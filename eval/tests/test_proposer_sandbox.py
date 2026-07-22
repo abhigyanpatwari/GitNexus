@@ -233,6 +233,8 @@ def test_runtime_mounts_bind_the_node_prefix_so_npx_and_npm_resolve(monkeypatch,
     (prefix / "bin").mkdir(parents=True)
     (prefix / "bin" / "node").write_text("#!/bin/sh\nexit 0\n")
     (prefix / "lib" / "node_modules" / "npm" / "bin").mkdir(parents=True)
+    (prefix / "lib" / "node_modules" / "npm" / "bin" / "npx-cli.js").write_text("")
+    (prefix / "bin" / "npx").symlink_to("../lib/node_modules/npm/bin/npx-cli.js")
     monkeypatch.setattr(
         "workflow_bench.proposer_sandbox.shutil.which",
         lambda name: str(prefix / "bin" / "node") if name == "node" else None,
@@ -271,9 +273,9 @@ def test_runtime_mounts_skip_the_prefix_bind_for_an_unrecognized_node_layout(mon
     assert args[args.index(str(bare / "node")) + 1] == SANDBOX_NODE
 
 
-def test_runtime_mounts_skip_the_prefix_bind_without_npm_under_the_prefix(monkeypatch, tmp_path) -> None:
-    # Right <prefix>/bin/node shape, but no lib/node_modules/npm: binding it
-    # would widen the mount surface without making npx resolvable.
+def test_runtime_mounts_skip_the_prefix_bind_without_npx_beside_node(monkeypatch, tmp_path) -> None:
+    # Right <prefix>/bin/node shape, but no working npx beside it: binding the
+    # prefix would widen the mount surface without making npx resolvable.
     prefix = tmp_path / "x64"
     (prefix / "bin").mkdir(parents=True)
     (prefix / "bin" / "node").write_text("#!/bin/sh\nexit 0\n")
@@ -292,6 +294,8 @@ def test_runtime_mounts_bind_a_real_tool_cache_layout(monkeypatch, tmp_path) -> 
     (prefix / "bin").mkdir(parents=True)
     (prefix / "bin" / "node").write_text("#!/bin/sh\nexit 0\n")
     (prefix / "lib" / "node_modules" / "npm" / "bin").mkdir(parents=True)
+    (prefix / "lib" / "node_modules" / "npm" / "bin" / "npx-cli.js").write_text("")
+    (prefix / "bin" / "npx").symlink_to("../lib/node_modules/npm/bin/npx-cli.js")
     monkeypatch.setattr(
         "workflow_bench.proposer_sandbox.shutil.which",
         lambda name: str(prefix / "bin" / "node") if name == "node" else None,

@@ -394,8 +394,15 @@ def _runtime_mount_args() -> list[str]:
         # before.
         node_bin_dir = Path(node_bin).resolve().parent
         node_prefix = node_bin_dir.parent
-        provides_npm = node_bin_dir.name == "bin" and (node_prefix / "lib" / "node_modules" / "npm").is_dir()
-        if provides_npm and not any(node_prefix.is_relative_to(tree) for tree in system_trees):
+        # Test the property actually needed -- a working npx next to node in a
+        # real bin/ directory -- rather than a proxy like lib/node_modules/npm.
+        # .exists() follows the symlink, so a dangling npx correctly fails: it
+        # would not survive the mount either. Requiring the "bin" name keeps
+        # the parent.parent derivation honest; an npx sitting directly beside
+        # node in a flat directory would make that derivation name the wrong
+        # prefix.
+        provides_npx = node_bin_dir.name == "bin" and (node_bin_dir / "npx").exists()
+        if provides_npx and not any(node_prefix.is_relative_to(tree) for tree in system_trees):
             args += ["--ro-bind", str(node_prefix), SANDBOX_NODE_PREFIX]
     for raw in (
         "/etc/ssl",
