@@ -97,16 +97,18 @@ describe('Spring configuration parsing', () => {
     expect(parseSpringYaml('just-a-scalar\n', 'application.yml')).toEqual([]);
     // Anchors are document-scoped: an alias may not reach into a previous document.
     expect(() =>
-      parseSpringYaml('base: &base\n  timeout: 30\n---\nservice:\n  <<: *base\n', 'application.yml'),
+      parseSpringYaml(
+        'base: &base\n  timeout: 30\n---\nservice:\n  <<: *base\n',
+        'application.yml',
+      ),
     ).toThrow('unidentified alias');
   });
 
   it('resolves sequence-form merge keys and explicitly tagged values', () => {
     expect(
-      parseSpringYaml(
-        'a: &a\n  x: 1\nb: &b\n  y: 2\nc:\n  <<: [*a, *b]\n',
-        'application.yml',
-      ).map((entry) => [entry.key, entry.line]),
+      parseSpringYaml('a: &a\n  x: 1\nb: &b\n  y: 2\nc:\n  <<: [*a, *b]\n', 'application.yml').map(
+        (entry) => [entry.key, entry.line],
+      ),
     ).toEqual([
       ['a.x', 2],
       ['b.y', 4],
