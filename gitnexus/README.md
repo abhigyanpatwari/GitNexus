@@ -311,6 +311,8 @@ GitNexus supports indexing multiple repositories. Each `gitnexus analyze` regist
 
 TypeScript, JavaScript, Python, Java, C, C++, C#, Go, Rust, PHP, Kotlin, Swift, Ruby, Dart
 
+**Move (Aptos)** is supported on the `aptos` release channel (`npm i -g gitnexus@aptos`) via compiler-first ingestion: the first analyze of a repo containing `Move.toml` provisions the pinned MoveFlow compiler automatically — see [Aptos / Move builds](#aptos--move-builds-aptos-dist-tag) and [Move compiler provisioning](#move-compiler-provisioning).
+
 ### Language Feature Matrix
 
 | Language   | Imports | Named Bindings | Exports | Heritage | Type Annotations | Constructor Inference | Config | Frameworks | Entry Points |
@@ -352,6 +354,26 @@ Installed automatically by both `gitnexus analyze` (per-repo) and `gitnexus setu
 
 - Node.js >= 22
 - Git repository (uses git for commit tracking)
+
+## Aptos / Move builds (`aptos` dist-tag)
+
+Move (Aptos) support ships from the `main-aptos` branch under the dedicated
+`aptos` dist-tag — the default `latest` channel does not include it yet.
+
+```bash
+# Install the Aptos-enabled build
+npm install -g gitnexus@aptos
+# — or run it directly —
+npx gitnexus@aptos analyze
+```
+
+Aptos builds version as `X.Y.Z-aptos.N` (e.g. `1.6.10-aptos.0`) and track the
+stable channel via periodic `main → main-aptos` syncs. Everything else in this
+README applies unchanged; the Move-specific pieces are the compiler-first
+ingestion of `Move.toml` packages and the analyze-time MoveFlow provisioning
+described in [Move compiler provisioning](#move-compiler-provisioning) —
+including the `MOVE_FLOW` override and `GITNEXUS_SKIP_MOVE_FLOW=1` for
+air-gapped hosts.
 
 ## Release candidates
 
