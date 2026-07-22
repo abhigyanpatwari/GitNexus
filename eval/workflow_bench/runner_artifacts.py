@@ -55,6 +55,20 @@ WORKSPACE_SNAPSHOT_BOOTSTRAP_NOISE = frozenset(
     }
 )
 
+# The set above is matched at the workspace ROOT only, because most of its
+# entries (package.json, node_modules, the .env family) are also legitimate
+# repository content further down the tree -- gitnexus/package.json and
+# gitnexus/.claude/settings.local.json are both tracked files whose edits must
+# still be caught. But Claude Code bootstraps into whatever directory it is
+# running in, so a task whose prompt cd's into a subdirectory gets the same
+# noise one level down. Observed in skill-evolution run 29861768554: 13 of 18
+# sessions failed with "phase changed unauthorized workspace path(s):
+# gitnexus/.claude/.cc-writes". These are the entries Claude Code creates
+# inside a .claude directory, and they are matched at ANY depth -- never
+# ".claude" itself, which holds real configuration.
+CLAUDE_BOOTSTRAP_DIR = ".claude"
+CLAUDE_BOOTSTRAP_ENTRIES = frozenset({".cc-writes", "agents", "commands"})
+
 IMPLEMENTATION_ARMS = frozenset(
     {
         "workflow",
@@ -86,6 +100,15 @@ class VerificationResult:
         yield self.output
 
 
+def _is_bootstrap_noise(relative: PurePosixPath) -> bool:
+    """Report whether a walked entry is harness noise rather than workspace change."""
+
+    parts = relative.parts
+    if parts[0] == ".git" or parts[0] in WORKSPACE_SNAPSHOT_BOOTSTRAP_NOISE:
+        return True
+    return len(parts) >= 2 and parts[-2] == CLAUDE_BOOTSTRAP_DIR and parts[-1] in CLAUDE_BOOTSTRAP_ENTRIES
+
+
 def workspace_snapshot(worktree: Path) -> dict[str, str]:
     """Hash the workspace without following links, excluding Git internals
     and Claude Code's own sandbox-bootstrap noise (see
@@ -110,7 +133,7 @@ def workspace_snapshot(worktree: Path) -> dict[str, str]:
             raise ValueError(f"workspace snapshot directory is unreadable: {directory}: {exc}") from exc
         for entry in children:
             relative = relative_dir / entry.name
-            if relative.parts[0] == ".git" or relative.parts[0] in WORKSPACE_SNAPSHOT_BOOTSTRAP_NOISE:
+            if _is_bootstrap_noise(relative):
                 continue
             entry_count += 1
             path_bytes += len(relative.as_posix().encode())
