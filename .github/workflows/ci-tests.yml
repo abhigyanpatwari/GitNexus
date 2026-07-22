@@ -46,7 +46,7 @@ jobs:
         with:
           path: ~/.lbdb/extension
           key: lbug-fts-${{ runner.os }}-${{ hashFiles('gitnexus/package-lock.json') }}
-      - name: Ensure FTS extension installed
+      - name: Ensure FTS + VECTOR extensions installed
         run: npx tsx scripts/ensure-fts.ts
         working-directory: gitnexus
       - name: Run sharded tests with coverage (blob)
@@ -205,6 +205,10 @@ jobs:
     # tsx-on-source path in CI (both entry points stay covered).
     env:
       GITNEXUS_REQUIRE_FTS: '1'
+      # #2623: the win32 VECTOR gate is gone, so the vector suites genuinely
+      # run here — require the extension so an unavailable VECTOR is a loud
+      # failure, never a silent skip (same contract as GITNEXUS_REQUIRE_FTS).
+      GITNEXUS_REQUIRE_VECTOR: '1'
       GITNEXUS_E2E_CLI: dist
       # #2449: hosted Windows runners intermittently push the busiest shard past
       # the default 15-minute watchdog. 20 minutes restores real headroom while
@@ -219,19 +223,21 @@ jobs:
       - uses: ./.github/actions/setup-gitnexus
         with:
           build: 'true'
-      # Warm-cache the installed LadybugDB FTS extension (~/.lbdb/extension) per
-      # OS + lockfile so a warm run skips the network install entirely, and the
-      # parallel shards share one download across runs. Pure reliability/speed:
-      # on a cache miss the tests self-install FTS on demand (see
-      # test/helpers/fts-availability.ts), so a miss just falls back to install —
-      # never a correctness dependency. Keyed by lockfile hash so a LadybugDB
-      # version bump re-installs; per-OS because the extension is a native binary.
+      # Warm-cache the installed LadybugDB FTS + VECTOR extensions
+      # (~/.lbdb/extension) per OS + lockfile so a warm run skips the network
+      # install entirely, and the parallel shards share one download across
+      # runs. Pure reliability/speed: on a cache miss the tests self-install on
+      # demand (see test/helpers/fts-availability.ts), so a miss just falls
+      # back to install — never a correctness dependency. Keyed by lockfile
+      # hash so a LadybugDB version bump re-installs; per-OS because the
+      # extensions are native binaries. (Key name kept as lbug-fts for cache
+      # continuity — the path covers every extension in the shared home.)
       - name: Cache LadybugDB FTS extension
         uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v5
         with:
           path: ~/.lbdb/extension
           key: lbug-fts-${{ runner.os }}-${{ hashFiles('gitnexus/package-lock.json') }}
-      - name: Ensure FTS extension installed
+      - name: Ensure FTS + VECTOR extensions installed
         run: npx tsx scripts/ensure-fts.ts
         working-directory: gitnexus
       - name: Run platform-sensitive tests

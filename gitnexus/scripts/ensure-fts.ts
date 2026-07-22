@@ -1,6 +1,6 @@
 /**
- * Install the LadybugDB FTS extension into the shared home (~/.lbdb) up front, so
- * every test in a sharded CI run finds it regardless of which shard it lands in.
+ * Install the LadybugDB FTS and VECTOR extensions into the shared home (~/.lbdb)
+ * up front, so every test in a sharded CI run finds them regardless of shard.
  *
  * FTS-dependent tests split two ways: the LOAD-path gate (skipUnlessFtsAvailable)
  * self-installs on miss, but the FILE-path gate (requireFtsResourceOrSkip, e.g.
@@ -17,13 +17,24 @@
 import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { initLbug, loadFTSExtension, closeLbug } from '../src/core/lbug/lbug-adapter.js';
+import {
+  initLbug,
+  loadFTSExtension,
+  loadVectorExtension,
+  closeLbug,
+} from '../src/core/lbug/lbug-adapter.js';
 
 const dir = mkdtempSync(join(tmpdir(), 'gn-ensure-fts-'));
 try {
   await initLbug(join(dir, 'ensure-fts.lbug'));
   const ok = await loadFTSExtension(undefined, { policy: 'auto' });
   console.log(ok ? 'FTS extension ready.' : 'FTS extension unavailable (continuing).');
+  // VECTOR rides the same pre-install (#2623): the win32 gate is gone, so the
+  // vector suites genuinely run on Windows/macOS — installing once here means
+  // every sharded test process LOADs from ~/.lbdb instead of racing its own
+  // out-of-process INSTALL (bounded 15s each when the server is unreachable).
+  const vec = await loadVectorExtension(undefined, { policy: 'auto' });
+  console.log(vec ? 'VECTOR extension ready.' : 'VECTOR extension unavailable (continuing).');
 } catch (err) {
   console.warn(`ensure-fts: skipped (${err instanceof Error ? err.message : String(err)})`);
 } finally {
