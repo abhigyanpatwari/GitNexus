@@ -15,7 +15,7 @@
 import fs from 'node:fs/promises';
 import path from 'node:path';
 import { createRequire } from 'node:module';
-import type { EventType as YamlEventType, State as YamlState } from 'js-yaml';
+import type { Event as YamlEvent } from 'js-yaml';
 import { SPRING_CONFIG_DESCRIPTION } from '../frameworks/spring/config-bindings.js';
 import { generateId } from '../../../lib/utils.js';
 import type { PipelineContext, PipelinePhase, PhaseResult } from './types.js';
@@ -24,6 +24,17 @@ import type { StructureOutput } from './structure.js';
 
 const require = createRequire(import.meta.url);
 const yaml = require('js-yaml') as typeof import('js-yaml');
+// js-yaml 5 dropped DEFAULT_SCHEMA; CORE plus these tags is what it used to be, so
+// explicitly tagged values keep parsing instead of throwing (an unknown tag aborts
+// the whole file). None of them can execute code.
+const SPRING_YAML_SCHEMA = yaml.CORE_SCHEMA.withTags(
+  yaml.mergeTag,
+  yaml.timestampTag,
+  yaml.binaryTag,
+  yaml.omapTag,
+  yaml.pairsTag,
+  yaml.setTag,
+);
 const MAX_CONFIG_FILE_BYTES = 2 * 1024 * 1024;
 const MAX_YAML_TRAVERSAL_DEPTH = 128;
 const MAX_YAML_TRAVERSAL_NODES = 100_000;
@@ -134,9 +145,9 @@ export function parseSpringProperties(
 
 interface YamlParseEvent {
   readonly startLine: number;
-  kind: string | null;
-  result: unknown;
-  tag: string | null;
+  readonly kind: 'scalar' | 'sequence' | 'mapping' | 'alias' | null;
+  readonly result: unknown;
+  readonly aliasOf: YamlParseEvent | undefined;
   readonly children: YamlParseEvent[];
 }
 
@@ -164,12 +175,10 @@ function isObjectValue(value: unknown): value is object {
   return value !== null && typeof value === 'object';
 }
 
-function resolveYamlAliasEvent(
-  event: YamlParseEvent | undefined,
-  objectEvents: WeakMap<object, YamlParseEvent>,
-): YamlParseEvent | undefined {
-  if (event?.kind !== null || !isObjectValue(event.result)) return event;
-  return objectEvents.get(event.result) ?? event;
+// Aliases are resolved to their anchor event by name while the tree is built,
+// so following one here is a single pointer hop.
+function resolveYamlAliasEvent(event: YamlParseEvent | undefined): YamlParseEvent | undefined {
+  return event?.aliasOf ?? event;
 }
 
 function yamlMappingPairs(event: YamlParseEvent): Array<{
@@ -187,114 +196,255 @@ function yamlMappingPairs(event: YamlParseEvent): Array<{
   return pairs;
 }
 
+/**
+ * First match in a pre-order walk of `event`, following sequences and `<<` merge
+ * chains. Iterative: children are pushed in reverse so the explicit stack pops
+ * them in declaration order, which is what makes "first match" mean the same
+ * thing it did when this recursed.
+ */
 function findYamlMappingLocation(
   event: YamlParseEvent | undefined,
   key: string,
-  objectEvents: WeakMap<object, YamlParseEvent>,
   traversal: YamlTraversalState,
-  visited = new Set<YamlParseEvent>(),
-  depth = 0,
 ): YamlMappingLocation | undefined {
-  consumeYamlTraversalBudget(traversal, depth);
-  const resolved = resolveYamlAliasEvent(event, objectEvents);
-  if (resolved === undefined || visited.has(resolved)) return undefined;
-  visited.add(resolved);
+  const visited = new Set<YamlParseEvent>();
+  const stack: Array<{ event: YamlParseEvent | undefined; depth: number }> = [{ event, depth: 0 }];
 
-  if (resolved.kind === 'sequence') {
-    for (const child of resolved.children) {
-      const found = findYamlMappingLocation(
-        child,
-        key,
-        objectEvents,
-        traversal,
-        visited,
-        depth + 1,
-      );
-      if (found !== undefined) return found;
+  while (stack.length > 0) {
+    const step = stack.pop();
+    if (step === undefined) break;
+    consumeYamlTraversalBudget(traversal, step.depth);
+    const resolved = resolveYamlAliasEvent(step.event);
+    if (resolved === undefined || visited.has(resolved)) continue;
+    visited.add(resolved);
+
+    if (resolved.kind === 'sequence') {
+      for (let index = resolved.children.length - 1; index >= 0; index--) {
+        stack.push({ event: resolved.children[index], depth: step.depth + 1 });
+      }
+      continue;
     }
-    return undefined;
-  }
-  if (resolved.kind !== 'mapping') return undefined;
+    if (resolved.kind !== 'mapping') continue;
 
-  const pairs = yamlMappingPairs(resolved);
-  const direct = pairs.find((pair) => pair.key === key);
-  if (direct !== undefined) {
-    return { valueEvent: direct.valueEvent, line: direct.keyEvent.startLine };
-  }
-  for (const merge of pairs.filter((pair) => pair.key === '<<')) {
-    const found = findYamlMappingLocation(
-      merge.valueEvent,
-      key,
-      objectEvents,
-      traversal,
-      visited,
-      depth + 1,
-    );
-    if (found !== undefined) return found;
+    const pairs = yamlMappingPairs(resolved);
+    const direct = pairs.find((pair) => pair.key === key);
+    if (direct !== undefined) {
+      return { valueEvent: direct.valueEvent, line: direct.keyEvent.startLine };
+    }
+    const merges = pairs.filter((pair) => pair.key === '<<');
+    for (let index = merges.length - 1; index >= 0; index--) {
+      stack.push({ event: merges[index].valueEvent, depth: step.depth + 1 });
+    }
   }
   return undefined;
 }
 
+type YamlFlattenStep =
+  | {
+      readonly kind: 'visit';
+      readonly value: unknown;
+      readonly event: YamlParseEvent | undefined;
+      readonly prefix: string;
+      readonly sourceLine: number;
+      readonly depth: number;
+    }
+  // Pops after every descendant of the object that pushed it, which is where the
+  // recursive form's `finally` used to release the cycle guard.
+  | { readonly kind: 'leave'; readonly object: object };
+
+/**
+ * Flatten a document to `dotted.key -> line`, iteratively. Children are pushed in
+ * reverse so the stack pops them in declaration order, keeping `out` in the same
+ * insertion order — and the traversal budget consumed in the same sequence — as
+ * the recursive walk this replaced.
+ */
 function flattenYamlValue(
   value: unknown,
   event: YamlParseEvent | undefined,
   prefix: string,
   out: Map<string, number>,
-  objectEvents: WeakMap<object, YamlParseEvent>,
   traversal: YamlTraversalState,
-  sourceLine = event?.startLine ?? 1,
-  depth = 0,
 ): void {
-  consumeYamlTraversalBudget(traversal, depth);
-  const resolvedEvent = resolveYamlAliasEvent(event, objectEvents);
-  const trackedObject = isObjectValue(value) ? value : undefined;
-  if (trackedObject !== undefined && traversal.activeObjects.has(trackedObject)) return;
-  if (trackedObject !== undefined) traversal.activeObjects.add(trackedObject);
-  try {
-    if (Array.isArray(value)) {
-      if (value.length === 0 && prefix.length > 0 && !out.has(prefix)) out.set(prefix, sourceLine);
-      value.forEach((item, index) =>
-        flattenYamlValue(
-          item,
-          resolvedEvent?.children[index],
-          `${prefix}[${index}]`,
-          out,
-          objectEvents,
-          traversal,
-          sourceLine,
-          depth + 1,
-        ),
-      );
-      return;
+  const stack: YamlFlattenStep[] = [
+    { kind: 'visit', value, event, prefix, sourceLine: event?.startLine ?? 1, depth: 0 },
+  ];
+
+  while (stack.length > 0) {
+    const step = stack.pop();
+    if (step === undefined) break;
+    if (step.kind === 'leave') {
+      traversal.activeObjects.delete(step.object);
+      continue;
     }
+
+    const { value: current, prefix: currentPrefix, sourceLine, depth } = step;
+    consumeYamlTraversalBudget(traversal, depth);
+    const resolvedEvent = resolveYamlAliasEvent(step.event);
+    const trackedObject = isObjectValue(current) ? current : undefined;
+    if (trackedObject !== undefined) {
+      if (traversal.activeObjects.has(trackedObject)) continue;
+      traversal.activeObjects.add(trackedObject);
+      stack.push({ kind: 'leave', object: trackedObject });
+    }
+
+    if (Array.isArray(current)) {
+      if (current.length === 0 && currentPrefix.length > 0 && !out.has(currentPrefix)) {
+        out.set(currentPrefix, sourceLine);
+      }
+      for (let index = current.length - 1; index >= 0; index--) {
+        stack.push({
+          kind: 'visit',
+          value: current[index],
+          event: resolvedEvent?.children[index],
+          prefix: `${currentPrefix}[${index}]`,
+          sourceLine,
+          depth: depth + 1,
+        });
+      }
+      continue;
+    }
+
     if (
-      value !== null &&
-      typeof value === 'object' &&
+      current !== null &&
+      typeof current === 'object' &&
       (resolvedEvent?.kind === 'mapping' || resolvedEvent === undefined)
     ) {
-      const entries = Object.entries(value as Record<string, unknown>);
-      if (entries.length === 0 && prefix.length > 0 && !out.has(prefix))
-        out.set(prefix, sourceLine);
-      for (const [key, nested] of entries) {
-        const next = prefix.length === 0 ? key : `${prefix}.${key}`;
-        const location = findYamlMappingLocation(resolvedEvent, key, objectEvents, traversal);
-        flattenYamlValue(
-          nested,
-          location?.valueEvent,
-          next,
-          out,
-          objectEvents,
-          traversal,
-          location?.line ?? sourceLine,
-          depth + 1,
-        );
+      // js-yaml 5 builds `!!set` as a native Set, whose members are not own
+      // properties; v4 built a plain `{member: null}` object. Enumerate them so a
+      // tagged set still contributes one key per member instead of a bare leaf.
+      const entries: Array<[string, unknown]> =
+        current instanceof Set
+          ? [...current].map((member) => [String(member), null])
+          : Object.entries(current as Record<string, unknown>);
+      if (entries.length === 0 && currentPrefix.length > 0 && !out.has(currentPrefix)) {
+        out.set(currentPrefix, sourceLine);
       }
-      return;
+      for (let index = entries.length - 1; index >= 0; index--) {
+        const [key, nested] = entries[index];
+        const location = findYamlMappingLocation(resolvedEvent, key, traversal);
+        stack.push({
+          kind: 'visit',
+          value: nested,
+          event: location?.valueEvent,
+          prefix: currentPrefix.length === 0 ? key : `${currentPrefix}.${key}`,
+          sourceLine: location?.line ?? sourceLine,
+          depth: depth + 1,
+        });
+      }
+      continue;
     }
-    if (prefix.length > 0 && !out.has(prefix)) out.set(prefix, sourceLine);
-  } finally {
-    if (trackedObject !== undefined) traversal.activeObjects.delete(trackedObject);
+
+    if (currentPrefix.length > 0 && !out.has(currentPrefix)) out.set(currentPrefix, sourceLine);
   }
+}
+
+// js-yaml 5 reports node positions as source offsets; map them to 1-based lines.
+function makeLineResolver(source: string): (offset: number) => number {
+  const lineStarts = [0];
+  for (let index = 0; index < source.length; index++) {
+    if (source[index] === '\n') lineStarts.push(index + 1);
+  }
+  return (offset: number): number => {
+    let low = 0;
+    let high = lineStarts.length - 1;
+    let line = 0;
+    while (low <= high) {
+      const mid = (low + high) >> 1;
+      if (lineStarts[mid] <= offset) {
+        line = mid;
+        low = mid + 1;
+      } else {
+        high = mid - 1;
+      }
+    }
+    return line + 1;
+  };
+}
+
+/**
+ * Rebuild the parse tree from js-yaml 5's event stream (v4's `listener` option
+ * was removed). Returns each document's root event, with aliases already
+ * resolved to their anchor event so merged/aliased keys keep the line where
+ * they were declared.
+ *
+ * One node per event, so this pass is bounded by MAX_CONFIG_FILE_BYTES alone —
+ * MAX_YAML_TRAVERSAL_NODES governs the later walk, which can revisit a shared
+ * anchor many times and so needs a budget this linear pass does not.
+ */
+function buildYamlEventTree(
+  events: readonly YamlEvent[],
+  source: string,
+): Array<YamlParseEvent | undefined> {
+  const lineOf = makeLineResolver(source);
+  const anchors = new Map<string, YamlParseEvent>();
+  const stack: YamlParseEvent[] = [];
+  const documentRoots: Array<YamlParseEvent | undefined> = [];
+
+  const anchorName = (start: number, end: number): string | null =>
+    start >= 0 && end > start ? source.slice(start, end) : null;
+  const attach = (node: YamlParseEvent): void => {
+    stack[stack.length - 1]?.children.push(node);
+  };
+  const register = (name: string | null, node: YamlParseEvent): void => {
+    if (name !== null) anchors.set(name, node);
+  };
+
+  for (const event of events) {
+    switch (event.type) {
+      case yaml.EVENT_DOCUMENT:
+        // Anchors are document-scoped. constructFromEvents already rejects a
+        // cross-document alias before we get here, so this only keeps the two
+        // layers from disagreeing.
+        anchors.clear();
+        stack.push({
+          startLine: 1,
+          kind: null,
+          result: undefined,
+          aliasOf: undefined,
+          children: [],
+        });
+        break;
+      case yaml.EVENT_MAPPING:
+      case yaml.EVENT_SEQUENCE: {
+        const node: YamlParseEvent = {
+          startLine: lineOf(event.start),
+          kind: event.type === yaml.EVENT_MAPPING ? 'mapping' : 'sequence',
+          result: undefined,
+          aliasOf: undefined,
+          children: [],
+        };
+        register(anchorName(event.anchorStart, event.anchorEnd), node);
+        attach(node);
+        stack.push(node);
+        break;
+      }
+      case yaml.EVENT_SCALAR: {
+        const node: YamlParseEvent = {
+          startLine: lineOf(event.valueStart),
+          kind: 'scalar',
+          result: yaml.getScalarValue(source, event),
+          aliasOf: undefined,
+          children: [],
+        };
+        register(anchorName(event.anchorStart, event.anchorEnd), node);
+        attach(node);
+        break;
+      }
+      case yaml.EVENT_ALIAS: {
+        const target = anchors.get(anchorName(event.anchorStart, event.anchorEnd) ?? '');
+        attach({ startLine: 1, kind: 'alias', result: undefined, aliasOf: target, children: [] });
+        break;
+      }
+      case yaml.EVENT_POP: {
+        const done = stack.pop();
+        // Documents are the only top-level containers, so a pop that empties the
+        // stack closes a document; its single child is the document's root value.
+        if (done !== undefined && stack.length === 0) documentRoots.push(done.children[0]);
+        break;
+      }
+    }
+  }
+  return documentRoots;
 }
 
 /** Parse and flatten YAML leaves without retaining their values. */
@@ -304,46 +454,21 @@ export function parseSpringYaml(
   profile?: string,
 ): SpringConfigKey[] {
   const flattened = new Map<string, number>();
-  const eventStack: YamlParseEvent[] = [];
-  const documentEvents: YamlParseEvent[] = [];
-  const objectEvents = new WeakMap<object, YamlParseEvent>();
-  const documents: unknown[] = [];
   const traversal: YamlTraversalState = {
     remainingNodes: MAX_YAML_TRAVERSAL_NODES,
     activeObjects: new Set<object>(),
   };
 
-  yaml.loadAll(content, (document) => documents.push(document), {
-    schema: yaml.DEFAULT_SCHEMA,
+  const events = yaml.parseEvents(content, { maxDepth: MAX_YAML_TRAVERSAL_DEPTH });
+  const documents = yaml.constructFromEvents(events, {
+    source: content,
+    schema: SPRING_YAML_SCHEMA,
     json: true,
-    listener: (eventType: YamlEventType, state: YamlState) => {
-      if (eventType === 'open') {
-        eventStack.push({
-          startLine: state.line + 1,
-          kind: null,
-          result: undefined,
-          tag: null,
-          children: [],
-        });
-        return;
-      }
-
-      const event = eventStack.pop();
-      if (event === undefined) return;
-      event.kind = state.kind ?? null;
-      event.result = state.result;
-      event.tag = (state as YamlState & { tag?: string | null }).tag ?? null;
-      if (isObjectValue(event.result) && event.kind !== null) {
-        objectEvents.set(event.result, event);
-      }
-      const parent = eventStack[eventStack.length - 1];
-      if (parent === undefined) documentEvents.push(event);
-      else parent.children.push(event);
-    },
   });
+  const documentEvents = buildYamlEventTree(events, content);
 
   documents.forEach((document, index) =>
-    flattenYamlValue(document, documentEvents[index], '', flattened, objectEvents, traversal),
+    flattenYamlValue(document, documentEvents[index], '', flattened, traversal),
   );
   return [...flattened.entries()]
     .sort(([left], [right]) => left.localeCompare(right))
