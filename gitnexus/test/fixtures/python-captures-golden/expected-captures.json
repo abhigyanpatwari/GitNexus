@@ -89,7 +89,7 @@
   },
   "python-call-result-binding/models.py": {
     "captureGroups": 17,
-    "digest": "30fa77241fe1cdb58658d8958c1e43b0d1218566fecff09446475867b1321c9f"
+    "digest": "441e2596001c4eaea4808ae6dd195a031f99d8ffe38c8fd450415c109d3365e2"
   },
   "python-call-result-binding/service.py": {
     "captureGroups": 9,
@@ -177,7 +177,7 @@
   },
   "python-constructor-field-receiver/memory_service.py": {
     "captureGroups": 59,
-    "digest": "ae65ce06427a4aa81ed82efe308062317c5400e30b8670a5cda444be41714ff7"
+    "digest": "ad9c3be5a7c10e112bb20eac20b8603196fc2e739b7567159c58a607639ce192"
   },
   "python-constructor-field-receiver/test_fixture.py": {
     "captureGroups": 13,
@@ -185,11 +185,11 @@
   },
   "python-constructor-type-inference/models/repo.py": {
     "captureGroups": 17,
-    "digest": "06dcbae58b0c98ac0d282a898890226e3e36375fb756446aed67426d84b7cb0f"
+    "digest": "3c400c7a331d7796a730e1ba53b91c4f5ec4799121044b0c160844988fca8662"
   },
   "python-constructor-type-inference/models/user.py": {
     "captureGroups": 17,
-    "digest": "30fa77241fe1cdb58658d8958c1e43b0d1218566fecff09446475867b1321c9f"
+    "digest": "441e2596001c4eaea4808ae6dd195a031f99d8ffe38c8fd450415c109d3365e2"
   },
   "python-constructor-type-inference/services/app.py": {
     "captureGroups": 13,
@@ -205,11 +205,11 @@
   },
   "python-dict-items-loop/repo.py": {
     "captureGroups": 16,
-    "digest": "d9b110c5eba687e2de69f0417ec7eeb2d50ab408363d9577399a8966ab142b8a"
+    "digest": "2d283b4acbc71e318a4520cb7557508b9084213ba53fbdac07457e348a8b24c6"
   },
   "python-dict-items-loop/user.py": {
     "captureGroups": 16,
-    "digest": "25e1758482975ac520d4aed712fe72b56ab67a052281dbe97888fa20cc02578b"
+    "digest": "6568834a7f228e78a11b08282196e138795980aed6c55b9953cc89e87c998e52"
   },
   "python-django-app-imports/accounts/__init__.py": {
     "captureGroups": 0,
@@ -301,7 +301,7 @@
   },
   "python-enumerate-loop/user.py": {
     "captureGroups": 17,
-    "digest": "30fa77241fe1cdb58658d8958c1e43b0d1218566fecff09446475867b1321c9f"
+    "digest": "441e2596001c4eaea4808ae6dd195a031f99d8ffe38c8fd450415c109d3365e2"
   },
   "python-field-type-disambig/address.py": {
     "captureGroups": 9,
@@ -329,7 +329,7 @@
   },
   "python-for-call-expr/models.py": {
     "captureGroups": 41,
-    "digest": "ebda2cb803a160066d7bc78d688e4ab1b7d8a684bece52e576a60d25687e951e"
+    "digest": "e8807a9969732197feb04204d200d5810b895c006f1424a7a6f5f0d5762ef49a"
   },
   "python-function-local-import-chain/app.py": {
     "captureGroups": 9,
@@ -477,7 +477,7 @@
   },
   "python-method-chain-binding/models.py": {
     "captureGroups": 48,
-    "digest": "a6a542fd64b187a8e7f0f8c23649e972a9ea77d501418d37dded0b7b60297230"
+    "digest": "f049817034428759193fce03b417ca23c133f6ead87f960e173afba9b79b88e8"
   },
   "python-method-enrichment/app.py": {
     "captureGroups": 13,
@@ -693,7 +693,7 @@
   },
   "python-return-type-inference/models.py": {
     "captureGroups": 17,
-    "digest": "30fa77241fe1cdb58658d8958c1e43b0d1218566fecff09446475867b1321c9f"
+    "digest": "441e2596001c4eaea4808ae6dd195a031f99d8ffe38c8fd450415c109d3365e2"
   },
   "python-return-type-inference/service.py": {
     "captureGroups": 9,
@@ -773,7 +773,7 @@
   },
   "python-walrus-operator/models.py": {
     "captureGroups": 22,
-    "digest": "8bf9d88dd498cbfcf667556e027af4185d6af66e9701668c20348a76244202f5"
+    "digest": "9ab1a8a69970e8c875bd103251ecf9c8af2c1464a6bdc1213fe7560c4fa34063"
   },
   "python-write-access/models.py": {
     "captureGroups": 11,
@@ -785,6 +785,6 @@
   },
   "synthetic:dao-20": {
     "captureGroups": 773,
-    "digest": "80222178b54fc7bcb5f63c72c6c4c321fdb8aae24f049bacefe38efd48f54fcc"
+    "digest": "37e047eda37477bbc33f4dd8ba259c3f876580378566c0c14dfe580795a952af"
   }
 }

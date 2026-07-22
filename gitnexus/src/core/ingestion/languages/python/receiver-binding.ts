@@ -158,7 +158,12 @@ export function synthesizeConstructorFieldTypeBindings(fnNode: SyntaxNode): Capt
       node !== body &&
       (node.type === 'function_definition' ||
         node.type === 'lambda' ||
-        node.type === 'class_definition')
+        node.type === 'class_definition' ||
+        node.type === 'if_statement' ||
+        node.type === 'for_statement' ||
+        node.type === 'while_statement' ||
+        node.type === 'try_statement' ||
+        node.type === 'match_statement')
     ) {
       continue;
     }
@@ -177,7 +182,7 @@ export function synthesizeConstructorFieldTypeBindings(fnNode: SyntaxNode): Capt
           if (typeName !== undefined) {
             const explicit = explicitType !== null;
             const existing = candidates.get(field.text);
-            if (existing === undefined || (explicit && !existing.explicit)) {
+            if (existing === undefined || explicit || !existing.explicit) {
               candidates.set(field.text, {
                 explicit,
                 match: {
@@ -187,6 +192,15 @@ export function synthesizeConstructorFieldTypeBindings(fnNode: SyntaxNode): Capt
                     explicitType ?? right ?? field,
                     typeName,
                   ),
+                  ...(explicit
+                    ? {}
+                    : {
+                        '@type-binding.parameter': syntheticCapture(
+                          '@type-binding.parameter',
+                          right ?? field,
+                          '1',
+                        ),
+                      }),
                   '@type-binding.instance-field': syntheticCapture(
                     '@type-binding.instance-field',
                     node,

@@ -44,14 +44,6 @@ class Facade:
 `,
     },
     {
-      name: 'explicit field annotation',
-      source: `
-class Facade:
-    def __init__(self, service):
-        self.service: Service = service
-`,
-    },
-    {
       name: 'custom receiver name',
       source: `
 class Facade:
@@ -59,7 +51,19 @@ class Facade:
         this.service = service
 `,
     },
-  ])('synthesizes an annotation-strength class field for $name', ({ source }) => {
+  ])('synthesizes a parameter-derived class field for $name', ({ source }) => {
+    expect(interpretedBindings(source)).toEqual([
+      { boundName: 'service', rawTypeName: 'Service', source: 'parameter-annotation' },
+    ]);
+  });
+
+  it('preserves explicit field-annotation provenance', () => {
+    const source = `
+class Facade:
+    def __init__(self, service):
+        self.service: Service = service
+`;
+
     expect(interpretedBindings(source)).toEqual([
       { boundName: 'service', rawTypeName: 'Service', source: 'annotation' },
     ]);
@@ -117,8 +121,63 @@ class Facade:
             self.service: Service = value
 `,
     },
+    {
+      name: 'an assignment inside an if branch',
+      source: `
+class Facade:
+    def __init__(self, service: Service, enabled: bool):
+        if enabled:
+            self.service = service
+`,
+    },
+    {
+      name: 'an assignment inside a for loop',
+      source: `
+class Facade:
+    def __init__(self, services: list[Service]):
+        for service in services:
+            self.service: Service = service
+`,
+    },
+    {
+      name: 'an assignment inside a while loop',
+      source: `
+class Facade:
+    def __init__(self, service: Service, enabled: bool):
+        while enabled:
+            self.service = service
+`,
+    },
+    {
+      name: 'an assignment inside a try statement',
+      source: `
+class Facade:
+    def __init__(self, service: Service):
+        try:
+            self.service = service
+        except RuntimeError:
+            pass
+`,
+    },
   ])('does not synthesize a binding for $name', ({ source }) => {
     expect(constructorFieldBindings(source)).toEqual([]);
+  });
+
+  it('uses the final inferred assignment for a repeatedly assigned field', () => {
+    const source = `
+class Facade:
+    def __init__(self, primary: PrimaryService, fallback: FallbackService):
+        self.service = primary
+        self.service = fallback
+`;
+
+    expect(interpretedBindings(source)).toEqual([
+      {
+        boundName: 'service',
+        rawTypeName: 'FallbackService',
+        source: 'parameter-annotation',
+      },
+    ]);
   });
 
   it('prefers an explicit field annotation over the parameter annotation', () => {
@@ -149,11 +208,32 @@ class Facade:
     const constructorScope = parsed!.scopes.find((scope) => scope.kind === 'Function');
     expect(classScope?.typeBindings.get('service')).toMatchObject({
       rawName: 'Service',
-      source: 'annotation',
+      source: 'parameter-annotation',
     });
     expect(constructorScope?.typeBindings.get('service')).toMatchObject({
       rawName: 'Service',
       source: 'parameter-annotation',
+    });
+  });
+
+  it('does not override a class-body field annotation with constructor inference', () => {
+    const parsed = extractParsedFile(
+      pythonProvider,
+      `
+class Facade:
+    service: ServiceProtocol
+
+    def __init__(self, service: ConcreteService):
+        self.service = service
+`,
+      'fixture.py',
+    );
+    expect(parsed).toBeDefined();
+
+    const classScope = parsed!.scopes.find((scope) => scope.kind === 'Class');
+    expect(classScope?.typeBindings.get('service')).toMatchObject({
+      rawName: 'ServiceProtocol',
+      source: 'annotation',
     });
   });
 
