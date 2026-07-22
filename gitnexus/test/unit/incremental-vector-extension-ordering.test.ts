@@ -95,8 +95,13 @@ describe('runFullAnalysis incremental writeback — VECTOR loaded before embeddi
       // Seed real embedding rows for two files, then build the HNSW index —
       // the state a prior `analyze --embeddings` leaves behind. Zero vectors
       // need no extension for the TABLE; only the index is extension-gated.
-      const changedFile = path.join('src', 'handler.ts');
-      const untouchedFile = path.join('src', 'validator.ts');
+      // POSIX literals, NOT path.join: the graph stores repo-relative
+      // filePaths with forward slashes on every OS, and a Windows backslash
+      // inside the seed helper's single-quoted Cypher literal is a parser
+      // error ("Invalid input <... n.filePath = '>"). path.join stays only
+      // for real filesystem access below.
+      const changedFile = 'src/handler.ts';
+      const untouchedFile = 'src/validator.ts';
       const seeded = await seedEmbeddingsForFiles(repo.dbPath, [changedFile, untouchedFile], 2);
       const changedIds = seeded.get(changedFile) ?? [];
       const untouchedIds = seeded.get(untouchedFile) ?? [];
@@ -197,8 +202,9 @@ describe('runFullAnalysis incremental writeback — VECTOR loaded before embeddi
     const previousPolicy = process.env.GITNEXUS_LBUG_EXTENSION_INSTALL;
     try {
       await runFullAnalysis(repo.dbPath, { skipAgentsMd: true }, { onProgress: () => {} });
-      const seeded = await seedEmbeddingsForFiles(repo.dbPath, [path.join('src', 'handler.ts')], 2);
-      const seededIds = seeded.get(path.join('src', 'handler.ts')) ?? [];
+      // POSIX literal for the graph-side path (see the note in the first case).
+      const seeded = await seedEmbeddingsForFiles(repo.dbPath, ['src/handler.ts'], 2);
+      const seededIds = seeded.get('src/handler.ts') ?? [];
       expect(seededIds.length).toBeGreaterThan(0);
       // Deliberately NOT stampEmbeddingCount: this pins the case where the DB
       // holds embedding rows that meta does not account for. The escalation
