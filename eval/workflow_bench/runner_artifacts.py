@@ -63,11 +63,21 @@ WORKSPACE_SNAPSHOT_BOOTSTRAP_NOISE = frozenset(
 # running in, so a task whose prompt cd's into a subdirectory gets the same
 # noise one level down. Observed in skill-evolution run 29861768554: 13 of 18
 # sessions failed with "phase changed unauthorized workspace path(s):
-# gitnexus/.claude/.cc-writes". These are the entries Claude Code creates
-# inside a .claude directory, and they are matched at ANY depth -- never
+# gitnexus/.claude/.cc-writes". That entry is matched at ANY depth -- never
 # ".claude" itself, which holds real configuration.
+#
+# Deliberately only .cc-writes. Every excluded name is a blind spot: once a
+# .claude directory already exists (gitnexus/.claude/settings.local.json is
+# tracked), anything a phase writes underneath an excluded entry becomes
+# invisible to this check, and Claude Code loads .claude/agents relative to
+# its cwd -- which these tasks point at gitnexus/. Adding "agents" and
+# "commands" here on the theory that they might also appear nested would let a
+# planning phase plant a definition that the later work phase reads, with no
+# evidence in the boundary check. Only .cc-writes was ever observed nested, so
+# only .cc-writes is excluded; extend this set from an observed failure, never
+# pre-emptively.
 CLAUDE_BOOTSTRAP_DIR = ".claude"
-CLAUDE_BOOTSTRAP_ENTRIES = frozenset({".cc-writes", "agents", "commands"})
+CLAUDE_BOOTSTRAP_ENTRIES = frozenset({".cc-writes"})
 
 IMPLEMENTATION_ARMS = frozenset(
     {

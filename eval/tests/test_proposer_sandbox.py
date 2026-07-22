@@ -220,7 +220,7 @@ def test_runtime_mounts_bind_the_resolved_node_to_a_fresh_sandbox_path(monkeypat
     assert not any(SANDBOX_NODE.startswith(bound + "/") for bound in ("/usr", "/bin", "/lib", "/lib64"))
 
 
-def test_runtime_mounts_bind_the_node_prefix_so_npx_and_npm_resolve(monkeypatch) -> None:
+def test_runtime_mounts_bind_the_node_prefix_so_npx_and_npm_resolve(monkeypatch, tmp_path) -> None:
     # npx and npm are not standalone binaries -- they are symlinks into
     # ../lib/node_modules/npm/bin/*-cli.js -- so binding the sibling files is
     # not enough; the install prefix carrying both bin/ and lib/node_modules
@@ -229,20 +229,77 @@ def test_runtime_mounts_bind_the_node_prefix_so_npx_and_npm_resolve(monkeypatch)
     # a sandbox with node but no npx, and every task verify command dies with
     # "/bin/sh: 1: npx: not found" -- all 18 runs of skill-evolution run
     # 29861768554 did exactly that.
+    prefix = tmp_path / "hostedtoolcache" / "node" / "22.18.0" / "x64"
+    (prefix / "bin").mkdir(parents=True)
+    (prefix / "bin" / "node").write_text("#!/bin/sh\nexit 0\n")
+    (prefix / "lib" / "node_modules" / "npm" / "bin").mkdir(parents=True)
     monkeypatch.setattr(
         "workflow_bench.proposer_sandbox.shutil.which",
-        lambda name: "/opt/hostedtoolcache/node/22.18.0/x64/bin/node" if name == "node" else None,
+        lambda name: str(prefix / "bin" / "node") if name == "node" else None,
     )
     args = _runtime_mount_args()
-    prefix_index = args.index("/opt/hostedtoolcache/node/22.18.0/x64")
+    prefix_index = args.index(str(prefix))
     assert args[prefix_index - 1] == "--ro-bind"
     assert args[prefix_index + 1] == SANDBOX_NODE_PREFIX
     # the single-binary bind stays: sanitized_graph.py and runner_sessions.py
     # invoke SANDBOX_NODE directly.
-    node_index = args.index("/opt/hostedtoolcache/node/22.18.0/x64/bin/node")
+    node_index = args.index(str(prefix / "bin" / "node"))
     assert args[node_index + 1] == SANDBOX_NODE
     # and the prefix's bin/ must actually be on PATH for npx to resolve.
     assert f"{SANDBOX_NODE_PREFIX}/bin" in SANDBOX_PATH.split(":")
+
+
+def test_runtime_mounts_skip_the_prefix_bind_for_an_unrecognized_node_layout(monkeypatch, tmp_path) -> None:
+    # The prefix is derived from the node binary's path, so it must only be
+    # trusted when the layout really is <prefix>/bin/node carrying npm.
+    # Otherwise parent.parent names an unrelated ancestor: /opt/bin/node would
+    # bind ALL of /opt (every tool cache on a hosted runner) and a bare
+    # <dir>/node would bind <dir>'s parent -- an over-broad mount into a
+    # sandbox that runs untrusted model-authored code. The pre-existing
+    # real-Bubblewrap node canary builds exactly this bare <dir>/node shape.
+    bare = tmp_path / "toolcache"
+    bare.mkdir()
+    (bare / "node").write_text("#!/bin/sh\nexit 0\n")
+    monkeypatch.setattr(
+        "workflow_bench.proposer_sandbox.shutil.which",
+        lambda name: str(bare / "node") if name == "node" else None,
+    )
+    args = _runtime_mount_args()
+    assert SANDBOX_NODE_PREFIX not in args
+    assert str(tmp_path) not in args
+    # the node bind itself is unaffected -- SANDBOX_NODE still works.
+    assert args[args.index(str(bare / "node")) + 1] == SANDBOX_NODE
+
+
+def test_runtime_mounts_skip_the_prefix_bind_without_npm_under_the_prefix(monkeypatch, tmp_path) -> None:
+    # Right <prefix>/bin/node shape, but no lib/node_modules/npm: binding it
+    # would widen the mount surface without making npx resolvable.
+    prefix = tmp_path / "x64"
+    (prefix / "bin").mkdir(parents=True)
+    (prefix / "bin" / "node").write_text("#!/bin/sh\nexit 0\n")
+    monkeypatch.setattr(
+        "workflow_bench.proposer_sandbox.shutil.which",
+        lambda name: str(prefix / "bin" / "node") if name == "node" else None,
+    )
+    args = _runtime_mount_args()
+    assert SANDBOX_NODE_PREFIX not in args
+
+
+def test_runtime_mounts_bind_a_real_tool_cache_layout(monkeypatch, tmp_path) -> None:
+    # The positive counterpart: a genuine <prefix>/bin/node install carrying
+    # npm, outside the system trees, is bound so npx resolves.
+    prefix = tmp_path / "node" / "22.18.0" / "x64"
+    (prefix / "bin").mkdir(parents=True)
+    (prefix / "bin" / "node").write_text("#!/bin/sh\nexit 0\n")
+    (prefix / "lib" / "node_modules" / "npm" / "bin").mkdir(parents=True)
+    monkeypatch.setattr(
+        "workflow_bench.proposer_sandbox.shutil.which",
+        lambda name: str(prefix / "bin" / "node") if name == "node" else None,
+    )
+    args = _runtime_mount_args()
+    prefix_index = args.index(SANDBOX_NODE_PREFIX)
+    assert args[prefix_index - 2] == "--ro-bind"
+    assert args[prefix_index - 1] == str(prefix)
 
 
 def test_runtime_mounts_skip_the_prefix_bind_when_it_is_already_bound(monkeypatch) -> None:

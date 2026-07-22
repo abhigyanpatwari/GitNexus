@@ -383,8 +383,19 @@ def _runtime_mount_args() -> list[str]:
         # ("cd gitnexus && npx tsc ... && npx vitest ...") died with
         # "/bin/sh: 1: npx: not found". Skip the redundant bind in the
         # already-covered case so the mount surface stays minimal.
-        node_prefix = Path(node_bin).resolve().parent.parent
-        if not any(node_prefix.is_relative_to(tree) for tree in system_trees):
+        #
+        # The prefix is only ever derived from a real <prefix>/bin/node layout
+        # that actually carries npm. Deriving it as parent.parent unconditionally
+        # would mount an unrelated ancestor whenever node sits somewhere else:
+        # /opt/bin/node would bind all of /opt (every tool cache on a hosted
+        # runner) and a bare <dir>/node would bind <dir>'s parent. This function
+        # exists to keep the sandbox surface minimal, so an unrecognized layout
+        # binds nothing extra and simply leaves npx unavailable, exactly as
+        # before.
+        node_bin_dir = Path(node_bin).resolve().parent
+        node_prefix = node_bin_dir.parent
+        provides_npm = node_bin_dir.name == "bin" and (node_prefix / "lib" / "node_modules" / "npm").is_dir()
+        if provides_npm and not any(node_prefix.is_relative_to(tree) for tree in system_trees):
             args += ["--ro-bind", str(node_prefix), SANDBOX_NODE_PREFIX]
     for raw in (
         "/etc/ssl",
