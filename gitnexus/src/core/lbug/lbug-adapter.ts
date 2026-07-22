@@ -45,6 +45,7 @@ import {
   type LbugConnectionHandle,
 } from './lbug-config.js';
 import {
+  cleanQuarantinedMissingShadowWals,
   finalizeLbugSidecarsAfterClose,
   guardWalQuarantine,
   isMissingShadowSidecarError,
@@ -54,6 +55,7 @@ import {
   quarantineWalForMissingShadow,
   renameFailureMessage,
   shadowSidecarRecoveryMessage,
+  sidecarPreflightDisabled,
 } from './sidecar-recovery.js';
 
 import { logger } from '../logger.js';
@@ -821,6 +823,28 @@ const doInitLbug = async (dbPath: string, readOnly: boolean = false) => {
     // -------------------------------------------------------------------------
     const releaseInitLock = await acquireInitLock(dbPath);
     try {
+      // Reclaim missing-shadow WAL quarantines from a PRIOR crash (#2637).
+      // LadybugDB renames an unrecoverable WAL aside as
+      // `${dbPath}.wal.missing-shadow.<ts>-<rand>` (quarantineWalForMissingShadow)
+      // instead of deleting it. Once quarantined it is permanently detached from
+      // the live store and never reopened, so reclaiming it is safe regardless of
+      // whether the main DB file exists this run — unlike the orphan-sidecar
+      // cleanup below, this must NOT be gated on "main DB missing": a quarantine
+      // event and a healthy main DB are independent facts. Never let a reclaim
+      // failure (e.g. a transient EBUSY from an antivirus scan) block DB startup.
+      if (!sidecarPreflightDisabled()) {
+        try {
+          const reclaimed = await cleanQuarantinedMissingShadowWals(dbPath);
+          for (const file of reclaimed) {
+            logger.warn(`GitNexus: reclaimed quarantined WAL ${path.basename(file)} from a prior crash`);
+          }
+        } catch (err) {
+          logger.warn(
+            `GitNexus: failed to reclaim missing-shadow WAL quarantines: ${summarizeError(err)}`,
+          );
+        }
+      }
+
       // Crash-recovery cleanup: if the main DB file is missing, stale sidecars
       // from an interrupted run can block fresh opens indefinitely.
       try {
