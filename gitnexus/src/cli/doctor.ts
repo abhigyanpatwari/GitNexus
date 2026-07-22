@@ -17,7 +17,11 @@ import {
   probeFtsExtensionLoad,
   probeVectorExtensionLoad,
 } from '../core/lbug/native-check.js';
-import { getOsPageSize, isPageSizeAwareLadybug } from '../core/lbug/lbug-config.js';
+import {
+  getEffectiveBufferPoolSize,
+  getOsPageSize,
+  isPageSizeAwareLadybug,
+} from '../core/lbug/lbug-config.js';
 import { diagnoseExtensionLoad } from '../core/lbug/extension-load-error.js';
 import { getExtensionInstallPolicy } from '../core/lbug/extension-loader.js';
 import { t } from './i18n/index.js';
@@ -167,6 +171,20 @@ export const doctorCommand = async () => {
   // (like the 'native' line below) to avoid adding i18n keys.
   for (const line of pageSizeDoctorLines(getOsPageSize(), fingerprint.ladybugdb)) {
     console.log(line);
+  }
+  // Effective analyze buffer pool (#2631) — page-size-scaled since non-4K
+  // hosts bill pool budget per OS-page granule. Literal label like the page
+  // size line above (no i18n key).
+  {
+    const pool = getEffectiveBufferPoolSize();
+    const pageSize = getOsPageSize();
+    const scaleNote =
+      pageSize !== undefined && pageSize > 4096
+        ? ` (×${Math.floor(pageSize / 4096)} page-size scaling)`
+        : '';
+    console.log(
+      `  ${padDisplayEnd('pool size', 10)}${Math.round(pool / (1024 * 1024))} MiB${scaleNote}`,
+    );
   }
   const nativeCheck = checkLbugNative();
   if (nativeCheck.ok) {
