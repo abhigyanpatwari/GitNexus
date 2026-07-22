@@ -833,6 +833,15 @@ export function populateClassOwnedMembers(parsed: ParsedFile): void {
     const q = def.qualifiedName;
     if (q === undefined || q.length === 0) return;
     if (q.includes('.')) return; // already qualified (dotted)
+    // A synthesized anonymous-class def (Java `$`-chain binary name,
+    // #2550/#2555 — `M3$2`, `EnumWrap$Mode$1`) already carries its
+    // COMPLETE name. Prefixing it (`M3.M3$2`) desyncs from the
+    // structure-phase node id (`M3$2.hook`), so same-named methods
+    // across sibling enum-constant bodies collapse onto the first
+    // body's node via the simple-name fallback (empirically caught in
+    // review). Class-like only: `$`-named MEMBERS (legal in JS/TS)
+    // still qualify normally against their class.
+    if (isClassLike(def.type) && q.includes('$')) return;
     const classQ = classDef.qualifiedName;
     if (classQ === undefined || classQ.length === 0) return;
     (def as { qualifiedName: string }).qualifiedName = `${classQ}.${q}`;

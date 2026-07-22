@@ -1,6 +1,6 @@
 /**
- * Synthesize `@type-binding.self` / `@type-binding.cls` captures for
- * methods.
+ * Synthesize implicit receiver and constructor-assigned field type bindings
+ * for methods.
  *
  * Tree-sitter can't easily express "the first parameter of a function
  * defined directly inside a class body" via a single static query.
@@ -112,4 +112,115 @@ export function synthesizeReceiverTypeBinding(fnNode: SyntaxNode): CaptureMatch 
     '@type-binding.name': syntheticCapture('@type-binding.name', first, firstName),
     '@type-binding.type': syntheticCapture('@type-binding.type', first, className),
   };
+}
+
+/**
+ * Synthesize class-scope field bindings for the common Python constructor
+ * injection pattern:
+ *
+ *   def __init__(self, service: Service):
+ *       self.service = service
+ *
+ * An explicit field annotation (`self.service: Service = ...`) is also
+ * accepted and takes precedence over a parameter annotation. Deliberately do
+ * not infer from arbitrary unannotated RHS expressions: the receiver resolver
+ * needs a declared type, not a name-only guess.
+ */
+export function synthesizeConstructorFieldTypeBindings(fnNode: SyntaxNode): CaptureMatch[] {
+  if (fnNode.childForFieldName('name')?.text !== '__init__') return [];
+  if (findEnclosingClassDefinition(fnNode) === null) return [];
+  if (hasDecorator(fnNode, 'staticmethod') || hasDecorator(fnNode, 'classmethod')) return [];
+
+  const receiver = synthesizeReceiverTypeBinding(fnNode);
+  const receiverName = receiver?.['@type-binding.self']?.text;
+  if (receiverName === undefined) return [];
+
+  const parameters = fnNode.childForFieldName('parameters');
+  const body = fnNode.childForFieldName('body');
+  if (parameters === null || body === null) return [];
+
+  const parameterTypes = new Map<string, string>();
+  for (let i = 0; i < parameters.namedChildCount; i++) {
+    const parameter = parameters.namedChild(i);
+    if (parameter === null) continue;
+    const name = firstParameterName(parameter);
+    const annotation = parameter.childForFieldName('type');
+    if (name !== null && annotation !== null) parameterTypes.set(name, annotation.text);
+  }
+
+  type Candidate = { readonly match: CaptureMatch; readonly explicit: boolean };
+  const candidates = new Map<string, Candidate>();
+
+  const stack: SyntaxNode[] = [body];
+  while (stack.length > 0) {
+    const node = stack.pop()!;
+    if (
+      node !== body &&
+      (node.type === 'function_definition' ||
+        node.type === 'lambda' ||
+        node.type === 'class_definition' ||
+        node.type === 'if_statement' ||
+        node.type === 'for_statement' ||
+        node.type === 'while_statement' ||
+        node.type === 'try_statement' ||
+        node.type === 'match_statement')
+    ) {
+      continue;
+    }
+
+    if (node.type === 'assignment') {
+      const left = node.childForFieldName('left');
+      const right = node.childForFieldName('right');
+      if (left?.type === 'attribute') {
+        const object = left.childForFieldName('object');
+        const field = left.childForFieldName('attribute');
+        if (object?.type === 'identifier' && object.text === receiverName && field !== null) {
+          const explicitType = node.childForFieldName('type');
+          const parameterType =
+            right?.type === 'identifier' ? parameterTypes.get(right.text) : undefined;
+          const typeName = explicitType?.text ?? parameterType;
+          if (typeName !== undefined) {
+            const explicit = explicitType !== null;
+            const existing = candidates.get(field.text);
+            if (existing === undefined || explicit || !existing.explicit) {
+              candidates.set(field.text, {
+                explicit,
+                match: {
+                  '@type-binding.name': syntheticCapture('@type-binding.name', field, field.text),
+                  '@type-binding.type': syntheticCapture(
+                    '@type-binding.type',
+                    explicitType ?? right ?? field,
+                    typeName,
+                  ),
+                  ...(explicit
+                    ? {}
+                    : {
+                        '@type-binding.parameter': syntheticCapture(
+                          '@type-binding.parameter',
+                          right ?? field,
+                          '1',
+                        ),
+                      }),
+                  '@type-binding.instance-field': syntheticCapture(
+                    '@type-binding.instance-field',
+                    node,
+                    '1',
+                  ),
+                },
+              });
+            }
+          }
+        }
+      }
+    }
+
+    // Push in reverse so the LIFO walk visits source order. That keeps Map
+    // insertion order (and therefore emitted capture order) deterministic.
+    for (let i = node.namedChildCount - 1; i >= 0; i--) {
+      const child = node.namedChild(i);
+      if (child !== null) stack.push(child);
+    }
+  }
+
+  return [...candidates.values()].map(({ match }) => match);
 }

@@ -11,10 +11,14 @@
  *   3. **Arity metadata** on method/constructor declarations.
  *   4. **Reference arity** on call sites.
  *
- * Pure given the input source text. No I/O, no globals consulted.
+ * The returned captures are deterministic. Class-annotation facts are also
+ * recorded for the worker side-channel consumed after scope resolution.
  */
-
-import type { Capture, CaptureMatch } from 'gitnexus-shared';
+import { type Capture, type CaptureMatch, type ScopeId } from 'gitnexus-shared';
+import {
+  materializeClassAnnotationFacts,
+  recordClassAnnotationCapture,
+} from '../../frameworks/spring/bean-candidates.js';
 import {
   nodeIfType,
   nodeToCapture,
@@ -28,7 +32,13 @@ import { getJavaParser, getJavaScopeQuery } from './query.js';
 import { recordCacheHit, recordCacheMiss } from './cache-stats.js';
 import { getTreeSitterBufferSize } from '../../constants.js';
 import { parseSourceSafe } from '../../../tree-sitter/safe-parse.js';
+import {
+  setJavaClassAnnotationFacts,
+  setJavaSpringConfigConsumerFacts,
+} from './capture-side-channel.js';
+import { captureJavaPackageFact } from './package-facts.js';
 import { synthesizeCallableFlowCaptures } from '../../utils/callable-flow-captures.js';
+import { captureJavaSpringConfigConsumerFacts } from './spring-config-bindings.js';
 
 /** Declaration anchors that carry function-like arity metadata. */
 const FUNCTION_DECL_TAGS = ['@declaration.method', '@declaration.constructor'] as const;
@@ -72,7 +82,7 @@ function shouldEmitReadMember(memberNode: SyntaxNode): boolean {
 
 export function emitJavaScopeCaptures(
   sourceText: string,
-  _filePath: string,
+  filePath: string,
   cachedTree?: unknown,
 ): readonly CaptureMatch[] {
   let tree = cachedTree as ReturnType<ReturnType<typeof getJavaParser>['parse']> | undefined;
@@ -84,9 +94,11 @@ export function emitJavaScopeCaptures(
   } else {
     recordCacheHit();
   }
+  captureJavaPackageFact(filePath, tree.rootNode);
 
   const rawMatches = getJavaScopeQuery().matches(tree.rootNode);
   const out: CaptureMatch[] = [];
+  const classAnnotations = new Map<ScopeId, Set<string>>();
 
   for (const m of rawMatches) {
     const grouped: Record<string, Capture> = {};
@@ -105,6 +117,13 @@ export function emitJavaScopeCaptures(
       nodeMap[tag] = c.node;
     }
     if (Object.keys(grouped).length === 0) continue;
+
+    const annotatedClass = grouped['@class-annotation.class'];
+    const annotationName = grouped['@class-annotation.name'];
+    if (annotatedClass !== undefined && annotationName !== undefined) {
+      recordClassAnnotationCapture(classAnnotations, filePath, annotatedClass, annotationName.text);
+      continue;
+    }
 
     // Decompose each `import_declaration`. `@import.statement` is captured
     // directly on the `import_declaration` node.
@@ -133,6 +152,29 @@ export function emitJavaScopeCaptures(
       grouped['@reference.receiver'] !== undefined
     ) {
       continue;
+    }
+
+    // Normalize a `new`-expression receiver to its constructed type's simple
+    // name: `new Local().inner()` binds the WHOLE `object_creation_expression`
+    // as `@reference.receiver`, so its raw text is `"new Local()"` — a string
+    // that can never match a scope binding, so the compound-receiver resolver
+    // silently falls through to name-only fallback resolution and picks the
+    // wrong same-named method on a collision (#2564). Rewriting the text to
+    // just `Local` lets Case 2 (class-name / static receiver) in
+    // receiver-bound-calls.ts resolve it via its normal MRO walk. Mirrors the
+    // established `normalizePhpReceiver` precedent (php/captures.ts) — a
+    // language-local capture rewrite, no shared-pipeline change.
+    if (grouped['@reference.receiver'] !== undefined) {
+      const receiverNode = nodeIfType(nodeMap['@reference.receiver'], 'object_creation_expression');
+      const typeNode = receiverNode?.childForFieldName('type');
+      const simpleName = typeNode ? javaBaseSimpleNameOf(typeNode) : undefined;
+      if (simpleName !== undefined) {
+        grouped['@reference.receiver'] = syntheticCapture(
+          '@reference.receiver',
+          receiverNode!,
+          simpleName,
+        );
+      }
     }
 
     // Filter read.member when it's a child of method_invocation or assignment.
@@ -241,6 +283,12 @@ export function emitJavaScopeCaptures(
     out.push(grouped);
   }
 
+  setJavaClassAnnotationFacts(filePath, materializeClassAnnotationFacts(classAnnotations));
+  setJavaSpringConfigConsumerFacts(
+    filePath,
+    captureJavaSpringConfigConsumerFacts(tree.rootNode, filePath),
+  );
+
   return [
     ...resolveVarTypeBindings(out),
     ...synthesizeJavaInheritanceReferences(tree.rootNode),
@@ -318,7 +366,72 @@ function synthesizeJavaAnonymousClassDeclarations(rootNode: SyntaxNode): Capture
       }
     }
   }
+
+  // Enum constant bodies (`enum E { A { ... } }`) — javac's other
+  // anonymous shape (#2555). Same synthesis, same body anchor; the
+  // constant's class extends its HOST ENUM (javac semantics), so the
+  // inherits reference names the enum — giving `mroFor(E$N) ∋ E` and
+  // keeping bare calls from the body to the enum's own helpers alive
+  // through the ownership gate's MRO arm.
+  for (const constant of rootNode.descendantsOfType('enum_constant')) {
+    const hostEnum = javaEnclosingEnumNameOf(constant);
+    const bodyNode = constant.childForFieldName?.('body');
+    const isBodied = bodyNode !== null && bodyNode !== undefined && bodyNode.type === 'class_body';
+    const bodiedName = synthesizeJavaAnonymousClassName(constant);
+    if (bodiedName !== undefined && isBodied) {
+      out.push({
+        '@declaration.class': nodeToCapture('@declaration.class', bodyNode),
+        '@declaration.name': syntheticCapture('@declaration.name', bodyNode, bodiedName),
+      });
+      if (hostEnum !== undefined) {
+        out.push({
+          '@reference.inherits': nodeToCapture('@reference.inherits', bodyNode),
+          '@reference.name': syntheticCapture('@reference.name', bodyNode, hostEnum),
+        });
+      }
+    }
+
+    // Receiver dispatch (#2561): `E.CONST.method()` resolves through the
+    // generic compound-receiver chain walk, which looks up each dotted
+    // segment via the owning class scope's `typeBindings` map — the same
+    // mechanism a field declaration uses (`private User user;` binds
+    // `user` on the class scope). Binding the constant's own simple name
+    // there — to its synthesized `E$N` class when bodied (MRO includes E,
+    // so members inherited from the enum still resolve), or to the host
+    // enum itself when body-less — makes `E.CONST.method()` resolve with
+    // no changes to the shared receiver-binding machinery.
+    //
+    // A bodied constant binds ONLY to its `E$N` class, never the host enum:
+    // if name synthesis fails on a malformed/error-recovery tree (`bodiedName`
+    // undefined despite a real body), emit nothing rather than silently
+    // misattributing an OVERRIDING constant's receiver to the enum's own
+    // (non-overridden) method — a wrong edge is worse than no edge. Mirrors
+    // the `object_creation_expression` branch, which skips on synthesis
+    // failure. `hostEnum` is used only for genuinely body-less constants.
+    const constantNameNode = constant.childForFieldName?.('name');
+    const constantType = isBodied ? bodiedName : hostEnum;
+    if (constantNameNode !== null && constantNameNode !== undefined && constantType !== undefined) {
+      out.push({
+        '@type-binding.annotation': nodeToCapture('@type-binding.annotation', constant),
+        '@type-binding.name': nodeToCapture('@type-binding.name', constantNameNode),
+        '@type-binding.type': syntheticCapture('@type-binding.type', constant, constantType),
+      });
+    }
+  }
   return out;
+}
+
+/** Simple name of the enum_declaration enclosing an enum_constant, or
+ *  undefined (grammar guarantees one exists in well-formed source). */
+function javaEnclosingEnumNameOf(constant: SyntaxNode): string | undefined {
+  let cursor: SyntaxNode | null = constant.parent;
+  while (cursor !== null) {
+    if (cursor.type === 'enum_declaration') {
+      return cursor.childForFieldName?.('name')?.text ?? undefined;
+    }
+    cursor = cursor.parent;
+  }
+  return undefined;
 }
 
 /**

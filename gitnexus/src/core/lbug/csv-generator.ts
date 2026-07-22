@@ -146,6 +146,17 @@ export const escapeCSVBoolean = (value: unknown): string => {
   return value ? 'true' : 'false';
 };
 
+const formatCSVStringArray = (value: unknown): string => {
+  const items = Array.isArray(value)
+    ? value.filter((item): item is string => typeof item === 'string')
+    : [];
+  const unsafe = items.find((item) => /[,\[\]'"\n\r]/.test(item));
+  if (unsafe !== undefined) {
+    throw new Error(`Cannot safely encode CSV string-list item: ${JSON.stringify(unsafe)}`);
+  }
+  return `[${items.join(',')}]`;
+};
+
 // ============================================================================
 // CONTENT EXTRACTION (lazy — reads from disk on demand)
 // ============================================================================
@@ -499,7 +510,10 @@ export const streamAllCSVsToDisk = async (
       path.join(csvDir, 'function.csv'),
       getNodeTableCsvHeader('Function'),
     );
-    const classWriter = new BufferedCSVWriter(path.join(csvDir, 'class.csv'), codeElementHeader);
+    const classWriter = new BufferedCSVWriter(
+      path.join(csvDir, 'class.csv'),
+      `${codeElementHeader},frameworkAnnotations`,
+    );
     const interfaceWriter = new BufferedCSVWriter(
       path.join(csvDir, 'interface.csv'),
       codeElementHeader,
@@ -739,6 +753,20 @@ export const streamAllCSVsToDisk = async (
             const content = await extractContent(node, contentCache);
             if (node.label === 'Function') {
               pending = writer.addRow(buildLayoutNodeRow('Function', node, content));
+            } else if (node.label === 'Class') {
+              pending = writer.addRow(
+                [
+                  escapeCSVField(node.id),
+                  escapeCSVField(node.properties.name || ''),
+                  escapeCSVField(node.properties.filePath || ''),
+                  escapeCSVNumber(node.properties.startLine, -1),
+                  escapeCSVNumber(node.properties.endLine, -1),
+                  node.properties.isExported ? 'true' : 'false',
+                  escapeCSVField(content),
+                  escapeCSVField(formatFtsDescription(node.properties.description || '')),
+                  escapeCSVField(formatCSVStringArray(node.properties.frameworkAnnotations)),
+                ].join(','),
+              );
             } else {
               pending = writer.addRow(
                 [

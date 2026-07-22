@@ -1175,6 +1175,75 @@ describe('Java chained method call resolution', () => {
 });
 
 // ---------------------------------------------------------------------------
+// Chained call on a new-expression receiver: new Local().inner()
+// The receiver of inner() is an object_creation_expression, not a variable.
+// Regression test for #2564: without treating `new Local()` as a typed
+// receiver, the call falls back to name-only resolution and can pick an
+// unrelated same-named method (Other.inner) instead of Local.inner.
+// ---------------------------------------------------------------------------
+
+describe('Java chained call on a new-expression receiver (#2564)', () => {
+  let result: PipelineResult;
+
+  beforeAll(async () => {
+    result = await runPipelineFromRepo(path.join(FIXTURES, 'java-new-expr-chain-call'), () => {});
+  }, 60000);
+
+  it('detects LocalChain and Other classes', () => {
+    const classes = getNodesByLabel(result, 'Class');
+    expect(classes).toContain('LocalChain');
+    expect(classes).toContain('Other');
+  });
+
+  it('resolves new Local().inner() to the local Local#inner, NOT Other#inner', () => {
+    const calls = getRelationships(result, 'CALLS');
+    const localInner = calls.find(
+      (c) =>
+        c.target === 'inner' && c.source === 'm' && c.targetFilePath.includes('LocalChain.java'),
+    );
+    const otherInner = calls.find(
+      (c) => c.target === 'inner' && c.source === 'm' && c.targetFilePath.includes('Other.java'),
+    );
+    expect(localInner).toBeDefined();
+    expect(otherInner).toBeUndefined();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Java record: container node + HAS_METHOD edges
+// Regression test for #2564: JAVA_QUERIES previously had no @definition.record
+// capture, so a record never got a Class/Record graph node — its methods
+// existed as ownerless orphans with no HAS_METHOD edge.
+// ---------------------------------------------------------------------------
+
+describe('Java record method resolution (#2564)', () => {
+  let result: PipelineResult;
+
+  beforeAll(async () => {
+    result = await runPipelineFromRepo(path.join(FIXTURES, 'java-record-methods'), () => {});
+  }, 60000);
+
+  it('detects a Record node for Point', () => {
+    const records = getNodesByLabel(result, 'Record');
+    expect(records).toContain('Point');
+  });
+
+  it('emits HAS_METHOD edges linking sum and scaled to Point', () => {
+    const hasMethod = getRelationships(result, 'HAS_METHOD');
+    const sumEdge = hasMethod.find((e) => e.source === 'Point' && e.target === 'sum');
+    const scaledEdge = hasMethod.find((e) => e.source === 'Point' && e.target === 'scaled');
+    expect(sumEdge).toBeDefined();
+    expect(scaledEdge).toBeDefined();
+  });
+
+  it('resolves scaled() calling sum() via a CALLS edge', () => {
+    const calls = getRelationships(result, 'CALLS');
+    const sumCall = calls.find((c) => c.target === 'sum' && c.source === 'scaled');
+    expect(sumCall).toBeDefined();
+  });
+});
+
+// ---------------------------------------------------------------------------
 // Java 16+ instanceof pattern variable: `if (obj instanceof User user)`
 // Phase 5.2: extractPatternBinding on instanceof_expression binds user → User.
 // Disambiguation: User.save vs Repo.save — only User.save should be called.
@@ -2855,4 +2924,174 @@ describe('Java anonymous-class inheritance and host coverage (#2550 review)', ()
     expect(own).toBeDefined();
     expect(own!.rel.targetId).toBe('Method:src/EnumHost.java:EnumHost.run#0');
   }, 60000);
+});
+
+// ---------------------------------------------------------------------------
+// #2555: enum constant bodies (`enum E { A { ... } }`) are javac's other
+// anonymous-class shape (`E$N`). They join the instance model: synthesized
+// Class node, re-keyed owned methods, EXTENDS to the host enum (so bare
+// calls from the body to enum helpers pass the ownership gate's MRO arm),
+// and the same-file bare-call leak closed. Naming follows JLS 13.1
+// immediate-host binary names (`EnumWrap$Mode$1` for nested hosts).
+// ---------------------------------------------------------------------------
+
+describe('Java enum constant bodies (#2555)', () => {
+  let result: PipelineResult;
+
+  beforeAll(async () => {
+    result = await runPipelineFromRepo(path.join(FIXTURES, 'java-enum-constant-body'), () => {});
+  }, 60000);
+
+  it('models constant bodies as EnumConst$1 / EnumConst$2 with owned re-keyed methods', () => {
+    const classes = getNodesByLabel(result, 'Class');
+    expect(classes).toContain('EnumConst$1');
+    expect(classes).toContain('EnumConst$2');
+    expect(classes).not.toContain('A');
+
+    const hasMethod = getRelationships(result, 'HAS_METHOD');
+    const owned = hasMethod.find(
+      (e) =>
+        e.rel.sourceId === 'Class:src/EnumConst.java:EnumConst$1' &&
+        e.rel.targetId === 'Method:src/EnumConst.java:EnumConst$1.hook#0',
+    );
+    expect(owned).toBeDefined();
+  });
+
+  it('emits EXTENDS from each constant body to the host enum', () => {
+    const extends_ = getRelationships(result, 'EXTENDS');
+    const first = extends_.find(
+      (e) => e.rel.sourceId === 'Class:src/EnumConst.java:EnumConst$1' && e.target === 'EnumConst',
+    );
+    expect(first).toBeDefined();
+  });
+
+  it("resolves a constant body's bare call to an enum helper via the MRO arm", () => {
+    const calls = getRelationships(result, 'CALLS');
+    const inherited = calls.find((c) => c.source === 'hook' && c.target === 'log');
+    expect(inherited).toBeDefined();
+    expect(inherited!.rel.targetId).toBe('Method:src/EnumConst.java:EnumConst.log#0');
+  });
+
+  it("does not resolve an unrelated same-file class's bare hook() to any constant body", () => {
+    const calls = getRelationships(result, 'CALLS');
+    const leaked = calls.find((c) => c.source === 'caller' && c.target === 'hook');
+    expect(leaked).toBeUndefined();
+  });
+
+  it('names a nested-host anonymous body with the JLS 13.1 immediate-host chain', async () => {
+    const nested = await runPipelineFromRepo(
+      path.join(FIXTURES, 'java-nested-host-naming'),
+      () => {},
+    );
+    const classes = getNodesByLabel(nested, 'Class');
+    expect(classes).toContain('EnumWrap$Mode$1');
+    expect(classes).not.toContain('EnumWrap$1');
+  }, 60000);
+
+  it('chains anonymous enclosing types per JLS 13.1: anon inside anon is NestHost$1$1', async () => {
+    const result = await runPipelineFromRepo(path.join(FIXTURES, 'java-anon-in-anon'), () => {});
+    const classes = getNodesByLabel(result, 'Class');
+    expect(classes).toContain('NestHost$1');
+    expect(classes).toContain('NestHost$1$1');
+    expect(classes).not.toContain('NestHost$2');
+  }, 60000);
+
+  it('chains through enum constant bodies: anon inside a constant body is N$1$1', async () => {
+    const result = await runPipelineFromRepo(
+      path.join(FIXTURES, 'java-anon-in-constant-body'),
+      () => {},
+    );
+    const classes = getNodesByLabel(result, 'Class');
+    expect(classes).toContain('N$1');
+    expect(classes).toContain('N$1$1');
+    expect(classes).not.toContain('N$2');
+
+    const hasMethod = getRelationships(result, 'HAS_METHOD');
+    const owned = hasMethod.find(
+      (e) =>
+        e.rel.sourceId === 'Class:src/N.java:N$1$1' &&
+        e.rel.targetId === 'Method:src/N.java:N$1$1.run#0',
+    );
+    expect(owned).toBeDefined();
+  }, 60000);
+
+  it('names a bodied constant in a NESTED enum with the full host chain (EnumWrap2$Mode$1)', async () => {
+    const result = await runPipelineFromRepo(
+      path.join(FIXTURES, 'java-nested-enum-constant'),
+      () => {},
+    );
+    const classes = getNodesByLabel(result, 'Class');
+    expect(classes).toContain('EnumWrap2$Mode$1');
+    expect(classes).not.toContain('EnumWrap2$1');
+  }, 60000);
+
+  it('attributes same-named methods across sibling constant bodies to their own classes', async () => {
+    // Review-caught collapse: the scope-side qualifier chained the
+    // synthesized class def to `M3.M3$2`, desyncing from the structure
+    // node id, so both bodies' `hook` calls attributed to M3$1's node
+    // via the simple-name fallback. Each body's caller must be its own.
+    const result = await runPipelineFromRepo(
+      path.join(FIXTURES, 'java-enum-constant-same-name'),
+      () => {},
+    );
+    const calls = getRelationships(result, 'CALLS');
+    const fromA = calls.find(
+      (c) =>
+        c.rel.sourceId === 'Method:src/M3.java:M3$1.hook#0' &&
+        c.rel.targetId === 'Method:src/M3.java:M3.base#0',
+    );
+    const fromC = calls.find(
+      (c) =>
+        c.rel.sourceId === 'Method:src/M3.java:M3$2.hook#0' &&
+        c.rel.targetId === 'Method:src/M3.java:M3.log#0',
+    );
+    expect(fromA).toBeDefined();
+    expect(fromC).toBeDefined();
+    const misattributed = calls.find(
+      (c) =>
+        c.rel.sourceId === 'Method:src/M3.java:M3$1.hook#0' &&
+        c.rel.targetId === 'Method:src/M3.java:M3.log#0',
+    );
+    expect(misattributed).toBeUndefined();
+  }, 60000);
+});
+
+// ---------------------------------------------------------------------------
+// #2561: E.CONST.method() emits no CALLS edge — the receiver-side follow-up
+// to #2555. A bodied constant's receiver must resolve to its synthesized
+// E$N class; a body-less constant's receiver must resolve to the host enum
+// itself.
+// ---------------------------------------------------------------------------
+
+describe('Java enum-constant receiver dispatch (#2561)', () => {
+  let result: PipelineResult;
+
+  beforeAll(async () => {
+    result = await runPipelineFromRepo(path.join(FIXTURES, 'java-enum-constant-body'), () => {});
+  }, 60000);
+
+  it('resolves EnumConst.A.hook() to the bodied constant override (EnumConst$1.hook#0)', () => {
+    const calls = getRelationships(result, 'CALLS');
+    const dispatch = calls.find((c) => c.source === 'dispatchToConstant' && c.target === 'hook');
+    expect(dispatch).toBeDefined();
+    expect(dispatch!.rel.targetId).toBe('Method:src/EnumConst.java:EnumConst$1.hook#0');
+  });
+
+  it("resolves EnumConst.A.log() to the host enum's inherited method via E$N's MRO (EnumConst.log#0)", () => {
+    // A's body overrides hook() but NOT log(); log() lives only on the enum.
+    // The bodied constant's receiver binds to EnumConst$1, whose MRO includes
+    // EnumConst (via @reference.inherits), so the qualified call reaches the
+    // host enum's own method — the inherited-dispatch capability the fix enables.
+    const calls = getRelationships(result, 'CALLS');
+    const dispatch = calls.find((c) => c.source === 'dispatchInherited' && c.target === 'log');
+    expect(dispatch).toBeDefined();
+    expect(dispatch!.rel.targetId).toBe('Method:src/EnumConst.java:EnumConst.log#0');
+  });
+
+  it("resolves Plain.A.m() to the body-less constant's inherited enum method (Plain.m#0)", () => {
+    const calls = getRelationships(result, 'CALLS');
+    const dispatch = calls.find((c) => c.source === 'callPlain' && c.target === 'm');
+    expect(dispatch).toBeDefined();
+    expect(dispatch!.rel.targetId).toBe('Method:src/Plain.java:Plain.m#0');
+  });
 });

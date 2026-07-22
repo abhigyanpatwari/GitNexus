@@ -13,7 +13,7 @@ This project uses the [PolyForm Noncommercial License 1.0.0](https://polyformpro
 
 ## Development setup
 
-**Prerequisites:** Node.js — `gitnexus/` requires `>=22.0.0` and `gitnexus-web/` requires `^20.19.0 || >=22.12.0` (enforced via the `engines` field in each package). Use `nvm install` to match the local version.
+**Prerequisites:** Node.js — `gitnexus/` requires `^22.18.0 || >=24.11.0` and `gitnexus-web/` requires `^20.19.0 || >=22.12.0` (enforced via the `engines` field in each package). Use `nvm install` to match the local version.
 
 1. Clone the repository.
 2. **Shared package:** `cd gitnexus-shared && npm install && npm run build`

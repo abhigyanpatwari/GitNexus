@@ -1,4 +1,4 @@
-import { describe, it, expect, vi, beforeEach } from 'vitest';
+import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { execSync } from 'child_process';
 import fs from 'fs';
 import os from 'os';
@@ -12,6 +12,8 @@ import {
   sanitizeRepoName,
   getDefaultBranch,
   getCurrentBranch,
+  getGitInfoExcludePath,
+  getCoreExcludesFilePath,
 } from '../../src/storage/git.js';
 
 // Mock child_process.execSync
@@ -285,6 +287,122 @@ describe('git utilities', () => {
     it('returns null for empty URL', () => {
       expect(parseRepoNameFromUrl('')).toBeNull();
       expect(parseRepoNameFromUrl(null)).toBeNull();
+    });
+  });
+
+  describe('getGitInfoExcludePath (#2606)', () => {
+    it('joins info/exclude onto the absolute git-common-dir', () => {
+      mockExecSync.mockReturnValueOnce(Buffer.from('/repo/.git\n'));
+      expect(getGitInfoExcludePath('/repo')).toBe(path.join('/repo/.git', 'info', 'exclude'));
+      expect(mockExecSync).toHaveBeenCalledWith(
+        'git rev-parse --path-format=absolute --git-common-dir',
+        expect.objectContaining({ cwd: '/repo', windowsHide: true }),
+      );
+    });
+
+    it('resolves the worktree-shared common dir, not a per-worktree one', () => {
+      // $GIT_COMMON_DIR is the same for the main checkout and every linked
+      // worktree, so a worktree's info/exclude resolves to the shared main repo.
+      mockExecSync.mockReturnValueOnce(Buffer.from('/repo/.git\n'));
+      expect(getGitInfoExcludePath('/repo/.worktrees/feature')).toBe(
+        path.join('/repo/.git', 'info', 'exclude'),
+      );
+    });
+
+    it('returns null when not inside a git repository', () => {
+      mockExecSync.mockImplementationOnce(() => {
+        throw new Error('not a git repo');
+      });
+      expect(getGitInfoExcludePath('/not-a-repo')).toBeNull();
+    });
+  });
+
+  describe('getCoreExcludesFilePath (#2606)', () => {
+    let originalXdgConfigHome: string | undefined;
+
+    beforeEach(() => {
+      originalXdgConfigHome = process.env.XDG_CONFIG_HOME;
+    });
+
+    afterEach(() => {
+      if (originalXdgConfigHome === undefined) {
+        delete process.env.XDG_CONFIG_HOME;
+      } else {
+        process.env.XDG_CONFIG_HOME = originalXdgConfigHome;
+      }
+    });
+
+    it('returns the configured core.excludesFile value', () => {
+      mockExecSync.mockReturnValueOnce(Buffer.from('/home/user/.gitignore_global\n'));
+      expect(getCoreExcludesFilePath('/repo')).toBe('/home/user/.gitignore_global');
+      expect(mockExecSync).toHaveBeenCalledWith(
+        'git config --get --type=path core.excludesFile',
+        expect.objectContaining({ cwd: '/repo', windowsHide: true }),
+      );
+    });
+
+    it("falls back to git's documented default ($XDG_CONFIG_HOME/git/ignore) when unset", () => {
+      mockExecSync.mockImplementationOnce(() => {
+        throw new Error('key not set'); // git config --get exits 1 when unset
+      });
+      process.env.XDG_CONFIG_HOME = '/home/user/.config';
+      // Different fromPath than the "configured" test above — each function
+      // caches by fromPath (see below), so reusing '/repo' here would return
+      // that test's cached result instead of exercising the fallback.
+      expect(getCoreExcludesFilePath('/repo-unconfigured')).toBe(
+        path.join('/home/user/.config', 'git', 'ignore'),
+      );
+    });
+
+    it('falls back to the default even when git is unavailable entirely', () => {
+      mockExecSync.mockImplementationOnce(() => {
+        throw new Error('git: command not found');
+      });
+      process.env.XDG_CONFIG_HOME = '/home/user/.config';
+      expect(getCoreExcludesFilePath('/anything')).toBe(
+        path.join('/home/user/.config', 'git', 'ignore'),
+      );
+    });
+  });
+
+  // A group sync calls loadIgnoreRules (and therefore these two functions)
+  // once per repo, per extractor — repeated calls with the same fromPath
+  // are the normal case, not an edge case. Both functions memoize by
+  // fromPath so a second call never spawns a second subprocess (#2606).
+  describe('getGitInfoExcludePath / getCoreExcludesFilePath caching (#2606)', () => {
+    it('getGitInfoExcludePath only spawns git once for repeated calls with the same fromPath', () => {
+      mockExecSync.mockReturnValueOnce(Buffer.from('/cached-repo/.git\n'));
+      const first = getGitInfoExcludePath('/cached-repo');
+      const second = getGitInfoExcludePath('/cached-repo');
+      expect(first).toBe(path.join('/cached-repo/.git', 'info', 'exclude'));
+      expect(second).toBe(first);
+      expect(mockExecSync).toHaveBeenCalledTimes(1);
+    });
+
+    it('getGitInfoExcludePath caches a null result too (not-a-git-repo stays cheap)', () => {
+      mockExecSync.mockImplementationOnce(() => {
+        throw new Error('not a git repo');
+      });
+      expect(getGitInfoExcludePath('/cached-non-repo')).toBeNull();
+      expect(getGitInfoExcludePath('/cached-non-repo')).toBeNull();
+      expect(mockExecSync).toHaveBeenCalledTimes(1);
+    });
+
+    it('getCoreExcludesFilePath only spawns git once for repeated calls with the same fromPath', () => {
+      mockExecSync.mockReturnValueOnce(Buffer.from('/home/user/.gitignore_global\n'));
+      const first = getCoreExcludesFilePath('/cached-repo-2');
+      const second = getCoreExcludesFilePath('/cached-repo-2');
+      expect(first).toBe('/home/user/.gitignore_global');
+      expect(second).toBe(first);
+      expect(mockExecSync).toHaveBeenCalledTimes(1);
+    });
+
+    it("a different fromPath is not served from another path's cache entry", () => {
+      mockExecSync.mockReturnValueOnce(Buffer.from('/repo-a/.git\n'));
+      mockExecSync.mockReturnValueOnce(Buffer.from('/repo-b/.git\n'));
+      expect(getGitInfoExcludePath('/repo-a')).toBe(path.join('/repo-a/.git', 'info', 'exclude'));
+      expect(getGitInfoExcludePath('/repo-b')).toBe(path.join('/repo-b/.git', 'info', 'exclude'));
+      expect(mockExecSync).toHaveBeenCalledTimes(2);
     });
   });
 });

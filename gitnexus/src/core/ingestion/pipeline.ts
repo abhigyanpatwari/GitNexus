@@ -32,6 +32,7 @@ import {
   ormPhase,
   crossFilePhase,
   scopeResolutionPhase,
+  springConfigPhase,
   pruneLocalSymbolsPhase,
   taintSummariesPhase,
   callSummariesPhase,
@@ -246,7 +247,7 @@ export interface PipelineOptions {
  *
  * Phase dependency graph:
  *
- *   scan → structure → [markdown, cobol] → parse → [routes, tools, orm]
+ *   scan → structure → [standaloneIngest, springConfig, markdown, cobol] → parse → [routes, tools, orm]
  *     → crossFile → scopeResolution → pruneLocalSymbols
  *     → mro → di → communities → processes
  *
@@ -267,6 +268,7 @@ export function buildPhaseList(options?: PipelineOptions): PipelinePhase[] {
       .register(scanPhase)
       .register(structurePhase)
       .register(standaloneIngestPhase)
+      .register(springConfigPhase)
       .register(markdownPhase)
       .register(cobolPhase)
       .register(parsePhase)

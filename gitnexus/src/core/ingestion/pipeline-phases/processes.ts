@@ -25,6 +25,17 @@ export interface ProcessesOutput {
   processResult: ProcessDetectionResult;
 }
 
+/**
+ * Compute the dynamic max-processes budget from the symbol count.
+ *
+ * Scales proportionally (symbolCount / 10) with a floor of 20.
+ * Prior to #2198 this was capped at 300 via `Math.min(300, …)`,
+ * silently truncating process detection on large repositories.
+ */
+export function computeDynamicMaxProcesses(symbolCount: number): number {
+  return Math.max(20, Math.round(symbolCount / 10));
+}
+
 export const processesPhase: PipelinePhase<ProcessesOutput> = {
   name: 'processes',
   // `structure` supplies `totalFiles` (progress counter) without the spurious
@@ -53,7 +64,7 @@ export const processesPhase: PipelinePhase<ProcessesOutput> = {
     ctx.graph.forEachNode((n) => {
       if (n.label !== 'File') symbolCount++;
     });
-    const dynamicMaxProcesses = Math.max(20, Math.min(300, Math.round(symbolCount / 10)));
+    const dynamicMaxProcesses = computeDynamicMaxProcesses(symbolCount);
 
     const processResult = await processProcesses(
       ctx.graph,

@@ -743,15 +743,20 @@ export const PYTHON_QUERIES = `
 
 // Java queries - works with tree-sitter-java
 export const JAVA_QUERIES = `
-; Classes, Interfaces, Enums, Annotations
+; Classes, Interfaces, Enums, Records, Annotations
 (class_declaration name: (identifier) @name) @definition.class
 (interface_declaration name: (identifier) @name) @definition.interface
 (enum_declaration name: (identifier) @name) @definition.enum
+(record_declaration name: (identifier) @name) @definition.record
 (annotation_type_declaration name: (identifier) @name) @definition.annotation
 
 ; Anonymous class bodies: new Runnable() { ... } — no @name capture; the
 ; class extractor synthesizes the javac-style Worker$N name (#2550)
 (object_creation_expression (class_body)) @definition.class
+
+; Enum constant bodies: enum E { A { ... } } — javac's other anonymous
+; shape, synthesized as E$N by the same naming authority (#2555)
+(enum_constant body: (class_body)) @definition.class
 
 ; Methods & Constructors
 (method_declaration name: (identifier) @name) @definition.method

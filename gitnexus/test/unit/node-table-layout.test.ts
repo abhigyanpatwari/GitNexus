@@ -13,7 +13,7 @@ import {
   NODE_TABLE_LAYOUTS,
   type LayoutTableName,
 } from '../../src/core/lbug/node-table-layout.js';
-import { buildLayoutNodeRow } from '../../src/core/lbug/csv-generator.js';
+import { buildLayoutNodeRow, escapeCSVBoolean } from '../../src/core/lbug/csv-generator.js';
 import { getCopyQuery } from '../../src/core/lbug/lbug-adapter.js';
 
 const schemas: Record<LayoutTableName, string> = {
@@ -75,6 +75,16 @@ describe('shared node-table persistence layouts', () => {
       expect(copyColumns(getCopyQuery(table, '/tmp/fixture.csv'))).toEqual(columns);
     },
   );
+
+  it('escapeCSVBoolean matches the incremental path truthy coercion (!!v) for non-boolean inputs', () => {
+    // The bulk CSV path and the incremental CREATE/MERGE path (`!!properties.x`
+    // in lbug-adapter) must classify the same value identically, or an
+    // incremental top-up would flip a boolean column relative to a full
+    // rebuild. Exercise the values a misbehaving extractor could emit.
+    for (const value of [true, false, 1, 0, '0', '', 'false', undefined, null, {}]) {
+      expect(escapeCSVBoolean(value)).toBe(value ? 'true' : 'false');
+    }
+  });
 
   it('rejects an unknown CSV column encoding instead of emitting an empty cell', () => {
     const column = NODE_TABLE_LAYOUTS.Function.columns[0];

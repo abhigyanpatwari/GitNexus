@@ -8,11 +8,13 @@ import {
   lstat,
   mkdir,
   mkdtemp,
+  open,
   readFile,
   readdir,
   rename,
   rm,
   writeFile,
+  type FileHandle,
 } from 'node:fs/promises';
 import { get as httpsGet } from 'node:https';
 import os from 'node:os';
@@ -296,8 +298,16 @@ const verifiedBinary = (
 const validCachedInstall = async (
   config: MoveFlowInstallConfig,
 ): Promise<VerifiedMoveFlowBinary | null> => {
+  let metadataHandle: FileHandle | undefined;
   try {
-    const metadataStat = await lstat(config.metadataPath);
+    // Symlinked metadata is rejected up front; every subsequent check reads
+    // through one open handle so the size gate and the JSON read cannot race
+    // a concurrent swap of the file (CodeQL js/file-system-race).
+    if (!(await lstat(config.metadataPath)).isFile()) {
+      return null;
+    }
+    metadataHandle = await open(config.metadataPath, 'r');
+    const metadataStat = await metadataHandle.stat();
     if (
       !metadataStat.isFile() ||
       metadataStat.size <= 0 ||
@@ -306,7 +316,7 @@ const validCachedInstall = async (
       return null;
     }
     const metadata = JSON.parse(
-      await readFile(config.metadataPath, 'utf8'),
+      await metadataHandle.readFile({ encoding: 'utf8' }),
     ) as MoveFlowCacheMetadata;
     const expected = expectedMetadata(config);
     const binaryStat = await lstat(config.binaryPath);
@@ -333,6 +343,8 @@ const validCachedInstall = async (
     return verifiedBinary(config, metadata);
   } catch {
     return null;
+  } finally {
+    await metadataHandle?.close().catch(() => {});
   }
 };
 

@@ -13,6 +13,7 @@ import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import { execSync } from 'child_process';
 import fs from 'fs/promises';
 import path from 'path';
+import { pathToFileURL } from 'url';
 
 type RepoManagerModule = typeof import('../../src/storage/repo-manager.js');
 
@@ -44,7 +45,9 @@ import {
   type RepoMeta,
 } from '../../src/storage/repo-manager.js';
 import { runFullAnalysis } from '../../src/core/run-analyze.js';
+import { resolveAnalyzerRunnerIdentity } from '../../src/core/analyzer-identity.js';
 import { createTempDir } from '../helpers/test-db.js';
+import { CLASS_FRAMEWORK_ANNOTATIONS_FEATURE } from '../../src/core/analysis-features.js';
 
 describe('fast-path restamp failure modes (#2364 F3)', () => {
   let tmpHome: Awaited<ReturnType<typeof createTempDir>>;
@@ -89,12 +92,19 @@ describe('fast-path restamp failure modes (#2364 F3)', () => {
       cwd: tmpRepo.dbPath,
       encoding: 'utf-8',
     }).trim();
+    const runnerIdentity = resolveAnalyzerRunnerIdentity(
+      pathToFileURL(path.resolve(__dirname, '../../src/core/run-analyze.ts')).href,
+    );
     const metaFor = (branch: string): RepoMeta => ({
       repoPath: tmpRepo.dbPath,
       lastCommit: commit,
       indexedAt: new Date().toISOString(),
       branch,
       schemaVersion: INCREMENTAL_SCHEMA_VERSION,
+      analysisFeatures: {
+        [CLASS_FRAMEWORK_ANNOTATIONS_FEATURE.id]: CLASS_FRAMEWORK_ANNOTATIONS_FEATURE.version,
+      },
+      runnerIdentity,
     });
     const flat = getStoragePaths(tmpRepo.dbPath);
     await rmCtx.realSaveMeta!(flat.storagePath, metaFor('main'));
