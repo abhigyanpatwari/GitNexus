@@ -836,7 +836,9 @@ const doInitLbug = async (dbPath: string, readOnly: boolean = false) => {
         try {
           const reclaimed = await cleanQuarantinedMissingShadowWals(dbPath);
           for (const file of reclaimed) {
-            logger.warn(`GitNexus: reclaimed quarantined WAL ${path.basename(file)} from a prior crash`);
+            logger.warn(
+              `GitNexus: reclaimed quarantined WAL ${path.basename(file)} from a prior crash`,
+            );
           }
         } catch (err) {
           logger.warn(
