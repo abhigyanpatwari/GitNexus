@@ -105,7 +105,6 @@
     "@types/cli-progress": "^3.11.6",
     "@types/cors": "^2.8.17",
     "@types/express": "^5.0.6",
-    "@types/js-yaml": "^4.0.9",
     "@types/node": "^26.0.0",
     "@vitest/coverage-v8": "^4.0.18",
     "gitnexus-shared": "file:../gitnexus-shared",

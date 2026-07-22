@@ -24,9 +24,17 @@ import type { StructureOutput } from './structure.js';
 
 const require = createRequire(import.meta.url);
 const yaml = require('js-yaml') as typeof import('js-yaml');
-// js-yaml 5 dropped DEFAULT_SCHEMA; CORE scalar resolution plus the merge (`<<`)
-// tag reproduces the Spring-relevant v4 behaviour (typed scalars + merge keys).
-const SPRING_YAML_SCHEMA = yaml.CORE_SCHEMA.withTags(yaml.mergeTag);
+// js-yaml 5 dropped DEFAULT_SCHEMA; CORE plus these tags is what it used to be, so
+// explicitly tagged values keep parsing instead of throwing (an unknown tag aborts
+// the whole file). None of them can execute code.
+const SPRING_YAML_SCHEMA = yaml.CORE_SCHEMA.withTags(
+  yaml.mergeTag,
+  yaml.timestampTag,
+  yaml.binaryTag,
+  yaml.omapTag,
+  yaml.pairsTag,
+  yaml.setTag,
+);
 const MAX_CONFIG_FILE_BYTES = 2 * 1024 * 1024;
 const MAX_YAML_TRAVERSAL_DEPTH = 128;
 const MAX_YAML_TRAVERSAL_NODES = 100_000;
@@ -330,6 +338,10 @@ function buildYamlEventTree(
   for (const event of events) {
     switch (event.type) {
       case yaml.EVENT_DOCUMENT:
+        // Anchors are document-scoped. constructFromEvents already rejects a
+        // cross-document alias before we get here, so this only keeps the two
+        // layers from disagreeing.
+        anchors.clear();
         stack.push({
           startLine: 1,
           kind: null,

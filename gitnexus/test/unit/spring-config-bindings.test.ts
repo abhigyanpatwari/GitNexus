@@ -79,6 +79,56 @@ describe('Spring configuration parsing', () => {
     expect(keys.some((entry) => entry.key.includes('<<'))).toBe(false);
   });
 
+  it('flattens every document of a multi-document file and ignores empty ones', () => {
+    expect(
+      parseSpringYaml(
+        'server:\n  port: 8080\n---\nservice:\n  name: demo\n',
+        'application.yml',
+      ).map((entry) => [entry.key, entry.line]),
+    ).toEqual([
+      ['server.port', 2],
+      ['service.name', 5],
+    ]);
+
+    expect(parseSpringYaml('', 'application.yml')).toEqual([]);
+    expect(parseSpringYaml('# only a comment\n\n', 'application.yml')).toEqual([]);
+    expect(parseSpringYaml('---\n', 'application.yml')).toEqual([]);
+    // A bare top-level scalar has no key to attribute, so it contributes nothing.
+    expect(parseSpringYaml('just-a-scalar\n', 'application.yml')).toEqual([]);
+    // Anchors are document-scoped: an alias may not reach into a previous document.
+    expect(() =>
+      parseSpringYaml('base: &base\n  timeout: 30\n---\nservice:\n  <<: *base\n', 'application.yml'),
+    ).toThrow('unidentified alias');
+  });
+
+  it('resolves sequence-form merge keys and explicitly tagged values', () => {
+    expect(
+      parseSpringYaml(
+        'a: &a\n  x: 1\nb: &b\n  y: 2\nc:\n  <<: [*a, *b]\n',
+        'application.yml',
+      ).map((entry) => [entry.key, entry.line]),
+    ).toEqual([
+      ['a.x', 2],
+      ['b.y', 4],
+      ['c.x', 2],
+      ['c.y', 4],
+    ]);
+
+    // js-yaml 5's CORE schema alone rejects these tags; the file-level catch would
+    // then drop every key in the file, so the schema must keep carrying them.
+    const tagged = parseSpringYaml(
+      [
+        'when: !!timestamp 2001-12-14',
+        'blob: !!binary "R0lGODlh"',
+        'flags: !!set\n  ? a',
+        'ordered: !!omap\n  - first: 1',
+      ].join('\n'),
+      'application.yml',
+    );
+    expect(tagged.map((entry) => entry.key)).toEqual(['blob', 'flags', 'ordered[0].first', 'when']);
+    expect(JSON.stringify(tagged)).not.toContain('R0lGODlh');
+  });
+
   it('terminates cyclic YAML aliases and bounds deeply nested expansion', () => {
     expect(
       parseSpringYaml('cycle: &cycle { self: *cycle }\nhealthy: true\n', 'application.yml'),
