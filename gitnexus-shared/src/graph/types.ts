@@ -127,14 +127,14 @@ export type RelationshipType =
   | 'ENTRY_POINT_OF'
   | 'WRAPS'
   | 'QUERIES'
-  /** Dependency-injection edge: a consumer class receives every implementer
-   *  of interface `T` via a container-injected collection-typed field
-   *  (`List<T>`, `Set<T>`, `Collection<T>`, or `Map<K,T>`). Precondition: the
-   *  field carries an injection annotation recognized by a per-language
-   *  matcher registered in `di-extractors/` (Java/Spring today: `@Autowired`
-   *  or `@Inject`; `@Resource` is excluded — by-name-first semantics).
-   *  Source = the consumer Class node (the one owning the field).
-   *  Target = an implementing Class node.
+  /** Dependency-injection edge: a consumer class receives a likely provider
+   *  through constructor, field, method, or collection injection. A
+   *  per-language resolver identifies the site and provider metadata; the
+   *  shared DI phase uses type heritage, qualifier names, and preferred
+   *  provider markers to resolve it. Ambiguous single injection is represented
+   *  by multiple lower-confidence edges instead of a fabricated exact target.
+   *  Source = the consumer Class node (the one owning the injection site).
+   *  Target = a concrete provider Class node.
    *  Framework specifics live in the `reason` payload (e.g.
    *  `Spring DI: @Autowired List<T>`), not in this type contract.
    *  Lets Cypher queries trace which beans the container injects into a given

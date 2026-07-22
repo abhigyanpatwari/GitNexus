@@ -17,6 +17,7 @@ import { createKnowledgeGraph } from '../../../src/core/graph/graph.js';
 import { diPhase } from '../../../src/core/ingestion/pipeline-phases/di.js';
 import {
   parseSpringCollectionType,
+  SPRING_DI_INJECTION_SITES_PROPERTY,
   springDiFieldMatcher,
 } from '../../../src/core/ingestion/di-extractors/spring.js';
 import { generateId } from '../../../src/lib/utils.js';
@@ -727,6 +728,54 @@ describe('di phase', () => {
       fieldsScanned: 1,
       ambiguousSkipped: 1,
     });
+  });
+
+  it('falls back to structural providers when no implementation is a known bean', async () => {
+    const graph = createKnowledgeGraph();
+
+    addInterface(graph, 'Port');
+    addClass(graph, 'FirstPort', 'java');
+    addClass(graph, 'SecondPort', 'java');
+    addImplements(graph, 'FirstPort', 'Port');
+    addImplements(graph, 'SecondPort', 'Port');
+    addClass(graph, 'Consumer', 'java', 'Class', {
+      [SPRING_DI_INJECTION_SITES_PROPERTY]: [
+        {
+          targetTypeName: 'Port',
+          cardinality: 'single',
+          reason: 'Spring DI: test constructor',
+        },
+      ],
+    });
+
+    const output = await diPhase.execute(makeCtx(graph), new Map());
+
+    expect(injectsEdges(graph)).toHaveLength(2);
+    expect(injectsEdges(graph).every((edge) => edge.confidence === 0.5)).toBe(true);
+    expect(output).toMatchObject({ injectsEdges: 2, ambiguousInjections: 1 });
+  });
+
+  it('fails closed when one injection type name denotes both a class and an interface', async () => {
+    const graph = createKnowledgeGraph();
+
+    addClass(graph, 'Port', 'java');
+    addInterface(graph, 'Port');
+    addClass(graph, 'PortImpl', 'java');
+    addImplements(graph, 'PortImpl', 'Port');
+    addClass(graph, 'Consumer', 'java', 'Class', {
+      [SPRING_DI_INJECTION_SITES_PROPERTY]: [
+        {
+          targetTypeName: 'Port',
+          cardinality: 'single',
+          reason: 'Spring DI: test constructor',
+        },
+      ],
+    });
+
+    const output = await diPhase.execute(makeCtx(graph), new Map());
+
+    expect(injectsEdges(graph)).toHaveLength(0);
+    expect(output).toMatchObject({ injectsEdges: 0, ambiguousSkipped: 1 });
   });
 });
 

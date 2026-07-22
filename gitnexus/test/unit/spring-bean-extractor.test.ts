@@ -19,6 +19,12 @@ function captureClassAnnotations(code: string): JavaCaptureSideChannel['classAnn
   return collectJavaCaptureSideChannel(filePath)?.classAnnotations ?? [];
 }
 
+function captureSpringDiFacts(code: string): NonNullable<JavaCaptureSideChannel['springDiFacts']> {
+  const filePath = 'src/Test.java';
+  emitJavaScopeCaptures(code, filePath);
+  return collectJavaCaptureSideChannel(filePath)?.springDiFacts ?? [];
+}
+
 describe('Java class annotation capture', () => {
   it('collects annotation names during the existing scope-query traversal', () => {
     const facts = captureClassAnnotations(`
@@ -48,6 +54,44 @@ describe('Java class annotation capture', () => {
     await javaScopeResolver.loadResolutionConfig?.('/tmp/repo');
 
     expect(collectJavaCaptureSideChannel(filePath)).toBeUndefined();
+  });
+});
+
+describe('Java Spring injection syntax capture', () => {
+  it('preserves constructor, field, method, qualifier, and bean-name syntax in the side channel', () => {
+    const facts = captureSpringDiFacts(`
+      @Service("checkout") class Checkout {
+        Checkout(@Qualifier("fastGateway") Gateway gateway) {}
+        @Autowired Gateway fallback;
+        @Inject void setRepo(Repo repo) {}
+      }
+    `);
+
+    expect(facts).toHaveLength(1);
+    expect(facts[0].classAnnotations).toEqual([{ name: 'Service', text: '@Service("checkout")' }]);
+    expect(facts[0].injectionSites).toMatchObject([
+      {
+        kind: 'constructor',
+        implicitConstructor: true,
+        dependencies: [
+          {
+            name: 'gateway',
+            rawType: 'Gateway',
+            annotations: [{ name: 'Qualifier', text: '@Qualifier("fastGateway")' }],
+          },
+        ],
+      },
+      {
+        kind: 'field',
+        memberName: 'fallback',
+        dependencies: [{ name: 'fallback', rawType: 'Gateway' }],
+      },
+      {
+        kind: 'method',
+        memberName: 'setRepo',
+        dependencies: [{ name: 'repo', rawType: 'Repo' }],
+      },
+    ]);
   });
 });
 

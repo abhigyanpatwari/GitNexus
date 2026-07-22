@@ -35,10 +35,12 @@ import { parseSourceSafe } from '../../../tree-sitter/safe-parse.js';
 import {
   setJavaClassAnnotationFacts,
   setJavaSpringConfigConsumerFacts,
+  setJavaSpringDiFacts,
 } from './capture-side-channel.js';
 import { captureJavaPackageFact } from './package-facts.js';
 import { synthesizeCallableFlowCaptures } from '../../utils/callable-flow-captures.js';
 import { captureJavaSpringConfigConsumerFacts } from './spring-config-bindings.js';
+import { captureJavaSpringDiFacts } from './spring-di.js';
 
 /** Declaration anchors that carry function-like arity metadata. */
 const FUNCTION_DECL_TAGS = ['@declaration.method', '@declaration.constructor'] as const;
@@ -288,6 +290,7 @@ export function emitJavaScopeCaptures(
     filePath,
     captureJavaSpringConfigConsumerFacts(tree.rootNode, filePath),
   );
+  setJavaSpringDiFacts(filePath, captureJavaSpringDiFacts(tree.rootNode, filePath));
 
   return [
     ...resolveVarTypeBindings(out),
