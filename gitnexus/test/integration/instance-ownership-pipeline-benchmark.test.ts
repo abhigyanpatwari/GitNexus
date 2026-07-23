@@ -7,7 +7,7 @@
  * those unrelated methods.
  *
  * Run:
- *   GITNEXUS_BENCH=1 npx vitest run test/integration/instance-ownership-pipeline-benchmark.test.ts
+ *   cd gitnexus && GITNEXUS_BENCH=1 npx vitest run test/integration/instance-ownership-pipeline-benchmark.test.ts
  */
 import fs from 'node:fs';
 import os from 'node:os';
@@ -17,6 +17,8 @@ import { runPipelineFromRepo } from '../../src/core/ingestion/pipeline.js';
 
 const BENCH_ENABLED = process.env.GITNEXUS_BENCH === '1';
 const CALLS_PER_FILE = 24;
+// time growth divided by file growth: quadratic work reaches 2 on a doubling.
+const NORMALIZED_SCALING_LIMIT = 2;
 
 interface BenchResult {
   fileCount: number;
@@ -117,7 +119,7 @@ describe.skipIf(!BENCH_ENABLED)('instance-ownership free-call gate benchmark', (
         if (previous !== undefined) {
           const fileRatio = result.fileCount / previous.fileCount;
           const timeRatio = result.elapsedMs / previous.elapsedMs;
-          expect(timeRatio / fileRatio).toBeLessThan(3);
+          expect(timeRatio / fileRatio).toBeLessThan(NORMALIZED_SCALING_LIMIT);
         }
         previous = result;
       }
