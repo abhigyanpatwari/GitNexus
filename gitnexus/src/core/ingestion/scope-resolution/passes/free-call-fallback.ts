@@ -133,8 +133,31 @@ export function emitFreeCallFallback(
     options.isCallableVisibleFromCaller === undefined
       ? new Map<string, readonly SymbolDefinition[]>()
       : undefined;
+  const reachableInstanceOwnersByScope =
+    options.freeCallsRequireInstanceOwnership === true
+      ? new Map<ScopeId, ReadonlySet<string>>()
+      : undefined;
+  const reachableInstanceOwners = (scopeId: ScopeId): ReadonlySet<string> => {
+    const cached = reachableInstanceOwnersByScope?.get(scopeId);
+    if (cached !== undefined) return cached;
+
+    const owners = new Set<string>();
+    const enclosing = findEnclosingClassDef(scopeId, scopes);
+    if (enclosing !== undefined) {
+      owners.add(enclosing.nodeId);
+      for (const ownerId of scopes.methodDispatch.mroFor(enclosing.nodeId)) {
+        owners.add(ownerId);
+      }
+    }
+    reachableInstanceOwnersByScope?.set(scopeId, owners);
+    return owners;
+  };
 
   for (const parsed of parsedFiles) {
+    const bindingCandidatesByScope =
+      options.freeCallsRequireInstanceOwnership === true
+        ? new Map<ScopeId, Map<string, readonly CallableBindingCandidate[]>>()
+        : undefined;
     for (const site of parsed.referenceSites) {
       if (site.kind !== 'call') continue;
       if (site.explicitReceiver !== undefined) continue;
@@ -204,15 +227,28 @@ export function emitFreeCallFallback(
           // (local shadows import). When a conversion-rank function is
           // available AND the binding scope contains multiple overloads,
           // refine with narrowOverloadCandidates (#1578).
-          const bindingCandidates =
-            options.freeCallsRequireInstanceOwnership === true
-              ? findAllCallableBindingCandidatesInScope(site.inScope, site.name, scopes)
-              : undefined;
+          let bindingCandidates: readonly CallableBindingCandidate[] | undefined;
+          if (bindingCandidatesByScope !== undefined) {
+            let byName = bindingCandidatesByScope.get(site.inScope);
+            if (byName === undefined) {
+              byName = new Map();
+              bindingCandidatesByScope.set(site.inScope, byName);
+            }
+            bindingCandidates = byName.get(site.name);
+            if (bindingCandidates === undefined) {
+              bindingCandidates = findAllCallableBindingCandidatesInScope(
+                site.inScope,
+                site.name,
+                scopes,
+              );
+              byName.set(site.name, bindingCandidates);
+            }
+          }
           let eligibleBindingCandidates: readonly CallableBindingCandidate[] | undefined;
           if (bindingCandidates === undefined) {
             fnDef = findCallableBindingInScope(site.inScope, site.name, scopes);
           } else {
-            const enclosing = findEnclosingClassDef(site.inScope, scopes);
+            const reachableOwners = reachableInstanceOwners(site.inScope);
             eligibleBindingCandidates = bindingCandidates.filter((candidate) => {
               const def = candidate.def;
               if (
@@ -222,10 +258,7 @@ export function emitFreeCallFallback(
               ) {
                 return true;
               }
-              const ownerReachable =
-                enclosing !== undefined &&
-                (enclosing.nodeId === def.ownerId ||
-                  scopes.methodDispatch.mroFor(enclosing.nodeId).includes(def.ownerId));
+              const ownerReachable = reachableOwners.has(def.ownerId);
               const staticallyImported = candidate.bindings.some(
                 (binding) => binding.visibility === 'static-member-import',
               );
