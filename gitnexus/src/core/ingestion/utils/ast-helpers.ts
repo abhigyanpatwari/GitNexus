@@ -437,7 +437,9 @@ const isJavaAnonymousBodyNode = (node: SyntaxNode): boolean =>
   (node.type === 'enum_constant' && node.childForFieldName?.('body')?.type === 'class_body');
 
 /** A named class whose ancestor walk reaches a method/constructor before
- *  another enclosing type is a Java local class (#2562). */
+ *  another enclosing type is a Java local class (#2562). Stopping at a type
+ *  keeps member classes declared inside a local class from being reclassified
+ *  as local themselves. */
 const isJavaLocalClassNode = (node: SyntaxNode): boolean => {
   if (node.type !== 'class_declaration') return false;
   let cursor = node.parent;
@@ -539,6 +541,8 @@ export const synthesizeJavaAnonymousClassName = (node: SyntaxNode): string | und
       const localSimpleName = isLocal
         ? candidate.childForFieldName?.('name')?.text
         : undefined;
+      // Error-recovery class declarations without a name cannot form a valid
+      // JLS binary identity or participate in source-level resolution.
       if (isLocal && !localSimpleName) continue;
       byStart.set(candidate.startIndex, `${prefix}$${i + 1}${localSimpleName ?? ''}`);
     }
