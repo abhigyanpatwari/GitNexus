@@ -465,11 +465,11 @@ const nearestJavaEnclosingType = (node: SyntaxNode): SyntaxNode | null => {
 
 interface JavaTypeIdentityState {
   readonly byStart: Map<number, JavaSynthesizedTypeIdentity>;
-  readonly candidatesByHost: Map<string, SyntaxNode[]>;
+  readonly ordinalByStart: Map<number, number>;
 }
 
-/** Parse-tree-bounded memo. Candidate grouping is built once per tree, avoiding
- * a full host-subtree scan for every extraction/ownership consumer. */
+/** Parse-tree-bounded memo. Sequence ordinals are built once per tree, avoiding
+ * a host-candidate scan for every extraction/ownership consumer. */
 const javaTypeIdentityMemo = new WeakMap<object, JavaTypeIdentityState>();
 
 const javaHostKey = (node: SyntaxNode): string => `${node.type}:${node.startIndex}`;
@@ -494,29 +494,28 @@ const javaIdentityCandidatesBelow = (root: SyntaxNode): SyntaxNode[] => {
 };
 
 const buildJavaTypeIdentityState = (root: SyntaxNode): JavaTypeIdentityState => {
-  const candidatesByHost = new Map<string, SyntaxNode[]>();
+  const ordinalByStart = new Map<number, number>();
+  const sequenceCounts = new Map<string, number>();
   for (const candidate of javaIdentityCandidatesBelow(root)) {
     const host = nearestJavaEnclosingType(candidate);
     if (host === null) continue;
-    const key = javaHostKey(host);
-    const candidates = candidatesByHost.get(key) ?? [];
-    candidates.push(candidate);
-    candidatesByHost.set(key, candidates);
+    const bindingName = isJavaAnonymousBodyNode(candidate)
+      ? ''
+      : candidate.childForFieldName?.('name')?.text;
+    if (bindingName === undefined) continue;
+    const sequenceKey = `${javaHostKey(host)}:${bindingName}`;
+    const ordinal = (sequenceCounts.get(sequenceKey) ?? 0) + 1;
+    sequenceCounts.set(sequenceKey, ordinal);
+    ordinalByStart.set(candidate.startIndex, ordinal);
   }
-  return { byStart: new Map(), candidatesByHost };
+  return { byStart: new Map(), ordinalByStart };
 };
 
 const javaTypeIdentityStateFor = (node: SyntaxNode): JavaTypeIdentityState => {
   const tree = (node as { tree?: { rootNode?: SyntaxNode } }).tree;
   if (tree === undefined) {
     const host = nearestJavaEnclosingType(node);
-    return {
-      byStart: new Map(),
-      candidatesByHost:
-        host === null
-          ? new Map()
-          : new Map([[javaHostKey(host), javaIdentityCandidatesBelow(host)]]),
-    };
+    return buildJavaTypeIdentityState(host ?? node);
   }
   let state = javaTypeIdentityMemo.get(tree);
   if (state === undefined) {
@@ -589,22 +588,11 @@ export const synthesizeJavaTypeIdentity = (
   const bindingName = isLocal ? node.childForFieldName?.('name')?.text : undefined;
   if (isLocal && !bindingName) return undefined;
 
-  const sameSequence = (state.candidatesByHost.get(javaHostKey(enclosing)) ?? []).filter(
-    (candidate) => {
-      if (isAnonymous) return isJavaAnonymousBodyNode(candidate);
-      return (
-        isJavaLocalTypeNode(candidate) &&
-        candidate.childForFieldName?.('name')?.text === bindingName
-      );
-    },
-  );
-  const index = sameSequence.findIndex(
-    (candidate) => candidate.startIndex === node.startIndex && candidate.type === node.type,
-  );
-  if (index === -1) return undefined;
+  const ordinal = state.ordinalByStart.get(node.startIndex);
+  if (ordinal === undefined) return undefined;
 
   const identity: JavaSynthesizedTypeIdentity = {
-    name: `${prefix}$${index + 1}${bindingName ?? ''}`,
+    name: `${prefix}$${ordinal}${bindingName ?? ''}`,
     label: isAnonymous ? 'Class' : localLabel!,
     ...(bindingName === undefined ? {} : { bindingName }),
   };
