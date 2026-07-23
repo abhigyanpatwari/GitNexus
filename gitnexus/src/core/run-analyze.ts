@@ -369,6 +369,12 @@ export interface AnalyzeResult {
    */
   ftsSkipped?: boolean;
   /**
+   * Operator-actionable warnings from the standalone ingest phase (e.g. Move
+   * packages skipped or ingested at degraded fidelity). Rendered persistently
+   * in the CLI summary — same rationale as the FTS warning (#1161).
+   */
+  ingestWarnings?: readonly string[];
+  /**
    * True when the index this run produced/validated is the flat workspace
    * slot (#2106 R2, inverted by #2354 to follow the checked-out branch).
    * `false` for a pinned `--branch` sub-index. Lets the CLI skip repo-root
@@ -2685,6 +2691,7 @@ export async function runFullAnalysis(
       stats: meta.stats,
       pipelineResult,
       ftsSkipped: !ftsReady,
+      ingestWarnings: pipelineResult.ingestWarnings,
       isPrimaryBranch: !placement.branch,
     };
   } catch (err) {

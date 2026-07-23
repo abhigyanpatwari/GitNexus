@@ -90,7 +90,11 @@ describe('moveIngest empty-facts discrimination', () => {
     expect(issues[0].message).toContain('does it compile?');
   });
 
-  it('does not probe status when facts are non-empty', async () => {
+  it('probes status once even when facts are non-empty (degraded-build detection, #2624)', async () => {
+    // Contract change from the original "never probe on success": move-flow
+    // serves complete-looking facts for erroring builds while silently dropping
+    // `acquiresInferred`, so the ONLY way to detect degraded fidelity is a
+    // status probe after ingestion. A clean status must stay warning-free.
     let statusCalls = 0;
     const output = await runPhase(
       makeClient({
@@ -112,8 +116,11 @@ describe('moveIngest empty-facts discrimination', () => {
       }),
     );
 
-    expect(statusCalls).toBe(0);
+    expect(statusCalls).toBe(1);
     expect(emptyFactsIssues(output)).toHaveLength(0);
+    expect(
+      output.consistencyIssues.filter((i) => i.code === 'degraded-package-facts'),
+    ).toHaveLength(0);
     expect(output.ingestedFiles.has('pkg/sources/t.move')).toBe(true);
   });
 });

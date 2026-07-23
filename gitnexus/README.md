@@ -375,6 +375,31 @@ described in [Move compiler provisioning](#move-compiler-provisioning) —
 including the `MOVE_FLOW` override and `GITNEXUS_SKIP_MOVE_FLOW=1` for
 air-gapped hosts.
 
+### Analyzing real-world Move repositories
+
+Real repos routinely contain Move packages that cannot build standalone (test
+fixtures, examples, fuzzer corpora — `aptos-core` alone has 470+). `analyze`
+handles them per package instead of giving up:
+
+- **Unbuildable packages are skipped with a warning**, not fatal: their
+  `.move` files stay out of the graph and the final summary names each skipped
+  package with the compiler's first diagnostic. Set `GITNEXUS_MOVE_STRICT=1`
+  to make any build failure abort the analyze instead.
+- **`_` placeholder addresses** (`econia = "_"` in `[addresses]`) are caught
+  pre-flight — MoveFlow has no dev-mode build, so set concrete addresses in
+  `Move.toml` or exclude the package.
+- **Builds with compiler errors still yield facts, at reduced fidelity**: the
+  MoveFlow compiler silently omits inferred `acquires` data from erroring
+  builds, so such packages are ingested with a persistent
+  "compiled with errors" warning. A common cause is a framework dependency
+  newer than MoveFlow's pinned compiler (e.g. unrecognized spec pragmas).
+- **`.gitnexusignore`** (gitignore syntax, repo root) excludes directories from
+  analysis entirely — the fastest way to scope large repos to the packages you
+  care about, and the remedy the skip warnings suggest.
+- **Cold builds of git-based framework dependencies can exceed the 5-minute
+  compile budget**; raise it with `GITNEXUS_MOVE_FLOW_TIMEOUT_MS` (e.g.
+  `1800000` for 30 min) for the first analyze.
+
 ## Release candidates
 
 Stable releases publish to the default `latest` dist-tag. When a pull request

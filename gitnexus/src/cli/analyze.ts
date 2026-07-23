@@ -1570,6 +1570,15 @@ const analyzeCommandImpl = async (
       );
     }
 
+    // Standalone-ingest warnings (skipped/degraded Move packages) share the
+    // FTS warning's rationale: mid-run progress lines scroll away, so anything
+    // the operator must act on has to reappear in the final summary.
+    if (result.ingestWarnings && result.ingestWarnings.length > 0) {
+      for (const warning of result.ingestWarnings) {
+        console.log(`\n  Warning: ${warning}`);
+      }
+    }
+
     try {
       await fs.access(getGlobalRegistryPath());
     } catch {

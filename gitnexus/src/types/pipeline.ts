@@ -36,4 +36,11 @@ export interface PipelineResult {
    * layer (if any) is resident in `graph` and persists via the whole-graph emit.
    */
   pdgEmitManifest?: PdgEmitManifest;
+  /**
+   * Operator-actionable warnings from the standalone ingest phase (skipped or
+   * degraded-fidelity packages). Passed through opaquely — the pipeline does
+   * not know which language produced them — so the CLI summary can render them
+   * persistently (same rationale as the FTS warning).
+   */
+  ingestWarnings?: readonly string[];
 }
