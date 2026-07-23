@@ -26,7 +26,9 @@ export function populateRustRangeBindings(
 ): void {
   const parser = getRustParser();
   const allReturnTypes = new Map<string, string>();
+  const ambiguousReturnTypes = new Set<string>();
   const allFieldTypes = new Map<string, Map<string, string>>();
+  const ambiguousFieldTypes = new Set<string>();
 
   for (const parsed of parsedFiles) {
     const sourceText = ctx.fileContents.get(parsed.filePath);
@@ -60,9 +62,13 @@ export function populateRustRangeBindings(
       const retType = fn.childForFieldName('return_type');
       if (nameNode !== null && retType !== null) {
         const name = nameNode.text;
+        // Ambiguity is a latch, not a toggle: once a name has two or more
+        // workspace definitions it stays ambiguous for the rest of the
+        // prepass, regardless of duplicate count or file order (#2514).
         if (allReturnTypes.has(name)) {
           allReturnTypes.delete(name);
-        } else {
+          ambiguousReturnTypes.add(name);
+        } else if (!ambiguousReturnTypes.has(name)) {
           allReturnTypes.set(name, retType.text);
         }
       }
@@ -82,9 +88,12 @@ export function populateRustRangeBindings(
       }
       if (fields.size > 0) {
         const name = nameNode.text;
+        // Same ambiguity latch as return types (#2514): a third same-named
+        // struct must not restore a resolvable global field map.
         if (allFieldTypes.has(name)) {
           allFieldTypes.delete(name);
-        } else {
+          ambiguousFieldTypes.add(name);
+        } else if (!ambiguousFieldTypes.has(name)) {
           allFieldTypes.set(name, fields);
         }
       }

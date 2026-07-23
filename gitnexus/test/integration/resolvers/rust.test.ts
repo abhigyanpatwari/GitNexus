@@ -13,6 +13,7 @@ import {
   edgeSet,
   runPipelineFromRepo,
   type PipelineResult,
+  type RelEdge,
 } from './helpers.js';
 
 // ---------------------------------------------------------------------------
@@ -2348,5 +2349,101 @@ describe('Rust macro resolution (issue #1934 F72)', () => {
     expect(greetCalls[0].targetLabel).toBe('Function');
     // And no CALLS edge anywhere targets the Macro node.
     expect(calls.every((e) => e.targetLabel !== 'Macro')).toBe(true);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// #2514: duplicate type names must stay ambiguous regardless of duplicate
+// count or file order. The range-binding prepass used Map presence as an
+// ambiguity toggle (has→delete / else→set), so a 3rd same-named definition
+// re-inserted a resolvable — and wrong — cross-file type (the last-scanned
+// file's). The fix latches ambiguity in a separate Set: once a name has two
+// definitions it never resolves again.
+//
+// Observable: for-loop `for item in make() { item.save(); }` where each
+// `make()` (or each `Config` field) lives in its own file with no `use`
+// import, so the receiver type can only come from the global range-binding
+// map. A cross-file `save`/`run` CALLS edge means the name resolved.
+// ---------------------------------------------------------------------------
+
+describe('Rust duplicate-name ambiguity latch (#2514)', () => {
+  // Cross-file receiver-method CALLS edges emitted from the fixture driver fn.
+  const receiverCalls = (result: PipelineResult, source: string, method: string): RelEdge[] =>
+    getRelationships(result, 'CALLS').filter((c) => c.source === source && c.target === method);
+
+  // --- return-type registry (allReturnTypes) ---
+
+  describe('two same-named fns with different return types', () => {
+    let result: PipelineResult;
+    beforeAll(async () => {
+      result = await runPipelineFromRepo(path.join(FIXTURES, 'rust-dup-return-2'), () => {});
+    }, 60000);
+
+    it('suppresses cross-file return-type inference — item.save() does not resolve', () => {
+      expect(receiverCalls(result, 'drive', 'save')).toEqual([]);
+    });
+  });
+
+  describe('three same-named fns with different return types', () => {
+    let result: PipelineResult;
+    beforeAll(async () => {
+      result = await runPipelineFromRepo(path.join(FIXTURES, 'rust-dup-return-3'), () => {});
+    }, 60000);
+
+    it('still suppresses inference — the 3rd duplicate does not restore a binding', () => {
+      expect(receiverCalls(result, 'drive', 'save')).toEqual([]);
+    });
+  });
+
+  describe('three same-named fns, permuted input file order', () => {
+    let result: PipelineResult;
+    beforeAll(async () => {
+      result = await runPipelineFromRepo(
+        path.join(FIXTURES, 'rust-dup-return-3-reordered'),
+        () => {},
+      );
+    }, 60000);
+
+    it('resolution is independent of file order — still no edge', () => {
+      expect(receiverCalls(result, 'drive', 'save')).toEqual([]);
+    });
+  });
+
+  describe('unique fn still infers normally (over-suppression guard)', () => {
+    let result: PipelineResult;
+    beforeAll(async () => {
+      result = await runPipelineFromRepo(path.join(FIXTURES, 'rust-unique-return'), () => {});
+    }, 60000);
+
+    it('resolves item.save() to User#save via cross-file return type', () => {
+      const edges = receiverCalls(result, 'drive', 'save');
+      expect(edges.length).toBe(1);
+      expect(edges[0]).toMatchObject({ source: 'drive', target: 'save', targetLabel: 'Function' });
+      expect(edges[0].targetFilePath).toContain('t_a.rs');
+    });
+  });
+
+  // --- field-type registry (allFieldTypes) via struct destructuring ---
+
+  describe('two same-named structs with conflicting field types', () => {
+    let result: PipelineResult;
+    beforeAll(async () => {
+      result = await runPipelineFromRepo(path.join(FIXTURES, 'rust-dup-fields-2'), () => {});
+    }, 60000);
+
+    it('suppresses global field-type inference — db.run() does not resolve', () => {
+      expect(receiverCalls(result, 'use_it', 'run')).toEqual([]);
+    });
+  });
+
+  describe('three same-named structs with conflicting field types', () => {
+    let result: PipelineResult;
+    beforeAll(async () => {
+      result = await runPipelineFromRepo(path.join(FIXTURES, 'rust-dup-fields-3'), () => {});
+    }, 60000);
+
+    it('still suppresses field inference — the 3rd duplicate does not restore', () => {
+      expect(receiverCalls(result, 'use_it', 'run')).toEqual([]);
+    });
   });
 });
