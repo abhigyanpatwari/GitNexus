@@ -925,6 +925,24 @@ function createJobs<TInput>(
  * single non-cloneable value can't masquerade as a worker death and exhaust a
  * slot's respawn budget here.
  */
+
+/**
+ * Per-worker V8 old-generation heap cap in MB (#2649). Without one, worker
+ * isolates inherit an unbounded default and a full pool can inflate process
+ * RSS past physical RAM on large repos. Half of RAM split across the pool,
+ * clamped to [512, 4096] MB — generous for the per-sub-batch working set
+ * (jobs are byte-budgeted), and a worker that does exceed it dies with a
+ * real heap error surfaced by the stderr-tail machinery + the
+ * quarantine/respawn path, instead of silently dragging the host into swap.
+ * `GITNEXUS_WORKER_HEAP_MB` overrides the formula. Exported for unit tests.
+ */
+export function resolveWorkerHeapCapMb(poolSize: number): number {
+  return (
+    positiveInteger(process.env.GITNEXUS_WORKER_HEAP_MB) ??
+    Math.min(4096, Math.max(512, Math.floor(os.totalmem() / (1024 * 1024) / 2 / poolSize)))
+  );
+}
+
 export const createWorkerPool = (
   workerUrl: URL,
   poolSize?: number,
@@ -957,6 +975,7 @@ export const createWorkerPool = (
     parsedFileStoreStoragePath || durableParsedFileStoragePath || pdg
       ? { parsedFileStoreStoragePath, durableParsedFileStoragePath, pdg, pdgMaxFunctionLines }
       : undefined;
+  const workerHeapCapMb = resolveWorkerHeapCapMb(size);
   const spawnWorker =
     options?.workerFactory ??
     ((url: URL) =>
@@ -976,7 +995,7 @@ export const createWorkerPool = (
         // nesting levels (far beyond any hand-written code); a deeper machine-
         // generated nest is still caught per-function (buildFunctionCfg's R4
         // try/catch) and only that function's PDG is skipped, never a crash.
-        resourceLimits: { stackSizeMb: 16 },
+        resourceLimits: { stackSizeMb: 16, maxOldGenerationSizeMb: workerHeapCapMb },
       }));
   /** Spawn + wire stdio capture/forwarding in one step (used by all spawn sites). */
   const spawnAndCapture = (url: URL): Worker => {
