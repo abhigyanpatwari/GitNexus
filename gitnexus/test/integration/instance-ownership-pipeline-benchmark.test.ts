@@ -41,10 +41,10 @@ const LANGUAGES: readonly LanguageCase[] = [
 
 public class Caller${fileIndex}
 {
-    public void Run()
-    {
-${Array.from({ length: CALLS_PER_FILE }, () => '        Foreign();').join('\n')}
-    }
+${Array.from(
+  { length: CALLS_PER_FILE },
+  (_, callIndex) => `    public void Run${callIndex}() { Foreign(); }`,
+).join('\n')}
 }
 
 public class Unrelated${fileIndex}
@@ -59,9 +59,10 @@ public class Unrelated${fileIndex}
     source: (fileIndex) => `package bench${fileIndex}
 
 class Caller${fileIndex} {
-    fun run() {
-${Array.from({ length: CALLS_PER_FILE }, () => '        foreign()').join('\n')}
-    }
+${Array.from(
+  { length: CALLS_PER_FILE },
+  (_, callIndex) => `    fun run${callIndex}() { foreign() }`,
+).join('\n')}
 }
 
 class Unrelated${fileIndex} {

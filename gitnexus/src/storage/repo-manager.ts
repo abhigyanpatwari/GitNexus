@@ -457,8 +457,12 @@ export interface RepoMeta {
  * spurious edges and these new resolved edges are cross-file, so a pre-v12
  * top-up would leave unchanged Rust files stale either way; force a full
  * re-analyze instead.
+ * v13: C# and Kotlin free-call fallback now rejects same-file methods whose
+ * instance owner is outside the caller's enclosing class/MRO (#2563). The
+ * incremental write set would otherwise retain those stale CALLS edges on
+ * every unchanged C# and Kotlin file; force a full re-analyze instead.
  */
-export const INCREMENTAL_SCHEMA_VERSION = 12;
+export const INCREMENTAL_SCHEMA_VERSION = 13;
 
 export interface IndexedRepo {
   repoPath: string;

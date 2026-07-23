@@ -53,3 +53,16 @@ public class SameFileConsumer : SameFileBase
         Func<int> lambda = () => LocalOnly(2);
     }
 }
+
+public partial class SameFilePartial
+{
+    public void CallAcrossFragment()
+    {
+        AcrossFragment();
+    }
+}
+
+public partial class SameFilePartial
+{
+    private void AcrossFragment() { }
+}

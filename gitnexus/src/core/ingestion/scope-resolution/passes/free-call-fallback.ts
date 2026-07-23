@@ -18,6 +18,7 @@
  */
 
 import type {
+  DefId,
   ParameterTypeClass,
   ParsedFile,
   Reference,
@@ -133,24 +134,39 @@ export function emitFreeCallFallback(
     options.isCallableVisibleFromCaller === undefined
       ? new Map<string, readonly SymbolDefinition[]>()
       : undefined;
-  const reachableInstanceOwnersByScope =
+  const enclosingInstanceOwnerByScope =
     options.freeCallsRequireInstanceOwnership === true
-      ? new Map<ScopeId, Set<string>>()
+      ? new Map<ScopeId, SymbolDefinition | null>()
       : undefined;
+  const reachableInstanceOwnersByOwner =
+    options.freeCallsRequireInstanceOwnership === true
+      ? new Map<string, ReadonlySet<string>>()
+      : undefined;
+  const instanceOwnerKey = (ownerId: string): string => {
+    const owner = scopes.defs.get(ownerId as DefId);
+    const qualifiedName = owner?.qualifiedName;
+    if (qualifiedName === undefined || qualifiedName === '') return ownerId;
+    const namespacePrefix = owner.namespacePrefix ?? '';
+    return `${namespacePrefix.length}:${namespacePrefix}:${qualifiedName}`;
+  };
   const isReachableInstanceOwner = (scopeId: ScopeId, ownerId: string): boolean => {
-    let owners = reachableInstanceOwnersByScope?.get(scopeId);
-    if (owners === undefined) {
-      owners = new Set();
-      const enclosing = findEnclosingClassDef(scopeId, scopes);
-      if (enclosing !== undefined) {
-        owners.add(enclosing.nodeId);
-        for (const inheritedOwnerId of scopes.methodDispatch.mroFor(enclosing.nodeId)) {
-          owners.add(inheritedOwnerId);
-        }
-      }
-      reachableInstanceOwnersByScope?.set(scopeId, owners);
+    let enclosing = enclosingInstanceOwnerByScope?.get(scopeId);
+    if (enclosing === undefined) {
+      enclosing = findEnclosingClassDef(scopeId, scopes) ?? null;
+      enclosingInstanceOwnerByScope?.set(scopeId, enclosing);
     }
-    return owners.has(ownerId);
+    if (enclosing === null) return false;
+
+    let owners = reachableInstanceOwnersByOwner?.get(enclosing.nodeId);
+    if (owners === undefined) {
+      const mutableOwners = new Set<string>([instanceOwnerKey(enclosing.nodeId)]);
+      for (const inheritedOwnerId of scopes.methodDispatch.mroFor(enclosing.nodeId)) {
+        mutableOwners.add(instanceOwnerKey(inheritedOwnerId));
+      }
+      owners = mutableOwners;
+      reachableInstanceOwnersByOwner?.set(enclosing.nodeId, owners);
+    }
+    return owners.has(instanceOwnerKey(ownerId));
   };
 
   for (const parsed of parsedFiles) {

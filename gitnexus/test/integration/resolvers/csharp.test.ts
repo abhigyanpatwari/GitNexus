@@ -245,6 +245,11 @@ describe('C# using static member injection', () => {
   it("does not resolve an unrelated same-file class's bare method", () => {
     const calls = getRelationships(result, 'CALLS');
     expect(calls.find((c) => c.source === 'Exercise' && c.target === 'LeakedOnly')).toBeUndefined();
+    expect(
+      calls.find(
+        (c) => c.source === 'RejectOtherNamespaceOwner' && c.target === 'NamespaceCollision',
+      ),
+    ).toBeUndefined();
   });
 
   it('preserves same-file using-static visibility when finalize masks its provenance', () => {
@@ -259,6 +264,13 @@ describe('C# using static member injection', () => {
     expect(calls.find((c) => c.source === 'Exercise' && c.target === 'OwnOnly')).toBeDefined();
     expect(
       calls.find((c) => c.source === 'Exercise' && c.target === 'InheritedOnly'),
+    ).toBeDefined();
+  });
+
+  it('preserves bare calls across same-file partial-class fragments', () => {
+    const calls = getRelationships(result, 'CALLS');
+    expect(
+      calls.find((c) => c.source === 'CallAcrossFragment' && c.target === 'AcrossFragment'),
     ).toBeDefined();
   });
 
