@@ -1,7 +1,4 @@
-// Bundled byte-identical into every hook adapter directory — each one installs
-// standalone and cannot import across packages. Drift guards in
-// gitnexus/test/unit/hooks.test.ts and test/unit/factory-plugin.test.ts fail if the
-// copies diverge; fix them together.
+// Byte-identical across all hook adapter dirs; drift-guarded by hooks.test.ts / factory-plugin.test.ts. Edit all copies.
 /**
  * Cross-platform best-effort probe: does another process hold dbPath open
  * with a command line that looks like a GitNexus MCP/serve server?
