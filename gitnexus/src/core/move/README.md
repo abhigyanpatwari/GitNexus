@@ -10,6 +10,9 @@ Cold compiler builds for large packages may take several minutes. Tool calls
 default to a five-minute timeout; override it in milliseconds with
 `GITNEXUS_MOVE_FLOW_TIMEOUT_MS` when a repository needs a larger budget.
 
+Every analysis that reaches Move ingestion queries `move-flow` live; compiler
+responses are not persisted or replayed.
+
 ## Runtime provisioning
 
 When `analyze` finds a `Move.toml`, it resolves `move-flow` from the authoritative
@@ -31,9 +34,8 @@ The repository metadata records the compiler identity used for Move facts.
 Changing that identity forces a full rebuild. If an existing compiler-backed
 graph needs updating while the compiler is unavailable, analysis fails before
 mutating the graph; restore `move-flow` or set `MOVE_FLOW` and retry.
-Managed identities include the verified binary hash; explicit and `PATH`
-identities use their locator and reported version, so replace a same-version
-local build with `gitnexus analyze --force`.
+Managed, explicit, and `PATH` identities all include the resolved executable's
+bytes, so replacing a same-version local build automatically invalidates facts.
 Filesystem errors while discovering `Move.toml` are also surfaced instead of
 silently treating the repository as non-Move.
 
@@ -52,7 +54,10 @@ Move package
 - `compiler-facts.ts` defines the normalized compiler response shapes used by
   downstream projections.
 - `move-ingest.ts` implements the standalone ingestion phase, including package
-  discovery, compiler queries, and cross-package resolution.
+  discovery and required compiler queries.
+- `function-usage.ts` recovers calls through compiler-known function values.
+- `move-linker.ts` resolves cross-package references and materializes external
+  dependency symbols.
 - `facts-mapper.ts` maps compiler facts to deterministic GitNexus nodes and
   relationships.
 - `consistency.ts` validates the resulting graph and reports incomplete or

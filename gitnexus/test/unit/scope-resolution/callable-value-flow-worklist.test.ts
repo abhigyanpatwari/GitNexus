@@ -17,7 +17,10 @@ import { createKnowledgeGraph } from '../../../src/core/graph/graph.js';
 import type { ScopeResolutionIndexes } from '../../../src/core/ingestion/model/scope-resolution-indexes.js';
 import { buildGraphNodeLookup } from '../../../src/core/ingestion/scope-resolution/graph-bridge/node-lookup.js';
 import { createCalleeIdAccumulator } from '../../../src/core/ingestion/scope-resolution/graph-bridge/callee-id-sink.js';
-import { emitCallableValueFlow } from '../../../src/core/ingestion/scope-resolution/passes/callable-value-flow.js';
+import {
+  aggregateCallableValueFlowWarnings,
+  emitCallableValueFlow,
+} from '../../../src/core/ingestion/scope-resolution/passes/callable-value-flow.js';
 
 const FILE = 'chain.ts';
 const MODULE = 'scope:module' as ScopeId;
@@ -198,5 +201,40 @@ describe('callable-value-flow dependency worklist', () => {
         (relationship) => twoN.graph.getNode(relationship.targetId)?.properties.name,
       ),
     ).toEqual(['target']);
+  });
+
+  it('groups repeated internal overflows by causal source context', () => {
+    expect(
+      aggregateCallableValueFlowWarnings([
+        {
+          language: 'javascript',
+          context: 'site:bundle.js:4:1933',
+          candidateCount: 33,
+          cap: 32,
+        },
+        {
+          language: 'javascript',
+          context: 'site:bundle.js:4:1933',
+          candidateCount: 40,
+          cap: 32,
+        },
+        {
+          language: 'javascript',
+          context: 'copy:bundle.js',
+          candidateCount: 33,
+          cap: 32,
+        },
+      ]),
+    ).toEqual([
+      {
+        language: 'javascript',
+        context: 'site:bundle.js:4:1933',
+        candidateCount: 40,
+        cap: 32,
+        occurrences: 3,
+        distinctContexts: 2,
+        contextSamples: ['site:bundle.js:4:1933', 'copy:bundle.js'],
+      },
+    ]);
   });
 });

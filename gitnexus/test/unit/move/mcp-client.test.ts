@@ -213,6 +213,43 @@ describe('MoveFlowMcpClient', () => {
     await client.shutdown();
   });
 
+  it('retries unrelated in-flight requests when another request times out', async () => {
+    vi.useFakeTimers();
+    process.env.GITNEXUS_MOVE_FLOW_TIMEOUT_MS = '25';
+    const timedOutProc = createMockProc();
+    const retryProc = createMockProc();
+    mockSpawn.mockReturnValueOnce(timedOutProc as any).mockReturnValueOnce(retryProc as any);
+
+    timedOutProc.stdin.on('data', (chunk: Buffer) => {
+      for (const line of chunk.toString().split('\n')) {
+        if (!line.trim()) continue;
+        const msg = JSON.parse(line);
+        if (msg.method === 'initialize') {
+          timedOutProc.stdout.write(
+            JSON.stringify({ jsonrpc: '2.0', id: msg.id, result: {} }) + '\n',
+          );
+        }
+      }
+    });
+    serveToolsCall(retryProc, {
+      result: { content: [{ type: 'text', text: '{"retried":true}' }], isError: false },
+    });
+
+    const client = new MoveFlowMcpClient('move-flow');
+    const first = client.facts('/first');
+    const firstFailure = expect(first).rejects.toThrow(
+      "move-flow 'move_package_query' timed out after 25ms",
+    );
+    await vi.advanceTimersByTimeAsync(5);
+    const secondSuccess = expect(client.facts('/second')).resolves.toEqual({ retried: true });
+
+    await vi.advanceTimersByTimeAsync(20);
+    await firstFailure;
+    await secondSuccess;
+    expect(mockSpawn).toHaveBeenCalledTimes(2);
+    await client.shutdown();
+  });
+
   it('ignores a late response after a tool timeout and starts a fresh child', async () => {
     vi.useFakeTimers();
     process.env.GITNEXUS_MOVE_FLOW_TIMEOUT_MS = '25';
@@ -371,6 +408,29 @@ describe('MoveFlowMcpClient', () => {
     await client.shutdown();
   });
 
+  it('rejects malformed function-usage payloads', async () => {
+    const proc = createMockProc();
+    mockSpawn.mockReturnValue(proc as any);
+    const client = new MoveFlowMcpClient('move-flow');
+    serveToolsCall(proc, {
+      result: {
+        content: [
+          {
+            type: 'text',
+            text: JSON.stringify({
+              called: 'not-an-array',
+              used: [],
+            }),
+          },
+        ],
+        isError: false,
+      },
+    });
+
+    await expect(client.functionUsage('/pkg', 'm::f')).rejects.toThrow(MoveFlowToolCallError);
+    await client.shutdown();
+  });
+
   it('packageStatus reports ok on an isError:false status result', async () => {
     // move-flow returns "no errors or warnings" for a compiling package.
     const proc = createMockProc();
@@ -403,12 +463,48 @@ describe('MoveFlowMcpClient', () => {
     });
     await client.shutdown();
   });
+
+  it('retries a request once after a mid-flight transport crash', async () => {
+    const crashProc = createMockProc();
+    const freshProc = createMockProc();
+    mockSpawn.mockReturnValueOnce(crashProc as any).mockReturnValueOnce(freshProc as any);
+
+    crashProc.stdin.on('data', (chunk: Buffer) => {
+      for (const line of chunk.toString().split('\n')) {
+        if (!line.trim()) continue;
+        const msg = JSON.parse(line);
+        if (msg.method === 'initialize') {
+          crashProc.stdout.write(JSON.stringify({ jsonrpc: '2.0', id: msg.id, result: {} }) + '\n');
+        } else if (msg.method === 'tools/call') {
+          // Die mid-request instead of answering — a transport fault.
+          crashProc.emit('exit', 137);
+        }
+      }
+    });
+    serveToolsCall(freshProc, {
+      result: { content: [{ type: 'text', text: '{"fresh":true}' }], isError: false },
+    });
+
+    const client = new MoveFlowMcpClient('move-flow');
+    await expect(client.facts('/pkg')).resolves.toEqual({ fresh: true });
+    expect(mockSpawn).toHaveBeenCalledTimes(2);
+    await client.shutdown();
+  });
+
+  it('rejects new requests after shutdown instead of respawning a child', async () => {
+    const client = new MoveFlowMcpClient('move-flow');
+    await client.shutdown();
+
+    await expect(client.facts('/pkg')).rejects.toThrow('move-flow client is shut down');
+    expect(mockSpawn).not.toHaveBeenCalled();
+  });
 });
 
 describe('detectMoveFlowCapabilities', () => {
   it('reports facts support from a standalone move_package_facts tool name', () => {
     const caps = detectMoveFlowCapabilities(['move_package_query', 'move_package_facts']);
     expect(caps.hasFactsQuery).toBe(true);
+    expect(caps.hasFunctionUsageQuery).toBe(false);
   });
 
   it('detects the facts query from the move_package_query inputSchema enum', () => {
@@ -420,23 +516,32 @@ describe('detectMoveFlowCapabilities', () => {
         inputSchema: {
           $defs: {
             QueryType: {
-              oneOf: [{ const: 'module_summary' }, { const: 'call_graph' }, { const: 'facts' }],
+              oneOf: [
+                { const: 'module_summary' },
+                { const: 'call_graph' },
+                { const: 'function_usage' },
+                { const: 'facts' },
+              ],
             },
           },
         },
       },
     ]);
     expect(caps.hasFactsQuery).toBe(true);
+    expect(caps.hasFunctionUsageQuery).toBe(true);
   });
 
   it('also detects facts from a flat enum schema', () => {
     const caps = detectMoveFlowCapabilities([
       {
         name: 'move_package_query',
-        inputSchema: { properties: { query: { enum: ['module_summary', 'facts'] } } },
+        inputSchema: {
+          properties: { query: { enum: ['module_summary', 'function_usage', 'facts'] } },
+        },
       },
     ]);
     expect(caps.hasFactsQuery).toBe(true);
+    expect(caps.hasFunctionUsageQuery).toBe(true);
   });
 
   it('reports facts absent when the schema omits it', () => {
@@ -448,11 +553,13 @@ describe('detectMoveFlowCapabilities', () => {
       'move_package_manifest',
     ]);
     expect(caps.hasFactsQuery).toBe(false);
+    expect(caps.hasFunctionUsageQuery).toBe(false);
   });
 
   it('reports facts absent when move_package_query is missing entirely', () => {
     const caps = detectMoveFlowCapabilities(['move_package_status']);
     expect(caps.hasFactsQuery).toBe(false);
+    expect(caps.hasFunctionUsageQuery).toBe(false);
     expect(caps.hasStatusTool).toBe(true);
   });
 

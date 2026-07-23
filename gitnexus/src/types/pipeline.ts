@@ -1,11 +1,14 @@
 import type { KnowledgeGraph } from '../core/graph/types.js';
 import { CommunityDetectionResult } from '../core/ingestion/community-processor.js';
 import { ProcessDetectionResult } from '../core/ingestion/process-processor.js';
+import type { StandaloneIngestOutput } from '../core/ingestion/pipeline-phases/standalone-ingest.js';
 import type { ResolutionOutcome } from '../core/ingestion/scope-resolution/resolution-outcome.js';
 import type { PdgEmitManifest } from '../core/lbug/pdg-emit-sink.js';
 
 // CLI-specific: in-memory result with graph + detection results
-export interface PipelineResult {
+export interface PipelineResult<
+  TStandaloneIngest extends StandaloneIngestOutput = StandaloneIngestOutput,
+> {
   graph: KnowledgeGraph;
   /** Absolute path to the repo root — used for lazy file reads during LadybugDB loading */
   repoPath: string;
@@ -36,4 +39,10 @@ export interface PipelineResult {
    * layer (if any) is resident in `graph` and persists via the whole-graph emit.
    */
   pdgEmitManifest?: PdgEmitManifest;
+  /**
+   * Output of the standalone-ingest phase (the caller-supplied compiler-backed
+   * ingester, e.g. Move). The pipeline stays language-agnostic; callers that
+   * register a richer phase may narrow this output to their phase contract.
+   */
+  standaloneIngest: TStandaloneIngest;
 }

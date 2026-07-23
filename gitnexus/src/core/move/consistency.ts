@@ -1,7 +1,7 @@
 import type { KnowledgeGraph } from '../graph/types.js';
 import type { MovePackageStatus } from './mcp-client.js';
 import type { MoveIngestOutput } from './move-ingest.js';
-import { moveModuleQualifiedName } from './symbol-id.js';
+import { moveModuleQualifiedName, parseMoveModuleQualifiedName } from './symbol-id.js';
 
 export type MoveConsistencySeverity = 'warning' | 'error';
 
@@ -11,6 +11,16 @@ export interface MoveConsistencyIssue {
     | 'missing-owned-callee'
     | 'malformed-source-evidence'
     | 'unresolved-resource-target'
+    | 'unresolved-type-target'
+    | 'unresolved-friend-target'
+    | 'unresolved-lambda-host'
+    | 'function-usage-query-failed'
+    /** Non-empty call graph in which no caller resolves to a mapped function -
+     *  a systematic qualified-name mismatch between `call_graph` and `facts`. */
+    | 'call-graph-unlinked'
+    /** Externally-materialized module shares an address with repo-local
+     *  modules - possibly local code the compiler elided from `facts`. */
+    | 'external-module-address-overlap'
     /** Package with .move sources returned facts `{}` - severity policy in
      *  `emptyFactsIssue` below. */
     | 'empty-package-facts';
@@ -25,6 +35,53 @@ export interface EmptyFactsPackage {
   pkgRoot: string;
   moveFileCount: number;
   status: MovePackageStatus | null;
+}
+
+export interface MoveConsistencySummaryIssue {
+  code: MoveConsistencyIssue['code'];
+  severity: MoveConsistencySeverity;
+  message: string;
+  /** Bounded JSON preview of the original structured details. */
+  details?: string;
+}
+
+/** Compact, persistable digest of a run's Move consistency issues. */
+export interface MoveConsistencySummary {
+  errorCount: number;
+  warningCount: number;
+  /** Errors-first sample, capped so meta.json stays small. */
+  issues: MoveConsistencySummaryIssue[];
+}
+
+const MAX_SUMMARY_MESSAGE_CHARS = 500;
+const MAX_SUMMARY_DETAILS_CHARS = 2_000;
+
+function truncateSummaryText(value: string, maxChars: number): string {
+  if (value.length <= maxChars) return value;
+  return `${value.slice(0, maxChars - 3)}...`;
+}
+
+/** `undefined` when there is nothing to record (the common clean run). */
+export function summarizeMoveConsistency(
+  issues: readonly MoveConsistencyIssue[],
+  sampleLimit = 20,
+): MoveConsistencySummary | undefined {
+  if (issues.length === 0) return undefined;
+  const errors = issues.filter((i) => i.severity === 'error');
+  const warnings = issues.filter((i) => i.severity === 'warning');
+  return {
+    errorCount: errors.length,
+    warningCount: warnings.length,
+    issues: [...errors, ...warnings].slice(0, sampleLimit).map((issue) => ({
+      code: issue.code,
+      severity: issue.severity,
+      message: truncateSummaryText(issue.message, MAX_SUMMARY_MESSAGE_CHARS),
+      details:
+        issue.details === undefined
+          ? undefined
+          : truncateSummaryText(JSON.stringify(issue.details), MAX_SUMMARY_DETAILS_CHARS),
+    })),
+  };
 }
 
 /**
@@ -95,6 +152,9 @@ export function validateMoveIngestOutput(
     }
   }
 
+  validateCallGraphLinkage(moveIngest, issues);
+  validateExternalAddressOverlap(graph, moveIngest, issues);
+
   for (const [packageRoot, callGraph] of moveIngest.callGraphByPackage) {
     for (const [callerQualified, callees] of Object.entries(callGraph)) {
       const callerModule = moveModuleQualifiedName(callerQualified);
@@ -124,15 +184,136 @@ export function validateMoveIngestOutput(
     }
   }
 
-  const dropped = moveIngest.droppedResourceRefs;
-  if (dropped && dropped.length > 0) {
-    issues.push({
-      code: 'unresolved-resource-target',
-      severity: 'warning',
-      message: `${dropped.length} resource read/write/acquires target(s) could not be resolved.`,
-      details: { count: dropped.length, sample: dropped.slice(0, 5) },
-    });
-  }
+  pushDroppedIssue(
+    issues,
+    moveIngest.droppedResourceRefs,
+    'unresolved-resource-target',
+    'resource read/write/acquires target(s) could not be resolved',
+  );
+  pushDroppedIssue(
+    issues,
+    moveIngest.droppedTypeRefs,
+    'unresolved-type-target',
+    'signature/type reference target(s) could not be resolved',
+  );
+  pushDroppedIssue(
+    issues,
+    moveIngest.droppedFriends,
+    'unresolved-friend-target',
+    'friend declaration target(s) have no Module node',
+  );
+  pushDroppedIssue(
+    issues,
+    moveIngest.droppedLambdaHosts,
+    'unresolved-lambda-host',
+    'lambda function(s) have no resolvable host function',
+  );
+  pushDroppedIssue(
+    issues,
+    moveIngest.functionUsageFailures,
+    'function-usage-query-failed',
+    'supplemental function-usage query(s) failed',
+  );
 
   return issues;
+}
+
+/** One warning per non-empty dropped-reference list: full count, 5-item sample. */
+function pushDroppedIssue(
+  issues: MoveConsistencyIssue[],
+  dropped: readonly unknown[],
+  code: MoveConsistencyIssue['code'],
+  label: string,
+): void {
+  if (dropped.length === 0) return;
+  issues.push({
+    code,
+    severity: 'warning',
+    message: `${dropped.length} ${label}.`,
+    details: { count: dropped.length, sample: dropped.slice(0, 5) },
+  });
+}
+
+/**
+ * A non-empty call graph in which NO caller resolves to a mapped function OR
+ * mapped module is a systematic qualified-name mismatch between `call_graph`
+ * and `facts` (e.g. address-normalization drift across move-flow versions):
+ * every CALLS edge drops, and the per-caller ownership checks are also blind
+ * because modulePackageMap is keyed from the same facts names. The module
+ * condition keeps call graphs that merely include facts-elided functions
+ * (e.g. tests) out of scope — their caller MODULES still resolve, and the
+ * per-caller missing-owned-caller check already covers them. The callee
+ * condition covers callers living entirely in facts-elided modules (a
+ * test-only module exercising a mapped library): their CALLEES still join
+ * facts names, which real normalization drift would break on both sides.
+ * Scoped to packages that DID map functions, so a structs-only package
+ * cannot false-positive.
+ */
+function validateCallGraphLinkage(
+  moveIngest: MoveIngestOutput,
+  issues: MoveConsistencyIssue[],
+): void {
+  const mappedFnPackages = new Set<string>();
+  for (const fnQualified of moveIngest.functionNodeMap.keys()) {
+    const pkg = moveIngest.modulePackageMap.get(moveModuleQualifiedName(fnQualified));
+    if (pkg) mappedFnPackages.add(pkg);
+  }
+  for (const [packageRoot, callGraph] of moveIngest.callGraphByPackage) {
+    const callers = Object.keys(callGraph);
+    if (callers.length === 0 || !mappedFnPackages.has(packageRoot)) continue;
+    if (callers.some((caller) => moveIngest.functionNodeMap.has(caller))) continue;
+    if (
+      callers.some((caller) => moveIngest.modulePackageMap.has(moveModuleQualifiedName(caller)))
+    ) {
+      continue;
+    }
+    const callees = Object.values(callGraph).flat();
+    if (callees.some((callee) => moveIngest.functionNodeMap.has(callee))) continue;
+    issues.push({
+      code: 'call-graph-unlinked',
+      severity: 'error',
+      message:
+        `Move call graph for ${packageRoot} resolved zero of ${callers.length} caller(s) to ` +
+        `mapped functions - qualified-name mismatch between call_graph and facts?`,
+      details: { packageRoot, callerCount: callers.length, sample: callers.slice(0, 5) },
+    });
+  }
+}
+
+/**
+ * The linker materializes unresolved cross-module targets as external
+ * dependency nodes (`locationFidelity: 'external'`). An external module whose
+ * ADDRESS also hosts repo-local modules is suspicious: it may be local code
+ * that `facts` elided while `call_graph`/type refs still name it, which would
+ * otherwise mislabel the user's own symbols as foreign with no trace.
+ */
+function validateExternalAddressOverlap(
+  graph: KnowledgeGraph,
+  moveIngest: MoveIngestOutput,
+  issues: MoveConsistencyIssue[],
+): void {
+  const localAddresses = new Set<string>();
+  for (const moduleQualified of moveIngest.moduleFileMap.keys()) {
+    const { address } = parseMoveModuleQualifiedName(moduleQualified);
+    if (address) localAddresses.add(address);
+  }
+  if (localAddresses.size === 0) return;
+
+  const overlapping: string[] = [];
+  for (const node of graph.iterNodes()) {
+    if (node.label !== 'Module' || node.properties.locationFidelity !== 'external') continue;
+    const qualifiedName = node.properties.qualifiedName;
+    if (typeof qualifiedName !== 'string') continue;
+    const { address } = parseMoveModuleQualifiedName(qualifiedName);
+    if (address && localAddresses.has(address)) overlapping.push(qualifiedName);
+  }
+  if (overlapping.length === 0) return;
+  issues.push({
+    code: 'external-module-address-overlap',
+    severity: 'warning',
+    message:
+      `${overlapping.length} external-dependency module(s) share an address with repo-local ` +
+      `modules - local code may have been materialized as external (facts/call_graph drift).`,
+    details: { count: overlapping.length, sample: overlapping.slice(0, 5) },
+  });
 }

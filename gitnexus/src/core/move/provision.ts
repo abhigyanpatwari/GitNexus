@@ -1,4 +1,8 @@
-import { createHash } from 'node:crypto';
+import { createHash, randomBytes } from 'node:crypto';
+import { createReadStream } from 'node:fs';
+import { access, realpath } from 'node:fs/promises';
+import { constants } from 'node:fs';
+import * as path from 'node:path';
 import type { MoveCompilerIdentity } from './constants.js';
 import {
   createMoveFlowClient,
@@ -43,15 +47,70 @@ const defaultDependencies: MoveFlowProvisionDependencies = {
   install: installMoveFlow,
 };
 
-const localIdentity = (
+async function resolveExecutablePath(locator: string): Promise<string | null> {
+  const candidates =
+    path.isAbsolute(locator) || locator.includes(path.sep)
+      ? [locator]
+      : (process.env.PATH ?? '')
+          .split(path.delimiter)
+          .filter(Boolean)
+          .flatMap((directory) => {
+            const exact = path.join(directory, locator);
+            if (process.platform !== 'win32' || path.extname(locator)) return [exact];
+            const extensions = (process.env.PATHEXT ?? '.EXE;.CMD;.BAT;.COM').split(';');
+            return [
+              exact,
+              ...extensions.map((extension) => path.join(directory, `${locator}${extension}`)),
+            ];
+          });
+  for (const candidate of candidates) {
+    try {
+      await access(candidate, constants.R_OK | (process.platform === 'win32' ? 0 : constants.X_OK));
+      return await realpath(candidate);
+    } catch {
+      // Continue through PATH. A resolver mock may intentionally have no file.
+    }
+  }
+  return null;
+}
+
+async function hashExecutable(absolutePath: string): Promise<string> {
+  const digest = createHash('sha256');
+  for await (const chunk of createReadStream(absolutePath)) digest.update(chunk as Buffer);
+  return digest.digest('hex');
+}
+
+const localIdentity = async (
   source: 'explicit' | 'path',
   locator: string,
   version: string,
-): MoveCompilerIdentity => ({
-  version,
-  source,
-  fingerprint: createHash('sha256').update(`${source}\0${locator}\0${version}`).digest('hex'),
-});
+  onLog?: (message: string) => void,
+): Promise<MoveCompilerIdentity> => {
+  const resolvedPath = await resolveExecutablePath(locator);
+  // If the binary changes between the successful version probe and hashing,
+  // make this identity unique rather than certifying an unverifiable runtime.
+  const binaryDigest = resolvedPath
+    ? await hashExecutable(resolvedPath).catch(
+        () => `unverifiable:${randomBytes(16).toString('hex')}`,
+      )
+    : `unverifiable:${randomBytes(16).toString('hex')}`;
+  if (binaryDigest.startsWith('unverifiable:')) {
+    // The random digest deliberately churns the fingerprint, and a fingerprint
+    // change forces a full Move re-index — every run, until the binary is
+    // readable again. Say so instead of rebuilding silently.
+    onLog?.(
+      `move-flow binary at '${resolvedPath ?? locator}' could not be read for ` +
+        `fingerprinting; Move facts will be fully rebuilt on every run until it is readable.`,
+    );
+  }
+  return {
+    version,
+    source,
+    fingerprint: createHash('sha256')
+      .update(`${source}\0${resolvedPath ?? locator}\0${version}\0${binaryDigest}`)
+      .digest('hex'),
+  };
+};
 
 const verifiedRuntime = (
   binary: VerifiedMoveFlowBinary,
@@ -98,7 +157,7 @@ export async function ensureMoveFlowRuntime(
     if (resolved) {
       return {
         client: resolved.client,
-        identity: localIdentity('explicit', explicitPath, resolved.version),
+        identity: await localIdentity('explicit', explicitPath, resolved.version, options.onLog),
       };
     }
     options.onLog?.(
@@ -119,7 +178,7 @@ export async function ensureMoveFlowRuntime(
     // terminals/CI steps, and a fingerprint churn forces a full re-index.
     return {
       client: existing.client,
-      identity: localIdentity('path', 'move-flow', existing.version),
+      identity: await localIdentity('path', 'move-flow', existing.version, options.onLog),
     };
   }
 

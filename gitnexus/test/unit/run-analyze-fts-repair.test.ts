@@ -6,6 +6,10 @@ import { createTempDir } from '../helpers/test-db.js';
 
 const SIMULATED_MISSING_FTS_INDEX_NAME = 'File.file_fts';
 const PLACEHOLDER_GRAPH_STORE_CONTENT = 'fixture';
+const emptyMoveIngestOutput = () => ({
+  ingestedFiles: new Set<string>(),
+  consistencyIssues: [],
+});
 
 const createPlaceholderGraphStore = async (lbugPath: string): Promise<void> => {
   // Repair mode gates on existence before `initLbug` takes over open/validate.
@@ -84,6 +88,7 @@ describe('runFullAnalysis FTS repair and verification failure paths', () => {
     const runPipelineFromRepo = vi.fn(async (repoPath: string) => ({
       repoPath,
       graph: { forEachNode: () => undefined },
+      standaloneIngest: emptyMoveIngestOutput(),
     }));
     vi.doMock('../../src/core/ingestion/pipeline.js', () => ({
       runPipelineFromRepo,
@@ -113,6 +118,7 @@ describe('runFullAnalysis FTS repair and verification failure paths', () => {
     const runPipelineFromRepo = vi.fn(async (repoPath: string) => ({
       repoPath,
       graph: { forEachNode: () => undefined },
+      standaloneIngest: emptyMoveIngestOutput(),
     }));
     vi.doMock('../../src/core/ingestion/pipeline.js', () => ({
       runPipelineFromRepo,
@@ -499,7 +505,14 @@ describe('runFullAnalysis FTS repair and verification failure paths', () => {
         repoPath,
         // Full-analyze path only needs `forEachNode` before the FTS phase.
         graph: { forEachNode: () => undefined },
+        standaloneIngest: emptyMoveIngestOutput(),
       })),
+    }));
+    // Avoid touching the global registry / repo .gitnexusignore from a unit test.
+    vi.doMock('../../src/storage/repo-manager.js', async (importActual) => ({
+      ...(await importActual<typeof import('../../src/storage/repo-manager.js')>()),
+      registerRepo: vi.fn(async () => 'verify-fail-repo'),
+      ensureGitNexusIgnored: vi.fn(async () => undefined),
     }));
 
     const tmpRepo = await createTempDir('gitnexus-run-analyze-full-verify-fail-');
@@ -564,6 +577,7 @@ describe('runFullAnalysis FTS repair and verification failure paths', () => {
         repoPath,
         totalFileCount: 1,
         graph: { forEachNode: () => undefined },
+        standaloneIngest: emptyMoveIngestOutput(),
       })),
     }));
     // Avoid touching the global registry / repo .gitnexusignore from a unit test.
@@ -635,6 +649,7 @@ describe('runFullAnalysis FTS repair and verification failure paths', () => {
         repoPath,
         totalFileCount: 1,
         graph: { forEachNode: () => undefined },
+        standaloneIngest: emptyMoveIngestOutput(),
       })),
     }));
     vi.doMock('../../src/storage/repo-manager.js', async (importActual) => ({
@@ -769,6 +784,7 @@ describe('runFullAnalysis wipe-and-restore vector-index stamp (tri-review 466951
       runPipelineFromRepo: vi.fn(async (repoPath: string) => ({
         repoPath,
         totalFileCount: 1,
+        standaloneIngest: emptyMoveIngestOutput(),
         graph: {
           forEachNode: (fn: (node: typeof stubNode) => void) => fn(stubNode),
           getNode: (id: string) => (id === RESTORED_NODE_ID ? stubNode : undefined),
@@ -871,6 +887,7 @@ describe('runFullAnalysis dirty-recovery parking failure fails fast (this shippi
       repoPath,
       totalFileCount: 1,
       graph: { forEachNode: () => undefined },
+      standaloneIngest: emptyMoveIngestOutput(),
     }));
     // Wholesale factory EXCEPT LbugWipeError: run-analyze throws the class it
     // imports from this module, and the test asserts on that very type — so

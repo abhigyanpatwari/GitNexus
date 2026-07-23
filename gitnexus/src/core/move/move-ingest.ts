@@ -29,27 +29,17 @@ import { getPhaseOutput } from '../ingestion/pipeline-phases/types.js';
 import type { StructureOutput } from '../ingestion/pipeline-phases/structure.js';
 import type { StandaloneIngestOutput } from '../ingestion/pipeline-phases/standalone-ingest.js';
 import type { KnowledgeGraph } from '../graph/types.js';
-import { MOVE_EDGE_REASON, moveRepoRelativePath } from './constants.js';
+import { moveRepoRelativePath } from './constants.js';
 import {
+  MoveFlowTimeoutError,
   MoveFlowToolCallError,
   type MoveFlowClient,
   type MovePackageStatus,
 } from './mcp-client.js';
-import {
-  buildLocalNameIndex,
-  mapFactsToGraph,
-  resolveFriendEdges,
-  resolveLambdaHostEdges,
-  resolveResourceEdges,
-  resolveTypeRefEdges,
-  type MoveFactsMapResult,
-  type PendingFriend,
-  type PendingLambdaHost,
-  type PendingResource,
-  type PendingTypeRef,
-} from './facts-mapper.js';
+import { mapFactsToGraph, type MoveFactsMapResult } from './facts-mapper.js';
 import type { CallGraphMap, MoveFactsMap } from './compiler-facts.js';
-import { moveModuleNodeId, moveModuleQualifiedName, moveRelId } from './symbol-id.js';
+import { collectClosureCaptureCalls, type FunctionUsageFailure } from './function-usage.js';
+import { linkMoveIngestGraph, type MoveLinkState } from './move-linker.js';
 import {
   emptyFactsIssue,
   validateMoveIngestOutput,
@@ -76,25 +66,25 @@ export interface MoveIngestOutput extends StandaloneIngestOutput {
   /** Absolute package root → compiler call graph for that package. */
   callGraphByPackage: ReadonlyMap<string, CallGraphMap>;
   /** Resource references dropped during global resolution. */
-  droppedResourceRefs?: { fnNodeId: string; target: string }[];
+  droppedResourceRefs: { fnNodeId: string; target: string }[];
+  /** Signature/type references dropped during global resolution. */
+  droppedTypeRefs: { sourceNodeId: string; target: string }[];
+  /** Friend declarations whose target module never got a Module node. */
+  droppedFriends: { moduleNodeId: string; friend: string }[];
+  /** Lambda functions whose host function never got a Function node. */
+  droppedLambdaHosts: { lambdaFnNodeId: string; hostQualified: string }[];
+  /** Supplemental function-usage queries that could not be completed. */
+  functionUsageFailures: FunctionUsageFailure[];
   /** Non-fatal consistency issues found after Move ingestion. */
   consistencyIssues: MoveConsistencyIssue[];
 }
 
 /** Mutable accumulator shared while ingesting every package. */
-interface MoveIngestState {
+interface MoveIngestState extends MoveLinkState {
   ingestedFiles: Set<string>;
-  moduleFileMap: Map<string, string>;
-  functionNodeMap: Map<string, string>;
-  structNodeMap: Map<string, string>;
   modulePackageMap: Map<string, string>;
   filePackageMap: Map<string, string>;
-  callGraphByPackage: Map<string, CallGraphMap>;
-  pendingResource: PendingResource[];
-  pendingFriends: PendingFriend[];
-  pendingTypeRef: PendingTypeRef[];
-  pendingLambdaHosts: PendingLambdaHost[];
-  droppedResourceRefs: { fnNodeId: string; target: string }[];
+  functionUsageFailures: FunctionUsageFailure[];
 }
 
 function createState(): MoveIngestState {
@@ -106,11 +96,16 @@ function createState(): MoveIngestState {
     modulePackageMap: new Map(),
     filePackageMap: new Map(),
     callGraphByPackage: new Map(),
+    closureCallsByPackage: new Map(),
     pendingResource: [],
     pendingFriends: [],
     pendingTypeRef: [],
     pendingLambdaHosts: [],
     droppedResourceRefs: [],
+    droppedTypeRefs: [],
+    droppedFriends: [],
+    droppedLambdaHosts: [],
+    functionUsageFailures: [],
   };
 }
 
@@ -129,6 +124,10 @@ function toOutput(
     filePackageMap: state.filePackageMap,
     callGraphByPackage: state.callGraphByPackage,
     droppedResourceRefs: state.droppedResourceRefs,
+    droppedTypeRefs: state.droppedTypeRefs,
+    droppedFriends: state.droppedFriends,
+    droppedLambdaHosts: state.droppedLambdaHosts,
+    functionUsageFailures: state.functionUsageFailures,
     consistencyIssues,
   };
 }
@@ -180,7 +179,7 @@ export function createMoveIngestPhase(
         return toOutput(createState(), packageRoots);
       }
 
-      const { hasFactsQuery, hasStatusTool } = await client.capabilities();
+      const { hasFactsQuery, hasFunctionUsageQuery, hasStatusTool } = await client.capabilities();
       if (!hasFactsQuery) {
         // userActionable: rendered as a one-liner without a stack — the fix is
         // an operator action (upgrade move-flow), not a code bug.
@@ -192,6 +191,7 @@ export function createMoveIngestPhase(
         );
       }
       const state = createState();
+      let functionUsageEnabled = hasFunctionUsageQuery;
 
       // Group scanned .move files by their (innermost) owning package. Files
       // are marked as ingested per package only AFTER its facts arrive, so a
@@ -214,10 +214,9 @@ export function createMoveIngestPhase(
         moveFilesByPackage.set(owner, files);
       }
 
-      const emptyFactsPackages: EmptyFactsPackage[] = [];
-
       // Pass 1: per-package nodes/edges (all packages first, so cross-package
       // CALLS in Pass 2 can resolve callees in later packages).
+      const emptyFactsPackages: EmptyFactsPackage[] = [];
       for (const pkgRoot of packageRoots) {
         ctx.onProgress({
           phase: 'moveIngest',
@@ -232,16 +231,7 @@ export function createMoveIngestPhase(
           callGraphData = await client.callGraph(pkgRoot);
           factsMap = await client.facts(pkgRoot);
         } catch (err) {
-          if (err instanceof MoveFlowToolCallError) {
-            // userActionable: rendered as a one-liner without a stack - a Move
-            // package that does not build (bad manifest, missing dependency,
-            // nonexistent path) is an operator problem, not a code bug.
-            throw Object.assign(
-              new Error(`move-flow could not build Move package ${pkgRoot}: ${err.message}`),
-              { userActionable: true },
-            );
-          }
-          throw err;
+          throw toPackageQueryError(err, pkgRoot);
         }
 
         const pkgMoveFiles = moveFilesByPackage.get(pkgRoot) ?? [];
@@ -262,17 +252,23 @@ export function createMoveIngestPhase(
         // Only past the gate: a skipped package must have zero footprint in
         // Pass 2 linking and consistency validation.
         state.callGraphByPackage.set(pkgRoot, callGraphData);
+        if (functionUsageEnabled) {
+          const closureCapture = await collectClosureCaptureCalls(
+            client,
+            pkgRoot,
+            factsMap,
+            callGraphData,
+          );
+          state.closureCallsByPackage.set(pkgRoot, closureCapture.calls);
+          state.functionUsageFailures.push(...closureCapture.failures);
+          if (closureCapture.failures.length > 0) functionUsageEnabled = false;
+        }
         for (const rel of pkgMoveFiles) state.ingestedFiles.add(rel);
-
         applyMapped(ctx.graph, mapFactsToGraph(factsMap, pkgRoot, ctx.repoPath), pkgRoot, state);
       }
 
       // Pass 2+: link edges that need the full cross-package node index.
-      linkCallEdges(ctx.graph, state);
-      linkLambdaHostEdges(ctx.graph, state);
-      linkResourceAndFriendEdges(ctx.graph, state);
-      linkFileImports(ctx.graph, state);
-      linkFileModuleContains(ctx.graph, state);
+      linkMoveIngestGraph(ctx.graph, state);
 
       const output = toOutput(state, packageRoots);
       createMoveEntryPointEdges(ctx.graph, output);
@@ -283,6 +279,32 @@ export function createMoveIngestPhase(
       return { ...output, consistencyIssues };
     },
   };
+}
+
+/**
+ * Map a package-query failure to its user-facing form. Build/input errors and
+ * timeouts are operator problems rendered as one-liners; transport faults
+ * have already used up the client's single retry, so anything else propagates
+ * as the crash it is.
+ */
+function toPackageQueryError(err: unknown, pkgRoot: string): Error {
+  if (err instanceof MoveFlowToolCallError) {
+    // userActionable: rendered as a one-liner without a stack - a Move
+    // package that does not build (bad manifest, missing dependency,
+    // nonexistent path) is an operator problem, not a code bug.
+    return Object.assign(
+      new Error(`move-flow could not build Move package ${pkgRoot}: ${err.message}`),
+      { userActionable: true },
+    );
+  }
+  if (err instanceof MoveFlowTimeoutError) {
+    // Fresh copy: the client owns this instance (it is reused across the
+    // transport retry), so stamping the original would mutate state we do
+    // not own. The message already names the fix (raise
+    // GITNEXUS_MOVE_FLOW_TIMEOUT_MS).
+    return Object.assign(new Error(err.message), { userActionable: true });
+  }
+  return err instanceof Error ? err : new Error(String(err));
 }
 
 // --- Empty-facts discrimination ---
@@ -300,133 +322,6 @@ async function probePackageStatus(
   } catch {
     // Probe failure -> cannot discriminate; fall back to the pessimistic issue.
     return null;
-  }
-}
-
-/** CALLS edges from each package's call graph (resolved across all packages). */
-function linkCallEdges(graph: KnowledgeGraph, state: MoveIngestState): void {
-  for (const callGraph of state.callGraphByPackage.values()) {
-    for (const [callerQualified, callees] of Object.entries(callGraph)) {
-      const callerId = state.functionNodeMap.get(callerQualified);
-      if (!callerId) continue;
-      for (const calleeQualified of callees) {
-        const calleeId = state.functionNodeMap.get(calleeQualified);
-        if (!calleeId) continue;
-        graph.addRelationship({
-          id: moveRelId(callerId, 'CALLS', calleeId, MOVE_EDGE_REASON.calls),
-          sourceId: callerId,
-          targetId: calleeId,
-          type: 'CALLS',
-          confidence: 1.0,
-          reason: MOVE_EDGE_REASON.calls,
-        });
-      }
-    }
-  }
-}
-
-/**
- * CALLS edges from each `__lambda__N__host` function back to its host. move-flow
- * synthesises lambdas as standalone functions but does NOT include the host-to-
- * lambda link in `call_graph` — without it, upstream traversal from the lambda
- * dead-ends and processes that route through a callback (e.g. market_callbacks
- * → settle_trade) lose the bridge.
- */
-function linkLambdaHostEdges(graph: KnowledgeGraph, state: MoveIngestState): void {
-  resolveLambdaHostEdges(state.pendingLambdaHosts, state.functionNodeMap, (rel) =>
-    graph.addRelationship(rel),
-  );
-}
-
-/** Resource/friend edges from facts, resolved after all package nodes exist. */
-function linkResourceAndFriendEdges(graph: KnowledgeGraph, state: MoveIngestState): void {
-  const structIdsByLocalName = buildLocalNameIndex(state.structNodeMap);
-  resolveResourceEdges(
-    state.pendingResource,
-    state.structNodeMap,
-    structIdsByLocalName,
-    (rel) => graph.addRelationship(rel),
-    (pending) =>
-      state.droppedResourceRefs.push({ fnNodeId: pending.fnNodeId, target: pending.target }),
-    (pending) =>
-      state.droppedResourceRefs.push({ fnNodeId: pending.fnNodeId, target: pending.target }),
-  );
-  resolveFriendEdges(state.pendingFriends, state.moduleFileMap, (rel) =>
-    graph.addRelationship(rel),
-  );
-  resolveTypeRefEdges(state.pendingTypeRef, state.structNodeMap, structIdsByLocalName, (rel) => {
-    graph.addRelationship(rel);
-    addUsedType(graph, rel.sourceId, rel.targetId);
-  });
-}
-
-function addUsedType(graph: KnowledgeGraph, functionNodeId: string, typeNodeId: string): void {
-  const fnNode = graph.getNode(functionNodeId);
-  const typeNode = graph.getNode(typeNodeId);
-  const qualifiedName = typeNode?.properties.qualifiedName;
-  // Only Function nodes carry `usedTypes` - resource-group membership USES_TYPE
-  // edges have a Struct source and must not grow the property there.
-  if (!fnNode || fnNode.label !== 'Function' || typeof qualifiedName !== 'string') return;
-
-  const current = Array.isArray(fnNode.properties.usedTypes) ? fnNode.properties.usedTypes : [];
-  if (current.includes(qualifiedName)) return;
-  fnNode.properties.usedTypes = [...current, qualifiedName];
-}
-
-/** File→File IMPORTS derived from cross-module CALLS (deduped against existing). */
-function linkFileImports(graph: KnowledgeGraph, state: MoveIngestState): void {
-  const seen = new Set<string>();
-  for (const r of graph.iterRelationshipsByType('IMPORTS')) {
-    if (!r.sourceId.startsWith('File:') || !r.targetId.startsWith('File:')) continue;
-    seen.add(`${r.sourceId.slice(5)}\0${r.targetId.slice(5)}`);
-  }
-  for (const callGraph of state.callGraphByPackage.values()) {
-    for (const [callerQualified, callees] of Object.entries(callGraph)) {
-      const callerFile = state.moduleFileMap.get(moveModuleQualifiedName(callerQualified));
-      if (!callerFile) continue;
-      for (const calleeQualified of callees) {
-        const calleeFile = state.moduleFileMap.get(moveModuleQualifiedName(calleeQualified));
-        if (!calleeFile || calleeFile === callerFile) continue;
-        const key = `${callerFile}\0${calleeFile}`;
-        if (seen.has(key)) continue;
-        seen.add(key);
-        const sourceFileId = `File:${callerFile}`;
-        const targetFileId = `File:${calleeFile}`;
-        if (graph.getNode(sourceFileId) && graph.getNode(targetFileId)) {
-          graph.addRelationship({
-            id: moveRelId(
-              sourceFileId,
-              'IMPORTS',
-              targetFileId,
-              MOVE_EDGE_REASON.crossModuleDependency,
-            ),
-            sourceId: sourceFileId,
-            targetId: targetFileId,
-            type: 'IMPORTS',
-            confidence: 0.9,
-            reason: MOVE_EDGE_REASON.crossModuleDependency,
-          });
-        }
-      }
-    }
-  }
-}
-
-/** File→Module CONTAINS where the File node exists (from the structure phase). */
-function linkFileModuleContains(graph: KnowledgeGraph, state: MoveIngestState): void {
-  for (const [qn, file] of state.moduleFileMap) {
-    const fileNodeId = `File:${file}`;
-    const moduleNodeId = moveModuleNodeId(qn, file);
-    if (graph.getNode(fileNodeId) && graph.getNode(moduleNodeId)) {
-      graph.addRelationship({
-        id: moveRelId(fileNodeId, 'CONTAINS', moduleNodeId, MOVE_EDGE_REASON.moduleInFile),
-        sourceId: fileNodeId,
-        targetId: moduleNodeId,
-        type: 'CONTAINS',
-        confidence: 1.0,
-        reason: MOVE_EDGE_REASON.moduleInFile,
-      });
-    }
   }
 }
 

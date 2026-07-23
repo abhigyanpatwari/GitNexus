@@ -40,11 +40,20 @@ interface FileInvoke {
   readonly site: CallableFlowInvokeSite;
 }
 
-export interface CallableValueFlowWarning {
+interface RawCallableValueFlowWarning {
   readonly language: string;
   readonly context: string;
   readonly candidateCount: number;
   readonly cap: number;
+}
+
+export interface CallableValueFlowWarning extends RawCallableValueFlowWarning {
+  /** Number of internal cells represented by this aggregate warning. */
+  readonly occurrences: number;
+  /** Number of source contexts represented by this aggregate warning. */
+  readonly distinctContexts: number;
+  /** Bounded diagnostic sample; stdout receives one aggregate, not every site. */
+  readonly contextSamples: readonly string[];
 }
 
 export interface CallableValueFlowResult {
@@ -53,6 +62,45 @@ export interface CallableValueFlowResult {
   readonly ambiguousInvokes: number;
   readonly unmatchedInvokes: number;
   readonly iterations: number;
+}
+
+/** Collapse internal-cell overflows to one bounded warning per language/cap. */
+export function aggregateCallableValueFlowWarnings(
+  warnings: Iterable<RawCallableValueFlowWarning>,
+): CallableValueFlowWarning[] {
+  const grouped = new Map<
+    string,
+    RawCallableValueFlowWarning & {
+      candidateCount: number;
+      occurrences: number;
+      allContexts: Set<string>;
+      contextSamples: string[];
+    }
+  >();
+  for (const warning of warnings) {
+    const key = `${warning.language}\0${warning.cap}`;
+    const current = grouped.get(key);
+    if (!current) {
+      grouped.set(key, {
+        ...warning,
+        occurrences: 1,
+        allContexts: new Set([warning.context]),
+        contextSamples: [warning.context],
+      });
+      continue;
+    }
+
+    current.candidateCount = Math.max(current.candidateCount, warning.candidateCount);
+    current.occurrences++;
+    current.allContexts.add(warning.context);
+    if (current.contextSamples.length < 5 && !current.contextSamples.includes(warning.context)) {
+      current.contextSamples.push(warning.context);
+    }
+  }
+  return [...grouped.values()].map(({ allContexts, ...warning }) => ({
+    ...warning,
+    distinctContexts: allContexts.size,
+  }));
 }
 
 export interface EmitCallableValueFlowInput {
@@ -74,6 +122,38 @@ export function callableFlowSiteKey(
   range: { readonly startLine: number; readonly startCol: number },
 ): string {
   return `${filePath}:${range.startLine}:${range.startCol}`;
+}
+
+function warningContext(filePath: string, site: CallableFlowSite): string {
+  let range: { readonly startLine: number; readonly startCol: number };
+  switch (site.kind) {
+    case 'seed':
+      range = site.destination.atRange;
+      break;
+    case 'copy':
+    case 'alias':
+    case 'address':
+      range = site.destination.atRange;
+      break;
+    case 'store':
+      range = site.pointer.atRange;
+      break;
+    case 'load':
+      range = site.destination.atRange;
+      break;
+    case 'formal':
+      range = site.ownerRange;
+      break;
+    case 'argument':
+    case 'invoke':
+      range = site.callSite;
+      break;
+    default: {
+      const exhaustive: never = site;
+      return exhaustive;
+    }
+  }
+  return `${site.kind}:${callableFlowSiteKey(filePath, range)}`;
 }
 
 /**
@@ -161,7 +241,7 @@ export function emitCallableValueFlow(input: EmitCallableValueFlowInput): Callab
   const addressesByBinding = new Map<string, Set<string>>();
   const overflowedTargets = new Set<string>();
   const overflowedAddresses = new Set<string>();
-  const overflowWarnings = new Map<string, CallableValueFlowWarning>();
+  const overflowWarnings = new Map<string, RawCallableValueFlowWarning>();
   const rawGraphTargets = buildGraphTargetIndex(
     input.scopes,
     input.nodeLookup,
@@ -476,7 +556,7 @@ export function emitCallableValueFlow(input: EmitCallableValueFlowInput): Callab
 
   for (const fact of facts) {
     const site = fact.site;
-    const context = `${fact.site.kind}:${fact.filePath}`;
+    const context = warningContext(fact.filePath, site);
     switch (site.kind) {
       case 'copy':
       case 'alias': {
@@ -684,7 +764,12 @@ export function emitCallableValueFlow(input: EmitCallableValueFlowInput): Callab
     );
   }
 
-  for (const warning of overflowWarnings.values()) input.onWarn?.(warning);
+  // A large generated bundle can create thousands of distinct binding cells
+  // at the same source site. Preserve the causal evidence while emitting one
+  // structured warning per site instead of one line per internal cell.
+  for (const warning of aggregateCallableValueFlowWarnings(overflowWarnings.values())) {
+    input.onWarn?.(warning);
+  }
 
   // No partial graph output when a hostile/corrupt fact graph exhausts the
   // bounded work budget. The caller receives a warning; NOTE this is not

@@ -518,6 +518,14 @@ export async function installMoveFlow(
     stagedDir = undefined;
     return { status: 'installed', binary: verifiedBinary(config, metadata) };
   } catch (error) {
+    // A concurrent installer may have published a valid cache while this
+    // attempt was waiting on the lock or downloading (e.g. a stolen lease
+    // after host sleep makes our publish rename collide) - its install is as
+    // good as ours, so prefer it over reporting a failure.
+    const published = await validCachedInstall(config);
+    if (published) {
+      return { status: 'available', binary: published };
+    }
     return {
       status: 'failed',
       message: `installation failed: ${error instanceof Error ? error.message : String(error)}`,

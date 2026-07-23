@@ -98,9 +98,13 @@ export const processProcesses = async (
   for (const n of knowledgeGraph.iterNodes()) nodeMap.set(n.id, n);
 
   // Step 1: Find entry points (functions that call others but have few callers)
-  const entryPoints = findEntryPoints(knowledgeGraph, reverseCallsEdges, callsEdges);
-
-  onProgress?.(`Found ${entryPoints.length} entry points, tracing flows...`, 20);
+  const explicitEntryPointIds = collectExplicitEntryPointIds(knowledgeGraph);
+  const entryPoints = findEntryPoints(
+    knowledgeGraph,
+    reverseCallsEdges,
+    callsEdges,
+    explicitEntryPointIds,
+  );
 
   onProgress?.(`Found ${entryPoints.length} entry points, tracing flows...`, 20);
 
@@ -125,7 +129,7 @@ export const processProcesses = async (
   onProgress?.(`Found ${allTraces.length} traces, deduplicating...`, 60);
 
   // Step 3: Deduplicate similar traces (subset removal)
-  const uniqueTraces = deduplicateTraces(allTraces);
+  const uniqueTraces = deduplicateTraces(allTraces, explicitEntryPointIds);
 
   // Step 3b: Deduplicate by entry+terminal pair (keep longest path per pair)
   const endpointDeduped = deduplicateByEndpoints(uniqueTraces);
@@ -135,9 +139,14 @@ export const processProcesses = async (
     70,
   );
 
-  // Step 4: Limit to max processes (prioritize longer traces)
+  // Step 4: Keep explicit graph roots ahead of heuristic traces, then prefer
+  // longer traces within each tier.
   const limitedTraces = endpointDeduped
-    .sort((a, b) => b.length - a.length)
+    .sort(
+      (a, b) =>
+        Number(explicitEntryPointIds.has(b[0])) - Number(explicitEntryPointIds.has(a[0])) ||
+        b.length - a.length,
+    )
     .slice(0, cfg.maxProcesses);
 
   onProgress?.(`Creating ${limitedTraces.length} process nodes...`, 80);
@@ -267,16 +276,30 @@ const buildReverseCallsGraph = (graph: KnowledgeGraph): AdjacencyList => {
  *
  * Test files are excluded entirely.
  */
+function collectExplicitEntryPointIds(graph: KnowledgeGraph): Set<string> {
+  const ids = new Set<string>();
+  for (const rel of graph.iterRelationshipsByType('ENTRY_POINT_OF')) ids.add(rel.sourceId);
+  return ids;
+}
+
 const findEntryPoints = (
   graph: KnowledgeGraph,
   reverseCallsEdges: AdjacencyList,
   callsEdges: AdjacencyList,
+  explicitEntryPointIds: ReadonlySet<string>,
 ): string[] => {
   const symbolTypes = new Set<NodeLabel>(['Function', 'Method']);
+  // ENTRY_POINT_OF is the graph-wide, language-neutral signal for a known
+  // runtime/API root. Only edges emitted BEFORE this phase count — today
+  // that is compiler-backed ingesters (Move entry/view functions); the
+  // Route/Tool ENTRY_POINT_OF edges are created after process extraction
+  // and point Route/Tool→Process, so they never land here. These roots must
+  // survive the global heuristic top-200 budget on large polyglot repos.
   const entryPointCandidates: {
     id: string;
     score: number;
     reasons: string[];
+    explicit: boolean;
   }[] = [];
 
   for (const node of graph.iterNodes()) {
@@ -304,19 +327,23 @@ const findEntryPoints = (
     );
 
     let score = baseScore;
+    const explicit = explicitEntryPointIds.has(node.id);
+    if (explicit) reasons.push('graph-entry-point');
     const astFrameworkMultiplier = node.properties.astFrameworkMultiplier ?? 1.0;
     if (astFrameworkMultiplier > 1.0) {
       score *= astFrameworkMultiplier;
       reasons.push(`framework-ast:${node.properties.astFrameworkReason || 'decorator'}`);
     }
 
-    if (score > 0) {
-      entryPointCandidates.push({ id: node.id, score, reasons });
+    if (explicit || score > 0) {
+      entryPointCandidates.push({ id: node.id, score, reasons, explicit });
     }
   }
 
-  // Sort by score descending and return top candidates
-  const sorted = entryPointCandidates.sort((a, b) => b.score - a.score);
+  // Known graph entry points form a priority tier ahead of heuristic scoring.
+  const sorted = entryPointCandidates.sort(
+    (a, b) => Number(b.explicit) - Number(a.explicit) || b.score - a.score,
+  );
 
   // DEBUG: Log top candidates with new scoring details
   if (sorted.length > 0 && isDev) {
@@ -330,9 +357,11 @@ const findEntryPoints = (
     });
   }
 
-  return sorted
-    .slice(0, 200) // Limit to prevent explosion
-    .map((c) => c.id);
+  const explicit = sorted.filter((candidate) => candidate.explicit);
+  const heuristic = sorted
+    .filter((candidate) => !candidate.explicit)
+    .slice(0, Math.max(0, 200 - explicit.length));
+  return [...explicit, ...heuristic].map((candidate) => candidate.id);
 };
 
 // ============================================================================
@@ -401,7 +430,10 @@ const traceFromEntryPoint = (
  * Merge traces that are subsets of other traces.
  * Keep longer traces, remove redundant shorter ones.
  */
-const deduplicateTraces = (traces: string[][]): string[][] => {
+const deduplicateTraces = (
+  traces: string[][],
+  explicitEntryPointIds: ReadonlySet<string> = new Set(),
+): string[][] => {
   if (traces.length === 0) return [];
 
   // Sort by length descending
@@ -409,16 +441,15 @@ const deduplicateTraces = (traces: string[][]): string[][] => {
   const unique: string[][] = [];
 
   for (const trace of sorted) {
-    // Check if this trace is a subset of any already-added trace
     const traceKey = trace.join('->');
-    const isSubset = unique.some((existing) => {
+    const isRedundant = unique.some((existing) => {
       const existingKey = existing.join('->');
-      return existingKey.includes(traceKey);
+      return explicitEntryPointIds.has(trace[0])
+        ? existingKey === traceKey
+        : existingKey.includes(traceKey);
     });
 
-    if (!isSubset) {
-      unique.push(trace);
-    }
+    if (!isRedundant) unique.push(trace);
   }
 
   return unique;

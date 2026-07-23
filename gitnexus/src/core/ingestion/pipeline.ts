@@ -48,7 +48,9 @@ import {
   type ProcessesOutput,
 } from './pipeline-phases/index.js';
 
-export interface PipelineOptions {
+export interface PipelineOptions<
+  TStandaloneIngest extends StandaloneIngestOutput = StandaloneIngestOutput,
+> {
   /**
    * Skip MRO, community detection, and process extraction for faster test runs.
    * The `pruneLocalSymbols` phase still runs — it is graph construction (it cleans
@@ -228,7 +230,7 @@ export interface PipelineOptions {
    */
   keepLocalValueSymbols?: boolean;
   /** Optional compiler-backed or otherwise standalone ingester. */
-  standaloneIngestPhase?: PipelinePhase<StandaloneIngestOutput>;
+  standaloneIngestPhase?: PipelinePhase<TStandaloneIngest>;
   /**
    * Extra fetch-wrapper function names to treat as HTTP consumers, threaded
    * from `.gitnexusrc` `fetchWrappers` via `AnalyzeOptions` (#1589/#1852
@@ -261,10 +263,12 @@ export interface PipelineOptions {
  * asserts the produced list is byte-identical to the legacy array for every
  * options combination.
  */
-export function buildPhaseList(options?: PipelineOptions): PipelinePhase[] {
+export function buildPhaseList<TStandaloneIngest extends StandaloneIngestOutput>(
+  options?: PipelineOptions<TStandaloneIngest>,
+): PipelinePhase[] {
   const { standaloneIngestPhase = emptyStandaloneIngestPhase } = options ?? {};
   return (
-    new PhaseRegistry<PipelineOptions>()
+    new PhaseRegistry<PipelineOptions<TStandaloneIngest>>()
       .register(scanPhase)
       .register(structurePhase)
       .register(standaloneIngestPhase)
@@ -295,11 +299,13 @@ export function buildPhaseList(options?: PipelineOptions): PipelinePhase[] {
 
 // ── Pipeline orchestrator ─────────────────────────────────────────────────
 
-export const runPipelineFromRepo = async (
+export const runPipelineFromRepo = async <
+  TStandaloneIngest extends StandaloneIngestOutput = StandaloneIngestOutput,
+>(
   repoPath: string,
   onProgress: (progress: PipelineProgress) => void,
-  options?: PipelineOptions,
-): Promise<PipelineResult> => {
+  options?: PipelineOptions<TStandaloneIngest>,
+): Promise<PipelineResult<TStandaloneIngest>> => {
   const graph = createKnowledgeGraph();
   const pipelineStart = Date.now();
 
@@ -354,5 +360,6 @@ export const runPipelineFromRepo = async (
     resolutionOutcomes,
     usedWorkerPool,
     pdgEmitManifest,
+    standaloneIngest: getPhaseOutput<TStandaloneIngest>(results, 'standaloneIngest'),
   };
 };

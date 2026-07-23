@@ -16,7 +16,12 @@ import type {
   NodeProperties,
   RelationshipType,
 } from 'gitnexus-shared';
-import type { MoveFactsAttribute, MoveFactsMap, MoveFactsTypeParam } from './compiler-facts.js';
+import type {
+  MoveFactsAttribute,
+  MoveFactsFunction,
+  MoveFactsMap,
+  MoveFactsTypeParam,
+} from './compiler-facts.js';
 import {
   moveModuleNodeId,
   moveFunctionNodeId,
@@ -43,6 +48,14 @@ import { toZeroBasedLine } from '../ingestion/utils/line-base.js';
 
 const spanLine = (span: [number, number] | undefined, idx: 0 | 1): number | undefined =>
   span ? toZeroBasedLine(span[idx]) : undefined;
+
+function functionLocationFidelity(
+  fn: MoveFactsFunction,
+  moduleFile: string | undefined,
+): NodeProperties['locationFidelity'] {
+  if (fn.isLambdaLifted) return moduleFile ? 'module' : 'package';
+  return fn.file ? 'precise' : 'package';
+}
 
 export interface MoveFactsMapResult {
   nodes: GraphNode[];
@@ -244,7 +257,13 @@ export function mapFactsToGraph(
     // Functions
     for (const fn of arr(mod.functions)) {
       const fnQualified = `${moduleQualified}::${fn.name}`;
-      const fnFile = moveRepoRelativePath(fn.file ?? moduleFileAbs, repoPath);
+      // move-flow may report the callee/dependency span that caused a lifted
+      // lambda to be instantiated. The synthesized function still belongs to
+      // its declaring module, so anchoring it to that external dependency
+      // creates phantom source ownership (observed with Aptos big_ordered_map).
+      const fnSourceFile = fn.isLambdaLifted ? moduleFileAbs : (fn.file ?? moduleFileAbs);
+      const fnFile = moveRepoRelativePath(fnSourceFile, repoPath);
+      const fnSpan = fn.isLambdaLifted ? undefined : fn.span;
       const fnNodeId = moveFunctionNodeId(fnQualified, fnFile);
       functionNodeMap.set(fnQualified, fnNodeId);
       const attrs = attributeNames(fn.attributes);
@@ -279,8 +298,11 @@ export function mapFactsToGraph(
         language: MOVE_LANGUAGE,
         qualifiedName: fnQualified,
         moduleQualifiedName: moduleQualified,
-        startLine: spanLine(fn.span, 0),
-        endLine: spanLine(fn.span, 1),
+        // Compiler-marked entry/view functions are runtime-facing even when
+        // their source visibility is internal.
+        isExported: fn.visibility === 'public' || fn.isEntry === true || fn.isView === true,
+        startLine: spanLine(fnSpan, 0),
+        endLine: spanLine(fnSpan, 1),
         visibility: fn.visibility === 'internal' ? 'private' : fn.visibility,
         visibilityModifier: fn.visibility,
         isEntry: fn.isEntry,
@@ -294,7 +316,7 @@ export function mapFactsToGraph(
         usedTypes: [],
         returnType: returnTypeProjection(arr(fn.returnTypes)),
         parameterCount: arr(fn.params).length,
-        locationFidelity: fn.file ? 'precise' : 'package',
+        locationFidelity: functionLocationFidelity(fn, mod.file),
       };
       // Lambda → host link queued for Pass 2 (host fn node may not yet exist
       // when this lambda is mapped). The canonical Cypher path for "is this a
@@ -352,6 +374,18 @@ export function mapFactsToGraph(
       const tyQualified = `${moduleQualified}::${ty.name}`;
       const tyFile = moveRepoRelativePath(ty.file ?? moduleFileAbs, repoPath);
       const attrs = attributeNames(ty.attributes);
+      const typeParamNames = new Set(arr(ty.typeParams).map((tp) => tp.name));
+      const addFieldTypeRefs = (sourceNodeId: string, typeExpr: string, reason: string): void => {
+        for (const target of new Set(extractTypeNames(typeExpr))) {
+          if (typeParamNames.has(target)) continue;
+          pendingTypeRef.push({
+            sourceNodeId,
+            moduleQualified,
+            target,
+            reason,
+          });
+        }
+      };
       if (ty.kind === 'struct') {
         const structNodeId = moveStructNodeId(tyQualified, tyFile);
         structNodeMap.set(tyQualified, structNodeId);
@@ -419,6 +453,7 @@ export function mapFactsToGraph(
             },
           });
           edge(structNodeId, propId, 'HAS_PROPERTY', 1.0, MOVE_EDGE_REASON.hasField);
+          addFieldTypeRefs(propId, field.type, MOVE_EDGE_REASON.structFieldType);
         }
       } else {
         const eId = moveEnumNodeId(tyQualified, tyFile);
@@ -472,6 +507,25 @@ export function mapFactsToGraph(
             },
           });
           edge(eId, vId, 'CONTAINS', 1.0, MOVE_EDGE_REASON.containsVariant);
+          for (const field of arr(variant.fields)) {
+            const variantQualified = `${tyQualified}::${variant.name}`;
+            const propId = moveFieldNodeId(variantQualified, field.name, tyFile);
+            nodes.push({
+              id: propId,
+              label: 'Property',
+              properties: {
+                name: field.name,
+                filePath: tyFile,
+                language: MOVE_LANGUAGE,
+                qualifiedName: `${variantQualified}.${field.name}`,
+                moduleQualifiedName: moduleQualified,
+                declaredType: field.type,
+                startLine: spanLine(ty.span, 0),
+              },
+            });
+            edge(vId, propId, 'HAS_PROPERTY', 1.0, MOVE_EDGE_REASON.hasVariantField);
+            addFieldTypeRefs(propId, field.type, MOVE_EDGE_REASON.enumVariantFieldType);
+          }
         }
       }
     }
@@ -522,11 +576,15 @@ export function resolveLambdaHostEdges(
   pendingLambdaHosts: readonly PendingLambdaHost[],
   functionNodeMap: ReadonlyMap<string, string>,
   edgeSink: (rel: GraphRelationship) => void,
+  onUnresolved?: (pending: PendingLambdaHost) => void,
 ): void {
   const seen = new Set<string>();
   for (const p of pendingLambdaHosts) {
     const hostId = functionNodeMap.get(p.hostQualified);
-    if (!hostId) continue;
+    if (!hostId) {
+      onUnresolved?.(p);
+      continue;
+    }
     const key = `${hostId}\0${p.lambdaFnNodeId}`;
     if (seen.has(key)) continue;
     seen.add(key);
@@ -626,10 +684,14 @@ export function resolveFriendEdges(
   pendingFriends: readonly PendingFriend[],
   moduleFileMap: ReadonlyMap<string, string>,
   edgeSink: (rel: GraphRelationship) => void,
+  onUnresolved?: (pending: PendingFriend) => void,
 ): void {
   for (const pf of pendingFriends) {
     const friendFile = moduleFileMap.get(pf.friend);
-    if (!friendFile) continue;
+    if (!friendFile) {
+      onUnresolved?.(pf);
+      continue;
+    }
     const targetId = moveModuleNodeId(pf.friend, friendFile);
     edgeSink({
       id: moveRelId(pf.moduleNodeId, 'FRIEND_OF', targetId, MOVE_EDGE_REASON.friend),

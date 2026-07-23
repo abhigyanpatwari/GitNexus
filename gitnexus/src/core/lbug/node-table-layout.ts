@@ -91,6 +91,18 @@ const structLikeLayout = (table: 'Struct' | 'Enum'): NodeTableLayout => ({
   ],
 });
 
+const TYPE_LAYOUT: NodeTableLayout = {
+  table: 'Type',
+  quoteTableName: true,
+  columns: [
+    ...MULTI_LANGUAGE_BASE,
+    column('language', 'STRING'),
+    column('qualifiedName', 'STRING'),
+    column('moduleQualifiedName', 'STRING'),
+    column('locationFidelity', 'STRING'),
+  ],
+};
+
 const ENUM_VARIANT_LAYOUT: NodeTableLayout = {
   table: 'EnumVariant',
   quoteTableName: true,
@@ -141,6 +153,7 @@ export const NODE_TABLE_LAYOUTS = {
   Function: FUNCTION_LAYOUT,
   Struct: structLikeLayout('Struct'),
   Enum: structLikeLayout('Enum'),
+  Type: TYPE_LAYOUT,
   EnumVariant: ENUM_VARIANT_LAYOUT,
   Const: CONST_LAYOUT,
   Module: MODULE_LAYOUT,

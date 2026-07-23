@@ -94,6 +94,35 @@ import { forceGc } from '../../../../storage/parsedfile-store.js';
 
 import { logger } from '../../../logger.js';
 
+const ANALYZE_PROGRESS_ACTIVE_ENV = 'GITNEXUS_ANALYZE_PROGRESS_ACTIVE';
+/** Exported for the boundary test in run-progress.test.ts. */
+export const MAX_PROGRESS_WARNING_CONTEXT_CHARS = 160;
+
+/** Escape control bytes and bound one context shown beside the live bar. */
+export function formatScopeResolutionWarningContext(context: string): string {
+  const escaped = JSON.stringify(context).slice(1, -1);
+  if (escaped.length <= MAX_PROGRESS_WARNING_CONTEXT_CHARS) return escaped;
+  return `${escaped.slice(0, MAX_PROGRESS_WARNING_CONTEXT_CHARS - 3)}...`;
+}
+
+/**
+ * Keep scope-resolution warnings visible without letting Pino write directly
+ * into analyze's live progress-bar stream. The analyze CLI routes console.warn
+ * through its bar logger; non-CLI callers retain the structured Pino record.
+ */
+export function emitScopeResolutionWarning(
+  fields: object,
+  message: string,
+  progressMessage: string,
+): void {
+  if (process.env[ANALYZE_PROGRESS_ACTIVE_ENV] === '1') {
+    // eslint-disable-next-line no-console -- intentionally routed by analyze progress UI
+    console.warn(progressMessage);
+    return;
+  }
+  logger.warn(fields, message);
+}
+
 /**
  * Emit one class-owned inheritance edge directly (the inheritance pre-pass is
  * the authoritative emitter — see `preEmitInheritanceEdges`). Encapsulates the
@@ -879,7 +908,7 @@ export function runScopeResolution(
     // Never drop dispatch coverage silently: a hook table larger than the
     // fan-out cap means member calls through those keys get no synthesized
     // CALLS — the #2437 false-safe gap reappears for exactly those keys.
-    logger.warn(
+    emitScopeResolutionWarning(
       {
         lang: provider.language,
         skippedKeys: propertyDispatch.skippedKeys,
@@ -887,6 +916,11 @@ export function runScopeResolution(
         fanoutCap: MAX_PROPERTY_DISPATCH_FANOUT,
       },
       'property-dispatch: keys over the fan-out cap were dropped (no CALLS synthesized for them)',
+      `  Warning: property dispatch (${provider.language}) skipped ${
+        propertyDispatch.skippedKeys
+      } key(s) above fan-out cap ${MAX_PROPERTY_DISPATCH_FANOUT}; no CALLS were synthesized. Sample: ${propertyDispatch.skippedKeyNames
+        .slice(0, 5)
+        .join(', ')}`,
     );
   }
   const callableValueFlow =
@@ -909,9 +943,13 @@ export function runScopeResolution(
           isCallableValueTarget: provider.isCallableValueTarget,
           hasFileLocalCallableLinkage: provider.hasFileLocalCallableLinkage,
           onWarn: (warning) =>
-            logger.warn(
+            emitScopeResolutionWarning(
               warning,
-              'callable-value-flow: candidate set exceeded the cap; no partial CALLS emitted',
+              'callable-value-flow: candidate set exceeded the cap; grouped occurrences emitted no partial CALLS',
+              `  Warning: callable value flow (${warning.language}) skipped ${warning.occurrences} candidate set(s) across ${warning.distinctContexts} context(s) above cap ${warning.cap}; no partial CALLS were emitted. Sample: ${warning.contextSamples
+                .slice(0, 2)
+                .map(formatScopeResolutionWarningContext)
+                .join(', ')}`,
             ),
         });
   const importsEmitted = callableFlowOnly
