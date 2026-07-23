@@ -128,17 +128,22 @@ const installFatalHandlers = (): void => {
   });
 };
 
-/** Historical floor for the re-exec heap cap — the auto-sizer never goes below
- *  this, so small boxes / CI never regress. */
+/** Historical floor for the re-exec heap cap. Applied only up to 0.80 × RAM:
+ *  a floor at or above physical memory makes V8 collect lazily and inflate the
+ *  heap into swap-thrash instead of a clean OOM (#2649 — 16 GB boxes got a
+ *  16 GB cap ≥ their RAM). */
 const DEFAULT_HEAP_MB = 16384;
 
 /**
- * RAM-aware re-exec heap cap (MB): `0.75 × effective RAM`, clamped to
- * `>= DEFAULT_HEAP_MB`. Kept BELOW physical RAM on purpose — a cap `>=` RAM makes
- * V8 collect lazily and inflate the heap into swap-thrash (observed analyzing the
- * Linux kernel at a 30GB cap on a 31GB box). `constrainedBytes` is the cgroup
- * limit or `null`; it is honored only as a real, smaller-than-physical cap, because
- * `process.constrainedMemory()` returns a huge sentinel when UNCONSTRAINED.
+ * RAM-aware re-exec heap cap (MB): `0.75 × effective RAM`, raised to
+ * `DEFAULT_HEAP_MB` when RAM allows, but never above `0.80 × effective RAM` —
+ * the cap must stay strictly below physical memory or V8 collects lazily and
+ * inflates the heap into swap-thrash (observed analyzing the Linux kernel at a
+ * 30GB cap on a 31GB box; observed as the #2649 worker-timeout cascade on
+ * 16GB boxes where the old `max(16384, …)` floor met or exceeded RAM).
+ * `constrainedBytes` is the cgroup limit or `null`; it is honored only as a
+ * real, smaller-than-physical cap, because `process.constrainedMemory()`
+ * returns a huge sentinel when UNCONSTRAINED.
  */
 export function computeHeapCapMb(totalBytes: number, constrainedBytes: number | null): number {
   const effectiveBytes =
@@ -146,7 +151,10 @@ export function computeHeapCapMb(totalBytes: number, constrainedBytes: number | 
       ? constrainedBytes
       : totalBytes;
   const effectiveMb = Math.floor(effectiveBytes / (1024 * 1024));
-  return Math.max(DEFAULT_HEAP_MB, Math.floor(0.75 * effectiveMb));
+  return Math.min(
+    Math.max(DEFAULT_HEAP_MB, Math.floor(0.75 * effectiveMb)),
+    Math.floor(0.8 * effectiveMb),
+  );
 }
 
 function readConstrainedBytes(): number | null {
