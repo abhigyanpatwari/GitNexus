@@ -25,6 +25,7 @@ import {
   closeLbugBeforeExit,
   loadCachedEmbeddings,
   deleteNodesForFiles,
+  ensureEmbeddingRowDmlSafe,
   deleteAllCommunitiesAndProcesses,
   deleteAllInterprocTaintPaths,
   deleteAllCallSummaries,
@@ -1686,7 +1687,44 @@ export async function runFullAnalysis(
       // DB write plan changes here; fileHashes/meta bookkeeping is identical.
       // Thresholds + the AND-gate live in incremental/escalation-gate.ts.
       const writeFraction = effectiveWriteSet.size / Math.max(1, allFilePaths.length);
+      // VECTOR gate (#2623) — load the extension BEFORE a single embedding row
+      // is touched. `deleteNodesForFiles` below opens with the CodeEmbedding
+      // join-delete, and LadybugDB refuses all DML on a table carrying its HNSW
+      // index unless VECTOR is loaded on this connection; nothing else on this
+      // path loads it until Phase 4, so every incremental run over a DB that
+      // already built `code_embedding_idx` died here. Same seam the FTS drop
+      // occupies at the head of this branch (#2589): index lifecycle first,
+      // then rows. UNCONDITIONAL — not gated on `shouldGenerateEmbeddings` —
+      // because a DB carrying the index from an earlier `--embeddings` run hits
+      // the identical wall on a plain incremental run.
+      //
+      // When VECTOR genuinely cannot load, the table is immutable (the index
+      // cannot be dropped without the extension either), so surgery is
+      // impossible: fall through to the escalation valve's wipe-and-COPY plan,
+      // which rebuilds the DB files outright and needs no embedding-row DML.
+      const embeddingRowDmlSafe = await ensureEmbeddingRowDmlSafe();
+      if (!embeddingRowDmlSafe && cachedEmbeddings.length === 0) {
+        // The escalation below WIPES the DB files, and Phase 3.5 restores
+        // embedding rows from `cachedEmbeddings` — which is only populated when
+        // `deriveEmbeddingMode` saw `meta.stats.embeddings > 0`. A DB whose meta
+        // under-reports its embeddings (meta restored from an older run, or a
+        // count that never got stamped) would therefore have every vector
+        // silently destroyed by a rebuild it did not ask for. Read them now,
+        // while the DB is still intact — a plain MATCH, which needs no VECTOR
+        // extension. Rows whose owning node is gone are dropped by Phase 3.5's
+        // live-graph filter, exactly as on any other wiped path.
+        const rescued = await loadCachedEmbeddings();
+        if (rescued.embeddings.length > 0) {
+          cachedEmbeddings = rescued.embeddings;
+          cachedEmbeddingNodeIds = rescued.embeddingNodeIds;
+          log(
+            `Preserving ${rescued.embeddings.length} embedding row(s) across the forced rebuild ` +
+              `(the index metadata did not account for them).`,
+          );
+        }
+      }
       if (
+        !embeddingRowDmlSafe ||
         shouldEscalateIncrementalWrite(
           filesToDelete.length,
           effectiveWriteSet.size,
@@ -1695,13 +1733,20 @@ export async function runFullAnalysis(
       ) {
         escalatedFullWrite = true;
         log(
-          `Incremental: effective write set covers ${effectiveWriteSet.size}/${allFilePaths.length} ` +
-            // Display clamp only (predicate unchanged): BFS-found deleted
-            // importers can push the numerator past the CURRENT file list, so
-            // the raw fraction can exceed 1 — see the population-mismatch note
-            // on shouldEscalateIncrementalWrite (tri-review 4669518496).
-            `files (${Math.min(100, Math.round(writeFraction * 100))}%) — switching to a full DB write ` +
-            `(wipe + bulk COPY) for this run; file-level incremental bookkeeping is unaffected.`,
+          !embeddingRowDmlSafe
+            ? `Incremental: the ${EMBEDDING_TABLE_NAME} vector index exists but the VECTOR ` +
+                `extension could not be loaded, so embedding rows cannot be rewritten in place — ` +
+                `switching to a full DB write (wipe + bulk COPY) for this run. Semantic search ` +
+                `falls back to exact scan until VECTOR is available; run \`gitnexus doctor\` for ` +
+                `live extension status, or set GITNEXUS_LBUG_EXTENSION_INSTALL=auto to allow one ` +
+                `bounded install attempt.`
+            : `Incremental: effective write set covers ${effectiveWriteSet.size}/${allFilePaths.length} ` +
+                // Display clamp only (predicate unchanged): BFS-found deleted
+                // importers can push the numerator past the CURRENT file list, so
+                // the raw fraction can exceed 1 — see the population-mismatch note
+                // on shouldEscalateIncrementalWrite (tri-review 4669518496).
+                `files (${Math.min(100, Math.round(writeFraction * 100))}%) — switching to a full DB write ` +
+                `(wipe + bulk COPY) for this run; file-level incremental bookkeeping is unaffected.`,
         );
         // toWriteCount: 0 is the established full-path dirty-flag sentinel;
         // the real counters ride along for crash diagnostics.
@@ -2067,8 +2112,8 @@ export async function runFullAnalysis(
     //     the case a naive gate would leave index-less again.
     // buildVectorIndex carries its own extension-policy gate and
     // warn-on-failure; the boolean feeds semanticMode so the finalize stamp
-    // reflects the DB's ACTUAL state even when recreation fails (win32 /
-    // extension unavailable → 'exact-scan').
+    // reflects the DB's ACTUAL state even when recreation fails (extension
+    // unavailable → 'exact-scan').
     const dbWasWiped = !isIncremental || escalatedFullWrite;
     if (restoredEmbeddingCount > 0 && dbWasWiped && embeddingSkipped) {
       // Re-import at the seam rather than thread a mutable capture from

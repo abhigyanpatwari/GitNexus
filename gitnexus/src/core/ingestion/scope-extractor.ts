@@ -982,13 +982,15 @@ function followChainedRef(start: TypeRef, draftById: ReadonlyMap<ScopeId, ScopeD
  * name in the same scope. Higher number wins; ties keep the later match
  * (last-write-wins preserves historical order within a tier).
  *
- * Rationale: explicit annotations always beat inferred ones because they
- * reflect user intent. `self`/`cls` are treated as strongly as annotations
- * because they are language-required receiver types.
+ * Rationale: explicit variable and field annotations always beat bindings
+ * derived from parameter annotations or inference because they reflect the
+ * most specific user intent. `self`/`cls` are treated as strongly as other
+ * declared types because they are language-required receiver types.
  */
 function typeBindingStrength(source: TypeRef['source']): number {
   switch (source) {
     case 'annotation':
+      return 3;
     case 'parameter-annotation':
     case 'return-annotation':
     case 'self':

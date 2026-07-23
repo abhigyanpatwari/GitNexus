@@ -29,7 +29,10 @@ vi.mock('@ladybugdb/core', () => {
   return { default: { Database, Connection } };
 });
 
-import { probeFtsExtensionLoad } from '../../src/core/lbug/native-check.js';
+import {
+  probeFtsExtensionLoad,
+  probeVectorExtensionLoad,
+} from '../../src/core/lbug/native-check.js';
 
 const closeable = () => ({ close: vi.fn() });
 
@@ -88,5 +91,31 @@ describe('probeFtsExtensionLoad (#2374)', () => {
       },
     });
     await expect(probeFtsExtensionLoad()).resolves.toEqual({ loaded: true });
+  });
+});
+
+describe('probeVectorExtensionLoad (#2623 follow-up)', () => {
+  it('issues LOAD EXTENSION vector and reports loaded on success — no platform short-circuit', async () => {
+    h.query.mockResolvedValue(closeable());
+    await expect(probeVectorExtensionLoad()).resolves.toEqual({ loaded: true });
+    // The probe must really attempt the LOAD (the old code refused Windows
+    // before ever touching the engine; the artifact ships for win_amd64 too).
+    expect(h.query).toHaveBeenCalledWith('LOAD EXTENSION vector');
+  });
+
+  it('reports the collapsed reason when LOAD fails', async () => {
+    h.query.mockRejectedValue(new Error('IO exception:\n  extension file not found'));
+    await expect(probeVectorExtensionLoad()).resolves.toMatchObject({
+      loaded: false,
+      reason: 'IO exception: extension file not found',
+    });
+  });
+
+  it('times out instead of hanging when the native call never settles', async () => {
+    h.query.mockReturnValue(new Promise<unknown>(() => undefined));
+    await expect(probeVectorExtensionLoad(20)).resolves.toMatchObject({
+      loaded: false,
+      reason: expect.stringContaining('timed out'),
+    });
   });
 });

@@ -6,16 +6,13 @@
  */
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 
-const { lbugMocks, platformMocks } = vi.hoisted(() => ({
+const { lbugMocks } = vi.hoisted(() => ({
   lbugMocks: {
     initLbug: vi.fn().mockResolvedValue(undefined),
     executeQuery: vi.fn().mockResolvedValue([]),
     executeParameterized: vi.fn().mockResolvedValue([]),
     closeLbug: vi.fn().mockResolvedValue(undefined),
     isLbugReady: vi.fn().mockReturnValue(true),
-  },
-  platformMocks: {
-    isVectorExtensionSupportedByPlatform: vi.fn().mockReturnValue(true),
   },
 }));
 
@@ -57,11 +54,6 @@ vi.mock('../../src/core/git-staleness.js', () => ({
 vi.mock('../../src/storage/git.js', async (importOriginal) => {
   const actual = await importOriginal<typeof import('../../src/storage/git.js')>();
   return { ...actual, getGitRoot: vi.fn().mockReturnValue(null) };
-});
-
-vi.mock('../../src/core/platform/capabilities.js', async (importOriginal) => {
-  const actual = await importOriginal<typeof import('../../src/core/platform/capabilities.js')>();
-  return { ...actual, ...platformMocks };
 });
 
 vi.mock('../../src/core/search/bm25-index.js', () => ({

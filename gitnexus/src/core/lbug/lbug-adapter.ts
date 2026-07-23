@@ -23,7 +23,11 @@ import { streamAllCSVsToDisk, type StreamedCSVResult } from './csv-generator.js'
 import type { PdgEmitManifest } from './pdg-emit-sink.js';
 import { getNodeLabel as deriveNodeLabel, type WriteStreamFactory } from './rel-pair-routing.js';
 import { EMBEDDABLE_LABELS, type CachedEmbedding } from '../embeddings/types.js';
-import { extensionManager, type ExtensionEnsureOptions } from './extension-loader.js';
+import {
+  extensionManager,
+  resolveAnalyzeInstallPolicy,
+  type ExtensionEnsureOptions,
+} from './extension-loader.js';
 import {
   classifyDeleteAllError,
   closeLbugConnection,
@@ -32,6 +36,7 @@ import {
   isDbBusyError,
   isOpenRetryExhausted,
   isWalCorruptionError,
+  bufferPoolExhaustionRemedy,
   openLbugConnection,
   sleep,
   toNativeSafePath,
@@ -41,6 +46,7 @@ import {
   type LbugConnectionHandle,
 } from './lbug-config.js';
 import {
+  cleanQuarantinedMissingShadowWals,
   finalizeLbugSidecarsAfterClose,
   guardWalQuarantine,
   isMissingShadowSidecarError,
@@ -50,8 +56,8 @@ import {
   quarantineWalForMissingShadow,
   renameFailureMessage,
   shadowSidecarRecoveryMessage,
+  sidecarPreflightDisabled,
 } from './sidecar-recovery.js';
-import { isVectorExtensionSupportedByPlatform } from '../platform/capabilities.js';
 
 import { logger } from '../logger.js';
 // ---------------------------------------------------------------------------
@@ -818,6 +824,30 @@ const doInitLbug = async (dbPath: string, readOnly: boolean = false) => {
     // -------------------------------------------------------------------------
     const releaseInitLock = await acquireInitLock(dbPath);
     try {
+      // Reclaim missing-shadow WAL quarantines from a PRIOR crash (#2637).
+      // LadybugDB renames an unrecoverable WAL aside as
+      // `${dbPath}.wal.missing-shadow.<ts>-<rand>` (quarantineWalForMissingShadow)
+      // instead of deleting it. Once quarantined it is permanently detached from
+      // the live store and never reopened, so reclaiming it is safe regardless of
+      // whether the main DB file exists this run — unlike the orphan-sidecar
+      // cleanup below, this must NOT be gated on "main DB missing": a quarantine
+      // event and a healthy main DB are independent facts. Never let a reclaim
+      // failure (e.g. a transient EBUSY from an antivirus scan) block DB startup.
+      if (!sidecarPreflightDisabled()) {
+        try {
+          const reclaimed = await cleanQuarantinedMissingShadowWals(dbPath);
+          for (const file of reclaimed) {
+            logger.warn(
+              `GitNexus: reclaimed quarantined WAL ${path.basename(file)} from a prior crash`,
+            );
+          }
+        } catch (err) {
+          logger.warn(
+            `GitNexus: failed to reclaim missing-shadow WAL quarantines: ${summarizeError(err)}`,
+          );
+        }
+      }
+
       // Crash-recovery cleanup: if the main DB file is missing, stale sidecars
       // from an interrupted run can block fresh opens indefinitely.
       try {
@@ -949,7 +979,14 @@ const copyNodeCSVs = async (
     const copyQuery = getCopyQuery(table, normalizeCopyPath(csvPath));
     await copyCsvWithRetry(targetConn, copyQuery, (retryErr) => {
       const retryMsg = retryErr instanceof Error ? retryErr.message : String(retryErr);
-      throw new Error(`COPY failed for ${table}: ${retryMsg.slice(0, 200)}`);
+      // Pool exhaustion gets a remedy (#2631): the raw binder text gives the
+      // operator nothing to act on, and on non-4K-page hosts (Ascend aarch64,
+      // Apple Silicon) the pool bills up to pageSize/4KiB x faster than the
+      // sizing was calibrated for — name the knob and the mechanism.
+      const remedy = bufferPoolExhaustionRemedy(retryMsg);
+      throw new Error(
+        `COPY failed for ${table}: ${retryMsg.slice(0, 200)}${remedy ? ` ${remedy}` : ''}`,
+      );
     });
   }
 };
@@ -1121,6 +1158,7 @@ export const loadGraphToLbug = async (
 
   const insertedRels = totalValidRels;
   const warnings: string[] = [];
+  let poolRemedyIssued = false;
   if (insertedRels > 0) {
     log(`Loading edges: ${insertedRels.toLocaleString()} across ${relsByPair.size} types`);
 
@@ -1147,6 +1185,17 @@ export const loadGraphToLbug = async (
       await copyCsvWithRetry(writeConn, copyQuery, (retryErr) => {
         const retryMsg = retryErr instanceof Error ? retryErr.message : String(retryErr);
         warnings.push(`${fromLabel}->${toLabel} (${rows} edges): ${retryMsg.slice(0, 80)}`);
+        // One remedy per bulk load, not per pair (#2631): pool exhaustion
+        // repeats for every remaining pair once it starts. logger.warn, not
+        // just warnings.push — the returned warnings array has no consumer at
+        // any call site, so a push alone would leave the remedy invisible
+        // while the row-by-row fallback quietly degrades the load.
+        const remedy = poolRemedyIssued ? undefined : bufferPoolExhaustionRemedy(retryMsg);
+        if (remedy) {
+          poolRemedyIssued = true;
+          warnings.push(remedy);
+          logger.warn(remedy);
+        }
         failedPairEdges += rows;
         failedPairCsvPaths.add(pairCsvPath);
       });
@@ -2696,14 +2745,16 @@ export const loadVectorExtension = async (
 ): Promise<boolean> => {
   const useModuleState = targetConn === undefined;
   if (useModuleState && vectorExtensionLoaded) return true;
-  // INSTALL VECTOR crashes with SIGSEGV on Windows: the KuzuDB native extension
-  // installer has an unhandled error path on Windows that raises a fatal signal
-  // that JS try/catch cannot intercept. Skip loading — vector/embedding search
-  // is unavailable but all graph index queries still work. Do NOT set
-  // vectorExtensionLoaded here: the flag means "successfully loaded", and a
-  // subsequent call would otherwise short-circuit to `return true` at the top.
-  if (process.platform === 'win32') return false;
-  if (!isVectorExtensionSupportedByPlatform()) return false;
+  // No platform gate. Windows was hard-refused here for years on the strength
+  // of an early-era report that in-process INSTALL VECTOR could SIGSEGV
+  // (#1365) — but the extension server ships win_amd64 VECTOR artifacts for
+  // every 0.18.x extension version (probed live: v0.18.0 and v0.18.1 both
+  // serve a real PE32+ DLL; the pinned 0.18.2 core resolves its extension
+  // directory to 0.18.1, strace-verified), and INSTALL now runs in a spawned
+  // child process (installDuckDbExtensionOutOfProcess), so even a crashing
+  // installer kills only the child and degrades to `false` here. LOAD of a
+  // present extension file is an ordinary in-process load whose failures
+  // surface as catchable errors, exactly like FTS.
 
   const c: lbug.Connection | null = targetConn ?? conn;
   if (!c) {
@@ -2810,6 +2861,78 @@ export const createVectorIndex = async (): Promise<boolean> => {
     if (isReadOnlyDbError(e)) return false;
     throw e;
   }
+};
+
+/**
+ * Make DML against {@link EMBEDDING_TABLE_NAME} legal on the writable
+ * connection when it can be, and report whether it is.
+ *
+ * LadybugDB refuses EVERY mutation of a table carrying an HNSW index while
+ * the VECTOR extension is not loaded on that connection: `DELETE` fails with
+ * "Trying to delete from an index on table CodeEmbedding but its extension is
+ * not loaded", `CREATE` with the matching "insert into an index" variant,
+ * `DROP TABLE` is refused while the index references it, and `SET` — even on
+ * a NON-indexed property — segfaults the process outright. Probed against
+ * @ladybugdb/core 0.18.2 (the lockfile-pinned version) and 0.18.0 — every
+ * result identical on both (#2623).
+ *
+ * Dropping the index is NOT an available recovery: `CALL DROP_VECTOR_INDEX`
+ * is itself a VECTOR-extension function and resolves to "Catalog exception:
+ * function DROP_VECTOR_INDEX is not defined" in exactly the state it would
+ * need to rescue. Loading the extension is the only in-place repair, which is
+ * why this returns a verdict instead of attempting a fixup.
+ *
+ * `true` = embedding-row DML is safe: either VECTOR is now loaded, or the
+ * table carries no index to trip over. `false` = genuinely blocked (index
+ * present, extension unloadable); the analyze orchestrator answers that by
+ * escalating to the wipe-and-rebuild write plan instead of failing
+ * mid-writeback.
+ *
+ * Cheap by construction: one local `SHOW_INDEXES` read settles the common
+ * "this repo never built an embedding index" case without touching the
+ * extension machinery at all, so a VECTOR-less machine is not charged a
+ * bounded INSTALL attempt on every incremental analyze. `SHOW_INDEXES` is
+ * readable WITHOUT the extension and reports `extension_loaded` per index, so
+ * no error-string sniffing is needed; it runs through the unprepared
+ * `conn.query()` path like every other `CALL` procedure here (#2114).
+ */
+export const ensureEmbeddingRowDmlSafe = async (): Promise<boolean> => {
+  const targetConn = conn;
+  if (!targetConn) {
+    throw new Error('LadybugDB not initialized. Call initLbug first.');
+  }
+  // Catalog FIRST. The overwhelmingly common case on a repo that never enabled
+  // embeddings is "no index at all", and that is provable with one local read
+  // — no extension needed. Loading first would make every incremental analyze
+  // on a VECTOR-less machine pay a bounded out-of-process INSTALL attempt (the
+  // `auto` policy) plus an "extension unavailable" warning, for a repo that
+  // can never hit this hazard.
+  let indexRows: any[] | undefined;
+  try {
+    indexRows = await withConnLock(async () =>
+      readQueryRows(await targetConn.query('CALL SHOW_INDEXES() RETURN *')),
+    );
+  } catch (err) {
+    // Fall through to the load attempt: unable to prove the index is absent,
+    // so the extension is the only thing that can make DML safe.
+    logger.warn(
+      { err },
+      `Could not read the index catalog to check for a ${EMBEDDING_TABLE_NAME} vector index; ` +
+        'falling back to loading the VECTOR extension.',
+    );
+  }
+  // Any non-HASH index on the embedding table gates DML. Keyed on index TYPE,
+  // not name, so an index built under a different name still counts; the
+  // implicit primary-key HASH index is engine-internal and never gates.
+  const indexGatesDml =
+    indexRows === undefined ||
+    indexRows.some((row) => {
+      const table = row?.table_name ?? row?.[0];
+      if (table !== EMBEDDING_TABLE_NAME) return false;
+      return (row?.index_type ?? row?.[2]) !== 'HASH';
+    });
+  if (!indexGatesDml) return true;
+  return await loadVectorExtension(undefined, { policy: resolveAnalyzeInstallPolicy() });
 };
 
 /**

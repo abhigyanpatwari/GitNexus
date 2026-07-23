@@ -323,7 +323,7 @@ export class ExtensionManager {
       name,
       loaded: false,
       reason,
-      diagnosis: diagnoseExtensionLoad(reason),
+      diagnosis: diagnoseExtensionLoad(reason, label),
     });
     const key = `${name}:${reason}`;
     if (this.warnedKeys.has(key)) return;

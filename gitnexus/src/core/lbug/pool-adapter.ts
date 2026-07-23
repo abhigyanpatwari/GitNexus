@@ -17,7 +17,7 @@
 
 import fs from 'fs/promises';
 import lbug from '@ladybugdb/core';
-import { isReadOnlyDbError, loadFTSExtension } from './lbug-adapter.js';
+import { isReadOnlyDbError, loadFTSExtension, loadVectorExtension } from './lbug-adapter.js';
 import { closeQueryResults } from './query-result-utils.js';
 import {
   createLbugDatabase,
@@ -126,6 +126,14 @@ interface SharedDB {
   db: lbug.Database;
   refCount: number;
   ftsLoaded: boolean;
+  /** VECTOR loaded on this Database. Extension load scope is per-Database
+   *  (probe-verified on @ladybugdb/core 0.18.x): loading on any one
+   *  connection enables QUERY_VECTOR_INDEX on every connection of the same
+   *  Database. Without this load the pool's vector lane raised a Catalog
+   *  exception on every semantic query and silently fell back to the exact
+   *  scan (#2623 follow-up). Optional with `?? false` semantics so the
+   *  construction sites stay minimal. */
+  vectorLoaded?: boolean;
   /** File identity at open — used to detect reuse of a shared read-only handle
    *  whose on-disk index was rebuilt/swapped since it opened (only reachable
    *  when a second pool consumer shares this dbPath; #2614 F2). */
@@ -358,6 +366,7 @@ function closeOne(repoId: string): void {
         // for the same dbPath reuse it instead of hitting a file lock.
         shared.refCount = 0;
         shared.ftsLoaded = false;
+        shared.vectorLoaded = false;
       } else {
         shared.db.close().catch(() => {});
         dbCache.delete(entry.dbPath);
@@ -810,6 +819,13 @@ async function doInitLbug(repoId: string, dbPath: string): Promise<void> {
   if (!shared.ftsLoaded) {
     shared.ftsLoaded = await loadFTSExtension(available[0], { policy: 'load-only' });
   }
+  // VECTOR too — extension load scope is per-Database, so this one load
+  // makes QUERY_VECTOR_INDEX legal on every pooled connection. Same
+  // load-only contract as FTS above; on failure the semantic-query lane
+  // falls back to the exact scan with its own diagnostic (#2623 follow-up).
+  if (!shared.vectorLoaded) {
+    shared.vectorLoaded = await loadVectorExtension(available[0], { policy: 'load-only' });
+  }
 
   // Register pool entry only after all connections are pre-warmed and FTS is
   // loaded.  Concurrent executeQuery calls see either "not initialized"
@@ -879,6 +895,11 @@ export async function initLbugWithDb(
   // must not block on a network install during query execution.
   if (!shared.ftsLoaded) {
     shared.ftsLoaded = await loadFTSExtension(available[0], { policy: 'load-only' });
+  }
+  // VECTOR too — same per-Database scope and load-only contract as the
+  // doInitLbug site above (#2623 follow-up).
+  if (!shared.vectorLoaded) {
+    shared.vectorLoaded = await loadVectorExtension(available[0], { policy: 'load-only' });
   }
 
   pool.set(repoId, {

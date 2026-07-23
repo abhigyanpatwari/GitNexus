@@ -1,6 +1,11 @@
 import fs from 'fs';
 import path from 'path';
 import { createRequire } from 'node:module';
+import { spawnSync, type SpawnSyncReturns } from 'node:child_process';
+
+/** Cap the out-of-process native load probe so a hung filesystem cannot wedge a
+ *  CLI startup gate (same bounding rationale as the extension probe below). */
+const NATIVE_LOAD_PROBE_TIMEOUT_MS = 15_000;
 
 export interface NativeCheckResult {
   ok: boolean;
@@ -59,35 +64,73 @@ export function checkLbugNative(overridePkgDir?: string): NativeCheckResult {
     };
   }
 
-  try {
-    const _require = createRequire(import.meta.url);
-    _require(binaryPath);
-  } catch (err: unknown) {
-    const nativeError = err instanceof Error ? err.message : String(err);
-    return {
-      ok: false,
-      binaryPath,
-      message: [
-        'LadybugDB native binary (lbugjs.node) exists but failed to load:',
-        `  ${nativeError}`,
-        '',
-        'This can happen with a truncated file, ABI mismatch, or wrong-platform binary.',
-        '',
-        'To repair:',
-        `  node ${path.join(pkgDir, 'install.js')}`,
-        '',
-        'If install scripts were skipped (pnpm dlx / pnpx / ignore-scripts):',
-        '  pnpm --allow-build=@ladybugdb/core --allow-build=gitnexus --allow-build=tree-sitter \\',
-        '    dlx gitnexus@latest serve',
-        '  pnpm add -g --allow-build=@ladybugdb/core --allow-build=gitnexus --allow-build=tree-sitter gitnexus',
-        '',
-        'If using bun, add to package.json and reinstall:',
-        '  "trustedDependencies": ["@ladybugdb/core"]',
-      ].join('\n'),
-    };
+  // Validate loadability in a THROWAWAY CHILD PROCESS, not in-process. A merely
+  // truncated or corrupted .node (valid header, missing pages) does not throw a
+  // catchable error — it SIGBUSes the dynamic loader mid-dlopen, which would take
+  // the whole CLI down with a raw exit 135 and no guidance (#2441). Loading it in
+  // a child lets us observe that crash (a non-zero exit or a kill signal) and turn
+  // it into the same actionable failure as a clean load error. The child requires
+  // the binary by absolute path, exactly as the former in-process load did.
+  const probe = spawnSync(process.execPath, ['-e', 'require(process.argv[1])', binaryPath], {
+    encoding: 'utf8',
+    timeout: NATIVE_LOAD_PROBE_TIMEOUT_MS,
+    stdio: ['ignore', 'ignore', 'pipe'],
+    // Run as Node even if process.execPath is an Electron/embedder binary.
+    env: { ...process.env, ELECTRON_RUN_AS_NODE: '1' },
+  });
+
+  // Only a child that actually RAN and failed proves the binary is bad. If the
+  // probe could not run at all — a spawn error or a timeout, e.g. a sandbox that
+  // forbids subprocesses or a non-Node execPath — we could not test the binary,
+  // so we stay out of the way and let the command's own load be the authority
+  // rather than condemn a healthy binary. (#2441 still holds: a genuinely broken
+  // binary loaded in-process later still exits non-zero.)
+  if (probe.error || probe.status === 0) {
+    return { ok: true, binaryPath };
   }
 
-  return { ok: true, binaryPath };
+  return {
+    ok: false,
+    binaryPath,
+    message: [
+      'LadybugDB native binary (lbugjs.node) exists but failed to load:',
+      `  ${describeNativeLoadFailure(probe)}`,
+      '',
+      'This can happen with a truncated file, ABI mismatch, or wrong-platform binary.',
+      '',
+      'To repair:',
+      `  node ${path.join(pkgDir, 'install.js')}`,
+      '',
+      'If install scripts were skipped (pnpm dlx / pnpx / ignore-scripts):',
+      '  pnpm --allow-build=@ladybugdb/core --allow-build=gitnexus --allow-build=tree-sitter \\',
+      '    dlx gitnexus@latest serve',
+      '  pnpm add -g --allow-build=@ladybugdb/core --allow-build=gitnexus --allow-build=tree-sitter gitnexus',
+      '',
+      'If using bun, add to package.json and reinstall:',
+      '  "trustedDependencies": ["@ladybugdb/core"]',
+    ].join('\n'),
+  };
+}
+
+/**
+ * Describe a child-observed native load failure. Reached only after a probe that
+ * actually ran and failed: a fatal signal (SIGBUS/SIGSEGV ⇒ truncated/corrupt
+ * binary), otherwise the child's own load error lifted from its stderr.
+ */
+function describeNativeLoadFailure(probe: SpawnSyncReturns<string>): string {
+  if (probe.signal) {
+    return `crashed while loading (signal ${probe.signal}) — the binary is likely truncated or corrupted`;
+  }
+  const lines = (probe.stderr ?? '')
+    .split('\n')
+    .map((line) => line.trim())
+    .filter(Boolean);
+  const errorLine = lines.find((line) => /^\w*Error: /.test(line));
+  return (
+    errorLine?.replace(/^\w*Error:\s*/, '') ??
+    lines.at(-1) ??
+    `exited with code ${probe.status ?? 'unknown'}`
+  );
 }
 
 export interface FtsProbeResult {
@@ -95,6 +138,9 @@ export interface FtsProbeResult {
   /** Collapsed LadybugDB error when `loaded` is false. */
   reason?: string;
 }
+
+/** Same shape for every optional extension; `FtsProbeResult` is the legacy name. */
+export type ExtensionProbeResult = FtsProbeResult;
 
 const DEFAULT_FTS_PROBE_TIMEOUT_MS = 10_000;
 
@@ -136,8 +182,39 @@ const closeProbeResults = (result: unknown): void => {
 export async function probeFtsExtensionLoad(
   timeoutMs: number = DEFAULT_FTS_PROBE_TIMEOUT_MS,
 ): Promise<FtsProbeResult> {
+  return await probeExtensionLoad('fts', timeoutMs);
+}
+
+/**
+ * Live-probe `LOAD EXTENSION vector`, the VECTOR counterpart of the FTS probe.
+ *
+ * Needed for the same reason #2374 needed the FTS one, and reported the same
+ * way: #2623's reporter saw `doctor` print `VECTOR index: available` while
+ * every incremental `analyze` was dying because the extension had not loaded.
+ * `doctor` derived that line from a static platform capability, so it read
+ * "available" no matter what the extension file was doing.
+ *
+ * Probes for real on every platform, Windows included: the extension server
+ * ships win_amd64 VECTOR artifacts for every 0.18.x extension version (the
+ * old blanket Windows refusal was stale, #1365-era). LOAD never touches the
+ * network and never invokes the installer, so this probe is exactly as safe
+ * as the FTS one above.
+ */
+export async function probeVectorExtensionLoad(
+  timeoutMs: number = DEFAULT_FTS_PROBE_TIMEOUT_MS,
+): Promise<ExtensionProbeResult> {
+  return await probeExtensionLoad('vector', timeoutMs);
+}
+
+/**
+ * Shared LOAD probe. `extension` is a fixed internal literal, never user input.
+ */
+async function probeExtensionLoad(
+  extension: 'fts' | 'vector',
+  timeoutMs: number,
+): Promise<ExtensionProbeResult> {
   let timer: ReturnType<typeof setTimeout> | undefined;
-  const timeout = new Promise<FtsProbeResult>((resolve) => {
+  const timeout = new Promise<ExtensionProbeResult>((resolve) => {
     timer = setTimeout(
       () =>
         resolve({
@@ -148,7 +225,7 @@ export async function probeFtsExtensionLoad(
     );
   });
 
-  const probe = (async (): Promise<FtsProbeResult> => {
+  const probe = (async (): Promise<ExtensionProbeResult> => {
     try {
       const { default: lbug } = await import('@ladybugdb/core');
       const db = new lbug.Database(':memory:');
@@ -156,7 +233,7 @@ export async function probeFtsExtensionLoad(
       try {
         const conn = new lbug.Connection(db);
         try {
-          const result = await conn.query('LOAD EXTENSION fts');
+          const result = await conn.query(`LOAD EXTENSION ${extension}`);
           closeProbeResults(result);
           return { loaded: true };
         } finally {

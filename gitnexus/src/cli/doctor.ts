@@ -12,8 +12,16 @@ import {
   type EmbeddingRuntimeResolution,
 } from '../core/embeddings/runtime-install.js';
 import { cudaRedirectDoctorStatus } from '../core/embeddings/onnxruntime-node-resolver.js';
-import { checkLbugNative, probeFtsExtensionLoad } from '../core/lbug/native-check.js';
-import { getOsPageSize, isPageSizeAwareLadybug } from '../core/lbug/lbug-config.js';
+import {
+  checkLbugNative,
+  probeFtsExtensionLoad,
+  probeVectorExtensionLoad,
+} from '../core/lbug/native-check.js';
+import {
+  getEffectiveBufferPoolSize,
+  getOsPageSize,
+  isPageSizeAwareLadybug,
+} from '../core/lbug/lbug-config.js';
 import { diagnoseExtensionLoad } from '../core/lbug/extension-load-error.js';
 import { getExtensionInstallPolicy } from '../core/lbug/extension-loader.js';
 import { t } from './i18n/index.js';
@@ -146,6 +154,22 @@ export function pageSizeDoctorLines(
   return lines;
 }
 
+/**
+ * The hintless buffer-pool doctor line (#2631) — the pool the next Database
+ * open in THIS process would get. Same plain-params testable-helper shape as
+ * pageSizeDoctorLines above. `pool` is getEffectiveBufferPoolSize(): `0` is
+ * the pass-through sentinel for LadybugDB's native 80%-of-RAM default, never
+ * printed as "0 MiB". `envRaw` (the raw GITNEXUS_LBUG_BUFFER_POOL_SIZE value)
+ * marks operator-supplied absolute values as "(env override)" — no scaling
+ * suffix: the hintless default is deliberately unscaled (#2557), and an env
+ * value is absolute, so a "×N" note would misdescribe both.
+ */
+export function poolSizeDoctorLine(pool: number, envRaw: string | undefined): string {
+  const value = pool === 0 ? 'native 80% of RAM' : `${Math.round(pool / (1024 * 1024))} MiB`;
+  const envNote = envRaw !== undefined && envRaw.trim().length > 0 ? ' (env override)' : '';
+  return `  ${padDisplayEnd('pool size', 10)}${value}${envNote}`;
+}
+
 export const doctorCommand = async () => {
   const fingerprint = getRuntimeFingerprint();
   const capabilities = getRuntimeCapabilities();
@@ -164,6 +188,11 @@ export const doctorCommand = async () => {
   for (const line of pageSizeDoctorLines(getOsPageSize(), fingerprint.ladybugdb)) {
     console.log(line);
   }
+  // Hintless buffer pool for the next DB open (#2631). Literal label like
+  // the page size line above (no i18n key).
+  console.log(
+    poolSizeDoctorLine(getEffectiveBufferPoolSize(), process.env.GITNEXUS_LBUG_BUFFER_POOL_SIZE),
+  );
   const nativeCheck = checkLbugNative();
   if (nativeCheck.ok) {
     console.log(`  ${padDisplayEnd('native', 10)}✓ lbugjs.node loaded`);
@@ -195,8 +224,32 @@ export const doctorCommand = async () => {
       console.log(`  ${padDisplayEnd('', 18)}${remedy}`);
     }
   }
-  console.log(`  ${label('doctor.labels.vectorIndex', 18)}${capabilities.vector}`);
-  console.log(`  ${label('doctor.labels.semanticMode', 18)}${capabilities.semanticMode}`);
+  // Live LOAD probe for VECTOR too (#2623). The static capability is just
+  // `platform !== 'win32'`, so it printed "available" on the very machines
+  // where analyze was failing to load the extension — the same contradiction
+  // #2374 fixed for FTS above, and exactly what #2623's reporter saw while
+  // every incremental analyze died on an unloaded VECTOR extension.
+  const vectorProbe = nativeCheck.ok
+    ? await probeVectorExtensionLoad()
+    : { loaded: false, reason: 'LadybugDB native module (lbugjs.node) failed to load' };
+  console.log(
+    `  ${label('doctor.labels.vectorIndex', 18)}${vectorProbe.loaded ? 'available' : 'unavailable'}`,
+  );
+  if (!vectorProbe.loaded && vectorProbe.reason) {
+    console.log(`  ${padDisplayEnd('', 18)}${vectorProbe.reason}`);
+    const { kind, remedy } = diagnoseExtensionLoad(vectorProbe.reason, 'VECTOR');
+    if (kind !== 'unknown') {
+      console.log(`  ${padDisplayEnd('', 18)}${remedy}`);
+    }
+  }
+  // Semantic mode follows the probe, not the platform: without a loadable
+  // VECTOR extension the index can be neither built nor queried, so search is
+  // really on exact scan no matter what the platform would allow.
+  console.log(
+    `  ${label('doctor.labels.semanticMode', 18)}${
+      vectorProbe.loaded ? capabilities.semanticMode : 'exact-scan'
+    }`,
+  );
   // Surface the optional-extension install policy so offline users can see
   // whether analyze/query will reach the network (extension.ladybugdb.com).
   // Literal label (like the 'native' line) to avoid adding i18n keys.
