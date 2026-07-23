@@ -135,22 +135,22 @@ export function emitFreeCallFallback(
       : undefined;
   const reachableInstanceOwnersByScope =
     options.freeCallsRequireInstanceOwnership === true
-      ? new Map<ScopeId, ReadonlySet<string>>()
+      ? new Map<ScopeId, Set<string>>()
       : undefined;
-  const reachableInstanceOwners = (scopeId: ScopeId): ReadonlySet<string> => {
-    const cached = reachableInstanceOwnersByScope?.get(scopeId);
-    if (cached !== undefined) return cached;
-
-    const owners = new Set<string>();
-    const enclosing = findEnclosingClassDef(scopeId, scopes);
-    if (enclosing !== undefined) {
-      owners.add(enclosing.nodeId);
-      for (const ownerId of scopes.methodDispatch.mroFor(enclosing.nodeId)) {
-        owners.add(ownerId);
+  const isReachableInstanceOwner = (scopeId: ScopeId, ownerId: string): boolean => {
+    let owners = reachableInstanceOwnersByScope?.get(scopeId);
+    if (owners === undefined) {
+      owners = new Set();
+      const enclosing = findEnclosingClassDef(scopeId, scopes);
+      if (enclosing !== undefined) {
+        owners.add(enclosing.nodeId);
+        for (const inheritedOwnerId of scopes.methodDispatch.mroFor(enclosing.nodeId)) {
+          owners.add(inheritedOwnerId);
+        }
       }
+      reachableInstanceOwnersByScope?.set(scopeId, owners);
     }
-    reachableInstanceOwnersByScope?.set(scopeId, owners);
-    return owners;
+    return owners.has(ownerId);
   };
 
   for (const parsed of parsedFiles) {
@@ -248,7 +248,6 @@ export function emitFreeCallFallback(
           if (bindingCandidates === undefined) {
             fnDef = findCallableBindingInScope(site.inScope, site.name, scopes);
           } else {
-            const reachableOwners = reachableInstanceOwners(site.inScope);
             eligibleBindingCandidates = bindingCandidates.filter((candidate) => {
               const def = candidate.def;
               if (
@@ -258,7 +257,7 @@ export function emitFreeCallFallback(
               ) {
                 return true;
               }
-              const ownerReachable = reachableOwners.has(def.ownerId);
+              const ownerReachable = isReachableInstanceOwner(site.inScope, def.ownerId);
               const staticallyImported = candidate.bindings.some(
                 (binding) => binding.visibility === 'static-member-import',
               );

@@ -104,23 +104,22 @@ async function runBenchmark(language: LanguageCase, fileCount: number): Promise<
 describe.skipIf(!BENCH_ENABLED)('instance-ownership free-call gate benchmark', () => {
   for (const language of LANGUAGES) {
     it(`${language.label} scales sub-quadratically with ownership-gated calls`, async () => {
-      const results: BenchResult[] = [];
+      // Wide enough steps to expose quadratic growth without making this
+      // opt-in benchmark impractical on contributor machines.
+      let previous: BenchResult | undefined;
       for (const fileCount of [100, 250, 500]) {
         const result = await runBenchmark(language, fileCount);
-        results.push(result);
         console.log(
           `${language.label}: ${result.fileCount} files / ${result.callCount} calls: ` +
             `${result.elapsedMs}ms, ${result.peakHeapMB}MB heap`,
         );
-      }
 
-      let previous = results[0];
-      if (previous === undefined) throw new Error('missing benchmark result');
-      for (const current of results.slice(1)) {
-        const fileRatio = current.fileCount / previous.fileCount;
-        const timeRatio = current.elapsedMs / previous.elapsedMs;
-        expect(timeRatio / fileRatio).toBeLessThan(3);
-        previous = current;
+        if (previous !== undefined) {
+          const fileRatio = result.fileCount / previous.fileCount;
+          const timeRatio = result.elapsedMs / previous.elapsedMs;
+          expect(timeRatio / fileRatio).toBeLessThan(3);
+        }
+        previous = result;
       }
     }, 600_000);
   }
