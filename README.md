@@ -181,7 +181,7 @@ flowchart TB
 | `detect_impact` | Pre-commit change analysis — scope, affected processes, risk level        |
 | `generate_map`  | Architecture documentation from the knowledge graph with mermaid diagrams |
 
-### Agent skills installed to `.claude/skills/` automatically
+### Agent skills installed to `.claude/skills/` and `.agents/skills/` (if `.agents/` exists) automatically
 
 - **Exploring** — navigate unfamiliar code using the knowledge graph
 - **Debugging** — trace bugs through call chains
@@ -197,6 +197,8 @@ flowchart TB
 - **LFG** (`/gitnexus-lfg`) — the full pipeline: plan → user gate → work → review
 
 **Repo-specific skills** — run `gitnexus analyze --skills` and GitNexus detects the functional areas of your codebase (via Leiden community detection) and generates each one as a direct project skill under `.claude/skills/gitnexus-area-<name>/`. Each skill describes a module's key files, entry points, execution flows, and cross-area connections, and is regenerated on each `--skills` run to stay current.
+
+When a repo contains an `.agents/` directory, the standard and generated skills are also mirrored to `.agents/skills/` (e.g. `.agents/skills/gitnexus-cli/`, `.agents/skills/gitnexus-area-<name>/`) so agents that read repo-local `.agents/skills/` (like Codex) stay in sync.
 
 ## Editor Setup
 
@@ -395,7 +397,7 @@ gitnexus analyze --skills        # Generate repo-specific skill files from detec
 gitnexus analyze --skip-embeddings  # Skip embedding generation (faster)
 gitnexus analyze --embeddings [limit]  # Enable embedding generation (slower, better search)
 gitnexus analyze --skip-agents-md   # Preserve custom AGENTS.md/CLAUDE.md gitnexus section edits
-gitnexus analyze --skip-skills      # Skip installing standard .claude/skills/gitnexus-* skill files
+gitnexus analyze --skip-skills      # Skip installing standard skill files under .claude/skills/ and .agents/skills/
 gitnexus analyze --skip-git         # Index folders that are not Git repositories
 gitnexus analyze --default-branch develop  # Branch used in the generated regression-compare example (base_ref)
 gitnexus analyze --verbose       # Log skipped files when parsers are unavailable
@@ -451,7 +453,7 @@ Commit a `.gitnexusrc` JSON file at the repo root to preconfigure recurring `ana
   // over its fix on every analyze. (Alias: "branch".)
   "defaultBranch": "develop",
   "skipContextFiles": true, // alias of skipAgentsMd: keep your own AGENTS.md/CLAUDE.md
-  "skipSkills": true, // don't install standard .claude/skills/gitnexus-* skills
+  "skipSkills": true, // don't install standard skill files under .claude/skills/ and .agents/skills/
   "embeddings": true, // generate embeddings by default
   "workerTimeout": 60,
 }
