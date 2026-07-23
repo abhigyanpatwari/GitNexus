@@ -147,8 +147,8 @@ class C {
   });
 });
 
-describe('emitJavaScopeCaptures — local-class binary names (#2562)', () => {
-  it('uses the binary identity for the definition and the simple name for lexical binding', () => {
+describe('emitJavaScopeCaptures — local-type identities (#2562)', () => {
+  it('uses the source-type-relative identity for the definition and the simple lexical binding', () => {
     const matches = emitJavaScopeCaptures(
       'class Outer { void m() { class Local {} new Local(); } }',
       'Outer.java',
@@ -173,6 +173,103 @@ describe('emitJavaScopeCaptures — local-class binary names (#2562)', () => {
     const names = matches.flatMap((m) => m['@declaration.name']?.text ?? []);
 
     expect(names).toContain('R$1Local');
-    expect(names).toContain('R$2');
+    expect(names).toContain('R$1');
+  });
+
+  it('uses javac-compatible independent sequences for anonymous and named local types', () => {
+    const matches = emitJavaScopeCaptures(
+      `class Outer {
+         void first() {
+           new Runnable() {};
+           class Local {}
+           class Other {}
+           new Runnable() {};
+         }
+         void second() { class Local {} }
+       }`,
+      'Outer.java',
+    );
+    const names = matches.flatMap((m) => m['@declaration.name']?.text ?? []);
+
+    expect(names).toEqual(
+      expect.arrayContaining([
+        'Outer$1',
+        'Outer$2',
+        'Outer$1Local',
+        'Outer$2Local',
+        'Outer$1Other',
+      ]),
+    );
+  });
+
+  it('synthesizes every legal local type kind with its lexical binding name', () => {
+    const matches = emitJavaScopeCaptures(
+      `class Outer {
+         void types() {
+           class C {}
+           enum E { A }
+           record R(int x) {}
+           interface I { void run(); }
+         }
+       }`,
+      'Outer.java',
+    );
+
+    for (const [tag, identityName, bindingName] of [
+      ['@declaration.class', 'Outer$1C', 'C'],
+      ['@declaration.enum', 'Outer$1E', 'E'],
+      ['@declaration.record', 'Outer$1R', 'R'],
+      ['@declaration.interface', 'Outer$1I', 'I'],
+    ] as const) {
+      const declaration = matches.find(
+        (match) => match[tag] !== undefined && match['@declaration.name']?.text === identityName,
+      );
+      expect(declaration?.['@declaration.binding-name']?.text).toBe(bindingName);
+    }
+  });
+
+  it('detects local types from block position in initializers, lambdas, and anonymous bodies', () => {
+    const matches = emitJavaScopeCaptures(
+      `class Outer {
+         static { class StaticLocal {} }
+         { record InstanceLocal(int x) {} }
+         Runnable task = () -> { interface LambdaLocal {} };
+         Runnable anon = new Runnable() {
+           { enum AnonymousLocal { A } }
+           public void run() {}
+         };
+       }`,
+      'Outer.java',
+    );
+    const names = matches.flatMap((match) => match['@declaration.name']?.text ?? []);
+
+    expect(names).toEqual(
+      expect.arrayContaining([
+        'Outer$1StaticLocal',
+        'Outer$1InstanceLocal',
+        'Outer$1LambdaLocal',
+        'Outer$1$1AnonymousLocal',
+      ]),
+    );
+  });
+
+  it('emits declaration-to-block visibility scopes for local types', () => {
+    const matches = emitJavaScopeCaptures(
+      `class Outer {
+         void blocks() {
+           new Local();
+           class Local {}
+           new Local();
+         }
+       }`,
+      'Outer.java',
+    );
+    const local = matches.find((match) => match['@declaration.name']?.text === 'Outer$1Local');
+    const visibility = matches.find(
+      (match) =>
+        match['@scope.block']?.range.startLine === local?.['@declaration.class']?.range.startLine,
+    );
+
+    expect(visibility?.['@scope.block']?.range.endLine).toBe(6);
   });
 });
