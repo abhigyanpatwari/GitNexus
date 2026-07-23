@@ -2714,3 +2714,29 @@ describe('C# spurious import edges — no-csproj direct-match (#1881, Codex F2)'
     expect(legit).toBeDefined();
   });
 });
+
+describe('C# instance-ownership free-call gate (#2563)', () => {
+  let result: PipelineResult;
+
+  beforeAll(async () => {
+    result = await runPipelineFromRepo(path.join(FIXTURES, 'csharp-instance-ownership'), () => {});
+  }, 60000);
+
+  it("does not resolve a bare call to an unrelated same-file class's method", () => {
+    const leaked = getRelationships(result, 'CALLS').find(
+      (call) => call.source === 'Run' && call.target === 'Collide',
+    );
+    expect(leaked).toBeUndefined();
+  });
+
+  it('preserves own, inherited, and local-function calls', () => {
+    const calls = getRelationships(result, 'CALLS');
+    expect(calls.find((call) => call.source === 'CallOwn' && call.target === 'Own')).toBeDefined();
+    expect(
+      calls.find((call) => call.source === 'CallInherited' && call.target === 'Inherited'),
+    ).toBeDefined();
+    expect(
+      calls.find((call) => call.source === 'CallLocal' && call.target === 'Local'),
+    ).toBeDefined();
+  });
+});
