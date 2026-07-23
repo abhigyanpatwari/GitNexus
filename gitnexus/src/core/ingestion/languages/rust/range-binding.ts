@@ -17,6 +17,51 @@ import { lookupBindingsAt } from '../../scope-resolution/scope/walkers.js';
  * Runs in Phase 2 (after propagateImportedReturnTypes) so all cross-file
  * type bindings are available for lookup.
  */
+type RustTree = ReturnType<ReturnType<typeof getRustParser>['parse']>;
+
+/**
+ * Hold parsed trees for reuse across both prepass loops only when the whole
+ * Rust source fits this budget. Trees are much larger than their source, so a
+ * modest source cap keeps peak held-tree memory bounded; larger repos fall
+ * back to re-parsing per loop (unchanged RSS).
+ */
+const TREE_REUSE_SOURCE_BUDGET_BYTES = 16 * 1024 * 1024;
+
+/**
+ * Parse `filePath`'s source once, honoring the caller's `treeCache` and, when
+ * provided, an in-function `store` so the two prepass loops share a single
+ * parse instead of re-parsing every file. Returns null when the source is
+ * missing or parsing times out.
+ */
+function getOrParseTree(
+  parser: ReturnType<typeof getRustParser>,
+  filePath: string,
+  ctx: {
+    readonly fileContents: ReadonlyMap<string, string>;
+    readonly treeCache?: { get(filePath: string): unknown };
+  },
+  store: Map<string, RustTree> | undefined,
+): RustTree | null {
+  const cached = (ctx.treeCache?.get(filePath) ?? store?.get(filePath)) as RustTree | undefined;
+  if (cached !== undefined) return cached;
+  const sourceText = ctx.fileContents.get(filePath);
+  if (sourceText === undefined) return null;
+  let tree: RustTree;
+  try {
+    tree = parseSourceSafe(parser, sourceText, undefined, {
+      bufferSize: getTreeSitterBufferSize(sourceText),
+    });
+  } catch (err) {
+    if (err instanceof ParseTimeoutError) {
+      logger.warn({ file: filePath }, 'rust range-binding: parse timed out, skipping file');
+      return null;
+    }
+    throw err;
+  }
+  store?.set(filePath, tree);
+  return tree;
+}
+
 export function populateRustRangeBindings(
   parsedFiles: readonly ParsedFile[],
   indexes: ScopeResolutionIndexes,
@@ -37,33 +82,18 @@ export function populateRustRangeBindings(
   // follow-up: import-disambiguated duplicates resolve like the compiler).
   const returnTypeByFile = new Map<string, Map<string, string>>();
   const fieldTypeByFile = new Map<string, Map<string, Map<string, string>>>();
+  // Parse each file once and reuse across both loops when the workspace fits
+  // the byte budget; otherwise re-parse per loop to bound RSS (see helper).
+  let totalSourceBytes = 0;
+  for (const parsed of parsedFiles) {
+    totalSourceBytes += ctx.fileContents.get(parsed.filePath)?.length ?? 0;
+  }
+  const treeStore: Map<string, RustTree> | undefined =
+    totalSourceBytes <= TREE_REUSE_SOURCE_BUDGET_BYTES ? new Map() : undefined;
 
   for (const parsed of parsedFiles) {
-    const sourceText = ctx.fileContents.get(parsed.filePath);
-    if (sourceText === undefined) continue;
-
-    const cachedTree = ctx.treeCache?.get(parsed.filePath) as
-      | ReturnType<typeof parser.parse>
-      | undefined;
-    let tree: ReturnType<typeof parser.parse>;
-    if (cachedTree !== undefined) {
-      tree = cachedTree;
-    } else {
-      try {
-        tree = parseSourceSafe(parser, sourceText, undefined, {
-          bufferSize: getTreeSitterBufferSize(sourceText),
-        });
-      } catch (err) {
-        if (err instanceof ParseTimeoutError) {
-          logger.warn(
-            { file: parsed.filePath },
-            'rust range-binding: parse timed out, skipping file',
-          );
-          continue;
-        }
-        throw err;
-      }
-    }
+    const tree = getOrParseTree(parser, parsed.filePath, ctx, treeStore);
+    if (tree === null) continue;
 
     for (const fn of tree.rootNode.descendantsOfType('function_item')) {
       const nameNode = fn.childForFieldName('name');
@@ -120,31 +150,8 @@ export function populateRustRangeBindings(
   }
 
   for (const parsed of parsedFiles) {
-    const sourceText = ctx.fileContents.get(parsed.filePath);
-    if (sourceText === undefined) continue;
-
-    const cachedTree = ctx.treeCache?.get(parsed.filePath) as
-      | ReturnType<typeof parser.parse>
-      | undefined;
-    let tree: ReturnType<typeof parser.parse>;
-    if (cachedTree !== undefined) {
-      tree = cachedTree;
-    } else {
-      try {
-        tree = parseSourceSafe(parser, sourceText, undefined, {
-          bufferSize: getTreeSitterBufferSize(sourceText),
-        });
-      } catch (err) {
-        if (err instanceof ParseTimeoutError) {
-          logger.warn(
-            { file: parsed.filePath },
-            'rust range-binding: parse timed out, skipping file',
-          );
-          continue;
-        }
-        throw err;
-      }
-    }
+    const tree = getOrParseTree(parser, parsed.filePath, ctx, treeStore);
+    if (tree === null) continue;
 
     const scopeMap = new Map(parsed.scopes.map((s) => [s.id, s]));
     const moduleScope = parsed.scopes.find((s) => s.kind === 'Module');
