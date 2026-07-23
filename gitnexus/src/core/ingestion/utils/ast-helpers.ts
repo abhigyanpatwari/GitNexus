@@ -446,7 +446,11 @@ const isJavaLocalClassNode = (node: SyntaxNode): boolean => {
   let iterations = 0;
   while (cursor) {
     if (++iterations > MAX_ENCLOSING_WALK_ITERATIONS) return false;
-    if (cursor.type === 'method_declaration' || cursor.type === 'constructor_declaration') {
+    if (
+      cursor.type === 'method_declaration' ||
+      cursor.type === 'constructor_declaration' ||
+      cursor.type === 'compact_constructor_declaration'
+    ) {
       return true;
     }
     if (JAVA_ANON_HOST_TYPES.has(cursor.type) || isJavaAnonymousBodyNode(cursor)) return false;

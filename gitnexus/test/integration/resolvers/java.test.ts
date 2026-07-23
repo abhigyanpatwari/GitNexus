@@ -2903,6 +2903,8 @@ describe('Java local-class binary naming (#2562)', () => {
     expect(classes).toContain('Outer$1Local$1');
     expect(classes).toContain('Outer$2CtorHost$1Local');
     expect(classes).toContain('Outer$3NestedHost$Member$1Local');
+    expect(classes).toContain('Compact$1Local');
+    expect(classes).toContain('Compact$2');
     expect(classes).not.toContain('Local');
   });
 

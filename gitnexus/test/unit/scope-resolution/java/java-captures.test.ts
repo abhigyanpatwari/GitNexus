@@ -164,4 +164,15 @@ describe('emitJavaScopeCaptures — local-class binary names (#2562)', () => {
 
     expect(member?.['@declaration.binding-name']).toBeUndefined();
   });
+
+  it('recognizes a local class inside a record compact constructor', () => {
+    const matches = emitJavaScopeCaptures(
+      'record R(int x) { R { class Local {} new Runnable() {}; } }',
+      'R.java',
+    );
+    const names = matches.flatMap((m) => m['@declaration.name']?.text ?? []);
+
+    expect(names).toContain('R$1Local');
+    expect(names).toContain('R$2');
+  });
 });

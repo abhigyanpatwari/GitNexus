@@ -44,7 +44,11 @@ import { captureJavaSpringConfigConsumerFacts } from './spring-config-bindings.j
 const FUNCTION_DECL_TAGS = ['@declaration.method', '@declaration.constructor'] as const;
 
 /** tree-sitter-java node types that the method extractor accepts. */
-const FUNCTION_NODE_TYPES = ['method_declaration', 'constructor_declaration'] as const;
+const FUNCTION_NODE_TYPES = [
+  'method_declaration',
+  'constructor_declaration',
+  'compact_constructor_declaration',
+] as const;
 
 const JAVA_CALLABLE_CAPTURE_OPTIONS = {
   functionNodeTypes: new Set([...FUNCTION_NODE_TYPES, 'lambda_expression']),
