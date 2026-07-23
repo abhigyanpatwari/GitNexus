@@ -56,6 +56,13 @@ const QUALIFIER_ANNOTATIONS = new Map([
 
 const PRIMARY_ANNOTATIONS = new Map([['org.springframework.context.annotation.Primary', true]]);
 
+const RESOLVABLE_DI_ANNOTATIONS = new Set([
+  ...SPRING_BEAN_STEREOTYPES.keys(),
+  ...INJECTION_ANNOTATIONS.keys(),
+  ...QUALIFIER_ANNOTATIONS.keys(),
+  ...PRIMARY_ANNOTATIONS.keys(),
+]);
+
 const CAPTURE_RELEVANT_ANNOTATIONS = new Set([
   'Autowired',
   'Inject',
@@ -123,83 +130,84 @@ function dependenciesOf(callable: SyntaxNode): JavaSpringDependencyFact[] {
   return dependencies;
 }
 
-/** Capture Spring-relevant Java syntax while the worker already owns the AST. */
-export function captureJavaSpringDiFacts(
-  root: SyntaxNode,
+/**
+ * Capture one class already surfaced by Java's scope query.
+ *
+ * `captures.ts` calls this from its existing query-match traversal, so Spring
+ * DI does not perform a second recursive walk from the AST root.
+ */
+export function captureJavaSpringDiClassFact(
+  classNode: SyntaxNode,
   filePath: string,
-): readonly JavaSpringDiClassFact[] {
-  const facts: JavaSpringDiClassFact[] = [];
-  for (const classNode of root.descendantsOfType('class_declaration')) {
-    const body = classNode.childForFieldName('body');
-    if (body === null) continue;
-    const classAnnotations = annotationFacts(classNode);
-    const injectionSites: JavaSpringInjectionSiteFact[] = [];
+): JavaSpringDiClassFact | null {
+  const body = classNode.childForFieldName('body');
+  if (body === null) return null;
+  const classAnnotations = annotationFacts(classNode);
+  const injectionSites: JavaSpringInjectionSiteFact[] = [];
 
-    const constructors = body.namedChildren.filter(
-      (child) => child.type === 'constructor_declaration',
-    );
-    for (const constructor of constructors) {
-      const annotations = annotationFacts(constructor);
-      const implicitConstructor =
-        constructors.length === 1 &&
-        hasStereotypeSyntax(classAnnotations) &&
-        !hasRelevantAnnotation(annotations);
-      if (!implicitConstructor && !hasRelevantAnnotation(annotations)) continue;
-      injectionSites.push({
-        kind: 'constructor',
-        memberName: constructor.childForFieldName('name')?.text.trim() ?? '<constructor>',
-        implicitConstructor,
-        annotations,
-        dependencies: dependenciesOf(constructor),
-      });
-    }
-
-    for (const member of body.namedChildren) {
-      if (member.type === 'field_declaration') {
-        const annotations = annotationFacts(member);
-        if (!hasRelevantAnnotation(annotations)) continue;
-        const typeNode = member.childForFieldName('type');
-        if (typeNode === null) continue;
-        for (const declarator of member.namedChildren) {
-          if (declarator.type !== 'variable_declarator') continue;
-          const nameNode = declarator.childForFieldName('name');
-          if (nameNode === null) continue;
-          injectionSites.push({
-            kind: 'field',
-            memberName: nameNode.text.trim(),
-            implicitConstructor: false,
-            annotations,
-            dependencies: [
-              {
-                name: nameNode.text.trim(),
-                rawType: typeNode.text.trim(),
-                annotations,
-              },
-            ],
-          });
-        }
-      } else if (member.type === 'method_declaration') {
-        const annotations = annotationFacts(member);
-        if (!hasRelevantAnnotation(annotations)) continue;
-        injectionSites.push({
-          kind: 'method',
-          memberName: member.childForFieldName('name')?.text.trim() ?? '<method>',
-          implicitConstructor: false,
-          annotations,
-          dependencies: dependenciesOf(member),
-        });
-      }
-    }
-
-    if (injectionSites.length === 0 && !hasRelevantAnnotation(classAnnotations)) continue;
-    const classCapture = nodeToCapture('@spring-di.class', classNode);
-    facts.push({
-      classScopeId: makeScopeId({ filePath, range: classCapture.range, kind: 'Class' }),
-      classAnnotations,
-      injectionSites,
+  const constructors = body.namedChildren.filter(
+    (child) => child.type === 'constructor_declaration',
+  );
+  for (const constructor of constructors) {
+    const annotations = annotationFacts(constructor);
+    const implicitConstructor =
+      constructors.length === 1 &&
+      hasStereotypeSyntax(classAnnotations) &&
+      !hasRelevantAnnotation(annotations);
+    if (!implicitConstructor && !hasRelevantAnnotation(annotations)) continue;
+    injectionSites.push({
+      kind: 'constructor',
+      memberName: constructor.childForFieldName('name')?.text.trim() ?? '<constructor>',
+      implicitConstructor,
+      annotations,
+      dependencies: dependenciesOf(constructor),
     });
   }
-  return facts;
+
+  for (const member of body.namedChildren) {
+    if (member.type === 'field_declaration') {
+      const annotations = annotationFacts(member);
+      if (!hasRelevantAnnotation(annotations)) continue;
+      const typeNode = member.childForFieldName('type');
+      if (typeNode === null) continue;
+      for (const declarator of member.namedChildren) {
+        if (declarator.type !== 'variable_declarator') continue;
+        const nameNode = declarator.childForFieldName('name');
+        if (nameNode === null) continue;
+        injectionSites.push({
+          kind: 'field',
+          memberName: nameNode.text.trim(),
+          implicitConstructor: false,
+          annotations,
+          dependencies: [
+            {
+              name: nameNode.text.trim(),
+              rawType: typeNode.text.trim(),
+              annotations,
+            },
+          ],
+        });
+      }
+    } else if (member.type === 'method_declaration') {
+      const annotations = annotationFacts(member);
+      if (!hasRelevantAnnotation(annotations)) continue;
+      injectionSites.push({
+        kind: 'method',
+        memberName: member.childForFieldName('name')?.text.trim() ?? '<method>',
+        implicitConstructor: false,
+        annotations,
+        dependencies: dependenciesOf(member),
+      });
+    }
+  }
+
+  if (injectionSites.length === 0 && !hasRelevantAnnotation(classAnnotations)) return null;
+  const classCapture = nodeToCapture('@spring-di.class', classNode);
+  return {
+    classScopeId: makeScopeId({ filePath, range: classCapture.range, kind: 'Class' }),
+    classAnnotations,
+    injectionSites,
+  };
 }
 
 function staticStringArgument(annotationText: string): string | undefined {
@@ -230,12 +238,6 @@ export function attachJavaSpringDiMetadata(
   indexes: ScopeResolutionIndexes,
 ): void {
   const resolveAnnotation = createSpringAnnotationNameResolver(indexes);
-  const propertiesByOwner = new Map<string, string[]>();
-  for (const relationship of graph.iterRelationshipsByType('HAS_PROPERTY')) {
-    const propertyIds = propertiesByOwner.get(relationship.sourceId) ?? [];
-    propertyIds.push(relationship.targetId);
-    propertiesByOwner.set(relationship.sourceId, propertyIds);
-  }
 
   for (const parsed of parsedFiles) {
     const incomplete = isJavaPackageSiblingVisibilityIncomplete(parsed.filePath);
@@ -252,19 +254,35 @@ export function attachJavaSpringDiMetadata(
       const capturedFieldNames = new Set(
         fact.injectionSites.filter((site) => site.kind === 'field').map((site) => site.memberName),
       );
-      for (const propertyId of propertiesByOwner.get(classNode.id) ?? []) {
-        const property = graph.getNode(propertyId);
-        if (property !== undefined && capturedFieldNames.has(property.properties.name)) {
-          property.properties[SPRING_DI_CAPTURED_FIELD_PROPERTY] = true;
+      for (const fieldName of capturedFieldNames) {
+        for (const { def } of classScope.bindings.get(fieldName) ?? []) {
+          if (def.ownerId !== classDef.nodeId) continue;
+          const propertyId = resolveDefGraphId(parsed.filePath, def, nodeLookup);
+          if (propertyId === undefined) continue;
+          const property = graph.getNode(propertyId);
+          if (property?.label === 'Property') {
+            property.properties[SPRING_DI_CAPTURED_FIELD_PROPERTY] = true;
+          }
         }
       }
 
+      const resolvedAnnotations = new Map<string, string | undefined>();
       const resolveFact = (
         annotation: JavaAnnotationSyntaxFact,
-        recognized: { readonly has: (value: string) => boolean },
         enclosingScope: ScopeId | null = classScope.parent,
-      ): string | undefined =>
-        resolveAnnotation(annotation.name, parsed, enclosingScope, recognized, incomplete);
+      ): string | undefined => {
+        const cacheKey = `${enclosingScope ?? '<root>'}\0${annotation.name}`;
+        if (resolvedAnnotations.has(cacheKey)) return resolvedAnnotations.get(cacheKey);
+        const resolved = resolveAnnotation(
+          annotation.name,
+          parsed,
+          enclosingScope,
+          RESOLVABLE_DI_ANNOTATIONS,
+          incomplete,
+        );
+        resolvedAnnotations.set(cacheKey, resolved);
+        return resolved;
+      };
 
       const frameworkAnnotations = Array.isArray(classNode.properties.frameworkAnnotations)
         ? classNode.properties.frameworkAnnotations.filter(
@@ -275,37 +293,43 @@ export function attachJavaSpringDiMetadata(
         const names = new Set<string>();
         let explicitBeanName: string | undefined;
         let hasDynamicBeanName = false;
+        let primary = false;
         for (const annotation of fact.classAnnotations) {
-          if (resolveFact(annotation, SPRING_BEAN_STEREOTYPES) !== undefined) {
+          const resolved = resolveFact(annotation);
+          if (resolved === undefined) continue;
+          if (SPRING_BEAN_STEREOTYPES.has(resolved)) {
             if (annotation.text.includes('(')) {
               const staticName = staticStringArgument(annotation.text);
               if (staticName === undefined) hasDynamicBeanName = true;
               else explicitBeanName = staticName;
             }
           }
-          if (resolveFact(annotation, QUALIFIER_ANNOTATIONS) !== undefined) {
+          if (QUALIFIER_ANNOTATIONS.has(resolved)) {
             const qualifier = staticStringArgument(annotation.text);
             if (qualifier !== undefined) names.add(qualifier);
           }
+          if (PRIMARY_ANNOTATIONS.has(resolved)) primary = true;
         }
         if (explicitBeanName !== undefined) names.add(explicitBeanName);
         else if (!hasDynamicBeanName) names.add(defaultBeanName(classNode.properties.name));
         const provider: DiProviderMatch = {
           isBean: true,
           names: [...names],
-          primary: fact.classAnnotations.some(
-            (annotation) => resolveFact(annotation, PRIMARY_ANNOTATIONS) !== undefined,
-          ),
+          primary,
         };
         classNode.properties[SPRING_DI_PROVIDER_PROPERTY] = provider;
       }
 
       const matches: DiInjectionMatch[] = [];
       for (const site of fact.injectionSites) {
-        const injectionAnnotation = site.annotations.find(
-          (annotation) =>
-            resolveFact(annotation, INJECTION_ANNOTATIONS, classScope.id) !== undefined,
-        );
+        let injectionAnnotation: JavaAnnotationSyntaxFact | undefined;
+        for (const annotation of site.annotations) {
+          const resolved = resolveFact(annotation, classScope.id);
+          if (resolved !== undefined && INJECTION_ANNOTATIONS.has(resolved)) {
+            injectionAnnotation = annotation;
+            break;
+          }
+        }
         if (injectionAnnotation === undefined) {
           if (!site.implicitConstructor || frameworkAnnotations.length === 0) continue;
         }
@@ -313,10 +337,14 @@ export function attachJavaSpringDiMetadata(
         for (const dependency of site.dependencies) {
           const parsedType = parseSpringInjectionType(dependency.rawType);
           if (parsedType === null) continue;
-          const qualifierAnnotation = dependency.annotations.find(
-            (annotation) =>
-              resolveFact(annotation, QUALIFIER_ANNOTATIONS, classScope.id) !== undefined,
-          );
+          let qualifierAnnotation: JavaAnnotationSyntaxFact | undefined;
+          for (const annotation of dependency.annotations) {
+            const resolved = resolveFact(annotation, classScope.id);
+            if (resolved !== undefined && QUALIFIER_ANNOTATIONS.has(resolved)) {
+              qualifierAnnotation = annotation;
+              break;
+            }
+          }
           const qualifier =
             qualifierAnnotation === undefined
               ? undefined
