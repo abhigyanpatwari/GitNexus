@@ -28,7 +28,6 @@ import type {
 import { getPhaseOutput } from '../ingestion/pipeline-phases/types.js';
 import type { StructureOutput } from '../ingestion/pipeline-phases/structure.js';
 import type { StandaloneIngestOutput } from '../ingestion/pipeline-phases/standalone-ingest.js';
-import type { KnowledgeGraph } from '../graph/types.js';
 import { moveRepoRelativePath } from './constants.js';
 import {
   MoveFlowTimeoutError,
@@ -39,7 +38,8 @@ import {
 import { mapFactsToGraph, type MoveFactsMapResult } from './facts-mapper.js';
 import type { CallGraphMap, MoveFactsMap } from './compiler-facts.js';
 import { collectClosureCaptureCalls, type FunctionUsageFailure } from './function-usage.js';
-import { linkMoveIngestGraph, type MoveLinkState } from './move-linker.js';
+import { linkMoveIngestGraph, type MoveLinkView } from './move-linker.js';
+import type { DroppedRef, PendingRef } from './refs.js';
 import {
   emptyFactsIssue,
   validateMoveIngestOutput,
@@ -47,6 +47,11 @@ import {
   type MoveConsistencyIssue,
 } from './consistency.js';
 import { createMoveEntryPointEdges } from './entry-points.js';
+
+function resolveMoveConcurrency(): number {
+  const n = Number(process.env.GITNEXUS_MOVE_FLOW_CONCURRENCY);
+  return Number.isSafeInteger(n) && n > 0 ? n : 4;
+}
 
 // ── Phase output ───────────────────────────────────────────────────────────
 
@@ -65,14 +70,8 @@ export interface MoveIngestOutput extends StandaloneIngestOutput {
   filePackageMap: ReadonlyMap<string, string>;
   /** Absolute package root → compiler call graph for that package. */
   callGraphByPackage: ReadonlyMap<string, CallGraphMap>;
-  /** Resource references dropped during global resolution. */
-  droppedResourceRefs: { fnNodeId: string; target: string }[];
-  /** Signature/type references dropped during global resolution. */
-  droppedTypeRefs: { sourceNodeId: string; target: string }[];
-  /** Friend declarations whose target module never got a Module node. */
-  droppedFriends: { moduleNodeId: string; friend: string }[];
-  /** Lambda functions whose host function never got a Function node. */
-  droppedLambdaHosts: { lambdaFnNodeId: string; hostQualified: string }[];
+  /** All refs dropped during global resolution (resource, type, friend, lambda-host). */
+  droppedRefs: DroppedRef[];
   /** Supplemental function-usage queries that could not be completed. */
   functionUsageFailures: FunctionUsageFailure[];
   /** Non-fatal consistency issues found after Move ingestion. */
@@ -80,78 +79,48 @@ export interface MoveIngestOutput extends StandaloneIngestOutput {
 }
 
 /** Mutable accumulator shared while ingesting every package. */
-interface MoveIngestState extends MoveLinkState {
-  ingestedFiles: Set<string>;
-  modulePackageMap: Map<string, string>;
-  filePackageMap: Map<string, string>;
-  functionUsageFailures: FunctionUsageFailure[];
-}
+class MoveIngestAccumulator implements MoveLinkView {
+  readonly moduleFileMap = new Map<string, string>();
+  readonly functionNodeMap = new Map<string, string>();
+  readonly structNodeMap = new Map<string, string>();
+  readonly modulePackageMap = new Map<string, string>();
+  readonly filePackageMap = new Map<string, string>();
+  readonly callGraphByPackage = new Map<string, CallGraphMap>();
+  readonly closureCallsByPackage = new Map<string, CallGraphMap>();
+  readonly pendingRefs: PendingRef[] = [];
+  readonly droppedRefs: DroppedRef[] = [];
+  readonly ingestedFiles = new Set<string>();
+  readonly functionUsageFailures: FunctionUsageFailure[] = [];
 
-function createState(): MoveIngestState {
-  return {
-    ingestedFiles: new Set(),
-    moduleFileMap: new Map(),
-    functionNodeMap: new Map(),
-    structNodeMap: new Map(),
-    modulePackageMap: new Map(),
-    filePackageMap: new Map(),
-    callGraphByPackage: new Map(),
-    closureCallsByPackage: new Map(),
-    pendingResource: [],
-    pendingFriends: [],
-    pendingTypeRef: [],
-    pendingLambdaHosts: [],
-    droppedResourceRefs: [],
-    droppedTypeRefs: [],
-    droppedFriends: [],
-    droppedLambdaHosts: [],
-    functionUsageFailures: [],
-  };
-}
-
-function toOutput(
-  state: MoveIngestState,
-  packageRoots: string[],
-  consistencyIssues: MoveConsistencyIssue[] = [],
-): MoveIngestOutput {
-  return {
-    ingestedFiles: state.ingestedFiles,
-    packageRoots,
-    moduleFileMap: state.moduleFileMap,
-    functionNodeMap: state.functionNodeMap,
-    structNodeMap: state.structNodeMap,
-    modulePackageMap: state.modulePackageMap,
-    filePackageMap: state.filePackageMap,
-    callGraphByPackage: state.callGraphByPackage,
-    droppedResourceRefs: state.droppedResourceRefs,
-    droppedTypeRefs: state.droppedTypeRefs,
-    droppedFriends: state.droppedFriends,
-    droppedLambdaHosts: state.droppedLambdaHosts,
-    functionUsageFailures: state.functionUsageFailures,
-    consistencyIssues,
-  };
-}
-
-/** Add a mapped package's nodes/edges to the graph and merge its identity maps. */
-function applyMapped(
-  graph: KnowledgeGraph,
-  mapped: MoveFactsMapResult,
-  pkgRoot: string,
-  state: MoveIngestState,
-): void {
-  for (const node of mapped.nodes) graph.addNode(node);
-  for (const rel of mapped.edges) graph.addRelationship(rel);
-  for (const [qn, file] of mapped.moduleFileMap) {
-    state.moduleFileMap.set(qn, file);
-    state.modulePackageMap.set(qn, pkgRoot);
-    state.filePackageMap.set(file, pkgRoot);
+  mergePackage(mapped: MoveFactsMapResult, pkgRoot: string): void {
+    for (const [qn, file] of mapped.moduleFileMap) {
+      this.moduleFileMap.set(qn, file);
+      this.modulePackageMap.set(qn, pkgRoot);
+      this.filePackageMap.set(file, pkgRoot);
+    }
+    for (const [qn, id] of mapped.functionNodeMap) this.functionNodeMap.set(qn, id);
+    for (const [qn, id] of mapped.structNodeMap) this.structNodeMap.set(qn, id);
+    this.pendingRefs.push(...mapped.pendingRefs);
   }
-  for (const [qn, id] of mapped.functionNodeMap) state.functionNodeMap.set(qn, id);
-  for (const [qn, id] of mapped.structNodeMap) state.structNodeMap.set(qn, id);
-  state.pendingResource.push(...mapped.pendingResource);
-  state.pendingFriends.push(...mapped.pendingFriends);
-  state.pendingTypeRef.push(...mapped.pendingTypeRef);
-  state.pendingLambdaHosts.push(...mapped.pendingLambdaHosts);
+
+  toOutput(
+    packageRoots: string[],
+    consistencyIssues: MoveConsistencyIssue[] = [],
+  ): MoveIngestOutput {
+    return {
+      ingestedFiles: this.ingestedFiles,
+      packageRoots,
+      moduleFileMap: this.moduleFileMap,
+      functionNodeMap: this.functionNodeMap,
+      structNodeMap: this.structNodeMap,
+      modulePackageMap: this.modulePackageMap,
+      filePackageMap: this.filePackageMap,
+      callGraphByPackage: this.callGraphByPackage,
+      droppedRefs: this.droppedRefs,
+      functionUsageFailures: this.functionUsageFailures,
+      consistencyIssues,
+    };
+  }
 }
 
 export function createMoveIngestPhase(
@@ -176,7 +145,7 @@ export function createMoveIngestPhase(
         ),
       ].sort();
       if (!client || packageRoots.length === 0) {
-        return toOutput(createState(), packageRoots);
+        return new MoveIngestAccumulator().toOutput(packageRoots);
       }
 
       const { hasFactsQuery, hasFunctionUsageQuery, hasStatusTool } = await client.capabilities();
@@ -190,7 +159,7 @@ export function createMoveIngestPhase(
           { userActionable: true },
         );
       }
-      const state = createState();
+      const acc = new MoveIngestAccumulator();
       let functionUsageEnabled = hasFunctionUsageQuery;
 
       // Group scanned .move files by their (innermost) owning package. Files
@@ -228,8 +197,10 @@ export function createMoveIngestPhase(
         let callGraphData: CallGraphMap;
         let factsMap: MoveFactsMap;
         try {
-          callGraphData = await client.callGraph(pkgRoot);
-          factsMap = await client.facts(pkgRoot);
+          [callGraphData, factsMap] = await Promise.all([
+            client.callGraph(pkgRoot),
+            client.facts(pkgRoot),
+          ]);
         } catch (err) {
           throw toPackageQueryError(err, pkgRoot);
         }
@@ -251,26 +222,30 @@ export function createMoveIngestPhase(
         }
         // Only past the gate: a skipped package must have zero footprint in
         // Pass 2 linking and consistency validation.
-        state.callGraphByPackage.set(pkgRoot, callGraphData);
+        acc.callGraphByPackage.set(pkgRoot, callGraphData);
         if (functionUsageEnabled) {
           const closureCapture = await collectClosureCaptureCalls(
             client,
             pkgRoot,
             factsMap,
             callGraphData,
+            resolveMoveConcurrency(),
           );
-          state.closureCallsByPackage.set(pkgRoot, closureCapture.calls);
-          state.functionUsageFailures.push(...closureCapture.failures);
+          acc.closureCallsByPackage.set(pkgRoot, closureCapture.calls);
+          acc.functionUsageFailures.push(...closureCapture.failures);
           if (closureCapture.failures.length > 0) functionUsageEnabled = false;
         }
-        for (const rel of pkgMoveFiles) state.ingestedFiles.add(rel);
-        applyMapped(ctx.graph, mapFactsToGraph(factsMap, pkgRoot, ctx.repoPath), pkgRoot, state);
+        for (const rel of pkgMoveFiles) acc.ingestedFiles.add(rel);
+        const mapped = mapFactsToGraph(factsMap, pkgRoot, ctx.repoPath);
+        for (const node of mapped.nodes) ctx.graph.addNode(node);
+        for (const rel of mapped.edges) ctx.graph.addRelationship(rel);
+        acc.mergePackage(mapped, pkgRoot);
       }
 
       // Pass 2+: link edges that need the full cross-package node index.
-      linkMoveIngestGraph(ctx.graph, state);
+      linkMoveIngestGraph(ctx.graph, acc);
 
-      const output = toOutput(state, packageRoots);
+      const output = acc.toOutput(packageRoots);
       createMoveEntryPointEdges(ctx.graph, output);
 
       const consistencyIssues: MoveConsistencyIssue[] = emptyFactsPackages.map(emptyFactsIssue);

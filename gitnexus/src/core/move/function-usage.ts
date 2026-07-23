@@ -1,4 +1,5 @@
 import type { CallGraphMap, MoveFactsMap } from './compiler-facts.js';
+import { mapWithConcurrency } from './concurrency.js';
 import type { MoveFlowClient } from './mcp-client.js';
 import { moveShortSymbol } from './symbol-id.js';
 
@@ -28,28 +29,37 @@ export async function collectClosureCaptureCalls(
   packageRoot: string,
   facts: MoveFactsMap,
   callGraph: CallGraphMap,
+  limit: number,
 ): Promise<ClosureCaptureResult> {
-  const calls: CallGraphMap = {};
-  const failures: FunctionUsageFailure[] = [];
-
+  const candidates: string[] = [];
   for (const [moduleQualified, moduleFacts] of Object.entries(facts)) {
     for (const fn of moduleFacts.functions ?? []) {
-      if (fn.isLambdaLifted) continue;
-      const functionQualified = `${moduleQualified}::${fn.name}`;
-      try {
-        const usage = await client.functionUsage(packageRoot, moveShortSymbol(functionQualified));
-        const known = new Set([...usage.called, ...(callGraph[functionQualified] ?? [])]);
-        const captured = usage.used.filter((target) => !known.has(target));
-        if (captured.length > 0) calls[functionQualified] = [...new Set(captured)];
-      } catch (error) {
-        failures.push({
-          functionQualified,
-          message: error instanceof Error ? error.message : String(error),
-        });
-        return { calls, failures };
-      }
+      if (fn.isLambdaLifted || fn.isNative) continue;
+      candidates.push(`${moduleQualified}::${fn.name}`);
     }
   }
+
+  const calls: CallGraphMap = {};
+  const { failure } = await mapWithConcurrency(
+    candidates,
+    limit,
+    async (functionQualified) => {
+      const usage = await client.functionUsage(packageRoot, moveShortSymbol(functionQualified));
+      const known = new Set([...usage.called, ...(callGraph[functionQualified] ?? [])]);
+      const captured = usage.used.filter((t) => !known.has(t));
+      if (captured.length > 0) calls[functionQualified] = [...new Set(captured)];
+    },
+    { failFast: true },
+  );
+
+  const failures: FunctionUsageFailure[] = failure
+    ? [
+        {
+          functionQualified: String(failure.item),
+          message: failure.error instanceof Error ? failure.error.message : String(failure.error),
+        },
+      ]
+    : [];
 
   return { calls, failures };
 }

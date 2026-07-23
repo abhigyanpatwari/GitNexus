@@ -1,6 +1,7 @@
 import type { KnowledgeGraph } from '../graph/types.js';
 import type { MovePackageStatus } from './mcp-client.js';
 import type { MoveIngestOutput } from './move-ingest.js';
+import type { DroppedRef, PendingRefKind } from './refs.js';
 import { moveModuleQualifiedName, parseMoveModuleQualifiedName } from './symbol-id.js';
 
 export type MoveConsistencySeverity = 'warning' | 'error';
@@ -184,30 +185,7 @@ export function validateMoveIngestOutput(
     }
   }
 
-  pushDroppedIssue(
-    issues,
-    moveIngest.droppedResourceRefs,
-    'unresolved-resource-target',
-    'resource read/write/acquires target(s) could not be resolved',
-  );
-  pushDroppedIssue(
-    issues,
-    moveIngest.droppedTypeRefs,
-    'unresolved-type-target',
-    'signature/type reference target(s) could not be resolved',
-  );
-  pushDroppedIssue(
-    issues,
-    moveIngest.droppedFriends,
-    'unresolved-friend-target',
-    'friend declaration target(s) have no Module node',
-  );
-  pushDroppedIssue(
-    issues,
-    moveIngest.droppedLambdaHosts,
-    'unresolved-lambda-host',
-    'lambda function(s) have no resolvable host function',
-  );
+  pushGroupedDrops(issues, moveIngest.droppedRefs);
   pushDroppedIssue(
     issues,
     moveIngest.functionUsageFailures,
@@ -216,6 +194,43 @@ export function validateMoveIngestOutput(
   );
 
   return issues;
+}
+
+const DROP_ISSUE: Record<PendingRefKind, { code: MoveConsistencyIssue['code']; label: string }> = {
+  resource: {
+    code: 'unresolved-resource-target',
+    label: 'resource read/write/acquires target(s) could not be resolved',
+  },
+  type: {
+    code: 'unresolved-type-target',
+    label: 'signature/type reference target(s) could not be resolved',
+  },
+  friend: {
+    code: 'unresolved-friend-target',
+    label: 'friend declaration target(s) have no Module node',
+  },
+  'lambda-host': {
+    code: 'unresolved-lambda-host',
+    label: 'lambda function(s) have no resolvable host function',
+  },
+};
+
+function pushGroupedDrops(issues: MoveConsistencyIssue[], drops: readonly DroppedRef[]): void {
+  const byKind = new Map<PendingRefKind, DroppedRef[]>();
+  for (const d of drops) {
+    const list = byKind.get(d.kind);
+    if (list) list.push(d);
+    else byKind.set(d.kind, [d]);
+  }
+  for (const [kind, list] of byKind) {
+    const { code, label } = DROP_ISSUE[kind];
+    issues.push({
+      code,
+      severity: 'warning',
+      message: `${list.length} ${label}.`,
+      details: { count: list.length, sample: list.slice(0, 5) },
+    });
+  }
 }
 
 /** One warning per non-empty dropped-reference list: full count, 5-item sample. */

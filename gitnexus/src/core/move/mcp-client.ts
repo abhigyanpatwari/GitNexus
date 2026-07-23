@@ -443,21 +443,26 @@ export class MoveFlowMcpClient implements MoveFlowClient {
   }
 
   /**
-   * Issue a request with one retry after a mid-flight transport fault:
+   * Issue a request with one optional retry after a mid-flight transport fault:
    * failProcess has already reset the client state when the fault surfaces,
    * so the second attempt respawns the server. Deterministic failures (spawn
    * errors, timeouts, tool errors) propagate on the first attempt.
+   *
+   * Pass `{ retryOnTransport: false }` to suppress the retry — callers that
+   * run under bounded concurrency (e.g. functionUsage) must not trigger a
+   * retry/respawn storm when the transport faults.
    */
   private async request(
     method: string,
     params: unknown,
     timeoutMs: number,
     timeoutError: Error,
+    { retryOnTransport = true }: { retryOnTransport?: boolean } = {},
   ): Promise<unknown> {
     try {
       return await this.requestOnce(method, params, timeoutMs, timeoutError);
     } catch (err) {
-      if (!(err instanceof MoveFlowTransportError)) throw err;
+      if (!retryOnTransport || !(err instanceof MoveFlowTransportError)) throw err;
       return this.requestOnce(method, params, timeoutMs, timeoutError);
     }
   }
@@ -506,7 +511,11 @@ export class MoveFlowMcpClient implements MoveFlowClient {
     });
   }
 
-  private async callTool(toolName: string, args: Record<string, unknown>): Promise<unknown> {
+  private async callTool(
+    toolName: string,
+    args: Record<string, unknown>,
+    opts?: { retryOnTransport?: boolean },
+  ): Promise<unknown> {
     const timeoutMs = resolveMoveFlowToolTimeoutMs();
     const result = await this.request(
       'tools/call',
@@ -516,6 +525,7 @@ export class MoveFlowMcpClient implements MoveFlowClient {
         `move-flow '${toolName}' timed out after ${timeoutMs}ms ` +
           '(raise GITNEXUS_MOVE_FLOW_TIMEOUT_MS for large packages)',
       ),
+      opts,
     );
     if (!isMcpCallToolResult(result)) return result;
     if (result.isError === true) {
@@ -548,11 +558,15 @@ export class MoveFlowMcpClient implements MoveFlowClient {
   }
 
   async functionUsage(packagePath: string, functionName: string): Promise<MoveFunctionUsage> {
-    const usage = await this.callTool('move_package_query', {
-      package_path: packagePath,
-      query: 'function_usage',
-      function: functionName,
-    });
+    const usage = await this.callTool(
+      'move_package_query',
+      {
+        package_path: packagePath,
+        query: 'function_usage',
+        function: functionName,
+      },
+      { retryOnTransport: false },
+    );
     if (!isMoveFunctionUsage(usage)) {
       throw new MoveFlowToolCallError(
         `move-flow returned malformed function_usage for '${functionName}'`,

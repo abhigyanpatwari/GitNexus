@@ -72,7 +72,8 @@ describe('moveIngest package-query failure classification', () => {
     const output = await runPhase(client);
 
     expect(output.functionNodeMap.has('0xa::t::with_callback')).toBe(true);
-    expect(client.counts.functionUsage).toBe(1);
+    expect(client.counts.functionUsage).toBeLessThanOrEqual(2);
+    expect(output.functionUsageFailures).toHaveLength(1);
     expect(output.consistencyIssues).toEqual(
       expect.arrayContaining([
         expect.objectContaining({
@@ -136,6 +137,22 @@ describe('moveIngest package-query failure classification', () => {
       message: expect.stringContaining('could not build Move package'),
     });
     expect(client.counts.callGraph).toBe(1);
+  });
+
+  it('skips isNative functions in the function_usage scan', async () => {
+    const client = makeMoveFlowClientStub({
+      facts: async () => ({
+        '0xa::m': {
+          file: 'a.move',
+          functions: [moveFunctionFact('nat', { isNative: true }), moveFunctionFact('reg')],
+          structs: [],
+          constants: [],
+        },
+      }),
+      callGraph: async () => ({}),
+    });
+    await runMoveIngestPhase(client, '/repo', ['a.move', 'Move.toml']);
+    expect(client.counts.functionUsage).toBe(1);
   });
 
   it('propagates a transport crash unchanged (the client already retried)', async () => {

@@ -52,6 +52,11 @@ const facts: MoveFactsMap = {
           },
         ],
       }),
+      moveFunctionFact('native_helper', {
+        file: SOURCE_FILE,
+        span: [27, 27],
+        isNative: true,
+      }),
     ],
     structs: [],
     constants: [],
@@ -130,7 +135,10 @@ describe('Move graph quality regressions', () => {
           edge.reason === 'move-compiler-closure-use',
       ),
     ).toBe(true);
-    expect(client.counts.functionUsage).toBe(facts['0xa::spot_callbacks'].functions?.length);
+    const queryable = (facts['0xa::spot_callbacks'].functions ?? []).filter(
+      (f) => !f.isNative && !f.isLambdaLifted,
+    );
+    expect(client.counts.functionUsage).toBe(queryable.length);
   });
 
   it('does not duplicate a call-graph edge the usage query classifies as a capture', async () => {
@@ -177,6 +185,6 @@ describe('Move graph quality regressions', () => {
           edge.sourceId === functionId('0xa::spot_callbacks::public_api'),
       ),
     ).toHaveLength(2);
-    expect(output.droppedTypeRefs).toEqual([]);
+    expect(output.droppedRefs.filter((d) => d.kind === 'type')).toEqual([]);
   });
 });

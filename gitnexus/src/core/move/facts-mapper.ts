@@ -30,7 +30,6 @@ import {
   moveConstNodeId,
   moveEnumVariantNodeId,
   moveFieldNodeId,
-  moveLocalName,
   moveRelId,
   parseMoveLambdaHostName,
   parseMoveModuleQualifiedName,
@@ -45,6 +44,7 @@ import {
 } from './constants.js';
 import { extractTypeNames } from './type-parser.js';
 import { toZeroBasedLine } from '../ingestion/utils/line-base.js';
+import type { PendingRef } from './refs.js';
 
 const spanLine = (span: [number, number] | undefined, idx: 0 | 1): number | undefined =>
   span ? toZeroBasedLine(span[idx]) : undefined;
@@ -66,43 +66,8 @@ export interface MoveFactsMapResult {
   functionNodeMap: Map<string, string>;
   /** Struct/enum qualified name → graph node ID. */
   structNodeMap: Map<string, string>;
-  /** Resource edges that need the full cross-package type index. */
-  pendingResource: PendingResource[];
-  /** Friend edges that need the full cross-package module index. */
-  pendingFriends: PendingFriend[];
-  /** Signature type refs that need the full cross-package type index. */
-  pendingTypeRef: PendingTypeRef[];
-  /** Lambda → host links that need the host's Function node id (resolved post-pass). */
-  pendingLambdaHosts: PendingLambdaHost[];
-}
-
-export interface PendingLambdaHost {
-  /** The lambda's Function node id (target of the CALLS edge). */
-  lambdaFnNodeId: string;
-  /** Host function's fully-qualified name (`<module>::<localHost>`). */
-  hostQualified: string;
-}
-
-export interface PendingResource {
-  fnNodeId: string;
-  moduleQualified: string;
-  type: RelationshipType;
-  target: string;
-  reason: string;
-}
-
-export interface PendingFriend {
-  moduleNodeId: string;
-  friend: string;
-}
-
-export interface PendingTypeRef {
-  /** Source node of the USES_TYPE edge - a Function, or a Struct for
-   *  `resource_group_member` membership refs. */
-  sourceNodeId: string;
-  moduleQualified: string;
-  target: string;
-  reason: string;
+  /** Cross-package references resolved in the linker's Pass B. */
+  pendingRefs: PendingRef[];
 }
 
 /** Strip generic type arguments: `CoinStore<CoinType>` → `CoinStore`. */
@@ -219,10 +184,7 @@ export function mapFactsToGraph(
   };
 
   // Deferred work that needs the full struct/module index (pass B).
-  const pendingResource: PendingResource[] = [];
-  const pendingFriends: PendingFriend[] = [];
-  const pendingTypeRef: PendingTypeRef[] = [];
-  const pendingLambdaHosts: PendingLambdaHost[] = [];
+  const pendingRefs: PendingRef[] = [];
 
   // ── Pass A: nodes (modules, functions, types, constants) ─────────────────
   for (const [moduleQualified, mod] of Object.entries(facts)) {
@@ -251,7 +213,14 @@ export function mapFactsToGraph(
     });
 
     for (const friend of arr(mod.friends)) {
-      pendingFriends.push({ moduleNodeId, friend: friend.module });
+      pendingRefs.push({
+        kind: 'friend',
+        knownNodeId: moduleNodeId,
+        target: friend.module,
+        moduleQualified: '',
+        edgeType: 'FRIEND_OF',
+        reason: MOVE_EDGE_REASON.friend,
+      });
     }
 
     // Functions
@@ -278,10 +247,12 @@ export function mapFactsToGraph(
           const key = `${reason}\0${typeName}`;
           if (seenTypeRefs.has(key)) continue;
           seenTypeRefs.add(key);
-          pendingTypeRef.push({
-            sourceNodeId: fnNodeId,
+          pendingRefs.push({
+            kind: 'type',
+            knownNodeId: fnNodeId,
             moduleQualified,
             target: typeName,
+            edgeType: 'USES_TYPE',
             reason,
           });
         }
@@ -328,9 +299,13 @@ export function mapFactsToGraph(
       const lambdaHostLocal =
         (fn.isLambdaLifted ? fn.definedIn : undefined) ?? parseMoveLambdaHostName(fn.name);
       if (lambdaHostLocal) {
-        pendingLambdaHosts.push({
-          lambdaFnNodeId: fnNodeId,
-          hostQualified: `${moduleQualified}::${lambdaHostLocal}`,
+        pendingRefs.push({
+          kind: 'lambda-host',
+          knownNodeId: fnNodeId,
+          target: `${moduleQualified}::${lambdaHostLocal}`,
+          moduleQualified: '',
+          edgeType: 'CALLS',
+          reason: MOVE_EDGE_REASON.lambdaHost,
         });
       }
       nodes.push({
@@ -341,29 +316,32 @@ export function mapFactsToGraph(
       edge(moduleNodeId, fnNodeId, 'DEFINES', 1.0, MOVE_EDGE_REASON.definesFunction);
 
       for (const r of arr(fn.resourceAccess?.reads)) {
-        pendingResource.push({
-          fnNodeId,
+        pendingRefs.push({
+          kind: 'resource',
+          knownNodeId: fnNodeId,
           moduleQualified,
-          type: 'READS_RESOURCE',
           target: stripTypeArgs(r),
+          edgeType: 'READS_RESOURCE',
           reason: MOVE_EDGE_REASON.readsResource,
         });
       }
       for (const w of arr(fn.resourceAccess?.writes)) {
-        pendingResource.push({
-          fnNodeId,
+        pendingRefs.push({
+          kind: 'resource',
+          knownNodeId: fnNodeId,
           moduleQualified,
-          type: 'WRITES_RESOURCE',
           target: stripTypeArgs(w),
+          edgeType: 'WRITES_RESOURCE',
           reason: MOVE_EDGE_REASON.writesResource,
         });
       }
       for (const a of arr(fn.acquiresInferred)) {
-        pendingResource.push({
-          fnNodeId,
+        pendingRefs.push({
+          kind: 'resource',
+          knownNodeId: fnNodeId,
           moduleQualified,
-          type: 'ACQUIRES',
           target: a,
+          edgeType: 'ACQUIRES',
           reason: MOVE_EDGE_REASON.acquires,
         });
       }
@@ -378,10 +356,12 @@ export function mapFactsToGraph(
       const addFieldTypeRefs = (sourceNodeId: string, typeExpr: string, reason: string): void => {
         for (const target of new Set(extractTypeNames(typeExpr))) {
           if (typeParamNames.has(target)) continue;
-          pendingTypeRef.push({
-            sourceNodeId,
+          pendingRefs.push({
+            kind: 'type',
+            knownNodeId: sourceNodeId,
             moduleQualified,
             target,
+            edgeType: 'USES_TYPE',
             reason,
           });
         }
@@ -424,10 +404,12 @@ export function mapFactsToGraph(
         // edge resolved against the cross-package type index in Pass B.
         const resourceGroup = resourceGroupOf(ty.attributes);
         if (resourceGroup) {
-          pendingTypeRef.push({
-            sourceNodeId: structNodeId,
+          pendingRefs.push({
+            kind: 'type',
+            knownNodeId: structNodeId,
             moduleQualified,
             target: resourceGroup,
+            edgeType: 'USES_TYPE',
             reason: MOVE_EDGE_REASON.resourceGroupMember,
           });
         }
@@ -559,188 +541,8 @@ export function mapFactsToGraph(
     moduleFileMap,
     functionNodeMap,
     structNodeMap,
-    pendingResource,
-    pendingFriends,
-    pendingTypeRef,
-    pendingLambdaHosts,
+    pendingRefs,
   };
-}
-
-/**
- * Resolve queued lambda→host links into CALLS edges. Run after every package's
- * facts have been mapped so the host's Function node is guaranteed to exist
- * (the host may be defined in a different module within the package, or — for
- * cross-package lambda capture — in another package altogether).
- */
-export function resolveLambdaHostEdges(
-  pendingLambdaHosts: readonly PendingLambdaHost[],
-  functionNodeMap: ReadonlyMap<string, string>,
-  edgeSink: (rel: GraphRelationship) => void,
-  onUnresolved?: (pending: PendingLambdaHost) => void,
-): void {
-  const seen = new Set<string>();
-  for (const p of pendingLambdaHosts) {
-    const hostId = functionNodeMap.get(p.hostQualified);
-    if (!hostId) {
-      onUnresolved?.(p);
-      continue;
-    }
-    const key = `${hostId}\0${p.lambdaFnNodeId}`;
-    if (seen.has(key)) continue;
-    seen.add(key);
-    edgeSink({
-      id: moveRelId(hostId, 'CALLS', p.lambdaFnNodeId, MOVE_EDGE_REASON.lambdaHost),
-      sourceId: hostId,
-      targetId: p.lambdaFnNodeId,
-      type: 'CALLS',
-      confidence: 0.9,
-      reason: MOVE_EDGE_REASON.lambdaHost,
-    });
-  }
-}
-
-export function buildLocalNameIndex(
-  structNodeMap: ReadonlyMap<string, string>,
-): Map<string, string[]> {
-  const structIdsByLocalName = new Map<string, string[]>();
-  for (const [qn, id] of structNodeMap) {
-    const key = moveLocalName(qn);
-    const list = structIdsByLocalName.get(key);
-    if (list) list.push(id);
-    else structIdsByLocalName.set(key, [id]);
-  }
-  return structIdsByLocalName;
-}
-
-function resolveStructRef(
-  localOrQualified: string,
-  callerModule: string,
-  structNodeMap: ReadonlyMap<string, string>,
-  structIdsByLocalName: ReadonlyMap<string, readonly string[]>,
-): { targetId: string } | { unresolved: true } | { ambiguous: true } {
-  const exact = structNodeMap.get(localOrQualified);
-  if (exact) return { targetId: exact };
-
-  const base = stripTypeArgs(localOrQualified);
-  const baseExact = structNodeMap.get(base);
-  if (baseExact) return { targetId: baseExact };
-
-  // move-flow emits every resourceAccess/param/return ref fully qualified, so a
-  // qualified ref that misses the exact lookup is a type outside the indexed
-  // graph (e.g. a dependency-only 0x1::coin::CoinStore). Falling through to the
-  // bare-name heuristic would silently mis-bind it to a same-named repo struct
-  // under a different address - report unresolved instead. The heuristics below
-  // remain only for unqualified inputs.
-  if (base.includes('::')) return { unresolved: true };
-
-  const sameModule = structNodeMap.get(`${callerModule}::${base}`);
-  if (sameModule) return { targetId: sameModule };
-
-  const matches = structIdsByLocalName.get(moveLocalName(base)) ?? [];
-  if (matches.length === 1) return { targetId: matches[0] };
-  return matches.length > 1 ? { ambiguous: true } : { unresolved: true };
-}
-
-export function resolveResourceEdges(
-  pendingResource: readonly PendingResource[],
-  structNodeMap: ReadonlyMap<string, string>,
-  structIdsByLocalName: ReadonlyMap<string, readonly string[]>,
-  edgeSink: (rel: GraphRelationship) => void,
-  onUnresolved?: (pending: PendingResource) => void,
-  onAmbiguous?: (pending: PendingResource) => void,
-): void {
-  const seenResourceEdges = new Set<string>();
-  for (const pr of pendingResource) {
-    const resolved = resolveStructRef(
-      pr.target,
-      pr.moduleQualified,
-      structNodeMap,
-      structIdsByLocalName,
-    );
-    if ('unresolved' in resolved) {
-      onUnresolved?.(pr);
-      continue;
-    }
-    if ('ambiguous' in resolved) {
-      onAmbiguous?.(pr);
-      continue;
-    }
-
-    const key = `${pr.fnNodeId}\0${pr.type}\0${resolved.targetId}`;
-    if (seenResourceEdges.has(key)) continue;
-    seenResourceEdges.add(key);
-    edgeSink({
-      id: moveRelId(pr.fnNodeId, pr.type, resolved.targetId, pr.reason),
-      sourceId: pr.fnNodeId,
-      targetId: resolved.targetId,
-      type: pr.type,
-      confidence: 1.0,
-      reason: pr.reason,
-    });
-  }
-}
-
-export function resolveFriendEdges(
-  pendingFriends: readonly PendingFriend[],
-  moduleFileMap: ReadonlyMap<string, string>,
-  edgeSink: (rel: GraphRelationship) => void,
-  onUnresolved?: (pending: PendingFriend) => void,
-): void {
-  for (const pf of pendingFriends) {
-    const friendFile = moduleFileMap.get(pf.friend);
-    if (!friendFile) {
-      onUnresolved?.(pf);
-      continue;
-    }
-    const targetId = moveModuleNodeId(pf.friend, friendFile);
-    edgeSink({
-      id: moveRelId(pf.moduleNodeId, 'FRIEND_OF', targetId, MOVE_EDGE_REASON.friend),
-      sourceId: pf.moduleNodeId,
-      targetId,
-      type: 'FRIEND_OF',
-      confidence: 1.0,
-      reason: MOVE_EDGE_REASON.friend,
-    });
-  }
-}
-
-export function resolveTypeRefEdges(
-  pendingTypeRef: readonly PendingTypeRef[],
-  structNodeMap: ReadonlyMap<string, string>,
-  structIdsByLocalName: ReadonlyMap<string, readonly string[]>,
-  edgeSink: (rel: GraphRelationship) => void,
-  onUnresolved?: (pending: PendingTypeRef) => void,
-  onAmbiguous?: (pending: PendingTypeRef) => void,
-): void {
-  const seenTypeEdges = new Set<string>();
-  for (const pr of pendingTypeRef) {
-    const resolved = resolveStructRef(
-      pr.target,
-      pr.moduleQualified,
-      structNodeMap,
-      structIdsByLocalName,
-    );
-    if ('unresolved' in resolved) {
-      onUnresolved?.(pr);
-      continue;
-    }
-    if ('ambiguous' in resolved) {
-      onAmbiguous?.(pr);
-      continue;
-    }
-
-    const key = `${pr.sourceNodeId}\0${pr.reason}\0${resolved.targetId}`;
-    if (seenTypeEdges.has(key)) continue;
-    seenTypeEdges.add(key);
-    edgeSink({
-      id: moveRelId(pr.sourceNodeId, 'USES_TYPE', resolved.targetId, pr.reason),
-      sourceId: pr.sourceNodeId,
-      targetId: resolved.targetId,
-      type: 'USES_TYPE',
-      confidence: 1.0,
-      reason: pr.reason,
-    });
-  }
 }
 
 // Re-export for callers that prefer the label type.

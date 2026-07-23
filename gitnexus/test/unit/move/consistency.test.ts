@@ -24,10 +24,7 @@ function makeOutput(overrides: Partial<MoveIngestOutput> = {}): MoveIngestOutput
     modulePackageMap: new Map(),
     filePackageMap: new Map(),
     callGraphByPackage: new Map(),
-    droppedResourceRefs: [],
-    droppedTypeRefs: [],
-    droppedFriends: [],
-    droppedLambdaHosts: [],
+    droppedRefs: [],
     functionUsageFailures: [],
     consistencyIssues: [],
     ...overrides,
@@ -207,7 +204,7 @@ describe('validateMoveIngestOutput', () => {
     const output = makeOutput({
       ingestedFiles: new Set([file]),
       moduleFileMap: new Map([['0xa::m', file]]),
-      droppedResourceRefs: [{ fnNodeId: 'Function:f', target: 'Config' }],
+      droppedRefs: [{ kind: 'resource', sourceId: 'Function:f', target: 'Config' }],
     });
     const issues = validateMoveIngestOutput(graph, output);
     expect(
@@ -218,9 +215,11 @@ describe('validateMoveIngestOutput', () => {
   it('warns when type, friend, or lambda-host targets were dropped', () => {
     const graph = createKnowledgeGraph();
     const output = makeOutput({
-      droppedTypeRefs: [{ sourceNodeId: 'Function:f', target: '(u64' }],
-      droppedFriends: [{ moduleNodeId: 'Module:m', friend: '0xb::gone' }],
-      droppedLambdaHosts: [{ lambdaFnNodeId: 'Function:l', hostQualified: '0xa::m::host' }],
+      droppedRefs: [
+        { kind: 'type', sourceId: 'Function:f', target: '(u64' },
+        { kind: 'friend', sourceId: 'Module:m', target: '0xb::gone' },
+        { kind: 'lambda-host', sourceId: 'Function:l', target: '0xa::m::host' },
+      ],
     });
     const issues = validateMoveIngestOutput(graph, output);
     for (const code of [
@@ -231,6 +230,13 @@ describe('validateMoveIngestOutput', () => {
       const issue = issues.find((i) => i.code === code);
       expect(issue?.severity).toBe('warning');
       expect(issue?.details?.count).toBe(1);
+      expect(
+        (issue?.details?.sample as Array<{ kind: string; sourceId: string; target: string }>)?.[0],
+      ).toMatchObject({
+        kind: expect.any(String),
+        sourceId: expect.any(String),
+        target: expect.any(String),
+      });
     }
   });
 

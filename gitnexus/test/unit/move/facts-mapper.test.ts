@@ -1,16 +1,17 @@
 import { describe, it, expect } from 'vitest';
+import { mapFactsToGraph } from '../../../src/core/move/facts-mapper.js';
 import {
   buildLocalNameIndex,
-  mapFactsToGraph,
-  resolveFriendEdges,
-  resolveResourceEdges,
-  resolveTypeRefEdges,
-} from '../../../src/core/move/facts-mapper.js';
+  resolveRefs,
+  ExternalMoveSymbols,
+} from '../../../src/core/move/move-linker.js';
+import type { DroppedRef } from '../../../src/core/move/refs.js';
 import {
   type MoveFactsFunction,
   type MoveFactsMap,
 } from '../../../src/core/move/compiler-facts.js';
 import { moveFunctionFact } from '../../helpers/move-ingest-harness.js';
+import { createKnowledgeGraph } from '../../../src/core/graph/graph.js';
 
 /** A fuller-shaped function facts entry (file/span/arrays) with per-test overrides. */
 function fnFixture(name: string, overrides: Partial<MoveFactsFunction> = {}): MoveFactsFunction {
@@ -107,29 +108,29 @@ const facts: MoveFactsMap = {
   },
 };
 
-function mapFactsToGraphWithResolvedEdges(
-  factsMap: MoveFactsMap,
-): ReturnType<typeof mapFactsToGraph> {
+function mapFactsToGraphWithResolvedEdges(factsMap: MoveFactsMap) {
   const mapped = mapFactsToGraph(factsMap, '/pkg');
-  const edges = [...mapped.edges];
+  const graph = createKnowledgeGraph();
+  for (const node of mapped.nodes) graph.addNode(node);
+  for (const rel of mapped.edges) graph.addRelationship(rel);
   const localNameIndex = buildLocalNameIndex(mapped.structNodeMap);
-  const addResolvedUsedType = (sourceId: string, targetId: string): void => {
-    const fnNode = mapped.nodes.find((n) => n.id === sourceId);
-    const typeNode = mapped.nodes.find((n) => n.id === targetId);
-    const qualifiedName = typeNode?.properties.qualifiedName;
-    if (!fnNode || typeof qualifiedName !== 'string') return;
-    const current = Array.isArray(fnNode.properties.usedTypes) ? fnNode.properties.usedTypes : [];
-    if (!current.includes(qualifiedName)) fnNode.properties.usedTypes = [...current, qualifiedName];
-  };
-  resolveResourceEdges(mapped.pendingResource, mapped.structNodeMap, localNameIndex, (rel) =>
-    edges.push(rel),
+  const external = new ExternalMoveSymbols(graph, mapped.moduleFileMap);
+  const drops: DroppedRef[] = [];
+  resolveRefs(
+    graph,
+    mapped.pendingRefs,
+    {
+      structNodeMap: mapped.structNodeMap,
+      structIdsByLocalName: localNameIndex,
+      moduleFileMap: mapped.moduleFileMap,
+      functionNodeMap: mapped.functionNodeMap,
+    },
+    external,
+    drops,
   );
-  resolveFriendEdges(mapped.pendingFriends, mapped.moduleFileMap, (rel) => edges.push(rel));
-  resolveTypeRefEdges(mapped.pendingTypeRef, mapped.structNodeMap, localNameIndex, (rel) => {
-    edges.push(rel);
-    addResolvedUsedType(rel.sourceId, rel.targetId);
-  });
-  return { ...mapped, edges };
+  const edges = [...graph.iterRelationships()];
+  const nodes = [...graph.iterNodes()];
+  return { ...mapped, nodes, edges };
 }
 
 describe('mapFactsToGraph', () => {
@@ -408,7 +409,7 @@ describe('mapFactsToGraph', () => {
         ],
       },
     };
-    const { nodes, edges, pendingTypeRef } = mapFactsToGraphWithResolvedEdges(enumFacts);
+    const { nodes, edges, pendingRefs } = mapFactsToGraphWithResolvedEdges(enumFacts);
     const variant = nodes.find(
       (node) => node.label === 'EnumVariant' && node.properties.name === 'Open',
     );
@@ -432,9 +433,10 @@ describe('mapFactsToGraph', () => {
           edge.targetId.includes('Payload'),
       ),
     ).toBe(true);
-    expect(pendingTypeRef.some((pending) => pending.target === 'copy')).toBe(false);
-    expect(pendingTypeRef.some((pending) => pending.target === 'drop')).toBe(false);
-    expect(pendingTypeRef.some((pending) => pending.target === 'T')).toBe(false);
+    const typeRefs = pendingRefs.filter((r) => r.kind === 'type');
+    expect(typeRefs.some((pending) => pending.target === 'copy')).toBe(false);
+    expect(typeRefs.some((pending) => pending.target === 'drop')).toBe(false);
+    expect(typeRefs.some((pending) => pending.target === 'T')).toBe(false);
   });
 
   it('does not write moduleAddress on Function nodes (only Module/Struct/Enum carry it)', () => {
@@ -624,8 +626,10 @@ describe('mapFactsToGraph', () => {
         constants: [],
       },
     };
-    const { pendingTypeRef } = mapFactsToGraph(rtFacts, '/pkg');
-    const returnRefs = pendingTypeRef.filter((p) => p.reason === 'move-fn-return-type');
+    const { pendingRefs } = mapFactsToGraph(rtFacts, '/pkg');
+    const returnRefs = pendingRefs.filter(
+      (p) => p.kind === 'type' && p.reason === 'move-fn-return-type',
+    );
     expect(returnRefs.map((p) => p.target)).toEqual(['0xbeef::price::PriceInfo']);
   });
 
@@ -677,18 +681,33 @@ describe('mapFactsToGraph', () => {
       },
     };
     const mapped = mapFactsToGraph(qualFacts, '/pkg');
+    const graph = createKnowledgeGraph();
+    for (const node of mapped.nodes) graph.addNode(node);
+    for (const rel of mapped.edges) graph.addRelationship(rel);
     const localNameIndex = buildLocalNameIndex(mapped.structNodeMap);
-    const resolvedEdges: unknown[] = [];
-    const unresolved: string[] = [];
-    resolveResourceEdges(
-      mapped.pendingResource,
-      mapped.structNodeMap,
-      localNameIndex,
-      (rel) => resolvedEdges.push(rel),
-      (pending) => unresolved.push(pending.target),
+    const external = new ExternalMoveSymbols(graph, mapped.moduleFileMap);
+    const drops: DroppedRef[] = [];
+    const resourceRefs = mapped.pendingRefs.filter((r) => r.kind === 'resource');
+    resolveRefs(
+      graph,
+      resourceRefs,
+      {
+        structNodeMap: mapped.structNodeMap,
+        structIdsByLocalName: localNameIndex,
+        moduleFileMap: mapped.moduleFileMap,
+        functionNodeMap: mapped.functionNodeMap,
+      },
+      external,
+      drops,
     );
-    expect(resolvedEdges).toEqual([]);
-    expect(unresolved).toEqual(['0x1::coin::CoinStore', '0x1::coin::CoinStore']);
+    const localCoinStoreId = mapped.structNodeMap.get('0xa::coin::CoinStore');
+    const resolvedResourceEdges = [...graph.iterRelationships()].filter(
+      (e) => e.type === 'READS_RESOURCE' || e.type === 'WRITES_RESOURCE' || e.type === 'ACQUIRES',
+    );
+    expect(resolvedResourceEdges.every((e) => e.targetId !== localCoinStoreId)).toBe(true);
+    expect(resolvedResourceEdges.every((e) => e.targetId.includes('0x1::coin::CoinStore'))).toBe(
+      true,
+    );
   });
 
   it('projects full attribute payloads (args/values) as attributesJson alongside the name list', () => {
@@ -793,11 +812,9 @@ describe('mapFactsToGraph', () => {
         constants: [],
       },
     };
-    const { pendingLambdaHosts } = mapFactsToGraph(lambdaFacts, '/pkg');
-    expect(pendingLambdaHosts.map((p) => p.hostQualified)).toEqual([
-      '0xa::vault::lifted',
-      '0xa::vault::outer',
-    ]);
+    const { pendingRefs } = mapFactsToGraph(lambdaFacts, '/pkg');
+    const lambdaRefs = pendingRefs.filter((r) => r.kind === 'lambda-host');
+    expect(lambdaRefs.map((p) => p.target)).toEqual(['0xa::vault::lifted', '0xa::vault::outer']);
   });
 
   it('attributes lifted lambdas to their declaring module source', () => {

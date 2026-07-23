@@ -11,6 +11,7 @@ vi.mock('node:child_process', () => ({
 import {
   MoveFlowMcpClient,
   MoveFlowToolCallError,
+  MoveFlowTransportError,
   tryResolveMoveFlowClient,
   detectMoveFlowCapabilities,
 } from '../../../src/core/move/mcp-client.js';
@@ -488,6 +489,30 @@ describe('MoveFlowMcpClient', () => {
     const client = new MoveFlowMcpClient('move-flow');
     await expect(client.facts('/pkg')).resolves.toEqual({ fresh: true });
     expect(mockSpawn).toHaveBeenCalledTimes(2);
+    await client.shutdown();
+  });
+
+  it('functionUsage does not retry a transport error', async () => {
+    const crashProc = createMockProc();
+    mockSpawn.mockReturnValueOnce(crashProc as any);
+
+    crashProc.stdin.on('data', (chunk: Buffer) => {
+      for (const line of chunk.toString().split('\n')) {
+        if (!line.trim()) continue;
+        const msg = JSON.parse(line);
+        if (msg.method === 'initialize') {
+          crashProc.stdout.write(JSON.stringify({ jsonrpc: '2.0', id: msg.id, result: {} }) + '\n');
+        } else if (msg.method === 'tools/call') {
+          // Die mid-request — a transport fault, no retry should happen.
+          crashProc.emit('exit', 137);
+        }
+      }
+    });
+
+    const client = new MoveFlowMcpClient('move-flow');
+    await expect(client.functionUsage('/pkg', 'm::f')).rejects.toThrow(MoveFlowTransportError);
+    // Exactly ONE spawn — no respawn/retry for functionUsage transport errors.
+    expect(mockSpawn).toHaveBeenCalledTimes(1);
     await client.shutdown();
   });
 
