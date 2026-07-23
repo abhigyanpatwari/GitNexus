@@ -2,7 +2,7 @@
   "mcpServers": {
     "gitnexus": {
       "command": "npx",
-      "args": ["-y", "gitnexus@1.6.10-aptos.0", "mcp"]
+      "args": ["-y", "gitnexus@1.6.10-aptos.1", "mcp"]
     }
   }
 }

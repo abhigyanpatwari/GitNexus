@@ -30,7 +30,7 @@ from .proposer_sandbox import (
 
 # main-aptos carries an -aptos prerelease suffix; keep this pin in lock-step
 # with gitnexus/package.json on THIS branch (release bumps must update both).
-PINNED_GITNEXUS_VERSION = "1.6.10-aptos.0"
+PINNED_GITNEXUS_VERSION = "1.6.10-aptos.1"
 HARNESS_ROOT = Path(__file__).resolve().parents[2]
 
 CE_ARMS = frozenset({"ce_workflow", "ce_workflow_direct", "ce_review"})
