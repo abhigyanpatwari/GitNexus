@@ -73,8 +73,8 @@ describe('CALL_SUMMARY relation-type exclusion (U-C1)', () => {
 });
 
 describe('CALL_SUMMARY incremental reuse gate (U-C5)', () => {
-  it('INCREMENTAL_SCHEMA_VERSION is bumped to 11 (Rust dyn-trait-object dispatch re-index window, #2604)', () => {
-    expect(INCREMENTAL_SCHEMA_VERSION).toBe(11);
+  it('INCREMENTAL_SCHEMA_VERSION is bumped to 12 (Rust range-binding ambiguity latch + import-disambiguated resolution, #2514)', () => {
+    expect(INCREMENTAL_SCHEMA_VERSION).toBe(12);
   });
 
   it('a pre-current stamp fails the `=== INCREMENTAL_SCHEMA_VERSION` reuse gate → forces full re-analyze', () => {
@@ -116,7 +116,12 @@ describe('CALL_SUMMARY incremental reuse gate (U-C5)', () => {
     // (#2604) — abstract trait methods would keep being uncaptured (no
     // ownerId/CALLS resolution) on unchanged Rust trait files → must NOT reuse.
     expect(passesReuseGate(10)).toBe(false);
+    // A pre-v12 (v11) index predates the #2514 Rust range-binding fix — the
+    // ambiguity latch removes spurious cross-file CALLS edges and the
+    // import-disambiguated resolution adds new ones on unchanged Rust files,
+    // neither of which reach an incremental write set → must NOT reuse.
+    expect(passesReuseGate(11)).toBe(false);
     // A current-version stamp passes the gate (incremental top-up eligible).
-    expect(passesReuseGate(11)).toBe(true);
+    expect(passesReuseGate(12)).toBe(true);
   });
 });
