@@ -18,9 +18,10 @@ import { normalizeKotlinType } from './interpret.js';
 import { synthesizeKotlinReceiverBinding } from './receiver-binding.js';
 import { getKotlinParser, getKotlinScopeQuery } from './query.js';
 import { markCompanionScope } from './companion-scopes.js';
-import { setKotlinClassAnnotationFacts } from './capture-side-channel.js';
+import { setKotlinClassAnnotationFacts, setKotlinSpringDiFacts } from './capture-side-channel.js';
 import { captureKotlinPackageFact } from './package-facts.js';
 import { synthesizeCallableFlowCaptures } from '../../utils/callable-flow-captures.js';
+import { captureKotlinSpringDiClassFact, type KotlinSpringDiClassFact } from './spring-di.js';
 
 const FUNCTION_DECL_TAGS = ['@declaration.function'] as const;
 
@@ -83,6 +84,8 @@ export function emitKotlinScopeCaptures(
 
   const out: CaptureMatch[] = [];
   const classAnnotations = new Map<ScopeId, Set<string>>();
+  const springDiFacts: KotlinSpringDiClassFact[] = [];
+  const springDiClassNodeIds = new Set<number>();
   const returnTypes = collectKotlinReturnTypeTexts(tree.rootNode);
   out.push(...synthesizeKotlinLocalAssignmentBindings(tree.rootNode, returnTypes));
   out.push(...synthesizeKotlinLoopBindings(tree.rootNode, returnTypes));
@@ -105,6 +108,13 @@ export function emitKotlinScopeCaptures(
       groupedNodes[tag] = capture.node;
     }
     if (Object.keys(grouped).length === 0) continue;
+
+    const springDiClassNode = nodeIfType(groupedNodes['@scope.class'], 'class_declaration');
+    if (springDiClassNode !== null && !springDiClassNodeIds.has(springDiClassNode.id)) {
+      springDiClassNodeIds.add(springDiClassNode.id);
+      const fact = captureKotlinSpringDiClassFact(springDiClassNode, filePath);
+      if (fact !== null) springDiFacts.push(fact);
+    }
 
     const annotatedClass = grouped['@class-annotation.class'];
     const annotationName = grouped['@class-annotation.name'];
@@ -288,6 +298,7 @@ export function emitKotlinScopeCaptures(
   }
 
   setKotlinClassAnnotationFacts(filePath, materializeClassAnnotationFacts(classAnnotations));
+  setKotlinSpringDiFacts(filePath, springDiFacts);
   out.push(...synthesizeCallableFlowCaptures(tree.rootNode, KOTLIN_CALLABLE_CAPTURE_OPTIONS));
   return out;
 }

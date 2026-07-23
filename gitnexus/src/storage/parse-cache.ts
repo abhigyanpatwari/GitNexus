@@ -55,8 +55,8 @@ import type { ParseWorkerResult } from '../core/ingestion/workers/parse-worker.j
 // the main thread (the #1983 OOM). Because the two stores share this version,
 // any future change to the `ParsedFile` serialization shape MUST bump
 // SCHEMA_BUMP so both invalidate in lockstep.
-// v21: Java Spring DI facts persist constructor, field, and method injection
-// sites plus bean-name and @Primary provider metadata.
+// v21: Java/Kotlin Spring DI facts persist constructor, field/property, and
+// method injection sites plus bean-name and @Primary provider metadata.
 // v20: Java/Kotlin capture side-channels persist package and class-annotation
 // facts for shared Spring Bean resolution.
 // v19: Java enum constant bodies emit E$N Class nodes; anonymous naming uses

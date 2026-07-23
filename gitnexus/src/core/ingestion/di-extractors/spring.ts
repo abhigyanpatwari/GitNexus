@@ -51,9 +51,11 @@
  *   between `<` and the element) are NOT stripped and fail closed —
  *   acceptable.
  *
- * Registered under `SupportedLanguages.Java` in `./index.ts` (`DI_RESOLVERS`);
- * language routing is the registry's job, so the matcher itself never reads
- * `node.properties.language`.
+ * Registered for Java and Kotlin in `./index.ts` (`DI_RESOLVERS`); language
+ * routing is the registry's job, so the matcher itself never reads
+ * `node.properties.language`. Kotlin's AST-backed class metadata is the
+ * primary path because Kotlin Property extraction intentionally exposes less
+ * annotation/type syntax than Java's legacy field contract.
  */
 
 import type { GraphNode } from 'gitnexus-shared';
@@ -274,7 +276,7 @@ function isProviderMatch(value: unknown): value is DiProviderMatch {
   );
 }
 
-/** Java/Spring resolver registered behind the framework-neutral DI seam. */
+/** JVM/Spring resolver registered behind the framework-neutral DI seam. */
 export const springDiResolver: DiResolver = {
   matchInjectionSites(node): readonly DiInjectionMatch[] {
     const matches: DiInjectionMatch[] = [];

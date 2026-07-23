@@ -394,3 +394,185 @@ public class AmbiguousConsumer {
     );
   });
 });
+
+describe('Kotlin Spring standard injection pipeline (#2414)', () => {
+  let dir: string;
+  let result: PipelineResult;
+
+  const sources: Record<string, string> = {
+    'PaymentGateway.kt': `package com.example
+interface PaymentGateway
+`,
+    'FastGateway.kt': `package com.example
+import org.springframework.context.annotation.Primary
+import org.springframework.stereotype.Service
+@Service @Primary
+class FastGateway : PaymentGateway
+`,
+    'SlowGateway.kt': `package com.example
+import org.springframework.stereotype.Service
+@Service("slowGateway")
+class SlowGateway : PaymentGateway
+`,
+    'ConcreteRepo.kt': `package com.example
+import org.springframework.stereotype.Repository
+@Repository
+class ConcreteRepo
+`,
+    'ConstructorConsumer.kt': `package com.example
+import org.springframework.stereotype.Service
+@Service
+class ConstructorConsumer(
+  val gateway: PaymentGateway,
+  repo: ConcreteRepo?,
+)
+`,
+    'ExplicitConstructorConsumer.kt': `package com.example
+import org.springframework.beans.factory.annotation.Autowired
+import org.springframework.stereotype.Service
+@Service
+class ExplicitConstructorConsumer() {
+  @Autowired constructor(repo: ConcreteRepo) : this()
+}
+`,
+    'QualifiedConsumer.kt': `package com.example
+import org.springframework.beans.factory.annotation.Qualifier
+import org.springframework.stereotype.Service
+@Service
+class QualifiedConsumer(
+  @param:Qualifier("slowGateway") gateway: PaymentGateway,
+)
+`,
+    'NamedConsumer.kt': `package com.example
+import jakarta.inject.Named
+import org.springframework.stereotype.Service
+@Service
+class NamedConsumer(@Named("slowGateway") gateway: PaymentGateway)
+`,
+    'FieldConsumer.kt': `package com.example
+import org.springframework.beans.factory.annotation.Autowired
+import org.springframework.stereotype.Service
+@Service
+class FieldConsumer {
+  @field:Autowired
+  lateinit var gateway: PaymentGateway
+}
+`,
+    'QualifiedFieldConsumer.kt': `package com.example
+import org.springframework.beans.factory.annotation.Autowired
+import org.springframework.beans.factory.annotation.Qualifier
+import org.springframework.stereotype.Service
+@Service
+class QualifiedFieldConsumer {
+  @field:Autowired
+  @field:Qualifier("slowGateway")
+  lateinit var gateway: PaymentGateway
+}
+`,
+    'SetterPropertyConsumer.kt': `package com.example
+import jakarta.inject.Inject
+import org.springframework.stereotype.Service
+@Service
+class SetterPropertyConsumer {
+  @set:Inject
+  var repo: ConcreteRepo? = null
+}
+`,
+    'MethodConsumer.kt': `package com.example
+import javax.inject.Inject
+import org.springframework.stereotype.Service
+@Service
+class MethodConsumer {
+  @Inject fun setRepo(repo: ConcreteRepo) {}
+}
+`,
+    'CollectionConsumer.kt': `package com.example
+import org.springframework.stereotype.Service
+@Service
+class CollectionConsumer(val gateways: List<out PaymentGateway>)
+`,
+    'MutableCollectionConsumer.kt': `package com.example
+import org.springframework.stereotype.Service
+@Service
+class MutableCollectionConsumer(val gateways: MutableList<PaymentGateway?>?)
+`,
+    'PlainConstructorConsumer.kt': `package com.example
+class PlainConstructorConsumer(gateway: PaymentGateway)
+`,
+    'MultipleConstructorConsumer.kt': `package com.example
+import org.springframework.stereotype.Service
+@Service
+class MultipleConstructorConsumer(gateway: PaymentGateway) {
+  constructor(repo: ConcreteRepo) : this(FastGateway())
+}
+`,
+    'GetterTargetConsumer.kt': `package com.example
+import org.springframework.beans.factory.annotation.Autowired
+import org.springframework.stereotype.Service
+@Service
+class GetterTargetConsumer {
+  @get:Autowired
+  var gateway: PaymentGateway? = null
+}
+`,
+    'DynamicQualifierConsumer.kt': `package com.example
+import org.springframework.beans.factory.annotation.Qualifier
+import org.springframework.stereotype.Service
+const val GATEWAY = "slowGateway"
+@Service
+class DynamicQualifierConsumer(@Qualifier(GATEWAY) gateway: PaymentGateway)
+`,
+  };
+
+  beforeAll(async () => {
+    dir = fs.mkdtempSync(path.join(os.tmpdir(), 'gn-kotlin-spring-standard-di-'));
+    for (const [fileName, source] of Object.entries(sources)) {
+      fs.writeFileSync(path.join(dir, fileName), source);
+    }
+    result = await runPipelineFromRepo(dir, () => {}, {});
+  }, 60_000);
+
+  afterAll(() => {
+    if (dir) fs.rmSync(dir, { recursive: true, force: true });
+  });
+
+  it('resolves Kotlin primary/secondary constructors, properties, methods, qualifiers, primary, nullable types, and projections', () => {
+    const details = injectsDetails(result);
+    expect(details.map((detail) => detail.pair)).toEqual([
+      'CollectionConsumer->FastGateway',
+      'CollectionConsumer->SlowGateway',
+      'ConstructorConsumer->ConcreteRepo',
+      'ConstructorConsumer->FastGateway',
+      'ExplicitConstructorConsumer->ConcreteRepo',
+      'FieldConsumer->FastGateway',
+      'MethodConsumer->ConcreteRepo',
+      'MutableCollectionConsumer->FastGateway',
+      'MutableCollectionConsumer->SlowGateway',
+      'NamedConsumer->SlowGateway',
+      'QualifiedConsumer->SlowGateway',
+      'QualifiedFieldConsumer->SlowGateway',
+      'SetterPropertyConsumer->ConcreteRepo',
+    ]);
+
+    expect(
+      details.find((detail) => detail.pair === 'ConstructorConsumer->FastGateway'),
+    ).toMatchObject({ confidence: 0.95, reason: expect.stringContaining('selected @Primary') });
+    expect(
+      details.find((detail) => detail.pair === 'QualifiedConsumer->SlowGateway'),
+    ).toMatchObject({
+      confidence: 0.95,
+      reason: expect.stringContaining('qualifier "slowGateway"'),
+    });
+    expect(
+      details.find((detail) => detail.pair === 'SetterPropertyConsumer->ConcreteRepo')?.reason,
+    ).toContain('@Inject property');
+  });
+
+  it('fails closed for unmanaged or ambiguous constructors, unsupported getter targets, and dynamic qualifiers', () => {
+    const pairs = injectsPairs(result);
+    expect(pairs.some((pair) => pair.startsWith('PlainConstructorConsumer->'))).toBe(false);
+    expect(pairs.some((pair) => pair.startsWith('MultipleConstructorConsumer->'))).toBe(false);
+    expect(pairs.some((pair) => pair.startsWith('GetterTargetConsumer->'))).toBe(false);
+    expect(pairs.some((pair) => pair.startsWith('DynamicQualifierConsumer->'))).toBe(false);
+  });
+});

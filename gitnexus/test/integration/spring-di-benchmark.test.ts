@@ -3,14 +3,16 @@
  *
  * Guards the two hot paths introduced by standard Spring injection:
  *
- *   1. Java capture emission collects DI facts from the existing scope-query
- *      traversal instead of recursively walking the AST root a second time.
+ *   1. Java and Kotlin capture emission collect DI facts from their existing
+ *      scope-query traversals instead of recursively walking the AST root a
+ *      second time.
  *   2. Post-resolution metadata attachment finds captured fields through the
  *      owning class scope's bindings instead of scanning every HAS_PROPERTY
  *      relationship in the graph.
  *
- * The normal-CI tripwire uses one dense Java file to catch a capture
- * re-regression. The gated suites measure capture and full-pipeline scaling:
+ * The normal-CI tripwires use dense Java/Kotlin files to catch a capture
+ * re-regression. The gated suites measure Java capture and full-pipeline
+ * scaling:
  *
  *   GITNEXUS_BENCH=1 npx vitest run test/integration/spring-di-benchmark.test.ts
  */
@@ -20,6 +22,8 @@ import path from 'node:path';
 import { describe, expect, it } from 'vitest';
 import { emitJavaScopeCaptures } from '../../src/core/ingestion/languages/java/captures.js';
 import { collectJavaCaptureSideChannel } from '../../src/core/ingestion/languages/java/capture-side-channel.js';
+import { emitKotlinScopeCaptures } from '../../src/core/ingestion/languages/kotlin/captures.js';
+import { collectKotlinCaptureSideChannel } from '../../src/core/ingestion/languages/kotlin/capture-side-channel.js';
 import { runPipelineFromRepo } from '../../src/core/ingestion/pipeline.js';
 
 const BENCH_ENABLED = process.env.GITNEXUS_BENCH === '1';
@@ -75,6 +79,49 @@ function runCaptureBenchmark(consumerCount: number, run: number): CaptureBenchRe
   };
 }
 
+function denseKotlinSpringSource(consumerCount: number): string {
+  const consumers = Array.from(
+    { length: consumerCount },
+    (_, index) => `
+@Service
+class Consumer${index} @Autowired constructor(
+  @param:Qualifier("gatewayImpl") gateway: Gateway,
+) {
+  @field:Autowired lateinit var field${index}: Gateway
+  @Inject fun setGateway(gateway: Gateway) {}
+}
+`,
+  ).join('\n');
+
+  return `package com.example
+import org.springframework.stereotype.Service
+import org.springframework.beans.factory.annotation.Autowired
+import org.springframework.beans.factory.annotation.Qualifier
+import jakarta.inject.Inject
+
+interface Gateway
+
+@Service
+class GatewayImpl : Gateway
+
+${consumers}
+`;
+}
+
+function runKotlinCaptureBenchmark(consumerCount: number, run: number): CaptureBenchResult {
+  const filePath = `src/SpringDiBench${consumerCount}_${run}.kt`;
+  const start = performance.now();
+  const captures = emitKotlinScopeCaptures(denseKotlinSpringSource(consumerCount), filePath);
+  const elapsedMs = performance.now() - start;
+  const facts = collectKotlinCaptureSideChannel(filePath)?.springDiFacts ?? [];
+  return {
+    consumers: consumerCount,
+    elapsedMs,
+    captureCount: captures.length,
+    factCount: facts.length,
+  };
+}
+
 describe('Spring DI capture O(n²) regression tripwire (#2414)', () => {
   it('captures a dense 400-consumer file within a coarse linear-time budget', () => {
     const consumers = 400;
@@ -85,6 +132,18 @@ describe('Spring DI capture O(n²) regression tripwire (#2414)', () => {
 
     expect(result.factCount).toBe(consumers + 1);
     expect(result.captureCount).toBeGreaterThan(consumers * 10);
+    expect(result.elapsedMs).toBeLessThan(budgetMs);
+  }, 30_000);
+
+  it('captures a dense 400-consumer Kotlin file within a coarse linear-time budget', () => {
+    const consumers = 400;
+    const budgetMs = 10_000;
+
+    runKotlinCaptureBenchmark(4, 0);
+    const result = runKotlinCaptureBenchmark(consumers, 1);
+
+    expect(result.factCount).toBe(consumers + 1);
+    expect(result.captureCount).toBeGreaterThan(consumers * 8);
     expect(result.elapsedMs).toBeLessThan(budgetMs);
   }, 30_000);
 });
@@ -109,6 +168,43 @@ describe.skipIf(!BENCH_ENABLED)('Spring DI capture scaling benchmark (#2414)', (
       results.push({ consumers, elapsedMs, captureCount, factCount });
       console.log(
         `  capture n=${consumers} ×${repetitions}: ${elapsedMs.toFixed(1)}ms ` +
+          `(${factCount} facts, ${captureCount} captures/run)`,
+      );
+    }
+
+    const first = results[0];
+    const last = results[results.length - 1];
+    const sizeRatio = last.consumers / first.consumers;
+    if (first.elapsedMs >= 20) {
+      const wallRatio = last.elapsedMs / first.elapsedMs;
+      expect(wallRatio).toBeLessThan(Math.pow(sizeRatio, 1.5));
+    } else {
+      expect(last.elapsedMs).toBeLessThan(10_000);
+    }
+    expect(last.factCount).toBe(last.consumers + 1);
+  }, 120_000);
+});
+
+describe.skipIf(!BENCH_ENABLED)('Kotlin Spring DI capture scaling benchmark (#2414)', () => {
+  it('scales sub-quadratically as classes and injection sites grow together', () => {
+    const scales = [100, 200, 400];
+    const repetitions = 4;
+    const results: CaptureBenchResult[] = [];
+
+    runKotlinCaptureBenchmark(8, 0);
+    for (const consumers of scales) {
+      let elapsedMs = 0;
+      let captureCount = 0;
+      let factCount = 0;
+      for (let run = 0; run < repetitions; run++) {
+        const current = runKotlinCaptureBenchmark(consumers, run + 1);
+        elapsedMs += current.elapsedMs;
+        captureCount = current.captureCount;
+        factCount = current.factCount;
+      }
+      results.push({ consumers, elapsedMs, captureCount, factCount });
+      console.log(
+        `  kotlin capture n=${consumers} ×${repetitions}: ${elapsedMs.toFixed(1)}ms ` +
           `(${factCount} facts, ${captureCount} captures/run)`,
       );
     }

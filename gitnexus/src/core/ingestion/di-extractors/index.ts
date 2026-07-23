@@ -10,7 +10,8 @@
  *
  * The registry is single-valued per language, matching the `SCOPE_RESOLVERS`
  * shape; widen the value type to arrays only when a second same-language
- * framework actually lands.
+ * framework actually lands. Java and Kotlin share Spring's attached metadata
+ * contract while retaining language-specific syntax capture.
  */
 
 import { SupportedLanguages } from 'gitnexus-shared';
@@ -67,4 +68,7 @@ export function isSupportedLanguage(value: string): value is SupportedLanguages 
 export const DI_RESOLVERS: ReadonlyMap<SupportedLanguages, DiResolver> = new Map<
   SupportedLanguages,
   DiResolver
->([[SupportedLanguages.Java, springDiResolver]]);
+>([
+  [SupportedLanguages.Java, springDiResolver],
+  [SupportedLanguages.Kotlin, springDiResolver],
+]);
