@@ -446,9 +446,8 @@ export function attachKotlinSpringDiMetadata(
         if (explicitBeanName !== undefined) names.add(explicitBeanName);
         else if (!hasDynamicBeanName) names.add(defaultBeanName(classNode.properties.name));
         const provider: DiProviderMatch = {
-          isBean: true,
           names: [...names],
-          primary,
+          ...(primary ? { preferenceReason: 'selected @Primary' } : {}),
         };
         classNode.properties[SPRING_DI_PROVIDER_PROPERTY] = provider;
       }
@@ -499,7 +498,14 @@ export function attachKotlinSpringDiMetadata(
           matches.push({
             targetTypeName: parsedType.targetTypeName,
             cardinality: parsedType.cardinality,
-            ...(qualifier === undefined ? {} : { qualifier }),
+            ...(qualifier === undefined
+              ? {}
+              : {
+                  namedSelection: {
+                    name: qualifier,
+                    reason: `qualifier "${qualifier}"`,
+                  },
+                }),
             reason: `Spring DI: ${trigger} ${location}: ${parsedType.displayType}`,
           });
         }

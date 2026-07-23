@@ -257,11 +257,16 @@ export const springDiFieldMatcher = (
 function isInjectionMatch(value: unknown): value is DiInjectionMatch {
   if (value === null || typeof value !== 'object') return false;
   const match = value as Partial<DiInjectionMatch>;
+  const namedSelection = match.namedSelection;
   return (
     typeof match.targetTypeName === 'string' &&
     (match.cardinality === 'single' || match.cardinality === 'collection') &&
     typeof match.reason === 'string' &&
-    (match.qualifier === undefined || typeof match.qualifier === 'string')
+    (namedSelection === undefined ||
+      (typeof namedSelection === 'object' &&
+        namedSelection !== null &&
+        typeof namedSelection.name === 'string' &&
+        typeof namedSelection.reason === 'string'))
   );
 }
 
@@ -269,10 +274,9 @@ function isProviderMatch(value: unknown): value is DiProviderMatch {
   if (value === null || typeof value !== 'object') return false;
   const provider = value as Partial<DiProviderMatch>;
   return (
-    typeof provider.isBean === 'boolean' &&
-    typeof provider.primary === 'boolean' &&
     Array.isArray(provider.names) &&
-    provider.names.every((name) => typeof name === 'string')
+    provider.names.every((name) => typeof name === 'string') &&
+    (provider.preferenceReason === undefined || typeof provider.preferenceReason === 'string')
   );
 }
 

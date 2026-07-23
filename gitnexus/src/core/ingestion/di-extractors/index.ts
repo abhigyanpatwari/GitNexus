@@ -20,13 +20,17 @@ import { springDiResolver } from './spring.js';
 
 /** A successful injection-site match, produced by a per-language resolver. */
 export interface DiInjectionMatch {
-  /** The requested bean type name. */
+  /** The requested dependency type name. */
   targetTypeName: string;
-  /** A collection receives every matching provider; a single site must be
-   *  disambiguated by qualifier, primary status, or uncertainty. */
+  /** A collection receives every matching provider; a single site may need
+   *  framework-specific named/preferred-provider disambiguation. */
   cardinality: 'single' | 'collection';
-  /** Statically known provider/bean name requested at the injection site. */
-  qualifier?: string;
+  /** Statically known provider name requested at the injection site. The
+   *  resolver owns the human-readable explanation of that selection. */
+  namedSelection?: {
+    name: string;
+    reason: string;
+  };
   /** Human-readable edge reason. Framework specifics (names, idioms,
    *  collection wrapper, gating annotation) live in this payload so the
    *  shared `di` phase stays framework-neutral. */
@@ -35,12 +39,11 @@ export interface DiInjectionMatch {
 
 /** Provider metadata used by the shared resolver without naming a framework. */
 export interface DiProviderMatch {
-  /** Whether the class is statically known to be container-managed. */
-  isBean: boolean;
-  /** Bean names and qualifier aliases that can satisfy a named injection. */
+  /** Provider names and aliases that can satisfy a named injection. */
   names: readonly string[];
-  /** Whether this provider has the framework's preferred-candidate marker. */
-  primary: boolean;
+  /** Present when the framework marks this as its preferred candidate. The
+   *  value is appended to the emitted edge reason when it disambiguates. */
+  preferenceReason?: string;
 }
 
 /** Per-language DI behavior. Matchers receive whole nodes so the shared phase

@@ -76,12 +76,12 @@ function providerCandidates(
   providers: ReadonlyMap<string, DiProviderMatch>,
 ): string[] {
   const all = [...ids];
-  const managed = all.filter((id) => providers.get(id)?.isBean === true);
-  // Recall-first fallback: bean metadata is deliberately incomplete (custom
-  // stereotypes, factory-created beans, and legacy indexes can all omit it).
-  // Prefer known managed providers when present, but keep structurally valid
+  const recognized = all.filter((id) => providers.has(id));
+  // Recall-first fallback: provider metadata can be incomplete (custom
+  // registration mechanisms and legacy indexes can omit it). Prefer
+  // framework-recognized providers when present, but keep structurally valid
   // candidates when none are known instead of dropping the injection entirely.
-  return managed.length > 0 ? managed : all;
+  return recognized.length > 0 ? recognized : all;
 }
 
 export const diPhase: PipelinePhase<DIOutput> = {
@@ -200,16 +200,17 @@ export const diPhase: PipelinePhase<DIOutput> = {
       if (structural.size === 0) continue;
 
       let viable = providerCandidates(structural, providers);
-      const qualifier = candidate.qualifier;
-      if (qualifier !== undefined) {
-        viable = viable.filter((id) => providers.get(id)?.names.includes(qualifier) === true);
+      const namedSelection = candidate.namedSelection;
+      if (namedSelection !== undefined) {
+        viable = viable.filter(
+          (id) => providers.get(id)?.names.includes(namedSelection.name) === true,
+        );
         if (viable.length === 0) continue;
       }
 
       if (candidate.cardinality === 'collection') {
-        const confidence = candidate.qualifier === undefined ? 0.8 : 0.9;
-        const suffix =
-          candidate.qualifier === undefined ? '' : `; qualifier "${candidate.qualifier}"`;
+        const confidence = namedSelection === undefined ? 0.8 : 0.9;
+        const suffix = namedSelection === undefined ? '' : `; ${namedSelection.reason}`;
         for (const targetId of viable) {
           queueEdge({
             sourceId: consumerClassId,
@@ -222,24 +223,27 @@ export const diPhase: PipelinePhase<DIOutput> = {
       }
 
       if (viable.length === 1) {
-        const suffix =
-          candidate.qualifier === undefined ? '' : `; qualifier "${candidate.qualifier}"`;
+        const suffix = namedSelection === undefined ? '' : `; ${namedSelection.reason}`;
         queueEdge({
           sourceId: consumerClassId,
           targetId: viable[0],
-          confidence: candidate.qualifier === undefined ? 0.9 : 0.95,
+          confidence: namedSelection === undefined ? 0.9 : 0.95,
           reason: candidate.reason + suffix,
         });
         continue;
       }
 
-      const primary = viable.filter((id) => providers.get(id)?.primary === true);
-      if (candidate.qualifier === undefined && primary.length === 1) {
+      const preferred = viable.flatMap((id) => {
+        const reason = providers.get(id)?.preferenceReason;
+        return reason === undefined ? [] : [{ id, reason }];
+      });
+      if (namedSelection === undefined && preferred.length === 1) {
+        const selected = preferred[0];
         queueEdge({
           sourceId: consumerClassId,
-          targetId: primary[0],
+          targetId: selected.id,
           confidence: 0.95,
-          reason: `${candidate.reason}; selected @Primary`,
+          reason: `${candidate.reason}; ${selected.reason}`,
         });
         continue;
       }
