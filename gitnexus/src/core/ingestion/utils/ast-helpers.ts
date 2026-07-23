@@ -499,10 +499,9 @@ const buildJavaTypeIdentityState = (root: SyntaxNode): JavaTypeIdentityState => 
   for (const candidate of javaIdentityCandidatesBelow(root)) {
     const host = nearestJavaEnclosingType(candidate);
     if (host === null) continue;
-    const bindingName = isJavaAnonymousBodyNode(candidate)
-      ? ''
-      : candidate.childForFieldName?.('name')?.text;
-    if (bindingName === undefined) continue;
+    const isAnonymous = isJavaAnonymousBodyNode(candidate);
+    const bindingName = isAnonymous ? '' : candidate.childForFieldName?.('name')?.text;
+    if (!isAnonymous && !bindingName) continue;
     const sequenceKey = `${javaHostKey(host)}:${bindingName}`;
     const ordinal = (sequenceCounts.get(sequenceKey) ?? 0) + 1;
     sequenceCounts.set(sequenceKey, ordinal);
