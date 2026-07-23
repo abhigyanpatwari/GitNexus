@@ -1,7 +1,7 @@
 {
   "rust-abstract-dispatch/src/lib.rs": {
-    "captureGroups": 30,
-    "digest": "88309004d1ab00054f81bc55c1d058fc4ca25781162d6b94b7e7ce631a5d61b2"
+    "captureGroups": 34,
+    "digest": "973679363065ecd54c4e5128a9fab214ea27eca24f0f079c63a3c6f285e678b0"
   },
   "rust-abstract-dispatch/src/main.rs": {
     "captureGroups": 21,
@@ -148,8 +148,8 @@
     "digest": "e0120e3f215282e68d83b4f8f5d8918945e0b3e7ce4e0128c6afd2aa43caa1c0"
   },
   "rust-cross-module-collision/src/traits.rs": {
-    "captureGroups": 3,
-    "digest": "88eef9d92ea6e370bd8ef7fbf64c42ec622ec933fb53c56b32bc67db87fa8e03"
+    "captureGroups": 5,
+    "digest": "c7150a5052e0e2b5fd7fc21cc8ce361530fe5cc60f67ad0e2ef945bb97965b53"
   },
   "rust-deep-field-chain/models.rs": {
     "captureGroups": 24,
@@ -170,6 +170,10 @@
   "rust-default-constructor/src/user.rs": {
     "captureGroups": 22,
     "digest": "c53db401a81fde2ffd5665393acb9cd605a62ec51c015c3aafb3f41c0897471f"
+  },
+  "rust-dyn-trait-object/src/lib.rs": {
+    "captureGroups": 23,
+    "digest": "720618dff6a43ab8e5b59aa354c0c448b9057dd6f2f7b3b22b13b82d53745943"
   },
   "rust-err-unwrap/src/error.rs": {
     "captureGroups": 9,
@@ -316,8 +320,8 @@
     "digest": "cd836a2a9c15ab240961d2e15f192f7e33d65eb5ebf2e1a8af2f620a47fe66ae"
   },
   "rust-method-enrichment/src/lib.rs": {
-    "captureGroups": 40,
-    "digest": "71627a8218e32514b6945e4e310686eb631ce37451c90c9644e3f5336a37820b"
+    "captureGroups": 42,
+    "digest": "a4d9ca570fbb1ff1859a0b4f737aa3507b236f99700d37ded2c8c36518add567"
   },
   "rust-method-enrichment/src/main.rs": {
     "captureGroups": 18,
@@ -360,8 +364,8 @@
     "digest": "141388068614e16d96f27cfdf18ac9001b9e202ce832fe10f38dab990637b3ab"
   },
   "rust-parent-resolution/src/serializable.rs": {
-    "captureGroups": 3,
-    "digest": "f35d44f44d81e3a0be40f68ba9dbd4bde6f01659fa15b6db34a458ad460f904e"
+    "captureGroups": 5,
+    "digest": "f33bb881dd937cdd5af2eca6b0284ea79ca2d296c79217513f882dcba8a82fd8"
   },
   "rust-parent-resolution/src/user.rs": {
     "captureGroups": 13,
@@ -372,8 +376,8 @@
     "digest": "bc8946d31db81b85d780633608fdaa7565258cd788285fa00cd6dcb0de3dd16c"
   },
   "rust-qualified-trait/src/traits.rs": {
-    "captureGroups": 5,
-    "digest": "15be069f28f1400e4beb0b0860acb59979f78549960486f36a92f56578f05a06"
+    "captureGroups": 9,
+    "digest": "10f3bba4c2a16cdac77de0498ff506910ac09cc1a85e7daebfc5743c54e26015"
   },
   "rust-qualified-trait/src/widget.rs": {
     "captureGroups": 23,
@@ -492,12 +496,12 @@
     "digest": "f1b9f72d74467be55a8b7679215b49bcabb4d0fced6080f752672070b32ed93d"
   },
   "rust-traits/src/traits/clickable.rs": {
-    "captureGroups": 3,
-    "digest": "3ed5b27c172d48f83929715ba92d1030a282f9f1e29ec2fcdd3d7e9efbc54a84"
+    "captureGroups": 7,
+    "digest": "83c36832f24446fe03a07288dd394bc7494a54e5979c9b71c1dcb8b19ab54341"
   },
   "rust-traits/src/traits/drawable.rs": {
-    "captureGroups": 5,
-    "digest": "1dca39bbc7c1b1b66f1a34730b9a5b4dba04c54ee9d2688255e0fd4e6bc48499"
+    "captureGroups": 9,
+    "digest": "cee5091f041038722f1f012394a75ba4e16870d05b2dafa37371200e785198f0"
   },
   "rust-union/lib.rs": {
     "captureGroups": 10,

@@ -44,6 +44,7 @@ import {
 } from '../helpers/embedding-seed.js';
 import { CLASS_FRAMEWORK_ANNOTATIONS_FEATURE } from '../../src/core/analysis-features.js';
 import { SPRING_BEAN_INVENTORY_FEATURE } from '../../src/core/ingestion/frameworks/spring/analysis-features.js';
+import { SPRING_CONFIG_BINDINGS_FEATURE } from '../../src/core/ingestion/languages/java/analysis-features.js';
 
 const setupMiniRepo = () => setupSharedMiniRepo('gitnexus-incr-orch-');
 
@@ -102,6 +103,16 @@ async function setupKotlinSpringBeanIncrementalRepo() {
   return repo;
 }
 
+async function setupSpringConfigIncrementalRepo() {
+  const repo = await createTempDir('gitnexus-incr-spring-config-');
+  const resources = path.join(repo.dbPath, 'src', 'main', 'resources');
+  await mkdir(resources, { recursive: true });
+  await writeFile(path.join(resources, 'application.properties'), 'service.timeout=30\n', 'utf-8');
+  execSync('git init', { cwd: repo.dbPath, stdio: 'pipe' });
+  gitCommitAll(repo.dbPath, 'initial spring configuration');
+  return repo;
+}
+
 async function readWildcardServiceAnnotations(repoPath: string): Promise<string[]> {
   const adapter = await import('../../src/core/lbug/lbug-adapter.js');
   const { lbugPath } = getStoragePaths(repoPath);
@@ -115,6 +126,21 @@ async function readWildcardServiceAnnotations(repoPath: string): Promise<string[
     return Array.isArray(value)
       ? value.filter((item): item is string => typeof item === 'string')
       : [];
+  } finally {
+    await adapter.closeLbug();
+  }
+}
+
+async function readSpringConfigPropertyNames(repoPath: string): Promise<string[]> {
+  const adapter = await import('../../src/core/lbug/lbug-adapter.js');
+  const { lbugPath } = getStoragePaths(repoPath);
+  await adapter.initLbug(lbugPath);
+  try {
+    const rows = (await adapter.executeQuery(
+      "MATCH (p:Property) WHERE p.filePath = 'src/main/resources/application.properties' " +
+        'RETURN p.name AS name ORDER BY p.name',
+    )) as Array<{ name?: unknown }>;
+    return rows.map((row) => String(row.name));
   } finally {
     await adapter.closeLbug();
   }
@@ -265,6 +291,38 @@ describe('runFullAnalysis — incremental orchestration', () => {
       expect((await loadMeta(storagePath))!.analysisFeatures).toEqual({
         [CLASS_FRAMEWORK_ANNOTATIONS_FEATURE.id]: CLASS_FRAMEWORK_ANNOTATIONS_FEATURE.version,
         [SPRING_BEAN_INVENTORY_FEATURE.id]: SPRING_BEAN_INVENTORY_FEATURE.version,
+      });
+    } finally {
+      await repo.cleanup();
+    }
+  }, 300_000);
+
+  it('a config-only index missing Spring config evidence rebuilds and restores the scoped stamp', async () => {
+    const repo = await setupSpringConfigIncrementalRepo();
+    try {
+      const { runFullAnalysis } = await import('../../src/core/run-analyze.js');
+      await runFullAnalysis(repo.dbPath, { skipAgentsMd: true }, { onProgress: () => {} });
+      const { storagePath } = getStoragePaths(repo.dbPath);
+      const meta = await loadMeta(storagePath);
+      expect(meta!.analysisFeatures).toEqual({
+        [CLASS_FRAMEWORK_ANNOTATIONS_FEATURE.id]: CLASS_FRAMEWORK_ANNOTATIONS_FEATURE.version,
+        [SPRING_CONFIG_BINDINGS_FEATURE.id]: SPRING_CONFIG_BINDINGS_FEATURE.version,
+      });
+
+      await saveMeta(storagePath, withoutAnalysisFeature(meta!, SPRING_CONFIG_BINDINGS_FEATURE.id));
+      const logs: string[] = [];
+      const reanalyzed = await runFullAnalysis(
+        repo.dbPath,
+        { skipAgentsMd: true },
+        { onProgress: () => {}, onLog: (message) => logs.push(message) },
+      );
+
+      expect(reanalyzed.alreadyUpToDate).toBeUndefined();
+      expect(logs.join('\n')).toContain(`missing:${SPRING_CONFIG_BINDINGS_FEATURE.id}`);
+      expect(await readSpringConfigPropertyNames(repo.dbPath)).toEqual(['service.timeout']);
+      expect((await loadMeta(storagePath))!.analysisFeatures).toEqual({
+        [CLASS_FRAMEWORK_ANNOTATIONS_FEATURE.id]: CLASS_FRAMEWORK_ANNOTATIONS_FEATURE.version,
+        [SPRING_CONFIG_BINDINGS_FEATURE.id]: SPRING_CONFIG_BINDINGS_FEATURE.version,
       });
     } finally {
       await repo.cleanup();

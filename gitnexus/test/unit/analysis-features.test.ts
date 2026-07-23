@@ -6,8 +6,13 @@ import {
   type AnalysisFeatureDescriptor,
 } from '../../src/core/analysis-features.js';
 import { SPRING_BEAN_INVENTORY_FEATURE } from '../../src/core/ingestion/frameworks/spring/analysis-features.js';
+import { SPRING_CONFIG_BINDINGS_FEATURE } from '../../src/core/ingestion/languages/java/analysis-features.js';
 
-const FEATURES = [CLASS_FRAMEWORK_ANNOTATIONS_FEATURE, SPRING_BEAN_INVENTORY_FEATURE] as const;
+const FEATURES = [
+  CLASS_FRAMEWORK_ANNOTATIONS_FEATURE,
+  SPRING_BEAN_INVENTORY_FEATURE,
+  SPRING_CONFIG_BINDINGS_FEATURE,
+] as const;
 
 describe('analysis feature versions', () => {
   it('separates the global Class schema capability from JVM-only Bean evidence', () => {
@@ -17,10 +22,20 @@ describe('analysis feature versions', () => {
     expect(resolveAnalysisFeatureVersions(FEATURES, ['src/App.java'])).toEqual({
       'graph.class-framework-annotations': 1,
       'spring.bean-inventory': 1,
+      'spring.config-bindings': 1,
     });
     expect(resolveAnalysisFeatureVersions(FEATURES, ['BUILD.GRADLE.KTS'])).toEqual({
       'graph.class-framework-annotations': 1,
       'spring.bean-inventory': 1,
+    });
+    expect(
+      resolveAnalysisFeatureVersions(FEATURES, [
+        'src/main/resources/application-local.yml',
+        'README.md',
+      ]),
+    ).toEqual({
+      'graph.class-framework-annotations': 1,
+      'spring.config-bindings': 1,
     });
   });
 

@@ -1952,6 +1952,31 @@ describe('Rust abstract dispatch (Repository trait)', () => {
 });
 
 // ---------------------------------------------------------------------------
+// #2604: trait-object (&dyn Trait) receiver dispatch
+// ---------------------------------------------------------------------------
+
+describe('Rust dyn trait-object dispatch (#2604)', () => {
+  let result: PipelineResult;
+
+  beforeAll(async () => {
+    result = await runPipelineFromRepo(path.join(FIXTURES, 'rust-dyn-trait-object'), () => {});
+  }, 60000);
+
+  it('detects Impl1 struct and Behaviour trait', () => {
+    expect(getNodesByLabel(result, 'Struct')).toContain('Impl1');
+    expect(getNodesByLabel(result, 'Trait')).toContain('Behaviour');
+  });
+
+  it('emits exactly one CALLS edge from calls_via_dyn(b: &dyn Behaviour) to trait_target', () => {
+    const calls = getRelationships(result, 'CALLS');
+    const dynCalls = calls.filter(
+      (c) => c.source === 'calls_via_dyn' && c.target === 'trait_target',
+    );
+    expect(dynCalls.length).toBe(1);
+  });
+});
+
+// ---------------------------------------------------------------------------
 // SM-11: Rust Child extends Parent — qualified-syntax MRO
 //
 // Companion integration test for the unit-level Rust qualified-syntax tests

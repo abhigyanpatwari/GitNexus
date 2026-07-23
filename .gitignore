@@ -68,9 +68,8 @@ gitnexus-web/test-results/
 eval/.coverage
 eval/.hypothesis/
 
-# Local docs (docs/plans/ stays tracked — gitnexus-plan output travels with the work)
+# Local docs — planning output (gitnexus-plan / gitnexus-work) stays local, not tracked
 docs/*
-!docs/plans/
 
 gitnexus/test/fixtures/mini-repo/*.md
 gitnexus/test/fixtures/mini-repo/.claude

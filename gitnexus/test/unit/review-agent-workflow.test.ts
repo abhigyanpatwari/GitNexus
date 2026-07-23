@@ -589,12 +589,12 @@ describe('gitnexus review-agent workflow security contract', () => {
     }
 
     expect(runtimePackage.dependencies?.gitnexus).toBe('1.6.9');
-    expect(runtimePackage.engines?.node).toBe('22.16.0');
+    expect(runtimePackage.engines?.node).toBe('22.18.0');
     expect(runtimeLock.packages?.['node_modules/gitnexus']?.version).toBe('1.6.9');
     expect(runtimeLock.packages?.['node_modules/gitnexus']?.integrity).toMatch(/^sha512-/);
     expect(workflow).not.toMatch(/gitnexus@(latest|next|beta)/);
-    expect(workflow).toContain("node-version: '22.16.0'");
-    expect(workflow).toContain('test "$(node --version)" = \'v22.16.0\'');
+    expect(workflow).toContain("node-version: '22.18.0'");
+    expect(workflow).toContain('test "$(node --version)" = \'v22.18.0\'');
     expect(workflow).toContain('npm ci');
     expect(workflow).not.toContain('--package-lock=false');
     expect(workflow).toContain(
@@ -682,7 +682,7 @@ describe('gitnexus review-agent workflow security contract', () => {
       '${{ runner.temp }}/gitnexus-review-claude-runtime/node_modules/@anthropic-ai/claude-code/bin/claude.exe';
 
     expect(claudeRuntimePackage.dependencies?.['@anthropic-ai/claude-code']).toBe('2.1.214');
-    expect(claudeRuntimePackage.engines?.node).toBe('22.16.0');
+    expect(claudeRuntimePackage.engines?.node).toBe('22.18.0');
     expect(claudeRuntimeLock.lockfileVersion).toBe(3);
     expect(claudeRuntimeLock.packages?.['node_modules/@anthropic-ai/claude-code']).toMatchObject({
       version: '2.1.214',
@@ -1119,7 +1119,7 @@ describe('gitnexus review-agent workflow security contract', () => {
       'CLAUDE_CONFIG_DIR: ${{ runner.temp }}/gitnexus-review-claude-config',
     );
     expect(analyze).toContain('CLAUDE_WORKING_DIR: ${{ runner.temp }}/gitnexus-review-control');
-    expect(analyze).toContain("NODE_VERSION: '22.16.0'");
+    expect(analyze).toContain("NODE_VERSION: '22.18.0'");
     expect(analyze).toContain('checkout-index --all --force');
     expect(analyze).toContain('find "${review_dir}" -type l -print0');
     expect(analyze).toContain('Escaping copied review symlink');

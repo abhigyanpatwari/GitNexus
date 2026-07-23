@@ -59,6 +59,7 @@ export interface SpringBeanCandidateAdapter {
 }
 
 type OwnedTypeNamesByOwner = ReadonlyMap<string, ReadonlySet<string>>;
+type RecognizedAnnotationNames = { readonly has: (value: string) => boolean };
 
 function simpleNameOf(def: SymbolDefinition): string | undefined {
   const qualifiedName = def.qualifiedName;
@@ -152,7 +153,11 @@ function hasVisibleTypeBinding(
   return false;
 }
 
-function wildcardImportTarget(parsed: ParsedFile, simpleName: string): string | undefined {
+function wildcardImportTarget(
+  parsed: ParsedFile,
+  simpleName: string,
+  recognizedAnnotations: RecognizedAnnotationNames,
+): string | undefined {
   const wildcardPackages = new Set(
     parsed.parsedImports
       .filter((entry) => entry.kind === 'wildcard')
@@ -161,37 +166,40 @@ function wildcardImportTarget(parsed: ParsedFile, simpleName: string): string | 
   if (wildcardPackages.size !== 1) return undefined;
   const [packageName] = wildcardPackages;
   const target = `${packageName}.${simpleName}`;
-  return SPRING_BEAN_STEREOTYPES.has(target) ? target : undefined;
+  return recognizedAnnotations.has(target) ? target : undefined;
 }
 
-function resolveSpringAnnotation(
-  rawName: string,
-  parsed: ParsedFile,
-  enclosingScope: ScopeId | null,
-  indexes: ScopeResolutionIndexes,
-  ownedTypeNamesByOwner: OwnedTypeNamesByOwner,
-  isPackageVisibilityIncomplete: boolean,
-): string | undefined {
-  if (rawName.includes('.')) {
-    return SPRING_BEAN_STEREOTYPES.has(rawName) ? rawName : undefined;
-  }
+/** Build a scope-aware Spring annotation resolver shared by framework hooks. */
+export function createSpringAnnotationNameResolver(indexes: ScopeResolutionIndexes) {
+  const ownedTypeNamesByOwner = buildOwnedTypeNamesByOwner(indexes);
+  return (
+    rawName: string,
+    parsed: ParsedFile,
+    enclosingScope: ScopeId | null,
+    recognizedAnnotations: RecognizedAnnotationNames,
+    isPackageVisibilityIncomplete: boolean,
+  ): string | undefined => {
+    if (rawName.includes('.')) {
+      return recognizedAnnotations.has(rawName) ? rawName : undefined;
+    }
 
-  if (hasLexicalTypeDeclaration(enclosingScope, rawName, indexes)) return undefined;
-  if (hasInheritedTypeDeclaration(enclosingScope, rawName, indexes, ownedTypeNamesByOwner)) {
-    return undefined;
-  }
+    if (hasLexicalTypeDeclaration(enclosingScope, rawName, indexes)) return undefined;
+    if (hasInheritedTypeDeclaration(enclosingScope, rawName, indexes, ownedTypeNamesByOwner)) {
+      return undefined;
+    }
 
-  const explicitImports = explicitImportTargets(parsed, rawName);
-  if (explicitImports.size > 0) {
-    if (explicitImports.size !== 1) return undefined;
-    const [imported] = explicitImports;
-    return SPRING_BEAN_STEREOTYPES.has(imported) ? imported : undefined;
-  }
+    const explicitImports = explicitImportTargets(parsed, rawName);
+    if (explicitImports.size > 0) {
+      if (explicitImports.size !== 1) return undefined;
+      const [imported] = explicitImports;
+      return recognizedAnnotations.has(imported) ? imported : undefined;
+    }
 
-  const wildcardTarget = wildcardImportTarget(parsed, rawName);
-  if (wildcardTarget === undefined || isPackageVisibilityIncomplete) return undefined;
+    const wildcardTarget = wildcardImportTarget(parsed, rawName, recognizedAnnotations);
+    if (wildcardTarget === undefined || isPackageVisibilityIncomplete) return undefined;
 
-  return hasVisibleTypeBinding(enclosingScope, rawName, indexes) ? undefined : wildcardTarget;
+    return hasVisibleTypeBinding(enclosingScope, rawName, indexes) ? undefined : wildcardTarget;
+  };
 }
 
 /** Build a language hook that enriches Class nodes after scope resolution. */
@@ -202,7 +210,7 @@ export function createSpringBeanCandidateAttacher(adapter: SpringBeanCandidateAd
     nodeLookup: GraphNodeLookup,
     indexes: ScopeResolutionIndexes,
   ): void => {
-    const ownedTypeNamesByOwner = buildOwnedTypeNamesByOwner(indexes);
+    const resolveSpringAnnotation = createSpringAnnotationNameResolver(indexes);
     for (const parsed of parsedFiles) {
       for (const fact of adapter.getClassAnnotationFacts(parsed.filePath)) {
         const classScope = indexes.scopeTree.getScope(fact.classScopeId);
@@ -221,8 +229,7 @@ export function createSpringBeanCandidateAttacher(adapter: SpringBeanCandidateAd
             rawName,
             parsed,
             classScope.parent,
-            indexes,
-            ownedTypeNamesByOwner,
+            SPRING_BEAN_STEREOTYPES,
             adapter.isPackageVisibilityIncomplete(parsed.filePath),
           );
           if (annotation !== undefined) recognized.add(annotation);

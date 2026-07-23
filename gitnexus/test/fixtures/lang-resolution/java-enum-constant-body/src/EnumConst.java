@@ -21,4 +21,12 @@ class Unrelated {
     public void caller() {
         hook();
     }
+
+    public void dispatchToConstant() {
+        EnumConst.A.hook();
+    }
+
+    public void dispatchInherited() {
+        EnumConst.A.log();
+    }
 }

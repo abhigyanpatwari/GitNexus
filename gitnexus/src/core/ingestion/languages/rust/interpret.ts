@@ -2,7 +2,22 @@ import type { CaptureMatch, ParsedImport, ParsedTypeBinding, TypeRef } from 'git
 
 const REF_PREFIX_RE = /^&\s*(mut\s+)?/;
 const PTR_PREFIX_RE = /^\*\s*(const|mut)?\s*/;
+const DYN_PREFIX_RE = /^dyn\s+/;
 const ENUM_VARIANT_NAMES = new Set(['Some', 'None', 'Ok', 'Err']);
+
+// `dyn Trait`, `&dyn Trait`, `Box<dyn Trait>` all name a trait object whose
+// receiver-dispatch target is the trait itself (#2604) — strip the `dyn`
+// keyword and any auto-trait/lifetime bound list (`dyn Trait + Send`) down to
+// the principal trait name. Reference/pointer sigils are stripped by the
+// caller first; wrapper unwrapping (Box<T> etc.) runs before this so the
+// unwrapped inner text still gets the same treatment.
+function stripDynBound(t: string): string {
+  if (!DYN_PREFIX_RE.test(t)) return t;
+  t = t.replace(DYN_PREFIX_RE, '');
+  const plus = t.indexOf('+');
+  if (plus !== -1) t = t.slice(0, plus);
+  return t.trim();
+}
 
 // ─── interpretImport ──────────────────────────────────────────────────────
 
@@ -98,6 +113,7 @@ export function normalizeRustTypeName(text: string): string {
     const inner = extractFirstGenericArg(t);
     if (inner !== null) t = inner;
   }
+  t = stripDynBound(t);
   const bracket = t.indexOf('<');
   if (bracket !== -1) t = t.slice(0, bracket);
   // Take last segment of qualified paths (crate::foo::Bar → Bar)
@@ -158,6 +174,7 @@ function normalizeRustReturnType(text: string): string {
       }
     }
   }
+  t = stripDynBound(t);
   const bracket = t.indexOf('<');
   if (bracket !== -1) t = t.slice(0, bracket);
   const lastColon = t.lastIndexOf('::');

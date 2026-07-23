@@ -167,6 +167,56 @@ def test_run_claude_forwards_the_named_model_to_every_session(monkeypatch, tmp_p
     assert captured[captured.index("--model") + 1] == "claude-sonnet-4-20250514"
 
 
+def test_run_claude_restricts_tools_via_tools_flag_outside_bare(monkeypatch, tmp_path):
+    # Outside --bare, the built-in toolset defaults to everything (subagents,
+    # WebFetch, Task, ...) and --allowedTools only pre-approves within that —
+    # it does not narrow it. --tools is what actually restricts the set, so a
+    # non-bare arm session must pass it or it silently gets a far wider
+    # toolset than intended.
+    captured: list[str] = []
+
+    def fake_run(command, **kwargs):
+        captured.extend(command)
+        return fake_cli_result(VALID_REPORT)
+
+    monkeypatch.setattr(runner_sessions, "run_managed", fake_run)
+    runner.run_claude(
+        "task",
+        tmp_path,
+        claude_bin="claude",
+        timeout=5,
+        bare=False,
+        allowed_tools=["Read", "Edit", "Bash", "Skill"],
+    )
+    tools_idx = captured.index("--tools")
+    assert captured[tools_idx + 1 : tools_idx + 5] == ["Read", "Edit", "Bash", "Skill"]
+    allowed_idx = captured.index("--allowedTools")
+    assert captured[allowed_idx + 1 : allowed_idx + 5] == ["Read", "Edit", "Bash", "Skill"]
+
+
+def test_run_claude_omits_tools_flag_under_bare(monkeypatch, tmp_path):
+    # --bare already hard-restricts to Bash/Edit/Read on its own (a Claude
+    # Code design choice, not something --tools/--allowedTools can widen or
+    # narrow further), so bare sessions must not also pass --tools.
+    captured: list[str] = []
+
+    def fake_run(command, **kwargs):
+        captured.extend(command)
+        return fake_cli_result(VALID_REPORT)
+
+    monkeypatch.setattr(runner_sessions, "run_managed", fake_run)
+    runner.run_claude(
+        "task",
+        tmp_path,
+        claude_bin="claude",
+        timeout=5,
+        bare=True,
+        allowed_tools=["Read", "Edit", "Bash", "Skill"],
+    )
+    assert "--tools" not in captured
+    assert "--allowedTools" in captured
+
+
 @pytest.mark.parametrize(
     ("proc", "expected_kind"),
     [
@@ -192,9 +242,22 @@ def test_run_claude_keeps_raw_subtype_and_stderr_tail(monkeypatch, tmp_path):
         "returncode": 1,
         "process_state": "exited",
         "stderr_tail": "rate limit hit",
+        "stdout_tail": VALID_REPORT,
         "process_detail": None,
         "event_stream_error": None,
     }
+
+
+def test_run_claude_surfaces_stdout_tail_on_empty_stderr(monkeypatch, tmp_path):
+    # A session can exit non-zero with an EMPTY stderr (e.g. a pre-flight
+    # sandbox failure before any model turn ever runs) -- stdout_tail is then
+    # the only place the actual event stream is visible, so it must not be
+    # dropped just because stderr had nothing to say.
+    proc = fake_cli_result(VALID_REPORT, returncode=1, stderr="")
+    monkeypatch.setattr(runner_sessions, "run_managed", lambda *a, **k: proc)
+    rec = runner.run_claude("task", tmp_path, claude_bin="claude", timeout=5)
+    assert rec["error_detail"]["stderr_tail"] == ""
+    assert rec["error_detail"]["stdout_tail"] == VALID_REPORT
 
 
 def test_run_arm_labels_completed_but_unverified_runs_verify_failed(monkeypatch, tmp_path):
@@ -269,6 +332,15 @@ def test_agent_tool_grants_are_exact_and_nomcp_has_no_graph_tools(monkeypatch, t
     assert captured[3]["mcp_config_json"] == '{"mcpServers":{}}'
     assert captured[3]["disallowed_tools"] == ["Skill", "mcp__gitnexus"]
 
+    # --bare hard-disables the Skill tool and every mcp__* tool regardless of
+    # --allowedTools (a Claude Code design choice, not something the harness
+    # can override) -- every arm here except baseline_nomcp needs Skill
+    # and/or MCP tools, so only baseline_nomcp may still run under --bare.
+    assert captured[0]["bare"] is False  # workflow: planning session
+    assert captured[1]["bare"] is False  # review
+    assert captured[2]["bare"] is False  # workflow_direct
+    assert captured[3]["bare"] is True  # baseline_nomcp
+
 
 def test_mcp_config_uses_only_the_minimal_pinned_harness_runtime(monkeypatch, tmp_path):
     runtime = tmp_path / "gitnexus"
@@ -277,10 +349,12 @@ def test_mcp_config_uses_only_the_minimal_pinned_harness_runtime(monkeypatch, tm
         runtime / "dist" / "cli",
         runtime / "node_modules",
         runtime / "vendor",
+        runtime / "hooks" / "claude",
         shared / "dist",
     ):
         directory.mkdir(parents=True)
     (runtime / "dist" / "cli" / "index.js").write_text("")
+    (runtime / "hooks" / "claude" / "resolve-analyze-cmd.cjs").write_text("")
     (runtime / "package.json").write_text(json.dumps({"version": runner.PINNED_GITNEXUS_VERSION}))
     (runtime / "node_modules" / "gitnexus-shared").symlink_to(shared, target_is_directory=True)
     (shared / "package.json").write_text(json.dumps({"name": "gitnexus-shared"}))
@@ -303,6 +377,7 @@ def test_mcp_config_uses_only_the_minimal_pinned_harness_runtime(monkeypatch, tm
         (runtime / "vendor", f"{runner.SANDBOX_GITNEXUS}/vendor"),
         (shared / "dist", f"{runner.SANDBOX_GITNEXUS_SHARED}/dist"),
         (shared / "package.json", f"{runner.SANDBOX_GITNEXUS_SHARED}/package.json"),
+        (runtime / "hooks" / "claude", f"{runner.SANDBOX_GITNEXUS}/hooks/claude"),
     ]
     package = json.loads((runtime / "package.json").read_text())
     assert package["version"] == runner.PINNED_GITNEXUS_VERSION
@@ -316,6 +391,12 @@ def test_mcp_config_uses_only_the_minimal_pinned_harness_runtime(monkeypatch, tm
         assert f"{runner.SANDBOX_GITNEXUS}/{forbidden}" not in mounted_targets
         assert shared / forbidden not in mounted_sources
         assert f"{runner.SANDBOX_GITNEXUS_SHARED}/{forbidden}" not in mounted_targets
+
+    # Only hooks/claude is exposed, not the whole hooks/ directory (which also
+    # has an unrelated hooks/antigravity/ tree) and not the runtime root itself.
+    assert runtime / "hooks" not in mounted_sources
+    assert runtime / "hooks" / "antigravity" not in mounted_sources
+    assert f"{runner.SANDBOX_GITNEXUS}/hooks" not in mounted_targets
 
 
 @pytest.mark.skipif(
@@ -334,6 +415,7 @@ def test_real_bubblewrap_runtime_mount_imports_cli_without_exposing_checkout(tmp
         f"{runner.SANDBOX_GITNEXUS}/vendor",
         f"{runner.SANDBOX_GITNEXUS_SHARED}/dist/index.js",
         f"{runner.SANDBOX_GITNEXUS_SHARED}/package.json",
+        f"{runner.SANDBOX_GITNEXUS}/hooks/claude/resolve-analyze-cmd.cjs",
     ]
     forbidden = [
         f"{runner.SANDBOX_GITNEXUS}/{relative}"
@@ -356,16 +438,26 @@ def test_real_bubblewrap_runtime_mount_imports_cli_without_exposing_checkout(tmp
         preflight=True,
     ) as sandbox:
         visibility = sandbox.run(
-            ["/usr/local/bin/node", "-e", visibility_script],
+            [runner.SANDBOX_NODE, "-e", visibility_script],
             timeout=10,
         )
         imported = sandbox.run(
-            ["/usr/local/bin/node", runner.SANDBOX_GITNEXUS_ENTRYPOINT, "--version"],
+            [runner.SANDBOX_NODE, runner.SANDBOX_GITNEXUS_ENTRYPOINT, "--version"],
+            timeout=10,
+        )
+        # --version never reaches the `analyze` command, which is loaded via a
+        # lazy dynamic import and is the only path that pulls in
+        # resolve-invocation.ts's module-load-time require of hooks/claude/
+        # resolve-analyze-cmd.cjs. Require the compiled analyze module
+        # directly so this canary actually exercises that chain.
+        analyze_imported = sandbox.run(
+            [runner.SANDBOX_NODE, "-e", f"require('{runner.SANDBOX_GITNEXUS}/dist/cli/analyze.js')"],
             timeout=10,
         )
 
     assert visibility.ok, visibility.stderr_tail
     assert imported.ok, imported.stderr_tail
+    assert analyze_imported.ok, analyze_imported.stderr_tail
     assert imported.stdout_tail.strip() == runner.PINNED_GITNEXUS_VERSION
 
 
@@ -1012,3 +1104,55 @@ def test_review_phase_rejects_workspace_or_skill_mutation(
     assert rec["resolved"] is False
     assert rec["error_kind"] == "review-evidence-invalid"
     assert expected_detail in rec["error_detail"]
+
+
+def _git(repo, *args, check=True):
+    return subprocess.run(["git", "-C", str(repo), *args], check=check, capture_output=True, text=True)
+
+
+def _git_commit(repo, message):
+    _git(
+        repo,
+        "-c",
+        "user.name=test",
+        "-c",
+        "user.email=test@invalid",
+        "commit",
+        "--quiet",
+        "--allow-empty",
+        "-m",
+        message,
+    )
+    return _git(repo, "rev-parse", "HEAD").stdout.strip()
+
+
+def test_make_worktree_clone_has_no_tags_but_keeps_all_branches(tmp_path):
+    # oracle_assets.MAX_CLONE_REFS refuses to sanitize a clone with more than
+    # 1024 refs; this repo's own history has 1000+ release-candidate tags, so
+    # a plain `git clone` of it (inheriting every tag) trips that cap on every
+    # benchmark session. make_worktree must not carry tags into its throwaway
+    # clone, but callers pass a bare SHA or "HEAD" as `ref` (never a branch
+    # name -- see evolve.py:476, runner.py:1037, sanitized_graph.py:345), so
+    # branch-fetching itself must stay untouched: a commit reachable only from
+    # a non-default branch must still resolve via the existing
+    # checkout(ref) -> checkout(origin/{ref}) fallback.
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    _git(repo, "init", "--quiet")
+    _git(repo, "checkout", "--quiet", "-b", "main")
+    _git_commit(repo, "base")
+    _git(repo, "tag", "v1.0.0-rc.1")
+
+    _git(repo, "checkout", "--quiet", "-b", "other")
+    other_sha = _git_commit(repo, "only on other")
+    _git(repo, "checkout", "--quiet", "main")
+
+    clones = tmp_path / "clones"
+    clones.mkdir()
+    target = runner.make_worktree(repo, other_sha, clones)
+
+    tags = _git(target, "tag").stdout.split()
+    assert tags == [], f"clone must carry no tags, found: {tags}"
+
+    current = _git(target, "rev-parse", "HEAD").stdout.strip()
+    assert current == other_sha

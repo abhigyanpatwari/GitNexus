@@ -378,15 +378,16 @@ jobs:
             "$PREFIX/bin/gitnexus" --version
           fi
 
-  # Node engines-floor gate (#2372). The embedding resolvers statically named
-  # `module.registerHooks`, which only exists on Node >= 22.15 / >= 23.5, so on
-  # the supported floor (engines: >=22.0.0) those ESM modules failed to LINK —
-  # a class vitest/tsx transforms structurally mask, and the default
-  # `node-version: 22` (resolves to latest) never hits. Build the dist on 22.x,
-  # then import-link every module R1 names as a load surface on a pinned 22.14
-  # so a regression fails here instead of shipping to users on that Node range.
+  # Node engines-floor gate (#2372). A module that statically names an API
+  # newer than the supported floor (e.g. `module.registerHooks`, added in
+  # 22.15) fails to LINK on the floor — a class vitest/tsx transforms
+  # structurally mask, and the default `node-version: 22` (resolves to latest)
+  # never hits. Build the dist on 22.x, then import-link every module R1 names
+  # as a load surface on the pinned engines floor (22.18.0, per package.json
+  # `engines: ^22.18.0 || >=24.11.0`) so a regression fails here instead of
+  # shipping to users on the minimum supported Node.
   node-floor-compat:
-    name: node floor compat (22.14)
+    name: node floor compat (22.18)
     runs-on: ubuntu-latest
     timeout-minutes: 15
     steps:
@@ -415,14 +416,14 @@ jobs:
       # (so no package-manager cache is needed).
       - uses: actions/setup-node@48b55a011bda9f5d6aeb4c2d9c7362e8dae4041e # v6.4.0
         with:
-          node-version: '22.14.0'
+          node-version: '22.18.0'
           package-manager-cache: false
-      - name: Import-link the built dist on Node 22.14
+      - name: Import-link the built dist on Node 22.18
         shell: bash
         run: |
           set -euo pipefail
           node --version
-          node --version | grep -q '^v22\.14\.' || { echo "expected Node 22.14.x" >&2; exit 1; }
+          node --version | grep -q '^v22\.18\.' || { echo "expected Node 22.18.x" >&2; exit 1; }
           for m in \
             core/embeddings/runtime-install \
             core/embeddings/onnxruntime-node-resolver \
@@ -556,7 +557,7 @@ jobs:
           persist-credentials: false
       - uses: actions/setup-node@48b55a011bda9f5d6aeb4c2d9c7362e8dae4041e # v6.4.0
         with:
-          node-version: '22.16.0'
+          node-version: '22.18.0'
           cache: npm
           cache-dependency-path: |
             gitnexus/package-lock.json

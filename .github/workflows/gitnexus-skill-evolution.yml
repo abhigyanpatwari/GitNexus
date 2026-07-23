@@ -12,12 +12,34 @@
 #     App that opens the promotion PR). The Mint-App-Token step hard-fails
 #     without them once a promotion is detected. Verify the App installation
 #     is scoped to this repo with only Contents: RW + Pull requests: RW.
-# [ ] Create the protected Environment `gitnexus-evolution` with a
+# [x] Create the protected Environment `gitnexus-evolution` with a
 #     deployment-branch rule restricting it to `main`, and ideally scope the
 #     three secrets above to that Environment. workflow_dispatch runs this
 #     workflow (and eval/workflow_bench/evolve.py) from the *dispatched ref*,
 #     so this server-side rule — not a code-side guard the branch could edit
 #     away — is what stops a non-main branch from running with the secrets.
+# [x] Register a self-hosted runner labeled `gitnexus-evolution` (a dedicated
+#     EC2 box works well). GitHub-hosted runners hard-cap job execution at 6
+#     hours, non-configurable — too short once a benchmark session actually
+#     invokes Skill/MCP tools for real. Self-hosted runners cap at 5 days
+#     instead. This job only ever runs on schedule/workflow_dispatch, never
+#     on fork-PR content, so the usual public-repo self-hosted-runner risk
+#     doesn't apply — still keep the box dedicated to this workflow, with
+#     outbound-only network access, and prefer on-demand over Spot (a Spot
+#     reclaim mid-run loses the same way a 6-hour timeout does). Instance,
+#     security group, and IAM setup are documented privately, not in this
+#     repo — publishing the exact topology of a real, live AWS account
+#     isn't safe to do in a public repo even without literal secrets.
+#     Accepted tradeoff: the box is stopped between runs (an EventBridge
+#     schedule starts it ~15min before the Saturday cron and stops it 24h
+#     later) but is not destroyed/recreated per run, so it isn't fully
+#     ephemeral — a compromise between the review-flagged ideal (re-image
+#     between runs, bounding how long the injected model API key could
+#     matter if the box were ever compromised some other way) and the added
+#     complexity of per-job ephemeral provisioning for a job that runs at
+#     most weekly. Revisit if run frequency increases or the threat model
+#     changes; stopping already bounds the exposure window to the job's own
+#     runtime on 1 day out of 7.
 # [ ] Run workflow_dispatch once and confirm: containment preflight passes,
 #     the benchmark completes inside the job timeout, the results artifact
 #     uploads, and a promotion (if any) opens a well-formed PR.
@@ -77,13 +99,13 @@ jobs:
         github.event_name == 'workflow_dispatch' ||
         vars.GITNEXUS_EVOLUTION_ENABLED == 'true'
       )
-    runs-on: ubuntu-latest
+    runs-on: [self-hosted, linux, x64, gitnexus-evolution]
     # Gate promotion runs on a protected Environment. An admin must attach a
     # deployment-branch rule (main only) and ideally scope the three secrets to
     # it — server-side enforcement a dispatched non-main ref cannot bypass by
     # editing its own workflow copy. See the activation checklist above.
     environment: gitnexus-evolution
-    timeout-minutes: 355 # ceiling just under GitHub's 360-minute hard cap
+    timeout-minutes: 1440 # self-hosted ceiling is 5 days (7200min); 24h is a generous margin over a single-generation serial run
     permissions:
       contents: read # The promotion PR uses a short-lived App token minted below.
     env:
@@ -110,7 +132,7 @@ jobs:
 
       - uses: actions/setup-node@48b55a011bda9f5d6aeb4c2d9c7362e8dae4041e # v6.4.0
         with:
-          node-version: '22.16.0'
+          node-version: '22.18.0'
           cache: npm
           cache-dependency-path: |
             gitnexus/package-lock.json
