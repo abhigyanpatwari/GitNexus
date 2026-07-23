@@ -272,8 +272,9 @@ const LANGS = [
     file: 'bench-local.java',
     header:
       'package generated;\n\nclass Base {}\n\ninterface Marker {}\n\nclass Bench {\n  void run() {\n',
-    // Co-scale both independent ordinal sequences under one host; the old
-    // per-identity host-candidate filter made this combined workload quadratic.
+    // Co-scale both independent ordinal sequences under one host; construction
+    // and dispatch keep lexical-alias captures hot. The old per-identity
+    // host-candidate filter made this combined workload quadratic.
     unit: (n) =>
       `    { class Local extends Base implements Marker { long value() { return ${n}L; } } ` +
       `new Local().value(); }\n` +

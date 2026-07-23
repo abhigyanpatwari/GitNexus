@@ -501,6 +501,8 @@ const buildJavaTypeIdentityState = (root: SyntaxNode): JavaTypeIdentityState => 
     if (host === null) continue;
     const isAnonymous = isJavaAnonymousBodyNode(candidate);
     const bindingName = isAnonymous ? '' : candidate.childForFieldName?.('name')?.text;
+    // Anonymous types deliberately use the empty sequence key; malformed named
+    // declarations must not enter that sequence.
     if (!isAnonymous && !bindingName) continue;
     const sequenceKey = `${javaHostKey(host)}:${bindingName}`;
     const ordinal = (sequenceCounts.get(sequenceKey) ?? 0) + 1;
