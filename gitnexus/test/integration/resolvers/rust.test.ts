@@ -2447,3 +2447,115 @@ describe('Rust duplicate-name ambiguity latch (#2514)', () => {
     });
   });
 });
+
+// ---------------------------------------------------------------------------
+// #2514 follow-up: when a `use` import disambiguates one of several same-named
+// definitions, the type must resolve to THAT definition (like the compiler),
+// not stay ambiguous. The bare-name map is ambiguous, but the call site's
+// import pins a single defining file, so range-binding reads that definition's
+// FULL return/field type — recovering generic element types the bare-name map
+// would have lost. Genuinely-ambiguous (no-import) duplicates still stay
+// unresolved (covered by the #2514 block above).
+// ---------------------------------------------------------------------------
+
+describe('Rust import-disambiguated duplicate resolution (#2514 follow-up)', () => {
+  describe('for-loop over an imported generic-returning duplicate fn', () => {
+    let result: PipelineResult;
+    beforeAll(async () => {
+      result = await runPipelineFromRepo(path.join(FIXTURES, 'rust-import-dup-return'), () => {});
+    }, 60000);
+
+    it('resolves item.save() to the imported definition in t_b (Repo), not ambiguous', () => {
+      const edges = getRelationships(result, 'CALLS').filter(
+        (c) => c.source === 'drive' && c.target === 'save',
+      );
+      expect(edges.length).toBe(1);
+      expect(edges[0]).toMatchObject({ source: 'drive', target: 'save', targetLabel: 'Function' });
+      expect(edges[0].targetFilePath).toContain('t_b.rs');
+    });
+  });
+
+  describe('struct destructuring of an imported duplicate struct', () => {
+    let result: PipelineResult;
+    beforeAll(async () => {
+      result = await runPipelineFromRepo(path.join(FIXTURES, 'rust-import-dup-fields'), () => {});
+    }, 60000);
+
+    it('resolves db.run() to the imported definition in t_b (DbB) via its field type', () => {
+      const edges = getRelationships(result, 'CALLS').filter(
+        (c) => c.source === 'use_it' && c.target === 'run',
+      );
+      expect(edges.length).toBe(1);
+      expect(edges[0]).toMatchObject({ source: 'use_it', target: 'run', targetLabel: 'Function' });
+      expect(edges[0].targetFilePath).toContain('t_b.rs');
+    });
+  });
+
+  describe('aliased import (`use t_b::make as mk`) still resolves the definition', () => {
+    let result: PipelineResult;
+    beforeAll(async () => {
+      result = await runPipelineFromRepo(path.join(FIXTURES, 'rust-import-alias-return'), () => {});
+    }, 60000);
+
+    it('keys on the definition name, not the alias — item.save() resolves to t_b (Repo)', () => {
+      const edges = getRelationships(result, 'CALLS').filter(
+        (c) => c.source === 'drive' && c.target === 'save',
+      );
+      expect(edges.length).toBe(1);
+      expect(edges[0]).toMatchObject({ source: 'drive', target: 'save', targetLabel: 'Function' });
+      expect(edges[0].targetFilePath).toContain('t_b.rs');
+    });
+  });
+
+  describe('single glob import (`use t_b::*`) resolves the one globbed definition', () => {
+    let result: PipelineResult;
+    beforeAll(async () => {
+      result = await runPipelineFromRepo(path.join(FIXTURES, 'rust-import-glob-return'), () => {});
+    }, 60000);
+
+    it('resolves item.save() to t_b (Repo) via the one glob-target that defines it', () => {
+      const edges = getRelationships(result, 'CALLS').filter(
+        (c) => c.source === 'drive' && c.target === 'save',
+      );
+      expect(edges.length).toBe(1);
+      expect(edges[0]).toMatchObject({ source: 'drive', target: 'save', targetLabel: 'Function' });
+      expect(edges[0].targetFilePath).toContain('t_b.rs');
+    });
+  });
+
+  describe('two glob imports that both export the name stay ambiguous', () => {
+    let result: PipelineResult;
+    beforeAll(async () => {
+      result = await runPipelineFromRepo(
+        path.join(FIXTURES, 'rust-import-glob-ambiguous'),
+        () => {},
+      );
+    }, 60000);
+
+    it('leaves item.save() unresolved when two `use x::*` both define make', () => {
+      const edges = getRelationships(result, 'CALLS').filter(
+        (c) => c.source === 'drive' && c.target === 'save',
+      );
+      expect(edges).toEqual([]);
+    });
+  });
+
+  describe('a local definition shadows a glob import', () => {
+    let result: PipelineResult;
+    beforeAll(async () => {
+      result = await runPipelineFromRepo(
+        path.join(FIXTURES, 'rust-import-glob-local-shadows'),
+        () => {},
+      );
+    }, 60000);
+
+    it('resolves item.save() to the local make in main.rs, not the glob target', () => {
+      const edges = getRelationships(result, 'CALLS').filter(
+        (c) => c.source === 'drive' && c.target === 'save',
+      );
+      expect(edges.length).toBe(1);
+      expect(edges[0]).toMatchObject({ source: 'drive', target: 'save', targetLabel: 'Function' });
+      expect(edges[0].targetFilePath).toContain('main.rs');
+    });
+  });
+});

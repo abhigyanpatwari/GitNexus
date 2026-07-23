@@ -450,7 +450,13 @@ export interface RepoMeta {
  * counts emitted a wrong cross-file CALLS edge. Same v7/v11 contract: the
  * incremental write set only covers changed files, so a top-up against a
  * pre-v12 index would keep these spurious CALLS edges on every unchanged Rust
- * file; force a full re-analyze instead.
+ * file. v12 also changes edges in the other direction: range-binding now
+ * RESOLVES import-disambiguated duplicate names (`for item in make()` /
+ * `let Struct { f } = ..` where a `use` or `use x::*` import pins one of several
+ * same-named definitions) to the imported definition's type. Both the removed
+ * spurious edges and these new resolved edges are cross-file, so a pre-v12
+ * top-up would leave unchanged Rust files stale either way; force a full
+ * re-analyze instead.
  */
 export const INCREMENTAL_SCHEMA_VERSION = 12;
 
