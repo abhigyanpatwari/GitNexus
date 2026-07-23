@@ -183,7 +183,9 @@ export const diPhase: PipelinePhase<DIOutput> = {
         // A simple/qualified name claimed by both a Class and an Interface is
         // type-ambiguous too. Fail closed rather than guessing which Java type
         // the injection site meant; import-aware disambiguation is not
-        // available in this graph-only phase.
+        // available in this graph-only phase. This intentionally applies to
+        // legacy collection sites too: a Class/Interface collision no longer
+        // fans out through the interface on a simple-name guess.
         ambiguousSkipped++;
         ambiguousTypeNames.add(candidate.targetTypeName);
         continue;

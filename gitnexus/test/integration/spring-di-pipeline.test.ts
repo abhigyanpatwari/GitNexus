@@ -41,6 +41,15 @@ public class Consumer {
 }
 `;
 
+const WILDCARD_CONSUMER = `package com.example;
+import java.util.*;
+import org.springframework.beans.factory.annotation.*;
+
+public class WildcardConsumer {
+  @Autowired private List<IFoo> foos;
+}
+`;
+
 /** A consumer whose collection fields carry NO injection annotation. */
 const PLAIN_CONSUMER = `package com.example;
 import java.util.List;
@@ -130,6 +139,28 @@ describe('Spring DI collection-injection pipeline (#2200)', () => {
   });
 });
 
+describe('Spring DI wildcard-import collection fallback (#2200, #2414)', () => {
+  let dir: string;
+  let result: PipelineResult;
+
+  beforeAll(async () => {
+    dir = fs.mkdtempSync(path.join(os.tmpdir(), 'gn-spring-di-wildcard-'));
+    fs.writeFileSync(path.join(dir, 'IFoo.java'), IFOO);
+    fs.writeFileSync(path.join(dir, 'FooA.java'), FOO_A);
+    fs.writeFileSync(path.join(dir, 'FooB.java'), FOO_B);
+    fs.writeFileSync(path.join(dir, 'WildcardConsumer.java'), WILDCARD_CONSUMER);
+    result = await runPipelineFromRepo(dir, () => {}, {});
+  }, 60_000);
+
+  afterAll(() => {
+    if (dir) fs.rmSync(dir, { recursive: true, force: true });
+  });
+
+  it('preserves collection edges when multiple wildcard imports prevent annotation FQN resolution', () => {
+    expect(injectsPairs(result)).toEqual(['WildcardConsumer->FooA', 'WildcardConsumer->FooB']);
+  });
+});
+
 describe('Spring DI pipeline negative control: no injection annotations anywhere (#2200)', () => {
   let dir: string;
   let result: PipelineResult;
@@ -178,6 +209,34 @@ import org.springframework.stereotype.Repository;
 @Repository
 public class ConcreteRepo {}
 `,
+    'S3Client.java': `package com.example;
+import org.springframework.stereotype.Service;
+@Service
+public class S3Client {}
+`,
+    'DigitBeanNameConsumer.java': `package com.example;
+import org.springframework.stereotype.Service;
+import org.springframework.beans.factory.annotation.Qualifier;
+@Service
+public class DigitBeanNameConsumer {
+  public DigitBeanNameConsumer(@Qualifier("s3Client") S3Client client) {}
+}
+`,
+    'EmptyParenService.java': `package com.example;
+import org.springframework.stereotype.Service;
+@Service()
+public class EmptyParenService {}
+`,
+    'EmptyParenConsumer.java': `package com.example;
+import org.springframework.stereotype.Service;
+import org.springframework.beans.factory.annotation.Qualifier;
+@Service
+public class EmptyParenConsumer {
+  public EmptyParenConsumer(
+    @Qualifier("emptyParenService") EmptyParenService service
+  ) {}
+}
+`,
     'ConstructorConsumer.java': `package com.example;
 import org.springframework.stereotype.Service;
 @Service
@@ -209,6 +268,17 @@ import org.springframework.beans.factory.annotation.Qualifier;
 public class DynamicQualifierConsumer {
   private static final String GATEWAY = "slowGateway";
   public DynamicQualifierConsumer(@Qualifier(GATEWAY) PaymentGateway gateway) {}
+}
+`,
+    'DynamicCollectionQualifierConsumer.java': `package com.example;
+import java.util.List;
+import org.springframework.stereotype.Service;
+import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.beans.factory.annotation.Qualifier;
+@Service
+public class DynamicCollectionQualifierConsumer {
+  private static final String GATEWAY = "slowGateway";
+  @Autowired @Qualifier(GATEWAY) private List<PaymentGateway> gateways;
 }
 `,
     'PlainConstructorConsumer.java': `package com.example;
@@ -283,6 +353,8 @@ public class AmbiguousConsumer {
       'AmbiguousConsumer->XmlFormatter',
       'ConstructorConsumer->ConcreteRepo',
       'ConstructorConsumer->FastGateway',
+      'DigitBeanNameConsumer->S3Client',
+      'EmptyParenConsumer->EmptyParenService',
       'ExplicitConstructorConsumer->ConcreteRepo',
       'FieldConsumer->FastGateway',
       'QualifiedCollectionConsumer->SlowGateway',
@@ -317,5 +389,8 @@ public class AmbiguousConsumer {
     const pairs = injectsDetails(result).map((detail) => detail.pair);
     expect(pairs.some((pair) => pair.startsWith('PlainConstructorConsumer->'))).toBe(false);
     expect(pairs.some((pair) => pair.startsWith('DynamicQualifierConsumer->'))).toBe(false);
+    expect(pairs.some((pair) => pair.startsWith('DynamicCollectionQualifierConsumer->'))).toBe(
+      false,
+    );
   });
 });

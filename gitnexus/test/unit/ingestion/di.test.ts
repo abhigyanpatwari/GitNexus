@@ -777,6 +777,33 @@ describe('di phase', () => {
     expect(injectsEdges(graph)).toHaveLength(0);
     expect(output).toMatchObject({ injectsEdges: 0, ambiguousSkipped: 1 });
   });
+
+  it('documents the legacy collection behavior change for a Class/Interface name collision', async () => {
+    const graph = createKnowledgeGraph();
+
+    addClass(graph, 'Port', 'java');
+    addInterface(graph, 'Port');
+    addClass(graph, 'PortImpl', 'java');
+    addImplements(graph, 'PortImpl', 'Port');
+    addClass(graph, 'Consumer', 'java', 'Class', {
+      [SPRING_DI_INJECTION_SITES_PROPERTY]: [
+        {
+          targetTypeName: 'Port',
+          cardinality: 'collection',
+          reason: 'Spring DI: @Autowired List<Port>',
+        },
+      ],
+    });
+
+    const output = await diPhase.execute(makeCtx(graph), new Map());
+
+    // Before concrete-class lookup was added, the interface alone won and
+    // collection injection fanned out to PortImpl. The graph-only resolver
+    // cannot disambiguate the colliding Java types, so the new behavior is an
+    // intentional fail-closed skip rather than a simple-name guess.
+    expect(injectsEdges(graph)).toHaveLength(0);
+    expect(output).toMatchObject({ injectsEdges: 0, ambiguousSkipped: 1 });
+  });
 });
 
 // ---------------------------------------------------------------------------

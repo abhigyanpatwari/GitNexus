@@ -224,10 +224,15 @@ function staticStringArgument(annotationText: string): string | undefined {
 }
 
 function defaultBeanName(className: string): string {
-  if (className.length < 2 || className[1] !== className[1].toUpperCase()) {
-    return className[0].toLowerCase() + className.slice(1);
+  if (className.length === 0) return className;
+  if (
+    className.length > 1 &&
+    className[0] !== className[0].toLowerCase() &&
+    className[1] !== className[1].toLowerCase()
+  ) {
+    return className;
   }
-  return className;
+  return className[0].toLowerCase() + className.slice(1);
 }
 
 /** Attach resolved, framework-private DI metadata to Class nodes. */
@@ -250,21 +255,6 @@ export function attachJavaSpringDiMetadata(
       if (graphId === undefined) continue;
       const classNode = graph.getNode(graphId);
       if (classNode === undefined || classNode.label !== 'Class') continue;
-
-      const capturedFieldNames = new Set(
-        fact.injectionSites.filter((site) => site.kind === 'field').map((site) => site.memberName),
-      );
-      for (const fieldName of capturedFieldNames) {
-        for (const { def } of classScope.bindings.get(fieldName) ?? []) {
-          if (def.ownerId !== classDef.nodeId) continue;
-          const propertyId = resolveDefGraphId(parsed.filePath, def, nodeLookup);
-          if (propertyId === undefined) continue;
-          const property = graph.getNode(propertyId);
-          if (property?.label === 'Property') {
-            property.properties[SPRING_DI_CAPTURED_FIELD_PROPERTY] = true;
-          }
-        }
-      }
 
       const resolvedAnnotations = new Map<string, string | undefined>();
       const resolveFact = (
@@ -298,10 +288,11 @@ export function attachJavaSpringDiMetadata(
           const resolved = resolveFact(annotation);
           if (resolved === undefined) continue;
           if (SPRING_BEAN_STEREOTYPES.has(resolved)) {
-            if (annotation.text.includes('(')) {
+            const argumentText = annotation.text.match(/\((.*)\)$/s)?.[1]?.trim();
+            if (argumentText !== undefined && argumentText.length > 0) {
               const staticName = staticStringArgument(annotation.text);
               if (staticName === undefined) hasDynamicBeanName = true;
-              else explicitBeanName = staticName;
+              else if (staticName.length > 0) explicitBeanName = staticName;
             }
           }
           if (QUALIFIER_ANNOTATIONS.has(resolved)) {
@@ -321,6 +312,7 @@ export function attachJavaSpringDiMetadata(
       }
 
       const matches: DiInjectionMatch[] = [];
+      const semanticallyOwnedFieldNames = new Set<string>();
       for (const site of fact.injectionSites) {
         let injectionAnnotation: JavaAnnotationSyntaxFact | undefined;
         for (const annotation of site.annotations) {
@@ -332,6 +324,13 @@ export function attachJavaSpringDiMetadata(
         }
         if (injectionAnnotation === undefined) {
           if (!site.implicitConstructor || frameworkAnnotations.length === 0) continue;
+        } else if (site.kind === 'field') {
+          // Suppress the legacy collection matcher only after the injection
+          // annotation resolves to a recognized FQN. Ambiguous wildcard
+          // imports deliberately leave the field unmarked so the pre-#2414
+          // collection fallback remains available. Once resolved, this path
+          // owns the field even when a dynamic qualifier fails closed.
+          semanticallyOwnedFieldNames.add(site.memberName);
         }
 
         for (const dependency of site.dependencies) {
@@ -370,6 +369,18 @@ export function attachJavaSpringDiMetadata(
         }
       }
       if (matches.length > 0) classNode.properties[SPRING_DI_INJECTION_SITES_PROPERTY] = matches;
+
+      for (const fieldName of semanticallyOwnedFieldNames) {
+        for (const { def } of classScope.bindings.get(fieldName) ?? []) {
+          if (def.ownerId !== classDef.nodeId) continue;
+          const propertyId = resolveDefGraphId(parsed.filePath, def, nodeLookup);
+          if (propertyId === undefined) continue;
+          const property = graph.getNode(propertyId);
+          if (property?.label === 'Property') {
+            property.properties[SPRING_DI_CAPTURED_FIELD_PROPERTY] = true;
+          }
+        }
+      }
     }
   }
 }
