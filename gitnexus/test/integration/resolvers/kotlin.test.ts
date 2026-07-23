@@ -2973,7 +2973,7 @@ describe('Kotlin instance-ownership free-call gate (#2563)', () => {
     expect(leaked).toBeUndefined();
   });
 
-  it('preserves own, inherited, and anonymous-object sibling calls', () => {
+  it('preserves own, inherited, outer-instance, and anonymous-object sibling calls', () => {
     const calls = getRelationships(result, 'CALLS');
     expect(calls.find((call) => call.source === 'callOwn' && call.target === 'own')).toBeDefined();
     expect(
@@ -2981,6 +2981,9 @@ describe('Kotlin instance-ownership free-call gate (#2563)', () => {
     ).toBeDefined();
     expect(
       calls.find((call) => call.source === 'callSibling' && call.target === 'sibling'),
+    ).toBeDefined();
+    expect(
+      calls.find((call) => call.source === 'callOuter' && call.target === 'outerMethod'),
     ).toBeDefined();
   });
 });

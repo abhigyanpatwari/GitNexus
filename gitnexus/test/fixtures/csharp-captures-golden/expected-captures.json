@@ -215,10 +215,6 @@
     "captureGroups": 22,
     "digest": "0765643d95d2c40a64d3f9b71fd488fc6cbfdb0cc72cc91eec94e46da1267722"
   },
-  "csharp-instance-ownership/src/App.cs": {
-    "captureGroups": 43,
-    "digest": "283f8b7892d4e7d19b385cf1afc1c5775bebf377beb1c5ee1d64ac08b195add1"
-  },
   "csharp-interface-default-method/App.cs": {
     "captureGroups": 12,
     "digest": "1df65065f20b8d316238bd3f7c43f95cc0e2527c8f7cca88e95a872016a04ed2"

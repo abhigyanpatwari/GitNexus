@@ -99,7 +99,6 @@ const csharpScopeResolver: ScopeResolver = {
   // files. The compound-receiver walker needs to walk up from the
   // class scope to find them; see the contract field for rationale.
   hoistTypeBindingsToModule: true,
-  freeCallsRequireInstanceOwnership: true,
 };
 
 export { csharpScopeResolver };

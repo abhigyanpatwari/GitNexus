@@ -24,6 +24,16 @@ class Caller {
     }
 }
 
+class Outer {
+    fun outerMethod() {}
+
+    inner class Inner {
+        fun callOuter() {
+            outerMethod()
+        }
+    }
+}
+
 val handler = object {
     fun sibling() {}
 
