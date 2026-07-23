@@ -114,14 +114,13 @@ describe.skipIf(!BENCH_ENABLED)('instance-ownership free-call gate benchmark', (
         );
       }
 
-      for (let i = 1; i < results.length; i++) {
-        const previous = results[i - 1];
-        const current = results[i];
-        if (previous === undefined || current === undefined)
-          throw new Error('missing benchmark result');
+      let previous = results[0];
+      if (previous === undefined) throw new Error('missing benchmark result');
+      for (const current of results.slice(1)) {
         const fileRatio = current.fileCount / previous.fileCount;
         const timeRatio = current.elapsedMs / previous.elapsedMs;
         expect(timeRatio / fileRatio).toBeLessThan(3);
+        previous = current;
       }
     }, 600_000);
   }
