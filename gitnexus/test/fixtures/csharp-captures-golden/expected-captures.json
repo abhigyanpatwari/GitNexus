@@ -659,6 +659,10 @@
     "captureGroups": 12,
     "digest": "b6f9dd906e1309338f21633d71e663cdfd95a8707d38b9a8bf74813415ee5d13"
   },
+  "csharp-using-static/App/SameFileCases.cs": {
+    "captureGroups": 56,
+    "digest": "d148be241ae17eb05e9e44774d01ad39e0d05bf5636639d3ef573cbe11b5a62f"
+  },
   "csharp-using-static/Helpers/MathUtils.cs": {
     "captureGroups": 8,
     "digest": "32c174cbaade4e2d6e0aa7e95a2b5addd138441deb43ced286c9cf5cd30750aa"

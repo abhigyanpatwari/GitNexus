@@ -37,11 +37,13 @@ import type {
 import { resolveCallerGraphId, resolveDefGraphId } from '../graph-bridge/ids.js';
 import type { CalleeIdSink } from '../graph-bridge/callee-id-sink.js';
 import {
+  findAllCallableBindingCandidatesInScope,
   findAllCallableBindingsInScope,
   findCallableBindingInScope,
   findCallableBindingsAndAdlBlocker,
   findEnclosingClassDef,
   resolveInheritanceBaseInScope,
+  type CallableBindingCandidate,
 } from '../scope/walkers.js';
 import {
   isOverloadAmbiguousAfterNormalization,
@@ -202,11 +204,52 @@ export function emitFreeCallFallback(
           // (local shadows import). When a conversion-rank function is
           // available AND the binding scope contains multiple overloads,
           // refine with narrowOverloadCandidates (#1578).
-          fnDef = findCallableBindingInScope(site.inScope, site.name, scopes);
+          const bindingCandidates =
+            options.freeCallsRequireInstanceOwnership === true
+              ? findAllCallableBindingCandidatesInScope(site.inScope, site.name, scopes)
+              : undefined;
+          let eligibleBindingCandidates: readonly CallableBindingCandidate[] | undefined;
+          if (bindingCandidates === undefined) {
+            fnDef = findCallableBindingInScope(site.inScope, site.name, scopes);
+          } else {
+            const enclosing = findEnclosingClassDef(site.inScope, scopes);
+            eligibleBindingCandidates = bindingCandidates.filter((candidate) => {
+              const def = candidate.def;
+              if (
+                def.type !== 'Method' ||
+                def.ownerId === undefined ||
+                def.filePath !== parsed.filePath
+              ) {
+                return true;
+              }
+              const ownerReachable =
+                enclosing !== undefined &&
+                (enclosing.nodeId === def.ownerId ||
+                  scopes.methodDispatch.mroFor(enclosing.nodeId).includes(def.ownerId));
+              const staticallyImported = candidate.bindings.some(
+                (binding) => binding.visibility === 'static-member-import',
+              );
+              return ownerReachable || staticallyImported;
+            });
+            fnDef = eligibleBindingCandidates[0]?.def;
+            if (fnDef === undefined && bindingCandidates.length > 0) {
+              recordSuppressedOutcome(options.recordResolutionOutcome, {
+                phase: 'free-call-fallback',
+                filePath: parsed.filePath,
+                name: site.name,
+                range: site.atRange,
+                reason: 'free-call-instance-ownership',
+                candidates: bindingCandidates.map((candidate) => candidate.def),
+              });
+            }
+          }
           if (
             fnDef !== undefined &&
             options.isBuiltInName?.(site.name) === true &&
             fnDef.filePath === parsed.filePath &&
+            eligibleBindingCandidates?.some((candidate) =>
+              candidate.bindings.some((binding) => binding.visibility === 'static-member-import'),
+            ) !== true &&
             !hasGenuineLexicalBinding(site.inScope, site.name, scopes)
           ) {
             // A platform/language built-in (e.g. `fetch`, `setTimeout`)
@@ -234,48 +277,14 @@ export function emitFreeCallFallback(
             // stopped resolving (verified via a scratch probe fixture).
             fnDef = undefined;
           }
-          // Instance-ownership gate (#2550). Placement matters: after the
-          // scope-chain lookup, BEFORE overload narrowing -- a suppressed
-          // candidate must not participate in overload selection. The
-          // legitimate same-class bare call already resolved earlier via
-          // `pickImplicitThisOverload`; an inherited bare call passes the
-          // MRO arm here; what remains is the finalize-bucket leak (an
-          // unrelated same-file method matched by bare name).
-          //
-          // Same-file only (mirrors the #2545 guard's load-bearing
-          // condition): the `materializeBindings` bucket is per-file, so
-          // the leak is ALWAYS same-file. A cross-file Method match here
-          // came through a genuine import channel -- e.g. the arity-
-          // narrowing parity fixtures resolve a bare `writeAudit(u)` to
-          // an imported class's method, which must keep working
-          // (suppressing it broke `java.test.ts`'s arity-filtering suite,
-          // verified empirically).
           if (
             fnDef !== undefined &&
-            options.freeCallsRequireInstanceOwnership === true &&
-            fnDef.type === 'Method' &&
-            fnDef.ownerId !== undefined &&
-            fnDef.filePath === parsed.filePath
+            (options.conversionRankFn !== undefined || bindingCandidates !== undefined)
           ) {
-            const enclosing = findEnclosingClassDef(site.inScope, scopes);
-            const ownerReachable =
-              enclosing !== undefined &&
-              (enclosing.nodeId === fnDef.ownerId ||
-                scopes.methodDispatch.mroFor(enclosing.nodeId).includes(fnDef.ownerId));
-            if (!ownerReachable) {
-              recordSuppressedOutcome(options.recordResolutionOutcome, {
-                phase: 'free-call-fallback',
-                filePath: parsed.filePath,
-                name: site.name,
-                range: site.atRange,
-                reason: 'free-call-instance-ownership',
-                candidates: [fnDef],
-              });
-              fnDef = undefined;
-            }
-          }
-          if (fnDef !== undefined && options.conversionRankFn !== undefined) {
-            const allCallables = findAllCallableBindingsInScope(site.inScope, site.name, scopes);
+            const allCallables =
+              eligibleBindingCandidates === undefined
+                ? findAllCallableBindingsInScope(site.inScope, site.name, scopes)
+                : eligibleBindingCandidates.map((candidate) => candidate.def);
             if (allCallables.length > 1) {
               const narrowed = narrowOverloadCandidates(
                 allCallables,
