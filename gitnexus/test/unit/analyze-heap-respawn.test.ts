@@ -76,6 +76,7 @@ describe('analyzeCommand heap respawn', () => {
 
   beforeEach(() => {
     initialNodeOptions = process.env.NODE_OPTIONS;
+    delete process.env.GITNEXUS_AUTO_HEAP;
     vi.resetModules();
     spawnMock.mockReset();
     getHeapStatisticsMock.mockReset();
@@ -145,6 +146,53 @@ describe('analyzeCommand heap respawn', () => {
     await analyzeCommand('/__gitnexus_nonexistent__', {});
 
     expect(spawnMock).not.toHaveBeenCalled();
+  });
+
+  it('re-execs with the auto cap when ambient NODE_OPTIONS pins a smaller heap (#2649)', async () => {
+    process.env.NODE_OPTIONS = '--max-old-space-size=4096';
+    getHeapStatisticsMock.mockReturnValue({ heap_size_limit: 4096 * 1024 * 1024 });
+    mockSpawnExit();
+
+    const { _captureLogger } = await import('../../src/core/logger.js');
+    const cap = _captureLogger();
+    const { analyzeCommand } = await import('../../src/cli/analyze.js');
+    await analyzeCommand(undefined, {});
+    cap.restore();
+
+    expect(spawnMock).toHaveBeenCalledTimes(1);
+    const [, args, opts] = spawnMock.mock.calls[0];
+    expect(args).toContain('--max-old-space-size=13107');
+    // The auto flag is appended after the ambient value, so V8's
+    // later-flag-wins semantics resolve to the larger cap.
+    expect(opts.env.NODE_OPTIONS.indexOf('--max-old-space-size=13107')).toBeGreaterThan(
+      opts.env.NODE_OPTIONS.indexOf('--max-old-space-size=4096'),
+    );
+    const warn = cap.records().find((r) => r.msg.includes('pins the heap to 4096MB'));
+    expect(warn?.msg).toContain('Re-running analyze with the larger auto-sized cap');
+  });
+
+  it('honors GITNEXUS_AUTO_HEAP=0: keeps the small ambient heap and only warns (#2649)', async () => {
+    process.env.NODE_OPTIONS = '--max-old-space-size=4096';
+    process.env.GITNEXUS_AUTO_HEAP = '0';
+    getHeapStatisticsMock.mockReturnValue({ heap_size_limit: 4096 * 1024 * 1024 });
+
+    const { _captureLogger } = await import('../../src/core/logger.js');
+    const cap = _captureLogger();
+    const { analyzeCommand } = await import('../../src/cli/analyze.js');
+    await analyzeCommand('/__gitnexus_nonexistent__', {});
+    cap.restore();
+
+    expect(spawnMock).not.toHaveBeenCalled();
+    const warn = cap.records().find((r) => r.msg.includes('pins the heap to 4096MB'));
+    expect(warn?.msg).toContain('GITNEXUS_AUTO_HEAP=0');
+  });
+
+  it('parseMaxOldSpaceMb: last occurrence wins, absent and malformed values are null', async () => {
+    const { parseMaxOldSpaceMb } = await import('../../src/cli/analyze.js');
+    expect(parseMaxOldSpaceMb('--max-old-space-size=4096 --max-old-space-size=8192')).toBe(8192);
+    expect(parseMaxOldSpaceMb('--max-semi-space-size=128')).toBeNull();
+    expect(parseMaxOldSpaceMb('')).toBeNull();
+    expect(parseMaxOldSpaceMb('--max-old-space-size=0')).toBeNull();
   });
 
   it('prints heap guidance when respawned analyze exits with likely OOM', async () => {

@@ -47,7 +47,7 @@ import { getMaxFileSizeBannerMessage } from '../core/ingestion/utils/max-file-si
 import { warnMissingOptionalGrammars, getOptionalGrammarExtensions } from './optional-grammars.js';
 import { glob } from 'glob';
 import fs from 'fs/promises';
-import { cliError } from './cli-message.js';
+import { cliError, cliWarn } from './cli-message.js';
 import { EMBEDDING_DIMS_ERROR, normalizeEmbeddingDims } from './embedding-dims.js';
 import { formatElapsed } from './format-elapsed.js';
 import { isHfDownloadFailure } from '../core/embeddings/hf-env.js';
@@ -524,14 +524,52 @@ const forceHeapOOMForTestIfEnabled = (): void => {
 // `gitnexus/src/core/lbug/lbug-config.ts` in sync with this value.
 const RECOMMENDED_WAL_CHECKPOINT_THRESHOLD = 64 * 1024 * 1024;
 
+/**
+ * Last `--max-old-space-size` value (MB) in a NODE_OPTIONS string, or `null`
+ * when absent/unparseable. Last occurrence wins, matching V8's own
+ * later-flag-wins semantics when NODE_OPTIONS repeats a flag.
+ */
+export function parseMaxOldSpaceMb(nodeOptions: string): number | null {
+  const matches = [...nodeOptions.matchAll(/--max-old-space-size=(\d+)/g)];
+  if (matches.length === 0) return null;
+  const mb = Number(matches[matches.length - 1][1]);
+  return Number.isFinite(mb) && mb > 0 ? mb : null;
+}
+
 /** Re-exec the process with the RAM-aware auto heap cap + larger semi-space/stack
- *  if we're currently below that. A user-supplied NODE_OPTIONS heap wins (no re-exec). */
+ *  if we're currently below that.
+ *
+ *  Heap-source precedence (#2649):
+ *  - an explicit per-invocation `--max-old-space-size` (execArgv) always wins;
+ *  - `GITNEXUS_AUTO_HEAP=0` disables auto-sizing entirely;
+ *  - an ambient NODE_OPTIONS heap >= the auto cap is honored as-is;
+ *  - an ambient NODE_OPTIONS heap BELOW the auto cap is treated as an
+ *    inherited environment default (devcontainers/CI export one for other
+ *    tooling), not a deliberate per-run choice: warn and respawn with the
+ *    auto cap. Pre-#2649 this returned early and large repos then OOM'd on
+ *    whatever heap the environment happened to specify. */
 async function ensureHeap(): Promise<boolean> {
   const nodeOpts = process.env.NODE_OPTIONS || '';
-  if (nodeOpts.includes('--max-old-space-size')) return false;
+  if (process.execArgv.some((a) => a.startsWith('--max-old-space-size'))) return false;
 
-  const v8Heap = v8.getHeapStatistics().heap_size_limit;
-  if (v8Heap >= HEAP_MB * 1024 * 1024 * 0.9) return false;
+  const ambientHeapMb = parseMaxOldSpaceMb(nodeOpts);
+  if (ambientHeapMb !== null) {
+    if (ambientHeapMb >= RESPAWN_HEAP_MB) return false;
+    if (process.env.GITNEXUS_AUTO_HEAP === '0') {
+      cliWarn(
+        `  NODE_OPTIONS pins the heap to ${ambientHeapMb}MB — below the ${RESPAWN_HEAP_MB}MB this machine's RAM supports.\n` +
+          `  Keeping it because GITNEXUS_AUTO_HEAP=0 is set; large repositories may run out of memory.\n`,
+      );
+      return false;
+    }
+    cliWarn(
+      `  NODE_OPTIONS pins the heap to ${ambientHeapMb}MB — below the ${RESPAWN_HEAP_MB}MB this machine's RAM supports.\n` +
+        `  Re-running analyze with the larger auto-sized cap (set GITNEXUS_AUTO_HEAP=0 to keep the NODE_OPTIONS value).\n`,
+    );
+  } else {
+    const v8Heap = v8.getHeapStatistics().heap_size_limit;
+    if (v8Heap >= HEAP_MB * 1024 * 1024 * 0.9) return false;
+  }
 
   // --stack-size is a V8 flag not allowed in NODE_OPTIONS on Node 24+, so pass it
   // only as a direct CLI argument. --max-semi-space-size IS allowed in NODE_OPTIONS.
