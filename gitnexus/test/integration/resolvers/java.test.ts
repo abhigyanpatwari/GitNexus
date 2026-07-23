@@ -2885,6 +2885,66 @@ describe('Java instance-ownership free-call gate (#2550)', () => {
   }, 60000);
 });
 
+describe('Java local-class binary naming (#2562)', () => {
+  let result: PipelineResult;
+
+  beforeAll(async () => {
+    result = await runPipelineFromRepo(path.join(FIXTURES, 'java-local-class-naming'), () => {});
+  }, 60000);
+
+  it('gives local and anonymous classes a shared source-order ordinal per host', () => {
+    const classes = getNodesByLabel(result, 'Class');
+    expect(classes).toContain('Outer$1Local');
+    expect(classes).toContain('Outer$2CtorHost');
+    expect(classes).toContain('Outer$3NestedHost');
+    expect(classes).toContain('Outer$4');
+    expect(classes).toContain('Outer$5');
+    expect(classes).toContain('Outer$6Local');
+    expect(classes).toContain('Outer$1Local$1');
+    expect(classes).toContain('Outer$2CtorHost$1Local');
+    expect(classes).toContain('Outer$3NestedHost$Member$1Local');
+    expect(classes).not.toContain('Local');
+  });
+
+  it('owns each same-named local class method through its collision-free binary identity', () => {
+    const hasMethod = getRelationships(result, 'HAS_METHOD');
+    expect(
+      hasMethod.some(
+        (e) =>
+          e.rel.sourceId === 'Class:src/Outer.java:Outer$1Local' &&
+          e.rel.targetId === 'Method:src/Outer.java:Outer$1Local.inner#0',
+      ),
+    ).toBe(true);
+    expect(
+      hasMethod.some(
+        (e) =>
+          e.rel.sourceId === 'Class:src/Outer.java:Outer$6Local' &&
+          e.rel.targetId === 'Method:src/Outer.java:Outer$6Local.inner#0',
+      ),
+    ).toBe(true);
+    expect(
+      hasMethod.some(
+        (e) =>
+          e.rel.sourceId === 'Class:src/Outer.java:Outer$2CtorHost$1Local' &&
+          e.rel.targetId === 'Method:src/Outer.java:Outer$2CtorHost$1Local.inner#0',
+      ),
+    ).toBe(true);
+  });
+
+  it('keeps source-level Local construction dispatch bound to the matching local class', () => {
+    const calls = getRelationships(result, 'CALLS');
+    expect(calls.find((c) => c.source === 'first' && c.target === 'inner')?.rel.targetId).toBe(
+      'Method:src/Outer.java:Outer$1Local.inner#0',
+    );
+    expect(calls.find((c) => c.source === 'second' && c.target === 'inner')?.rel.targetId).toBe(
+      'Method:src/Outer.java:Outer$6Local.inner#0',
+    );
+    expect(calls.find((c) => c.source === 'CtorHost' && c.target === 'inner')?.rel.targetId).toBe(
+      'Method:src/Outer.java:Outer$2CtorHost$1Local.inner#0',
+    );
+  });
+});
+
 // ---------------------------------------------------------------------------
 // #2550 review hardening: (a) an anonymous class inherits from its
 // constructed type, so bare calls to inherited methods INSIDE the

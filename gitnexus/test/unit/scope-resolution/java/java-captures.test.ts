@@ -146,3 +146,22 @@ class C {
     expect(invokeFactsFor(src)).toBe(1);
   });
 });
+
+describe('emitJavaScopeCaptures — local-class binary names (#2562)', () => {
+  it('uses the binary identity for the definition and the simple name for lexical binding', () => {
+    const matches = emitJavaScopeCaptures(
+      'class Outer { void m() { class Local {} new Local(); } }',
+      'Outer.java',
+    );
+    const local = matches.find((m) => m['@declaration.name']?.text === 'Outer$1Local');
+
+    expect(local?.['@declaration.binding-name']?.text).toBe('Local');
+  });
+
+  it('leaves non-local class declarations unchanged', () => {
+    const matches = emitJavaScopeCaptures('class Outer { class Member {} }', 'Outer.java');
+    const member = matches.find((m) => m['@declaration.name']?.text === 'Member');
+
+    expect(member?.['@declaration.binding-name']).toBeUndefined();
+  });
+});

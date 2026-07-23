@@ -125,6 +125,22 @@ export function emitJavaScopeCaptures(
       continue;
     }
 
+    const classDeclaration = nodeIfType(nodeMap['@declaration.class'], 'class_declaration');
+    const localClassName =
+      classDeclaration === null ? undefined : synthesizeJavaAnonymousClassName(classDeclaration);
+    if (
+      localClassName !== undefined &&
+      grouped['@declaration.name'] !== undefined &&
+      classDeclaration !== null
+    ) {
+      grouped['@declaration.binding-name'] = grouped['@declaration.name'];
+      grouped['@declaration.name'] = syntheticCapture(
+        '@declaration.name',
+        classDeclaration,
+        localClassName,
+      );
+    }
+
     // Decompose each `import_declaration`. `@import.statement` is captured
     // directly on the `import_declaration` node.
     if (grouped['@import.statement'] !== undefined) {

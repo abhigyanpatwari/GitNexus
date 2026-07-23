@@ -33,10 +33,7 @@ export const javaClassConfig: ClassExtractionConfig = {
     'record_declaration',
   ],
   extractName(node) {
-    if (node.type === 'object_creation_expression' || node.type === 'enum_constant') {
-      return synthesizeJavaAnonymousClassName(node);
-    }
-    return undefined;
+    return synthesizeJavaAnonymousClassName(node);
   },
   // An anonymous body whose name CANNOT be synthesized must not become a
   // Class node at all. Without this skip, `extract()`'s

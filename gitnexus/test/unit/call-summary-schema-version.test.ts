@@ -73,8 +73,8 @@ describe('CALL_SUMMARY relation-type exclusion (U-C1)', () => {
 });
 
 describe('CALL_SUMMARY incremental reuse gate (U-C5)', () => {
-  it('INCREMENTAL_SCHEMA_VERSION is bumped to 12 (Rust range-binding ambiguity latch + import-disambiguated resolution, #2514)', () => {
-    expect(INCREMENTAL_SCHEMA_VERSION).toBe(12);
+  it('INCREMENTAL_SCHEMA_VERSION is bumped to 13 (Java local-class binary identities, #2562)', () => {
+    expect(INCREMENTAL_SCHEMA_VERSION).toBe(13);
   });
 
   it('a pre-current stamp fails the `=== INCREMENTAL_SCHEMA_VERSION` reuse gate → forces full re-analyze', () => {
@@ -121,7 +121,10 @@ describe('CALL_SUMMARY incremental reuse gate (U-C5)', () => {
     // import-disambiguated resolution adds new ones on unchanged Rust files,
     // neither of which reach an incremental write set → must NOT reuse.
     expect(passesReuseGate(11)).toBe(false);
+    // A pre-v13 (v12) index predates Java local-class binary identities
+    // (#2562), so unchanged Local-keyed Class/Method ids must not survive.
+    expect(passesReuseGate(12)).toBe(false);
     // A current-version stamp passes the gate (incremental top-up eligible).
-    expect(passesReuseGate(12)).toBe(true);
+    expect(passesReuseGate(13)).toBe(true);
   });
 });

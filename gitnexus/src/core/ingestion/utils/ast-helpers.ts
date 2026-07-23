@@ -405,13 +405,10 @@ export interface EnclosingClassInfo {
 const MAX_ENCLOSING_WALK_ITERATIONS = 4096;
 
 /**
- * Synthesize a javac-style name for a Java anonymous class body:
- * `new Runnable() { ... }` inside top-level class `Worker` becomes
- * `Worker$1` (`$N` = 1-based source order of anonymous bodies within the
- * top-level class). Returns undefined when the node is not an
- * `object_creation_expression` carrying a `class_body` child — which also
- * keeps this a no-op for C#, whose `object_creation_expression` uses
- * `initializer_expression`, never `class_body` (#2550).
+ * Synthesize a JLS 13.1 binary name for a Java anonymous body or local class:
+ * `new Runnable() { ... }` becomes `Worker$1`, while `class Local {}` in a
+ * method becomes `Worker$1Local`. Returns undefined for every other shape,
+ * including C# object creation expressions (#2550/#2562).
  *
  * The SAME name must be produced by every layer that keys the anonymous
  * class (structure-phase node id, enclosing-owner walk, scope-side
@@ -439,6 +436,23 @@ const isJavaAnonymousBodyNode = (node: SyntaxNode): boolean =>
     node.namedChildren?.some((c: SyntaxNode) => c.type === 'class_body') === true) ||
   (node.type === 'enum_constant' && node.childForFieldName?.('body')?.type === 'class_body');
 
+/** A named class whose ancestor walk reaches a method/constructor before
+ *  another enclosing type is a Java local class (#2562). */
+const isJavaLocalClassNode = (node: SyntaxNode): boolean => {
+  if (node.type !== 'class_declaration') return false;
+  let cursor = node.parent;
+  let iterations = 0;
+  while (cursor) {
+    if (++iterations > MAX_ENCLOSING_WALK_ITERATIONS) return false;
+    if (cursor.type === 'method_declaration' || cursor.type === 'constructor_declaration') {
+      return true;
+    }
+    if (JAVA_ANON_HOST_TYPES.has(cursor.type) || isJavaAnonymousBodyNode(cursor)) return false;
+    cursor = cursor.parent;
+  }
+  return false;
+};
+
 /** Nearest ancestor of `node` that is an enclosing TYPE per JLS 13.1 —
  *  a named host declaration OR another anonymous body (both shapes).
  *  Anonymous ancestors chain through: an anon inside an anon is
@@ -454,7 +468,7 @@ const nearestJavaEnclosingType = (node: SyntaxNode): SyntaxNode | null => {
   return null;
 };
 
-/** Per-parse-tree memo of anonymous-body numbering: tree → (startIndex →
+/** Per-parse-tree memo of synthesized type numbering: tree → (startIndex →
  *  synthesized name). Keyed by the tree OBJECT via WeakMap so entries die
  *  with the parse; without it every call re-scans the host subtree
  *  (`descendantsOfType`), and the helper is called from four independent
@@ -462,8 +476,23 @@ const nearestJavaEnclosingType = (node: SyntaxNode): SyntaxNode | null => {
  *  listener-per-widget Java). */
 const javaAnonNameMemo = new WeakMap<object, Map<number, string>>();
 
+/** Binary name of a Java enclosing type, including synthesized local and
+ *  anonymous hosts and named member-class chains. */
+const javaBinaryNameOfType = (node: SyntaxNode): string | undefined => {
+  if (isJavaAnonymousBodyNode(node) || isJavaLocalClassNode(node)) {
+    return synthesizeJavaAnonymousClassName(node);
+  }
+  if (!JAVA_ANON_HOST_TYPES.has(node.type)) return undefined;
+  const simpleName = node.childForFieldName?.('name')?.text;
+  if (simpleName === undefined || simpleName.length === 0) return undefined;
+  const enclosing = nearestJavaEnclosingType(node);
+  if (enclosing === null) return simpleName;
+  const enclosingName = javaBinaryNameOfType(enclosing);
+  return enclosingName === undefined ? undefined : `${enclosingName}$${simpleName}`;
+};
+
 export const synthesizeJavaAnonymousClassName = (node: SyntaxNode): string | undefined => {
-  if (!isJavaAnonymousBodyNode(node)) return undefined;
+  if (!isJavaAnonymousBodyNode(node) && !isJavaLocalClassNode(node)) return undefined;
 
   const tree = (node as { tree?: object }).tree;
   if (tree !== undefined) {
@@ -479,36 +508,17 @@ export const synthesizeJavaAnonymousClassName = (node: SyntaxNode): string | und
   // is the `$`-joined chain of named hosts (`EnumWrap$Mode`).
   const enclosing = nearestJavaEnclosingType(node);
   if (enclosing === null) return undefined;
-  let prefix: string;
-  if (isJavaAnonymousBodyNode(enclosing)) {
-    const enclosingName = synthesizeJavaAnonymousClassName(enclosing);
-    if (enclosingName === undefined) return undefined;
-    prefix = enclosingName;
-  } else {
-    const hostNames: string[] = [];
-    let cursor: SyntaxNode | null = enclosing;
-    let iterations = 0;
-    while (cursor) {
-      if (++iterations > MAX_ENCLOSING_WALK_ITERATIONS) return undefined;
-      if (JAVA_ANON_HOST_TYPES.has(cursor.type)) {
-        const hostName = cursor.childForFieldName?.('name')?.text;
-        if (hostName === undefined || hostName.length === 0) return undefined;
-        hostNames.unshift(hostName);
-      }
-      cursor = cursor.parent;
-    }
-    prefix = hostNames.join('$');
-  }
+  const prefix = javaBinaryNameOfType(enclosing);
+  if (prefix === undefined) return undefined;
 
-  // All anonymous bodies (both shapes) whose immediately enclosing TYPE
-  // is THIS one, in source order. `descendantsOfType` over the subtree
-  // also finds bodies belonging to nested enclosing types — filter them
-  // out by re-deriving each candidate's own enclosing type.
+  // All anonymous bodies and local classes whose immediately enclosing TYPE
+  // is THIS one, in source order. Nested hosts are filtered out.
   const candidates = [
     ...(enclosing.descendantsOfType?.('object_creation_expression') ?? []),
     ...(enclosing.descendantsOfType?.('enum_constant') ?? []),
+    ...(enclosing.descendantsOfType?.('class_declaration') ?? []),
   ]
-    .filter(isJavaAnonymousBodyNode)
+    .filter((c: SyntaxNode) => isJavaAnonymousBodyNode(c) || isJavaLocalClassNode(c))
     .filter((c: SyntaxNode) => {
       const host = nearestJavaEnclosingType(c);
       return (
@@ -524,13 +534,22 @@ export const synthesizeJavaAnonymousClassName = (node: SyntaxNode): string | und
       javaAnonNameMemo.set(tree, byStart);
     }
     for (let i = 0; i < candidates.length; i++) {
-      byStart.set(candidates[i]!.startIndex, `${prefix}$${i + 1}`);
+      const candidate = candidates[i]!;
+      const isLocal = isJavaLocalClassNode(candidate);
+      const localSimpleName = isLocal
+        ? candidate.childForFieldName?.('name')?.text
+        : undefined;
+      if (isLocal && !localSimpleName) continue;
+      byStart.set(candidate.startIndex, `${prefix}$${i + 1}${localSimpleName ?? ''}`);
     }
     return byStart.get(node.startIndex);
   }
   const index = candidates.findIndex((c: SyntaxNode) => c.startIndex === node.startIndex);
   if (index === -1) return undefined;
-  return `${prefix}$${index + 1}`;
+  const isLocal = isJavaLocalClassNode(node);
+  const localSimpleName = isLocal ? node.childForFieldName?.('name')?.text : undefined;
+  if (isLocal && !localSimpleName) return undefined;
+  return `${prefix}$${index + 1}${localSimpleName ?? ''}`;
 };
 
 export const findEnclosingClassInfo = (
@@ -605,7 +624,11 @@ export const findEnclosingClassInfo = (
     // enum constant, and every C# `object_creation_expression`), so the
     // walk continues unchanged for those — including on to
     // `enum_declaration`, which sits in CLASS_CONTAINER_TYPES below.
-    if (current.type === 'object_creation_expression' || current.type === 'enum_constant') {
+    if (
+      current.type === 'object_creation_expression' ||
+      current.type === 'enum_constant' ||
+      current.type === 'class_declaration'
+    ) {
       const anonName = synthesizeJavaAnonymousClassName(current);
       if (anonName !== undefined) {
         return {
