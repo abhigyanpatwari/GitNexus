@@ -16,6 +16,7 @@
  */
 
 import { createKnowledgeGraph } from '../graph/graph.js';
+import { GraphEmitSink, type GraphEmitManifest } from '../lbug/graph-emit-sink.js';
 import { type PipelineProgress } from 'gitnexus-shared';
 import { PipelineResult } from '../../types/pipeline.js';
 import {
@@ -142,6 +143,22 @@ export interface PipelineOptions {
    * whole-graph emit.
    */
   streamPdgEmit?: boolean;
+  /**
+   * Streamed structural graph emit (#2680). When true, relationships that no
+   * mid-pipeline phase reads back (CALLS, IMPORTS, ACCESSES, CONTAINS, ...) are
+   * streamed to CSV-on-disk from the parse boundary onward instead of being
+   * retained in the in-memory graph — measured ~2.9x reduction of graph heap.
+   *
+   * NOT free: the `communities`, `processes`, `taintSummaries` and
+   * `callSummaries` phases all consume the whole CALLS graph and are disabled
+   * under this flag. The caller (`run-analyze`) gates it to full rebuilds.
+   * Requires `graphEmitCsvDir`.
+   */
+  streamGraphEmit?: boolean;
+  /** Directory for the streamed structural CSVs. Required when
+   *  `streamGraphEmit` is on; supplied by the caller, which owns storage-path
+   *  resolution (and its native-safe relocation). */
+  graphEmitCsvDir?: string;
   /** Streamed PDG-emit write buffer (rows) when `streamPdgEmit` is on (#2202).
    *  `undefined` ⇒ `DEFAULT_PDG_EMIT_CHUNK_ROWS`. Memory-only; does not affect
    *  emitted bytes. */
@@ -275,12 +292,25 @@ export function buildPhaseList(options?: PipelineOptions): PipelinePhase[] {
       // M4 (#2084): interprocedural taint fixpoint — the first real opt-in
       // pdg-gated phase. Off ⇒ absent ⇒ byte-identical graph. No always-on
       // phase depends on it (a filtered-out dep would throw in getPhaseOutput).
-      .register(taintSummariesPhase, { enabledWhen: (o) => o.pdg === true })
-      .register(callSummariesPhase, { enabledWhen: (o) => o.pdg === true })
+      // `streamGraphEmit` disables every phase that consumes the whole CALLS
+      // graph — CALLS is exactly what streams out, so leaving them enabled
+      // yields silently empty results, not an error. taintSummaries and
+      // callSummaries are gated on `pdg`, NOT on `skipGraphPhases`, so they
+      // need the condition spelled out separately.
+      .register(taintSummariesPhase, {
+        enabledWhen: (o) => o.pdg === true && o.streamGraphEmit !== true,
+      })
+      .register(callSummariesPhase, {
+        enabledWhen: (o) => o.pdg === true && o.streamGraphEmit !== true,
+      })
       .register(mroPhase, { enabledWhen: (o) => !o.skipGraphPhases })
       .register(diPhase, { enabledWhen: (o) => !o.skipGraphPhases })
-      .register(communitiesPhase, { enabledWhen: (o) => !o.skipGraphPhases })
-      .register(processesPhase, { enabledWhen: (o) => !o.skipGraphPhases })
+      .register(communitiesPhase, {
+        enabledWhen: (o) => !o.skipGraphPhases && o.streamGraphEmit !== true,
+      })
+      .register(processesPhase, {
+        enabledWhen: (o) => !o.skipGraphPhases && o.streamGraphEmit !== true,
+      })
       // Normalize a missing options object once here so phase predicates above
       // take a required PipelineOptions and need no `?.` guard (#2080 review S1).
       .build(options ?? {})
@@ -297,15 +327,39 @@ export const runPipelineFromRepo = async (
   const graph = createKnowledgeGraph();
   const pipelineStart = Date.now();
 
+  // Streamed structural emit (#2680). The sink is a write-routing façade over
+  // `graph`; it streams nothing until `arm()` fires at the parse boundary.
+  let graphEmitSink: GraphEmitSink | undefined;
+  if (options?.streamGraphEmit === true && options.graphEmitCsvDir !== undefined) {
+    graphEmitSink = new GraphEmitSink(graph, options.graphEmitCsvDir);
+    onProgress({
+      phase: 'structure',
+      percent: 0,
+      message:
+        'Streamed graph emit ON: community detection, process extraction, PDG taint summaries ' +
+        'and community-derived skills are DISABLED for this run.',
+    });
+  }
+
   const phases = buildPhaseList(options);
 
-  const results = await runPipeline(phases, {
-    repoPath,
-    graph,
-    onProgress,
-    options,
-    pipelineStart,
-  });
+  let graphEmitManifest: GraphEmitManifest | undefined;
+  let results;
+  try {
+    results = await runPipeline(phases, {
+      repoPath,
+      graph: graphEmitSink ?? graph,
+      onProgress,
+      options,
+      pipelineStart,
+      armStreaming: graphEmitSink === undefined ? undefined : () => graphEmitSink?.arm(),
+      hasStreamedSemanticEdge: graphEmitSink?.hasStreamedSemanticEdge,
+    });
+    graphEmitManifest = graphEmitSink?.finalize();
+  } finally {
+    // Release per-pair fds when the pipeline threw before finalize ran.
+    graphEmitSink?.close();
+  }
 
   // Extract final results for the PipelineResult contract
   const { totalFiles, usedWorkerPool } = getPhaseOutput<{
@@ -320,7 +374,12 @@ export const runPipelineFromRepo = async (
   // Streamed PDG-emit manifest (#2202): present only when streaming was on.
   const pdgEmitManifest = scopeResolutionOutput.pdgEmitManifest;
 
-  if (!options?.skipGraphPhases) {
+  // Presence check, not `!skipGraphPhases`: phases can now be filtered out by
+  // any `enabledWhen` predicate (streamGraphEmit disables communities/processes
+  // too), and `getPhaseOutput` THROWS on a phase that was never resolved. Keying
+  // off the options flag alone made every filtered-out combination crash here
+  // rather than return undefined results.
+  if (results.has('communities') && results.has('processes')) {
     communityResult = getPhaseOutput<CommunitiesOutput>(results, 'communities').communityResult;
     processResult = getPhaseOutput<ProcessesOutput>(results, 'processes').processResult;
   }
@@ -343,6 +402,8 @@ export const runPipelineFromRepo = async (
     graph,
     repoPath,
     totalFileCount: totalFiles,
+    graphEmitManifest,
+    graphEmitSink,
     communityResult,
     processResult,
     resolutionOutcomes,

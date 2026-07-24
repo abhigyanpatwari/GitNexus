@@ -37,7 +37,21 @@ const isFileDefinesEdge = (graph: KnowledgeGraph, rel: GraphRelationship): boole
 
 export const pruneLocalValueSymbols = (
   graph: KnowledgeGraph,
-  options: { keepLocalValueSymbols?: boolean } = {},
+  options: {
+    keepLocalValueSymbols?: boolean;
+    /**
+     * Reports whether a node is an endpoint of a relationship that has already
+     * been streamed to CSV and is therefore NOT visible to the
+     * `iterRelationships()` scan below (#2680).
+     *
+     * Without this, a block-local symbol whose only reference is a streamed
+     * edge looks unreferenced, gets pruned, and leaves the streamed CSV row
+     * pointing at a node with no row — a dangling edge at COPY time, not just
+     * a semantic mistake. Absent (the default) the scan alone decides, so
+     * behaviour is unchanged when streaming is off.
+     */
+    hasStreamedSemanticEdge?: (nodeId: string) => boolean;
+  } = {},
 ): LocalSymbolPruneStats => {
   if (options.keepLocalValueSymbols ?? shouldKeepLocalValueSymbols()) {
     return emptyStats(true);
@@ -64,6 +78,13 @@ export const pruneLocalValueSymbols = (
       if (!isFileDefinesEdge(graph, rel)) {
         candidatesWithSemanticEdges.add(rel.targetId);
       }
+    }
+  }
+
+  const hasStreamedSemanticEdge = options.hasStreamedSemanticEdge;
+  if (hasStreamedSemanticEdge !== undefined) {
+    for (const candidateId of candidateIds) {
+      if (hasStreamedSemanticEdge(candidateId)) candidatesWithSemanticEdges.add(candidateId);
     }
   }
 

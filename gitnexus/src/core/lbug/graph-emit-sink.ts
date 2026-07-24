@@ -154,6 +154,17 @@ export class GraphEmitSink implements KnowledgeGraph {
   private readonly streamedEndpoints = new Set<string>();
   private finalized = false;
   /**
+   * Streaming is OFF until {@link arm} is called at the parse boundary.
+   *
+   * The pre-parse phases are not all write-only: `mapCobolToGraph` scans
+   * `CALLS` edges and REMOVES the unresolved ones after adding resolved
+   * replacements (cobol-processor.ts). If the sink streamed from
+   * construction, that scan would see an empty set, no COBOL cross-program
+   * call would ever resolve, and the removal would be a silent no-op. Nothing
+   * before parse produces bulk edge volume, so deferring costs nothing.
+   */
+  private armed = false;
+  /**
    * First writer-construction failure (`fs.openSync` throwing on e.g. EMFILE).
    * It happens inside the `SyncCsvWriter` constructor before a writer object
    * exists to carry poison, so it is held at sink level and folded into the
@@ -182,8 +193,13 @@ export class GraphEmitSink implements KnowledgeGraph {
     this.real.addNode(node);
   }
 
+  /** Begin streaming. Called once, at the parse-phase boundary. */
+  arm(): void {
+    this.armed = true;
+  }
+
   addRelationship(relationship: GraphRelationship): void {
-    if (RETAINED_REL_TYPES.has(relationship.type)) {
+    if (!this.armed || RETAINED_REL_TYPES.has(relationship.type)) {
       this.real.addRelationship(relationship);
       return;
     }

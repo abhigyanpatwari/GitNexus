@@ -32,6 +32,19 @@ export interface PipelineContext {
   readonly options?: PipelineOptions;
   /** Pipeline start timestamp (for elapsed-time logging). */
   readonly pipelineStart: number;
+  /**
+   * Called by the `parse` phase at its start to begin streamed structural emit
+   * (#2680). Absent unless `streamGraphEmit` is on. The hook exists so `parse`
+   * need not know about the lbug sink type — see GraphEmitSink.arm().
+   */
+  readonly armStreaming?: () => void;
+  /**
+   * Reports whether a node is an endpoint of an already-streamed relationship
+   * (#2680). Present only under `streamGraphEmit`. The local-symbol pruner
+   * consults it so a symbol referenced solely by a streamed edge is not pruned
+   * — which would leave that CSV row pointing at a node with no row.
+   */
+  readonly hasStreamedSemanticEdge?: (nodeId: string) => boolean;
 }
 
 // ── Phase result wrapper ───────────────────────────────────────────────────

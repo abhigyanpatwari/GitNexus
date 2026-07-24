@@ -20,6 +20,7 @@ import {
   NodeTableName,
 } from './schema.js';
 import { streamAllCSVsToDisk, type StreamedCSVResult } from './csv-generator.js';
+import type { GraphEmitManifest } from './graph-emit-sink.js';
 import type { PdgEmitManifest } from './pdg-emit-sink.js';
 import { getNodeLabel as deriveNodeLabel, type WriteStreamFactory } from './rel-pair-routing.js';
 import { EMBEDDABLE_LABELS, type CachedEmbedding } from '../embeddings/types.js';
@@ -1017,6 +1018,15 @@ export const loadGraphToLbug = async (
    * emits none — the manifest is the sole source and there is no double-COPY.
    */
   pdgEmitManifest?: PdgEmitManifest,
+  /**
+   * Streamed structural-emit manifest (#2680). Unlike {@link pdgEmitManifest},
+   * these pair keys are NOT disjoint from the whole-graph emit's: a streamed
+   * `CALLS` edge is `Function|Function`, exactly like the retained edges
+   * `streamAllCSVsToDisk` just wrote. So these files are APPENDED as additional
+   * COPY jobs for the same pair rather than merged into `relsByPair` (a Map,
+   * which holds one CSV per pair and would silently drop one of them).
+   */
+  graphEmitManifest?: GraphEmitManifest,
 ) => {
   if (!conn) {
     throw new Error('LadybugDB not initialized. Call initLbug first.');
@@ -1156,17 +1166,32 @@ export const loadGraphToLbug = async (
   let tCopyRels = tCopyNodes;
   let tFallback = tCopyNodes;
 
-  const insertedRels = totalValidRels;
+  // One COPY job per CSV FILE, not per label pair. The whole-graph emit writes
+  // at most one file per pair, but the streamed structural manifest (#2680) can
+  // contribute a second file for a pair the whole-graph emit also wrote — both
+  // must load. `relsByPair` stays a one-file-per-pair Map so the PDG merge above
+  // and every other consumer are untouched.
+  const copyJobs: Array<{ pairKey: string; csvPath: string; rows: number }> = [];
+  for (const [pairKey, meta] of relsByPair) {
+    copyJobs.push({ pairKey, csvPath: meta.csvPath, rows: meta.rows });
+  }
+  if (graphEmitManifest) {
+    for (const [pairKey, meta] of graphEmitManifest.relsByPair) {
+      copyJobs.push({ pairKey, csvPath: meta.csvPath, rows: meta.rows });
+    }
+  }
+
+  const insertedRels = totalValidRels + (graphEmitManifest?.totalRows ?? 0);
   const warnings: string[] = [];
   let poolRemedyIssued = false;
   if (insertedRels > 0) {
-    log(`Loading edges: ${insertedRels.toLocaleString()} across ${relsByPair.size} types`);
+    log(`Loading edges: ${insertedRels.toLocaleString()} across ${copyJobs.length} CSV files`);
 
     let pairIdx = 0;
     let failedPairEdges = 0;
     const failedPairCsvPaths = new Set<string>();
 
-    for (const [pairKey, { csvPath: pairCsvPath, rows }] of relsByPair) {
+    for (const { pairKey, csvPath: pairCsvPath, rows } of copyJobs) {
       pairIdx++;
       const [fromLabel, toLabel] = pairKey.split('|');
       const normalizedPath = normalizeCopyPath(pairCsvPath);
@@ -1174,7 +1199,7 @@ export const loadGraphToLbug = async (
       const copyQuery = `COPY ${REL_TABLE_NAME} FROM "${normalizedPath}" (from="${fromLabel}", to="${toLabel}", HEADER=true, ESCAPE='"', DELIM=',', QUOTE='"', PARALLEL=false, auto_detect=false)`;
 
       if (pairIdx % 5 === 0 || rows > 1000) {
-        log(`Loading edges: ${pairIdx}/${relsByPair.size} types (${fromLabel} -> ${toLabel})`);
+        log(`Loading edges: ${pairIdx}/${copyJobs.length} files (${fromLabel} -> ${toLabel})`);
       }
 
       // Use the captured `writeConn` (not the module-level `conn`) for the rel

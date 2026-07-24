@@ -90,6 +90,12 @@ export const parsePhase: PipelinePhase<ParseOutput> = {
     ctx: PipelineContext,
     deps: ReadonlyMap<string, PhaseResult<unknown>>,
   ): Promise<ParseOutput> {
+    // Begin streamed structural emit (#2680), if enabled. Deliberately here and
+    // not at graph construction: the pre-parse phases are not all write-only —
+    // `mapCobolToGraph` scans CALLS edges and removes the unresolved ones — and
+    // nothing before parse produces bulk edge volume anyway.
+    ctx.armStreaming?.();
+
     const { scannedFiles, allPaths, allPathSet, totalFiles } = getPhaseOutput<StructureOutput>(
       deps,
       'structure',
