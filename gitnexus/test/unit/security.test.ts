@@ -39,6 +39,9 @@ describe('VALID_RELATION_TYPES', () => {
     'WRAPS',
     // Spring DI @Autowired collection injection (#2200)
     'INJECTS',
+    // Spring conditional activation and Boot auto-configuration discovery (#2415)
+    'CONDITIONAL_ON',
+    'AUTO_REGISTERS',
   ] as const;
 
   it('contains all expected relation types', () => {

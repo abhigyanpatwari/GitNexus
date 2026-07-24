@@ -81,8 +81,17 @@ const isGraphWide = (label: string): boolean => label === 'Community' || label =
 // analyze, and the `incrementalInProgress` dirty flag (saved before any
 // delete) forces a full rebuild on the next run. Temporary absence is
 // possible; duplicates are not.
+//
+// `AUTO_REGISTERS` (#2415) is recomputed from every Spring metadata file on
+// every run. A third-file class addition/removal can also change a metadata
+// declaration from a synthetic target to a source target, so endpoint-local
+// writeback is insufficient. Delete-all + global re-extract keeps it sound and
+// prevents the relationship table (which has no PK) from accumulating copies.
 const isGraphWideRelType = (type: string): boolean =>
-  type === 'TAINT_PATH' || type === 'CALL_SUMMARY' || type === 'INJECTS';
+  type === 'TAINT_PATH' ||
+  type === 'CALL_SUMMARY' ||
+  type === 'INJECTS' ||
+  type === 'AUTO_REGISTERS';
 
 /**
  * Build a Map<nodeId, filePath> for every File-bound node in the graph.

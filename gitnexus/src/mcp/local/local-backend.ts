@@ -302,6 +302,11 @@ export const VALID_RELATION_TYPES = new Set([
   // (WRAPS/FETCHES precedent): the 0.5 unknown-type floor applies there,
   // and the edges carry their own confidence (0.8) in the graph.
   'INJECTS',
+  // Spring framework evidence is opt-in for impact traversal, like INJECTS:
+  // explicit filters can follow activation constraints and auto-registration
+  // without changing the default callgraph surface for non-Spring projects.
+  'CONDITIONAL_ON',
+  'AUTO_REGISTERS',
 ]);
 
 /**

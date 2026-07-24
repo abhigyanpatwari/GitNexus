@@ -4,7 +4,10 @@ import { getCopyQuery } from '../../src/core/lbug/lbug-adapter.js';
 import { PARSE_CACHE_VERSION } from '../../src/storage/parse-cache.js';
 import { INCREMENTAL_SCHEMA_VERSION } from '../../src/storage/repo-manager.js';
 import { isSpringBeanCandidateSourceFile } from '../../src/core/ingestion/frameworks/spring/bean-catalog.js';
-import { SPRING_BEAN_INVENTORY_FEATURE } from '../../src/core/ingestion/frameworks/spring/analysis-features.js';
+import {
+  SPRING_BEAN_INVENTORY_FEATURE,
+  SPRING_CONDITIONALS_FEATURE,
+} from '../../src/core/ingestion/frameworks/spring/analysis-features.js';
 import { CLASS_FRAMEWORK_ANNOTATIONS_FEATURE } from '../../src/core/analysis-features.js';
 
 describe('Spring Bean Class persistence schema', () => {
@@ -18,10 +21,11 @@ describe('Spring Bean Class persistence schema', () => {
 
   it('meets the cache-version baselines required by the merged implementation', () => {
     const parseSchemaVersion = Number.parseInt(PARSE_CACHE_VERSION, 10);
-    expect(parseSchemaVersion).toBeGreaterThanOrEqual(20);
+    expect(parseSchemaVersion).toBeGreaterThanOrEqual(22);
     expect(INCREMENTAL_SCHEMA_VERSION).toBeGreaterThanOrEqual(8);
     expect(CLASS_FRAMEWORK_ANNOTATIONS_FEATURE.version).toBe(1);
     expect(SPRING_BEAN_INVENTORY_FEATURE.version).toBe(1);
+    expect(SPRING_CONDITIONALS_FEATURE.version).toBe(1);
   });
 
   it('limits incremental drift queries to Java and Kotlin Bean source files', () => {

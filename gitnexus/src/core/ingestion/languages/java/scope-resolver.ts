@@ -31,6 +31,7 @@ import {
 import { populateJavaPackageSiblings } from './package-siblings.js';
 import { attachSpringBeanCandidateMetadata } from './spring-bean-metadata.js';
 import { attachJavaSpringConfigBindings } from './spring-config-bindings.js';
+import { attachJavaSpringConditionalMetadata } from './spring-conditionals.js';
 import { attachJavaSpringDiMetadata } from './spring-di.js';
 import {
   applyJavaCaptureSideChannel,
@@ -87,6 +88,7 @@ const javaScopeResolver: ScopeResolver = {
   populateRangeBindings: populateJavaCrossFileReturnTypes,
   emitPostResolutionEdges: (graph, parsedFiles, nodeLookup, indexes, ctx) => {
     attachSpringBeanCandidateMetadata(graph, parsedFiles, nodeLookup, indexes);
+    attachJavaSpringConditionalMetadata(graph, parsedFiles, nodeLookup, indexes);
     attachJavaSpringDiMetadata(graph, parsedFiles, nodeLookup, indexes);
     attachJavaSpringConfigBindings(graph, parsedFiles, nodeLookup, indexes, ctx);
   },

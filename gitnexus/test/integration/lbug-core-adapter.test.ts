@@ -170,6 +170,27 @@ withTestLbugDB(
         expect(Number((queriesLeft[0] as { cnt: number }).cnt)).toBe(1);
       });
 
+      it('deleteAllAutoRegisters: removes only AUTO_REGISTERS edges (#2415)', async () => {
+        const { executeQuery: coreExecuteQuery, deleteAllAutoRegisters } =
+          await import('../../src/core/lbug/lbug-adapter.js');
+
+        await expect(deleteAllAutoRegisters()).resolves.toEqual({ edgesDeleted: 0 });
+        const fns = (await coreExecuteQuery('MATCH (n:Function) RETURN n.id AS id')) as Array<{
+          id: string;
+        }>;
+        expect(fns.length).toBe(2);
+        await coreExecuteQuery(
+          `MATCH (a:Function {id: '${fns[0].id}'}), (b:Function {id: '${fns[1].id}'}) ` +
+            `CREATE (a)-[:CodeRelation {type: 'AUTO_REGISTERS', confidence: 1.0, reason: 'spring', step: 0}]->(b)`,
+        );
+
+        await expect(deleteAllAutoRegisters()).resolves.toEqual({ edgesDeleted: 1 });
+        const left = await coreExecuteQuery(
+          `MATCH ()-[r:CodeRelation]->() WHERE r.type = 'AUTO_REGISTERS' RETURN count(r) AS cnt`,
+        );
+        expect(Number((left[0] as { cnt: number }).cnt)).toBe(0);
+      });
+
       describe('unhappy path', () => {
         it('throws on malformed Cypher query', async () => {
           const { executeQuery } = await import('../../src/core/lbug/lbug-adapter.js');

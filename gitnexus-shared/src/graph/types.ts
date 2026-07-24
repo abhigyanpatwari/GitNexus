@@ -140,6 +140,18 @@ export type RelationshipType =
    *  Lets Cypher queries trace which beans the container injects into a given
    *  consumer, complementing the structural `IMPLEMENTS` heritage edges. */
   | 'INJECTS'
+  /** Spring activation constraint. Source = a conditional Bean/configuration
+   *  Class or factory Method; target = the referenced configuration Property
+   *  when statically identifiable, otherwise an Annotation evidence node.
+   *  The reason records the annotation and explicitly marks activation as
+   *  unknown because runtime environment/classpath state may override source
+   *  configuration. */
+  | 'CONDITIONAL_ON'
+  /** Spring Boot auto-configuration discovery. Source = the metadata/source
+   *  File that declares an auto configuration; target = the discovered Class.
+   *  This keeps framework-provided configuration distinguishable from normal
+   *  application-owned Bean candidates. */
+  | 'AUTO_REGISTERS'
   /** Vue component event system: a handler function in a parent component is
    *  bound to an event emitted by a child component (`@event="handlerFn"`).
    *  Source = handler Function/Method node in the parent.

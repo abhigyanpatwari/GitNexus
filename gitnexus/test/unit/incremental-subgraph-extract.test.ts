@@ -130,6 +130,18 @@ describe('extractChangedSubgraph', () => {
 
     expect(sub.relationships.map((r) => r.id)).toEqual(['inj1']);
   });
+
+  it('always includes AUTO_REGISTERS edges between unchanged metadata and classes (#2415)', () => {
+    const g = createKnowledgeGraph();
+    g.addNode(makeFileNode('metadata:File', '/repo/META-INF/spring.factories', 'File'));
+    g.addNode(makeFileNode('config:Class', '/repo/AutoConfig.java', 'Class'));
+    g.addRelationship(makeRel('auto1', 'metadata:File', 'config:Class', 'AUTO_REGISTERS'));
+    g.addRelationship(makeRel('call1', 'metadata:File', 'config:Class', 'CALLS'));
+
+    const sub = extractChangedSubgraph(g, new Set(['/repo/unrelated.ts']));
+
+    expect(sub.relationships.map((relationship) => relationship.id)).toEqual(['auto1']);
+  });
 });
 
 describe('computeEffectiveWriteSet (Finding 1)', () => {

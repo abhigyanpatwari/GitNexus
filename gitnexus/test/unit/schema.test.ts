@@ -111,6 +111,11 @@ describe('LadybugDB Schema', () => {
     it('includes the DI collection-injection edge type (#2200)', () => {
       expect(REL_TYPES).toContain('INJECTS');
     });
+
+    it('includes Spring condition and auto-configuration edge types (#2415)', () => {
+      expect(REL_TYPES).toContain('CONDITIONAL_ON');
+      expect(REL_TYPES).toContain('AUTO_REGISTERS');
+    });
   });
 
   describe('node schema DDL', () => {

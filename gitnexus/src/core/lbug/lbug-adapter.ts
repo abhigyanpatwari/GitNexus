@@ -2608,9 +2608,9 @@ export const deleteAllCommunitiesAndProcesses = async (): Promise<{
 /**
  * Shared mechanics for the delete-all-relationships-of-one-type family
  * ({@link deleteAllInterprocTaintPaths}, {@link deleteAllCallSummaries},
- * {@link deleteAllInjects}): count the typed CodeRelation rows, then DELETE
- * them (relationship-level — these are edge types, not node labels, so
- * endpoints are untouched).
+ * {@link deleteAllInjects}, {@link deleteAllAutoRegisters}): count the typed
+ * CodeRelation rows, then DELETE them (relationship-level — these are edge
+ * types, not node labels, so endpoints are untouched).
  *
  * count + DELETE run as one critical section on the singleton connection so a
  * concurrent WAL-checkpoint cannot corrupt native state mid-delete (#pdg).
@@ -2725,6 +2725,20 @@ export const deleteAllCallSummaries = async (): Promise<{ edgesDeleted: number }
  */
 export const deleteAllInjects = async (): Promise<{ edgesDeleted: number }> =>
   deleteAllRelationshipsOfType('INJECTS', 'di', 'duplicate INJECTS edges');
+
+/**
+ * Drop every `AUTO_REGISTERS` relationship before incremental writeback.
+ * Spring Boot metadata is scanned repository-wide and can retarget an unchanged
+ * declaration when a third-file configuration class appears or disappears.
+ * The fresh graph therefore re-emits the complete set, matching the same
+ * delete-all/re-extract contract used by INJECTS.
+ */
+export const deleteAllAutoRegisters = async (): Promise<{ edgesDeleted: number }> =>
+  deleteAllRelationshipsOfType(
+    'AUTO_REGISTERS',
+    'spring-auto-configuration',
+    'duplicate auto-configuration registrations',
+  );
 
 // ============================================================================
 // Full-Text Search (FTS) Functions

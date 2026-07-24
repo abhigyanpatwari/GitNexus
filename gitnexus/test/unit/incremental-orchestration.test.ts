@@ -43,7 +43,10 @@ import {
   stampEmbeddingCount,
 } from '../helpers/embedding-seed.js';
 import { CLASS_FRAMEWORK_ANNOTATIONS_FEATURE } from '../../src/core/analysis-features.js';
-import { SPRING_BEAN_INVENTORY_FEATURE } from '../../src/core/ingestion/frameworks/spring/analysis-features.js';
+import {
+  SPRING_BEAN_INVENTORY_FEATURE,
+  SPRING_CONDITIONALS_FEATURE,
+} from '../../src/core/ingestion/frameworks/spring/analysis-features.js';
 import { SPRING_CONFIG_BINDINGS_FEATURE } from '../../src/core/ingestion/languages/java/analysis-features.js';
 
 const setupMiniRepo = () => setupSharedMiniRepo('gitnexus-incr-orch-');
@@ -165,6 +168,20 @@ async function countInjects(repoPath: string): Promise<number> {
   }
 }
 
+async function countAutoRegisters(repoPath: string): Promise<number> {
+  const adapter = await import('../../src/core/lbug/lbug-adapter.js');
+  const { lbugPath } = getStoragePaths(repoPath);
+  await adapter.initLbug(lbugPath);
+  try {
+    const rows = (await adapter.executeQuery(
+      `MATCH ()-[r:CodeRelation]->() WHERE r.type = 'AUTO_REGISTERS' RETURN count(r) AS c`,
+    )) as Array<{ c: number | bigint }>;
+    return Number(rows[0]?.c ?? 0);
+  } finally {
+    await adapter.closeLbug();
+  }
+}
+
 /** Java DI fixture (#2200): `@Autowired List<IFoo>` + 2 implementers ⇒ exactly
  *  2 INJECTS edges (Consumer→FooA, Consumer→FooB). Same shapes as the
  *  spring-di-pipeline integration fixture. */
@@ -275,6 +292,7 @@ describe('runFullAnalysis — incremental orchestration', () => {
       expect(meta!.analysisFeatures).toEqual({
         [CLASS_FRAMEWORK_ANNOTATIONS_FEATURE.id]: CLASS_FRAMEWORK_ANNOTATIONS_FEATURE.version,
         [SPRING_BEAN_INVENTORY_FEATURE.id]: SPRING_BEAN_INVENTORY_FEATURE.version,
+        [SPRING_CONDITIONALS_FEATURE.id]: SPRING_CONDITIONALS_FEATURE.version,
       });
 
       await saveMeta(storagePath, withoutAnalysisFeature(meta!, SPRING_BEAN_INVENTORY_FEATURE.id));
@@ -291,6 +309,7 @@ describe('runFullAnalysis — incremental orchestration', () => {
       expect((await loadMeta(storagePath))!.analysisFeatures).toEqual({
         [CLASS_FRAMEWORK_ANNOTATIONS_FEATURE.id]: CLASS_FRAMEWORK_ANNOTATIONS_FEATURE.version,
         [SPRING_BEAN_INVENTORY_FEATURE.id]: SPRING_BEAN_INVENTORY_FEATURE.version,
+        [SPRING_CONDITIONALS_FEATURE.id]: SPRING_CONDITIONALS_FEATURE.version,
       });
     } finally {
       await repo.cleanup();
@@ -358,6 +377,7 @@ describe('runFullAnalysis — incremental orchestration', () => {
       expect((await loadMeta(storagePath))!.analysisFeatures).toEqual({
         [CLASS_FRAMEWORK_ANNOTATIONS_FEATURE.id]: CLASS_FRAMEWORK_ANNOTATIONS_FEATURE.version,
         [SPRING_BEAN_INVENTORY_FEATURE.id]: SPRING_BEAN_INVENTORY_FEATURE.version,
+        [SPRING_CONDITIONALS_FEATURE.id]: SPRING_CONDITIONALS_FEATURE.version,
       });
     } finally {
       await repo.cleanup();
@@ -912,6 +932,42 @@ describe('runFullAnalysis — incremental orchestration', () => {
       );
       expect(run2.alreadyUpToDate).toBeUndefined();
       expect(await countInjects(repo.dbPath)).toBe(2);
+    } finally {
+      await repo.cleanup();
+    }
+  }, 600_000);
+
+  it('incremental runs do not duplicate repository-wide AUTO_REGISTERS edges (#2415)', async () => {
+    const repo = await setupMiniRepo();
+    try {
+      const sourceDir = path.join(repo.dbPath, 'src', 'main', 'java', 'com', 'example');
+      const metadataDir = path.join(repo.dbPath, 'src', 'main', 'resources', 'META-INF', 'spring');
+      await mkdir(sourceDir, { recursive: true });
+      await mkdir(metadataDir, { recursive: true });
+      await writeFile(
+        path.join(sourceDir, 'ExampleAutoConfiguration.java'),
+        'package com.example;\npublic class ExampleAutoConfiguration {}\n',
+        'utf-8',
+      );
+      await writeFile(
+        path.join(metadataDir, 'org.springframework.boot.autoconfigure.AutoConfiguration.imports'),
+        'com.example.ExampleAutoConfiguration\n',
+        'utf-8',
+      );
+      gitCommitAll(repo.dbPath, 'add auto configuration metadata');
+
+      const { runFullAnalysis } = await import('../../src/core/run-analyze.js');
+      await runFullAnalysis(repo.dbPath, { skipAgentsMd: true }, { onProgress: () => {} });
+      expect(await countAutoRegisters(repo.dbPath)).toBe(1);
+
+      const target = path.join(repo.dbPath, 'src', 'logger.ts');
+      for (const run of [1, 2]) {
+        const before = await readFile(target, 'utf-8');
+        await writeFile(target, `${before}\n// auto-register idempotency touch ${run}\n`, 'utf-8');
+        gitCommitAll(repo.dbPath, `unrelated auto-register touch ${run}`);
+        await runFullAnalysis(repo.dbPath, { skipAgentsMd: true }, { onProgress: () => {} });
+        expect(await countAutoRegisters(repo.dbPath)).toBe(1);
+      }
     } finally {
       await repo.cleanup();
     }
