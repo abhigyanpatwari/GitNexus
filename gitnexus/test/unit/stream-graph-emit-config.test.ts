@@ -14,6 +14,7 @@
 import { describe, it, expect, vi, afterEach } from 'vitest';
 
 import { resolveStreamGraphEmit } from '../../src/core/run-analyze.js';
+import { buildPhaseList } from '../../src/core/ingestion/pipeline.js';
 import { createKnowledgeGraph } from '../../src/core/graph/graph.js';
 import { pruneLocalValueSymbols } from '../../src/core/ingestion/local-symbol-pruner.js';
 import type { GraphNode } from 'gitnexus-shared';
@@ -113,5 +114,49 @@ describe('pruneLocalValueSymbols under streamed emit', () => {
     });
 
     expect(stats).toMatchObject({ candidateNodes: 1, prunedNodes: 1 });
+  });
+});
+
+describe('buildPhaseList under streamGraphEmit', () => {
+  const names = (o: Parameters<typeof buildPhaseList>[0]) => buildPhaseList(o).map((p) => p.name);
+
+  it('drops every phase that consumes the whole CALLS graph', () => {
+    // CALLS is exactly what streams out, so leaving these enabled yields
+    // silently empty results rather than an error.
+    const streamed = names({ streamGraphEmit: true, pdg: true, force: true });
+
+    expect(streamed).not.toContain('communities');
+    expect(streamed).not.toContain('processes');
+    expect(streamed).not.toContain('taintSummaries');
+    expect(streamed).not.toContain('callSummaries');
+  });
+
+  it('keeps mro and di, whose reads are all in the retained set', () => {
+    const streamed = names({ streamGraphEmit: true, pdg: true, force: true });
+
+    expect(streamed).toContain('mro');
+    expect(streamed).toContain('di');
+    expect(streamed).toContain('parse');
+    expect(streamed).toContain('scopeResolution');
+    expect(streamed).toContain('pruneLocalSymbols');
+  });
+
+  it('leaves the phase list untouched when the flag is off', () => {
+    // Guards the default path: the gating predicates must not filter anything
+    // for existing (flag-off) users.
+    const withPdg = names({ pdg: true, force: true });
+
+    expect(withPdg).toContain('communities');
+    expect(withPdg).toContain('processes');
+    expect(withPdg).toContain('taintSummaries');
+    expect(withPdg).toContain('callSummaries');
+  });
+
+  it('still honours skipGraphPhases independently of the streaming flag', () => {
+    const skipped = names({ skipGraphPhases: true });
+
+    expect(skipped).not.toContain('communities');
+    expect(skipped).not.toContain('processes');
+    expect(skipped).toContain('pruneLocalSymbols');
   });
 });
