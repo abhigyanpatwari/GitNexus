@@ -577,7 +577,17 @@ const acquireViaSocket = async (
  *  `net`: Windows named pipes and Linux abstract sockets. Elsewhere (macOS/BSD)
  *  the file backend is used (no abstract namespace; filesystem sockets don't
  *  release cleanly on death). Override for tests via GITNEXUS_INDEX_LOCK_BACKEND
- *  = 'socket' | 'file'. */
+ *  = 'socket' | 'file'.
+ *
+ *  Scope caveat: the socket backend's mutual-exclusion domain is NOT uniform.
+ *  Windows `\\.\pipe\` names are machine-wide (all sessions); Linux abstract
+ *  sockets are network-namespace-scoped (network_namespaces(7)). So two writers
+ *  that share a bind-mounted index dir but sit in separate netns (e.g. two
+ *  containers, Docker's default) do NOT collide on Linux — "single-host" is
+ *  really "single-netns" here. That cross-netns-shared-mount case is the one
+ *  the file backend (shared-filesystem O_EXCL) would cover; set
+ *  GITNEXUS_INDEX_LOCK_BACKEND=file there. The motivating case (local hook-
+ *  driven re-index) is single-netns, so the default socket backend covers it. */
 const selectBackend = (): 'socket' | 'file' => {
   const override = process.env.GITNEXUS_INDEX_LOCK_BACKEND;
   if (override === 'socket' || override === 'file') return override;

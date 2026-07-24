@@ -493,6 +493,8 @@ describe('runFullAnalysis FTS repair and verification failure paths', () => {
         ok: false,
         error: 'missing indexes after build: Function.function_fts',
       })),
+      ftsFailureIsFatal: (fc: 'capability' | 'integrity' | undefined, swap: boolean) =>
+        fc === 'integrity' && swap,
     }));
     vi.doMock('../../src/core/ingestion/pipeline.js', () => ({
       runPipelineFromRepo: vi.fn(async (repoPath: string) => ({
