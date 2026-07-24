@@ -225,6 +225,13 @@ export interface WorkerPoolOptions {
    */
   workerFactory?: (workerUrl: URL) => Worker;
   /**
+   * Test-only injection point for the main-thread stall probe (#2649):
+   * returns cumulative event-loop stall in ms. When provided, the pool
+   * skips its heartbeat tracker and reads this instead. Production code
+   * should leave this unset.
+   */
+  stallMsProbe?: () => number;
+  /**
    * Storage path for the disk-backed ParsedFile store (#1983 parallel
    * serialization). When set, it is baked into every spawned worker's
    * `workerData` so the worker writes its own ParsedFile shards to disk
@@ -927,6 +934,35 @@ function createJobs<TInput>(
  */
 
 /**
+ * Main-thread stall tracking (#2649). Near the V8 heap limit, multi-second
+ * mark-compact pauses freeze the main thread's message processing, so a
+ * healthy worker's `progress` messages sit unread and the worker LOOKS idle —
+ * the idle-timeout path then splits/retires it, and the respawn storm ends in
+ * "Replacement worker did not report ready". A 250ms unref'd heartbeat
+ * accumulates observed event-loop drift; the idle-timeout handler credits
+ * that stall once per job instead of retiring a worker the main thread
+ * starved. The floor filters scheduler jitter from real stalls.
+ */
+const HEARTBEAT_INTERVAL_MS = 250;
+const HEARTBEAT_STALL_FLOOR_MS = 100;
+/** Fraction of the idle-timeout budget that must be main-thread stall before
+ *  the timeout is credited and re-armed instead of acted on. */
+const STALL_CREDIT_FRACTION = 0.5;
+
+function startHeartbeatStallTracker(): { read: () => number; stop: () => void } {
+  let totalStallMs = 0;
+  let last = Date.now();
+  const handle = setInterval(() => {
+    const now = Date.now();
+    const drift = now - last - HEARTBEAT_INTERVAL_MS;
+    if (drift > HEARTBEAT_STALL_FLOOR_MS) totalStallMs += drift;
+    last = now;
+  }, HEARTBEAT_INTERVAL_MS);
+  handle.unref?.();
+  return { read: () => totalStallMs, stop: () => clearInterval(handle) };
+}
+
+/**
  * Per-worker V8 old-generation heap cap in MB (#2649). Without one, worker
  * isolates inherit an unbounded default and a full pool can inflate process
  * RSS past physical RAM on large repos. Half of RAM split across the pool,
@@ -976,6 +1012,10 @@ export const createWorkerPool = (
       ? { parsedFileStoreStoragePath, durableParsedFileStoragePath, pdg, pdgMaxFunctionLines }
       : undefined;
   const workerHeapCapMb = resolveWorkerHeapCapMb(size);
+  // #2649 stall probe: test seam wins; production uses the heartbeat tracker.
+  const stallTracker = options?.stallMsProbe
+    ? { read: options.stallMsProbe, stop: (): void => undefined }
+    : startHeartbeatStallTracker();
   const spawnWorker =
     options?.workerFactory ??
     ((url: URL) =>
@@ -1862,10 +1902,28 @@ export const createWorkerPool = (
           maybeDone();
         };
 
+        let stallCreditUsed = false;
+        let stallAtArm = 0;
         const resetIdleTimer = () => {
           if (idleTimer) clearTimeout(idleTimer);
+          stallAtArm = stallTracker.read();
           idleTimer = setTimeout(() => {
             if (!settled) {
+              // #2649: when at least STALL_CREDIT_FRACTION of the timeout
+              // window was main-thread stall (GC pressure near the heap
+              // limit), the worker's progress messages were starved, not
+              // absent — credit the stall once per job and re-arm instead
+              // of splitting/retiring a healthy worker.
+              const stallMs = stallTracker.read() - stallAtArm;
+              if (!stallCreditUsed && stallMs >= job.timeoutMs * STALL_CREDIT_FRACTION) {
+                stallCreditUsed = true;
+                logger.warn(
+                  { workerIndex, stallMs: Math.round(stallMs), timeoutMs: job.timeoutMs },
+                  `Worker ${workerIndex} idle timeout overlapped a main-thread stall (GC pressure); re-arming once instead of retiring.`,
+                );
+                resetIdleTimer();
+                return;
+              }
               settled = true;
               cleanup();
               inFlightProgress[workerIndex] = 0;
@@ -2173,6 +2231,7 @@ export const createWorkerPool = (
 
   const terminate = async (): Promise<void> => {
     terminated = true;
+    stallTracker.stop();
     // Cancel any in-flight startup backoff so its ref'd timer doesn't keep the
     // event loop alive after terminate; each cancel resolves the awaiting sleep
     // and the slot loop then sees `terminated` and gives up (#1741).
