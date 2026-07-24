@@ -96,6 +96,7 @@ import type { KnowledgeGraph } from '../../graph/types.js';
 import type { PipelineOptions } from '../pipeline.js';
 import fs from 'node:fs';
 import path from 'node:path';
+import v8 from 'node:v8';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 
 import { isDev } from '../utils/env.js';
@@ -110,6 +111,41 @@ import { isDebugHeapEnabled, logHeapProbe } from '../utils/heap-probe.js';
 
 import { logger } from '../../logger.js';
 // ── Constants ──────────────────────────────────────────────────────────────
+
+/**
+ * Heap-scale guardrail constants (#2649). Measured on a Linux-kernel analyze:
+ * ~55 graph nodes per parseable file, ~2.2KB main-thread heap per node,
+ * linear across the whole parse (heap probes at chunks 25/50/75 of 113).
+ * C-heavy corpus; other language mixes vary — these feed a WARNING and an
+ * emergency abort, never a hard admission gate, so estimate error only
+ * shifts when the operator hears about the problem, not whether analyze runs.
+ */
+const PROJECTED_NODES_PER_FILE = 55;
+const PROJECTED_HEAP_BYTES_PER_NODE = 2250;
+/** Warn at scan end when the projection crosses this share of the heap limit. */
+const PREFLIGHT_WARN_FRACTION = 0.85;
+/**
+ * Abort the chunk loop when live heap use crosses this share of the limit.
+ * Above ~0.95 V8 enters the ineffective-mark-compact death spiral (2s+ GC
+ * pauses that also falsely idle-timeout healthy workers, #2649); 0.92 leaves
+ * one chunk's worth of headroom to fail with an actionable message instead.
+ * `GITNEXUS_HEAP_GUARD=0` disables the abort (proceed-at-own-risk).
+ */
+const HEAP_ABORT_FRACTION = 0.92;
+
+/** Projected main-thread heap need for the parse phase (#2649). */
+export function projectParseHeapNeedBytes(parseableFileCount: number): number {
+  return parseableFileCount * PROJECTED_NODES_PER_FILE * PROJECTED_HEAP_BYTES_PER_NODE;
+}
+
+/** True when the mid-loop heap guard should abort the parse (#2649). */
+export function shouldAbortForHeapPressure(
+  heapUsedBytes: number,
+  heapLimitBytes: number,
+): boolean {
+  if (process.env.GITNEXUS_HEAP_GUARD === '0') return false;
+  return heapUsedBytes > heapLimitBytes * HEAP_ABORT_FRACTION;
+}
 
 /** Max bytes of source content to load per parse chunk.
  *
@@ -516,6 +552,22 @@ export async function runChunkedParseAndResolve(
           MIN_SUB_BATCH_BYTES,
           Math.ceil(chunkByteBudget / (effectivePoolSize * TARGET_JOBS_PER_WORKER)),
         );
+  // Heap-scale guardrails (#2649), measured on a Linux-kernel analyze
+  // (94,773 files): ~55 graph nodes per parseable file and ~2.2KB of
+  // main-thread heap per node, linear across 113 chunks (see
+  // docs/plans/2026-07-23-gitnexus-plan-large-repo-analyze-oom.md §2).
+  // Estimates, not contracts — used only to warn early (preflight) and to
+  // convert a certain multi-minute GC death spiral into an immediate
+  // actionable error (mid-loop guard).
+  const projectedHeapNeedBytes = projectParseHeapNeedBytes(parseableScanned.length);
+  const heapLimitBytes = v8.getHeapStatistics().heap_size_limit;
+  if (projectedHeapNeedBytes > heapLimitBytes * PREFLIGHT_WARN_FRACTION) {
+    logger.warn(
+      `Projected parse-phase heap need (~${Math.round(projectedHeapNeedBytes / 1024 / 1024)}MB for ${parseableScanned.length} parseable files) approaches the V8 heap limit (${Math.round(heapLimitBytes / 1024 / 1024)}MB). ` +
+        `Analyze may run out of memory. Raise the limit with NODE_OPTIONS="--max-old-space-size=<MB>" (and unset GITNEXUS_AUTO_HEAP=0 if set), or analyze a smaller scope.`,
+    );
+  }
+
   const chunks: string[][] = [];
   let currentChunk: string[] = [];
   let currentBytes = 0;
@@ -867,6 +919,20 @@ export async function runChunkedParseAndResolve(
         logHeapProbe(
           `parse-chunk-${chunkIdx}`,
           `nodes=${graph.nodeCount} parsedFiles=${allParsedFiles.length}`,
+        );
+      }
+      // #2649 mid-loop heap guard: fail actionably BEFORE V8 enters the
+      // ineffective-mark-compact death spiral (which also falsely times out
+      // healthy workers). The pool is torn down by this function's finally.
+      const heapUsedNow = process.memoryUsage().heapUsed;
+      const heapLimitNow = v8.getHeapStatistics().heap_size_limit;
+      if (shouldAbortForHeapPressure(heapUsedNow, heapLimitNow)) {
+        throw new Error(
+          `Analyze aborted at parse chunk ${chunkIdx + 1}/${numChunks}: main-thread heap use ` +
+            `(${Math.round(heapUsedNow / 1024 / 1024)}MB) crossed ${Math.round(HEAP_ABORT_FRACTION * 100)}% of the V8 limit ` +
+            `(${Math.round(heapLimitNow / 1024 / 1024)}MB) — continuing would end in a GC death spiral and OOM (#2649). ` +
+            `Raise the limit with NODE_OPTIONS="--max-old-space-size=<MB>" (unset GITNEXUS_AUTO_HEAP=0 if set), ` +
+            `analyze a smaller scope, or set GITNEXUS_HEAP_GUARD=0 to proceed at your own risk.`,
         );
       }
       const chunkPaths = chunks[chunkIdx];
