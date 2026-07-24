@@ -6,7 +6,7 @@
   "plugins": [
     {
       "name": "gitnexus",
-      "version": "1.6.10-aptos.1",
+      "version": "1.6.10-aptos.2",
       "source": {
         "source": "local",
         "path": "./gitnexus-claude-plugin"
