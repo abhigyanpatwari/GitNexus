@@ -24,7 +24,15 @@ export interface MoveConsistencyIssue {
     | 'external-module-address-overlap'
     /** Package with .move sources returned facts `{}` - severity policy in
      *  `emptyFactsIssue` below. */
-    | 'empty-package-facts';
+    | 'empty-package-facts'
+    /** Package skipped: move-flow could not build it (skip-and-warn, #2624). */
+    | 'package-build-failed'
+    /** Package skipped pre-flight: Move.toml [addresses] has `_` placeholders
+     *  move-flow cannot resolve (it has no dev-mode build). */
+    | 'unresolved-named-address'
+    /** Package ingested, but its build carries compiler errors - move-flow
+     *  silently omits inferred facts (acquires) from such builds. */
+    | 'degraded-package-facts';
   severity: MoveConsistencySeverity;
   message: string;
   details?: Record<string, unknown>;
@@ -123,6 +131,107 @@ export function emptyFactsIssue(pkg: EmptyFactsPackage): MoveConsistencyIssue {
       `: ${pkgRoot}`,
     details: { packageRoot: pkgRoot, moveFileCount, diagnostics: status.diagnostics },
   };
+}
+
+/** First non-empty line of a compiler diagnostic blob (for one-line summaries). */
+function firstDiagnosticLine(diagnostics: string | undefined): string {
+  if (!diagnostics) return '';
+  for (const line of diagnostics.split('\n')) {
+    const trimmed = line.trim();
+    if (trimmed) return trimmed;
+  }
+  return '';
+}
+
+/**
+ * A package skipped because move-flow could not build it (skip-and-warn).
+ * Warning, not error: the analyze continues and the skip is surfaced in the
+ * CLI summary; GITNEXUS_MOVE_STRICT=1 restores the historical fatal behavior.
+ */
+export function buildFailedIssue(pkg: {
+  pkgRoot: string;
+  moveFileCount: number;
+  diagnostics: string;
+}): MoveConsistencyIssue {
+  const firstLine = firstDiagnosticLine(pkg.diagnostics);
+  return {
+    code: 'package-build-failed',
+    severity: 'warning',
+    message:
+      `Move package skipped — move-flow could not build it` +
+      (firstLine ? ` (${firstLine})` : '') +
+      `: ${pkg.pkgRoot}. Fix the package or exclude its directory via .gitnexusignore; ` +
+      `set GITNEXUS_MOVE_STRICT=1 to make build failures fatal.`,
+    details: {
+      packageRoot: pkg.pkgRoot,
+      moveFileCount: pkg.moveFileCount,
+      diagnostics: pkg.diagnostics,
+    },
+  };
+}
+
+/**
+ * A package skipped pre-flight: its Move.toml `[addresses]` contains `_`
+ * placeholders. move-flow's `move_package_query` has no dev-mode, so the build
+ * would always fail with "Unresolved addresses" - skip with the remedy instead.
+ */
+export function unresolvedAddressIssue(pkg: {
+  pkgRoot: string;
+  moveFileCount: number;
+  placeholders: string[];
+}): MoveConsistencyIssue {
+  return {
+    code: 'unresolved-named-address',
+    severity: 'warning',
+    message:
+      `Move package skipped — named address(es) ${pkg.placeholders.join(', ')} are "_" ` +
+      `placeholders in Move.toml (move-flow cannot build dev-mode): ${pkg.pkgRoot}. ` +
+      `Set concrete addresses in [addresses] or exclude the directory via .gitnexusignore.`,
+    details: {
+      packageRoot: pkg.pkgRoot,
+      moveFileCount: pkg.moveFileCount,
+      placeholders: pkg.placeholders,
+    },
+  };
+}
+
+/**
+ * A package that WAS ingested but whose build carries compiler errors.
+ * move-flow still serves structurally complete facts for such builds but
+ * silently drops inference-stage output (`acquiresInferred`), so the graph is
+ * missing ACQUIRES edges/properties — surface it instead of implying full
+ * fidelity. (Commonly: a framework dependency newer than move-flow's pinned
+ * compiler, e.g. spec pragmas it does not recognize.)
+ */
+export function degradedFactsIssue(pkg: {
+  pkgRoot: string;
+  diagnostics: string;
+}): MoveConsistencyIssue {
+  const firstLine = firstDiagnosticLine(pkg.diagnostics);
+  return {
+    code: 'degraded-package-facts',
+    severity: 'warning',
+    message:
+      `Move package compiled with errors — compiler-inferred facts (acquires) may be ` +
+      `incomplete` +
+      (firstLine ? ` (${firstLine})` : '') +
+      `: ${pkg.pkgRoot}`,
+    details: { packageRoot: pkg.pkgRoot, diagnostics: pkg.diagnostics },
+  };
+}
+
+/**
+ * The persistent CLI-summary warnings for a run's Move issues: the three
+ * skip/degrade codes are operator-actionable and must survive past the
+ * scrolling progress bar (same rationale as the FTS warning, #1161).
+ */
+export function cliWarningsFromIssues(issues: readonly MoveConsistencyIssue[]): string[] {
+  const surfaced: MoveConsistencyIssue['code'][] = [
+    'package-build-failed',
+    'unresolved-named-address',
+    'degraded-package-facts',
+  ];
+  return issues.filter((i) => surfaced.includes(i.code)).map((i) => i.message);
 }
 
 export function validateMoveIngestOutput(

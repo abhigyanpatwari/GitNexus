@@ -1,9 +1,11 @@
 /**
  * Package-query failure classification in the moveIngest phase.
  *
- * Required facts/call-graph failures abort ingestion after the client's
- * transport retry. Supplemental function-usage failures are reported without
- * discarding the compiler graph.
+ * A package build failure is skip-and-warn by default (GITNEXUS_MOVE_STRICT=1
+ * restores the fatal path — covered in move-ingest-skip-and-warn.test.ts).
+ * Timeouts and transport crashes still abort after the client's transport
+ * retry. Supplemental function-usage failures are reported without discarding
+ * the compiler graph.
  */
 import { describe, it, expect } from 'vitest';
 import path from 'node:path';
@@ -126,16 +128,25 @@ describe('moveIngest package-query failure classification', () => {
     expect(client.counts.callGraph).toBe(1);
   });
 
-  it('marks a package build failure operator-actionable', async () => {
+  it('skips a package that fails to build (skip-and-warn) instead of aborting', async () => {
     const client = makeMoveFlowClientStub({
       callGraph: async () => {
         throw new MoveFlowToolCallError('failed to build package `pkg`: missing dependency');
       },
     });
-    await expect(runPhase(client)).rejects.toMatchObject({
-      userActionable: true,
-      message: expect.stringContaining('could not build Move package'),
-    });
+    // Default is skip-and-warn: the analyze continues, the package is left
+    // un-ingested, and a persistent operator warning is surfaced instead of a
+    // throw (the fatal GITNEXUS_MOVE_STRICT path lives in the skip-and-warn suite).
+    const output = await runPhase(client);
+    expect(output.functionNodeMap.size).toBe(0);
+    expect(output.consistencyIssues).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ code: 'package-build-failed', severity: 'warning' }),
+      ]),
+    );
+    expect(output.ingestWarnings ?? []).toEqual(
+      expect.arrayContaining([expect.stringContaining('could not build it')]),
+    );
     expect(client.counts.callGraph).toBe(1);
   });
 

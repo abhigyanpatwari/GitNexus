@@ -24,10 +24,14 @@ ref up in the accumulated index, synthesizing stub nodes for external
 `MoveIngestAccumulator` (in `move-ingest.ts`) holds the shared state across
 passes; `consistency.ts` validates the result.
 
-Compiler identity is recorded in the repository metadata; changing it forces a
-full rebuild. Env knobs: `GITNEXUS_MOVE_FLOW_TIMEOUT_MS`,
+A package move-flow cannot build is skipped with an operator-actionable warning
+rather than aborting the whole analyze (`_`-placeholder addresses are caught
+pre-flight; builds that compile with errors are ingested but flagged as
+degraded). Compiler identity is recorded in the repository metadata; changing it
+forces a full rebuild. Env knobs: `GITNEXUS_MOVE_FLOW_TIMEOUT_MS`,
 `GITNEXUS_MOVE_FLOW_CONCURRENCY` (supplemental `function_usage` fan-out, default
-`4`), `GITNEXUS_SKIP_MOVE_FLOW=1`, and `MOVE_FLOW` (see `provision.ts`).
+`4`), `GITNEXUS_MOVE_STRICT=1` (restore fatal-on-build-failure),
+`GITNEXUS_SKIP_MOVE_FLOW=1`, and `MOVE_FLOW` (see `provision.ts`).
 
 ## Upstream references
 

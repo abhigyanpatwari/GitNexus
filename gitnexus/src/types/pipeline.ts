@@ -45,4 +45,11 @@ export interface PipelineResult<
    * register a richer phase may narrow this output to their phase contract.
    */
   standaloneIngest: TStandaloneIngest;
+  /**
+   * Operator-actionable warnings from the standalone ingest phase (skipped or
+   * degraded-fidelity packages). Passed through opaquely — the pipeline does
+   * not know which language produced them — so the CLI summary can render them
+   * persistently (same rationale as the FTS warning).
+   */
+  ingestWarnings?: readonly string[];
 }

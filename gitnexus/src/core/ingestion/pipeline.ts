@@ -327,6 +327,16 @@ export const runPipelineFromRepo = async <
 
   let communityResult: CommunitiesOutput['communityResult'] | undefined;
   let processResult: ProcessesOutput['processResult'] | undefined;
+  // Standalone-ingest warnings, passed through opaquely (language-neutral).
+  let ingestWarnings: readonly string[] | undefined;
+  try {
+    ingestWarnings = getPhaseOutput<StandaloneIngestOutput>(
+      results,
+      'standaloneIngest',
+    ).ingestWarnings;
+  } catch {
+    /* phase filtered out of this run — nothing to surface */
+  }
   const scopeResolutionOutput = getPhaseOutput<ScopeResolutionOutput>(results, 'scopeResolution');
   const resolutionOutcomes = scopeResolutionOutput.resolutionOutcomes;
   // Streamed PDG-emit manifest (#2202): present only when streaming was on.
@@ -361,5 +371,6 @@ export const runPipelineFromRepo = async <
     usedWorkerPool,
     pdgEmitManifest,
     standaloneIngest: getPhaseOutput<TStandaloneIngest>(results, 'standaloneIngest'),
+    ingestWarnings,
   };
 };
