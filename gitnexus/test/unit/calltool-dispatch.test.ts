@@ -3893,3 +3893,62 @@ describe('LocalBackend.resolveRepo branch scope (#2106)', () => {
     expect(closedPaths.some((p) => p.includes(path.join('.gitnexus', 'branches')))).toBe(true);
   });
 });
+
+// #2655 review: the per-index tool-staleness cache must key by lbugPath, not
+// repoPath — flat and branch handles for one repo share a repoPath but carry
+// different lastCommit values, so a repoPath key would serve one handle's
+// freshness for the other within the TTL window.
+describe('LocalBackend tool-staleness cache keying (#2655 review)', () => {
+  let backend: LocalBackend;
+
+  beforeEach(async () => {
+    vi.clearAllMocks();
+    backend = new LocalBackend();
+    setupSingleRepo();
+    await backend.init();
+  });
+
+  it('does not share a staleness entry between flat and branch handles of one repo', async () => {
+    const flat = {
+      id: 'r',
+      name: 'r',
+      repoPath: '/r',
+      storagePath: '/r/.gitnexus',
+      lbugPath: '/r/.gitnexus/lbug',
+      indexedAt: '',
+      lastCommit: 'FLATSHA',
+    };
+    const branch = {
+      ...flat,
+      lbugPath: `/r/.gitnexus/${path.join('branches', 'x', 'lbug')}`,
+      lastCommit: 'BRANCHSHA',
+    };
+    vi.spyOn(backend, 'resolveRepo')
+      .mockResolvedValueOnce(flat as any)
+      .mockResolvedValueOnce(branch as any);
+    // The tool itself returns a plain (staleness-carryable) object.
+    vi.spyOn(backend as any, 'query').mockResolvedValue({ ok: true });
+
+    const { checkStalenessAsync } = await import('../../src/core/git-staleness.js');
+    (checkStalenessAsync as any).mockImplementation((_repoPath: string, lastCommit: string) =>
+      Promise.resolve(
+        lastCommit === 'FLATSHA'
+          ? { isStale: true, commitsBehind: 5, hint: '5 behind' }
+          : { isStale: false, commitsBehind: 0 },
+      ),
+    );
+
+    const flatRes = await backend.callTool('query', { search_query: 'x', repo: 'r' });
+    const branchRes = await backend.callTool('query', {
+      search_query: 'x',
+      repo: 'r',
+      branch: 'x',
+    });
+
+    // Flat index (lastCommit=FLATSHA) is 5 behind -> field present.
+    expect(flatRes).toMatchObject({ staleness: { commitsBehind: 5 } });
+    // Branch index (different lbugPath + lastCommit) is current; it must NOT
+    // inherit the flat handle's cached staleness (the pre-fix repoPath-keyed bug).
+    expect(branchRes).not.toHaveProperty('staleness');
+  });
+});
