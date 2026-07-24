@@ -170,6 +170,43 @@ withTestLbugDB(
         expect(Number((queriesLeft[0] as { cnt: number }).cnt)).toBe(1);
       });
 
+      it('deleteAllExternalNodes: removes only external dependency nodes (and their edges)', async () => {
+        // Same contract family as the delete-alls above — external nodes have
+        // no filePath, so the incremental writeback delete-alls them and
+        // re-COPYs the fresh external surface (extractChangedSubgraph).
+        const { executeQuery: coreExecuteQuery, deleteAllExternalNodes } =
+          await import('../../src/core/lbug/lbug-adapter.js');
+
+        // Benign: nothing external yet → 0, does NOT throw.
+        await expect(deleteAllExternalNodes()).resolves.toEqual({ nodesDeleted: 0 });
+
+        // Seed one external Function plus an edge into it from a local one.
+        await coreExecuteQuery(
+          `CREATE (:Function {id: 'Function::0x1::object::object_address', ` +
+            `name: 'object_address', filePath: '', locationFidelity: 'external'})`,
+        );
+        const fns = (await coreExecuteQuery(
+          `MATCH (n:Function) WHERE n.filePath <> '' RETURN n.id AS id`,
+        )) as { id: string }[];
+        expect(fns.length).toBe(2);
+        await coreExecuteQuery(
+          `MATCH (a:Function {id: '${fns[0].id}'}), ` +
+            `(b:Function {id: 'Function::0x1::object::object_address'}) ` +
+            `CREATE (a)-[:CodeRelation {type: 'CALLS', confidence: 1.0, reason: 'move', step: 0}]->(b)`,
+        );
+
+        const r = await deleteAllExternalNodes();
+        expect(r.nodesDeleted).toBe(1);
+        const externalLeft = await coreExecuteQuery(
+          `MATCH (n:Function) WHERE n.locationFidelity = 'external' RETURN count(n) AS cnt`,
+        );
+        expect(Number((externalLeft[0] as { cnt: number }).cnt)).toBe(0);
+        const localLeft = await coreExecuteQuery(
+          `MATCH (n:Function) WHERE n.filePath <> '' RETURN count(n) AS cnt`,
+        );
+        expect(Number((localLeft[0] as { cnt: number }).cnt)).toBe(2);
+      });
+
       describe('unhappy path', () => {
         it('throws on malformed Cypher query', async () => {
           const { executeQuery } = await import('../../src/core/lbug/lbug-adapter.js');

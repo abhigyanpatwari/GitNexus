@@ -68,6 +68,31 @@ describe('extractChangedSubgraph', () => {
     expect(sub.nodes.map((n) => n.id).sort()).toEqual(['comm-1', 'proc-1']);
   });
 
+  it('always includes external dependency nodes and their edges (locationFidelity external)', () => {
+    // A Move file changed and now calls a dependency function that was never
+    // persisted. The external node has no filePath, so file-keyed extraction
+    // would skip the node while including the edge — the dangling endpoint
+    // then fails the rel COPY into the silent per-row fallback. External
+    // nodes get the Community/Process treatment instead (orchestrator
+    // delete-alls, extractor re-includes).
+    const g = createKnowledgeGraph();
+    g.addNode(makeFileNode('caller:fn', 'sources/vault.move'));
+    g.addNode({
+      id: 'Function::0x1::object::object_address',
+      label: 'Function',
+      properties: { filePath: '', name: 'object_address', locationFidelity: 'external' },
+    } as unknown as GraphNode);
+    g.addRelationship(makeRel('e1', 'caller:fn', 'Function::0x1::object::object_address'));
+
+    const sub = extractChangedSubgraph(g, new Set(['sources/vault.move']));
+
+    expect(sub.nodes.map((n) => n.id).sort()).toEqual([
+      'Function::0x1::object::object_address',
+      'caller:fn',
+    ]);
+    expect(sub.relationships.map((r) => r.id)).toEqual(['e1']);
+  });
+
   it('includes a relationship when at least one endpoint is writable', () => {
     const g = createKnowledgeGraph();
     g.addNode(makeFileNode('a:fn', '/repo/a.ts'));

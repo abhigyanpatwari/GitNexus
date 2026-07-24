@@ -6,21 +6,18 @@
  */
 import { describe, it, expect } from 'vitest';
 import path from 'node:path';
-import type { MoveFlowClient } from '../../../src/core/move/mcp-client.js';
-import { runMoveIngestPhase } from '../../helpers/move-ingest-harness.js';
+import { makeMoveFlowClientStub, runMoveIngestPhase } from '../../helpers/move-ingest-harness.js';
 
 const REPO_ROOT = path.resolve('/repo');
 
-/** Client returning empty facts for every package, without a status tool. */
-function emptyFactsClient(): MoveFlowClient {
-  return {
-    facts: async () => ({}),
-    callGraph: async () => ({}),
-    packageStatus: async () => ({ ok: true, diagnostics: '' }),
-    capabilities: async () => ({ hasFactsQuery: true, hasStatusTool: false }),
-    shutdown: async () => {},
-  };
-}
+const emptyFactsClient = () =>
+  makeMoveFlowClientStub({
+    capabilities: async () => ({
+      hasFactsQuery: true,
+      hasFunctionUsageQuery: false,
+      hasStatusTool: false,
+    }),
+  });
 
 describe('moveIngest package-ownership attribution', () => {
   it('attributes each file to its own package across sibling packages pkg_a / pkg_ab', async () => {

@@ -67,6 +67,11 @@ export function moveConstNodeId(constQualifiedName: string, filePath: string): s
   return `Const:${filePath}:${constQualifiedName}`;
 }
 
+/** Synthetic dependency type whose declaration is outside the indexed repo. */
+export function moveExternalTypeNodeId(typeQualifiedName: string): string {
+  return `Type::<external>:${typeQualifiedName}`;
+}
+
 export function moveEnumVariantNodeId(
   enumQualifiedName: string,
   variantName: string,

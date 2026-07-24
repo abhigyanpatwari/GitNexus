@@ -148,6 +148,7 @@ CREATE NODE TABLE \`${name}\` (
 
 export const STRUCT_SCHEMA = buildNodeTableSchema('Struct');
 export const ENUM_SCHEMA = buildNodeTableSchema('Enum');
+export const TYPE_SCHEMA = buildNodeTableSchema('Type');
 export const ENUM_VARIANT_SCHEMA = buildNodeTableSchema('EnumVariant');
 export const MACRO_SCHEMA = CODE_ELEMENT_BASE('Macro');
 export const TYPEDEF_SCHEMA = CODE_ELEMENT_BASE('Typedef');
@@ -280,6 +281,7 @@ CREATE REL TABLE ${REL_TABLE_NAME} (
   FROM Function TO \`Enum\`,
   FROM Function TO \`Namespace\`,
   FROM Function TO \`TypeAlias\`,
+  FROM Function TO \`Type\`,
   FROM Function TO \`Module\`,
   FROM Function TO \`Impl\`,
   FROM Function TO Interface,
@@ -357,6 +359,7 @@ CREATE REL TABLE ${REL_TABLE_NAME} (
   FROM \`Struct\` TO \`Struct\`,
   FROM \`Struct\` TO Class,
   FROM \`Struct\` TO \`Enum\`,
+  FROM \`Struct\` TO \`Type\`,
   FROM \`Struct\` TO Function,
   FROM \`Struct\` TO Method,
   FROM \`Struct\` TO Interface,
@@ -374,9 +377,11 @@ CREATE REL TABLE ${REL_TABLE_NAME} (
   // Move/Aptos: module defines structs/enums/consts; enums contain variants.
   FROM \`Module\` TO \`Struct\`,
   FROM \`Module\` TO \`Enum\`,
+  FROM \`Module\` TO \`Type\`,
   FROM \`Module\` TO \`Const\`,
   FROM \`Enum\` TO \`EnumVariant\`,
   FROM \`Module\` TO \`EnumVariant\`,
+  FROM \`EnumVariant\` TO \`Property\`,
   FROM \`Typedef\` TO Community,
   FROM \`Union\` TO Community,
   FROM \`Namespace\` TO Community,
@@ -400,6 +405,9 @@ CREATE REL TABLE ${REL_TABLE_NAME} (
   FROM \`Variable\` TO Community,
   FROM \`Property\` TO Community,
   FROM \`Property\` TO \`Property\`,
+  FROM \`Property\` TO \`Struct\`,
+  FROM \`Property\` TO \`Enum\`,
+  FROM \`Property\` TO \`Type\`,
   FROM \`Record\` TO Method,
   FROM \`Record\` TO \`Constructor\`,
   FROM \`Record\` TO \`Property\`,
@@ -519,6 +527,7 @@ export const NODE_SCHEMA_QUERIES = [
   // Multi-language support
   STRUCT_SCHEMA,
   ENUM_SCHEMA,
+  TYPE_SCHEMA,
   ENUM_VARIANT_SCHEMA,
   MACRO_SCHEMA,
   TYPEDEF_SCHEMA,

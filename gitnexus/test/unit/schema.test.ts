@@ -14,6 +14,7 @@ import {
   INTERFACE_SCHEMA,
   METHOD_SCHEMA,
   PROPERTY_SCHEMA,
+  TYPE_SCHEMA,
   CODE_ELEMENT_SCHEMA,
   COMMUNITY_SCHEMA,
   PROCESS_SCHEMA,
@@ -54,6 +55,7 @@ describe('LadybugDB Schema', () => {
         'Trait',
         'Impl',
         'TypeAlias',
+        'Type',
         'Const',
         'Static',
         'Variable',
@@ -75,8 +77,8 @@ describe('LadybugDB Schema', () => {
     });
 
     it('has expected total count', () => {
-      // 9 core + 20 multi-language/Move + Route + Tool + BasicBlock = 33
-      expect(NODE_TABLES).toHaveLength(33);
+      // 10 core (including Section) + 21 multi-language/Move + Route + Tool + BasicBlock = 34
+      expect(NODE_TABLES).toHaveLength(34);
     });
   });
 
@@ -151,6 +153,13 @@ describe('LadybugDB Schema', () => {
       expect(PROPERTY_SCHEMA).toContain('declaredType STRING');
     });
 
+    it('Type schema preserves Move dependency identity and location fidelity', () => {
+      expect(SCHEMA_QUERIES).toContain(TYPE_SCHEMA);
+      expect(TYPE_SCHEMA).toContain('qualifiedName STRING');
+      expect(TYPE_SCHEMA).toContain('moduleQualifiedName STRING');
+      expect(TYPE_SCHEMA).toContain('locationFidelity STRING');
+    });
+
     it('BasicBlock schema is wired into SCHEMA_QUERIES (issue #2080, F1 guard)', () => {
       // Defining BASICBLOCK_SCHEMA is not enough — it must be appended to
       // NODE_SCHEMA_QUERIES (→ SCHEMA_QUERIES) or initLbug never creates the
@@ -205,6 +214,16 @@ describe('LadybugDB Schema', () => {
       expect(RELATION_SCHEMA).toContain('FROM Method TO Process');
     });
 
+    it('persists Move enum fields and signature/field type targets', () => {
+      expect(RELATION_SCHEMA).toContain('FROM `EnumVariant` TO `Property`');
+      expect(RELATION_SCHEMA).toContain('FROM Function TO `Type`');
+      expect(RELATION_SCHEMA).toContain('FROM `Module` TO `Type`');
+      expect(RELATION_SCHEMA).toContain('FROM `Struct` TO `Type`');
+      expect(RELATION_SCHEMA).toContain('FROM `Property` TO `Struct`');
+      expect(RELATION_SCHEMA).toContain('FROM `Property` TO `Enum`');
+      expect(RELATION_SCHEMA).toContain('FROM `Property` TO `Type`');
+    });
+
     it('connects BasicBlock to BasicBlock (taint/PDG substrate edges, #2080)', () => {
       expect(RELATION_SCHEMA).toContain('FROM BasicBlock TO BasicBlock');
     });
@@ -253,8 +272,8 @@ describe('LadybugDB Schema', () => {
 
   describe('schema query ordering', () => {
     it('NODE_SCHEMA_QUERIES has correct count', () => {
-      // 31 + EnumVariant + BasicBlock = 33
-      expect(NODE_SCHEMA_QUERIES).toHaveLength(33);
+      // 31 + EnumVariant + BasicBlock + Type = 34
+      expect(NODE_SCHEMA_QUERIES).toHaveLength(34);
     });
 
     it('REL_SCHEMA_QUERIES has one relation table', () => {
@@ -262,8 +281,8 @@ describe('LadybugDB Schema', () => {
     });
 
     it('SCHEMA_QUERIES includes all node + rel + embedding schemas', () => {
-      // 33 node + 1 rel + 1 embedding = 35
-      expect(SCHEMA_QUERIES).toHaveLength(35);
+      // 34 node + 1 rel + 1 embedding = 36
+      expect(SCHEMA_QUERIES).toHaveLength(36);
     });
 
     it('node schemas come before relation schemas in SCHEMA_QUERIES', () => {

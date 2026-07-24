@@ -17,6 +17,12 @@ const MOVE_PRIMITIVES = new Set([
   'u64',
   'u128',
   'u256',
+  'i8',
+  'i16',
+  'i32',
+  'i64',
+  'i128',
+  'i256',
   'address',
   'signer',
   '&signer',
@@ -25,11 +31,23 @@ const MOVE_PRIMITIVES = new Set([
 
 export function extractTypeNames(typeExpr: string): string[] {
   if (!typeExpr) return [];
-  const expr = typeExpr.trim().replace(/^&(mut\s+)?/, '');
+  // Move 2 function types may carry an ability constraint suffix:
+  // `|u64|bool has copy + drop`. The function type can itself be nested in a
+  // generic, so the suffix may end immediately before `>` rather than at the
+  // end of the complete expression. Abilities are not nominal types.
+  const expr = typeExpr
+    .trim()
+    .replace(
+      /\s+has\s+(?:copy|drop|store|key)(?:\s*\+\s*(?:copy|drop|store|key))*(?=\s*(?:[>,)|]|$))/gi,
+      '',
+    )
+    .replace(/^&(mut\s+)?/, '');
   if (MOVE_PRIMITIVES.has(expr)) return [];
 
   const tokens: string[] = [];
-  for (const raw of expr.split(/[<>,]/)) {
+  // Delimiters cover generics (`<`, `>`, `,`), tuples (`(`, `)`), and Move 2
+  // function types (`|u64|bool`) - without `()|` those leak into type names.
+  for (const raw of expr.split(/[<>,()|]/)) {
     const name = raw.trim().replace(/^&(mut\s+)?/, '');
     if (!name || MOVE_PRIMITIVES.has(name)) continue;
     tokens.push(name);

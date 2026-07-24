@@ -1,4 +1,7 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
+import { chmod, mkdtemp, rm, writeFile } from 'node:fs/promises';
+import os from 'node:os';
+import path from 'node:path';
 import type {
   MoveFlowMcpClient,
   ResolvedMoveFlowClient,
@@ -12,6 +15,8 @@ import type { VerifiedMoveFlowBinary } from '../../../src/core/move/install.js';
 const originalMoveFlow = process.env.MOVE_FLOW;
 
 afterEach(() => {
+  vi.unstubAllEnvs();
+  vi.restoreAllMocks();
   if (originalMoveFlow === undefined) delete process.env.MOVE_FLOW;
   else process.env.MOVE_FLOW = originalMoveFlow;
 });
@@ -40,6 +45,64 @@ describe('ensureMoveFlowRuntime', () => {
 
     await expect(ensureMoveFlowRuntime({}, deps)).resolves.toMatchObject({ client });
     expect(deps.install).not.toHaveBeenCalled();
+  });
+
+  it('logs when the resolved binary cannot be read for fingerprinting', async () => {
+    // A resolver that answers for a locator whose file does not exist: the
+    // digest falls back to a random 'unverifiable' value, which churns the
+    // fingerprint (full re-index every run) - that must not stay silent.
+    process.env.MOVE_FLOW = '/missing/move-flow';
+    const deps = dependencies({ resolveClient: vi.fn(() => resolved) });
+    const onLog = vi.fn();
+
+    const runtime = await ensureMoveFlowRuntime({ onLog }, deps);
+
+    expect(runtime?.client).toBe(client);
+    expect(onLog).toHaveBeenCalledWith(
+      expect.stringContaining('could not be read for fingerprinting'),
+    );
+  });
+
+  it.skipIf(process.platform === 'win32')(
+    'fingerprints local compiler bytes, not only path and version',
+    async () => {
+      const directory = await mkdtemp(path.join(os.tmpdir(), 'move-flow-identity-'));
+      const binary = path.join(directory, 'move-flow');
+      try {
+        process.env.MOVE_FLOW = binary;
+        await writeFile(binary, '#!/bin/sh\necho first\n');
+        await chmod(binary, 0o755);
+        const deps = dependencies({ resolveClient: vi.fn(() => resolved) });
+        const first = await ensureMoveFlowRuntime({}, deps);
+
+        await writeFile(binary, '#!/bin/sh\necho second\n');
+        await chmod(binary, 0o755);
+        const second = await ensureMoveFlowRuntime({}, deps);
+        expect(second?.identity.fingerprint).not.toBe(first?.identity.fingerprint);
+      } finally {
+        await rm(directory, { recursive: true, force: true });
+      }
+    },
+  );
+
+  it('fingerprints a Windows PATH locator that already includes its executable extension', async () => {
+    const directory = await mkdtemp(path.join(os.tmpdir(), 'move-flow-windows-identity-'));
+    const binary = path.join(directory, 'move-flow.exe');
+    try {
+      await writeFile(binary, 'stable move-flow bytes');
+      vi.spyOn(process, 'platform', 'get').mockReturnValue('win32');
+      vi.stubEnv('MOVE_FLOW', 'move-flow.exe');
+      vi.stubEnv('PATH', directory);
+      vi.stubEnv('PATHEXT', '.exe');
+      const deps = dependencies({ resolveClient: vi.fn(() => resolved) });
+
+      const first = await ensureMoveFlowRuntime({}, deps);
+      const second = await ensureMoveFlowRuntime({}, deps);
+
+      expect(second?.identity.fingerprint).toBe(first?.identity.fingerprint);
+    } finally {
+      await rm(directory, { recursive: true, force: true });
+    }
   });
 
   it('keeps an invalid explicit MOVE_FLOW authoritative', async () => {

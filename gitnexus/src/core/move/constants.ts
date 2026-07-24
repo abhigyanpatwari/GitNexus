@@ -59,6 +59,8 @@ export const MOVE_EDGE_REASON = {
   definesStruct: 'move-module-defines-struct',
   definesEnum: 'move-module-defines-enum',
   definesConst: 'move-module-defines-const',
+  externalDefinesFunction: 'move-external-module-defines-function',
+  externalDefinesType: 'move-external-module-defines-type',
   containsVariant: 'move-enum-contains-variant',
   friend: 'move-friend-or-package',
   calls: 'move-compiler-call-graph',
@@ -70,12 +72,16 @@ export const MOVE_EDGE_REASON = {
   acquires: 'move-acquires',
   fnParamType: 'move-fn-param-type',
   fnReturnType: 'move-fn-return-type',
+  structFieldType: 'move-struct-field-type',
+  enumVariantFieldType: 'move-enum-variant-field-type',
   // Struct -> resource-group struct (from `#[resource_group_member(group = ...)]`)
   resourceGroupMember: 'move-resource-group-member',
   // Field edges (struct → field)
   hasField: 'move-struct-has-field',
+  hasVariantField: 'move-enum-variant-has-field',
   // Lambda → host edges (host fn → __lambda__N__host)
   lambdaHost: 'move-lambda-of-host',
+  closureUse: 'move-compiler-closure-use',
   // Entry-point edge reasons (ENTRY_POINT_OF)
   entryFunction: 'move-entry-function',
   viewFunction: 'move-view-function',

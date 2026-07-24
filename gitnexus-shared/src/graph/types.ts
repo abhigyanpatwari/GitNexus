@@ -143,9 +143,10 @@ export type NodeProperties = {
   /**
    * Node-location precision. `'precise'` = per-symbol file/span from the
    * move-flow `facts` query; `'module'` = only the containing module/type file
-   * is known; `'package'` = coarse package-root fallback.
+   * is known; `'package'` = coarse package-root fallback; `'external'` =
+   * declaration belongs to a dependency outside the indexed repository.
    */
-  locationFidelity?: 'precise' | 'module' | 'package';
+  locationFidelity?: 'precise' | 'module' | 'package' | 'external';
   // BasicBlock (taint/PDG substrate, issue #2080) — reuses filePath/startLine/endLine.
   text?: string;
   /** BasicBlock: space-joined leaf callee names invoked in the block — the
