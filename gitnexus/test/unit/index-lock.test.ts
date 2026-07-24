@@ -19,7 +19,7 @@ import {
   IndexLockTimeoutError,
   type LockRecord,
 } from '../../src/storage/index-lock.js';
-import { classifyFtsBuildError } from '../../src/core/search/fts-indexes.js';
+import { classifyFtsBuildError, ftsFailureIsFatal } from '../../src/core/search/fts-indexes.js';
 
 let dir: string;
 const lockPath = () => path.join(dir, 'analyze.lock');
@@ -219,6 +219,20 @@ describe('classifyFtsBuildError', () => {
   it('lets a row-level tokenizer error win even if it mentions an integrity word', () => {
     // A tokenizer error is a bad row, not a broken build — must still degrade.
     expect(classifyFtsBuildError('Invalid UTF-8 during io exception path')).toBe('capability');
+  });
+});
+
+describe('ftsFailureIsFatal (#2658)', () => {
+  it('is fatal ONLY for an integrity failure on the atomic-swap path', () => {
+    // Atomic swap: staging DB, previous index intact → integrity may abort.
+    expect(ftsFailureIsFatal('integrity', true)).toBe(true);
+    // In-place: live DB already mutated, nothing to roll back → degrade.
+    expect(ftsFailureIsFatal('integrity', false)).toBe(false);
+    // Capability never aborts, either path.
+    expect(ftsFailureIsFatal('capability', true)).toBe(false);
+    expect(ftsFailureIsFatal('capability', false)).toBe(false);
+    // Missing class (ok result, or no classification) never aborts.
+    expect(ftsFailureIsFatal(undefined, true)).toBe(false);
   });
 });
 

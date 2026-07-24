@@ -240,6 +240,24 @@ export const classifyFtsBuildError = (message: string): FtsBuildFailureClass => 
   return 'capability';
 };
 
+/**
+ * Whether an FTS build failure should ABORT the analyze (throw before publish)
+ * rather than degrade to a search-less-but-queryable index (#2658).
+ *
+ * Only an `integrity` failure on the atomic-swap path is fatal: there the graph
+ * was built into a throwaway staging DB, so throwing abandons the staging file
+ * and leaves the previous live index intact. On an in-place build
+ * (`useAtomicSwap === false`: incremental, Windows default) the graph DML
+ * already mutated the LIVE database, so there is nothing to roll back by
+ * throwing — degrading to a queryable index with FTS marked unavailable is
+ * strictly better than exiting mid-finalization over a dirty, partially-indexed
+ * live DB. `capability` failures always degrade.
+ */
+export const ftsFailureIsFatal = (
+  failureClass: FtsBuildFailureClass | undefined,
+  useAtomicSwap: boolean,
+): boolean => failureClass === 'integrity' && useAtomicSwap;
+
 export interface BuildSearchIndexesResult {
   ok: boolean;
   error?: string;

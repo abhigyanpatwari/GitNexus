@@ -42,6 +42,7 @@ import { estimateBufferPool, setBufferPoolSizeHint } from './lbug/lbug-config.js
 import { escapeCypherString } from './lbug/cypher-escape.js';
 import {
   buildSearchIndexesOrDegrade,
+  ftsFailureIsFatal,
   createSearchFTSIndexes,
   dropSearchFTSIndexes,
   initialiseSearchFTSStemmer,
@@ -1999,13 +2000,15 @@ async function runFullAnalysisInner(
       });
       if (ftsResult.ok) {
         progress('fts', 90, 'Search indexes ready');
-      } else if (ftsResult.failureClass === 'integrity') {
+      } else if (ftsFailureIsFatal(ftsResult.failureClass, useAtomicSwap)) {
         // #2658: an IO/rename/checkpoint/corruption failure while building FTS
         // is a genuinely broken build on this disk — not a concurrent writer
-        // (the single-writer lock rules that out). Fail the run rather than
-        // publish a clean-looking index whose search silently never worked.
-        // We are still before the atomic swap, so throwing here leaves the
-        // previous index live and untouched; the caller exits non-zero.
+        // (the single-writer lock rules that out). ONLY fatal on the atomic-swap
+        // path: the graph was built into a throwaway staging DB, so throwing
+        // before the swap abandons the staging file and leaves the previous live
+        // index intact. On an in-place build the live DB is already mutated and
+        // cannot be rolled back by throwing (see ftsFailureIsFatal) — those
+        // degrade in the branch below instead.
         throw new Error(
           `Search index build failed with an integrity error and the analysis was aborted ` +
             `to avoid publishing a broken index: ${ftsResult.error}. The previous index is ` +
