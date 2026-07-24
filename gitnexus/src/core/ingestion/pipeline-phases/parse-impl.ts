@@ -115,13 +115,15 @@ import { logger } from '../../logger.js';
 
 /**
  * Heap-scale guardrail constants (#2649). Measured on a Linux-kernel analyze:
- * ~55 graph nodes per parseable file, ~2.2KB main-thread heap per node,
- * linear across the whole parse (heap probes at chunks 25/50/75 of 113).
- * C-heavy corpus; other language mixes vary — these feed a WARNING and an
- * emergency abort, never a hard admission gate, so estimate error only
- * shifts when the operator hears about the problem, not whether analyze runs.
+ * ~75 graph nodes per PARSEABLE file (~5M nodes / ~65k parseable files;
+ * validated against heap probes at chunks 25/50/75 of 113 — the first
+ * calibration divided by total scanned files and under-projected by ~30%),
+ * ~2.2KB main-thread heap per node. C-heavy corpus; other language mixes
+ * vary — these feed a WARNING and an emergency abort, never a hard
+ * admission gate, so estimate error only shifts when the operator hears
+ * about the problem, not whether analyze runs.
  */
-const PROJECTED_NODES_PER_FILE = 55;
+const PROJECTED_NODES_PER_FILE = 75;
 const PROJECTED_HEAP_BYTES_PER_NODE = 2250;
 /** Warn at scan end when the projection crosses this share of the heap limit. */
 const PREFLIGHT_WARN_FRACTION = 0.85;
