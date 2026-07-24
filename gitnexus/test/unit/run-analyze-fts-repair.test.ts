@@ -1082,3 +1082,60 @@ describe('runFullAnalysis dirty-recovery parking failure fails fast (this shippi
     }
   });
 });
+
+describe('runFullAnalysis re-resolves git state under the lock (#2658 review H2)', () => {
+  afterEach(() => {
+    vi.doUnmock('../../src/storage/git.js');
+    vi.doUnmock('../../src/core/ingestion/pipeline.js');
+    vi.resetModules();
+    vi.clearAllMocks();
+  });
+
+  it('re-reads HEAD after acquiring the lock, so a commit that lands during the wait is not missed', async () => {
+    // acquireIndexLock can wait up to the timeout ceiling; HEAD may advance
+    // during that wait. Pre-fix, resolveWriteTarget was called ONCE (before the
+    // lock) and its stale snapshot fed the freshness check — a waiter could
+    // return alreadyUpToDate against the OLD commit. Post-fix the wrapper
+    // re-resolves UNDER the lock, so getCurrentCommit is called again and the
+    // post-wait commit is what the pipeline uses. Simulate the advance by making
+    // getCurrentCommit return a new value on each call.
+    const commits = ['commit-before-wait', 'commit-after-wait'];
+    let call = 0;
+    const getCurrentCommit = vi.fn(() => commits[call < commits.length ? call++ : commits.length - 1]);
+    vi.doMock('../../src/storage/git.js', async () => {
+      const actual =
+        await vi.importActual<typeof import('../../src/storage/git.js')>('../../src/storage/git.js');
+      return {
+        ...actual,
+        getCurrentCommit,
+        hasGitDir: () => true,
+        getCurrentBranch: () => 'main',
+        isWorkingTreeDirty: () => false,
+      };
+    });
+    // Stop the run right after the wrapper's two resolveWriteTarget calls so the
+    // test pins the re-resolve, not the full pipeline.
+    vi.doMock('../../src/core/ingestion/pipeline.js', () => ({
+      runPipelineFromRepo: vi.fn(async () => {
+        throw new Error('stop-after-resolve');
+      }),
+    }));
+
+    const tmpRepo = await createTempDir('gitnexus-h2-relock-');
+    try {
+      const { runFullAnalysis } = await import('../../src/core/run-analyze.js');
+      await runFullAnalysis(
+        tmpRepo.dbPath,
+        { force: true },
+        { onProgress: () => {}, onLog: () => {} },
+      ).catch(() => undefined);
+
+      // Pre-fix: exactly 1 (single pre-lock resolve). Post-fix: >= 2 (re-resolve
+      // under the lock), and the second call observed the post-wait commit.
+      expect(getCurrentCommit.mock.calls.length).toBeGreaterThanOrEqual(2);
+      expect(getCurrentCommit.mock.results[1]?.value).toBe('commit-after-wait');
+    } finally {
+      await tmpRepo.cleanup();
+    }
+  });
+});

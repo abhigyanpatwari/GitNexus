@@ -732,13 +732,42 @@ export async function runFullAnalysis(
   // would otherwise stay saturated on a reused process).
   resetDegradedParseCounter();
 
-  const writeTarget = await resolveWriteTarget(repoPath, options);
   const log = (msg: string) => callbacks.onLog?.(msg);
-  const lock = await acquireIndexLock(writeTarget.metaDir, {
+  const acquireOpts = {
     log,
     onWaitStart: () =>
       callbacks.onProgress('lock', 0, 'Waiting for another analyze to finish on this index…'),
-  });
+  };
+
+  let writeTarget = await resolveWriteTarget(repoPath, options);
+  let lock = await acquireIndexLock(writeTarget.metaDir, acquireOpts);
+  // #2658 review H2: acquireIndexLock can wait up to the timeout ceiling, during
+  // which git HEAD/branch — and thus the resolved write slot — may change (a
+  // commit lands, a branch is switched, or another writer adopts the flat slot).
+  // The pre-wait snapshot must NOT be reused: re-resolve UNDER the lock so the
+  // freshness check (`existingMeta.lastCommit === currentCommit`) and the meta
+  // stamps see current git state, honoring the module's "re-check freshness after
+  // acquiring" contract. If the slot itself moved we hold the WRONG lock —
+  // release and re-acquire the correct one. Bounded so a pathologically churning
+  // checkout can't loop forever; after the cap we proceed on the current lock.
+  const MAX_RELOCK = 3;
+  for (let attempt = 0; attempt < MAX_RELOCK; attempt++) {
+    const fresh = await resolveWriteTarget(repoPath, options);
+    if (fresh.metaDir === writeTarget.metaDir) {
+      writeTarget = fresh; // same slot — adopt the freshly-read commit/branch/placement
+      break;
+    }
+    log(
+      `Index write target moved while waiting for the lock ` +
+        `(${writeTarget.metaDir} → ${fresh.metaDir}); re-acquiring the correct slot.`,
+    );
+    lock.release();
+    writeTarget = fresh;
+    lock = await acquireIndexLock(fresh.metaDir, acquireOpts);
+    if (attempt === MAX_RELOCK - 1) {
+      log('Index write target still moving after repeated re-acquire; proceeding on this lock.');
+    }
+  }
   try {
     return await runFullAnalysisInner(
       repoPath,
