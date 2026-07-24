@@ -457,8 +457,14 @@ export interface RepoMeta {
  * spurious edges and these new resolved edges are cross-file, so a pre-v12
  * top-up would leave unchanged Rust files stale either way; force a full
  * re-analyze instead.
+ * v13: Java local classes, enums, records, and interfaces use
+ * source-type-relative JLS 13.1 identities (`Outer$1Local`). Number allocation
+ * matches javac: one sequence per (enclosing type, local simple name), with a
+ * separate sequence for anonymous types. Existing type/member ids, lexical
+ * bindings, and ownership edges must not be mixed with newly named unchanged
+ * Java files; force a full re-analyze.
  */
-export const INCREMENTAL_SCHEMA_VERSION = 12;
+export const INCREMENTAL_SCHEMA_VERSION = 13;
 
 export interface IndexedRepo {
   repoPath: string;
