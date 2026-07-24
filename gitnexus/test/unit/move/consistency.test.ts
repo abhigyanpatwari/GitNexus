@@ -1,5 +1,8 @@
 import { describe, it, expect } from 'vitest';
-import { validateMoveIngestOutput } from '../../../src/core/move/consistency.js';
+import {
+  summarizeMoveConsistency,
+  validateMoveIngestOutput,
+} from '../../../src/core/move/consistency.js';
 import type { MoveIngestOutput } from '../../../src/core/move/move-ingest.js';
 import { createKnowledgeGraph } from '../../../src/core/graph/graph.js';
 
@@ -21,6 +24,8 @@ function makeOutput(overrides: Partial<MoveIngestOutput> = {}): MoveIngestOutput
     modulePackageMap: new Map(),
     filePackageMap: new Map(),
     callGraphByPackage: new Map(),
+    droppedRefs: [],
+    functionUsageFailures: [],
     consistencyIssues: [],
     ...overrides,
   };
@@ -199,11 +204,180 @@ describe('validateMoveIngestOutput', () => {
     const output = makeOutput({
       ingestedFiles: new Set([file]),
       moduleFileMap: new Map([['0xa::m', file]]),
-      droppedResourceRefs: [{ fnNodeId: 'Function:f', target: 'Config' }],
+      droppedRefs: [{ kind: 'resource', sourceId: 'Function:f', target: 'Config' }],
     });
     const issues = validateMoveIngestOutput(graph, output);
     expect(
       issues.some((i) => i.code === 'unresolved-resource-target' && i.severity === 'warning'),
     ).toBe(true);
+  });
+
+  it('warns when type, friend, or lambda-host targets were dropped', () => {
+    const graph = createKnowledgeGraph();
+    const output = makeOutput({
+      droppedRefs: [
+        { kind: 'type', sourceId: 'Function:f', target: '(u64' },
+        { kind: 'friend', sourceId: 'Module:m', target: '0xb::gone' },
+        { kind: 'lambda-host', sourceId: 'Function:l', target: '0xa::m::host' },
+      ],
+    });
+    const issues = validateMoveIngestOutput(graph, output);
+    for (const code of [
+      'unresolved-type-target',
+      'unresolved-friend-target',
+      'unresolved-lambda-host',
+    ] as const) {
+      const issue = issues.find((i) => i.code === code);
+      expect(issue?.severity).toBe('warning');
+      expect(issue?.details?.count).toBe(1);
+      expect(
+        (issue?.details?.sample as Array<{ kind: string; sourceId: string; target: string }>)?.[0],
+      ).toMatchObject({
+        kind: expect.any(String),
+        sourceId: expect.any(String),
+        target: expect.any(String),
+      });
+    }
+  });
+
+  it('errors call-graph-unlinked when no caller resolves despite mapped functions', () => {
+    const graph = createKnowledgeGraph();
+    const file = 'sources/coin.move';
+    addFileNode(graph, file);
+    const output = makeOutput({
+      ingestedFiles: new Set([file]),
+      moduleFileMap: new Map([['0xa::coin', file]]),
+      modulePackageMap: new Map([['0xa::coin', '/pkg']]),
+      functionNodeMap: new Map([['0xa::coin::register', `Function:${file}:0xa::coin::register`]]),
+      // Simulated normalization drift: call_graph came back zero-padded, so
+      // NO caller matches facts-derived names - and the ownership checks are
+      // also blind to it (caller modules miss modulePackageMap the same way).
+      callGraphByPackage: new Map([['/pkg', { '0x000a::coin::register': ['0x000a::coin::mint'] }]]),
+    });
+    const issues = validateMoveIngestOutput(graph, output);
+    const issue = issues.find((i) => i.code === 'call-graph-unlinked');
+    expect(issue?.severity).toBe('error');
+    expect(issue?.details?.packageRoot).toBe('/pkg');
+    // The pre-existing per-caller checks stay silent here - that blindness is
+    // exactly why the package-level check exists.
+    expect(issues.some((i) => i.code === 'missing-owned-caller')).toBe(false);
+  });
+
+  it('does not flag call-graph-unlinked when caller modules resolve (facts-elided callers)', () => {
+    const graph = createKnowledgeGraph();
+    const file = 'sources/coin.move';
+    addFileNode(graph, file);
+    const output = makeOutput({
+      ingestedFiles: new Set([file]),
+      moduleFileMap: new Map([['0xa::coin', file]]),
+      modulePackageMap: new Map([['0xa::coin', '/pkg']]),
+      functionNodeMap: new Map([['0xa::coin::register', `Function:${file}:0xa::coin::register`]]),
+      // The only caller is a #[test] function elided from facts: its MODULE
+      // resolves, so this is per-caller warning territory, not systematic
+      // qualified-name drift.
+      callGraphByPackage: new Map([['/pkg', { '0xa::coin::test_flow': ['0xa::coin::register'] }]]),
+    });
+    const issues = validateMoveIngestOutput(graph, output);
+    expect(issues.some((i) => i.code === 'call-graph-unlinked')).toBe(false);
+    expect(issues.some((i) => i.code === 'missing-owned-caller')).toBe(true);
+  });
+
+  it('does not flag call-graph-unlinked for a package with no mapped functions', () => {
+    const graph = createKnowledgeGraph();
+    const file = 'sources/coin.move';
+    addFileNode(graph, file);
+    const output = makeOutput({
+      ingestedFiles: new Set([file]),
+      moduleFileMap: new Map([['0xa::coin', file]]),
+      modulePackageMap: new Map([['0xa::coin', '/pkg']]),
+      // Structs-only package: call graph may list elided test-only functions.
+      callGraphByPackage: new Map([['/pkg', { '0xa::coin::test_helper': [] }]]),
+    });
+    const issues = validateMoveIngestOutput(graph, output);
+    expect(issues.some((i) => i.code === 'call-graph-unlinked')).toBe(false);
+  });
+
+  it('does not flag call-graph-unlinked when callees resolve (elided test-only caller module)', () => {
+    const graph = createKnowledgeGraph();
+    const file = 'sources/coin.move';
+    addFileNode(graph, file);
+    const output = makeOutput({
+      ingestedFiles: new Set([file]),
+      moduleFileMap: new Map([['0xa::coin', file]]),
+      modulePackageMap: new Map([['0xa::coin', '/pkg']]),
+      functionNodeMap: new Map([['0xa::coin::register', `Function:${file}:0xa::coin::register`]]),
+      // Every caller lives in a test-only MODULE elided from facts, so neither
+      // the function nor the module condition can clear the check - but the
+      // CALLEES still join facts names, which real drift would break too.
+      callGraphByPackage: new Map([['/pkg', { '0xa::coin_tests::flow': ['0xa::coin::register'] }]]),
+    });
+    const issues = validateMoveIngestOutput(graph, output);
+    expect(issues.some((i) => i.code === 'call-graph-unlinked')).toBe(false);
+  });
+
+  it('warns when an external module shares an address with repo-local modules', () => {
+    const graph = createKnowledgeGraph();
+    const file = 'sources/coin.move';
+    addFileNode(graph, file);
+    graph.addNode({
+      id: 'Module::0xa::vanished',
+      label: 'Module',
+      properties: {
+        name: 'vanished',
+        filePath: '',
+        qualifiedName: '0xa::vanished',
+        locationFidelity: 'external',
+      },
+    });
+    const output = makeOutput({
+      ingestedFiles: new Set([file]),
+      moduleFileMap: new Map([['0xa::coin', file]]),
+      modulePackageMap: new Map([['0xa::coin', '/pkg']]),
+      callGraphByPackage: new Map([['/pkg', {}]]),
+    });
+    const issue = validateMoveIngestOutput(graph, output).find(
+      (i) => i.code === 'external-module-address-overlap',
+    );
+    expect(issue?.severity).toBe('warning');
+    expect(issue?.details?.sample).toEqual(['0xa::vanished']);
+  });
+
+  it('does not warn for external modules at genuinely foreign addresses', () => {
+    const graph = createKnowledgeGraph();
+    const file = 'sources/coin.move';
+    addFileNode(graph, file);
+    graph.addNode({
+      id: 'Module::0x1::object',
+      label: 'Module',
+      properties: {
+        name: 'object',
+        filePath: '',
+        qualifiedName: '0x1::object',
+        locationFidelity: 'external',
+      },
+    });
+    const output = makeOutput({
+      ingestedFiles: new Set([file]),
+      moduleFileMap: new Map([['0xa::coin', file]]),
+      modulePackageMap: new Map([['0xa::coin', '/pkg']]),
+      callGraphByPackage: new Map([['/pkg', {}]]),
+    });
+    const issues = validateMoveIngestOutput(graph, output);
+    expect(issues.some((i) => i.code === 'external-module-address-overlap')).toBe(false);
+  });
+});
+
+describe('summarizeMoveConsistency', () => {
+  it('bounds persisted messages and details', () => {
+    const summary = summarizeMoveConsistency([
+      {
+        code: 'empty-package-facts',
+        severity: 'error',
+        message: 'm'.repeat(10_000),
+        details: { diagnostics: 'd'.repeat(1_000_000) },
+      },
+    ]);
+
+    expect(JSON.stringify(summary).length).toBeLessThan(5_000);
   });
 });

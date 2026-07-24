@@ -39,11 +39,14 @@ const client: MoveFlowClient = {
   async callGraph() {
     return {};
   },
+  async functionUsage() {
+    return { called: [], used: [] };
+  },
   async packageStatus() {
     return { ok: true, diagnostics: '' };
   },
   async capabilities() {
-    return { hasFactsQuery: true, hasStatusTool: false };
+    return { hasFactsQuery: true, hasFunctionUsageQuery: false, hasStatusTool: false };
   },
   async shutdown() {},
 };

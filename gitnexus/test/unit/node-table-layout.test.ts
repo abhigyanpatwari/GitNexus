@@ -7,6 +7,7 @@ import {
   FUNCTION_SCHEMA,
   MODULE_SCHEMA,
   STRUCT_SCHEMA,
+  TYPE_SCHEMA,
 } from '../../src/core/lbug/schema.js';
 import {
   getNodeTableCsvHeader,
@@ -20,6 +21,7 @@ const schemas: Record<LayoutTableName, string> = {
   Function: FUNCTION_SCHEMA,
   Struct: STRUCT_SCHEMA,
   Enum: ENUM_SCHEMA,
+  Type: TYPE_SCHEMA,
   EnumVariant: ENUM_VARIANT_SCHEMA,
   Const: CONST_SCHEMA,
   Module: MODULE_SCHEMA,

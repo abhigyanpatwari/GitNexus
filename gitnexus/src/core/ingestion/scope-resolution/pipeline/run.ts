@@ -82,6 +82,7 @@ import {
   callableFlowSiteKey,
   collectDeferredIndirectSites,
   emitCallableValueFlow,
+  type CallableValueFlowWarning,
 } from '../passes/callable-value-flow.js';
 import type { ScopeResolver } from '../contract/scope-resolver.js';
 import { findEnclosingClassDef, resolveInheritanceBaseInScope } from '../scope/walkers.js';
@@ -92,7 +93,37 @@ import { parseTruthyEnv } from '../../utils/env.js';
 import { TransitionalScopeTree } from '../../../../storage/scope-index-store.js';
 import { forceGc } from '../../../../storage/parsedfile-store.js';
 
-import { logger } from '../../../logger.js';
+import { logger, warnRespectingProgressBar } from '../../../logger.js';
+
+/** Exported for the boundary test in run-progress.test.ts. */
+export const MAX_PROGRESS_WARNING_CONTEXT_CHARS = 160;
+
+/** Escape control bytes and bound one context shown beside the live bar. */
+export function formatScopeResolutionWarningContext(context: string): string {
+  const escaped = JSON.stringify(context).slice(1, -1);
+  if (escaped.length <= MAX_PROGRESS_WARNING_CONTEXT_CHARS) return escaped;
+  return `${escaped.slice(0, MAX_PROGRESS_WARNING_CONTEXT_CHARS - 3)}...`;
+}
+
+/** One-line progress warning for property-dispatch fan-out drops. */
+function formatPropertyDispatchProgress(
+  language: string,
+  skippedKeys: number,
+  fanoutCap: number,
+  skippedKeyNames: readonly string[],
+): string {
+  return `  Warning: property dispatch (${language}) skipped ${skippedKeys} key(s) above fan-out cap ${fanoutCap}; no CALLS were synthesized. Sample: ${skippedKeyNames
+    .slice(0, 5)
+    .join(', ')}`;
+}
+
+/** One-line progress warning for callable-value-flow candidate-set overflows. */
+function formatCallableValueFlowProgress(warning: CallableValueFlowWarning): string {
+  return `  Warning: callable value flow (${warning.language}) skipped ${warning.occurrences} candidate set(s) across ${warning.distinctContexts} context(s) above cap ${warning.cap}; no partial CALLS were emitted. Sample: ${warning.contextSamples
+    .slice(0, 2)
+    .map(formatScopeResolutionWarningContext)
+    .join(', ')}`;
+}
 
 /**
  * Emit one class-owned inheritance edge directly (the inheritance pre-pass is
@@ -879,14 +910,23 @@ export function runScopeResolution(
     // Never drop dispatch coverage silently: a hook table larger than the
     // fan-out cap means member calls through those keys get no synthesized
     // CALLS — the #2437 false-safe gap reappears for exactly those keys.
-    logger.warn(
+    warnRespectingProgressBar(
+      formatPropertyDispatchProgress(
+        provider.language,
+        propertyDispatch.skippedKeys,
+        MAX_PROPERTY_DISPATCH_FANOUT,
+        propertyDispatch.skippedKeyNames,
+      ),
       {
-        lang: provider.language,
-        skippedKeys: propertyDispatch.skippedKeys,
-        skippedKeyNames: propertyDispatch.skippedKeyNames,
-        fanoutCap: MAX_PROPERTY_DISPATCH_FANOUT,
+        fields: {
+          lang: provider.language,
+          skippedKeys: propertyDispatch.skippedKeys,
+          skippedKeyNames: propertyDispatch.skippedKeyNames,
+          fanoutCap: MAX_PROPERTY_DISPATCH_FANOUT,
+        },
+        message:
+          'property-dispatch: keys over the fan-out cap were dropped (no CALLS synthesized for them)',
       },
-      'property-dispatch: keys over the fan-out cap were dropped (no CALLS synthesized for them)',
     );
   }
   const callableValueFlow =
@@ -904,15 +944,17 @@ export function runScopeResolution(
           parsedFiles: emitParsedFiles,
           nodeLookup: postHeritageNodeLookup,
           calleeIds: calleeIdAccumulator,
+          canonicalInvokeKeys: deferredIndirectSites,
           language: provider.language,
           collapseByCallerTarget: provider.collapseMemberCallsByCallerTarget === true,
           isCallableValueTarget: provider.isCallableValueTarget,
           hasFileLocalCallableLinkage: provider.hasFileLocalCallableLinkage,
           onWarn: (warning) =>
-            logger.warn(
-              warning,
-              'callable-value-flow: candidate set exceeded the cap; no partial CALLS emitted',
-            ),
+            warnRespectingProgressBar(formatCallableValueFlowProgress(warning), {
+              fields: warning,
+              message:
+                'callable-value-flow: candidate set exceeded the cap; grouped occurrences emitted no partial CALLS',
+            }),
         });
   const importsEmitted = callableFlowOnly
     ? 0

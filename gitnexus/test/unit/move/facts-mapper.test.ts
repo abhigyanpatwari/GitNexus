@@ -1,36 +1,32 @@
 import { describe, it, expect } from 'vitest';
+import { mapFactsToGraph } from '../../../src/core/move/facts-mapper.js';
 import {
   buildLocalNameIndex,
-  mapFactsToGraph,
-  resolveFriendEdges,
-  resolveResourceEdges,
-  resolveTypeRefEdges,
-} from '../../../src/core/move/facts-mapper.js';
+  resolveRefs,
+  ExternalMoveSymbols,
+} from '../../../src/core/move/move-linker.js';
+import type { DroppedRef } from '../../../src/core/move/refs.js';
 import {
   type MoveFactsFunction,
   type MoveFactsMap,
 } from '../../../src/core/move/compiler-facts.js';
+import { moveFunctionFact } from '../../helpers/move-ingest-harness.js';
+import { createKnowledgeGraph } from '../../../src/core/graph/graph.js';
 
-/** A minimal function facts entry with per-test overrides. */
+/** A fuller-shaped function facts entry (file/span/arrays) with per-test overrides. */
 function fnFixture(name: string, overrides: Partial<MoveFactsFunction> = {}): MoveFactsFunction {
-  return {
-    name,
+  return moveFunctionFact(name, {
     file: '/pkg/sources/fixture.move',
     span: [1, 3],
     visibility: 'public',
-    isEntry: false,
-    isInline: false,
-    isNative: false,
-    isView: false,
     attributes: [],
     typeParams: [],
     params: [],
-    returnTypes: [],
     acquiresInferred: [],
     resourceAccess: { reads: [], writes: [] },
     isLambdaLifted: false,
     ...overrides,
-  };
+  });
 }
 
 // Trimmed-but-faithful slice of a real `move_package_query { query: "facts" }`
@@ -112,29 +108,29 @@ const facts: MoveFactsMap = {
   },
 };
 
-function mapFactsToGraphWithResolvedEdges(
-  factsMap: MoveFactsMap,
-): ReturnType<typeof mapFactsToGraph> {
+function mapFactsToGraphWithResolvedEdges(factsMap: MoveFactsMap) {
   const mapped = mapFactsToGraph(factsMap, '/pkg');
-  const edges = [...mapped.edges];
+  const graph = createKnowledgeGraph();
+  for (const node of mapped.nodes) graph.addNode(node);
+  for (const rel of mapped.edges) graph.addRelationship(rel);
   const localNameIndex = buildLocalNameIndex(mapped.structNodeMap);
-  const addResolvedUsedType = (sourceId: string, targetId: string): void => {
-    const fnNode = mapped.nodes.find((n) => n.id === sourceId);
-    const typeNode = mapped.nodes.find((n) => n.id === targetId);
-    const qualifiedName = typeNode?.properties.qualifiedName;
-    if (!fnNode || typeof qualifiedName !== 'string') return;
-    const current = Array.isArray(fnNode.properties.usedTypes) ? fnNode.properties.usedTypes : [];
-    if (!current.includes(qualifiedName)) fnNode.properties.usedTypes = [...current, qualifiedName];
-  };
-  resolveResourceEdges(mapped.pendingResource, mapped.structNodeMap, localNameIndex, (rel) =>
-    edges.push(rel),
+  const external = new ExternalMoveSymbols(graph, mapped.moduleFileMap);
+  const drops: DroppedRef[] = [];
+  resolveRefs(
+    graph,
+    mapped.pendingRefs,
+    {
+      structNodeMap: mapped.structNodeMap,
+      structIdsByLocalName: localNameIndex,
+      moduleFileMap: mapped.moduleFileMap,
+      functionNodeMap: mapped.functionNodeMap,
+    },
+    external,
+    drops,
   );
-  resolveFriendEdges(mapped.pendingFriends, mapped.moduleFileMap, (rel) => edges.push(rel));
-  resolveTypeRefEdges(mapped.pendingTypeRef, mapped.structNodeMap, localNameIndex, (rel) => {
-    edges.push(rel);
-    addResolvedUsedType(rel.sourceId, rel.targetId);
-  });
-  return { ...mapped, edges };
+  const edges = [...graph.iterRelationships()];
+  const nodes = [...graph.iterNodes()];
+  return { ...mapped, nodes, edges };
 }
 
 describe('mapFactsToGraph', () => {
@@ -193,8 +189,34 @@ describe('mapFactsToGraph', () => {
     const { nodes } = mapFactsToGraph(facts, '/pkg');
     const fn = nodes.find((n) => n.properties.name === 'balance_of');
     expect(fn?.properties.isView).toBe(true);
+    expect(fn?.properties.isExported).toBe(true);
     expect(fn?.properties.locationFidelity).toBe('precise');
     expect(fn?.properties.startLine).toBe(33);
+  });
+
+  it('maps public and compiler-marked entry/view functions onto isExported', () => {
+    const visibilityFacts: MoveFactsMap = {
+      '0xa::roots': {
+        file: '/pkg/sources/roots.move',
+        functions: [
+          fnFixture('public_api', { visibility: 'public' }),
+          fnFixture('package_api', { visibility: 'package' }),
+          fnFixture('private_entry', { visibility: 'internal', isEntry: true }),
+          fnFixture('init_module', { visibility: 'internal' }),
+          fnFixture('helper', { visibility: 'internal' }),
+        ],
+      },
+    };
+    const { nodes } = mapFactsToGraph(visibilityFacts, '/pkg');
+    const exported = (name: string) =>
+      nodes.find((node) => node.label === 'Function' && node.properties.name === name)?.properties
+        .isExported;
+
+    expect(exported('public_api')).toBe(true);
+    expect(exported('package_api')).toBe(false);
+    expect(exported('private_entry')).toBe(true);
+    expect(exported('init_module')).toBe(false);
+    expect(exported('helper')).toBe(false);
   });
 
   it('tolerates functions/modules with missing optional arrays (real move-flow shape)', () => {
@@ -346,6 +368,75 @@ describe('mapFactsToGraph', () => {
     const v = nodes.find((n) => n.label === 'EnumVariant');
     expect(v?.properties.attributes).toEqual(['deprecated']);
     expect(v?.properties.locationFidelity).toBe('module');
+  });
+
+  it('materializes Move 2 enum variant fields and their local type edges', () => {
+    const enumFacts: MoveFactsMap = {
+      '0xa::orders': {
+        file: '/pkg/sources/orders.move',
+        functions: [],
+        structs: [
+          {
+            kind: 'struct',
+            name: 'Payload',
+            file: '/pkg/sources/orders.move',
+            span: [1, 2],
+            abilities: ['copy'],
+            typeParams: [],
+            fields: [],
+            attributes: [],
+          },
+          {
+            kind: 'enum',
+            name: 'OrderState',
+            file: '/pkg/sources/orders.move',
+            span: [4, 10],
+            abilities: ['drop'],
+            typeParams: [{ name: 'T', abilities: [], isPhantom: false }],
+            variants: [
+              {
+                name: 'Open',
+                kind: 'named',
+                fields: [
+                  { name: 'payload', type: 'Payload', positional: false },
+                  { name: 'callback', type: '|Payload|T has copy + drop', positional: false },
+                ],
+                attributes: [],
+              },
+            ],
+            attributes: [],
+          },
+        ],
+      },
+    };
+    const { nodes, edges, pendingRefs } = mapFactsToGraphWithResolvedEdges(enumFacts);
+    const variant = nodes.find(
+      (node) => node.label === 'EnumVariant' && node.properties.name === 'Open',
+    );
+    const fieldIds = new Set(
+      edges
+        .filter((edge) => edge.type === 'HAS_PROPERTY' && edge.sourceId === variant?.id)
+        .map((edge) => edge.targetId),
+    );
+    const fields = nodes.filter((node) => node.label === 'Property' && fieldIds.has(node.id));
+
+    expect(fields.map((field) => field.properties.name)).toEqual(['payload', 'callback']);
+    expect(
+      edges.filter((edge) => edge.type === 'HAS_PROPERTY' && edge.sourceId === variant?.id),
+    ).toHaveLength(2);
+    expect(
+      edges.some(
+        (edge) =>
+          edge.type === 'USES_TYPE' &&
+          edge.reason === 'move-enum-variant-field-type' &&
+          edge.sourceId === fields.find((field) => field.properties.name === 'callback')?.id &&
+          edge.targetId.includes('Payload'),
+      ),
+    ).toBe(true);
+    const typeRefs = pendingRefs.filter((r) => r.kind === 'type');
+    expect(typeRefs.some((pending) => pending.target === 'copy')).toBe(false);
+    expect(typeRefs.some((pending) => pending.target === 'drop')).toBe(false);
+    expect(typeRefs.some((pending) => pending.target === 'T')).toBe(false);
   });
 
   it('does not write moduleAddress on Function nodes (only Module/Struct/Enum carry it)', () => {
@@ -535,8 +626,10 @@ describe('mapFactsToGraph', () => {
         constants: [],
       },
     };
-    const { pendingTypeRef } = mapFactsToGraph(rtFacts, '/pkg');
-    const returnRefs = pendingTypeRef.filter((p) => p.reason === 'move-fn-return-type');
+    const { pendingRefs } = mapFactsToGraph(rtFacts, '/pkg');
+    const returnRefs = pendingRefs.filter(
+      (p) => p.kind === 'type' && p.reason === 'move-fn-return-type',
+    );
     expect(returnRefs.map((p) => p.target)).toEqual(['0xbeef::price::PriceInfo']);
   });
 
@@ -588,18 +681,33 @@ describe('mapFactsToGraph', () => {
       },
     };
     const mapped = mapFactsToGraph(qualFacts, '/pkg');
+    const graph = createKnowledgeGraph();
+    for (const node of mapped.nodes) graph.addNode(node);
+    for (const rel of mapped.edges) graph.addRelationship(rel);
     const localNameIndex = buildLocalNameIndex(mapped.structNodeMap);
-    const resolvedEdges: unknown[] = [];
-    const unresolved: string[] = [];
-    resolveResourceEdges(
-      mapped.pendingResource,
-      mapped.structNodeMap,
-      localNameIndex,
-      (rel) => resolvedEdges.push(rel),
-      (pending) => unresolved.push(pending.target),
+    const external = new ExternalMoveSymbols(graph, mapped.moduleFileMap);
+    const drops: DroppedRef[] = [];
+    const resourceRefs = mapped.pendingRefs.filter((r) => r.kind === 'resource');
+    resolveRefs(
+      graph,
+      resourceRefs,
+      {
+        structNodeMap: mapped.structNodeMap,
+        structIdsByLocalName: localNameIndex,
+        moduleFileMap: mapped.moduleFileMap,
+        functionNodeMap: mapped.functionNodeMap,
+      },
+      external,
+      drops,
     );
-    expect(resolvedEdges).toEqual([]);
-    expect(unresolved).toEqual(['0x1::coin::CoinStore', '0x1::coin::CoinStore']);
+    const localCoinStoreId = mapped.structNodeMap.get('0xa::coin::CoinStore');
+    const resolvedResourceEdges = [...graph.iterRelationships()].filter(
+      (e) => e.type === 'READS_RESOURCE' || e.type === 'WRITES_RESOURCE' || e.type === 'ACQUIRES',
+    );
+    expect(resolvedResourceEdges.every((e) => e.targetId !== localCoinStoreId)).toBe(true);
+    expect(resolvedResourceEdges.every((e) => e.targetId.includes('0x1::coin::CoinStore'))).toBe(
+      true,
+    );
   });
 
   it('projects full attribute payloads (args/values) as attributesJson alongside the name list', () => {
@@ -704,10 +812,31 @@ describe('mapFactsToGraph', () => {
         constants: [],
       },
     };
-    const { pendingLambdaHosts } = mapFactsToGraph(lambdaFacts, '/pkg');
-    expect(pendingLambdaHosts.map((p) => p.hostQualified)).toEqual([
-      '0xa::vault::lifted',
-      '0xa::vault::outer',
-    ]);
+    const { pendingRefs } = mapFactsToGraph(lambdaFacts, '/pkg');
+    const lambdaRefs = pendingRefs.filter((r) => r.kind === 'lambda-host');
+    expect(lambdaRefs.map((p) => p.target)).toEqual(['0xa::vault::lifted', '0xa::vault::outer']);
+  });
+
+  it('attributes lifted lambdas to their declaring module source', () => {
+    const lambdaFacts: MoveFactsMap = {
+      '0xa::vault': {
+        file: '/pkg/sources/vault.move',
+        functions: [
+          fnFixture('__lambda__1__run', {
+            file: '/external/aptos-framework/sources/big_ordered_map.move',
+            isLambdaLifted: true,
+            definedIn: 'run',
+          }),
+        ],
+      },
+    };
+    const { nodes } = mapFactsToGraph(lambdaFacts, '/pkg');
+    const lambda = nodes.find(
+      (node) => node.label === 'Function' && node.properties.name === '__lambda__1__run',
+    );
+    expect(lambda?.properties.filePath).toBe('/pkg/sources/vault.move');
+    expect(lambda?.properties.startLine).toBeUndefined();
+    expect(lambda?.properties.endLine).toBeUndefined();
+    expect(lambda?.properties.locationFidelity).toBe('module');
   });
 });

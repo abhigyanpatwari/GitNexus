@@ -15,6 +15,12 @@ export interface MoveFlowConstant {
 
 export type CallGraphMap = Record<string, string[]>;
 
+/** Compiler usage for one function. `used - called` is closure capture. */
+export interface MoveFunctionUsage {
+  called: string[];
+  used: string[];
+}
+
 // ─────────────────────────────────────────────────────────────────────────
 // move-flow `facts` query — full-fidelity, compiler-sourced per-module facts.
 //

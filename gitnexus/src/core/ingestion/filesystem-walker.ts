@@ -5,7 +5,7 @@ import path from 'path';
 import { glob } from 'glob';
 import { createIgnoreFilter } from '../../config/ignore-service.js';
 
-import { logger } from '../logger.js';
+import { warnRespectingProgressBar } from '../logger.js';
 
 /** Lightweight entry — path + size from stat, no content in memory */
 export interface ScannedFile {
@@ -19,21 +19,8 @@ export interface FilePath {
 }
 
 const READ_CONCURRENCY = 32;
-const ANALYZE_PROGRESS_ACTIVE_ENV = 'GITNEXUS_ANALYZE_PROGRESS_ACTIVE';
 
-const warnLargeFileSkip = (message: string): void => {
-  if (process.env[ANALYZE_PROGRESS_ACTIVE_ENV] === '1') {
-    // analyze.ts routes console.warn through the progress bar logger while
-    // the bar is active. Emitting the operator-facing large-file notice there
-    // avoids raw pino NDJSON corrupting the one-line progress display in the
-    // heap-respawn child, whose stderr is intentionally piped for crash
-    // classification.
-    // eslint-disable-next-line no-console -- intentionally routed by analyze progress UI
-    console.warn(message);
-    return;
-  }
-  logger.warn(message);
-};
+const warnLargeFileSkip = (message: string): void => warnRespectingProgressBar(message);
 
 /**
  * Phase 1: Scan repository — stat files to get paths + sizes, no content loaded.

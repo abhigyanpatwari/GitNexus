@@ -1,12 +1,15 @@
-import { describe, it, expect } from 'vitest';
+import { describe, it, expect, vi } from 'vitest';
 import type { ParsedFile, ScopeId, Scope } from 'gitnexus-shared';
 import {
+  formatScopeResolutionWarningContext,
+  MAX_PROGRESS_WARNING_CONTEXT_CHARS,
   runScopeResolution,
   type ScopeResolutionSubPhase,
 } from '../../../src/core/ingestion/scope-resolution/pipeline/run.js';
 import { createKnowledgeGraph } from '../../../src/core/graph/graph.js';
 import { createSemanticModel } from '../../../src/core/ingestion/model/semantic-model.js';
 import type { ScopeResolver } from '../../../src/core/ingestion/scope-resolution/contract/scope-resolver.js';
+import { _captureLogger, warnRespectingProgressBar } from '../../../src/core/logger.js';
 
 const mkScope = (id: ScopeId, filePath: string): Scope => ({
   id,
@@ -41,6 +44,37 @@ const stubProvider = {
 } as unknown as ScopeResolver;
 
 describe('runScopeResolution onProgress', () => {
+  it('escapes control bytes and bounds progress warning contexts', () => {
+    const formatted = formatScopeResolutionWarningContext(`binding\0${'x'.repeat(200)}`);
+
+    expect(formatted).not.toContain('\0');
+    expect(formatted).toContain('\\u0000');
+    expect(formatted).toHaveLength(MAX_PROGRESS_WARNING_CONTEXT_CHARS);
+    expect(formatted.endsWith('...')).toBe(true);
+  });
+
+  it('routes warnings through the analyze progress logger instead of Pino', () => {
+    const previous = process.env.GITNEXUS_ANALYZE_PROGRESS_ACTIVE;
+    const capture = _captureLogger();
+    const consoleWarn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    try {
+      process.env.GITNEXUS_ANALYZE_PROGRESS_ACTIVE = '1';
+      warnRespectingProgressBar('progress-safe warning', {
+        fields: { language: 'move', occurrences: 2 },
+        message: 'structured warning',
+      });
+
+      expect(consoleWarn).toHaveBeenCalledOnce();
+      expect(consoleWarn).toHaveBeenCalledWith('progress-safe warning');
+      expect(capture.records()).toEqual([]);
+    } finally {
+      consoleWarn.mockRestore();
+      capture.restore();
+      if (previous === undefined) delete process.env.GITNEXUS_ANALYZE_PROGRESS_ACTIVE;
+      else process.env.GITNEXUS_ANALYZE_PROGRESS_ACTIVE = previous;
+    }
+  });
+
   it('emits sub-phases in order for a 3-file input', () => {
     const files = [
       { path: 'a.py', content: '' },

@@ -2,7 +2,8 @@
  * Process Detection Processor
  *
  * Detects execution flows (Processes) in the code graph by:
- * 1. Finding entry points (functions with no internal callers)
+ * 1. Finding entry points (explicit graph roots plus functions that call
+ *    others but have few callers)
  * 2. Tracing forward via CALLS edges (BFS)
  * 3. Grouping and deduplicating similar paths
  * 4. Labeling with heuristic names
@@ -10,7 +11,7 @@
  * Processes help agents understand how features work through the codebase.
  */
 
-import type { GraphNode, NodeLabel } from 'gitnexus-shared';
+import type { NodeLabel } from 'gitnexus-shared';
 import { KnowledgeGraph } from '../graph/types.js';
 import { CommunityMembership } from './community-processor.js';
 import { calculateEntryPointScore, isTestFile } from './entry-point-scoring.js';
@@ -24,9 +25,9 @@ import { logger } from '../logger.js';
 
 export interface ProcessDetectionConfig {
   maxTraceDepth: number; // Maximum steps to trace (default: 10)
-  maxBranching: number; // Max branches to follow per node (default: 3)
-  maxProcesses: number; // Maximum processes to detect (default: 50)
-  minSteps: number; // Minimum steps for a valid process (default: 2)
+  maxBranching: number; // Max branches to follow per node (default: 4)
+  maxProcesses: number; // Maximum processes to detect (default: 75)
+  minSteps: number; // Minimum steps for a valid process (default: 3)
 }
 
 const DEFAULT_CONFIG: ProcessDetectionConfig = {
@@ -92,15 +93,17 @@ export const processProcesses = async (
   const membershipMap = new Map<string, string>();
   memberships.forEach((m) => membershipMap.set(m.nodeId, m.communityId));
 
-  const callsEdges = buildCallsGraph(knowledgeGraph);
-  const reverseCallsEdges = buildReverseCallsGraph(knowledgeGraph);
-  const nodeMap = new Map<string, GraphNode>();
-  for (const n of knowledgeGraph.iterNodes()) nodeMap.set(n.id, n);
+  const { forward: callsEdges, reverse: reverseCallsEdges } = buildCallsAdjacency(knowledgeGraph);
 
-  // Step 1: Find entry points (functions that call others but have few callers)
-  const entryPoints = findEntryPoints(knowledgeGraph, reverseCallsEdges, callsEdges);
-
-  onProgress?.(`Found ${entryPoints.length} entry points, tracing flows...`, 20);
+  // Step 1: Find entry points — explicit ENTRY_POINT_OF graph roots plus
+  // heuristic ones (functions that call others but have few callers).
+  const explicitEntryPointIds = collectExplicitEntryPointIds(knowledgeGraph);
+  const entryPoints = findEntryPoints(
+    knowledgeGraph,
+    reverseCallsEdges,
+    callsEdges,
+    explicitEntryPointIds,
+  );
 
   onProgress?.(`Found ${entryPoints.length} entry points, tracing flows...`, 20);
 
@@ -125,7 +128,7 @@ export const processProcesses = async (
   onProgress?.(`Found ${allTraces.length} traces, deduplicating...`, 60);
 
   // Step 3: Deduplicate similar traces (subset removal)
-  const uniqueTraces = deduplicateTraces(allTraces);
+  const uniqueTraces = deduplicateTraces(allTraces, explicitEntryPointIds);
 
   // Step 3b: Deduplicate by entry+terminal pair (keep longest path per pair)
   const endpointDeduped = deduplicateByEndpoints(uniqueTraces);
@@ -135,9 +138,15 @@ export const processProcesses = async (
     70,
   );
 
-  // Step 4: Limit to max processes (prioritize longer traces)
+  // Step 4: Keep explicit graph roots ahead of heuristic traces, then prefer
+  // longer traces within each tier.
   const limitedTraces = endpointDeduped
-    .sort((a, b) => b.length - a.length)
+    .sort(
+      explicitFirst(
+        (trace) => explicitEntryPointIds.has(trace[0]),
+        (a, b) => b.length - a.length,
+      ),
+    )
     .slice(0, cfg.maxProcesses);
 
   onProgress?.(`Creating ${limitedTraces.length} process nodes...`, 80);
@@ -163,8 +172,8 @@ export const processProcesses = async (
       communities.length > 1 ? 'cross_community' : 'intra_community';
 
     // Generate label
-    const entryNode = nodeMap.get(entryPointId);
-    const terminalNode = nodeMap.get(terminalId);
+    const entryNode = knowledgeGraph.getNode(entryPointId);
+    const terminalNode = knowledgeGraph.getNode(terminalId);
     const entryName = entryNode?.properties.name || 'Unknown';
     const terminalName = terminalNode?.properties.name || 'Unknown';
     const heuristicLabel = `${capitalize(entryName)} → ${capitalize(terminalName)}`;
@@ -227,35 +236,51 @@ type AdjacencyList = Map<string, string[]>;
  */
 const MIN_TRACE_CONFIDENCE = 0.5;
 
-const buildCallsGraph = (graph: KnowledgeGraph): AdjacencyList => {
-  const adj = new Map<string, string[]>();
+/** Build forward and reverse CALLS adjacency lists in one relationship scan. */
+const buildCallsAdjacency = (
+  graph: KnowledgeGraph,
+): { forward: AdjacencyList; reverse: AdjacencyList } => {
+  const forward: AdjacencyList = new Map();
+  const reverse: AdjacencyList = new Map();
+  const push = (adj: AdjacencyList, key: string, value: string): void => {
+    const bucket = adj.get(key);
+    if (bucket === undefined) adj.set(key, [value]);
+    else bucket.push(value);
+  };
 
   for (const rel of graph.iterRelationships()) {
     if (rel.type === 'CALLS' && rel.confidence >= MIN_TRACE_CONFIDENCE) {
-      if (!adj.has(rel.sourceId)) {
-        adj.set(rel.sourceId, []);
-      }
-      adj.get(rel.sourceId)!.push(rel.targetId);
+      push(forward, rel.sourceId, rel.targetId);
+      push(reverse, rel.targetId, rel.sourceId);
     }
   }
 
-  return adj;
+  return { forward, reverse };
 };
 
-const buildReverseCallsGraph = (graph: KnowledgeGraph): AdjacencyList => {
-  const adj = new Map<string, string[]>();
-
-  for (const rel of graph.iterRelationships()) {
-    if (rel.type === 'CALLS' && rel.confidence >= MIN_TRACE_CONFIDENCE) {
-      if (!adj.has(rel.targetId)) {
-        adj.set(rel.targetId, []);
-      }
-      adj.get(rel.targetId)!.push(rel.sourceId);
-    }
+/** IDs of nodes carrying a pre-phase ENTRY_POINT_OF edge (compiler-backed
+ *  runtime/API roots stamped by the standalone ingest phase). */
+function collectExplicitEntryPointIds(graph: KnowledgeGraph): Set<string> {
+  const ids = new Set<string>();
+  for (const rel of graph.iterRelationshipsByType('ENTRY_POINT_OF')) {
+    // Only callable roots qualify. Route/Tool→Process ENTRY_POINT_OF edges
+    // are created after this phase; the label filter keeps them out even if
+    // phase ordering ever changes.
+    const label = graph.getNode(rel.sourceId)?.label;
+    if (label === 'Function' || label === 'Method') ids.add(rel.sourceId);
   }
+  return ids;
+}
 
-  return adj;
-};
+/** Global cap on heuristic (non-explicit) entry points, to prevent explosion
+ *  on large polyglot repos. Explicit graph roots are exempt and counted first. */
+const HEURISTIC_ENTRY_POINT_BUDGET = 200;
+
+/** Comparator combinator: explicit items first, then a secondary order. */
+const explicitFirst =
+  <T>(isExplicit: (item: T) => boolean, then: (a: T, b: T) => number) =>
+  (a: T, b: T): number =>
+    Number(isExplicit(b)) - Number(isExplicit(a)) || then(a, b);
 
 /**
  * Find functions/methods that are good entry points for tracing.
@@ -271,12 +296,20 @@ const findEntryPoints = (
   graph: KnowledgeGraph,
   reverseCallsEdges: AdjacencyList,
   callsEdges: AdjacencyList,
+  explicitEntryPointIds: ReadonlySet<string>,
 ): string[] => {
   const symbolTypes = new Set<NodeLabel>(['Function', 'Method']);
+  // ENTRY_POINT_OF is the graph-wide, language-neutral signal for a known
+  // runtime/API root. Only edges emitted BEFORE this phase count — today
+  // that is compiler-backed standalone ingesters; the
+  // Route/Tool ENTRY_POINT_OF edges are created after process extraction
+  // and point Route/Tool→Process, so they never land here. These roots must
+  // survive the global heuristic top-200 budget on large polyglot repos.
   const entryPointCandidates: {
     id: string;
     score: number;
     reasons: string[];
+    explicit: boolean;
   }[] = [];
 
   for (const node of graph.iterNodes()) {
@@ -304,19 +337,26 @@ const findEntryPoints = (
     );
 
     let score = baseScore;
+    const explicit = explicitEntryPointIds.has(node.id);
+    if (explicit) reasons.push('graph-entry-point');
     const astFrameworkMultiplier = node.properties.astFrameworkMultiplier ?? 1.0;
     if (astFrameworkMultiplier > 1.0) {
       score *= astFrameworkMultiplier;
       reasons.push(`framework-ast:${node.properties.astFrameworkReason || 'decorator'}`);
     }
 
-    if (score > 0) {
-      entryPointCandidates.push({ id: node.id, score, reasons });
+    if (explicit || score > 0) {
+      entryPointCandidates.push({ id: node.id, score, reasons, explicit });
     }
   }
 
-  // Sort by score descending and return top candidates
-  const sorted = entryPointCandidates.sort((a, b) => b.score - a.score);
+  // Known graph entry points form a priority tier ahead of heuristic scoring.
+  const sorted = entryPointCandidates.sort(
+    explicitFirst(
+      (candidate) => candidate.explicit,
+      (a, b) => b.score - a.score,
+    ),
+  );
 
   // DEBUG: Log top candidates with new scoring details
   if (sorted.length > 0 && isDev) {
@@ -330,9 +370,11 @@ const findEntryPoints = (
     });
   }
 
-  return sorted
-    .slice(0, 200) // Limit to prevent explosion
-    .map((c) => c.id);
+  const explicit = sorted.filter((candidate) => candidate.explicit);
+  const heuristic = sorted
+    .filter((candidate) => !candidate.explicit)
+    .slice(0, Math.max(0, HEURISTIC_ENTRY_POINT_BUDGET - explicit.length));
+  return [...explicit, ...heuristic].map((candidate) => candidate.id);
 };
 
 // ============================================================================
@@ -401,23 +443,31 @@ const traceFromEntryPoint = (
  * Merge traces that are subsets of other traces.
  * Keep longer traces, remove redundant shorter ones.
  */
-const deduplicateTraces = (traces: string[][]): string[][] => {
+const deduplicateTraces = (
+  traces: string[][],
+  explicitEntryPointIds: ReadonlySet<string> = new Set(),
+): string[][] => {
   if (traces.length === 0) return [];
 
   // Sort by length descending
   const sorted = [...traces].sort((a, b) => b.length - a.length);
   const unique: string[][] = [];
+  // Cache each kept trace's join key so the redundancy scan below doesn't
+  // recompute `existing.join('->')` on every comparison.
+  const uniqueKeys: string[] = [];
 
   for (const trace of sorted) {
-    // Check if this trace is a subset of any already-added trace
     const traceKey = trace.join('->');
-    const isSubset = unique.some((existing) => {
-      const existingKey = existing.join('->');
-      return existingKey.includes(traceKey);
-    });
+    // Explicit entry points dedupe on exact equality; heuristic traces are
+    // dropped when a longer kept trace already contains them as a substring.
+    const exactOnly = explicitEntryPointIds.has(trace[0]);
+    const isRedundant = uniqueKeys.some((existingKey) =>
+      exactOnly ? existingKey === traceKey : existingKey.includes(traceKey),
+    );
 
-    if (!isSubset) {
+    if (!isRedundant) {
       unique.push(trace);
+      uniqueKeys.push(traceKey);
     }
   }
 
