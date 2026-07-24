@@ -121,6 +121,7 @@ export const kotlinScopeResolver: ScopeResolver = {
   propagatesReturnTypesAcrossImports: true,
   collapseMemberCallsByCallerTarget: false,
   hoistTypeBindingsToModule: true,
+  freeCallsRequireInstanceOwnership: true,
   postExtractSourceTextPolicy: 'uncached-files',
   populateNamespaceSiblings: populateKotlinPackageSiblings,
   emitPostResolutionEdges: (graph, parsedFiles, nodeLookup, indexes) => {

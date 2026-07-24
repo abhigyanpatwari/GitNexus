@@ -615,7 +615,11 @@ export function populateCsharpNamespaceSiblings(
         }
         if (seen.has(memberDef.nodeId)) continue;
         seen.add(memberDef.nodeId);
-        bucketArr.push({ def: memberDef, origin: 'import' });
+        bucketArr.push({
+          def: memberDef,
+          origin: 'import',
+          visibility: 'static-member-import',
+        });
       }
     }
   }

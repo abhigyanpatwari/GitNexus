@@ -457,8 +457,18 @@ export interface RepoMeta {
  * spurious edges and these new resolved edges are cross-file, so a pre-v12
  * top-up would leave unchanged Rust files stale either way; force a full
  * re-analyze instead.
+ * v13: Java local classes, enums, records, and interfaces use
+ * source-type-relative JLS 13.1 identities (`Outer$1Local`). Number allocation
+ * matches javac: one sequence per (enclosing type, local simple name), with a
+ * separate sequence for anonymous types. Existing type/member ids, lexical
+ * bindings, and ownership edges must not be mixed with newly named unchanged
+ * Java files; force a full re-analyze.
+ * v14: C# and Kotlin free-call fallback now rejects same-file methods whose
+ * instance owner is outside the caller's enclosing class/MRO (#2563). The
+ * incremental write set would otherwise retain those stale CALLS edges on
+ * every unchanged C# and Kotlin file; force a full re-analyze instead.
  */
-export const INCREMENTAL_SCHEMA_VERSION = 12;
+export const INCREMENTAL_SCHEMA_VERSION = 14;
 
 export interface IndexedRepo {
   repoPath: string;

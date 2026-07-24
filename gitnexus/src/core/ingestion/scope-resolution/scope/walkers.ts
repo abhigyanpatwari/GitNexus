@@ -668,6 +668,69 @@ export function findCallableBindingInScope(
   return findAllCallableBindingsInScope(startScope, callableName, scopes)[0];
 }
 
+export interface CallableBindingCandidate {
+  readonly def: SymbolDefinition;
+  /** Every visibility path for this definition, in binding precedence order. */
+  readonly bindings: readonly BindingRef[];
+}
+
+function collectCallableBindingCandidates(
+  sources: readonly (readonly BindingRef[] | undefined)[],
+): readonly CallableBindingCandidate[] {
+  const byNodeId = new Map<string, { def: SymbolDefinition; bindings: BindingRef[] }>();
+  for (const source of sources) {
+    if (source === undefined) continue;
+    for (const binding of source) {
+      const def = binding.def;
+      if (def.type !== 'Function' && def.type !== 'Method' && def.type !== 'Constructor') continue;
+      const existing = byNodeId.get(def.nodeId);
+      if (existing === undefined) {
+        byNodeId.set(def.nodeId, { def, bindings: [binding] });
+      } else {
+        existing.bindings.push(binding);
+      }
+    }
+  }
+  return [...byNodeId.values()];
+}
+
+/**
+ * Binding-aware callable lookup for consumers that need visibility evidence.
+ * Unlike `lookupBindingsAt`, duplicate definitions retain every binding path,
+ * so a weaker augmentation can contribute provenance even when a finalized
+ * binding remains the candidate's canonical definition.
+ */
+export function findAllCallableBindingCandidatesInScope(
+  startScope: ScopeId,
+  callableName: string,
+  scopes: ScopeResolutionIndexes,
+): readonly CallableBindingCandidate[] {
+  let currentId: ScopeId | null = startScope;
+  const visited = new Set<ScopeId>();
+  while (currentId !== null) {
+    if (visited.has(currentId)) return [];
+    visited.add(currentId);
+    const scope = scopes.scopeTree.getScope(currentId);
+    if (scope === undefined) return [];
+
+    if (scope.kind !== 'Object') {
+      const lexical = collectCallableBindingCandidates([scope.bindings.get(callableName)]);
+      if (lexical.length > 0) return lexical;
+
+      const candidates = collectCallableBindingCandidates([
+        scopes.bindings.get(currentId)?.get(callableName),
+        scopes.bindingAugmentations.get(currentId)?.get(callableName),
+        collectNamespaceFqnBindings(currentId, callableName, scopes),
+        scopes.workspaceFqnBindings?.get(callableName),
+      ]);
+      if (candidates.length > 0) return candidates;
+    }
+
+    currentId = scope.parent;
+  }
+  return [];
+}
+
 /**
  * Look up all callable bindings (Function/Method/Constructor) by name
  * from the nearest scope in the chain that binds `callableName`.

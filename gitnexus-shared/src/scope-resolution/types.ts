@@ -351,6 +351,11 @@ export interface BindingRef {
   readonly origin: 'local' | 'import' | 'namespace' | 'wildcard' | 'reexport';
   /** Non-null for non-local origins; carries the `ImportEdge` that brought the name into this scope. */
   readonly via?: ImportEdge;
+  /**
+   * Optional semantic visibility evidence supplied by a language hook.
+   * Shared resolution consumes this without inspecting language syntax.
+   */
+  readonly visibility?: 'static-member-import';
 }
 
 // ─── §2.5 TypeRef ───────────────────────────────────────────────────────────
