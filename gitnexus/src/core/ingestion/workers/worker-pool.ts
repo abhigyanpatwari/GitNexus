@@ -2166,9 +2166,14 @@ export const createWorkerPool = (
             // that cap, not read as generic quarantine noise — name the cap and
             // its override so an oversized-but-legitimate file (e.g. under a
             // raised GITNEXUS_MAX_FILE_SIZE) is a one-env-var fix.
+            // The 'error' event does not guarantee a well-formed Error: the
+            // structured-clone failure path can deliver a value with no
+            // `message` — guard every property access or the handler itself
+            // throws and the pool hangs instead of recovering.
             const isWorkerHeapOom =
-              (err as NodeJS.ErrnoException).code === 'ERR_WORKER_OUT_OF_MEMORY' ||
-              err.message.includes('ERR_WORKER_OUT_OF_MEMORY');
+              (err as NodeJS.ErrnoException | undefined)?.code === 'ERR_WORKER_OUT_OF_MEMORY' ||
+              (typeof err?.message === 'string' &&
+                err.message.includes('ERR_WORKER_OUT_OF_MEMORY'));
             const reason = isWorkerHeapOom
               ? `${workerErrorReason(workerIndex, err.message, err.stack)} (worker hit its ${workerHeapCapMb}MB heap cap — raise with GITNEXUS_WORKER_HEAP_MB)`
               : workerErrorReason(workerIndex, err.message, err.stack);
