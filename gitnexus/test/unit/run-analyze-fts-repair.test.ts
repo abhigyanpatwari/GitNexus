@@ -515,6 +515,7 @@ describe('runFullAnalysis FTS repair and verification failure paths', () => {
       );
 
       expect(result.ftsSkipped).toBe(true);
+      expect(result.ftsSkipReason).toBe('build-failed'); // #2658 review L2
       expect(logs.join('\n')).toMatch(
         /FTS index build failed.*missing indexes after build.*keyword search degraded this run/i,
       );
@@ -658,6 +659,7 @@ describe('runFullAnalysis FTS repair and verification failure paths', () => {
       );
 
       expect(result.ftsSkipped).toBe(true);
+      expect(result.ftsSkipReason).toBe('extension-unavailable'); // #2658 review L2
       expect(createSearchFTSIndexes).not.toHaveBeenCalled();
       expect(verifySearchFTSIndexes).not.toHaveBeenCalled();
       expect(logs.join('\n')).toMatch(/FTS extension unavailable; skipping search-index creation/i);
@@ -739,6 +741,7 @@ describe('runFullAnalysis FTS repair and verification failure paths', () => {
       );
 
       expect(result.ftsSkipped).toBe(true);
+      expect(result.ftsSkipReason).toBe('extension-unavailable'); // #2658 review L2
       const degradeLine = logs
         .filter((l) => l.includes('skipping search-index creation'))
         .join('\n');

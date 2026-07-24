@@ -362,6 +362,15 @@ export interface AnalyzeResult {
    */
   ftsSkipped?: boolean;
   /**
+   * Why FTS was skipped, when `ftsSkipped` is true (#2658 review L2):
+   * `extension-unavailable` (the LadybugDB FTS extension could not load — the
+   * offline-first case, remedied by installing it) vs `build-failed` (the
+   * extension loaded but the index build/verify failed non-fatally — remedied by
+   * `--repair-fts`, not by installing the extension). Lets the CLI show the
+   * correct recovery hint instead of always blaming a missing extension.
+   */
+  ftsSkipReason?: 'extension-unavailable' | 'build-failed';
+  /**
    * True when the index this run produced/validated is the flat workspace
    * slot (#2106 R2, inverted by #2354 to follow the checked-out branch).
    * `false` for a pinned `--branch` sub-index. Lets the CLI skip repo-root
@@ -1985,6 +1994,11 @@ async function runFullAnalysisInner(
     // build/verify step itself fails, so capabilities.fts.status / ftsSkipped
     // stay honest even though that failure no longer aborts the whole analyze.
     let ftsReady = ftsAvailable;
+    // Why FTS ended up skipped (#2658 review L2): extension-unavailable up front,
+    // or build-failed in the degrade branch below.
+    let ftsSkipReason: 'extension-unavailable' | 'build-failed' | undefined = ftsAvailable
+      ? undefined
+      : 'extension-unavailable';
     if (ftsAvailable) {
       // Degrade rather than throw: createSearchFTSIndexes re-tokenizes every
       // stored row on every run, so a native tokenizer error on a single
@@ -2017,6 +2031,7 @@ async function runFullAnalysisInner(
         );
       } else {
         ftsReady = false;
+        ftsSkipReason = 'build-failed';
         log(
           `FTS index build failed (${ftsResult.error}) — keyword search degraded this run. ` +
             'Graph and embeddings analysis completed successfully. Run `gitnexus analyze --repair-fts` to retry.',
@@ -2667,6 +2682,7 @@ async function runFullAnalysisInner(
       stats: meta.stats,
       pipelineResult,
       ftsSkipped: !ftsReady,
+      ftsSkipReason: ftsReady ? undefined : ftsSkipReason,
       isPrimaryBranch: !placement.branch,
     };
   } catch (err) {
