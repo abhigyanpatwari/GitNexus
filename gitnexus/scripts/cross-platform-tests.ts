@@ -154,12 +154,6 @@ const SPAWN_CLI = [
   'test/integration/antigravity-hook-e2e.test.ts',
   'test/unit/local-cli-subprocess.test.ts',
   'test/unit/runner-exec-tail.test.ts',
-  // Real cross-process single-writer lock coordination (#2658): spawns child
-  // processes that contend for the OS socket/pipe lock and race to reclaim a
-  // file lock after a SIGKILL. Process spawning + kernel lock auto-release are
-  // exactly the platform-varying behaviors the Windows/macOS matrix must prove
-  // — the Ubuntu suite covers only Linux (#2658 review H3).
-  'test/integration/analyze-index-lock-concurrency.test.ts',
 ];
 
 // Worker threads tests — exercise real worker_threads which have
