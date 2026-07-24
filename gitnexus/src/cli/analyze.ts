@@ -530,7 +530,10 @@ const RECOMMENDED_WAL_CHECKPOINT_THRESHOLD = 64 * 1024 * 1024;
  * later-flag-wins semantics when NODE_OPTIONS repeats a flag.
  */
 export function parseMaxOldSpaceMb(nodeOptions: string): number | null {
-  const matches = [...nodeOptions.matchAll(/--max-old-space-size=(\d+)/g)];
+  // V8 accepts `-` and `_` interchangeably in flag names; match both so an
+  // underscore-spelled pin is honored instead of silently overridden
+  // (space-separated values are not parsed — NODE_OPTIONS convention is `=`).
+  const matches = [...nodeOptions.matchAll(/--max[-_]old[-_]space[-_]size=(\d+)/g)];
   if (matches.length === 0) return null;
   const mb = Number(matches[matches.length - 1][1]);
   return Number.isFinite(mb) && mb > 0 ? mb : null;
@@ -549,16 +552,18 @@ export function parseMaxOldSpaceMb(nodeOptions: string): number | null {
  *    auto cap. Pre-#2649 this returned early and large repos then OOM'd on
  *    whatever heap the environment happened to specify. */
 async function ensureHeap(): Promise<boolean> {
+  // Explicit opt-out disables auto-sizing ENTIRELY — both the ambient-pin
+  // override and the default v8-limit respawn — and is honored SILENTLY:
+  // the operator already made the call, and stderr-sensitive consumers
+  // (test harnesses, scripts, supervisors that track a single PID) rely on
+  // a quiet, single-process run.
+  if (process.env.GITNEXUS_AUTO_HEAP === '0') return false;
   const nodeOpts = process.env.NODE_OPTIONS || '';
   if (process.execArgv.some((a) => a.startsWith('--max-old-space-size'))) return false;
 
   const ambientHeapMb = parseMaxOldSpaceMb(nodeOpts);
   if (ambientHeapMb !== null) {
     if (ambientHeapMb >= RESPAWN_HEAP_MB) return false;
-    // Explicit opt-out is honored SILENTLY: the operator already made the
-    // call, and stderr-sensitive consumers (test harnesses, scripts) rely on
-    // a quiet run. Only the default override path warns.
-    if (process.env.GITNEXUS_AUTO_HEAP === '0') return false;
     cliWarn(
       `  NODE_OPTIONS pins the heap to ${ambientHeapMb}MB — below the ${RESPAWN_HEAP_MB}MB this machine's RAM supports.\n` +
         `  Re-running analyze with the larger auto-sized cap (set GITNEXUS_AUTO_HEAP=0 to keep the NODE_OPTIONS value).\n`,
@@ -578,7 +583,10 @@ async function ensureHeap(): Promise<boolean> {
   // without `--import tsx` cannot execute TypeScript and dies with a
   // swallowed exit 1 (#2649 review). Our heap/semi/stack flags come AFTER
   // execArgv so V8's later-flag-wins semantics resolve duplicates our way.
-  const childArgs = [...process.execArgv, ...cliFlags, ...process.argv.slice(1)];
+  // Inspector flags are the one exception: replaying `--inspect[-brk]` makes
+  // the child fight the parent for the debug port and die with EADDRINUSE.
+  const preservedExecArgv = process.execArgv.filter((a) => !a.startsWith('--inspect'));
+  const childArgs = [...preservedExecArgv, ...cliFlags, ...process.argv.slice(1)];
   const childEnv = {
     ...process.env,
     NODE_OPTIONS: `${nodeOpts} ${HEAP_FLAG} ${SEMI_FLAG}`.trim(),

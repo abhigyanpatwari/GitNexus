@@ -119,3 +119,33 @@ describe('worker pool GC-stall credit (#2649)', () => {
     expect(creditWarns).toEqual([]);
   });
 });
+
+describe('startHeartbeatStallTracker (#2649 review — the production probe itself)', () => {
+  it('accumulates observed stalls, ignores on-time ticks, and freezes after stop()', async () => {
+    const { startHeartbeatStallTracker } = await import(
+      '../../src/core/ingestion/workers/worker-pool.js'
+    );
+    vi.useFakeTimers();
+    try {
+      const tracker = startHeartbeatStallTracker();
+      // Two on-time ticks: zero drift, nothing accumulates.
+      vi.advanceTimersByTime(500);
+      const afterOnTime = tracker.read();
+      // Simulate a ~2s main-thread stall: jump the wall clock, then let the
+      // delayed tick observe the drift.
+      vi.setSystemTime(Date.now() + 2000);
+      vi.advanceTimersByTime(250);
+      const afterStall = tracker.read();
+      tracker.stop();
+      vi.setSystemTime(Date.now() + 2000);
+      vi.advanceTimersByTime(500);
+      expect({
+        afterOnTime,
+        stallSeen: afterStall >= 1500,
+        frozenAfterStop: tracker.read() === afterStall,
+      }).toEqual({ afterOnTime: 0, stallSeen: true, frozenAfterStop: true });
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+});

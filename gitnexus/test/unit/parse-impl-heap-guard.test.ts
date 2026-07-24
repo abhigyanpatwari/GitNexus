@@ -16,17 +16,31 @@ import {
 
 const GB = 1024 * 1024 * 1024;
 
+const setConstrainedMemory = (value: number): (() => void) => {
+  const desc = Object.getOwnPropertyDescriptor(process, 'constrainedMemory');
+  Object.defineProperty(process, 'constrainedMemory', { configurable: true, value: () => value });
+  return () => {
+    if (desc) Object.defineProperty(process, 'constrainedMemory', desc);
+    else delete (process as { constrainedMemory?: unknown }).constrainedMemory;
+  };
+};
+
 describe('#2649 parse-phase heap guardrails', () => {
   let initialGuard: string | undefined;
+  let restoreConstrained: (() => void) | undefined;
 
   beforeEach(() => {
     initialGuard = process.env.GITNEXUS_HEAP_GUARD;
     delete process.env.GITNEXUS_HEAP_GUARD;
+    // Unconstrained by default so the mocked 32GB totalmem governs.
+    restoreConstrained = setConstrainedMemory(0);
   });
 
   afterEach(() => {
     if (initialGuard === undefined) delete process.env.GITNEXUS_HEAP_GUARD;
     else process.env.GITNEXUS_HEAP_GUARD = initialGuard;
+    restoreConstrained?.();
+    restoreConstrained = undefined;
   });
 
   it('projects kernel-scale repos far past the 4GB default heap and small repos well under it', () => {
@@ -59,5 +73,14 @@ describe('#2649 parse-phase heap guardrails', () => {
   it('points at scope or hardware when the machine is the ceiling', () => {
     // 23GB limit on a 32GB machine (~auto cap): nothing more to unlock locally.
     expect(heapPressureRemedy(23 * GB)).toContain('.gitnexusignore');
+  });
+
+  it('remedy respects a real cgroup limit: a memory-limited container is never told to "drop the pin" (#2649 review)', () => {
+    // 8GB cgroup limit on the mocked 32GB host, heap already sized to the
+    // container (~6.5GB): raw totalmem would claim "more memory available";
+    // the container is actually at its ceiling.
+    restoreConstrained?.();
+    restoreConstrained = setConstrainedMemory(8 * GB);
+    expect(heapPressureRemedy(6.5 * GB)).toContain('.gitnexusignore');
   });
 });

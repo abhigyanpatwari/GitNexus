@@ -212,6 +212,60 @@ describe('analyzeCommand heap respawn', () => {
     expect(parseMaxOldSpaceMb('--max-semi-space-size=128')).toBeNull();
     expect(parseMaxOldSpaceMb('')).toBeNull();
     expect(parseMaxOldSpaceMb('--max-old-space-size=0')).toBeNull();
+    // V8 treats - and _ interchangeably in flag names; the pin must be
+    // honored in either spelling instead of silently overridden.
+    expect(parseMaxOldSpaceMb('--max_old_space_size=4096')).toBe(4096);
+  });
+
+  it('GITNEXUS_AUTO_HEAP=0 also disables the default (unpinned) respawn (#2649 review)', async () => {
+    delete process.env.NODE_OPTIONS;
+    process.env.GITNEXUS_AUTO_HEAP = '0';
+    getHeapStatisticsMock.mockReturnValue({ heap_size_limit: 512 * 1024 * 1024 });
+
+    const { analyzeCommand } = await import('../../src/cli/analyze.js');
+    await analyzeCommand('/__gitnexus_nonexistent__', {});
+
+    expect(spawnMock).not.toHaveBeenCalled();
+  });
+
+  it('an explicit per-invocation execArgv heap flag always wins (no respawn)', async () => {
+    delete process.env.NODE_OPTIONS;
+    getHeapStatisticsMock.mockReturnValue({ heap_size_limit: 512 * 1024 * 1024 });
+    const execArgvDesc = Object.getOwnPropertyDescriptor(process, 'execArgv');
+    Object.defineProperty(process, 'execArgv', {
+      configurable: true,
+      value: ['--max-old-space-size=2048'],
+    });
+    try {
+      const { analyzeCommand } = await import('../../src/cli/analyze.js');
+      await analyzeCommand('/__gitnexus_nonexistent__', {});
+      expect(spawnMock).not.toHaveBeenCalled();
+    } finally {
+      if (execArgvDesc) Object.defineProperty(process, 'execArgv', execArgvDesc);
+    }
+  });
+
+  it('does not replay --inspect flags into the respawned child (debug-port clash)', async () => {
+    delete process.env.NODE_OPTIONS;
+    getHeapStatisticsMock.mockReturnValue({ heap_size_limit: 512 * 1024 * 1024 });
+    mockSpawnExit();
+    const execArgvDesc = Object.getOwnPropertyDescriptor(process, 'execArgv');
+    Object.defineProperty(process, 'execArgv', {
+      configurable: true,
+      value: ['--inspect', '--inspect-brk=9230', '--enable-source-maps'],
+    });
+    try {
+      const { analyzeCommand } = await import('../../src/cli/analyze.js');
+      await analyzeCommand(undefined, {});
+      expect(spawnMock).toHaveBeenCalledTimes(1);
+      const [, args] = spawnMock.mock.calls[0];
+      expect({
+        inspectFlags: args.filter((a: string) => a.startsWith('--inspect')),
+        keepsOtherFlags: args.includes('--enable-source-maps'),
+      }).toEqual({ inspectFlags: [], keepsOtherFlags: true });
+    } finally {
+      if (execArgvDesc) Object.defineProperty(process, 'execArgv', execArgvDesc);
+    }
   });
 
   it('prints heap guidance when respawned analyze exits with likely OOM', async () => {

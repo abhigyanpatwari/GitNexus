@@ -1,5 +1,6 @@
 import { Worker } from 'node:worker_threads';
 import os from 'node:os';
+import { effectiveRamBytes } from '../utils/effective-ram.js';
 import fs from 'node:fs';
 import { fileURLToPath } from 'node:url';
 
@@ -949,7 +950,7 @@ const HEARTBEAT_STALL_FLOOR_MS = 100;
  *  the timeout is credited and re-armed instead of acted on. */
 const STALL_CREDIT_FRACTION = 0.5;
 
-function startHeartbeatStallTracker(): { read: () => number; stop: () => void } {
+export function startHeartbeatStallTracker(): { read: () => number; stop: () => void } {
   let totalStallMs = 0;
   let last = Date.now();
   const handle = setInterval(() => {
@@ -975,7 +976,7 @@ function startHeartbeatStallTracker(): { read: () => number; stop: () => void } 
 export function resolveWorkerHeapCapMb(poolSize: number): number {
   return (
     positiveInteger(process.env.GITNEXUS_WORKER_HEAP_MB) ??
-    Math.min(4096, Math.max(512, Math.floor(os.totalmem() / (1024 * 1024) / 2 / poolSize)))
+    Math.min(4096, Math.max(512, Math.floor(effectiveRamBytes() / (1024 * 1024) / 2 / poolSize)))
   );
 }
 
@@ -2161,10 +2162,17 @@ export const createWorkerPool = (
             // the `{type:'error'}` message, the event delivers a real Error whose
             // `.stack` is the worker-side frame — carry it so the surfaced reason
             // points at the actual failure site, not just `err.message` (#2068).
-            void recoverAndResume(
-              workerErrorReason(workerIndex, err.message, err.stack),
-              resolveExcludePaths(),
-            );
+            // A worker dying on ITS OWN heap cap (#2649) must be attributable to
+            // that cap, not read as generic quarantine noise — name the cap and
+            // its override so an oversized-but-legitimate file (e.g. under a
+            // raised GITNEXUS_MAX_FILE_SIZE) is a one-env-var fix.
+            const isWorkerHeapOom =
+              (err as NodeJS.ErrnoException).code === 'ERR_WORKER_OUT_OF_MEMORY' ||
+              err.message.includes('ERR_WORKER_OUT_OF_MEMORY');
+            const reason = isWorkerHeapOom
+              ? `${workerErrorReason(workerIndex, err.message, err.stack)} (worker hit its ${workerHeapCapMb}MB heap cap — raise with GITNEXUS_WORKER_HEAP_MB)`
+              : workerErrorReason(workerIndex, err.message, err.stack);
+            void recoverAndResume(reason, resolveExcludePaths());
           }
         };
 

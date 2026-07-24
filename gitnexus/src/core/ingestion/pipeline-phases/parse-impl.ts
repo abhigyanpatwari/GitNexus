@@ -95,7 +95,7 @@ import {
 import type { KnowledgeGraph } from '../../graph/types.js';
 import type { PipelineOptions } from '../pipeline.js';
 import fs from 'node:fs';
-import os from 'node:os';
+import { effectiveRamBytes } from '../utils/effective-ram.js';
 import path from 'node:path';
 import v8 from 'node:v8';
 import { fileURLToPath, pathToFileURL } from 'node:url';
@@ -161,16 +161,19 @@ export function shouldAbortForHeapPressure(
  * Escape hatches (GITNEXUS_HEAP_GUARD etc.) stay in the README env table.
  */
 export function heapPressureRemedy(heapLimitBytes: number): string {
-  const autoCapBytes = os.totalmem() * 0.75;
+  // Effective RAM honors a real cgroup limit — raw os.totalmem() told users
+  // inside an 8GB-limited container on a 64GB host that "this machine has
+  // more memory available", an advice loop with no exit (#2649 review).
+  const autoCapBytes = effectiveRamBytes() * 0.75;
   if (heapLimitBytes < autoCapBytes * 0.9) {
     return (
       `This machine has more memory available: re-run without the --max-old-space-size ` +
-      `pin in NODE_OPTIONS — gitnexus sizes its heap to the machine automatically.`
+      `pin (NODE_OPTIONS or node flag) — gitnexus sizes its heap to the machine automatically.`
     );
   }
   return (
     `This machine is at its memory ceiling: exclude generated or vendored directories ` +
-    `via .gitnexusignore, or analyze on a machine with more RAM.`
+    `via .gitnexusignore, or analyze on a machine with more memory.`
   );
 }
 
