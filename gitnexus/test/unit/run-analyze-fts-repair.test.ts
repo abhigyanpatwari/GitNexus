@@ -527,6 +527,78 @@ describe('runFullAnalysis FTS repair and verification failure paths', () => {
     }
   });
 
+  it('ABORTS (throws before publish, leaves the previous index intact) on an FTS integrity failure on the atomic-swap path (#2658 review M1)', async () => {
+    // The single-writer lock rules out a concurrent-writer race, so an
+    // integrity-class FTS failure on the atomic-swap (--force) path is a real
+    // broken build: run-analyze must throw BEFORE swapping the staging DB in,
+    // leaving the previous live index untouched — not silently publish a
+    // search-less index as success. This end-to-end throw path was previously
+    // untested (only the ftsFailureIsFatal truth table was).
+    vi.doMock('../../src/core/lbug/lbug-adapter.js', () => ({
+      initLbug: vi.fn(async () => undefined),
+      loadGraphToLbug: vi.fn(async () => undefined),
+      getLbugStats: vi.fn(async () => ({ nodes: 0, edges: 0, communities: 0, processes: 0 })),
+      executeQuery: vi.fn(async () => []),
+      executeWithReusedStatement: vi.fn(async () => []),
+      closeLbug: vi.fn(async () => undefined),
+      wipeLbugDbFiles: vi.fn(async () => undefined),
+      loadCachedEmbeddings: vi.fn(async () => ({ embeddingNodeIds: new Set(), embeddings: [] })),
+      deleteNodesForFile: vi.fn(async () => undefined),
+      deleteNodesForFiles: vi.fn(async () => undefined),
+      deleteAllCommunitiesAndProcesses: vi.fn(async () => undefined),
+      queryImporters: vi.fn(async () => []),
+      queryImportersBatch: vi.fn(async () => []),
+      loadFTSExtension: vi.fn(async () => true),
+    }));
+    // Import the REAL classifier/predicate (not a re-stub) so the test pins the
+    // actual fatal-decision logic, per the #2658 review.
+    vi.doMock('../../src/core/search/fts-indexes.js', async () => {
+      const actual =
+        await vi.importActual<typeof import('../../src/core/search/fts-indexes.js')>(
+          '../../src/core/search/fts-indexes.js',
+        );
+      return {
+        ...actual,
+        initialiseSearchFTSStemmer: vi.fn(() => 'porter'),
+        buildSearchIndexesOrDegrade: vi.fn(async () => ({
+          ok: false,
+          failureClass: 'integrity' as const,
+          error: 'IO exception: Error renaming lbug.staging.wal to checkpoint',
+        })),
+      };
+    });
+    vi.doMock('../../src/core/ingestion/pipeline.js', () => ({
+      runPipelineFromRepo: vi.fn(async (repoPath: string) => ({
+        repoPath,
+        graph: { forEachNode: () => undefined },
+      })),
+    }));
+
+    const tmpRepo = await createTempDir('gitnexus-run-analyze-integrity-abort-');
+    try {
+      const { storagePath, lbugPath } = getStoragePaths(tmpRepo.dbPath);
+      await fs.mkdir(storagePath, { recursive: true });
+      // A pre-existing "previous index" that must survive the aborted rebuild.
+      await createPlaceholderGraphStore(lbugPath);
+      const before = await fs.readFile(lbugPath);
+
+      const { runFullAnalysis } = await import('../../src/core/run-analyze.js');
+      const message = await runFullAnalysis(
+        tmpRepo.dbPath,
+        { force: true },
+        { onProgress: () => {}, onLog: () => {} },
+      ).catch((e: unknown) => (e instanceof Error ? e.message : String(e)));
+
+      expect(message).toMatch(/integrity error/i);
+      expect(message).toMatch(/aborted|previous index is\s+left intact/i);
+      // The previous index bytes are untouched (throw happened before the swap).
+      const after = await fs.readFile(lbugPath);
+      expect(after.equals(before)).toBe(true);
+    } finally {
+      await tmpRepo.cleanup();
+    }
+  });
+
   it('full analyze degrades gracefully (no throw, warns, skips index creation) when FTS extension is unavailable', async () => {
     // Offline-first degradation: when loadFTSExtension() returns false, the
     // analyze path must NOT call createSearchFTSIndexes / verifySearchFTSIndexes
