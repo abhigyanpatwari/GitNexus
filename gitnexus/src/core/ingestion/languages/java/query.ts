@@ -55,6 +55,7 @@ const JAVA_SCOPE_QUERY = `
 
 (method_declaration) @scope.function
 (constructor_declaration) @scope.function
+(compact_constructor_declaration) @scope.function
 
 ;; Declarations — types
 (class_declaration

@@ -20,9 +20,10 @@ import {
   recordClassAnnotationCapture,
 } from '../../frameworks/spring/bean-candidates.js';
 import {
+  javaLocalTypeDeclarationContainer,
   nodeIfType,
   nodeToCapture,
-  synthesizeJavaAnonymousClassName,
+  synthesizeJavaTypeIdentity,
   syntheticCapture,
 } from '../../utils/ast-helpers.js';
 import { splitImportDeclaration } from './import-decomposer.js';
@@ -46,7 +47,11 @@ import { captureJavaSpringDiClassFact, type JavaSpringDiClassFact } from './spri
 const FUNCTION_DECL_TAGS = ['@declaration.method', '@declaration.constructor'] as const;
 
 /** tree-sitter-java node types that the method extractor accepts. */
-const FUNCTION_NODE_TYPES = ['method_declaration', 'constructor_declaration'] as const;
+const FUNCTION_NODE_TYPES = [
+  'method_declaration',
+  'constructor_declaration',
+  'compact_constructor_declaration',
+] as const;
 
 const JAVA_CALLABLE_CAPTURE_OPTIONS = {
   functionNodeTypes: new Set([...FUNCTION_NODE_TYPES, 'lambda_expression']),
@@ -66,6 +71,26 @@ const JAVA_CALLABLE_CAPTURE_OPTIONS = {
   callableProtocolMethods: new Set(['run', 'apply', 'accept', 'call']),
   normalizeQualifiedName: (raw: string) => raw.replaceAll('::', '.'),
 } as const;
+
+/** Visibility of a local type begins at its declaration and ends with its
+ * immediately enclosing block (JLS 6.3). A Java-only synthetic Block scope
+ * models that range without changing shared resolver selection semantics. */
+function javaLocalTypeVisibilityScope(node: SyntaxNode): CaptureMatch | undefined {
+  const container = javaLocalTypeDeclarationContainer(node);
+  if (container === null) return undefined;
+  return {
+    '@scope.block': {
+      name: '@scope.block',
+      range: {
+        startLine: node.startPosition.row + 1,
+        startCol: node.startPosition.column,
+        endLine: container.endPosition.row + 1,
+        endCol: container.endPosition.column,
+      },
+      text: node.text,
+    },
+  };
+}
 
 /** Suppress read.member emissions when the field_access is already
  *  covered by a method_invocation (object of a call) or an
@@ -134,6 +159,29 @@ export function emitJavaScopeCaptures(
     if (annotatedClass !== undefined && annotationName !== undefined) {
       recordClassAnnotationCapture(classAnnotations, filePath, annotatedClass, annotationName.text);
       continue;
+    }
+
+    const typeDeclaration = [
+      nodeMap['@declaration.class'],
+      nodeMap['@declaration.enum'],
+      nodeMap['@declaration.record'],
+      nodeMap['@declaration.interface'],
+    ].find((node): node is SyntaxNode => node !== undefined);
+    const localTypeIdentity =
+      typeDeclaration === undefined ? undefined : synthesizeJavaTypeIdentity(typeDeclaration);
+    if (
+      localTypeIdentity?.bindingName !== undefined &&
+      grouped['@declaration.name'] !== undefined &&
+      typeDeclaration !== undefined
+    ) {
+      grouped['@declaration.binding-name'] = grouped['@declaration.name'];
+      grouped['@declaration.name'] = syntheticCapture(
+        '@declaration.name',
+        typeDeclaration,
+        localTypeIdentity.name,
+      );
+      const visibilityScope = javaLocalTypeVisibilityScope(typeDeclaration);
+      if (visibilityScope !== undefined) out.push(visibilityScope);
     }
 
     // Decompose each `import_declaration`. `@import.statement` is captured
@@ -312,8 +360,8 @@ export function emitJavaScopeCaptures(
 
 /**
  * Synthesize `@declaration.class` matches for anonymous class bodies
- * (`new Runnable() { ... }`), named by the same javac-style authority
- * (`synthesizeJavaAnonymousClassName` → `Worker$N`) the structure phase
+ * (`new Runnable() { ... }`), named by the same javac-compatible authority
+ * (`synthesizeJavaTypeIdentity` → `Worker$N`) the structure phase
  * uses — the two layers agree by construction (#2550).
  *
  * The anchor is the `class_body` node: it shares its range with the
@@ -326,13 +374,13 @@ export function emitJavaScopeCaptures(
 function synthesizeJavaAnonymousClassDeclarations(rootNode: SyntaxNode): CaptureMatch[] {
   const out: CaptureMatch[] = [];
   for (const oce of rootNode.descendantsOfType('object_creation_expression')) {
-    const name = synthesizeJavaAnonymousClassName(oce);
-    if (name === undefined) continue;
+    const identity = synthesizeJavaTypeIdentity(oce);
+    if (identity === undefined) continue;
     const body = oce.namedChildren.find((c) => c.type === 'class_body');
     if (body === undefined) continue;
     out.push({
       '@declaration.class': nodeToCapture('@declaration.class', body),
-      '@declaration.name': syntheticCapture('@declaration.name', body, name),
+      '@declaration.name': syntheticCapture('@declaration.name', body, identity.name),
     });
 
     // Inheritance: the anonymous class extends/implements its constructed
@@ -373,7 +421,7 @@ function synthesizeJavaAnonymousClassDeclarations(rootNode: SyntaxNode): Capture
         out.push({
           '@type-binding.annotation': nodeToCapture('@type-binding.annotation', declNode),
           '@type-binding.name': nodeToCapture('@type-binding.name', varName),
-          '@type-binding.type': syntheticCapture('@type-binding.type', oce, name),
+          '@type-binding.type': syntheticCapture('@type-binding.type', oce, identity.name),
         });
       }
     }
@@ -389,11 +437,11 @@ function synthesizeJavaAnonymousClassDeclarations(rootNode: SyntaxNode): Capture
     const hostEnum = javaEnclosingEnumNameOf(constant);
     const bodyNode = constant.childForFieldName?.('body');
     const isBodied = bodyNode !== null && bodyNode !== undefined && bodyNode.type === 'class_body';
-    const bodiedName = synthesizeJavaAnonymousClassName(constant);
-    if (bodiedName !== undefined && isBodied) {
+    const bodiedIdentity = synthesizeJavaTypeIdentity(constant);
+    if (bodiedIdentity !== undefined && isBodied) {
       out.push({
         '@declaration.class': nodeToCapture('@declaration.class', bodyNode),
-        '@declaration.name': syntheticCapture('@declaration.name', bodyNode, bodiedName),
+        '@declaration.name': syntheticCapture('@declaration.name', bodyNode, bodiedIdentity.name),
       });
       if (hostEnum !== undefined) {
         out.push({
@@ -421,7 +469,7 @@ function synthesizeJavaAnonymousClassDeclarations(rootNode: SyntaxNode): Capture
     // the `object_creation_expression` branch, which skips on synthesis
     // failure. `hostEnum` is used only for genuinely body-less constants.
     const constantNameNode = constant.childForFieldName?.('name');
-    const constantType = isBodied ? bodiedName : hostEnum;
+    const constantType = isBodied ? bodiedIdentity?.name : hostEnum;
     if (constantNameNode !== null && constantNameNode !== undefined && constantType !== undefined) {
       out.push({
         '@type-binding.annotation': nodeToCapture('@type-binding.annotation', constant),
