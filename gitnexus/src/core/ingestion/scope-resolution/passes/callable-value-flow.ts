@@ -128,18 +128,14 @@ function warningContext(filePath: string, site: CallableFlowSite): string {
   let range: { readonly startLine: number; readonly startCol: number };
   switch (site.kind) {
     case 'seed':
-      range = site.destination.atRange;
-      break;
     case 'copy':
     case 'alias':
     case 'address':
+    case 'load':
       range = site.destination.atRange;
       break;
     case 'store':
       range = site.pointer.atRange;
-      break;
-    case 'load':
-      range = site.destination.atRange;
       break;
     case 'formal':
       range = site.ownerRange;

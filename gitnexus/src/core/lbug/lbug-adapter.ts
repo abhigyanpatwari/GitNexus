@@ -2495,34 +2495,40 @@ export const queryImportersBatch = async (
 };
 
 /**
- * Drop every Community and Process node (and their MEMBER_OF /
- * STEP_IN_PROCESS edges via DETACH DELETE). Used at the start of an
- * incremental run so the communities and processes phases regenerate
- * them from scratch on the merged graph — required for the
- * "Leiden runs on the FULL graph" correctness invariant.
+ * Shared mechanics for the delete-all-nodes-by-label family
+ * ({@link deleteAllCommunitiesAndProcesses}, {@link deleteAllExternalNodes}).
+ * For each label: count matching nodes, then `DETACH DELETE` them if any.
+ * The whole loop runs inside `withConnLock` so it cannot execute concurrently
+ * with the WAL-checkpoint driver's CHECKPOINT on the singleton connection
+ * (this runs during incremental --pdg writeback while the driver is live;
+ * mirrors the wrapped deleteAllInterprocTaintPaths / deleteAllCallSummaries).
+ * A missing table on a freshly-initialized DB is swallowed — it simply holds
+ * no rows to delete.
+ *
+ * `labels` are pre-formatted label tokens (the caller decides backticking).
+ * `filter` is an optional Cypher predicate on the bound node `n`
+ * (e.g. `WHERE n.locationFidelity = 'external'`); omitted → delete all rows.
  */
-export const deleteAllCommunitiesAndProcesses = async (): Promise<{
-  nodesDeleted: number;
-}> => {
+const deleteAllNodesByLabels = async (
+  labels: readonly string[],
+  filter = '',
+): Promise<{ nodesDeleted: number }> => {
   const c = conn;
   if (!c) {
     throw new Error('LadybugDB not initialized. Call initLbug first.');
   }
-  // count + DETACH DELETE run inside the connection lock so they cannot execute
-  // concurrently with the WAL-checkpoint driver's CHECKPOINT on the singleton
-  // connection. This runs during incremental --pdg writeback while the driver is
-  // live; mirrors the wrapped deleteAllInterprocTaintPaths / deleteAllCallSummaries.
+  const clause = filter ? ` ${filter}` : '';
   return withConnLock(async () => {
     let nodesDeleted = 0;
-    for (const label of ['Community', 'Process']) {
+    for (const label of labels) {
       let countResult: lbug.QueryResult | lbug.QueryResult[] | undefined;
       try {
-        countResult = await c.query(`MATCH (n:${label}) RETURN count(n) AS cnt`);
+        countResult = await c.query(`MATCH (n:${label})${clause} RETURN count(n) AS cnt`);
         const result = Array.isArray(countResult) ? countResult[0] : countResult;
         const rows = await result.getAll();
         const count = Number(rows[0]?.cnt ?? rows[0]?.[0] ?? 0);
         if (count > 0) {
-          await closeQueryResults(await c.query(`MATCH (n:${label}) DETACH DELETE n`));
+          await closeQueryResults(await c.query(`MATCH (n:${label})${clause} DETACH DELETE n`));
           nodesDeleted += count;
         }
       } catch {
@@ -2534,6 +2540,17 @@ export const deleteAllCommunitiesAndProcesses = async (): Promise<{
     return { nodesDeleted };
   });
 };
+
+/**
+ * Drop every Community and Process node (and their MEMBER_OF /
+ * STEP_IN_PROCESS edges via DETACH DELETE). Used at the start of an
+ * incremental run so the communities and processes phases regenerate
+ * them from scratch on the merged graph — required for the
+ * "Leiden runs on the FULL graph" correctness invariant.
+ */
+export const deleteAllCommunitiesAndProcesses = async (): Promise<{
+  nodesDeleted: number;
+}> => deleteAllNodesByLabels(['Community', 'Process']);
 
 /**
  * Node tables that can hold externally-declared dependency symbols
@@ -2553,36 +2570,15 @@ const EXTERNAL_NODE_TABLES = ['Module', 'Function', 'Type'] as const;
  * their edges — same contract as Community/Process. Crash-recovery matches
  * INJECTS: delete-then-COPY is not atomic, and the `incrementalInProgress`
  * dirty flag forces a full rebuild if we die between them.
+ *
+ * Every external label is backticked unconditionally: `Type` is quoted at
+ * CREATE but absent from BACKTICK_TABLES.
  */
-export const deleteAllExternalNodes = async (): Promise<{ nodesDeleted: number }> => {
-  const c = conn;
-  if (!c) {
-    throw new Error('LadybugDB not initialized. Call initLbug first.');
-  }
-  return withConnLock(async () => {
-    let nodesDeleted = 0;
-    for (const table of EXTERNAL_NODE_TABLES) {
-      const label = `\`${table}\``; // unconditional: 'Type' is quoted at CREATE but not in BACKTICK_TABLES
-      const filter = `WHERE n.locationFidelity = 'external'`;
-      let countResult: lbug.QueryResult | lbug.QueryResult[] | undefined;
-      try {
-        countResult = await c.query(`MATCH (n:${label}) ${filter} RETURN count(n) AS cnt`);
-        const result = Array.isArray(countResult) ? countResult[0] : countResult;
-        const rows = await result.getAll();
-        const count = Number(rows[0]?.cnt ?? rows[0]?.[0] ?? 0);
-        if (count > 0) {
-          await closeQueryResults(await c.query(`MATCH (n:${label}) ${filter} DETACH DELETE n`));
-          nodesDeleted += count;
-        }
-      } catch {
-        // Table may not exist yet on a freshly-initialized DB — fine.
-      } finally {
-        if (countResult) await closeQueryResults(countResult);
-      }
-    }
-    return { nodesDeleted };
-  });
-};
+export const deleteAllExternalNodes = async (): Promise<{ nodesDeleted: number }> =>
+  deleteAllNodesByLabels(
+    EXTERNAL_NODE_TABLES.map((t) => `\`${t}\``),
+    `WHERE n.locationFidelity = 'external'`,
+  );
 
 /**
  * Shared mechanics for the delete-all-relationships-of-one-type family

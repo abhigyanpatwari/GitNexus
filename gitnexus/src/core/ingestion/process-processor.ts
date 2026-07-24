@@ -143,9 +143,10 @@ export const processProcesses = async (
   // longer traces within each tier.
   const limitedTraces = endpointDeduped
     .sort(
-      (a, b) =>
-        Number(explicitEntryPointIds.has(b[0])) - Number(explicitEntryPointIds.has(a[0])) ||
-        b.length - a.length,
+      explicitFirst(
+        (trace) => explicitEntryPointIds.has(trace[0]),
+        (a, b) => b.length - a.length,
+      ),
     )
     .slice(0, cfg.maxProcesses);
 
@@ -266,6 +267,24 @@ const buildReverseCallsGraph = (graph: KnowledgeGraph): AdjacencyList => {
   return adj;
 };
 
+/** IDs of nodes carrying a pre-phase ENTRY_POINT_OF edge (compiler-backed
+ *  runtime/API roots — e.g. Move entry/view functions). */
+function collectExplicitEntryPointIds(graph: KnowledgeGraph): Set<string> {
+  const ids = new Set<string>();
+  for (const rel of graph.iterRelationshipsByType('ENTRY_POINT_OF')) ids.add(rel.sourceId);
+  return ids;
+}
+
+/** Global cap on heuristic (non-explicit) entry points, to prevent explosion
+ *  on large polyglot repos. Explicit graph roots are exempt and counted first. */
+const HEURISTIC_ENTRY_POINT_BUDGET = 200;
+
+/** Comparator combinator: explicit items first, then a secondary order. */
+const explicitFirst =
+  <T>(isExplicit: (item: T) => boolean, then: (a: T, b: T) => number) =>
+  (a: T, b: T): number =>
+    Number(isExplicit(b)) - Number(isExplicit(a)) || then(a, b);
+
 /**
  * Find functions/methods that are good entry points for tracing.
  *
@@ -276,12 +295,6 @@ const buildReverseCallsGraph = (graph: KnowledgeGraph): AdjacencyList => {
  *
  * Test files are excluded entirely.
  */
-function collectExplicitEntryPointIds(graph: KnowledgeGraph): Set<string> {
-  const ids = new Set<string>();
-  for (const rel of graph.iterRelationshipsByType('ENTRY_POINT_OF')) ids.add(rel.sourceId);
-  return ids;
-}
-
 const findEntryPoints = (
   graph: KnowledgeGraph,
   reverseCallsEdges: AdjacencyList,
@@ -342,7 +355,10 @@ const findEntryPoints = (
 
   // Known graph entry points form a priority tier ahead of heuristic scoring.
   const sorted = entryPointCandidates.sort(
-    (a, b) => Number(b.explicit) - Number(a.explicit) || b.score - a.score,
+    explicitFirst(
+      (candidate) => candidate.explicit,
+      (a, b) => b.score - a.score,
+    ),
   );
 
   // DEBUG: Log top candidates with new scoring details
@@ -360,7 +376,7 @@ const findEntryPoints = (
   const explicit = sorted.filter((candidate) => candidate.explicit);
   const heuristic = sorted
     .filter((candidate) => !candidate.explicit)
-    .slice(0, Math.max(0, 200 - explicit.length));
+    .slice(0, Math.max(0, HEURISTIC_ENTRY_POINT_BUDGET - explicit.length));
   return [...explicit, ...heuristic].map((candidate) => candidate.id);
 };
 

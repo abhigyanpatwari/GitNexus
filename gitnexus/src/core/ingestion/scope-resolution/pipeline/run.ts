@@ -82,6 +82,7 @@ import {
   callableFlowSiteKey,
   collectDeferredIndirectSites,
   emitCallableValueFlow,
+  type CallableValueFlowWarning,
 } from '../passes/callable-value-flow.js';
 import type { ScopeResolver } from '../contract/scope-resolver.js';
 import { findEnclosingClassDef, resolveInheritanceBaseInScope } from '../scope/walkers.js';
@@ -103,6 +104,26 @@ export function formatScopeResolutionWarningContext(context: string): string {
   const escaped = JSON.stringify(context).slice(1, -1);
   if (escaped.length <= MAX_PROGRESS_WARNING_CONTEXT_CHARS) return escaped;
   return `${escaped.slice(0, MAX_PROGRESS_WARNING_CONTEXT_CHARS - 3)}...`;
+}
+
+/** One-line progress warning for property-dispatch fan-out drops. */
+function formatPropertyDispatchProgress(
+  language: string,
+  skippedKeys: number,
+  fanoutCap: number,
+  skippedKeyNames: readonly string[],
+): string {
+  return `  Warning: property dispatch (${language}) skipped ${skippedKeys} key(s) above fan-out cap ${fanoutCap}; no CALLS were synthesized. Sample: ${skippedKeyNames
+    .slice(0, 5)
+    .join(', ')}`;
+}
+
+/** One-line progress warning for callable-value-flow candidate-set overflows. */
+function formatCallableValueFlowProgress(warning: CallableValueFlowWarning): string {
+  return `  Warning: callable value flow (${warning.language}) skipped ${warning.occurrences} candidate set(s) across ${warning.distinctContexts} context(s) above cap ${warning.cap}; no partial CALLS were emitted. Sample: ${warning.contextSamples
+    .slice(0, 2)
+    .map(formatScopeResolutionWarningContext)
+    .join(', ')}`;
 }
 
 /**
@@ -916,11 +937,12 @@ export function runScopeResolution(
         fanoutCap: MAX_PROPERTY_DISPATCH_FANOUT,
       },
       'property-dispatch: keys over the fan-out cap were dropped (no CALLS synthesized for them)',
-      `  Warning: property dispatch (${provider.language}) skipped ${
-        propertyDispatch.skippedKeys
-      } key(s) above fan-out cap ${MAX_PROPERTY_DISPATCH_FANOUT}; no CALLS were synthesized. Sample: ${propertyDispatch.skippedKeyNames
-        .slice(0, 5)
-        .join(', ')}`,
+      formatPropertyDispatchProgress(
+        provider.language,
+        propertyDispatch.skippedKeys,
+        MAX_PROPERTY_DISPATCH_FANOUT,
+        propertyDispatch.skippedKeyNames,
+      ),
     );
   }
   const callableValueFlow =
@@ -946,10 +968,7 @@ export function runScopeResolution(
             emitScopeResolutionWarning(
               warning,
               'callable-value-flow: candidate set exceeded the cap; grouped occurrences emitted no partial CALLS',
-              `  Warning: callable value flow (${warning.language}) skipped ${warning.occurrences} candidate set(s) across ${warning.distinctContexts} context(s) above cap ${warning.cap}; no partial CALLS were emitted. Sample: ${warning.contextSamples
-                .slice(0, 2)
-                .map(formatScopeResolutionWarningContext)
-                .join(', ')}`,
+              formatCallableValueFlowProgress(warning),
             ),
         });
   const importsEmitted = callableFlowOnly
