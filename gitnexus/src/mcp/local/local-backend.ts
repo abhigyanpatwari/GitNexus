@@ -4320,7 +4320,29 @@ export class LocalBackend {
             ? 'high'
             : 'critical';
 
+    // #2680 — risk here is a pure function of affected PROCESS count, and an
+    // index built with streamed graph emit has no Process rows at all. The
+    // STEP_IN_PROCESS query then succeeds with zero rows, so `queryDegraded`
+    // stays false and this returns risk_level 'low' with no `partial` marker for
+    // EVERY change — a false-clean on the gate this repo mandates before every
+    // commit, which is exactly what #2283 ruled out. Disclose it.
+    let dcGraphPhasesSkipped = false;
+    try {
+      const dcMeta = await loadMeta(path.dirname(repo.lbugPath));
+      dcGraphPhasesSkipped = dcMeta?.graphPhases === 'skipped';
+    } catch {
+      // Unreadable meta ⇒ assume complete, i.e. pre-#2680 behaviour.
+    }
+
     return {
+      ...(dcGraphPhasesSkipped && {
+        riskUnderstated: true,
+        riskNote:
+          'This index was built with streamed graph emit (GITNEXUS_STREAM_GRAPH_EMIT) and contains ' +
+          'no processes, so affected_processes is empty and risk_level is derived from a count that ' +
+          'is structurally zero — treat it as a LOWER BOUND, not a clean bill of health. Re-run ' +
+          '`gitnexus analyze --force` without that flag for a real assessment.',
+      }),
       summary: {
         changed_count: changedSymbols.length,
         affected_count: processCount,

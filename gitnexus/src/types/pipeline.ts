@@ -3,7 +3,7 @@ import { CommunityDetectionResult } from '../core/ingestion/community-processor.
 import { ProcessDetectionResult } from '../core/ingestion/process-processor.js';
 import type { ResolutionOutcome } from '../core/ingestion/scope-resolution/resolution-outcome.js';
 import type { PdgEmitManifest } from '../core/lbug/pdg-emit-sink.js';
-import type { GraphEmitManifest, GraphEmitSink } from '../core/lbug/graph-emit-sink.js';
+import type { GraphEmitManifest } from '../core/lbug/graph-emit-sink.js';
 
 // CLI-specific: in-memory result with graph + detection results
 export interface PipelineResult {
@@ -45,10 +45,4 @@ export interface PipelineResult {
    * additional COPY jobs, not map entries).
    */
   graphEmitManifest?: GraphEmitManifest;
-  /**
-   * The sink itself, when streaming was active — the local-symbol pruner needs
-   * its `hasStreamedSemanticEdge` predicate, and `run-analyze` needs it to size
-   * the buffer pool from the true COPY volume.
-   */
-  graphEmitSink?: GraphEmitSink;
 }

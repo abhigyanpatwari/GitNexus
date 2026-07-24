@@ -403,7 +403,6 @@ export const runPipelineFromRepo = async (
     repoPath,
     totalFileCount: totalFiles,
     graphEmitManifest,
-    graphEmitSink,
     communityResult,
     processResult,
     resolutionOutcomes,
