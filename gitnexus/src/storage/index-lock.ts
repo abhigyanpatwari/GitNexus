@@ -55,6 +55,7 @@ import {
   existsSync,
   mkdirSync,
   readdirSync,
+  realpathSync,
 } from 'node:fs';
 import net from 'node:net';
 import path from 'node:path';
@@ -400,6 +401,14 @@ const acquireViaFile = async (
       } finally {
         closeSync(fd);
       }
+      // Read-back verify (#2658 review L5): if this process stalled (a >graceMs
+      // GC pause) between the O_EXCL create of the *empty* file and the write
+      // above, a waiter could have reclaimed the empty file (renamed it aside)
+      // and O_EXCL-created its own lock at `lockPath`. Our write then landed on
+      // the renamed-aside inode, not `lockPath`. Confirm `lockPath` still carries
+      // our token before claiming ownership; if it was stolen, contend normally.
+      const confirmed = readRecord(lockPath);
+      if (!confirmed || confirmed.token !== me.token) continue;
       return {
         record: me,
         release: () => {
@@ -494,15 +503,41 @@ class SocketLockUnavailable extends Error {
 }
 
 /**
+ * Canonicalize a path to its real filesystem identity so lexical aliases of the
+ * same directory (a symlink, a bind-mount path, a Windows junction, a `\\?\`
+ * prefix) map to ONE name (#2658 review H1). `lockDir` (the index slot) often
+ * does not exist yet, so `realpathSync` the deepest existing ancestor and
+ * re-append the not-yet-created remainder. A path with no symlink components
+ * realpaths to itself, so the common (non-aliased) case is unchanged — a holder
+ * that used the old resolved name is never orphaned.
+ */
+const canonicalizeDir = (p: string): string => {
+  const resolved = path.resolve(p);
+  const tail: string[] = [];
+  let dir = resolved;
+  for (;;) {
+    try {
+      const real = realpathSync(dir);
+      return tail.length ? path.join(real, ...tail.reverse()) : real;
+    } catch {
+      const parent = path.dirname(dir);
+      if (parent === dir) return resolved; // reached the root with nothing to resolve
+      tail.push(path.basename(dir));
+      dir = parent;
+    }
+  }
+};
+
+/**
  * Stable OS-IPC endpoint name for an index directory. The name is derived from
- * the resolved absolute path (case-folded on Windows), so two processes
- * targeting the same slot collide and separate worktrees/branches never do. The
- * endpoint lives OUTSIDE the index directory (abstract namespace / pipe
- * namespace), so the lock needs no filesystem write and is unaffected by a
- * read-only index mount.
+ * the REAL path (case-folded on Windows), so two processes targeting the same
+ * physical slot — even via different lexical aliases — collide, and separate
+ * worktrees/branches never do. The endpoint lives OUTSIDE the index directory
+ * (abstract namespace / pipe namespace), so the lock needs no filesystem write
+ * and is unaffected by a read-only index mount.
  */
 const socketLockName = (lockDir: string): string => {
-  const resolved = path.resolve(lockDir);
+  const resolved = canonicalizeDir(lockDir);
   const key = createHash('sha256')
     .update(process.platform === 'win32' ? resolved.toLowerCase() : resolved)
     .digest('hex')

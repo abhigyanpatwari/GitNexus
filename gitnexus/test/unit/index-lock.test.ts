@@ -9,7 +9,15 @@
  * test/integration/analyze-index-lock-concurrency.test.ts.
  */
 import { describe, it, expect, beforeEach, afterEach } from 'vitest';
-import { mkdtempSync, rmSync, writeFileSync, readFileSync, existsSync, chmodSync } from 'node:fs';
+import {
+  mkdtempSync,
+  rmSync,
+  writeFileSync,
+  readFileSync,
+  existsSync,
+  chmodSync,
+  symlinkSync,
+} from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import {
@@ -295,6 +303,24 @@ describe.skipIf(process.platform !== 'linux' && process.platform !== 'win32')(
         expect((err as IndexLockTimeoutError).message).not.toContain('pid -1');
       } finally {
         first.release();
+      }
+    });
+
+    it('excludes an acquire reaching the same physical dir via a symlink alias (#2658 review H1)', async () => {
+      // Pre-fix the endpoint name hashed the LEXICAL path, so `alias` (a symlink
+      // to `dir`) produced a different name and BOTH acquired — a double-writer.
+      // Post-fix both canonicalize to `dir`'s real path → one name → excluded.
+      const alias = mkdtempSync(path.join(os.tmpdir(), 'gnx-lock-aliasparent-'));
+      const aliasLink = path.join(alias, 'link');
+      symlinkSync(dir, aliasLink);
+      try {
+        const first = await acquireIndexLock(dir, { timeoutMs: 2000 });
+        await expect(
+          acquireIndexLock(aliasLink, { timeoutMs: 300, pollMs: 20 }),
+        ).rejects.toBeInstanceOf(IndexLockTimeoutError);
+        first.release();
+      } finally {
+        rmSync(alias, { recursive: true, force: true });
       }
     });
 
