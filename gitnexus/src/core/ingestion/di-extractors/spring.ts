@@ -51,13 +51,15 @@
  *   between `<` and the element) are NOT stripped and fail closed —
  *   acceptable.
  *
- * Registered under `SupportedLanguages.Java` in `./index.ts` (`DI_MATCHERS`);
- * language routing is the registry's job, so the matcher itself never reads
- * `node.properties.language`.
+ * Registered for Java and Kotlin in `./index.ts` (`DI_RESOLVERS`); language
+ * routing is the registry's job, so the matcher itself never reads
+ * `node.properties.language`. Kotlin's AST-backed class metadata is the
+ * primary path because Kotlin Property extraction intentionally exposes less
+ * annotation/type syntax than Java's legacy field contract.
  */
 
 import type { GraphNode } from 'gitnexus-shared';
-import type { DiFieldMatch, DiFieldMatcher } from './index.js';
+import type { DiInjectionMatch, DiProviderMatch, DiResolver } from './index.js';
 import { isDev } from '../utils/env.js';
 import { logger } from '../../logger.js';
 
@@ -83,6 +85,17 @@ const WILDCARD_SUPER_PREFIX = '? super ';
  *  parser accepts. Everything else (wildcards, arrays, comments, stray
  *  punctuation) fails closed. */
 const JAVA_TYPE_NAME_PATTERN = /^[A-Za-z_$][A-Za-z0-9_$]*(?:\.[A-Za-z_$][A-Za-z0-9_$]*)*$/;
+
+/** Ephemeral Class-node property populated by Java's post-resolution Spring
+ * metadata hook. It is consumed in the same pipeline run before persistence. */
+export const SPRING_DI_INJECTION_SITES_PROPERTY = 'springDiInjectionSites';
+
+/** Ephemeral Class-node property carrying Spring bean names / @Primary. */
+export const SPRING_DI_PROVIDER_PROPERTY = 'springDiProvider';
+
+/** Marker placed on Property nodes whose richer AST-backed field fact was
+ * attached to the owning Class, suppressing the legacy collection fallback. */
+export const SPRING_DI_CAPTURED_FIELD_PROPERTY = 'springDiCapturedField';
 
 /**
  * Split a generic-argument list on TOP-LEVEL commas only, tracking `<`/`>`
@@ -181,13 +194,33 @@ export function parseSpringCollectionType(
   return { collectionType: wrapper, elementTypeName };
 }
 
+/** Parse either a supported collect-all type or a standard single bean type. */
+export function parseSpringInjectionType(
+  rawDeclaredType: string,
+): { targetTypeName: string; cardinality: 'single' | 'collection'; displayType: string } | null {
+  const collection = parseSpringCollectionType(rawDeclaredType);
+  if (collection !== null) {
+    return {
+      targetTypeName: collection.elementTypeName,
+      cardinality: 'collection',
+      displayType: `${collection.collectionType}<${collection.elementTypeName}>`,
+    };
+  }
+
+  const normalized = rawDeclaredType.replace(/\s+/g, '').trim();
+  if (!JAVA_TYPE_NAME_PATTERN.test(normalized)) return null;
+  return { targetTypeName: normalized, cardinality: 'single', displayType: normalized };
+}
+
 /**
  * Match a `Property` node against Spring's collection-injection shape.
  *
  * Returns the parsed match (with a Spring-specific human-readable `reason`
  * payload) or `null` when the field is not container-injected.
  */
-export const springDiFieldMatcher: DiFieldMatcher = (node: GraphNode): DiFieldMatch | null => {
+export const springDiFieldMatcher = (
+  node: GraphNode,
+): { elementTypeName: string; reason: string } | null => {
   // Injection-annotation gate: only fields the container actually
   // injects (@Autowired / @Inject) are candidates. Plain collection
   // fields are never injected; @Resource is deliberately excluded
@@ -219,4 +252,63 @@ export const springDiFieldMatcher: DiFieldMatcher = (node: GraphNode): DiFieldMa
     // payload — never in the phase.
     reason: `Spring DI: ${matchedAnnotation} ${parsed.collectionType}<${parsed.elementTypeName}>`,
   };
+};
+
+function isInjectionMatch(value: unknown): value is DiInjectionMatch {
+  if (value === null || typeof value !== 'object') return false;
+  const match = value as Partial<DiInjectionMatch>;
+  const namedSelection = match.namedSelection;
+  return (
+    typeof match.targetTypeName === 'string' &&
+    (match.cardinality === 'single' || match.cardinality === 'collection') &&
+    typeof match.reason === 'string' &&
+    (namedSelection === undefined ||
+      (typeof namedSelection === 'object' &&
+        namedSelection !== null &&
+        typeof namedSelection.name === 'string' &&
+        typeof namedSelection.reason === 'string'))
+  );
+}
+
+function isProviderMatch(value: unknown): value is DiProviderMatch {
+  if (value === null || typeof value !== 'object') return false;
+  const provider = value as Partial<DiProviderMatch>;
+  return (
+    Array.isArray(provider.names) &&
+    provider.names.every((name) => typeof name === 'string') &&
+    (provider.preferenceReason === undefined || typeof provider.preferenceReason === 'string')
+  );
+}
+
+/** JVM/Spring resolver registered behind the framework-neutral DI seam. */
+export const springDiResolver: DiResolver = {
+  matchInjectionSites(node): readonly DiInjectionMatch[] {
+    const matches: DiInjectionMatch[] = [];
+
+    // Preserve the existing Property-node collection contract for hand-built
+    // graphs and for compatibility with pre-#2414 extraction fixtures.
+    if (node.label === 'Property' && node.properties[SPRING_DI_CAPTURED_FIELD_PROPERTY] !== true) {
+      const field = springDiFieldMatcher(node);
+      if (field !== null) {
+        matches.push({
+          targetTypeName: field.elementTypeName,
+          cardinality: 'collection',
+          reason: field.reason,
+        });
+      }
+    }
+
+    const attached = node.properties[SPRING_DI_INJECTION_SITES_PROPERTY];
+    if (Array.isArray(attached)) {
+      for (const candidate of attached) {
+        if (isInjectionMatch(candidate)) matches.push(candidate);
+      }
+    }
+    return matches;
+  },
+
+  matchProvider(node): DiProviderMatch | null {
+    const attached = node.properties[SPRING_DI_PROVIDER_PROPERTY];
+    return isProviderMatch(attached) ? attached : null;
+  },
 };
