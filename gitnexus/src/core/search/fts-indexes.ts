@@ -211,18 +211,23 @@ export type FtsBuildFailureClass = 'capability' | 'integrity';
 // to mention an integrity word still degrades (it isn't a broken build).
 const FTS_CAPABILITY_SIGNATURES = ['invalid utf-8', 'failed calling lower', 'tokeniz'] as const;
 // IO / durability / corruption signatures that mean the build itself broke.
+// Deliberately SPECIFIC (#2658 review L1): generic OS errors a capability/config
+// failure can also carry — bare 'no such file or directory' (ENOENT, e.g. a
+// missing FTS extension asset) and 'bad file descriptor'/'ebadf' — are NOT here,
+// so an ambiguous failure degrades (the pre-#2658 safe behavior) instead of
+// newly aborting the whole analyze. A genuine write/rename/checkpoint integrity
+// failure still matches via 'error renaming' / 'io exception' / 'checkpoint'
+// (the #2658 repro message "Error renaming … : No such file or directory" hits
+// both 'io exception' and 'error renaming').
 const FTS_INTEGRITY_SIGNATURES = [
   'io exception',
   'i/o error',
   'io error',
   'error renaming',
   'checkpoint',
-  'no such file or directory',
   'corrupt',
   'no space',
   'enospc',
-  'bad file descriptor',
-  'ebadf',
   'double free',
   'segmentation',
 ] as const;

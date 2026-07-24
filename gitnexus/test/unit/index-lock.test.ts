@@ -242,6 +242,20 @@ describe('classifyFtsBuildError', () => {
     expect(classifyFtsBuildError('missing indexes after build: File.name_fts')).toBe('capability');
   });
 
+  it('keeps a bare ENOENT / bad-fd as capability so it degrades, not aborts (#2658 review L1)', () => {
+    // A missing extension asset / closed handle reports a generic OS error; those
+    // must NOT escalate to an abort on the atomic-swap path. Only a specific
+    // write/rename/checkpoint failure is integrity.
+    expect(classifyFtsBuildError('ENOENT: no such file or directory, open fts.ext')).toBe(
+      'capability',
+    );
+    expect(classifyFtsBuildError('read failed: bad file descriptor (EBADF)')).toBe('capability');
+    // The genuine build-broke rename race is still integrity via 'error renaming'.
+    expect(
+      classifyFtsBuildError('Error renaming lbug.new.wal to checkpoint: No such file or directory'),
+    ).toBe('integrity');
+  });
+
   it('lets a row-level tokenizer error win even if it mentions an integrity word', () => {
     // A tokenizer error is a bad row, not a broken build — must still degrade.
     expect(classifyFtsBuildError('Invalid UTF-8 during io exception path')).toBe('capability');
