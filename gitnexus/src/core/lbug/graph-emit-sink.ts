@@ -25,10 +25,19 @@
  * heap and two scope-resolution index builders (`buildGraphNodeLookup`,
  * `buildGraphCallableAnchorIndex`) scan them.
  *
- * Retained share = 0.17 (nodes) + 0.83 * 0.21 (retained edges) = 0.344,
- * i.e. a ~2.9x reduction of graph heap. This is NOT O(chunk): node identity
- * and the resolution registries stay O(repo). True O(chunk) needs DB-side
- * resolution and DB-side Leiden (#2337).
+ * Retained share = 0.17 (nodes) + 0.83 * 0.21 (retained edges) = 0.344 — but
+ * that formula assigns streamed edges a retained cost of ZERO, which is wrong:
+ * the sink keeps `streamedIds` and `streamedEndpoints` below, both
+ * O(streamed-edges) string Sets, and `id` is a plain concatenation of both
+ * endpoint ids (not a hash). Review measured those Sets at ~35% of full
+ * per-edge retention, not the ~a-tenth this once assumed, which puts the real
+ * figure nearer ~1.7-2.2x than 2.9x, and lower again on a member-dense
+ * Java/C# repo where the retained structural spine (DEFINES / HAS_METHOD /
+ * HAS_PROPERTY) is a larger share than in the TypeScript census used above.
+ * Treat every number here as an ESTIMATE pending an end-to-end measurement on
+ * a real repository. It is in any case NOT O(chunk): node identity and the
+ * resolution registries stay O(repo). True O(chunk) needs DB-side resolution
+ * and DB-side Leiden (#2337).
  *
  * Byte-identity: the sink reuses the SAME row builder (`buildRelRow`), header
  * (`REL_CSV_HEADER`), and label derivation (`getNodeLabel`) as
@@ -74,8 +83,13 @@ import { DEFAULT_EMIT_CHUNK_ROWS, SyncCsvWriter } from './sync-csv-writer.js';
  * `routes`/`tools`, never read back mid-pipeline).
  *
  * Adding a relationship type that a phase reads back WITHOUT adding it here is
- * a silent-wrong-graph bug, not a crash. The differential round-trip test is
- * what catches drift.
+ * a silent-wrong-graph bug, not a crash — and NOTHING automated catches it.
+ * The differential round-trip test cannot: `addRelationship` partitions edges
+ * between the graph and the CSVs, and the union of a partition is invariant
+ * under where the partition line falls, so that test stays green no matter how
+ * this set is drawn. Only the read-site audit protects this invariant; re-run it
+ * (grep iterRelationshipsByType / iterRelationships / forEachRelationship /
+ * removeRelationship across src/) when adding a phase or a relationship type.
  */
 export const RETAINED_REL_TYPES: ReadonlySet<RelationshipType> = new Set<RelationshipType>([
   'EXTENDS',

@@ -1313,7 +1313,13 @@ export async function runFullAnalysis(
       // Streamed structural emit (#2680) — same full-rebuild gate as the PDG
       // toggle above, for the same incremental-writeback reason.
       streamGraphEmit: streamGraphEmitActive,
-      graphEmitCsvDir: resolveNativeSafeStorageDir(storagePath, 'graph-csv'),
+      // Resolved ONLY when streaming is active: on a Windows non-ASCII storage
+      // path this helper mkdtempSyncs a real directory, so evaluating it
+      // unconditionally would leak one temp dir per analyze even with the flag
+      // off. The PDG sibling resolves inside its guard for the same reason.
+      graphEmitCsvDir: streamGraphEmitActive
+        ? resolveNativeSafeStorageDir(storagePath, 'graph-csv')
+        : undefined,
       fetchWrappers: options.fetchWrappers,
     },
   );
