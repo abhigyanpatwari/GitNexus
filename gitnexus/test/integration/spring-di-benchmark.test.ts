@@ -11,8 +11,8 @@
  *      relationship in the graph.
  *
  * The normal-CI tripwires use dense Java/Kotlin files to catch a capture
- * re-regression. The gated suites measure Java capture and full-pipeline
- * scaling:
+ * re-regression. The gated suites measure Java and Kotlin capture plus
+ * full-pipeline scaling:
  *
  *   GITNEXUS_BENCH=1 npx vitest run test/integration/spring-di-benchmark.test.ts
  */
