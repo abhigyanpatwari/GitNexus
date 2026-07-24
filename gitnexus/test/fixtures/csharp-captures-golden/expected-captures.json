@@ -659,6 +659,14 @@
     "captureGroups": 12,
     "digest": "b6f9dd906e1309338f21633d71e663cdfd95a8707d38b9a8bf74813415ee5d13"
   },
+  "csharp-using-static/App/NamespaceOwnerCollision.cs": {
+    "captureGroups": 16,
+    "digest": "d78082d240d14417ad3f502ef1e96e8e3575dd4e9cec00cfc15c7230c596ca53"
+  },
+  "csharp-using-static/App/SameFileCases.cs": {
+    "captureGroups": 67,
+    "digest": "50f41faf386131ecbf6cf9c22b3594cbafee8291f385252aad7c10202881d27e"
+  },
   "csharp-using-static/Helpers/MathUtils.cs": {
     "captureGroups": 8,
     "digest": "32c174cbaade4e2d6e0aa7e95a2b5addd138441deb43ced286c9cf5cd30750aa"

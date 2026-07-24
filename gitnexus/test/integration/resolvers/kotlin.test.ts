@@ -2958,3 +2958,32 @@ describe('Kotlin anonymous object-expression method scoping (#2545)', () => {
     expect(getNodesByLabel(result, 'Method')).toContain('println');
   });
 });
+
+describe('Kotlin instance-ownership free-call gate (#2563)', () => {
+  let result: PipelineResult;
+
+  beforeAll(async () => {
+    result = await runPipelineFromRepo(path.join(FIXTURES, 'kotlin-instance-ownership'), () => {});
+  }, 60000);
+
+  it("does not resolve a bare call to an unrelated same-file class's method", () => {
+    const leaked = getRelationships(result, 'CALLS').find(
+      (call) => call.source === 'run' && call.target === 'collide',
+    );
+    expect(leaked).toBeUndefined();
+  });
+
+  it('preserves own, inherited, outer-instance, and anonymous-object sibling calls', () => {
+    const calls = getRelationships(result, 'CALLS');
+    expect(calls.find((call) => call.source === 'callOwn' && call.target === 'own')).toBeDefined();
+    expect(
+      calls.find((call) => call.source === 'callInherited' && call.target === 'inherited'),
+    ).toBeDefined();
+    expect(
+      calls.find((call) => call.source === 'callSibling' && call.target === 'sibling'),
+    ).toBeDefined();
+    expect(
+      calls.find((call) => call.source === 'callOuter' && call.target === 'outerMethod'),
+    ).toBeDefined();
+  });
+});

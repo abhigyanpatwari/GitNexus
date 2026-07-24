@@ -463,8 +463,12 @@ export interface RepoMeta {
  * separate sequence for anonymous types. Existing type/member ids, lexical
  * bindings, and ownership edges must not be mixed with newly named unchanged
  * Java files; force a full re-analyze.
+ * v14: C# and Kotlin free-call fallback now rejects same-file methods whose
+ * instance owner is outside the caller's enclosing class/MRO (#2563). The
+ * incremental write set would otherwise retain those stale CALLS edges on
+ * every unchanged C# and Kotlin file; force a full re-analyze instead.
  */
-export const INCREMENTAL_SCHEMA_VERSION = 13;
+export const INCREMENTAL_SCHEMA_VERSION = 14;
 
 export interface IndexedRepo {
   repoPath: string;

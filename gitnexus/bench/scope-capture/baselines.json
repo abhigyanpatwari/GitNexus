@@ -39,11 +39,12 @@
   },
   "csharp": {
     "_rebaselined": "#1956 synth-widening: + csharp-qualified-base fixture; the synth now walks record_declaration + struct_declaration base_lists and handles alias_qualified_name (matching the #1940 legacy leg), so record/struct heritage now emits. csharp-record-base gains a record inherits capture. (record->record SAME-namespace EXTENDS is a separate registry resolution gap, tracked as follow-up.) Linear (~1.00). (Earlier #1956: heritage-bearing scale source.) | #942: scope-resolution-only cleanup reworded fixture comments; capture byte-positions shift, capture LOGIC unchanged. | #1924 F16: record primary-constructor base bindings now exclude constructor arguments; capture fingerprint changes, scaling remains linear. | #2036 review follow-up: csharp-record-base now exercises primary-constructor base dispatch end to end; +2 capture groups, scaling remains linear.",
-    "fingerprint": "75cf380209fa7d1a8a3ec873be1a9424b4e5173be0b08234c2291e8521a9b3c1",
+    "fingerprint": "e05dc27456bde8175948586c9e7689033a378fa40e9ca4ce78cce41fbea0f2f8",
     "scaling_budget": 1.5,
     "_rebaselined_callable_flow_2522_review": "PR #2522 review hardening: callable operands retain expression/qualified identity and formals retain signature metadata. Prior f31544530924748f9aa37d11cec570bc10c3ddf9d9b237e6df7a17623fd2bb3a -> 75cf380209fa7d1a8a3ec873be1a9424b4e5173be0b08234c2291e8521a9b3c1; scaling 1.061 < 1.5.",
     "_rebaselined_callable_flow_2522_followup": "PR #2522 follow-up: C# method-group/delegate callable flow facts with invocation-result suppression. Prior 2bb5bc8c19cb8eb08c9590545ad8a1968a7152951f7e12746e2d7901d542fed9 -> f31544530924748f9aa37d11cec570bc10c3ddf9d9b237e6df7a17623fd2bb3a; scaling 1.115 < 1.5.",
-    "_note": "#2046: F35 qualified-constructor captures now emit @reference.qualified-name + a simple-name @reference.name on `new Ns.Foo()`/`new A.B.Foo()`; namespace_declaration/file_scoped_namespace_declaration now emit @declaration.namespace name captures (feeding the non-destructive namespacePrefix sidecar for `new B.Foo()` same-tail disambiguation). + csharp-interface-only-base and csharp-namespace-qualified-ctor fixtures. Pure capture-additive + fixture-corpus drift; scaling stays linear (~1.11)."
+    "_note": "#2046: F35 qualified-constructor captures now emit @reference.qualified-name + a simple-name @reference.name on `new Ns.Foo()`/`new A.B.Foo()`; namespace_declaration/file_scoped_namespace_declaration now emit @declaration.namespace name captures (feeding the non-destructive namespacePrefix sidecar for `new B.Foo()` same-tail disambiguation). + csharp-interface-only-base and csharp-namespace-qualified-ctor fixtures. Pure capture-additive + fixture-corpus drift; scaling stays linear (~1.11).",
+    "_rebaselined_2563_instance_ownership": "#2563: csharp-using-static adds same-file ownership, local-function, overload, partial-class, and cross-namespace same-name coverage. Prior 75cf380209fa7d1a8a3ec873be1a9424b4e5173be0b08234c2291e8521a9b3c1 -> e05dc27456bde8175948586c9e7689033a378fa40e9ca4ce78cce41fbea0f2f8; scaling 1.058 < 1.5."
   },
   "rust": {
     "fingerprint": "655aed01cf1b6b84fa0c64d48dfb2526ecb67f47d90f0a91edabacd269a212db",
@@ -132,7 +133,7 @@
     "_rebaselined_2550_instance_model": "PR #2549 (#2545/#2551): object literals emit @scope.object. Prior 479927409bbdd9852a36172c8260aa56df260e99129a7a9c20a0d1903dd5538b -> f1ccf42a36895c8e34dcb724286f247d469835f2dcbb23ad3347190adc7fde1c; scaling 1.096 < 1.5."
   },
   "kotlin": {
-    "fingerprint": "a6fce0dff00e88d41d85023eaf3f35016b5217c7e5225f24a598e4c70bb63091",
+    "fingerprint": "9f159f8810d342ef1c821f466efd6920dad9a190f06000056e6cd2815861b195",
     "scaling_budget": 1.5,
     "_rebaselined_callable_flow_2522_review": "PR #2522 review hardening: callable operands retain expression/qualified identity and formals retain signature metadata. Prior bddba25d5a88152bbbee8d70e82c944b5302accb4b625df782adb1d4f7a7ac12 -> e856951c2a779163d555dadc8e1bf59304a86caed78ac1f450d9caa2b50f63d1; scaling 1.090 < 1.5.",
     "_rebaselined_callable_flow_2522_followup": "PR #2522 follow-up: Kotlin callable-reference flow facts with invocation-result suppression. Prior 4900431791f2b9280009deb2b82659c26ead8aa6fb8731190a7c505dec5a9041 -> bddba25d5a88152bbbee8d70e82c944b5302accb4b625df782adb1d4f7a7ac12; scaling 0.880 < 1.5.",
@@ -140,6 +141,7 @@
     "_rebaselined": "#1919 review CF3 fix: extended kotlin-local-property-owner (init/accessor destructuring) + new dart-accessor-owner fixture (getter/setter ownership). Fingerprint-only corpus drift; scaling ~1.0.",
     "_rebaselined_2271": "PR #2271: re-vendored tree-sitter-kotlin 0.3.8 -> unreleased fwcd main c8ac3d26 for `fun interface` support + new kotlin-fun-interface fixture in the corpus. Drift is both corpus-additive (the fixture) and grammar-driven (the new grammar parses `fun interface` as a class_declaration, not an ERROR node). Baselined to the NEW grammar's fingerprint, so this --check passes only once the regenerated prebuilds land \u2014 until then CI loads the committed 0.3.8 binary and the bench is red, same as the kotlin fun-interface integration tests. scaling ~0.83 (linear).",
     "_rebaselined_2522_review_fixes": "PR #2522 review fixes: fieldless assignment nodes decomposed positionally. Prior e856951c2a779163d555dadc8e1bf59304a86caed78ac1f450d9caa2b50f63d1 -> 4b31f46cfb004ba769a96feeb06ae4ef109c77410f54e7aaab4a688df599b112; scaling ratio re-verified within budget.",
-    "_rebaselined_2550_instance_model": "PR #2549 (#2545): anonymous object expressions (object_literal) emit @scope.class, and the kotlin-object-literal-scope fixture joined the corpus. Prior 4b31f46cfb004ba769a96feeb06ae4ef109c77410f54e7aaab4a688df599b112 -> a6fce0dff00e88d41d85023eaf3f35016b5217c7e5225f24a598e4c70bb63091; scaling 0.951 < 1.5."
+    "_rebaselined_2550_instance_model": "PR #2549 (#2545): anonymous object expressions (object_literal) emit @scope.class, and the kotlin-object-literal-scope fixture joined the corpus. Prior 4b31f46cfb004ba769a96feeb06ae4ef109c77410f54e7aaab4a688df599b112 -> a6fce0dff00e88d41d85023eaf3f35016b5217c7e5225f24a598e4c70bb63091; scaling 0.951 < 1.5.",
+    "_rebaselined_2563_instance_ownership": "#2563: kotlin-instance-ownership adds unrelated, inherited, outer-instance, and anonymous-object coverage. Prior a6fce0dff00e88d41d85023eaf3f35016b5217c7e5225f24a598e4c70bb63091 -> 9f159f8810d342ef1c821f466efd6920dad9a190f06000056e6cd2815861b195; scaling 1.257 < 1.5."
   }
 }

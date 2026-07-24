@@ -73,8 +73,8 @@ describe('CALL_SUMMARY relation-type exclusion (U-C1)', () => {
 });
 
 describe('CALL_SUMMARY incremental reuse gate (U-C5)', () => {
-  it('INCREMENTAL_SCHEMA_VERSION is 13 (Java local-type identity migration, #2562)', () => {
-    expect(INCREMENTAL_SCHEMA_VERSION).toBe(13);
+  it('INCREMENTAL_SCHEMA_VERSION is bumped to 14 (C#/Kotlin instance-ownership free-call gate, #2563)', () => {
+    expect(INCREMENTAL_SCHEMA_VERSION).toBe(14);
   });
 
   it('a pre-current stamp fails the `=== INCREMENTAL_SCHEMA_VERSION` reuse gate → forces full re-analyze', () => {
@@ -125,7 +125,10 @@ describe('CALL_SUMMARY incremental reuse gate (U-C5)', () => {
     // identities and lexical visibility scopes (#2562), so unchanged
     // simple-name-keyed type/member ids must not survive.
     expect(passesReuseGate(12)).toBe(false);
+    // A pre-v14 (v13) index predates the C#/Kotlin instance-ownership gate,
+    // so unchanged files may retain spurious same-file CALLS edges.
+    expect(passesReuseGate(13)).toBe(false);
     // A current-version stamp passes the gate (incremental top-up eligible).
-    expect(passesReuseGate(13)).toBe(true);
+    expect(passesReuseGate(14)).toBe(true);
   });
 });
