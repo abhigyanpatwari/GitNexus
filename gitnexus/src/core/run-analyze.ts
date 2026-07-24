@@ -664,6 +664,10 @@ export async function runFullAnalysis(
   const progress = (phase: string, percent: number, message: string) =>
     callbacks.onProgress(phase, percent, message);
 
+  // Streamed structural emit (#2680), resolved once: it both configures the
+  // pipeline and is stamped into RepoMeta, and those two must never disagree.
+  const streamGraphEmitActive = resolveStreamGraphEmit(options);
+
   // Resolve + validate operator-provided FTS config once, before the expensive
   // parse/load phases. A typo fails here in ms; createSearchFTSIndexes reuses
   // the cached value via getSearchFTSStemmer.
@@ -1308,7 +1312,7 @@ export async function runFullAnalysis(
       pdgEmitChunkSize: resolvePdgEmitChunkSize(options),
       // Streamed structural emit (#2680) — same full-rebuild gate as the PDG
       // toggle above, for the same incremental-writeback reason.
-      streamGraphEmit: resolveStreamGraphEmit(options),
+      streamGraphEmit: streamGraphEmitActive,
       graphEmitCsvDir: resolveNativeSafeStorageDir(storagePath, 'graph-csv'),
       fetchWrappers: options.fetchWrappers,
     },
@@ -2222,6 +2226,7 @@ export async function runFullAnalysis(
           schemaVersion: hasGitDir(repoPath) ? INCREMENTAL_SCHEMA_VERSION : undefined,
           analysisFeatures: currentAnalysisFeatures,
           cjkSegmentation: getSearchFTSCjkSegmentation(),
+          graphPhases: streamGraphEmitActive ? 'skipped' : 'complete',
           fileHashes: hasGitDir(repoPath) ? fileHashes : undefined,
           cacheKeys: [...parseCache.usedKeys],
           incrementalInProgress: undefined,
@@ -2389,6 +2394,10 @@ export async function runFullAnalysis(
       // `pdg` below, 'none' is a meaningful value to compare, not an
       // absence, so this is never conditionally omitted.
       cjkSegmentation: getSearchFTSCjkSegmentation(),
+      // Record whether communities/processes actually ran, so `impact` cannot
+      // report a false-low risk level off an index that simply has no Process
+      // or Community rows to count (#2680).
+      graphPhases: streamGraphEmitActive ? 'skipped' : 'complete',
       fileHashes: hasGitDir(repoPath) ? newFileHashesRecord : undefined,
       // This branch's full live chunk-key set (#2106 R6). `usedKeys` is every
       // chunk hash touched in this scan — cache HITS included (see parse-impl

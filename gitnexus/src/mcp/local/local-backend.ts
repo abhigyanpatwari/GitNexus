@@ -6099,7 +6099,30 @@ export class LocalBackend {
     // above. Additive: leaves impactedCount and every existing field untouched.
     const [epistemic, beanMetadata] = await Promise.all([epistemicPromise, beanMetadataPromise]);
 
+    // #2680 — an index built with streamed structural emit has NO Process or
+    // Community rows, and processCount/moduleCount are two of the four
+    // CRITICAL escalation criteria above. Left unqualified, such an index
+    // silently reports a lower risk than a complete one would for the very
+    // same change — the false-clean shape #2283 ruled out for detect_changes.
+    // Report the degradation rather than let the number stand alone.
+    let graphPhasesSkipped = false;
+    try {
+      const impactMeta = await loadMeta(path.dirname(repo.lbugPath));
+      graphPhasesSkipped = impactMeta?.graphPhases === 'skipped';
+    } catch {
+      // Unreadable meta ⇒ assume complete, i.e. pre-#2680 behaviour.
+    }
+
     const base = {
+      ...(graphPhasesSkipped && {
+        riskUnderstated: true,
+        riskNote:
+          'This index was built with streamed graph emit (GITNEXUS_STREAM_GRAPH_EMIT), so it ' +
+          'contains no communities or processes. Affected-process and affected-module counts ' +
+          'are two of the four criteria that escalate risk to CRITICAL, so the risk level below ' +
+          'is a LOWER BOUND and may understate the true blast radius. Re-run `gitnexus analyze ' +
+          '--force` without that flag for a complete risk assessment.',
+      }),
       target: {
         id: symId,
         name: sym.name || sym[1],

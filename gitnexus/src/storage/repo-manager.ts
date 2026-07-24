@@ -212,6 +212,19 @@ export interface RepoMeta {
    */
   cjkSegmentation?: string;
   /**
+   * Whether this index contains the graph-analysis layers (communities and
+   * processes) or was built with them skipped (#2680 streamed structural emit
+   * disables them, because they consume the whole CALLS graph that streams out).
+   *
+   * Unlike the rest of `capabilities`, this one has a programmatic reader: an
+   * index with `'skipped'` has empty Process/Community tables, and `impact`
+   * counts affected processes and modules as two of its four CRITICAL
+   * escalation criteria. Without this stamp a degraded index silently reports
+   * LOW where a complete index reports CRITICAL — the same false-clean shape
+   * #2283 ruled out for detect_changes.
+   */
+  graphPhases?: 'complete' | 'skipped';
+  /**
    * SHA-256 of every file's content at the time of the last successful
    * indexing run. The next run computes current hashes and diffs against
    * this map to determine which files' DB rows must be replaced.
