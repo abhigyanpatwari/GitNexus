@@ -250,6 +250,22 @@ const unknownHolder = (): LockRecord => ({
 });
 
 /**
+ * Filesystem-create error codes we tolerate by proceeding lock-free: a
+ * read-only mount (EROFS) or a denied create (EACCES/EPERM). Such a filesystem
+ * rejects every index WRITE in the same directory too, so no concurrent writer
+ * can exist and the lock is moot — an already-indexed repo on a `:ro` mount
+ * must still reach its `alreadyUpToDate` fast path (#2658). A genuinely-needed
+ * write fails later exactly as it would have without the lock.
+ */
+export const LOCK_UNWRITABLE_CODES: ReadonlySet<string> = new Set(['EROFS', 'EACCES', 'EPERM']);
+export const isLockUnwritableCode = (code: string | undefined): boolean =>
+  code !== undefined && LOCK_UNWRITABLE_CODES.has(code);
+
+/** A lock handle that owns nothing — returned when the filesystem refuses to
+ *  create the lock file (see {@link LOCK_UNWRITABLE_CODES}). Release is a no-op. */
+const noopHandle = (record: LockRecord): IndexLockHandle => ({ record, release: () => {} });
+
+/**
  * Delete orphaned build/staging artifacts left in the lock directory by a
  * crashed prior writer. Safe precisely because we hold the exclusive lock: no
  * other writer can be creating these here right now, so anything present is a
@@ -324,9 +340,15 @@ export const acquireIndexLock = async (
   lockDir: string,
   opts: AcquireOptions = {},
 ): Promise<IndexLockHandle> => {
-  mkdirSync(lockDir, { recursive: true });
-  const lockPath = path.join(lockDir, LOCK_FILENAME);
   const me = buildRecord();
+  try {
+    mkdirSync(lockDir, { recursive: true });
+  } catch (err) {
+    // Read-only / denied filesystem → proceed lock-free (see LOCK_UNWRITABLE_CODES).
+    if (isLockUnwritableCode((err as NodeJS.ErrnoException).code)) return noopHandle(me);
+    throw err;
+  }
+  const lockPath = path.join(lockDir, LOCK_FILENAME);
   const pollMs = opts.pollMs ?? DEFAULT_POLL_MS;
   const timeoutMs = resolveTimeoutMs(opts.timeoutMs);
   const startedAt = Date.now();
@@ -359,7 +381,14 @@ export const acquireIndexLock = async (
         },
       };
     } catch (err) {
-      if ((err as NodeJS.ErrnoException).code !== 'EEXIST') throw err;
+      const code = (err as NodeJS.ErrnoException).code;
+      if (code === 'EEXIST') {
+        // fall through to holder inspection / wait / reclaim below
+      } else if (isLockUnwritableCode(code)) {
+        return noopHandle(me); // read-only / denied → proceed lock-free
+      } else {
+        throw err;
+      }
     }
 
     const holder = readRecord(lockPath);

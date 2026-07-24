@@ -9,12 +9,13 @@
  * test/integration/analyze-index-lock-concurrency.test.ts.
  */
 import { describe, it, expect, beforeEach, afterEach } from 'vitest';
-import { mkdtempSync, rmSync, writeFileSync, readFileSync, existsSync } from 'node:fs';
+import { mkdtempSync, rmSync, writeFileSync, readFileSync, existsSync, chmodSync } from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import {
   acquireIndexLock,
   sweepStagingArtifacts,
+  isLockUnwritableCode,
   IndexLockTimeoutError,
   type LockRecord,
 } from '../../src/storage/index-lock.js';
@@ -219,4 +220,32 @@ describe('classifyFtsBuildError', () => {
     // A tokenizer error is a bad row, not a broken build — must still degrade.
     expect(classifyFtsBuildError('Invalid UTF-8 during io exception path')).toBe('capability');
   });
+});
+
+describe('read-only / permission-denied filesystem (#2658)', () => {
+  it('classifies EROFS/EACCES/EPERM as tolerable, others not', () => {
+    expect(isLockUnwritableCode('EROFS')).toBe(true);
+    expect(isLockUnwritableCode('EACCES')).toBe(true);
+    expect(isLockUnwritableCode('EPERM')).toBe(true);
+    expect(isLockUnwritableCode('EEXIST')).toBe(false);
+    expect(isLockUnwritableCode('ENOENT')).toBe(false);
+    expect(isLockUnwritableCode(undefined)).toBe(false);
+  });
+
+  // Mode bits are bypassed for uid 0, so the denied-create path only reproduces
+  // as non-root. The predicate test above is the always-on guard.
+  it.skipIf(!process.getuid || process.getuid() === 0)(
+    'returns a no-op handle instead of throwing when the lock dir cannot be written',
+    async () => {
+      chmodSync(dir, 0o555);
+      try {
+        const lock = await acquireIndexLock(dir, { timeoutMs: 2000 });
+        expect(typeof lock.release).toBe('function');
+        expect(() => lock.release()).not.toThrow();
+        expect(existsSync(lockPath())).toBe(false); // lock file was never created
+      } finally {
+        chmodSync(dir, 0o755);
+      }
+    },
+  );
 });
