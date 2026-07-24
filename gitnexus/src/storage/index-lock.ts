@@ -130,14 +130,26 @@ export interface AcquireOptions {
 
 export class IndexLockTimeoutError extends Error {
   readonly holder: LockRecord;
-  constructor(holder: LockRecord, waitedMs: number) {
+  /**
+   * Whether `holder` carries a real, identifiable owner. False on the socket
+   * backend (and the file backend's malformed/vanished-lock timeouts), where the
+   * holder is a placeholder (`pid -1`) — the OS socket lock exposes no owner
+   * metadata (#2658 review M3). Consumers must not present `holder.pid` as a real
+   * pid when this is false.
+   */
+  readonly holderKnown: boolean;
+  constructor(holder: LockRecord, waitedMs: number, holderKnown = true) {
     super(
-      `Timed out after ${waitedMs}ms waiting for another gitnexus analyze ` +
-        `(pid ${holder.pid} on ${holder.hostname}, invocation ${holder.invocationId}) ` +
-        `to release the index lock.`,
+      holderKnown
+        ? `Timed out after ${waitedMs}ms waiting for another gitnexus analyze ` +
+            `(pid ${holder.pid} on ${holder.hostname}, invocation ${holder.invocationId}) ` +
+            `to release the index lock.`
+        : `Timed out after ${waitedMs}ms waiting for another gitnexus analyze ` +
+            `(holder identity unknown) to release the index lock.`,
     );
     this.name = 'IndexLockTimeoutError';
     this.holder = holder;
+    this.holderKnown = holderKnown;
   }
 }
 
@@ -185,7 +197,12 @@ const readRecord = (lockPath: string): LockRecord | null => {
   try {
     const raw = readFileSync(lockPath, 'utf8');
     const parsed = JSON.parse(raw) as Partial<LockRecord>;
-    if (typeof parsed.pid !== 'number' || typeof parsed.token !== 'string') return null;
+    // `typeof NaN === 'number'`, so a bare number check lets NaN/0/-1/Infinity/
+    // fractional pids reach process.kill (#2658 review L4): a garbled or crafted
+    // lock file with `{"pid":0}` reads as a live holder and wedges a real analyze
+    // for the full wait timeout. A real pid is a positive integer.
+    if (!Number.isInteger(parsed.pid) || (parsed.pid as number) <= 0) return null;
+    if (typeof parsed.token !== 'string') return null;
     return parsed as LockRecord;
   } catch {
     // Missing (won the race, file gone) or malformed/half-written → treat as
@@ -447,7 +464,7 @@ const acquireViaFile = async (
     // here — both branches are bounded by sleep + timeout.
     if (!existsSync(lockPath)) {
       malformedSince = null; // genuinely vanished → the next create likely wins
-      if (waited >= timeoutMs) throw new IndexLockTimeoutError(unknownHolder(), waited);
+      if (waited >= timeoutMs) throw new IndexLockTimeoutError(unknownHolder(), waited, false);
       await sleep(jitteredDelay(pollMs, timeoutMs, waited));
       continue;
     }
@@ -460,7 +477,7 @@ const acquireViaFile = async (
       malformedSince = null;
       continue;
     }
-    if (waited >= timeoutMs) throw new IndexLockTimeoutError(unknownHolder(), waited);
+    if (waited >= timeoutMs) throw new IndexLockTimeoutError(unknownHolder(), waited, false);
     await sleep(jitteredDelay(pollMs, timeoutMs, waited));
   }
 };
@@ -552,6 +569,15 @@ const acquireViaSocket = async (
       };
     }
 
+    // This server never bound (listen failed); release its handle before the
+    // next poll or the fallback, so a long contended wait doesn't churn one
+    // unclosed net.Server per iteration (#2658 review L3).
+    try {
+      server.close();
+    } catch {
+      /* never listened */
+    }
+
     // Only EADDRINUSE means "held by a live holder → wait". Anything else means
     // this environment can't use the socket backend → fall back to the file one.
     if (listenErr.code !== 'EADDRINUSE') throw new SocketLockUnavailable(listenErr);
@@ -562,7 +588,8 @@ const acquireViaSocket = async (
       opts.log?.('Another gitnexus analyze is refreshing this index — waiting for it to finish.');
     }
     const waited = Date.now() - startedAt;
-    if (waited >= timeoutMs) throw new IndexLockTimeoutError(unknownHolder(), waited);
+    // Socket backend exposes no owner metadata → holder identity is unknown (M3).
+    if (waited >= timeoutMs) throw new IndexLockTimeoutError(unknownHolder(), waited, false);
     if (Date.now() - lastDiagnosticAt >= DIAGNOSTIC_INTERVAL_MS) {
       lastDiagnosticAt = Date.now();
       if (waited >= DIAGNOSTIC_INTERVAL_MS) {

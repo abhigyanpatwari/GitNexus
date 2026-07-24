@@ -119,6 +119,20 @@ describe('acquireIndexLock', () => {
     lock.release();
   });
 
+  it('treats a non-positive/NaN pid as no readable holder and reclaims (never wedges on process.kill) (#2658 review L4)', async () => {
+    // `{"pid":0}` pre-fix: typeof 0 === 'number' passed readRecord, then
+    // process.kill(0,0) reported the process group "alive" → treated as a live
+    // holder → the acquire wedged until the full timeout. Post-fix a pid that is
+    // not a positive integer makes readRecord return null, so the file is a
+    // malformed orphan that is reclaimed after the grace.
+    seedLock({ pid: 0, token: 'zero-pid' });
+    const lock = await acquireIndexLock(dir, { timeoutMs: 5000, pollMs: 20 });
+    const onDisk = JSON.parse(readFileSync(lockPath(), 'utf8')) as LockRecord;
+    expect(onDisk.pid).toBe(process.pid);
+    expect(onDisk.token).not.toBe('zero-pid');
+    lock.release();
+  });
+
   it('honors GITNEXUS_INDEX_LOCK_TIMEOUT_MS as the wait ceiling (bounds pid-reuse hangs)', async () => {
     // A live holder we cannot steal (own pid, no start-time recorded). Without a
     // finite ceiling this would hang; the env var must bound it (#2658).
@@ -267,6 +281,21 @@ describe.skipIf(process.platform !== 'linux' && process.platform !== 'win32')(
       // Once released, the endpoint is free again.
       const second = await acquireIndexLock(dir, { timeoutMs: 2000 });
       second.release();
+    });
+
+    it('reports the holder as unknown on timeout — never a bogus "pid -1" (#2658 review M3)', async () => {
+      // The OS socket lock exposes no owner metadata, so a contended-wait timeout
+      // must not surface the unknownHolder() placeholder pid (-1) as if it were a
+      // real process the operator can look up.
+      const first = await acquireIndexLock(dir, { timeoutMs: 2000 });
+      try {
+        const err = await acquireIndexLock(dir, { timeoutMs: 200, pollMs: 20 }).catch((e) => e);
+        expect(err).toBeInstanceOf(IndexLockTimeoutError);
+        expect((err as IndexLockTimeoutError).holderKnown).toBe(false);
+        expect((err as IndexLockTimeoutError).message).not.toContain('pid -1');
+      } finally {
+        first.release();
+      }
     });
 
     it('gives independent locks to different index dirs', async () => {
