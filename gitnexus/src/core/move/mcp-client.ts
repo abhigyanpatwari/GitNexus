@@ -8,7 +8,7 @@
 
 import { spawn, execFileSync, type ChildProcessWithoutNullStreams } from 'node:child_process';
 import { createInterface } from 'node:readline';
-import type { MoveFactsMap, CallGraphMap } from './compiler-facts.js';
+import type { MoveFactsMap, CallGraphMap, MoveFunctionUsage } from './compiler-facts.js';
 import { isCompatibleMoveFlowVersion } from './release.js';
 
 interface JsonRpcResponse {
@@ -39,6 +39,15 @@ interface McpListToolResult {
 }
 function isMcpListToolResult(v: unknown): v is McpListToolResult {
   return typeof v === 'object' && v !== null;
+}
+
+const isStringArray = (value: unknown): value is string[] =>
+  Array.isArray(value) && value.every((item) => typeof item === 'string');
+
+function isMoveFunctionUsage(value: unknown): value is MoveFunctionUsage {
+  if (typeof value !== 'object' || value === null) return false;
+  const usage = value as Record<string, unknown>;
+  return isStringArray(usage.called) && isStringArray(usage.used);
 }
 
 /** JSON-RPC `invalid_params` - move-flow uses it for caller/input errors
@@ -75,6 +84,32 @@ export class MoveFlowToolCallError extends Error {
 }
 
 /**
+ * A move-flow tool call that exceeded its time budget. The client kills and
+ * respawns the server either way, but callers must not blindly retry: the
+ * budget itself is the problem (raise GITNEXUS_MOVE_FLOW_TIMEOUT_MS), unlike a
+ * transport fault where a fresh process can succeed.
+ */
+export class MoveFlowTimeoutError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = 'MoveFlowTimeoutError';
+  }
+}
+
+/**
+ * The move-flow process died or its pipe broke while requests were in flight.
+ * The request layer retries these once — every query GitNexus issues is an
+ * idempotent read, and the process respawns on the next attempt. Everything
+ * else (build errors, timeouts, spawn failures, shutdown) is final.
+ */
+export class MoveFlowTransportError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = 'MoveFlowTransportError';
+  }
+}
+
+/**
  * The move-flow surface GitNexus consumes. Defined here (not in the ingest
  * phase) so the client owns its own contract and the ingest phase depends on
  * the client, never the reverse.
@@ -84,6 +119,8 @@ export interface MoveFlowClient {
   facts(packagePath: string): Promise<MoveFactsMap>;
   /** Function-level call graph (caller qualified name → callee qualified names). */
   callGraph(packagePath: string): Promise<CallGraphMap>;
+  /** Direct/transitive calls and closure captures for one function. */
+  functionUsage(packagePath: string, functionName: string): Promise<MoveFunctionUsage>;
   /**
    * Build status probe (move_package_status): does the package compile, and
    * what did the compiler say. Older move-flow builds do not expose the tool -
@@ -110,6 +147,8 @@ export interface MovePackageStatus {
 export interface MoveFlowCapabilities {
   /** `facts` query available (rich, compiler-sourced per-module facts). */
   hasFactsQuery: boolean;
+  /** `function_usage` query available (closure captures included in `used`). */
+  hasFunctionUsageQuery: boolean;
   /** `move_package_status` tool available (build status + diagnostics). */
   hasStatusTool: boolean;
 }
@@ -143,22 +182,28 @@ export function detectMoveFlowCapabilities(
       if (t.name === 'move_package_query') querySchema = t.inputSchema;
     }
   }
-  const hasFactsQuery = names.has('move_package_facts') || schemaMentionsFactsQuery(querySchema);
-  return { hasFactsQuery, hasStatusTool: names.has('move_package_status') };
+  const hasFactsQuery =
+    names.has('move_package_facts') || schemaMentionsQuery(querySchema, 'facts');
+  const hasFunctionUsageQuery = schemaMentionsQuery(querySchema, 'function_usage');
+  return {
+    hasFactsQuery,
+    hasFunctionUsageQuery,
+    hasStatusTool: names.has('move_package_status'),
+  };
 }
 
-/** True if the `move_package_query` inputSchema declares a `"facts"` query const. */
-function schemaMentionsFactsQuery(schema: unknown): boolean {
+/** True if `move_package_query` declares the requested query const/enum item. */
+function schemaMentionsQuery(schema: unknown, query: string): boolean {
   if (!schema || typeof schema !== 'object') return false;
-  // Walk the JSON-schema object looking for a `const: "facts"` or
-  // `enum: [... "facts" ...]` anywhere under the QueryType definition.
+  // Walk the JSON-schema object looking for the query in either a `const` or
+  // an `enum` anywhere under the QueryType definition.
   const stack: unknown[] = [schema];
   while (stack.length) {
     const node = stack.pop();
     if (!node || typeof node !== 'object') continue;
     const obj = node as Record<string, unknown>;
-    if (obj.const === 'facts') return true;
-    if (Array.isArray(obj.enum) && obj.enum.includes('facts')) return true;
+    if (obj.const === query) return true;
+    if (Array.isArray(obj.enum) && obj.enum.includes(query)) return true;
     for (const v of Object.values(obj)) {
       if (v && typeof v === 'object') stack.push(v);
     }
@@ -180,6 +225,9 @@ export class MoveFlowMcpClient implements MoveFlowClient {
   private initialized = false;
   private initPromise: Promise<void> | null = null;
   private capsPromise: Promise<MoveFlowCapabilities> | null = null;
+  /** Set by shutdown(); an in-flight transport retry must not respawn a child
+   *  after the owner has released the client (it would leak the process). */
+  private closed = false;
   private binaryPath: string;
   private stderrLines: string[] = [];
   private static readonly MAX_STDERR = 20;
@@ -218,6 +266,7 @@ export class MoveFlowMcpClient implements MoveFlowClient {
   }
 
   private async ensureStarted(): Promise<void> {
+    if (this.closed) throw new Error('move-flow client is shut down');
     if (this.initialized) return;
     if (this.initPromise) return this.initPromise;
     const start = this._start().catch((err) => {
@@ -285,19 +334,19 @@ export class MoveFlowMcpClient implements MoveFlowClient {
         if (this.stderrLines.length > MoveFlowMcpClient.MAX_STDERR) {
           this.stderrLines.shift();
         }
-        const wrapped = new Error(`move-flow stdin failed: ${err.message}${this.stderrContext()}`);
-        if (!initSettled) failInitialization(wrapped);
-        else this.failProcess(proc, wrapped);
+        const message = `move-flow stdin failed: ${err.message}${this.stderrContext()}`;
+        // Transport-typed only after init: a broken pipe during startup is a
+        // launch failure, not a retryable mid-flight fault.
+        if (!initSettled) failInitialization(new Error(message));
+        else this.failProcess(proc, new MoveFlowTransportError(message));
       });
 
       proc.on('error', (err) => {
-        const wrapped = new Error(
-          `Failed to spawn move-flow: ${err.message}${this.stderrContext()}`,
-        );
+        const message = `Failed to spawn move-flow: ${err.message}${this.stderrContext()}`;
         if (!initSettled) {
-          failInitialization(wrapped);
+          failInitialization(new Error(message));
         } else {
-          this.failProcess(proc, wrapped);
+          this.failProcess(proc, new MoveFlowTransportError(message));
         }
       });
 
@@ -312,7 +361,9 @@ export class MoveFlowMcpClient implements MoveFlowClient {
         }
         this.failProcess(
           proc,
-          new Error(`move-flow exited unexpectedly (code ${code})${this.stderrContext()}`),
+          new MoveFlowTransportError(
+            `move-flow exited unexpectedly (code ${code})${this.stderrContext()}`,
+          ),
           false,
         );
       });
@@ -391,11 +442,36 @@ export class MoveFlowMcpClient implements MoveFlowClient {
     this.proc.stdin.write(JSON.stringify(msg) + '\n');
   }
 
+  /**
+   * Issue a request with one optional retry after a mid-flight transport fault:
+   * failProcess has already reset the client state when the fault surfaces,
+   * so the second attempt respawns the server. Deterministic failures (spawn
+   * errors, timeouts, tool errors) propagate on the first attempt.
+   *
+   * Pass `{ retryOnTransport: false }` to suppress the retry — callers that
+   * run under bounded concurrency (e.g. functionUsage) must not trigger a
+   * retry/respawn storm when the transport faults.
+   */
   private async request(
     method: string,
     params: unknown,
     timeoutMs: number,
-    timeoutMessage: string,
+    timeoutError: Error,
+    { retryOnTransport = true }: { retryOnTransport?: boolean } = {},
+  ): Promise<unknown> {
+    try {
+      return await this.requestOnce(method, params, timeoutMs, timeoutError);
+    } catch (err) {
+      if (!retryOnTransport || !(err instanceof MoveFlowTransportError)) throw err;
+      return this.requestOnce(method, params, timeoutMs, timeoutError);
+    }
+  }
+
+  private async requestOnce(
+    method: string,
+    params: unknown,
+    timeoutMs: number,
+    timeoutError: Error,
   ): Promise<unknown> {
     await this.ensureStarted();
     const proc = this.proc;
@@ -404,7 +480,16 @@ export class MoveFlowMcpClient implements MoveFlowClient {
     return new Promise<unknown>((resolve, reject) => {
       const id = ++this.requestId;
       const timeout = setTimeout(() => {
-        this.failProcess(proc, new Error(timeoutMessage));
+        const timedOut = this.pending.get(id);
+        if (!timedOut) return;
+        this.pending.delete(id);
+        timedOut.reject(timeoutError);
+        this.failProcess(
+          proc,
+          new MoveFlowTransportError(
+            `move-flow process restarted after another request timed out: ${timeoutError.message}`,
+          ),
+        );
       }, timeoutMs);
       this.pending.set(id, {
         resolve: (result) => {
@@ -426,14 +511,21 @@ export class MoveFlowMcpClient implements MoveFlowClient {
     });
   }
 
-  private async callTool(toolName: string, args: Record<string, unknown>): Promise<unknown> {
+  private async callTool(
+    toolName: string,
+    args: Record<string, unknown>,
+    opts?: { retryOnTransport?: boolean },
+  ): Promise<unknown> {
     const timeoutMs = resolveMoveFlowToolTimeoutMs();
     const result = await this.request(
       'tools/call',
       { name: toolName, arguments: args },
       timeoutMs,
-      `move-flow '${toolName}' timed out after ${timeoutMs}ms ` +
-        '(raise GITNEXUS_MOVE_FLOW_TIMEOUT_MS for large packages)',
+      new MoveFlowTimeoutError(
+        `move-flow '${toolName}' timed out after ${timeoutMs}ms ` +
+          '(raise GITNEXUS_MOVE_FLOW_TIMEOUT_MS for large packages)',
+      ),
+      opts,
     );
     if (!isMcpCallToolResult(result)) return result;
     if (result.isError === true) {
@@ -465,6 +557,24 @@ export class MoveFlowMcpClient implements MoveFlowClient {
     })) as MoveFactsMap;
   }
 
+  async functionUsage(packagePath: string, functionName: string): Promise<MoveFunctionUsage> {
+    const usage = await this.callTool(
+      'move_package_query',
+      {
+        package_path: packagePath,
+        query: 'function_usage',
+        function: functionName,
+      },
+      { retryOnTransport: false },
+    );
+    if (!isMoveFunctionUsage(usage)) {
+      throw new MoveFlowToolCallError(
+        `move-flow returned malformed function_usage for '${functionName}'`,
+      );
+    }
+    return usage;
+  }
+
   async packageStatus(packagePath: string): Promise<MovePackageStatus> {
     try {
       const result = await this.callTool('move_package_status', { package_path: packagePath });
@@ -481,7 +591,12 @@ export class MoveFlowMcpClient implements MoveFlowClient {
 
   /** Raw JSON-RPC request (non-`tools/call`), e.g. `tools/list`. */
   private async rpcRequest(method: string, params?: unknown): Promise<unknown> {
-    return this.request(method, params, 30_000, `move-flow '${method}' timed out after 30s`);
+    return this.request(
+      method,
+      params,
+      30_000,
+      new MoveFlowTimeoutError(`move-flow '${method}' timed out after 30s`),
+    );
   }
 
   async capabilities(): Promise<MoveFlowCapabilities> {
@@ -498,6 +613,7 @@ export class MoveFlowMcpClient implements MoveFlowClient {
   }
 
   async shutdown(): Promise<void> {
+    this.closed = true;
     const proc = this.proc;
     if (proc) {
       proc.stdin?.end();

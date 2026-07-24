@@ -10,19 +10,12 @@
 import { describe, it, expect } from 'vitest';
 import path from 'node:path';
 import type { MoveFlowClient } from '../../../src/core/move/mcp-client.js';
-import { runMoveIngestPhase } from '../../helpers/move-ingest-harness.js';
+import { makeMoveFlowClientStub, runMoveIngestPhase } from '../../helpers/move-ingest-harness.js';
 
 const REPO_ROOT = path.resolve('/repo');
 
 function makeClient(overrides: Partial<MoveFlowClient> = {}): MoveFlowClient {
-  return {
-    facts: async () => ({}),
-    callGraph: async () => ({}),
-    packageStatus: async () => ({ ok: true, diagnostics: 'no errors or warnings' }),
-    capabilities: async () => ({ hasFactsQuery: true, hasStatusTool: true }),
-    shutdown: async () => {},
-    ...overrides,
-  };
+  return makeMoveFlowClientStub(overrides);
 }
 
 /** Run the phase against a fake repo with one package holding one .move file. */
@@ -65,7 +58,11 @@ describe('moveIngest empty-facts discrimination', () => {
   it('falls back to the error-level issue when move_package_status is unavailable', async () => {
     const output = await runPhase(
       makeClient({
-        capabilities: async () => ({ hasFactsQuery: true, hasStatusTool: false }),
+        capabilities: async () => ({
+          hasFactsQuery: true,
+          hasFunctionUsageQuery: false,
+          hasStatusTool: false,
+        }),
       }),
     );
 

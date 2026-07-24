@@ -19,6 +19,7 @@ import {
   persistedMoveGraphRequiresCompiler,
   shouldProvisionMoveFlowBeforeFastPath,
 } from './move/constants.js';
+import { summarizeMoveConsistency } from './move/consistency.js';
 import { createMoveIngestPhase } from './move/move-ingest.js';
 import { repoHasMove } from './move/discovery.js';
 import { getMoveFlowReleaseSelection } from './move/install.js';
@@ -40,6 +41,7 @@ import {
   deleteAllInterprocTaintPaths,
   deleteAllCallSummaries,
   deleteAllInjects,
+  deleteAllExternalNodes,
   queryImportersBatch,
   loadFTSExtension,
   wipeLbugDbFiles,
@@ -1330,44 +1332,52 @@ export async function runFullAnalysis(
   // ── Phase 1: Full Pipeline (0–60%) ────────────────────────────────
   // `finally` guarantees the spawned move-flow child is released even if the
   // pipeline throws — important for long-running hosts (MCP daemon, eval-server).
-  let pipelineResult: Awaited<ReturnType<typeof runPipelineFromRepo>>;
-  try {
-    pipelineResult = await runPipelineFromRepo(
-      repoPath,
-      (p) => {
-        const phaseLabel = PHASE_LABELS[p.phase] || p.phase;
-        const scaled = Math.round(p.percent * 0.6);
-        const message = p.detail
-          ? `${p.message || phaseLabel} (${p.detail})`
-          : p.message || phaseLabel;
-        progress(p.phase, scaled, message);
-      },
-      {
-        parseCache,
-        workerPoolSize: options.workerPoolSize,
-        standaloneIngestPhase: createMoveIngestPhase(moveFlowClient),
-        // CFG/PDG opt-in (#2081 M1). PipelineOptions.pdg fans out to the worker
-        // build gate (workerData.pdg) and the scope-resolution emit gate.
-        pdg: options.pdg === true,
-        pdgMaxFunctionLines: options.pdgMaxFunctionLines,
-        pdgMaxEdgesPerFunction: options.pdgMaxEdgesPerFunction,
-        pdgMaxReachingDefEdgesPerFunction: options.pdgMaxReachingDefEdgesPerFunction,
-        pdgMaxCdgEdgesPerFunction: options.pdgMaxCdgEdgesPerFunction,
-        pdgMaxTaintFindingsPerFunction: options.pdgMaxTaintFindingsPerFunction,
-        pdgMaxTaintHops: options.pdgMaxTaintHops,
-        pdgMaxInterprocFindings: options.pdgMaxInterprocFindings,
-        pdgMaxInterprocHops: options.pdgMaxInterprocHops,
-        pdgMaxInterprocEdges: options.pdgMaxInterprocEdges,
-        // Streaming/chunked PDG emit (#2202) — gated to full-rebuild runs
-        // (force === true) so the incremental writeback never reads back an
-        // offloaded BasicBlock layer. Memory-only; byte-identical output.
-        streamPdgEmit: resolveStreamPdgEmit(options),
-        pdgEmitChunkSize: resolvePdgEmitChunkSize(options),
-        fetchWrappers: options.fetchWrappers,
-      },
+  const pipelineResult = await runPipelineFromRepo(
+    repoPath,
+    (p) => {
+      const phaseLabel = PHASE_LABELS[p.phase] || p.phase;
+      const scaled = Math.round(p.percent * 0.6);
+      const message = p.detail
+        ? `${p.message || phaseLabel} (${p.detail})`
+        : p.message || phaseLabel;
+      progress(p.phase, scaled, message);
+    },
+    {
+      parseCache,
+      workerPoolSize: options.workerPoolSize,
+      standaloneIngestPhase: createMoveIngestPhase(moveFlowClient),
+      // CFG/PDG opt-in (#2081 M1). PipelineOptions.pdg fans out to the worker
+      // build gate (workerData.pdg) and the scope-resolution emit gate.
+      pdg: options.pdg === true,
+      pdgMaxFunctionLines: options.pdgMaxFunctionLines,
+      pdgMaxEdgesPerFunction: options.pdgMaxEdgesPerFunction,
+      pdgMaxReachingDefEdgesPerFunction: options.pdgMaxReachingDefEdgesPerFunction,
+      pdgMaxCdgEdgesPerFunction: options.pdgMaxCdgEdgesPerFunction,
+      pdgMaxTaintFindingsPerFunction: options.pdgMaxTaintFindingsPerFunction,
+      pdgMaxTaintHops: options.pdgMaxTaintHops,
+      pdgMaxInterprocFindings: options.pdgMaxInterprocFindings,
+      pdgMaxInterprocHops: options.pdgMaxInterprocHops,
+      pdgMaxInterprocEdges: options.pdgMaxInterprocEdges,
+      // Streaming/chunked PDG emit (#2202) — gated to full-rebuild runs
+      // (force === true) so the incremental writeback never reads back an
+      // offloaded BasicBlock layer. Memory-only; byte-identical output.
+      streamPdgEmit: resolveStreamPdgEmit(options),
+      pdgEmitChunkSize: resolvePdgEmitChunkSize(options),
+      fetchWrappers: options.fetchWrappers,
+    },
+  ).finally(() => moveFlowClient?.shutdown());
+
+  // Move ingest consistency digest — persisted to meta.json below so warnings
+  // (dropped refs, test-only packages) survive the run instead of dying with
+  // the transient progress stream.
+  const moveConsistency = summarizeMoveConsistency(
+    pipelineResult.standaloneIngest.consistencyIssues,
+  );
+  if (moveConsistency) {
+    log(
+      `Move ingest consistency: ${moveConsistency.errorCount} error(s), ` +
+        `${moveConsistency.warningCount} warning(s) — details in meta.json (moveConsistency).`,
     );
-  } finally {
-    await moveFlowClient?.shutdown();
   }
 
   // ── Phase 2: LadybugDB (60–85%) ──────────────────────────────────
@@ -1927,6 +1937,15 @@ export async function runFullAnalysis(
         //     deleting on every non-pdg incremental run (N runs = N copies of
         //     every INJECTS row; CodeRelation has no PK and no read-side dedup).
         await deleteAllInjects();
+        // 2a'. Drop externally-declared dependency nodes (locationFidelity
+        //     'external', filePath '') — the file-keyed delete/write cycle can
+        //     never refresh them, so an external symbol first referenced by
+        //     this run would otherwise be extracted edge-first and silently
+        //     dropped at the rel-COPY fallback. The standalone ingest phase
+        //     regenerates the full external surface every run and
+        //     extractChangedSubgraph re-includes it (isExternalNode), same
+        //     delete-all-then-rebuild contract as Community/Process/INJECTS.
+        await deleteAllExternalNodes();
         // 2b. Drop interprocedural TAINT_PATH edges (#2084 M4 U6) when pdg is on
         //     — their validity is a whole-program property (an A→C flow can be
         //     invalidated by a change to an intermediate function on a third
@@ -2392,8 +2411,23 @@ export async function runFullAnalysis(
     // force a full rebuild), so when the compiler is transiently unavailable
     // the previous record still describes the persisted facts. Stamping
     // false/undefined here would force a needless full rebuild the moment the
-    // compiler returns.
+    // compiler returns. All Move meta travels together: preservation is one
+    // structural decision, not per-field ternaries a future field can forget.
     const preserveMoveMeta = hasMovePackages && !moveFlow && isIncremental;
+    const moveMeta = preserveMoveMeta
+      ? {
+          moveIngestAvailable: existingMeta?.moveIngestAvailable,
+          moveCompilerIdentity: existingMeta?.moveCompilerIdentity,
+          moveFlowReleaseSelection: existingMeta?.moveFlowReleaseSelection,
+          moveConsistency: existingMeta?.moveConsistency,
+        }
+      : {
+          moveIngestAvailable,
+          moveCompilerIdentity: moveFlow?.identity,
+          moveFlowReleaseSelection:
+            moveFlow?.identity.source === 'release' ? desiredMoveFlowRelease : undefined,
+          moveConsistency,
+        };
 
     // Annotated so the capabilities stamp below is compile-checked against
     // RepoMeta's status unions (tri-review 4669518496 P1/U3) — an unannotated
@@ -2455,17 +2489,7 @@ export async function runFullAnalysis(
       // absence, so this is never conditionally omitted.
       cjkSegmentation: getSearchFTSCjkSegmentation(),
       fileHashes: hasGitDir(repoPath) ? newFileHashesRecord : undefined,
-      moveIngestAvailable: preserveMoveMeta
-        ? existingMeta?.moveIngestAvailable
-        : moveIngestAvailable,
-      moveCompilerIdentity: preserveMoveMeta
-        ? existingMeta?.moveCompilerIdentity
-        : moveFlow?.identity,
-      moveFlowReleaseSelection: preserveMoveMeta
-        ? existingMeta?.moveFlowReleaseSelection
-        : moveFlow?.identity.source === 'release'
-          ? desiredMoveFlowRelease
-          : undefined,
+      ...moveMeta,
       // This branch's full live chunk-key set (#2106 R6). `usedKeys` is every
       // chunk hash touched in this scan — cache HITS included (see parse-impl
       // usedKeys.add) — so it's complete even on an incremental run. Persisted
@@ -2691,7 +2715,7 @@ export async function runFullAnalysis(
       stats: meta.stats,
       pipelineResult,
       ftsSkipped: !ftsReady,
-      ingestWarnings: pipelineResult.ingestWarnings,
+      ingestWarnings: pipelineResult.standaloneIngest.ingestWarnings,
       isPrimaryBranch: !placement.branch,
     };
   } catch (err) {

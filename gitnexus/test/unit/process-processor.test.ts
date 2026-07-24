@@ -524,6 +524,73 @@ describe('processProcesses', () => {
     expect(result.stats.totalProcesses).toBeLessThanOrEqual(3);
   });
 
+  it('prioritizes explicit graph entry points ahead of the heuristic top-200 budget', async () => {
+    const graph = createKnowledgeGraph();
+    const addFunction = (id: string, name: string) =>
+      graph.addNode({
+        id,
+        label: 'Function',
+        properties: { name, filePath: `src/${name}.move`, isExported: true },
+      });
+
+    addFunction('func:explicit', 'entry_api');
+    addFunction('func:middle', 'middle');
+    addFunction('func:end', 'end');
+    graph.addNode({
+      id: 'module:root',
+      label: 'Module',
+      properties: { name: 'root', filePath: 'src/root.move' },
+    });
+    graph.addRelationship({
+      id: 'entry:explicit',
+      sourceId: 'func:explicit',
+      targetId: 'module:root',
+      type: 'ENTRY_POINT_OF',
+      confidence: 1,
+      reason: 'compiler-entry-point',
+    });
+    graph.addRelationship({
+      id: 'call:explicit-middle',
+      sourceId: 'func:explicit',
+      targetId: 'func:middle',
+      type: 'CALLS',
+      confidence: 1,
+      reason: 'compiler-call',
+    });
+    graph.addRelationship({
+      id: 'call:middle-end',
+      sourceId: 'func:middle',
+      targetId: 'func:end',
+      type: 'CALLS',
+      confidence: 1,
+      reason: 'compiler-call',
+    });
+
+    // More than 200 caller-free heuristic candidates make the explicit root's
+    // ordinary score too low to survive the legacy global slice.
+    for (let i = 0; i < 205; i++) {
+      const id = `func:noise-${i}`;
+      addFunction(id, `noise_${i}`);
+      graph.addRelationship({
+        id: `call:noise-${i}`,
+        sourceId: id,
+        targetId: 'func:explicit',
+        type: 'CALLS',
+        confidence: 1,
+        reason: 'compiler-call',
+      });
+    }
+
+    const result = await processProcesses(graph, [], undefined, {
+      maxProcesses: 1,
+      maxTraceDepth: 4,
+    });
+
+    expect(result.processes).toHaveLength(1);
+    expect(result.processes[0].entryPointId).toBe('func:explicit');
+    expect(result.processes[0].trace).toEqual(['func:explicit', 'func:middle', 'func:end']);
+  });
+
   // Regression for #2198: the processesPhase dynamic sizing used to cap at
   // Math.min(300, symbolCount/10). On large repos (>3000 symbols) that silently
   // truncated the process index. The cap was removed by extracting

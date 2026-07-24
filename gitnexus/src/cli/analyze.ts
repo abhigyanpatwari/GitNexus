@@ -13,6 +13,7 @@ import os from 'os';
 import { spawn } from 'child_process';
 import v8 from 'v8';
 import cliProgress from 'cli-progress';
+import { ANALYZE_PROGRESS_ACTIVE_ENV } from '../core/logger.js';
 import { isLbugReady, LbugWipeError } from '../core/lbug/lbug-adapter.js';
 import { boundedCheckpointBeforeExit } from '../core/lbug/shutdown-helpers.js';
 import {
@@ -596,7 +597,7 @@ const ANALYZE_CLI_ENV_KEYS = [
   'GITNEXUS_EMBEDDING_BATCH_SIZE',
   'GITNEXUS_EMBEDDING_SUB_BATCH_SIZE',
   'GITNEXUS_EMBEDDING_DEVICE',
-  'GITNEXUS_ANALYZE_PROGRESS_ACTIVE',
+  ANALYZE_PROGRESS_ACTIVE_ENV,
   'GITNEXUS_EMBEDDING_URL',
   'GITNEXUS_EMBEDDING_MODEL',
   'GITNEXUS_EMBEDDING_API_KEY',
@@ -1316,7 +1317,7 @@ const analyzeCommandImpl = async (
   console.warn = barLog;
   // eslint-disable-next-line no-console -- intentional console-routing for progress bar UX
   console.error = barLog;
-  process.env.GITNEXUS_ANALYZE_PROGRESS_ACTIVE = '1';
+  process.env[ANALYZE_PROGRESS_ACTIVE_ENV] = '1';
 
   // Track elapsed time per phase
   let lastPhaseLabel = 'Initializing...';

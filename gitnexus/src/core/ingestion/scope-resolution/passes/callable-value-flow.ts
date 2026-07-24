@@ -30,6 +30,10 @@ interface Target {
   readonly def: SymbolDefinition;
 }
 
+// Shared miss results for the fixpoint's read paths — callers only iterate.
+const EMPTY_TARGETS: ReadonlyMap<string, Target> = new Map();
+const EMPTY_CELLS: ReadonlySet<string> = new Set();
+
 interface FileFact {
   readonly filePath: string;
   readonly site: CallableFlowSite;
@@ -40,11 +44,20 @@ interface FileInvoke {
   readonly site: CallableFlowInvokeSite;
 }
 
-export interface CallableValueFlowWarning {
+interface RawCallableValueFlowWarning {
   readonly language: string;
   readonly context: string;
   readonly candidateCount: number;
   readonly cap: number;
+}
+
+export interface CallableValueFlowWarning extends RawCallableValueFlowWarning {
+  /** Number of internal cells represented by this aggregate warning. */
+  readonly occurrences: number;
+  /** Number of source contexts represented by this aggregate warning. */
+  readonly distinctContexts: number;
+  /** Bounded diagnostic sample; stdout receives one aggregate, not every site. */
+  readonly contextSamples: readonly string[];
 }
 
 export interface CallableValueFlowResult {
@@ -53,6 +66,46 @@ export interface CallableValueFlowResult {
   readonly ambiguousInvokes: number;
   readonly unmatchedInvokes: number;
   readonly iterations: number;
+}
+
+/** Collapse internal-cell overflows to one bounded warning per language/cap. */
+export function aggregateCallableValueFlowWarnings(
+  warnings: Iterable<RawCallableValueFlowWarning>,
+): CallableValueFlowWarning[] {
+  const grouped = new Map<
+    string,
+    RawCallableValueFlowWarning & {
+      // Re-declared mutable so occurrences can raise it (the raw field is readonly).
+      candidateCount: number;
+      occurrences: number;
+      allContexts: Set<string>;
+      contextSamples: string[];
+    }
+  >();
+  for (const warning of warnings) {
+    const key = `${warning.language}\0${warning.cap}`;
+    const current = grouped.get(key);
+    if (!current) {
+      grouped.set(key, {
+        ...warning,
+        occurrences: 1,
+        allContexts: new Set([warning.context]),
+        contextSamples: [warning.context],
+      });
+      continue;
+    }
+
+    current.candidateCount = Math.max(current.candidateCount, warning.candidateCount);
+    current.occurrences++;
+    current.allContexts.add(warning.context);
+    if (current.contextSamples.length < 5 && !current.contextSamples.includes(warning.context)) {
+      current.contextSamples.push(warning.context);
+    }
+  }
+  return [...grouped.values()].map(({ allContexts, ...warning }) => ({
+    ...warning,
+    distinctContexts: allContexts.size,
+  }));
 }
 
 export interface EmitCallableValueFlowInput {
@@ -66,6 +119,12 @@ export interface EmitCallableValueFlowInput {
   readonly isCallableValueTarget?: (def: SymbolDefinition) => boolean;
   readonly hasFileLocalCallableLinkage?: (def: SymbolDefinition) => boolean;
   readonly onWarn?: (warning: CallableValueFlowWarning) => void;
+  /**
+   * Precomputed {@link collectDeferredIndirectSites} result for the same
+   * files/scopes. The orchestrator already needs it to build skip sets;
+   * threading it here avoids a second whole-repo scan. Recomputed when absent.
+   */
+  readonly canonicalInvokeKeys?: ReadonlySet<string>;
 }
 
 /** Position key shared with the existing free/reference skip-set contract. */
@@ -74,6 +133,34 @@ export function callableFlowSiteKey(
   range: { readonly startLine: number; readonly startCol: number },
 ): string {
   return `${filePath}:${range.startLine}:${range.startCol}`;
+}
+
+function warningContext(filePath: string, site: CallableFlowSite): string {
+  let range: { readonly startLine: number; readonly startCol: number };
+  switch (site.kind) {
+    case 'seed':
+    case 'copy':
+    case 'alias':
+    case 'address':
+    case 'load':
+      range = site.destination.atRange;
+      break;
+    case 'store':
+      range = site.pointer.atRange;
+      break;
+    case 'formal':
+      range = site.ownerRange;
+      break;
+    case 'argument':
+    case 'invoke':
+      range = site.callSite;
+      break;
+    default: {
+      const exhaustive: never = site;
+      throw new Error(`Unhandled callable-flow site kind: ${String(exhaustive)}`);
+    }
+  }
+  return `${site.kind}:${callableFlowSiteKey(filePath, range)}`;
 }
 
 /**
@@ -140,7 +227,8 @@ function flowCellOperand(site: CallableFlowSite): CallableFlowOperand | undefine
 export function emitCallableValueFlow(input: EmitCallableValueFlowInput): CallableValueFlowResult {
   const facts: FileFact[] = [];
   const invokes: FileInvoke[] = [];
-  const canonicalInvokeKeys = collectDeferredIndirectSites(input.parsedFiles, input.scopes);
+  const canonicalInvokeKeys =
+    input.canonicalInvokeKeys ?? collectDeferredIndirectSites(input.parsedFiles, input.scopes);
   let unmatchedInvokes = 0;
   for (const parsed of input.parsedFiles) {
     for (const site of parsed.callableFlowSites ?? []) {
@@ -161,7 +249,7 @@ export function emitCallableValueFlow(input: EmitCallableValueFlowInput): Callab
   const addressesByBinding = new Map<string, Set<string>>();
   const overflowedTargets = new Set<string>();
   const overflowedAddresses = new Set<string>();
-  const overflowWarnings = new Map<string, CallableValueFlowWarning>();
+  const overflowWarnings = new Map<string, RawCallableValueFlowWarning>();
   const rawGraphTargets = buildGraphTargetIndex(
     input.scopes,
     input.nodeLookup,
@@ -311,7 +399,7 @@ export function emitCallableValueFlow(input: EmitCallableValueFlowInput): Callab
   ): { readonly targets: ReadonlyMap<string, Target>; readonly overflow: boolean } => {
     watch('target', key);
     return {
-      targets: targetsByBinding.get(key) ?? new Map(),
+      targets: targetsByBinding.get(key) ?? EMPTY_TARGETS,
       overflow: overflowedTargets.has(key),
     };
   };
@@ -321,7 +409,7 @@ export function emitCallableValueFlow(input: EmitCallableValueFlowInput): Callab
   ): { readonly cells: ReadonlySet<string>; readonly overflow: boolean } => {
     watch('address', key);
     return {
-      cells: addressesByBinding.get(key) ?? new Set(),
+      cells: addressesByBinding.get(key) ?? EMPTY_CELLS,
       overflow: overflowedAddresses.has(key),
     };
   };
@@ -476,10 +564,10 @@ export function emitCallableValueFlow(input: EmitCallableValueFlowInput): Callab
 
   for (const fact of facts) {
     const site = fact.site;
-    const context = `${fact.site.kind}:${fact.filePath}`;
     switch (site.kind) {
       case 'copy':
       case 'alias': {
+        const context = warningContext(fact.filePath, site);
         addWorkItem(() => {
           const source = bindingKey(fact.filePath, site.source);
           const destination = bindingKey(fact.filePath, site.destination);
@@ -493,6 +581,7 @@ export function emitCallableValueFlow(input: EmitCallableValueFlowInput): Callab
         break;
       }
       case 'load': {
+        const context = warningContext(fact.filePath, site);
         addWorkItem(() => {
           const destination = bindingKey(fact.filePath, site.destination);
           const reached = reachedCells(fact.filePath, site.pointer);
@@ -509,6 +598,7 @@ export function emitCallableValueFlow(input: EmitCallableValueFlowInput): Callab
         break;
       }
       case 'store': {
+        const context = warningContext(fact.filePath, site);
         addWorkItem(() => {
           const sourceTargets = operandTargets(fact.filePath, site.source);
           const reached = reachedCells(fact.filePath, site.pointer);
@@ -585,7 +675,11 @@ export function emitCallableValueFlow(input: EmitCallableValueFlowInput): Callab
         targetIds.add(id);
       }
       for (const id of dynamicCallees.get(callKey)?.keys() ?? []) targetIds.add(id);
-      let hasIndexedFormal = [...targetIds].some((id) => indexedFormals(id).length > 0);
+      const hasAnyIndexedFormal = (): boolean => {
+        for (const id of targetIds) if (indexedFormals(id).length > 0) return true;
+        return false;
+      };
+      let hasIndexedFormal = hasAnyIndexedFormal();
       if (!hasIndexedFormal && site.directCalleeName !== undefined) {
         for (const target of resolveSeedCandidates(
           fact.filePath,
@@ -601,7 +695,7 @@ export function emitCallableValueFlow(input: EmitCallableValueFlowInput): Callab
         )) {
           targetIds.add(target.id);
         }
-        hasIndexedFormal = [...targetIds].some((id) => indexedFormals(id).length > 0);
+        hasIndexedFormal = hasAnyIndexedFormal();
       }
       const history = dynamicTargetHistory.get(callKey);
       const callOverflow =
@@ -684,7 +778,12 @@ export function emitCallableValueFlow(input: EmitCallableValueFlowInput): Callab
     );
   }
 
-  for (const warning of overflowWarnings.values()) input.onWarn?.(warning);
+  // A large generated bundle can create thousands of distinct binding cells
+  // at the same source site. Preserve the causal evidence while emitting one
+  // structured warning per site instead of one line per internal cell.
+  for (const warning of aggregateCallableValueFlowWarnings(overflowWarnings.values())) {
+    input.onWarn?.(warning);
+  }
 
   // No partial graph output when a hostile/corrupt fact graph exhausts the
   // bounded work budget. The caller receives a warning; NOTE this is not
