@@ -505,22 +505,25 @@ GITNEXUS_FTS_CJK_SEGMENTATION=bigram npx gitnexus analyze --force
 
 ### Analysis runs out of memory
 
-Symptoms on very large repositories (#2649): a V8 `Reached heap limit` crash,
-the machine swap-thrashing, or repeated
-`Replacement worker did not report ready within 5000ms` warnings — the last is
-usually main-thread GC pressure starving healthy workers, not a worker bug.
+Memory management is automatic: `analyze` sizes its heap to the machine
+(always below physical RAM), caps each parse worker, and — rather than
+grinding into a GC death spiral or crash — stops early with a message telling
+you the one thing to do. Repeated
+`Replacement worker did not report ready within 5000ms` warnings on a large
+repository are part of the same picture: memory pressure starving healthy
+workers, not a worker bug (#2649).
 
-`analyze` auto-sizes its heap to fit the machine (never at or above physical
-RAM) and re-runs itself when an inherited `NODE_OPTIONS` heap is smaller than
-that auto cap. Knobs:
+If analyze says the repository doesn't fit, do what the message says:
 
-- `GITNEXUS_AUTO_HEAP=0` — keep the ambient `NODE_OPTIONS` heap instead of the
-  auto cap (a warning is still printed).
-- `GITNEXUS_WORKER_HEAP_MB` — per-parse-worker V8 heap cap (default: half of
-  RAM split across the pool, clamped to 512–4096 MB).
-- `GITNEXUS_HEAP_GUARD=0` — disable the parse-phase abort that stops an
-  analyze once main-thread heap use crosses 92% of the limit (by default it
-  fails fast with guidance instead of entering a GC death spiral).
+- **The machine has more memory to give** (a `NODE_OPTIONS`
+  `--max-old-space-size` pin from your environment is holding analyze back):
+  re-run without the pin — no flags needed.
+- **The machine is the ceiling**: shrink the scope (exclude generated or
+  vendored directories, below) or use a machine with more RAM.
+
+Escape hatches (`GITNEXUS_AUTO_HEAP`, `GITNEXUS_WORKER_HEAP_MB`,
+`GITNEXUS_HEAP_GUARD`) are listed in the environment-variable table below —
+most users never need them.
 
 For very large repositories:
 

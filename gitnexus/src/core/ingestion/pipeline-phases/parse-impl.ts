@@ -95,6 +95,7 @@ import {
 import type { KnowledgeGraph } from '../../graph/types.js';
 import type { PipelineOptions } from '../pipeline.js';
 import fs from 'node:fs';
+import os from 'node:os';
 import path from 'node:path';
 import v8 from 'node:v8';
 import { fileURLToPath, pathToFileURL } from 'node:url';
@@ -145,6 +146,30 @@ export function shouldAbortForHeapPressure(
 ): boolean {
   if (process.env.GITNEXUS_HEAP_GUARD === '0') return false;
   return heapUsedBytes > heapLimitBytes * HEAP_ABORT_FRACTION;
+}
+
+/**
+ * The ONE action a user should take when this repository doesn't fit the
+ * current heap (#2649). Users hitting memory limits are already frustrated —
+ * a menu of env knobs at that moment is noise. Branch on whether the machine
+ * itself has more memory to give: if this process's limit sits well below
+ * what the RAM-aware auto-sizer would grant (an inherited NODE_OPTIONS pin or
+ * explicit flag), the fix is to drop the pin — gitnexus sizes itself.
+ * Otherwise the machine is the ceiling and only scope or hardware helps.
+ * Escape hatches (GITNEXUS_HEAP_GUARD etc.) stay in the README env table.
+ */
+export function heapPressureRemedy(heapLimitBytes: number): string {
+  const autoCapBytes = os.totalmem() * 0.75;
+  if (heapLimitBytes < autoCapBytes * 0.9) {
+    return (
+      `This machine has more memory available: re-run without the --max-old-space-size ` +
+      `pin in NODE_OPTIONS — gitnexus sizes its heap to the machine automatically.`
+    );
+  }
+  return (
+    `This machine is at its memory ceiling: exclude generated or vendored directories ` +
+    `via .gitnexusignore, or analyze on a machine with more RAM.`
+  );
 }
 
 /** Max bytes of source content to load per parse chunk.
@@ -563,8 +588,8 @@ export async function runChunkedParseAndResolve(
   const heapLimitBytes = v8.getHeapStatistics().heap_size_limit;
   if (projectedHeapNeedBytes > heapLimitBytes * PREFLIGHT_WARN_FRACTION) {
     logger.warn(
-      `Projected parse-phase heap need (~${Math.round(projectedHeapNeedBytes / 1024 / 1024)}MB for ${parseableScanned.length} parseable files) approaches the V8 heap limit (${Math.round(heapLimitBytes / 1024 / 1024)}MB). ` +
-        `Analyze may run out of memory. Raise the limit with NODE_OPTIONS="--max-old-space-size=<MB>" (and unset GITNEXUS_AUTO_HEAP=0 if set), or analyze a smaller scope.`,
+      `Large repository: analyzing ${parseableScanned.length} files needs roughly ${Math.round(projectedHeapNeedBytes / 1024 / 1024 / 1024)}GB of memory, ` +
+        `but Node is limited to ${Math.round(heapLimitBytes / 1024 / 1024 / 1024)}GB — analyze may stop early. ${heapPressureRemedy(heapLimitBytes)}`,
     );
   }
 
@@ -928,11 +953,9 @@ export async function runChunkedParseAndResolve(
       const heapLimitNow = v8.getHeapStatistics().heap_size_limit;
       if (shouldAbortForHeapPressure(heapUsedNow, heapLimitNow)) {
         throw new Error(
-          `Analyze aborted at parse chunk ${chunkIdx + 1}/${numChunks}: main-thread heap use ` +
-            `(${Math.round(heapUsedNow / 1024 / 1024)}MB) crossed ${Math.round(HEAP_ABORT_FRACTION * 100)}% of the V8 limit ` +
-            `(${Math.round(heapLimitNow / 1024 / 1024)}MB) — continuing would end in a GC death spiral and OOM (#2649). ` +
-            `Raise the limit with NODE_OPTIONS="--max-old-space-size=<MB>" (unset GITNEXUS_AUTO_HEAP=0 if set), ` +
-            `analyze a smaller scope, or set GITNEXUS_HEAP_GUARD=0 to proceed at your own risk.`,
+          `Analyze stopped before running out of memory: ${Math.round(heapUsedNow / 1024 / 1024)}MB of the ` +
+            `${Math.round(heapLimitNow / 1024 / 1024)}MB Node heap in use at parse chunk ${chunkIdx + 1}/${numChunks} (#2649). ` +
+            heapPressureRemedy(heapLimitNow),
         );
       }
       const chunkPaths = chunks[chunkIdx];
