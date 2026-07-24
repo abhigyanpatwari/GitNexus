@@ -1792,7 +1792,12 @@ export class LocalBackend {
    */
   private async withToolStaleness(repo: RepoHandle, result: unknown): Promise<unknown> {
     if (!canCarryStaleness(result)) return result;
-    return attachToolStaleness(result, await this.stalenessForTool(repo));
+    // Defensive: `checkStalenessAsync` self-catches today, but a rejection here
+    // must never fail the tool — degrade to no-staleness. Paired with the
+    // evict-on-reject in `stalenessForTool`, a transient failure also can't
+    // poison the TTL cache entry (#2655 review F1).
+    const staleness = await this.stalenessForTool(repo).catch(() => undefined);
+    return attachToolStaleness(result, staleness);
   }
 
   /**
@@ -1811,9 +1816,26 @@ export class LocalBackend {
     if (cached && now - cached.at < LocalBackend.TOOL_STALENESS_TTL_MS) {
       return cached.value;
     }
-    const value = checkStalenessAsync(repo.repoPath, repo.lastCommit);
-    this.toolStalenessCache.set(repo.lbugPath, { at: now, value });
-    return value;
+    // Evict the entry if the check rejects so a transient failure isn't served
+    // (as a permanently-rejecting promise) for the rest of the TTL window; the
+    // next call then re-runs. A resolving promise is never evicted, so happy-path
+    // dedup is untouched (#2655 review F1). `Promise.resolve` wraps the call so a
+    // non-thenable return can't throw at this boundary — a no-op for the real
+    // async `checkStalenessAsync`, robust defense-in-depth otherwise.
+    const entry: { at: number; value: Promise<StalenessInfo> } = {
+      at: now,
+      // Only evict if THIS entry is still current — a later call may have
+      // installed a fresh (resolving) entry for the same key before a slow
+      // rejection lands, and that newer entry must not be dropped.
+      value: Promise.resolve(checkStalenessAsync(repo.repoPath, repo.lastCommit)).catch((err) => {
+        if (this.toolStalenessCache.get(repo.lbugPath) === entry) {
+          this.toolStalenessCache.delete(repo.lbugPath);
+        }
+        throw err;
+      }),
+    };
+    this.toolStalenessCache.set(repo.lbugPath, entry);
+    return entry.value;
   }
 
   async callTool(method: string, params: any): Promise<any> {

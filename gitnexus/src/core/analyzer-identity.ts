@@ -612,6 +612,10 @@ function resolveBuildRoot(analyzerModulePath: string): {
         // and (via collectDependencyInputs) dependencyRuntime.manifestPath /
         // lockfilePath — inherits a case-stable root and analyze-stamp equals
         // status-recompute regardless of launch-path casing (#2668).
+        // Migration: a Windows index stamped before this fix carries the old,
+        // un-normalized casing, so the first post-upgrade `status` sees one
+        // spurious "stale" flip — self-healing on the next `analyze`, which
+        // re-stamps the normalized (idempotent) form.
         return {
           packageRoot: normalizeAnalyzerRootPath(packageRoot, process.platform),
           buildRoot: normalizeAnalyzerRootPath(cursor, process.platform),

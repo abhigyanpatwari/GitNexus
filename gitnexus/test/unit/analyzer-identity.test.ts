@@ -1557,4 +1557,38 @@ describe('normalizeAnalyzerRootPath (#2668)', () => {
     );
     expect(normalizeAnalyzerRootPath('/Home/User/Dist', 'darwin')).toBe('/Home/User/Dist');
   });
+
+  // #2668 threading guard: the produced identity's path fields must already be
+  // normalizer-stable, i.e. resolveBuildRoot/resolveRuntimeVariant actually route
+  // build.rootPath and runtime.executablePath through normalizeAnalyzerRootPath.
+  // On POSIX the normalizer is a no-op, so this is a trivially-true fixpoint here
+  // and a real regression guard on Windows CI (where an un-threaded call site
+  // would leave a lowercase drive that the normalizer would change).
+  it('produces identity path fields that are already normalizer-stable', async () => {
+    const fixture = await createTempDir();
+    try {
+      const sourceRoot = path.join(fixture.dbPath, 'src');
+      const modulePath = path.join(sourceRoot, 'core', 'analyzer.ts');
+      await mkdir(path.dirname(modulePath), { recursive: true });
+      await writeFile(
+        path.join(fixture.dbPath, 'package.json'),
+        '{"name":"fixture-analyzer","version":"1.0.0"}\n',
+      );
+      await writeFile(path.join(fixture.dbPath, 'package-lock.json'), '{"lockfileVersion":3}\n');
+      await writeFile(modulePath, 'export const analyzer = 1;\n');
+
+      const identity = resolveAnalyzerRunnerIdentity(pathToFileURL(modulePath).href, {
+        cacheDirectory: path.join(fixture.dbPath, 'identity-cache'),
+      });
+
+      expect(identity.build.rootPath).toBe(
+        normalizeAnalyzerRootPath(identity.build.rootPath, process.platform),
+      );
+      expect(identity.runtime.executablePath).toBe(
+        normalizeAnalyzerRootPath(identity.runtime.executablePath, process.platform),
+      );
+    } finally {
+      await fixture.cleanup();
+    }
+  });
 });
