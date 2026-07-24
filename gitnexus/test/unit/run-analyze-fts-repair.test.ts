@@ -554,10 +554,9 @@ describe('runFullAnalysis FTS repair and verification failure paths', () => {
     // Import the REAL classifier/predicate (not a re-stub) so the test pins the
     // actual fatal-decision logic, per the #2658 review.
     vi.doMock('../../src/core/search/fts-indexes.js', async () => {
-      const actual =
-        await vi.importActual<typeof import('../../src/core/search/fts-indexes.js')>(
-          '../../src/core/search/fts-indexes.js',
-        );
+      const actual = await vi.importActual<typeof import('../../src/core/search/fts-indexes.js')>(
+        '../../src/core/search/fts-indexes.js',
+      );
       return {
         ...actual,
         initialiseSearchFTSStemmer: vi.fn(() => 'porter'),
@@ -1101,10 +1100,13 @@ describe('runFullAnalysis re-resolves git state under the lock (#2658 review H2)
     // getCurrentCommit return a new value on each call.
     const commits = ['commit-before-wait', 'commit-after-wait'];
     let call = 0;
-    const getCurrentCommit = vi.fn(() => commits[call < commits.length ? call++ : commits.length - 1]);
+    const getCurrentCommit = vi.fn(
+      () => commits[call < commits.length ? call++ : commits.length - 1],
+    );
     vi.doMock('../../src/storage/git.js', async () => {
-      const actual =
-        await vi.importActual<typeof import('../../src/storage/git.js')>('../../src/storage/git.js');
+      const actual = await vi.importActual<typeof import('../../src/storage/git.js')>(
+        '../../src/storage/git.js',
+      );
       return {
         ...actual,
         getCurrentCommit,
