@@ -97,20 +97,32 @@ describe('index lock across processes (#2658)', () => {
     }
     // This case targets the FILE backend's reclaim path specifically (the socket
     // backend has no stale file to reclaim). Seed a stale lock owned by a dead,
-    // same-host holder — every child must reclaim it, and the atomic steal must
-    // let exactly one at a time win so no two children are ever in their O_EXCL
+    // same-host holder — every child must reclaim it, and the reclaim must let
+    // exactly one at a time win so no two children are ever in their O_EXCL
     // sentinel section together.
-    const deadRecord = {
-      v: 1,
-      pid: 999_999_999,
-      hostname: os.hostname(),
-      startTime: null,
-      token: 'dead-holder-token',
-      invocationId: 'dead-holder',
-      acquiredAt: new Date(0).toISOString(),
-    };
-    writeFileSync(path.join(dir, 'analyze.lock'), JSON.stringify(deadRecord));
+    //
+    // The reclaim's rename-steal must NOT act on a stale staleness judgment: a
+    // waiter that judged the dead record must re-verify the file still holds it
+    // before renaming, or it will rename a live winner's freshly-created lock
+    // aside and admit a second writer (#2658 review — this reproduced at ~18% per
+    // round of 4-way contention before the judgment-verified steal). One round
+    // catches that regression only ~1-in-6 of the time, so loop several rounds to
+    // make it a reliable guard; with the fix every round is clean.
     const sentinel = path.join(dir, 'critical.sentinel');
+    const seedDeadHolder = (): void => {
+      writeFileSync(
+        path.join(dir, 'analyze.lock'),
+        JSON.stringify({
+          v: 1,
+          pid: 999_999_999,
+          hostname: os.hostname(),
+          startTime: null,
+          token: 'dead-holder-token',
+          invocationId: 'dead-holder',
+          acquiredAt: new Date(0).toISOString(),
+        }),
+      );
+    };
 
     const runChild = (): Promise<{ code: number | null; signal: NodeJS.Signals | null }> =>
       new Promise((resolve) => {
@@ -128,14 +140,19 @@ describe('index lock across processes (#2658)', () => {
         c.once('exit', (code, signal) => resolve({ code, signal }));
       });
 
-    const results = await Promise.all([runChild(), runChild(), runChild(), runChild()]);
-    // Every child acquired, ran its exclusive section, and exited cleanly (0).
-    // Exit 3 = it found the sentinel already present = two holders at once.
-    for (const r of results) {
-      expect(r.signal).toBeNull();
-      expect(r.code).toBe(0);
+    const ROUNDS = 8;
+    const KIDS = 5;
+    for (let round = 0; round < ROUNDS; round++) {
+      seedDeadHolder(); // the previous round's winner released (unlinked) the lock
+      const results = await Promise.all(Array.from({ length: KIDS }, () => runChild()));
+      // Every child acquired, ran its exclusive section, and exited cleanly (0).
+      // Exit 3 = it found the sentinel already present = two holders at once.
+      for (const r of results) {
+        expect(r.signal).toBeNull();
+        expect(r.code).toBe(0);
+      }
+      // No leftover sentinel — the last holder cleaned up.
+      expect(existsSync(sentinel)).toBe(false);
     }
-    // No leftover sentinel — the last holder cleaned up.
-    expect(existsSync(sentinel)).toBe(false);
-  }, 30_000);
+  }, 60_000);
 });

@@ -154,6 +154,14 @@ const SPAWN_CLI = [
   'test/integration/antigravity-hook-e2e.test.ts',
   'test/unit/local-cli-subprocess.test.ts',
   'test/unit/runner-exec-tail.test.ts',
+  // Real cross-process single-writer lock coordination (#2658): child processes
+  // contend for the lock and race to reclaim a dead holder. Process spawning,
+  // kernel socket auto-release (Win named pipe / Linux abstract socket), and the
+  // FILE-backend rename-steal reclaim (macOS/BSD default) all vary across OSes —
+  // the exact behaviors the Windows/macOS matrix must prove. macOS timing first
+  // exposed a file-backend double-admit race here (#2658 review); the reclaim is
+  // now judgment-verified so a live holder is never displaced.
+  'test/integration/analyze-index-lock-concurrency.test.ts',
 ];
 
 // Worker threads tests — exercise real worker_threads which have

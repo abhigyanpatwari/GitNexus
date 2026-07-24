@@ -230,25 +230,54 @@ const isStale = (holder: LockRecord): boolean => {
 };
 
 /**
- * Reclaim a lock file we judged stale (dead holder) or malformed (unreadable),
- * atomically. `rename` moves the exact inode aside in ONE syscall to a name
- * unique to us (`<lock>.dead.<our token>`), so when two waiters both try to
- * reclaim the same dead holder exactly one wins — the loser's `rename` fails
- * with ENOENT because the inode is already gone. This closes the check-then-
- * unlink TOCTOU where a waiter could `unlink` a *different* owner's freshly
- * O_EXCL-created lock. The aside file is then removed best-effort; the O_EXCL
- * create in the acquire loop remains the sole arbiter of new ownership.
+ * Reclaim a lock file we judged reclaimable — a dead holder (`expected` = its
+ * record) or a malformed/unreadable crash-orphan (`expected` = null) — moving
+ * the exact inode aside in ONE `rename` syscall to a token-unique name so two
+ * waiters reclaiming the same orphan can't both win (the loser's rename ENOENTs).
+ *
+ * CRITICAL (#2658 review): the reclaim must not act on a STALE judgment. The
+ * staleness decision (`isStale` / malformed-grace) happened a few syscalls ago;
+ * a live writer may have O_EXCL-created its own lock at `lockPath` since. Blindly
+ * renaming that live lock aside would delete it and admit a SECOND writer — the
+ * exact double-writer this lock exists to prevent (reproduced: ~18%/round under
+ * 4-way reclaim contention on the file backend). So:
+ *   1. re-read `lockPath` immediately BEFORE the rename and confirm it still holds
+ *      exactly what we judged (same token, or still-unreadable) — shrinking the
+ *      window to the single gap between this read and the rename;
+ *   2. after the rename, confirm what we ACTUALLY moved matches the judgment; if a
+ *      live lock slipped into that residual gap, RESTORE it (rename back) so its
+ *      holder is never displaced, and lose the reclaim.
+ * A concurrent creator whose fresh lock the restore overwrites is caught by the
+ * acquire loop's post-write read-back verify (see acquireViaFile), so it backs
+ * off rather than proceeding as a second writer.
  *
  * Returns true if we won the reclaim (caller retries the create), false if we
- * lost the race (caller re-loops and re-reads).
+ * lost the race or the judgment went stale (caller re-loops and re-reads).
  */
-const stealLock = (lockPath: string, me: LockRecord): boolean => {
+const matchesJudgment = (record: LockRecord | null, expected: LockRecord | null): boolean =>
+  expected === null ? record === null : record?.token === expected.token;
+
+const stealLock = (lockPath: string, me: LockRecord, expected: LockRecord | null): boolean => {
+  // (1) Re-verify the judgment still holds right before we move anything.
+  if (!matchesJudgment(readRecord(lockPath), expected)) return false;
+  if (expected === null && !existsSync(lockPath)) return false; // malformed → but now vanished
+
   const aside = `${lockPath}.dead.${me.token}`;
   try {
     renameSync(lockPath, aside);
   } catch (err) {
     if ((err as NodeJS.ErrnoException).code === 'ENOENT') return false; // another stealer won
     throw err;
+  }
+  // (2) Confirm what we moved is what we judged; if a live lock slipped into the
+  // read→rename gap, put it back — a live holder must never be displaced.
+  if (!matchesJudgment(readRecord(aside), expected)) {
+    try {
+      renameSync(aside, lockPath); // restore; an overwritten concurrent creator's read-back backs it off
+    } catch {
+      /* slot re-taken between our move and restore — leave it; we lost the reclaim */
+    }
+    return false;
   }
   try {
     unlinkSync(aside); // uniquely ours by token → safe; best-effort
@@ -442,7 +471,7 @@ const acquireViaFile = async (
           `Reclaiming stale index lock from dead analyze (pid ${holder.pid}, ` +
             `invocation ${holder.invocationId}).`,
         );
-        stealLock(lockPath, me);
+        stealLock(lockPath, me, holder); // reclaim ONLY this dead record; live locks are never stolen
         continue;
       }
       // Live holder → wait.
@@ -482,7 +511,7 @@ const acquireViaFile = async (
     if (malformedSince === null) malformedSince = Date.now();
     if (Date.now() - malformedSince >= malformedGraceMs(pollMs)) {
       opts.log?.('Reclaiming a malformed/partial index lock file (no readable owner record).');
-      stealLock(lockPath, me);
+      stealLock(lockPath, me, null); // reclaim ONLY while still unreadable; a live lock written since is left
       malformedSince = null;
       continue;
     }
