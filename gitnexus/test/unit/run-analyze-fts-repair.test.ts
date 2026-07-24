@@ -1140,4 +1140,65 @@ describe('runFullAnalysis re-resolves git state under the lock (#2658 review H2)
       await tmpRepo.cleanup();
     }
   });
+
+  it('releases the lock when the under-lock re-resolve throws (no leak) (#2658 review H2 self-review)', async () => {
+    // The re-resolve runs UNDER the held lock and can throw (e.g. a `--branch`
+    // that no longer matches a checkout switched during the wait). That throw
+    // must still release the lock — the loop lives inside the try/finally.
+    vi.doUnmock('../../src/storage/git.js');
+    const release = vi.fn();
+    vi.doMock('../../src/storage/index-lock.js', async () => {
+      const actual = await vi.importActual<typeof import('../../src/storage/index-lock.js')>(
+        '../../src/storage/index-lock.js',
+      );
+      return {
+        ...actual,
+        acquireIndexLock: vi.fn(async () => ({
+          record: {
+            v: 1,
+            pid: 1,
+            hostname: 'h',
+            startTime: null,
+            token: 't',
+            invocationId: 'i',
+            acquiredAt: '',
+          },
+          release,
+        })),
+      };
+    });
+    // getCurrentCommit succeeds on the pre-lock resolve, then throws on the
+    // under-lock re-resolve — the exact shape a mid-wait git change produces.
+    let call = 0;
+    vi.doMock('../../src/storage/git.js', async () => {
+      const actual = await vi.importActual<typeof import('../../src/storage/git.js')>(
+        '../../src/storage/git.js',
+      );
+      return {
+        ...actual,
+        hasGitDir: () => true,
+        getCurrentBranch: () => 'main',
+        isWorkingTreeDirty: () => false,
+        getCurrentCommit: () => {
+          if (call++ === 0) return 'c1';
+          throw new Error('git HEAD read failed mid-wait');
+        },
+      };
+    });
+
+    const tmpRepo = await createTempDir('gitnexus-h2-leak-');
+    try {
+      const { runFullAnalysis } = await import('../../src/core/run-analyze.js');
+      const err = await runFullAnalysis(
+        tmpRepo.dbPath,
+        { force: true },
+        { onProgress: () => {}, onLog: () => {} },
+      ).catch((e: unknown) => e);
+      expect(err).toBeInstanceOf(Error);
+      expect(release).toHaveBeenCalledTimes(1); // lock freed despite the throw
+    } finally {
+      vi.doUnmock('../../src/storage/index-lock.js');
+      await tmpRepo.cleanup();
+    }
+  });
 });
