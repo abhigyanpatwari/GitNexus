@@ -555,13 +555,10 @@ async function ensureHeap(): Promise<boolean> {
   const ambientHeapMb = parseMaxOldSpaceMb(nodeOpts);
   if (ambientHeapMb !== null) {
     if (ambientHeapMb >= RESPAWN_HEAP_MB) return false;
-    if (process.env.GITNEXUS_AUTO_HEAP === '0') {
-      cliWarn(
-        `  NODE_OPTIONS pins the heap to ${ambientHeapMb}MB — below the ${RESPAWN_HEAP_MB}MB this machine's RAM supports.\n` +
-          `  Keeping it because GITNEXUS_AUTO_HEAP=0 is set; large repositories may run out of memory.\n`,
-      );
-      return false;
-    }
+    // Explicit opt-out is honored SILENTLY: the operator already made the
+    // call, and stderr-sensitive consumers (test harnesses, scripts) rely on
+    // a quiet run. Only the default override path warns.
+    if (process.env.GITNEXUS_AUTO_HEAP === '0') return false;
     cliWarn(
       `  NODE_OPTIONS pins the heap to ${ambientHeapMb}MB — below the ${RESPAWN_HEAP_MB}MB this machine's RAM supports.\n` +
         `  Re-running analyze with the larger auto-sized cap (set GITNEXUS_AUTO_HEAP=0 to keep the NODE_OPTIONS value).\n`,
@@ -576,7 +573,12 @@ async function ensureHeap(): Promise<boolean> {
   const cliFlags = [HEAP_FLAG, SEMI_FLAG];
   if (!nodeOpts.includes('--stack-size')) cliFlags.push(STACK_FLAG);
 
-  const childArgs = [...cliFlags, ...process.argv.slice(1)];
+  // Preserve the parent's node flags (execArgv) — dropping them breaks any
+  // loader-launched CLI: `node --import tsx src/cli/index.ts` respawned
+  // without `--import tsx` cannot execute TypeScript and dies with a
+  // swallowed exit 1 (#2649 review). Our heap/semi/stack flags come AFTER
+  // execArgv so V8's later-flag-wins semantics resolve duplicates our way.
+  const childArgs = [...process.execArgv, ...cliFlags, ...process.argv.slice(1)];
   const childEnv = {
     ...process.env,
     NODE_OPTIONS: `${nodeOpts} ${HEAP_FLAG} ${SEMI_FLAG}`.trim(),

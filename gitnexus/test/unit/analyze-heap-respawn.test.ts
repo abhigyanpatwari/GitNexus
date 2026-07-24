@@ -171,7 +171,7 @@ describe('analyzeCommand heap respawn', () => {
     expect(warn?.msg).toContain('Re-running analyze with the larger auto-sized cap');
   });
 
-  it('honors GITNEXUS_AUTO_HEAP=0: keeps the small ambient heap and only warns (#2649)', async () => {
+  it('honors GITNEXUS_AUTO_HEAP=0: keeps the small ambient heap, silently (#2649)', async () => {
     process.env.NODE_OPTIONS = '--max-old-space-size=4096';
     process.env.GITNEXUS_AUTO_HEAP = '0';
     getHeapStatisticsMock.mockReturnValue({ heap_size_limit: 4096 * 1024 * 1024 });
@@ -183,8 +183,27 @@ describe('analyzeCommand heap respawn', () => {
     cap.restore();
 
     expect(spawnMock).not.toHaveBeenCalled();
-    const warn = cap.records().find((r) => r.msg.includes('pins the heap to 4096MB'));
-    expect(warn?.msg).toContain('GITNEXUS_AUTO_HEAP=0');
+    // Explicit opt-out stays quiet: stderr-sensitive consumers (e2e
+    // harnesses, scripts) rely on no extra warning here.
+    const warns = cap.records().filter((r) => r.msg.includes('pins the heap'));
+    expect(warns).toEqual([]);
+  });
+
+  it('preserves parent execArgv (e.g. a tsx loader) in the respawned child argv (#2649)', async () => {
+    delete process.env.NODE_OPTIONS;
+    restoreStderrIsTTY = setStreamIsTTY(process.stderr, true);
+    getHeapStatisticsMock.mockReturnValue({ heap_size_limit: 512 * 1024 * 1024 });
+    mockSpawnExit();
+
+    const { analyzeCommand } = await import('../../src/cli/analyze.js');
+    await analyzeCommand(undefined, {});
+
+    expect(spawnMock).toHaveBeenCalledTimes(1);
+    const [, args] = spawnMock.mock.calls[0];
+    // The child argv must start with the parent's node flags so
+    // loader-launched CLIs (node --import tsx src/cli/index.ts) survive the
+    // respawn; our heap flags follow and win via later-flag-wins.
+    expect(args.slice(0, process.execArgv.length)).toEqual(process.execArgv);
   });
 
   it('parseMaxOldSpaceMb: last occurrence wins, absent and malformed values are null', async () => {
