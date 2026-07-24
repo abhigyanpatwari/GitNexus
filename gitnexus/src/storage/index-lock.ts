@@ -13,30 +13,37 @@
  *
  * Ownership lives with the process that runs the pipeline (the heap-respawn
  * child when a respawn happens, the original otherwise) — NOT a supervising
- * parent. The liveness pid in the lock record is therefore always the real
- * writer: if a supervising parent is SIGKILLed while an orphaned child keeps
- * writing, the lock stays valid (child pid alive) instead of looking dead and
- * inviting a second writer. See run-analyze.ts for the acquire site.
+ * parent — so the entity the OS tracks for liveness is always the real writer.
+ * See run-analyze.ts for the acquire site.
  *
- * Backend: an `O_EXCL` lock FILE holding a JSON record. This is deliberately a
- * behind-an-interface choice — a kernel advisory lock (`flock`/`LockFileEx`),
- * which the OS releases automatically on ANY exit, is the stronger end state
- * but needs a native dependency. `acquireIndexLock` is the seam: swap the
- * backend later without touching analyze orchestration. Final ownership is
- * always decided by the atomic `O_EXCL` create — the liveness/stale logic only
- * governs whether a *dead* holder's file may be removed first.
+ * TWO BACKENDS behind the {@link acquireIndexLock} seam:
  *
- * Scope: cross-process, same logical index dir. Cross-HOST contention (a shared
- * network mount) is never force-stolen — a foreign hostname's lock is waited on,
- * never reclaimed — because pid liveness is meaningless across hosts. The
- * motivating case (local hook-driven re-index) is single-host.
+ *  - **socket** (Windows named pipe / Linux abstract socket, via `net`) — the
+ *    preferred, KERNEL-OWNED lock. Holding it = holding a listening endpoint the
+ *    kernel binds to this process; `EADDRINUSE` therefore means a *live* holder,
+ *    and the kernel drops the binding the instant the holder exits for ANY reason
+ *    (clean exit, crash, OOM, SIGKILL). That makes it provably race-free: no
+ *    stale detection, no pid-reuse guess, no takeover, and — since the endpoint
+ *    lives outside the index dir — no filesystem write, so it works unchanged on
+ *    a read-only index mount. This is the same class of kernel object as the
+ *    Windows named mutex the issue's reporter used as an external workaround, but
+ *    built from Node's stdlib `net`, so it adds NO native dependency and cannot
+ *    break `npx gitnexus` install anywhere.
  *
- * Waiting is bounded by a finite default timeout, not because a live holder
- * won't finish, but because a *reused* pid can masquerade as a live holder on
- * any platform without process start-time verification (everything but Linux).
- * The timeout stops waiting and errors — it never steals a possibly-live
- * holder — so a pid-reuse ghost costs a bounded wait, never a corrupt
- * double-write. See AcquireOptions.timeoutMs.
+ *  - **file** (`O_EXCL` pidfile) — the portable fallback for macOS/BSD (no
+ *    abstract sockets; filesystem sockets don't release cleanly on death) and
+ *    for any environment where the socket backend can't bind. It uses pid-
+ *    liveness staleness, an atomic rename-steal reclaim, bounded malformed-file
+ *    handling, read-only tolerance, and a finite wait timeout (a reused pid can
+ *    masquerade as live where process start-time isn't verifiable, so waiting is
+ *    bounded rather than a hang). Its stale-takeover has an irreducible narrow
+ *    race — inherent to file-based advisory locks — which is precisely why the
+ *    socket backend is preferred; only a kernel primitive closes it.
+ *
+ * Scope: cross-process, same logical index dir. The file backend never steals a
+ * foreign-host lock (pid liveness is meaningless across hosts); the socket
+ * backend is single-host by nature. The motivating case (local hook-driven
+ * re-index) is single-host. See AcquireOptions.timeoutMs for the wait ceiling.
  */
 import {
   openSync,
@@ -49,9 +56,10 @@ import {
   mkdirSync,
   readdirSync,
 } from 'node:fs';
+import net from 'node:net';
 import path from 'node:path';
 import os from 'node:os';
-import { randomBytes, randomUUID } from 'node:crypto';
+import { randomBytes, randomUUID, createHash } from 'node:crypto';
 
 const LOCK_FILENAME = 'analyze.lock';
 const LOCK_RECORD_VERSION = 1 as const;
@@ -336,11 +344,19 @@ const resolveTimeoutMs = (opt?: number): number => {
  * returns a handle. Rejects with `IndexLockTimeoutError` if `timeoutMs` is
  * exceeded while a live holder still holds the lock.
  */
-export const acquireIndexLock = async (
+/**
+ * File-based (O_EXCL pidfile) backend. The portable fallback used on platforms
+ * without the socket backend (macOS/BSD) or when the OS socket lock is
+ * unavailable. Carries the pid-liveness staleness, atomic rename-steal reclaim,
+ * bounded malformed-file handling, and read-only tolerance. Its stale-takeover
+ * has an irreducible (narrow) race — see the module header — which is why the
+ * socket backend is preferred where available.
+ */
+const acquireViaFile = async (
   lockDir: string,
-  opts: AcquireOptions = {},
+  me: LockRecord,
+  opts: AcquireOptions,
 ): Promise<IndexLockHandle> => {
-  const me = buildRecord();
   try {
     mkdirSync(lockDir, { recursive: true });
   } catch (err) {
@@ -367,7 +383,6 @@ export const acquireIndexLock = async (
       } finally {
         closeSync(fd);
       }
-      sweepStagingArtifacts(lockDir, opts.log);
       return {
         record: me,
         release: () => {
@@ -448,4 +463,159 @@ export const acquireIndexLock = async (
     if (waited >= timeoutMs) throw new IndexLockTimeoutError(unknownHolder(), waited);
     await sleep(jitteredDelay(pollMs, timeoutMs, waited));
   }
+};
+
+/** Signals that the OS socket backend can't be used here (e.g. abstract
+ *  namespace disabled, sandbox, or an unexpected bind error) so the caller
+ *  should fall back to the file backend. NOT thrown for EADDRINUSE (that is a
+ *  live holder → wait) or timeouts (those propagate as IndexLockTimeoutError). */
+class SocketLockUnavailable extends Error {
+  constructor(readonly cause: NodeJS.ErrnoException) {
+    super(`OS socket lock unavailable: ${cause.code ?? cause.message}`);
+    this.name = 'SocketLockUnavailable';
+  }
+}
+
+/**
+ * Stable OS-IPC endpoint name for an index directory. The name is derived from
+ * the resolved absolute path (case-folded on Windows), so two processes
+ * targeting the same slot collide and separate worktrees/branches never do. The
+ * endpoint lives OUTSIDE the index directory (abstract namespace / pipe
+ * namespace), so the lock needs no filesystem write and is unaffected by a
+ * read-only index mount.
+ */
+const socketLockName = (lockDir: string): string => {
+  const resolved = path.resolve(lockDir);
+  const key = createHash('sha256')
+    .update(process.platform === 'win32' ? resolved.toLowerCase() : resolved)
+    .digest('hex')
+    .slice(0, 32);
+  return process.platform === 'win32'
+    ? `\\\\.\\pipe\\gitnexus-idx-${key}`
+    : `\0gitnexus-idx-${key}`; // Linux abstract socket (no filesystem entry)
+};
+
+/** Attempt to listen; resolve to null on success or the error on failure. */
+const tryListen = (server: net.Server, name: string): Promise<NodeJS.ErrnoException | null> =>
+  new Promise((resolve) => {
+    const onError = (err: NodeJS.ErrnoException): void => {
+      server.removeListener('listening', onListening);
+      resolve(err);
+    };
+    const onListening = (): void => {
+      server.removeListener('error', onError);
+      resolve(null);
+    };
+    server.once('error', onError);
+    server.once('listening', onListening);
+    server.listen(name);
+  });
+
+/**
+ * OS-owned socket/pipe backend (Windows named pipe, Linux abstract socket).
+ * Holding the lock = holding a listening endpoint the kernel binds to this
+ * process; `EADDRINUSE` therefore means a *live* holder, and the kernel drops
+ * the binding the instant the holder exits (clean exit, crash, OOM, SIGKILL) —
+ * so there is no stale detection, no reclaim, and no takeover race. See the
+ * module header for why this is preferred over the file backend.
+ */
+const acquireViaSocket = async (
+  lockDir: string,
+  me: LockRecord,
+  opts: AcquireOptions,
+): Promise<IndexLockHandle> => {
+  const name = socketLockName(lockDir);
+  const pollMs = opts.pollMs ?? DEFAULT_POLL_MS;
+  const timeoutMs = resolveTimeoutMs(opts.timeoutMs);
+  const startedAt = Date.now();
+  let announcedWait = false;
+  let lastDiagnosticAt = 0;
+
+  for (;;) {
+    const server = net.createServer();
+    // Never keep the process alive on the lock's account, and never hold an
+    // incoming connection (nothing should connect; drop any stray peer).
+    server.unref();
+    server.on('connection', (sock) => sock.destroy());
+    const listenErr = await tryListen(server, name);
+
+    if (!listenErr) {
+      return {
+        record: me,
+        release: () => {
+          try {
+            server.close();
+          } catch {
+            /* already closed / releasing on exit */
+          }
+        },
+      };
+    }
+
+    // Only EADDRINUSE means "held by a live holder → wait". Anything else means
+    // this environment can't use the socket backend → fall back to the file one.
+    if (listenErr.code !== 'EADDRINUSE') throw new SocketLockUnavailable(listenErr);
+
+    if (!announcedWait) {
+      announcedWait = true;
+      opts.onWaitStart?.(me);
+      opts.log?.('Another gitnexus analyze is refreshing this index — waiting for it to finish.');
+    }
+    const waited = Date.now() - startedAt;
+    if (waited >= timeoutMs) throw new IndexLockTimeoutError(unknownHolder(), waited);
+    if (Date.now() - lastDiagnosticAt >= DIAGNOSTIC_INTERVAL_MS) {
+      lastDiagnosticAt = Date.now();
+      if (waited >= DIAGNOSTIC_INTERVAL_MS) {
+        opts.log?.(`Still waiting for another analyze (${Math.round(waited / 1000)}s elapsed).`);
+      }
+    }
+    await sleep(jitteredDelay(pollMs, timeoutMs, waited));
+  }
+};
+
+/** Platforms whose OS IPC namespace gives a clean, auto-releasing lock via
+ *  `net`: Windows named pipes and Linux abstract sockets. Elsewhere (macOS/BSD)
+ *  the file backend is used (no abstract namespace; filesystem sockets don't
+ *  release cleanly on death). Override for tests via GITNEXUS_INDEX_LOCK_BACKEND
+ *  = 'socket' | 'file'. */
+const selectBackend = (): 'socket' | 'file' => {
+  const override = process.env.GITNEXUS_INDEX_LOCK_BACKEND;
+  if (override === 'socket' || override === 'file') return override;
+  return process.platform === 'win32' || process.platform === 'linux' ? 'socket' : 'file';
+};
+
+/**
+ * Acquire the exclusive write lock for `lockDir` (the resolved index slot
+ * directory). Uses the OS socket/pipe backend where available (Windows/Linux),
+ * falling back to the file backend otherwise or if the socket backend is
+ * unusable in this environment. After acquiring, sweeps orphaned staging files
+ * under the lock (best-effort; a no-op on a read-only mount). Rejects with
+ * `IndexLockTimeoutError` if `timeoutMs` elapses while another live holder holds
+ * the lock.
+ */
+export const acquireIndexLock = async (
+  lockDir: string,
+  opts: AcquireOptions = {},
+): Promise<IndexLockHandle> => {
+  const me = buildRecord();
+  let handle: IndexLockHandle;
+  if (selectBackend() === 'socket') {
+    try {
+      handle = await acquireViaSocket(lockDir, me, opts);
+    } catch (err) {
+      if (!(err instanceof SocketLockUnavailable)) throw err; // timeout etc. propagate
+      opts.log?.('Index lock: OS socket lock unavailable here — using the file lock.');
+      handle = await acquireViaFile(lockDir, me, opts);
+    }
+  } else {
+    handle = await acquireViaFile(lockDir, me, opts);
+  }
+  // Reclaim crashed-build staging orphans while we hold the lock. Best-effort:
+  // a read-only mount (no orphans reachable) just no-ops.
+  try {
+    sweepStagingArtifacts(lockDir, opts.log);
+  } catch {
+    /* best-effort */
+  }
+  return handle;
 };

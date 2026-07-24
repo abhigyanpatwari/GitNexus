@@ -1,15 +1,18 @@
 /**
- * Real cross-process test for the index write lock (#2658): a child process
- * holds the lock while this process tries to acquire the same directory.
+ * Real cross-process tests for the index write lock (#2658): child processes
+ * contend for the lock on the same directory as this process.
  *
- *  - mutual exclusion: while the child holds it, our acquire blocks and times
- *    out (never steals a live holder).
- *  - kill recovery: after the child is SIGKILLed, our next acquire reclaims the
- *    now-dead holder's lock and succeeds.
+ *  - Test 1 exercises the DEFAULT backend (the OS socket/pipe lock on
+ *    Linux/Windows): while the child holds it, our acquire blocks and times out;
+ *    after the child is SIGKILLed the kernel drops the binding and our next
+ *    acquire succeeds — the kernel-auto-release guarantee, no stale handling.
+ *  - Test 2 pins the FILE backend and races several children reclaiming one dead
+ *    holder, asserting the atomic rename-steal never lets two into the critical
+ *    section at once.
  *
  * The child imports the BUILT module (dist/) and this process imports the
- * source — proving the on-disk record is interoperable, and that the guarantee
- * is a genuine cross-process one rather than same-process bookkeeping.
+ * source, proving the guarantee is a genuine cross-process one (and, for the
+ * socket backend, that both derive the same endpoint name for a given dir).
  */
 import { describe, it, expect, beforeEach, afterEach } from 'vitest';
 import { spawn, type ChildProcess } from 'node:child_process';
@@ -92,9 +95,11 @@ describe('index lock across processes (#2658)', () => {
           `(or use \`npm run test:integration\`, which builds via pretest:integration).`,
       );
     }
-    // Seed a stale lock owned by a dead, same-host holder — every child must
-    // reclaim it, and the atomic steal must let exactly one at a time win so
-    // no two children are ever in their O_EXCL sentinel section together.
+    // This case targets the FILE backend's reclaim path specifically (the socket
+    // backend has no stale file to reclaim). Seed a stale lock owned by a dead,
+    // same-host holder — every child must reclaim it, and the atomic steal must
+    // let exactly one at a time win so no two children are ever in their O_EXCL
+    // sentinel section together.
     const deadRecord = {
       v: 1,
       pid: 999_999_999,
@@ -116,6 +121,7 @@ describe('index lock across processes (#2658)', () => {
             LOCK_DIR: dir,
             SENTINEL: sentinel,
             MODE: 'EXCLUSIVE',
+            GITNEXUS_INDEX_LOCK_BACKEND: 'file',
           },
           stdio: ['ignore', 'pipe', 'pipe'],
         });

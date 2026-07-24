@@ -40,8 +40,12 @@ const seedLock = (overrides: Partial<LockRecord>): void => {
 
 beforeEach(() => {
   dir = mkdtempSync(path.join(os.tmpdir(), 'gnx-lock-'));
+  // These suites exercise the file (O_EXCL pidfile) backend directly. On Linux
+  // the default is the socket backend, so pin the file backend explicitly.
+  process.env.GITNEXUS_INDEX_LOCK_BACKEND = 'file';
 });
 afterEach(() => {
+  delete process.env.GITNEXUS_INDEX_LOCK_BACKEND;
   rmSync(dir, { recursive: true, force: true });
 });
 
@@ -235,6 +239,49 @@ describe('ftsFailureIsFatal (#2658)', () => {
     expect(ftsFailureIsFatal(undefined, true)).toBe(false);
   });
 });
+
+// The OS socket/pipe backend is only meaningful where `net` gives a clean,
+// auto-releasing namespace: Linux abstract sockets and Windows named pipes.
+describe.skipIf(process.platform !== 'linux' && process.platform !== 'win32')(
+  'OS socket lock backend (#2658)',
+  () => {
+    // Override the file-backend pin from the outer beforeEach.
+    beforeEach(() => {
+      process.env.GITNEXUS_INDEX_LOCK_BACKEND = 'socket';
+    });
+
+    it('holds no filesystem lock file (works on a read-only index dir)', async () => {
+      const lock = await acquireIndexLock(dir, { timeoutMs: 2000 });
+      expect(existsSync(lockPath())).toBe(false); // endpoint is outside the dir
+      lock.release();
+    });
+
+    it('excludes a second acquire on the same dir, then frees it on release', async () => {
+      const first = await acquireIndexLock(dir, { timeoutMs: 2000 });
+      // A second acquire on the SAME slot is refused by the kernel (EADDRINUSE)
+      // and waits, then times out — the live holder is never displaced.
+      await expect(acquireIndexLock(dir, { timeoutMs: 300, pollMs: 20 })).rejects.toBeInstanceOf(
+        IndexLockTimeoutError,
+      );
+      first.release();
+      // Once released, the endpoint is free again.
+      const second = await acquireIndexLock(dir, { timeoutMs: 2000 });
+      second.release();
+    });
+
+    it('gives independent locks to different index dirs', async () => {
+      const other = mkdtempSync(path.join(os.tmpdir(), 'gnx-lock-other-'));
+      try {
+        const a = await acquireIndexLock(dir, { timeoutMs: 2000 });
+        const b = await acquireIndexLock(other, { timeoutMs: 2000 }); // distinct name → no contention
+        a.release();
+        b.release();
+      } finally {
+        rmSync(other, { recursive: true, force: true });
+      }
+    });
+  },
+);
 
 describe('read-only / permission-denied filesystem (#2658)', () => {
   it('classifies EROFS/EACCES/EPERM as tolerable, others not', () => {
