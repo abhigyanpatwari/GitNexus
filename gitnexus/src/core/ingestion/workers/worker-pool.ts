@@ -818,7 +818,7 @@ function waitForWorkerReady(worker: Worker, readyTimeoutMs: number): Promise<voi
         new Error(
           withStderr(
             worker,
-            `Replacement worker did not report ready within ${readyTimeoutMs}ms — likely crashed during top-of-script init (slow host? raise GITNEXUS_WORKER_READY_TIMEOUT_MS)`,
+            `Replacement worker did not report ready within ${readyTimeoutMs}ms — likely crashed during top-of-script init (slow host? raise GITNEXUS_WORKER_READY_TIMEOUT_MS; repeated on a large repo? likely main-thread memory pressure — see the "Analysis runs out of memory" README section, #2649)`,
           ),
         ),
       );

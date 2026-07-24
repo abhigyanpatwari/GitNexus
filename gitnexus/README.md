@@ -505,6 +505,23 @@ GITNEXUS_FTS_CJK_SEGMENTATION=bigram npx gitnexus analyze --force
 
 ### Analysis runs out of memory
 
+Symptoms on very large repositories (#2649): a V8 `Reached heap limit` crash,
+the machine swap-thrashing, or repeated
+`Replacement worker did not report ready within 5000ms` warnings — the last is
+usually main-thread GC pressure starving healthy workers, not a worker bug.
+
+`analyze` auto-sizes its heap to fit the machine (never at or above physical
+RAM) and re-runs itself when an inherited `NODE_OPTIONS` heap is smaller than
+that auto cap. Knobs:
+
+- `GITNEXUS_AUTO_HEAP=0` — keep the ambient `NODE_OPTIONS` heap instead of the
+  auto cap (a warning is still printed).
+- `GITNEXUS_WORKER_HEAP_MB` — per-parse-worker V8 heap cap (default: half of
+  RAM split across the pool, clamped to 512–4096 MB).
+- `GITNEXUS_HEAP_GUARD=0` — disable the parse-phase abort that stops an
+  analyze once main-thread heap use crosses 92% of the limit (by default it
+  fails fast with guidance instead of entering a GC death spiral).
+
 For very large repositories:
 
 ```bash
@@ -567,6 +584,9 @@ Four env vars expose the pool's resilience layers (respawn budget, cumulative-ti
 | `GITNEXUS_WORKER_CONSECUTIVE_FAILURE_THRESHOLD` | `max(3, poolSize)`      | Per-slot consecutive deaths before the pool's circuit breaker trips. After tripping, dispatches require a fresh pool.                                                                            |
 | `GITNEXUS_WORKER_SHUTDOWN_DRAIN_MS`             | `30000`                 | Max wait at pool shutdown for a retired worker still inside native code — terminated at its next JS-safe point instead of mid-native-call, which would abort the process (`Napi::Error`, #2432). |
 | `GITNEXUS_WORKER_READY_TIMEOUT_MS`              | `5000`                  | Startup budget for a parse worker to load its grammar bindings and report `{type:'ready'}`. Slots that miss it are treated as startup crashes. Raise it on a slow or heavily loaded host where a full pool cold-starting concurrently needs more than 5s. |
+| `GITNEXUS_WORKER_HEAP_MB`                       | `clamp(512, RAM/2/poolSize, 4096)` | Per-worker V8 old-generation heap cap (#2649). Bounds pool RSS on large repos; a worker exceeding it dies with a real heap error handled by quarantine/respawn.                                                                    |
+| `GITNEXUS_AUTO_HEAP`                            | `1`                     | `0` keeps an ambient `NODE_OPTIONS --max-old-space-size` smaller than the RAM-aware auto cap instead of re-running analyze with the larger cap (#2649). A warning is printed either way.                                                                  |
+| `GITNEXUS_HEAP_GUARD`                           | `1`                     | `0` disables the parse-phase abort at 92% of the V8 heap limit (#2649) — analyze then runs into the GC death spiral instead of failing fast with guidance.                                                                                                |
 | `GITNEXUS_CPP_CAPTURE_BUDGET_MS`                | `20000`                 | Per-file wall-clock budget for C++ capture extraction; on breach the file keeps partial captures with a warning (#2432). `0` expires immediately.                                                |
 
 ### Graph cleanup tuning
