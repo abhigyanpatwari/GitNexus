@@ -44,6 +44,8 @@ import {
   closeSync,
   readFileSync,
   unlinkSync,
+  renameSync,
+  existsSync,
   mkdirSync,
   readdirSync,
 } from 'node:fs';
@@ -66,6 +68,14 @@ const DIAGNOSTIC_INTERVAL_MS = 15_000;
  * GITNEXUS_INDEX_LOCK_TIMEOUT_MS (or set it ≤ 0 for unbounded).
  */
 const DEFAULT_TIMEOUT_MS = 600_000;
+/**
+ * How long a lock file must stay unreadable (empty/partial JSON) before we
+ * treat it as a crash orphan and reclaim it. Tolerates the microsecond
+ * create→write→close window of a *live* owner (see acquireIndexLock), so we
+ * never steal a lock that is a poll-interval away from being written. Scaled
+ * off the poll interval, floored at 1s.
+ */
+const malformedGraceMs = (pollMs: number): number => Math.max(1000, pollMs * 2);
 
 /**
  * On-disk lock record. `token` proves ownership on release/steal; `startTime`
@@ -194,20 +204,50 @@ const isStale = (holder: LockRecord): boolean => {
 };
 
 /**
- * Remove a lock file we believe is stale, but ONLY if it still carries the
- * exact record we judged (token match) — so we never delete a fresh lock that
- * another waiter installed between our read and our unlink. The subsequent
- * O_EXCL create is the real arbiter; this just avoids obvious clobbers.
+ * Reclaim a lock file we judged stale (dead holder) or malformed (unreadable),
+ * atomically. `rename` moves the exact inode aside in ONE syscall to a name
+ * unique to us (`<lock>.dead.<our token>`), so when two waiters both try to
+ * reclaim the same dead holder exactly one wins — the loser's `rename` fails
+ * with ENOENT because the inode is already gone. This closes the check-then-
+ * unlink TOCTOU where a waiter could `unlink` a *different* owner's freshly
+ * O_EXCL-created lock. The aside file is then removed best-effort; the O_EXCL
+ * create in the acquire loop remains the sole arbiter of new ownership.
+ *
+ * Returns true if we won the reclaim (caller retries the create), false if we
+ * lost the race (caller re-loops and re-reads).
  */
-const removeStale = (lockPath: string, expected: LockRecord): void => {
-  const current = readRecord(lockPath);
-  if (current && current.token !== expected.token) return; // someone re-took it
+const stealLock = (lockPath: string, me: LockRecord): boolean => {
+  const aside = `${lockPath}.dead.${me.token}`;
   try {
-    unlinkSync(lockPath);
-  } catch {
-    /* already gone — fine */
+    renameSync(lockPath, aside);
+  } catch (err) {
+    if ((err as NodeJS.ErrnoException).code === 'ENOENT') return false; // another stealer won
+    throw err;
   }
+  try {
+    unlinkSync(aside); // uniquely ours by token → safe; best-effort
+  } catch {
+    /* leftover .dead.<token> is inert (not analyze.lock, not swept) — harmless */
+  }
+  return true;
 };
+
+/**
+ * Placeholder holder for an {@link IndexLockTimeoutError} thrown while the lock
+ * file exists but no valid record can be read (malformed/partial), or it keeps
+ * vanishing — there is no real holder to name, but the error still needs one so
+ * the CLI's `err.holder.pid` stays defined. This path is a rare backstop:
+ * malformed files are reclaimed within {@link MALFORMED_GRACE_MS}.
+ */
+const unknownHolder = (): LockRecord => ({
+  v: LOCK_RECORD_VERSION,
+  pid: -1,
+  hostname: HOSTNAME,
+  startTime: null,
+  token: '',
+  invocationId: '<unreadable>',
+  acquiredAt: '',
+});
 
 /**
  * Delete orphaned build/staging artifacts left in the lock directory by a
@@ -243,6 +283,15 @@ export const sweepStagingArtifacts = (lockDir: string, log?: (msg: string) => vo
 };
 
 const sleep = (ms: number): Promise<void> => new Promise((resolve) => setTimeout(resolve, ms));
+
+/** Poll delay with jitter (avoids two waiters lock-stepping), clamped so it
+ *  never overshoots the remaining timeout budget. Callers guarantee
+ *  `waited < timeoutMs`, so the result is ≥ 1. */
+const jitteredDelay = (pollMs: number, timeoutMs: number, waited: number): number => {
+  const jitter = Math.floor(Math.random() * pollMs);
+  const remaining = timeoutMs - waited;
+  return Math.max(1, Math.min(pollMs + jitter, remaining));
+};
 
 /**
  * Resolve the wait ceiling. Explicit `opt` wins; else
@@ -283,6 +332,9 @@ export const acquireIndexLock = async (
   const startedAt = Date.now();
   let announcedWait = false;
   let lastDiagnosticAt = 0;
+  // When the lock file exists but has no readable record, the timestamp we
+  // first observed it unreadable — used to reclaim a crash-orphan after a grace.
+  let malformedSince: number | null = null;
 
   for (;;) {
     try {
@@ -311,39 +363,60 @@ export const acquireIndexLock = async (
     }
 
     const holder = readRecord(lockPath);
-    if (!holder) continue; // vanished mid-read — retry create immediately
+    const waited = Date.now() - startedAt;
 
-    if (isStale(holder)) {
-      opts.log?.(
-        `Reclaiming stale index lock from dead analyze (pid ${holder.pid}, ` +
-          `invocation ${holder.invocationId}).`,
-      );
-      removeStale(lockPath, holder);
+    if (holder) {
+      malformedSince = null;
+      if (isStale(holder)) {
+        opts.log?.(
+          `Reclaiming stale index lock from dead analyze (pid ${holder.pid}, ` +
+            `invocation ${holder.invocationId}).`,
+        );
+        stealLock(lockPath, me);
+        continue;
+      }
+      // Live holder → wait.
+      if (!announcedWait) {
+        announcedWait = true;
+        opts.onWaitStart?.(holder);
+        opts.log?.(
+          `Another gitnexus analyze (pid ${holder.pid} on ${holder.hostname}) is ` +
+            `refreshing this index — waiting for it to finish.`,
+        );
+      }
+      if (waited >= timeoutMs) throw new IndexLockTimeoutError(holder, waited);
+      if (Date.now() - lastDiagnosticAt >= DIAGNOSTIC_INTERVAL_MS) {
+        lastDiagnosticAt = Date.now();
+        if (waited >= DIAGNOSTIC_INTERVAL_MS) {
+          opts.log?.(
+            `Still waiting for analyze pid ${holder.pid} (${Math.round(waited / 1000)}s elapsed).`,
+          );
+        }
+      }
+      await sleep(jitteredDelay(pollMs, timeoutMs, waited));
       continue;
     }
 
-    // Live holder → wait.
-    if (!announcedWait) {
-      announcedWait = true;
-      opts.onWaitStart?.(holder);
-      opts.log?.(
-        `Another gitnexus analyze (pid ${holder.pid} on ${holder.hostname}) is ` +
-          `refreshing this index — waiting for it to finish.`,
-      );
+    // holder === null: the lock file is either gone (vanished between the failed
+    // create and our read) or present-but-unreadable (a crash between the
+    // O_EXCL create and the record write, or a partial write). NEVER hot-loop
+    // here — both branches are bounded by sleep + timeout.
+    if (!existsSync(lockPath)) {
+      malformedSince = null; // genuinely vanished → the next create likely wins
+      if (waited >= timeoutMs) throw new IndexLockTimeoutError(unknownHolder(), waited);
+      await sleep(jitteredDelay(pollMs, timeoutMs, waited));
+      continue;
     }
-    const waited = Date.now() - startedAt;
-    if (waited >= timeoutMs) throw new IndexLockTimeoutError(holder, waited);
-    if (Date.now() - lastDiagnosticAt >= DIAGNOSTIC_INTERVAL_MS) {
-      lastDiagnosticAt = Date.now();
-      if (waited >= DIAGNOSTIC_INTERVAL_MS) {
-        opts.log?.(
-          `Still waiting for analyze pid ${holder.pid} (${Math.round(waited / 1000)}s elapsed).`,
-        );
-      }
+    // Malformed orphan present. Reclaim only after a grace, so a live owner's
+    // microsecond create→write window is never mistaken for a crash.
+    if (malformedSince === null) malformedSince = Date.now();
+    if (Date.now() - malformedSince >= malformedGraceMs(pollMs)) {
+      opts.log?.('Reclaiming a malformed/partial index lock file (no readable owner record).');
+      stealLock(lockPath, me);
+      malformedSince = null;
+      continue;
     }
-    // Jitter avoids two waiters lock-stepping their retries.
-    const jitter = Math.floor(Math.random() * pollMs);
-    const remaining = timeoutMs - waited;
-    await sleep(Math.max(1, Math.min(pollMs + jitter, remaining)));
+    if (waited >= timeoutMs) throw new IndexLockTimeoutError(unknownHolder(), waited);
+    await sleep(jitteredDelay(pollMs, timeoutMs, waited));
   }
 };

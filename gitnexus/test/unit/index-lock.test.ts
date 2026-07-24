@@ -95,6 +95,25 @@ describe('acquireIndexLock', () => {
     },
   );
 
+  it('reclaims an empty lock file (crash between O_EXCL create and record write) without hanging', async () => {
+    // Pre-fix, readRecord→null hot-looped forever here. Post-fix it reclaims
+    // the malformed orphan after the grace and acquires.
+    writeFileSync(lockPath(), '');
+    const lock = await acquireIndexLock(dir, { timeoutMs: 5000, pollMs: 20 });
+    const onDisk = JSON.parse(readFileSync(lockPath(), 'utf8')) as LockRecord;
+    expect(onDisk.pid).toBe(process.pid);
+    lock.release();
+  });
+
+  it('reclaims a partial/malformed record (valid JSON, missing token) without hanging', async () => {
+    writeFileSync(lockPath(), '{"pid":123}');
+    const lock = await acquireIndexLock(dir, { timeoutMs: 5000, pollMs: 20 });
+    const onDisk = JSON.parse(readFileSync(lockPath(), 'utf8')) as LockRecord;
+    expect(onDisk.pid).toBe(process.pid);
+    expect(onDisk.token.length).toBeGreaterThan(0);
+    lock.release();
+  });
+
   it('honors GITNEXUS_INDEX_LOCK_TIMEOUT_MS as the wait ceiling (bounds pid-reuse hangs)', async () => {
     // A live holder we cannot steal (own pid, no start-time recorded). Without a
     // finite ceiling this would hang; the env var must bound it (#2658).

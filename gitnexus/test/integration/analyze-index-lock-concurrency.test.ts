@@ -13,7 +13,7 @@
  */
 import { describe, it, expect, beforeEach, afterEach } from 'vitest';
 import { spawn, type ChildProcess } from 'node:child_process';
-import { mkdtempSync, rmSync, existsSync, readFileSync } from 'node:fs';
+import { mkdtempSync, rmSync, existsSync, readFileSync, writeFileSync } from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -83,5 +83,53 @@ describe('index lock across processes (#2658)', () => {
     const lock = await acquireIndexLock(dir, { timeoutMs: 5_000, pollMs: 25 });
     expect(lock.record.pid).toBe(process.pid);
     lock.release();
+  }, 30_000);
+
+  it('lets multiple waiters reclaim one dead holder without ever admitting two writers', async () => {
+    if (!existsSync(lockModule)) {
+      throw new Error(
+        `dist/storage/index-lock.js missing — run \`npm run build\` first ` +
+          `(or use \`npm run test:integration\`, which builds via pretest:integration).`,
+      );
+    }
+    // Seed a stale lock owned by a dead, same-host holder — every child must
+    // reclaim it, and the atomic steal must let exactly one at a time win so
+    // no two children are ever in their O_EXCL sentinel section together.
+    const deadRecord = {
+      v: 1,
+      pid: 999_999_999,
+      hostname: os.hostname(),
+      startTime: null,
+      token: 'dead-holder-token',
+      invocationId: 'dead-holder',
+      acquiredAt: new Date(0).toISOString(),
+    };
+    writeFileSync(path.join(dir, 'analyze.lock'), JSON.stringify(deadRecord));
+    const sentinel = path.join(dir, 'critical.sentinel');
+
+    const runChild = (): Promise<{ code: number | null; signal: NodeJS.Signals | null }> =>
+      new Promise((resolve) => {
+        const c = spawn(process.execPath, [childScript], {
+          env: {
+            ...process.env,
+            LOCK_MODULE: lockModule,
+            LOCK_DIR: dir,
+            SENTINEL: sentinel,
+            MODE: 'EXCLUSIVE',
+          },
+          stdio: ['ignore', 'pipe', 'pipe'],
+        });
+        c.once('exit', (code, signal) => resolve({ code, signal }));
+      });
+
+    const results = await Promise.all([runChild(), runChild(), runChild(), runChild()]);
+    // Every child acquired, ran its exclusive section, and exited cleanly (0).
+    // Exit 3 = it found the sentinel already present = two holders at once.
+    for (const r of results) {
+      expect(r.signal).toBeNull();
+      expect(r.code).toBe(0);
+    }
+    // No leftover sentinel — the last holder cleaned up.
+    expect(existsSync(sentinel)).toBe(false);
   }, 30_000);
 });
