@@ -14,8 +14,12 @@
  *    Used by the multi-reclaimer test where ≥2 children reclaim one dead holder.
  */
 import { writeFileSync, openSync, closeSync, unlinkSync } from 'node:fs';
+import { pathToFileURL } from 'node:url';
 
-const { acquireIndexLock } = await import(process.env.LOCK_MODULE);
+// LOCK_MODULE is an absolute path. On Windows `import('C:\\…')` throws
+// ERR_UNSUPPORTED_ESM_URL_SCHEME (a bare drive path is read as a URL scheme), so
+// convert to a file:// URL — required on Windows, harmless on POSIX.
+const { acquireIndexLock } = await import(pathToFileURL(process.env.LOCK_MODULE).href);
 
 if (process.env.MODE === 'EXCLUSIVE') {
   const lock = await acquireIndexLock(process.env.LOCK_DIR, { timeoutMs: 30_000, pollMs: 25 });

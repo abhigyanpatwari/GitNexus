@@ -92,13 +92,12 @@ describe('index lock across processes (#2658)', () => {
   }, 90_000);
 
   // The FILE backend is the DEFAULT only on macOS/BSD; Windows and Linux default
-  // to the race-free kernel lock (named pipe / abstract socket). This case
-  // FORCES the file backend to stress its rename-steal reclaim, so it runs where
-  // that backend is actually production (macOS) plus Linux — not on Windows,
-  // where forcing it exercises a non-default path AND the file lock's irreducible
-  // reclaim residual is timing-sensitive on Windows' slower, rename-no-overwrite
-  // filesystem. Windows' real lock (the named pipe) is covered by
-  // index-lock.test.ts (which runs on the Windows matrix) and by the
+  // to the race-free kernel lock (named pipe / abstract socket). This case FORCES
+  // the file backend to stress its rename-steal reclaim, so it runs where that
+  // backend is actually production (macOS — where the double-admit bug this
+  // guards lived and is now fixed) plus Linux. It is skipped on Windows, where
+  // the file backend is never the default; Windows' real lock (the named pipe) is
+  // covered by index-lock.test.ts on the Windows matrix and by the
   // default-backend cross-process case above.
   it.skipIf(process.platform === 'win32')(
     'lets multiple waiters reclaim one dead holder without ever admitting two writers',
