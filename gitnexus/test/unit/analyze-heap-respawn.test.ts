@@ -212,9 +212,12 @@ describe('analyzeCommand heap respawn', () => {
     expect(parseMaxOldSpaceMb('--max-semi-space-size=128')).toBeNull();
     expect(parseMaxOldSpaceMb('')).toBeNull();
     expect(parseMaxOldSpaceMb('--max-old-space-size=0')).toBeNull();
-    // V8 treats - and _ interchangeably in flag names; the pin must be
-    // honored in either spelling instead of silently overridden.
+    // V8 treats - and _ interchangeably in flag names, and Node accepts a
+    // space-separated value in NODE_OPTIONS; every spelling of the pin must
+    // be honored instead of silently overridden.
     expect(parseMaxOldSpaceMb('--max_old_space_size=4096')).toBe(4096);
+    expect(parseMaxOldSpaceMb('--max-old-space-size 4096')).toBe(4096);
+    expect(parseMaxOldSpaceMb('--max-old-space-size --other-flag')).toBeNull();
   });
 
   it('GITNEXUS_AUTO_HEAP=0 also disables the default (unpinned) respawn (#2649 review)', async () => {

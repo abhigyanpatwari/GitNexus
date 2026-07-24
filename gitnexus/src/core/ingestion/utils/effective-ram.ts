@@ -18,3 +18,27 @@ export function effectiveRamBytes(): number {
     ? constrained
     : total;
 }
+
+/** Historical floor for the auto heap cap — applied only up to 0.80 × RAM
+ *  (a floor at or above physical memory swap-thrashes instead of OOMing,
+ *  #2649). */
+const HEAP_FLOOR_MB = 16384;
+
+/**
+ * The RAM-aware heap cap formula (#2649), single-sourced here so the CLI
+ * respawn (`computeHeapCapMb` in `cli/analyze.ts`), and the server's
+ * analyze fork size from the same rule: `0.75 × effective RAM`, raised to
+ * the floor when RAM allows, never above `0.80 × effective RAM`.
+ */
+export function heapCapMbFor(effectiveBytes: number): number {
+  const effectiveMb = Math.floor(effectiveBytes / (1024 * 1024));
+  return Math.min(
+    Math.max(HEAP_FLOOR_MB, Math.floor(0.75 * effectiveMb)),
+    Math.floor(0.8 * effectiveMb),
+  );
+}
+
+/** The cap for THIS machine/container: `heapCapMbFor(effectiveRamBytes())`. */
+export function autoHeapCapMb(): number {
+  return heapCapMbFor(effectiveRamBytes());
+}

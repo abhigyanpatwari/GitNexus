@@ -48,6 +48,7 @@ import { warnMissingOptionalGrammars, getOptionalGrammarExtensions } from './opt
 import { glob } from 'glob';
 import fs from 'fs/promises';
 import { cliError, cliWarn } from './cli-message.js';
+import { heapCapMbFor } from '../core/ingestion/utils/effective-ram.js';
 import { EMBEDDING_DIMS_ERROR, normalizeEmbeddingDims } from './embedding-dims.js';
 import { formatElapsed } from './format-elapsed.js';
 import { isHfDownloadFailure } from '../core/embeddings/hf-env.js';
@@ -128,33 +129,21 @@ const installFatalHandlers = (): void => {
   });
 };
 
-/** Historical floor for the re-exec heap cap. Applied only up to 0.80 × RAM:
- *  a floor at or above physical memory makes V8 collect lazily and inflate the
- *  heap into swap-thrash instead of a clean OOM (#2649 — 16 GB boxes got a
- *  16 GB cap ≥ their RAM). */
-const DEFAULT_HEAP_MB = 16384;
-
 /**
- * RAM-aware re-exec heap cap (MB): `0.75 × effective RAM`, raised to
- * `DEFAULT_HEAP_MB` when RAM allows, but never above `0.80 × effective RAM` —
- * the cap must stay strictly below physical memory or V8 collects lazily and
- * inflates the heap into swap-thrash (observed analyzing the Linux kernel at a
- * 30GB cap on a 31GB box; observed as the #2649 worker-timeout cascade on
- * 16GB boxes where the old `max(16384, …)` floor met or exceeded RAM).
- * `constrainedBytes` is the cgroup limit or `null`; it is honored only as a
- * real, smaller-than-physical cap, because `process.constrainedMemory()`
- * returns a huge sentinel when UNCONSTRAINED.
+ * RAM-aware re-exec heap cap (MB) — the formula itself is single-sourced in
+ * `core/ingestion/utils/effective-ram.ts` (`heapCapMbFor`), shared with the
+ * server's analyze fork. `constrainedBytes` is the cgroup limit or `null`;
+ * it is honored only as a real, smaller-than-physical cap, because
+ * `process.constrainedMemory()` returns a huge sentinel when UNCONSTRAINED.
+ * (Observed rationale: a cap ≥ RAM made V8 collect lazily and swap-thrash —
+ * the #2649 worker-timeout cascade on 16 GB boxes.)
  */
 export function computeHeapCapMb(totalBytes: number, constrainedBytes: number | null): number {
   const effectiveBytes =
     constrainedBytes !== null && constrainedBytes > 0 && constrainedBytes < totalBytes
       ? constrainedBytes
       : totalBytes;
-  const effectiveMb = Math.floor(effectiveBytes / (1024 * 1024));
-  return Math.min(
-    Math.max(DEFAULT_HEAP_MB, Math.floor(0.75 * effectiveMb)),
-    Math.floor(0.8 * effectiveMb),
-  );
+  return heapCapMbFor(effectiveBytes);
 }
 
 function readConstrainedBytes(): number | null {
@@ -530,10 +519,10 @@ const RECOMMENDED_WAL_CHECKPOINT_THRESHOLD = 64 * 1024 * 1024;
  * later-flag-wins semantics when NODE_OPTIONS repeats a flag.
  */
 export function parseMaxOldSpaceMb(nodeOptions: string): number | null {
-  // V8 accepts `-` and `_` interchangeably in flag names; match both so an
-  // underscore-spelled pin is honored instead of silently overridden
-  // (space-separated values are not parsed — NODE_OPTIONS convention is `=`).
-  const matches = [...nodeOptions.matchAll(/--max[-_]old[-_]space[-_]size=(\d+)/g)];
+  // V8 accepts `-` and `_` interchangeably in flag names, and Node accepts a
+  // space-separated value in NODE_OPTIONS — honor every spelling of the pin
+  // instead of silently overriding it (#2649 review).
+  const matches = [...nodeOptions.matchAll(/--max[-_]old[-_]space[-_]size(?:=|\s+)(\d+)/g)];
   if (matches.length === 0) return null;
   const mb = Number(matches[matches.length - 1][1]);
   return Number.isFinite(mb) && mb > 0 ? mb : null;

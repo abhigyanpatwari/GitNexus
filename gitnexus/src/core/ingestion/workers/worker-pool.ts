@@ -1013,6 +1013,19 @@ export const createWorkerPool = (
       ? { parsedFileStoreStoragePath, durableParsedFileStoragePath, pdg, pdgMaxFunctionLines }
       : undefined;
   const workerHeapCapMb = resolveWorkerHeapCapMb(size);
+  // The 512MB per-worker floor exists so a worker can parse anything real,
+  // but on a very small container a large pool of floored workers can still
+  // overcommit total memory (#2649 review). Behavior is unchanged — deaths
+  // are attributed and quarantine converges — but say so up front, with the
+  // two levers, instead of letting the operator discover it from worker OOMs.
+  const poolCommitMb = workerHeapCapMb * size;
+  const effectiveMb = Math.floor(effectiveRamBytes() / (1024 * 1024));
+  if (poolCommitMb > 0.6 * effectiveMb) {
+    logger.warn(
+      { poolSize: size, workerHeapCapMb, effectiveMb },
+      `Worker pool may overcommit memory: ${size} workers × ${workerHeapCapMb}MB heap cap exceeds 60% of the ${effectiveMb}MB available to this process. Reduce GITNEXUS_WORKER_POOL_SIZE or set GITNEXUS_WORKER_HEAP_MB.`,
+    );
+  }
   // #2649 stall probe: test seam wins; production uses the heartbeat tracker.
   const stallTracker = options?.stallMsProbe
     ? { read: options.stallMsProbe, stop: (): void => undefined }

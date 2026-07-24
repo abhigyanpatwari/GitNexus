@@ -108,6 +108,28 @@ describe('resolveWorkerHeapCapMb (#2649 per-worker heap cap)', () => {
     expect([1, 16].map((n) => resolveWorkerHeapCapMb(n))).toEqual([768, 768]);
   });
 
+  it('warns when a floored pool would overcommit a tiny container (#2649 review)', async () => {
+    // 2GB cgroup limit, pool of 8: every worker floors at 512MB, so the pool
+    // may commit 4096MB against a 2048MB container — the warn must name it.
+    restoreConstrained?.();
+    restoreConstrained = setConstrainedMemory(2 * 1024 * 1024 * 1024);
+    const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'gitnexus-worker-overcommit-'));
+    const workerPath = path.join(tempDir, 'fake-worker.js');
+    fs.writeFileSync(workerPath, '// fake worker path for createWorkerPool');
+    try {
+      const { _captureLogger } = await import('../../src/core/logger.js');
+      const { createWorkerPool } = await import('../../src/core/ingestion/workers/worker-pool.js');
+      const cap = _captureLogger();
+      const pool = createWorkerPool(pathToFileURL(workerPath) as URL, 8, { shutdownDrainMs: 25 });
+      await pool.terminate();
+      cap.restore();
+      const warn = cap.records().find((r) => r.msg.includes('may overcommit memory'));
+      expect(warn?.msg).toContain('GITNEXUS_WORKER_POOL_SIZE');
+    } finally {
+      fs.rmSync(tempDir, { recursive: true, force: true });
+    }
+  });
+
   it('honors a real cgroup limit instead of host RAM (#2649 review — container overcommit)', async () => {
     // 8GB cgroup limit on the mocked 32GB host, pool of 4: the cap must come
     // from the container (8192/2/4 = 1024), not the host (32768/2/4 = 4096 —
