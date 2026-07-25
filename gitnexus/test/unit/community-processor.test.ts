@@ -150,6 +150,8 @@ describe('community-processor', () => {
   });
 
   describe('processCommunities engine fallback', () => {
+    let terminateCalls = 0;
+
     it('falls back to graphology when explicit icebug engine is unavailable', async () => {
       const graph = createKnowledgeGraph();
       graph.addNode(makeNode('fn:a', 'a', 'Function', '/src/group/a.ts'));
@@ -203,8 +205,11 @@ describe('community-processor', () => {
           }
 
           terminate(): Promise<number> {
+            terminateCalls++;
             return Promise.resolve(0);
           }
+
+          unref(): void {}
         }
 
         return { Worker: MockWorker };
@@ -231,6 +236,10 @@ describe('community-processor', () => {
         expect(progress.some((message) => message.includes('falling back to Graphology'))).toBe(
           true,
         );
+        // GUARDRAILS non-negotiable 6 (#2432): the icebug worker spends its whole
+        // life inside N-API, so terminating it aborts the process instead of
+        // falling back. It ends after one postMessage and exits on its own.
+        expect(terminateCalls).toBe(0);
       } finally {
         vi.doUnmock('node:worker_threads');
         vi.resetModules();

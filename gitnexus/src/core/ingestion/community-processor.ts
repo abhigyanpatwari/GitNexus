@@ -556,14 +556,21 @@ const runIcebugWorker = (
     let settled = false;
     const timeout = setTimeout(() => {
       settled = true;
-      void worker.terminate();
+      // Deliberately NOT terminate(): every millisecond of this worker's life is
+      // spent inside an N-API call (dlopen, GraphR, Leiden, run), and killing a
+      // thread mid-N-API aborts the whole process — Napi::Error → std::terminate
+      // → SIGABRT (#2432, see worker-pool.ts `shutdownDrainMs`). A timeout must
+      // degrade to the Graphology fallback, not take analyze down with it.
+      // unref() so a wedged native run cannot hold the process open either.
+      worker.unref();
       reject(new Error(`optional icebug community engine timed out after ${ICEBUG_TIMEOUT_MS}ms`));
     }, ICEBUG_TIMEOUT_MS);
 
+    // No terminate() on the settled paths either: the worker script ends after
+    // its single postMessage, so the thread exits on its own.
     worker.once('message', (message: IcebugWorkerSuccess | IcebugWorkerFailure) => {
       settled = true;
       clearTimeout(timeout);
-      void worker.terminate();
       if (message.ok === true) {
         resolve(message);
       } else {
@@ -574,7 +581,6 @@ const runIcebugWorker = (
     worker.once('error', (error) => {
       settled = true;
       clearTimeout(timeout);
-      void worker.terminate();
       reject(error);
     });
 

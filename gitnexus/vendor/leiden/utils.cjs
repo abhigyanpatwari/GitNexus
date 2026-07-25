@@ -6,6 +6,21 @@
  *
  * Vendored from: https://github.com/graphology/graphology/tree/master/src/communities-leiden
  * License: MIT
+ *
+ * LOCAL MODIFICATION (#2337) — do NOT re-vendor this file by copying upstream
+ * over it without re-applying the change below.
+ *
+ *   `mergeNodesSubset` used to snapshot the pre-merge
+ *   `externalEdgeWeightPerCommunity` with a full N-length `.slice()` on every
+ *   macro-community — O(communities x N) copying, ~70% of Leiden runtime on
+ *   large repos. It now writes only the current subset's entries into a
+ *   scratch buffer allocated once (`this.microDegrees`).
+ *
+ * A revert is invisible to the test suite: the two versions produce
+ * bit-identical partitions, so every golden and determinism test still passes.
+ * The only symptom is the old timeout cliff returning — a 200k-symbol
+ * projection back over LEIDEN_TIMEOUT_MS, collapsing every symbol into one
+ * community. Search for "microDegrees" to find both edits.
  */
 var SparseMap = require('mnemonist/sparse-map');
 var createRandom = require('pandemonium/random').createRandom;

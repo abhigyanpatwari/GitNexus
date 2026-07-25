@@ -178,7 +178,7 @@ Supported values are `graphology`, `icebug`, and `auto`. Today `auto` is behavio
 
 Icebug is **not** a declared dependency — its prebuilds link against system Arrow 24 (`libarrow.so.2400`), OpenMP, and glibc ≥ 2.38, none of which GitNexus can assume. Analyze falls back to Graphology and reports the reason in progress output when the module is missing, fails to load, or predates the `setNumberOfThreads` / `setSeed` controls that reproducible community IDs require (present at [icebug-nodejs](https://github.com/Ladybug-Memory/icebug-nodejs) HEAD, absent from the published 12.8.0 tarball — so the fallback is what you will see today). The engine is pinned to `threads: 1`, `randomize: false` for determinism.
 
-Note that the bundled Graphology path is no longer the slow option it once was: as of #2337 it partitions a 200k-symbol projection in ~15s.
+Note that the bundled Graphology path is no longer the slow option it once was: #2337 removed an accidental O(communities × N) copy in the vendored Leiden. On a synthetic 200k-node / 800k-edge benchmark graph it went from exceeding the 60s timeout to finishing in ~15s. Real projections vary with their degree distribution, so treat that as a direction, not a guarantee.
 
 ## MCP Tools
 
