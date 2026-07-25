@@ -4,9 +4,11 @@ import {
   doctorCommand,
   localEmbeddingDoctorStatus,
   padDisplayEnd,
+  nativeStatusLine,
   pageSizeDoctorLines,
   poolSizeDoctorLine,
 } from '../../src/cli/doctor.js';
+import type { NativeCheckResult } from '../../src/core/lbug/native-check.js';
 
 describe('doctor output formatting', () => {
   it('keeps ASCII padding equivalent to String.padEnd', () => {
@@ -184,6 +186,36 @@ describe('doctor pool-size line (#2631)', () => {
     expect(poolSizeDoctorLine(0, '0')).toBe(
       `  ${padDisplayEnd('pool size', 10)}native 80% of RAM (env override)`,
     );
+  });
+});
+
+// #2672: every failed check used to print "lbugjs.node missing", including the
+// glibc case where the binary is present and merely unloadable — contradicting
+// the detail printed directly beneath it and sending users to reinstall a file
+// they already had.
+describe('doctor native status line (#2672)', () => {
+  const nativeStatusCases: ReadonlyArray<readonly [string, NativeCheckResult, string]> = [
+    ['a loaded binary', { ok: true, binaryPath: '/x/lbugjs.node' }, '✓ lbugjs.node loaded'],
+    [
+      'an uninstalled package',
+      { ok: false, kind: 'package_missing', message: 'x' },
+      '✗ @ladybugdb/core not installed',
+    ],
+    [
+      'an absent binary',
+      { ok: false, kind: 'binary_missing', binaryPath: '/x/lbugjs.node', message: 'x' },
+      '✗ lbugjs.node missing',
+    ],
+    [
+      'a present-but-unloadable binary (glibc too old, truncated download)',
+      { ok: false, kind: 'load_failed', binaryPath: '/x/lbugjs.node', message: 'x' },
+      '✗ lbugjs.node present but failed to load',
+    ],
+    ['a failure with no kind recorded', { ok: false, message: 'x' }, '✗ lbugjs.node missing'],
+  ];
+
+  it.each(nativeStatusCases)('reports %s', (_name, check, expected) => {
+    expect(nativeStatusLine(check)).toBe(`  ${padDisplayEnd('native', 10)}${expected}`);
   });
 });
 

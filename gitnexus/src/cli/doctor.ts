@@ -14,6 +14,7 @@ import {
 import { cudaRedirectDoctorStatus } from '../core/embeddings/onnxruntime-node-resolver.js';
 import {
   checkLbugNative,
+  type NativeCheckResult,
   probeFtsExtensionLoad,
   probeVectorExtensionLoad,
 } from '../core/lbug/native-check.js';
@@ -170,6 +171,33 @@ export function poolSizeDoctorLine(pool: number, envRaw: string | undefined): st
   return `  ${padDisplayEnd('pool size', 10)}${value}${envNote}`;
 }
 
+/**
+ * The `native` status line. Literal label like the page-size and pool-size lines
+ * above (no i18n key).
+ *
+ * A failed check is not automatically a MISSING binary, and saying so is the
+ * same misdiagnosis #2672 fixed one layer down: on a host whose glibc is too
+ * old, `lbugjs.node` is present and merely unloadable, so "missing" sent users
+ * to reinstall a file that was already there — while the detail written to
+ * stderr right below said the opposite. Render what the check actually found.
+ */
+export function nativeStatusLine(check: NativeCheckResult): string {
+  return `  ${padDisplayEnd('native', 10)}${nativeStatusText(check)}`;
+}
+
+function nativeStatusText(check: NativeCheckResult): string {
+  if (check.ok) return '✓ lbugjs.node loaded';
+  switch (check.kind) {
+    case 'package_missing':
+      return '✗ @ladybugdb/core not installed';
+    case 'load_failed':
+      return '✗ lbugjs.node present but failed to load';
+    default:
+      // 'binary_missing', and any future kind: the conservative claim.
+      return '✗ lbugjs.node missing';
+  }
+}
+
 export const doctorCommand = async () => {
   const fingerprint = getRuntimeFingerprint();
   const capabilities = getRuntimeCapabilities();
@@ -194,10 +222,8 @@ export const doctorCommand = async () => {
     poolSizeDoctorLine(getEffectiveBufferPoolSize(), process.env.GITNEXUS_LBUG_BUFFER_POOL_SIZE),
   );
   const nativeCheck = checkLbugNative();
-  if (nativeCheck.ok) {
-    console.log(`  ${padDisplayEnd('native', 10)}✓ lbugjs.node loaded`);
-  } else {
-    console.log(`  ${padDisplayEnd('native', 10)}✗ lbugjs.node missing`);
+  console.log(nativeStatusLine(nativeCheck));
+  if (!nativeCheck.ok) {
     process.stderr.write(`\n${nativeCheck.message?.replace(/^/gm, '  ')}\n\n`);
   }
   console.log(`  ${label('doctor.labels.onnx', 10)}${fingerprint.onnxruntime ?? 'unknown'}`);

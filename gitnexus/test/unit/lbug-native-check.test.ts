@@ -20,6 +20,7 @@ describe('checkLbugNative', () => {
       const result = checkLbugNative(tmpDir);
 
       expect(result.ok).toBe(false);
+      expect(result.kind).toBe('binary_missing');
       expect(result.message).toContain('missing');
       expect(result.message).toContain('install.js');
       expect(result.message).toContain('trustedDependencies');
@@ -43,6 +44,8 @@ describe('checkLbugNative', () => {
       const result = checkLbugNative(tmpDir);
 
       expect(result.ok).toBe(false);
+      // Present but unloadable — doctor must not call this "missing" (#2672).
+      expect(result.kind).toBe('load_failed');
       expect(result.message).toContain('failed to load');
       expect(result.message).toContain('install.js');
     } finally {
@@ -116,6 +119,7 @@ describe('checkLbugNative', () => {
         const result = checkLbugNative(tmpDir);
 
         expect(result.ok).toBe(false);
+        expect(result.kind).toBe('load_failed');
         expect(result.message).toContain('glibc 2.34 or newer');
         expect(result.message).toContain('will NOT help');
         expect(result.message).not.toContain('install.js');

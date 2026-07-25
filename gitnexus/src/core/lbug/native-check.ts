@@ -7,10 +7,21 @@ import { spawnSync, type SpawnSyncReturns } from 'node:child_process';
  *  CLI startup gate (same bounding rationale as the extension probe below). */
 const NATIVE_LOAD_PROBE_TIMEOUT_MS = 15_000;
 
+/**
+ * Why the native check failed. A failed check is NOT necessarily a missing
+ * binary — the package may be absent, the binary may be absent, or a binary that
+ * is right there may fail to load (host glibc too old, truncated download).
+ * Callers that render a status line must tell those apart: reporting all of them
+ * as "missing" sends users to reinstall a file they already have (#2672).
+ */
+export type NativeCheckFailureKind = 'package_missing' | 'binary_missing' | 'load_failed';
+
 export interface NativeCheckResult {
   ok: boolean;
   binaryPath?: string;
   message?: string;
+  /** Set only when `ok` is false. */
+  kind?: NativeCheckFailureKind;
 }
 
 export function checkLbugNative(overridePkgDir?: string): NativeCheckResult {
@@ -26,6 +37,7 @@ export function checkLbugNative(overridePkgDir?: string): NativeCheckResult {
     } catch {
       return {
         ok: false,
+        kind: 'package_missing',
         message: [
           'LadybugDB package (@ladybugdb/core) is not installed.',
           '',
@@ -40,6 +52,7 @@ export function checkLbugNative(overridePkgDir?: string): NativeCheckResult {
     return {
       ok: false,
       binaryPath,
+      kind: 'binary_missing',
       message: [
         'LadybugDB native binary (lbugjs.node) is missing.',
         '',
@@ -99,6 +112,7 @@ export function checkLbugNative(overridePkgDir?: string): NativeCheckResult {
     return {
       ok: false,
       binaryPath,
+      kind: 'load_failed',
       message: [
         'LadybugDB native binary (lbugjs.node) exists but failed to load:',
         `  ${describeNativeLoadFailure(probe)}`,
@@ -111,6 +125,7 @@ export function checkLbugNative(overridePkgDir?: string): NativeCheckResult {
   return {
     ok: false,
     binaryPath,
+    kind: 'load_failed',
     message: [
       'LadybugDB native binary (lbugjs.node) exists but failed to load:',
       `  ${describeNativeLoadFailure(probe)}`,
