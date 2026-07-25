@@ -1,4 +1,8 @@
 import { EventEmitter } from 'node:events';
+import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+import { Worker } from 'node:worker_threads';
 import { describe, it, expect, vi } from 'vitest';
 import { createKnowledgeGraph } from '../../src/core/graph/graph.js';
 import type { GraphNode, GraphRelationship } from '../../src/core/graph/types.js';
@@ -7,6 +11,7 @@ import {
   COMMUNITY_COLORS,
   buildCommunityCsr,
   buildCommunityProjection,
+  buildIcebugWorkerSource,
   processCommunities,
   resolveCommunityDetectionEngine,
 } from '../../src/core/ingestion/community-processor.js';
@@ -145,6 +150,8 @@ describe('community-processor', () => {
   });
 
   describe('processCommunities engine fallback', () => {
+    let terminateCalls = 0;
+
     it('falls back to graphology when explicit icebug engine is unavailable', async () => {
       const graph = createKnowledgeGraph();
       graph.addNode(makeNode('fn:a', 'a', 'Function', '/src/group/a.ts'));
@@ -164,6 +171,28 @@ describe('community-processor', () => {
       expect(result.memberships).toHaveLength(2);
     });
 
+    it('announces the experimental engine on request, before any fallback', async () => {
+      const graph = createKnowledgeGraph();
+      graph.addNode(makeNode('fn:a', 'a', 'Function', '/src/group/a.ts'));
+      graph.addNode(makeNode('fn:b', 'b', 'Function', '/src/group/b.ts'));
+      graph.addRelationship(makeRel('rel:ab', 'fn:a', 'fn:b'));
+
+      const experimental: string[] = [];
+      await processCommunities(graph, (message) => experimental.push(message), { engine: 'auto' });
+      const notice = experimental.findIndex((message) => message.startsWith('Experimental auto'));
+      const fallback = experimental.findIndex((message) =>
+        message.includes('falling back to Graphology'),
+      );
+
+      expect(experimental[notice]).toContain('will not match the Graphology default');
+      expect(notice).toBeLessThan(fallback);
+
+      const defaultEngine: string[] = [];
+      await processCommunities(graph, (message) => defaultEngine.push(message));
+
+      expect(defaultEngine.some((message) => message.startsWith('Experimental'))).toBe(false);
+    });
+
     it('falls back to graphology when icebug returns invalid modularity', async () => {
       vi.resetModules();
       vi.doMock('node:worker_threads', () => {
@@ -176,8 +205,11 @@ describe('community-processor', () => {
           }
 
           terminate(): Promise<number> {
+            terminateCalls++;
             return Promise.resolve(0);
           }
+
+          unref(): void {}
         }
 
         return { Worker: MockWorker };
@@ -204,6 +236,10 @@ describe('community-processor', () => {
         expect(progress.some((message) => message.includes('falling back to Graphology'))).toBe(
           true,
         );
+        // GUARDRAILS non-negotiable 6 (#2432): the icebug worker spends its whole
+        // life inside N-API, so terminating it aborts the process instead of
+        // falling back. It ends after one postMessage and exits on its own.
+        expect(terminateCalls).toBe(0);
       } finally {
         vi.doUnmock('node:worker_threads');
         vi.resetModules();
@@ -229,6 +265,190 @@ describe('community-processor', () => {
       });
       expect(randomizeResult.stats.engine).toBe('graphology');
       expect(randomizeResult.stats.fallbackReason).toContain('randomize=false');
+    });
+  });
+
+  describe('icebug worker source', () => {
+    // Executes the real worker source against a stub shaped like
+    // @ladybugmem/icebug, so the package name, class names, constructor
+    // argument order and getPartition() shape are all pinned. The native
+    // package itself cannot run in CI (its prebuilds need system Arrow 24,
+    // libomp and glibc >= 2.38).
+    const STUB = `
+'use strict';
+const fs = require('node:fs');
+const calls = [];
+const log = () => fs.writeFileSync(process.env.ICEBUG_STUB_LOG, JSON.stringify(calls));
+
+class GraphR {
+  constructor(n, directed, outIndices, outIndptr) {
+    calls.push(['GraphR', n, directed, Array.from(outIndices, Number), Array.from(outIndptr, Number)]);
+  }
+}
+
+class Leiden {
+  constructor(graph, iterations, randomize, gamma) {
+    calls.push(['Leiden', graph instanceof GraphR, iterations, randomize, gamma]);
+  }
+  run() {
+    calls.push(['run']);
+    log();
+  }
+  getPartition() {
+    return { membership: Float64Array.from([7, 7, 3]), count: 2 };
+  }
+  modularity() {
+    return 0.25;
+  }
+}
+
+module.exports = {
+  GraphR,
+  Leiden,
+  setNumberOfThreads: (n) => calls.push(['setNumberOfThreads', n]),
+  setSeed: (seed, useThreadId) => calls.push(['setSeed', seed, useThreadId]),
+};
+`;
+
+    const runWorkerAgainstStub = async (stubSource: string) => {
+      const dir = mkdtempSync(join(tmpdir(), 'icebug-stub-'));
+      const stubPath = join(dir, 'stub.cjs');
+      const logPath = join(dir, 'calls.json');
+      writeFileSync(stubPath, stubSource);
+
+      const worker = new Worker(buildIcebugWorkerSource(stubPath), {
+        eval: true,
+        env: { ...process.env, ICEBUG_STUB_LOG: logPath },
+        workerData: {
+          nodeCount: 3,
+          indices: BigUint64Array.from([1n, 0n, 2n, 1n]),
+          indptr: BigUint64Array.from([0n, 1n, 3n, 4n]),
+          threads: 1,
+          seed: 49374,
+          iterations: 4,
+          gamma: 1.0,
+          randomize: false,
+        },
+      });
+
+      try {
+        const message = await new Promise<Record<string, unknown>>((resolve, reject) => {
+          worker.once('message', resolve);
+          worker.once('error', reject);
+        });
+        // Absent when the worker bailed before run() — an empty call log.
+        const calls: unknown[] = existsSync(logPath)
+          ? JSON.parse(readFileSync(logPath, 'utf8'))
+          : [];
+        return { message, calls };
+      } finally {
+        await worker.terminate();
+        rmSync(dir, { recursive: true, force: true });
+      }
+    };
+
+    it('drives GraphR + Leiden in the order the published API expects', async () => {
+      const { message, calls } = await runWorkerAgainstStub(STUB);
+
+      expect(calls).toEqual([
+        ['setNumberOfThreads', 1],
+        ['setSeed', 49374, false],
+        ['GraphR', 3, false, [1, 0, 2, 1], [0, 1, 3, 4]],
+        // (graph, iterations, randomize, gamma) — randomize precedes gamma.
+        ['Leiden', true, 4, false, 1.0],
+        ['run'],
+      ]);
+      expect(message).toMatchObject({ ok: true, modularity: 0.25 });
+      expect(Array.from(message.partition as Float64Array)).toEqual([7, 7, 3]);
+    });
+
+    it('refuses a build without the deterministic thread and seed controls', async () => {
+      const { message } = await runWorkerAgainstStub(
+        STUB.replace("setNumberOfThreads: (n) => calls.push(['setNumberOfThreads', n]),", ''),
+      );
+
+      expect(message).toMatchObject({ ok: false });
+      expect(message.error).toContain('deterministic thread/seed controls');
+    });
+  });
+
+  describe('vendored Leiden partitioning', () => {
+    // Golden values for the seeded graph below, captured from the vendored
+    // implementation. They pin the partition, not just its shape.
+    const GOLDEN_COMMUNITY_COUNT = 99;
+    const GOLDEN_NODES_PROCESSED = 1199;
+    const GOLDEN_MODULARITY = 0.7032803125;
+
+    // Guards the mergeNodesSubset scratch-buffer change in vendor/leiden/utils.cjs
+    // (#2337): the pre-merge snapshot must still hold each subset node's
+    // externalEdgeWeightPerCommunity from *before* the merge loop. Getting the
+    // snapshot wrong shifts the partition, which these golden values catch.
+    // Seeded planted partition with cross-community noise. Unlike clean cliques,
+    // the noisy edges make the outcome sensitive to the merge-phase bookkeeping
+    // that `microDegrees` feeds, so a wrong snapshot shifts the golden values.
+    const buildPlantedGraph = (nodeCount: number, edgeCount: number, groupCount: number) => {
+      let state = 0x1234_5678;
+      const random = () => {
+        state = (state + 0x6d2b79f5) >>> 0;
+        let mixed = Math.imul(state ^ (state >>> 15), 1 | state);
+        mixed = (mixed + Math.imul(mixed ^ (mixed >>> 7), 61 | mixed)) ^ mixed;
+        return ((mixed ^ (mixed >>> 14)) >>> 0) / 4294967296;
+      };
+
+      const graph = createKnowledgeGraph();
+      const groups: number[][] = Array.from({ length: groupCount }, () => []);
+
+      for (let node = 0; node < nodeCount; node++) {
+        const group = Math.floor(random() * groupCount);
+        groups[group].push(node);
+        graph.addNode(makeNode(`fn:${node}`, `f${node}`, 'Function', `/src/g${group}/f${node}.ts`));
+      }
+
+      const seen = new Set<string>();
+      let added = 0;
+      let guard = edgeCount * 50;
+
+      while (added < edgeCount && guard-- > 0) {
+        const group = groups[Math.floor(random() * groupCount)];
+        const intraCommunity = random() < 0.85 && group.length >= 2;
+        const source = intraCommunity
+          ? group[Math.floor(random() * group.length)]
+          : Math.floor(random() * nodeCount);
+        const target = intraCommunity
+          ? group[Math.floor(random() * group.length)]
+          : Math.floor(random() * nodeCount);
+        const low = Math.min(source, target);
+        const high = Math.max(source, target);
+        const key = `${low}:${high}`;
+
+        if (low === high || seen.has(key)) continue;
+
+        seen.add(key);
+        graph.addRelationship(makeRel(`rel:${key}`, `fn:${low}`, `fn:${high}`));
+        added++;
+      }
+
+      return graph;
+    };
+
+    it('recovers the planted partition with the expected golden quality', async () => {
+      const result = await processCommunities(buildPlantedGraph(1200, 4000, 60));
+
+      expect(result.stats).toMatchObject({
+        engine: 'graphology',
+        totalCommunities: GOLDEN_COMMUNITY_COUNT,
+        nodesProcessed: GOLDEN_NODES_PROCESSED,
+      });
+      expect(result.stats.modularity).toBeCloseTo(GOLDEN_MODULARITY, 6);
+    });
+
+    it('produces an identical partition across repeated runs', async () => {
+      const graph = buildPlantedGraph(600, 2000, 30);
+      const first = await processCommunities(graph);
+      const second = await processCommunities(graph);
+
+      expect(second.memberships).toEqual(first.memberships);
+      expect(second.stats.modularity).toBe(first.stats.modularity);
     });
   });
 });
