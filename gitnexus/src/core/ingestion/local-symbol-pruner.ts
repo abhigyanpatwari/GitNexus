@@ -1,4 +1,4 @@
-import type { GraphNode, GraphRelationship, NodeLabel } from 'gitnexus-shared';
+import type { GraphNode, NodeLabel, RelationshipType } from 'gitnexus-shared';
 import type { KnowledgeGraph } from '../graph/types.js';
 import { parseTruthyEnv } from './utils/env.js';
 
@@ -30,28 +30,18 @@ const isLocalValueCandidate = (node: GraphNode): boolean => {
 // True when `rel` is the structural `File -> DEFINES -> candidate` edge. Callers
 // guard on the candidate already being the edge target, so only the source label
 // needs checking here.
-const isFileDefinesEdge = (graph: KnowledgeGraph, rel: GraphRelationship): boolean => {
-  if (rel.type !== 'DEFINES') return false;
-  return graph.getNode(rel.sourceId)?.label === 'File';
+const isFileDefinesEdge = (
+  graph: KnowledgeGraph,
+  type: RelationshipType,
+  sourceId: string,
+): boolean => {
+  if (type !== 'DEFINES') return false;
+  return graph.getNode(sourceId)?.label === 'File';
 };
 
 export const pruneLocalValueSymbols = (
   graph: KnowledgeGraph,
-  options: {
-    keepLocalValueSymbols?: boolean;
-    /**
-     * Reports whether a node is an endpoint of a relationship that has already
-     * been streamed to CSV and is therefore NOT visible to the
-     * `iterRelationships()` scan below (#2680).
-     *
-     * Without this, a block-local symbol whose only reference is a streamed
-     * edge looks unreferenced, gets pruned, and leaves the streamed CSV row
-     * pointing at a node with no row — a dangling edge at COPY time, not just
-     * a semantic mistake. Absent (the default) the scan alone decides, so
-     * behaviour is unchanged when streaming is off.
-     */
-    hasStreamedSemanticEdge?: (nodeId: string) => boolean;
-  } = {},
+  options: { keepLocalValueSymbols?: boolean } = {},
 ): LocalSymbolPruneStats => {
   if (options.keepLocalValueSymbols ?? shouldKeepLocalValueSymbols()) {
     return emptyStats(true);
@@ -65,28 +55,21 @@ export const pruneLocalValueSymbols = (
   if (candidateIds.size === 0) return emptyStats(false);
 
   const candidatesWithSemanticEdges = new Set<string>();
-  for (const rel of graph.iterRelationships()) {
+  // Field-wise scan (#2680): a whole-graph walk that reads only these three, so
+  // materializing a relationship object per edge would be pure overhead.
+  graph.forEachRelationshipFields((sourceId, targetId, type) => {
     // Any outgoing edge from a candidate is a semantic edge: the only structural
     // edge a block-local value symbol carries is the incoming File -> DEFINES, on
     // which the candidate is the target, never the source.
-    if (candidateIds.has(rel.sourceId)) {
-      candidatesWithSemanticEdges.add(rel.sourceId);
+    if (candidateIds.has(sourceId)) {
+      candidatesWithSemanticEdges.add(sourceId);
     }
 
     // An incoming edge is semantic unless it is the structural File -> DEFINES.
-    if (candidateIds.has(rel.targetId)) {
-      if (!isFileDefinesEdge(graph, rel)) {
-        candidatesWithSemanticEdges.add(rel.targetId);
-      }
+    if (candidateIds.has(targetId) && !isFileDefinesEdge(graph, type, sourceId)) {
+      candidatesWithSemanticEdges.add(targetId);
     }
-  }
-
-  const hasStreamedSemanticEdge = options.hasStreamedSemanticEdge;
-  if (hasStreamedSemanticEdge !== undefined) {
-    for (const candidateId of candidateIds) {
-      if (hasStreamedSemanticEdge(candidateId)) candidatesWithSemanticEdges.add(candidateId);
-    }
-  }
+  });
 
   let prunedNodes = 0;
   for (const candidateId of candidateIds) {

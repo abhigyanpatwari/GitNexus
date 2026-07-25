@@ -281,6 +281,11 @@ export class PdgEmitSink implements KnowledgeGraph {
   forEachRelationship(fn: (rel: GraphRelationship) => void): void {
     this.real.forEachRelationship(fn);
   }
+  forEachRelationshipFields(
+    fn: (sourceId: string, targetId: string, type: RelationshipType, confidence: number) => void,
+  ): void {
+    this.real.forEachRelationshipFields(fn);
+  }
   getNode(id: string): GraphNode | undefined {
     return this.real.getNode(id);
   }

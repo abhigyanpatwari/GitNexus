@@ -38,29 +38,35 @@
  *
  * ## What it costs — measured, not assumed
  *
- * Reads allocate: iteration rebuilds objects instead of handing back stored
- * ones, and a real analyze performs SIX full relationship scans (the pruner,
- * community detection x2, process extraction x2, and the taint fixpoint's CALLS
- * pass). Measured on the same 400k-node / 1.08M-edge graph, all edges
- * streamable:
+ * Measured on the same 400k-node / 1.08M-edge graph, all edges streamable, each
+ * arm running what its own consumers actually call:
  *
  *   heap  820 MB -> 623 MB   (1.32x better)
- *   scans  107 ms -> 195 ms  (1.8x worse)
+ *   scans  ~82 ms -> ~90 ms  (parity, within run-to-run noise)
  *
- * The first cut of this was 6.8x worse (651 ms). Two fixes, both measured:
- * building the ~150-character synthesized `id` eagerly cost 436 ms of that, so
- * it moved to a lazy prototype getter ({@link StreamedRelationship}); and
- * {@link forEachRelationship} now loops the columns directly while
- * {@link iterRelationships} reuses one iterator-result record, since a
- * fresh-result hand-rolled iterator measured WORSE (252 ms) than the generator
- * it replaced.
+ * Getting there took three measured steps, because the naive version was 6.8x
+ * WORSE (651 ms) — reads rebuild objects, and a real analyze performs SIX full
+ * relationship scans (the pruner, community detection x2, process extraction x2,
+ * and the taint fixpoint's CALLS pass):
  *
- * The residual ~88 ms is object allocation — 6.5M instances across the six
- * scans — and it is irreducible while the read API returns objects at all. The
- * fix, if iteration ever needs true parity, is a field-wise callback
- * (`sourceId, targetId, type, confidence` as primitives) for the hot consumers,
- * all four of which read only those. That is an interface change across the
- * graph and its consumers, so it wants its own measurement and its own change.
+ * 1. The ~150-character synthesized `id` was built eagerly on every read — 6.5M
+ *    concatenations for a field no in-pipeline consumer reads. Isolating it
+ *    showed 436 ms of the regression. It is now a lazy prototype getter on
+ *    {@link StreamedRelationship}.
+ * 2. Generator and iterator-protocol overhead: {@link forEachRelationship} loops
+ *    the columns directly, and {@link iterRelationships} reuses one
+ *    iterator-result record. Note a hand-rolled iterator allocating a fresh
+ *    `{value, done}` per edge measured WORSE (252 ms) than the generator it
+ *    replaced, so the obvious rewrite is not the one that shipped.
+ * 3. The remaining ~90 ms was object allocation itself, irreducible while the
+ *    read API returns objects — so the five whole-graph scans moved to
+ *    `forEachRelationshipFields`, which passes the four fields they actually
+ *    read as primitives and allocates nothing. See
+ *    {@link GraphEmitSink.forEachRelationshipFields}.
+ *
+ * The last allocating scan is the taint fixpoint's `iterRelationshipsByType`
+ * pass; it is one scan of six and accounts for the small residual. Give it a
+ * by-type field variant only if a measurement says it matters.
  *
  * It is in any case NOT O(chunk) — node identity and the resolution registries
  * stay O(repo). True O(chunk) needs DB-side resolution and Leiden (#2337), at
@@ -481,6 +487,25 @@ export class GraphEmitSink implements KnowledgeGraph, GraphEmitControl {
   forEachNode(fn: (node: GraphNode) => void): void {
     this.real.forEachNode(fn);
   }
+  /**
+   * The fast path: streamed edges are read straight out of the columns, so a
+   * whole-graph scan allocates NOTHING. This is what keeps iteration at parity
+   * with the object-based graph despite holding relationships columnar.
+   */
+  forEachRelationshipFields(
+    fn: (sourceId: string, targetId: string, type: RelationshipType, confidence: number) => void,
+  ): void {
+    this.real.forEachRelationshipFields(fn);
+    for (let ix = 0; ix < this.srcIx.length; ix++) {
+      fn(
+        this.nodeIdByIx[this.srcIx[ix]],
+        this.nodeIdByIx[this.tgtIx[ix]],
+        this.relTypes[ix],
+        this.confidences[ix],
+      );
+    }
+  }
+
   /** Direct loop rather than delegating to {@link iterRelationships}: this is
    *  the form community detection uses (twice), and skipping the generator and
    *  iterator protocol is measurably cheaper on a million-edge scan. */

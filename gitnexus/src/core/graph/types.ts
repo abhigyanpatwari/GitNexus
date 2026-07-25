@@ -27,6 +27,19 @@ export interface KnowledgeGraph {
   iterRelationshipsByType: (type: RelationshipType) => IterableIterator<GraphRelationship>;
   forEachNode: (fn: (node: GraphNode) => void) => void;
   forEachRelationship: (fn: (rel: GraphRelationship) => void) => void;
+  /**
+   * Zero-allocation relationship scan: fields, not objects (#2680).
+   *
+   * The whole-graph scans (the local-symbol pruner, community detection,
+   * process extraction) read only these four fields, and materializing a
+   * `GraphRelationship` per edge just to read them dominates iteration cost once
+   * relationships are held columnar — measured at ~90 ms per analyze on a
+   * million-edge graph. Prefer this over `forEachRelationship` in any pass that
+   * walks every edge and needs no other field.
+   */
+  forEachRelationshipFields: (
+    fn: (sourceId: string, targetId: string, type: RelationshipType, confidence: number) => void,
+  ) => void;
   getNode: (id: string) => GraphNode | undefined;
   nodeCount: number;
   relationshipCount: number;
