@@ -467,17 +467,16 @@ export interface RepoMeta {
  * instance owner is outside the caller's enclosing class/MRO (#2563). The
  * incremental write set would otherwise retain those stale CALLS edges on
  * every unchanged C# and Kotlin file; force a full re-analyze instead.
- * v16: calls through a closure-valued binding (`val f = { }; f()`) now resolve
- * in Kotlin, Swift and Dart (#2693). These are NEW `CALLS` edges, and Dart also
- * gains `Function` nodes for function-local closures. The incremental write set
- * only covers changed files, so unchanged files would keep reporting a zero
- * blast radius for those symbols; force a full re-analyze instead.
- *
  * v15: `const X = <arrow | function-expression>` no longer emits an edgeless
  * `Const:<file>:X` twin beside its `Function` node (#2687). The incremental
  * write set only covers changed files, so every unchanged TS/JS file would
  * keep its twin and `impact`/`context` would stay ambiguous on those names;
  * force a full re-analyze instead.
+ * v16: calls through a closure-valued binding (`val f = { }; f()`) now resolve
+ * in Kotlin, Swift and Dart (#2693). These are NEW `CALLS` edges, and Dart also
+ * gains `Function` nodes for function-local closures. The incremental write set
+ * only covers changed files, so unchanged files would keep reporting a zero
+ * blast radius for those symbols; force a full re-analyze instead.
  */
 export const INCREMENTAL_SCHEMA_VERSION = 16;
 

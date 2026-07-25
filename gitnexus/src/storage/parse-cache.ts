@@ -61,13 +61,22 @@ import type { ParseWorkerResult } from '../core/ingestion/workers/parse-worker.j
 // instead of a `Function` plus an edgeless `Const` twin (#2687). Cached worker
 // results are replayed verbatim — including across `--force` — so without this
 // bump a warm cache keeps serving the old two-node set.
-// v21: Java/Kotlin Spring DI facts persist constructor, field/property, and
-// method injection sites plus bean-name and @Primary provider metadata.
+// v21: TWO changes share this number — a collision, not a typo. #2632
+// (Java/Kotlin Spring DI facts: constructor, field/property and method
+// injection sites plus bean-name and @Primary provider metadata) bumped 20 -> 21
+// and merged first; #2653 (Java local class/enum/record/interface captures using
+// javac-compatible, source-type-relative JLS 13.1 identities and
+// declaration-to-block scopes, #2562) had branched at 20, bumped to 21 as well,
+// and merged second — so it shipped with NO invalidation of its own. An index
+// already stamped 21 by the first change was treated as current by the second
+// and kept serving stale local-class identities from the warm cache. Harmless
+// now (anything below the current value is rejected), and left as-is because
+// both genuinely shipped as 21 — renumbering would misstate history. Read this
+// as the reason to re-check SCHEMA_BUMP against origin/main immediately before
+// merging, not just when the branch is cut; the same collision hit
+// INCREMENTAL_SCHEMA_VERSION in #2653/#2654.
 // v20: Java/Kotlin capture side-channels persist package and class-annotation
 // facts for shared Spring Bean resolution.
-// v21: Java local class/enum/record/interface captures use javac-compatible,
-// source-type-relative JLS 13.1 identities and declaration-to-block scopes
-// (#2562).
 // v19: Java enum constant bodies emit E$N Class nodes; anonymous naming uses
 // JLS 13.1 immediate-host chains (#2555).
 // v18: Worker$N anonymous bodies. v17: callable-value-flow operand identity.
