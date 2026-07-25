@@ -315,9 +315,24 @@ export const runPipelineFromRepo = async (
   const pipelineStart = Date.now();
 
   // Streamed structural emit (#2680). The sink is a write-routing façade over
-  // `graph`; it streams nothing until `arm()` fires at the parse boundary.
+  // `graph`; it streams nothing until `beginStreaming()` fires at the parse
+  // boundary.
+  //
+  // A missing `graphEmitCsvDir` is a caller bug, not a reason to quietly skip
+  // streaming: this is on by default, so a programmatic host that builds its own
+  // `PipelineOptions` (eval-server, the MCP daemon, a test) would otherwise ask
+  // for streaming, silently not get it, and still see a successful run. Fail
+  // loudly instead — the whole point of the surrounding work is that a degraded
+  // outcome must never look like a clean one.
   let graphEmitSink: GraphEmitSink | undefined;
-  if (options?.streamGraphEmit === true && options.graphEmitCsvDir !== undefined) {
+  if (options?.streamGraphEmit === true) {
+    if (options.graphEmitCsvDir === undefined) {
+      throw new Error(
+        'streamGraphEmit was requested but graphEmitCsvDir is missing. The caller owns ' +
+          'storage-path resolution (see resolveNativeSafeStorageDir in run-analyze.ts); ' +
+          'pass the directory, or leave streamGraphEmit unset to run without streaming.',
+      );
+    }
     graphEmitSink = new GraphEmitSink(graph, options.graphEmitCsvDir);
   }
 

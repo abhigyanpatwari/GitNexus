@@ -15,8 +15,9 @@ import { describe, it, expect, vi, afterEach } from 'vitest';
 
 import { resolveStreamGraphEmit } from '../../src/core/run-analyze.js';
 import { buildPhaseList } from '../../src/core/ingestion/pipeline.js';
+import { RETAINED_REL_TYPES } from '../../src/core/lbug/graph-emit-sink.js';
 import { createKnowledgeGraph } from '../../src/core/graph/graph.js';
-import type { GraphNode } from 'gitnexus-shared';
+import type { RelationshipType } from 'gitnexus-shared';
 
 afterEach(() => {
   vi.unstubAllEnvs();
@@ -132,5 +133,51 @@ describe('buildPhaseList under streamGraphEmit', () => {
     expect(skipped).not.toContain('communities');
     expect(skipped).not.toContain('processes');
     expect(skipped).toContain('pruneLocalSymbols');
+  });
+});
+
+describe('RETAINED_REL_TYPES tracks its readers', () => {
+  it('retains every relationship type any phase reads back mid-pipeline', async () => {
+    // The round-trip test CANNOT catch drift here: addRelationship partitions
+    // edges between the graph and the CSVs, and a partition's union is
+    // invariant under where the line falls — so it stays green for any
+    // partitioning, including a wrong one. Nothing else guards the invariant,
+    // and getting it wrong yields a silently incomplete edge set mid-pipeline
+    // rather than a crash. So derive the required set from the source and
+    // compare.
+    const { execFileSync } = await import('node:child_process');
+    const srcDir = new URL('../../src/', import.meta.url).pathname;
+
+    // Every literal `iterRelationshipsByType('X')` reachable while streaming is
+    // armed. `git grep -h` over src/ excluding tests; the sink itself is
+    // excluded because its own fast-path check reads the constant, not an edge.
+    const out = execFileSync(
+      'grep',
+      ['-rhoE', "iterRelationshipsByType\\('[A-Z_]+'\\)", '--include=*.ts', srcDir],
+      { encoding: 'utf8' },
+    );
+    const readTypes = new Set(
+      [...out.matchAll(/iterRelationshipsByType\('([A-Z_]+)'\)/g)].map((m) => m[1]),
+    );
+
+    // CALLS is read by taintSummaries, which is exactly why the sink answers a
+    // COMPLETE read instead of retaining it — so it is a known exemption.
+    readTypes.delete('CALLS');
+
+    const missing = [...readTypes].filter((t) => !RETAINED_REL_TYPES.has(t as RelationshipType));
+    expect(missing).toEqual([]);
+  });
+});
+
+describe('streamGraphEmit without a CSV dir', () => {
+  it('throws instead of silently running without streaming', async () => {
+    // Streaming is on by default, so a programmatic host that builds its own
+    // PipelineOptions and forgets the directory must not get a successful run
+    // that quietly did no streaming.
+    const { runPipelineFromRepo } = await import('../../src/core/ingestion/pipeline.js');
+
+    await expect(
+      runPipelineFromRepo('/nonexistent-repo', () => {}, { streamGraphEmit: true }),
+    ).rejects.toThrow(/graphEmitCsvDir is missing/);
   });
 });
