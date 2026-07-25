@@ -36,6 +36,29 @@
  * the interned column triple rather than on id strings (it must first be shown
  * not to alter the emitted row SET).
  *
+ * ## What it costs — measured, not assumed
+ *
+ * Reads allocate. Iteration rebuilds objects instead of handing back stored
+ * ones, and a real analyze performs SIX full relationship scans (the pruner,
+ * community detection ×2, process extraction ×2, and the taint fixpoint's
+ * CALLS pass). Measured on the same 400k-node / 1.08M-edge graph:
+ *
+ *   heap  820 MB -> 623 MB   (1.32x better)
+ *   scans   96 ms -> 651 ms  (6.8x WORSE)
+ *
+ * 6.8x on iteration sounds alarming and is worth knowing, but the absolute
+ * figure is what decides it: ~0.5 s here, ~2 s extrapolated to kernel scale,
+ * against an analyze measured in minutes — under 1% of wall-clock. The GC
+ * pressure (~26M short-lived objects at kernel scale) is young-generation
+ * churn, which is the cheap case, and being ~800 MB further from the heap
+ * ceiling matters more than the churn costs: #2649's cascade came from GC
+ * thrash NEAR the limit, not from allocation volume as such.
+ *
+ * If a future change makes these scans hot — more of them, or one inside a
+ * loop — the first lever is a per-type index over the columns so
+ * `iterRelationshipsByType` stops scanning all streamed edges. That trades
+ * some of the memory back, so measure before reaching for it.
+ *
  * It is in any case NOT O(chunk) — node identity and the resolution registries
  * stay O(repo). True O(chunk) needs DB-side resolution and Leiden (#2337), at
  * which point this sink should be deleted rather than extended.
