@@ -38,26 +38,29 @@
  *
  * ## What it costs — measured, not assumed
  *
- * Reads allocate. Iteration rebuilds objects instead of handing back stored
+ * Reads allocate: iteration rebuilds objects instead of handing back stored
  * ones, and a real analyze performs SIX full relationship scans (the pruner,
- * community detection ×2, process extraction ×2, and the taint fixpoint's
- * CALLS pass). Measured on the same 400k-node / 1.08M-edge graph:
+ * community detection x2, process extraction x2, and the taint fixpoint's CALLS
+ * pass). Measured on the same 400k-node / 1.08M-edge graph, all edges
+ * streamable:
  *
  *   heap  820 MB -> 623 MB   (1.32x better)
- *   scans   96 ms -> 651 ms  (6.8x WORSE)
+ *   scans  107 ms -> 195 ms  (1.8x worse)
  *
- * 6.8x on iteration sounds alarming and is worth knowing, but the absolute
- * figure is what decides it: ~0.5 s here, ~2 s extrapolated to kernel scale,
- * against an analyze measured in minutes — under 1% of wall-clock. The GC
- * pressure (~26M short-lived objects at kernel scale) is young-generation
- * churn, which is the cheap case, and being ~800 MB further from the heap
- * ceiling matters more than the churn costs: #2649's cascade came from GC
- * thrash NEAR the limit, not from allocation volume as such.
+ * The first cut of this was 6.8x worse (651 ms). Two fixes, both measured:
+ * building the ~150-character synthesized `id` eagerly cost 436 ms of that, so
+ * it moved to a lazy prototype getter ({@link StreamedRelationship}); and
+ * {@link forEachRelationship} now loops the columns directly while
+ * {@link iterRelationships} reuses one iterator-result record, since a
+ * fresh-result hand-rolled iterator measured WORSE (252 ms) than the generator
+ * it replaced.
  *
- * If a future change makes these scans hot — more of them, or one inside a
- * loop — the first lever is a per-type index over the columns so
- * `iterRelationshipsByType` stops scanning all streamed edges. That trades
- * some of the memory back, so measure before reaching for it.
+ * The residual ~88 ms is object allocation — 6.5M instances across the six
+ * scans — and it is irreducible while the read API returns objects at all. The
+ * fix, if iteration ever needs true parity, is a field-wise callback
+ * (`sourceId, targetId, type, confidence` as primitives) for the hot consumers,
+ * all four of which read only those. That is an interface change across the
+ * graph and its consumers, so it wants its own measurement and its own change.
  *
  * It is in any case NOT O(chunk) — node identity and the resolution registries
  * stay O(repo). True O(chunk) needs DB-side resolution and Leiden (#2337), at
@@ -152,6 +155,38 @@ export interface GraphEmitManifest {
 export interface GraphEmitControl {
   /** Start routing non-retained relationships to disk (see {@link GraphEmitSink.beginStreaming}). */
   beginStreaming(): void;
+}
+
+/**
+ * A streamed edge, rebuilt for a read.
+ *
+ * A class, not an object literal, for two reasons that both showed up in
+ * measurement. Its shape is fixed, so V8 keeps one hidden class across millions
+ * of instances; and `id` is a PROTOTYPE getter, so the ~150-character
+ * concatenation happens only if a caller actually reads it — which none of the
+ * in-pipeline consumers do. Building it eagerly cost 436 ms of a 555 ms
+ * iteration regression across the six full scans an analyze performs (measured
+ * at 400k nodes / 1.08M edges); deferring it gives that back.
+ */
+class StreamedRelationship implements GraphRelationship {
+  /** Constant for streamed edges — see the note on the columns about why
+   *  `reason` is not retained. The persisted CSV row keeps the real value. */
+  readonly reason = 'streamed';
+
+  constructor(
+    readonly sourceId: string,
+    readonly targetId: string,
+    readonly type: RelationshipType,
+    readonly confidence: number,
+    private readonly ix: number,
+  ) {}
+
+  /** Deterministic and unique — the column index disambiguates two streamed
+   *  edges that share (type, source, target). Lazily built; nothing in the
+   *  pipeline reads it. */
+  get id(): string {
+    return `${this.type}:${this.sourceId}->${this.targetId}#${this.ix}`;
+  }
 }
 
 /** Thrown when a consumer removes a relationship that already streamed to
@@ -282,23 +317,15 @@ export class GraphEmitSink implements KnowledgeGraph, GraphEmitControl {
     return ix;
   }
 
-  /** Rebuild a streamed edge; its id is synthesized, not stored. */
+  /** Rebuild a streamed edge; its id is synthesized lazily, not stored. */
   private streamedAt(ix: number): GraphRelationship {
-    const sourceId = this.nodeIdByIx[this.srcIx[ix]];
-    const targetId = this.nodeIdByIx[this.tgtIx[ix]];
-    const type = this.relTypes[ix];
-    return {
-      // Column index keeps this unique even when two streamed edges share
-      // (type, source, target) and differ only in reason/step — real ids are
-      // unique, so the synthesized one should be too. Prevents a future
-      // consumer that keys on id from silently collapsing two edges.
-      id: `${type}:${sourceId}->${targetId}#${ix}`,
-      sourceId,
-      targetId,
-      type,
-      confidence: this.confidences[ix],
-      reason: 'streamed',
-    };
+    return new StreamedRelationship(
+      this.nodeIdByIx[this.srcIx[ix]],
+      this.nodeIdByIx[this.tgtIx[ix]],
+      this.relTypes[ix],
+      this.confidences[ix],
+      ix,
+    );
   }
 
   addRelationship(relationship: GraphRelationship): void {
@@ -399,13 +426,51 @@ export class GraphEmitSink implements KnowledgeGraph, GraphEmitControl {
   iterNodes(): IterableIterator<GraphNode> {
     return this.real.iterNodes();
   }
-  /** Retained edges followed by the streamed ones, so every consumer sees a
-   *  complete graph and no phase needs to know streaming happened. This is what
-   *  lets streaming be the default. */
-  *iterRelationships(): IterableIterator<GraphRelationship> {
-    yield* this.real.iterRelationships();
-    for (let ix = 0; ix < this.srcIx.length; ix++) yield this.streamedAt(ix);
+  /**
+   * Retained edges followed by the streamed ones, so every consumer sees a
+   * complete graph and no phase needs to know streaming happened. This is what
+   * lets streaming be the default.
+   *
+   * Hand-rolled rather than a generator: a generator pays per-`yield` machinery
+   * on every one of millions of edges, and the pruner and process extraction
+   * walk this three times per analyze.
+   */
+  iterRelationships(): IterableIterator<GraphRelationship> {
+    const retained = this.real.iterRelationships();
+    const self = this;
+    let ix = 0;
+    // One reused result record. The iterator protocol lets the producer hand
+    // back the same object each step — `for…of` reads `value`/`done` and drops
+    // it immediately — and allocating a fresh one per edge cost more than the
+    // generator it replaced.
+    const result: { value: GraphRelationship | undefined; done: boolean } = {
+      value: undefined,
+      done: true,
+    };
+    const it: IterableIterator<GraphRelationship> = {
+      next(): IteratorResult<GraphRelationship> {
+        const fromReal = retained.next();
+        if (fromReal.done !== true) {
+          result.value = fromReal.value;
+          result.done = false;
+          return result as IteratorResult<GraphRelationship>;
+        }
+        if (ix < self.srcIx.length) {
+          result.value = self.streamedAt(ix++);
+          result.done = false;
+          return result as IteratorResult<GraphRelationship>;
+        }
+        result.value = undefined;
+        result.done = true;
+        return result as IteratorResult<GraphRelationship>;
+      },
+      [Symbol.iterator]() {
+        return it;
+      },
+    };
+    return it;
   }
+
   *iterRelationshipsByType(type: RelationshipType): IterableIterator<GraphRelationship> {
     yield* this.real.iterRelationshipsByType(type);
     if (RETAINED_REL_TYPES.has(type)) return; // never streamed — skip the scan
@@ -416,8 +481,12 @@ export class GraphEmitSink implements KnowledgeGraph, GraphEmitControl {
   forEachNode(fn: (node: GraphNode) => void): void {
     this.real.forEachNode(fn);
   }
+  /** Direct loop rather than delegating to {@link iterRelationships}: this is
+   *  the form community detection uses (twice), and skipping the generator and
+   *  iterator protocol is measurably cheaper on a million-edge scan. */
   forEachRelationship(fn: (rel: GraphRelationship) => void): void {
-    for (const rel of this.iterRelationships()) fn(rel);
+    this.real.forEachRelationship(fn);
+    for (let ix = 0; ix < this.srcIx.length; ix++) fn(this.streamedAt(ix));
   }
   getNode(id: string): GraphNode | undefined {
     return this.real.getNode(id);
