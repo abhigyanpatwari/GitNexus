@@ -71,6 +71,33 @@ export const TYPESCRIPT_QUERIES = `
       name: (identifier) @name
       value: (function_expression)))) @definition.function
 
+; \`var\` closure bindings (#2693). The lexical rules above cover const/let;
+; \`var\` is a different grammar node, so \`var f = (x) => x\` kept a Variable
+; label while const/let got Function — and the CALLS edge that resolved through
+; the declaration route therefore pointed at a NON-callable node. Same construct,
+; same binding semantics for this purpose, so same label.
+(variable_declaration
+  (variable_declarator
+    name: (identifier) @name
+    value: (arrow_function))) @definition.function
+
+(variable_declaration
+  (variable_declarator
+    name: (identifier) @name
+    value: (function_expression))) @definition.function
+
+(export_statement
+  declaration: (variable_declaration
+    (variable_declarator
+      name: (identifier) @name
+      value: (arrow_function)))) @definition.function
+
+(export_statement
+  declaration: (variable_declaration
+    (variable_declarator
+      name: (identifier) @name
+      value: (function_expression)))) @definition.function
+
 ; Object-property arrows / function expressions: \`{ addItem: () => ... }\`.
 ; The pair's key field carries the meaningful name. Without these patterns,
 ; calls inside the arrow are attributed to the file (issue #1166), and the
@@ -405,6 +432,33 @@ export const JAVASCRIPT_QUERIES = `
 
 (export_statement
   declaration: (lexical_declaration
+    (variable_declarator
+      name: (identifier) @name
+      value: (function_expression)))) @definition.function
+
+; \`var\` closure bindings (#2693). The lexical rules above cover const/let;
+; \`var\` is a different grammar node, so \`var f = (x) => x\` kept a Variable
+; label while const/let got Function — and the CALLS edge that resolved through
+; the declaration route therefore pointed at a NON-callable node. Same construct,
+; same binding semantics for this purpose, so same label.
+(variable_declaration
+  (variable_declarator
+    name: (identifier) @name
+    value: (arrow_function))) @definition.function
+
+(variable_declaration
+  (variable_declarator
+    name: (identifier) @name
+    value: (function_expression))) @definition.function
+
+(export_statement
+  declaration: (variable_declaration
+    (variable_declarator
+      name: (identifier) @name
+      value: (arrow_function)))) @definition.function
+
+(export_statement
+  declaration: (variable_declaration
     (variable_declarator
       name: (identifier) @name
       value: (function_expression)))) @definition.function
@@ -800,6 +854,27 @@ export const JAVA_QUERIES = `
     object: (_) @assignment.receiver
     field: (identifier) @assignment.property)
   right: (_)) @assignment
+
+; ── Closure bindings (#2693) ────────────────────────────────────────────────
+; A name bound to a closure literal IS a callable, so it emits Function rather
+; than a value label — matching TS/JS and the languages #2687 already covered.
+; The callable node is what callable-value-flow joins the binding to (by file,
+; line and name), which is what makes handler.apply(1) resolve. Overlap with the value
+; rules above is collapsed by the parse-worker dedup, which ranks callable
+; highest (#2687).
+; Anchored on field_declaration / local_variable_declaration — the SAME nodes
+; the value rules above use — so the parse-worker dedup (keyed by definition
+; node + name) actually collapses the pair. Anchoring on the inner
+; variable_declarator instead produced a Function AND a Property twin, the exact
+; double-indexing #2687 removed.
+(field_declaration
+  declarator: (variable_declarator
+    name: (identifier) @name
+    value: (lambda_expression))) @definition.function
+(local_variable_declaration
+  declarator: (variable_declarator
+    name: (identifier) @name
+    value: (lambda_expression))) @definition.function
 `;
 
 // C queries - works with tree-sitter-c
@@ -1152,6 +1227,17 @@ export const CSHARP_QUERIES = `
     expression: (_) @assignment.receiver
     name: (identifier) @assignment.property)
   right: (_)) @assignment
+
+; ── Closure bindings (#2693) ────────────────────────────────────────────────
+; A name bound to a closure literal IS a callable, so it emits Function rather
+; than a value label — matching TS/JS and the languages #2687 already covered.
+; The callable node is what callable-value-flow joins the binding to (by file,
+; line and name), which is what makes handler(1) resolve. Overlap with the value
+; rules above is collapsed by the parse-worker dedup, which ranks callable
+; highest (#2687).
+(variable_declarator
+  (identifier) @name
+  (lambda_expression)) @definition.function
 `;
 
 // Rust queries - works with tree-sitter-rust
@@ -1306,6 +1392,20 @@ export const PHP_QUERIES = `
     scope: (_) @assignment.receiver
     name: (variable_name (name) @assignment.property))
   right: (_)) @assignment
+
+; ── Closure bindings (#2693) ────────────────────────────────────────────────
+; A name bound to a closure literal IS a callable, so it emits Function rather
+; than a value label — matching TS/JS and the languages #2687 already covered.
+; The callable node is what callable-value-flow joins the binding to (by file,
+; line and name), which is what makes $handler(1) resolve. Overlap with the value
+; rules above is collapsed by the parse-worker dedup, which ranks callable
+; highest (#2687).
+(assignment_expression
+  left: (variable_name (name) @name)
+  right: (arrow_function)) @definition.function
+(assignment_expression
+  left: (variable_name (name) @name)
+  right: (anonymous_function)) @definition.function
 `;
 
 // Ruby queries - works with tree-sitter-ruby
@@ -1374,6 +1474,17 @@ export const RUBY_QUERIES = `
     receiver: (_) @assignment.receiver
     method: (identifier) @assignment.property)
   right: (_)) @assignment
+
+; ── Closure bindings (#2693) ────────────────────────────────────────────────
+; A name bound to a closure literal IS a callable, so it emits Function rather
+; than a value label — matching TS/JS and the languages #2687 already covered.
+; The callable node is what callable-value-flow joins the binding to (by file,
+; line and name), which is what makes handler.call(1) resolve. Overlap with the value
+; rules above is collapsed by the parse-worker dedup, which ranks callable
+; highest (#2687).
+(assignment
+  left: (identifier) @name
+  right: (lambda)) @definition.function
 `;
 
 // Kotlin queries - works with tree-sitter-kotlin (fwcd/tree-sitter-kotlin)

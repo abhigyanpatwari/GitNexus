@@ -473,10 +473,12 @@ export interface RepoMeta {
  * keep its twin and `impact`/`context` would stay ambiguous on those names;
  * force a full re-analyze instead.
  * v16: calls through a closure-valued binding (`val f = { }; f()`) now resolve
- * in Kotlin, Swift and Dart (#2693). These are NEW `CALLS` edges, and Dart also
- * gains `Function` nodes for function-local closures. The incremental write set
- * only covers changed files, so unchanged files would keep reporting a zero
- * blast radius for those symbols; force a full re-analyze instead.
+ * in Kotlin, Swift, Dart, Ruby, Java, C# and PHP (#2693). These are NEW `CALLS`
+ * edges, and those languages also gain callable graph nodes for closure
+ * bindings that previously carried a value label or no node at all (including
+ * JS/TS `var f = () => {}`). The incremental write set only covers changed
+ * files, so unchanged files would keep reporting a zero blast radius for those
+ * symbols; force a full re-analyze instead.
  */
 export const INCREMENTAL_SCHEMA_VERSION = 16;
 

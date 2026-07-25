@@ -55,8 +55,10 @@ import type { ParseWorkerResult } from '../core/ingestion/workers/parse-worker.j
 // the main thread (the #1983 OOM). Because the two stores share this version,
 // any future change to the `ParsedFile` serialization shape MUST bump
 // SCHEMA_BUMP so both invalidate in lockstep.
-// v23: Dart closure bindings emit Function nodes for function-local closures
-// and flow captures for top-level ones (#2693).
+// v23: closure bindings emit callable nodes in Dart, Ruby, Java, C# and PHP
+// (plus JS/TS `var`), and Dart/PHP gain the scope declarations and flow
+// captures their forms were missing (#2693). Cached worker results are replayed
+// verbatim, so without this bump a warm cache keeps serving the old labels.
 // v22: `const X = <arrow | function-expression>` emits one `Function` node
 // instead of a `Function` plus an edgeless `Const` twin (#2687). Cached worker
 // results are replayed verbatim — including across `--force` — so without this

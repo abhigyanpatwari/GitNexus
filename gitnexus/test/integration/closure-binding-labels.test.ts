@@ -24,13 +24,19 @@
  * node this file asserts IS the evidence that admits the binding as a callable
  * target, so a regression in the labels above now also breaks call resolution.
  */
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { runPipelineFromRepo } from '../../src/core/ingestion/pipeline.js';
 import { DIST_WORKER_URL, distWorkerExists } from '../helpers/worker-parse.js';
 import { parseFilesWithWorkers } from '../helpers/worker-parse.js';
+
+// Every test here spins its own worker pool (see the note above), and the file
+// now covers a dozen languages across four describes. Under that contention a
+// single case can exceed the 30s default even though it takes ~7s alone, so the
+// budget is raised file-wide rather than per-test.
+vi.setConfig({ testTimeout: 90_000 });
 
 const labelsFor = async (path: string, content: string, name: string): Promise<string[]> => {
   const { graph } = await parseFilesWithWorkers([{ path, content }]);
@@ -333,6 +339,82 @@ describeIfWorkerBuilt('the declaration route does not double-emit (#2693)', () =
         'auto handler = [](int x) { return x; };\n\nint caller() { return handler(1); }\n',
       ),
     ).toHaveLength(1);
+  });
+});
+
+describeIfWorkerBuilt('closure bindings resolve in the remaining languages (#2693)', () => {
+  // Ruby, Java, C# and PHP already emitted correct callable-flow seeds and
+  // invokes; what they lacked was the #2687 piece — a CALLABLE graph node at
+  // the binding, which is what `buildGraphTargetIndex` joins to by position.
+  // Ruby and Java invoke through the callable-object protocol (`.call` /
+  // `.apply`); C# and PHP call the binding directly.
+
+  it('Ruby: handler.call(1) resolves', async () => {
+    const targets = await callTargetsFor(
+      'a.rb',
+      'handler = ->(x) { x }\n\ndef caller\n  handler.call(1)\nend\n',
+    );
+
+    expect(targets).toEqual(['Function:a.rb:handler']);
+  });
+
+  it('Java: handler.apply(1) resolves to ONE node, not a Function/Property twin', async () => {
+    // The rule is anchored on field_declaration — the same node the value rule
+    // uses — so the parse-worker dedup collapses the pair. Anchoring on the
+    // inner variable_declarator produced both a Function and a Property node.
+    const targets = await callTargetsFor(
+      'A.java',
+      'import java.util.function.Function;\n' +
+        'class A {\n' +
+        '  static Function<Integer,Integer> handler = x -> x;\n' +
+        '  int caller() { return handler.apply(1); }\n' +
+        '}\n',
+    );
+
+    expect(targets).toEqual(['Function:A.java:A.handler']);
+  });
+
+  it('C#: handler(1) resolves', async () => {
+    const targets = await callTargetsFor(
+      'A.cs',
+      'using System;\nclass A {\n' +
+        '  static Func<int,int> handler = x => x;\n' +
+        '  int Caller() { return handler(1); }\n}\n',
+    );
+
+    expect(targets).toEqual(['Function:A.cs:A.handler']);
+  });
+
+  it('PHP: $handler(1) resolves', async () => {
+    const targets = await callTargetsFor(
+      'a.php',
+      '<?php\n$handler = fn($x) => $x;\n' +
+        'function caller() {\n  global $handler;\n  return $handler(1);\n}\n',
+    );
+
+    expect(targets).toEqual(['Function:a.php:handler']);
+  });
+
+  it('PHP: an anonymous function binding resolves too', async () => {
+    const targets = await callTargetsFor(
+      'b.php',
+      '<?php\n$handler = function ($x) { return $x; };\n' +
+        'function caller() {\n  global $handler;\n  return $handler(1);\n}\n',
+    );
+
+    expect(targets).toEqual(['Function:b.php:handler']);
+  });
+
+  it('JavaScript: a `var` closure binding is a Function, like const/let', async () => {
+    // `var` is a different grammar node than const/let, so it kept a Variable
+    // label — and the CALLS edge that resolved through the declaration route
+    // pointed at a NON-callable node.
+    const targets = await callTargetsFor(
+      'c.js',
+      'var handler = (x) => x;\n\nexport function caller() { return handler(1); }\n',
+    );
+
+    expect(targets).toEqual(['Function:c.js:handler']);
   });
 });
 
