@@ -72,45 +72,73 @@ afterAll(() => {
   if (suiteGitnexusHome) cleanupTempDirSync(suiteGitnexusHome);
 });
 
+const runAnalyze = () =>
+  spawnSync(process.execPath, [...CLI_SPAWN_PREFIX, 'analyze', '--skip-skills'], {
+    cwd: repoPath,
+    encoding: 'utf8',
+    // Generous timeout: the test does real CSV/COPY work before the
+    // first failing checkpoint, and CI runners are slow.
+    timeout: process.env.CI ? 120_000 : 60_000,
+    stdio: ['pipe', 'pipe', 'pipe'],
+    env: {
+      ...process.env,
+      GITNEXUS_HOME: suiteGitnexusHome,
+      // Skip ensureHeap re-exec (which drops the tsx loader).
+      NODE_OPTIONS: `${process.env.NODE_OPTIONS || ''} --max-old-space-size=8192`.trim(),
+      // Tiny threshold forces auto-checkpoint on every write so the
+      // first write into the WAL trips the planted rename blocker.
+      GITNEXUS_WAL_CHECKPOINT_THRESHOLD: '1',
+      CI: '1',
+    },
+  });
+
 describe('analyze WAL auto-checkpoint rename failure (real lbug, no mocks)', () => {
   it('surfaces the --wal-checkpoint-threshold recovery hint when the rename target is blocked', () => {
-    // Plant a non-empty directory at the path Ladybug's auto-checkpoint
-    // will try to rename `<db>.wal` over. `fs.rename` cannot overwrite a
-    // non-empty directory, and the adapter's orphan-sidecar cleanup uses
-    // `fs.unlink` (which fails on directories) — so the blocker persists
-    // through `doInitLbug` and trips the very first auto-checkpoint that
-    // a `GITNEXUS_WAL_CHECKPOINT_THRESHOLD=1` setting forces.
+    // The checkpoint rename target must be a PREDICTABLE path so the blocker
+    // can be pre-planted. A full rebuild builds into a per-run
+    // `lbug.staging.<uuid>` and checkpoints `lbug.staging.<uuid>.wal.checkpoint`
+    // (#2658) — an unknowable name. An INCREMENTAL run instead writes the live
+    // index in place, so its auto-checkpoint targets the fixed
+    // `lbug.wal.checkpoint`. So: first do a clean full analyze to create the
+    // index, then plant the blocker and drive an incremental analyze into it.
     const storageDir = path.join(repoPath, '.gitnexus');
-    fs.mkdirSync(storageDir, { recursive: true });
-    // A full rebuild now builds into `lbug.new` and swaps atomically (POSIX), so
-    // its auto-checkpoint targets `lbug.new.wal.checkpoint`; on the in-place /
-    // Windows path it targets `lbug.wal.checkpoint`. Block BOTH so the planted
-    // rename blocker trips the first checkpoint whichever path analyze takes.
-    for (const name of ['lbug.wal.checkpoint', 'lbug.new.wal.checkpoint']) {
-      const blockerDir = path.join(storageDir, name);
-      fs.mkdirSync(blockerDir, { recursive: true });
-      fs.writeFileSync(path.join(blockerDir, 'blocker'), 'cannot-be-renamed-over');
-    }
 
-    const result = spawnSync(process.execPath, [...CLI_SPAWN_PREFIX, 'analyze', '--skip-skills'], {
+    // 1) Clean full analyze (no blocker) — builds the index into staging and
+    // swaps it in. Must succeed; the staging checkpoint name is unblocked.
+    const first = runAnalyze();
+    expect(first.status === null ? 'timeout' : first.status).toBe(0);
+
+    // 2) Change a tracked source file and commit, so the next analyze is an
+    // incremental writeback (in-place), not a full rebuild.
+    const churnFile = path.join(repoPath, 'src', 'logger.ts');
+    fs.appendFileSync(churnFile, `\nexport const walChurnMarker = ${Date.now()};\n`);
+    const gitEnv = {
+      ...process.env,
+      GIT_AUTHOR_NAME: 'test',
+      GIT_AUTHOR_EMAIL: 'test@test',
+      GIT_COMMITTER_NAME: 'test',
+      GIT_COMMITTER_EMAIL: 'test@test',
+    };
+    spawnSync('git', ['add', '-A'], { cwd: repoPath, stdio: 'pipe' });
+    spawnSync('git', ['commit', '-m', 'churn for incremental'], {
       cwd: repoPath,
-      encoding: 'utf8',
-      // Generous timeout: the test does real CSV/COPY work before the
-      // first failing checkpoint, and CI runners are slow.
-      timeout: process.env.CI ? 120_000 : 60_000,
-      stdio: ['pipe', 'pipe', 'pipe'],
-      env: {
-        ...process.env,
-        GITNEXUS_HOME: suiteGitnexusHome,
-        // Skip ensureHeap re-exec (which drops the tsx loader).
-        NODE_OPTIONS: `${process.env.NODE_OPTIONS || ''} --max-old-space-size=8192`.trim(),
-        // Tiny threshold forces auto-checkpoint on every write so the
-        // first write into the WAL trips the planted rename blocker.
-        GITNEXUS_WAL_CHECKPOINT_THRESHOLD: '1',
-        CI: '1',
-      },
+      stdio: 'pipe',
+      env: gitEnv,
     });
 
+    // 3) Plant a non-empty directory at `lbug.wal.checkpoint`, the fixed rename
+    // target of the in-place checkpoint. `fs.rename` cannot overwrite a
+    // non-empty directory, and the adapter's orphan-sidecar cleanup uses
+    // `fs.unlink` (which fails on a directory) — so the blocker persists through
+    // `doInitLbug` and trips the auto-checkpoint the incremental writeback
+    // forces at `GITNEXUS_WAL_CHECKPOINT_THRESHOLD=1`.
+    const blockerDir = path.join(storageDir, 'lbug.wal.checkpoint');
+    fs.rmSync(blockerDir, { recursive: true, force: true });
+    fs.mkdirSync(blockerDir, { recursive: true });
+    fs.writeFileSync(path.join(blockerDir, 'blocker'), 'cannot-be-renamed-over');
+
+    // 4) Incremental analyze into the blocked checkpoint target.
+    const result = runAnalyze();
     const combined = `${result.stderr}\n${result.stdout}`;
 
     // The CLI must exit non-zero. status === null means the timeout fired
