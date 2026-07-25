@@ -141,9 +141,21 @@ const DART_SCOPE_QUERY = `
     (initialized_identifier
       (identifier) @declaration.name
       (function_expression))) @declaration.variable)
+(program
+  (static_final_declaration_list
+    (static_final_declaration
+      (identifier) @declaration.name
+      (function_expression))) @declaration.variable)
 (initialized_variable_definition
   name: (identifier) @declaration.name
   value: (function_expression)) @declaration.variable
+; Second and later declarators of \`var f = .., g = ..;\` are nested
+; initialized_identifier children of the same initialized_variable_definition,
+; which the field-based rule above only reaches for the first name.
+(initialized_variable_definition
+  (initialized_identifier
+    (identifier) @declaration.name
+    (function_expression)) @declaration.variable)
 
 ; ── Imports / re-exports ─────────────────────────────────────────────────────
 (import_or_export

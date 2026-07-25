@@ -133,7 +133,12 @@ describe('CALL_SUMMARY incremental reuse gate (U-C5)', () => {
     // every unchanged TS/JS file, and the incremental write set never touches
     // those files → must NOT reuse.
     expect(passesReuseGate(14)).toBe(false);
+    // A pre-v16 (v15) index predates #2693: calls through a closure-valued
+    // binding do not resolve in Kotlin/Swift/Dart, and the incremental write
+    // set never revisits unchanged files, so those symbols would keep reporting
+    // a zero blast radius → must NOT reuse.
+    expect(passesReuseGate(15)).toBe(false);
     // A current-version stamp passes the gate (incremental top-up eligible).
-    expect(passesReuseGate(15)).toBe(true);
+    expect(passesReuseGate(16)).toBe(true);
   });
 });

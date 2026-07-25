@@ -58,21 +58,31 @@ const DART_CALLABLE_CAPTURE_OPTIONS = {
   callNodeTypes: new Set(['selector']),
   parameterListNodeTypes: new Set(['formal_parameter_list', 'arguments']),
   parameterNodeTypes: new Set(['formal_parameter']),
-  // `initialized_identifier` covers TOP-LEVEL bindings, which Dart parses as a
-  // loose initialized_identifier_list under program rather than wrapping them
-  // in the local form. Without it a top-level `var f = (x) => x;` emitted no
-  // flow captures at all, so `f()` never resolved (#2693).
-  bindingNodeTypes: new Set(['initialized_variable_definition', 'initialized_identifier']),
+  // `initialized_identifier` covers TOP-LEVEL `var` bindings and the second and
+  // later declarators of a multi-name local; `static_final_declaration` covers
+  // top-level `final`/`const`, which parse into a different list node entirely.
+  // Dart wraps only the FIRST local declarator in `initialized_variable_
+  // definition`, so without the other two a top-level `var f = (x) => x;`, a
+  // `final f = …`, and the `g` of `var f = …, g = …;` all emitted no flow
+  // captures at all and never resolved (#2693).
+  bindingNodeTypes: new Set([
+    'initialized_variable_definition',
+    'initialized_identifier',
+    'static_final_declaration',
+  ]),
   assignmentNodeTypes: new Set(['assignment_expression']),
   identifierNodeTypes: new Set(['identifier', 'type_identifier']),
-  // `initialized_identifier` is FIELDLESS, so the shared field-based fallback
-  // (`left`/`name`/`value`/…) decomposes nothing and a top-level binding
-  // produced no flow facts at all — the same shape as Kotlin's fieldless
-  // `assignment` node. Positional: first named child is the bound name, last is
-  // the initializer. `initialized_variable_definition` carries real `name:` /
-  // `value:` fields, so it is left to the shared path by returning undefined.
+  // `initialized_identifier` and `static_final_declaration` are FIELDLESS, so
+  // the shared field-based fallback (`left`/`name`/`value`/…) decomposes
+  // nothing and those bindings produced no flow facts at all — the same shape
+  // as Kotlin's fieldless `assignment` node. Positional: first named child is
+  // the bound name, last is the initializer.
+  // `initialized_variable_definition` carries real `name:` / `value:` fields,
+  // so it is left to the shared path by returning undefined.
   extractAssignment: (node: SyntaxNode) => {
-    if (node.type !== 'initialized_identifier') return undefined;
+    if (node.type !== 'initialized_identifier' && node.type !== 'static_final_declaration') {
+      return undefined;
+    }
     const named = node.namedChildren.filter((child): child is SyntaxNode => child !== null);
     if (named.length < 2) return undefined;
     return { destination: named[0]!, source: named[named.length - 1]! };

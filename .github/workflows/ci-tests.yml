@@ -493,9 +493,10 @@ jobs:
         # set (fingerprint), stays linear in def count, and that the #2693
         # widened gate — which now considers VALUE bindings, a population that
         # outnumbers callables in real source — stays within its measured
-        # overhead of the pre-#2693 callable-only cost. Catches a regression in
-        # the value-binding pre-filter, without which every value binding pays
-        # the full resolveDefGraphId key chain just to be rejected.
+        # overhead of the pre-#2693 callable-only cost. The overhead budget also
+        # guards the DESIGN: value bindings are joined to their callable node by
+        # position, never by name through resolveDefGraphId, whose label-agnostic
+        # simpleKey fallback would alias a binding onto any same-named callable.
         run: node --import tsx bench/callable-value-flow/measure.mjs --check
         working-directory: gitnexus
 

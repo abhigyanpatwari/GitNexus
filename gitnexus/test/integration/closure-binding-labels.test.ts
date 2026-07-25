@@ -204,7 +204,7 @@ describeIfWorkerBuilt('calls to a closure binding resolve to its Function node',
       'val handler = { x: Int -> x }\n\nfun caller(): Int {\n    return handler(1)\n}\n',
     );
 
-    expect(targets).toContain('Function:App.kt:handler');
+    expect(targets).toEqual(['Function:App.kt:handler']);
   });
 
   it('Swift: handler(1) resolves', async () => {
@@ -213,7 +213,7 @@ describeIfWorkerBuilt('calls to a closure binding resolve to its Function node',
       'let handler = { (x: Int) -> Int in return x }\n\nfunc caller() -> Int {\n    return handler(1)\n}\n',
     );
 
-    expect(targets).toContain('Function:App.swift:handler');
+    expect(targets).toEqual(['Function:App.swift:handler']);
   });
   it('Dart: a top-level closure binding resolves', async () => {
     // The top-level form parses as `initialized_identifier`; the function-local
@@ -224,7 +224,7 @@ describeIfWorkerBuilt('calls to a closure binding resolve to its Function node',
       'var handler = (int x) => x;\n\nint caller() {\n  return handler(1);\n}\n',
     );
 
-    expect(targets).toContain('Function:app.dart:handler');
+    expect(targets).toEqual(['Function:app.dart:handler']);
   });
 
   it('Dart: a function-local closure binding resolves', async () => {
@@ -233,7 +233,44 @@ describeIfWorkerBuilt('calls to a closure binding resolve to its Function node',
       'int caller() {\n  var handler = (int x) => x;\n  return handler(1);\n}\n',
     );
 
-    expect(targets).toContain('Function:local.dart:handler');
+    expect(targets).toEqual(['Function:local.dart:handler']);
+  });
+
+  it('Dart: a top-level `final` closure binding resolves', async () => {
+    // `final` is the idiomatic top-level binding keyword and parses as a
+    // static_final_declaration_list, not an initialized_identifier_list, so it
+    // reaches neither the #2687 label rule nor the #2693 flow captures unless
+    // both are taught about it.
+    const targets = await callTargetsFor(
+      'final.dart',
+      'final handler = (int x) => x;\n\nint caller() {\n  return handler(1);\n}\n',
+    );
+
+    expect(targets).toEqual(['Function:final.dart:handler']);
+  });
+
+  it('Dart: every declarator of a multi-name local closure resolves', async () => {
+    // Dart wraps only the FIRST declarator in initialized_variable_definition;
+    // `g` is a nested initialized_identifier, so a rule keyed on the `name:`
+    // field alone silently drops it.
+    const targets = await callTargetsFor(
+      'multi.dart',
+      'int caller() {\n  var f = (int x) => x, g = (int y) => y;\n  return f(1) + g(2);\n}\n',
+    );
+
+    expect(targets).toEqual(['Function:multi.dart:f', 'Function:multi.dart:g']);
+  });
+
+  it('Kotlin: a class-body closure property resolves to its Method node', async () => {
+    // The class-body form is the common real-world shape and is the ONLY case
+    // that exercises the `Method` arm of the callable-label check — narrowing
+    // that check to `Function` would delete this silently.
+    const targets = await callTargetsFor(
+      'Box.kt',
+      'class Box {\n    val handler = { x: Int -> x }\n    fun caller(): Int {\n        return handler(1)\n    }\n}\n',
+    );
+
+    expect(targets).toEqual(['Method:Box.kt:Box.handler']);
   });
 });
 
@@ -299,16 +336,84 @@ describeIfWorkerBuilt('the declaration route does not double-emit (#2693)', () =
   });
 });
 
-describeIfWorkerBuilt('a non-callable value binding stays edge-free', () => {
-  // The suppression must key on an actual callable value. Widening
-  // `buildGraphTargetIndex` to admit value bindings whose graph node is a
-  // `Function` is safe only because a genuine constant keeps its own
-  // `Const`/`Property`/`Variable` node, so `resolveDefGraphId`'s qualified key
-  // hits before the label-agnostic `simpleKey` fallback can reach a callable.
+describeIfWorkerBuilt('a value binding is never aliased onto a same-named callable', () => {
+  // These are the regression tests for the defect the first cut of #2693
+  // shipped. Admitting a value binding on a same-file NAME match let
+  // `resolveDefGraphId` fall through to its label-agnostic, first-write-wins
+  // `simpleKey(filePath, simpleName)` and bind the name to ANY same-named
+  // callable in the file — a fabricated caller, chosen by declaration order.
+  //
+  // The join is positional now: a closure binding IS its callable node (same
+  // file, same line, same name); an aliasing local is not. Every case below
+  // pairs a value binding with a same-named callable, which is precisely the
+  // collision the previous fixtures never created — they used DIFFERENT names
+  // (`maxSize` vs `size`), so the pre-filter rejected them before the guard
+  // they were named after could run, and deleting that guard changed nothing.
 
-  it('Kotlin: a constant sharing its name with a function mints no CALLS to the constant', async () => {
+  it('TypeScript: a local aliasing a parameter does not call the same-named top-level function', async () => {
     const targets = await callTargetsFor(
-      'Shadow.kt',
+      'alias.ts',
+      'export function handler(): number {\n  return 1;\n}\n\n' +
+        'export function caller(cb: () => number): number {\n  const handler = cb;\n  return handler();\n}\n',
+    );
+
+    expect(targets).toEqual([]);
+  });
+
+  it('TypeScript: a local closure does not call a same-named class method', async () => {
+    // `Svc` is never instantiated. The local arrow has its own Function node,
+    // which is the only legitimate target.
+    const targets = await callTargetsFor(
+      'svc.ts',
+      'export class Svc {\n  save(x: number): number {\n    return x;\n  }\n}\n\n' +
+        'export function run(): number {\n  const save = (x: number): number => x * 2;\n  return save(1);\n}\n',
+    );
+
+    expect(targets).toEqual(['Function:svc.ts:save']);
+  });
+
+  it('TypeScript: a shadowing local does not also call the shadowed function', async () => {
+    // `caller` invokes `other` through the shadowing binding; the outer
+    // `handler` is unreachable from it.
+    const targets = await callTargetsFor(
+      'shadow.ts',
+      'export function handler(x: number): number {\n  return x;\n}\n' +
+        'export function other(x: number): number {\n  return x * 2;\n}\n\n' +
+        'export function caller(): number {\n  const handler = other;\n  return handler(1);\n}\n',
+    );
+
+    expect(targets).toEqual(['Function:shadow.ts:other']);
+  });
+
+  it('Rust: a let binding does not call the same-named function', async () => {
+    // Rust `let` bindings get no graph node at all, so the simple-name
+    // fallback was the ONLY route — this is the shape with no value node to
+    // claim the qualified key first.
+    const targets = await callTargetsFor(
+      'main.rs',
+      'fn handler() -> i32 {\n    1\n}\n\n' +
+        'fn caller(cb: fn() -> i32) -> i32 {\n    let handler = cb;\n    handler()\n}\n',
+    );
+
+    expect(targets).toEqual([]);
+  });
+
+  it('Dart: a local closure does not call a same-named class method', async () => {
+    // Before the positional join this emitted the WRONG edge and lost the
+    // right one: the only target was `Svc.save`, while the closure's own node
+    // got nothing.
+    const targets = await callTargetsFor(
+      'svc.dart',
+      'class Svc {\n  int save(int x) => x;\n}\n\n' +
+        'int run() {\n  var save = (int x) => x * 2;\n  return save(1);\n}\n',
+    );
+
+    expect(targets).toEqual(['Function:svc.dart:save']);
+  });
+
+  it('Kotlin: a genuine constant mints no CALLS', async () => {
+    const targets = await callTargetsFor(
+      'Consts.kt',
       'val maxSize = 10\n\nfun size(): Int {\n    return maxSize\n}\n',
     );
 

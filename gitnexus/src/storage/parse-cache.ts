@@ -55,6 +55,8 @@ import type { ParseWorkerResult } from '../core/ingestion/workers/parse-worker.j
 // the main thread (the #1983 OOM). Because the two stores share this version,
 // any future change to the `ParsedFile` serialization shape MUST bump
 // SCHEMA_BUMP so both invalidate in lockstep.
+// v23: Dart closure bindings emit Function nodes for function-local closures
+// and flow captures for top-level ones (#2693).
 // v22: `const X = <arrow | function-expression>` emits one `Function` node
 // instead of a `Function` plus an edgeless `Const` twin (#2687). Cached worker
 // results are replayed verbatim — including across `--force` — so without this
@@ -63,8 +65,6 @@ import type { ParseWorkerResult } from '../core/ingestion/workers/parse-worker.j
 // method injection sites plus bean-name and @Primary provider metadata.
 // v20: Java/Kotlin capture side-channels persist package and class-annotation
 // facts for shared Spring Bean resolution.
-// v23: Dart closure bindings emit Function nodes for function-local closures
-// and flow captures for top-level ones (#2693).
 // v21: Java local class/enum/record/interface captures use javac-compatible,
 // source-type-relative JLS 13.1 identities and declaration-to-block scopes
 // (#2562).

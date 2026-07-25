@@ -754,44 +754,43 @@ export function buildGraphTargetIndex(
   graph: KnowledgeGraph,
 ): ReadonlyMap<string, Target> {
   const out = new Map<string, Target>();
-  const { byAnchor, callableNameKeys } = buildGraphCallableIndexes(graph);
+  const { byAnchor, callableByPosition } = buildGraphCallableIndexes(graph);
   for (const def of scopes.defs.byId.values()) {
     const callableDef = isCallable(def) || providerTarget?.(def) === true;
-    // #2693: a closure bound to a name (`val f = { }`) is a callable the def
-    // type cannot see. The scope-resolution layer declares such a binding with
-    // its VALUE label (Kotlin/Swift `Property`, Dart `Variable`) while #2687
-    // makes the graph emit a single `Function` node for it. Only the graph
-    // knows, so value bindings are resolved below on the label of the node they
-    // actually reach.
     if (!callableDef) {
-      if (!VALUE_BINDING_DEF_TYPES.has(def.type)) continue;
-      // Exact pre-filter, not a heuristic. Every qualified key
-      // `resolveDefGraphId` tries embeds `def.type`, so for a VALUE def those
-      // can only ever hit a value-labelled node; its one route to a callable is
-      // the label-agnostic `simpleKey(filePath, simpleName)` fallback, which by
-      // construction requires a callable node with the SAME file and simple
-      // name. So a value binding with no such node cannot possibly resolve to a
-      // callable, and skipping it here is equivalent to running the full
-      // resolve and rejecting the result — at one Set lookup instead of the
-      // whole key chain. Value bindings outnumber callables in real source, so
-      // this is the difference between paying resolve cost per binding and
-      // paying it per binding that can actually match.
-      const simple = simpleQualifiedName(def);
-      if (simple === undefined || !callableNameKeys.has(`${def.filePath}\0${simple}`)) continue;
+      // #2693: a closure bound to a name (`val f = { }`) is a callable the def
+      // type cannot see — the scope layer declares it with its VALUE label
+      // (Kotlin/Swift `Property`, Dart `Variable`) while #2687 makes the graph
+      // emit a single callable node for it. Only the graph knows.
+      //
+      // The join MUST be positional. Resolving such a def through
+      // `resolveDefGraphId` is unsafe: every qualified key it builds embeds
+      // `def.type`, so for a value def they can only ever hit a value-labelled
+      // node — and when the def's own node is absent (Rust `let`) or carries a
+      // DIFFERENT label than the def's type (TypeScript declares `const` as
+      // `Variable` but emits a `Const` node), the chain falls through to the
+      // label-agnostic, first-write-wins `simpleKey(filePath, simpleName)`.
+      // That aliases the binding onto ANY same-named callable in the file —
+      // `const save = cb` next to an unrelated `Svc.save` mints a CALLS edge to
+      // the method, and the result depends on declaration order.
+      //
+      // A closure binding IS its callable node: same file, same line, same
+      // name. An aliasing local is not. So look the node up by position and
+      // admit only an exact hit.
+      const positionalKey = valueBindingPositionKey(def);
+      const positionalId =
+        positionalKey === undefined ? undefined : callableByPosition.get(positionalKey);
+      // `''` marks an ambiguous position (two callables claiming one
+      // file/line/name) — undecidable, so admit neither.
+      if (positionalId === undefined || positionalId === '') continue;
+      out.set(def.nodeId, { id: positionalId, def });
+      continue;
     }
-    // Only callable defs can match the anchor index — it is keyed by callable
-    // LABEL, and `definitionAnchorKey` builds its key from `def.type`. Running
-    // it for a value def costs a regex per def and can never hit.
-    const anchorKey = callableDef ? definitionAnchorKey(def) : undefined;
+    const anchorKey = definitionAnchorKey(def);
     const anchored = anchorKey === undefined ? undefined : byAnchor.get(anchorKey);
     const id =
       anchored?.length === 1 ? anchored[0] : resolveDefGraphId(def.filePath, def, nodeLookup);
     if (id === undefined) continue;
-    // A genuine constant keeps its own `Const`/`Property`/`Variable` node, so
-    // `resolveDefGraphId`'s qualified key hits before its label-agnostic
-    // `simpleKey` fallback can reach a same-named callable — only a binding
-    // whose own value node was replaced by a callable one gets through here.
-    if (!callableDef && !isCallableGraphNode(graph, id)) continue;
     // Overloads can intentionally share one graph node ID. Index by the
     // definition identity so contextual signature narrowing still sees the
     // complete overload set before a selected target collapses to graph ID.
@@ -801,21 +800,38 @@ export function buildGraphTargetIndex(
 }
 
 /**
- * Value-binding labels whose initializer can be a callable. Kept separate from
- * `isCallable` because these are admitted on graph-node evidence, never on the
- * def type alone.
+ * `file\0line\0name` for a value binding, matching the callable-node key built
+ * in `buildGraphCallableIndexes`. Definition lines come from the def id and are
+ * 1-based; graph `startLine` is 0-based, which is the `+ 1` there.
+ */
+function valueBindingPositionKey(def: SymbolDefinition): string | undefined {
+  if (!VALUE_BINDING_DEF_TYPES.has(def.type)) return undefined;
+  const line = def.nodeId.match(/#(\d+):(\d+):/)?.[1];
+  const name = simpleQualifiedName(def);
+  if (line === undefined || name === undefined) return undefined;
+  return `${def.filePath}\0${line}\0${name}`;
+}
+
+/**
+ * Value-binding labels whose initializer can be a callable. Admitted ONLY on
+ * positional graph-node evidence (see `buildGraphTargetIndex`), never on the def
+ * type alone.
+ *
+ * Deliberately NOT `isOwnableValueLabel` (scope/walkers.ts), which lists the
+ * same labels for the value-receiver bridge: that predicate is contracted to
+ * `reconcileOwnership`, and coupling the two would let a label added for
+ * ownership silently widen call-target admission. Two lists, two reasons —
+ * changing either means checking the other.
+ *
+ * `Static` is excluded: `normalizeNodeLabel` (scope-extractor.ts) has no
+ * `static` case, so no scope-resolution def can carry that type. Including it
+ * added an entry no fixture could ever exercise.
  */
 const VALUE_BINDING_DEF_TYPES: ReadonlySet<NodeLabel> = new Set<NodeLabel>([
   'Const',
   'Property',
-  'Static',
   'Variable',
 ]);
-
-function isCallableGraphNode(graph: KnowledgeGraph, id: string): boolean {
-  const label = graph.getNode(id)?.label;
-  return label === 'Function' || label === 'Method' || label === 'Constructor';
-}
 
 interface CanonicalCallableTargets {
   /** Definition identity remains the key; declaration keys may point at the definition target. */
@@ -935,32 +951,46 @@ interface GraphCallableIndexes {
   /** Callable graph nodes by `file\0label\0line\0name` — the definition anchor. */
   readonly byAnchor: ReadonlyMap<string, readonly string[]>;
   /**
-   * `file\0name` for every callable graph node. The value-binding pre-filter in
-   * `buildGraphTargetIndex` needs only existence, and deriving it here keeps the
-   * graph to ONE walk rather than a second pass for the same nodes.
+   * Callable graph nodes by `file\0line\0name` — the same anchor WITHOUT the
+   * label, because a value binding's def type never matches its callable node's
+   * label (that is the whole point of #2693). Value = the node id, or `''` when
+   * two callables claim one position and the join is undecidable.
+   *
+   * Derived in the same walk as `byAnchor`: a second pass over the graph for
+   * the same nodes would double the cost of the largest loop in this pass.
    */
-  readonly callableNameKeys: ReadonlySet<string>;
+  readonly callableByPosition: ReadonlyMap<string, string>;
 }
 
 function buildGraphCallableIndexes(graph: KnowledgeGraph): GraphCallableIndexes {
   const byAnchor = new Map<string, string[]>();
-  const callableNameKeys = new Set<string>();
+  const callableByPosition = new Map<string, string>();
   for (const node of graph.iterNodes()) {
     if (node.label !== 'Function' && node.label !== 'Method' && node.label !== 'Constructor') {
       continue;
     }
     const filePath = node.properties.filePath;
     const name = node.properties.name;
-    if (typeof filePath !== 'string' || typeof name !== 'string') continue;
-    callableNameKeys.add(`${filePath}\0${name}`);
     const zeroBasedLine = node.properties.startLine;
-    if (typeof zeroBasedLine !== 'number') continue;
-    const key = `${filePath}\0${node.label}\0${zeroBasedLine + 1}\0${name}`;
+    if (
+      typeof filePath !== 'string' ||
+      typeof name !== 'string' ||
+      typeof zeroBasedLine !== 'number'
+    ) {
+      continue;
+    }
+    const oneBasedLine = zeroBasedLine + 1;
+    const positionKey = `${filePath}\0${oneBasedLine}\0${name}`;
+    const existing = callableByPosition.get(positionKey);
+    // First wins would be order-dependent; mark the collision instead so an
+    // ambiguous position admits nothing rather than something arbitrary.
+    callableByPosition.set(positionKey, existing === undefined ? node.id : '');
+    const key = `${filePath}\0${node.label}\0${oneBasedLine}\0${name}`;
     const bucket = byAnchor.get(key);
     if (bucket === undefined) byAnchor.set(key, [node.id]);
     else bucket.push(node.id);
   }
-  return { byAnchor, callableNameKeys };
+  return { byAnchor, callableByPosition };
 }
 
 function definitionAnchorKey(def: SymbolDefinition): string | undefined {

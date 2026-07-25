@@ -1730,6 +1730,17 @@ export const DART_QUERIES = `
       (identifier) @name
       (function_expression))) @definition.function)
 
+; ── Top-level final/const closure bindings (#2693) ──────────────────────────
+; \`final handler = (x) => x;\` parses as a static_final_declaration_list, not an
+; initialized_identifier_list, so the rules above never reach it — \`final\` is
+; the idiomatic top-level binding keyword and was the one closure form getting
+; neither the callable label nor resolution.
+(program
+  (static_final_declaration_list
+    (static_final_declaration
+      (identifier) @name
+      (function_expression))) @definition.function)
+
 ; ── Function-local closure bindings (#2693) ─────────────────────────────────
 ; \`void m() { var f = (x) => x; }\` — locals parse as initialized_variable_
 ; definition, which the top-level rules above never reach, so a local closure
@@ -1738,6 +1749,17 @@ export const DART_QUERIES = `
 (initialized_variable_definition
   name: (identifier) @name
   value: (function_expression)) @definition.function
+
+; Second and later declarators of a multi-name local (\`var f = .., g = ..;\`)
+; are initialized_identifier children NESTED INSIDE the same
+; initialized_variable_definition, which the \`name:\`/\`value:\` field rule above
+; only reaches for the FIRST name — so \`g\` silently had no node. Anchored on the
+; inner node so each name gets its own range; the top-level form lives under
+; initialized_identifier_list instead, so these never double-match.
+(initialized_variable_definition
+  (initialized_identifier
+    (identifier) @name
+    (function_expression)) @definition.function)
 (program
   (static_final_declaration_list
     (static_final_declaration
