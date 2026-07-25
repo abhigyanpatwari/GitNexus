@@ -45,6 +45,10 @@ const PLATFORM_LOGIC = [
   // tests compare identity fields against raw temp-dir paths and fail on macOS,
   // where /var/... realpaths to /private/var/....
   'test/unit/analyzer-identity-path-normalization.test.ts',
+  // `isInside` containment guard vs Windows cross-drive paths: path.relative
+  // returns the absolute target across drives, so the guard needs isAbsolute.
+  // Fixture-free and pathApi-injectable, so it is portable to every runner.
+  'test/unit/analyzer-identity-is-inside.test.ts',
   // getconf page-size probe: explicit process.platform gate (win32 short-circuit)
   // plus a live-probe test whose only real non-4K coverage is macos-arm64's
   // 16 KiB pages — the exact hardware class #1231 targets (#2424 review).
