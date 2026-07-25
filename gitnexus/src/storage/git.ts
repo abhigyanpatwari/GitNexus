@@ -1,7 +1,8 @@
 import { execFileSync, execSync } from 'child_process';
-import { statSync } from 'fs';
+import { statSync, existsSync } from 'fs';
 import path from 'path';
 import os from 'os';
+import { logger } from '../core/logger.js';
 
 // Git utilities for repository detection, commit tracking, and diff analysis
 
@@ -48,6 +49,123 @@ export const isWorkingTreeDirty = (repoPath: string): boolean => {
     return out.trim().length > 0;
   } catch {
     return true; // conservative on git failure
+  }
+};
+
+/**
+ * Snapshot, per candidate file, whether it is safe for `selfCommitContextFiles`
+ * to auto-commit — call this BEFORE `analyze` writes AGENTS.md/CLAUDE.md.
+ * A file is safe when it does not exist yet (first-time creation, the normal
+ * case) or is currently clean (`git status --porcelain` reports nothing for
+ * it). A file that already has an uncommitted user edit is unsafe: without
+ * this check `selfCommitContextFiles` cannot tell that edit apart from the
+ * stats refresh `analyze` is about to write, and would silently sweep both
+ * into one generated-looking commit. Fails closed — a git failure marks the
+ * file unsafe rather than assuming it's clean. See #2639 review round 2.
+ */
+export const snapshotSelfCommitSafety = (
+  repoPath: string,
+  candidateFiles: string[],
+): Map<string, boolean> => {
+  const safety = new Map<string, boolean>();
+  for (const name of candidateFiles) {
+    if (!existsSync(path.join(repoPath, name))) {
+      safety.set(name, true);
+      continue;
+    }
+    try {
+      const status = execFileSync('git', ['status', '--porcelain', '--', name], {
+        cwd: repoPath,
+        stdio: ['ignore', 'pipe', 'ignore'],
+        windowsHide: true,
+        encoding: 'utf8',
+      });
+      safety.set(name, status.trim().length === 0);
+    } catch {
+      safety.set(name, false);
+    }
+  }
+  return safety;
+};
+
+/**
+ * Best-effort auto-commit for the AGENTS.md/CLAUDE.md files `analyze --self-commit`
+ * just (re)wrote. Filters `candidateFiles` down to the ones that actually exist
+ * under `repoPath` AND were marked safe by `snapshotSelfCommitSafety` — a file
+ * that already had an uncommitted edit before this run is skipped (logged),
+ * never swept into the generated commit. Never `git add -A`. `git status
+ * --porcelain` (not `diff --quiet`) is deliberate: a first-time `analyze` run
+ * creates AGENTS.md/CLAUDE.md fresh, and untracked files never show up in
+ * `git diff`, only in `git status` — the same reason `isWorkingTreeDirty`
+ * above uses `--porcelain`. If `git commit` fails after `git add` already
+ * staged the safe files (e.g. missing git identity), the staged files are
+ * reset back to unstaged so the user's index isn't silently left mutated.
+ * No-ops silently (never throws) when: none of the candidate files exist or
+ * are safe, none changed, or any git step fails. Must never fail the
+ * surrounding `analyze` run. See #2639.
+ */
+export const selfCommitContextFiles = (
+  repoPath: string,
+  candidateFiles: string[],
+  preRunSafety: Map<string, boolean>,
+): void => {
+  const existing = candidateFiles.filter((name) => existsSync(path.join(repoPath, name)));
+  if (existing.length === 0) return;
+
+  const safe = existing.filter((name) => preRunSafety.get(name) === true);
+  const skippedDirty = existing.filter((name) => preRunSafety.get(name) !== true);
+  if (skippedDirty.length > 0) {
+    logger.warn(
+      { files: skippedDirty },
+      'gitnexus: --self-commit skipping file(s) with uncommitted changes from before this analyze run',
+    );
+  }
+  if (safe.length === 0) return;
+
+  try {
+    const status = execFileSync('git', ['status', '--porcelain', '--', ...safe], {
+      cwd: repoPath,
+      stdio: ['ignore', 'pipe', 'ignore'],
+      windowsHide: true,
+      encoding: 'utf8',
+    });
+    if (status.trim().length === 0) return; // nothing to commit
+  } catch {
+    return; // git failed (not a repo, git missing, etc.) — nothing to do
+  }
+
+  try {
+    execFileSync('git', ['add', '--', ...safe], {
+      cwd: repoPath,
+      stdio: 'ignore',
+      windowsHide: true,
+    });
+  } catch (err) {
+    logger.warn({ err, files: safe }, 'gitnexus: --self-commit failed to stage context files');
+    return;
+  }
+
+  try {
+    execFileSync(
+      'git',
+      ['commit', '-m', 'chore(gitnexus): refresh index stats [skip ci]', '--', ...safe],
+      { cwd: repoPath, stdio: 'ignore', windowsHide: true },
+    );
+  } catch (err) {
+    // Commit failed after `git add` already staged `safe` (e.g. missing git
+    // identity). Restore the index to its pre-add state for exactly those
+    // files rather than leaving them silently staged — `analyze` reporting
+    // "success" must not leave the user's index mutated.
+    try {
+      execFileSync('git', ['reset', '--', ...safe], {
+        cwd: repoPath,
+        stdio: 'ignore',
+        windowsHide: true,
+      });
+    } catch {
+      /* best-effort restore; nothing more we can do */
+    }
+    logger.warn({ err, files: safe }, 'gitnexus: --self-commit failed to commit context files');
   }
 };
 

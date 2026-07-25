@@ -33,7 +33,13 @@ import {
   assertAnalysisFinalized,
   type AnalyzerRunnerIdentity,
 } from '../storage/repo-manager.js';
-import { getGitRoot, hasGitDir, getDefaultBranch } from '../storage/git.js';
+import {
+  getGitRoot,
+  hasGitDir,
+  getDefaultBranch,
+  selfCommitContextFiles,
+  snapshotSelfCommitSafety,
+} from '../storage/git.js';
 import { IndexLockTimeoutError } from '../storage/index-lock.js';
 import {
   loadAnalyzeConfig,
@@ -649,6 +655,13 @@ export interface AnalyzeOptions {
    * default-on case.
    */
   stats?: boolean;
+  /**
+   * Opt-in auto-commit of any AGENTS.md/CLAUDE.md changes this `analyze` run
+   * makes. Scoped to only those two files (never `git add -A`); no-ops
+   * silently if neither exists, neither changed, or the commit step itself
+   * fails (e.g. no git identity configured). See #2639.
+   */
+  selfCommit?: boolean;
   /** Skip installing standard GitNexus skill files directly under .claude/skills/. */
   skipSkills?: boolean;
   /**
@@ -1395,6 +1408,15 @@ const analyzeCommandImpl = async (
     const bootstrapArgs: [] | [AnalyzerRunnerIdentity] = runnerIdentityAtBootstrap
       ? [runnerIdentityAtBootstrap]
       : [];
+    // #2639 review round 2: snapshot which of AGENTS.md/CLAUDE.md are safe to
+    // auto-commit BEFORE runFullAnalysis (and the --skills regeneration
+    // further down) writes to them, so selfCommitContextFiles can tell a
+    // pre-existing unstaged user edit apart from this run's stats refresh
+    // and refuse to sweep the former into the latter's commit.
+    const selfCommitSafety =
+      options.selfCommit === true
+        ? snapshotSelfCommitSafety(repoPath, ['AGENTS.md', 'CLAUDE.md'])
+        : undefined;
     const result = await runFullAnalysis(repoPath, runOptions, runCallbacks, ...bootstrapArgs);
 
     if (result.alreadyUpToDate) {
@@ -1438,6 +1460,11 @@ const analyzeCommandImpl = async (
         console.log(
           `  Updated base_ref to "${resolvedDefaultBranch}" in ${baseRefRefreshed.join(', ')}\n`,
         );
+      }
+      // #2639: opt-in self-commit of any AGENTS.md/CLAUDE.md churn from this
+      // fast path (e.g. a base_ref refresh above). Best-effort — never throws.
+      if (options.selfCommit === true && selfCommitSafety) {
+        selfCommitContextFiles(repoPath, ['AGENTS.md', 'CLAUDE.md'], selfCommitSafety);
       }
       // Safe to return without process.exit(0) — the early-return path in
       // runFullAnalysis never opens LadybugDB, so no native handles prevent exit.
@@ -1526,6 +1553,14 @@ const analyzeCommandImpl = async (
       } catch {
         /* best-effort */
       }
+    }
+
+    // #2639: opt-in self-commit of any AGENTS.md/CLAUDE.md churn written by
+    // this run (the primary generateAIContextFiles call inside
+    // runFullAnalysis, and/or the --skills regeneration above). Best-effort
+    // — never throws, so a missing git identity etc. can't fail `analyze`.
+    if (options.selfCommit === true && selfCommitSafety) {
+      selfCommitContextFiles(repoPath, ['AGENTS.md', 'CLAUDE.md'], selfCommitSafety);
     }
 
     const totalTime = ((Date.now() - t0) / 1000).toFixed(1);
