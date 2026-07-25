@@ -41,8 +41,18 @@
  * Measured on the same 400k-node / 1.08M-edge graph, all edges streamable, each
  * arm running what its own consumers actually call:
  *
- *   heap  821 MB -> 518 MB   (1.59x better)
- *   scans  ~83 ms -> ~88 ms  (parity, within run-to-run noise)
+ *   heap  819 MB -> 584 MB   (1.40x better)
+ *   scans  ~78 ms -> ~88 ms  (parity, within run-to-run noise)
+ *
+ * Linear in both: verified at 100k/200k/400k/800k nodes, per-edge scan cost flat
+ * (~13 ns both arms) and the heap ratio drifting only 1.7x -> 1.5x as interner
+ * indices gain digits. No super-linear term, so a larger repo costs
+ * proportionally more, not disproportionately.
+ *
+ * The dedup key encodes its tail SEGMENT COUNT, which measurably costs ~66 MB
+ * here versus omitting it. That is not optional: without it a one-segment tail
+ * `:7` and a two-segment `:7:0` collapse onto one key and an edge is silently
+ * dropped (regression test in graph-emit-sink.test.ts).
  *
  * Getting there took three measured steps, because the naive version was 6.8x
  * WORSE (651 ms) — reads rebuild objects, and a real analyze performs SIX full
@@ -358,7 +368,11 @@ export class GraphEmitSink implements KnowledgeGraph, GraphEmitControl {
           }
           seen++;
         }
-        if (ok) return `${srcIx}|${tgtIx}|${rel.type}|${a}|${b}`;
+        // `seen` is part of the key: without it a one-segment tail `:7` (b
+        // defaults to 0) and a two-segment `:7:0` produce the same key, and the
+        // second edge is silently discarded as a duplicate. Distinct ids must
+        // never collapse — that is a lost relationship with no error.
+        if (ok) return `${srcIx}|${tgtIx}|${rel.type}|${seen}|${a}|${b}`;
       }
     }
     return rel.id;
@@ -600,6 +614,10 @@ export class GraphEmitSink implements KnowledgeGraph, GraphEmitControl {
    * return `false`; that is acceptable because the only production caller is the
    * COBOL resolver, which runs BEFORE the sink is armed and so takes the branch
    * below.
+   *
+   * NOTE this diverges from {@link KnowledgeGraph.removeRelationship}, which
+   * returns `false` for an id it does not hold. Pinned by a test so the
+   * divergence stays deliberate.
    */
   removeRelationship(relationshipId: string): boolean {
     if (this.real.removeRelationship(relationshipId)) return true;

@@ -47,5 +47,12 @@ export interface KnowledgeGraph {
   addRelationship: (relationship: GraphRelationship) => void;
   removeNode: (nodeId: string) => boolean;
   removeNodesByFile: (filePath: string) => number;
+  /**
+   * Removes the relationship with this id, returning whether it existed.
+   *
+   * Implementations that offload relationships out of memory cannot always tell
+   * "absent" from "already written out" — `GraphEmitSink` deliberately throws
+   * rather than answering `false` for an edge it can no longer recall (#2680).
+   */
   removeRelationship: (relationshipId: string) => boolean;
 }

@@ -286,3 +286,118 @@ describe('GraphEmitSink IO faults', () => {
     expect(() => sink.finalize()).toThrow(/called twice/);
   });
 });
+
+describe('dedup key exactness', () => {
+  const endpoints = { sourceId: fnId('f'), targetId: fnId('g') };
+  const withId = (id: string): GraphRelationship => ({
+    id,
+    ...endpoints,
+    type: 'CALLS',
+    confidence: 1,
+    reason: 'direct',
+  });
+
+  it('keeps two ids that differ only in how many tail segments they carry', () => {
+    // Regression: the dedup key packs the id's trailing numeric segments, and an
+    // absent second segment defaults to 0. Without the segment COUNT in the key,
+    // `:7` and `:7:0` collapse onto one key and the second edge is silently
+    // discarded — a lost relationship with no error. Distinct ids must never
+    // collapse; identical ones must (see the duplicate test above).
+    const real = createKnowledgeGraph();
+    const sink = new GraphEmitSink(real, csvDir);
+    sink.beginStreaming();
+
+    sink.addRelationship(withId(`rel:CALLS:${endpoints.sourceId}->${endpoints.targetId}:7`));
+    sink.addRelationship(withId(`rel:CALLS:${endpoints.sourceId}->${endpoints.targetId}:7:0`));
+
+    expect(sink.relationshipCount).toBe(2);
+    expect(sink.finalize()).toMatchObject({ totalRows: 2 });
+  });
+
+  it('keeps two call sites between the same pair', () => {
+    // The `:line:col` case from emit-references — same endpoints and type, so
+    // identical CSV rows; only the id distinguishes them, and the whole-graph
+    // emit keeps both.
+    const sink = new GraphEmitSink(createKnowledgeGraph(), csvDir);
+    sink.beginStreaming();
+
+    sink.addRelationship(withId(`rel:CALLS:${endpoints.sourceId}->${endpoints.targetId}:10:4`));
+    sink.addRelationship(withId(`rel:CALLS:${endpoints.sourceId}->${endpoints.targetId}:99:7`));
+
+    expect(sink.relationshipCount).toBe(2);
+    sink.finalize();
+  });
+
+  it('still collapses a genuinely repeated id', () => {
+    const sink = new GraphEmitSink(createKnowledgeGraph(), csvDir);
+    sink.beginStreaming();
+    const id = `rel:CALLS:${endpoints.sourceId}->${endpoints.targetId}:10:4`;
+
+    sink.addRelationship(withId(id));
+    sink.addRelationship(withId(id));
+
+    expect(sink.relationshipCount).toBe(1);
+    sink.finalize();
+  });
+
+  it('falls back to the full id for a non-numeric tail', () => {
+    // `rel:imports:...:${localName}` has a textual tail; the compact form does
+    // not apply and the id must be stored verbatim rather than truncated.
+    const sink = new GraphEmitSink(createKnowledgeGraph(), csvDir);
+    sink.beginStreaming();
+
+    sink.addRelationship(withId(`rel:IMPORTS:${endpoints.sourceId}->${endpoints.targetId}:alpha`));
+    sink.addRelationship(withId(`rel:IMPORTS:${endpoints.sourceId}->${endpoints.targetId}:beta`));
+
+    expect(sink.relationshipCount).toBe(2);
+    sink.finalize();
+  });
+});
+
+describe('removeRelationship contract divergence', () => {
+  it('throws for an absent id once streaming has begun, by design', () => {
+    // KnowledgeGraph.removeRelationship returns false for an id it does not
+    // hold. The sink cannot rebuild a compact dedup key from a bare id, so it
+    // refuses to answer "false" for something that might already be on disk and
+    // unrecallable. Pinned so the divergence stays deliberate.
+    const sink = new GraphEmitSink(createKnowledgeGraph(), csvDir);
+    sink.beginStreaming();
+    sink.addRelationship(rel('CALLS', 'a', 'b'));
+
+    expect(() => sink.removeRelationship('rel:CALLS:never:emitted')).toThrow(
+      StreamedRelationshipRemovalError,
+    );
+    sink.finalize();
+  });
+
+  it('returns false for an absent id before anything has streamed', () => {
+    const sink = new GraphEmitSink(createKnowledgeGraph(), csvDir);
+    sink.beginStreaming();
+
+    expect(sink.removeRelationship('rel:CALLS:never:emitted')).toBe(false);
+    sink.finalize();
+  });
+});
+
+describe('field scan matches the object scan', () => {
+  it('yields the same (source, target, type, confidence) tuples either way', () => {
+    // Guards the five whole-graph scans converted to forEachRelationshipFields:
+    // a divergence between the two forms would silently skew community
+    // detection, process extraction and the pruner.
+    const real = createKnowledgeGraph();
+    const sink = new GraphEmitSink(real, csvDir);
+    sink.beginStreaming();
+    sink.addRelationship(rel('DEFINES', 'file', 'fn'));
+    sink.addRelationship(rel('CALLS', 'a', 'b'));
+    sink.addRelationship({ ...rel('ACCESSES', 'b', 'c'), confidence: 0.5 });
+
+    const viaObjects = [...sink.iterRelationships()]
+      .map((r) => `${r.sourceId}|${r.targetId}|${r.type}|${r.confidence}`)
+      .sort();
+    const viaFields: string[] = [];
+    sink.forEachRelationshipFields((s, t, ty, c) => viaFields.push(`${s}|${t}|${ty}|${c}`));
+
+    expect(viaFields.sort()).toEqual(viaObjects);
+    sink.finalize();
+  });
+});
