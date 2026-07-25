@@ -69,16 +69,10 @@ describe('#2649 heap guardrails wired into runChunkedParseAndResolve', () => {
 
     const graph = createKnowledgeGraph();
     await expect(
-      runChunkedParseAndResolve(
-        graph,
-        [file],
-        [file.path],
-        1,
-        repoDir,
-        Date.now(),
-        () => {},
-        { workerUrlForTest: pathToFileURL(workerStubPath), workerPoolSize: 1 },
-      ),
+      runChunkedParseAndResolve(graph, [file], [file.path], 1, repoDir, Date.now(), () => {}, {
+        workerUrlForTest: pathToFileURL(workerStubPath),
+        workerPoolSize: 1,
+      }),
     ).rejects.toThrow(/Analyze stopped before running out of memory/);
   });
 
@@ -105,7 +99,16 @@ describe('#2649 heap guardrails wired into runChunkedParseAndResolve', () => {
         () => {},
         {
           workerUrlForTest: pathToFileURL(
-            path.resolve(__dirname, '..', '..', 'dist', 'core', 'ingestion', 'workers', 'parse-worker.js'),
+            path.resolve(
+              __dirname,
+              '..',
+              '..',
+              'dist',
+              'core',
+              'ingestion',
+              'workers',
+              'parse-worker.js',
+            ),
           ),
           workerPoolSize: 1,
         },

@@ -122,9 +122,8 @@ describe('worker pool GC-stall credit (#2649)', () => {
 
 describe('startHeartbeatStallTracker (#2649 review — the production probe itself)', () => {
   it('accumulates observed stalls, ignores on-time ticks, and freezes after stop()', async () => {
-    const { startHeartbeatStallTracker } = await import(
-      '../../src/core/ingestion/workers/worker-pool.js'
-    );
+    const { startHeartbeatStallTracker } =
+      await import('../../src/core/ingestion/workers/worker-pool.js');
     vi.useFakeTimers();
     try {
       const tracker = startHeartbeatStallTracker();

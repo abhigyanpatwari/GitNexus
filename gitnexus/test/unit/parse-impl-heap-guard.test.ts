@@ -54,9 +54,10 @@ describe('#2649 parse-phase heap guardrails', () => {
 
   it('aborts above 92% of the heap limit and not below it', () => {
     const limit = 4 * GB;
-    expect(
-      [0.91, 0.93].map((f) => shouldAbortForHeapPressure(limit * f, limit)),
-    ).toEqual([false, true]);
+    expect([0.91, 0.93].map((f) => shouldAbortForHeapPressure(limit * f, limit))).toEqual([
+      false,
+      true,
+    ]);
   });
 
   it('GITNEXUS_HEAP_GUARD=0 disables the abort entirely', () => {

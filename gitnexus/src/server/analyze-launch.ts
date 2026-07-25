@@ -158,9 +158,7 @@ export function createLaunchAnalysisWorker(deps: LaunchDeps) {
     // GITNEXUS_SERVER_ANALYZE_HEAP_MB overrides as an absolute value.
     const envHeapMb = Number(process.env.GITNEXUS_SERVER_ANALYZE_HEAP_MB);
     const workerHeapMb =
-      Number.isInteger(envHeapMb) && envHeapMb > 0
-        ? envHeapMb
-        : Math.min(8192, autoHeapCapMb());
+      Number.isInteger(envHeapMb) && envHeapMb > 0 ? envHeapMb : Math.min(8192, autoHeapCapMb());
 
     const forkWorker = () => {
       const currentJob = jobManager.getJob(job.id);

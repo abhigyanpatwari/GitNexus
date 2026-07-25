@@ -84,27 +84,24 @@ describe('resolveWorkerHeapCapMb (#2649 per-worker heap cap)', () => {
   });
 
   it('splits half of RAM across the pool, clamped to the 4096 ceiling', async () => {
-    const { resolveWorkerHeapCapMb } = await import(
-      '../../src/core/ingestion/workers/worker-pool.js'
-    );
+    const { resolveWorkerHeapCapMb } =
+      await import('../../src/core/ingestion/workers/worker-pool.js');
     // 32GB -> half = 16384MB; /16 workers = 1024; /4 workers = 4096 (at ceiling);
     // /2 workers = 8192 -> clamped to 4096.
     expect([16, 4, 2].map((n) => resolveWorkerHeapCapMb(n))).toEqual([1024, 4096, 4096]);
   });
 
   it('never drops below the 512MB floor on small shares', async () => {
-    const { resolveWorkerHeapCapMb } = await import(
-      '../../src/core/ingestion/workers/worker-pool.js'
-    );
+    const { resolveWorkerHeapCapMb } =
+      await import('../../src/core/ingestion/workers/worker-pool.js');
     // 32GB half-share across 64 workers = 256 -> floored to 512.
     expect(resolveWorkerHeapCapMb(64)).toBe(512);
   });
 
   it('GITNEXUS_WORKER_HEAP_MB overrides the formula', async () => {
     process.env.GITNEXUS_WORKER_HEAP_MB = '768';
-    const { resolveWorkerHeapCapMb } = await import(
-      '../../src/core/ingestion/workers/worker-pool.js'
-    );
+    const { resolveWorkerHeapCapMb } =
+      await import('../../src/core/ingestion/workers/worker-pool.js');
     expect([1, 16].map((n) => resolveWorkerHeapCapMb(n))).toEqual([768, 768]);
   });
 
@@ -136,9 +133,8 @@ describe('resolveWorkerHeapCapMb (#2649 per-worker heap cap)', () => {
     // which would let one worker outgrow a quarter of the whole container).
     restoreConstrained?.();
     restoreConstrained = setConstrainedMemory(8 * 1024 * 1024 * 1024);
-    const { resolveWorkerHeapCapMb } = await import(
-      '../../src/core/ingestion/workers/worker-pool.js'
-    );
+    const { resolveWorkerHeapCapMb } =
+      await import('../../src/core/ingestion/workers/worker-pool.js');
     expect(resolveWorkerHeapCapMb(4)).toBe(1024);
   });
 
@@ -147,9 +143,8 @@ describe('resolveWorkerHeapCapMb (#2649 per-worker heap cap)', () => {
     const workerPath = path.join(tempDir, 'fake-worker.js');
     fs.writeFileSync(workerPath, '// fake worker path for createWorkerPool');
     try {
-      const { createWorkerPool, resolveWorkerHeapCapMb } = await import(
-        '../../src/core/ingestion/workers/worker-pool.js'
-      );
+      const { createWorkerPool, resolveWorkerHeapCapMb } =
+        await import('../../src/core/ingestion/workers/worker-pool.js');
       const pool = createWorkerPool(pathToFileURL(workerPath) as URL, 2, {
         shutdownDrainMs: 25,
       });
