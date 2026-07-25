@@ -142,12 +142,19 @@ export const isSuppressedConcreteTypedefDuplicate = (
 
 /**
  * Graph labels produced by a value capture (`@definition.const` /
- * `@definition.static` / `@definition.variable`) — a binding that holds a value.
+ * `@definition.static` / `@definition.variable` / `@definition.property`) — a
+ * binding that holds a value rather than declaring a callable.
+ *
+ * `Property` belongs here because some grammars model a closure binding as a
+ * property declaration (Kotlin `val f = { … }`, Swift `let f = { … }`), so the
+ * callable and the value capture collide on the same declaration node exactly
+ * as `Const` does for `const f = () => {}`.
  */
 const VALUE_DEFINITION_LABELS: ReadonlySet<NodeLabel> = new Set<NodeLabel>([
   'Const',
   'Static',
   'Variable',
+  'Property',
 ]);
 
 /** True when `label` is the kind of node a value capture emits. */

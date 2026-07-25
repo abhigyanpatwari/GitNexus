@@ -90,6 +90,7 @@ import {
   genericFuncName,
   inferFunctionLabel,
   isSuppressedConcreteTypedefDuplicate,
+  isValueDefinitionLabel,
   isQualifiableScopeLabel,
   qualifyRustImplTargetByModScope,
   CLASS_CONTAINER_TYPES,
@@ -1991,7 +1992,7 @@ const processFileGroup = (
       // `selectNodeBearingDef` (#1876, still unwired); this pre-scan is the local
       // form that keeps the hot loop single-pass. Keep them in sync if #1876 lands.
       if (definitionNode) {
-        if (nodeLabel === 'Const' || nodeLabel === 'Static' || nodeLabel === 'Variable') {
+        if (isValueDefinitionLabel(nodeLabel)) {
           const definitionNameKey = `${definitionNode.startIndex}:${nodeName}`;
           if (
             processedDefinitionNodes.has(definitionNameKey) ||

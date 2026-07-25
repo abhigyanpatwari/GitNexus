@@ -699,6 +699,15 @@ export const PYTHON_QUERIES = `
   (assignment
     left: (identifier) @name)) @definition.variable
 
+; Lambda bindings: \`f = lambda x: x\` binds a CALLABLE, so it emits Function
+; rather than Variable — that is what lets \`f()\` resolve, since free-call
+; resolution only targets callable labels. Overlap with the assignment pattern
+; above is collapsed by the parse-worker dedup (#2687).
+(expression_statement
+  (assignment
+    left: (identifier) @name
+    right: (lambda))) @definition.function
+
 ; Write access: obj.field = value
 (assignment
   left: (attribute
@@ -868,6 +877,24 @@ export const GO_QUERIES = `
 ; Short variable declaration: x := 5
 (short_var_declaration left: (expression_list (identifier) @name)) @definition.variable
 
+; Closure bindings: \`var f = func(){}\` / \`f := func(){}\` bind a CALLABLE, so
+; they emit Function, not Variable — that is what lets \`f()\` resolve, since
+; free-call resolution only targets callable labels. Same convention TS/JS
+; already use for \`const f = () => {}\`. Overlap with the value patterns above
+; is collapsed by the parse-worker dedup (#2687).
+(var_declaration
+  (var_spec
+    name: (identifier) @name
+    value: (expression_list (func_literal)))) @definition.function
+(var_declaration
+  (var_spec_list
+    (var_spec
+      name: (identifier) @name
+      value: (expression_list (func_literal))))) @definition.function
+(short_var_declaration
+  left: (expression_list (identifier) @name)
+  right: (expression_list (func_literal))) @definition.function
+
 ; Struct literal construction: User{Name: "Alice"}
 (composite_literal type: (type_identifier) @call.name) @call
 
@@ -1030,6 +1057,15 @@ export const CPP_QUERIES = `
 (declaration
   declarator: (init_declarator
     declarator: (identifier) @name)) @definition.variable
+
+; Lambda bindings: \`auto f = [](int x){ … };\` binds a CALLABLE, so it emits
+; Function rather than Variable — that is what lets \`f()\` resolve, since
+; free-call resolution only targets callable labels. Overlap with the pattern
+; above is collapsed by the parse-worker dedup (#2687).
+(declaration
+  declarator: (init_declarator
+    declarator: (identifier) @name
+    value: (lambda_expression))) @definition.function
 
 ; Structured bindings: auto [a, b] = makePair();  (one @name per bound identifier)
 (declaration
@@ -1379,6 +1415,15 @@ export const KOTLIN_QUERIES = `
   (variable_declaration
     (simple_identifier) @name)) @definition.property
 
+; Lambda bindings: \`val f = { x -> x }\` binds a CALLABLE, so it emits Function
+; rather than Property — that is what lets \`f()\` resolve, since free-call
+; resolution only targets callable labels. Overlap with the property pattern
+; above is collapsed by the parse-worker dedup (#2687).
+(property_declaration
+  (variable_declaration
+    (simple_identifier) @name)
+  (lambda_literal)) @definition.function
+
 ; ── Destructuring declarations (F51, issue #1919) ────────────────────────
 ; "val (a, b) = pair" binds several names through a multi_variable_declaration
 ; (NOT a variable_declaration), which the property rule above misses. Emit one
@@ -1502,6 +1547,14 @@ export const SWIFT_QUERIES = `
 
 ; Properties (stored and computed)
 (property_declaration (pattern (simple_identifier) @name)) @definition.property
+
+; Closure bindings: \`let f = { ... }\` binds a CALLABLE, so it emits Function
+; rather than Property — that is what lets \`f()\` resolve, since free-call
+; resolution only targets callable labels. Overlap with the property pattern
+; above is collapsed by the parse-worker dedup (#2687).
+(property_declaration
+  name: (pattern (simple_identifier) @name)
+  value: (lambda_literal)) @definition.function
 
 ; Protocol property requirements (F75): "var title: String { get }" parses to a
 ; protocol_property_declaration (NOT property_declaration). Its name is a
@@ -1659,6 +1712,15 @@ export const DART_QUERIES = `
   (initialized_identifier_list
     (initialized_identifier
       (identifier) @name)) @definition.variable)
+; Closure bindings: \`var f = (x) => x;\` binds a CALLABLE, so it emits Function
+; rather than Variable — that is what lets \`f()\` resolve, since free-call
+; resolution only targets callable labels. Overlap with the pattern above is
+; collapsed by the parse-worker dedup (#2687).
+(program
+  (initialized_identifier_list
+    (initialized_identifier
+      (identifier) @name
+      (function_expression))) @definition.function)
 (program
   (static_final_declaration_list
     (static_final_declaration
