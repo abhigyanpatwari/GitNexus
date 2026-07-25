@@ -36,6 +36,12 @@ const PLATFORM_LOGIC = [
   // must exercise the Windows backslash branch, so run it on the OS matrix (#2394).
   'test/unit/cli-entry.test.ts',
   'test/unit/platform-capabilities.test.ts',
+  // Windows drive-letter case variance in the analyzer runner-identity path
+  // fields (#2668): normalizeAnalyzerRootPath is a POSIX no-op, so the
+  // "identity path fields are normalizer-stable" fixpoint guard only bites on
+  // the windows-latest matrix — the file must run there, not just in the
+  // Ubuntu full-suite where it's trivially green.
+  'test/unit/analyzer-identity.test.ts',
   // getconf page-size probe: explicit process.platform gate (win32 short-circuit)
   // plus a live-probe test whose only real non-4K coverage is macos-arm64's
   // 16 KiB pages — the exact hardware class #1231 targets (#2424 review).
