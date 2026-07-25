@@ -47,10 +47,12 @@ export type CommunityDetectionEngine = CommunityEngine | 'auto';
 
 export interface CommunityDetectionOptions {
   /**
-   * Graphology remains the default. `icebug`/`auto` route through the optional
-   * `@ladybugmem/icebug` native Leiden (#2337) and fall back to Graphology if
-   * it is not installed, cannot load, or predates the thread/seed controls
-   * determinism requires.
+   * Graphology is the supported default. `icebug`/`auto` are **experimental**:
+   * they route through the optional `@ladybugmem/icebug` native Leiden (#2337)
+   * and fall back to Graphology if it is not installed, cannot load, or
+   * predates the thread/seed controls determinism requires. The two engines
+   * partition differently, so switching changes community IDs — and with them
+   * any generated context keyed on those IDs. No stability guarantee.
    */
   engine?: CommunityDetectionEngine;
   icebug?: {
@@ -426,6 +428,15 @@ const runCommunityEngine = async (
   if (engineRequested === 'graphology') {
     return runGraphologyLeiden(graph, projection.isLarge, engineRequested);
   }
+
+  // Announced on request, not just on fallback: a run that succeeds is the case
+  // where the user most needs to know the partition came from the experimental
+  // engine, since community IDs feed generated context.
+  onProgress?.(
+    `Experimental ${engineRequested} community engine requested — unsupported, and its ` +
+      'communities will not match the Graphology default.',
+    32,
+  );
 
   try {
     return await runIcebugLeiden(projection, engineRequested, options);

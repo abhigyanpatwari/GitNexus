@@ -169,6 +169,28 @@ describe('community-processor', () => {
       expect(result.memberships).toHaveLength(2);
     });
 
+    it('announces the experimental engine on request, before any fallback', async () => {
+      const graph = createKnowledgeGraph();
+      graph.addNode(makeNode('fn:a', 'a', 'Function', '/src/group/a.ts'));
+      graph.addNode(makeNode('fn:b', 'b', 'Function', '/src/group/b.ts'));
+      graph.addRelationship(makeRel('rel:ab', 'fn:a', 'fn:b'));
+
+      const experimental: string[] = [];
+      await processCommunities(graph, (message) => experimental.push(message), { engine: 'auto' });
+      const notice = experimental.findIndex((message) => message.startsWith('Experimental auto'));
+      const fallback = experimental.findIndex((message) =>
+        message.includes('falling back to Graphology'),
+      );
+
+      expect(experimental[notice]).toContain('will not match the Graphology default');
+      expect(notice).toBeLessThan(fallback);
+
+      const defaultEngine: string[] = [];
+      await processCommunities(graph, (message) => defaultEngine.push(message));
+
+      expect(defaultEngine.some((message) => message.startsWith('Experimental'))).toBe(false);
+    });
+
     it('falls back to graphology when icebug returns invalid modularity', async () => {
       vi.resetModules();
       vi.doMock('node:worker_threads', () => {
