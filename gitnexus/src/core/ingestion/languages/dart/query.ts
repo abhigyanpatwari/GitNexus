@@ -126,6 +126,25 @@ const DART_SCOPE_QUERY = `
     (initialized_identifier
       . (identifier) @declaration.name))) @declaration.property
 
+; ── Declarations — closure bindings (#2693) ──────────────────────────────────
+; \`var f = (x) => x;\` binds a callable. Without a declaration the binding has
+; no SymbolDefinition, so callable-value-flow has nothing to attach its seed to
+; and \`f()\` stays unresolved even though the graph emits a Function node for it.
+;
+; Restricted to a function_expression value on purpose: declaring every Dart
+; variable would mint defs repo-wide for no resolution benefit. The top-level
+; rule is anchored under (program) — the same disambiguation the graph-node
+; query uses — so class-body fields, which reuse initialized_identifier_list
+; and are already @declaration.property, are never matched twice.
+(program
+  (initialized_identifier_list
+    (initialized_identifier
+      (identifier) @declaration.name
+      (function_expression))) @declaration.variable)
+(initialized_variable_definition
+  name: (identifier) @declaration.name
+  value: (function_expression)) @declaration.variable
+
 ; ── Imports / re-exports ─────────────────────────────────────────────────────
 (import_or_export
   (library_import

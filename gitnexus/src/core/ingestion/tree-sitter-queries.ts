@@ -1719,15 +1719,25 @@ export const DART_QUERIES = `
     (initialized_identifier
       (identifier) @name)) @definition.variable)
 ; Closure bindings: \`var f = (x) => x;\` binds a CALLABLE, so it emits Function
-; rather than Variable, matching TS/JS. This aligns the LABEL only — call
-; resolution runs off the scope-resolution query, which still models the binding
-; as a value, so \`f()\` does not resolve here yet. Overlap with the pattern
-; above is collapsed by the parse-worker dedup (#2687).
+; rather than Variable, matching TS/JS. Overlap with the pattern above is
+; collapsed by the parse-worker dedup (#2687). Since #2693 this node is also
+; what makes \`f()\` resolve: the scope-resolution query declares the binding as
+; a value, and callable-value-flow admits it as a call target precisely because
+; the node it resolves to is a Function.
 (program
   (initialized_identifier_list
     (initialized_identifier
       (identifier) @name
       (function_expression))) @definition.function)
+
+; ── Function-local closure bindings (#2693) ─────────────────────────────────
+; \`void m() { var f = (x) => x; }\` — locals parse as initialized_variable_
+; definition, which the top-level rules above never reach, so a local closure
+; had no graph node at all and \`f()\` could not resolve. Restricted to a
+; function_expression value: ordinary locals stay unindexed, as before.
+(initialized_variable_definition
+  name: (identifier) @name
+  value: (function_expression)) @definition.function
 (program
   (static_final_declaration_list
     (static_final_declaration

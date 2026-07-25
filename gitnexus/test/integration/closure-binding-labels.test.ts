@@ -215,6 +215,26 @@ describeIfWorkerBuilt('calls to a closure binding resolve to its Function node',
 
     expect(targets).toContain('Function:App.swift:handler');
   });
+  it('Dart: a top-level closure binding resolves', async () => {
+    // The top-level form parses as `initialized_identifier`; the function-local
+    // form as `initialized_variable_definition`. Only the latter was in Dart's
+    // `bindingNodeTypes`, so the top-level binding emitted no flow captures.
+    const targets = await callTargetsFor(
+      'app.dart',
+      'var handler = (int x) => x;\n\nint caller() {\n  return handler(1);\n}\n',
+    );
+
+    expect(targets).toContain('Function:app.dart:handler');
+  });
+
+  it('Dart: a function-local closure binding resolves', async () => {
+    const targets = await callTargetsFor(
+      'local.dart',
+      'int caller() {\n  var handler = (int x) => x;\n  return handler(1);\n}\n',
+    );
+
+    expect(targets).toContain('Function:local.dart:handler');
+  });
 });
 
 describeIfWorkerBuilt('a non-callable value binding stays edge-free', () => {

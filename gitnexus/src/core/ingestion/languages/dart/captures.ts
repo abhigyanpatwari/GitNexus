@@ -58,9 +58,25 @@ const DART_CALLABLE_CAPTURE_OPTIONS = {
   callNodeTypes: new Set(['selector']),
   parameterListNodeTypes: new Set(['formal_parameter_list', 'arguments']),
   parameterNodeTypes: new Set(['formal_parameter']),
-  bindingNodeTypes: new Set(['initialized_variable_definition']),
+  // `initialized_identifier` covers TOP-LEVEL bindings, which Dart parses as a
+  // loose initialized_identifier_list under program rather than wrapping them
+  // in the local form. Without it a top-level `var f = (x) => x;` emitted no
+  // flow captures at all, so `f()` never resolved (#2693).
+  bindingNodeTypes: new Set(['initialized_variable_definition', 'initialized_identifier']),
   assignmentNodeTypes: new Set(['assignment_expression']),
   identifierNodeTypes: new Set(['identifier', 'type_identifier']),
+  // `initialized_identifier` is FIELDLESS, so the shared field-based fallback
+  // (`left`/`name`/`value`/…) decomposes nothing and a top-level binding
+  // produced no flow facts at all — the same shape as Kotlin's fieldless
+  // `assignment` node. Positional: first named child is the bound name, last is
+  // the initializer. `initialized_variable_definition` carries real `name:` /
+  // `value:` fields, so it is left to the shared path by returning undefined.
+  extractAssignment: (node: SyntaxNode) => {
+    if (node.type !== 'initialized_identifier') return undefined;
+    const named = node.namedChildren.filter((child): child is SyntaxNode => child !== null);
+    if (named.length < 2) return undefined;
+    return { destination: named[0]!, source: named[named.length - 1]! };
+  },
   lexicalFunctionOwner: (node: SyntaxNode) => dartLexicalFunctionOwner(node),
   isCallNode: (node: SyntaxNode) => node.namedChild(0)?.type === 'argument_part',
   extractCallCallee: (node: SyntaxNode) => dartCallableCallee(node) ?? undefined,
