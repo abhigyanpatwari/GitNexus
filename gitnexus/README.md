@@ -352,6 +352,13 @@ Installed automatically by both `gitnexus analyze` (per-repo) and `gitnexus setu
 
 - Node.js >= 22
 - Git repository (uses git for commit tracking)
+- **Linux: glibc 2.34 or newer** (Ubuntu 22.04+, RHEL/Rocky/Alma 9+, Debian 12+, Fedora 35+). The
+  LadybugDB native binary ships as a prebuild against that floor, so on an older host it cannot
+  load and reinstalling does not help — see
+  [Linux: `GLIBC_2.34' not found`](#linux-glibc_234-not-found).
+- **Windows, for full-text search:** the Microsoft Visual C++ 2015-2022 Redistributable (x64) *and*
+  OpenSSL 3 (`libssl-3-x64.dll`, `libcrypto-3-x64.dll`) resolvable on `PATH` — see
+  [Windows: full-text search unavailable](#windows-full-text-search-unavailable).
 
 ## Release candidates
 
@@ -433,6 +440,50 @@ npx gitnexus@latest serve
 pnpm add -g --allow-build=@ladybugdb/core --allow-build=gitnexus --allow-build=tree-sitter gitnexus
 gitnexus serve
 ```
+
+### Linux: `GLIBC_2.34' not found`
+
+```
+LadybugDB native binary (lbugjs.node) exists but failed to load:
+  /lib64/libc.so.6: version `GLIBC_2.34' not found (required by .../lbugjs.node)
+```
+
+The LadybugDB addon ships as a prebuilt binary compiled against **glibc 2.34**. If your
+distribution is older (CentOS/RHEL 8 has 2.28, Ubuntu 20.04 has 2.31, Debian 11 has 2.31), the
+dynamic loader cannot resolve its symbols.
+
+**Reinstalling does not help** — every download delivers the same prebuilt binary. The fix is a
+newer C library:
+
+- Run GitNexus on a distribution with glibc 2.34 or newer — Ubuntu 22.04+, RHEL/Rocky/Alma 9+,
+  Debian 12+, Fedora 35+.
+- Or run it in the container image, which bundles a current glibc (see [Docker](#docker)).
+
+`gitnexus doctor` reports the required and detected glibc versions when this happens
+([#2672](https://github.com/abhigyanpatwari/GitNexus/issues/2672)).
+
+### Windows: full-text search unavailable
+
+`analyze` completes, but keyword search is degraded and `doctor` shows the FTS extension failing
+with Windows error 126 (`The specified module could not be found`). The extension needs two
+runtime dependencies Windows does not ship by default:
+
+1. **Microsoft Visual C++ 2015-2022 Redistributable (x64)** —
+   <https://aka.ms/vs/17/release/vc_redist.x64.exe>
+2. **OpenSSL 3** — `libssl-3-x64.dll` and `libcrypto-3-x64.dll`, resolvable on `PATH`
+
+The redistributable alone is **not** sufficient. If Git for Windows is installed you already have
+the OpenSSL DLLs — run `gitnexus` from **Git Bash**, or prepend the directory to `PATH` in the
+shell you use:
+
+```powershell
+$env:PATH = "C:\Program Files\Git\mingw64\bin;$env:PATH"
+gitnexus analyze --repair-fts
+```
+
+Without them the index is still built, but without search tables, so `query` returns empty keyword
+results until you re-run `gitnexus analyze --repair-fts` from a shell where the DLLs resolve
+([#2669](https://github.com/abhigyanpatwari/GitNexus/issues/2669)).
 
 ### Installation fails with native module errors
 

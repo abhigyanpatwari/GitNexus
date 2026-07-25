@@ -127,13 +127,25 @@ const VC_REDIST_INSTALL_HINT =
   'the Microsoft Visual C++ 2015-2022 Redistributable (x64) from ' +
   'https://aka.ms/vs/17/release/vc_redist.x64.exe';
 
+// Git for Windows already ships the OpenSSL 3 DLLs in its mingw64 bin directory,
+// so the identical command that fails in PowerShell succeeds in Git Bash (#2669
+// reporter, who had the VC++ redist installed and still failed until that
+// directory was on PATH). Deliberately a fixed system path and never a
+// user-profile one: remedy text is NOT path-redacted (fts-indexes.ts redacts
+// only the reason), and fts-degraded-warning.test.ts asserts that no
+// `C:\Users\…` path ever reaches a user through this surface.
+const GIT_BASH_OPENSSL_HINT =
+  ' If Git for Windows is installed you already have those DLLs: run the same command from Git Bash, ' +
+  'or prepend "C:\\Program Files\\Git\\mingw64\\bin" to PATH.';
+
 // MSVC-first per DuckDB's canonical answer for this exact error; OpenSSL second.
 const windowsMissingDependencyRemedy = (label: string): string =>
   `The ${label} extension is present but a required runtime library is missing (Windows error 126). ` +
   'Reinstalling the extension will NOT help. Install ' +
   VC_REDIST_INSTALL_HINT +
   '; if the error persists, the extension also needs OpenSSL 3 ' +
-  '(libcrypto-3-x64.dll / libssl-3-x64.dll) on the DLL search path.';
+  '(libcrypto-3-x64.dll / libssl-3-x64.dll) on the DLL search path.' +
+  GIT_BASH_OPENSSL_HINT;
 
 const posixMissingDependencyRemedy = (label: string): string =>
   `The ${label} extension is present but a shared library it depends on could not be loaded (named in ` +
@@ -205,7 +217,8 @@ const structuralMissingDependencyRemedy = (label: string): string =>
   `The ${label} extension file is valid, so the failure is a missing or incompatible runtime dependency, ` +
   'not the extension itself — reinstalling will NOT help. On Windows, install ' +
   VC_REDIST_INSTALL_HINT +
-  ' and ensure OpenSSL 3 is available; on Linux/macOS install the shared library named in the error above.';
+  ' and ensure OpenSSL 3 is available; on Linux/macOS install the shared library named in the error above.' +
+  GIT_BASH_OPENSSL_HINT;
 
 /**
  * Pull the extension file path out of lbug's load error. lbug's wrapper is
