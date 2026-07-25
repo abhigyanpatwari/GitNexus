@@ -141,6 +141,83 @@ export const isSuppressedConcreteTypedefDuplicate = (
 };
 
 /**
+ * Graph labels produced by a value capture (`@definition.const` /
+ * `@definition.static` / `@definition.variable`) — a binding that holds a value.
+ */
+const VALUE_DEFINITION_LABELS: ReadonlySet<NodeLabel> = new Set<NodeLabel>([
+  'Const',
+  'Static',
+  'Variable',
+]);
+
+/** True when `label` is the kind of node a value capture emits. */
+export const isValueDefinitionLabel = (label: NodeLabel): boolean =>
+  VALUE_DEFINITION_LABELS.has(label);
+
+/**
+ * Pre-scan `matches` for the `${definitionNode.startIndex}:${name}` keys already
+ * claimed by a NON-value definition capture (`@definition.function` and
+ * friends), so the parse-worker's duplicate suppression is order-independent.
+ *
+ * ## Why this exists (#2687)
+ *
+ * `const X = () => {}` matches BOTH `@definition.function` and
+ * `@definition.const` on the same `lexical_declaration`. Only one graph node
+ * should survive — the `Function`, because that is what `CALLS` edges target.
+ * The parse-worker's in-loop dedup intends exactly that, but only the value
+ * branch consults its `processedDefinitionNodes` set, so suppression worked only
+ * if the function match happened to be processed first. It is not: tree-sitter
+ * completes the const pattern at `@name`, while the function pattern must also
+ * match the trailing `(arrow_function)` / `(function_expression)` value, so the
+ * const match is yielded FIRST and the edgeless `Const:` twin escaped.
+ *
+ * Consulting this set makes the outcome independent of match order.
+ *
+ * ## Keying
+ *
+ * Keys are `startIndex:name`, never `startIndex` alone — a multi-name
+ * declaration (`const a = 1, b = () => {}`) shares ONE definition node, and a
+ * bare-index key would wrongly suppress `a`'s legitimate `Const` node.
+ *
+ * Labels come from {@link getLabelFromCaptures}, the same function the main loop
+ * uses, so the pre-scan and the loop can never disagree about what counts as a
+ * value capture — including when a provider's `labelOverride` reclassifies one.
+ * A match that resolves to a value label registers nothing, so a match can never
+ * suppress itself.
+ *
+ * Language-agnostic: keyed off capture names and labels only.
+ *
+ * Sibling of {@link buildConcreteTypedefDefinitionRanges}, which suppresses the
+ * analogous typedef/struct duplicate from the same `matches` array.
+ */
+export const buildNonValueDefinitionNameKeys = (
+  matches: readonly QueryMatchLike[],
+  provider: LanguageProvider,
+): Set<string> => {
+  const keys = new Set<string>();
+  for (const match of matches) {
+    const captureMap: Record<string, SyntaxNode> = {};
+    for (const capture of match.captures) {
+      captureMap[capture.name] = capture.node;
+    }
+
+    // No `@name` capture means nothing a value capture could collide with —
+    // a value pattern always binds a name.
+    const nameNode = captureMap['name'];
+    if (nameNode === undefined) continue;
+
+    const definitionNode = getDefinitionNodeFromCaptures(captureMap);
+    if (definitionNode === null) continue;
+
+    const label = getLabelFromCaptures(captureMap, provider);
+    if (label === null || isValueDefinitionLabel(label)) continue;
+
+    keys.add(`${definitionNode.startIndex}:${nameNode.text}`);
+  }
+  return keys;
+};
+
+/**
  * Node types that represent function/method definitions across languages.
  * Used by parent-walk in call-processor, parse-worker, and type-env to detect
  * enclosing function scope boundaries.
