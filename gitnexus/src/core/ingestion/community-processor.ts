@@ -290,14 +290,16 @@ export const buildCommunityProjection = (knowledgeGraph: KnowledgeGraph): Commun
   const connectedNodes = new Set<string>();
   const nodeDegree = new Map<string, number>();
 
-  knowledgeGraph.forEachRelationship((rel) => {
-    if (!isClusteringRelationship(rel.type) || rel.sourceId === rel.targetId) return;
-    if (isLarge && rel.confidence < MIN_CONFIDENCE_LARGE) return;
+  // Field-wise scan (#2680): this walks every edge and reads only these four,
+  // so taking objects would allocate one per edge for nothing.
+  knowledgeGraph.forEachRelationshipFields((sourceId, targetId, type, confidence) => {
+    if (!isClusteringRelationship(type) || sourceId === targetId) return;
+    if (isLarge && confidence < MIN_CONFIDENCE_LARGE) return;
 
-    connectedNodes.add(rel.sourceId);
-    connectedNodes.add(rel.targetId);
-    nodeDegree.set(rel.sourceId, (nodeDegree.get(rel.sourceId) || 0) + 1);
-    nodeDegree.set(rel.targetId, (nodeDegree.get(rel.targetId) || 0) + 1);
+    connectedNodes.add(sourceId);
+    connectedNodes.add(targetId);
+    nodeDegree.set(sourceId, (nodeDegree.get(sourceId) || 0) + 1);
+    nodeDegree.set(targetId, (nodeDegree.get(targetId) || 0) + 1);
   });
 
   const nodes: CommunityProjectionNode[] = [];
@@ -328,12 +330,12 @@ export const buildCommunityProjection = (knowledgeGraph: KnowledgeGraph): Commun
   const seenEdges = new Set<string>();
   const edges: Array<readonly [number, number]> = [];
 
-  knowledgeGraph.forEachRelationship((rel) => {
-    if (!isClusteringRelationship(rel.type) || rel.sourceId === rel.targetId) return;
-    if (isLarge && rel.confidence < MIN_CONFIDENCE_LARGE) return;
+  knowledgeGraph.forEachRelationshipFields((sourceId, targetId, type, confidence) => {
+    if (!isClusteringRelationship(type) || sourceId === targetId) return;
+    if (isLarge && confidence < MIN_CONFIDENCE_LARGE) return;
 
-    const sourceIndex = nodeIndexById.get(rel.sourceId);
-    const targetIndex = nodeIndexById.get(rel.targetId);
+    const sourceIndex = nodeIndexById.get(sourceId);
+    const targetIndex = nodeIndexById.get(targetId);
     if (sourceIndex === undefined || targetIndex === undefined || sourceIndex === targetIndex)
       return;
 
