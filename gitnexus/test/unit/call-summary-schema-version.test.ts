@@ -72,15 +72,14 @@ describe('CALL_SUMMARY relation-type exclusion (U-C1)', () => {
   });
 });
 
-describe('CALL_SUMMARY incremental reuse gate (U-C5)', () => {
-  it('INCREMENTAL_SCHEMA_VERSION is bumped to 12 (main-aptos merge: Move attributesJson past main v9–v11)', () => {
-    expect(INCREMENTAL_SCHEMA_VERSION).toBe(12);
+describe('incremental schema reuse gate', () => {
+  it('INCREMENTAL_SCHEMA_VERSION is bumped to 15 (persisted Move Type/field graph)', () => {
+    expect(INCREMENTAL_SCHEMA_VERSION).toBe(15);
   });
 
   it('a pre-current stamp fails the `=== INCREMENTAL_SCHEMA_VERSION` reuse gate → forces full re-analyze', () => {
-    // The reuse gate at run-analyze.ts:920 is exactly this strict equality on
-    // the persisted `existingMeta.schemaVersion` (a plain number, possibly
-    // absent on a legacy stamp). Replicate it as a typed predicate.
+    // The production gate compares the persisted numeric stamp by strict
+    // equality; legacy metadata may omit it.
     const passesReuseGate = (stampedSchemaVersion: number | undefined): boolean =>
       stampedSchemaVersion === INCREMENTAL_SCHEMA_VERSION;
     // A pre-v4 (v3) index has no CALL_SUMMARY edges → must NOT reuse.
@@ -121,7 +120,14 @@ describe('CALL_SUMMARY incremental reuse gate (U-C5)', () => {
     // `attributesJson` node-table column, so the bulk COPY referencing it
     // would fail on a top-up → must NOT reuse.
     expect(passesReuseGate(11)).toBe(false);
+    // A pre-v15 (v12) index silently dropped generic Type nodes and Move
+    // EnumVariant→Property / field USES_TYPE relationships during CSV routing.
+    expect(passesReuseGate(12)).toBe(false);
+    // Upstream main uses v13/v14 for a different schema lineage. Neither may
+    // be mistaken for this build's persisted Move Type/field graph.
+    expect(passesReuseGate(13)).toBe(false);
+    expect(passesReuseGate(14)).toBe(false);
     // A current-version stamp passes the gate (incremental top-up eligible).
-    expect(passesReuseGate(12)).toBe(true);
+    expect(passesReuseGate(15)).toBe(true);
   });
 });

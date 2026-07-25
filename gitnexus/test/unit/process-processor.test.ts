@@ -524,6 +524,142 @@ describe('processProcesses', () => {
     expect(result.stats.totalProcesses).toBeLessThanOrEqual(3);
   });
 
+  it('prioritizes explicit graph entry points ahead of the heuristic top-200 budget', async () => {
+    const graph = createKnowledgeGraph();
+    const addFunction = (id: string, name: string) =>
+      graph.addNode({
+        id,
+        label: 'Function',
+        properties: { name, filePath: `src/${name}.move`, isExported: true },
+      });
+
+    addFunction('func:explicit', 'entry_api');
+    addFunction('func:middle', 'middle');
+    addFunction('func:end', 'end');
+    graph.addNode({
+      id: 'module:root',
+      label: 'Module',
+      properties: { name: 'root', filePath: 'src/root.move' },
+    });
+    graph.addRelationship({
+      id: 'entry:explicit',
+      sourceId: 'func:explicit',
+      targetId: 'module:root',
+      type: 'ENTRY_POINT_OF',
+      confidence: 1,
+      reason: 'compiler-entry-point',
+    });
+    graph.addRelationship({
+      id: 'call:explicit-middle',
+      sourceId: 'func:explicit',
+      targetId: 'func:middle',
+      type: 'CALLS',
+      confidence: 1,
+      reason: 'compiler-call',
+    });
+    graph.addRelationship({
+      id: 'call:middle-end',
+      sourceId: 'func:middle',
+      targetId: 'func:end',
+      type: 'CALLS',
+      confidence: 1,
+      reason: 'compiler-call',
+    });
+
+    // More than 200 caller-free heuristic candidates make the explicit root's
+    // ordinary score too low to survive the legacy global slice.
+    for (let i = 0; i < 205; i++) {
+      const id = `func:noise-${i}`;
+      addFunction(id, `noise_${i}`);
+      graph.addRelationship({
+        id: `call:noise-${i}`,
+        sourceId: id,
+        targetId: 'func:explicit',
+        type: 'CALLS',
+        confidence: 1,
+        reason: 'compiler-call',
+      });
+    }
+
+    const result = await processProcesses(graph, [], undefined, {
+      maxProcesses: 1,
+      maxTraceDepth: 4,
+    });
+
+    expect(result.processes).toHaveLength(1);
+    expect(result.processes[0].entryPointId).toBe('func:explicit');
+    expect(result.processes[0].trace).toEqual(['func:explicit', 'func:middle', 'func:end']);
+  });
+
+  it('interleaves explicit Move roots with heuristic TS roots when both exceed the process budget', async () => {
+    const graph = createKnowledgeGraph();
+    graph.addNode({
+      id: 'module:move-root',
+      label: 'Module',
+      properties: { name: 'move_root', filePath: 'move/sources/root.move' },
+    });
+
+    const addChain = (prefix: string, extension: 'move' | 'ts', explicit: boolean) => {
+      const entry = `func:${prefix}:entry`;
+      const middle = `func:${prefix}:middle`;
+      const terminal = `func:${prefix}:terminal`;
+      for (const [id, suffix] of [
+        [entry, 'entry'],
+        [middle, 'middle'],
+        [terminal, 'terminal'],
+      ] as const) {
+        graph.addNode({
+          id,
+          label: 'Function',
+          properties: {
+            name: `${prefix}_${suffix}`,
+            filePath: `${extension}/${prefix}.${extension}`,
+            isExported: id === entry,
+          },
+        });
+      }
+      graph.addRelationship({
+        id: `call:${prefix}:1`,
+        sourceId: entry,
+        targetId: middle,
+        type: 'CALLS',
+        confidence: 1,
+        reason: 'fixture',
+      });
+      graph.addRelationship({
+        id: `call:${prefix}:2`,
+        sourceId: middle,
+        targetId: terminal,
+        type: 'CALLS',
+        confidence: 1,
+        reason: 'fixture',
+      });
+      if (explicit) {
+        graph.addRelationship({
+          id: `entry:${prefix}`,
+          sourceId: entry,
+          targetId: 'module:move-root',
+          type: 'ENTRY_POINT_OF',
+          confidence: 1,
+          reason: 'compiler-entry-point',
+        });
+      }
+    };
+
+    for (let i = 0; i < 12; i++) addChain(`move-${i}`, 'move', true);
+    for (let i = 0; i < 12; i++) addChain(`ts-${i}`, 'ts', false);
+
+    const result = await processProcesses(graph, [], undefined, {
+      maxProcesses: 6,
+      maxTraceDepth: 4,
+    });
+    const entryIds = result.processes.map((process) => process.entryPointId);
+
+    expect(result.processes).toHaveLength(6);
+    expect(entryIds.some((id) => id.startsWith('func:move-'))).toBe(true);
+    expect(entryIds.some((id) => id.startsWith('func:ts-'))).toBe(true);
+  });
+
   // Regression for #2198: the processesPhase dynamic sizing used to cap at
   // Math.min(300, symbolCount/10). On large repos (>3000 symbols) that silently
   // truncated the process index. The cap was removed by extracting

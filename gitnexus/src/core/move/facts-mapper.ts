@@ -16,7 +16,15 @@ import type {
   NodeProperties,
   RelationshipType,
 } from 'gitnexus-shared';
-import type { MoveFactsAttribute, MoveFactsMap, MoveFactsTypeParam } from './compiler-facts.js';
+import type {
+  MoveFactsAttribute,
+  MoveFactsFunction,
+  MoveFactsMap,
+  MoveFactsModule,
+  MoveFactsType,
+  MoveFactsTypeParam,
+  MoveFlowConstant,
+} from './compiler-facts.js';
 import {
   moveModuleNodeId,
   moveFunctionNodeId,
@@ -25,7 +33,6 @@ import {
   moveConstNodeId,
   moveEnumVariantNodeId,
   moveFieldNodeId,
-  moveLocalName,
   moveRelId,
   parseMoveLambdaHostName,
   parseMoveModuleQualifiedName,
@@ -40,9 +47,18 @@ import {
 } from './constants.js';
 import { extractTypeNames } from './type-parser.js';
 import { toZeroBasedLine } from '../ingestion/utils/line-base.js';
+import type { PendingRef } from './refs.js';
 
 const spanLine = (span: [number, number] | undefined, idx: 0 | 1): number | undefined =>
   span ? toZeroBasedLine(span[idx]) : undefined;
+
+function functionLocationFidelity(
+  fn: MoveFactsFunction,
+  moduleFile: string | undefined,
+): NodeProperties['locationFidelity'] {
+  if (fn.isLambdaLifted) return moduleFile ? 'module' : 'package';
+  return fn.file ? 'precise' : 'package';
+}
 
 export interface MoveFactsMapResult {
   nodes: GraphNode[];
@@ -53,43 +69,8 @@ export interface MoveFactsMapResult {
   functionNodeMap: Map<string, string>;
   /** Struct/enum qualified name → graph node ID. */
   structNodeMap: Map<string, string>;
-  /** Resource edges that need the full cross-package type index. */
-  pendingResource: PendingResource[];
-  /** Friend edges that need the full cross-package module index. */
-  pendingFriends: PendingFriend[];
-  /** Signature type refs that need the full cross-package type index. */
-  pendingTypeRef: PendingTypeRef[];
-  /** Lambda → host links that need the host's Function node id (resolved post-pass). */
-  pendingLambdaHosts: PendingLambdaHost[];
-}
-
-export interface PendingLambdaHost {
-  /** The lambda's Function node id (target of the CALLS edge). */
-  lambdaFnNodeId: string;
-  /** Host function's fully-qualified name (`<module>::<localHost>`). */
-  hostQualified: string;
-}
-
-export interface PendingResource {
-  fnNodeId: string;
-  moduleQualified: string;
-  type: RelationshipType;
-  target: string;
-  reason: string;
-}
-
-export interface PendingFriend {
-  moduleNodeId: string;
-  friend: string;
-}
-
-export interface PendingTypeRef {
-  /** Source node of the USES_TYPE edge - a Function, or a Struct for
-   *  `resource_group_member` membership refs. */
-  sourceNodeId: string;
-  moduleQualified: string;
-  target: string;
-  reason: string;
+  /** Cross-package references resolved in the linker's Pass B. */
+  pendingRefs: PendingRef[];
 }
 
 /** Strip generic type arguments: `CoinStore<CoinType>` → `CoinStore`. */
@@ -169,6 +150,465 @@ function assertFactsShape(facts: MoveFactsMap): void {
   }
 }
 
+/** Shared mutable accumulators threaded through every emitter. */
+interface EmitContext {
+  nodes: GraphNode[];
+  edges: GraphRelationship[];
+  moduleFileMap: Map<string, string>;
+  functionNodeMap: Map<string, string>;
+  structNodeMap: Map<string, string>;
+  pendingRefs: PendingRef[];
+  packageRoot: string;
+  repoPath?: string;
+}
+
+/** Values derived once per module and read by the function/type/const emitters. */
+interface ModuleEmitContext {
+  moduleQualified: string;
+  moduleNodeId: string;
+  /** Absolute module file (or packageRoot fallback) — the per-symbol file fallback. */
+  moduleFileAbs: string;
+  /** Repo-relative module file — used for module-level and const nodes. */
+  file: string;
+  address: string;
+  /** Raw `mod.file`; drives locationFidelity ('precise'/'module' vs 'package'). */
+  modFile?: string;
+}
+
+function pushEdge(
+  edges: GraphRelationship[],
+  sourceId: string,
+  targetId: string,
+  type: RelationshipType,
+  confidence: number,
+  reason: string,
+): void {
+  edges.push({
+    id: moveRelId(sourceId, type, targetId, reason),
+    sourceId,
+    targetId,
+    type,
+    confidence,
+    reason,
+  });
+}
+
+/** Emit the Module node + friend PendingRefs; return the per-module context. */
+function emitModule(
+  ctx: EmitContext,
+  moduleQualified: string,
+  mod: MoveFactsModule,
+): ModuleEmitContext {
+  const moduleFileAbs = mod.file ?? ctx.packageRoot;
+  const file = moveRepoRelativePath(moduleFileAbs, ctx.repoPath);
+  const { address, moduleName } = parseMoveModuleQualifiedName(moduleQualified);
+  ctx.moduleFileMap.set(moduleQualified, file);
+
+  const moduleNodeId = moveModuleNodeId(moduleQualified, file);
+  ctx.nodes.push({
+    id: moduleNodeId,
+    label: 'Module',
+    properties: {
+      name: moduleName,
+      filePath: file,
+      language: MOVE_LANGUAGE,
+      qualifiedName: moduleQualified,
+      moduleQualifiedName: moduleQualified,
+      moduleAddress: address,
+      startLine: spanLine(mod.span, 0),
+      endLine: spanLine(mod.span, 1),
+      attributes: attributeNames(mod.attributes),
+      attributesJson: attributesJson(mod.attributes),
+      locationFidelity: mod.file ? 'precise' : 'package',
+    },
+  });
+
+  for (const friend of arr(mod.friends)) {
+    ctx.pendingRefs.push({
+      kind: 'friend',
+      knownNodeId: moduleNodeId,
+      target: friend.module,
+      moduleQualified: '',
+      edgeType: 'FRIEND_OF',
+      reason: MOVE_EDGE_REASON.friend,
+    });
+  }
+
+  return { moduleQualified, moduleNodeId, moduleFileAbs, file, address, modFile: mod.file };
+}
+
+/** Emit a Function node + DEFINES and its signature/resource/lambda PendingRefs. */
+function emitFunction(ctx: EmitContext, mctx: ModuleEmitContext, fn: MoveFactsFunction): void {
+  const fnQualified = `${mctx.moduleQualified}::${fn.name}`;
+  // move-flow may report the callee/dependency span that caused a lifted lambda
+  // to be instantiated. The synthesized function still belongs to its declaring
+  // module, so anchoring it to that external dependency creates phantom source
+  // ownership (observed with Aptos big_ordered_map).
+  const fnSourceFile = fn.isLambdaLifted ? mctx.moduleFileAbs : (fn.file ?? mctx.moduleFileAbs);
+  const fnFile = moveRepoRelativePath(fnSourceFile, ctx.repoPath);
+  const fnSpan = fn.isLambdaLifted ? undefined : fn.span;
+  const fnNodeId = moveFunctionNodeId(fnQualified, fnFile);
+  ctx.functionNodeMap.set(fnQualified, fnNodeId);
+  const attrs = attributeNames(fn.attributes);
+  const seenTypeRefs = new Set<string>();
+  // Skip the function's own type parameters (e.g. `CoinType`): they are not
+  // nominal types and would create spurious USES_TYPE edges.
+  const fnTypeParamNames = new Set(arr(fn.typeParams).map((tp) => tp.name));
+  const addSignatureTypes = (typeExpr: string | null | undefined, reason: string): void => {
+    if (!typeExpr) return;
+    for (const typeName of extractTypeNames(typeExpr)) {
+      if (fnTypeParamNames.has(typeName)) continue;
+      const key = `${reason}\0${typeName}`;
+      if (seenTypeRefs.has(key)) continue;
+      seenTypeRefs.add(key);
+      ctx.pendingRefs.push({
+        kind: 'type',
+        knownNodeId: fnNodeId,
+        moduleQualified: mctx.moduleQualified,
+        target: typeName,
+        edgeType: 'USES_TYPE',
+        reason,
+      });
+    }
+  };
+  for (const p of arr(fn.params)) {
+    addSignatureTypes(p.type, MOVE_EDGE_REASON.fnParamType);
+  }
+  for (const rt of arr(fn.returnTypes)) {
+    addSignatureTypes(rt, MOVE_EDGE_REASON.fnReturnType);
+  }
+  const fnProps: NodeProperties = {
+    name: fn.name,
+    filePath: fnFile,
+    language: MOVE_LANGUAGE,
+    qualifiedName: fnQualified,
+    moduleQualifiedName: mctx.moduleQualified,
+    // Compiler-marked entry/view functions are runtime-facing even when their
+    // source visibility is internal.
+    isExported: fn.visibility === 'public' || fn.isEntry === true || fn.isView === true,
+    startLine: spanLine(fnSpan, 0),
+    endLine: spanLine(fnSpan, 1),
+    visibility: fn.visibility === 'internal' ? 'private' : fn.visibility,
+    visibilityModifier: fn.visibility,
+    isEntry: fn.isEntry,
+    isView: fn.isView,
+    isInline: fn.isInline,
+    isNative: fn.isNative,
+    attributes: attrs,
+    attributesJson: attributesJson(fn.attributes),
+    typeParamsJson: typeParamsJson(fn.typeParams),
+    acquires: arr(fn.acquiresInferred),
+    usedTypes: [],
+    returnType: returnTypeProjection(arr(fn.returnTypes)),
+    parameterCount: arr(fn.params).length,
+    locationFidelity: functionLocationFidelity(fn, mctx.modFile),
+  };
+  // Lambda → host link queued for Pass B (host fn node may not yet exist when
+  // this lambda is mapped). The canonical Cypher path for "is this a lambda?"
+  // is the inbound CALLS edge with reason 'move-lambda-of-host'; we do not
+  // project an `isLambda` boolean property because the lbug Function table does
+  // not carry it. move-flow reports the host explicitly via `definedIn`
+  // (resolved through nested closures); the `__lambda__N__<host>` name parse
+  // remains as fallback.
+  const lambdaHostLocal =
+    (fn.isLambdaLifted ? fn.definedIn : undefined) ?? parseMoveLambdaHostName(fn.name);
+  if (lambdaHostLocal) {
+    ctx.pendingRefs.push({
+      kind: 'lambda-host',
+      knownNodeId: fnNodeId,
+      target: `${mctx.moduleQualified}::${lambdaHostLocal}`,
+      moduleQualified: '',
+      edgeType: 'CALLS',
+      reason: MOVE_EDGE_REASON.lambdaHost,
+    });
+  }
+  ctx.nodes.push({ id: fnNodeId, label: 'Function', properties: fnProps });
+  pushEdge(
+    ctx.edges,
+    mctx.moduleNodeId,
+    fnNodeId,
+    'DEFINES',
+    1.0,
+    MOVE_EDGE_REASON.definesFunction,
+  );
+
+  for (const r of arr(fn.resourceAccess?.reads)) {
+    ctx.pendingRefs.push({
+      kind: 'resource',
+      knownNodeId: fnNodeId,
+      moduleQualified: mctx.moduleQualified,
+      target: stripTypeArgs(r),
+      edgeType: 'READS_RESOURCE',
+      reason: MOVE_EDGE_REASON.readsResource,
+    });
+  }
+  for (const w of arr(fn.resourceAccess?.writes)) {
+    ctx.pendingRefs.push({
+      kind: 'resource',
+      knownNodeId: fnNodeId,
+      moduleQualified: mctx.moduleQualified,
+      target: stripTypeArgs(w),
+      edgeType: 'WRITES_RESOURCE',
+      reason: MOVE_EDGE_REASON.writesResource,
+    });
+  }
+  for (const a of arr(fn.acquiresInferred)) {
+    ctx.pendingRefs.push({
+      kind: 'resource',
+      knownNodeId: fnNodeId,
+      moduleQualified: mctx.moduleQualified,
+      target: a,
+      edgeType: 'ACQUIRES',
+      reason: MOVE_EDGE_REASON.acquires,
+    });
+  }
+}
+
+/** Shared field-type ref emitter; skips the type's own type-parameter names. */
+function addFieldTypeRefs(
+  ctx: EmitContext,
+  moduleQualified: string,
+  typeParamNames: Set<string>,
+  sourceNodeId: string,
+  typeExpr: string,
+  reason: string,
+): void {
+  for (const target of new Set(extractTypeNames(typeExpr))) {
+    if (typeParamNames.has(target)) continue;
+    ctx.pendingRefs.push({
+      kind: 'type',
+      knownNodeId: sourceNodeId,
+      moduleQualified,
+      target,
+      edgeType: 'USES_TYPE',
+      reason,
+    });
+  }
+}
+
+function emitStruct(
+  ctx: EmitContext,
+  mctx: ModuleEmitContext,
+  ty: MoveFactsType,
+  tyFile: string,
+  attrs: string[],
+  typeParamNames: Set<string>,
+): void {
+  const tyQualified = `${mctx.moduleQualified}::${ty.name}`;
+  const structNodeId = moveStructNodeId(tyQualified, tyFile);
+  ctx.structNodeMap.set(tyQualified, structNodeId);
+  ctx.nodes.push({
+    id: structNodeId,
+    label: 'Struct',
+    properties: {
+      name: ty.name,
+      filePath: tyFile,
+      language: MOVE_LANGUAGE,
+      qualifiedName: tyQualified,
+      moduleQualifiedName: mctx.moduleQualified,
+      moduleAddress: mctx.address,
+      startLine: spanLine(ty.span, 0),
+      endLine: spanLine(ty.span, 1),
+      abilities: arr(ty.abilities),
+      isResource: arr(ty.abilities).includes(MOVE_ABILITY.KEY),
+      isEvent: attrs.includes(MOVE_ATTR.EVENT),
+      attributes: attrs,
+      attributesJson: attributesJson(ty.attributes),
+      typeParamsJson: typeParamsJson(ty.typeParams),
+      fields: (ty.fields ?? []).map((f) => ({
+        name: f.name,
+        type: f.type,
+        positional: f.positional,
+      })),
+      fieldList: (ty.fields ?? []).map((f) => `${f.name}: ${f.type}`),
+      moveDeclarationKind: 'struct',
+      locationFidelity: ty.file ? 'precise' : 'package',
+    },
+  });
+  pushEdge(
+    ctx.edges,
+    mctx.moduleNodeId,
+    structNodeId,
+    'DEFINES',
+    1.0,
+    MOVE_EDGE_REASON.definesStruct,
+  );
+  // `#[resource_group_member(group = ...)]` carries an exact qualified struct ref;
+  // queue a membership USES_TYPE edge resolved in Pass B.
+  const resourceGroup = resourceGroupOf(ty.attributes);
+  if (resourceGroup) {
+    ctx.pendingRefs.push({
+      kind: 'type',
+      knownNodeId: structNodeId,
+      moduleQualified: mctx.moduleQualified,
+      target: resourceGroup,
+      edgeType: 'USES_TYPE',
+      reason: MOVE_EDGE_REASON.resourceGroupMember,
+    });
+  }
+  // Per-field Property nodes + HAS_PROPERTY edges so ACCESSES queries and
+  // field-level taint can target individual fields. The composite name + type
+  // live on the Struct as a `fields` array projection, but only the per-field
+  // nodes let Cypher join on `(:Struct)-[:HAS_PROPERTY]->(:Property)`.
+  for (const field of arr(ty.fields)) {
+    const propId = moveFieldNodeId(tyQualified, field.name, tyFile);
+    ctx.nodes.push({
+      id: propId,
+      label: 'Property',
+      properties: {
+        name: field.name,
+        filePath: tyFile,
+        language: MOVE_LANGUAGE,
+        qualifiedName: `${tyQualified}.${field.name}`,
+        parentStruct: tyQualified,
+        moduleQualifiedName: mctx.moduleQualified,
+        declaredType: field.type,
+        positional: field.positional,
+        startLine: spanLine(ty.span, 0),
+      },
+    });
+    pushEdge(ctx.edges, structNodeId, propId, 'HAS_PROPERTY', 1.0, MOVE_EDGE_REASON.hasField);
+    addFieldTypeRefs(
+      ctx,
+      mctx.moduleQualified,
+      typeParamNames,
+      propId,
+      field.type,
+      MOVE_EDGE_REASON.structFieldType,
+    );
+  }
+}
+
+function emitEnum(
+  ctx: EmitContext,
+  mctx: ModuleEmitContext,
+  ty: MoveFactsType,
+  tyFile: string,
+  attrs: string[],
+  typeParamNames: Set<string>,
+): void {
+  const tyQualified = `${mctx.moduleQualified}::${ty.name}`;
+  const eId = moveEnumNodeId(tyQualified, tyFile);
+  ctx.structNodeMap.set(tyQualified, eId);
+  ctx.nodes.push({
+    id: eId,
+    label: 'Enum',
+    properties: {
+      name: ty.name,
+      filePath: tyFile,
+      language: MOVE_LANGUAGE,
+      qualifiedName: tyQualified,
+      moduleQualifiedName: mctx.moduleQualified,
+      moduleAddress: mctx.address,
+      startLine: spanLine(ty.span, 0),
+      endLine: spanLine(ty.span, 1),
+      abilities: arr(ty.abilities),
+      isResource: arr(ty.abilities).includes(MOVE_ABILITY.KEY),
+      isEvent: attrs.includes(MOVE_ATTR.EVENT),
+      attributes: attrs,
+      attributesJson: attributesJson(ty.attributes),
+      typeParamsJson: typeParamsJson(ty.typeParams),
+      moveDeclarationKind: 'enum',
+      locationFidelity: ty.file ? 'precise' : 'package',
+    },
+  });
+  pushEdge(ctx.edges, mctx.moduleNodeId, eId, 'DEFINES', 1.0, MOVE_EDGE_REASON.definesEnum);
+  for (const variant of arr(ty.variants)) {
+    const vId = moveEnumVariantNodeId(tyQualified, variant.name, tyFile);
+    ctx.nodes.push({
+      id: vId,
+      label: 'EnumVariant',
+      properties: {
+        name: variant.name,
+        filePath: tyFile,
+        language: MOVE_LANGUAGE,
+        qualifiedName: `${tyQualified}::${variant.name}`,
+        parentEnum: tyQualified,
+        moduleQualifiedName: mctx.moduleQualified,
+        variantKind: variant.kind,
+        fieldsJson: JSON.stringify(
+          arr(variant.fields).map((f) => ({
+            name: f.name,
+            type: f.type,
+            positional: f.positional,
+          })),
+        ),
+        attributes: attributeNames(variant.attributes),
+        attributesJson: attributesJson(variant.attributes),
+        locationFidelity: ty.file ? 'module' : 'package',
+      },
+    });
+    pushEdge(ctx.edges, eId, vId, 'CONTAINS', 1.0, MOVE_EDGE_REASON.containsVariant);
+    for (const field of arr(variant.fields)) {
+      const variantQualified = `${tyQualified}::${variant.name}`;
+      const propId = moveFieldNodeId(variantQualified, field.name, tyFile);
+      ctx.nodes.push({
+        id: propId,
+        label: 'Property',
+        properties: {
+          name: field.name,
+          filePath: tyFile,
+          language: MOVE_LANGUAGE,
+          qualifiedName: `${variantQualified}.${field.name}`,
+          moduleQualifiedName: mctx.moduleQualified,
+          declaredType: field.type,
+          startLine: spanLine(ty.span, 0),
+        },
+      });
+      pushEdge(ctx.edges, vId, propId, 'HAS_PROPERTY', 1.0, MOVE_EDGE_REASON.hasVariantField);
+      addFieldTypeRefs(
+        ctx,
+        mctx.moduleQualified,
+        typeParamNames,
+        propId,
+        field.type,
+        MOVE_EDGE_REASON.enumVariantFieldType,
+      );
+    }
+  }
+}
+
+/** Emit a struct or enum (move-flow groups both under the module's `structs`). */
+function emitType(ctx: EmitContext, mctx: ModuleEmitContext, ty: MoveFactsType): void {
+  const tyFile = moveRepoRelativePath(ty.file ?? mctx.moduleFileAbs, ctx.repoPath);
+  const attrs = attributeNames(ty.attributes);
+  const typeParamNames = new Set(arr(ty.typeParams).map((tp) => tp.name));
+  switch (ty.kind) {
+    case 'struct':
+      emitStruct(ctx, mctx, ty, tyFile, attrs, typeParamNames);
+      break;
+    case 'enum':
+      emitEnum(ctx, mctx, ty, tyFile, attrs, typeParamNames);
+      break;
+    default: {
+      const _exhaustive: never = ty.kind;
+      throw new Error(`Unhandled Move type kind: ${String(_exhaustive)}`);
+    }
+  }
+}
+
+/** Emit a Const node + DEFINES. */
+function emitConst(ctx: EmitContext, mctx: ModuleEmitContext, c: MoveFlowConstant): void {
+  const cQualified = `${mctx.moduleQualified}::${c.name}`;
+  const cNodeId = moveConstNodeId(cQualified, mctx.file);
+  ctx.nodes.push({
+    id: cNodeId,
+    label: 'Const',
+    properties: {
+      name: c.name,
+      filePath: mctx.file,
+      language: MOVE_LANGUAGE,
+      qualifiedName: cQualified,
+      moduleQualifiedName: mctx.moduleQualified,
+      constType: c.type,
+      constValue: c.value,
+      isErrorCode: ERROR_CODE_PATTERN.test(c.name),
+      locationFidelity: mctx.modFile ? 'module' : 'package',
+    },
+  });
+  pushEdge(ctx.edges, mctx.moduleNodeId, cNodeId, 'DEFINES', 1.0, MOVE_EDGE_REASON.definesConst);
+}
+
 /**
  * Map a full `facts` response (covering every module in a package) to graph
  * nodes + edges. `packageRoot` is used only as a location fallback when the
@@ -182,503 +622,32 @@ export function mapFactsToGraph(
   repoPath?: string,
 ): MoveFactsMapResult {
   assertFactsShape(facts);
-  const nodes: GraphNode[] = [];
-  const edges: GraphRelationship[] = [];
-  const moduleFileMap = new Map<string, string>();
-  const functionNodeMap = new Map<string, string>();
-  const structNodeMap = new Map<string, string>();
-
-  const edge = (
-    sourceId: string,
-    targetId: string,
-    type: RelationshipType,
-    confidence: number,
-    reason: string,
-  ): void => {
-    edges.push({
-      id: moveRelId(sourceId, type, targetId, reason),
-      sourceId,
-      targetId,
-      type,
-      confidence,
-      reason,
-    });
+  const ctx: EmitContext = {
+    nodes: [],
+    edges: [],
+    moduleFileMap: new Map(),
+    functionNodeMap: new Map(),
+    structNodeMap: new Map(),
+    pendingRefs: [],
+    packageRoot,
+    repoPath,
   };
 
-  // Deferred work that needs the full struct/module index (pass B).
-  const pendingResource: PendingResource[] = [];
-  const pendingFriends: PendingFriend[] = [];
-  const pendingTypeRef: PendingTypeRef[] = [];
-  const pendingLambdaHosts: PendingLambdaHost[] = [];
-
-  // ── Pass A: nodes (modules, functions, types, constants) ─────────────────
   for (const [moduleQualified, mod] of Object.entries(facts)) {
-    const moduleFileAbs = mod.file ?? packageRoot;
-    const file = moveRepoRelativePath(moduleFileAbs, repoPath);
-    const { address, moduleName } = parseMoveModuleQualifiedName(moduleQualified);
-    moduleFileMap.set(moduleQualified, file);
-
-    const moduleNodeId = moveModuleNodeId(moduleQualified, file);
-    nodes.push({
-      id: moduleNodeId,
-      label: 'Module',
-      properties: {
-        name: moduleName,
-        filePath: file,
-        language: MOVE_LANGUAGE,
-        qualifiedName: moduleQualified,
-        moduleQualifiedName: moduleQualified,
-        moduleAddress: address,
-        startLine: spanLine(mod.span, 0),
-        endLine: spanLine(mod.span, 1),
-        attributes: attributeNames(mod.attributes),
-        attributesJson: attributesJson(mod.attributes),
-        locationFidelity: mod.file ? 'precise' : 'package',
-      },
-    });
-
-    for (const friend of arr(mod.friends)) {
-      pendingFriends.push({ moduleNodeId, friend: friend.module });
-    }
-
-    // Functions
-    for (const fn of arr(mod.functions)) {
-      const fnQualified = `${moduleQualified}::${fn.name}`;
-      const fnFile = moveRepoRelativePath(fn.file ?? moduleFileAbs, repoPath);
-      const fnNodeId = moveFunctionNodeId(fnQualified, fnFile);
-      functionNodeMap.set(fnQualified, fnNodeId);
-      const attrs = attributeNames(fn.attributes);
-      const seenTypeRefs = new Set<string>();
-      // Skip the function's own type parameters (e.g. `CoinType`): they are not
-      // nominal types and would create spurious USES_TYPE edges.
-      const fnTypeParamNames = new Set(arr(fn.typeParams).map((tp) => tp.name));
-      const addSignatureTypes = (typeExpr: string | null | undefined, reason: string): void => {
-        if (!typeExpr) return;
-        for (const typeName of extractTypeNames(typeExpr)) {
-          if (fnTypeParamNames.has(typeName)) continue;
-          const key = `${reason}\0${typeName}`;
-          if (seenTypeRefs.has(key)) continue;
-          seenTypeRefs.add(key);
-          pendingTypeRef.push({
-            sourceNodeId: fnNodeId,
-            moduleQualified,
-            target: typeName,
-            reason,
-          });
-        }
-      };
-      for (const p of arr(fn.params)) {
-        addSignatureTypes(p.type, MOVE_EDGE_REASON.fnParamType);
-      }
-      for (const rt of arr(fn.returnTypes)) {
-        addSignatureTypes(rt, MOVE_EDGE_REASON.fnReturnType);
-      }
-      const fnProps: NodeProperties = {
-        name: fn.name,
-        filePath: fnFile,
-        language: MOVE_LANGUAGE,
-        qualifiedName: fnQualified,
-        moduleQualifiedName: moduleQualified,
-        startLine: spanLine(fn.span, 0),
-        endLine: spanLine(fn.span, 1),
-        visibility: fn.visibility === 'internal' ? 'private' : fn.visibility,
-        visibilityModifier: fn.visibility,
-        isEntry: fn.isEntry,
-        isView: fn.isView,
-        isInline: fn.isInline,
-        isNative: fn.isNative,
-        attributes: attrs,
-        attributesJson: attributesJson(fn.attributes),
-        typeParamsJson: typeParamsJson(fn.typeParams),
-        acquires: arr(fn.acquiresInferred),
-        usedTypes: [],
-        returnType: returnTypeProjection(arr(fn.returnTypes)),
-        parameterCount: arr(fn.params).length,
-        locationFidelity: fn.file ? 'precise' : 'package',
-      };
-      // Lambda → host link queued for Pass 2 (host fn node may not yet exist
-      // when this lambda is mapped). The canonical Cypher path for "is this a
-      // lambda?" is the inbound CALLS edge with reason 'move-lambda-of-host';
-      // we do not project an `isLambda` boolean property because the lbug
-      // Function table does not carry it. move-flow reports the host explicitly
-      // via `definedIn` (resolved through nested closures); the
-      // `__lambda__N__<host>` name parse remains as fallback.
-      const lambdaHostLocal =
-        (fn.isLambdaLifted ? fn.definedIn : undefined) ?? parseMoveLambdaHostName(fn.name);
-      if (lambdaHostLocal) {
-        pendingLambdaHosts.push({
-          lambdaFnNodeId: fnNodeId,
-          hostQualified: `${moduleQualified}::${lambdaHostLocal}`,
-        });
-      }
-      nodes.push({
-        id: fnNodeId,
-        label: 'Function',
-        properties: fnProps,
-      });
-      edge(moduleNodeId, fnNodeId, 'DEFINES', 1.0, MOVE_EDGE_REASON.definesFunction);
-
-      for (const r of arr(fn.resourceAccess?.reads)) {
-        pendingResource.push({
-          fnNodeId,
-          moduleQualified,
-          type: 'READS_RESOURCE',
-          target: stripTypeArgs(r),
-          reason: MOVE_EDGE_REASON.readsResource,
-        });
-      }
-      for (const w of arr(fn.resourceAccess?.writes)) {
-        pendingResource.push({
-          fnNodeId,
-          moduleQualified,
-          type: 'WRITES_RESOURCE',
-          target: stripTypeArgs(w),
-          reason: MOVE_EDGE_REASON.writesResource,
-        });
-      }
-      for (const a of arr(fn.acquiresInferred)) {
-        pendingResource.push({
-          fnNodeId,
-          moduleQualified,
-          type: 'ACQUIRES',
-          target: a,
-          reason: MOVE_EDGE_REASON.acquires,
-        });
-      }
-    }
-
-    // Types (structs + enums)
-    for (const ty of arr(mod.structs)) {
-      const tyQualified = `${moduleQualified}::${ty.name}`;
-      const tyFile = moveRepoRelativePath(ty.file ?? moduleFileAbs, repoPath);
-      const attrs = attributeNames(ty.attributes);
-      if (ty.kind === 'struct') {
-        const structNodeId = moveStructNodeId(tyQualified, tyFile);
-        structNodeMap.set(tyQualified, structNodeId);
-        nodes.push({
-          id: structNodeId,
-          label: 'Struct',
-          properties: {
-            name: ty.name,
-            filePath: tyFile,
-            language: MOVE_LANGUAGE,
-            qualifiedName: tyQualified,
-            moduleQualifiedName: moduleQualified,
-            moduleAddress: address,
-            startLine: spanLine(ty.span, 0),
-            endLine: spanLine(ty.span, 1),
-            abilities: arr(ty.abilities),
-            isResource: arr(ty.abilities).includes(MOVE_ABILITY.KEY),
-            isEvent: attrs.includes(MOVE_ATTR.EVENT),
-            attributes: attrs,
-            attributesJson: attributesJson(ty.attributes),
-            typeParamsJson: typeParamsJson(ty.typeParams),
-            fields: (ty.fields ?? []).map((f) => ({
-              name: f.name,
-              type: f.type,
-              positional: f.positional,
-            })),
-            // STRING[] projection persisted to lbug (`fieldList` column).
-            fieldList: (ty.fields ?? []).map((f) => `${f.name}: ${f.type}`),
-            moveDeclarationKind: 'struct',
-            locationFidelity: ty.file ? 'precise' : 'package',
-          },
-        });
-        edge(moduleNodeId, structNodeId, 'DEFINES', 1.0, MOVE_EDGE_REASON.definesStruct);
-        // `#[resource_group_member(group = ...)]` carries an exact qualified
-        // struct ref (e.g. '0xa::vault::Group') - queue a membership USES_TYPE
-        // edge resolved against the cross-package type index in Pass B.
-        const resourceGroup = resourceGroupOf(ty.attributes);
-        if (resourceGroup) {
-          pendingTypeRef.push({
-            sourceNodeId: structNodeId,
-            moduleQualified,
-            target: resourceGroup,
-            reason: MOVE_EDGE_REASON.resourceGroupMember,
-          });
-        }
-        // Per-field Property nodes + HAS_PROPERTY edges so ACCESSES queries and
-        // field-level taint can target individual fields. The composite name +
-        // type live on the Struct as a `fields` array projection, but only the
-        // per-field nodes let Cypher join on `(:Struct)-[:HAS_PROPERTY]->(:Property)`.
-        for (const field of arr(ty.fields)) {
-          const propId = moveFieldNodeId(tyQualified, field.name, tyFile);
-          nodes.push({
-            id: propId,
-            label: 'Property',
-            properties: {
-              name: field.name,
-              filePath: tyFile,
-              language: MOVE_LANGUAGE,
-              qualifiedName: `${tyQualified}.${field.name}`,
-              parentStruct: tyQualified,
-              moduleQualifiedName: moduleQualified,
-              declaredType: field.type,
-              positional: field.positional,
-              startLine: spanLine(ty.span, 0),
-            },
-          });
-          edge(structNodeId, propId, 'HAS_PROPERTY', 1.0, MOVE_EDGE_REASON.hasField);
-        }
-      } else {
-        const eId = moveEnumNodeId(tyQualified, tyFile);
-        structNodeMap.set(tyQualified, eId);
-        nodes.push({
-          id: eId,
-          label: 'Enum',
-          properties: {
-            name: ty.name,
-            filePath: tyFile,
-            language: MOVE_LANGUAGE,
-            qualifiedName: tyQualified,
-            moduleQualifiedName: moduleQualified,
-            moduleAddress: address,
-            startLine: spanLine(ty.span, 0),
-            endLine: spanLine(ty.span, 1),
-            abilities: arr(ty.abilities),
-            isResource: arr(ty.abilities).includes(MOVE_ABILITY.KEY),
-            isEvent: attrs.includes(MOVE_ATTR.EVENT),
-            attributes: attrs,
-            attributesJson: attributesJson(ty.attributes),
-            typeParamsJson: typeParamsJson(ty.typeParams),
-            moveDeclarationKind: 'enum',
-            locationFidelity: ty.file ? 'precise' : 'package',
-          },
-        });
-        edge(moduleNodeId, eId, 'DEFINES', 1.0, MOVE_EDGE_REASON.definesEnum);
-        for (const variant of arr(ty.variants)) {
-          const vId = moveEnumVariantNodeId(tyQualified, variant.name, tyFile);
-          nodes.push({
-            id: vId,
-            label: 'EnumVariant',
-            properties: {
-              name: variant.name,
-              filePath: tyFile,
-              language: MOVE_LANGUAGE,
-              qualifiedName: `${tyQualified}::${variant.name}`,
-              parentEnum: tyQualified,
-              moduleQualifiedName: moduleQualified,
-              variantKind: variant.kind,
-              fieldsJson: JSON.stringify(
-                arr(variant.fields).map((f) => ({
-                  name: f.name,
-                  type: f.type,
-                  positional: f.positional,
-                })),
-              ),
-              attributes: attributeNames(variant.attributes),
-              attributesJson: attributesJson(variant.attributes),
-              locationFidelity: ty.file ? 'module' : 'package',
-            },
-          });
-          edge(eId, vId, 'CONTAINS', 1.0, MOVE_EDGE_REASON.containsVariant);
-        }
-      }
-    }
-
-    // Constants
-    for (const c of arr(mod.constants)) {
-      const cQualified = `${moduleQualified}::${c.name}`;
-      const cNodeId = moveConstNodeId(cQualified, file);
-      nodes.push({
-        id: cNodeId,
-        label: 'Const',
-        properties: {
-          name: c.name,
-          filePath: file,
-          language: MOVE_LANGUAGE,
-          qualifiedName: cQualified,
-          moduleQualifiedName: moduleQualified,
-          constType: c.type,
-          constValue: c.value,
-          isErrorCode: ERROR_CODE_PATTERN.test(c.name),
-          locationFidelity: mod.file ? 'module' : 'package',
-        },
-      });
-      edge(moduleNodeId, cNodeId, 'DEFINES', 1.0, MOVE_EDGE_REASON.definesConst);
-    }
+    const mctx = emitModule(ctx, moduleQualified, mod);
+    for (const fn of arr(mod.functions)) emitFunction(ctx, mctx, fn);
+    for (const ty of arr(mod.structs)) emitType(ctx, mctx, ty);
+    for (const c of arr(mod.constants)) emitConst(ctx, mctx, c);
   }
 
   return {
-    nodes,
-    edges,
-    moduleFileMap,
-    functionNodeMap,
-    structNodeMap,
-    pendingResource,
-    pendingFriends,
-    pendingTypeRef,
-    pendingLambdaHosts,
+    nodes: ctx.nodes,
+    edges: ctx.edges,
+    moduleFileMap: ctx.moduleFileMap,
+    functionNodeMap: ctx.functionNodeMap,
+    structNodeMap: ctx.structNodeMap,
+    pendingRefs: ctx.pendingRefs,
   };
-}
-
-/**
- * Resolve queued lambda→host links into CALLS edges. Run after every package's
- * facts have been mapped so the host's Function node is guaranteed to exist
- * (the host may be defined in a different module within the package, or — for
- * cross-package lambda capture — in another package altogether).
- */
-export function resolveLambdaHostEdges(
-  pendingLambdaHosts: readonly PendingLambdaHost[],
-  functionNodeMap: ReadonlyMap<string, string>,
-  edgeSink: (rel: GraphRelationship) => void,
-): void {
-  const seen = new Set<string>();
-  for (const p of pendingLambdaHosts) {
-    const hostId = functionNodeMap.get(p.hostQualified);
-    if (!hostId) continue;
-    const key = `${hostId}\0${p.lambdaFnNodeId}`;
-    if (seen.has(key)) continue;
-    seen.add(key);
-    edgeSink({
-      id: moveRelId(hostId, 'CALLS', p.lambdaFnNodeId, MOVE_EDGE_REASON.lambdaHost),
-      sourceId: hostId,
-      targetId: p.lambdaFnNodeId,
-      type: 'CALLS',
-      confidence: 0.9,
-      reason: MOVE_EDGE_REASON.lambdaHost,
-    });
-  }
-}
-
-export function buildLocalNameIndex(
-  structNodeMap: ReadonlyMap<string, string>,
-): Map<string, string[]> {
-  const structIdsByLocalName = new Map<string, string[]>();
-  for (const [qn, id] of structNodeMap) {
-    const key = moveLocalName(qn);
-    const list = structIdsByLocalName.get(key);
-    if (list) list.push(id);
-    else structIdsByLocalName.set(key, [id]);
-  }
-  return structIdsByLocalName;
-}
-
-function resolveStructRef(
-  localOrQualified: string,
-  callerModule: string,
-  structNodeMap: ReadonlyMap<string, string>,
-  structIdsByLocalName: ReadonlyMap<string, readonly string[]>,
-): { targetId: string } | { unresolved: true } | { ambiguous: true } {
-  const exact = structNodeMap.get(localOrQualified);
-  if (exact) return { targetId: exact };
-
-  const base = stripTypeArgs(localOrQualified);
-  const baseExact = structNodeMap.get(base);
-  if (baseExact) return { targetId: baseExact };
-
-  // move-flow emits every resourceAccess/param/return ref fully qualified, so a
-  // qualified ref that misses the exact lookup is a type outside the indexed
-  // graph (e.g. a dependency-only 0x1::coin::CoinStore). Falling through to the
-  // bare-name heuristic would silently mis-bind it to a same-named repo struct
-  // under a different address - report unresolved instead. The heuristics below
-  // remain only for unqualified inputs.
-  if (base.includes('::')) return { unresolved: true };
-
-  const sameModule = structNodeMap.get(`${callerModule}::${base}`);
-  if (sameModule) return { targetId: sameModule };
-
-  const matches = structIdsByLocalName.get(moveLocalName(base)) ?? [];
-  if (matches.length === 1) return { targetId: matches[0] };
-  return matches.length > 1 ? { ambiguous: true } : { unresolved: true };
-}
-
-export function resolveResourceEdges(
-  pendingResource: readonly PendingResource[],
-  structNodeMap: ReadonlyMap<string, string>,
-  structIdsByLocalName: ReadonlyMap<string, readonly string[]>,
-  edgeSink: (rel: GraphRelationship) => void,
-  onUnresolved?: (pending: PendingResource) => void,
-  onAmbiguous?: (pending: PendingResource) => void,
-): void {
-  const seenResourceEdges = new Set<string>();
-  for (const pr of pendingResource) {
-    const resolved = resolveStructRef(
-      pr.target,
-      pr.moduleQualified,
-      structNodeMap,
-      structIdsByLocalName,
-    );
-    if ('unresolved' in resolved) {
-      onUnresolved?.(pr);
-      continue;
-    }
-    if ('ambiguous' in resolved) {
-      onAmbiguous?.(pr);
-      continue;
-    }
-
-    const key = `${pr.fnNodeId}\0${pr.type}\0${resolved.targetId}`;
-    if (seenResourceEdges.has(key)) continue;
-    seenResourceEdges.add(key);
-    edgeSink({
-      id: moveRelId(pr.fnNodeId, pr.type, resolved.targetId, pr.reason),
-      sourceId: pr.fnNodeId,
-      targetId: resolved.targetId,
-      type: pr.type,
-      confidence: 1.0,
-      reason: pr.reason,
-    });
-  }
-}
-
-export function resolveFriendEdges(
-  pendingFriends: readonly PendingFriend[],
-  moduleFileMap: ReadonlyMap<string, string>,
-  edgeSink: (rel: GraphRelationship) => void,
-): void {
-  for (const pf of pendingFriends) {
-    const friendFile = moduleFileMap.get(pf.friend);
-    if (!friendFile) continue;
-    const targetId = moveModuleNodeId(pf.friend, friendFile);
-    edgeSink({
-      id: moveRelId(pf.moduleNodeId, 'FRIEND_OF', targetId, MOVE_EDGE_REASON.friend),
-      sourceId: pf.moduleNodeId,
-      targetId,
-      type: 'FRIEND_OF',
-      confidence: 1.0,
-      reason: MOVE_EDGE_REASON.friend,
-    });
-  }
-}
-
-export function resolveTypeRefEdges(
-  pendingTypeRef: readonly PendingTypeRef[],
-  structNodeMap: ReadonlyMap<string, string>,
-  structIdsByLocalName: ReadonlyMap<string, readonly string[]>,
-  edgeSink: (rel: GraphRelationship) => void,
-  onUnresolved?: (pending: PendingTypeRef) => void,
-  onAmbiguous?: (pending: PendingTypeRef) => void,
-): void {
-  const seenTypeEdges = new Set<string>();
-  for (const pr of pendingTypeRef) {
-    const resolved = resolveStructRef(
-      pr.target,
-      pr.moduleQualified,
-      structNodeMap,
-      structIdsByLocalName,
-    );
-    if ('unresolved' in resolved) {
-      onUnresolved?.(pr);
-      continue;
-    }
-    if ('ambiguous' in resolved) {
-      onAmbiguous?.(pr);
-      continue;
-    }
-
-    const key = `${pr.sourceNodeId}\0${pr.reason}\0${resolved.targetId}`;
-    if (seenTypeEdges.has(key)) continue;
-    seenTypeEdges.add(key);
-    edgeSink({
-      id: moveRelId(pr.sourceNodeId, 'USES_TYPE', resolved.targetId, pr.reason),
-      sourceId: pr.sourceNodeId,
-      targetId: resolved.targetId,
-      type: 'USES_TYPE',
-      confidence: 1.0,
-      reason: pr.reason,
-    });
-  }
 }
 
 // Re-export for callers that prefer the label type.

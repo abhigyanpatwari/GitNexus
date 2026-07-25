@@ -266,6 +266,10 @@ describe('runFullAnalysis metadata reconciliation (mocked pipeline)', () => {
         repoPath,
         totalFileCount: 1,
         graph: { forEachNode: () => undefined },
+        standaloneIngest: {
+          ingestedFiles: new Set<string>(),
+          consistencyIssues: [],
+        },
       })),
     }));
     // Avoid touching the global registry / repo .gitnexusignore from a unit test.

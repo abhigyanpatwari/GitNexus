@@ -564,6 +564,7 @@ export const streamAllCSVsToDisk = async (
     const MULTI_LANG_TYPES = [
       'Struct',
       'Enum',
+      'Type',
       'EnumVariant',
       'Macro',
       'Typedef',

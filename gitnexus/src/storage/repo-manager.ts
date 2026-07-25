@@ -22,6 +22,7 @@ import { randomBytes } from 'crypto';
 import { getInferredRepoName, resolveRepoIdentityRoot } from './git.js';
 import { retryRename } from './fs-atomic.js';
 import { logger } from '../core/logger.js';
+import type { MoveConsistencySummary } from '../core/move/consistency.js';
 import type { MoveCompilerIdentity, MoveFlowReleaseSelection } from '../core/move/constants.js';
 import {
   branchSlug,
@@ -228,6 +229,12 @@ export interface RepoMeta {
   moveCompilerIdentity?: MoveCompilerIdentity;
   /** Managed release coordinates, kept separate from the binary fingerprint. */
   moveFlowReleaseSelection?: MoveFlowReleaseSelection;
+  /**
+   * Move ingest consistency digest from the run that produced the persisted
+   * facts (full counts + a capped errors-first sample). Absent when the run
+   * was clean or the repo has no Move packages.
+   */
+  moveConsistency?: MoveConsistencySummary;
   /**
    * Crash-recovery dirty flag — a generic marker written to the metadata
    * file (gitnexus.json + its meta.json mirror) BEFORE any destructive DB
@@ -460,8 +467,13 @@ export interface RepoMeta {
  * stamp of 9 is ambiguous between the two lineages, and a pre-merge Move
  * index also predates main's v9–v11 rebuild reasons. Any pre-v12 stamp fails
  * the strict-equality reuse gate; force a full re-analyze (same contract as v3).
+ * v15: generic Type nodes and the Move EnumVariant→Property / field
+ * USES_TYPE endpoint pairs became persistable. This Move-lineage change is
+ * numbered past upstream main's v13 (Java local-class identities) and v14 so
+ * indexes from either release channel cannot pass the strict-equality reuse
+ * gate under the other schema. Older indexes require a full rebuild.
  */
-export const INCREMENTAL_SCHEMA_VERSION = 12;
+export const INCREMENTAL_SCHEMA_VERSION = 15;
 
 export interface IndexedRepo {
   repoPath: string;

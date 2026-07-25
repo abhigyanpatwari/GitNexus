@@ -9,6 +9,9 @@
  *   - Every graph-wide node (Community, Process) — these are regenerated
  *     each run by the communities/processes phases and must be fully
  *     rewritten.
+ *   - Every external dependency node (`locationFidelity: 'external'`, no
+ *     filePath) — regenerated each run by the standalone ingest phase and
+ *     delete-all'd by the orchestrator, same contract as Community/Process.
  *   - Every relationship where AT LEAST ONE endpoint is in the writable
  *     set above. Relationships entirely between unchanged-file nodes
  *     are skipped — their rows are still in the DB and re-inserting
@@ -53,6 +56,20 @@ import { createKnowledgeGraph } from '../graph/graph.js';
 import type { KnowledgeGraph } from '../graph/types.js';
 
 const isGraphWide = (label: string): boolean => label === 'Community' || label === 'Process';
+
+/**
+ * Externally-declared dependency symbols (compiler-backed ingesters stamp
+ * `locationFidelity: 'external'`) carry no filePath, so the file-keyed
+ * delete/write cycle can never refresh them — an external symbol first
+ * referenced during an incremental run would be skipped here while its edges
+ * are extracted, and the dangling endpoints would fail the rel COPY into the
+ * per-row fallback (which silently drops them). They are regenerated
+ * whole-program by every ingest run, so they get the Community/Process
+ * treatment: the orchestrator delete-alls them first
+ * (`deleteAllExternalNodes`) and this extractor re-includes them from the
+ * fresh graph.
+ */
+const isExternalNode = (n: GraphNode): boolean => n.properties?.locationFidelity === 'external';
 
 /**
  * Relationship types whose VALIDITY is a whole-program property, not a
@@ -106,7 +123,8 @@ export const extractChangedSubgraph = (
 
   fullGraph.forEachNode((n: GraphNode) => {
     const filePath = n.properties?.filePath as string | undefined;
-    const include = (filePath && toWriteSet.has(filePath)) || isGraphWide(n.label);
+    const include =
+      (filePath && toWriteSet.has(filePath)) || isGraphWide(n.label) || isExternalNode(n);
     if (include) {
       sub.addNode(n);
       writableNodeIds.add(n.id);

@@ -1255,6 +1255,7 @@ const BACKTICK_TABLES = new Set([
   'Trait',
   'Impl',
   'TypeAlias',
+  'Type',
   'Const',
   'Static',
   'Property',
@@ -2281,12 +2282,7 @@ export const deleteNodesForFile = async (
 
 /**
  * Chunk size for {@link deleteNodesForFiles}. 200 paths keeps each
- * statement ~13KB (well inside parser limits) while a ~700-file write set
- * still collapses from ~13,000 statements to 124: 31 statements per chunk
- * (1 CodeEmbedding join-delete + 30 filePath-bearing node tables — the
- * 32-table NODE_TABLES roster minus Community/Process) × 4 chunks. The
- * original "~40" claim under-counted the per-chunk statement fan-out
- * (tri-review 4669518496 accuracy sweep).
+ * statement ~13KB while batching one delete per file-backed table.
  */
 export const DELETE_FILES_CHUNK_SIZE = 200;
 
@@ -2307,9 +2303,7 @@ export const DELETE_FILES_CHUNK_SIZE = 200;
  * binder error on the embedding join-delete: a DB created without
  * EMBEDDING_SCHEMA cannot own embedding rows, so skipping that one
  * statement is sound, while failing would brick every incremental run on
- * such a DB until `--force`. Statement count per chunk is unchanged by the
- * multi-label join: 1 embedding join-delete + 30 node-table deletes = 31
- * (the rejected per-label fallback shape would have been 19 + 30 = 49).
+ * such a DB until `--force`.
  * Singleton-connection only: the analyze writeback owns the write lock,
  * and `queryAndDrain` routes through `withConnLock` for it (the WAL
  * checkpoint driver is live during this).
@@ -2501,34 +2495,40 @@ export const queryImportersBatch = async (
 };
 
 /**
- * Drop every Community and Process node (and their MEMBER_OF /
- * STEP_IN_PROCESS edges via DETACH DELETE). Used at the start of an
- * incremental run so the communities and processes phases regenerate
- * them from scratch on the merged graph — required for the
- * "Leiden runs on the FULL graph" correctness invariant.
+ * Shared mechanics for the delete-all-nodes-by-label family
+ * ({@link deleteAllCommunitiesAndProcesses}, {@link deleteAllExternalNodes}).
+ * For each label: count matching nodes, then `DETACH DELETE` them if any.
+ * The whole loop runs inside `withConnLock` so it cannot execute concurrently
+ * with the WAL-checkpoint driver's CHECKPOINT on the singleton connection
+ * (this runs during incremental --pdg writeback while the driver is live;
+ * mirrors the wrapped deleteAllInterprocTaintPaths / deleteAllCallSummaries).
+ * A missing table on a freshly-initialized DB is swallowed — it simply holds
+ * no rows to delete.
+ *
+ * `labels` are pre-formatted label tokens (the caller decides backticking).
+ * `filter` is an optional Cypher predicate on the bound node `n`
+ * (e.g. `WHERE n.locationFidelity = 'external'`); omitted → delete all rows.
  */
-export const deleteAllCommunitiesAndProcesses = async (): Promise<{
-  nodesDeleted: number;
-}> => {
+const deleteAllNodesByLabels = async (
+  labels: readonly string[],
+  filter = '',
+): Promise<{ nodesDeleted: number }> => {
   const c = conn;
   if (!c) {
     throw new Error('LadybugDB not initialized. Call initLbug first.');
   }
-  // count + DETACH DELETE run inside the connection lock so they cannot execute
-  // concurrently with the WAL-checkpoint driver's CHECKPOINT on the singleton
-  // connection. This runs during incremental --pdg writeback while the driver is
-  // live; mirrors the wrapped deleteAllInterprocTaintPaths / deleteAllCallSummaries.
+  const clause = filter ? ` ${filter}` : '';
   return withConnLock(async () => {
     let nodesDeleted = 0;
-    for (const label of ['Community', 'Process']) {
+    for (const label of labels) {
       let countResult: lbug.QueryResult | lbug.QueryResult[] | undefined;
       try {
-        countResult = await c.query(`MATCH (n:${label}) RETURN count(n) AS cnt`);
+        countResult = await c.query(`MATCH (n:${label})${clause} RETURN count(n) AS cnt`);
         const result = Array.isArray(countResult) ? countResult[0] : countResult;
         const rows = await result.getAll();
         const count = Number(rows[0]?.cnt ?? rows[0]?.[0] ?? 0);
         if (count > 0) {
-          await closeQueryResults(await c.query(`MATCH (n:${label}) DETACH DELETE n`));
+          await closeQueryResults(await c.query(`MATCH (n:${label})${clause} DETACH DELETE n`));
           nodesDeleted += count;
         }
       } catch {
@@ -2540,6 +2540,45 @@ export const deleteAllCommunitiesAndProcesses = async (): Promise<{
     return { nodesDeleted };
   });
 };
+
+/**
+ * Drop every Community and Process node (and their MEMBER_OF /
+ * STEP_IN_PROCESS edges via DETACH DELETE). Used at the start of an
+ * incremental run so the communities and processes phases regenerate
+ * them from scratch on the merged graph — required for the
+ * "Leiden runs on the FULL graph" correctness invariant.
+ */
+export const deleteAllCommunitiesAndProcesses = async (): Promise<{
+  nodesDeleted: number;
+}> => deleteAllNodesByLabels(['Community', 'Process']);
+
+/**
+ * Node tables that can hold externally-declared dependency symbols
+ * (`locationFidelity = 'external'`, filePath '') — the labels
+ * `ExternalMoveSymbols` in move-linker materializes. Extend alongside it.
+ */
+const EXTERNAL_NODE_TABLES = ['Module', 'Function', 'Type'] as const;
+
+/**
+ * Drop every externally-declared dependency node (and, via DETACH, its
+ * edges). Used at the start of an incremental writeback: external nodes have
+ * no filePath, so `deleteNodesForFiles` can never remove them and the
+ * file-keyed write set can never refresh them. The standalone ingest phase
+ * regenerates the full external surface every run and
+ * `extractChangedSubgraph` re-includes it (`isExternalNode`), so
+ * delete-all-then-rebuild keeps first-referenced externals from dangling
+ * their edges — same contract as Community/Process. Crash-recovery matches
+ * INJECTS: delete-then-COPY is not atomic, and the `incrementalInProgress`
+ * dirty flag forces a full rebuild if we die between them.
+ *
+ * Every external label is backticked unconditionally so this table list stays
+ * safe even if it diverges from BACKTICK_TABLES in the future.
+ */
+export const deleteAllExternalNodes = async (): Promise<{ nodesDeleted: number }> =>
+  deleteAllNodesByLabels(
+    EXTERNAL_NODE_TABLES.map((t) => `\`${t}\``),
+    `WHERE n.locationFidelity = 'external'`,
+  );
 
 /**
  * Shared mechanics for the delete-all-relationships-of-one-type family
