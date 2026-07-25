@@ -3,6 +3,7 @@ import { CommunityDetectionResult } from '../core/ingestion/community-processor.
 import { ProcessDetectionResult } from '../core/ingestion/process-processor.js';
 import type { ResolutionOutcome } from '../core/ingestion/scope-resolution/resolution-outcome.js';
 import type { PdgEmitManifest } from '../core/lbug/pdg-emit-sink.js';
+import type { GraphEmitManifest } from '../core/lbug/graph-emit-sink.js';
 
 // CLI-specific: in-memory result with graph + detection results
 export interface PipelineResult {
@@ -36,4 +37,12 @@ export interface PipelineResult {
    * layer (if any) is resident in `graph` and persists via the whole-graph emit.
    */
   pdgEmitManifest?: PdgEmitManifest;
+  /**
+   * Streamed structural-emit COPY manifest (#2680). Present only when
+   * `streamGraphEmit` was active (full rebuild + enabled): the per-pair CSVs of
+   * relationships that never entered the in-memory graph, for `loadGraphToLbug`
+   * to COPY ALONGSIDE the whole-graph CSVs (their pair keys overlap, so they are
+   * additional COPY jobs, not map entries).
+   */
+  graphEmitManifest?: GraphEmitManifest;
 }

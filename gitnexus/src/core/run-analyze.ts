@@ -38,7 +38,11 @@ import {
   LbugWipeError,
   DELETE_FILES_CHUNK_SIZE,
 } from './lbug/lbug-adapter.js';
-import { estimateBufferPool, setBufferPoolSizeHint } from './lbug/lbug-config.js';
+import {
+  estimateBufferPool,
+  setBufferPoolSizeHint,
+  resolveNativeSafeStorageDir,
+} from './lbug/lbug-config.js';
 import { escapeCypherString } from './lbug/cypher-escape.js';
 import {
   buildSearchIndexesOrDegrade,
@@ -280,6 +284,11 @@ export interface AnalyzeOptions {
    *  `DEFAULT_PDG_EMIT_CHUNK_ROWS`. May also be set via
    *  `GITNEXUS_PDG_EMIT_CHUNK_SIZE`. Memory-only (#2202). */
   pdgEmitChunkSize?: number;
+  /** Streamed structural graph emit (#2680). Honored only on a full rebuild
+   *  (`force === true`). May also be enabled via `GITNEXUS_STREAM_GRAPH_EMIT`.
+   *  Trades community detection, process extraction and PDG taint summaries for
+   *  a ~2.9x reduction of in-memory graph heap. */
+  streamGraphEmit?: boolean;
   /**
    * Default branch threaded into generated AGENTS.md / CLAUDE.md so the
    * regression-compare example uses the configured branch instead of a
@@ -586,6 +595,38 @@ export const resolveStreamPdgEmit = (options: {
   (options.streamPdgEmit === true || parseTruthyEnv(process.env.GITNEXUS_STREAM_PDG_EMIT));
 
 /**
+ * Resolve whether streamed structural graph emit is on for this run (#2680).
+ *
+ * **On by default.** It costs nothing observable: the sink answers a complete
+ * relationship read, so community detection, process extraction, the taint
+ * fixpoint and the local-symbol pruner all behave exactly as they do without it
+ * — the edges simply live in columns and on disk instead of as objects. There is
+ * no reason to make a user opt in to using less memory.
+ *
+ * Two conditions still bound it:
+ *
+ * - `force === true`. Sound only on a full rebuild, because the incremental
+ *   writeback (`extractChangedSubgraph`) reads relationships back out of the
+ *   in-memory graph. Same gate, and same reason, as {@link resolveStreamPdgEmit}.
+ * - `GITNEXUS_STREAM_GRAPH_EMIT=0` (or an explicit `streamGraphEmit: false`)
+ *   turns it off. The escape hatch exists for bisecting a suspected
+ *   streaming-related fault, not as a routine choice.
+ *
+ * Memory-only: not part of {@link resolvePdgConfig}, so toggling never trips
+ * `pdgModeMismatch`. Read every call (not memoized) so `vi.stubEnv` works.
+ */
+export const resolveStreamGraphEmit = (options: {
+  force?: boolean;
+  streamGraphEmit?: boolean;
+}): boolean => {
+  if (options.force !== true) return false;
+  if (options.streamGraphEmit !== undefined) return options.streamGraphEmit;
+  // Unset ⇒ on. Set ⇒ honour it, so `=0` / `=false` is the escape hatch.
+  const raw = process.env.GITNEXUS_STREAM_GRAPH_EMIT;
+  return raw === undefined || raw === '' ? true : parseTruthyEnv(raw);
+};
+
+/**
  * Resolve the streamed PDG-emit write-buffer size (#2202). Explicit option wins
  * over `GITNEXUS_PDG_EMIT_CHUNK_SIZE`; `undefined` ⇒ the sink's
  * `DEFAULT_PDG_EMIT_CHUNK_ROWS`. Memory-only; does not affect emitted bytes.
@@ -794,6 +835,10 @@ async function runFullAnalysisInner(
   const log = (msg: string) => callbacks.onLog?.(msg);
   const progress = (phase: string, percent: number, message: string) =>
     callbacks.onProgress(phase, percent, message);
+
+  // Streamed structural emit (#2680), resolved once so the pipeline flag and the
+  // CSV-dir resolution below cannot disagree.
+  const streamGraphEmitActive = resolveStreamGraphEmit(options);
 
   // FTS-config validation and the degraded-parse counter reset happen in the
   // `runFullAnalysis` wrapper (before the lock is taken).
@@ -1392,6 +1437,16 @@ async function runFullAnalysisInner(
       // offloaded BasicBlock layer. Memory-only; byte-identical output.
       streamPdgEmit: resolveStreamPdgEmit(options),
       pdgEmitChunkSize: resolvePdgEmitChunkSize(options),
+      // Streamed structural emit (#2680) — same full-rebuild gate as the PDG
+      // toggle above, for the same incremental-writeback reason.
+      streamGraphEmit: streamGraphEmitActive,
+      // Resolved ONLY when streaming is active: on a Windows non-ASCII storage
+      // path this helper mkdtempSyncs a real directory, so evaluating it
+      // unconditionally would leak one temp dir per analyze even with the flag
+      // off. The PDG sibling resolves inside its guard for the same reason.
+      graphEmitCsvDir: streamGraphEmitActive
+        ? resolveNativeSafeStorageDir(storagePath, 'graph-csv')
+        : undefined,
       fetchWrappers: options.fetchWrappers,
     },
   );
@@ -1576,7 +1631,15 @@ async function runFullAnalysisInner(
   // the pool; env override / no-hint paths are unchanged. See
   // resolveBufferManagerSize / estimateBufferPool.
   setBufferPoolSizeHint(
-    estimateBufferPool(pipelineResult.graph.nodeCount + pipelineResult.graph.relationshipCount),
+    estimateBufferPool(
+      pipelineResult.graph.nodeCount +
+        pipelineResult.graph.relationshipCount +
+        // Streamed edges left the heap but still get COPYed, so they are part of
+        // the real load volume (#2680). The hint only ever SHRINKS the pool, so
+        // omitting them would starve the COPY at exactly the scale streaming
+        // exists to serve.
+        (pipelineResult.graphEmitManifest?.totalRows ?? 0),
+    ),
   );
 
   // Full rebuild (POSIX) builds into the temp `buildPath`; incremental and
@@ -2003,6 +2066,7 @@ async function runFullAnalysisInner(
           progress('lbug', pct, msg);
         },
         pipelineResult.pdgEmitManifest,
+        pipelineResult.graphEmitManifest,
       );
     }
 
