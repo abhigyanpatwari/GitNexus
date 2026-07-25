@@ -66,4 +66,20 @@ describe('stripWindowsLongPathPrefix (#2667)', () => {
       'a\\b.move',
     );
   });
+
+  // Why `canonicalizePath`'s `catch` branch leaked and its realpath branch did
+  // not. The repo-manager regression tests for that branch can only run on
+  // windows-latest, so pin the underlying platform fact here, where it runs
+  // everywhere: `path.resolve` carries the prefix through untouched, which is
+  // all the fallback branch used to do. Also pins the forward-slash spelling
+  // that the helper deliberately does not match, because `resolve` folds it
+  // into the backslash form first.
+  it('pins that path.resolve preserves the prefix (the fallback branch #2667 leaked through)', () => {
+    expect(path.win32.resolve('\\\\?\\D:\\repo\\sub')).toBe('\\\\?\\D:\\repo\\sub');
+    expect(path.win32.resolve('//?/D:/repo/sub')).toBe('\\\\?\\D:\\repo\\sub');
+
+    expect(stripWindowsLongPathPrefix(path.win32.resolve('\\\\?\\D:\\repo\\sub'), 'win32')).toBe(
+      'D:\\repo\\sub',
+    );
+  });
 });
