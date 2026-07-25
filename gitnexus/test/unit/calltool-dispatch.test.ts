@@ -1092,7 +1092,9 @@ describe('LocalBackend.callTool', () => {
 
     expect(result.status).toBe('ambiguous');
     expect(result.candidates).toHaveLength(2);
-    expect(result.impactedCount).toBe(0);
+    // #2687: undetermined, NOT a numeric zero — a measured 0 is indistinguishable
+    // from a genuine "nothing depends on this".
+    expect(result.impactedCount).toBeNull();
     expect(result.risk).toBe('UNKNOWN');
     expect(result.target.name).toBe('login');
     for (const c of result.candidates) {
@@ -2516,7 +2518,9 @@ describe('LocalBackend impact mode (KTD1/KTD5/KTD12)', () => {
     expect(result.status).toBe('ambiguous');
     expect(result.mode).toBe('pdg');
     expect(result.candidates).toHaveLength(2);
-    expect(result.impactedCount).toBe(0);
+    // #2687: undetermined, NOT a numeric zero. This branch runs no per-candidate
+    // fan-out, so it carries no maxImpactedCount to correct a zero against.
+    expect(result.impactedCount).toBeNull();
     expect(result.risk).toBe('UNKNOWN');
     // The callgraph per-candidate probe fan-out MUST NOT run under pdg.
     expect(bfsSpy).not.toHaveBeenCalled();

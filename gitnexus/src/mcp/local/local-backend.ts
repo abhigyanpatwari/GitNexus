@@ -115,6 +115,13 @@ import {
   type PdgLayerStatus,
 } from './pdg-impact.js';
 
+/**
+ * Candidate `type`s that label enrichment newly populates (#2687). Before that,
+ * these surfaced as `''`, which several resolution gates read as "kind unknown".
+ * Anything keyed on the empty string must name these explicitly.
+ */
+const VALUE_CANDIDATE_TYPES: ReadonlySet<string> = new Set(['Const', 'Variable', 'Static']);
+
 /** Real source-file extensions (`.ts`, `.py`, …) from the resolver's list,
  *  excluding the empty entry and the `/index.*` forms — used to decide whether
  *  an `explain` target is a file path vs a (possibly dotted) symbol name. */
@@ -2864,10 +2871,15 @@ export class LocalBackend {
    * Patch the `type` field on candidates whose `labels(n)[0]` projection
    * came back empty — a known LadybugDB behaviour for several node types.
    *
-   * Uses one scoped UNION query across the five priority labels rather
-   * than per-candidate round-trips, so cost is a single DB call regardless
-   * of how many candidates need enrichment. No-op when every candidate
-   * already has a non-empty type.
+   * Uses one scoped UNION query across the priority labels rather than
+   * per-candidate round-trips, so cost is a single DB call regardless of how
+   * many candidates need enrichment. No-op when every candidate already has a
+   * non-empty type.
+   *
+   * The value labels (`Const` / `Variable` / `Static`) are included because a
+   * value candidate otherwise surfaces with `kind: ""` — which reads as
+   * "unknown kind" and, worse, makes the `kind` disambiguation hint unable to
+   * filter it out (#2687).
    *
    * Failures are swallowed: label enrichment is an optimisation for
    * downstream scoring and #480 Class/Interface BFS seeding; if it fails
@@ -2892,6 +2904,12 @@ export class LocalBackend {
         MATCH (n:\`Method\`) WHERE n.id IN $ids RETURN n.id AS id, 'Method' AS label
         UNION ALL
         MATCH (n:\`Constructor\`) WHERE n.id IN $ids RETURN n.id AS id, 'Constructor' AS label
+        UNION ALL
+        MATCH (n:\`Const\`) WHERE n.id IN $ids RETURN n.id AS id, 'Const' AS label
+        UNION ALL
+        MATCH (n:\`Variable\`) WHERE n.id IN $ids RETURN n.id AS id, 'Variable' AS label
+        UNION ALL
+        MATCH (n:\`Static\`) WHERE n.id IN $ids RETURN n.id AS id, 'Static' AS label
         `,
         { ids },
       );
@@ -3066,7 +3084,7 @@ export class LocalBackend {
     // types (notably Class), which left downstream consumers (impact's
     // Class/Interface BFS seed, the kind-priority scoring bonus) unable to
     // distinguish a Class target from "unknown kind". One scoped UNION
-    // across the five priority labels patches the type in-place without
+    // across the priority labels patches the type in-place without
     // per-candidate round-trips.
     await this.enrichCandidateLabels(repo, normalized);
 
@@ -3078,7 +3096,15 @@ export class LocalBackend {
     // the `type === 'Constructor'` gate still correctly triggers when a
     // Class and its Constructor share the name.
     if (!hints.kind && normalized.length > 1) {
-      const ambiguousType = normalized.some((s) => s.type === '' || s.type === 'Constructor');
+      // A value candidate (`Const`/`Variable`/`Static`) used to reach here with
+      // `type === ''`, which is what kept this gate true for a `class Foo` +
+      // `const Foo` pair and let the collapse resolve it to the Class. Label
+      // enrichment now fills those in (#2687), so they must be named explicitly
+      // or the collapse silently stops firing and confident resolutions become
+      // `ambiguous` across every resolver-backed tool.
+      const ambiguousType = normalized.some(
+        (s) => s.type === '' || s.type === 'Constructor' || VALUE_CANDIDATE_TYPES.has(s.type),
+      );
       if (ambiguousType) {
         const candidateIds = normalized.map((s) => s.id).filter(Boolean);
         for (const label of ['Class', 'Interface']) {
@@ -5159,10 +5185,12 @@ export class LocalBackend {
           target: { name: target },
           direction,
           totalCandidates: outcome.candidates.length,
-          // No single resolved symbol → impactedCount stays 0 / risk UNKNOWN
-          // (UNKNOWN must never read as "safe to refactor"). No callgraph
-          // fan-out runs, so there is no per-candidate blast radius here yet.
-          impactedCount: 0,
+          // No single resolved symbol → the blast radius is UNDETERMINED, not
+          // zero. `null` (not 0) because no callgraph fan-out runs on this path,
+          // so there is not even a `maxImpactedCount` to correct a numeric zero
+          // against — it would be indistinguishable from a genuine "nothing
+          // depends on this" (#2687).
+          impactedCount: null,
           risk: 'UNKNOWN',
           ...(truncated && { candidatesTruncated: true }),
           candidates: shown.map((c) => ({
@@ -5278,12 +5306,15 @@ export class LocalBackend {
         // so consumers (CLI formatter) need this to report "N of M" honestly (#2129
         // review F11; the CLI previously read the truncated array length).
         totalCandidates: outcome.candidates.length,
-        // `impactedCount` stays 0 and `risk` stays UNKNOWN — there is no single
-        // resolved symbol, and UNKNOWN must NOT read as "safe to refactor". The
-        // real blast radius is surfaced per-candidate plus `maxImpactedCount` /
-        // `maxRisk` so a real caller can never hide behind the ambiguous zero
-        // (#2129).
-        impactedCount: 0,
+        // `impactedCount` is `null` — UNDETERMINED, not zero — and `risk` stays
+        // UNKNOWN, because there is no single resolved symbol. #2129 hoisted
+        // `maxImpactedCount` / `maxRisk` here so a real caller could not hide
+        // behind the ambiguous zero, but the zero itself remained
+        // byte-identical to a genuine "nothing depends on this": a consumer
+        // testing `impactedCount === 0` still read a confident all-clear
+        // without ever looking at `candidates[]`. `null` cannot be mistaken for
+        // a measured zero, while `|| 0` consumers are unchanged (#2687).
+        impactedCount: null,
         risk: 'UNKNOWN',
         maxImpactedCount,
         maxRisk,

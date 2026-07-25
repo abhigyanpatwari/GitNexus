@@ -41,6 +41,20 @@ const SEED = [
   `MATCH (a:Function {id:'Function:src/actions.ts:syncContent'}), (b:Function {id:'${SYNC_LOGIC_ID}'}) CREATE (a)-[:CodeRelation {type:'CALLS', confidence:0.85, reason:'direct', step:0}]->(b)`,
   `MATCH (a:Function {id:'Function:src/actions.ts:scheduleSync'}), (b:Function {id:'${SYNC_LOGIC_ID}'}) CREATE (a)-[:CodeRelation {type:'CALLS', confidence:0.85, reason:'direct', step:0}]->(b)`,
   `MATCH (a:Function {id:'Function:src/ui-helpers.ts:renderCard'}), (b:Function {id:'${UI_HELPERS_ID}'}) CREATE (a)-[:CodeRelation {type:'CALLS', confidence:0.85, reason:'direct', step:0}]->(b)`,
+
+  // Two same-named non-callable consts — an ambiguity that survives the #2687
+  // twin fix, used to pin that a value candidate reports a real `kind`.
+  `CREATE (k1:Const {id: 'Const:src/config-a.ts:APP_CONFIG', name: 'APP_CONFIG', filePath: 'src/config-a.ts', startLine: 1, endLine: 1, content: '', description: ''})`,
+  `CREATE (k2:Const {id: 'Const:src/config-b.ts:APP_CONFIG', name: 'APP_CONFIG', filePath: 'src/config-b.ts', startLine: 1, endLine: 1, content: '', description: ''})`,
+
+  // A class and a same-named value binding in another file — the #480
+  // Class/Constructor collapse must still fold onto the Class. Before the
+  // enrichment widening these value candidates carried `type: ''`, which is
+  // what kept the collapse gate open.
+  `CREATE (rc:Class {id: 'Class:src/registry.ts:Registry', name: 'Registry', filePath: 'src/registry.ts', startLine: 1, endLine: 9, isExported: true, content: '', description: ''})`,
+  `CREATE (rv:Const {id: 'Const:test/registry.test.ts:Registry', name: 'Registry', filePath: 'test/registry.test.ts', startLine: 3, endLine: 3, content: '', description: ''})`,
+  `CREATE (ru:Function {id: 'Function:src/boot.ts:boot', name: 'boot', filePath: 'src/boot.ts', startLine: 1, endLine: 5, isExported: true, content: '', description: ''})`,
+  `MATCH (a:Function {id:'Function:src/boot.ts:boot'}), (b:Class {id:'Class:src/registry.ts:Registry'}) CREATE (a)-[:CodeRelation {type:'CALLS', confidence:0.85, reason:'direct', step:0}]->(b)`,
 ];
 
 withTestLbugDB(
@@ -83,6 +97,76 @@ withTestLbugDB(
       expect(result.candidates[0].impactedCount).toBeGreaterThanOrEqual(
         result.candidates[1].impactedCount,
       );
+    });
+
+    it('reports an undetermined impactedCount, never a numeric zero (#2687)', async () => {
+      const result = await backend.callTool('impact', {
+        target: 'classifyCard',
+        direction: 'upstream',
+      });
+
+      // #2129 hoisted maxImpactedCount so a real caller could not hide behind
+      // the ambiguous zero — but the zero itself was still byte-identical to a
+      // genuine "nothing depends on this". A consumer testing
+      // `impactedCount === 0` got a confident all-clear without ever reading
+      // `candidates[]`. `null` is undetermined and cannot be misread that way.
+      expect(result).toMatchObject({ status: 'ambiguous', impactedCount: null, risk: 'UNKNOWN' });
+      expect(typeof result.impactedCount).not.toBe('number');
+
+      // The truthful signal is still present and still non-zero.
+      expect(result.maxImpactedCount).toBeGreaterThanOrEqual(2);
+    });
+
+    it('reports a real kind for an ambiguous value candidate (#2687)', async () => {
+      // `labels(n)[0]` comes back empty for these node types, and the label
+      // enrichment UNION used to cover only Class/Interface/Function/Method/
+      // Constructor — so a value candidate surfaced as `kind: ""`, which reads
+      // as "unknown kind" and leaves the `kind` disambiguation hint unable to
+      // filter it out.
+      const result = await backend.callTool('impact', {
+        target: 'APP_CONFIG',
+        direction: 'upstream',
+      });
+
+      expect(result.status).toBe('ambiguous');
+      expect(result.candidates.map((c: { kind: string }) => c.kind)).toEqual(['Const', 'Const']);
+    });
+
+    it('still collapses a Class against a same-named value binding (#480)', async () => {
+      // Regression guard for the enrichment widening: the collapse gate keys on
+      // "some candidate has an indeterminate kind". Value candidates used to
+      // qualify by carrying `type: ''`; now that enrichment fills them in they
+      // must be named explicitly, or this resolves to `ambiguous` and every
+      // resolver-backed tool loses a previously confident answer.
+      const result = await backend.callTool('impact', {
+        target: 'Registry',
+        direction: 'upstream',
+      });
+
+      expect(result.status).not.toBe('ambiguous');
+      expect(result.target).toMatchObject({
+        id: 'Class:src/registry.ts:Registry',
+        type: 'Class',
+      });
+      expect(result.impactedCount).toBeGreaterThanOrEqual(1);
+    });
+
+    it('reports an undetermined impactedCount for an ambiguous pdg target (#2687)', async () => {
+      // The pdg branch has no per-candidate fan-out, so it carries no
+      // maxImpactedCount at all — a numeric zero here is even less correctable.
+      const result = await backend.callTool('impact', {
+        target: 'classifyCard',
+        direction: 'upstream',
+        mode: 'pdg',
+      });
+
+      expect(result).toMatchObject({
+        status: 'ambiguous',
+        mode: 'pdg',
+        impactedCount: null,
+        risk: 'UNKNOWN',
+      });
+      expect(typeof result.impactedCount).not.toBe('number');
     });
 
     it('disambiguation by uid returns the exact dropped caller (BFS unchanged)', async () => {
