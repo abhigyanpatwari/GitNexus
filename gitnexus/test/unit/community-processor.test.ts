@@ -1,4 +1,8 @@
 import { EventEmitter } from 'node:events';
+import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+import { Worker } from 'node:worker_threads';
 import { describe, it, expect, vi } from 'vitest';
 import { createKnowledgeGraph } from '../../src/core/graph/graph.js';
 import type { GraphNode, GraphRelationship } from '../../src/core/graph/types.js';
@@ -7,6 +11,7 @@ import {
   COMMUNITY_COLORS,
   buildCommunityCsr,
   buildCommunityProjection,
+  buildIcebugWorkerSource,
   processCommunities,
   resolveCommunityDetectionEngine,
 } from '../../src/core/ingestion/community-processor.js';
@@ -229,6 +234,110 @@ describe('community-processor', () => {
       });
       expect(randomizeResult.stats.engine).toBe('graphology');
       expect(randomizeResult.stats.fallbackReason).toContain('randomize=false');
+    });
+  });
+
+  describe('icebug worker source', () => {
+    // Executes the real worker source against a stub shaped like
+    // @ladybugmem/icebug, so the package name, class names, constructor
+    // argument order and getPartition() shape are all pinned. The native
+    // package itself cannot run in CI (its prebuilds need system Arrow 24,
+    // libomp and glibc >= 2.38).
+    const STUB = `
+'use strict';
+const fs = require('node:fs');
+const calls = [];
+const log = () => fs.writeFileSync(process.env.ICEBUG_STUB_LOG, JSON.stringify(calls));
+
+class GraphR {
+  constructor(n, directed, outIndices, outIndptr) {
+    calls.push(['GraphR', n, directed, Array.from(outIndices, Number), Array.from(outIndptr, Number)]);
+  }
+}
+
+class Leiden {
+  constructor(graph, iterations, randomize, gamma) {
+    calls.push(['Leiden', graph instanceof GraphR, iterations, randomize, gamma]);
+  }
+  run() {
+    calls.push(['run']);
+    log();
+  }
+  getPartition() {
+    return { membership: Float64Array.from([7, 7, 3]), count: 2 };
+  }
+  modularity() {
+    return 0.25;
+  }
+}
+
+module.exports = {
+  GraphR,
+  Leiden,
+  setNumberOfThreads: (n) => calls.push(['setNumberOfThreads', n]),
+  setSeed: (seed, useThreadId) => calls.push(['setSeed', seed, useThreadId]),
+};
+`;
+
+    const runWorkerAgainstStub = async (stubSource: string) => {
+      const dir = mkdtempSync(join(tmpdir(), 'icebug-stub-'));
+      const stubPath = join(dir, 'stub.cjs');
+      const logPath = join(dir, 'calls.json');
+      writeFileSync(stubPath, stubSource);
+
+      const worker = new Worker(buildIcebugWorkerSource(stubPath), {
+        eval: true,
+        env: { ...process.env, ICEBUG_STUB_LOG: logPath },
+        workerData: {
+          nodeCount: 3,
+          indices: BigUint64Array.from([1n, 0n, 2n, 1n]),
+          indptr: BigUint64Array.from([0n, 1n, 3n, 4n]),
+          threads: 1,
+          seed: 49374,
+          iterations: 4,
+          gamma: 1.0,
+          randomize: false,
+        },
+      });
+
+      try {
+        const message = await new Promise<Record<string, unknown>>((resolve, reject) => {
+          worker.once('message', resolve);
+          worker.once('error', reject);
+        });
+        // Absent when the worker bailed before run() — an empty call log.
+        const calls: unknown[] = existsSync(logPath)
+          ? JSON.parse(readFileSync(logPath, 'utf8'))
+          : [];
+        return { message, calls };
+      } finally {
+        await worker.terminate();
+        rmSync(dir, { recursive: true, force: true });
+      }
+    };
+
+    it('drives GraphR + Leiden in the order the published API expects', async () => {
+      const { message, calls } = await runWorkerAgainstStub(STUB);
+
+      expect(calls).toEqual([
+        ['setNumberOfThreads', 1],
+        ['setSeed', 49374, false],
+        ['GraphR', 3, false, [1, 0, 2, 1], [0, 1, 3, 4]],
+        // (graph, iterations, randomize, gamma) — randomize precedes gamma.
+        ['Leiden', true, 4, false, 1.0],
+        ['run'],
+      ]);
+      expect(message).toMatchObject({ ok: true, modularity: 0.25 });
+      expect(Array.from(message.partition as Float64Array)).toEqual([7, 7, 3]);
+    });
+
+    it('refuses a build without the deterministic thread and seed controls', async () => {
+      const { message } = await runWorkerAgainstStub(
+        STUB.replace("setNumberOfThreads: (n) => calls.push(['setNumberOfThreads', n]),", ''),
+      );
+
+      expect(message).toMatchObject({ ok: false });
+      expect(message.error).toContain('deterministic thread/seed controls');
     });
   });
 
