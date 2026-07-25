@@ -378,6 +378,12 @@ export const runPipelineFromRepo = async (
   });
 
   return {
+    // The RAW graph, deliberately — NOT `graphEmitSink`. Phases above received
+    // the sink so their reads are complete, but `loadGraphToLbug` feeds this to
+    // `streamAllCSVsToDisk`, and the sink's complete iterator would then emit
+    // every streamed edge a SECOND time on top of the per-pair CSVs the sink
+    // already wrote and the manifest already COPYs. Returning the sink here
+    // silently doubles every streamed relationship in the persisted graph.
     graph,
     repoPath,
     totalFileCount: totalFiles,

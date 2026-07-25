@@ -183,6 +183,15 @@ export class GraphEmitSink implements KnowledgeGraph, GraphEmitControl {
    * safe because `buildRelRow` never persists `rel.id` and no consumer keys on
    * it (audited).
    *
+   * The dropped `reason`/`step` are safe too, but for a different reason worth
+   * stating: the PERSISTED row keeps their true values, because `buildRelRow` is
+   * handed the original relationship on the way through. Only in-memory reads
+   * see the `'streamed'` placeholder, and the in-pipeline consumers of streamed
+   * edges read neither field. So e.g. the `ACCESSES reason: 'read'|'write'`
+   * distinction that MCP queries rely on survives in the database. A future
+   * in-pipeline consumer needing `reason` or `step` on a streamed edge must add
+   * the column, not trust the placeholder.
+   *
    * Node ids are interned; the strings are shared by reference with the node
    * map's, so interning adds bookkeeping, not new text.
    */
@@ -256,7 +265,11 @@ export class GraphEmitSink implements KnowledgeGraph, GraphEmitControl {
     const targetId = this.nodeIdByIx[this.tgtIx[ix]];
     const type = this.relTypes[ix];
     return {
-      id: `${type}:${sourceId}->${targetId}`,
+      // Column index keeps this unique even when two streamed edges share
+      // (type, source, target) and differ only in reason/step — real ids are
+      // unique, so the synthesized one should be too. Prevents a future
+      // consumer that keys on id from silently collapsing two edges.
+      id: `${type}:${sourceId}->${targetId}#${ix}`,
       sourceId,
       targetId,
       type,
