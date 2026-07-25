@@ -118,13 +118,27 @@ import { logger } from '../../logger.js';
  * ~75 graph nodes per PARSEABLE file (~5M nodes / ~65k parseable files;
  * validated against heap probes at chunks 25/50/75 of 113 — the first
  * calibration divided by total scanned files and under-projected by ~30%),
- * ~2.2KB main-thread heap per node. C-heavy corpus; other language mixes
- * vary — these feed a WARNING and an emergency abort, never a hard
- * admission gate, so estimate error only shifts when the operator hears
- * about the problem, not whether analyze runs.
+ * main-thread heap per node. C-heavy corpus; other language mixes vary — these
+ * feed a WARNING and an emergency abort, never a hard admission gate, so
+ * estimate error only shifts when the operator hears about the problem, not
+ * whether analyze runs.
+ *
+ * RECALIBRATED for streamed structural emit (#2680), which is on by default for
+ * full rebuilds and holds relationships out of the JS heap. The original 2250
+ * was measured against the object-based graph; an A/B at 400k nodes / 1.08M
+ * edges put streaming at 1.40x smaller (819 MB -> 584 MB), so the corpus-
+ * calibrated figure is divided by that ratio: 2250 / 1.40 ~= 1600. Scaling the
+ * measured constant rather than substituting a synthetic one keeps #2649's
+ * kernel calibration intact and changes only the one thing that actually moved.
+ *
+ * If streaming is disabled (GITNEXUS_STREAM_GRAPH_EMIT=0, or any non-force run)
+ * this UNDER-projects by ~40%, so the preflight warning may stay quiet on a repo
+ * that then struggles. That is the safe direction to be wrong in: the abort
+ * below reads LIVE heap use, not this projection, so it still catches the real
+ * condition — only the early warning is affected.
  */
 const PROJECTED_NODES_PER_FILE = 75;
-const PROJECTED_HEAP_BYTES_PER_NODE = 2250;
+const PROJECTED_HEAP_BYTES_PER_NODE = 1600;
 /** Warn at scan end when the projection crosses this share of the heap limit. */
 const PREFLIGHT_WARN_FRACTION = 0.85;
 /**
