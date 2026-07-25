@@ -2757,10 +2757,15 @@ export class LocalBackend {
    * Patch the `type` field on candidates whose `labels(n)[0]` projection
    * came back empty — a known LadybugDB behaviour for several node types.
    *
-   * Uses one scoped UNION query across the five priority labels rather
-   * than per-candidate round-trips, so cost is a single DB call regardless
-   * of how many candidates need enrichment. No-op when every candidate
-   * already has a non-empty type.
+   * Uses one scoped UNION query across the priority labels rather than
+   * per-candidate round-trips, so cost is a single DB call regardless of how
+   * many candidates need enrichment. No-op when every candidate already has a
+   * non-empty type.
+   *
+   * The value labels (`Const` / `Variable` / `Static`) are included because a
+   * value candidate otherwise surfaces with `kind: ""` — which reads as
+   * "unknown kind" and, worse, makes the `kind` disambiguation hint unable to
+   * filter it out (#2687).
    *
    * Failures are swallowed: label enrichment is an optimisation for
    * downstream scoring and #480 Class/Interface BFS seeding; if it fails
@@ -2785,6 +2790,12 @@ export class LocalBackend {
         MATCH (n:\`Method\`) WHERE n.id IN $ids RETURN n.id AS id, 'Method' AS label
         UNION ALL
         MATCH (n:\`Constructor\`) WHERE n.id IN $ids RETURN n.id AS id, 'Constructor' AS label
+        UNION ALL
+        MATCH (n:\`Const\`) WHERE n.id IN $ids RETURN n.id AS id, 'Const' AS label
+        UNION ALL
+        MATCH (n:\`Variable\`) WHERE n.id IN $ids RETURN n.id AS id, 'Variable' AS label
+        UNION ALL
+        MATCH (n:\`Static\`) WHERE n.id IN $ids RETURN n.id AS id, 'Static' AS label
         `,
         { ids },
       );
@@ -2959,7 +2970,7 @@ export class LocalBackend {
     // types (notably Class), which left downstream consumers (impact's
     // Class/Interface BFS seed, the kind-priority scoring bonus) unable to
     // distinguish a Class target from "unknown kind". One scoped UNION
-    // across the five priority labels patches the type in-place without
+    // across the priority labels patches the type in-place without
     // per-candidate round-trips.
     await this.enrichCandidateLabels(repo, normalized);
 

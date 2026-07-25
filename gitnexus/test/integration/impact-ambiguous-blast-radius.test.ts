@@ -41,6 +41,11 @@ const SEED = [
   `MATCH (a:Function {id:'Function:src/actions.ts:syncContent'}), (b:Function {id:'${SYNC_LOGIC_ID}'}) CREATE (a)-[:CodeRelation {type:'CALLS', confidence:0.85, reason:'direct', step:0}]->(b)`,
   `MATCH (a:Function {id:'Function:src/actions.ts:scheduleSync'}), (b:Function {id:'${SYNC_LOGIC_ID}'}) CREATE (a)-[:CodeRelation {type:'CALLS', confidence:0.85, reason:'direct', step:0}]->(b)`,
   `MATCH (a:Function {id:'Function:src/ui-helpers.ts:renderCard'}), (b:Function {id:'${UI_HELPERS_ID}'}) CREATE (a)-[:CodeRelation {type:'CALLS', confidence:0.85, reason:'direct', step:0}]->(b)`,
+
+  // Two same-named non-callable consts — an ambiguity that survives the #2687
+  // twin fix, used to pin that a value candidate reports a real `kind`.
+  `CREATE (k1:Const {id: 'Const:src/config-a.ts:APP_CONFIG', name: 'APP_CONFIG', filePath: 'src/config-a.ts', startLine: 1, endLine: 1, content: '', description: ''})`,
+  `CREATE (k2:Const {id: 'Const:src/config-b.ts:APP_CONFIG', name: 'APP_CONFIG', filePath: 'src/config-b.ts', startLine: 1, endLine: 1, content: '', description: ''})`,
 ];
 
 withTestLbugDB(
@@ -101,6 +106,21 @@ withTestLbugDB(
 
       // The truthful signal is still present and still non-zero.
       expect(result.maxImpactedCount).toBeGreaterThanOrEqual(2);
+    });
+
+    it('reports a real kind for an ambiguous value candidate (#2687)', async () => {
+      // `labels(n)[0]` comes back empty for these node types, and the label
+      // enrichment UNION used to cover only Class/Interface/Function/Method/
+      // Constructor — so a value candidate surfaced as `kind: ""`, which reads
+      // as "unknown kind" and leaves the `kind` disambiguation hint unable to
+      // filter it out.
+      const result = await backend.callTool('impact', {
+        target: 'APP_CONFIG',
+        direction: 'upstream',
+      });
+
+      expect(result.status).toBe('ambiguous');
+      expect(result.candidates.map((c: { kind: string }) => c.kind)).toEqual(['Const', 'Const']);
     });
 
     it('reports an undetermined impactedCount for an ambiguous pdg target (#2687)', async () => {
