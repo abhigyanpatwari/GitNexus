@@ -237,6 +237,68 @@ describeIfWorkerBuilt('calls to a closure binding resolve to its Function node',
   });
 });
 
+/** Every CALLS edge id in a one-file repo, for the duplicate-shape assertions. */
+const callEdgeIdsFor = async (filename: string, source: string): Promise<string[]> => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'gn-closure-edges-'));
+  try {
+    fs.writeFileSync(path.join(dir, filename), source, 'utf-8');
+    const result = await runPipelineFromRepo(dir, () => {}, {
+      workerPoolSize: 1,
+      workerUrlForTest: DIST_WORKER_URL,
+    });
+    return result.graph.relationships
+      .filter((rel) => rel.type === 'CALLS')
+      .map((rel) => rel.id)
+      .sort();
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+};
+
+describeIfWorkerBuilt('the declaration route does not double-emit (#2693)', () => {
+  // Go, Python and C++ already resolved these calls through their
+  // `@declaration.function` capture. Widening `buildGraphTargetIndex` gives the
+  // same call a SECOND possible route, so each must still produce exactly one
+  // edge — `tryEmitEdge` dedups by key, and a collapsed and a site-anchored key
+  // are different keys, so a genuine regression here shows up as two ids.
+
+  it('TypeScript: one CALLS edge for one call site', async () => {
+    expect(
+      await callEdgeIdsFor(
+        'app.ts',
+        'const handler = (x: number) => x;\n\nexport function caller(): number {\n  return handler(1);\n}\n',
+      ),
+    ).toHaveLength(1);
+  });
+
+  it('Go: one CALLS edge for one call site', async () => {
+    expect(
+      await callEdgeIdsFor(
+        'main.go',
+        'package main\n\nvar Handler = func(x int) int { return x }\n\nfunc Caller() int { return Handler(1) }\n',
+      ),
+    ).toHaveLength(1);
+  });
+
+  it('Python: one CALLS edge for one call site', async () => {
+    expect(
+      await callEdgeIdsFor(
+        'app.py',
+        'handler = lambda x: x\n\ndef caller():\n    return handler(1)\n',
+      ),
+    ).toHaveLength(1);
+  });
+
+  it('C++: one CALLS edge for one call site', async () => {
+    expect(
+      await callEdgeIdsFor(
+        'main.cpp',
+        'auto handler = [](int x) { return x; };\n\nint caller() { return handler(1); }\n',
+      ),
+    ).toHaveLength(1);
+  });
+});
+
 describeIfWorkerBuilt('a non-callable value binding stays edge-free', () => {
   // The suppression must key on an actual callable value. Widening
   // `buildGraphTargetIndex` to admit value bindings whose graph node is a
