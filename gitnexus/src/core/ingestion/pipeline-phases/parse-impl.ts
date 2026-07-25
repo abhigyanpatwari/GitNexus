@@ -156,10 +156,7 @@ export function projectParseHeapNeedBytes(parseableFileCount: number): number {
 }
 
 /** True when the mid-loop heap guard should abort the parse (#2649). */
-export function shouldAbortForHeapPressure(
-  heapUsedBytes: number,
-  heapLimitBytes: number,
-): boolean {
+export function shouldAbortForHeapPressure(heapUsedBytes: number, heapLimitBytes: number): boolean {
   if (process.env.GITNEXUS_HEAP_GUARD === '0') return false;
   return heapUsedBytes > heapLimitBytes * HEAP_ABORT_FRACTION;
 }
