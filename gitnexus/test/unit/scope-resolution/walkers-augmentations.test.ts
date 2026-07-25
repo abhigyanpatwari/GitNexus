@@ -12,6 +12,7 @@
 
 import { describe, it, expect } from 'vitest';
 import {
+  findAllCallableBindingCandidatesInScope,
   findCallableBindingInScope,
   findClassBindingInScope,
   findExportedDefByName,
@@ -213,6 +214,25 @@ describe('walker helpers read bindingAugmentations', () => {
     const indexes = indexesForScopeLookup(moduleScope, new Map([['callMe', [callableRef]]]));
 
     expect(findCallableBindingInScope(SCOPE, 'callMe', indexes)?.nodeId).toBe('callMe');
+  });
+
+  it('preserves augmentation provenance masked by a finalized binding', () => {
+    const moduleScope = scope(SCOPE);
+    const callable = def('callMe');
+    const finalized = { def: callable, origin: 'local' } as BindingRef;
+    const staticImport = {
+      def: callable,
+      origin: 'import',
+      visibility: 'static-member-import',
+    } as BindingRef;
+    const indexes = indexesForScopeLookup(moduleScope, new Map([['callMe', [staticImport]]]));
+    indexes.bindings.set(SCOPE, new Map([['callMe', [finalized]]]));
+
+    const candidates = findAllCallableBindingCandidatesInScope(SCOPE, 'callMe', indexes);
+
+    expect(candidates).toHaveLength(1);
+    expect(candidates[0]!.def).toBe(callable);
+    expect(candidates[0]!.bindings).toEqual([finalized, staticImport]);
   });
 
   it('findExportedDefByName finds callable refs that exist only in augmentations', () => {

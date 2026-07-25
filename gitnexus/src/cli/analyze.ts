@@ -33,7 +33,14 @@ import {
   assertAnalysisFinalized,
   type AnalyzerRunnerIdentity,
 } from '../storage/repo-manager.js';
-import { getGitRoot, hasGitDir, getDefaultBranch } from '../storage/git.js';
+import {
+  getGitRoot,
+  hasGitDir,
+  getDefaultBranch,
+  selfCommitContextFiles,
+  snapshotSelfCommitSafety,
+} from '../storage/git.js';
+import { IndexLockTimeoutError } from '../storage/index-lock.js';
 import {
   loadAnalyzeConfig,
   mergeAnalyzeOptions,
@@ -47,7 +54,8 @@ import { getMaxFileSizeBannerMessage } from '../core/ingestion/utils/max-file-si
 import { warnMissingOptionalGrammars, getOptionalGrammarExtensions } from './optional-grammars.js';
 import { glob } from 'glob';
 import fs from 'fs/promises';
-import { cliError } from './cli-message.js';
+import { cliError, cliWarn } from './cli-message.js';
+import { heapCapMbFor, memoryAutopilotDisabled } from '../core/ingestion/utils/effective-ram.js';
 import { EMBEDDING_DIMS_ERROR, normalizeEmbeddingDims } from './embedding-dims.js';
 import { formatElapsed } from './format-elapsed.js';
 import { isHfDownloadFailure } from '../core/embeddings/hf-env.js';
@@ -138,25 +146,21 @@ const installFatalHandlers = (): void => {
   });
 };
 
-/** Historical floor for the re-exec heap cap — the auto-sizer never goes below
- *  this, so small boxes / CI never regress. */
-const DEFAULT_HEAP_MB = 16384;
-
 /**
- * RAM-aware re-exec heap cap (MB): `0.75 × effective RAM`, clamped to
- * `>= DEFAULT_HEAP_MB`. Kept BELOW physical RAM on purpose — a cap `>=` RAM makes
- * V8 collect lazily and inflate the heap into swap-thrash (observed analyzing the
- * Linux kernel at a 30GB cap on a 31GB box). `constrainedBytes` is the cgroup
- * limit or `null`; it is honored only as a real, smaller-than-physical cap, because
+ * RAM-aware re-exec heap cap (MB) — the formula itself is single-sourced in
+ * `core/ingestion/utils/effective-ram.ts` (`heapCapMbFor`), shared with the
+ * server's analyze fork. `constrainedBytes` is the cgroup limit or `null`;
+ * it is honored only as a real, smaller-than-physical cap, because
  * `process.constrainedMemory()` returns a huge sentinel when UNCONSTRAINED.
+ * (Observed rationale: a cap ≥ RAM made V8 collect lazily and swap-thrash —
+ * the #2649 worker-timeout cascade on 16 GB boxes.)
  */
 export function computeHeapCapMb(totalBytes: number, constrainedBytes: number | null): number {
   const effectiveBytes =
     constrainedBytes !== null && constrainedBytes > 0 && constrainedBytes < totalBytes
       ? constrainedBytes
       : totalBytes;
-  const effectiveMb = Math.floor(effectiveBytes / (1024 * 1024));
-  return Math.max(DEFAULT_HEAP_MB, Math.floor(0.75 * effectiveMb));
+  return heapCapMbFor(effectiveBytes);
 }
 
 function readConstrainedBytes(): number | null {
@@ -526,21 +530,69 @@ const forceHeapOOMForTestIfEnabled = (): void => {
 // `gitnexus/src/core/lbug/lbug-config.ts` in sync with this value.
 const RECOMMENDED_WAL_CHECKPOINT_THRESHOLD = 64 * 1024 * 1024;
 
-/** Re-exec the process with the RAM-aware auto heap cap + larger semi-space/stack
- *  if we're currently below that. A user-supplied NODE_OPTIONS heap wins (no re-exec). */
-async function ensureHeap(): Promise<boolean> {
-  const nodeOpts = process.env.NODE_OPTIONS || '';
-  if (nodeOpts.includes('--max-old-space-size')) return false;
+/**
+ * Last `--max-old-space-size` value (MB) in a NODE_OPTIONS string, or `null`
+ * when absent/unparseable. Last occurrence wins, matching V8's own
+ * later-flag-wins semantics when NODE_OPTIONS repeats a flag.
+ */
+export function parseMaxOldSpaceMb(nodeOptions: string): number | null {
+  // V8 accepts `-` and `_` interchangeably in flag names, and Node accepts a
+  // space-separated value in NODE_OPTIONS — honor every spelling of the pin
+  // instead of silently overriding it (#2649 review).
+  const matches = [...nodeOptions.matchAll(/--max[-_]old[-_]space[-_]size(?:=|\s+)(\d+)/g)];
+  if (matches.length === 0) return null;
+  const mb = Number(matches[matches.length - 1][1]);
+  return Number.isFinite(mb) && mb > 0 ? mb : null;
+}
 
-  const v8Heap = v8.getHeapStatistics().heap_size_limit;
-  if (v8Heap >= HEAP_MB * 1024 * 1024 * 0.9) return false;
+/** Re-exec the process with the RAM-aware auto heap cap + larger semi-space/stack
+ *  if we're currently below that.
+ *
+ *  Heap-source precedence (#2649):
+ *  - an explicit per-invocation `--max-old-space-size` (execArgv) always wins;
+ *  - `GITNEXUS_MEMORY=off` declines the memory autopilot entirely;
+ *  - an ambient NODE_OPTIONS heap >= the auto cap is honored as-is;
+ *  - an ambient NODE_OPTIONS heap BELOW the auto cap is treated as an
+ *    inherited environment default (devcontainers/CI export one for other
+ *    tooling), not a deliberate per-run choice: warn and respawn with the
+ *    auto cap. Pre-#2649 this returned early and large repos then OOM'd on
+ *    whatever heap the environment happened to specify. */
+async function ensureHeap(): Promise<boolean> {
+  // Explicit opt-out disables auto-sizing ENTIRELY — both the ambient-pin
+  // override and the default v8-limit respawn — and is honored SILENTLY:
+  // the operator already made the call, and stderr-sensitive consumers
+  // (test harnesses, scripts, supervisors that track a single PID) rely on
+  // a quiet, single-process run.
+  if (memoryAutopilotDisabled()) return false;
+  const nodeOpts = process.env.NODE_OPTIONS || '';
+  if (process.execArgv.some((a) => a.startsWith('--max-old-space-size'))) return false;
+
+  const ambientHeapMb = parseMaxOldSpaceMb(nodeOpts);
+  if (ambientHeapMb !== null) {
+    if (ambientHeapMb >= RESPAWN_HEAP_MB) return false;
+    cliWarn(
+      `  NODE_OPTIONS pins the heap to ${ambientHeapMb}MB — below the ${RESPAWN_HEAP_MB}MB this machine's RAM supports.\n` +
+        `  Re-running analyze with the larger auto-sized cap (set GITNEXUS_MEMORY=off to keep the NODE_OPTIONS value).\n`,
+    );
+  } else {
+    const v8Heap = v8.getHeapStatistics().heap_size_limit;
+    if (v8Heap >= HEAP_MB * 1024 * 1024 * 0.9) return false;
+  }
 
   // --stack-size is a V8 flag not allowed in NODE_OPTIONS on Node 24+, so pass it
   // only as a direct CLI argument. --max-semi-space-size IS allowed in NODE_OPTIONS.
   const cliFlags = [HEAP_FLAG, SEMI_FLAG];
   if (!nodeOpts.includes('--stack-size')) cliFlags.push(STACK_FLAG);
 
-  const childArgs = [...cliFlags, ...process.argv.slice(1)];
+  // Preserve the parent's node flags (execArgv) — dropping them breaks any
+  // loader-launched CLI: `node --import tsx src/cli/index.ts` respawned
+  // without `--import tsx` cannot execute TypeScript and dies with a
+  // swallowed exit 1 (#2649 review). Our heap/semi/stack flags come AFTER
+  // execArgv so V8's later-flag-wins semantics resolve duplicates our way.
+  // Inspector flags are the one exception: replaying `--inspect[-brk]` makes
+  // the child fight the parent for the debug port and die with EADDRINUSE.
+  const preservedExecArgv = process.execArgv.filter((a) => !a.startsWith('--inspect'));
+  const childArgs = [...preservedExecArgv, ...cliFlags, ...process.argv.slice(1)];
   const childEnv = {
     ...process.env,
     NODE_OPTIONS: `${nodeOpts} ${HEAP_FLAG} ${SEMI_FLAG}`.trim(),
@@ -658,6 +710,13 @@ export interface AnalyzeOptions {
    * default-on case.
    */
   stats?: boolean;
+  /**
+   * Opt-in auto-commit of any AGENTS.md/CLAUDE.md changes this `analyze` run
+   * makes. Scoped to only those two files (never `git add -A`); no-ops
+   * silently if neither exists, neither changed, or the commit step itself
+   * fails (e.g. no git identity configured). See #2639.
+   */
+  selfCommit?: boolean;
   /** Skip installing standard GitNexus skill files directly under .claude/skills/. */
   skipSkills?: boolean;
   /**
@@ -1404,6 +1463,15 @@ const analyzeCommandImpl = async (
     const bootstrapArgs: [] | [AnalyzerRunnerIdentity] = runnerIdentityAtBootstrap
       ? [runnerIdentityAtBootstrap]
       : [];
+    // #2639 review round 2: snapshot which of AGENTS.md/CLAUDE.md are safe to
+    // auto-commit BEFORE runFullAnalysis (and the --skills regeneration
+    // further down) writes to them, so selfCommitContextFiles can tell a
+    // pre-existing unstaged user edit apart from this run's stats refresh
+    // and refuse to sweep the former into the latter's commit.
+    const selfCommitSafety =
+      options.selfCommit === true
+        ? snapshotSelfCommitSafety(repoPath, ['AGENTS.md', 'CLAUDE.md'])
+        : undefined;
     const result = await runFullAnalysis(repoPath, runOptions, runCallbacks, ...bootstrapArgs);
 
     if (result.alreadyUpToDate) {
@@ -1447,6 +1515,11 @@ const analyzeCommandImpl = async (
         console.log(
           `  Updated base_ref to "${resolvedDefaultBranch}" in ${baseRefRefreshed.join(', ')}\n`,
         );
+      }
+      // #2639: opt-in self-commit of any AGENTS.md/CLAUDE.md churn from this
+      // fast path (e.g. a base_ref refresh above). Best-effort — never throws.
+      if (options.selfCommit === true && selfCommitSafety) {
+        selfCommitContextFiles(repoPath, ['AGENTS.md', 'CLAUDE.md'], selfCommitSafety);
       }
       // Safe to return without process.exit(0) — the early-return path in
       // runFullAnalysis never opens LadybugDB, so no native handles prevent exit.
@@ -1537,6 +1610,14 @@ const analyzeCommandImpl = async (
       }
     }
 
+    // #2639: opt-in self-commit of any AGENTS.md/CLAUDE.md churn written by
+    // this run (the primary generateAIContextFiles call inside
+    // runFullAnalysis, and/or the --skills regeneration above). Best-effort
+    // — never throws, so a missing git identity etc. can't fail `analyze`.
+    if (options.selfCommit === true && selfCommitSafety) {
+      selfCommitContextFiles(repoPath, ['AGENTS.md', 'CLAUDE.md'], selfCommitSafety);
+    }
+
     const totalTime = ((Date.now() - t0) / 1000).toFixed(1);
 
     clearInterval(elapsedTimer);
@@ -1563,11 +1644,21 @@ const analyzeCommandImpl = async (
     // progress-bar log() that fired mid-run has already scrolled away, so the
     // degraded-search state must also appear in the final summary (#1161).
     if (result.ftsSkipped) {
-      console.log(
-        `\n  Warning: full-text/BM25 search is disabled — the LadybugDB FTS extension was unavailable.\n` +
-          `  Install it once with network access (GITNEXUS_LBUG_EXTENSION_INSTALL=auto) then rerun, or\n` +
-          `  run \`gitnexus analyze --repair-fts\` when connected. Run \`gitnexus doctor\` for details.`,
-      );
+      // #2658 review L2: a build/verify failure is NOT an extension-unavailable
+      // problem — sending the user to install the extension is the wrong remedy.
+      if (result.ftsSkipReason === 'build-failed') {
+        console.log(
+          `\n  Warning: full-text/BM25 search is disabled — the search index build failed this run.\n` +
+            `  The FTS extension is available; rerun \`gitnexus analyze --repair-fts\`. If it persists,\n` +
+            `  check the disk for space or corruption. Run \`gitnexus doctor\` for details.`,
+        );
+      } else {
+        console.log(
+          `\n  Warning: full-text/BM25 search is disabled — the LadybugDB FTS extension was unavailable.\n` +
+            `  Install it once with network access (GITNEXUS_LBUG_EXTENSION_INSTALL=auto) then rerun, or\n` +
+            `  run \`gitnexus analyze --repair-fts\` when connected. Run \`gitnexus doctor\` for details.`,
+        );
+      }
     }
 
     // Standalone-ingest warnings (skipped/degraded Move packages) share the
@@ -1608,6 +1699,22 @@ const analyzeCommandImpl = async (
           `    • Pick a different alias:  gitnexus analyze --name <alias>\n` +
           `    • Allow the duplicate:     gitnexus analyze --allow-duplicate-name  (leaves "-r ${err.registryName}" ambiguous)\n`,
         { registryName: err.registryName, existingPath: err.existingPath },
+      );
+      process.exitCode = 1;
+      return;
+    }
+
+    // Another analyze held the index lock past the configured wait ceiling
+    // (#2658, GITNEXUS_INDEX_LOCK_TIMEOUT_MS). The on-disk index is being
+    // refreshed by the holder — this is a clean, expected condition, not a
+    // crash, so render the message without a stack trace.
+    if (err instanceof IndexLockTimeoutError) {
+      cliError(
+        `  Another gitnexus analyze (pid ${err.holder.pid} on ${err.holder.hostname}) is ` +
+          `already refreshing this index and did not finish within the wait window.\n` +
+          `  The on-disk index is being updated by that run. Retry later, or raise\n` +
+          `  GITNEXUS_INDEX_LOCK_TIMEOUT_MS to wait longer.\n`,
+        { recoveryHint: 'index-lock-timeout', holderPid: err.holder.pid },
       );
       process.exitCode = 1;
       return;

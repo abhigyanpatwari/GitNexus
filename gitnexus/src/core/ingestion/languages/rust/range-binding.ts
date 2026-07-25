@@ -5,6 +5,7 @@ import { getTreeSitterBufferSize } from '../../constants.js';
 import { parseSourceSafe, ParseTimeoutError } from '../../../tree-sitter/safe-parse.js';
 import type { SyntaxNode } from '../../utils/ast-helpers.js';
 import { logger } from '../../../logger.js';
+import { lookupBindingsAt } from '../../scope-resolution/scope/walkers.js';
 
 /**
  * Populate type bindings for patterns and iterators that the tree-sitter
@@ -16,9 +17,54 @@ import { logger } from '../../../logger.js';
  * Runs in Phase 2 (after propagateImportedReturnTypes) so all cross-file
  * type bindings are available for lookup.
  */
+type RustTree = ReturnType<ReturnType<typeof getRustParser>['parse']>;
+
+/**
+ * Hold parsed trees for reuse across both prepass loops only when the whole
+ * Rust source fits this budget. Trees are much larger than their source, so a
+ * modest source cap keeps peak held-tree memory bounded; larger repos fall
+ * back to re-parsing per loop (unchanged RSS).
+ */
+const TREE_REUSE_SOURCE_BUDGET_BYTES = 16 * 1024 * 1024;
+
+/**
+ * Parse `filePath`'s source once, honoring the caller's `treeCache` and, when
+ * provided, an in-function `store` so the two prepass loops share a single
+ * parse instead of re-parsing every file. Returns null when the source is
+ * missing or parsing times out.
+ */
+function getOrParseTree(
+  parser: ReturnType<typeof getRustParser>,
+  filePath: string,
+  ctx: {
+    readonly fileContents: ReadonlyMap<string, string>;
+    readonly treeCache?: { get(filePath: string): unknown };
+  },
+  store: Map<string, RustTree> | undefined,
+): RustTree | null {
+  const cached = (ctx.treeCache?.get(filePath) ?? store?.get(filePath)) as RustTree | undefined;
+  if (cached !== undefined) return cached;
+  const sourceText = ctx.fileContents.get(filePath);
+  if (sourceText === undefined) return null;
+  let tree: RustTree;
+  try {
+    tree = parseSourceSafe(parser, sourceText, undefined, {
+      bufferSize: getTreeSitterBufferSize(sourceText),
+    });
+  } catch (err) {
+    if (err instanceof ParseTimeoutError) {
+      logger.warn({ file: filePath }, 'rust range-binding: parse timed out, skipping file');
+      return null;
+    }
+    throw err;
+  }
+  store?.set(filePath, tree);
+  return tree;
+}
+
 export function populateRustRangeBindings(
   parsedFiles: readonly ParsedFile[],
-  _indexes: ScopeResolutionIndexes,
+  indexes: ScopeResolutionIndexes,
   ctx: {
     readonly fileContents: ReadonlyMap<string, string>;
     readonly treeCache?: { get(filePath: string): unknown };
@@ -26,45 +72,45 @@ export function populateRustRangeBindings(
 ): void {
   const parser = getRustParser();
   const allReturnTypes = new Map<string, string>();
+  const ambiguousReturnTypes = new Set<string>();
   const allFieldTypes = new Map<string, Map<string, string>>();
+  const ambiguousFieldTypes = new Set<string>();
+  // Per-defining-file, un-collapsed, FULL-generic return/field types. When a
+  // bare name is ambiguous (#2514) but the call site's `use` import pins a
+  // single definition, we resolve that definition's file here and read its
+  // untruncated type so a generic `Vec<Repo>` element type survives (#2514
+  // follow-up: import-disambiguated duplicates resolve like the compiler).
+  const returnTypeByFile = new Map<string, Map<string, string>>();
+  const fieldTypeByFile = new Map<string, Map<string, Map<string, string>>>();
+  // Parse each file once and reuse across both loops when the workspace fits
+  // the byte budget; otherwise re-parse per loop to bound RSS (see helper).
+  let totalSourceBytes = 0;
+  for (const parsed of parsedFiles) {
+    totalSourceBytes += ctx.fileContents.get(parsed.filePath)?.length ?? 0;
+  }
+  const treeStore: Map<string, RustTree> | undefined =
+    totalSourceBytes <= TREE_REUSE_SOURCE_BUDGET_BYTES ? new Map() : undefined;
 
   for (const parsed of parsedFiles) {
-    const sourceText = ctx.fileContents.get(parsed.filePath);
-    if (sourceText === undefined) continue;
-
-    const cachedTree = ctx.treeCache?.get(parsed.filePath) as
-      | ReturnType<typeof parser.parse>
-      | undefined;
-    let tree: ReturnType<typeof parser.parse>;
-    if (cachedTree !== undefined) {
-      tree = cachedTree;
-    } else {
-      try {
-        tree = parseSourceSafe(parser, sourceText, undefined, {
-          bufferSize: getTreeSitterBufferSize(sourceText),
-        });
-      } catch (err) {
-        if (err instanceof ParseTimeoutError) {
-          logger.warn(
-            { file: parsed.filePath },
-            'rust range-binding: parse timed out, skipping file',
-          );
-          continue;
-        }
-        throw err;
-      }
-    }
+    const tree = getOrParseTree(parser, parsed.filePath, ctx, treeStore);
+    if (tree === null) continue;
 
     for (const fn of tree.rootNode.descendantsOfType('function_item')) {
       const nameNode = fn.childForFieldName('name');
       const retType = fn.childForFieldName('return_type');
       if (nameNode !== null && retType !== null) {
         const name = nameNode.text;
+        // Ambiguity is a latch, not a toggle: once a name has two or more
+        // workspace definitions it stays ambiguous for the rest of the
+        // prepass, regardless of duplicate count or file order (#2514).
         if (allReturnTypes.has(name)) {
           allReturnTypes.delete(name);
-        } else {
+          ambiguousReturnTypes.add(name);
+        } else if (!ambiguousReturnTypes.has(name)) {
           allReturnTypes.set(name, retType.text);
         }
+        // Full-generic record per defining file for import-disambiguated lookup.
+        recordByFile(returnTypeByFile, parsed.filePath, name, retType.text);
       }
     }
 
@@ -82,11 +128,16 @@ export function populateRustRangeBindings(
       }
       if (fields.size > 0) {
         const name = nameNode.text;
+        // Same ambiguity latch as return types (#2514): a third same-named
+        // struct must not restore a resolvable global field map.
         if (allFieldTypes.has(name)) {
           allFieldTypes.delete(name);
-        } else {
+          ambiguousFieldTypes.add(name);
+        } else if (!ambiguousFieldTypes.has(name)) {
           allFieldTypes.set(name, fields);
         }
+        // Full-generic record per defining file for import-disambiguated lookup.
+        recordByFile(fieldTypeByFile, parsed.filePath, name, fields);
       }
     }
 
@@ -99,39 +150,32 @@ export function populateRustRangeBindings(
   }
 
   for (const parsed of parsedFiles) {
-    const sourceText = ctx.fileContents.get(parsed.filePath);
-    if (sourceText === undefined) continue;
-
-    const cachedTree = ctx.treeCache?.get(parsed.filePath) as
-      | ReturnType<typeof parser.parse>
-      | undefined;
-    let tree: ReturnType<typeof parser.parse>;
-    if (cachedTree !== undefined) {
-      tree = cachedTree;
-    } else {
-      try {
-        tree = parseSourceSafe(parser, sourceText, undefined, {
-          bufferSize: getTreeSitterBufferSize(sourceText),
-        });
-      } catch (err) {
-        if (err instanceof ParseTimeoutError) {
-          logger.warn(
-            { file: parsed.filePath },
-            'rust range-binding: parse timed out, skipping file',
-          );
-          continue;
-        }
-        throw err;
-      }
-    }
+    const tree = getOrParseTree(parser, parsed.filePath, ctx, treeStore);
+    if (tree === null) continue;
 
     const scopeMap = new Map(parsed.scopes.map((s) => [s.id, s]));
     const moduleScope = parsed.scopes.find((s) => s.kind === 'Module');
     if (moduleScope === undefined) continue;
 
-    processForLoops(tree.rootNode, parsed, scopeMap, moduleScope, allReturnTypes);
+    processForLoops(
+      tree.rootNode,
+      parsed,
+      scopeMap,
+      moduleScope,
+      allReturnTypes,
+      indexes,
+      returnTypeByFile,
+    );
     processPatternBindings(tree.rootNode, parsed, scopeMap, moduleScope);
-    processStructDestructuring(tree.rootNode, parsed, scopeMap, moduleScope, allFieldTypes);
+    processStructDestructuring(
+      tree.rootNode,
+      parsed,
+      scopeMap,
+      moduleScope,
+      allFieldTypes,
+      indexes,
+      fieldTypeByFile,
+    );
     processPendingAssignments(
       tree.rootNode,
       parsed,
@@ -196,12 +240,88 @@ function normalizeFieldType(text: string): string {
   return t.trim();
 }
 
+/** Get-or-create the inner map for `file` and record `name -> value`. */
+function recordByFile<V>(
+  byFile: Map<string, Map<string, V>>,
+  file: string,
+  name: string,
+  value: V,
+): void {
+  let inner = byFile.get(file);
+  if (inner === undefined) {
+    inner = new Map<string, V>();
+    byFile.set(file, inner);
+  }
+  inner.set(name, value);
+}
+
+/** Final segment of a dot-joined qualified name (`a.make` -> `make`), or the
+ *  bare name when the def carries no qualifier. */
+function simpleName(qualifiedName: string | undefined, bareName: string): string {
+  if (qualifiedName === undefined) return bareName;
+  const dot = qualifiedName.lastIndexOf('.');
+  return dot === -1 ? qualifiedName : qualifiedName.slice(dot + 1);
+}
+
+/** Distinct `(file, name)` definitions, in first-seen order. */
+function uniqueDefs(
+  defs: readonly { file: string; name: string }[],
+): { file: string; name: string }[] {
+  const seen = new Set<string>();
+  const out: { file: string; name: string }[] = [];
+  for (const d of defs) {
+    const key = `${d.file} ${d.name}`;
+    if (seen.has(key)) continue;
+    seen.add(key);
+    out.push(d);
+  }
+  return out;
+}
+
+/**
+ * Resolve `name` at `moduleScope` to the value recorded in `byFile` for the one
+ * definition visible here, or null when zero or several are visible (which
+ * keeps the #2514 ambiguity latch). Mirrors Rust name resolution: explicit
+ * `use`/re-export imports and local defs shadow `use x::*` globs, so a glob is
+ * consulted only when no explicit binding names `name`, and even then only when
+ * exactly one glob-target file actually defines it.
+ */
+function resolveImportedDef<V>(
+  name: string,
+  moduleScope: Scope,
+  indexes: ScopeResolutionIndexes,
+  byFile: ReadonlyMap<string, ReadonlyMap<string, V>>,
+): V | null {
+  const explicit = uniqueDefs(
+    lookupBindingsAt(moduleScope.id, name, indexes)
+      .filter((r) => r.origin === 'import' || r.origin === 'reexport' || r.origin === 'local')
+      .map((r) => ({ file: r.def.filePath, name: simpleName(r.def.qualifiedName, name) })),
+  );
+  const defs =
+    explicit.length > 0
+      ? explicit
+      : uniqueDefs(
+          (indexes.imports.get(moduleScope.id) ?? [])
+            .filter(
+              (e) =>
+                e.kind === 'wildcard-expanded' &&
+                e.targetFile !== null &&
+                byFile.get(e.targetFile)?.has(name) === true,
+            )
+            .map((e) => ({ file: e.targetFile as string, name })),
+        );
+  if (defs.length !== 1) return null;
+  return byFile.get(defs[0].file)?.get(defs[0].name) ?? null;
+}
+
 function processForLoops(
   root: SyntaxNode,
   parsed: ParsedFile,
   scopeMap: ReadonlyMap<string, Scope>,
   moduleScope: Scope,
   allReturnTypes: ReadonlyMap<string, string>,
+  indexes: ScopeResolutionIndexes,
+  returnTypeByFile: ReadonlyMap<string, Map<string, string>>,
 ): void {
   for (const forNode of root.descendantsOfType('for_expression')) {
     const patternNode = forNode.childForFieldName('pattern');
@@ -217,6 +337,8 @@ function processForLoops(
       scopeMap,
       moduleScope,
       allReturnTypes,
+      indexes,
+      returnTypeByFile,
     );
     if (elementType === null) continue;
 
@@ -331,7 +453,9 @@ function processStructDestructuring(
   parsed: ParsedFile,
   scopeMap: ReadonlyMap<string, Scope>,
   moduleScope: Scope,
-  allFieldTypes?: ReadonlyMap<string, Map<string, string>>,
+  allFieldTypes: ReadonlyMap<string, Map<string, string>>,
+  indexes: ScopeResolutionIndexes,
+  fieldTypeByFile: ReadonlyMap<string, ReadonlyMap<string, Map<string, string>>>,
 ): void {
   for (const letNode of root.descendantsOfType('let_declaration')) {
     const patternNode = letNode.childForFieldName('pattern');
@@ -356,7 +480,13 @@ function processStructDestructuring(
 
       let fieldType = lookupFieldType(typeName, fieldName, parsed, scopeMap, moduleScope);
       if (fieldType === null) {
-        fieldType = allFieldTypes?.get(typeName)?.get(fieldName) ?? null;
+        fieldType = allFieldTypes.get(typeName)?.get(fieldName) ?? null;
+      }
+      if (fieldType === null) {
+        // Import-disambiguated duplicate struct (#2514 follow-up): the global
+        // field map is ambiguous, but a `use` import pins one definition.
+        const fields = resolveImportedDef(typeName, moduleScope, indexes, fieldTypeByFile);
+        fieldType = fields?.get(fieldName) ?? null;
       }
       if (fieldType !== null) {
         injectTypeBinding(targetScope, fieldName, fieldType);
@@ -481,7 +611,9 @@ function resolveIterableElementType(
   parsed: ParsedFile,
   scopeMap: ReadonlyMap<string, Scope>,
   moduleScope: Scope,
-  allReturnTypes?: ReadonlyMap<string, string>,
+  allReturnTypes: ReadonlyMap<string, string>,
+  indexes: ScopeResolutionIndexes,
+  returnTypeByFile: ReadonlyMap<string, ReadonlyMap<string, string>>,
 ): string | null {
   let iterableNode = valueNode;
   if (iterableNode.type === 'reference_expression') {
@@ -506,10 +638,16 @@ function resolveIterableElementType(
     }
 
     if (func.type === 'identifier') {
-      const crossFileReturn = allReturnTypes?.get(func.text);
+      const crossFileReturn = allReturnTypes.get(func.text);
       if (crossFileReturn !== undefined) return unwrapGeneric(crossFileReturn);
       const rawReturn = lookupRawFunctionReturnType(func.text, valueNode);
       if (rawReturn !== null) return unwrapGeneric(rawReturn);
+      // Import-disambiguated duplicate: the bare-name map is ambiguous (#2514)
+      // but a `use` import pins one definition. Read its FULL return type
+      // here, BEFORE the scope-binding lookup below, because that binding is
+      // generic-truncated (`Vec<Repo>` becomes `Vec`), losing the element.
+      const importedReturn = resolveImportedDef(func.text, moduleScope, indexes, returnTypeByFile);
+      if (importedReturn !== null) return unwrapGeneric(importedReturn);
       const returnType = lookupReturnTypeInScopes(func.text, parsed, scopeMap, moduleScope);
       if (returnType !== null) return unwrapGeneric(returnType);
     }

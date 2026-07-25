@@ -328,3 +328,140 @@ describe('init lock — single-process ownership contract', () => {
     }
   });
 });
+
+// ---------------------------------------------------------------------------
+// Missing-shadow WAL quarantine reclaim (issue #2637)
+// ---------------------------------------------------------------------------
+
+const plantMissingShadowQuarantine = async (dbPath: string): Promise<string> => {
+  const quarantinePath = `${dbPath}.wal.missing-shadow.${Date.now()}-${Math.random()
+    .toString(36)
+    .slice(2)}`;
+  await fs.writeFile(quarantinePath, 'stale-quarantined-wal-bytes');
+  return quarantinePath;
+};
+
+describe('missing-shadow quarantine reclaim — native integration (issue #2637)', () => {
+  itLbugReopen(
+    'reclaims a pre-existing missing-shadow WAL quarantine file on write-path init when the main DB is present',
+    async () => {
+      const tmp = await createTempDir('gitnexus-lbug-quarantine-');
+      const dbPath = path.join(tmp.dbPath, 'lbug');
+
+      try {
+        const adapter = await import('../../src/core/lbug/lbug-adapter.js');
+
+        // Create a real DB first, then close it.
+        await adapter.initLbug(dbPath);
+        await adapter.closeLbug();
+
+        // Plant a quarantine file left over from an earlier crash.
+        const quarantinePath = await plantMissingShadowQuarantine(dbPath);
+        await expect(fs.access(quarantinePath)).resolves.toBeUndefined();
+
+        // Re-init with the main DB present — reclaim must fire unconditionally.
+        await adapter.initLbug(dbPath);
+
+        const rows = await adapter.executeQuery('RETURN 1 AS ok');
+        expect(rows).toEqual([{ ok: 1 }]);
+
+        await expect(fs.access(quarantinePath)).rejects.toThrow();
+
+        await adapter.closeLbug();
+      } finally {
+        await tmp.cleanup();
+      }
+    },
+  );
+
+  itLbugReopen(
+    'reclaims a pre-existing missing-shadow WAL quarantine file when the main DB is ALSO missing (crash-recovery path)',
+    async () => {
+      const tmp = await createTempDir('gitnexus-lbug-quarantine-');
+      const dbPath = path.join(tmp.dbPath, 'lbug');
+      const shadowPath = `${dbPath}.shadow`;
+      const walCheckpointPath = `${dbPath}.wal.checkpoint`;
+
+      try {
+        // No main DB file — plant the quarantine file alongside the #1618
+        // orphan sidecars to prove both cleanup blocks coexist correctly.
+        const quarantinePath = await plantMissingShadowQuarantine(dbPath);
+        await fs.writeFile(shadowPath, 'stale-shadow-data');
+        await fs.writeFile(walCheckpointPath, 'stale-wal-checkpoint-data');
+
+        const adapter = await import('../../src/core/lbug/lbug-adapter.js');
+        await adapter.initLbug(dbPath);
+
+        const rows = await adapter.executeQuery('RETURN 1 AS ok');
+        expect(rows).toEqual([{ ok: 1 }]);
+
+        await expect(fs.access(quarantinePath)).rejects.toThrow();
+        await expect(fs.access(shadowPath)).rejects.toThrow();
+        await expect(fs.access(walCheckpointPath)).rejects.toThrow();
+
+        await adapter.closeLbug();
+      } finally {
+        await tmp.cleanup();
+      }
+    },
+  );
+
+  itLbugReopen(
+    'leaves a missing-shadow quarantine file untouched when GITNEXUS_DISABLE_LBUG_SIDECAR_PREFLIGHT=1',
+    async () => {
+      const tmp = await createTempDir('gitnexus-lbug-quarantine-');
+      const dbPath = path.join(tmp.dbPath, 'lbug');
+      const previousEnv = process.env.GITNEXUS_DISABLE_LBUG_SIDECAR_PREFLIGHT;
+
+      try {
+        const quarantinePath = await plantMissingShadowQuarantine(dbPath);
+
+        process.env.GITNEXUS_DISABLE_LBUG_SIDECAR_PREFLIGHT = '1';
+
+        const adapter = await import('../../src/core/lbug/lbug-adapter.js');
+        await adapter.initLbug(dbPath);
+
+        const rows = await adapter.executeQuery('RETURN 1 AS ok');
+        expect(rows).toEqual([{ ok: 1 }]);
+
+        // Reclaim was suppressed — the quarantine file survives.
+        await expect(fs.access(quarantinePath)).resolves.toBeUndefined();
+
+        await adapter.closeLbug();
+      } finally {
+        if (previousEnv === undefined) {
+          delete process.env.GITNEXUS_DISABLE_LBUG_SIDECAR_PREFLIGHT;
+        } else {
+          process.env.GITNEXUS_DISABLE_LBUG_SIDECAR_PREFLIGHT = previousEnv;
+        }
+        await tmp.cleanup();
+      }
+    },
+  );
+
+  itLbugReopen(
+    'does not touch a .dirty-recovery parked sidecar (isolation from the missing-shadow family)',
+    async () => {
+      const tmp = await createTempDir('gitnexus-lbug-quarantine-');
+      const dbPath = path.join(tmp.dbPath, 'lbug');
+      const dirtyRecoveryPath = `${dbPath}.wal.dirty-recovery`;
+
+      try {
+        await fs.writeFile(dirtyRecoveryPath, 'parked-from-an-interrupted-dirty-recovery-rebuild');
+
+        const adapter = await import('../../src/core/lbug/lbug-adapter.js');
+        await adapter.initLbug(dbPath);
+
+        const rows = await adapter.executeQuery('RETURN 1 AS ok');
+        expect(rows).toEqual([{ ok: 1 }]);
+
+        // Different sidecar family, different lifecycle — must survive.
+        await expect(fs.access(dirtyRecoveryPath)).resolves.toBeUndefined();
+
+        await adapter.closeLbug();
+      } finally {
+        await tmp.cleanup();
+      }
+    },
+  );
+});

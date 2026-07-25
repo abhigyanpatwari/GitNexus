@@ -711,6 +711,7 @@ export function runScopeResolution(
     propagateImportedReturnTypes(parsedFiles, indexes, workspaceIndex);
   }
 
+  const tRangeBindStart = PROF ? process.hrtime.bigint() : 0n;
   if (provider.populateRangeBindings !== undefined) {
     provider.populateRangeBindings(parsedFiles, indexes, {
       fileContents: getFileContents(),
@@ -1309,6 +1310,7 @@ export function runScopeResolution(
       `[scope-resolution prof] extract=${ns(tStart, tExtract).toFixed(0)}ms` +
         ` finalize=${ns(tExtract, tFinalize).toFixed(0)}ms` +
         ` propagate=${ns(tFinalize, tPropagate).toFixed(0)}ms` +
+        ` rangeBind=${ns(tRangeBindStart, tPropagate).toFixed(1)}ms` +
         ` resolve=${ns(tPropagate, tResolve).toFixed(0)}ms` +
         ` emit=${ns(tResolve, tEnd).toFixed(0)}ms` +
         // pdg ⊆ emit: the M2 reaching-defs share of the emit bucket (#2082 U4).

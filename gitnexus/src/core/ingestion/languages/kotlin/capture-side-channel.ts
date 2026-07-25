@@ -9,6 +9,8 @@
  *     from the `@scope.companion` marker capture.
  *   - Spring Bean class-annotation facts collected during the same scope-query
  *     traversal, consumed only after imports and package visibility finalize.
+ *   - Spring DI class facts (constructor/property/method injection syntax),
+ *     resolved and attached only after imports finalize.
  *   - A JVM package fact read from the already-parsed root, so package-sibling
  *     visibility never re-parses Kotlin source on the main thread.
  *
@@ -29,7 +31,8 @@
  * The single generic `ParsedFile.captureSideChannel` field is shared with C++,
  * which is safe because each file is one language (a `.kt` file uses the kotlin
  * provider, a `.cpp` file the cpp provider). The payload is self-describing
- * (`{ kind: 'kotlin', companionScopes, packageFact, classAnnotations }`) so
+ * (`{ kind: 'kotlin', companionScopes, packageFact, classAnnotations,
+ * springDiFacts }`) so
  * `applyKotlinCaptureSideChannel` only restores kotlin state and ignores a
  * foreign-shaped snapshot.
  */
@@ -46,8 +49,10 @@ import {
 } from '../jvm/package-facts.js';
 import { getCompanionScopesForFile, markCompanionScope } from './companion-scopes.js';
 import { getKotlinPackageFact, setKotlinPackageFact } from './package-facts.js';
+import type { KotlinSpringDiClassFact } from './spring-di.js';
 
 const classAnnotations = createClassAnnotationFactStore();
+const springDiFacts = new Map<string, readonly KotlinSpringDiClassFact[]>();
 
 /**
  * Plain JSON-serializable snapshot of the per-file Kotlin capture-time
@@ -63,10 +68,13 @@ export interface KotlinCaptureSideChannel {
   readonly packageFact: JvmPackageFact;
   /** Class annotation syntax collected by the existing scope traversal. */
   readonly classAnnotations: readonly ClassAnnotationFact[];
+  /** Constructor, property, and method injection syntax captured per class. */
+  readonly springDiFacts?: readonly KotlinSpringDiClassFact[];
 }
 
 export function clearKotlinClassAnnotationFacts(): void {
   classAnnotations.clear();
+  springDiFacts.clear();
 }
 
 export function setKotlinClassAnnotationFacts(
@@ -80,6 +88,18 @@ export function getKotlinClassAnnotationFacts(filePath: string): readonly ClassA
   return classAnnotations.get(filePath);
 }
 
+export function setKotlinSpringDiFacts(
+  filePath: string,
+  facts: readonly KotlinSpringDiClassFact[],
+): void {
+  if (facts.length === 0) springDiFacts.delete(filePath);
+  else springDiFacts.set(filePath, facts);
+}
+
+export function getKotlinSpringDiFacts(filePath: string): readonly KotlinSpringDiClassFact[] {
+  return springDiFacts.get(filePath) ?? [];
+}
+
 /**
  * `LanguageProvider.collectCaptureSideChannel` implementation for Kotlin.
  * Returns `undefined` when this file recorded no side-channel state at all, so
@@ -90,8 +110,14 @@ export function collectKotlinCaptureSideChannel(
 ): KotlinCaptureSideChannel | undefined {
   const companionScopes = getCompanionScopesForFile(filePath);
   const annotationFacts = classAnnotations.get(filePath);
+  const diFacts = springDiFacts.get(filePath) ?? [];
   const packageFact = getKotlinPackageFact(filePath);
-  if (companionScopes.length === 0 && annotationFacts.length === 0 && packageFact === undefined) {
+  if (
+    companionScopes.length === 0 &&
+    annotationFacts.length === 0 &&
+    diFacts.length === 0 &&
+    packageFact === undefined
+  ) {
     return undefined;
   }
   return {
@@ -99,6 +125,7 @@ export function collectKotlinCaptureSideChannel(
     companionScopes,
     packageFact: packageFact ?? UNKNOWN_JVM_PACKAGE_FACT,
     classAnnotations: annotationFacts,
+    ...(diFacts.length > 0 ? { springDiFacts: diFacts } : {}),
   };
 }
 
@@ -121,6 +148,7 @@ export function applyKotlinCaptureSideChannel(parsed: ParsedFile): void {
     !Array.isArray(data.classAnnotations)
   ) {
     classAnnotations.set(parsed.filePath, []);
+    setKotlinSpringDiFacts(parsed.filePath, []);
     setKotlinPackageFact(parsed.filePath, UNKNOWN_JVM_PACKAGE_FACT);
     return;
   }
@@ -128,6 +156,10 @@ export function applyKotlinCaptureSideChannel(parsed: ParsedFile): void {
     markCompanionScope(parsed.filePath, scopeId);
   }
   classAnnotations.set(parsed.filePath, data.classAnnotations);
+  setKotlinSpringDiFacts(
+    parsed.filePath,
+    Array.isArray(data.springDiFacts) ? data.springDiFacts : [],
+  );
   setKotlinPackageFact(
     parsed.filePath,
     isJvmPackageFact(data.packageFact) ? data.packageFact : UNKNOWN_JVM_PACKAGE_FACT,

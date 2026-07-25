@@ -57,6 +57,7 @@ const OPTION_DESCRIPTION_KEYS = {
   'analyze|--skills': 'help.option.analyze.skills',
   'analyze|--skip-agents-md': 'help.option.analyze.skipAgentsMd',
   'analyze|--no-stats': 'help.option.analyze.noStats',
+  'analyze|--self-commit': 'help.option.analyze.selfCommit',
   'analyze|--skip-skills': 'help.option.analyze.skipSkills',
   'analyze|--index-only': 'help.option.analyze.indexOnly',
   'analyze|--skip-git': 'help.option.skipGit',

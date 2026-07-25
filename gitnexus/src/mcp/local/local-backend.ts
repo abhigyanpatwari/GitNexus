@@ -71,7 +71,11 @@ import {
   isSupportedCjkSegmentationMode,
   MAX_CJK_SEGMENTATION_QUERY_LENGTH,
 } from '../../core/search/cjk-segmentation.js';
-import { checkStalenessAsync, checkCwdMatch } from '../../core/git-staleness.js';
+import {
+  checkStalenessAsync,
+  checkCwdMatch,
+  type StalenessInfo,
+} from '../../core/git-staleness.js';
 import { logger } from '../../core/logger.js';
 import {
   isLocalEmbeddingRuntimeBlockerMessage,
@@ -110,6 +114,13 @@ import {
   type PdgBridgeEvidenceInfo,
   type PdgLayerStatus,
 } from './pdg-impact.js';
+
+/**
+ * Candidate `type`s that label enrichment newly populates (#2687). Before that,
+ * these surfaced as `''`, which several resolution gates read as "kind unknown".
+ * Anything keyed on the empty string must name these explicitly.
+ */
+const VALUE_CANDIDATE_TYPES: ReadonlySet<string> = new Set(['Const', 'Variable', 'Static']);
 
 /** Real source-file extensions (`.ts`, `.py`, …) from the resolver's list,
  *  excluding the empty entry and the `/index.*` forms — used to decide whether
@@ -749,12 +760,60 @@ interface MoveResourceRow {
   fieldList: unknown;
 }
 
+/**
+ * #2655: a tool result can carry a `staleness` field only if it is a plain
+ * object that isn't an error envelope and doesn't already carry one. Raw-array
+ * results (non-tabular `cypher` rows) are excluded because the CLI's `--limit`
+ * and other consumers branch on `Array.isArray`, so wrapping them would break
+ * that contract. Shared by `attachToolStaleness` and the dispatch site, which
+ * uses it to skip the freshness `git` spawn for results that can't carry it.
+ */
+function canCarryStaleness(result: unknown): result is Record<string, unknown> {
+  return (
+    result !== null &&
+    typeof result === 'object' &&
+    !Array.isArray(result) &&
+    !('error' in result) &&
+    !('staleness' in result)
+  );
+}
+
+/**
+ * #2655: attach a non-blocking `staleness` signal to a tool result when the
+ * index is behind HEAD, mirroring the `list_repos` `{commitsBehind, hint}`
+ * shape. Only ever ADDS a field to a carryable object result (see
+ * {@link canCarryStaleness}) — it never changes an existing result's shape.
+ */
+export function attachToolStaleness(
+  result: unknown,
+  staleness: StalenessInfo | undefined,
+): unknown {
+  if (!staleness?.isStale || !canCarryStaleness(result)) {
+    return result;
+  }
+  return {
+    ...result,
+    staleness: { commitsBehind: staleness.commitsBehind, hint: staleness.hint },
+  };
+}
+
 export class LocalBackend {
+  private static readonly TOOL_STALENESS_TTL_MS = 5000;
   private repos: Map<string, RepoHandle> = new Map();
   private contextCache: Map<string, CodebaseContext> = new Map();
   private initializedRepos: Set<string> = new Set();
   private reinitPromises: Map<string, Promise<void>> = new Map();
   private lastStalenessCheck: Map<string, number> = new Map();
+  // #2655: commit-behind freshness for the hot read tools. Stores the IN-FLIGHT
+  // promise (not just a timestamp) so N concurrent tool calls arriving before
+  // the first `git rev-list` resolves share one subprocess instead of each
+  // spawning their own; the resolved value is reused for TOOL_STALENESS_TTL_MS.
+  // Keyed by lbugPath (like lastStalenessCheck) — NOT repoPath — because flat
+  // and branch handles for one repo share a repoPath but carry different
+  // lastCommit values, so a repoPath key would serve one handle's freshness for
+  // the other; lbugPath is unique per flat/branch index.
+  private toolStalenessCache: Map<string, { at: number; value: Promise<StalenessInfo> }> =
+    new Map();
   // Last meta.indexedAt observed for an open pool, keyed by lbugPath. Keyed by
   // pool (not stored on the handle) because branch handles are produced fresh
   // by applyBranchScope on every resolveRepo call, so mutating the handle would
@@ -1101,6 +1160,7 @@ export class LocalBackend {
       if (liveLbugPaths.has(key)) continue;
       this.initializedRepos.delete(key);
       this.lastStalenessCheck.delete(key);
+      this.toolStalenessCache.delete(key);
       this.lastObservedIndexedAt.delete(key);
       this.lastObservedDbIdentity.delete(key);
       this.reinitPromises.delete(key);
@@ -1768,6 +1828,60 @@ export class LocalBackend {
 
   // ─── Tool Dispatch ───────────────────────────────────────────────
 
+  /**
+   * #2655: attach a commits-behind freshness signal to a hot-read-tool result,
+   * skipping the `git` spawn entirely for results that can't carry it (error
+   * envelopes, arrays, non-objects — see {@link canCarryStaleness}) so an
+   * error-returning call pays nothing.
+   */
+  private async withToolStaleness(repo: RepoHandle, result: unknown): Promise<unknown> {
+    if (!canCarryStaleness(result)) return result;
+    // Defensive: `checkStalenessAsync` self-catches today, but a rejection here
+    // must never fail the tool — degrade to no-staleness. Paired with the
+    // evict-on-reject in `stalenessForTool`, a transient failure also can't
+    // poison the TTL cache entry (#2655 review F1).
+    const staleness = await this.stalenessForTool(repo).catch(() => undefined);
+    return attachToolStaleness(result, staleness);
+  }
+
+  /**
+   * #2655: commits-behind freshness for the hot read tools, deduped per index.
+   * Returns a shared in-flight promise so concurrent tool calls spawn at most
+   * one `git rev-list` per index per TTL window; the resolved value is cached
+   * for TOOL_STALENESS_TTL_MS. Keyed by lbugPath so flat and branch handles
+   * (same repoPath, different lastCommit) don't share an entry. Non-blocking by
+   * construction: `checkStalenessAsync` swallows git failures to
+   * `{ isStale: false }`, so a git error never fails the tool — it just omits
+   * the `staleness` field.
+   */
+  private stalenessForTool(repo: RepoHandle): Promise<StalenessInfo> {
+    const now = Date.now();
+    const cached = this.toolStalenessCache.get(repo.lbugPath);
+    if (cached && now - cached.at < LocalBackend.TOOL_STALENESS_TTL_MS) {
+      return cached.value;
+    }
+    // Evict the entry if the check rejects so a transient failure isn't served
+    // (as a permanently-rejecting promise) for the rest of the TTL window; the
+    // next call then re-runs. A resolving promise is never evicted, so happy-path
+    // dedup is untouched (#2655 review F1). `Promise.resolve` wraps the call so a
+    // non-thenable return can't throw at this boundary — a no-op for the real
+    // async `checkStalenessAsync`, robust defense-in-depth otherwise.
+    const entry: { at: number; value: Promise<StalenessInfo> } = {
+      at: now,
+      // Only evict if THIS entry is still current — a later call may have
+      // installed a fresh (resolving) entry for the same key before a slow
+      // rejection lands, and that newer entry must not be dropped.
+      value: Promise.resolve(checkStalenessAsync(repo.repoPath, repo.lastCommit)).catch((err) => {
+        if (this.toolStalenessCache.get(repo.lbugPath) === entry) {
+          this.toolStalenessCache.delete(repo.lbugPath);
+        }
+        throw err;
+      }),
+    };
+    this.toolStalenessCache.set(repo.lbugPath, entry);
+    return entry.value;
+  }
+
   async callTool(method: string, params: any): Promise<any> {
     if (method === 'list_repos') {
       // Paginated tool surface (#2119). `listRepos()` is unchanged for internal
@@ -1810,19 +1924,19 @@ export class LocalBackend {
 
     switch (method) {
       case 'query':
-        return this.query(repo, p);
+        return this.withToolStaleness(repo, await this.query(repo, p));
       case 'cypher': {
         const raw = await this.cypher(repo, p);
-        return this.formatCypherAsMarkdown(raw);
+        return this.withToolStaleness(repo, this.formatCypherAsMarkdown(raw));
       }
       case 'context':
-        return this.context(repo, p);
+        return this.withToolStaleness(repo, await this.context(repo, p));
       case 'explain':
         return this.explain(repo, p);
       case 'pdg_query':
         return this.pdgQuery(repo, p);
       case 'impact':
-        return this.impact(repo, p as unknown as ImpactParams);
+        return this.withToolStaleness(repo, await this.impact(repo, p as unknown as ImpactParams));
       case 'detect_changes':
         return this.detectChanges(repo, p);
       case 'check':
@@ -2806,10 +2920,15 @@ export class LocalBackend {
    * Patch the `type` field on candidates whose `labels(n)[0]` projection
    * came back empty — a known LadybugDB behaviour for several node types.
    *
-   * Uses one scoped UNION query across the five priority labels rather
-   * than per-candidate round-trips, so cost is a single DB call regardless
-   * of how many candidates need enrichment. No-op when every candidate
-   * already has a non-empty type.
+   * Uses one scoped UNION query across the priority labels rather than
+   * per-candidate round-trips, so cost is a single DB call regardless of how
+   * many candidates need enrichment. No-op when every candidate already has a
+   * non-empty type.
+   *
+   * The value labels (`Const` / `Variable` / `Static`) are included because a
+   * value candidate otherwise surfaces with `kind: ""` — which reads as
+   * "unknown kind" and, worse, makes the `kind` disambiguation hint unable to
+   * filter it out (#2687).
    *
    * Failures are swallowed: label enrichment is an optimisation for
    * downstream scoring and #480 Class/Interface BFS seeding; if it fails
@@ -2834,6 +2953,12 @@ export class LocalBackend {
         MATCH (n:\`Method\`) WHERE n.id IN $ids RETURN n.id AS id, 'Method' AS label
         UNION ALL
         MATCH (n:\`Constructor\`) WHERE n.id IN $ids RETURN n.id AS id, 'Constructor' AS label
+        UNION ALL
+        MATCH (n:\`Const\`) WHERE n.id IN $ids RETURN n.id AS id, 'Const' AS label
+        UNION ALL
+        MATCH (n:\`Variable\`) WHERE n.id IN $ids RETURN n.id AS id, 'Variable' AS label
+        UNION ALL
+        MATCH (n:\`Static\`) WHERE n.id IN $ids RETURN n.id AS id, 'Static' AS label
         `,
         { ids },
       );
@@ -3008,7 +3133,7 @@ export class LocalBackend {
     // types (notably Class), which left downstream consumers (impact's
     // Class/Interface BFS seed, the kind-priority scoring bonus) unable to
     // distinguish a Class target from "unknown kind". One scoped UNION
-    // across the five priority labels patches the type in-place without
+    // across the priority labels patches the type in-place without
     // per-candidate round-trips.
     await this.enrichCandidateLabels(repo, normalized);
 
@@ -3020,7 +3145,15 @@ export class LocalBackend {
     // the `type === 'Constructor'` gate still correctly triggers when a
     // Class and its Constructor share the name.
     if (!hints.kind && normalized.length > 1) {
-      const ambiguousType = normalized.some((s) => s.type === '' || s.type === 'Constructor');
+      // A value candidate (`Const`/`Variable`/`Static`) used to reach here with
+      // `type === ''`, which is what kept this gate true for a `class Foo` +
+      // `const Foo` pair and let the collapse resolve it to the Class. Label
+      // enrichment now fills those in (#2687), so they must be named explicitly
+      // or the collapse silently stops firing and confident resolutions become
+      // `ambiguous` across every resolver-backed tool.
+      const ambiguousType = normalized.some(
+        (s) => s.type === '' || s.type === 'Constructor' || VALUE_CANDIDATE_TYPES.has(s.type),
+      );
       if (ambiguousType) {
         const candidateIds = normalized.map((s) => s.id).filter(Boolean);
         for (const label of ['Class', 'Interface']) {
@@ -5224,10 +5357,12 @@ export class LocalBackend {
           target: { name: target },
           direction,
           totalCandidates: outcome.candidates.length,
-          // No single resolved symbol → impactedCount stays 0 / risk UNKNOWN
-          // (UNKNOWN must never read as "safe to refactor"). No callgraph
-          // fan-out runs, so there is no per-candidate blast radius here yet.
-          impactedCount: 0,
+          // No single resolved symbol → the blast radius is UNDETERMINED, not
+          // zero. `null` (not 0) because no callgraph fan-out runs on this path,
+          // so there is not even a `maxImpactedCount` to correct a numeric zero
+          // against — it would be indistinguishable from a genuine "nothing
+          // depends on this" (#2687).
+          impactedCount: null,
           risk: 'UNKNOWN',
           ...(truncated && { candidatesTruncated: true }),
           candidates: shown.map((c) => ({
@@ -5343,12 +5478,15 @@ export class LocalBackend {
         // so consumers (CLI formatter) need this to report "N of M" honestly (#2129
         // review F11; the CLI previously read the truncated array length).
         totalCandidates: outcome.candidates.length,
-        // `impactedCount` stays 0 and `risk` stays UNKNOWN — there is no single
-        // resolved symbol, and UNKNOWN must NOT read as "safe to refactor". The
-        // real blast radius is surfaced per-candidate plus `maxImpactedCount` /
-        // `maxRisk` so a real caller can never hide behind the ambiguous zero
-        // (#2129).
-        impactedCount: 0,
+        // `impactedCount` is `null` — UNDETERMINED, not zero — and `risk` stays
+        // UNKNOWN, because there is no single resolved symbol. #2129 hoisted
+        // `maxImpactedCount` / `maxRisk` here so a real caller could not hide
+        // behind the ambiguous zero, but the zero itself remained
+        // byte-identical to a genuine "nothing depends on this": a consumer
+        // testing `impactedCount === 0` still read a confident all-clear
+        // without ever looking at `candidates[]`. `null` cannot be mistaken for
+        // a measured zero, while `|| 0` consumers are unchanged (#2687).
+        impactedCount: null,
         risk: 'UNKNOWN',
         maxImpactedCount,
         maxRisk,

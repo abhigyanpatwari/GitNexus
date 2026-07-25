@@ -2,7 +2,7 @@
 
 import { SupportedLanguages } from 'gitnexus-shared';
 import type { ClassExtractionConfig } from '../../class-types.js';
-import { synthesizeJavaAnonymousClassName } from '../../utils/ast-helpers.js';
+import { synthesizeJavaTypeIdentity } from '../../utils/ast-helpers.js';
 
 // ---------------------------------------------------------------------------
 // Java
@@ -33,10 +33,10 @@ export const javaClassConfig: ClassExtractionConfig = {
     'record_declaration',
   ],
   extractName(node) {
-    if (node.type === 'object_creation_expression' || node.type === 'enum_constant') {
-      return synthesizeJavaAnonymousClassName(node);
-    }
-    return undefined;
+    return synthesizeJavaTypeIdentity(node)?.name;
+  },
+  extractType(node) {
+    return synthesizeJavaTypeIdentity(node)?.label;
   },
   // An anonymous body whose name CANNOT be synthesized must not become a
   // Class node at all. Without this skip, `extract()`'s
@@ -50,7 +50,7 @@ export const javaClassConfig: ClassExtractionConfig = {
       definitionNode !== undefined &&
       (definitionNode.type === 'object_creation_expression' ||
         definitionNode.type === 'enum_constant') &&
-      synthesizeJavaAnonymousClassName(definitionNode) === undefined
+      synthesizeJavaTypeIdentity(definitionNode) === undefined
     );
   },
 };

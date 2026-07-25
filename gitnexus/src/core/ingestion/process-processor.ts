@@ -248,12 +248,12 @@ const buildCallsAdjacency = (
     else bucket.push(value);
   };
 
-  for (const rel of graph.iterRelationships()) {
-    if (rel.type === 'CALLS' && rel.confidence >= MIN_TRACE_CONFIDENCE) {
-      push(forward, rel.sourceId, rel.targetId);
-      push(reverse, rel.targetId, rel.sourceId);
-    }
-  }
+  // Field-wise scan (#2680) — whole-graph walk, four fields, no object needed.
+  graph.forEachRelationshipFields((sourceId, targetId, type, confidence) => {
+    if (type !== 'CALLS' || confidence < MIN_TRACE_CONFIDENCE) return;
+    push(forward, sourceId, targetId);
+    push(reverse, targetId, sourceId);
+  });
 
   return { forward, reverse };
 };

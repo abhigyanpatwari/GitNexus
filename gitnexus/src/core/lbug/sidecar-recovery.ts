@@ -60,7 +60,7 @@ export const isMissingFsError = (err: unknown): boolean =>
 
 const missing = isMissingFsError;
 
-const sidecarPreflightDisabled = (): boolean =>
+export const sidecarPreflightDisabled = (): boolean =>
   /^(1|true|yes|on)$/i.test(process.env.GITNEXUS_DISABLE_LBUG_SIDECAR_PREFLIGHT ?? '');
 
 export const statIfExists = async (filePath: string): Promise<{ size: number } | null> => {

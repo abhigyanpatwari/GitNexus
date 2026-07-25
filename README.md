@@ -181,7 +181,7 @@ flowchart TB
 | `detect_impact` | Pre-commit change analysis — scope, affected processes, risk level        |
 | `generate_map`  | Architecture documentation from the knowledge graph with mermaid diagrams |
 
-### Agent skills installed to `.claude/skills/` automatically
+### Agent skills installed to `.claude/skills/` and `.agents/skills/` (if `.agents/` exists) automatically
 
 - **Exploring** — navigate unfamiliar code using the knowledge graph
 - **Debugging** — trace bugs through call chains
@@ -197,6 +197,8 @@ flowchart TB
 - **LFG** (`/gitnexus-lfg`) — the full pipeline: plan → user gate → work → review
 
 **Repo-specific skills** — run `gitnexus analyze --skills` and GitNexus detects the functional areas of your codebase (via Leiden community detection) and generates each one as a direct project skill under `.claude/skills/gitnexus-area-<name>/`. Each skill describes a module's key files, entry points, execution flows, and cross-area connections, and is regenerated on each `--skills` run to stay current.
+
+When a repo contains an `.agents/` directory, the standard and generated skills are also mirrored to `.agents/skills/` (e.g. `.agents/skills/gitnexus-cli/`, `.agents/skills/gitnexus-area-<name>/`) so agents that read repo-local `.agents/skills/` (like Codex) stay in sync.
 
 ## Editor Setup
 
@@ -395,7 +397,7 @@ gitnexus analyze --skills        # Generate repo-specific skill files from detec
 gitnexus analyze --skip-embeddings  # Skip embedding generation (faster)
 gitnexus analyze --embeddings [limit]  # Enable embedding generation (slower, better search)
 gitnexus analyze --skip-agents-md   # Preserve custom AGENTS.md/CLAUDE.md gitnexus section edits
-gitnexus analyze --skip-skills      # Skip installing standard .claude/skills/gitnexus-* skill files
+gitnexus analyze --skip-skills      # Skip installing standard skill files under .claude/skills/ and .agents/skills/
 gitnexus analyze --skip-git         # Index folders that are not Git repositories
 gitnexus analyze --default-branch develop  # Branch used in the generated regression-compare example (base_ref)
 gitnexus analyze --verbose       # Log skipped files when parsers are unavailable
@@ -451,7 +453,7 @@ Commit a `.gitnexusrc` JSON file at the repo root to preconfigure recurring `ana
   // over its fix on every analyze. (Alias: "branch".)
   "defaultBranch": "develop",
   "skipContextFiles": true, // alias of skipAgentsMd: keep your own AGENTS.md/CLAUDE.md
-  "skipSkills": true, // don't install standard .claude/skills/gitnexus-* skills
+  "skipSkills": true, // don't install standard skill files under .claude/skills/ and .agents/skills/
   "embeddings": true, // generate embeddings by default
   "workerTimeout": 60,
 }
@@ -514,7 +516,7 @@ Most `analyze` knobs are also CLI flags (`--workers`, `--worker-timeout`, `--max
 | `GITNEXUS_WORKER_READY_TIMEOUT_MS`              | `5000`                    | Startup budget in milliseconds for a parse worker to load its grammar bindings and report `{type:'ready'}`. Slots that miss it are treated as startup crashes.                                                                                                                                              | Slow or heavily loaded hosts where a full pool cold-starting concurrently needs more than 5s, and analyze aborts with "did not report ready within 5000ms".                           |
 | `GITNEXUS_FTS_STEMMER`                          | `porter`                  | Stemmer used when rebuilding BM25/FTS indexes. Use `none` for CJK-heavy repositories, or a language stemmer such as `german`, `french`, or `spanish` for matching repository comments. Re-run `gitnexus analyze --repair-fts` after changing it.                                                            | Keyword search quality is poor for non-English comments or identifiers under English stemming.                                                                                        |
 | `GITNEXUS_WAL_CHECKPOINT_THRESHOLD`             | `67108864` (64 MiB)       | LadybugDB WAL auto-checkpoint threshold in bytes. Equivalent to `--wal-checkpoint-threshold <bytes>`. `-1` keeps LadybugDB's stock threshold (~16 MiB). Larger thresholds reduce checkpoint frequency but increase the WAL size at rotation time — choose a smaller value on disk-constrained environments. | You need a larger or smaller WAL auto-checkpoint threshold for your analyze workload.                                                                                                 |
-| `GITNEXUS_LBUG_BUFFER_POOL_SIZE`                | min(2 GiB, 80% RAM)       | LadybugDB buffer-pool ceiling in bytes for every GitNexus database (analyze, MCP server, serve, group bridges). `0` restores LadybugDB's native unbounded default of 80% of system RAM; invalid values warn and fall back to the default (#2557).                                                           | A long-lived `gitnexus mcp` or a big incremental `analyze` uses too much memory, or a huge repo's working set genuinely needs a pool larger than 2 GiB.                               |
+| `GITNEXUS_LBUG_BUFFER_POOL_SIZE`                | min(2 GiB, 80% RAM)       | LadybugDB buffer-pool ceiling in bytes for every GitNexus database (analyze, MCP server, serve, group bridges). `0` restores LadybugDB's native unbounded default of 80% of system RAM; invalid values warn and fall back to the default (#2557). During `analyze` the pool is right-sized to the graph, scaled on non-4 KiB-page hosts by the page-size granule ratio up to min(2 GiB × pageSize/4 KiB, 80% RAM) (#2631); this env var overrides all of that as an absolute value.                                                           | A long-lived `gitnexus mcp` or a big incremental `analyze` uses too much memory, or a huge repo's working set genuinely needs a pool larger than 2 GiB.                               |
 | `GITNEXUS_LBUG_MAX_DB_SIZE`                     | `17179869184` (16 GiB)    | Maximum size in bytes of a single LadybugDB database file — an mmap/disk-address-space ceiling, not a memory limit (it does not constrain the buffer pool). Invalid values silently fall back to the default.                                                                                               | Indexing a genuinely huge monorepo whose on-disk graph index approaches 16 GiB.                                                                                                       |
 | `GITNEXUS_WORKER_SUB_BATCH_MAX_BYTES`           | `8388608` (8 MB)          | Per-job byte budget the pool will send to a worker in one `postMessage`.                                                                                                                                                                                                                                    | Very large individual files; mostly diagnostic — bumping past 8 MB risks structured-clone memory pressure.                                                                            |
 | `GITNEXUS_WORKER_MAX_RESPAWNS_PER_SLOT`         | `3`                       | Max replacement spawns per worker slot before the slot is dropped from the active rotation. Bounds respawn loops on a chronically-crashing slot.                                                                                                                                                            | Hosts where a flaky worker should retry more (raise) or fail-fast (lower) before the slot is dropped.                                                                                 |

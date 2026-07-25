@@ -572,7 +572,7 @@ describe('gitnexus review-agent workflow security contract', () => {
     const expectedPins = [
       'actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0',
       'actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3',
-      'actions/setup-node@48b55a011bda9f5d6aeb4c2d9c7362e8dae4041e',
+      'actions/setup-node@820762786026740c76f36085b0efc47a31fe5020',
       'actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a',
       'actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c',
       'anthropics/claude-code-action/base-action@3553f84341b92da26052e28acf1aa898f9511f32',

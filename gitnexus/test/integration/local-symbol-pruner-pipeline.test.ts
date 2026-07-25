@@ -57,8 +57,15 @@ class Client {
     expect(findNode(result, 'Const', 'handler')).toBeUndefined();
 
     expect(findNode(result, 'Const', 'MODULE_CONST')).toBeDefined();
-    expect(findNode(result, 'Const', 'exportedHandler')).toBeDefined();
     expect(findNode(result, 'Function', 'handler')).toBeDefined();
+
+    // #2687: `export const exportedHandler = () => …` emits ONE node — the
+    // Function that carries the CALLS edges — not a Function plus an edgeless
+    // Const twin. This makes the module-scoped arrow consistent with the
+    // block-scoped `const handler = () => boring` asserted above, which has
+    // never had a surviving Const node.
+    expect(findNode(result, 'Const', 'exportedHandler')).toBeUndefined();
+    expect(findNode(result, 'Function', 'exportedHandler')).toBeDefined();
 
     const keepsResolvedClientCall = result.graph.relationships.some((rel) => {
       if (rel.type !== 'CALLS') return false;

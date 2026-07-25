@@ -1,8 +1,4 @@
-import {
-  findChild,
-  synthesizeJavaAnonymousClassName,
-  type SyntaxNode,
-} from '../utils/ast-helpers.js';
+import { findChild, synthesizeJavaTypeIdentity, type SyntaxNode } from '../utils/ast-helpers.js';
 import type {
   LanguageTypeConfig,
   ParameterExtractor,
@@ -40,7 +36,7 @@ const JAVA_DECLARATION_NODE_TYPES: ReadonlySet<string> = new Set([
 const anonymousInitializerTypeName = (declarator: SyntaxNode): string | undefined => {
   const valueNode = declarator.childForFieldName('value');
   if (!valueNode || valueNode.type !== 'object_creation_expression') return undefined;
-  return synthesizeJavaAnonymousClassName(valueNode);
+  return synthesizeJavaTypeIdentity(valueNode)?.name;
 };
 
 /** Java: Type x = ...; Type x; */

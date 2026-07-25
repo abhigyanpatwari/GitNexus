@@ -185,10 +185,10 @@ export const kotlinProvider = defineLanguage({
   emitScopeCaptures: emitKotlinScopeCaptures,
   // ── #2195 PDG layer: Kotlin CFG visitor (vendored grammar) ──
   cfgVisitor: createKotlinCfgVisitor(),
-  // Worker-side: snapshot companion-scope marks, package visibility, and
-  // class-annotation facts `emitKotlinScopeCaptures` just populated into plain
-  // data on `ParsedFile.captureSideChannel`, so the main thread can restore all
-  // three via `applyCaptureSideChannel` WITHOUT a re-parse (#1983). See
+  // Worker-side: snapshot companion-scope marks, package visibility, class
+  // annotations, and Spring DI facts `emitKotlinScopeCaptures` just populated
+  // into plain data on `ParsedFile.captureSideChannel`, so the main thread can
+  // restore them via `applyCaptureSideChannel` WITHOUT a re-parse (#1983). See
   // `kotlin/capture-side-channel.ts`.
   // `assertCloneable` is a runtime identity; it makes a future non-serializable
   // value in the side-channel payload a compile error here, at the source, rather

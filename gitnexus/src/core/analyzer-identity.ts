@@ -381,7 +381,14 @@ const LIBC_VARIANT = detectLibcVariant();
 
 function resolveRuntimeVariant(): RuntimeVariant {
   return {
-    executablePath: resolveExistingPath(process.execPath),
+    // Normalized like build.rootPath (#2668): executablePath is a compared
+    // identity field (only invokedArtifact is stripped in the comparison), and
+    // process.execPath carries the same Windows drive-letter case ambiguity —
+    // so leaving it un-normalized would reintroduce the false-stale via runtime.
+    executablePath: normalizeAnalyzerRootPath(
+      resolveExistingPath(process.execPath),
+      process.platform,
+    ),
     nodeVersion: process.version,
     platform: process.platform,
     architecture: process.arch,
@@ -524,6 +531,36 @@ function resolveExistingPath(candidate: string): string {
   return realpathSync.native(path.resolve(candidate));
 }
 
+/**
+ * Case-stabilize a path's Windows drive letter so two processes that observed
+ * the same directory under different drive-letter casing (`c:\…` vs `C:\…`)
+ * produce byte-identical analyzer-identity path fields (#2668).
+ *
+ * `realpathSync.native` canonicalizes 8.3 short names and symlinks but does not
+ * guarantee the drive-letter case it returns — it can preserve whatever casing
+ * the caller's path carried, and `import.meta.url` casing depends on how each
+ * entry process (CLI shim vs `npx`/npm wrapper vs server worker) was launched.
+ * When `analyze` stamps `build.rootPath` under one casing and `status`
+ * recomputes it under another, `analyzerRunnerIdentitiesEqual` deep-compares
+ * unequal and `status` reports a freshly-analyzed, untouched repo as stale.
+ * Uppercasing the drive letter (drive letters are case-insensitive; uppercase
+ * is the conventional form) collapses that variance. POSIX paths are returned
+ * unchanged. `platform` is explicit so the transform is unit-testable off
+ * Windows.
+ *
+ * The optional `\\?\` extended-length prefix (which `realpathSync.native` can
+ * emit for paths over MAX_PATH) is preserved and the drive letter after it is
+ * still normalized; UNC paths (`\\server\share`, `\\?\UNC\...`) have no drive
+ * letter and are left untouched.
+ */
+export function normalizeAnalyzerRootPath(p: string, platform: NodeJS.Platform): string {
+  if (platform !== 'win32') return p;
+  return p.replace(
+    /^(\\\\\?\\)?([a-z]):/,
+    (_match, prefix: string | undefined, drive: string) => `${prefix ?? ''}${drive.toUpperCase()}:`,
+  );
+}
+
 function isFile(candidate: string): boolean {
   try {
     return statSync(candidate).isFile();
@@ -553,10 +590,29 @@ function manifestLabel(manifest: PackageManifest): string {
   return `${name}@${version}`;
 }
 
-function isInside(parent: string, candidate: string): boolean {
-  const relative = path.relative(parent, candidate);
-  return relative === '' || (!relative.startsWith(`..${path.sep}`) && relative !== '..');
+/**
+ * Whether `candidate` is `parent` itself or lives beneath it.
+ *
+ * The absolute-result rejection is load-bearing on Windows: `path.relative`
+ * cannot express a relative path between two different drives, so it returns the
+ * absolute target instead — `path.win32.relative('C:\\parent', 'D:\\other')` is
+ * `'D:\\other'`. That string does not start with `..`, so the `..` checks alone
+ * would report an unrelated drive as *inside* the parent. This mirrors the
+ * containment guards elsewhere in the repo (`server/api.ts`,
+ * `server/git-clone.ts`, `group/extractors/fs-utils.ts`), which all pair the
+ * `..` check with `path.isAbsolute`.
+ *
+ * `pathApi` is injectable so the win32 semantics are unit-testable from a POSIX
+ * runner; production callers always use the platform-bound `path`.
+ */
+function isInside(parent: string, candidate: string, pathApi: typeof path = path): boolean {
+  const relative = pathApi.relative(parent, candidate);
+  if (pathApi.isAbsolute(relative)) return false;
+  return relative === '' || (!relative.startsWith(`..${pathApi.sep}`) && relative !== '..');
 }
+
+/** Test seam for {@link isInside} (see `_hashAnalyzerIdentityFramesForTests`). */
+export const _isInsideForTests = isInside;
 
 function resolveBuildRoot(analyzerModulePath: string): {
   packageRoot: string;
@@ -570,9 +626,18 @@ function resolveBuildRoot(analyzerModulePath: string): {
       const packageRoot = path.dirname(cursor);
       const packageJson = path.join(packageRoot, 'package.json');
       if (lstatSync(packageJson).isFile()) {
+        // Normalize the drive-letter case at this single upstream source so
+        // every derived identity path field — build.rootPath, identityCacheKey,
+        // and (via collectDependencyInputs) dependencyRuntime.manifestPath /
+        // lockfilePath — inherits a case-stable root and analyze-stamp equals
+        // status-recompute regardless of launch-path casing (#2668).
+        // Migration: a Windows index stamped before this fix carries the old,
+        // un-normalized casing, so the first post-upgrade `status` sees one
+        // spurious "stale" flip — self-healing on the next `analyze`, which
+        // re-stamps the normalized (idempotent) form.
         return {
-          packageRoot,
-          buildRoot: cursor,
+          packageRoot: normalizeAnalyzerRootPath(packageRoot, process.platform),
+          buildRoot: normalizeAnalyzerRootPath(cursor, process.platform),
           kind: base === 'src' ? 'source' : 'distribution',
         };
       }
