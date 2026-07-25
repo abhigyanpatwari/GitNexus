@@ -77,6 +77,33 @@ describe('mapWithConcurrency', () => {
     expect(failure?.item).toBe(2);
   });
 
+  it('reports the earliest scheduled in-flight failure, not the first rejection to settle', async () => {
+    let releaseFirst!: () => void;
+    const firstCanFail = new Promise<void>((resolve) => {
+      releaseFirst = resolve;
+    });
+
+    const resultPromise = mapWithConcurrency(
+      ['causal', 'collateral', 'never-started'],
+      2,
+      async (item) => {
+        if (item === 'causal') {
+          await firstCanFail;
+          throw new Error('causal failure');
+        }
+        if (item === 'collateral') {
+          releaseFirst();
+          throw new Error('collateral failure settled first');
+        }
+      },
+      { failFast: true },
+    );
+
+    const { failure } = await resultPromise;
+    expect(failure?.item).toBe('causal');
+    expect((failure?.error as Error).message).toBe('causal failure');
+  });
+
   it('without failFast, first worker rejection rejects the returned promise', async () => {
     await expect(
       mapWithConcurrency([1, 2, 3], 2, async (n) => {

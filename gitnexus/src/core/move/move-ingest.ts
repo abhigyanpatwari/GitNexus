@@ -117,6 +117,11 @@ class MoveIngestAccumulator implements MoveLinkView {
   ): MoveIngestOutput {
     return {
       ingestedFiles: this.ingestedFiles,
+      // A package only enters callGraphByPackage after all required queries
+      // and the empty-facts gate succeed. Any missing root means this run is a
+      // partial snapshot and incremental persistence must retain the prior
+      // external dependency nodes/edges for the skipped package.
+      externalNodeSnapshotComplete: packageRoots.every((root) => this.callGraphByPackage.has(root)),
       packageRoots,
       moduleFileMap: this.moduleFileMap,
       functionNodeMap: this.functionNodeMap,
@@ -207,7 +212,6 @@ export function createMoveIngestPhase(
         );
       }
       const acc = new MoveIngestAccumulator();
-      let functionUsageEnabled = hasFunctionUsageQuery;
 
       // Group scanned .move files by their (innermost) owning package. Files
       // are marked as ingested per package only AFTER its facts arrive, so a
@@ -258,10 +262,11 @@ export function createMoveIngestPhase(
         let callGraphData: CallGraphMap;
         let factsMap: MoveFactsMap;
         try {
-          [callGraphData, factsMap] = await Promise.all([
-            client.callGraph(pkgRoot),
-            client.facts(pkgRoot),
-          ]);
+          // The pinned move-flow server processes one stdin request at a time
+          // on Linux. Keep the two package queries serialized so a single
+          // client never has concurrent protocol requests in flight.
+          callGraphData = await client.callGraph(pkgRoot);
+          factsMap = await client.facts(pkgRoot);
         } catch (err) {
           // A Move package that does not build (bad manifest, missing
           // dependency, unresolved address) is an operator problem, not a code
@@ -307,7 +312,7 @@ export function createMoveIngestPhase(
         // Only past the gate: a skipped package must have zero footprint in
         // Pass 2 linking and consistency validation.
         acc.callGraphByPackage.set(pkgRoot, callGraphData);
-        if (functionUsageEnabled) {
+        if (hasFunctionUsageQuery) {
           const closureCapture = await collectClosureCaptureCalls(
             client,
             pkgRoot,
@@ -317,7 +322,6 @@ export function createMoveIngestPhase(
           );
           acc.closureCallsByPackage.set(pkgRoot, closureCapture.calls);
           acc.functionUsageFailures.push(...closureCapture.failures);
-          if (closureCapture.failures.length > 0) functionUsageEnabled = false;
         }
         for (const rel of pkgMoveFiles) acc.ingestedFiles.add(rel);
         const mapped = mapFactsToGraph(factsMap, pkgRoot, ctx.repoPath);

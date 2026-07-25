@@ -7,6 +7,13 @@ import type { PipelinePhase } from './types.js';
 export interface StandaloneIngestOutput {
   readonly ingestedFiles: ReadonlySet<string>;
   /**
+   * Whether this run produced a complete replacement snapshot of external
+   * dependency nodes. `false` tells incremental persistence to preserve the
+   * prior snapshot because at least one standalone-ingest input was skipped.
+   * Omitted is treated as complete for backward-compatible custom phases.
+   */
+  readonly externalNodeSnapshotComplete?: boolean;
+  /**
    * Operator-actionable warnings the ingester wants surfaced in the persistent
    * CLI summary (e.g. a package it had to skip or ingest at degraded fidelity).
    * Language-neutral: the pipeline passes these through without interpreting.
@@ -18,5 +25,9 @@ export interface StandaloneIngestOutput {
 export const emptyStandaloneIngestPhase: PipelinePhase<StandaloneIngestOutput> = {
   name: 'standaloneIngest',
   deps: ['structure'],
-  execute: () => Promise.resolve({ ingestedFiles: new Set<string>() }),
+  execute: () =>
+    Promise.resolve({
+      ingestedFiles: new Set<string>(),
+      externalNodeSnapshotComplete: true,
+    }),
 };

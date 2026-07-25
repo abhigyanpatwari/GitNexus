@@ -404,6 +404,17 @@ const findExtractedBinary = async (root: string, binaryName: string): Promise<st
     : null;
 };
 
+const isConcurrentPublishRecoveryError = (error: unknown): boolean => {
+  if (
+    error instanceof Error &&
+    error.message.includes('timed out waiting for another move-flow installation')
+  ) {
+    return true;
+  }
+  const code = (error as NodeJS.ErrnoException | undefined)?.code;
+  return code === 'EEXIST' || code === 'ENOTEMPTY';
+};
+
 export async function installMoveFlow(
   env: NodeJS.ProcessEnv = process.env,
 ): Promise<MoveFlowInstallResult> {
@@ -520,11 +531,16 @@ export async function installMoveFlow(
   } catch (error) {
     // A concurrent installer may have published a valid cache while this
     // attempt was waiting on the lock or downloading (e.g. a stolen lease
-    // after host sleep makes our publish rename collide) - its install is as
-    // good as ours, so prefer it over reporting a failure.
-    const published = await validCachedInstall(config);
-    if (published) {
-      return { status: 'available', binary: published };
+    // after host sleep makes our publish rename collide). Only recover for
+    // those concurrency-specific errors and only in the default single-user
+    // cache. A shared GITNEXUS_MOVE_FLOW_DIR is a trust boundary: its
+    // binarySha256 metadata is self-describing, so a post-failure publication
+    // must not be accepted without a release anchor.
+    if (!env.GITNEXUS_MOVE_FLOW_DIR?.trim() && isConcurrentPublishRecoveryError(error)) {
+      const published = await validCachedInstall(config);
+      if (published) {
+        return { status: 'available', binary: published };
+      }
     }
     return {
       status: 'failed',

@@ -1942,10 +1942,17 @@ export async function runFullAnalysis(
         //     never refresh them, so an external symbol first referenced by
         //     this run would otherwise be extracted edge-first and silently
         //     dropped at the rel-COPY fallback. The standalone ingest phase
-        //     regenerates the full external surface every run and
-        //     extractChangedSubgraph re-includes it (isExternalNode), same
-        //     delete-all-then-rebuild contract as Community/Process/INJECTS.
-        await deleteAllExternalNodes();
+        //     A partially degraded standalone ingest cannot regenerate skipped
+        //     inputs. Preserve the prior external snapshot in that case;
+        //     successful inputs can still top it up through the changed
+        //     subgraph without deleting clean-run evidence.
+        if (pipelineResult.standaloneIngest.externalNodeSnapshotComplete !== false) {
+          await deleteAllExternalNodes();
+        } else {
+          log(
+            'Standalone ingest was partial; preserving prior external dependency nodes during incremental writeback.',
+          );
+        }
         // 2b. Drop interprocedural TAINT_PATH edges (#2084 M4 U6) when pdg is on
         //     — their validity is a whole-program property (an A→C flow can be
         //     invalidated by a change to an intermediate function on a third

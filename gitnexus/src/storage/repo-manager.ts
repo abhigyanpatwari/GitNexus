@@ -467,12 +467,13 @@ export interface RepoMeta {
  * stamp of 9 is ambiguous between the two lineages, and a pre-merge Move
  * index also predates main's v9–v11 rebuild reasons. Any pre-v12 stamp fails
  * the strict-equality reuse gate; force a full re-analyze (same contract as v3).
- * v13: generic Type nodes and the Move EnumVariant→Property / field
- * USES_TYPE endpoint pairs became persistable. Older indexes silently dropped
- * those nodes and relationships during CSV routing, so a full rebuild is
- * required to backfill them.
+ * v15: generic Type nodes and the Move EnumVariant→Property / field
+ * USES_TYPE endpoint pairs became persistable. This Move-lineage change is
+ * numbered past upstream main's v13 (Java local-class identities) and v14 so
+ * indexes from either release channel cannot pass the strict-equality reuse
+ * gate under the other schema. Older indexes require a full rebuild.
  */
-export const INCREMENTAL_SCHEMA_VERSION = 13;
+export const INCREMENTAL_SCHEMA_VERSION = 15;
 
 export interface IndexedRepo {
   repoPath: string;

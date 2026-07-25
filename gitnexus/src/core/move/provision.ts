@@ -75,6 +75,10 @@ async function resolveExecutablePath(locator: string): Promise<string | null> {
 }
 
 async function hashExecutable(absolutePath: string): Promise<string> {
+  // `absolutePath` is the earlier realpath() result. The final path component
+  // can still be replaced before createReadStream opens it; this identity is
+  // only a cache-invalidation fingerprint (never an authenticity decision),
+  // so that TOCTOU can cause at most a conservative rebuild/churn.
   const digest = createHash('sha256');
   for await (const chunk of createReadStream(absolutePath)) digest.update(chunk as Buffer);
   return digest.digest('hex');

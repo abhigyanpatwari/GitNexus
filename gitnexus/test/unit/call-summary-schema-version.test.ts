@@ -73,8 +73,8 @@ describe('CALL_SUMMARY relation-type exclusion (U-C1)', () => {
 });
 
 describe('incremental schema reuse gate', () => {
-  it('INCREMENTAL_SCHEMA_VERSION is bumped to 13 (persisted Move Type/field graph)', () => {
-    expect(INCREMENTAL_SCHEMA_VERSION).toBe(13);
+  it('INCREMENTAL_SCHEMA_VERSION is bumped to 15 (persisted Move Type/field graph)', () => {
+    expect(INCREMENTAL_SCHEMA_VERSION).toBe(15);
   });
 
   it('a pre-current stamp fails the `=== INCREMENTAL_SCHEMA_VERSION` reuse gate → forces full re-analyze', () => {
@@ -120,10 +120,14 @@ describe('incremental schema reuse gate', () => {
     // `attributesJson` node-table column, so the bulk COPY referencing it
     // would fail on a top-up → must NOT reuse.
     expect(passesReuseGate(11)).toBe(false);
-    // A pre-v13 (v12) index silently dropped generic Type nodes and Move
+    // A pre-v15 (v12) index silently dropped generic Type nodes and Move
     // EnumVariant→Property / field USES_TYPE relationships during CSV routing.
     expect(passesReuseGate(12)).toBe(false);
+    // Upstream main uses v13/v14 for a different schema lineage. Neither may
+    // be mistaken for this build's persisted Move Type/field graph.
+    expect(passesReuseGate(13)).toBe(false);
+    expect(passesReuseGate(14)).toBe(false);
     // A current-version stamp passes the gate (incremental top-up eligible).
-    expect(passesReuseGate(13)).toBe(true);
+    expect(passesReuseGate(15)).toBe(true);
   });
 });

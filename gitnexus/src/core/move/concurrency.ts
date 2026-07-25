@@ -19,16 +19,21 @@ export async function mapWithConcurrency<T, R>(
   const results: R[] = new Array(items.length);
   const effectiveLimit = Math.max(1, Math.floor(limit));
   let next = 0;
-  let failure: { item: T; error: unknown } | undefined;
+  let stopped = false;
+  let failure: { index: number; item: T; error: unknown } | undefined;
 
   async function run(): Promise<void> {
-    while (next < items.length && !(opts.failFast && failure)) {
+    while (next < items.length && !(opts.failFast && stopped)) {
       const i = next++;
       try {
         results[i] = await worker(items[i], i);
       } catch (error) {
         if (opts.failFast) {
-          if (!failure) failure = { item: items[i], error };
+          stopped = true;
+          // Concurrent work may fail collaterally after one operation poisons
+          // shared state. Prefer the earliest scheduled failing item instead
+          // of whichever rejection happens to settle first.
+          if (!failure || i < failure.index) failure = { index: i, item: items[i], error };
           return;
         }
         throw error;
@@ -38,5 +43,5 @@ export async function mapWithConcurrency<T, R>(
 
   const workers = Array.from({ length: Math.min(effectiveLimit, items.length) }, run);
   await Promise.all(workers);
-  return failure ? { results, failure } : { results };
+  return failure ? { results, failure: { item: failure.item, error: failure.error } } : { results };
 }

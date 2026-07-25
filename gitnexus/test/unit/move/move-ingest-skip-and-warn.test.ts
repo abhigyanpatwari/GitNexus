@@ -77,6 +77,7 @@ describe('moveIngest skip-and-warn on build failure', () => {
     expect(output.ingestedFiles.has('good/sources/t.move')).toBe(true);
     expect(output.ingestedFiles.has('broken/sources/b.move')).toBe(false);
     expect(output.callGraphByPackage.has(brokenRoot)).toBe(false);
+    expect(output.externalNodeSnapshotComplete).toBe(false);
 
     const issues = output.consistencyIssues.filter((i) => i.code === 'package-build-failed');
     expect(issues).toHaveLength(1);
@@ -180,6 +181,7 @@ describe('moveIngest placeholder-address pre-flight', () => {
       output.consistencyIssues.filter((i) => i.code === 'unresolved-named-address'),
     ).toHaveLength(0);
     expect(output.ingestedFiles.has('pkg/sources/t.move')).toBe(true);
+    expect(output.externalNodeSnapshotComplete).toBe(true);
   });
 });
 

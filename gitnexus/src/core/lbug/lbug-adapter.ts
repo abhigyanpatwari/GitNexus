@@ -2571,8 +2571,8 @@ const EXTERNAL_NODE_TABLES = ['Module', 'Function', 'Type'] as const;
  * INJECTS: delete-then-COPY is not atomic, and the `incrementalInProgress`
  * dirty flag forces a full rebuild if we die between them.
  *
- * Every external label is backticked unconditionally: `Type` is quoted at
- * CREATE but absent from BACKTICK_TABLES.
+ * Every external label is backticked unconditionally so this table list stays
+ * safe even if it diverges from BACKTICK_TABLES in the future.
  */
 export const deleteAllExternalNodes = async (): Promise<{ nodesDeleted: number }> =>
   deleteAllNodesByLabels(

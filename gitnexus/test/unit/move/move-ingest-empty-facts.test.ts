@@ -39,6 +39,7 @@ describe('moveIngest empty-facts discrimination', () => {
     expect(output.consistencyIssues.filter((i) => i.severity === 'error')).toHaveLength(0);
     // The package's files must stay un-ingested (acceptable for test-only).
     expect(output.ingestedFiles.size).toBe(0);
+    expect(output.externalNodeSnapshotComplete).toBe(false);
   });
 
   it('keeps the error and folds in the diagnostics when the build fails', async () => {
@@ -119,5 +120,6 @@ describe('moveIngest empty-facts discrimination', () => {
       output.consistencyIssues.filter((i) => i.code === 'degraded-package-facts'),
     ).toHaveLength(0);
     expect(output.ingestedFiles.has('pkg/sources/t.move')).toBe(true);
+    expect(output.externalNodeSnapshotComplete).toBe(true);
   });
 });

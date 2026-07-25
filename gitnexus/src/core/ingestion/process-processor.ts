@@ -138,16 +138,16 @@ export const processProcesses = async (
     70,
   );
 
-  // Step 4: Keep explicit graph roots ahead of heuristic traces, then prefer
-  // longer traces within each tier.
-  const limitedTraces = endpointDeduped
-    .sort(
-      explicitFirst(
-        (trace) => explicitEntryPointIds.has(trace[0]),
-        (a, b) => b.length - a.length,
-      ),
-    )
-    .slice(0, cfg.maxProcesses);
+  // Step 4: Interleave compiler-declared and heuristic roots so a large
+  // explicit API surface cannot consume the entire process budget.
+  // Each tier still prefers longer traces.
+  const explicitTraces = endpointDeduped
+    .filter((trace) => explicitEntryPointIds.has(trace[0]))
+    .sort((a, b) => b.length - a.length);
+  const heuristicTraces = endpointDeduped
+    .filter((trace) => !explicitEntryPointIds.has(trace[0]))
+    .sort((a, b) => b.length - a.length);
+  const limitedTraces = interleaveTiers(explicitTraces, heuristicTraces).slice(0, cfg.maxProcesses);
 
   onProgress?.(`Creating ${limitedTraces.length} process nodes...`, 80);
 
@@ -273,7 +273,7 @@ function collectExplicitEntryPointIds(graph: KnowledgeGraph): Set<string> {
 }
 
 /** Global cap on heuristic (non-explicit) entry points, to prevent explosion
- *  on large polyglot repos. Explicit graph roots are exempt and counted first. */
+ *  on large polyglot repos. Explicit graph roots are interleaved separately. */
 const HEURISTIC_ENTRY_POINT_BUDGET = 200;
 
 /** Comparator combinator: explicit items first, then a secondary order. */
@@ -281,6 +281,17 @@ const explicitFirst =
   <T>(isExplicit: (item: T) => boolean, then: (a: T, b: T) => number) =>
   (a: T, b: T): number =>
     Number(isExplicit(b)) - Number(isExplicit(a)) || then(a, b);
+
+/** Alternate between two independently ranked tiers, starting with primary. */
+const interleaveTiers = <T>(primary: readonly T[], secondary: readonly T[]): T[] => {
+  const interleaved: T[] = [];
+  const length = Math.max(primary.length, secondary.length);
+  for (let i = 0; i < length; i++) {
+    if (i < primary.length) interleaved.push(primary[i]);
+    if (i < secondary.length) interleaved.push(secondary[i]);
+  }
+  return interleaved;
+};
 
 /**
  * Find functions/methods that are good entry points for tracing.
@@ -350,7 +361,9 @@ const findEntryPoints = (
     }
   }
 
-  // Known graph entry points form a priority tier ahead of heuristic scoring.
+  // Rank each tier independently, then interleave them. This retains the
+  // explicit-root guarantee without letting a large compiler-backed package
+  // starve every heuristic root before the trace budget is reached.
   const sorted = entryPointCandidates.sort(
     explicitFirst(
       (candidate) => candidate.explicit,
@@ -373,8 +386,8 @@ const findEntryPoints = (
   const explicit = sorted.filter((candidate) => candidate.explicit);
   const heuristic = sorted
     .filter((candidate) => !candidate.explicit)
-    .slice(0, Math.max(0, HEURISTIC_ENTRY_POINT_BUDGET - explicit.length));
-  return [...explicit, ...heuristic].map((candidate) => candidate.id);
+    .slice(0, HEURISTIC_ENTRY_POINT_BUDGET);
+  return interleaveTiers(explicit, heuristic).map((candidate) => candidate.id);
 };
 
 // ============================================================================

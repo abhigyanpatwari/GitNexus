@@ -51,6 +51,26 @@ describe('moveIngest package-query failure classification', () => {
     expect(second.functionNodeMap.has('0xa::t::second')).toBe(true);
   });
 
+  it('serializes call-graph and facts requests on one move-flow client', async () => {
+    const order: string[] = [];
+    const client = makeMoveFlowClientStub({
+      callGraph: async () => {
+        order.push('callGraph:start');
+        await Promise.resolve();
+        order.push('callGraph:end');
+        return {};
+      },
+      facts: async () => {
+        order.push('facts:start');
+        return {};
+      },
+    });
+
+    await runPhase(client);
+
+    expect(order).toEqual(['callGraph:start', 'callGraph:end', 'facts:start']);
+  });
+
   it('reports supplemental function-usage failures without aborting ingestion', async () => {
     const client = makeMoveFlowClientStub({
       facts: async () => ({
@@ -86,7 +106,7 @@ describe('moveIngest package-query failure classification', () => {
     );
   });
 
-  it('disables supplemental queries for later packages after the first failure', async () => {
+  it('re-arms supplemental queries for later packages and aggregates one failure per package', async () => {
     const client = makeMoveFlowClientStub({
       facts: async (packageRoot) => {
         const moduleName = path.basename(packageRoot);
@@ -102,14 +122,36 @@ describe('moveIngest package-query failure classification', () => {
       },
     });
 
-    await runMoveIngestPhase(client, REPO_ROOT, [
+    const output = await runMoveIngestPhase(client, REPO_ROOT, [
       'pkg_a/Move.toml',
       'pkg_a/sources/t.move',
       'pkg_b/Move.toml',
       'pkg_b/sources/t.move',
     ]);
 
-    expect(client.counts.functionUsage).toBe(1);
+    expect(client.counts.functionUsage).toBe(2);
+    expect(output.functionUsageFailures).toHaveLength(2);
+  });
+
+  it('does not call function_usage when the capability is absent', async () => {
+    const client = makeMoveFlowClientStub({
+      capabilities: async () => ({
+        hasFactsQuery: true,
+        hasFunctionUsageQuery: false,
+        hasStatusTool: true,
+      }),
+      facts: async () => ({
+        '0xa::t': {
+          file: path.join(REPO_ROOT, 'pkg/sources/t.move'),
+          functions: [moveFunctionFact('run', { visibility: 'public' })],
+        },
+      }),
+    });
+
+    const output = await runPhase(client);
+
+    expect(client.counts.functionUsage).toBe(0);
+    expect(output.functionUsageFailures).toEqual([]);
   });
 
   it('marks a timeout operator-actionable without a phase-level retry', async () => {
