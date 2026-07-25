@@ -41,8 +41,8 @@
  * Measured on the same 400k-node / 1.08M-edge graph, all edges streamable, each
  * arm running what its own consumers actually call:
  *
- *   heap  820 MB -> 623 MB   (1.32x better)
- *   scans  ~82 ms -> ~90 ms  (parity, within run-to-run noise)
+ *   heap  821 MB -> 518 MB   (1.59x better)
+ *   scans  ~83 ms -> ~88 ms  (parity, within run-to-run noise)
  *
  * Getting there took three measured steps, because the naive version was 6.8x
  * WORSE (651 ms) — reads rebuild objects, and a real analyze performs SIX full
@@ -314,6 +314,56 @@ export class GraphEmitSink implements KnowledgeGraph, GraphEmitControl {
     this.armed = true;
   }
 
+  /**
+   * Exact dedup key, built to hold no reference to the relationship id.
+   *
+   * An id embeds both node ids in full — ~200 characters on this repo — and the
+   * only information it adds beyond `(type, source, target)` is a short trailing
+   * disambiguator, e.g. `emit-references.ts` appends `:line:col` so two calls
+   * between the same pair at different sites stay distinct. The endpoints are
+   * already interned for the columns, so the key reuses those indices and parses
+   * the tail into NUMBERS.
+   *
+   * Numbers matter for more than size: a key built by slicing or replacing
+   * inside a long string is a V8 sliced/cons string that keeps its parent alive,
+   * so the 200-character id would never be freed and the memory saving would
+   * silently fail to materialize. Parsing to numbers severs that link.
+   *
+   * Falls back to the full id when the tail is not a numeric `:a:b` form (other
+   * id shapes exist, e.g. `rel:contains:` has no tail). Correctness first: an
+   * unrecognized shape is stored exactly, just without the saving.
+   */
+  private dedupKey(rel: GraphRelationship, srcIx: number, tgtIx: number): string {
+    const afterTarget = rel.id.lastIndexOf(rel.targetId);
+    if (afterTarget >= 0) {
+      const tail = rel.id.slice(afterTarget + rel.targetId.length);
+      if (tail.length === 0) return `${srcIx}|${tgtIx}|${rel.type}`;
+      // `:1483:6` -> two integers. Any non-numeric segment falls through.
+      if (tail.charCodeAt(0) === 58 /* ':' */) {
+        let a = 0;
+        let b = 0;
+        let seen = 0;
+        let ok = true;
+        for (const part of tail.slice(1).split(':')) {
+          const n = Number(part);
+          if (part.length === 0 || !Number.isInteger(n)) {
+            ok = false;
+            break;
+          }
+          if (seen === 0) a = n;
+          else if (seen === 1) b = n;
+          else {
+            ok = false;
+            break;
+          }
+          seen++;
+        }
+        if (ok) return `${srcIx}|${tgtIx}|${rel.type}|${a}|${b}`;
+      }
+    }
+    return rel.id;
+  }
+
   private internNode(id: string): number {
     const existing = this.nodeIds.get(id);
     if (existing !== undefined) return existing;
@@ -340,7 +390,6 @@ export class GraphEmitSink implements KnowledgeGraph, GraphEmitControl {
       return;
     }
     // Mirror KnowledgeGraph.addRelationship's first-writer-wins dedup.
-    if (this.streamedIds.has(relationship.id)) return;
 
     const fromLabel = getNodeLabel(relationship.sourceId);
     const toLabel = getNodeLabel(relationship.targetId);
@@ -363,10 +412,16 @@ export class GraphEmitSink implements KnowledgeGraph, GraphEmitControl {
       }
       this.relWriters.set(pairKey, writer);
     }
+    // Intern first so the dedup key can reuse the indices.
+    const srcIx = this.internNode(relationship.sourceId);
+    const tgtIx = this.internNode(relationship.targetId);
+    const key = this.dedupKey(relationship, srcIx, tgtIx);
+    if (this.streamedIds.has(key)) return;
+    this.streamedIds.add(key);
+
     writer.addRow(buildRelRow(relationship));
-    this.streamedIds.add(relationship.id);
-    this.srcIx.push(this.internNode(relationship.sourceId));
-    this.tgtIx.push(this.internNode(relationship.targetId));
+    this.srcIx.push(srcIx);
+    this.tgtIx.push(tgtIx);
     this.relTypes.push(relationship.type);
     this.confidences.push(relationship.confidence);
   }
@@ -533,10 +588,22 @@ export class GraphEmitSink implements KnowledgeGraph, GraphEmitControl {
   removeNodesByFile(filePath: string): number {
     return this.real.removeNodesByFile(filePath);
   }
+  /**
+   * Deliberately conservative. The dedup Set holds compact keys derived from a
+   * relationship's endpoints ({@link dedupKey}), and a bare id alone cannot be
+   * turned back into one — so a streamed edge is not directly identifiable here.
+   *
+   * Rather than risk the silent case (returning `false` for an edge that IS on
+   * disk and cannot be recalled), anything the real graph does not hold is
+   * treated as possibly-streamed once streaming has begun, and fails loudly. A
+   * genuinely-absent id therefore throws too, where the object-based graph would
+   * return `false`; that is acceptable because the only production caller is the
+   * COBOL resolver, which runs BEFORE the sink is armed and so takes the branch
+   * below.
+   */
   removeRelationship(relationshipId: string): boolean {
-    if (this.streamedIds.has(relationshipId)) {
-      throw new StreamedRelationshipRemovalError(relationshipId);
-    }
-    return this.real.removeRelationship(relationshipId);
+    if (this.real.removeRelationship(relationshipId)) return true;
+    if (this.srcIx.length > 0) throw new StreamedRelationshipRemovalError(relationshipId);
+    return false;
   }
 }
