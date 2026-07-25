@@ -119,12 +119,16 @@ import { DEFAULT_EMIT_CHUNK_ROWS, SyncCsvWriter } from './sync-csv-writer.js';
  *   METHOD_IMPLEMENTS    - mro-processor
  *   DEFINES              - local-symbol-pruner's isFileDefinesEdge test
  *   INJECTS              - di phase fan-out
+ *   ENTRY_POINT_OF       - process-processor's collectExplicitEntryPointIds
+ *                          (compiler-declared roots written pre-parse by the
+ *                          standalone Move ingest, read back in `processes`)
+ *   IMPORTS              - move-linker's file-import linking pass
  *
- * Deliberately NOT retained: STEP_IN_PROCESS / ENTRY_POINT_OF / MEMBER_OF
- * (written only by the `processes` / `communities` phases, which the streaming
- * flag disables), TAINT_PATH / CALL_SUMMARY (their phases are likewise gated
- * off under the flag), and HANDLES_ROUTE / HANDLES_TOOL (written by
- * `routes`/`tools`, never read back mid-pipeline).
+ * Deliberately NOT retained: STEP_IN_PROCESS / MEMBER_OF (written only by the
+ * `processes` / `communities` phases, which the streaming flag disables),
+ * TAINT_PATH / CALL_SUMMARY (their phases are likewise gated off under the
+ * flag), and HANDLES_ROUTE / HANDLES_TOOL (written by `routes`/`tools`, never
+ * read back mid-pipeline).
  *
  * Adding a relationship type that a phase reads back WITHOUT adding it here is
  * a silent-wrong-graph bug, not a crash — and NOTHING automated catches it.
@@ -144,6 +148,8 @@ export const RETAINED_REL_TYPES: ReadonlySet<RelationshipType> = new Set<Relatio
   'METHOD_IMPLEMENTS',
   'DEFINES',
   'INJECTS',
+  'ENTRY_POINT_OF',
+  'IMPORTS',
 ]);
 
 /**

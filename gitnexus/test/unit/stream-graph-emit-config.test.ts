@@ -145,20 +145,24 @@ describe('RETAINED_REL_TYPES tracks its readers', () => {
     // and getting it wrong yields a silently incomplete edge set mid-pipeline
     // rather than a crash. So derive the required set from the source and
     // compare.
-    const { execFileSync } = await import('node:child_process');
-    const srcDir = new URL('../../src/', import.meta.url).pathname;
+    const { readdir, readFile } = await import('node:fs/promises');
+    const { fileURLToPath } = await import('node:url');
+    const path = await import('node:path');
+    const srcDir = fileURLToPath(new URL('../../src/', import.meta.url));
 
     // Every literal `iterRelationshipsByType('X')` reachable while streaming is
-    // armed. `git grep -h` over src/ excluding tests; the sink itself is
-    // excluded because its own fast-path check reads the constant, not an edge.
-    const out = execFileSync(
-      'grep',
-      ['-rhoE', "iterRelationshipsByType\\('[A-Z_]+'\\)", '--include=*.ts', srcDir],
-      { encoding: 'utf8' },
-    );
-    const readTypes = new Set(
-      [...out.matchAll(/iterRelationshipsByType\('([A-Z_]+)'\)/g)].map((m) => m[1]),
-    );
+    // armed. In-process scan over src/*.ts (a shelled-out grep is not reliably
+    // present or path-compatible on Windows); the sink itself is fine to
+    // include because its own fast-path check reads the constant, not an edge.
+    const readTypes = new Set<string>();
+    const entries = await readdir(srcDir, { recursive: true, withFileTypes: true });
+    for (const entry of entries) {
+      if (!entry.isFile() || !entry.name.endsWith('.ts')) continue;
+      const content = await readFile(path.join(entry.parentPath, entry.name), 'utf8');
+      for (const m of content.matchAll(/iterRelationshipsByType\('([A-Z_]+)'\)/g)) {
+        readTypes.add(m[1]);
+      }
+    }
 
     // CALLS is read by taintSummaries, which is exactly why the sink answers a
     // COMPLETE read instead of retaining it — so it is a known exemption.

@@ -380,16 +380,21 @@ describe('page-size-scaled buffer pool sizing (#2631)', () => {
     vi.unstubAllEnvs();
   });
 
+  // main-aptos: ADAPTIVE_POOL_FLOOR is 512 MiB here, not main's 256 MiB — the
+  // Move node tables' extra columns deterministically OOM a 256 MiB pool
+  // during COPY. Expectations below use the 512 MiB base, and the estimate
+  // cases use element counts whose estimate clears the larger floor. Keep the
+  // 512 MiB-based values when syncing from main.
   it.each([
-    ['64 KiB pages scale the floor ×16', 65536, 41, 16 * 256 * MiB],
+    ['64 KiB pages scale the floor ×16', 65536, 41, 16 * 512 * MiB],
     [
-      '64 KiB pages scale the estimate ×16 (100k × 4 KiB × 16 = 6.4 GB)',
+      '64 KiB pages scale the estimate ×16 (150k × 4 KiB × 16 = 9.8 GB)',
       65536,
-      100_000,
-      100_000 * 4 * 1024 * 16,
+      150_000,
+      150_000 * 4 * 1024 * 16,
     ],
-    ['16 KiB pages (Apple Silicon) scale the floor ×4', 16384, 41, 4 * 256 * MiB],
-    ['4 KiB pages are byte-identical to the unscaled behavior', 4096, 100_000, 100_000 * 4 * 1024],
+    ['16 KiB pages (Apple Silicon) scale the floor ×4', 16384, 41, 4 * 512 * MiB],
+    ['4 KiB pages are byte-identical to the unscaled behavior', 4096, 150_000, 150_000 * 4 * 1024],
   ])('%s', (_label, pageSize, elements, expected) => {
     const totalmemSpy = vi.spyOn(os, 'totalmem').mockReturnValue(32 * GiB);
     try {
@@ -415,7 +420,7 @@ describe('page-size-scaled buffer pool sizing (#2631)', () => {
     const totalmemSpy = vi.spyOn(os, 'totalmem').mockReturnValue(32 * GiB);
     try {
       _setOsPageSizeForTests(null);
-      expect(estimateBufferPool(100_000)).toBe(100_000 * 4 * 1024);
+      expect(estimateBufferPool(150_000)).toBe(150_000 * 4 * 1024);
     } finally {
       totalmemSpy.mockRestore();
     }
@@ -443,8 +448,8 @@ describe('page-size-scaled buffer pool sizing (#2631)', () => {
       setBufferPoolSizeHint(estimateBufferPool(41));
       const Database = vi.fn(function (this: any) {});
       createLbugDatabase({ Database } as any, '/tmp/lbug-pool-64k-hint');
-      // 41 elements → below the scaled COPY floor → 16 × 256 MiB = 4 GiB
-      expect(bufferPoolArg(Database)).toBe(16 * 256 * MiB);
+      // 41 elements → below the scaled COPY floor → 16 × 512 MiB = 8 GiB
+      expect(bufferPoolArg(Database)).toBe(16 * 512 * MiB);
     } finally {
       totalmemSpy.mockRestore();
     }
