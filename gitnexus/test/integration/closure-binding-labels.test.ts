@@ -13,14 +13,16 @@
  * these rely on the #2687 pre-scan collapsing the pair; a regression there
  * would surface here as a twin rather than a wrong label.
  *
- * The label alone does not make `f()` resolve — free-call resolution runs off
- * the per-language scope-resolution queries. Go, Python and C++ now also carry a
+ * The label alone does not make `f()` resolve. Go, Python and C++ carry a
  * `@declaration.function` capture anchored on the inner closure literal, so
- * calls resolve there too (asserted in the second describe). Kotlin, Swift and
- * Dart still lack a `@scope.function` whose range matches the closure literal —
- * Kotlin deliberately scopes `lambda_literal` as a BLOCK (#1757) — and an
- * unaligned declaration anchor mis-attributes callers, so those three keep the
- * label fix only.
+ * free-call resolution finds the def directly. Kotlin, Swift and Dart cannot
+ * take that route — they lack a `@scope.function` whose range matches the
+ * closure literal (Kotlin deliberately scopes `lambda_literal` as a BLOCK,
+ * #1757) and an unaligned declaration anchor mis-attributes callers.
+ *
+ * #2693 resolves those three through `callable-value-flow` instead: the graph
+ * node this file asserts IS the evidence that admits the binding as a callable
+ * target, so a regression in the labels above now also breaks call resolution.
  */
 import { describe, expect, it } from 'vitest';
 import fs from 'node:fs';
@@ -156,9 +158,18 @@ const callTargetsFor = async (filename: string, source: string): Promise<string[
 };
 
 describeIfWorkerBuilt('calls to a closure binding resolve to its Function node', () => {
-  // The label change alone is not enough: each language also needs a
-  // `@declaration.function` anchored on the inner closure literal, so the def is
-  // owned by the closure's own scope and free-call resolution can find it.
+  // Two independent routes reach the same outcome.
+  //
+  // Go, Python and C++ take the DECLARATION route: a `@declaration.function`
+  // anchored on the inner closure literal, so the def is owned by the closure's
+  // own scope and free-call resolution finds it directly.
+  //
+  // Kotlin, Swift and Dart cannot — an unaligned declaration anchor
+  // mis-attributes callers, and Kotlin scopes `lambda_literal` as a BLOCK on
+  // purpose (#1757, smart casts). They take the CALLABLE-VALUE-FLOW route
+  // instead (#2693): their capture layer already emits a `seed` naming the
+  // binding as its own callable, and `buildGraphTargetIndex` admits the
+  // binding because the graph node #2687 created for it is a `Function`.
 
   it('Go: Handler(1) resolves', async () => {
     const targets = await callTargetsFor(
@@ -185,5 +196,49 @@ describeIfWorkerBuilt('calls to a closure binding resolve to its Function node',
     );
 
     expect(targets).toContain('Function:main.cpp:handler');
+  });
+
+  it('Kotlin: handler(1) resolves', async () => {
+    const targets = await callTargetsFor(
+      'App.kt',
+      'val handler = { x: Int -> x }\n\nfun caller(): Int {\n    return handler(1)\n}\n',
+    );
+
+    expect(targets).toContain('Function:App.kt:handler');
+  });
+
+  it('Swift: handler(1) resolves', async () => {
+    const targets = await callTargetsFor(
+      'App.swift',
+      'let handler = { (x: Int) -> Int in return x }\n\nfunc caller() -> Int {\n    return handler(1)\n}\n',
+    );
+
+    expect(targets).toContain('Function:App.swift:handler');
+  });
+});
+
+describeIfWorkerBuilt('a non-callable value binding stays edge-free', () => {
+  // The suppression must key on an actual callable value. Widening
+  // `buildGraphTargetIndex` to admit value bindings whose graph node is a
+  // `Function` is safe only because a genuine constant keeps its own
+  // `Const`/`Property`/`Variable` node, so `resolveDefGraphId`'s qualified key
+  // hits before the label-agnostic `simpleKey` fallback can reach a callable.
+
+  it('Kotlin: a constant sharing its name with a function mints no CALLS to the constant', async () => {
+    const targets = await callTargetsFor(
+      'Shadow.kt',
+      'val maxSize = 10\n\nfun size(): Int {\n    return maxSize\n}\n',
+    );
+
+    expect(targets).toEqual([]);
+  });
+
+  it('Kotlin: a property initialised from a call is not itself callable', async () => {
+    const targets = await callTargetsFor(
+      'Made.kt',
+      'fun make(): Int = 1\n\nval made = make()\n\nfun caller(): Int {\n    return made\n}\n',
+    );
+
+    expect(targets).toEqual(['Function:Made.kt:make']);
   });
 });

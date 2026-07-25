@@ -10,6 +10,7 @@ import type {
   CallableFlowInvokeSite,
   CallableFlowOperand,
   CallableFlowSite,
+  NodeLabel,
   ParsedFile,
   ScopeId,
   SymbolDefinition,
@@ -747,17 +748,47 @@ function buildGraphTargetIndex(
   const out = new Map<string, Target>();
   const byAnchor = buildGraphCallableAnchorIndex(graph);
   for (const def of scopes.defs.byId.values()) {
-    if (!isCallable(def) && providerTarget?.(def) !== true) continue;
+    const callableDef = isCallable(def) || providerTarget?.(def) === true;
+    // #2693: a closure bound to a name (`val f = { }`) is a callable the def
+    // type cannot see. The scope-resolution layer declares such a binding with
+    // its VALUE label (Kotlin/Swift `Property`, Dart `Variable`) while #2687
+    // makes the graph emit a single `Function` node for it. Only the graph
+    // knows, so value bindings are resolved first and admitted below on the
+    // label of the node they actually reach.
+    if (!callableDef && !VALUE_BINDING_DEF_TYPES.has(def.type)) continue;
     const anchorKey = definitionAnchorKey(def);
     const anchored = anchorKey === undefined ? undefined : byAnchor.get(anchorKey);
     const id =
       anchored?.length === 1 ? anchored[0] : resolveDefGraphId(def.filePath, def, nodeLookup);
+    if (id === undefined) continue;
+    // A genuine constant keeps its own `Const`/`Property`/`Variable` node, so
+    // `resolveDefGraphId`'s qualified key hits before its label-agnostic
+    // `simpleKey` fallback can reach a same-named callable — only a binding
+    // whose own value node was replaced by a callable one gets through here.
+    if (!callableDef && !isCallableGraphNode(graph, id)) continue;
     // Overloads can intentionally share one graph node ID. Index by the
     // definition identity so contextual signature narrowing still sees the
     // complete overload set before a selected target collapses to graph ID.
-    if (id !== undefined) out.set(def.nodeId, { id, def });
+    out.set(def.nodeId, { id, def });
   }
   return out;
+}
+
+/**
+ * Value-binding labels whose initializer can be a callable. Kept separate from
+ * `isCallable` because these are admitted on graph-node evidence, never on the
+ * def type alone.
+ */
+const VALUE_BINDING_DEF_TYPES: ReadonlySet<NodeLabel> = new Set<NodeLabel>([
+  'Const',
+  'Property',
+  'Static',
+  'Variable',
+]);
+
+function isCallableGraphNode(graph: KnowledgeGraph, id: string): boolean {
+  const label = graph.getNode(id)?.label;
+  return label === 'Function' || label === 'Method' || label === 'Constructor';
 }
 
 interface CanonicalCallableTargets {
