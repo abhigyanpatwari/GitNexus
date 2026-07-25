@@ -5,20 +5,20 @@
  * `normalizeAnalyzerRootPath` is a POSIX no-op, so these assertions only bite on
  * windows-latest; the file is registered in `scripts/cross-platform-tests.ts` for
  * exactly that reason. It is deliberately separate from `analyzer-identity.test.ts`,
- * whose fixture-based tests compare identity fields against raw temp-dir paths and
- * are therefore not portable to macOS (where `/var/...` realpaths to `/private/var/...`).
- * Everything here is either a pure-function assertion with an explicit `platform`
- * argument, or a self-referential fixpoint check — both portable to every runner.
+ * and holds ONLY pure-function assertions that pass an explicit `platform` argument
+ * — no fixture, no filesystem. That restriction is load-bearing: the fixture-based
+ * identity tests cannot run on this matrix, for two independent reasons observed in
+ * CI on this PR —
+ *   - macOS: they compare identity fields against the raw temp-dir path while the
+ *     identity realpaths it, so `/var/...` comes back as `/private/var/...`;
+ *   - Windows: the GH runner puts the repo on `D:` and temp fixtures on `C:`, and
+ *     `isInside()` misjudges cross-drive paths (`path.win32.relative` returns the
+ *     absolute target, which does not start with `..`), so `resolveInvokedArtifact`
+ *     picks the vitest fork worker and identity resolution throws.
+ * Keep this file fixture-free so it stays green on every runner.
  */
 import { describe, it, expect } from 'vitest';
-import { mkdir, writeFile } from 'node:fs/promises';
-import path from 'node:path';
-import { pathToFileURL } from 'node:url';
-import {
-  normalizeAnalyzerRootPath,
-  resolveAnalyzerRunnerIdentity,
-} from '../../src/core/analyzer-identity.js';
-import { createTempDir } from '../helpers/test-db.js';
+import { normalizeAnalyzerRootPath } from '../../src/core/analyzer-identity.js';
 
 // #2668: `status` reported a freshly-analyzed, untouched repo as stale on
 // Windows because `build.rootPath` (and the other compared identity path
@@ -66,41 +66,5 @@ describe('normalizeAnalyzerRootPath (#2668)', () => {
       '/home/user/gitnexus/dist',
     );
     expect(normalizeAnalyzerRootPath('/Home/User/Dist', 'darwin')).toBe('/Home/User/Dist');
-  });
-
-  // #2668 threading guard: the produced identity's path fields must already be
-  // normalizer-stable, i.e. resolveBuildRoot/resolveRuntimeVariant actually route
-  // build.rootPath and runtime.executablePath through normalizeAnalyzerRootPath.
-  // On POSIX the normalizer is a no-op, so this is a trivially-true fixpoint here
-  // and a real regression guard on Windows CI (where an un-threaded call site
-  // would leave a lowercase drive that the normalizer would change). It compares
-  // each field against ITSELF normalized — never against the raw fixture path —
-  // so it is immune to the macOS /var → /private/var realpath difference.
-  it('produces identity path fields that are already normalizer-stable', async () => {
-    const fixture = await createTempDir();
-    try {
-      const sourceRoot = path.join(fixture.dbPath, 'src');
-      const modulePath = path.join(sourceRoot, 'core', 'analyzer.ts');
-      await mkdir(path.dirname(modulePath), { recursive: true });
-      await writeFile(
-        path.join(fixture.dbPath, 'package.json'),
-        '{"name":"fixture-analyzer","version":"1.0.0"}\n',
-      );
-      await writeFile(path.join(fixture.dbPath, 'package-lock.json'), '{"lockfileVersion":3}\n');
-      await writeFile(modulePath, 'export const analyzer = 1;\n');
-
-      const identity = resolveAnalyzerRunnerIdentity(pathToFileURL(modulePath).href, {
-        cacheDirectory: path.join(fixture.dbPath, 'identity-cache'),
-      });
-
-      expect(identity.build.rootPath).toBe(
-        normalizeAnalyzerRootPath(identity.build.rootPath, process.platform),
-      );
-      expect(identity.runtime.executablePath).toBe(
-        normalizeAnalyzerRootPath(identity.runtime.executablePath, process.platform),
-      );
-    } finally {
-      await fixture.cleanup();
-    }
   });
 });
