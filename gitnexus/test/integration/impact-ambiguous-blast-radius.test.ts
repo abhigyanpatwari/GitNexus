@@ -85,6 +85,42 @@ withTestLbugDB(
       );
     });
 
+    it('reports an undetermined impactedCount, never a numeric zero (#2687)', async () => {
+      const result = await backend.callTool('impact', {
+        target: 'classifyCard',
+        direction: 'upstream',
+      });
+
+      // #2129 hoisted maxImpactedCount so a real caller could not hide behind
+      // the ambiguous zero — but the zero itself was still byte-identical to a
+      // genuine "nothing depends on this". A consumer testing
+      // `impactedCount === 0` got a confident all-clear without ever reading
+      // `candidates[]`. `null` is undetermined and cannot be misread that way.
+      expect(result).toMatchObject({ status: 'ambiguous', impactedCount: null, risk: 'UNKNOWN' });
+      expect(typeof result.impactedCount).not.toBe('number');
+
+      // The truthful signal is still present and still non-zero.
+      expect(result.maxImpactedCount).toBeGreaterThanOrEqual(2);
+    });
+
+    it('reports an undetermined impactedCount for an ambiguous pdg target (#2687)', async () => {
+      // The pdg branch has no per-candidate fan-out, so it carries no
+      // maxImpactedCount at all — a numeric zero here is even less correctable.
+      const result = await backend.callTool('impact', {
+        target: 'classifyCard',
+        direction: 'upstream',
+        mode: 'pdg',
+      });
+
+      expect(result).toMatchObject({
+        status: 'ambiguous',
+        mode: 'pdg',
+        impactedCount: null,
+        risk: 'UNKNOWN',
+      });
+      expect(typeof result.impactedCount).not.toBe('number');
+    });
+
     it('disambiguation by uid returns the exact dropped caller (BFS unchanged)', async () => {
       const result = await backend.callTool('impact', {
         target: 'classifyCard',

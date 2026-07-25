@@ -5052,10 +5052,12 @@ export class LocalBackend {
           target: { name: target },
           direction,
           totalCandidates: outcome.candidates.length,
-          // No single resolved symbol → impactedCount stays 0 / risk UNKNOWN
-          // (UNKNOWN must never read as "safe to refactor"). No callgraph
-          // fan-out runs, so there is no per-candidate blast radius here yet.
-          impactedCount: 0,
+          // No single resolved symbol → the blast radius is UNDETERMINED, not
+          // zero. `null` (not 0) because no callgraph fan-out runs on this path,
+          // so there is not even a `maxImpactedCount` to correct a numeric zero
+          // against — it would be indistinguishable from a genuine "nothing
+          // depends on this" (#2687).
+          impactedCount: null,
           risk: 'UNKNOWN',
           ...(truncated && { candidatesTruncated: true }),
           candidates: shown.map((c) => ({
@@ -5171,12 +5173,15 @@ export class LocalBackend {
         // so consumers (CLI formatter) need this to report "N of M" honestly (#2129
         // review F11; the CLI previously read the truncated array length).
         totalCandidates: outcome.candidates.length,
-        // `impactedCount` stays 0 and `risk` stays UNKNOWN — there is no single
-        // resolved symbol, and UNKNOWN must NOT read as "safe to refactor". The
-        // real blast radius is surfaced per-candidate plus `maxImpactedCount` /
-        // `maxRisk` so a real caller can never hide behind the ambiguous zero
-        // (#2129).
-        impactedCount: 0,
+        // `impactedCount` is `null` — UNDETERMINED, not zero — and `risk` stays
+        // UNKNOWN, because there is no single resolved symbol. #2129 hoisted
+        // `maxImpactedCount` / `maxRisk` here so a real caller could not hide
+        // behind the ambiguous zero, but the zero itself remained
+        // byte-identical to a genuine "nothing depends on this": a consumer
+        // testing `impactedCount === 0` still read a confident all-clear
+        // without ever looking at `candidates[]`. `null` cannot be mistaken for
+        // a measured zero, while `|| 0` consumers are unchanged (#2687).
+        impactedCount: null,
         risk: 'UNKNOWN',
         maxImpactedCount,
         maxRisk,
