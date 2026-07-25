@@ -73,8 +73,8 @@ describe('CALL_SUMMARY relation-type exclusion (U-C1)', () => {
 });
 
 describe('CALL_SUMMARY incremental reuse gate (U-C5)', () => {
-  it('INCREMENTAL_SCHEMA_VERSION is bumped to 14 (C#/Kotlin instance-ownership free-call gate, #2563)', () => {
-    expect(INCREMENTAL_SCHEMA_VERSION).toBe(14);
+  it('INCREMENTAL_SCHEMA_VERSION is bumped to 15 (const-arrow twin removal, #2687)', () => {
+    expect(INCREMENTAL_SCHEMA_VERSION).toBe(15);
   });
 
   it('a pre-current stamp fails the `=== INCREMENTAL_SCHEMA_VERSION` reuse gate → forces full re-analyze', () => {
@@ -128,7 +128,12 @@ describe('CALL_SUMMARY incremental reuse gate (U-C5)', () => {
     // A pre-v14 (v13) index predates the C#/Kotlin instance-ownership gate,
     // so unchanged files may retain spurious same-file CALLS edges.
     expect(passesReuseGate(13)).toBe(false);
+    // A pre-v15 (v14) index predates the #2687 const-arrow twin removal — an
+    // edgeless `Const:<file>:X` twin survives beside its `Function` node on
+    // every unchanged TS/JS file, and the incremental write set never touches
+    // those files → must NOT reuse.
+    expect(passesReuseGate(14)).toBe(false);
     // A current-version stamp passes the gate (incremental top-up eligible).
-    expect(passesReuseGate(14)).toBe(true);
+    expect(passesReuseGate(15)).toBe(true);
   });
 });
