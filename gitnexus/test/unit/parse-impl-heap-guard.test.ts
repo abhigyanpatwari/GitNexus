@@ -30,15 +30,15 @@ describe('#2649 parse-phase heap guardrails', () => {
   let restoreConstrained: (() => void) | undefined;
 
   beforeEach(() => {
-    initialGuard = process.env.GITNEXUS_HEAP_GUARD;
-    delete process.env.GITNEXUS_HEAP_GUARD;
+    initialGuard = process.env.GITNEXUS_MEMORY;
+    delete process.env.GITNEXUS_MEMORY;
     // Unconstrained by default so the mocked 32GB totalmem governs.
     restoreConstrained = setConstrainedMemory(0);
   });
 
   afterEach(() => {
-    if (initialGuard === undefined) delete process.env.GITNEXUS_HEAP_GUARD;
-    else process.env.GITNEXUS_HEAP_GUARD = initialGuard;
+    if (initialGuard === undefined) delete process.env.GITNEXUS_MEMORY;
+    else process.env.GITNEXUS_MEMORY = initialGuard;
     restoreConstrained?.();
     restoreConstrained = undefined;
   });
@@ -60,8 +60,8 @@ describe('#2649 parse-phase heap guardrails', () => {
     ]);
   });
 
-  it('GITNEXUS_HEAP_GUARD=0 disables the abort entirely', () => {
-    process.env.GITNEXUS_HEAP_GUARD = '0';
+  it('GITNEXUS_MEMORY=0 disables the abort entirely', () => {
+    process.env.GITNEXUS_MEMORY = 'off';
     const limit = 4 * GB;
     expect(shouldAbortForHeapPressure(limit * 0.99, limit)).toBe(false);
   });

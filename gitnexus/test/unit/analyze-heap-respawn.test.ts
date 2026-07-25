@@ -76,7 +76,7 @@ describe('analyzeCommand heap respawn', () => {
 
   beforeEach(() => {
     initialNodeOptions = process.env.NODE_OPTIONS;
-    delete process.env.GITNEXUS_AUTO_HEAP;
+    delete process.env.GITNEXUS_MEMORY;
     vi.resetModules();
     spawnMock.mockReset();
     getHeapStatisticsMock.mockReset();
@@ -171,9 +171,9 @@ describe('analyzeCommand heap respawn', () => {
     expect(warn?.msg).toContain('Re-running analyze with the larger auto-sized cap');
   });
 
-  it('honors GITNEXUS_AUTO_HEAP=0: keeps the small ambient heap, silently (#2649)', async () => {
+  it('honors GITNEXUS_MEMORY=off: keeps the small ambient heap, silently (#2649)', async () => {
     process.env.NODE_OPTIONS = '--max-old-space-size=4096';
-    process.env.GITNEXUS_AUTO_HEAP = '0';
+    process.env.GITNEXUS_MEMORY = 'off';
     getHeapStatisticsMock.mockReturnValue({ heap_size_limit: 4096 * 1024 * 1024 });
 
     const { _captureLogger } = await import('../../src/core/logger.js');
@@ -220,9 +220,9 @@ describe('analyzeCommand heap respawn', () => {
     expect(parseMaxOldSpaceMb('--max-old-space-size --other-flag')).toBeNull();
   });
 
-  it('GITNEXUS_AUTO_HEAP=0 also disables the default (unpinned) respawn (#2649 review)', async () => {
+  it('GITNEXUS_MEMORY=off also disables the default (unpinned) respawn (#2649 review)', async () => {
     delete process.env.NODE_OPTIONS;
-    process.env.GITNEXUS_AUTO_HEAP = '0';
+    process.env.GITNEXUS_MEMORY = 'off';
     getHeapStatisticsMock.mockReturnValue({ heap_size_limit: 512 * 1024 * 1024 });
 
     const { analyzeCommand } = await import('../../src/cli/analyze.js');

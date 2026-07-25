@@ -95,7 +95,7 @@ import {
 import type { KnowledgeGraph } from '../../graph/types.js';
 import type { PipelineOptions } from '../pipeline.js';
 import fs from 'node:fs';
-import { effectiveRamBytes } from '../utils/effective-ram.js';
+import { effectiveRamBytes, memoryAutopilotDisabled } from '../utils/effective-ram.js';
 import path from 'node:path';
 import v8 from 'node:v8';
 import { fileURLToPath, pathToFileURL } from 'node:url';
@@ -146,7 +146,7 @@ const PREFLIGHT_WARN_FRACTION = 0.85;
  * Above ~0.95 V8 enters the ineffective-mark-compact death spiral (2s+ GC
  * pauses that also falsely idle-timeout healthy workers, #2649); 0.92 leaves
  * one chunk's worth of headroom to fail with an actionable message instead.
- * `GITNEXUS_HEAP_GUARD=0` disables the abort (proceed-at-own-risk).
+ * `GITNEXUS_MEMORY=off` declines the abort (proceed-at-own-risk).
  */
 const HEAP_ABORT_FRACTION = 0.92;
 
@@ -157,7 +157,7 @@ export function projectParseHeapNeedBytes(parseableFileCount: number): number {
 
 /** True when the mid-loop heap guard should abort the parse (#2649). */
 export function shouldAbortForHeapPressure(heapUsedBytes: number, heapLimitBytes: number): boolean {
-  if (process.env.GITNEXUS_HEAP_GUARD === '0') return false;
+  if (memoryAutopilotDisabled()) return false;
   return heapUsedBytes > heapLimitBytes * HEAP_ABORT_FRACTION;
 }
 
@@ -169,7 +169,7 @@ export function shouldAbortForHeapPressure(heapUsedBytes: number, heapLimitBytes
  * what the RAM-aware auto-sizer would grant (an inherited NODE_OPTIONS pin or
  * explicit flag), the fix is to drop the pin — gitnexus sizes itself.
  * Otherwise the machine is the ceiling and only scope or hardware helps.
- * Escape hatches (GITNEXUS_HEAP_GUARD etc.) stay in the README env table.
+ * Escape hatches (GITNEXUS_MEMORY etc.) stay in the README env table.
  */
 export function heapPressureRemedy(heapLimitBytes: number): string {
   // Effective RAM honors a real cgroup limit — raw os.totalmem() told users

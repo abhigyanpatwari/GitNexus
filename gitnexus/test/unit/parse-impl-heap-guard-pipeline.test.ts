@@ -32,7 +32,7 @@ let workerStubPath: string;
 let memoryUsageSpy: ReturnType<typeof vi.spyOn> | undefined;
 
 beforeEach(() => {
-  delete process.env.GITNEXUS_HEAP_GUARD;
+  delete process.env.GITNEXUS_MEMORY;
   repoDir = fs.mkdtempSync(path.join(os.tmpdir(), 'gitnexus-heap-guard-pipeline-'));
   fs.mkdirSync(path.join(repoDir, 'src'), { recursive: true });
   // The pool validates the worker script's existence up front; the abort test
@@ -44,7 +44,7 @@ beforeEach(() => {
 afterEach(() => {
   memoryUsageSpy?.mockRestore();
   memoryUsageSpy = undefined;
-  delete process.env.GITNEXUS_HEAP_GUARD;
+  delete process.env.GITNEXUS_MEMORY;
   fs.rmSync(repoDir, { recursive: true, force: true });
 });
 
@@ -80,7 +80,7 @@ describe('#2649 heap guardrails wired into runChunkedParseAndResolve', () => {
     // Tiny mocked heap limit so ONE parseable file (~169KB projected) crosses
     // the 85% preflight threshold; the guard abort is disabled so the parse
     // itself proceeds on the real (unmocked) memoryUsage.
-    process.env.GITNEXUS_HEAP_GUARD = '0';
+    process.env.GITNEXUS_MEMORY = 'off';
     getHeapStatisticsMock.mockReturnValue({ heap_size_limit: 150_000 });
 
     const parseable = writeFixture('src/b.ts', 'export function b() { return 2; }\n');

@@ -38,6 +38,29 @@ export function heapCapMbFor(effectiveBytes: number): number {
   );
 }
 
+/**
+ * True when the operator has turned GitNexus's memory autopilot off
+ * (`GITNEXUS_MEMORY=off`).
+ *
+ * One switch for one concern. Memory management has two automatic behaviours —
+ * re-running analyze with a RAM-aware heap cap, and aborting the parse before
+ * V8's ineffective-mark-compact death spiral — and an operator who wants to
+ * drive manually wants both off, not one. They were previously two separate
+ * variables (`GITNEXUS_AUTO_HEAP`, `GITNEXUS_HEAP_GUARD`), which is three knobs
+ * for one intent once the worker-heap override is counted; neither had shipped,
+ * so this consolidates them rather than deprecating anything.
+ *
+ * Note the ordinary way to pin the heap is Node's own `--max-old-space-size`,
+ * which `ensureHeap` already honours as the operator's decision. This switch is
+ * for declining the autopilot WITHOUT naming a size.
+ *
+ * Lives here beside the cap formula so policy and its escape hatch are
+ * single-sourced. Read every call (not memoized) so tests can stub the env.
+ */
+export function memoryAutopilotDisabled(): boolean {
+  return process.env.GITNEXUS_MEMORY === 'off';
+}
+
 /** The cap for THIS machine/container: `heapCapMbFor(effectiveRamBytes())`. */
 export function autoHeapCapMb(): number {
   return heapCapMbFor(effectiveRamBytes());

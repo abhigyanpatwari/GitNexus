@@ -55,7 +55,7 @@ import { warnMissingOptionalGrammars, getOptionalGrammarExtensions } from './opt
 import { glob } from 'glob';
 import fs from 'fs/promises';
 import { cliError, cliWarn } from './cli-message.js';
-import { heapCapMbFor } from '../core/ingestion/utils/effective-ram.js';
+import { heapCapMbFor, memoryAutopilotDisabled } from '../core/ingestion/utils/effective-ram.js';
 import { EMBEDDING_DIMS_ERROR, normalizeEmbeddingDims } from './embedding-dims.js';
 import { formatElapsed } from './format-elapsed.js';
 import { isHfDownloadFailure } from '../core/embeddings/hf-env.js';
@@ -540,7 +540,7 @@ export function parseMaxOldSpaceMb(nodeOptions: string): number | null {
  *
  *  Heap-source precedence (#2649):
  *  - an explicit per-invocation `--max-old-space-size` (execArgv) always wins;
- *  - `GITNEXUS_AUTO_HEAP=0` disables auto-sizing entirely;
+ *  - `GITNEXUS_MEMORY=off` declines the memory autopilot entirely;
  *  - an ambient NODE_OPTIONS heap >= the auto cap is honored as-is;
  *  - an ambient NODE_OPTIONS heap BELOW the auto cap is treated as an
  *    inherited environment default (devcontainers/CI export one for other
@@ -553,7 +553,7 @@ async function ensureHeap(): Promise<boolean> {
   // the operator already made the call, and stderr-sensitive consumers
   // (test harnesses, scripts, supervisors that track a single PID) rely on
   // a quiet, single-process run.
-  if (process.env.GITNEXUS_AUTO_HEAP === '0') return false;
+  if (memoryAutopilotDisabled()) return false;
   const nodeOpts = process.env.NODE_OPTIONS || '';
   if (process.execArgv.some((a) => a.startsWith('--max-old-space-size'))) return false;
 
@@ -562,7 +562,7 @@ async function ensureHeap(): Promise<boolean> {
     if (ambientHeapMb >= RESPAWN_HEAP_MB) return false;
     cliWarn(
       `  NODE_OPTIONS pins the heap to ${ambientHeapMb}MB — below the ${RESPAWN_HEAP_MB}MB this machine's RAM supports.\n` +
-        `  Re-running analyze with the larger auto-sized cap (set GITNEXUS_AUTO_HEAP=0 to keep the NODE_OPTIONS value).\n`,
+        `  Re-running analyze with the larger auto-sized cap (set GITNEXUS_MEMORY=off to keep the NODE_OPTIONS value).\n`,
     );
   } else {
     const v8Heap = v8.getHeapStatistics().heap_size_limit;

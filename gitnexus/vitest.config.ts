@@ -13,8 +13,8 @@ export default defineConfig({
     // stay light; without this opt-out the #2649 auto-heap override would
     // respawn every such child with a RAM-sized cap. Children inherit it via
     // the harnesses' `{ ...process.env }` spreads. Tests that exercise the
-    // respawn behavior itself delete GITNEXUS_AUTO_HEAP in their own setup.
-    env: { GITNEXUS_AUTO_HEAP: '0' },
+    // respawn behavior itself delete GITNEXUS_MEMORY in their own setup.
+    env: { GITNEXUS_MEMORY: 'off' },
     // N-API destructors can crash worker forks on macOS during process exit.
     // This is independent of the QueryResult lifetime fix in @ladybugdb/core 0.15.2 —
     // it's a vitest forks + native addon interaction where destructors run in

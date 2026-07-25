@@ -522,8 +522,9 @@ If analyze says the repository doesn't fit, do what the message says:
 - **The machine is the ceiling**: shrink the scope (exclude generated or
   vendored directories, below) or use a machine with more RAM.
 
-Escape hatches (`GITNEXUS_AUTO_HEAP`, `GITNEXUS_WORKER_HEAP_MB`,
-`GITNEXUS_HEAP_GUARD`) are listed in the environment-variable table below —
+Escape hatches (`GITNEXUS_MEMORY=off` to decline the autopilot,
+`GITNEXUS_WORKER_HEAP_MB` to size workers yourself) are listed in the
+environment-variable table below —
 most users never need them.
 
 For very large repositories:
@@ -588,9 +589,8 @@ Four env vars expose the pool's resilience layers (respawn budget, cumulative-ti
 | `GITNEXUS_WORKER_CONSECUTIVE_FAILURE_THRESHOLD` | `max(3, poolSize)`      | Per-slot consecutive deaths before the pool's circuit breaker trips. After tripping, dispatches require a fresh pool.                                                                            |
 | `GITNEXUS_WORKER_SHUTDOWN_DRAIN_MS`             | `30000`                 | Max wait at pool shutdown for a retired worker still inside native code — terminated at its next JS-safe point instead of mid-native-call, which would abort the process (`Napi::Error`, #2432). |
 | `GITNEXUS_WORKER_READY_TIMEOUT_MS`              | `5000`                  | Startup budget for a parse worker to load its grammar bindings and report `{type:'ready'}`. Slots that miss it are treated as startup crashes. Raise it on a slow or heavily loaded host where a full pool cold-starting concurrently needs more than 5s. |
+| `GITNEXUS_MEMORY`                            | `off`                          | unset (autopilot on) | `off` declines GitNexus's memory autopilot: analyze will neither re-run itself with a RAM-aware heap cap nor abort the parse before V8 enters its ineffective-mark-compact death spiral. Use it when you want to drive memory manually; to simply pin a heap size, pass Node's own `--max-old-space-size`, which is already honoured as your decision. |
 | `GITNEXUS_WORKER_HEAP_MB`                       | `clamp(512, RAM/2/poolSize, 4096)` | Per-worker V8 old-generation heap cap (#2649). Bounds pool RSS on large repos; a worker exceeding it dies with a real heap error handled by quarantine/respawn.                                                                    |
-| `GITNEXUS_AUTO_HEAP`                            | `1`                     | `0` disables the RAM-aware heap auto-sizing entirely (#2649): analyze never re-runs itself and keeps whatever heap the environment provides — the ambient `NODE_OPTIONS` value or Node's default — silently. Use in shared/bounded environments.          |
-| `GITNEXUS_HEAP_GUARD`                           | `1`                     | `0` disables the parse-phase abort at 92% of the V8 heap limit (#2649) — analyze then runs into the GC death spiral instead of failing fast with guidance.                                                                                                |
 | `GITNEXUS_SERVER_ANALYZE_HEAP_MB`               | `min(8192, auto cap)`   | Heap for the web/MCP server's forked analyze worker (#2649). Defaults to the historical 8192 MB bounded by the machine/container's RAM-aware auto cap; set an absolute MB value to override.                                                              |
 | `GITNEXUS_CPP_CAPTURE_BUDGET_MS`                | `20000`                 | Per-file wall-clock budget for C++ capture extraction; on breach the file keeps partial captures with a warning (#2432). `0` expires immediately.                                                |
 
