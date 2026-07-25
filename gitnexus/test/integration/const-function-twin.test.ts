@@ -129,4 +129,20 @@ describe('#2687 export-const function twin', () => {
     expect(labelsOf(nodes, 'a')).toEqual(['Const']);
     expect(labelsOf(nodes, 'b')).toEqual(['Function']);
   });
+
+  it('keeps multi-name siblings when the callable is declared FIRST', async () => {
+    // Mirror of the case above. The callable's claim on the shared definition
+    // node used to be recorded under a bare `startIndex`, which swallowed every
+    // LATER sibling on that declaration — so `SIB_A`/`SIB_B` vanished entirely
+    // (no node, no symbol). Both claims are name-scoped now, so declarator
+    // order cannot decide whether a sibling exists.
+    const nodes = await parseNodes(
+      'src/multi-first.ts',
+      'export const cb = () => 1,\n  SIB_A = 2,\n  SIB_B = 3;\n',
+    );
+
+    expect(labelsOf(nodes, 'cb')).toEqual(['Function']);
+    expect(labelsOf(nodes, 'SIB_A')).toEqual(['Const']);
+    expect(labelsOf(nodes, 'SIB_B')).toEqual(['Const']);
+  });
 });

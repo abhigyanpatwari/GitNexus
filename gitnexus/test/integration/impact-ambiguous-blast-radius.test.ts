@@ -46,6 +46,15 @@ const SEED = [
   // twin fix, used to pin that a value candidate reports a real `kind`.
   `CREATE (k1:Const {id: 'Const:src/config-a.ts:APP_CONFIG', name: 'APP_CONFIG', filePath: 'src/config-a.ts', startLine: 1, endLine: 1, content: '', description: ''})`,
   `CREATE (k2:Const {id: 'Const:src/config-b.ts:APP_CONFIG', name: 'APP_CONFIG', filePath: 'src/config-b.ts', startLine: 1, endLine: 1, content: '', description: ''})`,
+
+  // A class and a same-named value binding in another file — the #480
+  // Class/Constructor collapse must still fold onto the Class. Before the
+  // enrichment widening these value candidates carried `type: ''`, which is
+  // what kept the collapse gate open.
+  `CREATE (rc:Class {id: 'Class:src/registry.ts:Registry', name: 'Registry', filePath: 'src/registry.ts', startLine: 1, endLine: 9, isExported: true, content: '', description: ''})`,
+  `CREATE (rv:Const {id: 'Const:test/registry.test.ts:Registry', name: 'Registry', filePath: 'test/registry.test.ts', startLine: 3, endLine: 3, content: '', description: ''})`,
+  `CREATE (ru:Function {id: 'Function:src/boot.ts:boot', name: 'boot', filePath: 'src/boot.ts', startLine: 1, endLine: 5, isExported: true, content: '', description: ''})`,
+  `MATCH (a:Function {id:'Function:src/boot.ts:boot'}), (b:Class {id:'Class:src/registry.ts:Registry'}) CREATE (a)-[:CodeRelation {type:'CALLS', confidence:0.85, reason:'direct', step:0}]->(b)`,
 ];
 
 withTestLbugDB(
@@ -121,6 +130,25 @@ withTestLbugDB(
 
       expect(result.status).toBe('ambiguous');
       expect(result.candidates.map((c: { kind: string }) => c.kind)).toEqual(['Const', 'Const']);
+    });
+
+    it('still collapses a Class against a same-named value binding (#480)', async () => {
+      // Regression guard for the enrichment widening: the collapse gate keys on
+      // "some candidate has an indeterminate kind". Value candidates used to
+      // qualify by carrying `type: ''`; now that enrichment fills them in they
+      // must be named explicitly, or this resolves to `ambiguous` and every
+      // resolver-backed tool loses a previously confident answer.
+      const result = await backend.callTool('impact', {
+        target: 'Registry',
+        direction: 'upstream',
+      });
+
+      expect(result.status).not.toBe('ambiguous');
+      expect(result.target).toMatchObject({
+        id: 'Class:src/registry.ts:Registry',
+        type: 'Class',
+      });
+      expect(result.impactedCount).toBeGreaterThanOrEqual(1);
     });
 
     it('reports an undetermined impactedCount for an ambiguous pdg target (#2687)', async () => {

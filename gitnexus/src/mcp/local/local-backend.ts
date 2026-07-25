@@ -115,6 +115,13 @@ import {
   type PdgLayerStatus,
 } from './pdg-impact.js';
 
+/**
+ * Candidate `type`s that label enrichment newly populates (#2687). Before that,
+ * these surfaced as `''`, which several resolution gates read as "kind unknown".
+ * Anything keyed on the empty string must name these explicitly.
+ */
+const VALUE_CANDIDATE_TYPES: ReadonlySet<string> = new Set(['Const', 'Variable', 'Static']);
+
 /** Real source-file extensions (`.ts`, `.py`, …) from the resolver's list,
  *  excluding the empty entry and the `/index.*` forms — used to decide whether
  *  an `explain` target is a file path vs a (possibly dotted) symbol name. */
@@ -3089,7 +3096,15 @@ export class LocalBackend {
     // the `type === 'Constructor'` gate still correctly triggers when a
     // Class and its Constructor share the name.
     if (!hints.kind && normalized.length > 1) {
-      const ambiguousType = normalized.some((s) => s.type === '' || s.type === 'Constructor');
+      // A value candidate (`Const`/`Variable`/`Static`) used to reach here with
+      // `type === ''`, which is what kept this gate true for a `class Foo` +
+      // `const Foo` pair and let the collapse resolve it to the Class. Label
+      // enrichment now fills those in (#2687), so they must be named explicitly
+      // or the collapse silently stops firing and confident resolutions become
+      // `ambiguous` across every resolver-backed tool.
+      const ambiguousType = normalized.some(
+        (s) => s.type === '' || s.type === 'Constructor' || VALUE_CANDIDATE_TYPES.has(s.type),
+      );
       if (ambiguousType) {
         const candidateIds = normalized.map((s) => s.id).filter(Boolean);
         for (const label of ['Class', 'Interface']) {

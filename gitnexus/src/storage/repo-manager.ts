@@ -467,8 +467,13 @@ export interface RepoMeta {
  * instance owner is outside the caller's enclosing class/MRO (#2563). The
  * incremental write set would otherwise retain those stale CALLS edges on
  * every unchanged C# and Kotlin file; force a full re-analyze instead.
+ * v15: `const X = <arrow | function-expression>` no longer emits an edgeless
+ * `Const:<file>:X` twin beside its `Function` node (#2687). The incremental
+ * write set only covers changed files, so every unchanged TS/JS file would
+ * keep its twin and `impact`/`context` would stay ambiguous on those names;
+ * force a full re-analyze instead.
  */
-export const INCREMENTAL_SCHEMA_VERSION = 14;
+export const INCREMENTAL_SCHEMA_VERSION = 15;
 
 export interface IndexedRepo {
   repoPath: string;

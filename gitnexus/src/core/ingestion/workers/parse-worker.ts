@@ -1973,7 +1973,7 @@ const processFileGroup = (
       // captures (e.g. `const fn = () => {}` matches both @definition.function and @definition.const).
       // Multi-name declarations share the same definition node, so include the emitted name.
       //
-      // `processedDefinitionNodes` alone only suppresses the value twin when the
+      // `processedDefinitionNodes` alone only suppressed the value twin when the
       // function-like match happened to be processed FIRST — and it is not.
       // tree-sitter completes `@definition.const` at `@name`, while
       // `@definition.function` must also match the trailing arrow / function
@@ -1981,23 +1981,25 @@ const processFileGroup = (
       // escaped (#2687). `nonValueDefinitionKeys` is the order-independent view of
       // the same claim, pre-scanned over `matches` before this loop.
       //
+      // It also replaces the old bare-`startIndex` claim, which was too coarse:
+      // a callable declared FIRST in a multi-name declaration
+      // (`const cb = () => 1, SIBLING = 2`) registered the shared definition
+      // node and silently dropped every later sibling on it. Both keys are now
+      // name-scoped, so siblings survive in either declarator order.
+      //
       // The long-term collapse seam for this duplicate class is
       // `selectNodeBearingDef` (#1876, still unwired); this pre-scan is the local
       // form that keeps the hot loop single-pass. Keep them in sync if #1876 lands.
       if (definitionNode) {
-        const definitionBaseKey = `${definitionNode.startIndex}`;
         if (nodeLabel === 'Const' || nodeLabel === 'Static' || nodeLabel === 'Variable') {
-          const definitionNameKey = `${definitionBaseKey}:${nodeName}`;
+          const definitionNameKey = `${definitionNode.startIndex}:${nodeName}`;
           if (
-            processedDefinitionNodes.has(definitionBaseKey) ||
             processedDefinitionNodes.has(definitionNameKey) ||
             nonValueDefinitionKeys.has(definitionNameKey)
           ) {
             continue;
           }
           processedDefinitionNodes.add(definitionNameKey);
-        } else {
-          processedDefinitionNodes.add(definitionBaseKey);
         }
       }
 
