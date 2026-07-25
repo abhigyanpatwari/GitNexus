@@ -36,6 +36,15 @@ const PLATFORM_LOGIC = [
   // must exercise the Windows backslash branch, so run it on the OS matrix (#2394).
   'test/unit/cli-entry.test.ts',
   'test/unit/platform-capabilities.test.ts',
+  // Windows drive-letter case variance in the analyzer runner-identity path
+  // fields (#2668): normalizeAnalyzerRootPath is a POSIX no-op, so the
+  // "identity path fields are normalizer-stable" fixpoint guard only bites on
+  // the windows-latest matrix — it must run there, not just in the Ubuntu
+  // full-suite where it's trivially green. Deliberately the split-out
+  // normalization file, NOT analyzer-identity.test.ts: the latter's fixture
+  // tests compare identity fields against raw temp-dir paths and fail on macOS,
+  // where /var/... realpaths to /private/var/....
+  'test/unit/analyzer-identity-path-normalization.test.ts',
   // getconf page-size probe: explicit process.platform gate (win32 short-circuit)
   // plus a live-probe test whose only real non-4K coverage is macos-arm64's
   // 16 KiB pages — the exact hardware class #1231 targets (#2424 review).
@@ -79,6 +88,13 @@ const PLATFORM_LOGIC = [
   // POSIX and Windows — the fail-closed path-claim semantics must hold on the
   // real windows-latest path implementation (#2419/#2420).
   'test/unit/server-api-repo-resolution.test.ts',
+  // The index write-lock (#2658) selects its backend by process.platform — the
+  // OS socket lock (Windows named pipe / Linux abstract socket) vs the file
+  // fallback — and its socket-backend describe block is gated to linux/win32.
+  // The Ubuntu suite only proves the Linux abstract-socket path, so run it here
+  // to exercise the Windows named-pipe backend and the macOS file fallback on
+  // their real platforms (#2658 review H3).
+  'test/unit/index-lock.test.ts',
 ];
 
 // Native LadybugDB integration tests — exercise the @ladybugdb/core
@@ -147,6 +163,14 @@ const SPAWN_CLI = [
   'test/integration/antigravity-hook-e2e.test.ts',
   'test/unit/local-cli-subprocess.test.ts',
   'test/unit/runner-exec-tail.test.ts',
+  // Real cross-process single-writer lock coordination (#2658): child processes
+  // contend for the lock and race to reclaim a dead holder. Process spawning,
+  // kernel socket auto-release (Win named pipe / Linux abstract socket), and the
+  // FILE-backend rename-steal reclaim (macOS/BSD default) all vary across OSes —
+  // the exact behaviors the Windows/macOS matrix must prove. macOS timing first
+  // exposed a file-backend double-admit race here (#2658 review); the reclaim is
+  // now judgment-verified so a live holder is never displaced.
+  'test/integration/analyze-index-lock-concurrency.test.ts',
 ];
 
 // Worker threads tests — exercise real worker_threads which have

@@ -493,6 +493,8 @@ describe('runFullAnalysis FTS repair and verification failure paths', () => {
         ok: false,
         error: 'missing indexes after build: Function.function_fts',
       })),
+      ftsFailureIsFatal: (fc: 'capability' | 'integrity' | undefined, swap: boolean) =>
+        fc === 'integrity' && swap,
     }));
     vi.doMock('../../src/core/ingestion/pipeline.js', () => ({
       runPipelineFromRepo: vi.fn(async (repoPath: string) => ({
@@ -513,6 +515,7 @@ describe('runFullAnalysis FTS repair and verification failure paths', () => {
       );
 
       expect(result.ftsSkipped).toBe(true);
+      expect(result.ftsSkipReason).toBe('build-failed'); // #2658 review L2
       expect(logs.join('\n')).toMatch(
         /FTS index build failed.*missing indexes after build.*keyword search degraded this run/i,
       );
@@ -520,6 +523,77 @@ describe('runFullAnalysis FTS repair and verification failure paths', () => {
       const { storagePath } = getStoragePaths(tmpRepo.dbPath);
       const meta = JSON.parse(await fs.readFile(`${storagePath}/meta.json`, 'utf-8'));
       expect(meta.capabilities.fts.status).toBe('unavailable');
+    } finally {
+      await tmpRepo.cleanup();
+    }
+  });
+
+  it('ABORTS (throws before publish, leaves the previous index intact) on an FTS integrity failure on the atomic-swap path (#2658 review M1)', async () => {
+    // The single-writer lock rules out a concurrent-writer race, so an
+    // integrity-class FTS failure on the atomic-swap (--force) path is a real
+    // broken build: run-analyze must throw BEFORE swapping the staging DB in,
+    // leaving the previous live index untouched — not silently publish a
+    // search-less index as success. This end-to-end throw path was previously
+    // untested (only the ftsFailureIsFatal truth table was).
+    vi.doMock('../../src/core/lbug/lbug-adapter.js', () => ({
+      initLbug: vi.fn(async () => undefined),
+      loadGraphToLbug: vi.fn(async () => undefined),
+      getLbugStats: vi.fn(async () => ({ nodes: 0, edges: 0, communities: 0, processes: 0 })),
+      executeQuery: vi.fn(async () => []),
+      executeWithReusedStatement: vi.fn(async () => []),
+      closeLbug: vi.fn(async () => undefined),
+      wipeLbugDbFiles: vi.fn(async () => undefined),
+      loadCachedEmbeddings: vi.fn(async () => ({ embeddingNodeIds: new Set(), embeddings: [] })),
+      deleteNodesForFile: vi.fn(async () => undefined),
+      deleteNodesForFiles: vi.fn(async () => undefined),
+      deleteAllCommunitiesAndProcesses: vi.fn(async () => undefined),
+      queryImporters: vi.fn(async () => []),
+      queryImportersBatch: vi.fn(async () => []),
+      loadFTSExtension: vi.fn(async () => true),
+    }));
+    // Import the REAL classifier/predicate (not a re-stub) so the test pins the
+    // actual fatal-decision logic, per the #2658 review.
+    vi.doMock('../../src/core/search/fts-indexes.js', async () => {
+      const actual = await vi.importActual<typeof import('../../src/core/search/fts-indexes.js')>(
+        '../../src/core/search/fts-indexes.js',
+      );
+      return {
+        ...actual,
+        initialiseSearchFTSStemmer: vi.fn(() => 'porter'),
+        buildSearchIndexesOrDegrade: vi.fn(async () => ({
+          ok: false,
+          failureClass: 'integrity' as const,
+          error: 'IO exception: Error renaming lbug.staging.wal to checkpoint',
+        })),
+      };
+    });
+    vi.doMock('../../src/core/ingestion/pipeline.js', () => ({
+      runPipelineFromRepo: vi.fn(async (repoPath: string) => ({
+        repoPath,
+        graph: { forEachNode: () => undefined },
+      })),
+    }));
+
+    const tmpRepo = await createTempDir('gitnexus-run-analyze-integrity-abort-');
+    try {
+      const { storagePath, lbugPath } = getStoragePaths(tmpRepo.dbPath);
+      await fs.mkdir(storagePath, { recursive: true });
+      // A pre-existing "previous index" that must survive the aborted rebuild.
+      await createPlaceholderGraphStore(lbugPath);
+      const before = await fs.readFile(lbugPath);
+
+      const { runFullAnalysis } = await import('../../src/core/run-analyze.js');
+      const message = await runFullAnalysis(
+        tmpRepo.dbPath,
+        { force: true },
+        { onProgress: () => {}, onLog: () => {} },
+      ).catch((e: unknown) => (e instanceof Error ? e.message : String(e)));
+
+      expect(message).toMatch(/integrity error/i);
+      expect(message).toMatch(/aborted|previous index is\s+left intact/i);
+      // The previous index bytes are untouched (throw happened before the swap).
+      const after = await fs.readFile(lbugPath);
+      expect(after.equals(before)).toBe(true);
     } finally {
       await tmpRepo.cleanup();
     }
@@ -584,6 +658,7 @@ describe('runFullAnalysis FTS repair and verification failure paths', () => {
       );
 
       expect(result.ftsSkipped).toBe(true);
+      expect(result.ftsSkipReason).toBe('extension-unavailable'); // #2658 review L2
       expect(createSearchFTSIndexes).not.toHaveBeenCalled();
       expect(verifySearchFTSIndexes).not.toHaveBeenCalled();
       expect(logs.join('\n')).toMatch(/FTS extension unavailable; skipping search-index creation/i);
@@ -665,6 +740,7 @@ describe('runFullAnalysis FTS repair and verification failure paths', () => {
       );
 
       expect(result.ftsSkipped).toBe(true);
+      expect(result.ftsSkipReason).toBe('extension-unavailable'); // #2658 review L2
       const degradeLine = logs
         .filter((l) => l.includes('skipping search-index creation'))
         .join('\n');
@@ -1001,6 +1077,127 @@ describe('runFullAnalysis dirty-recovery parking failure fails fast (this shippi
       const meta = JSON.parse(await fs.readFile(`${storagePath}/meta.json`, 'utf-8')) as RepoMeta;
       expect(meta.incrementalInProgress).toMatchObject({ phase: 'load-graph' });
     } finally {
+      await tmpRepo.cleanup();
+    }
+  });
+});
+
+describe('runFullAnalysis re-resolves git state under the lock (#2658 review H2)', () => {
+  afterEach(() => {
+    vi.doUnmock('../../src/storage/git.js');
+    vi.doUnmock('../../src/core/ingestion/pipeline.js');
+    vi.resetModules();
+    vi.clearAllMocks();
+  });
+
+  it('re-reads HEAD after acquiring the lock, so a commit that lands during the wait is not missed', async () => {
+    // acquireIndexLock can wait up to the timeout ceiling; HEAD may advance
+    // during that wait. Pre-fix, resolveWriteTarget was called ONCE (before the
+    // lock) and its stale snapshot fed the freshness check — a waiter could
+    // return alreadyUpToDate against the OLD commit. Post-fix the wrapper
+    // re-resolves UNDER the lock, so getCurrentCommit is called again and the
+    // post-wait commit is what the pipeline uses. Simulate the advance by making
+    // getCurrentCommit return a new value on each call.
+    const commits = ['commit-before-wait', 'commit-after-wait'];
+    let call = 0;
+    const getCurrentCommit = vi.fn(
+      () => commits[call < commits.length ? call++ : commits.length - 1],
+    );
+    vi.doMock('../../src/storage/git.js', async () => {
+      const actual = await vi.importActual<typeof import('../../src/storage/git.js')>(
+        '../../src/storage/git.js',
+      );
+      return {
+        ...actual,
+        getCurrentCommit,
+        hasGitDir: () => true,
+        getCurrentBranch: () => 'main',
+        isWorkingTreeDirty: () => false,
+      };
+    });
+    // Stop the run right after the wrapper's two resolveWriteTarget calls so the
+    // test pins the re-resolve, not the full pipeline.
+    vi.doMock('../../src/core/ingestion/pipeline.js', () => ({
+      runPipelineFromRepo: vi.fn(async () => {
+        throw new Error('stop-after-resolve');
+      }),
+    }));
+
+    const tmpRepo = await createTempDir('gitnexus-h2-relock-');
+    try {
+      const { runFullAnalysis } = await import('../../src/core/run-analyze.js');
+      await runFullAnalysis(
+        tmpRepo.dbPath,
+        { force: true },
+        { onProgress: () => {}, onLog: () => {} },
+      ).catch(() => undefined);
+
+      // Pre-fix: exactly 1 (single pre-lock resolve). Post-fix: >= 2 (re-resolve
+      // under the lock), and the second call observed the post-wait commit.
+      expect(getCurrentCommit.mock.calls.length).toBeGreaterThanOrEqual(2);
+      expect(getCurrentCommit.mock.results[1]?.value).toBe('commit-after-wait');
+    } finally {
+      await tmpRepo.cleanup();
+    }
+  });
+
+  it('releases the lock when the under-lock re-resolve throws (no leak) (#2658 review H2 self-review)', async () => {
+    // The re-resolve runs UNDER the held lock and can throw (e.g. a `--branch`
+    // that no longer matches a checkout switched during the wait). That throw
+    // must still release the lock — the loop lives inside the try/finally.
+    vi.doUnmock('../../src/storage/git.js');
+    const release = vi.fn();
+    vi.doMock('../../src/storage/index-lock.js', async () => {
+      const actual = await vi.importActual<typeof import('../../src/storage/index-lock.js')>(
+        '../../src/storage/index-lock.js',
+      );
+      return {
+        ...actual,
+        acquireIndexLock: vi.fn(async () => ({
+          record: {
+            v: 1,
+            pid: 1,
+            hostname: 'h',
+            startTime: null,
+            token: 't',
+            invocationId: 'i',
+            acquiredAt: '',
+          },
+          release,
+        })),
+      };
+    });
+    // getCurrentCommit succeeds on the pre-lock resolve, then throws on the
+    // under-lock re-resolve — the exact shape a mid-wait git change produces.
+    let call = 0;
+    vi.doMock('../../src/storage/git.js', async () => {
+      const actual = await vi.importActual<typeof import('../../src/storage/git.js')>(
+        '../../src/storage/git.js',
+      );
+      return {
+        ...actual,
+        hasGitDir: () => true,
+        getCurrentBranch: () => 'main',
+        isWorkingTreeDirty: () => false,
+        getCurrentCommit: () => {
+          if (call++ === 0) return 'c1';
+          throw new Error('git HEAD read failed mid-wait');
+        },
+      };
+    });
+
+    const tmpRepo = await createTempDir('gitnexus-h2-leak-');
+    try {
+      const { runFullAnalysis } = await import('../../src/core/run-analyze.js');
+      const err = await runFullAnalysis(
+        tmpRepo.dbPath,
+        { force: true },
+        { onProgress: () => {}, onLog: () => {} },
+      ).catch((e: unknown) => e);
+      expect(err).toBeInstanceOf(Error);
+      expect(release).toHaveBeenCalledTimes(1); // lock freed despite the throw
+    } finally {
+      vi.doUnmock('../../src/storage/index-lock.js');
       await tmpRepo.cleanup();
     }
   });

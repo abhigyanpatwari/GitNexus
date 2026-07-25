@@ -175,6 +175,8 @@ export const zhCN = {
     '根据检测到的社区生成仓库专属 skill 文件（同时设置 --index-only 时无效）。',
   'help.option.analyze.skipAgentsMd': '跳过更新 AGENTS.md 和 CLAUDE.md 中的 gitnexus 区块',
   'help.option.analyze.noStats': '从 AGENTS.md 和 CLAUDE.md 中省略易变的文件/符号计数',
+  'help.option.analyze.selfCommit':
+    '在 analyze 后自动提交 AGENTS.md/CLAUDE.md 的变更（默认关闭，需显式开启）。仅限这两个文件（绝不使用 `git add -A`）；若两者均不存在、均未变更，或仓库未配置 git 身份，则不执行任何操作。',
   'help.option.analyze.skipSkills':
     '跳过直接安装在 .claude/skills/ 和 .agents/skills/ 下的标准 GitNexus skill 文件。不抑制 --skills 生成的社区 skill（位于 .claude/skills/gitnexus-area-*）。使用 --index-only 可跳过所有 AI 上下文文件注入。',
   'help.option.analyze.indexOnly': '纯索引模式：跳过所有文件注入（AGENTS.md、CLAUDE.md、skills）',
