@@ -314,6 +314,32 @@ describe('uninstallCommand', () => {
     expect(config.mcp.other).toEqual({ type: 'local', command: ['foo'] });
   });
 
+  it('removes the gitnexus entry from OpenCode config.jsonc, preserving comments', async () => {
+    const configJsonc = path.join(tempHome, '.config', 'opencode', 'config.jsonc');
+    await fs.mkdir(path.dirname(configJsonc), { recursive: true });
+    await fs.writeFile(
+      configJsonc,
+      [
+        '{',
+        '  // keep this comment',
+        '  "mcp": {',
+        '    "gitnexus": { "type": "local", "command": ["gitnexus", "mcp"] },',
+        '    "other": { "type": "local", "command": ["foo"] }',
+        '  }',
+        '}',
+      ].join('\n'),
+      'utf-8',
+    );
+
+    const uninstallCommand = await importUninstall();
+    await uninstallCommand({ force: true });
+
+    const raw = await fs.readFile(configJsonc, 'utf-8');
+    expect(raw).toContain('keep this comment');
+    expect(raw).not.toContain('"gitnexus"');
+    expect(raw).toContain('"other"');
+  });
+
   // ── Antigravity MCP + hooks (AfterTool / gitnexus-antigravity-hook) ──
   it('removes Antigravity MCP and AfterTool hooks plus the adapter script dir', async () => {
     const mcpPath = path.join(tempHome, '.gemini', 'antigravity', 'mcp_config.json');
