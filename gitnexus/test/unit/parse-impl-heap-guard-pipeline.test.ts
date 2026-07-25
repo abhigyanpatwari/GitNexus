@@ -22,7 +22,10 @@ vi.mock('node:v8', async () => {
 });
 
 import { createKnowledgeGraph } from '../../src/core/graph/graph.js';
-import { runChunkedParseAndResolve } from '../../src/core/ingestion/pipeline-phases/parse-impl.js';
+import {
+  projectParseHeapNeedBytes,
+  runChunkedParseAndResolve,
+} from '../../src/core/ingestion/pipeline-phases/parse-impl.js';
 import { _captureLogger } from '../../src/core/logger.js';
 
 const MB = 1024 * 1024;
@@ -77,11 +80,17 @@ describe('#2649 heap guardrails wired into runChunkedParseAndResolve', () => {
   });
 
   it('preflight warn projects from PARSEABLE files only and names the parseable count', async () => {
-    // Tiny mocked heap limit so ONE parseable file (~169KB projected) crosses
-    // the 85% preflight threshold; the guard abort is disabled so the parse
-    // itself proceeds on the real (unmocked) memoryUsage.
+    // Mock the heap limit relative to what ONE parseable file actually projects,
+    // so this stays a test of the WARN BEHAVIOUR rather than of the projection
+    // constant. Hard-coding 150_000 tied it to PROJECTED_HEAP_BYTES_PER_NODE =
+    // 2250; recalibrating that constant for streamed emit (#2680) dropped the
+    // projection to 0.80 of the limit and the warn silently stopped firing.
+    // Deriving the limit keeps the ratio at 0.90 — above the 0.85 threshold —
+    // whatever the constant becomes.
     process.env.GITNEXUS_MEMORY = 'off';
-    getHeapStatisticsMock.mockReturnValue({ heap_size_limit: 150_000 });
+    getHeapStatisticsMock.mockReturnValue({
+      heap_size_limit: Math.floor(projectParseHeapNeedBytes(1) / 0.9),
+    });
 
     const parseable = writeFixture('src/b.ts', 'export function b() { return 2; }\n');
     const unparseable = writeFixture('src/data.zzz9', 'not source code\n');
