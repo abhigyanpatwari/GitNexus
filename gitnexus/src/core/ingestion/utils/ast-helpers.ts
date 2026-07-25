@@ -111,24 +111,6 @@ const isConcreteTypedefCapture = (captureMap: Record<string, SyntaxNode>): boole
   );
 };
 
-export const buildConcreteTypedefDefinitionRanges = (
-  matches: readonly QueryMatchLike[],
-): Set<string> => {
-  const ranges = new Set<string>();
-  for (const match of matches) {
-    const captureMap: Record<string, SyntaxNode> = {};
-    for (const capture of match.captures) {
-      captureMap[capture.name] = capture.node;
-    }
-
-    const definitionNode = getDefinitionNodeFromCaptures(captureMap);
-    if (definitionNode && isConcreteTypedefCapture(captureMap)) {
-      ranges.add(nodeRangeKey(definitionNode));
-    }
-  }
-  return ranges;
-};
-
 export const isSuppressedConcreteTypedefDuplicate = (
   captureMap: Record<string, SyntaxNode>,
   concreteTypedefRanges: ReadonlySet<string>,
@@ -161,8 +143,11 @@ const VALUE_DEFINITION_LABELS: ReadonlySet<NodeLabel> = new Set<NodeLabel>([
 export const isValueDefinitionLabel = (label: NodeLabel): boolean =>
   VALUE_DEFINITION_LABELS.has(label);
 
-/** Definition-name claims a file's matches stake out, by claimant rank. */
-export interface DefinitionNameClaims {
+/**
+ * One pass over a file's matches: definition-name claims by rank, plus the
+ * concrete-typedef ranges the loop's separate typedef guard consumes.
+ */
+export interface DefinitionPreScan {
   /**
    * Keys claimed by any non-value capture — consulted by `Const`/`Static`/
    * `Variable`. Includes `Property`, so an annotated Python attribute still
@@ -176,6 +161,8 @@ export interface DefinitionNameClaims {
    * `let f = { … }`) without being collapsible by its own claim.
    */
   readonly callable: ReadonlySet<string>;
+  /** Ranges of `type_definition` nodes that already emit a concrete struct/enum. */
+  readonly concreteTypedefRanges: ReadonlySet<string>;
 }
 
 /**
@@ -216,28 +203,38 @@ export interface DefinitionNameClaims {
  *
  * Language-agnostic: keyed off capture names and labels only.
  *
- * Sibling of {@link buildConcreteTypedefDefinitionRanges}, which suppresses the
- * analogous typedef/struct duplicate from the same `matches` array.
+ * Also collects the concrete-typedef ranges that suppress the analogous
+ * typedef/struct duplicate, so both suppression sets come from one traversal.
  */
-export const buildDefinitionNameClaims = (
+export const buildDefinitionPreScan = (
   matches: readonly QueryMatchLike[],
   provider: LanguageProvider,
-): DefinitionNameClaims => {
+): DefinitionPreScan => {
   const nonValue = new Set<string>();
   const callable = new Set<string>();
+  const concreteTypedefRanges = new Set<string>();
   for (const match of matches) {
+    // ONE capture-map build per match feeds both suppression sets. These used
+    // to be two independent passes over `matches` (each rebuilding this object)
+    // on the hot per-file parse path.
     const captureMap: Record<string, SyntaxNode> = {};
     for (const capture of match.captures) {
       captureMap[capture.name] = capture.node;
     }
 
-    // No `@name` capture means nothing a lower-ranked capture could collide
-    // with — a value or property pattern always binds a name.
-    const nameNode = captureMap['name'];
-    if (nameNode === undefined) continue;
-
     const definitionNode = getDefinitionNodeFromCaptures(captureMap);
     if (definitionNode === null) continue;
+
+    if (isConcreteTypedefCapture(captureMap)) {
+      concreteTypedefRanges.add(nodeRangeKey(definitionNode));
+    }
+
+    // No `@name` capture means nothing a lower-ranked capture could collide
+    // with — a value or property pattern always binds a name. Checked before
+    // `getLabelFromCaptures` so a nameless match never pays for label
+    // resolution (which can reach a provider's `labelOverride`).
+    const nameNode = captureMap['name'];
+    if (nameNode === undefined) continue;
 
     const label = getLabelFromCaptures(captureMap, provider);
     if (label === null || isValueDefinitionLabel(label)) continue;
@@ -246,7 +243,7 @@ export const buildDefinitionNameClaims = (
     nonValue.add(key);
     if (isOverloadableCallable(label)) callable.add(key);
   }
-  return { nonValue, callable };
+  return { nonValue, callable, concreteTypedefRanges };
 };
 
 /**

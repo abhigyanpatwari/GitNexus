@@ -78,8 +78,7 @@ try {
 } catch {}
 import { getLanguageFromFilename } from 'gitnexus-shared';
 import {
-  buildConcreteTypedefDefinitionRanges,
-  buildDefinitionNameClaims,
+  buildDefinitionPreScan,
   FUNCTION_NODE_TYPES,
   findAncestorBeforeBoundary,
   getDefinitionNodeFromCaptures,
@@ -1315,13 +1314,14 @@ const processFileGroup = (
       );
       continue;
     }
-    const concreteTypedefRanges = buildConcreteTypedefDefinitionRanges(matches);
-
     const provider = getProvider(language);
 
-    // #2687: definition-name claims by rank (callable > Property > value), so the
-    // dedup below cannot depend on tree-sitter's match order.
-    const definitionNameClaims = buildDefinitionNameClaims(matches, provider);
+    // #2687: ONE pass over `matches` yields both suppression sets — the
+    // definition-name claims by rank (callable > Property > value), so the dedup
+    // below cannot depend on tree-sitter's match order, and the concrete-typedef
+    // ranges the typedef guard consumes.
+    const definitionPreScan = buildDefinitionPreScan(matches, provider);
+    const concreteTypedefRanges = definitionPreScan.concreteTypedefRanges;
 
     // Produce the `ParsedFile` for the scope-resolution pipeline HERE, reusing
     // the tree we just parsed (no second tree-sitter parse). Scope-resolution
@@ -1979,7 +1979,7 @@ const processFileGroup = (
       // tree-sitter completes `@definition.const` at `@name`, while
       // `@definition.function` must also match the trailing arrow / function
       // expression, so the const match is yielded first and its edgeless twin
-      // escaped (#2687). `definitionNameClaims` is the order-independent view of
+      // escaped (#2687). `definitionPreScan` is the order-independent view of
       // the same claim, pre-scanned over `matches` before this loop and ranked so
       // a capture is dropped only by a STRICTLY higher-ranked claimant.
       //
@@ -1997,15 +1997,12 @@ const processFileGroup = (
         if (isValueDefinitionLabel(nodeLabel)) {
           if (
             processedDefinitionNodes.has(definitionNameKey) ||
-            definitionNameClaims.nonValue.has(definitionNameKey)
+            definitionPreScan.nonValue.has(definitionNameKey)
           ) {
             continue;
           }
           processedDefinitionNodes.add(definitionNameKey);
-        } else if (
-          nodeLabel === 'Property' &&
-          definitionNameClaims.callable.has(definitionNameKey)
-        ) {
+        } else if (nodeLabel === 'Property' && definitionPreScan.callable.has(definitionNameKey)) {
           // Only a CALLABLE collapses a property. Consulting the wider
           // `nonValue` set here would let a property suppress itself, and would
           // let an annotated Python attribute lose to its own bare-assignment

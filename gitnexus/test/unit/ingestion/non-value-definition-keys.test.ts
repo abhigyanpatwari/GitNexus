@@ -11,7 +11,7 @@
 import { describe, expect, it } from 'vitest';
 import type { LanguageProvider } from '../../../src/core/ingestion/language-provider.js';
 import {
-  buildDefinitionNameClaims,
+  buildDefinitionPreScan,
   type SyntaxNode,
 } from '../../../src/core/ingestion/utils/ast-helpers.js';
 
@@ -28,11 +28,11 @@ const PROVIDER = {} as unknown as LanguageProvider;
 
 /** The non-value claim set — what `Const`/`Static`/`Variable` consult. */
 const nonValueOf = (
-  matches: Parameters<typeof buildDefinitionNameClaims>[0],
+  matches: Parameters<typeof buildDefinitionPreScan>[0],
   provider: LanguageProvider,
-): ReadonlySet<string> => buildDefinitionNameClaims(matches, provider).nonValue;
+): ReadonlySet<string> => buildDefinitionPreScan(matches, provider).nonValue;
 
-describe('buildDefinitionNameClaims', () => {
+describe('buildDefinitionPreScan', () => {
   it('registers a function capture under its startIndex and name', () => {
     const keys = nonValueOf(
       [match({ 'definition.function': node(0, 'const Bare = () => 1;'), name: node(6, 'Bare') })],
@@ -103,7 +103,7 @@ describe('buildDefinitionNameClaims', () => {
     // bare-assignment `Variable` twin while still letting a callable collapse a
     // Kotlin/Swift closure property. A property in `callable` would make a
     // property suppress itself.
-    const claims = buildDefinitionNameClaims(
+    const claims = buildDefinitionPreScan(
       [match({ 'definition.property': node(0, 'name: str = "x"'), name: node(0, 'name') })],
       PROVIDER,
     );
@@ -115,7 +115,7 @@ describe('buildDefinitionNameClaims', () => {
   });
 
   it('ranks a callable claim into both sets', () => {
-    const claims = buildDefinitionNameClaims(
+    const claims = buildDefinitionPreScan(
       [match({ 'definition.function': node(0, 'val f = { }'), name: node(4, 'f') })],
       PROVIDER,
     );
