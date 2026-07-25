@@ -7,10 +7,21 @@ import { spawnSync, type SpawnSyncReturns } from 'node:child_process';
  *  CLI startup gate (same bounding rationale as the extension probe below). */
 const NATIVE_LOAD_PROBE_TIMEOUT_MS = 15_000;
 
+/**
+ * Why the native check failed. A failed check is NOT necessarily a missing
+ * binary — the package may be absent, the binary may be absent, or a binary that
+ * is right there may fail to load (host glibc too old, truncated download).
+ * Callers that render a status line must tell those apart: reporting all of them
+ * as "missing" sends users to reinstall a file they already have (#2672).
+ */
+export type NativeCheckFailureKind = 'package_missing' | 'binary_missing' | 'load_failed';
+
 export interface NativeCheckResult {
   ok: boolean;
   binaryPath?: string;
   message?: string;
+  /** Set only when `ok` is false. */
+  kind?: NativeCheckFailureKind;
 }
 
 export function checkLbugNative(overridePkgDir?: string): NativeCheckResult {
@@ -26,6 +37,7 @@ export function checkLbugNative(overridePkgDir?: string): NativeCheckResult {
     } catch {
       return {
         ok: false,
+        kind: 'package_missing',
         message: [
           'LadybugDB package (@ladybugdb/core) is not installed.',
           '',
@@ -40,6 +52,7 @@ export function checkLbugNative(overridePkgDir?: string): NativeCheckResult {
     return {
       ok: false,
       binaryPath,
+      kind: 'binary_missing',
       message: [
         'LadybugDB native binary (lbugjs.node) is missing.',
         '',
@@ -89,9 +102,30 @@ export function checkLbugNative(overridePkgDir?: string): NativeCheckResult {
     return { ok: true, binaryPath };
   }
 
+  // One failure class is NOT repairable by reinstalling: a host whose glibc is
+  // older than the prebuilt binary requires. Every download ships the same
+  // binary, so the generic advice below sends the user around a loop that always
+  // ends here (#2672). Branch before it, and only here — on the arm where the
+  // probe actually ran and failed, so an unrunnable probe still fails open above.
+  const glibcExplanation = glibcTooOldMessage(probe.stderr ?? '');
+  if (glibcExplanation !== null) {
+    return {
+      ok: false,
+      binaryPath,
+      kind: 'load_failed',
+      message: [
+        'LadybugDB native binary (lbugjs.node) exists but failed to load:',
+        `  ${describeNativeLoadFailure(probe)}`,
+        '',
+        glibcExplanation,
+      ].join('\n'),
+    };
+  }
+
   return {
     ok: false,
     binaryPath,
+    kind: 'load_failed',
     message: [
       'LadybugDB native binary (lbugjs.node) exists but failed to load:',
       `  ${describeNativeLoadFailure(probe)}`,
@@ -131,6 +165,80 @@ function describeNativeLoadFailure(probe: SpawnSyncReturns<string>): string {
     lines.at(-1) ??
     `exited with code ${probe.status ?? 'unknown'}`
   );
+}
+
+/**
+ * A `GLIBC_<version>` token. The dynamic loader names the first unresolved
+ * versioned symbol as ``version `GLIBC_2.34' not found (required by …)``, but we
+ * key on the token plus a "not found" line rather than on glibc's exact
+ * backtick/apostrophe quoting: if that wording ever changes, this degrades to
+ * the generic failure message instead of misfiring.
+ */
+const GLIBC_VERSION_TOKEN = /GLIBC_(\d+(?:\.\d+)+)/g;
+
+/** Numeric dotted-segment order — glibc 2.9 is OLDER than 2.34, not newer. */
+function compareDottedVersions(a: string, b: string): number {
+  const left = a.split('.').map((part) => Number.parseInt(part, 10));
+  const right = b.split('.').map((part) => Number.parseInt(part, 10));
+  for (let i = 0; i < Math.max(left.length, right.length); i += 1) {
+    const diff = (left[i] ?? 0) - (right[i] ?? 0);
+    if (diff !== 0) return diff;
+  }
+  return 0;
+}
+
+/**
+ * This host's runtime glibc, or null when Node cannot report it (musl builds,
+ * embedders without `process.report`). Read locally rather than through
+ * analyzer-identity's `detectLibcVariant`: that module is deliberately reached
+ * via dynamic import from the CLI lazy actions, and this file is the
+ * dependency-light startup gate that must not pull it in.
+ */
+function hostGlibcVersion(): string | null {
+  try {
+    const report = process.report?.getReport() as
+      | { header?: { glibcVersionRuntime?: unknown } }
+      | undefined;
+    const runtime = report?.header?.glibcVersionRuntime;
+    return typeof runtime === 'string' && runtime.length > 0 ? runtime : null;
+  } catch {
+    // Report generation is optional on some embedded Node builds; an unknown
+    // host version still leaves the required version worth printing.
+    return null;
+  }
+}
+
+/**
+ * Explain a glibc-too-old native load failure, or null when the probe's stderr
+ * describes something else.
+ *
+ * Reinstalling cannot fix this class — the package ships one prebuilt binary per
+ * platform — so the caller must NOT fall through to the reinstall instructions
+ * (#2672). Exported for direct unit testing: a real `GLIBC_2.34' not found`
+ * cannot be provoked on a host whose glibc is new enough to run the tests.
+ */
+export function glibcTooOldMessage(stderr: string): string | null {
+  const required = stderr
+    .split('\n')
+    .filter((line) => /not found/i.test(line))
+    .flatMap((line) => [...line.matchAll(GLIBC_VERSION_TOKEN)].map((match) => match[1]))
+    .sort(compareDottedVersions)
+    .at(-1);
+  if (required === undefined) return null;
+
+  const host = hostGlibcVersion();
+  return [
+    "This host's C library (glibc) is older than the prebuilt binary requires.",
+    `  required:  glibc ${required} or newer`,
+    `  this host: ${host === null ? 'glibc version could not be determined' : `glibc ${host}`}`,
+    '',
+    'Reinstalling will NOT help — every download ships the same prebuilt binary.',
+    '',
+    'Options:',
+    `  - Run GitNexus on a distribution with glibc ${required} or newer`,
+    '    (Ubuntu 22.04+, RHEL/Rocky/Alma 9+, Debian 12+, Fedora 35+).',
+    '  - Or use the GitNexus container image, which bundles a current glibc.',
+  ].join('\n');
 }
 
 export interface FtsProbeResult {

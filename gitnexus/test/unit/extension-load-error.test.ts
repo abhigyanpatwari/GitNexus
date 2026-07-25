@@ -154,6 +154,11 @@ describe('classifyExtensionLoadError', () => {
     expect(remedy).toMatch(/will NOT help/);
     // Must not resurrect the old, wrong "retry the network install" instruction.
     expect(remedy).not.toMatch(/Retry with network access/i);
+    // #2669: the zero-install path — Git for Windows already ships those DLLs.
+    expect(remedy).toMatch(/Git Bash/);
+    expect(remedy).toMatch(/mingw64/);
+    // Never a user-profile path: remedy text reaches /api/search unredacted.
+    expect(remedy).not.toMatch(/C:\\Users\\/);
   });
 
   it('hedged fallback remedy points at the OS error and offers both branches (language-independent)', () => {
@@ -318,6 +323,9 @@ describe('diagnoseExtensionLoad (structural, language-independent)', () => {
       const { kind, remedy } = diagnoseExtensionLoad(reason);
       expect(kind).toBe('missing_dependency');
       expect(remedy).toMatch(/vc_redist\.x64\.exe/);
+      // #2669: the structural remedy carries the same zero-install hint.
+      expect(remedy).toMatch(/Git Bash/);
+      expect(remedy).not.toMatch(/C:\\Users\\/);
     } finally {
       rmSync(dir, { recursive: true, force: true });
     }

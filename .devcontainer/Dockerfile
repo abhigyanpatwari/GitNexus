@@ -39,6 +39,7 @@ ENV BUN_VERSION=${BUN_VERSION} \
     TZ=${TZ} \
     DEVCONTAINER=true \
     NODE_OPTIONS=--max-old-space-size=4096 \
+    GITNEXUS_AUTO_HEAP=0 \
     POWERLEVEL9K_DISABLE_GITSTATUS=true
 
 # Native build toolchain that gitnexus/postinstall needs. It compiles
