@@ -15,8 +15,9 @@ vi.mock('v8', () => ({
   },
 }));
 
-// Pin physical RAM to 16GB so the RAM-aware auto-cap (0.75 x RAM, clamped
-// >= 16384) resolves deterministically to 16384 regardless of the host machine.
+// Pin physical RAM to 16GB so the RAM-aware auto-cap (floor raised to 16384
+// but capped at 0.80 x RAM, #2649) resolves deterministically to 13107
+// regardless of the host machine.
 vi.mock('os', async () => {
   const actual = await vi.importActual<typeof import('os')>('os');
   const mocked = { ...actual, totalmem: () => 16 * 1024 * 1024 * 1024 };
@@ -75,6 +76,7 @@ describe('analyzeCommand heap respawn', () => {
 
   beforeEach(() => {
     initialNodeOptions = process.env.NODE_OPTIONS;
+    delete process.env.GITNEXUS_MEMORY;
     vi.resetModules();
     spawnMock.mockReset();
     getHeapStatisticsMock.mockReset();
@@ -114,9 +116,9 @@ describe('analyzeCommand heap respawn', () => {
 
     expect(spawnMock).toHaveBeenCalledTimes(1);
     const [, args, opts] = spawnMock.mock.calls[0];
-    expect(args).toContain('--max-old-space-size=16384');
+    expect(args).toContain('--max-old-space-size=13107');
     expect(args).toContain('--max-semi-space-size=128');
-    expect(opts.env.NODE_OPTIONS).toContain('--max-old-space-size=16384');
+    expect(opts.env.NODE_OPTIONS).toContain('--max-old-space-size=13107');
     expect(opts.env.NODE_OPTIONS).toContain('--max-semi-space-size=128');
     expect(opts.env.GITNEXUS_RESPAWN_PROGRESS_TTY).toBe('1');
   });
@@ -146,6 +148,129 @@ describe('analyzeCommand heap respawn', () => {
     expect(spawnMock).not.toHaveBeenCalled();
   });
 
+  it('re-execs with the auto cap when ambient NODE_OPTIONS pins a smaller heap (#2649)', async () => {
+    process.env.NODE_OPTIONS = '--max-old-space-size=4096';
+    getHeapStatisticsMock.mockReturnValue({ heap_size_limit: 4096 * 1024 * 1024 });
+    mockSpawnExit();
+
+    const { _captureLogger } = await import('../../src/core/logger.js');
+    const cap = _captureLogger();
+    const { analyzeCommand } = await import('../../src/cli/analyze.js');
+    await analyzeCommand(undefined, {});
+    cap.restore();
+
+    expect(spawnMock).toHaveBeenCalledTimes(1);
+    const [, args, opts] = spawnMock.mock.calls[0];
+    expect(args).toContain('--max-old-space-size=13107');
+    // The auto flag is appended after the ambient value, so V8's
+    // later-flag-wins semantics resolve to the larger cap.
+    expect(opts.env.NODE_OPTIONS.indexOf('--max-old-space-size=13107')).toBeGreaterThan(
+      opts.env.NODE_OPTIONS.indexOf('--max-old-space-size=4096'),
+    );
+    const warn = cap.records().find((r) => r.msg.includes('pins the heap to 4096MB'));
+    expect(warn?.msg).toContain('Re-running analyze with the larger auto-sized cap');
+  });
+
+  it('honors GITNEXUS_MEMORY=off: keeps the small ambient heap, silently (#2649)', async () => {
+    process.env.NODE_OPTIONS = '--max-old-space-size=4096';
+    process.env.GITNEXUS_MEMORY = 'off';
+    getHeapStatisticsMock.mockReturnValue({ heap_size_limit: 4096 * 1024 * 1024 });
+
+    const { _captureLogger } = await import('../../src/core/logger.js');
+    const cap = _captureLogger();
+    const { analyzeCommand } = await import('../../src/cli/analyze.js');
+    await analyzeCommand('/__gitnexus_nonexistent__', {});
+    cap.restore();
+
+    expect(spawnMock).not.toHaveBeenCalled();
+    // Explicit opt-out stays quiet: stderr-sensitive consumers (e2e
+    // harnesses, scripts) rely on no extra warning here.
+    const warns = cap.records().filter((r) => r.msg.includes('pins the heap'));
+    expect(warns).toEqual([]);
+  });
+
+  it('preserves parent execArgv (e.g. a tsx loader) in the respawned child argv (#2649)', async () => {
+    delete process.env.NODE_OPTIONS;
+    restoreStderrIsTTY = setStreamIsTTY(process.stderr, true);
+    getHeapStatisticsMock.mockReturnValue({ heap_size_limit: 512 * 1024 * 1024 });
+    mockSpawnExit();
+
+    const { analyzeCommand } = await import('../../src/cli/analyze.js');
+    await analyzeCommand(undefined, {});
+
+    expect(spawnMock).toHaveBeenCalledTimes(1);
+    const [, args] = spawnMock.mock.calls[0];
+    // The child argv must start with the parent's node flags so
+    // loader-launched CLIs (node --import tsx src/cli/index.ts) survive the
+    // respawn; our heap flags follow and win via later-flag-wins.
+    expect(args.slice(0, process.execArgv.length)).toEqual(process.execArgv);
+  });
+
+  it('parseMaxOldSpaceMb: last occurrence wins, absent and malformed values are null', async () => {
+    const { parseMaxOldSpaceMb } = await import('../../src/cli/analyze.js');
+    expect(parseMaxOldSpaceMb('--max-old-space-size=4096 --max-old-space-size=8192')).toBe(8192);
+    expect(parseMaxOldSpaceMb('--max-semi-space-size=128')).toBeNull();
+    expect(parseMaxOldSpaceMb('')).toBeNull();
+    expect(parseMaxOldSpaceMb('--max-old-space-size=0')).toBeNull();
+    // V8 treats - and _ interchangeably in flag names, and Node accepts a
+    // space-separated value in NODE_OPTIONS; every spelling of the pin must
+    // be honored instead of silently overridden.
+    expect(parseMaxOldSpaceMb('--max_old_space_size=4096')).toBe(4096);
+    expect(parseMaxOldSpaceMb('--max-old-space-size 4096')).toBe(4096);
+    expect(parseMaxOldSpaceMb('--max-old-space-size --other-flag')).toBeNull();
+  });
+
+  it('GITNEXUS_MEMORY=off also disables the default (unpinned) respawn (#2649 review)', async () => {
+    delete process.env.NODE_OPTIONS;
+    process.env.GITNEXUS_MEMORY = 'off';
+    getHeapStatisticsMock.mockReturnValue({ heap_size_limit: 512 * 1024 * 1024 });
+
+    const { analyzeCommand } = await import('../../src/cli/analyze.js');
+    await analyzeCommand('/__gitnexus_nonexistent__', {});
+
+    expect(spawnMock).not.toHaveBeenCalled();
+  });
+
+  it('an explicit per-invocation execArgv heap flag always wins (no respawn)', async () => {
+    delete process.env.NODE_OPTIONS;
+    getHeapStatisticsMock.mockReturnValue({ heap_size_limit: 512 * 1024 * 1024 });
+    const execArgvDesc = Object.getOwnPropertyDescriptor(process, 'execArgv');
+    Object.defineProperty(process, 'execArgv', {
+      configurable: true,
+      value: ['--max-old-space-size=2048'],
+    });
+    try {
+      const { analyzeCommand } = await import('../../src/cli/analyze.js');
+      await analyzeCommand('/__gitnexus_nonexistent__', {});
+      expect(spawnMock).not.toHaveBeenCalled();
+    } finally {
+      if (execArgvDesc) Object.defineProperty(process, 'execArgv', execArgvDesc);
+    }
+  });
+
+  it('does not replay --inspect flags into the respawned child (debug-port clash)', async () => {
+    delete process.env.NODE_OPTIONS;
+    getHeapStatisticsMock.mockReturnValue({ heap_size_limit: 512 * 1024 * 1024 });
+    mockSpawnExit();
+    const execArgvDesc = Object.getOwnPropertyDescriptor(process, 'execArgv');
+    Object.defineProperty(process, 'execArgv', {
+      configurable: true,
+      value: ['--inspect', '--inspect-brk=9230', '--enable-source-maps'],
+    });
+    try {
+      const { analyzeCommand } = await import('../../src/cli/analyze.js');
+      await analyzeCommand(undefined, {});
+      expect(spawnMock).toHaveBeenCalledTimes(1);
+      const [, args] = spawnMock.mock.calls[0];
+      expect({
+        inspectFlags: args.filter((a: string) => a.startsWith('--inspect')),
+        keepsOtherFlags: args.includes('--enable-source-maps'),
+      }).toEqual({ inspectFlags: [], keepsOtherFlags: true });
+    } finally {
+      if (execArgvDesc) Object.defineProperty(process, 'execArgv', execArgvDesc);
+    }
+  });
+
   it('prints heap guidance when respawned analyze exits with likely OOM', async () => {
     delete process.env.NODE_OPTIONS;
     getHeapStatisticsMock.mockReturnValue({ heap_size_limit: 512 * 1024 * 1024 });
@@ -164,7 +289,7 @@ describe('analyzeCommand heap respawn', () => {
       .find((r) => r.msg.includes('Analysis likely ran out of memory'));
     expect(oomGuidance).toBeDefined();
     const msg = oomGuidance?.msg ?? '';
-    expect(msg).toContain('auto-sized to 16384MB');
+    expect(msg).toContain('auto-sized to 13107MB');
     expect(msg).toContain('NODE_OPTIONS="--max-old-space-size=<MB>"');
     expect(msg).toContain('[your-args]');
     expect(msg).toContain('native crash unrelated to heap size');
@@ -289,10 +414,22 @@ describe('computeHeapCapMb (RAM-aware auto heap cap)', () => {
     expect(computeHeapCapMb(31 * GB, null)).toBe(23808);
   });
 
-  it('clamps to the 16384 floor on small boxes', async () => {
+  it('keeps the cap below RAM on small boxes instead of the old >=RAM floor (#2649)', async () => {
     const { computeHeapCapMb } = await import('../../src/cli/analyze.js');
-    // 8GB -> 0.75 * 8192 = 6144 -> clamped to 16384
-    expect(computeHeapCapMb(8 * GB, null)).toBe(16384);
+    // 8GB -> floor wins the max (16384) but is capped to 0.80 * 8192 = 6553
+    expect(computeHeapCapMb(8 * GB, null)).toBe(6553);
+  });
+
+  it('caps a 16GB box at 0.80x RAM, below physical memory (#2649)', async () => {
+    const { computeHeapCapMb } = await import('../../src/cli/analyze.js');
+    // 16GB -> max(16384, 12288) = 16384 -> min(16384, floor(0.80 * 16384)) = 13107
+    expect(computeHeapCapMb(16 * GB, null)).toBe(13107);
+  });
+
+  it('lets the 0.75x rule win once RAM clears the floor region', async () => {
+    const { computeHeapCapMb } = await import('../../src/cli/analyze.js');
+    // 24GB -> max(16384, 18432) = 18432 -> min(18432, 19660) = 18432
+    expect(computeHeapCapMb(24 * GB, null)).toBe(18432);
   });
 
   it('ignores the unconstrained sentinel from constrainedMemory()', async () => {
@@ -303,8 +440,16 @@ describe('computeHeapCapMb (RAM-aware auto heap cap)', () => {
 
   it('honors a real cgroup cap smaller than physical RAM', async () => {
     const { computeHeapCapMb } = await import('../../src/cli/analyze.js');
-    // min(31, 12) = 12GB -> 0.75 * 12288 = 9216 -> clamped to 16384
-    expect(computeHeapCapMb(31 * GB, 12 * GB)).toBe(16384);
+    // min(31, 12) = 12GB effective -> capped to 0.80 * 12288 = 9830, not the 16384 floor
+    expect(computeHeapCapMb(31 * GB, 12 * GB)).toBe(9830);
+  });
+
+  it('never returns a cap at or above effective RAM', async () => {
+    const { computeHeapCapMb } = await import('../../src/cli/analyze.js');
+    const ramsGb = [4, 8, 12, 16, 20, 24, 32, 48, 64];
+    const caps = ramsGb.map((gb) => computeHeapCapMb(gb * GB, null));
+    const belowRam = caps.map((cap, i) => cap < ramsGb[i] * 1024);
+    expect(belowRam).toEqual(ramsGb.map(() => true));
   });
 
   it('uses a large cgroup cap when it exceeds the floor', async () => {
