@@ -99,4 +99,30 @@ describe('closure bindings emit a single Function node in every language', () =>
       'Variable',
     ]);
   });
+
+  it('Python: an annotated attribute stays a Property, not a Variable', async () => {
+    // Regression guard. Python matches BOTH `@definition.property` (annotated)
+    // and `@definition.variable` (bare assignment) on the same statement at the
+    // same byte offset. Ranking `Property` level with the value labels made the
+    // winner depend on match order, which silently turned every typed attribute
+    // — including dataclass fields — into a file-level `Variable`.
+    expect(await labelsFor('src/model.py', 'class C:\n    name: str = "x"\n', 'name')).toEqual([
+      'Property',
+    ]);
+  });
+
+  it('Python: an annotated attribute keeps its owning HAS_PROPERTY edge', async () => {
+    // The label regression above also detached the attribute from its class:
+    // the node became `Variable:<file>:name` reached by `File -DEFINES->`
+    // instead of `Property:<file>:C.name` reached by `Class -HAS_PROPERTY->`.
+    const { graph } = await parseFilesWithWorkers([
+      { path: 'src/owned.py', content: 'class C:\n    name: str = "x"\n' },
+    ]);
+
+    expect(
+      graph.relationships
+        .filter((rel) => rel.type === 'HAS_PROPERTY')
+        .map((rel) => `${rel.sourceId} -> ${rel.targetId}`),
+    ).toEqual(['Class:src/owned.py:C -> Property:src/owned.py:C.name']);
+  });
 });

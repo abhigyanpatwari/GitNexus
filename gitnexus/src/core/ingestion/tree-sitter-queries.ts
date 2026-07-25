@@ -700,9 +700,11 @@ export const PYTHON_QUERIES = `
     left: (identifier) @name)) @definition.variable
 
 ; Lambda bindings: \`f = lambda x: x\` binds a CALLABLE, so it emits Function
-; rather than Variable — that is what lets \`f()\` resolve, since free-call
-; resolution only targets callable labels. Overlap with the assignment pattern
-; above is collapsed by the parse-worker dedup (#2687).
+; rather than Variable, matching what TS/JS already do for \`const f = () => {}\`.
+; This aligns the LABEL only — call resolution runs off the scope-resolution
+; query, which still models the binding as a value, so \`f()\` does not resolve
+; here yet. Overlap with the assignment pattern above is collapsed by the
+; parse-worker dedup (#2687).
 (expression_statement
   (assignment
     left: (identifier) @name
@@ -878,10 +880,11 @@ export const GO_QUERIES = `
 (short_var_declaration left: (expression_list (identifier) @name)) @definition.variable
 
 ; Closure bindings: \`var f = func(){}\` / \`f := func(){}\` bind a CALLABLE, so
-; they emit Function, not Variable — that is what lets \`f()\` resolve, since
-; free-call resolution only targets callable labels. Same convention TS/JS
-; already use for \`const f = () => {}\`. Overlap with the value patterns above
-; is collapsed by the parse-worker dedup (#2687).
+; they emit Function, not Variable — the same convention TS/JS already use for
+; \`const f = () => {}\`. This aligns the LABEL only — call resolution runs off
+; the scope-resolution query, which still models the binding as a value, so
+; \`f()\` does not resolve here yet. Overlap with the value patterns above is
+; collapsed by the parse-worker dedup (#2687).
 (var_declaration
   (var_spec
     name: (identifier) @name
@@ -1059,9 +1062,10 @@ export const CPP_QUERIES = `
     declarator: (identifier) @name)) @definition.variable
 
 ; Lambda bindings: \`auto f = [](int x){ … };\` binds a CALLABLE, so it emits
-; Function rather than Variable — that is what lets \`f()\` resolve, since
-; free-call resolution only targets callable labels. Overlap with the pattern
-; above is collapsed by the parse-worker dedup (#2687).
+; Function rather than Variable, matching TS/JS. This aligns the LABEL only —
+; call resolution runs off the scope-resolution query, which still models the
+; binding as a value, so \`f()\` does not resolve here yet. Overlap with the
+; pattern above is collapsed by the parse-worker dedup (#2687).
 (declaration
   declarator: (init_declarator
     declarator: (identifier) @name
@@ -1416,9 +1420,10 @@ export const KOTLIN_QUERIES = `
     (simple_identifier) @name)) @definition.property
 
 ; Lambda bindings: \`val f = { x -> x }\` binds a CALLABLE, so it emits Function
-; rather than Property — that is what lets \`f()\` resolve, since free-call
-; resolution only targets callable labels. Overlap with the property pattern
-; above is collapsed by the parse-worker dedup (#2687).
+; rather than Property, matching TS/JS. This aligns the LABEL only — call
+; resolution runs off the scope-resolution query, which still models the binding
+; as a value, so \`f()\` does not resolve here yet. Overlap with the property
+; pattern above is collapsed by the parse-worker dedup (#2687).
 (property_declaration
   (variable_declaration
     (simple_identifier) @name)
@@ -1549,9 +1554,10 @@ export const SWIFT_QUERIES = `
 (property_declaration (pattern (simple_identifier) @name)) @definition.property
 
 ; Closure bindings: \`let f = { ... }\` binds a CALLABLE, so it emits Function
-; rather than Property — that is what lets \`f()\` resolve, since free-call
-; resolution only targets callable labels. Overlap with the property pattern
-; above is collapsed by the parse-worker dedup (#2687).
+; rather than Property, matching TS/JS. This aligns the LABEL only — call
+; resolution runs off the scope-resolution query, which still models the binding
+; as a value, so \`f()\` does not resolve here yet. Overlap with the property
+; pattern above is collapsed by the parse-worker dedup (#2687).
 (property_declaration
   name: (pattern (simple_identifier) @name)
   value: (lambda_literal)) @definition.function
@@ -1713,9 +1719,10 @@ export const DART_QUERIES = `
     (initialized_identifier
       (identifier) @name)) @definition.variable)
 ; Closure bindings: \`var f = (x) => x;\` binds a CALLABLE, so it emits Function
-; rather than Variable — that is what lets \`f()\` resolve, since free-call
-; resolution only targets callable labels. Overlap with the pattern above is
-; collapsed by the parse-worker dedup (#2687).
+; rather than Variable, matching TS/JS. This aligns the LABEL only — call
+; resolution runs off the scope-resolution query, which still models the binding
+; as a value, so \`f()\` does not resolve here yet. Overlap with the pattern
+; above is collapsed by the parse-worker dedup (#2687).
 (program
   (initialized_identifier_list
     (initialized_identifier

@@ -8,6 +8,7 @@ import {
   templateArgumentsIdTag,
 } from './template-arguments.js';
 import { splitQualifiedName } from './qualified-name.js';
+import { isOverloadableCallable } from './callable-labels.js';
 
 /** Tree-sitter AST node. Re-exported for use across ingestion modules. */
 export type SyntaxNode = Parser.SyntaxNode;
@@ -142,29 +143,50 @@ export const isSuppressedConcreteTypedefDuplicate = (
 
 /**
  * Graph labels produced by a value capture (`@definition.const` /
- * `@definition.static` / `@definition.variable` / `@definition.property`) — a
- * binding that holds a value rather than declaring a callable.
+ * `@definition.static` / `@definition.variable`) — a binding that holds a value.
  *
- * `Property` belongs here because some grammars model a closure binding as a
- * property declaration (Kotlin `val f = { … }`, Swift `let f = { … }`), so the
- * callable and the value capture collide on the same declaration node exactly
- * as `Const` does for `const f = () => {}`.
+ * `Property` is deliberately NOT here. It outranks these: Python matches both
+ * `@definition.property` (annotated) and `@definition.variable` (bare) on one
+ * assignment, and the property must win so a typed class attribute keeps its
+ * `Property` node and its owning `HAS_PROPERTY` edge. `Property` is instead
+ * suppressed only by a *callable* claim — see {@link buildDefinitionNameClaims}.
  */
 const VALUE_DEFINITION_LABELS: ReadonlySet<NodeLabel> = new Set<NodeLabel>([
   'Const',
   'Static',
   'Variable',
-  'Property',
 ]);
 
 /** True when `label` is the kind of node a value capture emits. */
 export const isValueDefinitionLabel = (label: NodeLabel): boolean =>
   VALUE_DEFINITION_LABELS.has(label);
 
+/** Definition-name claims a file's matches stake out, by claimant rank. */
+export interface DefinitionNameClaims {
+  /**
+   * Keys claimed by any non-value capture — consulted by `Const`/`Static`/
+   * `Variable`. Includes `Property`, so an annotated Python attribute still
+   * beats the bare-assignment `Variable` capture on the same statement.
+   */
+  readonly nonValue: ReadonlySet<string>;
+  /**
+   * Keys claimed by a *callable* capture (`Function`/`Method`/`Constructor`) —
+   * consulted by `Property`. Narrower than `nonValue` on purpose: a `Property`
+   * must be collapsible by a callable (Kotlin `val f = { … }`, Swift
+   * `let f = { … }`) without being collapsible by its own claim.
+   */
+  readonly callable: ReadonlySet<string>;
+}
+
 /**
  * Pre-scan `matches` for the `${definitionNode.startIndex}:${name}` keys already
- * claimed by a NON-value definition capture (`@definition.function` and
- * friends), so the parse-worker's duplicate suppression is order-independent.
+ * claimed by a higher-ranked definition capture, so the parse-worker's duplicate
+ * suppression is order-independent.
+ *
+ * Rank, highest first: callable (`Function`/`Method`/`Constructor`) → `Property`
+ * → value (`Const`/`Static`/`Variable`). A capture is dropped only when a
+ * STRICTLY higher rank claimed the same declaration node and name, so no capture
+ * can suppress itself and no rank can suppress a peer.
  *
  * ## Why this exists (#2687)
  *
@@ -197,19 +219,20 @@ export const isValueDefinitionLabel = (label: NodeLabel): boolean =>
  * Sibling of {@link buildConcreteTypedefDefinitionRanges}, which suppresses the
  * analogous typedef/struct duplicate from the same `matches` array.
  */
-export const buildNonValueDefinitionNameKeys = (
+export const buildDefinitionNameClaims = (
   matches: readonly QueryMatchLike[],
   provider: LanguageProvider,
-): Set<string> => {
-  const keys = new Set<string>();
+): DefinitionNameClaims => {
+  const nonValue = new Set<string>();
+  const callable = new Set<string>();
   for (const match of matches) {
     const captureMap: Record<string, SyntaxNode> = {};
     for (const capture of match.captures) {
       captureMap[capture.name] = capture.node;
     }
 
-    // No `@name` capture means nothing a value capture could collide with —
-    // a value pattern always binds a name.
+    // No `@name` capture means nothing a lower-ranked capture could collide
+    // with — a value or property pattern always binds a name.
     const nameNode = captureMap['name'];
     if (nameNode === undefined) continue;
 
@@ -219,9 +242,11 @@ export const buildNonValueDefinitionNameKeys = (
     const label = getLabelFromCaptures(captureMap, provider);
     if (label === null || isValueDefinitionLabel(label)) continue;
 
-    keys.add(`${definitionNode.startIndex}:${nameNode.text}`);
+    const key = `${definitionNode.startIndex}:${nameNode.text}`;
+    nonValue.add(key);
+    if (isOverloadableCallable(label)) callable.add(key);
   }
-  return keys;
+  return { nonValue, callable };
 };
 
 /**

@@ -79,7 +79,7 @@ try {
 import { getLanguageFromFilename } from 'gitnexus-shared';
 import {
   buildConcreteTypedefDefinitionRanges,
-  buildNonValueDefinitionNameKeys,
+  buildDefinitionNameClaims,
   FUNCTION_NODE_TYPES,
   findAncestorBeforeBoundary,
   getDefinitionNodeFromCaptures,
@@ -1319,9 +1319,9 @@ const processFileGroup = (
 
     const provider = getProvider(language);
 
-    // #2687: definition-node keys a function-like capture already claims, so the
-    // value-label dedup below cannot depend on tree-sitter's match order.
-    const nonValueDefinitionKeys = buildNonValueDefinitionNameKeys(matches, provider);
+    // #2687: definition-name claims by rank (callable > Property > value), so the
+    // dedup below cannot depend on tree-sitter's match order.
+    const definitionNameClaims = buildDefinitionNameClaims(matches, provider);
 
     // Produce the `ParsedFile` for the scope-resolution pipeline HERE, reusing
     // the tree we just parsed (no second tree-sitter parse). Scope-resolution
@@ -1979,8 +1979,9 @@ const processFileGroup = (
       // tree-sitter completes `@definition.const` at `@name`, while
       // `@definition.function` must also match the trailing arrow / function
       // expression, so the const match is yielded first and its edgeless twin
-      // escaped (#2687). `nonValueDefinitionKeys` is the order-independent view of
-      // the same claim, pre-scanned over `matches` before this loop.
+      // escaped (#2687). `definitionNameClaims` is the order-independent view of
+      // the same claim, pre-scanned over `matches` before this loop and ranked so
+      // a capture is dropped only by a STRICTLY higher-ranked claimant.
       //
       // It also replaces the old bare-`startIndex` claim, which was too coarse:
       // a callable declared FIRST in a multi-name declaration
@@ -1992,15 +1993,24 @@ const processFileGroup = (
       // `selectNodeBearingDef` (#1876, still unwired); this pre-scan is the local
       // form that keeps the hot loop single-pass. Keep them in sync if #1876 lands.
       if (definitionNode) {
+        const definitionNameKey = `${definitionNode.startIndex}:${nodeName}`;
         if (isValueDefinitionLabel(nodeLabel)) {
-          const definitionNameKey = `${definitionNode.startIndex}:${nodeName}`;
           if (
             processedDefinitionNodes.has(definitionNameKey) ||
-            nonValueDefinitionKeys.has(definitionNameKey)
+            definitionNameClaims.nonValue.has(definitionNameKey)
           ) {
             continue;
           }
           processedDefinitionNodes.add(definitionNameKey);
+        } else if (
+          nodeLabel === 'Property' &&
+          definitionNameClaims.callable.has(definitionNameKey)
+        ) {
+          // Only a CALLABLE collapses a property. Consulting the wider
+          // `nonValue` set here would let a property suppress itself, and would
+          // let an annotated Python attribute lose to its own bare-assignment
+          // twin — the property must outrank `Variable`, not tie with it.
+          continue;
         }
       }
 

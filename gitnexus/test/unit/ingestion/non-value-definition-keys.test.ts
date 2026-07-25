@@ -11,7 +11,7 @@
 import { describe, expect, it } from 'vitest';
 import type { LanguageProvider } from '../../../src/core/ingestion/language-provider.js';
 import {
-  buildNonValueDefinitionNameKeys,
+  buildDefinitionNameClaims,
   type SyntaxNode,
 } from '../../../src/core/ingestion/utils/ast-helpers.js';
 
@@ -26,9 +26,15 @@ const match = (captures: Record<string, SyntaxNode>) => ({
 /** `getLabelFromCaptures` only reaches for `labelOverride`; nothing else. */
 const PROVIDER = {} as unknown as LanguageProvider;
 
-describe('buildNonValueDefinitionNameKeys', () => {
+/** The non-value claim set — what `Const`/`Static`/`Variable` consult. */
+const nonValueOf = (
+  matches: Parameters<typeof buildDefinitionNameClaims>[0],
+  provider: LanguageProvider,
+): ReadonlySet<string> => buildDefinitionNameClaims(matches, provider).nonValue;
+
+describe('buildDefinitionNameClaims', () => {
   it('registers a function capture under its startIndex and name', () => {
-    const keys = buildNonValueDefinitionNameKeys(
+    const keys = nonValueOf(
       [match({ 'definition.function': node(0, 'const Bare = () => 1;'), name: node(6, 'Bare') })],
       PROVIDER,
     );
@@ -37,7 +43,7 @@ describe('buildNonValueDefinitionNameKeys', () => {
   });
 
   it('registers nothing for a value capture', () => {
-    const keys = buildNonValueDefinitionNameKeys(
+    const keys = nonValueOf(
       [match({ 'definition.const': node(0, 'const CONFIG = {};'), name: node(6, 'CONFIG') })],
       PROVIDER,
     );
@@ -46,16 +52,13 @@ describe('buildNonValueDefinitionNameKeys', () => {
   });
 
   it('registers nothing for a match with no name capture', () => {
-    const keys = buildNonValueDefinitionNameKeys(
-      [match({ 'definition.function': node(0, '() => 1') })],
-      PROVIDER,
-    );
+    const keys = nonValueOf([match({ 'definition.function': node(0, '() => 1') })], PROVIDER);
 
     expect([...keys]).toEqual([]);
   });
 
   it('registers nothing for a match with no definition capture', () => {
-    const keys = buildNonValueDefinitionNameKeys([match({ name: node(0, 'orphan') })], PROVIDER);
+    const keys = nonValueOf([match({ name: node(0, 'orphan') })], PROVIDER);
 
     expect([...keys]).toEqual([]);
   });
@@ -64,7 +67,7 @@ describe('buildNonValueDefinitionNameKeys', () => {
     // `const a = 1, b = () => {}` — both declarators share ONE definition node,
     // so only `b`'s name may be claimed.
     const declaration = node(0, 'const a = 1, b = () => {}');
-    const keys = buildNonValueDefinitionNameKeys(
+    const keys = nonValueOf(
       [
         match({ 'definition.const': declaration, name: node(6, 'a') }),
         match({ 'definition.function': declaration, name: node(13, 'b') }),
@@ -83,7 +86,7 @@ describe('buildNonValueDefinitionNameKeys', () => {
       labelOverride: () => 'Const',
     } as unknown as LanguageProvider;
 
-    const keys = buildNonValueDefinitionNameKeys(
+    const keys = nonValueOf(
       [match({ 'definition.function': node(0, 'val x = {}'), name: node(4, 'x') })],
       provider,
     );
@@ -92,6 +95,34 @@ describe('buildNonValueDefinitionNameKeys', () => {
   });
 
   it('returns an empty set for no matches', () => {
-    expect([...buildNonValueDefinitionNameKeys([], PROVIDER)]).toEqual([]);
+    expect([...nonValueOf([], PROVIDER)]).toEqual([]);
+  });
+
+  it('ranks a property claim as non-value but NOT callable', () => {
+    // The rank split is what keeps an annotated Python attribute ahead of its
+    // bare-assignment `Variable` twin while still letting a callable collapse a
+    // Kotlin/Swift closure property. A property in `callable` would make a
+    // property suppress itself.
+    const claims = buildDefinitionNameClaims(
+      [match({ 'definition.property': node(0, 'name: str = "x"'), name: node(0, 'name') })],
+      PROVIDER,
+    );
+
+    expect({ nonValue: [...claims.nonValue], callable: [...claims.callable] }).toEqual({
+      nonValue: ['0:name'],
+      callable: [],
+    });
+  });
+
+  it('ranks a callable claim into both sets', () => {
+    const claims = buildDefinitionNameClaims(
+      [match({ 'definition.function': node(0, 'val f = { }'), name: node(4, 'f') })],
+      PROVIDER,
+    );
+
+    expect({ nonValue: [...claims.nonValue], callable: [...claims.callable] }).toEqual({
+      nonValue: ['0:f'],
+      callable: ['0:f'],
+    });
   });
 });
