@@ -590,10 +590,29 @@ function manifestLabel(manifest: PackageManifest): string {
   return `${name}@${version}`;
 }
 
-function isInside(parent: string, candidate: string): boolean {
-  const relative = path.relative(parent, candidate);
-  return relative === '' || (!relative.startsWith(`..${path.sep}`) && relative !== '..');
+/**
+ * Whether `candidate` is `parent` itself or lives beneath it.
+ *
+ * The absolute-result rejection is load-bearing on Windows: `path.relative`
+ * cannot express a relative path between two different drives, so it returns the
+ * absolute target instead — `path.win32.relative('C:\\parent', 'D:\\other')` is
+ * `'D:\\other'`. That string does not start with `..`, so the `..` checks alone
+ * would report an unrelated drive as *inside* the parent. This mirrors the
+ * containment guards elsewhere in the repo (`server/api.ts`,
+ * `server/git-clone.ts`, `group/extractors/fs-utils.ts`), which all pair the
+ * `..` check with `path.isAbsolute`.
+ *
+ * `pathApi` is injectable so the win32 semantics are unit-testable from a POSIX
+ * runner; production callers always use the platform-bound `path`.
+ */
+function isInside(parent: string, candidate: string, pathApi: typeof path = path): boolean {
+  const relative = pathApi.relative(parent, candidate);
+  if (pathApi.isAbsolute(relative)) return false;
+  return relative === '' || (!relative.startsWith(`..${pathApi.sep}`) && relative !== '..');
 }
+
+/** Test seam for {@link isInside} (see `_hashAnalyzerIdentityFramesForTests`). */
+export const _isInsideForTests = isInside;
 
 function resolveBuildRoot(analyzerModulePath: string): {
   packageRoot: string;
