@@ -94,7 +94,7 @@ export const parsePhase: PipelinePhase<ParseOutput> = {
     // not at graph construction: the pre-parse phases are not all write-only —
     // `mapCobolToGraph` scans CALLS edges and removes the unresolved ones — and
     // nothing before parse produces bulk edge volume anyway.
-    ctx.armStreaming?.();
+    ctx.graphEmit?.beginStreaming();
 
     const { scannedFiles, allPaths, allPathSet, totalFiles } = getPhaseOutput<StructureOutput>(
       deps,

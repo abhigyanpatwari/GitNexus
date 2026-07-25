@@ -204,6 +204,42 @@ function normalizeToolParams(
  * Quick test-file detection for filtering impact results.
  * Matches common test file patterns across all supported languages.
  */
+/**
+ * Risk disclosure for an index built with streamed graph emit (#2680).
+ *
+ * Such an index has no `Process` or `Community` rows at all, and BOTH risk
+ * scorers here lean on counts derived from them — `impact` escalates to CRITICAL
+ * partly on affected-process/module counts, and `detect_changes` derives
+ * `risk_level` purely from affected-process count. Those counts are structurally
+ * zero on a streamed index, and the missing-table reads are swallowed as benign
+ * without raising `partial`, so both tools would otherwise report a confidently
+ * LOW risk for every change. That is the false-clean shape #2283 ruled out, and
+ * it matters because this repo mandates a risk check before every edit.
+ *
+ * Returns a spreadable marker, or `undefined` when the index is complete (or its
+ * metadata is unreadable, which is treated as complete = pre-#2680 behaviour).
+ * `whyZero` names the specific count that is structurally zero for the caller.
+ */
+const streamedIndexRiskDisclosure = async (
+  lbugPath: string,
+  whyZero: string,
+): Promise<{ riskUnderstated: true; riskNote: string } | undefined> => {
+  try {
+    const meta = await loadMeta(path.dirname(lbugPath));
+    if (meta?.graphPhases !== 'skipped') return undefined;
+  } catch {
+    return undefined;
+  }
+  return {
+    riskUnderstated: true,
+    riskNote:
+      'This index was built with streamed graph emit (GITNEXUS_STREAM_GRAPH_EMIT), so it contains ' +
+      `no communities or processes. ${whyZero}, so the risk level below is a LOWER BOUND and may ` +
+      'understate the true blast radius — not a clean bill of health. Re-run `gitnexus analyze ' +
+      '--force` without that flag for a complete assessment.',
+  };
+};
+
 export function isTestFilePath(filePath: string | null | undefined): boolean {
   if (!filePath) return false;
   const p = filePath.toLowerCase().replace(/\\/g, '/');
@@ -4320,29 +4356,11 @@ export class LocalBackend {
             ? 'high'
             : 'critical';
 
-    // #2680 — risk here is a pure function of affected PROCESS count, and an
-    // index built with streamed graph emit has no Process rows at all. The
-    // STEP_IN_PROCESS query then succeeds with zero rows, so `queryDegraded`
-    // stays false and this returns risk_level 'low' with no `partial` marker for
-    // EVERY change — a false-clean on the gate this repo mandates before every
-    // commit, which is exactly what #2283 ruled out. Disclose it.
-    let dcGraphPhasesSkipped = false;
-    try {
-      const dcMeta = await loadMeta(path.dirname(repo.lbugPath));
-      dcGraphPhasesSkipped = dcMeta?.graphPhases === 'skipped';
-    } catch {
-      // Unreadable meta ⇒ assume complete, i.e. pre-#2680 behaviour.
-    }
-
     return {
-      ...(dcGraphPhasesSkipped && {
-        riskUnderstated: true,
-        riskNote:
-          'This index was built with streamed graph emit (GITNEXUS_STREAM_GRAPH_EMIT) and contains ' +
-          'no processes, so affected_processes is empty and risk_level is derived from a count that ' +
-          'is structurally zero — treat it as a LOWER BOUND, not a clean bill of health. Re-run ' +
-          '`gitnexus analyze --force` without that flag for a real assessment.',
-      }),
+      ...(await streamedIndexRiskDisclosure(
+        repo.lbugPath,
+        'risk_level here is derived solely from affected-process count, which is therefore zero',
+      )),
       summary: {
         changed_count: changedSymbols.length,
         affected_count: processCount,
@@ -6121,30 +6139,12 @@ export class LocalBackend {
     // above. Additive: leaves impactedCount and every existing field untouched.
     const [epistemic, beanMetadata] = await Promise.all([epistemicPromise, beanMetadataPromise]);
 
-    // #2680 — an index built with streamed structural emit has NO Process or
-    // Community rows, and processCount/moduleCount are two of the four
-    // CRITICAL escalation criteria above. Left unqualified, such an index
-    // silently reports a lower risk than a complete one would for the very
-    // same change — the false-clean shape #2283 ruled out for detect_changes.
-    // Report the degradation rather than let the number stand alone.
-    let graphPhasesSkipped = false;
-    try {
-      const impactMeta = await loadMeta(path.dirname(repo.lbugPath));
-      graphPhasesSkipped = impactMeta?.graphPhases === 'skipped';
-    } catch {
-      // Unreadable meta ⇒ assume complete, i.e. pre-#2680 behaviour.
-    }
-
     const base = {
-      ...(graphPhasesSkipped && {
-        riskUnderstated: true,
-        riskNote:
-          'This index was built with streamed graph emit (GITNEXUS_STREAM_GRAPH_EMIT), so it ' +
-          'contains no communities or processes. Affected-process and affected-module counts ' +
-          'are two of the four criteria that escalate risk to CRITICAL, so the risk level below ' +
-          'is a LOWER BOUND and may understate the true blast radius. Re-run `gitnexus analyze ' +
-          '--force` without that flag for a complete risk assessment.',
-      }),
+      ...(await streamedIndexRiskDisclosure(
+        repo.lbugPath,
+        'affected-process and affected-module counts are two of the four criteria that escalate ' +
+          'risk to CRITICAL, and both are therefore zero',
+      )),
       target: {
         id: symId,
         name: sym.name || sym[1],

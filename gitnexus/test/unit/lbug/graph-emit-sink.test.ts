@@ -66,7 +66,7 @@ describe('GraphEmitSink routing', () => {
   it('streams a non-retained type to CSV and keeps it out of the graph', async () => {
     const real = createKnowledgeGraph();
     const sink = new GraphEmitSink(real, csvDir);
-    sink.arm();
+    sink.beginStreaming();
 
     sink.addRelationship(rel('CALLS', 'a', 'b'));
     const manifest = sink.finalize();
@@ -81,7 +81,7 @@ describe('GraphEmitSink routing', () => {
   it('delegates every retained type to the real graph and writes no CSV', () => {
     const real = createKnowledgeGraph();
     const sink = new GraphEmitSink(real, csvDir);
-    sink.arm();
+    sink.beginStreaming();
 
     for (const type of RETAINED_REL_TYPES) {
       sink.addRelationship(rel(type, 'a', 'b', `:${type}`));
@@ -96,7 +96,7 @@ describe('GraphEmitSink routing', () => {
   it('never streams nodes — they stay in the real graph', () => {
     const real = createKnowledgeGraph();
     const sink = new GraphEmitSink(real, csvDir);
-    sink.arm();
+    sink.beginStreaming();
 
     sink.addNode({
       id: fnId('a'),
@@ -112,7 +112,7 @@ describe('GraphEmitSink routing', () => {
   it('skips edges whose endpoint labels are not valid node tables', () => {
     const real = createKnowledgeGraph();
     const sink = new GraphEmitSink(real, csvDir);
-    sink.arm();
+    sink.beginStreaming();
 
     sink.addRelationship({
       id: 'CALLS:bogus->alsobogus',
@@ -160,7 +160,7 @@ describe('GraphEmitSink dedup', () => {
   it('writes a duplicate relationship id exactly once', async () => {
     const real = createKnowledgeGraph();
     const sink = new GraphEmitSink(real, csvDir);
-    sink.arm();
+    sink.beginStreaming();
 
     const duplicated = rel('CALLS', 'a', 'b');
     sink.addRelationship(duplicated);
@@ -178,7 +178,7 @@ describe('GraphEmitSink removal safety', () => {
   it('throws rather than silently forgetting an already-streamed edge', () => {
     const real = createKnowledgeGraph();
     const sink = new GraphEmitSink(real, csvDir);
-    sink.arm();
+    sink.beginStreaming();
     const streamed = rel('CALLS', 'a', 'b');
     sink.addRelationship(streamed);
 
@@ -189,7 +189,7 @@ describe('GraphEmitSink removal safety', () => {
   it('still removes a retained edge normally', () => {
     const real = createKnowledgeGraph();
     const sink = new GraphEmitSink(real, csvDir);
-    sink.arm();
+    sink.beginStreaming();
     const retained = rel('DEFINES', 'a', 'b');
     sink.addRelationship(retained);
 
@@ -203,7 +203,7 @@ describe('GraphEmitSink streamed-endpoint predicate', () => {
   it('reports both endpoints of a streamed edge as semantically referenced', () => {
     const real = createKnowledgeGraph();
     const sink = new GraphEmitSink(real, csvDir);
-    sink.arm();
+    sink.beginStreaming();
     sink.addRelationship(rel('CALLS', 'caller', 'callee'));
 
     // Both directions matter: the pruner treats any outgoing edge as semantic,
@@ -218,7 +218,7 @@ describe('GraphEmitSink streamed-endpoint predicate', () => {
   it('does not report endpoints of a retained edge (those stay scannable)', () => {
     const real = createKnowledgeGraph();
     const sink = new GraphEmitSink(real, csvDir);
-    sink.arm();
+    sink.beginStreaming();
     sink.addRelationship(rel('DEFINES', 'file', 'sym'));
 
     expect(sink.hasStreamedSemanticEdge(fnId('file'))).toBe(false);
@@ -230,7 +230,7 @@ describe('GraphEmitSink IO faults', () => {
   it('surfaces a writer-open failure from finalize instead of a partial manifest', () => {
     const real = createKnowledgeGraph();
     const sink = new GraphEmitSink(real, csvDir);
-    sink.arm();
+    sink.beginStreaming();
     sink.addRelationship(rel('CALLS', 'a', 'b'));
 
     // Destroy the CSV dir so the next pair's writer cannot be opened, the way
@@ -252,7 +252,7 @@ describe('GraphEmitSink IO faults', () => {
 
   it('refuses a second finalize', () => {
     const sink = new GraphEmitSink(createKnowledgeGraph(), csvDir);
-    sink.arm();
+    sink.beginStreaming();
     sink.finalize();
     expect(() => sink.finalize()).toThrow(/called twice/);
   });

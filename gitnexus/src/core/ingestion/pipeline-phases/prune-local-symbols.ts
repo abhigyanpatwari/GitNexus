@@ -26,7 +26,7 @@ export const pruneLocalSymbolsPhase: PipelinePhase<PruneLocalSymbolsOutput> = {
       // Under streamed emit the relationship scan cannot see edges already on
       // disk; without this a symbol referenced only by a streamed edge is
       // pruned and its streamed CSV row dangles at COPY (#2680).
-      hasStreamedSemanticEdge: ctx.hasStreamedSemanticEdge,
+      hasStreamedSemanticEdge: ctx.graphEmit?.hasStreamedSemanticEdge,
     });
 
     if (isDev && !stats.skippedByEnv && stats.prunedNodes > 0) {

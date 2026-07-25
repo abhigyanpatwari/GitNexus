@@ -136,7 +136,7 @@ describe('streamed structural emit is set-identical to the whole-graph emit', ()
     const realOn = createKnowledgeGraph();
     const sinkCsvDir = path.join(tmpRoot, 'csv-sink');
     const sink = new GraphEmitSink(realOn, sinkCsvDir);
-    sink.arm();
+    sink.beginStreaming();
     buildFixture(sink);
     const manifest = sink.finalize();
 
@@ -169,7 +169,7 @@ describe('streamed structural emit is set-identical to the whole-graph emit', ()
 
     const realOn = createKnowledgeGraph();
     const sink = new GraphEmitSink(realOn, path.join(tmpRoot, 'csv-sink'));
-    sink.arm();
+    sink.beginStreaming();
     buildFixture(sink);
     sink.finalize();
     const csvDirOn = path.join(tmpRoot, 'csv-on');

@@ -352,8 +352,7 @@ export const runPipelineFromRepo = async (
       onProgress,
       options,
       pipelineStart,
-      armStreaming: graphEmitSink === undefined ? undefined : () => graphEmitSink?.arm(),
-      hasStreamedSemanticEdge: graphEmitSink?.hasStreamedSemanticEdge,
+      graphEmit: graphEmitSink,
     });
     graphEmitManifest = graphEmitSink?.finalize();
   } finally {

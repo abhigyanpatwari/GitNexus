@@ -14,6 +14,7 @@
  *  - Each phase is independently testable with mocked inputs
  */
 
+import type { GraphEmitControl } from '../../lbug/graph-emit-sink.js';
 import type { KnowledgeGraph } from '../../graph/types.js';
 import type { PipelineProgress } from 'gitnexus-shared';
 import type { PipelineOptions } from '../pipeline.js';
@@ -33,18 +34,11 @@ export interface PipelineContext {
   /** Pipeline start timestamp (for elapsed-time logging). */
   readonly pipelineStart: number;
   /**
-   * Called by the `parse` phase at its start to begin streamed structural emit
-   * (#2680). Absent unless `streamGraphEmit` is on. The hook exists so `parse`
-   * need not know about the lbug sink type — see GraphEmitSink.arm().
+   * Streamed structural emit (#2680), present only when `streamGraphEmit` is on.
+   * `parse` calls `beginStreaming()` at its start; `pruneLocalSymbols` consults
+   * `hasStreamedSemanticEdge()`. Absent ⇒ everything stays in the graph.
    */
-  readonly armStreaming?: () => void;
-  /**
-   * Reports whether a node is an endpoint of an already-streamed relationship
-   * (#2680). Present only under `streamGraphEmit`. The local-symbol pruner
-   * consults it so a symbol referenced solely by a streamed edge is not pruned
-   * — which would leave that CSV row pointing at a node with no row.
-   */
-  readonly hasStreamedSemanticEdge?: (nodeId: string) => boolean;
+  readonly graphEmit?: GraphEmitControl;
 }
 
 // ── Phase result wrapper ───────────────────────────────────────────────────

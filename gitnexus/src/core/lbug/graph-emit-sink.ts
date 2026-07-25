@@ -1,52 +1,51 @@
 /**
  * Streaming structural graph-emit sink (issue #2680).
  *
- * The in-memory `KnowledgeGraph` retains every node and relationship on the
- * main thread for the whole pipeline, so `analyze`'s peak heap is O(repo)
- * (#2649 measured ~2.1 KB of heap per node at Linux-kernel scale). Measurement
- * on a kernel-shaped synthetic graph (400k nodes, 2.7 edges/node) locates that
- * cost precisely:
+ * `analyze` holds the whole `KnowledgeGraph` on the main thread for the entire
+ * pipeline, so peak heap is O(repo) — ~2.1 KB/node at Linux-kernel scale
+ * (#2649). Measurement on a kernel-shaped synthetic graph (400k nodes,
+ * 2.7 edges/node) says where that goes:
  *
- *   nodes only ......... 367 B/node
- *   nodes + edges ..... 2075 B/node   <- reproduces the #2649 figure
- *   => the relationship layer is 83% of graph heap, ~646 B/edge
+ *   nodes only .......  367 B/node
+ *   nodes + edges .... 2075 B/node   <- reproduces the #2649 figure
  *
- * ~646 B for an object holding four short strings is the cost of storing each
- * edge four times over (`relationshipMap`, a `relationshipsByType` bucket, and
- * both endpoints' `edgeIdsByNode` Sets) plus an `id` that concatenates both
- * endpoint ids. Dropping only the two redundant indexes saves 174 of those
- * 648 B/edge (~1.3x overall) — not enough; the objects and id strings
- * themselves have to leave the heap.
+ * So **relationships are ~83% of graph heap** (~646 B/edge), and that is what
+ * this sink removes. 646 B for an object holding four short strings is the cost
+ * of storing every edge four times over — `relationshipMap`, a
+ * `relationshipsByType` bucket, and both endpoints' `edgeIdsByNode` Sets — plus
+ * an `id` that concatenates both endpoint ids. (Dropping just the two redundant
+ * indexes was measured too: 174 of 648 B/edge, ~1.3x. Not enough on its own.)
  *
- * `GraphEmitSink` is the structural sibling of {@link PdgEmitSink}: a
- * write-routing façade over the real graph that sends relationships no
- * mid-pipeline phase reads back straight to bounded CSV-on-disk writers and
- * **never stores them**. Nodes are NOT streamed — they are only 17% of the
- * heap and two scope-resolution index builders (`buildGraphNodeLookup`,
+ * Nodes are deliberately NOT streamed: they are the other 17%, and two
+ * scope-resolution index builders (`buildGraphNodeLookup`,
  * `buildGraphCallableAnchorIndex`) scan them.
  *
- * Retained share = 0.17 (nodes) + 0.83 * 0.21 (retained edges) = 0.344 — but
- * that formula assigns streamed edges a retained cost of ZERO, which is wrong:
- * the sink keeps `streamedIds` and `streamedEndpoints` below, both
- * O(streamed-edges) string Sets, and `id` is a plain concatenation of both
- * endpoint ids (not a hash). Review measured those Sets at ~35% of full
- * per-edge retention, not the ~a-tenth this once assumed, which puts the real
- * figure nearer ~1.7-2.2x than 2.9x, and lower again on a member-dense
- * Java/C# repo where the retained structural spine (DEFINES / HAS_METHOD /
- * HAS_PROPERTY) is a larger share than in the TypeScript census used above.
- * Treat every number here as an ESTIMATE pending an end-to-end measurement on
- * a real repository. It is in any case NOT O(chunk): node identity and the
- * resolution registries stay O(repo). True O(chunk) needs DB-side resolution
- * and DB-side Leiden (#2337).
+ * ## How much this actually saves — read this before quoting a number
  *
- * Byte-identity: the sink reuses the SAME row builder (`buildRelRow`), header
- * (`REL_CSV_HEADER`), and label derivation (`getNodeLabel`) as
- * `streamAllCSVsToDisk`, and mirrors `RelPairRouter`'s validity check, so the
- * streamed row SET is identical to the whole-graph emit's and the bulk COPY
- * loads the same rows. Guarantee is set-level, not byte-level: rows stream in
- * emit order and are not re-sorted under `GITNEXUS_SORT_GRAPH_OUTPUT`.
+ * Retained share is `0.17 (nodes) + 0.83 * 0.21 (retained edges) = 0.344`, i.e.
+ * ~2.9x — but that formula charges streamed edges nothing, and this sink does
+ * keep two O(streamed-edges) string Sets ({@link streamedIds},
+ * {@link streamedEndpoints}); relationship ids are plain concatenations, not
+ * hashes. Measured, those Sets are ~35% of full per-edge retention, which puts
+ * the honest figure nearer **~1.7-2.2x** — lower still on a member-dense
+ * Java/C# repo, where the retained structural spine (`DEFINES` / `HAS_METHOD` /
+ * `HAS_PROPERTY`) is a bigger share of edges than in the TypeScript census the
+ * 0.21 came from. Every figure here is an ESTIMATE; no end-to-end measurement
+ * on a real repository exists yet.
+ *
+ * It is in any case NOT O(chunk) — node identity and the resolution registries
+ * stay O(repo). True O(chunk) needs DB-side resolution and Leiden (#2337), at
+ * which point this sink should be deleted rather than extended.
+ *
+ * ## Correctness contract
+ *
+ * Structural sibling of {@link PdgEmitSink}, and reuses its row builder
+ * (`buildRelRow`), header (`REL_CSV_HEADER`), label derivation (`getNodeLabel`)
+ * and `RelPairRouter` validity check, so the streamed row SET equals the
+ * whole-graph emit's and the bulk COPY loads the same rows. Set-level, not
+ * byte-level: rows stream in emit order and are not re-sorted under
+ * `GITNEXUS_SORT_GRAPH_OUTPUT`.
  */
-
 import fs from 'fs';
 import path from 'path';
 import type { GraphNode, GraphRelationship, RelationshipType } from 'gitnexus-shared';
@@ -118,6 +117,19 @@ export interface GraphEmitManifest {
   readonly totalRows: number;
 }
 
+/**
+ * The slice of the sink that pipeline phases drive. Declared here, next to the
+ * implementation, and imported as a type by `pipeline-phases/types.ts` so the
+ * phase layer depends on this narrow capability rather than on two loose
+ * callbacks bolted onto the context.
+ */
+export interface GraphEmitControl {
+  /** Start routing non-retained relationships to disk (see {@link GraphEmitSink.beginStreaming}). */
+  beginStreaming(): void;
+  /** True when `nodeId` is an endpoint of an already-streamed relationship. */
+  hasStreamedSemanticEdge(nodeId: string): boolean;
+}
+
 /** Thrown when a consumer removes a relationship that already streamed to
  *  disk. Silently no-oping would let a mutating consumer (e.g. the COBOL
  *  cross-program CALL resolver) corrupt the persisted graph undetected. */
@@ -139,7 +151,7 @@ export class StreamedRelationshipRemovalError extends Error {
  * read-modify-delete passes against a fully in-memory graph. Call
  * {@link finalize} once after the pipeline, before `loadGraphToLbug`.
  */
-export class GraphEmitSink implements KnowledgeGraph {
+export class GraphEmitSink implements KnowledgeGraph, GraphEmitControl {
   private readonly validTables: Set<string>;
   private readonly relWriters = new Map<string, SyncCsvWriter>();
   /**
@@ -168,7 +180,7 @@ export class GraphEmitSink implements KnowledgeGraph {
   private readonly streamedEndpoints = new Set<string>();
   private finalized = false;
   /**
-   * Streaming is OFF until {@link arm} is called at the parse boundary.
+   * Streaming is OFF until {@link beginStreaming} is called by `parse`.
    *
    * The pre-parse phases are not all write-only: `mapCobolToGraph` scans
    * `CALLS` edges and REMOVES the unresolved ones after adding resolved
@@ -207,8 +219,11 @@ export class GraphEmitSink implements KnowledgeGraph {
     this.real.addNode(node);
   }
 
-  /** Begin streaming. Called once, at the parse-phase boundary. */
-  arm(): void {
+  /**
+   * Start streaming. Called once, by the `parse` phase, for the reason on
+   * {@link armed}.
+   */
+  beginStreaming(): void {
     this.armed = true;
   }
 
