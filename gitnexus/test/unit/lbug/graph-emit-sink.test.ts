@@ -199,29 +199,58 @@ describe('GraphEmitSink removal safety', () => {
   });
 });
 
-describe('GraphEmitSink streamed-endpoint predicate', () => {
-  it('reports both endpoints of a streamed edge as semantically referenced', () => {
+describe('GraphEmitSink reads are complete', () => {
+  it('iterRelationships returns streamed edges alongside retained ones', () => {
+    // This is the property that lets streaming be the default: every consumer
+    // (communities, processes, taint, the pruner) reads through this and must
+    // see the whole graph, not just what stayed in memory.
     const real = createKnowledgeGraph();
     const sink = new GraphEmitSink(real, csvDir);
     sink.beginStreaming();
-    sink.addRelationship(rel('CALLS', 'caller', 'callee'));
 
-    // Both directions matter: the pruner treats any outgoing edge as semantic,
-    // and any incoming edge as semantic unless it is File->DEFINES — and
-    // DEFINES is retained, so no streamed edge is ever one.
-    expect(sink.hasStreamedSemanticEdge(fnId('caller'))).toBe(true);
-    expect(sink.hasStreamedSemanticEdge(fnId('callee'))).toBe(true);
-    expect(sink.hasStreamedSemanticEdge(fnId('unrelated'))).toBe(false);
+    sink.addRelationship(rel('DEFINES', 'file', 'fn')); // retained
+    sink.addRelationship(rel('CALLS', 'a', 'b')); // streamed
+    sink.addRelationship(rel('ACCESSES', 'b', 'c')); // streamed
+
+    const seen = [...sink.iterRelationships()];
+    expect(seen.map((r) => r.type).sort()).toEqual(['ACCESSES', 'CALLS', 'DEFINES']);
+    expect(sink.relationshipCount).toBe(3);
+    // The real graph still holds only the retained one — the saving is real.
+    expect(real.relationshipCount).toBe(1);
     sink.finalize();
   });
 
-  it('does not report endpoints of a retained edge (those stay scannable)', () => {
-    const real = createKnowledgeGraph();
-    const sink = new GraphEmitSink(real, csvDir);
+  it('preserves endpoints and confidence on a streamed edge', () => {
+    const sink = new GraphEmitSink(createKnowledgeGraph(), csvDir);
     sink.beginStreaming();
-    sink.addRelationship(rel('DEFINES', 'file', 'sym'));
+    sink.addRelationship({ ...rel('CALLS', 'caller', 'callee'), confidence: 0.25 });
 
-    expect(sink.hasStreamedSemanticEdge(fnId('file'))).toBe(false);
+    expect([...sink.iterRelationships()]).toMatchObject([
+      { sourceId: fnId('caller'), targetId: fnId('callee'), type: 'CALLS', confidence: 0.25 },
+    ]);
+    sink.finalize();
+  });
+
+  it('iterRelationshipsByType finds a streamed type', () => {
+    const sink = new GraphEmitSink(createKnowledgeGraph(), csvDir);
+    sink.beginStreaming();
+    sink.addRelationship(rel('CALLS', 'a', 'b'));
+    sink.addRelationship(rel('ACCESSES', 'a', 'c'));
+
+    expect([...sink.iterRelationshipsByType('CALLS')]).toHaveLength(1);
+    expect([...sink.iterRelationshipsByType('ACCESSES')]).toHaveLength(1);
+    expect([...sink.iterRelationshipsByType('EXTENDS')]).toEqual([]);
+    sink.finalize();
+  });
+
+  it('forEachRelationship visits streamed edges too', () => {
+    const sink = new GraphEmitSink(createKnowledgeGraph(), csvDir);
+    sink.beginStreaming();
+    sink.addRelationship(rel('CALLS', 'a', 'b'));
+
+    const visited: string[] = [];
+    sink.forEachRelationship((r) => visited.push(r.type));
+    expect(visited).toEqual(['CALLS']);
     sink.finalize();
   });
 });

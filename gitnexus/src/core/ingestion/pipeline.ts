@@ -292,25 +292,12 @@ export function buildPhaseList(options?: PipelineOptions): PipelinePhase[] {
       // M4 (#2084): interprocedural taint fixpoint — the first real opt-in
       // pdg-gated phase. Off ⇒ absent ⇒ byte-identical graph. No always-on
       // phase depends on it (a filtered-out dep would throw in getPhaseOutput).
-      // `streamGraphEmit` disables every phase that consumes the whole CALLS
-      // graph — CALLS is exactly what streams out, so leaving them enabled
-      // yields silently empty results, not an error. taintSummaries and
-      // callSummaries are gated on `pdg`, NOT on `skipGraphPhases`, so they
-      // need the condition spelled out separately.
-      .register(taintSummariesPhase, {
-        enabledWhen: (o) => o.pdg === true && o.streamGraphEmit !== true,
-      })
-      .register(callSummariesPhase, {
-        enabledWhen: (o) => o.pdg === true && o.streamGraphEmit !== true,
-      })
+      .register(taintSummariesPhase, { enabledWhen: (o) => o.pdg === true })
+      .register(callSummariesPhase, { enabledWhen: (o) => o.pdg === true })
       .register(mroPhase, { enabledWhen: (o) => !o.skipGraphPhases })
       .register(diPhase, { enabledWhen: (o) => !o.skipGraphPhases })
-      .register(communitiesPhase, {
-        enabledWhen: (o) => !o.skipGraphPhases && o.streamGraphEmit !== true,
-      })
-      .register(processesPhase, {
-        enabledWhen: (o) => !o.skipGraphPhases && o.streamGraphEmit !== true,
-      })
+      .register(communitiesPhase, { enabledWhen: (o) => !o.skipGraphPhases })
+      .register(processesPhase, { enabledWhen: (o) => !o.skipGraphPhases })
       // Normalize a missing options object once here so phase predicates above
       // take a required PipelineOptions and need no `?.` guard (#2080 review S1).
       .build(options ?? {})
@@ -332,13 +319,6 @@ export const runPipelineFromRepo = async (
   let graphEmitSink: GraphEmitSink | undefined;
   if (options?.streamGraphEmit === true && options.graphEmitCsvDir !== undefined) {
     graphEmitSink = new GraphEmitSink(graph, options.graphEmitCsvDir);
-    onProgress({
-      phase: 'structure',
-      percent: 0,
-      message:
-        'Streamed graph emit ON: community detection, process extraction, PDG taint summaries ' +
-        'and community-derived skills are DISABLED for this run.',
-    });
   }
 
   const phases = buildPhaseList(options);

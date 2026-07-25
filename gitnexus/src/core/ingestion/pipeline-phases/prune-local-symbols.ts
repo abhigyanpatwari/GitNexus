@@ -23,10 +23,6 @@ export const pruneLocalSymbolsPhase: PipelinePhase<PruneLocalSymbolsOutput> = {
   async execute(ctx: PipelineContext): Promise<PruneLocalSymbolsOutput> {
     const stats = pruneLocalValueSymbols(ctx.graph, {
       keepLocalValueSymbols: ctx.options?.keepLocalValueSymbols,
-      // Under streamed emit the relationship scan cannot see edges already on
-      // disk; without this a symbol referenced only by a streamed edge is
-      // pruned and its streamed CSV row dangles at COPY (#2680).
-      hasStreamedSemanticEdge: ctx.graphEmit?.hasStreamedSemanticEdge,
     });
 
     if (isDev && !stats.skippedByEnv && stats.prunedNodes > 0) {

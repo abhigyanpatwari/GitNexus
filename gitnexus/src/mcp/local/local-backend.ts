@@ -204,42 +204,6 @@ function normalizeToolParams(
  * Quick test-file detection for filtering impact results.
  * Matches common test file patterns across all supported languages.
  */
-/**
- * Risk disclosure for an index built with streamed graph emit (#2680).
- *
- * Such an index has no `Process` or `Community` rows at all, and BOTH risk
- * scorers here lean on counts derived from them — `impact` escalates to CRITICAL
- * partly on affected-process/module counts, and `detect_changes` derives
- * `risk_level` purely from affected-process count. Those counts are structurally
- * zero on a streamed index, and the missing-table reads are swallowed as benign
- * without raising `partial`, so both tools would otherwise report a confidently
- * LOW risk for every change. That is the false-clean shape #2283 ruled out, and
- * it matters because this repo mandates a risk check before every edit.
- *
- * Returns a spreadable marker, or `undefined` when the index is complete (or its
- * metadata is unreadable, which is treated as complete = pre-#2680 behaviour).
- * `whyZero` names the specific count that is structurally zero for the caller.
- */
-const streamedIndexRiskDisclosure = async (
-  lbugPath: string,
-  whyZero: string,
-): Promise<{ riskUnderstated: true; riskNote: string } | undefined> => {
-  try {
-    const meta = await loadMeta(path.dirname(lbugPath));
-    if (meta?.graphPhases !== 'skipped') return undefined;
-  } catch {
-    return undefined;
-  }
-  return {
-    riskUnderstated: true,
-    riskNote:
-      'This index was built with streamed graph emit (GITNEXUS_STREAM_GRAPH_EMIT), so it contains ' +
-      `no communities or processes. ${whyZero}, so the risk level below is a LOWER BOUND and may ` +
-      'understate the true blast radius — not a clean bill of health. Re-run `gitnexus analyze ' +
-      '--force` without that flag for a complete assessment.',
-  };
-};
-
 export function isTestFilePath(filePath: string | null | undefined): boolean {
   if (!filePath) return false;
   const p = filePath.toLowerCase().replace(/\\/g, '/');
@@ -4357,10 +4321,6 @@ export class LocalBackend {
             : 'critical';
 
     return {
-      ...(await streamedIndexRiskDisclosure(
-        repo.lbugPath,
-        'risk_level here is derived solely from affected-process count, which is therefore zero',
-      )),
       summary: {
         changed_count: changedSymbols.length,
         affected_count: processCount,
@@ -6140,11 +6100,6 @@ export class LocalBackend {
     const [epistemic, beanMetadata] = await Promise.all([epistemicPromise, beanMetadataPromise]);
 
     const base = {
-      ...(await streamedIndexRiskDisclosure(
-        repo.lbugPath,
-        'affected-process and affected-module counts are two of the four criteria that escalate ' +
-          'risk to CRITICAL, and both are therefore zero',
-      )),
       target: {
         id: symId,
         name: sym.name || sym[1],

@@ -16,7 +16,6 @@ import { describe, it, expect, vi, afterEach } from 'vitest';
 import { resolveStreamGraphEmit } from '../../src/core/run-analyze.js';
 import { buildPhaseList } from '../../src/core/ingestion/pipeline.js';
 import { createKnowledgeGraph } from '../../src/core/graph/graph.js';
-import { pruneLocalValueSymbols } from '../../src/core/ingestion/local-symbol-pruner.js';
 import type { GraphNode } from 'gitnexus-shared';
 
 afterEach(() => {
@@ -24,8 +23,18 @@ afterEach(() => {
 });
 
 describe('resolveStreamGraphEmit', () => {
-  it('is off by default', () => {
+  it('is ON by default on a full rebuild — no opt-in needed', () => {
+    expect(resolveStreamGraphEmit({ force: true })).toBe(true);
+  });
+
+  it('is turned off by an explicit falsy env value (the escape hatch)', () => {
+    vi.stubEnv('GITNEXUS_STREAM_GRAPH_EMIT', '0');
     expect(resolveStreamGraphEmit({ force: true })).toBe(false);
+  });
+
+  it('is turned off by an explicit option, which beats the env', () => {
+    vi.stubEnv('GITNEXUS_STREAM_GRAPH_EMIT', '1');
+    expect(resolveStreamGraphEmit({ force: true, streamGraphEmit: false })).toBe(false);
   });
 
   it('honors the explicit option on a full rebuild', () => {
@@ -81,54 +90,19 @@ const graphWithOnlyStructuralEdge = () => {
   return graph;
 };
 
-describe('pruneLocalValueSymbols under streamed emit', () => {
-  it('keeps a symbol whose only reference is a streamed edge', () => {
-    const graph = graphWithOnlyStructuralEdge();
-
-    const stats = pruneLocalValueSymbols(graph, {
-      keepLocalValueSymbols: false,
-      hasStreamedSemanticEdge: (nodeId) => nodeId === LOCAL_ID,
-    });
-
-    expect(stats).toMatchObject({ candidateNodes: 1, prunedNodes: 0, keptWithSemanticEdges: 1 });
-    expect(graph.getNode(LOCAL_ID)).toBeDefined();
-  });
-
-  it('prunes that same symbol without the predicate — the discriminating case', () => {
-    // Identical fixture, predicate omitted. If this ever stops pruning, the
-    // test above no longer proves the predicate is what saves the symbol.
-    const graph = graphWithOnlyStructuralEdge();
-
-    const stats = pruneLocalValueSymbols(graph, { keepLocalValueSymbols: false });
-
-    expect(stats).toMatchObject({ candidateNodes: 1, prunedNodes: 1 });
-    expect(graph.getNode(LOCAL_ID)).toBeUndefined();
-  });
-
-  it('leaves non-streamed decisions untouched when the predicate never matches', () => {
-    const graph = graphWithOnlyStructuralEdge();
-
-    const stats = pruneLocalValueSymbols(graph, {
-      keepLocalValueSymbols: false,
-      hasStreamedSemanticEdge: () => false,
-    });
-
-    expect(stats).toMatchObject({ candidateNodes: 1, prunedNodes: 1 });
-  });
-});
-
 describe('buildPhaseList under streamGraphEmit', () => {
   const names = (o: Parameters<typeof buildPhaseList>[0]) => buildPhaseList(o).map((p) => p.name);
 
-  it('drops every phase that consumes the whole CALLS graph', () => {
-    // CALLS is exactly what streams out, so leaving these enabled yields
-    // silently empty results rather than an error.
+  it('keeps every CALLS-consuming phase enabled — nothing is traded away', () => {
+    // The sink answers a complete relationship read, so these phases work
+    // unchanged. If this ever regresses to filtering them out, streaming can no
+    // longer be the default.
     const streamed = names({ streamGraphEmit: true, pdg: true, force: true });
 
-    expect(streamed).not.toContain('communities');
-    expect(streamed).not.toContain('processes');
-    expect(streamed).not.toContain('taintSummaries');
-    expect(streamed).not.toContain('callSummaries');
+    expect(streamed).toContain('communities');
+    expect(streamed).toContain('processes');
+    expect(streamed).toContain('taintSummaries');
+    expect(streamed).toContain('callSummaries');
   });
 
   it('keeps mro and di, whose reads are all in the retained set', () => {

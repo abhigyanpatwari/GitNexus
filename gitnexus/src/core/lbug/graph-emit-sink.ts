@@ -22,16 +22,19 @@
  *
  * ## How much this actually saves — read this before quoting a number
  *
- * Retained share is `0.17 (nodes) + 0.83 * 0.21 (retained edges) = 0.344`, i.e.
- * ~2.9x — but that formula charges streamed edges nothing, and this sink does
- * keep two O(streamed-edges) string Sets ({@link streamedIds},
- * {@link streamedEndpoints}); relationship ids are plain concatenations, not
- * hashes. Measured, those Sets are ~35% of full per-edge retention, which puts
- * the honest figure nearer **~1.7-2.2x** — lower still on a member-dense
- * Java/C# repo, where the retained structural spine (`DEFINES` / `HAS_METHOD` /
- * `HAS_PROPERTY`) is a bigger share of edges than in the TypeScript census the
- * 0.21 came from. Every figure here is an ESTIMATE; no end-to-end measurement
- * on a real repository exists yet.
+ * Measured A/B against the object-based graph, 400k nodes / 1.08M edges, all
+ * edges streamable (the worst case for this design): **823 MB -> 626 MB, ~1.3x**,
+ * with all 1.08M edges still visible through `iterRelationships`.
+ *
+ * That is well short of the ~2.9x a naive `0.17 + 0.83 * 0.21` retained-share
+ * calculation suggests, and the gap is deliberate: this sink is *lossless*, so
+ * it pays for the {@link streamedIds} dedup Set (one unique id string per
+ * streamed edge) and the columns above. An earlier revision hit a bigger number
+ * by disabling community detection, process extraction and the taint fixpoint —
+ * which is why it could not be the default. 1.3x with nothing traded away is the
+ * honest figure; if a future change needs more, the next lever is dedup keyed on
+ * the interned column triple rather than on id strings (it must first be shown
+ * not to alter the emitted row SET).
  *
  * It is in any case NOT O(chunk) — node identity and the resolution registries
  * stay O(repo). True O(chunk) needs DB-side resolution and Leiden (#2337), at
@@ -126,8 +129,6 @@ export interface GraphEmitManifest {
 export interface GraphEmitControl {
   /** Start routing non-retained relationships to disk (see {@link GraphEmitSink.beginStreaming}). */
   beginStreaming(): void;
-  /** True when `nodeId` is an endpoint of an already-streamed relationship. */
-  hasStreamedSemanticEdge(nodeId: string): boolean;
 }
 
 /** Thrown when a consumer removes a relationship that already streamed to
@@ -168,16 +169,29 @@ export class GraphEmitSink implements KnowledgeGraph, GraphEmitControl {
    */
   private readonly streamedIds = new Set<string>();
   /**
-   * Endpoint ids of streamed relationships, consumed by the local-symbol
-   * pruner via {@link hasStreamedSemanticEdge}.
+   * Streamed edges, kept as parallel columns so the sink can still answer a
+   * COMPLETE relationship read (see {@link iterRelationships}). Only the four
+   * fields any consumer of these edges actually reads are retained —
+   * `sourceId`, `targetId`, `type`, `confidence` — audited across
+   * community-processor, process-processor, taint-summaries and the pruner.
    *
-   * Both endpoints count as "semantic". The pruner treats any outgoing edge as
-   * semantic, and any incoming edge as semantic unless it is the structural
-   * `File -> DEFINES` edge — and `DEFINES` is retained in memory, so no
-   * streamed edge is ever a DEFINES. Every streamed edge therefore makes both
-   * of its endpoints semantically referenced.
+   * `id`, `reason` and `step` are deliberately NOT kept. Every relationship id
+   * is a unique long string, and retaining ids is exactly what made an earlier
+   * fully-columnar attempt LOSE to the object-based graph (measured 838 MB vs
+   * 822 MB at 400k nodes / 1.08M edges). Keeping ids out of the heap is where
+   * the saving comes from, so a read synthesizes a deterministic id instead —
+   * safe because `buildRelRow` never persists `rel.id` and no consumer keys on
+   * it (audited).
+   *
+   * Node ids are interned; the strings are shared by reference with the node
+   * map's, so interning adds bookkeeping, not new text.
    */
-  private readonly streamedEndpoints = new Set<string>();
+  private readonly nodeIds = new Map<string, number>();
+  private readonly nodeIdByIx: string[] = [];
+  private readonly srcIx: number[] = [];
+  private readonly tgtIx: number[] = [];
+  private readonly relTypes: RelationshipType[] = [];
+  private readonly confidences: number[] = [];
   private finalized = false;
   /**
    * Streaming is OFF until {@link beginStreaming} is called by `parse`.
@@ -227,6 +241,30 @@ export class GraphEmitSink implements KnowledgeGraph, GraphEmitControl {
     this.armed = true;
   }
 
+  private internNode(id: string): number {
+    const existing = this.nodeIds.get(id);
+    if (existing !== undefined) return existing;
+    const ix = this.nodeIdByIx.length;
+    this.nodeIdByIx.push(id);
+    this.nodeIds.set(id, ix);
+    return ix;
+  }
+
+  /** Rebuild a streamed edge; its id is synthesized, not stored. */
+  private streamedAt(ix: number): GraphRelationship {
+    const sourceId = this.nodeIdByIx[this.srcIx[ix]];
+    const targetId = this.nodeIdByIx[this.tgtIx[ix]];
+    const type = this.relTypes[ix];
+    return {
+      id: `${type}:${sourceId}->${targetId}`,
+      sourceId,
+      targetId,
+      type,
+      confidence: this.confidences[ix],
+      reason: 'streamed',
+    };
+  }
+
   addRelationship(relationship: GraphRelationship): void {
     if (!this.armed || RETAINED_REL_TYPES.has(relationship.type)) {
       this.real.addRelationship(relationship);
@@ -258,18 +296,11 @@ export class GraphEmitSink implements KnowledgeGraph, GraphEmitControl {
     }
     writer.addRow(buildRelRow(relationship));
     this.streamedIds.add(relationship.id);
-    this.streamedEndpoints.add(relationship.sourceId);
-    this.streamedEndpoints.add(relationship.targetId);
+    this.srcIx.push(this.internNode(relationship.sourceId));
+    this.tgtIx.push(this.internNode(relationship.targetId));
+    this.relTypes.push(relationship.type);
+    this.confidences.push(relationship.confidence);
   }
-
-  /**
-   * True when `nodeId` is an endpoint of a relationship that has streamed to
-   * disk. The local-symbol pruner consults this alongside its in-memory scan:
-   * without it, a block-local symbol whose only reference is a streamed CALLS
-   * edge looks unreferenced and gets pruned, leaving the streamed CSV row
-   * pointing at a node with no row (a dangling edge at COPY).
-   */
-  hasStreamedSemanticEdge = (nodeId: string): boolean => this.streamedEndpoints.has(nodeId);
 
   /** Flush + close every writer and return the COPY manifest. Every fd is
    *  closed even when a writer is poisoned; any IO fault — an in-flight write,
@@ -327,22 +358,30 @@ export class GraphEmitSink implements KnowledgeGraph, GraphEmitControl {
     return this.real.nodes;
   }
   get relationships(): GraphRelationship[] {
-    return this.real.relationships;
+    return [...this.iterRelationships()];
   }
   iterNodes(): IterableIterator<GraphNode> {
     return this.real.iterNodes();
   }
-  iterRelationships(): IterableIterator<GraphRelationship> {
-    return this.real.iterRelationships();
+  /** Retained edges followed by the streamed ones, so every consumer sees a
+   *  complete graph and no phase needs to know streaming happened. This is what
+   *  lets streaming be the default. */
+  *iterRelationships(): IterableIterator<GraphRelationship> {
+    yield* this.real.iterRelationships();
+    for (let ix = 0; ix < this.srcIx.length; ix++) yield this.streamedAt(ix);
   }
-  iterRelationshipsByType(type: RelationshipType): IterableIterator<GraphRelationship> {
-    return this.real.iterRelationshipsByType(type);
+  *iterRelationshipsByType(type: RelationshipType): IterableIterator<GraphRelationship> {
+    yield* this.real.iterRelationshipsByType(type);
+    if (RETAINED_REL_TYPES.has(type)) return; // never streamed — skip the scan
+    for (let ix = 0; ix < this.srcIx.length; ix++) {
+      if (this.relTypes[ix] === type) yield this.streamedAt(ix);
+    }
   }
   forEachNode(fn: (node: GraphNode) => void): void {
     this.real.forEachNode(fn);
   }
   forEachRelationship(fn: (rel: GraphRelationship) => void): void {
-    this.real.forEachRelationship(fn);
+    for (const rel of this.iterRelationships()) fn(rel);
   }
   getNode(id: string): GraphNode | undefined {
     return this.real.getNode(id);
@@ -356,7 +395,7 @@ export class GraphEmitSink implements KnowledgeGraph, GraphEmitControl {
    *  so under-reporting would starve the COPY at exactly the scale this
    *  feature targets). */
   get relationshipCount(): number {
-    return this.real.relationshipCount;
+    return this.real.relationshipCount + this.srcIx.length;
   }
   removeNode(nodeId: string): boolean {
     return this.real.removeNode(nodeId);

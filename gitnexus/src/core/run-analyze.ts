@@ -583,24 +583,36 @@ export const resolveStreamPdgEmit = (options: {
   (options.streamPdgEmit === true || parseTruthyEnv(process.env.GITNEXUS_STREAM_PDG_EMIT));
 
 /**
- * Resolve whether streamed STRUCTURAL graph emit is on for this run (#2680).
+ * Resolve whether streamed structural graph emit is on for this run (#2680).
  *
- * Same soundness gate as {@link resolveStreamPdgEmit}: sound ONLY on a full
- * rebuild, because the incremental writeback (`extractChangedSubgraph`) reads
- * relationships back out of the in-memory graph, which streaming has already
- * offloaded. `force === true` is the pre-pipeline guarantee of a full rebuild.
+ * **On by default.** It costs nothing observable: the sink answers a complete
+ * relationship read, so community detection, process extraction, the taint
+ * fixpoint and the local-symbol pruner all behave exactly as they do without it
+ * — the edges simply live in columns and on disk instead of as objects. There is
+ * no reason to make a user opt in to using less memory.
  *
- * Unlike the PDG toggle this does NOT require `--pdg` — the structural
- * relationship layer exists on every run. Memory-only: not part of
- * {@link resolvePdgConfig}, so toggling never trips `pdgModeMismatch`. Read
- * every call (not memoized) so `vi.stubEnv` works in tests.
+ * Two conditions still bound it:
+ *
+ * - `force === true`. Sound only on a full rebuild, because the incremental
+ *   writeback (`extractChangedSubgraph`) reads relationships back out of the
+ *   in-memory graph. Same gate, and same reason, as {@link resolveStreamPdgEmit}.
+ * - `GITNEXUS_STREAM_GRAPH_EMIT=0` (or an explicit `streamGraphEmit: false`)
+ *   turns it off. The escape hatch exists for bisecting a suspected
+ *   streaming-related fault, not as a routine choice.
+ *
+ * Memory-only: not part of {@link resolvePdgConfig}, so toggling never trips
+ * `pdgModeMismatch`. Read every call (not memoized) so `vi.stubEnv` works.
  */
 export const resolveStreamGraphEmit = (options: {
   force?: boolean;
   streamGraphEmit?: boolean;
-}): boolean =>
-  options.force === true &&
-  (options.streamGraphEmit === true || parseTruthyEnv(process.env.GITNEXUS_STREAM_GRAPH_EMIT));
+}): boolean => {
+  if (options.force !== true) return false;
+  if (options.streamGraphEmit !== undefined) return options.streamGraphEmit;
+  // Unset ⇒ on. Set ⇒ honour it, so `=0` / `=false` is the escape hatch.
+  const raw = process.env.GITNEXUS_STREAM_GRAPH_EMIT;
+  return raw === undefined || raw === '' ? true : parseTruthyEnv(raw);
+};
 
 /**
  * Resolve the streamed PDG-emit write-buffer size (#2202). Explicit option wins
@@ -2232,7 +2244,6 @@ export async function runFullAnalysis(
           schemaVersion: hasGitDir(repoPath) ? INCREMENTAL_SCHEMA_VERSION : undefined,
           analysisFeatures: currentAnalysisFeatures,
           cjkSegmentation: getSearchFTSCjkSegmentation(),
-          graphPhases: streamGraphEmitActive ? 'skipped' : 'complete',
           fileHashes: hasGitDir(repoPath) ? fileHashes : undefined,
           cacheKeys: [...parseCache.usedKeys],
           incrementalInProgress: undefined,
@@ -2400,10 +2411,6 @@ export async function runFullAnalysis(
       // `pdg` below, 'none' is a meaningful value to compare, not an
       // absence, so this is never conditionally omitted.
       cjkSegmentation: getSearchFTSCjkSegmentation(),
-      // Record whether communities/processes actually ran, so `impact` cannot
-      // report a false-low risk level off an index that simply has no Process
-      // or Community rows to count (#2680).
-      graphPhases: streamGraphEmitActive ? 'skipped' : 'complete',
       fileHashes: hasGitDir(repoPath) ? newFileHashesRecord : undefined,
       // This branch's full live chunk-key set (#2106 R6). `usedKeys` is every
       // chunk hash touched in this scan — cache HITS included (see parse-impl
