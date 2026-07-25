@@ -122,6 +122,7 @@ export function getEditorTargets(home: string = os.homedir()): EditorTargets {
       id: 'opencode',
       label: 'OpenCode',
       file: path.join(home, '.config', 'opencode', 'opencode.json'),
+      legacyFiles: [path.join(home, '.config', 'opencode', 'config.jsonc')],
       // OpenCode nests servers under `mcp`, not `mcpServers`.
       keyPath: ['mcp', 'gitnexus'],
     },

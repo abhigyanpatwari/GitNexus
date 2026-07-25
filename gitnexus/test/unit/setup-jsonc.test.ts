@@ -40,6 +40,7 @@ describe('setupOpenCode — JSONC preservation', () => {
 
   const opencodeDir = () => path.join(tempHome, '.config', 'opencode');
   const opencodeJsonPath = () => path.join(opencodeDir(), 'opencode.json');
+  const configJsoncPath = () => path.join(opencodeDir(), 'config.jsonc');
 
   beforeEach(async () => {
     vi.resetModules();
@@ -149,6 +150,28 @@ describe('setupOpenCode — JSONC preservation', () => {
     const raw = await fs.readFile(opencodeJsonPath(), 'utf-8');
     const config = parseJsonc(raw);
 
+    expect(config.mcp.gitnexus).toBeDefined();
+  });
+
+  it('updates existing config.jsonc instead of creating opencode.json', async () => {
+    await fs.rm(opencodeJsonPath(), { force: true });
+    const jsonc = `{
+  // OpenCode user config
+  "model": "test",
+  "mcp": { "other": { "command": "keep" } }
+}`;
+    await fs.writeFile(configJsoncPath(), jsonc, 'utf-8');
+
+    const { setupCommand } = await import('../../src/cli/setup.js');
+    await setupCommand();
+
+    const raw = await fs.readFile(configJsoncPath(), 'utf-8');
+    expect(raw).toContain('OpenCode user config');
+    await expect(fs.access(opencodeJsonPath())).rejects.toThrow();
+
+    const config = parseJsonc(raw);
+    expect(config.model).toBe('test');
+    expect(config.mcp.other).toEqual({ command: 'keep' });
     expect(config.mcp.gitnexus).toBeDefined();
   });
 
