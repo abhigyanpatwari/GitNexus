@@ -11,7 +11,9 @@
 
 import path from 'path';
 import fs from 'fs/promises';
+import { randomUUID } from 'node:crypto';
 import { retryRename } from '../storage/fs-atomic.js';
+import { acquireIndexLock } from '../storage/index-lock.js';
 import { runPipelineFromRepo } from './ingestion/pipeline.js';
 import type { KnowledgeGraph } from './graph/types.js';
 import { resetDegradedParseCounter } from './tree-sitter/safe-parse.js';
@@ -44,6 +46,7 @@ import {
 import { escapeCypherString } from './lbug/cypher-escape.js';
 import {
   buildSearchIndexesOrDegrade,
+  ftsFailureIsFatal,
   createSearchFTSIndexes,
   dropSearchFTSIndexes,
   initialiseSearchFTSStemmer,
@@ -368,6 +371,15 @@ export interface AnalyzeResult {
    */
   ftsSkipped?: boolean;
   /**
+   * Why FTS was skipped, when `ftsSkipped` is true (#2658 review L2):
+   * `extension-unavailable` (the LadybugDB FTS extension could not load — the
+   * offline-first case, remedied by installing it) vs `build-failed` (the
+   * extension loaded but the index build/verify failed non-fatally — remedied by
+   * `--repair-fts`, not by installing the extension). Lets the CLI show the
+   * correct recovery hint instead of always blaming a missing extension.
+   */
+  ftsSkipReason?: 'extension-unavailable' | 'build-failed';
+  /**
    * True when the index this run produced/validated is the flat workspace
    * slot (#2106 R2, inverted by #2354 to follow the checked-out branch).
    * `false` for a pinned `--branch` sub-index. Lets the CLI skip repo-root
@@ -666,38 +678,179 @@ export const pdgModeMismatch = (recorded: RepoMeta['pdg'], options: PdgOptions):
   return false;
 };
 
+/**
+ * The storage paths + resolved branch placement a run will write to. Computed
+ * once, up front, so the `runFullAnalysis` wrapper can lock the ACTUAL write
+ * directory (#2658). `metaDir` — not `getStoragePaths(repoPath, options.branch)`
+ * — is the lock scope: a `--branch X` that owns the flat slot resolves to the
+ * flat `.gitnexus`, so scoping off the raw option would lock the wrong dir.
+ */
+interface WriteTarget {
+  storagePath: string;
+  repoHasGit: boolean;
+  currentCommit: string;
+  checkedOutBranch: string | null;
+  branchLabel: string | null;
+  placement: { branch?: string };
+  lbugPath: string;
+  metaPath: string;
+  metaDir: string;
+}
+
+/**
+ * Resolve which storage slot this analyze writes to, including branch
+ * placement (#2106/#2354). Extracted from the top of the pipeline so the lock
+ * scope (`metaDir`) is known before the lock is acquired. Throws the same
+ * `--branch` / checked-out mismatch error the pipeline used to throw inline, so
+ * that failure still surfaces before any lock is taken.
+ */
+async function resolveWriteTarget(repoPath: string, options: AnalyzeOptions): Promise<WriteTarget> {
+  // `storagePath` is ALWAYS the flat `.gitnexus` — content-addressed caches
+  // (parse-cache, parsedfile-store) and kuzu-migration cleanup live there and
+  // are shared across branches (#2106 KTD7).
+  const { storagePath } = getStoragePaths(repoPath);
+  const repoHasGit = hasGitDir(repoPath);
+  const currentCommit = repoHasGit ? getCurrentCommit(repoPath) : '';
+  // Normalize the auto-detected branch the same way an explicit `--branch` is
+  // validated (#2106 R1): a git ref the branch-name rules forbid becomes `null`
+  // → the flat slot, matching that a later `--branch <that-ref>` query would
+  // also be rejected. A normal ref round-trips index-time/query-time labels.
+  const checkedOutBranch = repoHasGit
+    ? (sanitizeDetectedBranch(getCurrentBranch(repoPath)) ?? null)
+    : null;
+  // Analyze indexes the working tree, not an arbitrary ref. An explicit
+  // `--branch X` while a DIFFERENT branch Y is checked out would write Y's
+  // content into X's slot, corrupting X (#2106). Refuse the mismatch. Detached
+  // HEAD / non-git (checkedOutBranch === null) still allow an explicit label.
+  if (options.branch && checkedOutBranch && options.branch !== checkedOutBranch) {
+    throw new Error(
+      `--branch "${options.branch}" does not match the checked-out branch "${checkedOutBranch}". ` +
+        `Check out "${options.branch}" before indexing it, or omit --branch to index the current branch.`,
+    );
+  }
+  const branchLabel = options.branch ?? checkedOutBranch;
+  const placement = options.branch ? await resolveBranchPlacement(repoPath, branchLabel) : {};
+  const { lbugPath, metaPath } = getStoragePaths(repoPath, placement.branch);
+  return {
+    storagePath,
+    repoHasGit,
+    currentCommit,
+    checkedOutBranch,
+    branchLabel,
+    placement,
+    lbugPath,
+    metaPath,
+    metaDir: path.dirname(metaPath),
+  };
+}
+
+/**
+ * Run the full analysis under an exclusive, index-directory-scoped write lock
+ * (#2658). A second concurrent `analyze` on the same slot waits here for the
+ * first to finish, then falls through to the normal freshness check inside —
+ * so a run whose work the holder already did returns `alreadyUpToDate` in
+ * seconds instead of rebuilding (single-flight coalescing), while a run for a
+ * genuinely-changed tree does one follow-up incremental. No new flag: waiting
+ * is the default, which is what hook-driven re-index wants.
+ *
+ * The lock is held by whichever process runs the pipeline (the heap-respawn
+ * child, or the original) — see index-lock.ts for why ownership lives with the
+ * writer, not a supervising parent. Released as soon as the write completes or
+ * throws; the post-analysis steps in the CLI (skills, registry) run lock-free.
+ */
 export async function runFullAnalysis(
   repoPath: string,
   options: AnalyzeOptions,
   callbacks: AnalyzeCallbacks,
   runnerIdentityAtBootstrap?: AnalyzerRunnerIdentity,
 ): Promise<AnalyzeResult> {
+  // Validate operator-provided FTS config before anything else — a typo fails
+  // here in ms, without taking the lock. (createSearchFTSIndexes reuses the
+  // cached value via getSearchFTSStemmer.)
+  initialiseSearchFTSStemmer();
+  initialiseSearchFTSCjkSegmentation();
+  // Scope the degraded-parse log throttle to this run (module-level counter
+  // would otherwise stay saturated on a reused process).
+  resetDegradedParseCounter();
+
+  const log = (msg: string) => callbacks.onLog?.(msg);
+  const acquireOpts = {
+    log,
+    onWaitStart: () =>
+      callbacks.onProgress('lock', 0, 'Waiting for another analyze to finish on this index…'),
+  };
+
+  let writeTarget = await resolveWriteTarget(repoPath, options);
+  let lock = await acquireIndexLock(writeTarget.metaDir, acquireOpts);
+  try {
+    // #2658 review H2: acquireIndexLock can wait up to the timeout ceiling,
+    // during which git HEAD/branch — and thus the resolved write slot — may
+    // change (a commit lands, a branch is switched, or another writer adopts the
+    // flat slot). The pre-wait snapshot must NOT be reused: re-resolve UNDER the
+    // lock so the freshness check (`existingMeta.lastCommit === currentCommit`)
+    // and the meta stamps see current git state, honoring the module's "re-check
+    // freshness after acquiring" contract. If the slot itself moved we hold the
+    // WRONG lock — release and re-acquire the correct one. Bounded so a
+    // pathologically churning checkout can't loop forever; after the cap we
+    // proceed on the current lock. The loop is INSIDE the try so a re-resolve
+    // that throws (e.g. a `--branch` that stopped matching the now-switched
+    // checkout) still releases the held lock via `finally` (no leak).
+    const MAX_RELOCK = 3;
+    for (let attempt = 0; attempt < MAX_RELOCK; attempt++) {
+      const fresh = await resolveWriteTarget(repoPath, options);
+      if (fresh.metaDir === writeTarget.metaDir) {
+        writeTarget = fresh; // same slot — adopt the freshly-read commit/branch/placement
+        break;
+      }
+      log(
+        `Index write target moved while waiting for the lock ` +
+          `(${writeTarget.metaDir} → ${fresh.metaDir}); re-acquiring the correct slot.`,
+      );
+      lock.release();
+      writeTarget = fresh;
+      lock = await acquireIndexLock(fresh.metaDir, acquireOpts);
+      if (attempt === MAX_RELOCK - 1) {
+        log('Index write target still moving after repeated re-acquire; proceeding on this lock.');
+      }
+    }
+    return await runFullAnalysisInner(
+      repoPath,
+      options,
+      callbacks,
+      writeTarget,
+      runnerIdentityAtBootstrap,
+    );
+  } finally {
+    lock.release();
+  }
+}
+
+async function runFullAnalysisInner(
+  repoPath: string,
+  options: AnalyzeOptions,
+  callbacks: AnalyzeCallbacks,
+  writeTarget: WriteTarget,
+  runnerIdentityAtBootstrap?: AnalyzerRunnerIdentity,
+): Promise<AnalyzeResult> {
   const log = (msg: string) => callbacks.onLog?.(msg);
   const progress = (phase: string, percent: number, message: string) =>
     callbacks.onProgress(phase, percent, message);
 
-  // Streamed structural emit (#2680), resolved once: it both configures the
-  // pipeline and is stamped into RepoMeta, and those two must never disagree.
+  // Streamed structural emit (#2680), resolved once so the pipeline flag and the
+  // CSV-dir resolution below cannot disagree.
   const streamGraphEmitActive = resolveStreamGraphEmit(options);
 
-  // Resolve + validate operator-provided FTS config once, before the expensive
-  // parse/load phases. A typo fails here in ms; createSearchFTSIndexes reuses
-  // the cached value via getSearchFTSStemmer.
-  initialiseSearchFTSStemmer();
-  initialiseSearchFTSCjkSegmentation();
+  // FTS-config validation and the degraded-parse counter reset happen in the
+  // `runFullAnalysis` wrapper (before the lock is taken).
 
-  // Scope the degraded-parse log throttle to this run. On a reused process
-  // (e.g. tests, or any host that calls runFullAnalysis more than once) the
-  // module-level counter would otherwise stay saturated and suppress every
-  // degraded-parse log after the first run. The per-parse worker holds its own
-  // counter in its own module instance and is process-scoped, so no separate
-  // worker-side reset is needed (see safe-parse.ts ParseTimeoutError contract).
-  resetDegradedParseCounter();
-
-  // `storagePath` is ALWAYS the flat `.gitnexus` — content-addressed caches
-  // (parse-cache, parsedfile-store) and the kuzu-migration cleanup live there
-  // and are shared across branches (#2106 KTD7).
-  const { storagePath } = getStoragePaths(repoPath);
+  // Write target (storage paths + resolved branch placement) was computed by
+  // the `runFullAnalysis` wrapper — which needs `metaDir` up front to acquire
+  // the exclusive index lock BEFORE any of the freshness/write work below
+  // (#2658). `storagePath` is ALWAYS the flat `.gitnexus`; `placement.branch`
+  // selects a `branches/<slug>/` sub-slot only for an explicit `--branch` that
+  // does not own the flat slot. See resolveWriteTarget for the full contract.
+  const { storagePath, repoHasGit, currentCommit, branchLabel, placement, lbugPath, metaDir } =
+    writeTarget;
 
   // Start each analyze with a clean buffer-pool hint: any pre-pipeline DB open
   // (e.g. the embeddings-cache open) falls back to the default until the hint is
@@ -709,44 +862,6 @@ export async function runFullAnalysis(
   if (kuzuResult.found && kuzuResult.needsReindex) {
     log('Migrating from KuzuDB to LadybugDB — rebuilding index...');
   }
-
-  const repoHasGit = hasGitDir(repoPath);
-  const currentCommit = repoHasGit ? getCurrentCommit(repoPath) : '';
-
-  // ── #2106/#2354: resolve which branch slot this run writes to ─────────
-  // `branchLabel` is the branch identity recorded in meta.json (incl. the
-  // flat workspace slot). `placement.branch` is undefined for the flat slot
-  // (the lbug/meta paths stay byte-identical to single-branch behavior) and
-  // set for a `branches/<slug>/` sub-directory. Only an explicit `--branch`
-  // can route to a sub-directory; a plain analyze ALWAYS targets the flat
-  // slot, which follows the checked-out working tree (#2354) — the
-  // auto-detected branch (null for detached HEAD / non-git) is recorded as
-  // the slot's informational label only.
-  // Normalize the auto-detected branch the same way an explicit `--branch` is
-  // validated (#2106 R1): a git ref the branch-name rules forbid (backtick,
-  // `~ ^ : ? *`, leading `-`, `..`) becomes `null` → the flat slot, matching
-  // that a later `--branch <that-ref>` query would also be rejected. A normal
-  // ref passes through unchanged so index-time and query-time labels round-trip.
-  const checkedOutBranch = repoHasGit
-    ? (sanitizeDetectedBranch(getCurrentBranch(repoPath)) ?? null)
-    : null;
-  // Analyze indexes the working tree, not an arbitrary ref. An explicit
-  // `--branch X` while a DIFFERENT branch Y is checked out would write Y's
-  // content (and Y's commit) into X's index slot, corrupting X (#2106). Refuse
-  // the mismatch. Detached HEAD / non-git (checkedOutBranch === null) still
-  // allow an explicit label so CI checkouts can name their snapshot.
-  if (options.branch && checkedOutBranch && options.branch !== checkedOutBranch) {
-    throw new Error(
-      `--branch "${options.branch}" does not match the checked-out branch "${checkedOutBranch}". ` +
-        `Check out "${options.branch}" before indexing it, or omit --branch to index the current branch.`,
-    );
-  }
-  const branchLabel = options.branch ?? checkedOutBranch;
-  const placement = options.branch ? await resolveBranchPlacement(repoPath, branchLabel) : {};
-  const { lbugPath, metaPath } = getStoragePaths(repoPath, placement.branch);
-  // metaPath now points to the metadata file (gitnexus.json) in a branch-specific directory.
-  // metaDir is the directory containing the metadata file (and branch-specific DBs).
-  const metaDir = path.dirname(metaPath);
 
   // Keep gitnexus.json and the legacy meta.json mirror in sync (fresher
   // indexedAt wins; nothing is deleted). Best-effort: loadMeta has its own
@@ -1435,7 +1550,12 @@ export async function runFullAnalysis(
     log('atomic-incremental: live index carries orphan sidecars — using in-place writeback');
   }
   const useAtomicSwap = (isFullRebuild || atomicIncremental) && (posixSwap || windowsSwapOk);
-  const buildPath = useAtomicSwap ? `${lbugPath}.new` : lbugPath;
+  // #2658: a per-run staging name (was the fixed `lbug.new`). Even under the
+  // single-writer lock, a unique name means a crashed run's half-built staging
+  // file can never be mistaken for — or clobber — a live run's; the lock's
+  // orphan sweep (sweepStagingArtifacts) reclaims stragglers on the next
+  // acquire. The `.staging.` prefix is what that sweep matches.
+  const buildPath = useAtomicSwap ? `${lbugPath}.staging.${randomUUID()}` : lbugPath;
 
   if (isIncremental && hashDiff) {
     log(
@@ -1970,6 +2090,11 @@ export async function runFullAnalysis(
     // build/verify step itself fails, so capabilities.fts.status / ftsSkipped
     // stay honest even though that failure no longer aborts the whole analyze.
     let ftsReady = ftsAvailable;
+    // Why FTS ended up skipped (#2658 review L2): extension-unavailable up front,
+    // or build-failed in the degrade branch below.
+    let ftsSkipReason: 'extension-unavailable' | 'build-failed' | undefined = ftsAvailable
+      ? undefined
+      : 'extension-unavailable';
     if (ftsAvailable) {
       // Degrade rather than throw: createSearchFTSIndexes re-tokenizes every
       // stored row on every run, so a native tokenizer error on a single
@@ -1985,8 +2110,24 @@ export async function runFullAnalysis(
       });
       if (ftsResult.ok) {
         progress('fts', 90, 'Search indexes ready');
+      } else if (ftsFailureIsFatal(ftsResult.failureClass, useAtomicSwap)) {
+        // #2658: an IO/rename/checkpoint/corruption failure while building FTS
+        // is a genuinely broken build on this disk — not a concurrent writer
+        // (the single-writer lock rules that out). ONLY fatal on the atomic-swap
+        // path: the graph was built into a throwaway staging DB, so throwing
+        // before the swap abandons the staging file and leaves the previous live
+        // index intact. On an in-place build the live DB is already mutated and
+        // cannot be rolled back by throwing (see ftsFailureIsFatal) — those
+        // degrade in the branch below instead.
+        throw new Error(
+          `Search index build failed with an integrity error and the analysis was aborted ` +
+            `to avoid publishing a broken index: ${ftsResult.error}. The previous index is ` +
+            `left intact. Re-run \`gitnexus analyze\`; if it persists, check the disk for space ` +
+            `or corruption.`,
+        );
       } else {
         ftsReady = false;
+        ftsSkipReason = 'build-failed';
         log(
           `FTS index build failed (${ftsResult.error}) — keyword search degraded this run. ` +
             'Graph and embeddings analysis completed successfully. Run `gitnexus analyze --repair-fts` to retry.',
@@ -2637,6 +2778,7 @@ export async function runFullAnalysis(
       stats: meta.stats,
       pipelineResult,
       ftsSkipped: !ftsReady,
+      ftsSkipReason: ftsReady ? undefined : ftsSkipReason,
       isPrimaryBranch: !placement.branch,
     };
   } catch (err) {
