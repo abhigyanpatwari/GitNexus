@@ -13,13 +13,21 @@
  * these rely on the #2687 pre-scan collapsing the pair; a regression there
  * would surface here as a twin rather than a wrong label.
  *
- * NOTE (deliberately not asserted): making the node a `Function` does NOT by
- * itself make `f()` resolve to it outside TS/JS. Free-call resolution runs off
- * the per-language scope-resolution queries, which still model these bindings
- * as values — see the closing note in the #2687 plan. These tests pin the graph
- * label only.
+ * The label alone does not make `f()` resolve — free-call resolution runs off
+ * the per-language scope-resolution queries. Go, Python and C++ now also carry a
+ * `@declaration.function` capture anchored on the inner closure literal, so
+ * calls resolve there too (asserted in the second describe). Kotlin, Swift and
+ * Dart still lack a `@scope.function` whose range matches the closure literal —
+ * Kotlin deliberately scopes `lambda_literal` as a BLOCK (#1757) — and an
+ * unaligned declaration anchor mis-attributes callers, so those three keep the
+ * label fix only.
  */
 import { describe, expect, it } from 'vitest';
+import fs from 'node:fs';
+import os from 'node:os';
+import path from 'node:path';
+import { runPipelineFromRepo } from '../../src/core/ingestion/pipeline.js';
+import { DIST_WORKER_URL, distWorkerExists } from '../helpers/worker-parse.js';
 import { parseFilesWithWorkers } from '../helpers/worker-parse.js';
 
 const labelsFor = async (path: string, content: string, name: string): Promise<string[]> => {
@@ -124,5 +132,58 @@ describe('closure bindings emit a single Function node in every language', () =>
         .filter((rel) => rel.type === 'HAS_PROPERTY')
         .map((rel) => `${rel.sourceId} -> ${rel.targetId}`),
     ).toEqual(['Class:src/owned.py:C -> Property:src/owned.py:C.name']);
+  });
+});
+
+const describeIfWorkerBuilt = distWorkerExists() ? describe : describe.skip;
+
+/** Call targets resolved in a one-file repo, for the closure-call assertions. */
+const callTargetsFor = async (filename: string, source: string): Promise<string[]> => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'gn-closure-calls-'));
+  try {
+    fs.writeFileSync(path.join(dir, filename), source, 'utf-8');
+    const result = await runPipelineFromRepo(dir, () => {}, {
+      workerPoolSize: 1,
+      workerUrlForTest: DIST_WORKER_URL,
+    });
+    return result.graph.relationships
+      .filter((rel) => rel.type === 'CALLS')
+      .map((rel) => rel.targetId)
+      .sort();
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+};
+
+describeIfWorkerBuilt('calls to a closure binding resolve to its Function node', () => {
+  // The label change alone is not enough: each language also needs a
+  // `@declaration.function` anchored on the inner closure literal, so the def is
+  // owned by the closure's own scope and free-call resolution can find it.
+
+  it('Go: Handler(1) resolves', async () => {
+    const targets = await callTargetsFor(
+      'main.go',
+      'package main\n\nvar Handler = func(x int) int { return x }\n\nfunc Caller() int { return Handler(1) }\n',
+    );
+
+    expect(targets).toContain('Function:main.go:Handler');
+  });
+
+  it('Python: handler(1) resolves', async () => {
+    const targets = await callTargetsFor(
+      'app.py',
+      'handler = lambda x: x\n\ndef caller():\n    return handler(1)\n',
+    );
+
+    expect(targets).toContain('Function:app.py:handler');
+  });
+
+  it('C++: handler(1) resolves', async () => {
+    const targets = await callTargetsFor(
+      'main.cpp',
+      'auto handler = [](int x) { return x; };\n\nint caller() { return handler(1); }\n',
+    );
+
+    expect(targets).toContain('Function:main.cpp:handler');
   });
 });
