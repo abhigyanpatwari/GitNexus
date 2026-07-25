@@ -19,6 +19,12 @@ function captureClassAnnotations(code: string): JavaCaptureSideChannel['classAnn
   return collectJavaCaptureSideChannel(filePath)?.classAnnotations ?? [];
 }
 
+function captureSpringDiFacts(code: string): NonNullable<JavaCaptureSideChannel['springDiFacts']> {
+  const filePath = 'src/Test.java';
+  emitJavaScopeCaptures(code, filePath);
+  return collectJavaCaptureSideChannel(filePath)?.springDiFacts ?? [];
+}
+
 describe('Java class annotation capture', () => {
   it('collects annotation names during the existing scope-query traversal', () => {
     const facts = captureClassAnnotations(`
@@ -51,10 +57,56 @@ describe('Java class annotation capture', () => {
   });
 });
 
+describe('Java Spring injection syntax capture', () => {
+  it('preserves constructor, field, method, qualifier, and bean-name syntax in the side channel', () => {
+    const facts = captureSpringDiFacts(`
+      @Service("checkout") class Checkout {
+        Checkout(@Qualifier("fastGateway") Gateway gateway) {}
+        @Autowired Gateway fallback;
+        @Inject void setRepo(Repo repo) {}
+      }
+    `);
+
+    expect(facts).toHaveLength(1);
+    expect(facts[0].classAnnotations).toEqual([{ name: 'Service', text: '@Service("checkout")' }]);
+    expect(facts[0].injectionSites).toMatchObject([
+      {
+        kind: 'constructor',
+        implicitConstructor: true,
+        dependencies: [
+          {
+            name: 'gateway',
+            rawType: 'Gateway',
+            annotations: [{ name: 'Qualifier', text: '@Qualifier("fastGateway")' }],
+          },
+        ],
+      },
+      {
+        kind: 'field',
+        memberName: 'fallback',
+        dependencies: [{ name: 'fallback', rawType: 'Gateway' }],
+      },
+      {
+        kind: 'method',
+        memberName: 'setRepo',
+        dependencies: [{ name: 'repo', rawType: 'Repo' }],
+      },
+    ]);
+  });
+});
+
 function captureKotlinClassAnnotations(code: string): KotlinCaptureSideChannel['classAnnotations'] {
   const filePath = 'src/Test.kt';
   emitKotlinScopeCaptures(code, filePath);
   return collectKotlinCaptureSideChannel(filePath)?.classAnnotations ?? [];
+}
+
+function captureKotlinSpringDiFacts(
+  code: string,
+): NonNullable<KotlinCaptureSideChannel['springDiFacts']> {
+  const filePath = 'src/Test.kt';
+  emitKotlinScopeCaptures(code, filePath);
+  return collectKotlinCaptureSideChannel(filePath)?.springDiFacts ?? [];
 }
 
 describe('Kotlin class annotation capture', () => {
@@ -89,6 +141,106 @@ describe('Kotlin class annotation capture', () => {
     await kotlinScopeResolver.loadResolutionConfig?.('/tmp/repo');
 
     expect(collectKotlinCaptureSideChannel(filePath)).toBeUndefined();
+  });
+});
+
+describe('Kotlin Spring injection syntax capture', () => {
+  it('preserves primary constructor, property, method, nullable type, projection, and use-site syntax', () => {
+    const facts = captureKotlinSpringDiFacts(`
+      @Service("checkout") @Primary
+      class Checkout @Autowired constructor(
+        @param:Qualifier("fastGateway") private val gateway: PaymentGateway,
+        @Named("repo") repo: Repo?,
+        val gateways: List<out PaymentGateway>,
+      ) {
+        @field:Autowired
+        @field:Qualifier("slowGateway")
+        lateinit var fallback: PaymentGateway
+
+        @set:Inject
+        var optional: Repo? = null
+
+        @Inject
+        fun setRepo(@Named("repo") repo: Repo) {}
+      }
+    `);
+
+    expect(facts).toHaveLength(1);
+    expect(facts[0].classAnnotations).toEqual([
+      { name: 'Service', text: '@Service("checkout")' },
+      { name: 'Primary', text: '@Primary' },
+    ]);
+    expect(facts[0].injectionSites).toMatchObject([
+      {
+        kind: 'constructor',
+        implicitConstructor: false,
+        dependencies: [
+          {
+            name: 'gateway',
+            rawType: 'PaymentGateway',
+            annotations: [
+              {
+                name: 'Qualifier',
+                text: '@param:Qualifier("fastGateway")',
+                useSiteTarget: 'param',
+              },
+            ],
+          },
+          {
+            name: 'repo',
+            rawType: 'Repo?',
+            annotations: [{ name: 'Named', text: '@Named("repo")' }],
+          },
+          {
+            name: 'gateways',
+            rawType: 'List<out PaymentGateway>',
+          },
+        ],
+      },
+      {
+        kind: 'property',
+        memberName: 'fallback',
+        annotations: [
+          { name: 'Autowired', text: '@field:Autowired', useSiteTarget: 'field' },
+          {
+            name: 'Qualifier',
+            text: '@field:Qualifier("slowGateway")',
+            useSiteTarget: 'field',
+          },
+        ],
+      },
+      {
+        kind: 'property',
+        memberName: 'optional',
+        annotations: [{ name: 'Inject', text: '@set:Inject', useSiteTarget: 'set' }],
+      },
+      {
+        kind: 'method',
+        memberName: 'setRepo',
+        dependencies: [
+          {
+            name: 'repo',
+            rawType: 'Repo',
+            annotations: [{ name: 'Named', text: '@Named("repo")' }],
+          },
+        ],
+      },
+    ]);
+  });
+
+  it('captures sole stereotype primary constructors as implicit injection sites', () => {
+    const facts = captureKotlinSpringDiFacts(`
+      @Service
+      class Checkout(private val gateway: PaymentGateway)
+    `);
+
+    expect(facts[0].injectionSites).toMatchObject([
+      {
+        kind: 'constructor',
+        implicitConstructor: true,
+        dependencies: [{ name: 'gateway', rawType: 'PaymentGateway' }],
+      },
+    ]);
   });
 });
 

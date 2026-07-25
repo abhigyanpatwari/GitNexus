@@ -184,6 +184,8 @@ export const en = {
   'help.option.analyze.skipAgentsMd':
     'Skip updating the gitnexus section in AGENTS.md and CLAUDE.md',
   'help.option.analyze.noStats': 'Omit volatile file/symbol counts from AGENTS.md and CLAUDE.md',
+  'help.option.analyze.selfCommit':
+    'Auto-commit AGENTS.md/CLAUDE.md changes after analyze (opt-in, off by default). Scoped to only those two files (never `git add -A`); no-ops if neither exists, neither changed, or the repo has no git identity configured.',
   'help.option.analyze.skipSkills':
     'Skip installing standard GitNexus skill files directly under .claude/skills/ and .agents/skills/. Does not suppress community skills from --skills (those use .claude/skills/gitnexus-area-*). Use --index-only to skip all AI-context file injection.',
   'help.option.analyze.indexOnly':

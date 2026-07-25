@@ -265,6 +265,23 @@ const LANGS = [
       `  public void setName(String v) { this.name = v; }\n}\n\n`,
   },
   {
+    name: 'java-local-types',
+    emit: emitJavaScopeCaptures,
+    fixturePrefix: 'java-local',
+    exts: ['.java'],
+    file: 'bench-local.java',
+    header:
+      'package generated;\n\nclass Base {}\n\ninterface Marker {}\n\nclass Bench {\n  void run() {\n',
+    // Co-scale both independent ordinal sequences under one host; construction
+    // and dispatch keep lexical-alias captures hot. The old per-identity
+    // host-candidate filter made this combined workload quadratic.
+    unit: (n) =>
+      `    { class Local extends Base implements Marker { long value() { return ${n}L; } } ` +
+      `new Local().value(); }\n` +
+      `    Marker marker${n} = new Marker() {};\n`,
+    footer: '  }\n}\n',
+  },
+  {
     name: 'typescript',
     emit: emitTsScopeCaptures,
     fixturePrefix: 'typescript',
@@ -309,7 +326,7 @@ const LANGS = [
 function generate(lang, entityCount) {
   let src = lang.header;
   for (let i = 0; i < entityCount; i++) src += lang.unit(i);
-  return src;
+  return src + (lang.footer ?? '');
 }
 
 // ---- timing ----

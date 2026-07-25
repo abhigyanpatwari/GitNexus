@@ -2885,6 +2885,118 @@ describe('Java instance-ownership free-call gate (#2550)', () => {
   }, 60000);
 });
 
+describe('Java local-type identity and lexical scope (#2562)', () => {
+  let result: PipelineResult;
+
+  beforeAll(async () => {
+    result = await runPipelineFromRepo(path.join(FIXTURES, 'java-local-class-naming'), () => {});
+  }, 60000);
+
+  it('matches javac local-name and anonymous-name sequences per immediate host', () => {
+    const classes = getNodesByLabel(result, 'Class');
+    expect(classes).toContain('Outer$1Local');
+    expect(classes).toContain('Outer$1CtorHost');
+    expect(classes).toContain('Outer$1NestedHost');
+    expect(classes).toContain('Outer$1');
+    expect(classes).toContain('Outer$2');
+    expect(classes).toContain('Outer$2Local');
+    expect(classes).toContain('Outer$1Local$1');
+    expect(classes).toContain('Outer$1CtorHost$1Local');
+    expect(classes).toContain('Outer$1NestedHost$Member$1Local');
+    expect(classes).toContain('Outer$MemberHost$1Local');
+    expect(classes).toContain('Outer$1StaticLocal');
+    expect(classes).toContain('Outer$1InstanceLocal');
+    expect(classes).toContain('Outer$1LambdaLocal');
+    expect(classes).toContain('Outer$3$1Local');
+    expect(classes).toContain('Compact$1Local');
+    expect(classes).toContain('Compact$1');
+    expect(classes).not.toContain('Local');
+  });
+
+  it('emits the correct graph label and owner for every local type kind', () => {
+    expect(getNodesByLabel(result, 'Enum')).toContain('Types$1E');
+    expect(getNodesByLabel(result, 'Record')).toContain('Types$1R');
+    expect(getNodesByLabel(result, 'Interface')).toContain('Types$1I');
+    expect(getNodesByLabel(result, 'Class')).not.toContain('Types$1E');
+    expect(getNodesByLabel(result, 'Class')).not.toContain('Types$1R');
+    expect(getNodesByLabel(result, 'Class')).not.toContain('Types$1I');
+
+    const hasMethod = getRelationships(result, 'HAS_METHOD');
+    for (const [label, owner, method] of [
+      ['Class', 'Outer$1Local', 'inner'],
+      ['Class', 'Outer$2Local', 'inner'],
+      ['Class', 'Outer$1CtorHost$1Local', 'inner'],
+      ['Class', 'Outer$1NestedHost$Member', 'make'],
+      ['Enum', 'Types$1E', 'enumHit'],
+      ['Record', 'Types$1R', 'recordHit'],
+      ['Interface', 'Types$1I', 'run'],
+    ]) {
+      expect(
+        hasMethod.some(
+          (edge) =>
+            edge.rel.sourceId ===
+              `${label}:src/${owner.startsWith('Types') ? 'Types' : 'Outer'}.java:${owner}` &&
+            edge.rel.targetId ===
+              `Method:src/${owner.startsWith('Types') ? 'Types' : 'Outer'}.java:${owner}.${method}#0`,
+        ),
+      ).toBe(true);
+    }
+  });
+
+  it('keeps source-level construction dispatch bound to each local identity', () => {
+    const calls = getRelationships(result, 'CALLS');
+    expect(calls.find((c) => c.source === 'first' && c.target === 'inner')?.rel.targetId).toBe(
+      'Method:src/Outer.java:Outer$1Local.inner#0',
+    );
+    expect(calls.find((c) => c.source === 'second' && c.target === 'inner')?.rel.targetId).toBe(
+      'Method:src/Outer.java:Outer$2Local.inner#0',
+    );
+    expect(calls.find((c) => c.source === 'CtorHost' && c.target === 'inner')?.rel.targetId).toBe(
+      'Method:src/Outer.java:Outer$1CtorHost$1Local.inner#0',
+    );
+    for (const targetId of [
+      'Method:src/Outer.java:Outer$1StaticLocal.staticHit#0',
+      'Method:src/Outer.java:Outer$1InstanceLocal.instanceHit#0',
+      'Method:src/Outer.java:Outer$1LambdaLocal.lambdaHit#0',
+      'Method:src/Outer.java:Outer$3$1Local.anonymousHit#0',
+      'Method:src/Outer.java:Outer$MemberHost$1Local.ordinaryMemberHit#0',
+      'Method:src/Compact.java:Compact$1Local.inner#0',
+      'Method:src/Types.java:Types$1E.enumHit#0',
+      'Method:src/Types.java:Types$1R.recordHit#0',
+      'Method:src/Types.java:Types$1.run#0',
+    ]) {
+      expect(
+        calls.some((call) => call.rel.targetId === targetId),
+        targetId,
+      ).toBe(true);
+    }
+  });
+
+  it('respects declaration-order visibility against a same-named member type', () => {
+    const calls = getRelationships(result, 'CALLS').filter(
+      (call) => call.source === 'declarationOrder',
+    );
+
+    expect(calls.find((call) => call.target === 'member')?.rel.targetId).toBe(
+      'Method:src/Outer.java:Cyclic.member#0',
+    );
+    expect(calls.find((call) => call.target === 'local')?.rel.targetId).toBe(
+      'Method:src/Outer.java:Outer$1Cyclic.local#0',
+    );
+  });
+
+  it('keeps same-named local types isolated to their disjoint blocks', () => {
+    const calls = getRelationships(result, 'CALLS').filter((call) => call.source === 'blocks');
+
+    expect(calls.find((call) => call.target === 'firstBlock')?.rel.targetId).toBe(
+      'Method:src/Outer.java:Outer$3Local.firstBlock#0',
+    );
+    expect(calls.find((call) => call.target === 'secondBlock')?.rel.targetId).toBe(
+      'Method:src/Outer.java:Outer$4Local.secondBlock#0',
+    );
+  });
+});
+
 // ---------------------------------------------------------------------------
 // #2550 review hardening: (a) an anonymous class inherits from its
 // constructed type, so bare calls to inherited methods INSIDE the

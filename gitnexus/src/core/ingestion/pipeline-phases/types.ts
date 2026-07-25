@@ -14,6 +14,7 @@
  *  - Each phase is independently testable with mocked inputs
  */
 
+import type { GraphEmitControl } from '../../lbug/graph-emit-sink.js';
 import type { KnowledgeGraph } from '../../graph/types.js';
 import type { PipelineProgress } from 'gitnexus-shared';
 import type { PipelineOptions } from '../pipeline.js';
@@ -32,6 +33,12 @@ export interface PipelineContext {
   readonly options?: PipelineOptions;
   /** Pipeline start timestamp (for elapsed-time logging). */
   readonly pipelineStart: number;
+  /**
+   * Streamed structural emit (#2680), present only when `streamGraphEmit` is on.
+   * `parse` calls `beginStreaming()` at its start; `pruneLocalSymbols` consults
+   * `hasStreamedSemanticEdge()`. Absent ⇒ everything stays in the graph.
+   */
+  readonly graphEmit?: GraphEmitControl;
 }
 
 // ── Phase result wrapper ───────────────────────────────────────────────────

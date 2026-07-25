@@ -71,7 +71,11 @@ import {
   isSupportedCjkSegmentationMode,
   MAX_CJK_SEGMENTATION_QUERY_LENGTH,
 } from '../../core/search/cjk-segmentation.js';
-import { checkStalenessAsync, checkCwdMatch } from '../../core/git-staleness.js';
+import {
+  checkStalenessAsync,
+  checkCwdMatch,
+  type StalenessInfo,
+} from '../../core/git-staleness.js';
 import { logger } from '../../core/logger.js';
 import {
   isLocalEmbeddingRuntimeBlockerMessage,
@@ -712,12 +716,60 @@ export function parseListReposPagination(
   return { limit, offset };
 }
 
+/**
+ * #2655: a tool result can carry a `staleness` field only if it is a plain
+ * object that isn't an error envelope and doesn't already carry one. Raw-array
+ * results (non-tabular `cypher` rows) are excluded because the CLI's `--limit`
+ * and other consumers branch on `Array.isArray`, so wrapping them would break
+ * that contract. Shared by `attachToolStaleness` and the dispatch site, which
+ * uses it to skip the freshness `git` spawn for results that can't carry it.
+ */
+function canCarryStaleness(result: unknown): result is Record<string, unknown> {
+  return (
+    result !== null &&
+    typeof result === 'object' &&
+    !Array.isArray(result) &&
+    !('error' in result) &&
+    !('staleness' in result)
+  );
+}
+
+/**
+ * #2655: attach a non-blocking `staleness` signal to a tool result when the
+ * index is behind HEAD, mirroring the `list_repos` `{commitsBehind, hint}`
+ * shape. Only ever ADDS a field to a carryable object result (see
+ * {@link canCarryStaleness}) — it never changes an existing result's shape.
+ */
+export function attachToolStaleness(
+  result: unknown,
+  staleness: StalenessInfo | undefined,
+): unknown {
+  if (!staleness?.isStale || !canCarryStaleness(result)) {
+    return result;
+  }
+  return {
+    ...result,
+    staleness: { commitsBehind: staleness.commitsBehind, hint: staleness.hint },
+  };
+}
+
 export class LocalBackend {
+  private static readonly TOOL_STALENESS_TTL_MS = 5000;
   private repos: Map<string, RepoHandle> = new Map();
   private contextCache: Map<string, CodebaseContext> = new Map();
   private initializedRepos: Set<string> = new Set();
   private reinitPromises: Map<string, Promise<void>> = new Map();
   private lastStalenessCheck: Map<string, number> = new Map();
+  // #2655: commit-behind freshness for the hot read tools. Stores the IN-FLIGHT
+  // promise (not just a timestamp) so N concurrent tool calls arriving before
+  // the first `git rev-list` resolves share one subprocess instead of each
+  // spawning their own; the resolved value is reused for TOOL_STALENESS_TTL_MS.
+  // Keyed by lbugPath (like lastStalenessCheck) — NOT repoPath — because flat
+  // and branch handles for one repo share a repoPath but carry different
+  // lastCommit values, so a repoPath key would serve one handle's freshness for
+  // the other; lbugPath is unique per flat/branch index.
+  private toolStalenessCache: Map<string, { at: number; value: Promise<StalenessInfo> }> =
+    new Map();
   // Last meta.indexedAt observed for an open pool, keyed by lbugPath. Keyed by
   // pool (not stored on the handle) because branch handles are produced fresh
   // by applyBranchScope on every resolveRepo call, so mutating the handle would
@@ -1064,6 +1116,7 @@ export class LocalBackend {
       if (liveLbugPaths.has(key)) continue;
       this.initializedRepos.delete(key);
       this.lastStalenessCheck.delete(key);
+      this.toolStalenessCache.delete(key);
       this.lastObservedIndexedAt.delete(key);
       this.lastObservedDbIdentity.delete(key);
       this.reinitPromises.delete(key);
@@ -1731,6 +1784,60 @@ export class LocalBackend {
 
   // ─── Tool Dispatch ───────────────────────────────────────────────
 
+  /**
+   * #2655: attach a commits-behind freshness signal to a hot-read-tool result,
+   * skipping the `git` spawn entirely for results that can't carry it (error
+   * envelopes, arrays, non-objects — see {@link canCarryStaleness}) so an
+   * error-returning call pays nothing.
+   */
+  private async withToolStaleness(repo: RepoHandle, result: unknown): Promise<unknown> {
+    if (!canCarryStaleness(result)) return result;
+    // Defensive: `checkStalenessAsync` self-catches today, but a rejection here
+    // must never fail the tool — degrade to no-staleness. Paired with the
+    // evict-on-reject in `stalenessForTool`, a transient failure also can't
+    // poison the TTL cache entry (#2655 review F1).
+    const staleness = await this.stalenessForTool(repo).catch(() => undefined);
+    return attachToolStaleness(result, staleness);
+  }
+
+  /**
+   * #2655: commits-behind freshness for the hot read tools, deduped per index.
+   * Returns a shared in-flight promise so concurrent tool calls spawn at most
+   * one `git rev-list` per index per TTL window; the resolved value is cached
+   * for TOOL_STALENESS_TTL_MS. Keyed by lbugPath so flat and branch handles
+   * (same repoPath, different lastCommit) don't share an entry. Non-blocking by
+   * construction: `checkStalenessAsync` swallows git failures to
+   * `{ isStale: false }`, so a git error never fails the tool — it just omits
+   * the `staleness` field.
+   */
+  private stalenessForTool(repo: RepoHandle): Promise<StalenessInfo> {
+    const now = Date.now();
+    const cached = this.toolStalenessCache.get(repo.lbugPath);
+    if (cached && now - cached.at < LocalBackend.TOOL_STALENESS_TTL_MS) {
+      return cached.value;
+    }
+    // Evict the entry if the check rejects so a transient failure isn't served
+    // (as a permanently-rejecting promise) for the rest of the TTL window; the
+    // next call then re-runs. A resolving promise is never evicted, so happy-path
+    // dedup is untouched (#2655 review F1). `Promise.resolve` wraps the call so a
+    // non-thenable return can't throw at this boundary — a no-op for the real
+    // async `checkStalenessAsync`, robust defense-in-depth otherwise.
+    const entry: { at: number; value: Promise<StalenessInfo> } = {
+      at: now,
+      // Only evict if THIS entry is still current — a later call may have
+      // installed a fresh (resolving) entry for the same key before a slow
+      // rejection lands, and that newer entry must not be dropped.
+      value: Promise.resolve(checkStalenessAsync(repo.repoPath, repo.lastCommit)).catch((err) => {
+        if (this.toolStalenessCache.get(repo.lbugPath) === entry) {
+          this.toolStalenessCache.delete(repo.lbugPath);
+        }
+        throw err;
+      }),
+    };
+    this.toolStalenessCache.set(repo.lbugPath, entry);
+    return entry.value;
+  }
+
   async callTool(method: string, params: any): Promise<any> {
     if (method === 'list_repos') {
       // Paginated tool surface (#2119). `listRepos()` is unchanged for internal
@@ -1773,19 +1880,19 @@ export class LocalBackend {
 
     switch (method) {
       case 'query':
-        return this.query(repo, p);
+        return this.withToolStaleness(repo, await this.query(repo, p));
       case 'cypher': {
         const raw = await this.cypher(repo, p);
-        return this.formatCypherAsMarkdown(raw);
+        return this.withToolStaleness(repo, this.formatCypherAsMarkdown(raw));
       }
       case 'context':
-        return this.context(repo, p);
+        return this.withToolStaleness(repo, await this.context(repo, p));
       case 'explain':
         return this.explain(repo, p);
       case 'pdg_query':
         return this.pdgQuery(repo, p);
       case 'impact':
-        return this.impact(repo, p as unknown as ImpactParams);
+        return this.withToolStaleness(repo, await this.impact(repo, p as unknown as ImpactParams));
       case 'detect_changes':
         return this.detectChanges(repo, p);
       case 'check':

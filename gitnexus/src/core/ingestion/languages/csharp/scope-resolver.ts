@@ -93,6 +93,7 @@ const csharpScopeResolver: ScopeResolver = {
   // `(caller, target)` — multiple `g.Greet(...)` sites from Main
   // yield ONE edge, not one per site.
   collapseMemberCallsByCallerTarget: true,
+  freeCallsRequireInstanceOwnership: true,
 
   // C# hoists method return-type bindings to the enclosing Module
   // scope so `propagateImportedReturnTypes` can mirror them across
