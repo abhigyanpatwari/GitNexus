@@ -73,8 +73,8 @@ describe('CALL_SUMMARY relation-type exclusion (U-C1)', () => {
 });
 
 describe('CALL_SUMMARY incremental reuse gate (U-C5)', () => {
-  it('INCREMENTAL_SCHEMA_VERSION is bumped to 15 (const-arrow twin removal, #2687)', () => {
-    expect(INCREMENTAL_SCHEMA_VERSION).toBe(15);
+  it('INCREMENTAL_SCHEMA_VERSION is bumped to 16 (closure-binding call resolution, #2693)', () => {
+    expect(INCREMENTAL_SCHEMA_VERSION).toBe(16);
   });
 
   it('a pre-current stamp fails the `=== INCREMENTAL_SCHEMA_VERSION` reuse gate → forces full re-analyze', () => {

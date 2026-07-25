@@ -63,6 +63,8 @@ import type { ParseWorkerResult } from '../core/ingestion/workers/parse-worker.j
 // method injection sites plus bean-name and @Primary provider metadata.
 // v20: Java/Kotlin capture side-channels persist package and class-annotation
 // facts for shared Spring Bean resolution.
+// v23: Dart closure bindings emit Function nodes for function-local closures
+// and flow captures for top-level ones (#2693).
 // v21: Java local class/enum/record/interface captures use javac-compatible,
 // source-type-relative JLS 13.1 identities and declaration-to-block scopes
 // (#2562).
@@ -70,7 +72,7 @@ import type { ParseWorkerResult } from '../core/ingestion/workers/parse-worker.j
 // JLS 13.1 immediate-host chains (#2555).
 // v18: Worker$N anonymous bodies. v17: callable-value-flow operand identity.
 // v16: direct callee identity.
-const SCHEMA_BUMP = 22;
+const SCHEMA_BUMP = 23;
 const GITNEXUS_PKG_VERSION = (() => {
   try {
     // package.json sits at gitnexus/package.json — two levels up from
