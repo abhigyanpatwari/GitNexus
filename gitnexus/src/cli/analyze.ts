@@ -40,6 +40,7 @@ import {
   selfCommitContextFiles,
   snapshotSelfCommitSafety,
 } from '../storage/git.js';
+import { IndexLockTimeoutError } from '../storage/index-lock.js';
 import {
   loadAnalyzeConfig,
   mergeAnalyzeOptions,
@@ -1588,11 +1589,21 @@ const analyzeCommandImpl = async (
     // progress-bar log() that fired mid-run has already scrolled away, so the
     // degraded-search state must also appear in the final summary (#1161).
     if (result.ftsSkipped) {
-      console.log(
-        `\n  Warning: full-text/BM25 search is disabled — the LadybugDB FTS extension was unavailable.\n` +
-          `  Install it once with network access (GITNEXUS_LBUG_EXTENSION_INSTALL=auto) then rerun, or\n` +
-          `  run \`gitnexus analyze --repair-fts\` when connected. Run \`gitnexus doctor\` for details.`,
-      );
+      // #2658 review L2: a build/verify failure is NOT an extension-unavailable
+      // problem — sending the user to install the extension is the wrong remedy.
+      if (result.ftsSkipReason === 'build-failed') {
+        console.log(
+          `\n  Warning: full-text/BM25 search is disabled — the search index build failed this run.\n` +
+            `  The FTS extension is available; rerun \`gitnexus analyze --repair-fts\`. If it persists,\n` +
+            `  check the disk for space or corruption. Run \`gitnexus doctor\` for details.`,
+        );
+      } else {
+        console.log(
+          `\n  Warning: full-text/BM25 search is disabled — the LadybugDB FTS extension was unavailable.\n` +
+            `  Install it once with network access (GITNEXUS_LBUG_EXTENSION_INSTALL=auto) then rerun, or\n` +
+            `  run \`gitnexus analyze --repair-fts\` when connected. Run \`gitnexus doctor\` for details.`,
+        );
+      }
     }
 
     try {
@@ -1624,6 +1635,22 @@ const analyzeCommandImpl = async (
           `    • Pick a different alias:  gitnexus analyze --name <alias>\n` +
           `    • Allow the duplicate:     gitnexus analyze --allow-duplicate-name  (leaves "-r ${err.registryName}" ambiguous)\n`,
         { registryName: err.registryName, existingPath: err.existingPath },
+      );
+      process.exitCode = 1;
+      return;
+    }
+
+    // Another analyze held the index lock past the configured wait ceiling
+    // (#2658, GITNEXUS_INDEX_LOCK_TIMEOUT_MS). The on-disk index is being
+    // refreshed by the holder — this is a clean, expected condition, not a
+    // crash, so render the message without a stack trace.
+    if (err instanceof IndexLockTimeoutError) {
+      cliError(
+        `  Another gitnexus analyze (pid ${err.holder.pid} on ${err.holder.hostname}) is ` +
+          `already refreshing this index and did not finish within the wait window.\n` +
+          `  The on-disk index is being updated by that run. Retry later, or raise\n` +
+          `  GITNEXUS_INDEX_LOCK_TIMEOUT_MS to wait longer.\n`,
+        { recoveryHint: 'index-lock-timeout', holderPid: err.holder.pid },
       );
       process.exitCode = 1;
       return;
