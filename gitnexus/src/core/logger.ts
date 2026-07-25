@@ -287,6 +287,34 @@ export const logger = new Proxy({} as Logger, {
 }) as Logger;
 
 /**
+ * Env flag the analyze CLI sets while its live progress bar owns the
+ * terminal (it reroutes console.warn through the bar logger; see
+ * `cli/analyze.ts`).
+ */
+export const ANALYZE_PROGRESS_ACTIVE_ENV = 'GITNEXUS_ANALYZE_PROGRESS_ACTIVE';
+
+/**
+ * Emit an operator-facing warning without corrupting analyze's live progress
+ * bar. While the bar is active, the one-line progress message goes through
+ * console.warn (routed into the bar by the analyze CLI) — raw pino NDJSON
+ * would corrupt the one-line display, including in the heap-respawn child
+ * whose stderr is piped for crash classification. Otherwise the structured
+ * Pino record is emitted, falling back to the progress message when no
+ * structured form is given.
+ */
+export function warnRespectingProgressBar(
+  progressMessage: string,
+  structured?: { readonly fields: object; readonly message: string },
+): void {
+  if (process.env[ANALYZE_PROGRESS_ACTIVE_ENV] === '1') {
+    console.warn(progressMessage);
+    return;
+  }
+  if (structured) logger.warn(structured.fields, structured.message);
+  else logger.warn(progressMessage);
+}
+
+/**
  * Shape of a parsed pino record. `level`, `time`, and `msg` are always
  * present; `name` is set when emitted from a named child logger; arbitrary
  * additional fields appear when callers pass a structured first arg.
