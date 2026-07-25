@@ -20,7 +20,11 @@ import type { ScopeResolutionIndexes } from '../../model/scope-resolution-indexe
 import type { GraphNodeLookup } from '../graph-bridge/node-lookup.js';
 import type { CalleeIdAccumulator } from '../graph-bridge/callee-id-sink.js';
 import { tryEmitEdgeWithExplicitTargetId } from '../graph-bridge/edges.js';
-import { resolveCallerGraphId, resolveDefGraphId } from '../graph-bridge/ids.js';
+import {
+  resolveCallerGraphId,
+  resolveDefGraphId,
+  simpleQualifiedName,
+} from '../graph-bridge/ids.js';
 import { resolveInheritanceBaseInScope } from '../scope/walkers.js';
 import { narrowOverloadCandidates } from './overload-narrowing.js';
 
@@ -739,24 +743,46 @@ export function emitCallableValueFlow(input: EmitCallableValueFlowInput): Callab
   return { emitted, resolvedInvokes, ambiguousInvokes, unmatchedInvokes, iterations };
 }
 
-function buildGraphTargetIndex(
+/**
+ * Pure — exported for `bench/callable-value-flow/measure.mjs`, which guards its
+ * scaling ratio and result fingerprint. Not part of the pass's public contract.
+ */
+export function buildGraphTargetIndex(
   scopes: ScopeResolutionIndexes,
   nodeLookup: GraphNodeLookup,
   providerTarget: ((def: SymbolDefinition) => boolean) | undefined,
   graph: KnowledgeGraph,
 ): ReadonlyMap<string, Target> {
   const out = new Map<string, Target>();
-  const byAnchor = buildGraphCallableAnchorIndex(graph);
+  const { byAnchor, callableNameKeys } = buildGraphCallableIndexes(graph);
   for (const def of scopes.defs.byId.values()) {
     const callableDef = isCallable(def) || providerTarget?.(def) === true;
     // #2693: a closure bound to a name (`val f = { }`) is a callable the def
     // type cannot see. The scope-resolution layer declares such a binding with
     // its VALUE label (Kotlin/Swift `Property`, Dart `Variable`) while #2687
     // makes the graph emit a single `Function` node for it. Only the graph
-    // knows, so value bindings are resolved first and admitted below on the
-    // label of the node they actually reach.
-    if (!callableDef && !VALUE_BINDING_DEF_TYPES.has(def.type)) continue;
-    const anchorKey = definitionAnchorKey(def);
+    // knows, so value bindings are resolved below on the label of the node they
+    // actually reach.
+    if (!callableDef) {
+      if (!VALUE_BINDING_DEF_TYPES.has(def.type)) continue;
+      // Exact pre-filter, not a heuristic. Every qualified key
+      // `resolveDefGraphId` tries embeds `def.type`, so for a VALUE def those
+      // can only ever hit a value-labelled node; its one route to a callable is
+      // the label-agnostic `simpleKey(filePath, simpleName)` fallback, which by
+      // construction requires a callable node with the SAME file and simple
+      // name. So a value binding with no such node cannot possibly resolve to a
+      // callable, and skipping it here is equivalent to running the full
+      // resolve and rejecting the result — at one Set lookup instead of the
+      // whole key chain. Value bindings outnumber callables in real source, so
+      // this is the difference between paying resolve cost per binding and
+      // paying it per binding that can actually match.
+      const simple = simpleQualifiedName(def);
+      if (simple === undefined || !callableNameKeys.has(`${def.filePath}\0${simple}`)) continue;
+    }
+    // Only callable defs can match the anchor index — it is keyed by callable
+    // LABEL, and `definitionAnchorKey` builds its key from `def.type`. Running
+    // it for a value def costs a regex per def and can never hit.
+    const anchorKey = callableDef ? definitionAnchorKey(def) : undefined;
     const anchored = anchorKey === undefined ? undefined : byAnchor.get(anchorKey);
     const id =
       anchored?.length === 1 ? anchored[0] : resolveDefGraphId(def.filePath, def, nodeLookup);
@@ -905,30 +931,36 @@ function declarationSignatureCompatible(
   return typeof declarationConst !== 'boolean' || declarationConst === definitionConst;
 }
 
-function buildGraphCallableAnchorIndex(
-  graph: KnowledgeGraph,
-): ReadonlyMap<string, readonly string[]> {
-  const out = new Map<string, string[]>();
+interface GraphCallableIndexes {
+  /** Callable graph nodes by `file\0label\0line\0name` — the definition anchor. */
+  readonly byAnchor: ReadonlyMap<string, readonly string[]>;
+  /**
+   * `file\0name` for every callable graph node. The value-binding pre-filter in
+   * `buildGraphTargetIndex` needs only existence, and deriving it here keeps the
+   * graph to ONE walk rather than a second pass for the same nodes.
+   */
+  readonly callableNameKeys: ReadonlySet<string>;
+}
+
+function buildGraphCallableIndexes(graph: KnowledgeGraph): GraphCallableIndexes {
+  const byAnchor = new Map<string, string[]>();
+  const callableNameKeys = new Set<string>();
   for (const node of graph.iterNodes()) {
     if (node.label !== 'Function' && node.label !== 'Method' && node.label !== 'Constructor') {
       continue;
     }
     const filePath = node.properties.filePath;
     const name = node.properties.name;
+    if (typeof filePath !== 'string' || typeof name !== 'string') continue;
+    callableNameKeys.add(`${filePath}\0${name}`);
     const zeroBasedLine = node.properties.startLine;
-    if (
-      typeof filePath !== 'string' ||
-      typeof name !== 'string' ||
-      typeof zeroBasedLine !== 'number'
-    ) {
-      continue;
-    }
+    if (typeof zeroBasedLine !== 'number') continue;
     const key = `${filePath}\0${node.label}\0${zeroBasedLine + 1}\0${name}`;
-    const bucket = out.get(key);
-    if (bucket === undefined) out.set(key, [node.id]);
+    const bucket = byAnchor.get(key);
+    if (bucket === undefined) byAnchor.set(key, [node.id]);
     else bucket.push(node.id);
   }
-  return out;
+  return { byAnchor, callableNameKeys };
 }
 
 function definitionAnchorKey(def: SymbolDefinition): string | undefined {

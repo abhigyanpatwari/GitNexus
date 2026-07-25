@@ -488,6 +488,17 @@ jobs:
         run: node --import tsx bench/scope-capture/measure.mjs --check
         working-directory: gitnexus
 
+      - name: Callable-value-flow target-index guards (#2693)
+        # Build-free: asserts buildGraphTargetIndex resolves an unchanged target
+        # set (fingerprint), stays linear in def count, and that the #2693
+        # widened gate — which now considers VALUE bindings, a population that
+        # outnumbers callables in real source — stays within its measured
+        # overhead of the pre-#2693 callable-only cost. Catches a regression in
+        # the value-binding pre-filter, without which every value binding pays
+        # the full resolveDefGraphId key chain just to be rejected.
+        run: node --import tsx bench/callable-value-flow/measure.mjs --check
+        working-directory: gitnexus
+
       - name: CFG construction time / disk / memory guards (#2081 M1)
         # Build-free: asserts collectFunctionCfgs output is unchanged
         # (fingerprint) and that wall-time, cfgSideChannel disk bytes, AND
