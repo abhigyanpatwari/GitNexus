@@ -52,6 +52,10 @@ function UndirectedLeidenAddenda(index, options) {
  this.belongings = new NodesPointerArray(order);
  this.neighboringCommunities = new SparseMap(WeightsArray, order);
  this.cumulativeIncrement = new Float64Array(order);
+ // Scratch buffer for mergeNodesSubset's pre-merge snapshot, allocated once.
+ // Upstream re-`.slice()`d the full N-length array per macro-community, which is
+ // O(communities x N) copying — 70% of Leiden runtime on large repos (#2337).
+ this.microDegrees = new WeightsArray(order);
  this.macroCommunities = null;
 }
 
@@ -147,7 +151,15 @@ UndirectedLeidenAddenda.prototype.mergeNodesSubset = function (start, stop) {
  }
  }
 
- var microDegrees = this.externalEdgeWeightPerCommunity.slice();
+ // Only entries for nodes inside [start, stop) are ever read below (every `et`
+ // is filtered on `belongings[et] === currentMacroCommunity`), so snapshot just
+ // those instead of copying the whole N-length array.
+ var microDegrees = this.microDegrees;
+
+ for (j = start; j < stop; j++) {
+ i = this.nodesSortedByCommunities[j];
+ microDegrees[i] = this.externalEdgeWeightPerCommunity[i];
+ }
 
  var s, ri, ci;
  var order = stop - start;
