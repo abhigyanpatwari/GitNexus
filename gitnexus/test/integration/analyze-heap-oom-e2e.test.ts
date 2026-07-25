@@ -18,6 +18,9 @@ const runAnalyzeWithForcedOom = (cwd: string, gitnexusHome: string) =>
     stdio: ['pipe', 'pipe', 'pipe'],
     env: {
       ...process.env,
+      // This suite EXERCISES the heap respawn; the suite-wide
+      // GITNEXUS_MEMORY=off opt-out (vitest.config.ts) must not apply here.
+      GITNEXUS_MEMORY: '1',
       GITNEXUS_HOME: gitnexusHome,
       NODE_OPTIONS: '',
       GITNEXUS_TEST_RESPAWN_HEAP_MB: '32',
