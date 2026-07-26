@@ -81,6 +81,36 @@ describe('stripWindowsLongPathPrefix (#2667)', () => {
     expect(stripWindowsLongPathPrefix(uncOnce, 'win32')).toBe(uncOnce);
   });
 
+  // Near-miss spellings must fail closed rather than be half-normalized: none of
+  // these is the extended-length prefix, so none may be sliced.
+  it('leaves near-miss namespace spellings untouched', () => {
+    expect(stripWindowsLongPathPrefix('\\\\??\\D:\\repo', 'win32')).toBe('\\\\??\\D:\\repo');
+    expect(stripWindowsLongPathPrefix('\\\\?\\\\D:\\repo', 'win32')).toBe('\\\\?\\\\D:\\repo');
+    expect(stripWindowsLongPathPrefix('\\?\\D:\\repo', 'win32')).toBe('\\?\\D:\\repo');
+    expect(stripWindowsLongPathPrefix('\\\\?\\GLOBALROOT\\Device\\X', 'win32')).toBe(
+      '\\\\?\\GLOBALROOT\\Device\\X',
+    );
+  });
+
+  it('handles degenerate and empty input without throwing', () => {
+    expect(stripWindowsLongPathPrefix('', 'win32')).toBe('');
+    expect(stripWindowsLongPathPrefix('\\\\?\\', 'win32')).toBe('\\\\?\\');
+    expect(stripWindowsLongPathPrefix('\\\\', 'win32')).toBe('\\\\');
+    expect(stripWindowsLongPathPrefix('D:', 'win32')).toBe('D:');
+  });
+
+  // The helper matches the backslash spelling only, by design — `path.resolve`
+  // folds `//?/` into it first. A half-converted path is left alone rather than
+  // sliced on one separator convention and rejoined on the other.
+  it('leaves a forward-slash or mixed-separator prefix untouched', () => {
+    expect(stripWindowsLongPathPrefix('//?/D:/repo', 'win32')).toBe('//?/D:/repo');
+    expect(stripWindowsLongPathPrefix('//?/UNC/server/share', 'win32')).toBe(
+      '//?/UNC/server/share',
+    );
+    // Backslash prefix with a forward-slash body IS sliced — the prefix matched.
+    expect(stripWindowsLongPathPrefix('\\\\?\\D:\\a/b/c', 'win32')).toBe('D:\\a/b/c');
+  });
+
   it('is a no-op off Windows, where `\\\\?\\…` is an ordinary filename', () => {
     expect(stripWindowsLongPathPrefix('\\\\?\\D:\\repo', 'linux')).toBe('\\\\?\\D:\\repo');
     expect(stripWindowsLongPathPrefix('/home/node/repo', 'linux')).toBe('/home/node/repo');

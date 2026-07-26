@@ -67,7 +67,13 @@ vi.mock('../../src/lib/utils.js', async (importOriginal) => {
   };
 });
 
-import { canonicalizePath, registryPathEquals } from '../../src/storage/repo-manager.js';
+import {
+  assertSafeStoragePath,
+  canonicalizePath,
+  registryPathEquals,
+  type RegistryEntry,
+} from '../../src/storage/repo-manager.js';
+import { resolveRegisteredRepoEntry } from '../../src/server/api.js';
 
 /**
  * The lookup every registry consumer performs — `resolveRegistryEntry`,
@@ -119,5 +125,63 @@ describe('canonicalizePath vs the `\\\\?\\` long-path prefix (#2667)', () => {
 
     expect(canonicalizePath(present)).toBe(present);
     expect(canonicalizePath('D:\\Projects\\absent')).toBe('D:\\Projects\\absent');
+  });
+
+  // The spellings the helper deliberately does not strip must stay unmatched
+  // rather than be half-normalized. Asserted through canonicalizePath, not just
+  // the helper, so the deliberate branch asymmetry is pinned where it is used.
+  it('leaves volume-GUID and device-namespace spellings unmatched', () => {
+    expect(canonicalizePath('\\\\?\\Volume{1a2b}\\repo')).toBe('\\\\?\\Volume{1a2b}\\repo');
+    expect(canonicalizePath('\\\\.\\D:\\repo')).toBe('\\\\.\\D:\\repo');
+
+    expect(registryLookupMatches('D:\\repo', '\\\\?\\Volume{1a2b}\\repo')).toBe(false);
+    expect(registryLookupMatches('D:\\repo', '\\\\.\\D:\\repo')).toBe(false);
+  });
+});
+
+// The guard in front of `fs.rm(recursive)` in remove.ts / clean.ts. It compares
+// `path.resolve` forms on both sides and deliberately does NOT canonicalize, so a
+// prefixed entry stays self-consistent while a mixed-form entry fails closed.
+// Pinned here because "complete the fix by stripping here too" is the tempting
+// follow-up refactor, and it would widen what the recursive delete accepts.
+describe('assertSafeStoragePath vs the `\\\\?\\` prefix (#2667)', () => {
+  const base: Omit<RegistryEntry, 'storagePath'> = {
+    name: 'repo',
+    path: '\\\\?\\D:\\Projects\\repo',
+    indexedAt: '2026-07-26T00:00:00.000Z',
+    lastCommit: 'deadbee',
+  };
+
+  it('accepts an entry whose path and storagePath share the prefix', () => {
+    expect(() =>
+      assertSafeStoragePath({ ...base, storagePath: '\\\\?\\D:\\Projects\\repo\\.gitnexus' }),
+    ).not.toThrow();
+  });
+
+  it('rejects a mixed-form entry instead of deleting through it', () => {
+    expect(() =>
+      assertSafeStoragePath({ ...base, storagePath: 'D:\\Projects\\repo\\.gitnexus' }),
+    ).toThrow();
+  });
+});
+
+// The consumer surface the fix exists for: an MCP `repo` argument or an
+// `?repo=` query value arriving in the prefixed spelling must resolve the
+// un-prefixed registry entry it names.
+describe('resolveRegisteredRepoEntry with a prefixed path claim (#2667)', () => {
+  const registered: RegistryEntry = {
+    name: 'repo',
+    path: 'D:\\Projects\\repo',
+    storagePath: 'D:\\Projects\\repo\\.gitnexus',
+    indexedAt: '2026-07-26T00:00:00.000Z',
+    lastCommit: 'deadbee',
+  };
+
+  it('resolves the entry when the caller supplies the extended-length spelling', () => {
+    expect(resolveRegisteredRepoEntry([registered], '\\\\?\\D:\\Projects\\repo')).toBe(registered);
+  });
+
+  it('still fails closed for a prefixed path that names no entry', () => {
+    expect(resolveRegisteredRepoEntry([registered], '\\\\?\\D:\\Projects\\other')).toBeNull();
   });
 });
