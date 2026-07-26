@@ -9,9 +9,11 @@
  * the same line by resolving `this` through `getThisContainer` with
  * `includeArrowFunctions = false`.
  *
- * The fix spans three layers, and each is load-bearing — the false edge
- * survived removing any one of them alone, which is why the negative cases here
- * assert on the emitted edge rather than on any single walk:
+ * The fix spans three layers. An earlier version of this comment claimed all
+ * three were independently load-bearing because "the false edge survived
+ * removing any one of them alone". That was measured DURING development and is
+ * FALSE for the shipped code — it was carried into the final commit without
+ * being re-tested. Corrected:
  *
  *   1. `Scope.ownsReceivers`, set from the `@receiver-owner.this` query marker,
  *      stops both receiver-type walks (`findReceiverTypeBinding` in ingestion,
@@ -19,9 +21,23 @@
  *   2. `LanguageTypeConfig.thisBoundaryNodeTypes` stops the type-env AST walk
  *      that infers a receiver's type during capture.
  *   3. `isReceiverOwnedButUnbound` makes `receiver-bound-calls` SUPPRESS the
- *      site. Without this the member still resolved by NAME through
- *      `lookupCore`'s lexical chain — the class-body scope binds `m`, two
- *      scopes up — at a merely lower confidence.
+ *      site. This is the one that decides the outcome for the fixtures below:
+ *      without it the member still resolved by NAME through `lookupCore`'s
+ *      lexical chain — the class-body scope binds `m`, two scopes up.
+ *
+ * Layer 3 runs FIRST (`emitReceiverBoundCalls` marks the site in `handledSites`,
+ * which `emitReferencesViaLookup` then skips), so it SUBSUMES layer 1 for an
+ * explicit `this` receiver. Removing layer 1's gate in `lookup-core.ts` leaves
+ * every test in this file passing — verified by experiment.
+ *
+ * That gate is nonetheless RETAINED, and deleting it would be a mistake: the
+ * `receiver-bound-calls` suppression only covers EXPLICIT receivers
+ * (`if (site.explicitReceiver === undefined) continue;`), while `lookup-core`'s
+ * gate is also reached for IMPLICIT ones via `IMPLICIT_RECEIVERS` in
+ * `resolveReceiverOwner` — a bare `m()` inside a nested `function` inside a
+ * method. The experiment above establishes that gate is UNTESTED, not that it is
+ * unreachable. It needs a test for the implicit-receiver path; until then, do
+ * not treat its removability as demonstrated.
  *
  * WHAT THIS DELIBERATELY GIVES UP. `.bind(this)`, `.call(this)` and
  * `forEach(fn, thisArg)` DO make `this` the instance at runtime; their edges
