@@ -40,6 +40,8 @@ describe('setupOpenCode — JSONC preservation', () => {
 
   const opencodeDir = () => path.join(tempHome, '.config', 'opencode');
   const opencodeJsonPath = () => path.join(opencodeDir(), 'opencode.json');
+  const opencodeJsoncPath = () => path.join(opencodeDir(), 'opencode.jsonc');
+  const configJsonPath = () => path.join(opencodeDir(), 'config.json');
   const configJsoncPath = () => path.join(opencodeDir(), 'config.jsonc');
 
   beforeEach(async () => {
@@ -153,25 +155,59 @@ describe('setupOpenCode — JSONC preservation', () => {
     expect(config.mcp.gitnexus).toBeDefined();
   });
 
-  it('updates existing config.jsonc instead of creating opencode.json', async () => {
+  it('updates existing opencode.jsonc instead of creating opencode.json', async () => {
     await fs.rm(opencodeJsonPath(), { force: true });
     const jsonc = `{
   // OpenCode user config
   "model": "test",
   "mcp": { "other": { "command": "keep" } }
 }`;
-    await fs.writeFile(configJsoncPath(), jsonc, 'utf-8');
+    await fs.writeFile(opencodeJsoncPath(), jsonc, 'utf-8');
 
     const { setupCommand } = await import('../../src/cli/setup.js');
     await setupCommand();
 
-    const raw = await fs.readFile(configJsoncPath(), 'utf-8');
+    const raw = await fs.readFile(opencodeJsoncPath(), 'utf-8');
     expect(raw).toContain('OpenCode user config');
     await expect(fs.access(opencodeJsonPath())).rejects.toThrow();
 
     const config = parseJsonc(raw);
     expect(config.model).toBe('test');
     expect(config.mcp.other).toEqual({ command: 'keep' });
+    expect(config.mcp.gitnexus).toBeDefined();
+  });
+
+  it('updates existing config.json instead of creating opencode.json', async () => {
+    await fs.rm(opencodeJsonPath(), { force: true });
+    await fs.writeFile(
+      configJsonPath(),
+      JSON.stringify({ model: 'test', mcp: { other: { command: 'keep' } } }, null, 2),
+      'utf-8',
+    );
+
+    const { setupCommand } = await import('../../src/cli/setup.js');
+    await setupCommand();
+
+    const raw = await fs.readFile(configJsonPath(), 'utf-8');
+    await expect(fs.access(opencodeJsonPath())).rejects.toThrow();
+
+    const config = parseJsonc(raw);
+    expect(config.model).toBe('test');
+    expect(config.mcp.other).toEqual({ command: 'keep' });
+    expect(config.mcp.gitnexus).toBeDefined();
+  });
+
+  it('creates opencode.json when only ignored config.jsonc exists', async () => {
+    await fs.rm(opencodeJsonPath(), { force: true });
+    await fs.writeFile(configJsoncPath(), '{ "model": "ignored" }', 'utf-8');
+
+    const { setupCommand } = await import('../../src/cli/setup.js');
+    await setupCommand();
+
+    const ignoredConfig = parseJsonc(await fs.readFile(configJsoncPath(), 'utf-8'));
+    expect(ignoredConfig.mcp?.gitnexus).toBeUndefined();
+
+    const config = parseJsonc(await fs.readFile(opencodeJsonPath(), 'utf-8'));
     expect(config.mcp.gitnexus).toBeDefined();
   });
 

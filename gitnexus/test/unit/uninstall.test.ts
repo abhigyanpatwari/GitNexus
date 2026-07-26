@@ -314,7 +314,36 @@ describe('uninstallCommand', () => {
     expect(config.mcp.other).toEqual({ type: 'local', command: ['foo'] });
   });
 
-  it('removes the gitnexus entry from OpenCode config.jsonc, preserving comments', async () => {
+  it.each(['opencode.jsonc', 'config.json'])(
+    'removes the gitnexus entry from OpenCode %s, preserving comments',
+    async (fileName) => {
+      const configPath = path.join(tempHome, '.config', 'opencode', fileName);
+      await fs.mkdir(path.dirname(configPath), { recursive: true });
+      await fs.writeFile(
+        configPath,
+        [
+          '{',
+          '  // keep this comment',
+          '  "mcp": {',
+          '    "gitnexus": { "type": "local", "command": ["gitnexus", "mcp"] },',
+          '    "other": { "type": "local", "command": ["foo"] }',
+          '  }',
+          '}',
+        ].join('\n'),
+        'utf-8',
+      );
+
+      const uninstallCommand = await importUninstall();
+      await uninstallCommand({ force: true });
+
+      const raw = await fs.readFile(configPath, 'utf-8');
+      expect(raw).toContain('keep this comment');
+      expect(raw).not.toContain('"gitnexus"');
+      expect(raw).toContain('"other"');
+    },
+  );
+
+  it('leaves OpenCode config.jsonc untouched because OpenCode does not read it', async () => {
     const configJsonc = path.join(tempHome, '.config', 'opencode', 'config.jsonc');
     await fs.mkdir(path.dirname(configJsonc), { recursive: true });
     await fs.writeFile(
@@ -335,9 +364,7 @@ describe('uninstallCommand', () => {
     await uninstallCommand({ force: true });
 
     const raw = await fs.readFile(configJsonc, 'utf-8');
-    expect(raw).toContain('keep this comment');
-    expect(raw).not.toContain('"gitnexus"');
-    expect(raw).toContain('"other"');
+    expect(raw).toContain('"gitnexus"');
   });
 
   // ── Antigravity MCP + hooks (AfterTool / gitnexus-antigravity-hook) ──
