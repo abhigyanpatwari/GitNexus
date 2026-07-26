@@ -25,6 +25,18 @@ describe('stripWindowsLongPathPrefix (#2667)', () => {
     );
   });
 
+  // The namespace `\\?\` addresses is case-insensitive, so a caller can spell
+  // the token in any case. Matching only `UNC` left `\\?\unc\…` prefixed, which
+  // is the #2667 registry mismatch all over again on a network share.
+  it('rewrites the UNC form whatever case the token is spelled in', () => {
+    expect(stripWindowsLongPathPrefix('\\\\?\\unc\\server\\share\\repo', 'win32')).toBe(
+      '\\\\server\\share\\repo',
+    );
+    expect(stripWindowsLongPathPrefix('\\\\?\\Unc\\server\\share\\repo', 'win32')).toBe(
+      '\\\\server\\share\\repo',
+    );
+  });
+
   it('leaves a volume-GUID path untouched — its remainder is not a usable path', () => {
     expect(stripWindowsLongPathPrefix('\\\\?\\Volume{1a2b3c4d}\\repo', 'win32')).toBe(
       '\\\\?\\Volume{1a2b3c4d}\\repo',

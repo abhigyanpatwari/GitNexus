@@ -32,7 +32,9 @@ export const stripWindowsLongPathPrefix = (
   platform: NodeJS.Platform = process.platform,
 ): string => {
   if (platform !== 'win32') return p;
-  if (/^\\\\\?\\UNC\\/.test(p)) return `\\\\${p.slice(8)}`;
+  // Both spellings are case-insensitive: the Windows object namespace that
+  // `\\?\` addresses is, so `\\?\unc\…` is as valid as `\\?\UNC\…`.
+  if (/^\\\\\?\\UNC\\/i.test(p)) return `\\\\${p.slice(8)}`;
   if (/^\\\\\?\\[A-Za-z]:/.test(p)) return p.slice(4);
   return p;
 };
