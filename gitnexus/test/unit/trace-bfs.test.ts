@@ -214,6 +214,20 @@ describe('trace: dispatch', () => {
       filePath: 'src/a.ts',
     });
   });
+
+  it('rejects conflicting file and from_file MCP aliases', async () => {
+    const result = await backend.callTool('trace', {
+      from: 'A',
+      to: 'B',
+      file: 'src/a.ts',
+      from_file: 'src/other.ts',
+    });
+
+    expect(result).toEqual({
+      error: 'Conflicting MCP parameters for trace.from_file: from_file, file must agree.',
+    });
+    expect(executeParameterized).not.toHaveBeenCalled();
+  });
 });
 
 // ─── Group 2: BFS Core ──────────────────────────────────────────────
