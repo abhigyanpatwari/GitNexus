@@ -476,6 +476,56 @@ describeIfWorkerBuilt('closure bindings resolve in the remaining languages (#269
   });
 });
 
+describeIfWorkerBuilt('a closure binding is a call TARGET, not yet a call SOURCE', () => {
+  // Known limit, pinned deliberately so it is visible rather than surprising.
+  //
+  // A call made INSIDE a closure binding is attributed to the ENCLOSING scope,
+  // not to the binding's own node — so `impact(handler, direction:"downstream")`
+  // reports nothing even though the closure calls `target`.
+  //
+  // Cause: `pickCallerCallableDef` (graph-bridge/ids.ts) finds the caller by
+  // walking CHILD scopes whose range contains the call site, gated on
+  // `child.kind === 'Function'`. A closure literal is a BLOCK scope in these
+  // languages (Kotlin deliberately, #1757 smart casts), and the binding's def is
+  // owned by the enclosing scope rather than by the closure's scope — so neither
+  // half of the link exists. Fixing it means decoupling "callable boundary" from
+  // scope `kind` AND associating the closure scope with its binding; that is the
+  // orthogonal-scope-attribute work, not a query change.
+  //
+  // TS/JS free bindings are the exception: their arrow has a `@scope.function`
+  // with a matching range, so the closure IS the anchor there. These tests exist
+  // to catch that asymmetry changing in EITHER direction.
+
+  it('Kotlin: a call inside the closure is attributed to the file, not the binding', async () => {
+    const targets = await callEdgeIdsFor(
+      'A.kt',
+      'fun target(x: Int): Int = x\n\nval handler = { x: Int -> target(x) }\n',
+    );
+
+    expect(targets).toEqual(['rel:CALLS:File:A.kt->Function:A.kt:target']);
+  });
+
+  it('PHP: a call inside the closure is attributed to the file, not the binding', async () => {
+    const targets = await callEdgeIdsFor(
+      'a.php',
+      '<?php\nfunction target($x) { return $x; }\n' +
+        '$handler = function ($x) { return target($x); };\n',
+    );
+
+    expect(targets).toEqual(['rel:CALLS:File:a.php->Function:a.php:target']);
+  });
+
+  it('JavaScript: a free arrow binding IS the caller anchor', async () => {
+    // The counter-case: an aligned @scope.function makes the closure the anchor.
+    const targets = await callEdgeIdsFor(
+      'c.js',
+      'export function target(x) { return x; }\nvar handler = (x) => target(x);\n',
+    );
+
+    expect(targets).toEqual(['rel:CALLS:Function:c.js:handler->Function:c.js:target']);
+  });
+});
+
 describeIfWorkerBuilt('a value binding is never aliased onto a same-named callable', () => {
   // These are the regression tests for the defect the first cut of #2693
   // shipped. Admitting a value binding on a same-file NAME match let
