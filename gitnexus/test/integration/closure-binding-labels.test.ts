@@ -485,12 +485,24 @@ describeIfWorkerBuilt('a closure binding is a call TARGET, not yet a call SOURCE
   //
   // Cause: `pickCallerCallableDef` (graph-bridge/ids.ts) finds the caller by
   // walking CHILD scopes whose range contains the call site, gated on
-  // `child.kind === 'Function'`. A closure literal is a BLOCK scope in these
-  // languages (Kotlin deliberately, #1757 smart casts), and the binding's def is
-  // owned by the enclosing scope rather than by the closure's scope — so neither
-  // half of the link exists. Fixing it means decoupling "callable boundary" from
-  // scope `kind` AND associating the closure scope with its binding; that is the
-  // orthogonal-scope-attribute work, not a query change.
+  // `child.kind === 'Function'`, and then requires that child to OWN a
+  // callable def. The languages here fail at different points, which is worth
+  // stating precisely because an earlier version of this comment claimed one
+  // shared cause and that error propagated into a follow-up plan:
+  //
+  //   - Kotlin (`lambda_literal` @scope.block, deliberately — #1757 smart
+  //     casts) and Ruby (`do_block`/`block` @scope.block) fail the KIND gate.
+  //   - PHP does NOT: `anonymous_function`/`arrow_function` are already
+  //     @scope.function (php/query.ts:61-62). It fails only the second half —
+  //     the `$handler` def is owned by the enclosing scope, so the closure's
+  //     own scope owns no callable def.
+  //   - Dart has no scope over a closure literal at all, so there is no child
+  //     scope for the walk to consider.
+  //
+  // So a fix needs per-language work, not one switch: a callable-boundary
+  // signal independent of scope `kind` (Kotlin/Ruby), an association from a
+  // closure scope to its binding's def (PHP), and a scope that does not exist
+  // yet (Dart). See #2699.
   //
   // TS/JS free bindings are the exception: their arrow has a `@scope.function`
   // with a matching range, so the closure IS the anchor there. These tests exist
