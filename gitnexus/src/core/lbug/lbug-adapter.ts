@@ -926,7 +926,13 @@ const doInitLbug = async (dbPath: string, readOnly: boolean = false) => {
   // FTS powers baseline search, so initialize it with the core DB. Read-only
   // serve/MCP paths must never run DDL or trigger network INSTALL; analyze owns
   // schema/index creation and extension installation.
-  await loadFTSExtension(undefined, readOnly ? { policy: 'load-only' } : {});
+  //
+  // `quiet` on the writable branch: on a cold machine this pre-load is EXPECTED
+  // to miss (default policy is load-only, extension not yet on disk) and analyze
+  // Phase 3 installs it moments later in the same run. Warning here reported a
+  // degradation that never happened — the run went on to build every FTS index.
+  // Phase 3 (and the read-only branch) still warn for real failures.
+  await loadFTSExtension(undefined, readOnly ? { policy: 'load-only' } : { quiet: true });
 
   currentDbPath = dbPath;
   return { db, conn };
