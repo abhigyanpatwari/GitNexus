@@ -8,6 +8,7 @@
  * the dispatch and error handling logic in isolation.
  */
 import { describe, it, expect, vi, beforeEach, afterAll } from 'vitest';
+import type { StalenessInfo } from '../../src/core/git-staleness.js';
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'fs';
 import fsPromises from 'fs/promises';
 import os from 'os';
@@ -1091,7 +1092,9 @@ describe('LocalBackend.callTool', () => {
 
     expect(result.status).toBe('ambiguous');
     expect(result.candidates).toHaveLength(2);
-    expect(result.impactedCount).toBe(0);
+    // #2687: undetermined, NOT a numeric zero — a measured 0 is indistinguishable
+    // from a genuine "nothing depends on this".
+    expect(result.impactedCount).toBeNull();
     expect(result.risk).toBe('UNKNOWN');
     expect(result.target.name).toBe('login');
     for (const c of result.candidates) {
@@ -2515,7 +2518,9 @@ describe('LocalBackend impact mode (KTD1/KTD5/KTD12)', () => {
     expect(result.status).toBe('ambiguous');
     expect(result.mode).toBe('pdg');
     expect(result.candidates).toHaveLength(2);
-    expect(result.impactedCount).toBe(0);
+    // #2687: undetermined, NOT a numeric zero. This branch runs no per-candidate
+    // fan-out, so it carries no maxImpactedCount to correct a zero against.
+    expect(result.impactedCount).toBeNull();
     expect(result.risk).toBe('UNKNOWN');
     // The callgraph per-candidate probe fan-out MUST NOT run under pdg.
     expect(bfsSpy).not.toHaveBeenCalled();
@@ -3891,5 +3896,298 @@ describe('LocalBackend.resolveRepo branch scope (#2106)', () => {
     await backend.init();
     const closedPaths = lbugMocks.closeLbug.mock.calls.map((c: any[]) => String(c[0]));
     expect(closedPaths.some((p) => p.includes(path.join('.gitnexus', 'branches')))).toBe(true);
+  });
+});
+
+// #2655 review: the per-index tool-staleness cache must key by lbugPath, not
+// repoPath — flat and branch handles for one repo share a repoPath but carry
+// different lastCommit values, so a repoPath key would serve one handle's
+// freshness for the other within the TTL window.
+describe('LocalBackend tool-staleness cache keying (#2655 review)', () => {
+  let backend: LocalBackend;
+
+  beforeEach(async () => {
+    vi.clearAllMocks();
+    backend = new LocalBackend();
+    setupSingleRepo();
+    await backend.init();
+  });
+
+  it('does not share a staleness entry between flat and branch handles of one repo', async () => {
+    const flat = {
+      id: 'r',
+      name: 'r',
+      repoPath: '/r',
+      storagePath: '/r/.gitnexus',
+      lbugPath: '/r/.gitnexus/lbug',
+      indexedAt: '',
+      lastCommit: 'FLATSHA',
+    };
+    const branch = {
+      ...flat,
+      lbugPath: `/r/.gitnexus/${path.join('branches', 'x', 'lbug')}`,
+      lastCommit: 'BRANCHSHA',
+    };
+    vi.spyOn(backend, 'resolveRepo')
+      .mockResolvedValueOnce(flat as any)
+      .mockResolvedValueOnce(branch as any);
+    // The tool itself returns a plain (staleness-carryable) object.
+    vi.spyOn(backend as any, 'query').mockResolvedValue({ ok: true });
+
+    const { checkStalenessAsync } = await import('../../src/core/git-staleness.js');
+    (checkStalenessAsync as any).mockImplementation((_repoPath: string, lastCommit: string) =>
+      Promise.resolve(
+        lastCommit === 'FLATSHA'
+          ? { isStale: true, commitsBehind: 5, hint: '5 behind' }
+          : { isStale: false, commitsBehind: 0 },
+      ),
+    );
+
+    const flatRes = await backend.callTool('query', { search_query: 'x', repo: 'r' });
+    const branchRes = await backend.callTool('query', {
+      search_query: 'x',
+      repo: 'r',
+      branch: 'x',
+    });
+
+    // Flat index (lastCommit=FLATSHA) is 5 behind -> field present.
+    expect(flatRes).toMatchObject({ staleness: { commitsBehind: 5 } });
+    // Branch index (different lbugPath + lastCommit) is current; it must NOT
+    // inherit the flat handle's cached staleness (the pre-fix repoPath-keyed bug).
+    expect(branchRes).not.toHaveProperty('staleness');
+  });
+});
+
+// #2655 review F1–F4: the staleness signal wired into query/cypher/context/impact
+// must degrade gracefully on a rejecting freshness check, attach on every wrapped
+// tool (not just query), leave the adjacent read tools alone, and dedupe/expire
+// its per-index cache.
+describe('LocalBackend tool-staleness signal (#2655 review)', () => {
+  let backend: LocalBackend;
+
+  beforeEach(async () => {
+    vi.clearAllMocks();
+    backend = new LocalBackend();
+    setupSingleRepo();
+    await backend.init();
+  });
+
+  const handle = {
+    id: 'r',
+    name: 'r',
+    repoPath: '/r',
+    storagePath: '/r/.gitnexus',
+    lbugPath: '/r/.gitnexus/lbug',
+    indexedAt: '',
+    lastCommit: 'HEADSHA',
+  };
+
+  const stubResolve = () => vi.spyOn(backend, 'resolveRepo').mockResolvedValue(handle as any);
+
+  const stubStale = async () => {
+    const { checkStalenessAsync } = await import('../../src/core/git-staleness.js');
+    (checkStalenessAsync as any).mockResolvedValue({
+      isStale: true,
+      commitsBehind: 3,
+      hint: '3 behind',
+    });
+    return checkStalenessAsync as unknown as ReturnType<typeof vi.fn>;
+  };
+
+  // F1: a rejecting checkStalenessAsync must never fail the tool nor poison the
+  // 5s cache entry — the result comes back without a staleness field, and a
+  // later call (after the poisoned entry is evicted) still works.
+  it('degrades to no-staleness when the freshness check rejects, then recovers', async () => {
+    stubResolve();
+    vi.spyOn(backend as any, 'query').mockResolvedValue({ ok: true });
+    const { checkStalenessAsync } = await import('../../src/core/git-staleness.js');
+    (checkStalenessAsync as any)
+      .mockRejectedValueOnce(new Error('git blew up'))
+      .mockResolvedValue({ isStale: true, commitsBehind: 2, hint: '2 behind' });
+
+    const rejected = await backend.callTool('query', { search_query: 'x', repo: 'r' });
+    expect(rejected).toMatchObject({ ok: true });
+    expect(rejected).not.toHaveProperty('staleness');
+
+    // The rejected entry must not be cached — the next call re-runs and attaches.
+    const recovered = await backend.callTool('query', { search_query: 'x', repo: 'r' });
+    expect(recovered).toMatchObject({ ok: true, staleness: { commitsBehind: 2 } });
+  });
+
+  // F2: every wrapped tool attaches the field on a carryable object result.
+  it('attaches staleness on query, context, and impact object results', async () => {
+    stubResolve();
+    await stubStale();
+    vi.spyOn(backend as any, 'query').mockResolvedValue({ ok: true });
+    vi.spyOn(backend as any, 'context').mockResolvedValue({ symbol: 'x' });
+    vi.spyOn(backend as any, 'impact').mockResolvedValue({ impactedCount: 0 });
+
+    expect(await backend.callTool('query', { search_query: 'x', repo: 'r' })).toMatchObject({
+      staleness: { commitsBehind: 3, hint: '3 behind' },
+    });
+    expect(await backend.callTool('context', { name: 'x', repo: 'r' })).toMatchObject({
+      staleness: { commitsBehind: 3 },
+    });
+    expect(await backend.callTool('impact', { target: 'x', repo: 'r' })).toMatchObject({
+      staleness: { commitsBehind: 3 },
+    });
+  });
+
+  // F2: cypher's tabular {markdown,row_count} object gets the field; a raw-array
+  // (non-tabular) result keeps its shape untouched so Array.isArray consumers work.
+  it('attaches staleness to the cypher table object but never to a raw-array result', async () => {
+    stubResolve();
+    await stubStale();
+
+    // Non-empty array of keyed objects -> formatCypherAsMarkdown returns {markdown,row_count}.
+    lbugMocks.executeParameterized.mockResolvedValueOnce([{ a: 1 }]);
+    const tabular = await backend.callTool('cypher', {
+      statement: 'MATCH (n) RETURN n',
+      repo: 'r',
+    });
+    expect(tabular).toMatchObject({ row_count: 1, staleness: { commitsBehind: 3 } });
+
+    // Empty result -> formatCypherAsMarkdown passes the raw array through unchanged.
+    lbugMocks.executeParameterized.mockResolvedValueOnce([]);
+    const raw = await backend.callTool('cypher', { statement: 'MATCH (n) RETURN n', repo: 'r' });
+    expect(Array.isArray(raw)).toBe(true);
+    expect(raw).toHaveLength(0);
+  });
+
+  // F3: drift guard — exactly the four read tools route through stalenessForTool;
+  // the adjacent read-ish tools must not, so a future tool added without staleness
+  // (or one dropped) is caught.
+  it('routes only query/cypher/context/impact through the freshness check', async () => {
+    stubResolve();
+    await stubStale();
+    const spy = vi.spyOn(backend as any, 'stalenessForTool');
+    // Stub each tool to a benign object so dispatch reaches withToolStaleness.
+    for (const m of [
+      'query',
+      'context',
+      'impact',
+      'explain',
+      'pdgQuery',
+      'detectChanges',
+      'check',
+    ]) {
+      vi.spyOn(backend as any, m).mockResolvedValue({ ok: true });
+    }
+    // cypher runs its real path; a keyed-object row makes formatCypherAsMarkdown
+    // return a carryable {markdown,row_count} so the freshness check is reached.
+    lbugMocks.executeParameterized.mockResolvedValue([{ a: 1 }]);
+
+    await backend.callTool('query', { search_query: 'x', repo: 'r' });
+    await backend.callTool('cypher', { statement: 'RETURN 1', repo: 'r' });
+    await backend.callTool('context', { name: 'x', repo: 'r' });
+    await backend.callTool('impact', { target: 'x', repo: 'r' });
+    const wrappedCalls = spy.mock.calls.length;
+
+    await backend.callTool('explain', { target: 'x', repo: 'r' });
+    await backend.callTool('pdg_query', { anchor: 'x', repo: 'r' });
+    await backend.callTool('detect_changes', { scope: 'unstaged', repo: 'r' });
+    await backend.callTool('check', { cycles: true, repo: 'r' });
+
+    expect(wrappedCalls).toBe(4);
+    expect(spy.mock.calls.length).toBe(4);
+  });
+
+  // F4: the per-index freshness result is deduped within TOOL_STALENESS_TTL_MS and
+  // recomputed once the window elapses. Drive time via Date.now (not fake timers,
+  // which would entangle the awaited async dispatch with the microtask queue).
+  it('dedupes the freshness check within the TTL and recomputes after it expires', async () => {
+    stubResolve();
+    vi.spyOn(backend as any, 'query').mockResolvedValue({ ok: true });
+    const check = await stubStale();
+    check.mockClear();
+
+    const dateSpy = vi.spyOn(Date, 'now').mockReturnValue(1000);
+    await backend.callTool('query', { search_query: 'x', repo: 'r' });
+    await backend.callTool('query', { search_query: 'x', repo: 'r' });
+    expect(check).toHaveBeenCalledTimes(1); // deduped within the window
+
+    dateSpy.mockReturnValue(1000 + 5000 + 1); // past TOOL_STALENESS_TTL_MS
+    await backend.callTool('query', { search_query: 'x', repo: 'r' });
+    expect(check).toHaveBeenCalledTimes(2); // recomputed after expiry
+
+    dateSpy.mockRestore();
+  });
+
+  // @group-routed calls forward to callToolAtGroupRepo BEFORE the wrapping
+  // switch, so they deliberately never get the staleness signal (multi-repo,
+  // single-commit staleness is ill-defined). Pin that so it can't silently flip.
+  it('does not attach staleness to an @group-routed call', async () => {
+    const groupSpy = vi
+      .spyOn(backend as any, 'callToolAtGroupRepo')
+      .mockResolvedValue({ ok: true });
+    const freshSpy = vi.spyOn(backend as any, 'stalenessForTool');
+    await stubStale(); // stale — but @group must skip the signal regardless
+
+    const res = await backend.callTool('query', { search_query: 'x', repo: '@grp' });
+
+    expect(groupSpy).toHaveBeenCalledOnce();
+    expect(freshSpy).not.toHaveBeenCalled();
+    expect(res).not.toHaveProperty('staleness');
+  });
+
+  // The freshness check is deduped by sharing the IN-FLIGHT promise, not merely
+  // by reusing an already-resolved value: two calls that arrive before the first
+  // `checkStalenessAsync` settles must still spawn only one.
+  it('shares one in-flight freshness check across truly concurrent calls', async () => {
+    stubResolve();
+    vi.spyOn(backend as any, 'query').mockResolvedValue({ ok: true });
+    const dateSpy = vi.spyOn(Date, 'now').mockReturnValue(2000);
+    const { checkStalenessAsync } = await import('../../src/core/git-staleness.js');
+    let settle: (v: StalenessInfo) => void = () => {};
+    const pending = new Promise<StalenessInfo>((res) => {
+      settle = res;
+    });
+    (checkStalenessAsync as any).mockClear();
+    (checkStalenessAsync as any).mockReturnValue(pending);
+
+    // Both dispatched before the check resolves — they must share the entry.
+    const p1 = backend.callTool('query', { search_query: 'x', repo: 'r' });
+    const p2 = backend.callTool('query', { search_query: 'x', repo: 'r' });
+    await new Promise((r) => setTimeout(r, 0)); // let both reach stalenessForTool
+    settle({ isStale: true, commitsBehind: 1, hint: '1 behind' });
+    const [r1, r2] = await Promise.all([p1, p2]);
+
+    expect(checkStalenessAsync).toHaveBeenCalledTimes(1); // one spawn, shared
+    expect(r1).toMatchObject({ staleness: { commitsBehind: 1 } });
+    expect(r2).toMatchObject({ staleness: { commitsBehind: 1 } });
+    dateSpy.mockRestore();
+  });
+
+  // The evict-on-reject is guarded by object identity (=== entry), so a LATE
+  // rejection from a superseded entry must not drop the newer entry that
+  // replaced it after the TTL rolled over.
+  it('a late rejection does not evict the newer cache entry', async () => {
+    stubResolve();
+    vi.spyOn(backend as any, 'query').mockResolvedValue({ ok: true });
+    const dateSpy = vi.spyOn(Date, 'now').mockReturnValue(1000);
+    const { checkStalenessAsync } = await import('../../src/core/git-staleness.js');
+    let rejectFirst: (e: unknown) => void = () => {};
+    const first = new Promise<StalenessInfo>((_res, rej) => {
+      rejectFirst = rej;
+    });
+    (checkStalenessAsync as any)
+      .mockReturnValueOnce(first) // entry 1 — held open, will reject late
+      .mockResolvedValue({ isStale: true, commitsBehind: 7, hint: '7 behind' }); // entry 2+
+
+    const p1 = backend.callTool('query', { search_query: 'x', repo: 'r' }); // installs entry1 @1000
+    await new Promise((r) => setTimeout(r, 0)); // entry1 installed, awaiting `first`
+
+    dateSpy.mockReturnValue(1000 + 5000 + 1); // past TTL → next call installs entry2
+    const r2 = await backend.callTool('query', { search_query: 'x', repo: 'r' });
+    expect(r2).toMatchObject({ staleness: { commitsBehind: 7 } });
+
+    rejectFirst(new Error('late git failure')); // entry1's guarded catch must NOT evict entry2
+    await p1.catch(() => {}); // p1 degrades to no-staleness
+
+    const callsBefore = (checkStalenessAsync as any).mock.calls.length;
+    const r3 = await backend.callTool('query', { search_query: 'x', repo: 'r' }); // still within entry2 TTL
+    expect((checkStalenessAsync as any).mock.calls.length).toBe(callsBefore); // cache hit → entry2 survived
+    expect(r3).toMatchObject({ staleness: { commitsBehind: 7 } });
+    dateSpy.mockRestore();
   });
 });

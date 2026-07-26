@@ -44,6 +44,7 @@ function makeFsMock(dbPath: string) {
       rename: vi.fn(async () => {}),
       mkdir: vi.fn(async () => {}),
       open: makeOpenMock(),
+      readdir: vi.fn(async () => []),
     },
   };
 }
@@ -586,6 +587,7 @@ function makeFsMockWithWalSize(
       rename: vi.fn(async () => {}),
       mkdir: vi.fn(async () => {}),
       open: makeOpenMock(),
+      readdir: vi.fn(async () => []),
     },
   };
 }

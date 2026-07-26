@@ -705,6 +705,7 @@ function parseJsonStringArrayCapture(
 
 function deriveDeclarationName(match: CaptureMatch, def: SymbolDefinition): string | undefined {
   const nameCap =
+    match['@declaration.binding-name'] ??
     match['@declaration.name'] ??
     match[
       Object.keys(match).find((k) => k.startsWith('@declaration.') && k.endsWith('.name')) ?? ''

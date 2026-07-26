@@ -45,6 +45,7 @@ const mockFsForInit = (dbPath: string) => {
       unlink: vi.fn(async () => {}),
       mkdir: vi.fn(async () => {}),
       open: makeOpenMock(),
+      readdir: vi.fn(async () => []),
     },
   }));
 };
@@ -85,6 +86,7 @@ describe('lbug adapter CHECKPOINT lifecycle', () => {
         unlink: unlinkMock,
         mkdir: vi.fn(async () => {}),
         open: makeOpenMock(),
+        readdir: vi.fn(async () => []),
       },
     }));
     vi.doMock('../../src/core/lbug/lbug-config.js', () => ({
@@ -156,6 +158,7 @@ describe('lbug adapter CHECKPOINT lifecycle', () => {
         unlink: unlinkMock,
         mkdir: vi.fn(async () => {}),
         open: makeOpenMock(),
+        readdir: vi.fn(async () => []),
       },
     }));
     vi.doMock('../../src/core/lbug/lbug-config.js', () => ({
@@ -220,6 +223,7 @@ describe('lbug adapter CHECKPOINT lifecycle', () => {
         unlink: unlinkMock,
         mkdir: vi.fn(async () => {}),
         open: makeOpenMock(),
+        readdir: vi.fn(async () => []),
       },
     }));
     vi.doMock('../../src/core/lbug/lbug-config.js', () => ({
@@ -285,6 +289,7 @@ describe('lbug adapter CHECKPOINT lifecycle', () => {
         unlink: unlinkMock,
         mkdir: vi.fn(async () => {}),
         open: makeOpenMock(),
+        readdir: vi.fn(async () => []),
       },
     }));
     vi.doMock('../../src/core/lbug/lbug-config.js', () => ({
@@ -345,6 +350,7 @@ describe('lbug adapter CHECKPOINT lifecycle', () => {
         unlink: unlinkMock,
         mkdir: vi.fn(async () => {}),
         open: makeOpenMock(),
+        readdir: vi.fn(async () => []),
       },
     }));
     vi.doMock('../../src/core/lbug/lbug-config.js', () => ({
@@ -415,6 +421,7 @@ describe('lbug adapter CHECKPOINT lifecycle', () => {
         unlink: unlinkMock,
         mkdir: vi.fn(async () => {}),
         open: makeOpenMock(),
+        readdir: vi.fn(async () => []),
       },
     }));
     const openLbugConnectionMock = vi.fn(async () => ({ db, conn }));

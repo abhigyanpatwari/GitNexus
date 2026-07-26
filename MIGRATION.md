@@ -17,13 +17,20 @@ and the caller supplied none of `target_uid` / `file_path` / `kind`,
   "message": "Found N symbols matching '<target>'. Use target_uid, file_path, or kind to disambiguate.",
   "target": { "name": "<target>" },
   "direction": "upstream",
-  "impactedCount": 0,
+  "impactedCount": null,
   "risk": "UNKNOWN",
   "candidates": [
     { "uid": "...", "name": "...", "kind": "Function", "filePath": "...", "line": 42, "score": 0.76 }
   ]
 }
 ```
+
+> `impactedCount` is `null`, not `0`, on an ambiguous result (#2687): no single
+> symbol was resolved, so the blast radius is *undetermined*. A numeric `0` was
+> indistinguishable from a genuine "nothing depends on this", so a caller
+> testing `impactedCount === 0` read a false all-clear. Read `maxImpactedCount`
+> (callgraph ambiguity) or the per-candidate counts in `candidates[]` for the
+> real figure. Callers written as `impactedCount || 0` are unaffected.
 
 ### Do I need to migrate?
 

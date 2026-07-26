@@ -4,6 +4,7 @@ import { ProcessDetectionResult } from '../core/ingestion/process-processor.js';
 import type { StandaloneIngestOutput } from '../core/ingestion/pipeline-phases/standalone-ingest.js';
 import type { ResolutionOutcome } from '../core/ingestion/scope-resolution/resolution-outcome.js';
 import type { PdgEmitManifest } from '../core/lbug/pdg-emit-sink.js';
+import type { GraphEmitManifest } from '../core/lbug/graph-emit-sink.js';
 
 // CLI-specific: in-memory result with graph + detection results
 export interface PipelineResult<
@@ -45,4 +46,12 @@ export interface PipelineResult<
    * register a richer phase may narrow this output to their phase contract.
    */
   standaloneIngest: TStandaloneIngest;
+  /**
+   * Streamed structural-emit COPY manifest (#2680). Present only when
+   * `streamGraphEmit` was active (full rebuild + enabled): the per-pair CSVs of
+   * relationships that never entered the in-memory graph, for `loadGraphToLbug`
+   * to COPY ALONGSIDE the whole-graph CSVs (their pair keys overlap, so they are
+   * additional COPY jobs, not map entries).
+   */
+  graphEmitManifest?: GraphEmitManifest;
 }

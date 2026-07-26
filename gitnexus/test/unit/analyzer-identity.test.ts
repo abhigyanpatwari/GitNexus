@@ -11,6 +11,7 @@ import {
   analyzerRunnerIdentitiesEqual,
   captureAnalyzerIdentityBeforeLoad,
   finalizeAnalyzerRunnerIdentity,
+  normalizeAnalyzerRootPath,
   normalizeAnalyzerRunnerIdentityForComparison,
   resolveAnalyzerRunnerIdentity,
 } from '../../src/core/analyzer-identity.js';
@@ -1507,4 +1508,42 @@ describe('analyzer runner identity', () => {
       await repo.cleanup();
     }
   }, 300_000);
+});
+
+// #2668 threading guard: the produced identity's path fields must already be
+// normalizer-stable, i.e. resolveBuildRoot/resolveRuntimeVariant actually route
+// build.rootPath and runtime.executablePath through normalizeAnalyzerRootPath.
+// Ubuntu-only by necessity: this needs a real fixture identity, and the fixture
+// harness cannot run on the Windows matrix (the runner's repo is on D: while temp
+// is on C:, and isInside() misjudges cross-drive paths so resolveInvokedArtifact
+// picks the vitest fork worker). The pure-transform assertions that DO run on
+// windows-latest live in analyzer-identity-path-normalization.test.ts.
+describe('analyzer identity path threading (#2668)', () => {
+  it('produces identity path fields that are already normalizer-stable', async () => {
+    const fixture = await createTempDir();
+    try {
+      const sourceRoot = path.join(fixture.dbPath, 'src');
+      const modulePath = path.join(sourceRoot, 'core', 'analyzer.ts');
+      await mkdir(path.dirname(modulePath), { recursive: true });
+      await writeFile(
+        path.join(fixture.dbPath, 'package.json'),
+        '{"name":"fixture-analyzer","version":"1.0.0"}\n',
+      );
+      await writeFile(path.join(fixture.dbPath, 'package-lock.json'), '{"lockfileVersion":3}\n');
+      await writeFile(modulePath, 'export const analyzer = 1;\n');
+
+      const identity = resolveAnalyzerRunnerIdentity(pathToFileURL(modulePath).href, {
+        cacheDirectory: path.join(fixture.dbPath, 'identity-cache'),
+      });
+
+      expect(identity.build.rootPath).toBe(
+        normalizeAnalyzerRootPath(identity.build.rootPath, process.platform),
+      );
+      expect(identity.runtime.executablePath).toBe(
+        normalizeAnalyzerRootPath(identity.runtime.executablePath, process.platform),
+      );
+    } finally {
+      await fixture.cleanup();
+    }
+  });
 });

@@ -1,9 +1,10 @@
 /**
  * Integration test for the #2 atomic full-rebuild swap.
  *
- * A full rebuild builds the fresh index at `<lbugPath>.new` and swaps it over
- * the live index in one atomic rename (POSIX). Two invariants:
- *  - success publishes a single valid `lbug` with no `.new` temp left behind,
+ * A full rebuild builds the fresh index at a per-run `<lbugPath>.staging.<uuid>`
+ * (#2658) and swaps it over the live index in one atomic rename (POSIX). Two
+ * invariants:
+ *  - success publishes a single valid `lbug` with no staging temp left behind,
  *    and a repeat rebuild replaces the inode (proving the swap, not an in-place
  *    edit); and
  *  - a failure BEFORE the swap leaves the previous index byte-for-byte intact
@@ -49,7 +50,10 @@ const identity = async (p: string): Promise<string> => {
 const lingeringTemp = async (lbugPath: string): Promise<string[]> => {
   const base = path.basename(lbugPath);
   const entries = await fs.readdir(path.dirname(lbugPath));
-  return entries.filter((e) => e.startsWith(`${base}.new`));
+  // Staging temps are the legacy fixed `${base}.new*` and the current per-run
+  // `${base}.staging.<uuid>*` (#2658). Match both so this leftover-temp guard
+  // still catches a failed swap under the new naming.
+  return entries.filter((e) => e.startsWith(`${base}.new`) || e.startsWith(`${base}.staging.`));
 };
 
 describe.skipIf(isWin)('atomic full-rebuild swap (#2)', () => {

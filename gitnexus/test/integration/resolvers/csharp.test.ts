@@ -241,6 +241,54 @@ describe('C# using static member injection', () => {
     expect(sqCall!.targetFilePath).toBe('Helpers/MathUtils.cs');
     expect(['import-resolved', 'global']).toContain(sqCall!.rel.reason);
   });
+
+  it("does not resolve an unrelated same-file class's bare method", () => {
+    const calls = getRelationships(result, 'CALLS');
+    expect(calls.find((c) => c.source === 'Exercise' && c.target === 'LeakedOnly')).toBeUndefined();
+    expect(
+      calls.find(
+        (c) => c.source === 'RejectOtherNamespaceOwner' && c.target === 'NamespaceCollision',
+      ),
+    ).toBeUndefined();
+  });
+
+  it('preserves same-file using-static visibility when finalize masks its provenance', () => {
+    const calls = getRelationships(result, 'CALLS');
+    const imported = calls.find((c) => c.source === 'Exercise' && c.target === 'ImportedOnly');
+    expect(imported).toBeDefined();
+    expect(imported!.rel.targetId).toContain('SameFileStatics.ImportedOnly');
+  });
+
+  it('preserves own-instance and inherited bare calls', () => {
+    const calls = getRelationships(result, 'CALLS');
+    expect(calls.find((c) => c.source === 'Exercise' && c.target === 'OwnOnly')).toBeDefined();
+    expect(
+      calls.find((c) => c.source === 'Exercise' && c.target === 'InheritedOnly'),
+    ).toBeDefined();
+  });
+
+  it('preserves bare calls across same-file partial-class fragments', () => {
+    const calls = getRelationships(result, 'CALLS');
+    expect(
+      calls.find((c) => c.source === 'CallAcrossFragment' && c.target === 'AcrossFragment'),
+    ).toBeDefined();
+  });
+
+  it('resolves a local function called from a lambda body', () => {
+    const calls = getRelationships(result, 'CALLS');
+    expect(calls.find((c) => c.source === 'Exercise' && c.target === 'LocalOnly')).toBeDefined();
+  });
+
+  it('narrows static-import overloads after rejecting a leaked same-file method', () => {
+    const calls = getRelationships(result, 'CALLS');
+    const selectCalls = calls.filter((c) => c.source === 'Exercise' && c.target === 'Select');
+    expect(selectCalls).toHaveLength(1);
+    expect(selectCalls[0]!.rel.targetId).toContain('SameFileStatics.Select');
+    expect(result.graph.getNode(selectCalls[0]!.rel.targetId)?.properties.parameterTypes).toEqual([
+      'string',
+      'int',
+    ]);
+  });
 });
 
 // ---------------------------------------------------------------------------

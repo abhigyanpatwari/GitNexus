@@ -193,9 +193,81 @@ export async function verifySearchFTSIndexes(
   return missing;
 }
 
+/**
+ * Why an FTS build failed, so the caller can react correctly (#2658):
+ *
+ *  - `capability`: the environment can't support FTS this run, or a single
+ *    pre-existing row can't be tokenized (#2544/#2546 "Invalid UTF-8"). The
+ *    graph/embeddings work is sound — degrade keyword search and keep exit 0.
+ *  - `integrity`: an IO / rename / checkpoint / corruption failure while
+ *    writing the index. With the single-writer lock (#2658) this is no longer
+ *    "some other analyze racing us" — it's a genuinely broken build on this
+ *    disk, so the run must fail loudly rather than publish a clean-looking
+ *    index whose search silently never worked.
+ */
+export type FtsBuildFailureClass = 'capability' | 'integrity';
+
+// Checked before integrity signatures: a row-level tokenizer error that happens
+// to mention an integrity word still degrades (it isn't a broken build).
+const FTS_CAPABILITY_SIGNATURES = ['invalid utf-8', 'failed calling lower', 'tokeniz'] as const;
+// IO / durability / corruption signatures that mean the build itself broke.
+// Deliberately SPECIFIC (#2658 review L1): generic OS errors a capability/config
+// failure can also carry — bare 'no such file or directory' (ENOENT, e.g. a
+// missing FTS extension asset) and 'bad file descriptor'/'ebadf' — are NOT here,
+// so an ambiguous failure degrades (the pre-#2658 safe behavior) instead of
+// newly aborting the whole analyze. A genuine write/rename/checkpoint integrity
+// failure still matches via 'error renaming' / 'io exception' / 'checkpoint'
+// (the #2658 repro message "Error renaming … : No such file or directory" hits
+// both 'io exception' and 'error renaming').
+const FTS_INTEGRITY_SIGNATURES = [
+  'io exception',
+  'i/o error',
+  'io error',
+  'error renaming',
+  'checkpoint',
+  'corrupt',
+  'no space',
+  'enospc',
+  'double free',
+  'segmentation',
+] as const;
+
+/**
+ * Classify an FTS build failure message. Defaults to `capability` (degrade) —
+ * only clearly-integrity failures escalate, so the long-standing resilience to
+ * row-level tokenizer errors is preserved and we never newly fail a run on an
+ * unrecognised message.
+ */
+export const classifyFtsBuildError = (message: string): FtsBuildFailureClass => {
+  const m = message.toLowerCase();
+  if (FTS_CAPABILITY_SIGNATURES.some((s) => m.includes(s))) return 'capability';
+  if (FTS_INTEGRITY_SIGNATURES.some((s) => m.includes(s))) return 'integrity';
+  return 'capability';
+};
+
+/**
+ * Whether an FTS build failure should ABORT the analyze (throw before publish)
+ * rather than degrade to a search-less-but-queryable index (#2658).
+ *
+ * Only an `integrity` failure on the atomic-swap path is fatal: there the graph
+ * was built into a throwaway staging DB, so throwing abandons the staging file
+ * and leaves the previous live index intact. On an in-place build
+ * (`useAtomicSwap === false`: incremental, Windows default) the graph DML
+ * already mutated the LIVE database, so there is nothing to roll back by
+ * throwing — degrading to a queryable index with FTS marked unavailable is
+ * strictly better than exiting mid-finalization over a dirty, partially-indexed
+ * live DB. `capability` failures always degrade.
+ */
+export const ftsFailureIsFatal = (
+  failureClass: FtsBuildFailureClass | undefined,
+  useAtomicSwap: boolean,
+): boolean => failureClass === 'integrity' && useAtomicSwap;
+
 export interface BuildSearchIndexesResult {
   ok: boolean;
   error?: string;
+  /** Present only when `ok` is false. See {@link FtsBuildFailureClass}. */
+  failureClass?: FtsBuildFailureClass;
 }
 
 /**
@@ -216,10 +288,15 @@ export async function buildSearchIndexesOrDegrade(
     await createSearchFTSIndexes(options);
     const missing = await verifySearchFTSIndexes(executeQuery);
     if (missing.length > 0) {
-      return { ok: false, error: `missing indexes after build: ${missing.join(', ')}` };
+      // Structural incompleteness with no thrown error — treat as capability
+      // (degrade), matching prior behavior; a broken *write* surfaces as a
+      // thrown IO/checkpoint error below and is classified integrity there.
+      const error = `missing indexes after build: ${missing.join(', ')}`;
+      return { ok: false, error, failureClass: classifyFtsBuildError(error) };
     }
     return { ok: true };
   } catch (e) {
-    return { ok: false, error: e instanceof Error ? e.message : String(e) };
+    const error = e instanceof Error ? e.message : String(e);
+    return { ok: false, error, failureClass: classifyFtsBuildError(error) };
   }
 }

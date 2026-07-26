@@ -93,8 +93,14 @@ program
   )
   .option('--no-stats', 'Omit volatile file/symbol counts from AGENTS.md and CLAUDE.md')
   .option(
+    '--self-commit',
+    'Auto-commit AGENTS.md/CLAUDE.md changes after analyze (opt-in, off by default). ' +
+      'Scoped to only those two files (never `git add -A`); no-ops if neither exists, ' +
+      'neither changed, or the repo has no git identity configured.',
+  )
+  .option(
     '--skip-skills',
-    'Skip installing standard GitNexus skill files directly under .claude/skills/. ' +
+    'Skip installing standard GitNexus skill files directly under .claude/skills/ and .agents/skills/. ' +
       'Does not suppress community skills from --skills (those use .claude/skills/gitnexus-area-*). ' +
       'Use --index-only to skip all AI-context file injection.',
   )

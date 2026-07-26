@@ -73,8 +73,8 @@ describe('CALL_SUMMARY relation-type exclusion (U-C1)', () => {
 });
 
 describe('incremental schema reuse gate', () => {
-  it('INCREMENTAL_SCHEMA_VERSION is bumped to 15 (persisted Move Type/field graph)', () => {
-    expect(INCREMENTAL_SCHEMA_VERSION).toBe(15);
+  it('INCREMENTAL_SCHEMA_VERSION is bumped to 16 (main-aptos sync unifying the forked 12–15 range)', () => {
+    expect(INCREMENTAL_SCHEMA_VERSION).toBe(16);
   });
 
   it('a pre-current stamp fails the `=== INCREMENTAL_SCHEMA_VERSION` reuse gate → forces full re-analyze', () => {
@@ -116,18 +116,18 @@ describe('incremental schema reuse gate', () => {
     // (#2604) — abstract trait methods would keep being uncaptured (no
     // ownerId/CALLS resolution) on unchanged Rust trait files → must NOT reuse.
     expect(passesReuseGate(10)).toBe(false);
-    // A pre-v12 (v11) index predates the main-aptos merge — it lacks the Move
-    // `attributesJson` node-table column, so the bulk COPY referencing it
-    // would fail on a top-up → must NOT reuse.
+    // Stamps 11–15 span the forked main/main-aptos range: on either lineage
+    // they predate rebuild reasons from the other (aptos: Move attributesJson
+    // column, generic Type nodes, EnumVariant/field USES_TYPE; main: #2514
+    // Rust range-binding, #2562 Java local-type identities, #2563 C#/Kotlin
+    // instance-ownership gate, #2687 const-arrow twin removal), and a stamp
+    // in 12–15 is ambiguous between the lineages → must NOT reuse.
     expect(passesReuseGate(11)).toBe(false);
-    // A pre-v15 (v12) index silently dropped generic Type nodes and Move
-    // EnumVariant→Property / field USES_TYPE relationships during CSV routing.
     expect(passesReuseGate(12)).toBe(false);
-    // Upstream main uses v13/v14 for a different schema lineage. Neither may
-    // be mistaken for this build's persisted Move Type/field graph.
     expect(passesReuseGate(13)).toBe(false);
     expect(passesReuseGate(14)).toBe(false);
+    expect(passesReuseGate(15)).toBe(false);
     // A current-version stamp passes the gate (incremental top-up eligible).
-    expect(passesReuseGate(15)).toBe(true);
+    expect(passesReuseGate(16)).toBe(true);
   });
 });

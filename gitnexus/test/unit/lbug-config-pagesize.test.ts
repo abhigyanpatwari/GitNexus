@@ -1,7 +1,7 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { execFileSync } from 'child_process';
 import {
-  _resetOsPageSizeCacheForTest,
+  _setOsPageSizeForTests,
   getOsPageSize,
   isLbugPageSizeFrameError,
   isPageSizeAwareLadybug,
@@ -92,7 +92,7 @@ describe('isPageSizeAwareLadybug', () => {
 
 describe('getOsPageSize', () => {
   afterEach(() => {
-    _resetOsPageSizeCacheForTest();
+    _setOsPageSizeForTests(undefined);
     execFileSyncSpy.mockClear();
   });
 
@@ -155,7 +155,7 @@ describe('getOsPageSize', () => {
   it.skipIf(onWindows)('probes at most once per process (cached)', () => {
     expect(getOsPageSize()).toBe(getOsPageSize());
     expect(execFileSyncSpy).toHaveBeenCalledTimes(1);
-    _resetOsPageSizeCacheForTest();
+    _setOsPageSizeForTests(undefined);
     getOsPageSize();
     expect(execFileSyncSpy).toHaveBeenCalledTimes(2);
   });

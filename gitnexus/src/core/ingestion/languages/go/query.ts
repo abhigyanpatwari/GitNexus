@@ -35,6 +35,25 @@ const GO_SCOPE_QUERY = `
 (function_declaration
   name: (identifier) @declaration.name) @declaration.function
 
+;; Declarations — closure bindings (\`var f = func(){}\`, \`f := func(){}\`).
+;; The \`@declaration.function\` anchor sits on the INNER func_literal so its
+;; range aligns with the \`(func_literal) @scope.function\` scope above —
+;; without that alignment pass2AttachDeclarations owns the def by the module
+;; scope and calls inside the closure lose caller attribution. Mirrors the
+;; TypeScript \`const f = () => {}\` patterns (#2687).
+(var_declaration
+  (var_spec
+    name: (identifier) @declaration.name
+    value: (expression_list (func_literal) @declaration.function)))
+(var_declaration
+  (var_spec_list
+    (var_spec
+      name: (identifier) @declaration.name
+      value: (expression_list (func_literal) @declaration.function))))
+(short_var_declaration
+  left: (expression_list (identifier) @declaration.name)
+  right: (expression_list (func_literal) @declaration.function))
+
 ;; Declarations — method
 (method_declaration
   name: (field_identifier) @declaration.name) @declaration.method

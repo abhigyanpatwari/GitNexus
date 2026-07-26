@@ -20,6 +20,7 @@ import {
   NodeTableName,
 } from './schema.js';
 import { streamAllCSVsToDisk, type StreamedCSVResult } from './csv-generator.js';
+import type { GraphEmitManifest } from './graph-emit-sink.js';
 import type { PdgEmitManifest } from './pdg-emit-sink.js';
 import { getNodeLabel as deriveNodeLabel, type WriteStreamFactory } from './rel-pair-routing.js';
 import { EMBEDDABLE_LABELS, type CachedEmbedding } from '../embeddings/types.js';
@@ -37,6 +38,7 @@ import {
   isDbBusyError,
   isOpenRetryExhausted,
   isWalCorruptionError,
+  bufferPoolExhaustionRemedy,
   openLbugConnection,
   sleep,
   toNativeSafePath,
@@ -46,6 +48,7 @@ import {
   type LbugConnectionHandle,
 } from './lbug-config.js';
 import {
+  cleanQuarantinedMissingShadowWals,
   finalizeLbugSidecarsAfterClose,
   guardWalQuarantine,
   isMissingShadowSidecarError,
@@ -55,6 +58,7 @@ import {
   quarantineWalForMissingShadow,
   renameFailureMessage,
   shadowSidecarRecoveryMessage,
+  sidecarPreflightDisabled,
 } from './sidecar-recovery.js';
 
 import { logger } from '../logger.js';
@@ -822,6 +826,30 @@ const doInitLbug = async (dbPath: string, readOnly: boolean = false) => {
     // -------------------------------------------------------------------------
     const releaseInitLock = await acquireInitLock(dbPath);
     try {
+      // Reclaim missing-shadow WAL quarantines from a PRIOR crash (#2637).
+      // LadybugDB renames an unrecoverable WAL aside as
+      // `${dbPath}.wal.missing-shadow.<ts>-<rand>` (quarantineWalForMissingShadow)
+      // instead of deleting it. Once quarantined it is permanently detached from
+      // the live store and never reopened, so reclaiming it is safe regardless of
+      // whether the main DB file exists this run — unlike the orphan-sidecar
+      // cleanup below, this must NOT be gated on "main DB missing": a quarantine
+      // event and a healthy main DB are independent facts. Never let a reclaim
+      // failure (e.g. a transient EBUSY from an antivirus scan) block DB startup.
+      if (!sidecarPreflightDisabled()) {
+        try {
+          const reclaimed = await cleanQuarantinedMissingShadowWals(dbPath);
+          for (const file of reclaimed) {
+            logger.warn(
+              `GitNexus: reclaimed quarantined WAL ${path.basename(file)} from a prior crash`,
+            );
+          }
+        } catch (err) {
+          logger.warn(
+            `GitNexus: failed to reclaim missing-shadow WAL quarantines: ${summarizeError(err)}`,
+          );
+        }
+      }
+
       // Crash-recovery cleanup: if the main DB file is missing, stale sidecars
       // from an interrupted run can block fresh opens indefinitely.
       try {
@@ -953,7 +981,14 @@ const copyNodeCSVs = async (
     const copyQuery = getCopyQuery(table, normalizeCopyPath(csvPath));
     await copyCsvWithRetry(targetConn, copyQuery, (retryErr) => {
       const retryMsg = retryErr instanceof Error ? retryErr.message : String(retryErr);
-      throw new Error(`COPY failed for ${table}: ${retryMsg.slice(0, 200)}`);
+      // Pool exhaustion gets a remedy (#2631): the raw binder text gives the
+      // operator nothing to act on, and on non-4K-page hosts (Ascend aarch64,
+      // Apple Silicon) the pool bills up to pageSize/4KiB x faster than the
+      // sizing was calibrated for — name the knob and the mechanism.
+      const remedy = bufferPoolExhaustionRemedy(retryMsg);
+      throw new Error(
+        `COPY failed for ${table}: ${retryMsg.slice(0, 200)}${remedy ? ` ${remedy}` : ''}`,
+      );
     });
   }
 };
@@ -984,6 +1019,15 @@ export const loadGraphToLbug = async (
    * emits none — the manifest is the sole source and there is no double-COPY.
    */
   pdgEmitManifest?: PdgEmitManifest,
+  /**
+   * Streamed structural-emit manifest (#2680). Unlike {@link pdgEmitManifest},
+   * these pair keys are NOT disjoint from the whole-graph emit's: a streamed
+   * `CALLS` edge is `Function|Function`, exactly like the retained edges
+   * `streamAllCSVsToDisk` just wrote. So these files are APPENDED as additional
+   * COPY jobs for the same pair rather than merged into `relsByPair` (a Map,
+   * which holds one CSV per pair and would silently drop one of them).
+   */
+  graphEmitManifest?: GraphEmitManifest,
 ) => {
   if (!conn) {
     throw new Error('LadybugDB not initialized. Call initLbug first.');
@@ -1123,16 +1167,32 @@ export const loadGraphToLbug = async (
   let tCopyRels = tCopyNodes;
   let tFallback = tCopyNodes;
 
-  const insertedRels = totalValidRels;
+  // One COPY job per CSV FILE, not per label pair. The whole-graph emit writes
+  // at most one file per pair, but the streamed structural manifest (#2680) can
+  // contribute a second file for a pair the whole-graph emit also wrote — both
+  // must load. `relsByPair` stays a one-file-per-pair Map so the PDG merge above
+  // and every other consumer are untouched.
+  const copyJobs: Array<{ pairKey: string; csvPath: string; rows: number }> = [];
+  for (const [pairKey, meta] of relsByPair) {
+    copyJobs.push({ pairKey, csvPath: meta.csvPath, rows: meta.rows });
+  }
+  if (graphEmitManifest) {
+    for (const [pairKey, meta] of graphEmitManifest.relsByPair) {
+      copyJobs.push({ pairKey, csvPath: meta.csvPath, rows: meta.rows });
+    }
+  }
+
+  const insertedRels = totalValidRels + (graphEmitManifest?.totalRows ?? 0);
   const warnings: string[] = [];
+  let poolRemedyIssued = false;
   if (insertedRels > 0) {
-    log(`Loading edges: ${insertedRels.toLocaleString()} across ${relsByPair.size} types`);
+    log(`Loading edges: ${insertedRels.toLocaleString()} across ${copyJobs.length} CSV files`);
 
     let pairIdx = 0;
     let failedPairEdges = 0;
     const failedPairCsvPaths = new Set<string>();
 
-    for (const [pairKey, { csvPath: pairCsvPath, rows }] of relsByPair) {
+    for (const { pairKey, csvPath: pairCsvPath, rows } of copyJobs) {
       pairIdx++;
       const [fromLabel, toLabel] = pairKey.split('|');
       const normalizedPath = normalizeCopyPath(pairCsvPath);
@@ -1140,7 +1200,7 @@ export const loadGraphToLbug = async (
       const copyQuery = `COPY ${REL_TABLE_NAME} FROM "${normalizedPath}" (from="${fromLabel}", to="${toLabel}", HEADER=true, ESCAPE='"', DELIM=',', QUOTE='"', PARALLEL=false, auto_detect=false)`;
 
       if (pairIdx % 5 === 0 || rows > 1000) {
-        log(`Loading edges: ${pairIdx}/${relsByPair.size} types (${fromLabel} -> ${toLabel})`);
+        log(`Loading edges: ${pairIdx}/${copyJobs.length} files (${fromLabel} -> ${toLabel})`);
       }
 
       // Use the captured `writeConn` (not the module-level `conn`) for the rel
@@ -1151,6 +1211,17 @@ export const loadGraphToLbug = async (
       await copyCsvWithRetry(writeConn, copyQuery, (retryErr) => {
         const retryMsg = retryErr instanceof Error ? retryErr.message : String(retryErr);
         warnings.push(`${fromLabel}->${toLabel} (${rows} edges): ${retryMsg.slice(0, 80)}`);
+        // One remedy per bulk load, not per pair (#2631): pool exhaustion
+        // repeats for every remaining pair once it starts. logger.warn, not
+        // just warnings.push — the returned warnings array has no consumer at
+        // any call site, so a push alone would leave the remedy invisible
+        // while the row-by-row fallback quietly degrades the load.
+        const remedy = poolRemedyIssued ? undefined : bufferPoolExhaustionRemedy(retryMsg);
+        if (remedy) {
+          poolRemedyIssued = true;
+          warnings.push(remedy);
+          logger.warn(remedy);
+        }
         failedPairEdges += rows;
         failedPairCsvPaths.add(pairCsvPath);
       });

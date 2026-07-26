@@ -78,7 +78,7 @@ try {
 } catch {}
 import { getLanguageFromFilename } from 'gitnexus-shared';
 import {
-  buildConcreteTypedefDefinitionRanges,
+  buildDefinitionPreScan,
   FUNCTION_NODE_TYPES,
   findAncestorBeforeBoundary,
   getDefinitionNodeFromCaptures,
@@ -89,6 +89,7 @@ import {
   genericFuncName,
   inferFunctionLabel,
   isSuppressedConcreteTypedefDuplicate,
+  isValueDefinitionLabel,
   isQualifiableScopeLabel,
   qualifyRustImplTargetByModScope,
   CLASS_CONTAINER_TYPES,
@@ -1313,9 +1314,14 @@ const processFileGroup = (
       );
       continue;
     }
-    const concreteTypedefRanges = buildConcreteTypedefDefinitionRanges(matches);
-
     const provider = getProvider(language);
+
+    // #2687: ONE pass over `matches` yields both suppression sets — the
+    // definition-name claims by rank (callable > Property > value), so the dedup
+    // below cannot depend on tree-sitter's match order, and the concrete-typedef
+    // ranges the typedef guard consumes.
+    const definitionPreScan = buildDefinitionPreScan(matches, provider);
+    const concreteTypedefRanges = definitionPreScan.concreteTypedefRanges;
 
     // Produce the `ParsedFile` for the scope-resolution pipeline HERE, reusing
     // the tree we just parsed (no second tree-sitter parse). Scope-resolution
@@ -1967,19 +1973,41 @@ const processFileGroup = (
       // Dedup: variable captures (Const/Static/Variable) may overlap with higher-priority
       // captures (e.g. `const fn = () => {}` matches both @definition.function and @definition.const).
       // Multi-name declarations share the same definition node, so include the emitted name.
+      //
+      // `processedDefinitionNodes` alone only suppressed the value twin when the
+      // function-like match happened to be processed FIRST — and it is not.
+      // tree-sitter completes `@definition.const` at `@name`, while
+      // `@definition.function` must also match the trailing arrow / function
+      // expression, so the const match is yielded first and its edgeless twin
+      // escaped (#2687). `definitionPreScan` is the order-independent view of
+      // the same claim, pre-scanned over `matches` before this loop and ranked so
+      // a capture is dropped only by a STRICTLY higher-ranked claimant.
+      //
+      // It also replaces the old bare-`startIndex` claim, which was too coarse:
+      // a callable declared FIRST in a multi-name declaration
+      // (`const cb = () => 1, SIBLING = 2`) registered the shared definition
+      // node and silently dropped every later sibling on it. Both keys are now
+      // name-scoped, so siblings survive in either declarator order.
+      //
+      // The long-term collapse seam for this duplicate class is
+      // `selectNodeBearingDef` (#1876, still unwired); this pre-scan is the local
+      // form that keeps the hot loop single-pass. Keep them in sync if #1876 lands.
       if (definitionNode) {
-        const definitionBaseKey = `${definitionNode.startIndex}`;
-        if (nodeLabel === 'Const' || nodeLabel === 'Static' || nodeLabel === 'Variable') {
-          const definitionNameKey = `${definitionBaseKey}:${nodeName}`;
+        const definitionNameKey = `${definitionNode.startIndex}:${nodeName}`;
+        if (isValueDefinitionLabel(nodeLabel)) {
           if (
-            processedDefinitionNodes.has(definitionBaseKey) ||
-            processedDefinitionNodes.has(definitionNameKey)
+            processedDefinitionNodes.has(definitionNameKey) ||
+            definitionPreScan.nonValue.has(definitionNameKey)
           ) {
             continue;
           }
           processedDefinitionNodes.add(definitionNameKey);
-        } else {
-          processedDefinitionNodes.add(definitionBaseKey);
+        } else if (nodeLabel === 'Property' && definitionPreScan.callable.has(definitionNameKey)) {
+          // Only a CALLABLE collapses a property. Consulting the wider
+          // `nonValue` set here would let a property suppress itself, and would
+          // let an annotated Python attribute lose to its own bare-assignment
+          // twin — the property must outrank `Variable`, not tie with it.
+          continue;
         }
       }
 

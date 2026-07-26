@@ -461,19 +461,51 @@ export interface RepoMeta {
  * incremental write set only covers changed files, so a top-up against a
  * pre-v11 index would keep silently missing these CALLS edges for every
  * unchanged Rust trait file; force a full re-analyze instead.
- * v12: main-aptos merge. The Move lineage's v9 — `attributesJson` column added
- * to the Move node tables (Function, Struct, Enum, EnumVariant, Module) with
- * full attribute payloads — is re-numbered past main's v9–v11: a persisted
- * stamp of 9 is ambiguous between the two lineages, and a pre-merge Move
- * index also predates main's v9–v11 rebuild reasons. Any pre-v12 stamp fails
- * the strict-equality reuse gate; force a full re-analyze (same contract as v3).
- * v15: generic Type nodes and the Move EnumVariant→Property / field
- * USES_TYPE endpoint pairs became persistable. This Move-lineage change is
- * numbered past upstream main's v13 (Java local-class identities) and v14 so
- * indexes from either release channel cannot pass the strict-equality reuse
- * gate under the other schema. Older indexes require a full rebuild.
+ * — Between v11 and v16 the version history forks: the aptos release channel
+ * (main-aptos) and upstream main each allocated stamps 12–15 independently,
+ * so a persisted stamp in that range is ambiguous between the two lineages.
+ * Upstream main's 12–15:
+ * v12: Rust range-binding stopped restoring ambiguous duplicate type names
+ * (#2514): a function/struct name defined three or more times used to
+ * re-resolve to the last-scanned file (a presence toggle), so odd duplicate
+ * counts emitted a wrong cross-file CALLS edge. Same v7/v11 contract: the
+ * incremental write set only covers changed files, so a top-up against a
+ * pre-v12 index would keep these spurious CALLS edges on every unchanged Rust
+ * file. v12 also changes edges in the other direction: range-binding now
+ * RESOLVES import-disambiguated duplicate names (`for item in make()` /
+ * `let Struct { f } = ..` where a `use` or `use x::*` import pins one of several
+ * same-named definitions) to the imported definition's type. Both the removed
+ * spurious edges and these new resolved edges are cross-file, so a pre-v12
+ * top-up would leave unchanged Rust files stale either way; force a full
+ * re-analyze instead.
+ * v13: Java local classes, enums, records, and interfaces use
+ * source-type-relative JLS 13.1 identities (`Outer$1Local`). Number allocation
+ * matches javac: one sequence per (enclosing type, local simple name), with a
+ * separate sequence for anonymous types. Existing type/member ids, lexical
+ * bindings, and ownership edges must not be mixed with newly named unchanged
+ * Java files; force a full re-analyze.
+ * v14: C# and Kotlin free-call fallback now rejects same-file methods whose
+ * instance owner is outside the caller's enclosing class/MRO (#2563). The
+ * incremental write set would otherwise retain those stale CALLS edges on
+ * every unchanged C# and Kotlin file; force a full re-analyze instead.
+ * v15: `const X = <arrow | function-expression>` no longer emits an edgeless
+ * `Const:<file>:X` twin beside its `Function` node (#2687). The incremental
+ * write set only covers changed files, so every unchanged TS/JS file would
+ * keep its twin and `impact`/`context` would stay ambiguous on those names;
+ * force a full re-analyze instead.
+ * The aptos lineage's 12–15:
+ * v12: first main-aptos merge — the Move lineage's v9 (`attributesJson` column
+ * on the Move node tables) re-numbered past main's v9–v11.
+ * v13/v15: generic Type nodes and the Move EnumVariant→Property / field
+ * USES_TYPE endpoint pairs became persistable (v13 in PR #2682, renumbered to
+ * 15 to clear main's then-current v14).
+ * v16: second main-aptos merge unifies the fork. Any stamp 12–15 is ambiguous
+ * between the lineages: an aptos-15 index predates main's v12–v15 rebuild
+ * reasons and a main-15 index has no Move/Type tables. Any pre-v16 stamp
+ * fails the strict-equality reuse gate; force a full re-analyze (same
+ * contract as the v12 merge).
  */
-export const INCREMENTAL_SCHEMA_VERSION = 15;
+export const INCREMENTAL_SCHEMA_VERSION = 16;
 
 export interface IndexedRepo {
   repoPath: string;

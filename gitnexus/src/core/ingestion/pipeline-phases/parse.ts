@@ -61,6 +61,8 @@ export interface ParseOutput {
   model: MutableSemanticModel;
   /** Pass-through: all file paths for downstream phases. */
   readonly allPaths: readonly string[];
+  /** Pass-through: shared `allPathSet` from structure (built once, not per-phase). */
+  readonly allPathSet: ReadonlySet<string>;
   /** Pass-through: total file count for progress reporting. */
   totalFiles: number;
   /**
@@ -89,6 +91,12 @@ export const parsePhase: PipelinePhase<ParseOutput> = {
     ctx: PipelineContext,
     deps: ReadonlyMap<string, PhaseResult<unknown>>,
   ): Promise<ParseOutput> {
+    // Begin streamed structural emit (#2680), if enabled. Deliberately here and
+    // not at graph construction: the pre-parse phases are not all write-only —
+    // `mapCobolToGraph` scans CALLS edges and removes the unresolved ones — and
+    // nothing before parse produces bulk edge volume anyway.
+    ctx.graphEmit?.beginStreaming();
+
     const structure = getPhaseOutput<StructureOutput>(deps, 'structure');
     const { totalFiles } = structure;
 
@@ -101,6 +109,8 @@ export const parsePhase: PipelinePhase<ParseOutput> = {
     const allPaths = ingested.size
       ? structure.allPaths.filter((p) => !ingested.has(p))
       : structure.allPaths;
+    // Keep the O(1) lookup set consistent with the filtered path list.
+    const allPathSet = ingested.size ? new Set(allPaths) : structure.allPathSet;
 
     const result = await runChunkedParseAndResolve(
       ctx.graph,
@@ -116,6 +126,7 @@ export const parsePhase: PipelinePhase<ParseOutput> = {
     return {
       ...result,
       allPaths,
+      allPathSet,
       totalFiles,
     };
   },

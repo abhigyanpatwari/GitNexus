@@ -171,6 +171,78 @@
     "captureGroups": 22,
     "digest": "c53db401a81fde2ffd5665393acb9cd605a62ec51c015c3aafb3f41c0897471f"
   },
+  "rust-dup-fields-2/src/c_a.rs": {
+    "captureGroups": 11,
+    "digest": "4c7844b039d3b2c618e5e1978e0bed50a2d8de0a7a92a87fef4791c91fd2d0d2"
+  },
+  "rust-dup-fields-2/src/c_b.rs": {
+    "captureGroups": 11,
+    "digest": "cd02dd0f2b74d8e9495634f3a33477c2b20d5f2877612733b66402eae6fe8426"
+  },
+  "rust-dup-fields-2/src/main.rs": {
+    "captureGroups": 16,
+    "digest": "e96013ac801f874a1ad902c7bd2be277202b38fbf12030c4ebbb46edd8c0fe79"
+  },
+  "rust-dup-fields-3/src/c_a.rs": {
+    "captureGroups": 11,
+    "digest": "4c7844b039d3b2c618e5e1978e0bed50a2d8de0a7a92a87fef4791c91fd2d0d2"
+  },
+  "rust-dup-fields-3/src/c_b.rs": {
+    "captureGroups": 11,
+    "digest": "cd02dd0f2b74d8e9495634f3a33477c2b20d5f2877612733b66402eae6fe8426"
+  },
+  "rust-dup-fields-3/src/c_c.rs": {
+    "captureGroups": 11,
+    "digest": "a5263afa5bc9cb6b499d3c5394cc8b0a942d9a1fe388a2366a3baca963ead634"
+  },
+  "rust-dup-fields-3/src/main.rs": {
+    "captureGroups": 17,
+    "digest": "fad21b046b2f34b8a6fd98ffc3719446f176f7207864b3fdd9ba2d9bb07d607f"
+  },
+  "rust-dup-return-2/src/main.rs": {
+    "captureGroups": 14,
+    "digest": "a4d637dc57a09e56dce75102c70ca6a45998f498990289855d4953bf4ed5461f"
+  },
+  "rust-dup-return-2/src/t_a.rs": {
+    "captureGroups": 14,
+    "digest": "d531e0aec84d7da0e2c6818e445735b4cb1ff15e08d14586093069e5eeab41c9"
+  },
+  "rust-dup-return-2/src/t_b.rs": {
+    "captureGroups": 14,
+    "digest": "cb5f21ac23b71efdf24b121268f783d5b224e7d498ffa7a54555c97ab0f904bf"
+  },
+  "rust-dup-return-3-reordered/src/a_task.rs": {
+    "captureGroups": 14,
+    "digest": "67e8de06340dd3b5c5c4bcc88836d1ef89b47f4a740697664dfa26cd36cf5ac5"
+  },
+  "rust-dup-return-3-reordered/src/m_repo.rs": {
+    "captureGroups": 14,
+    "digest": "cb5f21ac23b71efdf24b121268f783d5b224e7d498ffa7a54555c97ab0f904bf"
+  },
+  "rust-dup-return-3-reordered/src/main.rs": {
+    "captureGroups": 15,
+    "digest": "0f68357dbffb22af2c36ca5a935c3eea4025c119afa1a7c1d258ab9a74fe96e8"
+  },
+  "rust-dup-return-3-reordered/src/z_user.rs": {
+    "captureGroups": 14,
+    "digest": "d531e0aec84d7da0e2c6818e445735b4cb1ff15e08d14586093069e5eeab41c9"
+  },
+  "rust-dup-return-3/src/main.rs": {
+    "captureGroups": 15,
+    "digest": "a93ca0874eeaedd21dba987143fa389281d8b738612ca49c314ab91dd73e4065"
+  },
+  "rust-dup-return-3/src/t_a.rs": {
+    "captureGroups": 14,
+    "digest": "d531e0aec84d7da0e2c6818e445735b4cb1ff15e08d14586093069e5eeab41c9"
+  },
+  "rust-dup-return-3/src/t_b.rs": {
+    "captureGroups": 14,
+    "digest": "cb5f21ac23b71efdf24b121268f783d5b224e7d498ffa7a54555c97ab0f904bf"
+  },
+  "rust-dup-return-3/src/t_c.rs": {
+    "captureGroups": 14,
+    "digest": "67e8de06340dd3b5c5c4bcc88836d1ef89b47f4a740697664dfa26cd36cf5ac5"
+  },
   "rust-dyn-trait-object/src/lib.rs": {
     "captureGroups": 23,
     "digest": "720618dff6a43ab8e5b59aa354c0c448b9057dd6f2f7b3b22b13b82d53745943"
@@ -266,6 +338,102 @@
   "rust-if-let/models.rs": {
     "captureGroups": 20,
     "digest": "d8c1eb57431b915dd5c9055d8451054a454e340c4842628e38e4d46f69471abd"
+  },
+  "rust-import-alias-return/src/main.rs": {
+    "captureGroups": 16,
+    "digest": "c14fd2abf932f09fe19821951e73afdf03839bdb761a7d0ad347c9926a0d5542"
+  },
+  "rust-import-alias-return/src/t_a.rs": {
+    "captureGroups": 14,
+    "digest": "d531e0aec84d7da0e2c6818e445735b4cb1ff15e08d14586093069e5eeab41c9"
+  },
+  "rust-import-alias-return/src/t_b.rs": {
+    "captureGroups": 14,
+    "digest": "cb5f21ac23b71efdf24b121268f783d5b224e7d498ffa7a54555c97ab0f904bf"
+  },
+  "rust-import-alias-return/src/t_c.rs": {
+    "captureGroups": 14,
+    "digest": "67e8de06340dd3b5c5c4bcc88836d1ef89b47f4a740697664dfa26cd36cf5ac5"
+  },
+  "rust-import-dup-fields/src/main.rs": {
+    "captureGroups": 18,
+    "digest": "82b48d00fe2e4b5a2f52185d5d2501fdef408faf148b509fdc5f428171b9a784"
+  },
+  "rust-import-dup-fields/src/t_a.rs": {
+    "captureGroups": 11,
+    "digest": "4c7844b039d3b2c618e5e1978e0bed50a2d8de0a7a92a87fef4791c91fd2d0d2"
+  },
+  "rust-import-dup-fields/src/t_b.rs": {
+    "captureGroups": 11,
+    "digest": "cd02dd0f2b74d8e9495634f3a33477c2b20d5f2877612733b66402eae6fe8426"
+  },
+  "rust-import-dup-fields/src/t_c.rs": {
+    "captureGroups": 11,
+    "digest": "a5263afa5bc9cb6b499d3c5394cc8b0a942d9a1fe388a2366a3baca963ead634"
+  },
+  "rust-import-dup-return/src/main.rs": {
+    "captureGroups": 16,
+    "digest": "e70780bcc2ccbfca9fe2099887e30187f70c48b68a11948592778997d1e2bd13"
+  },
+  "rust-import-dup-return/src/t_a.rs": {
+    "captureGroups": 14,
+    "digest": "d531e0aec84d7da0e2c6818e445735b4cb1ff15e08d14586093069e5eeab41c9"
+  },
+  "rust-import-dup-return/src/t_b.rs": {
+    "captureGroups": 14,
+    "digest": "cb5f21ac23b71efdf24b121268f783d5b224e7d498ffa7a54555c97ab0f904bf"
+  },
+  "rust-import-dup-return/src/t_c.rs": {
+    "captureGroups": 14,
+    "digest": "67e8de06340dd3b5c5c4bcc88836d1ef89b47f4a740697664dfa26cd36cf5ac5"
+  },
+  "rust-import-glob-ambiguous/src/main.rs": {
+    "captureGroups": 17,
+    "digest": "31f683937b9d9208e7f2c6bd2d1092c59bcf6ab16a6a6923b48bba6fcab2a1a6"
+  },
+  "rust-import-glob-ambiguous/src/t_a.rs": {
+    "captureGroups": 14,
+    "digest": "d531e0aec84d7da0e2c6818e445735b4cb1ff15e08d14586093069e5eeab41c9"
+  },
+  "rust-import-glob-ambiguous/src/t_b.rs": {
+    "captureGroups": 14,
+    "digest": "cb5f21ac23b71efdf24b121268f783d5b224e7d498ffa7a54555c97ab0f904bf"
+  },
+  "rust-import-glob-ambiguous/src/t_c.rs": {
+    "captureGroups": 14,
+    "digest": "67e8de06340dd3b5c5c4bcc88836d1ef89b47f4a740697664dfa26cd36cf5ac5"
+  },
+  "rust-import-glob-local-shadows/src/main.rs": {
+    "captureGroups": 28,
+    "digest": "5242d2ee3c9bdb8c679ddc55726e423fc48997db2bcfc4f79dca3645289d1149"
+  },
+  "rust-import-glob-local-shadows/src/t_a.rs": {
+    "captureGroups": 14,
+    "digest": "d531e0aec84d7da0e2c6818e445735b4cb1ff15e08d14586093069e5eeab41c9"
+  },
+  "rust-import-glob-local-shadows/src/t_b.rs": {
+    "captureGroups": 14,
+    "digest": "cb5f21ac23b71efdf24b121268f783d5b224e7d498ffa7a54555c97ab0f904bf"
+  },
+  "rust-import-glob-local-shadows/src/t_c.rs": {
+    "captureGroups": 14,
+    "digest": "67e8de06340dd3b5c5c4bcc88836d1ef89b47f4a740697664dfa26cd36cf5ac5"
+  },
+  "rust-import-glob-return/src/main.rs": {
+    "captureGroups": 16,
+    "digest": "a157af0c6d7b8f9861712c1822bb5bab8e7fadbcdd58c08d4d034343117053cb"
+  },
+  "rust-import-glob-return/src/t_a.rs": {
+    "captureGroups": 14,
+    "digest": "d531e0aec84d7da0e2c6818e445735b4cb1ff15e08d14586093069e5eeab41c9"
+  },
+  "rust-import-glob-return/src/t_b.rs": {
+    "captureGroups": 14,
+    "digest": "cb5f21ac23b71efdf24b121268f783d5b224e7d498ffa7a54555c97ab0f904bf"
+  },
+  "rust-import-glob-return/src/t_c.rs": {
+    "captureGroups": 14,
+    "digest": "67e8de06340dd3b5c5c4bcc88836d1ef89b47f4a740697664dfa26cd36cf5ac5"
   },
   "rust-iter-for-loop/src/main.rs": {
     "captureGroups": 30,
@@ -506,6 +674,14 @@
   "rust-union/lib.rs": {
     "captureGroups": 10,
     "digest": "e2a6fb9eab259b8c7104f1530b96b8c1f42ab32fe1d71d6bdca04d68263507f2"
+  },
+  "rust-unique-return/src/main.rs": {
+    "captureGroups": 13,
+    "digest": "72cc5728b40f51fae75359c2443986ce73f5d5450ebf8a367a2d860c87c84ed0"
+  },
+  "rust-unique-return/src/t_a.rs": {
+    "captureGroups": 14,
+    "digest": "d531e0aec84d7da0e2c6818e445735b4cb1ff15e08d14586093069e5eeab41c9"
   },
   "rust-write-access/models.rs": {
     "captureGroups": 9,
