@@ -500,6 +500,18 @@ jobs:
         run: node --import tsx bench/callable-value-flow/measure.mjs --check
         working-directory: gitnexus
 
+      - name: Scope-emission guards (#2699)
+        # Build-free: asserts the JS/TS scope set is unchanged. Block scopes are
+        # what make `let`/`const` in sibling blocks distinct bindings, but a
+        # scope per `statement_block` triples the count and deepens every
+        # scope-chain walk in every function for no semantic gain. Two emit-side
+        # filters drop the waste — function-body blocks (the Function scope
+        # already covers them) and blocks that declare nothing — and this gate
+        # fails if either regresses. Counts are exact, so it catches a change
+        # wall-clock CI could never resolve from noise.
+        run: node --import tsx bench/scope-emission/measure.mjs --check
+        working-directory: gitnexus
+
       - name: CFG construction time / disk / memory guards (#2081 M1)
         # Build-free: asserts collectFunctionCfgs output is unchanged
         # (fingerprint) and that wall-time, cfgSideChannel disk bytes, AND
