@@ -31,6 +31,32 @@ const ENABLE_AUTO_CONFIGURATION_KEY =
   'org.springframework.boot.autoconfigure.EnableAutoConfiguration';
 const AUTO_CONFIGURATION_IMPORTS =
   'META-INF/spring/org.springframework.boot.autoconfigure.AutoConfiguration.imports';
+const SPRING_FACTORIES = 'META-INF/spring.factories';
+const AUTO_CONFIGURATION_IMPORTS_LOWER = AUTO_CONFIGURATION_IMPORTS.toLowerCase();
+const SPRING_FACTORIES_LOWER = SPRING_FACTORIES.toLowerCase();
+
+/**
+ * Case-insensitive ASCII path-suffix match without allocating a normalized or
+ * lower-cased copy of every scanned path. Spring metadata suffixes are ASCII;
+ * both POSIX and Windows separators are accepted.
+ */
+function hasPathSuffix(filePath: string, suffix: string): boolean {
+  let fileCursor = filePath.length - 1;
+  for (let suffixCursor = suffix.length - 1; suffixCursor >= 0; suffixCursor--, fileCursor--) {
+    if (fileCursor < 0) return false;
+    const expected = suffix.charCodeAt(suffixCursor);
+    const actual = filePath.charCodeAt(fileCursor);
+    if (expected === 47) {
+      if (actual !== 47 && actual !== 92) return false;
+      continue;
+    }
+    const lowerActual = actual >= 65 && actual <= 90 ? actual + 32 : actual;
+    if (lowerActual !== expected) return false;
+  }
+  if (fileCursor < 0) return true;
+  const boundary = filePath.charCodeAt(fileCursor);
+  return boundary === 47 || boundary === 92;
+}
 
 export interface SpringAutoConfigurationEntry {
   readonly className: string;
@@ -53,12 +79,10 @@ export interface SpringAutoConfigurationOutput {
 export function classifySpringAutoConfigurationMetadata(
   filePath: string,
 ): SpringAutoConfigurationMetadataFile | null {
-  const normalized = filePath.replaceAll('\\', '/');
-  const lower = `/${normalized}`.toLowerCase();
-  if (lower.endsWith(`/${AUTO_CONFIGURATION_IMPORTS.toLowerCase()}`)) {
+  if (hasPathSuffix(filePath, AUTO_CONFIGURATION_IMPORTS_LOWER)) {
     return { filePath, kind: 'imports' };
   }
-  if (lower.endsWith('/meta-inf/spring.factories')) {
+  if (hasPathSuffix(filePath, SPRING_FACTORIES_LOWER)) {
     return { filePath, kind: 'spring-factories' };
   }
   return null;
@@ -149,8 +173,8 @@ function simpleClassName(qualifiedName: string): string {
 
 function sourceClassIndexes(
   graph: PipelineContext['graph'],
-): ReadonlyMap<string, readonly GraphNode[]> {
-  const byQualifiedName = new Map<string, GraphNode[]>();
+): ReadonlyMap<string, GraphNode | null> {
+  const byQualifiedName = new Map<string, GraphNode | null>();
   for (const node of graph.iterNodes()) {
     if (node.label !== 'Class') continue;
     const qualifiedName =
@@ -158,9 +182,14 @@ function sourceClassIndexes(
         ? normalizedQualifiedName(node.properties.qualifiedName)
         : undefined;
     if (qualifiedName !== undefined) {
-      const qualified = byQualifiedName.get(qualifiedName) ?? [];
-      qualified.push(node);
-      byQualifiedName.set(qualifiedName, qualified);
+      const existing = byQualifiedName.get(qualifiedName);
+      if (existing === undefined) {
+        byQualifiedName.set(qualifiedName, node);
+      } else if (existing !== null) {
+        // Only uniqueness matters. A null sentinel avoids retaining an array of
+        // every duplicate while preserving fail-closed ambiguity semantics.
+        byQualifiedName.set(qualifiedName, null);
+      }
     }
   }
   return byQualifiedName;
@@ -169,17 +198,16 @@ function sourceClassIndexes(
 function resolveOrCreateAutoConfigurationClass(
   ctx: PipelineContext,
   metadata: SpringAutoConfigurationMetadataFile,
-  entry: SpringAutoConfigurationEntry,
+  qualifiedName: string,
+  line: number,
   classesByQualifiedName: ReturnType<typeof sourceClassIndexes>,
 ): GraphNode | undefined {
-  const qualifiedName = normalizedQualifiedName(entry.className);
-  const exact = classesByQualifiedName.get(qualifiedName) ?? [];
-  const [exactMatch] = exact;
-  if (exact.length === 1 && exactMatch !== undefined) return exactMatch;
+  const exact = classesByQualifiedName.get(qualifiedName);
+  if (exact !== null && exact !== undefined) return exact;
   // The runtime classpath chooses one of duplicate FQNs. GitNexus has no
   // reliable module/classpath precedence here, so fail closed instead of
   // guessing, fanning out, or fabricating a third candidate.
-  if (exact.length > 1) return undefined;
+  if (exact === null) return undefined;
 
   const nodeId = generateId('Class', `spring-auto-configuration:${qualifiedName}`);
   const syntheticClass: GraphNode = {
@@ -189,8 +217,8 @@ function resolveOrCreateAutoConfigurationClass(
       name: simpleClassName(qualifiedName),
       qualifiedName,
       filePath: metadata.filePath,
-      startLine: entry.line,
-      endLine: entry.line,
+      startLine: line,
+      endLine: line,
       description: SPRING_AUTO_CONFIGURATION_SYNTHETIC_DESCRIPTION,
     },
   };
@@ -232,18 +260,23 @@ export const springAutoConfigurationPhase: PipelinePhase<SpringAutoConfiguration
       const declaredQualifiedNames = new Set<string>();
 
       for (const entry of entries) {
-        classesByQualifiedName ??= sourceClassIndexes(ctx.graph);
         const qualifiedName = normalizedQualifiedName(entry.className);
         if (declaredQualifiedNames.has(qualifiedName)) continue;
         declaredQualifiedNames.add(qualifiedName);
         let autoConfiguration = resolutions.get(qualifiedName);
-        if (!resolutions.has(qualifiedName)) {
+        if (autoConfiguration === undefined) {
+          classesByQualifiedName ??= sourceClassIndexes(ctx.graph);
           autoConfiguration =
-            resolveOrCreateAutoConfigurationClass(ctx, metadata, entry, classesByQualifiedName) ??
-            null;
+            resolveOrCreateAutoConfigurationClass(
+              ctx,
+              metadata,
+              qualifiedName,
+              entry.line,
+              classesByQualifiedName,
+            ) ?? null;
           resolutions.set(qualifiedName, autoConfiguration);
         }
-        if (autoConfiguration === null || autoConfiguration === undefined) {
+        if (autoConfiguration === null) {
           ambiguousQualifiedNames.add(qualifiedName);
           continue;
         }

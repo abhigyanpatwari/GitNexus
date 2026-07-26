@@ -27,6 +27,16 @@ describe('Spring Boot auto-configuration metadata parsing', () => {
     expect(
       classifySpringAutoConfigurationMetadata('src/main/resources/META-INF/spring.factories'),
     ).toMatchObject({ kind: 'spring-factories' });
+    expect(
+      classifySpringAutoConfigurationMetadata(
+        'SRC\\MAIN\\RESOURCES\\meta-inf\\SPRING\\ORG.SPRINGFRAMEWORK.BOOT.AUTOCONFIGURE.AUTOCONFIGURATION.IMPORTS',
+      ),
+    ).toMatchObject({ kind: 'imports' });
+    expect(
+      classifySpringAutoConfigurationMetadata(
+        'not-meta-inf/spring/org.springframework.boot.autoconfigure.AutoConfiguration.imports',
+      ),
+    ).toBeNull();
     expect(classifySpringAutoConfigurationMetadata('application.properties')).toBeNull();
   });
 
