@@ -222,6 +222,44 @@ describeIfWorkerBuilt('a function-local callable does not collide with a file-le
     expect(calls).toEqual(['Function:v.js:outer -> Function:v.js:outer.pick@1:11']);
   });
 
+  it('a MULTILINE local declaration does not alias onto a same-named sibling local', async () => {
+    // The two id phases anchor on different nodes ON PURPOSE: the graph node anchors on
+    // the outer `lexical_declaration`, the scope def on the inner `arrow_function` (so
+    // `anchor.range` lines up with `@scope.function` for auto-hoist). Splitting the
+    // declaration across lines therefore puts them on different LINES and the position
+    // join misses.
+    //
+    // Before the fix that miss fell through to the label-agnostic, first-write-wins
+    // `simpleKey`, which aliased `other`'s local onto `run`'s and emitted a FABRICATED
+    // edge `other -> run.pick@1:2`. Every other fixture in this file keeps the
+    // declaration and its initializer on ONE line, where the anchors coincide — which is
+    // exactly why the suite was green while the bug shipped.
+    //
+    // Correct behaviour is to fail CLOSED: two edges, each to its own binding, and no
+    // third edge. A missing edge is recoverable; a fabricated caller silently corrupts
+    // `impact`.
+    const { calls } = await analyze(
+      'm.ts',
+      [
+        'export function run(): number {',
+        '  const pick =',
+        '    (x: number): number => x * 2;',
+        '  return pick(1);',
+        '}',
+        'export function other(): number {',
+        '  const pick =',
+        '    (x: number): number => x * 3;',
+        '  return pick(2);',
+        '}',
+      ].join('\n'),
+    );
+
+    expect(calls).toEqual([
+      'Function:m.ts:other -> Function:m.ts:other.pick@6:2',
+      'Function:m.ts:run -> Function:m.ts:run.pick@1:2',
+    ]);
+  });
+
   it('leaves top-level functions and ordinary methods unqualified', async () => {
     // The bound on id churn: only a callable nested inside another callable
     // gains a prefix. If this ever fails, the change is rewriting far more ids

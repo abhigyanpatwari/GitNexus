@@ -22,6 +22,7 @@ import type { ScopeResolutionIndexes } from '../../model/scope-resolution-indexe
 import { generateId } from '../../../../lib/utils.js';
 import {
   AMBIGUOUS_POSITION,
+  localNameKey,
   positionKey,
   qualifiedKey,
   simpleKey,
@@ -170,8 +171,22 @@ export function resolveDefGraphId(
     // callables on one line) falls through to the name-based keys below.
     const line = defStartLine(def.nodeId);
     if (line !== undefined && isOverloadableCallable(def.type)) {
-      const posHit = nodeLookup.get(positionKey(filePath, def.type, line - 1, simpleNameOf(qn)));
+      const simple = simpleNameOf(qn);
+      const posHit = nodeLookup.get(positionKey(filePath, def.type, line - 1, simple));
       if (posHit !== undefined && posHit !== AMBIGUOUS_POSITION) return posHit;
+      // FAIL CLOSED when a function-local of this name exists in the file (#2699
+      // follow-up). Falling through to the name keys would end at the label-agnostic,
+      // first-write-wins `simpleKey` below and alias this def onto whichever same-named
+      // callable was registered first — reproducibly minting a FALSE edge for a
+      // multiline `const pick =` (the declaration and its initializer land on different
+      // lines, so the position join misses). A missing edge is the correct failure
+      // direction for a graph whose consumers include `impact`; a fabricated caller is
+      // not. Gated on `localNameKey` so this ONLY fires where the collision is real —
+      // a file with no such local keeps its previous fallback behaviour, which is what
+      // preserves legitimate anchor differences such as a Vue SFC's `lineOffset`.
+      if (nodeLookup.get(localNameKey(filePath, def.type, simple)) !== undefined) {
+        return undefined;
+      }
     }
     // SFINAE / `requires`-clause disambiguation (issue #1579) — try the
     // constraint-fingerprinted key FIRST. Two function-template overloads
