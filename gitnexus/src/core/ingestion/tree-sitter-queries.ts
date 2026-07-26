@@ -342,6 +342,25 @@ export const TYPESCRIPT_QUERIES = `
 (public_field_definition
   name: (private_property_identifier) @name) @definition.property
 
+; Closure-valued class fields (#2693): \`handler = (x) => x\` is a CALLABLE
+; member, so it emits Method like every other closure binding rather than a
+; Property that CALLS edges would point at — a call target must be callable.
+; Kotlin already models its class-body closure this way (Method + HAS_METHOD).
+;
+; Note this diverges from tsc's SymbolFlags and SCIP's descriptor, which both
+; class an arrow-initialized field as a PROPERTY/term. That is deliberate: the
+; label here means "is a call target", not "is a tsc symbol kind", and #2687 set
+; that convention for closure bindings in every language. Anchored on
+; public_field_definition — the same node the property rules use — so the
+; parse-worker dedup collapses the pair (callable ranks highest).
+(public_field_definition
+  name: (property_identifier) @name
+  value: (arrow_function)) @definition.method
+
+(public_field_definition
+  name: (property_identifier) @name
+  value: (function_expression)) @definition.method
+
 ; Constructor parameter properties: constructor(public address: Address)
 (required_parameter
   (accessibility_modifier)
@@ -666,6 +685,16 @@ export const JAVASCRIPT_QUERIES = `
 ; Class fields — field_definition captures JS class fields (class User { address = ... })
 (field_definition
   property: (property_identifier) @name) @definition.property
+
+; Closure-valued class fields (#2693) — see the TypeScript block for why these
+; are Method rather than Property.
+(field_definition
+  property: (property_identifier) @name
+  value: (arrow_function)) @definition.method
+
+(field_definition
+  property: (property_identifier) @name
+  value: (function_expression)) @definition.method
 
 ; Write access: obj.field = value
 (assignment_expression

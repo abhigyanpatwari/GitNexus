@@ -116,6 +116,14 @@ describe('closure bindings emit a single Function node in every language', () =>
     ]);
   });
 
+  it('TypeScript: a NON-closure class field stays a Property', async () => {
+    // The closure rule must key on the initializer, not the field syntax —
+    // otherwise every class field would become a callable member.
+    expect(
+      await labelsFor('src/plain.ts', 'export class A {\n  address = "x";\n}\n', 'address'),
+    ).toEqual(['Property']);
+  });
+
   it('Python: an annotated attribute stays a Property, not a Variable', async () => {
     // Regression guard. Python matches BOTH `@definition.property` (annotated)
     // and `@definition.variable` (bare assignment) on the same statement at the
@@ -403,6 +411,32 @@ describeIfWorkerBuilt('closure bindings resolve in the remaining languages (#269
     );
 
     expect(targets).toEqual(['Function:b.php:handler']);
+  });
+
+  it('TypeScript: a class-field arrow is a callable member, like Kotlin', async () => {
+    // A CALLS edge must target a CALLABLE node. This field used to emit
+    // Property, so the edge pointed at a non-callable — the same defect class
+    // as the `var` case below. Kotlin already modelled its class-body closure
+    // as Method + HAS_METHOD.
+    //
+    // This diverges from tsc (PropertyDeclaration) and SCIP (a `.` term), both
+    // of which class an arrow-initialised field as a property. Deliberate: the
+    // label means "is a call target" here, not "is a tsc symbol kind".
+    const targets = await callTargetsFor(
+      'Box.ts',
+      'export class Box {\n  handler = (x: number) => x;\n  caller(): number { return this.handler(1); }\n}\n',
+    );
+
+    expect(targets).toEqual(['Method:Box.ts:Box.handler']);
+  });
+
+  it('JavaScript: a class-field arrow is a callable member', async () => {
+    const targets = await callTargetsFor(
+      'C.js',
+      'export class C {\n  handler = (x) => x;\n  caller() { return this.handler(1); }\n}\n',
+    );
+
+    expect(targets).toEqual(['Method:C.js:C.handler']);
   });
 
   it('JavaScript: a `var` closure binding is a Function, like const/let', async () => {
