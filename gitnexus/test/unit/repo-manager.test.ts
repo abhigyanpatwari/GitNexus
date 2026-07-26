@@ -28,6 +28,7 @@ import {
   listRegisteredRepos,
   resolveRegistryEntry,
   canonicalizePath,
+  registryPathEquals,
   cloneDirBelongsToEntry,
   assertSafeStoragePath,
   RegistryNameCollisionError,
@@ -707,6 +708,48 @@ describe('case-insensitive path comparison', () => {
     // On Unix, case matters
     expect(compareUnix('/home/user/Project', '/home/user/project')).toBe(false);
     expect(compareUnix('/home/user/project', '/home/user/project')).toBe(true);
+  });
+});
+
+// ─── Windows \\?\ extended-length prefix (#2667) ──────────────────────
+//
+// `canonicalizePath` is the single comparison key for the registry, MCP repo
+// resolution and the server repo routes, and `registryPathEquals` compares its
+// output as a plain string. A caller-supplied `\\?\` prefix therefore matched
+// nothing: `path.resolve` preserves the prefix, and the `catch` fallback returns
+// that resolved path untouched.
+//
+// These run only on windows-latest (the file is registered in
+// scripts/cross-platform-tests.ts): `\\?\` is a Win32 concept, and on POSIX the
+// same string is just an oddly-named relative file.
+describe('canonicalizePath vs the \\\\?\\ long-path prefix (#2667)', () => {
+  const isWindows = process.platform === 'win32';
+
+  // Realpath branch. libuv's fs__realpath_handle strips the prefix itself, so
+  // this documents the branch that was already safe.
+  it.skipIf(!isWindows)('drops the prefix for a path that exists on disk', async () => {
+    const dir = await fs.mkdtemp(path.join(os.tmpdir(), 'gn-longpath-'));
+    try {
+      const prefixed = canonicalizePath(`\\\\?\\${dir}`);
+
+      expect(prefixed.startsWith('\\\\?\\')).toBe(false);
+      expect(registryPathEquals(prefixed, canonicalizePath(dir))).toBe(true);
+    } finally {
+      await fs.rm(dir, { recursive: true, force: true });
+    }
+  });
+
+  // Catch fallback — the branch that actually leaked. `realpathSync.native`
+  // throws for a path that is not on disk (a registry entry rm'd externally, a
+  // `remove`/`clean` alias, an MCP `repo` argument for an unindexed path), so
+  // the resolved string is returned as-is and carried the prefix straight into
+  // the string compare.
+  it.skipIf(!isWindows)('drops the prefix for a path that does not exist', () => {
+    const missing = path.join(os.tmpdir(), 'gn-longpath-absent-2667', 'repo');
+    const prefixed = canonicalizePath(`\\\\?\\${missing}`);
+
+    expect(prefixed.startsWith('\\\\?\\')).toBe(false);
+    expect(registryPathEquals(prefixed, canonicalizePath(missing))).toBe(true);
   });
 });
 

@@ -43,6 +43,18 @@ export interface ExtensionCapability {
 export interface ExtensionEnsureOptions {
   policy?: ExtensionInstallPolicy;
   installTimeoutMs?: number;
+  /**
+   * Speculative probe: log an unavailable outcome at debug level instead of
+   * warn, and do not consume the once-per-(extension, reason) warn budget.
+   *
+   * Set only by callers that do NOT own the extension's lifecycle and know a
+   * later owner will retry with an install-capable policy — currently the
+   * writable `initLbug` pre-load, whose miss on a cold cache is expected and
+   * is fixed moments later by analyze Phase 3. Never set it on a path where
+   * the failure is the final answer (serve/MCP read paths), or a real
+   * degradation goes unreported.
+   */
+  quiet?: boolean;
 }
 
 export interface ExtensionManagerOptions {
@@ -230,9 +242,10 @@ export class ExtensionManager {
     const timeoutMs =
       opts.installTimeoutMs ?? this.options.installTimeoutMs ?? getExtensionInstallTimeoutMs();
     const warn = this.options.warn ?? ((msg: string) => logger.warn(msg));
+    const quiet = opts.quiet === true;
 
     if (policy === 'never') {
-      this.markUnavailable(name, label, 'extension install policy is "never"', warn);
+      this.markUnavailable(name, label, 'extension install policy is "never"', warn, quiet);
       return false;
     }
 
@@ -248,6 +261,7 @@ export class ExtensionManager {
         label,
         `load-only policy (no install attempted); LOAD ${name} failed: ${loadError}`,
         warn,
+        quiet,
       );
       return false;
     }
@@ -267,6 +281,7 @@ export class ExtensionManager {
         label,
         `${install.message}; LOAD ${name} had failed: ${loadError}`,
         warn,
+        quiet,
       );
       return false;
     }
@@ -282,6 +297,7 @@ export class ExtensionManager {
       label,
       `LOAD ${name} failed after successful INSTALL: ${retryError}`,
       warn,
+      quiet,
     );
     return false;
   }
@@ -316,6 +332,7 @@ export class ExtensionManager {
     label: string,
     reason: string,
     warn: (message: string) => void,
+    quiet = false,
   ): void {
     // Classify once here (the single load-failure sink, run per Database not per
     // request) so the hot per-request warning path does no file I/O (#2383 F3).
@@ -325,12 +342,17 @@ export class ExtensionManager {
       reason,
       diagnosis: diagnoseExtensionLoad(reason, label),
     });
+    const message = `GitNexus: ${label} extension unavailable; continuing without ${label} features. ${reason}`;
+    // A quiet probe must not register the dedup key: the owning caller may hit
+    // the identical reason later, and that one is the real degradation report.
+    if (quiet) {
+      logger.debug(message);
+      return;
+    }
     const key = `${name}:${reason}`;
     if (this.warnedKeys.has(key)) return;
     this.warnedKeys.add(key);
-    warn(
-      `GitNexus: ${label} extension unavailable; continuing without ${label} features. ${reason}`,
-    );
+    warn(message);
   }
 }
 
