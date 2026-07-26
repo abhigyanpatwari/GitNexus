@@ -55,6 +55,10 @@ import type { ParseWorkerResult } from '../core/ingestion/workers/parse-worker.j
 // the main thread (the #1983 OOM). Because the two stores share this version,
 // any future change to the `ParsedFile` serialization shape MUST bump
 // SCHEMA_BUMP so both invalidate in lockstep.
+// v26: the enclosing-callable walk stops at class bodies and anonymous-class
+// construction sites (#2699 follow-up); a v25 cache replays worker results carrying the
+// wrong Java anonymous-class ids. Cached results are replayed verbatim — including
+// across `--force` — so without this bump a warm cache keeps serving them.
 // v25: function-local callables are qualified by their enclosing-callable chain
 // plus their own position, and JS/TS gain block scopes (#2699). Both the node
 // ids AND the scope tree in a cached worker result are therefore stale. Cached
@@ -93,7 +97,7 @@ import type { ParseWorkerResult } from '../core/ingestion/workers/parse-worker.j
 // JLS 13.1 immediate-host chains (#2555).
 // v18: Worker$N anonymous bodies. v17: callable-value-flow operand identity.
 // v16: direct callee identity.
-const SCHEMA_BUMP = 25;
+const SCHEMA_BUMP = 26;
 const GITNEXUS_PKG_VERSION = (() => {
   try {
     // package.json sits at gitnexus/package.json — two levels up from

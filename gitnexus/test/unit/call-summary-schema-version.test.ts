@@ -73,8 +73,8 @@ describe('CALL_SUMMARY relation-type exclusion (U-C1)', () => {
 });
 
 describe('CALL_SUMMARY incremental reuse gate (U-C5)', () => {
-  it('INCREMENTAL_SCHEMA_VERSION is bumped to 18 (function-local node identity, #2699)', () => {
-    expect(INCREMENTAL_SCHEMA_VERSION).toBe(18);
+  it('INCREMENTAL_SCHEMA_VERSION is bumped to 19 (class-body boundary fix, #2699)', () => {
+    expect(INCREMENTAL_SCHEMA_VERSION).toBe(19);
   });
 
   it('a pre-current stamp fails the `=== INCREMENTAL_SCHEMA_VERSION` reuse gate → forces full re-analyze', () => {
@@ -146,7 +146,11 @@ describe('CALL_SUMMARY incremental reuse gate (U-C5)', () => {
     // shares a node id with a same-named file-level one, and the incremental
     // write set would mix old and new ids → must NOT reuse.
     expect(passesReuseGate(17)).toBe(false);
+    // A pre-v19 (v18) index holds the WRONG Java anonymous-class ids — v18 bounded the
+    // enclosing-callable walk on class DECLARATIONS only, so `Worker$1.run` was re-keyed
+    // as `Worker.makeHandler.run@7:12`. Reusing it would keep those on unchanged files.
+    expect(passesReuseGate(18)).toBe(false);
     // A current-version stamp passes the gate (incremental top-up eligible).
-    expect(passesReuseGate(18)).toBe(true);
+    expect(passesReuseGate(19)).toBe(true);
   });
 });

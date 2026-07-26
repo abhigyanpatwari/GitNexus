@@ -790,17 +790,56 @@ function getMethodInfo(
 const localIdentity = (node: SyntaxNode, name: string): string =>
   `${name}@${node.startPosition.row}:${node.startPosition.column}`;
 
+/**
+ * Boundary for the enclosing-callable walk (#2699).
+ *
+ * `CLASS_CONTAINER_TYPES` lists class DECLARATIONS only. A class can also own
+ * members without any declaration node — Java anonymous classes
+ * (`object_creation_expression > class_body`), enum-constant bodies, and
+ * interface/annotation bodies — and those owners must still stop the walk, or a
+ * member of one gets re-keyed as a function-local of the surrounding method.
+ *
+ * (The dead `NO_QUALIFIED_NAME` sentinel that used to sit below this — which also
+ * contained a literal NUL byte — was removed; the cache is two-state: absent =
+ * not yet computed, any string = computed.)
+ */
+const CALLABLE_PREFIX_BOUNDARY_TYPES: ReadonlySet<string> = new Set<string>([
+  ...CLASS_CONTAINER_TYPES,
+  // Class bodies (Java, JS/TS, Kotlin) — the owner when the declaration is
+  // anonymous or the grammar nests members under a body node.
+  'class_body',
+  'interface_body',
+  'annotation_type_body',
+  'enum_body',
+  'enum_body_declarations',
+  'enum_constant',
+  // Anonymous-class construction sites.
+  'object_creation_expression', // Java: new Runnable() { ... }
+  'object_literal', // Kotlin: object : Runnable { ... }
+  'anonymous_object_creation_expression', // C#
+]);
+
 const enclosingCallablePrefix = (
   node: SyntaxNode,
   filePath: string,
   provider: LanguageProvider,
 ): string | undefined => {
-  // Boundary on class containers: a method's enclosing scope is its CLASS, not
-  // whatever function the class expression happens to sit in.
+  // Boundary on class-likes: a method's owner is its CLASS, not whatever
+  // function that class happens to sit inside. `CLASS_CONTAINER_TYPES` alone is
+  // NOT enough for that — it lists only DECLARATION nodes, and an anonymous or
+  // body-form class has none. A Java anonymous class is
+  // `object_creation_expression > class_body > method_declaration` with no
+  // `class_declaration` anywhere, so the walk sailed straight through it to the
+  // enclosing method and re-keyed `Worker$1.run` as `Worker.makeHandler.run@7:12`,
+  // destroying the javac-compatible JLS identity of #2550/#2555/#2562 (4 existing
+  // Java tests). Adding the body/anonymous forms restores the boundary.
+  //
+  // Over-inclusion here is the SAFE direction: an extra boundary only suppresses
+  // the nesting prefix, which falls back to the pre-#2699 class qualification.
   const fnNode = findAncestorBeforeBoundary(
     node,
     LOCAL_SCOPE_BODY_NODE_TYPES,
-    CLASS_CONTAINER_TYPES,
+    CALLABLE_PREFIX_BOUNDARY_TYPES,
   );
   if (fnNode === null) return undefined;
   return callableOwnQualifiedName(fnNode, filePath, provider);
@@ -856,7 +895,6 @@ const callableOwnQualifiedName = (
 };
 
 /** Sentinel distinguishing "computed, anonymous" from "not yet computed". */
-const NO_QUALIFIED_NAME = ' anonymous';
 const callableQualifiedNameCache = new WeakMap<SyntaxNode, string>();
 
 /** Walk up AST to find enclosing function, return its generateId or null for top-level.

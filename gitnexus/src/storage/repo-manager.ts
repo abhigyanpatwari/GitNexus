@@ -510,8 +510,16 @@ export interface RepoMeta {
  * which node a local call resolves to. An incremental top-up would leave
  * unchanged files pointing at the old ids while changed files emit the new
  * ones, splitting each symbol in two; force a full re-analyze instead.
+ * v19: the enclosing-callable walk now stops at class BODIES and anonymous-class
+ * construction sites, not only at class DECLARATIONS (#2699 follow-up). v18 shipped
+ * with `CLASS_CONTAINER_TYPES` as the only boundary, which lists no node for a Java
+ * anonymous class (`object_creation_expression > class_body`), so the walk reached the
+ * enclosing method and re-keyed `Worker$1.run` as `Worker.makeHandler.run@7:12` —
+ * destroying the javac-compatible JLS identity of #2550/#2555/#2562. An index stamped
+ * v18 therefore holds WRONG Java ids, and without this bump it passes the reuse gate
+ * and keeps them on every unchanged file; force a full re-analyze instead.
  */
-export const INCREMENTAL_SCHEMA_VERSION = 18;
+export const INCREMENTAL_SCHEMA_VERSION = 19;
 
 export interface IndexedRepo {
   repoPath: string;
