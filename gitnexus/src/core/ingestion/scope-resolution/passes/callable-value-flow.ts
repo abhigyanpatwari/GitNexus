@@ -800,6 +800,15 @@ export function buildGraphTargetIndex(
 }
 
 /**
+ * Leading sigils are part of a name in some grammars and stripped in others:
+ * PHP keeps `$` on a variable_name node (deliberately — it is what separates
+ * PHP's variable and function namespaces, so `$save` does not collide with
+ * `save()`), while the scope layer and the callable-flow synthesizer both
+ * normalise it away. The positional join has to see both sides the same way.
+ */
+const withoutSigil = (name: string): string => name.replace(/^[$@]+/, '');
+
+/**
  * `file\0line\0name` for a value binding, matching the callable-node key built
  * in `buildGraphCallableIndexes`. Definition lines come from the def id and are
  * 1-based; graph `startLine` is 0-based, which is the `+ 1` there.
@@ -809,7 +818,7 @@ function valueBindingPositionKey(def: SymbolDefinition): string | undefined {
   const line = def.nodeId.match(/#(\d+):(\d+):/)?.[1];
   const name = simpleQualifiedName(def);
   if (line === undefined || name === undefined) return undefined;
-  return `${def.filePath}\0${line}\0${name}`;
+  return `${def.filePath}\0${line}\0${withoutSigil(name)}`;
 }
 
 /**
@@ -980,7 +989,7 @@ function buildGraphCallableIndexes(graph: KnowledgeGraph): GraphCallableIndexes 
       continue;
     }
     const oneBasedLine = zeroBasedLine + 1;
-    const positionKey = `${filePath}\0${oneBasedLine}\0${name}`;
+    const positionKey = `${filePath}\0${oneBasedLine}\0${withoutSigil(name)}`;
     const existing = callableByPosition.get(positionKey);
     // First wins would be order-dependent; mark the collision instead so an
     // ambiguous position admits nothing rather than something arbitrary.

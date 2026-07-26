@@ -1429,11 +1429,19 @@ export const PHP_QUERIES = `
 ; line and name), which is what makes $handler(1) resolve. Overlap with the value
 ; rules above is collapsed by the parse-worker dedup, which ranks callable
 ; highest (#2687).
+; Captures the whole variable_name, so the node keeps PHP's \`$\` sigil. That is
+; not cosmetic: PHP holds variables and functions in SEPARATE namespaces, so
+; \`$save\` and \`save()\` can never collide in the language — but dropping the
+; sigil made both mint the id Function:<file>:save, and the local closure was
+; swallowed by the function's node (no node, therefore no edge). The property
+; rules in languages/php/query.ts already keep the sigil for the same reason.
+; The positional join normalises leading sigils, so the binding still matches
+; its own declaration.
 (assignment_expression
-  left: (variable_name (name) @name)
+  left: (variable_name) @name
   right: (arrow_function)) @definition.function
 (assignment_expression
-  left: (variable_name (name) @name)
+  left: (variable_name) @name
   right: (anonymous_function)) @definition.function
 `;
 

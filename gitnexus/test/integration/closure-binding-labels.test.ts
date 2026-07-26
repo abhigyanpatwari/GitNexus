@@ -400,7 +400,7 @@ describeIfWorkerBuilt('closure bindings resolve in the remaining languages (#269
         'function caller() {\n  global $handler;\n  return $handler(1);\n}\n',
     );
 
-    expect(targets).toEqual(['Function:a.php:handler']);
+    expect(targets).toEqual(['Function:a.php:$handler']);
   });
 
   it('PHP: an anonymous function binding resolves too', async () => {
@@ -410,7 +410,7 @@ describeIfWorkerBuilt('closure bindings resolve in the remaining languages (#269
         'function caller() {\n  global $handler;\n  return $handler(1);\n}\n',
     );
 
-    expect(targets).toEqual(['Function:b.php:handler']);
+    expect(targets).toEqual(['Function:b.php:$handler']);
   });
 
   it('TypeScript: a class-field arrow is a callable member, like Kotlin', async () => {
@@ -437,6 +437,30 @@ describeIfWorkerBuilt('closure bindings resolve in the remaining languages (#269
     );
 
     expect(targets).toEqual(['Method:C.js:C.handler']);
+  });
+
+  it('PHP: a local closure sharing a name with a function resolves to the CLOSURE', async () => {
+    // PHP keeps variables and functions in SEPARATE namespaces, so `$save` and
+    // `save()` cannot collide in the language. Dropping the `$` made both mint
+    // Function:<file>:save, so the closure was swallowed by the function's node
+    // and the call got NO edge at all. Keeping the sigil restores PHP's own
+    // separation; the positional join normalises it when matching.
+    const targets = await callTargetsFor(
+      'c.php',
+      '<?php\nfunction save($x) { return $x; }\n' +
+        'function run() {\n  $save = fn($x) => $x * 2;\n  return $save(1);\n}\n',
+    );
+
+    expect(targets).toEqual(['Function:c.php:$save']);
+  });
+
+  it('PHP: calling the real function still resolves to the function', async () => {
+    const targets = await callTargetsFor(
+      'f.php',
+      '<?php\nfunction save($x) { return $x; }\nfunction run() { return save(1); }\n',
+    );
+
+    expect(targets).toEqual(['Function:f.php:save']);
   });
 
   it('JavaScript: a `var` closure binding is a Function, like const/let', async () => {
