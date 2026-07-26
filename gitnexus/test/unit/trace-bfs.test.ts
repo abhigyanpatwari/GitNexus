@@ -201,6 +201,19 @@ describe('trace: dispatch', () => {
     expect(result.role).toBe('to');
     expect(result.candidates).toHaveLength(2);
   });
+
+  it('accepts file as an MCP alias for from_file', async () => {
+    (executeParameterized as any).mockImplementation(
+      makeResolveMock([SYMBOL_A], [SYMBOL_B], { [SYMBOL_A.id]: [] }),
+    );
+
+    await backend.callTool('trace', { from: 'A', to: 'B', file: 'src/a.ts' });
+
+    expect((executeParameterized as any).mock.calls[0][2]).toMatchObject({
+      symName: 'A',
+      filePath: 'src/a.ts',
+    });
+  });
 });
 
 // ─── Group 2: BFS Core ──────────────────────────────────────────────

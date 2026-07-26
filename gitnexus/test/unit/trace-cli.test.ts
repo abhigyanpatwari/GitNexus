@@ -72,6 +72,31 @@ describe('CLI trace command', () => {
     );
   });
 
+  it('forwards -f/--file as the source file hint', async () => {
+    await traceCommand('A', 'B', {
+      file: 'src/a.ts',
+    });
+
+    expect(callTool).toHaveBeenCalledWith(
+      'trace',
+      expect.objectContaining({
+        from_file: 'src/a.ts',
+      }),
+    );
+  });
+
+  it('exits with usage when --file and --from-file disagree', async () => {
+    const exitSpy = vi.spyOn(process, 'exit').mockImplementation(() => {
+      throw new Error('process.exit');
+    });
+    await expect(
+      traceCommand('A', 'B', { file: 'src/a.ts', fromFile: 'src/other.ts' }),
+    ).rejects.toThrow('process.exit');
+    expect(exitSpy).toHaveBeenCalledWith(1);
+    expect(callTool).not.toHaveBeenCalled();
+    exitSpy.mockRestore();
+  });
+
   it('forwards --depth as maxDepth', async () => {
     await traceCommand('A', 'B', { depth: '5' });
 

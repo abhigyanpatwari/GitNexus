@@ -60,7 +60,7 @@ export const en = {
   'tool.usage.impact':
     'Usage: gitnexus impact <symbol_name> [--uid <uid>] [--file <path>] [--kind <kind>] [--direction upstream|downstream]',
   'tool.usage.trace':
-    'Usage: gitnexus trace <from> <to> [--from-uid <uid>] [--to-uid <uid>] [--depth <n>]',
+    'Usage: gitnexus trace <from> <to> [-f|--file <path>] [--from-file <path>] [--to-file <path>] [--from-uid <uid>] [--to-uid <uid>] [--depth <n>]',
   'tool.usage.cypher': 'Usage: gitnexus cypher <cypher_query>',
   'tool.warn.unknownKind':
     "--kind '{{kind}}' is not a known symbol kind (e.g. Function, Class, Method); it will not narrow the result.",
