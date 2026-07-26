@@ -55,6 +55,11 @@ import type { ParseWorkerResult } from '../core/ingestion/workers/parse-worker.j
 // the main thread (the #1983 OOM). Because the two stores share this version,
 // any future change to the `ParsedFile` serialization shape MUST bump
 // SCHEMA_BUMP so both invalidate in lockstep.
+// v24: function scopes carry `Scope.ownsReceivers`, marking the JS/TS forms
+// that bind their own `this` (#2701). The flag lives on the cached `Scope`, so
+// without this bump a warm cache replays scopes that lack it and every `this`
+// inside an ordinary `function` keeps resolving to the enclosing class —
+// verified by probe: `--force` alone does NOT re-derive it.
 // v23: closure bindings emit callable nodes in Dart, Ruby, Java, C# and PHP
 // (plus JS/TS `var`), and Dart/PHP gain the scope declarations and flow
 // captures their forms were missing (#2693). Cached worker results are replayed
@@ -83,7 +88,7 @@ import type { ParseWorkerResult } from '../core/ingestion/workers/parse-worker.j
 // JLS 13.1 immediate-host chains (#2555).
 // v18: Worker$N anonymous bodies. v17: callable-value-flow operand identity.
 // v16: direct callee identity.
-const SCHEMA_BUMP = 23;
+const SCHEMA_BUMP = 24;
 const GITNEXUS_PKG_VERSION = (() => {
   try {
     // package.json sits at gitnexus/package.json — two levels up from

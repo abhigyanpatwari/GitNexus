@@ -67,11 +67,16 @@ const JAVASCRIPT_SCOPE_QUERY = `
 (class_declaration) @scope.class
 (class) @scope.class
 
-(function_declaration) @scope.function
-(generator_function_declaration) @scope.function
-(function_expression) @scope.function
+;; \`@receiver-owner.this\` — see the matching block in typescript/query.ts
+;; (#2701). Every function form except \`arrow_function\` binds its own \`this\`.
+(function_declaration) @scope.function @receiver-owner.this
+(generator_function_declaration) @scope.function @receiver-owner.this
+(function_expression) @scope.function @receiver-owner.this
+;; \`function*(){}\` as an EXPRESSION. Absent from this list before #2701, so it
+;; was not a scope at all and \`this\` inside one read as the enclosing method's.
+(generator_function) @scope.function @receiver-owner.this
 (arrow_function) @scope.function
-(method_definition) @scope.function
+(method_definition) @scope.function @receiver-owner.this
 
 ;; Object literals get their own scope boundary -- see the matching
 ;; comment in typescript/query.ts (#2545/#2551). Prevents a

@@ -494,8 +494,14 @@ export interface RepoMeta {
  * JS/TS `var f = () => {}`). The incremental write set only covers changed
  * files, so unchanged files would keep reporting a zero blast radius for those
  * symbols; force a full re-analyze instead.
+ * v17: `this` inside a JS/TS ordinary `function` no longer resolves to the
+ * lexically enclosing class (#2701). This REMOVES `CALLS`/`ACCESSES` edges —
+ * including ones that are correct at runtime via `.bind(this)`, `.call`, or a
+ * `forEach` thisArg, which the graph does not model. The incremental write set
+ * only covers changed files, so every unchanged TS/JS file would keep its
+ * fabricated `this` edges; force a full re-analyze instead.
  */
-export const INCREMENTAL_SCHEMA_VERSION = 16;
+export const INCREMENTAL_SCHEMA_VERSION = 17;
 
 export interface IndexedRepo {
   repoPath: string;

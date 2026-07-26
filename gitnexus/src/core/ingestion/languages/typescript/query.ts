@@ -94,14 +94,26 @@ const TYPESCRIPT_SCOPE_QUERY = `
 ;; class expressions omit it); ScopeExtractor tolerates missing names.
 (class) @scope.class
 
-(function_declaration) @scope.function
-(generator_function_declaration) @scope.function
-(function_signature) @scope.function
-(method_definition) @scope.function
-(method_signature) @scope.function
-(abstract_method_signature) @scope.function
+;; \`@receiver-owner.this\` marks a scope that BINDS its own \`this\` rather
+;; than inheriting one (#2701) — see \`Scope.ownsReceivers\`. Every function
+;; form except \`arrow_function\` carries it: ECMA-262 gives an arrow
+;; \`[[ThisMode]] = lexical\` (no \`this\` in its environment record, so the
+;; lookup passes through), while every other form binds \`this\` at call time.
+;; \`method_definition\` is marked too and is unaffected — it also carries a
+;; synthesized \`this\` typeBinding, which the walk consults first.
+;; The marker rides on the same node as \`@scope.function\`; it is outside the
+;; \`@scope.\` namespace so \`anchorCaptureFor\` cannot mistake it for the anchor.
+(function_declaration) @scope.function @receiver-owner.this
+(generator_function_declaration) @scope.function @receiver-owner.this
+(function_signature) @scope.function @receiver-owner.this
+(method_definition) @scope.function @receiver-owner.this
+(method_signature) @scope.function @receiver-owner.this
+(abstract_method_signature) @scope.function @receiver-owner.this
 (arrow_function) @scope.function
-(function_expression) @scope.function
+(function_expression) @scope.function @receiver-owner.this
+;; \`function*(){}\` as an EXPRESSION. Absent from this list before #2701, so it
+;; was not a scope at all and \`this\` inside one read as the enclosing method's.
+(generator_function) @scope.function @receiver-owner.this
 
 ;; Object literals (the { ... } value expression, NOT object_type or
 ;; object_pattern) get their own scope boundary. Without it, a

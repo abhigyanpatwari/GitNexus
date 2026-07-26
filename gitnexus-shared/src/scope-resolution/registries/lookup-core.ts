@@ -326,6 +326,12 @@ function lookupReceiverType(
       // intentionally do NOT re-implement a simple-name fallback here.
       return undefined;
     }
+    // The scope binds this receiver itself but carries no type for it — a
+    // JS/TS ordinary `function` whose `this` is bound at call time, not the
+    // enclosing instance (#2701). Stop rather than borrowing an enclosing
+    // scope's binding; see `Scope.ownsReceivers`. Mirrors the same gate in
+    // the ingestion-side twin of this walk, `findReceiverTypeBinding`.
+    if (scope.ownsReceivers?.has(receiverName) === true) return undefined;
     currentId = scope.parent;
   }
   return undefined;

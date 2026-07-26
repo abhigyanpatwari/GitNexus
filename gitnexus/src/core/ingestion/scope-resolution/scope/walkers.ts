@@ -179,7 +179,54 @@ export function isClassLike(t: string): boolean {
  * Walk the scope chain from `startScope` looking for a typeBinding
  * named `receiverName`. Returns the TypeRef or undefined if no binding
  * exists in the chain.
+ *
+ * A scope that declares `ownsReceivers.has(receiverName)` terminates the
+ * walk with `undefined` (#2701): it binds that receiver itself, so an
+ * enclosing scope's binding is not visible through it. The check runs
+ * AFTER this scope's own `typeBindings`, so a scope that both owns and
+ * binds the receiver — a class method, which is where `this` is bound TO
+ * the class — still resolves normally. The namespace/global fallbacks
+ * below are also skipped: they answer "which type is named X", which is a
+ * different question from "what is this scope's receiver", and reaching
+ * them for an owned-but-unbound receiver is how a static method or a
+ * detached callback acquires a fabricated one.
  */
+/**
+ * True when `receiverName` is DEFINITIVELY unresolvable at `startScope`:
+ * a scope on the chain declares it owns that receiver (`Scope.ownsReceivers`)
+ * and carries no type binding for it (#2701).
+ *
+ * This is a stronger statement than `findReceiverTypeBinding` returning
+ * `undefined`, which only means "no type found" — an ordinary miss that later
+ * passes are free to resolve by other means. Here the language has said the
+ * receiver is REBOUND at this scope, so no enclosing type can be its type:
+ * `this.m()` inside a nested JS/TS `function` is a call on whatever the
+ * function is invoked with, which the graph does not model. A member call
+ * whose receiver is unresolvable in this sense must be suppressed rather
+ * than left to the receiver-blind lexical fallback in `lookupCore`, which
+ * would find the enclosing class's member by name alone.
+ *
+ * Returns false for every language that leaves `ownsReceivers` unset.
+ */
+export function isReceiverOwnedButUnbound(
+  startScope: ScopeId,
+  receiverName: string,
+  scopes: ScopeResolutionIndexes,
+): boolean {
+  let currentId: ScopeId | null = startScope;
+  const visited = new Set<ScopeId>();
+  while (currentId !== null) {
+    if (visited.has(currentId)) return false;
+    visited.add(currentId);
+    const scope = scopes.scopeTree.getScope(currentId);
+    if (scope === undefined) return false;
+    if (scope.typeBindings.has(receiverName)) return false;
+    if (scope.ownsReceivers?.has(receiverName) === true) return true;
+    currentId = scope.parent;
+  }
+  return false;
+}
+
 export function findReceiverTypeBinding(
   startScope: ScopeId,
   receiverName: string,
@@ -195,6 +242,7 @@ export function findReceiverTypeBinding(
     if (scope === undefined) return undefined;
     const typeRef = scope.typeBindings.get(receiverName);
     if (typeRef !== undefined) return typeRef;
+    if (scope.ownsReceivers?.has(receiverName) === true) return undefined;
     if (scope.kind === 'Module') moduleScopeId = currentId;
     currentId = scope.parent;
   }
