@@ -111,7 +111,7 @@
     "_added": "#2562 performance follow-up: co-scales same-host, same-name local classes and anonymous classes to gate JLS binary-name ordinal allocation. Precomputed per-sequence ordinals reduce the focused 100->800 workload from 176->6655ms to 141->752ms; normalized 250->800 scaling is 1.054."
   },
   "typescript": {
-    "fingerprint": "3280b13d3f9378ab23eee31c2edc779b5a9ae1e7bb510c23a24855b44406d2f4",
+    "fingerprint": "281e95484203b481094729ca249ef0423c41273eac35e424cdfd032a0dac7699",
     "scaling_budget": 1.5,
     "_rebaselined_callable_flow_2522_review": "PR #2522 review hardening: callable operands retain expression/qualified identity and formals retain signature metadata. Prior 27f937bfb47d4bded316ea3c785ff659c8cd88a5761d928f113477a08c802c78 -> e05446620c5b80b7aae291cfdf32f693580fada2ae687124769b04a0c03bfe63; scaling 0.983 < 1.5.",
     "_rebaselined_callable_flow_2522_followup": "PR #2522 follow-up: lexical callable bindings, direct-callee argument metadata, and invocation-result suppression. Prior db5933cc6760234ed7d495123410feba6de243646d583f20d43032b9459f81fd -> 27f937bfb47d4bded316ea3c785ff659c8cd88a5761d928f113477a08c802c78; scaling 0.975 < 1.5.",
@@ -119,10 +119,11 @@
     "_rebaselined": "#1962: F44 (class scope@), F85 (enum member declarations), F87 (optional_parameter type annotations) add new captures \u2014 fingerprint drift expected.",
     "_note": "#1968: F44, F85, F87 \u2014 fingerprint drift expected.",
     "_rebaselined_2522": "#2522 intentional @reference.value-ref/property-key capture additions. GitHub Actions run 29553361660 job 87800394279: prior 3f44a4a6892698df2d145c8ff2812c3b318807648983c88aca28fbd694f172f9 -> 25de86fd3377132c4e35d3d98f4f94a58e0cfeb7c22948a8ea3be4e793be74fd; scaling ratio 0.987 < 1.5.",
-    "_rebaselined_2550_instance_model": "PR #2549 (#2545/#2551): object literals emit @scope.object (was unscoped, then @scope.block during development). Prior e05446620c5b80b7aae291cfdf32f693580fada2ae687124769b04a0c03bfe63 -> 3280b13d3f9378ab23eee31c2edc779b5a9ae1e7bb510c23a24855b44406d2f4; scaling 0.981 < 1.5."
+    "_rebaselined_2550_instance_model": "PR #2549 (#2545/#2551): object literals emit @scope.object (was unscoped, then @scope.block during development). Prior e05446620c5b80b7aae291cfdf32f693580fada2ae687124769b04a0c03bfe63 -> 3280b13d3f9378ab23eee31c2edc779b5a9ae1e7bb510c23a24855b44406d2f4; scaling 0.981 < 1.5.",
+    "_rebaselined_receiver_owner_2701": "#2701: every non-arrow function form now carries a `@receiver-owner.this` marker on the same node as `@scope.function`, so a scope that BINDS its own `this` can stop the receiver walk (`Scope.ownsReceivers`). Verified before re-baselining by diffing the capture-name histogram over this same fixture corpus against 1d3088173f6f93827641b476d614d5d15cd4f3ea: the ONLY delta is @receiver-owner.this (typescript +143, javascript +32) \u2014 every other capture count is byte-identical, so no existing capture moved. Prior 3280b13d3f9378ab23eee31c2edc779b5a9ae1e7bb510c23a24855b44406d2f4 -> 281e95484203b481094729ca249ef0423c41273eac35e424cdfd032a0dac7699."
   },
   "javascript": {
-    "fingerprint": "f1ccf42a36895c8e34dcb724286f247d469835f2dcbb23ad3347190adc7fde1c",
+    "fingerprint": "90601494695b834d3a9af7ac4844eac603f4f432809a05554cc59de0674a4354",
     "scaling_budget": 1.5,
     "_rebaselined_callable_flow_2522_review": "PR #2522 review hardening: callable operands retain expression/qualified identity and formals retain signature metadata. Prior b59fe8135b6a31a12bc3f872b224054b16592588153ae3661d03958d787c76f3 -> 479927409bbdd9852a36172c8260aa56df260e99129a7a9c20a0d1903dd5538b; scaling 1.050 < 1.5.",
     "_rebaselined_callable_flow_2522_followup": "PR #2522 follow-up: lexical callable bindings, direct-callee argument metadata, and invocation-result suppression. Prior 917a9cd975ba035bdad71fdb70cd72eeddec58c25797e5a1addfa6172808a55c -> b59fe8135b6a31a12bc3f872b224054b16592588153ae3661d03958d787c76f3; scaling 1.093 < 1.5.",
@@ -130,7 +131,8 @@
     "_added": "#1951: bench coverage added (was ungated); scale source heritage-bearing (extends Base); js/kotlin O(n^2) findNodeAtRange-per-match fixed to threaded captured node, now linear.",
     "_rebaselined": "#1956 synth-widening: + javascript-qualified-base fixture; synthesizeJsInheritanceReferences now handles a member_expression base (class S extends ns.Base -> Base), matching the #1940 legacy leg + the TS terminalTsTypeNameNode property_identifier case, at parity. Linear (~1.05). | #942: scope-resolution-only cleanup reworded fixture comments; capture byte-positions shift, capture LOGIC unchanged.",
     "_rebaselined_2522": "#2522 intentional @reference.value-ref/property-key capture additions. GitHub Actions run 29553361660 job 87800394279: prior d72f03c6c502235d2d4b74d66baa5c7d361f040d7a1b72e84acad61210d05ae8 -> 5567dd47e7ba29821a518c4a9852adc3b774e25ef3e7a6e2b3ecb7b59ddab73c; scaling ratio 1.031 < 1.5.",
-    "_rebaselined_2550_instance_model": "PR #2549 (#2545/#2551): object literals emit @scope.object. Prior 479927409bbdd9852a36172c8260aa56df260e99129a7a9c20a0d1903dd5538b -> f1ccf42a36895c8e34dcb724286f247d469835f2dcbb23ad3347190adc7fde1c; scaling 1.096 < 1.5."
+    "_rebaselined_2550_instance_model": "PR #2549 (#2545/#2551): object literals emit @scope.object. Prior 479927409bbdd9852a36172c8260aa56df260e99129a7a9c20a0d1903dd5538b -> f1ccf42a36895c8e34dcb724286f247d469835f2dcbb23ad3347190adc7fde1c; scaling 1.096 < 1.5.",
+    "_rebaselined_receiver_owner_2701": "#2701: every non-arrow function form now carries a `@receiver-owner.this` marker on the same node as `@scope.function`, so a scope that BINDS its own `this` can stop the receiver walk (`Scope.ownsReceivers`). Verified before re-baselining by diffing the capture-name histogram over this same fixture corpus against 1d3088173f6f93827641b476d614d5d15cd4f3ea: the ONLY delta is @receiver-owner.this (typescript +143, javascript +32) \u2014 every other capture count is byte-identical, so no existing capture moved. Prior f1ccf42a36895c8e34dcb724286f247d469835f2dcbb23ad3347190adc7fde1c -> 90601494695b834d3a9af7ac4844eac603f4f432809a05554cc59de0674a4354."
   },
   "kotlin": {
     "fingerprint": "9f159f8810d342ef1c821f466efd6920dad9a190f06000056e6cd2815861b195",
