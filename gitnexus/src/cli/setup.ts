@@ -1031,6 +1031,23 @@ export const RENAMED_SKILL_DIRS: Readonly<Record<string, readonly string[]>> = {
  */
 export const LEGACY_SKILL_DIR_NAMES: readonly string[] = Object.values(RENAMED_SKILL_DIRS).flat();
 
+/** Legacy skill dirs found during this run, keyed `oldName|newName` — flushed
+ *  as one grouped notice per rename by {@link flushSkillRenameNotices}. */
+const pendingSkillRenameNotices = new Map<string, string[]>();
+
+/** Print the collected rename leftovers (one line per rename, all target
+ *  paths grouped) and reset the collector. */
+export function flushSkillRenameNotices(): void {
+  for (const [key, paths] of pendingSkillRenameNotices) {
+    const [oldName, skillName] = key.split('|');
+    console.log(
+      `  Note: skill "${oldName}" was renamed to "${skillName}". Left in place ` +
+        `(delete manually if you have not customized them): ${paths.join(', ')}`,
+    );
+  }
+  pendingSkillRenameNotices.clear();
+}
+
 /**
  * Install GitNexus skills to a target directory.
  * Each skill is installed as {targetDir}/gitnexus-{skillName}/SKILL.md
@@ -1102,14 +1119,16 @@ async function installSkillsTo(targetDir: string): Promise<string[]> {
       // A directory superseded by a shipped rename is warned about, never
       // deleted: the installer cannot prove it owns the contents (users
       // customize installed skills or hand-write their own under these
-      // names), so an upgrade must not destroy data.
+      // names), so an upgrade must not destroy data. Collected instead of
+      // printed here so a multi-tool setup emits one grouped notice per
+      // rename, not one line per target directory.
       for (const oldName of RENAMED_SKILL_DIRS[skillName] ?? []) {
         const legacyDir = path.join(targetDir, oldName);
         if (await dirExists(legacyDir)) {
-          console.log(
-            `[gitnexus] skill "${oldName}" was renamed to "${skillName}"; ` +
-              `left ${legacyDir} in place — delete it manually if you have not customized it.`,
-          );
+          const key = `${oldName}|${skillName}`;
+          const paths = pendingSkillRenameNotices.get(key) ?? [];
+          paths.push(legacyDir);
+          pendingSkillRenameNotices.set(key, paths);
         }
       }
       installed.push(skillName);
@@ -1266,6 +1285,8 @@ export const setupCommand = async (options?: { codingAgent?: string[] | string }
       console.log(`    ! ${err}`);
     }
   }
+
+  flushSkillRenameNotices();
 
   console.log('');
   console.log('  Summary:');
