@@ -500,8 +500,18 @@ export interface RepoMeta {
  * `forEach` thisArg, which the graph does not model. The incremental write set
  * only covers changed files, so every unchanged TS/JS file would keep its
  * fabricated `this` edges; force a full re-analyze instead.
+ * v18: function-local callables carry their enclosing-callable chain plus their
+ * own position, so a local closure no longer shares a node id with a same-named
+ * file-level function (#2699) — `Function:f.ts:save` ->
+ * `Function:f.ts:run.save@2:2`. JavaScript/TypeScript also gain block scopes
+ * (`statement_block`), without which two `const` of one name in sibling blocks
+ * stay indistinguishable to the resolver and each call resolves to BOTH. This
+ * CHANGES PERSISTED NODE IDS for every function-local callable and changes
+ * which node a local call resolves to. An incremental top-up would leave
+ * unchanged files pointing at the old ids while changed files emit the new
+ * ones, splitting each symbol in two; force a full re-analyze instead.
  */
-export const INCREMENTAL_SCHEMA_VERSION = 17;
+export const INCREMENTAL_SCHEMA_VERSION = 18;
 
 export interface IndexedRepo {
   repoPath: string;

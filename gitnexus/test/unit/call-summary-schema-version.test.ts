@@ -73,8 +73,8 @@ describe('CALL_SUMMARY relation-type exclusion (U-C1)', () => {
 });
 
 describe('CALL_SUMMARY incremental reuse gate (U-C5)', () => {
-  it('INCREMENTAL_SCHEMA_VERSION is bumped to 17 (`this` boundary, #2701)', () => {
-    expect(INCREMENTAL_SCHEMA_VERSION).toBe(17);
+  it('INCREMENTAL_SCHEMA_VERSION is bumped to 18 (function-local node identity, #2699)', () => {
+    expect(INCREMENTAL_SCHEMA_VERSION).toBe(18);
   });
 
   it('a pre-current stamp fails the `=== INCREMENTAL_SCHEMA_VERSION` reuse gate → forces full re-analyze', () => {
@@ -142,7 +142,11 @@ describe('CALL_SUMMARY incremental reuse gate (U-C5)', () => {
     // `function` still resolves to the enclosing class, so every unchanged
     // TS/JS file keeps its fabricated `this` edges → must NOT reuse.
     expect(passesReuseGate(16)).toBe(false);
+    // A pre-v18 (v17) index predates #2699: a function-local callable still
+    // shares a node id with a same-named file-level one, and the incremental
+    // write set would mix old and new ids → must NOT reuse.
+    expect(passesReuseGate(17)).toBe(false);
     // A current-version stamp passes the gate (incremental top-up eligible).
-    expect(passesReuseGate(17)).toBe(true);
+    expect(passesReuseGate(18)).toBe(true);
   });
 });

@@ -85,6 +85,16 @@ const JAVASCRIPT_SCOPE_QUERY = `
 ;; sibling properties from seeing each other as bare identifiers.
 (object) @scope.object
 
+;; Statement blocks are BINDING scopes (#2699). ECMAScript gives every block its
+;; own environment record, so \`let\`/\`const\`/\`class\`/\`function\` declared in
+;; sibling blocks of one function are DIFFERENT bindings — without this the
+;; resolver sees both as function-level and a call in one branch resolves to
+;; both. \`tsBindingScopeFor\` already implements the other half of the rule:
+;; \`var\` hoists past blocks to the enclosing Function/Module, \`let\`/\`const\`
+;; take the innermost scope, which is now the block.
+(statement_block) @scope.block
+
+
 ;; Declarations — classes
 (class_declaration
   name: (identifier) @declaration.name) @declaration.class

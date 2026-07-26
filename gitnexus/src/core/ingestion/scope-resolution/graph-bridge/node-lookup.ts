@@ -67,6 +67,35 @@ export function simpleKey(filePath: string, name: string): string {
   return `${filePath}::${name}`;
 }
 
+/**
+ * Position key: `(filePath, label, 0-based startLine, simple name)` (#2699).
+ *
+ * The strongest evidence there is, and the only one that needs no name
+ * qualification at all — a definition and its graph node are the same
+ * construct, so they share a source position. That makes it correct for
+ * exactly the cases a name-based key cannot express: a function-local
+ * declaration shadowing a file-level one, a local inside an ANONYMOUS
+ * function (no name to qualify with), and two same-named declarations in
+ * sibling blocks. ECMAScript gives each of those its own environment record;
+ * position is what distinguishes them without having to model the chain.
+ *
+ * Registered only for callable labels, and only when the (line, name) pair is
+ * unique in the file — a genuine tie (overloads declared on one line) stores
+ * the `AMBIGUOUS_POSITION` tombstone so the caller falls through to the
+ * name-based keys rather than picking by source order.
+ */
+export function positionKey(
+  filePath: string,
+  label: NodeLabel,
+  startLine: number,
+  name: string,
+): string {
+  return `<p>:${filePath}::${label}::${startLine}::${name}`;
+}
+
+/** Tombstone for a position claimed by two nodes — see `positionKey`. */
+export const AMBIGUOUS_POSITION = '';
+
 export function buildGraphNodeLookup(graph: KnowledgeGraph): GraphNodeLookup {
   const lookup = new Map<string, string>();
   for (const node of graph.iterNodes()) {
@@ -78,6 +107,14 @@ export function buildGraphNodeLookup(graph: KnowledgeGraph): GraphNodeLookup {
     };
     if (props.filePath === undefined || props.name === undefined) continue;
     if (!isLinkableLabel(node.label)) continue;
+
+    // Position key (#2699) — see `positionKey`. Second write on a key marks it
+    // ambiguous rather than letting source order decide.
+    const startLine = (props as { startLine?: number }).startLine;
+    if (startLine !== undefined && isOverloadableCallable(node.label)) {
+      const posK = positionKey(props.filePath, node.label, startLine, props.name);
+      lookup.set(posK, lookup.has(posK) ? AMBIGUOUS_POSITION : node.id);
+    }
 
     // Primary key: fully-qualified name + label, in a separate
     // keyspace from simple names. Class nodes carry `qualifiedName`

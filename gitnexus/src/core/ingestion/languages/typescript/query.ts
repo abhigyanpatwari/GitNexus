@@ -132,6 +132,16 @@ const TYPESCRIPT_SCOPE_QUERY = `
 ;; (#2551).
 (object) @scope.object
 
+;; Statement blocks are BINDING scopes (#2699). ECMAScript gives every block its
+;; own environment record, so \`let\`/\`const\`/\`class\`/\`function\` declared in
+;; sibling blocks of one function are DIFFERENT bindings — without this the
+;; resolver sees both as function-level and a call in one branch resolves to
+;; both. \`tsBindingScopeFor\` already implements the other half of the rule:
+;; \`var\` hoists past blocks to the enclosing Function/Module, \`let\`/\`const\`
+;; take the innermost scope, which is now the block.
+(statement_block) @scope.block
+
+
 ;; Type aliases that contain an object_type are structurally class-like —
 ;; they define a shape with named members. Emit @scope.class so the
 ;; field-extractor's type-alias-with-object-type handling (in

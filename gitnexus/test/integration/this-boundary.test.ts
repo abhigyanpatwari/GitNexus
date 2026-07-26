@@ -74,10 +74,13 @@ describeIfWorkerBuilt('an arrow inherits `this`; every other function form binds
           '}',
         ].join('\n'),
       ),
+      // The closure ids carry their enclosing METHOD (`C.viaArrow.good`), not
+      // just the class — #2699. Note both phases agree on that name: the caller
+      // edge and the definition it points at were built independently.
     ).toEqual([
-      'Function:c.ts:C.good -> Method:c.ts:C.m#0',
-      'Method:c.ts:C.viaArrow#0 -> Function:c.ts:C.good',
-      'Method:c.ts:C.viaFn#0 -> Function:c.ts:C.bad',
+      'Function:c.ts:C.viaArrow.good@2:21 -> Method:c.ts:C.m#0',
+      'Method:c.ts:C.viaArrow#0 -> Function:c.ts:C.viaArrow.good@2:21',
+      'Method:c.ts:C.viaFn#0 -> Function:c.ts:C.viaFn.bad@3:18',
     ]);
   });
 
@@ -98,7 +101,7 @@ describeIfWorkerBuilt('an arrow inherits `this`; every other function form binds
         ].join('\n'),
       ),
     ).toEqual([
-      'Function:h.js:H.good -> Method:h.js:H.m#0',
+      'Function:h.js:H.viaArrow.good@2:15 -> Method:h.js:H.m#0',
       'Method:h.js:H.direct#0 -> Method:h.js:H.m#0',
     ]);
   });

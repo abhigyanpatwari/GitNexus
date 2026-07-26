@@ -445,13 +445,18 @@ describeIfWorkerBuilt('closure bindings resolve in the remaining languages (#269
     // Function:<file>:save, so the closure was swallowed by the function's node
     // and the call got NO edge at all. Keeping the sigil restores PHP's own
     // separation; the positional join normalises it when matching.
+    //
+    // #2699 then added the enclosing-callable qualifier, so the id is
+    // `run.$save`. The two fixes are independent and both still needed: the
+    // sigil separates the VARIABLE namespace from the function one, the
+    // qualifier separates this function's local from any other scope's.
     const targets = await callTargetsFor(
       'c.php',
       '<?php\nfunction save($x) { return $x; }\n' +
         'function run() {\n  $save = fn($x) => $x * 2;\n  return $save(1);\n}\n',
     );
 
-    expect(targets).toEqual(['Function:c.php:$save']);
+    expect(targets).toEqual(['Function:c.php:run.$save@3:2']);
   });
 
   it('PHP: calling the real function still resolves to the function', async () => {
@@ -571,7 +576,9 @@ describeIfWorkerBuilt('a value binding is never aliased onto a same-named callab
         'export function run(): number {\n  const save = (x: number): number => x * 2;\n  return save(1);\n}\n',
     );
 
-    expect(targets).toEqual(['Function:svc.ts:save']);
+    // `run.save` — the local carries its enclosing function, so it can no
+    // longer be confused with a file-level `save` (#2699).
+    expect(targets).toEqual(['Function:svc.ts:run.save@7:2']);
   });
 
   it('TypeScript: a shadowing local does not also call the shadowed function', async () => {

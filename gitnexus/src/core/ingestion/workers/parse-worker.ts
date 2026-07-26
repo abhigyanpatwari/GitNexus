@@ -741,6 +741,124 @@ function getMethodInfo(
 // Enclosing function detection (for call extraction) — cached
 // ============================================================================
 
+/**
+ * Qualified-name prefix naming the enclosing CALLABLE chain of `node`, or
+ * `undefined` when nothing callable encloses it (#2699).
+ *
+ * Graph node ids are file-scoped, so before this a function-local callable and
+ * a file-level one with the same name collapsed onto a single node: a
+ * top-level `save()` and `run() { const save = … }` both keyed
+ * `Function:<file>:save`, and `run`'s call to its OWN local was attributed to
+ * the top-level function — a wrong edge, not a missing one, so `impact` on
+ * `save` reported a caller that never calls it. Qualifying the local as
+ * `run.save` separates them, mirroring how class members already qualify as
+ * `Class.member` (and SCIP's document-scoped `local <id>` keyspace).
+ *
+ * **This pair is the lockstep guarantee.** The definition phase and the
+ * caller-attribution phase (`findEnclosingFunctionId`) each build ids
+ * independently, and an id they compute differently is not a test failure —
+ * it is a caller silently attaching to a node that does not exist, and the
+ * edge vanishing. Both phases therefore derive the nesting prefix from THIS
+ * function and nothing else. Keep it that way: any per-phase variation here
+ * fails silently.
+ *
+ * Only a callable that is genuinely nested inside another callable gains a
+ * prefix. Top-level functions and ordinary class methods hit the `null` branch
+ * and keep their existing ids byte-for-byte, which is what bounds the id churn
+ * this change forces.
+ *
+ * `localIdentity` below completes it. The name chain alone is not enough, and
+ * the gap is the language's, not the grammar's: ECMAScript creates an
+ * environment record per function AND per block, so sibling blocks in one
+ * function hold genuinely different bindings —
+ *
+ *     function outer(a) {
+ *       if (a) { const pick = …; return pick(1); }   // one binding
+ *       else   { const pick = …; return pick(2); }   // a DIFFERENT binding
+ *     }
+ *
+ * — and both are `outer.pick` by name. Putting a block token in the qualifier
+ * would tag every local inside any `if`, the common case, and buy nothing over
+ * putting the position on the declaration itself: a declaration's own position
+ * is unique across every environment record it could belong to, without the
+ * qualifier having to enumerate them. One rule, no conditionals, O(1).
+ *
+ * Applied ONLY to locals. Top-level functions and class methods keep their
+ * bare/class-qualified ids, which is what keeps this off the symbols other
+ * files, saved queries and stored references actually address.
+ */
+const localIdentity = (node: SyntaxNode, name: string): string =>
+  `${name}@${node.startPosition.row}:${node.startPosition.column}`;
+
+const enclosingCallablePrefix = (
+  node: SyntaxNode,
+  filePath: string,
+  provider: LanguageProvider,
+): string | undefined => {
+  // Boundary on class containers: a method's enclosing scope is its CLASS, not
+  // whatever function the class expression happens to sit in.
+  const fnNode = findAncestorBeforeBoundary(
+    node,
+    LOCAL_SCOPE_BODY_NODE_TYPES,
+    CLASS_CONTAINER_TYPES,
+  );
+  if (fnNode === null) return undefined;
+  return callableOwnQualifiedName(fnNode, filePath, provider);
+};
+
+/**
+ * A callable node's own qualified name, including its enclosing-callable chain.
+ * Mutually recursive with `enclosingCallablePrefix`; recursion depth is source
+ * nesting depth and every level is memoized, so a file costs O(callables).
+ *
+ * An ANONYMOUS callable still gets a name — its own source position
+ * (`fn@12:9`). ECMAScript creates an environment record for EVERY function
+ * whether or not it has a name, so the `save` in
+ * `outer() { (function () { const save = … })() }` is a genuinely distinct
+ * binding from a file-level `save`. Name-only qualification cannot express
+ * that; position can. It is unique by construction (two functions cannot start
+ * at the same offset) and deterministic across reparses of the same source.
+ * Same reasoning as SCIP's document-scoped `local <id>` keyspace: a local is
+ * not addressable from outside its document, so its identity only has to be
+ * unique within it.
+ */
+const callableOwnQualifiedName = (
+  fnNode: SyntaxNode,
+  filePath: string,
+  provider: LanguageProvider,
+): string => {
+  const cached = callableQualifiedNameCache.get(fnNode);
+  if (cached !== undefined) return cached;
+
+  const efnResult = provider.methodExtractor?.extractFunctionName?.(fnNode, filePath);
+  // An anonymous callable has no name of its own, so it IS its position —
+  // `localIdentity` supplies the same suffix the local branch below appends,
+  // and the two must not stack.
+  const ownName = efnResult?.funcName ?? genericFuncName(fnNode) ?? null;
+
+  const prefix = enclosingCallablePrefix(fnNode, filePath, provider);
+  const classInfo =
+    prefix === undefined
+      ? cachedFindEnclosingClassInfo(fnNode, filePath, provider.resolveEnclosingOwner)
+      : null;
+  const owner = prefix ?? classInfo?.className;
+  const localName = localIdentity(fnNode, ownName ?? 'fn');
+  const result =
+    prefix !== undefined
+      ? `${prefix}.${localName}`
+      : ownName === null
+        ? localName
+        : owner
+          ? `${owner}.${ownName}`
+          : ownName;
+  callableQualifiedNameCache.set(fnNode, result);
+  return result;
+};
+
+/** Sentinel distinguishing "computed, anonymous" from "not yet computed". */
+const NO_QUALIFIED_NAME = ' anonymous';
+const callableQualifiedNameCache = new WeakMap<SyntaxNode, string>();
+
 /** Walk up AST to find enclosing function, return its generateId or null for top-level.
  *  Applies provider.labelOverride so the label matches the definition phase (single source of truth). */
 const findEnclosingFunctionId = (
@@ -781,7 +899,13 @@ const findEnclosingFunctionId = (
                 language: encLang,
               })
             : null;
-        const ownerName = classInfo?.className ?? standaloneMethodInfo?.receiverType ?? undefined;
+        // A nested callable is qualified by its enclosing callable (#2699) and
+        // wins over the class/receiver owner: a closure inside a method belongs
+        // to the METHOD, not directly to the class, and a Go receiver method can
+        // never itself be nested inside another callable.
+        const nestedPrefix = enclosingCallablePrefix(current, filePath, provider);
+        const ownerName =
+          nestedPrefix ?? classInfo?.className ?? standaloneMethodInfo?.receiverType ?? undefined;
         const qualifiedName = ownerName ? `${ownerName}.${funcName}` : funcName;
         // Include #<arity> suffix to match definition-phase Method/Constructor IDs.
         // Use the same MethodExtractor (getMethodInfo) as the definition phase.
@@ -840,8 +964,18 @@ const findEnclosingFunctionId = (
           filePath,
           provider.resolveEnclosingOwner,
         );
-        const qualifiedName = classInfo
-          ? `${classInfo.className}.${customResult.funcName}`
+        // Same nesting rule as the generic branch above (#2699). Anchored on
+        // `sigNode`-equivalent (`current.previousSibling ?? current`) so Dart,
+        // whose body is a SIBLING of the signature, walks from the same node
+        // the class lookup already uses.
+        const nestedPrefix2 = enclosingCallablePrefix(
+          current.previousSibling ?? current,
+          filePath,
+          provider,
+        );
+        const customOwner = nestedPrefix2 ?? classInfo?.className;
+        const qualifiedName = customOwner
+          ? `${customOwner}.${customResult.funcName}`
           : customResult.funcName;
         // Include #<arity> suffix to match definition-phase Method/Constructor IDs.
         // When same-arity collisions exist, also append ~type1,type2.
@@ -2115,6 +2249,19 @@ const processFileGroup = (
       // #1982: LOCKSTEP with parsing-processor.ts — a Rust inherent-impl with an
       // UNSCOPED bare target is keyed by the enclosing `mod_item` scope so the
       // worker-path Impl node id matches the sequential path and the owner walk.
+      // #2699: a callable nested inside another callable is qualified by the
+      // enclosing callable, so a function-local closure stops colliding with a
+      // same-named file-level function. Restricted to CALLABLE labels: the
+      // collision that produced wrong CALLS edges is between callables, and
+      // widening it to every function-local Variable/Property would churn ids
+      // for symbols the local-symbol pruner mostly deletes anyway.
+      // Same helper as the caller-attribution phase — see `enclosingCallablePrefix`.
+      const nestedCallablePrefix =
+        (nodeLabel === 'Function' || nodeLabel === 'Method' || nodeLabel === 'Constructor') &&
+        definitionNode
+          ? enclosingCallablePrefix(definitionNode, file.path, provider)
+          : undefined;
+
       const rustImplQualifiedName =
         nodeLabel === 'Impl' &&
         definitionNode?.type === 'impl_item' &&
@@ -2131,9 +2278,11 @@ const processFileGroup = (
               provider.classExtractor?.qualifiedNodeId === true &&
               qualifiedTypeName !== undefined
             ? qualifiedTypeName
-            : enclosingClassInfo
-              ? `${enclosingClassInfo.className}.${nodeName}`
-              : nodeName;
+            : nestedCallablePrefix !== undefined && definitionNode
+              ? `${nestedCallablePrefix}.${localIdentity(definitionNode, nodeName)}`
+              : enclosingClassInfo
+                ? `${enclosingClassInfo.className}.${nodeName}`
+                : nodeName;
 
       // Extract method metadata BEFORE generating node ID — parameterCount is needed
       // to disambiguate overloaded methods via #<arity> suffix in the ID.

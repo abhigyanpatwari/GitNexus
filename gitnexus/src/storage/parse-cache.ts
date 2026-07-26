@@ -55,6 +55,11 @@ import type { ParseWorkerResult } from '../core/ingestion/workers/parse-worker.j
 // the main thread (the #1983 OOM). Because the two stores share this version,
 // any future change to the `ParsedFile` serialization shape MUST bump
 // SCHEMA_BUMP so both invalidate in lockstep.
+// v25: function-local callables are qualified by their enclosing-callable chain
+// plus their own position, and JS/TS gain block scopes (#2699). Both the node
+// ids AND the scope tree in a cached worker result are therefore stale. Cached
+// results are replayed verbatim — including across `--force` — so without this
+// bump a warm cache keeps serving the colliding ids and the block-less scopes.
 // v24: function scopes carry `Scope.ownsReceivers`, marking the JS/TS forms
 // that bind their own `this` (#2701). The flag lives on the cached `Scope`, so
 // without this bump a warm cache replays scopes that lack it and every `this`
@@ -88,7 +93,7 @@ import type { ParseWorkerResult } from '../core/ingestion/workers/parse-worker.j
 // JLS 13.1 immediate-host chains (#2555).
 // v18: Worker$N anonymous bodies. v17: callable-value-flow operand identity.
 // v16: direct callee identity.
-const SCHEMA_BUMP = 24;
+const SCHEMA_BUMP = 25;
 const GITNEXUS_PKG_VERSION = (() => {
   try {
     // package.json sits at gitnexus/package.json — two levels up from
