@@ -548,10 +548,29 @@ function resolveExistingPath(candidate: string): string {
  * unchanged. `platform` is explicit so the transform is unit-testable off
  * Windows.
  *
- * The optional `\\?\` extended-length prefix (which `realpathSync.native` can
- * emit for paths over MAX_PATH) is preserved and the drive letter after it is
- * still normalized; UNC paths (`\\server\share`, `\\?\UNC\...`) have no drive
- * letter and are left untouched.
+ * The optional `\\?\` extended-length prefix is preserved and the drive letter
+ * after it is still normalized; UNC paths (`\\server\share`, `\\?\UNC\...`)
+ * have no drive letter and are left untouched.
+ *
+ * That optional group is defensive, not a case `realpathSync.native` produces:
+ * libuv's `fs__realpath_handle` strips `\\?\` (and rewrites `\\?\UNC\` back to
+ * `\\`) before returning, so the prefix can only reach here from caller-supplied
+ * input, which `path.resolve` preserves (#2667).
+ *
+ * Preserving it is load-bearing. The roots this normalizes are not just compared —
+ * they are READ FROM: `resolveBuildRoot` joins `package.json` onto `packageRoot`,
+ * `collectBuildEntries` walks `buildRoot`, and the lockfile lookup walks
+ * `packageRoot`'s ancestors. Node does not re-add `\\?\` for over-MAX_PATH paths,
+ * so stripping here would break analyzer-identity resolution on a deep checkout
+ * exactly as it would at any other filesystem boundary. (These fields are also
+ * compared between an `analyze` and a later `status` run, so a shape change would
+ * additionally risk the #2668 false-stale class — but the filesystem reads are the
+ * reason that matters.)
+ *
+ * Registry-style path COMPARISON is a different domain, never opens what it
+ * canonicalizes, and does normalize the prefix away: see
+ * `stripWindowsLongPathPrefix` in `src/lib/utils.ts` and its use in
+ * `canonicalizePath`.
  */
 export function normalizeAnalyzerRootPath(p: string, platform: NodeJS.Platform): string {
   if (platform !== 'win32') return p;

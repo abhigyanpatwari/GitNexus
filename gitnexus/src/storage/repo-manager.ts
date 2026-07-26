@@ -20,6 +20,7 @@ import path from 'path';
 import os from 'os';
 import { randomBytes } from 'crypto';
 import { getInferredRepoName, resolveRepoIdentityRoot } from './git.js';
+import { stripWindowsLongPathPrefix } from '../lib/utils.js';
 import { retryRename } from './fs-atomic.js';
 import { logger } from '../core/logger.js';
 import {
@@ -49,6 +50,20 @@ export type { BranchSummary };
  *     form (`RUNNERA~1\...`), but `process.cwd()` often returns the
  *     long form (`runneradmin\...`). `realpathSync.native` normalises
  *     both sides to the long-name canonical path.
+ *   - **Windows, extended-length paths** (#2667): a caller can supply a
+ *     `\\?\`-prefixed path — the usual MAX_PATH workaround — and
+ *     `path.resolve` preserves the prefix, so the string compare below
+ *     never matches the un-prefixed entry the registry stores. The
+ *     realpath branch already dropped it (libuv strips the prefix inside
+ *     `fs__realpath`), but the fallback branch did not, which is exactly
+ *     the branch a missing path takes. `stripWindowsLongPathPrefix` is
+ *     applied to both so the two branches agree.
+ *
+ * This normalisation is safe here precisely because the result is only ever
+ * compared, never opened: Node does NOT re-add `\\?\` for over-MAX_PATH
+ * paths, so an fs-facing path must keep whatever form the caller gave it.
+ * See the `registerRepo` comment on applying canonicalisation at COMPARE
+ * points only.
  *
  * Fallback behaviour: if the path does not exist on disk (e.g. a user
  * passed `gitnexus remove some-alias` and the alias misses every
@@ -60,16 +75,16 @@ export type { BranchSummary };
  * Backwards compatibility: this function is applied to BOTH the
  * caller-supplied input AND each stored `entry.path` at compare time
  * inside `resolveRegistryEntry`, so registries written by older
- * versions (where `registerRepo` only ran `path.resolve`) still match
- * correctly. Newly-written entries are canonicalised at write time too
- * so the registry stabilises over analyze/re-analyze cycles.
+ * versions still match correctly. Entries are NOT canonicalised at
+ * write time — `registerRepo` stores `path.resolve(repoPath)` — which
+ * is what makes the compare-only rule above hold.
  */
 export const canonicalizePath = (p: string): string => {
   const resolved = path.resolve(p);
   try {
-    return realpathSync.native(resolved);
+    return stripWindowsLongPathPrefix(realpathSync.native(resolved));
   } catch {
-    return resolved;
+    return stripWindowsLongPathPrefix(resolved);
   }
 };
 
