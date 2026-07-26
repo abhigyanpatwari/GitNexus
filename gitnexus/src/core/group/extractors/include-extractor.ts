@@ -460,7 +460,16 @@ export class IncludeExtractor implements ContractExtractor {
       for (const r of rows) {
         if (typeof r.filePath !== 'string' || !r.filePath) continue;
         const absolute = r.filePath as string;
-        const rel = path.relative(normalizedRepoPath, absolute);
+        // Only relativise a row that is actually absolute. Current analyze writes
+        // repo-relative paths (above), and `path.relative(repoRoot, 'src/a.h')`
+        // resolves the second argument against the PROCESS CWD — so from any cwd
+        // other than the repo root every relative row came back `..`-prefixed and
+        // was dropped by the guard below, silently emptying this strategy (#2667
+        // review). Absolute rows still go through `path.relative` so the
+        // containment check keeps rejecting foreign and escaping paths.
+        const rel = path.isAbsolute(absolute)
+          ? path.relative(normalizedRepoPath, absolute)
+          : absolute;
         // Skip rows that resolve outside the repo (e.g., system headers
         // somehow indexed, or stale absolute paths from a different machine).
         // path.relative returns a `..`-prefixed path or an absolute path
