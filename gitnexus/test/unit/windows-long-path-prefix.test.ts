@@ -43,6 +43,29 @@ describe('stripWindowsLongPathPrefix (#2667)', () => {
     );
   });
 
+  it('leaves the `\\\\.\\` device namespace untouched', () => {
+    // Most of what it addresses is not a filesystem path at all.
+    expect(stripWindowsLongPathPrefix('\\\\.\\D:\\repo', 'win32')).toBe('\\\\.\\D:\\repo');
+    expect(stripWindowsLongPathPrefix('\\\\.\\PhysicalDrive0', 'win32')).toBe(
+      '\\\\.\\PhysicalDrive0',
+    );
+  });
+
+  // Degenerate extended paths: stripping these would emit something worse than
+  // the input. `\\?\UNC` has no share to keep, so a blind slice yields the bare
+  // root `\\`; `\\?\D:foo` is drive-RELATIVE, so a blind slice yields `D:foo`,
+  // which is not absolute and would resolve against the process cwd. Both are
+  // left untouched so they simply fail to match a registry entry.
+  it('leaves a UNC prefix with no share component untouched', () => {
+    expect(stripWindowsLongPathPrefix('\\\\?\\UNC\\', 'win32')).toBe('\\\\?\\UNC\\');
+    expect(stripWindowsLongPathPrefix('\\\\?\\UNC', 'win32')).toBe('\\\\?\\UNC');
+  });
+
+  it('leaves a drive-relative extended path untouched, so output stays absolute', () => {
+    expect(stripWindowsLongPathPrefix('\\\\?\\D:foo', 'win32')).toBe('\\\\?\\D:foo');
+    expect(path.win32.isAbsolute(stripWindowsLongPathPrefix('\\\\?\\D:\\foo', 'win32'))).toBe(true);
+  });
+
   it('is a no-op on already-canonical drive and UNC paths', () => {
     expect(stripWindowsLongPathPrefix('D:\\Projects\\repo', 'win32')).toBe('D:\\Projects\\repo');
     expect(stripWindowsLongPathPrefix('\\\\server\\share\\repo', 'win32')).toBe(

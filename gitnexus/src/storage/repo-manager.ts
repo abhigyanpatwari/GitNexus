@@ -75,9 +75,9 @@ export type { BranchSummary };
  * Backwards compatibility: this function is applied to BOTH the
  * caller-supplied input AND each stored `entry.path` at compare time
  * inside `resolveRegistryEntry`, so registries written by older
- * versions (where `registerRepo` only ran `path.resolve`) still match
- * correctly. Newly-written entries are canonicalised at write time too
- * so the registry stabilises over analyze/re-analyze cycles.
+ * versions still match correctly. Entries are NOT canonicalised at
+ * write time — `registerRepo` stores `path.resolve(repoPath)` — which
+ * is what makes the compare-only rule above hold.
  */
 export const canonicalizePath = (p: string): string => {
   const resolved = path.resolve(p);

@@ -49,9 +49,13 @@ const PLATFORM_LOGIC = [
   // returns the absolute target across drives, so the guard needs isAbsolute.
   // Fixture-free and pathApi-injectable, so it is portable to every runner.
   'test/unit/analyzer-identity-is-inside.test.ts',
-  // `\\?\` extended-length prefix normalization (#2667): another POSIX no-op,
-  // so it is only meaningful on windows-latest. Same mixed-prefix relativize
-  // hazard as the is-inside guard above, reached through a caller-supplied path.
+  // `\\?\` extended-length prefix normalization (#2667): fixture-free and
+  // platform-injectable (every assertion passes an explicit 'win32'), so like the
+  // is-inside guard above it is portable to every runner and its assertions run
+  // identically here and on Ubuntu. Registered alongside its two siblings so the
+  // Windows path-handling guards stay discoverable as one group. Same
+  // mixed-prefix relativize hazard as is-inside, reached through a
+  // caller-supplied path.
   'test/unit/windows-long-path-prefix.test.ts',
   // getconf page-size probe: explicit process.platform gate (win32 short-circuit)
   // plus a live-probe test whose only real non-4K coverage is macos-arm64's
