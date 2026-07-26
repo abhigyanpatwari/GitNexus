@@ -316,23 +316,6 @@ function addConditionalRelationship(
   });
 }
 
-function addAutoConfigurationRelationship(
-  graph: KnowledgeGraph,
-  owner: GraphNode,
-  annotation: SpringConditionalAnnotationFact,
-): void {
-  const fileId = generateId('File', owner.properties.filePath);
-  if (graph.getNode(fileId) === undefined) return;
-  graph.addRelationship({
-    id: generateId('AUTO_REGISTERS', `${fileId}->${owner.id}:annotation:${annotation.line}`),
-    sourceId: fileId,
-    targetId: owner.id,
-    type: 'AUTO_REGISTERS',
-    confidence: 1,
-    reason: 'spring-auto-configuration:@AutoConfiguration',
-  });
-}
-
 const configNodesByGraph = new WeakMap<KnowledgeGraph, ReadonlyMap<string, readonly GraphNode[]>>();
 
 function configNodesByKey(graph: KnowledgeGraph): ReadonlyMap<string, readonly GraphNode[]> {
@@ -395,10 +378,6 @@ export function createSpringConditionalMetadataAttacher<
             resolvedAnnotations.set(cacheKey, resolved);
           }
           if (resolved === undefined) continue;
-          if (resolved === AUTO_CONFIGURATION_ANNOTATION && owner.label === 'Class') {
-            addAutoConfigurationRelationship(graph, owner, annotation);
-            continue;
-          }
           if (!CONDITIONAL_ANNOTATIONS.has(resolved)) continue;
 
           if (PROPERTY_CONDITIONAL_ANNOTATIONS.has(resolved)) {

@@ -273,7 +273,7 @@ describe.skipIf(!BENCH_ENABLED)('Spring condition mixed-language pipeline scalin
         const result = await runPipelineFromRepo(dir, () => {}, { skipGraphPhases: true });
         const elapsedMs = performance.now() - start;
         expect([...result.graph.iterRelationshipsByType('CONDITIONAL_ON')]).toHaveLength(2);
-        expect([...result.graph.iterRelationshipsByType('AUTO_REGISTERS')]).toHaveLength(1);
+        expect([...result.graph.iterRelationshipsByType('DECLARES')]).toHaveLength(1);
         results.push({ nodes: [...result.graph.iterNodes()].length, elapsedMs });
         console.log(
           `  sparse condition graph properties=${unrelatedProperties}: ` +

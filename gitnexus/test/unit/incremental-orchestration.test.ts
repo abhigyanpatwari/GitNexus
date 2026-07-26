@@ -47,6 +47,7 @@ import {
   SPRING_BEAN_INVENTORY_FEATURE,
   SPRING_CONDITIONALS_FEATURE,
 } from '../../src/core/ingestion/frameworks/spring/analysis-features.js';
+import { SPRING_AUTO_CONFIGURATION_SYNTHETIC_ID_PREFIX } from '../../src/core/ingestion/frameworks/spring/auto-configuration.js';
 import { SPRING_CONFIG_BINDINGS_FEATURE } from '../../src/core/ingestion/languages/java/analysis-features.js';
 
 const setupMiniRepo = () => setupSharedMiniRepo('gitnexus-incr-orch-');
@@ -168,13 +169,31 @@ async function countInjects(repoPath: string): Promise<number> {
   }
 }
 
-async function countAutoRegisters(repoPath: string): Promise<number> {
+async function countSpringAutoConfigurationDeclarations(repoPath: string): Promise<number> {
   const adapter = await import('../../src/core/lbug/lbug-adapter.js');
   const { lbugPath } = getStoragePaths(repoPath);
   await adapter.initLbug(lbugPath);
   try {
     const rows = (await adapter.executeQuery(
-      `MATCH ()-[r:CodeRelation]->() WHERE r.type = 'AUTO_REGISTERS' RETURN count(r) AS c`,
+      `MATCH ()-[r:CodeRelation]->() WHERE r.type = 'DECLARES' ` +
+        `AND (r.reason = 'spring-auto-configuration-import' ` +
+        `OR r.reason = 'spring-auto-configuration-factory') RETURN count(r) AS c`,
+    )) as Array<{ c: number | bigint }>;
+    return Number(rows[0]?.c ?? 0);
+  } finally {
+    await adapter.closeLbug();
+  }
+}
+
+async function countSpringAutoConfigurationSyntheticClasses(repoPath: string): Promise<number> {
+  const adapter = await import('../../src/core/lbug/lbug-adapter.js');
+  const { lbugPath } = getStoragePaths(repoPath);
+  await adapter.initLbug(lbugPath);
+  try {
+    const rows = (await adapter.executeQuery(
+      `MATCH (n:Class) WHERE n.id STARTS WITH ` +
+        `'${SPRING_AUTO_CONFIGURATION_SYNTHETIC_ID_PREFIX}' ` +
+        `RETURN count(n) AS c`,
     )) as Array<{ c: number | bigint }>;
     return Number(rows[0]?.c ?? 0);
   } finally {
@@ -937,18 +956,13 @@ describe('runFullAnalysis — incremental orchestration', () => {
     }
   }, 600_000);
 
-  it('incremental runs do not duplicate repository-wide AUTO_REGISTERS edges (#2415)', async () => {
+  it('incremental runs do not duplicate repository-wide Spring DECLARES edges (#2415)', async () => {
     const repo = await setupMiniRepo();
     try {
       const sourceDir = path.join(repo.dbPath, 'src', 'main', 'java', 'com', 'example');
       const metadataDir = path.join(repo.dbPath, 'src', 'main', 'resources', 'META-INF', 'spring');
       await mkdir(sourceDir, { recursive: true });
       await mkdir(metadataDir, { recursive: true });
-      await writeFile(
-        path.join(sourceDir, 'ExampleAutoConfiguration.java'),
-        'package com.example;\npublic class ExampleAutoConfiguration {}\n',
-        'utf-8',
-      );
       await writeFile(
         path.join(metadataDir, 'org.springframework.boot.autoconfigure.AutoConfiguration.imports'),
         'com.example.ExampleAutoConfiguration\n',
@@ -958,7 +972,8 @@ describe('runFullAnalysis — incremental orchestration', () => {
 
       const { runFullAnalysis } = await import('../../src/core/run-analyze.js');
       await runFullAnalysis(repo.dbPath, { skipAgentsMd: true }, { onProgress: () => {} });
-      expect(await countAutoRegisters(repo.dbPath)).toBe(1);
+      expect(await countSpringAutoConfigurationDeclarations(repo.dbPath)).toBe(1);
+      expect(await countSpringAutoConfigurationSyntheticClasses(repo.dbPath)).toBe(1);
 
       const target = path.join(repo.dbPath, 'src', 'logger.ts');
       for (const run of [1, 2]) {
@@ -966,8 +981,19 @@ describe('runFullAnalysis — incremental orchestration', () => {
         await writeFile(target, `${before}\n// auto-register idempotency touch ${run}\n`, 'utf-8');
         gitCommitAll(repo.dbPath, `unrelated auto-register touch ${run}`);
         await runFullAnalysis(repo.dbPath, { skipAgentsMd: true }, { onProgress: () => {} });
-        expect(await countAutoRegisters(repo.dbPath)).toBe(1);
+        expect(await countSpringAutoConfigurationDeclarations(repo.dbPath)).toBe(1);
+        expect(await countSpringAutoConfigurationSyntheticClasses(repo.dbPath)).toBe(1);
       }
+
+      await writeFile(
+        path.join(sourceDir, 'ExampleAutoConfiguration.java'),
+        'package com.example;\npublic class ExampleAutoConfiguration {}\n',
+        'utf-8',
+      );
+      gitCommitAll(repo.dbPath, 'add source for metadata-only auto configuration');
+      await runFullAnalysis(repo.dbPath, { skipAgentsMd: true }, { onProgress: () => {} });
+      expect(await countSpringAutoConfigurationDeclarations(repo.dbPath)).toBe(1);
+      expect(await countSpringAutoConfigurationSyntheticClasses(repo.dbPath)).toBe(0);
     } finally {
       await repo.cleanup();
     }

@@ -3,18 +3,25 @@
  *
  * Discovers Spring Boot auto-configuration declarations from repository
  * metadata after source symbols have been resolved. Metadata-backed classes
- * are linked through AUTO_REGISTERS; when source is unavailable, a lightweight
+ * are linked through DECLARES; when source is unavailable, a lightweight
  * synthetic Class preserves the third-party/starter contribution.
  *
  * @deps    structure, scopeResolution
  * @reads   META-INF/spring.factories and AutoConfiguration.imports
- * @writes  Class nodes and AUTO_REGISTERS edges
+ * @writes  Class nodes and DECLARES edges
  */
 
 import fs from 'node:fs/promises';
 import path from 'node:path';
 import type { GraphNode } from 'gitnexus-shared';
 import { generateId } from '../../../lib/utils.js';
+import { logger } from '../../logger.js';
+import {
+  SPRING_AUTO_CONFIGURATION_FACTORY_REASON,
+  SPRING_AUTO_CONFIGURATION_IMPORT_REASON,
+  SPRING_AUTO_CONFIGURATION_SYNTHETIC_DESCRIPTION,
+} from '../frameworks/spring/auto-configuration.js';
+import { isDev } from '../utils/env.js';
 import type { StructureOutput } from './structure.js';
 import type { PipelineContext, PipelinePhase, PhaseResult } from './types.js';
 import { getPhaseOutput } from './types.js';
@@ -40,6 +47,7 @@ interface SpringAutoConfigurationMetadataFile {
 export interface SpringAutoConfigurationOutput {
   readonly metadataFiles: number;
   readonly autoConfigurations: number;
+  readonly ambiguousAutoConfigurations: number;
 }
 
 export function classifySpringAutoConfigurationMetadata(
@@ -139,12 +147,10 @@ function simpleClassName(qualifiedName: string): string {
   return separator === -1 ? qualifiedName : qualifiedName.slice(separator + 1);
 }
 
-function sourceClassIndexes(graph: PipelineContext['graph']): {
-  readonly byQualifiedName: ReadonlyMap<string, readonly GraphNode[]>;
-  readonly bySimpleName: ReadonlyMap<string, readonly GraphNode[]>;
-} {
+function sourceClassIndexes(
+  graph: PipelineContext['graph'],
+): ReadonlyMap<string, readonly GraphNode[]> {
   const byQualifiedName = new Map<string, GraphNode[]>();
-  const bySimpleName = new Map<string, GraphNode[]>();
   for (const node of graph.iterNodes()) {
     if (node.label !== 'Class') continue;
     const qualifiedName =
@@ -156,44 +162,36 @@ function sourceClassIndexes(graph: PipelineContext['graph']): {
       qualified.push(node);
       byQualifiedName.set(qualifiedName, qualified);
     }
-    const simple = String(node.properties.name);
-    const candidates = bySimpleName.get(simple) ?? [];
-    candidates.push(node);
-    bySimpleName.set(simple, candidates);
   }
-  return { byQualifiedName, bySimpleName };
+  return byQualifiedName;
 }
 
 function resolveOrCreateAutoConfigurationClass(
   ctx: PipelineContext,
   metadata: SpringAutoConfigurationMetadataFile,
   entry: SpringAutoConfigurationEntry,
-  indexes: ReturnType<typeof sourceClassIndexes>,
-): GraphNode {
+  classesByQualifiedName: ReturnType<typeof sourceClassIndexes>,
+): GraphNode | undefined {
   const qualifiedName = normalizedQualifiedName(entry.className);
-  const exact = indexes.byQualifiedName.get(qualifiedName) ?? [];
+  const exact = classesByQualifiedName.get(qualifiedName) ?? [];
   const [exactMatch] = exact;
   if (exact.length === 1 && exactMatch !== undefined) return exactMatch;
+  // The runtime classpath chooses one of duplicate FQNs. GitNexus has no
+  // reliable module/classpath precedence here, so fail closed instead of
+  // guessing, fanning out, or fabricating a third candidate.
+  if (exact.length > 1) return undefined;
 
-  const simpleMatches = indexes.bySimpleName.get(simpleClassName(entry.className)) ?? [];
-  const [simpleMatch] = simpleMatches;
-  if (simpleMatches.length === 1 && simpleMatch !== undefined) return simpleMatch;
-
-  const nodeId = generateId(
-    'Class',
-    `spring-auto-configuration:${metadata.filePath}:${entry.className}`,
-  );
+  const nodeId = generateId('Class', `spring-auto-configuration:${qualifiedName}`);
   const syntheticClass: GraphNode = {
     id: nodeId,
     label: 'Class',
     properties: {
-      name: simpleClassName(entry.className),
-      qualifiedName: entry.className,
+      name: simpleClassName(qualifiedName),
+      qualifiedName,
       filePath: metadata.filePath,
       startLine: entry.line,
       endLine: entry.line,
-      description:
-        'Spring Boot auto-configuration declared by metadata; implementation source unavailable',
+      description: SPRING_AUTO_CONFIGURATION_SYNTHETIC_DESCRIPTION,
     },
   };
   ctx.graph.addNode(syntheticClass);
@@ -209,7 +207,9 @@ export const springAutoConfigurationPhase: PipelinePhase<SpringAutoConfiguration
     deps: ReadonlyMap<string, PhaseResult<unknown>>,
   ): Promise<SpringAutoConfigurationOutput> {
     const { scannedFiles } = getPhaseOutput<StructureOutput>(deps, 'structure');
-    let indexes: ReturnType<typeof sourceClassIndexes> | undefined;
+    let classesByQualifiedName: ReturnType<typeof sourceClassIndexes> | undefined;
+    const resolutions = new Map<string, GraphNode | null>();
+    const ambiguousQualifiedNames = new Set<string>();
     let metadataFiles = 0;
     let autoConfigurations = 0;
 
@@ -229,33 +229,53 @@ export const springAutoConfigurationPhase: PipelinePhase<SpringAutoConfiguration
           : parseSpringFactoriesAutoConfigurations(content);
       const fileId = generateId('File', metadata.filePath);
       if (ctx.graph.getNode(fileId) === undefined) continue;
+      const declaredQualifiedNames = new Set<string>();
 
       for (const entry of entries) {
-        indexes ??= sourceClassIndexes(ctx.graph);
-        const autoConfiguration = resolveOrCreateAutoConfigurationClass(
-          ctx,
-          metadata,
-          entry,
-          indexes,
-        );
+        classesByQualifiedName ??= sourceClassIndexes(ctx.graph);
+        const qualifiedName = normalizedQualifiedName(entry.className);
+        if (declaredQualifiedNames.has(qualifiedName)) continue;
+        declaredQualifiedNames.add(qualifiedName);
+        let autoConfiguration = resolutions.get(qualifiedName);
+        if (!resolutions.has(qualifiedName)) {
+          autoConfiguration =
+            resolveOrCreateAutoConfigurationClass(ctx, metadata, entry, classesByQualifiedName) ??
+            null;
+          resolutions.set(qualifiedName, autoConfiguration);
+        }
+        if (autoConfiguration === null || autoConfiguration === undefined) {
+          ambiguousQualifiedNames.add(qualifiedName);
+          continue;
+        }
         ctx.graph.addRelationship({
           id: generateId(
-            'AUTO_REGISTERS',
+            'DECLARES',
             `${fileId}->${autoConfiguration.id}:${metadata.kind}:${entry.className}`,
           ),
           sourceId: fileId,
           targetId: autoConfiguration.id,
-          type: 'AUTO_REGISTERS',
+          type: 'DECLARES',
           confidence: 1,
           reason:
             metadata.kind === 'imports'
-              ? 'spring-auto-configuration:AutoConfiguration.imports'
-              : 'spring-auto-configuration:spring.factories',
+              ? SPRING_AUTO_CONFIGURATION_IMPORT_REASON
+              : SPRING_AUTO_CONFIGURATION_FACTORY_REASON,
         });
         autoConfigurations++;
       }
     }
 
-    return { metadataFiles, autoConfigurations };
+    if (isDev && ambiguousQualifiedNames.size > 0) {
+      logger.debug(
+        `Spring auto-configuration: skipped ${ambiguousQualifiedNames.size} ambiguous FQN(s) ` +
+          `because classpath precedence is unknown: ${[...ambiguousQualifiedNames].sort().join(', ')}`,
+      );
+    }
+
+    return {
+      metadataFiles,
+      autoConfigurations,
+      ambiguousAutoConfigurations: ambiguousQualifiedNames.size,
+    };
   },
 };

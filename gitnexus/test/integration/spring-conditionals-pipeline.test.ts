@@ -17,7 +17,7 @@ describe('Spring profiles, conditionals, and auto-configuration pipeline (#2415)
   let result: PipelineResult;
   let nodes: GraphNode[];
   let conditions: GraphRelationship[];
-  let autoRegistrations: GraphRelationship[];
+  let declarations: GraphRelationship[];
 
   beforeAll(async () => {
     dir = fs.mkdtempSync(path.join(os.tmpdir(), 'gn-spring-conditionals-'));
@@ -98,22 +98,44 @@ class KotlinAutoConfig
     );
     writeFixture(
       dir,
+      'src/main/java/com/local/StarterAutoConfiguration.java',
+      `package com.local;
+class StarterAutoConfiguration {}
+`,
+    );
+    for (const moduleName of ['module-a', 'module-b']) {
+      writeFixture(
+        dir,
+        `${moduleName}/src/main/java/com/duplicate/DuplicateAutoConfiguration.java`,
+        `package com.duplicate;
+class DuplicateAutoConfiguration {}
+`,
+      );
+    }
+    writeFixture(
+      dir,
       'src/main/resources/META-INF/spring/org.springframework.boot.autoconfigure.AutoConfiguration.imports',
-      'com.example.JavaAutoConfig\ncom.vendor.StarterAutoConfiguration\n',
+      `com.example.JavaAutoConfig
+com.vendor.StarterAutoConfiguration
+com.vendor.SharedAutoConfiguration
+com.duplicate.DuplicateAutoConfiguration
+`,
     );
     writeFixture(
       dir,
       'src/main/resources/META-INF/spring.factories',
       `org.springframework.boot.autoconfigure.EnableAutoConfiguration=\\
 com.example.KotlinAutoConfig,\\
-com.vendor.LegacyStarterAutoConfiguration
+com.vendor.LegacyStarterAutoConfiguration,\\
+com.vendor.SharedAutoConfiguration,\\
+com.duplicate.DuplicateAutoConfiguration
 `,
     );
 
     result = await runPipelineFromRepo(dir, () => {}, { skipGraphPhases: true });
     nodes = [...result.graph.iterNodes()];
     conditions = [...result.graph.iterRelationshipsByType('CONDITIONAL_ON')];
-    autoRegistrations = [...result.graph.iterRelationshipsByType('AUTO_REGISTERS')];
+    declarations = [...result.graph.iterRelationshipsByType('DECLARES')];
   }, 60_000);
 
   afterAll(() => {
@@ -122,6 +144,8 @@ com.vendor.LegacyStarterAutoConfiguration
 
   const nodeNamed = (name: string): GraphNode | undefined =>
     nodes.find((node) => node.properties.name === name);
+  const nodesQualified = (qualifiedName: string): GraphNode[] =>
+    nodes.filter((node) => node.properties.qualifiedName === qualifiedName);
 
   const outgoingConditions = (
     name: string,
@@ -217,27 +241,74 @@ com.vendor.LegacyStarterAutoConfiguration
     ]);
   });
 
-  it('marks annotation and metadata-discovered auto configurations separately', () => {
-    const targetNames = autoRegistrations
+  it('uses metadata DECLARES evidence without claiming annotation-based registration', () => {
+    const targetNames = declarations
       .map((edge) => String(result.graph.getNode(edge.targetId)?.properties.name))
       .sort();
     expect(targetNames).toEqual([
       'JavaAutoConfig',
-      'JavaAutoConfig',
-      'KotlinAutoConfig',
       'KotlinAutoConfig',
       'LegacyStarterAutoConfiguration',
+      'SharedAutoConfiguration',
+      'SharedAutoConfiguration',
       'StarterAutoConfiguration',
     ]);
     expect(
-      autoRegistrations.some(
+      declarations.some(
         (edge) =>
           result.graph.getNode(edge.targetId)?.properties.name === 'OrdinaryApplicationConfig',
       ),
     ).toBe(false);
-    expect(nodeNamed('StarterAutoConfiguration')?.properties.description).toContain(
-      'implementation source unavailable',
+    expect(
+      declarations.every((edge) =>
+        String(result.graph.getNode(edge.sourceId)?.properties.filePath).includes('META-INF'),
+      ),
+    ).toBe(true);
+    expect(
+      nodesQualified('com.vendor.StarterAutoConfiguration')[0]?.properties.description,
+    ).toContain('implementation source unavailable');
+  });
+
+  it('never falls back from metadata FQN to an unrelated simple-name match', () => {
+    const declaration = declarations.find(
+      (edge) =>
+        result.graph.getNode(edge.targetId)?.properties.qualifiedName ===
+        'com.vendor.StarterAutoConfiguration',
     );
+    expect(declaration).toBeDefined();
+    expect(result.graph.getNode(declaration!.targetId)?.properties.filePath).toContain('META-INF');
+    expect(
+      declarations.some(
+        (edge) =>
+          result.graph.getNode(edge.targetId)?.properties.qualifiedName ===
+          'com.local.StarterAutoConfiguration',
+      ),
+    ).toBe(false);
+  });
+
+  it('deduplicates missing source classes by normalized FQN across metadata files', () => {
+    const shared = nodesQualified('com.vendor.SharedAutoConfiguration');
+    expect(shared).toHaveLength(1);
+    expect(declarations.filter((edge) => edge.targetId === shared[0]?.id)).toHaveLength(2);
+    expect(
+      declarations
+        .filter((edge) => edge.targetId === shared[0]?.id)
+        .map((edge) => edge.reason)
+        .sort(),
+    ).toEqual(['spring-auto-configuration-factory', 'spring-auto-configuration-import']);
+  });
+
+  it('fails closed when duplicate real classes share one FQN', () => {
+    const duplicates = nodesQualified('com.duplicate.DuplicateAutoConfiguration');
+    expect(duplicates).toHaveLength(2);
+    expect(
+      declarations.some((edge) => duplicates.some((duplicate) => duplicate.id === edge.targetId)),
+    ).toBe(false);
+    expect(
+      duplicates.some((node) =>
+        String(node.properties.description).includes('implementation source unavailable'),
+      ),
+    ).toBe(false);
   });
 
   it('recognizes AutoConfiguration as a Spring Bean candidate in Java and Kotlin', () => {

@@ -6,8 +6,8 @@
  * replaced, produce a smaller KnowledgeGraph that contains:
  *
  *   - Every node whose `properties.filePath` is in `toWriteSet`.
- *   - Every graph-wide node (Community, Process) — these are regenerated
- *     each run by the communities/processes phases and must be fully
+ *   - Every graph-wide node (Community, Process, and Spring metadata
+ *     placeholders) — these are regenerated each run and must be fully
  *     rewritten.
  *   - Every relationship where AT LEAST ONE endpoint is in the writable
  *     set above. Relationships entirely between unchanged-file nodes
@@ -51,8 +51,15 @@
 import type { GraphNode, GraphRelationship } from 'gitnexus-shared';
 import { createKnowledgeGraph } from '../graph/graph.js';
 import type { KnowledgeGraph } from '../graph/types.js';
+import {
+  isSpringAutoConfigurationDeclaration,
+  isSpringAutoConfigurationSyntheticClass,
+} from '../ingestion/frameworks/spring/auto-configuration.js';
 
-const isGraphWide = (label: string): boolean => label === 'Community' || label === 'Process';
+const isGraphWideNode = (node: GraphNode): boolean =>
+  node.label === 'Community' ||
+  node.label === 'Process' ||
+  isSpringAutoConfigurationSyntheticClass(node);
 
 /**
  * Relationship types whose VALIDITY is a whole-program property, not a
@@ -82,16 +89,16 @@ const isGraphWide = (label: string): boolean => label === 'Community' || label =
 // delete) forces a full rebuild on the next run. Temporary absence is
 // possible; duplicates are not.
 //
-// `AUTO_REGISTERS` (#2415) is recomputed from every Spring metadata file on
-// every run. A third-file class addition/removal can also change a metadata
-// declaration from a synthetic target to a source target, so endpoint-local
-// writeback is insufficient. Delete-all + global re-extract keeps it sound and
-// prevents the relationship table (which has no PK) from accumulating copies.
-const isGraphWideRelType = (type: string): boolean =>
-  type === 'TAINT_PATH' ||
-  type === 'CALL_SUMMARY' ||
-  type === 'INJECTS' ||
-  type === 'AUTO_REGISTERS';
+// Spring auto-configuration DECLARES edges (#2415) are also recomputed from
+// repository-wide metadata. A third-file class addition/removal can retarget
+// an unchanged declaration, so they need the same global re-extract contract.
+// DECLARES itself is generic, however: only the two Spring-owned reasons are
+// graph-wide, leaving future metadata systems under their own lifecycle.
+const isGraphWideRelationship = (relationship: GraphRelationship): boolean =>
+  relationship.type === 'TAINT_PATH' ||
+  relationship.type === 'CALL_SUMMARY' ||
+  relationship.type === 'INJECTS' ||
+  isSpringAutoConfigurationDeclaration(relationship);
 
 /**
  * Build a Map<nodeId, filePath> for every File-bound node in the graph.
@@ -115,7 +122,7 @@ export const extractChangedSubgraph = (
 
   fullGraph.forEachNode((n: GraphNode) => {
     const filePath = n.properties?.filePath as string | undefined;
-    const include = (filePath && toWriteSet.has(filePath)) || isGraphWide(n.label);
+    const include = (filePath && toWriteSet.has(filePath)) || isGraphWideNode(n);
     if (include) {
       sub.addNode(n);
       writableNodeIds.add(n.id);
@@ -126,7 +133,7 @@ export const extractChangedSubgraph = (
     if (
       writableNodeIds.has(r.sourceId) ||
       writableNodeIds.has(r.targetId) ||
-      isGraphWideRelType(r.type)
+      isGraphWideRelationship(r)
     ) {
       sub.addRelationship(r);
     }

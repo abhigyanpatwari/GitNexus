@@ -147,11 +147,12 @@ export type RelationshipType =
    *  unknown because runtime environment/classpath state may override source
    *  configuration. */
   | 'CONDITIONAL_ON'
-  /** Spring Boot auto-configuration discovery. Source = the metadata/source
-   *  File that declares an auto configuration; target = the discovered Class.
-   *  This keeps framework-provided configuration distinguishable from normal
-   *  application-owned Bean candidates. */
-  | 'AUTO_REGISTERS'
+  /** Metadata declaration/discovery relationship. Source = a metadata File;
+   *  target = the declared candidate node. This deliberately does not claim
+   *  that the target is active or registered at runtime. Framework-specific
+   *  semantics belong in `reason` so the relationship can be reused by other
+   *  metadata-driven systems. */
+  | 'DECLARES'
   /** Vue component event system: a handler function in a parent component is
    *  bound to an event emitted by a child component (`@event="handlerFn"`).
    *  Source = handler Function/Method node in the parent.

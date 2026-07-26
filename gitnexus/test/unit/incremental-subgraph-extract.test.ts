@@ -17,6 +17,10 @@ import {
   extractChangedSubgraph,
   computeEffectiveWriteSet,
 } from '../../src/core/incremental/subgraph-extract.js';
+import {
+  SPRING_AUTO_CONFIGURATION_SYNTHETIC_DESCRIPTION,
+  SPRING_AUTO_CONFIGURATION_SYNTHETIC_ID_PREFIX,
+} from '../../src/core/ingestion/frameworks/spring/auto-configuration.js';
 
 const makeFileNode = (id: string, filePath: string, label = 'Function'): GraphNode =>
   ({
@@ -37,12 +41,14 @@ const makeRel = (
   sourceId: string,
   targetId: string,
   type = 'CALLS',
+  reason = 'test',
 ): GraphRelationship =>
   ({
     id,
     sourceId,
     targetId,
     type,
+    reason,
     properties: {},
   }) as unknown as GraphRelationship;
 
@@ -66,6 +72,25 @@ describe('extractChangedSubgraph', () => {
     const sub = extractChangedSubgraph(g, new Set([])); // no files changed
 
     expect(sub.nodes.map((n) => n.id).sort()).toEqual(['comm-1', 'proc-1']);
+  });
+
+  it('always includes Spring auto-configuration synthetic Class nodes', () => {
+    const g = createKnowledgeGraph();
+    g.addNode({
+      id: `${SPRING_AUTO_CONFIGURATION_SYNTHETIC_ID_PREFIX}com.example.ExternalAutoConfiguration`,
+      label: 'Class',
+      properties: {
+        name: 'ExternalAutoConfiguration',
+        filePath: '/repo/META-INF/spring.factories',
+        description: SPRING_AUTO_CONFIGURATION_SYNTHETIC_DESCRIPTION,
+      },
+    });
+
+    const sub = extractChangedSubgraph(g, new Set(['/repo/unrelated.ts']));
+
+    expect(sub.nodes.map((node) => node.id)).toEqual([
+      `${SPRING_AUTO_CONFIGURATION_SYNTHETIC_ID_PREFIX}com.example.ExternalAutoConfiguration`,
+    ]);
   });
 
   it('includes a relationship when at least one endpoint is writable', () => {
@@ -131,16 +156,37 @@ describe('extractChangedSubgraph', () => {
     expect(sub.relationships.map((r) => r.id)).toEqual(['inj1']);
   });
 
-  it('always includes AUTO_REGISTERS edges between unchanged metadata and classes (#2415)', () => {
+  it('always includes Spring DECLARES edges between unchanged metadata and classes (#2415)', () => {
     const g = createKnowledgeGraph();
     g.addNode(makeFileNode('metadata:File', '/repo/META-INF/spring.factories', 'File'));
     g.addNode(makeFileNode('config:Class', '/repo/AutoConfig.java', 'Class'));
-    g.addRelationship(makeRel('auto1', 'metadata:File', 'config:Class', 'AUTO_REGISTERS'));
+    g.addRelationship(
+      makeRel(
+        'declares1',
+        'metadata:File',
+        'config:Class',
+        'DECLARES',
+        'spring-auto-configuration-factory',
+      ),
+    );
     g.addRelationship(makeRel('call1', 'metadata:File', 'config:Class', 'CALLS'));
 
     const sub = extractChangedSubgraph(g, new Set(['/repo/unrelated.ts']));
 
-    expect(sub.relationships.map((relationship) => relationship.id)).toEqual(['auto1']);
+    expect(sub.relationships.map((relationship) => relationship.id)).toEqual(['declares1']);
+  });
+
+  it('does not make another metadata system graph-wide just because it uses DECLARES', () => {
+    const g = createKnowledgeGraph();
+    g.addNode(makeFileNode('metadata:File', '/repo/META-INF/example.metadata', 'File'));
+    g.addNode(makeFileNode('target:Class', '/repo/Target.java', 'Class'));
+    g.addRelationship(
+      makeRel('declares1', 'metadata:File', 'target:Class', 'DECLARES', 'example-discovery'),
+    );
+
+    const sub = extractChangedSubgraph(g, new Set(['/repo/unrelated.ts']));
+
+    expect(sub.relationships).toEqual([]);
   });
 });
 
