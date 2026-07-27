@@ -170,4 +170,62 @@ describeIfWorkerBuilt('a property read never resolves to a lexical binding of it
     expect(edges).toHaveLength(1);
     expect(edges[0]).toContain('-> Property:recv.ts:Box.baseUrl');
   });
+
+  it('PHP: `$this` is exempt from the skip, like `this` and `self`', async () => {
+    // COMPANION INVARIANT, not a discriminating regression test — and that was
+    // measured, not assumed. The receiver name arrives as raw source text, so
+    // PHP's `$this->x` presents as `"$this"` and matched neither exempt name
+    // until #2714; but no PHP shape tried here depends on Step 1. This fixture
+    // (a closure reading `$this->…` inside a method that also declares a
+    // same-named local) produces byte-identical edge sets with `$this` present
+    // and absent from `IMPLICIT_RECEIVERS`, because Step 2 resolves the
+    // receiver's type first.
+    //
+    // It is kept for the same reason the `this.baseUrl` case above is: the
+    // exemption is protective. Every other language's self-receiver keeps its
+    // Step-1 route, and the 762-file corpus that measured "0 true edges lost"
+    // was TypeScript-only, so PHP's safety was never established by evidence.
+    // This pins that PHP member resolution through a self-receiver keeps
+    // working if Step 2's coverage ever changes.
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'gn-php-self-'));
+    try {
+      fs.writeFileSync(
+        path.join(dir, 'Box.php'),
+        [
+          '<?php',
+          'class Box {',
+          "    private $baseUrl = 'https://example.com';",
+          '    public function helper() {',
+          '        return 1;',
+          '    }',
+          '    public function read() {',
+          "        $baseUrl = 'shadow';",
+          '        $fn = function () {',
+          '            return $this->baseUrl . $this->helper();',
+          '        };',
+          '        return $fn() . $baseUrl;',
+          '    }',
+          '}',
+          '',
+        ].join('\n'),
+        'utf-8',
+      );
+      const result = await runPipelineFromRepo(dir, () => {}, {
+        workerPoolSize: 1,
+        workerUrlForTest: DIST_WORKER_URL,
+        keepLocalValueSymbols: true,
+      });
+      const calls = result.graph.relationships
+        .filter((rel) => rel.type === 'CALLS')
+        .map((rel) => rel.targetId)
+        .sort();
+
+      // `$this->helper()` inside the closure reaches the class method, and the
+      // same-named local `$baseUrl` never becomes a call target.
+      expect(calls).toContain('Method:Box.php:Box.helper#0');
+      expect(calls.filter((t) => t.includes('baseUrl'))).toEqual([]);
+    } finally {
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
+  });
 });
