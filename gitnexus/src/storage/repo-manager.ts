@@ -1943,7 +1943,10 @@ const listRegisteredReposUnlocked = async (opts?: {
 
 export const listRegisteredRepos = async (opts?: {
   validate?: boolean;
-}): Promise<RegistryEntry[]> => withRegistryLock(() => listRegisteredReposUnlocked(opts));
+}): Promise<RegistryEntry[]> =>
+  opts?.validate
+    ? withRegistryLock(() => listRegisteredReposUnlocked(opts))
+    : listRegisteredReposUnlocked(opts);
 
 // ─── Global CLI Config (~/.gitnexus/config.json) ─────────────────────────
 
