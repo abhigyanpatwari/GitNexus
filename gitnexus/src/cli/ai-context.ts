@@ -175,7 +175,7 @@ export function generateGitNexusContent(
   const tableBody = [standardSkillsRows, generatedRows].filter(Boolean).join('\n');
   const skillsTable = tableBody
     ? `| Task | Read this skill file |
-|------|---------------------|
+| --- | --- |
 ${tableBody}`
     : '';
   // Docs reference the project-local runner `gitnexus analyze` writes (#1945):
@@ -222,7 +222,7 @@ This project is indexed by GitNexus as **${projectName}**${noStats ? '' : ` (${s
 ## Resources
 
 | Resource | Use for |
-|----------|---------|
+| --- | --- |
 | \`gitnexus://repo/${projectName}/context\` | Codebase overview, check index freshness |
 | \`gitnexus://repo/${projectName}/clusters\` | All functional areas |
 | \`gitnexus://repo/${projectName}/processes\` | All execution flows |
