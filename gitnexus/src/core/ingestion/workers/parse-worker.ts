@@ -857,9 +857,12 @@ const enclosingCallablePrefix = (
  * binding from a file-level `save`. Name-only qualification cannot express
  * that; position can. It is unique by construction (two functions cannot start
  * at the same offset) and deterministic across reparses of the same source.
- * Same reasoning as SCIP's document-scoped `local <id>` keyspace: a local is
- * not addressable from outside its document, so its identity only has to be
- * unique within it.
+ * Same reasoning as clang's USR for a function-local (`name@offset`) and
+ * Kythe's C++ indexer: a local is not addressable from outside its document,
+ * so its identity only has to be unique within it, and source position is the
+ * cheapest thing that is. NOT SCIP — SCIP's `local <id>` is a per-document
+ * counter and the spec is explicit that locals do not encode the name, so it
+ * is prior art for the document-scoped keyspace but not for this key shape.
  */
 const callableOwnQualifiedName = (
   fnNode: SyntaxNode,
