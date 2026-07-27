@@ -104,6 +104,34 @@ describe('createMCPServer', () => {
       await server.close();
     }
   });
+  it('requires repo in repo-scoped tool schemas when multiple repos are visible', async () => {
+    const backend = createMockBackend({
+      listRepos: vi.fn().mockResolvedValue([
+        { name: 'alpha', path: '/tmp/alpha' },
+        { name: 'beta', path: '/tmp/beta' },
+      ]),
+    });
+    const server = createMCPServer(backend);
+    const client = new Client({ name: 'multi-repo-client', version: '0.0.0' });
+    const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair();
+
+    try {
+      await Promise.all([server.connect(serverTransport), client.connect(clientTransport)]);
+      const tools = await client.listTools();
+      const query = tools.tools.find((tool) => tool.name === 'query');
+      const listRepos = tools.tools.find((tool) => tool.name === 'list_repos');
+
+      expect(query?.inputSchema.required).toContain('repo');
+      expect(listRepos?.inputSchema.required).not.toContain('repo');
+      expect(GITNEXUS_TOOLS.find((tool) => tool.name === 'query')?.inputSchema.required).not.toContain(
+        'repo',
+      );
+    } finally {
+      await client.close();
+      await server.close();
+    }
+  });
+
 });
 
 // ─── getNextStepHint (tested indirectly via server tool handler) ──────
