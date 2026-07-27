@@ -1,4 +1,5 @@
 import { parentPort, threadId, workerData } from 'node:worker_threads';
+import { localIdentity, nestedCallableQualifiedName } from './callable-id.js';
 import Parser from 'tree-sitter';
 import JavaScript from 'tree-sitter-javascript';
 import TypeScript from 'tree-sitter-typescript';
@@ -767,28 +768,12 @@ function getMethodInfo(
  * and keep their existing ids byte-for-byte, which is what bounds the id churn
  * this change forces.
  *
- * `localIdentity` below completes it. The name chain alone is not enough, and
- * the gap is the language's, not the grammar's: ECMAScript creates an
- * environment record per function AND per block, so sibling blocks in one
- * function hold genuinely different bindings —
- *
- *     function outer(a) {
- *       if (a) { const pick = …; return pick(1); }   // one binding
- *       else   { const pick = …; return pick(2); }   // a DIFFERENT binding
- *     }
- *
- * — and both are `outer.pick` by name. Putting a block token in the qualifier
- * would tag every local inside any `if`, the common case, and buy nothing over
- * putting the position on the declaration itself: a declaration's own position
- * is unique across every environment record it could belong to, without the
- * qualifier having to enumerate them. One rule, no conditionals, O(1).
- *
- * Applied ONLY to locals. Top-level functions and class methods keep their
- * bare/class-qualified ids, which is what keeps this off the symbols other
- * files, saved queries and stored references actually address.
+ * `localIdentity` completes it, and both it and the shared
+ * `nestedCallableQualifiedName` rule now live in `./callable-id.ts`: this
+ * module posts a `ready` message to `parentPort` at import, so a unit test
+ * cannot value-import it, and a rule three phases must agree on has to be
+ * testable rather than merely commented (#2714).
  */
-const localIdentity = (node: SyntaxNode, name: string): string =>
-  `${name}@${node.startPosition.row}:${node.startPosition.column}`;
 
 /**
  * Boundary for the enclosing-callable walk (#2699).
@@ -873,9 +858,9 @@ const callableOwnQualifiedName = (
   if (cached !== undefined) return cached;
 
   const efnResult = provider.methodExtractor?.extractFunctionName?.(fnNode, filePath);
-  // An anonymous callable has no name of its own, so it IS its position —
-  // `localIdentity` supplies the same suffix the local branch below appends,
-  // and the two must not stack.
+  // An anonymous callable has no name of its own, so it IS its position: the
+  // `ownName === null` branch below carries the position INSTEAD of a name,
+  // never in addition to one, so the two spellings cannot stack.
   const ownName = efnResult?.funcName ?? genericFuncName(fnNode) ?? null;
 
   const prefix = enclosingCallablePrefix(fnNode, filePath, provider);
@@ -884,12 +869,11 @@ const callableOwnQualifiedName = (
       ? cachedFindEnclosingClassInfo(fnNode, filePath, provider.resolveEnclosingOwner)
       : null;
   const owner = prefix ?? classInfo?.className;
-  const localName = localIdentity(fnNode, ownName ?? 'fn');
   const result =
     prefix !== undefined
-      ? `${prefix}.${localName}`
+      ? nestedCallableQualifiedName(prefix, fnNode, ownName ?? 'fn')
       : ownName === null
-        ? localName
+        ? localIdentity(fnNode, 'fn')
         : owner
           ? `${owner}.${ownName}`
           : ownName;
@@ -947,15 +931,16 @@ const findEnclosingFunctionId = (
         const nestedPrefix = enclosingCallablePrefix(current, filePath, provider);
         const ownerName =
           nestedPrefix ?? classInfo?.className ?? standaloneMethodInfo?.receiverType ?? undefined;
-        // Lockstep with the definition phase. `callableOwnQualifiedName` appends
-        // `localIdentity` to a nested callable's OWN name segment, under exactly
-        // this condition (`prefix !== undefined`). Omitting it here made the two
-        // phases derive different ids for the same callable — and the failure is
-        // silent: the caller id names a node that does not exist, so the edge is
-        // dropped rather than reported. The condition is deliberately identical
-        // to the definition phase's so the two cannot diverge again.
-        const ownSegment = nestedPrefix !== undefined ? localIdentity(current, funcName) : funcName;
-        const qualifiedName = ownerName ? `${ownerName}.${ownSegment}` : ownSegment;
+        // Lockstep with the other two id-building phases — see
+        // `nestedCallableQualifiedName`, which is the shared rule. When a
+        // nested prefix exists it IS `ownerName`, so this branch and the
+        // owner branch below cannot disagree about which prefix applies.
+        const qualifiedName =
+          nestedPrefix !== undefined
+            ? nestedCallableQualifiedName(nestedPrefix, current, funcName)
+            : ownerName
+              ? `${ownerName}.${funcName}`
+              : funcName;
         // Include #<arity> suffix to match definition-phase Method/Constructor IDs.
         // Use the same MethodExtractor (getMethodInfo) as the definition phase.
         // When same-arity collisions exist, also append ~type1,type2.
@@ -2328,7 +2313,7 @@ const processFileGroup = (
               qualifiedTypeName !== undefined
             ? qualifiedTypeName
             : nestedCallablePrefix !== undefined && definitionNode
-              ? `${nestedCallablePrefix}.${localIdentity(definitionNode, nodeName)}`
+              ? nestedCallableQualifiedName(nestedCallablePrefix, definitionNode, nodeName)
               : enclosingClassInfo
                 ? `${enclosingClassInfo.className}.${nodeName}`
                 : nodeName;
