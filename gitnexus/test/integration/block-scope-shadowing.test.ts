@@ -14,19 +14,26 @@
  * (`options.baseUrl`) mis-resolving to an unrelated function-local `const` of
  * the same name in the same file.
  *
- * The cause is not block-specific: `lookupCore` Step 1 walks the lexical chain
- * for every lookup, including explicit-receiver property reads, so
- * `options.baseUrl` can bind to a local `baseUrl`. Block scopes do not fix that
- * — they narrow it, by moving the local off the chain of any reference outside
- * its block. The remaining case (a local declared directly in the function
- * body) is unchanged and still mis-resolves; that is pre-existing and tracked
- * separately.
+ * The cause was not block-specific: `lookupCore` Step 1 walked the lexical
+ * chain for EVERY lookup, including explicit-receiver property reads, so
+ * `options.baseUrl` could bind to a local `baseUrl`. Block scopes narrowed
+ * that — they moved a nested-block local off the chain of any reference
+ * outside its block — but a local declared directly in the FUNCTION BODY
+ * stayed on it, and no amount of extra scopes reaches that case.
  *
- * So these tests pin the direction of the change in BOTH directions: the
- * property read must not reach the block-local, and the genuine bare read of
- * that same local must still emit its edge. Deleting the block-scope capture
- * fails the first; over-suppressing (dropping block bindings instead of
- * scoping them) fails the second.
+ * That residual half is fixed here too: Step 1 is now skipped when the site
+ * has a NAMED explicit receiver, since `recv.name` addresses a member of
+ * whatever `recv` denotes and never a lexical binding of the bare tail name.
+ * The second describe below pins it. What remains, deliberately, is that a
+ * `this`/`self` read can still bind lexically to a same-named local — that is
+ * the price of keeping the genuine self-alias reads Step 1 resolves correctly
+ * (`const self = this; self.member`), which is why those two names are exempt.
+ *
+ * So these tests pin the change in BOTH directions: a property read must not
+ * reach a same-named local, and a real member read must still resolve through
+ * the receiver's own type. Deleting the block-scope capture fails the first;
+ * over-suppressing — dropping block bindings rather than scoping them, or
+ * skipping Step 1 for `this` as well — fails the second.
  */
 import { describe, expect, it, vi } from 'vitest';
 import fs from 'node:fs';
@@ -112,5 +119,113 @@ describeIfWorkerBuilt('block scopes keep a property read off a same-named block 
     // an overload index (`Box.pick#1`) that is orthogonal to what this pins.
     expect(edges).toHaveLength(1);
     expect(edges[0]).toContain('-> Property:box.ts:Box.baseUrl');
+  });
+});
+
+describeIfWorkerBuilt('a property read never resolves to a lexical binding of its own name', () => {
+  // The residual half. Block scopes moved a NESTED-block local off the chain of
+  // a reference outside that block, which removed 114 false edges on a 762-file
+  // corpus. A local declared directly in the FUNCTION BODY stayed on the chain,
+  // so `options.baseUrl` still bound to it — same defect, one scope level up,
+  // and not fixable by adding more scopes.
+  //
+  // Fixed in `lookupCore` instead: Step 1's lexical walk is skipped when the
+  // site has an explicit receiver. `recv.name` names a member of whatever
+  // `recv` denotes; a binding of the bare tail name in an enclosing scope is
+  // never the right answer.
+
+  it('TypeScript: `options.baseUrl` does not ACCESS a function-body-level `const baseUrl`', async () => {
+    const edges = await accessEdgesFor(
+      'body.ts',
+      [
+        'export function pick(options: { baseUrl?: string }, fallback: string): string {',
+        '  const baseUrl = fallback.trim();',
+        '  if (baseUrl.length > 0) return baseUrl;',
+        '  return options.baseUrl ?? fallback;',
+        '}',
+        '',
+      ].join('\n'),
+    );
+
+    expect(edges.filter((e) => e.endsWith('baseUrl'))).toEqual([]);
+  });
+
+  it('TypeScript: a real member read still resolves through the receiver type', async () => {
+    // The guard against over-suppression: skipping Step 1 must not take Steps
+    // 2 and 3 with it. `this.baseUrl` has an explicit receiver too, and it
+    // must still reach the class property.
+    const edges = await accessEdgesFor(
+      'recv.ts',
+      [
+        'export class Box {',
+        "  baseUrl = 'https://example.com';",
+        '  read(): string {',
+        '    return this.baseUrl;',
+        '  }',
+        '}',
+        '',
+      ].join('\n'),
+    );
+
+    expect(edges).toHaveLength(1);
+    expect(edges[0]).toContain('-> Property:recv.ts:Box.baseUrl');
+  });
+
+  it('PHP: `$this` is exempt from the skip, like `this` and `self`', async () => {
+    // COMPANION INVARIANT, not a discriminating regression test — and that was
+    // measured, not assumed. The receiver name arrives as raw source text, so
+    // PHP's `$this->x` presents as `"$this"` and matched neither exempt name
+    // until #2714; but no PHP shape tried here depends on Step 1. This fixture
+    // (a closure reading `$this->…` inside a method that also declares a
+    // same-named local) produces byte-identical edge sets with `$this` present
+    // and absent from `IMPLICIT_RECEIVERS`, because Step 2 resolves the
+    // receiver's type first.
+    //
+    // It is kept for the same reason the `this.baseUrl` case above is: the
+    // exemption is protective. Every other language's self-receiver keeps its
+    // Step-1 route, and the 762-file corpus that measured "0 true edges lost"
+    // was TypeScript-only, so PHP's safety was never established by evidence.
+    // This pins that PHP member resolution through a self-receiver keeps
+    // working if Step 2's coverage ever changes.
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'gn-php-self-'));
+    try {
+      fs.writeFileSync(
+        path.join(dir, 'Box.php'),
+        [
+          '<?php',
+          'class Box {',
+          "    private $baseUrl = 'https://example.com';",
+          '    public function helper() {',
+          '        return 1;',
+          '    }',
+          '    public function read() {',
+          "        $baseUrl = 'shadow';",
+          '        $fn = function () {',
+          '            return $this->baseUrl . $this->helper();',
+          '        };',
+          '        return $fn() . $baseUrl;',
+          '    }',
+          '}',
+          '',
+        ].join('\n'),
+        'utf-8',
+      );
+      const result = await runPipelineFromRepo(dir, () => {}, {
+        workerPoolSize: 1,
+        workerUrlForTest: DIST_WORKER_URL,
+        keepLocalValueSymbols: true,
+      });
+      const calls = result.graph.relationships
+        .filter((rel) => rel.type === 'CALLS')
+        .map((rel) => rel.targetId)
+        .sort();
+
+      // `$this->helper()` inside the closure reaches the class method, and the
+      // same-named local `$baseUrl` never becomes a call target.
+      expect(calls).toContain('Method:Box.php:Box.helper#0');
+      expect(calls.filter((t) => t.includes('baseUrl'))).toEqual([]);
+    } finally {
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
   });
 });

@@ -59,6 +59,18 @@ export const TYPESCRIPT_QUERIES = `
     name: (identifier) @name
     value: (function_expression))) @definition.function
 
+; Generator EXPRESSIONS bound to a name (\`const g = function* () {}\`). Without
+; these, the binding emitted a \`Const\` node rather than a \`Function\` one, so
+; \`g()\` resolved to nothing: \`buildGraphTargetIndex\` only admits a callable
+; node. Same construct and same binding semantics as the \`function_expression\`
+; rules directly above, so same label. Covers the four variable-binding shapes
+; (const/let and var, each plain and exported); a generator in an object-literal
+; pair or a HOC wrapper is NOT covered and still falls through anonymous.
+(lexical_declaration
+  (variable_declarator
+    name: (identifier) @name
+    value: (generator_function))) @definition.function
+
 (export_statement
   declaration: (lexical_declaration
     (variable_declarator
@@ -70,6 +82,12 @@ export const TYPESCRIPT_QUERIES = `
     (variable_declarator
       name: (identifier) @name
       value: (function_expression)))) @definition.function
+
+(export_statement
+  declaration: (lexical_declaration
+    (variable_declarator
+      name: (identifier) @name
+      value: (generator_function)))) @definition.function
 
 ; \`var\` closure bindings (#2693). The lexical rules above cover const/let;
 ; \`var\` is a different grammar node, so \`var f = (x) => x\` kept a Variable
@@ -86,6 +104,11 @@ export const TYPESCRIPT_QUERIES = `
     name: (identifier) @name
     value: (function_expression))) @definition.function
 
+(variable_declaration
+  (variable_declarator
+    name: (identifier) @name
+    value: (generator_function))) @definition.function
+
 (export_statement
   declaration: (variable_declaration
     (variable_declarator
@@ -97,6 +120,12 @@ export const TYPESCRIPT_QUERIES = `
     (variable_declarator
       name: (identifier) @name
       value: (function_expression)))) @definition.function
+
+(export_statement
+  declaration: (variable_declaration
+    (variable_declarator
+      name: (identifier) @name
+      value: (generator_function)))) @definition.function
 
 ; Object-property arrows / function expressions: \`{ addItem: () => ... }\`.
 ; The pair's key field carries the meaningful name. Without these patterns,
@@ -443,6 +472,18 @@ export const JAVASCRIPT_QUERIES = `
     name: (identifier) @name
     value: (function_expression))) @definition.function
 
+; Generator EXPRESSIONS bound to a name (\`const g = function* () {}\`). Without
+; these, the binding emitted a \`Const\` node rather than a \`Function\` one, so
+; \`g()\` resolved to nothing: \`buildGraphTargetIndex\` only admits a callable
+; node. Same construct and same binding semantics as the \`function_expression\`
+; rules directly above, so same label. Covers the four variable-binding shapes
+; (const/let and var, each plain and exported); a generator in an object-literal
+; pair or a HOC wrapper is NOT covered and still falls through anonymous.
+(lexical_declaration
+  (variable_declarator
+    name: (identifier) @name
+    value: (generator_function))) @definition.function
+
 (export_statement
   declaration: (lexical_declaration
     (variable_declarator
@@ -454,6 +495,12 @@ export const JAVASCRIPT_QUERIES = `
     (variable_declarator
       name: (identifier) @name
       value: (function_expression)))) @definition.function
+
+(export_statement
+  declaration: (lexical_declaration
+    (variable_declarator
+      name: (identifier) @name
+      value: (generator_function)))) @definition.function
 
 ; \`var\` closure bindings (#2693). The lexical rules above cover const/let;
 ; \`var\` is a different grammar node, so \`var f = (x) => x\` kept a Variable
@@ -470,6 +517,11 @@ export const JAVASCRIPT_QUERIES = `
     name: (identifier) @name
     value: (function_expression))) @definition.function
 
+(variable_declaration
+  (variable_declarator
+    name: (identifier) @name
+    value: (generator_function))) @definition.function
+
 (export_statement
   declaration: (variable_declaration
     (variable_declarator
@@ -481,6 +533,12 @@ export const JAVASCRIPT_QUERIES = `
     (variable_declarator
       name: (identifier) @name
       value: (function_expression)))) @definition.function
+
+(export_statement
+  declaration: (variable_declaration
+    (variable_declarator
+      name: (identifier) @name
+      value: (generator_function)))) @definition.function
 
 ; Object-property arrows / function expressions: \`{ addItem: () => ... }\`.
 ; See TYPESCRIPT_QUERIES for rationale (issue #1166).

@@ -108,7 +108,31 @@ export function lookupCore(
   const perCandidate = new Map<DefId, CandidateState>();
 
   // ── Step 1: lexical scope-chain walk ──────────────────────────────────
-  const lexicalShadowed = walkLexicalChain(name, startScope, acceptedKinds, ctx, perCandidate);
+  //
+  // SKIPPED for a NAMED explicit receiver. `recv.name` names a MEMBER of
+  // whatever `recv` denotes; it is not a lexical reference to `name`, so a
+  // binding of the bare tail name in an enclosing scope is never the right
+  // answer. Steps 2 and 3 (receiver type / owner members) are the routes.
+  //
+  // Without this, `options.baseUrl` bound to an unrelated function-local
+  // `const baseUrl` in the same file. This is the residual half of the defect
+  // JS/TS block scopes narrowed in #2699 — blocks moved nested-block locals
+  // off the chain, but a local declared directly in the function body stayed
+  // on it, and no amount of extra scopes reaches that case.
+  //
+  // `this` / `self` are deliberately EXEMPT. For a self-receiver the members
+  // and the lexical chain legitimately overlap — a class body is itself a
+  // scope that binds its members — so Step 1 is a real resolution route
+  // there, not a coincidence. Measured on a 762-file corpus: skipping Step 1
+  // for every explicit receiver dropped 711 edges, of which 43 were
+  // `this.member` reads reaching their own owner. Exempting the self names
+  // keeps those and still removes the 668 named-receiver false positives.
+  const skipLexical =
+    params.explicitReceiver !== undefined &&
+    !IMPLICIT_RECEIVERS.includes(params.explicitReceiver.name);
+  const lexicalShadowed = skipLexical
+    ? false
+    : walkLexicalChain(name, startScope, acceptedKinds, ctx, perCandidate);
 
   // ── Step 2: type-binding / MRO walk (methods/fields) ──────────────────
   if (params.useReceiverTypeBinding && ctx.methodDispatch !== undefined) {
@@ -297,7 +321,31 @@ function resolveReceiverOwner(
   return undefined;
 }
 
-const IMPLICIT_RECEIVERS: readonly string[] = Object.freeze(['self', 'this']);
+/**
+ * Names that denote the enclosing instance rather than an arbitrary object.
+ *
+ * Two consumers, and both want the same set: `resolveReceiverOwner` above
+ * tries them when no explicit receiver is present, and the Step-1 skip in
+ * `lookupCore` exempts them because for a SELF receiver the members and the
+ * lexical chain legitimately overlap — a class body is itself a scope that
+ * binds its members — whereas for a named receiver they never do.
+ *
+ * `$this` is matched because the receiver name arrives as the reference node's
+ * RAW SOURCE TEXT (`extractExplicitReceiver` returns `cap.text` verbatim), so
+ * PHP's `$this->x` presents as `"$this"`, sigil included. Listing the spelling
+ * keeps this a data table rather than a language switch — this module resolves
+ * language behaviour through `providers.*` and `params` only (see the header)
+ * — and it follows the ingestion-side twin, `THIS_RECEIVERS` in
+ * `gitnexus/src/core/ingestion/type-env.ts`, which has always listed the
+ * sigil'd spelling rather than stripping it. Stripping would carry the same
+ * false-positive surface anyway (a JS variable literally named `$this`).
+ *
+ * That twin also lists `Me`, deliberately NOT mirrored here: no entry in
+ * `SupportedLanguages` uses it, so it can only ever exempt a variable that
+ * happens to be called `Me`. The two lists are otherwise the same set, and
+ * nothing enforces that — see the drift guard noted in #2714.
+ */
+const IMPLICIT_RECEIVERS: readonly string[] = Object.freeze(['self', 'this', '$this']);
 
 function lookupReceiverType(
   startScope: ScopeId,
