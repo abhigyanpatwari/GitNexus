@@ -542,8 +542,18 @@ describeIfWorkerBuilt('a closure binding is a call TARGET, not yet a call SOURCE
   //
   // So a fix needs per-language work, not one switch: a callable-boundary
   // signal independent of scope `kind` (Kotlin/Ruby), an association from a
-  // closure scope to its binding's def (PHP), and a scope that does not exist
-  // yet (Dart). See #2699.
+  // closure scope to its binding's def (PHP — DONE, see below), and a scope
+  // that does not exist yet (Dart). See #2699.
+  //
+  // Probe-measured root cause (#2699): EVERY still-failing language has an
+  // EMPTY ownedDefs on the closure's own scope, because the closure-binding
+  // declaration rule (binding name + @declaration.function on the INNER
+  // closure node) existed only in javascript/query.ts. Kotlin and Ruby need
+  // BOTH that rule AND a relaxed kind gate — their lambda_literal / do_block
+  // is @scope.block deliberately (#1757), so the rule alone leaves them
+  // rejected. Dart has no closure scope at all: dart/query.ts declares no
+  // @scope.function, and dart/captures.ts synthesizes one only from a
+  // declaration WITH a body node, which an expression-bodied closure lacks.
   //
   // TS/JS free bindings are the exception: their arrow has a `@scope.function`
   // with a matching range, so the closure IS the anchor there. These tests exist
@@ -558,14 +568,21 @@ describeIfWorkerBuilt('a closure binding is a call TARGET, not yet a call SOURCE
     expect(targets).toEqual(['rel:CALLS:File:A.kt->Function:A.kt:target']);
   });
 
-  it('PHP: a call inside the closure is attributed to the file, not the binding', async () => {
+  it('PHP: a call inside the closure IS attributed to the binding (#2699 S1)', async () => {
+    // FLIPPED by #2699 S1. php/query.ts now carries the closure-binding
+    // declaration rule with javascript/query.ts's anchor discipline
+    // (@declaration.function on the INNER anonymous_function, so its range
+    // aligns with the (anonymous_function) @scope.function above). The closure
+    // scope therefore owns the callable def and pickCallerCallableDef stops
+    // falling through to the enclosing scope — the closure is now a call
+    // SOURCE, not only a TARGET.
     const targets = await callEdgeIdsFor(
       'a.php',
       '<?php\nfunction target($x) { return $x; }\n' +
         '$handler = function ($x) { return target($x); };\n',
     );
 
-    expect(targets).toEqual(['rel:CALLS:File:a.php->Function:a.php:target']);
+    expect(targets).toEqual(['rel:CALLS:Function:a.php:$handler->Function:a.php:target']);
   });
 
   it('JavaScript: a free arrow binding IS the caller anchor', async () => {
