@@ -23,6 +23,7 @@ import { getInferredRepoName, resolveRepoIdentityRoot } from './git.js';
 import { stripWindowsLongPathPrefix } from '../lib/utils.js';
 import { retryRename } from './fs-atomic.js';
 import { logger } from '../core/logger.js';
+import { acquireIndexLock } from './index-lock.js';
 import {
   branchSlug,
   BRANCHES_DIR,
@@ -1132,6 +1133,23 @@ export const getGlobalRegistryPath = (): string => {
 };
 
 /**
+ * Serialize global registry read/merge/write transactions across processes.
+ *
+ * The registry is shared by every indexed repository, so per-index locks do
+ * not protect this file. Reuse the cross-platform index lock primitive with
+ * the global directory as its lock namespace; the handle is kernel-owned on
+ * supported platforms and crash-reclaimable by the existing fallback.
+ */
+const withRegistryLock = async <T>(operation: () => Promise<T>): Promise<T> => {
+  const lock = await acquireIndexLock(getGlobalDir());
+  try {
+    return await operation();
+  } finally {
+    lock.release();
+  }
+};
+
+/**
  * Read the global registry. Returns empty array if not found.
  */
 export const readRegistry = async (): Promise<RegistryEntry[]> => {
@@ -1277,7 +1295,7 @@ const hasCustomAlias = (entry: RegistryEntry, inferredName: string | null): bool
  * caller can re-use it to keep AGENTS.md / skill files aligned with the
  * MCP-visible repo name (#979).
  */
-export const registerRepo = async (
+const registerRepoUnlocked = async (
   repoPath: string,
   meta: RepoMeta,
   opts?: RegisterRepoOptions,
@@ -1444,11 +1462,18 @@ export const registerRepo = async (
   return name;
 };
 
+export const registerRepo = async (
+  repoPath: string,
+  meta: RepoMeta,
+  opts?: RegisterRepoOptions,
+): Promise<string> =>
+  withRegistryLock(() => registerRepoUnlocked(repoPath, meta, opts));
+
 /**
  * Remove a repo from the global registry.
  * Called after `gitnexus clean`.
  */
-export const unregisterRepo = async (repoPath: string): Promise<void> => {
+const unregisterRepoUnlocked = async (repoPath: string): Promise<void> => {
   // Canonicalise BOTH sides so an unregister call issued with the
   // symlink form (`/var/folders/.../repo`) still matches an entry
   // written with the realpath form (`/private/var/folders/.../repo`),
@@ -1460,6 +1485,9 @@ export const unregisterRepo = async (repoPath: string): Promise<void> => {
   await writeRegistry(filtered);
 };
 
+export const unregisterRepo = async (repoPath: string): Promise<void> =>
+  withRegistryLock(() => unregisterRepoUnlocked(repoPath));
+
 /**
  * Remove a single non-primary branch's summary from a repo's registry entry
  * (#2106 R7). Called by `gitnexus clean --branch`. Returns `true` when a
@@ -1468,7 +1496,7 @@ export const unregisterRepo = async (repoPath: string): Promise<void> => {
  * primary entry is left intact; an empty `branches[]` is dropped to keep the
  * registry shape legacy-clean.
  */
-export const removeBranchIndex = async (repoPath: string, branch: string): Promise<boolean> => {
+const removeBranchIndexUnlocked = async (repoPath: string, branch: string): Promise<boolean> => {
   const resolved = canonicalizePath(repoPath);
   const entries = await readRegistry();
   const idx = entries.findIndex((e) => registryPathEquals(canonicalizePath(e.path), resolved));
@@ -1484,6 +1512,9 @@ export const removeBranchIndex = async (repoPath: string, branch: string): Promi
   await writeRegistry(entries);
   return true;
 };
+
+export const removeBranchIndex = async (repoPath: string, branch: string): Promise<boolean> =>
+  withRegistryLock(() => removeBranchIndexUnlocked(repoPath, branch));
 
 /**
  * Record that the flat workspace slot now serves `branch` (#2354).
@@ -1502,7 +1533,7 @@ export const removeBranchIndex = async (repoPath: string, branch: string): Promi
  * repos (never self-heals an unregistered repo, per #2264/#1169; the registry
  * check precedes the rm per #2364 review F2) — and no subprocess is spawned.
  */
-export const adoptFlatBranchLabel = async (repoPath: string, branch: string): Promise<void> => {
+const adoptFlatBranchLabelUnlocked = async (repoPath: string, branch: string): Promise<void> => {
   const canonicalInput = canonicalizePath(repoPath);
   const isRegistered = (list: RegistryEntry[]): number =>
     list.findIndex((e) => registryPathEquals(canonicalizePath(e.path), canonicalInput));
@@ -1568,6 +1599,9 @@ export const adoptFlatBranchLabel = async (repoPath: string, branch: string): Pr
   entries[idx] = entry;
   await writeRegistry(entries);
 };
+
+export const adoptFlatBranchLabel = async (repoPath: string, branch: string): Promise<void> =>
+  withRegistryLock(() => adoptFlatBranchLabelUnlocked(repoPath, branch));
 
 /**
  * Thrown by {@link resolveRegistryEntry} when no registered repo matches
@@ -1850,7 +1884,7 @@ export const resolveRegistryEntry = (entries: RegistryEntry[], target: string): 
  * therefore "not confirmed present," not "confirmed present"; downstream DB
  * opens are independently and lazily guarded.
  */
-export const listRegisteredRepos = async (opts?: {
+const listRegisteredReposUnlocked = async (opts?: {
   validate?: boolean;
 }): Promise<RegistryEntry[]> => {
   const entries = await readRegistry();
@@ -1907,6 +1941,11 @@ export const listRegisteredRepos = async (opts?: {
 
   return valid;
 };
+
+export const listRegisteredRepos = async (opts?: {
+  validate?: boolean;
+}): Promise<RegistryEntry[]> =>
+  withRegistryLock(() => listRegisteredReposUnlocked(opts));
 
 // ─── Global CLI Config (~/.gitnexus/config.json) ─────────────────────────
 

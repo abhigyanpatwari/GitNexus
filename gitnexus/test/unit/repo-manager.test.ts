@@ -901,6 +901,27 @@ describe('registerRepo name override + collision guard (#829)', () => {
       await parentB.cleanup();
     }
   });
+  it('preserves all entries when distinct registrations overlap', async () => {
+    const repos = await Promise.all(
+      Array.from({ length: 6 }, (_, index) => createTempDir(`gitnexus-concurrent-repo-${index}-`)),
+    );
+    try {
+      await Promise.all(
+        repos.map((repo, index) =>
+          registerRepo(repo.dbPath, meta, { name: `concurrent-${index}` }),
+        ),
+      );
+
+      const entries = await listRegisteredRepos();
+      expect(entries).toHaveLength(repos.length);
+      expect(new Set(entries.map((entry) => entry.name))).toEqual(
+        new Set(repos.map((_, index) => `concurrent-${index}`)),
+      );
+    } finally {
+      await Promise.all(repos.map((repo) => repo.cleanup()));
+    }
+  });
+
 });
 
 // ─── registerRepo branch nesting (#2106) ─────────────────────────────
