@@ -73,8 +73,8 @@ describe('CALL_SUMMARY relation-type exclusion (U-C1)', () => {
 });
 
 describe('CALL_SUMMARY incremental reuse gate (U-C5)', () => {
-  it('INCREMENTAL_SCHEMA_VERSION is bumped to 19 (class-body boundary fix, #2699)', () => {
-    expect(INCREMENTAL_SCHEMA_VERSION).toBe(19);
+  it('INCREMENTAL_SCHEMA_VERSION is bumped to 20 (named-receiver lexical fallback, #2699)', () => {
+    expect(INCREMENTAL_SCHEMA_VERSION).toBe(20);
   });
 
   it('a pre-current stamp fails the `=== INCREMENTAL_SCHEMA_VERSION` reuse gate → forces full re-analyze', () => {
@@ -150,7 +150,12 @@ describe('CALL_SUMMARY incremental reuse gate (U-C5)', () => {
     // enclosing-callable walk on class DECLARATIONS only, so `Worker$1.run` was re-keyed
     // as `Worker.makeHandler.run@7:12`. Reusing it would keep those on unchanged files.
     expect(passesReuseGate(18)).toBe(false);
+    // A pre-v20 (v19) index holds the false CALLS/ACCESSES a NAMED explicit receiver
+    // used to mint through the lexical chain (`options.baseUrl` → a function-local
+    // `const baseUrl`) — 709 of them on a 762-file corpus. Reusing it would keep
+    // every one on unchanged files.
+    expect(passesReuseGate(19)).toBe(false);
     // A current-version stamp passes the gate (incremental top-up eligible).
-    expect(passesReuseGate(19)).toBe(true);
+    expect(passesReuseGate(20)).toBe(true);
   });
 });

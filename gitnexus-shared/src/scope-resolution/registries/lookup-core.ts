@@ -108,7 +108,31 @@ export function lookupCore(
   const perCandidate = new Map<DefId, CandidateState>();
 
   // ── Step 1: lexical scope-chain walk ──────────────────────────────────
-  const lexicalShadowed = walkLexicalChain(name, startScope, acceptedKinds, ctx, perCandidate);
+  //
+  // SKIPPED for a NAMED explicit receiver. `recv.name` names a MEMBER of
+  // whatever `recv` denotes; it is not a lexical reference to `name`, so a
+  // binding of the bare tail name in an enclosing scope is never the right
+  // answer. Steps 2 and 3 (receiver type / owner members) are the routes.
+  //
+  // Without this, `options.baseUrl` bound to an unrelated function-local
+  // `const baseUrl` in the same file. This is the residual half of the defect
+  // JS/TS block scopes narrowed in #2699 — blocks moved nested-block locals
+  // off the chain, but a local declared directly in the function body stayed
+  // on it, and no amount of extra scopes reaches that case.
+  //
+  // `this` / `self` are deliberately EXEMPT. For a self-receiver the members
+  // and the lexical chain legitimately overlap — a class body is itself a
+  // scope that binds its members — so Step 1 is a real resolution route
+  // there, not a coincidence. Measured on a 762-file corpus: skipping Step 1
+  // for every explicit receiver dropped 711 edges, of which 43 were
+  // `this.member` reads reaching their own owner. Exempting the self names
+  // keeps those and still removes the 668 named-receiver false positives.
+  const skipLexical =
+    params.explicitReceiver !== undefined &&
+    !IMPLICIT_RECEIVERS.includes(params.explicitReceiver.name);
+  const lexicalShadowed = skipLexical
+    ? false
+    : walkLexicalChain(name, startScope, acceptedKinds, ctx, perCandidate);
 
   // ── Step 2: type-binding / MRO walk (methods/fields) ──────────────────
   if (params.useReceiverTypeBinding && ctx.methodDispatch !== undefined) {

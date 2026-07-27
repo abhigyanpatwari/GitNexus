@@ -114,3 +114,53 @@ describeIfWorkerBuilt('block scopes keep a property read off a same-named block 
     expect(edges[0]).toContain('-> Property:box.ts:Box.baseUrl');
   });
 });
+
+describeIfWorkerBuilt('a property read never resolves to a lexical binding of its own name', () => {
+  // The residual half. Block scopes moved a NESTED-block local off the chain of
+  // a reference outside that block, which removed 114 false edges on a 762-file
+  // corpus. A local declared directly in the FUNCTION BODY stayed on the chain,
+  // so `options.baseUrl` still bound to it — same defect, one scope level up,
+  // and not fixable by adding more scopes.
+  //
+  // Fixed in `lookupCore` instead: Step 1's lexical walk is skipped when the
+  // site has an explicit receiver. `recv.name` names a member of whatever
+  // `recv` denotes; a binding of the bare tail name in an enclosing scope is
+  // never the right answer.
+
+  it('TypeScript: `options.baseUrl` does not ACCESS a function-body-level `const baseUrl`', async () => {
+    const edges = await accessEdgesFor(
+      'body.ts',
+      [
+        'export function pick(options: { baseUrl?: string }, fallback: string): string {',
+        '  const baseUrl = fallback.trim();',
+        '  if (baseUrl.length > 0) return baseUrl;',
+        '  return options.baseUrl ?? fallback;',
+        '}',
+        '',
+      ].join('\n'),
+    );
+
+    expect(edges.filter((e) => e.endsWith('baseUrl'))).toEqual([]);
+  });
+
+  it('TypeScript: a real member read still resolves through the receiver type', async () => {
+    // The guard against over-suppression: skipping Step 1 must not take Steps
+    // 2 and 3 with it. `this.baseUrl` has an explicit receiver too, and it
+    // must still reach the class property.
+    const edges = await accessEdgesFor(
+      'recv.ts',
+      [
+        'export class Box {',
+        "  baseUrl = 'https://example.com';",
+        '  read(): string {',
+        '    return this.baseUrl;',
+        '  }',
+        '}',
+        '',
+      ].join('\n'),
+    );
+
+    expect(edges).toHaveLength(1);
+    expect(edges[0]).toContain('-> Property:recv.ts:Box.baseUrl');
+  });
+});

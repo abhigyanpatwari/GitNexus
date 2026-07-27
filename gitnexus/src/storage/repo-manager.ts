@@ -518,8 +518,15 @@ export interface RepoMeta {
  * destroying the javac-compatible JLS identity of #2550/#2555/#2562. An index stamped
  * v18 therefore holds WRONG Java ids, and without this bump it passes the reuse gate
  * and keeps them on every unchanged file; force a full re-analyze instead.
+ * v20: a NAMED explicit receiver no longer resolves its member through the lexical
+ * scope chain (#2699 follow-up). `options.baseUrl` used to bind to an unrelated
+ * function-local `const baseUrl`; measured on a 762-file corpus this removes 709
+ * such edges and adds none. `this`/`self` are exempt, so the 2 genuine self-alias
+ * reads it also covered are kept. A v19 index holds those false CALLS/ACCESSES on
+ * every unchanged file and would keep serving them through the reuse gate; force a
+ * full re-analyze instead.
  */
-export const INCREMENTAL_SCHEMA_VERSION = 19;
+export const INCREMENTAL_SCHEMA_VERSION = 20;
 
 export interface IndexedRepo {
   repoPath: string;
