@@ -14,19 +14,26 @@
  * (`options.baseUrl`) mis-resolving to an unrelated function-local `const` of
  * the same name in the same file.
  *
- * The cause is not block-specific: `lookupCore` Step 1 walks the lexical chain
- * for every lookup, including explicit-receiver property reads, so
- * `options.baseUrl` can bind to a local `baseUrl`. Block scopes do not fix that
- * — they narrow it, by moving the local off the chain of any reference outside
- * its block. The remaining case (a local declared directly in the function
- * body) is unchanged and still mis-resolves; that is pre-existing and tracked
- * separately.
+ * The cause was not block-specific: `lookupCore` Step 1 walked the lexical
+ * chain for EVERY lookup, including explicit-receiver property reads, so
+ * `options.baseUrl` could bind to a local `baseUrl`. Block scopes narrowed
+ * that — they moved a nested-block local off the chain of any reference
+ * outside its block — but a local declared directly in the FUNCTION BODY
+ * stayed on it, and no amount of extra scopes reaches that case.
  *
- * So these tests pin the direction of the change in BOTH directions: the
- * property read must not reach the block-local, and the genuine bare read of
- * that same local must still emit its edge. Deleting the block-scope capture
- * fails the first; over-suppressing (dropping block bindings instead of
- * scoping them) fails the second.
+ * That residual half is fixed here too: Step 1 is now skipped when the site
+ * has a NAMED explicit receiver, since `recv.name` addresses a member of
+ * whatever `recv` denotes and never a lexical binding of the bare tail name.
+ * The second describe below pins it. What remains, deliberately, is that a
+ * `this`/`self` read can still bind lexically to a same-named local — that is
+ * the price of keeping the genuine self-alias reads Step 1 resolves correctly
+ * (`const self = this; self.member`), which is why those two names are exempt.
+ *
+ * So these tests pin the change in BOTH directions: a property read must not
+ * reach a same-named local, and a real member read must still resolve through
+ * the receiver's own type. Deleting the block-scope capture fails the first;
+ * over-suppressing — dropping block bindings rather than scoping them, or
+ * skipping Step 1 for `this` as well — fails the second.
  */
 import { describe, expect, it, vi } from 'vitest';
 import fs from 'node:fs';
