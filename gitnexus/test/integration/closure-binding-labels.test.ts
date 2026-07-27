@@ -479,6 +479,42 @@ describeIfWorkerBuilt('closure bindings resolve in the remaining languages (#269
 
     expect(targets).toEqual(['Function:c.js:handler']);
   });
+
+  it('TypeScript: a generator EXPRESSION binding is a Function, like the other forms', async () => {
+    // `function*` as an expression is its own grammar node, matched by none of
+    // the closure-binding definition rules — so the binding emitted a `Const`
+    // and `g(1)` resolved to nothing, since `buildGraphTargetIndex` only
+    // admits a callable node. Same defect shape as the `var` case above.
+    const targets = await callTargetsFor(
+      'gen.ts',
+      'const g = function* (x: number) {\n  yield x;\n};\n\nexport function caller() {\n  return g(1);\n}\n',
+    );
+
+    expect(targets).toEqual(['Function:gen.ts:g']);
+  });
+
+  it('JavaScript: an exported `var` generator expression resolves too', async () => {
+    // Covers the two axes the rules multiply over — declaration keyword and
+    // export wrapper — in the language where `var` is idiomatic.
+    const targets = await callTargetsFor(
+      'gen.js',
+      'export var g = function* (x) {\n  yield x;\n};\n\nexport function caller() {\n  return g(1);\n}\n',
+    );
+
+    expect(targets).toEqual(['Function:gen.js:g']);
+  });
+
+  it('TypeScript: a generator DECLARATION is unaffected', async () => {
+    // The declaration form already resolved; it shares the emit path the new
+    // expression rules were inserted beside, so it is the guard against the
+    // insertion disturbing it.
+    const targets = await callTargetsFor(
+      'decl.ts',
+      'function* g(x: number) {\n  yield x;\n}\n\nexport function caller() {\n  return g(1);\n}\n',
+    );
+
+    expect(targets).toEqual(['Function:decl.ts:g']);
+  });
 });
 
 describeIfWorkerBuilt('a closure binding is a call TARGET, not yet a call SOURCE', () => {

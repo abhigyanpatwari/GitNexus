@@ -91,13 +91,17 @@ import type { ParseWorkerResult } from '../core/ingestion/workers/parse-worker.j
 // as the reason to re-check SCHEMA_BUMP against origin/main immediately before
 // merging, not just when the branch is cut; the same collision hit
 // INCREMENTAL_SCHEMA_VERSION in #2653/#2654.
+// v27: generator EXPRESSIONS bound to a name emit a callable definition capture,
+// and nested-callable caller attribution appends the localIdentity suffix the
+// definition phase already used. Both are parse-time, so a warm cache would
+// otherwise replay the old captures and ids verbatim.
 // v20: Java/Kotlin capture side-channels persist package and class-annotation
 // facts for shared Spring Bean resolution.
 // v19: Java enum constant bodies emit E$N Class nodes; anonymous naming uses
 // JLS 13.1 immediate-host chains (#2555).
 // v18: Worker$N anonymous bodies. v17: callable-value-flow operand identity.
 // v16: direct callee identity.
-const SCHEMA_BUMP = 26;
+const SCHEMA_BUMP = 27;
 const GITNEXUS_PKG_VERSION = (() => {
   try {
     // package.json sits at gitnexus/package.json — two levels up from
