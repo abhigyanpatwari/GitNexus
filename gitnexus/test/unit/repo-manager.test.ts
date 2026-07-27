@@ -921,7 +921,6 @@ describe('registerRepo name override + collision guard (#829)', () => {
       await Promise.all(repos.map((repo) => repo.cleanup()));
     }
   });
-
 });
 
 // ─── registerRepo branch nesting (#2106) ─────────────────────────────

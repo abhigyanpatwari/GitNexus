@@ -1466,8 +1466,7 @@ export const registerRepo = async (
   repoPath: string,
   meta: RepoMeta,
   opts?: RegisterRepoOptions,
-): Promise<string> =>
-  withRegistryLock(() => registerRepoUnlocked(repoPath, meta, opts));
+): Promise<string> => withRegistryLock(() => registerRepoUnlocked(repoPath, meta, opts));
 
 /**
  * Remove a repo from the global registry.
@@ -1944,8 +1943,7 @@ const listRegisteredReposUnlocked = async (opts?: {
 
 export const listRegisteredRepos = async (opts?: {
   validate?: boolean;
-}): Promise<RegistryEntry[]> =>
-  withRegistryLock(() => listRegisteredReposUnlocked(opts));
+}): Promise<RegistryEntry[]> => withRegistryLock(() => listRegisteredReposUnlocked(opts));
 
 // ─── Global CLI Config (~/.gitnexus/config.json) ─────────────────────────
 
