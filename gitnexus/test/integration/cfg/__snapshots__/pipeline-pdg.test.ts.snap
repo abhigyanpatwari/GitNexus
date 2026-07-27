@@ -3,7 +3,7 @@
 exports[`U7 — C-family worker-mode --pdg pipeline > C#: --pdg off is byte-identical (zero PDG nodes/edges, stable golden digest) 1`] = `
 {
   "byRelType": {
-    "CALLS": 7,
+    "CALLS": 6,
     "DEFINES": 3,
     "HAS_METHOD": 16,
     "MEMBER_OF": 9,
@@ -18,8 +18,8 @@ exports[`U7 — C-family worker-mode --pdg pipeline > C#: --pdg off is byte-iden
     "Namespace": 1,
     "Process": 1,
   },
-  "edgeDigest": "0497d26dbe060d36426bf10cde5db490a6d82c013e0835296723a4c00ef7442a",
-  "relationships": 38,
+  "edgeDigest": "60d3d5449952563f9364148494c5bce96c306dba921d140dc08176e99d7f2b3d",
+  "relationships": 37,
   "symbols": 24,
 }
 `;
