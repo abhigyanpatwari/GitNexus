@@ -161,6 +161,7 @@ interface StringAliasDefinition {
 const TOOL_STRING_ALIASES: Readonly<Record<string, readonly StringAliasDefinition[]>> = {
   impact: [{ canonical: 'target', aliases: ['name', 'symbol'] }],
   context: [{ canonical: 'file_path', aliases: ['file'] }],
+  trace: [{ canonical: 'from_file', aliases: ['file'] }],
 };
 
 function normalizeToolParams(
