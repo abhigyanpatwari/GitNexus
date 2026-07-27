@@ -7,7 +7,7 @@
  */
 
 import { SupportedLanguages } from 'gitnexus-shared';
-import type { NodeLabel } from 'gitnexus-shared';
+import type { CaptureMatch, NodeLabel } from 'gitnexus-shared';
 import { defineLanguage } from '../language-provider.js';
 import type { AstFrameworkPatternConfig } from '../language-provider.js';
 import { createClassExtractor } from '../class-extractors/generic.js';
@@ -307,6 +307,18 @@ export const BUILT_INS: ReadonlySet<string> = new Set([
   'valueOf',
 ]);
 
+/**
+ * `this` is the only receiver keyword JavaScript and TypeScript bind, and it
+ * is bound by every function form except an arrow (#2701). The query files
+ * tag those forms with `@receiver-owner.this`; this hook just reads the tag,
+ * so the node-type list stays in the one place that already names grammar
+ * nodes. See `Scope.ownsReceivers` for what the marker does to the walk.
+ */
+const TS_OWNED_RECEIVERS: ReadonlySet<string> = new Set(['this']);
+
+const tsScopeOwnsReceivers = (match: CaptureMatch): ReadonlySet<string> | undefined =>
+  match['@receiver-owner.this'] === undefined ? undefined : TS_OWNED_RECEIVERS;
+
 export const typescriptProvider = defineLanguage({
   id: SupportedLanguages.TypeScript,
   extensions: ['.ts', '.tsx'],
@@ -335,6 +347,7 @@ export const typescriptProvider = defineLanguage({
   ] satisfies AstFrameworkPatternConfig[],
   treeSitterQueries: TYPESCRIPT_QUERIES,
   typeConfig: typescriptConfig,
+  scopeOwnsReceivers: tsScopeOwnsReceivers,
   exportChecker: tsExportChecker,
   importResolver: createImportResolver(typescriptImportConfig),
   callExtractor: createCallExtractor(typescriptCallConfig),
@@ -402,6 +415,7 @@ export const javascriptProvider = defineLanguage({
   ] satisfies AstFrameworkPatternConfig[],
   treeSitterQueries: JAVASCRIPT_QUERIES,
   typeConfig: typescriptConfig,
+  scopeOwnsReceivers: tsScopeOwnsReceivers,
   exportChecker: tsExportChecker,
   importResolver: createImportResolver(javascriptImportConfig),
   callExtractor: createCallExtractor(javascriptCallConfig),

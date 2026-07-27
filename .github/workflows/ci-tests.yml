@@ -488,6 +488,30 @@ jobs:
         run: node --import tsx bench/scope-capture/measure.mjs --check
         working-directory: gitnexus
 
+      - name: Callable-value-flow target-index guards (#2693)
+        # Build-free: asserts buildGraphTargetIndex resolves an unchanged target
+        # set (fingerprint), stays linear in def count, and that the #2693
+        # widened gate — which now considers VALUE bindings, a population that
+        # outnumbers callables in real source — stays within its measured
+        # overhead of the pre-#2693 callable-only cost. The overhead budget also
+        # guards the DESIGN: value bindings are joined to their callable node by
+        # position, never by name through resolveDefGraphId, whose label-agnostic
+        # simpleKey fallback would alias a binding onto any same-named callable.
+        run: node --import tsx bench/callable-value-flow/measure.mjs --check
+        working-directory: gitnexus
+
+      - name: Scope-emission guards (#2699)
+        # Build-free: asserts the JS/TS scope set is unchanged. Block scopes are
+        # what make `let`/`const` in sibling blocks distinct bindings, but a
+        # scope per `statement_block` triples the count and deepens every
+        # scope-chain walk in every function for no semantic gain. Two emit-side
+        # filters drop the waste — function-body blocks (the Function scope
+        # already covers them) and blocks that declare nothing — and this gate
+        # fails if either regresses. Counts are exact, so it catches a change
+        # wall-clock CI could never resolve from noise.
+        run: node --import tsx bench/scope-emission/measure.mjs --check
+        working-directory: gitnexus
+
       - name: CFG construction time / disk / memory guards (#2081 M1)
         # Build-free: asserts collectFunctionCfgs output is unchanged
         # (fingerprint) and that wall-time, cfgSideChannel disk bytes, AND

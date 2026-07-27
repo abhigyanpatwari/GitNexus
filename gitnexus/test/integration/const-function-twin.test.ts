@@ -15,8 +15,10 @@
  * the twin was emitted first and never suppressed.
  *
  * The over-suppression guards below matter as much as the twin assertions: a
- * genuine non-callable `const`, an object-literal service (#1718), a `var`
- * binding, and the non-function initializers must all keep their value nodes.
+ * genuine non-callable `const`, an object-literal service (#1718), a plain
+ * `var` value, and the non-function initializers must all keep their value
+ * nodes. (A `var` bound to a CLOSURE is a twin case, not a guard case, since
+ * #2693 — see the pair of `var` tests.)
  *
  * Mirrors the sibling suppression case in `c-cpp-typedef-legacy-parse.test.ts`.
  */
@@ -113,10 +115,23 @@ describe('#2687 export-const function twin', () => {
     expect(labelsOf(nodes, 'ternary')).toEqual(['Const']);
   });
 
-  it('keeps the Variable node for a var-bound function-expression', async () => {
-    // `var` has no matching `@definition.function` pattern, so nothing claims
-    // the name and the value node must survive untouched.
+  it('collapses a var-bound function-expression to one Function node', async () => {
+    // `var` originally had no `@definition.function` pattern, so the value node
+    // survived unclaimed and this asserted `Variable`. That was a gap, not a
+    // decision: a call through the binding still resolved via the declaration
+    // route, so the CALLS edge pointed at a NON-callable node. `var` now claims
+    // the name like const/let (#2693), and the dedup collapses the pair to ONE
+    // node — a twin here would mean the rule is anchored on a different node
+    // than the value rule.
     const nodes = await parseNodes('src/var.ts', 'var legacy = function () {\n  return 3;\n};\n');
+
+    expect(labelsOf(nodes, 'legacy')).toEqual(['Function']);
+  });
+
+  it('keeps the Variable node for a var-bound NON-function initializer', async () => {
+    // The property the previous case used to cover: when nothing claims the
+    // name, the value node must survive untouched.
+    const nodes = await parseNodes('src/varvalue.ts', 'var legacy = 3;\n');
 
     expect(labelsOf(nodes, 'legacy')).toEqual(['Variable']);
   });

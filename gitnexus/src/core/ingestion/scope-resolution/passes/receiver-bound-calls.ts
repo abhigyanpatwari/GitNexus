@@ -55,6 +55,7 @@ import { collectNamespaceTargets } from '../scope/namespace-targets.js';
 import {
   findClassBindingInScope,
   findEnclosingClassDef,
+  isReceiverOwnedButUnbound,
   findExportedDef,
   findOwnedMember,
   findReceiverTypeBinding,
@@ -269,6 +270,28 @@ export function emitReceiverBoundCalls(
       const receiverName = site.explicitReceiver.name;
       const memberName = site.name;
       const siteKey = `${parsed.filePath}:${site.atRange.startLine}:${site.atRange.startCol}`;
+
+      // ── owned-but-unbound receiver ───────────────────────────────
+      // The language declared this scope REBINDS the receiver and gave
+      // it no type — a JS/TS ordinary `function`, whose `this` comes
+      // from the call site (#2701). No enclosing type can be its type,
+      // so this is a definitive negative, not a miss: suppress the site
+      // instead of letting the receiver-blind lexical fallback in
+      // `lookupCore` match the enclosing class's member by name.
+      // No-op for every language that leaves `Scope.ownsReceivers` unset.
+      if (isReceiverOwnedButUnbound(site.inScope, receiverName, scopes)) {
+        options.recordResolutionOutcome?.({
+          kind: 'suppressed',
+          phase: 'receiver-bound-calls',
+          filePath: parsed.filePath,
+          name: site.name,
+          range: site.atRange,
+          reason: 'receiver-owned-but-unbound',
+          candidateIds: [],
+        });
+        handledSites.add(siteKey);
+        continue;
+      }
 
       // ── super branch ─────────────────────────────────────────────
       // Languages with caller-context-dependent super classification

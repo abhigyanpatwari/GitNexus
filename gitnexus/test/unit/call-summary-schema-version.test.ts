@@ -73,8 +73,8 @@ describe('CALL_SUMMARY relation-type exclusion (U-C1)', () => {
 });
 
 describe('CALL_SUMMARY incremental reuse gate (U-C5)', () => {
-  it('INCREMENTAL_SCHEMA_VERSION is bumped to 15 (const-arrow twin removal, #2687)', () => {
-    expect(INCREMENTAL_SCHEMA_VERSION).toBe(15);
+  it('INCREMENTAL_SCHEMA_VERSION is bumped to 19 (class-body boundary fix, #2699)', () => {
+    expect(INCREMENTAL_SCHEMA_VERSION).toBe(19);
   });
 
   it('a pre-current stamp fails the `=== INCREMENTAL_SCHEMA_VERSION` reuse gate → forces full re-analyze', () => {
@@ -133,7 +133,24 @@ describe('CALL_SUMMARY incremental reuse gate (U-C5)', () => {
     // every unchanged TS/JS file, and the incremental write set never touches
     // those files → must NOT reuse.
     expect(passesReuseGate(14)).toBe(false);
+    // A pre-v16 (v15) index predates #2693: calls through a closure-valued
+    // binding do not resolve in Kotlin/Swift/Dart, and the incremental write
+    // set never revisits unchanged files, so those symbols would keep reporting
+    // a zero blast radius → must NOT reuse.
+    expect(passesReuseGate(15)).toBe(false);
+    // A pre-v17 (v16) index predates #2701: `this` inside an ordinary JS/TS
+    // `function` still resolves to the enclosing class, so every unchanged
+    // TS/JS file keeps its fabricated `this` edges → must NOT reuse.
+    expect(passesReuseGate(16)).toBe(false);
+    // A pre-v18 (v17) index predates #2699: a function-local callable still
+    // shares a node id with a same-named file-level one, and the incremental
+    // write set would mix old and new ids → must NOT reuse.
+    expect(passesReuseGate(17)).toBe(false);
+    // A pre-v19 (v18) index holds the WRONG Java anonymous-class ids — v18 bounded the
+    // enclosing-callable walk on class DECLARATIONS only, so `Worker$1.run` was re-keyed
+    // as `Worker.makeHandler.run@7:12`. Reusing it would keep those on unchanged files.
+    expect(passesReuseGate(18)).toBe(false);
     // A current-version stamp passes the gate (incremental top-up eligible).
-    expect(passesReuseGate(15)).toBe(true);
+    expect(passesReuseGate(19)).toBe(true);
   });
 });

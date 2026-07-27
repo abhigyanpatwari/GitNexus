@@ -55,22 +55,49 @@ import type { ParseWorkerResult } from '../core/ingestion/workers/parse-worker.j
 // the main thread (the #1983 OOM). Because the two stores share this version,
 // any future change to the `ParsedFile` serialization shape MUST bump
 // SCHEMA_BUMP so both invalidate in lockstep.
+// v26: the enclosing-callable walk stops at class bodies and anonymous-class
+// construction sites (#2699 follow-up); a v25 cache replays worker results carrying the
+// wrong Java anonymous-class ids. Cached results are replayed verbatim — including
+// across `--force` — so without this bump a warm cache keeps serving them.
+// v25: function-local callables are qualified by their enclosing-callable chain
+// plus their own position, and JS/TS gain block scopes (#2699). Both the node
+// ids AND the scope tree in a cached worker result are therefore stale. Cached
+// results are replayed verbatim — including across `--force` — so without this
+// bump a warm cache keeps serving the colliding ids and the block-less scopes.
+// v24: function scopes carry `Scope.ownsReceivers`, marking the JS/TS forms
+// that bind their own `this` (#2701). The flag lives on the cached `Scope`, so
+// without this bump a warm cache replays scopes that lack it and every `this`
+// inside an ordinary `function` keeps resolving to the enclosing class —
+// verified by probe: `--force` alone does NOT re-derive it.
+// v23: closure bindings emit callable nodes in Dart, Ruby, Java, C# and PHP
+// (plus JS/TS `var`), and Dart/PHP gain the scope declarations and flow
+// captures their forms were missing (#2693). Cached worker results are replayed
+// verbatim, so without this bump a warm cache keeps serving the old labels.
 // v22: `const X = <arrow | function-expression>` emits one `Function` node
 // instead of a `Function` plus an edgeless `Const` twin (#2687). Cached worker
 // results are replayed verbatim — including across `--force` — so without this
 // bump a warm cache keeps serving the old two-node set.
-// v21: Java/Kotlin Spring DI facts persist constructor, field/property, and
-// method injection sites plus bean-name and @Primary provider metadata.
+// v21: TWO changes share this number — a collision, not a typo. #2632
+// (Java/Kotlin Spring DI facts: constructor, field/property and method
+// injection sites plus bean-name and @Primary provider metadata) bumped 20 -> 21
+// and merged first; #2653 (Java local class/enum/record/interface captures using
+// javac-compatible, source-type-relative JLS 13.1 identities and
+// declaration-to-block scopes, #2562) had branched at 20, bumped to 21 as well,
+// and merged second — so it shipped with NO invalidation of its own. An index
+// already stamped 21 by the first change was treated as current by the second
+// and kept serving stale local-class identities from the warm cache. Harmless
+// now (anything below the current value is rejected), and left as-is because
+// both genuinely shipped as 21 — renumbering would misstate history. Read this
+// as the reason to re-check SCHEMA_BUMP against origin/main immediately before
+// merging, not just when the branch is cut; the same collision hit
+// INCREMENTAL_SCHEMA_VERSION in #2653/#2654.
 // v20: Java/Kotlin capture side-channels persist package and class-annotation
 // facts for shared Spring Bean resolution.
-// v21: Java local class/enum/record/interface captures use javac-compatible,
-// source-type-relative JLS 13.1 identities and declaration-to-block scopes
-// (#2562).
 // v19: Java enum constant bodies emit E$N Class nodes; anonymous naming uses
 // JLS 13.1 immediate-host chains (#2555).
 // v18: Worker$N anonymous bodies. v17: callable-value-flow operand identity.
 // v16: direct callee identity.
-const SCHEMA_BUMP = 22;
+const SCHEMA_BUMP = 26;
 const GITNEXUS_PKG_VERSION = (() => {
   try {
     // package.json sits at gitnexus/package.json — two levels up from

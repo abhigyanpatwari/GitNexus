@@ -67,6 +67,59 @@ export function simpleKey(filePath: string, name: string): string {
   return `${filePath}::${name}`;
 }
 
+/**
+ * Position key: `(filePath, label, 0-based startLine, simple name)` (#2699).
+ *
+ * The strongest evidence there is, and the only one that needs no name
+ * qualification at all — a definition and its graph node are the same
+ * construct, so they share a source position. That makes it correct for
+ * exactly the cases a name-based key cannot express: a function-local
+ * declaration shadowing a file-level one, a local inside an ANONYMOUS
+ * function (no name to qualify with), and two same-named declarations in
+ * sibling blocks. ECMAScript gives each of those its own environment record;
+ * position is what distinguishes them without having to model the chain.
+ *
+ * Registered only for callable labels, and only when the (line, name) pair is
+ * unique in the file — a genuine tie (overloads declared on one line) stores
+ * the `AMBIGUOUS_POSITION` tombstone so the caller falls through to the
+ * name-based keys rather than picking by source order.
+ */
+export function positionKey(
+  filePath: string,
+  label: NodeLabel,
+  startLine: number,
+  name: string,
+): string {
+  return `<p>:${filePath}::${label}::${startLine}::${name}`;
+}
+
+/**
+ * Key recording that a FUNCTION-LOCAL callable with this simple name exists in the
+ * file (#2699 follow-up).
+ *
+ * `resolveDefGraphId`'s last resort is a label-agnostic, first-write-wins
+ * `simpleKey(filePath, simpleName)`. That is safe while at most one callable in a file
+ * carries a given simple name — but #2699 deliberately creates function-locals that
+ * share a name with a file-level callable, and the local's graph node is keyed by
+ * position (`run.pick@1:2`) while the scope def is not. When the position join misses —
+ * the two id phases anchor on different nodes, so a multiline `const pick =` puts the
+ * declaration and its initializer on different lines — the simple-name fallback aliases
+ * the local onto whichever same-named callable was registered FIRST and mints a
+ * fabricated edge. That is the exact failure class #2693 already shipped once.
+ *
+ * This lets the resolver fail CLOSED for precisely that case and only that case: if a
+ * local of this name exists, a position miss is a genuine ambiguity rather than a lookup
+ * gap, so emitting no edge is correct. Files with no such local are untouched, which
+ * keeps legitimate anchor differences (e.g. a Vue SFC `lineOffset`) resolving through the
+ * name keys exactly as before.
+ */
+export function localNameKey(filePath: string, label: NodeLabel, name: string): string {
+  return `<l>:${filePath}::${label}::${name}`;
+}
+
+/** Tombstone for a position claimed by two nodes — see `positionKey`. */
+export const AMBIGUOUS_POSITION = '';
+
 export function buildGraphNodeLookup(graph: KnowledgeGraph): GraphNodeLookup {
   const lookup = new Map<string, string>();
   for (const node of graph.iterNodes()) {
@@ -78,6 +131,21 @@ export function buildGraphNodeLookup(graph: KnowledgeGraph): GraphNodeLookup {
     };
     if (props.filePath === undefined || props.name === undefined) continue;
     if (!isLinkableLabel(node.label)) continue;
+
+    // Position key (#2699) — see `positionKey`. Second write on a key marks it
+    // ambiguous rather than letting source order decide.
+    const startLine = (props as { startLine?: number }).startLine;
+    if (startLine !== undefined && isOverloadableCallable(node.label)) {
+      const posK = positionKey(props.filePath, node.label, startLine, props.name);
+      lookup.set(posK, lookup.has(posK) ? AMBIGUOUS_POSITION : node.id);
+      // A local-identity node carries `@<row>:<col>` on its last name segment. Record
+      // that a local of this simple name exists, so the resolver can fail closed on a
+      // position miss instead of aliasing through the simple-name fallback.
+      const qualForLocal = parseQualifiedFromId(node.id, node.label, props.filePath);
+      if (qualForLocal !== undefined && /@\d+:\d+$/.test(qualForLocal)) {
+        lookup.set(localNameKey(props.filePath, node.label, props.name), node.id);
+      }
+    }
 
     // Primary key: fully-qualified name + label, in a separate
     // keyspace from simple names. Class nodes carry `qualifiedName`
