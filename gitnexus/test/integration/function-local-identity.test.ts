@@ -281,3 +281,64 @@ describeIfWorkerBuilt('a function-local callable does not collide with a file-le
     ]);
   });
 });
+
+/** Node ids for `name`, with local value symbols kept so the pruner can't hide them. */
+const valueNodeIdsFor = async (
+  filename: string,
+  source: string,
+  name: string,
+): Promise<string[]> => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'gn-local-value-identity-'));
+  try {
+    fs.writeFileSync(path.join(dir, filename), source, 'utf-8');
+    const result = await runPipelineFromRepo(dir, () => {}, {
+      workerPoolSize: 1,
+      workerUrlForTest: DIST_WORKER_URL,
+      // `pruneLocalSymbols` deletes ~94% of inert function-local value symbols,
+      // which would make the collapse below invisible rather than absent.
+      keepLocalValueSymbols: true,
+    });
+    return result.graph.nodes
+      .filter((node) => node.properties.name === name)
+      .map((node) => node.id)
+      .sort();
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+};
+
+describeIfWorkerBuilt('KNOWN LIMIT — the identity fix is callable-restricted (#2699)', () => {
+  it('a function-local VALUE still collapses onto the file-level node', async () => {
+    // Pinned as a limitation, not asserted as correct. #2695 gave function-local
+    // CALLABLES a position-bearing id; VALUES were deliberately excluded —
+    // widening it would re-key ~14,700 build-time nodes to change ~800 persisted
+    // ones, because the pruner deletes most of them (see the decision recorded
+    // in `workers/parse-worker.ts`). The guard that fails closed on a position
+    // miss is likewise gated on `isOverloadableCallable`
+    // (Function | Method | Constructor), so a value never reaches it.
+    //
+    // Consequence, measured here: a top-level `const handler` and a
+    // function-local `const handler` share ONE node. That is the residual half
+    // of #2699's original complaint, and it is why the issue is not fully
+    // closed by the identity work alone.
+    //
+    // If this ever returns two ids, the identity model was widened to values —
+    // which is a deliberate, schema-bumping change, so this test should be
+    // updated as part of it rather than deleted.
+    const ids = await valueNodeIdsFor(
+      'v.ts',
+      [
+        "export const handler = 'top-level value';",
+        '',
+        'export function run(): string {',
+        "  const handler = 'function-local value';",
+        '  return handler;',
+        '}',
+        '',
+      ].join('\n'),
+      'handler',
+    );
+
+    expect(ids).toEqual(['Const:v.ts:handler']);
+  });
+});
