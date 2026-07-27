@@ -947,7 +947,15 @@ const findEnclosingFunctionId = (
         const nestedPrefix = enclosingCallablePrefix(current, filePath, provider);
         const ownerName =
           nestedPrefix ?? classInfo?.className ?? standaloneMethodInfo?.receiverType ?? undefined;
-        const qualifiedName = ownerName ? `${ownerName}.${funcName}` : funcName;
+        // Lockstep with the definition phase. `callableOwnQualifiedName` appends
+        // `localIdentity` to a nested callable's OWN name segment, under exactly
+        // this condition (`prefix !== undefined`). Omitting it here made the two
+        // phases derive different ids for the same callable — and the failure is
+        // silent: the caller id names a node that does not exist, so the edge is
+        // dropped rather than reported. The condition is deliberately identical
+        // to the definition phase's so the two cannot diverge again.
+        const ownSegment = nestedPrefix !== undefined ? localIdentity(current, funcName) : funcName;
+        const qualifiedName = ownerName ? `${ownerName}.${ownSegment}` : ownSegment;
         // Include #<arity> suffix to match definition-phase Method/Constructor IDs.
         // Use the same MethodExtractor (getMethodInfo) as the definition phase.
         // When same-arity collisions exist, also append ~type1,type2.
