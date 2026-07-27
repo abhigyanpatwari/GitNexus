@@ -60,7 +60,7 @@ function isJsxFile(filePath: string): boolean {
   return filePath.endsWith('.jsx');
 }
 
-const JAVASCRIPT_SCOPE_QUERY = `
+export const JAVASCRIPT_SCOPE_QUERY = `
 ;; Scopes — module / class-likes / function-likes
 (program) @scope.module
 

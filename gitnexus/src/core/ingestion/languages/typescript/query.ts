@@ -78,7 +78,7 @@ function isTsxFile(filePath: string): boolean {
   return filePath.endsWith('.tsx');
 }
 
-const TYPESCRIPT_SCOPE_QUERY = `
+export const TYPESCRIPT_SCOPE_QUERY = `
 ;; Scopes — module / namespace / class-likes / function-likes
 (program) @scope.module
 

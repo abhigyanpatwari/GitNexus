@@ -50,12 +50,15 @@ import {
 
 /** JS function-like node types that may carry a synthesized `this` binding.
  *  Kept in sync with the `@scope.function` patterns in `query.ts`. */
-const FUNCTION_NODE_TYPES = [
+export const FUNCTION_NODE_TYPES = [
   'method_definition',
   'arrow_function',
   'function_expression',
   'function_declaration',
   'generator_function_declaration',
+  // The EXPRESSION form (`const g = function* () {}`) — see the matching note
+  // in `typescript/captures.ts`.
+  'generator_function',
 ] as const;
 
 /** Nodes whose `statement_block` child is their BODY, not a nested block. */

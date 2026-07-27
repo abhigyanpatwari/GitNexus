@@ -171,7 +171,7 @@ function isStaticMember(memberNode: SyntaxNode): boolean {
  * An arrow is deliberately absent: it inherits `this` lexically, so the walk SHOULD pass
  * through it (that is what makes a class-field arrow `m = () => this.x` resolve).
  */
-const THIS_REBINDING_BOUNDARY_TYPES: ReadonlySet<string> = new Set([
+export const THIS_REBINDING_BOUNDARY_TYPES: ReadonlySet<string> = new Set([
   'object', // object literal — `this` is the literal, not any enclosing type
   'function_declaration',
   'function_expression',

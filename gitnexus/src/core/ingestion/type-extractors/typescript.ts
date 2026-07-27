@@ -713,7 +713,7 @@ const inferTsLiteralType: LiteralTypeInferrer = (node) => {
  * and `languages/javascript/query.ts` — the two layers must agree or a call
  * suppressed by one is re-introduced by the other.
  */
-const THIS_BOUNDARY_NODE_TYPES: ReadonlySet<string> = new Set([
+export const THIS_BOUNDARY_NODE_TYPES: ReadonlySet<string> = new Set([
   'function_declaration',
   'function_expression',
   'generator_function',

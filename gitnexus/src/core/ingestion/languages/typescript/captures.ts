@@ -50,7 +50,7 @@ import {
 /** tree-sitter-typescript node types for function-like scopes that may
  *  carry a synthesized `this` binding. Kept in sync with the
  *  `@scope.function` patterns in `query.ts`. */
-const FUNCTION_NODE_TYPES = [
+export const FUNCTION_NODE_TYPES = [
   'method_definition',
   'method_signature',
   'abstract_method_signature',
@@ -58,6 +58,18 @@ const FUNCTION_NODE_TYPES = [
   'function_expression',
   'function_declaration',
   'generator_function_declaration',
+  // The EXPRESSION form (`const g = function* () {}`). Both queries capture it
+  // as `@scope.function`, and both `this`-boundary lists already carry it, but
+  // this list did not — so callable-flow synthesis and the body-block filter
+  // treated a generator expression as a non-function.
+  //
+  // Measured: adding it changes no graph output today. A generator-expression
+  // binding still emits a `Const` node rather than a `Function` one, so the
+  // call never resolves either way — that label comes from the definition
+  // rules, not from here, and closing it is a separate change. This entry is
+  // list consistency, enforced by
+  // `test/unit/ts-js-function-node-type-lists.test.ts`.
+  'generator_function',
   'function_signature',
 ] as const;
 
