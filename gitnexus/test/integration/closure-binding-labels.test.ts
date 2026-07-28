@@ -247,7 +247,13 @@ describeIfWorkerBuilt('calls to a closure binding resolve to its Function node',
       'int caller() {\n  var handler = (int x) => x;\n  return handler(1);\n}\n',
     );
 
-    expect(targets).toEqual(['Function:local.dart:handler']);
+    // Qualified by #2699: Dart's enclosing callable is a SIBLING of the body
+    // (function_signature + function_body), so the ancestor walk that builds
+    // this prefix found nothing and every Dart local stayed bare. Two
+    // same-named closures in one file therefore collapsed onto ONE node. Now
+    // carries the same enclosing-callable + position identity as every other
+    // language.
+    expect(targets).toEqual(['Function:local.dart:caller.handler@1:2']);
   });
 
   it('Dart: a top-level `final` closure binding resolves', async () => {
@@ -272,7 +278,13 @@ describeIfWorkerBuilt('calls to a closure binding resolve to its Function node',
       'int caller() {\n  var f = (int x) => x, g = (int y) => y;\n  return f(1) + g(2);\n}\n',
     );
 
-    expect(targets).toEqual(['Function:multi.dart:f', 'Function:multi.dart:g']);
+    // Both declarators are function-local, so both carry the enclosing-callable
+    // + position identity (#2699). The distinct columns are the point: `g` is a
+    // nested initialized_identifier on the SAME line as `f`.
+    expect(targets).toEqual([
+      'Function:multi.dart:caller.f@1:2',
+      'Function:multi.dart:caller.g@1:24',
+    ]);
   });
 
   it('Kotlin: a class-body closure property resolves to its Method node', async () => {
@@ -595,6 +607,36 @@ describeIfWorkerBuilt('a closure binding as a call SOURCE (#2699 part B)', () =>
     expect(targets).toEqual(['rel:CALLS:Function:a.php:$handler->Function:a.php:target']);
   });
 
+  it('Dart: two same-named closures in one file stay DISTINCT nodes (#2699 S4)', async () => {
+    // The defect this pins is worse than a missing edge. Before #2699 S4 gave
+    // Dart locals an enclosing-callable prefix, both closures keyed to the bare
+    // `Function:collide.dart:handler`, so ONE node appeared to call BOTH
+    // `target` and `other` — a CALLS edge that exists nowhere in the source.
+    //
+    // Dart is the only grammar here that splits a callable into a signature and
+    // a SIBLING body, so its enclosing callable was unreachable by ancestor
+    // walk and every Dart local stayed unqualified. Distinct positions in the
+    // two ids are the whole property.
+    const targets = await callEdgeIdsFor(
+      'collide.dart',
+      'int target(int x) => x;\nint other(int x) => x;\n' +
+        'int outer() {\n  var handler = (int x) => target(x);\n  return handler(1);\n}\n' +
+        'int second() {\n  var handler = (int x) => other(x);\n  return handler(2);\n}\n',
+    );
+
+    // The trailing `:5:9` / `:9:9` on the first and third edges is the CALL
+    // SITE, not part of the node id: invoking a closure binding is an indirect
+    // call emitted by the callable-value-flow pass, which keys its edge by the
+    // invocation position. The direct `handler -> target` calls carry no such
+    // suffix. Do not "normalize" these away — they are different edge kinds.
+    expect(targets).toEqual([
+      'rel:CALLS:Function:collide.dart:outer->Function:collide.dart:outer.handler@3:2:5:9',
+      'rel:CALLS:Function:collide.dart:outer.handler@3:2->Function:collide.dart:target',
+      'rel:CALLS:Function:collide.dart:second->Function:collide.dart:second.handler@7:2:9:9',
+      'rel:CALLS:Function:collide.dart:second.handler@7:2->Function:collide.dart:other',
+    ]);
+  });
+
   it('Ruby: a call inside a lambda binding IS attributed to the binding (#2699 S2)', async () => {
     // Ruby had no pinned case before #2699 S2, so this is new coverage rather
     // than an inverted assertion. do_block/block stay @scope.block (matching
@@ -692,7 +734,11 @@ describeIfWorkerBuilt('a value binding is never aliased onto a same-named callab
         'int run() {\n  var save = (int x) => x * 2;\n  return save(1);\n}\n',
     );
 
-    expect(targets).toEqual(['Function:svc.dart:save']);
+    // The target is the LOCAL closure, never `Svc.save`. Since #2699 the local
+    // also carries its enclosing callable and position, so the two are now
+    // distinct by id and not merely by which node the edge happened to reach —
+    // `run.save@5:2` cannot collide with the method however the lookup is keyed.
+    expect(targets).toEqual(['Function:svc.dart:run.save@5:2']);
   });
 
   it('Kotlin: a genuine constant mints no CALLS', async () => {

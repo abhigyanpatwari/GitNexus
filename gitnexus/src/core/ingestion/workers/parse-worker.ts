@@ -82,6 +82,8 @@ import {
   buildDefinitionPreScan,
   FUNCTION_NODE_TYPES,
   findAncestorBeforeBoundary,
+  findSplitBodyCallableAncestor,
+  SPLIT_SIGNATURE_NODE_TYPES,
   getDefinitionNodeFromCaptures,
   findEnclosingClassInfo,
   findObjectLiteralBindingInfo,
@@ -821,11 +823,20 @@ const enclosingCallablePrefix = (
   //
   // Over-inclusion here is the SAFE direction: an extra boundary only suppresses
   // the nesting prefix, which falls back to the pre-#2699 class qualification.
-  const fnNode = findAncestorBeforeBoundary(
-    node,
-    LOCAL_SCOPE_BODY_NODE_TYPES,
-    CALLABLE_PREFIX_BOUNDARY_TYPES,
-  );
+  const fnNode =
+    findAncestorBeforeBoundary(node, LOCAL_SCOPE_BODY_NODE_TYPES, CALLABLE_PREFIX_BOUNDARY_TYPES) ??
+    // Signature/body-split grammars: the enclosing callable is a SIBLING of the
+    // body, not an ancestor, so the walk above returns null for every local
+    // inside it. Dart is the case in hand (`function_signature` +
+    // `function_body` as siblings) — without this a Dart closure gets no
+    // prefix, so two same-named closures in one file collapse onto ONE node and
+    // the graph asserts a CALLS edge that does not exist in the source (#2699).
+    //
+    // SPLIT_SIGNATURE_NODE_TYPES, NOT FUNCTION_NODE_TYPES: only a callable that
+    // cannot hold its own body can be an enclosing callable of a SIBLING. Using
+    // the wider set mis-qualified a file-level PHP `$handler = function …` as
+    // `target.$handler` by grabbing the preceding `function target() {…}`.
+    findSplitBodyCallableAncestor(node, SPLIT_SIGNATURE_NODE_TYPES, CALLABLE_PREFIX_BOUNDARY_TYPES);
   if (fnNode === null) return undefined;
   return callableOwnQualifiedName(fnNode, filePath, provider);
 };

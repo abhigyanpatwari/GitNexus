@@ -92,6 +92,24 @@ const DART_SCOPE_QUERY = `
   (function_signature
     name: (identifier) @declaration.name) @declaration.function)
 
+; ── Declarations — closure bound to a local ──────────────────────────────────
+;
+; var handler = (int x) => target(x);   /   var blk = (int y) { ... };
+;
+; Anchor discipline (same contract as javascript/query.ts): @declaration.function
+; sits on the INNER function_expression, NOT on the local_variable_declaration
+; wrapper. Dart is the one language that declares NO @scope.function in this
+; file — its function scopes are SYNTHESIZED in captures.ts from
+; declNode + findFunctionBody(declNode). So this rule deliberately does not add
+; a @scope.function of its own: doing that would collide with the synthesized
+; one at identical range, and duplicate scope ids make buildScopeTree throw,
+; which drops the whole file. Instead findFunctionBody now understands a
+; closure's child function_expression_body, so the existing synthesis produces
+; exactly one scope, anchored on the same node as the declaration (#2699 S4).
+(initialized_variable_definition
+  (identifier) @declaration.name
+  (function_expression) @declaration.function)
+
 ; ── Declarations — methods (inside class/mixin/extension bodies) ─────────────
 (method_signature
   (function_signature
