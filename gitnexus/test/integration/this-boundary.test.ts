@@ -188,10 +188,14 @@ describeIfWorkerBuilt('an arrow inherits `this`; every other function form binds
           '\n',
         ),
       ),
-      // Attributed to `run`, not to `f`: Kotlin scopes `lambda_literal` as a
-      // BLOCK (#1757), so the lambda is not its own caller anchor. What matters
-      // here is only that the `this.m()` edge still exists at all.
-    ).toContain('Method:K.kt:K.run#0 -> Method:K.kt:K.m#0');
+      // Attributed to `f` since #2699 S2. Kotlin still scopes `lambda_literal`
+      // as a BLOCK (#1757 — that has NOT changed), but a Block-kind scope is now
+      // accepted as a caller anchor when the scope IS the callable's body, so
+      // the lambda is its own anchor. The property this test exists for is
+      // unchanged and is what the assertion still checks: `this` inside a Kotlin
+      // lambda resolves to the enclosing receiver, so the `this.m()` edge exists.
+      // Only its SOURCE moved, from `run` to `run.f`.
+    ).toContain('Method:K.kt:K.run.f@2:16 -> Method:K.kt:K.m#0');
   });
 });
 
