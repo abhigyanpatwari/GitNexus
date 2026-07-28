@@ -215,6 +215,51 @@ export const TYPESCRIPT_SCOPE_QUERY = `
     name: (identifier) @declaration.name
     value: (function_expression) @declaration.function))
 
+;; CJS property-assignment exports (#2723) — see the matching block in
+;; \`languages/javascript/query.ts\` for the rationale. Mirrored here because
+;; \`.ts\` files in a CommonJS package use the same form, and because the JS
+;; provider delegates several hooks to these TypeScript counterparts.
+;; One pattern per receiver form, RHS forms folded into an inner LEAF
+;; alternation — see the matching note in \`languages/javascript/query.ts\` for
+;; why that shape is safe under the tree-sitter 0.21.1 alternation hazard.
+(assignment_expression
+  left: (member_expression
+    object: (identifier) @_cjs.receiver
+    property: (property_identifier) @declaration.name)
+  right: [
+    (arrow_function)
+    (function_expression)
+    (generator_function)
+  ] @declaration.function)
+
+;; \`this.X = fn\` at MODULE level of a CommonJS file — there \`this\` IS
+;; \`module.exports\`, so this declares an export. Pruned emit-side for ESM
+;; files (where top-level \`this\` is undefined) and for a \`this\` inside a
+;; function, which is an instance member rather than an export.
+(assignment_expression
+  left: (member_expression
+    object: (this)
+    property: (property_identifier) @declaration.name)
+  right: [
+    (arrow_function)
+    (function_expression)
+    (generator_function)
+  ] @declaration.function)
+
+(assignment_expression
+  left: (member_expression
+    object: (member_expression
+      object: (identifier) @_cjs.module
+      property: (property_identifier) @_cjs.exports)
+    property: (property_identifier) @declaration.name)
+  right: [
+    (arrow_function)
+    (function_expression)
+    (generator_function)
+  ] @declaration.function
+  (#eq? @_cjs.module "module")
+  (#eq? @_cjs.exports "exports"))
+
 ;; Object-property arrows / function expressions named by their pair key:
 ;; \`{ addItem: (item) => ..., removeItem: (item) => ... }\`. The legacy
 ;; TYPESCRIPT_QUERIES emits the same shape; mirroring it here keeps

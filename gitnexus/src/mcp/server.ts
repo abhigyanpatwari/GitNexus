@@ -23,7 +23,7 @@ import {
   ListPromptsRequestSchema,
   GetPromptRequestSchema,
 } from '@modelcontextprotocol/sdk/types.js';
-import { GITNEXUS_TOOLS } from './tools.js';
+import { GITNEXUS_TOOLS, REPO_SCOPED_TOOLS } from './tools.js';
 import { installGlobalStdoutSentinel } from './stdio-context.js';
 import type { LocalBackend } from './local/local-backend.js';
 import { getResourceDefinitions, getResourceTemplates, readResource } from './resources.js';
@@ -185,21 +185,32 @@ export function createMCPServer(
     }
   });
 
-  // Handle list tools request
-  server.setRequestHandler(ListToolsRequestSchema, async () => ({
-    tools: GITNEXUS_TOOLS.filter(
-      (tool) =>
-        (!readOnly || MCP_READ_ONLY_TOOLS.has(tool.name)) &&
-        repositoryPolicy.toolAllowed(tool.name),
-    )
-      .map((tool) => toolForReadOnlyMcp(repositoryPolicy.toolForMcp(tool), readOnly))
-      .map((tool) => ({
-        name: tool.name,
-        description: tool.description,
-        inputSchema: tool.inputSchema,
-        annotations: tool.annotations,
-      })),
-  }));
+  // With multiple visible repositories and no process-wide default, make the
+  // routing requirement machine-readable. Agents then supply `repo` before the
+  // call instead of discovering the ambiguity through a failed tool response.
+  server.setRequestHandler(ListToolsRequestSchema, async () => {
+    const requireRepo = await repositoryPolicy.requiresExplicitRepo(backend);
+    return {
+      tools: GITNEXUS_TOOLS.filter(
+        (tool) =>
+          (!readOnly || MCP_READ_ONLY_TOOLS.has(tool.name)) &&
+          repositoryPolicy.toolAllowed(tool.name),
+      )
+        .map((tool) => toolForReadOnlyMcp(repositoryPolicy.toolForMcp(tool), readOnly))
+        .map((tool) => ({
+          name: tool.name,
+          description: tool.description,
+          inputSchema:
+            requireRepo && REPO_SCOPED_TOOLS.has(tool.name)
+              ? {
+                  ...tool.inputSchema,
+                  required: [...new Set([...tool.inputSchema.required, 'repo'])],
+                }
+              : tool.inputSchema,
+          annotations: tool.annotations,
+        })),
+    };
+  });
 
   // Handle tool calls — append next-step hints to guide agent workflow
   server.setRequestHandler(CallToolRequestSchema, async (request) => {

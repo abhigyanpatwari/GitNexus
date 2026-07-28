@@ -296,6 +296,7 @@ export GITNEXUS_EMBEDDING_API_KEY=your-key   # optional, default: "unused"
 export GITNEXUS_EMBEDDING_MAX_ATTEMPTS=3     # optional, total attempts (1-20)
 export GITNEXUS_EMBEDDING_RETRY_CAP_MS=5000  # optional, maximum retry delay
 export GITNEXUS_EMBEDDING_MIN_INTERVAL_MS=0  # optional, minimum request spacing
+export GITNEXUS_EMBEDDING_HTTP_TIMEOUT_MS=180000 # optional, per-request timeout (max 300000)
 gitnexus analyze . --embeddings
 ```
 

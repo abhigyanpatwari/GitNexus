@@ -335,6 +335,22 @@ describe('.gitnexusignore negation overrides hardcoded DEFAULT_IGNORE_LIST (#771
     expect(filter.ignored(mkPath('node_modules/express/index.js'))).toBe(false);
   });
 
+  it('`!parts/` unlocks Java modules and nested parts directories (#2673)', async () => {
+    await fs.writeFile(path.join(tmpDir, '.gitnexusignore'), '!parts/\n');
+    const filter = await createIgnoreFilter(tmpDir);
+
+    expect(filter.childrenIgnored(mkPath('parts'))).toBe(false);
+    expect(filter.ignored(mkPath('parts/src/main/java/com/example/Part.java'))).toBe(false);
+    expect(filter.childrenIgnored(mkPath('admin/src/main/java/com/example/controller/parts'))).toBe(
+      false,
+    );
+    expect(
+      filter.ignored(
+        mkPath('admin/src/main/java/com/example/controller/parts/PartsController.java'),
+      ),
+    ).toBe(false);
+  });
+
   it('negation of one hardcoded entry does not leak to others', async () => {
     await fs.writeFile(path.join(tmpDir, '.gitnexusignore'), '!__tests__/\n');
     const filter = await createIgnoreFilter(tmpDir);

@@ -87,6 +87,8 @@ import {
   getDefinitionNodeFromCaptures,
   findEnclosingClassInfo,
   findObjectLiteralBindingInfo,
+  findMemberAssignmentOwnerInfo,
+  isCjsDefaultExportAssignment,
   type EnclosingClassInfo,
   getLabelFromCaptures,
   genericFuncName,
@@ -106,6 +108,7 @@ import { buildTypeEnv } from '../type-env.js';
 import type { ConstructorBinding } from '../type-env.js';
 import { detectFrameworkFromAST } from '../framework-detection.js';
 import { generateId } from '../../../lib/utils.js';
+import { defaultExportNameCollides } from '../languages/typescript/cjs-export-assignment.js';
 import {
   extractVueScript,
   extractTemplateComponents,
@@ -2139,17 +2142,61 @@ const processFileGroup = (
         return deriveDefaultExportHocName(file.path);
       })();
 
+      // `module.exports = function () {}` (#2723): the whole module is the
+      // callable. The member-assignment rule captures the LEFT property as the
+      // name, which here is the literal `exports` — meaningless. Override it:
+      // a named function expression supplies its own name, and the anonymous
+      // forms are named after the file by the same convention anonymous
+      // default exports already use. Takes precedence over `nameNode` for
+      // exactly that reason.
+      //
+      // The derived name is dropped when it COLLIDES with a callable the module
+      // already declares. `format.js` holding `function format() {}` plus an
+      // anonymous `module.exports = function () { return format(v); }` merged
+      // both onto one node, and the inner call to `format` then resolved to
+      // that merged node — fabricating a self-recursion edge present in no
+      // source (#2729 review F4). A fabricated edge is worse than a missing
+      // one: it hands `impact` a caller that does not exist.
+      const isCjsDefaultExport =
+        definitionNode !== undefined && isCjsDefaultExportAssignment(definitionNode);
+      const cjsDefaultExportOwnName = isCjsDefaultExport
+        ? definitionNode?.childForFieldName('right')?.childForFieldName('name')?.text
+        : undefined;
+      // A collision must SUPPRESS the definition outright, not merely decline to
+      // name it — falling through would let the captured left property name the
+      // node the literal `exports`, which is both meaningless and the very node
+      // this feature's own test forbids.
+      const suppressCjsDefaultExport = (() => {
+        if (!isCjsDefaultExport || cjsDefaultExportOwnName !== undefined) return false;
+        const root = (definitionNode as { tree?: { rootNode?: SyntaxNode } }).tree?.rootNode;
+        if (root === undefined) return false;
+        return defaultExportNameCollides(
+          definitionNode!,
+          root,
+          deriveDefaultExportHocName(file.path),
+        );
+      })();
+      if (suppressCjsDefaultExport) continue;
+
+      const cjsDefaultExportName = isCjsDefaultExport
+        ? (cjsDefaultExportOwnName ?? deriveDefaultExportHocName(file.path))
+        : null;
+
       // Synthesize name for constructors without explicit @name capture (e.g. Swift init)
       if (
         !nameNode &&
         nodeLabel !== 'Constructor' &&
         !extractedClassSymbol &&
-        !defaultExportHocName
+        !defaultExportHocName &&
+        !cjsDefaultExportName
       )
         continue;
 
       const nodeName =
-        extractedClassSymbol?.name ?? defaultExportHocName ?? (nameNode ? nameNode.text : 'init');
+        extractedClassSymbol?.name ??
+        defaultExportHocName ??
+        cjsDefaultExportName ??
+        (nameNode ? nameNode.text : 'init');
       // Dedup: variable captures (Const/Static/Variable) may overlap with higher-priority
       // captures (e.g. `const fn = () => {}` matches both @definition.function and @definition.const).
       // Multi-name declarations share the same definition node, so include the emitted name.
@@ -2266,9 +2313,17 @@ const processFileGroup = (
           : null;
       const enclosingClassId =
         enclosingClassInfo?.qualifiedClassId ?? enclosingClassInfo?.classId ?? null;
+      // A Method with no enclosing class container is owned by a NAMED binding
+      // instead: an object literal (`const service = { load() {} }`) or, since
+      // the #2723 follow-up, a prototype assignment
+      // (`Foo.prototype.bar = function () {}`). Both resolve the owner from the
+      // syntax rather than from an ancestor walk, and both are language-shaped
+      // helpers behind the provider's own label decision — shared code here
+      // only asks "does this Method name an owner".
       const objectLiteralOwnerInfo =
         !enclosingClassId && nodeLabel === 'Method' && definitionNode
-          ? findObjectLiteralBindingInfo(definitionNode, file.path)
+          ? (findMemberAssignmentOwnerInfo(definitionNode, file.path) ??
+            findObjectLiteralBindingInfo(definitionNode, file.path))
           : null;
 
       // #1978: hoisted ABOVE qualifiedName/node-id (load-bearing order) so a
@@ -2354,7 +2409,13 @@ const processFileGroup = (
               ? nestedCallableQualifiedName(nestedCallablePrefix, definitionNode, nodeName)
               : enclosingClassInfo
                 ? `${enclosingClassInfo.className}.${nodeName}`
-                : nodeName;
+                : // A member whose owner is named by the assignment rather than
+                  // by an enclosing container (`Foo.prototype.bar = …`) qualifies
+                  // by that owner, so two constructors in one file that both
+                  // define `bar` stay distinct nodes.
+                  objectLiteralOwnerInfo?.ownerName !== undefined
+                  ? `${objectLiteralOwnerInfo.ownerName}.${nodeName}`
+                  : nodeName;
 
       // Extract method metadata BEFORE generating node ID — parameterCount is needed
       // to disambiguate overloaded methods via #<arity> suffix in the ID.

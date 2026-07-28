@@ -73,12 +73,12 @@ describe('CALL_SUMMARY relation-type exclusion (U-C1)', () => {
 });
 
 describe('CALL_SUMMARY incremental reuse gate (U-C5)', () => {
-  it('INCREMENTAL_SCHEMA_VERSION is bumped to 21 (closure bindings are call SOURCES, #2699 part B)', () => {
+  it('INCREMENTAL_SCHEMA_VERSION is bumped to 22 (CommonJS export indexing, #2723)', () => {
     // Moves with every bump BY DESIGN — that is the point of pinning it. A
     // change that alters emitted ids or edges without bumping would otherwise
     // ship silently, and an existing index would keep serving the old graph
     // through the reuse gate below.
-    expect(INCREMENTAL_SCHEMA_VERSION).toBe(21);
+    expect(INCREMENTAL_SCHEMA_VERSION).toBe(22);
   });
 
   it('a pre-current stamp fails the `=== INCREMENTAL_SCHEMA_VERSION` reuse gate → forces full re-analyze', () => {
@@ -169,6 +169,10 @@ describe('CALL_SUMMARY incremental reuse gate (U-C5)', () => {
     // source.
     expect(passesReuseGate(20)).toBe(false);
     // A current-version stamp passes the gate (incremental top-up eligible).
-    expect(passesReuseGate(21)).toBe(true);
+    // A pre-v22 (v21) index predates CommonJS export indexing (#2723): every
+    // unchanged CJS file would keep its pre-fix graph → must NOT reuse.
+    expect(passesReuseGate(21)).toBe(false);
+    // The current stamp passes.
+    expect(passesReuseGate(22)).toBe(true);
   });
 });
