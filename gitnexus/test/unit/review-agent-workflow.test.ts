@@ -326,6 +326,68 @@ function reviewTranscript({
   ];
 }
 
+// Two orchestrator context calls in one turn: the first proves the evidence,
+// the second is an ordinary exploratory call whose result may be junk.
+function twoCallTranscript({
+  firstResult,
+  secondResult,
+}: {
+  firstResult: string;
+  secondResult: string;
+}): Array<Record<string, unknown>> {
+  return [
+    {
+      type: 'system',
+      subtype: 'init',
+      session_id: 'session-1',
+      uuid: '11111111-1111-4111-8111-111111111111',
+    },
+    {
+      type: 'assistant',
+      parent_tool_use_id: null,
+      session_id: 'session-1',
+      uuid: '22222222-2222-4222-8222-222222222222',
+      message: {
+        role: 'assistant',
+        content: [
+          {
+            type: 'tool_use',
+            id: 'tool-1',
+            name: 'mcp__gitnexus__context',
+            input: { name: 'statusCommand' },
+          },
+          {
+            type: 'tool_use',
+            id: 'tool-2',
+            name: 'mcp__gitnexus__context',
+            input: { name: 'bigHotSymbol' },
+          },
+        ],
+      },
+    },
+    {
+      type: 'user',
+      parent_tool_use_id: null,
+      session_id: 'session-1',
+      uuid: '33333333-3333-4333-8333-333333333333',
+      message: {
+        role: 'user',
+        content: [
+          { type: 'tool_result', tool_use_id: 'tool-1', is_error: false, content: firstResult },
+          { type: 'tool_result', tool_use_id: 'tool-2', is_error: false, content: secondResult },
+        ],
+      },
+    },
+    {
+      type: 'result',
+      subtype: 'success',
+      is_error: false,
+      session_id: 'session-1',
+      uuid: '44444444-4444-4444-8444-444444444444',
+    },
+  ];
+}
+
 function reviewTranscriptWithoutTools(): Array<Record<string, unknown>> {
   return [
     {
@@ -362,7 +424,7 @@ function runArtifactScenario({
   executionFileOutput,
   noIndexableChangedSymbols = false,
   rawTranscript = JSON.stringify(reviewTranscript()),
-  structuredOutput = JSON.stringify({ body: 'Accepted graph-backed review' }),
+  structuredOutput = JSON.stringify({ body: 'Accepted graph-backed review', complete: true }),
 }: ArtifactScenario = {}) {
   const script = embeddedNodeScript('analyze', 'Assemble bounded review artifact');
   const runnerTemp = mkdtempSync(path.join(tmpdir(), 'gitnexus-review-artifact-'));
@@ -1175,9 +1237,13 @@ describe('gitnexus review-agent workflow security contract', () => {
     // control-SHA personas; Agent is not bare-denied (deny beats allow), and
     // lane calls cannot satisfy the evidence gate.
     expect(analyze).toContain('--tools "Read,Agent"');
-    expect(allowedTools).toContain(
-      'Agent(ci-correctness-lens,ci-security-lens,ci-blast-radius-lens,ci-coverage-lens,ci-adversarial-lens,ci-critic-lens)',
-    );
+    // One rule per persona, never a grouped Agent(a,b,c): the pinned base
+    // action parses allowedTools with `.flatMap((v) => v.split(","))`, which
+    // would shatter a grouped rule into `Agent(ci-correctness-lens`, bare
+    // names, and `ci-critic-lens)` before the SDK ever sees it.
+    expect(allowedToolRules).toContain('Agent(ci-correctness-lens)');
+    expect(allowedToolRules).toContain('Agent(ci-critic-lens)');
+    expect(allowedTools).not.toMatch(/Agent\([^)]*,/);
     expect(allowedTools).not.toContain('Task');
     const disallowedTools = analyze.match(/--disallowedTools "([^"]+)"/)?.[1] ?? '';
     const disallowedToolRules = disallowedTools.split(',');
@@ -1218,12 +1284,12 @@ describe('gitnexus review-agent workflow security contract', () => {
     // parse time), so the canary is the acceptance gate for that. What a unit
     // test CAN pin is that the scoped allowlist, the persona filenames, and each
     // persona's frontmatter name are the same set — catching a rename or typo in
-    // any of the three without auth.
+    // any of the three without auth. Names are read one-per-rule because the
+    // pinned action splits allowedTools on commas.
     const analyze = jobBlock('analyze');
     const allowed = analyze.match(/--allowedTools "([^"]+)"/)?.[1] ?? '';
-    const allowlistNames = (allowed.match(/Agent\(([^)]+)\)/)?.[1] ?? '')
-      .split(',')
-      .map((name) => name.trim())
+    const allowlistNames = [...allowed.matchAll(/Agent\(([^),]+)\)/g)]
+      .map((match) => match[1].trim())
       .sort();
 
     const personasDir = path.resolve(
@@ -1618,7 +1684,11 @@ describe('gitnexus review-agent workflow security contract', () => {
         }),
       ),
     });
-    expect(uidOnly.artifact.failure_code).toBeNull();
+    expect(uidOnly.artifact).toMatchObject({
+      status: 'success',
+      failure_code: null,
+      graph_evidence: { mode: 'context' },
+    });
 
     const noSelector = runArtifactScenario({
       rawTranscript: JSON.stringify(reviewTranscript({ toolInput: { kind: 'Function' } })),
@@ -1659,6 +1729,92 @@ describe('gitnexus review-agent workflow security contract', () => {
     expect(noCalls.stderr).toContain(
       'orchestrator context calls out of scope (no selector or unknown repo): 0',
     );
+
+    // An in-scope call whose result errored must not read as "no calls made".
+    const erroredResult = runArtifactScenario({
+      rawTranscript: JSON.stringify(reviewTranscript({ resultIsError: true })),
+    });
+    expect(erroredResult.stderr).toContain('in-scope calls with no usable result: 1 (errored 1');
+
+    const unresolved = runArtifactScenario({
+      rawTranscript: JSON.stringify(
+        reviewTranscript({
+          toolResultContent: `${JSON.stringify({ error: "Symbol 'x' not found" })}\n\n---\n**Next:** retry.`,
+        }),
+      ),
+    });
+    expect(unresolved.stderr).toContain('results that resolved nothing: 1');
+  });
+
+  it('treats a malformed context payload as non-evidence, not as a corrupt transcript', () => {
+    // The MCP truncates any context payload over GITNEXUS_MCP_DEFAULT_MAX_TOKENS
+    // mid-JSON. Every orchestrator context call is a candidate, so throwing on a
+    // payload-shape failure would let one truncated exploratory call discard a
+    // review that an earlier call already proved.
+    const proved = contextResultContent();
+    const truncated = `${JSON.stringify({ status: 'found', symbol: { uid: 'u' } }).slice(0, 30)}\n…`;
+    const provedThenTruncated = runArtifactScenario({
+      rawTranscript: JSON.stringify(
+        twoCallTranscript({ firstResult: proved, secondResult: truncated }),
+      ),
+    });
+    expect(provedThenTruncated.artifact).toMatchObject({
+      status: 'success',
+      failure_code: null,
+      graph_evidence: { mode: 'context' },
+    });
+
+    // With no proving call, the same truncated payload is counted, not thrown.
+    const truncatedOnly = runArtifactScenario({
+      rawTranscript: JSON.stringify(reviewTranscript({ toolResultContent: truncated })),
+    });
+    expect(truncatedOnly.artifact.failure_code).toBe('missing_graph_evidence');
+    expect(truncatedOnly.stderr).toContain('results too malformed or truncated to parse: 1');
+
+    // Structural transcript invariants must still fail closed.
+    const structural = runArtifactScenario({ rawTranscript: '{not-json' });
+    expect(structural.artifact.failure_code).toBe('invalid_execution_transcript');
+  });
+
+  it('scopes a deletion-only PR to the merge-base set instead of an empty head set', () => {
+    const deletedPath = 'gitnexus/src/cli/deleted-command.ts';
+    const headScopedCall = runArtifactScenario({
+      basePaths: [deletedPath],
+      changedPaths: [],
+      rawTranscript: JSON.stringify(
+        reviewTranscript({
+          toolInput: { name: 'deletedCommand' },
+          toolResultContent: contextResultContent(deletedPath),
+        }),
+      ),
+    });
+    // headPaths is empty, so the call can never be satisfied: report it as out
+    // of scope rather than as a result "outside the changed paths".
+    expect(headScopedCall.artifact.failure_code).toBe('missing_graph_evidence');
+    expect(headScopedCall.stderr).toContain('orchestrator context calls in scope: 0');
+    expect(headScopedCall.stderr).toContain(
+      'orchestrator context calls out of scope (no selector or unknown repo): 1',
+    );
+    expect(headScopedCall.stderr).toContain('results outside the changed paths: 0');
+  });
+
+  it('publishes an incomplete analysis as a labelled failure, never as an accepted review', () => {
+    const incomplete = runArtifactScenario({
+      structuredOutput: JSON.stringify({ body: 'Partial review, two lanes died', complete: false }),
+    });
+    expect(incomplete.artifact).toMatchObject({
+      status: 'failure',
+      failure_code: 'incomplete_analysis',
+      graph_evidence: null,
+    });
+    expect(incomplete.artifact.body).toContain('could not complete this analysis');
+    expect(incomplete.artifact.body).toContain('Partial review, two lanes died');
+    expect(incomplete.stderr).toContain('the model reported an incomplete analysis');
+
+    const missingField = runArtifactScenario({
+      structuredOutput: JSON.stringify({ body: 'No completeness signal' }),
+    });
+    expect(missingField.artifact.failure_code).toBe('invalid_model_output');
   });
 
   it('accepts SDK text-block results with omitted is_error', () => {
@@ -1697,13 +1853,17 @@ describe('gitnexus review-agent workflow security contract', () => {
     expect(wrongPath.artifact.failure_code).toBe('missing_graph_evidence');
   });
 
-  it('fails closed on malformed or empty context result content', () => {
+  it('separates malformed context payloads from structurally invalid tool results', () => {
+    // Payload shape is the MCP's business and can fail for benign reasons
+    // (truncation at the output budget), so it demotes one call to non-evidence.
     const malformed = runArtifactScenario({
       rawTranscript: JSON.stringify(reviewTranscript({ toolResultContent: '{not-json' })),
     });
-    expect(malformed.artifact.failure_code).toBe('invalid_execution_transcript');
-    expect(malformed.stderr).toContain('context tool result is not strict JSON');
+    expect(malformed.artifact.failure_code).toBe('missing_graph_evidence');
+    expect(malformed.stderr).toContain('results too malformed or truncated to parse: 1');
 
+    // An empty tool_result is a transcript-structural violation, not a payload
+    // shape, and still fails the whole run closed.
     const empty = runArtifactScenario({
       rawTranscript: JSON.stringify(reviewTranscript({ toolResultContent: '   ' })),
     });

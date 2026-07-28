@@ -1335,6 +1335,12 @@ jobs:
             Always end the run by returning that structured body field, even when a
             lane fails, a query comes back empty, or the analysis is incomplete —
             describe the gap inside the review instead of finishing without output.
+            Also return the boolean field complete: true only when you actually
+            finished the review you were asked for, and false whenever a lane
+            failed, a needed query never resolved, or you ran out of turns. A
+            false value still publishes the partial review, but labelled as
+            incomplete rather than accepted — never report true to make the run
+            look clean.
           claude_args: |
             --model claude-sonnet-5
             --add-dir "${{ runner.temp }}/gitnexus-review-pr-target"
@@ -1343,12 +1349,12 @@ jobs:
             --strict-mcp-config
             --mcp-config "${{ runner.temp }}/gitnexus-review-mcp.json"
             --tools "Read,Agent"
-            --allowedTools "Agent(ci-correctness-lens,ci-security-lens,ci-blast-radius-lens,ci-coverage-lens,ci-adversarial-lens,ci-critic-lens),Read(./**),Read(${{ runner.temp }}/gitnexus-review-pr-target/**),Read(${{ runner.temp }}/gitnexus-review-merge-base/**),mcp__gitnexus__list_repos,mcp__gitnexus__query,mcp__gitnexus__context,mcp__gitnexus__check,mcp__gitnexus__impact,mcp__gitnexus__explain,mcp__gitnexus__pdg_query,mcp__gitnexus__route_map,mcp__gitnexus__tool_map,mcp__gitnexus__shape_check,mcp__gitnexus__api_impact,mcp__gitnexus__trace"
+            --allowedTools "Agent(ci-correctness-lens),Agent(ci-security-lens),Agent(ci-blast-radius-lens),Agent(ci-coverage-lens),Agent(ci-adversarial-lens),Agent(ci-critic-lens),Read(./**),Read(${{ runner.temp }}/gitnexus-review-pr-target/**),Read(${{ runner.temp }}/gitnexus-review-merge-base/**),mcp__gitnexus__list_repos,mcp__gitnexus__query,mcp__gitnexus__context,mcp__gitnexus__check,mcp__gitnexus__impact,mcp__gitnexus__explain,mcp__gitnexus__pdg_query,mcp__gitnexus__route_map,mcp__gitnexus__tool_map,mcp__gitnexus__shape_check,mcp__gitnexus__api_impact,mcp__gitnexus__trace"
             --disallowedTools "Bash,Write,Edit,MultiEdit,NotebookEdit,WebFetch,WebSearch,Skill,Read(/proc/**),Read(/sys/**),Read(/dev/**),Read(${{ github.workspace }}/**),mcp__github,mcp__gitnexus__detect_changes,mcp__gitnexus__rename,mcp__gitnexus__cypher,mcp__gitnexus__group_list,mcp__gitnexus__group_sync"
             --permission-mode dontAsk
             --no-session-persistence
             --max-turns 150
-            --json-schema '{"type":"object","properties":{"body":{"type":"string","maxLength":50000}},"required":["body"],"additionalProperties":false}'
+            --json-schema '{"type":"object","properties":{"body":{"type":"string","maxLength":50000},"complete":{"type":"boolean"}},"required":["body","complete"],"additionalProperties":false}'
 
       - name: Assemble bounded review artifact
         id: artifact
@@ -1413,6 +1419,8 @@ jobs:
             index_failed: 'The review was not run because the exact-head graph index could not be built safely.',
             model_failed: 'The review agent did not produce a valid structured result.',
             invalid_model_output: 'The review agent returned an invalid structured result.',
+            incomplete_analysis:
+              'The review agent reported that it could not complete this analysis, so the partial review below is published for diagnosis rather than accepted as a review.',
             invalid_execution_transcript: 'The review execution transcript failed strict validation, so no model review was accepted.',
             missing_graph_evidence: 'The review execution did not prove a successful GitNexus context result for a symbol in an exact changed file.',
           };
@@ -1674,13 +1682,16 @@ jobs:
 
             const headRepo = path.join(process.env.GITHUB_WORKSPACE, 'pr-target');
             const baseRepo = path.join(process.env.RUNNER_TEMP, 'gitnexus-review-merge-base');
-            if (!Object.hasOwn(input, 'repo') || input.repo === headRepo) {
-              return changedPathManifest.headPaths;
-            }
-            if (input.repo === baseRepo) {
-              return changedPathManifest.baseEvidencePaths;
-            }
-            return undefined;
+            // An empty set can never be satisfied (a deletion-only PR has no
+            // head paths), so such a call is out of scope rather than a
+            // candidate whose every result reads as "outside the changed paths".
+            const scoped =
+              !Object.hasOwn(input, 'repo') || input.repo === headRepo
+                ? changedPathManifest.headPaths
+                : input.repo === baseRepo
+                  ? changedPathManifest.baseEvidencePaths
+                  : undefined;
+            return scoped && scoped.size > 0 ? scoped : undefined;
           }
 
           function validateToolResultContent(content) {
@@ -1712,6 +1723,14 @@ jobs:
             throw new Error('context tool result is not text');
           }
 
+          // Payload-shape failures are NOT transcript corruption. Every
+          // orchestrator context call is a candidate now, so an ordinary
+          // exploratory call whose result the MCP truncated at
+          // GITNEXUS_MCP_DEFAULT_MAX_TOKENS (mid-JSON, marker appended) would
+          // otherwise throw and discard a review an earlier call already
+          // proved. This throws only what the caller converts into a counted
+          // non-evidence result; structural transcript invariants still throw
+          // hard from proveGraphReview.
           function contextResultProvesChangedPath(content, eligiblePaths, rejected) {
             const text = decodeTextToolResult(content).trim();
             if (!text) throw new Error('context tool result is empty');
@@ -1784,7 +1803,11 @@ jobs:
               samples: [],
               sidechainCalls: 0,
               outOfScopeCalls: 0,
+              erroredResults: 0,
+              malformedResults: 0,
+              unusableResults: 0,
             };
+            const answeredCalls = new Set();
             const candidateCalls = new Map();
             const successfulResults = new Map();
             const seenToolCalls = new Set();
@@ -1886,14 +1909,25 @@ jobs:
                   }
                   seenToolResults.add(block.tool_use_id);
                   const candidate = candidateCalls.get(block.tool_use_id);
-                  if (
-                    !sidechain &&
-                    block.is_error !== true &&
-                    candidate &&
-                    messageIndex > candidate.messageIndex &&
-                    contextResultProvesChangedPath(block.content, candidate.eligiblePaths, rejected)
-                  ) {
-                    successfulResults.set(block.tool_use_id, messageIndex);
+                  if (candidate && (sidechain || messageIndex <= candidate.messageIndex)) {
+                    rejected.unusableResults += 1;
+                  } else if (candidate && block.is_error === true) {
+                    rejected.erroredResults += 1;
+                  } else if (candidate) {
+                    answeredCalls.add(block.tool_use_id);
+                    let proved = false;
+                    try {
+                      proved = contextResultProvesChangedPath(
+                        block.content,
+                        candidate.eligiblePaths,
+                        rejected,
+                      );
+                    } catch {
+                      // A malformed or truncated payload means this call is not
+                      // the evidence call — never that the transcript is corrupt.
+                      rejected.malformedResults += 1;
+                    }
+                    if (proved) successfulResults.set(block.tool_use_id, messageIndex);
                   }
                 }
               }
@@ -1911,7 +1945,12 @@ jobs:
                 `orchestrator context calls out of scope (no selector or unknown repo): ` +
                 `${rejected.outOfScopeCalls}; ` +
                 `sidechain context calls ignored: ${rejected.sidechainCalls}; ` +
+                `in-scope calls with no usable result: ` +
+                `${candidateCalls.size - answeredCalls.size}` +
+                ` (errored ${rejected.erroredResults}, out of order or sidechained ` +
+                `${rejected.unusableResults}); ` +
                 `results that resolved nothing: ${rejected.unresolved}; ` +
+                `results too malformed or truncated to parse: ${rejected.malformedResults}; ` +
                 `results outside the changed paths: ${rejected.offPath}` +
                 (rejected.samples.length > 0 ? ` (${rejected.samples.join(', ')})` : ''),
               headHasIndexableSymbol:
@@ -1987,22 +2026,32 @@ jobs:
                     if (
                       !parsed ||
                       Array.isArray(parsed) ||
-                      Object.keys(parsed).length !== 1 ||
+                      Object.keys(parsed).length !== 2 ||
                       typeof parsed.body !== 'string' ||
-                      parsed.body.trim().length === 0
+                      parsed.body.trim().length === 0 ||
+                      typeof parsed.complete !== 'boolean'
                     ) {
                       throw new Error('structured output shape mismatch');
                     }
-                    status = 'success';
-                    failureCode = 'none';
-                    graphEvidenceMode = {
-                      mode: graphEvidence.hasContextEvidence
-                        ? 'context'
-                        : 'no_indexable_changed_symbols',
-                      head_has_indexable_symbol: graphEvidence.headHasIndexableSymbol,
-                      base_has_indexable_symbol: graphEvidence.baseHasIndexableSymbol,
-                    };
-                    body = parsed.body;
+                    // The prompt asks for a body even when the analysis could
+                    // not finish, so completeness must be reported separately —
+                    // otherwise a degraded run publishes as an accepted review.
+                    if (parsed.complete) {
+                      status = 'success';
+                      failureCode = 'none';
+                      graphEvidenceMode = {
+                        mode: graphEvidence.hasContextEvidence
+                          ? 'context'
+                          : 'no_indexable_changed_symbols',
+                        head_has_indexable_symbol: graphEvidence.headHasIndexableSymbol,
+                        base_has_indexable_symbol: graphEvidence.baseHasIndexableSymbol,
+                      };
+                      body = parsed.body;
+                    } else {
+                      failureCode = 'incomplete_analysis';
+                      body = `${failureMessages.incomplete_analysis}\n\n${parsed.body}`;
+                      console.error('Review rejected: the model reported an incomplete analysis.');
+                    }
                   } catch {
                     failureCode = 'invalid_model_output';
                     body = failureMessages[failureCode];
