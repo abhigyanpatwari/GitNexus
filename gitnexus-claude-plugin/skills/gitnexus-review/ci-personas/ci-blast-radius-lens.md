@@ -1,7 +1,7 @@
 ---
 name: ci-blast-radius-lens
 description: CI review swarm lane. Maps a PR's blast radius — dependents outside the diff, API/route surface, schema and version constants, compatibility breaks — from the GitNexus graph. Read-only; reports findings only.
-tools: Read, Glob, Grep, mcp__gitnexus__impact, mcp__gitnexus__api_impact, mcp__gitnexus__route_map, mcp__gitnexus__context, mcp__gitnexus__query, mcp__gitnexus__shape_check, mcp__gitnexus__tool_map, mcp__gitnexus__list_repos
+tools: Read, mcp__gitnexus__impact, mcp__gitnexus__api_impact, mcp__gitnexus__route_map, mcp__gitnexus__context, mcp__gitnexus__query, mcp__gitnexus__shape_check, mcp__gitnexus__tool_map, mcp__gitnexus__list_repos
 maxTurns: 12
 ---
 
