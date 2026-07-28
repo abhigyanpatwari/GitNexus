@@ -296,3 +296,88 @@ def test_phase_workspace_still_rejects_a_genuinely_unauthorized_change(tmp_path)
 
     with pytest.raises(ValueError, match="unauthorized workspace path"):
         runner_artifacts.enforce_phase_workspace(tmp_path, before, allowed_artifact=artifact)
+
+
+def test_phase_workspace_ignores_nested_claude_sandbox_bootstrap_noise(tmp_path):
+    # Claude Code bootstraps into whatever directory it is running in, not just
+    # the workspace root. The benchmark's task prompts cd into gitnexus/, so the
+    # same noise lands one level down -- observed verbatim in skill-evolution run
+    # 29861768554, where 13 of 18 sessions failed with
+    # "phase changed unauthorized workspace path(s): gitnexus/.claude/.cc-writes".
+    nested = tmp_path / "gitnexus" / ".claude"
+    nested.mkdir(parents=True)
+    (nested / "settings.local.json").write_text("{}")
+    before = runner_artifacts.workspace_snapshot(tmp_path)
+    (nested / ".cc-writes").write_text("{}")
+    artifact = tmp_path / "review-output.md"
+    artifact.write_text("new review")
+
+    runner_artifacts.enforce_phase_workspace(tmp_path, before, allowed_artifact=artifact)
+
+
+def test_phase_workspace_does_not_descend_into_nested_bootstrap_directories(tmp_path):
+    # The exclusion must skip an entry before it is queued for traversal, so
+    # content created *inside* the ignored directory stays invisible too.
+    nested = tmp_path / "gitnexus" / ".claude" / ".cc-writes"
+    nested.mkdir(parents=True)
+    before = runner_artifacts.workspace_snapshot(tmp_path)
+    (nested / "pending.json").write_text('{"writes": 1}')
+    artifact = tmp_path / "review-output.md"
+    artifact.write_text("new review")
+
+    runner_artifacts.enforce_phase_workspace(tmp_path, before, allowed_artifact=artifact)
+
+
+def test_phase_workspace_still_rejects_nested_real_claude_config(tmp_path):
+    # gitnexus/.claude/settings.local.json is real tracked repository content.
+    # Excluding ".claude" wholesale at depth would blind the check to it, so the
+    # exclusion must name only the entries Claude Code itself creates.
+    nested = tmp_path / "gitnexus" / ".claude"
+    nested.mkdir(parents=True)
+    settings = nested / "settings.local.json"
+    settings.write_text("{}")
+    before = runner_artifacts.workspace_snapshot(tmp_path)
+    settings.write_text('{"permissions": "changed"}')
+    artifact = tmp_path / "review-output.md"
+    artifact.write_text("new review")
+
+    with pytest.raises(ValueError, match="unauthorized workspace path"):
+        runner_artifacts.enforce_phase_workspace(tmp_path, before, allowed_artifact=artifact)
+
+
+def test_phase_workspace_still_rejects_nested_package_json(tmp_path):
+    # package.json is in WORKSPACE_SNAPSHOT_BOOTSTRAP_NOISE, but only as a
+    # workspace-root entry: gitnexus/package.json is real tracked content whose
+    # edits must still be caught.
+    nested = tmp_path / "gitnexus"
+    nested.mkdir()
+    manifest = nested / "package.json"
+    manifest.write_text("{}")
+    before = runner_artifacts.workspace_snapshot(tmp_path)
+    manifest.write_text('{"version": "9.9.9"}')
+    artifact = tmp_path / "review-output.md"
+    artifact.write_text("new review")
+
+    with pytest.raises(ValueError, match="unauthorized workspace path"):
+        runner_artifacts.enforce_phase_workspace(tmp_path, before, allowed_artifact=artifact)
+
+
+def test_phase_workspace_still_sees_writes_under_a_pre_existing_nested_claude_dir(tmp_path):
+    # Every excluded name is a blind spot. .claude/agents and .claude/commands
+    # are deliberately NOT excluded at depth: once a .claude directory exists
+    # (gitnexus/.claude/settings.local.json is tracked), anything written
+    # underneath an excluded entry is invisible to this check, and Claude Code
+    # loads .claude/agents relative to its cwd -- which these tasks point at
+    # gitnexus/. A planning phase must not be able to plant a definition there
+    # for the later work phase to read.
+    nested = tmp_path / "gitnexus" / ".claude"
+    nested.mkdir(parents=True)
+    (nested / "settings.local.json").write_text("{}")
+    before = runner_artifacts.workspace_snapshot(tmp_path)
+    (nested / "agents").mkdir()
+    (nested / "agents" / "planted.md").write_text("planted agent definition")
+    artifact = tmp_path / "review-output.md"
+    artifact.write_text("new review")
+
+    with pytest.raises(ValueError, match="unauthorized workspace path"):
+        runner_artifacts.enforce_phase_workspace(tmp_path, before, allowed_artifact=artifact)

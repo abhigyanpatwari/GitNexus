@@ -846,6 +846,10 @@ DESTINATION TRACE (cross-repo): for an "@groupName" trace, OMIT to/to_uid/to_fil
       properties: {
         from: { type: 'string', description: 'Source symbol name' },
         from_uid: { type: 'string', description: 'Source symbol UID (zero-ambiguity)' },
+        file: {
+          type: 'string',
+          description: 'Source file path hint for disambiguation (alias for from_file)',
+        },
         from_file: { type: 'string', description: 'Source file path hint for disambiguation' },
         to: {
           type: 'string',
@@ -906,7 +910,7 @@ DESTINATION TRACE (cross-repo): for an "@groupName" trace, OMIT to/to_uid/to_fil
  * `list_repos` and the `group_*` tools are intentionally excluded — they are
  * not single-repo, single-branch operations.
  */
-const BRANCH_SCOPED_TOOLS = new Set([
+export const REPO_SCOPED_TOOLS = new Set([
   'query',
   'cypher',
   'context',
@@ -924,7 +928,7 @@ const BRANCH_SCOPED_TOOLS = new Set([
 ]);
 
 for (const tool of GITNEXUS_TOOLS) {
-  if (!BRANCH_SCOPED_TOOLS.has(tool.name)) continue;
+  if (!REPO_SCOPED_TOOLS.has(tool.name)) continue;
   if (tool.inputSchema.properties.branch) continue;
   // Optional — `required` is left unchanged so omitting `branch` keeps today's
   // workspace-index behavior. Ignored in group mode (repo starts "@").

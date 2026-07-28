@@ -459,6 +459,20 @@ interface LanguageProviderConfig {
   readonly resolveScopeKind?: (captures: CaptureMatch) => ScopeKind | null;
 
   /**
+   * Report the receiver names this scope BINDS rather than inherits — see
+   * `Scope.ownsReceivers` (#2701).
+   *
+   * Called once per `@scope.*` capture during scope-tree construction.
+   * Return the shared frozen set for a scope that starts a fresh receiver
+   * (a JS/TS ordinary `function`, whose `this` is bound at call time), and
+   * `undefined` for one that inherits it (an arrow function, and every
+   * closure form in languages that capture the receiver lexically).
+   *
+   * Default: undefined everywhere — the receiver walk is unchanged.
+   */
+  readonly scopeOwnsReceivers?: (captures: CaptureMatch) => ReadonlySet<string> | undefined;
+
+  /**
    * Override where a declaration's name becomes visible. By default the name
    * is bound in the innermost enclosing scope; return a different `ScopeId`
    * to hoist it (JS `var` → enclosing function scope; Ruby `def` inside

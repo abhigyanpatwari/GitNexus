@@ -20,6 +20,7 @@ Maintainer may widen scope per task.
 3. **Run impact analysis before editing shared symbols** — `impact` (upstream) for functions/classes/methods others call. Do not ignore HIGH/CRITICAL without maintainer sign-off.
 4. **Run `detect_changes` before commit** — confirm diffs map to expected symbols/processes when the graph is available.
 5. **Preserve embeddings** — plain `npx gitnexus analyze` now preserves any embeddings recorded in the index metadata (`.gitnexus/gitnexus.json`, mirrored to the legacy `meta.json`) — the previous behavior wiped them. Use `--embeddings` to also generate vectors for new/changed nodes; use `--drop-embeddings` only when an explicit wipe is intended (e.g., model swap).
+6. **Never `terminate()` a worker that may be inside a native call** — killing a worker thread mid-N-API aborts the entire process (`Napi::Error` → `std::terminate` → SIGABRT, #2432), so a timeout meant to trigger a graceful fallback takes the whole run down instead. Any worker running native code (tree-sitter grammars, LadybugDB, Icebug) must either reach a JS-visible safe point first — the parse pool's `shutdownDrainMs` handshake in `src/core/ingestion/workers/worker-pool.ts` — or be abandoned with `unref()` and left to exit on its own. A one-shot worker that ends after a single `postMessage` needs no `terminate()` at all: it exits by itself. This bites hardest on the path you cannot test locally, because the abort only reproduces once the native module actually loads.
 
 ---
 

@@ -101,6 +101,7 @@ import { extractTemplateArguments } from './utils/template-arguments.js';
 export type ScopeExtractorHooks = Pick<
   LanguageProvider,
   | 'resolveScopeKind'
+  | 'scopeOwnsReceivers'
   | 'bindingScopeFor'
   | 'interpretImport'
   | 'interpretTypeBinding'
@@ -137,7 +138,18 @@ export function extract(
   for (let i = 0; i < scopeDrafts.length; i++) {
     const d = scopeDrafts[i];
     if (d.parent === null && d.kind !== 'Module') {
-      scopeDrafts[i] = makeDraft(d.id, moduleScope.id, d.kind, d.range, d.filePath);
+      // `ownsReceivers` must be carried across: it is decided from the scope's
+      // own capture in pass 1 and re-parenting does not change what the scope
+      // binds. Dropping it here would silently un-mark every function scope in
+      // a file whose root parsed as ERROR (the only way a scope is orphaned).
+      scopeDrafts[i] = makeDraft(
+        d.id,
+        moduleScope.id,
+        d.kind,
+        d.range,
+        d.filePath,
+        d.ownsReceivers,
+      );
     }
   }
   const scopes = scopeDrafts.map(draftToScope);
@@ -301,6 +313,8 @@ interface ScopeDraft {
   readonly ownedDefs: SymbolDefinition[];
   readonly imports: ImportEdge[];
   readonly typeBindings: Map<string, TypeRef>;
+  /** See `Scope.ownsReceivers` — set once at pass 1, never mutated. */
+  readonly ownsReceivers?: ReadonlySet<string>;
 }
 
 function ensureModuleScope(
@@ -356,6 +370,7 @@ function draftToScope(draft: ScopeDraft): Scope {
     ownedDefs: Object.freeze(draft.ownedDefs.slice()),
     imports: Object.freeze(draft.imports.slice()),
     typeBindings: new Map(draft.typeBindings),
+    ownsReceivers: draft.ownsReceivers,
   };
 }
 
@@ -424,7 +439,16 @@ function pass1BuildScopes(
     }
 
     const parent = stack.length > 0 ? stack[stack.length - 1]!.id : null;
-    drafts.push(makeDraft(cand.id, parent, cand.kind, cand.range, filePath));
+    drafts.push(
+      makeDraft(
+        cand.id,
+        parent,
+        cand.kind,
+        cand.range,
+        filePath,
+        provider.scopeOwnsReceivers?.(cand.match),
+      ),
+    );
     stack.push(cand);
   }
 
@@ -468,6 +492,7 @@ function makeDraft(
   kind: ScopeKind,
   range: Range,
   filePath: string,
+  ownsReceivers?: ReadonlySet<string>,
 ): ScopeDraft {
   return {
     id,
@@ -479,6 +504,7 @@ function makeDraft(
     ownedDefs: [],
     imports: [],
     typeBindings: new Map(),
+    ownsReceivers,
   };
 }
 
@@ -705,6 +731,7 @@ function parseJsonStringArrayCapture(
 
 function deriveDeclarationName(match: CaptureMatch, def: SymbolDefinition): string | undefined {
   const nameCap =
+    match['@declaration.binding-name'] ??
     match['@declaration.name'] ??
     match[
       Object.keys(match).find((k) => k.startsWith('@declaration.') && k.endsWith('.name')) ?? ''
@@ -982,13 +1009,15 @@ function followChainedRef(start: TypeRef, draftById: ReadonlyMap<ScopeId, ScopeD
  * name in the same scope. Higher number wins; ties keep the later match
  * (last-write-wins preserves historical order within a tier).
  *
- * Rationale: explicit annotations always beat inferred ones because they
- * reflect user intent. `self`/`cls` are treated as strongly as annotations
- * because they are language-required receiver types.
+ * Rationale: explicit variable and field annotations always beat bindings
+ * derived from parameter annotations or inference because they reflect the
+ * most specific user intent. `self`/`cls` are treated as strongly as other
+ * declared types because they are language-required receiver types.
  */
 function typeBindingStrength(source: TypeRef['source']): number {
   switch (source) {
     case 'annotation':
+      return 3;
     case 'parameter-annotation':
     case 'return-annotation':
     case 'self':

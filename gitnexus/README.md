@@ -165,13 +165,20 @@ The result is a **LadybugDB graph database** stored locally in `.gitnexus/` with
 
 ### Experimental community detection engine
 
-Community detection uses the bundled Graphology Leiden implementation by default. To test the #2337 Icebug migration path without changing default analyze behavior, set:
+> **Experimental — not supported for production indexes.** The Icebug engine is a research path for #2337. It carries no stability guarantee, may change or be removed without a major version, and partitions differently from the default, so switching engines changes community IDs and any generated context keyed on them. Reindex with `graphology` before relying on the output.
+
+Community detection uses the bundled Graphology Leiden implementation by default. To try the #2337 Icebug path without changing default analyze behavior, install the optional native package alongside GitNexus and set the engine:
 
 ```bash
+npm i @ladybugmem/icebug
 GITNEXUS_COMMUNITY_ENGINE=icebug npx gitnexus analyze
 ```
 
-Supported values are `graphology`, `icebug`, and `auto`. The Icebug path is an experimental probe: GitNexus does not bundle an Icebug native package yet, and if a separately resolvable module is unavailable or its API does not match the expected `Graph.fromCSR` / `ParallelLeidenView` shape, analyze falls back to Graphology and reports the fallback in progress output. Today `auto` is behaviorally identical to `icebug`: both try Icebug and fall back to Graphology, while `graphology` skips the Icebug probe entirely.
+Supported values are `graphology`, `icebug`, and `auto`. Today `auto` is behaviorally identical to `icebug`: both try Icebug and fall back to Graphology, while `graphology` skips Icebug entirely.
+
+Icebug is **not** a declared dependency — its prebuilds link against system Arrow 24 (`libarrow.so.2400`), OpenMP, and glibc ≥ 2.38, none of which GitNexus can assume. Analyze falls back to Graphology and reports the reason in progress output when the module is missing, fails to load, or predates the `setNumberOfThreads` / `setSeed` controls that reproducible community IDs require (present at [icebug-nodejs](https://github.com/Ladybug-Memory/icebug-nodejs) HEAD, absent from the published 12.8.0 tarball — so the fallback is what you will see today). The engine is pinned to `threads: 1`, `randomize: false` for determinism.
+
+Note that the bundled Graphology path is no longer the slow option it once was: #2337 removed an accidental O(communities × N) copy in the vendored Leiden. On a synthetic 200k-node / 800k-edge benchmark graph it went from exceeding the 60s timeout to finishing in ~15s. Real projections vary with their degree distribution, so treat that as a direction, not a guarantee.
 
 ## MCP Tools
 
@@ -289,6 +296,7 @@ export GITNEXUS_EMBEDDING_API_KEY=your-key   # optional, default: "unused"
 export GITNEXUS_EMBEDDING_MAX_ATTEMPTS=3     # optional, total attempts (1-20)
 export GITNEXUS_EMBEDDING_RETRY_CAP_MS=5000  # optional, maximum retry delay
 export GITNEXUS_EMBEDDING_MIN_INTERVAL_MS=0  # optional, minimum request spacing
+export GITNEXUS_EMBEDDING_HTTP_TIMEOUT_MS=180000 # optional, per-request timeout (max 300000)
 gitnexus analyze . --embeddings
 ```
 
@@ -352,6 +360,13 @@ Installed automatically by both `gitnexus analyze` (per-repo) and `gitnexus setu
 
 - Node.js >= 22
 - Git repository (uses git for commit tracking)
+- **Linux: glibc 2.34 or newer** (Ubuntu 22.04+, RHEL/Rocky/Alma 9+, Debian 12+, Fedora 35+). The
+  LadybugDB native binary ships as a prebuild against that floor, so on an older host it cannot
+  load and reinstalling does not help — see
+  [Linux: `GLIBC_2.34' not found`](#linux-glibc_234-not-found).
+- **Windows, for full-text search:** the Microsoft Visual C++ 2015-2022 Redistributable (x64) *and*
+  OpenSSL 3 (`libssl-3-x64.dll`, `libcrypto-3-x64.dll`) resolvable on `PATH` — see
+  [Windows: full-text search unavailable](#windows-full-text-search-unavailable).
 
 ## Release candidates
 
@@ -434,6 +449,50 @@ pnpm add -g --allow-build=@ladybugdb/core --allow-build=gitnexus --allow-build=t
 gitnexus serve
 ```
 
+### Linux: `GLIBC_2.34' not found`
+
+```
+LadybugDB native binary (lbugjs.node) exists but failed to load:
+  /lib64/libc.so.6: version `GLIBC_2.34' not found (required by .../lbugjs.node)
+```
+
+The LadybugDB addon ships as a prebuilt binary compiled against **glibc 2.34**. If your
+distribution is older (CentOS/RHEL 8 has 2.28, Ubuntu 20.04 has 2.31, Debian 11 has 2.31), the
+dynamic loader cannot resolve its symbols.
+
+**Reinstalling does not help** — every download delivers the same prebuilt binary. The fix is a
+newer C library:
+
+- Run GitNexus on a distribution with glibc 2.34 or newer — Ubuntu 22.04+, RHEL/Rocky/Alma 9+,
+  Debian 12+, Fedora 35+.
+- Or run it in the container image, which bundles a current glibc (see [Docker](#docker)).
+
+`gitnexus doctor` reports the required and detected glibc versions when this happens
+([#2672](https://github.com/abhigyanpatwari/GitNexus/issues/2672)).
+
+### Windows: full-text search unavailable
+
+`analyze` completes, but keyword search is degraded and `doctor` shows the FTS extension failing
+with Windows error 126 (`The specified module could not be found`). The extension needs two
+runtime dependencies Windows does not ship by default:
+
+1. **Microsoft Visual C++ 2015-2022 Redistributable (x64)** —
+   <https://aka.ms/vs/17/release/vc_redist.x64.exe>
+2. **OpenSSL 3** — `libssl-3-x64.dll` and `libcrypto-3-x64.dll`, resolvable on `PATH`
+
+The redistributable alone is **not** sufficient. If Git for Windows is installed you already have
+the OpenSSL DLLs — run `gitnexus` from **Git Bash**, or prepend the directory to `PATH` in the
+shell you use:
+
+```powershell
+$env:PATH = "C:\Program Files\Git\mingw64\bin;$env:PATH"
+gitnexus analyze --repair-fts
+```
+
+Without them the index is still built, but without search tables, so `query` returns empty keyword
+results until you re-run `gitnexus analyze --repair-fts` from a shell where the DLLs resolve
+([#2669](https://github.com/abhigyanpatwari/GitNexus/issues/2669)).
+
 ### Installation fails with native module errors
 
 Some optional language grammars (Dart, Proto, Swift, Kotlin) require native compilation. If they fail, GitNexus still works — those languages will be skipped. To skip them intentionally (no C++ toolchain needed), set `GITNEXUS_SKIP_OPTIONAL_GRAMMARS=1` before installing.
@@ -476,16 +535,17 @@ GitNexus uses optional DuckDB extensions for BM25 and vector search. The `gitnex
 
 Configure the behavior with these environment variables:
 
-| Variable                                     | Values                         | Default             | Effect                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                  |
-| -------------------------------------------- | ------------------------------ | ------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `GITNEXUS_LBUG_EXTENSION_INSTALL`            | `auto`, `load-only`, `never`   | `auto`              | `auto` runs one bounded install if LOAD fails — a plain `INSTALL`, escalating to `FORCE INSTALL` only when the LOAD error shows the present extension file is broken. `load-only` only uses already-installed extensions (recommended for offline / firewalled environments). `never` skips optional extensions entirely.                                                                                                                                                                                                                                                                                                                                                                               |
-| `GITNEXUS_LBUG_EXTENSION_INSTALL_TIMEOUT_MS` | positive integer               | `15000`             | Wall-clock budget for the out-of-process extension-install child before it is killed.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                   |
-| `GITNEXUS_FTS_STEMMER`                       | supported LadybugDB stemmer    | `porter`            | Stemmer used when rebuilding BM25/FTS indexes. Use `none` for CJK-heavy repositories, or a language stemmer such as `german`, `french`, or `spanish` when that better matches repository comments and identifiers. Re-run `gitnexus analyze --repair-fts` after changing it.                                                                                                                                                                                                                                                                                                                                                                                                                            |
-| `GITNEXUS_FTS_CJK_SEGMENTATION`              | `none`, `bigram`               | `none`              | `bigram` inserts overlapping character-bigram boundaries into Chinese/Japanese Han-ideograph spans in `content`/`description` before FTS indexing, so LadybugDB's space-only tokenizer can see sub-phrase word boundaries. Scoped to CJK Unified Ideographs only — Japanese Hiragana/Katakana and Korean Hangul are not currently segmented. Unlike `GITNEXUS_FTS_STEMMER`, this rewrites stored text — enabling it on an already-indexed repo requires a full `gitnexus analyze --force`; neither `--repair-fts` nor a plain incremental `analyze` applies it to previously-indexed files. Set the same value wherever `analyze` and search-serving processes (CLI query, MCP server, web server) run. |
-| `GITNEXUS_COMMUNITY_ENGINE`                  | `graphology`, `icebug`, `auto` | `graphology`        | Community-detection engine used during analyze. `graphology` uses the bundled default path. `icebug` and `auto` currently behave identically: both try the experimental Icebug CSR path and fall back to Graphology if the optional native module is unavailable or incompatible.                                                                                                                                                                                                                                                                                                                                                                                                                       |
-| `GITNEXUS_WAL_CHECKPOINT_THRESHOLD`          | integer `>= -1`                | `67108864` (64 MiB) | LadybugDB WAL auto-checkpoint threshold during analyze (bytes). Auto-checkpoint remains enabled; `-1` keeps Ladybug's stock ~16 MiB. Larger thresholds reduce checkpoint frequency but increase the WAL size at rotation time — choose a smaller value on disk-constrained environments.                                                                                                                                                                                                                                                                                                                                                                                                                |
-| `GITNEXUS_LBUG_BUFFER_POOL_SIZE`             | integer `>= 0` (bytes)         | min(2 GiB, 80% RAM) | LadybugDB buffer-pool ceiling for every GitNexus database (analyze, MCP server, serve, group bridges). Bounded so a long-lived `gitnexus mcp` process or a large incremental `analyze` cannot grow toward LadybugDB's native 80%-of-RAM default and OOM the host (#2557). `0` restores that native unbounded default; invalid values warn and fall back to the default.                                                                                                                                                                                                                                                                                                                                  |
-| `GITNEXUS_LBUG_MAX_DB_SIZE`                  | positive integer (bytes)       | `17179869184` (16 GiB) | Upper bound for a single LadybugDB database file. This is an mmap/disk-address-space ceiling, not a memory limit — it does not constrain the buffer pool (use `GITNEXUS_LBUG_BUFFER_POOL_SIZE` for that). Raise it when indexing genuinely huge monorepos; invalid values silently fall back to the default.                                                                                                                                                                                                                                                                                                                                                                                             |
+| Variable                                     | Values                         | Default                | Effect                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                        |
+| -------------------------------------------- | ------------------------------ | ---------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `GITNEXUS_LBUG_EXTENSION_INSTALL`            | `auto`, `load-only`, `never`   | `auto`                 | `auto` runs one bounded install if LOAD fails — a plain `INSTALL`, escalating to `FORCE INSTALL` only when the LOAD error shows the present extension file is broken. `load-only` only uses already-installed extensions (recommended for offline / firewalled environments). `never` skips optional extensions entirely.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                     |
+| `GITNEXUS_LBUG_EXTENSION_INSTALL_TIMEOUT_MS` | positive integer               | `15000`                | Wall-clock budget for the out-of-process extension-install child before it is killed.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                         |
+| `GITNEXUS_FTS_STEMMER`                       | supported LadybugDB stemmer    | `porter`               | Stemmer used when rebuilding BM25/FTS indexes. Use `none` for CJK-heavy repositories, or a language stemmer such as `german`, `french`, or `spanish` when that better matches repository comments and identifiers. Re-run `gitnexus analyze --repair-fts` after changing it.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                  |
+| `GITNEXUS_FTS_CJK_SEGMENTATION`              | `none`, `bigram`               | `none`                 | `bigram` inserts overlapping character-bigram boundaries into Chinese/Japanese Han-ideograph spans in `content`/`description` before FTS indexing, so LadybugDB's space-only tokenizer can see sub-phrase word boundaries. Scoped to CJK Unified Ideographs only — Japanese Hiragana/Katakana and Korean Hangul are not currently segmented. Unlike `GITNEXUS_FTS_STEMMER`, this rewrites stored text — enabling it on an already-indexed repo requires a full `gitnexus analyze --force`; neither `--repair-fts` nor a plain incremental `analyze` applies it to previously-indexed files. Set the same value wherever `analyze` and search-serving processes (CLI query, MCP server, web server) run.                                                                                                                                       |
+| `GITNEXUS_STREAM_GRAPH_EMIT`                 | `0`, `1`                       | `1` (on)               | **On by default** on a full rebuild (`--force`); incremental runs ignore it. Holds structural relationships (CALLS, IMPORTS, ACCESSES, CONTAINS, ...) as CSV-on-disk plus compact in-memory columns instead of as objects in three overlapping indexes, cutting peak in-memory graph heap by ~1.4x at no measurable CPU cost (measured A/B on a synthetic 400k-node / 1.08M-edge graph: 819 MB -> 584 MB, iteration at parity, scaling verified linear from 100k to 800k nodes, with every edge still visible through the graph interface; no end-to-end measurement on a real repository yet). Nothing is traded away — community detection, process extraction, PDG taint summaries and the local-symbol pruner all read a complete relationship set and behave identically. Set to `0` only to bisect a suspected streaming-related fault. |
+| `GITNEXUS_COMMUNITY_ENGINE`                  | `graphology`, `icebug`, `auto` | `graphology`           | Community-detection engine used during analyze. `graphology` is the supported default. `icebug` and `auto` are **experimental** and currently behave identically: both try the optional `@ladybugmem/icebug` native Leiden over a CSR export and fall back to Graphology if it is not installed, cannot load, or lacks the deterministic thread/seed controls. Experimental engines partition differently, so community IDs are not comparable across engines.                                                                                                                                                                                                                                                                                                                                                                                |
+| `GITNEXUS_WAL_CHECKPOINT_THRESHOLD`          | integer `>= -1`                | `67108864` (64 MiB)    | LadybugDB WAL auto-checkpoint threshold during analyze (bytes). Auto-checkpoint remains enabled; `-1` keeps Ladybug's stock ~16 MiB. Larger thresholds reduce checkpoint frequency but increase the WAL size at rotation time — choose a smaller value on disk-constrained environments.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                      |
+| `GITNEXUS_LBUG_BUFFER_POOL_SIZE`             | integer `>= 0` (bytes)         | min(2 GiB, 80% RAM)    | LadybugDB buffer-pool ceiling for every GitNexus database (analyze, MCP server, serve, group bridges). Bounded so a long-lived `gitnexus mcp` process or a large incremental `analyze` cannot grow toward LadybugDB's native 80%-of-RAM default and OOM the host (#2557). `0` restores that native unbounded default; invalid values warn and fall back to the default. During `analyze` the pool is right-sized to the graph and, on non-4 KiB-page hosts (Apple Silicon 16 KiB, Ascend/aarch64 64 KiB), scaled by the page-size granule ratio up to min(2 GiB × pageSize/4 KiB, 80% RAM) (#2631); this env var overrides all of that as an absolute value.                                                                                                                                                                                  |
+| `GITNEXUS_LBUG_MAX_DB_SIZE`                  | positive integer (bytes)       | `17179869184` (16 GiB) | Upper bound for a single LadybugDB database file. This is an mmap/disk-address-space ceiling, not a memory limit — it does not constrain the buffer pool (use `GITNEXUS_LBUG_BUFFER_POOL_SIZE` for that). Raise it when indexing genuinely huge monorepos; invalid values silently fall back to the default.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                  |
 
 ```bash
 # Offline/airgapped: never reach the network for extensions
@@ -505,15 +565,46 @@ GITNEXUS_FTS_CJK_SEGMENTATION=bigram npx gitnexus analyze --force
 
 ### Analysis runs out of memory
 
+Memory management is automatic: `analyze` sizes its heap to the machine
+(always below physical RAM), caps each parse worker, and — rather than
+grinding into a GC death spiral or crash — stops early with a message telling
+you the one thing to do. Repeated
+`Replacement worker did not report ready within 5000ms` warnings on a large
+repository are part of the same picture: memory pressure starving healthy
+workers, not a worker bug (#2649).
+
+If analyze says the repository doesn't fit, do what the message says:
+
+- **The machine has more memory to give** (a `NODE_OPTIONS`
+  `--max-old-space-size` pin from your environment is holding analyze back):
+  re-run without the pin — no flags needed.
+- **The machine is the ceiling**: shrink the scope (exclude generated or
+  vendored directories, below) or use a machine with more RAM.
+
+Escape hatches (`GITNEXUS_MEMORY=off` to decline the autopilot,
+`GITNEXUS_WORKER_HEAP_MB` to size workers yourself) are listed in the
+environment-variable table below —
+most users never need them.
+
 For very large repositories:
 
 ```bash
 # Increase Node.js heap size
 NODE_OPTIONS="--max-old-space-size=16384" npx gitnexus analyze
 
-# Exclude large directories
+# Exclude large directories (this repo only)
 echo "vendor/" >> .gitnexusignore
 echo "dist/" >> .gitnexusignore
+
+# Exclude a directory across every repo you index, without touching each
+# repo's own .gitnexusignore or needing push/commit access to it. GitNexus
+# reads the same sources `git` itself does: core.excludesFile (all repos)
+# and $GIT_DIR/info/exclude (this repo only, untracked). A repo's own
+# .gitignore/.gitnexusignore can still override either with a `!pattern`
+# negation. Skip both entirely with GITNEXUS_NO_GLOBAL_IGNORE=1.
+git config --global core.excludesFile ~/.gitignore_global   # applies to every repo
+echo "docs/" >> ~/.gitignore_global
+echo "build/" >> .git/info/exclude                          # this repo only, untracked
 ```
 
 ### Large files are being skipped
@@ -550,13 +641,16 @@ For repositories with very large source files, `GITNEXUS_WORKER_SUB_BATCH_MAX_BY
 
 Four env vars expose the pool's resilience layers (respawn budget, cumulative-timeout cap, circuit breaker, startup handshake). Defaults are tuned for typical repos; bump them when an analyze legitimately needs more retries, or lower them to fail-fast on a known-bad shape.
 
-| Variable                                        | Default                 | Effect                                                                                                                                                                                           |
-| ----------------------------------------------- | ----------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
-| `GITNEXUS_WORKER_MAX_RESPAWNS_PER_SLOT`         | `3`                     | Max replacement spawns per slot before the slot is dropped from the active rotation.                                                                                                             |
-| `GITNEXUS_WORKER_MAX_CUMULATIVE_TIMEOUT_MS`     | `5 × subBatchTimeoutMs` | Total retry wall-time budget per job before quarantining. Bounds exponentially-growing retry waits.                                                                                              |
-| `GITNEXUS_WORKER_CONSECUTIVE_FAILURE_THRESHOLD` | `max(3, poolSize)`      | Per-slot consecutive deaths before the pool's circuit breaker trips. After tripping, dispatches require a fresh pool.                                                                            |
-| `GITNEXUS_WORKER_SHUTDOWN_DRAIN_MS`             | `30000`                 | Max wait at pool shutdown for a retired worker still inside native code — terminated at its next JS-safe point instead of mid-native-call, which would abort the process (`Napi::Error`, #2432). |
+| Variable                                        | Default                 | Effect                                                                                                                                                                                                                                                    |
+| ----------------------------------------------- | ----------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `GITNEXUS_WORKER_MAX_RESPAWNS_PER_SLOT`         | `3`                     | Max replacement spawns per slot before the slot is dropped from the active rotation.                                                                                                                                                                      |
+| `GITNEXUS_WORKER_MAX_CUMULATIVE_TIMEOUT_MS`     | `5 × subBatchTimeoutMs` | Total retry wall-time budget per job before quarantining. Bounds exponentially-growing retry waits.                                                                                                                                                       |
+| `GITNEXUS_WORKER_CONSECUTIVE_FAILURE_THRESHOLD` | `max(3, poolSize)`      | Per-slot consecutive deaths before the pool's circuit breaker trips. After tripping, dispatches require a fresh pool.                                                                                                                                     |
+| `GITNEXUS_WORKER_SHUTDOWN_DRAIN_MS`             | `30000`                 | Max wait at pool shutdown for a retired worker still inside native code — terminated at its next JS-safe point instead of mid-native-call, which would abort the process (`Napi::Error`, #2432).                                                          |
 | `GITNEXUS_WORKER_READY_TIMEOUT_MS`              | `5000`                  | Startup budget for a parse worker to load its grammar bindings and report `{type:'ready'}`. Slots that miss it are treated as startup crashes. Raise it on a slow or heavily loaded host where a full pool cold-starting concurrently needs more than 5s. |
+| `GITNEXUS_MEMORY`                            | `off`                          | unset (autopilot on) | `off` declines GitNexus's memory autopilot: analyze will neither re-run itself with a RAM-aware heap cap nor abort the parse before V8 enters its ineffective-mark-compact death spiral. Use it when you want to drive memory manually; to simply pin a heap size, pass Node's own `--max-old-space-size`, which is already honoured as your decision. |
+| `GITNEXUS_WORKER_HEAP_MB`                       | `clamp(512, RAM/2/poolSize, 4096)` | Per-worker V8 old-generation heap cap (#2649). Bounds pool RSS on large repos; a worker exceeding it dies with a real heap error handled by quarantine/respawn.                                                                    |
+| `GITNEXUS_SERVER_ANALYZE_HEAP_MB`               | `min(8192, auto cap)`   | Heap for the web/MCP server's forked analyze worker (#2649). Defaults to the historical 8192 MB bounded by the machine/container's RAM-aware auto cap; set an absolute MB value to override.                                                              |
 | `GITNEXUS_CPP_CAPTURE_BUDGET_MS`                | `20000`                 | Per-file wall-clock budget for C++ capture extraction; on breach the file keeps partial captures with a warning (#2432). `0` expires immediately.                                                |
 
 ### Graph cleanup tuning

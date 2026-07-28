@@ -56,7 +56,7 @@
     "version": "node scripts/sync-plugin-manifests.mjs"
   },
   "dependencies": {
-    "@ladybugdb/core": "^0.18.0",
+    "@ladybugdb/core": "^0.18.3",
     "@modelcontextprotocol/sdk": "^1.0.0",
     "@scarf/scarf": "^1.4.0",
     "busboy": "^1.6.0",
@@ -70,7 +70,7 @@
     "graphology-indices": "^0.17.0",
     "graphology-utils": "^2.3.0",
     "ignore": "^7.0.5",
-    "js-yaml": "^4.1.1",
+    "js-yaml": "^5.0.0",
     "jsonc-parser": "^3.3.1",
     "mnemonist": "^0.40.3",
     "node-addon-api": "^8.0.0",
@@ -105,7 +105,6 @@
     "@types/cli-progress": "^3.11.6",
     "@types/cors": "^2.8.17",
     "@types/express": "^5.0.6",
-    "@types/js-yaml": "^4.0.9",
     "@types/node": "^26.0.0",
     "@vitest/coverage-v8": "^4.0.18",
     "gitnexus-shared": "file:../gitnexus-shared",

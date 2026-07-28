@@ -13,6 +13,7 @@ import { PipelineResult } from '../types/pipeline.js';
 import { CommunityNode, CommunityMembership } from '../core/ingestion/community-processor.js';
 import { ProcessNode } from '../core/ingestion/process-processor.js';
 import { KnowledgeGraph } from '../core/graph/types.js';
+import { shouldMirrorSkillsToAgents } from './ai-context.js';
 
 const GENERATED_SKILL_PREFIX = 'gitnexus-area-';
 const MAX_SKILL_NAME_LENGTH = 64;
@@ -74,6 +75,12 @@ export const generateSkillFiles = async (
   const { communityResult, processResult, graph } = pipelineResult;
   const outputDir = path.join(repoPath, '.claude', 'skills');
   const legacyOutputDir = path.join(outputDir, 'generated');
+  // Some agents prioritize repo-local .agents/skills over the global
+  // ~/.agents/skills install (see shouldMirrorSkillsToAgents). When .agents/
+  // exists, mirror the generated community skills there too so those agents
+  // serve the up-to-date copies.
+  const agentsOutputDir = path.join(repoPath, '.agents', 'skills');
+  let mirrorToAgents = await shouldMirrorSkillsToAgents(repoPath);
 
   // Community skills used to live under an undiscoverable `generated/`
   // grouping directory. Clear that GitNexus-owned legacy output and
@@ -93,6 +100,24 @@ export const generateSkillFiles = async (
     await fs.rm(legacyOutputDir, { recursive: true, force: true });
   } catch {
     /* legacy output may not exist */
+  }
+
+  // Mirror cleanup: clear only stale GitNexus-generated community skills under
+  // .agents/skills/ (reserved gitnexus-area-* namespace), preserving mirrored
+  // standard skills and any user-authored skills. Never clear the whole root.
+  if (mirrorToAgents) {
+    try {
+      const entries = await fs.readdir(agentsOutputDir, { withFileTypes: true });
+      await Promise.all(
+        entries
+          .filter((entry) => entry.isDirectory() && entry.name.startsWith(GENERATED_SKILL_PREFIX))
+          .map((entry) =>
+            fs.rm(path.join(agentsOutputDir, entry.name), { recursive: true, force: true }),
+          ),
+      );
+    } catch {
+      /* mirror root may not exist yet */
+    }
   }
 
   if (!communityResult || !communityResult.memberships.length) {
@@ -135,6 +160,20 @@ export const generateSkillFiles = async (
   // Step 4: Ensure the shared project-skill root exists. Never clear it: it
   // also contains user-authored and standard GitNexus skills.
   await fs.mkdir(outputDir, { recursive: true });
+  // The .agents/ mirror is a side flow: keep it a weak dependency. If the
+  // mirror root cannot be created (e.g. `.agents/skills` exists as a file),
+  // warn and disable mirroring for this run instead of aborting canonical
+  // community-skill generation. Canonical writes below stay unaffected.
+  if (mirrorToAgents) {
+    try {
+      await fs.mkdir(agentsOutputDir, { recursive: true });
+    } catch (err) {
+      console.log(
+        `Warning: Could not create mirror root ${agentsOutputDir} — .agents/skills mirroring disabled for this run: ${err}`,
+      );
+      mirrorToAgents = false;
+    }
+  }
 
   // Step 5: Generate skill files
   const skills: GeneratedSkillInfo[] = [];
@@ -185,6 +224,19 @@ export const generateSkillFiles = async (
     await fs.mkdir(skillDir, { recursive: true });
     await fs.writeFile(path.join(skillDir, 'SKILL.md'), content, 'utf-8');
 
+    // Mirror to .agents/skills/ for agents that read repo-local skills
+    // (see mirrorToAgents above). Best-effort: a per-skill mirror failure
+    // must not abort canonical community-skill generation.
+    if (mirrorToAgents) {
+      try {
+        const agentsSkillDir = path.join(agentsOutputDir, skillName);
+        await fs.mkdir(agentsSkillDir, { recursive: true });
+        await fs.writeFile(path.join(agentsSkillDir, 'SKILL.md'), content, 'utf-8');
+      } catch (err) {
+        console.log(`Warning: Could not mirror skill ${skillName} to .agents/skills: ${err}`);
+      }
+    }
+
     const info: GeneratedSkillInfo = {
       name: skillName,
       label: community.label,
@@ -201,6 +253,11 @@ export const generateSkillFiles = async (
   console.log(
     `\n  ${skills.length} skills generated \u2192 .claude/skills/${GENERATED_SKILL_PREFIX}*/`,
   );
+  if (mirrorToAgents) {
+    console.log(
+      `  ${skills.length} skills mirrored \u2192 .agents/skills/${GENERATED_SKILL_PREFIX}*/ (.agents)`,
+    );
+  }
 
   return { skills, outputPath: outputDir };
 };

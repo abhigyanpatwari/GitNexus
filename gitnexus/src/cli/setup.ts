@@ -822,14 +822,15 @@ async function setupOpenCode(result: SetupResult): Promise<void> {
     return;
   }
 
-  const { file: configPath, keyPath } = mcpTarget('opencode');
+  const target = mcpTarget('opencode');
   try {
-    const ok = await mergeJsoncFile(configPath, keyPath, getOpenCodeMcpEntry());
+    const configPath = await resolveMcpConfigFile(target);
+    const ok = await mergeJsoncFile(configPath, target.keyPath, getOpenCodeMcpEntry());
     if (ok) {
       result.configured.push('OpenCode');
     } else {
       result.errors.push(
-        'OpenCode: opencode.json is corrupt — skipping to preserve existing content',
+        `OpenCode: ${path.basename(configPath)} is corrupt — skipping to preserve existing content`,
       );
     }
   } catch (err: any) {

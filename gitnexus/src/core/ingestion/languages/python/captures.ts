@@ -8,10 +8,9 @@
  *   1. **Per-name import statements** — `import a, b` and
  *      `from m import x, y` decompose to one match per imported name
  *      (see `import-decomposer.ts`).
- *   2. **Receiver type bindings** — each `function_definition` inside a
- *      class body emits a `@type-binding.self` (or `@type-binding.cls`
- *      for `@classmethod`) capture so Pass-4 attaches the implicit
- *      receiver (see `receiver-binding.ts`).
+ *   2. **Receiver type bindings** — methods emit an implicit `self` / `cls`
+ *      binding, and `__init__` assignments from annotated parameters emit
+ *      class-scoped instance-field bindings (see `receiver-binding.ts`).
  *
  * Pure given the input source text. No I/O, no globals consulted.
  */
@@ -25,7 +24,10 @@ import {
 } from '../../utils/ast-helpers.js';
 import { splitImportStatement } from './import-decomposer.js';
 import { getPythonParser, getPythonScopeQuery } from './query.js';
-import { synthesizeReceiverTypeBinding } from './receiver-binding.js';
+import {
+  synthesizeConstructorFieldTypeBindings,
+  synthesizeReceiverTypeBinding,
+} from './receiver-binding.js';
 import { synthesizeDependsReferences } from './depends-references.js';
 import { computePythonArityMetadata } from './arity-metadata.js';
 import { recordCacheHit, recordCacheMiss } from './cache-stats.js';
@@ -133,6 +135,7 @@ export function emitPythonScopeCaptures(
       if (fnNode !== null) {
         const synth = synthesizeReceiverTypeBinding(fnNode);
         if (synth !== null) out.push(synth);
+        out.push(...synthesizeConstructorFieldTypeBindings(fnNode));
         for (const depRef of synthesizeDependsReferences(fnNode)) out.push(depRef);
       }
       continue;

@@ -6,16 +6,13 @@
  */
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 
-const { lbugMocks, platformMocks } = vi.hoisted(() => ({
+const { lbugMocks } = vi.hoisted(() => ({
   lbugMocks: {
     initLbug: vi.fn().mockResolvedValue(undefined),
     executeQuery: vi.fn().mockResolvedValue([]),
     executeParameterized: vi.fn().mockResolvedValue([]),
     closeLbug: vi.fn().mockResolvedValue(undefined),
     isLbugReady: vi.fn().mockReturnValue(true),
-  },
-  platformMocks: {
-    isVectorExtensionSupportedByPlatform: vi.fn().mockReturnValue(true),
   },
 }));
 
@@ -57,11 +54,6 @@ vi.mock('../../src/core/git-staleness.js', () => ({
 vi.mock('../../src/storage/git.js', async (importOriginal) => {
   const actual = await importOriginal<typeof import('../../src/storage/git.js')>();
   return { ...actual, getGitRoot: vi.fn().mockReturnValue(null) };
-});
-
-vi.mock('../../src/core/platform/capabilities.js', async (importOriginal) => {
-  const actual = await importOriginal<typeof import('../../src/core/platform/capabilities.js')>();
-  return { ...actual, ...platformMocks };
 });
 
 vi.mock('../../src/core/search/bm25-index.js', () => ({
@@ -208,6 +200,33 @@ describe('trace: dispatch', () => {
     expect(result.status).toBe('ambiguous');
     expect(result.role).toBe('to');
     expect(result.candidates).toHaveLength(2);
+  });
+
+  it('accepts file as an MCP alias for from_file', async () => {
+    (executeParameterized as any).mockImplementation(
+      makeResolveMock([SYMBOL_A], [SYMBOL_B], { [SYMBOL_A.id]: [] }),
+    );
+
+    await backend.callTool('trace', { from: 'A', to: 'B', file: 'src/a.ts' });
+
+    expect((executeParameterized as any).mock.calls[0][2]).toMatchObject({
+      symName: 'A',
+      filePath: 'src/a.ts',
+    });
+  });
+
+  it('rejects conflicting file and from_file MCP aliases', async () => {
+    const result = await backend.callTool('trace', {
+      from: 'A',
+      to: 'B',
+      file: 'src/a.ts',
+      from_file: 'src/other.ts',
+    });
+
+    expect(result).toEqual({
+      error: 'Conflicting MCP parameters for trace.from_file: from_file, file must agree.',
+    });
+    expect(executeParameterized).not.toHaveBeenCalled();
   });
 });
 

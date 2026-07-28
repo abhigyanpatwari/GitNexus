@@ -119,7 +119,10 @@ export function interpretPythonTypeBinding(captures: CaptureMatch): ParsedTypeBi
   // `cls` is a self-like receiver; share the source label so downstream
   // `Registry.lookup` Step 2 treats them identically.
   else if (captures['@type-binding.cls'] !== undefined) source = 'self';
-  else if (captures['@type-binding.constructor'] !== undefined) source = 'constructor-inferred';
+  else if (captures['@type-binding.instance-field'] !== undefined) {
+    source =
+      captures['@type-binding.parameter'] !== undefined ? 'parameter-annotation' : 'annotation';
+  } else if (captures['@type-binding.constructor'] !== undefined) source = 'constructor-inferred';
   else if (captures['@type-binding.annotation'] !== undefined) source = 'annotation';
   else if (captures['@type-binding.alias'] !== undefined) source = 'assignment-inferred';
   else if (captures['@type-binding.return'] !== undefined) source = 'return-annotation';

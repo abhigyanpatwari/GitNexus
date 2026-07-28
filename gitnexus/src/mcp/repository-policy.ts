@@ -179,6 +179,11 @@ export class McpRepositoryPolicy {
       });
   }
 
+  async requiresExplicitRepo(backend: LocalBackend): Promise<boolean> {
+    if (this.defaultRepo) return false;
+    return (await this.listAllowedRepos(backend)).length > 1;
+  }
+
   private async listReposPage(
     backend: LocalBackend,
     params: Record<string, unknown> | undefined,

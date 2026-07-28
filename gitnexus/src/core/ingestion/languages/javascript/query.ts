@@ -60,18 +60,23 @@ function isJsxFile(filePath: string): boolean {
   return filePath.endsWith('.jsx');
 }
 
-const JAVASCRIPT_SCOPE_QUERY = `
+export const JAVASCRIPT_SCOPE_QUERY = `
 ;; Scopes — module / class-likes / function-likes
 (program) @scope.module
 
 (class_declaration) @scope.class
 (class) @scope.class
 
-(function_declaration) @scope.function
-(generator_function_declaration) @scope.function
-(function_expression) @scope.function
+;; \`@receiver-owner.this\` — see the matching block in typescript/query.ts
+;; (#2701). Every function form except \`arrow_function\` binds its own \`this\`.
+(function_declaration) @scope.function @receiver-owner.this
+(generator_function_declaration) @scope.function @receiver-owner.this
+(function_expression) @scope.function @receiver-owner.this
+;; \`function*(){}\` as an EXPRESSION. Absent from this list before #2701, so it
+;; was not a scope at all and \`this\` inside one read as the enclosing method's.
+(generator_function) @scope.function @receiver-owner.this
 (arrow_function) @scope.function
-(method_definition) @scope.function
+(method_definition) @scope.function @receiver-owner.this
 
 ;; Object literals get their own scope boundary -- see the matching
 ;; comment in typescript/query.ts (#2545/#2551). Prevents a
@@ -79,6 +84,16 @@ const JAVASCRIPT_SCOPE_QUERY = `
 ;; past the literal into the enclosing scope, and (unlike Block) keeps
 ;; sibling properties from seeing each other as bare identifiers.
 (object) @scope.object
+
+;; Statement blocks are BINDING scopes (#2699). ECMAScript gives every block its
+;; own environment record, so \`let\`/\`const\`/\`class\`/\`function\` declared in
+;; sibling blocks of one function are DIFFERENT bindings — without this the
+;; resolver sees both as function-level and a call in one branch resolves to
+;; both. \`tsBindingScopeFor\` already implements the other half of the rule:
+;; \`var\` hoists past blocks to the enclosing Function/Module, \`let\`/\`const\`
+;; take the innermost scope, which is now the block.
+(statement_block) @scope.block
+
 
 ;; Declarations — classes
 (class_declaration
@@ -136,6 +151,67 @@ const JAVASCRIPT_SCOPE_QUERY = `
   (variable_declarator
     name: (identifier) @declaration.name
     value: (function_expression) @declaration.function))
+
+;; CJS property-assignment exports (#2723): \`exports.foo = function () {}\`,
+;; \`module.exports.foo = (a) => a\`. The graph node for these comes from
+;; TYPESCRIPT/JAVASCRIPT_QUERIES; this block is the other half — without a
+;; scope-resolution declaration the node exists but nothing resolves TO it,
+;; so \`impact\` answered "found, zero callers" on a whole CommonJS API.
+;;
+;; The declaration binds the BARE property name into the enclosing (module)
+;; scope, which is what importers see: \`const { foo } = require('./m')\`
+;; matches by name, and a namespace \`m.foo()\` walks the module's defs.
+;;
+;; Same anchor discipline as the blocks above — \`@declaration.function\` sits
+;; on the INNER arrow / function_expression so its range matches the
+;; \`@scope.function\` range.
+;; The three right-hand-side forms share one pattern via an inner LEAF
+;; alternation. tree-sitter 0.21.1 has a known hazard where a top-level
+;; \`[...]\` alternation makes sibling branches share one predicate bucket and
+;; silently drops matches; an inner leaf alternation whose predicates all sit
+;; on captures OUTSIDE it (here \`@_cjs.exports\` / \`@_cjs.module\`, both on the
+;; left-hand side and bound in every branch) is the safe form. Verified by
+;; probing all six receiver × RHS combinations, not by reading.
+;;
+;; \`(generator_function) @scope.function\` is declared near the top of this
+;; query, so the anchor aligns for that branch too.
+(assignment_expression
+  left: (member_expression
+    object: (identifier) @_cjs.receiver
+    property: (property_identifier) @declaration.name)
+  right: [
+    (arrow_function)
+    (function_expression)
+    (generator_function)
+  ] @declaration.function)
+
+;; \`this.X = fn\` at MODULE level of a CommonJS file — there \`this\` IS
+;; \`module.exports\`, so this declares an export. Pruned emit-side for ESM
+;; files (where top-level \`this\` is undefined) and for a \`this\` inside a
+;; function, which is an instance member rather than an export.
+(assignment_expression
+  left: (member_expression
+    object: (this)
+    property: (property_identifier) @declaration.name)
+  right: [
+    (arrow_function)
+    (function_expression)
+    (generator_function)
+  ] @declaration.function)
+
+(assignment_expression
+  left: (member_expression
+    object: (member_expression
+      object: (identifier) @_cjs.module
+      property: (property_identifier) @_cjs.exports)
+    property: (property_identifier) @declaration.name)
+  right: [
+    (arrow_function)
+    (function_expression)
+    (generator_function)
+  ] @declaration.function
+  (#eq? @_cjs.module "module")
+  (#eq? @_cjs.exports "exports"))
 
 ;; Object-property arrows / function expressions named by their pair key.
 ;; Same anchor discipline as the lexical_declaration block above: the

@@ -58,9 +58,35 @@ const DART_CALLABLE_CAPTURE_OPTIONS = {
   callNodeTypes: new Set(['selector']),
   parameterListNodeTypes: new Set(['formal_parameter_list', 'arguments']),
   parameterNodeTypes: new Set(['formal_parameter']),
-  bindingNodeTypes: new Set(['initialized_variable_definition']),
+  // `initialized_identifier` covers TOP-LEVEL `var` bindings and the second and
+  // later declarators of a multi-name local; `static_final_declaration` covers
+  // top-level `final`/`const`, which parse into a different list node entirely.
+  // Dart wraps only the FIRST local declarator in `initialized_variable_
+  // definition`, so without the other two a top-level `var f = (x) => x;`, a
+  // `final f = …`, and the `g` of `var f = …, g = …;` all emitted no flow
+  // captures at all and never resolved (#2693).
+  bindingNodeTypes: new Set([
+    'initialized_variable_definition',
+    'initialized_identifier',
+    'static_final_declaration',
+  ]),
   assignmentNodeTypes: new Set(['assignment_expression']),
   identifierNodeTypes: new Set(['identifier', 'type_identifier']),
+  // `initialized_identifier` and `static_final_declaration` are FIELDLESS, so
+  // the shared field-based fallback (`left`/`name`/`value`/…) decomposes
+  // nothing and those bindings produced no flow facts at all — the same shape
+  // as Kotlin's fieldless `assignment` node. Positional: first named child is
+  // the bound name, last is the initializer.
+  // `initialized_variable_definition` carries real `name:` / `value:` fields,
+  // so it is left to the shared path by returning undefined.
+  extractAssignment: (node: SyntaxNode) => {
+    if (node.type !== 'initialized_identifier' && node.type !== 'static_final_declaration') {
+      return undefined;
+    }
+    const named = node.namedChildren.filter((child): child is SyntaxNode => child !== null);
+    if (named.length < 2) return undefined;
+    return { destination: named[0]!, source: named[named.length - 1]! };
+  },
   lexicalFunctionOwner: (node: SyntaxNode) => dartLexicalFunctionOwner(node),
   isCallNode: (node: SyntaxNode) => node.namedChild(0)?.type === 'argument_part',
   extractCallCallee: (node: SyntaxNode) => dartCallableCallee(node) ?? undefined,
@@ -223,6 +249,15 @@ function dartCallableCallee(selector: SyntaxNode): SyntaxNode | null {
  * nodes are unaffected.
  */
 function findFunctionBody(declNode: SyntaxNode): SyntaxNode | null {
+  // A closure literal carries its body as a CHILD (function_expression_body),
+  // unlike a Dart declaration whose body is the next named SIBLING. Without
+  // this branch the caller synthesizes no @scope.function for a closure at all,
+  // so a closure binding has no scope to own its callable def and can never be
+  // a call SOURCE (#2699 S4 — this is why Dart alone showed zero child scopes).
+  if (declNode.type === 'function_expression') {
+    const body = declNode.namedChildren.find((c) => c.type === 'function_expression_body');
+    return body ?? null;
+  }
   const node =
     declNode.parent !== null && declNode.parent.type === 'method_signature'
       ? declNode.parent

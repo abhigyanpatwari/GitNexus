@@ -98,6 +98,16 @@ const CPP_SCOPE_QUERY = `
   declarator: (function_declarator
     declarator: (identifier) @declaration.name)) @declaration.function
 
+;; Lambda bindings (\`auto f = [](int x){ … };\`). The \`@declaration.function\`
+;; anchor sits on the INNER lambda_expression so its range aligns with
+;; \`(lambda_expression) @scope.function\` above; otherwise the def is owned by
+;; the enclosing scope and calls inside the lambda lose caller attribution.
+;; Mirrors the TypeScript arrow patterns (#2687).
+(declaration
+  declarator: (init_declarator
+    declarator: (identifier) @declaration.name
+    value: (lambda_expression) @declaration.function))
+
 ;; ─── Declarations — function definition with pointer return ─────────
 (function_definition
   declarator: (pointer_declarator

@@ -20,6 +20,7 @@ import path from 'path';
 import os from 'os';
 import { randomBytes } from 'crypto';
 import { getInferredRepoName, resolveRepoIdentityRoot } from './git.js';
+import { stripWindowsLongPathPrefix } from '../lib/utils.js';
 import { retryRename } from './fs-atomic.js';
 import { logger } from '../core/logger.js';
 import {
@@ -49,6 +50,20 @@ export type { BranchSummary };
  *     form (`RUNNERA~1\...`), but `process.cwd()` often returns the
  *     long form (`runneradmin\...`). `realpathSync.native` normalises
  *     both sides to the long-name canonical path.
+ *   - **Windows, extended-length paths** (#2667): a caller can supply a
+ *     `\\?\`-prefixed path — the usual MAX_PATH workaround — and
+ *     `path.resolve` preserves the prefix, so the string compare below
+ *     never matches the un-prefixed entry the registry stores. The
+ *     realpath branch already dropped it (libuv strips the prefix inside
+ *     `fs__realpath`), but the fallback branch did not, which is exactly
+ *     the branch a missing path takes. `stripWindowsLongPathPrefix` is
+ *     applied to both so the two branches agree.
+ *
+ * This normalisation is safe here precisely because the result is only ever
+ * compared, never opened: Node does NOT re-add `\\?\` for over-MAX_PATH
+ * paths, so an fs-facing path must keep whatever form the caller gave it.
+ * See the `registerRepo` comment on applying canonicalisation at COMPARE
+ * points only.
  *
  * Fallback behaviour: if the path does not exist on disk (e.g. a user
  * passed `gitnexus remove some-alias` and the alias misses every
@@ -60,16 +75,16 @@ export type { BranchSummary };
  * Backwards compatibility: this function is applied to BOTH the
  * caller-supplied input AND each stored `entry.path` at compare time
  * inside `resolveRegistryEntry`, so registries written by older
- * versions (where `registerRepo` only ran `path.resolve`) still match
- * correctly. Newly-written entries are canonicalised at write time too
- * so the registry stabilises over analyze/re-analyze cycles.
+ * versions still match correctly. Entries are NOT canonicalised at
+ * write time — `registerRepo` stores `path.resolve(repoPath)` — which
+ * is what makes the compare-only rule above hold.
  */
 export const canonicalizePath = (p: string): string => {
   const resolved = path.resolve(p);
   try {
-    return realpathSync.native(resolved);
+    return stripWindowsLongPathPrefix(realpathSync.native(resolved));
   } catch {
-    return resolved;
+    return stripWindowsLongPathPrefix(resolved);
   }
 };
 
@@ -444,8 +459,91 @@ export interface RepoMeta {
  * incremental write set only covers changed files, so a top-up against a
  * pre-v11 index would keep silently missing these CALLS edges for every
  * unchanged Rust trait file; force a full re-analyze instead.
+ * v12: Rust range-binding stopped restoring ambiguous duplicate type names
+ * (#2514): a function/struct name defined three or more times used to
+ * re-resolve to the last-scanned file (a presence toggle), so odd duplicate
+ * counts emitted a wrong cross-file CALLS edge. Same v7/v11 contract: the
+ * incremental write set only covers changed files, so a top-up against a
+ * pre-v12 index would keep these spurious CALLS edges on every unchanged Rust
+ * file. v12 also changes edges in the other direction: range-binding now
+ * RESOLVES import-disambiguated duplicate names (`for item in make()` /
+ * `let Struct { f } = ..` where a `use` or `use x::*` import pins one of several
+ * same-named definitions) to the imported definition's type. Both the removed
+ * spurious edges and these new resolved edges are cross-file, so a pre-v12
+ * top-up would leave unchanged Rust files stale either way; force a full
+ * re-analyze instead.
+ * v13: Java local classes, enums, records, and interfaces use
+ * source-type-relative JLS 13.1 identities (`Outer$1Local`). Number allocation
+ * matches javac: one sequence per (enclosing type, local simple name), with a
+ * separate sequence for anonymous types. Existing type/member ids, lexical
+ * bindings, and ownership edges must not be mixed with newly named unchanged
+ * Java files; force a full re-analyze.
+ * v14: C# and Kotlin free-call fallback now rejects same-file methods whose
+ * instance owner is outside the caller's enclosing class/MRO (#2563). The
+ * incremental write set would otherwise retain those stale CALLS edges on
+ * every unchanged C# and Kotlin file; force a full re-analyze instead.
+ * v15: `const X = <arrow | function-expression>` no longer emits an edgeless
+ * `Const:<file>:X` twin beside its `Function` node (#2687). The incremental
+ * write set only covers changed files, so every unchanged TS/JS file would
+ * keep its twin and `impact`/`context` would stay ambiguous on those names;
+ * force a full re-analyze instead.
+ * v16: calls through a closure-valued binding (`val f = { }; f()`) now resolve
+ * in Kotlin, Swift, Dart, Ruby, Java, C# and PHP (#2693). These are NEW `CALLS`
+ * edges, and those languages also gain callable graph nodes for closure
+ * bindings that previously carried a value label or no node at all (including
+ * JS/TS `var f = () => {}`). The incremental write set only covers changed
+ * files, so unchanged files would keep reporting a zero blast radius for those
+ * symbols; force a full re-analyze instead.
+ * v17: `this` inside a JS/TS ordinary `function` no longer resolves to the
+ * lexically enclosing class (#2701). This REMOVES `CALLS`/`ACCESSES` edges —
+ * including ones that are correct at runtime via `.bind(this)`, `.call`, or a
+ * `forEach` thisArg, which the graph does not model. The incremental write set
+ * only covers changed files, so every unchanged TS/JS file would keep its
+ * fabricated `this` edges; force a full re-analyze instead.
+ * v18: function-local callables carry their enclosing-callable chain plus their
+ * own position, so a local closure no longer shares a node id with a same-named
+ * file-level function (#2699) — `Function:f.ts:save` ->
+ * `Function:f.ts:run.save@2:2`. JavaScript/TypeScript also gain block scopes
+ * (`statement_block`), without which two `const` of one name in sibling blocks
+ * stay indistinguishable to the resolver and each call resolves to BOTH. This
+ * CHANGES PERSISTED NODE IDS for every function-local callable and changes
+ * which node a local call resolves to. An incremental top-up would leave
+ * unchanged files pointing at the old ids while changed files emit the new
+ * ones, splitting each symbol in two; force a full re-analyze instead.
+ * v19: the enclosing-callable walk now stops at class BODIES and anonymous-class
+ * construction sites, not only at class DECLARATIONS (#2699 follow-up). v18 shipped
+ * with `CLASS_CONTAINER_TYPES` as the only boundary, which lists no node for a Java
+ * anonymous class (`object_creation_expression > class_body`), so the walk reached the
+ * enclosing method and re-keyed `Worker$1.run` as `Worker.makeHandler.run@7:12` —
+ * destroying the javac-compatible JLS identity of #2550/#2555/#2562. An index stamped
+ * v18 therefore holds WRONG Java ids, and without this bump it passes the reuse gate
+ * and keeps them on every unchanged file; force a full re-analyze instead.
+ * v20: a NAMED explicit receiver no longer resolves its member through the lexical
+ * scope chain (#2699 follow-up). `options.baseUrl` used to bind to an unrelated
+ * function-local `const baseUrl`; measured on a 762-file corpus this removes 709
+ * such edges and adds none. `this`/`self` are exempt, so the 2 genuine self-alias
+ * reads it also covered are kept. A v19 index holds those false CALLS/ACCESSES on
+ * every unchanged file and would keep serving them through the reuse gate; force a
+ * full re-analyze instead.
+ * v21: a closure bound to a name is a call SOURCE in every language, not only a
+ * TARGET (#2699 part B). PHP/Rust/Kotlin/Ruby/Dart closure bindings gained the
+ * declaration rule, Rust gained the graph NODE it never emitted, and Dart locals
+ * gained the enclosing-callable + position identity that made two same-named
+ * closures collapse onto one node — which had them asserting a CALLS edge
+ * present nowhere in the source. All of that changes emitted node ids AND edges
+ * on files that did not themselves change, so a v20 index topped up
+ * incrementally keeps serving the old attribution; force a full re-analyze.
+ *
+ * v22: CommonJS export forms are indexed (#2723) — `exports.X`/`module.exports.X`,
+ * aliased receivers, module-level `this`, re-export forwarding, `module.exports = fn`,
+ * plus prototype/`this` members as Methods with owner edges; and the #2729 review
+ * fixes that stopped a text-only exports receiver inventing exports inside UMD
+ * factories and stopped the shadow guard deleting or fabricating call edges.
+ * These change what is emitted for source whose CONTENT has not changed, so a v21
+ * index would keep serving the pre-fix graph for every unchanged CommonJS file —
+ * the exact "Target not found" symptom #2723 reported. Force a full re-analyze.
  */
-export const INCREMENTAL_SCHEMA_VERSION = 11;
+export const INCREMENTAL_SCHEMA_VERSION = 22;
 
 export interface IndexedRepo {
   repoPath: string;

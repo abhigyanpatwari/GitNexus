@@ -43,7 +43,11 @@ import {
   stampEmbeddingCount,
 } from '../helpers/embedding-seed.js';
 import { CLASS_FRAMEWORK_ANNOTATIONS_FEATURE } from '../../src/core/analysis-features.js';
-import { SPRING_BEAN_INVENTORY_FEATURE } from '../../src/core/ingestion/frameworks/spring/analysis-features.js';
+import {
+  SPRING_BEAN_INVENTORY_FEATURE,
+  SPRING_CONDITIONALS_FEATURE,
+} from '../../src/core/ingestion/frameworks/spring/analysis-features.js';
+import { SPRING_AUTO_CONFIGURATION_SYNTHETIC_ID_PREFIX } from '../../src/core/ingestion/frameworks/spring/auto-configuration.js';
 import { SPRING_CONFIG_BINDINGS_FEATURE } from '../../src/core/ingestion/languages/java/analysis-features.js';
 
 const setupMiniRepo = () => setupSharedMiniRepo('gitnexus-incr-orch-');
@@ -165,6 +169,38 @@ async function countInjects(repoPath: string): Promise<number> {
   }
 }
 
+async function countSpringAutoConfigurationDeclarations(repoPath: string): Promise<number> {
+  const adapter = await import('../../src/core/lbug/lbug-adapter.js');
+  const { lbugPath } = getStoragePaths(repoPath);
+  await adapter.initLbug(lbugPath);
+  try {
+    const rows = (await adapter.executeQuery(
+      `MATCH ()-[r:CodeRelation]->() WHERE r.type = 'DECLARES' ` +
+        `AND (r.reason = 'spring-auto-configuration-import' ` +
+        `OR r.reason = 'spring-auto-configuration-factory') RETURN count(r) AS c`,
+    )) as Array<{ c: number | bigint }>;
+    return Number(rows[0]?.c ?? 0);
+  } finally {
+    await adapter.closeLbug();
+  }
+}
+
+async function countSpringAutoConfigurationSyntheticClasses(repoPath: string): Promise<number> {
+  const adapter = await import('../../src/core/lbug/lbug-adapter.js');
+  const { lbugPath } = getStoragePaths(repoPath);
+  await adapter.initLbug(lbugPath);
+  try {
+    const rows = (await adapter.executeQuery(
+      `MATCH (n:Class) WHERE n.id STARTS WITH ` +
+        `'${SPRING_AUTO_CONFIGURATION_SYNTHETIC_ID_PREFIX}' ` +
+        `RETURN count(n) AS c`,
+    )) as Array<{ c: number | bigint }>;
+    return Number(rows[0]?.c ?? 0);
+  } finally {
+    await adapter.closeLbug();
+  }
+}
+
 /** Java DI fixture (#2200): `@Autowired List<IFoo>` + 2 implementers ⇒ exactly
  *  2 INJECTS edges (Consumer→FooA, Consumer→FooB). Same shapes as the
  *  spring-di-pipeline integration fixture. */
@@ -275,6 +311,7 @@ describe('runFullAnalysis — incremental orchestration', () => {
       expect(meta!.analysisFeatures).toEqual({
         [CLASS_FRAMEWORK_ANNOTATIONS_FEATURE.id]: CLASS_FRAMEWORK_ANNOTATIONS_FEATURE.version,
         [SPRING_BEAN_INVENTORY_FEATURE.id]: SPRING_BEAN_INVENTORY_FEATURE.version,
+        [SPRING_CONDITIONALS_FEATURE.id]: SPRING_CONDITIONALS_FEATURE.version,
       });
 
       await saveMeta(storagePath, withoutAnalysisFeature(meta!, SPRING_BEAN_INVENTORY_FEATURE.id));
@@ -291,6 +328,7 @@ describe('runFullAnalysis — incremental orchestration', () => {
       expect((await loadMeta(storagePath))!.analysisFeatures).toEqual({
         [CLASS_FRAMEWORK_ANNOTATIONS_FEATURE.id]: CLASS_FRAMEWORK_ANNOTATIONS_FEATURE.version,
         [SPRING_BEAN_INVENTORY_FEATURE.id]: SPRING_BEAN_INVENTORY_FEATURE.version,
+        [SPRING_CONDITIONALS_FEATURE.id]: SPRING_CONDITIONALS_FEATURE.version,
       });
     } finally {
       await repo.cleanup();
@@ -358,6 +396,7 @@ describe('runFullAnalysis — incremental orchestration', () => {
       expect((await loadMeta(storagePath))!.analysisFeatures).toEqual({
         [CLASS_FRAMEWORK_ANNOTATIONS_FEATURE.id]: CLASS_FRAMEWORK_ANNOTATIONS_FEATURE.version,
         [SPRING_BEAN_INVENTORY_FEATURE.id]: SPRING_BEAN_INVENTORY_FEATURE.version,
+        [SPRING_CONDITIONALS_FEATURE.id]: SPRING_CONDITIONALS_FEATURE.version,
       });
     } finally {
       await repo.cleanup();
@@ -916,6 +955,49 @@ describe('runFullAnalysis — incremental orchestration', () => {
       await repo.cleanup();
     }
   }, 600_000);
+
+  it('incremental runs do not duplicate repository-wide Spring DECLARES edges (#2415)', async () => {
+    const repo = await setupMiniRepo();
+    try {
+      const sourceDir = path.join(repo.dbPath, 'src', 'main', 'java', 'com', 'example');
+      const metadataDir = path.join(repo.dbPath, 'src', 'main', 'resources', 'META-INF', 'spring');
+      await mkdir(sourceDir, { recursive: true });
+      await mkdir(metadataDir, { recursive: true });
+      await writeFile(
+        path.join(metadataDir, 'org.springframework.boot.autoconfigure.AutoConfiguration.imports'),
+        'com.example.ExampleAutoConfiguration\n',
+        'utf-8',
+      );
+      gitCommitAll(repo.dbPath, 'add auto configuration metadata');
+
+      const { runFullAnalysis } = await import('../../src/core/run-analyze.js');
+      await runFullAnalysis(repo.dbPath, { skipAgentsMd: true }, { onProgress: () => {} });
+      expect(await countSpringAutoConfigurationDeclarations(repo.dbPath)).toBe(1);
+      expect(await countSpringAutoConfigurationSyntheticClasses(repo.dbPath)).toBe(1);
+
+      const target = path.join(repo.dbPath, 'src', 'logger.ts');
+      for (const run of [1, 2]) {
+        const before = await readFile(target, 'utf-8');
+        await writeFile(target, `${before}\n// auto-register idempotency touch ${run}\n`, 'utf-8');
+        gitCommitAll(repo.dbPath, `unrelated auto-register touch ${run}`);
+        await runFullAnalysis(repo.dbPath, { skipAgentsMd: true }, { onProgress: () => {} });
+        expect(await countSpringAutoConfigurationDeclarations(repo.dbPath)).toBe(1);
+        expect(await countSpringAutoConfigurationSyntheticClasses(repo.dbPath)).toBe(1);
+      }
+
+      await writeFile(
+        path.join(sourceDir, 'ExampleAutoConfiguration.java'),
+        'package com.example;\npublic class ExampleAutoConfiguration {}\n',
+        'utf-8',
+      );
+      gitCommitAll(repo.dbPath, 'add source for metadata-only auto configuration');
+      await runFullAnalysis(repo.dbPath, { skipAgentsMd: true }, { onProgress: () => {} });
+      expect(await countSpringAutoConfigurationDeclarations(repo.dbPath)).toBe(1);
+      expect(await countSpringAutoConfigurationSyntheticClasses(repo.dbPath)).toBe(0);
+    } finally {
+      await repo.cleanup();
+    }
+  }, 600_000);
 });
 
 /**
@@ -931,8 +1013,9 @@ describe('runFullAnalysis — incremental orchestration', () => {
  * and boot a real embedder in CI. This run stays preserve-only (no force).
  *
  * Skip-gated on VECTOR availability (the lbug-vector-extension.test.ts
- * pattern): hard-false on win32; statically linked on linux-x64, so the
- * assertions genuinely run in CI — and on win32 the honest stamp is
+ * pattern): skipped only where the extension genuinely cannot load —
+ * no platform is categorically excluded any more (#2623 follow-up) — and
+ * where it cannot, the honest stamp is
  * 'exact-scan', which the unit-level wiring pin in
  * run-analyze-fts-repair.test.ts covers platform-independently.
  */

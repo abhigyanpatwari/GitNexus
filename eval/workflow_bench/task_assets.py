@@ -25,7 +25,9 @@ from pathlib import Path, PurePosixPath
 from typing import Any
 
 from .proposer_sandbox import (
+    DEPENDENCY_MOUNT_BASENAME,
     SANDBOX_WORKSPACE,
+    VITE_TEMP_DIR,
     ReadOnlyMount,
     SandboxError,
     _prepare_clone_target,
@@ -160,9 +162,11 @@ class TaskAssetSnapshot:
             source = snapshot_root / Path(*dependency.snapshot_path.parts)
             metadata = source.lstat()
             expected_directory = dependency.kind == "directory"
-            if stat.S_ISLNK(metadata.st_mode) or (
-                expected_directory and not stat.S_ISDIR(metadata.st_mode)
-            ) or (not expected_directory and not stat.S_ISREG(metadata.st_mode)):
+            if (
+                stat.S_ISLNK(metadata.st_mode)
+                or (expected_directory and not stat.S_ISDIR(metadata.st_mode))
+                or (not expected_directory and not stat.S_ISREG(metadata.st_mode))
+            ):
                 raise SandboxError(f"dependency snapshot changed: {dependency.source}")
             target = PurePosixPath(dependency.target)
             _prepare_clone_target(
@@ -213,9 +217,7 @@ class TaskAssetCache:
         repo_identity = _real_directory(repo, label="task asset repository")
         declarations, relative_paths = _sandbox_copy_declarations(task)
         dependency_declarations = _sandbox_dependency_declarations(task)
-        dependency_identity = tuple(
-            (declaration.source, declaration.target) for declaration in dependency_declarations
-        )
+        dependency_identity = tuple((declaration.source, declaration.target) for declaration in dependency_declarations)
         definition = (str(repo_identity), resolved_sha, declarations, dependency_identity)
         existing = self._by_definition.get(definition)
         if existing is not None:
@@ -258,6 +260,21 @@ class TaskAssetCache:
                         dependency_builder.copy_descriptor(descriptor, PurePosixPath("payload"))
                     finally:
                         os.close(descriptor)
+                    # vitest cannot start against a read-only node_modules: vite
+                    # writes <node_modules>/.vite-temp/<config>.timestamp-*.mjs
+                    # before loading a TypeScript config. bwrap cannot create
+                    # that mount point inside an already-read-only bind, so the
+                    # empty directory is captured here -- before the manifest and
+                    # both dependency digests are computed, so it is part of the
+                    # snapshot rather than an untracked mutation of it. The
+                    # sandbox overlays a tmpfs on it; see VITE_TEMP_DIR.
+                    payload_entry = dependency_builder.entries.get(PurePosixPath("payload"))
+                    if (
+                        payload_entry is not None
+                        and payload_entry.kind == "directory"
+                        and PurePosixPath(declaration.target).name == DEPENDENCY_MOUNT_BASENAME
+                    ):
+                        dependency_builder.ensure_directory(PurePosixPath("payload") / VITE_TEMP_DIR)
                     dependency_entries = dependency_builder.finished_entries()
                     _validate_dependency_symlinks(
                         container,
@@ -462,10 +479,14 @@ class _SnapshotBuilder:
         destination = self.destination / Path(*relative.parts)
         os.symlink(target, destination)
         after = os.stat(name, dir_fd=parent_descriptor, follow_symlinks=False)
-        if _mutation_identity(before) != _mutation_identity(after) or os.readlink(
-            name,
-            dir_fd=parent_descriptor,
-        ) != target:
+        if (
+            _mutation_identity(before) != _mutation_identity(after)
+            or os.readlink(
+                name,
+                dir_fd=parent_descriptor,
+            )
+            != target
+        ):
             raise SandboxError(f"dependency symlink changed while snapshotting: {relative}")
         self.total_bytes += len(target_bytes)
         self.budget.total_bytes += len(target_bytes)
@@ -502,6 +523,15 @@ class _SnapshotBuilder:
             raise SandboxError("sandbox_copy exceeds the entry limit")
         self.entries[entry.path] = entry
         self.budget.entries += 1
+
+    def ensure_directory(self, relative: PurePosixPath) -> None:
+        """Record and create one extra directory inside this snapshot.
+
+        Used for harness-owned mount points that must exist in the captured
+        bytes rather than be created against a read-only bind at runtime.
+        """
+
+        self._record_directory(relative)
 
     def finished_entries(self) -> tuple[AssetManifestEntry, ...]:
         return tuple(sorted(self.entries.values(), key=lambda entry: entry.path.as_posix()))
@@ -567,9 +597,7 @@ def _sandbox_dependency_declarations(
                 or declaration.target_path in other.target_path.parents
                 or other.target_path in declaration.target_path.parents
             ):
-                raise SandboxError(
-                    f"sandbox dependency targets overlap: {declaration.target} and {other.target}"
-                )
+                raise SandboxError(f"sandbox dependency targets overlap: {declaration.target} and {other.target}")
     return tuple(declarations)
 
 
@@ -651,9 +679,7 @@ def _validate_dependency_symlinks(
         )
         if sandbox_resolved != sandbox_boundary and sandbox_boundary not in sandbox_resolved.parents:
             raise SandboxError(f"dependency symlink escapes the sandbox workspace: {entry.path}")
-        manifest_resolved = PurePosixPath(
-            posixpath.normpath((entry.path.parent / target).as_posix())
-        )
+        manifest_resolved = PurePosixPath(posixpath.normpath((entry.path.parent / target).as_posix()))
         if manifest_resolved != manifest_boundary and manifest_boundary not in manifest_resolved.parents:
             continue
         link = container / Path(*entry.path.parts)
@@ -1021,8 +1047,7 @@ def _dependency_mounts(
     snapshot: TaskAssetSnapshot,
 ) -> list[ReadOnlyMount]:
     declarations = tuple(
-        (declaration.source, declaration.target)
-        for declaration in _sandbox_dependency_declarations(task)
+        (declaration.source, declaration.target) for declaration in _sandbox_dependency_declarations(task)
     )
     if snapshot.dependency_declarations != declarations:
         raise SandboxError("task asset snapshot does not match this dependency declaration")

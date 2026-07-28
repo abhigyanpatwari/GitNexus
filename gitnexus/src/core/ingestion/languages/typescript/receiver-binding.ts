@@ -155,9 +155,36 @@ function isStaticMember(memberNode: SyntaxNode): boolean {
   return false;
 }
 
+/**
+ * Nodes that REBIND `this`, so the walk for an enclosing type must stop at them.
+ *
+ * Without these the walk ran to the top of the file and happily synthesized a binding
+ * from a type that does not own the member. An object-literal method nested in a class
+ * bound `this` to the CLASS:
+ *
+ *     class A { outer() { const o = { inner() { return this.x; } }; return o; } }
+ *
+ * `this` inside `o.inner` is `o`, never `A` — so every `this.…` in such a method
+ * resolved against the wrong type. Only the module-level object literal escaped, because
+ * there was no enclosing class to reach.
+ *
+ * An arrow is deliberately absent: it inherits `this` lexically, so the walk SHOULD pass
+ * through it (that is what makes a class-field arrow `m = () => this.x` resolve).
+ */
+export const THIS_REBINDING_BOUNDARY_TYPES: ReadonlySet<string> = new Set([
+  'object', // object literal — `this` is the literal, not any enclosing type
+  'function_declaration',
+  'function_expression',
+  'generator_function',
+  'generator_function_declaration',
+]);
+
 function findEnclosingType(node: SyntaxNode): SyntaxNode | null {
   let cur: SyntaxNode | null = node.parent;
   while (cur !== null) {
+    // Boundary before the type check: a rebinding node between the member and a type
+    // means the type does not own this `this`.
+    if (THIS_REBINDING_BOUNDARY_TYPES.has(cur.type)) return null;
     if (TYPE_DECL_NODE_TYPES.has(cur.type)) return cur;
     cur = cur.parent;
   }

@@ -20,10 +20,15 @@ import {
   NodeTableName,
 } from './schema.js';
 import { streamAllCSVsToDisk, type StreamedCSVResult } from './csv-generator.js';
+import type { GraphEmitManifest } from './graph-emit-sink.js';
 import type { PdgEmitManifest } from './pdg-emit-sink.js';
 import { getNodeLabel as deriveNodeLabel, type WriteStreamFactory } from './rel-pair-routing.js';
 import { EMBEDDABLE_LABELS, type CachedEmbedding } from '../embeddings/types.js';
-import { extensionManager, type ExtensionEnsureOptions } from './extension-loader.js';
+import {
+  extensionManager,
+  resolveAnalyzeInstallPolicy,
+  type ExtensionEnsureOptions,
+} from './extension-loader.js';
 import {
   classifyDeleteAllError,
   closeLbugConnection,
@@ -32,6 +37,7 @@ import {
   isDbBusyError,
   isOpenRetryExhausted,
   isWalCorruptionError,
+  bufferPoolExhaustionRemedy,
   openLbugConnection,
   sleep,
   toNativeSafePath,
@@ -41,6 +47,7 @@ import {
   type LbugConnectionHandle,
 } from './lbug-config.js';
 import {
+  cleanQuarantinedMissingShadowWals,
   finalizeLbugSidecarsAfterClose,
   guardWalQuarantine,
   isMissingShadowSidecarError,
@@ -50,10 +57,14 @@ import {
   quarantineWalForMissingShadow,
   renameFailureMessage,
   shadowSidecarRecoveryMessage,
+  sidecarPreflightDisabled,
 } from './sidecar-recovery.js';
-import { isVectorExtensionSupportedByPlatform } from '../platform/capabilities.js';
 
 import { logger } from '../logger.js';
+import {
+  SPRING_AUTO_CONFIGURATION_REASONS,
+  SPRING_AUTO_CONFIGURATION_SYNTHETIC_ID_PREFIX,
+} from '../ingestion/frameworks/spring/auto-configuration.js';
 // ---------------------------------------------------------------------------
 // Relationship CSV splitting — extracted for testability (PR #818)
 // ---------------------------------------------------------------------------
@@ -818,6 +829,30 @@ const doInitLbug = async (dbPath: string, readOnly: boolean = false) => {
     // -------------------------------------------------------------------------
     const releaseInitLock = await acquireInitLock(dbPath);
     try {
+      // Reclaim missing-shadow WAL quarantines from a PRIOR crash (#2637).
+      // LadybugDB renames an unrecoverable WAL aside as
+      // `${dbPath}.wal.missing-shadow.<ts>-<rand>` (quarantineWalForMissingShadow)
+      // instead of deleting it. Once quarantined it is permanently detached from
+      // the live store and never reopened, so reclaiming it is safe regardless of
+      // whether the main DB file exists this run — unlike the orphan-sidecar
+      // cleanup below, this must NOT be gated on "main DB missing": a quarantine
+      // event and a healthy main DB are independent facts. Never let a reclaim
+      // failure (e.g. a transient EBUSY from an antivirus scan) block DB startup.
+      if (!sidecarPreflightDisabled()) {
+        try {
+          const reclaimed = await cleanQuarantinedMissingShadowWals(dbPath);
+          for (const file of reclaimed) {
+            logger.warn(
+              `GitNexus: reclaimed quarantined WAL ${path.basename(file)} from a prior crash`,
+            );
+          }
+        } catch (err) {
+          logger.warn(
+            `GitNexus: failed to reclaim missing-shadow WAL quarantines: ${summarizeError(err)}`,
+          );
+        }
+      }
+
       // Crash-recovery cleanup: if the main DB file is missing, stale sidecars
       // from an interrupted run can block fresh opens indefinitely.
       try {
@@ -891,7 +926,13 @@ const doInitLbug = async (dbPath: string, readOnly: boolean = false) => {
   // FTS powers baseline search, so initialize it with the core DB. Read-only
   // serve/MCP paths must never run DDL or trigger network INSTALL; analyze owns
   // schema/index creation and extension installation.
-  await loadFTSExtension(undefined, readOnly ? { policy: 'load-only' } : {});
+  //
+  // `quiet` on the writable branch: on a cold machine this pre-load is EXPECTED
+  // to miss (default policy is load-only, extension not yet on disk) and analyze
+  // Phase 3 installs it moments later in the same run. Warning here reported a
+  // degradation that never happened — the run went on to build every FTS index.
+  // Phase 3 (and the read-only branch) still warn for real failures.
+  await loadFTSExtension(undefined, readOnly ? { policy: 'load-only' } : { quiet: true });
 
   currentDbPath = dbPath;
   return { db, conn };
@@ -949,7 +990,14 @@ const copyNodeCSVs = async (
     const copyQuery = getCopyQuery(table, normalizeCopyPath(csvPath));
     await copyCsvWithRetry(targetConn, copyQuery, (retryErr) => {
       const retryMsg = retryErr instanceof Error ? retryErr.message : String(retryErr);
-      throw new Error(`COPY failed for ${table}: ${retryMsg.slice(0, 200)}`);
+      // Pool exhaustion gets a remedy (#2631): the raw binder text gives the
+      // operator nothing to act on, and on non-4K-page hosts (Ascend aarch64,
+      // Apple Silicon) the pool bills up to pageSize/4KiB x faster than the
+      // sizing was calibrated for — name the knob and the mechanism.
+      const remedy = bufferPoolExhaustionRemedy(retryMsg);
+      throw new Error(
+        `COPY failed for ${table}: ${retryMsg.slice(0, 200)}${remedy ? ` ${remedy}` : ''}`,
+      );
     });
   }
 };
@@ -980,6 +1028,15 @@ export const loadGraphToLbug = async (
    * emits none — the manifest is the sole source and there is no double-COPY.
    */
   pdgEmitManifest?: PdgEmitManifest,
+  /**
+   * Streamed structural-emit manifest (#2680). Unlike {@link pdgEmitManifest},
+   * these pair keys are NOT disjoint from the whole-graph emit's: a streamed
+   * `CALLS` edge is `Function|Function`, exactly like the retained edges
+   * `streamAllCSVsToDisk` just wrote. So these files are APPENDED as additional
+   * COPY jobs for the same pair rather than merged into `relsByPair` (a Map,
+   * which holds one CSV per pair and would silently drop one of them).
+   */
+  graphEmitManifest?: GraphEmitManifest,
 ) => {
   if (!conn) {
     throw new Error('LadybugDB not initialized. Call initLbug first.');
@@ -1119,16 +1176,32 @@ export const loadGraphToLbug = async (
   let tCopyRels = tCopyNodes;
   let tFallback = tCopyNodes;
 
-  const insertedRels = totalValidRels;
+  // One COPY job per CSV FILE, not per label pair. The whole-graph emit writes
+  // at most one file per pair, but the streamed structural manifest (#2680) can
+  // contribute a second file for a pair the whole-graph emit also wrote — both
+  // must load. `relsByPair` stays a one-file-per-pair Map so the PDG merge above
+  // and every other consumer are untouched.
+  const copyJobs: Array<{ pairKey: string; csvPath: string; rows: number }> = [];
+  for (const [pairKey, meta] of relsByPair) {
+    copyJobs.push({ pairKey, csvPath: meta.csvPath, rows: meta.rows });
+  }
+  if (graphEmitManifest) {
+    for (const [pairKey, meta] of graphEmitManifest.relsByPair) {
+      copyJobs.push({ pairKey, csvPath: meta.csvPath, rows: meta.rows });
+    }
+  }
+
+  const insertedRels = totalValidRels + (graphEmitManifest?.totalRows ?? 0);
   const warnings: string[] = [];
+  let poolRemedyIssued = false;
   if (insertedRels > 0) {
-    log(`Loading edges: ${insertedRels.toLocaleString()} across ${relsByPair.size} types`);
+    log(`Loading edges: ${insertedRels.toLocaleString()} across ${copyJobs.length} CSV files`);
 
     let pairIdx = 0;
     let failedPairEdges = 0;
     const failedPairCsvPaths = new Set<string>();
 
-    for (const [pairKey, { csvPath: pairCsvPath, rows }] of relsByPair) {
+    for (const { pairKey, csvPath: pairCsvPath, rows } of copyJobs) {
       pairIdx++;
       const [fromLabel, toLabel] = pairKey.split('|');
       const normalizedPath = normalizeCopyPath(pairCsvPath);
@@ -1136,7 +1209,7 @@ export const loadGraphToLbug = async (
       const copyQuery = `COPY ${REL_TABLE_NAME} FROM "${normalizedPath}" (from="${fromLabel}", to="${toLabel}", HEADER=true, ESCAPE='"', DELIM=',', QUOTE='"', PARALLEL=false, auto_detect=false)`;
 
       if (pairIdx % 5 === 0 || rows > 1000) {
-        log(`Loading edges: ${pairIdx}/${relsByPair.size} types (${fromLabel} -> ${toLabel})`);
+        log(`Loading edges: ${pairIdx}/${copyJobs.length} files (${fromLabel} -> ${toLabel})`);
       }
 
       // Use the captured `writeConn` (not the module-level `conn`) for the rel
@@ -1147,6 +1220,17 @@ export const loadGraphToLbug = async (
       await copyCsvWithRetry(writeConn, copyQuery, (retryErr) => {
         const retryMsg = retryErr instanceof Error ? retryErr.message : String(retryErr);
         warnings.push(`${fromLabel}->${toLabel} (${rows} edges): ${retryMsg.slice(0, 80)}`);
+        // One remedy per bulk load, not per pair (#2631): pool exhaustion
+        // repeats for every remaining pair once it starts. logger.warn, not
+        // just warnings.push — the returned warnings array has no consumer at
+        // any call site, so a push alone would leave the remedy invisible
+        // while the row-by-row fallback quietly degrades the load.
+        const remedy = poolRemedyIssued ? undefined : bufferPoolExhaustionRemedy(retryMsg);
+        if (remedy) {
+          poolRemedyIssued = true;
+          warnings.push(remedy);
+          logger.warn(remedy);
+        }
         failedPairEdges += rows;
         failedPairCsvPaths.add(pairCsvPath);
       });
@@ -2534,9 +2618,9 @@ export const deleteAllCommunitiesAndProcesses = async (): Promise<{
 /**
  * Shared mechanics for the delete-all-relationships-of-one-type family
  * ({@link deleteAllInterprocTaintPaths}, {@link deleteAllCallSummaries},
- * {@link deleteAllInjects}): count the typed CodeRelation rows, then DELETE
- * them (relationship-level — these are edge types, not node labels, so
- * endpoints are untouched).
+ * {@link deleteAllInjects}, {@link deleteSpringAutoConfigurationDeclarations}):
+ * count the matching CodeRelation rows, then DELETE them (relationship-level —
+ * these are edge types, not node labels, so endpoints are untouched).
  *
  * count + DELETE run as one critical section on the singleton connection so a
  * concurrent WAL-checkpoint cannot corrupt native state mid-delete (#pdg).
@@ -2544,11 +2628,13 @@ export const deleteAllCommunitiesAndProcesses = async (): Promise<{
  * @param relType       the CodeRelation `type` value to delete (e.g. 'INJECTS')
  * @param logTag        the `[tag]` prefix on the abort error message
  * @param duplicateNoun what the abort message says would be duplicated
+ * @param exactReasons  optional reason allowlist for a shared relationship type
  */
 const deleteAllRelationshipsOfType = async (
   relType: string,
   logTag: string,
   duplicateNoun: string,
+  exactReasons?: readonly string[],
 ): Promise<{ edgesDeleted: number }> => {
   const c = conn;
   if (!c) {
@@ -2557,16 +2643,23 @@ const deleteAllRelationshipsOfType = async (
   return withConnLock(async () => {
     let edgesDeleted = 0;
     let countResult: lbug.QueryResult | lbug.QueryResult[] | undefined;
+    const reasonFilter =
+      exactReasons === undefined || exactReasons.length === 0
+        ? ''
+        : ` AND (${exactReasons
+            .map((reason) => `r.reason = '${escapeCypherString(reason)}'`)
+            .join(' OR ')})`;
+    const predicate = `r.type = '${escapeCypherString(relType)}'${reasonFilter}`;
     try {
       countResult = await c.query(
-        `MATCH ()-[r:CodeRelation]->() WHERE r.type = '${relType}' RETURN count(r) AS cnt`,
+        `MATCH ()-[r:CodeRelation]->() WHERE ${predicate} RETURN count(r) AS cnt`,
       );
       const result = Array.isArray(countResult) ? countResult[0] : countResult;
       const rows = await result.getAll();
       const count = Number(rows[0]?.cnt ?? rows[0]?.[0] ?? 0);
       if (count > 0) {
         await closeQueryResults(
-          await c.query(`MATCH ()-[r:CodeRelation]->() WHERE r.type = '${relType}' DELETE r`),
+          await c.query(`MATCH ()-[r:CodeRelation]->() WHERE ${predicate} DELETE r`),
         );
         edgesDeleted = count;
       }
@@ -2652,6 +2745,65 @@ export const deleteAllCallSummaries = async (): Promise<{ edgesDeleted: number }
 export const deleteAllInjects = async (): Promise<{ edgesDeleted: number }> =>
   deleteAllRelationshipsOfType('INJECTS', 'di', 'duplicate INJECTS edges');
 
+/**
+ * Drop Spring-owned auto-configuration `DECLARES` relationships before
+ * incremental writeback. `DECLARES` is generic, so exact reason filtering is
+ * required: other metadata systems must retain their own declarations.
+ */
+export const deleteSpringAutoConfigurationDeclarations = async (): Promise<{
+  edgesDeleted: number;
+}> =>
+  deleteAllRelationshipsOfType(
+    'DECLARES',
+    'spring-auto-configuration',
+    'duplicate auto-configuration declarations',
+    SPRING_AUTO_CONFIGURATION_REASONS,
+  );
+
+/**
+ * Drop synthetic source-unavailable auto-configuration Class nodes before
+ * incremental writeback. The fresh full graph re-emits every still-needed
+ * synthetic node; deleting first also removes placeholders that became stale
+ * when a real source class appeared.
+ */
+export const deleteSpringAutoConfigurationSyntheticClasses = async (): Promise<{
+  nodesDeleted: number;
+}> => {
+  const c = conn;
+  if (!c) {
+    throw new Error('LadybugDB not initialized. Call initLbug first.');
+  }
+  return withConnLock(async () => {
+    let countResult: lbug.QueryResult | lbug.QueryResult[] | undefined;
+    const idPrefix = escapeCypherString(SPRING_AUTO_CONFIGURATION_SYNTHETIC_ID_PREFIX);
+    const predicate = `n.id STARTS WITH '${idPrefix}'`;
+    try {
+      countResult = await c.query(`MATCH (n:Class) WHERE ${predicate} RETURN count(n) AS cnt`);
+      const result = Array.isArray(countResult) ? countResult[0] : countResult;
+      const rows = await result.getAll();
+      const count = Number(rows[0]?.cnt ?? rows[0]?.[0] ?? 0);
+      if (count > 0) {
+        await closeQueryResults(
+          await c.query(`MATCH (n:Class) WHERE ${predicate} DETACH DELETE n`),
+        );
+      }
+      if (countResult) await closeQueryResults(countResult);
+      return { nodesDeleted: count };
+    } catch (err) {
+      if (countResult) await closeQueryResults(countResult);
+      if (classifyDeleteAllError(err) === 'benign-missing-table') {
+        return { nodesDeleted: 0 };
+      }
+      const message = err instanceof Error ? err.message : String(err);
+      throw new Error(
+        '[spring-auto-configuration] failed to clear synthetic Class nodes before ' +
+          `incremental re-write (${message}) — aborting to avoid stale placeholders; ` +
+          'the next run will full-rebuild',
+      );
+    }
+  });
+};
+
 // ============================================================================
 // Full-Text Search (FTS) Functions
 // ============================================================================
@@ -2696,14 +2848,16 @@ export const loadVectorExtension = async (
 ): Promise<boolean> => {
   const useModuleState = targetConn === undefined;
   if (useModuleState && vectorExtensionLoaded) return true;
-  // INSTALL VECTOR crashes with SIGSEGV on Windows: the KuzuDB native extension
-  // installer has an unhandled error path on Windows that raises a fatal signal
-  // that JS try/catch cannot intercept. Skip loading — vector/embedding search
-  // is unavailable but all graph index queries still work. Do NOT set
-  // vectorExtensionLoaded here: the flag means "successfully loaded", and a
-  // subsequent call would otherwise short-circuit to `return true` at the top.
-  if (process.platform === 'win32') return false;
-  if (!isVectorExtensionSupportedByPlatform()) return false;
+  // No platform gate. Windows was hard-refused here for years on the strength
+  // of an early-era report that in-process INSTALL VECTOR could SIGSEGV
+  // (#1365) — but the extension server ships win_amd64 VECTOR artifacts for
+  // every 0.18.x extension version (probed live: v0.18.0 and v0.18.1 both
+  // serve a real PE32+ DLL; the pinned 0.18.2 core resolves its extension
+  // directory to 0.18.1, strace-verified), and INSTALL now runs in a spawned
+  // child process (installDuckDbExtensionOutOfProcess), so even a crashing
+  // installer kills only the child and degrades to `false` here. LOAD of a
+  // present extension file is an ordinary in-process load whose failures
+  // surface as catchable errors, exactly like FTS.
 
   const c: lbug.Connection | null = targetConn ?? conn;
   if (!c) {
@@ -2810,6 +2964,78 @@ export const createVectorIndex = async (): Promise<boolean> => {
     if (isReadOnlyDbError(e)) return false;
     throw e;
   }
+};
+
+/**
+ * Make DML against {@link EMBEDDING_TABLE_NAME} legal on the writable
+ * connection when it can be, and report whether it is.
+ *
+ * LadybugDB refuses EVERY mutation of a table carrying an HNSW index while
+ * the VECTOR extension is not loaded on that connection: `DELETE` fails with
+ * "Trying to delete from an index on table CodeEmbedding but its extension is
+ * not loaded", `CREATE` with the matching "insert into an index" variant,
+ * `DROP TABLE` is refused while the index references it, and `SET` — even on
+ * a NON-indexed property — segfaults the process outright. Probed against
+ * @ladybugdb/core 0.18.2 (the lockfile-pinned version) and 0.18.0 — every
+ * result identical on both (#2623).
+ *
+ * Dropping the index is NOT an available recovery: `CALL DROP_VECTOR_INDEX`
+ * is itself a VECTOR-extension function and resolves to "Catalog exception:
+ * function DROP_VECTOR_INDEX is not defined" in exactly the state it would
+ * need to rescue. Loading the extension is the only in-place repair, which is
+ * why this returns a verdict instead of attempting a fixup.
+ *
+ * `true` = embedding-row DML is safe: either VECTOR is now loaded, or the
+ * table carries no index to trip over. `false` = genuinely blocked (index
+ * present, extension unloadable); the analyze orchestrator answers that by
+ * escalating to the wipe-and-rebuild write plan instead of failing
+ * mid-writeback.
+ *
+ * Cheap by construction: one local `SHOW_INDEXES` read settles the common
+ * "this repo never built an embedding index" case without touching the
+ * extension machinery at all, so a VECTOR-less machine is not charged a
+ * bounded INSTALL attempt on every incremental analyze. `SHOW_INDEXES` is
+ * readable WITHOUT the extension and reports `extension_loaded` per index, so
+ * no error-string sniffing is needed; it runs through the unprepared
+ * `conn.query()` path like every other `CALL` procedure here (#2114).
+ */
+export const ensureEmbeddingRowDmlSafe = async (): Promise<boolean> => {
+  const targetConn = conn;
+  if (!targetConn) {
+    throw new Error('LadybugDB not initialized. Call initLbug first.');
+  }
+  // Catalog FIRST. The overwhelmingly common case on a repo that never enabled
+  // embeddings is "no index at all", and that is provable with one local read
+  // — no extension needed. Loading first would make every incremental analyze
+  // on a VECTOR-less machine pay a bounded out-of-process INSTALL attempt (the
+  // `auto` policy) plus an "extension unavailable" warning, for a repo that
+  // can never hit this hazard.
+  let indexRows: any[] | undefined;
+  try {
+    indexRows = await withConnLock(async () =>
+      readQueryRows(await targetConn.query('CALL SHOW_INDEXES() RETURN *')),
+    );
+  } catch (err) {
+    // Fall through to the load attempt: unable to prove the index is absent,
+    // so the extension is the only thing that can make DML safe.
+    logger.warn(
+      { err },
+      `Could not read the index catalog to check for a ${EMBEDDING_TABLE_NAME} vector index; ` +
+        'falling back to loading the VECTOR extension.',
+    );
+  }
+  // Any non-HASH index on the embedding table gates DML. Keyed on index TYPE,
+  // not name, so an index built under a different name still counts; the
+  // implicit primary-key HASH index is engine-internal and never gates.
+  const indexGatesDml =
+    indexRows === undefined ||
+    indexRows.some((row) => {
+      const table = row?.table_name ?? row?.[0];
+      if (table !== EMBEDDING_TABLE_NAME) return false;
+      return (row?.index_type ?? row?.[2]) !== 'HASH';
+    });
+  if (!indexGatesDml) return true;
+  return await loadVectorExtension(undefined, { policy: resolveAnalyzeInstallPolicy() });
 };
 
 /**

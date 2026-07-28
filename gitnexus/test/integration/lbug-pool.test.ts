@@ -315,3 +315,91 @@ withTestLbugDB(
     poolAdapter: true,
   },
 );
+
+/**
+ * Pool vector lane (#2623 follow-up).
+ *
+ * Extension load scope is per-Database, and the pool pre-warm historically
+ * loaded only FTS — so `CALL QUERY_VECTOR_INDEX` through the pool ALWAYS
+ * raised `Catalog exception: function QUERY_VECTOR_INDEX is not defined` and
+ * LocalBackend's semantic lane silently exact-scanned. This block pins that
+ * the pool's shared Database really can serve the vector lane: rows and the
+ * HNSW index are built through the core adapter first (the state `analyze
+ * --embeddings` leaves behind), then the pool opens and must answer a vector
+ * query. Own withTestLbugDB block: the vector index would leak into the
+ * sibling suites' shared fixture expectations.
+ */
+withTestLbugDB(
+  'lbug-pool-vector-lane',
+  (handle) => {
+    describe('pool vector lane (#2623 follow-up)', () => {
+      afterEach(async () => {
+        try {
+          await closeLbug('vec-repo');
+        } catch {
+          /* best-effort */
+        }
+      });
+
+      it('QUERY_VECTOR_INDEX works through the pool once the pre-warm loads VECTOR', async (ctx) => {
+        const core = await import('../../src/core/lbug/lbug-adapter.js');
+        const { batchInsertEmbeddings } =
+          await import('../../src/core/embeddings/embedding-pipeline.js');
+        const { EMBEDDING_TABLE_NAME, EMBEDDING_INDEX_NAME, EMBEDDING_DIMS } =
+          await import('../../src/core/lbug/schema.js');
+
+        // Seed one embedding row for the fixture Function through the CORE
+        // adapter (writable), then build the HNSW index — skip visibly when
+        // VECTOR is unavailable in this environment, matching the
+        // lbug-vector-extension suite convention.
+        const embedding = new Array(EMBEDDING_DIMS).fill(0);
+        embedding[0] = 1;
+        await batchInsertEmbeddings(core.executeWithReusedStatement, [
+          {
+            nodeId: 'func:vec',
+            chunkIndex: 0,
+            startLine: 1,
+            endLine: 3,
+            embedding,
+            contentHash: 'vec-hash',
+          },
+        ]);
+        const indexBuilt = await core.createVectorIndex();
+        if (!indexBuilt) {
+          console.warn('[lbug-pool-vector-lane] Skipping — VECTOR unavailable.');
+          ctx.skip();
+          return;
+        }
+
+        // Close the writable core adapter so the pool opens its OWN read-only
+        // Database. This is what makes the case discriminating: extension
+        // loads are per-Database, so a shared/injected Database would inherit
+        // the VECTOR load from createVectorIndex above and pass even without
+        // the pre-warm fix. A fresh Database has nothing loaded — only the
+        // pool's own pre-warm can make the vector lane legal.
+        await core.closeLbug();
+
+        // The regression: through the POOL, the vector lane must work without
+        // any caller loading the extension. Pre-fix this rejects with
+        // "Catalog exception: function QUERY_VECTOR_INDEX is not defined".
+        await initLbug('vec-repo', handle.dbPath);
+        const vec = `CAST([${embedding.join(',')}] AS FLOAT[${EMBEDDING_DIMS}])`;
+        const rows = (await executeQuery(
+          'vec-repo',
+          `CALL QUERY_VECTOR_INDEX('${EMBEDDING_TABLE_NAME}', '${EMBEDDING_INDEX_NAME}', ${vec}, 1)
+           YIELD node AS emb, distance
+           RETURN emb.nodeId AS nodeId, distance`,
+        )) as Array<{ nodeId: string; distance: number }>;
+
+        expect(rows.length).toBe(1);
+        expect(String(rows[0].nodeId)).toBe('func:vec');
+        expect(Number(rows[0].distance)).toBeLessThan(1e-6);
+      }, 120_000);
+    });
+  },
+  {
+    seed: [
+      `CREATE (fn:Function {id: 'func:vec', name: 'vec', filePath: 'src/vec.ts', startLine: 1, endLine: 3, isExported: true, content: '', description: ''})`,
+    ],
+  },
+);

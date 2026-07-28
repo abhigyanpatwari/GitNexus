@@ -46,7 +46,7 @@ jobs:
         with:
           path: ~/.lbdb/extension
           key: lbug-fts-${{ runner.os }}-${{ hashFiles('gitnexus/package-lock.json') }}
-      - name: Ensure FTS extension installed
+      - name: Ensure FTS + VECTOR extensions installed
         run: npx tsx scripts/ensure-fts.ts
         working-directory: gitnexus
       - name: Run sharded tests with coverage (blob)
@@ -205,6 +205,10 @@ jobs:
     # tsx-on-source path in CI (both entry points stay covered).
     env:
       GITNEXUS_REQUIRE_FTS: '1'
+      # #2623: the win32 VECTOR gate is gone, so the vector suites genuinely
+      # run here — require the extension so an unavailable VECTOR is a loud
+      # failure, never a silent skip (same contract as GITNEXUS_REQUIRE_FTS).
+      GITNEXUS_REQUIRE_VECTOR: '1'
       GITNEXUS_E2E_CLI: dist
       # #2449: hosted Windows runners intermittently push the busiest shard past
       # the default 15-minute watchdog. 20 minutes restores real headroom while
@@ -219,19 +223,21 @@ jobs:
       - uses: ./.github/actions/setup-gitnexus
         with:
           build: 'true'
-      # Warm-cache the installed LadybugDB FTS extension (~/.lbdb/extension) per
-      # OS + lockfile so a warm run skips the network install entirely, and the
-      # parallel shards share one download across runs. Pure reliability/speed:
-      # on a cache miss the tests self-install FTS on demand (see
-      # test/helpers/fts-availability.ts), so a miss just falls back to install —
-      # never a correctness dependency. Keyed by lockfile hash so a LadybugDB
-      # version bump re-installs; per-OS because the extension is a native binary.
+      # Warm-cache the installed LadybugDB FTS + VECTOR extensions
+      # (~/.lbdb/extension) per OS + lockfile so a warm run skips the network
+      # install entirely, and the parallel shards share one download across
+      # runs. Pure reliability/speed: on a cache miss the tests self-install on
+      # demand (see test/helpers/fts-availability.ts), so a miss just falls
+      # back to install — never a correctness dependency. Keyed by lockfile
+      # hash so a LadybugDB version bump re-installs; per-OS because the
+      # extensions are native binaries. (Key name kept as lbug-fts for cache
+      # continuity — the path covers every extension in the shared home.)
       - name: Cache LadybugDB FTS extension
         uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v5
         with:
           path: ~/.lbdb/extension
           key: lbug-fts-${{ runner.os }}-${{ hashFiles('gitnexus/package-lock.json') }}
-      - name: Ensure FTS extension installed
+      - name: Ensure FTS + VECTOR extensions installed
         run: npx tsx scripts/ensure-fts.ts
         working-directory: gitnexus
       - name: Run platform-sensitive tests
@@ -396,7 +402,7 @@ jobs:
       - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
         with:
           persist-credentials: false
-      - uses: actions/setup-node@48b55a011bda9f5d6aeb4c2d9c7362e8dae4041e # v6.4.0
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
         with:
           node-version: '22'
           cache: npm
@@ -414,7 +420,7 @@ jobs:
       # Switch to the engines-floor Node AFTER building — native deps built on
       # 22.x load across the whole 22.x ABI line, and nothing installs after this
       # (so no package-manager cache is needed).
-      - uses: actions/setup-node@48b55a011bda9f5d6aeb4c2d9c7362e8dae4041e # v6.4.0
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
         with:
           node-version: '22.18.0'
           package-manager-cache: false
@@ -482,6 +488,30 @@ jobs:
         run: node --import tsx bench/scope-capture/measure.mjs --check
         working-directory: gitnexus
 
+      - name: Callable-value-flow target-index guards (#2693)
+        # Build-free: asserts buildGraphTargetIndex resolves an unchanged target
+        # set (fingerprint), stays linear in def count, and that the #2693
+        # widened gate — which now considers VALUE bindings, a population that
+        # outnumbers callables in real source — stays within its measured
+        # overhead of the pre-#2693 callable-only cost. The overhead budget also
+        # guards the DESIGN: value bindings are joined to their callable node by
+        # position, never by name through resolveDefGraphId, whose label-agnostic
+        # simpleKey fallback would alias a binding onto any same-named callable.
+        run: node --import tsx bench/callable-value-flow/measure.mjs --check
+        working-directory: gitnexus
+
+      - name: Scope-emission guards (#2699)
+        # Build-free: asserts the JS/TS scope set is unchanged. Block scopes are
+        # what make `let`/`const` in sibling blocks distinct bindings, but a
+        # scope per `statement_block` triples the count and deepens every
+        # scope-chain walk in every function for no semantic gain. Two emit-side
+        # filters drop the waste — function-body blocks (the Function scope
+        # already covers them) and blocks that declare nothing — and this gate
+        # fails if either regresses. Counts are exact, so it catches a change
+        # wall-clock CI could never resolve from noise.
+        run: node --import tsx bench/scope-emission/measure.mjs --check
+        working-directory: gitnexus
+
       - name: CFG construction time / disk / memory guards (#2081 M1)
         # Build-free: asserts collectFunctionCfgs output is unchanged
         # (fingerprint) and that wall-time, cfgSideChannel disk bytes, AND
@@ -517,6 +547,7 @@ jobs:
           npx vitest run --no-file-parallelism
           test/integration/cobol-pipeline-benchmark.test.ts
           test/integration/csharp-pipeline-benchmark.test.ts
+          test/integration/instance-ownership-pipeline-benchmark.test.ts
           test/integration/rust-pipeline-benchmark.test.ts
           test/integration/php-pipeline-benchmark.test.ts
           test/integration/ruby-pipeline-benchmark.test.ts
@@ -555,7 +586,7 @@ jobs:
       - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
         with:
           persist-credentials: false
-      - uses: actions/setup-node@48b55a011bda9f5d6aeb4c2d9c7362e8dae4041e # v6.4.0
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
         with:
           node-version: '22.18.0'
           cache: npm

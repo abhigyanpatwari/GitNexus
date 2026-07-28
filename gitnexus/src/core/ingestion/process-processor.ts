@@ -230,14 +230,13 @@ const MIN_TRACE_CONFIDENCE = 0.5;
 const buildCallsGraph = (graph: KnowledgeGraph): AdjacencyList => {
   const adj = new Map<string, string[]>();
 
-  for (const rel of graph.iterRelationships()) {
-    if (rel.type === 'CALLS' && rel.confidence >= MIN_TRACE_CONFIDENCE) {
-      if (!adj.has(rel.sourceId)) {
-        adj.set(rel.sourceId, []);
-      }
-      adj.get(rel.sourceId)!.push(rel.targetId);
-    }
-  }
+  // Field-wise scan (#2680) — whole-graph walk, four fields, no object needed.
+  graph.forEachRelationshipFields((sourceId, targetId, type, confidence) => {
+    if (type !== 'CALLS' || confidence < MIN_TRACE_CONFIDENCE) return;
+    const existing = adj.get(sourceId);
+    if (existing === undefined) adj.set(sourceId, [targetId]);
+    else existing.push(targetId);
+  });
 
   return adj;
 };
@@ -245,14 +244,12 @@ const buildCallsGraph = (graph: KnowledgeGraph): AdjacencyList => {
 const buildReverseCallsGraph = (graph: KnowledgeGraph): AdjacencyList => {
   const adj = new Map<string, string[]>();
 
-  for (const rel of graph.iterRelationships()) {
-    if (rel.type === 'CALLS' && rel.confidence >= MIN_TRACE_CONFIDENCE) {
-      if (!adj.has(rel.targetId)) {
-        adj.set(rel.targetId, []);
-      }
-      adj.get(rel.targetId)!.push(rel.sourceId);
-    }
-  }
+  graph.forEachRelationshipFields((sourceId, targetId, type, confidence) => {
+    if (type !== 'CALLS' || confidence < MIN_TRACE_CONFIDENCE) return;
+    const existing = adj.get(targetId);
+    if (existing === undefined) adj.set(targetId, [sourceId]);
+    else existing.push(sourceId);
+  });
 
   return adj;
 };

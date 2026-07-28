@@ -385,6 +385,7 @@ export async function traceCommand(
   to?: string,
   options?: {
     fromUid?: string;
+    file?: string;
     fromFile?: string;
     toUid?: string;
     toFile?: string;
@@ -395,6 +396,14 @@ export async function traceCommand(
   },
 ): Promise<void> {
   if (options?.fromUid?.startsWith('--') || options?.toUid?.startsWith('--')) {
+    cliErrorKey('tool.usage.trace');
+    process.exit(1);
+  }
+  if (
+    options?.file !== undefined &&
+    options?.fromFile !== undefined &&
+    options.file !== options.fromFile
+  ) {
     cliErrorKey('tool.usage.trace');
     process.exit(1);
   }
@@ -414,10 +423,11 @@ export async function traceCommand(
 
   try {
     const backend = await getBackend();
+    const fromFile = options?.fromFile ?? options?.file;
     const result = await backend.callTool('trace', {
       from: from || undefined,
       from_uid: options?.fromUid,
-      from_file: options?.fromFile,
+      from_file: fromFile,
       to: to || undefined,
       to_uid: options?.toUid,
       to_file: options?.toFile,

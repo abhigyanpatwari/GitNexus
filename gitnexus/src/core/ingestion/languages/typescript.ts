@@ -7,7 +7,7 @@
  */
 
 import { SupportedLanguages } from 'gitnexus-shared';
-import type { NodeLabel } from 'gitnexus-shared';
+import type { CaptureMatch, NodeLabel } from 'gitnexus-shared';
 import { defineLanguage } from '../language-provider.js';
 import type { AstFrameworkPatternConfig } from '../language-provider.js';
 import { createClassExtractor } from '../class-extractors/generic.js';
@@ -16,7 +16,61 @@ import {
   javascriptClassConfig,
 } from '../class-extractors/configs/typescript-javascript.js';
 import type { SyntaxNode } from '../utils/ast-helpers.js';
-import { createLeadingDocDescriptionExtractor } from '../utils/ast-helpers.js';
+import {
+  createLeadingDocDescriptionExtractor,
+  isCjsDefaultExportAssignment,
+  isPrototypeMemberAssignmentNode,
+} from '../utils/ast-helpers.js';
+import {
+  cjsExportedNameFor,
+  isModuleLevelThisAssignment,
+  isModuleLevelThisExport,
+  isShadowedCjsExportAssignmentNode,
+} from './typescript/cjs-export-assignment.js';
+
+const rootOf = (node: SyntaxNode): SyntaxNode | undefined =>
+  (node as { tree?: { rootNode?: SyntaxNode } }).tree?.rootNode;
+
+/** `exports.X = fn` where the module already declares `X` — see #2723. */
+const isShadowedCjsExportNode = (node: SyntaxNode): boolean => {
+  const root = rootOf(node);
+  return root !== undefined && isShadowedCjsExportAssignmentNode(node, root);
+};
+
+/**
+ * Label for a `<receiver>.<member> = <function>` capture (#2723 follow-up).
+ *
+ * The member-assignment queries match ANY identifier receiver, because an
+ * `exports` alias (`const e = exports; e.foo = fn`) cannot be pinned in the
+ * query. Everything that is not a recognised shape is dropped HERE — without
+ * that, every `obj.handler = function () {}` in every JS/TS file would emit a
+ * spurious top-level `Function` named `handler`.
+ *
+ * Recognised: a CJS export (direct, `module.exports`, or via a module-scope
+ * alias) stays a Function; a prototype or `this` member becomes a Method; a
+ * CJS export shadowing a name the module already declares emits nothing.
+ */
+const memberAssignmentLabel = (node: SyntaxNode): NodeLabel | null => {
+  const root = rootOf(node);
+
+  // Module-level `this.X = fn` in CommonJS IS `module.exports.X = fn`, so it
+  // is an exported Function, not an instance member. Checked before the
+  // Method branch, which would otherwise claim every `this` receiver.
+  if (root !== undefined && isModuleLevelThisExport(node, root)) return 'Function';
+  // `module.exports = fn` — the module itself is the callable.
+  if (isCjsDefaultExportAssignment(node)) return 'Function';
+  // A module-level `this` member in ESM or a no-signal file is neither an
+  // export (top-level `this` is undefined) nor an instance member. Emitting a
+  // Method there minted an ownerless node (#2729 review F13).
+  if (isModuleLevelThisAssignment(node)) return null;
+  if (isPrototypeMemberAssignmentNode(node)) return 'Method';
+  if (isShadowedCjsExportNode(node)) return null;
+
+  const value = node.childForFieldName('right');
+  if (root === undefined || value === null) return null;
+
+  return cjsExportedNameFor(value, root) !== null ? 'Function' : null;
+};
 import { createTypeScriptCfgVisitor } from '../cfg/visitors/typescript.js';
 import { typeConfig as typescriptConfig } from '../type-extractors/typescript.js';
 import { tsExportChecker } from '../export-detection.js';
@@ -307,6 +361,18 @@ export const BUILT_INS: ReadonlySet<string> = new Set([
   'valueOf',
 ]);
 
+/**
+ * `this` is the only receiver keyword JavaScript and TypeScript bind, and it
+ * is bound by every function form except an arrow (#2701). The query files
+ * tag those forms with `@receiver-owner.this`; this hook just reads the tag,
+ * so the node-type list stays in the one place that already names grammar
+ * nodes. See `Scope.ownsReceivers` for what the marker does to the walk.
+ */
+const TS_OWNED_RECEIVERS: ReadonlySet<string> = new Set(['this']);
+
+const tsScopeOwnsReceivers = (match: CaptureMatch): ReadonlySet<string> | undefined =>
+  match['@receiver-owner.this'] === undefined ? undefined : TS_OWNED_RECEIVERS;
+
 export const typescriptProvider = defineLanguage({
   id: SupportedLanguages.TypeScript,
   extensions: ['.ts', '.tsx'],
@@ -335,6 +401,7 @@ export const typescriptProvider = defineLanguage({
   ] satisfies AstFrameworkPatternConfig[],
   treeSitterQueries: TYPESCRIPT_QUERIES,
   typeConfig: typescriptConfig,
+  scopeOwnsReceivers: tsScopeOwnsReceivers,
   exportChecker: tsExportChecker,
   importResolver: createImportResolver(typescriptImportConfig),
   callExtractor: createCallExtractor(typescriptCallConfig),
@@ -351,6 +418,21 @@ export const typescriptProvider = defineLanguage({
     wrapperNodeTypes: ['export_statement'],
   }),
   builtInNames: BUILT_INS,
+
+  // Member-assignment shapes are not free functions (#2723 follow-up). The
+  // capture arrives anchored on the assignment, so the shape is decided from
+  // the left-hand side:
+  //   - `Foo.prototype.bar = fn` / `this.bar = fn` -> a Method
+  //   - a CJS export shadowing a name the module already declares -> no node
+  //     at all, since the scope declaration that would reach it is suppressed
+  //     too (an orphan `Function` twin beside `class Dup {}` otherwise).
+  // Every other `definition.function` capture keeps its default label.
+  labelOverride: (functionNode, defaultLabel) =>
+    defaultLabel !== 'Function'
+      ? defaultLabel
+      : functionNode.type === 'assignment_expression'
+        ? memberAssignmentLabel(functionNode)
+        : defaultLabel,
 
   // ── RFC #909 Ring 3: scope-based resolution hooks (RFC §5) ──────────
   // TypeScript is the third migration after Python and C#. See
@@ -402,6 +484,7 @@ export const javascriptProvider = defineLanguage({
   ] satisfies AstFrameworkPatternConfig[],
   treeSitterQueries: JAVASCRIPT_QUERIES,
   typeConfig: typescriptConfig,
+  scopeOwnsReceivers: tsScopeOwnsReceivers,
   exportChecker: tsExportChecker,
   importResolver: createImportResolver(javascriptImportConfig),
   callExtractor: createCallExtractor(javascriptCallConfig),
@@ -418,6 +501,14 @@ export const javascriptProvider = defineLanguage({
     wrapperNodeTypes: ['export_statement'],
   }),
   builtInNames: BUILT_INS,
+
+  // Member-assignment shapes — see the TypeScript provider above.
+  labelOverride: (functionNode, defaultLabel) =>
+    defaultLabel !== 'Function'
+      ? defaultLabel
+      : functionNode.type === 'assignment_expression'
+        ? memberAssignmentLabel(functionNode)
+        : defaultLabel,
 
   // ── RFC #909 Ring 3: scope-based resolution hooks (RFC §5) ──────────
   // JavaScript is the fourth migration after Python, C#, and TypeScript.

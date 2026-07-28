@@ -22,6 +22,15 @@ const PYTHON_SCOPE_QUERY = `
 (function_definition
   name: (identifier) @declaration.name) @declaration.function
 
+;; Lambda bindings (\`f = lambda x: x\`). The \`@declaration.function\` anchor
+;; sits on the INNER lambda so its range aligns with \`(lambda) @scope.function\`
+;; above; otherwise the def is owned by the module scope and calls inside the
+;; lambda lose caller attribution. Mirrors the TypeScript arrow patterns (#2687).
+(expression_statement
+  (assignment
+    left: (identifier) @declaration.name
+    right: (lambda) @declaration.function))
+
 (assignment
   left: (identifier) @declaration.name) @declaration.variable
 

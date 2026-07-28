@@ -39,6 +39,9 @@ describe('VALID_RELATION_TYPES', () => {
     'WRAPS',
     // Spring DI @Autowired collection injection (#2200)
     'INJECTS',
+    // Conditional activation and metadata declaration/discovery (#2415)
+    'CONDITIONAL_ON',
+    'DECLARES',
   ] as const;
 
   it('contains all expected relation types', () => {

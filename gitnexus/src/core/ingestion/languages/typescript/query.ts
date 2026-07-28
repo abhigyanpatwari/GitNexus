@@ -78,7 +78,7 @@ function isTsxFile(filePath: string): boolean {
   return filePath.endsWith('.tsx');
 }
 
-const TYPESCRIPT_SCOPE_QUERY = `
+export const TYPESCRIPT_SCOPE_QUERY = `
 ;; Scopes — module / namespace / class-likes / function-likes
 (program) @scope.module
 
@@ -94,14 +94,26 @@ const TYPESCRIPT_SCOPE_QUERY = `
 ;; class expressions omit it); ScopeExtractor tolerates missing names.
 (class) @scope.class
 
-(function_declaration) @scope.function
-(generator_function_declaration) @scope.function
-(function_signature) @scope.function
-(method_definition) @scope.function
-(method_signature) @scope.function
-(abstract_method_signature) @scope.function
+;; \`@receiver-owner.this\` marks a scope that BINDS its own \`this\` rather
+;; than inheriting one (#2701) — see \`Scope.ownsReceivers\`. Every function
+;; form except \`arrow_function\` carries it: ECMA-262 gives an arrow
+;; \`[[ThisMode]] = lexical\` (no \`this\` in its environment record, so the
+;; lookup passes through), while every other form binds \`this\` at call time.
+;; \`method_definition\` is marked too and is unaffected — it also carries a
+;; synthesized \`this\` typeBinding, which the walk consults first.
+;; The marker rides on the same node as \`@scope.function\`; it is outside the
+;; \`@scope.\` namespace so \`anchorCaptureFor\` cannot mistake it for the anchor.
+(function_declaration) @scope.function @receiver-owner.this
+(generator_function_declaration) @scope.function @receiver-owner.this
+(function_signature) @scope.function @receiver-owner.this
+(method_definition) @scope.function @receiver-owner.this
+(method_signature) @scope.function @receiver-owner.this
+(abstract_method_signature) @scope.function @receiver-owner.this
 (arrow_function) @scope.function
-(function_expression) @scope.function
+(function_expression) @scope.function @receiver-owner.this
+;; \`function*(){}\` as an EXPRESSION. Absent from this list before #2701, so it
+;; was not a scope at all and \`this\` inside one read as the enclosing method's.
+(generator_function) @scope.function @receiver-owner.this
 
 ;; Object literals (the { ... } value expression, NOT object_type or
 ;; object_pattern) get their own scope boundary. Without it, a
@@ -119,6 +131,16 @@ const TYPESCRIPT_SCOPE_QUERY = `
 ;; own bindings entirely while still treating it as a hoist boundary
 ;; (#2551).
 (object) @scope.object
+
+;; Statement blocks are BINDING scopes (#2699). ECMAScript gives every block its
+;; own environment record, so \`let\`/\`const\`/\`class\`/\`function\` declared in
+;; sibling blocks of one function are DIFFERENT bindings — without this the
+;; resolver sees both as function-level and a call in one branch resolves to
+;; both. \`tsBindingScopeFor\` already implements the other half of the rule:
+;; \`var\` hoists past blocks to the enclosing Function/Module, \`let\`/\`const\`
+;; take the innermost scope, which is now the block.
+(statement_block) @scope.block
+
 
 ;; Type aliases that contain an object_type are structurally class-like —
 ;; they define a shape with named members. Emit @scope.class so the
@@ -192,6 +214,51 @@ const TYPESCRIPT_SCOPE_QUERY = `
   (variable_declarator
     name: (identifier) @declaration.name
     value: (function_expression) @declaration.function))
+
+;; CJS property-assignment exports (#2723) — see the matching block in
+;; \`languages/javascript/query.ts\` for the rationale. Mirrored here because
+;; \`.ts\` files in a CommonJS package use the same form, and because the JS
+;; provider delegates several hooks to these TypeScript counterparts.
+;; One pattern per receiver form, RHS forms folded into an inner LEAF
+;; alternation — see the matching note in \`languages/javascript/query.ts\` for
+;; why that shape is safe under the tree-sitter 0.21.1 alternation hazard.
+(assignment_expression
+  left: (member_expression
+    object: (identifier) @_cjs.receiver
+    property: (property_identifier) @declaration.name)
+  right: [
+    (arrow_function)
+    (function_expression)
+    (generator_function)
+  ] @declaration.function)
+
+;; \`this.X = fn\` at MODULE level of a CommonJS file — there \`this\` IS
+;; \`module.exports\`, so this declares an export. Pruned emit-side for ESM
+;; files (where top-level \`this\` is undefined) and for a \`this\` inside a
+;; function, which is an instance member rather than an export.
+(assignment_expression
+  left: (member_expression
+    object: (this)
+    property: (property_identifier) @declaration.name)
+  right: [
+    (arrow_function)
+    (function_expression)
+    (generator_function)
+  ] @declaration.function)
+
+(assignment_expression
+  left: (member_expression
+    object: (member_expression
+      object: (identifier) @_cjs.module
+      property: (property_identifier) @_cjs.exports)
+    property: (property_identifier) @declaration.name)
+  right: [
+    (arrow_function)
+    (function_expression)
+    (generator_function)
+  ] @declaration.function
+  (#eq? @_cjs.module "module")
+  (#eq? @_cjs.exports "exports"))
 
 ;; Object-property arrows / function expressions named by their pair key:
 ;; \`{ addItem: (item) => ..., removeItem: (item) => ... }\`. The legacy

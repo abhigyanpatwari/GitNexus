@@ -440,18 +440,36 @@ export class IncludeExtractor implements ContractExtractor {
          WHERE f.filePath =~ '.*\\\\.(h|hpp|hxx|hh|cuh)$'
          RETURN f.filePath AS filePath, f.id AS fileId`,
       );
-      // gitnexus analyze stores absolute paths in the File.filePath column.
       // Provider contract IDs MUST be repo-relative — otherwise the consumer
       // emits `include::map/base/view.h` and the provider emits
       // `include::/abs/path/to/repo/map/base/view.h`, which never match
       // through runExactMatch and the cross-link silently disappears.
       // (PR #1156 follow-up review: graph provider absolute-path bug.)
+      //
+      // Current `gitnexus analyze` does NOT store absolute paths here, contrary
+      // to what this comment used to claim: File.filePath is built from the
+      // walker's repo-relative, forward-slash paths (filesystem-walker.ts →
+      // processStructure), and a full self-index at 89bbdcf5 had 0 of 239,070
+      // nodes with an absolute or backslash-bearing filePath (#2667). The
+      // relativisation below therefore stays as a guard against rows this
+      // process did not write — an index built by an older version, or one
+      // carried over from another machine — not as a description of what
+      // analyze currently emits.
       const normalizedRepoPath = path.resolve(repoPath);
       const out: ExtractedContract[] = [];
       for (const r of rows) {
         if (typeof r.filePath !== 'string' || !r.filePath) continue;
         const absolute = r.filePath as string;
-        const rel = path.relative(normalizedRepoPath, absolute);
+        // Only relativise a row that is actually absolute. Current analyze writes
+        // repo-relative paths (above), and `path.relative(repoRoot, 'src/a.h')`
+        // resolves the second argument against the PROCESS CWD — so from any cwd
+        // other than the repo root every relative row came back `..`-prefixed and
+        // was dropped by the guard below, silently emptying this strategy (#2667
+        // review). Absolute rows still go through `path.relative` so the
+        // containment check keeps rejecting foreign and escaping paths.
+        const rel = path.isAbsolute(absolute)
+          ? path.relative(normalizedRepoPath, absolute)
+          : absolute;
         // Skip rows that resolve outside the repo (e.g., system headers
         // somehow indexed, or stale absolute paths from a different machine).
         // path.relative returns a `..`-prefixed path or an absolute path

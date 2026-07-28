@@ -23,6 +23,7 @@ import {
   SHUTDOWN_EXIT_CODES,
 } from '../../src/mcp/server.js';
 import { GITNEXUS_TOOLS } from '../../src/mcp/tools.js';
+import { createMcpRepositoryPolicy } from '../../src/mcp/repository-policy.js';
 
 // ─── Mock backend ──────────────────────────────────────────────────
 
@@ -99,6 +100,86 @@ describe('createMCPServer', () => {
         const definition = GITNEXUS_TOOLS.find((t) => t.name === tool.name)!;
         expect(tool.annotations).toEqual(definition.annotations);
       }
+    } finally {
+      await client.close();
+      await server.close();
+    }
+  });
+  it('requires repo in repo-scoped tool schemas when multiple repos are visible', async () => {
+    const backend = createMockBackend({
+      listRepos: vi.fn().mockResolvedValue([
+        { name: 'alpha', path: '/tmp/alpha' },
+        { name: 'beta', path: '/tmp/beta' },
+      ]),
+    });
+    const server = createMCPServer(backend);
+    const client = new Client({ name: 'multi-repo-client', version: '0.0.0' });
+    const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair();
+
+    try {
+      await Promise.all([server.connect(serverTransport), client.connect(clientTransport)]);
+      const tools = await client.listTools();
+      const query = tools.tools.find((tool) => tool.name === 'query');
+      const listRepos = tools.tools.find((tool) => tool.name === 'list_repos');
+
+      expect(query?.inputSchema.required).toContain('repo');
+      expect(listRepos?.inputSchema.required).not.toContain('repo');
+      expect(
+        GITNEXUS_TOOLS.find((tool) => tool.name === 'query')?.inputSchema.required,
+      ).not.toContain('repo');
+    } finally {
+      await client.close();
+      await server.close();
+    }
+  });
+
+  it('keeps repo optional when a default repo is configured', async () => {
+    const backend = createMockBackend({
+      listRepos: vi.fn().mockResolvedValue([
+        { name: 'alpha', path: '/tmp/alpha' },
+        { name: 'beta', path: '/tmp/beta' },
+      ]),
+    });
+    const repositoryPolicy = await createMcpRepositoryPolicy(backend, {
+      GITNEXUS_MCP_DEFAULT_REPO: 'alpha',
+    });
+    const server = createMCPServer(backend, { repositoryPolicy });
+    const client = new Client({ name: 'default-repo-client', version: '0.0.0' });
+    const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair();
+
+    try {
+      await Promise.all([server.connect(serverTransport), client.connect(clientTransport)]);
+      const tools = await client.listTools();
+      const query = tools.tools.find((tool) => tool.name === 'query');
+
+      expect(query?.inputSchema.required).not.toContain('repo');
+    } finally {
+      await client.close();
+      await server.close();
+    }
+  });
+
+  it('requires repo when multiple allowed repositories are visible without a default', async () => {
+    const backend = createMockBackend({
+      listRepos: vi.fn().mockResolvedValue([
+        { name: 'alpha', path: '/tmp/alpha' },
+        { name: 'beta', path: '/tmp/beta' },
+        { name: 'gamma', path: '/tmp/gamma' },
+      ]),
+    });
+    const repositoryPolicy = await createMcpRepositoryPolicy(backend, {
+      GITNEXUS_MCP_ALLOWED_REPOS: 'alpha,beta',
+    });
+    const server = createMCPServer(backend, { repositoryPolicy });
+    const client = new Client({ name: 'allowlisted-repos-client', version: '0.0.0' });
+    const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair();
+
+    try {
+      await Promise.all([server.connect(serverTransport), client.connect(clientTransport)]);
+      const tools = await client.listTools();
+      const query = tools.tools.find((tool) => tool.name === 'query');
+
+      expect(query?.inputSchema.required).toContain('repo');
     } finally {
       await client.close();
       await server.close();

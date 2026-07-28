@@ -156,10 +156,11 @@ const lookupInEnv = (
     filePath?: string,
   ) => { funcName: string | null; label: NodeLabel } | null,
   filePath?: string,
+  thisBoundaryNodeTypes?: ReadonlySet<string>,
 ): string | undefined => {
   // Self/this receiver: resolve to enclosing class name via AST walk
   if (varName === 'self' || varName === 'this' || varName === '$this') {
-    return findEnclosingClassName(callNode);
+    return findEnclosingClassName(callNode, thisBoundaryNodeTypes);
   }
 
   // Super/base/parent receiver: resolve to the parent class name via AST walk.
@@ -215,10 +216,17 @@ const enclosingParentClassNameCache = new Map<SyntaxNode, string | undefined>();
  * Used to resolve `self`/`this` receivers to their containing type.
  * Memoized per-file: cache is cleared at buildTypeEnv entry.
  */
-const findEnclosingClassName = (node: SyntaxNode): string | undefined => {
+const findEnclosingClassName = (
+  node: SyntaxNode,
+  thisBoundaryNodeTypes?: ReadonlySet<string>,
+): string | undefined => {
   if (enclosingClassNameCache.has(node)) return enclosingClassNameCache.get(node);
   let current = node.parent;
   while (current) {
+    if (thisBoundaryNodeTypes?.has(current.type) === true) {
+      enclosingClassNameCache.set(node, undefined);
+      return undefined;
+    }
     if (CLASS_CONTAINER_TYPES.has(current.type)) {
       const nameNode = current.childForFieldName('name') ?? findTypeIdentifierChild(current);
       if (nameNode) {
@@ -241,10 +249,14 @@ const THIS_RECEIVERS = new Set(['this', 'self', '$this', 'Me']);
  * or when the receiver is not a this-keyword. Properties are readonly in the
  * discriminated union, so a new object is returned when substitution occurs.
  */
-const substituteThisReceiver = (item: PendingAssignment, node: SyntaxNode): PendingAssignment => {
+const substituteThisReceiver = (
+  item: PendingAssignment,
+  node: SyntaxNode,
+  thisBoundaryNodeTypes?: ReadonlySet<string>,
+): PendingAssignment => {
   if (item.kind !== 'fieldAccess' && item.kind !== 'methodCallResult') return item;
   if (!THIS_RECEIVERS.has(item.receiver)) return item;
-  const className = findEnclosingClassName(node);
+  const className = findEnclosingClassName(node, thisBoundaryNodeTypes);
   if (!className) return item;
   return { ...item, receiver: className };
 };
@@ -1218,7 +1230,7 @@ export const buildTypeEnv = (
           const items = Array.isArray(pending) ? pending : [pending];
           for (const item of items) {
             // Substitute this/self/$this/Me receivers with enclosing class name
-            const resolved = substituteThisReceiver(item, node);
+            const resolved = substituteThisReceiver(item, node, config.thisBoundaryNodeTypes);
             pendingItems.push({ scope, ...resolved });
           }
         }
@@ -1298,6 +1310,7 @@ export const buildTypeEnv = (
         options?.enclosingFunctionFinder,
         extractFuncNameHook,
         options?.filePath,
+        config.thisBoundaryNodeTypes,
       ),
     constructorBindings: bindings,
     fileScope: () => env.get(FILE_SCOPE) ?? emptyFileScope(),
