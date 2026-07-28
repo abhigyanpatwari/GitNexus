@@ -100,6 +100,7 @@ import {
   LOCAL_SCOPE_BODY_NODE_TYPES,
   type SyntaxNode,
 } from '../utils/ast-helpers.js';
+import { isPositionQualifiedLocalLabel } from '../utils/callable-labels.js';
 import { extractCallArgTypes, type MixedChainStep } from '../utils/call-analysis.js';
 import { buildTypeEnv } from '../type-env.js';
 import type { ConstructorBinding } from '../type-env.js';
@@ -2297,13 +2298,16 @@ const processFileGroup = (
       // #2699: a callable nested inside another callable is qualified by the
       // enclosing callable, so a function-local closure stops colliding with a
       // same-named file-level function. Restricted to CALLABLE labels: the
-      // collision that produced wrong CALLS edges is between callables, and
-      // widening it to every function-local Variable/Property would churn ids
-      // for symbols the local-symbol pruner mostly deletes anyway.
+      // Applies to VALUES as well as callables since #2699 closed A1: a
+      // top-level `const handler` and a function-local `const handler`
+      // otherwise collapse onto one `Const:v.ts:handler`, which was the
+      // issue's original complaint and is unreachable from a callable-only
+      // gate. `isPositionQualifiedLocalLabel` is the single definition of that
+      // set, shared with resolution in `ids.ts` — the two phases disagreeing
+      // silently drops edges rather than failing (#2714).
       // Same helper as the caller-attribution phase — see `enclosingCallablePrefix`.
       const nestedCallablePrefix =
-        (nodeLabel === 'Function' || nodeLabel === 'Method' || nodeLabel === 'Constructor') &&
-        definitionNode
+        isPositionQualifiedLocalLabel(nodeLabel) && definitionNode
           ? enclosingCallablePrefix(definitionNode, file.path, provider)
           : undefined;
 

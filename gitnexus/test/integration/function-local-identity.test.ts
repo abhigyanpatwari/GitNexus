@@ -307,24 +307,32 @@ const valueNodeIdsFor = async (
   }
 };
 
-describeIfWorkerBuilt('KNOWN LIMIT — the identity fix is callable-restricted (#2699)', () => {
-  it('a function-local VALUE still collapses onto the file-level node', async () => {
-    // Pinned as a limitation, not asserted as correct. #2695 gave function-local
-    // CALLABLES a position-bearing id; VALUES were deliberately excluded —
-    // widening it would re-key ~14,700 build-time nodes to change ~800 persisted
-    // ones, because the pruner deletes most of them (see the decision recorded
-    // in `workers/parse-worker.ts`). The guard that fails closed on a position
-    // miss is likewise gated on `isOverloadableCallable`
-    // (Function | Method | Constructor), so a value never reaches it.
+describeIfWorkerBuilt('function-local VALUES carry their own identity (#2699 A1)', () => {
+  it('a function-local VALUE does not collapse onto the file-level node', async () => {
+    // FLIPPED, per this test's own former instruction. It previously pinned the
+    // collapse as a KNOWN LIMIT: #2695 gave function-local CALLABLES a
+    // position-bearing id and deliberately excluded VALUES, so a top-level
+    // `const handler` and a function-local `const handler` shared ONE node.
+    // That was the residual half of #2699's ORIGINAL complaint — the issue is
+    // about values first, and no callable-only gate could ever reach it.
     //
-    // Consequence, measured here: a top-level `const handler` and a
-    // function-local `const handler` share ONE node. That is the residual half
-    // of #2699's original complaint, and it is why the issue is not fully
-    // closed by the identity work alone.
+    // Widened here via `isPositionQualifiedLocalLabel`, the single definition
+    // shared by all THREE phases that must agree: id-building
+    // (`parse-worker.ts`), resolution (`ids.ts` position key) and registration
+    // (`node-lookup.ts`). Two of them disagreeing does not fail loudly — the
+    // caller attaches to a node that does not exist and the edge is silently
+    // dropped, which is the #2714 failure mode.
     //
-    // If this ever returns two ids, the identity model was widened to values —
-    // which is a deliberate, schema-bumping change, so this test should be
-    // updated as part of it rather than deleted.
+    // The churn this was deferred for is real and was accepted deliberately:
+    // it re-keys ~14,700 build-time nodes to change ~800 persisted ones,
+    // because `pruneLocalSymbols` deletes most locals. Hence the paired
+    // INCREMENTAL_SCHEMA_VERSION / parse-cache SCHEMA_BUMP bumps — without them
+    // a warm cache or an incremental top-up replays the old un-suffixed ids.
+    //
+    // Only LOCALS move. The prefix comes from `enclosingCallablePrefix`, which
+    // returns undefined when nothing encloses the declaration, so the
+    // file-level `handler` below keeps its bare id — that is what keeps this
+    // off the symbols other files and stored references address.
     const ids = await valueNodeIdsFor(
       'v.ts',
       [
@@ -339,6 +347,8 @@ describeIfWorkerBuilt('KNOWN LIMIT — the identity fix is callable-restricted (
       'handler',
     );
 
-    expect(ids).toEqual(['Const:v.ts:handler']);
+    // Two distinct nodes: the file-level one keeps its bare id, the local
+    // carries its enclosing callable AND declaration position.
+    expect(ids).toEqual(['Const:v.ts:handler', 'Const:v.ts:run.handler@3:2']);
   });
 });

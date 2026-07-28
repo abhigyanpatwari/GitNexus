@@ -28,7 +28,10 @@ import {
   simpleKey,
   type GraphNodeLookup,
 } from '../graph-bridge/node-lookup.js';
-import { isOverloadableCallable } from '../../utils/callable-labels.js';
+import {
+  isOverloadableCallable,
+  isPositionQualifiedLocalLabel,
+} from '../../utils/callable-labels.js';
 import { templateConstraintsIdTag } from '../../utils/template-arguments.js';
 import { parameterShapeIdTag } from '../../utils/method-props.js';
 /**
@@ -206,7 +209,7 @@ export function resolveDefGraphId(
     // 0-based, def ids 1-based. An `AMBIGUOUS_POSITION` tombstone (two
     // callables on one line) falls through to the name-based keys below.
     const line = defStartLine(def.nodeId);
-    if (line !== undefined && isOverloadableCallable(def.type)) {
+    if (line !== undefined && isPositionQualifiedLocalLabel(def.type)) {
       const simple = simpleNameOf(qn);
       const posHit = nodeLookup.get(positionKey(filePath, def.type, line - 1, simple));
       if (posHit !== undefined && posHit !== AMBIGUOUS_POSITION) return posHit;
