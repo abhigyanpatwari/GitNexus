@@ -35,6 +35,12 @@ const CLAUDE_RUNTIME_LOCK_PATH = path.resolve(
   '../../../.github/claude-canary-runtime/package-lock.json',
 );
 const workflow = readFileSync(WORKFLOW_PATH, 'utf8');
+// Both pinned installs run through this helper, so the flags that keep them
+// inert and lock-bound are asserted against it rather than the step bodies.
+const npmCiHelper = readFileSync(
+  path.resolve(__dirname, '../../../.github/scripts/npm-ci-retry.sh'),
+  'utf8',
+);
 const runtimePackage = JSON.parse(readFileSync(RUNTIME_PACKAGE_PATH, 'utf8')) as {
   dependencies?: Record<string, string>;
   engines?: Record<string, string>;
@@ -262,7 +268,9 @@ function contextResultContent(filePath = CHANGED_PATH): string {
 
 function reviewTranscript({
   toolName = 'mcp__gitnexus__context',
-  toolInput = { name: 'statusCommand', file_path: CHANGED_PATH },
+  // No file_path: the gate is call-argument-agnostic, and a default that
+  // carried one would imply the opposite.
+  toolInput = { name: 'statusCommand' },
   toolResultContent = contextResultContent(),
   resultIsError = false,
   toolUseId = 'tool-1',
@@ -657,7 +665,7 @@ describe('gitnexus review-agent workflow security contract', () => {
     expect(workflow).not.toMatch(/gitnexus@(latest|next|beta)/);
     expect(workflow).toContain("node-version: '22.18.0'");
     expect(workflow).toContain('test "$(node --version)" = \'v22.18.0\'');
-    expect(workflow).toContain('npm ci');
+    expect(workflow).toContain('.github/scripts/npm-ci-retry.sh');
     expect(workflow).not.toContain('--package-lock=false');
     expect(workflow).toContain(
       'actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0',
@@ -678,8 +686,8 @@ describe('gitnexus review-agent workflow security contract', () => {
       DO_NOT_TRACK: '1',
     });
     const script = typeof runtimeStep?.run === 'string' ? runtimeStep.run : '';
-    expect(script).toContain('npm ci');
-    expect(script).toContain('--ignore-scripts=true');
+    expect(script).toContain('.github/scripts/npm-ci-retry.sh');
+    expect(npmCiHelper).toContain('--ignore-scripts=true');
     expect(script).toContain('"${npm_path}" rebuild');
     expect(script).toContain('NPM_CONFIG_OFFLINE=true');
     expect(script).toContain('--offline');
@@ -689,8 +697,9 @@ describe('gitnexus review-agent workflow security contract', () => {
     expect(script).toContain('"${runtime_dir}/node_modules/.bin/gitnexus" status');
     // A registry ECONNRESET during this install burned a whole review run; the
     // lock is pinned, so a bounded retry can only refetch the identical tree.
-    expect(script).toContain('for attempt in 1 2 3; do');
-    expect(script).toContain('The pinned analyzer runtime install failed after 3 attempts.');
+    // Both installs call one shared helper, exercised behaviourally below.
+    expect(script).toContain('/.github/scripts/npm-ci-retry.sh');
+    expect(script).toContain("'analyzer runtime'");
     expect(script.indexOf('npm ci')).toBeLessThan(script.indexOf('"${npm_path}" rebuild'));
     expect(script.indexOf('"${npm_path}" rebuild')).toBeLessThan(
       script.indexOf('"${runtime_dir}/node_modules/.bin/gitnexus" analyze'),
@@ -767,9 +776,10 @@ describe('gitnexus review-agent workflow security contract', () => {
       DO_NOT_TRACK: '1',
     });
     expect(script).toContain('.github/claude-canary-runtime/package-lock.json');
-    expect(script).toContain('npm ci');
-    expect(script).toContain('The pinned Claude runtime install failed after 3 attempts.');
-    expect(script).toContain('--ignore-scripts=true');
+    expect(script).toContain('.github/scripts/npm-ci-retry.sh');
+    expect(script).toContain('/.github/scripts/npm-ci-retry.sh');
+    expect(script).toContain("'Claude runtime'");
+    expect(npmCiHelper).toContain('--ignore-scripts=true');
     expect(script).toContain('--unshare-net');
     expect(script).toContain('NPM_CONFIG_OFFLINE=true');
     expect(script).toContain('@anthropic-ai/claude-code/install.cjs');
@@ -954,8 +964,8 @@ describe('gitnexus review-agent workflow security contract', () => {
     // but it must never invoke package scripts from the PR checkout.
     expect(analyze).not.toMatch(/cd[^\n]*pr-target[\s\S]{0,200}npm\s+(ci|install|run)\b/);
     expect(analyze).not.toContain('npm install');
-    expect(analyze).toContain('npm ci');
-    expect(analyze).toContain('--prefix "${runtime_dir}"');
+    expect(analyze).toContain('.github/scripts/npm-ci-retry.sh');
+    expect(npmCiHelper).toContain('--prefix "${runtime_dir}"');
     expect(analyze).not.toContain('pr-target/.mcp.json');
     expect(analyze).not.toContain('pr-target/.claude');
     expect(analyze).not.toContain('node pr-target/.gitnexus/run.cjs');
@@ -2067,5 +2077,138 @@ describe('gitnexus review-agent workflow security contract', () => {
     expect(overCap.core.setFailed).toHaveBeenCalledWith(
       expect.stringContaining('exceeded the bounded publication scan'),
     );
+  });
+  it('retries a failing pinned install, then gives up, and stops on first success', () => {
+    // The string assertions above cannot tell a working retry from a loop whose
+    // `npm ci` was moved outside it, so drive the real helper with a stub npm.
+    const script = path.resolve(__dirname, '../../../.github/scripts/npm-ci-retry.sh');
+    const runHelper = (failures: number) => {
+      const dir = mkdtempSync(path.join(tmpdir(), 'npm-ci-retry-'));
+      const counter = path.join(dir, 'attempts');
+      writeFileSync(counter, '');
+      writeFileSync(
+        path.join(dir, 'npm'),
+        `#!/usr/bin/env bash\nprintf 'x' >> ${counter}\nattempts=$(wc -c < ${counter})\n` +
+          `if [ "$attempts" -le ${failures} ]; then exit 1; fi\nexit 0\n`,
+        { mode: 0o755 },
+      );
+      writeFileSync(path.join(dir, 'sleep'), '#!/usr/bin/env bash\nexit 0\n', { mode: 0o755 });
+      const result = spawnSync('bash', [script, 'test runtime', dir, path.join(dir, '.npmrc')], {
+        encoding: 'utf8',
+        env: { ...process.env, PATH: `${dir}:${process.env.PATH ?? ''}` },
+      });
+      const attempts = readFileSync(counter, 'utf8').length;
+      rmSync(dir, { recursive: true, force: true });
+      return { status: result.status, stderr: result.stderr, attempts };
+    };
+
+    expect(runHelper(0)).toMatchObject({ status: 0, attempts: 1 });
+    const recovered = runHelper(2);
+    expect(recovered).toMatchObject({ status: 0, attempts: 3 });
+    expect(recovered.stderr).toContain('retrying (1/3)');
+    const exhausted = runHelper(3);
+    expect(exhausted).toMatchObject({ status: 1, attempts: 3 });
+    expect(exhausted.stderr).toContain('failed after 3 attempts');
+  });
+
+  it('bounds every install attempt so a hung registry cannot eat the job budget', () => {
+    const helper = readFileSync(
+      path.resolve(__dirname, '../../../.github/scripts/npm-ci-retry.sh'),
+      'utf8',
+    );
+    expect(helper).toContain('timeout "${attempt_timeout}" npm ci');
+    expect(helper).toContain('NPM_CI_ATTEMPT_TIMEOUT_SECONDS:-600');
+    expect(helper).toContain('set -euo pipefail');
+  });
+
+  it('rejects a context result whose filePath is not a string', () => {
+    // The transcript is treated as hostile-adjacent data: a non-string filePath
+    // must be a clean reject, never an uncaught type error.
+    const nonString = runArtifactScenario({
+      rawTranscript: JSON.stringify(
+        reviewTranscript({
+          toolResultContent: JSON.stringify({
+            status: 'found',
+            symbol: { uid: 'u', name: 'n', filePath: 42, startLine: 1, endLine: 2 },
+          }),
+        }),
+      ),
+    });
+    expect(nonString.artifact.failure_code).toBe('missing_graph_evidence');
+    expect(nonString.stderr).toContain('results outside the changed paths: 1');
+  });
+
+  it('sanitizes an adversarial resolved path before it reaches the job log', () => {
+    const hostile = 'src/\u001b[31m\n::set-output name=x::y\u202egnp.js';
+    const sanitized = runArtifactScenario({
+      rawTranscript: JSON.stringify(
+        reviewTranscript({
+          toolResultContent: JSON.stringify({
+            status: 'found',
+            symbol: { uid: 'u', name: 'n', filePath: hostile, startLine: 1, endLine: 2 },
+          }),
+        }),
+      ),
+    });
+    expect(sanitized.artifact.failure_code).toBe('missing_graph_evidence');
+    expect(sanitized.stderr).not.toContain('::set-output');
+    expect(sanitized.stderr).not.toContain('\u001b');
+    expect(sanitized.stderr).not.toContain('\u202e');
+    expect(sanitized.stderr).toContain('src/?');
+  });
+
+  it('names the transcript shape when the envelope is rejected', () => {
+    const wrongFirstMessage = runArtifactScenario({
+      rawTranscript: JSON.stringify([
+        { type: 'assistant', message: { role: 'assistant', content: [] } },
+        { type: 'result', subtype: 'success', is_error: false },
+      ]),
+    });
+    expect(wrongFirstMessage.artifact.failure_code).toBe('invalid_execution_transcript');
+    expect(wrongFirstMessage.stderr).toContain('2 messages, first assistant/undefined');
+  });
+
+  it('counts an in-scope call whose result never arrives', () => {
+    const noResult = runArtifactScenario({
+      rawTranscript: JSON.stringify([
+        { type: 'system', subtype: 'init', session_id: 's', uuid: '1' },
+        {
+          type: 'assistant',
+          parent_tool_use_id: null,
+          session_id: 's',
+          uuid: '2',
+          message: {
+            role: 'assistant',
+            content: [
+              {
+                type: 'tool_use',
+                id: 'tool-1',
+                name: 'mcp__gitnexus__context',
+                input: { name: 'statusCommand' },
+              },
+            ],
+          },
+        },
+        { type: 'result', subtype: 'success', is_error: false, session_id: 's', uuid: '3' },
+      ]),
+    });
+    expect(noResult.artifact.failure_code).toBe('missing_graph_evidence');
+    expect(noResult.stderr).toContain('in-scope calls with no usable result: 1');
+  });
+
+  it('always clears the in-progress marker, even when analysis was never authorized', () => {
+    // The acknowledge job posts the marker from the event alone, so gating the
+    // whole publish job on authorization stranded it on the PR forever.
+    const publish = jobBlock('publish');
+    expect(publish).toContain('if: always()');
+    expect(publish).toContain('- name: Remove the in-progress marker');
+    const removalIndex = publish.indexOf('- name: Remove the in-progress marker');
+    const gatedIndex = publish.indexOf(
+      'Validate freshness and upsert an accepted same-SHA comment',
+    );
+    expect(gatedIndex).toBeGreaterThan(-1);
+    expect(removalIndex).toBeGreaterThan(gatedIndex);
+    // Publication itself stays authorization-gated.
+    expect(publish).toContain("needs.analyze.outputs.authorized == 'true'");
   });
 });

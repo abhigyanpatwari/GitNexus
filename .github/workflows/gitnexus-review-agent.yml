@@ -413,24 +413,10 @@ jobs:
           # npm verifies the committed SHA-512 lock integrities while scripts
           # remain inert. The integrity-pinned postinstall only selects the
           # lock-resolved native binary and runs offline in the proven sandbox.
-          # A registry ECONNRESET killed a whole review run, so retry the fetch:
-          # npm ci re-creates node_modules from the same pinned lock every time,
-          # so a retry can only reproduce the identical, integrity-checked tree.
-          for attempt in 1 2 3; do
-            npm ci \
-              --prefix "${runtime_dir}" \
-              --userconfig "${npmrc}" \
-              --ignore-scripts=true \
-              --audit=false \
-              --fund=false \
-              --registry=https://registry.npmjs.org/ && break
-            if [[ "${attempt}" -ge 3 ]]; then
-              echo 'The pinned Claude runtime install failed after 3 attempts.' >&2
-              exit 1
-            fi
-            echo "The pinned Claude runtime install failed; retrying (${attempt}/3)." >&2
-            sleep "$(( attempt * 5 ))"
-          done
+          # A registry ECONNRESET killed a whole review run, so the shared
+          # helper retries the fetch under a per-attempt timeout.
+          "${GITHUB_WORKSPACE}/.github/scripts/npm-ci-retry.sh" \
+            'Claude runtime' "${runtime_dir}" "${npmrc}"
 
           bwrap_path="$(command -v bwrap)"
           node_path="$(command -v node)"
@@ -518,23 +504,8 @@ jobs:
           install -m 0600 .github/gitnexus-review-runtime/package-lock.json "${runtime_dir}/package-lock.json"
           printf '%s\n' 'registry=https://registry.npmjs.org/' 'audit=false' 'fund=false' > "${npmrc}"
           test "$(node --version)" = 'v22.18.0'
-          # Same bounded retry as the Claude runtime install: the lock is pinned,
-          # so only a transient registry fault can differ between attempts.
-          for attempt in 1 2 3; do
-            npm ci \
-              --prefix "${runtime_dir}" \
-              --userconfig "${npmrc}" \
-              --ignore-scripts=true \
-              --audit=false \
-              --fund=false \
-              --registry=https://registry.npmjs.org/ && break
-            if [[ "${attempt}" -ge 3 ]]; then
-              echo 'The pinned analyzer runtime install failed after 3 attempts.' >&2
-              exit 1
-            fi
-            echo "The pinned analyzer runtime install failed; retrying (${attempt}/3)." >&2
-            sleep "$(( attempt * 5 ))"
-          done
+          "${GITHUB_WORKSPACE}/.github/scripts/npm-ci-retry.sh" \
+            'analyzer runtime' "${runtime_dir}" "${npmrc}"
 
           # The lock authenticates registry payloads, but lifecycle scripts can
           # still execute arbitrary downloads. Activate every lock-resolved
@@ -1294,9 +1265,13 @@ jobs:
             status=found with symbol.filePath equal to a head_paths entry, or to an
             evidence-eligible base_paths entry when the call passes repo
             ${{ runner.temp }}/gitnexus-review-merge-base (head paths use the default
-            graph). Passing file_path is optional and only disambiguates; what the
-            publisher checks is the resolved result, and it rejects reviews without
-            that substantive transcript evidence. The base_prescan_paths field
+            graph). What the publisher checks is the resolved result, not the call
+            arguments, and it rejects reviews without that substantive transcript
+            evidence. Because a bare name resolves to whatever the graph ranks
+            first — which may live in a file this PR never touched — prefer the
+            uid form (for example Function:path/to/file.ts:name) or pass file_path
+            for the changed file when a name could be ambiguous. The
+            base_prescan_paths field
             is prescan-only and never makes merge-base context eligible. Only when the
             trusted prescan says no_indexable_changed_symbols=true may you finish without
             a context call; the publisher verifies that mode independently. Other safe
@@ -1731,7 +1706,7 @@ jobs:
           // proved. This throws only what the caller converts into a counted
           // non-evidence result; structural transcript invariants still throw
           // hard from proveGraphReview.
-          function contextResultProvesChangedPath(content, eligiblePaths, rejected) {
+          function contextResultProvesEligiblePath(content, eligiblePaths, rejected) {
             const text = decodeTextToolResult(content).trim();
             if (!text) throw new Error('context tool result is empty');
             if (/^(?:error\s*:|no results? found\b)/i.test(text)) {
@@ -1922,7 +1897,7 @@ jobs:
                     answeredCalls.add(block.tool_use_id);
                     let proved = false;
                     try {
-                      proved = contextResultProvesChangedPath(
+                      proved = contextResultProvesEligiblePath(
                         block.content,
                         candidate.eligiblePaths,
                         rejected,
@@ -2134,10 +2109,12 @@ jobs:
   publish:
     name: Validate and publish review
     needs: analyze
-    if: >-
-      always() &&
-      needs.analyze.outputs.authorized == 'true' &&
-      needs.analyze.outputs.pr_number != ''
+    # Runs even when analysis was never authorized, because the acknowledge job
+    # posts the in-progress marker from the event alone: gating the whole job on
+    # authorization left that marker on the PR forever whenever normalization
+    # rejected the request. Publication itself stays authorization-gated at the
+    # step below; only the marker cleanup is unconditional.
+    if: always()
     runs-on: ubuntu-latest
     timeout-minutes: 10
     permissions:
@@ -2147,6 +2124,9 @@ jobs:
     steps:
       - name: Download review artifact
         id: download
+        if: >-
+          needs.analyze.outputs.authorized == 'true' &&
+          needs.analyze.outputs.pr_number != ''
         continue-on-error: true
         uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
         with:
@@ -2154,6 +2134,9 @@ jobs:
           path: ${{ runner.temp }}/gitnexus-review-publish
 
       - name: Validate freshness and upsert an accepted same-SHA comment
+        if: >-
+          needs.analyze.outputs.authorized == 'true' &&
+          needs.analyze.outputs.pr_number != ''
         uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9.0.0
         env:
           ARTIFACT_PATH: ${{ runner.temp }}/gitnexus-review-publish/review.json
