@@ -73,8 +73,12 @@ describe('CALL_SUMMARY relation-type exclusion (U-C1)', () => {
 });
 
 describe('CALL_SUMMARY incremental reuse gate (U-C5)', () => {
-  it('INCREMENTAL_SCHEMA_VERSION is bumped to 20 (named-receiver lexical fallback, #2699)', () => {
-    expect(INCREMENTAL_SCHEMA_VERSION).toBe(20);
+  it('INCREMENTAL_SCHEMA_VERSION is bumped to 21 (closure bindings are call SOURCES, #2699 part B)', () => {
+    // Moves with every bump BY DESIGN — that is the point of pinning it. A
+    // change that alters emitted ids or edges without bumping would otherwise
+    // ship silently, and an existing index would keep serving the old graph
+    // through the reuse gate below.
+    expect(INCREMENTAL_SCHEMA_VERSION).toBe(21);
   });
 
   it('a pre-current stamp fails the `=== INCREMENTAL_SCHEMA_VERSION` reuse gate → forces full re-analyze', () => {
@@ -155,7 +159,16 @@ describe('CALL_SUMMARY incremental reuse gate (U-C5)', () => {
     // `const baseUrl`) — 709 of them on a 762-file corpus. Reusing it would keep
     // every one on unchanged files.
     expect(passesReuseGate(19)).toBe(false);
+    // A pre-v21 (v20) index predates closure bindings becoming call SOURCES in
+    // PHP/Rust/Kotlin/Ruby/Dart, the Rust graph node for `let f = || …`, the Dart
+    // closure scope + enclosing-callable identity, and position-qualified
+    // function-local VALUES. All of those change emitted ids and edges on files
+    // that did not themselves change, so reusing a v20 index keeps serving the
+    // old attribution — including the Dart case where two same-named closures
+    // collapsed onto one node and asserted a CALLS edge present nowhere in the
+    // source.
+    expect(passesReuseGate(20)).toBe(false);
     // A current-version stamp passes the gate (incremental top-up eligible).
-    expect(passesReuseGate(20)).toBe(true);
+    expect(passesReuseGate(21)).toBe(true);
   });
 });

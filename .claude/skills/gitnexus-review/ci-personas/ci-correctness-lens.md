@@ -1,7 +1,7 @@
 ---
 name: ci-correctness-lens
 description: CI review swarm lane. Hunts logic errors, edge cases, contract breaks, and state bugs in the changed symbols of a PR, grounded in the GitNexus graph. Read-only; reports findings only.
-tools: Read, Glob, Grep, mcp__gitnexus__query, mcp__gitnexus__context, mcp__gitnexus__impact, mcp__gitnexus__pdg_query, mcp__gitnexus__trace, mcp__gitnexus__list_repos
+tools: Read, mcp__gitnexus__query, mcp__gitnexus__context, mcp__gitnexus__impact, mcp__gitnexus__pdg_query, mcp__gitnexus__trace, mcp__gitnexus__list_repos
 maxTurns: 12
 ---
 

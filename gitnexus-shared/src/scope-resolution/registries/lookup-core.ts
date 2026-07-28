@@ -343,7 +343,9 @@ function resolveReceiverOwner(
  * That twin also lists `Me`, deliberately NOT mirrored here: no entry in
  * `SupportedLanguages` uses it, so it can only ever exempt a variable that
  * happens to be called `Me`. The two lists are otherwise the same set, and
- * nothing enforces that — see the drift guard noted in #2714.
+ * that equality — plus the `Me` exemption in both directions — is now ENFORCED
+ * by `gitnexus/test/unit/receiver-twin-list-drift.test.ts`. Editing either list
+ * without the other fails there.
  */
 const IMPLICIT_RECEIVERS: readonly string[] = Object.freeze(['self', 'this', '$this']);
 
