@@ -2297,7 +2297,7 @@ const processFileGroup = (
       // worker-path Impl node id matches the sequential path and the owner walk.
       // #2699: a callable nested inside another callable is qualified by the
       // enclosing callable, so a function-local closure stops colliding with a
-      // same-named file-level function. Restricted to CALLABLE labels: the
+      // same-named file-level function.
       // Applies to VALUES as well as callables since #2699 closed A1: a
       // top-level `const handler` and a function-local `const handler`
       // otherwise collapse onto one `Const:v.ts:handler`, which was the
@@ -2306,8 +2306,31 @@ const processFileGroup = (
       // set, shared with resolution in `ids.ts` — the two phases disagreeing
       // silently drops edges rather than failing (#2714).
       // Same helper as the caller-attribution phase — see `enclosingCallablePrefix`.
+      //
+      // A CLASS MEMBER must never gain a local prefix, and the plain walk is not
+      // enough to guarantee that once `Property`/`Static` are in the set. A
+      // TypeScript constructor PARAMETER PROPERTY —
+      // `constructor(private readonly port: Port)` — reaches the constructor's
+      // `method_definition` THROUGH the parameter list, and `method_definition`
+      // is in LOCAL_SCOPE_BODY_NODE_TYPES, so the walk hits it BEFORE any class
+      // boundary and re-keys a genuine field as `C.constructor.port@r:c`. That
+      // silently empties the `C.port` slot every `impact` / `rename` / FTS
+      // consumer addresses, and the class still asserts HAS_PROPERTY against it.
+      //
+      // `isFunctionLocalProperty` above already encodes the correct test (a
+      // parameter-list ancestor reached before any local-scope body means NOT
+      // function-local); reuse that exclusion here rather than spelling a second
+      // rule, so the owner-edge decision and the id decision cannot disagree.
+      const isParameterScopedMember =
+        (nodeLabel === 'Property' || nodeLabel === 'Static') &&
+        definitionNode !== undefined &&
+        findAncestorBeforeBoundary(
+          definitionNode,
+          PARAMETER_LIST_NODE_TYPES,
+          LOCAL_SCOPE_BODY_NODE_TYPES,
+        ) !== null;
       const nestedCallablePrefix =
-        isPositionQualifiedLocalLabel(nodeLabel) && definitionNode
+        isPositionQualifiedLocalLabel(nodeLabel) && definitionNode && !isParameterScopedMember
           ? enclosingCallablePrefix(definitionNode, file.path, provider)
           : undefined;
 

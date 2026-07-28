@@ -76,8 +76,13 @@ function rangeContainsPoint(
   return true;
 }
 
-const isCallableDef = (d: SymbolDefinition): boolean =>
-  d.type === 'Function' || d.type === 'Method' || d.type === 'Constructor';
+/**
+ * Adapter over the canonical {@link isOverloadableCallable} — deliberately NOT a
+ * second spelling of the label set. An earlier revision of this file inlined
+ * `Function | Method | Constructor` here, which recreated the exact twin-list
+ * drift this PR adds a guard test for elsewhere.
+ */
+const isCallableDef = (d: SymbolDefinition): boolean => isOverloadableCallable(d.type);
 
 /**
  * True when `range` is the body of `def` itself — the scope's start position
@@ -108,7 +113,7 @@ function pickCallerCallableDef(
   },
   scopes: ScopeResolutionIndexes,
   atRange?: { startLine: number; startCol: number },
-): SymbolDefinition | undefined {
+): { def: SymbolDefinition; fromChildScope: boolean } | undefined {
   if (atRange !== undefined) {
     for (const childId of scopes.scopeTree.getChildren(scope.id)) {
       const child = scopes.scopeTree.getScope(childId);
@@ -116,7 +121,7 @@ function pickCallerCallableDef(
       if (!rangeContainsPoint(child.range, atRange)) continue;
       const childCallable = child.ownedDefs.find(isCallableDef);
       if (childCallable === undefined) continue;
-      if (child.kind === 'Function') return childCallable;
+      if (child.kind === 'Function') return { def: childCallable, fromChildScope: true };
       // A Block-kind scope is a callable boundary ONLY when the scope IS that
       // callable's own body. Kotlin `lambda_literal` and Ruby `do_block`/`block`
       // are @scope.block deliberately (#1757 smart casts), so the kind gate
@@ -131,11 +136,12 @@ function pickCallerCallableDef(
       // a nested function the block starts at `{` and the def starts at the
       // declaration, so they do not.
       if (child.kind === 'Block' && scopeIsCallableBody(child.range, childCallable)) {
-        return childCallable;
+        return { def: childCallable, fromChildScope: true };
       }
     }
   }
-  return scope.ownedDefs.find(isCallableDef);
+  const own = scope.ownedDefs.find(isCallableDef);
+  return own === undefined ? undefined : { def: own, fromChildScope: false };
 }
 
 /**
@@ -179,8 +185,15 @@ function defStartLine(nodeId: string | undefined): number | undefined {
 function simpleNameOf(qualifiedName: string): string {
   const dot = qualifiedName.lastIndexOf('.');
   const tail = dot === -1 ? qualifiedName : qualifiedName.slice(dot + 1);
-  return tail.replace(/@\d+:\d+$/, '');
+  return tail.replace(LOCAL_IDENTITY_SUFFIX, '');
 }
+
+/**
+ * The function-local identity marker appended by `localIdentity` (`name@row:col`).
+ * Shared so the stripper above and the fail-closed guard in
+ * `resolveCallerGraphId` cannot disagree about what counts as a local.
+ */
+const LOCAL_IDENTITY_SUFFIX = /@\d+:\d+$/;
 
 export function resolveDefGraphId(
   filePath: string,
@@ -351,10 +364,34 @@ export function resolveCallerGraphId(
     // Prefer Function/Method/Constructor anchors; fall back to
     // Class/Interface/Struct/Enum. Variable/Property are NOT valid
     // caller anchors — see `isCallerAnchorLabel` for why.
-    const fnDef = pickCallerCallableDef(scope, scopes, atRange);
-    if (fnDef !== undefined) {
+    const picked = pickCallerCallableDef(scope, scopes, atRange);
+    if (picked !== undefined) {
+      const fnDef = picked.def;
       const id = resolveDefGraphId(fnDef.filePath, fnDef, nodeLookup);
       if (id !== undefined) return id;
+      // FAIL CLOSED at a FUNCTION-LOCAL boundary (#2699 review P1-1).
+      //
+      // `fnDef` is the callable that genuinely owns this call site. When its
+      // graph node cannot be named, climbing to the parent scope does not
+      // degrade gracefully — it ATTRIBUTES THE CALL TO A FUNCTION THAT DOES NOT
+      // MAKE IT. Measured before this guard, a closure whose literal starts on
+      // the line after its binding
+      //     $multi =
+      //         function ($x) { return target($x); };
+      // emitted `outer -> target` while the real `outer.$multi` node sat with no
+      // outgoing edges: a CALLS edge present nowhere in the source, which is the
+      // exact defect class #2699 exists to remove.
+      //
+      // Restricted to defs carrying the function-local `@line:col` identity,
+      // because that is precisely the set whose position join can miss (the two
+      // query channels anchor on different nodes by design). For every other
+      // callable the historical climb is preserved, so this cannot silently
+      // delete edges outside the local-identity path.
+      // The scope we are standing in OWNS this call site and we have identified
+      // its callable — we simply cannot name that callable's graph node. Climbing
+      // to an ancestor here does not degrade gracefully: it credits the call to a
+      // function that does not make it. Fail closed instead.
+      return undefined;
     }
     const classDef = scope.ownedDefs.find((d) => isCallerAnchorLabel(d.type));
     if (classDef !== undefined) {

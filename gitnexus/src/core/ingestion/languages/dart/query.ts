@@ -106,7 +106,26 @@ const DART_SCOPE_QUERY = `
 ; which drops the whole file. Instead findFunctionBody now understands a
 ; closure's child function_expression_body, so the existing synthesis produces
 ; exactly one scope, anchored on the same node as the declaration (#2699 S4).
+;; THREE binding shapes, not one. Dart wraps only the FIRST local declarator in
+;; initialized_variable_definition; a top-level var and every later declarator
+;; are initialized_identifier, and a top-level final/const is
+;; static_final_declaration. Matching only the first shape left idiomatic
+;; top-level closures and the g of "var f = ..., g = ..." with no declaration
+;; capture, so findFunctionBody never synthesized their scope and they could
+;; never be call SOURCES.
+;;
+;; This mirrors DART_CALLABLE_CAPTURE_OPTIONS.bindingNodeTypes in captures.ts,
+;; which already listed all three for callable-flow. The two lists must stay in
+;; step; dart-closure-binding-shapes.test.ts pins that.
 (initialized_variable_definition
+  (identifier) @declaration.name
+  (function_expression) @declaration.function)
+
+(initialized_identifier
+  (identifier) @declaration.name
+  (function_expression) @declaration.function)
+
+(static_final_declaration
   (identifier) @declaration.name
   (function_expression) @declaration.function)
 

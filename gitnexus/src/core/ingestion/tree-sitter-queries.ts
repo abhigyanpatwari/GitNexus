@@ -1594,6 +1594,38 @@ export const RUBY_QUERIES = `
 (assignment
   left: (identifier) @name
   right: (lambda)) @definition.function
+
+; The (lambda) rule above covers the stabby forms only. lambda do...end,
+; proc do...end and Proc.new are (call) nodes, so without these the scope
+; channel declared a closure the graph channel never gave a node to, and the
+; call fell through to the enclosing method. Same two-channel lockstep Rust
+; needed. Receiver constraints mirror ruby/query.ts exactly: bare for
+; lambda/proc, Proc-constant for new — otherwise every block-taking call
+; (items.map { }) would mint a Function node.
+(assignment
+  left: (identifier) @name
+  right: (call
+    !receiver
+    method: (identifier) @_lam
+    block: [(block) (do_block)])
+  (#eq? @_lam "lambda")) @definition.function
+
+(assignment
+  left: (identifier) @name
+  right: (call
+    !receiver
+    method: (identifier) @_prc
+    block: [(block) (do_block)])
+  (#eq? @_prc "proc")) @definition.function
+
+(assignment
+  left: (identifier) @name
+  right: (call
+    receiver: (constant) @_pc
+    method: (identifier) @_nw
+    block: [(block) (do_block)])
+  (#eq? @_pc "Proc")
+  (#eq? @_nw "new")) @definition.function
 `;
 
 // Kotlin queries - works with tree-sitter-kotlin (fwcd/tree-sitter-kotlin)

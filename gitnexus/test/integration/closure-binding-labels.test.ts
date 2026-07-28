@@ -555,8 +555,14 @@ describeIfWorkerBuilt('a closure binding as a call SOURCE (#2699 part B)', () =>
   // So a fix needs per-language work, not one switch: a callable-boundary
   // signal independent of scope `kind` (Kotlin/Ruby — DONE, S2), an
   // association from a closure scope to its binding's def (PHP — DONE, S1;
-  // Rust — DONE, S3), and a scope that does not exist yet (Dart — STILL OPEN).
+  // Rust — DONE, S3), and a scope that did not exist at all (Dart — DONE, S4).
   // See #2699.
+  //
+  // All five languages now attribute closure calls to the binding. The review
+  // of that work found the FIRST cut incomplete in four ways — multi-line
+  // bindings, Dart top-level/`final` shapes, Ruby `do ... end`/`Proc.new`, and
+  // TS constructor parameter properties — each now pinned in
+  // `closure-review-findings.test.ts`.
   //
   // Probe-measured root cause (#2699): EVERY still-failing language has an
   // EMPTY ownedDefs on the closure's own scope, because the closure-binding

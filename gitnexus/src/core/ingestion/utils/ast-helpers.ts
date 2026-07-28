@@ -449,7 +449,28 @@ export function findSplitBodyCallableAncestor(
   while (current !== null) {
     if (boundaryTypes.has(current.type)) return null;
     const prev = current.previousNamedSibling;
-    if (prev !== null && signatureOnlyTypes.has(prev.type)) return prev;
+    if (
+      prev !== null &&
+      signatureOnlyTypes.has(prev.type) &&
+      // `current` must be the signature's BODY, not merely the next thing after
+      // it. Without this, valid TypeScript trips the fallback: in
+      //     declare namespace Api {
+      //       function internalHelper(x): number;
+      //       export function send(x): number;
+      //     }
+      // `send`'s `export_statement` is the next sibling of `internalHelper`'s
+      // `function_signature`, so `send` was mis-qualified as
+      // `internalHelper.send@r:c`. TypeScript emits bodyless
+      // function_signature/method_signature for overloads and ambient
+      // declarations, so the split-signature set is NOT Dart-only.
+      //
+      // A body contains statements; a declaration wrapper contains another
+      // signature. Rejecting any `current` that directly holds a signature of
+      // its own separates the two without naming a grammar.
+      !current.namedChildren.some((child) => signatureOnlyTypes.has(child.type))
+    ) {
+      return prev;
+    }
     current = current.parent;
   }
   return null;
