@@ -131,7 +131,6 @@ describe('createMCPServer', () => {
       await server.close();
     }
   });
-
 });
 
 // ─── getNextStepHint (tested indirectly via server tool handler) ──────
