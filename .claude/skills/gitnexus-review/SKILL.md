@@ -181,8 +181,7 @@ dropping anything without a concrete failing scenario.
 ### Swarm lanes
 
 Six dispatchable lane definitions ship with this skill in `ci-personas/` —
-read-only reviewers restricted to Read/Glob/Grep plus the safe graph
-tools. Five are finder lanes: `ci-correctness-lens`, `ci-security-lens`,
+read-only reviewers restricted to Read plus the safe graph tools. Five are finder lanes: `ci-correctness-lens`, `ci-security-lens`,
 `ci-blast-radius-lens`, `ci-coverage-lens`, and `ci-adversarial-lens`
 (which assumes the change is broken and constructs reachable failure
 scenarios the pattern checks miss). They carry the verification

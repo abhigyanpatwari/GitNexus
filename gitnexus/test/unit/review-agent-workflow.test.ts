@@ -625,6 +625,10 @@ describe('gitnexus review-agent workflow security contract', () => {
     expect(script).toContain('NPM_CONFIG_IGNORE_SCRIPTS=false');
     expect(script).toContain('"${runtime_dir}/node_modules/.bin/gitnexus" analyze');
     expect(script).toContain('"${runtime_dir}/node_modules/.bin/gitnexus" status');
+    // A registry ECONNRESET during this install burned a whole review run; the
+    // lock is pinned, so a bounded retry can only refetch the identical tree.
+    expect(script).toContain('for attempt in 1 2 3; do');
+    expect(script).toContain('The pinned analyzer runtime install failed after 3 attempts.');
     expect(script.indexOf('npm ci')).toBeLessThan(script.indexOf('"${npm_path}" rebuild'));
     expect(script.indexOf('"${npm_path}" rebuild')).toBeLessThan(
       script.indexOf('"${runtime_dir}/node_modules/.bin/gitnexus" analyze'),
@@ -702,6 +706,7 @@ describe('gitnexus review-agent workflow security contract', () => {
     });
     expect(script).toContain('.github/claude-canary-runtime/package-lock.json');
     expect(script).toContain('npm ci');
+    expect(script).toContain('The pinned Claude runtime install failed after 3 attempts.');
     expect(script).toContain('--ignore-scripts=true');
     expect(script).toContain('--unshare-net');
     expect(script).toContain('NPM_CONFIG_OFFLINE=true');
@@ -1149,11 +1154,12 @@ describe('gitnexus review-agent workflow security contract', () => {
     const allowedToolRules = allowedTools.split(',');
     expect(allowedToolRules).toContain('Read(./**)');
     expect(allowedToolRules).not.toContain('Read');
-    // Glob/Grep are intentionally NOT allow-listed: bare Glob/Grep are separate
+    // Glob/Grep are neither enabled nor allow-listed: bare Glob/Grep are separate
     // tools that the Read()-scoped path denies below (/proc, github.workspace,
     // ...) do not cover, so allow-listing them would open an undenied read path
-    // to the raw checkouts and host paths. Under dontAsk they stay denied by
-    // omission; lanes read via the scoped Read() rules and the graph MCP.
+    // to the raw checkouts and host paths. Leaving them in --tools while denying
+    // them by omission only burned model turns on denied calls, so they are off
+    // the tool set entirely; lanes read via the scoped Read() rules and the MCP.
     expect(allowedToolRules).not.toContain('Glob');
     expect(allowedToolRules).not.toContain('Grep');
     // The merge-base source checkout is readable so lanes can inspect deleted or
@@ -1168,7 +1174,7 @@ describe('gitnexus review-agent workflow security contract', () => {
     // (renamed from Task in Claude Code 2.1.63), scoped to the six trusted
     // control-SHA personas; Agent is not bare-denied (deny beats allow), and
     // lane calls cannot satisfy the evidence gate.
-    expect(analyze).toContain('--tools "Read,Glob,Grep,Agent"');
+    expect(analyze).toContain('--tools "Read,Agent"');
     expect(allowedTools).toContain(
       'Agent(ci-correctness-lens,ci-security-lens,ci-blast-radius-lens,ci-coverage-lens,ci-adversarial-lens,ci-critic-lens)',
     );
@@ -1577,22 +1583,82 @@ describe('gitnexus review-agent workflow security contract', () => {
     expect(listOnly.artifact.body).toContain('successful GitNexus context result');
     expect(listOnly.stderr).toContain('no substantive exact-path GitNexus context result');
 
-    const unrelated = runArtifactScenario({
+    const unknownRepo = runArtifactScenario({
       rawTranscript: JSON.stringify(
         reviewTranscript({
-          toolInput: {
-            name: 'statusCommand',
-            file_path: 'gitnexus/src/cli/status.ts.backup',
-          },
+          toolInput: { name: 'statusCommand', repo: '/tmp/some-other-checkout' },
         }),
       ),
     });
-    expect(unrelated.artifact.failure_code).toBe('missing_graph_evidence');
+    expect(unknownRepo.artifact.failure_code).toBe('missing_graph_evidence');
 
     const failedQuery = runArtifactScenario({
       rawTranscript: JSON.stringify(reviewTranscript({ resultIsError: true })),
     });
     expect(failedQuery.artifact.failure_code).toBe('missing_graph_evidence');
+  });
+
+  it('accepts a name-only context call whose result resolves an exact changed path', () => {
+    // The gate proves evidence from the RESULT, so the plain context({name})
+    // call the review skill teaches counts; requiring file_path in the call
+    // starved the gate: 17 of 26 real review-agent run failures were this.
+    const nameOnly = runArtifactScenario({
+      rawTranscript: JSON.stringify(reviewTranscript({ toolInput: { name: 'statusCommand' } })),
+    });
+    expect(nameOnly.artifact).toMatchObject({
+      status: 'success',
+      failure_code: null,
+      graph_evidence: { mode: 'context' },
+    });
+
+    const uidOnly = runArtifactScenario({
+      rawTranscript: JSON.stringify(
+        reviewTranscript({
+          toolInput: { uid: 'Function:gitnexus/src/cli/status.ts:statusCommand' },
+        }),
+      ),
+    });
+    expect(uidOnly.artifact.failure_code).toBeNull();
+
+    const noSelector = runArtifactScenario({
+      rawTranscript: JSON.stringify(reviewTranscript({ toolInput: { kind: 'Function' } })),
+    });
+    expect(noSelector.artifact.failure_code).toBe('missing_graph_evidence');
+  });
+
+  it('diagnoses why an unproven review was rejected', () => {
+    const offPath = runArtifactScenario({
+      rawTranscript: JSON.stringify(
+        reviewTranscript({ toolResultContent: contextResultContent('gitnexus/src/cli/index.ts') }),
+      ),
+    });
+    expect(offPath.stderr).toContain('Evidence diagnosis: orchestrator context calls in scope: 1');
+    expect(offPath.stderr).toContain('results outside the changed paths: 1');
+    expect(offPath.stderr).toContain('gitnexus/src/cli/index.ts');
+
+    const sidechainOnly = runArtifactScenario({
+      rawTranscript: JSON.stringify(reviewTranscript({ parentToolUseId: 'toolu-parent-1' })),
+    });
+    expect(sidechainOnly.stderr).toContain('sidechain context calls ignored: 1');
+
+    // Without this counter "in scope: 0" cannot distinguish a review that never
+    // called context from one that called it against an unrecognized repo.
+    const unknownRepo = runArtifactScenario({
+      rawTranscript: JSON.stringify(
+        reviewTranscript({ toolInput: { name: 'statusCommand', repo: '/tmp/other-checkout' } }),
+      ),
+    });
+    expect(unknownRepo.stderr).toContain(
+      'orchestrator context calls out of scope (no selector or unknown repo): 1',
+    );
+
+    const noCalls = runArtifactScenario({
+      rawTranscript: JSON.stringify(reviewTranscriptWithoutTools()),
+    });
+    expect(noCalls.stderr).toContain('orchestrator context calls in scope: 0');
+    expect(noCalls.stderr).toContain(
+      'orchestrator context calls out of scope (no selector or unknown repo): 0',
+    );
   });
 
   it('accepts SDK text-block results with omitted is_error', () => {
