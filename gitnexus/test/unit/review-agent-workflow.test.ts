@@ -250,6 +250,8 @@ type ArtifactScenario = {
   changedPaths?: string[];
   entries?: Array<Record<string, string>>;
   executionFileOutput?: string;
+  repairStructuredOutput?: string;
+  repairOutcome?: string;
   noIndexableChangedSymbols?: boolean;
   rawTranscript?: string | Uint8Array | ((runnerTemp: string) => string | Uint8Array);
   structuredOutput?: string;
@@ -433,6 +435,8 @@ function runArtifactScenario({
     ...basePaths.map((basePath) => ({ status: 'D', base_path: basePath })),
   ],
   executionFileOutput,
+  repairStructuredOutput,
+  repairOutcome = repairStructuredOutput ? 'success' : 'skipped',
   noIndexableChangedSymbols = false,
   rawTranscript = JSON.stringify(reviewTranscript()),
   structuredOutput = JSON.stringify({ body: ACCEPTED_BODY, complete: true }),
@@ -464,10 +468,35 @@ function runArtifactScenario({
   );
   writeFileSync(githubOutput, '');
 
+  const workspace = path.join(runnerTemp, 'workspace');
+  const headCheckout = path.join(workspace, 'pr-target');
+  const baseCheckout = path.join(runnerTemp, 'gitnexus-review-merge-base');
+  mkdirSync(path.join(workspace, '.github', 'scripts'), { recursive: true });
+  writeFileSync(
+    path.join(workspace, '.github', 'scripts', 'review-citations.cjs'),
+    readFileSync(path.resolve(__dirname, '../../../.github/scripts/review-citations.cjs'), 'utf8'),
+  );
+  // 40 real lines per changed file so a citation can resolve or overrun.
+  for (const [checkout, files] of [
+    [headCheckout, changedPaths],
+    [baseCheckout, basePaths],
+  ] as const) {
+    for (const filePath of files) {
+      const absolute = path.join(checkout, filePath);
+      mkdirSync(path.dirname(absolute), { recursive: true });
+      writeFileSync(
+        absolute,
+        Array.from({ length: 40 }, (_unused, i) => `line ${i + 1}`).join('\n'),
+      );
+    }
+  }
+
   const environment = {
     ...process.env,
     RUNNER_TEMP: runnerTemp,
-    GITHUB_WORKSPACE: path.join(runnerTemp, 'workspace'),
+    GITHUB_REPOSITORY: 'owner/repo',
+    MERGE_BASE_SHA: BASE_SHA,
+    GITHUB_WORKSPACE: workspace,
     GITHUB_OUTPUT: githubOutput,
     PR_NUMBER: String(PR_NUMBER),
     CONTROL_SHA,
@@ -490,6 +519,9 @@ function runArtifactScenario({
     CLAUDE_OUTCOME: 'success',
     EXECUTION_FILE: executionFileOutput ?? transcriptPath,
     STRUCTURED_OUTPUT: structuredOutput,
+    REPAIR_OUTCOME: repairOutcome,
+    REPAIR_STRUCTURED_OUTPUT: repairStructuredOutput ?? '',
+    REPAIR_EXECUTION_FILE: repairStructuredOutput ? transcriptPath : '',
   };
 
   try {
@@ -2324,5 +2356,94 @@ describe('gitnexus review-agent workflow security contract', () => {
     expect(silent.stdout).toContain(
       'Swarm dispatch: lane dispatches requested: 0; lanes that produced transcript turns: 0',
     );
+  });
+  it('rejects a review that cites a location which does not exist', () => {
+    const cite = (sha: string, file: string, line: string) =>
+      `https://github.com/owner/repo/blob/${sha}/${file}#L${line}`;
+    const withBody = (link: string) =>
+      runArtifactScenario({
+        structuredOutput: JSON.stringify({
+          body: `**APPROVE.** ${'Reviewed the changed surface in detail. '.repeat(5)} See [here](${link}).`,
+          complete: true,
+        }),
+      });
+
+    const real = withBody(cite(HEAD_SHA, CHANGED_PATH, '12-L20'));
+    expect(real.artifact).toMatchObject({ status: 'success', failure_code: null });
+    expect(real.stdout).toContain('1 checked, 1 resolve, 1 land in the diff, 0 unverifiable');
+
+    const pastEof = withBody(cite(HEAD_SHA, CHANGED_PATH, '900'));
+    expect(pastEof.artifact.failure_code).toBe('unverifiable_citations');
+    expect(pastEof.stderr).toContain('cites line 900 of a 40-line file');
+
+    const missingFile = withBody(cite(HEAD_SHA, 'gitnexus/src/cli/invented.ts', '3'));
+    expect(missingFile.artifact.failure_code).toBe('unverifiable_citations');
+    expect(missingFile.stderr).toContain('cites a path that does not exist at that commit');
+
+    const foreignSha = withBody(cite('f'.repeat(40), CHANGED_PATH, '3'));
+    expect(foreignSha.artifact.failure_code).toBe('unverifiable_citations');
+    expect(foreignSha.stderr).toContain('cites a commit that was not analyzed');
+
+    // The published body never carries the unverifiable text.
+    expect(missingFile.artifact.body).toContain('do not exist at the analyzed commits');
+    expect(missingFile.artifact.body).not.toContain('invented.ts');
+  });
+
+  it('allows citing an unchanged file, and reports grounding without enforcing it', () => {
+    // A caller the change breaks lives outside the diff; citing it is correct
+    // review work, so existence is enforced and diff-membership is only logged.
+    const unchanged = 'gitnexus/src/cli/untouched.ts';
+    const result = runArtifactScenario({
+      changedPaths: [CHANGED_PATH, unchanged],
+      structuredOutput: JSON.stringify({
+        body: `**APPROVE.** ${'Reviewed the changed surface. '.repeat(6)} See [caller](https://github.com/owner/repo/blob/${HEAD_SHA}/${unchanged}#L5).`,
+        complete: true,
+      }),
+    });
+    expect(result.artifact).toMatchObject({ status: 'success', failure_code: null });
+    expect(result.stdout).toContain('1 checked, 1 resolve, 1 land in the diff');
+
+    const noCitations = runArtifactScenario();
+    expect(noCitations.artifact.failure_code).toBeNull();
+    expect(noCitations.stdout).toContain('0 checked, 0 resolve, 0 land in the diff');
+  });
+  it('hands the rejection reason back to the model and publishes the repaired review', () => {
+    // Before this, every rejection was terminal: the gate runs after the
+    // transcript closes, so the model never learned why it failed.
+    const analyze = jobBlock('analyze');
+    expect(analyze).toContain('- name: Check the model result before the transcript closes');
+    expect(analyze).toContain('review-precheck.cjs');
+    expect(analyze).toContain("steps.precheck.outputs.repair_reason != ''");
+    // The binary is re-verified before the secret is exposed a second time.
+    const recheckIndex = analyze.indexOf(
+      '- name: Reverify exact Claude executable before the repair',
+    );
+    const repairIndex = analyze.indexOf(
+      '- name: Repair the review once when the first result is unpublishable',
+    );
+    expect(recheckIndex).toBeGreaterThan(-1);
+    expect(repairIndex).toBeGreaterThan(recheckIndex);
+    expect(analyze).toContain("steps.repair-recheck.outcome == 'success'");
+    // The repair is bounded well below the first attempt.
+    const turnCaps = [...analyze.matchAll(/--max-turns (\d+)/g)].map((match) => Number(match[1]));
+    expect(turnCaps).toEqual([150, 60]);
+
+    const repaired = runArtifactScenario({
+      structuredOutput: JSON.stringify({ body: 'placeholder', complete: false }),
+      repairStructuredOutput: JSON.stringify({
+        body: `**APPROVE.** ${'The repaired review covers the changed surface. '.repeat(5)}`,
+        complete: true,
+      }),
+    });
+    expect(repaired.artifact).toMatchObject({ status: 'success', failure_code: null });
+    expect(repaired.artifact.body).toContain('repaired review covers');
+    expect(repaired.stdout).toContain('Publishing the repaired review');
+
+    // A repair that itself fails must not rescue the rejected first result.
+    const repairFailed = runArtifactScenario({
+      structuredOutput: JSON.stringify({ body: 'placeholder', complete: false }),
+      repairOutcome: 'failure',
+    });
+    expect(repairFailed.artifact.failure_code).toBe('invalid_model_output');
   });
 });
