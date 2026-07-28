@@ -87,6 +87,91 @@ describe('#2723 CommonJS export assignment emits a Function node', () => {
   });
 });
 
+describe('#2723 follow-up: callable member assignments', () => {
+  const nodesFor = async (
+    path: string,
+    content: string,
+  ): Promise<{ labels: string[]; ids: string[]; owners: string[] }> => {
+    const { graph } = await parseFilesWithWorkers([{ path, content }]);
+    return {
+      labels: graph.nodes.map((n) => n.label).sort(),
+      ids: graph.nodes.map((n) => n.id).sort(),
+      owners: graph.relationships
+        .filter((r) => r.type === 'HAS_METHOD')
+        .map((r) => `${r.sourceId} -> ${r.targetId}`)
+        .sort(),
+    };
+  };
+
+  it('Foo.prototype.bar = fn is a Method owned by the constructor', async () => {
+    const { ids, owners } = await nodesFor(
+      'src/proto.js',
+      'function Foo() {}\nFoo.prototype.bar = function (v) { return v; };\n',
+    );
+    expect(ids).toContain('Method:src/proto.js:Foo.bar');
+    expect(owners).toEqual(['Function:src/proto.js:Foo -> Method:src/proto.js:Foo.bar']);
+  });
+
+  it('a class owner gets a Class-sourced owner edge', async () => {
+    const { owners } = await nodesFor(
+      'src/protocls.js',
+      'class Ctl {}\nCtl.prototype.run = function () { return 1; };\n',
+    );
+    expect(owners).toEqual(['Class:src/protocls.js:Ctl -> Method:src/protocls.js:Ctl.run']);
+  });
+
+  // Two constructors defining the same member name must stay distinct nodes;
+  // an unqualified `Method:<file>:bar` would collapse them into one.
+  it('same-named prototype members on different owners do not collide', async () => {
+    const { ids } = await nodesFor(
+      'src/two.js',
+      'function Foo() {}\nFoo.prototype.bar = function () { return 1; };\n' +
+        'function Baz() {}\nBaz.prototype.bar = function () { return 2; };\n',
+    );
+    expect(ids).toContain('Method:src/two.js:Foo.bar');
+    expect(ids).toContain('Method:src/two.js:Baz.bar');
+  });
+
+  // An owner the file does not declare cannot be resolved to a node, so no
+  // owner edge is claimed rather than one pointing at a fabricated node.
+  it('an undeclared prototype owner claims no owner edge', async () => {
+    const { owners } = await nodesFor(
+      'src/ext.js',
+      'External.prototype.skipped = function () { return 1; };\n',
+    );
+    expect(owners).toEqual([]);
+  });
+
+  it('this.handler = fn in a constructor is a Method owned by it', async () => {
+    const { owners } = await nodesFor(
+      'src/this.js',
+      'function Widget() {\n  this.handler = function (v) { return v; };\n}\n',
+    );
+    expect(owners).toHaveLength(1);
+    expect(owners[0]).toMatch(/^Function:src\/this\.js:Widget -> Method:src\/this\.js:Widget\./);
+  });
+
+  it('this.cb = fn in a class constructor is owned by the class', async () => {
+    const { owners } = await nodesFor(
+      'src/thiscls.js',
+      'class Klass {\n  constructor() { this.cb = function () { return 1; }; }\n}\n',
+    );
+    expect(owners.some((o) => o.startsWith('Class:src/thiscls.js:Klass -> Method:'))).toBe(true);
+  });
+
+  // The scope declaration for a shadowed CJS export is suppressed, so its graph
+  // node would be unreachable. With a `class` of the same name the labels
+  // differ, so it does not even collapse — it lingers as an orphan.
+  it('a CJS export shadowing a class emits no orphan Function twin', async () => {
+    const { labels, ids } = await nodesFor(
+      'src/twin.js',
+      'class Dup { run() { return 1; } }\nexports.Dup = function () { return 2; };\n',
+    );
+    expect(ids).not.toContain('Function:src/twin.js:Dup');
+    expect(labels.filter((l) => l === 'Function')).toEqual([]);
+  });
+});
+
 const describeIfWorkerBuilt = distWorkerExists() ? describe : describe.skip;
 
 describeIfWorkerBuilt('#2723 calls resolve to the CJS-exported function', () => {

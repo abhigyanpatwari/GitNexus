@@ -16,7 +16,17 @@ import {
   javascriptClassConfig,
 } from '../class-extractors/configs/typescript-javascript.js';
 import type { SyntaxNode } from '../utils/ast-helpers.js';
-import { createLeadingDocDescriptionExtractor } from '../utils/ast-helpers.js';
+import {
+  createLeadingDocDescriptionExtractor,
+  isPrototypeMemberAssignmentNode,
+} from '../utils/ast-helpers.js';
+import { isShadowedCjsExportAssignmentNode } from './typescript/cjs-export-assignment.js';
+
+/** `exports.X = fn` where the module already declares `X` — see #2723. */
+const isShadowedCjsExportNode = (node: SyntaxNode): boolean => {
+  const root = (node as { tree?: { rootNode?: SyntaxNode } }).tree?.rootNode;
+  return root !== undefined && isShadowedCjsExportAssignmentNode(node, root);
+};
 import { createTypeScriptCfgVisitor } from '../cfg/visitors/typescript.js';
 import { typeConfig as typescriptConfig } from '../type-extractors/typescript.js';
 import { tsExportChecker } from '../export-detection.js';
@@ -365,6 +375,23 @@ export const typescriptProvider = defineLanguage({
   }),
   builtInNames: BUILT_INS,
 
+  // Member-assignment shapes are not free functions (#2723 follow-up). The
+  // capture arrives anchored on the assignment, so the shape is decided from
+  // the left-hand side:
+  //   - `Foo.prototype.bar = fn` / `this.bar = fn` -> a Method
+  //   - a CJS export shadowing a name the module already declares -> no node
+  //     at all, since the scope declaration that would reach it is suppressed
+  //     too (an orphan `Function` twin beside `class Dup {}` otherwise).
+  // Every other `definition.function` capture keeps its default label.
+  labelOverride: (functionNode, defaultLabel) =>
+    defaultLabel !== 'Function'
+      ? defaultLabel
+      : isShadowedCjsExportNode(functionNode)
+        ? null
+        : isPrototypeMemberAssignmentNode(functionNode)
+          ? 'Method'
+          : defaultLabel,
+
   // ── RFC #909 Ring 3: scope-based resolution hooks (RFC §5) ──────────
   // TypeScript is the third migration after Python and C#. See
   // ./typescript/index.ts for the full per-hook rationale and the
@@ -432,6 +459,16 @@ export const javascriptProvider = defineLanguage({
     wrapperNodeTypes: ['export_statement'],
   }),
   builtInNames: BUILT_INS,
+
+  // Member-assignment shapes — see the TypeScript provider above.
+  labelOverride: (functionNode, defaultLabel) =>
+    defaultLabel !== 'Function'
+      ? defaultLabel
+      : isShadowedCjsExportNode(functionNode)
+        ? null
+        : isPrototypeMemberAssignmentNode(functionNode)
+          ? 'Method'
+          : defaultLabel,
 
   // ── RFC #909 Ring 3: scope-based resolution hooks (RFC §5) ──────────
   // JavaScript is the fourth migration after Python, C#, and TypeScript.

@@ -154,3 +154,26 @@ export function isShadowedCjsExportAssignment(node: SyntaxNode, root: SyntaxNode
 
   return moduleScopeDeclaredNames(root).has(exportedName);
 }
+
+/**
+ * Same question as {@link isShadowedCjsExportAssignment}, asked of the
+ * ASSIGNMENT node rather than its value — the shape `provider.labelOverride`
+ * receives, since the graph-node capture is anchored on the assignment.
+ *
+ * Used to drop the graph node too, not just the scope declaration. When the
+ * shadowed name is a `function`, the node collapsed onto the lexical
+ * declaration's node anyway (same label, same id), but a `class Dup {}` plus
+ * `exports.Dup = function () {}` produced `Class:f:Dup` AND an orphan
+ * `Function:f:Dup` — a node nothing can reach, because the declaration that
+ * would have made it reachable is suppressed by the rule above.
+ */
+export function isShadowedCjsExportAssignmentNode(node: SyntaxNode, root: SyntaxNode): boolean {
+  if (node.type !== 'assignment_expression') return false;
+  const value = node.childForFieldName('right');
+  if (value === null) return false;
+  return isShadowedCjsExportAssignment(value, root);
+}
+
+// `Foo.prototype.bar = function () {}` is handled as a MEMBER assignment — see
+// `prototypeAssignmentOwnerName` / `findMemberAssignmentOwnerInfo` in
+// `utils/ast-helpers.ts`, next to the object-literal owner helper it mirrors.

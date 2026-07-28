@@ -965,6 +965,15 @@ export const findEnclosingClassInfo = (
 /** Object literal binding info for TS/JS shorthand methods. */
 export interface ObjectLiteralBindingInfo {
   ownerId: string;
+  /**
+   * Owner name, when the owner is also the member's qualifier.
+   *
+   * Set by {@link findMemberAssignmentOwnerInfo} so a prototype method keys as
+   * `Foo.bar` — without it two constructors in one file that each define
+   * `bar` collapse onto a single `Method:<file>:bar` id. Left undefined by
+   * {@link findObjectLiteralBindingInfo}, whose ids stay exactly as they were.
+   */
+  ownerName?: string;
 }
 
 /**
@@ -1077,6 +1086,142 @@ export const findObjectLiteralBindingInfo = (
   return {
     ownerId: generateId(ownerLabel, `${filePath}:${nameNode.text}`),
   };
+};
+
+/**
+ * Find the owner of a member assigned by `<Owner>.prototype.<member> = fn`
+ * (#2723 follow-up).
+ *
+ * Sibling of {@link findObjectLiteralBindingInfo}: same seam, same return
+ * shape, different syntax. There the owner is the variable the literal is
+ * bound to; here it is the identifier to the left of `.prototype`.
+ *
+ * The owner label is read from the file's own module-scope declaration, so the
+ * edge points at the node that actually exists — `function Foo() {}` is a
+ * `Function` node, `class Foo {}` is a `Class` node. When the file declares no
+ * such name (the constructor lives in another module) no owner is claimed:
+ * a HAS_METHOD edge to a fabricated node is worse than a top-level Method.
+ */
+export const findMemberAssignmentOwnerInfo = (
+  node: SyntaxNode,
+  filePath: string,
+): ObjectLiteralBindingInfo | null => {
+  const ownerName = prototypeAssignmentOwnerName(node) ?? thisAssignmentOwnerName(node);
+  if (ownerName === null) return null;
+
+  const root = (node as { tree?: { rootNode?: SyntaxNode } }).tree?.rootNode;
+  if (!root) return null;
+
+  const ownerLabel = prototypeOwnerLabel(root, ownerName);
+  if (ownerLabel === null) return null;
+
+  return { ownerId: generateId(ownerLabel, `${filePath}:${ownerName}`), ownerName };
+};
+
+/** Right-hand-side node types that make an assignment a callable binding. */
+const CALLABLE_ASSIGNMENT_VALUE_TYPES: ReadonlySet<string> = new Set([
+  'arrow_function',
+  'function_expression',
+  'generator_function',
+]);
+
+/**
+ * The receiver name of a `<Owner>.prototype.<member> = <function>` assignment,
+ * or null when `assignment` is not that shape.
+ *
+ * Only a bare identifier owner is accepted. `a.b.prototype.c = …` and
+ * `getClass().prototype.c = …` name an owner this layer cannot resolve to a
+ * definition, so they are left alone rather than attributed to a guess.
+ */
+export const prototypeAssignmentOwnerName = (assignment: SyntaxNode): string | null => {
+  const left = callableAssignmentTarget(assignment);
+  if (left === null) return null;
+
+  const protoRef = left.childForFieldName('object');
+  if (protoRef === null || protoRef.type !== 'member_expression') return null;
+
+  if (protoRef.childForFieldName('property')?.text !== 'prototype') return null;
+
+  const owner = protoRef.childForFieldName('object');
+  if (owner === null || owner.type !== 'identifier') return null;
+
+  return owner.text;
+};
+
+/** The `member_expression` being assigned a function value, or null. */
+const callableAssignmentTarget = (assignment: SyntaxNode): SyntaxNode | null => {
+  if (assignment.type !== 'assignment_expression') return null;
+
+  const right = assignment.childForFieldName('right');
+  if (right === null || !CALLABLE_ASSIGNMENT_VALUE_TYPES.has(right.type)) return null;
+
+  const left = assignment.childForFieldName('left');
+  return left !== null && left.type === 'member_expression' ? left : null;
+};
+
+/**
+ * The constructor function that owns a `this.member = <function>` assignment,
+ * or null when there is none (module top level, or an owner this layer cannot
+ * name).
+ *
+ * Only a `function_declaration` counts. An `arrow_function` does NOT bind its
+ * own `this` (ECMA-262 gives it `[[ThisMode]] = lexical`), so the walk passes
+ * through arrows to the function that actually binds the receiver — the same
+ * rule `@receiver-owner.this` encodes in the scope queries (#2701). A class
+ * method never reaches here: parse-worker resolves its owner from the
+ * enclosing class container first.
+ */
+export const thisAssignmentOwnerName = (assignment: SyntaxNode): string | null => {
+  const left = callableAssignmentTarget(assignment);
+  if (left === null) return null;
+  if (left.childForFieldName('object')?.type !== 'this') return null;
+
+  for (let anc: SyntaxNode | null = assignment.parent; anc !== null; anc = anc.parent) {
+    if (anc.type === 'arrow_function') continue;
+    if (anc.type === 'function_declaration') {
+      const name = anc.childForFieldName('name');
+      return name !== null && name.type === 'identifier' ? name.text : null;
+    }
+    // Any other receiver-binding form (function_expression, method_definition,
+    // generator) owns the `this` but gives this layer no module-scope name to
+    // point an owner edge at.
+    if (FUNCTION_NODE_TYPES.has(anc.type) || CLASS_CONTAINER_TYPES.has(anc.type)) return null;
+  }
+  return null;
+};
+
+/**
+ * True when `node` is a `X.prototype.Y = <function>` or `this.Y = <function>`
+ * assignment — i.e. a callable MEMBER rather than a free function.
+ *
+ * Takes the ASSIGNMENT node, because that is what the `@definition.function`
+ * capture is anchored on and therefore what `provider.labelOverride` receives.
+ */
+export const isPrototypeMemberAssignmentNode = (node: SyntaxNode): boolean =>
+  prototypeAssignmentOwnerName(node) !== null || isThisMemberAssignmentNode(node);
+
+/** True when `node` is a `this.Y = <function>` assignment, at any nesting. */
+export const isThisMemberAssignmentNode = (node: SyntaxNode): boolean => {
+  const left = callableAssignmentTarget(node);
+  return left !== null && left.childForFieldName('object')?.type === 'this';
+};
+
+/**
+ * The label the owner named by {@link prototypeAssignmentOwnerName} carries in
+ * the graph, so the owner edge points at the node that actually exists.
+ * Returns null when the file declares no such module-scope name.
+ */
+const prototypeOwnerLabel = (root: SyntaxNode, ownerName: string): 'Class' | 'Function' | null => {
+  for (const child of root.namedChildren) {
+    const decl = child.type === 'export_statement' ? child.childForFieldName('declaration') : child;
+    if (decl === null) continue;
+    if (decl.childForFieldName('name')?.text !== ownerName) continue;
+
+    if (decl.type === 'class_declaration') return 'Class';
+    if (decl.type === 'function_declaration' || decl.type === 'generator_function_declaration')
+      return 'Function';
+  }
+  return null;
 };
 
 /** Convenience wrapper: returns just the class ID string (backward compat). */

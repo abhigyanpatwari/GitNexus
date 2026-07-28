@@ -85,6 +85,7 @@ import {
   getDefinitionNodeFromCaptures,
   findEnclosingClassInfo,
   findObjectLiteralBindingInfo,
+  findMemberAssignmentOwnerInfo,
   type EnclosingClassInfo,
   getLabelFromCaptures,
   genericFuncName,
@@ -2254,9 +2255,17 @@ const processFileGroup = (
           : null;
       const enclosingClassId =
         enclosingClassInfo?.qualifiedClassId ?? enclosingClassInfo?.classId ?? null;
+      // A Method with no enclosing class container is owned by a NAMED binding
+      // instead: an object literal (`const service = { load() {} }`) or, since
+      // the #2723 follow-up, a prototype assignment
+      // (`Foo.prototype.bar = function () {}`). Both resolve the owner from the
+      // syntax rather than from an ancestor walk, and both are language-shaped
+      // helpers behind the provider's own label decision — shared code here
+      // only asks "does this Method name an owner".
       const objectLiteralOwnerInfo =
         !enclosingClassId && nodeLabel === 'Method' && definitionNode
-          ? findObjectLiteralBindingInfo(definitionNode, file.path)
+          ? (findMemberAssignmentOwnerInfo(definitionNode, file.path) ??
+            findObjectLiteralBindingInfo(definitionNode, file.path))
           : null;
 
       // #1978: hoisted ABOVE qualifiedName/node-id (load-bearing order) so a
@@ -2316,7 +2325,13 @@ const processFileGroup = (
               ? nestedCallableQualifiedName(nestedCallablePrefix, definitionNode, nodeName)
               : enclosingClassInfo
                 ? `${enclosingClassInfo.className}.${nodeName}`
-                : nodeName;
+                : // A member whose owner is named by the assignment rather than
+                  // by an enclosing container (`Foo.prototype.bar = …`) qualifies
+                  // by that owner, so two constructors in one file that both
+                  // define `bar` stay distinct nodes.
+                  objectLiteralOwnerInfo?.ownerName !== undefined
+                  ? `${objectLiteralOwnerInfo.ownerName}.${nodeName}`
+                  : nodeName;
 
       // Extract method metadata BEFORE generating node ID — parameterCount is needed
       // to disambiguate overloaded methods via #<arity> suffix in the ID.
