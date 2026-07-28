@@ -130,6 +130,7 @@ type ContextScenario = {
   permissionError?: Error;
   pull?: Record<string, unknown>;
   pullError?: Error;
+  existingComments?: Array<{ user?: { login: string }; body?: string }>;
 };
 
 async function runContextScenario({
@@ -141,6 +142,7 @@ async function runContextScenario({
   permissionError,
   pull,
   pullError,
+  existingComments = [],
 }: ContextScenario = {}) {
   const contextScript = jobScript('analyze', 'Normalize and authorize the request');
   if (!contextScript) throw new Error('context github-script block not found');
@@ -158,10 +160,17 @@ async function runContextScenario({
   const getPull = pullError
     ? vi.fn().mockRejectedValue(pullError)
     : vi.fn().mockResolvedValue({ data: resolvedPull });
+  const listComments = vi.fn();
   const github = {
     rest: {
       repos: { getCollaboratorPermissionLevel: getPermission },
       pulls: { get: getPull },
+      issues: { listComments },
+    },
+    paginate: {
+      iterator: vi.fn(function* iterate() {
+        yield { data: existingComments };
+      }),
     },
   };
   const outputs = new Map<string, string>();
@@ -333,6 +342,8 @@ function reviewTranscript({
       type: 'result',
       subtype: 'success',
       is_error: false,
+      num_turns: 25,
+      total_cost_usd: 3.8797,
       session_id: 'session-1',
       uuid: '44444444-4444-4444-8444-444444444444',
     },
@@ -2445,5 +2456,81 @@ describe('gitnexus review-agent workflow security contract', () => {
       repairOutcome: 'failure',
     });
     expect(repairFailed.artifact.failure_code).toBe('invalid_model_output');
+  });
+
+  it('skips a request whose exact head and base already carry an accepted review', async () => {
+    // Real PRs took two and three full runs each; a repeat request reproduced a
+    // comment that was already on the page, at full model cost.
+    const marker = `<!-- gitnexus-review-agent:${PR_NUMBER}:${HEAD_SHA}:${BASE_SHA} -->`;
+    const accepted = await runContextScenario({
+      permission: 'write',
+      existingComments: [
+        { user: { login: 'github-actions[bot]' }, body: `${marker}\n**APPROVE.** Looks good.` },
+      ],
+    });
+    expect(accepted.outputs.get('ready')).toBe('false');
+    expect(accepted.outputs.get('failure_code')).toBe('already_reviewed');
+
+    // A previous FAILURE at the same tuple must still be retryable.
+    const previouslyFailed = await runContextScenario({
+      permission: 'write',
+      existingComments: [
+        {
+          user: { login: 'github-actions[bot]' },
+          body: `${marker}\n### GitNexus review — unable to complete\n\nnope`,
+        },
+      ],
+    });
+    expect(previouslyFailed.outputs.get('ready')).toBe('true');
+
+    // A review of a different commit does not suppress this one.
+    const otherCommit = await runContextScenario({
+      permission: 'write',
+      existingComments: [
+        {
+          user: { login: 'github-actions[bot]' },
+          body: `<!-- gitnexus-review-agent:${PR_NUMBER}:${'9'.repeat(40)}:${BASE_SHA} -->\nold`,
+        },
+      ],
+    });
+    expect(otherCommit.outputs.get('ready')).toBe('true');
+
+    // And a human comment quoting the marker cannot suppress a review.
+    const impostor = await runContextScenario({
+      permission: 'write',
+      existingComments: [{ user: { login: 'someone' }, body: `${marker}\nlooks fine to me` }],
+    });
+    expect(impostor.outputs.get('ready')).toBe('true');
+  });
+
+  it('stops before the model when the pull request moved during preparation', () => {
+    const analyze = jobBlock('analyze');
+    expect(analyze).toContain(
+      '- name: Confirm the pull request has not moved before spending the model',
+    );
+    expect(analyze).toContain("steps.freshness.outcome == 'success'");
+    const freshnessIndex = analyze.indexOf('id: freshness');
+    const modelIndex = analyze.indexOf('- name: Run read-only graph-backed review');
+    expect(freshnessIndex).toBeGreaterThan(-1);
+    expect(modelIndex).toBeGreaterThan(freshnessIndex);
+    const freshnessScript = jobScript(
+      'analyze',
+      'Confirm the pull request has not moved before spending the model',
+    );
+    expect(freshnessScript).toContain('core.setFailed');
+    expect(freshnessScript).toContain('stopping before the model runs');
+  });
+
+  it('records what each run spent so waste is visible without grepping logs', () => {
+    const spent = runArtifactScenario();
+    expect(spent.stdout).toContain('Model spend: turns: 25; cost: $3.88.');
+
+    // A transcript without the fields must not break the run.
+    const unknown = runArtifactScenario({
+      rawTranscript: JSON.stringify(reviewTranscriptWithoutTools()),
+      changedPaths: ['docs/x.md'],
+      noIndexableChangedSymbols: true,
+    });
+    expect(unknown.stdout).toContain('Model spend: turns: unknown; cost: unknown.');
   });
 });

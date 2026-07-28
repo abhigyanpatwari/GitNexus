@@ -254,6 +254,44 @@ jobs:
                 return;
               }
 
+              // Nothing about this pull request has moved since it was last
+              // reviewed, so a second run would spend a full model budget to
+              // reproduce a comment that is already on the page. Real PRs took
+              // two and three runs each under the old behaviour.
+              const acceptedMarker =
+                `<!-- gitnexus-review-agent:${prNumber}:${headSha}:${baseSha} -->`;
+              const REVIEW_FAILURE_HEADINGS = [
+                '### GitNexus review — not published',
+                '### GitNexus review — failed safely',
+                '### GitNexus review — unable to complete',
+              ];
+              let alreadyReviewed = false;
+              let commentPages = 0;
+              for await (const response of github.paginate.iterator(
+                github.rest.issues.listComments,
+                { owner: context.repo.owner, repo: context.repo.repo, issue_number: prNumber, per_page: 100 },
+              )) {
+                commentPages += 1;
+                if (commentPages > 20) break;
+                for (const comment of response.data) {
+                  if (comment.user?.login !== 'github-actions[bot]') continue;
+                  const commentBody = comment.body || '';
+                  if (!commentBody.includes(acceptedMarker)) continue;
+                  // A previous FAILURE at this tuple must not suppress a retry.
+                  if (REVIEW_FAILURE_HEADINGS.some((heading) => commentBody.includes(heading))) continue;
+                  alreadyReviewed = true;
+                }
+              }
+              if (alreadyReviewed) {
+                core.notice(
+                  `An accepted review already exists for ${headSha}; skipping before any model spend.`,
+                );
+                core.setOutput('head_repo', headRepo);
+                core.setOutput('ready', 'false');
+                core.setOutput('failure_code', 'already_reviewed');
+                return;
+              }
+
               core.setOutput('head_repo', headRepo);
               core.setOutput('ready', 'true');
               core.setOutput('failure_code', 'none');
@@ -1201,6 +1239,35 @@ jobs:
           fs.renameSync(temporaryPath, manifestPath);
           NODE
 
+      - name: Confirm the pull request has not moved before spending the model
+        id: freshness
+        if: steps.context.outputs.ready == 'true'
+        uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9.0.0
+        env:
+          PR_NUMBER: ${{ steps.context.outputs.pr_number }}
+          HEAD_SHA: ${{ steps.context.outputs.head_sha }}
+          BASE_SHA: ${{ steps.context.outputs.base_sha }}
+        with:
+          github-token: ${{ github.token }}
+          script: |
+            // Indexing takes minutes. If new commits landed while it ran, the
+            // publisher will reject whatever the model produces as stale, so
+            // paying for that review is pure waste.
+            const prNumber = Number(process.env.PR_NUMBER);
+            const { data: pull } = await github.rest.pulls.get({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              pull_number: prNumber,
+            });
+            const head = String(pull.head.sha || '').toLowerCase();
+            const base = String(pull.base.sha || '').toLowerCase();
+            if (head !== process.env.HEAD_SHA || base !== process.env.BASE_SHA) {
+              core.setFailed(
+                `The pull request moved from ${process.env.HEAD_SHA} to ${head} during preparation; ` +
+                  'stopping before the model runs rather than reviewing a stale commit.',
+              );
+            }
+
       - name: Reverify exact Claude executable at secret boundary
         id: claude-recheck
         if: steps.context.outputs.ready == 'true'
@@ -1223,6 +1290,7 @@ jobs:
         if: >-
           steps.context.outputs.authorized == 'true' &&
           steps.context.outputs.ready == 'true' &&
+          steps.freshness.outcome == 'success' &&
           steps.claude-recheck.outcome == 'success'
         # Use the low-level base action: the high-level GitHub action can restore
         # project configuration from a moving base branch before invoking Claude.
@@ -1279,7 +1347,13 @@ jobs:
             gate. Adapt the skill's checkout/index steps to this pre-aligned environment.
 
             The skill's "Swarm lanes" section governs the expert-lens pass, including
-            lane dispatch, verification, the critic gate, and every fallback. All six
+            lane dispatch, verification, the critic gate, and every fallback.
+            Right-size it to the diff rather than always paying for six lanes: a
+            change confined to docs, comments, or configuration needs no lane at
+            all, and a small single-domain change needs only the lanes whose
+            domain it touches. Dispatch every lane when the diff is large, spans
+            several domains, or touches a trust boundary. Say in the review which
+            lanes you ran and why, so a thin pass is visible rather than implied. All six
             lanes are pre-installed as spawnable agents from the exact control SHA;
             the Agent tool exists solely to dispatch them. Map the section's generic
             context to this environment when handing lanes their inputs: the diff is
@@ -1487,6 +1561,8 @@ jobs:
             index_failed: 'The review was not run because the exact-head graph index could not be built safely.',
             model_failed: 'The review agent did not produce a valid structured result.',
             invalid_model_output: 'The review agent returned an invalid structured result.',
+            already_reviewed:
+              'An accepted review for this exact head and base already exists, so this request was skipped.',
             unverifiable_citations:
               'The review cited file locations that do not exist at the analyzed commits, so it was not published.',
             incomplete_analysis:
@@ -1904,6 +1980,8 @@ jobs:
             // one distinct parent_tool_use_id per lane that really ran.
             const laneTurns = new Set();
             let laneDispatches = 0;
+            let runTurns = null;
+            let runCostUsd = null;
             const candidateCalls = new Map();
             const successfulResults = new Map();
             const seenToolCalls = new Set();
@@ -1920,6 +1998,11 @@ jobs:
               }
               if (entry.type === 'result') {
                 if (entry.subtype === 'success' && entry.is_error === false) sawSuccessfulRun = true;
+                // Spend is only controllable if it is recorded. Building the
+                // failure inventory that motivated these gates meant grepping
+                // job logs by hand.
+                if (typeof entry.num_turns === 'number') runTurns = entry.num_turns;
+                if (typeof entry.total_cost_usd === 'number') runCostUsd = entry.total_cost_usd;
                 continue;
               }
               // Subagent (sidechain) turns carry a non-null parent_tool_use_id.
@@ -2039,6 +2122,9 @@ jobs:
               laneReport:
                 `lane dispatches requested: ${laneDispatches}; ` +
                 `lanes that produced transcript turns: ${laneTurns.size}`,
+              spendReport:
+                `turns: ${runTurns === null ? 'unknown' : runTurns}; ` +
+                `cost: ${runCostUsd === null ? 'unknown' : `$${runCostUsd.toFixed(2)}`}`,
               // Bounded, path-sanitized counters so a rejected review says why
               // it was rejected instead of only that it was.
               diagnosis:
@@ -2108,6 +2194,7 @@ jobs:
                 // merely completes cannot distinguish a working swarm from a
                 // silent inline fallback.
                 console.log(`Swarm dispatch: ${graphEvidence.laneReport}.`);
+                console.log(`Model spend: ${graphEvidence.spendReport}.`);
               } catch (error) {
                 failureCode = 'invalid_execution_transcript';
                 body = failureMessages[failureCode];
@@ -2278,6 +2365,7 @@ jobs:
           always() &&
           steps.context.outputs.authorized == 'true' &&
           steps.context.outputs.pr_number != '' &&
+          steps.context.outputs.failure_code != 'already_reviewed' &&
           (
             steps.artifact.outcome != 'success' ||
             steps.upload.outcome != 'success' ||
