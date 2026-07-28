@@ -2,9 +2,20 @@ import type { BindingRef, ParsedFile, ScopeId, TypeRef } from 'gitnexus-shared';
 import { logger } from '../../../logger.js';
 import type { ScopeResolutionIndexes } from '../../model/scope-resolution-indexes.js';
 import { isClassLike } from '../../scope-resolution/scope/walkers.js';
-import type { JvmPackageFact } from './package-facts.js';
+export type JvmPackageFact =
+  | { readonly status: 'known'; readonly packageName: string }
+  | { readonly status: 'unknown' };
 
 const MAX_PACKAGE_FILES = 500;
+
+const DEFAULT_MAX_INJECTED_SIBLINGS = 200;
+
+function getMaxInjectedSiblings(): number {
+  const raw = process.env.GITNEXUS_MAX_INJECTED_SIBLINGS;
+  if (raw === undefined || raw === '') return DEFAULT_MAX_INJECTED_SIBLINGS;
+  const parsed = Number(raw);
+  return Number.isInteger(parsed) && parsed >= 0 ? parsed : DEFAULT_MAX_INJECTED_SIBLINGS;
+}
 
 export interface JvmPackageSiblingOptions {
   readonly languageLabel: string;
@@ -79,6 +90,7 @@ export function createJvmPackageSiblingVisibility(
     }
 
     const augmentations = indexes.bindingAugmentations as Map<ScopeId, Map<string, BindingRef[]>>;
+    const maxInjectedSiblings = getMaxInjectedSiblings();
 
     for (const bucket of buckets.values()) {
       if (bucket.moduleScopes.length < 2) continue;
@@ -124,6 +136,7 @@ export function createJvmPackageSiblingVisibility(
         const injectedIds = new Set<string>();
         for (const { def } of candidates) {
           if (injectedIds.has(def.nodeId) || def.qualifiedName === undefined) continue;
+          if (maxInjectedSiblings > 0 && injectedIds.size >= maxInjectedSiblings) break;
           injectedIds.add(def.nodeId);
           const simpleName = def.qualifiedName.includes('.')
             ? def.qualifiedName.slice(def.qualifiedName.lastIndexOf('.') + 1)
