@@ -18,6 +18,7 @@ import {
 import type { SyntaxNode } from '../utils/ast-helpers.js';
 import {
   createLeadingDocDescriptionExtractor,
+  isCjsDefaultExportAssignment,
   isPrototypeMemberAssignmentNode,
 } from '../utils/ast-helpers.js';
 import {
@@ -55,6 +56,8 @@ const memberAssignmentLabel = (node: SyntaxNode): NodeLabel | null => {
   // is an exported Function, not an instance member. Checked before the
   // Method branch, which would otherwise claim every `this` receiver.
   if (root !== undefined && isModuleLevelThisExport(node, root)) return 'Function';
+  // `module.exports = fn` — the module itself is the callable.
+  if (isCjsDefaultExportAssignment(node)) return 'Function';
   if (isPrototypeMemberAssignmentNode(node)) return 'Method';
   if (isShadowedCjsExportNode(node)) return null;
 

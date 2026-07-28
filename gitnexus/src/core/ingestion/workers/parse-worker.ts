@@ -86,6 +86,7 @@ import {
   findEnclosingClassInfo,
   findObjectLiteralBindingInfo,
   findMemberAssignmentOwnerInfo,
+  isCjsDefaultExportAssignment,
   type EnclosingClassInfo,
   getLabelFromCaptures,
   genericFuncName,
@@ -2128,17 +2129,34 @@ const processFileGroup = (
         return deriveDefaultExportHocName(file.path);
       })();
 
+      // `module.exports = function () {}` (#2723): the whole module is the
+      // callable. The member-assignment rule captures the LEFT property as the
+      // name, which here is the literal `exports` — meaningless. Override it:
+      // a named function expression supplies its own name, and the anonymous
+      // forms are named after the file by the same convention anonymous
+      // default exports already use. Takes precedence over `nameNode` for
+      // exactly that reason.
+      const cjsDefaultExportName =
+        definitionNode && isCjsDefaultExportAssignment(definitionNode)
+          ? (definitionNode.childForFieldName('right')?.childForFieldName('name')?.text ??
+            deriveDefaultExportHocName(file.path))
+          : null;
+
       // Synthesize name for constructors without explicit @name capture (e.g. Swift init)
       if (
         !nameNode &&
         nodeLabel !== 'Constructor' &&
         !extractedClassSymbol &&
-        !defaultExportHocName
+        !defaultExportHocName &&
+        !cjsDefaultExportName
       )
         continue;
 
       const nodeName =
-        extractedClassSymbol?.name ?? defaultExportHocName ?? (nameNode ? nameNode.text : 'init');
+        extractedClassSymbol?.name ??
+        defaultExportHocName ??
+        cjsDefaultExportName ??
+        (nameNode ? nameNode.text : 'init');
       // Dedup: variable captures (Const/Static/Variable) may overlap with higher-priority
       // captures (e.g. `const fn = () => {}` matches both @definition.function and @definition.const).
       // Multi-name declarations share the same definition node, so include the emitted name.

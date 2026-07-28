@@ -165,6 +165,41 @@ describe('#2723 follow-up: callable member assignments', () => {
   // The member-assignment rule matches ANY identifier receiver so an exports
   // alias can be recognised; everything else must be pruned emit-side. Without
   // that, every `obj.handler = fn` would emit a top-level `Function`.
+  // `module.exports = fn` — the whole module is the callable, so there is no
+  // property to name it after. Anonymous forms take the file-derived name
+  // (`deriveDefaultExportHocName`), the convention already used for anonymous
+  // default exports; a named function expression keeps its own name.
+  it('module.exports = function () {} is named after the file', async () => {
+    const { ids } = await nodesFor(
+      'src/cjsdef.js',
+      'module.exports = function (v) { return v; };\n',
+    );
+    expect(ids).toContain('Function:src/cjsdef.js:cjsdef');
+  });
+
+  it('module.exports = (v) => v is named after the file', async () => {
+    const { ids } = await nodesFor('src/cjsarrow.js', 'module.exports = (v) => v;\n');
+    expect(ids).toContain('Function:src/cjsarrow.js:cjsarrow');
+  });
+
+  // The member-assignment rule captures the LEFT property as the name, which
+  // for this shape is the literal `exports`. That must not survive.
+  it('a named module.exports function keeps its own name and emits no `exports` node', async () => {
+    const { ids } = await nodesFor(
+      'src/cjsnamed.js',
+      'module.exports = function namedFn(v) { return v; };\n',
+    );
+    expect(ids).toContain('Function:src/cjsnamed.js:namedFn');
+    expect(ids).not.toContain('Function:src/cjsnamed.js:exports');
+  });
+
+  // Reassigning `exports` does NOT export in CommonJS — it only breaks the
+  // alias to `module.exports` — so indexing it would invent an export.
+  it('exports = fn is not treated as a default export', async () => {
+    const { labels } = await nodesFor('src/rebind.js', 'exports = function (v) { return v; };\n');
+    expect(labels.filter((l) => l === 'Function')).toEqual([]);
+  });
+
   it('a non-exports receiver emits no node', async () => {
     const { labels } = await nodesFor(
       'src/plain.js',

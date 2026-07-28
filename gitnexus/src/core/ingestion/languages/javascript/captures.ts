@@ -439,6 +439,52 @@ function synthesizeCjsReExports(root: SyntaxNode, out: CaptureMatch[]): void {
   }
 }
 
+/**
+ * Synthesize the scope declaration for `module.exports = <function>` (#2723).
+ *
+ * The graph node for this comes from the definition query, but the scope query
+ * cannot produce its name: an anonymous default export takes its name from the
+ * FILE, which a tree-sitter pattern has no access to. Without a declaration the
+ * node exists and nothing resolves to it — the half-fixed state this issue's
+ * first commit already had to correct once.
+ *
+ * A named function expression (`module.exports = function named() {}`) keeps
+ * its own name; the anonymous forms use `deriveDefaultExportHocName`, the
+ * convention already applied to anonymous default exports elsewhere.
+ */
+function synthesizeCjsDefaultExport(root: SyntaxNode, filePath: string, out: CaptureMatch[]): void {
+  for (const child of root.namedChildren) {
+    if (child.type !== 'expression_statement') continue;
+    const assignment = child.namedChild(0);
+    if (assignment === null || assignment.type !== 'assignment_expression') continue;
+
+    const left = assignment.childForFieldName('left');
+    if (left === null || left.type !== 'member_expression') continue;
+    if (left.childForFieldName('object')?.text !== 'module') continue;
+    if (left.childForFieldName('property')?.text !== 'exports') continue;
+
+    const value = assignment.childForFieldName('right');
+    if (value === null) continue;
+    if (
+      value.type !== 'function_expression' &&
+      value.type !== 'arrow_function' &&
+      value.type !== 'generator_function'
+    )
+      continue;
+
+    const ownName = value.childForFieldName('name');
+    const name = ownName?.text ?? deriveDefaultExportHocName(filePath);
+
+    // Anchored on the INNER function so the declaration range matches the
+    // `@scope.function` range — the same anchor discipline as every other
+    // closure-binding rule.
+    out.push({
+      '@declaration.function': nodeToCapture('@declaration.function', value),
+      '@declaration.name': syntheticCapture('@declaration.name', ownName ?? value, name),
+    });
+  }
+}
+
 // ─── JSDoc type binding synthesis ────────────────────────────────────────
 
 interface JsDocParam {
@@ -1124,6 +1170,7 @@ export function emitJsScopeCaptures(
   // Post-query synthesis passes.
   synthesizeCjsImports(tree.rootNode, out);
   synthesizeCjsReExports(tree.rootNode, out);
+  synthesizeCjsDefaultExport(tree.rootNode, filePath, out);
   synthesizeJsDocBindings(tree.rootNode, out);
   synthesizeConstructorFieldBindings(tree.rootNode, out);
   synthesizeDestructuringBindings(tree.rootNode, out);

@@ -1200,6 +1200,40 @@ export const thisAssignmentOwnerName = (assignment: SyntaxNode): string | null =
 export const isPrototypeMemberAssignmentNode = (node: SyntaxNode): boolean =>
   prototypeAssignmentOwnerName(node) !== null || isThisMemberAssignmentNode(node);
 
+/**
+ * True when `node` is `module.exports = <anonymous function>` (#2723).
+ *
+ * The whole module IS the callable, so there is no property to take a name
+ * from and the caller supplies a file-derived one. A NAMED function expression
+ * is excluded — its own name is captured directly and is more informative.
+ */
+export const isAnonymousDefaultExportAssignment = (node: SyntaxNode): boolean =>
+  isCjsDefaultExportAssignment(node) &&
+  node.childForFieldName('right')?.childForFieldName('name') == null;
+
+/**
+ * True when `node` is `module.exports = <function>`, named or anonymous — the
+ * CommonJS default export, where the whole module IS the callable.
+ *
+ * `exports = fn` is deliberately NOT this shape: reassigning the `exports`
+ * binding does not export anything in CommonJS, it only breaks the alias to
+ * `module.exports`.
+ */
+export const isCjsDefaultExportAssignment = (node: SyntaxNode): boolean => {
+  if (node.type !== 'assignment_expression') return false;
+
+  const right = node.childForFieldName('right');
+  if (right === null || !CALLABLE_ASSIGNMENT_VALUE_TYPES.has(right.type)) return false;
+
+  const left = node.childForFieldName('left');
+  if (left === null || left.type !== 'member_expression') return false;
+
+  return (
+    left.childForFieldName('object')?.text === 'module' &&
+    left.childForFieldName('property')?.text === 'exports'
+  );
+};
+
 /** True when `node` is a `this.Y = <function>` assignment, at any nesting. */
 export const isThisMemberAssignmentNode = (node: SyntaxNode): boolean => {
   const left = callableAssignmentTarget(node);
