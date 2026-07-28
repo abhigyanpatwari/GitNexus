@@ -36,12 +36,17 @@ import { parseSourceSafe } from '../../../tree-sitter/safe-parse.js';
 import {
   setJavaClassAnnotationFacts,
   setJavaSpringConfigConsumerFacts,
+  setJavaSpringConditionalFacts,
   setJavaSpringDiFacts,
 } from './capture-side-channel.js';
 import { captureJavaPackageFact } from './package-facts.js';
 import { synthesizeCallableFlowCaptures } from '../../utils/callable-flow-captures.js';
 import { captureJavaSpringConfigConsumerFacts } from './spring-config-bindings.js';
 import { captureJavaSpringDiClassFact, type JavaSpringDiClassFact } from './spring-di.js';
+import {
+  captureJavaSpringConditionalFacts,
+  type JavaSpringConditionalFact,
+} from './spring-conditionals.js';
 
 /** Declaration anchors that carry function-like arity metadata. */
 const FUNCTION_DECL_TAGS = ['@declaration.method', '@declaration.constructor'] as const;
@@ -126,6 +131,7 @@ export function emitJavaScopeCaptures(
   const rawMatches = getJavaScopeQuery().matches(tree.rootNode);
   const out: CaptureMatch[] = [];
   const classAnnotations = new Map<ScopeId, Set<string>>();
+  const springConditionalFacts: JavaSpringConditionalFact[] = [];
   const springDiFacts: JavaSpringDiClassFact[] = [];
   const springDiClassNodeIds = new Set<number>();
 
@@ -150,6 +156,9 @@ export function emitJavaScopeCaptures(
     const springDiClassNode = nodeIfType(nodeMap['@scope.class'], 'class_declaration');
     if (springDiClassNode !== null && !springDiClassNodeIds.has(springDiClassNode.id)) {
       springDiClassNodeIds.add(springDiClassNode.id);
+      springConditionalFacts.push(
+        ...captureJavaSpringConditionalFacts(springDiClassNode, filePath),
+      );
       const fact = captureJavaSpringDiClassFact(springDiClassNode, filePath);
       if (fact !== null) springDiFacts.push(fact);
     }
@@ -347,6 +356,7 @@ export function emitJavaScopeCaptures(
     filePath,
     captureJavaSpringConfigConsumerFacts(tree.rootNode, filePath),
   );
+  setJavaSpringConditionalFacts(filePath, springConditionalFacts);
   setJavaSpringDiFacts(filePath, springDiFacts);
 
   return [

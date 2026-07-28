@@ -55,6 +55,8 @@ import type { ParseWorkerResult } from '../core/ingestion/workers/parse-worker.j
 // the main thread (the #1983 OOM). Because the two stores share this version,
 // any future change to the `ParsedFile` serialization shape MUST bump
 // SCHEMA_BUMP so both invalidate in lockstep.
+// v28: Java/Kotlin capture side-channels persist Spring condition facts and
+// annotation-source line numbers (#2415).
 // v26: the enclosing-callable walk stops at class bodies and anonymous-class
 // construction sites (#2699 follow-up); a v25 cache replays worker results carrying the
 // wrong Java anonymous-class ids. Cached results are replayed verbatim — including
@@ -101,7 +103,7 @@ import type { ParseWorkerResult } from '../core/ingestion/workers/parse-worker.j
 // JLS 13.1 immediate-host chains (#2555).
 // v18: Worker$N anonymous bodies. v17: callable-value-flow operand identity.
 // v16: direct callee identity.
-const SCHEMA_BUMP = 27;
+const SCHEMA_BUMP = 28;
 const GITNEXUS_PKG_VERSION = (() => {
   try {
     // package.json sits at gitnexus/package.json — two levels up from
