@@ -517,7 +517,7 @@ describeIfWorkerBuilt('closure bindings resolve in the remaining languages (#269
   });
 });
 
-describeIfWorkerBuilt('a closure binding is a call TARGET, not yet a call SOURCE', () => {
+describeIfWorkerBuilt('a closure binding as a call SOURCE (#2699 part B)', () => {
   // Known limit, pinned deliberately so it is visible rather than surprising.
   //
   // A call made INSIDE a closure binding is attributed to the ENCLOSING scope,
@@ -541,9 +541,10 @@ describeIfWorkerBuilt('a closure binding is a call TARGET, not yet a call SOURCE
   //     scope for the walk to consider.
   //
   // So a fix needs per-language work, not one switch: a callable-boundary
-  // signal independent of scope `kind` (Kotlin/Ruby), an association from a
-  // closure scope to its binding's def (PHP — DONE, see below), and a scope
-  // that does not exist yet (Dart). See #2699.
+  // signal independent of scope `kind` (Kotlin/Ruby — DONE, S2), an
+  // association from a closure scope to its binding's def (PHP — DONE, S1;
+  // Rust — DONE, S3), and a scope that does not exist yet (Dart — STILL OPEN).
+  // See #2699.
   //
   // Probe-measured root cause (#2699): EVERY still-failing language has an
   // EMPTY ownedDefs on the closure's own scope, because the closure-binding
@@ -559,13 +560,22 @@ describeIfWorkerBuilt('a closure binding is a call TARGET, not yet a call SOURCE
   // with a matching range, so the closure IS the anchor there. These tests exist
   // to catch that asymmetry changing in EITHER direction.
 
-  it('Kotlin: a call inside the closure is attributed to the file, not the binding', async () => {
+  it('Kotlin: a call inside the closure IS attributed to the binding (#2699 S2)', async () => {
+    // FLIPPED by #2699 S2, which took BOTH halves:
+    //   1. kotlin/query.ts gained the closure-binding declaration rule, with
+    //      @declaration.function on the INNER lambda_literal so its range
+    //      aligns with the (lambda_literal) @scope.block range;
+    //   2. pickCallerCallableDef now accepts a Block-kind scope as a callable
+    //      boundary when the scope IS the callable's body (def start position
+    //      == scope start position).
+    // Half 1 alone changes nothing here — the lambda stays @scope.block
+    // deliberately (#1757 smart casts), so the kind gate would still reject it.
     const targets = await callEdgeIdsFor(
       'A.kt',
       'fun target(x: Int): Int = x\n\nval handler = { x: Int -> target(x) }\n',
     );
 
-    expect(targets).toEqual(['rel:CALLS:File:A.kt->Function:A.kt:target']);
+    expect(targets).toEqual(['rel:CALLS:Function:A.kt:handler->Function:A.kt:target']);
   });
 
   it('PHP: a call inside the closure IS attributed to the binding (#2699 S1)', async () => {
@@ -583,6 +593,18 @@ describeIfWorkerBuilt('a closure binding is a call TARGET, not yet a call SOURCE
     );
 
     expect(targets).toEqual(['rel:CALLS:Function:a.php:$handler->Function:a.php:target']);
+  });
+
+  it('Ruby: a call inside a lambda binding IS attributed to the binding (#2699 S2)', async () => {
+    // Ruby had no pinned case before #2699 S2, so this is new coverage rather
+    // than an inverted assertion. do_block/block stay @scope.block (matching
+    // Kotlin), so this exercises the same Block-scope alignment path.
+    const targets = await callEdgeIdsFor(
+      'a.rb',
+      'def target(x)\n  x\nend\n\nhandler = ->(x) { target(x) }\n',
+    );
+
+    expect(targets).toEqual(['rel:CALLS:Function:a.rb:handler->Method:a.rb:target#1']);
   });
 
   it('JavaScript: a free arrow binding IS the caller anchor', async () => {

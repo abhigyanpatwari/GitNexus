@@ -73,6 +73,29 @@ function rangeContainsPoint(
   return true;
 }
 
+const isCallableDef = (d: SymbolDefinition): boolean =>
+  d.type === 'Function' || d.type === 'Method' || d.type === 'Constructor';
+
+/**
+ * True when `range` is the body of `def` itself — the scope's start position
+ * equals the def's declaration position.
+ *
+ * Safe to compare directly: `scope-extractor.ts` builds a def id as
+ * `def:<filePath>#<startLine>:<startCol>:<type>:<name>` from the same `Range`
+ * a scope carries, so both sides share one coordinate base and need no
+ * conversion. (Do not "fix" this against the 1-based reading in
+ * `defStartLine`'s docblock — what matters here is that the two sides agree
+ * with each other, not which base they use.)
+ */
+function scopeIsCallableBody(
+  range: { startLine: number; startCol: number },
+  def: SymbolDefinition,
+): boolean {
+  const m = def.nodeId.match(/#(\d+):(\d+):/);
+  if (m === null) return false;
+  return Number(m[1]) === range.startLine && Number(m[2]) === range.startCol;
+}
+
 /** Pick the callable that owns `atRange` when multiple overloads share a class scope. */
 function pickCallerCallableDef(
   scope: {
@@ -86,17 +109,30 @@ function pickCallerCallableDef(
   if (atRange !== undefined) {
     for (const childId of scopes.scopeTree.getChildren(scope.id)) {
       const child = scopes.scopeTree.getScope(childId);
-      if (child === undefined || child.kind !== 'Function') continue;
+      if (child === undefined) continue;
       if (!rangeContainsPoint(child.range, atRange)) continue;
-      const childCallable = child.ownedDefs.find(
-        (d) => d.type === 'Function' || d.type === 'Method' || d.type === 'Constructor',
-      );
-      if (childCallable !== undefined) return childCallable;
+      const childCallable = child.ownedDefs.find(isCallableDef);
+      if (childCallable === undefined) continue;
+      if (child.kind === 'Function') return childCallable;
+      // A Block-kind scope is a callable boundary ONLY when the scope IS that
+      // callable's own body. Kotlin `lambda_literal` and Ruby `do_block`/`block`
+      // are @scope.block deliberately (#1757 smart casts), so the kind gate
+      // alone would never let a closure there become a call SOURCE (#2699).
+      //
+      // But relaxing the gate to accept ANY Block owning a callable is wrong:
+      // a nested `fun foo()` declared inside a block is owned by that block, so
+      // a call made at BLOCK level — outside foo — would be misattributed to
+      // foo. The alignment test discriminates them. For a closure the
+      // declaration and the scope sit on the SAME node (the anchor discipline
+      // documented in javascript/query.ts), so their start positions match; for
+      // a nested function the block starts at `{` and the def starts at the
+      // declaration, so they do not.
+      if (child.kind === 'Block' && scopeIsCallableBody(child.range, childCallable)) {
+        return childCallable;
+      }
     }
   }
-  return scope.ownedDefs.find(
-    (d) => d.type === 'Function' || d.type === 'Method' || d.type === 'Constructor',
-  );
+  return scope.ownedDefs.find(isCallableDef);
 }
 
 /**
