@@ -123,9 +123,9 @@ describe('createMCPServer', () => {
 
       expect(query?.inputSchema.required).toContain('repo');
       expect(listRepos?.inputSchema.required).not.toContain('repo');
-      expect(GITNEXUS_TOOLS.find((tool) => tool.name === 'query')?.inputSchema.required).not.toContain(
-        'repo',
-      );
+      expect(
+        GITNEXUS_TOOLS.find((tool) => tool.name === 'query')?.inputSchema.required,
+      ).not.toContain('repo');
     } finally {
       await client.close();
       await server.close();
