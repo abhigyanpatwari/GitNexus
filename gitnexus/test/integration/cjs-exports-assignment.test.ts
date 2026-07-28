@@ -359,6 +359,37 @@ describeIfWorkerBuilt('#2723 calls resolve to the CJS-exported function', () => 
     ).toEqual(['drive']);
   });
 
+  // `exports.fwd = lib.imported` assigns an existing symbol rather than a
+  // literal, so no definition rule reaches it. Modelled as a re-export, NOT a
+  // plain import binding: an import is private to its module, so importers of
+  // the forwarding module resolved to nothing.
+  it('a CJS re-export forwards to the original definition', async () => {
+    const files = [
+      {
+        path: 'src/lib.js',
+        content:
+          'exports.imported = function (v) { return v; };\n' +
+          'exports.second = function (v) { return !v; };\n',
+      },
+      {
+        path: 'src/fwd.js',
+        content:
+          "const lib = require('./lib');\n" +
+          "const { second } = require('./lib');\n" +
+          'exports.forwarded = lib.imported;\n' +
+          'exports.alsoForwarded = second;\n',
+      },
+      {
+        path: 'src/usefwd.js',
+        content:
+          "const { forwarded, alsoForwarded } = require('./fwd');\n" +
+          'function drive(v) { return [forwarded(v), alsoForwarded(v)]; }\n',
+      },
+    ];
+    expect(await callersOf(files, 'imported')).toEqual(['drive']);
+    expect(await callersOf(files, 'second')).toEqual(['drive']);
+  });
+
   it('cross-file destructured require() call resolves', async () => {
     expect(
       await callersOf(

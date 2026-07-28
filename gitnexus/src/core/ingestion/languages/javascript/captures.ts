@@ -331,6 +331,114 @@ function synthesizeCjsImports(root: SyntaxNode, out: CaptureMatch[]): void {
   }
 }
 
+/**
+ * Synthesize re-export markers for CJS forwarding assignments (#2723).
+ *
+ *   const lib = require('./lib');
+ *   exports.forwarded = lib.imported;   // re-export of `imported` from ./lib
+ *   const { imported } = require('./lib');
+ *   exports.alsoForwarded = imported;   // same, through a named binding
+ *
+ * The right-hand side is an existing symbol rather than a function literal, so
+ * no definition rule reaches it and importers of `forwarded` resolved to
+ * nothing. Emitted with the `named-alias` vocabulary the destructured
+ * `require()` form already uses, so `interpretJsImport` needs no new case.
+ *
+ * `exports.foo = localFn` (a locally DECLARED function) is deliberately not
+ * handled here: the module scope already binds `localFn`, importers already
+ * resolve through it, and synthesizing a second binding would re-create the
+ * ambiguity the shadow guard exists to prevent.
+ */
+function synthesizeCjsReExports(root: SyntaxNode, out: CaptureMatch[]): void {
+  // Namespace and named bindings introduced by require(), by local name.
+  const namespaceSources = new Map<string, { source: string; node: SyntaxNode }>();
+  const namedSources = new Map<string, { source: string; name: string; node: SyntaxNode }>();
+
+  for (const child of root.namedChildren) {
+    if (child.type !== 'lexical_declaration' && child.type !== 'variable_declaration') continue;
+    for (const declarator of child.namedChildren) {
+      if (declarator.type !== 'variable_declarator') continue;
+      const value = declarator.childForFieldName('value');
+      if (value === null || value.type !== 'call_expression') continue;
+      if (value.childForFieldName('function')?.text !== 'require') continue;
+      const arg = value.childForFieldName('arguments')?.namedChild(0);
+      if (arg === undefined || arg === null || arg.type !== 'string') continue;
+      const source = arg.namedChild(0)?.text ?? arg.text.slice(1, -1);
+
+      const nameNode = declarator.childForFieldName('name');
+      if (nameNode === null) continue;
+      if (nameNode.type === 'identifier') {
+        namespaceSources.set(nameNode.text, { source, node: arg });
+      } else if (nameNode.type === 'object_pattern') {
+        for (const field of nameNode.namedChildren) {
+          if (field.type === 'shorthand_property_identifier_pattern') {
+            namedSources.set(field.text, { source, name: field.text, node: arg });
+          } else if (field.type === 'pair_pattern') {
+            const key = field.childForFieldName('key');
+            const local = field.childForFieldName('value');
+            if (key !== null && local !== null && local.type === 'identifier')
+              namedSources.set(local.text, { source, name: key.text, node: arg });
+          }
+        }
+      }
+    }
+  }
+
+  if (namespaceSources.size === 0 && namedSources.size === 0) return;
+
+  for (const child of root.namedChildren) {
+    if (child.type !== 'expression_statement') continue;
+    const assignment = child.namedChild(0);
+    if (assignment === null || assignment.type !== 'assignment_expression') continue;
+
+    const left = assignment.childForFieldName('left');
+    if (left === null || left.type !== 'member_expression') continue;
+    const receiver = left.childForFieldName('object');
+    const exposed = left.childForFieldName('property');
+    if (receiver === null || exposed === null || exposed.type !== 'property_identifier') continue;
+
+    const isExportsReceiver =
+      (receiver.type === 'identifier' && receiver.text === 'exports') ||
+      (receiver.type === 'member_expression' &&
+        receiver.childForFieldName('object')?.text === 'module' &&
+        receiver.childForFieldName('property')?.text === 'exports');
+    if (!isExportsReceiver) continue;
+
+    const right = assignment.childForFieldName('right');
+    if (right === null) continue;
+
+    // `exports.fwd = ns.member`
+    if (right.type === 'member_expression') {
+      const ns = right.childForFieldName('object');
+      const member = right.childForFieldName('property');
+      if (ns === null || member === null || ns.type !== 'identifier') continue;
+      const origin = namespaceSources.get(ns.text);
+      if (origin === undefined) continue;
+      out.push({
+        '@import.statement': syntheticCapture('@import.statement', assignment, origin.source),
+        '@import.kind': syntheticCapture('@import.kind', assignment, 'reexport-alias'),
+        '@import.name': syntheticCapture('@import.name', member, member.text),
+        '@import.alias': syntheticCapture('@import.alias', exposed, exposed.text),
+        '@import.source': syntheticCapture('@import.source', origin.node, origin.source),
+      });
+      continue;
+    }
+
+    // `exports.fwd = importedName`
+    if (right.type === 'identifier') {
+      const origin = namedSources.get(right.text);
+      if (origin === undefined) continue;
+      out.push({
+        '@import.statement': syntheticCapture('@import.statement', assignment, origin.source),
+        '@import.kind': syntheticCapture('@import.kind', assignment, 'reexport-alias'),
+        '@import.name': syntheticCapture('@import.name', right, origin.name),
+        '@import.alias': syntheticCapture('@import.alias', exposed, exposed.text),
+        '@import.source': syntheticCapture('@import.source', origin.node, origin.source),
+      });
+    }
+  }
+}
+
 // ─── JSDoc type binding synthesis ────────────────────────────────────────
 
 interface JsDocParam {
@@ -1015,6 +1123,7 @@ export function emitJsScopeCaptures(
 
   // Post-query synthesis passes.
   synthesizeCjsImports(tree.rootNode, out);
+  synthesizeCjsReExports(tree.rootNode, out);
   synthesizeJsDocBindings(tree.rootNode, out);
   synthesizeConstructorFieldBindings(tree.rootNode, out);
   synthesizeDestructuringBindings(tree.rootNode, out);
