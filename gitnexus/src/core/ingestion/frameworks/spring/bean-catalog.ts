@@ -15,6 +15,7 @@ export const SPRING_BEAN_STEREOTYPES = new Map<string, SpringBeanStereotype>([
   ['org.springframework.stereotype.Controller', { role: 'controller' }],
   ['org.springframework.web.bind.annotation.RestController', { role: 'rest-controller' }],
   ['org.springframework.context.annotation.Configuration', { role: 'configuration' }],
+  ['org.springframework.boot.autoconfigure.AutoConfiguration', { role: 'auto-configuration' }],
 ]);
 
 export function deriveSpringBeanMetadata(

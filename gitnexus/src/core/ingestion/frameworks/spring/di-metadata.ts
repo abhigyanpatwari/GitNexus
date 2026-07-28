@@ -77,6 +77,7 @@ const CAPTURE_RELEVANT_ANNOTATIONS = new Set([
   'Controller',
   'RestController',
   'Configuration',
+  'AutoConfiguration',
 ]);
 
 const STEREOTYPE_SIMPLE_NAMES = new Set(

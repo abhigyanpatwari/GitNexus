@@ -7,3 +7,23 @@ export const SPRING_BEAN_INVENTORY_FEATURE: AnalysisFeatureDescriptor = {
   version: 1,
   appliesTo: (filePaths) => filePaths.some(isSpringBeanCandidateSourceFile),
 };
+
+function isSpringConditionOrAutoConfigurationFile(filePath: string): boolean {
+  const normalized = `/${filePath.replaceAll('\\', '/')}`.toLowerCase();
+  return (
+    normalized.endsWith('.java') ||
+    normalized.endsWith('.kt') ||
+    normalized.endsWith('.kts') ||
+    normalized.endsWith('/meta-inf/spring.factories') ||
+    normalized.endsWith(
+      '/meta-inf/spring/org.springframework.boot.autoconfigure.autoconfiguration.imports',
+    )
+  );
+}
+
+/** Durable completeness contract for conditional and auto-configuration evidence. */
+export const SPRING_CONDITIONALS_FEATURE: AnalysisFeatureDescriptor = {
+  id: 'spring.conditionals-auto-configuration',
+  version: 1,
+  appliesTo: (filePaths) => filePaths.some(isSpringConditionOrAutoConfigurationFile),
+};

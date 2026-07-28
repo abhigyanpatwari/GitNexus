@@ -14,6 +14,10 @@ import path from 'path';
 import type { GraphRelationship } from 'gitnexus-shared';
 import { withTestLbugDB } from '../helpers/test-indexed-db.js';
 import { skipUnlessFtsAvailable } from '../helpers/fts-availability.js';
+import {
+  SPRING_AUTO_CONFIGURATION_SYNTHETIC_DESCRIPTION,
+  SPRING_AUTO_CONFIGURATION_SYNTHETIC_ID_PREFIX,
+} from '../../src/core/ingestion/frameworks/spring/auto-configuration.js';
 
 /**
  * LadybugDB 0.16.0 has a known Windows-only regression: `Database.close()`
@@ -168,6 +172,66 @@ withTestLbugDB(
           `MATCH ()-[r:CodeRelation]->() WHERE r.type = 'QUERIES' RETURN count(r) AS cnt`,
         );
         expect(Number((queriesLeft[0] as { cnt: number }).cnt)).toBe(1);
+      });
+
+      it('deleteSpringAutoConfigurationDeclarations: removes only Spring DECLARES edges (#2415)', async () => {
+        const { executeQuery: coreExecuteQuery, deleteSpringAutoConfigurationDeclarations } =
+          await import('../../src/core/lbug/lbug-adapter.js');
+
+        await expect(deleteSpringAutoConfigurationDeclarations()).resolves.toEqual({
+          edgesDeleted: 0,
+        });
+        const fns = (await coreExecuteQuery('MATCH (n:Function) RETURN n.id AS id')) as Array<{
+          id: string;
+        }>;
+        expect(fns.length).toBe(2);
+        await coreExecuteQuery(
+          `MATCH (a:Function {id: '${fns[0].id}'}), (b:Function {id: '${fns[1].id}'}) ` +
+            `CREATE (a)-[:CodeRelation {type: 'DECLARES', confidence: 1.0, reason: 'spring-auto-configuration-import', step: 0}]->(b)`,
+        );
+        await coreExecuteQuery(
+          `MATCH (a:Function {id: '${fns[0].id}'}), (b:Function {id: '${fns[1].id}'}) ` +
+            `CREATE (a)-[:CodeRelation {type: 'DECLARES', confidence: 1.0, reason: 'spring-auto-configuration-factory', step: 0}]->(b)`,
+        );
+        await coreExecuteQuery(
+          `MATCH (a:Function {id: '${fns[0].id}'}), (b:Function {id: '${fns[1].id}'}) ` +
+            `CREATE (a)-[:CodeRelation {type: 'DECLARES', confidence: 1.0, reason: 'other-metadata-system', step: 0}]->(b)`,
+        );
+
+        await expect(deleteSpringAutoConfigurationDeclarations()).resolves.toEqual({
+          edgesDeleted: 2,
+        });
+        const left = await coreExecuteQuery(
+          `MATCH ()-[r:CodeRelation]->() WHERE r.type = 'DECLARES' RETURN count(r) AS cnt`,
+        );
+        expect(Number((left[0] as { cnt: number }).cnt)).toBe(1);
+      });
+
+      it('deleteSpringAutoConfigurationSyntheticClasses: removes only metadata placeholders (#2415)', async () => {
+        const { executeQuery: coreExecuteQuery, deleteSpringAutoConfigurationSyntheticClasses } =
+          await import('../../src/core/lbug/lbug-adapter.js');
+
+        await coreExecuteQuery(
+          `CREATE (:Class {id: '${SPRING_AUTO_CONFIGURATION_SYNTHETIC_ID_PREFIX}com.example.ExternalAutoConfiguration', ` +
+            `name: 'ExternalAutoConfiguration', ` +
+            `filePath: 'META-INF/spring.factories', ` +
+            `description: '${SPRING_AUTO_CONFIGURATION_SYNTHETIC_DESCRIPTION}'})`,
+        );
+        await coreExecuteQuery(
+          `CREATE (:Class {id: 'Class:src/Real.java:Real', name: 'Real', ` +
+            `filePath: 'src/Real.java', ` +
+            `description: '${SPRING_AUTO_CONFIGURATION_SYNTHETIC_DESCRIPTION}'})`,
+        );
+        await expect(deleteSpringAutoConfigurationSyntheticClasses()).resolves.toEqual({
+          nodesDeleted: 1,
+        });
+        const syntheticLeft = await coreExecuteQuery(
+          `MATCH (n:Class) WHERE n.id STARTS WITH '${SPRING_AUTO_CONFIGURATION_SYNTHETIC_ID_PREFIX}' ` +
+            'RETURN count(n) AS cnt',
+        );
+        expect(Number((syntheticLeft[0] as { cnt: number }).cnt)).toBe(0);
+        const realClasses = await coreExecuteQuery('MATCH (n:Class) RETURN count(n) AS cnt');
+        expect(Number((realClasses[0] as { cnt: number }).cnt)).toBe(2);
       });
 
       describe('unhappy path', () => {
