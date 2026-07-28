@@ -57,6 +57,50 @@ const NAMED_DECLARATION_TYPES = new Set([
 /** Declaration nodes that carry one or more `variable_declarator` children. */
 const VARIABLE_DECLARATION_TYPES = new Set(['lexical_declaration', 'variable_declaration']);
 
+/**
+ * Identifiers bound to the exports object at module scope, per program root.
+ *
+ * `const e = exports;` / `const e = module.exports;` makes `e.foo = fn` an
+ * export just as surely as `exports.foo = fn`. The queries cannot express
+ * "an identifier that happens to alias exports", so they match any identifier
+ * receiver and the emitters prune here.
+ *
+ * Memoized for the same reason as {@link moduleScopeDeclaredNames}: asked once
+ * per candidate assignment, and a large CommonJS module has many.
+ */
+const exportAliasesByRoot = new WeakMap<SyntaxNode, Set<string>>();
+
+/** True when `node` is the `exports` / `module.exports` object itself. */
+function isExportsObjectExpression(node: SyntaxNode): boolean {
+  if (node.type === 'identifier') return node.text === 'exports';
+  if (node.type !== 'member_expression') return false;
+  return (
+    node.childForFieldName('object')?.text === 'module' &&
+    node.childForFieldName('property')?.text === 'exports'
+  );
+}
+
+/** The set of module-scope identifiers aliasing the exports object. */
+function exportAliases(root: SyntaxNode): Set<string> {
+  const cached = exportAliasesByRoot.get(root);
+  if (cached !== undefined) return cached;
+
+  const aliases = new Set<string>();
+  for (const child of root.namedChildren) {
+    if (!VARIABLE_DECLARATION_TYPES.has(child.type)) continue;
+    for (const declarator of child.namedChildren) {
+      if (declarator.type !== 'variable_declarator') continue;
+      const name = declarator.childForFieldName('name');
+      const value = declarator.childForFieldName('value');
+      if (name === null || name.type !== 'identifier' || value === null) continue;
+      if (isExportsObjectExpression(value)) aliases.add(name.text);
+    }
+  }
+
+  exportAliasesByRoot.set(root, aliases);
+  return aliases;
+}
+
 /** Collect the names `node` binds into its enclosing scope, into `out`. */
 function collectDeclaredNames(node: SyntaxNode, out: Set<string>): void {
   if (NAMED_DECLARATION_TYPES.has(node.type)) {
@@ -106,7 +150,7 @@ function moduleScopeDeclaredNames(root: SyntaxNode): Set<string> {
  * `this`, an aliased `const e = exports`) returns null, so this guard never
  * fires for a construct the CJS declaration rules did not create.
  */
-function cjsExportedPropertyName(node: SyntaxNode): string | null {
+function cjsExportedPropertyName(node: SyntaxNode, root?: SyntaxNode): string | null {
   const assignment = node.parent;
   if (assignment === null || assignment.type !== 'assignment_expression') return null;
   if (assignment.childForFieldName('right')?.id !== node.id) return null;
@@ -120,23 +164,53 @@ function cjsExportedPropertyName(node: SyntaxNode): string | null {
   const receiver = left.childForFieldName('object');
   if (receiver === null) return null;
 
-  if (receiver.type === 'identifier' && receiver.text === 'exports') return property.text;
+  if (isExportsObjectExpression(receiver)) return property.text;
 
-  if (receiver.type === 'member_expression') {
-    const base = receiver.childForFieldName('object');
-    const member = receiver.childForFieldName('property');
-    if (
-      base !== null &&
-      base.type === 'identifier' &&
-      base.text === 'module' &&
-      member !== null &&
-      member.text === 'exports'
-    ) {
-      return property.text;
-    }
-  }
+  // An identifier aliasing the exports object (`const e = exports; e.foo = fn`).
+  // Only consulted when a root is supplied, so the shadow guard — which asks
+  // about a receiver it has already pinned — keeps its cheaper path.
+  if (
+    receiver.type === 'identifier' &&
+    root !== undefined &&
+    exportAliases(root).has(receiver.text)
+  )
+    return property.text;
 
   return null;
+}
+
+/**
+ * The name this assignment exports, or null when it exports nothing.
+ *
+ * Takes the VALUE node (the function literal) and the program root, because
+ * alias resolution is a whole-file question. Used by the capture emitters to
+ * keep the widened `<identifier>.X = fn` match only when the receiver really
+ * is the exports object.
+ */
+export function cjsExportedNameFor(node: SyntaxNode, root: SyntaxNode): string | null {
+  return cjsExportedPropertyName(node, root);
+}
+
+/**
+ * True when `node` is the value of a `<identifier>.<member> = fn` assignment
+ * whose receiver is NOT the exports object — the over-match the widened
+ * member-assignment rule accepts so an `exports` alias can be recognised.
+ *
+ * Such a receiver declares nothing at module scope: `obj.handler = fn` binds a
+ * property of `obj`, not a module symbol named `handler`. Prototype and `this`
+ * receivers are not identifiers, so they never reach this guard and keep their
+ * own (Method) treatment.
+ */
+export function isUnexportedMemberAssignmentValue(node: SyntaxNode, root: SyntaxNode): boolean {
+  const assignment = node.parent;
+  if (assignment === null || assignment.type !== 'assignment_expression') return false;
+  if (assignment.childForFieldName('right')?.id !== node.id) return false;
+
+  const left = assignment.childForFieldName('left');
+  if (left === null || left.type !== 'member_expression') return false;
+  if (left.childForFieldName('object')?.type !== 'identifier') return false;
+
+  return cjsExportedPropertyName(node, root) === null;
 }
 
 /**

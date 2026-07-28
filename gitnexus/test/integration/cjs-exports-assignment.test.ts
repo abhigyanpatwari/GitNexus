@@ -162,6 +162,18 @@ describe('#2723 follow-up: callable member assignments', () => {
   // The scope declaration for a shadowed CJS export is suppressed, so its graph
   // node would be unreachable. With a `class` of the same name the labels
   // differ, so it does not even collapse — it lingers as an orphan.
+  // The member-assignment rule matches ANY identifier receiver so an exports
+  // alias can be recognised; everything else must be pruned emit-side. Without
+  // that, every `obj.handler = fn` would emit a top-level `Function`.
+  it('a non-exports receiver emits no node', async () => {
+    const { labels } = await nodesFor(
+      'src/plain.js',
+      'const obj = {};\nobj.notAnExport = function () { return 1; };\n' +
+        'self.alsoNot = () => 1;\nlocalThing.nope = function () { return 2; };\n',
+    );
+    expect(labels.filter((l) => l === 'Function' || l === 'Method')).toEqual([]);
+  });
+
   it('a CJS export shadowing a class emits no orphan Function twin', async () => {
     const { labels, ids } = await nodesFor(
       'src/twin.js',
@@ -280,6 +292,27 @@ describeIfWorkerBuilt('#2723 calls resolve to the CJS-exported function', () => 
         'dup',
       ),
     ).toEqual(['callIt']);
+  });
+
+  it('an exports alias resolves like a direct export', async () => {
+    const files = [
+      {
+        path: 'src/alias.js',
+        content:
+          'const e = exports;\n' +
+          'const m = module.exports;\n' +
+          'e.aliased = function (v) { return v; };\n' +
+          'm.viaModule = (v) => v;\n',
+      },
+      {
+        path: 'src/aliasuse.js',
+        content:
+          "const { aliased, viaModule } = require('./alias');\n" +
+          'function drive(v) { return [aliased(v), viaModule(v)]; }\n',
+      },
+    ];
+    expect(await callersOf(files, 'aliased')).toEqual(['drive']);
+    expect(await callersOf(files, 'viaModule')).toEqual(['drive']);
   });
 
   it('cross-file destructured require() call resolves', async () => {

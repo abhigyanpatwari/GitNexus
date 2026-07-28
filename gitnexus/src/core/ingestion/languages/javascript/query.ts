@@ -177,14 +177,13 @@ export const JAVASCRIPT_SCOPE_QUERY = `
 ;; query, so the anchor aligns for that branch too.
 (assignment_expression
   left: (member_expression
-    object: (identifier) @_cjs.exports
+    object: (identifier) @_cjs.receiver
     property: (property_identifier) @declaration.name)
   right: [
     (arrow_function)
     (function_expression)
     (generator_function)
-  ] @declaration.function
-  (#eq? @_cjs.exports "exports"))
+  ] @declaration.function)
 
 (assignment_expression
   left: (member_expression

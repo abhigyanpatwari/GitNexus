@@ -38,7 +38,10 @@ import { recordCacheHit, recordCacheMiss } from './cache-stats.js';
 import { synthesizeTsReceiverBinding } from './receiver-binding.js';
 import { computeTsArityMetadata } from './arity-metadata.js';
 import { isArrayMethodCallbackArrow } from './array-callback.js';
-import { isShadowedCjsExportAssignment } from './cjs-export-assignment.js';
+import {
+  isShadowedCjsExportAssignment,
+  isUnexportedMemberAssignmentValue,
+} from './cjs-export-assignment.js';
 import { getTreeSitterBufferSize } from '../../constants.js';
 import { parseSourceSafe } from '../../../tree-sitter/safe-parse.js';
 import { synthesizeCallableFlowCaptures } from '../../utils/callable-flow-captures.js';
@@ -364,6 +367,13 @@ export function emitTsScopeCaptures(
       // would become ambiguous and the resolver would drop the intra-module
       // edge that resolved before #2723.
       if (arrowNode !== null && isShadowedCjsExportAssignment(arrowNode, tree.rootNode)) {
+        continue;
+      }
+      // #2723 follow-up: the member-assignment rule matches ANY identifier
+      // receiver so an `exports` alias can be recognised. A receiver that is
+      // not the exports object declares nothing at module scope — drop it, or
+      // every `obj.handler = fn` would bind `handler` as a module symbol.
+      if (arrowNode !== null && isUnexportedMemberAssignmentValue(arrowNode, tree.rootNode)) {
         continue;
       }
     }

@@ -224,14 +224,13 @@ export const TYPESCRIPT_SCOPE_QUERY = `
 ;; why that shape is safe under the tree-sitter 0.21.1 alternation hazard.
 (assignment_expression
   left: (member_expression
-    object: (identifier) @_cjs.exports
+    object: (identifier) @_cjs.receiver
     property: (property_identifier) @declaration.name)
   right: [
     (arrow_function)
     (function_expression)
     (generator_function)
-  ] @declaration.function
-  (#eq? @_cjs.exports "exports"))
+  ] @declaration.function)
 
 (assignment_expression
   left: (member_expression

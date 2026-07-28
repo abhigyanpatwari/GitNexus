@@ -20,12 +20,42 @@ import {
   createLeadingDocDescriptionExtractor,
   isPrototypeMemberAssignmentNode,
 } from '../utils/ast-helpers.js';
-import { isShadowedCjsExportAssignmentNode } from './typescript/cjs-export-assignment.js';
+import {
+  cjsExportedNameFor,
+  isShadowedCjsExportAssignmentNode,
+} from './typescript/cjs-export-assignment.js';
+
+const rootOf = (node: SyntaxNode): SyntaxNode | undefined =>
+  (node as { tree?: { rootNode?: SyntaxNode } }).tree?.rootNode;
 
 /** `exports.X = fn` where the module already declares `X` — see #2723. */
 const isShadowedCjsExportNode = (node: SyntaxNode): boolean => {
-  const root = (node as { tree?: { rootNode?: SyntaxNode } }).tree?.rootNode;
+  const root = rootOf(node);
   return root !== undefined && isShadowedCjsExportAssignmentNode(node, root);
+};
+
+/**
+ * Label for a `<receiver>.<member> = <function>` capture (#2723 follow-up).
+ *
+ * The member-assignment queries match ANY identifier receiver, because an
+ * `exports` alias (`const e = exports; e.foo = fn`) cannot be pinned in the
+ * query. Everything that is not a recognised shape is dropped HERE — without
+ * that, every `obj.handler = function () {}` in every JS/TS file would emit a
+ * spurious top-level `Function` named `handler`.
+ *
+ * Recognised: a CJS export (direct, `module.exports`, or via a module-scope
+ * alias) stays a Function; a prototype or `this` member becomes a Method; a
+ * CJS export shadowing a name the module already declares emits nothing.
+ */
+const memberAssignmentLabel = (node: SyntaxNode): NodeLabel | null => {
+  if (isPrototypeMemberAssignmentNode(node)) return 'Method';
+  if (isShadowedCjsExportNode(node)) return null;
+
+  const root = rootOf(node);
+  const value = node.childForFieldName('right');
+  if (root === undefined || value === null) return null;
+
+  return cjsExportedNameFor(value, root) !== null ? 'Function' : null;
 };
 import { createTypeScriptCfgVisitor } from '../cfg/visitors/typescript.js';
 import { typeConfig as typescriptConfig } from '../type-extractors/typescript.js';
@@ -386,11 +416,9 @@ export const typescriptProvider = defineLanguage({
   labelOverride: (functionNode, defaultLabel) =>
     defaultLabel !== 'Function'
       ? defaultLabel
-      : isShadowedCjsExportNode(functionNode)
-        ? null
-        : isPrototypeMemberAssignmentNode(functionNode)
-          ? 'Method'
-          : defaultLabel,
+      : functionNode.type === 'assignment_expression'
+        ? memberAssignmentLabel(functionNode)
+        : defaultLabel,
 
   // ── RFC #909 Ring 3: scope-based resolution hooks (RFC §5) ──────────
   // TypeScript is the third migration after Python and C#. See
@@ -464,11 +492,9 @@ export const javascriptProvider = defineLanguage({
   labelOverride: (functionNode, defaultLabel) =>
     defaultLabel !== 'Function'
       ? defaultLabel
-      : isShadowedCjsExportNode(functionNode)
-        ? null
-        : isPrototypeMemberAssignmentNode(functionNode)
-          ? 'Method'
-          : defaultLabel,
+      : functionNode.type === 'assignment_expression'
+        ? memberAssignmentLabel(functionNode)
+        : defaultLabel,
 
   // ── RFC #909 Ring 3: scope-based resolution hooks (RFC §5) ──────────
   // JavaScript is the fourth migration after Python, C#, and TypeScript.

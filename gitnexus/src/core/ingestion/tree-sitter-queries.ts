@@ -395,10 +395,9 @@ export const TYPESCRIPT_QUERIES = `
 ; Mirrored here because \`.ts\` files in a CommonJS package use the same form.
 (assignment_expression
   left: (member_expression
-    object: (identifier) @_cjs.exports
+    object: (identifier) @_cjs.receiver
     property: (property_identifier) @name)
-  right: [(function_expression) (arrow_function) (generator_function)]
-  (#eq? @_cjs.exports "exports")) @definition.function
+  right: [(function_expression) (arrow_function) (generator_function)]) @definition.function
 
 (assignment_expression
   left: (member_expression
@@ -599,10 +598,9 @@ export const JAVASCRIPT_QUERIES = `
 ; other closure-binding rules above: the label means "is a call target".
 (assignment_expression
   left: (member_expression
-    object: (identifier) @_cjs.exports
+    object: (identifier) @_cjs.receiver
     property: (property_identifier) @name)
-  right: [(function_expression) (arrow_function) (generator_function)]
-  (#eq? @_cjs.exports "exports")) @definition.function
+  right: [(function_expression) (arrow_function) (generator_function)]) @definition.function
 
 (assignment_expression
   left: (member_expression

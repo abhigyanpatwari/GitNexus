@@ -39,7 +39,10 @@ import { getJsParser, getJsScopeQuery, jsCachedTreeMatchesGrammar } from './quer
 import { computeTsArityMetadata } from '../typescript/arity-metadata.js';
 import { synthesizeTsReceiverBinding } from '../typescript/receiver-binding.js';
 import { isArrayMethodCallbackArrow } from '../typescript/array-callback.js';
-import { isShadowedCjsExportAssignment } from '../typescript/cjs-export-assignment.js';
+import {
+  isShadowedCjsExportAssignment,
+  isUnexportedMemberAssignmentValue,
+} from '../typescript/cjs-export-assignment.js';
 import { getTreeSitterBufferSize } from '../../constants.js';
 import { parseSourceSafe } from '../../../tree-sitter/safe-parse.js';
 import { synthesizeCallableFlowCaptures } from '../../utils/callable-flow-captures.js';
@@ -884,6 +887,13 @@ export function emitJsScopeCaptures(
       }
       // #2723 — see the matching filter in `typescript/captures.ts`.
       if (arrowNode !== null && isShadowedCjsExportAssignment(arrowNode, tree.rootNode)) {
+        continue;
+      }
+      // #2723 follow-up: the member-assignment rule matches ANY identifier
+      // receiver so an `exports` alias can be recognised. A receiver that is
+      // not the exports object declares nothing at module scope — drop it, or
+      // every `obj.handler = fn` would bind `handler` as a module symbol.
+      if (arrowNode !== null && isUnexportedMemberAssignmentValue(arrowNode, tree.rootNode)) {
         continue;
       }
     }
