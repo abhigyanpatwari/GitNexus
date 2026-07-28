@@ -38,6 +38,7 @@ import { recordCacheHit, recordCacheMiss } from './cache-stats.js';
 import { synthesizeTsReceiverBinding } from './receiver-binding.js';
 import { computeTsArityMetadata } from './arity-metadata.js';
 import { isArrayMethodCallbackArrow } from './array-callback.js';
+import { isShadowedCjsExportAssignment } from './cjs-export-assignment.js';
 import { getTreeSitterBufferSize } from '../../constants.js';
 import { parseSourceSafe } from '../../../tree-sitter/safe-parse.js';
 import { synthesizeCallableFlowCaptures } from '../../utils/callable-flow-captures.js';
@@ -356,6 +357,13 @@ export function emitTsScopeCaptures(
         continue;
       }
       if (arrowNode !== null && isBlockedDefaultExportHoc(arrowNode)) {
+        continue;
+      }
+      // #2723: a CJS export assignment must not register a SECOND module-scope
+      // declaration for a name the file already declares lexically — the name
+      // would become ambiguous and the resolver would drop the intra-module
+      // edge that resolved before #2723.
+      if (arrowNode !== null && isShadowedCjsExportAssignment(arrowNode, tree.rootNode)) {
         continue;
       }
     }

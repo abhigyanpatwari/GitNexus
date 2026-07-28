@@ -175,6 +175,28 @@ describeIfWorkerBuilt('#2723 calls resolve to the CJS-exported function', () => 
     expect(await callersOf(files, 'crawl')).toEqual(['drive']);
   });
 
+  // A CJS export assignment must not shadow a same-named `function X(){}` in
+  // the same file. Registering a second module-scope declaration for `dup`
+  // makes the name ambiguous and the resolver drops the intra-module edge
+  // entirely — a silently missing caller, which is worse than the gap #2723
+  // set out to close. Verified against base ff86ccf1e, where this edge exists.
+  it('an exports assignment does not shadow a same-named declared function', async () => {
+    expect(
+      await callersOf(
+        [
+          {
+            path: 'src/collide.js',
+            content:
+              'function dup(v) { return v; }\n' +
+              'exports.dup = function (v) { return !v; };\n' +
+              'function callIt(v) { return dup(v); }\n',
+          },
+        ],
+        'dup',
+      ),
+    ).toEqual(['callIt']);
+  });
+
   it('cross-file destructured require() call resolves', async () => {
     expect(
       await callersOf(

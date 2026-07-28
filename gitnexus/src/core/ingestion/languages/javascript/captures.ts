@@ -39,6 +39,7 @@ import { getJsParser, getJsScopeQuery, jsCachedTreeMatchesGrammar } from './quer
 import { computeTsArityMetadata } from '../typescript/arity-metadata.js';
 import { synthesizeTsReceiverBinding } from '../typescript/receiver-binding.js';
 import { isArrayMethodCallbackArrow } from '../typescript/array-callback.js';
+import { isShadowedCjsExportAssignment } from '../typescript/cjs-export-assignment.js';
 import { getTreeSitterBufferSize } from '../../constants.js';
 import { parseSourceSafe } from '../../../tree-sitter/safe-parse.js';
 import { synthesizeCallableFlowCaptures } from '../../utils/callable-flow-captures.js';
@@ -879,6 +880,10 @@ export function emitJsScopeCaptures(
         continue;
       }
       if (arrowNode !== null && isBlockedDefaultExportHoc(arrowNode)) {
+        continue;
+      }
+      // #2723 — see the matching filter in `typescript/captures.ts`.
+      if (arrowNode !== null && isShadowedCjsExportAssignment(arrowNode, tree.rootNode)) {
         continue;
       }
     }
