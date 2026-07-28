@@ -371,6 +371,18 @@
     "captureGroups": 8,
     "digest": "6ce8f7f1b5ccd7951765eee06a538d2fe791f7ca955230fc8041b2cf46b9ca8d"
   },
+  "python-inline-constructor-receiver/app.py": {
+    "captureGroups": 17,
+    "digest": "9395668ee45c389e97ba0facc03a9fff8f4c7cba3c9054a5899031d8f92b6b22"
+  },
+  "python-inline-constructor-receiver/models/repo.py": {
+    "captureGroups": 14,
+    "digest": "a6b2ee5047f71951ed90feb0eee43b75fe7c2d5656fe2e3e7fe5db7e8328bef6"
+  },
+  "python-inline-constructor-receiver/models/user.py": {
+    "captureGroups": 14,
+    "digest": "98d04d069da1a1feefc832b5b1b62c236062fced95b82782ee344a21860bfadb"
+  },
   "python-local-shadow/app.py": {
     "captureGroups": 9,
     "digest": "68c3ec5904bb2e2613c0b008a85e4bc598168a53fe7ae409bfc187d1f06373eb"

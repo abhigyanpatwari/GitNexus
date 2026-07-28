@@ -28,6 +28,7 @@ import {
   findEnclosingClassDef,
   findExportedDefByName,
   findReceiverTypeBinding,
+  isClassLike,
 } from '../scope/walkers.js';
 
 /** Max depth for compound-receiver chain resolution (`a().b().c().d()`).
@@ -237,10 +238,26 @@ export function resolveCompoundReceiverClass(
       // return-type typeBinding (which lives in the function's
       // enclosing scope per the language's return-type hoist rule).
       const fnDef = findExportedDefByName(fnExpr, inScope, scopes, index);
-      if (fnDef === undefined) return undefined;
-      const retType = findReceiverTypeBinding(inScope, fnExpr, scopes);
-      if (retType === undefined) return undefined;
-      return findClassBindingInScope(retType.declaredAtScope, retType.rawName, scopes);
+      if (fnDef !== undefined) {
+        const retType = findReceiverTypeBinding(inScope, fnExpr, scopes);
+        const viaReturn =
+          retType === undefined
+            ? undefined
+            : findClassBindingInScope(retType.declaredAtScope, retType.rawName, scopes);
+        if (viaReturn !== undefined) return viaReturn;
+      }
+      // Constructor-expression receiver — `Service(db).do_work()` (#2708).
+      // In languages that construct without a `new` keyword (Python,
+      // Kotlin, Swift, Scala) a free call naming a class IS a constructor
+      // call, so the expression's type is that class. The return-type
+      // path above cannot see this: a class has no return-type binding,
+      // so the receiver resolved to nothing and the member call was
+      // dropped. `new`-keyword languages never reach this line — their
+      // receiver text keeps the keyword (`new Service(db)`), which is
+      // not a bare callee name and so matches no class binding.
+      const ctorClass = findClassBindingInScope(inScope, fnExpr, scopes);
+      if (ctorClass !== undefined && isClassLike(ctorClass.type)) return ctorClass;
+      return undefined;
     }
 
     // `obj.method()` — resolve obj's class, look up method's return
