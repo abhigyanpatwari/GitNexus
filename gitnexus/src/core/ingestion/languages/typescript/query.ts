@@ -215,6 +215,62 @@ export const TYPESCRIPT_SCOPE_QUERY = `
     name: (identifier) @declaration.name
     value: (function_expression) @declaration.function))
 
+;; CJS property-assignment exports (#2723) — see the matching block in
+;; \`languages/javascript/query.ts\` for the rationale. Mirrored here because
+;; \`.ts\` files in a CommonJS package use the same form, and because the JS
+;; provider delegates several hooks to these TypeScript counterparts.
+(assignment_expression
+  left: (member_expression
+    object: (identifier) @_cjs.exports
+    property: (property_identifier) @declaration.name)
+  right: (arrow_function) @declaration.function
+  (#eq? @_cjs.exports "exports"))
+
+(assignment_expression
+  left: (member_expression
+    object: (identifier) @_cjs.exports
+    property: (property_identifier) @declaration.name)
+  right: (function_expression) @declaration.function
+  (#eq? @_cjs.exports "exports"))
+
+;; Generator parity — see the matching note in \`languages/javascript/query.ts\`.
+(assignment_expression
+  left: (member_expression
+    object: (identifier) @_cjs.exports
+    property: (property_identifier) @declaration.name)
+  right: (generator_function) @declaration.function
+  (#eq? @_cjs.exports "exports"))
+
+(assignment_expression
+  left: (member_expression
+    object: (member_expression
+      object: (identifier) @_cjs.module
+      property: (property_identifier) @_cjs.exports)
+    property: (property_identifier) @declaration.name)
+  right: (arrow_function) @declaration.function
+  (#eq? @_cjs.module "module")
+  (#eq? @_cjs.exports "exports"))
+
+(assignment_expression
+  left: (member_expression
+    object: (member_expression
+      object: (identifier) @_cjs.module
+      property: (property_identifier) @_cjs.exports)
+    property: (property_identifier) @declaration.name)
+  right: (function_expression) @declaration.function
+  (#eq? @_cjs.module "module")
+  (#eq? @_cjs.exports "exports"))
+
+(assignment_expression
+  left: (member_expression
+    object: (member_expression
+      object: (identifier) @_cjs.module
+      property: (property_identifier) @_cjs.exports)
+    property: (property_identifier) @declaration.name)
+  right: (generator_function) @declaration.function
+  (#eq? @_cjs.module "module")
+  (#eq? @_cjs.exports "exports"))
+
 ;; Object-property arrows / function expressions named by their pair key:
 ;; \`{ addItem: (item) => ..., removeItem: (item) => ... }\`. The legacy
 ;; TYPESCRIPT_QUERIES emits the same shape; mirroring it here keeps

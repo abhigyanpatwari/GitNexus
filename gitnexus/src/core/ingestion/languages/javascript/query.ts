@@ -152,6 +152,75 @@ export const JAVASCRIPT_SCOPE_QUERY = `
     name: (identifier) @declaration.name
     value: (function_expression) @declaration.function))
 
+;; CJS property-assignment exports (#2723): \`exports.foo = function () {}\`,
+;; \`module.exports.foo = (a) => a\`. The graph node for these comes from
+;; TYPESCRIPT/JAVASCRIPT_QUERIES; this block is the other half — without a
+;; scope-resolution declaration the node exists but nothing resolves TO it,
+;; so \`impact\` answered "found, zero callers" on a whole CommonJS API.
+;;
+;; The declaration binds the BARE property name into the enclosing (module)
+;; scope, which is what importers see: \`const { foo } = require('./m')\`
+;; matches by name, and a namespace \`m.foo()\` walks the module's defs.
+;;
+;; Same anchor discipline as the blocks above — \`@declaration.function\` sits
+;; on the INNER arrow / function_expression so its range matches the
+;; \`@scope.function\` range.
+(assignment_expression
+  left: (member_expression
+    object: (identifier) @_cjs.exports
+    property: (property_identifier) @declaration.name)
+  right: (arrow_function) @declaration.function
+  (#eq? @_cjs.exports "exports"))
+
+(assignment_expression
+  left: (member_expression
+    object: (identifier) @_cjs.exports
+    property: (property_identifier) @declaration.name)
+  right: (function_expression) @declaration.function
+  (#eq? @_cjs.exports "exports"))
+
+;; Generator parity. The graph-node rules in \`tree-sitter-queries.ts\` accept
+;; \`generator_function\` for this form, so without a matching declaration the
+;; node existed with nothing resolving to it — the same half-fixed state the
+;; block above exists to prevent. \`(generator_function) @scope.function\` is
+;; declared near the top of this query, so the anchor still aligns.
+(assignment_expression
+  left: (member_expression
+    object: (identifier) @_cjs.exports
+    property: (property_identifier) @declaration.name)
+  right: (generator_function) @declaration.function
+  (#eq? @_cjs.exports "exports"))
+
+(assignment_expression
+  left: (member_expression
+    object: (member_expression
+      object: (identifier) @_cjs.module
+      property: (property_identifier) @_cjs.exports)
+    property: (property_identifier) @declaration.name)
+  right: (arrow_function) @declaration.function
+  (#eq? @_cjs.module "module")
+  (#eq? @_cjs.exports "exports"))
+
+(assignment_expression
+  left: (member_expression
+    object: (member_expression
+      object: (identifier) @_cjs.module
+      property: (property_identifier) @_cjs.exports)
+    property: (property_identifier) @declaration.name)
+  right: (function_expression) @declaration.function
+  (#eq? @_cjs.module "module")
+  (#eq? @_cjs.exports "exports"))
+
+(assignment_expression
+  left: (member_expression
+    object: (member_expression
+      object: (identifier) @_cjs.module
+      property: (property_identifier) @_cjs.exports)
+    property: (property_identifier) @declaration.name)
+  right: (generator_function) @declaration.function
+  (#eq? @_cjs.module "module")
+  (#eq? @_cjs.exports "exports"))
+
 ;; Object-property arrows / function expressions named by their pair key.
 ;; Same anchor discipline as the lexical_declaration block above: the
 ;; @declaration.function capture must sit on the INNER arrow/fn-expression.

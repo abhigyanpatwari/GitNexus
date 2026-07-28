@@ -34,11 +34,17 @@
  *      resolved.
  *   3. **Dynamic require** — `require(computedPath)` is skipped (non-literal
  *      argument — cannot statically resolve the target).
- *   4. **`module.exports` / `exports.X`** — CJS export forms are not yet
- *      modeled as re-exports. The finalize algorithm treats the exporting
- *      module as a namespace; importers that do `const X = require('./m')`
- *      bind the module namespace, and member-call resolution walks the
- *      class graph from there.
+ *   4. **`module.exports` / `exports.X`** — CJS export forms are not modeled
+ *      as re-exports. The finalize algorithm treats the exporting module as a
+ *      namespace; importers that do `const X = require('./m')` bind the module
+ *      namespace, and member-call resolution walks the class graph from there.
+ *
+ *      `exports.foo = function () {}` / `module.exports.foo = (a) => a` DO
+ *      declare `foo` in the module scope (#2723) — the query block in
+ *      `query.ts` — so importers resolve to them by name. What is still
+ *      unmodeled is the re-export EDGE: `exports.foo = someImported` does not
+ *      forward to the original declaration, and `module.exports = fn`
+ *      (anonymous default) has no name to bind.
  */
 
 export { emitJsScopeCaptures } from './captures.js';
