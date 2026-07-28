@@ -59,6 +59,18 @@ export const TYPESCRIPT_QUERIES = `
     name: (identifier) @name
     value: (function_expression))) @definition.function
 
+; Generator EXPRESSIONS bound to a name (\`const g = function* () {}\`). Without
+; these, the binding emitted a \`Const\` node rather than a \`Function\` one, so
+; \`g()\` resolved to nothing: \`buildGraphTargetIndex\` only admits a callable
+; node. Same construct and same binding semantics as the \`function_expression\`
+; rules directly above, so same label. Covers the four variable-binding shapes
+; (const/let and var, each plain and exported); a generator in an object-literal
+; pair or a HOC wrapper is NOT covered and still falls through anonymous.
+(lexical_declaration
+  (variable_declarator
+    name: (identifier) @name
+    value: (generator_function))) @definition.function
+
 (export_statement
   declaration: (lexical_declaration
     (variable_declarator
@@ -70,6 +82,50 @@ export const TYPESCRIPT_QUERIES = `
     (variable_declarator
       name: (identifier) @name
       value: (function_expression)))) @definition.function
+
+(export_statement
+  declaration: (lexical_declaration
+    (variable_declarator
+      name: (identifier) @name
+      value: (generator_function)))) @definition.function
+
+; \`var\` closure bindings (#2693). The lexical rules above cover const/let;
+; \`var\` is a different grammar node, so \`var f = (x) => x\` kept a Variable
+; label while const/let got Function — and the CALLS edge that resolved through
+; the declaration route therefore pointed at a NON-callable node. Same construct,
+; same binding semantics for this purpose, so same label.
+(variable_declaration
+  (variable_declarator
+    name: (identifier) @name
+    value: (arrow_function))) @definition.function
+
+(variable_declaration
+  (variable_declarator
+    name: (identifier) @name
+    value: (function_expression))) @definition.function
+
+(variable_declaration
+  (variable_declarator
+    name: (identifier) @name
+    value: (generator_function))) @definition.function
+
+(export_statement
+  declaration: (variable_declaration
+    (variable_declarator
+      name: (identifier) @name
+      value: (arrow_function)))) @definition.function
+
+(export_statement
+  declaration: (variable_declaration
+    (variable_declarator
+      name: (identifier) @name
+      value: (function_expression)))) @definition.function
+
+(export_statement
+  declaration: (variable_declaration
+    (variable_declarator
+      name: (identifier) @name
+      value: (generator_function)))) @definition.function
 
 ; Object-property arrows / function expressions: \`{ addItem: () => ... }\`.
 ; The pair's key field carries the meaningful name. Without these patterns,
@@ -315,6 +371,25 @@ export const TYPESCRIPT_QUERIES = `
 (public_field_definition
   name: (private_property_identifier) @name) @definition.property
 
+; Closure-valued class fields (#2693): \`handler = (x) => x\` is a CALLABLE
+; member, so it emits Method like every other closure binding rather than a
+; Property that CALLS edges would point at — a call target must be callable.
+; Kotlin already models its class-body closure this way (Method + HAS_METHOD).
+;
+; Note this diverges from tsc's SymbolFlags and SCIP's descriptor, which both
+; class an arrow-initialized field as a PROPERTY/term. That is deliberate: the
+; label here means "is a call target", not "is a tsc symbol kind", and #2687 set
+; that convention for closure bindings in every language. Anchored on
+; public_field_definition — the same node the property rules use — so the
+; parse-worker dedup collapses the pair (callable ranks highest).
+(public_field_definition
+  name: (property_identifier) @name
+  value: (arrow_function)) @definition.method
+
+(public_field_definition
+  name: (property_identifier) @name
+  value: (function_expression)) @definition.method
+
 ; Constructor parameter properties: constructor(public address: Address)
 (required_parameter
   (accessibility_modifier)
@@ -397,6 +472,18 @@ export const JAVASCRIPT_QUERIES = `
     name: (identifier) @name
     value: (function_expression))) @definition.function
 
+; Generator EXPRESSIONS bound to a name (\`const g = function* () {}\`). Without
+; these, the binding emitted a \`Const\` node rather than a \`Function\` one, so
+; \`g()\` resolved to nothing: \`buildGraphTargetIndex\` only admits a callable
+; node. Same construct and same binding semantics as the \`function_expression\`
+; rules directly above, so same label. Covers the four variable-binding shapes
+; (const/let and var, each plain and exported); a generator in an object-literal
+; pair or a HOC wrapper is NOT covered and still falls through anonymous.
+(lexical_declaration
+  (variable_declarator
+    name: (identifier) @name
+    value: (generator_function))) @definition.function
+
 (export_statement
   declaration: (lexical_declaration
     (variable_declarator
@@ -408,6 +495,50 @@ export const JAVASCRIPT_QUERIES = `
     (variable_declarator
       name: (identifier) @name
       value: (function_expression)))) @definition.function
+
+(export_statement
+  declaration: (lexical_declaration
+    (variable_declarator
+      name: (identifier) @name
+      value: (generator_function)))) @definition.function
+
+; \`var\` closure bindings (#2693). The lexical rules above cover const/let;
+; \`var\` is a different grammar node, so \`var f = (x) => x\` kept a Variable
+; label while const/let got Function — and the CALLS edge that resolved through
+; the declaration route therefore pointed at a NON-callable node. Same construct,
+; same binding semantics for this purpose, so same label.
+(variable_declaration
+  (variable_declarator
+    name: (identifier) @name
+    value: (arrow_function))) @definition.function
+
+(variable_declaration
+  (variable_declarator
+    name: (identifier) @name
+    value: (function_expression))) @definition.function
+
+(variable_declaration
+  (variable_declarator
+    name: (identifier) @name
+    value: (generator_function))) @definition.function
+
+(export_statement
+  declaration: (variable_declaration
+    (variable_declarator
+      name: (identifier) @name
+      value: (arrow_function)))) @definition.function
+
+(export_statement
+  declaration: (variable_declaration
+    (variable_declarator
+      name: (identifier) @name
+      value: (function_expression)))) @definition.function
+
+(export_statement
+  declaration: (variable_declaration
+    (variable_declarator
+      name: (identifier) @name
+      value: (generator_function)))) @definition.function
 
 ; Object-property arrows / function expressions: \`{ addItem: () => ... }\`.
 ; See TYPESCRIPT_QUERIES for rationale (issue #1166).
@@ -613,6 +744,16 @@ export const JAVASCRIPT_QUERIES = `
 (field_definition
   property: (property_identifier) @name) @definition.property
 
+; Closure-valued class fields (#2693) — see the TypeScript block for why these
+; are Method rather than Property.
+(field_definition
+  property: (property_identifier) @name
+  value: (arrow_function)) @definition.method
+
+(field_definition
+  property: (property_identifier) @name
+  value: (function_expression)) @definition.method
+
 ; Write access: obj.field = value
 (assignment_expression
   left: (member_expression
@@ -800,6 +941,27 @@ export const JAVA_QUERIES = `
     object: (_) @assignment.receiver
     field: (identifier) @assignment.property)
   right: (_)) @assignment
+
+; ── Closure bindings (#2693) ────────────────────────────────────────────────
+; A name bound to a closure literal IS a callable, so it emits Function rather
+; than a value label — matching TS/JS and the languages #2687 already covered.
+; The callable node is what callable-value-flow joins the binding to (by file,
+; line and name), which is what makes handler.apply(1) resolve. Overlap with the value
+; rules above is collapsed by the parse-worker dedup, which ranks callable
+; highest (#2687).
+; Anchored on field_declaration / local_variable_declaration — the SAME nodes
+; the value rules above use — so the parse-worker dedup (keyed by definition
+; node + name) actually collapses the pair. Anchoring on the inner
+; variable_declarator instead produced a Function AND a Property twin, the exact
+; double-indexing #2687 removed.
+(field_declaration
+  declarator: (variable_declarator
+    name: (identifier) @name
+    value: (lambda_expression))) @definition.function
+(local_variable_declaration
+  declarator: (variable_declarator
+    name: (identifier) @name
+    value: (lambda_expression))) @definition.function
 `;
 
 // C queries - works with tree-sitter-c
@@ -1152,6 +1314,17 @@ export const CSHARP_QUERIES = `
     expression: (_) @assignment.receiver
     name: (identifier) @assignment.property)
   right: (_)) @assignment
+
+; ── Closure bindings (#2693) ────────────────────────────────────────────────
+; A name bound to a closure literal IS a callable, so it emits Function rather
+; than a value label — matching TS/JS and the languages #2687 already covered.
+; The callable node is what callable-value-flow joins the binding to (by file,
+; line and name), which is what makes handler(1) resolve. Overlap with the value
+; rules above is collapsed by the parse-worker dedup, which ranks callable
+; highest (#2687).
+(variable_declarator
+  (identifier) @name
+  (lambda_expression)) @definition.function
 `;
 
 // Rust queries - works with tree-sitter-rust
@@ -1306,6 +1479,28 @@ export const PHP_QUERIES = `
     scope: (_) @assignment.receiver
     name: (variable_name (name) @assignment.property))
   right: (_)) @assignment
+
+; ── Closure bindings (#2693) ────────────────────────────────────────────────
+; A name bound to a closure literal IS a callable, so it emits Function rather
+; than a value label — matching TS/JS and the languages #2687 already covered.
+; The callable node is what callable-value-flow joins the binding to (by file,
+; line and name), which is what makes $handler(1) resolve. Overlap with the value
+; rules above is collapsed by the parse-worker dedup, which ranks callable
+; highest (#2687).
+; Captures the whole variable_name, so the node keeps PHP's \`$\` sigil. That is
+; not cosmetic: PHP holds variables and functions in SEPARATE namespaces, so
+; \`$save\` and \`save()\` can never collide in the language — but dropping the
+; sigil made both mint the id Function:<file>:save, and the local closure was
+; swallowed by the function's node (no node, therefore no edge). The property
+; rules in languages/php/query.ts already keep the sigil for the same reason.
+; The positional join normalises leading sigils, so the binding still matches
+; its own declaration.
+(assignment_expression
+  left: (variable_name) @name
+  right: (arrow_function)) @definition.function
+(assignment_expression
+  left: (variable_name) @name
+  right: (anonymous_function)) @definition.function
 `;
 
 // Ruby queries - works with tree-sitter-ruby
@@ -1374,6 +1569,17 @@ export const RUBY_QUERIES = `
     receiver: (_) @assignment.receiver
     method: (identifier) @assignment.property)
   right: (_)) @assignment
+
+; ── Closure bindings (#2693) ────────────────────────────────────────────────
+; A name bound to a closure literal IS a callable, so it emits Function rather
+; than a value label — matching TS/JS and the languages #2687 already covered.
+; The callable node is what callable-value-flow joins the binding to (by file,
+; line and name), which is what makes handler.call(1) resolve. Overlap with the value
+; rules above is collapsed by the parse-worker dedup, which ranks callable
+; highest (#2687).
+(assignment
+  left: (identifier) @name
+  right: (lambda)) @definition.function
 `;
 
 // Kotlin queries - works with tree-sitter-kotlin (fwcd/tree-sitter-kotlin)
@@ -1719,15 +1925,47 @@ export const DART_QUERIES = `
     (initialized_identifier
       (identifier) @name)) @definition.variable)
 ; Closure bindings: \`var f = (x) => x;\` binds a CALLABLE, so it emits Function
-; rather than Variable, matching TS/JS. This aligns the LABEL only — call
-; resolution runs off the scope-resolution query, which still models the binding
-; as a value, so \`f()\` does not resolve here yet. Overlap with the pattern
-; above is collapsed by the parse-worker dedup (#2687).
+; rather than Variable, matching TS/JS. Overlap with the pattern above is
+; collapsed by the parse-worker dedup (#2687). Since #2693 this node is also
+; what makes \`f()\` resolve: the scope-resolution query declares the binding as
+; a value, and callable-value-flow admits it as a call target precisely because
+; the node it resolves to is a Function.
 (program
   (initialized_identifier_list
     (initialized_identifier
       (identifier) @name
       (function_expression))) @definition.function)
+
+; ── Top-level final/const closure bindings (#2693) ──────────────────────────
+; \`final handler = (x) => x;\` parses as a static_final_declaration_list, not an
+; initialized_identifier_list, so the rules above never reach it — \`final\` is
+; the idiomatic top-level binding keyword and was the one closure form getting
+; neither the callable label nor resolution.
+(program
+  (static_final_declaration_list
+    (static_final_declaration
+      (identifier) @name
+      (function_expression))) @definition.function)
+
+; ── Function-local closure bindings (#2693) ─────────────────────────────────
+; \`void m() { var f = (x) => x; }\` — locals parse as initialized_variable_
+; definition, which the top-level rules above never reach, so a local closure
+; had no graph node at all and \`f()\` could not resolve. Restricted to a
+; function_expression value: ordinary locals stay unindexed, as before.
+(initialized_variable_definition
+  name: (identifier) @name
+  value: (function_expression)) @definition.function
+
+; Second and later declarators of a multi-name local (\`var f = .., g = ..;\`)
+; are initialized_identifier children NESTED INSIDE the same
+; initialized_variable_definition, which the \`name:\`/\`value:\` field rule above
+; only reaches for the FIRST name — so \`g\` silently had no node. Anchored on the
+; inner node so each name gets its own range; the top-level form lives under
+; initialized_identifier_list instead, so these never double-match.
+(initialized_variable_definition
+  (initialized_identifier
+    (identifier) @name
+    (function_expression)) @definition.function)
 (program
   (static_final_declaration_list
     (static_final_declaration

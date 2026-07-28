@@ -107,6 +107,20 @@ const PHP_SCOPE_QUERY = `
   (property_element
     name: (variable_name) @declaration.name)) @declaration.variable
 
+;; ── Declarations — closure bindings (#2693) ───────────────────────────────
+;; A dollar-name bound to a closure (fn(x) => x, or function(x){...}) IS a
+;; callable. PHP emitted the callable-flow seed and invoke for it already, but
+;; nothing DECLARED the name, so the flow pass had no SymbolDefinition to attach
+;; the seed to and the call stayed unresolved.
+;; Restricted to a closure value: declaring every PHP assignment would mint defs
+;; repo-wide for no resolution benefit.
+(assignment_expression
+  left: (variable_name (name) @declaration.name)
+  right: (arrow_function)) @declaration.variable
+(assignment_expression
+  left: (variable_name (name) @declaration.name)
+  right: (anonymous_function)) @declaration.variable
+
 ;; ── Imports — namespace_use_declaration ───────────────────────────────────
 ;;
 ;; Captures ALL forms: plain, alias, function/const qualifiers, and grouped.

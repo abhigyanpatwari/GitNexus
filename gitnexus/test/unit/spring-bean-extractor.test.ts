@@ -68,7 +68,9 @@ describe('Java Spring injection syntax capture', () => {
     `);
 
     expect(facts).toHaveLength(1);
-    expect(facts[0].classAnnotations).toEqual([{ name: 'Service', text: '@Service("checkout")' }]);
+    expect(facts[0].classAnnotations).toEqual([
+      { name: 'Service', text: '@Service("checkout")', line: 2 },
+    ]);
     expect(facts[0].injectionSites).toMatchObject([
       {
         kind: 'constructor',
@@ -167,8 +169,8 @@ describe('Kotlin Spring injection syntax capture', () => {
 
     expect(facts).toHaveLength(1);
     expect(facts[0].classAnnotations).toEqual([
-      { name: 'Service', text: '@Service("checkout")' },
-      { name: 'Primary', text: '@Primary' },
+      { name: 'Service', text: '@Service("checkout")', line: 2 },
+      { name: 'Primary', text: '@Primary', line: 2 },
     ]);
     expect(facts[0].injectionSites).toMatchObject([
       {

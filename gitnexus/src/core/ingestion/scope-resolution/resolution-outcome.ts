@@ -8,7 +8,11 @@ export type ResolutionSuppressionReason =
   | 'selected-callable-deleted'
   | 'overload-ambiguous'
   | 'overload-ambiguous-normalization'
-  | 'free-call-instance-ownership';
+  | 'free-call-instance-ownership'
+  /** #2701 — the receiver is rebound by its own scope and has no type
+   *  there (a JS/TS ordinary `function`'s `this`), so no enclosing type
+   *  can be its type. See `isReceiverOwnedButUnbound`. */
+  | 'receiver-owned-but-unbound';
 
 export type ResolutionOutcome =
   | {
