@@ -34,13 +34,22 @@
  *      resolved.
  *   3. **Dynamic require** — `require(computedPath)` is skipped (non-literal
  *      argument — cannot statically resolve the target).
- *   4. **Calling a renamed default-export binding** — `module.exports = fn` IS
+ *   4. **CommonJS `require()` in TypeScript** — `require()` decomposition is a
+ *      JavaScript-emitter concern, so a `.ts` file's `const m = require('./m')`
+ *      is not decomposed into an import. The EXPORT side of a `.ts` CommonJS
+ *      module is now declared (shared with the JS emitter), but an importer
+ *      written in TypeScript still cannot resolve through it.
+ *   5. **`.cjs` module-level `this`** — the CommonJS/ESM gate consults the file
+ *      extension where it can, but `provider.labelOverride` receives no file
+ *      path, so a `.cjs` file whose only export is a module-level `this.X = fn`
+ *      is not labelled. It now emits nothing rather than an ownerless `Method`.
+ *   6. **Calling a renamed default-export binding** — `module.exports = fn` IS
  *      indexed (#2723, named after the file), but resolving a CALL through a
  *      renamed local binding (`const renamed = require('./mod'); renamed()`)
  *      needs the finalize layer to treat a called namespace binding as the
  *      target module's default export. `const mod = require('./mod'); mod()`
  *      happens to resolve because the names coincide.
- *   5. **Anonymous ESM default** — `export default function () {}` (no name)
+ *   7. **Anonymous ESM default** — `export default function () {}` (no name)
  *      is not indexed either. Same class as the CJS default above, different
  *      construct; not addressed by #2723.
  *

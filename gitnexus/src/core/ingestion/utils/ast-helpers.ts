@@ -1278,9 +1278,6 @@ export const isPrototypeMemberAssignmentNode = (node: SyntaxNode): boolean =>
  * from and the caller supplies a file-derived one. A NAMED function expression
  * is excluded — its own name is captured directly and is more informative.
  */
-export const isAnonymousDefaultExportAssignment = (node: SyntaxNode): boolean =>
-  isCjsDefaultExportAssignment(node) &&
-  node.childForFieldName('right')?.childForFieldName('name') == null;
 
 /**
  * True when `node` is `module.exports = <function>`, named or anonymous — the
@@ -1320,14 +1317,42 @@ const prototypeOwnerLabel = (root: SyntaxNode, ownerName: string): 'Class' | 'Fu
   for (const child of root.namedChildren) {
     const decl = child.type === 'export_statement' ? child.childForFieldName('declaration') : child;
     if (decl === null) continue;
-    if (decl.childForFieldName('name')?.text !== ownerName) continue;
 
-    if (decl.type === 'class_declaration') return 'Class';
-    if (decl.type === 'function_declaration' || decl.type === 'generator_function_declaration')
-      return 'Function';
+    if (decl.childForFieldName('name')?.text === ownerName) {
+      if (decl.type === 'class_declaration') return 'Class';
+      if (decl.type === 'function_declaration' || decl.type === 'generator_function_declaration')
+        return 'Function';
+    }
+
+    // `var Foo = function () {}` / `const Foo = () => {}` / `const Foo = class {}`.
+    // The dominant pre-ES6 constructor form, and the population this whole
+    // change targets. Without it `prototypeOwnerLabel` returned null, the
+    // member fell back to an UNQUALIFIED `Method:<file>:<member>` id, and two
+    // constructors defining the same member name in one file collapsed onto a
+    // single node with no owner edges at all (#2729 review F6).
+    if (!VARIABLE_DECLARATION_NODE_TYPES.has(decl.type)) continue;
+    for (const declarator of decl.namedChildren) {
+      if (declarator.type !== 'variable_declarator') continue;
+      if (declarator.childForFieldName('name')?.text !== ownerName) continue;
+      const value = declarator.childForFieldName('value');
+      if (value === null) continue;
+      // Only a callable value is claimed. A closure binding reliably emits
+      // `Function:<file>:<name>` (the #2687/#2693 convention), so the owner id
+      // resolves to a node that exists. A class EXPRESSION or a require()-bound
+      // value names an owner whose node label this layer cannot predict —
+      // claim none rather than point an edge at a node that may not exist,
+      // which is the same defect class this fix exists to remove.
+      if (CALLABLE_ASSIGNMENT_VALUE_TYPES.has(value.type)) return 'Function';
+    }
   }
   return null;
 };
+
+/** Declaration nodes carrying `variable_declarator` children (JS/TS). */
+const VARIABLE_DECLARATION_NODE_TYPES: ReadonlySet<string> = new Set([
+  'lexical_declaration',
+  'variable_declaration',
+]);
 
 /** Convenience wrapper: returns just the class ID string (backward compat). */
 export const findEnclosingClassId = (node: SyntaxNode, filePath: string): string | null => {

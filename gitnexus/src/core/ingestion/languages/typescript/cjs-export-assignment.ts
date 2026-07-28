@@ -70,13 +70,78 @@ const VARIABLE_DECLARATION_TYPES = new Set(['lexical_declaration', 'variable_dec
  */
 const exportAliasesByRoot = new WeakMap<SyntaxNode, Set<string>>();
 
-/** True when `node` is the `exports` / `module.exports` object itself. */
+/** Nodes that introduce their own binding scope for the purposes below. */
+const BINDING_SCOPE_NODE_TYPES = new Set([
+  'function_declaration',
+  'generator_function_declaration',
+  'function_expression',
+  'generator_function',
+  'arrow_function',
+  'method_definition',
+]);
+
+/**
+ * True when the identifier `name` is SHADOWED by a local binding somewhere
+ * between `node` and the module root — a parameter, or a `var`/`let`/`const`
+ * declared inside an enclosing function.
+ *
+ * This is the difference between reading source and understanding it. The
+ * canonical UMD wrapper takes the exports object as a PARAMETER:
+ *
+ *   (function (exports) { exports.publicApi = function () {}; })(this);
+ *
+ * A text comparison sees `exports` and claims a module export. It is a local
+ * binding, so the assignment exports nothing — and treating it as an export
+ * both invents a symbol and, because the name then collides with the real
+ * module scope, deletes call edges that resolved before (#2729 review F2).
+ */
+function isShadowedByLocalBinding(node: SyntaxNode, name: string): boolean {
+  for (let scope: SyntaxNode | null = node.parent; scope !== null; scope = scope.parent) {
+    if (!BINDING_SCOPE_NODE_TYPES.has(scope.type)) continue;
+
+    // Parameters of this function.
+    const params = scope.childForFieldName('parameters');
+    if (params !== null && declaresName(params, name)) return true;
+
+    // `var`/`let`/`const` declared directly in this function's body.
+    const body = scope.childForFieldName('body');
+    if (body !== null) {
+      for (const stmt of body.namedChildren) {
+        if (!VARIABLE_DECLARATION_TYPES.has(stmt.type)) continue;
+        if (declaresName(stmt, name)) return true;
+      }
+    }
+  }
+  return false;
+}
+
+/** True when `subtree` binds `name` as an identifier (parameter or declarator). */
+function declaresName(subtree: SyntaxNode, name: string): boolean {
+  const stack: SyntaxNode[] = [subtree];
+  while (stack.length > 0) {
+    const n = stack.pop();
+    if (n === undefined) continue;
+    if (n.type === 'identifier' && n.text === name) return true;
+    // Do not descend into nested function bodies — their bindings are not ours.
+    if (n !== subtree && BINDING_SCOPE_NODE_TYPES.has(n.type)) continue;
+    for (const child of n.namedChildren) stack.push(child);
+  }
+  return false;
+}
+
+/**
+ * True when `node` is the `exports` / `module.exports` object itself AND that
+ * name is not shadowed by a local binding at this site.
+ */
 function isExportsObjectExpression(node: SyntaxNode): boolean {
-  if (node.type === 'identifier') return node.text === 'exports';
+  if (node.type === 'identifier') {
+    return node.text === 'exports' && !isShadowedByLocalBinding(node, 'exports');
+  }
   if (node.type !== 'member_expression') return false;
   return (
     node.childForFieldName('object')?.text === 'module' &&
-    node.childForFieldName('property')?.text === 'exports'
+    node.childForFieldName('property')?.text === 'exports' &&
+    !isShadowedByLocalBinding(node, 'module')
   );
 }
 
@@ -127,7 +192,16 @@ const THIS_BINDING_NODE_TYPES = new Set([
  * `exports`/`module` reference marks it CommonJS. A file with neither signal
  * is left alone — silence is not evidence of CommonJS.
  */
-function isCommonJsModule(root: SyntaxNode): boolean {
+function isCommonJsModule(root: SyntaxNode, filePath?: string): boolean {
+  // The extension settles it outright where Node itself does: `.cjs`/`.cts` are
+  // CommonJS whatever the body contains, `.mjs`/`.mts` are ESM. Without this a
+  // `.cjs` file whose only content is `this.x = fn` carries no AST signal and
+  // was classified non-CommonJS, silently dropping the export (#2729 review F14).
+  if (filePath !== undefined) {
+    if (/\.(cjs|cts)$/.test(filePath)) return true;
+    if (/\.(mjs|mts)$/.test(filePath)) return false;
+  }
+
   const cached = isCommonJsByRoot.get(root);
   if (cached !== undefined) return cached;
 
@@ -159,7 +233,35 @@ function isCommonJsModule(root: SyntaxNode): boolean {
  * module's. Every other function form binds its own receiver and stops the
  * walk — that is an instance member, handled as a Method instead.
  */
-export function isModuleLevelThisExport(assignment: SyntaxNode, root: SyntaxNode): boolean {
+/**
+ * True when `assignment` is a `this.X = <callable>` at MODULE level, regardless
+ * of module system.
+ *
+ * Distinct from {@link isModuleLevelThisExport}, which additionally requires the
+ * file to be CommonJS. A module-level `this` member in ESM (or in a file with no
+ * module-system signal) is neither an export nor an instance member — `this` is
+ * `undefined` there — so it should produce nothing rather than an ownerless
+ * `Method` node (#2729 review F13).
+ */
+export function isModuleLevelThisAssignment(assignment: SyntaxNode): boolean {
+  const left =
+    assignment.type === 'assignment_expression' ? assignment.childForFieldName('left') : null;
+  if (left === null || left.type !== 'member_expression') return false;
+  if (left.childForFieldName('object')?.type !== 'this') return false;
+  const right = assignment.childForFieldName('right');
+  if (right === null || !CALLABLE_VALUE_TYPES.has(right.type)) return false;
+
+  for (let anc: SyntaxNode | null = assignment.parent; anc !== null; anc = anc.parent) {
+    if (THIS_BINDING_NODE_TYPES.has(anc.type)) return false;
+  }
+  return true;
+}
+
+export function isModuleLevelThisExport(
+  assignment: SyntaxNode,
+  root: SyntaxNode,
+  filePath?: string,
+): boolean {
   const left =
     assignment.type === 'assignment_expression' ? assignment.childForFieldName('left') : null;
   if (left === null || left.type !== 'member_expression') return false;
@@ -168,17 +270,41 @@ export function isModuleLevelThisExport(assignment: SyntaxNode, root: SyntaxNode
   for (let anc: SyntaxNode | null = assignment.parent; anc !== null; anc = anc.parent) {
     if (THIS_BINDING_NODE_TYPES.has(anc.type)) return false;
   }
-  return isCommonJsModule(root);
+  return isCommonJsModule(root, filePath);
 }
 
 /** The property name of a module-level `this.X = fn` export, or null. */
-export function moduleLevelThisExportName(assignment: SyntaxNode, root: SyntaxNode): string | null {
-  if (!isModuleLevelThisExport(assignment, root)) return null;
+export function moduleLevelThisExportName(
+  assignment: SyntaxNode,
+  root: SyntaxNode,
+  filePath?: string,
+): string | null {
+  if (!isModuleLevelThisExport(assignment, root, filePath)) return null;
   const property = assignment.childForFieldName('left')?.childForFieldName('property');
   return property?.type === 'property_identifier' ? property.text : null;
 }
 
-/** Collect the names `node` binds into its enclosing scope, into `out`. */
+/** Right-hand-side node types that make a binding CALLABLE. */
+const CALLABLE_VALUE_TYPES = new Set([
+  'arrow_function',
+  'function_expression',
+  'generator_function',
+]);
+
+/**
+ * Collect the CALLABLE names `node` binds into its enclosing scope, into `out`.
+ *
+ * Callable-only is load-bearing. The guard exists to stop TWO declarations of
+ * one callable name making the name ambiguous, which drops the intra-module
+ * call edge. A non-callable binding cannot be a call target and so cannot
+ * create that ambiguity — including it instead deletes a genuine export:
+ *
+ *   let cache = null;
+ *   exports.cache = function (v) { cache = v; return cache; };
+ *
+ * With every module-scope name collected, `cache` matched the `let` and the
+ * export vanished entirely — no node, no edge (#2729 review F8).
+ */
 function collectDeclaredNames(node: SyntaxNode, out: Set<string>): void {
   if (NAMED_DECLARATION_TYPES.has(node.type)) {
     const name = node.childForFieldName('name');
@@ -193,7 +319,9 @@ function collectDeclaredNames(node: SyntaxNode, out: Set<string>): void {
       // Destructuring patterns bind several names; they never collide with a
       // CJS export assignment's single property name in a way this guard
       // needs to model, so only plain identifiers are collected.
-      if (name !== null && name.type === 'identifier') out.add(name.text);
+      if (name === null || name.type !== 'identifier') continue;
+      const value = declarator.childForFieldName('value');
+      if (value !== null && CALLABLE_VALUE_TYPES.has(value.type)) out.add(name.text);
     }
     return;
   }
@@ -244,12 +372,14 @@ function cjsExportedPropertyName(node: SyntaxNode, root?: SyntaxNode): string | 
   if (isExportsObjectExpression(receiver)) return property.text;
 
   // An identifier aliasing the exports object (`const e = exports; e.foo = fn`).
-  // Only consulted when a root is supplied, so the shadow guard — which asks
-  // about a receiver it has already pinned — keeps its cheaper path.
+  // The alias is a MODULE-scope binding, so it only means "exports" where it is
+  // not shadowed — `const e = exports; function f(e) { e.x = fn }` assigns to
+  // the parameter, not to the module (#2729 review F2).
   if (
     receiver.type === 'identifier' &&
     root !== undefined &&
-    exportAliases(root).has(receiver.text)
+    exportAliases(root).has(receiver.text) &&
+    !isShadowedByLocalBinding(receiver, receiver.text)
   )
     return property.text;
 
@@ -269,16 +399,6 @@ export function cjsExportedNameFor(node: SyntaxNode, root: SyntaxNode): string |
 }
 
 /**
- * True when `node` is the value of a `<identifier>.<member> = fn` assignment
- * whose receiver is NOT the exports object — the over-match the widened
- * member-assignment rule accepts so an `exports` alias can be recognised.
- *
- * Such a receiver declares nothing at module scope: `obj.handler = fn` binds a
- * property of `obj`, not a module symbol named `handler`. Prototype and `this`
- * receivers are not identifiers, so they never reach this guard and keep their
- * own (Method) treatment.
- */
-/**
  * True when `node` is the value of a `this.X = fn` assignment that declares
  * NOTHING at module scope — either because a function encloses it (an instance
  * member, which gets a Method + owner edge instead) or because the file is not
@@ -296,6 +416,16 @@ export function isUndeclarableThisMemberValue(node: SyntaxNode, root: SyntaxNode
   return !isModuleLevelThisExport(assignment, root);
 }
 
+/**
+ * True when `node` is the value of a `<identifier>.<member> = fn` assignment
+ * whose receiver is NOT the exports object — the over-match the widened
+ * member-assignment rule accepts so an `exports` alias can be recognised.
+ *
+ * Such a receiver declares nothing at module scope: `obj.handler = fn` binds a
+ * property of `obj`, not a module symbol named `handler`. Prototype and `this`
+ * receivers are not identifiers, so they never reach this guard and keep their
+ * own (Method) treatment.
+ */
 export function isUnexportedMemberAssignmentValue(node: SyntaxNode, root: SyntaxNode): boolean {
   const assignment = node.parent;
   if (assignment === null || assignment.type !== 'assignment_expression') return false;
@@ -318,10 +448,75 @@ export function isUnexportedMemberAssignmentValue(node: SyntaxNode, root: Syntax
  * anything that is not a CJS export assignment at all.
  */
 export function isShadowedCjsExportAssignment(node: SyntaxNode, root: SyntaxNode): boolean {
-  const exportedName = cjsExportedPropertyName(node);
+  const exportedName = cjsExportedName(node, root);
   if (exportedName === null) return false;
 
   return moduleScopeDeclaredNames(root).has(exportedName);
+}
+
+/**
+ * The module-scope name this assignment value exports, across EVERY export
+ * form — direct `exports.X`, `module.exports.X`, an alias receiver, a
+ * module-level `this.X`, and the anonymous/named default export.
+ *
+ * One entry point so the shadow guard cannot silently miss a form. Previously
+ * it consulted only the direct path: the alias path was skipped because `root`
+ * was not forwarded, `this` never reached it at all, and the default export had
+ * no check — three holes that each dropped a real call edge or, for the
+ * default, fabricated a self-recursive one (#2729 review F3/F4).
+ */
+export function cjsExportedName(value: SyntaxNode, root: SyntaxNode): string | null {
+  const direct = cjsExportedPropertyName(value, root);
+  if (direct !== null) return direct;
+
+  const assignment = value.parent;
+  if (assignment === null || assignment.type !== 'assignment_expression') return null;
+  if (assignment.childForFieldName('right')?.id !== value.id) return null;
+
+  // Module-level `this.X = fn` in CommonJS — `this` IS `module.exports`.
+  const viaThis = moduleLevelThisExportName(assignment, root);
+  if (viaThis !== null) return viaThis;
+
+  // `module.exports = fn` — the whole module is the callable. A named function
+  // expression names itself; an anonymous one takes the file-derived name,
+  // which the caller supplies since a tree has no file path.
+  if (isCjsDefaultExportAssignmentNode(assignment)) {
+    return assignment.childForFieldName('right')?.childForFieldName('name')?.text ?? null;
+  }
+
+  return null;
+}
+
+/** `module.exports = <callable>`, named or anonymous. */
+function isCjsDefaultExportAssignmentNode(assignment: SyntaxNode): boolean {
+  const right = assignment.childForFieldName('right');
+  if (right === null || !CALLABLE_VALUE_TYPES.has(right.type)) return false;
+  const left = assignment.childForFieldName('left');
+  if (left === null || left.type !== 'member_expression') return false;
+  return (
+    left.childForFieldName('object')?.text === 'module' &&
+    left.childForFieldName('property')?.text === 'exports'
+  );
+}
+
+/**
+ * True when the DERIVED default-export name collides with a callable the module
+ * already declares.
+ *
+ * `format.js` containing `function format() {}` plus an anonymous
+ * `module.exports = function () { return format(v); }` merged both onto one
+ * node, and the inner call to `format` then resolved to the merged node —
+ * fabricating a self-recursion edge present in no source (#2729 review F4).
+ * A fabricated edge is worse than a missing one: it misleads `impact` with a
+ * caller that does not exist.
+ */
+export function defaultExportNameCollides(
+  assignment: SyntaxNode,
+  root: SyntaxNode,
+  derivedName: string,
+): boolean {
+  if (!isCjsDefaultExportAssignmentNode(assignment)) return false;
+  return moduleScopeDeclaredNames(root).has(derivedName);
 }
 
 /**

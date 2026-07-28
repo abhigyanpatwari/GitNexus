@@ -109,13 +109,17 @@ import type { ParseWorkerResult } from '../core/ingestion/workers/parse-worker.j
 // and nested-callable caller attribution appends the localIdentity suffix the
 // definition phase already used. Both are parse-time, so a warm cache would
 // otherwise replay the old captures and ids verbatim.
+// v30/schema v22: CommonJS export capture emission (#2723) — new @definition/@declaration
+// captures for exports.X, aliased receivers, module-level `this`, re-export
+// forwarding and `module.exports = fn`, plus prototype/`this` Methods. A warm
+// cache would otherwise replay the pre-fix captures verbatim.
 // v20: Java/Kotlin capture side-channels persist package and class-annotation
 // facts for shared Spring Bean resolution.
 // v19: Java enum constant bodies emit E$N Class nodes; anonymous naming uses
 // JLS 13.1 immediate-host chains (#2555).
 // v18: Worker$N anonymous bodies. v17: callable-value-flow operand identity.
 // v16: direct callee identity.
-const SCHEMA_BUMP = 29;
+const SCHEMA_BUMP = 30;
 const GITNEXUS_PKG_VERSION = (() => {
   try {
     // package.json sits at gitnexus/package.json — two levels up from

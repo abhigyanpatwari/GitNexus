@@ -533,8 +533,17 @@ export interface RepoMeta {
  * present nowhere in the source. All of that changes emitted node ids AND edges
  * on files that did not themselves change, so a v20 index topped up
  * incrementally keeps serving the old attribution; force a full re-analyze.
+ *
+ * v22: CommonJS export forms are indexed (#2723) — `exports.X`/`module.exports.X`,
+ * aliased receivers, module-level `this`, re-export forwarding, `module.exports = fn`,
+ * plus prototype/`this` members as Methods with owner edges; and the #2729 review
+ * fixes that stopped a text-only exports receiver inventing exports inside UMD
+ * factories and stopped the shadow guard deleting or fabricating call edges.
+ * These change what is emitted for source whose CONTENT has not changed, so a v21
+ * index would keep serving the pre-fix graph for every unchanged CommonJS file —
+ * the exact "Target not found" symptom #2723 reported. Force a full re-analyze.
  */
-export const INCREMENTAL_SCHEMA_VERSION = 21;
+export const INCREMENTAL_SCHEMA_VERSION = 22;
 
 export interface IndexedRepo {
   repoPath: string;

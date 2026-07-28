@@ -46,6 +46,7 @@ import {
 import { getTreeSitterBufferSize } from '../../constants.js';
 import { parseSourceSafe } from '../../../tree-sitter/safe-parse.js';
 import { synthesizeCallableFlowCaptures } from '../../utils/callable-flow-captures.js';
+import { synthesizeCjsModuleExports } from './cjs-module-exports.js';
 import {
   deriveDefaultExportHocName,
   isBlockedDefaultExportHoc,
@@ -528,6 +529,12 @@ export function emitTsScopeCaptures(
   synthesizeInstanceofNarrowings(tree.rootNode, out);
   synthesizeTsInheritanceReferences(tree.rootNode, out);
   out.push(...synthesizeCallableFlowCaptures(tree.rootNode, TS_CALLABLE_CAPTURE_OPTIONS));
+
+  // CommonJS module-export declarations (#2723). Shared with the JavaScript
+  // emitter: a `.ts` file in a CommonJS package uses the same forms, and
+  // without this the default-export NODE was emitted with nothing declaring it
+  // — the "found, zero callers" state this work exists to remove (#2729 F7).
+  synthesizeCjsModuleExports(tree.rootNode, filePath, out);
 
   return out;
 }

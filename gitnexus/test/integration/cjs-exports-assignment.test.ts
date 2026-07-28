@@ -156,7 +156,10 @@ describe('#2723 follow-up: callable member assignments', () => {
       'src/thiscls.js',
       'class Klass {\n  constructor() { this.cb = function () { return 1; }; }\n}\n',
     );
-    expect(owners.some((o) => o.startsWith('Class:src/thiscls.js:Klass -> Method:'))).toBe(true);
+    // The class owns its `constructor` AND the `cb` member assigned inside it.
+    const cbOwners = owners.filter((o) => o.includes('.cb'));
+    expect(cbOwners).toHaveLength(1);
+    expect(cbOwners[0]).toMatch(/^Class:src\/thiscls\.js:Klass -> Method:src\/thiscls\.js:Klass\./);
   });
 
   // The scope declaration for a shadowed CJS export is suppressed, so its graph
@@ -195,9 +198,49 @@ describe('#2723 follow-up: callable member assignments', () => {
 
   // Reassigning `exports` does NOT export in CommonJS — it only breaks the
   // alias to `module.exports` — so indexing it would invent an export.
+  // Paired with a positive control in the SAME fixture. Without it this test
+  // passes trivially: no JS/TS query matches a bare-identifier LHS at all, so
+  // an empty graph — from a parse failure or an unrelated guard misfire —
+  // would satisfy it just as well as correct behaviour (#2729 review F9).
   it('exports = fn is not treated as a default export', async () => {
-    const { labels } = await nodesFor('src/rebind.js', 'exports = function (v) { return v; };\n');
-    expect(labels.filter((l) => l === 'Function')).toEqual([]);
+    const { ids } = await nodesFor(
+      'src/rebind.js',
+      'exports = function (v) { return v; };\nmodule.exports.ok = function (v) { return v; };\n',
+    );
+    expect(ids).toContain('Function:src/rebind.js:ok');
+    expect(ids).not.toContain('Function:src/rebind.js:exports');
+    expect(ids).not.toContain('Function:src/rebind.js:rebind');
+  });
+
+  // F4: an anonymous default takes the FILE name. When that collides with a
+  // callable the module already declares, the two merged onto one node and the
+  // inner call resolved to itself — fabricating a self-recursion edge present
+  // in no source. A fabricated edge is worse than a missing one.
+  it('a default export whose derived name collides emits no merged node', async () => {
+    const { ids } = await nodesFor(
+      'src/format.js',
+      'function format(v) { return String(v); }\nmodule.exports = function (v) { return format(v); };\n',
+    );
+    expect(ids).toContain('Function:src/format.js:format');
+    expect(ids).not.toContain('Function:src/format.js:exports');
+    expect(ids.filter((id) => id.endsWith(':format'))).toHaveLength(1);
+  });
+
+  // F6: `var Foo = function(){}` is the dominant pre-ES6 constructor form.
+  // Owner lookup handled only declarations, so two same-named members
+  // collapsed onto one unqualified node with no owner edges at all.
+  it('variable-bound constructors own their prototype methods distinctly', async () => {
+    const { ids, owners } = await nodesFor(
+      'src/varctor.js',
+      'var Foo = function () {};\nFoo.prototype.run = function (a) { return a; };\n' +
+        'var Baz = function () {};\nBaz.prototype.run = function (a) { return !a; };\n',
+    );
+    expect(ids).toContain('Method:src/varctor.js:Foo.run');
+    expect(ids).toContain('Method:src/varctor.js:Baz.run');
+    expect(owners).toEqual([
+      'Function:src/varctor.js:Baz -> Method:src/varctor.js:Baz.run',
+      'Function:src/varctor.js:Foo -> Method:src/varctor.js:Foo.run',
+    ]);
   });
 
   it('a non-exports receiver emits no node', async () => {
@@ -246,6 +289,7 @@ describeIfWorkerBuilt('#2723 calls resolve to the CJS-exported function', () => 
   const callersOf = async (
     files: { path: string; content: string }[],
     name: string,
+    inFile?: string,
   ): Promise<string[]> => {
     const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'gn-2723-'));
     try {
@@ -258,7 +302,12 @@ describeIfWorkerBuilt('#2723 calls resolve to the CJS-exported function', () => 
         workerPoolSize: 1,
         workerUrlForTest: DIST_WORKER_URL,
       });
-      const target = graph.nodes.find((n) => n.properties.name === name && n.label === 'Function');
+      const target = graph.nodes.find(
+        (n) =>
+          n.properties.name === name &&
+          n.label === 'Function' &&
+          (inFile === undefined || n.id.includes(`:${inFile}:`)),
+      );
       expect(target).toBeDefined();
       const byId = new Map(graph.nodes.map((n) => [n.id, n]));
       return graph.relationships
@@ -423,6 +472,115 @@ describeIfWorkerBuilt('#2723 calls resolve to the CJS-exported function', () => 
     ];
     expect(await callersOf(files, 'imported')).toEqual(['drive']);
     expect(await callersOf(files, 'second')).toEqual(['drive']);
+  });
+
+  // ─── #2729 review regressions ──────────────────────────────────────────
+  // Each of these failed against the pre-review build. They cover the two root
+  // causes: a receiver identified by TEXT with no scope lookup, and a shadow
+  // guard that reached only one of the export forms.
+
+  // F2: the canonical UMD wrapper takes the exports object as a PARAMETER. A
+  // text match called it a module export, invented a symbol, and deleted the
+  // factory's real call edges.
+  it('an `exports` parameter does not hijack the module (UMD factory)', async () => {
+    expect(
+      await callersOf(
+        [
+          { path: 'src/other.js', content: 'exports.noop = function (v) { return v; };\n' },
+          {
+            path: 'src/umd.js',
+            content:
+              "const other = require('./other');\n" +
+              '(function (exports) {\n' +
+              '  function publicApi(v) { return other.noop(v); }\n' +
+              '  exports.publicApi = function (v) { return publicApi(v); };\n' +
+              '})(this);\n',
+          },
+        ],
+        'noop',
+      ),
+    ).toEqual(['publicApi']);
+  });
+
+  // F1: `const helper = require('./helper'); exports.helper = fn` resolved an
+  // importer into the OTHER module's function — an edge in no source.
+  it('a wrapper export does not resolve into the required module', async () => {
+    expect(
+      await callersOf(
+        [
+          { path: 'src/helper.js', content: 'exports.helper = function (v) { return v; };\n' },
+          {
+            path: 'src/wrap.js',
+            content:
+              "const helper = require('./helper');\nexports.helper = function (v) { return v; };\n",
+          },
+          {
+            path: 'src/wrapuse.js',
+            content:
+              "const { helper } = require('./wrap');\nfunction driveWrap(v) { return helper(v); }\n",
+          },
+        ],
+        'helper',
+        'src/wrap.js',
+      ),
+    ).toEqual(['driveWrap']);
+  });
+
+  // F3 hole A: the alias receiver skipped the shadow guard, dropping a real edge.
+  it('an aliased export does not shadow a same-named declared function', async () => {
+    expect(
+      await callersOf(
+        [
+          {
+            path: 'src/aliasdup.js',
+            content:
+              'const e = exports;\nfunction dup(v) { return v; }\n' +
+              'e.dup = function (v) { return !v; };\nfunction callIt(v) { return dup(v); }\n',
+          },
+        ],
+        'dup',
+      ),
+    ).toEqual(['callIt']);
+  });
+
+  // F3 hole B: module-level `this` never reached the shadow guard at all.
+  it('a module-level this export does not shadow a declared function', async () => {
+    expect(
+      await callersOf(
+        [
+          {
+            path: 'src/thisdup.js',
+            content:
+              "const dep = require('./other2');\nfunction dup2(v) { return v; }\n" +
+              'this.dup2 = function (v) { return !v; };\nfunction callIt2(v) { return dup2(v); }\n',
+          },
+          { path: 'src/other2.js', content: 'exports.noop = function (v) { return v; };\n' },
+        ],
+        'dup2',
+      ),
+    ).toEqual(['callIt2']);
+  });
+
+  // F8: the guard collected EVERY module-scope name, so an export colliding
+  // with a plain variable was deleted outright — node and edge both gone.
+  it('a non-callable variable of the same name does not delete the export', async () => {
+    expect(
+      await callersOf(
+        [
+          {
+            path: 'src/cache.js',
+            content:
+              'let cache = null;\nexports.cache = function (v) { cache = v; return cache; };\n',
+          },
+          {
+            path: 'src/cacheuse.js',
+            content:
+              "const { cache } = require('./cache');\nfunction driveCache(v) { return cache(v); }\n",
+          },
+        ],
+        'cache',
+      ),
+    ).toEqual(['driveCache']);
   });
 
   it('cross-file destructured require() call resolves', async () => {

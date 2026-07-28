@@ -108,6 +108,7 @@ import { buildTypeEnv } from '../type-env.js';
 import type { ConstructorBinding } from '../type-env.js';
 import { detectFrameworkFromAST } from '../framework-detection.js';
 import { generateId } from '../../../lib/utils.js';
+import { defaultExportNameCollides } from '../languages/typescript/cjs-export-assignment.js';
 import {
   extractVueScript,
   extractTemplateComponents,
@@ -2148,11 +2149,38 @@ const processFileGroup = (
       // forms are named after the file by the same convention anonymous
       // default exports already use. Takes precedence over `nameNode` for
       // exactly that reason.
-      const cjsDefaultExportName =
-        definitionNode && isCjsDefaultExportAssignment(definitionNode)
-          ? (definitionNode.childForFieldName('right')?.childForFieldName('name')?.text ??
-            deriveDefaultExportHocName(file.path))
-          : null;
+      //
+      // The derived name is dropped when it COLLIDES with a callable the module
+      // already declares. `format.js` holding `function format() {}` plus an
+      // anonymous `module.exports = function () { return format(v); }` merged
+      // both onto one node, and the inner call to `format` then resolved to
+      // that merged node — fabricating a self-recursion edge present in no
+      // source (#2729 review F4). A fabricated edge is worse than a missing
+      // one: it hands `impact` a caller that does not exist.
+      const isCjsDefaultExport =
+        definitionNode !== undefined && isCjsDefaultExportAssignment(definitionNode);
+      const cjsDefaultExportOwnName = isCjsDefaultExport
+        ? definitionNode?.childForFieldName('right')?.childForFieldName('name')?.text
+        : undefined;
+      // A collision must SUPPRESS the definition outright, not merely decline to
+      // name it — falling through would let the captured left property name the
+      // node the literal `exports`, which is both meaningless and the very node
+      // this feature's own test forbids.
+      const suppressCjsDefaultExport = (() => {
+        if (!isCjsDefaultExport || cjsDefaultExportOwnName !== undefined) return false;
+        const root = (definitionNode as { tree?: { rootNode?: SyntaxNode } }).tree?.rootNode;
+        if (root === undefined) return false;
+        return defaultExportNameCollides(
+          definitionNode!,
+          root,
+          deriveDefaultExportHocName(file.path),
+        );
+      })();
+      if (suppressCjsDefaultExport) continue;
+
+      const cjsDefaultExportName = isCjsDefaultExport
+        ? (cjsDefaultExportOwnName ?? deriveDefaultExportHocName(file.path))
+        : null;
 
       // Synthesize name for constructors without explicit @name capture (e.g. Swift init)
       if (

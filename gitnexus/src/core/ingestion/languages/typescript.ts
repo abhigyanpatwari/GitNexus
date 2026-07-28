@@ -23,6 +23,7 @@ import {
 } from '../utils/ast-helpers.js';
 import {
   cjsExportedNameFor,
+  isModuleLevelThisAssignment,
   isModuleLevelThisExport,
   isShadowedCjsExportAssignmentNode,
 } from './typescript/cjs-export-assignment.js';
@@ -58,6 +59,10 @@ const memberAssignmentLabel = (node: SyntaxNode): NodeLabel | null => {
   if (root !== undefined && isModuleLevelThisExport(node, root)) return 'Function';
   // `module.exports = fn` — the module itself is the callable.
   if (isCjsDefaultExportAssignment(node)) return 'Function';
+  // A module-level `this` member in ESM or a no-signal file is neither an
+  // export (top-level `this` is undefined) nor an instance member. Emitting a
+  // Method there minted an ownerless node (#2729 review F13).
+  if (isModuleLevelThisAssignment(node)) return null;
   if (isPrototypeMemberAssignmentNode(node)) return 'Method';
   if (isShadowedCjsExportNode(node)) return null;
 
