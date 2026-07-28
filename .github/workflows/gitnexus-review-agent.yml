@@ -1294,8 +1294,9 @@ jobs:
             dispatching any lane, so a fully-delegated run cannot leave the gate
             unsatisfied.
 
-            Return one structured field named body containing the complete Markdown
-            review, structured exactly as: first a short opening paragraph that leads
+            Return two structured fields, body and complete. The body field carries
+            the complete Markdown review, structured exactly as: first a short
+            opening paragraph that leads
             with the skill's verdict wording and a plain-language summary of what the
             PR does; then "### Findings" ordered by severity (CRITICAL, HIGH, MEDIUM,
             LOW), one bold-severity bullet per finding stating the one-sentence claim
@@ -1307,15 +1308,19 @@ jobs:
             (exact analyzed head SHA, real line range) and deleted or rename-old paths
             as the same URL shape at ${{ steps.inputs.outputs.merge_base }}. Do not
             include an HTML publication marker and do not mention users or teams.
-            Always end the run by returning that structured body field, even when a
-            lane fails, a query comes back empty, or the analysis is incomplete —
-            describe the gap inside the review instead of finishing without output.
-            Also return the boolean field complete: true only when you actually
-            finished the review you were asked for, and false whenever a lane
-            failed, a needed query never resolved, or you ran out of turns. A
-            false value still publishes the partial review, but labelled as
-            incomplete rather than accepted — never report true to make the run
-            look clean.
+            Always end the run by returning that body, even when a lane fails, a
+            query comes back empty, or the analysis is incomplete — describe the
+            gap inside the review instead of finishing without output. The body is
+            always the real review of the actual diff: never a placeholder, a
+            stub, a promise to review later, or a bare status line. If you got far
+            enough to make the required context call, you got far enough to report
+            what you did and did not manage to check, on which files.
+            Set complete: true only when you finished the review you were asked
+            for, and false whenever a lane failed, a needed query never resolved,
+            or you ran out of turns. A false value still publishes that partial
+            review, labelled incomplete rather than accepted — so never report
+            true to make the run look clean, and never shorten the body because
+            you are reporting false.
           claude_args: |
             --model claude-sonnet-5
             --add-dir "${{ runner.temp }}/gitnexus-review-pr-target"
@@ -1367,6 +1372,11 @@ jobs:
           const { TextDecoder } = require('node:util');
 
           const MAX_ARTIFACT_BYTES = 60_000;
+          // A run that reached the structured-output step spent real budget and
+          // proved graph evidence, so a body too short to be a review of any diff
+          // is a malfunction to surface, not a review to publish: one run returned
+          // the literal string 'placeholder'.
+          const MIN_BODY_CHARS = 200;
           const MAX_BODY_BYTES = 54_000;
           const MAX_TRANSCRIPT_BYTES = 8_000_000;
           const MAX_TRANSCRIPT_MESSAGES = 1_000;
@@ -1378,6 +1388,7 @@ jobs:
           const SHA_RE = /^[0-9a-f]{40}$/;
           const TOOL_ID_RE = /^[A-Za-z0-9_-]{1,128}$/;
           const CONTEXT_EVIDENCE_TOOL = 'mcp__gitnexus__context';
+          const LANE_DISPATCH_TOOL = 'Agent';
           const NEXT_STEP_HINT_MARKER = '\n\n---\n**Next:';
           const failureMessages = {
             invalid_pr_number: 'The review request did not contain a valid pull request number.',
@@ -1788,6 +1799,11 @@ jobs:
               unusableResults: 0,
             };
             const answeredCalls = new Set();
+            // Whether the swarm actually dispatched cannot be proven by any unit
+            // test (the activation checklist says so), but the transcript knows:
+            // one distinct parent_tool_use_id per lane that really ran.
+            const laneTurns = new Set();
+            let laneDispatches = 0;
             const candidateCalls = new Map();
             const successfulResults = new Map();
             const seenToolCalls = new Set();
@@ -1822,6 +1838,7 @@ jobs:
                   throw new Error('execution transcript parent linkage is invalid');
                 }
                 sidechain = true;
+                laneTurns.add(entry.parent_tool_use_id);
               }
               if (entry.type === 'assistant') {
                 if (
@@ -1848,6 +1865,7 @@ jobs:
                     throw new Error('execution transcript contains a duplicate tool call id');
                   }
                   seenToolCalls.add(block.id);
+                  if (block.name === LANE_DISPATCH_TOOL && !sidechain) laneDispatches += 1;
                   if (block.name === CONTEXT_EVIDENCE_TOOL) {
                     if (sidechain) {
                       rejected.sidechainCalls += 1;
@@ -1918,6 +1936,9 @@ jobs:
             }
             return {
               hasContextEvidence: successfulResults.size > 0,
+              laneReport:
+                `lane dispatches requested: ${laneDispatches}; ` +
+                `lanes that produced transcript turns: ${laneTurns.size}`,
               // Bounded, path-sanitized counters so a rejected review says why
               // it was rejected instead of only that it was.
               diagnosis:
@@ -1982,6 +2003,11 @@ jobs:
               let graphEvidence;
               try {
                 graphEvidence = proveGraphReview();
+                // Always, not only on rejection: this is the one place a run can
+                // say whether the six lanes really dispatched. A review that
+                // merely completes cannot distinguish a working swarm from a
+                // silent inline fallback.
+                console.log(`Swarm dispatch: ${graphEvidence.laneReport}.`);
               } catch (error) {
                 failureCode = 'invalid_execution_transcript';
                 body = failureMessages[failureCode];
@@ -2008,7 +2034,7 @@ jobs:
                       Array.isArray(parsed) ||
                       Object.keys(parsed).length !== 2 ||
                       typeof parsed.body !== 'string' ||
-                      parsed.body.trim().length === 0 ||
+                      parsed.body.trim().length < MIN_BODY_CHARS ||
                       typeof parsed.complete !== 'boolean'
                     ) {
                       throw new Error('structured output shape mismatch');

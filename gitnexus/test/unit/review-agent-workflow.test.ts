@@ -84,6 +84,9 @@ const CONTROL_SHA = '1'.repeat(40);
 const HEAD_SHA = '2'.repeat(40);
 const BASE_SHA = '3'.repeat(40);
 const CHANGED_PATH = 'gitnexus/src/cli/status.ts';
+// Long enough to clear the assembler's MIN_BODY_CHARS floor, which exists so a
+// stub like the literal string "placeholder" can never be published.
+const ACCEPTED_BODY = `**APPROVE.** ${'Accepted graph-backed review of the changed surface. '.repeat(5)}`;
 
 function jobBlock(name: string): string {
   const match = workflow.match(
@@ -432,7 +435,7 @@ function runArtifactScenario({
   executionFileOutput,
   noIndexableChangedSymbols = false,
   rawTranscript = JSON.stringify(reviewTranscript()),
-  structuredOutput = JSON.stringify({ body: 'Accepted graph-backed review', complete: true }),
+  structuredOutput = JSON.stringify({ body: ACCEPTED_BODY, complete: true }),
 }: ArtifactScenario = {}) {
   const script = embeddedNodeScript('analyze', 'Assemble bounded review artifact');
   const runnerTemp = mkdtempSync(path.join(tmpdir(), 'gitnexus-review-artifact-'));
@@ -1427,7 +1430,7 @@ describe('gitnexus review-agent workflow security contract', () => {
       head_sha: HEAD_SHA,
       base_sha: BASE_SHA,
       status: 'success',
-      body: 'Accepted graph-backed review',
+      body: ACCEPTED_BODY,
       failure_code: null,
       graph_evidence: {
         mode: 'context',
@@ -1831,7 +1834,10 @@ describe('gitnexus review-agent workflow security contract', () => {
 
   it('publishes an incomplete analysis as a labelled failure, never as an accepted review', () => {
     const incomplete = runArtifactScenario({
-      structuredOutput: JSON.stringify({ body: 'Partial review, two lanes died', complete: false }),
+      structuredOutput: JSON.stringify({
+        body: `Partial review, two lanes died. ${'The correctness lane covered the changed parser path. '.repeat(4)}`,
+        complete: false,
+      }),
     });
     expect(incomplete.artifact).toMatchObject({
       status: 'failure',
@@ -2220,5 +2226,103 @@ describe('gitnexus review-agent workflow security contract', () => {
     expect(removalIndex).toBeGreaterThan(gatedIndex);
     // Publication itself stays authorization-gated.
     expect(publish).toContain("needs.analyze.outputs.authorized == 'true'");
+  });
+
+  it('refuses a stub body even when the model admits it is incomplete', () => {
+    // A production run returned {"body":"placeholder","complete":false}: the
+    // gate had already been satisfied, so this published a maintainer-visible
+    // comment whose entire content was that word.
+    const stub = runArtifactScenario({
+      structuredOutput: JSON.stringify({ body: 'placeholder', complete: false }),
+    });
+    expect(stub.artifact).toMatchObject({
+      status: 'failure',
+      failure_code: 'invalid_model_output',
+    });
+    expect(stub.artifact.body).not.toContain('placeholder');
+
+    const stubButComplete = runArtifactScenario({
+      structuredOutput: JSON.stringify({ body: 'LGTM', complete: true }),
+    });
+    expect(stubButComplete.artifact.failure_code).toBe('invalid_model_output');
+
+    // A real partial review still publishes, labelled incomplete.
+    const realPartial = runArtifactScenario({
+      structuredOutput: JSON.stringify({
+        body: `**REQUEST CHANGES.** ${'This is a genuine partial review of the diff. '.repeat(6)}`,
+        complete: false,
+      }),
+    });
+    expect(realPartial.artifact.failure_code).toBe('incomplete_analysis');
+    expect(realPartial.artifact.body).toContain('genuine partial review');
+  });
+
+  it('reports swarm dispatch from the transcript on every run', () => {
+    const laneTranscript = (lanes: number) => {
+      const messages: Array<Record<string, unknown>> = [
+        { type: 'system', subtype: 'init', session_id: 's', uuid: '1' },
+        {
+          type: 'assistant',
+          parent_tool_use_id: null,
+          session_id: 's',
+          uuid: '2',
+          message: {
+            role: 'assistant',
+            content: [
+              ...Array.from({ length: lanes }, (_unused, index) => ({
+                type: 'tool_use',
+                id: `lane-${index}`,
+                name: 'Agent',
+                input: { subagent_type: 'ci-correctness-lens' },
+              })),
+              {
+                type: 'tool_use',
+                id: 'tool-1',
+                name: 'mcp__gitnexus__context',
+                input: { name: 'statusCommand' },
+              },
+            ],
+          },
+        },
+        ...Array.from({ length: lanes }, (_unused, index) => ({
+          type: 'assistant',
+          parent_tool_use_id: `lane-${index}`,
+          session_id: 's',
+          uuid: `lane-turn-${index}`,
+          message: { role: 'assistant', content: [] },
+        })),
+        {
+          type: 'user',
+          parent_tool_use_id: null,
+          session_id: 's',
+          uuid: '3',
+          message: {
+            role: 'user',
+            content: [
+              {
+                type: 'tool_result',
+                tool_use_id: 'tool-1',
+                is_error: false,
+                content: contextResultContent(),
+              },
+            ],
+          },
+        },
+        { type: 'result', subtype: 'success', is_error: false, session_id: 's', uuid: '4' },
+      ];
+      return JSON.stringify(messages);
+    };
+
+    const dispatched = runArtifactScenario({ rawTranscript: laneTranscript(6) });
+    expect(dispatched.artifact.failure_code).toBeNull();
+    expect(dispatched.stdout).toContain(
+      'Swarm dispatch: lane dispatches requested: 6; lanes that produced transcript turns: 6',
+    );
+
+    // The failure this exists to expose: dispatch attempted, nothing came back.
+    const silent = runArtifactScenario({ rawTranscript: laneTranscript(0) });
+    expect(silent.stdout).toContain(
+      'Swarm dispatch: lane dispatches requested: 0; lanes that produced transcript turns: 0',
+    );
   });
 });
