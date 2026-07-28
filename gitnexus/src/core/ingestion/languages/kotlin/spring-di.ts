@@ -15,6 +15,7 @@ import { isKotlinPackageSiblingVisibilityIncomplete } from './package-siblings.j
 
 export interface KotlinAnnotationSyntaxFact extends SpringDiAnnotationFact {
   readonly useSiteTarget?: string;
+  readonly line: number;
 }
 
 export type KotlinSpringDependencyFact = SpringDiDependencyFact<KotlinAnnotationSyntaxFact>;
@@ -57,6 +58,7 @@ function annotationFact(annotation: SyntaxNode): KotlinAnnotationSyntaxFact | nu
   return {
     name: nameNode.text.trim(),
     text: annotation.text.trim(),
+    line: annotation.startPosition.row + 1,
     ...(useSiteTarget === undefined || useSiteTarget.length === 0 ? {} : { useSiteTarget }),
   };
 }
@@ -71,7 +73,7 @@ function annotationsFromModifierContainer(node: SyntaxNode): KotlinAnnotationSyn
   return facts;
 }
 
-function annotationFacts(node: SyntaxNode): KotlinAnnotationSyntaxFact[] {
+export function kotlinSpringAnnotationFacts(node: SyntaxNode): KotlinAnnotationSyntaxFact[] {
   const facts: KotlinAnnotationSyntaxFact[] = [];
   for (const child of node.namedChildren) {
     if (child.type !== 'modifiers' && child.type !== 'parameter_modifiers') continue;
@@ -94,7 +96,7 @@ function parameterDependency(
   return {
     name: nameNode.text.trim(),
     rawType: typeNode.text.trim(),
-    annotations: [...precedingAnnotations, ...annotationFacts(parameter)],
+    annotations: [...precedingAnnotations, ...kotlinSpringAnnotationFacts(parameter)],
   };
 }
 
@@ -134,7 +136,7 @@ function propertyDependency(property: SyntaxNode): KotlinSpringDependencyFact | 
   const nameNode = variable.namedChildren.find((child) => child.type === 'simple_identifier');
   const typeNode = directTypeNode(variable);
   if (nameNode === undefined || typeNode === undefined) return null;
-  const annotations = annotationFacts(property);
+  const annotations = kotlinSpringAnnotationFacts(property);
   return {
     name: nameNode.text.trim(),
     rawType: typeNode.text.trim(),
@@ -162,7 +164,7 @@ export function captureKotlinSpringDiClassFact(
   filePath: string,
 ): KotlinSpringDiClassFact | null {
   if (!isKotlinBeanCandidateClass(classNode)) return null;
-  const classAnnotations = annotationFacts(classNode);
+  const classAnnotations = kotlinSpringAnnotationFacts(classNode);
   const injectionSites: KotlinSpringInjectionSiteFact[] = [];
   const body = classNode.namedChildren.find((child) => child.type === 'class_body');
   const primaryConstructor = classNode.namedChildren.find(
@@ -174,7 +176,7 @@ export function captureKotlinSpringDiClassFact(
     (primaryConstructor === undefined ? 0 : 1) + secondaryConstructors.length;
 
   if (primaryConstructor !== undefined) {
-    const annotations = annotationFacts(primaryConstructor);
+    const annotations = kotlinSpringAnnotationFacts(primaryConstructor);
     const implicitConstructor =
       constructorCount === 1 &&
       hasSpringStereotypeSyntax(classAnnotations) &&
@@ -191,7 +193,7 @@ export function captureKotlinSpringDiClassFact(
   }
 
   for (const constructor of secondaryConstructors) {
-    const annotations = annotationFacts(constructor);
+    const annotations = kotlinSpringAnnotationFacts(constructor);
     const implicitConstructor =
       constructorCount === 1 &&
       hasSpringStereotypeSyntax(classAnnotations) &&
@@ -209,7 +211,7 @@ export function captureKotlinSpringDiClassFact(
   if (body !== undefined) {
     for (const member of body.namedChildren) {
       if (member.type === 'property_declaration') {
-        const annotations = annotationFacts(member);
+        const annotations = kotlinSpringAnnotationFacts(member);
         if (!hasSpringDiRelevantAnnotation(annotations)) continue;
         const dependency = propertyDependency(member);
         if (dependency === null) continue;
@@ -221,7 +223,7 @@ export function captureKotlinSpringDiClassFact(
           dependencies: [dependency],
         });
       } else if (member.type === 'function_declaration') {
-        const annotations = annotationFacts(member);
+        const annotations = kotlinSpringAnnotationFacts(member);
         if (!hasSpringDiRelevantAnnotation(annotations)) continue;
         const name =
           member.namedChildren.find((child) => child.type === 'simple_identifier')?.text.trim() ??

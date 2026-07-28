@@ -20,7 +20,14 @@
 import type { NodeLabel, ParameterTypeClass, ScopeId, SymbolDefinition } from 'gitnexus-shared';
 import type { ScopeResolutionIndexes } from '../../model/scope-resolution-indexes.js';
 import { generateId } from '../../../../lib/utils.js';
-import { qualifiedKey, simpleKey, type GraphNodeLookup } from '../graph-bridge/node-lookup.js';
+import {
+  AMBIGUOUS_POSITION,
+  localNameKey,
+  positionKey,
+  qualifiedKey,
+  simpleKey,
+  type GraphNodeLookup,
+} from '../graph-bridge/node-lookup.js';
 import { isOverloadableCallable } from '../../utils/callable-labels.js';
 import { templateConstraintsIdTag } from '../../utils/template-arguments.js';
 import { parameterShapeIdTag } from '../../utils/method-props.js';
@@ -109,9 +116,38 @@ function pickCallerCallableDef(
  * resolution working for languages that don't yet synthesize
  * qualifiers).
  */
+/**
+ * Extract the 1-based declaration line from a scope-resolution def id.
+ * Shape: `def:<filePath>#<line>:<col>:<...>`; `undefined` when it doesn't match.
+ */
+function defStartLine(nodeId: string | undefined): number | undefined {
+  if (nodeId === undefined) return undefined;
+  const m = nodeId.match(/#(\d+):(\d+):/);
+  if (m === null) return undefined;
+  const line = Number(m[1]);
+  return Number.isFinite(line) ? line : undefined;
+}
+
+/**
+ * Trailing segment of a dotted qualified name (`Outer.inner` -> `inner`),
+ * with any function-local `@line:col` identity suffix stripped
+ * (`run.pick@5:10` -> `pick`).
+ *
+ * The graph node's `name` property is the bare source name, so the position
+ * key must compare against that — the position it carries is already the
+ * disambiguator, and leaving the suffix on would make every local miss.
+ */
+function simpleNameOf(qualifiedName: string): string {
+  const dot = qualifiedName.lastIndexOf('.');
+  const tail = dot === -1 ? qualifiedName : qualifiedName.slice(dot + 1);
+  return tail.replace(/@\d+:\d+$/, '');
+}
+
 export function resolveDefGraphId(
   filePath: string,
   def: {
+    /** Scope-resolution def id — carries the declaration position (#2699). */
+    nodeId?: string;
     qualifiedName?: string;
     type?: NodeLabel;
     parameterTypes?: readonly string[];
@@ -127,6 +163,31 @@ export function resolveDefGraphId(
   const qn = def.qualifiedName;
   if (qn === undefined || qn.length === 0) return undefined;
   if (def.type !== undefined) {
+    // Position key FIRST (#2699). A def and its graph node are the same
+    // construct, so they share a source line — the only evidence that
+    // separates a function-local declaration from a same-named file-level one
+    // without either side having to model the scope chain. Node ids are
+    // 0-based, def ids 1-based. An `AMBIGUOUS_POSITION` tombstone (two
+    // callables on one line) falls through to the name-based keys below.
+    const line = defStartLine(def.nodeId);
+    if (line !== undefined && isOverloadableCallable(def.type)) {
+      const simple = simpleNameOf(qn);
+      const posHit = nodeLookup.get(positionKey(filePath, def.type, line - 1, simple));
+      if (posHit !== undefined && posHit !== AMBIGUOUS_POSITION) return posHit;
+      // FAIL CLOSED when a function-local of this name exists in the file (#2699
+      // follow-up). Falling through to the name keys would end at the label-agnostic,
+      // first-write-wins `simpleKey` below and alias this def onto whichever same-named
+      // callable was registered first — reproducibly minting a FALSE edge for a
+      // multiline `const pick =` (the declaration and its initializer land on different
+      // lines, so the position join misses). A missing edge is the correct failure
+      // direction for a graph whose consumers include `impact`; a fabricated caller is
+      // not. Gated on `localNameKey` so this ONLY fires where the collision is real —
+      // a file with no such local keeps its previous fallback behaviour, which is what
+      // preserves legitimate anchor differences such as a Vue SFC's `lineOffset`.
+      if (nodeLookup.get(localNameKey(filePath, def.type, simple)) !== undefined) {
+        return undefined;
+      }
+    }
     // SFINAE / `requires`-clause disambiguation (issue #1579) — try the
     // constraint-fingerprinted key FIRST. Two function-template overloads
     // with identical `parameterTypes` but mutually-exclusive SFINAE

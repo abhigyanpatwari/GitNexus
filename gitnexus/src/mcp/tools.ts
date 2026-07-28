@@ -846,6 +846,10 @@ DESTINATION TRACE (cross-repo): for an "@groupName" trace, OMIT to/to_uid/to_fil
       properties: {
         from: { type: 'string', description: 'Source symbol name' },
         from_uid: { type: 'string', description: 'Source symbol UID (zero-ambiguity)' },
+        file: {
+          type: 'string',
+          description: 'Source file path hint for disambiguation (alias for from_file)',
+        },
         from_file: { type: 'string', description: 'Source file path hint for disambiguation' },
         to: {
           type: 'string',

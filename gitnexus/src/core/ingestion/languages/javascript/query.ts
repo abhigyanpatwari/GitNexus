@@ -60,18 +60,23 @@ function isJsxFile(filePath: string): boolean {
   return filePath.endsWith('.jsx');
 }
 
-const JAVASCRIPT_SCOPE_QUERY = `
+export const JAVASCRIPT_SCOPE_QUERY = `
 ;; Scopes — module / class-likes / function-likes
 (program) @scope.module
 
 (class_declaration) @scope.class
 (class) @scope.class
 
-(function_declaration) @scope.function
-(generator_function_declaration) @scope.function
-(function_expression) @scope.function
+;; \`@receiver-owner.this\` — see the matching block in typescript/query.ts
+;; (#2701). Every function form except \`arrow_function\` binds its own \`this\`.
+(function_declaration) @scope.function @receiver-owner.this
+(generator_function_declaration) @scope.function @receiver-owner.this
+(function_expression) @scope.function @receiver-owner.this
+;; \`function*(){}\` as an EXPRESSION. Absent from this list before #2701, so it
+;; was not a scope at all and \`this\` inside one read as the enclosing method's.
+(generator_function) @scope.function @receiver-owner.this
 (arrow_function) @scope.function
-(method_definition) @scope.function
+(method_definition) @scope.function @receiver-owner.this
 
 ;; Object literals get their own scope boundary -- see the matching
 ;; comment in typescript/query.ts (#2545/#2551). Prevents a
@@ -79,6 +84,16 @@ const JAVASCRIPT_SCOPE_QUERY = `
 ;; past the literal into the enclosing scope, and (unlike Block) keeps
 ;; sibling properties from seeing each other as bare identifiers.
 (object) @scope.object
+
+;; Statement blocks are BINDING scopes (#2699). ECMAScript gives every block its
+;; own environment record, so \`let\`/\`const\`/\`class\`/\`function\` declared in
+;; sibling blocks of one function are DIFFERENT bindings — without this the
+;; resolver sees both as function-level and a call in one branch resolves to
+;; both. \`tsBindingScopeFor\` already implements the other half of the rule:
+;; \`var\` hoists past blocks to the enclosing Function/Module, \`let\`/\`const\`
+;; take the innermost scope, which is now the block.
+(statement_block) @scope.block
+
 
 ;; Declarations — classes
 (class_declaration

@@ -142,6 +142,18 @@ export interface LanguageTypeConfig {
   readonly allowPatternBindingOverwrite?: boolean;
   /** Node types that represent typed declarations for this language */
   declarationNodeTypes: ReadonlySet<string>;
+  /** Function node types that OWN their `this` receiver, terminating the
+   *  upward AST walk that resolves `this`/`self`/`$this` to an enclosing
+   *  class. The type-env twin of `Scope.ownsReceivers` (#2701): the scope
+   *  layer gates receiver-type LOOKUP, this gates receiver-type INFERENCE
+   *  during capture, and a call is only suppressed when both agree.
+   *
+   *  Most languages leave it unset — their closures capture the enclosing
+   *  `this` lexically (Kotlin lambdas, Go func literals, C# lambdas, Dart
+   *  function expressions, PHP closures auto-bound since 5.4, Python's
+   *  `self` closed over by a nested `def`) — so the walk is unchanged
+   *  there. JavaScript/TypeScript are the exception. */
+  thisBoundaryNodeTypes?: ReadonlySet<string>;
   /** Optional: language-specific way to find a declaration's type-annotation node.
    * Prefer providing this for grammars where the type is wrapped (e.g., C#, Kotlin, Swift). */
   getDeclarationTypeNode?: DeclarationTypeNodeLocator;

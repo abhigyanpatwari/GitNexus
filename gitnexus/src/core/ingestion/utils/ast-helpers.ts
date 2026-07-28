@@ -8,6 +8,7 @@ import {
   templateArgumentsIdTag,
 } from './template-arguments.js';
 import { splitQualifiedName } from './qualified-name.js';
+import { isOverloadableCallable } from './callable-labels.js';
 
 /** Tree-sitter AST node. Re-exported for use across ingestion modules. */
 export type SyntaxNode = Parser.SyntaxNode;
@@ -110,24 +111,6 @@ const isConcreteTypedefCapture = (captureMap: Record<string, SyntaxNode>): boole
   );
 };
 
-export const buildConcreteTypedefDefinitionRanges = (
-  matches: readonly QueryMatchLike[],
-): Set<string> => {
-  const ranges = new Set<string>();
-  for (const match of matches) {
-    const captureMap: Record<string, SyntaxNode> = {};
-    for (const capture of match.captures) {
-      captureMap[capture.name] = capture.node;
-    }
-
-    const definitionNode = getDefinitionNodeFromCaptures(captureMap);
-    if (definitionNode && isConcreteTypedefCapture(captureMap)) {
-      ranges.add(nodeRangeKey(definitionNode));
-    }
-  }
-  return ranges;
-};
-
 export const isSuppressedConcreteTypedefDuplicate = (
   captureMap: Record<string, SyntaxNode>,
   concreteTypedefRanges: ReadonlySet<string>,
@@ -138,6 +121,129 @@ export const isSuppressedConcreteTypedefDuplicate = (
     captureMap['definition.typedef'] !== undefined &&
     concreteTypedefRanges.has(nodeRangeKey(definitionNode))
   );
+};
+
+/**
+ * Graph labels produced by a value capture (`@definition.const` /
+ * `@definition.static` / `@definition.variable`) — a binding that holds a value.
+ *
+ * `Property` is deliberately NOT here. It outranks these: Python matches both
+ * `@definition.property` (annotated) and `@definition.variable` (bare) on one
+ * assignment, and the property must win so a typed class attribute keeps its
+ * `Property` node and its owning `HAS_PROPERTY` edge. `Property` is instead
+ * suppressed only by a *callable* claim — see {@link buildDefinitionNameClaims}.
+ */
+const VALUE_DEFINITION_LABELS: ReadonlySet<NodeLabel> = new Set<NodeLabel>([
+  'Const',
+  'Static',
+  'Variable',
+]);
+
+/** True when `label` is the kind of node a value capture emits. */
+export const isValueDefinitionLabel = (label: NodeLabel): boolean =>
+  VALUE_DEFINITION_LABELS.has(label);
+
+/**
+ * One pass over a file's matches: definition-name claims by rank, plus the
+ * concrete-typedef ranges the loop's separate typedef guard consumes.
+ */
+export interface DefinitionPreScan {
+  /**
+   * Keys claimed by any non-value capture — consulted by `Const`/`Static`/
+   * `Variable`. Includes `Property`, so an annotated Python attribute still
+   * beats the bare-assignment `Variable` capture on the same statement.
+   */
+  readonly nonValue: ReadonlySet<string>;
+  /**
+   * Keys claimed by a *callable* capture (`Function`/`Method`/`Constructor`) —
+   * consulted by `Property`. Narrower than `nonValue` on purpose: a `Property`
+   * must be collapsible by a callable (Kotlin `val f = { … }`, Swift
+   * `let f = { … }`) without being collapsible by its own claim.
+   */
+  readonly callable: ReadonlySet<string>;
+  /** Ranges of `type_definition` nodes that already emit a concrete struct/enum. */
+  readonly concreteTypedefRanges: ReadonlySet<string>;
+}
+
+/**
+ * Pre-scan `matches` for the `${definitionNode.startIndex}:${name}` keys already
+ * claimed by a higher-ranked definition capture, so the parse-worker's duplicate
+ * suppression is order-independent.
+ *
+ * Rank, highest first: callable (`Function`/`Method`/`Constructor`) → `Property`
+ * → value (`Const`/`Static`/`Variable`). A capture is dropped only when a
+ * STRICTLY higher rank claimed the same declaration node and name, so no capture
+ * can suppress itself and no rank can suppress a peer.
+ *
+ * ## Why this exists (#2687)
+ *
+ * `const X = () => {}` matches BOTH `@definition.function` and
+ * `@definition.const` on the same `lexical_declaration`. Only one graph node
+ * should survive — the `Function`, because that is what `CALLS` edges target.
+ * The parse-worker's in-loop dedup intends exactly that, but only the value
+ * branch consults its `processedDefinitionNodes` set, so suppression worked only
+ * if the function match happened to be processed first. It is not: tree-sitter
+ * completes the const pattern at `@name`, while the function pattern must also
+ * match the trailing `(arrow_function)` / `(function_expression)` value, so the
+ * const match is yielded FIRST and the edgeless `Const:` twin escaped.
+ *
+ * Consulting this set makes the outcome independent of match order.
+ *
+ * ## Keying
+ *
+ * Keys are `startIndex:name`, never `startIndex` alone — a multi-name
+ * declaration (`const a = 1, b = () => {}`) shares ONE definition node, and a
+ * bare-index key would wrongly suppress `a`'s legitimate `Const` node.
+ *
+ * Labels come from {@link getLabelFromCaptures}, the same function the main loop
+ * uses, so the pre-scan and the loop can never disagree about what counts as a
+ * value capture — including when a provider's `labelOverride` reclassifies one.
+ * A match that resolves to a value label registers nothing, so a match can never
+ * suppress itself.
+ *
+ * Language-agnostic: keyed off capture names and labels only.
+ *
+ * Also collects the concrete-typedef ranges that suppress the analogous
+ * typedef/struct duplicate, so both suppression sets come from one traversal.
+ */
+export const buildDefinitionPreScan = (
+  matches: readonly QueryMatchLike[],
+  provider: LanguageProvider,
+): DefinitionPreScan => {
+  const nonValue = new Set<string>();
+  const callable = new Set<string>();
+  const concreteTypedefRanges = new Set<string>();
+  for (const match of matches) {
+    // ONE capture-map build per match feeds both suppression sets. These used
+    // to be two independent passes over `matches` (each rebuilding this object)
+    // on the hot per-file parse path.
+    const captureMap: Record<string, SyntaxNode> = {};
+    for (const capture of match.captures) {
+      captureMap[capture.name] = capture.node;
+    }
+
+    const definitionNode = getDefinitionNodeFromCaptures(captureMap);
+    if (definitionNode === null) continue;
+
+    if (isConcreteTypedefCapture(captureMap)) {
+      concreteTypedefRanges.add(nodeRangeKey(definitionNode));
+    }
+
+    // No `@name` capture means nothing a lower-ranked capture could collide
+    // with — a value or property pattern always binds a name. Checked before
+    // `getLabelFromCaptures` so a nameless match never pays for label
+    // resolution (which can reach a provider's `labelOverride`).
+    const nameNode = captureMap['name'];
+    if (nameNode === undefined) continue;
+
+    const label = getLabelFromCaptures(captureMap, provider);
+    if (label === null || isValueDefinitionLabel(label)) continue;
+
+    const key = `${definitionNode.startIndex}:${nameNode.text}`;
+    nonValue.add(key);
+    if (isOverloadableCallable(label)) callable.add(key);
+  }
+  return { nonValue, callable, concreteTypedefRanges };
 };
 
 /**
@@ -1149,12 +1255,11 @@ export function findChild(node: SyntaxNode, type: string): SyntaxNode | null {
   return null;
 }
 
-/** Remove bidi-override and zero-width control characters. Doc text is
- *  attacker-influenced (any indexed repo) and is returned verbatim to MCP
- *  clients, so strip Trojan-Source-style hidden controls from the description
- *  before it leaves the extractor (#2286 review). Scoped to the doc-comment path
- *  only — global `sanitizeUTF8` is intentionally untouched. */
-const stripBidiAndZeroWidth = (text: string): string =>
+/** Remove bidi-override and zero-width control characters from attacker-
+ *  influenced repository text before it is exposed through graph descriptions
+ *  or MCP output (#2286). Global `sanitizeUTF8` intentionally remains focused
+ *  on encoding/control-character validity. */
+export const stripBidiAndZeroWidth = (text: string): string =>
   Array.from(text)
     .filter((ch) => {
       const c = ch.codePointAt(0) ?? 0;

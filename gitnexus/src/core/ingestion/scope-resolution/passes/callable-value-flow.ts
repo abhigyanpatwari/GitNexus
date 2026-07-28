@@ -10,6 +10,7 @@ import type {
   CallableFlowInvokeSite,
   CallableFlowOperand,
   CallableFlowSite,
+  NodeLabel,
   ParsedFile,
   ScopeId,
   SymbolDefinition,
@@ -19,7 +20,11 @@ import type { ScopeResolutionIndexes } from '../../model/scope-resolution-indexe
 import type { GraphNodeLookup } from '../graph-bridge/node-lookup.js';
 import type { CalleeIdAccumulator } from '../graph-bridge/callee-id-sink.js';
 import { tryEmitEdgeWithExplicitTargetId } from '../graph-bridge/edges.js';
-import { resolveCallerGraphId, resolveDefGraphId } from '../graph-bridge/ids.js';
+import {
+  resolveCallerGraphId,
+  resolveDefGraphId,
+  simpleQualifiedName,
+} from '../graph-bridge/ids.js';
 import { resolveInheritanceBaseInScope } from '../scope/walkers.js';
 import { narrowOverloadCandidates } from './overload-narrowing.js';
 
@@ -738,27 +743,104 @@ export function emitCallableValueFlow(input: EmitCallableValueFlowInput): Callab
   return { emitted, resolvedInvokes, ambiguousInvokes, unmatchedInvokes, iterations };
 }
 
-function buildGraphTargetIndex(
+/**
+ * Pure — exported for `bench/callable-value-flow/measure.mjs`, which guards its
+ * scaling ratio and result fingerprint. Not part of the pass's public contract.
+ */
+export function buildGraphTargetIndex(
   scopes: ScopeResolutionIndexes,
   nodeLookup: GraphNodeLookup,
   providerTarget: ((def: SymbolDefinition) => boolean) | undefined,
   graph: KnowledgeGraph,
 ): ReadonlyMap<string, Target> {
   const out = new Map<string, Target>();
-  const byAnchor = buildGraphCallableAnchorIndex(graph);
+  const { byAnchor, callableByPosition } = buildGraphCallableIndexes(graph);
   for (const def of scopes.defs.byId.values()) {
-    if (!isCallable(def) && providerTarget?.(def) !== true) continue;
+    const callableDef = isCallable(def) || providerTarget?.(def) === true;
+    if (!callableDef) {
+      // #2693: a closure bound to a name (`val f = { }`) is a callable the def
+      // type cannot see — the scope layer declares it with its VALUE label
+      // (Kotlin/Swift `Property`, Dart `Variable`) while #2687 makes the graph
+      // emit a single callable node for it. Only the graph knows.
+      //
+      // The join MUST be positional. Resolving such a def through
+      // `resolveDefGraphId` is unsafe: every qualified key it builds embeds
+      // `def.type`, so for a value def they can only ever hit a value-labelled
+      // node — and when the def's own node is absent (Rust `let`) or carries a
+      // DIFFERENT label than the def's type (TypeScript declares `const` as
+      // `Variable` but emits a `Const` node), the chain falls through to the
+      // label-agnostic, first-write-wins `simpleKey(filePath, simpleName)`.
+      // That aliases the binding onto ANY same-named callable in the file —
+      // `const save = cb` next to an unrelated `Svc.save` mints a CALLS edge to
+      // the method, and the result depends on declaration order.
+      //
+      // A closure binding IS its callable node: same file, same line, same
+      // name. An aliasing local is not. So look the node up by position and
+      // admit only an exact hit.
+      const positionalKey = valueBindingPositionKey(def);
+      const positionalId =
+        positionalKey === undefined ? undefined : callableByPosition.get(positionalKey);
+      // `''` marks an ambiguous position (two callables claiming one
+      // file/line/name) — undecidable, so admit neither.
+      if (positionalId === undefined || positionalId === '') continue;
+      out.set(def.nodeId, { id: positionalId, def });
+      continue;
+    }
     const anchorKey = definitionAnchorKey(def);
     const anchored = anchorKey === undefined ? undefined : byAnchor.get(anchorKey);
     const id =
       anchored?.length === 1 ? anchored[0] : resolveDefGraphId(def.filePath, def, nodeLookup);
+    if (id === undefined) continue;
     // Overloads can intentionally share one graph node ID. Index by the
     // definition identity so contextual signature narrowing still sees the
     // complete overload set before a selected target collapses to graph ID.
-    if (id !== undefined) out.set(def.nodeId, { id, def });
+    out.set(def.nodeId, { id, def });
   }
   return out;
 }
+
+/**
+ * Leading sigils are part of a name in some grammars and stripped in others:
+ * PHP keeps `$` on a variable_name node (deliberately — it is what separates
+ * PHP's variable and function namespaces, so `$save` does not collide with
+ * `save()`), while the scope layer and the callable-flow synthesizer both
+ * normalise it away. The positional join has to see both sides the same way.
+ */
+const withoutSigil = (name: string): string => name.replace(/^[$@]+/, '');
+
+/**
+ * `file\0line\0name` for a value binding, matching the callable-node key built
+ * in `buildGraphCallableIndexes`. Definition lines come from the def id and are
+ * 1-based; graph `startLine` is 0-based, which is the `+ 1` there.
+ */
+function valueBindingPositionKey(def: SymbolDefinition): string | undefined {
+  if (!VALUE_BINDING_DEF_TYPES.has(def.type)) return undefined;
+  const line = def.nodeId.match(/#(\d+):(\d+):/)?.[1];
+  const name = simpleQualifiedName(def);
+  if (line === undefined || name === undefined) return undefined;
+  return `${def.filePath}\0${line}\0${withoutSigil(name)}`;
+}
+
+/**
+ * Value-binding labels whose initializer can be a callable. Admitted ONLY on
+ * positional graph-node evidence (see `buildGraphTargetIndex`), never on the def
+ * type alone.
+ *
+ * Deliberately NOT `isOwnableValueLabel` (scope/walkers.ts), which lists the
+ * same labels for the value-receiver bridge: that predicate is contracted to
+ * `reconcileOwnership`, and coupling the two would let a label added for
+ * ownership silently widen call-target admission. Two lists, two reasons —
+ * changing either means checking the other.
+ *
+ * `Static` is excluded: `normalizeNodeLabel` (scope-extractor.ts) has no
+ * `static` case, so no scope-resolution def can carry that type. Including it
+ * added an entry no fixture could ever exercise.
+ */
+const VALUE_BINDING_DEF_TYPES: ReadonlySet<NodeLabel> = new Set<NodeLabel>([
+  'Const',
+  'Property',
+  'Variable',
+]);
 
 interface CanonicalCallableTargets {
   /** Definition identity remains the key; declaration keys may point at the definition target. */
@@ -874,10 +956,24 @@ function declarationSignatureCompatible(
   return typeof declarationConst !== 'boolean' || declarationConst === definitionConst;
 }
 
-function buildGraphCallableAnchorIndex(
-  graph: KnowledgeGraph,
-): ReadonlyMap<string, readonly string[]> {
-  const out = new Map<string, string[]>();
+interface GraphCallableIndexes {
+  /** Callable graph nodes by `file\0label\0line\0name` — the definition anchor. */
+  readonly byAnchor: ReadonlyMap<string, readonly string[]>;
+  /**
+   * Callable graph nodes by `file\0line\0name` — the same anchor WITHOUT the
+   * label, because a value binding's def type never matches its callable node's
+   * label (that is the whole point of #2693). Value = the node id, or `''` when
+   * two callables claim one position and the join is undecidable.
+   *
+   * Derived in the same walk as `byAnchor`: a second pass over the graph for
+   * the same nodes would double the cost of the largest loop in this pass.
+   */
+  readonly callableByPosition: ReadonlyMap<string, string>;
+}
+
+function buildGraphCallableIndexes(graph: KnowledgeGraph): GraphCallableIndexes {
+  const byAnchor = new Map<string, string[]>();
+  const callableByPosition = new Map<string, string>();
   for (const node of graph.iterNodes()) {
     if (node.label !== 'Function' && node.label !== 'Method' && node.label !== 'Constructor') {
       continue;
@@ -892,12 +988,18 @@ function buildGraphCallableAnchorIndex(
     ) {
       continue;
     }
-    const key = `${filePath}\0${node.label}\0${zeroBasedLine + 1}\0${name}`;
-    const bucket = out.get(key);
-    if (bucket === undefined) out.set(key, [node.id]);
+    const oneBasedLine = zeroBasedLine + 1;
+    const positionKey = `${filePath}\0${oneBasedLine}\0${withoutSigil(name)}`;
+    const existing = callableByPosition.get(positionKey);
+    // First wins would be order-dependent; mark the collision instead so an
+    // ambiguous position admits nothing rather than something arbitrary.
+    callableByPosition.set(positionKey, existing === undefined ? node.id : '');
+    const key = `${filePath}\0${node.label}\0${oneBasedLine}\0${name}`;
+    const bucket = byAnchor.get(key);
+    if (bucket === undefined) byAnchor.set(key, [node.id]);
     else bucket.push(node.id);
   }
-  return out;
+  return { byAnchor, callableByPosition };
 }
 
 function definitionAnchorKey(def: SymbolDefinition): string | undefined {

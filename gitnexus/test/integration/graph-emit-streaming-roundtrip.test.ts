@@ -85,6 +85,8 @@ const buildFixture = (
   }
   relationships.push(edge('EXTENDS', `Class:${FILE_PATH}:Cls2`, `Class:${FILE_PATH}:Cls1`)); // retained
   relationships.push(edge('IMPORTS', `File:${FILE_PATH}`, `Class:${FILE_PATH}:Cls1`)); // streamed
+  relationships.push(edge('DECLARES', `File:${FILE_PATH}`, `Class:${FILE_PATH}:Cls1`)); // streamed
+  relationships.push(edge('CONDITIONAL_ON', `Class:${FILE_PATH}:Cls2`, `Class:${FILE_PATH}:Cls1`)); // streamed
   // Self-edge and an exact duplicate id — both must appear exactly once.
   relationships.push(edge('CALLS', `Function:${FILE_PATH}:fn0`, `Function:${FILE_PATH}:fn0`));
   relationships.push(edge('CALLS', `Function:${FILE_PATH}:fn0`, `Function:${FILE_PATH}:fn1`));

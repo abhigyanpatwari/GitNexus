@@ -1399,6 +1399,66 @@ invoke(assigned);
     }
   }, 120_000);
 
+  it('replays closure-binding resolution from the durable warm parse cache (#2693)', async () => {
+    // The #2693 captures are provider-synthesized (Dart's fieldless
+    // `initialized_identifier` seed) and the function-local closure `Function`
+    // node is minted at parse time — both are replayed VERBATIM from the parse
+    // cache, so a serialization change would surface only on the SECOND
+    // analyze. Every other test in this PR runs cold and would stay green.
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), 'gitnexus-closure-warm-repo-'));
+    const storage = fs.mkdtempSync(path.join(os.tmpdir(), 'gitnexus-closure-warm-store-'));
+    try {
+      fs.writeFileSync(
+        path.join(root, 'app.dart'),
+        'var handler = (int x) => x;\n\nint caller() {\n  return handler(1);\n}\n',
+        'utf8',
+      );
+      fs.writeFileSync(
+        path.join(root, 'App.kt'),
+        'val handler = { x: Int -> x }\n\nfun caller(): Int {\n    return handler(1)\n}\n',
+        'utf8',
+      );
+      const coldCache: ParseCache = {
+        version: PARSE_CACHE_VERSION,
+        entries: new Map(),
+        usedKeys: new Set(),
+        storagePath: storage,
+        onDiskKeys: new Set(),
+      };
+      const cold = await runPipelineFromRepo(root, () => {}, {
+        skipGraphPhases: true,
+        parseCache: coldCache,
+      });
+      const savedKeys = await saveParseCache(storage, coldCache);
+      await pruneAndSaveDurableParsedFileStore(
+        getDurableParsedFileDir(storage),
+        PARSE_CACHE_VERSION,
+        new Set(savedKeys),
+      );
+      const warmCache = await loadParseCache(storage);
+      const warm = await runPipelineFromRepo(root, () => {}, {
+        skipGraphPhases: true,
+        parseCache: warmCache,
+      });
+      const project = (result: Awaited<ReturnType<typeof runSource>>) =>
+        getRelationships(result, 'CALLS')
+          .map(
+            (edge) =>
+              `${edge.sourceFilePath}:${edge.source}->${edge.targetFilePath}:${edge.target}`,
+          )
+          .sort();
+
+      expect(project(warm)).toEqual(project(cold));
+      expect(project(warm)).toEqual([
+        'App.kt:caller->App.kt:handler',
+        'app.dart:caller->app.dart:handler',
+      ]);
+    } finally {
+      fs.rmSync(root, { recursive: true, force: true });
+      fs.rmSync(storage, { recursive: true, force: true });
+    }
+  }, 120_000);
+
   it('keeps normal/PDG targets identical and stamps calleeIds at the indirect invocation', async () => {
     const source = `
 function target(): void {}

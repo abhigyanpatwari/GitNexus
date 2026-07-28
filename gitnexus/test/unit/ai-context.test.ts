@@ -166,6 +166,19 @@ describe('generateAIContextFiles', () => {
     expect(withoutPdg).toContain('explain(');
   });
 
+  it('emits MD060-compatible compact tables in generated docs (#2709)', () => {
+    const content = generateGitNexusContent('MarkdownProject', {
+      nodes: 50,
+      edges: 100,
+      processes: 5,
+    });
+
+    expect(content).toContain('| Resource | Use for |\n| --- | --- |\n');
+    expect(content).toContain('| Task | Read this skill file |\n| --- | --- |\n');
+    expect(content).not.toContain('|----------|---------|');
+    expect(content).not.toContain('|------|---------------------|');
+  });
+
   it('degrades gracefully when the runner copy fails (#1945)', async () => {
     // A read-only/full-disk storage dir must not abort generation. The copy is
     // best-effort + logged; the generated docs still carry the inline bootstrap

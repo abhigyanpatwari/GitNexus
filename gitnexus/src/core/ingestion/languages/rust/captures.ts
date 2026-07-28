@@ -123,6 +123,31 @@ export function emitRustScopeCaptures(
       }
     }
 
+    // `Self` in a type binding names the enclosing impl's type, not a type
+    // called "Self". `let fresh = Self { … }` inside `impl User` binds
+    // `fresh: User`; recorded verbatim it binds `fresh: Self`, which resolves
+    // to nothing and leaves the receiver's type unknown.
+    //
+    // The type-env channel already substitutes this
+    // (`type-extractors/rust.ts` → `findEnclosingImplType`); the
+    // scope-resolution channel did not, so the two disagreed. That went
+    // unnoticed while `lookupCore` Step 1 still walked the lexical chain for
+    // named receivers — the impl scope binds the method by name, so
+    // `fresh.validate()` resolved by accident. #2714 stopped that walk for
+    // named receivers and the gap became a lost edge (#2699 follow-up).
+    const tbTypeNode = nodeMap['@type-binding.type'];
+    if (grouped['@type-binding.type']?.text === 'Self' && tbTypeNode !== undefined) {
+      const implNode = findEnclosingImpl(tbTypeNode);
+      const implTypeNode = implNode?.childForFieldName('type') ?? null;
+      if (implTypeNode !== null) {
+        grouped['@type-binding.type'] = syntheticCapture(
+          '@type-binding.type',
+          tbTypeNode,
+          implTypeNode.text,
+        );
+      }
+    }
+
     // Hoist return-type bindings from impl block functions to module level.
     // The auto-hoist in the scope-extractor places a type binding whose
     // anchor matches its innermost scope on the parent scope. By using the

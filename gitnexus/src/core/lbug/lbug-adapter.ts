@@ -61,6 +61,10 @@ import {
 } from './sidecar-recovery.js';
 
 import { logger } from '../logger.js';
+import {
+  SPRING_AUTO_CONFIGURATION_REASONS,
+  SPRING_AUTO_CONFIGURATION_SYNTHETIC_ID_PREFIX,
+} from '../ingestion/frameworks/spring/auto-configuration.js';
 // ---------------------------------------------------------------------------
 // Relationship CSV splitting — extracted for testability (PR #818)
 // ---------------------------------------------------------------------------
@@ -922,7 +926,13 @@ const doInitLbug = async (dbPath: string, readOnly: boolean = false) => {
   // FTS powers baseline search, so initialize it with the core DB. Read-only
   // serve/MCP paths must never run DDL or trigger network INSTALL; analyze owns
   // schema/index creation and extension installation.
-  await loadFTSExtension(undefined, readOnly ? { policy: 'load-only' } : {});
+  //
+  // `quiet` on the writable branch: on a cold machine this pre-load is EXPECTED
+  // to miss (default policy is load-only, extension not yet on disk) and analyze
+  // Phase 3 installs it moments later in the same run. Warning here reported a
+  // degradation that never happened — the run went on to build every FTS index.
+  // Phase 3 (and the read-only branch) still warn for real failures.
+  await loadFTSExtension(undefined, readOnly ? { policy: 'load-only' } : { quiet: true });
 
   currentDbPath = dbPath;
   return { db, conn };
@@ -2608,9 +2618,9 @@ export const deleteAllCommunitiesAndProcesses = async (): Promise<{
 /**
  * Shared mechanics for the delete-all-relationships-of-one-type family
  * ({@link deleteAllInterprocTaintPaths}, {@link deleteAllCallSummaries},
- * {@link deleteAllInjects}): count the typed CodeRelation rows, then DELETE
- * them (relationship-level — these are edge types, not node labels, so
- * endpoints are untouched).
+ * {@link deleteAllInjects}, {@link deleteSpringAutoConfigurationDeclarations}):
+ * count the matching CodeRelation rows, then DELETE them (relationship-level —
+ * these are edge types, not node labels, so endpoints are untouched).
  *
  * count + DELETE run as one critical section on the singleton connection so a
  * concurrent WAL-checkpoint cannot corrupt native state mid-delete (#pdg).
@@ -2618,11 +2628,13 @@ export const deleteAllCommunitiesAndProcesses = async (): Promise<{
  * @param relType       the CodeRelation `type` value to delete (e.g. 'INJECTS')
  * @param logTag        the `[tag]` prefix on the abort error message
  * @param duplicateNoun what the abort message says would be duplicated
+ * @param exactReasons  optional reason allowlist for a shared relationship type
  */
 const deleteAllRelationshipsOfType = async (
   relType: string,
   logTag: string,
   duplicateNoun: string,
+  exactReasons?: readonly string[],
 ): Promise<{ edgesDeleted: number }> => {
   const c = conn;
   if (!c) {
@@ -2631,16 +2643,23 @@ const deleteAllRelationshipsOfType = async (
   return withConnLock(async () => {
     let edgesDeleted = 0;
     let countResult: lbug.QueryResult | lbug.QueryResult[] | undefined;
+    const reasonFilter =
+      exactReasons === undefined || exactReasons.length === 0
+        ? ''
+        : ` AND (${exactReasons
+            .map((reason) => `r.reason = '${escapeCypherString(reason)}'`)
+            .join(' OR ')})`;
+    const predicate = `r.type = '${escapeCypherString(relType)}'${reasonFilter}`;
     try {
       countResult = await c.query(
-        `MATCH ()-[r:CodeRelation]->() WHERE r.type = '${relType}' RETURN count(r) AS cnt`,
+        `MATCH ()-[r:CodeRelation]->() WHERE ${predicate} RETURN count(r) AS cnt`,
       );
       const result = Array.isArray(countResult) ? countResult[0] : countResult;
       const rows = await result.getAll();
       const count = Number(rows[0]?.cnt ?? rows[0]?.[0] ?? 0);
       if (count > 0) {
         await closeQueryResults(
-          await c.query(`MATCH ()-[r:CodeRelation]->() WHERE r.type = '${relType}' DELETE r`),
+          await c.query(`MATCH ()-[r:CodeRelation]->() WHERE ${predicate} DELETE r`),
         );
         edgesDeleted = count;
       }
@@ -2725,6 +2744,65 @@ export const deleteAllCallSummaries = async (): Promise<{ edgesDeleted: number }
  */
 export const deleteAllInjects = async (): Promise<{ edgesDeleted: number }> =>
   deleteAllRelationshipsOfType('INJECTS', 'di', 'duplicate INJECTS edges');
+
+/**
+ * Drop Spring-owned auto-configuration `DECLARES` relationships before
+ * incremental writeback. `DECLARES` is generic, so exact reason filtering is
+ * required: other metadata systems must retain their own declarations.
+ */
+export const deleteSpringAutoConfigurationDeclarations = async (): Promise<{
+  edgesDeleted: number;
+}> =>
+  deleteAllRelationshipsOfType(
+    'DECLARES',
+    'spring-auto-configuration',
+    'duplicate auto-configuration declarations',
+    SPRING_AUTO_CONFIGURATION_REASONS,
+  );
+
+/**
+ * Drop synthetic source-unavailable auto-configuration Class nodes before
+ * incremental writeback. The fresh full graph re-emits every still-needed
+ * synthetic node; deleting first also removes placeholders that became stale
+ * when a real source class appeared.
+ */
+export const deleteSpringAutoConfigurationSyntheticClasses = async (): Promise<{
+  nodesDeleted: number;
+}> => {
+  const c = conn;
+  if (!c) {
+    throw new Error('LadybugDB not initialized. Call initLbug first.');
+  }
+  return withConnLock(async () => {
+    let countResult: lbug.QueryResult | lbug.QueryResult[] | undefined;
+    const idPrefix = escapeCypherString(SPRING_AUTO_CONFIGURATION_SYNTHETIC_ID_PREFIX);
+    const predicate = `n.id STARTS WITH '${idPrefix}'`;
+    try {
+      countResult = await c.query(`MATCH (n:Class) WHERE ${predicate} RETURN count(n) AS cnt`);
+      const result = Array.isArray(countResult) ? countResult[0] : countResult;
+      const rows = await result.getAll();
+      const count = Number(rows[0]?.cnt ?? rows[0]?.[0] ?? 0);
+      if (count > 0) {
+        await closeQueryResults(
+          await c.query(`MATCH (n:Class) WHERE ${predicate} DETACH DELETE n`),
+        );
+      }
+      if (countResult) await closeQueryResults(countResult);
+      return { nodesDeleted: count };
+    } catch (err) {
+      if (countResult) await closeQueryResults(countResult);
+      if (classifyDeleteAllError(err) === 'benign-missing-table') {
+        return { nodesDeleted: 0 };
+      }
+      const message = err instanceof Error ? err.message : String(err);
+      throw new Error(
+        '[spring-auto-configuration] failed to clear synthetic Class nodes before ' +
+          `incremental re-write (${message}) — aborting to avoid stale placeholders; ` +
+          'the next run will full-rebuild',
+      );
+    }
+  });
+};
 
 // ============================================================================
 // Full-Text Search (FTS) Functions

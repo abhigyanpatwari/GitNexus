@@ -3,7 +3,7 @@
 exports[`U7 — C-family worker-mode --pdg pipeline > C#: --pdg off is byte-identical (zero PDG nodes/edges, stable golden digest) 1`] = `
 {
   "byRelType": {
-    "CALLS": 7,
+    "CALLS": 6,
     "DEFINES": 3,
     "HAS_METHOD": 16,
     "MEMBER_OF": 9,
@@ -18,8 +18,8 @@ exports[`U7 — C-family worker-mode --pdg pipeline > C#: --pdg off is byte-iden
     "Namespace": 1,
     "Process": 1,
   },
-  "edgeDigest": "0497d26dbe060d36426bf10cde5db490a6d82c013e0835296723a4c00ef7442a",
-  "relationships": 38,
+  "edgeDigest": "60d3d5449952563f9364148494c5bce96c306dba921d140dc08176e99d7f2b3d",
+  "relationships": 37,
   "symbols": 24,
 }
 `;
@@ -27,15 +27,18 @@ exports[`U7 — C-family worker-mode --pdg pipeline > C#: --pdg off is byte-iden
 exports[`U7 — C-family worker-mode --pdg pipeline > C++: --pdg off is byte-identical (zero PDG nodes/edges, stable golden digest) 1`] = `
 {
   "byRelType": {
-    "DEFINES": 6,
+    "CALLS": 1,
+    "DEFINES": 7,
+    "MEMBER_OF": 2,
   },
   "byType": {
+    "Community": 1,
     "File": 1,
-    "Function": 6,
+    "Function": 7,
   },
-  "edgeDigest": "4e8cfcfe7cbde0d0a858e2f5db8af82713fbb42527d23e6fabf704382d8088df",
-  "relationships": 6,
-  "symbols": 7,
+  "edgeDigest": "5b6f4ec33d30b5d95c06529dfe7bf7a279cfffa73638efc55432363365896328",
+  "relationships": 10,
+  "symbols": 9,
 }
 `;
 
