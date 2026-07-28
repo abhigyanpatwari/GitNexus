@@ -13,13 +13,16 @@
 
 import { CircuitOpenError, ResilientFetchExhaustedError, resilientFetch } from 'gitnexus-shared';
 
-const HTTP_TIMEOUT_MS = 30_000;
+const DEFAULT_HTTP_TIMEOUT_MS = 180_000;
+const MAX_HTTP_TIMEOUT_MS = 300_000;
 const HTTP_MAX_RETRIES = 2;
 const HTTP_RETRY_BACKOFF_MS = 1_000;
 const HTTP_RETRY_CAP_MS = 5_000;
 const HTTP_BATCH_SIZE = 64;
 const DEFAULT_DIMS = 384;
 const HTTP_BREAKER_KEY = 'embeddings-http';
+
+const HTTP_TIMEOUT_ENV = 'GITNEXUS_EMBEDDING_HTTP_TIMEOUT_MS';
 
 interface HttpConfig {
   baseUrl: string;
@@ -29,6 +32,7 @@ interface HttpConfig {
   maxAttempts: number;
   retryCapMs: number;
   minIntervalMs: number;
+  timeoutMs: number;
   requestDimensions?: number;
 }
 
@@ -187,6 +191,11 @@ const readConfig = (): HttpConfig | null => {
       300_000,
     ),
     minIntervalMs: parseNonNegativeIntegerEnv('GITNEXUS_EMBEDDING_MIN_INTERVAL_MS', 0, 300_000),
+    timeoutMs: parsePositiveIntegerEnv(
+      HTTP_TIMEOUT_ENV,
+      DEFAULT_HTTP_TIMEOUT_MS,
+      MAX_HTTP_TIMEOUT_MS,
+    ),
     requestDimensions,
   };
 };
@@ -209,6 +218,11 @@ export const isHttpMode = (): boolean =>
  */
 export const getHttpDimensions = (): number | undefined => readConfig()?.dimensions;
 
+/**
+ * Return the configured per-request HTTP timeout for HTTP mode, or undefined
+ * when HTTP mode is not active.
+ */
+export const getHttpTimeoutMs = (): number | undefined => readConfig()?.timeoutMs;
 /**
  * Return a safe representation of a URL for logs and error messages.
  * Strips query string (may contain tokens) and userinfo (may contain
@@ -323,6 +337,7 @@ const httpEmbedBatch = async (
   maxAttempts = HTTP_MAX_RETRIES + 1,
   retryCapMs = HTTP_RETRY_CAP_MS,
   minIntervalMs = 0,
+  timeoutMs = DEFAULT_HTTP_TIMEOUT_MS,
 ): Promise<EmbeddingItem[]> => {
   const requestBody: { input: string[]; model: string; dimensions?: number } = {
     input: batch,
@@ -349,7 +364,7 @@ const httpEmbedBatch = async (
         fetchImpl: async (input, init) => {
           await paceHttpRequest(minIntervalMs, requestOptions.signal);
           throwIfAborted(requestOptions.signal);
-          const timeoutSignal = AbortSignal.timeout(HTTP_TIMEOUT_MS);
+          const timeoutSignal = AbortSignal.timeout(timeoutMs);
           const signal = requestOptions.signal
             ? AbortSignal.any([requestOptions.signal, timeoutSignal])
             : timeoutSignal;
@@ -383,7 +398,7 @@ const httpEmbedBatch = async (
     }
     if (err instanceof DOMException && err.name === 'TimeoutError') {
       throw new HttpEmbeddingError(
-        `Embedding request timed out after ${HTTP_TIMEOUT_MS}ms (${safeUrl(url)}, batch ${batchIndex})`,
+        `Embedding request timed out after ${timeoutMs}ms (${safeUrl(url)}, batch ${batchIndex})`,
         { cause: err },
       );
     }
@@ -464,6 +479,7 @@ export const httpEmbed = async (
       config.maxAttempts,
       config.retryCapMs,
       config.minIntervalMs,
+      config.timeoutMs,
     );
 
     if (items.length !== batch.length) {
@@ -521,6 +537,7 @@ export const httpEmbedQuery = async (
     config.maxAttempts,
     config.retryCapMs,
     config.minIntervalMs,
+    config.timeoutMs,
   );
   if (!items.length) {
     throw new HttpEmbeddingError(`Embedding endpoint returned empty response (${safeUrl(url)})`);
