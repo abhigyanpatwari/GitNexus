@@ -1748,11 +1748,16 @@ jobs:
               throw new Error('context tool result is not strict JSON');
             }
             validateBoundedJson(decoded, { nodes: 0 });
+            // A line range is what the trusted prescan calls an indexable
+            // symbol, so a bare File node — `context({name: 'AGENTS.md'})` —
+            // must not pass for a review of that file's contents.
             if (
               !isRecord(decoded) ||
               Object.hasOwn(decoded, 'error') ||
               decoded.status !== 'found' ||
-              !isRecord(decoded.symbol)
+              !isRecord(decoded.symbol) ||
+              !Number.isFinite(decoded.symbol.startLine) ||
+              !Number.isFinite(decoded.symbol.endLine)
             ) {
               rejected.unresolved += 1;
               return false;

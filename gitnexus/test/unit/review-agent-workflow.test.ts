@@ -1776,6 +1776,27 @@ describe('gitnexus review-agent workflow security contract', () => {
     expect(structural.artifact.failure_code).toBe('invalid_execution_transcript');
   });
 
+  it('refuses a bare File node as evidence, matching the prescan definition of indexable', () => {
+    const fileNode = runArtifactScenario({
+      rawTranscript: JSON.stringify(
+        reviewTranscript({
+          toolInput: { name: 'status.ts' },
+          toolResultContent: JSON.stringify({
+            status: 'found',
+            symbol: {
+              uid: `File:${CHANGED_PATH}`,
+              name: 'status.ts',
+              kind: 'File',
+              filePath: CHANGED_PATH,
+            },
+          }),
+        }),
+      ),
+    });
+    expect(fileNode.artifact.failure_code).toBe('missing_graph_evidence');
+    expect(fileNode.stderr).toContain('results that resolved nothing: 1');
+  });
+
   it('scopes a deletion-only PR to the merge-base set instead of an empty head set', () => {
     const deletedPath = 'gitnexus/src/cli/deleted-command.ts';
     const headScopedCall = runArtifactScenario({
