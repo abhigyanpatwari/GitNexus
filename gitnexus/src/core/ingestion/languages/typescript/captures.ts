@@ -41,6 +41,7 @@ import { isArrayMethodCallbackArrow } from './array-callback.js';
 import {
   isShadowedCjsExportAssignment,
   isUnexportedMemberAssignmentValue,
+  isUndeclarableThisMemberValue,
 } from './cjs-export-assignment.js';
 import { getTreeSitterBufferSize } from '../../constants.js';
 import { parseSourceSafe } from '../../../tree-sitter/safe-parse.js';
@@ -374,6 +375,14 @@ export function emitTsScopeCaptures(
       // not the exports object declares nothing at module scope — drop it, or
       // every `obj.handler = fn` would bind `handler` as a module symbol.
       if (arrowNode !== null && isUnexportedMemberAssignmentValue(arrowNode, tree.rootNode)) {
+        continue;
+      }
+
+      // A `this.X = fn` declares a module symbol ONLY at the top level of a
+      // CommonJS file, where `this` is `module.exports`. Inside a function it
+      // is an instance member (a Method with an owner, no module binding), and
+      // in ESM top-level `this` is undefined and exports nothing.
+      if (arrowNode !== null && isUndeclarableThisMemberValue(arrowNode, tree.rootNode)) {
         continue;
       }
     }

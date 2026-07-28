@@ -22,6 +22,7 @@ import {
 } from '../utils/ast-helpers.js';
 import {
   cjsExportedNameFor,
+  isModuleLevelThisExport,
   isShadowedCjsExportAssignmentNode,
 } from './typescript/cjs-export-assignment.js';
 
@@ -48,10 +49,15 @@ const isShadowedCjsExportNode = (node: SyntaxNode): boolean => {
  * CJS export shadowing a name the module already declares emits nothing.
  */
 const memberAssignmentLabel = (node: SyntaxNode): NodeLabel | null => {
+  const root = rootOf(node);
+
+  // Module-level `this.X = fn` in CommonJS IS `module.exports.X = fn`, so it
+  // is an exported Function, not an instance member. Checked before the
+  // Method branch, which would otherwise claim every `this` receiver.
+  if (root !== undefined && isModuleLevelThisExport(node, root)) return 'Function';
   if (isPrototypeMemberAssignmentNode(node)) return 'Method';
   if (isShadowedCjsExportNode(node)) return null;
 
-  const root = rootOf(node);
   const value = node.childForFieldName('right');
   if (root === undefined || value === null) return null;
 

@@ -174,6 +174,26 @@ describe('#2723 follow-up: callable member assignments', () => {
     expect(labels.filter((l) => l === 'Function' || l === 'Method')).toEqual([]);
   });
 
+  // Top-level `this` is `undefined` in ESM, so it exports nothing there. This
+  // gate is what keeps the CJS rule above from mis-indexing every ESM file.
+  it('module-level this.X = fn in an ESM file is not an export', async () => {
+    const { ids } = await nodesFor(
+      'src/esmmod.js',
+      "import { helper } from './helper.js';\n" +
+        'this.notAnExport = function (v) { return helper(v); };\n' +
+        'export const real = 1;\n',
+    );
+    expect(ids).not.toContain('Function:src/esmmod.js:notAnExport');
+  });
+
+  it('a file with no CJS or ESM signal does not claim a this export', async () => {
+    const { ids } = await nodesFor(
+      'src/neither.js',
+      'this.ambiguous = function () { return 1; };\n',
+    );
+    expect(ids).not.toContain('Function:src/neither.js:ambiguous');
+  });
+
   it('a CJS export shadowing a class emits no orphan Function twin', async () => {
     const { labels, ids } = await nodesFor(
       'src/twin.js',
@@ -313,6 +333,30 @@ describeIfWorkerBuilt('#2723 calls resolve to the CJS-exported function', () => 
     ];
     expect(await callersOf(files, 'aliased')).toEqual(['drive']);
     expect(await callersOf(files, 'viaModule')).toEqual(['drive']);
+  });
+
+  // In CommonJS, module-level `this` IS `module.exports`.
+  it('module-level this.X = fn in a CJS file is an export', async () => {
+    expect(
+      await callersOf(
+        [
+          {
+            path: 'src/cjsmod.js',
+            content:
+              "const dep = require('./dep');\n" +
+              'this.topExport = function (v) { return dep(v); };\n',
+          },
+          { path: 'src/dep.js', content: 'module.exports = function (v) { return v; };\n' },
+          {
+            path: 'src/usecjs.js',
+            content:
+              "const { topExport } = require('./cjsmod');\n" +
+              'function drive(v) { return topExport(v); }\n',
+          },
+        ],
+        'topExport',
+      ),
+    ).toEqual(['drive']);
   });
 
   it('cross-file destructured require() call resolves', async () => {

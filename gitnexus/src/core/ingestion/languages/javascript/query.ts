@@ -185,6 +185,20 @@ export const JAVASCRIPT_SCOPE_QUERY = `
     (generator_function)
   ] @declaration.function)
 
+;; \`this.X = fn\` at MODULE level of a CommonJS file — there \`this\` IS
+;; \`module.exports\`, so this declares an export. Pruned emit-side for ESM
+;; files (where top-level \`this\` is undefined) and for a \`this\` inside a
+;; function, which is an instance member rather than an export.
+(assignment_expression
+  left: (member_expression
+    object: (this)
+    property: (property_identifier) @declaration.name)
+  right: [
+    (arrow_function)
+    (function_expression)
+    (generator_function)
+  ] @declaration.function)
+
 (assignment_expression
   left: (member_expression
     object: (member_expression

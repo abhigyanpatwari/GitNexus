@@ -101,6 +101,83 @@ function exportAliases(root: SyntaxNode): Set<string> {
   return aliases;
 }
 
+/** Whether each program root is a CommonJS module, memoized. */
+const isCommonJsByRoot = new WeakMap<SyntaxNode, boolean>();
+
+/** Function forms that BIND their own `this` (every form except an arrow). */
+const THIS_BINDING_NODE_TYPES = new Set([
+  'function_declaration',
+  'generator_function_declaration',
+  'function_expression',
+  'generator_function',
+  'method_definition',
+  'class_declaration',
+  'class',
+]);
+
+/**
+ * True when the file is a CommonJS module, so module-level `this` is
+ * `module.exports` rather than `undefined`.
+ *
+ * This gate is load-bearing, not decoration: `this.foo = fn` at the top level
+ * of an ESM file assigns to `undefined` and exports nothing, so indexing it as
+ * an export would be wrong for every `.mjs`, every `"type": "module"` package,
+ * and every `.ts` that compiles to ESM. An `import`/`export` statement makes
+ * the file unambiguously ESM; otherwise a `require()` call or an
+ * `exports`/`module` reference marks it CommonJS. A file with neither signal
+ * is left alone — silence is not evidence of CommonJS.
+ */
+function isCommonJsModule(root: SyntaxNode): boolean {
+  const cached = isCommonJsByRoot.get(root);
+  if (cached !== undefined) return cached;
+
+  let sawCjsSignal = false;
+  const visit = (node: SyntaxNode): boolean => {
+    // An ESM statement settles it immediately: top-level `this` is undefined.
+    if (node.type === 'import_statement' || node.type === 'export_statement') return false;
+    if (node.type === 'identifier' && (node.text === 'exports' || node.text === 'module'))
+      sawCjsSignal = true;
+    if (node.type === 'call_expression' && node.childForFieldName('function')?.text === 'require')
+      sawCjsSignal = true;
+
+    for (const child of node.namedChildren) if (!visit(child)) return false;
+    return true;
+  };
+
+  const result = visit(root) && sawCjsSignal;
+  isCommonJsByRoot.set(root, result);
+  return result;
+}
+
+/**
+ * True when `assignment` is a `this.X = <function>` at MODULE level — i.e. no
+ * `this`-binding function encloses it — inside a CommonJS module, which makes
+ * it an export of `X`.
+ *
+ * Arrow functions are transparent here: ECMA-262 gives an arrow
+ * `[[ThisMode]] = lexical`, so a top-level arrow's `this` is still the
+ * module's. Every other function form binds its own receiver and stops the
+ * walk — that is an instance member, handled as a Method instead.
+ */
+export function isModuleLevelThisExport(assignment: SyntaxNode, root: SyntaxNode): boolean {
+  const left =
+    assignment.type === 'assignment_expression' ? assignment.childForFieldName('left') : null;
+  if (left === null || left.type !== 'member_expression') return false;
+  if (left.childForFieldName('object')?.type !== 'this') return false;
+
+  for (let anc: SyntaxNode | null = assignment.parent; anc !== null; anc = anc.parent) {
+    if (THIS_BINDING_NODE_TYPES.has(anc.type)) return false;
+  }
+  return isCommonJsModule(root);
+}
+
+/** The property name of a module-level `this.X = fn` export, or null. */
+export function moduleLevelThisExportName(assignment: SyntaxNode, root: SyntaxNode): string | null {
+  if (!isModuleLevelThisExport(assignment, root)) return null;
+  const property = assignment.childForFieldName('left')?.childForFieldName('property');
+  return property?.type === 'property_identifier' ? property.text : null;
+}
+
 /** Collect the names `node` binds into its enclosing scope, into `out`. */
 function collectDeclaredNames(node: SyntaxNode, out: Set<string>): void {
   if (NAMED_DECLARATION_TYPES.has(node.type)) {
@@ -201,6 +278,24 @@ export function cjsExportedNameFor(node: SyntaxNode, root: SyntaxNode): string |
  * receivers are not identifiers, so they never reach this guard and keep their
  * own (Method) treatment.
  */
+/**
+ * True when `node` is the value of a `this.X = fn` assignment that declares
+ * NOTHING at module scope — either because a function encloses it (an instance
+ * member, which gets a Method + owner edge instead) or because the file is not
+ * CommonJS (top-level `this` is undefined in ESM).
+ */
+export function isUndeclarableThisMemberValue(node: SyntaxNode, root: SyntaxNode): boolean {
+  const assignment = node.parent;
+  if (assignment === null || assignment.type !== 'assignment_expression') return false;
+  if (assignment.childForFieldName('right')?.id !== node.id) return false;
+
+  const left = assignment.childForFieldName('left');
+  if (left === null || left.type !== 'member_expression') return false;
+  if (left.childForFieldName('object')?.type !== 'this') return false;
+
+  return !isModuleLevelThisExport(assignment, root);
+}
+
 export function isUnexportedMemberAssignmentValue(node: SyntaxNode, root: SyntaxNode): boolean {
   const assignment = node.parent;
   if (assignment === null || assignment.type !== 'assignment_expression') return false;
