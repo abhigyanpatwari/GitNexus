@@ -34,9 +34,15 @@
  *      resolved.
  *   3. **Dynamic require** — `require(computedPath)` is skipped (non-literal
  *      argument — cannot statically resolve the target).
- *   4. **`module.exports = fn`** — an anonymous default export has no name to
- *      bind, so nothing declares it. The rest of the CJS export surface IS
- *      modeled (#2723); see below.
+ *   4. **Calling a renamed default-export binding** — `module.exports = fn` IS
+ *      indexed (#2723, named after the file), but resolving a CALL through a
+ *      renamed local binding (`const renamed = require('./mod'); renamed()`)
+ *      needs the finalize layer to treat a called namespace binding as the
+ *      target module's default export. `const mod = require('./mod'); mod()`
+ *      happens to resolve because the names coincide.
+ *   5. **Anonymous ESM default** — `export default function () {}` (no name)
+ *      is not indexed either. Same class as the CJS default above, different
+ *      construct; not addressed by #2723.
  *
  * ## CommonJS export forms (#2723)
  *
@@ -57,6 +63,10 @@
  *     as a re-export (`reexport-alias`), so callers reach the ORIGINAL
  *     definition. A plain import binding would not do: it is private to its
  *     module, exactly as in ESM.
+ *   - `module.exports = fn` — the whole module is the callable, so it is named
+ *     after the file (`index.js` takes its parent directory). A named function
+ *     expression keeps its own name. `exports = fn` is NOT indexed: rebinding
+ *     `exports` exports nothing in CommonJS, it only breaks the alias.
  *
  * Two deliberate non-cases. `exports.foo = localFn`, where the value is a
  * locally declared function, needs nothing — the module scope already binds
