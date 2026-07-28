@@ -1332,6 +1332,20 @@ export const RUST_QUERIES = `
 ; Functions & Items
 (function_item name: (identifier) @name) @definition.function
 (function_signature_item name: (identifier) @name) @definition.function
+
+; Closure bound to a let: let handler = || target(1);
+; Emits the Function NODE. Without it a Rust closure binding had no graph node
+; at all, so it could be neither a call target nor a call source (#2699), which
+; made Rust the one exception to "a closure bound to a name is a Function node
+; in every language" (#2687).
+; Anchor note: this channel puts @definition.function on the OUTER
+; let_declaration, which is the OPPOSITE of the scope-resolution channel in
+; languages/rust/query.ts (inner closure_expression, to align with
+; @scope.function). Both match their own channel's convention -- compare the
+; (lexical_declaration (variable_declarator ... (arrow_function))) rule above.
+(let_declaration
+  pattern: (identifier) @name
+  value: (closure_expression)) @definition.function
 (struct_item name: (type_identifier) @name) @definition.struct
 ; A union is materialized as a Struct node (same rationale as the
 ; scope-resolution @declaration.struct in languages/rust/query.ts: every
@@ -1580,6 +1594,38 @@ export const RUBY_QUERIES = `
 (assignment
   left: (identifier) @name
   right: (lambda)) @definition.function
+
+; The (lambda) rule above covers the stabby forms only. lambda do...end,
+; proc do...end and Proc.new are (call) nodes, so without these the scope
+; channel declared a closure the graph channel never gave a node to, and the
+; call fell through to the enclosing method. Same two-channel lockstep Rust
+; needed. Receiver constraints mirror ruby/query.ts exactly: bare for
+; lambda/proc, Proc-constant for new — otherwise every block-taking call
+; (items.map { }) would mint a Function node.
+(assignment
+  left: (identifier) @name
+  right: (call
+    !receiver
+    method: (identifier) @_lam
+    block: [(block) (do_block)])
+  (#eq? @_lam "lambda")) @definition.function
+
+(assignment
+  left: (identifier) @name
+  right: (call
+    !receiver
+    method: (identifier) @_prc
+    block: [(block) (do_block)])
+  (#eq? @_prc "proc")) @definition.function
+
+(assignment
+  left: (identifier) @name
+  right: (call
+    receiver: (constant) @_pc
+    method: (identifier) @_nw
+    block: [(block) (do_block)])
+  (#eq? @_pc "Proc")
+  (#eq? @_nw "new")) @definition.function
 `;
 
 // Kotlin queries - works with tree-sitter-kotlin (fwcd/tree-sitter-kotlin)

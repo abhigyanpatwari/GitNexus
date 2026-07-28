@@ -20,7 +20,10 @@
 
 import type { NodeLabel, ParameterTypeClass } from 'gitnexus-shared';
 import type { KnowledgeGraph } from '../../../graph/types.js';
-import { isOverloadableCallable } from '../../utils/callable-labels.js';
+import {
+  isOverloadableCallable,
+  isPositionQualifiedLocalLabel,
+} from '../../utils/callable-labels.js';
 import { templateConstraintsIdTag } from '../../utils/template-arguments.js';
 import { parameterShapeIdTag } from '../../utils/method-props.js';
 
@@ -135,7 +138,7 @@ export function buildGraphNodeLookup(graph: KnowledgeGraph): GraphNodeLookup {
     // Position key (#2699) — see `positionKey`. Second write on a key marks it
     // ambiguous rather than letting source order decide.
     const startLine = (props as { startLine?: number }).startLine;
-    if (startLine !== undefined && isOverloadableCallable(node.label)) {
+    if (startLine !== undefined && isPositionQualifiedLocalLabel(node.label)) {
       const posK = positionKey(props.filePath, node.label, startLine, props.name);
       lookup.set(posK, lookup.has(posK) ? AMBIGUOUS_POSITION : node.id);
       // A local-identity node carries `@<row>:<col>` on its last name segment. Record

@@ -64,8 +64,13 @@ describe('no call site re-inlines the rule', () => {
   it('parse-worker.ts contains no inlined `<prefix>.${localIdentity(...)}` template', () => {
     // The structural half. The unit assertions above would still pass if a
     // fourth phase appeared and spelled the rule out by hand — which is
-    // exactly how the divergence #2714 fixed came to exist. This fails if any
-    // site reconstructs the id instead of calling the shared function.
+    // exactly how the divergence #2714 fixed came to exist.
+    //
+    // Scope, stated honestly: this matches ONE template spelling — the
+    // `${prefix}.${localIdentity(...)}` form the divergence actually took. A
+    // hand-rolled id built by string concatenation, or with the interpolation
+    // spelled differently, still slips past. It is a tripwire for the known
+    // shape, not a proof that no site reconstructs the id.
     const source = readFileSync(
       fileURLToPath(new URL('../../src/core/ingestion/workers/parse-worker.ts', import.meta.url)),
       'utf8',
