@@ -32,6 +32,8 @@ import {
   deleteAllInterprocTaintPaths,
   deleteAllCallSummaries,
   deleteAllInjects,
+  deleteSpringAutoConfigurationDeclarations,
+  deleteSpringAutoConfigurationSyntheticClasses,
   queryImportersBatch,
   loadFTSExtension,
   wipeLbugDbFiles,
@@ -136,7 +138,10 @@ import { sanitizeDetectedBranch } from '../cli/analyze-config.js';
 import { EMBEDDING_TABLE_NAME } from './lbug/schema.js';
 import { STALE_HASH_SENTINEL } from './lbug/schema.js';
 import { isSpringBeanCandidateSourceFile } from './ingestion/frameworks/spring/bean-catalog.js';
-import { SPRING_BEAN_INVENTORY_FEATURE } from './ingestion/frameworks/spring/analysis-features.js';
+import {
+  SPRING_BEAN_INVENTORY_FEATURE,
+  SPRING_CONDITIONALS_FEATURE,
+} from './ingestion/frameworks/spring/analysis-features.js';
 import { SPRING_CONFIG_BINDINGS_FEATURE } from './ingestion/languages/java/analysis-features.js';
 import {
   CLASS_FRAMEWORK_ANNOTATIONS_FEATURE,
@@ -152,6 +157,7 @@ import {
 const ANALYSIS_FEATURES = [
   CLASS_FRAMEWORK_ANNOTATIONS_FEATURE,
   SPRING_BEAN_INVENTORY_FEATURE,
+  SPRING_CONDITIONALS_FEATURE,
   SPRING_CONFIG_BINDINGS_FEATURE,
 ] as const;
 
@@ -2010,7 +2016,16 @@ async function runFullAnalysisInner(
         //     deleting on every non-pdg incremental run (N runs = N copies of
         //     every INJECTS row; CodeRelation has no PK and no read-side dedup).
         await deleteAllInjects();
-        // 2b. Drop interprocedural TAINT_PATH edges (#2084 M4 U6) when pdg is on
+        // 2b. Drop Spring-owned DECLARES edges (#2415). The
+        //     auto-configuration phase scans every metadata file and recomputes
+        //     the full set each run; exact reason filtering leaves declarations
+        //     owned by other metadata systems untouched.
+        await deleteSpringAutoConfigurationDeclarations();
+        // 2c. Drop source-unavailable auto-configuration placeholders. Fresh
+        //     synthetic nodes are graph-wide in extractChangedSubgraph, so this
+        //     also removes an orphan when a newly-added real class takes over.
+        await deleteSpringAutoConfigurationSyntheticClasses();
+        // 2d. Drop interprocedural TAINT_PATH edges (#2084 M4 U6) when pdg is on
         //     — their validity is a whole-program property (an A→C flow can be
         //     invalidated by a change to an intermediate function on a third
         //     file), so endpoint-writability extraction can't refresh them.
@@ -2018,7 +2033,7 @@ async function runFullAnalysisInner(
         //     graph (isGraphWideRelType), mirroring Community/Process.
         if (options.pdg === true) {
           await deleteAllInterprocTaintPaths();
-          // 2c. Drop CALL_SUMMARY edges (PDG FU-C) on an incremental `--pdg`
+          // 2e. Drop CALL_SUMMARY edges (PDG FU-C) on an incremental `--pdg`
           //     writeback. They are re-included from the FULL fresh graph
           //     (isGraphWideRelType) and the callSummaries phase recomputes every
           //     summary each run, so delete-all-then-rebuild keeps an unchanged

@@ -140,6 +140,19 @@ export type RelationshipType =
    *  Lets Cypher queries trace which beans the container injects into a given
    *  consumer, complementing the structural `IMPLEMENTS` heritage edges. */
   | 'INJECTS'
+  /** Spring activation constraint. Source = a conditional Bean/configuration
+   *  Class or factory Method; target = the referenced configuration Property
+   *  when statically identifiable, otherwise an Annotation evidence node.
+   *  The reason records the annotation and explicitly marks activation as
+   *  unknown because runtime environment/classpath state may override source
+   *  configuration. */
+  | 'CONDITIONAL_ON'
+  /** Metadata declaration/discovery relationship. Source = a metadata File;
+   *  target = the declared candidate node. This deliberately does not claim
+   *  that the target is active or registered at runtime. Framework-specific
+   *  semantics belong in `reason` so the relationship can be reused by other
+   *  metadata-driven systems. */
+  | 'DECLARES'
   /** Vue component event system: a handler function in a parent component is
    *  bound to an event emitted by a child component (`@event="handlerFn"`).
    *  Source = handler Function/Method node in the parent.

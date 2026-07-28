@@ -1321,12 +1321,11 @@ export function findChild(node: SyntaxNode, type: string): SyntaxNode | null {
   return null;
 }
 
-/** Remove bidi-override and zero-width control characters. Doc text is
- *  attacker-influenced (any indexed repo) and is returned verbatim to MCP
- *  clients, so strip Trojan-Source-style hidden controls from the description
- *  before it leaves the extractor (#2286 review). Scoped to the doc-comment path
- *  only — global `sanitizeUTF8` is intentionally untouched. */
-const stripBidiAndZeroWidth = (text: string): string =>
+/** Remove bidi-override and zero-width control characters from attacker-
+ *  influenced repository text before it is exposed through graph descriptions
+ *  or MCP output (#2286). Global `sanitizeUTF8` intentionally remains focused
+ *  on encoding/control-character validity. */
+export const stripBidiAndZeroWidth = (text: string): string =>
   Array.from(text)
     .filter((ch) => {
       const c = ch.codePointAt(0) ?? 0;

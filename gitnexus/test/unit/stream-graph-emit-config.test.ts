@@ -137,6 +137,11 @@ describe('buildPhaseList under streamGraphEmit', () => {
 });
 
 describe('RETAINED_REL_TYPES tracks its readers', () => {
+  it('streams write-only conditional and declaration evidence', () => {
+    expect(RETAINED_REL_TYPES.has('CONDITIONAL_ON')).toBe(false);
+    expect(RETAINED_REL_TYPES.has('DECLARES')).toBe(false);
+  });
+
   it('retains every relationship type any phase reads back mid-pipeline', async () => {
     // The round-trip test CANNOT catch drift here: addRelationship partitions
     // edges between the graph and the CSVs, and a partition's union is
