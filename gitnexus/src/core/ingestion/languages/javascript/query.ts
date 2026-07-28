@@ -165,30 +165,25 @@ export const JAVASCRIPT_SCOPE_QUERY = `
 ;; Same anchor discipline as the blocks above — \`@declaration.function\` sits
 ;; on the INNER arrow / function_expression so its range matches the
 ;; \`@scope.function\` range.
+;; The three right-hand-side forms share one pattern via an inner LEAF
+;; alternation. tree-sitter 0.21.1 has a known hazard where a top-level
+;; \`[...]\` alternation makes sibling branches share one predicate bucket and
+;; silently drops matches; an inner leaf alternation whose predicates all sit
+;; on captures OUTSIDE it (here \`@_cjs.exports\` / \`@_cjs.module\`, both on the
+;; left-hand side and bound in every branch) is the safe form. Verified by
+;; probing all six receiver × RHS combinations, not by reading.
+;;
+;; \`(generator_function) @scope.function\` is declared near the top of this
+;; query, so the anchor aligns for that branch too.
 (assignment_expression
   left: (member_expression
     object: (identifier) @_cjs.exports
     property: (property_identifier) @declaration.name)
-  right: (arrow_function) @declaration.function
-  (#eq? @_cjs.exports "exports"))
-
-(assignment_expression
-  left: (member_expression
-    object: (identifier) @_cjs.exports
-    property: (property_identifier) @declaration.name)
-  right: (function_expression) @declaration.function
-  (#eq? @_cjs.exports "exports"))
-
-;; Generator parity. The graph-node rules in \`tree-sitter-queries.ts\` accept
-;; \`generator_function\` for this form, so without a matching declaration the
-;; node existed with nothing resolving to it — the same half-fixed state the
-;; block above exists to prevent. \`(generator_function) @scope.function\` is
-;; declared near the top of this query, so the anchor still aligns.
-(assignment_expression
-  left: (member_expression
-    object: (identifier) @_cjs.exports
-    property: (property_identifier) @declaration.name)
-  right: (generator_function) @declaration.function
+  right: [
+    (arrow_function)
+    (function_expression)
+    (generator_function)
+  ] @declaration.function
   (#eq? @_cjs.exports "exports"))
 
 (assignment_expression
@@ -197,27 +192,11 @@ export const JAVASCRIPT_SCOPE_QUERY = `
       object: (identifier) @_cjs.module
       property: (property_identifier) @_cjs.exports)
     property: (property_identifier) @declaration.name)
-  right: (arrow_function) @declaration.function
-  (#eq? @_cjs.module "module")
-  (#eq? @_cjs.exports "exports"))
-
-(assignment_expression
-  left: (member_expression
-    object: (member_expression
-      object: (identifier) @_cjs.module
-      property: (property_identifier) @_cjs.exports)
-    property: (property_identifier) @declaration.name)
-  right: (function_expression) @declaration.function
-  (#eq? @_cjs.module "module")
-  (#eq? @_cjs.exports "exports"))
-
-(assignment_expression
-  left: (member_expression
-    object: (member_expression
-      object: (identifier) @_cjs.module
-      property: (property_identifier) @_cjs.exports)
-    property: (property_identifier) @declaration.name)
-  right: (generator_function) @declaration.function
+  right: [
+    (arrow_function)
+    (function_expression)
+    (generator_function)
+  ] @declaration.function
   (#eq? @_cjs.module "module")
   (#eq? @_cjs.exports "exports"))
 

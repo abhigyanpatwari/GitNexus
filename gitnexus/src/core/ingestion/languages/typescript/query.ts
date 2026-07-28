@@ -219,26 +219,18 @@ export const TYPESCRIPT_SCOPE_QUERY = `
 ;; \`languages/javascript/query.ts\` for the rationale. Mirrored here because
 ;; \`.ts\` files in a CommonJS package use the same form, and because the JS
 ;; provider delegates several hooks to these TypeScript counterparts.
+;; One pattern per receiver form, RHS forms folded into an inner LEAF
+;; alternation — see the matching note in \`languages/javascript/query.ts\` for
+;; why that shape is safe under the tree-sitter 0.21.1 alternation hazard.
 (assignment_expression
   left: (member_expression
     object: (identifier) @_cjs.exports
     property: (property_identifier) @declaration.name)
-  right: (arrow_function) @declaration.function
-  (#eq? @_cjs.exports "exports"))
-
-(assignment_expression
-  left: (member_expression
-    object: (identifier) @_cjs.exports
-    property: (property_identifier) @declaration.name)
-  right: (function_expression) @declaration.function
-  (#eq? @_cjs.exports "exports"))
-
-;; Generator parity — see the matching note in \`languages/javascript/query.ts\`.
-(assignment_expression
-  left: (member_expression
-    object: (identifier) @_cjs.exports
-    property: (property_identifier) @declaration.name)
-  right: (generator_function) @declaration.function
+  right: [
+    (arrow_function)
+    (function_expression)
+    (generator_function)
+  ] @declaration.function
   (#eq? @_cjs.exports "exports"))
 
 (assignment_expression
@@ -247,27 +239,11 @@ export const TYPESCRIPT_SCOPE_QUERY = `
       object: (identifier) @_cjs.module
       property: (property_identifier) @_cjs.exports)
     property: (property_identifier) @declaration.name)
-  right: (arrow_function) @declaration.function
-  (#eq? @_cjs.module "module")
-  (#eq? @_cjs.exports "exports"))
-
-(assignment_expression
-  left: (member_expression
-    object: (member_expression
-      object: (identifier) @_cjs.module
-      property: (property_identifier) @_cjs.exports)
-    property: (property_identifier) @declaration.name)
-  right: (function_expression) @declaration.function
-  (#eq? @_cjs.module "module")
-  (#eq? @_cjs.exports "exports"))
-
-(assignment_expression
-  left: (member_expression
-    object: (member_expression
-      object: (identifier) @_cjs.module
-      property: (property_identifier) @_cjs.exports)
-    property: (property_identifier) @declaration.name)
-  right: (generator_function) @declaration.function
+  right: [
+    (arrow_function)
+    (function_expression)
+    (generator_function)
+  ] @declaration.function
   (#eq? @_cjs.module "module")
   (#eq? @_cjs.exports "exports"))
 
