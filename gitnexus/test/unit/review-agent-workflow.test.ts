@@ -2111,6 +2111,16 @@ describe('gitnexus review-agent workflow security contract', () => {
     expect(exhausted.stderr).toContain('failed after 3 attempts');
   });
 
+  it('ships the install helper executable, since the workflow invokes it directly', () => {
+    // Committed as 100644 it would fail on the runner with permission denied,
+    // and no other check in this suite would notice.
+    const mode = spawnSync('git', ['ls-files', '-s', '.github/scripts/npm-ci-retry.sh'], {
+      cwd: path.resolve(__dirname, '../../..'),
+      encoding: 'utf8',
+    }).stdout;
+    expect(mode.startsWith('100755')).toBe(true);
+  });
+
   it('bounds every install attempt so a hung registry cannot eat the job budget', () => {
     const helper = readFileSync(
       path.resolve(__dirname, '../../../.github/scripts/npm-ci-retry.sh'),
