@@ -38,9 +38,15 @@ import { recordCacheHit, recordCacheMiss } from './cache-stats.js';
 import { synthesizeTsReceiverBinding } from './receiver-binding.js';
 import { computeTsArityMetadata } from './arity-metadata.js';
 import { isArrayMethodCallbackArrow } from './array-callback.js';
+import {
+  isShadowedCjsExportAssignment,
+  isUnexportedMemberAssignmentValue,
+  isUndeclarableThisMemberValue,
+} from './cjs-export-assignment.js';
 import { getTreeSitterBufferSize } from '../../constants.js';
 import { parseSourceSafe } from '../../../tree-sitter/safe-parse.js';
 import { synthesizeCallableFlowCaptures } from '../../utils/callable-flow-captures.js';
+import { synthesizeCjsModuleExports } from './cjs-module-exports.js';
 import {
   deriveDefaultExportHocName,
   isBlockedDefaultExportHoc,
@@ -358,6 +364,28 @@ export function emitTsScopeCaptures(
       if (arrowNode !== null && isBlockedDefaultExportHoc(arrowNode)) {
         continue;
       }
+      // #2723: a CJS export assignment must not register a SECOND module-scope
+      // declaration for a name the file already declares lexically — the name
+      // would become ambiguous and the resolver would drop the intra-module
+      // edge that resolved before #2723.
+      if (arrowNode !== null && isShadowedCjsExportAssignment(arrowNode, tree.rootNode)) {
+        continue;
+      }
+      // #2723 follow-up: the member-assignment rule matches ANY identifier
+      // receiver so an `exports` alias can be recognised. A receiver that is
+      // not the exports object declares nothing at module scope — drop it, or
+      // every `obj.handler = fn` would bind `handler` as a module symbol.
+      if (arrowNode !== null && isUnexportedMemberAssignmentValue(arrowNode, tree.rootNode)) {
+        continue;
+      }
+
+      // A `this.X = fn` declares a module symbol ONLY at the top level of a
+      // CommonJS file, where `this` is `module.exports`. Inside a function it
+      // is an instance member (a Method with an owner, no module binding), and
+      // in ESM top-level `this` is undefined and exports nothing.
+      if (arrowNode !== null && isUndeclarableThisMemberValue(arrowNode, tree.rootNode)) {
+        continue;
+      }
     }
 
     if (fnDeclAnchor !== undefined) {
@@ -501,6 +529,12 @@ export function emitTsScopeCaptures(
   synthesizeInstanceofNarrowings(tree.rootNode, out);
   synthesizeTsInheritanceReferences(tree.rootNode, out);
   out.push(...synthesizeCallableFlowCaptures(tree.rootNode, TS_CALLABLE_CAPTURE_OPTIONS));
+
+  // CommonJS module-export declarations (#2723). Shared with the JavaScript
+  // emitter: a `.ts` file in a CommonJS package uses the same forms, and
+  // without this the default-export NODE was emitted with nothing declaring it
+  // — the "found, zero callers" state this work exists to remove (#2729 F7).
+  synthesizeCjsModuleExports(tree.rootNode, filePath, out);
 
   return out;
 }
