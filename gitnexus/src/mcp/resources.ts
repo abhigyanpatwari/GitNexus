@@ -497,7 +497,7 @@ relationships:
   - IMPORTS: Module imports
   - EXTENDS: Class inheritance
   - IMPLEMENTS: Interface implementation
-  - HAS_METHOD: Class/Struct/Interface owns a Method
+  - HAS_METHOD: Class/Struct/Interface owns a Method; also a Function acting as a pre-ES6 constructor (prototype assignment)
   - HAS_PROPERTY: Class/Struct/Interface owns a Property (field)
   - ACCESSES: Function/Method reads or writes a Property (reason: 'read' or 'write')
   - METHOD_OVERRIDES: Method overrides another Method (MRO)

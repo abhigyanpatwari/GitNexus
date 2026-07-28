@@ -390,6 +390,50 @@ export const TYPESCRIPT_QUERIES = `
   name: (property_identifier) @name
   value: (function_expression)) @definition.method
 
+; CJS property-assignment exports (#2723) — see JAVASCRIPT_QUERIES for the
+; rationale and for why the receiver is pinned to \`exports\`/\`module.exports\`.
+; Mirrored here because \`.ts\` files in a CommonJS package use the same form.
+(assignment_expression
+  left: (member_expression
+    object: (identifier) @_cjs.receiver
+    property: (property_identifier) @name)
+  right: [(function_expression) (arrow_function) (generator_function)]) @definition.function
+
+(assignment_expression
+  left: (member_expression
+    object: (member_expression
+      object: (identifier) @_cjs.module
+      property: (property_identifier) @_cjs.exports)
+    property: (property_identifier) @name)
+  right: [(function_expression) (arrow_function) (generator_function)]
+  (#eq? @_cjs.module "module")
+  (#eq? @_cjs.exports "exports")) @definition.function
+
+; Instance members assigned through \`this\` (#2723 follow-up) — see
+; JAVASCRIPT_QUERIES for rationale.
+(assignment_expression
+  left: (member_expression
+    object: (this)
+    property: (property_identifier) @name)
+  right: [
+    (function_expression)
+    (arrow_function)
+    (generator_function)
+  ]) @definition.function
+
+; Prototype methods (#2723 follow-up) — see JAVASCRIPT_QUERIES for rationale.
+(assignment_expression
+  left: (member_expression
+    object: (member_expression
+      property: (property_identifier) @_proto.kw)
+    property: (property_identifier) @name)
+  right: [
+    (function_expression)
+    (arrow_function)
+    (generator_function)
+  ]
+  (#eq? @_proto.kw "prototype")) @definition.function
+
 ; Constructor parameter properties: constructor(public address: Address)
 (required_parameter
   (accessibility_modifier)
@@ -539,6 +583,66 @@ export const JAVASCRIPT_QUERIES = `
     (variable_declarator
       name: (identifier) @name
       value: (generator_function)))) @definition.function
+
+; CJS property-assignment exports (#2723): \`exports.foo = function () {}\`,
+; \`module.exports.foo = (a) => a\`. This is the dominant export style in
+; pre-ESM Node (Express, Firebase Functions), and without these rules a
+; CommonJS codebase indexed its internals while every symbol on its public
+; API was missing — \`impact\`/\`context\`/\`rename\` all answered "not found".
+;
+; Scoped to the \`exports\` / \`module.exports\` receivers on purpose. The
+; general \`X.foo = function () {}\` shape also covers \`Foo.prototype.bar\` and
+; \`this.handler\`, which are member constructs with their own ownership
+; questions (an owning Class, a function-local binding) — a broader rule
+; would emit ownerless top-level Functions for them. Same rationale as the
+; other closure-binding rules above: the label means "is a call target".
+(assignment_expression
+  left: (member_expression
+    object: (identifier) @_cjs.receiver
+    property: (property_identifier) @name)
+  right: [(function_expression) (arrow_function) (generator_function)]) @definition.function
+
+(assignment_expression
+  left: (member_expression
+    object: (member_expression
+      object: (identifier) @_cjs.module
+      property: (property_identifier) @_cjs.exports)
+    property: (property_identifier) @name)
+  right: [(function_expression) (arrow_function) (generator_function)]
+  (#eq? @_cjs.module "module")
+  (#eq? @_cjs.exports "exports")) @definition.function
+
+; Prototype methods (#2723 follow-up): \`Foo.prototype.bar = function () {}\`.
+; The dominant pre-ES6 method form, and previously invisible — no node at all,
+; so \`impact\` could not reach a single prototype method. Emitted as a MEMBER:
+; \`labelOverride\` reclassifies it to Method and the owner resolves to whatever
+; \`Foo\` names, so \`HAS_METHOD\` makes it reachable the way a class method is.
+(assignment_expression
+  left: (member_expression
+    object: (member_expression
+      property: (property_identifier) @_proto.kw)
+    property: (property_identifier) @name)
+  right: [
+    (function_expression)
+    (arrow_function)
+    (generator_function)
+  ]
+  (#eq? @_proto.kw "prototype")) @definition.function
+
+; Instance members assigned through \`this\` (#2723 follow-up):
+; \`function Widget() { this.handler = function () {}; }\`. The pre-ES6 sibling
+; of a closure-valued class field, which #2693 already models as a Method.
+; Ownership resolves to the enclosing constructor/class; a \`this\` at module
+; top level owns nothing and stays a plain top-level definition.
+(assignment_expression
+  left: (member_expression
+    object: (this)
+    property: (property_identifier) @name)
+  right: [
+    (function_expression)
+    (arrow_function)
+    (generator_function)
+  ]) @definition.function
 
 ; Object-property arrows / function expressions: \`{ addItem: () => ... }\`.
 ; See TYPESCRIPT_QUERIES for rationale (issue #1166).
