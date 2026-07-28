@@ -33,6 +33,7 @@ import {
   crossFilePhase,
   scopeResolutionPhase,
   springConfigPhase,
+  springAutoConfigurationPhase,
   pruneLocalSymbolsPhase,
   taintSummariesPhase,
   callSummariesPhase,
@@ -261,7 +262,7 @@ export interface PipelineOptions {
  * Phase dependency graph:
  *
  *   scan → structure → [springConfig, markdown, cobol] → parse → [routes, tools, orm]
- *     → crossFile → scopeResolution → pruneLocalSymbols
+ *     → crossFile → scopeResolution → springAutoConfiguration → pruneLocalSymbols
  *     → mro → di → communities → processes
  *
  * To add a new phase: create a file in pipeline-phases/, export the phase
@@ -288,6 +289,7 @@ export function buildPhaseList(options?: PipelineOptions): PipelinePhase[] {
       .register(ormPhase)
       .register(crossFilePhase)
       .register(scopeResolutionPhase)
+      .register(springAutoConfigurationPhase)
       .register(pruneLocalSymbolsPhase)
       // M4 (#2084): interprocedural taint fixpoint — the first real opt-in
       // pdg-gated phase. Off ⇒ absent ⇒ byte-identical graph. No always-on

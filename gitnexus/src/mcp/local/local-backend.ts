@@ -303,6 +303,12 @@ export const VALID_RELATION_TYPES = new Set([
   // (WRAPS/FETCHES precedent): the 0.5 unknown-type floor applies there,
   // and the edges carry their own confidence (0.8) in the graph.
   'INJECTS',
+  // Conditional and metadata-declaration evidence is opt-in for impact
+  // traversal, like INJECTS: explicit filters can follow activation
+  // constraints and declarations without changing the default callgraph
+  // surface.
+  'CONDITIONAL_ON',
+  'DECLARES',
 ]);
 
 /**

@@ -23,6 +23,7 @@ import { populateKotlinPackageSiblings } from './package-siblings.js';
 import { attachKotlinSpringBeanCandidateMetadata } from './spring-bean-metadata.js';
 import { clearKotlinPackageFacts } from './package-facts.js';
 import { attachKotlinSpringDiMetadata } from './spring-di.js';
+import { attachKotlinSpringConditionalMetadata } from './spring-conditionals.js';
 
 /**
  * Kotlin scope resolver for RFC #909 Ring 3.
@@ -126,6 +127,7 @@ export const kotlinScopeResolver: ScopeResolver = {
   populateNamespaceSiblings: populateKotlinPackageSiblings,
   emitPostResolutionEdges: (graph, parsedFiles, nodeLookup, indexes) => {
     attachKotlinSpringBeanCandidateMetadata(graph, parsedFiles, nodeLookup, indexes);
+    attachKotlinSpringConditionalMetadata(graph, parsedFiles, nodeLookup, indexes);
     attachKotlinSpringDiMetadata(graph, parsedFiles, nodeLookup, indexes);
   },
 };
