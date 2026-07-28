@@ -55,6 +55,18 @@ import type { ParseWorkerResult } from '../core/ingestion/workers/parse-worker.j
 // the main thread (the #1983 OOM). Because the two stores share this version,
 // any future change to the `ParsedFile` serialization shape MUST bump
 // SCHEMA_BUMP so both invalidate in lockstep.
+// v29: closure-binding declaration rules for PHP/Rust/Kotlin/Ruby/Dart, a Rust
+// graph node for `let f = || …`, a Dart closure scope, and function-local VALUES
+// (Variable/Const/Property/Static) qualified by their enclosing callable plus
+// position (#2699 parts A1 + B). All parse-time, so a warm cache would replay
+// the old captures and the pre-qualification ids verbatim.
+//
+// This is 29 and not 28 because of the exact collision the v21 note below warns
+// about: this branch cut at 27 and bumped to 28, while #2415 bumped 27 -> 28 and
+// merged FIRST. Re-checking against origin/main at merge time — not at branch
+// time — is what caught it; leaving it at 28 would have shipped this change with
+// NO parse-cache invalidation, so every warm cache keeps serving the pre-fix
+// captures and ids.
 // v28: Java/Kotlin capture side-channels persist Spring condition facts and
 // annotation-source line numbers (#2415).
 // v26: the enclosing-callable walk stops at class bodies and anonymous-class
@@ -103,7 +115,7 @@ import type { ParseWorkerResult } from '../core/ingestion/workers/parse-worker.j
 // JLS 13.1 immediate-host chains (#2555).
 // v18: Worker$N anonymous bodies. v17: callable-value-flow operand identity.
 // v16: direct callee identity.
-const SCHEMA_BUMP = 28;
+const SCHEMA_BUMP = 29;
 const GITNEXUS_PKG_VERSION = (() => {
   try {
     // package.json sits at gitnexus/package.json — two levels up from

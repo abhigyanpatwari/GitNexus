@@ -410,6 +410,77 @@ export function findAncestorBeforeBoundary(
 }
 
 /**
+ * Enclosing callable for grammars that split a callable into a SIGNATURE node
+ * and a SIBLING body, where the callable is therefore never an ancestor of the
+ * code inside it.
+ *
+ * Dart is the case that forced this: `int outer() { … }` parses as
+ * `function_signature` followed by `function_body` as SIBLINGS, so an ancestor
+ * walk from a closure inside the body can never reach `outer`. No membership
+ * set fixes that — the walk is looking in the wrong direction (#2699).
+ *
+ * Deliberately a FALLBACK, used only when the ancestor walk found nothing.
+ *
+ * The sibling must be a BARE SIGNATURE, and that restriction is load-bearing —
+ * "any preceding callable sibling" is WRONG and was caught regressing PHP. In
+ * `<?php function target($x) {…} $handler = function ($x) {…};` the closure is
+ * at FILE level, so the primary ancestor walk correctly finds nothing and this
+ * fallback runs; an unrestricted version then grabs the preceding
+ * `function_definition` and mis-qualifies the file-level `$handler` as
+ * `target.$handler`. A preceding sibling is only an ENCLOSING callable when it
+ * cannot hold its own body — i.e. when the grammar split the body off.
+ *
+ * `SPLIT_SIGNATURE_NODE_TYPES` is exactly that set, and it is derived rather
+ * than listed: `LOCAL_SCOPE_BODY_NODE_TYPES` already filters the bare-signature
+ * types out of `FUNCTION_NODE_TYPES`, so the difference between them IS the
+ * split-signature set. PHP's `function_definition` carries a body and is in
+ * both, so it is excluded; Dart's `function_signature` is in only the former,
+ * so it qualifies.
+ *
+ * Language-neutral by construction — it names no grammar, and any future
+ * signature/body-split language is covered for free.
+ */
+export function findSplitBodyCallableAncestor(
+  node: SyntaxNode,
+  signatureOnlyTypes: ReadonlySet<string>,
+  boundaryTypes: ReadonlySet<string>,
+): SyntaxNode | null {
+  let current = node.parent;
+  while (current !== null) {
+    if (boundaryTypes.has(current.type)) return null;
+    const prev = current.previousNamedSibling;
+    if (
+      prev !== null &&
+      signatureOnlyTypes.has(prev.type) &&
+      // `current` must be the signature's BODY, not merely the next thing after
+      // it. Without this, valid TypeScript trips the fallback: in
+      //     declare namespace Api {
+      //       function internalHelper(x): number;
+      //       export function send(x): number;
+      //     }
+      // `send`'s `export_statement` is the next sibling of `internalHelper`'s
+      // `function_signature`, so `send` was mis-qualified as
+      // `internalHelper.send@r:c`. TypeScript emits bodyless
+      // function_signature/method_signature for overloads and ambient
+      // declarations, so the split-signature set is NOT Dart-only.
+      //
+      // A body contains statements; a declaration wrapper contains another
+      // signature. Rejecting any `current` that directly holds a signature of
+      // its own separates the two without naming a grammar.
+      !current.namedChildren.some((child) => signatureOnlyTypes.has(child.type))
+    ) {
+      return prev;
+    }
+    current = current.parent;
+  }
+  return null;
+}
+
+// SPLIT_SIGNATURE_NODE_TYPES is defined next to LOCAL_SCOPE_BODY_NODE_TYPES,
+// which it derives from — declaring it here would read it in its temporal dead
+// zone and throw at module load (tsc does NOT catch that; only running does).
+
+/**
  * Determine the graph node label from a tree-sitter capture map.
  * Handles language-specific reclassification via the provider's labelOverride hook
  * (e.g. C/C++ duplicate skipping, Kotlin Method promotion).
@@ -1395,6 +1466,22 @@ export const LOCAL_SCOPE_BODY_NODE_TYPES: ReadonlySet<string> = new Set(
       'computed_setter', // Swift: set { }
       'computed_modify', // Swift: _modify { }
     ]),
+);
+
+/**
+ * Callable node types whose grammar splits the body off into a SIBLING node, so
+ * the callable is never an ancestor of the code inside it (Dart
+ * `function_signature` / `method_signature`).
+ *
+ * Derived, not listed, so it cannot drift from the two sets that define it:
+ * `LOCAL_SCOPE_BODY_NODE_TYPES` is `FUNCTION_NODE_TYPES` minus exactly the bare
+ * signature types, so the difference IS the split-signature set.
+ *
+ * Must stay BELOW `LOCAL_SCOPE_BODY_NODE_TYPES` — reading it earlier hits the
+ * temporal dead zone and throws at module load.
+ */
+export const SPLIT_SIGNATURE_NODE_TYPES: ReadonlySet<string> = new Set(
+  [...FUNCTION_NODE_TYPES].filter((t) => !LOCAL_SCOPE_BODY_NODE_TYPES.has(t)),
 );
 
 // ============================================================================

@@ -64,6 +64,19 @@ const RUST_SCOPE_QUERY = `
 (function_signature_item
   name: (identifier) @declaration.name) @declaration.function
 
+;; Declarations — closure bound to a let: let handler = || target(1);
+;; Anchor discipline (same contract as javascript/query.ts): @declaration.function
+;; sits on the INNER closure_expression, NOT on the let_declaration wrapper, so
+;; anchor.range aligns with the (closure_expression) @scope.function range above.
+;; pass2AttachDeclarations then attaches the declaration to the CLOSURE's own
+;; scope instead of the enclosing block, which is what lets pickCallerCallableDef
+;; treat the closure as a call SOURCE rather than falling through to the
+;; enclosing fn (#2699). Also covers move closures — the closure_expression
+;; node spans the move keyword.
+(let_declaration
+  pattern: (identifier) @declaration.name
+  value: (closure_expression) @declaration.function)
+
 ;; Declarations — struct fields
 (field_declaration
   name: (field_identifier) @declaration.name

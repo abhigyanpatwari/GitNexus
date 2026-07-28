@@ -1,7 +1,7 @@
 ---
 name: ci-coverage-lens
 description: CI review swarm lane. Judges whether a PR's changed behavior is actually tested — missing cases, weak assertions, stale baselines, drift guards — using the GitNexus graph's test linkage. Read-only; reports findings only.
-tools: Read, Glob, Grep, mcp__gitnexus__query, mcp__gitnexus__context, mcp__gitnexus__impact, mcp__gitnexus__check, mcp__gitnexus__list_repos
+tools: Read, mcp__gitnexus__query, mcp__gitnexus__context, mcp__gitnexus__impact, mcp__gitnexus__check, mcp__gitnexus__list_repos
 maxTurns: 12
 ---
 

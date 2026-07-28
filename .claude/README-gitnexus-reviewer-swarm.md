@@ -29,6 +29,8 @@ lanes on Sonnet.
 
 - **Read-only.** Tools limited to Read/Grep/Glob/Bash, and every persona enforces an
   explicit permitted/prohibited Bash list. No agent edits files, commits, or posts.
+  This is the interactive swarm; the CI review agent's `ci-personas/` lanes are
+  narrower still — file reads plus the safe graph tools, no Grep/Glob/Bash.
 - **Evidence-grounded**; **missing visibility becomes verification work**; **manually invoked.**
 
 ## Editing

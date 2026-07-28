@@ -35,6 +35,12 @@ const CLAUDE_RUNTIME_LOCK_PATH = path.resolve(
   '../../../.github/claude-canary-runtime/package-lock.json',
 );
 const workflow = readFileSync(WORKFLOW_PATH, 'utf8');
+// Both pinned installs run through this helper, so the flags that keep them
+// inert and lock-bound are asserted against it rather than the step bodies.
+const npmCiHelper = readFileSync(
+  path.resolve(__dirname, '../../../.github/scripts/npm-ci-retry.sh'),
+  'utf8',
+);
 const runtimePackage = JSON.parse(readFileSync(RUNTIME_PACKAGE_PATH, 'utf8')) as {
   dependencies?: Record<string, string>;
   engines?: Record<string, string>;
@@ -262,7 +268,9 @@ function contextResultContent(filePath = CHANGED_PATH): string {
 
 function reviewTranscript({
   toolName = 'mcp__gitnexus__context',
-  toolInput = { name: 'statusCommand', file_path: CHANGED_PATH },
+  // No file_path: the gate is call-argument-agnostic, and a default that
+  // carried one would imply the opposite.
+  toolInput = { name: 'statusCommand' },
   toolResultContent = contextResultContent(),
   resultIsError = false,
   toolUseId = 'tool-1',
@@ -326,6 +334,68 @@ function reviewTranscript({
   ];
 }
 
+// Two orchestrator context calls in one turn: the first proves the evidence,
+// the second is an ordinary exploratory call whose result may be junk.
+function twoCallTranscript({
+  firstResult,
+  secondResult,
+}: {
+  firstResult: string;
+  secondResult: string;
+}): Array<Record<string, unknown>> {
+  return [
+    {
+      type: 'system',
+      subtype: 'init',
+      session_id: 'session-1',
+      uuid: '11111111-1111-4111-8111-111111111111',
+    },
+    {
+      type: 'assistant',
+      parent_tool_use_id: null,
+      session_id: 'session-1',
+      uuid: '22222222-2222-4222-8222-222222222222',
+      message: {
+        role: 'assistant',
+        content: [
+          {
+            type: 'tool_use',
+            id: 'tool-1',
+            name: 'mcp__gitnexus__context',
+            input: { name: 'statusCommand' },
+          },
+          {
+            type: 'tool_use',
+            id: 'tool-2',
+            name: 'mcp__gitnexus__context',
+            input: { name: 'bigHotSymbol' },
+          },
+        ],
+      },
+    },
+    {
+      type: 'user',
+      parent_tool_use_id: null,
+      session_id: 'session-1',
+      uuid: '33333333-3333-4333-8333-333333333333',
+      message: {
+        role: 'user',
+        content: [
+          { type: 'tool_result', tool_use_id: 'tool-1', is_error: false, content: firstResult },
+          { type: 'tool_result', tool_use_id: 'tool-2', is_error: false, content: secondResult },
+        ],
+      },
+    },
+    {
+      type: 'result',
+      subtype: 'success',
+      is_error: false,
+      session_id: 'session-1',
+      uuid: '44444444-4444-4444-8444-444444444444',
+    },
+  ];
+}
+
 function reviewTranscriptWithoutTools(): Array<Record<string, unknown>> {
   return [
     {
@@ -362,7 +432,7 @@ function runArtifactScenario({
   executionFileOutput,
   noIndexableChangedSymbols = false,
   rawTranscript = JSON.stringify(reviewTranscript()),
-  structuredOutput = JSON.stringify({ body: 'Accepted graph-backed review' }),
+  structuredOutput = JSON.stringify({ body: 'Accepted graph-backed review', complete: true }),
 }: ArtifactScenario = {}) {
   const script = embeddedNodeScript('analyze', 'Assemble bounded review artifact');
   const runnerTemp = mkdtempSync(path.join(tmpdir(), 'gitnexus-review-artifact-'));
@@ -595,7 +665,7 @@ describe('gitnexus review-agent workflow security contract', () => {
     expect(workflow).not.toMatch(/gitnexus@(latest|next|beta)/);
     expect(workflow).toContain("node-version: '22.18.0'");
     expect(workflow).toContain('test "$(node --version)" = \'v22.18.0\'');
-    expect(workflow).toContain('npm ci');
+    expect(workflow).toContain('.github/scripts/npm-ci-retry.sh');
     expect(workflow).not.toContain('--package-lock=false');
     expect(workflow).toContain(
       'actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0',
@@ -616,8 +686,8 @@ describe('gitnexus review-agent workflow security contract', () => {
       DO_NOT_TRACK: '1',
     });
     const script = typeof runtimeStep?.run === 'string' ? runtimeStep.run : '';
-    expect(script).toContain('npm ci');
-    expect(script).toContain('--ignore-scripts=true');
+    expect(script).toContain('.github/scripts/npm-ci-retry.sh');
+    expect(npmCiHelper).toContain('--ignore-scripts=true');
     expect(script).toContain('"${npm_path}" rebuild');
     expect(script).toContain('NPM_CONFIG_OFFLINE=true');
     expect(script).toContain('--offline');
@@ -625,6 +695,11 @@ describe('gitnexus review-agent workflow security contract', () => {
     expect(script).toContain('NPM_CONFIG_IGNORE_SCRIPTS=false');
     expect(script).toContain('"${runtime_dir}/node_modules/.bin/gitnexus" analyze');
     expect(script).toContain('"${runtime_dir}/node_modules/.bin/gitnexus" status');
+    // A registry ECONNRESET during this install burned a whole review run; the
+    // lock is pinned, so a bounded retry can only refetch the identical tree.
+    // Both installs call one shared helper, exercised behaviourally below.
+    expect(script).toContain('/.github/scripts/npm-ci-retry.sh');
+    expect(script).toContain("'analyzer runtime'");
     expect(script.indexOf('npm ci')).toBeLessThan(script.indexOf('"${npm_path}" rebuild'));
     expect(script.indexOf('"${npm_path}" rebuild')).toBeLessThan(
       script.indexOf('"${runtime_dir}/node_modules/.bin/gitnexus" analyze'),
@@ -701,8 +776,10 @@ describe('gitnexus review-agent workflow security contract', () => {
       DO_NOT_TRACK: '1',
     });
     expect(script).toContain('.github/claude-canary-runtime/package-lock.json');
-    expect(script).toContain('npm ci');
-    expect(script).toContain('--ignore-scripts=true');
+    expect(script).toContain('.github/scripts/npm-ci-retry.sh');
+    expect(script).toContain('/.github/scripts/npm-ci-retry.sh');
+    expect(script).toContain("'Claude runtime'");
+    expect(npmCiHelper).toContain('--ignore-scripts=true');
     expect(script).toContain('--unshare-net');
     expect(script).toContain('NPM_CONFIG_OFFLINE=true');
     expect(script).toContain('@anthropic-ai/claude-code/install.cjs');
@@ -887,8 +964,8 @@ describe('gitnexus review-agent workflow security contract', () => {
     // but it must never invoke package scripts from the PR checkout.
     expect(analyze).not.toMatch(/cd[^\n]*pr-target[\s\S]{0,200}npm\s+(ci|install|run)\b/);
     expect(analyze).not.toContain('npm install');
-    expect(analyze).toContain('npm ci');
-    expect(analyze).toContain('--prefix "${runtime_dir}"');
+    expect(analyze).toContain('.github/scripts/npm-ci-retry.sh');
+    expect(npmCiHelper).toContain('--prefix "${runtime_dir}"');
     expect(analyze).not.toContain('pr-target/.mcp.json');
     expect(analyze).not.toContain('pr-target/.claude');
     expect(analyze).not.toContain('node pr-target/.gitnexus/run.cjs');
@@ -1149,11 +1226,12 @@ describe('gitnexus review-agent workflow security contract', () => {
     const allowedToolRules = allowedTools.split(',');
     expect(allowedToolRules).toContain('Read(./**)');
     expect(allowedToolRules).not.toContain('Read');
-    // Glob/Grep are intentionally NOT allow-listed: bare Glob/Grep are separate
+    // Glob/Grep are neither enabled nor allow-listed: bare Glob/Grep are separate
     // tools that the Read()-scoped path denies below (/proc, github.workspace,
     // ...) do not cover, so allow-listing them would open an undenied read path
-    // to the raw checkouts and host paths. Under dontAsk they stay denied by
-    // omission; lanes read via the scoped Read() rules and the graph MCP.
+    // to the raw checkouts and host paths. Leaving them in --tools while denying
+    // them by omission only burned model turns on denied calls, so they are off
+    // the tool set entirely; lanes read via the scoped Read() rules and the MCP.
     expect(allowedToolRules).not.toContain('Glob');
     expect(allowedToolRules).not.toContain('Grep');
     // The merge-base source checkout is readable so lanes can inspect deleted or
@@ -1168,10 +1246,14 @@ describe('gitnexus review-agent workflow security contract', () => {
     // (renamed from Task in Claude Code 2.1.63), scoped to the six trusted
     // control-SHA personas; Agent is not bare-denied (deny beats allow), and
     // lane calls cannot satisfy the evidence gate.
-    expect(analyze).toContain('--tools "Read,Glob,Grep,Agent"');
-    expect(allowedTools).toContain(
-      'Agent(ci-correctness-lens,ci-security-lens,ci-blast-radius-lens,ci-coverage-lens,ci-adversarial-lens,ci-critic-lens)',
-    );
+    expect(analyze).toContain('--tools "Read,Agent"');
+    // One rule per persona, never a grouped Agent(a,b,c): the pinned base
+    // action parses allowedTools with `.flatMap((v) => v.split(","))`, which
+    // would shatter a grouped rule into `Agent(ci-correctness-lens`, bare
+    // names, and `ci-critic-lens)` before the SDK ever sees it.
+    expect(allowedToolRules).toContain('Agent(ci-correctness-lens)');
+    expect(allowedToolRules).toContain('Agent(ci-critic-lens)');
+    expect(allowedTools).not.toMatch(/Agent\([^)]*,/);
     expect(allowedTools).not.toContain('Task');
     const disallowedTools = analyze.match(/--disallowedTools "([^"]+)"/)?.[1] ?? '';
     const disallowedToolRules = disallowedTools.split(',');
@@ -1212,12 +1294,12 @@ describe('gitnexus review-agent workflow security contract', () => {
     // parse time), so the canary is the acceptance gate for that. What a unit
     // test CAN pin is that the scoped allowlist, the persona filenames, and each
     // persona's frontmatter name are the same set — catching a rename or typo in
-    // any of the three without auth.
+    // any of the three without auth. Names are read one-per-rule because the
+    // pinned action splits allowedTools on commas.
     const analyze = jobBlock('analyze');
     const allowed = analyze.match(/--allowedTools "([^"]+)"/)?.[1] ?? '';
-    const allowlistNames = (allowed.match(/Agent\(([^)]+)\)/)?.[1] ?? '')
-      .split(',')
-      .map((name) => name.trim())
+    const allowlistNames = [...allowed.matchAll(/Agent\(([^),]+)\)/g)]
+      .map((match) => match[1].trim())
       .sort();
 
     const personasDir = path.resolve(
@@ -1577,22 +1659,193 @@ describe('gitnexus review-agent workflow security contract', () => {
     expect(listOnly.artifact.body).toContain('successful GitNexus context result');
     expect(listOnly.stderr).toContain('no substantive exact-path GitNexus context result');
 
-    const unrelated = runArtifactScenario({
+    const unknownRepo = runArtifactScenario({
       rawTranscript: JSON.stringify(
         reviewTranscript({
-          toolInput: {
-            name: 'statusCommand',
-            file_path: 'gitnexus/src/cli/status.ts.backup',
-          },
+          toolInput: { name: 'statusCommand', repo: '/tmp/some-other-checkout' },
         }),
       ),
     });
-    expect(unrelated.artifact.failure_code).toBe('missing_graph_evidence');
+    expect(unknownRepo.artifact.failure_code).toBe('missing_graph_evidence');
 
     const failedQuery = runArtifactScenario({
       rawTranscript: JSON.stringify(reviewTranscript({ resultIsError: true })),
     });
     expect(failedQuery.artifact.failure_code).toBe('missing_graph_evidence');
+  });
+
+  it('accepts a name-only context call whose result resolves an exact changed path', () => {
+    // The gate proves evidence from the RESULT, so the plain context({name})
+    // call the review skill teaches counts; requiring file_path in the call
+    // starved the gate: 17 of 26 real review-agent run failures were this.
+    const nameOnly = runArtifactScenario({
+      rawTranscript: JSON.stringify(reviewTranscript({ toolInput: { name: 'statusCommand' } })),
+    });
+    expect(nameOnly.artifact).toMatchObject({
+      status: 'success',
+      failure_code: null,
+      graph_evidence: { mode: 'context' },
+    });
+
+    const uidOnly = runArtifactScenario({
+      rawTranscript: JSON.stringify(
+        reviewTranscript({
+          toolInput: { uid: 'Function:gitnexus/src/cli/status.ts:statusCommand' },
+        }),
+      ),
+    });
+    expect(uidOnly.artifact).toMatchObject({
+      status: 'success',
+      failure_code: null,
+      graph_evidence: { mode: 'context' },
+    });
+
+    const noSelector = runArtifactScenario({
+      rawTranscript: JSON.stringify(reviewTranscript({ toolInput: { kind: 'Function' } })),
+    });
+    expect(noSelector.artifact.failure_code).toBe('missing_graph_evidence');
+  });
+
+  it('diagnoses why an unproven review was rejected', () => {
+    const offPath = runArtifactScenario({
+      rawTranscript: JSON.stringify(
+        reviewTranscript({ toolResultContent: contextResultContent('gitnexus/src/cli/index.ts') }),
+      ),
+    });
+    expect(offPath.stderr).toContain('Evidence diagnosis: orchestrator context calls in scope: 1');
+    expect(offPath.stderr).toContain('results outside the changed paths: 1');
+    expect(offPath.stderr).toContain('gitnexus/src/cli/index.ts');
+
+    const sidechainOnly = runArtifactScenario({
+      rawTranscript: JSON.stringify(reviewTranscript({ parentToolUseId: 'toolu-parent-1' })),
+    });
+    expect(sidechainOnly.stderr).toContain('sidechain context calls ignored: 1');
+
+    // Without this counter "in scope: 0" cannot distinguish a review that never
+    // called context from one that called it against an unrecognized repo.
+    const unknownRepo = runArtifactScenario({
+      rawTranscript: JSON.stringify(
+        reviewTranscript({ toolInput: { name: 'statusCommand', repo: '/tmp/other-checkout' } }),
+      ),
+    });
+    expect(unknownRepo.stderr).toContain(
+      'orchestrator context calls out of scope (no selector or unknown repo): 1',
+    );
+
+    const noCalls = runArtifactScenario({
+      rawTranscript: JSON.stringify(reviewTranscriptWithoutTools()),
+    });
+    expect(noCalls.stderr).toContain('orchestrator context calls in scope: 0');
+    expect(noCalls.stderr).toContain(
+      'orchestrator context calls out of scope (no selector or unknown repo): 0',
+    );
+
+    // An in-scope call whose result errored must not read as "no calls made".
+    const erroredResult = runArtifactScenario({
+      rawTranscript: JSON.stringify(reviewTranscript({ resultIsError: true })),
+    });
+    expect(erroredResult.stderr).toContain('in-scope calls with no usable result: 1 (errored 1');
+
+    const unresolved = runArtifactScenario({
+      rawTranscript: JSON.stringify(
+        reviewTranscript({
+          toolResultContent: `${JSON.stringify({ error: "Symbol 'x' not found" })}\n\n---\n**Next:** retry.`,
+        }),
+      ),
+    });
+    expect(unresolved.stderr).toContain('results that resolved nothing: 1');
+  });
+
+  it('treats a malformed context payload as non-evidence, not as a corrupt transcript', () => {
+    // The MCP truncates any context payload over GITNEXUS_MCP_DEFAULT_MAX_TOKENS
+    // mid-JSON. Every orchestrator context call is a candidate, so throwing on a
+    // payload-shape failure would let one truncated exploratory call discard a
+    // review that an earlier call already proved.
+    const proved = contextResultContent();
+    const truncated = `${JSON.stringify({ status: 'found', symbol: { uid: 'u' } }).slice(0, 30)}\n…`;
+    const provedThenTruncated = runArtifactScenario({
+      rawTranscript: JSON.stringify(
+        twoCallTranscript({ firstResult: proved, secondResult: truncated }),
+      ),
+    });
+    expect(provedThenTruncated.artifact).toMatchObject({
+      status: 'success',
+      failure_code: null,
+      graph_evidence: { mode: 'context' },
+    });
+
+    // With no proving call, the same truncated payload is counted, not thrown.
+    const truncatedOnly = runArtifactScenario({
+      rawTranscript: JSON.stringify(reviewTranscript({ toolResultContent: truncated })),
+    });
+    expect(truncatedOnly.artifact.failure_code).toBe('missing_graph_evidence');
+    expect(truncatedOnly.stderr).toContain('results too malformed or truncated to parse: 1');
+
+    // Structural transcript invariants must still fail closed.
+    const structural = runArtifactScenario({ rawTranscript: '{not-json' });
+    expect(structural.artifact.failure_code).toBe('invalid_execution_transcript');
+  });
+
+  it('refuses a bare File node as evidence, matching the prescan definition of indexable', () => {
+    const fileNode = runArtifactScenario({
+      rawTranscript: JSON.stringify(
+        reviewTranscript({
+          toolInput: { name: 'status.ts' },
+          toolResultContent: JSON.stringify({
+            status: 'found',
+            symbol: {
+              uid: `File:${CHANGED_PATH}`,
+              name: 'status.ts',
+              kind: 'File',
+              filePath: CHANGED_PATH,
+            },
+          }),
+        }),
+      ),
+    });
+    expect(fileNode.artifact.failure_code).toBe('missing_graph_evidence');
+    expect(fileNode.stderr).toContain('results that resolved nothing: 1');
+  });
+
+  it('scopes a deletion-only PR to the merge-base set instead of an empty head set', () => {
+    const deletedPath = 'gitnexus/src/cli/deleted-command.ts';
+    const headScopedCall = runArtifactScenario({
+      basePaths: [deletedPath],
+      changedPaths: [],
+      rawTranscript: JSON.stringify(
+        reviewTranscript({
+          toolInput: { name: 'deletedCommand' },
+          toolResultContent: contextResultContent(deletedPath),
+        }),
+      ),
+    });
+    // headPaths is empty, so the call can never be satisfied: report it as out
+    // of scope rather than as a result "outside the changed paths".
+    expect(headScopedCall.artifact.failure_code).toBe('missing_graph_evidence');
+    expect(headScopedCall.stderr).toContain('orchestrator context calls in scope: 0');
+    expect(headScopedCall.stderr).toContain(
+      'orchestrator context calls out of scope (no selector or unknown repo): 1',
+    );
+    expect(headScopedCall.stderr).toContain('results outside the changed paths: 0');
+  });
+
+  it('publishes an incomplete analysis as a labelled failure, never as an accepted review', () => {
+    const incomplete = runArtifactScenario({
+      structuredOutput: JSON.stringify({ body: 'Partial review, two lanes died', complete: false }),
+    });
+    expect(incomplete.artifact).toMatchObject({
+      status: 'failure',
+      failure_code: 'incomplete_analysis',
+      graph_evidence: null,
+    });
+    expect(incomplete.artifact.body).toContain('could not complete this analysis');
+    expect(incomplete.artifact.body).toContain('Partial review, two lanes died');
+    expect(incomplete.stderr).toContain('the model reported an incomplete analysis');
+
+    const missingField = runArtifactScenario({
+      structuredOutput: JSON.stringify({ body: 'No completeness signal' }),
+    });
+    expect(missingField.artifact.failure_code).toBe('invalid_model_output');
   });
 
   it('accepts SDK text-block results with omitted is_error', () => {
@@ -1631,13 +1884,17 @@ describe('gitnexus review-agent workflow security contract', () => {
     expect(wrongPath.artifact.failure_code).toBe('missing_graph_evidence');
   });
 
-  it('fails closed on malformed or empty context result content', () => {
+  it('separates malformed context payloads from structurally invalid tool results', () => {
+    // Payload shape is the MCP's business and can fail for benign reasons
+    // (truncation at the output budget), so it demotes one call to non-evidence.
     const malformed = runArtifactScenario({
       rawTranscript: JSON.stringify(reviewTranscript({ toolResultContent: '{not-json' })),
     });
-    expect(malformed.artifact.failure_code).toBe('invalid_execution_transcript');
-    expect(malformed.stderr).toContain('context tool result is not strict JSON');
+    expect(malformed.artifact.failure_code).toBe('missing_graph_evidence');
+    expect(malformed.stderr).toContain('results too malformed or truncated to parse: 1');
 
+    // An empty tool_result is a transcript-structural violation, not a payload
+    // shape, and still fails the whole run closed.
     const empty = runArtifactScenario({
       rawTranscript: JSON.stringify(reviewTranscript({ toolResultContent: '   ' })),
     });
@@ -1820,5 +2077,148 @@ describe('gitnexus review-agent workflow security contract', () => {
     expect(overCap.core.setFailed).toHaveBeenCalledWith(
       expect.stringContaining('exceeded the bounded publication scan'),
     );
+  });
+  it('retries a failing pinned install, then gives up, and stops on first success', () => {
+    // The string assertions above cannot tell a working retry from a loop whose
+    // `npm ci` was moved outside it, so drive the real helper with a stub npm.
+    const script = path.resolve(__dirname, '../../../.github/scripts/npm-ci-retry.sh');
+    const runHelper = (failures: number) => {
+      const dir = mkdtempSync(path.join(tmpdir(), 'npm-ci-retry-'));
+      const counter = path.join(dir, 'attempts');
+      writeFileSync(counter, '');
+      writeFileSync(
+        path.join(dir, 'npm'),
+        `#!/usr/bin/env bash\nprintf 'x' >> ${counter}\nattempts=$(wc -c < ${counter})\n` +
+          `if [ "$attempts" -le ${failures} ]; then exit 1; fi\nexit 0\n`,
+        { mode: 0o755 },
+      );
+      writeFileSync(path.join(dir, 'sleep'), '#!/usr/bin/env bash\nexit 0\n', { mode: 0o755 });
+      const result = spawnSync('bash', [script, 'test runtime', dir, path.join(dir, '.npmrc')], {
+        encoding: 'utf8',
+        env: { ...process.env, PATH: `${dir}:${process.env.PATH ?? ''}` },
+      });
+      const attempts = readFileSync(counter, 'utf8').length;
+      rmSync(dir, { recursive: true, force: true });
+      return { status: result.status, stderr: result.stderr, attempts };
+    };
+
+    expect(runHelper(0)).toMatchObject({ status: 0, attempts: 1 });
+    const recovered = runHelper(2);
+    expect(recovered).toMatchObject({ status: 0, attempts: 3 });
+    expect(recovered.stderr).toContain('retrying (1/3)');
+    const exhausted = runHelper(3);
+    expect(exhausted).toMatchObject({ status: 1, attempts: 3 });
+    expect(exhausted.stderr).toContain('failed after 3 attempts');
+  });
+
+  it('ships the install helper executable, since the workflow invokes it directly', () => {
+    // Committed as 100644 it would fail on the runner with permission denied,
+    // and no other check in this suite would notice.
+    const mode = spawnSync('git', ['ls-files', '-s', '.github/scripts/npm-ci-retry.sh'], {
+      cwd: path.resolve(__dirname, '../../..'),
+      encoding: 'utf8',
+    }).stdout;
+    expect(mode.startsWith('100755')).toBe(true);
+  });
+
+  it('bounds every install attempt so a hung registry cannot eat the job budget', () => {
+    const helper = readFileSync(
+      path.resolve(__dirname, '../../../.github/scripts/npm-ci-retry.sh'),
+      'utf8',
+    );
+    expect(helper).toContain('timeout "${attempt_timeout}" npm ci');
+    expect(helper).toContain('NPM_CI_ATTEMPT_TIMEOUT_SECONDS:-600');
+    expect(helper).toContain('set -euo pipefail');
+  });
+
+  it('rejects a context result whose filePath is not a string', () => {
+    // The transcript is treated as hostile-adjacent data: a non-string filePath
+    // must be a clean reject, never an uncaught type error.
+    const nonString = runArtifactScenario({
+      rawTranscript: JSON.stringify(
+        reviewTranscript({
+          toolResultContent: JSON.stringify({
+            status: 'found',
+            symbol: { uid: 'u', name: 'n', filePath: 42, startLine: 1, endLine: 2 },
+          }),
+        }),
+      ),
+    });
+    expect(nonString.artifact.failure_code).toBe('missing_graph_evidence');
+    expect(nonString.stderr).toContain('results outside the changed paths: 1');
+  });
+
+  it('sanitizes an adversarial resolved path before it reaches the job log', () => {
+    const hostile = 'src/\u001b[31m\n::set-output name=x::y\u202egnp.js';
+    const sanitized = runArtifactScenario({
+      rawTranscript: JSON.stringify(
+        reviewTranscript({
+          toolResultContent: JSON.stringify({
+            status: 'found',
+            symbol: { uid: 'u', name: 'n', filePath: hostile, startLine: 1, endLine: 2 },
+          }),
+        }),
+      ),
+    });
+    expect(sanitized.artifact.failure_code).toBe('missing_graph_evidence');
+    expect(sanitized.stderr).not.toContain('::set-output');
+    expect(sanitized.stderr).not.toContain('\u001b');
+    expect(sanitized.stderr).not.toContain('\u202e');
+    expect(sanitized.stderr).toContain('src/?');
+  });
+
+  it('names the transcript shape when the envelope is rejected', () => {
+    const wrongFirstMessage = runArtifactScenario({
+      rawTranscript: JSON.stringify([
+        { type: 'assistant', message: { role: 'assistant', content: [] } },
+        { type: 'result', subtype: 'success', is_error: false },
+      ]),
+    });
+    expect(wrongFirstMessage.artifact.failure_code).toBe('invalid_execution_transcript');
+    expect(wrongFirstMessage.stderr).toContain('2 messages, first assistant/undefined');
+  });
+
+  it('counts an in-scope call whose result never arrives', () => {
+    const noResult = runArtifactScenario({
+      rawTranscript: JSON.stringify([
+        { type: 'system', subtype: 'init', session_id: 's', uuid: '1' },
+        {
+          type: 'assistant',
+          parent_tool_use_id: null,
+          session_id: 's',
+          uuid: '2',
+          message: {
+            role: 'assistant',
+            content: [
+              {
+                type: 'tool_use',
+                id: 'tool-1',
+                name: 'mcp__gitnexus__context',
+                input: { name: 'statusCommand' },
+              },
+            ],
+          },
+        },
+        { type: 'result', subtype: 'success', is_error: false, session_id: 's', uuid: '3' },
+      ]),
+    });
+    expect(noResult.artifact.failure_code).toBe('missing_graph_evidence');
+    expect(noResult.stderr).toContain('in-scope calls with no usable result: 1');
+  });
+
+  it('always clears the in-progress marker, even when analysis was never authorized', () => {
+    // The acknowledge job posts the marker from the event alone, so gating the
+    // whole publish job on authorization stranded it on the PR forever.
+    const publish = jobBlock('publish');
+    expect(publish).toContain('if: always()');
+    expect(publish).toContain('- name: Remove the in-progress marker');
+    const removalIndex = publish.indexOf('- name: Remove the in-progress marker');
+    const gatedIndex = publish.indexOf(
+      'Validate freshness and upsert an accepted same-SHA comment',
+    );
+    expect(gatedIndex).toBeGreaterThan(-1);
+    expect(removalIndex).toBeGreaterThan(gatedIndex);
+    // Publication itself stays authorization-gated.
+    expect(publish).toContain("needs.analyze.outputs.authorized == 'true'");
   });
 });

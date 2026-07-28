@@ -79,6 +79,64 @@ const RUBY_SCOPE_QUERY = `
 (singleton_method
   name: (identifier) @declaration.name) @declaration.function
 
+;; ── Declarations — closure bound to a local ──────────────────────────────
+;;
+;; handler = ->(x) { target(x) } / lambda { |x| ... } / proc { |x| ... }
+;;
+;; Anchor discipline (same contract as javascript/query.ts): @declaration.function
+;; sits on the INNER (block), NOT on the assignment wrapper and NOT on the
+;; (lambda) node — the block is what carries @scope.block above, so anchoring
+;; there aligns anchor.range with the scope range. That alignment is what lets
+;; pickCallerCallableDef accept a Block-kind scope as a callable boundary.
+;; do_block/block stay @scope.block deliberately — do NOT re-kind them.
+;;
+;; The call forms are restricted to lambda/proc by name. An unrestricted
+;; (call block: (block)) would match ANY method call with a block, so
+;; mapped = items.map { |i| ... } would wrongly declare mapped a callable.
+;; Separate #eq? patterns rather than one #match? alternation: alternation
+;; predicates are a known hazard on this tree-sitter line.
+;; BOTH block forms in every pattern. do...end produces (do_block), braces
+;; produce (block), and do/end is the dominant MULTI-LINE style — covering only
+;; braces left lambda-do-end with a Block scope owning nothing, so its
+;; calls fell through to the enclosing method. @scope.block above already covers
+;; both, so the two channels now agree.
+;;
+;; The !receiver constraint is load-bearing: without it #eq? tests the method
+;; NAME only, so MyMod.lambda {...} / obj.proc {...} would be captured as
+;; closure bindings. Verified against the grammar: with !receiver those are
+;; rejected while bare lambda/proc still match.
+(assignment
+  left: (identifier) @declaration.name
+  right: (lambda body: [(block) (do_block)] @declaration.function))
+
+(assignment
+  left: (identifier) @declaration.name
+  right: (call
+    !receiver
+    method: (identifier) @_lambda-kw
+    block: [(block) (do_block)] @declaration.function)
+  (#eq? @_lambda-kw "lambda"))
+
+(assignment
+  left: (identifier) @declaration.name
+  right: (call
+    !receiver
+    method: (identifier) @_proc-kw
+    block: [(block) (do_block)] @declaration.function)
+  (#eq? @_proc-kw "proc"))
+
+;; Proc.new { ... } / Proc.new do ... end — the explicit constructor form.
+;; Receiver IS required here and must be the Proc constant, so this cannot
+;; collide with the bare-call patterns above.
+(assignment
+  left: (identifier) @declaration.name
+  right: (call
+    receiver: (constant) @_proc-const
+    method: (identifier) @_new-kw
+    block: [(block) (do_block)] @declaration.function)
+  (#eq? @_proc-const "Proc")
+  (#eq? @_new-kw "new"))
+
 ;; ── Declarations — variable assignment ───────────────────────────────────
 
 (assignment

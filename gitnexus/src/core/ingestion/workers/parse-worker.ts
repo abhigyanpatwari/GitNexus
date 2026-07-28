@@ -82,6 +82,8 @@ import {
   buildDefinitionPreScan,
   FUNCTION_NODE_TYPES,
   findAncestorBeforeBoundary,
+  findSplitBodyCallableAncestor,
+  SPLIT_SIGNATURE_NODE_TYPES,
   getDefinitionNodeFromCaptures,
   findEnclosingClassInfo,
   findObjectLiteralBindingInfo,
@@ -100,6 +102,7 @@ import {
   LOCAL_SCOPE_BODY_NODE_TYPES,
   type SyntaxNode,
 } from '../utils/ast-helpers.js';
+import { isPositionQualifiedLocalLabel } from '../utils/callable-labels.js';
 import { extractCallArgTypes, type MixedChainStep } from '../utils/call-analysis.js';
 import { buildTypeEnv } from '../type-env.js';
 import type { ConstructorBinding } from '../type-env.js';
@@ -823,11 +826,20 @@ const enclosingCallablePrefix = (
   //
   // Over-inclusion here is the SAFE direction: an extra boundary only suppresses
   // the nesting prefix, which falls back to the pre-#2699 class qualification.
-  const fnNode = findAncestorBeforeBoundary(
-    node,
-    LOCAL_SCOPE_BODY_NODE_TYPES,
-    CALLABLE_PREFIX_BOUNDARY_TYPES,
-  );
+  const fnNode =
+    findAncestorBeforeBoundary(node, LOCAL_SCOPE_BODY_NODE_TYPES, CALLABLE_PREFIX_BOUNDARY_TYPES) ??
+    // Signature/body-split grammars: the enclosing callable is a SIBLING of the
+    // body, not an ancestor, so the walk above returns null for every local
+    // inside it. Dart is the case in hand (`function_signature` +
+    // `function_body` as siblings) — without this a Dart closure gets no
+    // prefix, so two same-named closures in one file collapse onto ONE node and
+    // the graph asserts a CALLS edge that does not exist in the source (#2699).
+    //
+    // SPLIT_SIGNATURE_NODE_TYPES, NOT FUNCTION_NODE_TYPES: only a callable that
+    // cannot hold its own body can be an enclosing callable of a SIBLING. Using
+    // the wider set mis-qualified a file-level PHP `$handler = function …` as
+    // `target.$handler` by grabbing the preceding `function target() {…}`.
+    findSplitBodyCallableAncestor(node, SPLIT_SIGNATURE_NODE_TYPES, CALLABLE_PREFIX_BOUNDARY_TYPES);
   if (fnNode === null) return undefined;
   return callableOwnQualifiedName(fnNode, filePath, provider);
 };
@@ -2312,14 +2324,40 @@ const processFileGroup = (
       // worker-path Impl node id matches the sequential path and the owner walk.
       // #2699: a callable nested inside another callable is qualified by the
       // enclosing callable, so a function-local closure stops colliding with a
-      // same-named file-level function. Restricted to CALLABLE labels: the
-      // collision that produced wrong CALLS edges is between callables, and
-      // widening it to every function-local Variable/Property would churn ids
-      // for symbols the local-symbol pruner mostly deletes anyway.
+      // same-named file-level function.
+      // Applies to VALUES as well as callables since #2699 closed A1: a
+      // top-level `const handler` and a function-local `const handler`
+      // otherwise collapse onto one `Const:v.ts:handler`, which was the
+      // issue's original complaint and is unreachable from a callable-only
+      // gate. `isPositionQualifiedLocalLabel` is the single definition of that
+      // set, shared with resolution in `ids.ts` — the two phases disagreeing
+      // silently drops edges rather than failing (#2714).
       // Same helper as the caller-attribution phase — see `enclosingCallablePrefix`.
+      //
+      // A CLASS MEMBER must never gain a local prefix, and the plain walk is not
+      // enough to guarantee that once `Property`/`Static` are in the set. A
+      // TypeScript constructor PARAMETER PROPERTY —
+      // `constructor(private readonly port: Port)` — reaches the constructor's
+      // `method_definition` THROUGH the parameter list, and `method_definition`
+      // is in LOCAL_SCOPE_BODY_NODE_TYPES, so the walk hits it BEFORE any class
+      // boundary and re-keys a genuine field as `C.constructor.port@r:c`. That
+      // silently empties the `C.port` slot every `impact` / `rename` / FTS
+      // consumer addresses, and the class still asserts HAS_PROPERTY against it.
+      //
+      // `isFunctionLocalProperty` above already encodes the correct test (a
+      // parameter-list ancestor reached before any local-scope body means NOT
+      // function-local); reuse that exclusion here rather than spelling a second
+      // rule, so the owner-edge decision and the id decision cannot disagree.
+      const isParameterScopedMember =
+        (nodeLabel === 'Property' || nodeLabel === 'Static') &&
+        definitionNode !== undefined &&
+        findAncestorBeforeBoundary(
+          definitionNode,
+          PARAMETER_LIST_NODE_TYPES,
+          LOCAL_SCOPE_BODY_NODE_TYPES,
+        ) !== null;
       const nestedCallablePrefix =
-        (nodeLabel === 'Function' || nodeLabel === 'Method' || nodeLabel === 'Constructor') &&
-        definitionNode
+        isPositionQualifiedLocalLabel(nodeLabel) && definitionNode && !isParameterScopedMember
           ? enclosingCallablePrefix(definitionNode, file.path, provider)
           : undefined;
 
