@@ -34,17 +34,41 @@
  *      resolved.
  *   3. **Dynamic require** — `require(computedPath)` is skipped (non-literal
  *      argument — cannot statically resolve the target).
- *   4. **`module.exports` / `exports.X`** — CJS export forms are not modeled
- *      as re-exports. The finalize algorithm treats the exporting module as a
- *      namespace; importers that do `const X = require('./m')` bind the module
- *      namespace, and member-call resolution walks the class graph from there.
+ *   4. **`module.exports = fn`** — an anonymous default export has no name to
+ *      bind, so nothing declares it. The rest of the CJS export surface IS
+ *      modeled (#2723); see below.
  *
- *      `exports.foo = function () {}` / `module.exports.foo = (a) => a` DO
- *      declare `foo` in the module scope (#2723) — the query block in
- *      `query.ts` — so importers resolve to them by name. What is still
- *      unmodeled is the re-export EDGE: `exports.foo = someImported` does not
- *      forward to the original declaration, and `module.exports = fn`
- *      (anonymous default) has no name to bind.
+ * ## CommonJS export forms (#2723)
+ *
+ * Each of these declares its name in the module scope, so importers resolve to
+ * it by name — `const { foo } = require('./m')` matches directly and a
+ * namespace `m.foo()` walks the module's defs:
+ *
+ *   - `exports.foo = function () {}` / `module.exports.foo = (a) => a`, in
+ *     every value form (function, async, arrow, async arrow, generator).
+ *   - `const e = exports; e.foo = fn` — an alias bound at module scope. The
+ *     receiver cannot be pinned in a query, so the member-assignment rules
+ *     match any identifier receiver and the emitters prune anything that is
+ *     not the exports object.
+ *   - `this.foo = fn` at MODULE level of a CommonJS file, where `this` is
+ *     `module.exports`. Gated on the file being CommonJS — in ESM top-level
+ *     `this` is undefined and the same line exports nothing.
+ *   - `exports.foo = lib.imported` / `exports.foo = importedName` — forwarded
+ *     as a re-export (`reexport-alias`), so callers reach the ORIGINAL
+ *     definition. A plain import binding would not do: it is private to its
+ *     module, exactly as in ESM.
+ *
+ * Two deliberate non-cases. `exports.foo = localFn`, where the value is a
+ * locally declared function, needs nothing — the module scope already binds
+ * `localFn` and importers already resolve through it. And a CJS export whose
+ * name the module ALSO declares lexically is suppressed rather than declared
+ * twice: two declarations of one name are ambiguous, and the resolver would
+ * drop the intra-module edge entirely.
+ *
+ * Callable members assigned through a receiver are Methods with an owner edge
+ * rather than free functions: `Foo.prototype.bar = fn` and `this.bar = fn`
+ * inside a constructor. Ownership resolves to what the file declares, so an
+ * owner it cannot see (`External.prototype.x = fn`) claims no edge.
  */
 
 export { emitJsScopeCaptures } from './captures.js';
