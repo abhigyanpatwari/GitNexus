@@ -525,8 +525,16 @@ export interface RepoMeta {
  * reads it also covered are kept. A v19 index holds those false CALLS/ACCESSES on
  * every unchanged file and would keep serving them through the reuse gate; force a
  * full re-analyze instead.
+ * v21: a closure bound to a name is a call SOURCE in every language, not only a
+ * TARGET (#2699 part B). PHP/Rust/Kotlin/Ruby/Dart closure bindings gained the
+ * declaration rule, Rust gained the graph NODE it never emitted, and Dart locals
+ * gained the enclosing-callable + position identity that made two same-named
+ * closures collapse onto one node — which had them asserting a CALLS edge
+ * present nowhere in the source. All of that changes emitted node ids AND edges
+ * on files that did not themselves change, so a v20 index topped up
+ * incrementally keeps serving the old attribution; force a full re-analyze.
  */
-export const INCREMENTAL_SCHEMA_VERSION = 20;
+export const INCREMENTAL_SCHEMA_VERSION = 21;
 
 export interface IndexedRepo {
   repoPath: string;

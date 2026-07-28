@@ -247,7 +247,13 @@ describeIfWorkerBuilt('calls to a closure binding resolve to its Function node',
       'int caller() {\n  var handler = (int x) => x;\n  return handler(1);\n}\n',
     );
 
-    expect(targets).toEqual(['Function:local.dart:handler']);
+    // Qualified by #2699: Dart's enclosing callable is a SIBLING of the body
+    // (function_signature + function_body), so the ancestor walk that builds
+    // this prefix found nothing and every Dart local stayed bare. Two
+    // same-named closures in one file therefore collapsed onto ONE node. Now
+    // carries the same enclosing-callable + position identity as every other
+    // language.
+    expect(targets).toEqual(['Function:local.dart:caller.handler@1:2']);
   });
 
   it('Dart: a top-level `final` closure binding resolves', async () => {
@@ -272,7 +278,13 @@ describeIfWorkerBuilt('calls to a closure binding resolve to its Function node',
       'int caller() {\n  var f = (int x) => x, g = (int y) => y;\n  return f(1) + g(2);\n}\n',
     );
 
-    expect(targets).toEqual(['Function:multi.dart:f', 'Function:multi.dart:g']);
+    // Both declarators are function-local, so both carry the enclosing-callable
+    // + position identity (#2699). The distinct columns are the point: `g` is a
+    // nested initialized_identifier on the SAME line as `f`.
+    expect(targets).toEqual([
+      'Function:multi.dart:caller.f@1:2',
+      'Function:multi.dart:caller.g@1:24',
+    ]);
   });
 
   it('Kotlin: a class-body closure property resolves to its Method node', async () => {
@@ -517,7 +529,7 @@ describeIfWorkerBuilt('closure bindings resolve in the remaining languages (#269
   });
 });
 
-describeIfWorkerBuilt('a closure binding is a call TARGET, not yet a call SOURCE', () => {
+describeIfWorkerBuilt('a closure binding as a call SOURCE (#2699 part B)', () => {
   // Known limit, pinned deliberately so it is visible rather than surprising.
   //
   // A call made INSIDE a closure binding is attributed to the ENCLOSING scope,
@@ -541,31 +553,106 @@ describeIfWorkerBuilt('a closure binding is a call TARGET, not yet a call SOURCE
   //     scope for the walk to consider.
   //
   // So a fix needs per-language work, not one switch: a callable-boundary
-  // signal independent of scope `kind` (Kotlin/Ruby), an association from a
-  // closure scope to its binding's def (PHP), and a scope that does not exist
-  // yet (Dart). See #2699.
+  // signal independent of scope `kind` (Kotlin/Ruby — DONE, S2), an
+  // association from a closure scope to its binding's def (PHP — DONE, S1;
+  // Rust — DONE, S3), and a scope that did not exist at all (Dart — DONE, S4).
+  // See #2699.
+  //
+  // All five languages now attribute closure calls to the binding. The review
+  // of that work found the FIRST cut incomplete in four ways — multi-line
+  // bindings, Dart top-level/`final` shapes, Ruby `do ... end`/`Proc.new`, and
+  // TS constructor parameter properties — each now pinned in
+  // `closure-review-findings.test.ts`.
+  //
+  // Probe-measured root cause (#2699): EVERY still-failing language has an
+  // EMPTY ownedDefs on the closure's own scope, because the closure-binding
+  // declaration rule (binding name + @declaration.function on the INNER
+  // closure node) existed only in javascript/query.ts. Kotlin and Ruby need
+  // BOTH that rule AND a relaxed kind gate — their lambda_literal / do_block
+  // is @scope.block deliberately (#1757), so the rule alone leaves them
+  // rejected. Dart has no closure scope at all: dart/query.ts declares no
+  // @scope.function, and dart/captures.ts synthesizes one only from a
+  // declaration WITH a body node, which an expression-bodied closure lacks.
   //
   // TS/JS free bindings are the exception: their arrow has a `@scope.function`
   // with a matching range, so the closure IS the anchor there. These tests exist
   // to catch that asymmetry changing in EITHER direction.
 
-  it('Kotlin: a call inside the closure is attributed to the file, not the binding', async () => {
+  it('Kotlin: a call inside the closure IS attributed to the binding (#2699 S2)', async () => {
+    // FLIPPED by #2699 S2, which took BOTH halves:
+    //   1. kotlin/query.ts gained the closure-binding declaration rule, with
+    //      @declaration.function on the INNER lambda_literal so its range
+    //      aligns with the (lambda_literal) @scope.block range;
+    //   2. pickCallerCallableDef now accepts a Block-kind scope as a callable
+    //      boundary when the scope IS the callable's body (def start position
+    //      == scope start position).
+    // Half 1 alone changes nothing here — the lambda stays @scope.block
+    // deliberately (#1757 smart casts), so the kind gate would still reject it.
     const targets = await callEdgeIdsFor(
       'A.kt',
       'fun target(x: Int): Int = x\n\nval handler = { x: Int -> target(x) }\n',
     );
 
-    expect(targets).toEqual(['rel:CALLS:File:A.kt->Function:A.kt:target']);
+    expect(targets).toEqual(['rel:CALLS:Function:A.kt:handler->Function:A.kt:target']);
   });
 
-  it('PHP: a call inside the closure is attributed to the file, not the binding', async () => {
+  it('PHP: a call inside the closure IS attributed to the binding (#2699 S1)', async () => {
+    // FLIPPED by #2699 S1. php/query.ts now carries the closure-binding
+    // declaration rule with javascript/query.ts's anchor discipline
+    // (@declaration.function on the INNER anonymous_function, so its range
+    // aligns with the (anonymous_function) @scope.function above). The closure
+    // scope therefore owns the callable def and pickCallerCallableDef stops
+    // falling through to the enclosing scope — the closure is now a call
+    // SOURCE, not only a TARGET.
     const targets = await callEdgeIdsFor(
       'a.php',
       '<?php\nfunction target($x) { return $x; }\n' +
         '$handler = function ($x) { return target($x); };\n',
     );
 
-    expect(targets).toEqual(['rel:CALLS:File:a.php->Function:a.php:target']);
+    expect(targets).toEqual(['rel:CALLS:Function:a.php:$handler->Function:a.php:target']);
+  });
+
+  it('Dart: two same-named closures in one file stay DISTINCT nodes (#2699 S4)', async () => {
+    // The defect this pins is worse than a missing edge. Before #2699 S4 gave
+    // Dart locals an enclosing-callable prefix, both closures keyed to the bare
+    // `Function:collide.dart:handler`, so ONE node appeared to call BOTH
+    // `target` and `other` — a CALLS edge that exists nowhere in the source.
+    //
+    // Dart is the only grammar here that splits a callable into a signature and
+    // a SIBLING body, so its enclosing callable was unreachable by ancestor
+    // walk and every Dart local stayed unqualified. Distinct positions in the
+    // two ids are the whole property.
+    const targets = await callEdgeIdsFor(
+      'collide.dart',
+      'int target(int x) => x;\nint other(int x) => x;\n' +
+        'int outer() {\n  var handler = (int x) => target(x);\n  return handler(1);\n}\n' +
+        'int second() {\n  var handler = (int x) => other(x);\n  return handler(2);\n}\n',
+    );
+
+    // The trailing `:5:9` / `:9:9` on the first and third edges is the CALL
+    // SITE, not part of the node id: invoking a closure binding is an indirect
+    // call emitted by the callable-value-flow pass, which keys its edge by the
+    // invocation position. The direct `handler -> target` calls carry no such
+    // suffix. Do not "normalize" these away — they are different edge kinds.
+    expect(targets).toEqual([
+      'rel:CALLS:Function:collide.dart:outer->Function:collide.dart:outer.handler@3:2:5:9',
+      'rel:CALLS:Function:collide.dart:outer.handler@3:2->Function:collide.dart:target',
+      'rel:CALLS:Function:collide.dart:second->Function:collide.dart:second.handler@7:2:9:9',
+      'rel:CALLS:Function:collide.dart:second.handler@7:2->Function:collide.dart:other',
+    ]);
+  });
+
+  it('Ruby: a call inside a lambda binding IS attributed to the binding (#2699 S2)', async () => {
+    // Ruby had no pinned case before #2699 S2, so this is new coverage rather
+    // than an inverted assertion. do_block/block stay @scope.block (matching
+    // Kotlin), so this exercises the same Block-scope alignment path.
+    const targets = await callEdgeIdsFor(
+      'a.rb',
+      'def target(x)\n  x\nend\n\nhandler = ->(x) { target(x) }\n',
+    );
+
+    expect(targets).toEqual(['rel:CALLS:Function:a.rb:handler->Method:a.rb:target#1']);
   });
 
   it('JavaScript: a free arrow binding IS the caller anchor', async () => {
@@ -653,7 +740,11 @@ describeIfWorkerBuilt('a value binding is never aliased onto a same-named callab
         'int run() {\n  var save = (int x) => x * 2;\n  return save(1);\n}\n',
     );
 
-    expect(targets).toEqual(['Function:svc.dart:save']);
+    // The target is the LOCAL closure, never `Svc.save`. Since #2699 the local
+    // also carries its enclosing callable and position, so the two are now
+    // distinct by id and not merely by which node the edge happened to reach —
+    // `run.save@5:2` cannot collide with the method however the lookup is keyed.
+    expect(targets).toEqual(['Function:svc.dart:run.save@5:2']);
   });
 
   it('Kotlin: a genuine constant mints no CALLS', async () => {
