@@ -1,5 +1,6 @@
 mod a;
 mod facade;
+mod private_facade;
 mod tools;
 
 // Case 1: inline module — rustc resolves `inner::dispatch` via the module tree.
@@ -24,8 +25,13 @@ fn via_reexport() -> usize {
     facade::dispatch()
 }
 
+fn via_private() -> usize {
+    private_facade::helper()
+}
+
 fn main() {
     dispatch();
     nested();
     via_reexport();
+    via_private();
 }

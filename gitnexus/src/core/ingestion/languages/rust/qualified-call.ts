@@ -312,6 +312,13 @@ function findMemberInModule(
  * module's own scope — a `pub use` is modelled as visibility granted to
  * IMPORTERS, so the re-exporting file's `bindings` map is empty. The re-export
  * survives as an `ImportEdge` on that module scope, which is what this reads.
+ *
+ * Known limitation: only FILE modules are reachable here. `moduleScopeByFile`
+ * holds one Module scope per file, so a re-export declared inside an inline
+ * `mod facade { pub use … }` has no entry and is not resolved. Reaching it would
+ * mean walking every child scope, which faults the whole scope tree back in from
+ * disk on the out-of-core path — the cost this index exists to avoid. A miss
+ * here falls through to the unchanged chain rather than guessing (#2741 review).
  */
 function findReexportedMember(
   targetModule: RustModule,
@@ -320,25 +327,49 @@ function findReexportedMember(
   workspaceIndex: WorkspaceResolutionIndex,
   index: RustModuleIndex,
 ): SymbolDefinition | undefined {
+  let unique: SymbolDefinition | undefined;
+  let count = 0;
+
   for (const [filePath, moduleScope] of workspaceIndex.moduleScopeByFile) {
     const fileModule = moduleOfFile(filePath, index);
     if (fileModule === undefined || !sameModule(fileModule, targetModule)) continue;
 
     for (const edge of scopes.imports.get(moduleScope.id) ?? []) {
       if (edge.localName !== name) continue;
-      if (edge.kind !== 'reexport' && edge.kind !== 'named') continue;
-      const viaDefId = edge.targetDefId;
-      if (viaDefId !== undefined) {
-        const def = scopes.defs.get(viaDefId);
-        if (def !== undefined && CALLABLE_TYPES.has(def.type)) return def;
-      }
-      // No pre-resolved def id: fall back to the exporting file's own module.
-      if (edge.targetFile === null) continue;
-      const exported = findExportedCallable(edge.targetFile, name, workspaceIndex);
-      if (exported !== undefined) return exported;
+      // Only a `pub use` re-exports. A private `use` (`named`) makes the name
+      // visible INSIDE the module and does not put it on the module's public
+      // surface, so treating one as a re-export resolved paths that do not
+      // compile. `alias` carries `pub use x::y as name`, which does re-export.
+      if (edge.kind !== 'reexport' && edge.kind !== 'alias') continue;
+
+      const resolved = resolveReexportTarget(edge, name, scopes, workspaceIndex);
+      if (resolved === undefined) continue;
+      // Refuse on a tie rather than taking whichever file the pool happened to
+      // parse first: two `cfg`-exclusive facades re-exporting the same name are
+      // indistinguishable here, and picking one is a coin flip baked into the graph.
+      if (unique !== undefined && resolved.nodeId !== unique.nodeId) return undefined;
+      unique = resolved;
+      count++;
     }
   }
-  return undefined;
+  return count >= 1 ? unique : undefined;
+}
+
+/** Follow one re-export edge to the definition it exposes. */
+function resolveReexportTarget(
+  edge: { readonly targetDefId?: string; readonly targetFile: string | null },
+  name: string,
+  scopes: ScopeResolutionIndexes,
+  workspaceIndex: WorkspaceResolutionIndex,
+): SymbolDefinition | undefined {
+  const viaDefId = edge.targetDefId;
+  if (viaDefId !== undefined) {
+    const def = scopes.defs.get(viaDefId);
+    if (def !== undefined && CALLABLE_TYPES.has(def.type)) return def;
+  }
+  // No pre-resolved def id: fall back to the exporting file's own module.
+  if (edge.targetFile === null) return undefined;
+  return findExportedCallable(edge.targetFile, name, workspaceIndex);
 }
 
 /** Module-scope callable declared locally by `targetFile`. */

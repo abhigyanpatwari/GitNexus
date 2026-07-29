@@ -2684,6 +2684,11 @@ describe('Rust qualified paths resolve against the module tree (#2730)', () => {
     expect(edges[0]).toMatchObject({ target: 'dispatch', targetFilePath: 'src/tools.rs' });
   });
 
+  it('does not treat a private `use` as a re-export', () => {
+    const edges = getRelationships(result, 'CALLS').filter((c) => c.source === 'via_private');
+    expect(edges).toEqual([]);
+  });
+
   it('keeps every qualified target distinct from the crate-root fn of the same name', () => {
     const targets = getRelationships(result, 'CALLS')
       .filter((c) => ['nested', 'go', 'via_reexport'].includes(c.source))

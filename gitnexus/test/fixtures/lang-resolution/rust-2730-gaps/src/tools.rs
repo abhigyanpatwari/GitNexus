@@ -11,3 +11,7 @@ pub fn wrapper() -> usize {
     }
     dispatch()
 }
+
+pub fn helper() -> usize {
+    7
+}

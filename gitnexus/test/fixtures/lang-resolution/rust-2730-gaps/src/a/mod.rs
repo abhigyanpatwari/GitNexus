@@ -4,3 +4,8 @@ pub mod b;
 pub fn dispatch() -> usize {
     4
 }
+
+// Second definition: makes `helper` globally ambiguous on purpose.
+pub fn helper() -> usize {
+    8
+}
