@@ -458,7 +458,10 @@ CREATE REL TABLE ${REL_TABLE_NAME} (
   type STRING,
   confidence DOUBLE,
   reason STRING,
-  step INT32
+  step INT32,
+  callSiteFilePath STRING,
+  callSiteLine INT64,
+  callSiteColumn INT64
 )`;
 
 // ============================================================================

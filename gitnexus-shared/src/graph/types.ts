@@ -232,6 +232,9 @@ export interface GraphRelationship {
   confidence: number;
   reason: string;
   step?: number;
+  callSiteFilePath?: string;
+  callSiteLine?: number;
+  callSiteColumn?: number;
   /**
    * Per-signal evidence trace for edges emitted by the scope-based
    * resolution pipeline (RFC #909 Ring 2 PKG #925). Populated by

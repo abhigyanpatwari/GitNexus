@@ -108,7 +108,7 @@ export function emitReferencesToGraph(input: EmitReferencesInput): EmitStats {
         skippedNoCaller++;
         continue;
       }
-      graph.addRelationship(buildRelationship(ref, callerId, targetDef, sourceLabel));
+      graph.addRelationship(buildRelationship(ref, callerId, targetDef, sourceLabel, scopes.scopeTree.getScope(fromScope)?.filePath));
       edgesEmitted++;
     }
   }
@@ -248,6 +248,7 @@ function buildRelationship(
   callerId: string,
   targetDef: SymbolDefinition,
   sourceLabel: string,
+  callSiteFilePath: string | undefined,
 ): Parameters<KnowledgeGraph['addRelationship']>[0] {
   const type = mapKindToType(ref.kind);
   const reason = `${sourceLabel}: ${ref.kind} | confidence ${ref.confidence.toFixed(3)}`;
@@ -262,6 +263,9 @@ function buildRelationship(
     confidence: ref.confidence,
     reason,
     evidence: ref.evidence.map(serializeEvidence),
+    callSiteFilePath,
+    callSiteLine: ref.atRange.startLine,
+    callSiteColumn: ref.atRange.startCol + 1,
     ...(step !== undefined ? { step } : {}),
   };
 }

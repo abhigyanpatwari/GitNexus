@@ -112,6 +112,9 @@ export function emitReferencesViaLookup(
         type: edgeType,
         confidence: ref.confidence,
         reason: `scope-resolution: ${ref.kind}`,
+        callSiteFilePath: fromFilePath,
+        callSiteLine: ref.atRange.startLine,
+        callSiteColumn: ref.atRange.startCol + 1,
       });
       emitted++;
     }

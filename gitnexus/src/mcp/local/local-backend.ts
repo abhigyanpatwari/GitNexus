@@ -3391,7 +3391,8 @@ export class LocalBackend {
       `
       MATCH (n {id: $symId})-[r:CodeRelation]->(target)
       WHERE r.type IN ['CALLS', 'IMPORTS', 'EXTENDS', 'IMPLEMENTS', 'USES', 'HAS_METHOD', 'HAS_PROPERTY', 'METHOD_OVERRIDES', 'OVERRIDES', 'METHOD_IMPLEMENTS', 'ACCESSES']
-      RETURN r.type AS relType, target.id AS uid, target.name AS name, target.filePath AS filePath, labels(target)[0] AS kind
+      RETURN r.type AS relType, target.id AS uid, target.name AS name, target.filePath AS filePath, labels(target)[0] AS kind,
+             r.callSiteFilePath AS callSiteFilePath, r.callSiteLine AS callSiteLine, r.callSiteColumn AS callSiteColumn
       LIMIT 30
     `,
       { symId },
@@ -3422,6 +3423,11 @@ export class LocalBackend {
           name: row.name || row[2],
           filePath: row.filePath || row[3],
           kind: row.kind || row[4],
+          ...(Number(row.callSiteLine || row[6]) > 0 ? {
+            callSiteFilePath: row.callSiteFilePath || row[5],
+            callSiteLine: Number(row.callSiteLine || row[6]),
+            callSiteColumn: Number(row.callSiteColumn || row[7]),
+          } : {}),
         };
         if (!cats[relType]) cats[relType] = [];
         cats[relType].push(entry);

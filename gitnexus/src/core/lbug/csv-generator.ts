@@ -330,7 +330,7 @@ class BufferedCSVWriter {
 
 /** Canonical relationship CSV header — shared by the emit pass and the
  * `splitRelCsvByLabelPair` differential oracle. */
-export const REL_CSV_HEADER = 'from,to,type,confidence,reason,step';
+export const REL_CSV_HEADER = 'from,to,type,confidence,reason,step,callSiteFilePath,callSiteLine,callSiteColumn';
 
 /** Build the escaped CSV row (no trailing newline) for one relationship.
  * Single source of the relationship row bytes — used by the emit pass and by
@@ -343,6 +343,9 @@ export const buildRelRow = (rel: GraphRelationship): string =>
     escapeCSVNumber(rel.confidence, 1.0),
     escapeCSVField(rel.reason),
     escapeCSVNumber(rel.step, 0),
+    escapeCSVField(rel.callSiteFilePath ?? ''),
+    escapeCSVNumber(rel.callSiteLine, 0),
+    escapeCSVNumber(rel.callSiteColumn, 0),
   ].join(',');
 
 /** Canonical BasicBlock node CSV header — taint/PDG substrate (issue #2080).
