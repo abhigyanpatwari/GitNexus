@@ -2686,3 +2686,53 @@ describe('Rust qualified paths resolve against the module tree (#2730)', () => {
     expect(targets).toEqual(['src/a/b.rs', 'src/a/mod.rs', 'src/tools.rs']);
   });
 });
+
+// ---------------------------------------------------------------------------
+// #2730 review H1 — module identity carries the crate.
+//
+// A cargo workspace routinely gives several members the same internal module
+// name. With identity by path segments alone, `crates/alpha/src/tools.rs` and
+// `crates/beta/src/tools.rs` were the SAME module: where only one defined the
+// member the call bound across crates, and where both did the lookup tied and
+// refused — handing the site back to the lexical walk that reinstates the very
+// self-loop #2730 is about. Rust has no implicit cross-crate paths, so two
+// modules in different crates are never the same module.
+// ---------------------------------------------------------------------------
+
+describe('Rust qualified calls stay inside their own crate (#2730 review H1)', () => {
+  let result: PipelineResult;
+
+  beforeAll(async () => {
+    result = await runPipelineFromRepo(path.join(FIXTURES, 'rust-2730-workspace-crates'), () => {});
+  }, 60000);
+
+  it('binds alpha::sched::dispatch to alpha tools, not beta', () => {
+    const edges = getRelationships(result, 'CALLS').filter(
+      (c) => c.sourceFilePath === 'crates/alpha/src/sched.rs' && c.source === 'dispatch',
+    );
+    expect(edges.length).toBe(1);
+    expect(edges[0]).toMatchObject({
+      target: 'dispatch',
+      targetFilePath: 'crates/alpha/src/tools.rs',
+    });
+  });
+
+  it('binds beta::sched::dispatch to beta tools, not alpha', () => {
+    const edges = getRelationships(result, 'CALLS').filter(
+      (c) => c.sourceFilePath === 'crates/beta/src/sched.rs' && c.source === 'dispatch',
+    );
+    expect(edges.length).toBe(1);
+    expect(edges[0]).toMatchObject({
+      target: 'dispatch',
+      targetFilePath: 'crates/beta/src/tools.rs',
+    });
+  });
+
+  it('emits no self-loop in either crate', () => {
+    const selfLoops = getRelationships(result, 'CALLS').filter(
+      (c) =>
+        c.source === 'dispatch' && c.target === 'dispatch' && c.sourceFilePath === c.targetFilePath,
+    );
+    expect(selfLoops).toEqual([]);
+  });
+});

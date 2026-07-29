@@ -41,6 +41,7 @@ import {
   moduleOfFile,
   resolveAnchoredModulePath,
   sameModule,
+  type RustModule,
   type RustModuleIndex,
 } from './module-path.js';
 
@@ -114,7 +115,7 @@ function callerModuleOf(
   inScope: ScopeId,
   scopes: ScopeResolutionIndexes,
   index: RustModuleIndex,
-): string[] | undefined {
+): RustModule | undefined {
   const fileModule = moduleOfFile(callerParsed.filePath, index);
   if (fileModule === undefined) return undefined;
 
@@ -132,7 +133,7 @@ function callerModuleOf(
     }
     scopeId = scope.parent;
   }
-  return [...fileModule, ...inline];
+  return { crateRoot: fileModule.crateRoot, segments: [...fileModule.segments, ...inline] };
 }
 
 /**
@@ -141,21 +142,21 @@ function callerModuleOf(
  * admits no alternatives.
  */
 function* candidateModules(
-  anchored: { readonly path: string[]; readonly anchored: boolean },
+  anchored: { readonly module: RustModule; readonly anchored: boolean },
   qualifier: readonly string[],
-  callerModule: readonly string[],
+  callerModule: RustModule,
   callerParsed: ParsedFile,
   scopes: ScopeResolutionIndexes,
   index: RustModuleIndex,
-): Generator<readonly string[]> {
+): Generator<RustModule> {
   if (anchored.anchored) {
-    yield anchored.path;
+    yield anchored.module;
     return;
   }
 
   // 1. A module declared in, or below, the calling module (`mod inner { … }`,
   //    `mod tools;`) — the in-scope type-namespace binding.
-  yield [...callerModule, ...qualifier];
+  yield { crateRoot: callerModule.crateRoot, segments: [...callerModule.segments, ...qualifier] };
 
   // 2. A `use` binding for the first segment. Finalize already resolved the
   //    import to a file, so the module path comes back through the same
@@ -166,17 +167,22 @@ function* candidateModules(
     if (edge.localName !== head || edge.targetFile === null) continue;
     const importedModule = moduleOfFile(edge.targetFile, index);
     if (importedModule === undefined) continue;
-    yield [...importedModule, ...qualifier.slice(1)];
+    yield {
+      crateRoot: importedModule.crateRoot,
+      segments: [...importedModule.segments, ...qualifier.slice(1)],
+    };
   }
 
   // 3. Crate-root-relative (`a::b::f()` written from a nested module — 2015
   //    edition style, and still what a single-file crate looks like).
-  if (callerModule.length > 0) yield [...qualifier];
+  if (callerModule.segments.length > 0) {
+    yield { crateRoot: callerModule.crateRoot, segments: [...qualifier] };
+  }
 }
 
 /** A callable named `name` declared directly in `targetModule`. Refuses on a tie. */
 function findMemberInModule(
-  targetModule: readonly string[],
+  targetModule: RustModule,
   name: string,
   scopes: ScopeResolutionIndexes,
   index: RustModuleIndex,
@@ -206,7 +212,7 @@ function findMemberInModule(
  * survives as an `ImportEdge` on that module scope, which is what this reads.
  */
 function findReexportedMember(
-  targetModule: readonly string[],
+  targetModule: RustModule,
   name: string,
   scopes: ScopeResolutionIndexes,
   workspaceIndex: WorkspaceResolutionIndex,

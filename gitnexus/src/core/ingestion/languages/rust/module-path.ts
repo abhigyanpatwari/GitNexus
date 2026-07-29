@@ -14,10 +14,17 @@
  *     no in-file marker at all — the module path lives in the FILE PATH relative
  *     to the crate root. That half is reconstructed here.
  *
- * A def's full module path is therefore `moduleOfFile(filePath) ++
- * namespacePrefix`, and a call site's target module is its written path resolved
- * against the caller's own module path (`crate::` / `self::` / `super::` are
- * prefix transforms, exactly as in rustc — never bail-outs).
+ * ## Module identity carries its crate
+ *
+ * A module is `{ crateRoot, segments }`, never bare segments. A cargo workspace
+ * routinely gives several members the same internal module name — `util`,
+ * `error`, `config`, `types` are near-universal — and identity by segments alone
+ * makes `crates/a/src/tools.rs` and `crates/b/src/tools.rs` the same module. That
+ * mis-binds a call across crates when only one defines the member, and (worse)
+ * ties the lookup when both do, so qualified resolution refuses and the call
+ * falls back to the lexical walk that #2730 exists to prevent. Rust has no
+ * implicit cross-crate paths: reaching another crate requires naming it, so two
+ * modules in different crates are never the same module.
  *
  * Everything here is pure path arithmetic over the workspace file set; no I/O.
  */
@@ -27,6 +34,16 @@ const CRATE_ROOT_FILES = new Set(['main.rs', 'lib.rs']);
 
 /** A module file whose name does NOT contribute a path segment. */
 const MODULE_DIR_FILE = 'mod.rs';
+
+/**
+ * A module's full identity: the crate it belongs to, plus its `::`-path inside
+ * that crate. `segments` is empty for the crate-root module itself.
+ */
+export interface RustModule {
+  /** Crate-root directory (`src`, `crates/noob/src`, or `''` at repo root). */
+  readonly crateRoot: string;
+  readonly segments: readonly string[];
+}
 
 export interface RustModuleIndex {
   /** Crate-root directories, longest first, so nested crates win. */
@@ -51,23 +68,24 @@ export function buildRustModuleIndex(allFilePaths: ReadonlySet<string>): RustMod
 }
 
 /**
- * Module path of the file itself, as `::`-segments below its crate root.
+ * Module identity of the file itself: its crate root plus the `::`-segments
+ * below it.
  *
- *   src/main.rs                     → []            (the crate root module)
- *   src/tools.rs                    → ['tools']
- *   src/a/mod.rs                    → ['a']
- *   src/a/b.rs                      → ['a', 'b']
- *   crates/noob/src/tools/mod.rs    → ['tools']
+ *   src/main.rs                     → { src,             [] }   (crate root module)
+ *   src/tools.rs                    → { src,             ['tools'] }
+ *   src/a/mod.rs                    → { src,             ['a'] }
+ *   src/a/b.rs                      → { src,             ['a', 'b'] }
+ *   crates/noob/src/tools/mod.rs    → { crates/noob/src, ['tools'] }
  *
  * Returns `undefined` for a file under no known crate root — the caller then has
  * no module identity to reason about and must refuse rather than guess.
  */
-export function moduleOfFile(filePath: string, index: RustModuleIndex): string[] | undefined {
-  for (const root of index.crateRoots) {
-    const prefix = root === '' ? '' : `${root}/`;
-    if (root !== '' && !filePath.startsWith(prefix)) continue;
+export function moduleOfFile(filePath: string, index: RustModuleIndex): RustModule | undefined {
+  for (const crateRoot of index.crateRoots) {
+    const prefix = crateRoot === '' ? '' : `${crateRoot}/`;
+    if (crateRoot !== '' && !filePath.startsWith(prefix)) continue;
     const rel = filePath.slice(prefix.length);
-    if (rel.includes('/') === false && CRATE_ROOT_FILES.has(rel)) return [];
+    if (!rel.includes('/') && CRATE_ROOT_FILES.has(rel)) return { crateRoot, segments: [] };
     const segments = rel.split('/');
     const last = segments.pop();
     if (last === undefined) return undefined;
@@ -75,33 +93,40 @@ export function moduleOfFile(filePath: string, index: RustModuleIndex): string[]
       if (!last.endsWith('.rs')) return undefined;
       segments.push(last.slice(0, -'.rs'.length));
     }
-    return segments;
+    return { crateRoot, segments };
   }
   return undefined;
 }
 
-/** Full module path of a definition: its file's module path plus any `mod` blocks around it. */
+/** Full module identity of a definition: its file's module plus any `mod` blocks around it. */
 export function moduleOfDef(
   filePath: string,
   namespacePrefix: string | undefined,
   index: RustModuleIndex,
-): string[] | undefined {
+): RustModule | undefined {
   const fileModule = moduleOfFile(filePath, index);
   if (fileModule === undefined) return undefined;
   if (namespacePrefix === undefined || namespacePrefix === '') return fileModule;
-  return [...fileModule, ...namespacePrefix.split('.')];
+  return {
+    crateRoot: fileModule.crateRoot,
+    segments: [...fileModule.segments, ...namespacePrefix.split('.')],
+  };
 }
 
 /**
- * Resolve a written path's leading segments to an absolute module path, from the
- * calling module. Mirrors rustc's anchor handling:
+ * Resolve a written path's leading segments to a module, from the calling
+ * module. Mirrors rustc's anchor handling:
  *
- *   crate::a::b   → ['a','b']                 (crate root)
+ *   crate::a::b   → the caller's OWN crate, segments ['a','b']
  *   self::a       → callerModule ++ ['a']
  *   super::a      → callerModule[:-1] ++ ['a']
  *   a::b          → relative; the caller resolves this against the candidate
- *                   channels (child module, `use` binding, extern crate), so it
- *                   is returned as-is for the caller to try in context.
+ *                   channels (child module, `use` binding), so it is returned
+ *                   as-is for the caller to try in context.
+ *
+ * An anchored path always stays inside the caller's crate — `crate::` names the
+ * current crate, and `super::`/`self::` are relative to it — so the resolved
+ * module inherits `callerModule.crateRoot`.
  *
  * `super` chains (`super::super::x`) are consumed left to right. Returns
  * `undefined` when the chain walks above the crate root — an invalid path that
@@ -109,31 +134,43 @@ export function moduleOfDef(
  */
 export function resolveAnchoredModulePath(
   qualifier: readonly string[],
-  callerModule: readonly string[],
-): { readonly path: string[]; readonly anchored: boolean } | undefined {
+  callerModule: RustModule,
+): { readonly module: RustModule; readonly anchored: boolean } | undefined {
   if (qualifier.length === 0) return undefined;
+  const crateRoot = callerModule.crateRoot;
 
   const head = qualifier[0];
   if (head === 'crate' || head === '$crate') {
-    return { path: qualifier.slice(1), anchored: true };
+    return { module: { crateRoot, segments: qualifier.slice(1) }, anchored: true };
   }
   if (head === 'self') {
-    return { path: [...callerModule, ...qualifier.slice(1)], anchored: true };
+    return {
+      module: { crateRoot, segments: [...callerModule.segments, ...qualifier.slice(1)] },
+      anchored: true,
+    };
   }
   if (head === 'super') {
     let i = 0;
-    const base = [...callerModule];
+    const base = [...callerModule.segments];
     while (i < qualifier.length && qualifier[i] === 'super') {
       if (base.length === 0) return undefined; // above the crate root
       base.pop();
       i++;
     }
-    return { path: [...base, ...qualifier.slice(i)], anchored: true };
+    return { module: { crateRoot, segments: [...base, ...qualifier.slice(i)] }, anchored: true };
   }
-  return { path: [...qualifier], anchored: false };
+  return { module: { crateRoot, segments: [...qualifier] }, anchored: false };
 }
 
-/** Structural equality for two module paths. */
-export function sameModule(a: readonly string[], b: readonly string[]): boolean {
-  return a.length === b.length && a.every((seg, i) => seg === b[i]);
+/**
+ * Identity comparison for two modules. The crate root participates: two modules
+ * with the same internal path in DIFFERENT crates are different modules, and
+ * conflating them is what let a workspace mis-bind or refuse (#2730 review H1).
+ */
+export function sameModule(a: RustModule, b: RustModule): boolean {
+  return (
+    a.crateRoot === b.crateRoot &&
+    a.segments.length === b.segments.length &&
+    a.segments.every((seg, i) => seg === b.segments[i])
+  );
 }
