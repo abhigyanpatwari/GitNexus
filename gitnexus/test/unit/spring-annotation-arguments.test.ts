@@ -123,6 +123,20 @@ describe('Spring Resource semantics', () => {
     });
   });
 
+  it('does not type-fallback an implicit-name generic Resource site', () => {
+    const generic = springResourceInjectionMatch(
+      '@Resource',
+      'handlers',
+      'List<Handler>',
+      'handlers',
+    );
+    expect(generic).toMatchObject({
+      targetTypeName: 'List',
+      namedSelection: { name: 'handlers' },
+    });
+    expect(generic?.namedSelection).not.toHaveProperty('fallbackToType');
+  });
+
   it('honors static type overrides and rejects runtime-only metadata', () => {
     expect(
       springResourceInjectionMatch('@Resource(type = Concrete::class)', 'repo', 'Any', 'repo'),

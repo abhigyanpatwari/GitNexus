@@ -73,12 +73,12 @@ describe('CALL_SUMMARY relation-type exclusion (U-C1)', () => {
 });
 
 describe('CALL_SUMMARY incremental reuse gate (U-C5)', () => {
-  it('INCREMENTAL_SCHEMA_VERSION is bumped to 24 (inline constructor receivers, #2708)', () => {
+  it('INCREMENTAL_SCHEMA_VERSION is bumped to 25 (Spring Bean relation schema, #2413)', () => {
     // Moves with every bump BY DESIGN — that is the point of pinning it. A
     // change that alters emitted ids or edges without bumping would otherwise
     // ship silently, and an existing index would keep serving the old graph
     // through the reuse gate below.
-    expect(INCREMENTAL_SCHEMA_VERSION).toBe(24);
+    expect(INCREMENTAL_SCHEMA_VERSION).toBe(25);
   });
 
   it('a pre-current stamp fails the `=== INCREMENTAL_SCHEMA_VERSION` reuse gate → forces full re-analyze', () => {
@@ -175,9 +175,13 @@ describe('CALL_SUMMARY incremental reuse gate (U-C5)', () => {
     // (#2730): every unchanged Rust file would keep the same-name self-loop and
     // keep reporting the real callee as unreached → must NOT reuse.
     expect(passesReuseGate(22)).toBe(false);
-    // A pre-v24 (v23) index predates
+    // A pre-v24 (v23) index predates inline constructor receiver resolution
+    // (#2708), so unchanged files would keep missing those CALLS edges.
     expect(passesReuseGate(23)).toBe(false);
-    // The current stamp passes the gate (incremental top-up eligible).
-    expect(passesReuseGate(24)).toBe(true);
+    // A pre-v25 (v24) index lacks Class→CodeElement relation schema support,
+    // so Spring Bean injection edges would be dropped during persistence.
+    expect(passesReuseGate(24)).toBe(false);
+    // The current stamp passes (incremental top-up eligible).
+    expect(passesReuseGate(25)).toBe(true);
   });
 });

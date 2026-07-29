@@ -17,7 +17,7 @@ import { createWriteStream, WriteStream } from 'fs';
 import path from 'path';
 import type { GraphNode, GraphRelationship } from 'gitnexus-shared';
 import { KnowledgeGraph } from '../graph/types.js';
-import { NodeTableName, NODE_TABLES } from './schema.js';
+import { NodeTableName, NODE_TABLES, RELATION_SCHEMA_PAIRS } from './schema.js';
 import { RelPairRouter } from './rel-pair-routing.js';
 import { parseTruthyEnv } from '../ingestion/utils/env.js';
 import { SYMBOL_NODE_LABELS } from '../ingestion/utils/symbol-labels.js';
@@ -785,7 +785,12 @@ export const streamAllCSVsToDisk = async (
     // read once instead of twice. The router applies the SAME label-derivation +
     // validTables filter as the legacy splitRelCsvByLabelPair, so the per-pair
     // files are byte-identical (asserted by the differential test).
-    const relRouter = new RelPairRouter(csvDir, REL_CSV_HEADER, new Set<string>(NODE_TABLES));
+    const relRouter = new RelPairRouter(
+      csvDir,
+      REL_CSV_HEADER,
+      new Set<string>(NODE_TABLES),
+      RELATION_SCHEMA_PAIRS,
+    );
     try {
       let emitted = 0;
       for (const rel of orderedRelationships(graph, sortOutput)) {

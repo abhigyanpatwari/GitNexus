@@ -106,7 +106,7 @@ export function springResourceInjectionMatch(
     namedSelection: {
       name: selectedName,
       reason: `${explicitName ? 'resource name' : 'default resource name'} "${selectedName}"`,
-      ...(!explicitName ? { fallbackToType: true } : {}),
+      ...(!explicitName && !rawDeclaredType.includes('<') ? { fallbackToType: true } : {}),
     },
     reason: `Spring DI: @Resource ${location}: ${targetTypeName}`,
   };

@@ -50,6 +50,10 @@ export interface DiProviderMatch {
   /** Optional type directly provided by a declaration node, such as a
    * framework factory method whose node is not itself a Class. */
   providedTypeName?: string;
+  /** Graph node that declares this provider. The shared phase excludes a
+   * provider from injection into its own declaration site without knowing the
+   * framework-specific declaration model. */
+  declaredByNodeId?: string;
   /** Present when the framework marks this as its preferred candidate. The
    *  value is appended to the emitted edge reason when it disambiguates. */
   preferenceReason?: string;

@@ -103,7 +103,7 @@ scan → structure → [markdown, cobol] → parse → [routes, tools, orm]
 | `scopeResolution` | `scope-resolution/pipeline/phase.ts` | `parse`, `crossFile`, `structure` | Binding/reference + inheritance edges; disposes BindingAccumulator |
 | `pruneLocalSymbols` | `prune-local-symbols.ts` | `scopeResolution` | Drops inert block-local `Const`/`Variable`/`Static` nodes (only a `File→DEFINES` edge) post-resolution |
 | `mro` | `mro.ts` | `crossFile`, `scopeResolution`, `pruneLocalSymbols`, `structure` | METHOD_OVERRIDES + METHOD_IMPLEMENTS edges |
-| `di` | `di.ts` | `mro` | INJECTS edges (framework-neutral DI resolution; per-language matchers registered in `di-extractors/`) |
+| `di` | `di.ts` | `mro` | INJECTS edges from consumer Classes or factory Methods to provider Classes/declaration CodeElements (framework-neutral DI resolution; per-language matchers registered in `di-extractors/`) |
 | `communities` | `communities.ts` | `mro`, `pruneLocalSymbols`, `structure` | Community nodes + MEMBER_OF edges (Leiden algorithm) |
 | `processes` | `processes.ts` | `communities`, `routes`, `tools`, `pruneLocalSymbols`, `structure` | Process nodes + STEP_IN_PROCESS edges |
 

@@ -51,7 +51,6 @@ interface PendingEdge {
 }
 
 type ProvidedTypesByLanguage = Map<string, Map<string, Set<string>>>;
-type ProviderNamesByLanguage = Map<string, Map<string, Set<string>>>;
 
 function addProvidedType(
   index: ProvidedTypesByLanguage,
@@ -120,6 +119,7 @@ export const diPhase: PipelinePhase<DIOutput> = {
     const providedTypes = new Map<string, Map<string, Set<string>>>();
     const providerNames = new Map<string, Map<string, Set<string>>>();
     const providerNodes = new Map<string, GraphNode>();
+    const providersByDeclarer = new Map<string, Set<string>>();
     ctx.graph.forEachNode((node) => {
       const language = node.properties.language;
       if (language === undefined || !isSupportedLanguage(language)) return;
@@ -140,6 +140,11 @@ export const diPhase: PipelinePhase<DIOutput> = {
         if (provider.providedTypeName !== undefined) {
           addProvidedType(providedTypes, language, provider.providedTypeName, node.id);
         }
+        if (provider.declaredByNodeId !== undefined) {
+          const declared = providersByDeclarer.get(provider.declaredByNodeId) ?? new Set<string>();
+          declared.add(node.id);
+          providersByDeclarer.set(provider.declaredByNodeId, declared);
+        }
       }
       for (const match of resolver.matchInjectionSites(node)) {
         candidates.push({ ...match, siteNodeId: node.id, language });
@@ -156,10 +161,19 @@ export const diPhase: PipelinePhase<DIOutput> = {
     }
 
     const interfaceToImplementers = new Map<string, Set<string>>();
+    const directSupertypes = new Map<string, Set<string>>();
     for (const rel of ctx.graph.iterRelationshipsByType('IMPLEMENTS')) {
       const set = interfaceToImplementers.get(rel.targetId) ?? new Set<string>();
       set.add(rel.sourceId);
       interfaceToImplementers.set(rel.targetId, set);
+      const supertypes = directSupertypes.get(rel.sourceId) ?? new Set<string>();
+      supertypes.add(rel.targetId);
+      directSupertypes.set(rel.sourceId, supertypes);
+    }
+    for (const rel of ctx.graph.iterRelationshipsByType('EXTENDS')) {
+      const supertypes = directSupertypes.get(rel.sourceId) ?? new Set<string>();
+      supertypes.add(rel.targetId);
+      directSupertypes.set(rel.sourceId, supertypes);
     }
 
     const memberToClass = new Map<string, string>();
@@ -182,6 +196,65 @@ export const diPhase: PipelinePhase<DIOutput> = {
       indexes.set(language, index);
       if (node.label === 'Class') providerNodes.set(node.id, node);
     });
+
+    // A declaration returning a concrete class is assignable to every class or
+    // interface that type extends/implements. Expand once per language+type and
+    // register the declaration under those ancestor names. This keeps named
+    // selection fast (set intersection below) while allowing, for example, a
+    // `DefaultGateway` Bean to satisfy a named `Gateway` Resource site.
+    const assignableNamesByProvidedType = new Map<string, readonly string[]>();
+    for (const [providerId, provider] of providers) {
+      if (provider.providedTypeName === undefined) continue;
+      const providerNode = providerNodes.get(providerId);
+      const language = providerNode?.properties.language;
+      if (typeof language !== 'string') continue;
+      const cacheKey = `${language}\0${provider.providedTypeName}`;
+      let assignableTypeNames = assignableNamesByProvidedType.get(cacheKey);
+      if (assignableTypeNames === undefined) {
+        const classEntry = resolveIndexedName(
+          classesByLanguage.get(language),
+          provider.providedTypeName,
+        );
+        const interfaceEntry = resolveIndexedName(
+          interfacesByLanguage.get(language),
+          provider.providedTypeName,
+        );
+        const rootTypeId =
+          typeof classEntry === 'string' && interfaceEntry === undefined
+            ? classEntry
+            : typeof interfaceEntry === 'string' && classEntry === undefined
+              ? interfaceEntry
+              : undefined;
+        const names = new Set<string>();
+        if (rootTypeId !== undefined) {
+          const queue = [rootTypeId];
+          const visited = new Set<string>();
+          while (queue.length > 0) {
+            const typeId = queue.pop();
+            if (typeId === undefined) continue;
+            if (visited.has(typeId)) continue;
+            visited.add(typeId);
+            const typeNode = ctx.graph.getNode(typeId);
+            if (
+              (typeNode?.label === 'Class' || typeNode?.label === 'Interface') &&
+              typeNode.properties.language === language
+            ) {
+              names.add(typeNode.properties.name);
+              const qualifiedName = typeNode.properties.qualifiedName;
+              if (typeof qualifiedName === 'string') names.add(qualifiedName);
+            }
+            for (const supertypeId of directSupertypes.get(typeId) ?? []) {
+              queue.push(supertypeId);
+            }
+          }
+        }
+        assignableTypeNames = [...names];
+        assignableNamesByProvidedType.set(cacheKey, assignableTypeNames);
+      }
+      for (const typeName of assignableTypeNames) {
+        addProvidedType(providedTypes, language, typeName, providerId);
+      }
+    }
 
     let ambiguousSkipped = 0;
     let ambiguousInjections = 0;
@@ -235,6 +308,7 @@ export const diPhase: PipelinePhase<DIOutput> = {
       for (const id of providedTypes.get(candidate.language)?.get(candidate.targetTypeName) ?? []) {
         structural.add(id);
       }
+      for (const id of providersByDeclarer.get(edgeSourceId) ?? []) structural.delete(id);
       structural.delete(consumerClassId);
       structural.delete(edgeSourceId);
       if (structural.size === 0) continue;

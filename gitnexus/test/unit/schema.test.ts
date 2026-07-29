@@ -19,6 +19,7 @@ import {
   PROCESS_SCHEMA,
   BASICBLOCK_SCHEMA,
   RELATION_SCHEMA,
+  RELATION_SCHEMA_PAIRS,
   EMBEDDING_SCHEMA,
   CREATE_VECTOR_INDEX_QUERY,
 } from '../../src/core/lbug/schema.js';
@@ -206,6 +207,11 @@ describe('LadybugDB Schema', () => {
 
     it('connects BasicBlock to BasicBlock (taint/PDG substrate edges, #2080)', () => {
       expect(RELATION_SCHEMA).toContain('FROM BasicBlock TO BasicBlock');
+    });
+
+    it('persists consumer Class injection edges to synthetic provider declarations', () => {
+      expect(RELATION_SCHEMA).toContain('FROM Class TO CodeElement');
+      expect(RELATION_SCHEMA_PAIRS.has('Class|CodeElement')).toBe(true);
     });
 
     it('has all FROM/TO pairs needed for HAS_METHOD edges', () => {

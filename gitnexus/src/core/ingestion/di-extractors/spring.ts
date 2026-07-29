@@ -282,6 +282,7 @@ function isProviderMatch(value: unknown): value is DiProviderMatch {
     Array.isArray(provider.names) &&
     provider.names.every((name) => typeof name === 'string') &&
     (provider.providedTypeName === undefined || typeof provider.providedTypeName === 'string') &&
+    (provider.declaredByNodeId === undefined || typeof provider.declaredByNodeId === 'string') &&
     (provider.preferenceReason === undefined || typeof provider.preferenceReason === 'string')
   );
 }

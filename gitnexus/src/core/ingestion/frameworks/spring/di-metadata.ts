@@ -300,6 +300,7 @@ export function createSpringDiMetadataAttacher<
           };
           beanNode.properties[SPRING_DI_PROVIDER_PROPERTY] = {
             names: names.names,
+            declaredByNodeId: methodNode.id,
             ...(providedType === null || providedType === undefined
               ? {}
               : { providedTypeName: providedType }),
@@ -383,7 +384,16 @@ export function createSpringDiMetadataAttacher<
               resourceAnnotation = annotation;
             }
           }
-          if (injectionAnnotation !== undefined && resourceAnnotation !== undefined) continue;
+          if (injectionAnnotation !== undefined && resourceAnnotation !== undefined) {
+            // The annotation pair is semantically ambiguous, so emit no edge.
+            // It still owns a captured member: otherwise the legacy collection
+            // matcher sees the same Property and fans out behind this fail-closed
+            // decision.
+            if (site.kind === adapter.capturedMemberKind) {
+              semanticallyOwnedMemberNames.add(site.memberName);
+            }
+            continue;
+          }
 
           if (resourceAnnotation !== undefined) {
             if (site.kind === adapter.capturedMemberKind) {

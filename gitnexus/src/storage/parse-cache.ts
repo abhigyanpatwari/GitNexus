@@ -55,6 +55,9 @@ import type { ParseWorkerResult } from '../core/ingestion/workers/parse-worker.j
 // the main thread (the #1983 OOM). Because the two stores share this version,
 // any future change to the `ParsedFile` serialization shape MUST bump
 // SCHEMA_BUMP so both invalidate in lockstep.
+// v32/schema v24: Java/Kotlin Spring @Bean factory and @Resource side-channel
+// facts (#2413). ParsedFile results are content-addressed and replayed verbatim,
+// so the feature/schema inventory alone cannot invalidate pre-#2413 captures.
 // v31: Rust `mod_item` gained `@declaration.namespace` and scoped call sites
 // gained `@reference.qualified-name` (#2730). Both are PARSE-TIME captures, so a
 // warm cache replays the old capture set verbatim: `rawQualifiedName` comes back
@@ -125,7 +128,7 @@ import type { ParseWorkerResult } from '../core/ingestion/workers/parse-worker.j
 // JLS 13.1 immediate-host chains (#2555).
 // v18: Worker$N anonymous bodies. v17: callable-value-flow operand identity.
 // v16: direct callee identity.
-const SCHEMA_BUMP = 31;
+const SCHEMA_BUMP = 32;
 const GITNEXUS_PKG_VERSION = (() => {
   try {
     // package.json sits at gitnexus/package.json — two levels up from

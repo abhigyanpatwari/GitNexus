@@ -69,6 +69,8 @@ public class AppConfiguration {
   @Bean(name = {"slowGateway", "gatewayAlias"})
   Gateway namedGateway() { return new DefaultGateway(); }
   @Bean Gateway setterGateway() { return new DefaultGateway(); }
+  @Bean DefaultGateway concreteGateway() { return new DefaultGateway(); }
+  @Bean Gateway selfAwareGateway(Gateway dependency) { return new DefaultGateway(); }
   @Bean List<Gateway> gatewayList() { return List.of(); }
   @Bean ConcreteRepo repo() { return new ConcreteRepo(); }
   @Bean @Autowired
@@ -105,6 +107,19 @@ public class CollectionResourceConsumer {
   @Resource(name = "gatewayList") List<Gateway> gateways;
 }
 `,
+    'ConcreteFactoryResourceConsumer.java': `package com.example;
+import jakarta.annotation.Resource;
+public class ConcreteFactoryResourceConsumer {
+  @Resource(name = "concreteGateway") Gateway gateway;
+}
+`,
+    'GenericResourceConsumer.java': `package com.example;
+import java.util.List;
+import jakarta.annotation.Resource;
+public class GenericResourceConsumer {
+  @Resource List<Gateway> missingGateways;
+}
+`,
     'TypeOverrideResourceConsumer.java': `package com.example;
 import jakarta.annotation.Resource;
 public class TypeOverrideResourceConsumer {
@@ -137,10 +152,11 @@ public class QualifierConsumer {
 }
 `,
     'ConflictingResourceConsumer.java': `package com.example;
+import java.util.List;
 import jakarta.annotation.Resource;
 import org.springframework.beans.factory.annotation.Autowired;
 public class ConflictingResourceConsumer {
-  @Autowired @Resource Gateway gateway;
+  @Autowired @Resource List<Gateway> gateways;
 }
 `,
     'ClassResourceConsumer.java': `package com.example;
@@ -181,6 +197,8 @@ class KotlinConfiguration {
   @Bean(name = ["kotlinNamed", "kotlinAlias"])
   fun namedGateway(): KGateway = KGatewayImpl()
   @Bean fun inferredGateway() = KGatewayImpl()
+  @Bean fun kotlinConcreteGateway() = KGatewayImpl()
+  @Bean fun kotlinSelfAwareGateway(dependency: KGateway): KGateway = KGatewayImpl()
   private fun buildGateway(): KGateway = KGatewayImpl()
   @Bean fun indirectGateway() = buildGateway()
   @Bean fun kotlinList(): List<KGateway> = emptyList()
@@ -213,6 +231,29 @@ import jakarta.annotation.Resource
 class KotlinCollectionResourceConsumer {
   @set:Resource
   var kotlinList: List<KGateway>? = null
+}
+`,
+    'KotlinConcreteFactoryResourceConsumer.kt': `package com.kotlin
+import jakarta.annotation.Resource
+class KotlinConcreteFactoryResourceConsumer {
+  @field:Resource(name = "kotlinConcreteGateway")
+  lateinit var gateway: KGateway
+}
+`,
+    'KotlinGenericResourceConsumer.kt': `package com.kotlin
+import jakarta.annotation.Resource
+class KotlinGenericResourceConsumer {
+  @field:Resource
+  lateinit var missingGateways: List<KGateway>
+}
+`,
+    'KotlinConflictingResourceConsumer.kt': `package com.kotlin
+import jakarta.annotation.Resource
+import org.springframework.beans.factory.annotation.Autowired
+class KotlinConflictingResourceConsumer {
+  @field:Autowired
+  @field:Resource
+  lateinit var gateways: List<KGateway>
 }
 `,
     'KotlinGetterResourceConsumer.kt': `package com.kotlin
@@ -285,6 +326,7 @@ class LocalResourceConsumer {
     expect(pairs).toContain('DefaultResourceConsumer->gateway');
     expect(pairs).toContain('SetterResourceConsumer->setterGateway');
     expect(pairs).toContain('CollectionResourceConsumer->gatewayList');
+    expect(pairs).toContain('ConcreteFactoryResourceConsumer->concreteGateway');
     expect(pairs).toContain('TypeOverrideResourceConsumer->repo');
     expect(pairs).toContain('ClassResourceConsumer->ClassGateway');
     expect(pairs).toContain('QualifierConsumer->slowGateway');
@@ -292,10 +334,14 @@ class LocalResourceConsumer {
     expect(pairs.some((pair) => pair.startsWith('AppConfiguration->'))).toBe(false);
     expect(pairs.filter((pair) => pair.startsWith('aggregate->'))).toEqual([
       'aggregate->ClassGateway',
+      'aggregate->concreteGateway',
       'aggregate->gateway',
+      'aggregate->selfAwareGateway',
       'aggregate->setterGateway',
       'aggregate->slowGateway',
     ]);
+    expect(pairs.some((pair) => pair === 'selfAwareGateway->selfAwareGateway')).toBe(false);
+    expect(pairs.some((pair) => pair.startsWith('selfAwareGateway->'))).toBe(true);
     expect(pairs.filter((pair) => pair.startsWith('CollectionResourceConsumer->'))).toEqual([
       'CollectionResourceConsumer->gatewayList',
     ]);
@@ -318,6 +364,9 @@ class LocalResourceConsumer {
     expect(details.some((detail) => detail.pair.startsWith('ConflictingResourceConsumer->'))).toBe(
       false,
     );
+    expect(details.some((detail) => detail.pair.startsWith('GenericResourceConsumer->'))).toBe(
+      false,
+    );
     expect(details.some((detail) => detail.pair.startsWith('LocalResourceConsumer->'))).toBe(false);
   });
 
@@ -327,10 +376,19 @@ class LocalResourceConsumer {
     expect(pairs).toContain('KotlinDefaultResourceConsumer->kotlinGateway');
     expect(pairs).toContain('KotlinSetterResourceConsumer->inferredGateway');
     expect(pairs).toContain('KotlinCollectionResourceConsumer->kotlinList');
+    expect(pairs).toContain('KotlinConcreteFactoryResourceConsumer->kotlinConcreteGateway');
     expect(pairs).toContain('KotlinClassResourceConsumer->KClassGateway');
     expect(pairs).toContain('kotlinService->kotlinNamed');
     expect(pairs.some((pair) => pair.startsWith('KotlinConfiguration->'))).toBe(false);
     expect(pairs.some((pair) => pair.startsWith('KotlinGetterResourceConsumer->'))).toBe(false);
+    expect(pairs.some((pair) => pair.startsWith('KotlinGenericResourceConsumer->'))).toBe(false);
+    expect(pairs.some((pair) => pair.startsWith('KotlinConflictingResourceConsumer->'))).toBe(
+      false,
+    );
+    expect(pairs.some((pair) => pair === 'kotlinSelfAwareGateway->kotlinSelfAwareGateway')).toBe(
+      false,
+    );
+    expect(pairs.some((pair) => pair.startsWith('kotlinSelfAwareGateway->'))).toBe(true);
     expect(pairs.filter((pair) => pair.startsWith('KotlinCollectionResourceConsumer->'))).toEqual([
       'KotlinCollectionResourceConsumer->kotlinList',
     ]);

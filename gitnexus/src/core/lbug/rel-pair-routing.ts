@@ -16,8 +16,11 @@
  * router derives the label from the RAW id, while the oracle re-derives it via a
  * regex over the ESCAPED row — so for an id containing a `"` the router is the
  * more-correct path (it routes the edge to the right pair; the oracle's regex
- * mis-buckets or drops it). `splitRelCsvByLabelPair` is retained as the
- * differential oracle (the quote-in-id divergence is asserted explicitly).
+ * mis-buckets or drops it). Unlike the legacy oracle, the router also rejects a
+ * valid node-label pair absent from the relationship DDL. That distinction is
+ * load-bearing: silently writing such a CSV lets COPY fail late and can drop an
+ * otherwise valid edge during fallback. `splitRelCsvByLabelPair` is retained as
+ * the differential oracle (the quote-in-id divergence is asserted explicitly).
  *
  * Backpressure: at most one stream is awaited at a time (the caller routes
  * edges sequentially and awaits the returned drain promise before the next),
@@ -69,6 +72,7 @@ export class RelPairRouter {
     private readonly csvDir: string,
     private readonly header: string,
     private readonly validTables: Set<string>,
+    private readonly declaredPairs: ReadonlySet<string>,
     private readonly wsFactory: WriteStreamFactory = (p) => createWriteStream(p, 'utf-8'),
   ) {}
 
@@ -104,6 +108,11 @@ export class RelPairRouter {
     }
 
     const pairKey = `${fromLabel}|${toLabel}`;
+    if (!this.declaredPairs.has(pairKey)) {
+      throw new Error(
+        `Relationship label pair ${fromLabel}→${toLabel} is not declared in the LadybugDB relation schema`,
+      );
+    }
     const ws = this.streams.get(pairKey);
     if (ws === undefined) {
       // First edge for this pair: open the stream, write header + row.

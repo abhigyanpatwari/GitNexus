@@ -564,8 +564,13 @@ export interface RepoMeta {
  * the same-commit "already up to date" fast path — keeps returning the pre-fix
  * graph for every unchanged file, which is exactly the missing-caller symptom
  * #2708 reported. Force a full re-analyze.
+ *
+ * v25: Spring @Bean declarations are CodeElement providers and INJECTS may run
+ * from a consumer Class or factory Method to that CodeElement (#2413). The
+ * relation DDL gained Class→CodeElement; a v24 database cannot persist that
+ * label pair, so force a one-time rebuild against the expanded schema.
  */
-export const INCREMENTAL_SCHEMA_VERSION = 24;
+export const INCREMENTAL_SCHEMA_VERSION = 25;
 
 export interface IndexedRepo {
   repoPath: string;
