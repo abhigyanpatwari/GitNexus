@@ -21,13 +21,16 @@
  */
 
 import type { ScopeId, SymbolDefinition, TypeRef } from 'gitnexus-shared';
+import type { ScopeResolver } from '../contract/scope-resolver.js';
 import type { ScopeResolutionIndexes } from '../../model/scope-resolution-indexes.js';
 import type { WorkspaceResolutionIndex } from '../workspace-index.js';
+import { stripTemplateArguments } from '../../utils/template-arguments.js';
 import {
   findClassBindingInScope,
   findEnclosingClassDef,
   findExportedDefByName,
   findReceiverTypeBinding,
+  isClassLike,
 } from '../scope/walkers.js';
 
 /** Max depth for compound-receiver chain resolution (`a().b().c().d()`).
@@ -90,6 +93,110 @@ interface ResolveCompoundReceiverOptions {
    *  `ScopeResolver` contract toggle of the same name for the
    *  classifier grammar and per-language opt-in rules. */
   readonly stripReceiverCastExpressions?: boolean;
+  /** Surface syntax this language uses to construct a value, so an
+   *  inline constructor receiver can be typed. Derived from the contract
+   *  rather than re-declared, so a future sub-field cannot be added there
+   *  and silently ignored here (#2708). */
+  readonly constructionSyntax?: ScopeResolver['constructionSyntax'];
+}
+
+/** Is this hop the language's construction selector applied to the class
+ *  itself — `Factory.new` — rather than an ordinary member named `new` on a
+ *  value? Both call sites ask the identical question, so it is asked in one
+ *  place (#2708). `onClassConstant` is what separates `Factory.new` from
+ *  `factory.new`; see the contract field for the known limitation around a
+ *  class-level override of the selector. */
+function isConstructionSelectorHop(
+  memberName: string,
+  receiverClass: SymbolDefinition,
+  onClassConstant: boolean,
+  options: ResolveCompoundReceiverOptions,
+): boolean {
+  return (
+    onClassConstant &&
+    options.constructionSyntax?.selector === memberName &&
+    isClassLike(receiverClass.type)
+  );
+}
+
+/** Escape a literal for embedding in a RegExp. The construction keyword comes
+ *  from a language provider, so it is not user input, but a keyword containing
+ *  a metacharacter would otherwise silently build a wrong pattern. */
+function escapeForRegExp(literal: string): string {
+  return literal.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+}
+
+/**
+ * Type of a construction expression's callee — the class it constructs.
+ *
+ * `Service` (bare, when the language constructs without a keyword) and
+ * `new Service` (keyword form) both name the class being built, so the
+ * expression's type is that class. Together with
+ * `isConstructionSelectorHop` (the `Class.new` spelling), this is where the
+ * rule "constructing a class yields an instance of it" lives; the
+ * per-language surface syntax arrives via `constructionSyntax` (#2708).
+ *
+ * Returns undefined when the language declares no construction syntax,
+ * when the callee names no class-like symbol reachable from `inScope`,
+ * or when the keyword is required but absent — never a guess.
+ */
+function resolveConstructionExpressionClass(
+  fnExpr: string,
+  inScope: ScopeId,
+  scopes: ScopeResolutionIndexes,
+  options: ResolveCompoundReceiverOptions,
+): SymbolDefinition | undefined {
+  const syntax = options.constructionSyntax;
+  if (syntax === undefined) return undefined;
+
+  let calleeName: string | undefined;
+  // The keyword is separated from the type by whatever trivia the source
+  // used — `new Service`, `new\tService`, or a line break — so match the
+  // keyword as a whole token followed by at least one whitespace character
+  // rather than by exactly one space (#2708). `newService()` keeps failing
+  // the match, which is the point: it is an ordinary call.
+  const keywordMatch =
+    syntax.keyword === undefined
+      ? null
+      : new RegExp(`^${escapeForRegExp(syntax.keyword)}\\s+`).exec(fnExpr);
+  if (keywordMatch !== null) {
+    calleeName = fnExpr.slice(keywordMatch[0].length).trim();
+  } else if (syntax.bare === true) {
+    calleeName = fnExpr;
+  }
+  // A `new`-keyword language reaching here without the keyword is an
+  // ordinary free call, not a construction — resolving it to the class
+  // would fabricate an edge (a factory function may share the class's
+  // name).
+  if (calleeName === undefined || calleeName.length === 0) return undefined;
+
+  const direct = findClassBindingInScope(inScope, calleeName, scopes);
+  if (direct !== undefined && isClassLike(direct.type)) return direct;
+
+  // Generic construction — `new Box<string>()` arrives here as `Box<string>`,
+  // which names no class binding. Retry on the base name, the same
+  // normalization `resolveClassBindingForName` in `receiver-bound-calls`
+  // already applies for typed receivers (#2708).
+  const baseName = stripTemplateArguments(calleeName).trim();
+  if (baseName.length > 0 && baseName !== calleeName) {
+    const viaBaseName = findClassBindingInScope(inScope, baseName, scopes);
+    if (viaBaseName !== undefined && isClassLike(viaBaseName.type)) return viaBaseName;
+  }
+
+  // Qualified callee — `new ns.Service()` / `new Outer.Inner()`. Prefer an
+  // unambiguous qualified-name match, then fall back to the trailing simple
+  // name the way receiver resolution does elsewhere (#2708).
+  const lastDot = baseName.lastIndexOf('.');
+  if (lastDot === -1) return undefined;
+  const qualifiedIds = scopes.qualifiedNames.get(baseName);
+  if (qualifiedIds.length === 1) {
+    const qualified = scopes.defs.get(qualifiedIds[0]!);
+    if (qualified !== undefined && isClassLike(qualified.type)) return qualified;
+  }
+  const simpleName = baseName.slice(lastDot + 1);
+  if (simpleName.length === 0) return undefined;
+  const viaSimpleName = findClassBindingInScope(inScope, simpleName, scopes);
+  return viaSimpleName !== undefined && isClassLike(viaSimpleName.type) ? viaSimpleName : undefined;
 }
 
 export function resolveCompoundReceiverClass(
@@ -231,16 +338,34 @@ export function resolveCompoundReceiverClass(
     const fnExpr = workingText.slice(0, openIdx).trim();
     if (fnExpr.length === 0) return undefined;
 
+    // A keyword-marked construction is never an `obj.method()` call, even when
+    // the type is qualified (`new ns.Service()`), so it must be resolved before
+    // the dot-split below routes it into member resolution (#2708).
+    const keyword = options.constructionSyntax?.keyword;
+    if (keyword !== undefined && new RegExp(`^${escapeForRegExp(keyword)}\\s`).test(fnExpr)) {
+      return resolveConstructionExpressionClass(fnExpr, inScope, scopes, options);
+    }
+
     const lastDot = fnExpr.lastIndexOf('.');
     if (lastDot === -1) {
       // Free call `name()`. Look up function in scope, then its
       // return-type typeBinding (which lives in the function's
       // enclosing scope per the language's return-type hoist rule).
       const fnDef = findExportedDefByName(fnExpr, inScope, scopes, index);
-      if (fnDef === undefined) return undefined;
-      const retType = findReceiverTypeBinding(inScope, fnExpr, scopes);
-      if (retType === undefined) return undefined;
-      return findClassBindingInScope(retType.declaredAtScope, retType.rawName, scopes);
+      if (fnDef !== undefined) {
+        const retType = findReceiverTypeBinding(inScope, fnExpr, scopes);
+        const viaReturn =
+          retType === undefined
+            ? undefined
+            : findClassBindingInScope(retType.declaredAtScope, retType.rawName, scopes);
+        if (viaReturn !== undefined) return viaReturn;
+      }
+      // Inline construction — `Service(db).m()` / `new Service(db).m()`.
+      // The constructed value IS the receiver, so there is no binding to
+      // read a type off; the return-type path above cannot help either,
+      // because a class has no return-type binding. Type it from the
+      // class the callee names (#2708).
+      return resolveConstructionExpressionClass(fnExpr, inScope, scopes, options);
     }
 
     // `obj.method()` — resolve obj's class, look up method's return
@@ -256,6 +381,27 @@ export function resolveCompoundReceiverClass(
       depth + 1,
     );
     if (objClass === undefined) return undefined;
+
+    // Does `objExpr` name the CLASS ITSELF (`Factory.new`) rather than a
+    // value whose type is that class (`factory.new`)? Only the former is
+    // a construction — see the selector fallback below. A bare identifier
+    // that resolves straight to the class binding is the class constant;
+    // anything reached through a typeBinding is an instance.
+    const objIsClassConstant =
+      !objExpr.includes('(') &&
+      !objExpr.includes('.') &&
+      findClassBindingInScope(inScope, objExpr, scopes)?.nodeId === objClass.nodeId;
+
+    // Selector-form construction — `Factory.new.do_work` (#2708). Gated on the
+    // receiver naming the CLASS: `factory.new` is an ordinary call to a member
+    // named `new` on an instance, and reading that as construction replaced a
+    // correct edge with a wrong one. For the class constant, construction wins
+    // over any recorded binding for the selector, because a member named `new`
+    // on a class is an instance method Ruby never reaches through the constant
+    // (see the contract's KNOWN LIMITATION note for the `def self.new` case).
+    if (isConstructionSelectorHop(methodName, objClass, objIsClassConstant, options)) {
+      return objClass;
+    }
 
     let retType: TypeRef | undefined;
     const ownerChain = [objClass.nodeId, ...scopes.methodDispatch.mroFor(objClass.nodeId)];
@@ -386,6 +532,12 @@ export function resolveCompoundReceiverClass(
   let currentClass: SymbolDefinition | undefined = headType
     ? findClassBindingInScope(headType.declaredAtScope, headType.rawName, scopes)
     : findClassBindingInScope(inScope, headMemberName, scopes);
+  // Whether the walk currently sits on the CLASS ITSELF rather than on a
+  // value of that class. Seeded true only when the head resolved straight to
+  // a class binding (`Factory.new…`); a head reached through a typeBinding
+  // (`factory = Factory.new` then `factory.new…`) is already an instance.
+  // Every hop past the head yields a value, so it clears below (#2708).
+  let currentIsClassConstant = headType === undefined && currentClass !== undefined;
   // Head seed for a literal `this` head with no receiver typeBinding in
   // scope: languages synthesize `this` typeBindings per function scope,
   // so a chain site outside any function scope (a field initializer or
@@ -425,10 +577,30 @@ export function resolveCompoundReceiverClass(
       depth + 1,
     );
   }
+  // Construction in the chain HEAD — `new Service().inner.doWork()` (#2708).
+  // The head arrives as `new Service()`, which `stripCallParens` reduces to
+  // `new Service`: no binding and no class of that name, so the walk was never
+  // seeded and the whole chain resolved to nothing. A constructed value is an
+  // instance, so `currentIsClassConstant` correctly stays false here.
+  if (currentClass === undefined) {
+    currentClass = resolveConstructionExpressionClass(headMemberName, inScope, scopes, options);
+  }
+
   for (let i = 1; i < parts.length && currentClass !== undefined; i++) {
     const segment = parts[i];
     if (segment === undefined) break;
     const memberName = stripCallParens(segment);
+    // Selector-form construction mid-chain — `Factory.new.do_work`, including
+    // the parenthesis-less spelling that never reaches the call branch above
+    // (#2708). Gated on the walk sitting on the CLASS itself: after
+    // `factory = Factory.new`, `factory.new` is an ordinary instance-member
+    // call and must keep normal resolution.
+    if (isConstructionSelectorHop(memberName, currentClass, currentIsClassConstant, options)) {
+      // Constructing yields an INSTANCE of the same class: the walk stays on
+      // `currentClass` but no longer sits on the class constant.
+      currentIsClassConstant = false;
+      continue;
+    }
     const cs = classScopeByDefId.get(currentClass.nodeId);
     let memberType = cs?.typeBindings.get(memberName);
     if (
@@ -472,6 +644,7 @@ export function resolveCompoundReceiverClass(
       if (fromMap !== undefined) nextClass = fromMap;
     }
     currentClass = nextClass;
+    currentIsClassConstant = false;
   }
   return currentClass;
 }

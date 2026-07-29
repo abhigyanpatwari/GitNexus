@@ -3211,3 +3211,104 @@ describe('TS dynamic-this receiver seeding guard', () => {
     expect(calls.some((c) => c.target === 'go' && c.source === 'onClick')).toBe(false);
   });
 });
+
+// ---------------------------------------------------------------------------
+// Inline constructor receiver: new Service(db).doWork() (#2708)
+// The keyword form of the same shape covered for Python and Ruby. The receiver
+// is the constructed value itself, so there is no binding to read a type from —
+// the compound receiver resolver types it from the class the callee names.
+// ---------------------------------------------------------------------------
+
+describe('TypeScript inline constructor receiver resolution', () => {
+  let result: PipelineResult;
+
+  beforeAll(async () => {
+    result = await runPipelineFromRepo(
+      path.join(FIXTURES, 'typescript-inline-constructor-receiver'),
+      () => {},
+    );
+  }, 60000);
+
+  it('resolves new Service(db).doWork() to Service.doWork', () => {
+    const calls = getRelationships(result, 'CALLS');
+    const inlineCall = calls.find((c) => c.source === 'viaInlineNew' && c.target === 'doWork');
+    expect(inlineCall).toMatchObject({
+      source: 'viaInlineNew',
+      target: 'doWork',
+      targetFilePath: 'src/svc.ts',
+    });
+    expect(inlineCall!.rel.targetId).toContain('Service');
+  });
+
+  it('keeps the two-step spelling resolving to Service.doWork', () => {
+    const calls = getRelationships(result, 'CALLS');
+    const twoStep = calls.find((c) => c.source === 'viaTwoStep' && c.target === 'doWork');
+    // Pin the file too: this fixture also defines `LegacyService`, and
+    // 'LegacyService'.includes('Service') is true, so the id check alone
+    // cannot tell the two targets apart.
+    expect(twoStep).toMatchObject({ target: 'doWork', targetFilePath: 'src/svc.ts' });
+    expect(twoStep!.rel.targetId).toContain('Service');
+  });
+
+  it('resolves the same shape in a plain .js file (javascript provider)', () => {
+    const calls = getRelationships(result, 'CALLS');
+    const jsCall = calls.find((c) => c.source === 'viaInlineNewJs' && c.target === 'doWork');
+    expect(jsCall).toBeDefined();
+    expect(jsCall!.rel.targetId).toContain('LegacyService');
+  });
+
+  it('resolves a generic constructor receiver — new Box<string>().unwrap()', () => {
+    const calls = getRelationships(result, 'CALLS');
+    const genericCall = calls.find((c) => c.source === 'viaGenericCtor' && c.target === 'unwrap');
+    expect(genericCall).toMatchObject({
+      source: 'viaGenericCtor',
+      target: 'unwrap',
+      targetFilePath: 'src/svc.ts',
+    });
+    expect(genericCall!.rel.targetId).toContain('Box');
+  });
+
+  it('resolves construction in the chain HEAD — new Service(db).inner.deep()', () => {
+    const calls = getRelationships(result, 'CALLS');
+    const chainCall = calls.find((c) => c.source === 'viaChainHead' && c.target === 'deep');
+    expect(chainCall).toMatchObject({
+      source: 'viaChainHead',
+      target: 'deep',
+      targetFilePath: 'src/svc.ts',
+    });
+    expect(chainCall!.rel.targetId).toContain('Inner');
+  });
+
+  it('resolves the keyword separated by a tab or a newline, not just one space', () => {
+    const calls = getRelationships(result, 'CALLS');
+    for (const source of ['viaTabSeparatedNew', 'viaNewlineSeparatedNew']) {
+      const call = calls.find((c) => c.source === source && c.target === 'doWork');
+      expect(call, `${source} -> doWork`).toMatchObject({
+        source,
+        target: 'doWork',
+        targetFilePath: 'src/svc.ts',
+      });
+      expect(call!.rel.targetId).toContain('Service');
+    }
+  });
+
+  it('resolves a namespace-qualified constructor — new ns.Service(db).doWork()', () => {
+    const calls = getRelationships(result, 'CALLS');
+    const qualified = calls.find((c) => c.source === 'viaQualifiedCtor' && c.target === 'doWork');
+    expect(qualified).toMatchObject({
+      source: 'viaQualifiedCtor',
+      target: 'doWork',
+      targetFilePath: 'src/svc.ts',
+    });
+    expect(qualified!.rel.targetId).toContain('Service');
+  });
+
+  it('resolves a bare factory call through its return type, not as a construction', () => {
+    const calls = getRelationships(result, 'CALLS');
+    const factoryCall = calls.find((c) => c.source === 'viaFactory' && c.target === 'doWork');
+    expect(factoryCall).toBeDefined();
+    // Other.doWork, via makeOther's return type — a bare call in a `new`
+    // language must never be typed as a construction of a same-named class.
+    expect(factoryCall!.rel.targetId).toContain('Other');
+  });
+});

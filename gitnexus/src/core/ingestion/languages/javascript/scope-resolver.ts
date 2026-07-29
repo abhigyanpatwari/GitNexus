@@ -44,6 +44,8 @@ import { jsArityCompatibility } from './arity.js';
 import { makeJsResolveImportTarget } from './import-target.js';
 
 const javascriptScopeResolver: ScopeResolver = {
+  // Construction is keyword-prefixed: `new Service(db).doWork()` (#2708).
+  constructionSyntax: { keyword: 'new' },
   language: SupportedLanguages.JavaScript,
   languageProvider: javascriptProvider,
   importEdgeReason: 'javascript-scope: import',

@@ -95,6 +95,7 @@ type ReceiverBoundProviderSubset = Pick<
   | 'unwrapCollectionAccessor'
   | 'hoistTypeBindingsToModule'
   | 'stripReceiverCastExpressions'
+  | 'constructionSyntax'
   | 'resolveQualifiedReceiverMember'
   | 'resolveReceiverMember'
   | 'resolveThisViaEnclosingClass'
@@ -182,6 +183,7 @@ export function emitReceiverBoundCalls(
     unwrapCollectionAccessor: provider.unwrapCollectionAccessor,
     hoistTypeBindingsToModule,
     stripReceiverCastExpressions: provider.stripReceiverCastExpressions === true,
+    constructionSyntax: provider.constructionSyntax,
   };
 
   // Build an interface → implementors map from IMPLEMENTS edges.

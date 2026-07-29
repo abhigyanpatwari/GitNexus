@@ -259,6 +259,8 @@ function expandRubyWildcardNames(
 }
 
 export const rubyScopeResolver: ScopeResolver = {
+  // Construction is a selector on the class: `Service.new.do_work` (#2708).
+  constructionSyntax: { selector: 'new' },
   language: SupportedLanguages.Ruby,
   languageProvider: rubyProvider,
   importEdgeReason: 'ruby-scope: import',

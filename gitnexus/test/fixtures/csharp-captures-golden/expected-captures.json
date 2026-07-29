@@ -215,6 +215,14 @@
     "captureGroups": 22,
     "digest": "0765643d95d2c40a64d3f9b71fd488fc6cbfdb0cc72cc91eec94e46da1267722"
   },
+  "csharp-inline-constructor-receiver/src/Runner.cs": {
+    "captureGroups": 22,
+    "digest": "4ce5c87777f7cb1f4a6b35dff7c120ac6bc8322a8a3084670b525f98022bf1e3"
+  },
+  "csharp-inline-constructor-receiver/src/Svc.cs": {
+    "captureGroups": 19,
+    "digest": "c2ec7f452c244d7fda931e32c16e46cc7c59e15f404a4413d18f522ed6c492bb"
+  },
   "csharp-interface-default-method/App.cs": {
     "captureGroups": 12,
     "digest": "1df65065f20b8d316238bd3f7c43f95cc0e2527c8f7cca88e95a872016a04ed2"
