@@ -20,20 +20,24 @@
     "digest": "a20d02f246b5e35775050650c82a08d207a95d4da5ecdb81db46f786b2f717fc"
   },
   "rust-2730-gaps/src/a/mod.rs": {
-    "captureGroups": 7,
-    "digest": "b901795b558fb26ff91d3a88577e171715f73e579c2a7df9837c942fd298a19b"
+    "captureGroups": 11,
+    "digest": "7be125d388e9759769b1533fd063f061b24d43c058226bf1b8555f7e5f533b96"
   },
   "rust-2730-gaps/src/facade.rs": {
     "captureGroups": 2,
     "digest": "a367994c959ed693e53cad3ca2960b7a5cfb6c30c32034cd8151edfe8ac1b2c6"
   },
   "rust-2730-gaps/src/main.rs": {
-    "captureGroups": 34,
-    "digest": "b0fe97af6d5eff22e014e496c7de47f1216cf7abe80ef09a1335f4a741e357f6"
+    "captureGroups": 42,
+    "digest": "5330a8f1fc22f73b441b597dc208ef558b02e4037532d84db017131573f38cb7"
+  },
+  "rust-2730-gaps/src/private_facade.rs": {
+    "captureGroups": 7,
+    "digest": "8bbaa5956035779257ae970d2bbaa5175183b82ae8d27e1fe831519eed3eac8d"
   },
   "rust-2730-gaps/src/tools.rs": {
-    "captureGroups": 5,
-    "digest": "fc172abe9db5f2e1e3fe8b962ade51c3502f6865f1f2a3b454933a3065e39dea"
+    "captureGroups": 18,
+    "digest": "988a4d373dfd7e7589486f628997d2a3e3ad2ae7a3e56ea981626da2e1e9f680"
   },
   "rust-2730-samename-wrapper/src/main.rs": {
     "captureGroups": 27,
@@ -46,6 +50,42 @@
   "rust-2730-samename-wrapper/src/tools.rs": {
     "captureGroups": 26,
     "digest": "d55cde148f74dbe323020ec696f949d18394684b8cc2c7c9babc1f80b2eba914"
+  },
+  "rust-2730-type-qualified/src/client/mod.rs": {
+    "captureGroups": 13,
+    "digest": "d74618e1f3444b492ae7728f127981824e5f5abb4f846d36728fddee5a9d3d0d"
+  },
+  "rust-2730-type-qualified/src/driver.rs": {
+    "captureGroups": 13,
+    "digest": "71689600fdf5cb039f486bf88b328caa822ada15ed7abd1c93cec9156f75c125"
+  },
+  "rust-2730-type-qualified/src/lib.rs": {
+    "captureGroups": 5,
+    "digest": "8d94bd9dc806aef8ce3f610090548c7b344c1c21f7b59ce836a27689515a30bb"
+  },
+  "rust-2730-workspace-crates/crates/alpha/src/lib.rs": {
+    "captureGroups": 5,
+    "digest": "9a0eafa33b6ded6c218fe85317e830731342a77e6e669b8561a3a0486d385539"
+  },
+  "rust-2730-workspace-crates/crates/alpha/src/sched.rs": {
+    "captureGroups": 10,
+    "digest": "4c5c9bd4854f1667d2236cb701217c7c1c0eb73429f4cfb40a3e82b7f749ac2c"
+  },
+  "rust-2730-workspace-crates/crates/alpha/src/tools.rs": {
+    "captureGroups": 9,
+    "digest": "0c618f7418939f9d66f5e5177c55091ff1e296fa4be0331879502bb0970a1aa7"
+  },
+  "rust-2730-workspace-crates/crates/beta/src/lib.rs": {
+    "captureGroups": 5,
+    "digest": "9a0eafa33b6ded6c218fe85317e830731342a77e6e669b8561a3a0486d385539"
+  },
+  "rust-2730-workspace-crates/crates/beta/src/sched.rs": {
+    "captureGroups": 10,
+    "digest": "ef9247afbd74aa506934347c2125e56e88727ea000f2d8bf31b47285d3de4fab"
+  },
+  "rust-2730-workspace-crates/crates/beta/src/tools.rs": {
+    "captureGroups": 9,
+    "digest": "fdbdd68d6920a9d7861562c562acc4fbd4580836467cad1ce8428c57a11d0d19"
   },
   "rust-abstract-dispatch/src/lib.rs": {
     "captureGroups": 34,

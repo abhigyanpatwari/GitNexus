@@ -49,6 +49,13 @@ export interface RustModuleIndex {
   /** Crate-root directories, longest first, so nested crates win. */
   readonly crateRoots: readonly string[];
   /**
+   * Every module name that exists anywhere in the workspace, as a flat set of
+   * single segments. Used only as a fast negative filter: a qualifier whose head
+   * is not in here cannot name a workspace module, so type-qualified calls
+   * (`Vec::new()`, `String::from()`) are rejected before any candidate search.
+   */
+  readonly moduleNames: ReadonlySet<string>;
+  /**
    * Entry files that are a crate root in their own right rather than a module of
    * the surrounding crate — `src/bin/<name>.rs` auto-discovered binary targets.
    * Maps the entry file to the directory its own submodules live under.
@@ -94,10 +101,38 @@ export function buildRustModuleIndex(allFilePaths: ReadonlySet<string>): RustMod
     roots.add(own);
   }
 
-  return {
-    crateRoots: [...roots].sort((a, b) => b.length - a.length),
-    standaloneRootFiles,
-  };
+  const crateRoots = [...roots].sort((a, b) => b.length - a.length);
+
+  // Flat set of every module segment name in the workspace, for the negative
+  // filter. Built from the same single pass over file paths.
+  const moduleNames = new Set<string>();
+  const index: RustModuleIndex = { crateRoots, standaloneRootFiles, moduleNames: new Set() };
+  for (const filePath of allFilePaths) {
+    const module = moduleOfFile(filePath, index);
+    if (module === undefined) continue;
+    for (const segment of module.segments) moduleNames.add(segment);
+  }
+
+  return { crateRoots, standaloneRootFiles, moduleNames };
+}
+
+/**
+ * Could this qualifier name a module that exists in the workspace?
+ *
+ * A negative answer is authoritative and cheap: if the head segment matches no
+ * module name anywhere, no candidate channel can resolve it. Anchors keep their
+ * meaning (`crate::`/`self::`/`super::` are relative to the caller, so the head
+ * to test is the first non-anchor segment); an all-anchor qualifier (`self::f()`)
+ * names the caller's own module and is always worth trying.
+ */
+export function couldNameAModule(qualifier: readonly string[], index: RustModuleIndex): boolean {
+  for (const segment of qualifier) {
+    if (segment === 'crate' || segment === '$crate' || segment === 'self' || segment === 'super') {
+      continue;
+    }
+    return index.moduleNames.has(segment);
+  }
+  return true;
 }
 
 /**

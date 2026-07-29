@@ -32,11 +32,12 @@
  * made this issue dangerous in the first place.
  */
 
-import type { ParsedFile, ScopeId, SymbolDefinition } from 'gitnexus-shared';
+import type { ParsedFile, Scope, ScopeId, SymbolDefinition } from 'gitnexus-shared';
 import type { ScopeResolutionIndexes } from '../../model/scope-resolution-indexes.js';
 import type { WorkspaceResolutionIndex } from '../../scope-resolution/workspace-index.js';
 import {
   buildRustModuleIndex,
+  couldNameAModule,
   moduleOfDef,
   moduleOfFile,
   resolveAnchoredModulePath,
@@ -82,7 +83,16 @@ export function resolveRustQualifiedFreeCall(
   const qualifier = segments.slice(0, -1);
   if (qualifier.length === 0) return undefined;
 
+  // Cheap rejection BEFORE any index work. The capture that carries
+  // `rawQualifiedName` matches every `scoped_identifier` callee, so this hook is
+  // reached by `Vec::new()`, `String::from()`, `Self::method()` and every other
+  // type-qualified call — the overwhelming majority of `::` calls in real Rust,
+  // none of which name a module. Letting those run the full candidate search
+  // meant each one paid a same-name-bucket scan plus a walk of every module
+  // scope in the workspace before returning undefined (#2741 review).
   const index = moduleIndexFor(allFilePaths);
+  if (!couldNameAModule(qualifier, index)) return undefined;
+
   const callerModule = callerModuleOf(callerParsed, site.inScope, scopes, index);
   if (callerModule === undefined) return undefined;
 
@@ -330,10 +340,7 @@ function findReexportedMember(
   let unique: SymbolDefinition | undefined;
   let count = 0;
 
-  for (const [filePath, moduleScope] of workspaceIndex.moduleScopeByFile) {
-    const fileModule = moduleOfFile(filePath, index);
-    if (fileModule === undefined || !sameModule(fileModule, targetModule)) continue;
-
+  for (const moduleScope of moduleScopesFor(targetModule, workspaceIndex, index)) {
     for (const edge of scopes.imports.get(moduleScope.id) ?? []) {
       if (edge.localName !== name) continue;
       // Only a `pub use` re-exports. A private `use` (`named`) makes the name
@@ -354,6 +361,52 @@ function findReexportedMember(
   }
   return count >= 1 ? unique : undefined;
 }
+
+/**
+ * Module → the file-module scopes that realise it, built once per resolution
+ * pass instead of per candidate.
+ *
+ * The previous shape walked all of `workspaceIndex.moduleScopeByFile` for every
+ * candidate module of every qualified call, so total cost grew as
+ * `sites x files`. On the out-of-core scope index that walk is worse than CPU:
+ * `moduleScopeByFile` fetches through `scopeTree.getScope`, so a full sweep can
+ * fault every module scope back in from disk — the exact pattern
+ * `workspace-index.ts` added `exportedCallableByName` to avoid (#2741 review).
+ *
+ * Keyed on the `WorkspaceResolutionIndex` identity, which is rebuilt per pass.
+ */
+const MODULE_SCOPE_CACHE = new WeakMap<
+  WorkspaceResolutionIndex,
+  ReadonlyMap<string, readonly Scope[]>
+>();
+
+function moduleKey(module: RustModule): string {
+  return `${module.crateRoot}\u0000${module.segments.join('::')}`;
+}
+
+function moduleScopesFor(
+  targetModule: RustModule,
+  workspaceIndex: WorkspaceResolutionIndex,
+  index: RustModuleIndex,
+): readonly Scope[] {
+  let byModule = MODULE_SCOPE_CACHE.get(workspaceIndex);
+  if (byModule === undefined) {
+    const built = new Map<string, Scope[]>();
+    for (const [filePath, moduleScope] of workspaceIndex.moduleScopeByFile) {
+      const fileModule = moduleOfFile(filePath, index);
+      if (fileModule === undefined) continue;
+      const key = moduleKey(fileModule);
+      const bucket = built.get(key);
+      if (bucket === undefined) built.set(key, [moduleScope]);
+      else bucket.push(moduleScope);
+    }
+    byModule = built;
+    MODULE_SCOPE_CACHE.set(workspaceIndex, byModule);
+  }
+  return byModule.get(moduleKey(targetModule)) ?? EMPTY_SCOPES;
+}
+
+const EMPTY_SCOPES: readonly Scope[] = Object.freeze([]);
 
 /** Follow one re-export edge to the definition it exposes. */
 function resolveReexportTarget(
