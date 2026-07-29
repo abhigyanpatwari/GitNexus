@@ -33,6 +33,7 @@
  */
 
 import type { ParsedFile, Scope, ScopeId, SymbolDefinition } from 'gitnexus-shared';
+import { isOverloadableCallable } from '../../utils/callable-labels.js';
 import type { ScopeResolutionIndexes } from '../../model/scope-resolution-indexes.js';
 import type { WorkspaceResolutionIndex } from '../../scope-resolution/workspace-index.js';
 import {
@@ -45,9 +46,6 @@ import {
   type RustModule,
   type RustModuleIndex,
 } from './module-path.js';
-
-/** Callable def kinds a call site may target. */
-const CALLABLE_TYPES = new Set(['Function', 'Method', 'Constructor']);
 
 /**
  * Per-run memo of the crate-root index, keyed by the file set it was built from.
@@ -309,7 +307,7 @@ function findMemberInModule(
   let count = 0;
   for (const defId of scopes.qualifiedNames.get(name)) {
     const def = scopes.defs.get(defId);
-    if (def === undefined || !CALLABLE_TYPES.has(def.type)) continue;
+    if (def === undefined || !isOverloadableCallable(def.type)) continue;
     const defModule = moduleOfDef(def.filePath, def.namespacePrefix, index);
     if (defModule === undefined || !sameModule(defModule, targetModule)) continue;
     if (!isModuleLevelMember(def, name, workspaceIndex)) continue;
@@ -425,7 +423,7 @@ function resolveReexportTarget(
   const viaDefId = edge.targetDefId;
   if (viaDefId !== undefined) {
     const def = scopes.defs.get(viaDefId);
-    if (def !== undefined && CALLABLE_TYPES.has(def.type)) return def;
+    if (def !== undefined && isOverloadableCallable(def.type)) return def;
   }
   // No pre-resolved def id: fall back to the exporting file's own module.
   if (edge.targetFile === null) return undefined;
@@ -441,11 +439,7 @@ function findExportedCallable(
   const moduleScope = workspaceIndex.moduleScopeByFile.get(targetFile);
   if (moduleScope === undefined) return undefined;
   for (const ref of moduleScope.bindings.get(name) ?? []) {
-    if (ref.origin === 'local' && CALLABLE_TYPES.has(ref.def.type)) return ref.def;
+    if (ref.origin === 'local' && isOverloadableCallable(ref.def.type)) return ref.def;
   }
   return undefined;
 }
-
-/** Re-exported for the resolver's unit tests. */
-export { moduleOfFile, moduleOfDef };
-export type { ScopeResolutionIndexes };
