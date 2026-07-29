@@ -542,8 +542,21 @@ export interface RepoMeta {
  * These change what is emitted for source whose CONTENT has not changed, so a v21
  * index would keep serving the pre-fix graph for every unchanged CommonJS file —
  * the exact "Target not found" symptom #2723 reported. Force a full re-analyze.
+ *
+ * v23: inline constructor receivers resolve — `Service(db).do_work()` (Python),
+ * `new Service(db).doWork()` (JS/TS, C#), `Service.new.do_work` (Ruby), plus the
+ * generic, qualified, chain-head and keyword-trivia spellings of the same shape
+ * (#2708). These calls previously emitted NO `CALLS` edge, so the caller was
+ * missing from `impact(direction: "upstream")` and `context()`. The Ruby
+ * selector fix also moves an edge: `factory.new.run`, where the class defines an
+ * instance method named `new`, now resolves through that method again instead of
+ * being read as construction. All of it changes what is emitted for source whose
+ * CONTENT has not changed, so a v22 index topped up incrementally — or served by
+ * the same-commit "already up to date" fast path — keeps returning the pre-fix
+ * graph for every unchanged file, which is exactly the missing-caller symptom
+ * #2708 reported. Force a full re-analyze.
  */
-export const INCREMENTAL_SCHEMA_VERSION = 22;
+export const INCREMENTAL_SCHEMA_VERSION = 23;
 
 export interface IndexedRepo {
   repoPath: string;
