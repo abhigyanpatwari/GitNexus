@@ -28,8 +28,8 @@
     "digest": "a367994c959ed693e53cad3ca2960b7a5cfb6c30c32034cd8151edfe8ac1b2c6"
   },
   "rust-2730-gaps/src/main.rs": {
-    "captureGroups": 42,
-    "digest": "5330a8f1fc22f73b441b597dc208ef558b02e4037532d84db017131573f38cb7"
+    "captureGroups": 48,
+    "digest": "f9d211046e86d1a5d129d73fd89799acb6944bc7c5ef8372cafc0ad6873e160b"
   },
   "rust-2730-gaps/src/private_facade.rs": {
     "captureGroups": 7,

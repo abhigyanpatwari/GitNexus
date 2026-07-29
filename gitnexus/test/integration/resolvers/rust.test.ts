@@ -2684,6 +2684,15 @@ describe('Rust qualified paths resolve against the module tree (#2730)', () => {
     expect(edges[0]).toMatchObject({ target: 'dispatch', targetFilePath: 'src/tools.rs' });
   });
 
+  it('does not bind a leading :: path into the local module of the same name', () => {
+    // `::tools::dispatch()` names an EXTERN crate. GitNexus does not model extern
+    // crates, so the qualified tier must refuse; whatever the unchanged lexical
+    // tier then does is out of scope here. What must NOT happen is this binding
+    // to the local `tools` module as though the `::` were absent.
+    const edges = getRelationships(result, 'CALLS').filter((c) => c.source === 'via_extern');
+    expect(edges.filter((c) => c.targetFilePath === 'src/tools.rs')).toEqual([]);
+  });
+
   it('does not treat a private `use` as a re-export', () => {
     const edges = getRelationships(result, 'CALLS').filter((c) => c.source === 'via_private');
     expect(edges).toEqual([]);

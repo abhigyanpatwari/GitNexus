@@ -75,6 +75,13 @@ export function resolveRustQualifiedFreeCall(
   const raw = site.rawQualifiedName;
   if (raw === undefined) return undefined;
 
+  // A leading `::` anchors at the EXTERN PRELUDE — `::tools::dispatch()` names
+  // the crate `tools`, not a module of this one. Extern crates are outside the
+  // workspace module tree, so the honest answer is to refuse. Filtering the empty
+  // first segment out instead silently reinterpreted the path as relative and
+  // resolved it against a local module of the same name.
+  if (raw.trimStart().startsWith('::')) return undefined;
+
   const segments = raw
     .split('::')
     .map((s) => s.trim())

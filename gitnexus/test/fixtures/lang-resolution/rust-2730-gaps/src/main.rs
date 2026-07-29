@@ -29,9 +29,16 @@ fn via_private() -> usize {
     private_facade::helper()
 }
 
+// A leading `::` names an EXTERN CRATE, not this crate's `tools` module.
+// Must not resolve to the local module of the same name (#2741 review).
+fn via_extern() -> usize {
+    ::tools::dispatch()
+}
+
 fn main() {
     dispatch();
     nested();
     via_reexport();
     via_private();
+    via_extern();
 }
