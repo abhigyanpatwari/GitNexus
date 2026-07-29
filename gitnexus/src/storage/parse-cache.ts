@@ -55,6 +55,12 @@ import type { ParseWorkerResult } from '../core/ingestion/workers/parse-worker.j
 // the main thread (the #1983 OOM). Because the two stores share this version,
 // any future change to the `ParsedFile` serialization shape MUST bump
 // SCHEMA_BUMP so both invalidate in lockstep.
+// v31: Rust `mod_item` gained `@declaration.namespace` and scoped call sites
+// gained `@reference.qualified-name` (#2730). Both are PARSE-TIME captures, so a
+// warm cache replays the old capture set verbatim: `rawQualifiedName` comes back
+// undefined and no Namespace def exists to hang a module prefix on, which turns
+// the whole module-qualified resolution tier into a no-op on unchanged files.
+// Re-checked against origin/main at commit time per the v29 note below.
 // v29: closure-binding declaration rules for PHP/Rust/Kotlin/Ruby/Dart, a Rust
 // graph node for `let f = || …`, a Dart closure scope, and function-local VALUES
 // (Variable/Const/Property/Static) qualified by their enclosing callable plus
@@ -119,7 +125,7 @@ import type { ParseWorkerResult } from '../core/ingestion/workers/parse-worker.j
 // JLS 13.1 immediate-host chains (#2555).
 // v18: Worker$N anonymous bodies. v17: callable-value-flow operand identity.
 // v16: direct callee identity.
-const SCHEMA_BUMP = 30;
+const SCHEMA_BUMP = 31;
 const GITNEXUS_PKG_VERSION = (() => {
   try {
     // package.json sits at gitnexus/package.json — two levels up from
