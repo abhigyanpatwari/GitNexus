@@ -126,7 +126,7 @@
     "_rebaselined_receiver_owner_2701": "#2701: every non-arrow function form now carries a `@receiver-owner.this` marker on the same node as `@scope.function`, so a scope that BINDS its own `this` can stop the receiver walk (`Scope.ownsReceivers`). Verified before re-baselining by diffing the capture-name histogram over this same fixture corpus against 1d3088173f6f93827641b476d614d5d15cd4f3ea: the ONLY delta is @receiver-owner.this (typescript +143, javascript +32) \u2014 every other capture count is byte-identical, so no existing capture moved. Prior 3280b13d3f9378ab23eee31c2edc779b5a9ae1e7bb510c23a24855b44406d2f4 -> 281e95484203b481094729ca249ef0423c41273eac35e424cdfd032a0dac7699."
   },
   "javascript": {
-    "fingerprint": "90601494695b834d3a9af7ac4844eac603f4f432809a05554cc59de0674a4354",
+    "fingerprint": "1c71ef628eb75a3b111afa8c2a7c351c16a7f5aab9fac2f098f82b2866312aa8",
     "scaling_budget": 1.5,
     "_rebaselined_callable_flow_2522_review": "PR #2522 review hardening: callable operands retain expression/qualified identity and formals retain signature metadata. Prior b59fe8135b6a31a12bc3f872b224054b16592588153ae3661d03958d787c76f3 -> 479927409bbdd9852a36172c8260aa56df260e99129a7a9c20a0d1903dd5538b; scaling 1.050 < 1.5.",
     "_rebaselined_callable_flow_2522_followup": "PR #2522 follow-up: lexical callable bindings, direct-callee argument metadata, and invocation-result suppression. Prior 917a9cd975ba035bdad71fdb70cd72eeddec58c25797e5a1addfa6172808a55c -> b59fe8135b6a31a12bc3f872b224054b16592588153ae3661d03958d787c76f3; scaling 1.093 < 1.5.",

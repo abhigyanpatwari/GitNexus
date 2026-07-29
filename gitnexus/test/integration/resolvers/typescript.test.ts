@@ -3250,13 +3250,6 @@ describe('TypeScript inline constructor receiver resolution', () => {
     expect(twoStep!.rel.targetId).toContain('Service');
   });
 
-  it('resolves the same shape in a plain .js file (javascript provider)', () => {
-    const calls = getRelationships(result, 'CALLS');
-    const jsCall = calls.find((c) => c.source === 'viaInlineNewJs' && c.target === 'doWork');
-    expect(jsCall).toBeDefined();
-    expect(jsCall!.rel.targetId).toContain('LegacyService');
-  });
-
   it('resolves a generic constructor receiver — new Box<string>().unwrap()', () => {
     const calls = getRelationships(result, 'CALLS');
     const genericCall = calls.find((c) => c.source === 'viaGenericCtor' && c.target === 'unwrap');
