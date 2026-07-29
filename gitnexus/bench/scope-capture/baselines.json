@@ -39,7 +39,7 @@
   },
   "csharp": {
     "_rebaselined": "#1956 synth-widening: + csharp-qualified-base fixture; the synth now walks record_declaration + struct_declaration base_lists and handles alias_qualified_name (matching the #1940 legacy leg), so record/struct heritage now emits. csharp-record-base gains a record inherits capture. (record->record SAME-namespace EXTENDS is a separate registry resolution gap, tracked as follow-up.) Linear (~1.00). (Earlier #1956: heritage-bearing scale source.) | #942: scope-resolution-only cleanup reworded fixture comments; capture byte-positions shift, capture LOGIC unchanged. | #1924 F16: record primary-constructor base bindings now exclude constructor arguments; capture fingerprint changes, scaling remains linear. | #2036 review follow-up: csharp-record-base now exercises primary-constructor base dispatch end to end; +2 capture groups, scaling remains linear.",
-    "fingerprint": "e05dc27456bde8175948586c9e7689033a378fa40e9ca4ce78cce41fbea0f2f8",
+    "fingerprint": "05a85bae70cf9c94f42459c843cfc36e3e81c872e5dcc7d77bc42fbc390f4bfe",
     "scaling_budget": 1.5,
     "_rebaselined_callable_flow_2522_review": "PR #2522 review hardening: callable operands retain expression/qualified identity and formals retain signature metadata. Prior f31544530924748f9aa37d11cec570bc10c3ddf9d9b237e6df7a17623fd2bb3a -> 75cf380209fa7d1a8a3ec873be1a9424b4e5173be0b08234c2291e8521a9b3c1; scaling 1.061 < 1.5.",
     "_rebaselined_callable_flow_2522_followup": "PR #2522 follow-up: C# method-group/delegate callable flow facts with invocation-result suppression. Prior 2bb5bc8c19cb8eb08c9590545ad8a1968a7152951f7e12746e2d7901d542fed9 -> f31544530924748f9aa37d11cec570bc10c3ddf9d9b237e6df7a17623fd2bb3a; scaling 1.115 < 1.5.",
@@ -66,7 +66,7 @@
     "_note": "PR #1931: F53 import multi-clause, F54 enum_case, F55 anonymous_class \u2014 fixture count 138\u2192140, fingerprint drift expected."
   },
   "ruby": {
-    "fingerprint": "070e4e11502442998ddf4048c2981cf1b2b735a87362ff854c5d14d71f98f4e2",
+    "fingerprint": "fea3edf82f521995147874b7f6c5f9e2eb88efdebf6365668f3260e913f0b558",
     "scaling_budget": 1.5,
     "_rebaselined_callable_flow_2522_review": "PR #2522 review hardening: callable operands retain expression/qualified identity and formals retain signature metadata. Prior cff273ae6cb7232c977d9241581834a2a2fa8bcf6369f7bd8f2471cd4419a6ef -> bf50ec6a53c8c91680dc6feac63a8956e78b1059249232dc25a0cfed25f31236; scaling 1.103 < 1.5.",
     "_rebaselined_callable_flow_2522_followup": "PR #2522 follow-up: Ruby Method/Proc callable flow facts with invocation/constructor-result suppression. Prior b5ea93bb3d0469c3821a8c70f5d5991c6f326e41097c119ad691154301dcc753 -> cff273ae6cb7232c977d9241581834a2a2fa8bcf6369f7bd8f2471cd4419a6ef; scaling 1.086 < 1.5.",
@@ -112,7 +112,7 @@
     "_added": "#2562 performance follow-up: co-scales same-host, same-name local classes and anonymous classes to gate JLS binary-name ordinal allocation. Precomputed per-sequence ordinals reduce the focused 100->800 workload from 176->6655ms to 141->752ms; normalized 250->800 scaling is 1.054."
   },
   "typescript": {
-    "fingerprint": "281e95484203b481094729ca249ef0423c41273eac35e424cdfd032a0dac7699",
+    "fingerprint": "cad25be9f81d6e021ebae8dcb166bc0af3a1ba8021f1506f6ca93fd4c2649000",
     "scaling_budget": 1.5,
     "_rebaselined_callable_flow_2522_review": "PR #2522 review hardening: callable operands retain expression/qualified identity and formals retain signature metadata. Prior 27f937bfb47d4bded316ea3c785ff659c8cd88a5761d928f113477a08c802c78 -> e05446620c5b80b7aae291cfdf32f693580fada2ae687124769b04a0c03bfe63; scaling 0.983 < 1.5.",
     "_rebaselined_callable_flow_2522_followup": "PR #2522 follow-up: lexical callable bindings, direct-callee argument metadata, and invocation-result suppression. Prior db5933cc6760234ed7d495123410feba6de243646d583f20d43032b9459f81fd -> 27f937bfb47d4bded316ea3c785ff659c8cd88a5761d928f113477a08c802c78; scaling 0.975 < 1.5.",
