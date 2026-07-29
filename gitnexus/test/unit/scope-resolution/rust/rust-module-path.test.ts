@@ -158,3 +158,46 @@ describe('resolveAnchoredModulePath', () => {
     });
   });
 });
+
+// ---------------------------------------------------------------------------
+// #2741 review — `src/bin/<name>.rs` is its own crate, not a library module.
+// ---------------------------------------------------------------------------
+
+describe('auto-discovered binary targets', () => {
+  const WITH_BIN = buildRustModuleIndex(
+    new Set([
+      'src/lib.rs',
+      'src/helper.rs',
+      'src/bin/tool.rs',
+      'src/bin/tool/helper.rs',
+      'src/bin/other/main.rs',
+    ]),
+  );
+
+  it('treats a src/bin entry file as its own crate root, not module bin::tool', () => {
+    expect(moduleOfFile('src/bin/tool.rs', WITH_BIN)).toMatchObject({
+      crateRoot: 'src/bin/tool',
+      segments: [],
+    });
+  });
+
+  it('places a binary submodule under the binary, not the library', () => {
+    expect(moduleOfFile('src/bin/tool/helper.rs', WITH_BIN)).toMatchObject({
+      crateRoot: 'src/bin/tool',
+      segments: ['helper'],
+    });
+  });
+
+  it('keeps the library module separate from the same-named binary module', () => {
+    const lib = moduleOfFile('src/helper.rs', WITH_BIN)!;
+    const bin = moduleOfFile('src/bin/tool/helper.rs', WITH_BIN)!;
+    expect(sameModule(lib, bin)).toBe(false);
+  });
+
+  it('handles the src/bin/<name>/main.rs directory form', () => {
+    expect(moduleOfFile('src/bin/other/main.rs', WITH_BIN)).toMatchObject({
+      crateRoot: 'src/bin/other',
+      segments: [],
+    });
+  });
+});

@@ -48,6 +48,12 @@ export interface RustModule {
 export interface RustModuleIndex {
   /** Crate-root directories, longest first, so nested crates win. */
   readonly crateRoots: readonly string[];
+  /**
+   * Entry files that are a crate root in their own right rather than a module of
+   * the surrounding crate — `src/bin/<name>.rs` auto-discovered binary targets.
+   * Maps the entry file to the directory its own submodules live under.
+   */
+  readonly standaloneRootFiles: ReadonlyMap<string, string>;
 }
 
 /**
@@ -55,6 +61,13 @@ export interface RustModuleIndex {
  * `lib.rs`. A cargo workspace has one per member (`crates/noob/src`), a plain
  * package exactly one (`src`). Longest-first ordering makes `moduleOfFile` pick
  * the innermost enclosing crate for nested layouts.
+ *
+ * Cargo also auto-discovers a binary target per `src/bin/<name>.rs`. Each is a
+ * separate crate with its own `crate::` root, and its submodules live under
+ * `src/bin/<name>/`. Treating those files as ordinary modules of the library
+ * invented the module path `bin::<name>`, which made `crate::helper()` inside a
+ * binary resolve into the LIBRARY — downgrading an edge the lexical walk had
+ * previously got right (#2741 review).
  */
 export function buildRustModuleIndex(allFilePaths: ReadonlySet<string>): RustModuleIndex {
   const roots = new Set<string>();
@@ -64,7 +77,27 @@ export function buildRustModuleIndex(allFilePaths: ReadonlySet<string>): RustMod
     if (!CRATE_ROOT_FILES.has(base)) continue;
     roots.add(slash === -1 ? '' : filePath.slice(0, slash));
   }
-  return { crateRoots: [...roots].sort((a, b) => b.length - a.length) };
+
+  // Auto-discovered binary targets: `<crateRoot>/bin/<name>.rs`, and the
+  // directory form `<crateRoot>/bin/<name>/main.rs` (already a root above).
+  const standaloneRootFiles = new Map<string, string>();
+  for (const filePath of allFilePaths) {
+    if (!filePath.endsWith('.rs')) continue;
+    const slash = filePath.lastIndexOf('/');
+    if (slash === -1) continue;
+    const dir = filePath.slice(0, slash);
+    if (!dir.endsWith('/bin')) continue;
+    const parent = dir.slice(0, -'/bin'.length);
+    if (!roots.has(parent)) continue;
+    const own = filePath.slice(0, -'.rs'.length);
+    standaloneRootFiles.set(filePath, own);
+    roots.add(own);
+  }
+
+  return {
+    crateRoots: [...roots].sort((a, b) => b.length - a.length),
+    standaloneRootFiles,
+  };
 }
 
 /**
@@ -81,6 +114,11 @@ export function buildRustModuleIndex(allFilePaths: ReadonlySet<string>): RustMod
  * no module identity to reason about and must refuse rather than guess.
  */
 export function moduleOfFile(filePath: string, index: RustModuleIndex): RustModule | undefined {
+  // A `src/bin/<name>.rs` entry file is its own crate root, not a module of the
+  // surrounding library.
+  const standalone = index.standaloneRootFiles.get(filePath);
+  if (standalone !== undefined) return { crateRoot: standalone, segments: [] };
+
   for (const crateRoot of index.crateRoots) {
     const prefix = crateRoot === '' ? '' : `${crateRoot}/`;
     if (crateRoot !== '' && !filePath.startsWith(prefix)) continue;
