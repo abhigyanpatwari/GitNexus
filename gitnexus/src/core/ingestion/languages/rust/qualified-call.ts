@@ -98,7 +98,7 @@ export function resolveRustQualifiedFreeCall(
     index,
   )) {
     const hit =
-      findMemberInModule(targetModule, site.name, scopes, index) ??
+      findMemberInModule(targetModule, site.name, scopes, workspaceIndex, index) ??
       findReexportedMember(targetModule, site.name, scopes, workspaceIndex, index);
     if (hit !== undefined) return hit;
   }
@@ -180,11 +180,51 @@ function* candidateModules(
   }
 }
 
+/**
+ * Is `def` a MEMBER of its module, rather than merely a callable sitting in the
+ * same file?
+ *
+ * Module membership cannot be inferred from the file path: a `fn` nested inside
+ * another `fn` has the same `filePath`, the same bare `qualifiedName` and no
+ * owner, so a path-only test counts it as a second member of the module. That
+ * ties `findMemberInModule`, which then refuses and hands the site back to the
+ * lexical walk — reinstating the very self-loop #2730 fixes, from a module that
+ * merely happens to contain a local helper (#2741 review H3).
+ *
+ * The scope model already draws the line exactly: a module-level item is bound
+ * with `origin: 'local'` in its module's own scope, a function-local item binds
+ * in the enclosing Block, and an `impl`/trait method binds in the Class scope.
+ * So membership is a binding lookup, not a path comparison.
+ *
+ * Inline-`mod` members bind in their `Namespace` scope rather than the file's
+ * Module scope, and reaching that scope would mean walking every child scope
+ * (faulting them in from disk on the out-of-core path). They are instead
+ * identified by the `namespacePrefix` the shared tagging pass stamps on them,
+ * which a file-module member never carries. Residual: a `fn` nested inside a
+ * `fn` that is itself inside an inline `mod` inherits that prefix and is still
+ * counted — a strictly smaller hole than before, and one that only costs a
+ * refusal, never a wrong edge.
+ */
+function isModuleLevelMember(
+  def: SymbolDefinition,
+  name: string,
+  workspaceIndex: WorkspaceResolutionIndex,
+): boolean {
+  if (def.namespacePrefix !== undefined && def.namespacePrefix !== '') return true;
+  const moduleScope = workspaceIndex.moduleScopeByFile.get(def.filePath);
+  if (moduleScope === undefined) return false;
+  for (const ref of moduleScope.bindings.get(name) ?? []) {
+    if (ref.origin === 'local' && ref.def.nodeId === def.nodeId) return true;
+  }
+  return false;
+}
+
 /** A callable named `name` declared directly in `targetModule`. Refuses on a tie. */
 function findMemberInModule(
   targetModule: RustModule,
   name: string,
   scopes: ScopeResolutionIndexes,
+  workspaceIndex: WorkspaceResolutionIndex,
   index: RustModuleIndex,
 ): SymbolDefinition | undefined {
   let unique: SymbolDefinition | undefined;
@@ -194,6 +234,7 @@ function findMemberInModule(
     if (def === undefined || !CALLABLE_TYPES.has(def.type)) continue;
     const defModule = moduleOfDef(def.filePath, def.namespacePrefix, index);
     if (defModule === undefined || !sameModule(defModule, targetModule)) continue;
+    if (!isModuleLevelMember(def, name, workspaceIndex)) continue;
     unique = def;
     count++;
   }

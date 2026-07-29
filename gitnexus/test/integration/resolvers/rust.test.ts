@@ -2672,6 +2672,12 @@ describe('Rust qualified paths resolve against the module tree (#2730)', () => {
     expect(edges[0]).toMatchObject({ target: 'dispatch', targetFilePath: 'src/a/mod.rs' });
   });
 
+  it('ignores a function-local fn of the same name in the target module (H3)', () => {
+    const edges = getRelationships(result, 'CALLS').filter((c) => c.source === 'via_reexport');
+    expect(edges.length).toBe(1);
+    expect(edges[0]).toMatchObject({ target: 'dispatch', targetFilePath: 'src/tools.rs' });
+  });
+
   it('follows a `pub use` re-export through to the original definition', () => {
     const edges = getRelationships(result, 'CALLS').filter((c) => c.source === 'via_reexport');
     expect(edges.length).toBe(1);
