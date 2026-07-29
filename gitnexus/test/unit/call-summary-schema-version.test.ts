@@ -175,7 +175,9 @@ describe('CALL_SUMMARY incremental reuse gate (U-C5)', () => {
     // (#2730): every unchanged Rust file would keep the same-name self-loop and
     // keep reporting the real callee as unreached → must NOT reuse.
     expect(passesReuseGate(22)).toBe(false);
-    // The current stamp passes (incremental top-up eligible).
-    expect(passesReuseGate(23)).toBe(true);
+    // A pre-v24 (v23) index predates
+    expect(passesReuseGate(23)).toBe(false);
+    // The current stamp passes the gate (incremental top-up eligible).
+    expect(passesReuseGate(24)).toBe(true);
   });
 });
