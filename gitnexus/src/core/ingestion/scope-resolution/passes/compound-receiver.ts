@@ -21,6 +21,7 @@
  */
 
 import type { ScopeId, SymbolDefinition, TypeRef } from 'gitnexus-shared';
+import type { ScopeResolver } from '../contract/scope-resolver.js';
 import type { ScopeResolutionIndexes } from '../../model/scope-resolution-indexes.js';
 import type { WorkspaceResolutionIndex } from '../workspace-index.js';
 import { stripTemplateArguments } from '../../utils/template-arguments.js';
@@ -93,13 +94,29 @@ interface ResolveCompoundReceiverOptions {
    *  classifier grammar and per-language opt-in rules. */
   readonly stripReceiverCastExpressions?: boolean;
   /** Surface syntax this language uses to construct a value, so an
-   *  inline constructor receiver can be typed. See the `ScopeResolver`
-   *  contract field of the same name for the per-form rules (#2708). */
-  readonly constructionSyntax?: {
-    readonly bare?: boolean;
-    readonly keyword?: string;
-    readonly selector?: string;
-  };
+   *  inline constructor receiver can be typed. Derived from the contract
+   *  rather than re-declared, so a future sub-field cannot be added there
+   *  and silently ignored here (#2708). */
+  readonly constructionSyntax?: ScopeResolver['constructionSyntax'];
+}
+
+/** Is this hop the language's construction selector applied to the class
+ *  itself — `Factory.new` — rather than an ordinary member named `new` on a
+ *  value? Both call sites ask the identical question, so it is asked in one
+ *  place (#2708). `onClassConstant` is what separates `Factory.new` from
+ *  `factory.new`; see the contract field for the known limitation around a
+ *  class-level override of the selector. */
+function isConstructionSelectorHop(
+  memberName: string,
+  receiverClass: SymbolDefinition,
+  onClassConstant: boolean,
+  options: ResolveCompoundReceiverOptions,
+): boolean {
+  return (
+    onClassConstant &&
+    options.constructionSyntax?.selector === memberName &&
+    isClassLike(receiverClass.type)
+  );
 }
 
 /** Escape a literal for embedding in a RegExp. The construction keyword comes
@@ -114,8 +131,9 @@ function escapeForRegExp(literal: string): string {
  *
  * `Service` (bare, when the language constructs without a keyword) and
  * `new Service` (keyword form) both name the class being built, so the
- * expression's type is that class. This is the one place the rule
- * "constructing a class yields an instance of it" is stated; the
+ * expression's type is that class. Together with
+ * `isConstructionSelectorHop` (the `Class.new` spelling), this is where the
+ * rule "constructing a class yields an instance of it" lives; the
  * per-language surface syntax arrives via `constructionSyntax` (#2708).
  *
  * Returns undefined when the language declares no construction syntax,
@@ -381,11 +399,7 @@ export function resolveCompoundReceiverClass(
     // over any recorded binding for the selector, because a member named `new`
     // on a class is an instance method Ruby never reaches through the constant
     // (see the contract's KNOWN LIMITATION note for the `def self.new` case).
-    if (
-      objIsClassConstant &&
-      options.constructionSyntax?.selector === methodName &&
-      isClassLike(objClass.type)
-    ) {
+    if (isConstructionSelectorHop(methodName, objClass, objIsClassConstant, options)) {
       return objClass;
     }
 
@@ -581,11 +595,7 @@ export function resolveCompoundReceiverClass(
     // (#2708). Gated on the walk sitting on the CLASS itself: after
     // `factory = Factory.new`, `factory.new` is an ordinary instance-member
     // call and must keep normal resolution.
-    if (
-      currentIsClassConstant &&
-      options.constructionSyntax?.selector === memberName &&
-      isClassLike(currentClass.type)
-    ) {
+    if (isConstructionSelectorHop(memberName, currentClass, currentIsClassConstant, options)) {
       // Constructing yields an INSTANCE of the same class: the walk stays on
       // `currentClass` but no longer sits on the class constant.
       currentIsClassConstant = false;
