@@ -102,6 +102,13 @@ interface ResolveCompoundReceiverOptions {
   };
 }
 
+/** Escape a literal for embedding in a RegExp. The construction keyword comes
+ *  from a language provider, so it is not user input, but a keyword containing
+ *  a metacharacter would otherwise silently build a wrong pattern. */
+function escapeForRegExp(literal: string): string {
+  return literal.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+}
+
 /**
  * Type of a construction expression's callee — the class it constructs.
  *
@@ -125,9 +132,17 @@ function resolveConstructionExpressionClass(
   if (syntax === undefined) return undefined;
 
   let calleeName: string | undefined;
-  const keywordPrefix = syntax.keyword === undefined ? undefined : `${syntax.keyword} `;
-  if (keywordPrefix !== undefined && fnExpr.startsWith(keywordPrefix)) {
-    calleeName = fnExpr.slice(keywordPrefix.length).trim();
+  // The keyword is separated from the type by whatever trivia the source
+  // used — `new Service`, `new\tService`, or a line break — so match the
+  // keyword as a whole token followed by at least one whitespace character
+  // rather than by exactly one space (#2708). `newService()` keeps failing
+  // the match, which is the point: it is an ordinary call.
+  const keywordMatch =
+    syntax.keyword === undefined
+      ? null
+      : new RegExp(`^${escapeForRegExp(syntax.keyword)}\\s+`).exec(fnExpr);
+  if (keywordMatch !== null) {
+    calleeName = fnExpr.slice(keywordMatch[0].length).trim();
   } else if (syntax.bare === true) {
     calleeName = fnExpr;
   }

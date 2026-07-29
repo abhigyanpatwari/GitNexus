@@ -20,3 +20,11 @@ export function viaGenericCtor(): number {
 export function viaChainHead(db: number): number {
   return new Service(db).inner.deep();
 }
+
+export function viaTabSeparatedNew(db: number): number {
+  return new	Service(db).doWork();
+}
+
+export function viaNewlineSeparatedNew(db: number): number {
+  return new Service(db).doWork();
+}

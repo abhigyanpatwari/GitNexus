@@ -3276,6 +3276,19 @@ describe('TypeScript inline constructor receiver resolution', () => {
     expect(chainCall!.rel.targetId).toContain('Inner');
   });
 
+  it('resolves the keyword separated by a tab or a newline, not just one space', () => {
+    const calls = getRelationships(result, 'CALLS');
+    for (const source of ['viaTabSeparatedNew', 'viaNewlineSeparatedNew']) {
+      const call = calls.find((c) => c.source === source && c.target === 'doWork');
+      expect(call, `${source} -> doWork`).toMatchObject({
+        source,
+        target: 'doWork',
+        targetFilePath: 'src/svc.ts',
+      });
+      expect(call!.rel.targetId).toContain('Service');
+    }
+  });
+
   it('resolves a bare factory call through its return type, not as a construction', () => {
     const calls = getRelationships(result, 'CALLS');
     const factoryCall = calls.find((c) => c.source === 'viaFactory' && c.target === 'doWork');
