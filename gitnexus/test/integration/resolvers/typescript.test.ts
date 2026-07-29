@@ -3243,7 +3243,10 @@ describe('TypeScript inline constructor receiver resolution', () => {
   it('keeps the two-step spelling resolving to Service.doWork', () => {
     const calls = getRelationships(result, 'CALLS');
     const twoStep = calls.find((c) => c.source === 'viaTwoStep' && c.target === 'doWork');
-    expect(twoStep).toBeDefined();
+    // Pin the file too: this fixture also defines `LegacyService`, and
+    // 'LegacyService'.includes('Service') is true, so the id check alone
+    // cannot tell the two targets apart.
+    expect(twoStep).toMatchObject({ target: 'doWork', targetFilePath: 'src/svc.ts' });
     expect(twoStep!.rel.targetId).toContain('Service');
   });
 

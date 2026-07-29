@@ -2762,3 +2762,46 @@ describe('C# spurious import edges — no-csproj direct-match (#1881, Codex F2)'
     expect(legit).toBeDefined();
   });
 });
+
+// ---------------------------------------------------------------------------
+// Inline constructor receiver: new Svc().DoWork() (#2708)
+// C# is the only keyword-wired language whose behaviour actually depends on
+// the construction rule — Java resolves this shape through its own capture
+// rewrite (#2564) and is deliberately unwired — so this is the regression
+// guard for `constructionSyntax: { keyword: 'new' }` in the C# provider.
+// ---------------------------------------------------------------------------
+
+describe('C# inline constructor receiver resolution', () => {
+  let result: PipelineResult;
+
+  beforeAll(async () => {
+    result = await runPipelineFromRepo(
+      path.join(FIXTURES, 'csharp-inline-constructor-receiver'),
+      () => {},
+    );
+  }, 60000);
+
+  it('resolves new Svc().DoWork() to Svc.DoWork', () => {
+    const call = getRelationships(result, 'CALLS').find(
+      (c) => c.source === 'ViaInline' && c.target === 'DoWork',
+    );
+    expect(call).toMatchObject({ target: 'DoWork', targetFilePath: 'src/Svc.cs' });
+    expect(call!.rel.targetId).toContain('Svc.DoWork');
+  });
+
+  it('keeps the two-step spelling resolving to Svc.DoWork', () => {
+    const call = getRelationships(result, 'CALLS').find(
+      (c) => c.source === 'ViaTwoStep' && c.target === 'DoWork',
+    );
+    expect(call).toMatchObject({ target: 'DoWork', targetFilePath: 'src/Svc.cs' });
+    expect(call!.rel.targetId).toContain('Svc.DoWork');
+  });
+
+  it('resolves a static factory call through its return type, not as construction', () => {
+    const call = getRelationships(result, 'CALLS').find(
+      (c) => c.source === 'ViaFactory' && c.target === 'DoWork',
+    );
+    expect(call).toMatchObject({ target: 'DoWork' });
+    expect(call!.rel.targetId).toContain('Other.DoWork');
+  });
+});
