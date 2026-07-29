@@ -95,6 +95,7 @@ export function resolveRustQualifiedFreeCall(
     callerModule,
     callerParsed,
     scopes,
+    workspaceIndex,
     index,
   )) {
     const hit =
@@ -147,6 +148,7 @@ function* candidateModules(
   callerModule: RustModule,
   callerParsed: ParsedFile,
   scopes: ScopeResolutionIndexes,
+  workspaceIndex: WorkspaceResolutionIndex,
   index: RustModuleIndex,
 ): Generator<RustModule> {
   if (anchored.anchored) {
@@ -154,9 +156,21 @@ function* candidateModules(
     return;
   }
 
-  // 1. A module declared in, or below, the calling module (`mod inner { … }`,
+  // 1. A submodule the caller actually DECLARES (`mod inner { … }` or
   //    `mod tools;`) — the in-scope type-namespace binding.
-  yield { crateRoot: callerModule.crateRoot, segments: [...callerModule.segments, ...qualifier] };
+  //
+  //    This must be checked, not assumed. Yielding `callerModule ++ qualifier`
+  //    unconditionally let file layout outrank a real `use` binding: with
+  //    `use crate::b;` in `src/a/mod.rs` and an undeclared (or `cfg`-gated)
+  //    `src/a/b.rs` sitting on disk, `b::f()` bound to the sibling file, where
+  //    rustc resolves it to `crate::b` (#2741 review).
+  //
+  //    A `mod` declaration — inline or file-backed — emits a `Namespace` def
+  //    bound in the declaring scope, so the check is a binding lookup.
+  const head = qualifier[0];
+  if (head !== undefined && declaresSubmodule(callerParsed, head, workspaceIndex)) {
+    yield { crateRoot: callerModule.crateRoot, segments: [...callerModule.segments, ...qualifier] };
+  }
 
   // 2. A `use` binding for the first segment. Finalize already resolved the
   //    import to a file, so the module path comes back through the same
@@ -171,7 +185,6 @@ function* candidateModules(
   //    TYPE look like the module `client`, and `ClientBuilder::new()` then
   //    resolved against `client`'s module members — binding an associated
   //    function to an unrelated module-level `new` (#2741 review H2).
-  const head = qualifier[0];
   for (const edge of scopes.imports.get(callerParsed.moduleScope) ?? []) {
     if (edge.localName !== head || edge.targetFile === null) continue;
     const importedModule = moduleOfFile(edge.targetFile, index);
@@ -188,6 +201,24 @@ function* candidateModules(
   if (callerModule.segments.length > 0) {
     yield { crateRoot: callerModule.crateRoot, segments: [...qualifier] };
   }
+}
+
+/**
+ * Does the calling file declare `name` as a submodule (`mod name;` or
+ * `mod name { … }`)? Both forms emit a `Namespace` def bound locally in the
+ * declaring scope, so this is a binding lookup rather than a filesystem probe.
+ */
+function declaresSubmodule(
+  callerParsed: ParsedFile,
+  name: string,
+  workspaceIndex: WorkspaceResolutionIndex,
+): boolean {
+  const moduleScope = workspaceIndex.moduleScopeByFile.get(callerParsed.filePath);
+  if (moduleScope === undefined) return false;
+  for (const ref of moduleScope.bindings.get(name) ?? []) {
+    if (ref.origin === 'local' && ref.def.type === 'Namespace') return true;
+  }
+  return false;
 }
 
 /**
