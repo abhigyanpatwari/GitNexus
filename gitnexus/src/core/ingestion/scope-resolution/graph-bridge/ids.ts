@@ -308,19 +308,22 @@ export function resolveDefGraphId(
       const tHit = nodeLookup.get(tKey);
       if (tHit !== undefined) return tHit;
     }
-    const qualifiedHit = nodeLookup.get(qualifiedKey(filePath, def.type, qn));
-    if (qualifiedHit !== undefined) return qualifiedHit;
     // #1982: some scope-extractors qualify a type by its enclosing CLASS chain
     // (`A.Inner`) but drop the enclosing NAMESPACE, while the structure-phase
-    // node is keyed by the full path (`NS.A.Inner`). Retry with the
-    // namespace-prefixed key (tagged by `tagNamespacePrefixes`) BEFORE the
-    // simple-name fallback, so same-tail nested bases don't collapse across
-    // sibling namespace members via `simpleKey`.
+    // node is keyed by the full path (`NS.A.Inner`). The namespace-prefixed key
+    // is tried FIRST, because it is the more specific one: `qualifiedName` is a
+    // bare tail for these defs, so the plain key below happily matches a
+    // same-named item at a DIFFERENT namespace depth in the same file and
+    // returns it before this retry is ever reached (#2742 — a call into
+    // `mod inner { fn dispatch }` bound to the crate-root `fn dispatch`, which
+    // rendered as a self-loop).
     const nsPrefix = def.namespacePrefix;
     if (nsPrefix !== undefined && nsPrefix.length > 0) {
       const nsHit = nodeLookup.get(qualifiedKey(filePath, def.type, `${nsPrefix}.${qn}`));
       if (nsHit !== undefined) return nsHit;
     }
+    const qualifiedHit = nodeLookup.get(qualifiedKey(filePath, def.type, qn));
+    if (qualifiedHit !== undefined) return qualifiedHit;
   }
   const simpleName = qn.lastIndexOf('.') === -1 ? qn : qn.slice(qn.lastIndexOf('.') + 1);
   return nodeLookup.get(simpleKey(filePath, simpleName));
