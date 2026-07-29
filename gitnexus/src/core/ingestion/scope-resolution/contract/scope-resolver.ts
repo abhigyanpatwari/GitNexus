@@ -285,6 +285,7 @@ import { LanguageProvider } from '../../language-provider.js';
 import { ScopeResolutionIndexes } from '../../model/scope-resolution-indexes.js';
 import type { SemanticModel } from '../../model/semantic-model.js';
 import type { ConversionRankFn } from '../passes/overload-narrowing.js';
+import type { WorkspaceResolutionIndex } from '../workspace-index.js';
 
 /** A LinearizeStrategy receives the full ancestor map so C3-style
  *  algorithms (which need to merge each parent's MRO) can implement
@@ -957,6 +958,46 @@ export interface ScopeResolver {
     scopes: ScopeResolutionIndexes,
     parsedFiles: readonly ParsedFile[],
   ) => readonly SymbolDefinition[] | undefined;
+
+  /**
+   * Optional resolver for a module-qualified FREE call — a call written with
+   * an explicit path but no value receiver (Rust `tools::dispatch(...)`, where
+   * `tools` names a module, not a variable or a type).
+   *
+   * These sites are captured as free calls (`callForm === 'free'`) with the
+   * written path preserved in `site.rawQualifiedName`. Without this hook the
+   * qualifier is inert and the scope-chain walk resolves the bare tail name —
+   * which silently binds to a same-named definition in the CALLER's own file
+   * when one exists, producing a self-loop and dropping the real cross-module
+   * edge (#2730: `fn dispatch` in `sched.rs` calling `tools::dispatch`
+   * resolved to itself, so `impact` reported the central dispatcher as
+   * risk LOW with 0 affected processes).
+   *
+   * `emitFreeCallFallback` invokes this BEFORE the implicit-`this` and
+   * scope-chain lookups, so an explicit path outranks a lexical shadow.
+   * Returning `undefined` (unqualified call, unknown module, or no such
+   * member in the named module) falls through to the unchanged chain — the
+   * hook is strictly additive and never removes an edge the prior tiers
+   * would have produced.
+   *
+   * Languages whose qualified calls carry a value/type receiver (`x.foo()`,
+   * `Type::foo()`) are served by the receiver-bound-calls pass and leave
+   * this undefined.
+   */
+  readonly resolveQualifiedFreeCall?: (
+    site: {
+      readonly name: string;
+      readonly rawQualifiedName?: string;
+      /** Needed to locate the calling MODULE, not just the calling file — a
+       *  relative anchor (`super::`) is resolved against the module the call
+       *  sits in, which may be an inline `mod` block inside that file. */
+      readonly inScope: ScopeId;
+    },
+    callerParsed: ParsedFile,
+    scopes: ScopeResolutionIndexes,
+    workspaceIndex: WorkspaceResolutionIndex,
+    allFilePaths: ReadonlySet<string>,
+  ) => SymbolDefinition | undefined;
 
   /**
    * Optional resolver for qualified-receiver member calls where the

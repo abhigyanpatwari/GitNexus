@@ -1019,7 +1019,20 @@ export function populateClassOwnedMembers(parsed: ParsedFile): void {
  * for nested namespaces regardless of whether the inner namespace's name is
  * stored simple or already dotted. Skips defs already carrying the prefix.
  */
-export function tagNamespacePrefixes(parsed: ParsedFile): void {
+export function tagNamespacePrefixes(
+  parsed: ParsedFile,
+  options: { readonly qualifiedNamesCarryNamespace?: boolean } = {},
+): void {
+  // Whether a def's `qualifiedName` may ALREADY encode its enclosing namespace.
+  // Where it can (C++, C#), a name equal to — or prefixed by — the namespace path
+  // must not be tagged again. Where it cannot, that guard misreads a coincidence:
+  // a Rust `mod a { pub fn a() }` has `qualifiedName === 'a'` purely because the
+  // item and its module share a name, and skipping it leaves the member looking
+  // like it belongs to the PARENT module.
+  const alreadyQualified =
+    options.qualifiedNamesCarryNamespace === undefined
+      ? true
+      : options.qualifiedNamesCarryNamespace;
   const scopesById = new Map<ScopeId, ParsedFile['scopes'][number]>();
   for (const scope of parsed.scopes) scopesById.set(scope.id, scope);
 
@@ -1051,7 +1064,7 @@ export function tagNamespacePrefixes(parsed: ParsedFile): void {
     for (const def of scope.ownedDefs) {
       const q = def.qualifiedName;
       if (q === undefined || q.length === 0) continue;
-      if (q === prefix || q.startsWith(`${prefix}.`)) continue; // already namespaced
+      if (alreadyQualified && (q === prefix || q.startsWith(`${prefix}.`))) continue;
       def.namespacePrefix = prefix;
     }
   }
@@ -1075,7 +1088,7 @@ export function tagNamespacePrefixes(parsed: ParsedFile): void {
       if (def.type === 'Namespace') continue;
       const q = def.qualifiedName;
       if (q === undefined || q.length === 0) continue;
-      if (q === fullPrefix || q.startsWith(`${fullPrefix}.`)) continue; // already namespaced
+      if (alreadyQualified && (q === fullPrefix || q.startsWith(`${fullPrefix}.`))) continue;
       if (def.namespacePrefix !== undefined) continue;
       def.namespacePrefix = fullPrefix;
     }

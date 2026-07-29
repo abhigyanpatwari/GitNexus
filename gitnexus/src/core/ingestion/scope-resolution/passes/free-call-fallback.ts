@@ -84,6 +84,9 @@ export function emitFreeCallFallback(
       scopes: ScopeResolutionIndexes,
       parsedFiles: readonly ParsedFile[],
     ) => readonly SymbolDefinition[] | undefined;
+    /** Module-qualified free-call resolver (#2730) — see
+     *  `ScopeResolver.resolveQualifiedFreeCall`. */
+    readonly resolveQualifiedFreeCall?: ScopeResolver['resolveQualifiedFreeCall'];
     readonly conversionRankFn?: ConversionRankFn;
     readonly conversionOnlyArgTypePrefixes?: readonly string[];
     /** Optional per-language constraint hook threaded into
@@ -125,6 +128,12 @@ export function emitFreeCallFallback(
   // defs.byId.values() at every constructor call. Same simple-name keying
   // and class-like kind filter the previous per-site scan applied.
   const globalClassesBySimpleName = buildGlobalClassIndex(scopes);
+  // Workspace file-path set for `resolveQualifiedFreeCall` (a module path maps
+  // to a file by language convention). Built lazily and once: languages without
+  // the hook never pay for it.
+  let allFilePathsMemo: ReadonlySet<string> | undefined;
+  const allFilePaths = (): ReadonlySet<string> =>
+    (allFilePathsMemo ??= new Set(parsedFiles.map((p) => p.filePath)));
   // Per-pass memo of pickUniqueGlobalCallable's post-filter candidate list,
   // keyed (simpleName, callerFilePath). Only created when no per-caller
   // visibility filter applies (the list is then a pure function of name+file —
@@ -216,6 +225,26 @@ export function emitFreeCallFallback(
                   : pickConstructorOrClass(globalClass, workspaceIndex, scopes, site.arity);
           }
         }
+      }
+      // Module-qualified free call (`mod::fn()`): the source named the module
+      // explicitly, so that path outranks every lexical tier below — otherwise
+      // the scope-chain walk binds the bare tail to a same-named definition in
+      // the caller's own file and emits a self-loop instead of the real
+      // cross-module edge (#2730). Only fires when the language populated
+      // `rawQualifiedName` AND provides the hook; `undefined` falls through to
+      // the unchanged chain, so this tier is strictly additive.
+      if (
+        fnDef === undefined &&
+        options.resolveQualifiedFreeCall !== undefined &&
+        site.rawQualifiedName !== undefined
+      ) {
+        fnDef = options.resolveQualifiedFreeCall(
+          site,
+          parsed,
+          scopes,
+          workspaceIndex,
+          allFilePaths(),
+        );
       }
       // Implicit-this overload narrowing: an unqualified call inside
       // a method body might be calling a sibling overload on the

@@ -73,12 +73,12 @@ describe('CALL_SUMMARY relation-type exclusion (U-C1)', () => {
 });
 
 describe('CALL_SUMMARY incremental reuse gate (U-C5)', () => {
-  it('INCREMENTAL_SCHEMA_VERSION is bumped to 23 (inline constructor receivers, #2708)', () => {
+  it('INCREMENTAL_SCHEMA_VERSION is bumped to 24 (inline constructor receivers, #2708)', () => {
     // Moves with every bump BY DESIGN — that is the point of pinning it. A
     // change that alters emitted ids or edges without bumping would otherwise
     // ship silently, and an existing index would keep serving the old graph
     // through the reuse gate below.
-    expect(INCREMENTAL_SCHEMA_VERSION).toBe(23);
+    expect(INCREMENTAL_SCHEMA_VERSION).toBe(24);
   });
 
   it('a pre-current stamp fails the `=== INCREMENTAL_SCHEMA_VERSION` reuse gate → forces full re-analyze', () => {
@@ -171,12 +171,11 @@ describe('CALL_SUMMARY incremental reuse gate (U-C5)', () => {
     // A pre-v22 (v21) index predates CommonJS export indexing (#2723): every
     // unchanged CJS file would keep its pre-fix graph → must NOT reuse.
     expect(passesReuseGate(21)).toBe(false);
-    // A pre-v23 (v22) index predates inline constructor receiver resolution
-    // (#2708) — `Service(db).do_work()`, `new Service(db).doWork()` and
-    // `Service.new.do_work` emitted no CALLS edge at all, so every unchanged
-    // file keeps a graph that is missing those callers → must NOT reuse.
+    // A pre-v23 (v22) index predates Rust module-qualified call resolution
+    // (#2730): every unchanged Rust file would keep the same-name self-loop and
+    // keep reporting the real callee as unreached → must NOT reuse.
     expect(passesReuseGate(22)).toBe(false);
-    // The current stamp passes the gate (incremental top-up eligible).
+    // The current stamp passes (incremental top-up eligible).
     expect(passesReuseGate(23)).toBe(true);
   });
 });
