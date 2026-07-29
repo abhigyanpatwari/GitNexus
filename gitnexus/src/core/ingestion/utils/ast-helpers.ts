@@ -26,12 +26,9 @@ export type SyntaxNode = Parser.SyntaxNode;
  * raw text (#1975). The Impl-node materialization in parsing-processor /
  * parse-worker mirrors this so the owner edge and node id agree byte-for-byte.
  */
-export const qualifyRustImplTargetByModScope = (
-  implNode: SyntaxNode,
-  rawTargetText: string,
-): string => {
+export const qualifyByEnclosingModScope = (node: SyntaxNode, rawText: string): string => {
   const modSegments: string[] = [];
-  let current = implNode.parent;
+  let current = node.parent;
   while (current) {
     if (current.type === 'mod_item') {
       const nameNode =
@@ -41,8 +38,21 @@ export const qualifyRustImplTargetByModScope = (
     }
     current = current.parent;
   }
-  return [...modSegments, ...splitQualifiedName(rawTargetText)].filter(Boolean).join('.');
+  // No enclosing `mod`: return the raw text UNTOUCHED. Normalizing here would
+  // rewrite a scoped target's separator (`a::Inner` -> `a.Inner`) and silently
+  // move its node id away from the one the owner edge emits, which is how this
+  // helper first broke the #1975 scoped-impl ownership when it was generalized
+  // beyond unscoped targets. Callers that pass an unscoped name are unaffected,
+  // since splitting one has always been the identity.
+  if (modSegments.length === 0) return rawText;
+  return [...modSegments, ...splitQualifiedName(rawText)].filter(Boolean).join('.');
 };
+
+/**
+ * Impl-target alias of {@link qualifyByEnclosingModScope}, kept as its own name
+ * because the caller gates it on UNSCOPED targets (see the contract above).
+ */
+export const qualifyRustImplTargetByModScope = qualifyByEnclosingModScope;
 
 /**
  * #1991: scope-label predicate that single-sources the `nodeLabel === 'Trait'`

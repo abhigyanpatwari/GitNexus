@@ -96,6 +96,7 @@ import {
   isSuppressedConcreteTypedefDuplicate,
   isValueDefinitionLabel,
   isQualifiableScopeLabel,
+  qualifyByEnclosingModScope,
   qualifyRustImplTargetByModScope,
   CLASS_CONTAINER_TYPES,
   PARAMETER_LIST_NODE_TYPES,
@@ -2396,7 +2397,7 @@ const processFileGroup = (
           ? qualifyRustImplTargetByModScope(definitionNode, nodeName)
           : undefined;
 
-      const qualifiedName =
+      const qualifiedNameBeforeModScope =
         rustImplQualifiedName !== undefined
           ? rustImplQualifiedName
           : // #1991: LOCKSTEP — include Trait so a Ruby mixin module's qualified
@@ -2416,6 +2417,34 @@ const processFileGroup = (
                   objectLiteralOwnerInfo?.ownerName !== undefined
                   ? `${objectLiteralOwnerInfo.ownerName}.${nodeName}`
                   : nodeName;
+
+      // #2742: qualify by the enclosing `mod` chain, so two same-named items at
+      // different module depths in one file are DISTINCT nodes. Without this,
+      // `mod inner { fn dispatch }` and a crate-root `fn dispatch` both keyed
+      // `Function:<file>:dispatch`, first-wins — so a correctly resolved call
+      // into the inline module still rendered as a self-loop, and `impact`
+      // reported the real callee as unreached.
+      //
+      // Keyed purely on the `mod_item` node type, exactly as the impl-target
+      // qualifier above (#1982) already is, so it is a no-op for every language
+      // whose grammar has no such node. The impl branch already applied it and
+      // is left alone rather than qualified twice.
+      //
+      // Scoped to items with NO enclosing class/impl. A method already carries
+      // its owner's name (`Inner.method`), and that owner's own id is mod-scoped
+      // by the impl qualifier above — so qualifying the method again would break
+      // the byte-for-byte agreement between the HAS_METHOD owner edge and the
+      // node id that #1975/#1982 established. Same-named methods on same-named
+      // types in sibling modules therefore still collapse; that is a narrower
+      // residual than the free-item case this fixes, and it is the owner edge's
+      // problem to solve rather than this one's.
+      const qualifiedName =
+        rustImplQualifiedName === undefined &&
+        definitionNode !== undefined &&
+        !enclosingClassInfo &&
+        objectLiteralOwnerInfo?.ownerName === undefined
+          ? qualifyByEnclosingModScope(definitionNode, qualifiedNameBeforeModScope)
+          : qualifiedNameBeforeModScope;
 
       // Extract method metadata BEFORE generating node ID — parameterCount is needed
       // to disambiguate overloaded methods via #<arity> suffix in the ID.

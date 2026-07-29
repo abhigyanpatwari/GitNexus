@@ -2788,3 +2788,45 @@ describe('Rust type-qualified calls are not treated as module paths (#2730 revie
     expect(edges[0]).toMatchObject({ target: 'new', targetFilePath: 'src/client/mod.rs' });
   });
 });
+
+// ---------------------------------------------------------------------------
+// #2742 — same-named items at different module depths are distinct nodes.
+//
+// Node identity was `<label>:<file>:<qualifiedName>` with no module path, so an
+// inline `mod inner { fn dispatch }` and a crate-root `fn dispatch` in the same
+// file collapsed onto one node, first-wins. Resolution already picked the right
+// definition; the target simply was not representable, so a correct resolution
+// still rendered as a self-loop and `impact` reported the real callee unreached.
+// ---------------------------------------------------------------------------
+
+describe('Rust items are qualified by their enclosing mod chain (#2742)', () => {
+  let result: PipelineResult;
+
+  beforeAll(async () => {
+    result = await runPipelineFromRepo(path.join(FIXTURES, 'rust-2730-gaps'), () => {});
+  }, 60000);
+
+  it('gives an inline-mod member its own node, distinct from the crate-root item', () => {
+    const ids: string[] = [];
+    result.graph.forEachNode((n) => {
+      if (n.label === 'Function' && n.properties.name === 'dispatch') ids.push(n.id);
+    });
+    expect(ids).toContain('Function:src/main.rs:inner.dispatch');
+    expect(ids).toContain('Function:src/main.rs:dispatch');
+  });
+
+  it('resolves inner::dispatch() to the inline member, not back to the caller', () => {
+    const edges = getRelationships(result, 'CALLS').filter(
+      (c) => c.sourceFilePath === 'src/main.rs' && c.source === 'dispatch',
+    );
+    expect(edges.length).toBe(1);
+    expect(edges[0].rel.targetId).toBe('Function:src/main.rs:inner.dispatch');
+  });
+
+  it('emits no self-loop for the inline-mod wrapper', () => {
+    const selfLoops = getRelationships(result, 'CALLS').filter(
+      (c) => c.rel.sourceId === c.rel.targetId,
+    );
+    expect(selfLoops).toEqual([]);
+  });
+});
