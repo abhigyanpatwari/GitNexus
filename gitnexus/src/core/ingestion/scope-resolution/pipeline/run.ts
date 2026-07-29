@@ -840,6 +840,7 @@ export function runScopeResolution(
           freeCallsRequireInstanceOwnership: provider.freeCallsRequireInstanceOwnership === true,
           isCallableVisibleFromCaller: provider.isCallableVisibleFromCaller,
           resolveAdlCandidates: provider.resolveAdlCandidates,
+          resolveQualifiedFreeCall: provider.resolveQualifiedFreeCall,
           conversionRankFn: provider.conversionRankFn,
           conversionOnlyArgTypePrefixes: provider.conversionOnlyArgTypePrefixes,
           constraintCompatibility: provider.constraintCompatibility,

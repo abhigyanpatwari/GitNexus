@@ -5,6 +5,7 @@ import type { ScopeResolver } from '../../scope-resolution/contract/scope-resolv
 import { rustProvider } from '../rust.js';
 import { rustArityCompatibility, rustMergeBindings, resolveRustImportTarget } from './index.js';
 import { populateRustOwners } from './method-owners.js';
+import { resolveRustQualifiedFreeCall } from './qualified-call.js';
 import { populateRustRangeBindings } from './range-binding.js';
 import {
   isClassLike,
@@ -151,6 +152,9 @@ export const rustScopeResolver: ScopeResolver = {
   mergeBindings: (existing, incoming, scopeId) => rustMergeBindings(existing, incoming, scopeId),
 
   arityCompatibility: (callsite, def) => rustArityCompatibility(def, callsite),
+
+  resolveQualifiedFreeCall: (site, callerParsed, scopes, workspaceIndex, allFilePaths) =>
+    resolveRustQualifiedFreeCall(site, callerParsed, scopes, workspaceIndex, allFilePaths),
 
   buildMro: (graph, parsedFiles, nodeLookup) => buildRustMro(graph, parsedFiles, nodeLookup),
 

@@ -542,8 +542,17 @@ export interface RepoMeta {
  * These change what is emitted for source whose CONTENT has not changed, so a v21
  * index would keep serving the pre-fix graph for every unchanged CommonJS file —
  * the exact "Target not found" symptom #2723 reported. Force a full re-analyze.
+ * v23: Rust module-qualified calls resolve against the module tree (#2730).
+ * RUST_SCOPE_QUERY gained `@declaration.namespace` on `mod_item` and
+ * `@reference.qualified-name` on scoped call sites, and a new resolution tier
+ * binds `tools::dispatch(..)` to the module the path names instead of the
+ * lexically nearest same-named fn. Same v11/v12 contract: the incremental
+ * write set only covers CHANGED files, so a top-up against a pre-v23 index
+ * would keep the wrong self-loop — and keep reporting the callee as unreached
+ * — for every unchanged Rust file, which is exactly the symptom #2730
+ * reported. Force a full re-analyze.
  */
-export const INCREMENTAL_SCHEMA_VERSION = 22;
+export const INCREMENTAL_SCHEMA_VERSION = 23;
 
 export interface IndexedRepo {
   repoPath: string;

@@ -44,6 +44,18 @@ const RUST_SCOPE_QUERY = `
 (union_item
   name: (type_identifier) @declaration.name) @declaration.struct
 
+;; Declarations — module (mod foo { ... } / mod foo;)
+;; A Rust mod is an ITEM, not just a lexical region: rustc resolves the first
+;; segment of a path (inner::dispatch) against the module tree in the TYPE
+;; namespace, which is why a same-named fn can never shadow it. Capturing the
+;; module as a named DEF (not only the @scope.namespace region above) is what
+;; makes that tree addressable — it feeds the shared tagNamespacePrefixes pass
+;; so members carry inner / a.b as their namespacePrefix, which qualified
+;; call resolution then matches against the written path (#2730). Mirrors the
+;; C++ namespace_definition capture.
+(mod_item
+  name: (identifier) @declaration.name) @declaration.namespace
+
 ;; Declarations — macro (macro_rules! foo { ... })
 ;; Captured as @declaration.macro → Macro label. A macro invocation
 ;; (@reference.macro, below) resolves to this definition via MacroRegistry,
@@ -150,10 +162,14 @@ const RUST_SCOPE_QUERY = `
     value: (_) @reference.receiver
     field: (field_identifier) @reference.name)) @reference.call.member
 
-;; References — scoped calls (Foo::bar())
+;; References — scoped calls (Foo::bar(), tools::dispatch())
+;; The call stays a FREE call (resolution is the lexical scope chain), but the
+;; written path is carried along as @reference.qualified-name so a module-
+;; qualified call can be resolved against the module the qualifier names before
+;; the scope-chain walk binds it to a same-named local shadow (#2730).
 (call_expression
   function: (scoped_identifier
-    name: (identifier) @reference.name)) @reference.call.free
+    name: (identifier) @reference.name) @reference.qualified-name) @reference.call.free
 
 ;; References — constructor calls (struct literal)
 ;; tree-sitter-rust gives struct_expression.name one of three node types
