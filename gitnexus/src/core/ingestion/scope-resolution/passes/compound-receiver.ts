@@ -91,6 +91,53 @@ interface ResolveCompoundReceiverOptions {
    *  `ScopeResolver` contract toggle of the same name for the
    *  classifier grammar and per-language opt-in rules. */
   readonly stripReceiverCastExpressions?: boolean;
+  /** Surface syntax this language uses to construct a value, so an
+   *  inline constructor receiver can be typed. See the `ScopeResolver`
+   *  contract field of the same name for the per-form rules (#2708). */
+  readonly constructionSyntax?: {
+    readonly bare?: boolean;
+    readonly keyword?: string;
+    readonly selector?: string;
+  };
+}
+
+/**
+ * Type of a construction expression's callee — the class it constructs.
+ *
+ * `Service` (bare, when the language constructs without a keyword) and
+ * `new Service` (keyword form) both name the class being built, so the
+ * expression's type is that class. This is the one place the rule
+ * "constructing a class yields an instance of it" is stated; the
+ * per-language surface syntax arrives via `constructionSyntax` (#2708).
+ *
+ * Returns undefined when the language declares no construction syntax,
+ * when the callee names no class-like symbol reachable from `inScope`,
+ * or when the keyword is required but absent — never a guess.
+ */
+function resolveConstructionExpressionClass(
+  fnExpr: string,
+  inScope: ScopeId,
+  scopes: ScopeResolutionIndexes,
+  options: ResolveCompoundReceiverOptions,
+): SymbolDefinition | undefined {
+  const syntax = options.constructionSyntax;
+  if (syntax === undefined) return undefined;
+
+  let calleeName: string | undefined;
+  const keywordPrefix = syntax.keyword === undefined ? undefined : `${syntax.keyword} `;
+  if (keywordPrefix !== undefined && fnExpr.startsWith(keywordPrefix)) {
+    calleeName = fnExpr.slice(keywordPrefix.length).trim();
+  } else if (syntax.bare === true) {
+    calleeName = fnExpr;
+  }
+  // A `new`-keyword language reaching here without the keyword is an
+  // ordinary free call, not a construction — resolving it to the class
+  // would fabricate an edge (a factory function may share the class's
+  // name).
+  if (calleeName === undefined || calleeName.length === 0) return undefined;
+
+  const cls = findClassBindingInScope(inScope, calleeName, scopes);
+  return cls !== undefined && isClassLike(cls.type) ? cls : undefined;
 }
 
 export function resolveCompoundReceiverClass(
@@ -246,18 +293,12 @@ export function resolveCompoundReceiverClass(
             : findClassBindingInScope(retType.declaredAtScope, retType.rawName, scopes);
         if (viaReturn !== undefined) return viaReturn;
       }
-      // Constructor-expression receiver — `Service(db).do_work()` (#2708).
-      // In languages that construct without a `new` keyword (Python,
-      // Kotlin, Swift, Scala) a free call naming a class IS a constructor
-      // call, so the expression's type is that class. The return-type
-      // path above cannot see this: a class has no return-type binding,
-      // so the receiver resolved to nothing and the member call was
-      // dropped. `new`-keyword languages never reach this line — their
-      // receiver text keeps the keyword (`new Service(db)`), which is
-      // not a bare callee name and so matches no class binding.
-      const ctorClass = findClassBindingInScope(inScope, fnExpr, scopes);
-      if (ctorClass !== undefined && isClassLike(ctorClass.type)) return ctorClass;
-      return undefined;
+      // Inline construction — `Service(db).m()` / `new Service(db).m()`.
+      // The constructed value IS the receiver, so there is no binding to
+      // read a type off; the return-type path above cannot help either,
+      // because a class has no return-type binding. Type it from the
+      // class the callee names (#2708).
+      return resolveConstructionExpressionClass(fnExpr, inScope, scopes, options);
     }
 
     // `obj.method()` — resolve obj's class, look up method's return
@@ -273,6 +314,16 @@ export function resolveCompoundReceiverClass(
       depth + 1,
     );
     if (objClass === undefined) return undefined;
+
+    // Selector-form construction — `Service.new.do_work` (#2708). The
+    // receiver resolved to the CLASS; invoking the construction selector
+    // on it yields an instance of that same class, so the member lookup
+    // below should run against `objClass` rather than the (nonexistent)
+    // return type of a method named `new`.
+    const selector = options.constructionSyntax?.selector;
+    if (selector !== undefined && methodName === selector && isClassLike(objClass.type)) {
+      return objClass;
+    }
 
     let retType: TypeRef | undefined;
     const ownerChain = [objClass.nodeId, ...scopes.methodDispatch.mroFor(objClass.nodeId)];
@@ -446,6 +497,13 @@ export function resolveCompoundReceiverClass(
     const segment = parts[i];
     if (segment === undefined) break;
     const memberName = stripCallParens(segment);
+    // Selector-form construction mid-chain — `Service.new.do_work`, and
+    // the parenthesis-less spelling `Service.new` that never reaches the
+    // call branch above (#2708). Constructing yields an instance of the
+    // same class, so the walk continues from `currentClass` unchanged.
+    if (options.constructionSyntax?.selector === memberName && isClassLike(currentClass.type)) {
+      continue;
+    }
     const cs = classScopeByDefId.get(currentClass.nodeId);
     let memberType = cs?.typeBindings.get(memberName);
     if (

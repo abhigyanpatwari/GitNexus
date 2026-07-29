@@ -167,6 +167,14 @@
     "captureGroups": 6,
     "digest": "a5f34e078d09145f2c2921610af56a1dd8273705d31446002d6a28aff1d32abc"
   },
+  "ruby-inline-constructor-receiver/lib/app.rb": {
+    "captureGroups": 17,
+    "digest": "b686ac42b4eac84ab9f486b687965df28f9ac8c292cc6ebcfc903832281023f3"
+  },
+  "ruby-inline-constructor-receiver/lib/svc.rb": {
+    "captureGroups": 6,
+    "digest": "8aedd668abdfe23d71e55b3fca341588038ef04988846392dd6663cfbe25f3e0"
+  },
   "ruby-local-shadow/lib/app.rb": {
     "captureGroups": 8,
     "digest": "6413cadbe85841eb6f06f42e8a7dd3902cc0d2908971b61c1a1a5e0e221afec9"

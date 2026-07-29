@@ -1778,3 +1778,39 @@ describe('Ruby qualified mixin arg — IMPLEMENTS not corrupted by :: (issue #19
     expect(e!.rel.targetId).toContain('Mixin');
   });
 });
+
+// ---------------------------------------------------------------------------
+// Inline constructor receiver: Service.new.do_work (#2708)
+// Ruby spells construction as a selector on the class, with or without an
+// argument list, so both `Service.new.do_work` and `Service.new(1).do_work`
+// have to type the receiver as an instance of Service.
+// ---------------------------------------------------------------------------
+
+describe('Ruby inline constructor receiver resolution', () => {
+  let result: PipelineResult;
+
+  beforeAll(async () => {
+    result = await runPipelineFromRepo(
+      path.join(FIXTURES, 'ruby-inline-constructor-receiver'),
+      () => {},
+    );
+  }, 60000);
+
+  it('resolves Service.new.do_work and Service.new(1).do_work to Service#do_work', () => {
+    const calls = getRelationships(result, 'CALLS');
+    for (const source of ['route_inline', 'route_inline_args']) {
+      const call = calls.find((c) => c.source === source && c.target === 'do_work');
+      expect(call, `${source} -> do_work`).toMatchObject({
+        source,
+        target: 'do_work',
+        targetFilePath: 'lib/svc.rb',
+      });
+    }
+  });
+
+  it('keeps the two-step spelling resolving to Service#do_work', () => {
+    const calls = getRelationships(result, 'CALLS');
+    const twoStep = calls.find((c) => c.source === 'route_twostep' && c.target === 'do_work');
+    expect(twoStep).toMatchObject({ target: 'do_work', targetFilePath: 'lib/svc.rb' });
+  });
+});

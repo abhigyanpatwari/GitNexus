@@ -3211,3 +3211,55 @@ describe('TS dynamic-this receiver seeding guard', () => {
     expect(calls.some((c) => c.target === 'go' && c.source === 'onClick')).toBe(false);
   });
 });
+
+// ---------------------------------------------------------------------------
+// Inline constructor receiver: new Service(db).doWork() (#2708)
+// The keyword form of the same shape covered for Python and Ruby. The receiver
+// is the constructed value itself, so there is no binding to read a type from —
+// the compound receiver resolver types it from the class the callee names.
+// ---------------------------------------------------------------------------
+
+describe('TypeScript inline constructor receiver resolution', () => {
+  let result: PipelineResult;
+
+  beforeAll(async () => {
+    result = await runPipelineFromRepo(
+      path.join(FIXTURES, 'typescript-inline-constructor-receiver'),
+      () => {},
+    );
+  }, 60000);
+
+  it('resolves new Service(db).doWork() to Service.doWork', () => {
+    const calls = getRelationships(result, 'CALLS');
+    const inlineCall = calls.find((c) => c.source === 'viaInlineNew' && c.target === 'doWork');
+    expect(inlineCall).toMatchObject({
+      source: 'viaInlineNew',
+      target: 'doWork',
+      targetFilePath: 'src/svc.ts',
+    });
+    expect(inlineCall!.rel.targetId).toContain('Service');
+  });
+
+  it('keeps the two-step spelling resolving to Service.doWork', () => {
+    const calls = getRelationships(result, 'CALLS');
+    const twoStep = calls.find((c) => c.source === 'viaTwoStep' && c.target === 'doWork');
+    expect(twoStep).toBeDefined();
+    expect(twoStep!.rel.targetId).toContain('Service');
+  });
+
+  it('resolves the same shape in a plain .js file (javascript provider)', () => {
+    const calls = getRelationships(result, 'CALLS');
+    const jsCall = calls.find((c) => c.source === 'viaInlineNewJs' && c.target === 'doWork');
+    expect(jsCall).toBeDefined();
+    expect(jsCall!.rel.targetId).toContain('LegacyService');
+  });
+
+  it('resolves a bare factory call through its return type, not as a construction', () => {
+    const calls = getRelationships(result, 'CALLS');
+    const factoryCall = calls.find((c) => c.source === 'viaFactory' && c.target === 'doWork');
+    expect(factoryCall).toBeDefined();
+    // Other.doWork, via makeOther's return type — a bare call in a `new`
+    // language must never be typed as a construction of a same-named class.
+    expect(factoryCall!.rel.targetId).toContain('Other');
+  });
+});
