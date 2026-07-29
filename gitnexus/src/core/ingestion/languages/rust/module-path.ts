@@ -49,10 +49,11 @@ export interface RustModuleIndex {
   /** Crate-root directories, longest first, so nested crates win. */
   readonly crateRoots: readonly string[];
   /**
-   * Every module name that exists anywhere in the workspace, as a flat set of
-   * single segments. Used only as a fast negative filter: a qualifier whose head
-   * is not in here cannot name a workspace module, so type-qualified calls
-   * (`Vec::new()`, `String::from()`) are rejected before any candidate search.
+   * Every module name derivable from a FILE PATH, as a flat set of single
+   * segments. Inline `mod x { … }` names are absent by construction — they exist
+   * in no path — so this is only half of the negative filter's input; the
+   * resolver unions it with the inline module names it collects from the scope
+   * model (#2742).
    */
   readonly moduleNames: ReadonlySet<string>;
   /**
@@ -125,12 +126,15 @@ export function buildRustModuleIndex(allFilePaths: ReadonlySet<string>): RustMod
  * to test is the first non-anchor segment); an all-anchor qualifier (`self::f()`)
  * names the caller's own module and is always worth trying.
  */
-export function couldNameAModule(qualifier: readonly string[], index: RustModuleIndex): boolean {
+export function couldNameAModule(
+  qualifier: readonly string[],
+  knownModuleNames: ReadonlySet<string>,
+): boolean {
   for (const segment of qualifier) {
     if (segment === 'crate' || segment === '$crate' || segment === 'self' || segment === 'super') {
       continue;
     }
-    return index.moduleNames.has(segment);
+    return knownModuleNames.has(segment);
   }
   return true;
 }

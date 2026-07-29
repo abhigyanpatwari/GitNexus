@@ -96,7 +96,9 @@ export function resolveRustQualifiedFreeCall(
   // meant each one paid a same-name-bucket scan plus a walk of every module
   // scope in the workspace before returning undefined (#2741 review).
   const index = moduleIndexFor(allFilePaths);
-  if (!couldNameAModule(qualifier, index)) return undefined;
+  if (!couldNameAModule(qualifier, passIndexFor(workspaceIndex, index).knownModuleNames)) {
+    return undefined;
+  }
 
   const callerModule = callerModuleOf(callerParsed, site.inScope, scopes, index);
   if (callerModule === undefined) return undefined;
@@ -380,13 +382,55 @@ function findReexportedMember(
  *
  * Keyed on the `WorkspaceResolutionIndex` identity, which is rebuilt per pass.
  */
-const MODULE_SCOPE_CACHE = new WeakMap<
-  WorkspaceResolutionIndex,
-  ReadonlyMap<string, readonly Scope[]>
->();
+interface PassModuleIndex {
+  /** Module identity key → the file-module scopes realising it. */
+  readonly scopesByModule: ReadonlyMap<string, readonly Scope[]>;
+  /**
+   * Every module name resolution may legitimately see: the file-derived names
+   * from the path index, UNIONED with inline `mod x { … }` names, which exist in
+   * no file path and would otherwise be rejected by the negative filter before
+   * any candidate ran (#2742).
+   */
+  readonly knownModuleNames: ReadonlySet<string>;
+}
+
+const MODULE_SCOPE_CACHE = new WeakMap<WorkspaceResolutionIndex, PassModuleIndex>();
 
 function moduleKey(module: RustModule): string {
   return `${module.crateRoot}\u0000${module.segments.join('::')}`;
+}
+
+function passIndexFor(
+  workspaceIndex: WorkspaceResolutionIndex,
+  index: RustModuleIndex,
+): PassModuleIndex {
+  let pass = MODULE_SCOPE_CACHE.get(workspaceIndex);
+  if (pass === undefined) {
+    const scopesByModule = new Map<string, Scope[]>();
+    const knownModuleNames = new Set<string>(index.moduleNames);
+    for (const [filePath, moduleScope] of workspaceIndex.moduleScopeByFile) {
+      // Inline `mod x { … }` declares a Namespace def bound locally in the
+      // declaring scope; that binding is the only place an inline module's name
+      // exists, since it never appears in a file path.
+      for (const [name, refs] of moduleScope.bindings) {
+        for (const ref of refs) {
+          if (ref.origin === 'local' && ref.def.type === 'Namespace') {
+            knownModuleNames.add(name);
+            break;
+          }
+        }
+      }
+      const fileModule = moduleOfFile(filePath, index);
+      if (fileModule === undefined) continue;
+      const key = moduleKey(fileModule);
+      const bucket = scopesByModule.get(key);
+      if (bucket === undefined) scopesByModule.set(key, [moduleScope]);
+      else bucket.push(moduleScope);
+    }
+    pass = { scopesByModule, knownModuleNames };
+    MODULE_SCOPE_CACHE.set(workspaceIndex, pass);
+  }
+  return pass;
 }
 
 function moduleScopesFor(
@@ -394,21 +438,9 @@ function moduleScopesFor(
   workspaceIndex: WorkspaceResolutionIndex,
   index: RustModuleIndex,
 ): readonly Scope[] {
-  let byModule = MODULE_SCOPE_CACHE.get(workspaceIndex);
-  if (byModule === undefined) {
-    const built = new Map<string, Scope[]>();
-    for (const [filePath, moduleScope] of workspaceIndex.moduleScopeByFile) {
-      const fileModule = moduleOfFile(filePath, index);
-      if (fileModule === undefined) continue;
-      const key = moduleKey(fileModule);
-      const bucket = built.get(key);
-      if (bucket === undefined) built.set(key, [moduleScope]);
-      else bucket.push(moduleScope);
-    }
-    byModule = built;
-    MODULE_SCOPE_CACHE.set(workspaceIndex, byModule);
-  }
-  return byModule.get(moduleKey(targetModule)) ?? EMPTY_SCOPES;
+  return (
+    passIndexFor(workspaceIndex, index).scopesByModule.get(moduleKey(targetModule)) ?? EMPTY_SCOPES
+  );
 }
 
 const EMPTY_SCOPES: readonly Scope[] = Object.freeze([]);
