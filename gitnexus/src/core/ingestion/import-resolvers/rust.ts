@@ -12,7 +12,7 @@
 export function resolveRustImportInternal(
   currentFile: string,
   importPath: string,
-  allFiles: Set<string>,
+  allFiles: ReadonlySet<string>,
 ): string | null {
   let rustPath: string;
 
@@ -63,7 +63,10 @@ export function resolveRustImportInternal(
  * Tries: path.rs, path/mod.rs, and with the last segment stripped
  * (last segment might be a symbol name, not a module).
  */
-export function tryRustModulePath(modulePath: string, allFiles: Set<string>): string | null {
+export function tryRustModulePath(
+  modulePath: string,
+  allFiles: ReadonlySet<string>,
+): string | null {
   // Try direct: path.rs
   if (allFiles.has(modulePath + '.rs')) return modulePath + '.rs';
   // Try directory: path/mod.rs

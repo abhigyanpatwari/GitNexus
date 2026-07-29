@@ -1,5 +1,9 @@
 import type { ParsedFile } from 'gitnexus-shared';
-import { isClassLike, populateClassOwnedMembers } from '../../scope-resolution/scope/walkers.js';
+import {
+  isClassLike,
+  populateClassOwnedMembers,
+  tagNamespacePrefixes,
+} from '../../scope-resolution/scope/walkers.js';
 
 /**
  * Populate `ownerId` on Rust method defs.
@@ -21,6 +25,12 @@ import { isClassLike, populateClassOwnedMembers } from '../../scope-resolution/s
 export function populateRustOwners(parsed: ParsedFile): void {
   populateClassOwnedMembers(parsed);
   populateRustImplOwners(parsed);
+  // #2730: tag defs declared inside `mod` blocks with their enclosing module
+  // path (`inner`, `a.b`) on the `namespacePrefix` sidecar. Rust modules are
+  // Namespace scopes owning a Namespace def (see the `mod_item` capture), so
+  // the shared C++-era pass applies unchanged. Qualified call resolution reads
+  // this to tell `inner::dispatch` apart from a same-named crate-root `fn`.
+  tagNamespacePrefixes(parsed);
 }
 
 function populateRustImplOwners(parsed: ParsedFile): void {
