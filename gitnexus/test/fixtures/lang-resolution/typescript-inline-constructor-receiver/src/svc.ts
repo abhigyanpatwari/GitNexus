@@ -17,3 +17,9 @@ export class Other {
 export function makeOther(db: number): Other {
   return new Other();
 }
+
+export class Box<T> {
+  unwrap(): number {
+    return 3;
+  }
+}

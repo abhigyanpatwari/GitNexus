@@ -3254,6 +3254,17 @@ describe('TypeScript inline constructor receiver resolution', () => {
     expect(jsCall!.rel.targetId).toContain('LegacyService');
   });
 
+  it('resolves a generic constructor receiver — new Box<string>().unwrap()', () => {
+    const calls = getRelationships(result, 'CALLS');
+    const genericCall = calls.find((c) => c.source === 'viaGenericCtor' && c.target === 'unwrap');
+    expect(genericCall).toMatchObject({
+      source: 'viaGenericCtor',
+      target: 'unwrap',
+      targetFilePath: 'src/svc.ts',
+    });
+    expect(genericCall!.rel.targetId).toContain('Box');
+  });
+
   it('resolves a bare factory call through its return type, not as a construction', () => {
     const calls = getRelationships(result, 'CALLS');
     const factoryCall = calls.find((c) => c.source === 'viaFactory' && c.target === 'doWork');

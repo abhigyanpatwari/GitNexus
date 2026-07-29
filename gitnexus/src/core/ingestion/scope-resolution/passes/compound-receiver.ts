@@ -23,6 +23,7 @@
 import type { ScopeId, SymbolDefinition, TypeRef } from 'gitnexus-shared';
 import type { ScopeResolutionIndexes } from '../../model/scope-resolution-indexes.js';
 import type { WorkspaceResolutionIndex } from '../workspace-index.js';
+import { stripTemplateArguments } from '../../utils/template-arguments.js';
 import {
   findClassBindingInScope,
   findEnclosingClassDef,
@@ -136,8 +137,17 @@ function resolveConstructionExpressionClass(
   // name).
   if (calleeName === undefined || calleeName.length === 0) return undefined;
 
-  const cls = findClassBindingInScope(inScope, calleeName, scopes);
-  return cls !== undefined && isClassLike(cls.type) ? cls : undefined;
+  const direct = findClassBindingInScope(inScope, calleeName, scopes);
+  if (direct !== undefined && isClassLike(direct.type)) return direct;
+
+  // Generic construction — `new Box<string>()` arrives here as `Box<string>`,
+  // which names no class binding. Retry on the base name, the same
+  // normalization `resolveClassBindingForName` in `receiver-bound-calls`
+  // already applies for typed receivers (#2708).
+  const baseName = stripTemplateArguments(calleeName).trim();
+  if (baseName.length === 0 || baseName === calleeName) return undefined;
+  const viaBaseName = findClassBindingInScope(inScope, baseName, scopes);
+  return viaBaseName !== undefined && isClassLike(viaBaseName.type) ? viaBaseName : undefined;
 }
 
 export function resolveCompoundReceiverClass(
