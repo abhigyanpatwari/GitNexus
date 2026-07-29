@@ -794,7 +794,15 @@ export interface ScopeResolver {
     readonly bare?: boolean;
     /** Prefix keyword form: `new Service(db)`. */
     readonly keyword?: string;
-    /** Member-selector form on the class itself: `Service.new(db)`. */
+    /** Member-selector form on the class itself: `Service.new(db)`.
+     *  Applies only when the receiver names the CLASS — `factory.new` is an
+     *  ordinary call to a member named `new` on an instance and keeps normal
+     *  member resolution. KNOWN LIMITATION: a class that OVERRIDES the
+     *  selector at class level (Ruby `def self.new` returning some other
+     *  type) is still read as construction, because the scope model records
+     *  no staticness for a member, so `def new` and `def self.new` are
+     *  indistinguishable here. Modelling that needs per-member staticness
+     *  from the language provider first. */
     readonly selector?: string;
   };
 

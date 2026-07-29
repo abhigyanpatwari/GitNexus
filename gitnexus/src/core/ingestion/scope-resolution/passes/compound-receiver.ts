@@ -315,13 +315,28 @@ export function resolveCompoundReceiverClass(
     );
     if (objClass === undefined) return undefined;
 
-    // Selector-form construction — `Service.new.do_work` (#2708). The
-    // receiver resolved to the CLASS; invoking the construction selector
-    // on it yields an instance of that same class, so the member lookup
-    // below should run against `objClass` rather than the (nonexistent)
-    // return type of a method named `new`.
-    const selector = options.constructionSyntax?.selector;
-    if (selector !== undefined && methodName === selector && isClassLike(objClass.type)) {
+    // Does `objExpr` name the CLASS ITSELF (`Factory.new`) rather than a
+    // value whose type is that class (`factory.new`)? Only the former is
+    // a construction — see the selector fallback below. A bare identifier
+    // that resolves straight to the class binding is the class constant;
+    // anything reached through a typeBinding is an instance.
+    const objIsClassConstant =
+      !objExpr.includes('(') &&
+      !objExpr.includes('.') &&
+      findClassBindingInScope(inScope, objExpr, scopes)?.nodeId === objClass.nodeId;
+
+    // Selector-form construction — `Factory.new.do_work` (#2708). Gated on the
+    // receiver naming the CLASS: `factory.new` is an ordinary call to a member
+    // named `new` on an instance, and reading that as construction replaced a
+    // correct edge with a wrong one. For the class constant, construction wins
+    // over any recorded binding for the selector, because a member named `new`
+    // on a class is an instance method Ruby never reaches through the constant
+    // (see the contract's KNOWN LIMITATION note for the `def self.new` case).
+    if (
+      objIsClassConstant &&
+      options.constructionSyntax?.selector === methodName &&
+      isClassLike(objClass.type)
+    ) {
       return objClass;
     }
 
@@ -454,6 +469,12 @@ export function resolveCompoundReceiverClass(
   let currentClass: SymbolDefinition | undefined = headType
     ? findClassBindingInScope(headType.declaredAtScope, headType.rawName, scopes)
     : findClassBindingInScope(inScope, headMemberName, scopes);
+  // Whether the walk currently sits on the CLASS ITSELF rather than on a
+  // value of that class. Seeded true only when the head resolved straight to
+  // a class binding (`Factory.new…`); a head reached through a typeBinding
+  // (`factory = Factory.new` then `factory.new…`) is already an instance.
+  // Every hop past the head yields a value, so it clears below (#2708).
+  let currentIsClassConstant = headType === undefined && currentClass !== undefined;
   // Head seed for a literal `this` head with no receiver typeBinding in
   // scope: languages synthesize `this` typeBindings per function scope,
   // so a chain site outside any function scope (a field initializer or
@@ -497,11 +518,19 @@ export function resolveCompoundReceiverClass(
     const segment = parts[i];
     if (segment === undefined) break;
     const memberName = stripCallParens(segment);
-    // Selector-form construction mid-chain — `Service.new.do_work`, and
-    // the parenthesis-less spelling `Service.new` that never reaches the
-    // call branch above (#2708). Constructing yields an instance of the
-    // same class, so the walk continues from `currentClass` unchanged.
-    if (options.constructionSyntax?.selector === memberName && isClassLike(currentClass.type)) {
+    // Selector-form construction mid-chain — `Factory.new.do_work`, including
+    // the parenthesis-less spelling that never reaches the call branch above
+    // (#2708). Gated on the walk sitting on the CLASS itself: after
+    // `factory = Factory.new`, `factory.new` is an ordinary instance-member
+    // call and must keep normal resolution.
+    if (
+      currentIsClassConstant &&
+      options.constructionSyntax?.selector === memberName &&
+      isClassLike(currentClass.type)
+    ) {
+      // Constructing yields an INSTANCE of the same class: the walk stays on
+      // `currentClass` but no longer sits on the class constant.
+      currentIsClassConstant = false;
       continue;
     }
     const cs = classScopeByDefId.get(currentClass.nodeId);
@@ -547,6 +576,7 @@ export function resolveCompoundReceiverClass(
       if (fromMap !== undefined) nextClass = fromMap;
     }
     currentClass = nextClass;
+    currentIsClassConstant = false;
   }
   return currentClass;
 }
