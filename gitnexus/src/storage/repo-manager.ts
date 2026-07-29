@@ -227,6 +227,22 @@ export interface RepoMeta {
    */
   cjkSegmentation?: string;
   /**
+   * Member names whose call sites were DROPPED because the receiver's type
+   * could not be established (#2744, the second half of #2708). Read by
+   * `impact()` / `context()` to report a result as `epistemic: 'lower-bound'`
+   * instead of `'exact'` when the queried symbol's name appears here.
+   *
+   * Keyed by member name, not by target symbol, on purpose: a dropped site's
+   * callee is unknown by definition, so the drop cannot be attributed to any
+   * target. Absent when a run dropped nothing, which is the common case and
+   * keeps `epistemic` exact for cleanly-resolving repos.
+   */
+  unresolvedReceiverMembers?: {
+    counts: Record<string, number>;
+    totalSites: number;
+    omittedNames?: number;
+  };
+  /**
    * SHA-256 of every file's content at the time of the last successful
    * indexing run. The next run computes current hashes and diffs against
    * this map to determine which files' DB rows must be replaced.
@@ -564,6 +580,18 @@ export interface RepoMeta {
  * the same-commit "already up to date" fast path — keeps returning the pre-fix
  * graph for every unchanged file, which is exactly the missing-caller symptom
  * #2708 reported. Force a full re-analyze.
+ * v26: unresolved-receiver member names are persisted
+ * (`unresolvedReceiverMembers`) so `impact()`/`context()` can report
+ * `epistemic: 'lower-bound'` instead of a confident `'exact'` when a call site
+ * was dropped for want of a receiver type (#2744). A pre-v26 index carries no
+ * such summary, and an absent summary is indistinguishable from "nothing was
+ * dropped" — so topping one up incrementally would keep reporting `exact` for
+ * exactly the symbols the signal exists to flag. Force a full re-analyze.
+ *
+ * (This shipped as v25 on its own branch; `main` took 25 for #2742 first, so it
+ * is renumbered here. Re-check both constants against origin/main immediately
+ * before merging — this is the fourth time that collision has bitten.)
+ *
  * v25: Rust items are qualified by their enclosing `mod` chain (#2742), so
  * `mod inner { fn dispatch }` and a crate-root `fn dispatch` in one file are
  * finally DISTINCT nodes instead of collapsing onto `Function:<file>:dispatch`
@@ -572,7 +600,7 @@ export interface RepoMeta {
  * index holds ids an incremental top-up cannot reconcile and would simply
  * strand. Force a full re-analyze.
  */
-export const INCREMENTAL_SCHEMA_VERSION = 25;
+export const INCREMENTAL_SCHEMA_VERSION = 26;
 
 export interface IndexedRepo {
   repoPath: string;

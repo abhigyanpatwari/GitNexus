@@ -73,12 +73,12 @@ describe('CALL_SUMMARY relation-type exclusion (U-C1)', () => {
 });
 
 describe('CALL_SUMMARY incremental reuse gate (U-C5)', () => {
-  it('INCREMENTAL_SCHEMA_VERSION is bumped to 25 (Rust mod-qualified node ids, #2742)', () => {
+  it('INCREMENTAL_SCHEMA_VERSION is bumped to 26 (unresolved-receiver epistemic summary, #2744)', () => {
     // Moves with every bump BY DESIGN — that is the point of pinning it. A
     // change that alters emitted ids or edges without bumping would otherwise
     // ship silently, and an existing index would keep serving the old graph
     // through the reuse gate below.
-    expect(INCREMENTAL_SCHEMA_VERSION).toBe(25);
+    expect(INCREMENTAL_SCHEMA_VERSION).toBe(26);
   });
 
   it('a pre-current stamp fails the `=== INCREMENTAL_SCHEMA_VERSION` reuse gate → forces full re-analyze', () => {
@@ -175,14 +175,15 @@ describe('CALL_SUMMARY incremental reuse gate (U-C5)', () => {
     // (#2730): every unchanged Rust file would keep the same-name self-loop and
     // keep reporting the real callee as unreached → must NOT reuse.
     expect(passesReuseGate(22)).toBe(false);
-    // A pre-v24 (v23) index predates
+    // A pre-v24 (v23) index predates the #2708 inline-constructor receivers.
     expect(passesReuseGate(23)).toBe(false);
-    // The current stamp passes the gate (incremental top-up eligible).
-    // A pre-v25 (v24) index predates mod-qualified Rust node ids (#2742): every
-    // item inside a `mod` block has a different id now, so a top-up would strand
-    // the old nodes → must NOT reuse.
+    // A pre-v25 (v24) index predates mod-qualified Rust node ids (#2742) → must NOT reuse.
     expect(passesReuseGate(24)).toBe(false);
+    // A pre-v26 (v25) index predates `unresolvedReceiverMembers` (#2744). An absent
+    // summary is indistinguishable from "nothing was dropped", so a top-up would keep
+    // reporting `epistemic: 'exact'` for exactly the symbols whose callers were dropped.
+    expect(passesReuseGate(25)).toBe(false);
     // The current stamp passes (incremental top-up eligible).
-    expect(passesReuseGate(25)).toBe(true);
+    expect(passesReuseGate(26)).toBe(true);
   });
 });

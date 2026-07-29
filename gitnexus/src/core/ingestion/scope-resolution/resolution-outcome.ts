@@ -12,7 +12,15 @@ export type ResolutionSuppressionReason =
   /** #2701 — the receiver is rebound by its own scope and has no type
    *  there (a JS/TS ordinary `function`'s `this`), so no enclosing type
    *  can be its type. See `isReceiverOwnedButUnbound`. */
-  | 'receiver-owned-but-unbound';
+  | 'receiver-owned-but-unbound'
+  /** #2744 — the receiver is a compound expression (a call, a chain, a
+   *  construction) whose TYPE could not be established, so the member call
+   *  was dropped with no candidate at all. Distinct from the ambiguity
+   *  reasons above: there is nothing to be ambiguous between. Consumers use
+   *  this to report `impact()`/`context()` counts as a lower bound rather
+   *  than as exact, since a dropped site's callee is by definition unknown
+   *  and cannot be attributed to any target. */
+  | 'receiver-unresolved';
 
 export type ResolutionOutcome =
   | {
