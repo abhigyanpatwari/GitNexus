@@ -773,8 +773,15 @@ export interface ScopeResolver {
    * `resolveCompoundReceiverClass`:
    *
    *   - `bare: true`      — `Service(db).m()`     (Python)
-   *   - `keyword: 'new'`  — `new Service(db).m()` (JS/TS, Java, C#)
+   *   - `keyword: 'new'`  — `new Service(db).m()` (JS/TS, C#)
    *   - `selector: 'new'` — `Service.new.m()`     (Ruby)
+   *
+   * Java is deliberately NOT wired even though it spells construction with
+   * `new`: its capture layer already rewrites an `object_creation_expression`
+   * receiver to the constructed type's simple name (#2564), so the raw
+   * `new Svc()` text never reaches this resolver and the declaration would be
+   * unreachable. Measured both ways — Java resolves the shape identically with
+   * and without it.
    *
    * Opting in is per-language ON PURPOSE rather than universal, for two
    * reasons. Correctness: `bare` would mistype `stat(&st).field` in C,

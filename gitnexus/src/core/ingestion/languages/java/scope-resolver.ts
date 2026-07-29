@@ -40,8 +40,6 @@ import {
 import { clearJavaPackageFacts } from './package-facts.js';
 
 const javaScopeResolver: ScopeResolver = {
-  // Construction is keyword-prefixed: `new Service(db).doWork()` (#2708).
-  constructionSyntax: { keyword: 'new' },
   language: SupportedLanguages.Java,
   languageProvider: javaProvider,
   importEdgeReason: 'java-scope: import',
