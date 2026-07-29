@@ -564,8 +564,15 @@ export interface RepoMeta {
  * the same-commit "already up to date" fast path — keeps returning the pre-fix
  * graph for every unchanged file, which is exactly the missing-caller symptom
  * #2708 reported. Force a full re-analyze.
+ * v25: Rust items are qualified by their enclosing `mod` chain (#2742), so
+ * `mod inner { fn dispatch }` and a crate-root `fn dispatch` in one file are
+ * finally DISTINCT nodes instead of collapsing onto `Function:<file>:dispatch`
+ * first-wins. Node IDS CHANGE for every Rust item inside any `mod` block —
+ * `#[cfg(test)] mod tests` makes that close to every Rust repo — so a pre-v25
+ * index holds ids an incremental top-up cannot reconcile and would simply
+ * strand. Force a full re-analyze.
  */
-export const INCREMENTAL_SCHEMA_VERSION = 24;
+export const INCREMENTAL_SCHEMA_VERSION = 25;
 
 export interface IndexedRepo {
   repoPath: string;
