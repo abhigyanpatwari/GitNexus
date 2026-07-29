@@ -2742,3 +2742,35 @@ describe('Rust qualified calls stay inside their own crate (#2730 review H1)', (
     expect(selfLoops).toEqual([]);
   });
 });
+
+// ---------------------------------------------------------------------------
+// #2730 review H2 — a `use` binding must name a MODULE, not a type.
+//
+// Import resolution deliberately strips a trailing symbol segment when probing
+// for a file, so `use crate::client::ClientBuilder;` also resolves to
+// `client/mod.rs`. Taking that at face value made the imported TYPE look like
+// the module `client`, and `ClientBuilder::new()` bound to an unrelated
+// module-level `new` instead of the associated function.
+// ---------------------------------------------------------------------------
+
+describe('Rust type-qualified calls are not treated as module paths (#2730 review H2)', () => {
+  let result: PipelineResult;
+
+  beforeAll(async () => {
+    result = await runPipelineFromRepo(path.join(FIXTURES, 'rust-2730-type-qualified'), () => {});
+  }, 60000);
+
+  it('does not bind ClientBuilder::new() to the module-level new', () => {
+    const edges = getRelationships(result, 'CALLS').filter(
+      (c) => c.source === 'build' && c.target === 'new',
+    );
+    const moduleLevel = edges.filter((c) => c.targetLabel === 'Function');
+    expect(moduleLevel).toEqual([]);
+  });
+
+  it('still resolves a genuine module qualifier', () => {
+    const edges = getRelationships(result, 'CALLS').filter((c) => c.source === 'via_module');
+    expect(edges.length).toBe(1);
+    expect(edges[0]).toMatchObject({ target: 'new', targetFilePath: 'src/client/mod.rs' });
+  });
+});

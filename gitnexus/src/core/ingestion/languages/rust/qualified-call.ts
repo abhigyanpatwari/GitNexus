@@ -160,13 +160,23 @@ function* candidateModules(
 
   // 2. A `use` binding for the first segment. Finalize already resolved the
   //    import to a file, so the module path comes back through the same
-  //    file → module mapping as everything else. Covers `use crate::tools::{self}`
-  //    and `use crate::a::b as tools`.
+  //    file → module mapping as everything else. Covers `use crate::tools;`,
+  //    `use crate::tools::{self}` and `use crate::a::b as tools`.
+  //
+  //    The binding must name a MODULE, not a symbol inside one. Import
+  //    resolution deliberately strips a trailing symbol segment when probing for
+  //    a file ("the last segment might be a symbol, not a module" —
+  //    import-resolvers/rust.ts), so `use crate::client::ClientBuilder;` also
+  //    lands on `client/mod.rs`. Taking that at face value made the imported
+  //    TYPE look like the module `client`, and `ClientBuilder::new()` then
+  //    resolved against `client`'s module members — binding an associated
+  //    function to an unrelated module-level `new` (#2741 review H2).
   const head = qualifier[0];
   for (const edge of scopes.imports.get(callerParsed.moduleScope) ?? []) {
     if (edge.localName !== head || edge.targetFile === null) continue;
     const importedModule = moduleOfFile(edge.targetFile, index);
     if (importedModule === undefined) continue;
+    if (!importNamesModule(edge.targetExportedName, importedModule)) continue;
     yield {
       crateRoot: importedModule.crateRoot,
       segments: [...importedModule.segments, ...qualifier.slice(1)],
@@ -178,6 +188,26 @@ function* candidateModules(
   if (callerModule.segments.length > 0) {
     yield { crateRoot: callerModule.crateRoot, segments: [...qualifier] };
   }
+}
+
+/**
+ * Does this `use` binding name the module it resolved to, rather than a symbol
+ * declared inside it?
+ *
+ * The edge's `targetExportedName` is the tail of the written path, so comparing
+ * it to the resolved module's own tail separates the two cases exactly:
+ *
+ *   use crate::tools;                 tail `tools`         module ['tools']     ✓
+ *   use crate::a::b as tools;         tail `b`             module ['a','b']     ✓ (alias)
+ *   use crate::tools::{self, Ctx};    tail `tools`         module ['tools']     ✓
+ *   use crate::client::ClientBuilder; tail `ClientBuilder` module ['client']    ✗ a type
+ *
+ * An import of the crate-root module itself has no tail segment to match; those
+ * are left to the anchored (`crate::`) channel rather than guessed at here.
+ */
+function importNamesModule(targetExportedName: string, module: RustModule): boolean {
+  const tail = module.segments[module.segments.length - 1];
+  return tail !== undefined && tail === targetExportedName;
 }
 
 /**
