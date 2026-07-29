@@ -262,11 +262,16 @@ function isInjectionMatch(value: unknown): value is DiInjectionMatch {
     typeof match.targetTypeName === 'string' &&
     (match.cardinality === 'single' || match.cardinality === 'collection') &&
     typeof match.reason === 'string' &&
+    (match.edgeSource === undefined ||
+      match.edgeSource === 'owner-class' ||
+      match.edgeSource === 'site') &&
     (namedSelection === undefined ||
       (typeof namedSelection === 'object' &&
         namedSelection !== null &&
         typeof namedSelection.name === 'string' &&
-        typeof namedSelection.reason === 'string'))
+        typeof namedSelection.reason === 'string' &&
+        (namedSelection.fallbackToType === undefined ||
+          typeof namedSelection.fallbackToType === 'boolean')))
   );
 }
 
@@ -276,6 +281,7 @@ function isProviderMatch(value: unknown): value is DiProviderMatch {
   return (
     Array.isArray(provider.names) &&
     provider.names.every((name) => typeof name === 'string') &&
+    (provider.providedTypeName === undefined || typeof provider.providedTypeName === 'string') &&
     (provider.preferenceReason === undefined || typeof provider.preferenceReason === 'string')
   );
 }

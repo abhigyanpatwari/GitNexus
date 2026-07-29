@@ -107,6 +107,26 @@ async function setupKotlinSpringBeanIncrementalRepo() {
   return repo;
 }
 
+async function setupSpringBeanFactoryIncrementalRepo() {
+  const repo = await createTempDir('gitnexus-incr-spring-bean-factory-');
+  const src = path.join(repo.dbPath, 'src', 'com', 'other');
+  await mkdir(src, { recursive: true });
+  await writeFile(
+    path.join(src, 'WildcardConfiguration.java'),
+    'package com.other;\n' +
+      'import org.springframework.context.annotation.*;\n\n' +
+      '@Configuration class WildcardConfiguration {\n' +
+      '  @Bean Gateway gateway() { return new DefaultGateway(); }\n' +
+      '}\n' +
+      'interface Gateway {}\n' +
+      'class DefaultGateway implements Gateway {}\n',
+    'utf-8',
+  );
+  execSync('git init', { cwd: repo.dbPath, stdio: 'pipe' });
+  gitCommitAll(repo.dbPath, 'initial spring bean factory');
+  return repo;
+}
+
 async function setupSpringConfigIncrementalRepo() {
   const repo = await createTempDir('gitnexus-incr-spring-config-');
   const resources = path.join(repo.dbPath, 'src', 'main', 'resources');
@@ -178,6 +198,21 @@ async function countSpringAutoConfigurationDeclarations(repoPath: string): Promi
       `MATCH ()-[r:CodeRelation]->() WHERE r.type = 'DECLARES' ` +
         `AND (r.reason = 'spring-auto-configuration-import' ` +
         `OR r.reason = 'spring-auto-configuration-factory') RETURN count(r) AS c`,
+    )) as Array<{ c: number | bigint }>;
+    return Number(rows[0]?.c ?? 0);
+  } finally {
+    await adapter.closeLbug();
+  }
+}
+
+async function countSpringBeanFactoryDeclarations(repoPath: string): Promise<number> {
+  const adapter = await import('../../src/core/lbug/lbug-adapter.js');
+  const { lbugPath } = getStoragePaths(repoPath);
+  await adapter.initLbug(lbugPath);
+  try {
+    const rows = (await adapter.executeQuery(
+      `MATCH ()-[r:CodeRelation]->() WHERE r.type = 'DECLARES' ` +
+        `AND r.reason STARTS WITH 'spring-bean-factory:' RETURN count(r) AS c`,
     )) as Array<{ c: number | bigint }>;
     return Number(rows[0]?.c ?? 0);
   } finally {
@@ -587,6 +622,30 @@ describe('runFullAnalysis — incremental orchestration', () => {
 
       await runFullAnalysis(repo.dbPath, { skipAgentsMd: true }, { onProgress: () => {} });
       expect(await readWildcardServiceAnnotations(repo.dbPath)).toEqual([SPRING_SERVICE]);
+    } finally {
+      await repo.cleanup();
+    }
+  }, 600_000);
+
+  it('rewrites unchanged Bean factory declarations when same-package shadowing changes', async () => {
+    const repo = await setupSpringBeanFactoryIncrementalRepo();
+    try {
+      const { runFullAnalysis } = await import('../../src/core/run-analyze.js');
+      await runFullAnalysis(repo.dbPath, { skipAgentsMd: true }, { onProgress: () => {} });
+      expect(await countSpringBeanFactoryDeclarations(repo.dbPath)).toBe(1);
+
+      const shadow = path.join(repo.dbPath, 'src', 'com', 'other', 'Bean.java');
+      await writeFile(shadow, 'package com.other;\npublic @interface Bean {}\n', 'utf-8');
+      gitCommitAll(repo.dbPath, 'add same-package Bean annotation shadow');
+
+      await runFullAnalysis(repo.dbPath, { skipAgentsMd: true }, { onProgress: () => {} });
+      expect(await countSpringBeanFactoryDeclarations(repo.dbPath)).toBe(0);
+
+      await rm(shadow);
+      gitCommitAll(repo.dbPath, 'remove same-package Bean annotation shadow');
+
+      await runFullAnalysis(repo.dbPath, { skipAgentsMd: true }, { onProgress: () => {} });
+      expect(await countSpringBeanFactoryDeclarations(repo.dbPath)).toBe(1);
     } finally {
       await repo.cleanup();
     }

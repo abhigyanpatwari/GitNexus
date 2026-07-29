@@ -1,4 +1,5 @@
-import type { ParsedFile, ScopeId } from 'gitnexus-shared';
+import type { GraphNode, ParsedFile, ScopeId } from 'gitnexus-shared';
+import { generateId } from '../../../../lib/utils.js';
 import type { KnowledgeGraph } from '../../../graph/types.js';
 import type { DiInjectionMatch, DiProviderMatch } from '../../di-extractors/index.js';
 import {
@@ -8,10 +9,30 @@ import {
   SPRING_DI_PROVIDER_PROPERTY,
 } from '../../di-extractors/spring.js';
 import type { ScopeResolutionIndexes } from '../../model/scope-resolution-indexes.js';
-import { resolveDefGraphId } from '../../scope-resolution/graph-bridge/ids.js';
+import {
+  resolveCallerGraphId,
+  resolveDefGraphId,
+} from '../../scope-resolution/graph-bridge/ids.js';
 import type { GraphNodeLookup } from '../../scope-resolution/graph-bridge/node-lookup.js';
 import { createSpringAnnotationNameResolver } from './bean-candidates.js';
 import { SPRING_BEAN_STEREOTYPES } from './bean-catalog.js';
+import {
+  encodeSpringBeanFactoryReason,
+  SPRING_BEAN_ANNOTATION,
+  SPRING_BEAN_DECLARATION_ID_PREFIX,
+  springBeanNames,
+  type SpringBeanFactoryMethodFact,
+} from './bean-factories.js';
+import {
+  normalizeSpringBeanType,
+  parseSpringAnnotationArguments,
+  parseStaticStringValues,
+} from './annotation-arguments.js';
+import {
+  SPRING_RESOURCE_ANNOTATIONS,
+  springResourceDefaultName,
+  springResourceInjectionMatch,
+} from './resource-injection.js';
 
 export interface SpringDiAnnotationFact {
   readonly name: string;
@@ -42,6 +63,7 @@ export interface SpringDiClassFact<
   readonly classScopeId: ScopeId;
   readonly classAnnotations: readonly Annotation[];
   readonly injectionSites: readonly SpringDiInjectionSiteFact<Annotation, SiteKind>[];
+  readonly beanFactoryMethods?: readonly SpringBeanFactoryMethodFact<Annotation>[];
 }
 
 const INJECTION_ANNOTATIONS = new Set([
@@ -63,6 +85,8 @@ const RESOLVABLE_DI_ANNOTATIONS = new Set([
   ...INJECTION_ANNOTATIONS,
   ...QUALIFIER_ANNOTATIONS,
   ...PRIMARY_ANNOTATIONS,
+  ...SPRING_RESOURCE_ANNOTATIONS,
+  SPRING_BEAN_ANNOTATION,
 ]);
 
 const CAPTURE_RELEVANT_ANNOTATIONS = new Set([
@@ -71,6 +95,7 @@ const CAPTURE_RELEVANT_ANNOTATIONS = new Set([
   'Qualifier',
   'Named',
   'Primary',
+  'Resource',
   'Component',
   'Service',
   'Repository',
@@ -104,16 +129,12 @@ export function hasSpringStereotypeSyntax(annotations: readonly SpringDiAnnotati
 }
 
 function staticStringArgument(annotationText: string): string | undefined {
-  const args = annotationText.match(/\((.*)\)$/s)?.[1]?.trim();
-  if (args === undefined) return undefined;
-  const value = args.replace(/^value\s*=\s*/, '').trim();
-  const literal = value.match(/^"((?:\\.|[^"\\])*)"$/s);
-  if (literal === null) return undefined;
-  try {
-    return JSON.parse(`"${literal[1]}"`) as string;
-  } catch {
-    return undefined;
-  }
+  const argumentsList = parseSpringAnnotationArguments(annotationText);
+  if (argumentsList === null || argumentsList.length !== 1) return undefined;
+  const argument = argumentsList[0];
+  if (argument.name !== undefined && argument.name !== 'value') return undefined;
+  const values = parseStaticStringValues(argument.value);
+  return values !== null && values.length === 1 ? values[0] : undefined;
 }
 
 function defaultBeanName(className: string): string {
@@ -146,6 +167,7 @@ export interface SpringDiMetadataAdapter<
     annotation: Annotation,
     site: SpringDiInjectionSiteFact<Annotation, SiteKind>,
   ): boolean;
+  isFactoryQualifierAnnotationApplicable?(annotation: Annotation): boolean;
 }
 
 /**
@@ -231,18 +253,164 @@ export function createSpringDiMetadataAttacher<
           classNode.properties[SPRING_DI_PROVIDER_PROPERTY] = provider;
         }
 
+        // Factory methods have no legacy member-collection fallback to suppress,
+        // so they do not participate in semanticallyOwnedMemberNames below.
+        for (const factory of fact.beanFactoryMethods ?? []) {
+          const factoryScope = indexes.scopeTree.getScope(factory.callableScopeId);
+          if (factoryScope === undefined) continue;
+          const beanAnnotation = factory.annotations.find(
+            (annotation) => resolveFact(annotation, factoryScope.parent) === SPRING_BEAN_ANNOTATION,
+          );
+          if (beanAnnotation === undefined) continue;
+          const methodId = resolveCallerGraphId(factory.callableScopeId, indexes, nodeLookup, {
+            startLine: factoryScope.range.startLine,
+            startCol: factoryScope.range.startCol,
+          });
+          if (methodId === undefined) continue;
+          const methodNode = graph.getNode(methodId);
+          if (methodNode === undefined || methodNode.label !== 'Method') continue;
+
+          const names = springBeanNames(beanAnnotation.text, factory.methodName);
+          const providedType =
+            factory.returnType === undefined
+              ? undefined
+              : normalizeSpringBeanType(factory.returnType);
+          const declaration = {
+            names: names.names,
+            namesKnown: names.namesKnown,
+            ...(providedType === null || providedType === undefined ? {} : { providedType }),
+          };
+          const reason = encodeSpringBeanFactoryReason(declaration);
+          const beanId = `${SPRING_BEAN_DECLARATION_ID_PREFIX}${methodNode.id}`;
+          const beanNode: GraphNode = {
+            id: beanId,
+            label: 'CodeElement',
+            properties: {
+              name: names.names[0] ?? factory.methodName,
+              filePath: methodNode.properties.filePath,
+              startLine: methodNode.properties.startLine,
+              endLine: methodNode.properties.endLine,
+              language: methodNode.properties.language,
+              description:
+                `Spring @Bean factory declaration from ${factory.methodName}` +
+                (providedType === null || providedType === undefined
+                  ? ''
+                  : ` providing ${providedType}`),
+            },
+          };
+          beanNode.properties[SPRING_DI_PROVIDER_PROPERTY] = {
+            names: names.names,
+            ...(providedType === null || providedType === undefined
+              ? {}
+              : { providedTypeName: providedType }),
+          } satisfies DiProviderMatch;
+          graph.addNode(beanNode);
+          const fileId = generateId('File', parsed.filePath);
+          if (graph.getNode(fileId) !== undefined) {
+            graph.addRelationship({
+              id: generateId('DEFINES', `${fileId}->${beanId}`),
+              sourceId: fileId,
+              targetId: beanId,
+              type: 'DEFINES',
+              confidence: 1,
+              reason: 'spring-bean:declaration',
+            });
+          }
+          graph.addRelationship({
+            id: generateId('DECLARES', `${methodNode.id}->${beanId}`),
+            sourceId: methodNode.id,
+            targetId: beanId,
+            type: 'DECLARES',
+            confidence: names.namesKnown ? 1 : 0.8,
+            reason,
+          });
+
+          const factoryMatches: DiInjectionMatch[] = [];
+          for (const dependency of factory.dependencies) {
+            const parsedType = adapter.parseInjectionType(dependency.rawType);
+            if (parsedType === null) continue;
+            let qualifierAnnotation: Annotation | undefined;
+            for (const annotation of dependency.annotations) {
+              if (adapter.isFactoryQualifierAnnotationApplicable?.(annotation) === false) continue;
+              const resolved = resolveFact(annotation, factoryScope.id);
+              if (resolved !== undefined && QUALIFIER_ANNOTATIONS.has(resolved)) {
+                qualifierAnnotation = annotation;
+                break;
+              }
+            }
+            const qualifier =
+              qualifierAnnotation === undefined
+                ? undefined
+                : staticStringArgument(qualifierAnnotation.text);
+            if (qualifierAnnotation !== undefined && qualifier === undefined) continue;
+            factoryMatches.push({
+              targetTypeName: parsedType.targetTypeName,
+              cardinality: parsedType.cardinality,
+              edgeSource: 'site',
+              ...(qualifier === undefined
+                ? {}
+                : {
+                    namedSelection: {
+                      name: qualifier,
+                      reason: `qualifier "${qualifier}"`,
+                    },
+                  }),
+              reason:
+                `Spring DI: @Bean method ${factory.methodName} parameter ${dependency.name}: ` +
+                parsedType.displayType,
+            });
+          }
+          if (factoryMatches.length > 0) {
+            const existing = methodNode.properties[SPRING_DI_INJECTION_SITES_PROPERTY];
+            methodNode.properties[SPRING_DI_INJECTION_SITES_PROPERTY] = [
+              ...(Array.isArray(existing) ? existing : []),
+              ...factoryMatches,
+            ];
+          }
+        }
+
         const matches: DiInjectionMatch[] = [];
         const semanticallyOwnedMemberNames = new Set<string>();
         for (const site of fact.injectionSites) {
           let injectionAnnotation: Annotation | undefined;
+          let resourceAnnotation: Annotation | undefined;
           for (const annotation of site.annotations) {
             if (adapter.isInjectionAnnotationApplicable?.(annotation, site) === false) continue;
             const resolved = resolveFact(annotation, classScope.id);
             if (resolved !== undefined && INJECTION_ANNOTATIONS.has(resolved)) {
               injectionAnnotation = annotation;
-              break;
+            } else if (resolved !== undefined && SPRING_RESOURCE_ANNOTATIONS.has(resolved)) {
+              resourceAnnotation = annotation;
             }
           }
+          if (injectionAnnotation !== undefined && resourceAnnotation !== undefined) continue;
+
+          if (resourceAnnotation !== undefined) {
+            if (site.kind === adapter.capturedMemberKind) {
+              semanticallyOwnedMemberNames.add(site.memberName);
+            }
+            if (site.dependencies.length !== 1 || site.kind === 'constructor') continue;
+            const defaultName = springResourceDefaultName(
+              site.kind,
+              site.memberName,
+              site.dependencies.length,
+            );
+            if (defaultName === null) continue;
+            const dependency = site.dependencies[0];
+            const location =
+              site.kind === adapter.capturedMemberKind
+                ? site.memberName
+                : `${site.memberName} parameter ${dependency.name}`;
+            const resourceMatch = springResourceInjectionMatch(
+              resourceAnnotation.text,
+              defaultName,
+              dependency.rawType,
+              location,
+            );
+            if (resourceMatch !== null) matches.push(resourceMatch);
+            continue;
+          }
+
           if (injectionAnnotation === undefined) {
             if (!site.implicitConstructor || frameworkAnnotations.length === 0) continue;
           } else if (site.kind === adapter.capturedMemberKind) {

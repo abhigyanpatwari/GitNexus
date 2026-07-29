@@ -3,7 +3,7 @@
  *
  * Framework-neutral dependency-injection resolution. Per-language resolvers
  * identify injection sites and provider metadata; this phase performs only
- * graph-level type/heritage resolution and emits Class -> Class INJECTS edges.
+ * graph-level type/heritage resolution and emits owner/site -> provider INJECTS edges.
  *
  * @deps    mro
  * @reads   graph (Class/Interface/member nodes and heritage/ownership edges)
@@ -48,6 +48,25 @@ interface PendingEdge {
   targetId: string;
   confidence: number;
   reason: string;
+}
+
+type ProvidedTypesByLanguage = Map<string, Map<string, Set<string>>>;
+type ProviderNamesByLanguage = Map<string, Map<string, Set<string>>>;
+
+function addProvidedType(
+  index: ProvidedTypesByLanguage,
+  language: string,
+  typeName: string,
+  providerId: string,
+): void {
+  const byName = index.get(language) ?? new Map<string, Set<string>>();
+  const names = new Set([typeName, typeName.slice(typeName.lastIndexOf('.') + 1)]);
+  for (const name of names) {
+    const providers = byName.get(name) ?? new Set<string>();
+    providers.add(providerId);
+    byName.set(name, providers);
+  }
+  index.set(language, byName);
 }
 
 function emptyNameIndex(): NameIndex {
@@ -98,6 +117,9 @@ export const diPhase: PipelinePhase<DIOutput> = {
 
     const candidates: CandidateSite[] = [];
     const providers = new Map<string, DiProviderMatch>();
+    const providedTypes = new Map<string, Map<string, Set<string>>>();
+    const providerNames = new Map<string, Map<string, Set<string>>>();
+    const providerNodes = new Map<string, GraphNode>();
     ctx.graph.forEachNode((node) => {
       const language = node.properties.language;
       if (language === undefined || !isSupportedLanguage(language)) return;
@@ -105,7 +127,20 @@ export const diPhase: PipelinePhase<DIOutput> = {
       if (resolver === undefined) return;
 
       const provider = resolver.matchProvider(node);
-      if (provider !== null) providers.set(node.id, provider);
+      if (provider !== null) {
+        providers.set(node.id, provider);
+        providerNodes.set(node.id, node);
+        const namesByLanguage = providerNames.get(language) ?? new Map<string, Set<string>>();
+        for (const name of provider.names) {
+          const namedProviders = namesByLanguage.get(name) ?? new Set<string>();
+          namedProviders.add(node.id);
+          namesByLanguage.set(name, namedProviders);
+        }
+        providerNames.set(language, namesByLanguage);
+        if (provider.providedTypeName !== undefined) {
+          addProvidedType(providedTypes, language, provider.providedTypeName, node.id);
+        }
+      }
       for (const match of resolver.matchInjectionSites(node)) {
         candidates.push({ ...match, siteNodeId: node.id, language });
       }
@@ -137,7 +172,6 @@ export const diPhase: PipelinePhase<DIOutput> = {
     const candidateLanguages = new Set<string>(candidates.map((candidate) => candidate.language));
     const interfacesByLanguage = new Map<string, NameIndex>();
     const classesByLanguage = new Map<string, NameIndex>();
-    const classNodes = new Map<string, GraphNode>();
     ctx.graph.forEachNode((node) => {
       if (node.label !== 'Class' && node.label !== 'Interface') return;
       const language = node.properties.language;
@@ -146,7 +180,7 @@ export const diPhase: PipelinePhase<DIOutput> = {
       const index = indexes.get(language) ?? emptyNameIndex();
       addIndexedName(index, node);
       indexes.set(language, index);
-      if (node.label === 'Class') classNodes.set(node.id, node);
+      if (node.label === 'Class') providerNodes.set(node.id, node);
     });
 
     let ambiguousSkipped = 0;
@@ -166,6 +200,8 @@ export const diPhase: PipelinePhase<DIOutput> = {
       const consumerClassId =
         siteNode?.label === 'Class' ? siteNode.id : memberToClass.get(candidate.siteNodeId);
       if (consumerClassId === undefined) continue;
+      const edgeSourceId =
+        candidate.edgeSource === 'site' && siteNode !== undefined ? siteNode.id : consumerClassId;
 
       const classEntry = resolveIndexedName(
         classesByLanguage.get(candidate.language),
@@ -196,39 +232,54 @@ export const diPhase: PipelinePhase<DIOutput> = {
       if (typeof interfaceEntry === 'string') {
         for (const id of interfaceToImplementers.get(interfaceEntry) ?? []) structural.add(id);
       }
+      for (const id of providedTypes.get(candidate.language)?.get(candidate.targetTypeName) ?? []) {
+        structural.add(id);
+      }
       structural.delete(consumerClassId);
+      structural.delete(edgeSourceId);
       if (structural.size === 0) continue;
 
-      let viable = providerCandidates(structural, providers);
       const namedSelection = candidate.namedSelection;
+      let usedNamedSelection = false;
+      let selectionSuffix = '';
+      let viable: string[];
       if (namedSelection !== undefined) {
-        viable = viable.filter(
-          (id) => providers.get(id)?.names.includes(namedSelection.name) === true,
-        );
-        if (viable.length === 0) continue;
+        const named = [
+          ...(providerNames.get(candidate.language)?.get(namedSelection.name) ?? []),
+        ].filter((id) => structural.has(id));
+        if (named.length > 0) {
+          viable = named;
+          usedNamedSelection = true;
+          selectionSuffix = `; ${namedSelection.reason}`;
+        } else if (namedSelection.fallbackToType === true) {
+          viable = providerCandidates(structural, providers);
+          selectionSuffix = `; ${namedSelection.reason} unmatched; type fallback`;
+        } else {
+          continue;
+        }
+      } else {
+        viable = providerCandidates(structural, providers);
       }
 
       if (candidate.cardinality === 'collection') {
-        const confidence = namedSelection === undefined ? 0.8 : 0.9;
-        const suffix = namedSelection === undefined ? '' : `; ${namedSelection.reason}`;
+        const confidence = usedNamedSelection ? 0.9 : 0.8;
         for (const targetId of viable) {
           queueEdge({
-            sourceId: consumerClassId,
+            sourceId: edgeSourceId,
             targetId,
             confidence,
-            reason: candidate.reason + suffix,
+            reason: candidate.reason + selectionSuffix,
           });
         }
         continue;
       }
 
       if (viable.length === 1) {
-        const suffix = namedSelection === undefined ? '' : `; ${namedSelection.reason}`;
         queueEdge({
-          sourceId: consumerClassId,
+          sourceId: edgeSourceId,
           targetId: viable[0],
-          confidence: namedSelection === undefined ? 0.9 : 0.95,
-          reason: candidate.reason + suffix,
+          confidence: usedNamedSelection ? 0.95 : namedSelection === undefined ? 0.9 : 0.85,
+          reason: candidate.reason + selectionSuffix,
         });
         continue;
       }
@@ -237,28 +288,28 @@ export const diPhase: PipelinePhase<DIOutput> = {
         const reason = providers.get(id)?.preferenceReason;
         return reason === undefined ? [] : [{ id, reason }];
       });
-      if (namedSelection === undefined && preferred.length === 1) {
+      if (!usedNamedSelection && preferred.length === 1) {
         const selected = preferred[0];
         queueEdge({
-          sourceId: consumerClassId,
+          sourceId: edgeSourceId,
           targetId: selected.id,
           confidence: 0.95,
-          reason: `${candidate.reason}; ${selected.reason}`,
+          reason: `${candidate.reason}${selectionSuffix}; ${selected.reason}`,
         });
         continue;
       }
 
       ambiguousInjections++;
       const candidateNames = viable
-        .map((id) => classNodes.get(id)?.properties.name ?? id)
+        .map((id) => providerNodes.get(id)?.properties.name ?? id)
         .sort()
         .join(', ');
       for (const targetId of viable) {
         queueEdge({
-          sourceId: consumerClassId,
+          sourceId: edgeSourceId,
           targetId,
           confidence: 0.5,
-          reason: `${candidate.reason}; ambiguous candidates: ${candidateNames}`,
+          reason: `${candidate.reason}${selectionSuffix}; ambiguous candidates: ${candidateNames}`,
         });
       }
     }

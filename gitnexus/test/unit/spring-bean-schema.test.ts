@@ -24,7 +24,7 @@ describe('Spring Bean Class persistence schema', () => {
     expect(parseSchemaVersion).toBeGreaterThanOrEqual(22);
     expect(INCREMENTAL_SCHEMA_VERSION).toBeGreaterThanOrEqual(8);
     expect(CLASS_FRAMEWORK_ANNOTATIONS_FEATURE.version).toBe(1);
-    expect(SPRING_BEAN_INVENTORY_FEATURE.version).toBe(1);
+    expect(SPRING_BEAN_INVENTORY_FEATURE.version).toBe(2);
     expect(SPRING_CONDITIONALS_FEATURE.version).toBe(1);
   });
 
