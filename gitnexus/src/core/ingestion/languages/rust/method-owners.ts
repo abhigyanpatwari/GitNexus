@@ -30,7 +30,11 @@ export function populateRustOwners(parsed: ParsedFile): void {
   // Namespace scopes owning a Namespace def (see the `mod_item` capture), so
   // the shared C++-era pass applies unchanged. Qualified call resolution reads
   // this to tell `inner::dispatch` apart from a same-named crate-root `fn`.
-  tagNamespacePrefixes(parsed);
+  // Rust `qualifiedName`s never encode the enclosing module, so the shared
+  // "already namespaced" guard must be off: with it on, `mod a { pub fn a() }`
+  // matched by coincidence and the member was left looking like it belonged to
+  // the parent module (#2741 review).
+  tagNamespacePrefixes(parsed, { qualifiedNamesCarryNamespace: false });
 }
 
 function populateRustImplOwners(parsed: ParsedFile): void {
