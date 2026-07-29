@@ -524,6 +524,15 @@ export function resolveCompoundReceiverClass(
       depth + 1,
     );
   }
+  // Construction in the chain HEAD — `new Service().inner.doWork()` (#2708).
+  // The head arrives as `new Service()`, which `stripCallParens` reduces to
+  // `new Service`: no binding and no class of that name, so the walk was never
+  // seeded and the whole chain resolved to nothing. A constructed value is an
+  // instance, so `currentIsClassConstant` correctly stays false here.
+  if (currentClass === undefined) {
+    currentClass = resolveConstructionExpressionClass(headMemberName, inScope, scopes, options);
+  }
+
   for (let i = 1; i < parts.length && currentClass !== undefined; i++) {
     const segment = parts[i];
     if (segment === undefined) break;

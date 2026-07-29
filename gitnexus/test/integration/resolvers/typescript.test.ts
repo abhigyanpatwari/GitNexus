@@ -3265,6 +3265,17 @@ describe('TypeScript inline constructor receiver resolution', () => {
     expect(genericCall!.rel.targetId).toContain('Box');
   });
 
+  it('resolves construction in the chain HEAD — new Service(db).inner.deep()', () => {
+    const calls = getRelationships(result, 'CALLS');
+    const chainCall = calls.find((c) => c.source === 'viaChainHead' && c.target === 'deep');
+    expect(chainCall).toMatchObject({
+      source: 'viaChainHead',
+      target: 'deep',
+      targetFilePath: 'src/svc.ts',
+    });
+    expect(chainCall!.rel.targetId).toContain('Inner');
+  });
+
   it('resolves a bare factory call through its return type, not as a construction', () => {
     const calls = getRelationships(result, 'CALLS');
     const factoryCall = calls.find((c) => c.source === 'viaFactory' && c.target === 'doWork');

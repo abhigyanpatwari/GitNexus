@@ -16,3 +16,7 @@ export function viaTwoStep(db: number): number {
 export function viaGenericCtor(): number {
   return new Box<string>().unwrap();
 }
+
+export function viaChainHead(db: number): number {
+  return new Service(db).inner.deep();
+}

@@ -1,4 +1,12 @@
+export class Inner {
+  deep(): number {
+    return 4;
+  }
+}
+
 export class Service {
+  readonly inner: Inner = new Inner();
+
   constructor(private db: number) {}
 
   doWork(): number {
