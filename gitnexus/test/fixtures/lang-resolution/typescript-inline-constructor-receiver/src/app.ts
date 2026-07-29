@@ -1,3 +1,4 @@
+import * as ns from './svc';
 import { Box, Service, makeOther } from './svc';
 
 export function viaInlineNew(db: number): number {
@@ -27,4 +28,8 @@ export function viaTabSeparatedNew(db: number): number {
 
 export function viaNewlineSeparatedNew(db: number): number {
   return new Service(db).doWork();
+}
+
+export function viaQualifiedCtor(db: number): number {
+  return new ns.Service(db).doWork();
 }

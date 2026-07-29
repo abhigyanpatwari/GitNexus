@@ -160,9 +160,25 @@ function resolveConstructionExpressionClass(
   // normalization `resolveClassBindingForName` in `receiver-bound-calls`
   // already applies for typed receivers (#2708).
   const baseName = stripTemplateArguments(calleeName).trim();
-  if (baseName.length === 0 || baseName === calleeName) return undefined;
-  const viaBaseName = findClassBindingInScope(inScope, baseName, scopes);
-  return viaBaseName !== undefined && isClassLike(viaBaseName.type) ? viaBaseName : undefined;
+  if (baseName.length > 0 && baseName !== calleeName) {
+    const viaBaseName = findClassBindingInScope(inScope, baseName, scopes);
+    if (viaBaseName !== undefined && isClassLike(viaBaseName.type)) return viaBaseName;
+  }
+
+  // Qualified callee — `new ns.Service()` / `new Outer.Inner()`. Prefer an
+  // unambiguous qualified-name match, then fall back to the trailing simple
+  // name the way receiver resolution does elsewhere (#2708).
+  const lastDot = baseName.lastIndexOf('.');
+  if (lastDot === -1) return undefined;
+  const qualifiedIds = scopes.qualifiedNames.get(baseName);
+  if (qualifiedIds.length === 1) {
+    const qualified = scopes.defs.get(qualifiedIds[0]!);
+    if (qualified !== undefined && isClassLike(qualified.type)) return qualified;
+  }
+  const simpleName = baseName.slice(lastDot + 1);
+  if (simpleName.length === 0) return undefined;
+  const viaSimpleName = findClassBindingInScope(inScope, simpleName, scopes);
+  return viaSimpleName !== undefined && isClassLike(viaSimpleName.type) ? viaSimpleName : undefined;
 }
 
 export function resolveCompoundReceiverClass(
@@ -303,6 +319,14 @@ export function resolveCompoundReceiverClass(
     if (openIdx === -1) return undefined;
     const fnExpr = workingText.slice(0, openIdx).trim();
     if (fnExpr.length === 0) return undefined;
+
+    // A keyword-marked construction is never an `obj.method()` call, even when
+    // the type is qualified (`new ns.Service()`), so it must be resolved before
+    // the dot-split below routes it into member resolution (#2708).
+    const keyword = options.constructionSyntax?.keyword;
+    if (keyword !== undefined && new RegExp(`^${escapeForRegExp(keyword)}\\s`).test(fnExpr)) {
+      return resolveConstructionExpressionClass(fnExpr, inScope, scopes, options);
+    }
 
     const lastDot = fnExpr.lastIndexOf('.');
     if (lastDot === -1) {

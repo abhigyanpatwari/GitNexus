@@ -3289,6 +3289,17 @@ describe('TypeScript inline constructor receiver resolution', () => {
     }
   });
 
+  it('resolves a namespace-qualified constructor — new ns.Service(db).doWork()', () => {
+    const calls = getRelationships(result, 'CALLS');
+    const qualified = calls.find((c) => c.source === 'viaQualifiedCtor' && c.target === 'doWork');
+    expect(qualified).toMatchObject({
+      source: 'viaQualifiedCtor',
+      target: 'doWork',
+      targetFilePath: 'src/svc.ts',
+    });
+    expect(qualified!.rel.targetId).toContain('Service');
+  });
+
   it('resolves a bare factory call through its return type, not as a construction', () => {
     const calls = getRelationships(result, 'CALLS');
     const factoryCall = calls.find((c) => c.source === 'viaFactory' && c.target === 'doWork');
