@@ -123,6 +123,21 @@ export interface ReferenceSite {
    * for existing overload narrowing and conversion-rank logic.
    */
   readonly argumentTypeClasses?: readonly ParameterTypeClass[];
+  /**
+   * Compact encoding of a receiver that is itself an expression, so resolution
+   * can type it by folding over structure instead of re-parsing the receiver's
+   * source text.
+   *
+   * Format and the reason it is a string rather than `MixedChainStep[]` live in
+   * `receiver-chain-codec.ts` — briefly, the store's interning reviver re-shares
+   * objects only when they carry `nodeId` + `filePath`, which a chain step does
+   * not, so an object encoding would survive every warm load as fresh
+   * allocations.
+   *
+   * Absent whenever the receiver is a bare name, which is the overwhelming
+   * majority of sites — the field costs nothing where it is not needed.
+   */
+  readonly receiverChain?: string;
 }
 
 /**

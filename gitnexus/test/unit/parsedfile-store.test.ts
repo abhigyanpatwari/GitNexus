@@ -504,3 +504,86 @@ describe('parsedfile-store', () => {
     }
   });
 });
+
+/**
+ * `receiverChain` at the untrusted boundary. Unlike `callableFlowSites`,
+ * `referenceSites` had no sanitizer here at all, so this field arrives with the
+ * first one.
+ */
+describe('parsedfile-store receiverChain sanitation', () => {
+  const siteWith = (receiverChain: unknown) => ({
+    name: 'save',
+    atRange: { startLine: 3, startCol: 2, endLine: 3, endCol: 6 },
+    inScope: 'x.ts:module',
+    kind: 'call',
+    ...(receiverChain === undefined ? {} : { receiverChain }),
+  });
+
+  it('round-trips a well-formed chain', async () => {
+    const dir = await mkdtemp(path.join(tmpdir(), 'pfstore-chain-'));
+    try {
+      await persistParsedFileChunk(dir, 'chunk-0', [
+        makeStoreEntry('x.ts', { referenceSites: [siteWith('1|svc|cgetUser')] }),
+      ]);
+      const loaded = (await loadParsedFilesForPaths(dir, new Set(['x.ts']))).get('x.ts')!;
+      expect(loaded.referenceSites[0]).toMatchObject({
+        name: 'save',
+        receiverChain: '1|svc|cgetUser',
+      });
+    } finally {
+      await rm(dir, { recursive: true, force: true });
+    }
+  });
+
+  it('loads a shard written before the field existed, unchanged', async () => {
+    const dir = await mkdtemp(path.join(tmpdir(), 'pfstore-chain-old-'));
+    try {
+      await persistParsedFileChunk(dir, 'chunk-0', [
+        makeStoreEntry('x.ts', { referenceSites: [siteWith(undefined)] }),
+      ]);
+      const loaded = (await loadParsedFilesForPaths(dir, new Set(['x.ts']))).get('x.ts')!;
+      expect(loaded.referenceSites[0]).toMatchObject({ name: 'save' });
+      expect(loaded.referenceSites[0]).not.toHaveProperty('receiverChain');
+    } finally {
+      await rm(dir, { recursive: true, force: true });
+    }
+  });
+
+  it.each([
+    ['malformed', 'not-a-chain'],
+    ['wrong version', '2|svc|cgetUser'],
+    ['over depth', '1|svc|ca|cb|cc|cd'],
+    ['non-string', 42],
+  ])(
+    'strips a %s chain but KEEPS the site — it still resolves via the text cascade',
+    async (_label, payload) => {
+      const dir = await mkdtemp(path.join(tmpdir(), 'pfstore-chain-bad-'));
+      try {
+        await persistParsedFileChunk(dir, 'chunk-0', [
+          makeStoreEntry('x.ts', { referenceSites: [siteWith(payload)] }),
+        ]);
+        const loaded = (await loadParsedFilesForPaths(dir, new Set(['x.ts']))).get('x.ts')!;
+        expect(loaded.referenceSites).toHaveLength(1);
+        expect(loaded.referenceSites[0]).toMatchObject({ name: 'save' });
+        expect(loaded.referenceSites[0]).not.toHaveProperty('receiverChain');
+      } finally {
+        await rm(dir, { recursive: true, force: true });
+      }
+    },
+  );
+
+  it('rejects the file when referenceSites is not an array at all', async () => {
+    const dir = await mkdtemp(path.join(tmpdir(), 'pfstore-chain-garbage-'));
+    try {
+      await persistParsedFileChunk(dir, 'chunk-0', [
+        makeStoreEntry('garbage.ts', { referenceSites: 'nonsense' }),
+        makeStoreEntry('ok.ts', { referenceSites: [siteWith('1|svc|cgetUser')] }),
+      ]);
+      const loaded = await loadParsedFilesForPaths(dir, new Set(['garbage.ts', 'ok.ts']));
+      expect(loaded.has('garbage.ts')).toBe(false);
+      expect(loaded.has('ok.ts')).toBe(true);
+    } finally {
+      await rm(dir, { recursive: true, force: true });
+    }
+  });
+});
