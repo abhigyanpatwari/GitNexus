@@ -25,6 +25,7 @@ import type { ScopeResolver } from '../contract/scope-resolver.js';
 import type { ScopeResolutionIndexes } from '../../model/scope-resolution-indexes.js';
 import type { WorkspaceResolutionIndex } from '../workspace-index.js';
 import { stripTemplateArguments } from '../../utils/template-arguments.js';
+import type { DecodedReceiverChain } from '../../utils/receiver-chain-codec.js';
 import {
   findClassBindingInScope,
   findEnclosingClassDef,
@@ -197,6 +198,103 @@ function resolveConstructionExpressionClass(
   if (simpleName.length === 0) return undefined;
   const viaSimpleName = findClassBindingInScope(inScope, simpleName, scopes);
   return viaSimpleName !== undefined && isClassLike(viaSimpleName.type) ? viaSimpleName : undefined;
+}
+
+/**
+ * One step of the fold: the type of `memberName` on `owner`, or `undefined`.
+ *
+ * A method's return type and a field's declared type both live in the owning
+ * class scope's `typeBindings`, keyed by name, so a `call` step and a `field`
+ * step are the same lookup — the step's `kind` carries no resolution
+ * difference, only intent. Walks the MRO so an inherited member resolves.
+ *
+ * Deliberately does NOT consult the field fallback that
+ * `resolveCompoundReceiverClass` offers. That fallback iterates every field of
+ * the owner and re-resolves each one's class looking for a same-named member —
+ * O(fields x depth x names) per step, the shape behind the 128 GB blowup in
+ * #1871 — and it answers a DIFFERENT question ("does any field's type have a
+ * member of this name?"), which is a guess. Structure exists precisely so this
+ * does not have to guess.
+ */
+function typeOfMemberOnClass(
+  owner: SymbolDefinition,
+  memberName: string,
+  scopes: ScopeResolutionIndexes,
+  index: WorkspaceResolutionIndex,
+  options: ResolveCompoundReceiverOptions,
+): SymbolDefinition | undefined {
+  const classScopeByDefId = index.classScopeByDefId;
+  const ownerChain = [owner.nodeId, ...scopes.methodDispatch.mroFor(owner.nodeId)];
+  for (const ownerId of ownerChain) {
+    const classScope = classScopeByDefId.get(ownerId);
+    const memberType = classScope?.typeBindings.get(memberName);
+    if (memberType !== undefined) {
+      return findClassBindingInScope(memberType.declaredAtScope, memberType.rawName, scopes);
+    }
+    // Languages whose binding-scope hook hoists a method's return-type binding
+    // out of the class body and onto an ancestor (Module) scope keep NOTHING in
+    // the class scope to find — TypeScript is one, via `tsBindingScopeFor`, so
+    // without this walk the fold cannot type a single step in the first
+    // language it ships for. Gated on the same contract flag
+    // `resolveCompoundReceiverClass` uses, so a language that does not hoist
+    // cannot pick up an unrelated module-level binding of the same name.
+    if (classScope !== undefined && options.hoistTypeBindingsToModule === true) {
+      let curId: ScopeId | null = classScope.parent;
+      while (curId !== null) {
+        const curScope = scopes.scopeTree.getScope(curId);
+        if (curScope === undefined) break;
+        const hoisted = curScope.typeBindings.get(memberName);
+        if (hoisted !== undefined) {
+          return findClassBindingInScope(hoisted.declaredAtScope, hoisted.rawName, scopes);
+        }
+        curId = curScope.parent;
+      }
+    }
+  }
+  return undefined;
+}
+
+/**
+ * Type a receiver from its decoded structure instead of from its source text.
+ *
+ * Resolves the base, then folds the steps base-first, each step typed against
+ * the class the previous step produced. Returns `undefined` the moment any step
+ * fails to type, so the caller falls back to the existing text cascade rather
+ * than receiving a partially-folded guess — a missing edge is recoverable, a
+ * confidently wrong one is not.
+ *
+ * The base is resolved by handing it to `resolveCompoundReceiverClass`, which
+ * already owns the bare-identifier path in full: type binding, static
+ * class-name receivers, map-tuple sentinels, member aliases and call-result
+ * aliases. A second implementation of that would drift from it.
+ *
+ * NOT WIRED into any resolution path yet — see U10.
+ */
+export function foldReceiverChain(
+  chain: DecodedReceiverChain,
+  inScope: ScopeId,
+  scopes: ScopeResolutionIndexes,
+  index: WorkspaceResolutionIndex,
+  options: ResolveCompoundReceiverOptions = {},
+): SymbolDefinition | undefined {
+  // A truncated chain is missing the head that decides the final type. The
+  // producer refuses to mint one, so this is defence in depth against a
+  // future producer that does.
+  if (chain.truncated) return undefined;
+  if (chain.steps.length === 0) return undefined;
+
+  let current = resolveCompoundReceiverClass(chain.baseReceiverName, inScope, scopes, index, {
+    ...options,
+    fieldFallback: false,
+  });
+  if (current === undefined) return undefined;
+
+  for (const step of chain.steps) {
+    const next = typeOfMemberOnClass(current, step.name, scopes, index, options);
+    if (next === undefined) return undefined;
+    current = next;
+  }
+  return current;
 }
 
 export function resolveCompoundReceiverClass(
