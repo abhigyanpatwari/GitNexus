@@ -59,8 +59,15 @@
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
+import { fileURLToPath } from 'node:url';
 
 import { runPipelineFromRepo } from '../../src/core/ingestion/pipeline.ts';
+
+const __dirname = path.dirname(fileURLToPath(import.meta.url));
+const BASELINE_PATH = path.resolve(__dirname, 'baseline.json');
+/** The `--check` corpus. Committed and multi-language, so the gate is
+ *  deterministic and does not depend on anything outside the repo. */
+const DEFAULT_CORPUS = path.resolve(__dirname, '..', '..', 'test', 'fixtures', 'lang-resolution');
 
 // ---------------------------------------------------------------------------
 // Shape corpus
@@ -321,15 +328,74 @@ const KNOWN_BLIND = [
   'Every count is therefore a LOWER BOUND on a known-biased population. A later delta must be read against the same bias.',
 ];
 
+/**
+ * The gated projection: shape states per language, plus the call-drop counts.
+ * Deliberately EXACT rather than budgeted — two consecutive runs are
+ * byte-identical, so a range would only hide real movement. Adding fixtures
+ * moves these numbers and requires a rebaseline; that treadmill is the accepted
+ * cost of the guard, the same trade the scope-capture bench already makes.
+ */
+function projection(output) {
+  return {
+    shapeArm: Object.fromEntries(
+      output.shapeArm.map((corpus) => [
+        corpus.language,
+        Object.fromEntries(corpus.shapes.map((shape) => [shape.id, shape.state])),
+      ]),
+    ),
+    countArm: {
+      callDrops: output.countArm.callDrops,
+      totalDropsAllKinds: output.countArm.totalDropsAllKinds,
+      bySiteKind: output.countArm.bySiteKind,
+      callDropsByExtension: output.countArm.callDropsByExtension,
+    },
+  };
+}
+
+/** Every leaf whose value differs, as `dotted.path: expected -> actual`. */
+function drift(expected, actual, prefix = '') {
+  const out = [];
+  const keys = new Set([...Object.keys(expected ?? {}), ...Object.keys(actual ?? {})]);
+  for (const key of keys) {
+    const want = expected?.[key];
+    const got = actual?.[key];
+    const at = prefix === '' ? key : `${prefix}.${key}`;
+    if (want !== null && typeof want === 'object') out.push(...drift(want, got ?? {}, at));
+    else if (want !== got) out.push(`${at}: ${JSON.stringify(want)} -> ${JSON.stringify(got)}`);
+  }
+  return out;
+}
+
 const args = process.argv.slice(2);
 const corpusIndex = args.indexOf('--corpus');
-const corpusPath = corpusIndex === -1 ? undefined : args[corpusIndex + 1];
+const check = args.includes('--check');
+const corpusPath =
+  corpusIndex === -1 ? (check ? DEFAULT_CORPUS : undefined) : path.resolve(args[corpusIndex + 1]);
 
 const output = { knownBlind: KNOWN_BLIND };
-if (corpusPath === undefined || args.includes('--shapes')) {
+if (corpusPath === undefined || check || args.includes('--shapes')) {
   output.shapeArm = await runShapeArm();
 }
 if (corpusPath !== undefined) {
-  output.countArm = await runCountArm(path.resolve(corpusPath));
+  output.countArm = await runCountArm(corpusPath);
 }
-console.log(JSON.stringify(output, null, 2));
+
+if (args.includes('--update-baseline')) {
+  fs.writeFileSync(BASELINE_PATH, `${JSON.stringify(projection(output), null, 2)}\n`, 'utf8');
+  console.error(`[receiver-resolution] wrote ${BASELINE_PATH}`);
+} else if (check) {
+  const expected = JSON.parse(fs.readFileSync(BASELINE_PATH, 'utf8'));
+  const diffs = drift(expected, projection(output));
+  if (diffs.length > 0) {
+    console.error('[receiver-resolution] FAIL — drift against the committed baseline:');
+    for (const line of diffs) console.error(`  ${line}`);
+    console.error(
+      '\nIf this is intended (a fixture was added, or a shape genuinely changed state),' +
+        '\nre-run with --update-baseline and explain the movement in the commit message.',
+    );
+    process.exit(1);
+  }
+  console.error('[receiver-resolution] OK — shape states and call-drop counts match baseline.');
+} else {
+  console.log(JSON.stringify(output, null, 2));
+}
