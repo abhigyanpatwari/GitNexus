@@ -311,6 +311,18 @@ validates the returned vector's length):
 
 Works with Infinity, vLLM, TEI, llama.cpp, Ollama, LM Studio, or OpenAI. Retry and pacing settings are provider-neutral; provider-specific limits should be supplied through configuration. When unset, local embeddings are used unchanged.
 
+## JVM Package Sibling Injection
+
+Java and Kotlin files in the same package receive implicit sibling class bindings
+to resolve same-package references. By default, GitNexus injects at most 200
+siblings per module scope. Set `GITNEXUS_MAX_INJECTED_SIBLINGS=0` to remove the
+limit; this can substantially increase indexing work for large packages.
+
+```bash
+export GITNEXUS_MAX_INJECTED_SIBLINGS=200
+gitnexus analyze .
+```
+
 ## Multi-Repo Support
 
 GitNexus supports indexing multiple repositories. Each `gitnexus analyze` registers the repo in a global registry (`~/.gitnexus/registry.json`). The MCP server serves all indexed repos automatically.
