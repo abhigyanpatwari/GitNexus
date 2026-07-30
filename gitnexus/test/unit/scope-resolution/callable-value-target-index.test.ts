@@ -33,7 +33,7 @@ const graphOf = (nodes: readonly StubNode[]): KnowledgeGraph => {
 
 /** `line` is 1-based, matching the definition-id convention. */
 const def = (type: string, filePath: string, qualifiedName: string, line: number) => ({
-  nodeId: `${filePath}#${line}:0:${qualifiedName}`,
+  nodeId: `def:${filePath}#${line}:0:${type}:${qualifiedName}`,
   type,
   filePath,
   qualifiedName,
@@ -69,7 +69,7 @@ describe('buildGraphTargetIndex — value bindings join by position', () => {
     // the same construct, so they share file, line and name.
     expect(
       targetsFor([node('Function', 'a.kt', 'handler', 3)], [def('Property', 'a.kt', 'handler', 3)]),
-    ).toEqual(['a.kt#3:0:handler => Function:a.kt:handler']);
+    ).toEqual(['def:a.kt#3:0:Property:handler => Function:a.kt:handler']);
   });
 
   it('REJECTS a value binding that merely shares a name with a callable elsewhere', () => {
@@ -106,12 +106,12 @@ describe('buildGraphTargetIndex — value bindings join by position', () => {
         [node('Function', 'a.php', '$save', 5), node('Function', 'a.php', 'save', 2)],
         [def('Variable', 'a.php', 'save', 5)],
       ),
-    ).toEqual(['a.php#5:0:save => Function:a.php:$save']);
+    ).toEqual(['def:a.php#5:0:Variable:save => Function:a.php:$save']);
   });
 
   it('keeps ordinary callable defs, which never take the positional path', () => {
     expect(
       targetsFor([node('Function', 'a.ts', 'fn', 1)], [def('Function', 'a.ts', 'fn', 1)]),
-    ).toEqual(['a.ts#1:0:fn => Function:a.ts:fn']);
+    ).toEqual(['def:a.ts#1:0:Function:fn => Function:a.ts:fn']);
   });
 });

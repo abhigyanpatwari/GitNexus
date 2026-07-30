@@ -34,6 +34,7 @@ import {
 } from '../../utils/callable-labels.js';
 import { templateConstraintsIdTag } from '../../utils/template-arguments.js';
 import { parameterShapeIdTag } from '../../utils/method-props.js';
+import { definitionIdPosition } from '../utils/definition-id.js';
 /**
  * Labels that may legitimately ANCHOR a CALLS/ACCESSES edge as the
  * source ("caller"). A Variable / Property can be the TARGET of an
@@ -99,9 +100,9 @@ function scopeIsCallableBody(
   range: { startLine: number; startCol: number },
   def: SymbolDefinition,
 ): boolean {
-  const m = def.nodeId.match(/#(\d+):(\d+):/);
-  if (m === null) return false;
-  return Number(m[1]) === range.startLine && Number(m[2]) === range.startCol;
+  const position = definitionIdPosition(def.nodeId, def.filePath);
+  if (position === undefined) return false;
+  return position.line === range.startLine && position.column === range.startCol;
 }
 
 /** Pick the callable that owns `atRange` when multiple overloads share a class scope. */
@@ -165,12 +166,8 @@ function pickCallerCallableDef(
  * Extract the 1-based declaration line from a scope-resolution def id.
  * Shape: `def:<filePath>#<line>:<col>:<...>`; `undefined` when it doesn't match.
  */
-function defStartLine(nodeId: string | undefined): number | undefined {
-  if (nodeId === undefined) return undefined;
-  const m = nodeId.match(/#(\d+):(\d+):/);
-  if (m === null) return undefined;
-  const line = Number(m[1]);
-  return Number.isFinite(line) ? line : undefined;
+function defStartLine(nodeId: string | undefined, filePath: string): number | undefined {
+  return definitionIdPosition(nodeId, filePath)?.line;
 }
 
 /**
@@ -221,7 +218,7 @@ export function resolveDefGraphId(
     // without either side having to model the scope chain. Node ids are
     // 0-based, def ids 1-based. An `AMBIGUOUS_POSITION` tombstone (two
     // callables on one line) falls through to the name-based keys below.
-    const line = defStartLine(def.nodeId);
+    const line = defStartLine(def.nodeId, filePath);
     if (line !== undefined && isPositionQualifiedLocalLabel(def.type)) {
       const simple = simpleNameOf(qn);
       const posHit = nodeLookup.get(positionKey(filePath, def.type, line - 1, simple));
