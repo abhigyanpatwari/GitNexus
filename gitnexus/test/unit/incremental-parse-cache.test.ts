@@ -101,6 +101,10 @@ describe('fileContentHash', () => {
 });
 
 describe('PARSE_CACHE_VERSION', () => {
+  it('pins SCHEMA_BUMP to 31 so concurrent bumps cannot silently collide (#2736)', () => {
+    expect(Number(PARSE_CACHE_VERSION.split('+', 1)[0])).toBe(31);
+  });
+
   it('embeds the gitnexus package version (so upgrades invalidate the cache)', () => {
     // Looks like "1+1.6.4" — schema bump prefix + actual gitnexus version
     expect(PARSE_CACHE_VERSION).toMatch(/^\d+\+\d+\.\d+\.\d+/);
