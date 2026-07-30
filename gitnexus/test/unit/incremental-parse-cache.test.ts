@@ -101,8 +101,8 @@ describe('fileContentHash', () => {
 });
 
 describe('PARSE_CACHE_VERSION', () => {
-  it('pins SCHEMA_BUMP to 31 so concurrent bumps cannot silently collide (#2736)', () => {
-    expect(Number(PARSE_CACHE_VERSION.split('+', 1)[0])).toBe(31);
+  it('pins SCHEMA_BUMP to 32 so concurrent bumps cannot silently collide (#2736)', () => {
+    expect(Number(PARSE_CACHE_VERSION.split('+', 1)[0])).toBe(32);
   });
 
   it('embeds the gitnexus package version (so upgrades invalidate the cache)', () => {
