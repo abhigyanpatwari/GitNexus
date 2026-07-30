@@ -240,6 +240,11 @@ export const swiftExportChecker: ExportChecker = (node, _name) => {
 /** Ruby: all top-level definitions are public (no export syntax). */
 export const rubyExportChecker: ExportChecker = (_node, _name) => true;
 
+/** Lua: `function foo()` is global (reachable from other files via require/_G);
+ *  `local function foo()` is module-private. */
+export const luaExportChecker: ExportChecker = (node, _name) =>
+  node.type !== 'local_function_definition_statement';
+
 /** Dart: public if no leading underscore (convention, same as Python). */
 export const dartExportChecker: ExportChecker = (_node, name) => !name.startsWith('_');
 
