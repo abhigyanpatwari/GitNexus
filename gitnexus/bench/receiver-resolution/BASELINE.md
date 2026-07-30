@@ -20,6 +20,53 @@
 >
 > The tables below are the pre-U10 measurement, kept as the reference point.
 
+## U7 — the go/no-go gate: PASS
+
+A/B produced by reverting ONLY the fold wiring (`compound-receiver.ts` +
+`receiver-bound-calls.ts`) to the pre-U10 commit and rebuilding, so capture
+emission — and therefore the persisted bytes — is identical in both arms and the
+delta isolates the fold. Build + both caches wiped before every run (KTD4).
+
+| Metric | Control | Treatment | Δ | Threshold | Verdict |
+|---|---|---|---|---|---|
+| scope-resolution wall-clock, median of 3 | 25470.0 ms | 25687.9 ms | +0.86% | ≤ +3% | **PASS** |
+| wall-clock, slowest of 3 | 25520.0 ms | 25832.6 ms | +1.22% | ≤ +5% p95 | **PASS** |
+| serialized bytes per emitting site | — | **35.2 B** | — | ≤ 48 B | **PASS** |
+| persisted store growth | 1 234 600 B | 1 235 340 B | **+0.0599%** | ≤ 3% | **PASS** |
+| retained chain payload | — | 740 B | — | ≤ 6 MB | **PASS** |
+| call drops (no regression) | 99 | 99 | 0 | no new drops | **PASS** |
+| peak RSS | — | — | — | ≤ +2% | **NOT RESOLVABLE** |
+
+**The 35.2 B result confirms KTD7 by measurement rather than by assertion.** The
+48-byte threshold was set deliberately so the object encoding (~71 B predicted)
+fails and the compact string (~35 B predicted) passes. Measured: 35.2 B,
+including the JSON key and quotes. The encoding decision is now evidence-backed.
+
+**Peak RSS: the threshold is below this instrument's resolution, so it is
+reported as unresolvable rather than as a pass or a fail.** Three *independent*
+treatment runs with the code held constant gave 414.9 / 436.6 / 436.9 MB — a
+5.3% spread, wider than the ±2% being tested. (An earlier pair of 3-reps-in-one-
+process runs read 536 vs 551 MB and looked like a +2.77% regression; that was
+heap accumulating across reps, not growth.) Corroborating argument that no growth
+exists to find: the change persists 740 bytes across the entire corpus and the
+fold allocates nothing retained — it returns `SymbolDefinition`s the indexes
+already hold.
+
+**Fold hit-rate.** Chains are minted for 21 of 529 TypeScript reference sites
+(4.0%) — the field costs nothing on the 96% of sites with a bare-name receiver.
+On the shape corpus, all 5 chain-carrying shapes resolve, so the fold is not pure
+added cost on this population.
+
+**Not measured: a dedicated synthetic miss-dominant scaling corpus.** The plan
+asks for `scaling_ratio < 1.5` on one, on the grounds that a same-name corpus
+hits at `ownerChain[0]` and never exercises the MRO tail. Stated plainly so it is
+not mistaken for a silent pass. What bounds the cost instead: the fold runs with
+`fieldFallback: false`, so the O(fields × depth × names) path the threshold exists
+to police cannot execute at all, and the remaining work is at most
+`MAX_CHAIN_DEPTH` (3) map lookups per MRO ancestor per chained site, over a
+population of 21 sites. The wall-clock A/B above is the empirical check on that
+reasoning.
+
 Measured with `bench/receiver-resolution/measure.mjs` on `f87b2cbe`.
 
 Hygiene (a run without both steps is void — `analyze --force` clears neither cache,

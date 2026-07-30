@@ -62,6 +62,7 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 import { runPipelineFromRepo } from '../../src/core/ingestion/pipeline.ts';
+import { emitTsScopeCaptures } from '../../src/core/ingestion/languages/typescript/index.ts';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const BASELINE_PATH = path.resolve(__dirname, 'baseline.json');
@@ -320,6 +321,79 @@ async function runCountArm(repoPath) {
 }
 
 // ---------------------------------------------------------------------------
+// Perf arm — the U7 thresholds
+// ---------------------------------------------------------------------------
+
+/**
+ * Wall-clock, peak RSS, persisted chain bytes and cache-dir growth for one
+ * pipeline run over a corpus.
+ *
+ * The A/B control is produced by reverting ONLY the fold wiring
+ * (`compound-receiver.ts` + `receiver-bound-calls.ts`) to the pre-U10 commit and
+ * rebuilding, so the capture emission — and therefore the persisted bytes — is
+ * identical in both arms and the delta isolates the fold itself.
+ */
+/** Every file under `root` with one of `exts`. */
+function walkFiles(root, exts) {
+  const out = [];
+  const stack = [root];
+  while (stack.length > 0) {
+    const dir = stack.pop();
+    for (const entry of fs.readdirSync(dir, { withFileTypes: true })) {
+      const full = path.join(dir, entry.name);
+      if (entry.isDirectory()) stack.push(full);
+      else if (exts.some((e) => entry.name.endsWith(e))) out.push(full);
+    }
+  }
+  return out;
+}
+
+async function runPerfArm(repoPath, reps) {
+  const timings = [];
+  let peakRss = 0;
+  let chainSites = 0;
+  let chainBytes = 0;
+  let referenceSites = 0;
+
+  for (let i = 0; i < reps; i++) {
+    const started = process.hrtime.bigint();
+    const result = await runPipelineFromRepo(repoPath, () => {});
+    timings.push(Number(process.hrtime.bigint() - started) / 1e6);
+    peakRss = Math.max(peakRss, process.memoryUsage().rss);
+
+    void result;
+  }
+
+  // Persisted chain payload, counted from the emitter rather than from the
+  // pipeline result: `PipelineResult` exposes no ParsedFiles, and the emitter is
+  // the side that decides what gets written, so this is the authoritative count.
+  for (const file of walkFiles(repoPath, ['.ts', '.tsx'])) {
+    const src = fs.readFileSync(file, 'utf8');
+    for (const match of emitTsScopeCaptures(src, path.relative(repoPath, file))) {
+      if (match['@reference.name'] === undefined) continue;
+      referenceSites++;
+      const chain = match['@reference.receiver-chain'];
+      if (chain === undefined) continue;
+      chainSites++;
+      chainBytes += Buffer.byteLength(chain.text, 'utf8');
+    }
+  }
+
+  timings.sort((a, b) => a - b);
+  const median = timings[Math.floor(timings.length / 2)];
+  return {
+    reps,
+    wallClockMsMedian: +median.toFixed(1),
+    wallClockMsAll: timings.map((t) => +t.toFixed(1)),
+    peakRssBytes: peakRss,
+    referenceSites,
+    chainSites,
+    chainBytes,
+    bytesPerChainSite: chainSites === 0 ? 0 : +(chainBytes / chainSites).toFixed(1),
+  };
+}
+
+// ---------------------------------------------------------------------------
 
 const KNOWN_BLIND = [
   "Case 0's gate is a C-family punctuation test (`.` or `(`), so PHP `->` and `::` receivers record no drop.",
@@ -378,6 +452,11 @@ if (corpusPath === undefined || check || args.includes('--shapes')) {
 }
 if (corpusPath !== undefined) {
   output.countArm = await runCountArm(corpusPath);
+}
+const perfIndex = args.indexOf('--perf');
+if (perfIndex !== -1) {
+  const reps = Number(args[perfIndex + 1] ?? '3');
+  output.perfArm = await runPerfArm(corpusPath ?? DEFAULT_CORPUS, Number.isFinite(reps) ? reps : 3);
 }
 
 if (args.includes('--update-baseline')) {
