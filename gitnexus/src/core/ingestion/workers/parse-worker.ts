@@ -1,5 +1,9 @@
 import { parentPort, threadId, workerData } from 'node:worker_threads';
-import { localIdentity, nestedCallableQualifiedName } from './callable-id.js';
+import {
+  boundCallablePositionNode,
+  localIdentity,
+  nestedCallableQualifiedName,
+} from './callable-id.js';
 import Parser from 'tree-sitter';
 import JavaScript from 'tree-sitter-javascript';
 import TypeScript from 'tree-sitter-typescript';
@@ -2240,8 +2244,17 @@ const processFileGroup = (
         }
       }
 
-      const startLine = definitionNode
-        ? definitionNode.startPosition.row + lineOffset
+      // #2735: for a bound callable the graph-node capture sits on the OUTER
+      // wrapper while scope-resolution anchors on the INNER expression. The
+      // position join is line-only, so `startLine` must follow the initializer
+      // (ids still use `definitionNode` via `localIdentity`).
+      const positionNode =
+        definitionNode &&
+        (nodeLabel === 'Function' || nodeLabel === 'Method' || nodeLabel === 'Constructor')
+          ? boundCallablePositionNode(definitionNode, nameNode)
+          : definitionNode;
+      const startLine = positionNode
+        ? positionNode.startPosition.row + lineOffset
         : nameNode
           ? nameNode.startPosition.row + lineOffset
           : lineOffset;
@@ -2750,7 +2763,7 @@ const processFileGroup = (
         properties: {
           name: nodeName,
           filePath: file.path,
-          startLine: definitionNode ? definitionNode.startPosition.row + lineOffset : startLine,
+          startLine,
           endLine: definitionNode ? definitionNode.endPosition.row + lineOffset : startLine,
           language: language,
           isExported:

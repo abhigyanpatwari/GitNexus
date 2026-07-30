@@ -128,7 +128,10 @@ import type { ParseWorkerResult } from '../core/ingestion/workers/parse-worker.j
 // JLS 13.1 immediate-host chains (#2555).
 // v18: Worker$N anonymous bodies. v17: callable-value-flow operand identity.
 // v16: direct callee identity.
-const SCHEMA_BUMP = 32;
+// v33: bound-callable graph `startLine` follows the initializer so multi-line
+// closure bindings join the scope channel (#2735). Warm cache would otherwise
+// keep serving wrapper-line startLines and drop the CALLS edge.
+const SCHEMA_BUMP = 33;
 const GITNEXUS_PKG_VERSION = (() => {
   try {
     // package.json sits at gitnexus/package.json — two levels up from

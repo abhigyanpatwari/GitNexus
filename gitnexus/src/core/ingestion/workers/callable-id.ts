@@ -22,6 +22,115 @@
 import type { SyntaxNode } from '../utils/ast-helpers.js';
 
 /**
+ * Callable expressions the scope-resolution channel anchors on for a
+ * closure binding (`@declaration.function` on the INNER node). Kept separate
+ * from `FUNCTION_NODE_TYPES` because that set also lists declaration forms that
+ * are never a binding initializer (`method_declaration`, `impl_item`, …).
+ */
+const BOUND_CALLABLE_EXPRESSION_TYPES = new Set([
+  'arrow_function',
+  'async_arrow_function',
+  'function_expression',
+  'generator_function',
+  'anonymous_function',
+  'closure_expression',
+  'lambda_literal',
+  'lambda_expression',
+  // Named forms that are themselves the definition node (not a wrapper).
+  'function_declaration',
+  'generator_function_declaration',
+  'async_function_declaration',
+  'function_item',
+  'function_definition',
+  'method_definition',
+  'local_function_statement',
+]);
+
+const INITIALIZER_FIELDS = [
+  'value',
+  'right',
+  'initializer',
+  'default_value',
+  'result',
+] as const;
+
+function fieldInitializer(node: SyntaxNode): SyntaxNode | null {
+  for (const field of INITIALIZER_FIELDS) {
+    const child = node.childForFieldName(field);
+    if (child !== null) return child;
+  }
+  return null;
+}
+
+function unwrapBoundCallable(node: SyntaxNode | null): SyntaxNode | undefined {
+  if (node === null) return undefined;
+  if (BOUND_CALLABLE_EXPRESSION_TYPES.has(node.type)) return node;
+
+  // Parenthesized / thin wrappers: dig one level when the grammar fields it.
+  const wrapped =
+    node.childForFieldName('expression') ??
+    node.childForFieldName('argument') ??
+    (node.type.includes('parenthesized') ? node.namedChild(0) : null);
+  if (wrapped !== null && wrapped.id !== node.id) {
+    const found = unwrapBoundCallable(wrapped);
+    if (found !== undefined) return found;
+  }
+
+  // HOC / factory: `const X = HOC((args) => …)` — the callable sits in arguments.
+  if (node.type === 'call_expression' || node.type === 'arguments') {
+    for (const child of node.namedChildren) {
+      const found = unwrapBoundCallable(child);
+      if (found !== undefined) return found;
+    }
+  }
+  return undefined;
+}
+
+/**
+ * AST node whose start line keys the graph↔scope position join for a bound
+ * callable (#2735).
+ *
+ * Graph-node queries put `@definition.function` on the OUTER binding wrapper
+ * (`assignment_expression` / `lexical_declaration` / `let_declaration`); the
+ * scope channel puts `@declaration.function` on the INNER callable so its range
+ * aligns with `@scope.function`. The join is line-only (`positionKey`), so a
+ * multi-line binding missed until the graph node's `startLine` followed the
+ * initializer.
+ *
+ * Node *ids* stay on the binding wrapper via `localIdentity(definitionNode)` —
+ * only the reported `startLine` moves to the callable body.
+ */
+export function boundCallablePositionNode(
+  definitionNode: SyntaxNode,
+  nameNode?: SyntaxNode | null,
+): SyntaxNode {
+  // Prefer the declarator/assignment that owns `nameNode`, so
+  // `const a = () => 1, b = () => 2` does not give `b` the start line of `a`.
+  if (nameNode !== undefined && nameNode !== null) {
+    let current: SyntaxNode | null = nameNode;
+    while (current !== null && current.id !== definitionNode.id) {
+      const callable = unwrapBoundCallable(fieldInitializer(current));
+      if (callable !== undefined) return callable;
+      current = current.parent;
+    }
+  }
+
+  if (BOUND_CALLABLE_EXPRESSION_TYPES.has(definitionNode.type)) {
+    return definitionNode;
+  }
+
+  const fromDefinition = unwrapBoundCallable(fieldInitializer(definitionNode));
+  if (fromDefinition !== undefined) return fromDefinition;
+
+  for (const child of definitionNode.namedChildren) {
+    const callable = unwrapBoundCallable(fieldInitializer(child));
+    if (callable !== undefined) return callable;
+  }
+
+  return definitionNode;
+}
+
+/**
  * A function-local callable's own name segment: its name plus its declaration
  * position.
  *

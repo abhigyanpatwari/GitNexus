@@ -26,11 +26,99 @@
 import { readFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { describe, expect, it } from 'vitest';
-import { nestedCallableQualifiedName } from '../../src/core/ingestion/workers/callable-id.js';
+import { boundCallablePositionNode, nestedCallableQualifiedName } from '../../src/core/ingestion/workers/callable-id.js';
 import type { SyntaxNode } from '../../src/core/ingestion/utils/ast-helpers.js';
 
 const nodeAt = (row: number, column: number): SyntaxNode =>
   ({ startPosition: { row, column } }) as unknown as SyntaxNode;
+
+function stubNode(opts: {
+  type: string;
+  id: number;
+  row?: number;
+  column?: number;
+  parent?: SyntaxNode | null;
+  fields?: Record<string, SyntaxNode | null>;
+  namedChildren?: SyntaxNode[];
+}): SyntaxNode {
+  const node = {
+    type: opts.type,
+    id: opts.id,
+    startPosition: { row: opts.row ?? 0, column: opts.column ?? 0 },
+    parent: opts.parent ?? null,
+    namedChildren: opts.namedChildren ?? [],
+    namedChildCount: (opts.namedChildren ?? []).length,
+    namedChild: (i: number) => (opts.namedChildren ?? [])[i] ?? null,
+    childForFieldName: (field: string) => opts.fields?.[field] ?? null,
+  } as unknown as SyntaxNode;
+  return node;
+}
+
+describe('boundCallablePositionNode — #2735 initializer start line', () => {
+  it('returns the definition itself when it is already a callable', () => {
+    const fn = stubNode({ type: 'function_declaration', id: 1, row: 2, column: 0 });
+    expect(boundCallablePositionNode(fn)).toBe(fn);
+  });
+
+  it('follows assignment right-hand side from the name node', () => {
+    const closure = stubNode({ type: 'anonymous_function', id: 3, row: 5, column: 4 });
+    const assign = stubNode({
+      type: 'assignment_expression',
+      id: 1,
+      row: 4,
+      column: 2,
+      fields: { right: closure },
+    });
+    const name = stubNode({
+      type: 'variable_name',
+      id: 2,
+      row: 4,
+      column: 2,
+      parent: assign,
+    });
+    // Close the parent link after name exists (assign.fields already set).
+    (assign as { parent: SyntaxNode | null }).parent = null;
+
+    expect(boundCallablePositionNode(assign, name)).toBe(closure);
+  });
+
+  it('does not steal a sibling declarator initializer', () => {
+    const aArrow = stubNode({ type: 'arrow_function', id: 10, row: 1, column: 0 });
+    const bArrow = stubNode({ type: 'arrow_function', id: 11, row: 3, column: 0 });
+    const aDecl = stubNode({
+      type: 'variable_declarator',
+      id: 2,
+      row: 1,
+      column: 0,
+      fields: { value: aArrow },
+    });
+    const bDecl = stubNode({
+      type: 'variable_declarator',
+      id: 3,
+      row: 2,
+      column: 0,
+      fields: { value: bArrow },
+    });
+    const lexical = stubNode({
+      type: 'lexical_declaration',
+      id: 1,
+      row: 1,
+      column: 0,
+      namedChildren: [aDecl, bDecl],
+    });
+    (aDecl as { parent: SyntaxNode | null }).parent = lexical;
+    (bDecl as { parent: SyntaxNode | null }).parent = lexical;
+    const bName = stubNode({
+      type: 'identifier',
+      id: 4,
+      row: 2,
+      column: 6,
+      parent: bDecl,
+    });
+
+    expect(boundCallablePositionNode(lexical, bName)).toBe(bArrow);
+  });
+});
 
 describe('nestedCallableQualifiedName — the shared nested-callable id rule', () => {
   it('qualifies by the enclosing callable AND the declaration position', () => {

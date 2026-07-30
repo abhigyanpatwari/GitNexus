@@ -104,8 +104,8 @@ describe('PARSE_CACHE_VERSION', () => {
   // 31 -> 32 for the mod-qualified Rust node ids (#2742). Updated deliberately:
   // this pin exists so a bump cannot ride along unnoticed, and it caught the
   // collision when the pin arrived from main while this branch already held 32.
-  it('pins SCHEMA_BUMP to 32 so concurrent bumps cannot silently collide (#2736)', () => {
-    expect(Number(PARSE_CACHE_VERSION.split('+', 1)[0])).toBe(32);
+  it('pins SCHEMA_BUMP to 33 so concurrent bumps cannot silently collide (#2736)', () => {
+    expect(Number(PARSE_CACHE_VERSION.split('+', 1)[0])).toBe(33);
   });
 
   it('embeds the gitnexus package version (so upgrades invalidate the cache)', () => {
