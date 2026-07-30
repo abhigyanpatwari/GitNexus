@@ -2955,3 +2955,38 @@ describe('Rust nested inline modules resolve (#2745 review)', () => {
     expect(selfLoops).toEqual([]);
   });
 });
+
+// ---------------------------------------------------------------------------
+// #2745 review — an imported type outranks a same-named module at the crate root.
+//
+// Widening the negative filter to inline `mod` names let a type-qualified call
+// through when a module happened to share the type's name. The crate-root-relative
+// candidate — the loosest one, a guess at a path the caller never wrote — then
+// captured it, producing an edge to a callee the source does not name. The base
+// emitted no edge, which per the doctrine quoted in `ids.ts` is the correct failure
+// direction: a missing edge is recoverable, a fabricated caller misleads `impact`.
+// ---------------------------------------------------------------------------
+
+describe('Rust type-qualified calls outrank a same-named module (#2745 review)', () => {
+  let result: PipelineResult;
+
+  beforeAll(async () => {
+    result = await runPipelineFromRepo(path.join(FIXTURES, 'rust-2742-type-vs-module'), () => {});
+  }, 60000);
+
+  it('never binds an imported type to the crate-root module of the same name', () => {
+    const fromCall = getRelationships(result, 'CALLS').filter(
+      (c) => c.rel.sourceId === 'Function:src/b.rs:call',
+    );
+    const targets = fromCall.map((c) => c.rel.targetId);
+    expect(targets).not.toContain('Function:src/lib.rs:Buffer.with_capacity');
+  });
+
+  it('leaves the module member itself intact as a node', () => {
+    const ids: string[] = [];
+    result.graph.forEachNode((n) => {
+      if (n.label === 'Function' && n.properties.name === 'with_capacity') ids.push(n.id);
+    });
+    expect(ids).toContain('Function:src/lib.rs:Buffer.with_capacity');
+  });
+});

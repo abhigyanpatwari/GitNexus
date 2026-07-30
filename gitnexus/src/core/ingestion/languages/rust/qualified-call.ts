@@ -34,6 +34,7 @@
 
 import type { ParsedFile, Scope, ScopeId, SymbolDefinition } from 'gitnexus-shared';
 import { isOverloadableCallable } from '../../utils/callable-labels.js';
+import { lookupBindingsAt } from '../../scope-resolution/scope/walkers.js';
 import type { ScopeResolutionIndexes } from '../../model/scope-resolution-indexes.js';
 import type { WorkspaceResolutionIndex } from '../../scope-resolution/workspace-index.js';
 import {
@@ -219,9 +220,51 @@ function* candidateModules(
 
   // 3. Crate-root-relative (`a::b::f()` written from a nested module — 2015
   //    edition style, and still what a single-file crate looks like).
-  if (callerModule.segments.length > 0) {
+  //
+  //    Skipped when the head already names something else in the caller's own
+  //    module. This is the loosest candidate — a guess at a path the caller never
+  //    wrote — and in Rust 2018 a bare first segment resolves in the caller's
+  //    module, not at the crate root, so a local binding for it settles the
+  //    question. Without the check, a crate-root `mod` whose name matches an
+  //    imported TYPE captured the call:
+  //
+  //      // src/lib.rs
+  //      pub mod Buffer { pub fn with_capacity() -> usize { 111 } }
+  //      // src/b.rs
+  //      use crate::c::Buffer;                        // the real target, in c.rs
+  //      pub fn call() -> usize { Buffer::with_capacity() }
+  //
+  //    which yielded `CALLS b::call -> lib.rs:Buffer.with_capacity`, an edge to a
+  //    callee the source never names. The base emitted no edge at all, and per the
+  //    doctrine quoted in `ids.ts` that is the correct failure direction: a missing
+  //    edge is recoverable, a fabricated caller silently misleads `impact`.
+  if (callerModule.segments.length > 0 && !headBoundLocally(callerParsed, head, scopes)) {
     yield { crateRoot: callerModule.crateRoot, segments: [...qualifier] };
   }
+}
+
+/**
+ * Is `name` bound in the caller's own module to anything that is NOT a module?
+ *
+ * A `use crate::c::Buffer;` binds the TYPE `Buffer`, so a bare `Buffer::…` path in
+ * that file resolves through the import — never to a same-named module elsewhere in
+ * the crate. Module bindings are excluded so the legitimate `use crate::tools;`
+ * case, which candidate 2 already handles, is not double-counted here.
+ */
+function headBoundLocally(
+  callerParsed: ParsedFile,
+  name: string | undefined,
+  scopes: ScopeResolutionIndexes,
+): boolean {
+  if (name === undefined) return false;
+  // Read through `lookupBindingsAt`, not the raw `Scope.bindings` map: a `use`
+  // binding is finalize OUTPUT and is absent from the scope's own local table, so
+  // the direct read saw nothing for exactly the imported-type case this guards
+  // (contract I8 in `contract/scope-resolver.ts` requires this channel anyway).
+  for (const ref of lookupBindingsAt(callerParsed.moduleScope, name, scopes)) {
+    if (ref.def.type !== 'Namespace') return true;
+  }
+  return false;
 }
 
 /** Tail segment of a dot-joined qualified name (`outer.tools` → `tools`). */
