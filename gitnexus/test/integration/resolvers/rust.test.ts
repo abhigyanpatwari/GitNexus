@@ -2910,3 +2910,48 @@ describe('Rust containers inside a mod keep their member edges (#2745 review)', 
     ]);
   });
 });
+
+// ---------------------------------------------------------------------------
+// #2745 review — the #2730 self-loop survived one `mod` deeper.
+//
+// A `mod` nested inside an inline `mod` binds in the PARENT module's scope.
+// `declaresSubmodule` looked it up through `moduleScopeByFile`, which maps a file
+// to its root `Module` scope only, so a nested inline module was invisible: the
+// candidate was never yielded, the hook refused, and the shared lexical tier bound
+// `tools::dispatch()` to the enclosing same-name `dispatch`.
+//
+// Inline module paths are now derived from the MEMBERS' `namespacePrefix` — a `mod`
+// def carries no nesting information of its own, and a `Namespace` scope owns its
+// own def rather than its children's, so neither channel could answer this.
+// ---------------------------------------------------------------------------
+
+describe('Rust nested inline modules resolve (#2745 review)', () => {
+  let result: PipelineResult;
+
+  beforeAll(async () => {
+    result = await runPipelineFromRepo(path.join(FIXTURES, 'rust-2742-nested-mods'), () => {});
+  }, 60000);
+
+  it('resolves a nested inline module member instead of the enclosing same-name fn', () => {
+    const edges = getRelationships(result, 'CALLS').filter(
+      (c) => c.rel.sourceId === 'Function:src/main.rs:outer.dispatch',
+    );
+    expect(edges).toMatchObject([
+      { rel: { targetId: 'Function:src/main.rs:outer.tools.dispatch' } },
+    ]);
+  });
+
+  it('resolves three levels deep', () => {
+    const midToDeep = getRelationships(result, 'CALLS').filter(
+      (c) => c.rel.sourceId === 'Function:src/main.rs:a.b.mid',
+    );
+    expect(midToDeep).toMatchObject([{ rel: { targetId: 'Function:src/main.rs:a.b.c.deep' } }]);
+  });
+
+  it('emits no self-loop anywhere in the nested fixture', () => {
+    const selfLoops = getRelationships(result, 'CALLS').filter(
+      (c) => c.rel.sourceId === c.rel.targetId,
+    );
+    expect(selfLoops).toEqual([]);
+  });
+});
