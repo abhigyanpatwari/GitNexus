@@ -112,4 +112,22 @@ describe('foldReceiverChain', () => {
   it('declines a truncated chain even though the producer refuses to mint one', () => {
     expect(fold('1|svc|cgetUser|~')).toBeUndefined();
   });
+
+  it('declines a construction-selector step and leaves it to the cascade', () => {
+    // `Factory.new` denotes an INSTANCE of Factory, not the result of looking up
+    // a member named `new`. The cascade encodes that, together with the
+    // class-constant test that separates it from an instance method genuinely
+    // named `new`; a chain step records only a name, so the fold cannot make the
+    // distinction and must not try. Folding it turned a correct Ruby edge
+    // (`Factory.new.run` → `Factory#run`) into a wrong one (`Product.run`).
+    const decoded = decodeReceiverChain('1|svc|cnew');
+    expect(decoded).toBeDefined();
+    expect(
+      foldReceiverChain(decoded!, ctx.inScope, ctx.scopes, ctx.index, {
+        fieldFallback: false,
+        hoistTypeBindingsToModule: true,
+        constructionSyntax: { selector: 'new' },
+      }),
+    ).toBeUndefined();
+  });
 });

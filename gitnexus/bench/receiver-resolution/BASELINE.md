@@ -188,3 +188,57 @@ must be read against the same bias.
   plain property path (`$this->repo`, `a::b`) never reaches the recorder.
 - `repos[0].save()` has neither `.` nor `(` in its receiver — same result.
 - `?.` and explicit type arguments produce no reference site at all.
+
+## U8 — per-language rollout
+
+Emission moved into one shared helper
+(`utils/receiver-chain-captures.ts`) and is wired into all 14 language
+emitters. The helper is language-free (R6): its call gate reads the
+`@reference.call.*` tag prefix, a vocabulary every language's `.scm` query
+shares, rather than a per-language tag list. It is self-gating — a non-call
+match, an absent receiver, or a chain with no nameable base all leave the match
+untouched — so inserting the call before every `out.push(grouped)` is safe even
+in the emitters that have three or four such paths.
+
+| Language | Shape | Before | After |
+|---|---|---|---|
+| TypeScript | `svc?.getUser().save()` | INVISIBLE-GAP | **RESOLVES** |
+| TypeScript | `svc!.getUser().save()` | VISIBLE-GAP | **RESOLVES** |
+| TypeScript | `svc.getTyped<User>().save()` | INVISIBLE-GAP | **RESOLVES** |
+| C++ | `svc->getUser()->save()` | INVISIBLE-GAP | **RESOLVES** |
+| C++ | `svc2.getUser()->save()` (control) | RESOLVES | RESOLVES |
+| PHP | `$svc->getUser()->save()` | VISIBLE-GAP | INVISIBLE-GAP |
+| PHP | `$this->repo->save()` (control) | RESOLVES | RESOLVES |
+
+The C++ row is the one the plan flagged as having **no fixture anywhere** —
+`cpp-chain-call/` uses the value `.` form, which already worked. It now has one,
+plus the value-dot control that proves the defect was the `->` base specifically.
+
+### PHP: a measured residual, with the trap checked
+
+PHP does **not** resolve yet, and the plan's named trap — a language whose node
+type is missing from `extractMixedChain`'s tables reads as "didn't need it" when
+it in fact cannot be measured — is **not** the cause. Checked directly against
+the emitter:
+
+```
+name=save   chain=1|$svc|cgetUser   recv=$svc.getUser()
+```
+
+The chain is minted correctly. The residual is that the fold's base, `$svc`,
+does not bind in the PHP resolver, so the fold returns `undefined` and the site
+falls through to the text cascade. That is PHP binding-key work, not a
+chain-layer defect, and it is left as a recorded residual rather than absorbed
+into this series.
+
+Two incidental corrections from that check, both to KTD6:
+
+- PHP's receiver capture text is normalized to `$svc.getUser()` — DOTS, not
+  `->`. So Case 0's "C-family punctuation" gate fires for PHP after all, which
+  is why the call chain was recorded as a VISIBLE-GAP to begin with.
+- Typing the fixture parameter (`function f(Service $svc)`) moved the row from
+  VISIBLE-GAP to INVISIBLE-GAP: with a type binding the cascade now types the
+  receiver but finds no member, so `compoundReceiverUnresolved` is false and no
+  drop is recorded. An untyped fixture parameter had been reporting a language
+  gap that was really a fixture defect — the same error class as the untyped
+  `$repo` control caught earlier.

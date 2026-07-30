@@ -46,9 +46,8 @@ import {
 import { getTreeSitterBufferSize } from '../../constants.js';
 import { parseSourceSafe } from '../../../tree-sitter/safe-parse.js';
 import { synthesizeCallableFlowCaptures } from '../../utils/callable-flow-captures.js';
-import { extractMixedChain } from '../../utils/call-analysis.js';
-import { encodeReceiverChain } from '../../utils/receiver-chain-codec.js';
 import { synthesizeCjsModuleExports } from './cjs-module-exports.js';
+import { synthesizeReceiverChainCapture } from '../../utils/receiver-chain-captures.js';
 import {
   deriveDefaultExportHocName,
   isBlockedDefaultExportHoc,
@@ -496,39 +495,12 @@ export function emitTsScopeCaptures(
       }
     }
 
-    // Synthesize the compact receiver chain for a receiver that is itself an
-    // expression, so resolution can type it by folding over structure instead
-    // of re-parsing the receiver's source text.
-    //
-    // Emitted HERE rather than in the query: the receiver capture originates in
-    // several `.scm` patterns, and a query cannot call `extractMixedChain`.
-    //
-    // Gated on CALL_TAGS. Without that gate this fires on read, write and JSX
-    // receivers too, which pay the walk and the bytes for a field no call-site
-    // resolver will read.
-    //
-    // A chain is minted only when the walk reached a NAMEABLE base.
-    // `extractMixedChain` returns `baseReceiverName: undefined` when it stopped
-    // early — either it hit `MAX_CHAIN_DEPTH` or it could not read a step — and
-    // in both cases what it collected is a partial chain whose missing head is
-    // exactly what decides the final type. Encoding that would turn a receiver
-    // we cannot type into one we type WRONGLY, so those fall through to the
-    // existing text cascade instead.
-    const receiverChainNode = groupedNodes['@reference.receiver'];
-    if (receiverChainNode !== undefined && callAnchor !== undefined) {
-      const extracted = extractMixedChain(receiverChainNode);
-      if (extracted !== undefined && extracted.baseReceiverName !== undefined) {
-        const encoded = encodeReceiverChain(extracted.baseReceiverName, extracted.chain);
-        if (encoded !== undefined) {
-          grouped['@reference.receiver-chain'] = syntheticCapture(
-            '@reference.receiver-chain',
-            receiverChainNode,
-            encoded,
-          );
-        }
-      }
-    }
-
+    // Structural receiver chain for a call whose receiver is itself an
+    // expression, so resolution can type it by folding over structure
+    // instead of re-parsing the receiver's source text. Self-gating: a
+    // non-call match, an absent receiver, or a chain with no nameable base
+    // all leave `grouped` untouched.
+    synthesizeReceiverChainCapture(grouped, groupedNodes['@reference.receiver']);
     out.push(grouped);
 
     // Synthesize `this` receiver type-bindings on every function-like

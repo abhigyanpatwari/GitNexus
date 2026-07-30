@@ -302,6 +302,18 @@ export function foldReceiverChain(
   if (current === undefined) return undefined;
 
   for (const step of chain.steps) {
+    // Construction is NOT an ordinary member lookup. `Factory.new` on a class
+    // constant denotes an instance of Factory, and the cascade already encodes
+    // that (`isConstructionSelectorHop`) along with the class-constant test that
+    // separates it from an instance method genuinely named `new`. The fold
+    // carries no such distinction — a chain step records a name, not whether its
+    // base was a class reference or a value — so folding one would resolve
+    // `Factory.new.run` against whatever member named `new` the lookup reaches
+    // first. That turned a correct edge into a WRONG one (Ruby
+    // `Factory.new.run` → `Product.run`), which is the failure mode this whole
+    // line of work exists to avoid. Decline and let the cascade answer.
+    if (options.constructionSyntax?.selector === step.name) return undefined;
+
     const next = typeOfMemberOnClass(current, step.name, scopes, index, options);
     if (next === undefined) return undefined;
     current = next;

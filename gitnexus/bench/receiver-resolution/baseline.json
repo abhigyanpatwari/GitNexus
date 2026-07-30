@@ -10,11 +10,11 @@
       "indexElement": "INVISIBLE-GAP"
     },
     "php": {
-      "arrowCallChain": "VISIBLE-GAP",
+      "arrowCallChain": "INVISIBLE-GAP",
       "arrowPropertyPath": "RESOLVES"
     },
     "cpp": {
-      "pointerArrowChain": "INVISIBLE-GAP",
+      "pointerArrowChain": "RESOLVES",
       "valueDotChain": "RESOLVES"
     }
   },

@@ -148,7 +148,10 @@ class Service {
 `,
     },
     header: `<?php\nrequire_once 'models.php';\n`,
-    wrap: (entry, body) => `function ${entry}($svc) {\n    ${body}\n}\n`,
+    // TYPED parameter. An untyped `$svc` has no type binding to resolve the
+    // chain's base against, which would make this row report a language gap
+    // that is really a fixture defect.
+    wrap: (entry, body) => `function ${entry}(Service $svc) {\n    ${body}\n}\n`,
     shapes: [
       {
         id: 'arrowCallChain',
