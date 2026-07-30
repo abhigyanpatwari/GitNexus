@@ -240,6 +240,36 @@ export function resolveDefGraphId(
         return undefined;
       }
     }
+    // Name forms to try for every keyed lookup below, most specific first.
+    //
+    // #1982/#2742: some scope-extractors qualify a def by its enclosing CLASS
+    // chain (`A.Inner`) or leave it a bare tail, while the structure-phase node is
+    // keyed by the full path (`NS.A.Inner`, or a Rust `mod` chain). The
+    // namespace-prefixed form is therefore the more specific one and must be tried
+    // first — the bare form happily matches a same-named item at a DIFFERENT
+    // namespace depth in the same file and returns it before any retry is reached
+    // (#2742: a call into `mod inner { fn dispatch }` bound to the crate-root
+    // `fn dispatch` and rendered as a self-loop).
+    //
+    // Applied to the TAGGED keys too, not just the plain one. Previously only the
+    // plain key had the prefixed retry, so for a namespace/mod-qualified def every
+    // tagged key — constraints, parameter types, parameter shape, arity, template
+    // arguments — composed from the bare tail and simply missed the node
+    // `node-lookup.ts` had registered under the qualified name. Those keys exist to
+    // separate overloads, so leaving them dead meant a mod-scoped overload set
+    // depended on whichever later key happened to catch it.
+    const defType = def.type;
+    const nsPrefix = def.namespacePrefix;
+    const nameForms =
+      nsPrefix !== undefined && nsPrefix.length > 0 ? [`${nsPrefix}.${qn}`, qn] : [qn];
+    const lookupTagged = (tag: string): string | undefined => {
+      for (const form of nameForms) {
+        const hit = nodeLookup.get(qualifiedKey(filePath, defType, `${form}${tag}`));
+        if (hit !== undefined) return hit;
+      }
+      return undefined;
+    };
+
     // SFINAE / `requires`-clause disambiguation (issue #1579) — try the
     // constraint-fingerprinted key FIRST. Two function-template overloads
     // with identical `parameterTypes` but mutually-exclusive SFINAE
@@ -250,12 +280,7 @@ export function resolveDefGraphId(
       (def.type === 'Function' || def.type === 'Method') &&
       def.templateConstraints !== undefined
     ) {
-      const cKey = qualifiedKey(
-        filePath,
-        def.type,
-        `${qn}${templateConstraintsIdTag(def.templateConstraints)}`,
-      );
-      const cHit = nodeLookup.get(cKey);
+      const cHit = lookupTagged(templateConstraintsIdTag(def.templateConstraints));
       if (cHit !== undefined) return cHit;
     }
     if (
@@ -265,8 +290,7 @@ export function resolveDefGraphId(
     ) {
       const shapeTag = parameterShapeIdTag(def.parameterTypes, def.parameterTypeClasses);
       if (shapeTag !== '') {
-        const shapeKey = qualifiedKey(filePath, def.type, `${qn}${shapeTag}`);
-        const shapeHit = nodeLookup.get(shapeKey);
+        const shapeHit = lookupTagged(shapeTag);
         if (shapeHit !== undefined) return shapeHit;
       }
     }
@@ -282,8 +306,7 @@ export function resolveDefGraphId(
       def.parameterTypes !== undefined &&
       def.parameterTypes.length > 0
     ) {
-      const pKey = qualifiedKey(filePath, def.type, `${qn}~${def.parameterTypes.join(',')}`);
-      const pHit = nodeLookup.get(pKey);
+      const pHit = lookupTagged(`~${def.parameterTypes.join(',')}`);
       if (pHit !== undefined) return pHit;
     }
     // Arity-disambiguating key (see node-lookup.ts): route a same-name overload
@@ -291,8 +314,7 @@ export function resolveDefGraphId(
     // zero-arg overload (no parameterTypes) that would otherwise collapse onto a
     // sibling overload via the source-order-dependent qualified key.
     if (isOverloadableCallable(def.type) && def.parameterCount !== undefined) {
-      const aKey = qualifiedKey(filePath, def.type, `${qn}#${def.parameterCount}`);
-      const aHit = nodeLookup.get(aKey);
+      const aHit = lookupTagged(`#${def.parameterCount}`);
       if (aHit !== undefined) return aHit;
     }
     if (
@@ -304,25 +326,10 @@ export function resolveDefGraphId(
       def.templateArguments !== undefined &&
       def.templateArguments.length > 0
     ) {
-      const tKey = qualifiedKey(filePath, def.type, `${qn}~${def.templateArguments.join(',')}`);
-      const tHit = nodeLookup.get(tKey);
+      const tHit = lookupTagged(`~${def.templateArguments.join(',')}`);
       if (tHit !== undefined) return tHit;
     }
-    // #1982: some scope-extractors qualify a type by its enclosing CLASS chain
-    // (`A.Inner`) but drop the enclosing NAMESPACE, while the structure-phase
-    // node is keyed by the full path (`NS.A.Inner`). The namespace-prefixed key
-    // is tried FIRST, because it is the more specific one: `qualifiedName` is a
-    // bare tail for these defs, so the plain key below happily matches a
-    // same-named item at a DIFFERENT namespace depth in the same file and
-    // returns it before this retry is ever reached (#2742 — a call into
-    // `mod inner { fn dispatch }` bound to the crate-root `fn dispatch`, which
-    // rendered as a self-loop).
-    const nsPrefix = def.namespacePrefix;
-    if (nsPrefix !== undefined && nsPrefix.length > 0) {
-      const nsHit = nodeLookup.get(qualifiedKey(filePath, def.type, `${nsPrefix}.${qn}`));
-      if (nsHit !== undefined) return nsHit;
-    }
-    const qualifiedHit = nodeLookup.get(qualifiedKey(filePath, def.type, qn));
+    const qualifiedHit = lookupTagged('');
     if (qualifiedHit !== undefined) return qualifiedHit;
   }
   const simpleName = qn.lastIndexOf('.') === -1 ? qn : qn.slice(qn.lastIndexOf('.') + 1);

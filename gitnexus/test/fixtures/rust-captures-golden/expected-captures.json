@@ -87,6 +87,30 @@
     "captureGroups": 9,
     "digest": "fdbdd68d6920a9d7861562c562acc4fbd4580836467cad1ce8428c57a11d0d19"
   },
+  "rust-2742-mod-members/src/a.rs": {
+    "captureGroups": 3,
+    "digest": "cf9bb9565b1d9ab7a7fcb287240198d27d41eeeb4d0953818074e4654bc831ca"
+  },
+  "rust-2742-mod-members/src/main.rs": {
+    "captureGroups": 43,
+    "digest": "59bf9f7c931cbba2c58b581e15a79a4d7a59c3088a9b62eda940298f7a150088"
+  },
+  "rust-2742-nested-mods/src/main.rs": {
+    "captureGroups": 39,
+    "digest": "0100d72de1c56c7d4ce3f3dae34997acb6413df8d13bc49671a321504a2ca1e4"
+  },
+  "rust-2742-type-vs-module/src/b.rs": {
+    "captureGroups": 7,
+    "digest": "1066fc99e6a4570fba07c641942a536145e82ff71e87c3992828ec8f1f11048a"
+  },
+  "rust-2742-type-vs-module/src/c.rs": {
+    "captureGroups": 10,
+    "digest": "bb98c27950620193afb1593213d476bde0f9c8a12581656cf81146603d95ec22"
+  },
+  "rust-2742-type-vs-module/src/lib.rs": {
+    "captureGroups": 11,
+    "digest": "8bb48d12a411f6918fc5dfb726434e9f5b2888f5b0bea6f7615f274b0f18ce5d"
+  },
   "rust-abstract-dispatch/src/lib.rs": {
     "captureGroups": 34,
     "digest": "973679363065ecd54c4e5128a9fab214ea27eca24f0f079c63a3c6f285e678b0"
