@@ -1,4 +1,4 @@
-import type { Range } from 'gitnexus-shared';
+import type { Range, ReferenceKind } from 'gitnexus-shared';
 
 export type ResolutionSuppressionReason =
   | 'adl-ordinary-lookup-blocked'
@@ -44,6 +44,23 @@ export type ResolutionOutcome =
       readonly filePath: string;
       readonly name: string;
       readonly range: Range;
+      /**
+       * The reference kind of the site the suppression happened at, when the
+       * emitting case knows it.
+       *
+       * Set for `receiver-unresolved` because Case 0's gate fires on any
+       * compound receiver regardless of what the reference *is*, so a property
+       * write (`x.argtypes = [...]`) and a property read (`d.source.kind`) land
+       * in the same bucket as a genuinely dropped method call. Anything
+       * measuring resolver gaps has to separate them, and the site kind is the
+       * only authoritative signal — re-deriving it from the source line means
+       * regex-classifying the number that gates the work, which is the same
+       * textual-shape dispatch the structural-receiver work exists to remove.
+       *
+       * Diagnostic only. `summarizeUnresolvedReceivers` ignores it, so the
+       * persisted `RepoMeta.unresolvedReceiverMembers` artifact is unchanged.
+       */
+      readonly siteKind?: ReferenceKind;
     };
 
 export type ResolutionOutcomeRecorder = (outcome: ResolutionOutcome) => void;

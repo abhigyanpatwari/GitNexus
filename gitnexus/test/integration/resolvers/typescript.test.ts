@@ -11,6 +11,7 @@ import {
   getNodesByLabel,
   getNodesByLabelFull,
   edgeSet,
+  getResolutionOutcomes,
   runPipelineFromRepo,
   type PipelineResult,
 } from './helpers.js';
@@ -3303,5 +3304,70 @@ describe('TypeScript inline constructor receiver resolution', () => {
     // Other.doWork, via makeOther's return type — a bare call in a `new`
     // language must never be typed as a construction of a same-named class.
     expect(factoryCall!.rel.targetId).toContain('Other');
+  });
+});
+
+// ---------------------------------------------------------------------------
+// #2744 drop recorder — the site kind travels with the drop.
+//
+// Case 0's gate tests the RECEIVER's punctuation, not the site's kind, so a
+// compound-receiver property write is recorded in the same bucket as a dropped
+// method call. Anything measuring resolver gaps has to tell those apart, and
+// the site kind is the only authoritative signal for it.
+//
+// Both shapes below are empirically confirmed drops: `!` produces a reference
+// site that reaches Case 0. (`?.` and explicit type arguments do NOT record a
+// drop at all — they are invisible to this recorder, which is a property of the
+// capture layer, not of this field.)
+// ---------------------------------------------------------------------------
+
+describe('TypeScript receiver-unresolved drops carry their site kind (#2744)', () => {
+  let repoDir: string;
+  let result: PipelineResult;
+
+  beforeAll(async () => {
+    repoDir = fs.mkdtempSync(path.join(os.tmpdir(), 'gn-ts-drop-site-kind-'));
+    writeFixtureRepo(repoDir, {
+      'models.ts': `export class User {
+  name: string = '';
+  save(): void {}
+}
+
+export class Service {
+  getUser(): User {
+    return new User();
+  }
+}
+`,
+      'main.ts': `import { Service } from './models';
+
+export function droppedCall(svc: Service | null): void {
+  svc!.getUser().save();
+}
+
+export function droppedWrite(svc: Service | null): void {
+  svc!.getUser().name = 'x';
+}
+`,
+    });
+    result = await runPipelineFromRepo(repoDir, () => {}, {});
+  }, 60000);
+
+  afterAll(() => {
+    if (repoDir !== undefined) fs.rmSync(repoDir, { recursive: true, force: true });
+  });
+
+  it('tags a dropped method call as a call site', () => {
+    const drops = getResolutionOutcomes(result).filter(
+      (outcome) => outcome.kind === 'suppressed' && outcome.reason === 'receiver-unresolved',
+    );
+    expect(drops).toContainEqual(expect.objectContaining({ name: 'save', siteKind: 'call' }));
+  });
+
+  it('tags a dropped property write as a write site, so it is separable from calls', () => {
+    const drops = getResolutionOutcomes(result).filter(
+      (outcome) => outcome.kind === 'suppressed' && outcome.reason === 'receiver-unresolved',
+    );
+    expect(drops).toContainEqual(expect.objectContaining({ name: 'name', siteKind: 'write' }));
   });
 });

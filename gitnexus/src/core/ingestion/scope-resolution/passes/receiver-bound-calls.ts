@@ -1345,6 +1345,11 @@ export function emitReceiverBoundCalls(
           filePath: parsed.filePath,
           name: site.name,
           range: site.atRange,
+          // The gate above tests the receiver's punctuation, not the site's
+          // kind, so property reads and writes with a compound receiver are
+          // recorded here too. Carry the kind so a consumer can separate a
+          // dropped CALL from a dropped property access.
+          siteKind: site.kind,
         });
       }
     }
