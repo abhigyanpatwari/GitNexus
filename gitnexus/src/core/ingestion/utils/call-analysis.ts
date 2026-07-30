@@ -454,7 +454,10 @@ export function extractCallChain(
       current = innerReceiver; // continue walking
     } else {
       // Reached a simple identifier — the base receiver
-      return { chain, baseReceiverName: innerReceiver.text || undefined };
+      return {
+        chain,
+        baseReceiverName: unwrapTransparentReceiver(innerReceiver).text || undefined,
+      };
     }
   }
 
@@ -477,6 +480,35 @@ export function extractCallChain(
  *
  * Pure field chains and pure call chains are special cases (all steps same kind).
  */
+/**
+ * Node types that wrap an expression without changing what it denotes, so a
+ * receiver chain's BASE can be read through them.
+ *
+ * `svc!` (TS non-null assertion) and `(svc)` denote exactly `svc`; taking the
+ * wrapper's own text instead yields `svc!` / `(svc)`, which matches no binding
+ * and silently costs the chain its base.
+ *
+ * Deliberately EXCLUDES a cast (`x as T`, `(T)x`): a cast changes the type an
+ * expression denotes, so reading through one would type the receiver as the
+ * operand rather than as the cast target.
+ */
+const TRANSPARENT_RECEIVER_WRAPPERS = new Set([
+  'non_null_expression', // TypeScript `svc!`
+  'parenthesized_expression', // `(svc)`
+]);
+
+/** Peel transparent wrappers off a base receiver node. */
+function unwrapTransparentReceiver(node: SyntaxNode): SyntaxNode {
+  let current = node;
+  // Bounded: `((x))` nests twice; nothing real nests deeply.
+  for (let i = 0; i < MAX_CHAIN_DEPTH && TRANSPARENT_RECEIVER_WRAPPERS.has(current.type); i++) {
+    const inner = current.namedChildren?.find((c) => c !== null);
+    if (inner === undefined || inner === null) break;
+    current = inner;
+  }
+  return current;
+}
+
 export function extractMixedChain(
   receiverNode: SyntaxNode,
 ): { chain: MixedChainStep[]; baseReceiverName: string | undefined } | undefined {
@@ -546,7 +578,10 @@ export function extractMixedChain(
       ) {
         current = innerReceiver;
       } else {
-        return { chain, baseReceiverName: innerReceiver.text || undefined };
+        return {
+          chain,
+          baseReceiverName: unwrapTransparentReceiver(innerReceiver).text || undefined,
+        };
       }
     } else if (FIELD_ACCESS_NODE_TYPES.has(current.type)) {
       // ── Field/member access: extract property name + inner object ─────────
@@ -595,7 +630,10 @@ export function extractMixedChain(
       ) {
         current = innerObject;
       } else {
-        return { chain, baseReceiverName: innerObject.text || undefined };
+        return {
+          chain,
+          baseReceiverName: unwrapTransparentReceiver(innerObject).text || undefined,
+        };
       }
     } else if (current.type === 'selector') {
       // ── Dart: flat selector siblings (user.address.save() uses selector nodes) ──

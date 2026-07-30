@@ -407,7 +407,9 @@ export function emitReceiverBoundCalls(
           site.inScope,
           scopes,
           index,
-          compoundOpts,
+          // Group A: the receiver IS this site's expression, so the site's
+          // captured chain describes it and the structural fold applies.
+          { ...compoundOpts, receiverChain: site.receiverChain },
         );
         compoundReceiverUnresolved = currentClass === undefined;
         if (currentClass !== undefined) {
@@ -1046,7 +1048,8 @@ export function emitReceiverBoundCalls(
             site.inScope,
             scopes,
             index,
-            compoundOpts,
+            // Group A, same reasoning as Case 0 above.
+            { ...compoundOpts, receiverChain: site.receiverChain },
           );
         }
         if (ownerDef !== undefined) {

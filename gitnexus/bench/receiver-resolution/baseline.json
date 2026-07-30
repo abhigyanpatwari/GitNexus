@@ -3,10 +3,10 @@
     "typescript": {
       "plainChain": "RESOLVES",
       "plainDeepChain": "RESOLVES",
-      "optionalChain": "INVISIBLE-GAP",
-      "nonNullAssert": "VISIBLE-GAP",
+      "optionalChain": "RESOLVES",
+      "nonNullAssert": "RESOLVES",
       "awaitParen": "VISIBLE-GAP",
-      "explicitTypeArgs": "INVISIBLE-GAP",
+      "explicitTypeArgs": "RESOLVES",
       "indexElement": "INVISIBLE-GAP"
     },
     "php": {

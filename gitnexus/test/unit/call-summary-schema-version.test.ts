@@ -73,12 +73,12 @@ describe('CALL_SUMMARY relation-type exclusion (U-C1)', () => {
 });
 
 describe('CALL_SUMMARY incremental reuse gate (U-C5)', () => {
-  it('INCREMENTAL_SCHEMA_VERSION is bumped to 26 (unresolved-receiver epistemic summary, #2744)', () => {
+  it('INCREMENTAL_SCHEMA_VERSION is bumped to 27 (structural receiver typing)', () => {
     // Moves with every bump BY DESIGN — that is the point of pinning it. A
     // change that alters emitted ids or edges without bumping would otherwise
     // ship silently, and an existing index would keep serving the old graph
     // through the reuse gate below.
-    expect(INCREMENTAL_SCHEMA_VERSION).toBe(26);
+    expect(INCREMENTAL_SCHEMA_VERSION).toBe(27);
   });
 
   it('a pre-current stamp fails the `=== INCREMENTAL_SCHEMA_VERSION` reuse gate → forces full re-analyze', () => {
@@ -179,11 +179,18 @@ describe('CALL_SUMMARY incremental reuse gate (U-C5)', () => {
     expect(passesReuseGate(23)).toBe(false);
     // A pre-v25 (v24) index predates mod-qualified Rust node ids (#2742) → must NOT reuse.
     expect(passesReuseGate(24)).toBe(false);
-    // A pre-v26 (v25) index predates `unresolvedReceiverMembers` (#2744). An absent
-    // summary is indistinguishable from "nothing was dropped", so a top-up would keep
-    // reporting `epistemic: 'exact'` for exactly the symbols whose callers were dropped.
+    // A pre-v25 (v24) index predates `unresolvedReceiverMembers` (#2744). An
+    // absent summary is indistinguishable from "nothing was dropped", so a
+    // top-up would keep reporting `epistemic: 'exact'` for exactly the symbols
+    // whose callers were dropped → must NOT reuse.
+    expect(passesReuseGate(24)).toBe(false);
+    // A pre-v26 (v25) index typed receivers from source TEXT, so `svc?.m().n()`,
+    // `svc!.m().n()` and `svc.m<T>().n()` emitted no CALLS edge — and two of the
+    // three recorded no drop either, so the count still claimed `exact`. A
+    // changed-files top-up keeps both the missing edge and the false confidence
+    // for every unchanged file → must NOT reuse.
     expect(passesReuseGate(25)).toBe(false);
-    // The current stamp passes (incremental top-up eligible).
+    // The current stamp passes the gate (incremental top-up eligible).
     expect(passesReuseGate(26)).toBe(true);
   });
 });

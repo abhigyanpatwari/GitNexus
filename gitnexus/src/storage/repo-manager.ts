@@ -568,6 +568,20 @@ export interface RepoMeta {
  * — for every unchanged Rust file, which is exactly the symptom #2730
  * reported. Force a full re-analyze.
  *
+ * v27: receiver expressions are typed from captured structure rather than from
+ * their source text. `svc?.getUser().save()`, `svc!.getUser().save()` and
+ * `svc.getTyped<User>().save()` previously emitted NO `CALLS` edge — the text
+ * cascade split the receiver on punctuation it could not parse — and two of the
+ * three recorded no drop either, because a later case marked the site handled,
+ * which suppresses the drop record. So the caller was missing from
+ * `impact(direction: "upstream")` and `context()` AND the count still claimed
+ * `epistemic: 'exact'`. Same v11/v12 contract: the incremental write set covers
+ * only CHANGED files, so a top-up against a pre-v26 index keeps serving the
+ * pre-fix graph — and the pre-fix confident count — for every unchanged file.
+ * Worse than merely incomplete: the drop summary is a whole-repo recompute while
+ * the edges are a changed-files write, so the two would disagree. Force a full
+ * re-analyze.
+ *
  * v24: inline constructor receivers resolve — `Service(db).do_work()` (Python),
  * `new Service(db).doWork()` (JS/TS, C#), `Service.new.do_work` (Ruby), plus the
  * generic, qualified, chain-head and keyword-trivia spellings of the same shape
@@ -580,6 +594,7 @@ export interface RepoMeta {
  * the same-commit "already up to date" fast path — keeps returning the pre-fix
  * graph for every unchanged file, which is exactly the missing-caller symptom
  * #2708 reported. Force a full re-analyze.
+ *
  * v26: unresolved-receiver member names are persisted
  * (`unresolvedReceiverMembers`) so `impact()`/`context()` can report
  * `epistemic: 'lower-bound'` instead of a confident `'exact'` when a call site
@@ -600,7 +615,7 @@ export interface RepoMeta {
  * index holds ids an incremental top-up cannot reconcile and would simply
  * strand. Force a full re-analyze.
  */
-export const INCREMENTAL_SCHEMA_VERSION = 26;
+export const INCREMENTAL_SCHEMA_VERSION = 27;
 
 export interface IndexedRepo {
   repoPath: string;

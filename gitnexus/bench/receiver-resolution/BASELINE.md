@@ -1,5 +1,25 @@
 # Receiver-resolution baseline
 
+> **Updated after U10** (structural receiver typing wired into Case 0). Three
+> TypeScript shapes flipped to `RESOLVES` — `svc?.getUser().save()`,
+> `svc!.getUser().save()`, `svc.getTyped<User>().save()` — and the call-drop
+> count did **not** move: 99 before, 99 after.
+>
+> That is the whole argument for the shape arm, now demonstrated rather than
+> predicted. The committed fixture corpus contains none of those three
+> spellings, so a gate reading only the drop count would have scored a working
+> change as "no improvement" and stopped the series. Nothing regressed: no edge
+> was lost and no new drop appeared.
+>
+> Still gaps after U10, both genuine:
+> - `(await svc.getUserAsync()).save()` — `extractMixedChain` reaches
+>   `await …`, which is not a chain node, so no chain is minted. Remains a
+>   VISIBLE-GAP and is now the call-kind fixture in the drop-recorder test.
+> - `repos[0].save()` — Case 0's punctuation gate never fires for a subscript
+>   receiver, so it stays INVISIBLE.
+>
+> The tables below are the pre-U10 measurement, kept as the reference point.
+
 Measured with `bench/receiver-resolution/measure.mjs` on `f87b2cbe`.
 
 Hygiene (a run without both steps is void — `analyze --force` clears neither cache,

@@ -26,6 +26,7 @@ import type { ScopeResolutionIndexes } from '../../model/scope-resolution-indexe
 import type { WorkspaceResolutionIndex } from '../workspace-index.js';
 import { stripTemplateArguments } from '../../utils/template-arguments.js';
 import type { DecodedReceiverChain } from '../../utils/receiver-chain-codec.js';
+import { decodeReceiverChain } from '../../utils/receiver-chain-codec.js';
 import {
   findClassBindingInScope,
   findEnclosingClassDef,
@@ -99,6 +100,13 @@ interface ResolveCompoundReceiverOptions {
    *  rather than re-declared, so a future sub-field cannot be added there
    *  and silently ignored here (#2708). */
   readonly constructionSyntax?: ScopeResolver['constructionSyntax'];
+  /** Compact receiver chain for THIS site (`ReferenceSite.receiverChain`), when
+   *  the language's capture emitter produced one. Present ⇒ the structural fold
+   *  is tried before the text cascade; absent ⇒ behaviour is exactly as before.
+   *  Consumed only at `depth === 0`: it describes the site's own receiver, so
+   *  carrying it into a recursive call would re-fold it against an inner
+   *  expression it does not describe. */
+  readonly receiverChain?: string;
 }
 
 /** Is this hop the language's construction selector applied to the class
@@ -283,9 +291,13 @@ export function foldReceiverChain(
   if (chain.truncated) return undefined;
   if (chain.steps.length === 0) return undefined;
 
+  // `receiverChain` is dropped before resolving the base: it describes the
+  // whole receiver, and handing it back to the resolver would re-enter this
+  // fold on the base and never terminate.
   let current = resolveCompoundReceiverClass(chain.baseReceiverName, inScope, scopes, index, {
     ...options,
     fieldFallback: false,
+    receiverChain: undefined,
   });
   if (current === undefined) return undefined;
 
@@ -310,6 +322,26 @@ export function resolveCompoundReceiverClass(
   const text = receiverText.trim();
   if (text.length === 0) return undefined;
   const fieldFallback = options.fieldFallback ?? true;
+
+  // ── Structural fold, ahead of the text cascade ───────────────────
+  // When the capture layer produced a chain for this site, type the receiver
+  // from that structure. The cascade below dispatches on enumerated textual
+  // shapes, so every new spelling (`?.`, `!`, `<T>`, `->`) needs another branch;
+  // the AST already knew the answer and the chain carries it.
+  //
+  // Only at depth 0 — the chain describes THIS site's receiver, not the inner
+  // expressions the cascade recurses into.
+  //
+  // A failed fold falls through rather than returning: structure is an
+  // additional route to an answer, never a veto on the existing one, so a site
+  // the cascade could already resolve keeps resolving.
+  if (depth === 0 && options.receiverChain !== undefined) {
+    const decoded = decodeReceiverChain(options.receiverChain);
+    if (decoded !== undefined) {
+      const folded = foldReceiverChain(decoded, inScope, scopes, index, options);
+      if (folded !== undefined) return folded;
+    }
+  }
 
   // ── Pre-processing: strip C-style cast expressions (opt-in) ──────
   // Cast-wrapped receivers like ((Type)((Object)this.field)).method()
