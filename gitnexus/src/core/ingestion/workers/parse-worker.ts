@@ -96,6 +96,7 @@ import {
   isSuppressedConcreteTypedefDuplicate,
   isValueDefinitionLabel,
   isQualifiableScopeLabel,
+  MEMBER_OWNER_NODE_TYPES,
   qualifyByEnclosingModScope,
   qualifyRustImplTargetByModScope,
   CLASS_CONTAINER_TYPES,
@@ -2430,17 +2431,33 @@ const processFileGroup = (
       // whose grammar has no such node. The impl branch already applied it and
       // is left alone rather than qualified twice.
       //
-      // Scoped to items with NO enclosing class/impl. A method already carries
-      // its owner's name (`Inner.method`), and that owner's own id is mod-scoped
-      // by the impl qualifier above — so qualifying the method again would break
-      // the byte-for-byte agreement between the HAS_METHOD owner edge and the
-      // node id that #1975/#1982 established. Same-named methods on same-named
-      // types in sibling modules therefore still collapse; that is a narrower
-      // residual than the free-item case this fixes, and it is the owner edge's
-      // problem to solve rather than this one's.
+      // Scoped to items that sit on NEITHER side of an owner edge, because only
+      // the id is re-keyed here — the anchor is minted independently by
+      // `findEnclosingClassInfo` and does not move with it:
+      //
+      //   - `!enclosingClassInfo` excludes the MEMBER side. A method already
+      //     carries its owner's name (`Inner.method`), and for an unscoped
+      //     inherent impl that owner is mod-scoped by the impl qualifier above,
+      //     so qualifying the member again would break the byte-for-byte
+      //     agreement #1975/#1982 established.
+      //   - `!MEMBER_OWNER_NODE_TYPES.has(...)` excludes the OWNER side. A
+      //     `struct` / `trait` / `enum` / `impl` declared directly in a `mod` has
+      //     no enclosing class, so the member-side guard alone let it through
+      //     while its own anchor stayed bare — `mod engine { struct Config { … } }`
+      //     minted `Struct:<file>:engine.Config` against a `HAS_PROPERTY` edge
+      //     anchored on `Struct:<file>:Config`, dangling every field. The same
+      //     gap put `impl a::Inner` inside a `mod` back on the #1975 rake this
+      //     helper's own docblock warns about: the impl branch above deliberately
+      //     fires only for an UNSCOPED `type_identifier`, and this gate was
+      //     picking up the scoped targets it had just excluded.
+      //
+      // Same-named members on same-named types in sibling modules therefore
+      // still collapse, as do the containers themselves — unchanged from before
+      // this fix, and owned by the owner edge rather than worked around here.
       const qualifiedName =
         rustImplQualifiedName === undefined &&
         definitionNode !== undefined &&
+        !MEMBER_OWNER_NODE_TYPES.has(definitionNode.type) &&
         !enclosingClassInfo &&
         objectLiteralOwnerInfo?.ownerName === undefined
           ? qualifyByEnclosingModScope(definitionNode, qualifiedNameBeforeModScope)

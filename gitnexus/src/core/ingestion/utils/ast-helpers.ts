@@ -348,6 +348,37 @@ export const CLASS_CONTAINER_TYPES = new Set([
   'interface_type',
 ]);
 
+/**
+ * Node types whose OWN node id must not be re-keyed by an enclosing-scope
+ * qualifier (see {@link qualifyByEnclosingModScope}) unless the owner-edge
+ * anchor moves in the same change.
+ *
+ * These are the containers a member can be declared inside. Their members'
+ * `HAS_METHOD` / `HAS_PROPERTY` edges anchor on `findEnclosingClassInfo().classId`,
+ * which is minted from the container's bare `nameNode.text` further down this
+ * file and only follows a qualified shape when the provider opts in via
+ * `classExtractor.qualifiedNodeId`. So qualifying a container's id alone points
+ * every one of its member edges at a node that does not exist — the edges are
+ * dropped at COPY time and the container silently loses all its members.
+ *
+ * Derived from `CLASS_CONTAINER_TYPES` on purpose: that set is already the
+ * single source of "this node type owns member edges", carries the INVARIANT
+ * note above binding it to `CONTAINER_TYPE_TO_LABEL`, and so a language adding
+ * a container cannot gain a mismatched id shape here without also failing that
+ * invariant. Keyed purely on tree-sitter node types — no language names.
+ */
+export const MEMBER_OWNER_NODE_TYPES: ReadonlySet<string> = new Set<string>([
+  ...CLASS_CONTAINER_TYPES,
+  // Rust `union_item` owns a `field_declaration_list` exactly as `struct_item`
+  // does, and its fields ARE captured as `Property`, but it is absent from
+  // `CLASS_CONTAINER_TYPES`, so `findEnclosingClassInfo` does not recognize it as
+  // an owner: union fields carry no `HAS_PROPERTY` edge at all and therefore
+  // cannot dangle. Listed here so the union's own id keeps the same shape as the
+  // struct beside it, and so making it a real owner later starts from a
+  // consistent id rather than having to move one.
+  'union_item',
+]);
+
 export const CONTAINER_TYPE_TO_LABEL: Record<string, string> = {
   class_declaration: 'Class',
   abstract_class_declaration: 'Class',

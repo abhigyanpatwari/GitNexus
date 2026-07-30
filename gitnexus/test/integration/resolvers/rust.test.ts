@@ -2823,10 +2823,90 @@ describe('Rust items are qualified by their enclosing mod chain (#2742)', () => 
     expect(edges[0].rel.targetId).toBe('Function:src/main.rs:inner.dispatch');
   });
 
+  // Fixture-wide rather than pinned to one edge, because the #2730 symptom is a
+  // CLASS of mis-binding: any qualified call whose leading segment names an
+  // inline module can land back on the enclosing same-name item. The preceding
+  // test pins the one target we know regressed; this one fails if the same fault
+  // reappears through any other path in the fixture. `rust-2730-gaps` contains no
+  // self-recursive function, so an empty result is the correct invariant — adding
+  // one to the fixture means narrowing this filter, not deleting the test.
   it('emits no self-loop for the inline-mod wrapper', () => {
     const selfLoops = getRelationships(result, 'CALLS').filter(
       (c) => c.rel.sourceId === c.rel.targetId,
     );
     expect(selfLoops).toEqual([]);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// #2745 review — mod-qualifying a node id must not orphan its member edges.
+//
+// The mint (parse-worker) and the owner-edge anchor (findEnclosingClassInfo) are
+// computed independently. #2742 re-keyed ids by the enclosing `mod` chain but the
+// anchor is minted from the container's BARE name and only follows a qualified
+// shape when the provider sets `classExtractor.qualifiedNodeId`, which Rust does
+// not. Every `struct` / `trait` / `enum` / `impl` inside a `mod` therefore had a
+// node id no member edge pointed at, and the rows were dropped at COPY time.
+//
+// Guarded here with the UNFILTERED findDanglingEdges. Every other dangling
+// assertion in this file passes `['HAS_METHOD']`, which is exactly why the
+// HAS_PROPERTY breakage shipped green.
+// ---------------------------------------------------------------------------
+
+describe('Rust containers inside a mod keep their member edges (#2745 review)', () => {
+  let result: PipelineResult;
+
+  beforeAll(async () => {
+    result = await runPipelineFromRepo(path.join(FIXTURES, 'rust-2742-mod-members'), () => {});
+  }, 60000);
+
+  it('leaves no dangling edge of ANY type', () => {
+    expect(findDanglingEdges(result)).toEqual([]);
+  });
+
+  // Asserts the NODE id, not just the edge's anchor: the anchor was already bare
+  // while the bug was live, so an edge-only assertion passes in both builds. The
+  // half that moved is the mint.
+  it('keeps a mod-scoped struct and its field on one agreed id', () => {
+    const structIds: string[] = [];
+    result.graph.forEachNode((n) => {
+      if (n.label === 'Struct' && n.properties.name === 'Config') structIds.push(n.id);
+    });
+    expect(structIds).toEqual(['Struct:src/main.rs:Config']);
+
+    const hasProperty = getRelationships(result, 'HAS_PROPERTY').filter(
+      (e) => e.target === 'retries',
+    );
+    expect(hasProperty).toMatchObject([
+      {
+        rel: {
+          sourceId: 'Struct:src/main.rs:Config',
+          targetId: 'Property:src/main.rs:Config.retries',
+        },
+      },
+    ]);
+  });
+
+  it('keeps a scoped inherent-impl target inside a mod at its raw path (#1975)', () => {
+    const implIds: string[] = [];
+    result.graph.forEachNode((n) => {
+      if (n.label === 'Impl') implIds.push(n.id);
+    });
+    expect(implIds).toEqual(['Impl:src/main.rs:a::Inner']);
+
+    const hasMethod = getRelationships(result, 'HAS_METHOD').filter((e) => e.target === 'helper');
+    expect(hasMethod).toMatchObject([{ rel: { sourceId: 'Impl:src/main.rs:a::Inner' } }]);
+  });
+
+  it('still links a trait impl declared inside a mod to the trait method', () => {
+    const implementsEdges = getRelationships(result, 'METHOD_IMPLEMENTS');
+    expect(implementsEdges).toMatchObject([
+      {
+        rel: {
+          sourceId: 'Function:src/main.rs:Config.go#0',
+          targetId: 'Function:src/main.rs:Runner.go#0',
+        },
+      },
+    ]);
   });
 });
