@@ -177,6 +177,15 @@ const SOURCES: Record<string, GrammarSource> = {
       'Likely cause: no prebuilt `.node` for this platform/architecture. ' +
       `See ${ISSUES_URL}/2107.`,
   },
+  [SupportedLanguages.Lua]: {
+    load: () => requireVendoredGrammar('tree-sitter-lua'),
+    optional: true,
+    userSkippable: true,
+    unavailableNote:
+      'Lua parsing disabled: vendored `tree-sitter-lua` (under ' +
+      '`gitnexus/vendor/tree-sitter-lua`) failed to load. ' +
+      'Likely cause: the native binding did not build at install or no prebuild exists for this platform.',
+  },
   // Zig grammar declares peerOptional `tree-sitter@^0.22.1` but its native
   // binding is ABI-compatible with the bundled `tree-sitter@0.21.x` runtime
   // (verified by load-time smoke test). The peer-dep mismatch is suppressed
