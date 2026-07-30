@@ -29,7 +29,13 @@
  *   character of the segment and the name follows immediately, so a member
  *   whose name begins with `c` or `f` needs no escaping (`ccount` decodes as a
  *   call to `count`).
- * - A trailing `|~` segment is the TRUNCATION MARKER: the chain hit
+ * - A trailing `|~` segment is the TRUNCATION MARKER. NOTE: no current producer
+ *   mints one. `extractMixedChain` signals "stopped early" by returning
+ *   `baseReceiverName: undefined`, and the encoder requires a base, so a
+ *   truncated chain is unrepresentable rather than merely unused. The marker and
+ *   the decoder/fold guards are kept as a forward-compatible contract: a future
+ *   producer that CAN report a partial chain must set it, and the fold already
+ *   refuses such chains. Read the `truncated` field as "reserved", not "live". the chain hit
  *   `MAX_CHAIN_DEPTH` and what is encoded is a base-side PREFIX of the real
  *   chain. A consumer MUST treat a truncated chain as unusable for typing —
  *   the missing tail is exactly what determines the final type — but never as
@@ -69,11 +75,15 @@ export interface DecodedReceiverChain {
  *  every supported language satisfy this; anything that does not is a payload
  *  we refuse to mint rather than escape. */
 function isEncodableSegment(value: string): boolean {
+  // `\s` does NOT match zero-width characters (U+200B ZWS, U+200C/D ZWNJ/ZWJ,
+  // U+200E/F LRM/RLM, U+FEFF BOM). An identifier carrying one is a trojan-source
+  // vector: it would encode and persist cleanly, then match no binding at
+  // resolution time — a silent, unexplained miss. Refuse to mint instead.
   return (
     value.length > 0 &&
     !value.includes(SEPARATOR) &&
     !value.includes(TRUNCATED) &&
-    !/\s/.test(value)
+    !/[\s\u200B-\u200F\u2028\u2029\uFEFF]/.test(value)
   );
 }
 
@@ -116,7 +126,8 @@ export function decodeReceiverChain(value: unknown): DecodedReceiverChain | unde
   if (parts.length < 3) return undefined; // version + base + at least one step
   if (parts[0] !== VERSION) return undefined;
 
-  const baseReceiverName = parts[1] ?? '';
+  // `parts.length < 3` above already proves this element exists.
+  const baseReceiverName = parts[1] as string;
   if (!isEncodableSegment(baseReceiverName)) return undefined;
 
   let stepParts = parts.slice(2);

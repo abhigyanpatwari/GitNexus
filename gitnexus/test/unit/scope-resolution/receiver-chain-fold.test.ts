@@ -66,6 +66,19 @@ function build() {
 
 const ctx = build();
 
+/** Fold with the language contract flags overridden — used to exercise the
+ *  OFF branch of `hoistTypeBindingsToModule`, which six wired languages
+ *  (c, cobol, dart, python, ruby, swift) actually run. */
+function foldWith(encoded: string, overrides: Record<string, unknown>) {
+  const decoded = decodeReceiverChain(encoded);
+  expect(decoded).toBeDefined();
+  return foldReceiverChain(decoded!, ctx.inScope, ctx.scopes, ctx.index, {
+    fieldFallback: false,
+    hoistTypeBindingsToModule: true,
+    ...overrides,
+  });
+}
+
 function fold(encoded: string) {
   const decoded = decodeReceiverChain(encoded);
   expect(decoded).toBeDefined();
@@ -129,5 +142,18 @@ describe('foldReceiverChain', () => {
         constructionSyntax: { selector: 'new' },
       }),
     ).toBeUndefined();
+  });
+
+  it('does NOT climb to module scope when hoistTypeBindingsToModule is off', () => {
+    // The flag exists because TypeScript hoists a method's return-type binding
+    // OUT of the class body, so the fold must walk to Module scope to find it.
+    // Languages that do NOT hoist must not get that walk — climbing anyway is
+    // how an unrelated module-level binding of the same name gets picked up,
+    // which is exactly what the flag's own contract warns against. Same chain,
+    // opposite answers, so this pins the branch rather than the happy path.
+    expect(foldWith('1|svc|cgetUser', { hoistTypeBindingsToModule: true })).toMatchObject({
+      qualifiedName: 'User',
+    });
+    expect(foldWith('1|svc|cgetUser', { hoistTypeBindingsToModule: false })).toBeUndefined();
   });
 });

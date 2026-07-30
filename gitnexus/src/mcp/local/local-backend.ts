@@ -93,6 +93,7 @@ import { findImportCycles } from '../../core/graph/import-cycles.js';
 import { decodeTaintPath } from '../../core/ingestion/taint/path-codec.js';
 import { decodeReachingDefReason } from '../../core/ingestion/cfg/reaching-def-reason-codec.js';
 import { EXTENSIONS } from '../../core/ingestion/import-resolvers/utils.js';
+import { lookupUnresolvedCallCount } from '../../core/ingestion/scope-resolution/unresolved-receivers.js';
 import {
   fnLineOf,
   isPdgDegradedLayerStatus,
@@ -5715,8 +5716,11 @@ export class LocalBackend {
     try {
       const meta = await loadMeta(path.dirname(repo.lbugPath));
       const summary = meta?.unresolvedReceiverMembers;
-      const sites = summary?.counts?.[symName];
-      if (sites === undefined || sites <= 0) return [];
+      // Prototype-safe: see `lookupUnresolvedCallCount`. A bare `counts[symName]`
+      // returns a Function for `constructor`/`toString`/… and `NaN <= 0` is false,
+      // so the old guard let it through into user-facing text.
+      const sites = lookupUnresolvedCallCount(summary, symName);
+      if (sites === undefined) return [];
       return [
         `${sites} call ${sites === 1 ? 'site' : 'sites'} invoking \`${symName}\` ${
           sites === 1 ? 'was' : 'were'

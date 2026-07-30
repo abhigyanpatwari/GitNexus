@@ -128,16 +128,19 @@ import type { ParseWorkerResult } from '../core/ingestion/workers/parse-worker.j
 // JLS 13.1 immediate-host chains (#2555).
 // v18: Worker$N anonymous bodies. v17: callable-value-flow operand identity.
 // v16: direct callee identity.
+// v34: the receiver-chain capture is emitted by ALL 14 language emitters, not
+// just TypeScript. v33 landed with the TypeScript-only emission; the rollout to
+// the other 13 languages changed the capture set AGAIN, so a cache stamped 33 by
+// an intermediate build of this series is not equivalent to one stamped at this
+// commit — it would be treated as current while every non-TypeScript file
+// replayed pre-rollout captures, leaving the feature silently inert for 13 of 14
+// languages. Bumped here so the version tracks the FINAL capture set rather than
+// the first divergence.
 // v33: TypeScript call matches carry `@reference.receiver-chain`, a compact
-// encoding of a receiver that is itself an expression. Lands at the first commit
-// where the capture SET actually diverges — not earlier with the field that
-// carries it, which changed nothing a warm cache could replay wrongly. A cache
-// written before this has no chain capture at all, so replaying it would make
-// the feature look inert rather than broken, which is the harder failure to
-// diagnose. (Shipped as v32 on its own branch; `main` took 32 for #2742 first,
-// so it is renumbered here — see the v21 note on re-checking against origin/main
-// at MERGE time, not branch time.)
-const SCHEMA_BUMP = 33;
+// encoding of a receiver that is itself an expression. (Shipped as v32 on its own
+// branch; `main` took 32 for #2742 first, so this series is renumbered — see the
+// v21 note on re-checking against origin/main at MERGE time, not branch time.)
+const SCHEMA_BUMP = 34;
 const GITNEXUS_PKG_VERSION = (() => {
   try {
     // package.json sits at gitnexus/package.json — two levels up from

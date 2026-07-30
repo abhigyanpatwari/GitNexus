@@ -19,20 +19,20 @@
     }
   },
   "countArm": {
-    "callDrops": 99,
-    "totalDropsAllKinds": 124,
+    "callDrops": 101,
+    "totalDropsAllKinds": 128,
     "bySiteKind": {
-      "call": 99,
-      "read": 25
+      "call": 101,
+      "read": 27
     },
     "callDropsByExtension": {
       ".java": 49,
       ".cs": 8,
       ".ts": 7,
+      ".cpp": 7,
       ".tsx": 6,
       ".py": 5,
       ".go": 5,
-      ".cpp": 5,
       ".php": 4,
       ".rs": 3,
       ".kt": 3,

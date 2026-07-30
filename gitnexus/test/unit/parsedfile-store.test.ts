@@ -586,4 +586,29 @@ describe('parsedfile-store receiverChain sanitation', () => {
       await rm(dir, { recursive: true, force: true });
     }
   });
+
+  it('strips only the invalid chain and leaves a valid sibling intact', async () => {
+    // Sanitation is per-FIELD, not per-site or per-file. Every other case here
+    // uses a single-element array, so the `dropped > 0` .map() branch was never
+    // shown to preserve a good neighbour.
+    const dir = await mkdtemp(path.join(tmpdir(), 'pfstore-chain-mixed-'));
+    try {
+      await persistParsedFileChunk(dir, 'chunk-0', [
+        makeStoreEntry('x.ts', {
+          referenceSites: [
+            siteWith('1|svc|cgetUser'),
+            siteWith('not-a-chain'),
+            siteWith('1|other|ffield'),
+          ],
+        }),
+      ]);
+      const loaded = (await loadParsedFilesForPaths(dir, new Set(['x.ts']))).get('x.ts')!;
+      expect(loaded.referenceSites).toHaveLength(3);
+      expect(loaded.referenceSites[0]).toMatchObject({ receiverChain: '1|svc|cgetUser' });
+      expect(loaded.referenceSites[1]).not.toHaveProperty('receiverChain');
+      expect(loaded.referenceSites[2]).toMatchObject({ receiverChain: '1|other|ffield' });
+    } finally {
+      await rm(dir, { recursive: true, force: true });
+    }
+  });
 });

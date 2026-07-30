@@ -3398,7 +3398,19 @@ describe('TypeScript structural receiver chains', () => {
   beforeAll(async () => {
     repoDir = fs.mkdtempSync(path.join(os.tmpdir(), 'gn-ts-receiver-chain-'));
     writeFixtureRepo(repoDir, {
-      'models.ts': `export class Address {
+      'models.ts': `export class Database {
+  query(): void {}
+}
+
+export class Config {
+  db: Database = new Database();
+}
+
+export function make(n: number): number {
+  return n;
+}
+
+export class Address {
   persist(): void {}
 }
 
@@ -3416,10 +3428,17 @@ export class Service {
   }
 }
 `,
-      'main.ts': `import { Service } from './models';
+      'main.ts': `import { Service, Config, make } from './models';
 
 export function viaOptionalChain(svc: Service | null): void {
   svc?.getUser().save();
+}
+
+// A local that merely SHADOWS an imported class name. Its value is a number,
+// so it has NO members — the fold must not type it as the class.
+export function shadowsAClassName(): void {
+  const Config = make(1);
+  Config.db.query();
 }
 
 export function viaTypeArgs(svc: Service): void {
@@ -3430,8 +3449,16 @@ export function viaNonNull(svc: Service | null): void {
   svc!.getUser().save();
 }
 
-export function viaMixedChain(svc: Service): void {
-  svc.getUser().address.persist();
+// A mixed call/field chain behind a spelling the TEXT cascade cannot parse
+// (optional chaining), so this discriminates the fold rather than re-testing
+// the pre-existing cascade path.
+export function viaMixedChain(svc: Service | null): void {
+  svc?.getUser().address.persist();
+}
+
+// User has no member named missing, so the chain dies at its middle step.
+export function brokenMiddleStep(svc: Service): void {
+  svc.getUser().missing.persist();
 }
 
 export function alreadyWorked(svc: Service): void {
@@ -3490,9 +3517,32 @@ export function alreadyWorked(svc: Service): void {
     });
   });
 
-  it('emits no CALLS edge to a member that exists on no class in the chain', () => {
-    // A broken middle step must produce NO edge, never a wrong one.
+  it('does NOT fabricate an edge when a local shadows a class name', () => {
+    // Regression: the fold resolved its base through the permissive
+    // bare-identifier path, which falls through to a plain class-name lookup
+    // even when a receiver typeBinding exists but names no class. A local
+    // `const Config = make(1)` (a number) was therefore typed as the imported
+    // `class Config`, emitting a confident `CALLS` edge to `Database.query`
+    // that the text cascade never produced. A missing edge is recoverable; a
+    // wrong one is not.
     const calls = getRelationships(result, 'CALLS');
-    expect(calls.filter((c) => c.target === 'noSuchMember')).toHaveLength(0);
+    expect(calls.filter((c) => c.source === 'shadowsAClassName' && c.target === 'query')).toEqual(
+      [],
+    );
+  });
+
+  it('emits no CALLS edge when a middle step names no member of the previous class', () => {
+    // A broken MIDDLE step must produce no edge, never a wrong one. `User` has no
+    // member `missing`, so the chain cannot be typed past it and `persist` must
+    // not bind to anything — in particular not to `Address.persist`, which a
+    // field-walking fallback could otherwise reach.
+    // `getUser` itself still resolves — only the tail past the broken step must not.
+    const calls = getRelationships(result, 'CALLS');
+    expect(calls.filter((c) => c.source === 'brokenMiddleStep' && c.target === 'persist')).toEqual(
+      [],
+    );
+    expect(
+      calls.filter((c) => c.source === 'brokenMiddleStep' && c.target === 'getUser'),
+    ).toHaveLength(1);
   });
 });

@@ -47,6 +47,15 @@ export function summarizeUnresolvedReceivers(
   for (const outcome of outcomes) {
     if (outcome.kind !== 'suppressed' || outcome.reason !== 'receiver-unresolved') continue;
     if (outcome.name.length === 0) continue;
+    // CALL sites only. Case 0's recorder gates on the receiver's punctuation, not
+    // on what the reference IS, so property reads (`d.source.kind`) and writes
+    // (`x.argtypes = [...]`) are recorded alongside lost method calls — measured at
+    // 25 of 124 drops on the fixture corpus. Counting them made the consumer's
+    // "N call sites invoking X were dropped" literally false, and flagged symbols
+    // whose CALL count was never short. `siteKind` exists to make this separable.
+    // A missing `siteKind` counts as a call: the only emitter always sets it, and
+    // erring toward `lower-bound` is the safe direction for an epistemic signal.
+    if (outcome.siteKind !== undefined && outcome.siteKind !== 'call') continue;
     totalSites++;
     counts.set(outcome.name, (counts.get(outcome.name) ?? 0) + 1);
   }
@@ -66,4 +75,30 @@ export function summarizeUnresolvedReceivers(
     totalSites,
     ...(omittedNames > 0 ? { omittedNames } : {}),
   };
+}
+
+/**
+ * Look up the dropped-CALL count for a member name.
+ *
+ * THE one place that reads `UnresolvedReceiverSummary.counts`. The map is
+ * revived from JSON, so it carries `Object.prototype`: a bare
+ * `counts[symName]` returns a FUNCTION for `constructor`, `toString`,
+ * `valueOf`, `hasOwnProperty` and friends, and a `<= 0` guard does not catch it
+ * because `Number(fn)` is `NaN` and `NaN <= 0` is false. `constructor` is an
+ * ordinary member name in a code graph, so that was reachable in normal use and
+ * interpolated a function into user-facing text.
+ *
+ * Returns `undefined` when the name was never recorded, and only ever returns a
+ * finite positive number otherwise.
+ */
+export function lookupUnresolvedCallCount(
+  summary: UnresolvedReceiverSummary | undefined,
+  symName: string,
+): number | undefined {
+  const counts = summary?.counts;
+  if (counts === undefined || symName.length === 0) return undefined;
+  if (!Object.hasOwn(counts, symName)) return undefined;
+  const sites = counts[symName];
+  if (typeof sites !== 'number' || !Number.isFinite(sites) || sites <= 0) return undefined;
+  return sites;
 }

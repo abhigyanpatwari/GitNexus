@@ -568,7 +568,15 @@ export interface RepoMeta {
  * — for every unchanged Rust file, which is exactly the symptom #2730
  * reported. Force a full re-analyze.
  *
- * v27: receiver expressions are typed from captured structure rather than from
+ * v28: structural receiver typing is active for ALL 14 languages, and the fold no
+ * longer types a bare identifier that merely SHADOWS a class name as that class.
+ * v27 landed with TypeScript-only emission and with the permissive base lookup, so
+ * an index stamped 27 by an intermediate build carries both pre-rollout edges for 13
+ * languages AND the fabricated edges the shadowing bug produced. The reuse gate is a
+ * strict `===`, so such an index would be treated as current. Re-bumped here so the
+ * version tracks the final edge semantics. Force a full re-analyze.
+ *
+ * v26: receiver expressions are typed from captured structure rather than from
  * their source text. `svc?.getUser().save()`, `svc!.getUser().save()` and
  * `svc.getTyped<User>().save()` previously emitted NO `CALLS` edge — the text
  * cascade split the receiver on punctuation it could not parse — and two of the
@@ -615,7 +623,7 @@ export interface RepoMeta {
  * index holds ids an incremental top-up cannot reconcile and would simply
  * strand. Force a full re-analyze.
  */
-export const INCREMENTAL_SCHEMA_VERSION = 27;
+export const INCREMENTAL_SCHEMA_VERSION = 28;
 
 export interface IndexedRepo {
   repoPath: string;

@@ -107,6 +107,17 @@ interface ResolveCompoundReceiverOptions {
    *  carrying it into a recursive call would re-fold it against an inner
    *  expression it does not describe. */
   readonly receiverChain?: string;
+  /** Resolve a BARE identifier the way the dotted-chain head does: when a
+   *  receiver typeBinding exists for the name, that binding decides the type and
+   *  nothing else does. Off by default, so the text cascade keeps its existing
+   *  (more permissive) behaviour; the structural fold turns it ON.
+   *
+   *  Without it, the bare-identifier branch falls through to a plain class-name
+   *  lookup EVEN WHEN a binding existed but named no class — which types a local
+   *  that merely SHADOWS a class as that class. That fabricated a `CALLS` edge
+   *  (`const Config = make(1); Config.db.query()` emitted `entry → Database.query`),
+   *  the exact wrong-edge failure this work exists to avoid. */
+  readonly strictBaseBinding?: boolean;
 }
 
 /** Is this hop the language's construction selector applied to the class
@@ -276,7 +287,8 @@ function typeOfMemberOnClass(
  * class-name receivers, map-tuple sentinels, member aliases and call-result
  * aliases. A second implementation of that would drift from it.
  *
- * NOT WIRED into any resolution path yet — see U10.
+ * Called from `resolveCompoundReceiverClass` ahead of the text cascade, and only
+ * when the site carries a `receiverChain` (see the `depth === 0` gate below).
  */
 export function foldReceiverChain(
   chain: DecodedReceiverChain,
@@ -298,6 +310,7 @@ export function foldReceiverChain(
     ...options,
     fieldFallback: false,
     receiverChain: undefined,
+    strictBaseBinding: true,
   });
   if (current === undefined) return undefined;
 
@@ -467,6 +480,11 @@ export function resolveCompoundReceiverClass(
         if (compound !== undefined) return compound;
       }
     }
+    // Mirror the dotted-chain head rule below (`headType ? … : …`): a binding
+    // that EXISTS but resolves to no class means "not a typed receiver", not
+    // "try the class namespace instead". Only the structural fold opts in; the
+    // cascade keeps its historical fallthrough so no existing edge moves.
+    if (tb !== undefined && options.strictBaseBinding === true) return undefined;
     return findClassBindingInScope(inScope, workingText, scopes);
   }
 

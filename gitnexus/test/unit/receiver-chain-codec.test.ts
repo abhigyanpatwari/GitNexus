@@ -104,6 +104,53 @@ describe('receiver-chain codec', () => {
     expect(isValidReceiverChain(payload)).toBe(false);
   });
 
+  it('refuses to mint a name carrying a zero-width character', () => {
+    // `\s` does not match these, so without an explicit class they encode and
+    // persist cleanly and then match no binding at resolution time — a silent,
+    // unexplained miss, and a trojan-source vector.
+    for (const invisible of ['\u200B', '\u200C', '\u200D', '\u200E', '\u200F', '\uFEFF']) {
+      expect(
+        encodeReceiverChain('svc', [{ kind: 'call', name: `get${invisible}User` }]),
+      ).toBeUndefined();
+      expect(
+        encodeReceiverChain(`sv${invisible}c`, [{ kind: 'call', name: 'getUser' }]),
+      ).toBeUndefined();
+    }
+  });
+
+  it('round-trips a chain of exactly MAX_CHAIN_DEPTH steps', () => {
+    // The refusal at MAX_CHAIN_DEPTH + 1 is pinned above; pin the boundary that
+    // must still WORK, so a future off-by-one narrowing is caught too.
+    const steps = Array.from({ length: MAX_CHAIN_DEPTH }, (_unused, i) => ({
+      kind: 'call' as const,
+      name: `m${i}`,
+    }));
+    expect(decodeReceiverChain(encodeReceiverChain('svc', steps))).toMatchObject({
+      baseReceiverName: 'svc',
+      truncated: false,
+    });
+    expect(decodeReceiverChain(encodeReceiverChain('svc', steps))?.steps).toHaveLength(
+      MAX_CHAIN_DEPTH,
+    );
+  });
+
+  it('survives adversarial payloads without throwing', () => {
+    // The "total function" claim was previously verified by reading only.
+    for (const hostile of [
+      '|'.repeat(512),
+      '1|' + '|'.repeat(400),
+      '1|svc|c\u0000name',
+      '1|svc|c\uD800',
+      `1|svc|c${'x'.repeat(MAX_RECEIVER_CHAIN_BYTES)}`,
+      '1|'.repeat(300),
+      {},
+      [],
+      null,
+    ]) {
+      expect(() => decodeReceiverChain(hostile)).not.toThrow();
+    }
+  });
+
   it('rejects an over-cap payload at decode, matching the emit-side refusal', () => {
     // Emit and load must agree. A bound applied only on load is a writer that
     // keeps minting what the reader keeps refusing — a permanent, unlogged

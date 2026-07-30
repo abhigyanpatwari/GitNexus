@@ -412,6 +412,15 @@ const KNOWN_BLIND = [
  * moves these numbers and requires a rebaseline; that treadmill is the accepted
  * cost of the guard, the same trade the scope-capture bench already makes.
  */
+/**
+ * NOTE ON SCOPE: this is the GATED projection — shape states plus call-drop
+ * counts. The perf arm (`--perf N`: wall-clock, RSS, bytes/site) is deliberately
+ * NOT part of it: those measurements need an A/B against a control build, which
+ * `--check` has no way to construct, so asserting them here would compare against
+ * numbers from a different machine and fail on noise. The perf figures recorded in
+ * BASELINE.md are therefore a POINT-IN-TIME MEASUREMENT, not a CI guard — do not
+ * read a green `--check` as evidence that performance has not regressed.
+ */
 function projection(output) {
   return {
     shapeArm: Object.fromEntries(

@@ -350,8 +350,16 @@ function sanitizeCallableFlowSites(
 }
 
 /**
- * Same untrusted-boundary contract as `sanitizeCallableFlowSites`, for the
- * compact `receiverChain` on a reference site.
+ * Untrusted-boundary handling for the compact `receiverChain` on a reference site.
+ *
+ * NARROWER than its sibling `sanitizeCallableFlowSites`, deliberately and worth
+ * stating plainly: that function validates every element with a full type
+ * predicate, whereas this one inspects only the `receiverChain` sub-field and, in
+ * the common case where nothing was stripped, returns the original array typed as
+ * `ReferenceSite[]` without structurally validating `name` / `kind` / `atRange`.
+ * That is still a strict improvement — `referenceSites` had NO sanitation at all
+ * before this — but it is not parity, and a future change that needs per-site
+ * structural validation must add it rather than assume it is already here.
  *
  * Sanitation is per-FIELD, not per-site: a chain that does not decode is
  * stripped and the site is kept, because the site is still perfectly usable
