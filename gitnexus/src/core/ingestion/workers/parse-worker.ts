@@ -2450,16 +2450,29 @@ const processFileGroup = (
       //     helper's own docblock warns about: the impl branch above deliberately
       //     fires only for an UNSCOPED `type_identifier`, and this gate was
       //     picking up the scoped targets it had just excluded.
+      //   - `nestedCallablePrefix === undefined` excludes an item inside a
+      //     CALLABLE. `fn wrapper() { mod helper { fn dispatch } }` composed the
+      //     mod segment outermost — `helper.wrapper.dispatch@2:8` — inverting the
+      //     real nesting, because the mod prefix is prepended to a name the
+      //     enclosing-callable pass has already qualified. Nothing dangled (the
+      //     `@line:col` suffix keeps such ids unique on its own, which is also why
+      //     the mod segment adds no identity here), but the path read as a lie
+      //     about the source. Skipping is the honest answer; reordering would mean
+      //     interleaving two qualifier passes for a shape that only ever produces
+      //     already-unique ids.
       //
       // Same-named members on same-named types in sibling modules therefore
       // still collapse, as do the containers themselves — unchanged from before
       // this fix, and owned by the owner edge rather than worked around here.
-      const qualifiedName =
+      const qualifiesByEnclosingModScope =
         rustImplQualifiedName === undefined &&
         definitionNode !== undefined &&
         !MEMBER_OWNER_NODE_TYPES.has(definitionNode.type) &&
+        nestedCallablePrefix === undefined &&
         !enclosingClassInfo &&
-        objectLiteralOwnerInfo?.ownerName === undefined
+        objectLiteralOwnerInfo?.ownerName === undefined;
+      const qualifiedName =
+        qualifiesByEnclosingModScope && definitionNode !== undefined
           ? qualifyByEnclosingModScope(definitionNode, qualifiedNameBeforeModScope)
           : qualifiedNameBeforeModScope;
 

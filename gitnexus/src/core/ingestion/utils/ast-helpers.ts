@@ -14,17 +14,32 @@ import { isOverloadableCallable } from './callable-labels.js';
 export type SyntaxNode = Parser.SyntaxNode;
 
 /**
- * Qualify a Rust inherent-impl target (`impl Inner { ... }`) by its enclosing
- * `mod_item` scope, so a bare same-tail target nested under different modules
- * resolves to a DISTINCT path (`outer.Inner` vs `other.Inner`) — the #1982
- * follow-up to #1975. Walks `mod_item` ancestors (outermost → innermost) and
- * joins them with the normalized raw target via the shared `splitQualifiedName`.
- * A top-level `impl Inner` (no enclosing mod) returns the bare target unchanged.
- * Keyed purely on tree-sitter node types (no language name), matching the
- * inherent-impl branch in `findEnclosingClassInfo`; the caller restricts this to
- * UNSCOPED targets (`type_identifier`) so a SCOPED `impl a::Inner` keeps its full
- * raw text (#1975). The Impl-node materialization in parsing-processor /
- * parse-worker mirrors this so the owner edge and node id agree byte-for-byte.
+ * Qualify a name by its enclosing `mod_item` scope, so two same-tail items nested
+ * under different modules get DISTINCT paths (`outer.Inner` vs `other.Inner`).
+ * Walks `mod_item` ancestors (outermost → innermost) and joins them with the
+ * normalized raw text via the shared `splitQualifiedName`. Keyed purely on
+ * tree-sitter node types (no language name), so it is a no-op for every grammar
+ * without such a node.
+ *
+ * TWO callers, with different contracts — read both before widening either:
+ *
+ *  1. The inherent-impl target (`impl Inner { … }`) — the #1982 follow-up to
+ *     #1975, reachable through the {@link qualifyRustImplTargetByModScope} alias
+ *     and mirrored by the inherent-impl branch in `findEnclosingClassInfo` so the
+ *     owner edge and the node id agree byte-for-byte. That caller gates on an
+ *     UNSCOPED `type_identifier`, which is what keeps a SCOPED `impl a::Inner` on
+ *     its full raw text.
+ *
+ *  2. Free items, for module node identity (#2742). That caller gates on the node
+ *     being on neither side of an owner edge (`MEMBER_OWNER_NODE_TYPES`,
+ *     `enclosingClassInfo`) and not inside a callable, because only the id moves
+ *     here — every owner-edge anchor is minted separately and does not follow.
+ *
+ * A name with NO enclosing `mod` is returned verbatim, never normalized: rewriting
+ * a scoped target's separator (`a::Inner` → `a.Inner`) would move its node id away
+ * from the id its owner edge emits, which is how caller 2 first broke caller 1's
+ * #1975 contract. Splitting an unscoped name has always been the identity, so
+ * caller 1 is unaffected either way.
  */
 export const qualifyByEnclosingModScope = (node: SyntaxNode, rawText: string): string => {
   const modSegments: string[] = [];

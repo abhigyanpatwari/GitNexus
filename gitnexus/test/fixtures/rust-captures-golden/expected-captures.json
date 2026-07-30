@@ -96,8 +96,8 @@
     "digest": "59bf9f7c931cbba2c58b581e15a79a4d7a59c3088a9b62eda940298f7a150088"
   },
   "rust-2742-nested-mods/src/main.rs": {
-    "captureGroups": 39,
-    "digest": "0100d72de1c56c7d4ce3f3dae34997acb6413df8d13bc49671a321504a2ca1e4"
+    "captureGroups": 50,
+    "digest": "505ff37c8c8959076865a05e5237b0aaad4d00a2a88f9676ce4b5d694a25d48b"
   },
   "rust-2742-type-vs-module/src/b.rs": {
     "captureGroups": 7,

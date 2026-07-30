@@ -39,3 +39,17 @@ fn main() {
     outer::dispatch();
     a::top();
 }
+
+// A `mod` declared inside a FUNCTION. The enclosing-callable pass already
+// position-qualifies these ids, so prepending the mod segment put it OUTSIDE the
+// callable — `helper.wrapper.dispatch@L:C` — inverting the real nesting. The
+// `@line:col` suffix makes such ids unique on its own, so the mod segment adds no
+// identity and is skipped rather than reordered.
+pub fn wrapper() -> usize {
+    mod helper {
+        pub fn dispatch() -> usize {
+            3
+        }
+    }
+    helper::dispatch()
+}

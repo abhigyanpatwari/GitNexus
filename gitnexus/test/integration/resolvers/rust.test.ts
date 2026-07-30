@@ -2954,6 +2954,22 @@ describe('Rust nested inline modules resolve (#2745 review)', () => {
     );
     expect(selfLoops).toEqual([]);
   });
+
+  // A `mod` inside a `fn` is already position-qualified by the enclosing-callable
+  // pass, so prepending the mod segment placed it OUTSIDE the callable and the id
+  // read as `helper.wrapper.dispatch@L:C` — the inverse of the real nesting.
+  it('does not hoist a mod declared inside a fn above the callable', () => {
+    const ids: string[] = [];
+    result.graph.forEachNode((n) => {
+      if (n.label === 'Function' && n.properties.name === 'dispatch') ids.push(n.id);
+    });
+    // Prefix rather than an exact `@line:col`, so adding a line to the fixture
+    // above does not turn this into a coordinate-maintenance test.
+    expect(
+      ids.filter((id) => id.startsWith('Function:src/main.rs:wrapper.dispatch@')),
+    ).toHaveLength(1);
+    expect(ids.filter((id) => id.includes(':helper.'))).toEqual([]);
+  });
 });
 
 // ---------------------------------------------------------------------------

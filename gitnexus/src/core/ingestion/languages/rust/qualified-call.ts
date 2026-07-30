@@ -89,13 +89,20 @@ export function resolveRustQualifiedFreeCall(
   const qualifier = segments.slice(0, -1);
   if (qualifier.length === 0) return undefined;
 
-  // Cheap rejection BEFORE any index work. The capture that carries
+  // Cheap rejection before the candidate SEARCH. The capture that carries
   // `rawQualifiedName` matches every `scoped_identifier` callee, so this hook is
   // reached by `Vec::new()`, `String::from()`, `Self::method()` and every other
   // type-qualified call — the overwhelming majority of `::` calls in real Rust,
-  // none of which name a module. Letting those run the full candidate search
-  // meant each one paid a same-name-bucket scan plus a walk of every module
-  // scope in the workspace before returning undefined (#2741 review).
+  // none of which name a module. Letting those through meant each one paid a
+  // same-name-bucket scan plus a walk of every module scope in the workspace
+  // before returning undefined (#2741 review).
+  //
+  // `passIndexFor` is not free on its FIRST call in a pass — it walks the def
+  // index once — so this is not "before any index work", as an earlier version of
+  // this comment claimed. It is memoized per resolution pass on a WeakMap, over
+  // structures already resident in memory, and every later site here is a set
+  // lookup. What the filter still buys is skipping the per-site candidate search,
+  // which is the part that scales with the workspace.
   const index = moduleIndexFor(allFilePaths);
   const pass = passIndexFor(workspaceIndex, index, scopes);
   if (!couldNameAModule(qualifier, pass.knownModuleNames)) {
