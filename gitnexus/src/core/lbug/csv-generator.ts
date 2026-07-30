@@ -17,11 +17,13 @@ import { createWriteStream, WriteStream } from 'fs';
 import path from 'path';
 import type { GraphNode, GraphRelationship } from 'gitnexus-shared';
 import { KnowledgeGraph } from '../graph/types.js';
-import { NodeTableName, NODE_TABLES, RELATION_SCHEMA_PAIRS } from './schema.js';
-import { RelPairRouter } from './rel-pair-routing.js';
+import { NodeTableName, NODE_TABLES, RELATION_SCHEMA } from './schema.js';
+import { parseRelationSchemaPairs, RelPairRouter } from './rel-pair-routing.js';
 import { parseTruthyEnv } from '../ingestion/utils/env.js';
 import { SYMBOL_NODE_LABELS } from '../ingestion/utils/symbol-labels.js';
 import { applyCjkSegmentationIfEnabled } from '../search/cjk-segmentation.js';
+
+const DECLARED_RELATION_PAIRS = parseRelationSchemaPairs(RELATION_SCHEMA);
 
 /**
  * Deterministic output ordering — optional (out-of-core / windowed-resolve
@@ -789,7 +791,7 @@ export const streamAllCSVsToDisk = async (
       csvDir,
       REL_CSV_HEADER,
       new Set<string>(NODE_TABLES),
-      RELATION_SCHEMA_PAIRS,
+      DECLARED_RELATION_PAIRS,
     );
     try {
       let emitted = 0;

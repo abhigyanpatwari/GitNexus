@@ -462,21 +462,6 @@ CREATE REL TABLE ${REL_TABLE_NAME} (
   step INT32
 )`;
 
-/**
- * Declared FROM→TO label pairs for the single relationship table.
- *
- * Derived from the DDL itself so the CSV router and LadybugDB schema cannot
- * drift into separate allowlists. Backticks are schema quoting, not part of a
- * node label.
- */
-export const RELATION_SCHEMA_PAIRS: ReadonlySet<string> = new Set(
-  [
-    ...RELATION_SCHEMA.matchAll(
-      /\bFROM\s+`?([A-Za-z][A-Za-z0-9_]*)`?\s+TO\s+`?([A-Za-z][A-Za-z0-9_]*)`?/g,
-    ),
-  ].map((match) => `${match[1]}|${match[2]}`),
-);
-
 // ============================================================================
 // EMBEDDING TABLE SCHEMA
 // Separate table for vector storage to avoid copy-on-write overhead

@@ -3,7 +3,11 @@ import { EventEmitter } from 'events';
 import fs from 'fs';
 import path from 'path';
 import os from 'os';
-import { RelPairRouter, getNodeLabel } from '../../src/core/lbug/rel-pair-routing.js';
+import {
+  RelPairRouter,
+  getNodeLabel,
+  parseRelationSchemaPairs,
+} from '../../src/core/lbug/rel-pair-routing.js';
 
 /**
  * Unit tests for RelPairRouter (#2203 U2) — the production per-pair emit path.
@@ -95,6 +99,20 @@ describe('getNodeLabel', () => {
     expect(getNodeLabel('proc_7')).toBe('Process');
     expect(getNodeLabel('Function:src/a.ts:f:1')).toBe('Function');
     expect(getNodeLabel('File:src/a.ts')).toBe('File');
+  });
+});
+
+describe('parseRelationSchemaPairs', () => {
+  it('extracts plain and quoted FROM→TO labels for router validation', () => {
+    expect(
+      parseRelationSchemaPairs(`
+        CREATE REL TABLE CodeRelation(
+          FROM Class TO CodeElement,
+          FROM \`Enum\` TO \`TypeAlias\`,
+          type STRING
+        )
+      `),
+    ).toEqual(new Set(['Class|CodeElement', 'Enum|TypeAlias']));
   });
 });
 

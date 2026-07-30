@@ -48,6 +48,22 @@ export const getNodeLabel = (nodeId: string): string => {
   return nodeId.split(':')[0];
 };
 
+/**
+ * Extract the FROM→TO pairs accepted by a relationship DDL.
+ *
+ * This belongs at the routing boundary: schema.ts owns the DDL, while the CSV
+ * router owns the fail-fast check that prevents writing a pair LadybugDB cannot
+ * COPY. Backticks quote schema labels and are not part of the graph label.
+ */
+export const parseRelationSchemaPairs = (relationSchema: string): ReadonlySet<string> =>
+  new Set(
+    [
+      ...relationSchema.matchAll(
+        /\bFROM\s+`?([A-Za-z][A-Za-z0-9_]*)`?\s+TO\s+`?([A-Za-z][A-Za-z0-9_]*)`?/g,
+      ),
+    ].map((match) => `${match[1]}|${match[2]}`),
+  );
+
 export interface RelPairMeta {
   csvPath: string;
   rows: number;
