@@ -20,6 +20,7 @@ export const VENDORED_GRAMMAR_PACKAGES: ReadonlySet<string> = new Set([
   'tree-sitter-kotlin',
   'tree-sitter-objc',
   'tree-sitter-zig',
+  'tree-sitter-lua',
 ]);
 
 /** Absolute directory of a vendored grammar package under `vendor/`. */
@@ -29,8 +30,11 @@ export const vendoredGrammarDir = (packageName: string): string =>
 /**
  * Load a vendored tree-sitter grammar by its absolute path under `vendor/`.
  *
- * GitNexus vendors seven grammars (c/dart/proto/swift/kotlin/objc/zig) inside its own
- * package under `vendor/`, each shipping committed per-platform prebuilds. They
+ * GitNexus vendors eight grammars (c/dart/proto/swift/kotlin/objc/zig/lua) inside its own
+ * package under `vendor/`. All but Lua ship committed per-platform prebuilds; Lua
+ * is source-built by the grammar workflow / postinstall because it has no
+ * committed prebuilds yet (its upstream nan-based binding is incompatible with
+ * the pinned tree-sitter runtime — see `.github/vendored-grammars.json`). They
  * are deliberately NOT npm dependencies and must NEVER be copied into
  * `node_modules`: an undeclared package under `node_modules` is "extraneous" to
  * every subsequent `npm`/`npx` arborist reify, which prunes or relocates it.

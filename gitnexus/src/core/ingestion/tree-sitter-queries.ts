@@ -3052,6 +3052,49 @@ export const ZIG_QUERIES = `
     member: (identifier) @call.name)) @call
 `;
 
+// Lua queries — definitions and call sites are shared with the scope resolver.
+export const LUA_QUERIES = `
+(function_definition_statement
+  name: (identifier) @name) @definition.function
+
+(function_definition_statement
+  name: (variable
+    method: (identifier) @name)) @definition.method
+
+(function_definition_statement
+  name: (variable
+    field: (identifier) @name)) @definition.method
+
+(local_function_definition_statement
+  name: (identifier) @name) @definition.function
+
+(local_variable_declaration
+  (variable_list (variable name: (identifier) @name))
+  (expression_list
+    value: (call
+      function: (variable name: (identifier) @_class)
+      (#eq? @_class "class")))) @definition.class
+
+(local_variable_declaration
+  (variable_list (variable name: (identifier) @name))
+  (expression_list
+    value: (call
+      function: (variable name: (identifier) @_middleclass)
+      (#eq? @_middleclass "middleclass")))) @definition.class
+
+(call
+  function: (variable
+    name: (identifier) @call.name)) @call
+
+(call
+  function: (variable
+    method: (identifier) @call.name)) @call
+
+(call
+  function: (variable
+    field: (identifier) @call.name)) @call
+`;
+
 import { SupportedLanguages } from 'gitnexus-shared';
 
 const OBJECTIVE_C_QUERIES = `((translation_unit) @objc.root)`;
@@ -3072,6 +3115,7 @@ export const LANGUAGE_QUERIES: Record<SupportedLanguages, string> = {
   [SupportedLanguages.Ruby]: RUBY_QUERIES,
   [SupportedLanguages.Swift]: SWIFT_QUERIES,
   [SupportedLanguages.Dart]: DART_QUERIES,
+  [SupportedLanguages.Lua]: LUA_QUERIES,
   [SupportedLanguages.Vue]: TYPESCRIPT_QUERIES, // Vue <script> blocks are parsed as TypeScript
   [SupportedLanguages.Cobol]: '', // Standalone regex processor — no tree-sitter queries
   [SupportedLanguages.Zig]: ZIG_QUERIES,

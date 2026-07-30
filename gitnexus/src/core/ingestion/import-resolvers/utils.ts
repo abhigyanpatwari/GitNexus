@@ -22,6 +22,9 @@ export const EXTENSIONS = [
   // Python
   '.py',
   '/__init__.py',
+  // Lua — require("a.b.c") resolves to a/b/c.lua or a/b/c/init.lua
+  '.lua',
+  '/init.lua',
   // Java
   '.java',
   // Kotlin
