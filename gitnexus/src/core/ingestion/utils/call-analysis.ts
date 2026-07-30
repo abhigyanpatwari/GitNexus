@@ -1,3 +1,5 @@
+import type { MixedChainStep } from 'gitnexus-shared';
+
 import type { SyntaxNode } from './ast-helpers.js';
 import { CALL_ARGUMENT_LIST_TYPES } from './ast-helpers.js';
 
@@ -362,8 +364,14 @@ const FIELD_ACCESS_NODE_TYPES = new Set([
   'member_binding_expression', // C# null-conditional (user?.Address)
 ]);
 
-/** One step in a mixed receiver chain. */
-export type MixedChainStep = { kind: 'field' | 'call'; name: string };
+/**
+ * One step in a mixed receiver chain.
+ *
+ * Owned by `gitnexus-shared` — it is part of the ScopeExtractor output
+ * contract, and resolution consumes it. Re-exported here so the producer's
+ * existing importers keep a single import site.
+ */
+export type { MixedChainStep };
 
 /**
  * Walk a receiver AST node that is itself a call expression, accumulating the

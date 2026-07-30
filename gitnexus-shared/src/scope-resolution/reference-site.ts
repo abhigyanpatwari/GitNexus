@@ -124,3 +124,18 @@ export interface ReferenceSite {
    */
   readonly argumentTypeClasses?: readonly ParameterTypeClass[];
 }
+
+/**
+ * One step in a mixed receiver chain — the decoded form of a receiver that is
+ * itself an expression rather than a bare name.
+ *
+ * For `svc.getUser().address.save()`, the receiver of `save` decodes to
+ * `[{ kind: 'call', name: 'getUser' }, { kind: 'field', name: 'address' }]`
+ * over a base receiver of `svc`.
+ *
+ * Lives here rather than beside its producer because it is part of the
+ * ScopeExtractor output contract that this package owns: the producer
+ * (`extractMixedChain`) walks a tree-sitter AST and so must stay in the
+ * analyzer, but the shape it yields crosses into resolution.
+ */
+export type MixedChainStep = { kind: 'field' | 'call'; name: string };
