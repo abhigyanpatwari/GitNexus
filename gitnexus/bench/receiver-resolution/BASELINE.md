@@ -70,11 +70,35 @@ receiver has no well-defined type is not a usable control.
    to nothing, because it asks about edge presence rather than about a recorder
    that has to have fired.
 
-2. **The Problem Frame's death sites are wrong for the invisible shapes.** The
-   plan traces `svc?.getUser().save()` to `compound-receiver.ts:349` splitting
-   `objExpr = "svc?"`. It never reaches that file — no reference site is produced,
-   so Case 0 is never consulted. Any fix aimed at `:349` for this shape would be
-   aimed at code that does not run for it.
+2. **Invisibility is NOT a capture-layer gap.** Measured directly against
+   `emitTsScopeCaptures`, all five TypeScript shapes emit a full call match —
+   `@reference.call.member`, `@reference.name`, and crucially
+   `@reference.receiver`:
+
+   | Shape | `@reference.receiver` |
+   |---|---|
+   | `svc?.getUser().save()` | `svc?.getUser()` |
+   | `svc.getTyped<User>().save()` | `svc.getTyped<User>()` |
+   | `repos[0].save()` | `repos[0]` |
+
+   So a `ReferenceSite` exists for every one of them, and hanging a
+   `receiverChain` field on `ReferenceSite` is a viable carrier for all of them.
+   That was worth establishing before building on it.
+
+   The drop suppression is therefore downstream of capture. For `repos[0]` the
+   cause is known and matches the plan: the receiver has neither `.` nor `(`, so
+   Case 0's gate never fires. For `?.` and `<T>` the receiver text satisfies the
+   gate, so Case 0 *does* run and one of two things happens — the site was marked
+   in `handledSites` by another case, or `resolveCompoundReceiverClass` returned a
+   class on which the member was then not found, leaving
+   `compoundReceiverUnresolved` false. Those are materially different defects and
+   which one applies is **not yet determined**; it is the first thing U10 has to
+   establish, since the second would mean the recorder under-reports by
+   mis-attribution rather than by a gate.
+
+   *(An earlier revision of this file asserted that these shapes produce no
+   reference site at all. That was inferred from edge-and-drop absence and is
+   disproven by the capture dump above.)*
 
 3. **KTD6 defect 2 overstates the PHP blindness.** The claim is that Case 0's
    C-family punctuation test means PHP `->` receivers "never record a drop at
