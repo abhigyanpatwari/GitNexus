@@ -113,6 +113,52 @@ describeIfWorkerBuilt(
         'Function:ml.ts:outer.single@2:2 -> Function:ml.ts:target',
       ]);
     });
+
+    it('Kotlin: a multi-line val lambda binding emits CALLS to target', async () => {
+      const edges = await callEdges(
+        'ml.kt',
+        'fun target(x: Int): Int = x\nfun outer(): Int {\n' +
+          '  val single = { x: Int -> target(x) }\n' +
+          '  val multi =\n    { x: Int -> target(x) }\n  return 1\n}\n',
+      );
+
+      expect(edges.some((e) => e.includes('multi') && e.endsWith('-> Function:ml.kt:target'))).toBe(
+        true,
+      );
+      expect(edges.some((e) => e.startsWith('Function:ml.kt:outer ->') && e.endsWith('target'))).toBe(
+        false,
+      );
+    });
+
+    it('Ruby: a multi-line lambda do-end binding emits CALLS to target', async () => {
+      const edges = await callEdges(
+        'ml.rb',
+        'def target(x)\n  x\nend\ndef outer\n' +
+          '  a = ->(x) { target(x) }\n' +
+          '  b =\n    lambda do |y|\n      target(y)\n    end\nend\n',
+      );
+
+      expect(edges.some((e) => e.includes('.b@') && e.endsWith('-> Method:ml.rb:target#1'))).toBe(
+        true,
+      );
+      expect(edges.some((e) => e.startsWith('Method:ml.rb:outer#0 ->'))).toBe(false);
+    });
+
+    it('Dart: a multi-line var closure binding emits CALLS to target', async () => {
+      const edges = await callEdges(
+        'ml.dart',
+        'int target(int x) => x;\nint outer() {\n' +
+          '  var single = (int x) => target(x);\n' +
+          '  var multi =\n    (int x) => target(x);\n  return 1;\n}\n',
+      );
+
+      expect(edges.some((e) => e.includes('multi') && e.endsWith('-> Function:ml.dart:target'))).toBe(
+        true,
+      );
+      expect(
+        edges.some((e) => e.startsWith('Function:ml.dart:outer ->') && e.endsWith('target')),
+      ).toBe(false);
+    });
   },
 );
 

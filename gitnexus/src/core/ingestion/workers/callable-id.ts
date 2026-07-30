@@ -36,6 +36,9 @@ const BOUND_CALLABLE_EXPRESSION_TYPES = new Set([
   'closure_expression',
   'lambda_literal',
   'lambda_expression',
+  // Ruby brace / do-end blocks used as closure values (`-> { }`, `lambda do`).
+  'block',
+  'do_block',
   // Named forms that are themselves the definition node (not a wrapper).
   'function_declaration',
   'generator_function_declaration',
@@ -76,8 +79,17 @@ function unwrapBoundCallable(node: SyntaxNode | null): SyntaxNode | undefined {
     if (found !== undefined) return found;
   }
 
-  // HOC / factory: `const X = HOC((args) => …)` — the callable sits in arguments.
-  if (node.type === 'call_expression' || node.type === 'arguments') {
+  // HOC / factory / Ruby `lambda do`: callable sits in call arguments or a
+  // `block`/`do_block` child. Ruby's grammar names the node `call`, not
+  // `call_expression`.
+  if (
+    node.type === 'call_expression' ||
+    node.type === 'call' ||
+    node.type === 'arguments'
+  ) {
+    const blockField = node.childForFieldName('block');
+    const fromBlock = unwrapBoundCallable(blockField);
+    if (fromBlock !== undefined) return fromBlock;
     for (const child of node.namedChildren) {
       const found = unwrapBoundCallable(child);
       if (found !== undefined) return found;
@@ -109,7 +121,11 @@ export function boundCallablePositionNode(
   if (nameNode !== undefined && nameNode !== null) {
     let current: SyntaxNode | null = nameNode;
     while (current !== null && current.id !== definitionNode.id) {
-      const callable = unwrapBoundCallable(fieldInitializer(current));
+      const callable =
+        unwrapBoundCallable(fieldInitializer(current)) ??
+        // Kotlin/Swift sometimes attach the lambda as a positional sibling of
+        // the name pattern rather than a `value:` field.
+        firstBoundCallableChild(current);
       if (callable !== undefined) return callable;
       current = current.parent;
     }
@@ -119,15 +135,26 @@ export function boundCallablePositionNode(
     return definitionNode;
   }
 
-  const fromDefinition = unwrapBoundCallable(fieldInitializer(definitionNode));
+  const fromDefinition =
+    unwrapBoundCallable(fieldInitializer(definitionNode)) ??
+    firstBoundCallableChild(definitionNode);
   if (fromDefinition !== undefined) return fromDefinition;
 
   for (const child of definitionNode.namedChildren) {
-    const callable = unwrapBoundCallable(fieldInitializer(child));
+    const callable =
+      unwrapBoundCallable(fieldInitializer(child)) ?? unwrapBoundCallable(child);
     if (callable !== undefined) return callable;
   }
 
   return definitionNode;
+}
+
+function firstBoundCallableChild(node: SyntaxNode): SyntaxNode | undefined {
+  for (const child of node.namedChildren) {
+    const found = unwrapBoundCallable(child);
+    if (found !== undefined) return found;
+  }
+  return undefined;
 }
 
 /**
