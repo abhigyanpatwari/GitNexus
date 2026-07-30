@@ -73,12 +73,12 @@ describe('CALL_SUMMARY relation-type exclusion (U-C1)', () => {
 });
 
 describe('CALL_SUMMARY incremental reuse gate (U-C5)', () => {
-  it('INCREMENTAL_SCHEMA_VERSION is bumped to 24 (inline constructor receivers, #2708)', () => {
+  it('INCREMENTAL_SCHEMA_VERSION is bumped to 25 (Rust mod-qualified node ids, #2742)', () => {
     // Moves with every bump BY DESIGN — that is the point of pinning it. A
     // change that alters emitted ids or edges without bumping would otherwise
     // ship silently, and an existing index would keep serving the old graph
     // through the reuse gate below.
-    expect(INCREMENTAL_SCHEMA_VERSION).toBe(24);
+    expect(INCREMENTAL_SCHEMA_VERSION).toBe(25);
   });
 
   it('a pre-current stamp fails the `=== INCREMENTAL_SCHEMA_VERSION` reuse gate → forces full re-analyze', () => {
@@ -178,6 +178,11 @@ describe('CALL_SUMMARY incremental reuse gate (U-C5)', () => {
     // A pre-v24 (v23) index predates
     expect(passesReuseGate(23)).toBe(false);
     // The current stamp passes the gate (incremental top-up eligible).
-    expect(passesReuseGate(24)).toBe(true);
+    // A pre-v25 (v24) index predates mod-qualified Rust node ids (#2742): every
+    // item inside a `mod` block has a different id now, so a top-up would strand
+    // the old nodes → must NOT reuse.
+    expect(passesReuseGate(24)).toBe(false);
+    // The current stamp passes (incremental top-up eligible).
+    expect(passesReuseGate(25)).toBe(true);
   });
 });

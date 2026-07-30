@@ -2724,6 +2724,18 @@ describe('C++ two-phase template lookup — dependent-base deep nesting suppress
     const leaks = calls.filter((c) => c.source === 'g' && c.target === 'f');
     expect(leaks.length).toBe(0);
   });
+
+  // The base is `ns::a::b::Inner`, and this fixture deliberately also declares a
+  // global-scope `Inner` to force the multi-candidate path. `resolveDefGraphId`
+  // must reach the deep node, not the global decoy: the scope-extractor leaves
+  // the base's `qualifiedName` a bare `Inner` with the path on `namespacePrefix`,
+  // so only the namespace-prefixed key can distinguish them, and it has to be
+  // tried BEFORE the bare key or the decoy answers first (#2745 review — the
+  // reorder that fixed this was previously unpinned by any assertion).
+  it('EXTENDS anchors on the deep ns.a.b.Inner, not the global Inner decoy', () => {
+    const extendsEdges = getRelationships(result, 'EXTENDS').filter((e) => e.source === 'Derived');
+    expect(extendsEdges).toMatchObject([{ rel: { targetId: 'Struct:lib.h:ns.a.b.Inner' } }]);
+  });
 });
 
 describe('C++ two-phase template lookup — dependent-base sibling-namespace suppression', () => {
