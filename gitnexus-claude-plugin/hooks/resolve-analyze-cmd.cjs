@@ -5,9 +5,18 @@
  * 1. Global `gitnexus` on PATH (best — no install step)
  * 2. npm 11+ with pnpm on PATH → `pnpm --allow-build=… dlx` (avoids the npx
  *    arborist crash *and* pnpm 10+ ignored-build-script failures, #1939)
- * 3. npm < 11 with npm on PATH → `npx` (works; simpler than pnpm dlx)
- * 4. pnpm-only → `pnpm --allow-build=… dlx`
- * 5. Last resort → `npx` (warned on npm 11+ from analyze.ts)
+ * 3. npm 11+ without pnpm but with bunx → `bunx` (dodges the same crash)
+ * 4. npm < 11 with npm on PATH → `npx` (works; simpler than pnpm dlx)
+ * 5. pnpm-only → `pnpm --allow-build=… dlx`
+ * 6. bun-only → `bunx`
+ * 7. Last resort → `npx` (warned on npm 11+ from analyze.ts)
+ *
+ * The bun branches exist because a Node toolchain is no longer implied: on a
+ * bun-only machine npm, npx and pnpm are all absent, so every rung above
+ * resolved to `npx` and the emitted command could not run at all. `bunx` is
+ * bun's install-free one-shot runner and needs no allow-build equivalent — bun
+ * skips lifecycle scripts unconditionally for a `bunx` fetch, which the native
+ * loader recovers from directly (see core/lbug/native-check.ts).
  *
  * The `--allow-build` flags MUST precede the `dlx` token. pnpm < 10.14 keeps
  * `dlx` in its argv escape list, so flags placed *after* `dlx` are parsed as
@@ -176,14 +185,14 @@ function formatDocumentationDlxCommand(gitnexusArgs, options = {}) {
 }
 
 /**
- * Resolve `gitnexus` | `pnpm` | `npx`. `GITNEXUS_INVOCATION` forces a mode
- * (test/escape hatch). `probe` is injectable so the preference order can be
+ * Resolve `gitnexus` | `pnpm` | `bun` | `npx`. `GITNEXUS_INVOCATION` forces a
+ * mode (test/escape hatch). `probe` is injectable so the preference order can be
  * unit-tested without spawning; it defaults to the real PATH probe. `deps` can
- * inject `{ npmMajor, pnpmMajor }` for tests.
+ * inject `{ npmMajor, pnpmMajor, bunPresent }` for tests.
  */
 function resolveInvocationMode(probe = resolveOnPath, deps = {}) {
   const forced = process.env.GITNEXUS_INVOCATION?.trim().toLowerCase();
-  if (forced === 'gitnexus' || forced === 'pnpm' || forced === 'npx') {
+  if (forced === 'gitnexus' || forced === 'pnpm' || forced === 'npx' || forced === 'bun') {
     return forced;
   }
   if (probe('gitnexus', true)) return 'gitnexus';
@@ -202,12 +211,29 @@ function resolveInvocationMode(probe = resolveOnPath, deps = {}) {
         ? deps.pnpmMajor !== null
         : Boolean(probe('pnpm'));
 
+  // bun presence is resolved lazily: only the two branches below can select it,
+  // so a machine with npm or pnpm never pays the extra PATH scan. `bunx` (not
+  // `bun`) is probed because `bunx` is what the resolved command actually runs.
+  let bunCache;
+  const hasBun = () => {
+    if (bunCache === undefined) {
+      bunCache = 'bunPresent' in deps ? Boolean(deps.bunPresent) : Boolean(probe('bunx'));
+    }
+    return bunCache;
+  };
+
   // npm 11+ npx install crash (#1939) — prefer pnpm dlx when available.
   if (hasPnpm && npmMajor !== null && npmMajor >= 11) return 'pnpm';
+  // Same crash, no pnpm to fall back on: bunx is install-free and unaffected.
+  if (npmMajor !== null && npmMajor >= 11 && hasBun()) return 'bun';
   // npm 10 and earlier: npx works; prefer it over pnpm dlx when npm is present.
   if (npmMajor !== null && npmMajor < 11) return 'npx';
   // npm absent or unreadable — use pnpm if present (with allow-build flags).
   if (hasPnpm) return 'pnpm';
+  // Neither npm nor pnpm — bunx is the only install-free runner left. Without
+  // this rung a bun-only machine fell through to `npx`, which is not installed
+  // there, so the emitted command failed with "npx: command not found".
+  if (hasBun()) return 'bun';
 
   return 'npx';
 }
@@ -216,6 +242,17 @@ function formatPnpmDlxCommand(gitnexusArgs, options = {}, deps = {}) {
   const flags = formatPnpmAllowBuildArgs(options, deps).join(' ');
   const prefix = flags ? `${flags} ` : '';
   return `pnpm ${prefix}dlx ${NPX_REF} ${gitnexusArgs}`;
+}
+
+/**
+ * bun's install-free one-shot runner. Deliberately flag-free: bun has no
+ * per-invocation `--allow-build` equivalent (`--trust` is a `bun add`/`bun
+ * install` flag that writes trustedDependencies into a project package.json,
+ * which a one-shot `bunx` has nowhere to put), so the skipped lifecycle copy is
+ * recovered by the native loader instead of by the invocation.
+ */
+function formatBunxCommand(gitnexusArgs) {
+  return `bunx ${NPX_REF} ${gitnexusArgs}`;
 }
 
 function formatAnalyzeCommand(options = {}, deps = {}) {
@@ -238,7 +275,8 @@ function formatAnalyzeCommand(options = {}, deps = {}) {
     const forced = process.env.GITNEXUS_INVOCATION?.trim().toLowerCase();
     // pnpm is only consulted when no non-pnpm mode is already certain: forced
     // gitnexus/npx never use pnpm, and a present global gitnexus wins outright.
-    const mightUsePnpm = forced === 'pnpm' || (forced !== 'gitnexus' && forced !== 'npx');
+    const mightUsePnpm =
+      forced === 'pnpm' || (forced !== 'gitnexus' && forced !== 'npx' && forced !== 'bun');
     if (mightUsePnpm && (forced === 'pnpm' || !probe('gitnexus', true))) {
       const { major, minor } = probeVersion('pnpm');
       // Carry presence separately from version: when the version probe fails
@@ -252,6 +290,7 @@ function formatAnalyzeCommand(options = {}, deps = {}) {
   const mode = resolveInvocationMode(probe, resolved);
   if (mode === 'gitnexus') return `gitnexus analyze${suffix}`;
   if (mode === 'pnpm') return `${formatPnpmDlxCommand(`analyze${suffix}`, options, resolved)}`;
+  if (mode === 'bun') return formatBunxCommand(`analyze${suffix}`);
   return `npx ${NPX_REF} analyze${suffix}`;
 }
 
@@ -268,6 +307,7 @@ function buildRunnerArgv(mode, gitnexusArgs, deps = {}) {
     (a) => a === '--embeddings' || a.startsWith('--embeddings='),
   );
   if (mode === 'gitnexus') return { program: 'gitnexus', args: [...gitnexusArgs] };
+  if (mode === 'bun') return { program: 'bunx', args: [NPX_REF, ...gitnexusArgs] };
   if (mode === 'pnpm') {
     return {
       program: 'pnpm',
@@ -279,6 +319,7 @@ function buildRunnerArgv(mode, gitnexusArgs, deps = {}) {
 
 module.exports = {
   formatAnalyzeCommand,
+  formatBunxCommand,
   formatDocumentationDlxCommand,
   formatPnpmAllowBuildArgs,
   formatPnpmDlxCommand,
@@ -291,7 +332,7 @@ module.exports = {
 };
 
 // Direct-exec entrypoint (#1945): `node run.cjs <gitnexus args…>` resolves the
-// best available runner (global `gitnexus` → `pnpm dlx` → `npx`) at call time and
+// best available runner (global `gitnexus` → `pnpm dlx` → `bunx` → `npx`) at call time and
 // runs it, inheriting stdio and propagating the child's exit code. This lets the
 // committed skills and generated AGENTS.md/CLAUDE.md reference ONE stable,
 // CLI-neutral command without baking in a package-manager assumption. `gitnexus
