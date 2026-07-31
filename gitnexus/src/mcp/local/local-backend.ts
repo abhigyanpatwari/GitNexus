@@ -93,6 +93,7 @@ import { findImportCycles } from '../../core/graph/import-cycles.js';
 import { decodeTaintPath } from '../../core/ingestion/taint/path-codec.js';
 import { decodeReachingDefReason } from '../../core/ingestion/cfg/reaching-def-reason-codec.js';
 import { EXTENSIONS } from '../../core/ingestion/import-resolvers/utils.js';
+import { lookupUnresolvedCallCount } from '../../core/ingestion/scope-resolution/unresolved-receivers.js';
 import {
   fnLineOf,
   isPdgDegradedLayerStatus,
@@ -462,6 +463,17 @@ export interface CodebaseContext {
     communityCount: number;
     processCount: number;
   };
+}
+
+/** Collapse dropped-site boundary notes into an epistemic verdict: any note at
+ *  all means the count is a lower bound, none means it is exact (#2744). */
+function epistemicFrom(droppedBoundaries: readonly string[]): {
+  epistemic: 'exact' | 'lower-bound';
+  boundaries?: string[];
+} {
+  return droppedBoundaries.length === 0
+    ? { epistemic: 'exact' }
+    : { epistemic: 'lower-bound', boundaries: [...droppedBoundaries] };
 }
 
 interface RepoHandle {
@@ -5596,6 +5608,13 @@ export class LocalBackend {
   ): Promise<{ epistemic: 'exact' | 'lower-bound'; boundaries?: string[] }> {
     const HERITAGE_TYPES = EPISTEMIC_HERITAGE_RELATION_TYPES;
     const CONSUMER_TYPES = EPISTEMIC_CONSUMER_RELATION_TYPES;
+    // #2744 — call sites dropped for want of a receiver type. Checked BEFORE
+    // the heritage probe below and reported even when that probe finds nothing:
+    // the two are independent reasons a count can be short, and this one is the
+    // reason #2708 was filed. A dropped site's callee is unknown, so the index
+    // records the member NAME invoked at the drop; a match on the queried
+    // symbol's name means at least one call to something of that name was lost.
+    const droppedBoundaries = await this.unresolvedReceiverBoundaries(repo, symName);
     try {
       // Discover the interface / abstract supertypes on the target's boundary.
       // If the target is itself an interface, it is its own boundary node.
@@ -5620,7 +5639,7 @@ export class LocalBackend {
           });
         }
       }
-      if (boundary.size === 0) return { epistemic: 'exact' };
+      if (boundary.size === 0) return epistemicFrom(droppedBoundaries);
 
       const ifaceIds = Array.from(boundary.keys());
       // Count per interface id with scalar equality. A parameterized
@@ -5676,10 +5695,42 @@ export class LocalBackend {
           );
         }
       }
-      if (boundaries.length === 0) return { epistemic: 'exact' };
-      return { epistemic: 'lower-bound', boundaries };
+      if (boundaries.length === 0) return epistemicFrom(droppedBoundaries);
+      return { epistemic: 'lower-bound', boundaries: [...droppedBoundaries, ...boundaries] };
     } catch {
-      return { epistemic: 'exact' };
+      // Never let the heritage probe's failure suppress a drop we already know
+      // about — the whole point is that silence must not read as certainty.
+      return epistemicFrom(droppedBoundaries);
+    }
+  }
+
+  /**
+   * Boundary notes for call sites the analyzer dropped because it could not
+   * type their receiver, when the queried symbol's name is among them (#2744).
+   * Empty when the index records no drops for this name — including every
+   * index written before the summary existed, which is why the schema version
+   * was bumped rather than treating "absent" as "none".
+   */
+  private async unresolvedReceiverBoundaries(repo: RepoHandle, symName: string): Promise<string[]> {
+    if (symName.length === 0) return [];
+    try {
+      const meta = await loadMeta(path.dirname(repo.lbugPath));
+      const summary = meta?.unresolvedReceiverMembers;
+      // Prototype-safe: see `lookupUnresolvedCallCount`. A bare `counts[symName]`
+      // returns a Function for `constructor`/`toString`/… and `NaN <= 0` is false,
+      // so the old guard let it through into user-facing text.
+      const sites = lookupUnresolvedCallCount(summary, symName);
+      if (sites === undefined) return [];
+      return [
+        `${sites} call ${sites === 1 ? 'site' : 'sites'} invoking \`${symName}\` ${
+          sites === 1 ? 'was' : 'were'
+        } dropped at index time because the receiver's type could not be ` +
+          `established (e.g. an unresolved constructor, factory or chained ` +
+          `expression). Those callers are absent from this result — actual ` +
+          `impact may be higher.`,
+      ];
+    } catch {
+      return [];
     }
   }
 

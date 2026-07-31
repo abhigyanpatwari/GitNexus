@@ -34,6 +34,7 @@
 
 import type { ParsedFile, Scope, ScopeId, SymbolDefinition } from 'gitnexus-shared';
 import { isOverloadableCallable } from '../../utils/callable-labels.js';
+import { lookupBindingsAt } from '../../scope-resolution/scope/walkers.js';
 import type { ScopeResolutionIndexes } from '../../model/scope-resolution-indexes.js';
 import type { WorkspaceResolutionIndex } from '../../scope-resolution/workspace-index.js';
 import {
@@ -88,15 +89,25 @@ export function resolveRustQualifiedFreeCall(
   const qualifier = segments.slice(0, -1);
   if (qualifier.length === 0) return undefined;
 
-  // Cheap rejection BEFORE any index work. The capture that carries
+  // Cheap rejection before the candidate SEARCH. The capture that carries
   // `rawQualifiedName` matches every `scoped_identifier` callee, so this hook is
   // reached by `Vec::new()`, `String::from()`, `Self::method()` and every other
   // type-qualified call — the overwhelming majority of `::` calls in real Rust,
-  // none of which name a module. Letting those run the full candidate search
-  // meant each one paid a same-name-bucket scan plus a walk of every module
-  // scope in the workspace before returning undefined (#2741 review).
+  // none of which name a module. Letting those through meant each one paid a
+  // same-name-bucket scan plus a walk of every module scope in the workspace
+  // before returning undefined (#2741 review).
+  //
+  // `passIndexFor` is not free on its FIRST call in a pass — it walks the def
+  // index once — so this is not "before any index work", as an earlier version of
+  // this comment claimed. It is memoized per resolution pass on a WeakMap, over
+  // structures already resident in memory, and every later site here is a set
+  // lookup. What the filter still buys is skipping the per-site candidate search,
+  // which is the part that scales with the workspace.
   const index = moduleIndexFor(allFilePaths);
-  if (!couldNameAModule(qualifier, index)) return undefined;
+  const pass = passIndexFor(workspaceIndex, index, scopes);
+  if (!couldNameAModule(qualifier, pass.knownModuleNames)) {
+    return undefined;
+  }
 
   const callerModule = callerModuleOf(callerParsed, site.inScope, scopes, index);
   if (callerModule === undefined) return undefined;
@@ -183,7 +194,10 @@ function* candidateModules(
   //    A `mod` declaration — inline or file-backed — emits a `Namespace` def
   //    bound in the declaring scope, so the check is a binding lookup.
   const head = qualifier[0];
-  if (head !== undefined && declaresSubmodule(callerParsed, head, workspaceIndex)) {
+  if (
+    head !== undefined &&
+    declaresSubmodule(callerParsed, callerModule, head, workspaceIndex, index, scopes)
+  ) {
     yield { crateRoot: callerModule.crateRoot, segments: [...callerModule.segments, ...qualifier] };
   }
 
@@ -213,21 +227,96 @@ function* candidateModules(
 
   // 3. Crate-root-relative (`a::b::f()` written from a nested module — 2015
   //    edition style, and still what a single-file crate looks like).
-  if (callerModule.segments.length > 0) {
+  //
+  //    Skipped when the head already names something else in the caller's own
+  //    module. This is the loosest candidate — a guess at a path the caller never
+  //    wrote — and in Rust 2018 a bare first segment resolves in the caller's
+  //    module, not at the crate root, so a local binding for it settles the
+  //    question. Without the check, a crate-root `mod` whose name matches an
+  //    imported TYPE captured the call:
+  //
+  //      // src/lib.rs
+  //      pub mod Buffer { pub fn with_capacity() -> usize { 111 } }
+  //      // src/b.rs
+  //      use crate::c::Buffer;                        // the real target, in c.rs
+  //      pub fn call() -> usize { Buffer::with_capacity() }
+  //
+  //    which yielded `CALLS b::call -> lib.rs:Buffer.with_capacity`, an edge to a
+  //    callee the source never names. The base emitted no edge at all, and per the
+  //    doctrine quoted in `ids.ts` that is the correct failure direction: a missing
+  //    edge is recoverable, a fabricated caller silently misleads `impact`.
+  if (callerModule.segments.length > 0 && !headBoundLocally(callerParsed, head, scopes)) {
     yield { crateRoot: callerModule.crateRoot, segments: [...qualifier] };
   }
 }
 
 /**
- * Does the calling file declare `name` as a submodule (`mod name;` or
- * `mod name { … }`)? Both forms emit a `Namespace` def bound locally in the
- * declaring scope, so this is a binding lookup rather than a filesystem probe.
+ * Is `name` bound in the caller's own module to anything that is NOT a module?
+ *
+ * A `use crate::c::Buffer;` binds the TYPE `Buffer`, so a bare `Buffer::…` path in
+ * that file resolves through the import — never to a same-named module elsewhere in
+ * the crate. Module bindings are excluded so the legitimate `use crate::tools;`
+ * case, which candidate 2 already handles, is not double-counted here.
+ */
+function headBoundLocally(
+  callerParsed: ParsedFile,
+  name: string | undefined,
+  scopes: ScopeResolutionIndexes,
+): boolean {
+  if (name === undefined) return false;
+  // Read through `lookupBindingsAt`, not the raw `Scope.bindings` map: a `use`
+  // binding is finalize OUTPUT and is absent from the scope's own local table, so
+  // the direct read saw nothing for exactly the imported-type case this guards
+  // (contract I8 in `contract/scope-resolver.ts` requires this channel anyway).
+  for (const ref of lookupBindingsAt(callerParsed.moduleScope, name, scopes)) {
+    if (ref.def.type !== 'Namespace') return true;
+  }
+  return false;
+}
+
+/** Tail segment of a dot-joined qualified name (`outer.tools` → `tools`). */
+function tailSegment(qualifiedName: string): string {
+  return qualifiedName.slice(qualifiedName.lastIndexOf('.') + 1);
+}
+
+/**
+ * Does the caller's own module declare `name` as a submodule (`mod name;` or
+ * `mod name { … }`)?
+ *
+ * Answered against the set of module paths the workspace actually DECLARES, so it
+ * holds at any nesting depth. The previous binding lookup went through
+ * `moduleScopeByFile`, which maps a file to its root `Module` scope only: a `mod`
+ * nested inside an inline `mod` binds in that parent module's scope and was
+ * therefore invisible. `mod outer { mod tools { … } fn dispatch() { tools::dispatch() } }`
+ * skipped this candidate entirely and fell through to the lexical tier, which
+ * reinstated the very #2730 self-loop this hook exists to prevent.
+ *
+ * Still a declaration check, not a filesystem probe: the set is built from
+ * `Namespace` defs, so an undeclared (or `cfg`-gated) file sitting on disk
+ * contributes nothing and cannot outrank a real `use` binding (#2741 review).
  */
 function declaresSubmodule(
   callerParsed: ParsedFile,
+  callerModule: RustModule,
   name: string,
   workspaceIndex: WorkspaceResolutionIndex,
+  index: RustModuleIndex,
+  scopes: ScopeResolutionIndexes,
 ): boolean {
+  // Inline modules at any depth, keyed by full path.
+  const inline = passIndexFor(workspaceIndex, index, scopes).inlineModuleKeys;
+  if (
+    inline.has(
+      moduleKey({ crateRoot: callerModule.crateRoot, segments: [...callerModule.segments, name] }),
+    )
+  ) {
+    return true;
+  }
+
+  // File-backed submodules (`mod tools;`) still go through the declaring scope's
+  // binding table. A `Namespace` def bound locally is the DECLARATION; probing the
+  // file set instead would let an undeclared or `cfg`-gated file on disk outrank a
+  // real `use` binding (#2741 review).
   const moduleScope = workspaceIndex.moduleScopeByFile.get(callerParsed.filePath);
   if (moduleScope === undefined) return false;
   for (const ref of moduleScope.bindings.get(name) ?? []) {
@@ -345,7 +434,7 @@ function findReexportedMember(
   let unique: SymbolDefinition | undefined;
   let count = 0;
 
-  for (const moduleScope of moduleScopesFor(targetModule, workspaceIndex, index)) {
+  for (const moduleScope of moduleScopesFor(targetModule, workspaceIndex, index, scopes)) {
     for (const edge of scopes.imports.get(moduleScope.id) ?? []) {
       if (edge.localName !== name) continue;
       // Only a `pub use` re-exports. A private `use` (`named`) makes the name
@@ -380,35 +469,106 @@ function findReexportedMember(
  *
  * Keyed on the `WorkspaceResolutionIndex` identity, which is rebuilt per pass.
  */
-const MODULE_SCOPE_CACHE = new WeakMap<
-  WorkspaceResolutionIndex,
-  ReadonlyMap<string, readonly Scope[]>
->();
+interface PassModuleIndex {
+  /** Module identity key → the file-module scopes realising it. */
+  readonly scopesByModule: ReadonlyMap<string, readonly Scope[]>;
+  /**
+   * Every module name resolution may legitimately see: the file-derived names
+   * from the path index, UNIONED with inline `mod x { … }` names, which exist in
+   * no file path and would otherwise be rejected by the negative filter before
+   * any candidate ran (#2742).
+   */
+  readonly knownModuleNames: ReadonlySet<string>;
+  /**
+   * `moduleKey` of every INLINE module path in the workspace, at any depth.
+   * Distinct from `knownModuleNames`, a flat name set used only as a negative
+   * filter: this one answers "is `<callerModule>::<name>` a real inline
+   * submodule", which the name set cannot (two unrelated modules share a tail).
+   */
+  readonly inlineModuleKeys: ReadonlySet<string>;
+}
+
+const MODULE_SCOPE_CACHE = new WeakMap<WorkspaceResolutionIndex, PassModuleIndex>();
 
 function moduleKey(module: RustModule): string {
   return `${module.crateRoot}\u0000${module.segments.join('::')}`;
+}
+
+function passIndexFor(
+  workspaceIndex: WorkspaceResolutionIndex,
+  index: RustModuleIndex,
+  scopes: ScopeResolutionIndexes,
+): PassModuleIndex {
+  let pass = MODULE_SCOPE_CACHE.get(workspaceIndex);
+  if (pass === undefined) {
+    const scopesByModule = new Map<string, Scope[]>();
+    const knownModuleNames = new Set<string>(index.moduleNames);
+
+    // Inline `mod x { … }` never appears in a file path, so its name exists only
+    // as a `Namespace` def. Read from the def index rather than from module-scope
+    // bindings: `moduleScopeByFile` holds each file's ROOT `Module` scope only, so
+    // a binding walk saw depth-1 inline modules and missed every nested one —
+    // `mod outer { mod tools { … } }` left `tools` out of the set, and this gate
+    // then rejected `tools::dispatch()` before any module walk could resolve it.
+    //
+    // One pass over the defs, memoized per resolution pass on the WeakMap above,
+    // over an already-resident in-memory index — the same order of work as the
+    // binding walk it replaces, and it subsumes it (a `mod` declaration at any
+    // depth is a `Namespace` def).
+    //
+    // The same pass records every INLINE module path, which is what
+    // `declaresSubmodule` needs at depth > 1.
+    //
+    // Derived from the MEMBERS, not from the `Namespace` defs: a `mod` def carries
+    // no nesting information of its own (`mod outer { mod tools { … } }` gives the
+    // inner def `qualifiedName: 'tools'` and NO `namespacePrefix`), whereas every
+    // def inside it is stamped `outer.tools` by `tagNamespacePrefixes`. A
+    // `Namespace` scope also owns its OWN def rather than its children's, so
+    // walking scopes cannot answer this either — the `mod outer` scope lists
+    // `outer`, never `tools`.
+    //
+    // Restricted to non-empty prefixes on purpose: those come from `mod` blocks in
+    // source, so this stays a DECLARATION check. Including file-derived modules
+    // here would let an undeclared (or `cfg`-gated) file on disk outrank a real
+    // `use` binding — the #2741 review regression. File-backed submodules keep
+    // going through the binding check in `declaresSubmodule`.
+    //
+    // A module containing no defs at all is absent, which is harmless: it has no
+    // member for a qualified call to resolve to.
+    const inlineModuleKeys = new Set<string>();
+    for (const def of scopes.defs.byId.values()) {
+      if (def.type === 'Namespace' && def.qualifiedName !== undefined) {
+        knownModuleNames.add(tailSegment(def.qualifiedName));
+      }
+      if (def.namespacePrefix === undefined || def.namespacePrefix === '') continue;
+      const declaringModule = moduleOfDef(def.filePath, def.namespacePrefix, index);
+      if (declaringModule !== undefined) inlineModuleKeys.add(moduleKey(declaringModule));
+    }
+
+    for (const [filePath, moduleScope] of workspaceIndex.moduleScopeByFile) {
+      const fileModule = moduleOfFile(filePath, index);
+      if (fileModule === undefined) continue;
+      const key = moduleKey(fileModule);
+      const bucket = scopesByModule.get(key);
+      if (bucket === undefined) scopesByModule.set(key, [moduleScope]);
+      else bucket.push(moduleScope);
+    }
+    pass = { scopesByModule, knownModuleNames, inlineModuleKeys };
+    MODULE_SCOPE_CACHE.set(workspaceIndex, pass);
+  }
+  return pass;
 }
 
 function moduleScopesFor(
   targetModule: RustModule,
   workspaceIndex: WorkspaceResolutionIndex,
   index: RustModuleIndex,
+  scopes: ScopeResolutionIndexes,
 ): readonly Scope[] {
-  let byModule = MODULE_SCOPE_CACHE.get(workspaceIndex);
-  if (byModule === undefined) {
-    const built = new Map<string, Scope[]>();
-    for (const [filePath, moduleScope] of workspaceIndex.moduleScopeByFile) {
-      const fileModule = moduleOfFile(filePath, index);
-      if (fileModule === undefined) continue;
-      const key = moduleKey(fileModule);
-      const bucket = built.get(key);
-      if (bucket === undefined) built.set(key, [moduleScope]);
-      else bucket.push(moduleScope);
-    }
-    byModule = built;
-    MODULE_SCOPE_CACHE.set(workspaceIndex, byModule);
-  }
-  return byModule.get(moduleKey(targetModule)) ?? EMPTY_SCOPES;
+  return (
+    passIndexFor(workspaceIndex, index, scopes).scopesByModule.get(moduleKey(targetModule)) ??
+    EMPTY_SCOPES
+  );
 }
 
 const EMPTY_SCOPES: readonly Scope[] = Object.freeze([]);
