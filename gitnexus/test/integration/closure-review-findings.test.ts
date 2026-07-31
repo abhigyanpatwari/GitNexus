@@ -64,19 +64,14 @@ const nodeIdsContaining = async (
 };
 
 describeIfWorkerBuilt(
-  '#2699 review P1-1 — a closure that cannot be named never credits its parent',
+  '#2735 — a multi-line closure binding is a call SOURCE (not merely fail-closed)',
   () => {
-    it('a MULTI-LINE closure binding does not fabricate a call from the enclosing function', async () => {
-      // The two channels anchor on DIFFERENT nodes by design — graph-node on the
-      // outer wrapper, scope-resolution on the inner closure. On one line they
-      // share a row and the position join matches. Split across lines it misses,
-      // and before the fix `resolveCallerGraphId` CLIMBED to the enclosing scope,
-      // emitting `outer -> target` although `outer` calls nothing. That is a CALLS
-      // edge present nowhere in the source — the exact defect class #2699 exists
-      // to remove — so the bridge now fails closed at the owning callable.
-      //
-      // The single-line binding in the same fixture proves the fail-closed path
-      // did not simply delete the feature.
+    it('PHP: both single-line and multi-line bindings emit CALLS to target', async () => {
+      // Graph-node queries anchor `@definition.function` on the OUTER assignment;
+      // scope-resolution anchors `@declaration.function` on the INNER closure.
+      // #2699 made a miss fail closed (no fabricated `outer -> target`). #2735
+      // makes the join hit by putting the graph node's `startLine` on the
+      // initializer, so the real `outer.$multi -> target` edge appears.
       const edges = await callEdges(
         'ml.php',
         '<?php\nfunction target($x) { return $x; }\nfunction outer() {\n' +
@@ -84,7 +79,105 @@ describeIfWorkerBuilt(
           '  $multi =\n    function ($x) { return target($x); };\n  return 1;\n}\n',
       );
 
-      expect(edges).toEqual(['Function:ml.php:outer.$single@3:2 -> Function:ml.php:target']);
+      expect(edges).toEqual([
+        'Function:ml.php:outer.$multi@4:2 -> Function:ml.php:target',
+        'Function:ml.php:outer.$single@3:2 -> Function:ml.php:target',
+      ]);
+    });
+
+    it('Rust: a wrapped closure binding emits CALLS to target', async () => {
+      const edges = await callEdges(
+        'ml.rs',
+        'fn target(x: i32) -> i32 { x }\nfn outer() -> i32 {\n' +
+          '    let handler =\n        || target(1);\n    handler()\n}\n',
+      );
+
+      expect(edges).toEqual([
+        'Function:ml.rs:outer -> Function:ml.rs:outer.handler@2:4',
+        'Function:ml.rs:outer.handler@2:4 -> Function:ml.rs:target',
+      ]);
+    });
+
+    it('TypeScript: a multi-line const arrow binding emits CALLS to target', async () => {
+      const edges = await callEdges(
+        'ml.ts',
+        'function target(x: number): number { return x; }\nfunction outer(): number {\n' +
+          '  const single = (x: number) => target(x);\n' +
+          '  const multi =\n    (x: number) => target(x);\n  return single(1) + multi(2);\n}\n',
+      );
+
+      expect(edges).toEqual([
+        'Function:ml.ts:outer -> Function:ml.ts:outer.multi@3:2',
+        'Function:ml.ts:outer -> Function:ml.ts:outer.single@2:2',
+        'Function:ml.ts:outer.multi@3:2 -> Function:ml.ts:target',
+        'Function:ml.ts:outer.single@2:2 -> Function:ml.ts:target',
+      ]);
+    });
+
+    it('Kotlin: a multi-line val lambda binding emits CALLS to target', async () => {
+      const edges = await callEdges(
+        'ml.kt',
+        'fun target(x: Int): Int = x\nfun outer(): Int {\n' +
+          '  val single = { x: Int -> target(x) }\n' +
+          '  val multi =\n    { x: Int -> target(x) }\n  return 1\n}\n',
+      );
+
+      expect(edges.some((e) => e.includes('multi') && e.endsWith('-> Function:ml.kt:target'))).toBe(
+        true,
+      );
+      expect(
+        edges.some((e) => e.startsWith('Function:ml.kt:outer ->') && e.endsWith('target')),
+      ).toBe(false);
+    });
+
+    it('Ruby: a multi-line lambda do-end binding emits CALLS to target', async () => {
+      const edges = await callEdges(
+        'ml.rb',
+        'def target(x)\n  x\nend\ndef outer\n' +
+          '  a = ->(x) { target(x) }\n' +
+          '  b =\n    lambda do |y|\n      target(y)\n    end\nend\n',
+      );
+
+      expect(edges.some((e) => e.includes('.b@') && e.endsWith('-> Method:ml.rb:target#1'))).toBe(
+        true,
+      );
+      expect(edges.some((e) => e.startsWith('Method:ml.rb:outer#0 ->'))).toBe(false);
+    });
+
+    it('Dart: a multi-line var closure binding emits CALLS to target', async () => {
+      const edges = await callEdges(
+        'ml.dart',
+        'int target(int x) => x;\nint outer() {\n' +
+          '  var single = (int x) => target(x);\n' +
+          '  var multi =\n    (int x) => target(x);\n  return 1;\n}\n',
+      );
+
+      expect(
+        edges.some((e) => e.includes('multi') && e.endsWith('-> Function:ml.dart:target')),
+      ).toBe(true);
+      expect(
+        edges.some((e) => e.startsWith('Function:ml.dart:outer ->') && e.endsWith('target')),
+      ).toBe(false);
+    });
+  },
+);
+
+describeIfWorkerBuilt(
+  '#2699 review P1-1 — a closure that cannot be named never credits its parent',
+  () => {
+    it('a MULTI-LINE closure binding does not fabricate a call from the enclosing function', async () => {
+      // Retained as the fail-closed half of #2735: even when the join works,
+      // `outer` itself must not grow a CALLS edge to `target` — only the
+      // binding nodes do.
+      const edges = await callEdges(
+        'ml.php',
+        '<?php\nfunction target($x) { return $x; }\nfunction outer() {\n' +
+          '  $single = function ($x) { return target($x); };\n' +
+          '  $multi =\n    function ($x) { return target($x); };\n  return 1;\n}\n',
+      );
+
+      expect(edges.some((e) => e.startsWith('Function:ml.php:outer ->'))).toBe(false);
+      expect(edges).toContain('Function:ml.php:outer.$multi@4:2 -> Function:ml.php:target');
     });
   },
 );

@@ -26,12 +26,109 @@
 import { readFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { describe, expect, it } from 'vitest';
-import { nestedCallableQualifiedName } from '../../src/core/ingestion/workers/callable-id.js';
+import {
+  boundCallableStartRow,
+  nestedCallableQualifiedName,
+} from '../../src/core/ingestion/workers/callable-id.js';
+import type { NodeLabel, SymbolDefinition } from 'gitnexus-shared';
 import type { SyntaxNode } from '../../src/core/ingestion/utils/ast-helpers.js';
 
 const nodeAt = (row: number, column: number): SyntaxNode =>
   ({ startPosition: { row, column } }) as unknown as SyntaxNode;
 
+function stubNode(opts: {
+  type: string;
+  id: number;
+  row?: number;
+  column?: number;
+  endRow?: number;
+  endColumn?: number;
+}): SyntaxNode {
+  return {
+    type: opts.type,
+    id: opts.id,
+    startPosition: { row: opts.row ?? 0, column: opts.column ?? 0 },
+    endPosition: {
+      row: opts.endRow ?? opts.row ?? 0,
+      column: opts.endColumn ?? opts.column ?? 0,
+    },
+  } as unknown as SyntaxNode;
+}
+
+const semanticDef = (
+  filePath: string,
+  type: NodeLabel,
+  name: string,
+  line: number,
+  column: number,
+): SymbolDefinition => ({
+  nodeId: `def:${filePath}#${line}:${column}:${type}:${name}`,
+  filePath,
+  type,
+  qualifiedName: name,
+});
+
+describe('boundCallableStartRow - #2735 semantic position join', () => {
+  it('keeps the wrapper row when no semantic definition is available', () => {
+    const wrapper = stubNode({
+      type: 'binding_wrapper',
+      id: 1,
+      row: 2,
+      column: 0,
+      endRow: 4,
+      endColumn: 1,
+    });
+
+    expect(boundCallableStartRow(wrapper, 'handler', 'Function', undefined)).toBe(2);
+  });
+
+  it('uses the matching semantic callable position inside the wrapper', () => {
+    const wrapper = stubNode({
+      type: 'binding_wrapper',
+      id: 1,
+      row: 1,
+      column: 0,
+      endRow: 5,
+      endColumn: 10,
+    });
+    const name = stubNode({ type: 'binding_name', id: 2, row: 1, column: 4 });
+    const defs = [semanticDef('src/file.ext', 'Function', 'handler', 4, 8)];
+
+    expect(boundCallableStartRow(wrapper, 'handler', 'Function', defs, name)).toBe(3);
+  });
+
+  it('selects by canonical name and label rather than grammar shape', () => {
+    const wrapper = stubNode({
+      type: 'binding_wrapper',
+      id: 1,
+      row: 1,
+      column: 0,
+      endRow: 8,
+      endColumn: 10,
+    });
+    const defs = [
+      semanticDef('src/file.ext', 'Function', 'sibling', 3, 4),
+      semanticDef('src/file.ext', 'Method', 'handler', 4, 4),
+      semanticDef('src/file.ext', 'Function', 'handler', 6, 4),
+    ];
+
+    expect(boundCallableStartRow(wrapper, 'handler', 'Function', defs)).toBe(5);
+  });
+
+  it('ignores a same-named semantic definition outside the wrapper', () => {
+    const wrapper = stubNode({
+      type: 'binding_wrapper',
+      id: 1,
+      row: 4,
+      column: 0,
+      endRow: 6,
+      endColumn: 10,
+    });
+    const defs = [semanticDef('src/file.ext', 'Function', 'handler', 2, 0)];
+
+    expect(boundCallableStartRow(wrapper, 'handler', 'Function', defs)).toBe(4);
+  });
+});
 describe('nestedCallableQualifiedName — the shared nested-callable id rule', () => {
   it('qualifies by the enclosing callable AND the declaration position', () => {
     expect(nestedCallableQualifiedName('run', nodeAt(3, 2), 'save')).toBe('run.save@3:2');
