@@ -15,6 +15,7 @@ import { randomUUID } from 'node:crypto';
 import { retryRename } from '../storage/fs-atomic.js';
 import { acquireIndexLock } from '../storage/index-lock.js';
 import { runPipelineFromRepo } from './ingestion/pipeline.js';
+import { summarizeUnresolvedReceivers } from './ingestion/scope-resolution/unresolved-receivers.js';
 import type { KnowledgeGraph } from './graph/types.js';
 import { resetDegradedParseCounter } from './tree-sitter/safe-parse.js';
 import {
@@ -2461,6 +2462,9 @@ async function runFullAnalysisInner(
             embeddings,
           },
           schemaVersion: hasGitDir(repoPath) ? INCREMENTAL_SCHEMA_VERSION : undefined,
+          unresolvedReceiverMembers: summarizeUnresolvedReceivers(
+            pipelineResult.resolutionOutcomes ?? [],
+          ),
           analysisFeatures: currentAnalysisFeatures,
           cjkSegmentation: getSearchFTSCjkSegmentation(),
           fileHashes: hasGitDir(repoPath) ? fileHashes : undefined,
@@ -2625,6 +2629,9 @@ async function runFullAnalysisInner(
       // incrementalInProgress to undefined explicitly clears any prior
       // dirty flag (full and incremental success paths converge here).
       schemaVersion: hasGitDir(repoPath) ? INCREMENTAL_SCHEMA_VERSION : undefined,
+      unresolvedReceiverMembers: summarizeUnresolvedReceivers(
+        pipelineResult.resolutionOutcomes ?? [],
+      ),
       analysisFeatures: currentAnalysisFeatures,
       // Always stamped with the live resolved mode (#2331/#2339) — unlike
       // `pdg` below, 'none' is a meaningful value to compare, not an

@@ -101,8 +101,12 @@ describe('fileContentHash', () => {
 });
 
 describe('PARSE_CACHE_VERSION', () => {
-  it('pins SCHEMA_BUMP to 32 so concurrent bumps cannot silently collide (#2736)', () => {
-    expect(Number(PARSE_CACHE_VERSION.split('+', 1)[0])).toBe(32);
+  // 34 -> 35 for the Spring @Bean/@Resource side-channel captures (#2413).
+  // Updated deliberately — this branch cut at 32 while `main` independently took
+  // 32 (#2742) and 33/34 (#2747), so the pin caught the collision again at merge
+  // time. Re-check against origin/main before merging, not at branch time.
+  it('pins SCHEMA_BUMP to 35 so concurrent bumps cannot silently collide (#2736)', () => {
+    expect(Number(PARSE_CACHE_VERSION.split('+', 1)[0])).toBe(35);
   });
 
   it('embeds the gitnexus package version (so upgrades invalidate the cache)', () => {

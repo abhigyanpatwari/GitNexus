@@ -96,6 +96,8 @@ import {
   isSuppressedConcreteTypedefDuplicate,
   isValueDefinitionLabel,
   isQualifiableScopeLabel,
+  MEMBER_OWNER_NODE_TYPES,
+  qualifyByEnclosingModScope,
   qualifyRustImplTargetByModScope,
   CLASS_CONTAINER_TYPES,
   PARAMETER_LIST_NODE_TYPES,
@@ -2396,7 +2398,7 @@ const processFileGroup = (
           ? qualifyRustImplTargetByModScope(definitionNode, nodeName)
           : undefined;
 
-      const qualifiedName =
+      const qualifiedNameBeforeModScope =
         rustImplQualifiedName !== undefined
           ? rustImplQualifiedName
           : // #1991: LOCKSTEP — include Trait so a Ruby mixin module's qualified
@@ -2416,6 +2418,63 @@ const processFileGroup = (
                   objectLiteralOwnerInfo?.ownerName !== undefined
                   ? `${objectLiteralOwnerInfo.ownerName}.${nodeName}`
                   : nodeName;
+
+      // #2742: qualify by the enclosing `mod` chain, so two same-named items at
+      // different module depths in one file are DISTINCT nodes. Without this,
+      // `mod inner { fn dispatch }` and a crate-root `fn dispatch` both keyed
+      // `Function:<file>:dispatch`, first-wins — so a correctly resolved call
+      // into the inline module still rendered as a self-loop, and `impact`
+      // reported the real callee as unreached.
+      //
+      // Keyed purely on the `mod_item` node type, exactly as the impl-target
+      // qualifier above (#1982) already is, so it is a no-op for every language
+      // whose grammar has no such node. The impl branch already applied it and
+      // is left alone rather than qualified twice.
+      //
+      // Scoped to items that sit on NEITHER side of an owner edge, because only
+      // the id is re-keyed here — the anchor is minted independently by
+      // `findEnclosingClassInfo` and does not move with it:
+      //
+      //   - `!enclosingClassInfo` excludes the MEMBER side. A method already
+      //     carries its owner's name (`Inner.method`), and for an unscoped
+      //     inherent impl that owner is mod-scoped by the impl qualifier above,
+      //     so qualifying the member again would break the byte-for-byte
+      //     agreement #1975/#1982 established.
+      //   - `!MEMBER_OWNER_NODE_TYPES.has(...)` excludes the OWNER side. A
+      //     `struct` / `trait` / `enum` / `impl` declared directly in a `mod` has
+      //     no enclosing class, so the member-side guard alone let it through
+      //     while its own anchor stayed bare — `mod engine { struct Config { … } }`
+      //     minted `Struct:<file>:engine.Config` against a `HAS_PROPERTY` edge
+      //     anchored on `Struct:<file>:Config`, dangling every field. The same
+      //     gap put `impl a::Inner` inside a `mod` back on the #1975 rake this
+      //     helper's own docblock warns about: the impl branch above deliberately
+      //     fires only for an UNSCOPED `type_identifier`, and this gate was
+      //     picking up the scoped targets it had just excluded.
+      //   - `nestedCallablePrefix === undefined` excludes an item inside a
+      //     CALLABLE. `fn wrapper() { mod helper { fn dispatch } }` composed the
+      //     mod segment outermost — `helper.wrapper.dispatch@2:8` — inverting the
+      //     real nesting, because the mod prefix is prepended to a name the
+      //     enclosing-callable pass has already qualified. Nothing dangled (the
+      //     `@line:col` suffix keeps such ids unique on its own, which is also why
+      //     the mod segment adds no identity here), but the path read as a lie
+      //     about the source. Skipping is the honest answer; reordering would mean
+      //     interleaving two qualifier passes for a shape that only ever produces
+      //     already-unique ids.
+      //
+      // Same-named members on same-named types in sibling modules therefore
+      // still collapse, as do the containers themselves — unchanged from before
+      // this fix, and owned by the owner edge rather than worked around here.
+      const qualifiesByEnclosingModScope =
+        rustImplQualifiedName === undefined &&
+        definitionNode !== undefined &&
+        !MEMBER_OWNER_NODE_TYPES.has(definitionNode.type) &&
+        nestedCallablePrefix === undefined &&
+        !enclosingClassInfo &&
+        objectLiteralOwnerInfo?.ownerName === undefined;
+      const qualifiedName =
+        qualifiesByEnclosingModScope && definitionNode !== undefined
+          ? qualifyByEnclosingModScope(definitionNode, qualifiedNameBeforeModScope)
+          : qualifiedNameBeforeModScope;
 
       // Extract method metadata BEFORE generating node ID — parameterCount is needed
       // to disambiguate overloaded methods via #<arity> suffix in the ID.
