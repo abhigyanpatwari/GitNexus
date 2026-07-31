@@ -53,7 +53,7 @@
   },
   "go-chain-call/cmd/main.go": {
     "captureGroups": 20,
-    "digest": "c60375f48bb2765060f068dc986abc9ed6ed4489c14115b6fa544ee3beb3d3d8"
+    "digest": "149b55b1cf523c13f9ed06cd02ce293f00407c08dd7d3bc0dd9173bc016e72e5"
   },
   "go-chain-call/models/repo.go": {
     "captureGroups": 10,
@@ -97,7 +97,7 @@
   },
   "go-deep-field-chain/cmd/main.go": {
     "captureGroups": 14,
-    "digest": "2a2d67f1fd9813558ce13d969fd9f6a50368f303c7e925b4cf8df9b52e66d54f"
+    "digest": "f9a16407d136307fa11299fadb4dff527a910dd9f2ffe4a50afc95dc3e1dd483"
   },
   "go-deep-field-chain/models/models.go": {
     "captureGroups": 33,
@@ -105,7 +105,7 @@
   },
   "go-field-types/cmd/main.go": {
     "captureGroups": 10,
-    "digest": "358f4003af7b957c35bb049af4941f8a23c36981b7e777bf1b943bcf734c7d1b"
+    "digest": "d79a7120276b1a5297f6e39bc88574a18b82ad26faede903dd449309544293c6"
   },
   "go-field-types/models/models.go": {
     "captureGroups": 22,
@@ -181,7 +181,7 @@
   },
   "go-mixed-chain/cmd/main.go": {
     "captureGroups": 22,
-    "digest": "486c3edfe09e6bc6ba3652f55e167c1e73cdac3b5419ef513811a1e6bfcdb9d5"
+    "digest": "ee4f286d8b6baa15476e6316665f6d51a891701f9c994e14514aaee2738e811a"
   },
   "go-mixed-chain/models/models.go": {
     "captureGroups": 41,

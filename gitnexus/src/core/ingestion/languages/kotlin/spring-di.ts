@@ -9,6 +9,10 @@ import {
   type SpringDiDependencyFact,
   type SpringDiInjectionSiteFact,
 } from '../../frameworks/spring/di-metadata.js';
+import {
+  hasSpringBeanFactorySyntax,
+  type SpringBeanFactoryMethodFact,
+} from '../../frameworks/spring/bean-factories.js';
 import { nodeToCapture, type SyntaxNode } from '../../utils/ast-helpers.js';
 import { getKotlinSpringDiFacts } from './capture-side-channel.js';
 import { isKotlinPackageSiblingVisibilityIncomplete } from './package-siblings.js';
@@ -31,6 +35,7 @@ export type KotlinSpringDiClassFact = SpringDiClassFact<
   KotlinAnnotationSyntaxFact,
   KotlinSpringInjectionSiteKind
 >;
+type KotlinSpringBeanFactoryMethodFact = SpringBeanFactoryMethodFact<KotlinAnnotationSyntaxFact>;
 
 const KOTLIN_TYPE_NODES = new Set(['user_type', 'nullable_type', 'function_type']);
 
@@ -84,6 +89,24 @@ export function kotlinSpringAnnotationFacts(node: SyntaxNode): KotlinAnnotationS
 
 function directTypeNode(node: SyntaxNode): SyntaxNode | undefined {
   return node.namedChildren.find((child) => KOTLIN_TYPE_NODES.has(child.type));
+}
+
+function kotlinBeanFactoryReturnType(functionNode: SyntaxNode): string | undefined {
+  const parametersIndex = functionNode.namedChildren.findIndex(
+    (child) => child.type === 'function_value_parameters',
+  );
+  if (parametersIndex === -1) return undefined;
+  const afterParameters = functionNode.namedChildren.slice(parametersIndex + 1);
+  const explicit = afterParameters.find((child) => KOTLIN_TYPE_NODES.has(child.type));
+  if (explicit !== undefined) return explicit.text.trim();
+
+  const body = afterParameters.find((child) => !KOTLIN_TYPE_NODES.has(child.type));
+  if (body === undefined) return undefined;
+  const call =
+    body.type === 'call_expression' ? body : firstDescendantOfType(body, 'call_expression');
+  const callee = call?.namedChildren.find((child) => child.type === 'simple_identifier');
+  const inferred = callee?.text.trim();
+  return inferred !== undefined && /^[A-Z_$]/.test(inferred) ? inferred : undefined;
 }
 
 function parameterDependency(
@@ -166,6 +189,7 @@ export function captureKotlinSpringDiClassFact(
   if (!isKotlinBeanCandidateClass(classNode)) return null;
   const classAnnotations = kotlinSpringAnnotationFacts(classNode);
   const injectionSites: KotlinSpringInjectionSiteFact[] = [];
+  const beanFactoryMethods: KotlinSpringBeanFactoryMethodFact[] = [];
   const body = classNode.namedChildren.find((child) => child.type === 'class_body');
   const primaryConstructor = classNode.namedChildren.find(
     (child) => child.type === 'primary_constructor',
@@ -224,10 +248,33 @@ export function captureKotlinSpringDiClassFact(
         });
       } else if (member.type === 'function_declaration') {
         const annotations = kotlinSpringAnnotationFacts(member);
-        if (!hasSpringDiRelevantAnnotation(annotations)) continue;
         const name =
           member.namedChildren.find((child) => child.type === 'simple_identifier')?.text.trim() ??
           '<method>';
+        const factoryAnnotations = annotations.filter(
+          (annotation) => annotation.useSiteTarget === undefined,
+        );
+        const beanFactory = hasSpringBeanFactorySyntax(factoryAnnotations);
+        if (beanFactory) {
+          const callableCapture = nodeToCapture('@spring-bean.factory', member);
+          const returnType = kotlinBeanFactoryReturnType(member);
+          beanFactoryMethods.push({
+            callableScopeId: makeScopeId({
+              filePath,
+              range: callableCapture.range,
+              kind: 'Function',
+            }),
+            methodName: name,
+            ...(returnType === undefined ? {} : { returnType }),
+            annotations: factoryAnnotations,
+            dependencies: functionDependencies(member),
+          });
+        }
+        // @Bean parameters are already represented on the factory Method. Do not
+        // also attach them to the owning configuration Class when the method has
+        // an otherwise relevant annotation such as @Autowired or @Qualifier.
+        if (beanFactory) continue;
+        if (!hasSpringDiRelevantAnnotation(annotations)) continue;
         injectionSites.push({
           kind: 'method',
           memberName: name,
@@ -239,12 +286,19 @@ export function captureKotlinSpringDiClassFact(
     }
   }
 
-  if (injectionSites.length === 0 && !hasSpringDiRelevantAnnotation(classAnnotations)) return null;
+  if (
+    injectionSites.length === 0 &&
+    beanFactoryMethods.length === 0 &&
+    !hasSpringDiRelevantAnnotation(classAnnotations)
+  ) {
+    return null;
+  }
   const classCapture = nodeToCapture('@spring-di.class', classNode);
   return {
     classScopeId: makeScopeId({ filePath, range: classCapture.range, kind: 'Class' }),
     classAnnotations,
     injectionSites,
+    ...(beanFactoryMethods.length === 0 ? {} : { beanFactoryMethods }),
   };
 }
 
@@ -275,6 +329,10 @@ function isApplicableQualifierAnnotation(
   return annotation.useSiteTarget === 'param';
 }
 
+function isApplicableFactoryQualifierAnnotation(annotation: KotlinAnnotationSyntaxFact): boolean {
+  return annotation.useSiteTarget === undefined || annotation.useSiteTarget === 'param';
+}
+
 function parseKotlinSpringInjectionType(rawType: string) {
   // Kotlin nullable suffixes, type projections, and mutable collection aliases
   // do not change the JVM bean type selected by Spring. Normalize only those
@@ -298,4 +356,5 @@ export const attachKotlinSpringDiMetadata = createSpringDiMetadataAttacher<
   capturedMemberKind: 'property',
   isInjectionAnnotationApplicable: isApplicableInjectionAnnotation,
   isQualifierAnnotationApplicable: isApplicableQualifierAnnotation,
+  isFactoryQualifierAnnotationApplicable: isApplicableFactoryQualifierAnnotation,
 });

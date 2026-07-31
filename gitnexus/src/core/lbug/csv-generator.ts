@@ -17,11 +17,13 @@ import { createWriteStream, WriteStream } from 'fs';
 import path from 'path';
 import type { GraphNode, GraphRelationship } from 'gitnexus-shared';
 import { KnowledgeGraph } from '../graph/types.js';
-import { NodeTableName, NODE_TABLES } from './schema.js';
-import { RelPairRouter } from './rel-pair-routing.js';
+import { NodeTableName, NODE_TABLES, RELATION_SCHEMA } from './schema.js';
+import { parseRelationSchemaPairs, RelPairRouter } from './rel-pair-routing.js';
 import { parseTruthyEnv } from '../ingestion/utils/env.js';
 import { SYMBOL_NODE_LABELS } from '../ingestion/utils/symbol-labels.js';
 import { applyCjkSegmentationIfEnabled } from '../search/cjk-segmentation.js';
+
+const DECLARED_RELATION_PAIRS = parseRelationSchemaPairs(RELATION_SCHEMA);
 
 /**
  * Deterministic output ordering — optional (out-of-core / windowed-resolve
@@ -785,7 +787,12 @@ export const streamAllCSVsToDisk = async (
     // read once instead of twice. The router applies the SAME label-derivation +
     // validTables filter as the legacy splitRelCsvByLabelPair, so the per-pair
     // files are byte-identical (asserted by the differential test).
-    const relRouter = new RelPairRouter(csvDir, REL_CSV_HEADER, new Set<string>(NODE_TABLES));
+    const relRouter = new RelPairRouter(
+      csvDir,
+      REL_CSV_HEADER,
+      new Set<string>(NODE_TABLES),
+      DECLARED_RELATION_PAIRS,
+    );
     try {
       let emitted = 0;
       for (const rel of orderedRelationships(graph, sortOutput)) {

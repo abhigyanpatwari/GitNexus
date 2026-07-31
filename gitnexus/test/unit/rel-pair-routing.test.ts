@@ -3,7 +3,11 @@ import { EventEmitter } from 'events';
 import fs from 'fs';
 import path from 'path';
 import os from 'os';
-import { RelPairRouter, getNodeLabel } from '../../src/core/lbug/rel-pair-routing.js';
+import {
+  RelPairRouter,
+  getNodeLabel,
+  parseRelationSchemaPairs,
+} from '../../src/core/lbug/rel-pair-routing.js';
 
 /**
  * Unit tests for RelPairRouter (#2203 U2) — the production per-pair emit path.
@@ -65,6 +69,7 @@ class MockWriteStream extends EventEmitter {
 
 const HEADER = '"from","to","type","confidence","reason","step"';
 const VALID = new Set<string>(['File', 'Function', 'Community', 'Process']);
+const DECLARED = new Set<string>(['File|Function', 'Function|Function', 'Community|Community']);
 
 const row = (from: string, to: string, type = 'CALLS'): string =>
   `"${from}","${to}","${type}",1.0,"auto",0`;
@@ -97,10 +102,24 @@ describe('getNodeLabel', () => {
   });
 });
 
+describe('parseRelationSchemaPairs', () => {
+  it('extracts plain and quoted FROM→TO labels for router validation', () => {
+    expect(
+      parseRelationSchemaPairs(`
+        CREATE REL TABLE CodeRelation(
+          FROM Class TO CodeElement,
+          FROM \`Enum\` TO \`TypeAlias\`,
+          type STRING
+        )
+      `),
+    ).toEqual(new Set(['Class|CodeElement', 'Enum|TypeAlias']));
+  });
+});
+
 describe('RelPairRouter', () => {
   it('routes valid edges to per-pair files (header first) and skips invalid-label edges', async () => {
     const streams: MockWriteStream[] = [];
-    const router = new RelPairRouter(tmpDir, HEADER, VALID, mockFactory(streams));
+    const router = new RelPairRouter(tmpDir, HEADER, VALID, DECLARED, mockFactory(streams));
 
     const route = async (from: string, to: string) => {
       const p = router.route(from, to, row(from, to));
@@ -122,12 +141,25 @@ describe('RelPairRouter', () => {
     expect(streams.every((s) => s.ended)).toBe(true);
   });
 
+  it('rejects a valid-label pair that is absent from the relation schema', () => {
+    const streams: MockWriteStream[] = [];
+    const router = new RelPairRouter(tmpDir, HEADER, VALID, DECLARED, mockFactory(streams));
+
+    expect(() => router.route('File:a', 'Community:1', row('File:a', 'Community:1'))).toThrow(
+      'File→Community is not declared in the LadybugDB relation schema',
+    );
+    expect(streams).toHaveLength(0);
+    expect(router.skipped).toBe(0);
+    expect(router.total).toBe(0);
+  });
+
   it('returns a drain promise under backpressure and completes once unblocked', async () => {
     const streams: MockWriteStream[] = [];
     const router = new RelPairRouter(
       tmpDir,
       HEADER,
       VALID,
+      DECLARED,
       mockFactory(streams, { blocked: true }),
     );
 
@@ -143,7 +175,7 @@ describe('RelPairRouter', () => {
 
   it('on a stream error: route() throws the real error, lastError exposes it, close() rejects + destroys', async () => {
     const streams: MockWriteStream[] = [];
-    const router = new RelPairRouter(tmpDir, HEADER, VALID, mockFactory(streams));
+    const router = new RelPairRouter(tmpDir, HEADER, VALID, DECLARED, mockFactory(streams));
 
     const first = router.route('File:a', 'Function:a:f:1', row('File:a', 'Function:a:f:1'));
     if (first) await first;
@@ -162,7 +194,7 @@ describe('RelPairRouter', () => {
 
   it('destroy() tears down every open pair stream', async () => {
     const streams: MockWriteStream[] = [];
-    const router = new RelPairRouter(tmpDir, HEADER, VALID, mockFactory(streams));
+    const router = new RelPairRouter(tmpDir, HEADER, VALID, DECLARED, mockFactory(streams));
 
     const a = router.route('File:a', 'Function:a:f:1', row('File:a', 'Function:a:f:1'));
     if (a) await a;

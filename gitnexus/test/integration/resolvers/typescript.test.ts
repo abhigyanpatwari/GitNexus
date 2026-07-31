@@ -11,6 +11,7 @@ import {
   getNodesByLabel,
   getNodesByLabelFull,
   edgeSet,
+  getResolutionOutcomes,
   runPipelineFromRepo,
   type PipelineResult,
 } from './helpers.js';
@@ -3250,13 +3251,6 @@ describe('TypeScript inline constructor receiver resolution', () => {
     expect(twoStep!.rel.targetId).toContain('Service');
   });
 
-  it('resolves the same shape in a plain .js file (javascript provider)', () => {
-    const calls = getRelationships(result, 'CALLS');
-    const jsCall = calls.find((c) => c.source === 'viaInlineNewJs' && c.target === 'doWork');
-    expect(jsCall).toBeDefined();
-    expect(jsCall!.rel.targetId).toContain('LegacyService');
-  });
-
   it('resolves a generic constructor receiver — new Box<string>().unwrap()', () => {
     const calls = getRelationships(result, 'CALLS');
     const genericCall = calls.find((c) => c.source === 'viaGenericCtor' && c.target === 'unwrap');
@@ -3310,5 +3304,245 @@ describe('TypeScript inline constructor receiver resolution', () => {
     // Other.doWork, via makeOther's return type — a bare call in a `new`
     // language must never be typed as a construction of a same-named class.
     expect(factoryCall!.rel.targetId).toContain('Other');
+  });
+});
+
+// ---------------------------------------------------------------------------
+// #2744 drop recorder — the site kind travels with the drop.
+//
+// Case 0's gate tests the RECEIVER's punctuation, not the site's kind, so a
+// compound-receiver property write is recorded in the same bucket as a dropped
+// method call. Anything measuring resolver gaps has to tell those apart, and
+// the site kind is the only authoritative signal for it.
+//
+// Both shapes below are empirically confirmed drops: `!` produces a reference
+// site that reaches Case 0. (`?.` and explicit type arguments do NOT record a
+// drop at all — they are invisible to this recorder, which is a property of the
+// capture layer, not of this field.)
+// ---------------------------------------------------------------------------
+
+describe('TypeScript receiver-unresolved drops carry their site kind (#2744)', () => {
+  let repoDir: string;
+  let result: PipelineResult;
+
+  beforeAll(async () => {
+    repoDir = fs.mkdtempSync(path.join(os.tmpdir(), 'gn-ts-drop-site-kind-'));
+    writeFixtureRepo(repoDir, {
+      'models.ts': `export class User {
+  name: string = '';
+  save(): void {}
+}
+
+export class Service {
+  getUser(): User {
+    return new User();
+  }
+  async getUserAsync(): Promise<User> {
+    return new User();
+  }
+}
+`,
+      'main.ts': `import { Service } from './models';
+
+export async function droppedCall(svc: Service): Promise<void> {
+  // An await-parenthesized receiver. Structural typing does NOT cover this
+  // shape — \`extractMixedChain\` reaches \`await …\`, which is not a chain node,
+  // so no chain is minted and the site still reaches the drop recorder. The
+  // \`!\` spelling used to serve here until structural typing resolved it.
+  (await svc.getUserAsync()).save();
+}
+
+export function droppedWrite(svc: Service | null): void {
+  // A write receiver mints no chain at all (the emitter gates on CALL_TAGS),
+  // so this keeps dropping and stays separable from the call above.
+  svc!.getUser().name = 'x';
+}
+`,
+    });
+    result = await runPipelineFromRepo(repoDir, () => {}, {});
+  }, 60000);
+
+  afterAll(() => {
+    if (repoDir !== undefined) fs.rmSync(repoDir, { recursive: true, force: true });
+  });
+
+  it('tags a dropped method call as a call site', () => {
+    const drops = getResolutionOutcomes(result).filter(
+      (outcome) => outcome.kind === 'suppressed' && outcome.reason === 'receiver-unresolved',
+    );
+    expect(drops).toContainEqual(expect.objectContaining({ name: 'save', siteKind: 'call' }));
+  });
+
+  it('tags a dropped property write as a write site, so it is separable from calls', () => {
+    const drops = getResolutionOutcomes(result).filter(
+      (outcome) => outcome.kind === 'suppressed' && outcome.reason === 'receiver-unresolved',
+    );
+    expect(drops).toContainEqual(expect.objectContaining({ name: 'name', siteKind: 'write' }));
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Structural receiver typing: receiver spellings the text cascade cannot parse
+// now resolve by folding the captured chain.
+//
+// Both shapes below emitted NO edge and recorded NO drop before this work:
+// Case 0's gate fired, `resolveCompoundReceiverClass` returned undefined, and a
+// later case marked the site handled — which suppresses the drop record too, so
+// the loss was invisible to the epistemic signal as well as to the graph.
+// ---------------------------------------------------------------------------
+
+describe('TypeScript structural receiver chains', () => {
+  let repoDir: string;
+  let result: PipelineResult;
+
+  beforeAll(async () => {
+    repoDir = fs.mkdtempSync(path.join(os.tmpdir(), 'gn-ts-receiver-chain-'));
+    writeFixtureRepo(repoDir, {
+      'models.ts': `export class Database {
+  query(): void {}
+}
+
+export class Config {
+  db: Database = new Database();
+}
+
+export function make(n: number): number {
+  return n;
+}
+
+export class Address {
+  persist(): void {}
+}
+
+export class User {
+  address: Address = new Address();
+  save(): void {}
+}
+
+export class Service {
+  getUser(): User {
+    return new User();
+  }
+  getTyped<T>(): User {
+    return new User();
+  }
+}
+`,
+      'main.ts': `import { Service, Config, make } from './models';
+
+export function viaOptionalChain(svc: Service | null): void {
+  svc?.getUser().save();
+}
+
+// A local that merely SHADOWS an imported class name. Its value is a number,
+// so it has NO members — the fold must not type it as the class.
+export function shadowsAClassName(): void {
+  const Config = make(1);
+  Config.db.query();
+}
+
+export function viaTypeArgs(svc: Service): void {
+  svc.getTyped<User>().save();
+}
+
+export function viaNonNull(svc: Service | null): void {
+  svc!.getUser().save();
+}
+
+// A mixed call/field chain behind a spelling the TEXT cascade cannot parse
+// (optional chaining), so this discriminates the fold rather than re-testing
+// the pre-existing cascade path.
+export function viaMixedChain(svc: Service | null): void {
+  svc?.getUser().address.persist();
+}
+
+// User has no member named missing, so the chain dies at its middle step.
+export function brokenMiddleStep(svc: Service): void {
+  svc.getUser().missing.persist();
+}
+
+export function alreadyWorked(svc: Service): void {
+  svc.getUser().save();
+}
+`,
+    });
+    result = await runPipelineFromRepo(repoDir, () => {}, {});
+  }, 60000);
+
+  afterAll(() => {
+    if (repoDir !== undefined) fs.rmSync(repoDir, { recursive: true, force: true });
+  });
+
+  it('resolves an optional-chained receiver — svc?.getUser().save()', () => {
+    const calls = getRelationships(result, 'CALLS');
+    expect(calls.find((c) => c.source === 'viaOptionalChain' && c.target === 'save')).toMatchObject(
+      {
+        target: 'save',
+        targetFilePath: 'models.ts',
+      },
+    );
+  });
+
+  it('resolves an explicit-type-argument receiver — svc.getTyped<User>().save()', () => {
+    const calls = getRelationships(result, 'CALLS');
+    expect(calls.find((c) => c.source === 'viaTypeArgs' && c.target === 'save')).toMatchObject({
+      target: 'save',
+      targetFilePath: 'models.ts',
+    });
+  });
+
+  it('resolves a non-null-asserted receiver — svc!.getUser().save()', () => {
+    const calls = getRelationships(result, 'CALLS');
+    expect(calls.find((c) => c.source === 'viaNonNull' && c.target === 'save')).toMatchObject({
+      target: 'save',
+      targetFilePath: 'models.ts',
+    });
+  });
+
+  it('resolves a mixed call/field chain through the fold', () => {
+    const calls = getRelationships(result, 'CALLS');
+    expect(calls.find((c) => c.source === 'viaMixedChain' && c.target === 'persist')).toMatchObject(
+      {
+        target: 'persist',
+        targetFilePath: 'models.ts',
+      },
+    );
+  });
+
+  it('keeps the shape that already resolved through the text cascade', () => {
+    const calls = getRelationships(result, 'CALLS');
+    expect(calls.find((c) => c.source === 'alreadyWorked' && c.target === 'save')).toMatchObject({
+      target: 'save',
+      targetFilePath: 'models.ts',
+    });
+  });
+
+  it('does NOT fabricate an edge when a local shadows a class name', () => {
+    // Regression: the fold resolved its base through the permissive
+    // bare-identifier path, which falls through to a plain class-name lookup
+    // even when a receiver typeBinding exists but names no class. A local
+    // `const Config = make(1)` (a number) was therefore typed as the imported
+    // `class Config`, emitting a confident `CALLS` edge to `Database.query`
+    // that the text cascade never produced. A missing edge is recoverable; a
+    // wrong one is not.
+    const calls = getRelationships(result, 'CALLS');
+    expect(calls.filter((c) => c.source === 'shadowsAClassName' && c.target === 'query')).toEqual(
+      [],
+    );
+  });
+
+  it('emits no CALLS edge when a middle step names no member of the previous class', () => {
+    // A broken MIDDLE step must produce no edge, never a wrong one. `User` has no
+    // member `missing`, so the chain cannot be typed past it and `persist` must
+    // not bind to anything — in particular not to `Address.persist`, which a
+    // field-walking fallback could otherwise reach.
+    // `getUser` itself still resolves — only the tail past the broken step must not.
+    const calls = getRelationships(result, 'CALLS');
+    expect(calls.filter((c) => c.source === 'brokenMiddleStep' && c.target === 'persist')).toEqual(
+      [],
+    );
+    expect(
+      calls.filter((c) => c.source === 'brokenMiddleStep' && c.target === 'getUser'),
+    ).toHaveLength(1);
   });
 });

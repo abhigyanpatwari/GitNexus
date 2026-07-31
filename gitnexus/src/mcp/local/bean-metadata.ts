@@ -3,15 +3,38 @@ import {
   deriveSpringBeanMetadata,
   type SpringBeanMetadata,
 } from '../../core/ingestion/frameworks/spring/bean-catalog.js';
+import {
+  decodeSpringBeanFactoryReason,
+  type SpringBeanFactoryMetadata,
+} from '../../core/ingestion/frameworks/spring/bean-factories.js';
 
 export async function queryClassBeanMetadata(
   lbugPath: string,
   symbolId: string,
   symbolType: string,
-): Promise<SpringBeanMetadata | undefined> {
-  if (symbolType !== 'Class') return undefined;
+): Promise<SpringBeanMetadata | SpringBeanFactoryMetadata | undefined> {
+  if (symbolType !== 'Class' && symbolType !== 'Method' && symbolType !== 'CodeElement') {
+    return undefined;
+  }
 
   try {
+    if (symbolType !== 'Class') {
+      const pattern =
+        symbolType === 'Method'
+          ? 'MATCH (m:Method {id: $symbolId})-[r:CodeRelation]->(b:CodeElement)'
+          : 'MATCH (m:Method)-[r:CodeRelation]->(b:CodeElement {id: $symbolId})';
+      const rows = await executeParameterized(
+        lbugPath,
+        `${pattern}
+         WHERE r.type = 'DECLARES'
+         RETURN r.reason AS reason
+         LIMIT 1`,
+        { symbolId },
+      );
+      const row = rows[0];
+      return row === undefined ? undefined : decodeSpringBeanFactoryReason(row.reason ?? row[0]);
+    }
+
     const rows = await executeParameterized(
       lbugPath,
       `

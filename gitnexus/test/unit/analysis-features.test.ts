@@ -25,13 +25,13 @@ describe('analysis feature versions', () => {
     });
     expect(resolveAnalysisFeatureVersions(FEATURES, ['src/App.java'])).toEqual({
       'graph.class-framework-annotations': 1,
-      'spring.bean-inventory': 1,
+      'spring.bean-inventory': 2,
       'spring.conditionals-auto-configuration': 1,
       'spring.config-bindings': 1,
     });
     expect(resolveAnalysisFeatureVersions(FEATURES, ['BUILD.GRADLE.KTS'])).toEqual({
       'graph.class-framework-annotations': 1,
-      'spring.bean-inventory': 1,
+      'spring.bean-inventory': 2,
       'spring.conditionals-auto-configuration': 1,
     });
     expect(
@@ -56,7 +56,7 @@ describe('analysis feature versions', () => {
   it('requires an exact, well-formed feature set', () => {
     const expected = {
       'graph.class-framework-annotations': 1,
-      'spring.bean-inventory': 1,
+      'spring.bean-inventory': 2,
     };
 
     expect(findAnalysisFeatureMismatches(expected, expected)).toEqual([]);
@@ -66,7 +66,7 @@ describe('analysis feature versions', () => {
     ]);
     expect(
       findAnalysisFeatureMismatches(
-        { 'graph.class-framework-annotations': 1, 'spring.bean-inventory': 2 },
+        { 'graph.class-framework-annotations': 1, 'spring.bean-inventory': 1 },
         expected,
       ),
     ).toEqual(['version:spring.bean-inventory']);

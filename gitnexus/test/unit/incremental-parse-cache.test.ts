@@ -101,11 +101,11 @@ describe('fileContentHash', () => {
 });
 
 describe('PARSE_CACHE_VERSION', () => {
-  // 31 -> 32 for the mod-qualified Rust node ids (#2742). Updated deliberately:
-  // this pin exists so a bump cannot ride along unnoticed, and it caught the
-  // collision when the pin arrived from main while this branch already held 32.
-  it('pins SCHEMA_BUMP to 33 so concurrent bumps cannot silently collide (#2736)', () => {
-    expect(Number(PARSE_CACHE_VERSION.split('+', 1)[0])).toBe(33);
+  // 35 -> 36 for the bound-callable start-line join (#2735). Updated
+  // deliberately after main independently took 35 for Spring side-channel
+  // captures (#2413), so the pin continues to catch concurrent bump collisions.
+  it('pins SCHEMA_BUMP to 36 so concurrent bumps cannot silently collide (#2736)', () => {
+    expect(Number(PARSE_CACHE_VERSION.split('+', 1)[0])).toBe(36);
   });
 
   it('embeds the gitnexus package version (so upgrades invalidate the cache)', () => {
