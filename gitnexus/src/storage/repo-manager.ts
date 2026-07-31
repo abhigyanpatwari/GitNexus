@@ -631,8 +631,13 @@ export interface RepoMeta {
  * `#[cfg(test)] mod tests` makes that close to every Rust repo — so a pre-v25
  * index holds ids an incremental top-up cannot reconcile and would simply
  * strand. Force a full re-analyze.
+ *
+ * v30: bound-callable graph `startLine` follows the initializer (#2735), so a
+ * multi-line closure binding joins the scope channel and emits its CALLS edge.
+ * Pre-v30 indexes keep the wrapper line on unchanged files and would keep
+ * failing closed (no edge) through the reuse gate. Force a full re-analyze.
  */
-export const INCREMENTAL_SCHEMA_VERSION = 29;
+export const INCREMENTAL_SCHEMA_VERSION = 30;
 
 export interface IndexedRepo {
   repoPath: string;

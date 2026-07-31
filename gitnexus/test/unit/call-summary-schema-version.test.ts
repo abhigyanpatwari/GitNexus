@@ -73,12 +73,12 @@ describe('CALL_SUMMARY relation-type exclusion (U-C1)', () => {
 });
 
 describe('CALL_SUMMARY incremental reuse gate (U-C5)', () => {
-  it('INCREMENTAL_SCHEMA_VERSION is bumped to 29 (Spring Bean relation schema, #2413)', () => {
+  it('INCREMENTAL_SCHEMA_VERSION is bumped to 30 (multi-line closure startLine join, #2735)', () => {
     // Moves with every bump BY DESIGN — that is the point of pinning it. A
     // change that alters emitted ids or edges without bumping would otherwise
     // ship silently, and an existing index would keep serving the old graph
     // through the reuse gate below.
-    expect(INCREMENTAL_SCHEMA_VERSION).toBe(29);
+    expect(INCREMENTAL_SCHEMA_VERSION).toBe(30);
   });
 
   it('a pre-current stamp fails the `=== INCREMENTAL_SCHEMA_VERSION` reuse gate → forces full re-analyze', () => {
@@ -202,7 +202,10 @@ describe('CALL_SUMMARY incremental reuse gate (U-C5)', () => {
     // so Spring @Bean injection edges (#2413) would be dropped during
     // persistence → must NOT reuse.
     expect(passesReuseGate(28)).toBe(false);
+    // A pre-v30 (v29) index keeps wrapper-line startLines for multi-line closure
+    // bindings (#2735), so the graph-to-scope join still drops the CALLS edge.
+    expect(passesReuseGate(29)).toBe(false);
     // The current stamp passes the gate (incremental top-up eligible).
-    expect(passesReuseGate(29)).toBe(true);
+    expect(passesReuseGate(30)).toBe(true);
   });
 });
