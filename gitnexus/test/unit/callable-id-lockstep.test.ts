@@ -26,7 +26,10 @@
 import { readFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { describe, expect, it } from 'vitest';
-import { boundCallablePositionNode, nestedCallableQualifiedName } from '../../src/core/ingestion/workers/callable-id.js';
+import {
+  boundCallablePositionNode,
+  nestedCallableQualifiedName,
+} from '../../src/core/ingestion/workers/callable-id.js';
 import type { SyntaxNode } from '../../src/core/ingestion/utils/ast-helpers.js';
 
 const nodeAt = (row: number, column: number): SyntaxNode =>

@@ -49,13 +49,7 @@ const BOUND_CALLABLE_EXPRESSION_TYPES = new Set([
   'local_function_statement',
 ]);
 
-const INITIALIZER_FIELDS = [
-  'value',
-  'right',
-  'initializer',
-  'default_value',
-  'result',
-] as const;
+const INITIALIZER_FIELDS = ['value', 'right', 'initializer', 'default_value', 'result'] as const;
 
 function fieldInitializer(node: SyntaxNode): SyntaxNode | null {
   for (const field of INITIALIZER_FIELDS) {
@@ -82,11 +76,7 @@ function unwrapBoundCallable(node: SyntaxNode | null): SyntaxNode | undefined {
   // HOC / factory / Ruby `lambda do`: callable sits in call arguments or a
   // `block`/`do_block` child. Ruby's grammar names the node `call`, not
   // `call_expression`.
-  if (
-    node.type === 'call_expression' ||
-    node.type === 'call' ||
-    node.type === 'arguments'
-  ) {
+  if (node.type === 'call_expression' || node.type === 'call' || node.type === 'arguments') {
     const blockField = node.childForFieldName('block');
     const fromBlock = unwrapBoundCallable(blockField);
     if (fromBlock !== undefined) return fromBlock;
@@ -141,8 +131,7 @@ export function boundCallablePositionNode(
   if (fromDefinition !== undefined) return fromDefinition;
 
   for (const child of definitionNode.namedChildren) {
-    const callable =
-      unwrapBoundCallable(fieldInitializer(child)) ?? unwrapBoundCallable(child);
+    const callable = unwrapBoundCallable(fieldInitializer(child)) ?? unwrapBoundCallable(child);
     if (callable !== undefined) return callable;
   }
 

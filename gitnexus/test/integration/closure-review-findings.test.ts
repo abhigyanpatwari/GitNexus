@@ -125,9 +125,9 @@ describeIfWorkerBuilt(
       expect(edges.some((e) => e.includes('multi') && e.endsWith('-> Function:ml.kt:target'))).toBe(
         true,
       );
-      expect(edges.some((e) => e.startsWith('Function:ml.kt:outer ->') && e.endsWith('target'))).toBe(
-        false,
-      );
+      expect(
+        edges.some((e) => e.startsWith('Function:ml.kt:outer ->') && e.endsWith('target')),
+      ).toBe(false);
     });
 
     it('Ruby: a multi-line lambda do-end binding emits CALLS to target', async () => {
@@ -152,9 +152,9 @@ describeIfWorkerBuilt(
           '  var multi =\n    (int x) => target(x);\n  return 1;\n}\n',
       );
 
-      expect(edges.some((e) => e.includes('multi') && e.endsWith('-> Function:ml.dart:target'))).toBe(
-        true,
-      );
+      expect(
+        edges.some((e) => e.includes('multi') && e.endsWith('-> Function:ml.dart:target')),
+      ).toBe(true);
       expect(
         edges.some((e) => e.startsWith('Function:ml.dart:outer ->') && e.endsWith('target')),
       ).toBe(false);
