@@ -636,8 +636,19 @@ export interface RepoMeta {
  * multi-line closure binding joins the scope channel and emits its CALLS edge.
  * Pre-v30 indexes keep the wrapper line on unchanged files and would keep
  * failing closed (no edge) through the reuse gate. Force a full re-analyze.
+ *
+ * v31: the CONTAINS DDL gains the eleven Swift member-containment pairs
+ * Enum→{Function, Method, Struct, Constructor, Property, TypeAlias},
+ * Method→Variable, and Property→{Class, Enum, Function, Struct}. Swift enums
+ * carry computed properties, methods, initializers, and nested types; method
+ * bodies can declare local variables; and computed-property bodies can define
+ * nested functions and types. A pre-v31 database physically lacks the new rel
+ * tables, so an incremental top-up that emits one of these edges fails at the
+ * DB layer. Force a full re-analyze. As with the collision notes above, 31 may
+ * need renumbering at merge time; re-check this constant against upstream's
+ * value immediately before merging.
  */
-export const INCREMENTAL_SCHEMA_VERSION = 30;
+export const INCREMENTAL_SCHEMA_VERSION = 31;
 
 export interface IndexedRepo {
   repoPath: string;

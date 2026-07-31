@@ -212,6 +212,26 @@ describe('LadybugDB Schema', () => {
       expect(RELATION_SCHEMA).toContain('FROM Class TO CodeElement');
     });
 
+    it('declares the Swift member-containment pairs', () => {
+      const swiftMemberPairs = [
+        'FROM `Enum` TO Function',
+        'FROM `Enum` TO Method',
+        'FROM `Enum` TO `Struct`',
+        'FROM `Enum` TO `Constructor`',
+        'FROM `Enum` TO `Property`',
+        'FROM `Enum` TO `TypeAlias`',
+        'FROM Method TO `Variable`',
+        'FROM `Property` TO Class',
+        'FROM `Property` TO `Enum`',
+        'FROM `Property` TO Function',
+        'FROM `Property` TO `Struct`',
+      ];
+
+      for (const pair of swiftMemberPairs) {
+        expect(RELATION_SCHEMA).toContain(pair);
+      }
+    });
+
     it('has all FROM/TO pairs needed for HAS_METHOD edges', () => {
       // HAS_METHOD sources: Class, Interface, Struct, Trait, Impl, Record
       // HAS_METHOD targets: Method, Constructor (Property is now HAS_PROPERTY)
