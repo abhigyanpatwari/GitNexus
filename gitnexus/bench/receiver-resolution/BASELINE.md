@@ -1,5 +1,123 @@
 # Receiver-resolution baseline
 
+## U2 — shape matrix expanded to a canonical axis
+
+The shape arm was three languages with an ad-hoc shape list each. It is now a
+**canonical 10-shape axis** (`SHAPE_IDS`) that every language must answer for,
+with two states added so a hole cannot masquerade as a measurement:
+
+- `N/A` — the grammar does not admit this spelling. **A reason is required.** An
+  omitted cell and a genuinely inapplicable cell look identical in a diff
+  otherwise, which is how coverage rots.
+- `GRAMMAR-UNAVAILABLE` — the parser could not be loaded, so nothing was
+  measured. Neither passes nor fails the gate, and `drift` skips it on **both**
+  sides so the gate cannot fail for the environment it ran in. `tree-sitter-dart`,
+  `-kotlin` and `-swift` are vendored *optional* grammars: absent when a run sets
+  `GITNEXUS_SKIP_OPTIONAL_GRAMMARS=1`, and soft-failing when no vendored prebuild
+  matches the host (the set covers darwin/linux arm64+x64 and win32-arm64 — a
+  win32-x64 or musl host has none). **All 14 load on a glibc linux-x64 host, so
+  this state has no producer in the committed baseline** — it guards the
+  skip-flag and unsupported-host cases rather than a condition seen here.
+
+`assertMatrixComplete` throws when a language omits a cell, declares an unknown
+id, or writes an `N/A` with no reason. Languages may declare `extraShapeIds` for
+diagnostics the canonical axis cannot express (PHP's annotated/unannotated
+return-type pair, C++'s pointer/value base pair) — an extra must be declared, so
+it stays a deliberate diagnostic rather than a typo'd canonical id.
+
+**Vue and COBOL** are language-level `N/A` rows: their emitters never call
+`synthesizeReceiverChainCapture`, so there is nothing to measure — but the
+language axis now obeys the same no-omitted-cells rule as the shape axis.
+
+### What the first expanded run found
+
+Three results that redirected the plan they were built to serve:
+
+**Go — the root cause, isolated to one cell.** Three rows vary receiver
+decoration and field decoration independently:
+
+| Cell | Receiver | Field | State |
+|---|---|---|---|
+| `fieldReceiverCall` | value | value | RESOLVES |
+| `decoratedFieldType` | value | **pointer** | RESOLVES |
+| `decoratedReceiverBase` | **pointer** | value | **VISIBLE-GAP** |
+
+Only the pointer *receiver* fails. Go already normalizes field type bindings
+through `normalizeGoTypeName`, so the step lookup is sound and the defect is
+entirely the base — `synthesizeGoReceiverBinding` stores `typeNode.text` raw, so
+`func (h *Host)` binds `h` to the literal `*Host`, which
+`findClassBindingInScope` cannot resolve.
+
+**PHP — the sigil hypothesis is dead.** The two rows differ only in whether the
+called method declares a return type:
+
+| Cell | Return type | State |
+|---|---|---|
+| `arrowCallChain` — `$svc->getUser()->save()` | unannotated | INVISIBLE-GAP |
+| `plainChain` — `$svc->getUserTyped()->save()` | **annotated** | **RESOLVES** |
+
+Same chain, same `->`, same base. PHP chains resolve when the return type is
+declared; the `$` sigil is not involved. `decoratedFieldType` (`?User $repo`)
+also resolves, so PHP nullable field types already work.
+
+**C++ — the base already resolves, but `this->` field receivers do not.**
+`pointerArrowChain` and `valueDotChain` both RESOLVE, so a decorated C++ base is
+not a gap. But `this->repo.save()` and `this->repo->save()` are both
+INVISIBLE-GAP — a distinct defect, not a decoration one.
+
+**Rust — the decorated receiver is NOT a gap.** `&mut self` resolves, so Go is
+the only language whose method receiver decoration defeats the lookup. Rust's
+gap is the field: `Box<User>` is INVISIBLE-GAP.
+
+### The decoration cells, across all 14
+
+The rows U1 exists to fix. Everything else is a different defect.
+
+| Language | `decoratedReceiverBase` | `decoratedFieldType` |
+|---|---|---|
+| go | **VISIBLE-GAP** (`*Host`) | RESOLVES |
+| rust | RESOLVES (`&mut self`) | **INVISIBLE-GAP** (`Box<User>`) |
+| typescript | N/A | **INVISIBLE-GAP** (`User \| null`) |
+| csharp | N/A | **VISIBLE-GAP** (`User?`) |
+| swift | N/A | **INVISIBLE-GAP** (`User?`) |
+| cpp | N/A | **INVISIBLE-GAP** (`User*`) |
+| python, php, kotlin, dart | N/A | RESOLVES |
+| java, c, javascript, ruby | N/A | N/A |
+
+So U1's measured scope is **Go's receiver base**, plus the field-type gap in
+**Rust, TypeScript, C#, Swift and C++** — and *not* PHP, Python, Kotlin, Dart or
+Java, whose decoration handling already works or does not exist. Five of the
+seven hooks the plan speculatively listed were aimed at languages that need
+none; three languages that do need one were not on the list at all.
+
+### Other gaps this run surfaced, not in the plan
+
+- **Swift resolves almost nothing.** `plainChain`, `plainDeepChain`,
+  `optionalChain` and `nonNullAssert` are all INVISIBLE-GAP, while
+  `fieldReceiverCall` resolves. Chained receivers are essentially unsupported.
+- **Ruby chains are VISIBLE-GAPs** (`plainChain`, `plainDeepChain`,
+  `optionalChain`) and `fieldReceiverCall` on `@repo` is INVISIBLE.
+- **C++ `this->` field receivers** are INVISIBLE-GAP in both the value and
+  pointer form.
+- **C# has four gaps** beyond the field one: `optionalChain`, `nonNullAssert`,
+  `awaitParen`, `explicitTypeArgs`.
+- **Dart `await` already resolves** — the only language where `awaitParen` is
+  green, which makes it the reference for U4's unwrap direction.
+- **`indexElement` is INVISIBLE-GAP in all 14** — uniform, and exactly what U5
+  targets.
+
+### Coverage status
+
+All 14 languages measured, plus `vue` and `cobol` as language-level `N/A` rows.
+164 cells: 42 RESOLVES, 22 VISIBLE-GAP, 31 INVISIBLE-GAP, 69 N/A, 0
+GRAMMAR-UNAVAILABLE.
+
+The **count arm is unchanged at 101 call drops** — shape fixtures are built in
+temp directories and never touch the committed corpus, so expanding the shape
+axis moves the shape arm only.
+
+---
+
 > **Updated after U10** (structural receiver typing wired into Case 0). Three
 > TypeScript shapes flipped to `RESOLVES` — `svc?.getUser().save()`,
 > `svc!.getUser().save()`, `svc.getTyped<User>().save()` — and the call-drop
