@@ -33,6 +33,17 @@ export const goScopeResolver: ScopeResolver = {
 
   arityCompatibility: (callsite, def) => goArityCompatibility(def, callsite),
 
+  // Only `*` — a pointer leaves the method set reachable by selector unchanged,
+  // so `*Host` and `Host` name the same class for receiver typing. `[]` and
+  // `map[…]` are deliberately NOT stripped here: they are containers whose
+  // member set differs from the element's, and unwrapping them belongs to the
+  // index step that consumed a subscript. (Field bindings never reach this
+  // anyway — `normalizeGoTypeName` already strips them at capture. The one
+  // binding that arrives decorated is the receiver self-binding, kept raw on
+  // purpose for `method-owners.ts`.)
+  stripTypePreservingDecoration: (typeName) =>
+    typeName.startsWith('*') ? typeName.slice(1).trim() : undefined,
+
   buildMro: (graph, parsedFiles, nodeLookup) =>
     buildMro(graph, parsedFiles, nodeLookup, defaultLinearize),
 

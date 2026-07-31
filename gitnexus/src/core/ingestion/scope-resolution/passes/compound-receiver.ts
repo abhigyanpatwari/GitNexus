@@ -121,6 +121,13 @@ interface ResolveCompoundReceiverOptions {
    *  (`const Config = make(1); Config.db.query()` emitted `entry → Database.query`),
    *  the exact wrong-edge failure this work exists to avoid. */
   readonly strictBaseBinding?: boolean;
+  /** Per-language type-preserving decoration stripper, from the `ScopeResolver`
+   *  contract. Passed to the class lookup at the base and step sites so a
+   *  decorated declared type (`*Host`) resolves to its class. Absent for
+   *  languages whose declared types carry no such decoration, and never applied
+   *  by the shared lookup's other callers — see the contract's own note on why
+   *  this is opt-in rather than global. */
+  readonly stripTypePreservingDecoration?: (typeName: string) => string | undefined;
 }
 
 /** Is this hop the language's construction selector applied to the class
@@ -304,7 +311,12 @@ function typeOfMemberOnClass(
     const classScope = classScopeByDefId.get(ownerId);
     const memberType = classScope?.typeBindings.get(memberName);
     if (memberType !== undefined) {
-      return findClassBindingInScope(memberType.declaredAtScope, memberType.rawName, scopes);
+      return findClassBindingInScope(
+        memberType.declaredAtScope,
+        memberType.rawName,
+        scopes,
+        options.stripTypePreservingDecoration,
+      );
     }
     // Languages whose binding-scope hook hoists a method's return-type binding
     // out of the class body and onto an ancestor (Module) scope keep NOTHING in
@@ -480,7 +492,12 @@ export function resolveCompoundReceiverClass(
         return findClassBindingInScope(rhsTb.declaredAtScope, arg, scopes);
       }
 
-      const viaTb = findClassBindingInScope(tb.declaredAtScope, tb.rawName, scopes);
+      const viaTb = findClassBindingInScope(
+        tb.declaredAtScope,
+        tb.rawName,
+        scopes,
+        options.stripTypePreservingDecoration,
+      );
       if (viaTb !== undefined) return viaTb;
 
       // Member-alias / call-result shapes store the RHS path on rawName

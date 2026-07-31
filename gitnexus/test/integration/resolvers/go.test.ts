@@ -1655,3 +1655,46 @@ describe('Go Child embeds Parent — inherited method resolution (SM-9)', () => 
     expect(parentMethodCall!.source).toBe('Run');
   });
 });
+
+// ---------------------------------------------------------------------------
+// #2766: pointer-receiver base resolution
+// ---------------------------------------------------------------------------
+
+describe('Go pointer-receiver field chains (#2766)', () => {
+  let result: PipelineResult;
+
+  beforeAll(async () => {
+    result = await runPipelineFromRepo(
+      path.join(FIXTURES, 'go-pointer-receiver-field-chain'),
+      () => {},
+    );
+  }, 60000);
+
+  const calls = (): Set<string> => edgeSet(getRelationships(result, 'CALLS'));
+
+  // The three rows that emitted nothing before the decoration fallback. All
+  // three have a POINTER receiver, which bound as the literal `*Holder` and
+  // matched no class, so receiver typing declined at the base.
+  it('resolves an interface-typed cross-package field through a pointer receiver', () => {
+    expect(calls()).toContain('RunInterface → DoWork');
+  });
+
+  it('resolves a concrete-typed cross-package field through a pointer receiver', () => {
+    expect(calls()).toContain('RunConcrete → DoWork');
+  });
+
+  it('resolves a concrete cross-package field returning a value', () => {
+    expect(calls()).toContain('RunCart → WithTx');
+  });
+
+  // Controls: these resolved BEFORE the fix. R11 requires they still resolve to
+  // the same target, so a regression here means the fallback moved an edge
+  // rather than adding one.
+  it('keeps resolving a local-variable receiver', () => {
+    expect(calls()).toContain('RunLocal → DoWork');
+  });
+
+  it('keeps resolving a value receiver', () => {
+    expect(calls()).toContain('RunFromValueReceiver → DoWork');
+  });
+});

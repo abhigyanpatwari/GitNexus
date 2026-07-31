@@ -73,7 +73,7 @@
       "explicitTypeArgs": "N/A",
       "indexElement": "INVISIBLE-GAP",
       "fieldReceiverCall": "RESOLVES",
-      "decoratedReceiverBase": "VISIBLE-GAP",
+      "decoratedReceiverBase": "RESOLVES",
       "decoratedFieldType": "RESOLVES"
     },
     "javascript": {
