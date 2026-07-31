@@ -123,4 +123,34 @@ export interface ReferenceSite {
    * for existing overload narrowing and conversion-rank logic.
    */
   readonly argumentTypeClasses?: readonly ParameterTypeClass[];
+  /**
+   * Compact encoding of a receiver that is itself an expression, so resolution
+   * can type it by folding over structure instead of re-parsing the receiver's
+   * source text.
+   *
+   * Format and the reason it is a string rather than `MixedChainStep[]` live in
+   * `receiver-chain-codec.ts` — briefly, the store's interning reviver re-shares
+   * objects only when they carry `nodeId` + `filePath`, which a chain step does
+   * not, so an object encoding would survive every warm load as fresh
+   * allocations.
+   *
+   * Absent whenever the receiver is a bare name, which is the overwhelming
+   * majority of sites — the field costs nothing where it is not needed.
+   */
+  readonly receiverChain?: string;
 }
+
+/**
+ * One step in a mixed receiver chain — the decoded form of a receiver that is
+ * itself an expression rather than a bare name.
+ *
+ * For `svc.getUser().address.save()`, the receiver of `save` decodes to
+ * `[{ kind: 'call', name: 'getUser' }, { kind: 'field', name: 'address' }]`
+ * over a base receiver of `svc`.
+ *
+ * Lives here rather than beside its producer because it is part of the
+ * ScopeExtractor output contract that this package owns: the producer
+ * (`extractMixedChain`) walks a tree-sitter AST and so must stay in the
+ * analyzer, but the shape it yields crosses into resolution.
+ */
+export type MixedChainStep = { kind: 'field' | 'call'; name: string };
