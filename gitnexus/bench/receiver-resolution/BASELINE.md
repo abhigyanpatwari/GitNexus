@@ -1,5 +1,46 @@
 # Receiver-resolution baseline
 
+## U6 — the depth cap does NOT limit resolution. Measured, not raised.
+
+The premise was that a chain deeper than `MAX_CHAIN_DEPTH` (3) is discarded
+whole rather than truncated, so a 4-hop builder chain "contributes nothing at
+all". The first half is true; the second is not.
+
+`fourHopChain` was added to the TypeScript corpus as a declared extra
+specifically to make the question answerable — without a chain longer than the
+cap, raising the cap measures nothing:
+
+```ts
+root.getSvc().getUser().address.getCity().save();
+//   ^step1     ^step2   ^step3   ^step4   receiver of `save` = 4 steps
+```
+
+| Cap | Chain minted? | Cell state |
+|---|---|---|
+| 3 | **none** (confirmed by probing the emitter directly) | **RESOLVES** |
+| 4 | `2\|root\|cgetSvc\|cgetUser\|faddress\|cgetCity` | RESOLVES |
+
+The site resolves at BOTH depths. At 3 it resolves through the text cascade,
+which owns the fallback path and runs to its own
+`COMPOUND_RECEIVER_MAX_DEPTH` of 8.
+
+**So the cap bounds which chains are typed structurally, not which calls
+resolve.** Raising it moves work from the cascade to the fold without changing a
+single edge — measured across the whole matrix: totals identical at 3 and 4,
+`callDrops` 102 at both.
+
+Left at 3. The fixture is committed so the next person to reach for this number
+inherits the measurement instead of the intuition.
+
+What DID need fixing: `unwrapTransparentReceiver` shared `MAX_CHAIN_DEPTH` as
+its iteration bound. The two answer unrelated questions — how many chain hops do
+we type, versus how many redundant parens might someone write — so raising the
+chain cap would have silently widened the paren peel as a side effect. That
+coupling got worse when the await/subscript work added a peel call at loop
+entry. Now `MAX_TRANSPARENT_WRAPPER_DEPTH`, its own constant.
+
+---
+
 ## U9 — the epistemic hedge has TWO producers, and only one is a defect
 
 `impact` reports `epistemic: 'lower-bound'` for two independent reasons that were

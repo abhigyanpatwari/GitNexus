@@ -32,6 +32,7 @@
       "awaitParen": "VISIBLE-GAP",
       "explicitTypeArgs": "RESOLVES",
       "indexElement": "VISIBLE-GAP",
+      "fourHopChain": "RESOLVES",
       "fieldReceiverCall": "RESOLVES",
       "decoratedReceiverBase": "N/A",
       "decoratedFieldType": "RESOLVES"

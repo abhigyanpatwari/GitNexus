@@ -16,6 +16,24 @@ export const CALL_EXPRESSION_TYPES = new Set([
 /**
  * Hard limit on chain depth to prevent runaway recursion.
  * For `a.b().c().d()`, the chain has depth 2 (b and c before d).
+ *
+ * A chain deeper than this is DISCARDED WHOLE, not truncated:
+ * `extractMixedChain` returns an undefined base and the encoder refuses to mint
+ * a partial chain, because a base-side prefix decodes cleanly as a shorter,
+ * complete-looking chain and would type the receiver against the wrong member.
+ * Correct, but it means a builder chain one hop too long contributes nothing at
+ * all rather than degrading.
+ *
+ * DELIBERATELY NOT RAISED. Measured (see bench/receiver-resolution/BASELINE.md,
+ * `fourHopChain`): a 4-step chain mints NOTHING at this cap — confirmed by
+ * probing the emitter directly — and the site still RESOLVES, because the text
+ * cascade that owns the fallback path runs to `COMPOUND_RECEIVER_MAX_DEPTH` (8)
+ * and answers where the structural fold declined.
+ *
+ * So the cap bounds which chains are typed STRUCTURALLY, not which calls
+ * resolve. Raising it moves work from the cascade to the fold without changing
+ * any edge, and the fixture that proves it is committed so the next person to
+ * reach for this number has the measurement rather than the intuition.
  */
 export const MAX_CHAIN_DEPTH = 3;
 
@@ -522,11 +540,25 @@ const TRANSPARENT_RECEIVER_WRAPPERS = new Set([
   'parenthesized_expression', // `(svc)`
 ]);
 
+/**
+ * Iteration bound for the wrapper peel. Its OWN constant, not `MAX_CHAIN_DEPTH`.
+ *
+ * The two answer unrelated questions — "how many chain hops do we type?" versus
+ * "how many redundant parens might someone write?" — and sharing one number
+ * meant raising the chain cap silently widened this loop as a side effect. That
+ * coupling is easy to miss precisely because the shared name reads as
+ * intentional. `((x))` nests twice; nothing real nests deeply.
+ */
+const MAX_TRANSPARENT_WRAPPER_DEPTH = 3;
+
 /** Peel transparent wrappers off a base receiver node. */
 function unwrapTransparentReceiver(node: SyntaxNode): SyntaxNode {
   let current = node;
-  // Bounded: `((x))` nests twice; nothing real nests deeply.
-  for (let i = 0; i < MAX_CHAIN_DEPTH && TRANSPARENT_RECEIVER_WRAPPERS.has(current.type); i++) {
+  for (
+    let i = 0;
+    i < MAX_TRANSPARENT_WRAPPER_DEPTH && TRANSPARENT_RECEIVER_WRAPPERS.has(current.type);
+    i++
+  ) {
     const inner = current.namedChildren?.find((c) => c !== null);
     if (inner === undefined || inner === null) break;
     current = inner;

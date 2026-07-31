@@ -140,9 +140,20 @@ const CORPORA = [
   {
     lang: 'typescript',
     ext: '.ts',
+    // `fourHopChain` exists to make MAX_CHAIN_DEPTH answerable. Without a chain
+    // longer than the cap, raising the cap measures nothing and the question
+    // "what does depth N buy?" has no instrument behind it.
+    extraShapeIds: ['fourHopChain'],
     support: {
-      'models.ts': `export class Address {
+      'models.ts': `export class City {
   save(): void {}
+}
+
+export class Address {
+  save(): void {}
+  getCity(): City {
+    return new City();
+  }
 }
 
 export class User {
@@ -185,6 +196,26 @@ export class Service {
       },
       { id: 'explicitTypeArgs', member: 'save', body: 'svc.getTyped<User>().save();', note: 'PF4' },
       { id: 'indexElement', member: 'save', body: 'repos[0].save();', note: 'PF5' },
+      {
+        // FOUR STEPS in the receiver of `save`: getSvc, getUser, address,
+        // getCity. One more than the pre-U6 cap of 3, so the chain is DISCARDED
+        // WHOLE at depth 3 and types end to end at depth 4 — the whole basis
+        // for choosing the number. (An earlier version of this fixture had only
+        // three steps and therefore resolved at both depths, measuring nothing.)
+        id: 'fourHopChain',
+        member: 'save',
+        body: 'root.getSvc().getUser().address.getCity().save();',
+        raw: `class Root {
+  getSvc(): Service {
+    return new Service();
+  }
+}
+
+export function fourHopChain(root: Root): void {
+  root.getSvc().getUser().address.getCity().save();
+}
+`,
+      },
       {
         id: 'fieldReceiverCall',
         member: 'save',
