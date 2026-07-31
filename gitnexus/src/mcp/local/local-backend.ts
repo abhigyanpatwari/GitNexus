@@ -2376,6 +2376,15 @@ export class LocalBackend {
           lastErrorRedacted: ftsQueryErrors?.[0],
         }),
       );
+    } else if (ftsQueryErrors) {
+      // #2767: at least one FTS table succeeded (ftsUsed=true) but another
+      // hit a real, non-benign error — results may be silently missing
+      // matches from that table with no signal, the same "partial success"
+      // shape the enrichmentDegraded branch below already surfaces. Mirror
+      // that convention instead of only logging server-side.
+      warnings.push(
+        `FTS keyword search partially failed — ${ftsQueryErrors.length} of the configured indexes hit a query error and were skipped; results may be missing matches from those node types (see server logs).`,
+      );
     }
     // #2331: a CJK query against a server process resolving
     // GITNEXUS_FTS_CJK_SEGMENTATION to 'none' silently misses sub-phrase
@@ -2452,6 +2461,10 @@ export class LocalBackend {
         'Symbol enrichment partially failed — some process/cohesion/content data may be missing from these results (see server logs).',
       );
     }
+    // #2767: a partial FTS failure (some tables ok, one or more real errors)
+    // is as much a "results may be incomplete" signal as enrichmentDegraded —
+    // flag it the same way rather than only via the warning string.
+    const ftsPartial = ftsUsed && !!ftsQueryErrors;
 
     return {
       processes,
@@ -2459,7 +2472,7 @@ export class LocalBackend {
       definitions: definitions.slice(0, 20), // cap standalone definitions
       timing,
       ...(warnings.length > 0 && { warning: warnings.join(' ') }),
-      ...(enrichmentDegraded && { partial: true }),
+      ...((enrichmentDegraded || ftsPartial) && { partial: true }),
     };
   }
 

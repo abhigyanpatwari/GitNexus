@@ -187,9 +187,12 @@ export interface RepoMeta {
    * the meta literal in run-analyze.ts — typed here so the stamp site is
    * compile-checked; tri-review 4669518496 P1/U3: `vectorSearch.status`
    * must never claim 'vector-index' unless the run verified or recreated
-   * the HNSW index). Forensic today — no programmatic readers (`doctor`
-   * prints platform-derived capabilities, query routing never consults
-   * meta). The status unions mirror `CapabilityStatus` /
+   * the HNSW index). `fts.status` gained its first programmatic reader in
+   * #2767: `LocalBackend.ensureInitialized()` compares it against the
+   * warm connection pool's last-observed value as the dedicated signal
+   * that `--repair-fts` changed FTS availability (`doctor` still prints
+   * platform-derived capabilities separately; `graph`/`vectorSearch` remain
+   * forensic-only). The status unions mirror `CapabilityStatus` /
    * `SemanticSearchMode` in core/platform/capabilities.ts; inlined to keep
    * storage/ free of a core/ type dependency.
    */

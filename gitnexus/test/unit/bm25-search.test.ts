@@ -334,6 +334,23 @@ describe('BM25 search', () => {
       ).toBe('missing-index');
     });
 
+    it('does not misclassify a real, differently-classed error that echoes the benign phrase in its body', () => {
+      // Adversarial case: a Runtime exception (not Binder/Catalog) that
+      // happens to echo the user's own search text — which could itself
+      // contain "does not exist" — must not be anchored away as benign.
+      expect(
+        classifyFtsQueryError(
+          'Runtime exception: FTS query syntax error near "the config file does not exist here"',
+        ),
+      ).toBe('other');
+    });
+
+    it('does not misclassify a real Binder-class error unrelated to a missing FTS index', () => {
+      expect(classifyFtsQueryError('Binder exception: column X does not match expected type')).toBe(
+        'other',
+      );
+    });
+
     it('classifies any other message as other', () => {
       expect(classifyFtsQueryError('Query execution timed out after 30000ms')).toBe('other');
       expect(classifyFtsQueryError('Connection pool exhausted')).toBe('other');

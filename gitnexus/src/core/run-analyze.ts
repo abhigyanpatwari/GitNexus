@@ -1042,15 +1042,23 @@ async function runFullAnalysisInner(
       // Best-effort: a write failure must not turn an already-successful FTS
       // rebuild into a reported repair failure.
       try {
+        // Re-read the on-disk meta immediately before writing, rather than
+        // reusing `existingMeta` (captured before the FTS rebuild ran, which
+        // can span real wall-clock time). Another writer to this same
+        // gitnexus.json in the interim — e.g. the HTTP server's background
+        // embedding-checkpoint job — must not have its update silently
+        // reverted by this stamp overwriting a stale snapshot. Falls back to
+        // `existingMeta` only if the file became unreadable in that window.
+        const latestMeta = (await loadMeta(metaDir)) ?? existingMeta;
         await saveMeta(metaDir, {
-          ...existingMeta,
+          ...latestMeta,
           capabilities: {
-            graph: existingMeta.capabilities?.graph ?? {
+            graph: latestMeta.capabilities?.graph ?? {
               provider: 'ladybugdb',
               status: 'available',
             },
             fts: { provider: 'ladybugdb-fts', status: 'available' },
-            vectorSearch: existingMeta.capabilities?.vectorSearch ?? {
+            vectorSearch: latestMeta.capabilities?.vectorSearch ?? {
               provider: 'exact-scan',
               status: 'unavailable',
               exactScanLimit: 0,

@@ -439,6 +439,66 @@ describe('runFullAnalysis FTS repair and verification failure paths', () => {
     }
   });
 
+  it('--repair-fts stamps onto the LATEST on-disk meta, not a snapshot from before the rebuild ran (#2767)', async () => {
+    // A concurrent writer (e.g. the HTTP server's background embedding
+    // checkpoint job) lands its own saveMeta while the FTS rebuild is in
+    // flight. The repair-fts stamp must not silently revert that write by
+    // basing itself on the `existingMeta` captured before the rebuild started.
+    const CONCURRENT_LAST_COMMIT = 'concurrent-writer-commit';
+    let storagePathForConcurrentWrite = '';
+    vi.doMock('../../src/core/lbug/lbug-adapter.js', () => mockRepairSuccessLbugAdapter());
+    vi.doMock('../../src/core/search/fts-indexes.js', () => ({
+      initialiseSearchFTSStemmer: vi.fn(() => 'porter'),
+      createSearchFTSIndexes: vi.fn(async () => {
+        // Simulate the concurrent writer landing mid-repair, via the test
+        // file's own top-level `saveMeta` import (bound before any
+        // vi.doMock call in this file, so it is always the real function).
+        await saveMeta(storagePathForConcurrentWrite, {
+          repoPath: '',
+          lastCommit: CONCURRENT_LAST_COMMIT,
+          indexedAt: new Date().toISOString(),
+          stats: { files: 999 },
+        });
+      }),
+      verifySearchFTSIndexes: vi.fn(async () => []),
+    }));
+    vi.doMock('../../src/storage/repo-manager.js', async (importActual) => ({
+      ...(await importActual<typeof import('../../src/storage/repo-manager.js')>()),
+      ensureGitNexusIgnored: vi.fn(async () => undefined),
+    }));
+
+    const tmpRepo = await createTempDir('gitnexus-run-analyze-repair-race-');
+    try {
+      const { storagePath, lbugPath } = getStoragePaths(tmpRepo.dbPath);
+      storagePathForConcurrentWrite = storagePath;
+      await fs.mkdir(storagePath, { recursive: true });
+      await saveMeta(storagePath, {
+        repoPath: tmpRepo.dbPath,
+        lastCommit: 'original-commit',
+        indexedAt: new Date().toISOString(),
+        stats: { files: 1 },
+      });
+      await createPlaceholderGraphStore(lbugPath);
+
+      const { runFullAnalysis } = await import('../../src/core/run-analyze.js');
+      const result = await runFullAnalysis(
+        tmpRepo.dbPath,
+        { repairFts: true },
+        { onProgress: () => {} },
+      );
+      expect(result.ftsRepairedOnly).toBe(true);
+
+      const meta = JSON.parse(await fs.readFile(`${storagePath}/gitnexus.json`, 'utf-8'));
+      // The concurrent writer's update survives — the stamp did not revert it.
+      expect(meta.lastCommit).toBe(CONCURRENT_LAST_COMMIT);
+      expect(meta.stats).toEqual({ files: 999 });
+      // The FTS stamp still landed on top of that latest state.
+      expect(meta.capabilities.fts.status).toBe('available');
+    } finally {
+      await tmpRepo.cleanup();
+    }
+  });
+
   it('surfaces extension-unavailable errors from FTS index creation in repair mode', async () => {
     vi.doMock('../../src/core/lbug/lbug-adapter.js', () => ({
       initLbug: vi.fn(async () => undefined),

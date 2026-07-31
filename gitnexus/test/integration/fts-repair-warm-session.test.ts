@@ -52,7 +52,10 @@ const ftsMissing = (r: QueryResult): boolean =>
 async function waitForFtsRecognized(
   backend: LocalBackend,
   query: string,
-  timeoutMs = 7000,
+  // Production throttle is 5s (`lastStalenessCheck`); this deadline leaves a
+  // generous margin beyond it for a loaded CI runner, per review feedback
+  // that the original 7s deadline left only ~2s of slack (#2767).
+  timeoutMs = 15000,
   intervalMs = 300,
 ): Promise<QueryResult> {
   const deadline = Date.now() + timeoutMs;

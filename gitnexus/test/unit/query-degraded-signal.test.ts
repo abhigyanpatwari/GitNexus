@@ -135,7 +135,7 @@ describe('query: degraded-enrichment signal', () => {
     expect(result.warning.toLowerCase()).toContain('enrichment');
   });
 
-  it('a non-benign FTS query error is logged even when FTS overall succeeded (#2767)', async () => {
+  it('a non-benign FTS query error is logged AND surfaced as a partial-result warning even when FTS overall succeeded (#2767)', async () => {
     const cap: LoggerCapture = _captureLogger();
     try {
       const b = makeBackend(true, ['Query execution timed out after 30000ms']);
@@ -143,14 +143,27 @@ describe('query: degraded-enrichment signal', () => {
 
       const result = await runQuery(b);
 
-      // ftsUsed=true, so the client-facing warning is not required to mention it —
-      // but the real error must still reach the server log (previously silent).
+      // Real error must reach the server log (previously silent)...
       expect(result).not.toHaveProperty('error');
       const record = cap.records().find((r) => r.context === 'query:fts-search');
       expect(record).toBeDefined();
+      // ...AND the client sees it: mirrors the enrichmentDegraded convention
+      // for "some succeeded, one genuinely failed" (#2767).
+      expect(result.partial).toBe(true);
+      expect(result.warning).toMatch(/FTS keyword search partially failed/);
     } finally {
       cap.restore();
     }
+  });
+
+  it('does not flag partial when FTS fully succeeds with no query errors', async () => {
+    const b = makeBackend(true);
+    executeParameterizedMock.mockResolvedValue([]);
+
+    const result = await runQuery(b);
+
+    expect(result.partial).toBeUndefined();
+    expect(result.warning).toBeUndefined();
   });
 
   it('the FTS-missing warning includes the redacted query error detail when every table failed (#2767)', async () => {

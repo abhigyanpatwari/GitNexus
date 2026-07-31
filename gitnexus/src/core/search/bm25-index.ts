@@ -56,11 +56,28 @@ export type FtsQueryFailureClass = 'missing-index' | 'other';
  * and `--repair-fts`) — and would have re-introduced #2767's silent-swallow
  * bug in the opposite direction: flooding logs and the client warning with a
  * "real error" for the single most ordinary degraded state.
+ *
+ * Anchored to the exception class (after stripping the optional "Prepare
+ * failed: " wrapper LadybugDB adds for statement-preparation failures),
+ * mirroring `isBenignDropFtsIndexError`'s START-of-message anchor: a bare
+ * substring search would misclassify a genuine, differently-classed error
+ * (e.g. a `Runtime exception` from the FTS parser that echoes the user's
+ * own search text back into its message) as benign whenever that echoed
+ * text happened to contain "does not exist" — silently dropping a real
+ * error, the exact #2767 failure mode this function exists to prevent.
  */
-export const classifyFtsQueryError = (message: string): FtsQueryFailureClass =>
-  message.includes('does not exist') || message.includes("doesn't have an index")
+export const classifyFtsQueryError = (message: string): FtsQueryFailureClass => {
+  const PREPARE_FAILED_PREFIX = 'Prepare failed: ';
+  const body = message.startsWith(PREPARE_FAILED_PREFIX)
+    ? message.slice(PREPARE_FAILED_PREFIX.length)
+    : message;
+  if (!body.startsWith('Binder exception:') && !body.startsWith('Catalog exception:')) {
+    return 'other';
+  }
+  return body.includes('does not exist') || body.includes("doesn't have an index")
     ? 'missing-index'
     : 'other';
+};
 
 /**
  * Optional-field shape rather than a discriminated union: this project builds
