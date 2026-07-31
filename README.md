@@ -912,6 +912,14 @@ After this, attempting to deploy an unsigned image — or one signed by anything
 
 </details>
 
+### Deploy on Render
+
+Deploy the GitNexus server and web UI from this repository's ready-to-use Blueprint:
+
+[![Deploy to Render](https://render.com/images/deploy-to-render-button.svg)](https://render.com/deploy?repo=https://github.com/abhigyanpatwari/GitNexus)
+
+Render reads [`render.yaml`](render.yaml) and provisions a private API server with persistent storage for indexes, cloned repos, and the registry, plus a public web UI that reverse-proxies to it over the private network. No API key is required and no secret is committed. Private services and persistent disks require paid Render instances. To index a large repo, raise the `gitnexus-server` `plan` to `pro` (4 GB) or `pro plus` (8 GB).
+
 ## Enterprise
 
 GitNexus is available as an **enterprise offering** — fully managed **SaaS** or **self-hosted** deployment. Commercial use of the OSS version is also available with proper licensing.
