@@ -99,6 +99,7 @@ type ReceiverBoundProviderSubset = Pick<
   | 'stripReceiverCastExpressions'
   | 'constructionSyntax'
   | 'stripTypePreservingDecoration'
+  | 'unwrapCollectionElement'
   | 'resolveQualifiedReceiverMember'
   | 'resolveReceiverMember'
   | 'resolveThisViaEnclosingClass'
@@ -188,6 +189,7 @@ export function emitReceiverBoundCalls(
     stripReceiverCastExpressions: provider.stripReceiverCastExpressions === true,
     constructionSyntax: provider.constructionSyntax,
     stripTypePreservingDecoration: provider.stripTypePreservingDecoration,
+    unwrapCollectionElement: provider.unwrapCollectionElement,
   };
 
   // Build an interface → implementors map from IMPLEMENTS edges.
@@ -406,7 +408,23 @@ export function emitReceiverBoundCalls(
       // the end of the site loop, not here — a later case may still resolve
       // the site, and only a site that survives every case is a real drop.
       let compoundReceiverUnresolved = false;
-      if (receiverName.includes('.') || receiverName.includes('(')) {
+      // The punctuation test is a C-family heuristic and it is the reason
+      // `repos[0].save()` is INVISIBLE in all 14 languages: a subscript receiver
+      // contains neither `.` nor `(`, so this case never fired, the fold was
+      // never consulted, and no drop was recorded either — the call vanished
+      // with the instrument blind to it. PHP `->` and `::` receivers are lost
+      // the same way.
+      //
+      // A minted receiver chain is the STRUCTURAL answer to the same question:
+      // the capture layer walked the real AST and found the receiver is an
+      // expression, whatever punctuation it happens to be spelled with. Trusting
+      // that instead of the text is the substitution this whole line of work
+      // exists to make.
+      if (
+        receiverName.includes('.') ||
+        receiverName.includes('(') ||
+        site.receiverChain !== undefined
+      ) {
         const currentClass = resolveCompoundReceiverClass(
           receiverName,
           site.inScope,

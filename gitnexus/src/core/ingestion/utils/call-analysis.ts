@@ -353,6 +353,31 @@ export const extractReceiverNode = (nameNode: SyntaxNode): SyntaxNode | undefine
 // ── Chained-call extraction ───────────────────────────────────────────────
 
 /** Node types representing member/field access across languages. */
+/**
+ * Await expressions, per grammar. The walk previously stopped here — an await
+ * node is neither a call nor a field access — so `(await svc.getUserAsync()).save()`
+ * minted NO chain at all and the receiver fell to the text cascade.
+ */
+const AWAIT_EXPRESSION_NODE_TYPES = new Set([
+  'await_expression', // TS/JS/C#/Rust
+  'await', // Python
+]);
+
+/**
+ * Subscript / index expressions, per grammar. Same story as await: the walk
+ * stopped, so `repos[0].save()` minted no chain — which is why `indexElement`
+ * is an INVISIBLE-GAP (no edge AND no recorded drop) in all 14 languages, the
+ * most uniform cell in the matrix.
+ */
+const SUBSCRIPT_NODE_TYPES = new Set([
+  'subscript_expression', // TS/JS/PHP/C/C++
+  'subscript', // Python
+  'index_expression', // Go/Rust
+  'element_access_expression', // C#
+  'array_access', // Java
+  'indexing_expression', // Kotlin
+]);
+
 const FIELD_ACCESS_NODE_TYPES = new Set([
   'member_expression', // TS/JS
   'member_access_expression', // C#
@@ -516,6 +541,12 @@ export function extractMixedChain(
   let current: SyntaxNode = receiverNode;
 
   while (chain.length < MAX_CHAIN_DEPTH) {
+    // Peel transparent wrappers at LOOP ENTRY, not only where a base is
+    // returned. `(await svc.getUserAsync()).save()` hands this walk a
+    // `parenthesized_expression`, which matches no branch below, so the walk
+    // fell straight through to the base case with an empty chain and minted
+    // nothing — the await step could never be reached.
+    current = unwrapTransparentReceiver(current);
     if (CALL_EXPRESSION_TYPES.has(current.type)) {
       // ── Call expression: extract method name + inner receiver ────────────
       const funcNode =
@@ -633,6 +664,54 @@ export function extractMixedChain(
         return {
           chain,
           baseReceiverName: unwrapTransparentReceiver(innerObject).text || undefined,
+        };
+      }
+    } else if (AWAIT_EXPRESSION_NODE_TYPES.has(current.type)) {
+      // Name-free: the awaited call's method name already lives on its own
+      // `call` step, so this records only that an await happened.
+      chain.unshift({ kind: 'await' });
+      const inner =
+        current.childForFieldName?.('argument') ??
+        current.childForFieldName?.('expression') ??
+        current.namedChildren?.find((c: SyntaxNode) => c !== null) ??
+        null;
+      if (!inner) break;
+      if (
+        CALL_EXPRESSION_TYPES.has(inner.type) ||
+        FIELD_ACCESS_NODE_TYPES.has(inner.type) ||
+        AWAIT_EXPRESSION_NODE_TYPES.has(inner.type) ||
+        SUBSCRIPT_NODE_TYPES.has(inner.type)
+      ) {
+        current = inner;
+      } else {
+        return {
+          chain,
+          baseReceiverName: unwrapTransparentReceiver(inner).text || undefined,
+        };
+      }
+    } else if (SUBSCRIPT_NODE_TYPES.has(current.type)) {
+      // Name-free: a subscript key is a VALUE, not an identifier the resolver
+      // could look up, so there is no member name to record.
+      chain.unshift({ kind: 'index' });
+      const obj =
+        current.childForFieldName?.('object') ??
+        current.childForFieldName?.('argument') ??
+        current.childForFieldName?.('operand') ??
+        current.childForFieldName?.('expression') ??
+        current.namedChildren?.find((c: SyntaxNode) => c !== null) ??
+        null;
+      if (!obj) break;
+      if (
+        CALL_EXPRESSION_TYPES.has(obj.type) ||
+        FIELD_ACCESS_NODE_TYPES.has(obj.type) ||
+        AWAIT_EXPRESSION_NODE_TYPES.has(obj.type) ||
+        SUBSCRIPT_NODE_TYPES.has(obj.type)
+      ) {
+        current = obj;
+      } else {
+        return {
+          chain,
+          baseReceiverName: unwrapTransparentReceiver(obj).text || undefined,
         };
       }
     } else if (current.type === 'selector') {

@@ -106,6 +106,26 @@ function makeTsResolveImportTarget(): ScopeResolver['resolveImportTarget'] {
 }
 
 const typescriptScopeResolver: ScopeResolver = {
+  // Collections only, consulted ONLY by an index step (see the contract field).
+  // A TypeScript parameter annotation carries `User[]` through to the binding,
+  // so `repos[0].save()` needs exactly one unwrap here; a binding path that
+  // already reduced the container returns undefined and the step falls back to
+  // identity. Deliberately NOT part of `stripTypePreservingDecoration`: a
+  // container changes the member set, so unwrapping it at the bare class lookup
+  // would let `repos.find(x)` fold to `User.find`.
+  unwrapCollectionElement: (typeName) => {
+    const trimmed = typeName.trim();
+    if (trimmed.endsWith('[]')) {
+      const inner = trimmed.slice(0, -2).trim();
+      const unparen =
+        inner.startsWith('(') && inner.endsWith(')') ? inner.slice(1, -1).trim() : inner;
+      return unparen.length > 0 ? unparen : undefined;
+    }
+    const generic =
+      /^(?:Readonly)?(?:Array|Set|ReadonlySet|Iterable|AsyncIterable)<([^,<>]+)>$/.exec(trimmed);
+    return generic === null ? undefined : generic[1].trim();
+  },
+
   // Construction is keyword-prefixed: `new Service(db).doWork()` (#2708).
   constructionSyntax: { keyword: 'new' },
   language: SupportedLanguages.TypeScript,

@@ -128,6 +128,10 @@ interface ResolveCompoundReceiverOptions {
    *  by the shared lookup's other callers — see the contract's own note on why
    *  this is opt-in rather than global. */
   readonly stripTypePreservingDecoration?: (typeName: string) => string | undefined;
+  /** Collection -> element unwrap, consulted ONLY by an index step. See the
+   *  `ScopeResolver` field of the same name for why this is separate from the
+   *  type-preserving stripper. */
+  readonly unwrapCollectionElement?: (typeName: string) => string | undefined;
 }
 
 /** Is this hop the language's construction selector applied to the class
@@ -315,7 +319,9 @@ function resolveConstructionExpressionClass(
  * than guessing.
  */
 interface FoldState {
-  readonly def: SymbolDefinition;
+  /** Absent when the position's declared type named no class — see
+   *  `unresolvedDeclaredType`. Only an unwrapping step can advance from there. */
+  readonly def: SymbolDefinition | undefined;
   readonly declaredTypeName?: string;
   readonly declaredAtScope?: ScopeId;
   /**
@@ -433,17 +439,34 @@ export function foldReceiverChain(
     receiverChain: undefined,
     strictBaseBinding: true,
   });
-  if (baseDef === undefined) return undefined;
-
   // The base's own declared type is carried too, so a chain whose FIRST step is
   // an unwrap (`repos[0].save()` — index applied directly to the base) has the
-  // container spelling available. Without it that shape would decline at step 1.
+  // container spelling available. Without it that shape declines at step 1.
   const baseBinding = findReceiverTypeBinding(inScope, chain.baseReceiverName, scopes);
-  let current: FoldState = {
-    def: baseDef,
-    declaredTypeName: baseBinding?.rawName,
-    declaredAtScope: baseBinding?.declaredAtScope,
-  };
+
+  // A base whose declared type names no class is NOT automatically a dead end:
+  // `repos: User[]` binds to the literal `User[]`, which matches no class
+  // because a container is not one. That position is still usable IF the next
+  // step unwraps it — which is exactly what an index step does. Carrying it
+  // forward with the marker lets that step recover; every other step kind
+  // declines on the marker, so nothing folds against a phantom owner.
+  let current: FoldState;
+  if (baseDef !== undefined) {
+    current = {
+      def: baseDef,
+      declaredTypeName: baseBinding?.rawName,
+      declaredAtScope: baseBinding?.declaredAtScope,
+    };
+  } else if (baseBinding !== undefined) {
+    current = {
+      def: undefined,
+      declaredTypeName: baseBinding.rawName,
+      declaredAtScope: baseBinding.declaredAtScope,
+      unresolvedDeclaredType: true,
+    };
+  } else {
+    return undefined;
+  }
 
   for (const step of chain.steps) {
     // Construction is NOT an ordinary member lookup. `Factory.new` on a class
@@ -461,7 +484,49 @@ export function foldReceiverChain(
     // A position whose declared type named no class can only be advanced by an
     // unwrapping step. Folding an ordinary member off it would look the member
     // up on the PREVIOUS class — a wrong owner, silently.
-    if (current.unresolvedDeclaredType === true) return undefined;
+    // `await` and `index` are IDENTITY, deliberately.
+    //
+    // Every language whose capture layer reduces the wrapper has ALREADY done
+    // so by the time a binding reaches the fold: TypeScript strips `Promise<X>`
+    // and `X[]`, C# strips `Task<X>` and `List<X>`, Go strips `[]T` and
+    // `map[K]V`. The declared type here is therefore already the awaited /
+    // element type, and unwrapping a second time would take the element OF the
+    // element and decline — turning a step that types fine into a dropped one.
+    //
+    // These steps exist so the chain can be MINTED through such a receiver at
+    // all; before U4/U5 the walk stopped at the node and no chain existed. A
+    // language whose wrapper survives capture (a multi-arg container like
+    // `Dictionary<K,V>`, which is deliberately left alone) would need an
+    // unwrap hook here — none does today, so adding one now would be
+    // speculative machinery with no caller.
+    if (step.kind === 'await') continue;
+    if (step.kind === 'index') {
+      // Try the container unwrap; fall back to identity. Both outcomes are
+      // correct: a binding path that already reduced the container at capture
+      // has nothing to unwrap and the position is already the element type,
+      // while one that carried it through (a TypeScript `User[]` parameter
+      // annotation) needs exactly one unwrap here.
+      const declared = current.declaredTypeName;
+      const element =
+        declared === undefined ? undefined : options.unwrapCollectionElement?.(declared);
+      if (element !== undefined) {
+        const scopeForLookup = current.declaredAtScope ?? inScope;
+        const elementClass = findClassBindingInScope(
+          scopeForLookup,
+          element,
+          scopes,
+          options.stripTypePreservingDecoration,
+        );
+        if (elementClass === undefined) return undefined;
+        current = { def: elementClass, declaredTypeName: element, declaredAtScope: scopeForLookup };
+      } else if (current.unresolvedDeclaredType === true) {
+        // No unwrap available and the position never named a class: nothing to
+        // fold on. Decline rather than continue against a stale owner.
+        return undefined;
+      }
+      continue;
+    }
+    if (current.unresolvedDeclaredType === true || current.def === undefined) return undefined;
     const next = typeOfMemberOnClass(current.def, step.name, scopes, index, options);
     if (next === undefined) return undefined;
     current = next;

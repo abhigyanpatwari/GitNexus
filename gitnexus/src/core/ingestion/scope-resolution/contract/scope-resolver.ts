@@ -1148,6 +1148,27 @@ export interface ScopeResolver {
   readonly stripTypePreservingDecoration?: (typeName: string) => string | undefined;
 
   /**
+   * Unwrap a COLLECTION spelling to its element type — `User[]` -> `User`,
+   * `Array<User>` -> `User`, `[]User` -> `User` — or `undefined` when the name
+   * is not a collection.
+   *
+   * Deliberately separate from `stripTypePreservingDecoration`. A pointer or a
+   * nullable leaves the member set unchanged, so stripping one at the class
+   * lookup is safe. A container does NOT: unwrapping `User[]` at the lookup
+   * would let `repos.find(x)` fold to `User.find`. This hook is therefore
+   * consulted ONLY by an index step that actually consumed a subscript in the
+   * source, never by the bare class lookup.
+   *
+   * Tolerant by design: some binding paths already reduce the container at
+   * capture (Go's `normalizeGoTypeName`, C#'s `stripGeneric`) while others carry
+   * it through (a TypeScript `User[]` parameter annotation). The index step
+   * tries this hook and falls back to identity when it returns `undefined`, so
+   * both kinds of path land on the element type without the core needing to know
+   * which is which.
+   */
+  readonly unwrapCollectionElement?: (typeName: string) => string | undefined;
+
+  /**
    * Whether the compound-receiver resolver should strip C-style cast
    * expressions from receiver-position text before resolving it —
    * `((Target)((Object)expr)).method()` peels to receiver `expr` with
