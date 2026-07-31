@@ -1619,19 +1619,14 @@ export class LocalBackend {
       this.initializedRepos.add(poolKey);
       this.lastObservedIndexedAt.set(poolKey, repo.indexedAt);
       this.lastObservedDbIdentity.set(poolKey, await statDbIdentity(repo.lbugPath));
-      // #2767: seed the FTS-caps baseline at cold init too. capabilities.fts.status
-      // is already stamped by every normal analyze run, so without this a fresh
-      // process's first WARM staleness check (5s+ later) would compare an
-      // unseeded `undefined` against the real on-disk value and reinit for no
-      // reason. Best-effort: a read failure here must not fail initialization —
-      // the warm path's own catch-all already tolerates an unreadable meta.
-      try {
-        const coldMeta = await loadMeta(path.dirname(repo.lbugPath));
-        this.lastObservedFtsStatus.set(poolKey, coldMeta?.capabilities?.fts?.status);
-      } catch {
-        // Leave unseeded (undefined) — the next warm check falls back to the
-        // same "can't read meta, assume pool is fine" tolerance as the warm path.
-      }
+      // #2767: lastObservedFtsStatus is deliberately left unseeded (undefined)
+      // here rather than issuing an extra loadMeta read — every tool call
+      // already routes through ensureInitialized, so an extra per-cold-init
+      // read adds up, and the cost of skipping it is negligible: at most one
+      // redundant initLbug call on the first warm check (initLbug itself
+      // no-ops cheaply via a single fs.stat when the file identity is
+      // actually unchanged, per pool-adapter.ts's own "unchanged → reuse"
+      // guard), not a real reopen.
     } catch (err: any) {
       // If lock error, mark as not initialized so next call retries
       this.initializedRepos.delete(poolKey);
