@@ -87,6 +87,30 @@
     "captureGroups": 9,
     "digest": "fdbdd68d6920a9d7861562c562acc4fbd4580836467cad1ce8428c57a11d0d19"
   },
+  "rust-2742-mod-members/src/a.rs": {
+    "captureGroups": 3,
+    "digest": "cf9bb9565b1d9ab7a7fcb287240198d27d41eeeb4d0953818074e4654bc831ca"
+  },
+  "rust-2742-mod-members/src/main.rs": {
+    "captureGroups": 43,
+    "digest": "59bf9f7c931cbba2c58b581e15a79a4d7a59c3088a9b62eda940298f7a150088"
+  },
+  "rust-2742-nested-mods/src/main.rs": {
+    "captureGroups": 50,
+    "digest": "505ff37c8c8959076865a05e5237b0aaad4d00a2a88f9676ce4b5d694a25d48b"
+  },
+  "rust-2742-type-vs-module/src/b.rs": {
+    "captureGroups": 7,
+    "digest": "1066fc99e6a4570fba07c641942a536145e82ff71e87c3992828ec8f1f11048a"
+  },
+  "rust-2742-type-vs-module/src/c.rs": {
+    "captureGroups": 10,
+    "digest": "bb98c27950620193afb1593213d476bde0f9c8a12581656cf81146603d95ec22"
+  },
+  "rust-2742-type-vs-module/src/lib.rs": {
+    "captureGroups": 11,
+    "digest": "8bb48d12a411f6918fc5dfb726434e9f5b2888f5b0bea6f7615f274b0f18ce5d"
+  },
   "rust-abstract-dispatch/src/lib.rs": {
     "captureGroups": 34,
     "digest": "973679363065ecd54c4e5128a9fab214ea27eca24f0f079c63a3c6f285e678b0"
@@ -173,7 +197,7 @@
   },
   "rust-chain-call/src/main.rs": {
     "captureGroups": 25,
-    "digest": "4b47bbd3de939f8692c1615442e233ad00440075fafc5b6a7f7db35851492a64"
+    "digest": "4ec0ae45ee576d539774b3dd6b0cc102665278f86f0290c643c9823d091e3421"
   },
   "rust-chain-call/src/models/mod.rs": {
     "captureGroups": 5,
@@ -245,7 +269,7 @@
   },
   "rust-deep-field-chain/service.rs": {
     "captureGroups": 16,
-    "digest": "49d6a6bff4bfde6d29d8e63c2899f49688bee98273c9f743d9189dbfdf19ce2c"
+    "digest": "82cd5c09f7db44a7f22697edefc7a66eb2b9d1baabdfd15443e052bdcfaae73a"
   },
   "rust-default-constructor/src/main.rs": {
     "captureGroups": 36,
@@ -357,7 +381,7 @@
   },
   "rust-field-types/service.rs": {
     "captureGroups": 11,
-    "digest": "5bba21d0f792eb98025ce0531c575dac215492027cd877df09b19877e80da4ad"
+    "digest": "d7a51207d8056e862523bae284bdbc3bd0fda03c85374fd71e449148731f9b9f"
   },
   "rust-for-call-expr/src/main.rs": {
     "captureGroups": 26,
@@ -593,7 +617,7 @@
   },
   "rust-nullable-receiver/src/main.rs": {
     "captureGroups": 41,
-    "digest": "811410fc6afe4722331ff1edfc79ce38a94c241ae52b86c10511d65d8603ef19"
+    "digest": "ea8a4e442cacf4d5647aa3db5bdd3c2ea5485e8dae72c9a2f9c61eb062a6bb05"
   },
   "rust-nullable-receiver/src/repo.rs": {
     "captureGroups": 10,
@@ -705,7 +729,7 @@
   },
   "rust-self-struct-literal/models.rs": {
     "captureGroups": 32,
-    "digest": "8928de22daa88f6f311a407e0051d1dbd3e52c81503f4b295eecb3a3c86b23cf"
+    "digest": "f9c89cb8c9f2b9c10140ae6971a09756b27112ab61d483b9ffe7fbcb36fefa8d"
   },
   "rust-self-this-resolution/src/repo.rs": {
     "captureGroups": 10,

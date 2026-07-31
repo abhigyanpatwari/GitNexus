@@ -81,6 +81,7 @@ import type {
 } from 'gitnexus-shared';
 import { buildPositionIndex, buildScopeTree, canParentScope, makeScopeId } from 'gitnexus-shared';
 import type { LanguageProvider } from './language-provider.js';
+import { isValidReceiverChain } from './utils/receiver-chain-codec.js';
 import { extractTemplateArguments } from './utils/template-arguments.js';
 
 // ─── Narrow hook surface the extractor actually uses ───────────────────────
@@ -1076,6 +1077,13 @@ function pass5CollectReferences(
     // consumed by the property-dispatch pass (#2437).
     const propertyKeyCap = match['@reference.property-key'];
 
+    // Compact receiver chain, when the emitter produced one. Validated HERE as
+    // well as at the store boundary: bounds applied only on load are a
+    // recurring defect in this codebase — the writer keeps minting payloads the
+    // reader keeps rejecting, which is a permanent warm-cache-miss reparse loop
+    // that logs nothing.
+    const receiverChain = extractReceiverChain(match);
+
     const site: ReferenceSite = {
       name: nameCap.text,
       atRange: anchor.range,
@@ -1092,6 +1100,7 @@ function pass5CollectReferences(
       ...(arity !== undefined ? { arity } : {}),
       ...(argumentTypes !== undefined ? { argumentTypes } : {}),
       ...(argumentTypeClasses !== undefined ? { argumentTypeClasses } : {}),
+      ...(receiverChain !== undefined ? { receiverChain } : {}),
     };
     referenceSites.push(site);
   }
@@ -1160,6 +1169,19 @@ function extractExplicitReceiver(match: CaptureMatch): { readonly name: string }
   const cap = match['@reference.receiver'];
   if (cap === undefined) return undefined;
   return { name: cap.text };
+}
+
+/**
+ * The compact receiver chain, when the language emitter synthesized one.
+ *
+ * Returns `undefined` for anything that does not decode, so a malformed or
+ * over-bound payload degrades to the existing text cascade rather than
+ * poisoning the durable store. Never throws — this runs per reference site.
+ */
+function extractReceiverChain(match: CaptureMatch): string | undefined {
+  const cap = match['@reference.receiver-chain'];
+  if (cap === undefined) return undefined;
+  return isValidReceiverChain(cap.text) ? cap.text : undefined;
 }
 
 function extractArity(match: CaptureMatch): number | undefined {

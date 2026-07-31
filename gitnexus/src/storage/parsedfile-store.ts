@@ -52,7 +52,13 @@ import { promises as fs, mkdirSync, writeFileSync } from 'node:fs';
 import path from 'node:path';
 import v8 from 'node:v8';
 import vm from 'node:vm';
-import type { CallableFlowSite, ParsedFile, SymbolDefinition } from 'gitnexus-shared';
+import type {
+  CallableFlowSite,
+  ParsedFile,
+  ReferenceSite,
+  SymbolDefinition,
+} from 'gitnexus-shared';
+import { isValidReceiverChain } from '../core/ingestion/utils/receiver-chain-codec.js';
 import { logger } from '../core/logger.js';
 import { mapReplacer, mapReviver } from './parse-cache.js';
 
@@ -247,6 +253,8 @@ export const loadParsedFilesForPaths = async (
   const pool = new Map<string, string>();
   let droppedSites = 0;
   let filesWithDroppedSites = 0;
+  let droppedChains = 0;
+  let rejectedFiles = 0;
   for (let i = 0; i < shards.length; i++) {
     // Per-shard def pool: a SymbolDefinition's three serialized copies live within
     // a single shard (one ParsedFile), so the dedup is shard-local. A cross-shard
@@ -265,13 +273,27 @@ export const loadParsedFilesForPaths = async (
     for (const pf of parsed) {
       if (!pf || typeof pf.filePath !== 'string' || !wantPaths.has(pf.filePath)) continue;
       const flow = sanitizeCallableFlowSites(pf.callableFlowSites);
-      if (flow === undefined) continue; // non-array garbage → distrust the file, re-extract
-      if (flow.dropped === 0) {
+      if (flow === undefined) {
+        // non-array garbage → distrust the file, re-extract
+        rejectedFiles++;
+        continue;
+      }
+      const chains = sanitizeReceiverChains(pf.referenceSites);
+      if (chains === undefined) {
+        rejectedFiles++;
+        continue;
+      }
+      if (flow.dropped === 0 && chains.dropped === 0) {
         out.set(pf.filePath, pf);
       } else {
         droppedSites += flow.dropped;
+        droppedChains += chains.dropped;
         filesWithDroppedSites++;
-        out.set(pf.filePath, { ...pf, callableFlowSites: flow.sites });
+        out.set(pf.filePath, {
+          ...pf,
+          ...(flow.dropped === 0 ? {} : { callableFlowSites: flow.sites }),
+          ...(chains.dropped === 0 ? {} : { referenceSites: chains.sites }),
+        });
       }
     }
     // Every few shards, reclaim the transient pre-intern parse churn before it
@@ -282,13 +304,23 @@ export const loadParsedFilesForPaths = async (
       await new Promise<void>((resolve) => setImmediate(resolve));
     }
   }
-  if (droppedSites > 0) {
+  if (droppedSites > 0 || droppedChains > 0) {
     // Facts for the dropped sites are omitted this run (the file itself is
     // retained, so no re-extract happens) — surface it so a recurring drop
     // on every warm load is observable rather than silent (#2522 review).
     logger.warn(
-      { droppedSites, files: filesWithDroppedSites },
-      'parsedfile-store: dropped malformed/over-bound callable-flow sites at load; files retained without those facts',
+      { droppedSites, droppedChains, files: filesWithDroppedSites },
+      'parsedfile-store: dropped malformed/over-bound sites at load; files retained without those facts',
+    );
+  }
+  if (rejectedFiles > 0) {
+    // The other half of the same defect. A rejected file silently falls back to
+    // a fresh extract EVERY load, so a writer that keeps minting what this
+    // reader keeps refusing is a permanent warm-cache miss that costs real time
+    // and says nothing about why.
+    logger.warn(
+      { rejectedFiles },
+      'parsedfile-store: rejected shard entries at load (untrusted shape); those files re-extract every run',
     );
   }
   return out;
@@ -315,6 +347,55 @@ function sanitizeCallableFlowSites(
       : value;
   const sites = bounded.filter(isValidCallableFlowSite);
   return { sites, dropped: value.length - sites.length };
+}
+
+/**
+ * Untrusted-boundary handling for the compact `receiverChain` on a reference site.
+ *
+ * NARROWER than its sibling `sanitizeCallableFlowSites`, deliberately and worth
+ * stating plainly: that function validates every element with a full type
+ * predicate, whereas this one inspects only the `receiverChain` sub-field and, in
+ * the common case where nothing was stripped, returns the original array typed as
+ * `ReferenceSite[]` without structurally validating `name` / `kind` / `atRange`.
+ * That is still a strict improvement — `referenceSites` had NO sanitation at all
+ * before this — but it is not parity, and a future change that needs per-site
+ * structural validation must add it rather than assume it is already here.
+ *
+ * Sanitation is per-FIELD, not per-site: a chain that does not decode is
+ * stripped and the site is kept, because the site is still perfectly usable
+ * through the text cascade — dropping the whole reference would turn a
+ * degraded receiver into a missing edge. Only a non-array `referenceSites`
+ * rejects the file, and `undefined` (a store written before this field
+ * existed) passes through untouched, which is what makes an old shard load
+ * without error.
+ *
+ * Returns the ORIGINAL array when nothing was stripped, so the overwhelmingly
+ * common case allocates nothing on a hot warm-load path.
+ */
+function sanitizeReceiverChains(
+  value: unknown,
+): { sites: readonly ReferenceSite[] | undefined; dropped: number } | undefined {
+  if (value === undefined) return { sites: undefined, dropped: 0 };
+  if (!Array.isArray(value)) return undefined;
+
+  let dropped = 0;
+  for (const site of value) {
+    if (
+      isRecord(site) &&
+      site.receiverChain !== undefined &&
+      !isValidReceiverChain(site.receiverChain)
+    )
+      dropped++;
+  }
+  if (dropped === 0) return { sites: value as readonly ReferenceSite[], dropped: 0 };
+
+  const sites = value.map((site) => {
+    if (!isRecord(site) || site.receiverChain === undefined) return site;
+    if (isValidReceiverChain(site.receiverChain)) return site;
+    const { receiverChain: _dropped, ...rest } = site;
+    return rest;
+  }) as readonly ReferenceSite[];
+  return { sites, dropped };
 }
 
 function isValidCallableFlowSite(value: unknown): value is CallableFlowSite {

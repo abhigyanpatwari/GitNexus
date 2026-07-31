@@ -397,14 +397,21 @@ export function emitReceiverBoundCalls(
       }
 
       // ── Case 0: compound receiver ────────────────────────────────
+      // #2744: remember a compound receiver we could not type. Reported at
+      // the end of the site loop, not here — a later case may still resolve
+      // the site, and only a site that survives every case is a real drop.
+      let compoundReceiverUnresolved = false;
       if (receiverName.includes('.') || receiverName.includes('(')) {
         const currentClass = resolveCompoundReceiverClass(
           receiverName,
           site.inScope,
           scopes,
           index,
-          compoundOpts,
+          // Group A: the receiver IS this site's expression, so the site's
+          // captured chain describes it and the structural fold applies.
+          { ...compoundOpts, receiverChain: site.receiverChain },
         );
+        compoundReceiverUnresolved = currentClass === undefined;
         if (currentClass !== undefined) {
           const chain = [currentClass.nodeId, ...scopes.methodDispatch.mroFor(currentClass.nodeId)];
           let memberDef: SymbolDefinition | undefined;
@@ -1041,7 +1048,8 @@ export function emitReceiverBoundCalls(
             site.inScope,
             scopes,
             index,
-            compoundOpts,
+            // Group A, same reasoning as Case 0 above.
+            { ...compoundOpts, receiverChain: site.receiverChain },
           );
         }
         if (ownerDef !== undefined) {
@@ -1323,6 +1331,29 @@ export function emitReceiverBoundCalls(
           handledSites.add(siteKey);
           continue;
         }
+      }
+
+      // #2744: the site survived every case with a compound receiver we could
+      // not type, so the call is dropped with no candidate. Record it here —
+      // after the cases, so a site a later case resolved is never reported —
+      // keyed by the MEMBER name, which is the only thing still known about a
+      // dropped site (its callee is unknown by definition, so the drop cannot
+      // be attributed to any target symbol).
+      if (compoundReceiverUnresolved && !handledSites.has(siteKey)) {
+        options.recordResolutionOutcome?.({
+          kind: 'suppressed',
+          reason: 'receiver-unresolved',
+          candidateIds: [],
+          phase: 'receiver-bound-calls',
+          filePath: parsed.filePath,
+          name: site.name,
+          range: site.atRange,
+          // The gate above tests the receiver's punctuation, not the site's
+          // kind, so property reads and writes with a compound receiver are
+          // recorded here too. Carry the kind so a consumer can separate a
+          // dropped CALL from a dropped property access.
+          siteKind: site.kind,
+        });
       }
     }
   }

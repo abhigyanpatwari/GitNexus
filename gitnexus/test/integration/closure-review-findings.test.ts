@@ -18,12 +18,16 @@ import { DIST_WORKER_URL, distWorkerExists } from '../helpers/worker-parse.js';
 vi.setConfig({ testTimeout: 90_000 });
 
 const describeIfWorkerBuilt = distWorkerExists() ? describe : describe.skip;
+const describeIfPathSupportsColon =
+  process.platform === 'win32' ? describe.skip : describeIfWorkerBuilt;
 
 /** Every CALLS edge in a one-file repo, as `src -> dst`, sorted. */
 const callEdges = async (filename: string, source: string): Promise<string[]> => {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'gn-review-'));
   try {
-    fs.writeFileSync(path.join(dir, filename), source, 'utf-8');
+    const filePath = path.join(dir, filename);
+    fs.mkdirSync(path.dirname(filePath), { recursive: true });
+    fs.writeFileSync(filePath, source, 'utf-8');
     const result = await runPipelineFromRepo(dir, () => {}, {
       workerPoolSize: 1,
       workerUrlForTest: DIST_WORKER_URL,
@@ -84,6 +88,20 @@ describeIfWorkerBuilt(
     });
   },
 );
+
+describeIfPathSupportsColon('#2734 — def ids parse coordinates after the file path', () => {
+  it('a path containing #<line>:<column>: still attributes closure calls', async () => {
+    const edges = await callEdges(
+      'src/bugs#12:34:test/a.php',
+      '<?php\nfunction target($x) { return $x; }\nfunction outer() {\n' +
+        '  $handler = function ($x) { return target($x); };\n  return 1;\n}\n',
+    );
+
+    expect(edges).toEqual([
+      'Function:src/bugs#12:34:test/a.php:outer.$handler@3:2 -> Function:src/bugs#12:34:test/a.php:target',
+    ]);
+  });
+});
 
 describeIfWorkerBuilt(
   '#2699 review P1-2 — widening identity to values must not touch class members',
