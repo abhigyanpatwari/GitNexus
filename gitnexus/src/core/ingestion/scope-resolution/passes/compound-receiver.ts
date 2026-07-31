@@ -298,25 +298,72 @@ function resolveConstructionExpressionClass(
  * member of this name?"), which is a guess. Structure exists precisely so this
  * does not have to guess.
  */
+/**
+ * One position in a fold: the class the chain has reached, PLUS the declared
+ * type text that produced it.
+ *
+ * The declared type is carried because a step can need the WRAPPER rather than
+ * the class it resolved to. `typeOfMemberOnClass` collapses `Promise<User>` to
+ * the class `User`... except it cannot, because no workspace class is named
+ * `Promise<User>` — so an await or index step reached through a bare
+ * `SymbolDefinition` would find the previous step had already returned
+ * `undefined`. Keeping `declaredTypeName` alongside the class is what lets those
+ * steps unwrap one layer instead of typing against nothing.
+ *
+ * `undefined` when the position was reached by a route that has no declared type
+ * to report (a static class receiver, say). A step needing one declines rather
+ * than guessing.
+ */
+interface FoldState {
+  readonly def: SymbolDefinition;
+  readonly declaredTypeName?: string;
+  readonly declaredAtScope?: ScopeId;
+  /**
+   * The declared type named no class in the workspace, so `def` is the PREVIOUS
+   * position rather than this member's type. Only an unwrapping step (await,
+   * index) can make progress from here; any other step must decline, because
+   * folding on against the previous class would silently look the next member up
+   * on the wrong owner.
+   */
+  readonly unresolvedDeclaredType?: boolean;
+}
+
 function typeOfMemberOnClass(
   owner: SymbolDefinition,
   memberName: string,
   scopes: ScopeResolutionIndexes,
   index: WorkspaceResolutionIndex,
   options: ResolveCompoundReceiverOptions,
-): SymbolDefinition | undefined {
+): FoldState | undefined {
   const classScopeByDefId = index.classScopeByDefId;
   const ownerChain = [owner.nodeId, ...scopes.methodDispatch.mroFor(owner.nodeId)];
   for (const ownerId of ownerChain) {
     const classScope = classScopeByDefId.get(ownerId);
     const memberType = classScope?.typeBindings.get(memberName);
     if (memberType !== undefined) {
-      return findClassBindingInScope(
+      const def = findClassBindingInScope(
         memberType.declaredAtScope,
         memberType.rawName,
         scopes,
         options.stripTypePreservingDecoration,
       );
+      // The declared type is reported even when it resolved to no class:
+      // `Promise<User>` and `[]Repo` name nothing in the workspace, and an
+      // await or index step unwrapping them is exactly how they become
+      // resolvable. Returning `undefined` here would strand those shapes.
+      if (def === undefined) {
+        return {
+          def: owner,
+          declaredTypeName: memberType.rawName,
+          declaredAtScope: memberType.declaredAtScope,
+          unresolvedDeclaredType: true,
+        };
+      }
+      return {
+        def,
+        declaredTypeName: memberType.rawName,
+        declaredAtScope: memberType.declaredAtScope,
+      };
     }
     // Languages whose binding-scope hook hoists a method's return-type binding
     // out of the class body and onto an ancestor (Module) scope keep NOTHING in
@@ -332,7 +379,13 @@ function typeOfMemberOnClass(
         if (curScope === undefined) break;
         const hoisted = curScope.typeBindings.get(memberName);
         if (hoisted !== undefined) {
-          return findClassBindingInScope(hoisted.declaredAtScope, hoisted.rawName, scopes);
+          const def = findClassBindingInScope(hoisted.declaredAtScope, hoisted.rawName, scopes);
+          if (def === undefined) return undefined;
+          return {
+            def,
+            declaredTypeName: hoisted.rawName,
+            declaredAtScope: hoisted.declaredAtScope,
+          };
         }
         curId = curScope.parent;
       }
@@ -374,13 +427,23 @@ export function foldReceiverChain(
   // `receiverChain` is dropped before resolving the base: it describes the
   // whole receiver, and handing it back to the resolver would re-enter this
   // fold on the base and never terminate.
-  let current = resolveCompoundReceiverClass(chain.baseReceiverName, inScope, scopes, index, {
+  const baseDef = resolveCompoundReceiverClass(chain.baseReceiverName, inScope, scopes, index, {
     ...options,
     fieldFallback: false,
     receiverChain: undefined,
     strictBaseBinding: true,
   });
-  if (current === undefined) return undefined;
+  if (baseDef === undefined) return undefined;
+
+  // The base's own declared type is carried too, so a chain whose FIRST step is
+  // an unwrap (`repos[0].save()` — index applied directly to the base) has the
+  // container spelling available. Without it that shape would decline at step 1.
+  const baseBinding = findReceiverTypeBinding(inScope, chain.baseReceiverName, scopes);
+  let current: FoldState = {
+    def: baseDef,
+    declaredTypeName: baseBinding?.rawName,
+    declaredAtScope: baseBinding?.declaredAtScope,
+  };
 
   for (const step of chain.steps) {
     // Construction is NOT an ordinary member lookup. `Factory.new` on a class
@@ -395,11 +458,17 @@ export function foldReceiverChain(
     // line of work exists to avoid. Decline and let the cascade answer.
     if (options.constructionSyntax?.selector === step.name) return undefined;
 
-    const next = typeOfMemberOnClass(current, step.name, scopes, index, options);
+    // A position whose declared type named no class can only be advanced by an
+    // unwrapping step. Folding an ordinary member off it would look the member
+    // up on the PREVIOUS class — a wrong owner, silently.
+    if (current.unresolvedDeclaredType === true) return undefined;
+    const next = typeOfMemberOnClass(current.def, step.name, scopes, index, options);
     if (next === undefined) return undefined;
     current = next;
   }
-  return current;
+  // A chain that ended on an unresolved declared type never reached a class.
+  if (current.unresolvedDeclaredType === true) return undefined;
+  return current.def;
 }
 
 export function resolveCompoundReceiverClass(
