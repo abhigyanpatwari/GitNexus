@@ -139,3 +139,68 @@ describe('ftsDegradedWarning (#2374)', () => {
     expect(ftsDegradedWarning()).toMatch(/Visual C\+\+/);
   });
 });
+
+describe('ftsDegradedWarning resolved-repo context (#2767)', () => {
+  it('omits the context suffix entirely when no context is passed (unchanged message)', async () => {
+    await extensionManager.ensure(vi.fn().mockResolvedValue({}), 'fts', 'FTS', {
+      policy: 'load-only',
+    });
+
+    expect(ftsDegradedWarning()).toBe(
+      'FTS indexes missing — keyword search degraded. Run: gitnexus analyze --repair-fts (or gitnexus analyze --force) to rebuild indexes.',
+    );
+  });
+
+  it('appends the resolved repo name and indexed-at on the indexes-missing branch', async () => {
+    await extensionManager.ensure(vi.fn().mockResolvedValue({}), 'fts', 'FTS', {
+      policy: 'load-only',
+    });
+
+    const warning = ftsDegradedWarning({
+      repoName: 'myrepo',
+      indexedAt: '2026-07-30T12:00:00.000Z',
+    });
+    expect(warning).toContain('FTS indexes missing');
+    expect(warning).toContain('resolved: myrepo');
+    expect(warning).toContain('indexed 2026-07-30T12:00:00.000Z');
+  });
+
+  it('includes the branch label when the resolved handle is branch-scoped', async () => {
+    await extensionManager.ensure(vi.fn().mockResolvedValue({}), 'fts', 'FTS', {
+      policy: 'load-only',
+    });
+
+    const warning = ftsDegradedWarning({ repoName: 'myrepo', branch: 'feature/x' });
+    expect(warning).toContain('branch:feature/x');
+  });
+
+  it('never leaks an absolute path via the context suffix', async () => {
+    await extensionManager.ensure(vi.fn().mockResolvedValue({}), 'fts', 'FTS', {
+      policy: 'load-only',
+    });
+
+    const warning = ftsDegradedWarning({
+      repoName: 'myrepo',
+      lastErrorRedacted: 'connection reset',
+    });
+    expect(warning).not.toMatch(/\/home\/|\/Users\/|C:\\Users\\/);
+    expect(warning).toContain('last error: connection reset');
+  });
+
+  it('also renders the context suffix on the extension-failed-to-load branch', async () => {
+    await extensionManager.ensure(
+      vi.fn().mockRejectedValue(new Error('invalid ELF header.')),
+      'fts',
+      'FTS',
+      { policy: 'load-only' },
+    );
+
+    const warning = ftsDegradedWarning({
+      repoName: 'myrepo',
+      indexedAt: '2026-07-30T12:00:00.000Z',
+    });
+    expect(warning).toContain('FTS extension failed to load');
+    expect(warning).toContain('resolved: myrepo');
+    expect(warning).toContain('indexed 2026-07-30T12:00:00.000Z');
+  });
+});

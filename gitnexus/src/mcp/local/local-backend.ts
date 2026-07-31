@@ -2326,7 +2326,17 @@ export class LocalBackend {
     // path, leaving the success-path response shape byte-identical.
     const warnings: string[] = [];
     if (!ftsUsed) {
-      warnings.push(ftsDegradedWarning());
+      // #2767: attach what THIS session resolved (repo/branch/indexed-at) so a
+      // CLI/MCP mismatch is visible in the warning itself rather than requiring
+      // a separate debugging round-trip. Built from the already-resolved
+      // `repo` handle — no extra I/O on this per-request path.
+      warnings.push(
+        ftsDegradedWarning({
+          repoName: repo.name,
+          branch: repo.branch,
+          indexedAt: repo.indexedAt,
+        }),
+      );
     }
     // #2331: a CJK query against a server process resolving
     // GITNEXUS_FTS_CJK_SEGMENTATION to 'none' silently misses sub-phrase

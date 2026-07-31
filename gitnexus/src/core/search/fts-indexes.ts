@@ -16,12 +16,41 @@ const redactPaths = (reason: string): string =>
   reason.replace(/(?:[A-Za-z]:\\|\/)[^\s'"]+/g, '<path>');
 
 /**
+ * Resolved-repo/index identity a caller can attach to a degraded-FTS warning
+ * (#2767) so a reader can tell whether *this* session even resolved the index
+ * they expect, instead of guessing between a stale connection, a different
+ * repo/branch, or a genuine build failure. MCP-`query`-only today — never
+ * forwarded into the HTTP `/api/search` response (see that call site).
+ */
+export interface FtsWarningContext {
+  repoName: string;
+  branch?: string;
+  indexedAt?: string;
+  /** Already redacted by the caller (e.g. via {@link redactPaths} on a captured query error). */
+  lastErrorRedacted?: string;
+}
+
+const formatWarningContext = (context: FtsWarningContext): string => {
+  const branchSuffix = context.branch ? `/branch:${context.branch}` : '';
+  const indexedSuffix = context.indexedAt ? `, indexed ${context.indexedAt}` : '';
+  const errorSuffix = context.lastErrorRedacted ? `; last error: ${context.lastErrorRedacted}` : '';
+  return ` (resolved: ${context.repoName}${branchSuffix}${indexedSuffix}${errorSuffix})`;
+};
+
+/**
  * Warning attached to search responses when BM25/FTS is degraded. Prefers the
  * live extension-load failure (with LadybugDB's real reason, #2374) over the
  * generic indexes-missing message, so "indexes exist but the extension broke"
  * is not misreported as missing indexes.
+ *
+ * `context`, when supplied, appends the resolved repo/branch/indexed-at (and
+ * redacted query-error detail, if captured) so a CLI/MCP mismatch — or a real
+ * query error masquerading as "indexes missing" — is visible in the warning
+ * text itself (#2767). Optional and additive: omitting it reproduces today's
+ * exact message.
  */
-export const ftsDegradedWarning = (): string => {
+export const ftsDegradedWarning = (context?: FtsWarningContext): string => {
+  const suffix = context ? formatWarningContext(context) : '';
   const fts = getExtensionCapabilities().find((c) => c.name === 'fts');
   if (fts && !fts.loaded) {
     const reason = fts.reason ? redactPaths(fts.reason).replace(/\.$/, '') : undefined;
@@ -38,10 +67,15 @@ export const ftsDegradedWarning = (): string => {
     return (
       'FTS extension failed to load — keyword search degraded' +
       (reason ? ` (${reason})` : '') +
-      tail
+      tail +
+      suffix
     );
   }
-  return 'FTS indexes missing — keyword search degraded. Run: gitnexus analyze --repair-fts (or gitnexus analyze --force) to rebuild indexes.';
+  return (
+    'FTS indexes missing — keyword search degraded. Run: gitnexus analyze --repair-fts ' +
+    '(or gitnexus analyze --force) to rebuild indexes.' +
+    suffix
+  );
 };
 
 // Stemmers shipped by the LadybugDB FTS extension. Mirrors the lowercase token

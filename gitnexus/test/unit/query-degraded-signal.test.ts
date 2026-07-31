@@ -133,6 +133,17 @@ describe('query: degraded-enrichment signal', () => {
     expect(result.warning.toLowerCase()).toContain('enrichment');
   });
 
+  it('the FTS-missing warning includes the resolved repo name and indexed-at (#2767)', async () => {
+    const b = makeBackend(false); // FTS unavailable
+    executeParameterizedMock.mockResolvedValue([]);
+
+    const result = await runQuery(b);
+
+    expect(result.warning).toContain('FTS indexes missing');
+    expect(result.warning).toContain('resolved: repo1');
+    expect(result.warning).toContain('indexed now');
+  });
+
   it('warns when a CJK query hits a server resolving segmentation to none (#2331)', async () => {
     const b = makeBackend(true);
     executeParameterizedMock.mockResolvedValue([]);
