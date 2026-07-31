@@ -808,6 +808,13 @@ export class LocalBackend {
   // so a rebuilt index is never served stale even when the stamp looks current.
   private lastObservedDbIdentity: Map<string, Awaited<ReturnType<typeof statDbIdentity>>> =
     new Map();
+  // #2767: last meta.capabilities.fts.status observed for an open pool, keyed
+  // by lbugPath (same rationale as lastObservedIndexedAt above). `--repair-fts`
+  // intentionally never restamps `indexedAt` (it doesn't regenerate the graph),
+  // so this is the dedicated signal a warm session uses to notice a repair —
+  // independent of the file-identity heuristic, which the repair path also
+  // triggers but only incidentally.
+  private lastObservedFtsStatus: Map<string, string | undefined> = new Map();
   private groupToolSvc: GroupService | null = null;
   /**
    * One-shot stderr warnings for sibling-clone drift, keyed by
@@ -1145,6 +1152,7 @@ export class LocalBackend {
       this.toolStalenessCache.delete(key);
       this.lastObservedIndexedAt.delete(key);
       this.lastObservedDbIdentity.delete(key);
+      this.lastObservedFtsStatus.delete(key);
       this.reinitPromises.delete(key);
       closeLbug(key).catch(() => {});
     }
@@ -1562,7 +1570,16 @@ export class LocalBackend {
           this.lastObservedDbIdentity.get(poolKey) ?? null,
           currentIdentity,
         );
-        if (stampChanged || identityChanged) {
+        // #2767: `--repair-fts` intentionally never restamps `indexedAt` (it
+        // doesn't regenerate the graph), so `stampChanged` alone can't notice
+        // a repair. `capabilities.fts.status` is the field repair-fts DOES
+        // write, so a change there is a third, independent reinit trigger —
+        // sibling to stampChanged/identityChanged, not a replacement for them
+        // (identityChanged still catches an in-place mutation even if the
+        // caps stamp were somehow missed).
+        const ftsCapsChanged =
+          this.lastObservedFtsStatus.get(poolKey) !== meta?.capabilities?.fts?.status;
+        if (stampChanged || identityChanged || ftsCapsChanged) {
           // Index was rebuilt/swapped — DELEGATE the close/reopen to the pool's
           // initLbug, which refuses to evict (and close the shared Database)
           // while a query is in flight (its checkedOut>0 guard). Calling
@@ -1574,6 +1591,7 @@ export class LocalBackend {
               // Advance the observed stamp regardless: a stamp change with an
               // unchanged file must not re-trigger on every check.
               if (meta?.indexedAt) this.lastObservedIndexedAt.set(poolKey, meta.indexedAt);
+              this.lastObservedFtsStatus.set(poolKey, meta?.capabilities?.fts?.status);
               const reopened = await initLbug(poolKey, repo.lbugPath);
               // Advance the observed IDENTITY only when the pool actually rolled
               // over. If a query was in flight, initLbug served the current
@@ -1601,6 +1619,19 @@ export class LocalBackend {
       this.initializedRepos.add(poolKey);
       this.lastObservedIndexedAt.set(poolKey, repo.indexedAt);
       this.lastObservedDbIdentity.set(poolKey, await statDbIdentity(repo.lbugPath));
+      // #2767: seed the FTS-caps baseline at cold init too. capabilities.fts.status
+      // is already stamped by every normal analyze run, so without this a fresh
+      // process's first WARM staleness check (5s+ later) would compare an
+      // unseeded `undefined` against the real on-disk value and reinit for no
+      // reason. Best-effort: a read failure here must not fail initialization —
+      // the warm path's own catch-all already tolerates an unreadable meta.
+      try {
+        const coldMeta = await loadMeta(path.dirname(repo.lbugPath));
+        this.lastObservedFtsStatus.set(poolKey, coldMeta?.capabilities?.fts?.status);
+      } catch {
+        // Leave unseeded (undefined) — the next warm check falls back to the
+        // same "can't read meta, assume pool is fine" tolerance as the warm path.
+      }
     } catch (err: any) {
       // If lock error, mark as not initialized so next call retries
       this.initializedRepos.delete(poolKey);

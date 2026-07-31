@@ -1031,6 +1031,39 @@ async function runFullAnalysisInner(
         );
       }
       await ensureGitNexusIgnored(repoPath);
+      // #2767: stamp ONLY capabilities.fts so a long-lived MCP session's
+      // ensureInitialized() has an explicit, correctly-scoped signal that FTS
+      // changed — indexedAt/lastCommit/runnerIdentity/stats are copied through
+      // untouched (see the "must not claim a new analyzer identity" comment
+      // below). capabilities is forensic/no-programmatic-readers-until-now, so
+      // graph/vectorSearch are backfilled with conservative, honest defaults
+      // when a legacy meta.json predates this field entirely — repair-fts
+      // never touched them and cannot claim a capability it did not verify.
+      // Best-effort: a write failure must not turn an already-successful FTS
+      // rebuild into a reported repair failure.
+      try {
+        await saveMeta(metaDir, {
+          ...existingMeta,
+          capabilities: {
+            graph: existingMeta.capabilities?.graph ?? {
+              provider: 'ladybugdb',
+              status: 'available',
+            },
+            fts: { provider: 'ladybugdb-fts', status: 'available' },
+            vectorSearch: existingMeta.capabilities?.vectorSearch ?? {
+              provider: 'exact-scan',
+              status: 'unavailable',
+              exactScanLimit: 0,
+            },
+          },
+        });
+      } catch (err) {
+        log(
+          `FTS capability stamp write failed (non-critical, repair itself succeeded${
+            err instanceof Error ? `: ${err.message}` : ''
+          }); continuing.`,
+        );
+      }
       progress('fts', 90, 'Search indexes ready');
       progress('done', 100, 'Done');
       return {
