@@ -15,7 +15,7 @@ import {
   isPythonImportedModule,
   resolvePythonImportTarget,
 } from '../../../../src/core/ingestion/languages/python/index.js';
-import type { ParsedImport } from 'gitnexus-shared';
+import type { ParsedFile, ParsedImport } from 'gitnexus-shared';
 
 function mkImport(targetRaw: string): ParsedImport {
   return { kind: 'absolute', targetRaw, isRelative: false, names: [] } as unknown as ParsedImport;
@@ -167,6 +167,22 @@ describe('resolvePythonImportTarget — index parity', () => {
 
     expect(target).toBe('pkg/models.py');
     expect(isPythonImportedModule(parsed, target ?? '', 'pkg/app.py')).toBe(true);
+  });
+
+  it('preserves an explicit package export over a same-named submodule', () => {
+    const parsed = mkNamed('pkg', 'models');
+    const packageFile = {
+      filePath: 'pkg/__init__.py',
+      localDefs: [{ qualifiedName: 'models' }],
+    } as unknown as ParsedFile;
+    const target = resolvePythonImportTarget(parsed, {
+      fromFile: 'pkg/app.py',
+      allFilePaths: new Set(['pkg/__init__.py', 'pkg/models.py']),
+      parsedFiles: [packageFile],
+    });
+
+    expect(target).toBe('pkg/__init__.py');
+    expect(isPythonImportedModule(parsed, target ?? '', 'pkg/app.py')).toBe(false);
   });
 
   it('keeps ordinary symbols on the named-import path', () => {

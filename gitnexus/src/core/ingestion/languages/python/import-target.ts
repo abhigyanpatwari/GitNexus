@@ -10,7 +10,7 @@
  * `linkStatus: 'unresolved'`.
  */
 
-import type { ParsedImport, WorkspaceIndex } from 'gitnexus-shared';
+import type { ParsedFile, ParsedImport, WorkspaceIndex } from 'gitnexus-shared';
 import { resolvePythonImportInternal } from '../../import-resolvers/python.js';
 import { recordPythonFileIndexBuild } from './index-stats.js';
 
@@ -20,6 +20,9 @@ export interface PythonResolveContext {
    *  through to `getPythonFileIndex`'s `WeakMap` key (built once per run, not
    *  copied per import). The whole resolver chain only reads the set. */
   readonly allFilePaths: ReadonlySet<string>;
+  /** Optional parsed workspace used to preserve a package's explicit export
+   * when it collides with a same-named concrete submodule. */
+  readonly parsedFiles?: readonly ParsedFile[];
 }
 
 export function resolvePythonImportTarget(
@@ -53,6 +56,22 @@ export function resolvePythonImportTarget(
     submoduleTarget !== null &&
     (parsedImport.kind === 'named' || parsedImport.kind === 'alias')
   ) {
+    // Python's IMPORT_FROM first reads an attribute already exported by the
+    // package and only loads a same-named submodule when that attribute is
+    // absent. Preserve that precedence when parsed workspace facts are
+    // available; the flag suppresses this submodule probe in the recursive
+    // base-package lookup.
+    const packageTarget = resolvePythonImportTarget(
+      { ...parsedImport, targetIncludesImportedName: true },
+      workspaceIndex,
+    );
+    if (
+      packageTarget !== null &&
+      pythonFileExportsName(packageTarget, parsedImport.importedName, ctx.parsedFiles)
+    ) {
+      return packageTarget;
+    }
+
     const submodule = resolvePythonImportTarget(
       {
         kind: 'namespace',
@@ -63,6 +82,7 @@ export function resolvePythonImportTarget(
       workspaceIndex,
     );
     if (submodule !== null) return submodule;
+    if (packageTarget !== null) return packageTarget;
   }
 
   // PEP-328 relative + single-segment proximity bare imports.
@@ -100,6 +120,22 @@ export function resolvePythonImportTarget(
   // directories (e.g. `accounts.models` matching `billing/models.py` when
   // both files exist).
   return resolveAbsoluteFromFiles(pathLike, ctx.allFilePaths, ctx.fromFile);
+}
+
+function pythonFileExportsName(
+  targetFile: string,
+  importedName: string,
+  parsedFiles: readonly ParsedFile[] | undefined,
+): boolean {
+  if (parsedFiles === undefined) return false;
+  const parsed = parsedFiles.find((file) => file.filePath === targetFile);
+  if (parsed === undefined) return false;
+  return parsed.localDefs.some((def) => {
+    const qualifiedName = def.qualifiedName;
+    if (qualifiedName === undefined || qualifiedName.length === 0) return false;
+    const dot = qualifiedName.lastIndexOf('.');
+    return (dot === -1 ? qualifiedName : qualifiedName.slice(dot + 1)) === importedName;
+  });
 }
 
 /**

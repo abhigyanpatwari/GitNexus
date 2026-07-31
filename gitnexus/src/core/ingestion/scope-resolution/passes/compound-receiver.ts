@@ -149,6 +149,42 @@ function escapeForRegExp(literal: string): string {
   return literal.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
 }
 
+/** True when a local declaration between the call site and its module scope
+ * shadows a file-level namespace import with the same name. Namespace targets
+ * are collected per file, so callers must apply this lexical guard before
+ * trusting them at an inner scope. */
+function isNamespaceNameShadowed(
+  namespaceName: string,
+  inScope: ScopeId,
+  scopes: ScopeResolutionIndexes,
+): boolean {
+  let currentId: ScopeId | null = inScope;
+  const visited = new Set<ScopeId>();
+  while (currentId !== null) {
+    if (visited.has(currentId)) return true;
+    visited.add(currentId);
+    const scope = scopes.scopeTree.getScope(currentId);
+    if (scope === undefined) return true;
+    if (
+      scope.kind !== 'Object' &&
+      (scope.bindings.has(namespaceName) ||
+        scope.typeBindings.has(namespaceName) ||
+        scope.lexicalNames?.has(namespaceName) === true ||
+        scope.ownedDefs.some((def) => {
+          const qualifiedName = def.qualifiedName;
+          if (qualifiedName === undefined) return false;
+          const dot = qualifiedName.lastIndexOf('.');
+          return (dot === -1 ? qualifiedName : qualifiedName.slice(dot + 1)) === namespaceName;
+        }))
+    ) {
+      return true;
+    }
+    if (scope.kind === 'Module') return false;
+    currentId = scope.parent;
+  }
+  return true;
+}
+
 /**
  * Type of a construction expression's callee — the class it constructs.
  *
@@ -194,14 +230,30 @@ function resolveConstructionExpressionClass(
   // name).
   if (calleeName === undefined || calleeName.length === 0) return undefined;
 
-  const direct = findClassBindingInScope(inScope, calleeName, scopes);
-  if (direct !== undefined && isClassLike(direct.type)) return direct;
-
   // Generic construction — `new Box<string>()` arrives here as `Box<string>`,
   // which names no class binding. Retry on the base name, the same
   // normalization `resolveClassBindingForName` in `receiver-bound-calls`
   // already applies for typed receivers (#2708).
   const baseName = stripTemplateArguments(calleeName).trim();
+  const lastDot = baseName.lastIndexOf('.');
+  if (lastDot !== -1) {
+    const namespaceName = baseName.slice(0, lastDot);
+    const exportedName = baseName.slice(lastDot + 1);
+    const namespaceFiles = options.namespaceTargets?.get(namespaceName) ?? [];
+    // A verified namespace is authoritative: do not fall through to the
+    // workspace-wide simple-name heuristics on either a miss or ambiguity.
+    if (namespaceFiles.length > 0) {
+      if (isNamespaceNameShadowed(namespaceName, inScope, scopes)) return undefined;
+      const namespaceMatches = namespaceFiles
+        .map((targetFile) => findExportedDef(targetFile, exportedName, index))
+        .filter((def): def is SymbolDefinition => def !== undefined && isClassLike(def.type));
+      return namespaceMatches.length === 1 ? namespaceMatches[0] : undefined;
+    }
+  }
+
+  const direct = findClassBindingInScope(inScope, calleeName, scopes);
+  if (direct !== undefined && isClassLike(direct.type)) return direct;
+
   if (baseName.length > 0 && baseName !== calleeName) {
     const viaBaseName = findClassBindingInScope(inScope, baseName, scopes);
     if (viaBaseName !== undefined && isClassLike(viaBaseName.type)) return viaBaseName;
@@ -210,19 +262,7 @@ function resolveConstructionExpressionClass(
   // Qualified callee — `new ns.Service()` / `new Outer.Inner()`. Prefer an
   // unambiguous qualified-name match, then fall back to the trailing simple
   // name the way receiver resolution does elsewhere (#2708).
-  const lastDot = baseName.lastIndexOf('.');
   if (lastDot === -1) return undefined;
-
-  const namespaceName = baseName.slice(0, lastDot);
-  const exportedName = baseName.slice(lastDot + 1);
-  const namespaceFiles = options.namespaceTargets?.get(namespaceName) ?? [];
-  if (namespaceFiles.length > 0) {
-    const namespaceMatches = namespaceFiles
-      .map((targetFile) => findExportedDef(targetFile, exportedName, index))
-      .filter((def): def is SymbolDefinition => def !== undefined && isClassLike(def.type));
-    if (namespaceMatches.length === 1) return namespaceMatches[0];
-    if (namespaceMatches.length > 1) return undefined;
-  }
 
   const qualifiedIds = scopes.qualifiedNames.get(baseName);
   if (qualifiedIds.length === 1) {

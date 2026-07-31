@@ -15,8 +15,10 @@
  *
  * Next-consumer contract: any language with namespace-style imports
  * (TypeScript `import * as X`, Java static import, Ruby `require`)
- * uses this directly. `ParsedImport.kind === 'namespace'` is the
- * cross-language hook.
+ * uses this directly. The finalized `ImportEdge.kind === 'namespace'`
+ * classification is authoritative; providers may produce it directly from
+ * syntax or reclassify a named import after target resolution proves it names
+ * a module.
  *
  * Scope-chain concern (verified 2026-04-21): `pythonImportOwningScope`
  * documents that function-local and class-body imports bind to the

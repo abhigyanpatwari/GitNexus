@@ -40,7 +40,11 @@ const pythonScopeResolver: ScopeResolver = {
     // WeakMap — so the index is built once per run and reused across every
     // import. Copying here (the previous `new Set(allFilePaths)`) handed a
     // fresh identity to every import, defeating that cache (PR #1918 review P1).
-    const ws: PythonResolveContext = { fromFile, allFilePaths };
+    const ws: PythonResolveContext = {
+      fromFile,
+      allFilePaths,
+      parsedFiles: context?.parsedFiles,
+    };
     // `WorkspaceIndex` is an opaque `unknown` placeholder in the
     // shared contract, so `ws` passes structurally without a cast.
     return resolvePythonImportTarget(
