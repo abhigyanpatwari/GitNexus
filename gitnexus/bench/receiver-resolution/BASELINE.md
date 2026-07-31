@@ -1,5 +1,34 @@
 # Receiver-resolution baseline
 
+## U9 (part 2) — no drop ratchet is needed; the gate is already stronger
+
+The plan's R10 set a ZERO supported-shape drop target, and review correctly
+found that it contradicts R12: a site whose normalized name matches more than
+one class MUST decline, a decline records a drop, and simple names collide
+routinely in large Go and Java codebases. The proposed fix was a ratchet — the
+count may not rise above the value measured after the last unit.
+
+Neither is needed. `measure.mjs --check` already asserts **exact match** against
+the committed baseline, which is strictly stronger than a ratchet: the count
+cannot rise *or* fall without a deliberate `--update-baseline`, and that path
+prints an instruction to explain the movement in the commit message. A ratchet
+would be a weakening.
+
+So R10 as written (zero) was wrong, and the ratchet proposed to repair it is
+redundant. The existing gate stands, now also covering `callDropsByShape` since
+the shape census joined the gated projection.
+
+**Deferred and NOT done: the `impact` risk-cutoff recalibration.** Review flagged
+that added edges push symbols toward the absolute cutoffs (`directCount >= 30`,
+`impacted.length >= 200`), so edits read HIGHER risk without being more
+dangerous, and agents warning on HIGH/CRITICAL escalate more often. That is real,
+but measuring it honestly needs a before/after risk distribution over a corpus
+large enough for those thresholds to bind — the committed fixtures are nowhere
+near 200 impacted symbols. Recording it as owed rather than inventing a number
+from fixtures that cannot exercise the cutoffs.
+
+---
+
 ## U6 — the depth cap does NOT limit resolution. Measured, not raised.
 
 The premise was that a chain deeper than `MAX_CHAIN_DEPTH` (3) is discarded
