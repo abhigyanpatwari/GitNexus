@@ -19,133 +19,78 @@
  * in here is derived, and why only genuinely nested callables get one.
  */
 
+import type { NodeLabel, SymbolDefinition } from 'gitnexus-shared';
 import type { SyntaxNode } from '../utils/ast-helpers.js';
+import { definitionIdPosition } from '../scope-resolution/utils/definition-id.js';
 
-/**
- * Callable expressions the scope-resolution channel anchors on for a
- * closure binding (`@declaration.function` on the INNER node). Kept separate
- * from `FUNCTION_NODE_TYPES` because that set also lists declaration forms that
- * are never a binding initializer (`method_declaration`, `impl_item`, …).
- */
-const BOUND_CALLABLE_EXPRESSION_TYPES = new Set([
-  'arrow_function',
-  'async_arrow_function',
-  'function_expression',
-  'generator_function',
-  'anonymous_function',
-  'closure_expression',
-  'lambda_literal',
-  'lambda_expression',
-  // Ruby brace / do-end blocks used as closure values (`-> { }`, `lambda do`).
-  'block',
-  'do_block',
-  // Named forms that are themselves the definition node (not a wrapper).
-  'function_declaration',
-  'generator_function_declaration',
-  'async_function_declaration',
-  'function_item',
-  'function_definition',
-  'method_definition',
-  'local_function_statement',
-]);
+const LOCAL_IDENTITY_SUFFIX = /@\d+:\d+$/;
 
-const INITIALIZER_FIELDS = ['value', 'right', 'initializer', 'default_value', 'result'] as const;
-
-function fieldInitializer(node: SyntaxNode): SyntaxNode | null {
-  for (const field of INITIALIZER_FIELDS) {
-    const child = node.childForFieldName(field);
-    if (child !== null) return child;
-  }
-  return null;
+function simpleDefinitionName(def: SymbolDefinition): string | undefined {
+  const qualifiedName = def.qualifiedName;
+  if (qualifiedName === undefined) return undefined;
+  const dot = qualifiedName.lastIndexOf('.');
+  const tail = dot === -1 ? qualifiedName : qualifiedName.slice(dot + 1);
+  return tail.replace(LOCAL_IDENTITY_SUFFIX, '');
 }
 
-function unwrapBoundCallable(node: SyntaxNode | null): SyntaxNode | undefined {
-  if (node === null) return undefined;
-  if (BOUND_CALLABLE_EXPRESSION_TYPES.has(node.type)) return node;
-
-  // Parenthesized / thin wrappers: dig one level when the grammar fields it.
-  const wrapped =
-    node.childForFieldName('expression') ??
-    node.childForFieldName('argument') ??
-    (node.type.includes('parenthesized') ? node.namedChild(0) : null);
-  if (wrapped !== null && wrapped.id !== node.id) {
-    const found = unwrapBoundCallable(wrapped);
-    if (found !== undefined) return found;
-  }
-
-  // HOC / factory / Ruby `lambda do`: callable sits in call arguments or a
-  // `block`/`do_block` child. Ruby's grammar names the node `call`, not
-  // `call_expression`.
-  if (node.type === 'call_expression' || node.type === 'call' || node.type === 'arguments') {
-    const blockField = node.childForFieldName('block');
-    const fromBlock = unwrapBoundCallable(blockField);
-    if (fromBlock !== undefined) return fromBlock;
-    for (const child of node.namedChildren) {
-      const found = unwrapBoundCallable(child);
-      if (found !== undefined) return found;
-    }
-  }
-  return undefined;
+function containsPosition(node: SyntaxNode, row: number, column: number): boolean {
+  const start = node.startPosition;
+  const end = node.endPosition;
+  if (row < start.row || row > end.row) return false;
+  if (row === start.row && column < start.column) return false;
+  if (row === end.row && column > end.column) return false;
+  return true;
 }
 
 /**
- * AST node whose start line keys the graph↔scope position join for a bound
+ * Zero-based start row that keys the graph-to-scope position join for a bound
  * callable (#2735).
  *
- * Graph-node queries put `@definition.function` on the OUTER binding wrapper
- * (`assignment_expression` / `lexical_declaration` / `let_declaration`); the
- * scope channel puts `@declaration.function` on the INNER callable so its range
- * aligns with `@scope.function`. The join is line-only (`positionKey`), so a
- * multi-line binding missed until the graph node's `startLine` followed the
- * initializer.
+ * Graph-node queries may anchor on an outer binding wrapper while the scope
+ * channel anchors on the inner callable. The join is line-only, so a multi-line
+ * binding needs the graph node's `startLine` to follow the semantic definition.
  *
- * Node *ids* stay on the binding wrapper via `localIdentity(definitionNode)` —
- * only the reported `startLine` moves to the callable body.
+ * `ParsedFile.localDefs` is the language-agnostic source of that position.
+ * Matching uses only the canonical label, name, and source range; shared worker
+ * code does not need to know grammar node types or initializer field names.
+ *
+ * Node ids stay on the binding wrapper via `localIdentity(definitionNode)`.
+ * Missing or ambiguous semantic matches retain the wrapper row, preserving the
+ * existing fail-closed behavior.
  */
-export function boundCallablePositionNode(
+export function boundCallableStartRow(
   definitionNode: SyntaxNode,
+  nodeName: string,
+  nodeLabel: NodeLabel,
+  localDefs: readonly SymbolDefinition[] | undefined,
   nameNode?: SyntaxNode | null,
-): SyntaxNode {
-  // Prefer the declarator/assignment that owns `nameNode`, so
-  // `const a = () => 1, b = () => 2` does not give `b` the start line of `a`.
-  if (nameNode !== undefined && nameNode !== null) {
-    let current: SyntaxNode | null = nameNode;
-    while (current !== null && current.id !== definitionNode.id) {
-      const callable =
-        unwrapBoundCallable(fieldInitializer(current)) ??
-        // Kotlin/Swift sometimes attach the lambda as a positional sibling of
-        // the name pattern rather than a `value:` field.
-        firstBoundCallableChild(current);
-      if (callable !== undefined) return callable;
-      current = current.parent;
+): number {
+  if (localDefs === undefined) return definitionNode.startPosition.row;
+
+  const origin = nameNode?.startPosition ?? definitionNode.startPosition;
+  let best: { row: number; distance: number } | undefined;
+  let tied = false;
+
+  for (const def of localDefs) {
+    if (def.type !== nodeLabel || simpleDefinitionName(def) !== nodeName) continue;
+    const position = definitionIdPosition(def.nodeId, def.filePath);
+    if (position === undefined) continue;
+
+    const row = position.line - 1;
+    if (!containsPosition(definitionNode, row, position.column)) continue;
+
+    const distance =
+      Math.abs(row - origin.row) * 1_000_000 + Math.abs(position.column - origin.column);
+    if (best === undefined || distance < best.distance) {
+      best = { row, distance };
+      tied = false;
+    } else if (distance === best.distance && row !== best.row) {
+      tied = true;
     }
   }
 
-  if (BOUND_CALLABLE_EXPRESSION_TYPES.has(definitionNode.type)) {
-    return definitionNode;
-  }
-
-  const fromDefinition =
-    unwrapBoundCallable(fieldInitializer(definitionNode)) ??
-    firstBoundCallableChild(definitionNode);
-  if (fromDefinition !== undefined) return fromDefinition;
-
-  for (const child of definitionNode.namedChildren) {
-    const callable = unwrapBoundCallable(fieldInitializer(child)) ?? unwrapBoundCallable(child);
-    if (callable !== undefined) return callable;
-  }
-
-  return definitionNode;
+  return best !== undefined && !tied ? best.row : definitionNode.startPosition.row;
 }
-
-function firstBoundCallableChild(node: SyntaxNode): SyntaxNode | undefined {
-  for (const child of node.namedChildren) {
-    const found = unwrapBoundCallable(child);
-    if (found !== undefined) return found;
-  }
-  return undefined;
-}
-
 /**
  * A function-local callable's own name segment: its name plus its declaration
  * position.

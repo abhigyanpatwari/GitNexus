@@ -27,9 +27,10 @@ import { readFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { describe, expect, it } from 'vitest';
 import {
-  boundCallablePositionNode,
+  boundCallableStartRow,
   nestedCallableQualifiedName,
 } from '../../src/core/ingestion/workers/callable-id.js';
+import type { NodeLabel, SymbolDefinition } from 'gitnexus-shared';
 import type { SyntaxNode } from '../../src/core/ingestion/utils/ast-helpers.js';
 
 const nodeAt = (row: number, column: number): SyntaxNode =>
@@ -40,89 +41,94 @@ function stubNode(opts: {
   id: number;
   row?: number;
   column?: number;
-  parent?: SyntaxNode | null;
-  fields?: Record<string, SyntaxNode | null>;
-  namedChildren?: SyntaxNode[];
+  endRow?: number;
+  endColumn?: number;
 }): SyntaxNode {
-  const node = {
+  return {
     type: opts.type,
     id: opts.id,
     startPosition: { row: opts.row ?? 0, column: opts.column ?? 0 },
-    parent: opts.parent ?? null,
-    namedChildren: opts.namedChildren ?? [],
-    namedChildCount: (opts.namedChildren ?? []).length,
-    namedChild: (i: number) => (opts.namedChildren ?? [])[i] ?? null,
-    childForFieldName: (field: string) => opts.fields?.[field] ?? null,
+    endPosition: {
+      row: opts.endRow ?? opts.row ?? 0,
+      column: opts.endColumn ?? opts.column ?? 0,
+    },
   } as unknown as SyntaxNode;
-  return node;
 }
 
-describe('boundCallablePositionNode — #2735 initializer start line', () => {
-  it('returns the definition itself when it is already a callable', () => {
-    const fn = stubNode({ type: 'function_declaration', id: 1, row: 2, column: 0 });
-    expect(boundCallablePositionNode(fn)).toBe(fn);
-  });
-
-  it('follows assignment right-hand side from the name node', () => {
-    const closure = stubNode({ type: 'anonymous_function', id: 3, row: 5, column: 4 });
-    const assign = stubNode({
-      type: 'assignment_expression',
-      id: 1,
-      row: 4,
-      column: 2,
-      fields: { right: closure },
-    });
-    const name = stubNode({
-      type: 'variable_name',
-      id: 2,
-      row: 4,
-      column: 2,
-      parent: assign,
-    });
-    // Close the parent link after name exists (assign.fields already set).
-    (assign as { parent: SyntaxNode | null }).parent = null;
-
-    expect(boundCallablePositionNode(assign, name)).toBe(closure);
-  });
-
-  it('does not steal a sibling declarator initializer', () => {
-    const aArrow = stubNode({ type: 'arrow_function', id: 10, row: 1, column: 0 });
-    const bArrow = stubNode({ type: 'arrow_function', id: 11, row: 3, column: 0 });
-    const aDecl = stubNode({
-      type: 'variable_declarator',
-      id: 2,
-      row: 1,
-      column: 0,
-      fields: { value: aArrow },
-    });
-    const bDecl = stubNode({
-      type: 'variable_declarator',
-      id: 3,
-      row: 2,
-      column: 0,
-      fields: { value: bArrow },
-    });
-    const lexical = stubNode({
-      type: 'lexical_declaration',
-      id: 1,
-      row: 1,
-      column: 0,
-      namedChildren: [aDecl, bDecl],
-    });
-    (aDecl as { parent: SyntaxNode | null }).parent = lexical;
-    (bDecl as { parent: SyntaxNode | null }).parent = lexical;
-    const bName = stubNode({
-      type: 'identifier',
-      id: 4,
-      row: 2,
-      column: 6,
-      parent: bDecl,
-    });
-
-    expect(boundCallablePositionNode(lexical, bName)).toBe(bArrow);
-  });
+const semanticDef = (
+  filePath: string,
+  type: NodeLabel,
+  name: string,
+  line: number,
+  column: number,
+): SymbolDefinition => ({
+  nodeId: `def:${filePath}#${line}:${column}:${type}:${name}`,
+  filePath,
+  type,
+  qualifiedName: name,
 });
 
+describe('boundCallableStartRow - #2735 semantic position join', () => {
+  it('keeps the wrapper row when no semantic definition is available', () => {
+    const wrapper = stubNode({
+      type: 'binding_wrapper',
+      id: 1,
+      row: 2,
+      column: 0,
+      endRow: 4,
+      endColumn: 1,
+    });
+
+    expect(boundCallableStartRow(wrapper, 'handler', 'Function', undefined)).toBe(2);
+  });
+
+  it('uses the matching semantic callable position inside the wrapper', () => {
+    const wrapper = stubNode({
+      type: 'binding_wrapper',
+      id: 1,
+      row: 1,
+      column: 0,
+      endRow: 5,
+      endColumn: 10,
+    });
+    const name = stubNode({ type: 'binding_name', id: 2, row: 1, column: 4 });
+    const defs = [semanticDef('src/file.ext', 'Function', 'handler', 4, 8)];
+
+    expect(boundCallableStartRow(wrapper, 'handler', 'Function', defs, name)).toBe(3);
+  });
+
+  it('selects by canonical name and label rather than grammar shape', () => {
+    const wrapper = stubNode({
+      type: 'binding_wrapper',
+      id: 1,
+      row: 1,
+      column: 0,
+      endRow: 8,
+      endColumn: 10,
+    });
+    const defs = [
+      semanticDef('src/file.ext', 'Function', 'sibling', 3, 4),
+      semanticDef('src/file.ext', 'Method', 'handler', 4, 4),
+      semanticDef('src/file.ext', 'Function', 'handler', 6, 4),
+    ];
+
+    expect(boundCallableStartRow(wrapper, 'handler', 'Function', defs)).toBe(5);
+  });
+
+  it('ignores a same-named semantic definition outside the wrapper', () => {
+    const wrapper = stubNode({
+      type: 'binding_wrapper',
+      id: 1,
+      row: 4,
+      column: 0,
+      endRow: 6,
+      endColumn: 10,
+    });
+    const defs = [semanticDef('src/file.ext', 'Function', 'handler', 2, 0)];
+
+    expect(boundCallableStartRow(wrapper, 'handler', 'Function', defs)).toBe(4);
+  });
+});
 describe('nestedCallableQualifiedName — the shared nested-callable id rule', () => {
   it('qualifies by the enclosing callable AND the declaration position', () => {
     expect(nestedCallableQualifiedName('run', nodeAt(3, 2), 'save')).toBe('run.save@3:2');
