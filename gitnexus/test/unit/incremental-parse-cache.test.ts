@@ -101,9 +101,18 @@ describe('fileContentHash', () => {
 });
 
 describe('PARSE_CACHE_VERSION', () => {
-  // 36 -> 37 for Java/Kotlin Spring AOP capture side-channels (#2416).
-  it('pins SCHEMA_BUMP to 37 so concurrent bumps cannot silently collide (#2416)', () => {
-    expect(Number(PARSE_CACHE_VERSION.split('+', 1)[0])).toBe(37);
+  // 35 -> 36 for the bound-callable start-line join (#2735), 36 -> 37 for
+  // Java/Kotlin Spring AOP capture side-channels (#2416), 37 -> 38 for
+  // receiver-chain wire format v2: every persisted chain string changed prefix
+  // and a v2 decoder refuses v1 by design, so a cache stamped 37 replays chains
+  // this build silently discards.
+  //
+  // This pin has now earned its keep SEVEN times, and the seventh was the first
+  // EXACT clash rather than a near-miss: main took 37 for #2416 while this
+  // branch already used 37, so two incompatible schemas both claimed the same
+  // number. Re-check against origin/main before merge.
+  it('pins SCHEMA_BUMP to 38 so concurrent bumps cannot silently collide (#2736)', () => {
+    expect(Number(PARSE_CACHE_VERSION.split('+', 1)[0])).toBe(38);
   });
 
   it('embeds the gitnexus package version (so upgrades invalidate the cache)', () => {

@@ -673,8 +673,19 @@ export interface RepoMeta {
  * (#2416). LadybugDB fixes allowed endpoint pairs when the relation table is
  * created, so an older index cannot persist these edges through incremental
  * writeback. Force a full re-analyze.
+ *
+ * v34: receiver-chain wire format v2 (name-free `await` / `index` steps). Every
+ * persisted `ReferenceSite.receiverChain` string changed prefix, and a v2
+ * decoder refuses a v1 payload by design, so a pre-v34 index carries chains this
+ * build cannot read. Resolution would silently fall back to the text cascade for
+ * every chain-carrying site — no error, just quietly worse edges. Force a full
+ * re-analyze.
+ *
+ * Numbered 34, not 33: `main` took 33 for Spring AOP (#2416) mid-flight, landing
+ * on exactly this branch's number — the seventh collision in this series and the
+ * first exact clash. Re-check against origin/main before merge.
  */
-export const INCREMENTAL_SCHEMA_VERSION = 33;
+export const INCREMENTAL_SCHEMA_VERSION = 34;
 
 export interface IndexedRepo {
   repoPath: string;

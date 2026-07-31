@@ -153,4 +153,16 @@ export interface ReferenceSite {
  * (`extractMixedChain`) walks a tree-sitter AST and so must stay in the
  * analyzer, but the shape it yields crosses into resolution.
  */
-export type MixedChainStep = { kind: 'field' | 'call'; name: string };
+/**
+ * One hop in a receiver chain.
+ *
+ * `field` and `call` carry the member name they reach. `await` and `index` are
+ * NAME-FREE: the call step already holds the method name for an awaited call,
+ * and a subscript has no member name at all — an index expression's key is a
+ * value, not an identifier the resolver could look up. The codec encodes them
+ * as a bare sigil and rejects any trailing characters, so the encoder's
+ * non-empty-name guard stays live for exactly the two kinds it was written for.
+ */
+export type MixedChainStep =
+  | { kind: 'field' | 'call'; name: string }
+  | { kind: 'await' | 'index'; name?: undefined };

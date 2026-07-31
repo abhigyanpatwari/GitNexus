@@ -149,7 +149,21 @@ import type { ParseWorkerResult } from '../core/ingestion/workers/parse-worker.j
 // v37: Java/Kotlin capture side-channels include Spring AOP owner/advice facts
 // (#2416). Warm cache entries at v36 do not carry those facts and would silently
 // omit ADVISED_BY evidence.
-const SCHEMA_BUMP = 37;
+// v38: receiver-chain wire format v2 — the encoded chain gained name-free
+// `await` and `index` step kinds, so the VERSION prefix moved 1 -> 2 and every
+// persisted chain string changed. A v2 decoder REFUSES a v1 payload (that is
+// the point: a chain missing its await or index hop decodes cleanly as a
+// different, shorter chain and would type the receiver against the wrong
+// member), so a cache stamped 34 replays chains this build silently discards —
+// the feature degrades to the text cascade with no error anywhere. Bumped so
+// the stale cache is rejected rather than half-read.
+//
+// NUMBERED 38, NOT 37: `main` took 37 for Spring AOP (#2416) while this branch
+// was in flight, landing on EXACTLY the number this branch already used. That is
+// the SEVENTH collision in this series and the first that was an exact clash
+// rather than a near-miss — two incompatible schemas both claiming 37. Re-check
+// against origin/main immediately before merge.
+const SCHEMA_BUMP = 38;
 const GITNEXUS_PKG_VERSION = (() => {
   try {
     // package.json sits at gitnexus/package.json — two levels up from

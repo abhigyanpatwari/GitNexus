@@ -34,25 +34,25 @@ declare const repos: User[];
 describe('TypeScript receiver-chain capture', () => {
   it('emits a chain for a plain call-chain receiver', () => {
     expect(chainsFor(`${MODELS}\nsvc.getUser().save();\n`)).toMatchObject({
-      save: '1|svc|cgetUser',
+      save: '2|svc|cgetUser',
     });
   });
 
   it('emits a mixed call/field chain base-first', () => {
     expect(chainsFor(`${MODELS}\nsvc.getUser().address.save();\n`)).toMatchObject({
-      save: '1|svc|cgetUser|faddress',
+      save: '2|svc|cgetUser|faddress',
     });
   });
 
   it('emits a chain for an optional-chained receiver — one of the shapes that resolves to nothing today', () => {
     expect(chainsFor(`${MODELS}\nsvc?.getUser().save();\n`)).toMatchObject({
-      save: '1|svc|cgetUser',
+      save: '2|svc|cgetUser',
     });
   });
 
   it('emits a chain for an explicit-type-argument receiver', () => {
     expect(chainsFor(`${MODELS}\nsvc.getTyped<User>().save();\n`)).toMatchObject({
-      save: '1|svc|cgetTyped',
+      save: '2|svc|cgetTyped',
     });
   });
 
