@@ -19,6 +19,7 @@ import { populateClassOwnedMembers } from '../../scope-resolution/scope/walkers.
 import type { ScopeResolver } from '../../scope-resolution/contract/scope-resolver.js';
 import { pythonProvider } from '../python.js';
 import {
+  isPythonImportedModule,
   pythonArityCompatibility,
   pythonMergeBindings,
   resolvePythonImportTarget,
@@ -32,7 +33,7 @@ const pythonScopeResolver: ScopeResolver = {
   languageProvider: pythonProvider,
   importEdgeReason: 'python-scope: import',
 
-  resolveImportTarget: (targetRaw, fromFile, allFilePaths) => {
+  resolveImportTarget: (targetRaw, fromFile, allFilePaths, _resolutionConfig, context) => {
     // Pass the orchestrator's stable run-level `ReadonlySet` straight through
     // (no per-import copy). The Python resolver chain only reads the set, and
     // `getPythonFileIndex` memoizes its index on the set's identity via a
@@ -43,10 +44,13 @@ const pythonScopeResolver: ScopeResolver = {
     // `WorkspaceIndex` is an opaque `unknown` placeholder in the
     // shared contract, so `ws` passes structurally without a cast.
     return resolvePythonImportTarget(
-      { kind: 'named', localName: '_', importedName: '_', targetRaw },
+      context?.parsedImport ?? { kind: 'namespace', localName: '_', importedName: '_', targetRaw },
       ws,
     );
   },
+
+  isNamespaceImport: (parsedImport, targetFile, fromFile) =>
+    isPythonImportedModule(parsedImport, targetFile, fromFile),
 
   // Python LEGB precedence: local > import/namespace/reexport > wildcard.
   // The per-scope id is unused by pythonMergeBindings (tier ordering

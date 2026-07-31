@@ -43,14 +43,8 @@ export function collectNamespaceTargets(
   const moduleEdges = scopes.imports.get(parsed.moduleScope);
   if (moduleEdges === undefined) return out;
 
-  const namespaceLocals = new Set<string>();
-  for (const imp of parsed.parsedImports) {
-    if (imp.kind === 'namespace') namespaceLocals.add(imp.localName);
-  }
-
   for (const edge of moduleEdges) {
-    if (edge.targetFile === null) continue;
-    if (!namespaceLocals.has(edge.localName)) continue;
+    if (edge.targetFile === null || edge.kind !== 'namespace') continue;
     let targets = out.get(edge.localName);
     if (targets === undefined) {
       targets = [];

@@ -30,6 +30,7 @@ import { decodeReceiverChain } from '../../utils/receiver-chain-codec.js';
 import {
   findClassBindingInScope,
   findEnclosingClassDef,
+  findExportedDef,
   findExportedDefByName,
   findReceiverTypeBinding,
   isClassLike,
@@ -100,6 +101,8 @@ interface ResolveCompoundReceiverOptions {
    *  rather than re-declared, so a future sub-field cannot be added there
    *  and silently ignored here (#2708). */
   readonly constructionSyntax?: ScopeResolver['constructionSyntax'];
+  /** Verified namespace handles visible in the current file. */
+  readonly namespaceTargets?: ReadonlyMap<string, readonly string[]>;
   /** Compact receiver chain for THIS site (`ReferenceSite.receiverChain`), when
    *  the language's capture emitter produced one. Present ⇒ the structural fold
    *  is tried before the text cascade; absent ⇒ behaviour is exactly as before.
@@ -164,6 +167,7 @@ function resolveConstructionExpressionClass(
   fnExpr: string,
   inScope: ScopeId,
   scopes: ScopeResolutionIndexes,
+  index: WorkspaceResolutionIndex,
   options: ResolveCompoundReceiverOptions,
 ): SymbolDefinition | undefined {
   const syntax = options.constructionSyntax;
@@ -208,6 +212,18 @@ function resolveConstructionExpressionClass(
   // name the way receiver resolution does elsewhere (#2708).
   const lastDot = baseName.lastIndexOf('.');
   if (lastDot === -1) return undefined;
+
+  const namespaceName = baseName.slice(0, lastDot);
+  const exportedName = baseName.slice(lastDot + 1);
+  const namespaceFiles = options.namespaceTargets?.get(namespaceName) ?? [];
+  if (namespaceFiles.length > 0) {
+    const namespaceMatches = namespaceFiles
+      .map((targetFile) => findExportedDef(targetFile, exportedName, index))
+      .filter((def): def is SymbolDefinition => def !== undefined && isClassLike(def.type));
+    if (namespaceMatches.length === 1) return namespaceMatches[0];
+    if (namespaceMatches.length > 1) return undefined;
+  }
+
   const qualifiedIds = scopes.qualifiedNames.get(baseName);
   if (qualifiedIds.length === 1) {
     const qualified = scopes.defs.get(qualifiedIds[0]!);
@@ -503,7 +519,7 @@ export function resolveCompoundReceiverClass(
     // the dot-split below routes it into member resolution (#2708).
     const keyword = options.constructionSyntax?.keyword;
     if (keyword !== undefined && new RegExp(`^${escapeForRegExp(keyword)}\\s`).test(fnExpr)) {
-      return resolveConstructionExpressionClass(fnExpr, inScope, scopes, options);
+      return resolveConstructionExpressionClass(fnExpr, inScope, scopes, index, options);
     }
 
     const lastDot = fnExpr.lastIndexOf('.');
@@ -525,7 +541,7 @@ export function resolveCompoundReceiverClass(
       // read a type off; the return-type path above cannot help either,
       // because a class has no return-type binding. Type it from the
       // class the callee names (#2708).
-      return resolveConstructionExpressionClass(fnExpr, inScope, scopes, options);
+      return resolveConstructionExpressionClass(fnExpr, inScope, scopes, index, options);
     }
 
     // `obj.method()` — resolve obj's class, look up method's return
@@ -540,7 +556,15 @@ export function resolveCompoundReceiverClass(
       options,
       depth + 1,
     );
-    if (objClass === undefined) return undefined;
+    if (objClass === undefined) {
+      // A verified namespace-qualified bare constructor is syntactically
+      // indistinguishable from an untyped member call here. Only the namespace
+      // map makes the constructor interpretation safe.
+      if (options.namespaceTargets?.has(objExpr) === true) {
+        return resolveConstructionExpressionClass(fnExpr, inScope, scopes, index, options);
+      }
+      return undefined;
+    }
 
     // Does `objExpr` name the CLASS ITSELF (`Factory.new`) rather than a
     // value whose type is that class (`factory.new`)? Only the former is
@@ -743,7 +767,13 @@ export function resolveCompoundReceiverClass(
   // seeded and the whole chain resolved to nothing. A constructed value is an
   // instance, so `currentIsClassConstant` correctly stays false here.
   if (currentClass === undefined) {
-    currentClass = resolveConstructionExpressionClass(headMemberName, inScope, scopes, options);
+    currentClass = resolveConstructionExpressionClass(
+      headMemberName,
+      inScope,
+      scopes,
+      index,
+      options,
+    );
   }
 
   for (let i = 1; i < parts.length && currentClass !== undefined; i++) {

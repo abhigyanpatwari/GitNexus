@@ -48,6 +48,23 @@ export function resolvePythonImportTarget(
   if (parsedImport.kind === 'dynamic-unresolved') return null;
   if (parsedImport.targetRaw === null || parsedImport.targetRaw === '') return null;
 
+  const submoduleTarget = pythonImportedSubmoduleTarget(parsedImport);
+  if (
+    submoduleTarget !== null &&
+    (parsedImport.kind === 'named' || parsedImport.kind === 'alias')
+  ) {
+    const submodule = resolvePythonImportTarget(
+      {
+        kind: 'namespace',
+        localName: parsedImport.localName,
+        importedName: parsedImport.importedName,
+        targetRaw: submoduleTarget,
+      },
+      workspaceIndex,
+    );
+    if (submodule !== null) return submodule;
+  }
+
   // PEP-328 relative + single-segment proximity bare imports.
   const internal = resolvePythonImportInternal(
     ctx.fromFile,
@@ -340,4 +357,49 @@ function getPythonFileIndex(allFilePaths: ReadonlySet<string>): PythonFileIndex 
   const index: PythonFileIndex = { normSet, byBasename, byInitParent, dirPrefixes };
   PYTHON_FILE_INDEX_CACHE.set(allFilePaths, index);
   return index;
+}
+
+function pythonImportedSubmoduleTarget(parsedImport: ParsedImport): string | null {
+  if (parsedImport.kind !== 'named' && parsedImport.kind !== 'alias') return null;
+  if (parsedImport.targetIncludesImportedName === true) return null;
+  const separator = parsedImport.targetRaw.endsWith('.') ? '' : '.';
+  return parsedImport.targetRaw + separator + parsedImport.importedName;
+}
+
+/**
+ * A named Python import is a namespace handle only when its resolved file is
+ * the concrete submodule formed by appending the imported name. This keeps
+ * ordinary symbol imports on the named-binding path.
+ */
+export function isPythonImportedModule(
+  parsedImport: ParsedImport,
+  targetFile: string,
+  fromFile: string,
+): boolean {
+  const submoduleTarget = pythonImportedSubmoduleTarget(parsedImport);
+  if (submoduleTarget === null) return false;
+
+  const normalizedTarget = targetFile.replace(/\\/g, '/');
+  let pathLike: string;
+
+  if (submoduleTarget.startsWith('.')) {
+    const match = submoduleTarget.match(/^(\.+)(.*)$/);
+    if (match === null) return false;
+    const ascend = match[1].length - 1;
+    const base = fromFile.replace(/\\/g, '/').split('/').slice(0, -1);
+    if (ascend > base.length) return false;
+    const relativeParts = match[2].split('.').filter(Boolean);
+    pathLike = [...base.slice(0, base.length - ascend), ...relativeParts].join('/');
+  } else {
+    pathLike = submoduleTarget.replace(/\./g, '/');
+  }
+
+  const moduleFile = pathLike + '.py';
+  const packageFile = pathLike + '/__init__.py';
+  return (
+    normalizedTarget === moduleFile ||
+    normalizedTarget === packageFile ||
+    normalizedTarget.endsWith('/' + moduleFile) ||
+    normalizedTarget.endsWith('/' + packageFile)
+  );
 }
