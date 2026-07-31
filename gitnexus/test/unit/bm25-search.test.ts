@@ -1,5 +1,9 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
-import { searchFTSFromLbug, type BM25SearchResult } from '../../src/core/search/bm25-index.js';
+import {
+  searchFTSFromLbug,
+  classifyFtsQueryError,
+  type BM25SearchResult,
+} from '../../src/core/search/bm25-index.js';
 import { FTS_INDEXES } from '../../src/core/search/fts-schema.js';
 
 vi.mock('../../src/core/lbug/lbug-adapter.js', async (importOriginal) => {
@@ -312,6 +316,79 @@ describe('BM25 search', () => {
       expect(queryCalls.map((c) => String(c[1]).match(/QUERY_FTS_INDEX\('([^']+)'/)?.[1])).toEqual(
         FTS_INDEXES.map((i) => i.table),
       );
+    });
+  });
+
+  describe('classifyFtsQueryError (#2767)', () => {
+    it('classifies a missing-index message as missing-index', () => {
+      expect(classifyFtsQueryError('Binder exception: Table Function does not exist.')).toBe(
+        'missing-index',
+      );
+    });
+
+    it('classifies any other message as other', () => {
+      expect(classifyFtsQueryError('Query execution timed out after 30000ms')).toBe('other');
+      expect(classifyFtsQueryError('Connection pool exhausted')).toBe('other');
+    });
+  });
+
+  describe('MCP pool path — real vs benign FTS query errors (#2767)', () => {
+    const REPO = 'test-repo-error-classification';
+
+    beforeEach(() => {
+      mockExecuteParameterized.mockReset();
+    });
+
+    it('a benign missing-index error on every table leaves nonBenignErrors unset (unchanged behavior)', async () => {
+      mockExecuteParameterized.mockRejectedValue(
+        new Error('Binder exception: Table Function does not exist.'),
+      );
+
+      const response = await searchFTSFromLbug('login', 5, REPO);
+
+      expect(response.ftsAvailable).toBe(false);
+      expect(response.nonBenignErrors).toBeUndefined();
+    });
+
+    it('a real error on every table surfaces it in nonBenignErrors, redacted', async () => {
+      mockExecuteParameterized.mockRejectedValue(
+        new Error(
+          'Query execution failed: connection reset at /home/alice/.gitnexus/lbug/main.lbug',
+        ),
+      );
+
+      const response = await searchFTSFromLbug('login', 5, REPO);
+
+      expect(response.ftsAvailable).toBe(false);
+      expect(response.nonBenignErrors).toBeDefined();
+      expect(response.nonBenignErrors!.length).toBeGreaterThan(0);
+      expect(response.nonBenignErrors![0]).toContain('connection reset');
+      expect(response.nonBenignErrors![0]).not.toMatch(/\/home\/alice/);
+    });
+
+    it('a real error on one table while another succeeds is still reported (partial-failure gap closed)', async () => {
+      let call = 0;
+      mockExecuteParameterized.mockImplementation(async (_repo: string, cypher: string) => {
+        call++;
+        if (cypher.includes("QUERY_FTS_INDEX('Function'")) {
+          throw new Error('Query execution timed out after 30000ms');
+        }
+        if (cypher.includes("QUERY_FTS_INDEX('File'")) {
+          return [{ node: { filePath: 'src/index.ts', id: 'file:index' }, score: 3 }];
+        }
+        return [];
+      });
+
+      const response = await searchFTSFromLbug('login', 5, REPO);
+
+      // At least one table succeeded, so the client-visible availability
+      // signal and result set are unaffected (regression guard).
+      expect(response.ftsAvailable).toBe(true);
+      expect(response.results.length).toBeGreaterThan(0);
+      // But the real error on the OTHER table is not silently dropped.
+      expect(response.nonBenignErrors).toBeDefined();
+      expect(response.nonBenignErrors![0]).toContain('timed out');
+      expect(call).toBe(FTS_INDEXES.length);
     });
   });
 

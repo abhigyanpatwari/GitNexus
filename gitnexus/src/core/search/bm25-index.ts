@@ -7,6 +7,7 @@
 
 import { queryFTS } from '../lbug/lbug-adapter.js';
 import { normalizeFtsText } from '../lbug/csv-generator.js';
+import { redactPaths } from './fts-indexes.js';
 import { FTS_INDEXES } from './fts-schema.js';
 import {
   applyCjkSegmentationIfEnabled,
@@ -24,12 +25,53 @@ export interface FTSSearchResponse {
   results: BM25SearchResult[];
   /** True when at least one FTS index query succeeded (index exists). */
   ftsAvailable: boolean;
+  /**
+   * Redacted (via {@link redactPaths}) message(s) from per-table
+   * `QUERY_FTS_INDEX` calls that failed for a reason OTHER than "index
+   * doesn't exist" (#2767) — a real query/connection error was previously
+   * indistinguishable from a genuinely-missing index. Populated whenever ANY
+   * table hit a non-benign error, regardless of whether other tables
+   * succeeded, so a caller can always log it; whether to also surface it in
+   * a client-facing warning is a caller decision (see `LocalBackend.query()`,
+   * which only does so when every table failed).
+   */
+  nonBenignErrors?: string[];
+}
+
+export type FtsQueryFailureClass = 'missing-index' | 'other';
+
+/**
+ * Classify a `QUERY_FTS_INDEX` failure so a genuinely-missing index (normal —
+ * this table's FTS index hasn't been built yet) is distinguished from a real
+ * query-time error that would otherwise look identical (#2767). Mirrors
+ * `queryFTS`'s own `.includes('does not exist')` check in `lbug-adapter.ts`
+ * for this exact cypher call — same statement, routed through a different
+ * connection (pool executor here vs. the writable core adapter there).
+ */
+export const classifyFtsQueryError = (message: string): FtsQueryFailureClass =>
+  message.includes('does not exist') ? 'missing-index' : 'other';
+
+/**
+ * Optional-field shape rather than a discriminated union: this project builds
+ * with `strict: false` (no `strictNullChecks`), under which TypeScript's
+ * control-flow narrowing across an `if/else` on a boolean discriminant is
+ * unreliable (verified empirically — narrows correctly under `strict: true`,
+ * fails under `strict: false`). `rows` present means success; `rows` absent
+ * means failure, with `benign`/`message` describing why.
+ */
+interface FTSQueryOutcome {
+  rows?: Array<{ filePath: string; score: number; nodeId: string }>;
+  benign?: boolean;
+  message?: string;
 }
 
 /**
  * Execute a single FTS query via a custom executor (for MCP connection pool).
- * Returns `null` when the query fails (e.g. FTS index does not exist) so the
- * caller can distinguish "zero matches" from "index missing".
+ * Returns a benign failure when the query fails because the index doesn't
+ * exist (the normal, expected case), and a non-benign failure with the
+ * captured message for any other error, so the caller can distinguish "zero
+ * matches", "index missing", and "a real error occurred" instead of
+ * collapsing the latter two into the same silent `null`.
  */
 async function queryFTSViaExecutor(
   executor: (cypher: string, params: Record<string, any>) => Promise<any[]>,
@@ -37,7 +79,7 @@ async function queryFTSViaExecutor(
   indexName: string,
   query: string,
   limit: number,
-): Promise<Array<{ filePath: string; score: number; nodeId: string }> | null> {
+): Promise<FTSQueryOutcome> {
   const cypher = `
     CALL QUERY_FTS_INDEX('${tableName}', '${indexName}', $query, conjunctive := false)
     RETURN node, score
@@ -46,17 +88,20 @@ async function queryFTSViaExecutor(
   `;
   try {
     const rows = await executor(cypher, { query });
-    return rows.map((row: any) => {
-      const node = row.node || row[0] || {};
-      const score = row.score ?? row[1] ?? 0;
-      return {
-        filePath: node.filePath || '',
-        score: typeof score === 'number' ? score : parseFloat(score) || 0,
-        nodeId: node.nodeId || node.id || '',
-      };
-    });
-  } catch {
-    return null;
+    return {
+      rows: rows.map((row: any) => {
+        const node = row.node || row[0] || {};
+        const score = row.score ?? row[1] ?? 0;
+        return {
+          filePath: node.filePath || '',
+          score: typeof score === 'number' ? score : parseFloat(score) || 0,
+          nodeId: node.nodeId || node.id || '',
+        };
+      }),
+    };
+  } catch (e) {
+    const message = e instanceof Error ? e.message : String(e);
+    return { benign: classifyFtsQueryError(message) === 'missing-index', message };
   }
 }
 
@@ -95,6 +140,7 @@ export const searchFTSFromLbug = async (
   );
   const resultsByIndex: any[][] = [];
   let queriesSucceeded = 0;
+  const nonBenignErrors: string[] = [];
 
   if (repoId) {
     // Use MCP connection pool via dynamic import
@@ -106,10 +152,12 @@ export const searchFTSFromLbug = async (
       executeParameterized(repoId, cypher, params);
 
     for (const { table, indexName } of FTS_INDEXES) {
-      const result = await queryFTSViaExecutor(executor, table, indexName, searchQuery, limit);
-      if (result !== null) {
+      const outcome = await queryFTSViaExecutor(executor, table, indexName, searchQuery, limit);
+      if (outcome.rows) {
         queriesSucceeded++;
-        resultsByIndex.push(result);
+        resultsByIndex.push(outcome.rows);
+      } else if (!outcome.benign) {
+        nonBenignErrors.push(redactPaths(outcome.message ?? 'Unknown FTS query error'));
       }
     }
   } else {
@@ -165,5 +213,6 @@ export const searchFTSFromLbug = async (
       nodeIds: r.nodeIds,
     })),
     ftsAvailable,
+    ...(nonBenignErrors.length > 0 && { nonBenignErrors }),
   };
 };

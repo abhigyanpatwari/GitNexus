@@ -2047,6 +2047,13 @@ export class LocalBackend {
     // unavailable the search helper may return an unexpected shape.
     const bm25Results = bm25SearchResult?.results ?? [];
     const ftsUsed = bm25SearchResult?.ftsUsed ?? false;
+    // #2767: log every non-benign per-table FTS query error server-side,
+    // regardless of whether OTHER tables succeeded — previously a real error
+    // on N-1 of N tables while one succeeded left zero diagnostic trail.
+    const ftsQueryErrors = bm25SearchResult?.nonBenignErrors;
+    if (ftsQueryErrors) {
+      for (const err of ftsQueryErrors) logQueryError('query:fts-search', err);
+    }
 
     // Merge via reciprocal rank fusion
     timer.start('merge');
@@ -2335,6 +2342,7 @@ export class LocalBackend {
           repoName: repo.name,
           branch: repo.branch,
           indexedAt: repo.indexedAt,
+          lastErrorRedacted: ftsQueryErrors?.[0],
         }),
       );
     }
@@ -2431,7 +2439,7 @@ export class LocalBackend {
     repo: RepoHandle,
     query: string,
     limit: number,
-  ): Promise<{ results: any[]; ftsUsed: boolean }> {
+  ): Promise<{ results: any[]; ftsUsed: boolean; nonBenignErrors?: string[] }> {
     let searchFTSFromLbug;
     try {
       ({ searchFTSFromLbug } = await import('../../core/search/bm25-index.js'));
@@ -2463,6 +2471,7 @@ export class LocalBackend {
     // could be undefined when the FTS extension is unavailable in the MCP process.
     const bm25Results = ftsResponse?.results ?? [];
     const ftsUsed = ftsResponse?.ftsAvailable ?? false;
+    const nonBenignErrors = ftsResponse?.nonBenignErrors;
 
     const results: any[] = [];
 
@@ -2534,7 +2543,7 @@ export class LocalBackend {
       }
     }
 
-    return { results, ftsUsed };
+    return { results, ftsUsed, ...(nonBenignErrors && { nonBenignErrors }) };
   }
 
   /**

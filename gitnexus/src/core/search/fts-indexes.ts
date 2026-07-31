@@ -12,7 +12,7 @@ import { FTS_INDEXES } from './fts-schema.js';
  * survive. CLI/doctor/log surfaces keep the full path (they read the reason
  * directly, not through this function).
  */
-const redactPaths = (reason: string): string =>
+export const redactPaths = (reason: string): string =>
   reason.replace(/(?:[A-Za-z]:\\|\/)[^\s'"]+/g, '<path>');
 
 /**

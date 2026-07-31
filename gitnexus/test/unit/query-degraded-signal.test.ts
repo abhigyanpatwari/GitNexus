@@ -46,7 +46,7 @@ import { LocalBackend } from '../../src/mcp/local/local-backend';
 // A backend whose hybrid search yields exactly one matched symbol, so the
 // enrichment chunk loop runs and can be made to fail. `ftsUsed` is parameterized
 // so we can exercise the FTS-missing + enrichment-degraded composition.
-function makeBackend(ftsUsed = true): LocalBackend {
+function makeBackend(ftsUsed = true, nonBenignErrors?: string[]): LocalBackend {
   const backend = new LocalBackend();
   const repoHandle = {
     id: 'repo1',
@@ -68,7 +68,9 @@ function makeBackend(ftsUsed = true): LocalBackend {
     startLine: 1,
     endLine: 2,
   };
-  (backend as any).bm25Search = vi.fn().mockResolvedValue({ results: [sym], ftsUsed });
+  (backend as any).bm25Search = vi
+    .fn()
+    .mockResolvedValue({ results: [sym], ftsUsed, ...(nonBenignErrors && { nonBenignErrors }) });
   (backend as any).semanticSearch = vi.fn().mockResolvedValue([]);
   return { backend, repoHandle } as any;
 }
@@ -131,6 +133,34 @@ describe('query: degraded-enrichment signal', () => {
     // Both messages present in the single composed warning — neither overwrites the other.
     expect(result.warning).toMatch(/FTS indexes missing|repair-fts/i);
     expect(result.warning.toLowerCase()).toContain('enrichment');
+  });
+
+  it('a non-benign FTS query error is logged even when FTS overall succeeded (#2767)', async () => {
+    const cap: LoggerCapture = _captureLogger();
+    try {
+      const b = makeBackend(true, ['Query execution timed out after 30000ms']);
+      executeParameterizedMock.mockResolvedValue([]);
+
+      const result = await runQuery(b);
+
+      // ftsUsed=true, so the client-facing warning is not required to mention it —
+      // but the real error must still reach the server log (previously silent).
+      expect(result).not.toHaveProperty('error');
+      const record = cap.records().find((r) => r.context === 'query:fts-search');
+      expect(record).toBeDefined();
+    } finally {
+      cap.restore();
+    }
+  });
+
+  it('the FTS-missing warning includes the redacted query error detail when every table failed (#2767)', async () => {
+    const b = makeBackend(false, ['connection reset']);
+    executeParameterizedMock.mockResolvedValue([]);
+
+    const result = await runQuery(b);
+
+    expect(result.warning).toContain('FTS indexes missing');
+    expect(result.warning).toContain('last error: connection reset');
   });
 
   it('the FTS-missing warning includes the resolved repo name and indexed-at (#2767)', async () => {
