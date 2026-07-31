@@ -326,6 +326,14 @@ describe('BM25 search', () => {
       );
     });
 
+    it('classifies the real "doesn\'t have an index" message (confirmed against a live QUERY_FTS_INDEX call) as missing-index', () => {
+      expect(
+        classifyFtsQueryError(
+          "Prepare failed: Binder exception: Table File doesn't have an index with name file_fts.",
+        ),
+      ).toBe('missing-index');
+    });
+
     it('classifies any other message as other', () => {
       expect(classifyFtsQueryError('Query execution timed out after 30000ms')).toBe('other');
       expect(classifyFtsQueryError('Connection pool exhausted')).toBe('other');

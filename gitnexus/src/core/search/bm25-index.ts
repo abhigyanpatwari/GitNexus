@@ -43,13 +43,24 @@ export type FtsQueryFailureClass = 'missing-index' | 'other';
 /**
  * Classify a `QUERY_FTS_INDEX` failure so a genuinely-missing index (normal —
  * this table's FTS index hasn't been built yet) is distinguished from a real
- * query-time error that would otherwise look identical (#2767). Mirrors
- * `queryFTS`'s own `.includes('does not exist')` check in `lbug-adapter.ts`
- * for this exact cypher call — same statement, routed through a different
- * connection (pool executor here vs. the writable core adapter there).
+ * query-time error that would otherwise look identical (#2767).
+ *
+ * Two real message shapes were confirmed empirically against a live
+ * `CALL QUERY_FTS_INDEX(...)` on an index that hasn't been created:
+ * `"Prepare failed: Binder exception: Table <T> doesn't have an index with
+ * name <name>."` (the actual text observed end-to-end in the integration
+ * suite) and `"...does not exist..."`, which `queryFTS`'s own check in
+ * `lbug-adapter.ts` guards against for the same cypher call. Matching only
+ * the latter under-classifies the former as a real error — which is exactly
+ * the common case (a repo analyzed before FTS existed, or between analyze
+ * and `--repair-fts`) — and would have re-introduced #2767's silent-swallow
+ * bug in the opposite direction: flooding logs and the client warning with a
+ * "real error" for the single most ordinary degraded state.
  */
 export const classifyFtsQueryError = (message: string): FtsQueryFailureClass =>
-  message.includes('does not exist') ? 'missing-index' : 'other';
+  message.includes('does not exist') || message.includes("doesn't have an index")
+    ? 'missing-index'
+    : 'other';
 
 /**
  * Optional-field shape rather than a discriminated union: this project builds
