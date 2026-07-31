@@ -218,6 +218,11 @@ export function resolveDefGraphId(
     // without either side having to model the scope chain. Node ids are
     // 0-based, def ids 1-based. An `AMBIGUOUS_POSITION` tombstone (two
     // callables on one line) falls through to the name-based keys below.
+    //
+    // For a closure binding the two query channels still anchor on different
+    // AST nodes (outer wrapper vs inner callable), but the graph node's
+    // `startLine` follows the initializer (#2735) so this join matches even
+    // when the binding is split across lines.
     const line = defStartLine(def.nodeId, filePath);
     if (line !== undefined && isPositionQualifiedLocalLabel(def.type)) {
       const simple = simpleNameOf(qn);
@@ -226,13 +231,15 @@ export function resolveDefGraphId(
       // FAIL CLOSED when a function-local of this name exists in the file (#2699
       // follow-up). Falling through to the name keys would end at the label-agnostic,
       // first-write-wins `simpleKey` below and alias this def onto whichever same-named
-      // callable was registered first — reproducibly minting a FALSE edge for a
-      // multiline `const pick =` (the declaration and its initializer land on different
-      // lines, so the position join misses). A missing edge is the correct failure
-      // direction for a graph whose consumers include `impact`; a fabricated caller is
-      // not. Gated on `localNameKey` so this ONLY fires where the collision is real —
-      // a file with no such local keeps its previous fallback behaviour, which is what
-      // preserves legitimate anchor differences such as a Vue SFC's `lineOffset`.
+      // callable was registered first — reproducibly minting a FALSE edge. A missing
+      // edge is the correct failure direction for a graph whose consumers include
+      // `impact`; a fabricated caller is not. Gated on `localNameKey` so this ONLY
+      // fires where the collision is real — a file with no such local keeps its
+      // previous fallback behaviour, which is what preserves legitimate anchor
+      // differences such as a Vue SFC's `lineOffset`.
+      //
+      // Multi-line closure bindings are NOT this case anymore (#2735): their graph
+      // `startLine` follows the initializer, so the position key above hits.
       if (nodeLookup.get(localNameKey(filePath, def.type, simple)) !== undefined) {
         return undefined;
       }
