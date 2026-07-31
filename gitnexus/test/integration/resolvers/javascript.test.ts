@@ -663,3 +663,31 @@ describe('JavaScript factory-pattern singleton resolution (issue #1358 sub-case)
     ]);
   });
 });
+
+// ---------------------------------------------------------------------------
+// Inline constructor receiver: new Legacy().doWork() (#2708)
+// The javascript provider is wired `{ keyword: 'new' }` independently of
+// typescript, so it needs its own fixture. Kept under a `javascript-` prefix
+// deliberately: the capture-fingerprint bench globs fixture directories by
+// language prefix, so `.js` sources parked under a `typescript-` directory
+// would be covered by neither language's guard.
+// ---------------------------------------------------------------------------
+
+describe('JavaScript inline constructor receiver resolution', () => {
+  let result: PipelineResult;
+
+  beforeAll(async () => {
+    result = await runPipelineFromRepo(
+      path.join(FIXTURES, 'javascript-inline-constructor-receiver'),
+      () => {},
+    );
+  }, 60000);
+
+  it('resolves new Legacy().doWork() to Legacy.doWork', () => {
+    const call = getRelationships(result, 'CALLS').find(
+      (c) => c.source === 'viaInlineNewJs' && c.target === 'doWork',
+    );
+    expect(call).toMatchObject({ target: 'doWork', targetFilePath: 'svc.js' });
+    expect(call!.rel.targetId).toContain('Legacy');
+  });
+});
