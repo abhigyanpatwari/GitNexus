@@ -24,6 +24,63 @@ export interface NativeCheckResult {
   kind?: NativeCheckFailureKind;
 }
 
+/**
+ * Re-do the copy `@ladybugdb/core`'s install script performs, when a package
+ * manager skipped that script but still downloaded the prebuilt binary.
+ *
+ * The binary is published in a per-platform optional sub-package
+ * (`@ladybugdb/core-<platform>-<arch>`) and the install script only copies it up
+ * into the main package. Every "install lifecycle script was skipped" case
+ * therefore has the file sitting on disk one directory over, and this restores
+ * it without a network fetch or a source build.
+ *
+ * Load-bearing for `bunx gitnexus@latest …`: bun skips lifecycle scripts for a
+ * `bunx` fetch and has no per-invocation opt-in (its `--trust` flag writes
+ * trustedDependencies into a project package.json, which a one-shot has none
+ * of), AND bun re-extracts the package on every `bunx` run — so a manual repair
+ * is wiped before the next invocation and in-process recovery is the only thing
+ * that can work. Also covers `pnpm dlx` without `--allow-build` and
+ * `npm --ignore-scripts`.
+ *
+ * Best-effort by construction: any failure (read-only node_modules, absent
+ * sub-package, unsupported platform) returns false and the caller falls through
+ * to the existing diagnostics unchanged.
+ */
+function restorePrebuiltNativeBinary(pkgDir: string, binaryPath: string): boolean {
+  try {
+    const manifest = JSON.parse(fs.readFileSync(path.join(pkgDir, 'package.json'), 'utf-8')) as {
+      name?: unknown;
+    };
+    if (typeof manifest.name !== 'string' || manifest.name.length === 0) return false;
+
+    const candidates: string[] = [];
+    try {
+      // require.resolve finds the sub-package regardless of hoisting depth,
+      // matching how the install script locates it.
+      const subPkg = createRequire(import.meta.url).resolve(
+        `${manifest.name}-${process.platform}-${process.arch}/package.json`,
+        { paths: [pkgDir] },
+      );
+      candidates.push(path.join(path.dirname(subPkg), 'lbugjs.node'));
+    } catch {
+      // Sub-package not installed (unsupported platform or missing optionalDep).
+    }
+    // Legacy prebuilt/ layout, for tarballs published before the per-platform
+    // sub-package migration — the same fallback order the install script uses.
+    candidates.push(
+      path.join(pkgDir, 'prebuilt', `lbugjs-${process.platform}-${process.arch}.node`),
+    );
+
+    const prebuilt = candidates.find((candidate) => fs.existsSync(candidate));
+    if (prebuilt === undefined) return false;
+
+    fs.copyFileSync(prebuilt, binaryPath);
+    return fs.existsSync(binaryPath);
+  } catch {
+    return false;
+  }
+}
+
 export function checkLbugNative(overridePkgDir?: string): NativeCheckResult {
   let pkgDir: string;
 
@@ -48,7 +105,11 @@ export function checkLbugNative(overridePkgDir?: string): NativeCheckResult {
   }
 
   const binaryPath = path.join(pkgDir, 'lbugjs.node');
-  if (!fs.existsSync(binaryPath)) {
+  // A missing binary is recoverable whenever the prebuilt sub-package is present
+  // — the install script's copy is all that was skipped. Try that before
+  // reporting failure, so runners that cannot opt into lifecycle scripts (bunx)
+  // work instead of dead-ending on instructions they have no way to follow.
+  if (!fs.existsSync(binaryPath) && !restorePrebuiltNativeBinary(pkgDir, binaryPath)) {
     return {
       ok: false,
       binaryPath,

@@ -36,6 +36,61 @@ describe('checkLbugNative', () => {
     }
   });
 
+  it('restores a missing lbugjs.node from the prebuilt platform sub-package', async () => {
+    // The "install lifecycle script was skipped" case is recoverable without a
+    // network fetch: the binary is already on disk in the per-platform optional
+    // sub-package and the skipped script only copied it up. Load-bearing for
+    // `bunx gitnexus@latest …` — bun skips lifecycle scripts for a bunx fetch,
+    // offers no per-invocation opt-in, and re-extracts on every run, so an
+    // out-of-band repair cannot survive to the next invocation.
+    const root = await fs.mkdtemp(path.join(os.tmpdir(), 'lbug-restore-'));
+    try {
+      const pkgDir = path.join(root, 'node_modules', '@ladybugdb', 'core');
+      const subPkgDir = path.join(
+        root,
+        'node_modules',
+        '@ladybugdb',
+        `core-${process.platform}-${process.arch}`,
+      );
+      await fs.mkdir(pkgDir, { recursive: true });
+      await fs.mkdir(subPkgDir, { recursive: true });
+      await fs.writeFile(path.join(pkgDir, 'package.json'), '{"name":"@ladybugdb/core"}');
+      await fs.writeFile(path.join(subPkgDir, 'package.json'), '{"name":"sub"}');
+      // A real, loadable binary so the check reaches ok:true rather than
+      // stopping at the load probe — this asserts the whole path, not just the copy.
+      const realPath = checkLbugNative().binaryPath;
+      expect(realPath).toBeDefined();
+      await fs.copyFile(realPath!, path.join(subPkgDir, 'lbugjs.node'));
+
+      const result = checkLbugNative(pkgDir);
+
+      expect(result.ok).toBe(true);
+      await expect(fs.access(path.join(pkgDir, 'lbugjs.node'))).resolves.toBeUndefined();
+    } finally {
+      await fs.rm(root, { recursive: true, force: true });
+    }
+  });
+
+  it('still reports binary_missing when no prebuilt sub-package exists to restore from', async () => {
+    // Recovery is best-effort: with nothing to copy, the existing diagnostics
+    // must survive verbatim rather than being masked by a failed restore.
+    const root = await fs.mkdtemp(path.join(os.tmpdir(), 'lbug-restore-none-'));
+    try {
+      const pkgDir = path.join(root, 'node_modules', '@ladybugdb', 'core');
+      await fs.mkdir(pkgDir, { recursive: true });
+      await fs.writeFile(path.join(pkgDir, 'package.json'), '{"name":"@ladybugdb/core"}');
+      await fs.writeFile(path.join(pkgDir, 'install.js'), '');
+
+      const result = checkLbugNative(pkgDir);
+
+      expect(result.ok).toBe(false);
+      expect(result.kind).toBe('binary_missing');
+      expect(result.message).toContain('install.js');
+    } finally {
+      await fs.rm(root, { recursive: true, force: true });
+    }
+  });
+
   it('returns ok:false when lbugjs.node exists but is unloadable (zero-byte)', async () => {
     const tmpDir = await fs.mkdtemp(path.join(os.tmpdir(), 'lbug-check-'));
     try {
