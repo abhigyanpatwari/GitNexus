@@ -73,12 +73,12 @@ describe('CALL_SUMMARY relation-type exclusion (U-C1)', () => {
 });
 
 describe('CALL_SUMMARY incremental reuse gate (U-C5)', () => {
-  it('INCREMENTAL_SCHEMA_VERSION is bumped to 25 (Rust mod-qualified node ids, #2742)', () => {
+  it('INCREMENTAL_SCHEMA_VERSION is bumped to 28 (structural receiver typing, all languages)', () => {
     // Moves with every bump BY DESIGN — that is the point of pinning it. A
     // change that alters emitted ids or edges without bumping would otherwise
     // ship silently, and an existing index would keep serving the old graph
     // through the reuse gate below.
-    expect(INCREMENTAL_SCHEMA_VERSION).toBe(25);
+    expect(INCREMENTAL_SCHEMA_VERSION).toBe(28);
   });
 
   it('a pre-current stamp fails the `=== INCREMENTAL_SCHEMA_VERSION` reuse gate → forces full re-analyze', () => {
@@ -175,14 +175,30 @@ describe('CALL_SUMMARY incremental reuse gate (U-C5)', () => {
     // (#2730): every unchanged Rust file would keep the same-name self-loop and
     // keep reporting the real callee as unreached → must NOT reuse.
     expect(passesReuseGate(22)).toBe(false);
-    // A pre-v24 (v23) index predates
+    // A pre-v24 (v23) index predates the #2708 inline-constructor receivers.
     expect(passesReuseGate(23)).toBe(false);
-    // The current stamp passes the gate (incremental top-up eligible).
-    // A pre-v25 (v24) index predates mod-qualified Rust node ids (#2742): every
-    // item inside a `mod` block has a different id now, so a top-up would strand
-    // the old nodes → must NOT reuse.
+    // A pre-v25 (v24) index predates `unresolvedReceiverMembers` (#2744). An
+    // absent summary is indistinguishable from "nothing was dropped", so a
+    // top-up would keep reporting `epistemic: 'exact'` for exactly the symbols
+    // whose callers were dropped → must NOT reuse.
     expect(passesReuseGate(24)).toBe(false);
-    // The current stamp passes (incremental top-up eligible).
-    expect(passesReuseGate(25)).toBe(true);
+    // A pre-v26 (v25) index typed receivers from source TEXT, so `svc?.m().n()`,
+    // `svc!.m().n()` and `svc.m<T>().n()` emitted no CALLS edge — and two of the
+    // three recorded no drop either, so the count still claimed `exact`. A
+    // changed-files top-up keeps both the missing edge and the false confidence
+    // for every unchanged file → must NOT reuse.
+    expect(passesReuseGate(25)).toBe(false);
+    // A pre-v27 (v26) index was stamped by an intermediate build of this same
+    // series: structural typing was TypeScript-only at that point, and the fold
+    // still typed a bare identifier that merely shadowed a class name as that
+    // class — so such an index carries both pre-rollout edges for 13 languages
+    // and fabricated ones. The gate is a strict `===`, so it must NOT reuse.
+    expect(passesReuseGate(26)).toBe(false);
+    // A pre-v28 (v27) index was stamped mid-series: TypeScript-only structural
+    // typing, and the fold still typed a local that merely shadowed a class name
+    // as that class — so it carries pre-rollout edges AND fabricated ones.
+    expect(passesReuseGate(27)).toBe(false);
+    // The current stamp passes the gate (incremental top-up eligible).
+    expect(passesReuseGate(28)).toBe(true);
   });
 });

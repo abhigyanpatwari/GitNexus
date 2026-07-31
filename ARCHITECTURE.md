@@ -257,6 +257,8 @@ Single interface a language implements to plug into the pipeline. Contract fully
 | `populateNamespaceSiblings?` | Cross-file implicit visibility (compiler-implicit namespace sharing) — default off; ctx carries `treeCache` |
 | `hoistTypeBindingsToModule?` | Walk up to Module scope when looking up a method's return-type typeBinding — default off; enable only when bindings are stored at module level |
 | `hasFileLocalCallableLinkage?` | Precise internal-linkage predicate used only when joining callable declarations/prototypes to cross-file definitions; C/C++ use it for `static` free functions |
+| `constructorCallTargetsClass?` | A constructor-form call `Type(...)` links to the Class def rather than its explicit Constructor def — default off; Swift and Dart opt in |
+| `constructionSyntax?` | How the language spells construction, so an INLINE constructor receiver (`Service(db).m()`, `new Service(db).m()`, `Service.new.m()`) can be typed — `bare` / `keyword` / `selector`; default off, opt in per language only where measured to be needed (#2708) |
 
 ### Per-language registration
 

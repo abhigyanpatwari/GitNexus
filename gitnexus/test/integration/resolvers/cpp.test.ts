@@ -4548,3 +4548,33 @@ describe('C++ deleted overload selection (#1893 A2)', () => {
     ]);
   });
 });
+
+// ---------------------------------------------------------------------------
+// Structural receiver typing for a `->` base receiver.
+//
+// The all-language rollout is proven behaviourally for TypeScript only; this is
+// the second language, and the one the rollout measurably changed: C++
+// `svc->getUser()->save()` emitted NO edge and recorded NO drop before it.
+// ---------------------------------------------------------------------------
+
+describe('C++ structural receiver chain through a pointer base', () => {
+  let result: PipelineResult;
+
+  beforeAll(async () => {
+    result = await runPipelineFromRepo(path.join(FIXTURES, 'cpp-receiver-chain-arrow'), () => {});
+  }, 60000);
+
+  it('resolves svc->getUser()->save() — the `->` base the text cascade could not parse', () => {
+    const calls = getRelationships(result, 'CALLS');
+    expect(
+      calls.find((c) => c.source === 'pointerArrowChain' && c.target === 'save'),
+    ).toMatchObject({ target: 'save' });
+  });
+
+  it('keeps the value-dot base resolving (control — worked before this work)', () => {
+    const calls = getRelationships(result, 'CALLS');
+    expect(calls.find((c) => c.source === 'valueDotChain' && c.target === 'save')).toMatchObject({
+      target: 'save',
+    });
+  });
+});
