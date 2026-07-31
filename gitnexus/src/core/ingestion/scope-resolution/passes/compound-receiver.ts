@@ -479,7 +479,15 @@ export function foldReceiverChain(
     // first. That turned a correct edge into a WRONG one (Ruby
     // `Factory.new.run` → `Product.run`), which is the failure mode this whole
     // line of work exists to avoid. Decline and let the cascade answer.
-    if (options.constructionSyntax?.selector === step.name) return undefined;
+    // `step.name !== undefined` is load-bearing, not defensive. The name-free
+    // step kinds (`await`, `index`) carry no name, and a language with no
+    // `constructionSyntax` has no selector — so the bare equality below was
+    // `undefined === undefined`, which matched EVERY name-free step and vetoed
+    // the whole fold before it ran. That is why subscript and await receivers
+    // minted a chain, fired the gate, and still produced no edge.
+    if (step.name !== undefined && options.constructionSyntax?.selector === step.name) {
+      return undefined;
+    }
 
     // A position whose declared type named no class can only be advanced by an
     // unwrapping step. Folding an ordinary member off it would look the member
