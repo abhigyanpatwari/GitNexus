@@ -122,7 +122,10 @@ describe('generateAIContextFiles', () => {
         expect(content).toContain('`node .gitnexus/run.cjs analyze`');
         expect(content).not.toContain('run `gitnexus analyze`'); // no machine-resolved leak
         // Bootstrap path (for a not-yet-analyzed checkout) + npm-11 escape hatch.
-        expect(content).toContain('npx gitnexus analyze');
+        // Every install-free runner is named, so a machine without npm (bun-only)
+        // still finds a bootstrap command it can actually run.
+        expect(content).toContain('`npx`, `bunx`, or `pnpm dlx`');
+        expect(content).toContain('bunx gitnexus@latest analyze');
         expect(content).toContain('1939');
       }
     } finally {
@@ -182,7 +185,8 @@ describe('generateAIContextFiles', () => {
   it('degrades gracefully when the runner copy fails (#1945)', async () => {
     // A read-only/full-disk storage dir must not abort generation. The copy is
     // best-effort + logged; the generated docs still carry the inline bootstrap
-    // (`npx gitnexus analyze`) so a reader hitting the absent runner has a path.
+    // (`bunx gitnexus@latest analyze`) so a reader hitting the absent runner has
+    // a path.
     const subDir = await fs.mkdtemp(path.join(os.tmpdir(), 'gn-copyfail-'));
     const subStorage = path.join(subDir, '.gitnexus');
     await fs.mkdir(subStorage, { recursive: true });
@@ -192,7 +196,7 @@ describe('generateAIContextFiles', () => {
       // Must not throw despite the copy failure.
       await generateAIContextFiles(subDir, subStorage, 'CopyFail', stats);
       const content = await fs.readFile(path.join(subDir, 'CLAUDE.md'), 'utf-8');
-      expect(content).toContain('npx gitnexus analyze'); // bootstrap survives
+      expect(content).toContain('bunx gitnexus@latest analyze'); // bootstrap survives
       // The runner was not written, so the file is absent.
       await expect(fs.access(path.join(subStorage, 'run.cjs'))).rejects.toThrow();
     } finally {
