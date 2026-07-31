@@ -208,6 +208,10 @@ describe('LadybugDB Schema', () => {
       expect(RELATION_SCHEMA).toContain('FROM BasicBlock TO BasicBlock');
     });
 
+    it('persists consumer Class injection edges to synthetic provider declarations', () => {
+      expect(RELATION_SCHEMA).toContain('FROM Class TO CodeElement');
+    });
+
     it('has all FROM/TO pairs needed for HAS_METHOD edges', () => {
       // HAS_METHOD sources: Class, Interface, Struct, Trait, Impl, Record
       // HAS_METHOD targets: Method, Constructor (Property is now HAS_PROPERTY)

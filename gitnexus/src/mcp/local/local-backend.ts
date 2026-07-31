@@ -2924,6 +2924,8 @@ export class LocalBackend {
         UNION ALL
         MATCH (n:\`Constructor\`) WHERE n.id IN $ids RETURN n.id AS id, 'Constructor' AS label
         UNION ALL
+        MATCH (n:\`CodeElement\`) WHERE n.id IN $ids RETURN n.id AS id, 'CodeElement' AS label
+        UNION ALL
         MATCH (n:\`Const\`) WHERE n.id IN $ids RETURN n.id AS id, 'Const' AS label
         UNION ALL
         MATCH (n:\`Variable\`) WHERE n.id IN $ids RETURN n.id AS id, 'Variable' AS label

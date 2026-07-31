@@ -139,6 +139,7 @@ import { sanitizeDetectedBranch } from '../cli/analyze-config.js';
 import { EMBEDDING_TABLE_NAME } from './lbug/schema.js';
 import { STALE_HASH_SENTINEL } from './lbug/schema.js';
 import { isSpringBeanCandidateSourceFile } from './ingestion/frameworks/spring/bean-catalog.js';
+import { isSpringBeanFactoryDeclaration } from './ingestion/frameworks/spring/bean-factories.js';
 import {
   SPRING_BEAN_INVENTORY_FEATURE,
   SPRING_CONDITIONALS_FEATURE,
@@ -165,6 +166,12 @@ const ANALYSIS_FEATURES = [
 interface PersistedFrameworkAnnotationRow {
   readonly id?: unknown;
   readonly frameworkAnnotations?: unknown;
+}
+
+interface PersistedSpringBeanDeclarationRow {
+  readonly id?: unknown;
+  readonly filePath?: unknown;
+  readonly reason?: unknown;
 }
 
 function stringList(value: unknown): readonly string[] {
@@ -197,6 +204,45 @@ function collectFrameworkAnnotationDriftFiles(
       if (typeof filePath === 'string') driftFiles.add(filePath);
     }
   });
+  return driftFiles;
+}
+
+function collectSpringBeanDeclarationDriftFiles(
+  graph: KnowledgeGraph,
+  persistedRows: readonly PersistedSpringBeanDeclarationRow[],
+): Set<string> {
+  const persisted = new Map<string, { readonly filePath: string; readonly reason: string }>();
+  for (const row of persistedRows) {
+    if (
+      typeof row.id === 'string' &&
+      typeof row.filePath === 'string' &&
+      typeof row.reason === 'string' &&
+      isSpringBeanFactoryDeclaration({ type: 'DECLARES', reason: row.reason })
+    ) {
+      persisted.set(row.id, { filePath: row.filePath, reason: row.reason });
+    }
+  }
+
+  const current = new Map<string, { readonly filePath: string; readonly reason: string }>();
+  for (const relationship of graph.relationships) {
+    if (relationship.type !== 'DECLARES') continue;
+    if (!isSpringBeanFactoryDeclaration(relationship)) continue;
+    const declaration = graph.getNode(relationship.targetId);
+    if (declaration === undefined || typeof declaration.properties.filePath !== 'string') continue;
+    current.set(declaration.id, {
+      filePath: declaration.properties.filePath,
+      reason: relationship.reason,
+    });
+  }
+
+  const driftFiles = new Set<string>();
+  for (const [id, value] of current) {
+    const prior = persisted.get(id);
+    if (prior === undefined || prior.reason !== value.reason) driftFiles.add(value.filePath);
+  }
+  for (const [id, value] of persisted) {
+    if (!current.has(id)) driftFiles.add(value.filePath);
+  }
   return driftFiles;
 }
 
@@ -1853,6 +1899,23 @@ async function runFullAnalysisInner(
           log(
             `Incremental: +${frameworkAnnotationDriftFiles.size} file(s) added for ` +
               'framework annotation property drift',
+          );
+        }
+
+        const persistedSpringBeanDeclarations = (await executeQuery(
+          'MATCH (m:Method)-[r:CodeRelation]->(b:CodeElement) ' +
+            "WHERE r.type = 'DECLARES' AND r.reason STARTS WITH 'spring-bean-factory:' " +
+            'RETURN b.id AS id, b.filePath AS filePath, r.reason AS reason',
+        )) as PersistedSpringBeanDeclarationRow[];
+        const springBeanDeclarationDriftFiles = collectSpringBeanDeclarationDriftFiles(
+          pipelineResult.graph,
+          persistedSpringBeanDeclarations,
+        );
+        for (const filePath of springBeanDeclarationDriftFiles) effectiveWriteSet.add(filePath);
+        if (springBeanDeclarationDriftFiles.size > 0) {
+          log(
+            `Incremental: +${springBeanDeclarationDriftFiles.size} file(s) added for ` +
+              'Spring Bean factory declaration drift',
           );
         }
       }

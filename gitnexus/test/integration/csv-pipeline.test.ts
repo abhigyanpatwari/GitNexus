@@ -641,17 +641,18 @@ describe('streamAllCSVsToDisk — direct per-pair emit matches the split oracle'
         { id: 'Function:a.ts:f:1', label: 'Function', name: 'f', filePath: 'a.ts' },
         { id: 'Function:a.ts:g:5', label: 'Function', name: 'g', filePath: 'a.ts' },
         { id: 'comm_1', label: 'Community' as never, name: 'c1', filePath: '' },
-        { id: 'comm_2', label: 'Community' as never, name: 'c2', filePath: '' },
         { id: 'proc_1', label: 'Process' as never, name: 'p1', filePath: '' },
-        { id: 'proc_2', label: 'Process' as never, name: 'p2', filePath: '' },
       ],
       [
         { sourceId: 'File:a.ts', targetId: 'Function:a.ts:f:1', type: 'CONTAINS' },
         { sourceId: 'File:a.ts', targetId: 'Function:a.ts:g:5', type: 'CONTAINS' },
         { sourceId: 'Function:a.ts:f:1', targetId: 'Function:a.ts:g:5', type: 'CALLS' },
-        { sourceId: 'comm_1', targetId: 'comm_2', type: 'CONTAINS' },
-        // proc_ prefix → Process label (getNodeLabel special case).
-        { sourceId: 'proc_1', targetId: 'proc_2', type: 'CONTAINS' },
+        // comm_ target prefix → Community label (getNodeLabel special case);
+        // Function→Community is a real schema pair.
+        { sourceId: 'Function:a.ts:f:1', targetId: 'comm_1', type: 'MEMBER_OF' },
+        // proc_ target prefix → Process label; Function→Process is likewise
+        // declared in the production relation schema.
+        { sourceId: 'Function:a.ts:g:5', targetId: 'proc_1', type: 'STEP_IN_PROCESS' },
         // Invalid FROM label ('Bogus' ∉ NODE_TABLES) — skipped by both paths.
         { sourceId: 'Bogus:x', targetId: 'File:a.ts', type: 'CONTAINS' },
         // Invalid TO label — exercises the OTHER branch of the skip condition.

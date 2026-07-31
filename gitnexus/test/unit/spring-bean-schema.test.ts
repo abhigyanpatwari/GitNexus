@@ -21,10 +21,10 @@ describe('Spring Bean Class persistence schema', () => {
 
   it('meets the cache-version baselines required by the merged implementation', () => {
     const parseSchemaVersion = Number.parseInt(PARSE_CACHE_VERSION, 10);
-    expect(parseSchemaVersion).toBeGreaterThanOrEqual(22);
-    expect(INCREMENTAL_SCHEMA_VERSION).toBeGreaterThanOrEqual(8);
+    expect(parseSchemaVersion).toBeGreaterThanOrEqual(31);
+    expect(INCREMENTAL_SCHEMA_VERSION).toBeGreaterThanOrEqual(23);
     expect(CLASS_FRAMEWORK_ANNOTATIONS_FEATURE.version).toBe(1);
-    expect(SPRING_BEAN_INVENTORY_FEATURE.version).toBe(1);
+    expect(SPRING_BEAN_INVENTORY_FEATURE.version).toBe(2);
     expect(SPRING_CONDITIONALS_FEATURE.version).toBe(1);
   });
 

@@ -316,6 +316,7 @@ CREATE REL TABLE ${REL_TABLE_NAME} (
   FROM Class TO \`Namespace\`,
   FROM Class TO \`Typedef\`,
   FROM Class TO \`Property\`,
+  FROM Class TO CodeElement,
   FROM Method TO Function,
   FROM Method TO Method,
   FROM Method TO Class,

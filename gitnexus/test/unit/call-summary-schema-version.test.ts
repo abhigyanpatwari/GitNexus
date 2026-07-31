@@ -73,12 +73,12 @@ describe('CALL_SUMMARY relation-type exclusion (U-C1)', () => {
 });
 
 describe('CALL_SUMMARY incremental reuse gate (U-C5)', () => {
-  it('INCREMENTAL_SCHEMA_VERSION is bumped to 28 (structural receiver typing, all languages)', () => {
+  it('INCREMENTAL_SCHEMA_VERSION is bumped to 29 (Spring Bean relation schema, #2413)', () => {
     // Moves with every bump BY DESIGN — that is the point of pinning it. A
     // change that alters emitted ids or edges without bumping would otherwise
     // ship silently, and an existing index would keep serving the old graph
     // through the reuse gate below.
-    expect(INCREMENTAL_SCHEMA_VERSION).toBe(28);
+    expect(INCREMENTAL_SCHEMA_VERSION).toBe(29);
   });
 
   it('a pre-current stamp fails the `=== INCREMENTAL_SCHEMA_VERSION` reuse gate → forces full re-analyze', () => {
@@ -198,7 +198,11 @@ describe('CALL_SUMMARY incremental reuse gate (U-C5)', () => {
     // typing, and the fold still typed a local that merely shadowed a class name
     // as that class — so it carries pre-rollout edges AND fabricated ones.
     expect(passesReuseGate(27)).toBe(false);
+    // A pre-v29 (v28) index lacks Class→CodeElement relation schema support,
+    // so Spring @Bean injection edges (#2413) would be dropped during
+    // persistence → must NOT reuse.
+    expect(passesReuseGate(28)).toBe(false);
     // The current stamp passes the gate (incremental top-up eligible).
-    expect(passesReuseGate(28)).toBe(true);
+    expect(passesReuseGate(29)).toBe(true);
   });
 });

@@ -603,6 +603,15 @@ export interface RepoMeta {
  * graph for every unchanged file, which is exactly the missing-caller symptom
  * #2708 reported. Force a full re-analyze.
  *
+ * v29: Spring @Bean declarations are CodeElement providers and INJECTS may run
+ * from a consumer Class or factory Method to that CodeElement (#2413). The
+ * relation DDL gained Class→CodeElement; a pre-v29 database cannot persist that
+ * label pair, so force a one-time rebuild against the expanded schema.
+ *
+ * (This shipped as v25 on its own branch; `main` took 25 through 28 first, so it
+ * is renumbered at merge time. Re-check both constants against origin/main
+ * immediately before merging — this is the fifth time that collision has bitten.)
+ *
  * v26: unresolved-receiver member names are persisted
  * (`unresolvedReceiverMembers`) so `impact()`/`context()` can report
  * `epistemic: 'lower-bound'` instead of a confident `'exact'` when a call site
@@ -623,7 +632,7 @@ export interface RepoMeta {
  * index holds ids an incremental top-up cannot reconcile and would simply
  * strand. Force a full re-analyze.
  */
-export const INCREMENTAL_SCHEMA_VERSION = 28;
+export const INCREMENTAL_SCHEMA_VERSION = 29;
 
 export interface IndexedRepo {
   repoPath: string;

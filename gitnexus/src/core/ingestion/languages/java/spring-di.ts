@@ -8,6 +8,10 @@ import {
   type SpringDiDependencyFact,
   type SpringDiInjectionSiteFact,
 } from '../../frameworks/spring/di-metadata.js';
+import {
+  hasSpringBeanFactorySyntax,
+  type SpringBeanFactoryMethodFact,
+} from '../../frameworks/spring/bean-factories.js';
 import { parseSpringInjectionType } from '../../di-extractors/spring.js';
 import { nodeToCapture, type SyntaxNode } from '../../utils/ast-helpers.js';
 import { isJavaPackageSiblingVisibilityIncomplete } from './package-siblings.js';
@@ -30,6 +34,7 @@ export type JavaSpringDiClassFact = SpringDiClassFact<
   JavaAnnotationSyntaxFact,
   JavaSpringInjectionSiteKind
 >;
+type JavaSpringBeanFactoryMethodFact = SpringBeanFactoryMethodFact<JavaAnnotationSyntaxFact>;
 
 export function javaSpringAnnotationFacts(node: SyntaxNode): JavaAnnotationSyntaxFact[] {
   const facts: JavaAnnotationSyntaxFact[] = [];
@@ -81,6 +86,7 @@ export function captureJavaSpringDiClassFact(
   if (body === null) return null;
   const classAnnotations = javaSpringAnnotationFacts(classNode);
   const injectionSites: JavaSpringInjectionSiteFact[] = [];
+  const beanFactoryMethods: JavaSpringBeanFactoryMethodFact[] = [];
 
   const constructors = body.namedChildren.filter(
     (child) => child.type === 'constructor_declaration',
@@ -127,10 +133,31 @@ export function captureJavaSpringDiClassFact(
       }
     } else if (member.type === 'method_declaration') {
       const annotations = javaSpringAnnotationFacts(member);
+      const memberName = member.childForFieldName('name')?.text.trim() ?? '<method>';
+      const beanFactory = hasSpringBeanFactorySyntax(annotations);
+      if (beanFactory) {
+        const callableCapture = nodeToCapture('@spring-bean.factory', member);
+        const returnType = member.childForFieldName('type')?.text.trim();
+        beanFactoryMethods.push({
+          callableScopeId: makeScopeId({
+            filePath,
+            range: callableCapture.range,
+            kind: 'Function',
+          }),
+          methodName: memberName,
+          ...(returnType === undefined ? {} : { returnType }),
+          annotations,
+          dependencies: dependenciesOf(member),
+        });
+      }
+      // @Bean parameters are already represented on the factory Method. Do not
+      // also attach them to the owning configuration Class when the method has
+      // an otherwise relevant annotation such as @Autowired or @Qualifier.
+      if (beanFactory) continue;
       if (!hasSpringDiRelevantAnnotation(annotations)) continue;
       injectionSites.push({
         kind: 'method',
-        memberName: member.childForFieldName('name')?.text.trim() ?? '<method>',
+        memberName,
         implicitConstructor: false,
         annotations,
         dependencies: dependenciesOf(member),
@@ -138,12 +165,19 @@ export function captureJavaSpringDiClassFact(
     }
   }
 
-  if (injectionSites.length === 0 && !hasSpringDiRelevantAnnotation(classAnnotations)) return null;
+  if (
+    injectionSites.length === 0 &&
+    beanFactoryMethods.length === 0 &&
+    !hasSpringDiRelevantAnnotation(classAnnotations)
+  ) {
+    return null;
+  }
   const classCapture = nodeToCapture('@spring-di.class', classNode);
   return {
     classScopeId: makeScopeId({ filePath, range: classCapture.range, kind: 'Class' }),
     classAnnotations,
     injectionSites,
+    ...(beanFactoryMethods.length === 0 ? {} : { beanFactoryMethods }),
   };
 }
 
