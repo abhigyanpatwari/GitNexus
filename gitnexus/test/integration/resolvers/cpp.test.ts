@@ -2724,6 +2724,18 @@ describe('C++ two-phase template lookup — dependent-base deep nesting suppress
     const leaks = calls.filter((c) => c.source === 'g' && c.target === 'f');
     expect(leaks.length).toBe(0);
   });
+
+  // The base is `ns::a::b::Inner`, and this fixture deliberately also declares a
+  // global-scope `Inner` to force the multi-candidate path. `resolveDefGraphId`
+  // must reach the deep node, not the global decoy: the scope-extractor leaves
+  // the base's `qualifiedName` a bare `Inner` with the path on `namespacePrefix`,
+  // so only the namespace-prefixed key can distinguish them, and it has to be
+  // tried BEFORE the bare key or the decoy answers first (#2745 review — the
+  // reorder that fixed this was previously unpinned by any assertion).
+  it('EXTENDS anchors on the deep ns.a.b.Inner, not the global Inner decoy', () => {
+    const extendsEdges = getRelationships(result, 'EXTENDS').filter((e) => e.source === 'Derived');
+    expect(extendsEdges).toMatchObject([{ rel: { targetId: 'Struct:lib.h:ns.a.b.Inner' } }]);
+  });
 });
 
 describe('C++ two-phase template lookup — dependent-base sibling-namespace suppression', () => {
@@ -4534,5 +4546,35 @@ describe('C++ deleted overload selection (#1893 A2)', () => {
       'select',
       'touch',
     ]);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Structural receiver typing for a `->` base receiver.
+//
+// The all-language rollout is proven behaviourally for TypeScript only; this is
+// the second language, and the one the rollout measurably changed: C++
+// `svc->getUser()->save()` emitted NO edge and recorded NO drop before it.
+// ---------------------------------------------------------------------------
+
+describe('C++ structural receiver chain through a pointer base', () => {
+  let result: PipelineResult;
+
+  beforeAll(async () => {
+    result = await runPipelineFromRepo(path.join(FIXTURES, 'cpp-receiver-chain-arrow'), () => {});
+  }, 60000);
+
+  it('resolves svc->getUser()->save() — the `->` base the text cascade could not parse', () => {
+    const calls = getRelationships(result, 'CALLS');
+    expect(
+      calls.find((c) => c.source === 'pointerArrowChain' && c.target === 'save'),
+    ).toMatchObject({ target: 'save' });
+  });
+
+  it('keeps the value-dot base resolving (control — worked before this work)', () => {
+    const calls = getRelationships(result, 'CALLS');
+    expect(calls.find((c) => c.source === 'valueDotChain' && c.target === 'save')).toMatchObject({
+      target: 'save',
+    });
   });
 });

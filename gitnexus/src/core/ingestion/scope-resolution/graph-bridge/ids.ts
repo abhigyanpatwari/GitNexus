@@ -34,6 +34,7 @@ import {
 } from '../../utils/callable-labels.js';
 import { templateConstraintsIdTag } from '../../utils/template-arguments.js';
 import { parameterShapeIdTag } from '../../utils/method-props.js';
+import { definitionIdPosition } from '../utils/definition-id.js';
 /**
  * Labels that may legitimately ANCHOR a CALLS/ACCESSES edge as the
  * source ("caller"). A Variable / Property can be the TARGET of an
@@ -99,9 +100,9 @@ function scopeIsCallableBody(
   range: { startLine: number; startCol: number },
   def: SymbolDefinition,
 ): boolean {
-  const m = def.nodeId.match(/#(\d+):(\d+):/);
-  if (m === null) return false;
-  return Number(m[1]) === range.startLine && Number(m[2]) === range.startCol;
+  const position = definitionIdPosition(def.nodeId, def.filePath);
+  if (position === undefined) return false;
+  return position.line === range.startLine && position.column === range.startCol;
 }
 
 /** Pick the callable that owns `atRange` when multiple overloads share a class scope. */
@@ -165,12 +166,8 @@ function pickCallerCallableDef(
  * Extract the 1-based declaration line from a scope-resolution def id.
  * Shape: `def:<filePath>#<line>:<col>:<...>`; `undefined` when it doesn't match.
  */
-function defStartLine(nodeId: string | undefined): number | undefined {
-  if (nodeId === undefined) return undefined;
-  const m = nodeId.match(/#(\d+):(\d+):/);
-  if (m === null) return undefined;
-  const line = Number(m[1]);
-  return Number.isFinite(line) ? line : undefined;
+function defStartLine(nodeId: string | undefined, filePath: string): number | undefined {
+  return definitionIdPosition(nodeId, filePath)?.line;
 }
 
 /**
@@ -221,7 +218,7 @@ export function resolveDefGraphId(
     // without either side having to model the scope chain. Node ids are
     // 0-based, def ids 1-based. An `AMBIGUOUS_POSITION` tombstone (two
     // callables on one line) falls through to the name-based keys below.
-    const line = defStartLine(def.nodeId);
+    const line = defStartLine(def.nodeId, filePath);
     if (line !== undefined && isPositionQualifiedLocalLabel(def.type)) {
       const simple = simpleNameOf(qn);
       const posHit = nodeLookup.get(positionKey(filePath, def.type, line - 1, simple));
@@ -240,6 +237,36 @@ export function resolveDefGraphId(
         return undefined;
       }
     }
+    // Name forms to try for every keyed lookup below, most specific first.
+    //
+    // #1982/#2742: some scope-extractors qualify a def by its enclosing CLASS
+    // chain (`A.Inner`) or leave it a bare tail, while the structure-phase node is
+    // keyed by the full path (`NS.A.Inner`, or a Rust `mod` chain). The
+    // namespace-prefixed form is therefore the more specific one and must be tried
+    // first — the bare form happily matches a same-named item at a DIFFERENT
+    // namespace depth in the same file and returns it before any retry is reached
+    // (#2742: a call into `mod inner { fn dispatch }` bound to the crate-root
+    // `fn dispatch` and rendered as a self-loop).
+    //
+    // Applied to the TAGGED keys too, not just the plain one. Previously only the
+    // plain key had the prefixed retry, so for a namespace/mod-qualified def every
+    // tagged key — constraints, parameter types, parameter shape, arity, template
+    // arguments — composed from the bare tail and simply missed the node
+    // `node-lookup.ts` had registered under the qualified name. Those keys exist to
+    // separate overloads, so leaving them dead meant a mod-scoped overload set
+    // depended on whichever later key happened to catch it.
+    const defType = def.type;
+    const nsPrefix = def.namespacePrefix;
+    const nameForms =
+      nsPrefix !== undefined && nsPrefix.length > 0 ? [`${nsPrefix}.${qn}`, qn] : [qn];
+    const lookupTagged = (tag: string): string | undefined => {
+      for (const form of nameForms) {
+        const hit = nodeLookup.get(qualifiedKey(filePath, defType, `${form}${tag}`));
+        if (hit !== undefined) return hit;
+      }
+      return undefined;
+    };
+
     // SFINAE / `requires`-clause disambiguation (issue #1579) — try the
     // constraint-fingerprinted key FIRST. Two function-template overloads
     // with identical `parameterTypes` but mutually-exclusive SFINAE
@@ -250,12 +277,7 @@ export function resolveDefGraphId(
       (def.type === 'Function' || def.type === 'Method') &&
       def.templateConstraints !== undefined
     ) {
-      const cKey = qualifiedKey(
-        filePath,
-        def.type,
-        `${qn}${templateConstraintsIdTag(def.templateConstraints)}`,
-      );
-      const cHit = nodeLookup.get(cKey);
+      const cHit = lookupTagged(templateConstraintsIdTag(def.templateConstraints));
       if (cHit !== undefined) return cHit;
     }
     if (
@@ -265,8 +287,7 @@ export function resolveDefGraphId(
     ) {
       const shapeTag = parameterShapeIdTag(def.parameterTypes, def.parameterTypeClasses);
       if (shapeTag !== '') {
-        const shapeKey = qualifiedKey(filePath, def.type, `${qn}${shapeTag}`);
-        const shapeHit = nodeLookup.get(shapeKey);
+        const shapeHit = lookupTagged(shapeTag);
         if (shapeHit !== undefined) return shapeHit;
       }
     }
@@ -282,8 +303,7 @@ export function resolveDefGraphId(
       def.parameterTypes !== undefined &&
       def.parameterTypes.length > 0
     ) {
-      const pKey = qualifiedKey(filePath, def.type, `${qn}~${def.parameterTypes.join(',')}`);
-      const pHit = nodeLookup.get(pKey);
+      const pHit = lookupTagged(`~${def.parameterTypes.join(',')}`);
       if (pHit !== undefined) return pHit;
     }
     // Arity-disambiguating key (see node-lookup.ts): route a same-name overload
@@ -291,8 +311,7 @@ export function resolveDefGraphId(
     // zero-arg overload (no parameterTypes) that would otherwise collapse onto a
     // sibling overload via the source-order-dependent qualified key.
     if (isOverloadableCallable(def.type) && def.parameterCount !== undefined) {
-      const aKey = qualifiedKey(filePath, def.type, `${qn}#${def.parameterCount}`);
-      const aHit = nodeLookup.get(aKey);
+      const aHit = lookupTagged(`#${def.parameterCount}`);
       if (aHit !== undefined) return aHit;
     }
     if (
@@ -304,23 +323,11 @@ export function resolveDefGraphId(
       def.templateArguments !== undefined &&
       def.templateArguments.length > 0
     ) {
-      const tKey = qualifiedKey(filePath, def.type, `${qn}~${def.templateArguments.join(',')}`);
-      const tHit = nodeLookup.get(tKey);
+      const tHit = lookupTagged(`~${def.templateArguments.join(',')}`);
       if (tHit !== undefined) return tHit;
     }
-    const qualifiedHit = nodeLookup.get(qualifiedKey(filePath, def.type, qn));
+    const qualifiedHit = lookupTagged('');
     if (qualifiedHit !== undefined) return qualifiedHit;
-    // #1982: some scope-extractors qualify a type by its enclosing CLASS chain
-    // (`A.Inner`) but drop the enclosing NAMESPACE, while the structure-phase
-    // node is keyed by the full path (`NS.A.Inner`). Retry with the
-    // namespace-prefixed key (tagged by `tagNamespacePrefixes`) BEFORE the
-    // simple-name fallback, so same-tail nested bases don't collapse across
-    // sibling namespace members via `simpleKey`.
-    const nsPrefix = def.namespacePrefix;
-    if (nsPrefix !== undefined && nsPrefix.length > 0) {
-      const nsHit = nodeLookup.get(qualifiedKey(filePath, def.type, `${nsPrefix}.${qn}`));
-      if (nsHit !== undefined) return nsHit;
-    }
   }
   const simpleName = qn.lastIndexOf('.') === -1 ? qn : qn.slice(qn.lastIndexOf('.') + 1);
   return nodeLookup.get(simpleKey(filePath, simpleName));

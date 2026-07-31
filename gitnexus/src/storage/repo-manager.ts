@@ -227,6 +227,22 @@ export interface RepoMeta {
    */
   cjkSegmentation?: string;
   /**
+   * Member names whose call sites were DROPPED because the receiver's type
+   * could not be established (#2744, the second half of #2708). Read by
+   * `impact()` / `context()` to report a result as `epistemic: 'lower-bound'`
+   * instead of `'exact'` when the queried symbol's name appears here.
+   *
+   * Keyed by member name, not by target symbol, on purpose: a dropped site's
+   * callee is unknown by definition, so the drop cannot be attributed to any
+   * target. Absent when a run dropped nothing, which is the common case and
+   * keeps `epistemic` exact for cleanly-resolving repos.
+   */
+  unresolvedReceiverMembers?: {
+    counts: Record<string, number>;
+    totalSites: number;
+    omittedNames?: number;
+  };
+  /**
    * SHA-256 of every file's content at the time of the last successful
    * indexing run. The next run computes current hashes and diffs against
    * this map to determine which files' DB rows must be replaced.
@@ -552,6 +568,28 @@ export interface RepoMeta {
  * — for every unchanged Rust file, which is exactly the symptom #2730
  * reported. Force a full re-analyze.
  *
+ * v28: structural receiver typing is active for ALL 14 languages, and the fold no
+ * longer types a bare identifier that merely SHADOWS a class name as that class.
+ * v27 landed with TypeScript-only emission and with the permissive base lookup, so
+ * an index stamped 27 by an intermediate build carries both pre-rollout edges for 13
+ * languages AND the fabricated edges the shadowing bug produced. The reuse gate is a
+ * strict `===`, so such an index would be treated as current. Re-bumped here so the
+ * version tracks the final edge semantics. Force a full re-analyze.
+ *
+ * v26: receiver expressions are typed from captured structure rather than from
+ * their source text. `svc?.getUser().save()`, `svc!.getUser().save()` and
+ * `svc.getTyped<User>().save()` previously emitted NO `CALLS` edge — the text
+ * cascade split the receiver on punctuation it could not parse — and two of the
+ * three recorded no drop either, because a later case marked the site handled,
+ * which suppresses the drop record. So the caller was missing from
+ * `impact(direction: "upstream")` and `context()` AND the count still claimed
+ * `epistemic: 'exact'`. Same v11/v12 contract: the incremental write set covers
+ * only CHANGED files, so a top-up against a pre-v26 index keeps serving the
+ * pre-fix graph — and the pre-fix confident count — for every unchanged file.
+ * Worse than merely incomplete: the drop summary is a whole-repo recompute while
+ * the edges are a changed-files write, so the two would disagree. Force a full
+ * re-analyze.
+ *
  * v24: inline constructor receivers resolve — `Service(db).do_work()` (Python),
  * `new Service(db).doWork()` (JS/TS, C#), `Service.new.do_work` (Ruby), plus the
  * generic, qualified, chain-head and keyword-trivia spellings of the same shape
@@ -564,8 +602,28 @@ export interface RepoMeta {
  * the same-commit "already up to date" fast path — keeps returning the pre-fix
  * graph for every unchanged file, which is exactly the missing-caller symptom
  * #2708 reported. Force a full re-analyze.
+ *
+ * v26: unresolved-receiver member names are persisted
+ * (`unresolvedReceiverMembers`) so `impact()`/`context()` can report
+ * `epistemic: 'lower-bound'` instead of a confident `'exact'` when a call site
+ * was dropped for want of a receiver type (#2744). A pre-v26 index carries no
+ * such summary, and an absent summary is indistinguishable from "nothing was
+ * dropped" — so topping one up incrementally would keep reporting `exact` for
+ * exactly the symbols the signal exists to flag. Force a full re-analyze.
+ *
+ * (This shipped as v25 on its own branch; `main` took 25 for #2742 first, so it
+ * is renumbered here. Re-check both constants against origin/main immediately
+ * before merging — this is the fourth time that collision has bitten.)
+ *
+ * v25: Rust items are qualified by their enclosing `mod` chain (#2742), so
+ * `mod inner { fn dispatch }` and a crate-root `fn dispatch` in one file are
+ * finally DISTINCT nodes instead of collapsing onto `Function:<file>:dispatch`
+ * first-wins. Node IDS CHANGE for every Rust item inside any `mod` block —
+ * `#[cfg(test)] mod tests` makes that close to every Rust repo — so a pre-v25
+ * index holds ids an incremental top-up cannot reconcile and would simply
+ * strand. Force a full re-analyze.
  */
-export const INCREMENTAL_SCHEMA_VERSION = 24;
+export const INCREMENTAL_SCHEMA_VERSION = 28;
 
 export interface IndexedRepo {
   repoPath: string;

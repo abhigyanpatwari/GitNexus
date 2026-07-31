@@ -26,6 +26,7 @@ import {
 import { captureKotlinPackageFact } from './package-facts.js';
 import { synthesizeCallableFlowCaptures } from '../../utils/callable-flow-captures.js';
 import { captureKotlinSpringDiClassFact, type KotlinSpringDiClassFact } from './spring-di.js';
+import { synthesizeReceiverChainCapture } from '../../utils/receiver-chain-captures.js';
 import {
   captureKotlinSpringConditionalFacts,
   type KotlinSpringConditionalFact,
@@ -246,6 +247,12 @@ export function emitKotlinScopeCaptures(
     }
 
     if (grouped['@scope.function'] !== undefined) {
+      // Structural receiver chain for a call whose receiver is itself an
+      // expression, so resolution can type it by folding over structure
+      // instead of re-parsing the receiver's source text. Self-gating: a
+      // non-call match, an absent receiver, or a chain with no nameable base
+      // all leave `grouped` untouched.
+      synthesizeReceiverChainCapture(grouped, groupedNodes['@reference.receiver']);
       out.push(grouped);
       const fnNode = nodeIfType(groupedNodes['@scope.function'], 'function_declaration');
       if (fnNode !== null) {
@@ -303,6 +310,12 @@ export function emitKotlinScopeCaptures(
       }
     }
 
+    // Structural receiver chain for a call whose receiver is itself an
+    // expression, so resolution can type it by folding over structure
+    // instead of re-parsing the receiver's source text. Self-gating: a
+    // non-call match, an absent receiver, or a chain with no nameable base
+    // all leave `grouped` untouched.
+    synthesizeReceiverChainCapture(grouped, groupedNodes['@reference.receiver']);
     out.push(grouped);
 
     const extensionFallback = extensionFreeCallFallback(grouped, groupedNodes);
