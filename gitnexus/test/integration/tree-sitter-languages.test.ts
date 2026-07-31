@@ -493,6 +493,48 @@ describe('Tree-sitter multi-language parsing', () => {
       expect(defs.length).toBeGreaterThan(0);
     });
 
+    it('captures a class whose body contains indented conditional directives after preprocessing', async () => {
+      await loadLanguage(SupportedLanguages.Swift);
+      const content = [
+        'class Outer {',
+        '  enum A { case x }',
+        '  #if os(iOS)',
+        '  enum B { case y }',
+        '  #endif',
+        '}',
+      ].join('\n');
+      const provider = getProvider(SupportedLanguages.Swift);
+      const parseContent = provider.preprocessSource?.(content, 'Fixture.swift') ?? content;
+      const { tree, matches } = parseAndQuery(parser, parseContent, provider.treeSitterQueries);
+      const defs = extractDefinitions(matches);
+
+      expect(tree.rootNode.hasError).toBe(false);
+      expect(defs).toContainEqual({ type: 'definition.class', name: 'Outer' });
+    });
+
+    it('leaves top-level conditional directives intact while capturing their declarations', async () => {
+      await loadLanguage(SupportedLanguages.Swift);
+      const content = [
+        '#if os(iOS)',
+        'struct PlatformValue {',
+        '  let value: Int = 1',
+        '}',
+        '#else',
+        'struct PlatformValue {',
+        '  let value: Int = 2',
+        '}',
+        '#endif',
+      ].join('\n');
+      const provider = getProvider(SupportedLanguages.Swift);
+      const parseContent = provider.preprocessSource?.(content, 'Fixture.swift') ?? content;
+      const { tree, matches } = parseAndQuery(parser, parseContent, provider.treeSitterQueries);
+      const defs = extractDefinitions(matches);
+
+      expect(tree.rootNode.hasError).toBe(false);
+      expect(parseContent).toBe(content);
+      expect(defs).toContainEqual({ type: 'definition.struct', name: 'PlatformValue' });
+    });
+
     it('gracefully handles missing tree-sitter-swift', async () => {
       // If Swift is NOT available, loadLanguage should throw
       // If it IS available, this test just passes

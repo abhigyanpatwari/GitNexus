@@ -37,6 +37,7 @@ import {
   swiftMergeBindings,
   swiftArityCompatibility,
 } from './swift/index.js';
+import { preprocessSwiftConditionalDirectives } from './swift/conditional-directive-preprocess.js';
 
 /** Swift init/deinit declarations have special names and Constructor label. */
 const swiftExtractFunctionName = (
@@ -178,6 +179,7 @@ const BUILT_INS: ReadonlySet<string> = new Set([
 export const swiftProvider = defineLanguage({
   id: SupportedLanguages.Swift,
   extensions: ['.swift'],
+  preprocessSource: preprocessSwiftConditionalDirectives,
   entryPointPatterns: [
     /^viewDidLoad$/,
     /^viewWillAppear$/,
