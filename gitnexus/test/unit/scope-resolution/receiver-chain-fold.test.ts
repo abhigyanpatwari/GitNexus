@@ -93,37 +93,37 @@ function fold(encoded: string) {
 
 describe('foldReceiverChain', () => {
   it('types a single call step through the method return type', () => {
-    expect(fold('1|svc|cgetUser')).toMatchObject({ qualifiedName: 'User', type: 'Class' });
+    expect(fold('2|svc|cgetUser')).toMatchObject({ qualifiedName: 'User', type: 'Class' });
   });
 
   it('types a mixed call/field chain, base-first', () => {
-    expect(fold('1|svc|cgetUser|faddress')).toMatchObject({
+    expect(fold('2|svc|cgetUser|faddress')).toMatchObject({
       qualifiedName: 'Address',
       type: 'Class',
     });
   });
 
   it('types a step inherited through the MRO', () => {
-    expect(fold('1|svc|cinherited')).toMatchObject({ qualifiedName: 'User', type: 'Class' });
+    expect(fold('2|svc|cinherited')).toMatchObject({ qualifiedName: 'User', type: 'Class' });
   });
 
   it('returns undefined when a step names no member of the previous class', () => {
-    expect(fold('1|svc|cgetUser|fnoSuchField')).toBeUndefined();
+    expect(fold('2|svc|cgetUser|fnoSuchField')).toBeUndefined();
   });
 
   it('returns undefined when the base does not resolve', () => {
-    expect(fold('1|noSuchLocal|cgetUser')).toBeUndefined();
+    expect(fold('2|noSuchLocal|cgetUser')).toBeUndefined();
   });
 
   it('does not consult the field fallback', () => {
     // `Holder` has no member `save` — only its field's TYPE does. The field
     // fallback would walk Holder's fields, find `User.save` and answer: a
     // guess, at O(fields x depth x names) per step. The fold declines.
-    expect(fold('1|holder|csave')).toBeUndefined();
+    expect(fold('2|holder|csave')).toBeUndefined();
   });
 
   it('declines a truncated chain even though the producer refuses to mint one', () => {
-    expect(fold('1|svc|cgetUser|~')).toBeUndefined();
+    expect(fold('2|svc|cgetUser|~')).toBeUndefined();
   });
 
   it('declines a construction-selector step and leaves it to the cascade', () => {
@@ -133,7 +133,7 @@ describe('foldReceiverChain', () => {
     // named `new`; a chain step records only a name, so the fold cannot make the
     // distinction and must not try. Folding it turned a correct Ruby edge
     // (`Factory.new.run` → `Factory#run`) into a wrong one (`Product.run`).
-    const decoded = decodeReceiverChain('1|svc|cnew');
+    const decoded = decodeReceiverChain('2|svc|cnew');
     expect(decoded).toBeDefined();
     expect(
       foldReceiverChain(decoded!, ctx.inScope, ctx.scopes, ctx.index, {
@@ -151,9 +151,9 @@ describe('foldReceiverChain', () => {
     // how an unrelated module-level binding of the same name gets picked up,
     // which is exactly what the flag's own contract warns against. Same chain,
     // opposite answers, so this pins the branch rather than the happy path.
-    expect(foldWith('1|svc|cgetUser', { hoistTypeBindingsToModule: true })).toMatchObject({
+    expect(foldWith('2|svc|cgetUser', { hoistTypeBindingsToModule: true })).toMatchObject({
       qualifiedName: 'User',
     });
-    expect(foldWith('1|svc|cgetUser', { hoistTypeBindingsToModule: false })).toBeUndefined();
+    expect(foldWith('2|svc|cgetUser', { hoistTypeBindingsToModule: false })).toBeUndefined();
   });
 });

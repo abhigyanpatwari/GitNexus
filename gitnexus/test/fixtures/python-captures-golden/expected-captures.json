@@ -109,7 +109,7 @@
   },
   "python-chain-call/app.py": {
     "captureGroups": 9,
-    "digest": "63798aa4bc97cd70bac26d971dd8980030a35a6bab5e1f88acff139bd1dcd67b"
+    "digest": "32a50d4cb43aecefbd97efd812eb1c8d63fc3034fb3c948ca2f4cc9116e11303"
   },
   "python-chain-call/models/repo.py": {
     "captureGroups": 7,
@@ -177,7 +177,7 @@
   },
   "python-constructor-field-receiver/memory_service.py": {
     "captureGroups": 59,
-    "digest": "c46b8b91e9f7a41f8fcdd13a8dbc6132458ea2e4e4d19b852b054ced848e91c4"
+    "digest": "7fbc07c361997c2e44b401b301f10081345a0bcadf86feae30bc895a1858f5d5"
   },
   "python-constructor-field-receiver/test_fixture.py": {
     "captureGroups": 13,
@@ -273,7 +273,7 @@
   },
   "python-django-app-imports/config/asgi.py": {
     "captureGroups": 7,
-    "digest": "44e7118a9123e137d361f2cde199c1ed653a01503449577f8e260d6670f8c243"
+    "digest": "c6f0099622890188e8aed9b0cd0631040bc44d7e47a261a1a6ba00a144d3f6d8"
   },
   "python-django-app-imports/config/settings.py": {
     "captureGroups": 21,
@@ -285,11 +285,11 @@
   },
   "python-django-app-imports/config/wsgi.py": {
     "captureGroups": 7,
-    "digest": "32a6daf4cf7ff4938c7077e27f4f911a4630890f72ba4d6c11c25d05fab18f69"
+    "digest": "fad4cb18554c2433f6a9ce32de800ef22d5e78def2387e30f2eb2ebf97a80312"
   },
   "python-django-app-imports/manage.py": {
     "captureGroups": 11,
-    "digest": "4c86987fe515c4417d6157dabbed6f0abe50b21f9fe08497a0d2a5e04223b322"
+    "digest": "49022e52142b861dbeab7f2aac57cf76c2d782d7e37fc37ad2e9e6b3b995d0ff"
   },
   "python-enumerate-loop/app.py": {
     "captureGroups": 27,
@@ -309,7 +309,7 @@
   },
   "python-field-type-disambig/service.py": {
     "captureGroups": 7,
-    "digest": "d406758347cfa612e0a7c69e9613ce19d9b7658744c2a7c8d079182eded41fde"
+    "digest": "4460b3bf3219f1a7c7633839adfd50a293cc2df6fa0db436358b1c112b12d6b9"
   },
   "python-field-type-disambig/user.py": {
     "captureGroups": 12,
@@ -321,7 +321,7 @@
   },
   "python-field-types/service.py": {
     "captureGroups": 7,
-    "digest": "6022bc25143590d4736a7a470c0df6442c9b1478738b0812d53b038b5843822d"
+    "digest": "11fce687b8092ea0ebc12348dd7fb314ab95ddf61bae813474ec3994fbb60c52"
   },
   "python-for-call-expr/main.py": {
     "captureGroups": 15,
@@ -365,7 +365,7 @@
   },
   "python-grandparent-resolution/app.py": {
     "captureGroups": 9,
-    "digest": "dd0012c9188d9145bdfa8b74a2c3f213ec658b0efaa0c2ac9a09c1f6f7d6c4d3"
+    "digest": "e8658e76b1e0e6a4a8847bb60554a102a7b72ef582cf4065a19f5da78a73f568"
   },
   "python-grandparent-resolution/models/__init__.py": {
     "captureGroups": 0,
@@ -621,7 +621,7 @@
   },
   "python-overload-dispatch/service.py": {
     "captureGroups": 37,
-    "digest": "a0b60d32ee7065e8e5b0eb9d1bf180b81485e0899d141542663615b74ef55f95"
+    "digest": "fd23d8926c3debb335ab3ae7126d4314ec2f5d81f5e81f47c12a5a7d8b25537d"
   },
   "python-parent-resolution/models/__init__.py": {
     "captureGroups": 0,
