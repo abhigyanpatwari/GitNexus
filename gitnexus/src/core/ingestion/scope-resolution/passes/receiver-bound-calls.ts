@@ -82,6 +82,8 @@ import type {
   ResolutionOutcomeRecorder,
   ResolutionSuppressionReason,
 } from '../resolution-outcome.js';
+import { classifyReceiverShape } from '../resolution-outcome.js';
+import { decodeReceiverChain } from '../../utils/receiver-chain-codec.js';
 
 /** Subset of `ScopeResolver` consumed by this pass. Accepting the
  *  subset rather than the full provider keeps tests and partial
@@ -1356,6 +1358,11 @@ export function emitReceiverBoundCalls(
           // recorded here too. Carry the kind so a consumer can separate a
           // dropped CALL from a dropped property access.
           siteKind: site.kind,
+          // Structural, from the AST-derived chain the emitter minted — never
+          // re-derived from the source line.
+          receiverShape: classifyReceiverShape(
+            site.receiverChain === undefined ? undefined : decodeReceiverChain(site.receiverChain),
+          ),
         });
       }
     }

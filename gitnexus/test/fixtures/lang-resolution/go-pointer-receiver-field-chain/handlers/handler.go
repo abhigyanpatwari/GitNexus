@@ -52,3 +52,20 @@ type ValueHolder struct {
 func (v ValueHolder) RunFromValueReceiver() error {
 	return v.impl.DoWork()
 }
+
+// #2766 / U8 control: SAME-PACKAGE field receiver through a pointer receiver.
+// Before the base fix this emitted an ACCESSES edge to the method and NO CALLS
+// edge — the member name resolved while the CALLS leg, which needs the
+// receiver's class, did not. It is the shape that made the miss look like an
+// edge-classification bug rather than a receiver-typing one.
+type LocalDep struct{}
+
+func (d *LocalDep) Work() error { return nil }
+
+type LocalHost struct {
+	dep *LocalDep
+}
+
+func (h *LocalHost) RunSamePackage() error {
+	return h.dep.Work()
+}

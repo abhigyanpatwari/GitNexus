@@ -10,6 +10,7 @@ import {
   lookupUnresolvedCallCount,
   summarizeUnresolvedReceivers,
 } from '../../../src/core/ingestion/scope-resolution/unresolved-receivers.js';
+import { classifyReceiverShape } from '../../../src/core/ingestion/scope-resolution/resolution-outcome.js';
 import type { ResolutionOutcome } from '../../../src/core/ingestion/scope-resolution/resolution-outcome.js';
 
 const range = { startLine: 1, startCol: 0, endLine: 1, endCol: 1 };
@@ -125,5 +126,34 @@ describe('summarizeUnresolvedReceivers', () => {
     expect(lookupUnresolvedCallCount(summary, 'save')).toBe(1);
     expect(lookupUnresolvedCallCount(summary, 'neverRecorded')).toBeUndefined();
     expect(lookupUnresolvedCallCount(undefined, 'save')).toBeUndefined();
+  });
+});
+
+describe('classifyReceiverShape', () => {
+  it('reports no-chain when the site carried no chain', () => {
+    expect(classifyReceiverShape(undefined)).toBe('no-chain');
+  });
+
+  it('reports no-chain for a chain with no steps', () => {
+    expect(classifyReceiverShape({ steps: [] })).toBe('no-chain');
+  });
+
+  it('reports chain-call when every step is a call', () => {
+    expect(classifyReceiverShape({ steps: [{ kind: 'call' }, { kind: 'call' }] })).toBe(
+      'chain-call',
+    );
+  });
+
+  it('reports chain-field when every step is a field', () => {
+    expect(classifyReceiverShape({ steps: [{ kind: 'field' }] })).toBe('chain-field');
+  });
+
+  // The distinction that makes the census actionable: a mixed chain fails for
+  // different reasons than a pure one, so collapsing it into either bucket
+  // would misattribute the population a fix has to target.
+  it('reports chain-mixed when the chain interleaves calls and fields', () => {
+    expect(classifyReceiverShape({ steps: [{ kind: 'call' }, { kind: 'field' }] })).toBe(
+      'chain-mixed',
+    );
   });
 });

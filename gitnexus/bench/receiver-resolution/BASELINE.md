@@ -1,5 +1,44 @@
 # Receiver-resolution baseline
 
+## U10 — recorded drops, censused by receiver shape
+
+`ResolutionOutcome`'s suppressed variant now carries `receiverShape`, set by the
+emitting case from the site's ENCODED CHAIN — the compact string the capture
+emitters mint by walking the real AST. Never re-derived from the source line:
+doing that would mean regex-classifying the number that gates this work, the
+same textual-shape dispatch the structural-receiver line exists to remove.
+Diagnostic only, so the persisted `RepoMeta.unresolvedReceiverMembers` artifact
+is unchanged.
+
+Census of the 101 call drops on the committed fixture corpus:
+
+| Shape | Count | Share |
+|---|---|---|
+| `chain-field` — every step a field (`h.repo.save()`) | 60 | 59% |
+| `chain-call` — every step a call (`svc.getUser().save()`) | 27 | 27% |
+| `no-chain` — no chain minted; the walk found no nameable base | 12 | 12% |
+| `chain-mixed` — interleaved (`svc.getUser().addr.save()`) | 2 | 2% |
+
+Two decisions come out of it.
+
+**The `.java` bucket is not one defect.** Its 49 call drops split 30 field-chain
+/ 14 call-chain / 5 no-chain, so the open question of whether Java's largest-
+single-bucket status hides a single cause is answered: it does not. It is the
+same population as everywhere else, just more of it.
+
+**Field-receiver chains are where the remaining value is.** At 59% they dominate,
+and they are precisely the shape U1 fixed for Go — whose count fell to 3.
+The same defect class in java (30), csharp (6), cpp (4), php (4), py (3) and
+rust (3) is the largest addressable population the count arm can see.
+
+**What this census CANNOT justify.** Await-wrapped and subscript receivers do not
+appear, because the committed fixture corpus contains no such sites — not
+because they are rare in real code. `indexElement` is an INVISIBLE-GAP in all 14
+languages in the shape arm, so U5's population is real but structurally
+invisible to the count arm. Any decision to fund or drop U4 and U5 has to be
+read off the SHAPE arm; reading it off this census would confuse "absent from
+these fixtures" with "does not happen".
+
 ## U2 — shape matrix expanded to a canonical axis
 
 The shape arm was three languages with an ad-hoc shape list each. It is now a

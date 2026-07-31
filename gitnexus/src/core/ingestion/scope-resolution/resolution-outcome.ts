@@ -61,6 +61,60 @@ export type ResolutionOutcome =
        * persisted `RepoMeta.unresolvedReceiverMembers` artifact is unchanged.
        */
       readonly siteKind?: ReferenceKind;
+      /**
+       * Structural shape of the receiver whose type could not be established.
+       *
+       * Derived from the site's ENCODED RECEIVER CHAIN — the compact string the
+       * capture emitters mint by walking the real AST — never from the source
+       * line. Re-deriving a shape textually would mean regex-classifying the
+       * number that gates this work, which is exactly the textual-shape dispatch
+       * the structural-receiver line of work exists to remove.
+       *
+       * Lets a consumer ask "which KIND of receiver are we losing?" instead of
+       * only "how many". Without it, `callDropsByExtension` is the finest
+       * available split and a language's bucket says nothing about whether the
+       * cause is one defect or five.
+       *
+       * NOTE ON COVERAGE: only drops that REACH the recorder carry a shape, and
+       * Case 0's gate fires on receiver punctuation, so shapes that mint no
+       * reference site at all (`?.`, explicit type args, subscript) are absent
+       * from this breakdown entirely — they are the INVISIBLE-GAP population the
+       * bench shape arm exists to see. A shape census here is a census of the
+       * VISIBLE drops, not of all lost calls.
+       *
+       * Diagnostic only. `summarizeUnresolvedReceivers` ignores it, so the
+       * persisted `RepoMeta.unresolvedReceiverMembers` artifact is unchanged.
+       */
+      readonly receiverShape?: ReceiverShape;
     };
+
+/**
+ * How a dropped receiver was spelled, structurally.
+ *
+ * - `chain-call`   every recorded step is a call — `svc.getUser().save()`
+ * - `chain-field`  every recorded step is a field — `h.repo.save()`
+ * - `chain-mixed`  the chain interleaves both — `svc.getUser().addr.save()`
+ * - `no-chain`     the site carried no chain, so the receiver was a compound
+ *                  expression the capture walk could not reduce to a nameable
+ *                  base (it stopped early, or the base was unencodable)
+ */
+export type ReceiverShape = 'chain-call' | 'chain-field' | 'chain-mixed' | 'no-chain';
+
+/** Classify a dropped receiver from its encoded chain. `undefined` chain ⇒
+ *  `no-chain`; an undecodable one is also `no-chain`, since what we know about
+ *  it is exactly that no usable structure survived. */
+export function classifyReceiverShape(
+  decoded: { readonly steps: readonly { readonly kind: string }[] } | undefined,
+): ReceiverShape {
+  if (decoded === undefined || decoded.steps.length === 0) return 'no-chain';
+  let calls = 0;
+  let fields = 0;
+  for (const step of decoded.steps) {
+    if (step.kind === 'call') calls++;
+    else fields++;
+  }
+  if (calls > 0 && fields > 0) return 'chain-mixed';
+  return calls > 0 ? 'chain-call' : 'chain-field';
+}
 
 export type ResolutionOutcomeRecorder = (outcome: ResolutionOutcome) => void;

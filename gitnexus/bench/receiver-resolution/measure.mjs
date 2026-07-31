@@ -1333,12 +1333,22 @@ async function runCountArm(repoPath) {
   const byKind = new Map();
   const byExtension = new Map();
   const callDropsByExtension = new Map();
+  // Shape census over the CALL drops only, so the answer to "which kind of
+  // receiver are we losing?" is not diluted by property reads and writes.
+  const callDropsByShape = new Map();
+  const callDropsByShapeAndExt = new Map();
   for (const drop of drops) {
     const kind = drop.siteKind ?? '<<unset>>';
     byKind.set(kind, (byKind.get(kind) ?? 0) + 1);
     const ext = path.extname(drop.filePath);
     byExtension.set(ext, (byExtension.get(ext) ?? 0) + 1);
-    if (kind === 'call') callDropsByExtension.set(ext, (callDropsByExtension.get(ext) ?? 0) + 1);
+    if (kind === 'call') {
+      callDropsByExtension.set(ext, (callDropsByExtension.get(ext) ?? 0) + 1);
+      const shape = drop.receiverShape ?? '<<unclassified>>';
+      callDropsByShape.set(shape, (callDropsByShape.get(shape) ?? 0) + 1);
+      const pair = `${ext} ${shape}`;
+      callDropsByShapeAndExt.set(pair, (callDropsByShapeAndExt.get(pair) ?? 0) + 1);
+    }
   }
 
   const sortDesc = (map) => Object.fromEntries([...map.entries()].sort((a, b) => b[1] - a[1]));
@@ -1349,6 +1359,8 @@ async function runCountArm(repoPath) {
     totalDropsAllKinds: drops.length,
     bySiteKind: sortDesc(byKind),
     callDropsByExtension: sortDesc(callDropsByExtension),
+    callDropsByShape: sortDesc(callDropsByShape),
+    callDropsByShapeAndExtension: sortDesc(callDropsByShapeAndExt),
     allDropsByExtension: sortDesc(byExtension),
   };
 }
@@ -1464,6 +1476,7 @@ function projection(output) {
       totalDropsAllKinds: output.countArm.totalDropsAllKinds,
       bySiteKind: output.countArm.bySiteKind,
       callDropsByExtension: output.countArm.callDropsByExtension,
+      callDropsByShape: output.countArm.callDropsByShape,
     },
   };
 }

@@ -218,6 +218,12 @@
       ".rb": 2,
       ".js": 1,
       ".swift": 1
+    },
+    "callDropsByShape": {
+      "chain-field": 60,
+      "chain-call": 27,
+      "no-chain": 12,
+      "chain-mixed": 2
     }
   }
 }
