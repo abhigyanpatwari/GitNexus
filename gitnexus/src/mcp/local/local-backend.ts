@@ -472,13 +472,48 @@ export interface CodebaseContext {
 
 /** Collapse dropped-site boundary notes into an epistemic verdict: any note at
  *  all means the count is a lower bound, none means it is exact (#2744). */
-function epistemicFrom(droppedBoundaries: readonly string[]): {
+/**
+ * Why a count is a lower bound, as a machine-readable split.
+ *
+ * `epistemic` is a single enum and `boundaries` is prose, so a consumer that is
+ * not a human — a coding agent gating its own edits on this result — can tell
+ * THAT the answer is short but not WHY, and cannot branch on the difference.
+ * The two causes are independent and have opposite remedies:
+ *
+ * - `receiverTyping` — the analyzer dropped call sites because it could not
+ *   establish the receiver's type. A resolver defect. Fixable, and shrinking:
+ *   this is the population the structural-receiver work targets.
+ * - `dispatchBoundary` — the symbol sits behind an interface with real
+ *   consumers or multiple implementations, so callers binding through a DI
+ *   container or dynamic dispatch are genuinely untraceable statically. NOT a
+ *   defect; a compiler would refuse here too.
+ *
+ * Collapsing them told the reader "impact may be higher" for both, which made
+ * the fixable cause indistinguishable from the irreducible one — and made
+ * "the hedge should stop appearing" an unfalsifiable goal, because there was no
+ * way to see which producer was still firing.
+ */
+export interface EpistemicCauses {
+  readonly receiverTyping: number;
+  readonly dispatchBoundary: number;
+}
+
+function epistemicFrom(dropped: { notes: readonly string[]; sites: number }): {
   epistemic: 'exact' | 'lower-bound';
   boundaries?: string[];
+  causes?: EpistemicCauses;
 } {
-  return droppedBoundaries.length === 0
+  return dropped.notes.length === 0
     ? { epistemic: 'exact' }
-    : { epistemic: 'lower-bound', boundaries: [...droppedBoundaries] };
+    : {
+        epistemic: 'lower-bound',
+        boundaries: [...dropped.notes],
+        // SITES, not notes. There is one note per symbol name but it reports N
+        // dropped sites, so counting notes would have published `1` next to
+        // prose saying `2 call sites` — a consumer branching on the number
+        // would read a different magnitude than the human reading the text.
+        causes: { receiverTyping: dropped.sites, dispatchBoundary: 0 },
+      };
 }
 
 interface RepoHandle {
@@ -5738,7 +5773,11 @@ export class LocalBackend {
     symId: string,
     symType: string,
     symName: string,
-  ): Promise<{ epistemic: 'exact' | 'lower-bound'; boundaries?: string[] }> {
+  ): Promise<{
+    epistemic: 'exact' | 'lower-bound';
+    boundaries?: string[];
+    causes?: EpistemicCauses;
+  }> {
     const HERITAGE_TYPES = EPISTEMIC_HERITAGE_RELATION_TYPES;
     const CONSUMER_TYPES = EPISTEMIC_CONSUMER_RELATION_TYPES;
     // #2744 — call sites dropped for want of a receiver type. Checked BEFORE
@@ -5829,7 +5868,14 @@ export class LocalBackend {
         }
       }
       if (boundaries.length === 0) return epistemicFrom(droppedBoundaries);
-      return { epistemic: 'lower-bound', boundaries: [...droppedBoundaries, ...boundaries] };
+      return {
+        epistemic: 'lower-bound',
+        boundaries: [...droppedBoundaries.notes, ...boundaries],
+        causes: {
+          receiverTyping: droppedBoundaries.sites,
+          dispatchBoundary: boundaries.length,
+        },
+      };
     } catch {
       // Never let the heritage probe's failure suppress a drop we already know
       // about — the whole point is that silence must not read as certainty.
@@ -5844,8 +5890,11 @@ export class LocalBackend {
    * index written before the summary existed, which is why the schema version
    * was bumped rather than treating "absent" as "none".
    */
-  private async unresolvedReceiverBoundaries(repo: RepoHandle, symName: string): Promise<string[]> {
-    if (symName.length === 0) return [];
+  private async unresolvedReceiverBoundaries(
+    repo: RepoHandle,
+    symName: string,
+  ): Promise<{ notes: string[]; sites: number }> {
+    if (symName.length === 0) return { notes: [], sites: 0 };
     try {
       const meta = await loadMeta(path.dirname(repo.lbugPath));
       const summary = meta?.unresolvedReceiverMembers;
@@ -5853,8 +5902,8 @@ export class LocalBackend {
       // returns a Function for `constructor`/`toString`/… and `NaN <= 0` is false,
       // so the old guard let it through into user-facing text.
       const sites = lookupUnresolvedCallCount(summary, symName);
-      if (sites === undefined) return [];
-      return [
+      if (sites === undefined) return { notes: [], sites: 0 };
+      const notes = [
         `${sites} call ${sites === 1 ? 'site' : 'sites'} invoking \`${symName}\` ${
           sites === 1 ? 'was' : 'were'
         } dropped at index time because the receiver's type could not be ` +
@@ -5862,8 +5911,9 @@ export class LocalBackend {
           `expression). Those callers are absent from this result — actual ` +
           `impact may be higher.`,
       ];
+      return { notes, sites };
     } catch {
-      return [];
+      return { notes: [], sites: 0 };
     }
   }
 

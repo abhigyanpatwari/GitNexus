@@ -1,5 +1,39 @@
 # Receiver-resolution baseline
 
+## U9 — the epistemic hedge has TWO producers, and only one is a defect
+
+`impact` reports `epistemic: 'lower-bound'` for two independent reasons that were
+previously indistinguishable in the output:
+
+| Cause | What it means | Is it a defect? |
+|---|---|---|
+| `receiverTyping` | Call sites dropped because the analyzer could not type the receiver | **Yes** — a resolver gap. This is the population this whole series targets. |
+| `dispatchBoundary` | The symbol sits behind an interface with real consumers or 2+ implementations | **No** — callers binding through DI or dynamic dispatch are genuinely untraceable statically. A compiler refuses here too. |
+
+Both collapsed into one enum plus prose, so a consumer — especially a coding
+agent gating its own edits on the result — could tell THAT a count was short but
+not WHY, and could not branch on the difference. Worse, it made "the hedge should
+stop appearing" unfalsifiable: with no way to see which producer fired, there was
+no way to check whether fixing receiver typing had done anything.
+
+`impact` and `context` now carry a structured `causes: { receiverTyping,
+dispatchBoundary }` alongside the prose. `receiverTyping` counts dropped SITES,
+not boundary notes — there is one note per symbol name but it reports N sites, so
+counting notes published `1` next to prose reading "2 call sites" and a consumer
+branching on the number would have read a different magnitude than the human
+reading the text.
+
+**Only the `receiverTyping` producer is addressed by this series.** The dispatch
+boundary is untouched and will keep firing for interface-dispatched symbols —
+which is correct. Any claim that the hedge has "stopped appearing" has to be read
+per-producer, and that is now possible.
+
+Measured on the #2766 reproduction: `WithTx` went from `impactedCount: 0` with a
+`lower-bound` hedge to `impactedCount: 1` with `epistemic: exact`. The hedge is
+gone there because its cause is gone, not because it was suppressed.
+
+---
+
 ## U10 — recorded drops, censused by receiver shape
 
 `ResolutionOutcome`'s suppressed variant now carries `receiverShape`, set by the
