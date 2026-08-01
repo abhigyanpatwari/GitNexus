@@ -21,7 +21,7 @@
  */
 
 import type { ScopeId, SymbolDefinition, TypeRef } from 'gitnexus-shared';
-import type { ScopeResolver } from '../contract/scope-resolver.js';
+import type { ElementAccessRoute, ScopeResolver } from '../contract/scope-resolver.js';
 import type { ScopeResolutionIndexes } from '../../model/scope-resolution-indexes.js';
 import type { WorkspaceResolutionIndex } from '../workspace-index.js';
 import { stripTemplateArguments } from '../../utils/template-arguments.js';
@@ -82,10 +82,9 @@ interface ResolveCompoundReceiverOptions {
    *  Dictionary<K,V>-typed receiver yields V (C#), etc. Returns the
    *  element type's simple name, or `undefined` to let the regular
    *  field-walk handle the access. */
-  readonly unwrapCollectionAccessor?: (
-    receiverType: string,
-    accessor: string,
-  ) => string | undefined;
+  /** Container -> element, by subscript or accessor. See the `ScopeResolver`
+   *  field of the same name for why the two routes share one hook. */
+  readonly elementTypeOf?: (containerType: string, via: ElementAccessRoute) => string | undefined;
   /** Walk up from the class scope to ancestor (Module) scopes when
    *  looking up a method's return-type typeBinding. Only enable for
    *  languages that hoist return-type bindings to Module scope (C#);
@@ -129,10 +128,6 @@ interface ResolveCompoundReceiverOptions {
    *  by the shared lookup's other callers — see the contract's own note on why
    *  this is opt-in rather than global. */
   readonly stripTypePreservingDecoration?: DecorationStripper;
-  /** Collection -> element unwrap, consulted ONLY by an index step. See the
-   *  `ScopeResolver` field of the same name for why this is separate from the
-   *  type-preserving stripper. */
-  readonly unwrapCollectionElement?: DecorationStripper;
 }
 
 /** Is this hop the language's construction selector applied to the class
@@ -508,7 +503,7 @@ export function foldReceiverChain(
       // annotation) needs exactly one unwrap here.
       const declared = current.declaredTypeName;
       const element =
-        declared === undefined ? undefined : options.unwrapCollectionElement?.(declared);
+        declared === undefined ? undefined : options.elementTypeOf?.(declared, { kind: 'index' });
       if (element !== undefined) {
         const scopeForLookup = current.declaredAtScope ?? inScope;
         const elementClass = findClassBindingInScope(
@@ -884,7 +879,7 @@ export function resolveCompoundReceiverClass(
   // the final segment and unwraps the receiver's generic, return
   // the element class directly. Resolved before the field-walk
   // because Dictionary-family types aren't local class defs.
-  if (options.unwrapCollectionAccessor !== undefined && parts.length >= 2) {
+  if (options.elementTypeOf !== undefined && parts.length >= 2) {
     const last = parts[parts.length - 1];
     const headInner = parts[0];
     if (last === undefined || headInner === undefined) return undefined;
@@ -912,7 +907,7 @@ export function resolveCompoundReceiverClass(
       prefixType = cur;
     }
     if (prefixType !== undefined) {
-      const elemName = options.unwrapCollectionAccessor(prefixType.rawName, last);
+      const elemName = options.elementTypeOf(prefixType.rawName, { kind: 'accessor', name: last });
       if (elemName !== undefined) {
         return findClassBindingInScope(prefixType.declaredAtScope, elemName, scopes);
       }

@@ -94,12 +94,11 @@ type ReceiverBoundProviderSubset = Pick<
   | 'isSuperReceiverInContext'
   | 'fieldFallbackOnMethodLookup'
   | 'collapseMemberCallsByCallerTarget'
-  | 'unwrapCollectionAccessor'
+  | 'elementTypeOf'
   | 'hoistTypeBindingsToModule'
   | 'stripReceiverCastExpressions'
   | 'constructionSyntax'
   | 'stripTypePreservingDecoration'
-  | 'unwrapCollectionElement'
   | 'resolveQualifiedReceiverMember'
   | 'resolveReceiverMember'
   | 'resolveThisViaEnclosingClass'
@@ -184,12 +183,11 @@ export function emitReceiverBoundCalls(
   const hoistTypeBindingsToModule = provider.hoistTypeBindingsToModule === true;
   const compoundOpts = {
     fieldFallback,
-    unwrapCollectionAccessor: provider.unwrapCollectionAccessor,
+    elementTypeOf: provider.elementTypeOf,
     hoistTypeBindingsToModule,
     stripReceiverCastExpressions: provider.stripReceiverCastExpressions === true,
     constructionSyntax: provider.constructionSyntax,
     stripTypePreservingDecoration: provider.stripTypePreservingDecoration,
-    unwrapCollectionElement: provider.unwrapCollectionElement,
   };
 
   // Build an interface → implementors map from IMPLEMENTS edges.

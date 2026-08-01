@@ -107,17 +107,12 @@ function makeTsResolveImportTarget(): ScopeResolver['resolveImportTarget'] {
 }
 
 const typescriptScopeResolver: ScopeResolver = {
-  // Collections only, consulted ONLY by an index step (see the contract field).
-  // Delegates to the shared, bracket-balanced extractor rather than a local
-  // regex: that helper is already used by seven language type-extractors, and it
-  // covers `Map<K,V>` / `Record<K,V>` (returning the VALUE type, which is what a
-  // subscript yields) where a hand-rolled single-arg regex returned undefined
-  // and made `cache["k"].save()` decline.
-  //
-  // Deliberately NOT part of `stripTypePreservingDecoration`: a container
-  // changes the member set, so unwrapping it at the bare class lookup would let
-  // `repos.find(x)` fold to `User.find`.
-  unwrapCollectionElement: (typeName) => extractElementTypeFromString(typeName),
+  // One hook, both routes. TypeScript exposes collection views as METHOD calls
+  // (`.values()`), which the call-expression branch already handles, so the
+  // accessor route yields nothing here — but it is now the same hook rather
+  // than a second one left undefined.
+  elementTypeOf: (containerType, via) =>
+    via.kind === 'index' ? extractElementTypeFromString(containerType) : undefined,
 
   // Construction is keyword-prefixed: `new Service(db).doWork()` (#2708).
   constructionSyntax: { keyword: 'new' },
@@ -168,10 +163,10 @@ const typescriptScopeResolver: ScopeResolver = {
   fieldFallbackOnMethodLookup: false,
   propagatesReturnTypesAcrossImports: true,
 
-  // TypeScript uses `.values()` / `.keys()` method-call syntax for
-  // collection views -- no property-style accessors like C#'s
-  // `Dictionary<K,V>.Values`. Leave `unwrapCollectionAccessor`
-  // undefined and let the regular member-call branch handle them.
+  // TypeScript uses `.values()` / `.keys()` method-call syntax for collection
+  // views -- no property-style accessors like C#'s `Dictionary<K,V>.Values` --
+  // so `elementTypeOf` answers only the `index` route and lets the regular
+  // member-call branch handle the rest.
   //
   // `collapseMemberCallsByCallerTarget` left undefined (= false) --
   // TypeScript legacy DAG emits one edge per call site, so
