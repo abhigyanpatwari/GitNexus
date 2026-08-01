@@ -23,7 +23,10 @@ import { parseTruthyEnv } from '../ingestion/utils/env.js';
 import { SYMBOL_NODE_LABELS } from '../ingestion/utils/symbol-labels.js';
 import { applyCjkSegmentationIfEnabled } from '../search/cjk-segmentation.js';
 
-const DECLARED_RELATION_PAIRS = parseRelationSchemaPairs(RELATION_SCHEMA);
+/** Computed once — `RELATION_SCHEMA` is a static template literal. Exported so
+ *  the streamed sinks (`GraphEmitSink`, `PdgEmitSink`) share this parse
+ *  instead of each re-deriving it from the same DDL string. */
+export const DECLARED_RELATION_PAIRS = parseRelationSchemaPairs(RELATION_SCHEMA);
 
 /**
  * Deterministic output ordering — optional (out-of-core / windowed-resolve

@@ -29,7 +29,17 @@ import { resolveInheritanceBaseInScope } from '../scope/walkers.js';
 import { definitionIdPosition } from '../utils/definition-id.js';
 import { narrowOverloadCandidates } from './overload-narrowing.js';
 
-export const MAX_CALLABLE_VALUE_TARGETS = 32;
+/**
+ * Per-site dispatch-target cap. Above it the site is treated as overflowed and
+ * its edges are dropped — a cliff, so a repo with a legitimately wide dispatch
+ * table (33+ candidates on one callable site) loses the whole call chain.
+ *
+ * Override via `GITNEXUS_MAX_CALLABLE_VALUE_TARGETS` for such repos.
+ */
+export const MAX_CALLABLE_VALUE_TARGETS = (() => {
+  const env = Number(process.env.GITNEXUS_MAX_CALLABLE_VALUE_TARGETS);
+  return Number.isInteger(env) && env >= 1 ? env : 32;
+})();
 
 interface Target {
   readonly id: string;

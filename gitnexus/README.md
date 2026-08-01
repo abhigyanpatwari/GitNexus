@@ -688,6 +688,56 @@ After scope resolution, analyze prunes inert block-local value symbols (a functi
 
 Programmatic callers can pass `keepLocalValueSymbols: true` in `PipelineOptions` instead of setting the env var.
 
+### Scope-resolution property-key dispatch cap
+
+During scope resolution GitNexus synthesizes CALLS edges through *property-key
+dispatch* — call sites like `hooks.emitScopeCaptures()` where a property key is
+registered by multiple definitions across the codebase. To keep this fan-in
+bounded, each property key is capped at **32 registrations**: a key registered
+by more than 32 distinct functions is skipped entirely (no CALLS are synthesized
+through it), and the dropped key names are surfaced in the analyze log for
+operator visibility. The cap is calibrated at 2× this repo's own provider table
+(16 legitimate registrations, one per language provider).
+
+| Variable                                | Default | Effect                                                                                                                                                                                                                                                                                                                |
+| --------------------------------------- | ------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `GITNEXUS_MAX_PROPERTY_DISPATCH_FANOUT` | `32`    | Per-property-key registration cap in the property-dispatch scope-resolution pass. Set to a positive integer to raise it for repositories whose provider/hook tables exceed the default and lose CALLS coverage on a legitimate key; non-integer or `< 1` values fall back to `32`. Lowering it tightens the overflow budget. |
+
+```bash
+# A property key registered by 40 functions overflows the default 32 and drops
+# all CALLS through it — raise the cap for that repo and rebuild so scope
+# resolution reruns.
+export GITNEXUS_MAX_PROPERTY_DISPATCH_FANOUT=64
+npx gitnexus analyze --force
+```
+
+### Scope-resolution dispatch-target cap
+
+During scope resolution GitNexus resolves calls that flow through *callable
+values* — function/method references bound to variables, passed as arguments,
+or stored in maps/tables. To keep that inclusion-based resolution finite, each
+callable site is capped at **32 dispatch targets**. When a site gathers more
+candidates than the cap it is treated as **overflowed** and *all* of its call
+edges are dropped — a cliff, not a tail, so a repository with a legitimately
+wide dispatch table (a single callable site resolving to 33+ targets) loses
+that site's whole call chain. In that case `analyze` logs
+`callable-value-flow: candidate set exceeded the cap; no partial CALLS emitted`
+alongside a warning carrying the language, the overflowing context, the
+candidate count, and the cap (32).
+
+Raise the cap for such repositories:
+
+| Variable                              | Default | Effect                                                                                                                                                                                                                                                                                                              |
+| ------------------------------------- | ------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| `GITNEXUS_MAX_CALLABLE_VALUE_TARGETS` | `32`    | Per-callable-site dispatch-target cap in the callable-value-flow scope-resolution pass. Set to a positive integer to raise it for repositories whose wide dispatch tables overflow the default and lose a whole call chain; non-integer or `< 1` values fall back to `32`. Lowering it tightens the overflow budget. |
+
+```bash
+# A callable site resolving to 48 targets overflows the default 32 and drops
+# the chain — raise the cap for that repo and rebuild so scope resolution reruns.
+export GITNEXUS_MAX_CALLABLE_VALUE_TARGETS=64
+npx gitnexus analyze --force
+```
+
 ### Hook augmentation and skip diagnostics
 
 The Claude Code / Antigravity hooks keep their **stderr** silent on normal skip

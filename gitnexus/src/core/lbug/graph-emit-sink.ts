@@ -95,8 +95,8 @@ import fs from 'fs';
 import path from 'path';
 import type { GraphNode, GraphRelationship, RelationshipType } from 'gitnexus-shared';
 import type { KnowledgeGraph } from '../graph/types.js';
-import { REL_CSV_HEADER, buildRelRow } from './csv-generator.js';
-import { getNodeLabel } from './rel-pair-routing.js';
+import { DECLARED_RELATION_PAIRS, REL_CSV_HEADER, buildRelRow } from './csv-generator.js';
+import { assertDeclaredPair, getNodeLabel } from './rel-pair-routing.js';
 import { NODE_TABLES } from './schema.js';
 import { DEFAULT_EMIT_CHUNK_ROWS, SyncCsvWriter } from './sync-csv-writer.js';
 
@@ -412,6 +412,7 @@ export class GraphEmitSink implements KnowledgeGraph, GraphEmitControl {
     if (!this.validTables.has(fromLabel) || !this.validTables.has(toLabel)) return;
 
     const pairKey = `${fromLabel}|${toLabel}`;
+    assertDeclaredPair(pairKey, DECLARED_RELATION_PAIRS);
     let writer = this.relWriters.get(pairKey);
     if (writer === undefined) {
       try {
