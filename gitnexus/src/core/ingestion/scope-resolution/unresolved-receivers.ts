@@ -46,6 +46,43 @@ export interface UnresolvedReceiverSummary {
   readonly externalCounts?: Readonly<Record<string, number>>;
   /** Total external-rooted call sites, including any beyond the cap. */
   readonly externalSites?: number;
+  /**
+   * Distinct member names beyond the cap, omitted from `externalCounts`. Absent
+   * when nothing was dropped from that map.
+   *
+   * The exact twin of `omittedNames`, and it exists for the same reason. Past
+   * the cap `lookupExternalCallCount` returns `undefined` for a truncated name,
+   * which is indistinguishable from "this member had no external drops" — so a
+   * symbol with real boundary evidence reads as having none. One map carrying a
+   * truncation marker and the other silently losing entries also made the
+   * persisted artifact self-contradictory: `externalSites` would exceed the sum
+   * of `externalCounts` with nothing to explain the difference.
+   */
+  readonly externalOmittedNames?: number;
+}
+
+/**
+ * Rank a name→count map and cap it at {@link MAX_UNRESOLVED_RECEIVER_MEMBERS}.
+ *
+ * Highest count first, name as a tiebreak so the persisted map is stable across
+ * runs — an unstable ordering would churn the metadata file (and its diff) on
+ * every analyze for no behavioural reason. ONE comparator, shared by the
+ * in-program and external maps: two hand-copied comparators that must stay
+ * identical or the artifact churns on one map and not the other is exactly the
+ * drift this contract cannot tolerate.
+ *
+ * `omitted` is the number of distinct names past the cap, so the caller can
+ * report truncation rather than silently losing entries.
+ */
+function rankAndCap(counts: Map<string, number>): {
+  kept: [string, number][];
+  omitted: number;
+} {
+  const ranked = [...counts.entries()].sort(
+    ([aName, aCount], [bName, bCount]) => bCount - aCount || aName.localeCompare(bName),
+  );
+  const kept = ranked.slice(0, MAX_UNRESOLVED_RECEIVER_MEMBERS);
+  return { kept, omitted: ranked.length - kept.length };
 }
 
 /**
@@ -73,22 +110,17 @@ export function summarizeUnresolvedReceivers(
     // A missing `siteKind` counts as a call: the only emitter always sets it, and
     // erring toward `lower-bound` is the safe direction for an epistemic signal.
     if (outcome.siteKind !== undefined && outcome.siteKind !== 'call') continue;
-    // EXTERNAL targets are not uncertainty. `System.out.println(...)`,
-    // `fetch(...)`, `os.environ.setdefault(...)` reach code this index does not
-    // contain, so there is no node an edge could have pointed at and nothing was
-    // lost. Counting them made `impact` report a lower bound on essentially
-    // every real codebase — 75% of the drops on this corpus — which is what
-    // taught readers to ignore the signal.
+    // Routed, not discarded. External-rooted drops (`console.log(...)`,
+    // `fetch(...)`) reach code this index does not contain, so there is no node
+    // an edge could have pointed at and nothing was lost — they must not hedge.
+    // But they stay in the artifact under their own key so the split is
+    // auditable and reversible.
     //
-    // A compiler resolves these against the JDK / BCL / lib.d.ts. Lacking those,
-    // the honest statement is "this call leaves the analyzed program", not "this
-    // analysis is incomplete". `unknown` still counts: assuming completeness we
-    // cannot demonstrate is the unsafe direction.
-    // Routed, not discarded. External-rooted drops reach code this index does
-    // not contain, so nothing was lost and they must not hedge — but they stay
-    // in the artifact under their own key so the split is auditable and
-    // reversible. `unknown` counts with `in-program`: assuming a completeness we
-    // cannot demonstrate is the unsafe direction.
+    // `external` is a POSITIVE determination made by `classifyReceiverOrigin`
+    // from a language built-in match, never a fallthrough: a receiver the
+    // classifier could not place lands in `unknown`, which counts here WITH
+    // `in-program`, because assuming a completeness we cannot demonstrate is
+    // the unsafe direction.
     if (outcome.receiverOrigin === 'external') {
       externalSites++;
       externalCounts.set(outcome.name, (externalCounts.get(outcome.name) ?? 0) + 1);
@@ -101,18 +133,8 @@ export function summarizeUnresolvedReceivers(
   // "nothing was lost" is distinguishable from "nothing was measured".
   if (totalSites === 0 && externalSites === 0) return undefined;
 
-  // Highest count first, name as a tiebreak so the persisted map is stable
-  // across runs — an unstable ordering would churn the metadata file (and its
-  // diff) on every analyze for no behavioural reason.
-  const ranked = [...counts.entries()].sort(
-    ([aName, aCount], [bName, bCount]) => bCount - aCount || aName.localeCompare(bName),
-  );
-  const kept = ranked.slice(0, MAX_UNRESOLVED_RECEIVER_MEMBERS);
-  const omittedNames = ranked.length - kept.length;
-
-  const externalRanked = [...externalCounts.entries()].sort(
-    ([aName, aCount], [bName, bCount]) => bCount - aCount || aName.localeCompare(bName),
-  );
+  const { kept, omitted: omittedNames } = rankAndCap(counts);
+  const { kept: externalKept, omitted: externalOmittedNames } = rankAndCap(externalCounts);
 
   return {
     counts: Object.fromEntries(kept),
@@ -120,10 +142,9 @@ export function summarizeUnresolvedReceivers(
     ...(omittedNames > 0 ? { omittedNames } : {}),
     ...(externalSites > 0
       ? {
-          externalCounts: Object.fromEntries(
-            externalRanked.slice(0, MAX_UNRESOLVED_RECEIVER_MEMBERS),
-          ),
+          externalCounts: Object.fromEntries(externalKept),
           externalSites,
+          ...(externalOmittedNames > 0 ? { externalOmittedNames } : {}),
         }
       : {}),
   };

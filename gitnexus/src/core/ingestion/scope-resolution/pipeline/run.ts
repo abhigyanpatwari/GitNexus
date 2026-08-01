@@ -810,6 +810,10 @@ export function runScopeResolution(
         {
           recordResolutionOutcome,
           calleeIdSink: calleeIdAccumulator,
+          // The pass's only source of positive EXTERNAL evidence for a dropped
+          // receiver (`console.log`, `fetch(...)`). Same hook, same spelling as
+          // the `emitFreeCallFallback` wiring below.
+          isBuiltInName: provider.languageProvider.isBuiltInName,
         },
       );
   const unresolvedReceiverExtras =

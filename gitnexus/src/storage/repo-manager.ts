@@ -23,6 +23,7 @@ import { getInferredRepoName, resolveRepoIdentityRoot } from './git.js';
 import { stripWindowsLongPathPrefix } from '../lib/utils.js';
 import { retryRename } from './fs-atomic.js';
 import { logger } from '../core/logger.js';
+import type { UnresolvedReceiverSummary } from '../core/ingestion/scope-resolution/unresolved-receivers.js';
 import { acquireIndexLock, IndexLockTimeoutError, type IndexLockHandle } from './index-lock.js';
 import {
   branchSlug,
@@ -240,12 +241,14 @@ export interface RepoMeta {
    * callee is unknown by definition, so the drop cannot be attributed to any
    * target. Absent when a run dropped nothing, which is the common case and
    * keeps `epistemic` exact for cleanly-resolving repos.
+   *
+   * The persisted shape IS `UnresolvedReceiverSummary` — referenced, not
+   * re-declared. The writer stores the whole summary, so a structural mirror
+   * here silently drops any field added on the producing side (a reader then
+   * sees `undefined` for keys that are present on disk). Type-only import, so
+   * this adds no runtime dependency from storage/ on core/.
    */
-  unresolvedReceiverMembers?: {
-    counts: Record<string, number>;
-    totalSites: number;
-    omittedNames?: number;
-  };
+  unresolvedReceiverMembers?: UnresolvedReceiverSummary;
   /**
    * SHA-256 of every file's content at the time of the last successful
    * indexing run. The next run computes current hashes and diffs against
