@@ -1,8 +1,21 @@
 import { describe, expect, it } from 'vitest';
 import { preprocessSwiftConditionalDirectives } from '../../src/core/ingestion/languages/swift/conditional-directive-preprocess.js';
 
+/**
+ * Assert the WHOLE output: `source` with exactly `blankedLines` replaced by
+ * spaces of the same width. Widths come from the source line, so a wrong-length
+ * blank fails, and an unexpected blank anywhere else fails too.
+ */
+function expectBlanked(source: string, blankedLines: readonly number[], separator = '\n'): void {
+  const lines = source.split(separator);
+
+  expect(preprocessSwiftConditionalDirectives(source).split(separator)).toEqual(
+    lines.map((line, index) => (blankedLines.includes(index) ? ' '.repeat(line.length) : line)),
+  );
+}
+
 describe('Swift conditional-directive preprocessing', () => {
-  it('blanks only indented conditional directives, including conditions and comments', () => {
+  it('blanks every directive of a nested group and leaves the top-level one alone', () => {
     const source = [
       '#if os(macOS)',
       'class TopLevel {}',
@@ -18,18 +31,7 @@ describe('Swift conditional-directive preprocessing', () => {
       '}',
     ].join('\n');
 
-    const rewritten = preprocessSwiftConditionalDirectives(source);
-    const lines = rewritten.split('\n');
-    const sourceLines = source.split('\n');
-
-    expect(lines[0]).toBe('#if os(macOS)');
-    expect(lines[2]).toBe('#endif');
-    // Widths come from the SOURCE line, so a wrong-length blank still fails.
-    for (const line of [4, 6, 8, 10]) {
-      expect(lines[line]).toBe(''.padEnd(sourceLines[line]!.length, ' '));
-    }
-    expect(lines[5]).toBe('  enum A { case x }');
-    expect(lines[11]).toBe('}');
+    expectBlanked(source, [4, 6, 8, 10]);
   });
 
   it('preserves JavaScript string length and newline count', () => {
@@ -38,7 +40,7 @@ describe('Swift conditional-directive preprocessing', () => {
 
     expect(rewritten).toHaveLength(source.length);
     expect(rewritten.match(/\n/g)?.length ?? 0).toBe(source.match(/\n/g)?.length ?? 0);
-    expect(rewritten.slice(0, '#if DEBUG'.length)).toBe('#if DEBUG');
+    expectBlanked(source, []);
   });
 
   it('returns directive-free Swift source unchanged', () => {
@@ -52,11 +54,15 @@ describe('Swift conditional-directive preprocessing', () => {
     const rewritten = preprocessSwiftConditionalDirectives(source);
 
     expect(rewritten).toHaveLength(source.length);
-    expect(rewritten.match(/\r\n/g)?.length ?? 0).toBe(source.match(/\r\n/g)?.length ?? 0);
     expect(rewritten.indexOf('enum A')).toBe(source.indexOf('enum A'));
-    expect(rewritten).toContain('          \r\n');
-    expect(rewritten).toContain('      \r\n');
-    expect(rewritten).toContain('\tenum A { case x }\r\n');
+    expectBlanked(source, [1, 3], '\r\n');
+  });
+
+  it('treats a bare carriage return as a line terminator', () => {
+    const source = 'class Outer {\r  #if os(iOS)\r  enum A { case x }\r  #endif\r}\r';
+
+    expect(preprocessSwiftConditionalDirectives(source)).toHaveLength(source.length);
+    expectBlanked(source, [1, 3], '\r');
   });
 
   it('leaves regular and raw multiline string interiors byte-identical', () => {
@@ -84,17 +90,7 @@ describe('Swift conditional-directive preprocessing', () => {
       '}',
     ].join('\n');
 
-    const rewritten = preprocessSwiftConditionalDirectives(source);
-    const sourceLines = source.split('\n');
-    const rewrittenLines = rewritten.split('\n');
-
-    expect(rewritten).toHaveLength(source.length);
-    for (const line of [2, 3, 4, 5, 11, 12, 13, 14, 17, 18]) {
-      expect(rewrittenLines[line]).toBe(sourceLines[line]);
-    }
-    for (const line of [7, 9]) {
-      expect(rewrittenLines[line]).toBe(''.padEnd(sourceLines[line]!.length, ' '));
-    }
+    expectBlanked(source, [7, 9]);
   });
 
   it('does not let an unterminated multiline string blank later lines', () => {
@@ -116,11 +112,8 @@ describe('Swift conditional-directive preprocessing', () => {
       '  #endif',
       '}',
     ].join('\n');
-    const rewritten = preprocessSwiftConditionalDirectives(source);
 
-    expect(rewritten.split('\n').slice(1, 5)).toEqual(source.split('\n').slice(1, 5));
-    expect(rewritten.split('\n')[5]).toBe(''.padEnd(source.split('\n')[5]!.length, ' '));
-    expect(rewritten.split('\n')[6]).toBe(''.padEnd(source.split('\n')[6]!.length, ' '));
+    expectBlanked(source, [5, 6]);
   });
 
   it('keeps nested block comments out of string state and never blanks inside them', () => {
@@ -134,12 +127,8 @@ describe('Swift conditional-directive preprocessing', () => {
       '  #if in-string',
       '"""',
     ].join('\n');
-    const sourceLines = source.split('\n');
-    const rewrittenLines = preprocessSwiftConditionalDirectives(source).split('\n');
 
-    expect(rewrittenLines[1]).toBe(sourceLines[1]);
-    expect(rewrittenLines[3]).toBe(sourceLines[3]);
-    expect(rewrittenLines[6]).toBe('  #if in-string');
+    expectBlanked(source, []);
   });
 
   it('keeps a block-comment terminator that shares its line with a directive', () => {
@@ -166,12 +155,8 @@ describe('Swift conditional-directive preprocessing', () => {
       '#endif',
       '}',
     ].join('\n');
-    const sourceLines = source.split('\n');
-    const rewrittenLines = preprocessSwiftConditionalDirectives(source).split('\n');
 
-    expect(rewrittenLines[2]).toBe(''.padEnd(sourceLines[2]!.length, ' '));
-    expect(rewrittenLines[4]).toBe(''.padEnd(sourceLines[4]!.length, ' '));
-    expect(rewrittenLines[1]).toBe(sourceLines[1]);
+    expectBlanked(source, [2, 4]);
   });
 
   it('leaves an indented directive that is still at file scope intact', () => {
@@ -181,27 +166,17 @@ describe('Swift conditional-directive preprocessing', () => {
   });
 
   it('recognizes non-ASCII indentation and a leading byte-order mark', () => {
-    const source = ['class Outer {', ' #if os(iOS)', '  enum A { case x }', '　#endif', '}'].join(
-      '\n',
-    );
-    const sourceLines = source.split('\n');
-    const rewrittenLines = preprocessSwiftConditionalDirectives(source).split('\n');
-
-    expect(rewrittenLines[1]).toBe(''.padEnd(sourceLines[1]!.length, ' '));
-    expect(rewrittenLines[3]).toBe(''.padEnd(sourceLines[3]!.length, ' '));
-
+    const nbspSource = [
+      'class Outer {',
+      ' #if os(iOS)',
+      '  enum A { case x }',
+      '　#endif',
+      '}',
+    ].join('\n');
     const bomSource = `﻿class Outer {\n  #if os(iOS)\n  enum A { case x }\n  #endif\n}\n`;
-    const bomLines = preprocessSwiftConditionalDirectives(bomSource).split('\n');
-    expect(bomLines[1]).toBe(''.padEnd('  #if os(iOS)'.length, ' '));
-  });
 
-  it('treats a bare carriage return as a line terminator', () => {
-    const source = 'class Outer {\r  #if os(iOS)\r  enum A { case x }\r  #endif\r}\r';
-    const rewritten = preprocessSwiftConditionalDirectives(source);
-
-    expect(rewritten).toHaveLength(source.length);
-    expect(rewritten.split('\r')[1]).toBe(''.padEnd('  #if os(iOS)'.length, ' '));
-    expect(rewritten.split('\r')[2]).toBe('  enum A { case x }');
+    expectBlanked(nbspSource, [1, 3]);
+    expectBlanked(bomSource, [1, 3]);
   });
 
   it('refuses to blank a group whose branches split a declaration header', () => {
@@ -235,13 +210,8 @@ describe('Swift conditional-directive preprocessing', () => {
       '  #endif',
       '}',
     ].join('\n');
-    const sourceLines = source.split('\n');
-    const rewrittenLines = preprocessSwiftConditionalDirectives(source).split('\n');
 
-    for (const line of [1, 3, 5, 7]) {
-      expect(rewrittenLines[line]).toBe(''.padEnd(sourceLines[line]!.length, ' '));
-    }
-    expect(rewrittenLines[4]).toBe(sourceLines[4]);
+    expectBlanked(source, [1, 3, 5, 7]);
   });
 
   it('lets an unbalanced nested group also block its enclosing group', () => {
@@ -278,12 +248,8 @@ describe('Swift conditional-directive preprocessing', () => {
       '  #endif',
       '}',
     ].join('\n');
-    const sourceLines = source.split('\n');
-    const rewrittenLines = preprocessSwiftConditionalDirectives(source).split('\n');
 
-    expect(rewrittenLines[3]).toBe(sourceLines[3]);
-    expect(rewrittenLines[5]).toBe(''.padEnd(sourceLines[5]!.length, ' '));
-    expect(rewrittenLines[7]).toBe(''.padEnd(sourceLines[7]!.length, ' '));
+    expectBlanked(source, [5, 7]);
   });
 
   it('closes a plain multiline string whose terminator is followed by a pound', () => {
@@ -297,11 +263,8 @@ describe('Swift conditional-directive preprocessing', () => {
       '  #endif',
       '}',
     ].join('\n');
-    const sourceLines = source.split('\n');
-    const rewrittenLines = preprocessSwiftConditionalDirectives(source).split('\n');
 
-    expect(rewrittenLines[4]).toBe(''.padEnd(sourceLines[4]!.length, ' '));
-    expect(rewrittenLines[6]).toBe(''.padEnd(sourceLines[6]!.length, ' '));
+    expectBlanked(source, [4, 6]);
   });
 
   it('closes a raw multiline string terminated by extra pounds', () => {
@@ -315,11 +278,8 @@ describe('Swift conditional-directive preprocessing', () => {
       '  #endif',
       '}',
     ].join('\n');
-    const sourceLines = source.split('\n');
-    const rewrittenLines = preprocessSwiftConditionalDirectives(source).split('\n');
 
-    expect(rewrittenLines[4]).toBe(''.padEnd(sourceLines[4]!.length, ' '));
-    expect(rewrittenLines[6]).toBe(''.padEnd(sourceLines[6]!.length, ' '));
+    expectBlanked(source, [4, 6]);
   });
 
   it('does not let an extended regex literal open a phantom block comment', () => {
@@ -331,11 +291,8 @@ describe('Swift conditional-directive preprocessing', () => {
       '  #endif',
       '}',
     ].join('\n');
-    const sourceLines = source.split('\n');
-    const rewrittenLines = preprocessSwiftConditionalDirectives(source).split('\n');
 
-    expect(rewrittenLines[2]).toBe(''.padEnd(sourceLines[2]!.length, ' '));
-    expect(rewrittenLines[4]).toBe(''.padEnd(sourceLines[4]!.length, ' '));
+    expectBlanked(source, [2, 4]);
   });
 
   it('stays linear on a long run of bare pound signs', () => {
@@ -343,24 +300,21 @@ describe('Swift conditional-directive preprocessing', () => {
     // n=64000. The bound is a per-test timeout rather than a measured
     // elapsed-time assertion; the fixed scanner runs this in ~1ms.
     const source = `class Outer {\n  let s = ${'#'.repeat(64000)}\n  #if REAL_DIRECTIVE\n  func after() {}\n  #endif\n}\n`;
-    const rewrittenLines = preprocessSwiftConditionalDirectives(source).split('\n');
 
-    expect(rewrittenLines[2]).toBe(''.padEnd('  #if REAL_DIRECTIVE'.length, ' '));
-    expect(rewrittenLines[4]).toBe(''.padEnd('  #endif'.length, ' '));
+    expectBlanked(source, [2, 4]);
   }, 2000);
 
   it('preserves JavaScript length on a directive carrying non-ASCII comment text', () => {
     const source = ['class Outer {', '  #if os(iOS) // 日本語 🔥', '  #endif', '}'].join('\n');
-    const sourceLines = source.split('\n');
     const rewritten = preprocessSwiftConditionalDirectives(source);
 
     // UTF-16 length is preserved; UTF-8 byte length is not (56 -> 48).
     // Documented as safe because no consumer slices the original bytes by
     // `startIndex` — node-tree-sitter reports UTF-16 code-unit indices.
     expect(rewritten).toHaveLength(source.length);
-    expect(rewritten.split('\n')[1]).toBe(''.padEnd(sourceLines[1]!.length, ' '));
     expect(Buffer.byteLength(source, 'utf8')).toBe(56);
     expect(Buffer.byteLength(rewritten, 'utf8')).toBe(48);
+    expectBlanked(source, [1, 2]);
   });
 
   it('is idempotent', () => {

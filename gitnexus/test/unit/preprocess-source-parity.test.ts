@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { SupportedLanguages } from 'gitnexus-shared';
-import { getProvider } from '../../src/core/ingestion/languages/index.js';
+import { providers, getProvider } from '../../src/core/ingestion/languages/index.js';
 import { extractParsedFile } from '../../src/core/ingestion/scope-extractor-bridge.js';
 import { isLanguageAvailable } from '../../src/core/tree-sitter/parser-loader.js';
 import { ensureAndParse } from '../../src/core/embeddings/ast-utils.js';
@@ -9,14 +9,16 @@ import { ensureAndParse } from '../../src/core/embeddings/ast-utils.js';
  * Every provider that defines `preprocessSource` must produce the same
  * `ParsedFile` whether it is handed raw source or already-preprocessed source.
  *
- * Only the parse worker applies the hook (`parse-worker.ts`). `emitScopeCaptures`
- * re-parses on a parse-cache miss, so unless each emitter re-applies the
- * transform the two halves of the pipeline analyze different programs and the
- * graph depends on whether the run was warm or cold (#2771).
+ * The parse worker applies the hook, but `emitScopeCaptures` re-parses on a
+ * parse-cache miss and the embedding pipeline parses independently — so unless
+ * those paths see the same transform the halves of the pipeline analyze
+ * different programs and the graph depends on whether the run was warm (#2771).
+ *
+ * Fixtures are keyed by language and cross-checked against the registry, so a
+ * new provider adopting the hook fails here until it adds one.
  */
-const PREPROCESSED_LANGUAGES = [
-  {
-    language: SupportedLanguages.Swift,
+const FIXTURES: Partial<Record<SupportedLanguages, { filePath: string; source: string }>> = {
+  [SupportedLanguages.Swift]: {
     filePath: 'Fixture.swift',
     source: [
       'class Outer {',
@@ -28,8 +30,7 @@ const PREPROCESSED_LANGUAGES = [
       '',
     ].join('\n'),
   },
-  {
-    language: SupportedLanguages.CPlusPlus,
+  [SupportedLanguages.CPlusPlus]: {
     filePath: 'Actor.cpp',
     source: [
       'UCLASS()',
@@ -42,36 +43,42 @@ const PREPROCESSED_LANGUAGES = [
       '',
     ].join('\n'),
   },
-  {
-    language: SupportedLanguages.Dart,
+  [SupportedLanguages.Dart]: {
     filePath: 'meters.dart',
     source: ['extension type Meters(int value) {', '  int get raw => value;', '}', ''].join('\n'),
   },
-] as const;
+};
+
+const languagesWithHook = Object.entries(providers)
+  .filter(([, provider]) => provider.preprocessSource !== undefined)
+  .map(([language]) => language)
+  .sort();
 
 describe('LanguageProvider.preprocessSource parity', () => {
-  describe.each(PREPROCESSED_LANGUAGES)('$language', ({ language, filePath, source }) => {
-    it.skipIf(!isLanguageAvailable(language))(
-      'extracts the same ParsedFile from raw and preprocessed source',
-      () => {
-        const provider = getProvider(language);
-        const preprocessed = provider.preprocessSource?.(source, filePath) ?? source;
+  it('has a fixture for every provider defining the hook', () => {
+    expect(Object.keys(FIXTURES).sort()).toEqual(languagesWithHook);
+  });
+
+  describe.each(languagesWithHook)('%s', (language) => {
+    const provider = getProvider(language as SupportedLanguages);
+    const { filePath, source } = FIXTURES[language as SupportedLanguages]!;
+
+    describe.skipIf(!isLanguageAvailable(language as SupportedLanguages))('with the grammar', () => {
+      it('extracts the same ParsedFile from raw and preprocessed source', () => {
+        const preprocessed = provider.preprocessSource!(source, filePath);
 
         expect(preprocessed).not.toBe(source);
         expect(preprocessed).toHaveLength(source.length);
         expect(extractParsedFile(provider, source, filePath, () => {})).toEqual(
           extractParsedFile(provider, preprocessed, filePath, () => {}),
         );
-      },
-    );
+      });
 
-    it.skipIf(!isLanguageAvailable(language))(
-      'parses the preprocessed text on the embedding path too',
-      async () => {
+      it('parses the preprocessed text on the embedding path too', async () => {
         const tree = await ensureAndParse(source, filePath);
 
         expect(tree.rootNode.hasError).toBe(false);
-      },
-    );
+      });
+    });
   });
 });

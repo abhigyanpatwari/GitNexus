@@ -502,13 +502,13 @@ describe('Tree-sitter multi-language parsing', () => {
     describe.skipIf(!isLanguageAvailable(SupportedLanguages.Swift))(
       'conditional-compilation directives',
       () => {
-        const preprocess = (content: string): string => {
-          const provider = getProvider(SupportedLanguages.Swift);
-          return provider.preprocessSource?.(content, 'Fixture.swift') ?? content;
-        };
+        const provider = getProvider(SupportedLanguages.Swift);
+        const preprocess = (content: string): string =>
+          provider.preprocessSource?.(content, 'Fixture.swift') ?? content;
 
-        it('captures a class whose body contains indented conditional directives after preprocessing', async () => {
-          await loadLanguage(SupportedLanguages.Swift);
+        beforeAll(async () => {});
+
+        it('captures a class whose body contains indented conditional directives after preprocessing', () => {
           const content = [
             'class Outer {',
             '  enum A { case x }',
@@ -517,7 +517,6 @@ describe('Tree-sitter multi-language parsing', () => {
             '  #endif',
             '}',
           ].join('\n');
-          const provider = getProvider(SupportedLanguages.Swift);
           const { tree, matches } = parseAndQuery(
             parser,
             preprocess(content),
@@ -535,8 +534,7 @@ describe('Tree-sitter multi-language parsing', () => {
           ]);
         });
 
-        it('captures a class whose body contains column-zero conditional directives', async () => {
-          await loadLanguage(SupportedLanguages.Swift);
+        it('captures a class whose body contains column-zero conditional directives', () => {
           const content = [
             'class Outer {',
             '  enum A { case x }',
@@ -545,7 +543,6 @@ describe('Tree-sitter multi-language parsing', () => {
             '#endif',
             '}',
           ].join('\n');
-          const provider = getProvider(SupportedLanguages.Swift);
           const { tree, matches } = parseAndQuery(
             parser,
             preprocess(content),
@@ -563,8 +560,7 @@ describe('Tree-sitter multi-language parsing', () => {
           ]);
         });
 
-        it('leaves top-level conditional directives intact while capturing their declarations', async () => {
-          await loadLanguage(SupportedLanguages.Swift);
+        it('leaves top-level conditional directives intact while capturing their declarations', () => {
           const content = [
             '#if os(iOS)',
             'struct PlatformValue {',
@@ -576,7 +572,6 @@ describe('Tree-sitter multi-language parsing', () => {
             '}',
             '#endif',
           ].join('\n');
-          const provider = getProvider(SupportedLanguages.Swift);
           const parseContent = preprocess(content);
           const { tree, matches } = parseAndQuery(parser, parseContent, provider.treeSitterQueries);
           const defs = extractDefinitions(matches);
@@ -591,8 +586,7 @@ describe('Tree-sitter multi-language parsing', () => {
           ]);
         });
 
-        it('keeps source that comments out a conditional block parseable', async () => {
-          await loadLanguage(SupportedLanguages.Swift);
+        it('keeps source that comments out a conditional block parseable', () => {
           const content = [
             'class Foo {',
             '  /* temporarily disabled:',
@@ -602,7 +596,6 @@ describe('Tree-sitter multi-language parsing', () => {
             '  func g() {}',
             '}',
           ].join('\n');
-          const provider = getProvider(SupportedLanguages.Swift);
           const parseContent = preprocess(content);
           const { tree, matches } = parseAndQuery(parser, parseContent, provider.treeSitterQueries);
           const defs = extractDefinitions(matches);
@@ -616,8 +609,7 @@ describe('Tree-sitter multi-language parsing', () => {
           ]);
         });
 
-        it('does not re-parent later declarations when branches split a declaration header', async () => {
-          await loadLanguage(SupportedLanguages.Swift);
+        it('does not re-parent later declarations when branches split a declaration header', () => {
           const content = [
             'class NetworkClient {',
             '  #if swift(>=5.5)',
@@ -631,7 +623,6 @@ describe('Tree-sitter multi-language parsing', () => {
             'struct SessionStore {}',
             'enum Unrelated { case a }',
           ].join('\n');
-          const provider = getProvider(SupportedLanguages.Swift);
           const parseContent = preprocess(content);
           const { tree } = parseAndQuery(parser, parseContent, provider.treeSitterQueries);
           const topLevelTypes = tree.rootNode.namedChildren.map((child) => child.type);
@@ -649,8 +640,7 @@ describe('Tree-sitter multi-language parsing', () => {
           ]);
         });
 
-        it('keeps a declaration from every branch once the directives are blanked', async () => {
-          await loadLanguage(SupportedLanguages.Swift);
+        it('keeps a declaration from every branch once the directives are blanked', () => {
           const content = [
             'class Themed {',
             '  #if os(iOS)',
@@ -660,7 +650,6 @@ describe('Tree-sitter multi-language parsing', () => {
             '  #endif',
             '}',
           ].join('\n');
-          const provider = getProvider(SupportedLanguages.Swift);
           const { tree, matches } = parseAndQuery(
             parser,
             preprocess(content),

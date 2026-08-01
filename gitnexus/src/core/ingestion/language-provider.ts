@@ -117,12 +117,14 @@ interface LanguageProviderConfig {
    * Must be a pure function — same input always yields the same output, and
    * re-applying it to its own output changes nothing.
    *
-   * The parse worker (`parse-worker.ts`) is the only caller of this hook. Every
-   * *other* path that re-parses the same file must apply the same transform
-   * itself, or the two halves of the pipeline analyze different programs:
-   * `emitScopeCaptures` on a parse-cache miss (see the Swift/C++/Dart emitters)
-   * and the embedding parse in `embeddings/ast-utils.ts`. `test/unit/
-   * preprocess-source-parity.test.ts` pins that equivalence.
+   * Applied by the parse worker (`parse-worker.ts`), by `extractParsedFile`
+   * (`scope-extractor-bridge.ts`) on the parse-cache-miss path, and by the
+   * embedding parse (`embeddings/ast-utils.ts`, which does not go through the
+   * bridge). Any *new* path that re-parses a file must apply it too, or the two
+   * halves of the pipeline analyze different programs — and note the set is not
+   * closed today: language-owned re-parse helpers reached through other
+   * provider hooks (e.g. `populateRangeBindings`) still see raw text.
+   * `test/unit/preprocess-source-parity.test.ts` pins the bridge equivalence.
    *
    * Default: undefined (no preprocessing — `file.content` is parsed verbatim).
    */

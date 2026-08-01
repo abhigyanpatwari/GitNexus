@@ -45,7 +45,6 @@ import { parseSourceSafe } from '../../../tree-sitter/safe-parse.js';
 import { encodeMarker } from '../../utils/heritage-marker.js';
 import { DART_BUILT_INS } from './built-ins.js';
 import { synthesizeCallableFlowCaptures } from '../../utils/callable-flow-captures.js';
-import { preprocessDartExtensionTypes } from './extension-type-preprocess.js';
 import { synthesizeReceiverChainCapture } from '../../utils/receiver-chain-captures.js';
 
 const FUNCTION_DECL_TAGS = [
@@ -113,14 +112,15 @@ export function emitDartScopeCaptures(
   _filePath: string,
   cachedTree?: unknown,
 ): readonly CaptureMatch[] {
-  const parseText = preprocessDartExtensionTypes(sourceText);
+  // `sourceText` already carries `preprocessDartExtensionTypes` —
+  // `extractParsedFile` applies the provider's `preprocessSource` on this path.
   let tree: Parser.Tree;
   if (cachedTree !== undefined && cachedTree !== null) {
     tree = cachedTree as Parser.Tree;
     recordCacheHit();
   } else {
-    tree = parseSourceSafe(getDartParser(), parseText, undefined, {
-      bufferSize: getTreeSitterBufferSize(parseText),
+    tree = parseSourceSafe(getDartParser(), sourceText, undefined, {
+      bufferSize: getTreeSitterBufferSize(sourceText),
     });
     recordCacheMiss();
   }

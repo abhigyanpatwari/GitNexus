@@ -46,7 +46,6 @@ import { computeSwiftArityMetadata } from './arity-metadata.js';
 import { synthesizeSwiftReceiverBinding } from './receiver-binding.js';
 import { synthesizeSwiftSignatureBindings } from './signature-bindings.js';
 import { getSwiftParser, getSwiftScopeQuery } from './query.js';
-import { preprocessSwiftConditionalDirectives } from './conditional-directive-preprocess.js';
 import { recordCacheHit, recordCacheMiss } from './cache-stats.js';
 import { getTreeSitterBufferSize } from '../../constants.js';
 import { parseSourceSafe } from '../../../tree-sitter/safe-parse.js';
@@ -90,15 +89,12 @@ export function emitSwiftScopeCaptures(
   cachedTree?: unknown,
 ): readonly CaptureMatch[] {
   // Reuse the parse phase's cached Tree when available; otherwise parse.
-  // On a miss we must re-apply the provider's preprocessing, or this path would
-  // see a different program than the worker did (the same hole Dart closes in
-  // `dart/captures.ts`). The transform is length-preserving, so every offset
-  // below still indexes `sourceText`.
+  // `sourceText` already carries the provider's `preprocessSource` transform —
+  // `extractParsedFile` applies it on this path.
   let tree = cachedTree as ReturnType<ReturnType<typeof getSwiftParser>['parse']> | undefined;
   if (tree === undefined) {
-    const parseText = preprocessSwiftConditionalDirectives(sourceText);
-    tree = parseSourceSafe(getSwiftParser(), parseText, undefined, {
-      bufferSize: getTreeSitterBufferSize(parseText),
+    tree = parseSourceSafe(getSwiftParser(), sourceText, undefined, {
+      bufferSize: getTreeSitterBufferSize(sourceText),
     });
     recordCacheMiss();
   } else {

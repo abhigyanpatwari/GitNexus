@@ -1,5 +1,3 @@
-type SwiftDirectiveKind = 'if' | 'elseif' | 'else' | 'endif';
-
 /**
  * A conditional-compilation directive occupying a whole line.
  *
@@ -11,8 +9,11 @@ type SwiftDirectiveKind = 'if' | 'elseif' | 'else' | 'endif';
  */
 const SWIFT_CONDITIONAL_DIRECTIVE_RE = /^[^\S\r\n]*#(if|elseif|else|endif)\b[^\r\n]*$/;
 
-/** Cheap whole-file precondition, mirroring `stripUeMacros`'s `HAS_UE_HINT`. */
-const HAS_CONDITIONAL_DIRECTIVE_HINT = /^[^\S\r\n]*#(?:if|elseif|else|endif)\b/m;
+/**
+ * Cheap whole-file precondition, mirroring `stripUeMacros`'s `HAS_UE_HINT`.
+ * Derived from the line pattern so the two can never drift apart.
+ */
+const HAS_CONDITIONAL_DIRECTIVE_HINT = new RegExp(SWIFT_CONDITIONAL_DIRECTIVE_RE.source, 'm');
 
 interface SwiftPreprocessScanState {
   blockCommentDepth: number;
@@ -21,20 +22,18 @@ interface SwiftPreprocessScanState {
   braceDepth: number;
 }
 
-/** One physical line plus the exact terminator that followed it. */
-interface SourceLine {
-  text: string;
-  terminator: string;
-}
-
 /**
  * An `#if` … `#endif` run. Blanking is decided per group, so a group is either
  * fully blanked or fully preserved — never half-erased.
  */
 interface DirectiveGroup {
   braceDepthAtStart: number;
+  /** Indices into the alternating `parts` array of this group's directive lines. */
   directiveLines: number[];
-  branchDeltas: number[];
+  /** Net brace delta of every branch so far — what the parser sees once all survive. */
+  totalDelta: number;
+  /** False as soon as one branch is not brace-balanced on its own. */
+  allBranchesBalanced: boolean;
   currentBranchDelta: number;
 }
 
@@ -168,27 +167,6 @@ function scanSwiftLine(line: string, state: SwiftPreprocessScanState): void {
   }
 }
 
-/** Split into lines, keeping `\n`, `\r\n` and bare-`\r` terminators verbatim. */
-function splitSourceLines(sourceText: string): SourceLine[] {
-  const lines: SourceLine[] = [];
-  let lineStart = 0;
-
-  for (let index = 0; index < sourceText.length; index++) {
-    const char = sourceText[index];
-    if (char !== '\n' && char !== '\r') continue;
-
-    const terminator = char === '\r' && sourceText[index + 1] === '\n' ? '\r\n' : char;
-    lines.push({ text: sourceText.slice(lineStart, index), terminator });
-    index += terminator.length - 1;
-    lineStart = index + 1;
-  }
-  if (lineStart < sourceText.length) {
-    lines.push({ text: sourceText.slice(lineStart), terminator: '' });
-  }
-
-  return lines;
-}
-
 /**
  * Blank nested Swift conditional-compilation directives before parsing.
  *
@@ -218,10 +196,6 @@ function splitSourceLines(sourceText: string): SourceLine[] {
  *     later top-level declaration. Such a group degrades to the pre-fix
  *     behavior instead.
  *
- * The scan tracks regular, raw and multiline strings (including matching raw
- * pound counts: `#"""` closes with `"""#`), extended regex literals (`#/…/#`,
- * whose body may contain `/*`), and nested block comments.
- *
  * Known residuals, all of which degrade to "directive left in place" rather
  * than to corrupted output: string interpolation is not parsed with full Swift
  * expression fidelity, so a nested multiline string inside an interpolation can
@@ -238,23 +212,24 @@ function splitSourceLines(sourceText: string): SourceLine[] {
  * node-tree-sitter reports UTF-16 code-unit indices, and every in-process
  * consumer slices the JS string, whose `.length` *is* preserved.
  *
- * Must stay pure and idempotent — `emitSwiftScopeCaptures` re-applies it on the
- * parse-cache-miss path so the worker and scope-capture paths see one text.
+ * Must stay pure and idempotent — see `LanguageProvider.preprocessSource`.
  */
 export function preprocessSwiftConditionalDirectives(sourceText: string): string {
   if (!HAS_CONDITIONAL_DIRECTIVE_HINT.test(sourceText)) return sourceText;
 
-  const lines = splitSourceLines(sourceText);
+  // Alternating [line, terminator, line, terminator, …, line]; joining it back
+  // reproduces the input byte for byte, including bare-`\r` endings.
+  const parts = sourceText.split(/(\r\n|\n|\r)/);
   const state: SwiftPreprocessScanState = {
     blockCommentDepth: 0,
     multilineStringPounds: null,
     braceDepth: 0,
   };
-  const blanked = new Array<boolean>(lines.length).fill(false);
   const openGroups: DirectiveGroup[] = [];
+  let blankedAny = false;
 
-  for (let index = 0; index < lines.length; index++) {
-    const text = lines[index]!.text;
+  for (let index = 0; index < parts.length; index += 2) {
+    const text = parts[index]!;
     const insideLiteralOrComment =
       state.multilineStringPounds !== null || state.blockCommentDepth > 0;
     const match = insideLiteralOrComment ? null : SWIFT_CONDITIONAL_DIRECTIVE_RE.exec(text);
@@ -271,12 +246,12 @@ export function preprocessSwiftConditionalDirectives(sourceText: string): string
 
     // Directive lines are blanked as a unit, so their own braces (if any) never
     // reach the parser and must not count toward a branch's balance.
-    const kind = match[1] as SwiftDirectiveKind;
-    if (kind === 'if') {
+    if (match[1] === 'if') {
       openGroups.push({
         braceDepthAtStart,
         directiveLines: [index],
-        branchDeltas: [],
+        totalDelta: 0,
+        allBranchesBalanced: true,
         currentBranchDelta: 0,
       });
       continue;
@@ -285,28 +260,24 @@ export function preprocessSwiftConditionalDirectives(sourceText: string): string
     if (openGroup === undefined) continue;
 
     openGroup.directiveLines.push(index);
-    openGroup.branchDeltas.push(openGroup.currentBranchDelta);
+    openGroup.totalDelta += openGroup.currentBranchDelta;
+    openGroup.allBranchesBalanced &&= openGroup.currentBranchDelta === 0;
     openGroup.currentBranchDelta = 0;
-    if (kind !== 'endif') continue;
+    if (match[1] !== 'endif') continue;
 
     openGroups.pop();
     const parentGroup = openGroups[openGroups.length - 1];
-    if (parentGroup !== undefined) {
-      // Both branches survive preprocessing, so the enclosing branch sees the
-      // sum — not one branch's delta.
-      parentGroup.currentBranchDelta += openGroup.branchDeltas.reduce((sum, d) => sum + d, 0);
-    }
+    // Every branch survives preprocessing, so the enclosing branch sees the sum
+    // — not one branch's delta.
+    if (parentGroup !== undefined) parentGroup.currentBranchDelta += openGroup.totalDelta;
 
-    if (openGroup.braceDepthAtStart > 0 && openGroup.branchDeltas.every((d) => d === 0)) {
-      for (const directiveLine of openGroup.directiveLines) blanked[directiveLine] = true;
+    if (openGroup.braceDepthAtStart > 0 && openGroup.allBranchesBalanced) {
+      // Safe to mutate in place: every line of this group has already been
+      // scanned, and the decision never reopens.
+      for (const line of openGroup.directiveLines) parts[line] = ' '.repeat(parts[line]!.length);
+      blankedAny = true;
     }
   }
 
-  let output = '';
-  for (let index = 0; index < lines.length; index++) {
-    const { text, terminator } = lines[index]!;
-    output += (blanked[index] ? ' '.repeat(text.length) : text) + terminator;
-  }
-
-  return output;
+  return blankedAny ? parts.join('') : sourceText;
 }
