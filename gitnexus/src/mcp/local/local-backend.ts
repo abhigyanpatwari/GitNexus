@@ -94,7 +94,10 @@ import { findImportCycles } from '../../core/graph/import-cycles.js';
 import { decodeTaintPath } from '../../core/ingestion/taint/path-codec.js';
 import { decodeReachingDefReason } from '../../core/ingestion/cfg/reaching-def-reason-codec.js';
 import { EXTENSIONS } from '../../core/ingestion/import-resolvers/utils.js';
-import { lookupUnresolvedCallCount } from '../../core/ingestion/scope-resolution/unresolved-receivers.js';
+import {
+  lookupExternalCallCount,
+  lookupUnresolvedCallCount,
+} from '../../core/ingestion/scope-resolution/unresolved-receivers.js';
 import {
   fnLineOf,
   isPdgDegradedLayerStatus,
@@ -496,15 +499,34 @@ export interface CodebaseContext {
 export interface EpistemicCauses {
   readonly receiverTyping: number;
   readonly dispatchBoundary: number;
+  /**
+   * Call sites whose receiver was rooted OUTSIDE the indexed program —
+   * `System.out.println`, `fetch(...)`, `os.environ.*`. Reported, but NOT a
+   * reason the count is short: there is no in-graph node an edge could have
+   * reached, so the analysis is complete for the program as given.
+   *
+   * Surfaced so "no uncertainty" is distinguishable from "we judged 76 calls to
+   * be outside the program". A compiler resolves these against the JDK / BCL /
+   * lib.d.ts; lacking those, this number IS the boundary.
+   */
+  readonly externalBoundary: number;
 }
 
-function epistemicFrom(dropped: { notes: readonly string[]; sites: number }): {
+function epistemicFrom(dropped: { notes: readonly string[]; sites: number; external: number }): {
   epistemic: 'exact' | 'lower-bound';
   boundaries?: string[];
   causes?: EpistemicCauses;
 } {
+  // An index whose only drops were external still reports `exact` — nothing was
+  // lost — but carries the boundary count so "complete" is distinguishable from
+  // "we judged N calls to leave the program".
   return dropped.notes.length === 0
-    ? { epistemic: 'exact' }
+    ? dropped.external > 0
+      ? {
+          epistemic: 'exact',
+          causes: { receiverTyping: 0, dispatchBoundary: 0, externalBoundary: dropped.external },
+        }
+      : { epistemic: 'exact' }
     : {
         epistemic: 'lower-bound',
         boundaries: [...dropped.notes],
@@ -512,7 +534,11 @@ function epistemicFrom(dropped: { notes: readonly string[]; sites: number }): {
         // dropped sites, so counting notes would have published `1` next to
         // prose saying `2 call sites` — a consumer branching on the number
         // would read a different magnitude than the human reading the text.
-        causes: { receiverTyping: dropped.sites, dispatchBoundary: 0 },
+        causes: {
+          receiverTyping: dropped.sites,
+          dispatchBoundary: 0,
+          externalBoundary: dropped.external,
+        },
       };
 }
 
@@ -5874,6 +5900,7 @@ export class LocalBackend {
         causes: {
           receiverTyping: droppedBoundaries.sites,
           dispatchBoundary: boundaries.length,
+          externalBoundary: droppedBoundaries.external,
         },
       };
     } catch {
@@ -5893,8 +5920,8 @@ export class LocalBackend {
   private async unresolvedReceiverBoundaries(
     repo: RepoHandle,
     symName: string,
-  ): Promise<{ notes: string[]; sites: number }> {
-    if (symName.length === 0) return { notes: [], sites: 0 };
+  ): Promise<{ notes: string[]; sites: number; external: number }> {
+    if (symName.length === 0) return { notes: [], sites: 0, external: 0 };
     try {
       const meta = await loadMeta(path.dirname(repo.lbugPath));
       const summary = meta?.unresolvedReceiverMembers;
@@ -5902,7 +5929,8 @@ export class LocalBackend {
       // returns a Function for `constructor`/`toString`/… and `NaN <= 0` is false,
       // so the old guard let it through into user-facing text.
       const sites = lookupUnresolvedCallCount(summary, symName);
-      if (sites === undefined) return { notes: [], sites: 0 };
+      const external = lookupExternalCallCount(summary, symName) ?? 0;
+      if (sites === undefined) return { notes: [], sites: 0, external };
       const notes = [
         `${sites} call ${sites === 1 ? 'site' : 'sites'} invoking \`${symName}\` ${
           sites === 1 ? 'was' : 'were'
@@ -5911,9 +5939,9 @@ export class LocalBackend {
           `expression). Those callers are absent from this result — actual ` +
           `impact may be higher.`,
       ];
-      return { notes, sites };
+      return { notes, sites, external };
     } catch {
-      return { notes: [], sites: 0 };
+      return { notes: [], sites: 0, external: 0 };
     }
   }
 

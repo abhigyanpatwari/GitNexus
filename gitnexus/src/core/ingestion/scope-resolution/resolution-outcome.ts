@@ -124,15 +124,6 @@ export type ResolutionOutcome =
  *                  expression the capture walk could not reduce to a nameable
  *                  base (it stopped early, or the base was unencodable)
  */
-/**
- * Is the receiver rooted inside the analyzed program, or outside it?
- *
- * `unknown` is for a site carrying no usable base at all — neither a chain nor
- * an explicit receiver — where the question cannot be asked. It is treated as
- * `in-program` for hedging purposes, because assuming completeness we cannot
- * demonstrate is the unsafe direction.
- */
-export type ReceiverOrigin = 'in-program' | 'external' | 'unknown';
 
 export type ReceiverShape =
   | 'chain-call'
@@ -150,6 +141,16 @@ export type ReceiverShape =
  *  counted as FIELDS, so the two shapes this work exists to expose were
  *  censused as `chain-field`. The discriminated union makes a new step kind a
  *  compile error instead of a silent bucket. */
+/**
+ * Is the receiver rooted inside the analyzed program, or outside it?
+ *
+ * `unknown` is for a site carrying no usable base at all — neither a chain nor
+ * an explicit receiver — where the question cannot be asked. It is treated as
+ * `in-program` for hedging purposes, because assuming completeness we cannot
+ * demonstrate is the unsafe direction.
+ */
+export type ReceiverOrigin = 'in-program' | 'external' | 'unknown';
+
 export function classifyReceiverShape(decoded: DecodedReceiverChain | undefined): ReceiverShape {
   if (decoded === undefined || decoded.steps.length === 0) return 'no-chain';
   let calls = 0;

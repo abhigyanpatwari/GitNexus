@@ -85,6 +85,7 @@ import type {
 import { classifyReceiverShape } from '../resolution-outcome.js';
 import type { ReceiverOrigin } from '../resolution-outcome.js';
 import { decodeReceiverChain } from '../../utils/receiver-chain-codec.js';
+import type { DecodedReceiverChain } from '../../utils/receiver-chain-codec.js';
 
 /** Subset of `ScopeResolver` consumed by this pass. Accepting the
  *  subset rather than the full provider keeps tests and partial
@@ -174,11 +175,11 @@ function resolveClassBindingForName(
  * head of the receiver text otherwise — never a regex over the source line.
  */
 function classifyReceiverOrigin(
-  site: { readonly receiverChain?: string; readonly inScope: string },
+  decoded: DecodedReceiverChain | undefined,
+  inScope: string,
   receiverName: string,
   scopes: ScopeResolutionIndexes,
 ): ReceiverOrigin {
-  const decoded = decodeReceiverChain(site.receiverChain);
   // The chain's base is authoritative. Without one, take the head of the
   // receiver text up to the first member/call punctuation.
   const base = decoded?.baseReceiverName ?? /^[A-Za-z_$][\w$]*/.exec(receiverName)?.[0];
@@ -188,16 +189,20 @@ function classifyReceiverOrigin(
   // declared here is NOT enough: `inputs.stream()` has an in-program base bound
   // to `List<String>`, whose `stream` lives in the JDK. What decides the target
   // is whether the base's declared TYPE is one this index contains.
-  const binding = findReceiverTypeBinding(site.inScope, base, scopes);
+  const binding = findReceiverTypeBinding(inScope, base, scopes);
   if (binding !== undefined) {
-    return findClassBindingInScope(binding.declaredAtScope, binding.rawName, scopes) !== undefined
+    // `resolveClassBindingForName`, not a bare lookup: it also strips template
+    // arguments, so an in-program generic base (`Box<String> b; b.open()`)
+    // resolves instead of being mislabelled external and dropped from the hedge.
+    return resolveClassBindingForName(binding.declaredAtScope, binding.rawName, scopes) !==
+      undefined
       ? 'in-program'
       : 'external';
   }
   // A type the program declares, used as a static receiver.
-  if (findClassBindingInScope(site.inScope, base, scopes) !== undefined) return 'in-program';
+  if (findClassBindingInScope(inScope, base, scopes) !== undefined) return 'in-program';
   // Anything else this index knows by that name (namespace, module, free fn).
-  if (scopes.qualifiedNames.get(base).length > 0) return 'in-program';
+  if (scopes.qualifiedNames.has(base)) return 'in-program';
 
   return 'external';
 }
@@ -1408,6 +1413,10 @@ export function emitReceiverBoundCalls(
       // dropped site (its callee is unknown by definition, so the drop cannot
       // be attributed to any target symbol).
       if (compoundReceiverUnresolved && !handledSites.has(siteKey)) {
+        // Decoded once: both the shape census and the origin classifier read the
+        // same chain, and this is inside the drop guard so a resolved site pays
+        // nothing.
+        const decodedChain = decodeReceiverChain(site.receiverChain);
         options.recordResolutionOutcome?.({
           kind: 'suppressed',
           reason: 'receiver-unresolved',
@@ -1425,10 +1434,10 @@ export function emitReceiverBoundCalls(
           // re-derived from the source line.
           // `decodeReceiverChain` opens with a non-string guard, so the
           // undefined case needs no ternary here.
-          receiverShape: classifyReceiverShape(decodeReceiverChain(site.receiverChain)),
+          receiverShape: classifyReceiverShape(decodedChain),
           // Whether anything was actually lost. An external target has no node
           // to point at, so its absence is completeness, not uncertainty.
-          receiverOrigin: classifyReceiverOrigin(site, receiverName, scopes),
+          receiverOrigin: classifyReceiverOrigin(decodedChain, site.inScope, receiverName, scopes),
         });
       }
     }
