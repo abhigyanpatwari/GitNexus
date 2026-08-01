@@ -32,6 +32,15 @@ USAGE_FIELDS = (
     "output_tokens",
 )
 MAX_TRANSCRIPT_BYTES = 8 * 1024 * 1024
+# Wall-clock ceiling for one headless session, shared by the runner and the
+# evolution loop so both CLIs kill a session at the same point. 3600s was too
+# tight for the `workflow` arm: run 29907431284 lost two inv-bug-pdg-note
+# incumbent runs to SIGTERM at the ceiling while a Bash verification step was
+# still going, and the promotion gate demands zero excluded runs in both paired
+# arms — so a single ceiling hit costs the whole generation. Successful
+# `workflow` rows in that run finished in ~1600-2600s across both sessions, so
+# this leaves real headroom over observed work rather than over the timeout.
+SESSION_TIMEOUT_SECONDS = 5400
 # Provenance tag stamped on every parent-captured transcript artifact. The
 # evidence preflight (evolve._transcript_artifact_metadata) validates against
 # this exact value, so producer and consumer stay pinned to one schema.
@@ -416,11 +425,17 @@ def run_claude(
         if proc.stdout_capture_overflow:
             raise ValueError(f"parent-captured event stream exceeds {MAX_TRANSCRIPT_BYTES} bytes")
         events = _parse_parent_event_stream(proc.stdout_capture)
-        result_events = [event for event in events if event.get("type") == "result"]
-        if len(result_events) != 1:
-            raise ValueError(f"expected exactly one final result event, observed {len(result_events)}")
-        data = result_events[0]
-        if events[-1] is not data:
+        result_indexes = [index for index, event in enumerate(events) if event.get("type") == "result"]
+        if len(result_indexes) != 1:
+            raise ValueError(f"expected exactly one final result event, observed {len(result_indexes)}")
+        data = events[result_indexes[0]]
+        # A session that used a background task drains its bookkeeping after
+        # the final result event (`background_tasks_changed`, `task_updated`,
+        # `task_notification` — all `type: "system"`), so the result is last
+        # only among the events that carry evidence. `system` events hold no
+        # tool_use/tool_result/usage payload and so cannot forge skill or cost
+        # evidence; any other event after the result still fails closed.
+        if any(event.get("type") != "system" for event in events[result_indexes[0] + 1 :]):
             raise ValueError("final result event is not the last event in the captured stream")
     except (UnicodeError, ValueError) as exc:
         event_stream_error = str(exc)

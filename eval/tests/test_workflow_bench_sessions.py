@@ -967,6 +967,37 @@ def test_final_result_event_must_be_last(monkeypatch, tmp_path):
     assert "not the last event" in rec["error_detail"]["event_stream_error"]
 
 
+def test_background_task_teardown_after_the_result_stays_valid_evidence(monkeypatch, tmp_path):
+    # Claude Code drains background-task bookkeeping after the final result
+    # event. Those `system` events carry no tool or usage payload, so they must
+    # not invalidate an otherwise complete session (run 29907431284 lost three
+    # runs this way, and the gate demands zero excluded runs).
+    teardown = [
+        {"type": "system", "subtype": "background_tasks_changed", "tasks": []},
+        {"type": "system", "subtype": "task_updated", "task_id": "bdw43oy7j", "patch": {"status": "killed"}},
+        {"type": "system", "subtype": "task_notification", "task_id": "bdw43oy7j", "status": "stopped"},
+    ]
+    stream = (
+        "\n".join([*(json.dumps(event) for event in skill_events({"skill": "gitnexus-work"})), VALID_REPORT])
+        + "\n"
+        + "".join(json.dumps(event) + "\n" for event in teardown)
+    )
+    monkeypatch.setattr(runner_sessions, "run_managed", lambda *a, **k: fake_cli_result(stream))
+    rec = runner.run_claude(
+        "task",
+        tmp_path,
+        claude_bin="claude",
+        timeout=5,
+        expected_skill="gitnexus-work",
+    )
+
+    assert rec["ok"] is True
+    assert rec["error_kind"] is None
+    assert rec["skill_invoked"] is True
+    assert rec["transcript_missing"] is False
+    assert "evidence_diagnostics" not in rec
+
+
 def test_snapshot_plan_docs_detects_one_modified_plan_and_rejects_ambiguous_output(tmp_path):
     plans = tmp_path / "docs" / "plans"
     plans.mkdir(parents=True)

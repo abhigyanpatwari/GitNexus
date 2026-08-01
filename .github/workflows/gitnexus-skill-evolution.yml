@@ -5,10 +5,11 @@
 # merges without review.
 #
 # Activation checklist (the scheduled lane is OFF by default).
-# [ ] Configure the repository secret GITNEXUS_BENCH_AUTH_TOKEN (an Anthropic
+# [x] Configure the repository secret GITNEXUS_BENCH_AUTH_TOKEN (an Anthropic
 #     API key — benchmark sessions bill real usage; the Claude Code OAuth
-#     subscription token does not work here).
-# [ ] Configure the RELEASE_APP_ID and RELEASE_APP_PRIVATE_KEY secrets (the
+#     subscription token does not work here). Scoped to the
+#     `gitnexus-evolution` Environment.
+# [x] Configure the RELEASE_APP_ID and RELEASE_APP_PRIVATE_KEY secrets (the
 #     App that opens the promotion PR). The Mint-App-Token step hard-fails
 #     without them once a promotion is detected. Verify the App installation
 #     is scoped to this repo with only Contents: RW + Pull requests: RW.
@@ -40,10 +41,15 @@
 #     most weekly. Revisit if run frequency increases or the threat model
 #     changes; stopping already bounds the exposure window to the job's own
 #     runtime on 1 day out of 7.
-# [ ] Run workflow_dispatch once and confirm: containment preflight passes,
+# [x] Run workflow_dispatch once and confirm: containment preflight passes,
 #     the benchmark completes inside the job timeout, the results artifact
-#     uploads, and a promotion (if any) opens a well-formed PR.
-# [ ] Set the repository variable GITNEXUS_EVOLUTION_ENABLED=true.
+#     uploads, and a promotion (if any) opens a well-formed PR. Run
+#     29907431284 (2026-07-22) went green end to end in 14h45m and reached a
+#     gate decision (`insufficient_evidence`, no promotion).
+# [ ] Set the repository variable GITNEXUS_EVOLUTION_ENABLED=true. This is the
+#     only remaining gap: until it is set the scheduled lane skips the job in
+#     seconds — while the EventBridge schedule still starts the runner for the
+#     day — so the Saturday cron costs instance time and produces nothing.
 # Roll back by setting that variable to false. Note: workflow_dispatch always
 # runs the full benchmark loop regardless of GITNEXUS_EVOLUTION_ENABLED and
 # bills real API usage on GITNEXUS_BENCH_AUTH_TOKEN.

@@ -822,7 +822,12 @@ def build_parser() -> argparse.ArgumentParser:
     )
     parser.add_argument("--out-root", type=Path, default=None)
     parser.add_argument("--claude-bin", default="claude")
-    parser.add_argument("--timeout", type=int, default=3600, help="per session, seconds")
+    parser.add_argument(
+        "--timeout",
+        type=int,
+        default=runner_sessions.SESSION_TIMEOUT_SECONDS,
+        help="per session, seconds",
+    )
     parser.add_argument("--base-url", default=None)
     parser.add_argument(
         "--auth-token",

@@ -119,6 +119,7 @@ from .runner_sessions import (
     GITNEXUS_READ_ONLY_TOOLS as GITNEXUS_READ_ONLY_TOOLS,
     MAX_TRANSCRIPT_BYTES as MAX_TRANSCRIPT_BYTES,
     SANDBOX_GITNEXUS_ENTRYPOINT as SANDBOX_GITNEXUS_ENTRYPOINT,
+    SESSION_TIMEOUT_SECONDS,
     USAGE_FIELDS,
     allowed_agent_tools,
     run_claude,
@@ -855,7 +856,12 @@ def build_parser() -> argparse.ArgumentParser:
         default=None,
         help="exact Compound Engineering plugin version; required for ce_* arms",
     )
-    parser.add_argument("--timeout", type=int, default=3600, help="per session, seconds")
+    parser.add_argument(
+        "--timeout",
+        type=int,
+        default=SESSION_TIMEOUT_SECONDS,
+        help="per session, seconds",
+    )
     parser.add_argument("--out", type=Path, default=None)
     parser.add_argument(
         "--model",
