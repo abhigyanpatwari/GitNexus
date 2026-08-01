@@ -213,10 +213,12 @@ describe('LadybugDB Schema', () => {
       expect(RELATION_SCHEMA).toContain('FROM Class TO CodeElement');
     });
 
-    it('declares the member-containment pairs emitted for Swift enums, Rust impl/trait members, and JS/TS object-literal methods (#2769)', () => {
+    it('declares the Swift enum/property member-containment pairs (#2769)', () => {
       // Asserted through the runtime's own parser, not raw strings, so a
       // cosmetic DDL formatting change cannot fail this without a semantic
-      // change (see PR #2769 review Finding 7).
+      // change (see PR #2769 review Finding 7). The Rust impl/trait and JS/TS
+      // object-literal pairs get their own tests below — narrower and named
+      // for the specific abort each one fixes.
       const declaredPairs = parseRelationSchemaPairs(RELATION_SCHEMA);
       const memberPairs = [
         // Swift enum members (also reached by Java/PHP enum methods)
@@ -230,14 +232,8 @@ describe('LadybugDB Schema', () => {
         'Property|Enum',
         'Property|Function',
         'Property|Struct',
-        // Rust `impl`/`trait` methods, minted as `Function` nodes, not `Method`
-        'Trait|Function',
-        'Impl|Function',
-        // JS/TS object-literal shorthand methods (owner labelled Const/Variable)
-        'Const|Method',
-        'Variable|Method',
-        'Method|Const',
         'Method|Variable',
+        'Method|Const',
       ];
 
       for (const pair of memberPairs) {

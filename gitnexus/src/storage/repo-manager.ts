@@ -657,11 +657,9 @@ export interface RepoMeta {
  * `impl`/`trait` method, which is minted as a `Function` node, not `Method`;
  * Const/Variable→Method and its sibling Method→Const cover a JS/TS object
  * literal's shorthand methods, whose owner is labelled `Const`/`Variable`. A
- * pre-v32 database physically lacks these from-to pairs, so an incremental
- * top-up emitting one of these edges fails the bulk COPY and — on the
- * streamed emit path — falls through the per-edge fallback's `catch {}` and
- * silently drops the edges, with `analyze` still exiting 0; on the
- * non-streamed path it aborts instead. Force a full re-analyze.
+ * pre-v32 database physically lacks these from-to pairs — see
+ * `assertDeclaredPair` (rel-pair-routing.ts) for why an incremental top-up
+ * fails loudly on one path and silently on the other. Force a full re-analyze.
  *
  * (This shipped as v31 on its own branch; `main` took 31 for #2746 first, so
  * it is renumbered here. Re-check both constants against origin/main

@@ -76,15 +76,18 @@ export interface RelPairMeta {
  * without this, an undeclared pair on a streaming run reaches `COPY`, fails
  * the bulk insert, and is silently dropped by the per-edge fallback instead
  * of failing loudly like the non-streaming path does.
+ *
+ * Takes the already-built `From|To` pairKey rather than the two labels — every
+ * caller needs that same key immediately after for its own Map/stream lookup,
+ * and this is on the per-edge hot path, so building it twice would be a
+ * needless allocation per edge. `|` cannot appear inside a label (node labels
+ * are `NODE_TABLES` identifiers), so splitting it back apart for the error
+ * message is safe.
  */
-export const assertDeclaredPair = (
-  fromLabel: string,
-  toLabel: string,
-  declaredPairs: ReadonlySet<string>,
-): void => {
-  if (!declaredPairs.has(`${fromLabel}|${toLabel}`)) {
+export const assertDeclaredPair = (pairKey: string, declaredPairs: ReadonlySet<string>): void => {
+  if (!declaredPairs.has(pairKey)) {
     throw new Error(
-      `Relationship label pair ${fromLabel}→${toLabel} is not declared in the LadybugDB relation schema`,
+      `Relationship label pair ${pairKey.replace('|', '→')} is not declared in the LadybugDB relation schema`,
     );
   }
 };
@@ -143,8 +146,8 @@ export class RelPairRouter {
       return;
     }
 
-    assertDeclaredPair(fromLabel, toLabel, this.declaredPairs);
     const pairKey = `${fromLabel}|${toLabel}`;
+    assertDeclaredPair(pairKey, this.declaredPairs);
     const ws = this.streams.get(pairKey);
     if (ws === undefined) {
       // First edge for this pair: open the stream, write header + row.
