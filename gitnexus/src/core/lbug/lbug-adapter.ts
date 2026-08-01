@@ -3077,6 +3077,55 @@ export const ensureFTSIndex = async (
   }
 };
 
+export type FtsQueryFailureClass = 'missing-index' | 'missing-table' | 'other';
+
+/**
+ * Classify a `QUERY_FTS_INDEX` failure so a genuinely-missing index (normal —
+ * this table's FTS index hasn't been built yet) is distinguished from a real
+ * query-time error that would otherwise look identical (#2767), and from the
+ * table itself being missing (schema drift / a corrupted or partial DB — a
+ * much more serious condition than an unbuilt index).
+ *
+ * tri-review Residual-1: this used to be a second, independently-maintained
+ * classifier living in `core/search/bm25-index.ts` (re-exported from there
+ * for backward compatibility), duplicating this function's job for the
+ * IDENTICAL `QUERY_FTS_INDEX` cypher call. `queryFTS` below now uses this
+ * same classifier for its own catch instead of a bare, unanchored
+ * `.includes('does not exist')` check that could not tell "index missing"
+ * from "table missing" apart, and silently swallowed both alike.
+ *
+ * Three real message shapes were confirmed empirically against a live
+ * `CALL QUERY_FTS_INDEX(...)`:
+ * `"Prepare failed: Binder exception: Table <T> doesn't have an index with
+ * name <name>."` — the table exists, only its FTS index is missing (normal,
+ * benign — `missing-index`) — `"Prepare failed: Binder exception: Table <T>
+ * does not exist."` — the TABLE ITSELF is missing (`missing-table`) — and a
+ * `Catalog exception: function QUERY_FTS_INDEX is not defined...` when the
+ * FTS extension isn't loaded at all (`other`; mirrors the confirmed
+ * `DROP_FTS_INDEX` shape in {@link isBenignDropFtsIndexError}'s doc comment).
+ *
+ * Anchored to the exception class (after stripping the optional "Prepare
+ * failed: " wrapper LadybugDB adds for statement-preparation failures),
+ * mirroring `isBenignDropFtsIndexError`'s START-of-message anchor: a bare
+ * substring search would misclassify a genuine, differently-classed error
+ * (e.g. a `Runtime exception` from the FTS parser that echoes the user's
+ * own search text back into its message) as benign whenever that echoed
+ * text happened to contain "does not exist" — silently dropping a real
+ * error, the exact #2767 failure mode this function exists to prevent.
+ */
+export const classifyFtsQueryError = (message: string): FtsQueryFailureClass => {
+  const PREPARE_FAILED_PREFIX = 'Prepare failed: ';
+  const body = message.startsWith(PREPARE_FAILED_PREFIX)
+    ? message.slice(PREPARE_FAILED_PREFIX.length)
+    : message;
+  if (!body.startsWith('Binder exception:') && !body.startsWith('Catalog exception:')) {
+    return 'other';
+  }
+  if (body.includes("doesn't have an index")) return 'missing-index';
+  if (body.includes('does not exist')) return 'missing-table';
+  return 'other';
+};
+
 /**
  * Query a full-text search index
  * @param tableName - The node table name
@@ -3121,8 +3170,13 @@ export const queryFTS = async (
       };
     });
   } catch (e: any) {
-    // Return empty if index doesn't exist yet
-    if (e.message?.includes('does not exist')) {
+    // Return empty only for a genuinely-missing index — the ordinary,
+    // expected case. A missing TABLE (schema drift) or any other real error
+    // rethrows instead of being silently swallowed (tri-review Residual-1 /
+    // NEW-6 — this used to be a bare `.includes('does not exist')` check
+    // that could not tell the two apart).
+    const message = e instanceof Error ? e.message : String(e);
+    if (classifyFtsQueryError(message) === 'missing-index') {
       return [];
     }
     throw e;
