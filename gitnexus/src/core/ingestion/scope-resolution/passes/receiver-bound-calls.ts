@@ -257,6 +257,7 @@ export function emitReceiverBoundCalls(
 
   for (const parsed of parsedFiles) {
     const namespaceTargets = collectNamespaceTargets(parsed, scopes);
+    const fileCompoundOpts = { ...compoundOpts, namespaceTargets };
     // Per-file resolved-callee-id capture context (#2227 U2). Built once per
     // file; `undefined` when the sink is absent (pdg off) so the `tryEmitEdge`
     // capture is a no-op and emission stays byte-identical (R4).
@@ -409,7 +410,7 @@ export function emitReceiverBoundCalls(
           index,
           // Group A: the receiver IS this site's expression, so the site's
           // captured chain describes it and the structural fold applies.
-          { ...compoundOpts, receiverChain: site.receiverChain },
+          { ...fileCompoundOpts, receiverChain: site.receiverChain },
         );
         compoundReceiverUnresolved = currentClass === undefined;
         if (currentClass !== undefined) {
@@ -938,7 +939,7 @@ export function emitReceiverBoundCalls(
           typeRef.declaredAtScope,
           scopes,
           index,
-          compoundOpts,
+          fileCompoundOpts,
         );
         if (ownerDef === undefined && !typeRef.rawName.includes('(')) {
           ownerDef = resolveCompoundReceiverClass(
@@ -946,7 +947,7 @@ export function emitReceiverBoundCalls(
             typeRef.declaredAtScope,
             scopes,
             index,
-            compoundOpts,
+            fileCompoundOpts,
           );
         }
         if (ownerDef !== undefined) {
@@ -1049,7 +1050,7 @@ export function emitReceiverBoundCalls(
             scopes,
             index,
             // Group A, same reasoning as Case 0 above.
-            { ...compoundOpts, receiverChain: site.receiverChain },
+            { ...fileCompoundOpts, receiverChain: site.receiverChain },
           );
         }
         if (ownerDef !== undefined) {

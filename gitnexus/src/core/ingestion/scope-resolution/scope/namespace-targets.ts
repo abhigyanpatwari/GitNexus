@@ -15,8 +15,10 @@
  *
  * Next-consumer contract: any language with namespace-style imports
  * (TypeScript `import * as X`, Java static import, Ruby `require`)
- * uses this directly. `ParsedImport.kind === 'namespace'` is the
- * cross-language hook.
+ * uses this directly. The finalized `ImportEdge.kind === 'namespace'`
+ * classification is authoritative; providers may produce it directly from
+ * syntax or reclassify a named import after target resolution proves it names
+ * a module.
  *
  * Scope-chain concern (verified 2026-04-21): `pythonImportOwningScope`
  * documents that function-local and class-body imports bind to the
@@ -43,14 +45,8 @@ export function collectNamespaceTargets(
   const moduleEdges = scopes.imports.get(parsed.moduleScope);
   if (moduleEdges === undefined) return out;
 
-  const namespaceLocals = new Set<string>();
-  for (const imp of parsed.parsedImports) {
-    if (imp.kind === 'namespace') namespaceLocals.add(imp.localName);
-  }
-
   for (const edge of moduleEdges) {
-    if (edge.targetFile === null) continue;
-    if (!namespaceLocals.has(edge.localName)) continue;
+    if (edge.targetFile === null || edge.kind !== 'namespace') continue;
     let targets = out.get(edge.localName);
     if (targets === undefined) {
       targets = [];

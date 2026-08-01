@@ -415,6 +415,11 @@ export interface Scope {
   /** Local type facts visible from this scope (parameter annotations, `self` binding, etc.). */
   readonly typeBindings: ReadonlyMap<string, TypeRef>;
 
+  /** Lexically bound names that may have no definition or type fact of their
+   * own (for example, an untyped function parameter). Consumers use this only
+   * as a shadowing barrier; it never resolves a symbol by itself. */
+  readonly lexicalNames?: ReadonlySet<string>;
+
   /** Receiver names this scope BINDS rather than inherits — `this`, `self`, … (#2701).
    *
    *  A receiver walk (`findReceiverTypeBinding`) that reaches such a scope

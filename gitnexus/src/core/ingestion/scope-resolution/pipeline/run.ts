@@ -605,6 +605,8 @@ export function runScopeResolution(
           parsedFiles,
           parsedImport,
         }),
+      isNamespaceImport: (parsedImport, targetFile, fromFile) =>
+        provider.isNamespaceImport?.(parsedImport, targetFile, fromFile) ?? false,
       expandsWildcardTo: (targetModuleScope) =>
         provider.expandsWildcardTo?.(targetModuleScope, parsedFiles) ?? [],
       mergeBindings: (existing, incoming, scopeId) =>
