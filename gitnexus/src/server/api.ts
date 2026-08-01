@@ -1833,8 +1833,16 @@ export const createServer = async (port: number, host: string = '127.0.0.1') => 
                 },
                 pendingNodeIds: string[],
               ): Promise<void> => {
+                // tri-review NEW-2: re-read immediately before writing (mirrors
+                // the pattern in run-analyze.ts's --repair-fts stamp) instead of
+                // spreading the stale `embeddingMeta` snapshot captured once at
+                // job start. This job can run up to EMBED_TIMEOUT_MS (30 min);
+                // without a fresh read, a concurrent writer's update (e.g. a
+                // --repair-fts capability stamp) would be silently reverted on
+                // every checkpoint save for the job's whole lifetime.
+                const latestMeta = (await loadMeta(entry.storagePath)) ?? embeddingMeta;
                 embeddingMeta = {
-                  ...embeddingMeta,
+                  ...latestMeta,
                   embeddingCheckpoint: {
                     at: new Date().toISOString(),
                     ...checkpoint,
@@ -1896,7 +1904,9 @@ export const createServer = async (port: number, host: string = '127.0.0.1') => 
               // handles this during process exit, but the server keeps the
               // connection open for other routes — a CHECKPOINT is enough.
               await flushWAL();
-              embeddingMeta = { ...embeddingMeta, embeddingCheckpoint: undefined };
+              // Same re-read-before-write reasoning as saveEmbeddingCheckpoint above.
+              const finalMeta = (await loadMeta(entry.storagePath)) ?? embeddingMeta;
+              embeddingMeta = { ...finalMeta, embeddingCheckpoint: undefined };
               await saveMeta(entry.storagePath, embeddingMeta);
             });
 

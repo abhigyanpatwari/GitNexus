@@ -73,12 +73,12 @@ describe('CALL_SUMMARY relation-type exclusion (U-C1)', () => {
 });
 
 describe('CALL_SUMMARY incremental reuse gate (U-C5)', () => {
-  it('INCREMENTAL_SCHEMA_VERSION is bumped to 28 (structural receiver typing, all languages)', () => {
+  it('INCREMENTAL_SCHEMA_VERSION is bumped to 33 (Spring AOP relation pairs, #2416)', () => {
     // Moves with every bump BY DESIGN — that is the point of pinning it. A
     // change that alters emitted ids or edges without bumping would otherwise
     // ship silently, and an existing index would keep serving the old graph
     // through the reuse gate below.
-    expect(INCREMENTAL_SCHEMA_VERSION).toBe(28);
+    expect(INCREMENTAL_SCHEMA_VERSION).toBe(33);
   });
 
   it('a pre-current stamp fails the `=== INCREMENTAL_SCHEMA_VERSION` reuse gate → forces full re-analyze', () => {
@@ -198,7 +198,25 @@ describe('CALL_SUMMARY incremental reuse gate (U-C5)', () => {
     // typing, and the fold still typed a local that merely shadowed a class name
     // as that class — so it carries pre-rollout edges AND fabricated ones.
     expect(passesReuseGate(27)).toBe(false);
+    // A pre-v29 (v28) index lacks Class→CodeElement relation schema support,
+    // so Spring @Bean injection edges (#2413) would be dropped during
+    // persistence → must NOT reuse.
+    expect(passesReuseGate(28)).toBe(false);
+    // A pre-v30 (v29) index keeps wrapper-line startLines for multi-line closure
+    // bindings (#2735), so the graph-to-scope join still drops the CALLS edge.
+    expect(passesReuseGate(29)).toBe(false);
+    // A pre-v31 (v30) index treats `from pkg import models` as a named package
+    // import, so unchanged files retain the old missing qualified CALLS edges.
+    expect(passesReuseGate(30)).toBe(false);
+    // A pre-v32 (v31) index predates the Rust impl/trait, JS/TS object-literal
+    // and Swift member-containment relation pairs (#2769), so an incremental
+    // top-up emitting one of those edges would fail the bulk COPY (or silently
+    // drop it on the streamed path) → must NOT reuse.
+    expect(passesReuseGate(31)).toBe(false);
+    // A pre-v33 (v32) index predates the Spring AOP Interface→CodeElement
+    // relation pair (#2416), so it cannot persist all evidence edges.
+    expect(passesReuseGate(32)).toBe(false);
     // The current stamp passes the gate (incremental top-up eligible).
-    expect(passesReuseGate(28)).toBe(true);
+    expect(passesReuseGate(33)).toBe(true);
   });
 });

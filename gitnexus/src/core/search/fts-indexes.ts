@@ -11,17 +11,62 @@ import { FTS_INDEXES } from './fts-schema.js';
  * ELF header", "has not been installed") have no leading path separator and
  * survive. CLI/doctor/log surfaces keep the full path (they read the reason
  * directly, not through this function).
+ *
+ * tri-review Residual-3: every real message shape observed from LadybugDB
+ * wraps the path in single quotes (`Failed to load library '<path>': ...`),
+ * so a QUOTED path is redacted first, consuming through its closing quote —
+ * spaces included (e.g. a Windows username like `alice smith`). The original
+ * unquoted-stop-at-first-whitespace pattern still runs afterward as a
+ * fallback for the rare case of a path appearing without quotes; that path's
+ * own known limitation (partial redaction if it itself contains a space) is
+ * unchanged, but is no longer the ONLY path this function knows how to redact.
  */
-const redactPaths = (reason: string): string =>
-  reason.replace(/(?:[A-Za-z]:\\|\/)[^\s'"]+/g, '<path>');
+export const redactPaths = (reason: string): string =>
+  reason
+    .replace(/'((?:[A-Za-z]:\\|\/)[^']*)'/g, "'<path>'")
+    .replace(/(?:[A-Za-z]:\\|\/)[^\s'"]+/g, '<path>');
+
+/**
+ * Resolved-repo/index identity a caller can attach to a degraded-FTS warning
+ * (#2767) so a reader can tell whether *this* session even resolved the index
+ * they expect, instead of guessing between a stale connection, a different
+ * repo/branch, or a genuine build failure. MCP-`query`-only today — never
+ * forwarded into the HTTP `/api/search` response (see that call site).
+ */
+export interface FtsWarningContext {
+  repoName: string;
+  branch?: string;
+  indexedAt?: string;
+  /** Already redacted by the caller (e.g. via {@link redactPaths} on a captured query error). */
+  lastErrorRedacted?: string;
+}
+
+/** The repo/branch/indexed-at portion shared by both warning-context formatters below. */
+const formatResolvedSuffix = (context: FtsWarningContext): string => {
+  const branchSuffix = context.branch ? `/branch:${context.branch}` : '';
+  const indexedSuffix = context.indexedAt ? `, indexed ${context.indexedAt}` : '';
+  return `${context.repoName}${branchSuffix}${indexedSuffix}`;
+};
+
+const formatWarningContext = (context: FtsWarningContext): string => {
+  const errorSuffix = context.lastErrorRedacted ? `; last error: ${context.lastErrorRedacted}` : '';
+  return ` (resolved: ${formatResolvedSuffix(context)}${errorSuffix})`;
+};
 
 /**
  * Warning attached to search responses when BM25/FTS is degraded. Prefers the
  * live extension-load failure (with LadybugDB's real reason, #2374) over the
  * generic indexes-missing message, so "indexes exist but the extension broke"
  * is not misreported as missing indexes.
+ *
+ * `context`, when supplied, appends the resolved repo/branch/indexed-at (and
+ * redacted query-error detail, if captured) so a CLI/MCP mismatch — or a real
+ * query error masquerading as "indexes missing" — is visible in the warning
+ * text itself (#2767). Optional and additive: omitting it reproduces today's
+ * exact message.
  */
-export const ftsDegradedWarning = (): string => {
+export const ftsDegradedWarning = (context?: FtsWarningContext): string => {
+  const suffix = context ? formatWarningContext(context) : '';
   const fts = getExtensionCapabilities().find((c) => c.name === 'fts');
   if (fts && !fts.loaded) {
     const reason = fts.reason ? redactPaths(fts.reason).replace(/\.$/, '') : undefined;
@@ -38,11 +83,32 @@ export const ftsDegradedWarning = (): string => {
     return (
       'FTS extension failed to load — keyword search degraded' +
       (reason ? ` (${reason})` : '') +
-      tail
+      tail +
+      suffix
     );
   }
-  return 'FTS indexes missing — keyword search degraded. Run: gitnexus analyze --repair-fts (or gitnexus analyze --force) to rebuild indexes.';
+  return (
+    'FTS indexes missing — keyword search degraded. Run: gitnexus analyze --repair-fts ' +
+    '(or gitnexus analyze --force) to rebuild indexes.' +
+    suffix
+  );
 };
+
+/**
+ * Warning for when the FTS extension is loaded and indexes exist, but every
+ * configured table's query failed for a real, non-benign reason (timeout,
+ * connection reset, native fault) — as opposed to `ftsDegradedWarning`'s
+ * missing-index case. `--repair-fts` will not fix a query/connection error,
+ * so this deliberately does NOT suggest it: reusing the missing-index
+ * message here would reproduce, for this cause, the exact misleading
+ * "run --repair-fts" guidance #2767 itself was about (tri-review NEW-1).
+ */
+export const ftsQueryFailedWarning = (context: FtsWarningContext): string =>
+  'FTS keyword search failed — every configured index query returned an error' +
+  (context.lastErrorRedacted ? ` (${context.lastErrorRedacted})` : '') +
+  '; results do not include keyword matches. This is not a missing-index ' +
+  'condition — see server logs for details.' +
+  ` (resolved: ${formatResolvedSuffix(context)})`;
 
 // Stemmers shipped by the LadybugDB FTS extension. Mirrors the lowercase token
 // set in the extension bundled with @ladybugdb/core 0.18.x (see package.json).

@@ -16,8 +16,11 @@
  * router derives the label from the RAW id, while the oracle re-derives it via a
  * regex over the ESCAPED row — so for an id containing a `"` the router is the
  * more-correct path (it routes the edge to the right pair; the oracle's regex
- * mis-buckets or drops it). `splitRelCsvByLabelPair` is retained as the
- * differential oracle (the quote-in-id divergence is asserted explicitly).
+ * mis-buckets or drops it). Unlike the legacy oracle, the router also rejects a
+ * valid node-label pair absent from the relationship DDL. That distinction is
+ * load-bearing: silently writing such a CSV lets COPY fail late and can drop an
+ * otherwise valid edge during fallback. `splitRelCsvByLabelPair` is retained as
+ * the differential oracle (the quote-in-id divergence is asserted explicitly).
  *
  * Backpressure: at most one stream is awaited at a time (the caller routes
  * edges sequentially and awaits the returned drain promise before the next),
@@ -45,10 +48,49 @@ export const getNodeLabel = (nodeId: string): string => {
   return nodeId.split(':')[0];
 };
 
+/**
+ * Extract the FROM→TO pairs accepted by a relationship DDL.
+ *
+ * This belongs at the routing boundary: schema.ts owns the DDL, while the CSV
+ * router owns the fail-fast check that prevents writing a pair LadybugDB cannot
+ * COPY. Backticks quote schema labels and are not part of the graph label.
+ */
+export const parseRelationSchemaPairs = (relationSchema: string): ReadonlySet<string> =>
+  new Set(
+    [
+      ...relationSchema.matchAll(
+        /\bFROM\s+`?([A-Za-z][A-Za-z0-9_]*)`?\s+TO\s+`?([A-Za-z][A-Za-z0-9_]*)`?/g,
+      ),
+    ].map((match) => `${match[1]}|${match[2]}`),
+  );
+
 export interface RelPairMeta {
   csvPath: string;
   rows: number;
 }
+
+/**
+ * Fail fast on an endpoint-label pair absent from the relationship DDL, the
+ * same guard `RelPairRouter.route` applies to the whole-graph emit. Exported
+ * so the streamed sinks (`GraphEmitSink`, `PdgEmitSink`) can apply it too —
+ * without this, an undeclared pair on a streaming run reaches `COPY`, fails
+ * the bulk insert, and is silently dropped by the per-edge fallback instead
+ * of failing loudly like the non-streaming path does.
+ *
+ * Takes the already-built `From|To` pairKey rather than the two labels — every
+ * caller needs that same key immediately after for its own Map/stream lookup,
+ * and this is on the per-edge hot path, so building it twice would be a
+ * needless allocation per edge. `|` cannot appear inside a label (node labels
+ * are `NODE_TABLES` identifiers), so splitting it back apart for the error
+ * message is safe.
+ */
+export const assertDeclaredPair = (pairKey: string, declaredPairs: ReadonlySet<string>): void => {
+  if (!declaredPairs.has(pairKey)) {
+    throw new Error(
+      `Relationship label pair ${pairKey.replaceAll('|', '→')} is not declared in the LadybugDB relation schema`,
+    );
+  }
+};
 
 /**
  * Routes already-escaped relationship CSV rows to per-FROM→TO-label-pair
@@ -69,6 +111,7 @@ export class RelPairRouter {
     private readonly csvDir: string,
     private readonly header: string,
     private readonly validTables: Set<string>,
+    private readonly declaredPairs: ReadonlySet<string>,
     private readonly wsFactory: WriteStreamFactory = (p) => createWriteStream(p, 'utf-8'),
   ) {}
 
@@ -104,6 +147,7 @@ export class RelPairRouter {
     }
 
     const pairKey = `${fromLabel}|${toLabel}`;
+    assertDeclaredPair(pairKey, this.declaredPairs);
     const ws = this.streams.get(pairKey);
     if (ws === undefined) {
       // First edge for this pair: open the stream, write header + row.

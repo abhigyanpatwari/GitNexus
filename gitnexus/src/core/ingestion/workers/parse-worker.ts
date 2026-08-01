@@ -1,5 +1,9 @@
 import { parentPort, threadId, workerData } from 'node:worker_threads';
-import { localIdentity, nestedCallableQualifiedName } from './callable-id.js';
+import {
+  boundCallableStartRow,
+  localIdentity,
+  nestedCallableQualifiedName,
+} from './callable-id.js';
 import Parser from 'tree-sitter';
 import JavaScript from 'tree-sitter-javascript';
 import TypeScript from 'tree-sitter-typescript';
@@ -2240,11 +2244,27 @@ const processFileGroup = (
         }
       }
 
-      const startLine = definitionNode
-        ? definitionNode.startPosition.row + lineOffset
-        : nameNode
-          ? nameNode.startPosition.row + lineOffset
-          : lineOffset;
+      // #2735: for a bound callable the graph-node capture sits on the OUTER
+      // wrapper while scope-resolution anchors on the INNER expression. The
+      // position join is line-only, so `startLine` must follow the initializer
+      // (ids still use `definitionNode` via `localIdentity`).
+      const startRow =
+        definitionNode &&
+        (nodeLabel === 'Function' || nodeLabel === 'Method' || nodeLabel === 'Constructor')
+          ? boundCallableStartRow(
+              definitionNode,
+              nodeName,
+              nodeLabel,
+              parsedFile?.localDefs,
+              nameNode,
+            )
+          : definitionNode?.startPosition.row;
+      const startLine =
+        startRow !== undefined
+          ? startRow + lineOffset
+          : nameNode
+            ? nameNode.startPosition.row + lineOffset
+            : lineOffset;
 
       // Compute enclosing class BEFORE node ID — needed to qualify method IDs
       const needsOwner =
@@ -2750,7 +2770,7 @@ const processFileGroup = (
         properties: {
           name: nodeName,
           filePath: file.path,
-          startLine: definitionNode ? definitionNode.startPosition.row + lineOffset : startLine,
+          startLine,
           endLine: definitionNode ? definitionNode.endPosition.row + lineOffset : startLine,
           language: language,
           isExported:

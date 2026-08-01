@@ -33,6 +33,8 @@ import {
   deleteAllInterprocTaintPaths,
   deleteAllCallSummaries,
   deleteAllInjects,
+  deleteAllAdvisedBy,
+  deleteSpringAopEvidenceNodes,
   deleteSpringAutoConfigurationDeclarations,
   deleteSpringAutoConfigurationSyntheticClasses,
   queryImportersBatch,
@@ -139,7 +141,9 @@ import { sanitizeDetectedBranch } from '../cli/analyze-config.js';
 import { EMBEDDING_TABLE_NAME } from './lbug/schema.js';
 import { STALE_HASH_SENTINEL } from './lbug/schema.js';
 import { isSpringBeanCandidateSourceFile } from './ingestion/frameworks/spring/bean-catalog.js';
+import { isSpringBeanFactoryDeclaration } from './ingestion/frameworks/spring/bean-factories.js';
 import {
+  SPRING_AOP_FEATURE,
   SPRING_BEAN_INVENTORY_FEATURE,
   SPRING_CONDITIONALS_FEATURE,
 } from './ingestion/frameworks/spring/analysis-features.js';
@@ -157,6 +161,7 @@ import {
 
 const ANALYSIS_FEATURES = [
   CLASS_FRAMEWORK_ANNOTATIONS_FEATURE,
+  SPRING_AOP_FEATURE,
   SPRING_BEAN_INVENTORY_FEATURE,
   SPRING_CONDITIONALS_FEATURE,
   SPRING_CONFIG_BINDINGS_FEATURE,
@@ -165,6 +170,12 @@ const ANALYSIS_FEATURES = [
 interface PersistedFrameworkAnnotationRow {
   readonly id?: unknown;
   readonly frameworkAnnotations?: unknown;
+}
+
+interface PersistedSpringBeanDeclarationRow {
+  readonly id?: unknown;
+  readonly filePath?: unknown;
+  readonly reason?: unknown;
 }
 
 function stringList(value: unknown): readonly string[] {
@@ -197,6 +208,45 @@ function collectFrameworkAnnotationDriftFiles(
       if (typeof filePath === 'string') driftFiles.add(filePath);
     }
   });
+  return driftFiles;
+}
+
+function collectSpringBeanDeclarationDriftFiles(
+  graph: KnowledgeGraph,
+  persistedRows: readonly PersistedSpringBeanDeclarationRow[],
+): Set<string> {
+  const persisted = new Map<string, { readonly filePath: string; readonly reason: string }>();
+  for (const row of persistedRows) {
+    if (
+      typeof row.id === 'string' &&
+      typeof row.filePath === 'string' &&
+      typeof row.reason === 'string' &&
+      isSpringBeanFactoryDeclaration({ type: 'DECLARES', reason: row.reason })
+    ) {
+      persisted.set(row.id, { filePath: row.filePath, reason: row.reason });
+    }
+  }
+
+  const current = new Map<string, { readonly filePath: string; readonly reason: string }>();
+  for (const relationship of graph.relationships) {
+    if (relationship.type !== 'DECLARES') continue;
+    if (!isSpringBeanFactoryDeclaration(relationship)) continue;
+    const declaration = graph.getNode(relationship.targetId);
+    if (declaration === undefined || typeof declaration.properties.filePath !== 'string') continue;
+    current.set(declaration.id, {
+      filePath: declaration.properties.filePath,
+      reason: relationship.reason,
+    });
+  }
+
+  const driftFiles = new Set<string>();
+  for (const [id, value] of current) {
+    const prior = persisted.get(id);
+    if (prior === undefined || prior.reason !== value.reason) driftFiles.add(value.filePath);
+  }
+  for (const [id, value] of persisted) {
+    if (!current.has(id)) driftFiles.add(value.filePath);
+  }
   return driftFiles;
 }
 
@@ -985,6 +1035,47 @@ async function runFullAnalysisInner(
         );
       }
       await ensureGitNexusIgnored(repoPath);
+      // #2767: stamp ONLY capabilities.fts so a long-lived MCP session's
+      // ensureInitialized() has an explicit, correctly-scoped signal that FTS
+      // changed — indexedAt/lastCommit/runnerIdentity/stats are copied through
+      // untouched (see the "must not claim a new analyzer identity" comment
+      // below). capabilities is forensic/no-programmatic-readers-until-now, so
+      // graph/vectorSearch are backfilled with conservative, honest defaults
+      // when a legacy meta.json predates this field entirely — repair-fts
+      // never touched them and cannot claim a capability it did not verify.
+      // Best-effort: a write failure must not turn an already-successful FTS
+      // rebuild into a reported repair failure.
+      try {
+        // Re-read the on-disk meta immediately before writing, rather than
+        // reusing `existingMeta` (captured before the FTS rebuild ran, which
+        // can span real wall-clock time). Another writer to this same
+        // gitnexus.json in the interim — e.g. the HTTP server's background
+        // embedding-checkpoint job — must not have its update silently
+        // reverted by this stamp overwriting a stale snapshot. Falls back to
+        // `existingMeta` only if the file became unreadable in that window.
+        const latestMeta = (await loadMeta(metaDir)) ?? existingMeta;
+        await saveMeta(metaDir, {
+          ...latestMeta,
+          capabilities: {
+            graph: latestMeta.capabilities?.graph ?? {
+              provider: 'ladybugdb',
+              status: 'available',
+            },
+            fts: { provider: 'ladybugdb-fts', status: 'available' },
+            vectorSearch: latestMeta.capabilities?.vectorSearch ?? {
+              provider: 'exact-scan',
+              status: 'unavailable',
+              exactScanLimit: 0,
+            },
+          },
+        });
+      } catch (err) {
+        log(
+          `FTS capability stamp write failed (non-critical, repair itself succeeded${
+            err instanceof Error ? `: ${err.message}` : ''
+          }); continuing.`,
+        );
+      }
       progress('fts', 90, 'Search indexes ready');
       progress('done', 100, 'Done');
       return {
@@ -1855,6 +1946,23 @@ async function runFullAnalysisInner(
               'framework annotation property drift',
           );
         }
+
+        const persistedSpringBeanDeclarations = (await executeQuery(
+          'MATCH (m:Method)-[r:CodeRelation]->(b:CodeElement) ' +
+            "WHERE r.type = 'DECLARES' AND r.reason STARTS WITH 'spring-bean-factory:' " +
+            'RETURN b.id AS id, b.filePath AS filePath, r.reason AS reason',
+        )) as PersistedSpringBeanDeclarationRow[];
+        const springBeanDeclarationDriftFiles = collectSpringBeanDeclarationDriftFiles(
+          pipelineResult.graph,
+          persistedSpringBeanDeclarations,
+        );
+        for (const filePath of springBeanDeclarationDriftFiles) effectiveWriteSet.add(filePath);
+        if (springBeanDeclarationDriftFiles.size > 0) {
+          log(
+            `Incremental: +${springBeanDeclarationDriftFiles.size} file(s) added for ` +
+              'Spring Bean factory declaration drift',
+          );
+        }
       }
       // Deduped: deleted entries may already appear via importer-BFS
       // expansion (the importer BFS can return a now-deleted path), which
@@ -2017,16 +2125,21 @@ async function runFullAnalysisInner(
         //     deleting on every non-pdg incremental run (N runs = N copies of
         //     every INJECTS row; CodeRelation has no PK and no read-side dedup).
         await deleteAllInjects();
-        // 2b. Drop Spring-owned DECLARES edges (#2415). The
+        // 2b. Spring AOP pointcuts are matched against the full resolved graph;
+        // a third-file change can invalidate an edge between unchanged files.
+        // Rebuild the complete ADVISED_BY set on every incremental writeback.
+        await deleteAllAdvisedBy();
+        await deleteSpringAopEvidenceNodes();
+        // 2c. Drop Spring-owned DECLARES edges (#2415). The
         //     auto-configuration phase scans every metadata file and recomputes
         //     the full set each run; exact reason filtering leaves declarations
         //     owned by other metadata systems untouched.
         await deleteSpringAutoConfigurationDeclarations();
-        // 2c. Drop source-unavailable auto-configuration placeholders. Fresh
+        // 2d. Drop source-unavailable auto-configuration placeholders. Fresh
         //     synthetic nodes are graph-wide in extractChangedSubgraph, so this
         //     also removes an orphan when a newly-added real class takes over.
         await deleteSpringAutoConfigurationSyntheticClasses();
-        // 2d. Drop interprocedural TAINT_PATH edges (#2084 M4 U6) when pdg is on
+        // 2e. Drop interprocedural TAINT_PATH edges (#2084 M4 U6) when pdg is on
         //     — their validity is a whole-program property (an A→C flow can be
         //     invalidated by a change to an intermediate function on a third
         //     file), so endpoint-writability extraction can't refresh them.
@@ -2034,7 +2147,7 @@ async function runFullAnalysisInner(
         //     graph (isGraphWideRelType), mirroring Community/Process.
         if (options.pdg === true) {
           await deleteAllInterprocTaintPaths();
-          // 2e. Drop CALL_SUMMARY edges (PDG FU-C) on an incremental `--pdg`
+          // 2f. Drop CALL_SUMMARY edges (PDG FU-C) on an incremental `--pdg`
           //     writeback. They are re-included from the FULL fresh graph
           //     (isGraphWideRelType) and the callSummaries phase recomputes every
           //     summary each run, so delete-all-then-rebuild keeps an unchanged

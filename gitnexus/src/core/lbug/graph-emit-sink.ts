@@ -95,8 +95,8 @@ import fs from 'fs';
 import path from 'path';
 import type { GraphNode, GraphRelationship, RelationshipType } from 'gitnexus-shared';
 import type { KnowledgeGraph } from '../graph/types.js';
-import { REL_CSV_HEADER, buildRelRow } from './csv-generator.js';
-import { getNodeLabel } from './rel-pair-routing.js';
+import { DECLARED_RELATION_PAIRS, REL_CSV_HEADER, buildRelRow } from './csv-generator.js';
+import { assertDeclaredPair, getNodeLabel } from './rel-pair-routing.js';
 import { NODE_TABLES } from './schema.js';
 import { DEFAULT_EMIT_CHUNK_ROWS, SyncCsvWriter } from './sync-csv-writer.js';
 
@@ -127,8 +127,8 @@ import { DEFAULT_EMIT_CHUNK_ROWS, SyncCsvWriter } from './sync-csv-writer.js';
  * `routes`/`tools`, never read back mid-pipeline).
  *
  * Adding a relationship type that a phase reads back WITHOUT adding it here is
- * a silent-wrong-graph bug, not a crash — and NOTHING automated catches it.
- * The differential round-trip test cannot: `addRelationship` partitions edges
+ * a silent-wrong-graph bug, not a crash. The differential round-trip test cannot:
+ * `addRelationship` partitions edges
  * between the graph and the CSVs, and the union of a partition is invariant
  * under where the partition line falls, so that test stays green no matter how
  * this set is drawn. Only the read-site audit protects this invariant; re-run it
@@ -144,6 +144,8 @@ export const RETAINED_REL_TYPES: ReadonlySet<RelationshipType> = new Set<Relatio
   'METHOD_IMPLEMENTS',
   'DEFINES',
   'INJECTS',
+  // springAopInheritance reads direct behavior evidence after MRO.
+  'ADVISED_BY',
 ]);
 
 /**
@@ -412,6 +414,7 @@ export class GraphEmitSink implements KnowledgeGraph, GraphEmitControl {
     if (!this.validTables.has(fromLabel) || !this.validTables.has(toLabel)) return;
 
     const pairKey = `${fromLabel}|${toLabel}`;
+    assertDeclaredPair(pairKey, DECLARED_RELATION_PAIRS);
     let writer = this.relWriters.get(pairKey);
     if (writer === undefined) {
       try {

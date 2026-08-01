@@ -133,8 +133,8 @@ export type RelationshipType =
    *  shared DI phase uses type heritage, qualifier names, and preferred
    *  provider markers to resolve it. Ambiguous single injection is represented
    *  by multiple lower-confidence edges instead of a fabricated exact target.
-   *  Source = the consumer Class node (the one owning the injection site).
-   *  Target = a concrete provider Class node.
+   *  Source = the consumer Class, or a factory Method for its parameters.
+   *  Target = a concrete provider Class or synthetic provider CodeElement.
    *  Framework specifics live in the `reason` payload (e.g.
    *  `Spring DI: @Autowired List<T>`), not in this type contract.
    *  Lets Cypher queries trace which beans the container injects into a given
@@ -153,6 +153,12 @@ export type RelationshipType =
    *  semantics belong in `reason` so the relationship can be reused by other
    *  metadata-driven systems. */
   | 'DECLARES'
+  /** Framework advice relationship. Source = the class-like/Method whose behavior
+   *  is intercepted; target = either the concrete advice Method or a synthetic
+   *  CodeElement describing a declarative interceptor (transaction, cache, or
+   *  method security). Runtime activation remains explicitly unknown in the
+   *  relationship reason; this edge records statically visible advice only. */
+  | 'ADVISED_BY'
   /** Vue component event system: a handler function in a parent component is
    *  bound to an event emitted by a child component (`@event="handlerFn"`).
    *  Source = handler Function/Method node in the parent.

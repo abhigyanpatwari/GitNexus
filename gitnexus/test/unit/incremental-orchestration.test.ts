@@ -44,9 +44,14 @@ import {
 } from '../helpers/embedding-seed.js';
 import { CLASS_FRAMEWORK_ANNOTATIONS_FEATURE } from '../../src/core/analysis-features.js';
 import {
+  SPRING_AOP_FEATURE,
   SPRING_BEAN_INVENTORY_FEATURE,
   SPRING_CONDITIONALS_FEATURE,
 } from '../../src/core/ingestion/frameworks/spring/analysis-features.js';
+import {
+  decodeSpringAopReason,
+  SPRING_AOP_EVIDENCE_ID_PREFIX,
+} from '../../src/core/ingestion/frameworks/spring/aop.js';
 import { SPRING_AUTO_CONFIGURATION_SYNTHETIC_ID_PREFIX } from '../../src/core/ingestion/frameworks/spring/auto-configuration.js';
 import { SPRING_CONFIG_BINDINGS_FEATURE } from '../../src/core/ingestion/languages/java/analysis-features.js';
 
@@ -104,6 +109,75 @@ async function setupKotlinSpringBeanIncrementalRepo() {
   );
   execSync('git init', { cwd: repo.dbPath, stdio: 'pipe' });
   gitCommitAll(repo.dbPath, 'initial Kotlin spring bean candidate');
+  return repo;
+}
+
+const springAopAspectSource = (pointcut: string): string =>
+  `package com.example;\n` +
+  `import org.aspectj.lang.annotation.Aspect;\n` +
+  `import org.aspectj.lang.annotation.Before;\n\n` +
+  `@Aspect public class TraceAspect {\n` +
+  `  @Before("${pointcut}") public void trace() {}\n` +
+  `}\n`;
+
+async function setupSpringAopIncrementalRepo() {
+  const repo = await createTempDir('gitnexus-incr-spring-aop-');
+  const javaSrc = path.join(repo.dbPath, 'src', 'main', 'java', 'com', 'example');
+  const kotlinSrc = path.join(repo.dbPath, 'src', 'main', 'kotlin', 'com', 'example');
+  const resources = path.join(repo.dbPath, 'src', 'main', 'resources');
+  await Promise.all([
+    mkdir(javaSrc, { recursive: true }),
+    mkdir(kotlinSrc, { recursive: true }),
+    mkdir(resources, { recursive: true }),
+  ]);
+  await Promise.all([
+    writeFile(path.join(repo.dbPath, '.gitignore'), '.gitnexus/\n', 'utf-8'),
+    writeFile(
+      path.join(javaSrc, 'FirstService.java'),
+      'package com.example;\n\n' +
+        'public class FirstService {\n' +
+        '  public void first() {}\n' +
+        '}\n',
+      'utf-8',
+    ),
+    writeFile(
+      path.join(javaSrc, 'TraceAspect.java'),
+      springAopAspectSource('within(com.example.FirstService)'),
+      'utf-8',
+    ),
+    writeFile(
+      path.join(kotlinSrc, 'KotlinService.kt'),
+      'package com.example\n\n' +
+        'import org.springframework.transaction.annotation.Transactional as Tx\n\n' +
+        'class KotlinService {\n' +
+        '  @Tx fun kotlinTx() {}\n' +
+        '}\n',
+      'utf-8',
+    ),
+    writeFile(path.join(resources, 'application.properties'), 'feature.enabled=true\n', 'utf-8'),
+  ]);
+  execSync('git init', { cwd: repo.dbPath, stdio: 'pipe' });
+  gitCommitAll(repo.dbPath, 'initial spring aop fixture');
+  return repo;
+}
+
+async function setupSpringBeanFactoryIncrementalRepo() {
+  const repo = await createTempDir('gitnexus-incr-spring-bean-factory-');
+  const src = path.join(repo.dbPath, 'src', 'com', 'other');
+  await mkdir(src, { recursive: true });
+  await writeFile(
+    path.join(src, 'WildcardConfiguration.java'),
+    'package com.other;\n' +
+      'import org.springframework.context.annotation.*;\n\n' +
+      '@Configuration class WildcardConfiguration {\n' +
+      '  @Bean Gateway gateway() { return new DefaultGateway(); }\n' +
+      '}\n' +
+      'interface Gateway {}\n' +
+      'class DefaultGateway implements Gateway {}\n',
+    'utf-8',
+  );
+  execSync('git init', { cwd: repo.dbPath, stdio: 'pipe' });
+  gitCommitAll(repo.dbPath, 'initial spring bean factory');
   return repo;
 }
 
@@ -185,6 +259,21 @@ async function countSpringAutoConfigurationDeclarations(repoPath: string): Promi
   }
 }
 
+async function countSpringBeanFactoryDeclarations(repoPath: string): Promise<number> {
+  const adapter = await import('../../src/core/lbug/lbug-adapter.js');
+  const { lbugPath } = getStoragePaths(repoPath);
+  await adapter.initLbug(lbugPath);
+  try {
+    const rows = (await adapter.executeQuery(
+      `MATCH ()-[r:CodeRelation]->() WHERE r.type = 'DECLARES' ` +
+        `AND r.reason STARTS WITH 'spring-bean-factory:' RETURN count(r) AS c`,
+    )) as Array<{ c: number | bigint }>;
+    return Number(rows[0]?.c ?? 0);
+  } finally {
+    await adapter.closeLbug();
+  }
+}
+
 async function countSpringAutoConfigurationSyntheticClasses(repoPath: string): Promise<number> {
   const adapter = await import('../../src/core/lbug/lbug-adapter.js');
   const { lbugPath } = getStoragePaths(repoPath);
@@ -199,6 +288,81 @@ async function countSpringAutoConfigurationSyntheticClasses(repoPath: string): P
   } finally {
     await adapter.closeLbug();
   }
+}
+
+interface SpringAopPersistedRelationship {
+  readonly relType: string;
+  readonly sourceId: string;
+  readonly sourceName: string;
+  readonly targetId: string;
+  readonly targetName: string;
+  readonly reason: string;
+}
+
+interface SpringAopPersistedEvidence {
+  readonly id: string;
+  readonly description: string;
+}
+
+interface SpringAopPersistedSnapshot {
+  readonly relationships: readonly SpringAopPersistedRelationship[];
+  readonly evidence: readonly SpringAopPersistedEvidence[];
+}
+
+async function readSpringAopSnapshot(repoPath: string): Promise<SpringAopPersistedSnapshot> {
+  const adapter = await import('../../src/core/lbug/lbug-adapter.js');
+  const { lbugPath } = getStoragePaths(repoPath);
+  await adapter.initLbug(lbugPath);
+  try {
+    const relationships = (await adapter.executeQuery(
+      `MATCH (s)-[r:CodeRelation]->(t) ` +
+        `WHERE (r.type = 'ADVISED_BY' OR r.type = 'DECLARES') ` +
+        `AND r.reason STARTS WITH 'spring-aop:v1:' ` +
+        `RETURN r.type AS relType, s.id AS sourceId, s.name AS sourceName, ` +
+        `t.id AS targetId, t.name AS targetName, r.reason AS reason ` +
+        `ORDER BY relType, sourceId, targetId, reason`,
+    )) as SpringAopPersistedRelationship[];
+    const evidence = (await adapter.executeQuery(
+      `MATCH (n:CodeElement) WHERE n.id STARTS WITH '${SPRING_AOP_EVIDENCE_ID_PREFIX}' ` +
+        `RETURN n.id AS id, n.description AS description ORDER BY id`,
+    )) as SpringAopPersistedEvidence[];
+    return { relationships, evidence };
+  } finally {
+    await adapter.closeLbug();
+  }
+}
+
+function assertSpringAopSnapshotShape(
+  snapshot: SpringAopPersistedSnapshot,
+  expectedAdviceSource: string,
+): void {
+  expect(snapshot.relationships).toHaveLength(4);
+  expect(snapshot.evidence).toHaveLength(3);
+  const decoded = snapshot.relationships.map((relationship) => ({
+    relationship,
+    reason: decodeSpringAopReason(relationship.reason),
+  }));
+  expect(decoded.map(({ reason }) => reason?.kind).sort()).toEqual([
+    'advice',
+    'aspect',
+    'behavior',
+    'pointcut',
+  ]);
+  expect(decoded.find(({ reason }) => reason?.kind === 'behavior')?.relationship.sourceName).toBe(
+    'kotlinTx',
+  );
+  const advice = decoded.find(({ reason }) => reason?.kind === 'advice')?.relationship;
+  expect(advice?.sourceName).toBe(expectedAdviceSource);
+  expect(advice?.targetName).toBe('trace');
+  expect(
+    new Set(
+      snapshot.relationships.map(
+        (relationship) =>
+          `${relationship.relType}\0${relationship.sourceId}\0${relationship.targetId}\0${relationship.reason}`,
+      ),
+    ).size,
+  ).toBe(snapshot.relationships.length);
+  expect(new Set(snapshot.evidence.map(({ id }) => id)).size).toBe(snapshot.evidence.length);
 }
 
 /** Java DI fixture (#2200): `@Autowired List<IFoo>` + 2 implementers ⇒ exactly
@@ -310,6 +474,7 @@ describe('runFullAnalysis — incremental orchestration', () => {
       const meta = await loadMeta(storagePath);
       expect(meta!.analysisFeatures).toEqual({
         [CLASS_FRAMEWORK_ANNOTATIONS_FEATURE.id]: CLASS_FRAMEWORK_ANNOTATIONS_FEATURE.version,
+        [SPRING_AOP_FEATURE.id]: SPRING_AOP_FEATURE.version,
         [SPRING_BEAN_INVENTORY_FEATURE.id]: SPRING_BEAN_INVENTORY_FEATURE.version,
         [SPRING_CONDITIONALS_FEATURE.id]: SPRING_CONDITIONALS_FEATURE.version,
       });
@@ -327,6 +492,7 @@ describe('runFullAnalysis — incremental orchestration', () => {
       expect(await readWildcardServiceAnnotations(repo.dbPath)).toEqual([SPRING_SERVICE]);
       expect((await loadMeta(storagePath))!.analysisFeatures).toEqual({
         [CLASS_FRAMEWORK_ANNOTATIONS_FEATURE.id]: CLASS_FRAMEWORK_ANNOTATIONS_FEATURE.version,
+        [SPRING_AOP_FEATURE.id]: SPRING_AOP_FEATURE.version,
         [SPRING_BEAN_INVENTORY_FEATURE.id]: SPRING_BEAN_INVENTORY_FEATURE.version,
         [SPRING_CONDITIONALS_FEATURE.id]: SPRING_CONDITIONALS_FEATURE.version,
       });
@@ -395,6 +561,7 @@ describe('runFullAnalysis — incremental orchestration', () => {
       expect(logs.join('\n')).not.toContain('Incremental:');
       expect((await loadMeta(storagePath))!.analysisFeatures).toEqual({
         [CLASS_FRAMEWORK_ANNOTATIONS_FEATURE.id]: CLASS_FRAMEWORK_ANNOTATIONS_FEATURE.version,
+        [SPRING_AOP_FEATURE.id]: SPRING_AOP_FEATURE.version,
         [SPRING_BEAN_INVENTORY_FEATURE.id]: SPRING_BEAN_INVENTORY_FEATURE.version,
         [SPRING_CONDITIONALS_FEATURE.id]: SPRING_CONDITIONALS_FEATURE.version,
       });
@@ -402,6 +569,81 @@ describe('runFullAnalysis — incremental orchestration', () => {
       await repo.cleanup();
     }
   }, 300_000);
+
+  it('replaces Spring AOP evidence across real incremental runs without duplicates', async () => {
+    const repo = await setupSpringAopIncrementalRepo();
+    try {
+      const { runFullAnalysis } = await import('../../src/core/run-analyze.js');
+      await runFullAnalysis(repo.dbPath, { skipAgentsMd: true }, { onProgress: () => {} });
+      const firstSnapshot = await readSpringAopSnapshot(repo.dbPath);
+      assertSpringAopSnapshotShape(firstSnapshot, 'first');
+      const firstPointcutEvidenceId = firstSnapshot.relationships.find(
+        ({ reason }) => decodeSpringAopReason(reason)?.kind === 'pointcut',
+      )?.targetId;
+      expect(firstPointcutEvidenceId).toBeDefined();
+
+      const aspectPath = path.join(
+        repo.dbPath,
+        'src',
+        'main',
+        'java',
+        'com',
+        'example',
+        'TraceAspect.java',
+      );
+      await writeFile(
+        aspectPath,
+        springAopAspectSource(
+          '@annotation(org.springframework.transaction.annotation.Transactional)',
+        ),
+        'utf-8',
+      );
+      gitCommitAll(repo.dbPath, 'retarget spring advice');
+      const retargetLogs: string[] = [];
+      const retargeted = await runFullAnalysis(
+        repo.dbPath,
+        { skipAgentsMd: true },
+        { onProgress: () => {}, onLog: (message) => retargetLogs.push(message) },
+      );
+      expect(retargeted.alreadyUpToDate).toBeUndefined();
+      expect(retargetLogs.join('\n')).toContain('Incremental: changed=1');
+      expect(retargetLogs.join('\n')).not.toContain('switching to a full DB write');
+
+      const secondSnapshot = await readSpringAopSnapshot(repo.dbPath);
+      assertSpringAopSnapshotShape(secondSnapshot, 'kotlinTx');
+      const secondPointcutEvidenceId = secondSnapshot.relationships.find(
+        ({ reason }) => decodeSpringAopReason(reason)?.kind === 'pointcut',
+      )?.targetId;
+      expect(secondPointcutEvidenceId).toBeDefined();
+      expect(secondPointcutEvidenceId).not.toBe(firstPointcutEvidenceId);
+      expect(secondSnapshot.evidence.map(({ id }) => id)).not.toContain(firstPointcutEvidenceId);
+
+      const propertyPath = path.join(
+        repo.dbPath,
+        'src',
+        'main',
+        'resources',
+        'application.properties',
+      );
+      await writeFile(propertyPath, 'feature.enabled=false\n', 'utf-8');
+      gitCommitAll(repo.dbPath, 'change unrelated resource');
+      const replayLogs: string[] = [];
+      const replayed = await runFullAnalysis(
+        repo.dbPath,
+        { skipAgentsMd: true },
+        {
+          onLog: (message) => replayLogs.push(message),
+          onProgress: () => {},
+        },
+      );
+      expect(replayed.alreadyUpToDate).toBeUndefined();
+      expect(replayLogs.join('\n')).toContain('Incremental: changed=1');
+      expect(replayLogs.join('\n')).not.toContain('switching to a full DB write');
+      expect(await readSpringAopSnapshot(repo.dbPath)).toEqual(secondSnapshot);
+    } finally {
+      await repo.cleanup();
+    }
+  }, 600_000);
 
   it('second run after a comment-only edit takes the incremental path, clears the dirty flag, and preserves graph stats exactly', async () => {
     const repo = await setupMiniRepo();
@@ -587,6 +829,30 @@ describe('runFullAnalysis — incremental orchestration', () => {
 
       await runFullAnalysis(repo.dbPath, { skipAgentsMd: true }, { onProgress: () => {} });
       expect(await readWildcardServiceAnnotations(repo.dbPath)).toEqual([SPRING_SERVICE]);
+    } finally {
+      await repo.cleanup();
+    }
+  }, 600_000);
+
+  it('rewrites unchanged Bean factory declarations when same-package shadowing changes', async () => {
+    const repo = await setupSpringBeanFactoryIncrementalRepo();
+    try {
+      const { runFullAnalysis } = await import('../../src/core/run-analyze.js');
+      await runFullAnalysis(repo.dbPath, { skipAgentsMd: true }, { onProgress: () => {} });
+      expect(await countSpringBeanFactoryDeclarations(repo.dbPath)).toBe(1);
+
+      const shadow = path.join(repo.dbPath, 'src', 'com', 'other', 'Bean.java');
+      await writeFile(shadow, 'package com.other;\npublic @interface Bean {}\n', 'utf-8');
+      gitCommitAll(repo.dbPath, 'add same-package Bean annotation shadow');
+
+      await runFullAnalysis(repo.dbPath, { skipAgentsMd: true }, { onProgress: () => {} });
+      expect(await countSpringBeanFactoryDeclarations(repo.dbPath)).toBe(0);
+
+      await rm(shadow);
+      gitCommitAll(repo.dbPath, 'remove same-package Bean annotation shadow');
+
+      await runFullAnalysis(repo.dbPath, { skipAgentsMd: true }, { onProgress: () => {} });
+      expect(await countSpringBeanFactoryDeclarations(repo.dbPath)).toBe(1);
     } finally {
       await repo.cleanup();
     }
