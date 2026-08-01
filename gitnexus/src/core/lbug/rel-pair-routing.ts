@@ -87,7 +87,7 @@ export interface RelPairMeta {
 export const assertDeclaredPair = (pairKey: string, declaredPairs: ReadonlySet<string>): void => {
   if (!declaredPairs.has(pairKey)) {
     throw new Error(
-      `Relationship label pair ${pairKey.replace('|', '→')} is not declared in the LadybugDB relation schema`,
+      `Relationship label pair ${pairKey.replaceAll('|', '→')} is not declared in the LadybugDB relation schema`,
     );
   }
 };
