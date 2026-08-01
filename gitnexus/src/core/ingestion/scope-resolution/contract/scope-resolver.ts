@@ -733,7 +733,35 @@ export interface ScopeResolver {
    * Consulted ONLY where the source actually performed the access. It is NOT a
    * general type-name normalizer: unwrapping a container at a bare class lookup
    * would let `repos.find(x)` fold to `Repo.find`, because a container's member
-   * set is not its element's.
+   * set is not its element's. For the same reason it is deliberately separate
+   * from `stripTypePreservingDecoration`: a pointer or a nullable leaves the
+   * member set unchanged and is safe to strip at the lookup; a container is not.
+   *
+   * ## The `index` route is REQUIRED, and `undefined` means "not a container"
+   *
+   * A language that leaves the `index` route unanswered gets NO index folding —
+   * the structural fold declines the step rather than passing the position
+   * through. That is not a default worth softening. `undefined` used to mean
+   * "fall back to identity", on the theory that a capture layer which already
+   * reduced the container (Go's `normalizeGoTypeName`, C#/TypeScript's
+   * `stripGeneric`) leaves nothing to unwrap. The theory holds for a container;
+   * it is false for an ordinary class the source happened to subscript, and
+   * `rawName` cannot tell those apart — `repos: User[]` and `grid: Grid` both
+   * arrive as a bare resolvable class name. Identity there typed `grid[0].run()`
+   * as `Grid.run` and `t[0].Render()` as `Table.Render`: a wrong owner, which
+   * this pipeline ranks strictly below a missing edge.
+   *
+   * The hook is therefore handed `TypeRef.declaredSpelling` — the annotation AS
+   * WRITTEN, retained by the scope extractor precisely because capture-time
+   * normalization destroys it — falling back to `rawName` only when nothing was
+   * normalized away. So a provider sees `User[]`, `List[User]`, `[]*User` or
+   * `Dictionary<string, User>`, never the post-reduction `User`, and answering
+   * `undefined` for a spelling it does not recognize as a container is an
+   * ANSWER, not an absence.
+   *
+   * Implementations may return a still-DECORATED element name (Go's `[]*User`
+   * yields `*User`): the index step looks the element up through
+   * `stripTypePreservingDecoration`, so the pointer resolves.
    */
   readonly elementTypeOf?: (containerType: string, via: ElementAccessRoute) => string | undefined;
 
@@ -1158,26 +1186,6 @@ export interface ScopeResolver {
    * TypeScript and C++ need it for field types.
    */
   readonly stripTypePreservingDecoration?: DecorationStripper;
-
-  /**
-   * Unwrap a COLLECTION spelling to its element type — `User[]` -> `User`,
-   * `Array<User>` -> `User`, `[]User` -> `User` — or `undefined` when the name
-   * is not a collection.
-   *
-   * Deliberately separate from `stripTypePreservingDecoration`. A pointer or a
-   * nullable leaves the member set unchanged, so stripping one at the class
-   * lookup is safe. A container does NOT: unwrapping `User[]` at the lookup
-   * would let `repos.find(x)` fold to `User.find`. This hook is therefore
-   * consulted ONLY by an index step that actually consumed a subscript in the
-   * source, never by the bare class lookup.
-   *
-   * Tolerant by design: some binding paths already reduce the container at
-   * capture (Go's `normalizeGoTypeName`, C#'s `stripGeneric`) while others carry
-   * it through (a TypeScript `User[]` parameter annotation). The index step
-   * tries this hook and falls back to identity when it returns `undefined`, so
-   * both kinds of path land on the element type without the core needing to know
-   * which is which.
-   */
 
   /**
    * Whether the compound-receiver resolver should strip C-style cast

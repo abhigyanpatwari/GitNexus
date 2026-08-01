@@ -23,7 +23,7 @@ import type { ScopeResolutionIndexes } from '../../model/scope-resolution-indexe
 import { typescriptProvider } from '../typescript.js';
 import { loadTsconfigPaths, type TsconfigPaths } from '../../language-config.js';
 import { buildSuffixIndex, type SuffixIndex } from '../../import-resolvers/utils.js';
-import { extractElementTypeFromString } from '../../type-extractors/shared.js';
+import { indexOnlyElementType } from '../../type-extractors/shared.js';
 import {
   typescriptArityCompatibility,
   typescriptMergeBindings,
@@ -111,8 +111,7 @@ const typescriptScopeResolver: ScopeResolver = {
   // (`.values()`), which the call-expression branch already handles, so the
   // accessor route yields nothing here — but it is now the same hook rather
   // than a second one left undefined.
-  elementTypeOf: (containerType, via) =>
-    via.kind === 'index' ? extractElementTypeFromString(containerType) : undefined,
+  elementTypeOf: indexOnlyElementType,
 
   // Construction is keyword-prefixed: `new Service(db).doWork()` (#2708).
   constructionSyntax: { keyword: 'new' },
