@@ -20,7 +20,7 @@ describe('receiver-chain codec', () => {
       { kind: 'call', name: 'getUser' },
       { kind: 'field', name: 'address' },
     ]);
-    expect(encoded).toBe('1|svc|cgetUser|faddress');
+    expect(encoded).toBe('2|svc|cgetUser|faddress');
     expect(decodeReceiverChain(encoded)).toEqual({
       baseReceiverName: 'svc',
       steps: [
@@ -60,7 +60,7 @@ describe('receiver-chain codec', () => {
     const encoded = encodeReceiverChain('svc', [{ kind: 'call', name: 'getUser' }], {
       truncated: true,
     });
-    expect(encoded).toBe('1|svc|cgetUser|~');
+    expect(encoded).toBe('2|svc|cgetUser|~');
     expect(decodeReceiverChain(encoded)).toMatchObject({ truncated: true });
   });
 
@@ -92,13 +92,14 @@ describe('receiver-chain codec', () => {
     ['undefined', undefined],
     ['empty', ''],
     ['no version', 'svc|cgetUser'],
-    ['wrong version', '2|svc|cgetUser'],
-    ['no steps', '1|svc'],
-    ['unknown kind sigil', '1|svc|xgetUser'],
-    ['empty step name', '1|svc|c'],
+    ['unknown future version', '3|svc|cgetUser'],
+    ['superseded v1 payload', '1|svc|cgetUser'],
+    ['no steps', '2|svc'],
+    ['unknown kind sigil', '2|svc|xgetUser'],
+    ['empty step name', '2|svc|c'],
     ['empty base', '1||cgetUser'],
-    ['over depth', '1|svc|ca|cb|cc|cd'],
-    ['truncation marker only', '1|svc|~'],
+    ['over depth', '2|svc|ca|cb|cc|cd'],
+    ['truncation marker only', '2|svc|~'],
   ])('decodes %s as undefined rather than throwing', (_label, payload) => {
     expect(decodeReceiverChain(payload)).toBeUndefined();
     expect(isValidReceiverChain(payload)).toBe(false);
@@ -139,9 +140,9 @@ describe('receiver-chain codec', () => {
     for (const hostile of [
       '|'.repeat(512),
       '1|' + '|'.repeat(400),
-      '1|svc|c\u0000name',
-      '1|svc|c\uD800',
-      `1|svc|c${'x'.repeat(MAX_RECEIVER_CHAIN_BYTES)}`,
+      '2|svc|c\u0000name',
+      '2|svc|c\uD800',
+      `2|svc|c${'x'.repeat(MAX_RECEIVER_CHAIN_BYTES)}`,
       '1|'.repeat(300),
       {},
       [],
@@ -155,6 +156,67 @@ describe('receiver-chain codec', () => {
     // Emit and load must agree. A bound applied only on load is a writer that
     // keeps minting what the reader keeps refusing — a permanent, unlogged
     // warm-cache-miss reparse loop.
-    expect(isValidReceiverChain(`1|svc|c${'x'.repeat(MAX_RECEIVER_CHAIN_BYTES)}`)).toBe(false);
+    expect(isValidReceiverChain(`2|svc|c${'x'.repeat(MAX_RECEIVER_CHAIN_BYTES)}`)).toBe(false);
+  });
+});
+
+describe('codec v2 — name-free step kinds', () => {
+  it('round-trips an await step', () => {
+    const encoded = encodeReceiverChain('svc', [
+      { kind: 'call', name: 'getUserAsync' },
+      { kind: 'await' },
+    ]);
+    expect(encoded).toBe('2|svc|cgetUserAsync|a');
+    expect(decodeReceiverChain(encoded)).toMatchObject({
+      baseReceiverName: 'svc',
+      steps: [{ kind: 'call', name: 'getUserAsync' }, { kind: 'await' }],
+      truncated: false,
+    });
+  });
+
+  it('round-trips an index step', () => {
+    const encoded = encodeReceiverChain('repos', [{ kind: 'index' }]);
+    expect(encoded).toBe('2|repos|i');
+    expect(decodeReceiverChain(encoded)).toMatchObject({
+      baseReceiverName: 'repos',
+      steps: [{ kind: 'index' }],
+    });
+  });
+
+  it('decodes a chain mixing named and name-free steps', () => {
+    const encoded = encodeReceiverChain('svc', [
+      { kind: 'index' },
+      { kind: 'field', name: 'address' },
+    ]);
+    expect(decodeReceiverChain(encoded)).toMatchObject({
+      steps: [{ kind: 'index' }, { kind: 'field', name: 'address' }],
+    });
+  });
+
+  // The guard that keeps the name-free exemption from widening: a name-free
+  // sigil must be EXACTLY the sigil, so a corrupt payload cannot smuggle a
+  // trailing tail through the branch that skips the non-empty-name check.
+  it('refuses a name-free sigil carrying a trailing tail', () => {
+    expect(decodeReceiverChain('2|svc|await')).toBeUndefined();
+    expect(decodeReceiverChain('2|repos|i0')).toBeUndefined();
+  });
+
+  // An empty-name call or field is still malformed — it does NOT become an
+  // await or index just because those kinds are name-free.
+  it('still refuses an empty-name call or field segment', () => {
+    expect(decodeReceiverChain('2|svc|c')).toBeUndefined();
+    expect(decodeReceiverChain('2|svc|f')).toBeUndefined();
+  });
+
+  // The whole reason the version moved: a v1 payload decoded under v2 rules
+  // would be a chain missing whichever hop v1 could not express, which reads as
+  // a complete-but-different chain and types the receiver against the wrong
+  // member. Refusing is the correct, lossy-but-safe outcome.
+  it('refuses a v1 payload outright', () => {
+    expect(decodeReceiverChain('1|svc|cgetUser|faddress')).toBeUndefined();
+  });
+
+  it('emits the v2 prefix for an ordinary named chain', () => {
+    expect(encodeReceiverChain('svc', [{ kind: 'call', name: 'getUser' }])).toBe('2|svc|cgetUser');
   });
 });

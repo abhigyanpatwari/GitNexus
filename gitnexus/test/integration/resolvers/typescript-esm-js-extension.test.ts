@@ -8,15 +8,12 @@ import { describe, it, expect, beforeAll, afterAll } from 'vitest';
 import path from 'path';
 import fs from 'node:fs';
 import os from 'node:os';
-import { getRelationships, runPipelineFromRepo, type PipelineResult } from './helpers.js';
-
-function writeFixtureRepo(root: string, files: Record<string, string>): void {
-  for (const [relPath, content] of Object.entries(files)) {
-    const fullPath = path.join(root, relPath);
-    fs.mkdirSync(path.dirname(fullPath), { recursive: true });
-    fs.writeFileSync(fullPath, content, 'utf8');
-  }
-}
+import {
+  getRelationships,
+  runPipelineFromRepo,
+  writeFixtureRepo,
+  type PipelineResult,
+} from './helpers.js';
 
 describe('TypeScript ESM .js extension → CALLS edges', () => {
   let result: PipelineResult;

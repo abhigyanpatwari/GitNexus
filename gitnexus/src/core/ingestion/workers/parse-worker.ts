@@ -283,7 +283,10 @@ export interface ExtractedCall {
    *   `svc.getUser().save()`        → chain=[{kind:'call',name:'getUser'}], receiverName='svc'
    *   `user.address.save()`         → chain=[{kind:'field',name:'address'}], receiverName='user'
    *   `svc.getUser().address.save()` → chain=[{kind:'call',name:'getUser'},{kind:'field',name:'address'}]
-   * Length is capped at MAX_CHAIN_DEPTH (3).
+   * Length is capped at MAX_CHAIN_DEPTH. Deliberately NOT restating the number
+   * here: this comment previously hardcoded `(3)` and would have drifted the
+   * moment the cap moved, which is exactly the kind of stale doc that reads as
+   * authoritative.
    */
   receiverMixedChain?: MixedChainStep[];
   argTypes?: (string | undefined)[];

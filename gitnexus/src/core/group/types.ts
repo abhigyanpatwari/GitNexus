@@ -177,6 +177,12 @@ export interface CrossRepoImpact {
   };
   by_depth: Record<string, unknown[]>;
   affected_processes: string[];
+  /**
+   * Present when the bridge proves a repository boundary but the far endpoint
+   * has no graph symbol, so local fan-out cannot be attempted. Omitted for
+   * completed fan-out to preserve the existing serialized result shape.
+   */
+  fanout_status?: 'not_attempted';
 }
 
 export interface OutOfScopeLink {

@@ -39,13 +39,13 @@ import { computeDartArityMetadata } from './arity-metadata.js';
 import { synthesizeDartReceiverBinding } from './receiver-binding.js';
 import { synthesizeDartSignatureBindings } from './signature-bindings.js';
 import { getDartParser, getDartScopeQuery } from './query.js';
+import { preprocessDartExtensionTypes } from './extension-type-preprocess.js';
 import { recordCacheHit, recordCacheMiss } from './cache-stats.js';
 import { getTreeSitterBufferSize } from '../../constants.js';
 import { parseSourceSafe } from '../../../tree-sitter/safe-parse.js';
 import { encodeMarker } from '../../utils/heritage-marker.js';
 import { DART_BUILT_INS } from './built-ins.js';
 import { synthesizeCallableFlowCaptures } from '../../utils/callable-flow-captures.js';
-import { preprocessDartExtensionTypes } from './extension-type-preprocess.js';
 import { synthesizeReceiverChainCapture } from '../../utils/receiver-chain-captures.js';
 
 const FUNCTION_DECL_TAGS = [
@@ -113,6 +113,9 @@ export function emitDartScopeCaptures(
   _filePath: string,
   cachedTree?: unknown,
 ): readonly CaptureMatch[] {
+  // Idempotent re-application: `extractParsedFile` already preprocesses, but
+  // direct emitter callers (benchmarks, capture goldens) must see the same
+  // program the pipeline does.
   const parseText = preprocessDartExtensionTypes(sourceText);
   let tree: Parser.Tree;
   if (cachedTree !== undefined && cachedTree !== null) {

@@ -5,6 +5,7 @@ import type { ScopeResolver } from '../../scope-resolution/contract/scope-resolv
 import { resolveDefGraphId } from '../../scope-resolution/graph-bridge/ids.js';
 import type { GraphNodeLookup } from '../../scope-resolution/graph-bridge/node-lookup.js';
 import { isClassLike } from '../../scope-resolution/scope/walkers.js';
+import { indexOnlyElementType } from '../../type-extractors/shared.js';
 import { kotlinProvider } from '../kotlin.js';
 import {
   kotlinArityCompatibility,
@@ -116,6 +117,16 @@ export const kotlinScopeResolver: ScopeResolver = {
   populateOwners: (parsed: ParsedFile) => populateKotlinOwners(parsed),
 
   isSuperReceiver: (text) => text.trim() === 'super',
+
+  // Subscript route only — Kotlin's collection views (`.values`, `.keys`) are
+  // properties on the stdlib types, resolved by the ordinary member walk rather
+  // than by unwrapping a generic here.
+  //
+  // Fed the annotation AS WRITTEN (`List<User>`, `Map<String, User>`), which
+  // `normalizeKotlinType` had already reduced to `User`. `undefined` means "not
+  // a container", so an `operator fun get` class does not fold `cache[k]` onto
+  // `Cache` itself.
+  elementTypeOf: indexOnlyElementType,
 
   isStaticOnly: isKotlinStaticOnly,
 

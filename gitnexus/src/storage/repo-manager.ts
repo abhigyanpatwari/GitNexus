@@ -23,6 +23,7 @@ import { getInferredRepoName, resolveRepoIdentityRoot } from './git.js';
 import { stripWindowsLongPathPrefix } from '../lib/utils.js';
 import { retryRename } from './fs-atomic.js';
 import { logger } from '../core/logger.js';
+import type { UnresolvedReceiverSummary } from '../core/ingestion/scope-resolution/unresolved-receivers.js';
 import { acquireIndexLock, IndexLockTimeoutError, type IndexLockHandle } from './index-lock.js';
 import {
   branchSlug,
@@ -240,12 +241,14 @@ export interface RepoMeta {
    * callee is unknown by definition, so the drop cannot be attributed to any
    * target. Absent when a run dropped nothing, which is the common case and
    * keeps `epistemic` exact for cleanly-resolving repos.
+   *
+   * The persisted shape IS `UnresolvedReceiverSummary` — referenced, not
+   * re-declared. The writer stores the whole summary, so a structural mirror
+   * here silently drops any field added on the producing side (a reader then
+   * sees `undefined` for keys that are present on disk). Type-only import, so
+   * this adds no runtime dependency from storage/ on core/.
    */
-  unresolvedReceiverMembers?: {
-    counts: Record<string, number>;
-    totalSites: number;
-    omittedNames?: number;
-  };
+  unresolvedReceiverMembers?: UnresolvedReceiverSummary;
   /**
    * SHA-256 of every file's content at the time of the last successful
    * indexing run. The next run computes current hashes and diffs against
@@ -673,8 +676,19 @@ export interface RepoMeta {
  * (#2416). LadybugDB fixes allowed endpoint pairs when the relation table is
  * created, so an older index cannot persist these edges through incremental
  * writeback. Force a full re-analyze.
+ *
+ * v34: receiver-chain wire format v2 (name-free `await` / `index` steps). Every
+ * persisted `ReferenceSite.receiverChain` string changed prefix, and a v2
+ * decoder refuses a v1 payload by design, so a pre-v34 index carries chains this
+ * build cannot read. Resolution would silently fall back to the text cascade for
+ * every chain-carrying site — no error, just quietly worse edges. Force a full
+ * re-analyze.
+ *
+ * Numbered 34, not 33: `main` took 33 for Spring AOP (#2416) mid-flight, landing
+ * on exactly this branch's number — the seventh collision in this series and the
+ * first exact clash. Re-check against origin/main before merge.
  */
-export const INCREMENTAL_SCHEMA_VERSION = 33;
+export const INCREMENTAL_SCHEMA_VERSION = 34;
 
 export interface IndexedRepo {
   repoPath: string;

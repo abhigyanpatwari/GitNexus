@@ -21,7 +21,10 @@ vi.mock('../../src/core/tree-sitter/safe-parse.js', async () => {
   return buildSafeParseMock(parseSourceSafeSpy);
 });
 
-vi.mock('gitnexus-shared', () => ({
+// Partial mock: `ast-utils` now resolves the LanguageProvider registry to apply
+// `preprocessSource`, and that graph needs the real shared exports (#2771).
+vi.mock('gitnexus-shared', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('gitnexus-shared')>()),
   getLanguageFromFilename,
 }));
 
