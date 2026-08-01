@@ -114,9 +114,15 @@ interface LanguageProviderConfig {
    * The current C++ UE-macro preprocessor relies on the practical fact that
    * UE reflection macros and module-export tokens are ASCII-only.
    *
-   * Must be a pure function — same input always yields the same output. Called
-   * once per file, on every code path that re-parses (parsing-processor, import
-   * processor, heritage processor, call processor, parse worker).
+   * Must be a pure function — same input always yields the same output, and
+   * re-applying it to its own output changes nothing.
+   *
+   * The parse worker (`parse-worker.ts`) is the only caller of this hook. Every
+   * *other* path that re-parses the same file must apply the same transform
+   * itself, or the two halves of the pipeline analyze different programs:
+   * `emitScopeCaptures` on a parse-cache miss (see the Swift/C++/Dart emitters)
+   * and the embedding parse in `embeddings/ast-utils.ts`. `test/unit/
+   * preprocess-source-parity.test.ts` pins that equivalence.
    *
    * Default: undefined (no preprocessing — `file.content` is parsed verbatim).
    */

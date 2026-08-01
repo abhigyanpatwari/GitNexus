@@ -101,9 +101,9 @@ describe('fileContentHash', () => {
 });
 
 describe('PARSE_CACHE_VERSION', () => {
-  // 36 -> 37 for Java/Kotlin Spring AOP capture side-channels (#2416).
-  it('pins SCHEMA_BUMP to 37 so concurrent bumps cannot silently collide (#2416)', () => {
-    expect(Number(PARSE_CACHE_VERSION.split('+', 1)[0])).toBe(37);
+  // 37 -> 38 for the Swift conditional-directive parse-semantics change (#2771).
+  it('pins SCHEMA_BUMP to 38 so concurrent bumps cannot silently collide (#2771)', () => {
+    expect(Number(PARSE_CACHE_VERSION.split('+', 1)[0])).toBe(38);
   });
 
   it('embeds the gitnexus package version (so upgrades invalidate the cache)', () => {

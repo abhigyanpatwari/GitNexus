@@ -8,6 +8,7 @@ import {
 import { getCppParser, getCppScopeQuery } from './query.js';
 import { getTreeSitterBufferSize } from '../../constants.js';
 import { parseSourceSafe } from '../../../tree-sitter/safe-parse.js';
+import { stripUeMacros } from '../../cpp-ue-preprocessor.js';
 import { normalizeQualifiedName } from '../../utils/qualified-name.js';
 import { splitCppInclude, splitCppUsingDecl } from './import-decomposer.js';
 import {
@@ -159,8 +160,12 @@ export function emitCppScopeCaptures(
 ): readonly CaptureMatch[] {
   let tree = cachedTree as ReturnType<ReturnType<typeof getCppParser>['parse']> | undefined;
   if (tree === undefined) {
-    tree = parseSourceSafe(getCppParser(), sourceText, undefined, {
-      bufferSize: getTreeSitterBufferSize(sourceText),
+    // Match the worker's `preprocessSource` on the cache-miss path, or this
+    // path sees a different program than the parse phase did. Length-preserving
+    // for ASCII UE macro tokens, so offsets still index `sourceText`.
+    const parseText = stripUeMacros(sourceText);
+    tree = parseSourceSafe(getCppParser(), parseText, undefined, {
+      bufferSize: getTreeSitterBufferSize(parseText),
     });
   }
 

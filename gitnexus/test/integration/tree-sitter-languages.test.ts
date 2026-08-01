@@ -1,7 +1,11 @@
 import { describe, it, expect, beforeAll } from 'vitest';
 import fs from 'fs';
 import path from 'path';
-import { loadParser, loadLanguage } from '../../src/core/tree-sitter/parser-loader.js';
+import {
+  loadParser,
+  loadLanguage,
+  isLanguageAvailable,
+} from '../../src/core/tree-sitter/parser-loader.js';
 import { SupportedLanguages, getLanguageFromFilename } from 'gitnexus-shared';
 import { getProvider } from '../../src/core/ingestion/languages/index.js';
 import Parser from 'tree-sitter';
@@ -493,47 +497,188 @@ describe('Tree-sitter multi-language parsing', () => {
       expect(defs.length).toBeGreaterThan(0);
     });
 
-    it('captures a class whose body contains indented conditional directives after preprocessing', async () => {
-      await loadLanguage(SupportedLanguages.Swift);
-      const content = [
-        'class Outer {',
-        '  enum A { case x }',
-        '  #if os(iOS)',
-        '  enum B { case y }',
-        '  #endif',
-        '}',
-      ].join('\n');
-      const provider = getProvider(SupportedLanguages.Swift);
-      const parseContent = provider.preprocessSource?.(content, 'Fixture.swift') ?? content;
-      const { tree, matches } = parseAndQuery(parser, parseContent, provider.treeSitterQueries);
-      const defs = extractDefinitions(matches);
+    // Grammar-load failures are expected on the platform-sensitive matrix, so
+    // skip rather than hard-fail — same guard the sibling tests apply inline.
+    describe.skipIf(!isLanguageAvailable(SupportedLanguages.Swift))(
+      'conditional-compilation directives',
+      () => {
+        const preprocess = (content: string): string => {
+          const provider = getProvider(SupportedLanguages.Swift);
+          return provider.preprocessSource?.(content, 'Fixture.swift') ?? content;
+        };
 
-      expect(tree.rootNode.hasError).toBe(false);
-      expect(defs).toContainEqual({ type: 'definition.class', name: 'Outer' });
-    });
+        it('captures a class whose body contains indented conditional directives after preprocessing', async () => {
+          await loadLanguage(SupportedLanguages.Swift);
+          const content = [
+            'class Outer {',
+            '  enum A { case x }',
+            '  #if os(iOS)',
+            '  enum B { case y }',
+            '  #endif',
+            '}',
+          ].join('\n');
+          const provider = getProvider(SupportedLanguages.Swift);
+          const { tree, matches } = parseAndQuery(
+            parser,
+            preprocess(content),
+            provider.treeSitterQueries,
+          );
+          const defs = extractDefinitions(matches);
 
-    it('leaves top-level conditional directives intact while capturing their declarations', async () => {
-      await loadLanguage(SupportedLanguages.Swift);
-      const content = [
-        '#if os(iOS)',
-        'struct PlatformValue {',
-        '  let value: Int = 1',
-        '}',
-        '#else',
-        'struct PlatformValue {',
-        '  let value: Int = 2',
-        '}',
-        '#endif',
-      ].join('\n');
-      const provider = getProvider(SupportedLanguages.Swift);
-      const parseContent = provider.preprocessSource?.(content, 'Fixture.swift') ?? content;
-      const { tree, matches } = parseAndQuery(parser, parseContent, provider.treeSitterQueries);
-      const defs = extractDefinitions(matches);
+          expect(tree.rootNode.hasError).toBe(false);
+          expect(defs).toEqual([
+            { type: 'definition.class', name: 'Outer' },
+            { type: 'definition.enum', name: 'A' },
+            { type: 'definition.property', name: 'x' },
+            { type: 'definition.enum', name: 'B' },
+            { type: 'definition.property', name: 'y' },
+          ]);
+        });
 
-      expect(tree.rootNode.hasError).toBe(false);
-      expect(parseContent).toBe(content);
-      expect(defs).toContainEqual({ type: 'definition.struct', name: 'PlatformValue' });
-    });
+        it('captures a class whose body contains column-zero conditional directives', async () => {
+          await loadLanguage(SupportedLanguages.Swift);
+          const content = [
+            'class Outer {',
+            '  enum A { case x }',
+            '#if os(iOS)',
+            '  enum B { case y }',
+            '#endif',
+            '}',
+          ].join('\n');
+          const provider = getProvider(SupportedLanguages.Swift);
+          const { tree, matches } = parseAndQuery(
+            parser,
+            preprocess(content),
+            provider.treeSitterQueries,
+          );
+          const defs = extractDefinitions(matches);
+
+          expect(tree.rootNode.hasError).toBe(false);
+          expect(defs).toEqual([
+            { type: 'definition.class', name: 'Outer' },
+            { type: 'definition.enum', name: 'A' },
+            { type: 'definition.property', name: 'x' },
+            { type: 'definition.enum', name: 'B' },
+            { type: 'definition.property', name: 'y' },
+          ]);
+        });
+
+        it('leaves top-level conditional directives intact while capturing their declarations', async () => {
+          await loadLanguage(SupportedLanguages.Swift);
+          const content = [
+            '#if os(iOS)',
+            'struct PlatformValue {',
+            '  let value: Int = 1',
+            '}',
+            '#else',
+            'struct PlatformValue {',
+            '  let value: Int = 2',
+            '}',
+            '#endif',
+          ].join('\n');
+          const provider = getProvider(SupportedLanguages.Swift);
+          const parseContent = preprocess(content);
+          const { tree, matches } = parseAndQuery(parser, parseContent, provider.treeSitterQueries);
+          const defs = extractDefinitions(matches);
+
+          expect(tree.rootNode.hasError).toBe(false);
+          expect(parseContent).toBe(content);
+          expect(defs).toEqual([
+            { type: 'definition.struct', name: 'PlatformValue' },
+            { type: 'definition.property', name: 'value' },
+            { type: 'definition.struct', name: 'PlatformValue' },
+            { type: 'definition.property', name: 'value' },
+          ]);
+        });
+
+        it('keeps source that comments out a conditional block parseable', async () => {
+          await loadLanguage(SupportedLanguages.Swift);
+          const content = [
+            'class Foo {',
+            '  /* temporarily disabled:',
+            '  #if DEBUG',
+            '  func f() {}',
+            '  #endif */',
+            '  func g() {}',
+            '}',
+          ].join('\n');
+          const provider = getProvider(SupportedLanguages.Swift);
+          const parseContent = preprocess(content);
+          const { tree, matches } = parseAndQuery(parser, parseContent, provider.treeSitterQueries);
+          const defs = extractDefinitions(matches);
+
+          // Erasing the comment terminator would swallow `g()` and the rest.
+          expect(parseContent).toBe(content);
+          expect(tree.rootNode.hasError).toBe(false);
+          expect(defs).toEqual([
+            { type: 'definition.class', name: 'Foo' },
+            { type: 'definition.function', name: 'g' },
+          ]);
+        });
+
+        it('does not re-parent later declarations when branches split a declaration header', async () => {
+          await loadLanguage(SupportedLanguages.Swift);
+          const content = [
+            'class NetworkClient {',
+            '  #if swift(>=5.5)',
+            '  func fetch() async {',
+            '  #else',
+            '  func fetch() {',
+            '  #endif',
+            '    perform()',
+            '  }',
+            '}',
+            'struct SessionStore {}',
+            'enum Unrelated { case a }',
+          ].join('\n');
+          const provider = getProvider(SupportedLanguages.Swift);
+          const parseContent = preprocess(content);
+          const { tree } = parseAndQuery(parser, parseContent, provider.treeSitterQueries);
+          const topLevelTypes = tree.rootNode.namedChildren.map((child) => child.type);
+
+          // Blanking both markers would leave `NetworkClient` unterminated and
+          // collapse every later top-level declaration into it (5 nodes -> 1).
+          // `struct`/`enum` both surface as `class_declaration` in this grammar.
+          expect(parseContent).toBe(content);
+          expect(topLevelTypes).toEqual([
+            'class_declaration',
+            'directive',
+            'function_declaration',
+            'class_declaration',
+            'class_declaration',
+          ]);
+        });
+
+        it('keeps a declaration from every branch once the directives are blanked', async () => {
+          await loadLanguage(SupportedLanguages.Swift);
+          const content = [
+            'class Themed {',
+            '  #if os(iOS)',
+            '  func accent(alpha: Int) {}',
+            '  #else',
+            '  func accent() {}',
+            '  #endif',
+            '}',
+          ].join('\n');
+          const provider = getProvider(SupportedLanguages.Swift);
+          const { tree, matches } = parseAndQuery(
+            parser,
+            preprocess(content),
+            provider.treeSitterQueries,
+          );
+          const defs = extractDefinitions(matches);
+
+          // Branch selection is not modelled: mutually exclusive declarations
+          // both reach the graph. Pinned so changing it shows up as a diff.
+          expect(tree.rootNode.hasError).toBe(false);
+          expect(defs).toEqual([
+            { type: 'definition.class', name: 'Themed' },
+            { type: 'definition.function', name: 'accent' },
+            { type: 'definition.function', name: 'accent' },
+          ]);
+        });
+      },
+    );
 
     it('gracefully handles missing tree-sitter-swift', async () => {
       // If Swift is NOT available, loadLanguage should throw

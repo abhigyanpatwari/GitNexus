@@ -11,6 +11,7 @@ import {
   resolveLanguageKey,
 } from '../tree-sitter/parser-loader.js';
 import { parseSourceSafe } from '../tree-sitter/safe-parse.js';
+import { getProviderForFile } from '../ingestion/languages/index.js';
 
 const parserCache = new Map<string, any>();
 
@@ -30,7 +31,15 @@ export const ensureAndParse = async (content: string, filePath: string): Promise
     parserCache.set(parserKey, parserInstance);
   }
 
-  return parseSourceSafe(parserInstance, content);
+  // Same text the ingestion worker parses — otherwise a provider whose
+  // `preprocessSource` repairs a declaration (Swift conditional directives,
+  // C++ UE macros, Dart extension types) would leave embeddings looking at an
+  // error-recovered tree. Length-preserving, so node offsets still index
+  // `content`.
+  const provider = getProviderForFile(filePath);
+  const parseContent = provider?.preprocessSource?.(content, filePath) ?? content;
+
+  return parseSourceSafe(parserInstance, parseContent);
 };
 
 const FUNCTION_LIKE_TYPES = new Set([
