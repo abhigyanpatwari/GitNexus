@@ -63,7 +63,7 @@ import {
 import { EMBEDDING_TABLE_NAME, EMBEDDING_INDEX_NAME } from '../../core/lbug/schema.js';
 import { getExactScanLimit } from '../../core/platform/capabilities.js';
 import { PhaseTimer } from '../../core/search/phase-timer.js';
-import { ftsDegradedWarning } from '../../core/search/fts-indexes.js';
+import { ftsDegradedWarning, ftsQueryFailedWarning } from '../../core/search/fts-indexes.js';
 import {
   cjkSegmentationModeMismatch,
   containsSegmentableCjkRun,
@@ -779,6 +779,13 @@ export function attachToolStaleness(
   };
 }
 
+/** tri-review Residual-2: see `LocalBackend.lastObservedPoolState`'s doc comment. */
+interface PoolObservedState {
+  indexedAt?: string;
+  dbIdentity: Awaited<ReturnType<typeof statDbIdentity>>;
+  ftsStatus?: string;
+}
+
 export class LocalBackend {
   private static readonly TOOL_STALENESS_TTL_MS = 5000;
   private repos: Map<string, RepoHandle> = new Map();
@@ -796,18 +803,30 @@ export class LocalBackend {
   // the other; lbugPath is unique per flat/branch index.
   private toolStalenessCache: Map<string, { at: number; value: Promise<StalenessInfo> }> =
     new Map();
-  // Last meta.indexedAt observed for an open pool, keyed by lbugPath. Keyed by
-  // pool (not stored on the handle) because branch handles are produced fresh
-  // by applyBranchScope on every resolveRepo call, so mutating the handle would
-  // not persist across calls and the staleness check would reinit forever
-  // (#2106).
-  private lastObservedIndexedAt: Map<string, string> = new Map();
-  // #2614 F1: file identity of the lbug the pool last opened. An atomic swap or
-  // an in-place incremental changes the inode; reiniting on that reinit-covers
-  // the window where meta.indexedAt hasn't caught up (and the incremental case),
-  // so a rebuilt index is never served stale even when the stamp looks current.
-  private lastObservedDbIdentity: Map<string, Awaited<ReturnType<typeof statDbIdentity>>> =
-    new Map();
+  // tri-review Residual-2: consolidates what were three parallel per-poolKey
+  // Maps (lastObservedIndexedAt / lastObservedDbIdentity / lastObservedFtsStatus)
+  // touched in lockstep at every call site below — one Map, one delete, one
+  // shape. Keyed by lbugPath (not stored on the repo handle) because branch
+  // handles are produced fresh by applyBranchScope on every resolveRepo call,
+  // so mutating the handle would not persist across calls and the staleness
+  // check would reinit forever (#2106).
+  //   - `indexedAt`: last meta.indexedAt observed for an open pool.
+  //   - `dbIdentity`: file identity of the lbug the pool last opened (#2614 F1)
+  //     — an atomic swap or in-place incremental changes the inode; reiniting
+  //     on that covers the window where meta.indexedAt hasn't caught up (and
+  //     the incremental case), so a rebuilt index is never served stale even
+  //     when the stamp looks current.
+  //   - `ftsStatus`: last meta.capabilities.fts.status observed (#2767).
+  //     `--repair-fts` intentionally never restamps `indexedAt` (it doesn't
+  //     regenerate the graph), so this is the dedicated signal a warm session
+  //     uses to notice a repair — independent of the file-identity heuristic,
+  //     which the repair path also triggers but only incidentally.
+  private lastObservedPoolState: Map<string, PoolObservedState> = new Map();
+  /** Merge-patch one poolKey's observed state, preserving fields not passed. */
+  private setObservedState(poolKey: string, patch: Partial<PoolObservedState>): void {
+    const current = this.lastObservedPoolState.get(poolKey) ?? { dbIdentity: null };
+    this.lastObservedPoolState.set(poolKey, { ...current, ...patch });
+  }
   private groupToolSvc: GroupService | null = null;
   /**
    * One-shot stderr warnings for sibling-clone drift, keyed by
@@ -1143,8 +1162,7 @@ export class LocalBackend {
       this.initializedRepos.delete(key);
       this.lastStalenessCheck.delete(key);
       this.toolStalenessCache.delete(key);
-      this.lastObservedIndexedAt.delete(key);
-      this.lastObservedDbIdentity.delete(key);
+      this.lastObservedPoolState.delete(key);
       this.reinitPromises.delete(key);
       closeLbug(key).catch(() => {});
     }
@@ -1548,10 +1566,11 @@ export class LocalBackend {
         // Reading the flat meta for a branch handle would compare the branch
         // index's indexedAt against the primary's and thrash the pool (#2106).
         const meta = await loadMeta(path.dirname(repo.lbugPath));
+        const observedState = this.lastObservedPoolState.get(poolKey);
         // Compare against the last indexedAt OBSERVED for this pool (keyed by
         // lbugPath), not the handle's — branch handles are fresh spreads so a
         // handle mutation would not persist and would reinit on every check.
-        const observed = this.lastObservedIndexedAt.get(poolKey) ?? repo.indexedAt;
+        const observed = observedState?.indexedAt ?? repo.indexedAt;
         const stampChanged = !!meta?.indexedAt && meta.indexedAt !== observed;
         // #2614 F1: also reinit on a file-identity change. An atomic swap (or an
         // in-place incremental) changes the lbug inode; keying only on
@@ -1559,10 +1578,19 @@ export class LocalBackend {
         // latch on the old inode forever (its stamp already == meta.indexedAt).
         const currentIdentity = await statDbIdentity(repo.lbugPath);
         const identityChanged = dbIdentityChanged(
-          this.lastObservedDbIdentity.get(poolKey) ?? null,
+          observedState?.dbIdentity ?? null,
           currentIdentity,
         );
-        if (stampChanged || identityChanged) {
+        // #2767: `--repair-fts` intentionally never restamps `indexedAt` (it
+        // doesn't regenerate the graph), so `stampChanged` alone can't notice
+        // a repair. `capabilities.fts.status` is the field repair-fts DOES
+        // write, so a change there is a third, independent reinit trigger —
+        // sibling to stampChanged/identityChanged, not a replacement for them
+        // (identityChanged still catches an in-place mutation even if the
+        // caps stamp were somehow missed).
+        const ftsStatus = meta?.capabilities?.fts?.status;
+        const ftsCapsChanged = observedState?.ftsStatus !== ftsStatus;
+        if (stampChanged || identityChanged || ftsCapsChanged) {
           // Index was rebuilt/swapped — DELEGATE the close/reopen to the pool's
           // initLbug, which refuses to evict (and close the shared Database)
           // while a query is in flight (its checkedOut>0 guard). Calling
@@ -1571,17 +1599,22 @@ export class LocalBackend {
           // reinitPromises to serialize concurrent detectors.
           const reinit = (async () => {
             try {
-              // Advance the observed stamp regardless: a stamp change with an
-              // unchanged file must not re-trigger on every check.
-              if (meta?.indexedAt) this.lastObservedIndexedAt.set(poolKey, meta.indexedAt);
               const reopened = await initLbug(poolKey, repo.lbugPath);
+              // tri-review NEW-7: advance the observed stamp/caps watermarks
+              // only AFTER initLbug completes, not before calling it — still
+              // regardless of `reopened` true/false (a stamp/caps change with
+              // an unchanged file must not re-trigger on every check), but if
+              // initLbug THROWS the watermark must stay at its old value so
+              // the next staleness check retries, instead of a failed reinit
+              // silently latching as "already applied" and never trying again.
+              const patch: Partial<PoolObservedState> = { ftsStatus };
+              if (meta?.indexedAt) patch.indexedAt = meta.indexedAt;
               // Advance the observed IDENTITY only when the pool actually rolled
               // over. If a query was in flight, initLbug served the current
               // handle and returned false; leaving the identity divergent
               // re-triggers the reopen on a later idle check instead of latching.
-              if (reopened) {
-                this.lastObservedDbIdentity.set(poolKey, await statDbIdentity(repo.lbugPath));
-              }
+              if (reopened) patch.dbIdentity = await statDbIdentity(repo.lbugPath);
+              this.setObservedState(poolKey, patch);
             } finally {
               this.reinitPromises.delete(poolKey);
             }
@@ -1599,8 +1632,18 @@ export class LocalBackend {
     try {
       await initLbug(poolKey, repo.lbugPath);
       this.initializedRepos.add(poolKey);
-      this.lastObservedIndexedAt.set(poolKey, repo.indexedAt);
-      this.lastObservedDbIdentity.set(poolKey, await statDbIdentity(repo.lbugPath));
+      // #2767: ftsStatus is deliberately left unset (undefined) here rather
+      // than issuing an extra loadMeta read — every tool call already routes
+      // through ensureInitialized, so an extra per-cold-init read adds up,
+      // and the cost of skipping it is negligible: at most one redundant
+      // initLbug call on the first warm check (initLbug itself no-ops
+      // cheaply via a single fs.stat when the file identity is actually
+      // unchanged, per pool-adapter.ts's own "unchanged → reuse" guard), not
+      // a real reopen.
+      this.setObservedState(poolKey, {
+        indexedAt: repo.indexedAt,
+        dbIdentity: await statDbIdentity(repo.lbugPath),
+      });
     } catch (err: any) {
       // If lock error, mark as not initialized so next call retries
       this.initializedRepos.delete(poolKey);
@@ -2047,6 +2090,21 @@ export class LocalBackend {
     // unavailable the search helper may return an unexpected shape.
     const bm25Results = bm25SearchResult?.results ?? [];
     const ftsUsed = bm25SearchResult?.ftsUsed ?? false;
+    // #2767: log every non-benign per-table FTS query error server-side,
+    // regardless of whether OTHER tables succeeded — previously a real error
+    // on N-1 of N tables while one succeeded left zero diagnostic trail.
+    const ftsQueryErrors = bm25SearchResult?.nonBenignErrors;
+    if (ftsQueryErrors) {
+      // tri-review NEW-5: these strings are already classified non-benign by
+      // classifyFtsQueryError — do NOT route them through logQueryError,
+      // whose own broader, unanchored isBenignMissingTableError regex (any
+      // "does not exist" substring, anywhere) could disagree and silently
+      // demote an already-flagged real error to debug, undercutting the
+      // severity signal this classification exists to preserve.
+      for (const err of ftsQueryErrors) {
+        logger.warn({ context: 'query:fts-search', err }, 'GitNexus query failed (degraded)');
+      }
+    }
 
     // Merge via reciprocal rank fusion
     timer.start('merge');
@@ -2326,7 +2384,37 @@ export class LocalBackend {
     // path, leaving the success-path response shape byte-identical.
     const warnings: string[] = [];
     if (!ftsUsed) {
-      warnings.push(ftsDegradedWarning());
+      // #2767: attach what THIS session resolved (repo/branch/indexed-at) so a
+      // CLI/MCP mismatch is visible in the warning itself rather than requiring
+      // a separate debugging round-trip. tri-review NEW-3: `indexedAt` reads
+      // from `lastObservedPoolState` (kept current by ensureInitialized's
+      // staleness check, including a same-call reinit) rather than the `repo`
+      // handle resolved before that check ran — a warm backend that just
+      // reopened against a newer on-disk index must not warn with stale
+      // metadata. No extra I/O: the map is already maintained per-request.
+      const warningContext = {
+        repoName: repo.name,
+        branch: repo.branch,
+        indexedAt: this.lastObservedPoolState.get(repo.lbugPath)?.indexedAt ?? repo.indexedAt,
+      };
+      // tri-review NEW-1: every table failing for a REAL error (timeout,
+      // connection reset) is not a missing-index condition — `ftsDegradedWarning`'s
+      // "run --repair-fts" headline won't fix it. Route to a dedicated message
+      // instead of burying the real cause as a trailing suffix on bad advice.
+      warnings.push(
+        ftsQueryErrors
+          ? ftsQueryFailedWarning({ ...warningContext, lastErrorRedacted: ftsQueryErrors[0] })
+          : ftsDegradedWarning(warningContext),
+      );
+    } else if (ftsQueryErrors) {
+      // #2767: at least one FTS table succeeded (ftsUsed=true) but another
+      // hit a real, non-benign error — results may be silently missing
+      // matches from that table with no signal, the same "partial success"
+      // shape the enrichmentDegraded branch below already surfaces. Mirror
+      // that convention instead of only logging server-side.
+      warnings.push(
+        `FTS keyword search partially failed — ${ftsQueryErrors.length} of the configured indexes hit a query error and were skipped; results may be missing matches from those node types (see server logs).`,
+      );
     }
     // #2331: a CJK query against a server process resolving
     // GITNEXUS_FTS_CJK_SEGMENTATION to 'none' silently misses sub-phrase
@@ -2403,6 +2491,10 @@ export class LocalBackend {
         'Symbol enrichment partially failed — some process/cohesion/content data may be missing from these results (see server logs).',
       );
     }
+    // #2767: a partial FTS failure (some tables ok, one or more real errors)
+    // is as much a "results may be incomplete" signal as enrichmentDegraded —
+    // flag it the same way rather than only via the warning string.
+    const ftsPartial = ftsUsed && !!ftsQueryErrors;
 
     return {
       processes,
@@ -2410,7 +2502,7 @@ export class LocalBackend {
       definitions: definitions.slice(0, 20), // cap standalone definitions
       timing,
       ...(warnings.length > 0 && { warning: warnings.join(' ') }),
-      ...(enrichmentDegraded && { partial: true }),
+      ...((enrichmentDegraded || ftsPartial) && { partial: true }),
     };
   }
 
@@ -2421,7 +2513,7 @@ export class LocalBackend {
     repo: RepoHandle,
     query: string,
     limit: number,
-  ): Promise<{ results: any[]; ftsUsed: boolean }> {
+  ): Promise<{ results: any[]; ftsUsed: boolean; nonBenignErrors?: string[] }> {
     let searchFTSFromLbug;
     try {
       ({ searchFTSFromLbug } = await import('../../core/search/bm25-index.js'));
@@ -2453,6 +2545,7 @@ export class LocalBackend {
     // could be undefined when the FTS extension is unavailable in the MCP process.
     const bm25Results = ftsResponse?.results ?? [];
     const ftsUsed = ftsResponse?.ftsAvailable ?? false;
+    const nonBenignErrors = ftsResponse?.nonBenignErrors;
 
     const results: any[] = [];
 
@@ -2524,7 +2617,7 @@ export class LocalBackend {
       }
     }
 
-    return { results, ftsUsed };
+    return { results, ftsUsed, ...(nonBenignErrors && { nonBenignErrors }) };
   }
 
   /**

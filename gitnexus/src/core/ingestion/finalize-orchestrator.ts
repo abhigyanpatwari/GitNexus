@@ -201,6 +201,7 @@ function collectReferenceSites(parsedFiles: readonly ParsedFile[]) {
 function withDefaultHooks(partial: Partial<FinalizeHooks>): FinalizeHooks {
   return {
     resolveImportTarget: partial.resolveImportTarget ?? (() => null),
+    isNamespaceImport: partial.isNamespaceImport,
     expandsWildcardTo: partial.expandsWildcardTo ?? (() => []),
     mergeBindings:
       partial.mergeBindings ??

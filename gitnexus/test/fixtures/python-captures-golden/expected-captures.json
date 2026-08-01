@@ -331,6 +331,22 @@
     "captureGroups": 41,
     "digest": "e8807a9969732197feb04204d200d5810b895c006f1424a7a6f5f0d5762ef49a"
   },
+  "python-from-module-alias/decoy/models.py": {
+    "captureGroups": 7,
+    "digest": "bc8f2332e9a4a683f3fdae966a0d8a8f534a310ddc438a7a4ebc040e97d642b8"
+  },
+  "python-from-module-alias/pkg/__init__.py": {
+    "captureGroups": 0,
+    "digest": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+  },
+  "python-from-module-alias/pkg/app.py": {
+    "captureGroups": 23,
+    "digest": "afb50d3e98def472f9215e986dd4f964eedd197a9acfc8048d92b882e8fe868a"
+  },
+  "python-from-module-alias/pkg/models.py": {
+    "captureGroups": 14,
+    "digest": "fe52542a27d98c57d7acd48212dc301bdb448ad5868afb68c98cede9299dd1e5"
+  },
   "python-function-local-import-chain/app.py": {
     "captureGroups": 9,
     "digest": "ad4d45976ca10c3fc3b7bf498ee23397797368a5d2817311d0e95e943af89199"
