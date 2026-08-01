@@ -11,9 +11,20 @@ import { FTS_INDEXES } from './fts-schema.js';
  * ELF header", "has not been installed") have no leading path separator and
  * survive. CLI/doctor/log surfaces keep the full path (they read the reason
  * directly, not through this function).
+ *
+ * tri-review Residual-3: every real message shape observed from LadybugDB
+ * wraps the path in single quotes (`Failed to load library '<path>': ...`),
+ * so a QUOTED path is redacted first, consuming through its closing quote —
+ * spaces included (e.g. a Windows username like `alice smith`). The original
+ * unquoted-stop-at-first-whitespace pattern still runs afterward as a
+ * fallback for the rare case of a path appearing without quotes; that path's
+ * own known limitation (partial redaction if it itself contains a space) is
+ * unchanged, but is no longer the ONLY path this function knows how to redact.
  */
 export const redactPaths = (reason: string): string =>
-  reason.replace(/(?:[A-Za-z]:\\|\/)[^\s'"]+/g, '<path>');
+  reason
+    .replace(/'((?:[A-Za-z]:\\|\/)[^']*)'/g, "'<path>'")
+    .replace(/(?:[A-Za-z]:\\|\/)[^\s'"]+/g, '<path>');
 
 /**
  * Resolved-repo/index identity a caller can attach to a degraded-FTS warning
@@ -30,11 +41,16 @@ export interface FtsWarningContext {
   lastErrorRedacted?: string;
 }
 
-const formatWarningContext = (context: FtsWarningContext): string => {
+/** The repo/branch/indexed-at portion shared by both warning-context formatters below. */
+const formatResolvedSuffix = (context: FtsWarningContext): string => {
   const branchSuffix = context.branch ? `/branch:${context.branch}` : '';
   const indexedSuffix = context.indexedAt ? `, indexed ${context.indexedAt}` : '';
+  return `${context.repoName}${branchSuffix}${indexedSuffix}`;
+};
+
+const formatWarningContext = (context: FtsWarningContext): string => {
   const errorSuffix = context.lastErrorRedacted ? `; last error: ${context.lastErrorRedacted}` : '';
-  return ` (resolved: ${context.repoName}${branchSuffix}${indexedSuffix}${errorSuffix})`;
+  return ` (resolved: ${formatResolvedSuffix(context)}${errorSuffix})`;
 };
 
 /**
@@ -77,6 +93,22 @@ export const ftsDegradedWarning = (context?: FtsWarningContext): string => {
     suffix
   );
 };
+
+/**
+ * Warning for when the FTS extension is loaded and indexes exist, but every
+ * configured table's query failed for a real, non-benign reason (timeout,
+ * connection reset, native fault) — as opposed to `ftsDegradedWarning`'s
+ * missing-index case. `--repair-fts` will not fix a query/connection error,
+ * so this deliberately does NOT suggest it: reusing the missing-index
+ * message here would reproduce, for this cause, the exact misleading
+ * "run --repair-fts" guidance #2767 itself was about (tri-review NEW-1).
+ */
+export const ftsQueryFailedWarning = (context: FtsWarningContext): string =>
+  'FTS keyword search failed — every configured index query returned an error' +
+  (context.lastErrorRedacted ? ` (${context.lastErrorRedacted})` : '') +
+  '; results do not include keyword matches. This is not a missing-index ' +
+  'condition — see server logs for details.' +
+  ` (resolved: ${formatResolvedSuffix(context)})`;
 
 // Stemmers shipped by the LadybugDB FTS extension. Mirrors the lowercase token
 // set in the extension bundled with @ladybugdb/core 0.18.x (see package.json).

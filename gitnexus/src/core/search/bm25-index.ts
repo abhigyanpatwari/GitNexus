@@ -5,8 +5,13 @@
  * Always reads from the database (no cached state to drift).
  */
 
-import { queryFTS } from '../lbug/lbug-adapter.js';
+// tri-review Residual-1: `classifyFtsQueryError` now lives in lbug-adapter.ts
+// (see its doc comment) so `queryFTS`'s own catch can share the SAME
+// classifier instead of maintaining a second, independently-drifting copy
+// for the identical `QUERY_FTS_INDEX` cypher call.
+import { queryFTS, classifyFtsQueryError } from '../lbug/lbug-adapter.js';
 import { normalizeFtsText } from '../lbug/csv-generator.js';
+import { getExtensionCapabilities } from '../lbug/extension-loader.js';
 import { redactPaths } from './fts-indexes.js';
 import { FTS_INDEXES } from './fts-schema.js';
 import {
@@ -37,47 +42,6 @@ export interface FTSSearchResponse {
    */
   nonBenignErrors?: string[];
 }
-
-export type FtsQueryFailureClass = 'missing-index' | 'other';
-
-/**
- * Classify a `QUERY_FTS_INDEX` failure so a genuinely-missing index (normal —
- * this table's FTS index hasn't been built yet) is distinguished from a real
- * query-time error that would otherwise look identical (#2767).
- *
- * Two real message shapes were confirmed empirically against a live
- * `CALL QUERY_FTS_INDEX(...)` on an index that hasn't been created:
- * `"Prepare failed: Binder exception: Table <T> doesn't have an index with
- * name <name>."` (the actual text observed end-to-end in the integration
- * suite) and `"...does not exist..."`, which `queryFTS`'s own check in
- * `lbug-adapter.ts` guards against for the same cypher call. Matching only
- * the latter under-classifies the former as a real error — which is exactly
- * the common case (a repo analyzed before FTS existed, or between analyze
- * and `--repair-fts`) — and would have re-introduced #2767's silent-swallow
- * bug in the opposite direction: flooding logs and the client warning with a
- * "real error" for the single most ordinary degraded state.
- *
- * Anchored to the exception class (after stripping the optional "Prepare
- * failed: " wrapper LadybugDB adds for statement-preparation failures),
- * mirroring `isBenignDropFtsIndexError`'s START-of-message anchor: a bare
- * substring search would misclassify a genuine, differently-classed error
- * (e.g. a `Runtime exception` from the FTS parser that echoes the user's
- * own search text back into its message) as benign whenever that echoed
- * text happened to contain "does not exist" — silently dropping a real
- * error, the exact #2767 failure mode this function exists to prevent.
- */
-export const classifyFtsQueryError = (message: string): FtsQueryFailureClass => {
-  const PREPARE_FAILED_PREFIX = 'Prepare failed: ';
-  const body = message.startsWith(PREPARE_FAILED_PREFIX)
-    ? message.slice(PREPARE_FAILED_PREFIX.length)
-    : message;
-  if (!body.startsWith('Binder exception:') && !body.startsWith('Catalog exception:')) {
-    return 'other';
-  }
-  return body.includes('does not exist') || body.includes("doesn't have an index")
-    ? 'missing-index'
-    : 'other';
-};
 
 /**
  * Optional-field shape rather than a discriminated union: this project builds
@@ -170,7 +134,21 @@ export const searchFTSFromLbug = async (
   let queriesSucceeded = 0;
   const nonBenignErrors: string[] = [];
 
-  if (repoId) {
+  const ftsExtension = getExtensionCapabilities().find((c) => c.name === 'fts');
+  if (ftsExtension && !ftsExtension.loaded) {
+    // tri-review NEW-4 (applies to BOTH the MCP pool path and the CLI/pipeline
+    // path — a /simplify altitude pass caught the original repoId-only guard
+    // letting the CLI branch surface spurious "non-benign" errors for this
+    // exact expected state, which the pool branch correctly stayed silent on):
+    // extension-unavailable is an expected, already-diagnosed degraded-capability
+    // state (#2374/#2658), not a per-table query error — every configured table
+    // would throw the identical "function not defined" shape, which
+    // classifyFtsQueryError correctly refuses to call benign "missing-index"
+    // (it's a different, more serious condition). Skip the N redundant
+    // QUERY_FTS_INDEX round-trips and N nonBenignErrors entries; ftsAvailable
+    // stays false and ftsDegradedWarning() already reports this state
+    // accurately from the same extension-capabilities registry.
+  } else if (repoId) {
     // Use MCP connection pool via dynamic import
     // IMPORTANT: FTS queries run sequentially to avoid connection contention.
     // The MCP pool supports multiple connections, but FTS is best run serially.
@@ -190,13 +168,18 @@ export const searchFTSFromLbug = async (
     }
   } else {
     // Use core lbug adapter (CLI / pipeline context) — also sequential for safety.
+    // tri-review Residual-1: `queryFTS` itself only swallows a genuinely-missing
+    // index (via the SAME classifyFtsQueryError this module re-exports); a
+    // missing-table or real query error rethrows here — track it the same way
+    // the MCP pool path does instead of a bare `catch {}` that dropped it.
     for (const { table, indexName } of FTS_INDEXES) {
       try {
         const result = await queryFTS(table, indexName, searchQuery, limit, false);
         queriesSucceeded++;
         resultsByIndex.push(result);
-      } catch {
-        // FTS index may not exist — count as failed
+      } catch (e) {
+        const message = e instanceof Error ? e.message : String(e);
+        nonBenignErrors.push(redactPaths(message));
       }
     }
   }

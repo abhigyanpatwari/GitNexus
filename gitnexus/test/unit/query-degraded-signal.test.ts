@@ -156,6 +156,29 @@ describe('query: degraded-enrichment signal', () => {
     }
   });
 
+  it('logs an already-classified non-benign FTS error at warn even when it echoes "does not exist" (tri-review NEW-5)', async () => {
+    const cap: LoggerCapture = _captureLogger(); // default 'info' level — a debug-level record would be invisible here
+    try {
+      // Adversarial shape from classifyFtsQueryError's own doc comment: a real
+      // error whose body happens to contain the benign phrase. It's already in
+      // nonBenignErrors (classifyFtsQueryError correctly refused to call it
+      // benign), so it must not be silently re-demoted to debug by a second,
+      // broader classifier on the logging path.
+      const b = makeBackend(true, [
+        'Runtime exception: FTS query syntax error near "the config file does not exist here"',
+      ]);
+      executeParameterizedMock.mockResolvedValue([]);
+
+      await runQuery(b);
+
+      const record = cap.records().find((r) => r.context === 'query:fts-search');
+      expect(record).toBeDefined();
+      expect(record!.level).toBeGreaterThanOrEqual(40); // pino 'warn', not 'debug' (20)
+    } finally {
+      cap.restore();
+    }
+  });
+
   it('does not flag partial when FTS fully succeeds with no query errors', async () => {
     const b = makeBackend(true);
     executeParameterizedMock.mockResolvedValue([]);
@@ -166,14 +189,35 @@ describe('query: degraded-enrichment signal', () => {
     expect(result.warning).toBeUndefined();
   });
 
-  it('the FTS-missing warning includes the redacted query error detail when every table failed (#2767)', async () => {
+  it('surfaces a dedicated query-failed warning (not missing-index advice) when every table failed for a real error (tri-review NEW-1)', async () => {
     const b = makeBackend(false, ['connection reset']);
     executeParameterizedMock.mockResolvedValue([]);
 
     const result = await runQuery(b);
 
-    expect(result.warning).toContain('FTS indexes missing');
-    expect(result.warning).toContain('last error: connection reset');
+    // The indexes are NOT missing here — --repair-fts would not help, so the
+    // misleading missing-index advice must not be the headline.
+    expect(result.warning).not.toContain('FTS indexes missing');
+    expect(result.warning).not.toContain('repair-fts');
+    expect(result.warning).toContain('FTS keyword search failed');
+    expect(result.warning).toContain('connection reset');
+  });
+
+  it('the FTS-missing warning uses the freshly-observed indexedAt, not a stale cached repo handle (tri-review NEW-3)', async () => {
+    const b = makeBackend(false); // FTS unavailable
+    executeParameterizedMock.mockResolvedValue([]);
+    // Simulate ensureInitialized having just reinit'd against a newer index —
+    // it keeps lastObservedPoolState current but never mutates the caller's
+    // `repo` handle (a fresh spread per call), which still reads the old value.
+    (b.backend as any).lastObservedPoolState.set('/tmp/repo/.gitnexus/lbug', {
+      indexedAt: 'fresher-than-repo-handle',
+      dbIdentity: null,
+    });
+
+    const result = await runQuery(b);
+
+    expect(result.warning).toContain('indexed fresher-than-repo-handle');
+    expect(result.warning).not.toContain('indexed now'); // the stale repo.indexedAt value
   });
 
   it('the FTS-missing warning includes the resolved repo name and indexed-at (#2767)', async () => {

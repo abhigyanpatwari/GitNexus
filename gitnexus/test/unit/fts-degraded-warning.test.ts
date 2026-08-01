@@ -79,6 +79,28 @@ describe('ftsDegradedWarning (#2374)', () => {
     expect(warning).toContain('not a valid Win32 application');
   });
 
+  it('fully redacts a Windows path containing a space in the username (tri-review Residual-3, was only partially redacted)', async () => {
+    await extensionManager.ensure(
+      vi
+        .fn()
+        .mockRejectedValue(
+          new Error(
+            "Failed to load library 'C:\\Users\\alice smith\\.lbdb\\extension\\0.18.0\\win_amd64\\fts\\libfts.lbug_extension': not a valid Win32 application",
+          ),
+        ),
+      'fts',
+      'FTS',
+      { policy: 'load-only' },
+    );
+
+    const warning = ftsDegradedWarning();
+    // Neither the drive-letter prefix NOR the tail after the space may leak.
+    expect(warning).not.toMatch(/C:\\Users\\/);
+    expect(warning).not.toContain('smith');
+    expect(warning).not.toContain('alice');
+    expect(warning).toContain('not a valid Win32 application');
+  });
+
   it('surfaces the runtime-install remedy, not reinstall, for a Windows missing-dependency error', async () => {
     await extensionManager.ensure(
       vi
