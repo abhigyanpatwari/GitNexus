@@ -17,6 +17,7 @@ import os from 'node:os';
 import {
   getRelationships,
   runPipelineFromRepo,
+  writeFixtureRepo,
   type PipelineResult,
   type RelEdge,
 } from './helpers.js';
@@ -25,14 +26,6 @@ import {
   PROPERTY_DISPATCH_CONFIDENCE,
 } from '../../../src/core/ingestion/scope-resolution/passes/property-dispatch.js';
 import { _captureLogger, type PinoLogRecord } from '../../../src/core/logger.js';
-
-function writeFixtureRepo(root: string, files: Record<string, string>): void {
-  for (const [relPath, content] of Object.entries(files)) {
-    const fullPath = path.join(root, relPath);
-    fs.mkdirSync(path.dirname(fullPath), { recursive: true });
-    fs.writeFileSync(fullPath, content, 'utf8');
-  }
-}
 
 function edgesFrom(edges: RelEdge[], sourceFile: string): RelEdge[] {
   return edges.filter((c) => c.sourceFilePath === sourceFile);
