@@ -4,7 +4,7 @@ import { CircuitOpenError, ResilientFetchExhaustedError, resilientFetch } from '
  * LLM Client for Wiki Generation
  *
  * OpenAI-compatible API client using native fetch.
- * Supports OpenAI, Azure, LiteLLM, Ollama, and any OpenAI-compatible endpoint.
+ * Supports MiniMax and other OpenAI-compatible endpoints.
  *
  * Config priority: CLI flags > env vars > defaults
  */
@@ -17,7 +17,40 @@ export type LLMProvider =
   | 'cursor'
   | 'claude'
   | 'codex'
-  | 'opencode';
+  | 'opencode'
+  | 'minimax';
+
+export const MINIMAX_OPENAI_BASE_URLS = {
+  global_en: 'https://api.minimax.io/v1',
+  cn_zh: 'https://api.minimaxi.com/v1',
+} as const;
+
+export const MINIMAX_MODEL_IDS = ['MiniMax-M3', 'MiniMax-M2.7'] as const;
+
+export type MiniMaxThinkingMode = 'adaptive' | 'disabled' | 'always_on';
+
+export type LLMUserContent =
+  | string
+  | Array<
+      | { type: 'text'; text: string }
+      | {
+          type: 'image_url';
+          image_url: {
+            url: string;
+            detail?: 'low' | 'default' | 'high';
+            max_long_side_pixel?: number;
+          };
+        }
+      | {
+          type: 'video_url';
+          video_url: {
+            url: string;
+            detail?: 'low' | 'default' | 'high';
+            fps?: number;
+            max_long_side_pixel?: number;
+          };
+        }
+    >;
 
 export interface LLMConfig {
   apiKey: string;
@@ -45,6 +78,17 @@ export interface LLMResponse {
   completionTokens?: number;
 }
 
+export function resolveMiniMaxThinkingMode(
+  model: string,
+  reasoningOverride?: boolean,
+): MiniMaxThinkingMode | undefined {
+  if (model === MINIMAX_MODEL_IDS[1]) return 'always_on';
+  if (model === MINIMAX_MODEL_IDS[0]) {
+    return reasoningOverride === false ? 'disabled' : 'adaptive';
+  }
+  return undefined;
+}
+
 /**
  * Resolve LLM configuration from env vars, saved config, and optional overrides.
  * Priority: overrides (CLI flags) > env vars > ~/.gitnexus/config.json > error
@@ -54,7 +98,11 @@ export interface LLMResponse {
 export async function resolveLLMConfig(overrides?: Partial<LLMConfig>): Promise<LLMConfig> {
   const { loadCLIConfig } = await import('../../storage/repo-manager.js');
   const savedConfig = await loadCLIConfig();
-  const savedProvider = overrides?.provider ?? savedConfig.provider;
+  const hasLegacyHttpConfig = !savedConfig.provider && !!(savedConfig.model || savedConfig.baseUrl);
+  const savedProvider =
+    overrides?.provider ?? savedConfig.provider ?? (hasLegacyHttpConfig ? 'openai' : 'minimax');
+  const reuseSavedHttpConfig =
+    savedConfig.provider === savedProvider || (hasLegacyHttpConfig && savedProvider === 'openai');
   const savedLocalModel =
     savedProvider === 'cursor'
       ? savedConfig.cursorModel
@@ -73,6 +121,7 @@ export async function resolveLLMConfig(overrides?: Partial<LLMConfig>): Promise<
 
   const apiKey =
     overrides?.apiKey ||
+    (savedProvider === 'minimax' ? process.env.MINIMAX_API_KEY : undefined) ||
     process.env.GITNEXUS_API_KEY ||
     process.env.OPENAI_API_KEY ||
     savedConfig.apiKey ||
@@ -83,19 +132,26 @@ export async function resolveLLMConfig(overrides?: Partial<LLMConfig>): Promise<
     baseUrl:
       overrides?.baseUrl ||
       process.env.GITNEXUS_LLM_BASE_URL ||
-      savedConfig.baseUrl ||
-      'https://openrouter.ai/api/v1',
+      (reuseSavedHttpConfig ? savedConfig.baseUrl : undefined) ||
+      (savedProvider === 'minimax'
+        ? MINIMAX_OPENAI_BASE_URLS.global_en
+        : 'https://openrouter.ai/api/v1'),
     model:
       overrides?.model ||
       (localProvider ? undefined : process.env.GITNEXUS_MODEL) ||
       savedLocalModel ||
-      (localProvider ? '' : savedConfig.model || 'minimax/minimax-m2.5'),
+      (localProvider
+        ? ''
+        : (reuseSavedHttpConfig ? savedConfig.model : undefined) ||
+          (savedProvider === 'minimax' ? MINIMAX_MODEL_IDS[0] : '')),
     maxTokens: overrides?.maxTokens ?? 16_384,
     temperature: overrides?.temperature ?? 0,
-    provider: savedProvider ?? 'openai',
+    provider: savedProvider,
     apiVersion:
       overrides?.apiVersion || process.env.GITNEXUS_AZURE_API_VERSION || savedConfig.apiVersion,
-    isReasoningModel: overrides?.isReasoningModel ?? savedConfig.isReasoningModel,
+    isReasoningModel:
+      overrides?.isReasoningModel ??
+      (reuseSavedHttpConfig ? savedConfig.isReasoningModel : undefined),
     allowedInsecureHttpHosts:
       overrides?.allowedInsecureHttpHosts ??
       parseLLMAllowedInsecureHttpHosts(process.env[LLM_ALLOW_INSECURE_CONNECTION_ENV]),
@@ -252,7 +308,7 @@ export interface CallLLMOptions {
  * Retries up to 3 times on transient failures (429, 5xx, network errors).
  */
 export async function callLLM(
-  prompt: string,
+  prompt: LLMUserContent,
   config: LLMConfig,
   systemPrompt?: string,
   options?: CallLLMOptions,
@@ -260,7 +316,7 @@ export async function callLLM(
   // Validate base URL before any fetch (CodeQL js/http-to-file-access)
   validateLLMBaseUrl(config.baseUrl, config.allowedInsecureHttpHosts);
 
-  const messages: Array<{ role: string; content: string }> = [];
+  const messages: Array<{ role: string; content: LLMUserContent }> = [];
   if (systemPrompt) {
     messages.push({ role: 'system', content: systemPrompt });
   }
@@ -276,8 +332,15 @@ export async function callLLM(
     );
   }
 
-  // Detect reasoning model (o1, o3, o4-mini etc.) or explicit override
-  const reasoning = isReasoningModel(config.model, config.isReasoningModel);
+  const miniMaxThinkingMode =
+    config.provider === 'minimax'
+      ? resolveMiniMaxThinkingMode(config.model, config.isReasoningModel)
+      : undefined;
+
+  // Detect reasoning models or explicit provider-specific thinking configuration.
+  const reasoning = miniMaxThinkingMode
+    ? miniMaxThinkingMode !== 'disabled'
+    : isReasoningModel(config.model, config.isReasoningModel);
 
   const url = buildRequestUrl(config.baseUrl, azure ? config.apiVersion : undefined);
   const useStream = !!options?.onChunk;
@@ -287,6 +350,13 @@ export async function callLLM(
     model: config.model,
     messages,
   };
+
+  if (miniMaxThinkingMode === 'adaptive' || miniMaxThinkingMode === 'disabled') {
+    body.thinking = { type: miniMaxThinkingMode };
+  }
+  if (config.provider === 'minimax') {
+    body.reasoning_split = true;
+  }
 
   // max_tokens is deprecated; use max_completion_tokens for all models
   body.max_completion_tokens = config.maxTokens;

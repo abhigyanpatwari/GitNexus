@@ -10,6 +10,7 @@ import {
   DeepSeekChatOpenAI,
   DeepSeekChatOpenAICompletions,
 } from '../../src/core/llm/deepseek-chat-model';
+import { MINIMAX_ANTHROPIC_BASE_URLS, MINIMAX_MODEL_IDS } from '../../src/core/llm/types';
 
 describe('buildLangChainMessages', () => {
   it('reconstructs assistant tool-call turns for replay', () => {
@@ -49,6 +50,24 @@ describe('buildLangChainMessages', () => {
       },
     ]);
     expect((langChainMessages[2] as any).tool_call_id).toBe('call_weather');
+  });
+
+  it('preserves MiniMax image and video content blocks', () => {
+    const content = [
+      { type: 'text' as const, text: 'Compare these inputs.' },
+      {
+        type: 'image' as const,
+        source: { type: 'url' as const, url: 'https://example.com/image.png' },
+      },
+      {
+        type: 'video' as const,
+        source: { type: 'url' as const, url: 'https://example.com/video.mp4', fps: 1 },
+      },
+    ];
+
+    const [message] = buildLangChainMessages([{ role: 'user', content }]);
+
+    expect((message as any).content).toEqual(content);
   });
 });
 
@@ -206,6 +225,48 @@ it('drops reasoningContent from serialized assistant messages without tool calls
 });
 
 describe('createChatModel', () => {
+  it('configures MiniMax-M3 adaptive thinking on the China endpoint', () => {
+    const model = createChatModel({
+      provider: 'minimax',
+      apiKey: 'minimax-test-key',
+      model: MINIMAX_MODEL_IDS[0],
+      baseUrl: MINIMAX_ANTHROPIC_BASE_URLS.cn_zh,
+      thinkingMode: 'adaptive',
+      temperature: 0.1,
+    } as any) as any;
+
+    expect(model.model).toBe(MINIMAX_MODEL_IDS[0]);
+    expect(model.clientOptions.baseURL).toBe(MINIMAX_ANTHROPIC_BASE_URLS.cn_zh);
+    expect(model.thinking).toEqual({ type: 'adaptive' });
+    expect(model.temperature).toBeUndefined();
+  });
+
+  it('supports disabled thinking for MiniMax-M3', () => {
+    const model = createChatModel({
+      provider: 'minimax',
+      apiKey: 'minimax-test-key',
+      model: MINIMAX_MODEL_IDS[0],
+      thinkingMode: 'disabled',
+      temperature: 0.1,
+    } as any) as any;
+
+    expect(model.thinking).toEqual({ type: 'disabled' });
+    expect(model.temperature).toBe(0.1);
+  });
+
+  it('keeps MiniMax-M2.7 thinking always on', () => {
+    const model = createChatModel({
+      provider: 'minimax',
+      apiKey: 'minimax-test-key',
+      model: MINIMAX_MODEL_IDS[1],
+      thinkingMode: 'disabled',
+      temperature: 0.1,
+    } as any) as any;
+
+    expect(model.thinkingExplicitlySet).toBe(false);
+    expect(model.temperature).toBeUndefined();
+  });
+
   it('keeps DeepSeek model subclasses on withConfig clones used for tool binding', () => {
     const model = createChatModel({
       provider: 'deepseek',

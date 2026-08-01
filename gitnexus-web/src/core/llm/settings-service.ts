@@ -19,6 +19,7 @@ import {
   GLMConfig,
   DeepSeekConfig,
   ProviderConfig,
+  MINIMAX_MODEL_IDS,
 } from './types';
 import { DEFAULT_OPENROUTER_BASE_URL, DEFAULT_OLLAMA_BASE_URL } from '../../config/ui-constants';
 import { resilientFetch } from 'gitnexus-shared';
@@ -437,7 +438,7 @@ export const getAvailableModels = (provider: LLMProvider): string[] => {
     case 'ollama':
       return ['llama3.2', 'llama3.1', 'mistral', 'codellama', 'deepseek-coder'];
     case 'minimax':
-      return ['MiniMax-M2.5', 'MiniMax-M2.5-highspeed'];
+      return [...MINIMAX_MODEL_IDS];
     case 'glm':
       return ['GLM-5', 'GLM-5-Turbo', 'GLM-4.7', 'GLM-4.5'];
     case 'deepseek':

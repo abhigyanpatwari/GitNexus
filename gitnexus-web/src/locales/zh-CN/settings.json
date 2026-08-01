@@ -65,8 +65,20 @@
       "apiKeyPlaceholder": "输入 MiniMax API Key",
       "helperText": "从这里获取 API Key：",
       "helperLinkLabel": "MiniMax Platform",
-      "modelPlaceholder": "例如：MiniMax-M2.5、MiniMax-M2.5-highspeed",
-      "helperModel": "可用：MiniMax-M2.5（默认）、MiniMax-M2.5-highspeed（更快）"
+      "modelPlaceholder": "例如：MiniMax-M3 或 MiniMax-M2.7",
+      "helperModel": "可用：MiniMax-M3（默认）和 MiniMax-M2.7",
+      "endpoint": "区域端点",
+      "endpoints": {
+        "global": "全球（api.minimax.io）",
+        "china": "中国（api.minimaxi.com）"
+      },
+      "thinking": "思考模式",
+      "thinkingModes": {
+        "adaptive": "自适应",
+        "disabled": "关闭",
+        "always_on": "始终开启"
+      },
+      "capabilities": "{{contextWindow}} token 上下文 | 输入：{{modalities}}"
     },
     "glm": {
       "apiKeyPlaceholder": "输入 Z.AI API Key"

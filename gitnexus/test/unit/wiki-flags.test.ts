@@ -143,6 +143,7 @@ describe('resolveLLMConfig', () => {
 
   afterEach(async () => {
     vi.restoreAllMocks();
+    vi.unstubAllEnvs();
     await fs.rm(tmpDir, { recursive: true, force: true });
   });
 
@@ -211,7 +212,7 @@ describe('resolveLLMConfig', () => {
     vi.doMock('../../src/storage/repo-manager.js', () => ({
       loadCLIConfig: vi.fn().mockResolvedValue({
         provider: 'openai',
-        model: 'minimax/minimax-m2.5',
+        model: 'legacy-http-model',
       }),
     }));
 
@@ -226,7 +227,7 @@ describe('resolveLLMConfig', () => {
     vi.doMock('../../src/storage/repo-manager.js', () => ({
       loadCLIConfig: vi.fn().mockResolvedValue({
         provider: 'openai',
-        model: 'minimax/minimax-m2.5',
+        model: 'legacy-http-model',
       }),
     }));
 
@@ -237,7 +238,22 @@ describe('resolveLLMConfig', () => {
     expect(config.model).toBe('');
   });
 
-  it('uses default OpenRouter model for openai provider', async () => {
+  it('uses MiniMax global defaults when no provider is configured', async () => {
+    vi.doMock('../../src/storage/repo-manager.js', () => ({
+      loadCLIConfig: vi.fn().mockResolvedValue({}),
+    }));
+
+    const { MINIMAX_MODEL_IDS, MINIMAX_OPENAI_BASE_URLS, resolveLLMConfig } =
+      await import('../../src/core/wiki/llm-client.js');
+    const config = await resolveLLMConfig();
+
+    expect(config.provider).toBe('minimax');
+    expect(config.model).toBe(MINIMAX_MODEL_IDS[0]);
+    expect(config.baseUrl).toBe(MINIMAX_OPENAI_BASE_URLS.global_en);
+  });
+
+  it('uses the MiniMax-specific API key environment variable', async () => {
+    vi.stubEnv('MINIMAX_API_KEY', 'minimax-env-key');
     vi.doMock('../../src/storage/repo-manager.js', () => ({
       loadCLIConfig: vi.fn().mockResolvedValue({}),
     }));
@@ -245,9 +261,43 @@ describe('resolveLLMConfig', () => {
     const { resolveLLMConfig } = await import('../../src/core/wiki/llm-client.js');
     const config = await resolveLLMConfig();
 
+    expect(config.apiKey).toBe('minimax-env-key');
+  });
+
+  it('preserves the configured China endpoint', async () => {
+    const { MINIMAX_MODEL_IDS, MINIMAX_OPENAI_BASE_URLS } =
+      await import('../../src/core/wiki/llm-client.js');
+    vi.doMock('../../src/storage/repo-manager.js', () => ({
+      loadCLIConfig: vi.fn().mockResolvedValue({
+        provider: 'minimax',
+        model: MINIMAX_MODEL_IDS[0],
+        baseUrl: MINIMAX_OPENAI_BASE_URLS.cn_zh,
+      }),
+    }));
+
+    const { resolveLLMConfig } = await import('../../src/core/wiki/llm-client.js');
+    const config = await resolveLLMConfig();
+
+    expect(config.provider).toBe('minimax');
+    expect(config.model).toBe(MINIMAX_MODEL_IDS[0]);
+    expect(config.baseUrl).toBe(MINIMAX_OPENAI_BASE_URLS.cn_zh);
+  });
+
+  it('preserves providerless HTTP configs created by earlier versions', async () => {
+    vi.doMock('../../src/storage/repo-manager.js', () => ({
+      loadCLIConfig: vi.fn().mockResolvedValue({
+        apiKey: 'legacy-http-key',
+        model: 'legacy-http-model',
+        baseUrl: 'https://legacy.example/v1',
+      }),
+    }));
+
+    const { resolveLLMConfig } = await import('../../src/core/wiki/llm-client.js');
+    const config = await resolveLLMConfig();
+
     expect(config.provider).toBe('openai');
-    expect(config.model).toBe('minimax/minimax-m2.5');
-    expect(config.baseUrl).toBe('https://openrouter.ai/api/v1');
+    expect(config.model).toBe('legacy-http-model');
+    expect(config.baseUrl).toBe('https://legacy.example/v1');
   });
 
   it('CLI overrides take priority over saved config', async () => {
