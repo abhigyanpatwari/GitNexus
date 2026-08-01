@@ -360,6 +360,7 @@ CREATE REL TABLE ${REL_TABLE_NAME} (
   FROM Interface TO Method,
   FROM Interface TO Class,
   FROM Interface TO Interface,
+  FROM Interface TO CodeElement,
   FROM Interface TO \`TypeAlias\`,
   FROM Interface TO \`Struct\`,
   FROM Interface TO \`Constructor\`,
