@@ -1,5 +1,49 @@
 # Receiver-resolution baseline
 
+## Phantom callee read sites — a duplicate-edge bug the U8 test missed
+
+Go's `@reference.read` pattern matches **every** `selector_expression`, with no
+call-position exclusion. So `h.dep.Work()` minted **three** reference sites:
+
+| site | kind | name | what it is |
+|---|---|---|---|
+| S1 | `call` | `Work` | the member call |
+| S2 | `read` | `Work` | **phantom** — the callee `h.dep.Work`, already captured by S1 |
+| S3 | `read` | `dep` | the genuine field read |
+
+S2 resolved through `findOwnedMember`, which prefers methods over fields, and
+emitted an `ACCESSES` edge to the **method** duplicating S1's `CALLS` edge at the
+same position.
+
+**The U8 assertion passed by accident.** It asserted `RunSamePackage → Work` was
+absent from `ACCESSES`, and it was — but only because that row has a *pointer*
+receiver whose text-cascade head lookup failed for an unrelated reason. The
+value-receiver twin was emitting the bad edge the whole time:
+
+```
+ACCESSES  RunFromValueReceiver -> DoWork:Method     <- phantom, shipped
+ACCESSES  RunLocal             -> DoWork:Method     <- phantom, shipped
+```
+
+Fixed at the emitter: a selector in **function position** is never a read. A
+method *value* (`f := h.dep.Work`) is not in function position and is untouched.
+The assertion is now backed by an exact-set check over the whole fixture, so a
+new phantom fails even on a row nobody wrote a targeted assertion for.
+
+### What the numbers say
+
+- `callDrops` **unchanged at 102** — no call was lost.
+- `read` drops **27 → 22**: five phantom sites were being *recorded as drops*,
+  inflating the read bucket with sites that were never field reads.
+- One drop reclassified `chain-field` → `chain-unwrap`. The phantom and the real
+  call share a site key, so the phantom's field-shaped chain was previously the
+  one recorded. The census now describes the actual dropped call.
+
+Caught by three review agents dispatched at the A1 regression; the phantom was
+the mechanism, not the global-normalization story the first revert note asserted.
+
+---
+
 ## U9 (part 2) — no drop ratchet is needed; the gate is already stronger
 
 The plan's R10 set a ZERO supported-shape drop target, and review correctly

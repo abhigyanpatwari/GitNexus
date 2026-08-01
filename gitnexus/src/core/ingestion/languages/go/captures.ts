@@ -45,6 +45,20 @@ const GO_CALLABLE_CAPTURE_OPTIONS = {
   },
 } as const;
 
+/**
+ * Is this `selector_expression` the callee of a call, rather than a value read?
+ *
+ * `h.dep.Work` in `h.dep.Work()` is the function being called; the member-call
+ * pattern already captures it. Matching it a second time as a field read mints a
+ * duplicate edge. `f := h.dep.Work` — a method value — is NOT in function
+ * position and stays a read.
+ */
+function isCalleeOfMemberCall(node: SyntaxNode): boolean {
+  const parent = node.parent;
+  if (parent === null || parent.type !== 'call_expression') return false;
+  return parent.childForFieldName('function')?.id === node.id;
+}
+
 export function emitGoScopeCaptures(
   sourceText: string,
   _filePath: string,
@@ -182,6 +196,26 @@ export function emitGoScopeCaptures(
         );
       }
     }
+
+    // Drop the PHANTOM read site on a member call's callee.
+    //
+    // The `@reference.read` pattern matches every `selector_expression`, so
+    // `h.dep.Work()` yields THREE sites: the call on `Work`, a read on the inner
+    // `h.dep` (the genuine field read), and a read on the OUTER `h.dep.Work` —
+    // which is not a field read at all, it is the callee of the call already
+    // captured beside it.
+    //
+    // That phantom resolves through `findOwnedMember`, which prefers methods
+    // over fields, so it emits an ACCESSES edge to the METHOD duplicating the
+    // CALLS edge at the same position. Visible today on any Go receiver the text
+    // cascade can type: `v.impl.DoWork()` emits both `CALLS -> DoWork` and
+    // `ACCESSES -> DoWork`. It stayed hidden on pointer receivers only because
+    // their lookup failed for an unrelated reason.
+    //
+    // A selector in FUNCTION position is never a read. A genuine method value
+    // (`f := h.dep.Work`) is not in function position and is untouched.
+    const readNode = nodeMap['@reference.read'];
+    if (readNode !== undefined && isCalleeOfMemberCall(readNode)) continue;
 
     // Structural receiver chain for a call whose receiver is itself an
     // expression, so resolution can type it by folding over structure

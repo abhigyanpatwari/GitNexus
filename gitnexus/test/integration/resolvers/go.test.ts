@@ -1710,4 +1710,37 @@ describe('Go pointer-receiver field chains (#2766)', () => {
     expect(accesses).toContain('RunSamePackage → dep');
     expect(accesses).not.toContain('RunSamePackage → Work');
   });
+
+  // The assertion above used to pass by ACCIDENT: a pointer receiver's text
+  // cascade failed for an unrelated reason, so the phantom never resolved. The
+  // value-receiver twin proves the rule holds when the lookup SUCCEEDS — before
+  // the callee read-site was dropped, this emitted `RunFromValueReceiver →
+  // DoWork` as an ACCESSES edge duplicating its own CALLS edge.
+  it('emits no method-targeted ACCESSES for a value receiver either', () => {
+    const accesses = edgeSet(getRelationships(result, 'ACCESSES'));
+    expect(accesses).toContain('RunFromValueReceiver → impl');
+    expect(accesses).not.toContain('RunFromValueReceiver → DoWork');
+  });
+
+  // The invariant, stated once rather than per-fixture: a member call's callee
+  // is captured by the call pattern and must not ALSO be captured as a field
+  // read. Asserted as the EXACT edge set, so a new phantom fails here even if
+  // it appears on a fixture row nobody wrote a targeted assertion for.
+  it('emits exactly the property ACCESSES, and nothing method-targeted', () => {
+    expect([...edgeSet(getRelationships(result, 'ACCESSES'))].sort()).toEqual([
+      'RunCart → cart',
+      'RunConcrete → impl',
+      'RunFromValueReceiver → impl',
+      'RunInterface → thing',
+      'RunSamePackage → dep',
+    ]);
+  });
+
+  // A method VALUE is a genuine read and must survive: `f := h.dep.Work` is not
+  // in function position, so the callee-drop must not touch it.
+  it('keeps CALLS for every field-receiver call', () => {
+    const calls = edgeSet(getRelationships(result, 'CALLS'));
+    expect(calls).toContain('RunSamePackage → Work');
+    expect(calls).toContain('RunFromValueReceiver → DoWork');
+  });
 });

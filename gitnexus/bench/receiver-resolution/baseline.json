@@ -200,10 +200,10 @@
   },
   "countArm": {
     "callDrops": 102,
-    "totalDropsAllKinds": 129,
+    "totalDropsAllKinds": 124,
     "bySiteKind": {
       "call": 102,
-      "read": 27
+      "read": 22
     },
     "callDropsByExtension": {
       ".java": 49,
@@ -221,10 +221,11 @@
       ".swift": 1
     },
     "callDropsByShape": {
-      "chain-field": 61,
+      "chain-field": 60,
       "chain-call": 27,
       "no-chain": 12,
-      "chain-mixed": 2
+      "chain-mixed": 2,
+      "chain-unwrap": 1
     }
   }
 }
