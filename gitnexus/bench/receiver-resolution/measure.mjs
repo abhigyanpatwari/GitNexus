@@ -1367,6 +1367,14 @@ async function runCountArm(repoPath) {
   // Shape census over the CALL drops only, so the answer to "which kind of
   // receiver are we losing?" is not diluted by property reads and writes.
   const callDropsByShape = new Map();
+  // THE number that matters now. A drop whose receiver is rooted outside the
+  // indexed program (`System.out.println`, `fetch(...)`) reaches code with no
+  // node to point an edge at — nothing was lost. Only `in-program` and
+  // `unknown` drops represent a real resolver gap, and only those make an
+  // `impact` count a lower bound. Measured on this corpus: 76 external, 20
+  // in-program, 6 unknown — i.e. three quarters of the raw count was the
+  // program boundary rather than uncertainty about the program.
+  const callDropsByOrigin = new Map();
   const callDropsByShapeAndExt = new Map();
   for (const drop of drops) {
     const kind = drop.siteKind ?? '<<unset>>';
@@ -1377,6 +1385,8 @@ async function runCountArm(repoPath) {
       callDropsByExtension.set(ext, (callDropsByExtension.get(ext) ?? 0) + 1);
       const shape = drop.receiverShape ?? '<<unclassified>>';
       callDropsByShape.set(shape, (callDropsByShape.get(shape) ?? 0) + 1);
+      const origin = drop.receiverOrigin ?? '<<unclassified>>';
+      callDropsByOrigin.set(origin, (callDropsByOrigin.get(origin) ?? 0) + 1);
       const pair = `${ext} ${shape}`;
       callDropsByShapeAndExt.set(pair, (callDropsByShapeAndExt.get(pair) ?? 0) + 1);
     }
@@ -1391,6 +1401,7 @@ async function runCountArm(repoPath) {
     bySiteKind: sortDesc(byKind),
     callDropsByExtension: sortDesc(callDropsByExtension),
     callDropsByShape: sortDesc(callDropsByShape),
+    callDropsByOrigin: sortDesc(callDropsByOrigin),
     callDropsByShapeAndExtension: sortDesc(callDropsByShapeAndExt),
     allDropsByExtension: sortDesc(byExtension),
   };
@@ -1508,6 +1519,7 @@ function projection(output) {
       bySiteKind: output.countArm.bySiteKind,
       callDropsByExtension: output.countArm.callDropsByExtension,
       callDropsByShape: output.countArm.callDropsByShape,
+      callDropsByOrigin: output.countArm.callDropsByOrigin,
     },
   };
 }

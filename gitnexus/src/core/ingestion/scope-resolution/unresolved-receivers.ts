@@ -56,6 +56,18 @@ export function summarizeUnresolvedReceivers(
     // A missing `siteKind` counts as a call: the only emitter always sets it, and
     // erring toward `lower-bound` is the safe direction for an epistemic signal.
     if (outcome.siteKind !== undefined && outcome.siteKind !== 'call') continue;
+    // EXTERNAL targets are not uncertainty. `System.out.println(...)`,
+    // `fetch(...)`, `os.environ.setdefault(...)` reach code this index does not
+    // contain, so there is no node an edge could have pointed at and nothing was
+    // lost. Counting them made `impact` report a lower bound on essentially
+    // every real codebase — 75% of the drops on this corpus — which is what
+    // taught readers to ignore the signal.
+    //
+    // A compiler resolves these against the JDK / BCL / lib.d.ts. Lacking those,
+    // the honest statement is "this call leaves the analyzed program", not "this
+    // analysis is incomplete". `unknown` still counts: assuming completeness we
+    // cannot demonstrate is the unsafe direction.
+    if (outcome.receiverOrigin === 'external') continue;
     totalSites++;
     counts.set(outcome.name, (counts.get(outcome.name) ?? 0) + 1);
   }

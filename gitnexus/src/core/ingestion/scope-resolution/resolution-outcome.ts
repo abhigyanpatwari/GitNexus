@@ -87,6 +87,27 @@ export type ResolutionOutcome =
        * persisted `RepoMeta.unresolvedReceiverMembers` artifact is unchanged.
        */
       readonly receiverShape?: ReceiverShape;
+      /**
+       * Whether the receiver is rooted INSIDE the analyzed program.
+       *
+       * The single most important distinction a static-analysis tool can make
+       * about a call it did not resolve, and the one this codebase previously
+       * collapsed:
+       *
+       * - `in-program` — the receiver's base is a local, parameter, field or a
+       *   type this index knows. Failing to type it is a RESOLVER DEFECT: a real
+       *   caller exists in the graph and was lost.
+       * - `external` — the base is rooted in code this index does not contain
+       *   (`System.out.println`, `fetch(...)`, `os.environ.setdefault`). There is
+       *   NO node to point an edge at, so nothing was lost. A compiler resolves
+       *   these against the JDK / BCL / lib.d.ts; without those, the honest
+       *   answer is "outside the program", not "unknown".
+       *
+       * Only `in-program` makes an `impact` count a lower bound. Reporting an
+       * external target as uncertainty is what made the hedge fire on nearly
+       * every real codebase and taught readers to ignore it.
+       */
+      readonly receiverOrigin?: ReceiverOrigin;
     };
 
 /**
@@ -103,6 +124,16 @@ export type ResolutionOutcome =
  *                  expression the capture walk could not reduce to a nameable
  *                  base (it stopped early, or the base was unencodable)
  */
+/**
+ * Is the receiver rooted inside the analyzed program, or outside it?
+ *
+ * `unknown` is for a site carrying no usable base at all — neither a chain nor
+ * an explicit receiver — where the question cannot be asked. It is treated as
+ * `in-program` for hedging purposes, because assuming completeness we cannot
+ * demonstrate is the unsafe direction.
+ */
+export type ReceiverOrigin = 'in-program' | 'external' | 'unknown';
+
 export type ReceiverShape =
   | 'chain-call'
   | 'chain-field'

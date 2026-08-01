@@ -226,6 +226,11 @@
       "no-chain": 12,
       "chain-mixed": 2,
       "chain-unwrap": 1
+    },
+    "callDropsByOrigin": {
+      "external": 76,
+      "in-program": 20,
+      "unknown": 6
     }
   }
 }

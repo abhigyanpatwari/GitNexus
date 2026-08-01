@@ -1,5 +1,53 @@
 # Receiver-resolution baseline
 
+## Receiver ORIGIN — three quarters of the hedge was the program boundary
+
+The drop count was measuring two different things and reporting both as
+uncertainty. Dumping all 102 call drops with source context settles it:
+
+| Origin | Count | Is anything lost? |
+|---|---|---|
+| `external` | **76** | **No.** `System.out.println`, `fetch(...)`, `os.environ.setdefault`, `document.body.appendChild`, `.stream()`. The callee is not in the graph — there is no node an edge could point at. |
+| `in-program` | 20 | Yes in principle — but see below. |
+| `unknown` | 6 | Yes. Casts, ternaries, `globalThis.x ??= []`. |
+
+**A compiler resolves `System.out.println` against the JDK.** Lacking the JDK,
+the honest statement is *"this call leaves the analyzed program"* — not *"this
+analysis is incomplete"*. Those are different epistemic states, and collapsing
+them is what made `impact` report a lower bound on essentially every real
+codebase, which is what teaches readers to ignore the signal.
+
+`ResolutionOutcome.receiverOrigin` now records which one applies, and
+`summarizeUnresolvedReceivers` skips `external`. `unknown` still counts —
+assuming a completeness we cannot demonstrate is the unsafe direction.
+
+### How origin is decided
+
+By the receiver base's **declared type**, not its name. A first cut asked
+whether the base was a local, which marked `inputs.stream()` in-program:
+`inputs` is a local, but its type `List<String>` is JDK, so the target is
+external. Asking whether the base's *type* is one this index contains moved 28
+sites to the correct bucket.
+
+### What the remaining 20 in-program drops actually are
+
+Mostly **not** product defects. `user.Address.Save()` resolves cleanly in
+isolation — the `csharp-deep-field-chain` fixture alone emits both expected
+edges with **zero** drops. It drops in the count arm only because the corpus is
+~200 independent mini-projects in one directory and **55 files define
+`Address`**, so the resolver correctly declines on ambiguity rather than picking
+one. That is right behaviour measured on an unrepresentative corpus.
+
+The genuinely untypeable population is the 6 `unknown` — and those are the real
+targets for type resolution, because a cast *gives* you the type
+(`((Box<String>) obj).open()`) and a ternary needs a join of its branch types.
+They were previously invisible under 76 stdlib calls.
+
+`callDropsByOrigin` is now part of the gated projection, so this split cannot
+drift silently.
+
+---
+
 ## Phantom callee read sites — a duplicate-edge bug the U8 test missed
 
 Go's `@reference.read` pattern matches **every** `selector_expression`, with no
