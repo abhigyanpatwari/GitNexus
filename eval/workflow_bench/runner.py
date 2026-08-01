@@ -35,6 +35,7 @@ model).
 from __future__ import annotations
 
 import argparse
+from concurrent.futures import ThreadPoolExecutor, wait
 import hashlib
 import json
 import os
@@ -44,7 +45,8 @@ import stat
 import statistics
 import tempfile
 import time
-from collections.abc import Mapping
+from collections.abc import Callable, Mapping, Sequence
+from functools import partial
 from dataclasses import dataclass, replace
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
@@ -639,6 +641,64 @@ def systemic_outage_streak(error_kind: str | None, prior_streak: int) -> int:
     return prior_streak + 1 if error_kind in SYSTEMIC_ERROR_KINDS else 0
 
 
+def sweep_task_cells(
+    cells: Sequence[tuple[int, str]],
+    *,
+    workers: int,
+    run: Callable[[int, str], dict[str, Any]],
+    on_start: Callable[[int, str], None],
+    on_record: Callable[[int, str, dict[str, Any]], None],
+    outage_streak: int,
+    outage_limit: int,
+) -> tuple[int, bool]:
+    """Run one task's cells in waves of ``workers``; return (streak, tripped).
+
+    Waves rather than one fan-out, because the outage breaker counts
+    CONSECUTIVE systemic failures and "consecutive" only means anything in a
+    fixed order — completion order under concurrency is not one. Each wave is
+    folded in submission order once it has fully completed, and the next wave
+    starts only if the breaker held, so the breaker overruns its limit by at
+    most ``workers - 1`` cells: the ones already in flight when it tripped.
+
+    ``workers == 1`` runs the cell directly instead of through a pool of one.
+    That is not an optimisation — an async KeyboardInterrupt is delivered only
+    to the main thread, so a cell on a worker thread is outside the reach of
+    the ownership cleanup that kills its sandboxed process tree.
+    """
+    if workers < 1:
+        raise ValueError("workers must be positive")
+    for wave_start in range(0, len(cells), workers):
+        wave = list(cells[wave_start : wave_start + workers])
+        for run_idx, arm in wave:
+            on_start(run_idx, arm)
+        if workers == 1:
+            records = [run(run_idx, arm) for run_idx, arm in wave]
+        else:
+            with ThreadPoolExecutor(max_workers=workers) as pool:
+                futures = [pool.submit(run, run_idx, arm) for run_idx, arm in wave]
+                try:
+                    wait(futures)
+                except KeyboardInterrupt:
+                    pool.shutdown(wait=False, cancel_futures=True)
+                    raise
+                # Every future has to be read. An exception a cell did not
+                # expect stays parked inside its Future until something asks
+                # for it, so skipping this would turn a harness bug into a
+                # silently missing run rather than a crash.
+                records = [future.result() for future in futures]
+        for (run_idx, arm), record in zip(wave, records, strict=True):
+            on_record(run_idx, arm, record)
+            outage_streak = systemic_outage_streak(record.get("error_kind"), outage_streak)
+            if outage_limit and outage_streak >= outage_limit:
+                print(
+                    f"[systemic-outage] {outage_streak} consecutive session/infra/cleanup "
+                    "failures — aborting the remaining sweep; report and promotion are written "
+                    "from partial evidence and the run exits non-zero."
+                )
+                return outage_streak, True
+    return outage_streak, False
+
+
 @dataclass(frozen=True)
 class TaskCellContext:
     """Everything one benchmark cell needs from its task, prepared once.
@@ -1076,6 +1136,17 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--tasks", required=True, type=Path)
     parser.add_argument("--runs", type=int, default=1)
     parser.add_argument(
+        "--workers",
+        type=int,
+        default=1,
+        help="cells of one task to run at once (default 1, fully serial). Size "
+        "this to the machine: a cell that loses CPU to its siblings takes "
+        "longer, and a session that reaches its timeout is an excluded run the "
+        "promotion gate refuses to work with. Above 1 the cells run on worker "
+        "threads, so Ctrl-C no longer reaches the code owning a sandboxed "
+        "process and an abort waits for the running cells to finish.",
+    )
+    parser.add_argument(
         "--outage-streak",
         type=int,
         default=DEFAULT_OUTAGE_STREAK,
@@ -1215,6 +1286,8 @@ def main() -> None:
             parser.error(f"{candidate_arm} must be paired with {incumbent_arm}")
     if args.runs < 1 or args.promotion_min_runs < 1:
         parser.error("--runs and --promotion-min-runs must be positive")
+    if args.workers < 1:
+        parser.error("--workers must be positive")
 
     candidate_overlay = args.candidate_overlay.expanduser().absolute() if args.candidate_overlay is not None else None
     overlay_digest = candidate_overlay_digest(candidate_overlay) if candidate_overlay is not None else None
@@ -1350,43 +1423,49 @@ def main() -> None:
                 overlay_digest=overlay_digest,
             )
             per_arm: dict[str, list[dict[str, Any]]] = {a: [] for a in args.arms}
-            for run_idx in range(args.runs):
-                if outage_tripped:
-                    break
-                for arm in args.arms:
-                    if outage_tripped:
-                        break
-                    started_cells += 1
-                    print(
-                        f"[{task['id']}][{arm}][run {run_idx}] starting "
-                        f"({started_cells}/{total_cells}, {(time.monotonic() - sweep_started) / 60:.0f}m elapsed)"
-                    )
-                    record = run_cell(cell_context, run_idx, arm)
-                    per_arm[arm].append(record)
-                    with results_path.open("a") as fh:
-                        # Redact any API token a session-error stderr_tail
-                        # echoed into error_detail before it enters the uploaded
-                        # results.jsonl artifact (transcripts are redacted; this
-                        # sink was not).
-                        fh.write(redact_text(json.dumps(record), [args.auth_token or ""]) + "\n")
-                    print(
-                        f"[{task['id']}][{arm}][run {run_idx}] resolved={record['resolved']} "
-                        f"in={record['input_tokens']} out={record['output_tokens']} "
-                        f"cost=${_na(record['cost_usd'])} "
-                        f"took={_na(record.get('duration_s'))}s "
-                        # An excluded run is what actually blocks promotion, so
-                        # name it here instead of leaving it to results.jsonl.
-                        f"error_kind={record.get('error_kind') or 'none'}"
-                    )
-                    outage_streak = systemic_outage_streak(record.get("error_kind"), outage_streak)
-                    if args.outage_streak and outage_streak >= args.outage_streak:
-                        outage_tripped = True
-                        print(
-                            f"[systemic-outage] {outage_streak} consecutive session/infra/cleanup "
-                            "failures — aborting the remaining sweep; report and promotion are written "
-                            "from partial evidence and the run exits non-zero."
-                        )
-                        break
+            cells = [(run_idx, arm) for run_idx in range(args.runs) for arm in args.arms]
+
+            def announce(run_idx: int, arm: str, task_id: str = task["id"]) -> None:
+                nonlocal started_cells
+                started_cells += 1
+                print(
+                    f"[{task_id}][{arm}][run {run_idx}] starting "
+                    f"({started_cells}/{total_cells}, {(time.monotonic() - sweep_started) / 60:.0f}m elapsed)"
+                )
+
+            def keep(
+                run_idx: int,
+                arm: str,
+                record: dict[str, Any],
+                task_id: str = task["id"],
+                rows: dict[str, list[dict[str, Any]]] = per_arm,
+            ) -> None:
+                rows[arm].append(record)
+                with results_path.open("a") as fh:
+                    # Redact any API token a session-error stderr_tail echoed
+                    # into error_detail before it enters the uploaded
+                    # results.jsonl artifact (transcripts are redacted; this
+                    # sink was not).
+                    fh.write(redact_text(json.dumps(record), [args.auth_token or ""]) + "\n")
+                print(
+                    f"[{task_id}][{arm}][run {run_idx}] resolved={record['resolved']} "
+                    f"in={record['input_tokens']} out={record['output_tokens']} "
+                    f"cost=${_na(record['cost_usd'])} "
+                    f"took={_na(record.get('duration_s'))}s "
+                    # An excluded run is what actually blocks promotion, so name
+                    # it here instead of leaving it to results.jsonl.
+                    f"error_kind={record.get('error_kind') or 'none'}"
+                )
+
+            outage_streak, outage_tripped = sweep_task_cells(
+                cells,
+                workers=args.workers,
+                run=partial(run_cell, cell_context),
+                on_start=announce,
+                on_record=keep,
+                outage_streak=outage_streak,
+                outage_limit=args.outage_streak,
+            )
             results[task["id"]] = {a: aggregate(rs) for a, rs in per_arm.items() if rs}
 
     selection_report = [

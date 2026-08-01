@@ -551,3 +551,116 @@ def test_run_cell_fails_closed_when_a_per_task_snapshot_never_materialized(tmp_p
 
     assert record["error_kind"] == "infra-error"
     assert "no assets" in str(record["error_detail"])
+
+
+def _sweep(cells, *, workers, run, outage_limit=5, streak=0):
+    """Drive sweep_task_cells, recording what it started and kept."""
+    started: list[tuple[int, str]] = []
+    kept: list[tuple[int, str]] = []
+    ending_streak, tripped = runner.sweep_task_cells(
+        cells,
+        workers=workers,
+        run=run,
+        on_start=lambda run_idx, arm: started.append((run_idx, arm)),
+        on_record=lambda run_idx, arm, _record: kept.append((run_idx, arm)),
+        outage_streak=streak,
+        outage_limit=outage_limit,
+    )
+    return SimpleNamespace(started=started, kept=kept, streak=ending_streak, tripped=tripped)
+
+
+def _row(error_kind=None):
+    return {"resolved": error_kind is None, "error_kind": error_kind}
+
+
+CELLS = [(run_idx, arm) for run_idx in range(3) for arm in ("workflow", "candidate_workflow")]
+
+
+def test_sweep_keeps_rows_in_submission_order_whatever_order_they_finish(tmp_path):
+    # Cells finish in whatever order the machine allows, but a wave is folded
+    # in submission order — the outage streak counts consecutive failures, and
+    # "consecutive" in completion order would make the trip point flaky.
+    import time as _time
+
+    def run(run_idx, arm):
+        _time.sleep(0.02 if run_idx == 0 else 0.0)
+        return _row()
+
+    result = _sweep(CELLS, workers=3, run=run)
+
+    assert result.kept == CELLS
+    assert result.started == CELLS
+    assert result.tripped is False
+
+
+@pytest.mark.parametrize("workers", [1, 2, 3])
+def test_sweep_trips_the_breaker_within_one_wave_of_the_serial_point(workers):
+    # Serial stops after the 5th consecutive systemic failure. Cells already in
+    # flight when the breaker trips cannot be recalled, so the overrun is
+    # bounded by the wave — the point of waves is that it is never the whole
+    # task. Ten cells, so the bound is visible rather than hidden by the end.
+    long_task = [(run_idx, arm) for run_idx in range(5) for arm in ("workflow", "candidate_workflow")]
+
+    result = _sweep(long_task, workers=workers, run=lambda *_: _row("session-error"))
+
+    assert result.tripped is True
+    assert len(result.kept) == 5
+    assert 5 <= len(result.started) <= 5 + workers - 1
+    assert len(result.started) < len(long_task)
+
+
+def test_sweep_reads_a_real_failure_as_signal_rather_than_an_outage():
+    # resolved=False with no systemic error_kind is the benchmark working, not
+    # the harness failing; it must reset the streak instead of tripping.
+    result = _sweep(CELLS, workers=3, run=lambda *_: {"resolved": False, "error_kind": None})
+
+    assert result.tripped is False
+    assert result.streak == 0
+    assert result.kept == CELLS
+
+
+def test_sweep_surfaces_an_unexpected_worker_failure_instead_of_dropping_the_cell():
+    def run(run_idx, arm):
+        if (run_idx, arm) == (0, "candidate_workflow"):
+            raise KeyError("harness bug")
+        return _row()
+
+    # A Future holds its exception until read. Unread, this cell would vanish
+    # from the evidence with no crash and no row — fewer runs in an arm's
+    # aggregate, silently.
+    with pytest.raises(KeyError):
+        _sweep(CELLS, workers=3, run=run)
+
+
+def test_sweep_runs_cells_of_a_wave_at_the_same_time():
+    import threading
+
+    barrier = threading.Barrier(3, timeout=10)
+
+    def run(run_idx, arm):
+        # Deadlocks unless all three cells of the wave are genuinely in flight
+        # together — a pool that serialised them would time out here.
+        barrier.wait()
+        return _row()
+
+    result = _sweep(CELLS, workers=3, run=run)
+
+    assert result.kept == CELLS
+
+
+def test_sweep_of_one_worker_never_leaves_the_calling_thread():
+    import threading
+
+    caller = threading.current_thread()
+    seen: list[threading.Thread] = []
+
+    def run(run_idx, arm):
+        seen.append(threading.current_thread())
+        return _row()
+
+    # Ctrl-C reaches only the main thread, so the serial default has to stay on
+    # it: a cell on a worker thread is outside the reach of the cleanup that
+    # kills its sandboxed process tree.
+    _sweep(CELLS, workers=1, run=run)
+
+    assert seen == [caller] * len(CELLS)
