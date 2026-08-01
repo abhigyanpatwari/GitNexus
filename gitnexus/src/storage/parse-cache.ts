@@ -149,21 +149,27 @@ import type { ParseWorkerResult } from '../core/ingestion/workers/parse-worker.j
 // v37: Java/Kotlin capture side-channels include Spring AOP owner/advice facts
 // (#2416). Warm cache entries at v36 do not carry those facts and would silently
 // omit ADVISED_BY evidence.
-// v38: receiver-chain wire format v2 — the encoded chain gained name-free
+// v38: Swift nested conditional-compilation directives are blanked before the
+// parse (#2771) — allocated on `main`, NOT by this branch. Recorded here so the
+// number is not reused a third time.
+// v39: receiver-chain wire format v2 — the encoded chain gained name-free
 // `await` and `index` step kinds, so the VERSION prefix moved 1 -> 2 and every
 // persisted chain string changed. A v2 decoder REFUSES a v1 payload (that is
 // the point: a chain missing its await or index hop decodes cleanly as a
 // different, shorter chain and would type the receiver against the wrong
-// member), so a cache stamped 34 replays chains this build silently discards —
+// member), so a stale cache replays chains this build silently discards —
 // the feature degrades to the text cascade with no error anywhere. Bumped so
 // the stale cache is rejected rather than half-read.
 //
-// NUMBERED 38, NOT 37: `main` took 37 for Spring AOP (#2416) while this branch
-// was in flight, landing on EXACTLY the number this branch already used. That is
-// the SEVENTH collision in this series and the first that was an exact clash
-// rather than a near-miss — two incompatible schemas both claiming 37. Re-check
-// against origin/main immediately before merge.
-const SCHEMA_BUMP = 38;
+// NUMBERED 39, AFTER TWO REALLOCATIONS. This branch first used 37; `main` took
+// 37 for Spring AOP (#2416) mid-flight, so it moved to 38; `main` then took 38
+// for the Swift directive fix (#2771), landing on the branch's number AGAIN.
+// That is the EIGHTH collision in this series and the SECOND exact clash — two
+// incompatible schemas claiming one number, twice running. The lesson is not
+// "pick a bigger number": it is that the check must happen immediately before
+// merge, because the window between review and merge is exactly when `main`
+// allocates. Re-check against origin/main before merging this.
+const SCHEMA_BUMP = 39;
 const GITNEXUS_PKG_VERSION = (() => {
   try {
     // package.json sits at gitnexus/package.json — two levels up from

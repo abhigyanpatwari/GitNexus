@@ -107,12 +107,15 @@ describe('PARSE_CACHE_VERSION', () => {
   // and a v2 decoder refuses v1 by design, so a cache stamped 37 replays chains
   // this build silently discards.
   //
-  // This pin has now earned its keep SEVEN times, and the seventh was the first
-  // EXACT clash rather than a near-miss: main took 37 for #2416 while this
-  // branch already used 37, so two incompatible schemas both claimed the same
-  // number. Re-check against origin/main before merge.
-  it('pins SCHEMA_BUMP to 38 so concurrent bumps cannot silently collide (#2766)', () => {
-    expect(Number(PARSE_CACHE_VERSION.split('+', 1)[0])).toBe(38);
+  // This pin has now earned its keep EIGHT times, and twice it caught an EXACT
+  // clash rather than a near-miss: main took 37 for #2416 while this branch
+  // already used 37, and then took 38 for #2771 after this branch had moved to
+  // 38. Both times two incompatible schemas claimed one number. Note when the
+  // second clash was caught — after review, while the branch sat waiting to
+  // merge — which is precisely the window in which `main` allocates. Re-check
+  // against origin/main immediately before merge, not at review time.
+  it('pins SCHEMA_BUMP to 39 so concurrent bumps cannot silently collide (#2766)', () => {
+    expect(Number(PARSE_CACHE_VERSION.split('+', 1)[0])).toBe(39);
   });
 
   it('embeds the gitnexus package version (so upgrades invalidate the cache)', () => {
