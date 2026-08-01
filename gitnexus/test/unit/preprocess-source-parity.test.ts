@@ -63,22 +63,25 @@ describe('LanguageProvider.preprocessSource parity', () => {
     const provider = getProvider(language as SupportedLanguages);
     const { filePath, source } = FIXTURES[language as SupportedLanguages]!;
 
-    describe.skipIf(!isLanguageAvailable(language as SupportedLanguages))('with the grammar', () => {
-      it('extracts the same ParsedFile from raw and preprocessed source', () => {
-        const preprocessed = provider.preprocessSource!(source, filePath);
+    describe.skipIf(!isLanguageAvailable(language as SupportedLanguages))(
+      'with the grammar',
+      () => {
+        it('extracts the same ParsedFile from raw and preprocessed source', () => {
+          const preprocessed = provider.preprocessSource!(source, filePath);
 
-        expect(preprocessed).not.toBe(source);
-        expect(preprocessed).toHaveLength(source.length);
-        expect(extractParsedFile(provider, source, filePath, () => {})).toEqual(
-          extractParsedFile(provider, preprocessed, filePath, () => {}),
-        );
-      });
+          expect(preprocessed).not.toBe(source);
+          expect(preprocessed).toHaveLength(source.length);
+          expect(extractParsedFile(provider, source, filePath, () => {})).toEqual(
+            extractParsedFile(provider, preprocessed, filePath, () => {}),
+          );
+        });
 
-      it('parses the preprocessed text on the embedding path too', async () => {
-        const tree = await ensureAndParse(source, filePath);
+        it('parses the preprocessed text on the embedding path too', async () => {
+          const tree = await ensureAndParse(source, filePath);
 
-        expect(tree.rootNode.hasError).toBe(false);
-      });
-    });
+          expect(tree.rootNode.hasError).toBe(false);
+        });
+      },
+    );
   });
 });
