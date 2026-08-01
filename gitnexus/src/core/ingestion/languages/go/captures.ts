@@ -16,6 +16,31 @@ import { parseSourceSafe } from '../../../tree-sitter/safe-parse.js';
 import { synthesizeCallableFlowCaptures } from '../../utils/callable-flow-captures.js';
 import { synthesizeReceiverChainCapture } from '../../utils/receiver-chain-captures.js';
 
+/** Range for a capture that marks no source span. */
+const ZERO_RANGE = Object.freeze({ startLine: 0, startCol: 0, endLine: 0, endCol: 0 });
+
+/**
+ * The callee-position marker, allocated once for the whole process.
+ *
+ * This capture is a PRESENCE FLAG, not a payload: `scope-extractor.ts` reads it
+ * only as `match['@reference.callee-position'] !== undefined`, and the tag is
+ * listed in `KNOWN_SUB_TAGS`, so `anchorCaptureFor` never considers its range
+ * when picking a reference anchor. Nothing else in the pipeline touches it.
+ * (Its range used to duplicate `@reference.read`'s exactly, and that capture is
+ * still emitted, so the one place that scans every capture's range — the
+ * synthetic Module-scope span in `scope-extractor.ts` — sees the same maximum.)
+ *
+ * Minting it per site from the read node was therefore pure cost, and not a
+ * cheap one: `node.text` is an `input.substring` behind N-API index marshals,
+ * and `startPosition` / `endPosition` are two more round-trips each. A frozen
+ * singleton carries exactly the same information — its presence — for free.
+ */
+const CALLEE_POSITION_MARKER: Capture = Object.freeze({
+  name: '@reference.callee-position',
+  range: ZERO_RANGE,
+  text: '',
+});
+
 const GO_CALLABLE_CAPTURE_OPTIONS = {
   functionNodeTypes: new Set(['function_declaration', 'method_declaration', 'func_literal']),
   callNodeTypes: new Set(['call_expression']),
@@ -46,12 +71,17 @@ const GO_CALLABLE_CAPTURE_OPTIONS = {
 } as const;
 
 /**
- * Is this `selector_expression` the callee of a call, rather than a value read?
+ * Is this `selector_expression` in CALLEE position — the `function` child of an
+ * enclosing `call_expression` — rather than free-standing?
  *
- * `h.dep.Work` in `h.dep.Work()` is the function being called; the member-call
- * pattern already captures it. Matching it a second time as a field read mints a
- * duplicate edge. `f := h.dep.Work` — a method value — is NOT in function
- * position and stays a read.
+ * `h.dep.Work` in `h.dep.Work()` is in callee position; `f := h.dep.Work` (a
+ * method value, or a func-typed field value) is not.
+ *
+ * Callee position alone does NOT make the selector a non-read. Go dispatches
+ * `h.dep.Work()` through a func-typed struct field just as readily as through a
+ * method, and this predicate cannot tell the two apart — `call_expression` has
+ * the same shape either way, and the tail's declaration may live in another
+ * package. See {@link emitGoScopeCaptures} for what is done with the answer.
  */
 function isCalleeOfMemberCall(node: SyntaxNode): boolean {
   const parent = node.parent;
@@ -197,25 +227,33 @@ export function emitGoScopeCaptures(
       }
     }
 
-    // Drop the PHANTOM read site on a member call's callee.
+    // Mark — do NOT drop — the read site on a member call's callee.
     //
     // The `@reference.read` pattern matches every `selector_expression`, so
     // `h.dep.Work()` yields THREE sites: the call on `Work`, a read on the inner
-    // `h.dep` (the genuine field read), and a read on the OUTER `h.dep.Work` —
-    // which is not a field read at all, it is the callee of the call already
-    // captured beside it.
+    // `h.dep` (the genuine field read), and a read on the OUTER `h.dep.Work`.
     //
-    // That phantom resolves through `findOwnedMember`, which prefers methods
-    // over fields, so it emits an ACCESSES edge to the METHOD duplicating the
-    // CALLS edge at the same position. Visible today on any Go receiver the text
-    // cascade can type: `v.impl.DoWork()` emits both `CALLS -> DoWork` and
-    // `ACCESSES -> DoWork`. It stayed hidden on pointer receivers only because
-    // their lookup failed for an unrelated reason.
+    // That third site is a phantom ONLY when `Work` is a method: it then
+    // resolves through `findOwnedMember` (which prefers methods over fields) and
+    // emits an ACCESSES edge to the METHOD duplicating the CALLS edge at the
+    // same position — `v.impl.DoWork()` emitting both `CALLS -> DoWork` and
+    // `ACCESSES -> DoWork`.
     //
-    // A selector in FUNCTION position is never a read. A genuine method value
-    // (`f := h.dep.Work`) is not in function position and is untouched.
+    // When `Work` is a FUNC-TYPED STRUCT FIELD (`Work func() error` — callback
+    // structs, hook structs, hand-rolled mocks) the very same syntax is a
+    // genuine field read followed by an indirect call through the value it
+    // holds, and that read is the field's only ACCESSES evidence. Dropping the
+    // site here deleted it (#2782 review).
+    //
+    // Method-vs-field is not knowable at capture: `call_expression` has the same
+    // shape either way and the tail's declaration may live in another package.
+    // So the capture layer records the POSITION and edge emission — which knows
+    // the resolved target's kind — decides. See `ReferenceSite.inCalleePosition`
+    // and `tryEmitEdge`.
     const readNode = nodeMap['@reference.read'];
-    if (readNode !== undefined && isCalleeOfMemberCall(readNode)) continue;
+    if (readNode !== undefined && isCalleeOfMemberCall(readNode)) {
+      grouped['@reference.callee-position'] = CALLEE_POSITION_MARKER;
+    }
 
     // Structural receiver chain for a call whose receiver is itself an
     // expression, so resolution can type it by folding over structure

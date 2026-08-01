@@ -138,6 +138,30 @@ export interface ReferenceSite {
    * majority of sites — the field costs nothing where it is not needed.
    */
   readonly receiverChain?: string;
+  /**
+   * This site sits in CALLEE position: it is the expression being invoked by an
+   * enclosing call, not a value the program otherwise consumes. Only ever set on
+   * `kind: 'read'` sites, and only by languages whose member-read capture also
+   * matches the callee of a member call (`obj.f()` yields both a `call` site on
+   * `f` and a `read` site on `obj.f`).
+   *
+   * It is a POSITION FACT, not a decision. Whether that read is redundant
+   * depends on what the tail resolves to, which the capture layer cannot know:
+   *
+   *   - tail is a METHOD  → the read duplicates the call's own edge and must be
+   *                         suppressed (an `ACCESSES → m` beside a `CALLS → m`
+   *                         at the same position is a phantom).
+   *   - tail is a FIELD   → the read is GENUINE. `h.dep.Work()` where
+   *                         `Work func() error` selects a func-typed field and
+   *                         then calls the value it holds; deleting the read
+   *                         erases the only evidence that the field was used
+   *                         (callback/hook structs, hand-rolled mocks).
+   *
+   * The suppression is therefore applied at edge emission, where the resolved
+   * target's kind is known — see `tryEmitEdge`. Absent on every site that is not
+   * in callee position, so nothing changes for languages that never set it.
+   */
+  readonly inCalleePosition?: boolean;
 }
 
 /**

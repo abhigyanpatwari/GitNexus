@@ -1670,7 +1670,11 @@ describe('Go pointer-receiver field chains (#2766)', () => {
     );
   }, 60000);
 
-  const calls = (): Set<string> => edgeSet(getRelationships(result, 'CALLS'));
+  const calls = (): string[] => edgeSet(getRelationships(result, 'CALLS'));
+  /** ACCESSES rows with each target's KIND appended — `→ Work` alone cannot
+   *  tell a func-typed field apart from the method that shadowed it. */
+  const accesses = (): string[] =>
+    getRelationships(result, 'ACCESSES').map((e) => `${e.source} → ${e.target}:${e.targetLabel}`);
 
   // The three rows that emitted nothing before the decoration fallback. All
   // three have a POINTER receiver, which bound as the literal `*Holder` and
@@ -1706,9 +1710,11 @@ describe('Go pointer-receiver field chains (#2766)', () => {
   });
 
   it('retargets the field ACCESSES to the property, not the method', () => {
-    const accesses = edgeSet(getRelationships(result, 'ACCESSES'));
-    expect(accesses).toContain('RunSamePackage → dep');
-    expect(accesses).not.toContain('RunSamePackage → Work');
+    // Unlabeled on purpose: the negative must reject `→ Work` under ANY target
+    // kind, which the kind-qualified rows below cannot express.
+    const accessEdges = edgeSet(getRelationships(result, 'ACCESSES'));
+    expect(accessEdges).toContain('RunSamePackage → dep');
+    expect(accessEdges).not.toContain('RunSamePackage → Work');
   });
 
   // The assertion above used to pass by ACCIDENT: a pointer receiver's text
@@ -1717,30 +1723,74 @@ describe('Go pointer-receiver field chains (#2766)', () => {
   // the callee read-site was dropped, this emitted `RunFromValueReceiver →
   // DoWork` as an ACCESSES edge duplicating its own CALLS edge.
   it('emits no method-targeted ACCESSES for a value receiver either', () => {
-    const accesses = edgeSet(getRelationships(result, 'ACCESSES'));
-    expect(accesses).toContain('RunFromValueReceiver → impl');
-    expect(accesses).not.toContain('RunFromValueReceiver → DoWork');
+    const accessEdges = edgeSet(getRelationships(result, 'ACCESSES'));
+    expect(accessEdges).toContain('RunFromValueReceiver → impl');
+    expect(accessEdges).not.toContain('RunFromValueReceiver → DoWork');
   });
 
-  // The invariant, stated once rather than per-fixture: a member call's callee
-  // is captured by the call pattern and must not ALSO be captured as a field
-  // read. Asserted as the EXACT edge set, so a new phantom fails here even if
-  // it appears on a fixture row nobody wrote a targeted assertion for.
-  it('emits exactly the property ACCESSES, and nothing method-targeted', () => {
-    expect([...edgeSet(getRelationships(result, 'ACCESSES'))].sort()).toEqual([
-      'RunCart → cart',
-      'RunConcrete → impl',
-      'RunFromValueReceiver → impl',
-      'RunInterface → thing',
-      'RunSamePackage → dep',
+  // The invariant, stated once rather than per-fixture: a member call whose
+  // callee resolves to a METHOD must not also emit a field read for it.
+  // Asserted as the EXACT edge set INCLUDING each target's kind, so the two
+  // failure directions are both caught on rows nobody wrote a targeted
+  // assertion for: a new phantom (an ACCESSES to a Method at a call position)
+  // fails here, and so does a deleted genuine read (a missing ACCESSES to a
+  // Property). The kinds are load-bearing — `→ Work` alone cannot tell a
+  // func-typed field apart from the method that shadowed it.
+  it('emits exactly the expected ACCESSES set, target kinds included', () => {
+    expect(accesses().sort()).toEqual([
+      // #2782 review: callee position is a POSITION, not a verdict. Go
+      // dispatches `c.OnEvent()` through a func-typed struct field with exactly
+      // the same syntax as a method call, so the capture layer cannot decide
+      // which it is — `call_expression` looks identical and the tail may be
+      // declared in another package. Suppressing every callee-position read
+      // deleted the only ACCESSES evidence for callback structs, hook structs
+      // and hand-rolled mocks; this row is that evidence.
+      'CallFuncField → OnEvent:Property',
+      // A METHOD VALUE resolves to a Method just like the phantom does, and is
+      // the reason the suppression cannot key on target kind alone.
+      'MethodValue → DoWork:Method',
+      // A plain (non-func) field read, never in callee position.
+      'ReadPlainField → Label:Property',
+      'RunCart → cart:Property',
+      'RunConcrete → impl:Property',
+      'RunFromValueReceiver → impl:Property',
+      'RunInterface → thing:Property',
+      'RunSamePackage → dep:Property',
     ]);
   });
 
-  // A method VALUE is a genuine read and must survive: `f := h.dep.Work` is not
-  // in function position, so the callee-drop must not touch it.
   it('keeps CALLS for every field-receiver call', () => {
-    const calls = edgeSet(getRelationships(result, 'CALLS'));
-    expect(calls).toContain('RunSamePackage → Work');
-    expect(calls).toContain('RunFromValueReceiver → DoWork');
+    expect(calls()).toContain('RunSamePackage → Work');
+    expect(calls()).toContain('RunFromValueReceiver → DoWork');
+  });
+
+  // ---------------------------------------------------------------------
+  // #2782 review: callee position is a POSITION, not a verdict
+  // ---------------------------------------------------------------------
+  // That the READS survive is asserted by the exact-set test above, row by
+  // row. What that set cannot show is that keeping them did not cost the
+  // CALLS edge those same sites must still emit — which is what remains here.
+
+  it('still emits the call through the func-typed field', () => {
+    expect(calls()).toContain('CallFuncField → OnEvent');
+  });
+
+  // The original defect, on a bare-name receiver whose lookup definitely
+  // succeeds: CALLS only, and no ACCESSES duplicating it.
+  it('emits CALLS but no duplicate ACCESSES for a real method call', () => {
+    expect(calls()).toContain('RealMethodCall → DoWork');
+    // Unlabeled: the duplicate must be absent under any target kind.
+    expect(edgeSet(getRelationships(result, 'ACCESSES'))).not.toContain('RealMethodCall → DoWork');
+  });
+
+  // #2782 review finding 2: the fixture spans two packages and imports
+  // `fixture/repository`, but carried no `go.mod` — so `resolveGoImportTarget`
+  // matched NEITHER tier (tier 1 needs the module prefix; tier 2's ≥2-segment
+  // suffix rule cannot match `fixture/repository` against `repository/`) and the
+  // guard for this PR's headline fix exercised an import path no real Go repo
+  // takes. With `module fixture` the go.mod tier resolves.
+  it('resolves the cross-package import through the go.mod tier', () => {
+    const imports = getRelationships(result, 'IMPORTS');
+    expect(imports.map((e) => `${e.source} → ${e.target}`)).toContain('handler.go → repo.go');
   });
 });

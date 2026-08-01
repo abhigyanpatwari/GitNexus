@@ -69,3 +69,43 @@ type LocalHost struct {
 func (h *LocalHost) RunSamePackage() error {
 	return h.dep.Work()
 }
+
+// #2782 review: a FUNC-TYPED STRUCT FIELD is dispatched with exactly the same
+// `x.f()` syntax as a method, so a selector in callee position is NOT always a
+// phantom read. `Callbacks` is the shape of every callback struct, hook struct
+// and hand-rolled mock in real Go (`mock.DoFunc`, `opts.OnEvent`), and the field
+// read is their ONLY ACCESSES evidence — dropping callee-position reads at the
+// capture layer erased it.
+//
+// The receivers below are deliberately BARE names rather than field chains:
+// `h.x.y` reads do not resolve at all today (a separate, pre-existing compound
+// receiver gap), so a chained spelling would assert nothing either way.
+type Callbacks struct {
+	OnEvent func() error
+	Label   string
+}
+
+// The row the callee-position drop deleted. `OnEvent` is a field, so the
+// selector is a genuine read; the call goes through the value it holds.
+func CallFuncField(c *Callbacks) error {
+	return c.OnEvent()
+}
+
+// Control: a plain (non-func) field read is never in callee position.
+func ReadPlainField(c *Callbacks) string {
+	return c.Label
+}
+
+// Control: a METHOD VALUE is not in callee position either, so its read must
+// survive even though the tail resolves to a Method — the kind test alone would
+// wrongly suppress it.
+func MethodValue(i *repository.Impl) func() error {
+	f := i.DoWork
+	return f
+}
+
+// Control: the ORIGINAL defect. A real method call emits CALLS only; an ACCESSES
+// to the same method at the same position is the phantom that must stay gone.
+func RealMethodCall(i *repository.Impl) error {
+	return i.DoWork()
+}
