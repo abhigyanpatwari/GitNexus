@@ -18,6 +18,7 @@ const workflowDocument = load(workflow) as {
     string,
     {
       environment?: unknown;
+      env?: Record<string, string>;
       'timeout-minutes'?: unknown;
       steps?: Array<{
         name?: string;
@@ -45,6 +46,14 @@ describe('gitnexus skill-evolution workflow contract', () => {
     // Without --apply the overlay is never written, git status stays clean,
     // promoted=false is emitted, and the App-token/PR steps are dead code.
     expect(loop).toContain('--apply');
+  });
+
+  it('passes the cell concurrency through to the benchmark', () => {
+    // The lane is serial unless told otherwise: concurrency only pays off when
+    // the runner has the vCPUs for it, and a cell starved of CPU drifts toward
+    // its session timeout, which the gate counts as an excluded run.
+    expect(stepRun('Run the propose → benchmark → gate loop')).toContain('--workers "${WORKERS}"');
+    expect(evolveJob?.env?.WORKERS).toBe("${{ inputs.workers || '1' }}");
   });
 
   it('runs the proposer on its own model, separate from the benchmark arms', () => {

@@ -74,6 +74,11 @@ on:
         required: false
         default: '3'
         type: string
+      workers:
+        description: 'Benchmark cells of one task to run at once — raise only to match the runner’s vCPUs'
+        required: false
+        default: '1'
+        type: string
       model:
         description: 'Model for the benchmark arms (match the model your skill users run)'
         required: false
@@ -129,6 +134,11 @@ jobs:
     env:
       GENERATIONS: ${{ inputs.generations || '1' }}
       RUNS: ${{ inputs.runs || '3' }}
+      # Serial by default. A cell that loses CPU to its siblings takes longer,
+      # and a session that reaches its timeout is an excluded run the promotion
+      # gate refuses to work with — so this only goes up when the runner has the
+      # vCPUs to back it (the box is sized for one cell at a time today).
+      WORKERS: ${{ inputs.workers || '1' }}
       MODEL: ${{ inputs.model || 'claude-sonnet-5' }}
       PROPOSER_MODEL: ${{ inputs.proposer_model || 'claude-opus-4-8' }}
       INCLUDE_EXPENSIVE: ${{ inputs.include_expensive && '1' || '' }}
@@ -303,6 +313,7 @@ jobs:
             --proposer-model "${PROPOSER_MODEL}" \
             --generations "${GENERATIONS}" \
             --runs "${RUNS}" \
+            --workers "${WORKERS}" \
             --claude-bin "${RUNNER_TEMP}/claude-canary/node_modules/@anthropic-ai/claude-code-linux-x64/claude" \
             --out-root "${OUT_ROOT}" \
             --apply \

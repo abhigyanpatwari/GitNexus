@@ -620,6 +620,8 @@ def runner_argv(
         str(args.tasks),
         "--runs",
         str(args.runs),
+        "--workers",
+        str(args.workers),
         "--model",
         args.model,
         "--claude-bin",
@@ -792,6 +794,13 @@ def build_parser() -> argparse.ArgumentParser:
         "quality matters more than cost here, so a stronger model is fine",
     )
     parser.add_argument("--runs", type=int, default=3, help="per arm per task; the gate needs ≥3")
+    parser.add_argument(
+        "--workers",
+        type=int,
+        default=1,
+        help="benchmark cells of one task to run at once (default 1, fully "
+        "serial); size it to the machine — see workflow_bench.runner --workers",
+    )
     parser.add_argument("--generations", type=int, default=1)
     parser.add_argument(
         "--arms",
@@ -857,6 +866,8 @@ def main() -> int:
         parser.error("--generations must be positive")
     if args.runs < 1 or args.timeout < 1:
         parser.error("--runs and --timeout must be positive")
+    if args.workers < 1:
+        parser.error("--workers must be positive")
     try:
         args.model = runner.normalized_model_identifier(args.model)
         args.proposer_model = runner.normalized_model_identifier(
