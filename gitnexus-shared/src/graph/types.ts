@@ -153,6 +153,12 @@ export type RelationshipType =
    *  semantics belong in `reason` so the relationship can be reused by other
    *  metadata-driven systems. */
   | 'DECLARES'
+  /** Framework advice relationship. Source = the class-like/Method whose behavior
+   *  is intercepted; target = either the concrete advice Method or a synthetic
+   *  CodeElement describing a declarative interceptor (transaction, cache, or
+   *  method security). Runtime activation remains explicitly unknown in the
+   *  relationship reason; this edge records statically visible advice only. */
+  | 'ADVISED_BY'
   /** Vue component event system: a handler function in a parent component is
    *  bound to an event emitted by a child component (`@event="handlerFn"`).
    *  Source = handler Function/Method node in the parent.

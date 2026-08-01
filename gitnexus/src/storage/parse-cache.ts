@@ -146,7 +146,10 @@ import type { ParseWorkerResult } from '../core/ingestion/workers/parse-worker.j
 // v36: bound-callable graph `startLine` follows the initializer so multi-line
 // closure bindings join the scope channel (#2735). Warm cache would otherwise
 // keep serving wrapper-line startLines and drop the CALLS edge.
-const SCHEMA_BUMP = 36;
+// v37: Java/Kotlin capture side-channels include Spring AOP owner/advice facts
+// (#2416). Warm cache entries at v36 do not carry those facts and would silently
+// omit ADVISED_BY evidence.
+const SCHEMA_BUMP = 37;
 const GITNEXUS_PKG_VERSION = (() => {
   try {
     // package.json sits at gitnexus/package.json — two levels up from

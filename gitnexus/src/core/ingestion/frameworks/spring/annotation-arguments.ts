@@ -6,7 +6,7 @@ export interface SpringAnnotationArgument {
 function splitTopLevel(value: string, separator: string): string[] | null {
   const parts: string[] = [];
   const stack: string[] = [];
-  let quote: '"' | "'" | null = null;
+  let quote: '"' | "'" | '"""' | null = null;
   let escaped = false;
   let start = 0;
 
@@ -22,10 +22,22 @@ function splitTopLevel(value: string, separator: string): string[] | null {
 
   for (let index = 0; index < value.length; index++) {
     const char = value[index];
+    if (quote === '"""') {
+      if (value.startsWith('"""', index)) {
+        quote = null;
+        index += 2;
+      }
+      continue;
+    }
     if (quote !== null) {
       if (escaped) escaped = false;
       else if (char === '\\') escaped = true;
       else if (char === quote) quote = null;
+      continue;
+    }
+    if (value.startsWith('"""', index)) {
+      quote = '"""';
+      index += 2;
       continue;
     }
     if (char === '"' || char === "'") {
@@ -53,7 +65,7 @@ function splitTopLevel(value: string, separator: string): string[] | null {
 
 function topLevelAssignment(argument: string): number {
   const stack: string[] = [];
-  let quote: '"' | "'" | null = null;
+  let quote: '"' | "'" | '"""' | null = null;
   let escaped = false;
   // Keep the same deliberate generic-delimiter policy as splitTopLevel.
   const closing = new Map([
@@ -65,10 +77,22 @@ function topLevelAssignment(argument: string): number {
 
   for (let index = 0; index < argument.length; index++) {
     const char = argument[index];
+    if (quote === '"""') {
+      if (argument.startsWith('"""', index)) {
+        quote = null;
+        index += 2;
+      }
+      continue;
+    }
     if (quote !== null) {
       if (escaped) escaped = false;
       else if (char === '\\') escaped = true;
       else if (char === quote) quote = null;
+      continue;
+    }
+    if (argument.startsWith('"""', index)) {
+      quote = '"""';
+      index += 2;
       continue;
     }
     if (char === '"' || char === "'") {
@@ -119,6 +143,12 @@ export function parseSpringAnnotationArguments(
 
 export function parseStaticStringLiteral(value: string): string | null {
   const trimmed = value.trim();
+  if (trimmed.startsWith('"""')) {
+    if (trimmed.length < 6 || !trimmed.endsWith('"""')) return null;
+    const raw = trimmed.slice(3, -3);
+    if (raw.includes('"""') || /\$(?:\{|[A-Za-z_])/.test(raw)) return null;
+    return raw;
+  }
   const match = /^"((?:\\.|[^"\\])*)"$/s.exec(trimmed);
   if (match === null) return null;
   if (/(^|[^\\])\$(?:\{|[A-Za-z_])/.test(match[1])) return null;

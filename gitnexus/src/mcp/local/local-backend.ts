@@ -19,6 +19,7 @@ import {
   dbIdentityChanged,
 } from '../../core/lbug/pool-adapter.js';
 import { queryClassBeanMetadata } from './bean-metadata.js';
+import { querySpringAopMetadata } from './aop-metadata.js';
 import { isValidQueryParams } from '../../core/lbug/query-params.js';
 import { toDisplayLine } from './line-display.js';
 import { isWalCorruptionError, WAL_RECOVERY_SUGGESTION } from '../../core/lbug/lbug-config.js';
@@ -310,6 +311,10 @@ export const VALID_RELATION_TYPES = new Set([
   // surface.
   'CONDITIONAL_ON',
   'DECLARES',
+  // Spring proxy/advice evidence (#2416). Opt-in for traversal so existing
+  // impact defaults do not silently widen; target enrichment still surfaces
+  // advised/proxied state on ordinary impact calls.
+  'ADVISED_BY',
 ]);
 
 /**
@@ -3365,16 +3370,31 @@ export class LocalBackend {
     const symId = sym.id;
 
     // Categorized incoming refs
-    const incomingRows = await executeParameterized(
-      repo.lbugPath,
-      `
+    const [incomingRows, incomingAdvisedRows] = await Promise.all([
+      executeParameterized(
+        repo.lbugPath,
+        `
       MATCH (caller)-[r:CodeRelation]->(n {id: $symId})
       WHERE r.type IN ['CALLS', 'IMPORTS', 'EXTENDS', 'IMPLEMENTS', 'USES', 'HAS_METHOD', 'HAS_PROPERTY', 'METHOD_OVERRIDES', 'OVERRIDES', 'METHOD_IMPLEMENTS', 'ACCESSES']
       RETURN r.type AS relType, caller.id AS uid, caller.name AS name, caller.filePath AS filePath, labels(caller)[0] AS kind
       LIMIT 30
     `,
-      { symId },
-    );
+        { symId },
+      ),
+      // Keep high-fan-in advice edges out of the legacy 30-row context window.
+      // A broad pointcut can advise hundreds of methods; sharing that LIMIT
+      // would make CALLS/HAS_METHOD/etc. disappear nondeterministically.
+      executeParameterized(
+        repo.lbugPath,
+        `
+      MATCH (caller)-[r:CodeRelation {type: 'ADVISED_BY'}]->(n {id: $symId})
+      RETURN r.type AS relType, caller.id AS uid, caller.name AS name, caller.filePath AS filePath, labels(caller)[0] AS kind
+      LIMIT 30
+    `,
+        { symId },
+      ),
+    ]);
+    incomingRows.push(...incomingAdvisedRows);
     let typedPropertyRows: any[] = [];
 
     // Fix #480: Class/Interface nodes have no direct CALLS/IMPORTS edges —
@@ -3493,16 +3513,28 @@ export class LocalBackend {
     }
 
     // Categorized outgoing refs
-    const outgoingRows = await executeParameterized(
-      repo.lbugPath,
-      `
+    const [outgoingRows, outgoingAdvisedRows] = await Promise.all([
+      executeParameterized(
+        repo.lbugPath,
+        `
       MATCH (n {id: $symId})-[r:CodeRelation]->(target)
       WHERE r.type IN ['CALLS', 'IMPORTS', 'EXTENDS', 'IMPLEMENTS', 'USES', 'HAS_METHOD', 'HAS_PROPERTY', 'METHOD_OVERRIDES', 'OVERRIDES', 'METHOD_IMPLEMENTS', 'ACCESSES']
       RETURN r.type AS relType, target.id AS uid, target.name AS name, target.filePath AS filePath, labels(target)[0] AS kind
       LIMIT 30
     `,
-      { symId },
-    );
+        { symId },
+      ),
+      executeParameterized(
+        repo.lbugPath,
+        `
+      MATCH (n {id: $symId})-[r:CodeRelation {type: 'ADVISED_BY'}]->(target)
+      RETURN r.type AS relType, target.id AS uid, target.name AS name, target.filePath AS filePath, labels(target)[0] AS kind
+      LIMIT 30
+    `,
+        { symId },
+      ),
+    ]);
+    outgoingRows.push(...outgoingAdvisedRows);
 
     // Process participation
     let processRows: any[] = [];
@@ -3564,6 +3596,7 @@ export class LocalBackend {
       (sym.name || sym[1]) as string,
     );
     const beanMetadataPromise = queryClassBeanMetadata(repo.lbugPath, symId, epistemicSymType);
+    const aopMetadataPromise = querySpringAopMetadata(repo.lbugPath, symId, epistemicSymType);
 
     let methodMetadata: Record<string, unknown> | undefined;
     if (isMethodLike) {
@@ -3602,7 +3635,11 @@ export class LocalBackend {
     // dynamic dispatch are not reflected in `incoming`, so the view is a lower
     // bound. Additive; never suppresses a field. Resolved from the probe started
     // above (concurrent with methodMetadata).
-    const [epistemic, beanMetadata] = await Promise.all([epistemicPromise, beanMetadataPromise]);
+    const [epistemic, beanMetadata, aopMetadata] = await Promise.all([
+      epistemicPromise,
+      beanMetadataPromise,
+      aopMetadataPromise,
+    ]);
 
     return {
       status: 'found',
@@ -3616,6 +3653,7 @@ export class LocalBackend {
         ...(include_content && (sym.content || sym[6]) ? { content: sym.content || sym[6] } : {}),
         ...(methodMetadata ? { methodMetadata } : {}),
         ...(beanMetadata ? { bean: beanMetadata } : {}),
+        ...(aopMetadata ? { aop: aopMetadata } : {}),
       },
       ...epistemic,
       incoming: categorize(incomingRows),
@@ -5906,7 +5944,10 @@ export class LocalBackend {
       opts.skipEpistemic || summaryOnly
         ? Promise.resolve(undefined)
         : queryClassBeanMetadata(repo.lbugPath, symId, symType);
-
+    const aopMetadataPromise =
+      opts.skipEpistemic || summaryOnly
+        ? Promise.resolve(undefined)
+        : querySpringAopMetadata(repo.lbugPath, symId, symType);
     const impacted: any[] = [];
     const visited = new Set<string>([symId]);
     const pdgBridgeEvidenceById = new Map<string, PdgBridgeEvidenceInfo>();
@@ -6388,7 +6429,11 @@ export class LocalBackend {
 
     // #1858 — await the epistemic boundary probe kicked off alongside the BFS
     // above. Additive: leaves impactedCount and every existing field untouched.
-    const [epistemic, beanMetadata] = await Promise.all([epistemicPromise, beanMetadataPromise]);
+    const [epistemic, beanMetadata, aopMetadata] = await Promise.all([
+      epistemicPromise,
+      beanMetadataPromise,
+      aopMetadataPromise,
+    ]);
 
     const base = {
       target: {
@@ -6397,6 +6442,7 @@ export class LocalBackend {
         type: symType,
         filePath: sym.filePath || sym[2],
         ...(beanMetadata ? { bean: beanMetadata } : {}),
+        ...(aopMetadata ? { aop: aopMetadata } : {}),
       },
       direction,
       impactedCount: impacted.length,
