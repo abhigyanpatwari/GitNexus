@@ -25,11 +25,23 @@
  * pass. Every assertion here is therefore on the EDGE, whose source and target
  * are produced by the two different phases: it can only pass if both agree.
  */
+import {
+  buildDefIndex,
+  buildScopeTree,
+  type Reference,
+  type Scope,
+  type ScopeId,
+  type SymbolDefinition,
+} from 'gitnexus-shared';
 import { describe, expect, it, vi } from 'vitest';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
+import { createKnowledgeGraph } from '../../src/core/graph/graph.js';
+import type { ScopeResolutionIndexes } from '../../src/core/ingestion/model/scope-resolution-indexes.js';
 import { runPipelineFromRepo } from '../../src/core/ingestion/pipeline.js';
+import { buildGraphNodeLookup } from '../../src/core/ingestion/scope-resolution/graph-bridge/node-lookup.js';
+import { emitReferencesViaLookup } from '../../src/core/ingestion/scope-resolution/graph-bridge/references-to-edges.js';
 import { DIST_WORKER_URL, distWorkerExists } from '../helpers/worker-parse.js';
 
 vi.setConfig({ testTimeout: 90_000 });
@@ -278,6 +290,168 @@ describeIfWorkerBuilt('a function-local callable does not collide with a file-le
     expect(calls).toEqual([
       'Function:t.ts:top -> Function:t.ts:helper',
       'Method:t.ts:T.m#0 -> Function:t.ts:helper',
+    ]);
+  });
+});
+
+/** Node ids for `name`, with local value symbols kept so the pruner can't hide them. */
+const valueNodeIdsFor = async (
+  filename: string,
+  source: string,
+  name: string,
+): Promise<string[]> => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'gn-local-value-identity-'));
+  try {
+    fs.writeFileSync(path.join(dir, filename), source, 'utf-8');
+    const result = await runPipelineFromRepo(dir, () => {}, {
+      workerPoolSize: 1,
+      workerUrlForTest: DIST_WORKER_URL,
+      // `pruneLocalSymbols` deletes ~94% of inert function-local value symbols,
+      // which would make the collapse below invisible rather than absent.
+      keepLocalValueSymbols: true,
+    });
+    return result.graph.nodes
+      .filter((node) => node.properties.name === name)
+      .map((node) => node.id)
+      .sort();
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+};
+
+describeIfWorkerBuilt('function-local VALUES carry their own identity (#2699 A1)', () => {
+  it('a function-local VALUE does not collapse onto the file-level node', async () => {
+    // FLIPPED, per this test's own former instruction. It previously pinned the
+    // collapse as a KNOWN LIMIT: #2695 gave function-local CALLABLES a
+    // position-bearing id and deliberately excluded VALUES, so a top-level
+    // `const handler` and a function-local `const handler` shared ONE node.
+    // That was the residual half of #2699's ORIGINAL complaint — the issue is
+    // about values first, and no callable-only gate could ever reach it.
+    //
+    // Widened here via `isPositionQualifiedLocalLabel`, the single definition
+    // shared by all THREE phases that must agree: id-building
+    // (`parse-worker.ts`), resolution (`ids.ts` position key) and registration
+    // (`node-lookup.ts`). Two of them disagreeing does not fail loudly — the
+    // caller attaches to a node that does not exist and the edge is silently
+    // dropped, which is the #2714 failure mode.
+    //
+    // The churn this was deferred for is real and was accepted deliberately:
+    // it re-keys ~14,700 build-time nodes to change ~800 persisted ones,
+    // because `pruneLocalSymbols` deletes most locals. Hence the paired
+    // INCREMENTAL_SCHEMA_VERSION / parse-cache SCHEMA_BUMP bumps — without them
+    // a warm cache or an incremental top-up replays the old un-suffixed ids.
+    //
+    // Only LOCALS move. The prefix comes from `enclosingCallablePrefix`, which
+    // returns undefined when nothing encloses the declaration, so the
+    // file-level `handler` below keeps its bare id — that is what keeps this
+    // off the symbols other files and stored references address.
+    const ids = await valueNodeIdsFor(
+      'v.ts',
+      [
+        "export const handler = 'top-level value';",
+        '',
+        'export function run(): string {',
+        "  const handler = 'function-local value';",
+        '  return handler;',
+        '}',
+        '',
+      ].join('\n'),
+      'handler',
+    );
+
+    // Two distinct nodes: the file-level one keeps its bare id, the local
+    // carries its enclosing callable AND declaration position.
+    expect(ids).toEqual(['Const:v.ts:handler', 'Const:v.ts:run.handler@3:2']);
+  });
+});
+
+describe('function-local value identity resolves through to emitted edges (#2736)', () => {
+  it('targets the position-qualified local rather than its file-level twin', () => {
+    const filePath = 'v.ts';
+    const caller: SymbolDefinition = {
+      nodeId: 'def:v.ts#3:0:Function:run',
+      filePath,
+      type: 'Function',
+      qualifiedName: 'run',
+    };
+    const topLevel: SymbolDefinition = {
+      nodeId: 'def:v.ts#1:0:Const:handler',
+      filePath,
+      type: 'Const',
+      qualifiedName: 'handler',
+    };
+    const local: SymbolDefinition = {
+      nodeId: 'def:v.ts#4:2:Const:run.handler',
+      filePath,
+      type: 'Const',
+      qualifiedName: 'run.handler',
+    };
+    const moduleScope: Scope = {
+      id: 'scope:v.ts#1:0-100:0:Module',
+      parent: null,
+      kind: 'Module',
+      range: { startLine: 1, startCol: 0, endLine: 100, endCol: 0 },
+      filePath,
+      bindings: new Map(),
+      ownedDefs: [caller, topLevel],
+      imports: [],
+      typeBindings: new Map(),
+    };
+    const functionScope: Scope = {
+      id: 'scope:v.ts#3:0-6:1:Function',
+      parent: moduleScope.id,
+      kind: 'Function',
+      range: { startLine: 3, startCol: 0, endLine: 6, endCol: 1 },
+      filePath,
+      bindings: new Map(),
+      ownedDefs: [local],
+      imports: [],
+      typeBindings: new Map(),
+    };
+    const indexes = {
+      scopeTree: buildScopeTree([moduleScope, functionScope]),
+      defs: buildDefIndex([caller, topLevel, local]),
+    } as unknown as ScopeResolutionIndexes;
+
+    const graph = createKnowledgeGraph();
+    graph.addNode({
+      id: 'Function:v.ts:run',
+      label: 'Function',
+      properties: { name: 'run', qualifiedName: 'run', filePath, startLine: 2 },
+    });
+    graph.addNode({
+      id: 'Const:v.ts:handler',
+      label: 'Const',
+      properties: { name: 'handler', qualifiedName: 'handler', filePath, startLine: 0 },
+    });
+    graph.addNode({
+      id: 'Const:v.ts:run.handler@3:2',
+      label: 'Const',
+      properties: { name: 'handler', qualifiedName: 'run.handler', filePath, startLine: 3 },
+    });
+
+    const reference: Reference = {
+      fromScope: functionScope.id,
+      toDef: local.nodeId,
+      atRange: { startLine: 5, startCol: 9, endLine: 5, endCol: 16 },
+      kind: 'read',
+      confidence: 1,
+      evidence: [],
+    };
+    const emitted = emitReferencesViaLookup(
+      graph,
+      indexes,
+      { bySourceScope: new Map<ScopeId, readonly Reference[]>([[functionScope.id, [reference]]]) },
+      buildGraphNodeLookup(graph),
+    );
+
+    expect(emitted).toEqual({ emitted: 1, skipped: 0 });
+    expect(graph.relationships).toEqual([
+      expect.objectContaining({
+        sourceId: 'Function:v.ts:run',
+        targetId: 'Const:v.ts:run.handler@3:2',
+        type: 'ACCESSES',
+      }),
     ]);
   });
 });

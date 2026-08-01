@@ -152,6 +152,67 @@ export const JAVASCRIPT_SCOPE_QUERY = `
     name: (identifier) @declaration.name
     value: (function_expression) @declaration.function))
 
+;; CJS property-assignment exports (#2723): \`exports.foo = function () {}\`,
+;; \`module.exports.foo = (a) => a\`. The graph node for these comes from
+;; TYPESCRIPT/JAVASCRIPT_QUERIES; this block is the other half — without a
+;; scope-resolution declaration the node exists but nothing resolves TO it,
+;; so \`impact\` answered "found, zero callers" on a whole CommonJS API.
+;;
+;; The declaration binds the BARE property name into the enclosing (module)
+;; scope, which is what importers see: \`const { foo } = require('./m')\`
+;; matches by name, and a namespace \`m.foo()\` walks the module's defs.
+;;
+;; Same anchor discipline as the blocks above — \`@declaration.function\` sits
+;; on the INNER arrow / function_expression so its range matches the
+;; \`@scope.function\` range.
+;; The three right-hand-side forms share one pattern via an inner LEAF
+;; alternation. tree-sitter 0.21.1 has a known hazard where a top-level
+;; \`[...]\` alternation makes sibling branches share one predicate bucket and
+;; silently drops matches; an inner leaf alternation whose predicates all sit
+;; on captures OUTSIDE it (here \`@_cjs.exports\` / \`@_cjs.module\`, both on the
+;; left-hand side and bound in every branch) is the safe form. Verified by
+;; probing all six receiver × RHS combinations, not by reading.
+;;
+;; \`(generator_function) @scope.function\` is declared near the top of this
+;; query, so the anchor aligns for that branch too.
+(assignment_expression
+  left: (member_expression
+    object: (identifier) @_cjs.receiver
+    property: (property_identifier) @declaration.name)
+  right: [
+    (arrow_function)
+    (function_expression)
+    (generator_function)
+  ] @declaration.function)
+
+;; \`this.X = fn\` at MODULE level of a CommonJS file — there \`this\` IS
+;; \`module.exports\`, so this declares an export. Pruned emit-side for ESM
+;; files (where top-level \`this\` is undefined) and for a \`this\` inside a
+;; function, which is an instance member rather than an export.
+(assignment_expression
+  left: (member_expression
+    object: (this)
+    property: (property_identifier) @declaration.name)
+  right: [
+    (arrow_function)
+    (function_expression)
+    (generator_function)
+  ] @declaration.function)
+
+(assignment_expression
+  left: (member_expression
+    object: (member_expression
+      object: (identifier) @_cjs.module
+      property: (property_identifier) @_cjs.exports)
+    property: (property_identifier) @declaration.name)
+  right: [
+    (arrow_function)
+    (function_expression)
+    (generator_function)
+  ] @declaration.function
+  (#eq? @_cjs.module "module")
+  (#eq? @_cjs.exports "exports"))
+
 ;; Object-property arrows / function expressions named by their pair key.
 ;; Same anchor discipline as the lexical_declaration block above: the
 ;; @declaration.function capture must sit on the INNER arrow/fn-expression.

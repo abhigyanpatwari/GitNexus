@@ -285,6 +285,7 @@ import { LanguageProvider } from '../../language-provider.js';
 import { ScopeResolutionIndexes } from '../../model/scope-resolution-indexes.js';
 import type { SemanticModel } from '../../model/semantic-model.js';
 import type { ConversionRankFn } from '../passes/overload-narrowing.js';
+import type { WorkspaceResolutionIndex } from '../workspace-index.js';
 
 /** A LinearizeStrategy receives the full ancestor map so C3-style
  *  algorithms (which need to merge each parent's MRO) can implement
@@ -359,6 +360,17 @@ export interface ScopeResolver {
     resolutionConfig?: unknown,
     context?: ImportResolutionContext,
   ): string | readonly string[] | null;
+
+  /**
+   * Optionally reclassify an import as a namespace handle after target
+   * resolution proves the imported name is itself a module. Returning false
+   * retains ordinary named-binding behavior.
+   */
+  readonly isNamespaceImport?: (
+    parsedImport: ParsedImport,
+    targetFile: string,
+    fromFile: string,
+  ) => boolean;
 
   /**
    * Enumerate names visible through a wildcard import after the target
@@ -762,6 +774,58 @@ export interface ScopeResolver {
   readonly constructorCallTargetsClass?: boolean;
 
   /**
+   * How this language spells a construction expression, so the compound
+   * receiver resolver can type an INLINE constructor receiver — the
+   * `Service(db).do_work()` shape, where the receiver is the constructed
+   * value itself rather than a binding that holds it (#2708).
+   *
+   * The rule is the same in every language ("constructing a class yields
+   * an instance of that class"); only the surface syntax differs, so the
+   * syntax is declared here and the rule lives once in
+   * `resolveCompoundReceiverClass`:
+   *
+   *   - `bare: true`      — `Service(db).m()`     (Python)
+   *   - `keyword: 'new'`  — `new Service(db).m()` (JS/TS, C#)
+   *   - `selector: 'new'` — `Service.new.m()`     (Ruby)
+   *
+   * Java is deliberately NOT wired even though it spells construction with
+   * `new`: its capture layer already rewrites an `object_creation_expression`
+   * receiver to the constructed type's simple name (#2564), so the raw
+   * `new Svc()` text never reaches this resolver and the declaration would be
+   * unreachable. Measured both ways — Java resolves the shape identically with
+   * and without it.
+   *
+   * Opting in is per-language ON PURPOSE rather than universal, for two
+   * reasons. Correctness: `bare` would mistype `stat(&st).field` in C,
+   * where a struct and a function may share a name and the free call is
+   * NOT a construction. Evidence: PHP, Swift, Dart and Kotlin already
+   * resolve this shape through their own capture-side paths (verified
+   * per language — the receiver typing here changed nothing for them),
+   * so they stay unwired rather than carrying a redundant declaration.
+   *
+   * Only affects receiver TYPING. Which node a construction call links
+   * to is a separate question, owned by `constructorCallTargetsClass`.
+   * Path-syntax constructors (Rust `Foo::new(x)`) are not covered — they
+   * are not member calls and never reach this resolver.
+   */
+  readonly constructionSyntax?: {
+    /** A free call naming a class constructs it: `Service(db)`. */
+    readonly bare?: boolean;
+    /** Prefix keyword form: `new Service(db)`. */
+    readonly keyword?: string;
+    /** Member-selector form on the class itself: `Service.new(db)`.
+     *  Applies only when the receiver names the CLASS — `factory.new` is an
+     *  ordinary call to a member named `new` on an instance and keeps normal
+     *  member resolution. KNOWN LIMITATION: a class that OVERRIDES the
+     *  selector at class level (Ruby `def self.new` returning some other
+     *  type) is still read as construction, because the scope model records
+     *  no staticness for a member, so `def new` and `def self.new` are
+     *  indistinguishable here. Modelling that needs per-member staticness
+     *  from the language provider first. */
+    readonly selector?: string;
+  };
+
+  /**
    * Optional per-slot conversion-rank function for overload resolution.
    * When provided, `narrowOverloadCandidates` uses ranked scoring as a
    * fallback when the exact-type filter produces no match. The function
@@ -905,6 +969,46 @@ export interface ScopeResolver {
     scopes: ScopeResolutionIndexes,
     parsedFiles: readonly ParsedFile[],
   ) => readonly SymbolDefinition[] | undefined;
+
+  /**
+   * Optional resolver for a module-qualified FREE call — a call written with
+   * an explicit path but no value receiver (Rust `tools::dispatch(...)`, where
+   * `tools` names a module, not a variable or a type).
+   *
+   * These sites are captured as free calls (`callForm === 'free'`) with the
+   * written path preserved in `site.rawQualifiedName`. Without this hook the
+   * qualifier is inert and the scope-chain walk resolves the bare tail name —
+   * which silently binds to a same-named definition in the CALLER's own file
+   * when one exists, producing a self-loop and dropping the real cross-module
+   * edge (#2730: `fn dispatch` in `sched.rs` calling `tools::dispatch`
+   * resolved to itself, so `impact` reported the central dispatcher as
+   * risk LOW with 0 affected processes).
+   *
+   * `emitFreeCallFallback` invokes this BEFORE the implicit-`this` and
+   * scope-chain lookups, so an explicit path outranks a lexical shadow.
+   * Returning `undefined` (unqualified call, unknown module, or no such
+   * member in the named module) falls through to the unchanged chain — the
+   * hook is strictly additive and never removes an edge the prior tiers
+   * would have produced.
+   *
+   * Languages whose qualified calls carry a value/type receiver (`x.foo()`,
+   * `Type::foo()`) are served by the receiver-bound-calls pass and leave
+   * this undefined.
+   */
+  readonly resolveQualifiedFreeCall?: (
+    site: {
+      readonly name: string;
+      readonly rawQualifiedName?: string;
+      /** Needed to locate the calling MODULE, not just the calling file — a
+       *  relative anchor (`super::`) is resolved against the module the call
+       *  sits in, which may be an inline `mod` block inside that file. */
+      readonly inScope: ScopeId;
+    },
+    callerParsed: ParsedFile,
+    scopes: ScopeResolutionIndexes,
+    workspaceIndex: WorkspaceResolutionIndex,
+    allFilePaths: ReadonlySet<string>,
+  ) => SymbolDefinition | undefined;
 
   /**
    * Optional resolver for qualified-receiver member calls where the

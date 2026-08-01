@@ -30,7 +30,13 @@ export interface DiInjectionMatch {
   namedSelection?: {
     name: string;
     reason: string;
+    /** Name-first frameworks may fall back to type only for implicit/default
+     * names. Explicit names remain strict. */
+    fallbackToType?: boolean;
   };
+  /** Most injection edges originate at the owning Class. Factory-method
+   * parameters preserve the Method as the semantic source. */
+  edgeSource?: 'owner-class' | 'site';
   /** Human-readable edge reason. Framework specifics (names, idioms,
    *  collection wrapper, gating annotation) live in this payload so the
    *  shared `di` phase stays framework-neutral. */
@@ -41,6 +47,13 @@ export interface DiInjectionMatch {
 export interface DiProviderMatch {
   /** Provider names and aliases that can satisfy a named injection. */
   names: readonly string[];
+  /** Optional type directly provided by a declaration node, such as a
+   * framework factory method whose node is not itself a Class. */
+  providedTypeName?: string;
+  /** Graph node that declares this provider. The shared phase excludes a
+   * provider from injection into its own declaration site without knowing the
+   * framework-specific declaration model. */
+  declaredByNodeId?: string;
   /** Present when the framework marks this as its preferred candidate. The
    *  value is appended to the emitted edge reason when it disambiguates. */
   preferenceReason?: string;

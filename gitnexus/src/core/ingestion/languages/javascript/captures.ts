@@ -39,9 +39,16 @@ import { getJsParser, getJsScopeQuery, jsCachedTreeMatchesGrammar } from './quer
 import { computeTsArityMetadata } from '../typescript/arity-metadata.js';
 import { synthesizeTsReceiverBinding } from '../typescript/receiver-binding.js';
 import { isArrayMethodCallbackArrow } from '../typescript/array-callback.js';
+import { synthesizeCjsModuleExports } from '../typescript/cjs-module-exports.js';
+import {
+  isShadowedCjsExportAssignment,
+  isUnexportedMemberAssignmentValue,
+  isUndeclarableThisMemberValue,
+} from '../typescript/cjs-export-assignment.js';
 import { getTreeSitterBufferSize } from '../../constants.js';
 import { parseSourceSafe } from '../../../tree-sitter/safe-parse.js';
 import { synthesizeCallableFlowCaptures } from '../../utils/callable-flow-captures.js';
+import { synthesizeReceiverChainCapture } from '../../utils/receiver-chain-captures.js';
 import {
   deriveDefaultExportHocName,
   isBlockedDefaultExportHoc,
@@ -881,6 +888,25 @@ export function emitJsScopeCaptures(
       if (arrowNode !== null && isBlockedDefaultExportHoc(arrowNode)) {
         continue;
       }
+      // #2723 — see the matching filter in `typescript/captures.ts`.
+      if (arrowNode !== null && isShadowedCjsExportAssignment(arrowNode, tree.rootNode)) {
+        continue;
+      }
+      // #2723 follow-up: the member-assignment rule matches ANY identifier
+      // receiver so an `exports` alias can be recognised. A receiver that is
+      // not the exports object declares nothing at module scope — drop it, or
+      // every `obj.handler = fn` would bind `handler` as a module symbol.
+      if (arrowNode !== null && isUnexportedMemberAssignmentValue(arrowNode, tree.rootNode)) {
+        continue;
+      }
+
+      // A `this.X = fn` declares a module symbol ONLY at the top level of a
+      // CommonJS file, where `this` is `module.exports`. Inside a function it
+      // is an instance member (a Method with an owner, no module binding), and
+      // in ESM top-level `this` is undefined and exports nothing.
+      if (arrowNode !== null && isUndeclarableThisMemberValue(arrowNode, tree.rootNode)) {
+        continue;
+      }
     }
 
     if (fnDeclAnchor !== undefined) {
@@ -972,6 +998,12 @@ export function emitJsScopeCaptures(
       }
     }
 
+    // Structural receiver chain for a call whose receiver is itself an
+    // expression, so resolution can type it by folding over structure
+    // instead of re-parsing the receiver's source text. Self-gating: a
+    // non-call match, an absent receiver, or a chain with no nameable base
+    // all leave `grouped` untouched.
+    synthesizeReceiverChainCapture(grouped, groupedNodes['@reference.receiver']);
     out.push(grouped);
 
     // Synthesize `this` receiver type-bindings on class member functions.
@@ -991,6 +1023,7 @@ export function emitJsScopeCaptures(
 
   // Post-query synthesis passes.
   synthesizeCjsImports(tree.rootNode, out);
+  synthesizeCjsModuleExports(tree.rootNode, filePath, out);
   synthesizeJsDocBindings(tree.rootNode, out);
   synthesizeConstructorFieldBindings(tree.rootNode, out);
   synthesizeDestructuringBindings(tree.rootNode, out);

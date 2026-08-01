@@ -466,9 +466,9 @@ export const createIgnoreFilter = async (repoPath: string, options?: IgnoreOptio
 
   return {
     ignored(p: Path): boolean {
-      // path-scurry's Path.relative() returns POSIX paths on all platforms,
-      // which is what the `ignore` package expects. No explicit normalization needed.
-      const rel = p.relative();
+      // The `ignore` package expects POSIX separators; path-scurry can surface
+      // native separators on Windows when called through glob.
+      const rel = p.relative().replace(/\\/g, '/');
       if (!rel) return false;
       // User's .gitnexusignore negation takes precedence over hardcoded
       // rules (#771). If any ancestor or the path itself was explicitly
@@ -488,7 +488,7 @@ export const createIgnoreFilter = async (repoPath: string, options?: IgnoreOptio
       // glob's `dot: false` option in filesystem-walker.ts. The hardcoded
       // list check below is defense-in-depth — do not remove `dot: false`
       // assuming this covers it.
-      const rel = p.relative();
+      const rel = p.relative().replace(/\\/g, '/');
       // User's .gitnexusignore negation takes precedence (#771) — if the
       // user explicitly unignored this directory or any ancestor via a
       // !pattern rule, allow descent even if the directory name is in

@@ -127,6 +127,29 @@ describe('GraphEmitSink routing', () => {
     expect(manifest).toMatchObject({ totalRows: 0 });
     expect(real.relationshipCount).toBe(0);
   });
+
+  it('throws rather than silently dropping an undeclared endpoint-label pair (#2769)', () => {
+    // Before #2769's fix, this pair reached COPY, failed the bulk insert, and
+    // the per-edge fallback swallowed the failure into `catch {}` — the run
+    // still exited 0 with the edge silently missing. Both endpoints are valid
+    // node tables (so the validTables gate above does not catch it); the pair
+    // itself is simply absent from RELATION_SCHEMA.
+    const real = createKnowledgeGraph();
+    const sink = new GraphEmitSink(real, csvDir);
+    sink.beginStreaming();
+
+    const undeclared: GraphRelationship = {
+      id: 'CALLS:Static:a->Static:b',
+      sourceId: 'Static:src/a.ts:A',
+      targetId: 'Static:src/a.ts:B',
+      type: 'CALLS',
+      confidence: 1,
+      reason: 'direct',
+    };
+    expect(() => sink.addRelationship(undeclared)).toThrow(
+      /Relationship label pair Static→Static is not declared/,
+    );
+  });
 });
 
 describe('GraphEmitSink arming', () => {

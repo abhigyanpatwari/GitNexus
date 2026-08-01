@@ -2559,3 +2559,450 @@ describe('Rust import-disambiguated duplicate resolution (#2514 follow-up)', () 
     });
   });
 });
+
+// ---------------------------------------------------------------------------
+// #2730 — a module-qualified call must not bind to a same-named local fn
+//
+// `tools::dispatch(...)` is captured as a FREE call named `dispatch`. Before
+// the fix the qualifier was discarded, so the scope-chain walk bound the bare
+// tail to the ENCLOSING same-named wrapper and emitted a self-loop — the real
+// cross-module edge never existed, and `impact` on the callee reported the
+// production caller as absent (risk LOW, 0 affected processes) while still
+// labelling itself `epistemic: "exact"`.
+// ---------------------------------------------------------------------------
+
+describe('Rust module-qualified free calls (#2730)', () => {
+  describe('flat src/ layout', () => {
+    let result: PipelineResult;
+
+    beforeAll(async () => {
+      result = await runPipelineFromRepo(
+        path.join(FIXTURES, 'rust-2730-samename-wrapper'),
+        () => {},
+      );
+    }, 60000);
+
+    it('binds tools::dispatch to tools.rs, not to the same-named wrapper (use ::{self})', () => {
+      const edges = getRelationships(result, 'CALLS').filter(
+        (c) => c.sourceFilePath === 'src/sched.rs' && c.source === 'dispatch',
+      );
+      expect(edges.length).toBe(1);
+      expect(edges[0]).toMatchObject({
+        source: 'dispatch',
+        target: 'dispatch',
+        targetFilePath: 'src/tools.rs',
+      });
+      expect(edges[0].rel.reason).toBe('import-resolved');
+    });
+
+    it('binds tools::dispatch through a bare `mod tools;` with no use binding', () => {
+      const edges = getRelationships(result, 'CALLS').filter(
+        (c) => c.sourceFilePath === 'src/main.rs' && c.source === 'dispatch',
+      );
+      expect(edges.length).toBe(1);
+      expect(edges[0]).toMatchObject({ target: 'dispatch', targetFilePath: 'src/tools.rs' });
+    });
+
+    it('binds a fully path-qualified crate::tools::dispatch to tools.rs', () => {
+      const edges = getRelationships(result, 'CALLS').filter((c) => c.source === 'crate_qualified');
+      expect(edges.length).toBe(1);
+      expect(edges[0]).toMatchObject({ target: 'dispatch', targetFilePath: 'src/tools.rs' });
+    });
+
+    it('leaves genuinely unqualified calls on the lexical scope chain', () => {
+      const edges = getRelationships(result, 'CALLS').filter((c) => c.source === 'run');
+      expect(edges.length).toBe(1);
+      expect(edges[0]).toMatchObject({ target: 'dispatch', targetFilePath: 'src/sched.rs' });
+      expect(edges[0].rel.reason).toBe('local-call');
+    });
+  });
+
+  describe('cargo workspace crates/<name>/src layout', () => {
+    let result: PipelineResult;
+
+    beforeAll(async () => {
+      result = await runPipelineFromRepo(path.join(FIXTURES, 'rust-2730-crate-layout'), () => {});
+    }, 60000);
+
+    it('resolves crate::tools through the use edge when no sibling file matches the path', () => {
+      const edges = getRelationships(result, 'CALLS').filter(
+        (c) => c.sourceFilePath === 'crates/noob/src/agent/sched.rs' && c.source === 'dispatch',
+      );
+      expect(edges.length).toBe(1);
+      expect(edges[0]).toMatchObject({
+        target: 'dispatch',
+        targetFilePath: 'crates/noob/src/tools/mod.rs',
+      });
+    });
+
+    it('keeps the unqualified sibling call local', () => {
+      const edges = getRelationships(result, 'CALLS').filter((c) => c.source === 'execute');
+      expect(edges.length).toBe(1);
+      expect(edges[0].targetFilePath).toBe('crates/noob/src/agent/sched.rs');
+    });
+  });
+});
+
+// ---------------------------------------------------------------------------
+// #2730 — path resolution over the module tree (rustc semantics)
+//
+// The leading segments of a path name MODULES, resolved in the type namespace,
+// so a same-named `fn` (value namespace) can never shadow them. `crate::`,
+// `self::` and `super::` are prefix transforms on the calling module, and the
+// final segment is a member of the resolved module — including members it only
+// re-exports.
+// ---------------------------------------------------------------------------
+
+describe('Rust qualified paths resolve against the module tree (#2730)', () => {
+  let result: PipelineResult;
+
+  beforeAll(async () => {
+    result = await runPipelineFromRepo(path.join(FIXTURES, 'rust-2730-gaps'), () => {});
+  }, 60000);
+
+  it('resolves a multi-segment path a::b::dispatch() past a same-named local fn', () => {
+    const edges = getRelationships(result, 'CALLS').filter((c) => c.source === 'nested');
+    expect(edges.length).toBe(1);
+    expect(edges[0]).toMatchObject({ target: 'dispatch', targetFilePath: 'src/a/b.rs' });
+  });
+
+  it('resolves super::dispatch() to the parent module, not the caller file', () => {
+    const edges = getRelationships(result, 'CALLS').filter((c) => c.source === 'go');
+    expect(edges.length).toBe(1);
+    expect(edges[0]).toMatchObject({ target: 'dispatch', targetFilePath: 'src/a/mod.rs' });
+  });
+
+  it('ignores a function-local fn of the same name in the target module (H3)', () => {
+    const edges = getRelationships(result, 'CALLS').filter((c) => c.source === 'via_reexport');
+    expect(edges.length).toBe(1);
+    expect(edges[0]).toMatchObject({ target: 'dispatch', targetFilePath: 'src/tools.rs' });
+  });
+
+  it('follows a `pub use` re-export through to the original definition', () => {
+    const edges = getRelationships(result, 'CALLS').filter((c) => c.source === 'via_reexport');
+    expect(edges.length).toBe(1);
+    expect(edges[0]).toMatchObject({ target: 'dispatch', targetFilePath: 'src/tools.rs' });
+  });
+
+  it('does not bind a leading :: path into the local module of the same name', () => {
+    // `::tools::dispatch()` names an EXTERN crate. GitNexus does not model extern
+    // crates, so the qualified tier must refuse; whatever the unchanged lexical
+    // tier then does is out of scope here. What must NOT happen is this binding
+    // to the local `tools` module as though the `::` were absent.
+    const edges = getRelationships(result, 'CALLS').filter((c) => c.source === 'via_extern');
+    expect(edges.filter((c) => c.targetFilePath === 'src/tools.rs')).toEqual([]);
+  });
+
+  it('does not treat a private `use` as a re-export', () => {
+    const edges = getRelationships(result, 'CALLS').filter((c) => c.source === 'via_private');
+    expect(edges).toEqual([]);
+  });
+
+  it('keeps every qualified target distinct from the crate-root fn of the same name', () => {
+    const targets = getRelationships(result, 'CALLS')
+      .filter((c) => ['nested', 'go', 'via_reexport'].includes(c.source))
+      .map((c) => c.targetFilePath)
+      .sort();
+    expect(targets).toEqual(['src/a/b.rs', 'src/a/mod.rs', 'src/tools.rs']);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// #2730 review H1 — module identity carries the crate.
+//
+// A cargo workspace routinely gives several members the same internal module
+// name. With identity by path segments alone, `crates/alpha/src/tools.rs` and
+// `crates/beta/src/tools.rs` were the SAME module: where only one defined the
+// member the call bound across crates, and where both did the lookup tied and
+// refused — handing the site back to the lexical walk that reinstates the very
+// self-loop #2730 is about. Rust has no implicit cross-crate paths, so two
+// modules in different crates are never the same module.
+// ---------------------------------------------------------------------------
+
+describe('Rust qualified calls stay inside their own crate (#2730 review H1)', () => {
+  let result: PipelineResult;
+
+  beforeAll(async () => {
+    result = await runPipelineFromRepo(path.join(FIXTURES, 'rust-2730-workspace-crates'), () => {});
+  }, 60000);
+
+  it('binds alpha::sched::dispatch to alpha tools, not beta', () => {
+    const edges = getRelationships(result, 'CALLS').filter(
+      (c) => c.sourceFilePath === 'crates/alpha/src/sched.rs' && c.source === 'dispatch',
+    );
+    expect(edges.length).toBe(1);
+    expect(edges[0]).toMatchObject({
+      target: 'dispatch',
+      targetFilePath: 'crates/alpha/src/tools.rs',
+    });
+  });
+
+  it('binds beta::sched::dispatch to beta tools, not alpha', () => {
+    const edges = getRelationships(result, 'CALLS').filter(
+      (c) => c.sourceFilePath === 'crates/beta/src/sched.rs' && c.source === 'dispatch',
+    );
+    expect(edges.length).toBe(1);
+    expect(edges[0]).toMatchObject({
+      target: 'dispatch',
+      targetFilePath: 'crates/beta/src/tools.rs',
+    });
+  });
+
+  it('emits no self-loop in either crate', () => {
+    const selfLoops = getRelationships(result, 'CALLS').filter(
+      (c) =>
+        c.source === 'dispatch' && c.target === 'dispatch' && c.sourceFilePath === c.targetFilePath,
+    );
+    expect(selfLoops).toEqual([]);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// #2730 review H2 — a `use` binding must name a MODULE, not a type.
+//
+// Import resolution deliberately strips a trailing symbol segment when probing
+// for a file, so `use crate::client::ClientBuilder;` also resolves to
+// `client/mod.rs`. Taking that at face value made the imported TYPE look like
+// the module `client`, and `ClientBuilder::new()` bound to an unrelated
+// module-level `new` instead of the associated function.
+// ---------------------------------------------------------------------------
+
+describe('Rust type-qualified calls are not treated as module paths (#2730 review H2)', () => {
+  let result: PipelineResult;
+
+  beforeAll(async () => {
+    result = await runPipelineFromRepo(path.join(FIXTURES, 'rust-2730-type-qualified'), () => {});
+  }, 60000);
+
+  it('does not bind ClientBuilder::new() to the module-level new', () => {
+    const edges = getRelationships(result, 'CALLS').filter(
+      (c) => c.source === 'build' && c.target === 'new',
+    );
+    const moduleLevel = edges.filter((c) => c.targetLabel === 'Function');
+    expect(moduleLevel).toEqual([]);
+  });
+
+  it('still resolves a genuine module qualifier', () => {
+    const edges = getRelationships(result, 'CALLS').filter((c) => c.source === 'via_module');
+    expect(edges.length).toBe(1);
+    expect(edges[0]).toMatchObject({ target: 'new', targetFilePath: 'src/client/mod.rs' });
+  });
+});
+
+// ---------------------------------------------------------------------------
+// #2742 — same-named items at different module depths are distinct nodes.
+//
+// Node identity was `<label>:<file>:<qualifiedName>` with no module path, so an
+// inline `mod inner { fn dispatch }` and a crate-root `fn dispatch` in the same
+// file collapsed onto one node, first-wins. Resolution already picked the right
+// definition; the target simply was not representable, so a correct resolution
+// still rendered as a self-loop and `impact` reported the real callee unreached.
+// ---------------------------------------------------------------------------
+
+describe('Rust items are qualified by their enclosing mod chain (#2742)', () => {
+  let result: PipelineResult;
+
+  beforeAll(async () => {
+    result = await runPipelineFromRepo(path.join(FIXTURES, 'rust-2730-gaps'), () => {});
+  }, 60000);
+
+  it('gives an inline-mod member its own node, distinct from the crate-root item', () => {
+    const ids: string[] = [];
+    result.graph.forEachNode((n) => {
+      if (n.label === 'Function' && n.properties.name === 'dispatch') ids.push(n.id);
+    });
+    expect(ids).toContain('Function:src/main.rs:inner.dispatch');
+    expect(ids).toContain('Function:src/main.rs:dispatch');
+  });
+
+  it('resolves inner::dispatch() to the inline member, not back to the caller', () => {
+    const edges = getRelationships(result, 'CALLS').filter(
+      (c) => c.sourceFilePath === 'src/main.rs' && c.source === 'dispatch',
+    );
+    expect(edges.length).toBe(1);
+    expect(edges[0].rel.targetId).toBe('Function:src/main.rs:inner.dispatch');
+  });
+
+  // Fixture-wide rather than pinned to one edge, because the #2730 symptom is a
+  // CLASS of mis-binding: any qualified call whose leading segment names an
+  // inline module can land back on the enclosing same-name item. The preceding
+  // test pins the one target we know regressed; this one fails if the same fault
+  // reappears through any other path in the fixture. `rust-2730-gaps` contains no
+  // self-recursive function, so an empty result is the correct invariant — adding
+  // one to the fixture means narrowing this filter, not deleting the test.
+  it('emits no self-loop for the inline-mod wrapper', () => {
+    const selfLoops = getRelationships(result, 'CALLS').filter(
+      (c) => c.rel.sourceId === c.rel.targetId,
+    );
+    expect(selfLoops).toEqual([]);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// #2745 review — mod-qualifying a node id must not orphan its member edges.
+//
+// The mint (parse-worker) and the owner-edge anchor (findEnclosingClassInfo) are
+// computed independently. #2742 re-keyed ids by the enclosing `mod` chain but the
+// anchor is minted from the container's BARE name and only follows a qualified
+// shape when the provider sets `classExtractor.qualifiedNodeId`, which Rust does
+// not. Every `struct` / `trait` / `enum` / `impl` inside a `mod` therefore had a
+// node id no member edge pointed at, and the rows were dropped at COPY time.
+//
+// Guarded here with the UNFILTERED findDanglingEdges. Every other dangling
+// assertion in this file passes `['HAS_METHOD']`, which is exactly why the
+// HAS_PROPERTY breakage shipped green.
+// ---------------------------------------------------------------------------
+
+describe('Rust containers inside a mod keep their member edges (#2745 review)', () => {
+  let result: PipelineResult;
+
+  beforeAll(async () => {
+    result = await runPipelineFromRepo(path.join(FIXTURES, 'rust-2742-mod-members'), () => {});
+  }, 60000);
+
+  it('leaves no dangling edge of ANY type', () => {
+    expect(findDanglingEdges(result)).toEqual([]);
+  });
+
+  // Asserts the NODE id, not just the edge's anchor: the anchor was already bare
+  // while the bug was live, so an edge-only assertion passes in both builds. The
+  // half that moved is the mint.
+  it('keeps a mod-scoped struct and its field on one agreed id', () => {
+    const structIds: string[] = [];
+    result.graph.forEachNode((n) => {
+      if (n.label === 'Struct' && n.properties.name === 'Config') structIds.push(n.id);
+    });
+    expect(structIds).toEqual(['Struct:src/main.rs:Config']);
+
+    const hasProperty = getRelationships(result, 'HAS_PROPERTY').filter(
+      (e) => e.target === 'retries',
+    );
+    expect(hasProperty).toMatchObject([
+      {
+        rel: {
+          sourceId: 'Struct:src/main.rs:Config',
+          targetId: 'Property:src/main.rs:Config.retries',
+        },
+      },
+    ]);
+  });
+
+  it('keeps a scoped inherent-impl target inside a mod at its raw path (#1975)', () => {
+    const implIds: string[] = [];
+    result.graph.forEachNode((n) => {
+      if (n.label === 'Impl') implIds.push(n.id);
+    });
+    expect(implIds).toEqual(['Impl:src/main.rs:a::Inner']);
+
+    const hasMethod = getRelationships(result, 'HAS_METHOD').filter((e) => e.target === 'helper');
+    expect(hasMethod).toMatchObject([{ rel: { sourceId: 'Impl:src/main.rs:a::Inner' } }]);
+  });
+
+  it('still links a trait impl declared inside a mod to the trait method', () => {
+    const implementsEdges = getRelationships(result, 'METHOD_IMPLEMENTS');
+    expect(implementsEdges).toMatchObject([
+      {
+        rel: {
+          sourceId: 'Function:src/main.rs:Config.go#0',
+          targetId: 'Function:src/main.rs:Runner.go#0',
+        },
+      },
+    ]);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// #2745 review — the #2730 self-loop survived one `mod` deeper.
+//
+// A `mod` nested inside an inline `mod` binds in the PARENT module's scope.
+// `declaresSubmodule` looked it up through `moduleScopeByFile`, which maps a file
+// to its root `Module` scope only, so a nested inline module was invisible: the
+// candidate was never yielded, the hook refused, and the shared lexical tier bound
+// `tools::dispatch()` to the enclosing same-name `dispatch`.
+//
+// Inline module paths are now derived from the MEMBERS' `namespacePrefix` — a `mod`
+// def carries no nesting information of its own, and a `Namespace` scope owns its
+// own def rather than its children's, so neither channel could answer this.
+// ---------------------------------------------------------------------------
+
+describe('Rust nested inline modules resolve (#2745 review)', () => {
+  let result: PipelineResult;
+
+  beforeAll(async () => {
+    result = await runPipelineFromRepo(path.join(FIXTURES, 'rust-2742-nested-mods'), () => {});
+  }, 60000);
+
+  it('resolves a nested inline module member instead of the enclosing same-name fn', () => {
+    const edges = getRelationships(result, 'CALLS').filter(
+      (c) => c.rel.sourceId === 'Function:src/main.rs:outer.dispatch',
+    );
+    expect(edges).toMatchObject([
+      { rel: { targetId: 'Function:src/main.rs:outer.tools.dispatch' } },
+    ]);
+  });
+
+  it('resolves three levels deep', () => {
+    const midToDeep = getRelationships(result, 'CALLS').filter(
+      (c) => c.rel.sourceId === 'Function:src/main.rs:a.b.mid',
+    );
+    expect(midToDeep).toMatchObject([{ rel: { targetId: 'Function:src/main.rs:a.b.c.deep' } }]);
+  });
+
+  it('emits no self-loop anywhere in the nested fixture', () => {
+    const selfLoops = getRelationships(result, 'CALLS').filter(
+      (c) => c.rel.sourceId === c.rel.targetId,
+    );
+    expect(selfLoops).toEqual([]);
+  });
+
+  // A `mod` inside a `fn` is already position-qualified by the enclosing-callable
+  // pass, so prepending the mod segment placed it OUTSIDE the callable and the id
+  // read as `helper.wrapper.dispatch@L:C` — the inverse of the real nesting.
+  it('does not hoist a mod declared inside a fn above the callable', () => {
+    const ids: string[] = [];
+    result.graph.forEachNode((n) => {
+      if (n.label === 'Function' && n.properties.name === 'dispatch') ids.push(n.id);
+    });
+    // Prefix rather than an exact `@line:col`, so adding a line to the fixture
+    // above does not turn this into a coordinate-maintenance test.
+    expect(
+      ids.filter((id) => id.startsWith('Function:src/main.rs:wrapper.dispatch@')),
+    ).toHaveLength(1);
+    expect(ids.filter((id) => id.includes(':helper.'))).toEqual([]);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// #2745 review — an imported type outranks a same-named module at the crate root.
+//
+// Widening the negative filter to inline `mod` names let a type-qualified call
+// through when a module happened to share the type's name. The crate-root-relative
+// candidate — the loosest one, a guess at a path the caller never wrote — then
+// captured it, producing an edge to a callee the source does not name. The base
+// emitted no edge, which per the doctrine quoted in `ids.ts` is the correct failure
+// direction: a missing edge is recoverable, a fabricated caller misleads `impact`.
+// ---------------------------------------------------------------------------
+
+describe('Rust type-qualified calls outrank a same-named module (#2745 review)', () => {
+  let result: PipelineResult;
+
+  beforeAll(async () => {
+    result = await runPipelineFromRepo(path.join(FIXTURES, 'rust-2742-type-vs-module'), () => {});
+  }, 60000);
+
+  it('never binds an imported type to the crate-root module of the same name', () => {
+    const fromCall = getRelationships(result, 'CALLS').filter(
+      (c) => c.rel.sourceId === 'Function:src/b.rs:call',
+    );
+    const targets = fromCall.map((c) => c.rel.targetId);
+    expect(targets).not.toContain('Function:src/lib.rs:Buffer.with_capacity');
+  });
+
+  it('leaves the module member itself intact as a node', () => {
+    const ids: string[] = [];
+    result.graph.forEachNode((n) => {
+      if (n.label === 'Function' && n.properties.name === 'with_capacity') ids.push(n.id);
+    });
+    expect(ids).toContain('Function:src/lib.rs:Buffer.with_capacity');
+  });
+});

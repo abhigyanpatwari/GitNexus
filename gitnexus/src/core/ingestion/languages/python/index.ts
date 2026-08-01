@@ -76,7 +76,11 @@ export { getPythonCaptureCacheStats, resetPythonCaptureCacheStats } from './cach
 export { interpretPythonImport, interpretPythonTypeBinding } from './interpret.js';
 export { pythonMergeBindings } from './merge-bindings.js';
 export { pythonArityCompatibility } from './arity.js';
-export { resolvePythonImportTarget, type PythonResolveContext } from './import-target.js';
+export {
+  isPythonImportedModule,
+  resolvePythonImportTarget,
+  type PythonResolveContext,
+} from './import-target.js';
 export {
   pythonBindingScopeFor,
   pythonFunctionDefinitionLabel,

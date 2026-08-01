@@ -26,9 +26,20 @@ import {
   simpleQualifiedName,
 } from '../graph-bridge/ids.js';
 import { resolveInheritanceBaseInScope } from '../scope/walkers.js';
+import { definitionIdPosition } from '../utils/definition-id.js';
 import { narrowOverloadCandidates } from './overload-narrowing.js';
 
-export const MAX_CALLABLE_VALUE_TARGETS = 32;
+/**
+ * Per-site dispatch-target cap. Above it the site is treated as overflowed and
+ * its edges are dropped — a cliff, so a repo with a legitimately wide dispatch
+ * table (33+ candidates on one callable site) loses the whole call chain.
+ *
+ * Override via `GITNEXUS_MAX_CALLABLE_VALUE_TARGETS` for such repos.
+ */
+export const MAX_CALLABLE_VALUE_TARGETS = (() => {
+  const env = Number(process.env.GITNEXUS_MAX_CALLABLE_VALUE_TARGETS);
+  return Number.isInteger(env) && env >= 1 ? env : 32;
+})();
 
 interface Target {
   readonly id: string;
@@ -815,7 +826,7 @@ const withoutSigil = (name: string): string => name.replace(/^[$@]+/, '');
  */
 function valueBindingPositionKey(def: SymbolDefinition): string | undefined {
   if (!VALUE_BINDING_DEF_TYPES.has(def.type)) return undefined;
-  const line = def.nodeId.match(/#(\d+):(\d+):/)?.[1];
+  const line = definitionIdPosition(def.nodeId, def.filePath)?.line;
   const name = simpleQualifiedName(def);
   if (line === undefined || name === undefined) return undefined;
   return `${def.filePath}\0${line}\0${withoutSigil(name)}`;
@@ -921,8 +932,10 @@ function canonicalizeCallableDeclarations(
 }
 
 function definitionPosition(def: SymbolDefinition): string | undefined {
-  const match = def.nodeId.match(/#(\d+):(\d+):/);
-  return match === null ? undefined : `${def.filePath}\0${match[1]}\0${match[2]}`;
+  const position = definitionIdPosition(def.nodeId, def.filePath);
+  return position === undefined
+    ? undefined
+    : `${def.filePath}\0${position.line}\0${position.column}`;
 }
 
 function declarationSignatureCompatible(
@@ -1003,7 +1016,7 @@ function buildGraphCallableIndexes(graph: KnowledgeGraph): GraphCallableIndexes 
 }
 
 function definitionAnchorKey(def: SymbolDefinition): string | undefined {
-  const line = def.nodeId.match(/#(\d+):(\d+):/)?.[1];
+  const line = definitionIdPosition(def.nodeId, def.filePath)?.line;
   const name = simpleName(def.qualifiedName);
   if (line === undefined || name === undefined) return undefined;
   return `${def.filePath}\0${def.type}\0${line}\0${name}`;
@@ -1437,8 +1450,8 @@ function dedupeDefinitions(defs: readonly SymbolDefinition[]): SymbolDefinition[
 }
 
 function definitionStartsAt(def: SymbolDefinition, line: number, column: number): boolean {
-  const match = def.nodeId.match(/#(\d+):(\d+):/);
-  return match !== null && Number(match[1]) === line && Number(match[2]) === column;
+  const position = definitionIdPosition(def.nodeId, def.filePath);
+  return position !== undefined && position.line === line && position.column === column;
 }
 
 function expandMemberTargets(

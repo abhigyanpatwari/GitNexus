@@ -55,6 +55,42 @@ import type { ParseWorkerResult } from '../core/ingestion/workers/parse-worker.j
 // the main thread (the #1983 OOM). Because the two stores share this version,
 // any future change to the `ParsedFile` serialization shape MUST bump
 // SCHEMA_BUMP so both invalidate in lockstep.
+// v35: Java/Kotlin Spring @Bean factory and @Resource side-channel facts
+// (#2413). ParsedFile results are content-addressed and replayed verbatim, so
+// the feature/schema inventory alone cannot invalidate pre-#2413 captures.
+// (Cut as v32 on this branch; `main` took 32 for #2742 and 33/34 for #2747
+// first, so this series is renumbered at merge time — see the v21 note.)
+// v34: the receiver-chain capture is emitted by ALL 14 language emitters, not
+// just TypeScript. v33 landed with the TypeScript-only emission; the rollout to
+// the other 13 languages changed the capture set AGAIN, so a cache stamped 33 by
+// an intermediate build of that series is not equivalent to one stamped at this
+// commit — it would be treated as current while every non-TypeScript file
+// replayed pre-rollout captures, leaving the feature silently inert for 13 of 14
+// languages. Bumped there so the version tracks the FINAL capture set rather
+// than the first divergence.
+// v33: TypeScript call matches carry `@reference.receiver-chain`, a compact
+// encoding of a receiver that is itself an expression.
+// v32: Rust items are qualified by their enclosing `mod` chain (#2742). The
+// qualified name is computed in the parse worker, so a warm cache replays the
+// old unqualified ids verbatim and the collapse persists.
+// v31: Rust `mod_item` gained `@declaration.namespace` and scoped call sites
+// gained `@reference.qualified-name` (#2730). Both are PARSE-TIME captures, so a
+// warm cache replays the old capture set verbatim: `rawQualifiedName` comes back
+// undefined and no Namespace def exists to hang a module prefix on, which turns
+// the whole module-qualified resolution tier into a no-op on unchanged files.
+// Re-checked against origin/main at commit time per the v29 note below.
+// v29: closure-binding declaration rules for PHP/Rust/Kotlin/Ruby/Dart, a Rust
+// graph node for `let f = || …`, a Dart closure scope, and function-local VALUES
+// (Variable/Const/Property/Static) qualified by their enclosing callable plus
+// position (#2699 parts A1 + B). All parse-time, so a warm cache would replay
+// the old captures and the pre-qualification ids verbatim.
+//
+// This is 29 and not 28 because of the exact collision the v21 note below warns
+// about: this branch cut at 27 and bumped to 28, while #2415 bumped 27 -> 28 and
+// merged FIRST. Re-checking against origin/main at merge time — not at branch
+// time — is what caught it; leaving it at 28 would have shipped this change with
+// NO parse-cache invalidation, so every warm cache keeps serving the pre-fix
+// captures and ids.
 // v28: Java/Kotlin capture side-channels persist Spring condition facts and
 // annotation-source line numbers (#2415).
 // v26: the enclosing-callable walk stops at class bodies and anonymous-class
@@ -97,13 +133,20 @@ import type { ParseWorkerResult } from '../core/ingestion/workers/parse-worker.j
 // and nested-callable caller attribution appends the localIdentity suffix the
 // definition phase already used. Both are parse-time, so a warm cache would
 // otherwise replay the old captures and ids verbatim.
+// v30/schema v22: CommonJS export capture emission (#2723) — new @definition/@declaration
+// captures for exports.X, aliased receivers, module-level `this`, re-export
+// forwarding and `module.exports = fn`, plus prototype/`this` Methods. A warm
+// cache would otherwise replay the pre-fix captures verbatim.
 // v20: Java/Kotlin capture side-channels persist package and class-annotation
 // facts for shared Spring Bean resolution.
 // v19: Java enum constant bodies emit E$N Class nodes; anonymous naming uses
 // JLS 13.1 immediate-host chains (#2555).
 // v18: Worker$N anonymous bodies. v17: callable-value-flow operand identity.
 // v16: direct callee identity.
-const SCHEMA_BUMP = 28;
+// v36: bound-callable graph `startLine` follows the initializer so multi-line
+// closure bindings join the scope channel (#2735). Warm cache would otherwise
+// keep serving wrapper-line startLines and drop the CALLS edge.
+const SCHEMA_BUMP = 36;
 const GITNEXUS_PKG_VERSION = (() => {
   try {
     // package.json sits at gitnexus/package.json — two levels up from

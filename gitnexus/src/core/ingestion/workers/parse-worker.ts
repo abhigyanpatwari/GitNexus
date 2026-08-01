@@ -1,5 +1,9 @@
 import { parentPort, threadId, workerData } from 'node:worker_threads';
-import { localIdentity, nestedCallableQualifiedName } from './callable-id.js';
+import {
+  boundCallableStartRow,
+  localIdentity,
+  nestedCallableQualifiedName,
+} from './callable-id.js';
 import Parser from 'tree-sitter';
 import JavaScript from 'tree-sitter-javascript';
 import TypeScript from 'tree-sitter-typescript';
@@ -82,9 +86,13 @@ import {
   buildDefinitionPreScan,
   FUNCTION_NODE_TYPES,
   findAncestorBeforeBoundary,
+  findSplitBodyCallableAncestor,
+  SPLIT_SIGNATURE_NODE_TYPES,
   getDefinitionNodeFromCaptures,
   findEnclosingClassInfo,
   findObjectLiteralBindingInfo,
+  findMemberAssignmentOwnerInfo,
+  isCjsDefaultExportAssignment,
   type EnclosingClassInfo,
   getLabelFromCaptures,
   genericFuncName,
@@ -92,17 +100,21 @@ import {
   isSuppressedConcreteTypedefDuplicate,
   isValueDefinitionLabel,
   isQualifiableScopeLabel,
+  MEMBER_OWNER_NODE_TYPES,
+  qualifyByEnclosingModScope,
   qualifyRustImplTargetByModScope,
   CLASS_CONTAINER_TYPES,
   PARAMETER_LIST_NODE_TYPES,
   LOCAL_SCOPE_BODY_NODE_TYPES,
   type SyntaxNode,
 } from '../utils/ast-helpers.js';
+import { isPositionQualifiedLocalLabel } from '../utils/callable-labels.js';
 import { extractCallArgTypes, type MixedChainStep } from '../utils/call-analysis.js';
 import { buildTypeEnv } from '../type-env.js';
 import type { ConstructorBinding } from '../type-env.js';
 import { detectFrameworkFromAST } from '../framework-detection.js';
 import { generateId } from '../../../lib/utils.js';
+import { defaultExportNameCollides } from '../languages/typescript/cjs-export-assignment.js';
 import {
   extractVueScript,
   extractTemplateComponents,
@@ -821,11 +833,20 @@ const enclosingCallablePrefix = (
   //
   // Over-inclusion here is the SAFE direction: an extra boundary only suppresses
   // the nesting prefix, which falls back to the pre-#2699 class qualification.
-  const fnNode = findAncestorBeforeBoundary(
-    node,
-    LOCAL_SCOPE_BODY_NODE_TYPES,
-    CALLABLE_PREFIX_BOUNDARY_TYPES,
-  );
+  const fnNode =
+    findAncestorBeforeBoundary(node, LOCAL_SCOPE_BODY_NODE_TYPES, CALLABLE_PREFIX_BOUNDARY_TYPES) ??
+    // Signature/body-split grammars: the enclosing callable is a SIBLING of the
+    // body, not an ancestor, so the walk above returns null for every local
+    // inside it. Dart is the case in hand (`function_signature` +
+    // `function_body` as siblings) — without this a Dart closure gets no
+    // prefix, so two same-named closures in one file collapse onto ONE node and
+    // the graph asserts a CALLS edge that does not exist in the source (#2699).
+    //
+    // SPLIT_SIGNATURE_NODE_TYPES, NOT FUNCTION_NODE_TYPES: only a callable that
+    // cannot hold its own body can be an enclosing callable of a SIBLING. Using
+    // the wider set mis-qualified a file-level PHP `$handler = function …` as
+    // `target.$handler` by grabbing the preceding `function target() {…}`.
+    findSplitBodyCallableAncestor(node, SPLIT_SIGNATURE_NODE_TYPES, CALLABLE_PREFIX_BOUNDARY_TYPES);
   if (fnNode === null) return undefined;
   return callableOwnQualifiedName(fnNode, filePath, provider);
 };
@@ -2127,17 +2148,61 @@ const processFileGroup = (
         return deriveDefaultExportHocName(file.path);
       })();
 
+      // `module.exports = function () {}` (#2723): the whole module is the
+      // callable. The member-assignment rule captures the LEFT property as the
+      // name, which here is the literal `exports` — meaningless. Override it:
+      // a named function expression supplies its own name, and the anonymous
+      // forms are named after the file by the same convention anonymous
+      // default exports already use. Takes precedence over `nameNode` for
+      // exactly that reason.
+      //
+      // The derived name is dropped when it COLLIDES with a callable the module
+      // already declares. `format.js` holding `function format() {}` plus an
+      // anonymous `module.exports = function () { return format(v); }` merged
+      // both onto one node, and the inner call to `format` then resolved to
+      // that merged node — fabricating a self-recursion edge present in no
+      // source (#2729 review F4). A fabricated edge is worse than a missing
+      // one: it hands `impact` a caller that does not exist.
+      const isCjsDefaultExport =
+        definitionNode !== undefined && isCjsDefaultExportAssignment(definitionNode);
+      const cjsDefaultExportOwnName = isCjsDefaultExport
+        ? definitionNode?.childForFieldName('right')?.childForFieldName('name')?.text
+        : undefined;
+      // A collision must SUPPRESS the definition outright, not merely decline to
+      // name it — falling through would let the captured left property name the
+      // node the literal `exports`, which is both meaningless and the very node
+      // this feature's own test forbids.
+      const suppressCjsDefaultExport = (() => {
+        if (!isCjsDefaultExport || cjsDefaultExportOwnName !== undefined) return false;
+        const root = (definitionNode as { tree?: { rootNode?: SyntaxNode } }).tree?.rootNode;
+        if (root === undefined) return false;
+        return defaultExportNameCollides(
+          definitionNode!,
+          root,
+          deriveDefaultExportHocName(file.path),
+        );
+      })();
+      if (suppressCjsDefaultExport) continue;
+
+      const cjsDefaultExportName = isCjsDefaultExport
+        ? (cjsDefaultExportOwnName ?? deriveDefaultExportHocName(file.path))
+        : null;
+
       // Synthesize name for constructors without explicit @name capture (e.g. Swift init)
       if (
         !nameNode &&
         nodeLabel !== 'Constructor' &&
         !extractedClassSymbol &&
-        !defaultExportHocName
+        !defaultExportHocName &&
+        !cjsDefaultExportName
       )
         continue;
 
       const nodeName =
-        extractedClassSymbol?.name ?? defaultExportHocName ?? (nameNode ? nameNode.text : 'init');
+        extractedClassSymbol?.name ??
+        defaultExportHocName ??
+        cjsDefaultExportName ??
+        (nameNode ? nameNode.text : 'init');
       // Dedup: variable captures (Const/Static/Variable) may overlap with higher-priority
       // captures (e.g. `const fn = () => {}` matches both @definition.function and @definition.const).
       // Multi-name declarations share the same definition node, so include the emitted name.
@@ -2179,11 +2244,27 @@ const processFileGroup = (
         }
       }
 
-      const startLine = definitionNode
-        ? definitionNode.startPosition.row + lineOffset
-        : nameNode
-          ? nameNode.startPosition.row + lineOffset
-          : lineOffset;
+      // #2735: for a bound callable the graph-node capture sits on the OUTER
+      // wrapper while scope-resolution anchors on the INNER expression. The
+      // position join is line-only, so `startLine` must follow the initializer
+      // (ids still use `definitionNode` via `localIdentity`).
+      const startRow =
+        definitionNode &&
+        (nodeLabel === 'Function' || nodeLabel === 'Method' || nodeLabel === 'Constructor')
+          ? boundCallableStartRow(
+              definitionNode,
+              nodeName,
+              nodeLabel,
+              parsedFile?.localDefs,
+              nameNode,
+            )
+          : definitionNode?.startPosition.row;
+      const startLine =
+        startRow !== undefined
+          ? startRow + lineOffset
+          : nameNode
+            ? nameNode.startPosition.row + lineOffset
+            : lineOffset;
 
       // Compute enclosing class BEFORE node ID — needed to qualify method IDs
       const needsOwner =
@@ -2254,9 +2335,17 @@ const processFileGroup = (
           : null;
       const enclosingClassId =
         enclosingClassInfo?.qualifiedClassId ?? enclosingClassInfo?.classId ?? null;
+      // A Method with no enclosing class container is owned by a NAMED binding
+      // instead: an object literal (`const service = { load() {} }`) or, since
+      // the #2723 follow-up, a prototype assignment
+      // (`Foo.prototype.bar = function () {}`). Both resolve the owner from the
+      // syntax rather than from an ancestor walk, and both are language-shaped
+      // helpers behind the provider's own label decision — shared code here
+      // only asks "does this Method name an owner".
       const objectLiteralOwnerInfo =
         !enclosingClassId && nodeLabel === 'Method' && definitionNode
-          ? findObjectLiteralBindingInfo(definitionNode, file.path)
+          ? (findMemberAssignmentOwnerInfo(definitionNode, file.path) ??
+            findObjectLiteralBindingInfo(definitionNode, file.path))
           : null;
 
       // #1978: hoisted ABOVE qualifiedName/node-id (load-bearing order) so a
@@ -2285,14 +2374,40 @@ const processFileGroup = (
       // worker-path Impl node id matches the sequential path and the owner walk.
       // #2699: a callable nested inside another callable is qualified by the
       // enclosing callable, so a function-local closure stops colliding with a
-      // same-named file-level function. Restricted to CALLABLE labels: the
-      // collision that produced wrong CALLS edges is between callables, and
-      // widening it to every function-local Variable/Property would churn ids
-      // for symbols the local-symbol pruner mostly deletes anyway.
+      // same-named file-level function.
+      // Applies to VALUES as well as callables since #2699 closed A1: a
+      // top-level `const handler` and a function-local `const handler`
+      // otherwise collapse onto one `Const:v.ts:handler`, which was the
+      // issue's original complaint and is unreachable from a callable-only
+      // gate. `isPositionQualifiedLocalLabel` is the single definition of that
+      // set, shared with resolution in `ids.ts` — the two phases disagreeing
+      // silently drops edges rather than failing (#2714).
       // Same helper as the caller-attribution phase — see `enclosingCallablePrefix`.
+      //
+      // A CLASS MEMBER must never gain a local prefix, and the plain walk is not
+      // enough to guarantee that once `Property`/`Static` are in the set. A
+      // TypeScript constructor PARAMETER PROPERTY —
+      // `constructor(private readonly port: Port)` — reaches the constructor's
+      // `method_definition` THROUGH the parameter list, and `method_definition`
+      // is in LOCAL_SCOPE_BODY_NODE_TYPES, so the walk hits it BEFORE any class
+      // boundary and re-keys a genuine field as `C.constructor.port@r:c`. That
+      // silently empties the `C.port` slot every `impact` / `rename` / FTS
+      // consumer addresses, and the class still asserts HAS_PROPERTY against it.
+      //
+      // `isFunctionLocalProperty` above already encodes the correct test (a
+      // parameter-list ancestor reached before any local-scope body means NOT
+      // function-local); reuse that exclusion here rather than spelling a second
+      // rule, so the owner-edge decision and the id decision cannot disagree.
+      const isParameterScopedMember =
+        (nodeLabel === 'Property' || nodeLabel === 'Static') &&
+        definitionNode !== undefined &&
+        findAncestorBeforeBoundary(
+          definitionNode,
+          PARAMETER_LIST_NODE_TYPES,
+          LOCAL_SCOPE_BODY_NODE_TYPES,
+        ) !== null;
       const nestedCallablePrefix =
-        (nodeLabel === 'Function' || nodeLabel === 'Method' || nodeLabel === 'Constructor') &&
-        definitionNode
+        isPositionQualifiedLocalLabel(nodeLabel) && definitionNode && !isParameterScopedMember
           ? enclosingCallablePrefix(definitionNode, file.path, provider)
           : undefined;
 
@@ -2303,7 +2418,7 @@ const processFileGroup = (
           ? qualifyRustImplTargetByModScope(definitionNode, nodeName)
           : undefined;
 
-      const qualifiedName =
+      const qualifiedNameBeforeModScope =
         rustImplQualifiedName !== undefined
           ? rustImplQualifiedName
           : // #1991: LOCKSTEP — include Trait so a Ruby mixin module's qualified
@@ -2316,7 +2431,70 @@ const processFileGroup = (
               ? nestedCallableQualifiedName(nestedCallablePrefix, definitionNode, nodeName)
               : enclosingClassInfo
                 ? `${enclosingClassInfo.className}.${nodeName}`
-                : nodeName;
+                : // A member whose owner is named by the assignment rather than
+                  // by an enclosing container (`Foo.prototype.bar = …`) qualifies
+                  // by that owner, so two constructors in one file that both
+                  // define `bar` stay distinct nodes.
+                  objectLiteralOwnerInfo?.ownerName !== undefined
+                  ? `${objectLiteralOwnerInfo.ownerName}.${nodeName}`
+                  : nodeName;
+
+      // #2742: qualify by the enclosing `mod` chain, so two same-named items at
+      // different module depths in one file are DISTINCT nodes. Without this,
+      // `mod inner { fn dispatch }` and a crate-root `fn dispatch` both keyed
+      // `Function:<file>:dispatch`, first-wins — so a correctly resolved call
+      // into the inline module still rendered as a self-loop, and `impact`
+      // reported the real callee as unreached.
+      //
+      // Keyed purely on the `mod_item` node type, exactly as the impl-target
+      // qualifier above (#1982) already is, so it is a no-op for every language
+      // whose grammar has no such node. The impl branch already applied it and
+      // is left alone rather than qualified twice.
+      //
+      // Scoped to items that sit on NEITHER side of an owner edge, because only
+      // the id is re-keyed here — the anchor is minted independently by
+      // `findEnclosingClassInfo` and does not move with it:
+      //
+      //   - `!enclosingClassInfo` excludes the MEMBER side. A method already
+      //     carries its owner's name (`Inner.method`), and for an unscoped
+      //     inherent impl that owner is mod-scoped by the impl qualifier above,
+      //     so qualifying the member again would break the byte-for-byte
+      //     agreement #1975/#1982 established.
+      //   - `!MEMBER_OWNER_NODE_TYPES.has(...)` excludes the OWNER side. A
+      //     `struct` / `trait` / `enum` / `impl` declared directly in a `mod` has
+      //     no enclosing class, so the member-side guard alone let it through
+      //     while its own anchor stayed bare — `mod engine { struct Config { … } }`
+      //     minted `Struct:<file>:engine.Config` against a `HAS_PROPERTY` edge
+      //     anchored on `Struct:<file>:Config`, dangling every field. The same
+      //     gap put `impl a::Inner` inside a `mod` back on the #1975 rake this
+      //     helper's own docblock warns about: the impl branch above deliberately
+      //     fires only for an UNSCOPED `type_identifier`, and this gate was
+      //     picking up the scoped targets it had just excluded.
+      //   - `nestedCallablePrefix === undefined` excludes an item inside a
+      //     CALLABLE. `fn wrapper() { mod helper { fn dispatch } }` composed the
+      //     mod segment outermost — `helper.wrapper.dispatch@2:8` — inverting the
+      //     real nesting, because the mod prefix is prepended to a name the
+      //     enclosing-callable pass has already qualified. Nothing dangled (the
+      //     `@line:col` suffix keeps such ids unique on its own, which is also why
+      //     the mod segment adds no identity here), but the path read as a lie
+      //     about the source. Skipping is the honest answer; reordering would mean
+      //     interleaving two qualifier passes for a shape that only ever produces
+      //     already-unique ids.
+      //
+      // Same-named members on same-named types in sibling modules therefore
+      // still collapse, as do the containers themselves — unchanged from before
+      // this fix, and owned by the owner edge rather than worked around here.
+      const qualifiesByEnclosingModScope =
+        rustImplQualifiedName === undefined &&
+        definitionNode !== undefined &&
+        !MEMBER_OWNER_NODE_TYPES.has(definitionNode.type) &&
+        nestedCallablePrefix === undefined &&
+        !enclosingClassInfo &&
+        objectLiteralOwnerInfo?.ownerName === undefined;
+      const qualifiedName =
+        qualifiesByEnclosingModScope && definitionNode !== undefined
+          ? qualifyByEnclosingModScope(definitionNode, qualifiedNameBeforeModScope)
+          : qualifiedNameBeforeModScope;
 
       // Extract method metadata BEFORE generating node ID — parameterCount is needed
       // to disambiguate overloaded methods via #<arity> suffix in the ID.
@@ -2592,7 +2770,7 @@ const processFileGroup = (
         properties: {
           name: nodeName,
           filePath: file.path,
-          startLine: definitionNode ? definitionNode.startPosition.row + lineOffset : startLine,
+          startLine,
           endLine: definitionNode ? definitionNode.endPosition.row + lineOffset : startLine,
           language: language,
           isExported:

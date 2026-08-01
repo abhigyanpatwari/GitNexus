@@ -101,6 +101,13 @@ describe('fileContentHash', () => {
 });
 
 describe('PARSE_CACHE_VERSION', () => {
+  // 35 -> 36 for the bound-callable start-line join (#2735). Updated
+  // deliberately after main independently took 35 for Spring side-channel
+  // captures (#2413), so the pin continues to catch concurrent bump collisions.
+  it('pins SCHEMA_BUMP to 36 so concurrent bumps cannot silently collide (#2736)', () => {
+    expect(Number(PARSE_CACHE_VERSION.split('+', 1)[0])).toBe(36);
+  });
+
   it('embeds the gitnexus package version (so upgrades invalidate the cache)', () => {
     // Looks like "1+1.6.4" — schema bump prefix + actual gitnexus version
     expect(PARSE_CACHE_VERSION).toMatch(/^\d+\+\d+\.\d+\.\d+/);

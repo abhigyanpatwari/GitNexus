@@ -87,6 +87,23 @@ const PHP_SCOPE_QUERY = `
 (function_definition
   name: (name) @declaration.name) @declaration.function
 
+;; Closure assigned to a variable: $handler = function () {...}; or fn() => ...;
+;; Anchor discipline (same contract as javascript/query.ts): @declaration.function
+;; sits on the INNER anonymous_function / arrow_function, NOT on the
+;; assignment_expression wrapper. That aligns anchor.range with the
+;; @scope.function range above, so pass2AttachDeclarations attaches the
+;; declaration to the CLOSURE's own scope rather than the enclosing function's.
+;; Without this the closure scope owns no callable def and
+;; pickCallerCallableDef falls through to the enclosing callable, making the
+;; closure a call TARGET but never a call SOURCE (#2699).
+(assignment_expression
+  left: (variable_name) @declaration.name
+  right: (anonymous_function) @declaration.function)
+
+(assignment_expression
+  left: (variable_name) @declaration.name
+  right: (arrow_function) @declaration.function)
+
 ;; ── Declarations — properties ─────────────────────────────────────────────
 
 ;; PHP 7.4+ typed property: private UserRepo $repo;

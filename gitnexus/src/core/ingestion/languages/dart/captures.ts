@@ -46,6 +46,7 @@ import { encodeMarker } from '../../utils/heritage-marker.js';
 import { DART_BUILT_INS } from './built-ins.js';
 import { synthesizeCallableFlowCaptures } from '../../utils/callable-flow-captures.js';
 import { preprocessDartExtensionTypes } from './extension-type-preprocess.js';
+import { synthesizeReceiverChainCapture } from '../../utils/receiver-chain-captures.js';
 
 const FUNCTION_DECL_TAGS = [
   '@declaration.function',
@@ -155,6 +156,12 @@ export function emitDartScopeCaptures(
       const bodyNode = findFunctionBody(declNode);
 
       attachArityMetadata(grouped, declNode);
+      // Structural receiver chain for a call whose receiver is itself an
+      // expression, so resolution can type it by folding over structure
+      // instead of re-parsing the receiver's source text. Self-gating: a
+      // non-call match, an absent receiver, or a chain with no nameable base
+      // all leave `grouped` untouched.
+      synthesizeReceiverChainCapture(grouped, nodeMap['@reference.receiver']);
       out.push(grouped);
 
       if (bodyNode !== null) {
@@ -181,6 +188,12 @@ export function emitDartScopeCaptures(
           fieldType,
         );
       }
+      // Structural receiver chain for a call whose receiver is itself an
+      // expression, so resolution can type it by folding over structure
+      // instead of re-parsing the receiver's source text. Self-gating: a
+      // non-call match, an absent receiver, or a chain with no nameable base
+      // all leave `grouped` untouched.
+      synthesizeReceiverChainCapture(grouped, nodeMap['@reference.receiver']);
       out.push(grouped);
       if (fieldType !== null) {
         out.push({
@@ -192,6 +205,12 @@ export function emitDartScopeCaptures(
       continue;
     }
 
+    // Structural receiver chain for a call whose receiver is itself an
+    // expression, so resolution can type it by folding over structure
+    // instead of re-parsing the receiver's source text. Self-gating: a
+    // non-call match, an absent receiver, or a chain with no nameable base
+    // all leave `grouped` untouched.
+    synthesizeReceiverChainCapture(grouped, nodeMap['@reference.receiver']);
     out.push(grouped);
   }
 
@@ -249,6 +268,15 @@ function dartCallableCallee(selector: SyntaxNode): SyntaxNode | null {
  * nodes are unaffected.
  */
 function findFunctionBody(declNode: SyntaxNode): SyntaxNode | null {
+  // A closure literal carries its body as a CHILD (function_expression_body),
+  // unlike a Dart declaration whose body is the next named SIBLING. Without
+  // this branch the caller synthesizes no @scope.function for a closure at all,
+  // so a closure binding has no scope to own its callable def and can never be
+  // a call SOURCE (#2699 S4 — this is why Dart alone showed zero child scopes).
+  if (declNode.type === 'function_expression') {
+    const body = declNode.namedChildren.find((c) => c.type === 'function_expression_body');
+    return body ?? null;
+  }
   const node =
     declNode.parent !== null && declNode.parent.type === 'method_signature'
       ? declNode.parent

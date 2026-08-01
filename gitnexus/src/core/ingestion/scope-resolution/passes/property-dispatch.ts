@@ -52,8 +52,15 @@ import { findCallableBindingInScope } from '../scope/walkers.js';
  * 2× that — dropping the motivating key was the failure the first value (8)
  * had. ponytail: flat cap; revisit with per-receiver narrowing if real
  * repos show useful keys being dropped (§12 of the #2437 plan).
+ *
+ * Override via `GITNEXUS_MAX_PROPERTY_DISPATCH_FANOUT` env var for repos with
+ * legitimate high-fanout property keys (e.g. large Vue codebases where
+ * `validator` exceeds the default).
  */
-export const MAX_PROPERTY_DISPATCH_FANOUT = 32;
+export const MAX_PROPERTY_DISPATCH_FANOUT = (() => {
+  const env = Number(process.env.GITNEXUS_MAX_PROPERTY_DISPATCH_FANOUT);
+  return Number.isInteger(env) && env >= 1 ? env : 32;
+})();
 
 /** Below the 0.85 resolved baseline; same discount idea as interface-dispatch. */
 export const PROPERTY_DISPATCH_CONFIDENCE = 0.7;

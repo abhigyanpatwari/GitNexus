@@ -500,6 +500,21 @@ jobs:
         run: node --import tsx bench/callable-value-flow/measure.mjs --check
         working-directory: gitnexus
 
+      - name: Receiver-resolution drop guards
+        # NOT build-free: this one runs the real pipeline, so it needs dist/
+        # (the setup action above builds). ~2m15s.
+        #
+        # Two arms, because neither gates alone. The count arm asserts the
+        # call-only drop count per language — call-only because Case 0's
+        # recorder gates on the receiver's punctuation, not on what the
+        # reference is, so property reads would inflate it by ~20%. The shape
+        # arm asserts the state of each receiver spelling by EDGE PRESENCE,
+        # which is the only arm that can see the shapes the recorder is blind
+        # to (`?.`, explicit type args, `repos[0]`): those emit no edge AND no
+        # drop, so fixing them moves the count by zero.
+        run: node --import tsx bench/receiver-resolution/measure.mjs --check
+        working-directory: gitnexus
+
       - name: Scope-emission guards (#2699)
         # Build-free: asserts the JS/TS scope set is unchanged. Block scopes are
         # what make `let`/`const` in sibling blocks distinct bindings, but a
@@ -548,6 +563,7 @@ jobs:
           test/integration/cobol-pipeline-benchmark.test.ts
           test/integration/csharp-pipeline-benchmark.test.ts
           test/integration/instance-ownership-pipeline-benchmark.test.ts
+          test/integration/spring-bean-resource-benchmark.test.ts
           test/integration/rust-pipeline-benchmark.test.ts
           test/integration/php-pipeline-benchmark.test.ts
           test/integration/ruby-pipeline-benchmark.test.ts

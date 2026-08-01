@@ -6,6 +6,7 @@ const ENV_KEYS = [
   'GITNEXUS_EMBEDDING_MODEL',
   'GITNEXUS_EMBEDDING_API_KEY',
   'GITNEXUS_EMBEDDING_DIMS',
+  'GITNEXUS_EMBEDDING_HTTP_TIMEOUT_MS',
   'GITNEXUS_EMBEDDING_MAX_ATTEMPTS',
   'GITNEXUS_EMBEDDING_RETRY_CAP_MS',
   'GITNEXUS_EMBEDDING_MIN_INTERVAL_MS',
@@ -682,6 +683,19 @@ describe('HTTP embedding backend', () => {
   });
 
   describe('timeout and network error handling', () => {
+    it('uses a 180-second default timeout and accepts a bounded override', async () => {
+      process.env.GITNEXUS_EMBEDDING_URL = 'http://test:8080/v1';
+      process.env.GITNEXUS_EMBEDDING_MODEL = 'test-model';
+
+      const { getHttpTimeoutMs } = await import('../../src/core/embeddings/http-client.js');
+      expect(getHttpTimeoutMs()).toBe(180_000);
+
+      process.env.GITNEXUS_EMBEDDING_HTTP_TIMEOUT_MS = '120000';
+      expect(getHttpTimeoutMs()).toBe(120_000);
+      process.env.GITNEXUS_EMBEDDING_HTTP_TIMEOUT_MS = '300001';
+      expect(() => getHttpTimeoutMs()).toThrow('GITNEXUS_EMBEDDING_HTTP_TIMEOUT_MS');
+    });
+
     it('does not retry on timeout', async () => {
       process.env.GITNEXUS_EMBEDDING_URL = 'http://test:8080/v1';
       process.env.GITNEXUS_EMBEDDING_MODEL = 'test-model';
@@ -814,6 +828,7 @@ describe('HTTP embedding backend', () => {
     });
 
     it.each([
+      ['GITNEXUS_EMBEDDING_HTTP_TIMEOUT_MS', '0'],
       ['GITNEXUS_EMBEDDING_MAX_ATTEMPTS', '0'],
       ['GITNEXUS_EMBEDDING_RETRY_CAP_MS', '-1'],
       ['GITNEXUS_EMBEDDING_MIN_INTERVAL_MS', 'nope'],

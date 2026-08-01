@@ -30,6 +30,13 @@ const SCHEMA_MOCK = {
   SCHEMA_QUERIES: ['CREATE NODE TABLE IF NOT EXISTS File (id STRING, PRIMARY KEY(id))'],
 };
 
+const schemaMockFactory = async () => ({
+  ...(await vi.importActual<typeof import('../../src/core/lbug/schema.js')>(
+    '../../src/core/lbug/schema.js',
+  )),
+  ...SCHEMA_MOCK,
+});
+
 function makeFsMock(dbPath: string) {
   const ENOENT = Object.assign(new Error(`ENOENT: ${dbPath}`), { code: 'ENOENT' });
   return {
@@ -127,7 +134,7 @@ describe('doInitLbug WAL corruption guard — behavioural', () => {
     const db = { close: vi.fn(async () => {}) };
 
     vi.doMock('fs/promises', () => makeFsMock(dbPath));
-    vi.doMock('../../src/core/lbug/schema.js', () => SCHEMA_MOCK);
+    vi.doMock('../../src/core/lbug/schema.js', schemaMockFactory);
     vi.doMock('../../src/core/lbug/lbug-config.js', () => ({
       openLbugConnection: vi.fn(async () => ({ db, conn })),
       closeLbugConnection: vi.fn(async () => {}),
@@ -182,7 +189,7 @@ describe('doInitLbug WAL corruption guard — behavioural', () => {
     const warnMock = vi.fn();
 
     vi.doMock('fs/promises', () => makeFsMock(dbPath));
-    vi.doMock('../../src/core/lbug/schema.js', () => SCHEMA_MOCK);
+    vi.doMock('../../src/core/lbug/schema.js', schemaMockFactory);
     vi.doMock('../../src/core/lbug/lbug-config.js', () => ({
       openLbugConnection: vi.fn(async () => ({ db, conn })),
       closeLbugConnection: vi.fn(async () => {}),
@@ -240,7 +247,7 @@ describe('doInitLbug WAL corruption guard — behavioural', () => {
     const warnMock = vi.fn();
 
     vi.doMock('fs/promises', () => fsMock);
-    vi.doMock('../../src/core/lbug/schema.js', () => SCHEMA_MOCK);
+    vi.doMock('../../src/core/lbug/schema.js', schemaMockFactory);
     vi.doMock('../../src/core/lbug/lbug-config.js', () => ({
       openLbugConnection: openLbugConnectionMock,
       closeLbugConnection: async (handle: { conn: typeof firstConn; db: typeof firstDb }) => {
@@ -295,7 +302,7 @@ describe('doInitLbug WAL corruption guard — behavioural', () => {
     const warnMock = vi.fn();
 
     vi.doMock('fs/promises', () => makeFsMock(dbPath));
-    vi.doMock('../../src/core/lbug/schema.js', () => SCHEMA_MOCK);
+    vi.doMock('../../src/core/lbug/schema.js', schemaMockFactory);
     vi.doMock('../../src/core/lbug/lbug-config.js', () => ({
       openLbugConnection: openLbugConnectionMock,
       closeLbugConnection: vi.fn(async () => {}),
@@ -366,7 +373,7 @@ describe('doInitLbug WAL corruption guard — behavioural', () => {
     const ensureMock = vi.fn(async () => false);
 
     vi.doMock('fs/promises', () => makeFsMock(dbPath));
-    vi.doMock('../../src/core/lbug/schema.js', () => SCHEMA_MOCK);
+    vi.doMock('../../src/core/lbug/schema.js', schemaMockFactory);
     vi.doMock('../../src/core/lbug/lbug-config.js', () => ({
       openLbugConnection: openLbugConnectionMock,
       closeLbugConnection: async (handle: {
@@ -450,7 +457,7 @@ describe('doInitLbug WAL corruption guard — behavioural', () => {
     const fsMock = makeFsMock(dbPath);
 
     vi.doMock('fs/promises', () => fsMock);
-    vi.doMock('../../src/core/lbug/schema.js', () => SCHEMA_MOCK);
+    vi.doMock('../../src/core/lbug/schema.js', schemaMockFactory);
     vi.doMock('../../src/core/lbug/lbug-config.js', () => ({
       openLbugConnection: openLbugConnectionMock,
       closeLbugConnection: async (handle: { conn: typeof readOnlyConn; db: typeof readOnlyDb }) => {
@@ -504,7 +511,7 @@ describe('doInitLbug WAL corruption guard — behavioural', () => {
     const db = { close: vi.fn(async () => {}) };
 
     vi.doMock('fs/promises', () => makeFsMock(dbPath));
-    vi.doMock('../../src/core/lbug/schema.js', () => SCHEMA_MOCK);
+    vi.doMock('../../src/core/lbug/schema.js', schemaMockFactory);
     vi.doMock('../../src/core/lbug/lbug-config.js', () => ({
       openLbugConnection: vi.fn(async () => ({ db, conn })),
       closeLbugConnection: vi.fn(async () => {}),
@@ -626,7 +633,7 @@ describe('Symmetric WAL-size gate during missing-shadow recovery (PR #1747 D2)',
     const warnMock = vi.fn();
 
     vi.doMock('fs/promises', () => fsMock);
-    vi.doMock('../../src/core/lbug/schema.js', () => SCHEMA_MOCK);
+    vi.doMock('../../src/core/lbug/schema.js', schemaMockFactory);
     vi.doMock('../../src/core/lbug/lbug-config.js', () => ({
       openLbugConnection: openLbugConnectionMock,
       closeLbugConnection: async (handle: { conn: typeof firstConn; db: typeof firstDb }) => {

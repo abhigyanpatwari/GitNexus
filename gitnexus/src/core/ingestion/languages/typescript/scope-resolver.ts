@@ -106,6 +106,8 @@ function makeTsResolveImportTarget(): ScopeResolver['resolveImportTarget'] {
 }
 
 const typescriptScopeResolver: ScopeResolver = {
+  // Construction is keyword-prefixed: `new Service(db).doWork()` (#2708).
+  constructionSyntax: { keyword: 'new' },
   language: SupportedLanguages.TypeScript,
   languageProvider: typescriptProvider,
   importEdgeReason: 'typescript-scope: import',

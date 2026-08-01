@@ -73,8 +73,12 @@ describe('CALL_SUMMARY relation-type exclusion (U-C1)', () => {
 });
 
 describe('CALL_SUMMARY incremental reuse gate (U-C5)', () => {
-  it('INCREMENTAL_SCHEMA_VERSION is bumped to 20 (named-receiver lexical fallback, #2699)', () => {
-    expect(INCREMENTAL_SCHEMA_VERSION).toBe(20);
+  it('INCREMENTAL_SCHEMA_VERSION is bumped to 32 (Rust/Swift/JS-TS member-containment DDL, #2769)', () => {
+    // Moves with every bump BY DESIGN — that is the point of pinning it. A
+    // change that alters emitted ids or edges without bumping would otherwise
+    // ship silently, and an existing index would keep serving the old graph
+    // through the reuse gate below.
+    expect(INCREMENTAL_SCHEMA_VERSION).toBe(32);
   });
 
   it('a pre-current stamp fails the `=== INCREMENTAL_SCHEMA_VERSION` reuse gate → forces full re-analyze', () => {
@@ -155,7 +159,61 @@ describe('CALL_SUMMARY incremental reuse gate (U-C5)', () => {
     // `const baseUrl`) — 709 of them on a 762-file corpus. Reusing it would keep
     // every one on unchanged files.
     expect(passesReuseGate(19)).toBe(false);
-    // A current-version stamp passes the gate (incremental top-up eligible).
-    expect(passesReuseGate(20)).toBe(true);
+    // A pre-v21 (v20) index predates closure bindings becoming call SOURCES in
+    // PHP/Rust/Kotlin/Ruby/Dart, the Rust graph node for `let f = || …`, the Dart
+    // closure scope + enclosing-callable identity, and position-qualified
+    // function-local VALUES. All of those change emitted ids and edges on files
+    // that did not themselves change, so reusing a v20 index keeps serving the
+    // old attribution — including the Dart case where two same-named closures
+    // collapsed onto one node and asserted a CALLS edge present nowhere in the
+    // source.
+    expect(passesReuseGate(20)).toBe(false);
+    // A pre-v22 (v21) index predates CommonJS export indexing (#2723): every
+    // unchanged CJS file would keep its pre-fix graph → must NOT reuse.
+    expect(passesReuseGate(21)).toBe(false);
+    // A pre-v23 (v22) index predates Rust module-qualified call resolution
+    // (#2730): every unchanged Rust file would keep the same-name self-loop and
+    // keep reporting the real callee as unreached → must NOT reuse.
+    expect(passesReuseGate(22)).toBe(false);
+    // A pre-v24 (v23) index predates the #2708 inline-constructor receivers.
+    expect(passesReuseGate(23)).toBe(false);
+    // A pre-v25 (v24) index predates `unresolvedReceiverMembers` (#2744). An
+    // absent summary is indistinguishable from "nothing was dropped", so a
+    // top-up would keep reporting `epistemic: 'exact'` for exactly the symbols
+    // whose callers were dropped → must NOT reuse.
+    expect(passesReuseGate(24)).toBe(false);
+    // A pre-v26 (v25) index typed receivers from source TEXT, so `svc?.m().n()`,
+    // `svc!.m().n()` and `svc.m<T>().n()` emitted no CALLS edge — and two of the
+    // three recorded no drop either, so the count still claimed `exact`. A
+    // changed-files top-up keeps both the missing edge and the false confidence
+    // for every unchanged file → must NOT reuse.
+    expect(passesReuseGate(25)).toBe(false);
+    // A pre-v27 (v26) index was stamped by an intermediate build of this same
+    // series: structural typing was TypeScript-only at that point, and the fold
+    // still typed a bare identifier that merely shadowed a class name as that
+    // class — so such an index carries both pre-rollout edges for 13 languages
+    // and fabricated ones. The gate is a strict `===`, so it must NOT reuse.
+    expect(passesReuseGate(26)).toBe(false);
+    // A pre-v28 (v27) index was stamped mid-series: TypeScript-only structural
+    // typing, and the fold still typed a local that merely shadowed a class name
+    // as that class — so it carries pre-rollout edges AND fabricated ones.
+    expect(passesReuseGate(27)).toBe(false);
+    // A pre-v29 (v28) index lacks Class→CodeElement relation schema support,
+    // so Spring @Bean injection edges (#2413) would be dropped during
+    // persistence → must NOT reuse.
+    expect(passesReuseGate(28)).toBe(false);
+    // A pre-v30 (v29) index keeps wrapper-line startLines for multi-line closure
+    // bindings (#2735), so the graph-to-scope join still drops the CALLS edge.
+    expect(passesReuseGate(29)).toBe(false);
+    // A pre-v31 (v30) index treats `from pkg import models` as a named package
+    // import, so unchanged files retain the old missing qualified CALLS edges.
+    expect(passesReuseGate(30)).toBe(false);
+    // A pre-v32 (v31) index predates the Rust impl/trait, JS/TS object-literal
+    // and Swift member-containment relation pairs (#2769), so an incremental
+    // top-up emitting one of those edges would fail the bulk COPY (or silently
+    // drop it on the streamed path) → must NOT reuse.
+    expect(passesReuseGate(31)).toBe(false);
+    // The current stamp passes the gate (incremental top-up eligible).
+    expect(passesReuseGate(32)).toBe(true);
   });
 });

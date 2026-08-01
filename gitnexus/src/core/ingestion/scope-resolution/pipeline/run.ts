@@ -605,6 +605,8 @@ export function runScopeResolution(
           parsedFiles,
           parsedImport,
         }),
+      isNamespaceImport: (parsedImport, targetFile, fromFile) =>
+        provider.isNamespaceImport?.(parsedImport, targetFile, fromFile) ?? false,
       expandsWildcardTo: (targetModuleScope) =>
         provider.expandsWildcardTo?.(targetModuleScope, parsedFiles) ?? [],
       mergeBindings: (existing, incoming, scopeId) =>
@@ -840,6 +842,7 @@ export function runScopeResolution(
           freeCallsRequireInstanceOwnership: provider.freeCallsRequireInstanceOwnership === true,
           isCallableVisibleFromCaller: provider.isCallableVisibleFromCaller,
           resolveAdlCandidates: provider.resolveAdlCandidates,
+          resolveQualifiedFreeCall: provider.resolveQualifiedFreeCall,
           conversionRankFn: provider.conversionRankFn,
           conversionOnlyArgTypePrefixes: provider.conversionOnlyArgTypePrefixes,
           constraintCompatibility: provider.constraintCompatibility,

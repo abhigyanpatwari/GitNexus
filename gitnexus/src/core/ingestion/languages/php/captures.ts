@@ -46,6 +46,7 @@ import { recordCacheHit, recordCacheMiss } from './cache-stats.js';
 import { getTreeSitterBufferSize } from '../../constants.js';
 import { parseSourceSafe } from '../../../tree-sitter/safe-parse.js';
 import { synthesizeCallableFlowCaptures } from '../../utils/callable-flow-captures.js';
+import { synthesizeReceiverChainCapture } from '../../utils/receiver-chain-captures.js';
 
 type SyntaxNode = ReturnType<ReturnType<typeof getPhpParser>['parse']>['rootNode'];
 
@@ -228,6 +229,12 @@ export function emitPhpScopeCaptures(
         }
       }
       // Defensive fallback: emit the raw match.
+      // Structural receiver chain for a call whose receiver is itself an
+      // expression, so resolution can type it by folding over structure
+      // instead of re-parsing the receiver's source text. Self-gating: a
+      // non-call match, an absent receiver, or a chain with no nameable base
+      // all leave `grouped` untouched.
+      synthesizeReceiverChainCapture(grouped, nodeMap['@reference.receiver']);
       out.push(grouped);
       continue;
     }
@@ -235,6 +242,12 @@ export function emitPhpScopeCaptures(
     // Synthesize `$this` / `parent` receiver type-bindings on every
     // non-static method-like. Mirrors C#'s `this` / `base` synthesis.
     if (grouped['@scope.function'] !== undefined) {
+      // Structural receiver chain for a call whose receiver is itself an
+      // expression, so resolution can type it by folding over structure
+      // instead of re-parsing the receiver's source text. Self-gating: a
+      // non-call match, an absent receiver, or a chain with no nameable base
+      // all leave `grouped` untouched.
+      synthesizeReceiverChainCapture(grouped, nodeMap['@reference.receiver']);
       out.push(grouped);
       const fnNode = nodeIfType(nodeMap['@scope.function'], ...FUNCTION_NODE_TYPES);
       if (fnNode !== null) {
@@ -338,6 +351,12 @@ export function emitPhpScopeCaptures(
       }
     }
 
+    // Structural receiver chain for a call whose receiver is itself an
+    // expression, so resolution can type it by folding over structure
+    // instead of re-parsing the receiver's source text. Self-gating: a
+    // non-call match, an absent receiver, or a chain with no nameable base
+    // all leave `grouped` untouched.
+    synthesizeReceiverChainCapture(grouped, nodeMap['@reference.receiver']);
     out.push(grouped);
   }
 

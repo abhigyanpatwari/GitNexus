@@ -24,6 +24,8 @@ import { loadCsharpResolutionConfig, type CsharpResolutionConfig } from './resol
 import { unwrapCsharpCollectionAccessor } from './accessor-unwrap.js';
 
 const csharpScopeResolver: ScopeResolver = {
+  // Construction is keyword-prefixed: `new Service(db).doWork()` (#2708).
+  constructionSyntax: { keyword: 'new' },
   language: SupportedLanguages.CSharp,
   languageProvider: csharpProvider,
   importEdgeReason: 'csharp-scope: using',
