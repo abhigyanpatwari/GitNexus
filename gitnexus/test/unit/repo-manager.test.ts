@@ -23,6 +23,7 @@ import {
   readRegistry,
   loadCLIConfig,
   registerRepo,
+  unregisterRepo,
   removeBranchIndex,
   adoptFlatBranchLabel,
   listRegisteredRepos,
@@ -38,6 +39,7 @@ import {
   type RegistryEntry,
   type RepoMeta,
 } from '../../src/storage/repo-manager.js';
+import { acquireIndexLock } from '../../src/storage/index-lock.js';
 import { parseRepoNameFromUrl, getInferredRepoName } from '../../src/storage/git.js';
 import { execSync } from 'child_process';
 import { createTempDir } from '../helpers/test-db.js';
@@ -921,6 +923,53 @@ describe('registerRepo name override + collision guard (#829)', () => {
       await Promise.all(repos.map((repo) => repo.cleanup()));
     }
   });
+
+  it('keeps an overlapping unregisterRepo and registerRepo from clobbering each other', async () => {
+    await registerRepo(tmpRepoA.dbPath, meta, { name: 'stays' });
+    await registerRepo(tmpRepoB.dbPath, meta, { name: 'goes' });
+    const added = await createTempDir('gitnexus-concurrent-added-');
+
+    try {
+      await Promise.all([
+        unregisterRepo(tmpRepoB.dbPath),
+        registerRepo(added.dbPath, meta, { name: 'added' }),
+      ]);
+
+      const entries = await listRegisteredRepos();
+      expect(new Set(entries.map((entry) => entry.name))).toEqual(new Set(['stays', 'added']));
+    } finally {
+      await added.cleanup();
+    }
+  });
+
+  it('registers while an index lock is held on the global directory (#2716)', async () => {
+    // A repo rooted at the user's home directory makes the per-repo analyze
+    // lock target `~/.gitnexus` — the very directory the registry lock would
+    // take if it shared that namespace. `runFullAnalysis` holds the per-repo
+    // lock across its call to `registerRepo` and `acquireIndexLock` is not
+    // reentrant, so a shared namespace self-deadlocks until the wait ceiling
+    // and then degrades. The registry lock lives in its own sub-directory, so
+    // the registration must contend with nothing: no wait announcement, no
+    // degraded-write warning. Asserted on the log rather than elapsed time —
+    // the outcome is what matters, and it stays deterministic on a slow runner.
+    const capture = _captureLogger();
+    const held = await acquireIndexLock(tmpHome.dbPath);
+    try {
+      await registerRepo(tmpRepoA.dbPath, meta, { name: 'home-rooted' });
+    } finally {
+      held.release();
+      capture.restore();
+    }
+
+    expect(capture.records().map((record) => record.msg)).not.toContain(
+      'Waiting for another GitNexus process to finish a registry update…',
+    );
+    expect(capture.records().map((record) => record.msg)).not.toContain(
+      'Timed out waiting for the global registry lock; proceeding without it. A concurrent registry write may be lost.',
+    );
+    const entries = await listRegisteredRepos();
+    expect(entries.map((entry) => entry.name)).toEqual(['home-rooted']);
+  });
 });
 
 // ─── registerRepo branch nesting (#2106) ─────────────────────────────
@@ -1033,6 +1082,24 @@ describe('registerRepo branch nesting (#2106)', () => {
     await removeBranchIndex(tmpRepo.dbPath, 'feature/x');
     const [entry] = await listRegisteredRepos();
     expect(entry.branches?.map((b) => b.branch)).toEqual(['feature/y']);
+  });
+
+  it('overlapping removeBranchIndex calls drop both summaries (#2716)', async () => {
+    await registerRepo(tmpRepo.dbPath, metaFor('main', 'aaa1111'));
+    await registerRepo(tmpRepo.dbPath, metaFor('feature/x', 'bbb2222'), { branch: 'feature/x' });
+    await registerRepo(tmpRepo.dbPath, metaFor('feature/y', 'ccc3333'), { branch: 'feature/y' });
+
+    // Unserialized, both writers read the same two-branch snapshot and the
+    // last rename wins — one summary survives as a lost update.
+    const removed = await Promise.all([
+      removeBranchIndex(tmpRepo.dbPath, 'feature/x'),
+      removeBranchIndex(tmpRepo.dbPath, 'feature/y'),
+    ]);
+
+    expect(removed).toEqual([true, true]);
+    const [entry] = await listRegisteredRepos();
+    expect(entry.branch).toBe('main'); // primary intact
+    expect(entry.branches).toBeUndefined();
   });
 
   // ─── adoptFlatBranchLabel (#2354) ───────────────────────────────────
