@@ -27,6 +27,7 @@ export async function queryClassBeanMetadata(
         lbugPath,
         `${pattern}
          WHERE r.type = 'DECLARES'
+           AND r.reason STARTS WITH 'spring-bean-factory:'
          RETURN r.reason AS reason
          LIMIT 1`,
         { symbolId },

@@ -534,7 +534,7 @@ SERVICE: optional monorepo path prefix (case-sensitive path segments). When "rep
           type: 'array',
           items: { type: 'string' },
           description:
-            'Filter: CALLS, IMPORTS, EXTENDS, IMPLEMENTS, HAS_METHOD, HAS_PROPERTY, METHOD_OVERRIDES, METHOD_IMPLEMENTS, ACCESSES (default: usage-based, ACCESSES excluded by default). DI edges (consumer Class or factory Method → provider Class or declaration CodeElement) require explicitly including INJECTS.',
+            'Filter: CALLS, IMPORTS, EXTENDS, IMPLEMENTS, HAS_METHOD, HAS_PROPERTY, METHOD_OVERRIDES, METHOD_IMPLEMENTS, ACCESSES (default: usage-based, ACCESSES excluded by default). DI edges require INJECTS; Spring proxy/advice edges require ADVISED_BY.',
         },
         includeTests: { type: 'boolean', description: 'Include test files (default: false)' },
         minConfidence: {
