@@ -76,13 +76,14 @@ matching:
 
   it('reports a proven manifest crossing when the far endpoint has only a synthetic UID', async () => {
     const impactByUid = vi.fn(async () => null);
+    const resolveRepo = vi.fn(async (name: string) => ({
+      id: name,
+      name,
+      repoPath: name,
+      storagePath: path.join(home, name),
+    }));
     const port: GroupToolPort = {
-      resolveRepo: vi.fn(async (name) => ({
-        id: name,
-        name,
-        repoPath: name,
-        storagePath: path.join(home, name),
-      })),
+      resolveRepo,
       impact: vi.fn(async () => ({
         target: {
           id: 'Function:src/functions.ts:executeAddDynamicLinkMS',
@@ -125,6 +126,53 @@ matching:
       }),
     ]);
     expect(result.truncated).toBe(false);
+    expect(resolveRepo).toHaveBeenCalledWith('app-registry');
+    expect(impactByUid).not.toHaveBeenCalled();
+  });
+
+  it('keeps an unavailable synthetic neighbor truncated instead of reporting a hit', async () => {
+    const impactByUid = vi.fn(async () => null);
+    const port: GroupToolPort = {
+      resolveRepo: vi.fn(async (name) => {
+        if (name === 'app-registry') throw new Error('repository unavailable');
+        return {
+          id: name,
+          name,
+          repoPath: name,
+          storagePath: path.join(home, name),
+        };
+      }),
+      impact: vi.fn(async () => ({
+        target: {
+          id: 'Function:src/functions.ts:executeAddDynamicLinkMS',
+          filePath: 'src/functions.ts',
+        },
+        byDepth: {},
+        summary: { direct: 0, processes_affected: 0, modules_affected: 0 },
+        risk: 'LOW',
+      })),
+      impactByUid,
+      query: vi.fn(),
+      context: vi.fn(),
+    };
+
+    const result = await runGroupImpact(
+      { port, gitnexusDir: home },
+      {
+        name: 'waveful',
+        repo: 'backend',
+        target: 'executeAddDynamicLinkMS',
+        direction: 'upstream',
+      },
+    );
+
+    expect('error' in result).toBe(false);
+    if ('error' in result) return;
+
+    expect(result.cross).toEqual([]);
+    expect(result.summary.cross_repo_hits).toBe(0);
+    expect(result.truncated).toBe(true);
+    expect(result.truncatedRepos).toEqual(['app']);
     expect(impactByUid).not.toHaveBeenCalled();
   });
 });
