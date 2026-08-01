@@ -55,10 +55,12 @@ import {
   isSpringAutoConfigurationDeclaration,
   isSpringAutoConfigurationSyntheticClass,
 } from '../ingestion/frameworks/spring/auto-configuration.js';
+import { isSpringAopEvidenceNode } from '../ingestion/frameworks/spring/aop.js';
 
 const isGraphWideNode = (node: GraphNode): boolean =>
   node.label === 'Community' ||
   node.label === 'Process' ||
+  isSpringAopEvidenceNode(node) ||
   isSpringAutoConfigurationSyntheticClass(node);
 
 /**
@@ -98,6 +100,10 @@ const isGraphWideRelationship = (relationship: GraphRelationship): boolean =>
   relationship.type === 'TAINT_PATH' ||
   relationship.type === 'CALL_SUMMARY' ||
   relationship.type === 'INJECTS' ||
+  // Spring pointcut matching (#2416) is repository-wide. A third-file change
+  // can alter annotation-name visibility or the set matched by a wildcard,
+  // even when neither endpoint file changed.
+  relationship.type === 'ADVISED_BY' ||
   isSpringAutoConfigurationDeclaration(relationship);
 
 /**
@@ -144,10 +150,13 @@ export const extractChangedSubgraph = (
 
 /**
  * Public — derive the EFFECTIVE write-set: `toWriteSet` expanded by one
- * hop along every edge in the new graph that crosses the writable
- * boundary (one endpoint in a writable file, the other in an unchanged
- * file). The unchanged-side file is pulled in so its stale rows are
- * deleted + rewritten in lockstep with the changed side.
+ * hop along every file-owned edge in the new graph that crosses the
+ * writable boundary (one endpoint in a writable file, the other in an
+ * unchanged file). Graph-wide relationships are excluded: their owner
+ * phase delete-alls and re-extracts them independently, so following them
+ * here would turn high-fan-out metadata into a near-full-repository write.
+ * For ordinary edges, the unchanged-side file is pulled in so its stale
+ * rows are deleted + rewritten in lockstep with the changed side.
  *
  * Single pass over the edge list. Does NOT mutate `toWriteSet`. The
  * orchestrator MUST feed the returned set to both `deleteNodesForFiles`
@@ -161,6 +170,7 @@ export const computeEffectiveWriteSet = (
   const nodeFilePaths = indexNodeFilePaths(fullGraph);
   const expanded = new Set<string>(toWriteSet);
   fullGraph.forEachRelationship((r: GraphRelationship) => {
+    if (isGraphWideRelationship(r)) return;
     const sourcePath = nodeFilePaths.get(r.sourceId);
     const targetPath = nodeFilePaths.get(r.targetId);
     if (!sourcePath || !targetPath) return; // skip edges to graph-wide nodes

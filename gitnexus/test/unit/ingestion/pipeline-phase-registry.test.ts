@@ -76,6 +76,7 @@ const FULL_ORDER = [
   'crossFile',
   'scopeResolution',
   'springAutoConfiguration',
+  'springAop',
   'pruneLocalSymbols',
   'mro',
   'di',

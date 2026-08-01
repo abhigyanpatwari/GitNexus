@@ -20,6 +20,7 @@ import { getKotlinParser, getKotlinScopeQuery } from './query.js';
 import { markCompanionScope } from './companion-scopes.js';
 import {
   setKotlinClassAnnotationFacts,
+  setKotlinSpringAopFacts,
   setKotlinSpringConditionalFacts,
   setKotlinSpringDiFacts,
 } from './capture-side-channel.js';
@@ -27,6 +28,7 @@ import { captureKotlinPackageFact } from './package-facts.js';
 import { synthesizeCallableFlowCaptures } from '../../utils/callable-flow-captures.js';
 import { captureKotlinSpringDiClassFact, type KotlinSpringDiClassFact } from './spring-di.js';
 import { synthesizeReceiverChainCapture } from '../../utils/receiver-chain-captures.js';
+import { captureKotlinSpringAopFacts, type KotlinSpringAopFact } from './spring-aop.js';
 import {
   captureKotlinSpringConditionalFacts,
   type KotlinSpringConditionalFact,
@@ -93,6 +95,8 @@ export function emitKotlinScopeCaptures(
 
   const out: CaptureMatch[] = [];
   const classAnnotations = new Map<ScopeId, Set<string>>();
+  const springAopFacts: KotlinSpringAopFact[] = [];
+  const springAopTypeNodeIds = new Set<number>();
   const springConditionalFacts: KotlinSpringConditionalFact[] = [];
   const springDiFacts: KotlinSpringDiClassFact[] = [];
   const springDiClassNodeIds = new Set<number>();
@@ -118,6 +122,17 @@ export function emitKotlinScopeCaptures(
       groupedNodes[tag] = capture.node;
     }
     if (Object.keys(grouped).length === 0) continue;
+
+    // tree-sitter-kotlin represents both classes and interfaces with
+    // `class_declaration`; `object_declaration` is the separate object form.
+    const springAopTypeNode = [
+      nodeIfType(groupedNodes['@scope.class'], 'class_declaration'),
+      nodeIfType(groupedNodes['@scope.class'], 'object_declaration'),
+    ].find((node): node is SyntaxNode => node !== null);
+    if (springAopTypeNode !== undefined && !springAopTypeNodeIds.has(springAopTypeNode.id)) {
+      springAopTypeNodeIds.add(springAopTypeNode.id);
+      springAopFacts.push(...captureKotlinSpringAopFacts(springAopTypeNode, filePath));
+    }
 
     const springDiClassNode = nodeIfType(groupedNodes['@scope.class'], 'class_declaration');
     if (springDiClassNode !== null && !springDiClassNodeIds.has(springDiClassNode.id)) {
@@ -323,6 +338,7 @@ export function emitKotlinScopeCaptures(
   }
 
   setKotlinClassAnnotationFacts(filePath, materializeClassAnnotationFacts(classAnnotations));
+  setKotlinSpringAopFacts(filePath, springAopFacts);
   setKotlinSpringConditionalFacts(filePath, springConditionalFacts);
   setKotlinSpringDiFacts(filePath, springDiFacts);
   out.push(...synthesizeCallableFlowCaptures(tree.rootNode, KOTLIN_CALLABLE_CAPTURE_OPTIONS));

@@ -3,6 +3,7 @@ import {
   normalizeSpringBeanType,
   parseSpringAnnotationArguments,
   parseStaticClassLiteral,
+  parseStaticStringLiteral,
   parseStaticStringValues,
 } from '../../src/core/ingestion/frameworks/spring/annotation-arguments.js';
 import {
@@ -43,6 +44,31 @@ describe('Spring annotation static arguments', () => {
     expect(parseStaticClassLiteral('Concrete.class')).toBe('Concrete');
     expect(parseStaticClassLiteral('Concrete::class')).toBe('Concrete');
     expect(parseStaticClassLiteral('Object.class')).toBe('');
+  });
+
+  it('parses static Kotlin raw strings and rejects raw string templates', () => {
+    expect(parseStaticStringLiteral('"""within(com.example.service.KotlinOrderService)"""')).toBe(
+      'within(com.example.service.KotlinOrderService)',
+    );
+    expect(parseStaticStringValues('["one", """two, three"""]')).toEqual(['one', 'two, three']);
+
+    expect(parseStaticStringLiteral('"""bean-$name"""')).toBeNull();
+    expect(parseStaticStringLiteral('"""bean-${expression}"""')).toBeNull();
+    expect(parseStaticStringValues('["""static""", """$name"""]')).toBeNull();
+  });
+
+  it('keeps commas, assignments, and ordinary quotes inside Kotlin raw arguments', () => {
+    expect(
+      parseSpringAnnotationArguments(
+        '@AfterReturning(pointcut = """execution(* com.example.Service.run(*,*)) && args("quoted=value")""", returning = "result")',
+      ),
+    ).toEqual([
+      {
+        name: 'pointcut',
+        value: '"""execution(* com.example.Service.run(*,*)) && args("quoted=value")"""',
+      },
+      { name: 'returning', value: '"result"' },
+    ]);
   });
 
   it('normalizes Kotlin nullability, mutable collections, projections, and bean generics', () => {
