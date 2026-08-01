@@ -27,3 +27,19 @@ export const SPRING_CONDITIONALS_FEATURE: AnalysisFeatureDescriptor = {
   version: 1,
   appliesTo: (filePaths) => filePaths.some(isSpringConditionOrAutoConfigurationFile),
 };
+
+/**
+ * Candidate-language approximation, not a claim that the file contains AOP.
+ * Kotlin scripts are included because `.kts` is a supported Kotlin input.
+ */
+function isJvmSourceFile(filePath: string): boolean {
+  const normalized = filePath.replaceAll('\\', '/').toLowerCase();
+  return normalized.endsWith('.java') || normalized.endsWith('.kt') || normalized.endsWith('.kts');
+}
+
+/** Durable completeness contract for Spring proxy/advice evidence (#2416). */
+export const SPRING_AOP_FEATURE: AnalysisFeatureDescriptor = {
+  id: 'spring.aop-advice',
+  version: 1,
+  appliesTo: (filePaths) => filePaths.some(isJvmSourceFile),
+};

@@ -116,6 +116,7 @@ describe('LadybugDB Schema', () => {
     it('includes Spring condition and auto-configuration edge types (#2415)', () => {
       expect(REL_TYPES).toContain('CONDITIONAL_ON');
       expect(REL_TYPES).toContain('DECLARES');
+      expect(REL_TYPES).toContain('ADVISED_BY');
       expect(REL_TYPES).not.toContain('AUTO_REGISTERS');
     });
   });
@@ -209,8 +210,9 @@ describe('LadybugDB Schema', () => {
       expect(RELATION_SCHEMA).toContain('FROM BasicBlock TO BasicBlock');
     });
 
-    it('persists consumer Class injection edges to synthetic provider declarations', () => {
+    it('persists class-like framework edges to synthetic declarations (#2416)', () => {
       expect(RELATION_SCHEMA).toContain('FROM Class TO CodeElement');
+      expect(RELATION_SCHEMA).toContain('FROM Interface TO CodeElement');
     });
 
     it('declares the Swift enum/property member-containment pairs (#2769)', () => {

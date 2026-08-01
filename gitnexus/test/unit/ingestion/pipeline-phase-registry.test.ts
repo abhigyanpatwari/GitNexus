@@ -76,15 +76,22 @@ const FULL_ORDER = [
   'crossFile',
   'scopeResolution',
   'springAutoConfiguration',
+  'springAop',
   'pruneLocalSymbols',
   'mro',
+  'springAopInheritance',
   'di',
   'communities',
   'processes',
 ];
 
 const WITHOUT_GRAPH_PHASES = FULL_ORDER.filter(
-  (n) => n !== 'mro' && n !== 'di' && n !== 'communities' && n !== 'processes',
+  (n) =>
+    n !== 'mro' &&
+    n !== 'springAopInheritance' &&
+    n !== 'di' &&
+    n !== 'communities' &&
+    n !== 'processes',
 );
 
 describe('buildPhaseList parity (registry refactor, #2080)', () => {

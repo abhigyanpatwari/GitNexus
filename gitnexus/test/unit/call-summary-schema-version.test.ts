@@ -73,12 +73,12 @@ describe('CALL_SUMMARY relation-type exclusion (U-C1)', () => {
 });
 
 describe('CALL_SUMMARY incremental reuse gate (U-C5)', () => {
-  it('INCREMENTAL_SCHEMA_VERSION is bumped to 32 (Rust/Swift/JS-TS member-containment DDL, #2769)', () => {
+  it('INCREMENTAL_SCHEMA_VERSION is bumped to 33 (Spring AOP relation pairs, #2416)', () => {
     // Moves with every bump BY DESIGN — that is the point of pinning it. A
     // change that alters emitted ids or edges without bumping would otherwise
     // ship silently, and an existing index would keep serving the old graph
     // through the reuse gate below.
-    expect(INCREMENTAL_SCHEMA_VERSION).toBe(32);
+    expect(INCREMENTAL_SCHEMA_VERSION).toBe(33);
   });
 
   it('a pre-current stamp fails the `=== INCREMENTAL_SCHEMA_VERSION` reuse gate → forces full re-analyze', () => {
@@ -213,7 +213,10 @@ describe('CALL_SUMMARY incremental reuse gate (U-C5)', () => {
     // top-up emitting one of those edges would fail the bulk COPY (or silently
     // drop it on the streamed path) → must NOT reuse.
     expect(passesReuseGate(31)).toBe(false);
+    // A pre-v33 (v32) index predates the Spring AOP Interface→CodeElement
+    // relation pair (#2416), so it cannot persist all evidence edges.
+    expect(passesReuseGate(32)).toBe(false);
     // The current stamp passes the gate (incremental top-up eligible).
-    expect(passesReuseGate(32)).toBe(true);
+    expect(passesReuseGate(33)).toBe(true);
   });
 });
