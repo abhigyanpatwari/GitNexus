@@ -8,6 +8,7 @@ from types import SimpleNamespace
 import pytest
 
 from workflow_bench.evolution import (
+    CANDIDATE_SKILLS,
     MAX_CANDIDATE_ENTRIES,
     apply_candidate_overlay,
     candidate_overlay_digest,
@@ -16,6 +17,7 @@ from workflow_bench.evolution import (
     skill_fingerprint,
     unexercised_overlay_skills,
 )
+from workflow_bench.promotion_apply import MIRROR_SKILL_ROOTS
 from workflow_bench.process_control import ManagedProcessResult
 from workflow_bench.runner import aggregate, build_parser
 
@@ -601,3 +603,29 @@ def test_overlay_skills_must_be_exercised_by_selected_candidate_arms(tmp_path):
     write_overlay_skill(plan_overlay, "gitnexus-plan")
     assert unexercised_overlay_skills(plan_overlay, ["candidate_workflow_direct"]) == ["gitnexus-plan"]
     assert unexercised_overlay_skills(plan_overlay, ["candidate_workflow"]) == []
+
+
+@pytest.mark.parametrize("skill", sorted(CANDIDATE_SKILLS))
+def test_a_promoted_skill_is_visible_to_git_status_in_every_shipped_tree(skill):
+    """A promotion the repository cannot see is a promotion that never happens.
+
+    The workflow detects an applied promotion with `git status --porcelain`,
+    which is blind to ignored paths, and `.claude/skills/*` is ignored with a
+    hand-maintained per-skill allowlist. A candidate skill missing from that
+    allowlist would leave the run reporting "No promotion this run" after the
+    gate had already said promote — silently, and only after a full generation
+    of benchmark spend.
+    """
+    repo_root = Path(__file__).resolve().parents[2]
+    targets = [f".claude/skills/{skill}"] + [f"{root}/{skill}" for root in MIRROR_SKILL_ROOTS]
+    ignored = [
+        target
+        for target in targets
+        if subprocess.run(
+            ["git", "check-ignore", "-q", f"{target}/SKILL.md"],
+            cwd=repo_root,
+            check=False,
+        ).returncode
+        == 0
+    ]
+    assert ignored == []

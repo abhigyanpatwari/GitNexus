@@ -18,10 +18,13 @@ const workflowDocument = load(workflow) as {
     string,
     {
       environment?: unknown;
+      'timeout-minutes'?: unknown;
       steps?: Array<{
         name?: string;
+        if?: unknown;
         run?: unknown;
         uses?: string;
+        'timeout-minutes'?: unknown;
         with?: Record<string, unknown>;
       }>;
     }
@@ -117,6 +120,35 @@ describe('gitnexus skill-evolution workflow contract', () => {
     for (const step of runSteps) {
       expect(step.run, `${step.name} must set -euo pipefail`).toContain('set -euo pipefail');
     }
+  });
+
+  it('kills the benchmark with job time left to upload its evidence', () => {
+    // A job-level timeout cancels the job outright, so the upload step never
+    // runs and a multi-hour generation's evidence is lost. The sweep therefore
+    // needs its own, strictly shorter budget: a step timeout only fails that
+    // step, and the always() upload below still ships what it wrote.
+    const jobBudget = evolveJob?.['timeout-minutes'];
+    const loopStep = evolveJob?.steps?.find(
+      ({ name }) => name === 'Run the propose → benchmark → gate loop',
+    );
+    const stepBudget = loopStep?.['timeout-minutes'];
+    expect(typeof jobBudget).toBe('number');
+    expect(typeof stepBudget).toBe('number');
+    expect(stepBudget as number).toBeLessThan(jobBudget as number);
+    // The runner is an EC2 box an EventBridge schedule stops 24h after it
+    // starts; when the box goes the runner vanishes mid-step and nothing
+    // uploads. The job must finish inside that window even when the schedule
+    // fires late (the 2026-08-01 run was queued 65 minutes after the cron).
+    expect(jobBudget as number).toBeLessThanOrEqual(21 * 60);
+  });
+
+  it('uploads benchmark evidence unconditionally, on a path fixed before the sweep runs', () => {
+    const upload = evolveJob?.steps?.find(({ name }) => name === 'Upload benchmark evidence');
+    // The sweep appends results.jsonl and transcripts as it goes, so a killed
+    // generation still holds the evidence explaining why — and a path taken
+    // from the killed step's outputs is exactly what would not be there.
+    expect(upload?.if).toBe('always()');
+    expect(upload?.with?.path).toBe('${{ env.OUT_ROOT }}');
   });
 
   it('documents the App secrets and protected Environment on the activation checklist', () => {

@@ -111,15 +111,30 @@ jobs:
     # it — server-side enforcement a dispatched non-main ref cannot bypass by
     # editing its own workflow copy. See the activation checklist above.
     environment: gitnexus-evolution
-    timeout-minutes: 1440 # self-hosted ceiling is 5 days (7200min); 24h is a generous margin over a single-generation serial run
+    # Three budgets have to nest, longest first, or the evidence is lost:
+    #   EventBridge instance uptime (24h from ~02:45)
+    #     > this job timeout (21h)
+    #       > the benchmark step timeout (19h, set on the step below)
+    # A job-level timeout CANCELS the job, so the upload step never runs and a
+    # multi-hour generation's evidence dies with it; a step-level timeout only
+    # fails that step, and `if: always()` still uploads what the sweep wrote.
+    # The instance must outlive the job for the same reason — when the box
+    # stops the runner just disappears mid-step. Scheduled runs can start well
+    # after the cron (the 2026-08-01 run was queued 65min late), so the job
+    # budget has to absorb that delay and still land inside the uptime window.
+    timeout-minutes: 1260
     permissions:
       contents: read # The promotion PR uses a short-lived App token minted below.
+      actions: read # Read the previous run's evidence artifact to seed the proposer.
     env:
       GENERATIONS: ${{ inputs.generations || '1' }}
       RUNS: ${{ inputs.runs || '3' }}
       MODEL: ${{ inputs.model || 'claude-sonnet-5' }}
       PROPOSER_MODEL: ${{ inputs.proposer_model || 'claude-opus-4-8' }}
       INCLUDE_EXPENSIVE: ${{ inputs.include_expensive && '1' || '' }}
+      # Fixed, known before the sweep starts: the upload below must not depend
+      # on a step that may have been killed having reported an output.
+      OUT_ROOT: ${{ runner.temp }}/wfevolve
     steps:
       - name: Require the benchmark auth secret
         env:
@@ -214,21 +229,73 @@ jobs:
           # and mounts dependencies read-only, so the checkout is never mutated.
           ln -sfn "${GITHUB_WORKSPACE}" "${HOME}/GitNexus"
 
+      - name: Seed the proposer with the previous run's evidence
+        id: seed
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          # Without this the weekly lane is memoryless: `--seed-results` is the
+          # only way a run sees what already lost (evolve.summarize_gate feeds
+          # the prior promotion.json to the proposer as "what already lost"),
+          # and with the default --generations 1 there is no earlier generation
+          # in-process to supply it. Every Saturday would otherwise propose
+          # from a blank slate and could re-propose the same rejected candidate
+          # forever. Best-effort by design: a first run, an expired artifact,
+          # or a download failure must not cost a whole generation.
+          if ! command -v gh >/dev/null; then
+            echo '::warning::gh is not installed on this runner — proposing without prior evidence. The promotion-PR step needs gh too.'
+            exit 0
+          fi
+          previous="$(gh run list \
+            --repo "${GITHUB_REPOSITORY}" \
+            --workflow gitnexus-skill-evolution.yml \
+            --branch main \
+            --status success \
+            --limit 5 \
+            --json databaseId \
+            --jq "map(.databaseId) | map(select(. != ${GITHUB_RUN_ID})) | first // empty")"
+          if [[ -z "${previous}" ]]; then
+            echo 'No prior successful run to seed from; the proposer starts from the learnings queue only.'
+            exit 0
+          fi
+          seed_root="${RUNNER_TEMP}/wfseed"
+          rm -rf "${seed_root}"
+          mkdir -p "${seed_root}"
+          if ! gh run download "${previous}" --repo "${GITHUB_REPOSITORY}" --dir "${seed_root}"; then
+            echo "::warning::Evidence from run ${previous} could not be downloaded (expired past its retention?); proposing without it."
+            exit 0
+          fi
+          # The artifact holds gen-N/bench/{results.jsonl,promotion.json,...};
+          # the highest generation is the one that actually reached the gate.
+          latest="$(find "${seed_root}" -type f -path '*/gen-*/bench/results.jsonl' | sort -V | tail -1)"
+          if [[ -z "${latest}" ]]; then
+            echo "::warning::Run ${previous} uploaded no benchmark results; proposing without prior evidence."
+            exit 0
+          fi
+          echo "Seeding the proposer from run ${previous}: $(dirname "${latest}")"
+          echo "seed=$(dirname "${latest}")" >> "${GITHUB_OUTPUT}"
+
       - name: Run the propose → benchmark → gate loop
         id: loop
+        # Kill the sweep with time left in the job to upload what it produced.
+        # See the budget nesting on the job above.
+        timeout-minutes: 1140
         env:
           GITNEXUS_BENCH_AUTH_TOKEN: ${{ secrets.GITNEXUS_BENCH_AUTH_TOKEN }}
           # The step's stdout is a pipe, so CPython block-buffers it and a
           # multi-hour generation would report nothing until it exits (run
           # 29907431284 emitted every line at the same timestamp, 14h45m in).
           PYTHONUNBUFFERED: '1'
+          SEED_RESULTS: ${{ steps.seed.outputs.seed }}
         run: |
           set -euo pipefail
-          out_root="${RUNNER_TEMP}/wfevolve"
-          echo "out_root=${out_root}" >> "${GITHUB_OUTPUT}"
           extra=()
           if [[ -n "${INCLUDE_EXPENSIVE}" ]]; then
             extra+=(--include-expensive)
+          fi
+          if [[ -n "${SEED_RESULTS}" ]]; then
+            extra+=(--seed-results "${SEED_RESULTS}")
           fi
           uv run --locked --extra dev python -m workflow_bench.evolve \
             --tasks workflow_bench/tasks.scenarios.yaml \
@@ -237,24 +304,25 @@ jobs:
             --generations "${GENERATIONS}" \
             --runs "${RUNS}" \
             --claude-bin "${RUNNER_TEMP}/claude-canary/node_modules/@anthropic-ai/claude-code-linux-x64/claude" \
-            --out-root "${out_root}" \
+            --out-root "${OUT_ROOT}" \
             --apply \
             "${extra[@]}"
         working-directory: eval
 
       - name: Upload benchmark evidence
-        if: always() && steps.loop.outputs.out_root != ''
+        # Unconditional: the sweep writes results.jsonl and transcripts as it
+        # goes, so a killed or failed generation still has evidence worth
+        # keeping — and that is exactly the run whose evidence is needed.
+        if: always()
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: gitnexus-evolution-${{ github.run_id }}-${{ github.run_attempt }}
-          path: ${{ steps.loop.outputs.out_root }}
+          path: ${{ env.OUT_ROOT }}
           retention-days: 14
           if-no-files-found: warn
 
       - name: Detect and bound the applied promotion
         id: promotion
-        env:
-          OUT_ROOT: ${{ steps.loop.outputs.out_root }}
         run: |
           set -euo pipefail
           changed="$(git status --porcelain)"
