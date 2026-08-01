@@ -150,6 +150,7 @@ export function extract(
         d.range,
         d.filePath,
         d.ownsReceivers,
+        d.lexicalNames,
       );
     }
   }
@@ -314,6 +315,7 @@ interface ScopeDraft {
   readonly ownedDefs: SymbolDefinition[];
   readonly imports: ImportEdge[];
   readonly typeBindings: Map<string, TypeRef>;
+  readonly lexicalNames?: ReadonlySet<string>;
   /** See `Scope.ownsReceivers` — set once at pass 1, never mutated. */
   readonly ownsReceivers?: ReadonlySet<string>;
 }
@@ -371,6 +373,7 @@ function draftToScope(draft: ScopeDraft): Scope {
     ownedDefs: Object.freeze(draft.ownedDefs.slice()),
     imports: Object.freeze(draft.imports.slice()),
     typeBindings: new Map(draft.typeBindings),
+    lexicalNames: draft.lexicalNames,
     ownsReceivers: draft.ownsReceivers,
   };
 }
@@ -448,6 +451,7 @@ function pass1BuildScopes(
         cand.range,
         filePath,
         provider.scopeOwnsReceivers?.(cand.match),
+        parseScopeLexicalNames(cand.match),
       ),
     );
     stack.push(cand);
@@ -494,6 +498,7 @@ function makeDraft(
   range: Range,
   filePath: string,
   ownsReceivers?: ReadonlySet<string>,
+  lexicalNames?: ReadonlySet<string>,
 ): ScopeDraft {
   return {
     id,
@@ -505,8 +510,24 @@ function makeDraft(
     ownedDefs: [],
     imports: [],
     typeBindings: new Map(),
+    lexicalNames,
     ownsReceivers,
   };
+}
+
+function parseScopeLexicalNames(match: CaptureMatch): ReadonlySet<string> | undefined {
+  const raw = match['@scope.lexical-names']?.text;
+  if (raw === undefined) return undefined;
+  try {
+    const parsed: unknown = JSON.parse(raw);
+    if (!Array.isArray(parsed)) return undefined;
+    const names = parsed.filter(
+      (name): name is string => typeof name === 'string' && name.length > 0,
+    );
+    return names.length > 0 ? new Set(names) : undefined;
+  } catch {
+    return undefined;
+  }
 }
 
 // ─── Pass 2: attach declarations + local bindings ──────────────────────────
@@ -1490,6 +1511,7 @@ function rangesEqual(a: Range, b: Range): boolean {
  * change.
  */
 const KNOWN_SUB_TAGS: ReadonlySet<string> = new Set<string>([
+  '@scope.lexical-names',
   '@declaration.name',
   '@declaration.qualified_name',
   '@import.name',
