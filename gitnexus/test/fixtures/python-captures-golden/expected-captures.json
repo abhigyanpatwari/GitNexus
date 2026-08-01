@@ -341,7 +341,7 @@
   },
   "python-from-module-alias/pkg/app.py": {
     "captureGroups": 23,
-    "digest": "afb50d3e98def472f9215e986dd4f964eedd197a9acfc8048d92b882e8fe868a"
+    "digest": "eac5246ce801935a97cb9be9f55a3307bd86392bdac8fec8715171485d82a90e"
   },
   "python-from-module-alias/pkg/models.py": {
     "captureGroups": 14,
