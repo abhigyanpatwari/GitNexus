@@ -1939,7 +1939,7 @@ export const resolveRegistryEntry = (entries: RegistryEntry[], target: string): 
  * therefore "not confirmed present," not "confirmed present"; downstream DB
  * opens are independently and lazily guarded.
  */
-const listRegisteredReposUnlocked = async (opts?: {
+export const listRegisteredRepos = async (opts?: {
   validate?: boolean;
 }): Promise<RegistryEntry[]> => {
   const entries = await readRegistry();
@@ -1989,20 +1989,25 @@ const listRegisteredReposUnlocked = async (opts?: {
     }
   }
 
-  // If we pruned any entries, save the cleaned registry
+  // If we pruned any entries, save the cleaned registry — under the lock, and
+  // only then. The validation walk above is read-only (an fs.access per entry,
+  // slow on a network mount or a large registry) and the common case prunes
+  // nothing, so holding the global lock across it would serialize every
+  // `gitnexus augment` behind unrelated registry work for no benefit. Re-read
+  // inside the lock and drop the provably-absent paths from that fresh
+  // snapshot, so a concurrent registration in the validation window survives.
   if (valid.length !== entries.length) {
-    await writeRegistry(valid);
+    const pruned = new Set(
+      entries.filter((entry) => !valid.includes(entry)).map((entry) => entry.path),
+    );
+    await withRegistryLock(async () => {
+      const fresh = await readRegistry();
+      await writeRegistry(fresh.filter((entry) => !pruned.has(entry.path)));
+    });
   }
 
   return valid;
 };
-
-export const listRegisteredRepos = async (opts?: {
-  validate?: boolean;
-}): Promise<RegistryEntry[]> =>
-  opts?.validate
-    ? withRegistryLock(() => listRegisteredReposUnlocked(opts))
-    : listRegisteredReposUnlocked(opts);
 
 // ─── Global CLI Config (~/.gitnexus/config.json) ─────────────────────────
 

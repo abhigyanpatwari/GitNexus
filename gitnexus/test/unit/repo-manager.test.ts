@@ -961,10 +961,11 @@ describe('registerRepo name override + collision guard (#829)', () => {
       capture.restore();
     }
 
-    expect(capture.records().map((record) => record.msg)).not.toContain(
+    const logged = capture.records().map((record) => record.msg);
+    expect(logged).not.toContain(
       'Waiting for another GitNexus process to finish a registry update…',
     );
-    expect(capture.records().map((record) => record.msg)).not.toContain(
+    expect(logged).not.toContain(
       'Timed out waiting for the global registry lock; proceeding without it. A concurrent registry write may be lost.',
     );
     const entries = await listRegisteredRepos();
