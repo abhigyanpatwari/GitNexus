@@ -46,6 +46,7 @@ import { computeSwiftArityMetadata } from './arity-metadata.js';
 import { synthesizeSwiftReceiverBinding } from './receiver-binding.js';
 import { synthesizeSwiftSignatureBindings } from './signature-bindings.js';
 import { getSwiftParser, getSwiftScopeQuery } from './query.js';
+import { preprocessSwiftConditionalDirectives } from './conditional-directive-preprocess.js';
 import { recordCacheHit, recordCacheMiss } from './cache-stats.js';
 import { getTreeSitterBufferSize } from '../../constants.js';
 import { parseSourceSafe } from '../../../tree-sitter/safe-parse.js';
@@ -89,12 +90,16 @@ export function emitSwiftScopeCaptures(
   cachedTree?: unknown,
 ): readonly CaptureMatch[] {
   // Reuse the parse phase's cached Tree when available; otherwise parse.
-  // `sourceText` already carries the provider's `preprocessSource` transform —
-  // `extractParsedFile` applies it on this path.
+  // `extractParsedFile` already applies `preprocessSource` on this path, but
+  // this emitter is also called directly (benchmarks, capture goldens, the
+  // scope-capture tripwire), and those callers must see the same program the
+  // pipeline does. The transform is idempotent, so applying it twice is a
+  // no-op; it is length-preserving, so offsets still index `sourceText`.
   let tree = cachedTree as ReturnType<ReturnType<typeof getSwiftParser>['parse']> | undefined;
   if (tree === undefined) {
-    tree = parseSourceSafe(getSwiftParser(), sourceText, undefined, {
-      bufferSize: getTreeSitterBufferSize(sourceText),
+    const parseText = preprocessSwiftConditionalDirectives(sourceText);
+    tree = parseSourceSafe(getSwiftParser(), parseText, undefined, {
+      bufferSize: getTreeSitterBufferSize(parseText),
     });
     recordCacheMiss();
   } else {
