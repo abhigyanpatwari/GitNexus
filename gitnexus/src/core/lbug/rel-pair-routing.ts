@@ -70,6 +70,26 @@ export interface RelPairMeta {
 }
 
 /**
+ * Fail fast on an endpoint-label pair absent from the relationship DDL, the
+ * same guard `RelPairRouter.route` applies to the whole-graph emit. Exported
+ * so the streamed sinks (`GraphEmitSink`, `PdgEmitSink`) can apply it too —
+ * without this, an undeclared pair on a streaming run reaches `COPY`, fails
+ * the bulk insert, and is silently dropped by the per-edge fallback instead
+ * of failing loudly like the non-streaming path does.
+ */
+export const assertDeclaredPair = (
+  fromLabel: string,
+  toLabel: string,
+  declaredPairs: ReadonlySet<string>,
+): void => {
+  if (!declaredPairs.has(`${fromLabel}|${toLabel}`)) {
+    throw new Error(
+      `Relationship label pair ${fromLabel}→${toLabel} is not declared in the LadybugDB relation schema`,
+    );
+  }
+};
+
+/**
  * Routes already-escaped relationship CSV rows to per-FROM→TO-label-pair
  * files. Filters edges whose endpoint labels are not valid node tables
  * (counted as `skipped`), exactly as the legacy split did.
@@ -123,12 +143,8 @@ export class RelPairRouter {
       return;
     }
 
+    assertDeclaredPair(fromLabel, toLabel, this.declaredPairs);
     const pairKey = `${fromLabel}|${toLabel}`;
-    if (!this.declaredPairs.has(pairKey)) {
-      throw new Error(
-        `Relationship label pair ${fromLabel}→${toLabel} is not declared in the LadybugDB relation schema`,
-      );
-    }
     const ws = this.streams.get(pairKey);
     if (ws === undefined) {
       // First edge for this pair: open the stream, write header + row.

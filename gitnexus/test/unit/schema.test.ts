@@ -22,6 +22,7 @@ import {
   EMBEDDING_SCHEMA,
   CREATE_VECTOR_INDEX_QUERY,
 } from '../../src/core/lbug/schema.js';
+import { parseRelationSchemaPairs } from '../../src/core/lbug/rel-pair-routing.js';
 
 describe('LadybugDB Schema', () => {
   describe('NODE_TABLES', () => {
@@ -212,52 +213,74 @@ describe('LadybugDB Schema', () => {
       expect(RELATION_SCHEMA).toContain('FROM Class TO CodeElement');
     });
 
-    it('declares the Swift member-containment pairs', () => {
-      const swiftMemberPairs = [
-        'FROM `Enum` TO Function',
-        'FROM `Enum` TO Method',
-        'FROM `Enum` TO `Struct`',
-        'FROM `Enum` TO `Constructor`',
-        'FROM `Enum` TO `Property`',
-        'FROM `Enum` TO `TypeAlias`',
-        'FROM Method TO `Variable`',
-        'FROM `Property` TO Class',
-        'FROM `Property` TO `Enum`',
-        'FROM `Property` TO Function',
-        'FROM `Property` TO `Struct`',
+    it('declares the member-containment pairs emitted for Swift enums, Rust impl/trait members, and JS/TS object-literal methods (#2769)', () => {
+      // Asserted through the runtime's own parser, not raw strings, so a
+      // cosmetic DDL formatting change cannot fail this without a semantic
+      // change (see PR #2769 review Finding 7).
+      const declaredPairs = parseRelationSchemaPairs(RELATION_SCHEMA);
+      const memberPairs = [
+        // Swift enum members (also reached by Java/PHP enum methods)
+        'Enum|Function',
+        'Enum|Method',
+        'Enum|Struct',
+        'Enum|Constructor',
+        'Enum|Property',
+        'Enum|TypeAlias',
+        'Property|Class',
+        'Property|Enum',
+        'Property|Function',
+        'Property|Struct',
+        // Rust `impl`/`trait` methods, minted as `Function` nodes, not `Method`
+        'Trait|Function',
+        'Impl|Function',
+        // JS/TS object-literal shorthand methods (owner labelled Const/Variable)
+        'Const|Method',
+        'Variable|Method',
+        'Method|Const',
+        'Method|Variable',
       ];
 
-      for (const pair of swiftMemberPairs) {
-        expect(RELATION_SCHEMA).toContain(pair);
+      for (const pair of memberPairs) {
+        expect(declaredPairs.has(pair)).toBe(true);
       }
     });
 
     it('has all FROM/TO pairs needed for HAS_METHOD edges', () => {
       // HAS_METHOD sources: Class, Interface, Struct, Trait, Impl, Record
       // HAS_METHOD targets: Method, Constructor (Property is now HAS_PROPERTY)
+      const declaredPairs = parseRelationSchemaPairs(RELATION_SCHEMA);
       const sources = ['Class', 'Interface'];
       const backtickSources = ['Struct', 'Trait', 'Impl', 'Record'];
       const targets = ['Method'];
       const backtickTargets = ['Constructor'];
 
-      // Non-backtick source → non-backtick target
-      for (const src of sources) {
-        for (const tgt of targets) {
-          expect(RELATION_SCHEMA).toContain(`FROM ${src} TO ${tgt}`);
-        }
-        for (const tgt of backtickTargets) {
-          expect(RELATION_SCHEMA).toContain(`FROM ${src} TO \`${tgt}\``);
+      for (const src of [...sources, ...backtickSources]) {
+        for (const tgt of [...targets, ...backtickTargets]) {
+          expect(declaredPairs.has(`${src}|${tgt}`)).toBe(true);
         }
       }
+    });
 
-      // Backtick source → all targets
-      for (const src of backtickSources) {
-        for (const tgt of targets) {
-          expect(RELATION_SCHEMA).toContain(`FROM \`${src}\` TO ${tgt}`);
-        }
-        for (const tgt of backtickTargets) {
-          expect(RELATION_SCHEMA).toContain(`FROM \`${src}\` TO \`${tgt}\``);
-        }
+    it('has FROM/TO pairs for HAS_METHOD edges whose member is minted as Function, not Method (#2769)', () => {
+      // A Rust `impl`/`trait` method is minted as a `Function` node, not
+      // `Method` (tree-sitter-queries.ts), so `Impl|Method`/`Trait|Method`
+      // never fire for it — this was the reproduced abort on any Rust repo
+      // with an `impl` or `trait` block (PR #2769 review Finding 1).
+      const declaredPairs = parseRelationSchemaPairs(RELATION_SCHEMA);
+      for (const pair of ['Trait|Function', 'Impl|Function']) {
+        expect(declaredPairs.has(pair)).toBe(true);
+      }
+    });
+
+    it('has FROM/TO pairs for HAS_METHOD edges owned by a JS/TS object-literal binding (#2769)', () => {
+      // A `const x = { m() {} }` / `var x = { m() {} }` owner is labelled
+      // verbatim `Const`/`Variable` (ast-helpers.ts), and its shorthand
+      // method is a `Method` node — this was the second reproduced abort,
+      // hit on ordinary TS/JS code including GitNexus's own source tree
+      // (PR #2769 review Finding 1).
+      const declaredPairs = parseRelationSchemaPairs(RELATION_SCHEMA);
+      for (const pair of ['Const|Method', 'Variable|Method']) {
+        expect(declaredPairs.has(pair)).toBe(true);
       }
     });
   });

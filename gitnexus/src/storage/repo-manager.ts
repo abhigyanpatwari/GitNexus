@@ -637,16 +637,27 @@ export interface RepoMeta {
  * Pre-v30 indexes keep the wrapper line on unchanged files and would keep
  * failing closed (no edge) through the reuse gate. Force a full re-analyze.
  *
- * v31: the CONTAINS DDL gains the eleven Swift member-containment pairs
- * Enum→{Function, Method, Struct, Constructor, Property, TypeAlias},
- * Method→Variable, and Property→{Class, Enum, Function, Struct}. Swift enums
- * carry computed properties, methods, initializers, and nested types; method
- * bodies can declare local variables; and computed-property bodies can define
- * nested functions and types. A pre-v31 database physically lacks the new rel
- * tables, so an incremental top-up that emits one of these edges fails at the
- * DB layer. Force a full re-analyze. As with the collision notes above, 31 may
- * need renumbering at merge time; re-check this constant against upstream's
- * value immediately before merging.
+ * v31: the relation DDL (the single shared `CodeRelation` REL TABLE) gains
+ * sixteen FROM/TO pairs carried by `HAS_METHOD`/`HAS_PROPERTY` and
+ * scope-resolution edges: Enum→{Function, Method, Struct, Constructor,
+ * Property, TypeAlias}, Property→{Class, Enum, Function, Struct},
+ * Method→{Variable, Const}, Trait→Function, Impl→Function, Const→Method and
+ * Variable→Method. The Enum/Property set was observed on Swift (enums carry
+ * computed properties, methods, initializers and nested types) and is also
+ * reached by Java/PHP enum members; Trait/Impl→Function covers a Rust
+ * `impl`/`trait` method, which is minted as a `Function` node, not `Method`;
+ * Const/Variable→Method and its sibling Method→Const cover a JS/TS object
+ * literal's shorthand methods, whose owner is labelled `Const`/`Variable`. A
+ * pre-v31 database physically lacks these from-to pairs, so an incremental
+ * top-up emitting one of these edges fails the bulk COPY and — on the
+ * streamed emit path — falls through the per-edge fallback's `catch {}` and
+ * silently drops the edges, with `analyze` still exiting 0; on the
+ * non-streamed path it aborts instead. Force a full re-analyze. As with the
+ * collision notes above, 31 may need renumbering at merge time; re-check this
+ * constant against upstream's value immediately before merging, and if this
+ * change is ever reverted, do not free 31 for reuse — the reuse gate is exact
+ * equality, so an index already stamped 31 would satisfy it against a
+ * differently-shaped reverted DB. Start the next allocation at 32 instead.
  */
 export const INCREMENTAL_SCHEMA_VERSION = 31;
 

@@ -96,9 +96,12 @@ import path from 'path';
 import type { GraphNode, GraphRelationship, RelationshipType } from 'gitnexus-shared';
 import type { KnowledgeGraph } from '../graph/types.js';
 import { REL_CSV_HEADER, buildRelRow } from './csv-generator.js';
-import { getNodeLabel } from './rel-pair-routing.js';
-import { NODE_TABLES } from './schema.js';
+import { assertDeclaredPair, getNodeLabel, parseRelationSchemaPairs } from './rel-pair-routing.js';
+import { NODE_TABLES, RELATION_SCHEMA } from './schema.js';
 import { DEFAULT_EMIT_CHUNK_ROWS, SyncCsvWriter } from './sync-csv-writer.js';
+
+/** Computed once — `RELATION_SCHEMA` is a static template literal. */
+const DECLARED_REL_PAIRS = parseRelationSchemaPairs(RELATION_SCHEMA);
 
 /**
  * Relationship types that MUST stay in the in-memory graph because a phase
@@ -410,6 +413,7 @@ export class GraphEmitSink implements KnowledgeGraph, GraphEmitControl {
     // Skip edges whose endpoint labels are not valid node tables — mirrors
     // `RelPairRouter` exactly so the streamed set matches the whole-graph set.
     if (!this.validTables.has(fromLabel) || !this.validTables.has(toLabel)) return;
+    assertDeclaredPair(fromLabel, toLabel, DECLARED_REL_PAIRS);
 
     const pairKey = `${fromLabel}|${toLabel}`;
     let writer = this.relWriters.get(pairKey);
