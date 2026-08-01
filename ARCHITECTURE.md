@@ -103,7 +103,7 @@ scan → structure → [markdown, cobol] → parse → [routes, tools, orm]
 | `scopeResolution` | `scope-resolution/pipeline/phase.ts` | `parse`, `crossFile`, `structure` | Binding/reference + inheritance edges; disposes BindingAccumulator |
 | `pruneLocalSymbols` | `prune-local-symbols.ts` | `scopeResolution` | Drops inert block-local `Const`/`Variable`/`Static` nodes (only a `File→DEFINES` edge) post-resolution |
 | `mro` | `mro.ts` | `crossFile`, `scopeResolution`, `pruneLocalSymbols`, `structure` | METHOD_OVERRIDES + METHOD_IMPLEMENTS edges |
-| `di` | `di.ts` | `mro` | INJECTS edges (framework-neutral DI resolution; per-language matchers registered in `di-extractors/`) |
+| `di` | `di.ts` | `mro` | INJECTS edges from consumer Classes or factory Methods to provider Classes/declaration CodeElements (framework-neutral DI resolution; per-language matchers registered in `di-extractors/`) |
 | `communities` | `communities.ts` | `mro`, `pruneLocalSymbols`, `structure` | Community nodes + MEMBER_OF edges (Leiden algorithm) |
 | `processes` | `processes.ts` | `communities`, `routes`, `tools`, `pruneLocalSymbols`, `structure` | Process nodes + STEP_IN_PROCESS edges |
 
@@ -247,6 +247,7 @@ Single interface a language implements to plug into the pipeline. Contract fully
 | `populateOwners(parsed)` | Fill deferred `ownerId` fields on method defs (captures can't always know the owning class at parse time) |
 | `buildMro(graph, parsed, nodeLookup)` | Produce `mroByClassDefId: Map<DefId, DefId[]>` — C3, Ruby-mixin, or first-wins per language |
 | `resolveImportTarget(target, fromFile, allFiles)` | `(rawImportPath, sourceFile) → targetFilePath` (PEP-328 for Python, etc.) |
+| `isNamespaceImport(parsedImport, targetFile, fromFile)` | Optionally reclassify a resolved named import as a namespace handle when the imported symbol is itself a module |
 | `mergeBindings(existing, incoming, scopeId)` | Shadowing / LEGB precedence |
 | `arityCompatibility` | Provider consumed by registry during `MethodRegistry.lookup` Step 2 |
 | `importEdgeReason` | Confidence-tier string for IMPORTS edge reason field |

@@ -362,6 +362,17 @@ export interface ScopeResolver {
   ): string | readonly string[] | null;
 
   /**
+   * Optionally reclassify an import as a namespace handle after target
+   * resolution proves the imported name is itself a module. Returning false
+   * retains ordinary named-binding behavior.
+   */
+  readonly isNamespaceImport?: (
+    parsedImport: ParsedImport,
+    targetFile: string,
+    fromFile: string,
+  ) => boolean;
+
+  /**
    * Enumerate names visible through a wildcard import after the target
    * module scope has been linked. Languages that do not support
    * wildcard-style imports leave this undefined.

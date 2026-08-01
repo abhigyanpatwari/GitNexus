@@ -101,14 +101,11 @@ describe('fileContentHash', () => {
 });
 
 describe('PARSE_CACHE_VERSION', () => {
-  // 32 -> 34 for the receiver-chain capture (#2747): 33 is the TypeScript-only
-  // emission, 34 the rollout to the other 13 emitters, which changed the capture
-  // set a second time. Updated deliberately — and this pin earned its keep twice
-  // over: it caught the #2742 collision when it arrived from main, and it caught
-  // this series again on rebase, where `main` had independently taken 32 for the
-  // very number this branch was already using.
-  it('pins SCHEMA_BUMP to 34 so concurrent bumps cannot silently collide (#2736)', () => {
-    expect(Number(PARSE_CACHE_VERSION.split('+', 1)[0])).toBe(34);
+  // 35 -> 36 for the bound-callable start-line join (#2735). Updated
+  // deliberately after main independently took 35 for Spring side-channel
+  // captures (#2413), so the pin continues to catch concurrent bump collisions.
+  it('pins SCHEMA_BUMP to 36 so concurrent bumps cannot silently collide (#2736)', () => {
+    expect(Number(PARSE_CACHE_VERSION.split('+', 1)[0])).toBe(36);
   });
 
   it('embeds the gitnexus package version (so upgrades invalidate the cache)', () => {

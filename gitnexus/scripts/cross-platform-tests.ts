@@ -63,6 +63,9 @@ const PLATFORM_LOGIC = [
   'test/unit/lbug-config-pagesize.test.ts',
   'test/unit/worker-pool-windows-quarantine.test.ts',
   'test/unit/lbug-pool-fts-load.test.ts',
+  // Global registry writes use the platform-specific index-lock backend
+  // (Windows named pipe, Linux socket, or macOS file lock). This includes the
+  // overlapping-registration regression from #2716 on every OS matrix.
   'test/unit/repo-manager.test.ts',
   'test/unit/repo-manager-finalize-invariant.test.ts',
   'test/unit/git-utils.test.ts',

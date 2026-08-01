@@ -18,6 +18,7 @@ import { diPhase } from '../../../src/core/ingestion/pipeline-phases/di.js';
 import {
   parseSpringCollectionType,
   SPRING_DI_INJECTION_SITES_PROPERTY,
+  SPRING_DI_PROVIDER_PROPERTY,
   springDiFieldMatcher,
 } from '../../../src/core/ingestion/di-extractors/spring.js';
 import { generateId } from '../../../src/lib/utils.js';
@@ -159,6 +160,30 @@ function addProperty(
     reason: '',
   });
   return propId;
+}
+
+function addProviderDeclaration(
+  graph: KnowledgeGraph,
+  name: string,
+  providedTypeName: string,
+  declaredByNodeId?: string,
+): string {
+  const id = generateId('CodeElement', `spring-bean:${name}`);
+  graph.addNode({
+    id,
+    label: 'CodeElement',
+    properties: {
+      name,
+      filePath: 'src/AppConfiguration.java',
+      language: 'java',
+      [SPRING_DI_PROVIDER_PROPERTY]: {
+        names: [name],
+        providedTypeName,
+        ...(declaredByNodeId === undefined ? {} : { declaredByNodeId }),
+      },
+    },
+  });
+  return id;
 }
 
 /** Collect all INJECTS relationships currently in the graph. */
@@ -753,6 +778,93 @@ describe('di phase', () => {
     expect(injectsEdges(graph)).toHaveLength(2);
     expect(injectsEdges(graph).every((edge) => edge.confidence === 0.5)).toBe(true);
     expect(output).toMatchObject({ injectsEdges: 2, ambiguousInjections: 1 });
+  });
+
+  it('matches a named provider whose concrete provided type implements the requested interface', async () => {
+    const graph = createKnowledgeGraph();
+
+    addInterface(graph, 'Gateway');
+    addClass(graph, 'DefaultGateway', 'java');
+    addImplements(graph, 'DefaultGateway', 'Gateway');
+    const providerId = addProviderDeclaration(graph, 'defaultGateway', 'DefaultGateway');
+    const consumerId = addClass(graph, 'Consumer', 'java', 'Class', {
+      [SPRING_DI_INJECTION_SITES_PROPERTY]: [
+        {
+          targetTypeName: 'Gateway',
+          cardinality: 'single',
+          namedSelection: {
+            name: 'defaultGateway',
+            reason: 'resource name "defaultGateway"',
+          },
+          reason: 'Spring DI: @Resource gateway: Gateway',
+        },
+      ],
+    });
+
+    const output = await diPhase.execute(makeCtx(graph), new Map());
+
+    expect(injectsEdges(graph)).toEqual([
+      expect.objectContaining({
+        sourceId: consumerId,
+        targetId: providerId,
+        confidence: 0.95,
+      }),
+    ]);
+    expect(output).toMatchObject({ injectsEdges: 1, ambiguousInjections: 0 });
+  });
+
+  it('excludes the provider declared by a factory method from that method parameter injection', async () => {
+    const graph = createKnowledgeGraph();
+
+    addInterface(graph, 'Gateway');
+    addClass(graph, 'DefaultGateway', 'java');
+    addImplements(graph, 'DefaultGateway', 'Gateway');
+    const configurationId = addClass(graph, 'AppConfiguration', 'java');
+    const factoryMethodId = generateId('Method', 'AppConfiguration.gateway');
+    graph.addNode({
+      id: factoryMethodId,
+      label: 'Method',
+      properties: {
+        name: 'gateway',
+        filePath: 'src/AppConfiguration.java',
+        language: 'java',
+        [SPRING_DI_INJECTION_SITES_PROPERTY]: [
+          {
+            targetTypeName: 'Gateway',
+            cardinality: 'single',
+            edgeSource: 'site',
+            reason: 'Spring DI: @Bean method gateway parameter dependency: Gateway',
+          },
+        ],
+      },
+    });
+    graph.addRelationship({
+      id: generateId('HAS_METHOD', `${configurationId}->${factoryMethodId}`),
+      sourceId: configurationId,
+      targetId: factoryMethodId,
+      type: 'HAS_METHOD',
+      confidence: 1,
+      reason: '',
+    });
+    const selfProviderId = addProviderDeclaration(graph, 'gateway', 'Gateway', factoryMethodId);
+    const siblingProviderId = addProviderDeclaration(
+      graph,
+      'fallbackGateway',
+      'Gateway',
+      generateId('Method', 'AppConfiguration.fallbackGateway'),
+    );
+
+    const output = await diPhase.execute(makeCtx(graph), new Map());
+
+    expect(injectsEdges(graph)).toEqual([
+      expect.objectContaining({
+        sourceId: factoryMethodId,
+        targetId: siblingProviderId,
+        confidence: 0.9,
+      }),
+    ]);
+    expect(injectsEdges(graph).some((edge) => edge.targetId === selfProviderId)).toBe(false);
+    expect(output).toMatchObject({ injectsEdges: 1, ambiguousInjections: 0 });
   });
 
   it('fails closed when one injection type name denotes both a class and an interface', async () => {
