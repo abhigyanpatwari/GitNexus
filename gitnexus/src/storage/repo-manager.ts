@@ -23,7 +23,7 @@ import { getInferredRepoName, resolveRepoIdentityRoot } from './git.js';
 import { stripWindowsLongPathPrefix } from '../lib/utils.js';
 import { retryRename } from './fs-atomic.js';
 import { logger } from '../core/logger.js';
-import { acquireIndexLock } from './index-lock.js';
+import { acquireIndexLock, IndexLockTimeoutError, type IndexLockHandle } from './index-lock.js';
 import {
   branchSlug,
   BRANCHES_DIR,
@@ -1138,19 +1138,65 @@ export const getGlobalRegistryPath = (): string => {
 };
 
 /**
+ * Lock namespace for the global registry.
+ *
+ * Deliberately a dedicated sub-directory rather than {@link getGlobalDir}
+ * itself: an index slot's lock dir is always `<repo>/.gitnexus` (or
+ * `<repo>/.gitnexus/branches/<slug>`), so for a repository rooted at the
+ * user's home directory — dotfiles-at-`$HOME` is a real layout — the per-repo
+ * analyze lock and the global-dir lock would resolve to the SAME directory.
+ * `acquireIndexLock` is not reentrant, so `runFullAnalysis` (which holds the
+ * per-repo lock across its whole pipeline) would then self-deadlock the moment
+ * it reached `registerRepo`/`adoptFlatBranchLabel`. No repo's index slot can
+ * ever be named `registry-lock`, so this namespace cannot collide.
+ */
+const getRegistryLockDir = (): string => path.join(getGlobalDir(), 'registry-lock');
+
+/**
+ * Wait ceiling for the registry lock. A registry transaction is a sub-second
+ * JSON read/merge/write, so it must NOT inherit the index lock's 10-minute
+ * default (sized for multi-minute analyze runs): `gitnexus augment` runs on
+ * every editor/agent tool call with a documented sub-500ms cold-start budget
+ * and reaches this lock via `listRegisteredRepos({ validate: true })`.
+ */
+const REGISTRY_LOCK_TIMEOUT_MS = 5_000;
+
+/**
  * Serialize global registry read/merge/write transactions across processes.
  *
  * The registry is shared by every indexed repository, so per-index locks do
- * not protect this file. Reuse the cross-platform index lock primitive with
- * the global directory as its lock namespace; the handle is kernel-owned on
- * supported platforms and crash-reclaimable by the existing fallback.
+ * not protect this file. Reuse the cross-platform index lock primitive with a
+ * registry-private lock namespace; the handle is kernel-owned on supported
+ * platforms and crash-reclaimable by the existing fallback.
+ *
+ * On timeout the transaction proceeds UNLOCKED rather than throwing: the lock
+ * closes a lost-update race that existed unguarded before #2716, so degrading
+ * to the old best-effort behaviour is strictly better than failing an
+ * `analyze`/`list`/`augment` outright on a wedged lock (a stale pid-reuse
+ * ghost on platforms without start-time verification can look live forever).
  */
 const withRegistryLock = async <T>(operation: () => Promise<T>): Promise<T> => {
-  const lock = await acquireIndexLock(getGlobalDir());
+  let lock: IndexLockHandle | null = null;
+  try {
+    lock = await acquireIndexLock(getRegistryLockDir(), {
+      timeoutMs: REGISTRY_LOCK_TIMEOUT_MS,
+      // Registry contention was previously invisible: `acquireIndexLock`'s own
+      // `log` texts name an "analyze" holder, which misattributes a registry
+      // wait, so surface a registry-specific line instead (#2716 review).
+      onWaitStart: () =>
+        logger.info('Waiting for another GitNexus process to finish a registry update…'),
+    });
+  } catch (err) {
+    if (!(err instanceof IndexLockTimeoutError)) throw err;
+    logger.warn(
+      { timeoutMs: REGISTRY_LOCK_TIMEOUT_MS },
+      'Timed out waiting for the global registry lock; proceeding without it. A concurrent registry write may be lost.',
+    );
+  }
   try {
     return await operation();
   } finally {
-    lock.release();
+    lock?.release();
   }
 };
 
@@ -1536,8 +1582,14 @@ export const removeBranchIndex = async (repoPath: string, branch: string): Promi
  * a no-op — including the sub-index deletion, which only runs for registered
  * repos (never self-heals an unregistered repo, per #2264/#1169; the registry
  * check precedes the rm per #2364 review F2) — and no subprocess is spawned.
+ *
+ * Only the closing re-read/mutate/write runs under the registry lock. The
+ * recursive `rm` stays outside it — mirroring `clean.ts`, which deletes the
+ * branch directory before calling the (locked) `removeBranchIndex` — so a slow
+ * delete (large sub-index, AV scan, network mount) never blocks every other
+ * registry operation on the machine.
  */
-const adoptFlatBranchLabelUnlocked = async (repoPath: string, branch: string): Promise<void> => {
+export const adoptFlatBranchLabel = async (repoPath: string, branch: string): Promise<void> => {
   const canonicalInput = canonicalizePath(repoPath);
   const isRegistered = (list: RegistryEntry[]): number =>
     list.findIndex((e) => registryPathEquals(canonicalizePath(e.path), canonicalInput));
@@ -1586,26 +1638,25 @@ const adoptFlatBranchLabelUnlocked = async (repoPath: string, branch: string): P
     }
   }
 
-  // Re-read AFTER the potentially slow recursive rm: the registry is a
-  // multi-writer whole-file overwrite, and writing a pre-rm snapshot would
-  // silently clobber concurrent registerRepo/removeBranchIndex writers —
-  // the #2106 R9 re-read-before-write discipline registerRepo follows.
-  const entries = await readRegistry();
-  const idx = isRegistered(entries);
-  if (idx < 0) return; // unregistered concurrently → still a no-op
-  const entry = entries[idx];
-  const remaining = dirGone ? entry.branches?.filter((b) => b.branch !== branch) : entry.branches;
-  const droppedSummary = (entry.branches?.length ?? 0) !== (remaining?.length ?? 0);
-  if (entry.branch === branch && !droppedSummary) return; // already coherent
-  entry.branch = branch;
-  if (remaining && remaining.length > 0) entry.branches = remaining;
-  else delete entry.branches;
-  entries[idx] = entry;
-  await writeRegistry(entries);
+  // Re-read AFTER the potentially slow recursive rm, and under the lock: the
+  // registry is a multi-writer whole-file overwrite, and writing a pre-rm
+  // snapshot would silently clobber concurrent registerRepo/removeBranchIndex
+  // writers — the #2106 R9 re-read-before-write discipline registerRepo follows.
+  await withRegistryLock(async () => {
+    const entries = await readRegistry();
+    const idx = isRegistered(entries);
+    if (idx < 0) return; // unregistered concurrently → still a no-op
+    const entry = entries[idx];
+    const remaining = dirGone ? entry.branches?.filter((b) => b.branch !== branch) : entry.branches;
+    const droppedSummary = (entry.branches?.length ?? 0) !== (remaining?.length ?? 0);
+    if (entry.branch === branch && !droppedSummary) return; // already coherent
+    entry.branch = branch;
+    if (remaining && remaining.length > 0) entry.branches = remaining;
+    else delete entry.branches;
+    entries[idx] = entry;
+    await writeRegistry(entries);
+  });
 };
-
-export const adoptFlatBranchLabel = async (repoPath: string, branch: string): Promise<void> =>
-  withRegistryLock(() => adoptFlatBranchLabelUnlocked(repoPath, branch));
 
 /**
  * Thrown by {@link resolveRegistryEntry} when no registered repo matches
