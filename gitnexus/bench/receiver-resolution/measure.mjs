@@ -1556,11 +1556,26 @@ function drift(expected, actual, prefix = '') {
 const args = process.argv.slice(2);
 const corpusIndex = args.indexOf('--corpus');
 const check = args.includes('--check');
+const updateBaseline = args.includes('--update-baseline');
+// `--update-baseline` defaults the corpus for the same reason `--check` does:
+// the two must measure the SAME thing or the gate can never be satisfied. It
+// previously did not, so a bare `--update-baseline` skipped the count arm and
+// then crashed dereferencing `output.countArm` in `projection` — which is the
+// command the `--check` failure message tells you to run. Writing a baseline
+// with no count arm would have been worse: the gate would go green while
+// silently measuring nothing.
 const corpusPath =
-  corpusIndex === -1 ? (check ? DEFAULT_CORPUS : undefined) : path.resolve(args[corpusIndex + 1]);
+  corpusIndex === -1
+    ? check || updateBaseline
+      ? DEFAULT_CORPUS
+      : undefined
+    : path.resolve(args[corpusIndex + 1]);
 
 const output = { knownBlind: KNOWN_BLIND };
-if (corpusPath === undefined || check || args.includes('--shapes')) {
+// `--update-baseline` needs BOTH arms, because `projection` writes both and
+// `--check` compares both. Running one arm would write a baseline missing the
+// other, and the next `--check` would then crash rather than fail a comparison.
+if (corpusPath === undefined || check || updateBaseline || args.includes('--shapes')) {
   output.shapeArm = await runShapeArm();
 }
 if (corpusPath !== undefined) {
@@ -1572,7 +1587,7 @@ if (perfIndex !== -1) {
   output.perfArm = await runPerfArm(corpusPath ?? DEFAULT_CORPUS, Number.isFinite(reps) ? reps : 3);
 }
 
-if (args.includes('--update-baseline')) {
+if (updateBaseline) {
   fs.writeFileSync(BASELINE_PATH, `${JSON.stringify(projection(output), null, 2)}\n`, 'utf8');
   console.error(`[receiver-resolution] wrote ${BASELINE_PATH}`);
 } else if (check) {

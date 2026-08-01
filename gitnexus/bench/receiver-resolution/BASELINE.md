@@ -13,15 +13,32 @@
 The drop count was measuring two different things and reporting both as
 uncertainty. Dumping all 102 call drops with source context settles it:
 
-| Origin | Count | Is anything lost? |
-|---|---|---|
-| `external` | **76** | **No.** `System.out.println`, `fetch(...)`, `os.environ.setdefault`, `document.body.appendChild`, `.stream()`. The callee is not in the graph — there is no node an edge could point at. |
-| `in-program` | 20 | Yes in principle — but see below. |
-| `unknown` | 6 | Yes. Casts, ternaries, `globalThis.x ??= []`. |
+| Origin       | Count  | Is anything lost?                                                                                                                                                                        |
+| ------------ | ------ | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `external`   | **44** | **No.** `System.out.println`, `fetch(...)`, `os.environ.setdefault`, `document.body.appendChild`, `.stream()`. The callee is not in the graph — there is no node an edge could point at. |
+| `in-program` | 36     | Yes in principle — but see below.                                                                                                                                                        |
+| `unknown`    | 22     | Yes. Casts, ternaries, `globalThis.x ??= []`, and everything the classifier will not guess about.                                                                                        |
+
+> **These numbers moved once, in review, and the movement is the point.** They
+> were first measured as 76 / 20 / 6, when `external` was the FALLTHROUGH: any
+> base whose type did not resolve was called external. Review reproduced two
+> triggers where that published `epistemic: 'exact'` over a real in-program loss
+> — a Go pointer receiver (`*Host`, whose lookup was missing the decoration
+> stripper) and any base with no type binding at all, including this branch's own
+> `droppedCall(svc)` fixture. `external` is now a POSITIVE determination via
+> `LanguageProvider.isBuiltInName`, and everything unproven is `unknown`, which
+> still hedges. So `external` fell 76 -> 44 and the difference went to
+> `in-program` (+16, the drops that really were ours) and `unknown` (+16, the
+> drops we decline to characterize). Total call drops is unchanged at 102 —
+> this is re-bucketing, not resolution.
+>
+> A controlled A/B over the Java built-in set (off vs on, same tree) reads
+> 7/36/59 vs 44/36/22: `in-program` is byte-identical across the toggle, so
+> naming built-ins reclassified nothing the index can demonstrate is ours.
 
 **A compiler resolves `System.out.println` against the JDK.** Lacking the JDK,
-the honest statement is *"this call leaves the analyzed program"* — not *"this
-analysis is incomplete"*. Those are different epistemic states, and collapsing
+the honest statement is _"this call leaves the analyzed program"_ — not _"this
+analysis is incomplete"_. Those are different epistemic states, and collapsing
 them is what made `impact` report a lower bound on essentially every real
 codebase, which is what teaches readers to ignore the signal.
 
@@ -34,10 +51,10 @@ assuming a completeness we cannot demonstrate is the unsafe direction.
 By the receiver base's **declared type**, not its name. A first cut asked
 whether the base was a local, which marked `inputs.stream()` in-program:
 `inputs` is a local, but its type `List<String>` is JDK, so the target is
-external. Asking whether the base's *type* is one this index contains moved 28
+external. Asking whether the base's _type_ is one this index contains moved 28
 sites to the correct bucket.
 
-### What the remaining 20 in-program drops actually are
+### What the remaining in-program drops actually are
 
 Mostly **not** product defects. `user.Address.Save()` resolves cleanly in
 isolation — the `csharp-deep-field-chain` fixture alone emits both expected
@@ -46,10 +63,11 @@ edges with **zero** drops. It drops in the count arm only because the corpus is
 `Address`**, so the resolver correctly declines on ambiguity rather than picking
 one. That is right behaviour measured on an unrepresentative corpus.
 
-The genuinely untypeable population is the 6 `unknown` — and those are the real
-targets for type resolution, because a cast *gives* you the type
+The genuinely untypeable population is the `unknown` bucket — and those are the real
+targets for type resolution, because a cast _gives_ you the type
 (`((Box<String>) obj).open()`) and a ternary needs a join of its branch types.
-They were previously invisible under 76 stdlib calls.
+They were previously invisible under the stdlib calls the old fallthrough swept
+into `external`.
 
 `callDropsByOrigin` is now part of the gated projection, so this split cannot
 drift silently.
@@ -61,18 +79,18 @@ drift silently.
 Go's `@reference.read` pattern matches **every** `selector_expression`, with no
 call-position exclusion. So `h.dep.Work()` minted **three** reference sites:
 
-| site | kind | name | what it is |
-|---|---|---|---|
-| S1 | `call` | `Work` | the member call |
-| S2 | `read` | `Work` | **phantom** — the callee `h.dep.Work`, already captured by S1 |
-| S3 | `read` | `dep` | the genuine field read |
+| site | kind   | name   | what it is                                                    |
+| ---- | ------ | ------ | ------------------------------------------------------------- |
+| S1   | `call` | `Work` | the member call                                               |
+| S2   | `read` | `Work` | **phantom** — the callee `h.dep.Work`, already captured by S1 |
+| S3   | `read` | `dep`  | the genuine field read                                        |
 
 S2 resolved through `findOwnedMember`, which prefers methods over fields, and
 emitted an `ACCESSES` edge to the **method** duplicating S1's `CALLS` edge at the
 same position.
 
 **The U8 assertion passed by accident.** It asserted `RunSamePackage → Work` was
-absent from `ACCESSES`, and it was — but only because that row has a *pointer*
+absent from `ACCESSES`, and it was — but only because that row has a _pointer_
 receiver whose text-cascade head lookup failed for an unrelated reason. The
 value-receiver twin was emitting the bad edge the whole time:
 
@@ -81,22 +99,45 @@ ACCESSES  RunFromValueReceiver -> DoWork:Method     <- phantom, shipped
 ACCESSES  RunLocal             -> DoWork:Method     <- phantom, shipped
 ```
 
-Fixed at the emitter: a selector in **function position** is never a read. A
-method *value* (`f := h.dep.Work`) is not in function position and is untouched.
-The assertion is now backed by an exact-set check over the whole fixture, so a
-new phantom fails even on a row nobody wrote a targeted assertion for.
+First fix, at capture: drop the match outright, on the rule _"a selector in
+function position is never a read."_ **That rule is false, and review caught
+it.** In Go a func-typed struct field IS read and then called indirectly —
+`h.dep.Work()` where `Work func() error` — and `isCalleeOfMemberCall` cannot
+tell a method from a func-valued field, because the AST shape is identical.
+Dropping at capture therefore deleted the only `ACCESSES` evidence for callback
+structs, hook structs and hand-rolled mocks (`mock.DoFunc`, `opts.OnEvent`).
+
+Second fix, and the one that shipped: **split the decision across the two layers
+that each hold half of it.** Capture records the POSITION as a fact
+(`@reference.callee-position` → `ReferenceSite.inCalleePosition`) — only the AST
+knows it, and it is gone by resolution time. Emit makes the DECISION from the
+resolved target's kind — only resolution knows whether the tail is a method or a
+field, and it may be declared in another package. Neither layer can answer alone.
+The suppression is language-neutral in `graph-bridge/edges.ts` and keys on the
+canonical `CALL_TARGET_TYPES`, so `Macro` and `Delegate` targets are covered too.
+
+A method _value_ (`f := h.dep.Work`) is not in function position and is
+untouched. The assertion is backed by an exact-set check over the whole fixture —
+now carrying target KINDS, so it catches both a new phantom and a deleted
+genuine read.
 
 ### What the numbers say
 
-- `callDrops` **unchanged at 102** — no call was lost.
-- `read` drops **27 → 22**: five phantom sites were being *recorded as drops*,
-  inflating the read bucket with sites that were never field reads.
+- `callDrops` **unchanged at 102** — no call was lost, in either fix.
+- `read` drops went **27 → 22** under the capture-time drop, then **22 → 27**
+  again once the marker replaced it. The round trip is the finding: those five
+  sites are genuine field reads, and the first fix was scoring their deletion as
+  an improvement.
+- `totalDropsAllKinds` **124 → 129**, the same five sites.
 - One drop reclassified `chain-field` → `chain-unwrap`. The phantom and the real
   call share a site key, so the phantom's field-shaped chain was previously the
   one recorded. The census now describes the actual dropped call.
 
 Caught by three review agents dispatched at the A1 regression; the phantom was
 the mechanism, not the global-normalization story the first revert note asserted.
+The func-field regression it introduced was then caught by two more, on the
+tri-review of #2782 — which is the argument for the exact-set-with-kinds
+assertion over the targeted one that passed by accident the first time.
 
 ---
 
@@ -110,7 +151,7 @@ count may not rise above the value measured after the last unit.
 
 Neither is needed. `measure.mjs --check` already asserts **exact match** against
 the committed baseline, which is strictly stronger than a ratchet: the count
-cannot rise *or* fall without a deliberate `--update-baseline`, and that path
+cannot rise _or_ fall without a deliberate `--update-baseline`, and that path
 prints an instruction to explain the movement in the commit message. A ratchet
 would be a weakening.
 
@@ -144,10 +185,10 @@ root.getSvc().getUser().address.getCity().save();
 //   ^step1     ^step2   ^step3   ^step4   receiver of `save` = 4 steps
 ```
 
-| Cap | Chain minted? | Cell state |
-|---|---|---|
-| 3 | **none** (confirmed by probing the emitter directly) | **RESOLVES** |
-| 4 | `2\|root\|cgetSvc\|cgetUser\|faddress\|cgetCity` | RESOLVES |
+| Cap | Chain minted?                                        | Cell state   |
+| --- | ---------------------------------------------------- | ------------ |
+| 3   | **none** (confirmed by probing the emitter directly) | **RESOLVES** |
+| 4   | `2\|root\|cgetSvc\|cgetUser\|faddress\|cgetCity`     | RESOLVES     |
 
 The site resolves at BOTH depths. At 3 it resolves through the text cascade,
 which owns the fallback path and runs to its own
@@ -175,11 +216,11 @@ entry. Now `MAX_TRANSPARENT_WRAPPER_DEPTH`, its own constant.
 `impact` reports `epistemic: 'lower-bound'` for two independent reasons that were
 previously indistinguishable in the output:
 
-| Cause | Unit | What it means | Is it a defect? |
-|---|---|---|---|
-| `receiverTyping` | call sites | Call sites dropped because the analyzer could not type the receiver | **Yes** — a resolver gap. This is the population this whole series targets. |
-| `dispatchBoundary` | symbols | The symbol sits behind an interface with real consumers or 2+ implementations; the number is the implementations plus interface-level consumers behind it | **No** — callers binding through DI or dynamic dispatch are genuinely untraceable statically. A compiler refuses here too. |
-| `externalBoundary` | call sites | The call left the indexed program (`System.out.println`, `fetch(...)`) | **No**, and not even a shortfall — there is no in-graph node an edge could have reached. An `epistemic: 'exact'` result can carry it. |
+| Cause              | Unit       | What it means                                                                                                                                             | Is it a defect?                                                                                                                       |
+| ------------------ | ---------- | --------------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------- |
+| `receiverTyping`   | call sites | Call sites dropped because the analyzer could not type the receiver                                                                                       | **Yes** — a resolver gap. This is the population this whole series targets.                                                           |
+| `dispatchBoundary` | symbols    | The symbol sits behind an interface with real consumers or 2+ implementations; the number is the implementations plus interface-level consumers behind it | **No** — callers binding through DI or dynamic dispatch are genuinely untraceable statically. A compiler refuses here too.            |
+| `externalBoundary` | call sites | The call left the indexed program (`System.out.println`, `fetch(...)`)                                                                                    | **No**, and not even a shortfall — there is no in-graph node an edge could have reached. An `epistemic: 'exact'` result can carry it. |
 
 Both collapsed into one enum plus prose, so a consumer — especially a coding
 agent gating its own edits on the result — could tell THAT a count was short but
@@ -227,12 +268,12 @@ Census of the call drops on the committed fixture corpus, **as measured at U10**
 — it predates the phantom-read fix documented above, which reclassified one drop
 `chain-field` → `chain-unwrap`. `callDropsByShape` in `baseline.json` is current:
 
-| Shape | Count | Share |
-|---|---|---|
-| `chain-field` — every step a field (`h.repo.save()`) | 60 | 59% |
-| `chain-call` — every step a call (`svc.getUser().save()`) | 27 | 27% |
-| `no-chain` — no chain minted; the walk found no nameable base | 12 | 12% |
-| `chain-mixed` — interleaved (`svc.getUser().addr.save()`) | 2 | 2% |
+| Shape                                                         | Count | Share |
+| ------------------------------------------------------------- | ----- | ----- |
+| `chain-field` — every step a field (`h.repo.save()`)          | 60    | 59%   |
+| `chain-call` — every step a call (`svc.getUser().save()`)     | 27    | 27%   |
+| `no-chain` — no chain minted; the walk found no nameable base | 12    | 12%   |
+| `chain-mixed` — interleaved (`svc.getUser().addr.save()`)     | 2     | 2%    |
 
 Two decisions come out of it.
 
@@ -271,7 +312,7 @@ with two states added so a hole cannot masquerade as a measurement:
 - `GRAMMAR-UNAVAILABLE` — the parser could not be loaded, so nothing was
   measured. Neither passes nor fails the gate, and `drift` skips it on **both**
   sides so the gate cannot fail for the environment it ran in. `tree-sitter-dart`,
-  `-kotlin` and `-swift` are vendored *optional* grammars: absent when a run sets
+  `-kotlin` and `-swift` are vendored _optional_ grammars: absent when a run sets
   `GITNEXUS_SKIP_OPTIONAL_GRAMMARS=1`, and soft-failing when no vendored prebuild
   matches the host (the set covers darwin/linux arm64+x64 and win32-arm64 — a
   win32-x64 or musl host has none). **All 14 load on a glibc linux-x64 host, so
@@ -297,13 +338,13 @@ problem, and several have since flipped (`baseline.json` is current):
 **Go — the root cause, isolated to one cell.** Three rows vary receiver
 decoration and field decoration independently:
 
-| Cell | Receiver | Field | State |
-|---|---|---|---|
-| `fieldReceiverCall` | value | value | RESOLVES |
-| `decoratedFieldType` | value | **pointer** | RESOLVES |
-| `decoratedReceiverBase` | **pointer** | value | **VISIBLE-GAP** |
+| Cell                    | Receiver    | Field       | State           |
+| ----------------------- | ----------- | ----------- | --------------- |
+| `fieldReceiverCall`     | value       | value       | RESOLVES        |
+| `decoratedFieldType`    | value       | **pointer** | RESOLVES        |
+| `decoratedReceiverBase` | **pointer** | value       | **VISIBLE-GAP** |
 
-Only the pointer *receiver* fails. Go already normalizes field type bindings
+Only the pointer _receiver_ fails. Go already normalizes field type bindings
 through `normalizeGoTypeName`, so the step lookup is sound and the defect is
 entirely the base — `synthesizeGoReceiverBinding` stores `typeNode.text` raw, so
 `func (h *Host)` binds `h` to the literal `*Host`, which
@@ -312,10 +353,10 @@ entirely the base — `synthesizeGoReceiverBinding` stores `typeNode.text` raw, 
 **PHP — the sigil hypothesis is dead.** The two rows differ only in whether the
 called method declares a return type:
 
-| Cell | Return type | State |
-|---|---|---|
-| `arrowCallChain` — `$svc->getUser()->save()` | unannotated | INVISIBLE-GAP |
-| `plainChain` — `$svc->getUserTyped()->save()` | **annotated** | **RESOLVES** |
+| Cell                                          | Return type   | State         |
+| --------------------------------------------- | ------------- | ------------- |
+| `arrowCallChain` — `$svc->getUser()->save()`  | unannotated   | INVISIBLE-GAP |
+| `plainChain` — `$svc->getUserTyped()->save()` | **annotated** | **RESOLVES**  |
 
 Same chain, same `->`, same base. PHP chains resolve when the return type is
 declared; the `$` sigil is not involved. `decoratedFieldType` (`?User $repo`)
@@ -337,19 +378,19 @@ measured at U2, i.e. BEFORE U1 landed** — it is the statement of the problem, 
 of the current state. Go's `decoratedReceiverBase` and TypeScript's
 `decoratedFieldType` have since moved; `baseline.json` has the live cells.
 
-| Language | `decoratedReceiverBase` | `decoratedFieldType` |
-|---|---|---|
-| go | **VISIBLE-GAP** (`*Host`) | RESOLVES |
-| rust | RESOLVES (`&mut self`) | **INVISIBLE-GAP** (`Box<User>`) |
-| typescript | N/A | **INVISIBLE-GAP** (`User \| null`) |
-| csharp | N/A | **VISIBLE-GAP** (`User?`) |
-| swift | N/A | **INVISIBLE-GAP** (`User?`) |
-| cpp | N/A | **INVISIBLE-GAP** (`User*`) |
-| python, php, kotlin, dart | N/A | RESOLVES |
-| java, c, javascript, ruby | N/A | N/A |
+| Language                  | `decoratedReceiverBase`   | `decoratedFieldType`               |
+| ------------------------- | ------------------------- | ---------------------------------- |
+| go                        | **VISIBLE-GAP** (`*Host`) | RESOLVES                           |
+| rust                      | RESOLVES (`&mut self`)    | **INVISIBLE-GAP** (`Box<User>`)    |
+| typescript                | N/A                       | **INVISIBLE-GAP** (`User \| null`) |
+| csharp                    | N/A                       | **VISIBLE-GAP** (`User?`)          |
+| swift                     | N/A                       | **INVISIBLE-GAP** (`User?`)        |
+| cpp                       | N/A                       | **INVISIBLE-GAP** (`User*`)        |
+| python, php, kotlin, dart | N/A                       | RESOLVES                           |
+| java, c, javascript, ruby | N/A                       | N/A                                |
 
 So U1's measured scope is **Go's receiver base**, plus the field-type gap in
-**Rust, TypeScript, C#, Swift and C++** — and *not* PHP, Python, Kotlin, Dart or
+**Rust, TypeScript, C#, Swift and C++** — and _not_ PHP, Python, Kotlin, Dart or
 Java, whose decoration handling already works or does not exist. Five of the
 seven hooks the plan speculatively listed were aimed at languages that need
 none; three languages that do need one were not on the list at all.
@@ -396,6 +437,7 @@ the shape axis moves the shape arm only.
 > was lost and no new drop appeared.
 >
 > Two gaps remained open **at U10**, both genuine at the time:
+>
 > - `(await svc.getUserAsync()).save()` — `extractMixedChain` reached `await …`,
 >   which is not a chain node, so no chain was minted. It was a VISIBLE-GAP and is
 >   the call-kind fixture in the drop-recorder test.
@@ -416,15 +458,15 @@ A/B produced by reverting ONLY the fold wiring (`compound-receiver.ts` +
 emission — and therefore the persisted bytes — is identical in both arms and the
 delta isolates the fold. Build + both caches wiped before every run (KTD4).
 
-| Metric | Control | Treatment | Δ | Threshold | Verdict |
-|---|---|---|---|---|---|
-| scope-resolution wall-clock, median of 3 | 25470.0 ms | 25687.9 ms | +0.86% | ≤ +3% | **PASS** |
-| wall-clock, slowest of 3 | 25520.0 ms | 25832.6 ms | +1.22% | ≤ +5% p95 | **PASS** |
-| serialized bytes per emitting site | — | **35.2 B** | — | ≤ 48 B | **PASS** |
-| persisted store growth | 1 234 600 B | 1 235 340 B | **+0.0599%** | ≤ 3% | **PASS** |
-| retained chain payload | — | 740 B | — | ≤ 6 MB | **PASS** |
-| call drops (no regression) | 99 | 99 | 0 | no new drops | **PASS** |
-| peak RSS | — | — | — | ≤ +2% | **NOT RESOLVABLE** |
+| Metric                                   | Control     | Treatment   | Δ            | Threshold    | Verdict            |
+| ---------------------------------------- | ----------- | ----------- | ------------ | ------------ | ------------------ |
+| scope-resolution wall-clock, median of 3 | 25470.0 ms  | 25687.9 ms  | +0.86%       | ≤ +3%        | **PASS**           |
+| wall-clock, slowest of 3                 | 25520.0 ms  | 25832.6 ms  | +1.22%       | ≤ +5% p95    | **PASS**           |
+| serialized bytes per emitting site       | —           | **35.2 B**  | —            | ≤ 48 B       | **PASS**           |
+| persisted store growth                   | 1 234 600 B | 1 235 340 B | **+0.0599%** | ≤ 3%         | **PASS**           |
+| retained chain payload                   | —           | 740 B       | —            | ≤ 6 MB       | **PASS**           |
+| call drops (no regression)               | 99          | 99          | 0            | no new drops | **PASS**           |
+| peak RSS                                 | —           | —           | —            | ≤ +2%        | **NOT RESOLVABLE** |
 
 **The 35.2 B result confirms KTD7 by measurement rather than by assertion.** The
 48-byte threshold was set deliberately so the object encoding (~71 B predicted)
@@ -432,7 +474,7 @@ fails and the compact string (~35 B predicted) passes. Measured: 35.2 B,
 including the JSON key and quotes. The encoding decision is now evidence-backed.
 
 **Peak RSS: the threshold is below this instrument's resolution, so it is
-reported as unresolvable rather than as a pass or a fail.** Three *independent*
+reported as unresolvable rather than as a pass or a fail.** Three _independent_
 treatment runs with the code held constant gave 414.9 / 436.6 / 436.9 MB — a
 5.3% spread, wider than the ±2% being tested. (An earlier pair of 3-reps-in-one-
 process runs read 536 vs 551 MB and looked like a +2.77% regression; that was
@@ -476,24 +518,24 @@ point for the A/B above.** The gate enforces `countArm` in `baseline.json`, whic
 has moved since — read the live call-drop number, site-kind split, and
 per-extension breakdown from there.
 
-| Metric | Value at U7 |
-|---|---|
-| **Call drops (the gate number)** | **99** |
-| Total drops, all site kinds | 124 |
-| Split by site kind | `call: 99`, `read: 25` |
+| Metric                           | Value at U7            |
+| -------------------------------- | ---------------------- |
+| **Call drops (the gate number)** | **99**                 |
+| Total drops, all site kinds      | 124                    |
+| Split by site kind               | `call: 99`, `read: 25` |
 
 Call drops by extension, at U7:
 
-| ext | n | ext | n | ext | n |
-|---|---|---|---|---|---|
-| `.java` | 49 | `.py` | 5 | `.rs` | 3 |
-| `.cs` | 8 | `.go` | 5 | `.kt` | 3 |
-| `.ts` | 7 | `.cpp` | 5 | `.rb` | 2 |
-| `.tsx` | 6 | `.php` | 4 | `.js` | 1 |
-| | | | | `.swift` | 1 |
+| ext     | n   | ext    | n   | ext      | n   |
+| ------- | --- | ------ | --- | -------- | --- |
+| `.java` | 49  | `.py`  | 5   | `.rs`    | 3   |
+| `.cs`   | 8   | `.go`  | 5   | `.kt`    | 3   |
+| `.ts`   | 7   | `.cpp` | 5   | `.rb`    | 2   |
+| `.tsx`  | 6   | `.php` | 4   | `.js`    | 1   |
+|         |     |        |     | `.swift` | 1   |
 
 **Why the split matters (KTD6 defect 1, now measured).** About a fifth of the
-drops are property *reads*, not lost calls (25 of 124 at U7; `bySiteKind` in
+drops are property _reads_, not lost calls (25 of 124 at U7; `bySiteKind` in
 `baseline.json` is current). Case 0's recorder gates on the receiver's
 punctuation, not on what the reference is, so `d.source.kind` lands in the same
 bucket as a dropped method call. Gating on the unsplit total would have measured a
@@ -510,19 +552,19 @@ evidence that the shape arm moves when the count arm does not. Superseded twice 
 by U8's rollout table above and by the canonical shape axis in `baseline.json`.
 The three TypeScript rows marked as gaps here (`?.`, `!`, `<T>`) all resolve now.
 
-| Language | Shape | State at pre-U10 | siteKind |
-|---|---|---|---|
-| TypeScript | `svc.getUser().save()` | RESOLVES | — |
-| TypeScript | `svc.getUser().address.save()` | RESOLVES | — |
-| TypeScript | `svc?.getUser().save()` | **INVISIBLE-GAP** | — |
-| TypeScript | `svc!.getUser().save()` | VISIBLE-GAP | `call` |
-| TypeScript | `(await svc.getUserAsync()).save()` | VISIBLE-GAP | `call` |
-| TypeScript | `svc.getTyped<User>().save()` | **INVISIBLE-GAP** | — |
-| TypeScript | `repos[0].save()` | **INVISIBLE-GAP** | — |
-| PHP | `$svc->getUser()->save()` | VISIBLE-GAP | `call` |
-| PHP | `$this->repo->save()` (typed property) | RESOLVES | — |
-| C++ | `svc->getUser()->save()` | **INVISIBLE-GAP** | — |
-| C++ | `svc2.getUser()->save()` | RESOLVES | — |
+| Language   | Shape                                  | State at pre-U10  | siteKind |
+| ---------- | -------------------------------------- | ----------------- | -------- |
+| TypeScript | `svc.getUser().save()`                 | RESOLVES          | —        |
+| TypeScript | `svc.getUser().address.save()`         | RESOLVES          | —        |
+| TypeScript | `svc?.getUser().save()`                | **INVISIBLE-GAP** | —        |
+| TypeScript | `svc!.getUser().save()`                | VISIBLE-GAP       | `call`   |
+| TypeScript | `(await svc.getUserAsync()).save()`    | VISIBLE-GAP       | `call`   |
+| TypeScript | `svc.getTyped<User>().save()`          | **INVISIBLE-GAP** | —        |
+| TypeScript | `repos[0].save()`                      | **INVISIBLE-GAP** | —        |
+| PHP        | `$svc->getUser()->save()`              | VISIBLE-GAP       | `call`   |
+| PHP        | `$this->repo->save()` (typed property) | RESOLVES          | —        |
+| C++        | `svc->getUser()->save()`               | **INVISIBLE-GAP** | —        |
+| C++        | `svc2.getUser()->save()`               | RESOLVES          | —        |
 
 ## Corrections to the plan, forced by measurement
 
@@ -542,11 +584,11 @@ The three TypeScript rows marked as gaps here (`?.`, `!`, `<T>`) all resolve now
    `@reference.call.member`, `@reference.name`, and crucially
    `@reference.receiver`:
 
-   | Shape | `@reference.receiver` |
-   |---|---|
-   | `svc?.getUser().save()` | `svc?.getUser()` |
+   | Shape                         | `@reference.receiver`  |
+   | ----------------------------- | ---------------------- |
+   | `svc?.getUser().save()`       | `svc?.getUser()`       |
    | `svc.getTyped<User>().save()` | `svc.getTyped<User>()` |
-   | `repos[0].save()` | `repos[0]` |
+   | `repos[0].save()`             | `repos[0]`             |
 
    So a `ReferenceSite` exists for every one of them, and hanging a
    `receiverChain` field on `ReferenceSite` is a viable carrier for all of them.
@@ -555,7 +597,7 @@ The three TypeScript rows marked as gaps here (`?.`, `!`, `<T>`) all resolve now
    The drop suppression is therefore downstream of capture. For `repos[0]` the
    cause is known and matches the plan: the receiver has neither `.` nor `(`, so
    Case 0's gate never fires. For `?.` and `<T>` the receiver text satisfies the
-   gate, so Case 0 *does* run and one of two things happens — the site was marked
+   gate, so Case 0 _does_ run and one of two things happens — the site was marked
    in `handledSites` by another case, or `resolveCompoundReceiverClass` returned a
    class on which the member was then not found, leaving
    `compoundReceiverUnresolved` false. Those are materially different defects and
@@ -563,13 +605,13 @@ The three TypeScript rows marked as gaps here (`?.`, `!`, `<T>`) all resolve now
    establish, since the second would mean the recorder under-reports by
    mis-attribution rather than by a gate.
 
-   *(An earlier revision of this file asserted that these shapes produce no
+   _(An earlier revision of this file asserted that these shapes produce no
    reference site at all. That was inferred from edge-and-drop absence and is
-   disproven by the capture dump above.)*
+   disproven by the capture dump above.)_
 
 3. **KTD6 defect 2 overstates the PHP blindness.** The claim is that Case 0's
    C-family punctuation test means PHP `->` receivers "never record a drop at
-   all". Measured, `$svc->getUser()->save()` *is* recorded, because its receiver
+   all". Measured, `$svc->getUser()->save()` _is_ recorded, because its receiver
    text `$svc->getUser()` contains `(` and satisfies the gate. And the plan's own
    example, `$this->repo->save()`, does not need recording — with a typed property
    it resolves. The genuine PHP gap is the call chain, and it is already visible.
@@ -597,7 +639,7 @@ must be read against the same bias. Kept in sync with `KNOWN_BLIND` in
   only by a gate. (This is what moved PHP's `arrowCallChain` from VISIBLE-GAP to
   INVISIBLE-GAP when its fixture parameter was typed; see U8 below.)
 - Retracted, and left here because it was quoted for several units: the earlier
-  claim that `?.` and explicit type arguments *"produce no reference site at all"*.
+  claim that `?.` and explicit type arguments _"produce no reference site at all"_.
   They do — the capture dump under "Corrections to the plan" §2 shows a full call
   match with `@reference.receiver` for all three of `svc?.getUser()`,
   `svc.getTyped<User>()` and `repos[0]`. The absence was of an EDGE and of a DROP,
@@ -614,15 +656,15 @@ match, an absent receiver, or a chain with no nameable base all leave the match
 untouched — so inserting the call before every `out.push(grouped)` is safe even
 in the emitters that have three or four such paths.
 
-| Language | Shape | Before | After |
-|---|---|---|---|
-| TypeScript | `svc?.getUser().save()` | INVISIBLE-GAP | **RESOLVES** |
-| TypeScript | `svc!.getUser().save()` | VISIBLE-GAP | **RESOLVES** |
-| TypeScript | `svc.getTyped<User>().save()` | INVISIBLE-GAP | **RESOLVES** |
-| C++ | `svc->getUser()->save()` | INVISIBLE-GAP | **RESOLVES** |
-| C++ | `svc2.getUser()->save()` (control) | RESOLVES | RESOLVES |
-| PHP | `$svc->getUser()->save()` | VISIBLE-GAP | INVISIBLE-GAP |
-| PHP | `$this->repo->save()` (control) | RESOLVES | RESOLVES |
+| Language   | Shape                              | Before        | After         |
+| ---------- | ---------------------------------- | ------------- | ------------- |
+| TypeScript | `svc?.getUser().save()`            | INVISIBLE-GAP | **RESOLVES**  |
+| TypeScript | `svc!.getUser().save()`            | VISIBLE-GAP   | **RESOLVES**  |
+| TypeScript | `svc.getTyped<User>().save()`      | INVISIBLE-GAP | **RESOLVES**  |
+| C++        | `svc->getUser()->save()`           | INVISIBLE-GAP | **RESOLVES**  |
+| C++        | `svc2.getUser()->save()` (control) | RESOLVES      | RESOLVES      |
+| PHP        | `$svc->getUser()->save()`          | VISIBLE-GAP   | INVISIBLE-GAP |
+| PHP        | `$this->repo->save()` (control)    | RESOLVES      | RESOLVES      |
 
 The C++ row is the one the plan flagged as having **no fixture anywhere** —
 `cpp-chain-call/` uses the value `.` form, which already worked. It now has one,
