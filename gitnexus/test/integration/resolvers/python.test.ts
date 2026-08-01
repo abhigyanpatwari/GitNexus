@@ -2337,6 +2337,44 @@ describe('Python module import CALLS resolution (Issue #337)', () => {
 });
 
 // ---------------------------------------------------------------------------
+// Module reached through `from pkg import models` (#2746)
+// ---------------------------------------------------------------------------
+
+describe('Python from-import module alias resolution', () => {
+  let result: PipelineResult;
+
+  beforeAll(async () => {
+    result = await runPipelineFromRepo(path.join(FIXTURES, 'python-from-module-alias'), () => {});
+  }, 60000);
+
+  it('links the imported module rather than the package initializer', () => {
+    const imports = getRelationships(result, 'IMPORTS');
+    const appImports = imports.filter((edge) => edge.sourceFilePath === 'pkg/app.py');
+
+    expect(appImports.length).toBeGreaterThan(0);
+    expect(appImports.every((edge) => edge.targetFilePath === 'pkg/models.py')).toBe(true);
+  });
+
+  it('resolves inline and assigned calls through the module alias', () => {
+    const calls = getRelationships(result, 'CALLS').filter(
+      (edge) => edge.sourceFilePath === 'pkg/app.py',
+    );
+
+    expect(calls.filter((edge) => edge.target === 'User')).toHaveLength(2);
+    expect(calls.filter((edge) => edge.target === 'save')).toHaveLength(3);
+    expect(calls.every((edge) => edge.targetFilePath === 'pkg/models.py')).toBe(true);
+  });
+
+  it('does not bind the same-named class from an unrelated module', () => {
+    const wrongCalls = getRelationships(result, 'CALLS').filter(
+      (edge) => edge.sourceFilePath === 'pkg/app.py' && edge.targetFilePath === 'decoy/models.py',
+    );
+
+    expect(wrongCalls).toHaveLength(0);
+  });
+});
+
+// ---------------------------------------------------------------------------
 // External dotted imports: framework modules like django.apps must not resolve
 // to unrelated local basename matches such as accounts/apps.py or config/urls.py.
 // ---------------------------------------------------------------------------

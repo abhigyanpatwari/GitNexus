@@ -49,11 +49,12 @@ import type { GraphNode, GraphRelationship, RelationshipType } from 'gitnexus-sh
 import type { KnowledgeGraph } from '../graph/types.js';
 import {
   BASICBLOCK_CSV_HEADER,
+  DECLARED_RELATION_PAIRS,
   REL_CSV_HEADER,
   buildBasicBlockRow,
   buildRelRow,
 } from './csv-generator.js';
-import { getNodeLabel } from './rel-pair-routing.js';
+import { assertDeclaredPair, getNodeLabel } from './rel-pair-routing.js';
 import { DEFAULT_EMIT_CHUNK_ROWS, SyncCsvWriter } from './sync-csv-writer.js';
 import { NODE_TABLES, type NodeTableName } from './schema.js';
 
@@ -165,6 +166,7 @@ export class PdgEmitSink implements KnowledgeGraph {
       // `RelPairRouter` exactly so the streamed set matches the whole-graph set.
       if (!this.validTables.has(fromLabel) || !this.validTables.has(toLabel)) return;
       const pairKey = `${fromLabel}|${toLabel}`;
+      assertDeclaredPair(pairKey, DECLARED_RELATION_PAIRS);
       let writer = this.relWriters.get(pairKey);
       if (writer === undefined) {
         try {

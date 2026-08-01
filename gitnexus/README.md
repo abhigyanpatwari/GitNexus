@@ -311,6 +311,31 @@ validates the returned vector's length):
 
 Works with Infinity, vLLM, TEI, llama.cpp, Ollama, LM Studio, or OpenAI. Retry and pacing settings are provider-neutral; provider-specific limits should be supplied through configuration. When unset, local embeddings are used unchanged.
 
+## JVM Package Sibling Injection
+
+Java and Kotlin files in the same package receive implicit sibling class bindings
+to resolve same-package references. By default, GitNexus injects at most 200
+siblings per module scope, nearest first by path. Set
+`GITNEXUS_MAX_INJECTED_SIBLINGS=0` to remove that per-file limit; this can
+substantially increase indexing work for large packages.
+
+```bash
+export GITNEXUS_MAX_INJECTED_SIBLINGS=200
+gitnexus analyze .
+```
+
+When the limit truncates a file's sibling set, that file is marked
+visibility-incomplete: same-package references still resolve through the
+injected siblings, but wildcard-import attribution (used by the Spring
+bean/DI/config passes) is disabled for it rather than resolved against a
+partial view. Analyze logs a `sibling injection truncated` warning naming how
+many files were affected.
+
+Packages with more than 500 files are a separate, fixed limit: they are skipped
+entirely (logged as `skipping package with N files`) and every file in them is
+marked visibility-incomplete. `GITNEXUS_MAX_INJECTED_SIBLINGS` does not lift
+that skip — including at `0`.
+
 ## Multi-Repo Support
 
 GitNexus supports indexing multiple repositories. Each `gitnexus analyze` registers the repo in a global registry (`~/.gitnexus/registry.json`). The MCP server serves all indexed repos automatically.
@@ -662,6 +687,56 @@ After scope resolution, analyze prunes inert block-local value symbols (a functi
 | `GITNEXUS_KEEP_LOCAL_VALUE_SYMBOLS` | unset   | Set to `1`/`true` to keep inert block-local value symbols instead of pruning them. |
 
 Programmatic callers can pass `keepLocalValueSymbols: true` in `PipelineOptions` instead of setting the env var.
+
+### Scope-resolution property-key dispatch cap
+
+During scope resolution GitNexus synthesizes CALLS edges through *property-key
+dispatch* — call sites like `hooks.emitScopeCaptures()` where a property key is
+registered by multiple definitions across the codebase. To keep this fan-in
+bounded, each property key is capped at **32 registrations**: a key registered
+by more than 32 distinct functions is skipped entirely (no CALLS are synthesized
+through it), and the dropped key names are surfaced in the analyze log for
+operator visibility. The cap is calibrated at 2× this repo's own provider table
+(16 legitimate registrations, one per language provider).
+
+| Variable                                | Default | Effect                                                                                                                                                                                                                                                                                                                |
+| --------------------------------------- | ------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `GITNEXUS_MAX_PROPERTY_DISPATCH_FANOUT` | `32`    | Per-property-key registration cap in the property-dispatch scope-resolution pass. Set to a positive integer to raise it for repositories whose provider/hook tables exceed the default and lose CALLS coverage on a legitimate key; non-integer or `< 1` values fall back to `32`. Lowering it tightens the overflow budget. |
+
+```bash
+# A property key registered by 40 functions overflows the default 32 and drops
+# all CALLS through it — raise the cap for that repo and rebuild so scope
+# resolution reruns.
+export GITNEXUS_MAX_PROPERTY_DISPATCH_FANOUT=64
+npx gitnexus analyze --force
+```
+
+### Scope-resolution dispatch-target cap
+
+During scope resolution GitNexus resolves calls that flow through *callable
+values* — function/method references bound to variables, passed as arguments,
+or stored in maps/tables. To keep that inclusion-based resolution finite, each
+callable site is capped at **32 dispatch targets**. When a site gathers more
+candidates than the cap it is treated as **overflowed** and *all* of its call
+edges are dropped — a cliff, not a tail, so a repository with a legitimately
+wide dispatch table (a single callable site resolving to 33+ targets) loses
+that site's whole call chain. In that case `analyze` logs
+`callable-value-flow: candidate set exceeded the cap; no partial CALLS emitted`
+alongside a warning carrying the language, the overflowing context, the
+candidate count, and the cap (32).
+
+Raise the cap for such repositories:
+
+| Variable                              | Default | Effect                                                                                                                                                                                                                                                                                                              |
+| ------------------------------------- | ------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| `GITNEXUS_MAX_CALLABLE_VALUE_TARGETS` | `32`    | Per-callable-site dispatch-target cap in the callable-value-flow scope-resolution pass. Set to a positive integer to raise it for repositories whose wide dispatch tables overflow the default and lose a whole call chain; non-integer or `< 1` values fall back to `32`. Lowering it tightens the overflow budget. |
+
+```bash
+# A callable site resolving to 48 targets overflows the default 32 and drops
+# the chain — raise the cap for that repo and rebuild so scope resolution reruns.
+export GITNEXUS_MAX_CALLABLE_VALUE_TARGETS=64
+npx gitnexus analyze --force
+```
 
 ### Hook augmentation and skip diagnostics
 

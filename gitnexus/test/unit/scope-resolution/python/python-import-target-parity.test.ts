@@ -11,11 +11,18 @@
  * index regression fails CI rather than silently changing resolved edges.
  */
 import { describe, it, expect } from 'vitest';
-import { resolvePythonImportTarget } from '../../../../src/core/ingestion/languages/python/index.js';
-import type { ParsedImport } from 'gitnexus-shared';
+import {
+  isPythonImportedModule,
+  resolvePythonImportTarget,
+} from '../../../../src/core/ingestion/languages/python/index.js';
+import type { ParsedFile, ParsedImport } from 'gitnexus-shared';
 
 function mkImport(targetRaw: string): ParsedImport {
   return { kind: 'absolute', targetRaw, isRelative: false, names: [] } as unknown as ParsedImport;
+}
+
+function mkNamed(targetRaw: string, importedName: string): ParsedImport {
+  return { kind: 'named', targetRaw, localName: importedName, importedName };
 }
 
 function resolve(fromFile: string, files: string[], targetRaw: string): string | null {
@@ -149,5 +156,65 @@ describe('resolvePythonImportTarget — index parity', () => {
     expect(resolve('app/main.py', files, 'pkg.models')).toBe('a/pkg/models.py');
     // A package whose only file is non-.py is not a repo candidate → null.
     expect(resolve('app/main.py', [...files, 'tsonly/widget.ts'], 'tsonly.widget')).toBeNull();
+  });
+
+  it('prefers a concrete imported submodule over the package initializer (#2746)', () => {
+    const parsed = mkNamed('pkg', 'models');
+    const target = resolvePythonImportTarget(parsed, {
+      fromFile: 'pkg/app.py',
+      allFilePaths: new Set(['pkg/__init__.py', 'pkg/models.py']),
+    });
+
+    expect(target).toBe('pkg/models.py');
+    expect(isPythonImportedModule(parsed, target ?? '', 'pkg/app.py')).toBe(true);
+  });
+
+  it('preserves an explicit package export over a same-named submodule', () => {
+    const parsed = mkNamed('pkg', 'models');
+    const packageFile = {
+      filePath: 'pkg/__init__.py',
+      localDefs: [{ qualifiedName: 'models' }],
+    } as unknown as ParsedFile;
+    const target = resolvePythonImportTarget(parsed, {
+      fromFile: 'pkg/app.py',
+      allFilePaths: new Set(['pkg/__init__.py', 'pkg/models.py']),
+      parsedFiles: [packageFile],
+    });
+
+    expect(target).toBe('pkg/__init__.py');
+    expect(isPythonImportedModule(parsed, target ?? '', 'pkg/app.py')).toBe(false);
+  });
+
+  it('keeps ordinary symbols on the named-import path', () => {
+    const parsed = mkNamed('pkg.models', 'User');
+    const target = resolvePythonImportTarget(parsed, {
+      fromFile: 'pkg/app.py',
+      allFilePaths: new Set(['pkg/__init__.py', 'pkg/models.py']),
+    });
+
+    expect(target).toBe('pkg/models.py');
+    expect(isPythonImportedModule(parsed, target ?? '', 'pkg/app.py')).toBe(false);
+  });
+
+  it('recognizes relative from-import submodules', () => {
+    const parsed = mkNamed('.', 'models');
+    const target = resolvePythonImportTarget(parsed, {
+      fromFile: 'pkg/app.py',
+      allFilePaths: new Set(['pkg/__init__.py', 'pkg/models.py']),
+    });
+
+    expect(target).toBe('pkg/models.py');
+    expect(isPythonImportedModule(parsed, target ?? '', 'pkg/app.py')).toBe(true);
+  });
+
+  it('falls back to a package export when no same-named submodule exists', () => {
+    const parsed = mkNamed('pkg', 'exported');
+    const target = resolvePythonImportTarget(parsed, {
+      fromFile: 'pkg/app.py',
+      allFilePaths: new Set(['pkg/__init__.py']),
+    });
+
+    expect(target).toBe('pkg/__init__.py');
+    expect(isPythonImportedModule(parsed, target ?? '', 'pkg/app.py')).toBe(false);
   });
 });
