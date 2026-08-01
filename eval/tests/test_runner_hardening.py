@@ -2,12 +2,15 @@
 
 import hashlib
 import json
+from contextlib import nullcontext
+from types import SimpleNamespace
 
 import pytest
 
 from workflow_bench import runner, runner_artifacts, runner_sessions
 from workflow_bench.evolution import skill_fingerprint
 from workflow_bench.process_control import ManagedProcessError, ManagedProcessResult
+from workflow_bench.proposer_sandbox import SandboxError
 
 
 def _report(**overrides) -> str:
@@ -381,3 +384,170 @@ def test_phase_workspace_still_sees_writes_under_a_pre_existing_nested_claude_di
 
     with pytest.raises(ValueError, match="unauthorized workspace path"):
         runner_artifacts.enforce_phase_workspace(tmp_path, before, allowed_artifact=artifact)
+
+
+def _cell_context(tmp_path, **overrides):
+    """A TaskCellContext whose per-task inputs are all present and valid."""
+    snapshot = SimpleNamespace(
+        digest="asset-digest",
+        manifest_digest="asset-manifest",
+        dependency_content_digest="dep-content",
+        dependency_manifest_digest="dep-manifest",
+    )
+    graph = SimpleNamespace(
+        digest="graph-digest",
+        manifest_digest="graph-manifest",
+        materialize=lambda *_a, **_k: None,
+    )
+    oracle = SimpleNamespace(
+        digest="oracle-digest",
+        command_digest="oracle-command",
+        manifest_digest="oracle-manifest",
+    )
+    fields = {
+        "task": {"id": "task-a", "class": "demo", "prompt": "do the thing"},
+        "oracle_snapshot": oracle,
+        "repo": tmp_path / "repo",
+        "task_sha": "a" * 40,
+        "graph_snapshot": graph,
+        "graph_snapshot_error": None,
+        "asset_snapshot": snapshot,
+        "asset_snapshot_error": None,
+        "args": SimpleNamespace(
+            claude_bin="claude",
+            model="pinned-model",
+            proposer_model=None,
+            auth_token=None,
+        ),
+        "out_dir": tmp_path / "out",
+        "oracle_mask": tmp_path / "mask",
+        "ce_plugin_snapshot": None,
+        "trees_dir": tmp_path / "trees",
+        "bwrap_bin": tmp_path / "bwrap",
+        "runtime_mounts": (),
+        "candidate_overlay": None,
+        "overlay_digest": None,
+    }
+    fields.update(overrides)
+    fields["out_dir"].mkdir(parents=True, exist_ok=True)
+    return runner.TaskCellContext(**fields)
+
+
+def _stub_cell_dependencies(monkeypatch, tmp_path, removed):
+    """Replace everything a cell shells out to, so only its own logic runs."""
+    worktree = tmp_path / "clone"
+    worktree.mkdir()
+    monkeypatch.setattr(runner, "make_worktree", lambda *_a, **_k: worktree)
+    monkeypatch.setattr(runner, "sanitize_clone_for_hidden_oracles", lambda *_a, **_k: "b" * 40)
+    monkeypatch.setattr(runner, "stage_task_assets", lambda *_a, **_k: [])
+    monkeypatch.setattr(runner, "isolated_gitnexus_registry_mount", lambda *_a, **_k: None)
+    monkeypatch.setattr(runner, "ce_plugin_mounts_for_arm", lambda *_a, **_k: [])
+    monkeypatch.setattr(runner, "ce_plugin_dir_for_arm", lambda *_a, **_k: None)
+    monkeypatch.setattr(runner, "prepare_sandbox", lambda **_k: nullcontext(SimpleNamespace(run=None)))
+    monkeypatch.setattr(runner, "skill_fingerprint", lambda *_a, **_k: "skill-digest")
+    monkeypatch.setattr(runner, "require_skill_fingerprint", lambda *_a, **_k: None)
+    monkeypatch.setattr(runner, "_sandbox_git", lambda *_a, **_k: "c" * 40)
+    monkeypatch.setattr(runner, "implementation_diff_digest", lambda *_a, **_k: "")
+    monkeypatch.setattr(runner, "_prepare_untracked_for_diff", lambda *_a, **_k: None)
+    monkeypatch.setattr(runner, "diff_churn", lambda *_a, **_k: {})
+    monkeypatch.setattr(runner, "enforce_work_evidence", lambda *_a, **_k: None)
+    monkeypatch.setattr(runner, "capture_patch", lambda *_a, **_k: b"diff")
+    monkeypatch.setattr(runner, "run_arm", lambda *_a, **_k: {"resolved": True, "ok": True, "error_kind": None})
+    monkeypatch.setattr(runner, "remove_clone", lambda path: removed.append(path))
+    return worktree
+
+
+def test_run_cell_returns_a_row_bound_to_its_task_and_snapshots(monkeypatch, tmp_path):
+    removed: list = []
+    _stub_cell_dependencies(monkeypatch, tmp_path, removed)
+
+    record = runner.run_cell(_cell_context(tmp_path), 2, "workflow")
+
+    assert record["resolved"] is True
+    assert record["error_kind"] is None
+    # The row has to carry its own coordinates: once cells stop running in a
+    # predictable order, position in results.jsonl identifies nothing.
+    assert record["task"] == "task-a"
+    assert record["arm"] == "workflow"
+    assert record["run"] == 2
+    assert record["task_asset_snapshot_digest"] == "asset-digest"
+    assert record["sanitized_graph_snapshot_digest"] == "graph-digest"
+    assert record["oracle_digest"] == "oracle-digest"
+    assert removed == [tmp_path / "clone"]
+
+
+@pytest.mark.parametrize(
+    "failure",
+    [
+        ManagedProcessError(
+            ["setup"],
+            ManagedProcessResult(
+                state="timeout",
+                returncode=-15,
+                stdout_tail="",
+                stderr_tail="",
+                duration_s=1.0,
+            ),
+        ),
+        SandboxError("sandbox refused"),
+        OSError("disk went away"),
+        RuntimeError("overlay drifted"),
+        ValueError("bad binding"),
+    ],
+    ids=["managed-process", "sandbox", "os", "runtime", "value"],
+)
+def test_run_cell_records_an_expected_failure_and_still_removes_its_clone(monkeypatch, tmp_path, failure):
+    removed: list = []
+    _stub_cell_dependencies(monkeypatch, tmp_path, removed)
+
+    def explode(*_args, **_kwargs):
+        raise failure
+
+    monkeypatch.setattr(runner, "run_arm", explode)
+    record = runner.run_cell(_cell_context(tmp_path), 0, "workflow")
+
+    assert record["error_kind"] == "infra-error"
+    assert record["resolved"] is False
+    # A cell owns its clone for its whole lifetime; the sweep has no other
+    # chance to reclaim it, so the finally must survive every expected failure.
+    assert removed == [tmp_path / "clone"]
+
+
+def test_run_cell_lets_an_unexpected_failure_escape_rather_than_scoring_it(monkeypatch, tmp_path):
+    removed: list = []
+    _stub_cell_dependencies(monkeypatch, tmp_path, removed)
+
+    def explode(*_args, **_kwargs):
+        raise KeyError("harness bug")
+
+    monkeypatch.setattr(runner, "run_arm", explode)
+    # A harness bug recorded as an ordinary infra-error would be averaged into
+    # the evidence and counted toward the outage breaker. It must crash instead.
+    with pytest.raises(KeyError):
+        runner.run_cell(_cell_context(tmp_path), 0, "workflow")
+    assert removed == [tmp_path / "clone"]
+
+
+def test_run_cell_reports_a_cleanup_failure_over_its_primary_outcome(monkeypatch, tmp_path):
+    _stub_cell_dependencies(monkeypatch, tmp_path, [])
+
+    def refuse(_path):
+        raise OSError("clone is busy")
+
+    monkeypatch.setattr(runner, "remove_clone", refuse)
+    record = runner.run_cell(_cell_context(tmp_path), 1, "workflow")
+
+    assert record["error_kind"] == "cleanup-failure"
+    assert record["resolved"] is False
+    assert "primary=None" in record["error_detail"]
+    assert "clone is busy" in record["error_detail"]
+
+
+def test_run_cell_fails_closed_when_a_per_task_snapshot_never_materialized(tmp_path):
+    # The snapshots are prepared once per task, before any cell. If that failed,
+    # every cell of the task has to record it rather than run against nothing.
+    context = _cell_context(tmp_path, asset_snapshot=None, asset_snapshot_error=OSError("no assets"))
+    record = runner.run_cell(context, 0, "workflow")
+
+    assert record["error_kind"] == "infra-error"
+    assert "no assets" in str(record["error_detail"])

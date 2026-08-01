@@ -45,7 +45,7 @@ import statistics
 import tempfile
 import time
 from collections.abc import Mapping
-from dataclasses import replace
+from dataclasses import dataclass, replace
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any
@@ -140,6 +140,7 @@ from .sanitized_graph import (
 )
 from .runtime_mounts import (
     CE_ARMS,
+    CePluginSnapshot,
     HARNESS_ROOT as HARNESS_ROOT,
     PINNED_GITNEXUS_VERSION as PINNED_GITNEXUS_VERSION,
     ce_plugin_dir_for_arm,
@@ -638,6 +639,264 @@ def systemic_outage_streak(error_kind: str | None, prior_streak: int) -> int:
     return prior_streak + 1 if error_kind in SYSTEMIC_ERROR_KINDS else 0
 
 
+@dataclass(frozen=True)
+class TaskCellContext:
+    """Everything one benchmark cell needs from its task, prepared once.
+
+    A cell is one (run, arm) pair: a private clone, a sandboxed session set, and
+    the row it produces. Cells of the same task share this context read-only, so
+    it is what makes them independent of each other — every per-cell mutable is
+    local to ``run_cell``. Holding the fields explicitly, rather than closing
+    over ``main``'s scope, is what lets a cell run off the main thread without
+    dragging the whole sweep's state along with it.
+
+    ``args`` is treated as immutable: ``main`` finishes mutating it during
+    setup, well before any cell starts. ``argparse.Namespace`` cannot enforce
+    that, so it is stated here.
+    """
+
+    task: dict[str, Any]
+    oracle_snapshot: TaskOracleSnapshot
+    repo: Path
+    task_sha: str
+    graph_snapshot: SanitizedGraphSnapshot | None
+    graph_snapshot_error: BaseException | None
+    asset_snapshot: TaskAssetSnapshot | None
+    asset_snapshot_error: BaseException | None
+    args: argparse.Namespace
+    out_dir: Path
+    oracle_mask: Path
+    ce_plugin_snapshot: CePluginSnapshot | None
+    trees_dir: Path
+    bwrap_bin: Path
+    runtime_mounts: tuple[ReadOnlyMount, ...]
+    candidate_overlay: Path | None
+    overlay_digest: str | None
+
+
+def run_cell(ctx: TaskCellContext, run_idx: int, arm: str) -> dict[str, Any]:
+    """Run one (run, arm) cell end to end and return its result row.
+
+    Owns its clone for the whole call, including teardown: the ``finally``
+    removes the worktree whatever happens, and an exception outside the five
+    expected kinds is deliberately left to propagate — a harness bug must not be
+    recorded as an ordinary infra-error and averaged into the evidence.
+    """
+    args = ctx.args
+    task = ctx.task
+    worktree: Path | None = None
+    record: dict[str, Any] | None = None
+    cleanup_error: OSError | None = None
+    try:
+        if ctx.asset_snapshot_error is not None:
+            raise RuntimeError(f"task asset snapshot preparation failed: {ctx.asset_snapshot_error}")
+        if ctx.graph_snapshot_error is not None:
+            raise RuntimeError(f"sanitized graph snapshot preparation failed: {ctx.graph_snapshot_error}")
+        if ctx.graph_snapshot is None:
+            raise RuntimeError("sanitized graph snapshot is unavailable")
+        if ctx.asset_snapshot is None:
+            raise RuntimeError("task asset snapshot is unavailable")
+        worktree = make_worktree(ctx.repo, ctx.task_sha, ctx.trees_dir)
+        sanitized_head = sanitize_clone_for_hidden_oracles(worktree)
+        ctx.graph_snapshot.materialize(worktree, sanitized_head=sanitized_head)
+        dependency_mounts = stage_task_assets(
+            task,
+            repo=ctx.repo,
+            clone=worktree,
+            snapshot=ctx.asset_snapshot,
+        )
+        registry_mount = isolated_gitnexus_registry_mount(worktree, ctx.trees_dir)
+        hidden_harness = worktree / "eval" / "workflow_bench"
+        oracle_visibility_mounts: list[ReadOnlyMount] = []
+        if hidden_harness.exists() or hidden_harness.is_symlink():
+            hidden_metadata = hidden_harness.lstat()
+            if stat.S_ISLNK(hidden_metadata.st_mode) or not stat.S_ISDIR(hidden_metadata.st_mode):
+                raise SandboxError("benchmark harness path must be a real directory before it can be hidden")
+            oracle_visibility_mounts.append(
+                ReadOnlyMount(
+                    source=ctx.oracle_mask,
+                    target=f"{SANDBOX_WORKSPACE}/eval/workflow_bench",
+                )
+            )
+        execution_arm = CANDIDATE_ARMS.get(arm, arm)
+        ce_mounts = ce_plugin_mounts_for_arm(execution_arm, ctx.ce_plugin_snapshot)
+        with prepare_sandbox(
+            clone=worktree,
+            claude_bin=args.claude_bin,
+            bwrap_bin=ctx.bwrap_bin,
+            read_only_mounts=[
+                *dependency_mounts,
+                *ctx.runtime_mounts,
+                registry_mount,
+                *ce_mounts,
+                *oracle_visibility_mounts,
+            ],
+            preflight=False,
+        ) as sandbox:
+            # Capture the BASE (pre-overlay) skill digest — identical
+            # for the incumbent and candidate arms — then run the
+            # task's untrusted setup against those base skills. The
+            # candidate overlay is applied only afterwards, so setup
+            # can never observe candidate prose and both arms share
+            # byte-identical pre-overlay state.
+            base_skill_digest = skill_fingerprint(worktree, execution_arm)
+            if task.get("setup"):
+                setup_command = ["/bin/sh", "-lc", str(task["setup"])]
+                setup = sandbox.run(
+                    setup_command,
+                    timeout=600,
+                    env=build_sandbox_environment(),
+                )
+                if not setup.ok:
+                    raise ManagedProcessError(setup_command, setup)
+            # Tamper-evidence: setup must not have rewritten the base
+            # skills, verified before any candidate overlay lands.
+            require_skill_fingerprint(
+                worktree,
+                execution_arm,
+                base_skill_digest,
+                phase="task setup",
+            )
+            if arm in CANDIDATE_ARMS:
+                assert ctx.candidate_overlay is not None
+                applied_digest = apply_candidate_overlay(
+                    ctx.candidate_overlay,
+                    worktree,
+                    sandbox=sandbox,
+                )
+                if applied_digest != ctx.overlay_digest:
+                    raise RuntimeError("candidate overlay changed during the benchmark run")
+            # The digest the model must preserve during its run is the
+            # post-overlay skill surface (candidate skills for
+            # candidate arms; unchanged base skills otherwise).
+            expected_skill_digest = skill_fingerprint(worktree, execution_arm)
+            orig_sha = _sandbox_git(sandbox, ["rev-parse", "HEAD"]).strip()
+            if not re.fullmatch(r"[0-9a-fA-F]{40,64}", orig_sha):
+                raise RuntimeError("sandboxed candidate setup did not produce an immutable commit")
+            before_work_digest = (
+                implementation_diff_digest(sandbox, orig_sha) if execution_arm in IMPLEMENTATION_ARMS else ""
+            )
+            record = run_arm(
+                execution_arm,
+                task,
+                worktree,
+                args,
+                sandbox=sandbox,
+                transcript_output_dir=ctx.out_dir,
+                transcript_output_prefix=f"{task['id']}-{arm}-run{run_idx}",
+                expected_skill_digest=expected_skill_digest,
+                enforce_phase_boundary=True,
+                ce_plugin_dir=ce_plugin_dir_for_arm(execution_arm, ctx.ce_plugin_snapshot),
+                oracle_snapshot=ctx.oracle_snapshot,
+            )
+            _prepare_untracked_for_diff(sandbox)
+            after_work_digest = (
+                implementation_diff_digest(
+                    sandbox,
+                    orig_sha,
+                    prepare_untracked=False,
+                )
+                if execution_arm in IMPLEMENTATION_ARMS
+                else ""
+            )
+            record.update(
+                diff_churn(
+                    sandbox,
+                    orig_sha,
+                    prepare_untracked=False,
+                )
+            )
+            enforce_work_evidence(
+                record,
+                arm=execution_arm,
+                before_digest=before_work_digest,
+                after_digest=after_work_digest,
+            )
+            patch_bytes = capture_patch(sandbox, worktree, orig_sha)
+        record["arm"] = arm
+        record.update(
+            {
+                "model": args.model,
+                "benchmark_model": args.model,
+                "proposer_model": args.proposer_model,
+                "task_ref": task.get("ref", "HEAD"),
+                "task_base_sha": ctx.task_sha,
+                "sanitized_task_sha": sanitized_head,
+                "variant_head_sha": orig_sha,
+                "task_prompt_digest": hashlib.sha256(task["prompt"].encode()).hexdigest(),
+                "skill_digest": expected_skill_digest,
+                "candidate_overlay_digest": (ctx.overlay_digest if arm in CANDIDATE_ARMS else None),
+                "recorded_at": datetime.now(UTC).isoformat(),
+            }
+        )
+        # Final working-tree patch — the clone is destroyed, so
+        # this is the only artifact for diagnosing verify fails.
+        patch_path = ctx.out_dir / f"{task['id']}-{arm}-run{run_idx}.patch"
+        patch_path.write_bytes(patch_bytes)
+    except (
+        ManagedProcessError,
+        SandboxError,
+        OSError,
+        RuntimeError,
+        ValueError,
+    ) as exc:
+        # One hung session or failed setup must not abort the
+        # sweep — record the run as infra-error and move on so
+        # report.md/promotion.json still get written.
+        record = infra_error_record(exc)
+        record["arm"] = arm
+        print(f"[{task['id']}][{arm}][run {run_idx}] infra-error: {exc}")
+    finally:
+        if worktree is not None and worktree.exists():
+            try:
+                remove_clone(worktree)
+            except OSError as exc:
+                cleanup_error = exc
+    assert record is not None
+    if cleanup_error is not None:
+        primary_kind = record.get("error_kind")
+        primary_detail = record.get("error_detail")
+        record["resolved"] = False
+        record["ok"] = False
+        record["error_kind"] = "cleanup-failure"
+        record["error_detail"] = (
+            f"primary={primary_kind}: {primary_detail}; cleanup: {type(cleanup_error).__name__}: {cleanup_error}"
+        )[:2000]
+    record.update(
+        {
+            "task": task["id"],
+            "class": task.get("class", ""),
+            "run": run_idx,
+            "task_asset_snapshot_digest": (ctx.asset_snapshot.digest if ctx.asset_snapshot is not None else None),
+            "task_asset_manifest_digest": (
+                ctx.asset_snapshot.manifest_digest if ctx.asset_snapshot is not None else None
+            ),
+            "sandbox_dependency_content_digest": (
+                ctx.asset_snapshot.dependency_content_digest if ctx.asset_snapshot is not None else None
+            ),
+            "sandbox_dependency_manifest_digest": (
+                ctx.asset_snapshot.dependency_manifest_digest if ctx.asset_snapshot is not None else None
+            ),
+            "sanitized_graph_snapshot_digest": (ctx.graph_snapshot.digest if ctx.graph_snapshot is not None else None),
+            "sanitized_graph_manifest_digest": (
+                ctx.graph_snapshot.manifest_digest if ctx.graph_snapshot is not None else None
+            ),
+            "oracle_digest": ctx.oracle_snapshot.digest,
+            "oracle_command_digest": ctx.oracle_snapshot.command_digest,
+            "oracle_manifest_digest": ctx.oracle_snapshot.manifest_digest,
+            "ce_plugin_version": (
+                ctx.ce_plugin_snapshot.version if arm in CE_ARMS and ctx.ce_plugin_snapshot is not None else None
+            ),
+            "ce_plugin_manifest_digest": (
+                ctx.ce_plugin_snapshot.manifest_digest
+                if arm in CE_ARMS and ctx.ce_plugin_snapshot is not None
+                else None
+            ),
+        }
+    )
+    return record
+
+
 def infra_error_record(exc: BaseException) -> dict[str, Any]:
     """Row for a run the harness itself killed (timeout, setup failure)."""
     if isinstance(exc, ManagedProcessError):
@@ -1059,6 +1318,37 @@ def main() -> None:
             except (ManagedProcessError, OSError, SandboxError, RuntimeError, ValueError) as exc:
                 graph_snapshot_error = exc
                 graph_snapshot_errors[graph_key] = exc
+            try:
+                # Prepared here, once, rather than lazily inside the first cell:
+                # TaskAssetCache is a plain dict, so a lazy build would be a
+                # read-then-write race the moment cells stop running serially.
+                asset_snapshot = task_asset_cache.prepare(
+                    task,
+                    repo=repo,
+                    resolved_sha=task_sha,
+                    expected_dependency_binding=task_binding,
+                )
+            except (OSError, SandboxError, ValueError) as exc:
+                asset_snapshot_error = exc
+            cell_context = TaskCellContext(
+                task=task,
+                oracle_snapshot=oracle_snapshot,
+                repo=repo,
+                task_sha=task_sha,
+                graph_snapshot=graph_snapshot,
+                graph_snapshot_error=graph_snapshot_error,
+                asset_snapshot=asset_snapshot,
+                asset_snapshot_error=asset_snapshot_error,
+                args=args,
+                out_dir=out_dir,
+                oracle_mask=oracle_mask,
+                ce_plugin_snapshot=ce_plugin_snapshot,
+                trees_dir=Path(trees),
+                bwrap_bin=bwrap_bin,
+                runtime_mounts=runtime_mounts,
+                candidate_overlay=candidate_overlay,
+                overlay_digest=overlay_digest,
+            )
             per_arm: dict[str, list[dict[str, Any]]] = {a: [] for a in args.arms}
             for run_idx in range(args.runs):
                 if outage_tripped:
@@ -1071,236 +1361,7 @@ def main() -> None:
                         f"[{task['id']}][{arm}][run {run_idx}] starting "
                         f"({started_cells}/{total_cells}, {(time.monotonic() - sweep_started) / 60:.0f}m elapsed)"
                     )
-                    worktree: Path | None = None
-                    record: dict[str, Any] | None = None
-                    cleanup_error: OSError | None = None
-                    try:
-                        if asset_snapshot_error is not None:
-                            raise RuntimeError(f"task asset snapshot preparation failed: {asset_snapshot_error}")
-                        if graph_snapshot_error is not None:
-                            raise RuntimeError(f"sanitized graph snapshot preparation failed: {graph_snapshot_error}")
-                        if graph_snapshot is None:
-                            raise RuntimeError("sanitized graph snapshot is unavailable")
-                        if asset_snapshot is None:
-                            try:
-                                asset_snapshot = task_asset_cache.prepare(
-                                    task,
-                                    repo=repo,
-                                    resolved_sha=task_sha,
-                                    expected_dependency_binding=task_binding,
-                                )
-                            except (OSError, SandboxError, ValueError) as exc:
-                                asset_snapshot_error = exc
-                                raise
-                        worktree = make_worktree(repo, task_sha, Path(trees))
-                        sanitized_head = sanitize_clone_for_hidden_oracles(worktree)
-                        graph_snapshot.materialize(worktree, sanitized_head=sanitized_head)
-                        dependency_mounts = stage_task_assets(
-                            task,
-                            repo=repo,
-                            clone=worktree,
-                            snapshot=asset_snapshot,
-                        )
-                        registry_mount = isolated_gitnexus_registry_mount(worktree, Path(trees))
-                        hidden_harness = worktree / "eval" / "workflow_bench"
-                        oracle_visibility_mounts: list[ReadOnlyMount] = []
-                        if hidden_harness.exists() or hidden_harness.is_symlink():
-                            hidden_metadata = hidden_harness.lstat()
-                            if stat.S_ISLNK(hidden_metadata.st_mode) or not stat.S_ISDIR(hidden_metadata.st_mode):
-                                raise SandboxError(
-                                    "benchmark harness path must be a real directory before it can be hidden"
-                                )
-                            oracle_visibility_mounts.append(
-                                ReadOnlyMount(
-                                    source=oracle_mask,
-                                    target=f"{SANDBOX_WORKSPACE}/eval/workflow_bench",
-                                )
-                            )
-                        execution_arm = CANDIDATE_ARMS.get(arm, arm)
-                        ce_mounts = ce_plugin_mounts_for_arm(execution_arm, ce_plugin_snapshot)
-                        with prepare_sandbox(
-                            clone=worktree,
-                            claude_bin=args.claude_bin,
-                            bwrap_bin=bwrap_bin,
-                            read_only_mounts=[
-                                *dependency_mounts,
-                                *runtime_mounts,
-                                registry_mount,
-                                *ce_mounts,
-                                *oracle_visibility_mounts,
-                            ],
-                            preflight=False,
-                        ) as sandbox:
-                            # Capture the BASE (pre-overlay) skill digest — identical
-                            # for the incumbent and candidate arms — then run the
-                            # task's untrusted setup against those base skills. The
-                            # candidate overlay is applied only afterwards, so setup
-                            # can never observe candidate prose and both arms share
-                            # byte-identical pre-overlay state.
-                            base_skill_digest = skill_fingerprint(worktree, execution_arm)
-                            if task.get("setup"):
-                                setup_command = ["/bin/sh", "-lc", str(task["setup"])]
-                                setup = sandbox.run(
-                                    setup_command,
-                                    timeout=600,
-                                    env=build_sandbox_environment(),
-                                )
-                                if not setup.ok:
-                                    raise ManagedProcessError(setup_command, setup)
-                            # Tamper-evidence: setup must not have rewritten the base
-                            # skills, verified before any candidate overlay lands.
-                            require_skill_fingerprint(
-                                worktree,
-                                execution_arm,
-                                base_skill_digest,
-                                phase="task setup",
-                            )
-                            if arm in CANDIDATE_ARMS:
-                                assert candidate_overlay is not None
-                                applied_digest = apply_candidate_overlay(
-                                    candidate_overlay,
-                                    worktree,
-                                    sandbox=sandbox,
-                                )
-                                if applied_digest != overlay_digest:
-                                    raise RuntimeError("candidate overlay changed during the benchmark run")
-                            # The digest the model must preserve during its run is the
-                            # post-overlay skill surface (candidate skills for
-                            # candidate arms; unchanged base skills otherwise).
-                            expected_skill_digest = skill_fingerprint(worktree, execution_arm)
-                            orig_sha = _sandbox_git(sandbox, ["rev-parse", "HEAD"]).strip()
-                            if not re.fullmatch(r"[0-9a-fA-F]{40,64}", orig_sha):
-                                raise RuntimeError("sandboxed candidate setup did not produce an immutable commit")
-                            before_work_digest = (
-                                implementation_diff_digest(sandbox, orig_sha)
-                                if execution_arm in IMPLEMENTATION_ARMS
-                                else ""
-                            )
-                            record = run_arm(
-                                execution_arm,
-                                task,
-                                worktree,
-                                args,
-                                sandbox=sandbox,
-                                transcript_output_dir=out_dir,
-                                transcript_output_prefix=f"{task['id']}-{arm}-run{run_idx}",
-                                expected_skill_digest=expected_skill_digest,
-                                enforce_phase_boundary=True,
-                                ce_plugin_dir=ce_plugin_dir_for_arm(execution_arm, ce_plugin_snapshot),
-                                oracle_snapshot=oracle_snapshot,
-                            )
-                            _prepare_untracked_for_diff(sandbox)
-                            after_work_digest = (
-                                implementation_diff_digest(
-                                    sandbox,
-                                    orig_sha,
-                                    prepare_untracked=False,
-                                )
-                                if execution_arm in IMPLEMENTATION_ARMS
-                                else ""
-                            )
-                            record.update(
-                                diff_churn(
-                                    sandbox,
-                                    orig_sha,
-                                    prepare_untracked=False,
-                                )
-                            )
-                            enforce_work_evidence(
-                                record,
-                                arm=execution_arm,
-                                before_digest=before_work_digest,
-                                after_digest=after_work_digest,
-                            )
-                            patch_bytes = capture_patch(sandbox, worktree, orig_sha)
-                        record["arm"] = arm
-                        record.update(
-                            {
-                                "model": args.model,
-                                "benchmark_model": args.model,
-                                "proposer_model": args.proposer_model,
-                                "task_ref": task.get("ref", "HEAD"),
-                                "task_base_sha": task_sha,
-                                "sanitized_task_sha": sanitized_head,
-                                "variant_head_sha": orig_sha,
-                                "task_prompt_digest": hashlib.sha256(task["prompt"].encode()).hexdigest(),
-                                "skill_digest": expected_skill_digest,
-                                "candidate_overlay_digest": (overlay_digest if arm in CANDIDATE_ARMS else None),
-                                "recorded_at": datetime.now(UTC).isoformat(),
-                            }
-                        )
-                        # Final working-tree patch — the clone is destroyed, so
-                        # this is the only artifact for diagnosing verify fails.
-                        patch_path = out_dir / f"{task['id']}-{arm}-run{run_idx}.patch"
-                        patch_path.write_bytes(patch_bytes)
-                    except (
-                        ManagedProcessError,
-                        SandboxError,
-                        OSError,
-                        RuntimeError,
-                        ValueError,
-                    ) as exc:
-                        # One hung session or failed setup must not abort the
-                        # sweep — record the run as infra-error and move on so
-                        # report.md/promotion.json still get written.
-                        record = infra_error_record(exc)
-                        record["arm"] = arm
-                        print(f"[{task['id']}][{arm}][run {run_idx}] infra-error: {exc}")
-                    finally:
-                        if worktree is not None and worktree.exists():
-                            try:
-                                remove_clone(worktree)
-                            except OSError as exc:
-                                cleanup_error = exc
-                    assert record is not None
-                    if cleanup_error is not None:
-                        primary_kind = record.get("error_kind")
-                        primary_detail = record.get("error_detail")
-                        record["resolved"] = False
-                        record["ok"] = False
-                        record["error_kind"] = "cleanup-failure"
-                        record["error_detail"] = (
-                            f"primary={primary_kind}: {primary_detail}; cleanup: "
-                            f"{type(cleanup_error).__name__}: {cleanup_error}"
-                        )[:2000]
-                    record.update(
-                        {
-                            "task": task["id"],
-                            "class": task.get("class", ""),
-                            "run": run_idx,
-                            "task_asset_snapshot_digest": (
-                                asset_snapshot.digest if asset_snapshot is not None else None
-                            ),
-                            "task_asset_manifest_digest": (
-                                asset_snapshot.manifest_digest if asset_snapshot is not None else None
-                            ),
-                            "sandbox_dependency_content_digest": (
-                                asset_snapshot.dependency_content_digest if asset_snapshot is not None else None
-                            ),
-                            "sandbox_dependency_manifest_digest": (
-                                asset_snapshot.dependency_manifest_digest if asset_snapshot is not None else None
-                            ),
-                            "sanitized_graph_snapshot_digest": (
-                                graph_snapshot.digest if graph_snapshot is not None else None
-                            ),
-                            "sanitized_graph_manifest_digest": (
-                                graph_snapshot.manifest_digest if graph_snapshot is not None else None
-                            ),
-                            "oracle_digest": oracle_snapshot.digest,
-                            "oracle_command_digest": oracle_snapshot.command_digest,
-                            "oracle_manifest_digest": oracle_snapshot.manifest_digest,
-                            "ce_plugin_version": (
-                                ce_plugin_snapshot.version
-                                if arm in CE_ARMS and ce_plugin_snapshot is not None
-                                else None
-                            ),
-                            "ce_plugin_manifest_digest": (
-                                ce_plugin_snapshot.manifest_digest
-                                if arm in CE_ARMS and ce_plugin_snapshot is not None
-                                else None
-                            ),
-                        }
-                    )
+                    record = run_cell(cell_context, run_idx, arm)
                     per_arm[arm].append(record)
                     with results_path.open("a") as fh:
                         # Redact any API token a session-error stderr_tail

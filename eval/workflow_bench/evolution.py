@@ -615,9 +615,7 @@ def evaluate_candidate(
         # when it is fed back to the proposer (evolve.summarize_gate), and a
         # growing set of unsolvable tasks must not crowd out the reason the
         # candidate actually won or lost. The full list ships structurally.
-        reasons.append(
-            f"not gated on {len(ungated_tasks)} task(s) neither arm resolved: {', '.join(ungated_tasks)}"
-        )
+        reasons.append(f"not gated on {len(ungated_tasks)} task(s) neither arm resolved: {', '.join(ungated_tasks)}")
     if not task_rows:
         insufficient = True
         reasons.append("no paired task results were found")
