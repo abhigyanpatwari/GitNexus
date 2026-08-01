@@ -149,7 +149,12 @@ import type { ParseWorkerResult } from '../core/ingestion/workers/parse-worker.j
 // v37: Java/Kotlin capture side-channels include Spring AOP owner/advice facts
 // (#2416). Warm cache entries at v36 do not carry those facts and would silently
 // omit ADVISED_BY evidence.
-const SCHEMA_BUMP = 37;
+// v38: Swift nested conditional-compilation directives are blanked before the
+// parse (#2771), so a class body that previously error-recovered away now
+// survives. The chunk key hashes raw on-disk bytes and `preprocessSource` runs
+// after it is computed, so unchanged Swift files would otherwise replay their
+// pre-fix `ParseWorkerResult` verbatim — including across `--force`.
+const SCHEMA_BUMP = 38;
 const GITNEXUS_PKG_VERSION = (() => {
   try {
     // package.json sits at gitnexus/package.json — two levels up from
