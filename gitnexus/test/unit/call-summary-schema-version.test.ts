@@ -218,7 +218,12 @@ describe('CALL_SUMMARY incremental reuse gate (U-C5)', () => {
     // A pre-v33 (v32) index predates the Spring AOP Interface→CodeElement
     // relation pair (#2416), so it cannot persist all evidence edges.
     expect(passesReuseGate(32)).toBe(false);
+    // A pre-v34 (v33) index carries `receiverChain` strings in wire format v1,
+    // which the v2 decoder refuses by design (#2766) — an incremental top-up
+    // would silently fall back to the text cascade for every chain-carrying
+    // site → must NOT reuse.
+    expect(passesReuseGate(33)).toBe(false);
     // The current stamp passes the gate (incremental top-up eligible).
-    expect(passesReuseGate(33)).toBe(true);
+    expect(passesReuseGate(34)).toBe(true);
   });
 });
