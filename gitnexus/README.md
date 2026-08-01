@@ -688,6 +688,29 @@ After scope resolution, analyze prunes inert block-local value symbols (a functi
 
 Programmatic callers can pass `keepLocalValueSymbols: true` in `PipelineOptions` instead of setting the env var.
 
+### Scope-resolution property-key dispatch cap
+
+During scope resolution GitNexus synthesizes CALLS edges through *property-key
+dispatch* — call sites like `hooks.emitScopeCaptures()` where a property key is
+registered by multiple definitions across the codebase. To keep this fan-in
+bounded, each property key is capped at **32 registrations**: a key registered
+by more than 32 distinct functions is skipped entirely (no CALLS are synthesized
+through it), and the dropped key names are surfaced in the analyze log for
+operator visibility. The cap is calibrated at 2× this repo's own provider table
+(16 legitimate registrations, one per language provider).
+
+| Variable                                | Default | Effect                                                                                                                                                                                                                                                                                                                |
+| --------------------------------------- | ------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `GITNEXUS_MAX_PROPERTY_DISPATCH_FANOUT` | `32`    | Per-property-key registration cap in the property-dispatch scope-resolution pass. Set to a positive integer to raise it for repositories whose provider/hook tables exceed the default and lose CALLS coverage on a legitimate key; non-integer or `< 1` values fall back to `32`. Lowering it tightens the overflow budget. |
+
+```bash
+# A property key registered by 40 functions overflows the default 32 and drops
+# all CALLS through it — raise the cap for that repo and rebuild so scope
+# resolution reruns.
+export GITNEXUS_MAX_PROPERTY_DISPATCH_FANOUT=64
+npx gitnexus analyze --force
+```
+
 ### Hook augmentation and skip diagnostics
 
 The Claude Code / Antigravity hooks keep their **stderr** silent on normal skip
