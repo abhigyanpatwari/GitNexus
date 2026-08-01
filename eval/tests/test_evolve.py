@@ -641,7 +641,7 @@ def bound_task_fixture():
 def promotion_fixture(*, decisions=None, expires_delta=timedelta(days=1)):
     now = datetime.now(UTC)
     return {
-        "schema_version": 3,
+        "schema_version": 4,
         "generated_at": now.isoformat(),
         "evidence_expires_at": (now + expires_delta).isoformat(),
         "benchmark_model": "bench-model",
@@ -751,7 +751,7 @@ def test_manual_initial_overlay_has_no_fictitious_proposer_model():
 
 def test_promotion_apply_rejects_pre_oracle_schema_and_missing_oracle_bindings():
     legacy = promotion_fixture()
-    legacy["schema_version"] = 2
+    legacy["schema_version"] = 3
     with pytest.raises(ValueError, match="unsupported schema"):
         validate_fixture(legacy)
 

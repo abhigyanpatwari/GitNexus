@@ -510,8 +510,23 @@ def test_candidate_gate_rejects_a_partial_candidate_even_with_a_resolution_edge(
     assert any("oracle-backed quality floor" in reason for reason in decision["reasons"])
 
 
-@pytest.mark.parametrize("resolved", [0, 2])
-def test_candidate_gate_never_promotes_zero_or_partial_success_for_efficiency(resolved):
+@pytest.mark.parametrize(
+    ("resolved", "expected_decision", "expected_reason"),
+    [
+        # Nothing resolved anywhere: the task is ungated, which leaves the
+        # generation with no quality signal at all — refuse outright rather
+        # than rank a 100x cost win across runs that all failed the oracle.
+        (0, "insufficient_evidence", "no task supplied quality signal"),
+        # Partial success on a task the incumbent also partly resolves stays a
+        # quality-floor rejection: the candidate has to be reliable, not lucky.
+        (2, "keep_incumbent", "oracle-backed quality floor"),
+    ],
+)
+def test_candidate_gate_never_promotes_zero_or_partial_success_for_efficiency(
+    resolved,
+    expected_decision,
+    expected_reason,
+):
     incumbent_records = [record(cost_usd=1.0, resolved=index < resolved) for index in range(3)]
     candidate_records = [record(cost_usd=0.01, resolved=index < resolved) for index in range(3)]
     decision = evaluate_candidate(
@@ -526,9 +541,38 @@ def test_candidate_gate_never_promotes_zero_or_partial_success_for_efficiency(re
         model="pinned-model",
     )
 
-    assert decision["decision"] == "keep_incumbent"
+    assert decision["decision"] == expected_decision
     assert decision["tasks"][0]["candidate_quality_floor_met"] is False
-    assert any("oracle-backed quality floor" in reason for reason in decision["reasons"])
+    assert any(expected_reason in reason for reason in decision["reasons"])
+
+
+def test_a_task_no_arm_can_resolve_is_reported_but_does_not_veto_promotion():
+    # inv-feature-list-repos-filter fails its hidden oracle on every run of
+    # both arms. Gating on it made promotion unreachable for as long as it
+    # stayed in the set, while saying nothing about the candidate.
+    solvable = {
+        "workflow": aggregate([record(cost_usd=1.0, resolved=index > 1) for index in range(3)]),
+        "candidate_workflow": aggregate([record(cost_usd=1.0) for _ in range(3)]),
+    }
+    unsolvable = {
+        "workflow": aggregate([record(cost_usd=1.0, resolved=False) for _ in range(3)]),
+        "candidate_workflow": aggregate([record(cost_usd=9.0, resolved=False) for _ in range(3)]),
+    }
+    decision = evaluate_candidate(
+        {"task-a": solvable, "task-impossible": unsolvable},
+        incumbent_arm="workflow",
+        candidate_arm="candidate_workflow",
+        model="pinned-model",
+    )
+
+    assert decision["decision"] == "promote"
+    assert decision["ungated_tasks"] == ["task-impossible"]
+    assert [row["gated"] for row in decision["tasks"]] == [True, False]
+    # The ungated task's 800% cost regression must not reach the median or the
+    # per-task cap; only the gated task ranks.
+    assert decision["median_improvement_pct"] == 0.0
+    assert not any("above the" in reason for reason in decision["reasons"])
+    assert any("neither arm resolved any of its 3 valid runs" in reason for reason in decision["reasons"])
 
 
 def test_candidate_gate_promotes_on_a_two_run_resolution_margin():

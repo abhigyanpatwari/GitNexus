@@ -1355,7 +1355,7 @@ def main() -> None:
             # Schema 3 is the first promotion evidence that requires hidden,
             # byte-bound behavioral oracles. Older self-authored-only rows are
             # intentionally ineligible for application.
-            "schema_version": 3,
+            "schema_version": 4,
             "generated_at": promotion_generated_at.isoformat(),
             "evidence_expires_at": (promotion_generated_at + timedelta(days=EVIDENCE_MAX_AGE_DAYS)).isoformat(),
             "benchmark_model": args.model,

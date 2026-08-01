@@ -686,7 +686,7 @@ def validate_promotion_for_apply(
     now: datetime | None = None,
 ) -> list[dict[str, Any]]:
     """Require one complete, current, exact evidence binding before apply."""
-    if promotion.get("schema_version") != 3:
+    if promotion.get("schema_version") != 4:
         raise ValueError("promotion binding uses an unsupported schema")
     sha256_pattern = re.compile(r"[0-9a-f]{64}")
     if not selected_tasks:
