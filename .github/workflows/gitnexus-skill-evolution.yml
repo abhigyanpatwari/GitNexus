@@ -134,25 +134,13 @@ jobs:
     env:
       GENERATIONS: ${{ inputs.generations || '1' }}
       RUNS: ${{ inputs.runs || '3' }}
-      # Serial by default. A cell that loses CPU to its siblings takes longer,
-      # and a session that reaches its timeout is an excluded run the promotion
-      # gate refuses to work with — so this only goes up when the runner has the
-      # vCPUs to back it (the box is sized for one cell at a time today).
+      # Serial by default — see workflow_bench.runner --workers for why, and
+      # raise it only to match the runner's vCPUs.
       WORKERS: ${{ inputs.workers || '1' }}
       MODEL: ${{ inputs.model || 'claude-sonnet-5' }}
       PROPOSER_MODEL: ${{ inputs.proposer_model || 'claude-opus-4-8' }}
       INCLUDE_EXPENSIVE: ${{ inputs.include_expensive && '1' || '' }}
     steps:
-      - name: Pin the evidence path before anything can run
-        # The upload step must not take its path from the sweep step's outputs
-        # — that is the step whose death is the reason the upload matters. A
-        # job-level `env:` cannot hold it either (the `runner` context does not
-        # exist there), so publish it to GITHUB_ENV first: every later step
-        # sees it, including the `if: always()` upload after a killed sweep.
-        run: |
-          set -euo pipefail
-          echo "OUT_ROOT=${RUNNER_TEMP}/wfevolve" >> "${GITHUB_ENV}"
-
       - name: Require the benchmark auth secret
         env:
           HAS_TOKEN: ${{ secrets.GITNEXUS_BENCH_AUTH_TOKEN != '' }}
@@ -322,7 +310,7 @@ jobs:
             --runs "${RUNS}" \
             --workers "${WORKERS}" \
             --claude-bin "${RUNNER_TEMP}/claude-canary/node_modules/@anthropic-ai/claude-code-linux-x64/claude" \
-            --out-root "${OUT_ROOT}" \
+            --out-root "${RUNNER_TEMP}/wfevolve" \
             --apply \
             "${extra[@]}"
         working-directory: eval
@@ -335,7 +323,10 @@ jobs:
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: gitnexus-evolution-${{ github.run_id }}-${{ github.run_attempt }}
-          path: ${{ env.OUT_ROOT }}
+          # Addressed directly rather than carried from the sweep step: that is
+          # the step whose death is the reason this upload matters, and a value
+          # threaded from it would not be there when it counts.
+          path: ${{ runner.temp }}/wfevolve
           retention-days: 14
           if-no-files-found: warn
 
@@ -369,7 +360,7 @@ jobs:
           # generation's decisions could surface in the PR body. The heredoc
           # uses a per-run random delimiter so a summary value that ever
           # contains the marker cannot close the block early and inject keys.
-          promotion_file="$(find "${OUT_ROOT}" -name promotion.json | sort -V | tail -1)"
+          promotion_file="$(find "${RUNNER_TEMP}/wfevolve" -name promotion.json | sort -V | tail -1)"
           delim="PROMOTION_EOF_$(openssl rand -hex 16)"
           {
             echo "summary<<${delim}"

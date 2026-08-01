@@ -3,6 +3,7 @@
 import hashlib
 import json
 from contextlib import nullcontext
+from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
@@ -433,8 +434,12 @@ def _cell_context(tmp_path, **overrides):
     return runner.TaskCellContext(**fields)
 
 
-def _stub_cell_dependencies(monkeypatch, tmp_path, removed):
-    """Replace everything a cell shells out to, so only its own logic runs."""
+def _stub_cell_dependencies(monkeypatch, tmp_path):
+    """Replace everything a cell shells out to, so only its own logic runs.
+
+    Returns the clone it will hand out and the list its teardown appends to.
+    """
+    removed: list[Path] = []
     worktree = tmp_path / "clone"
     worktree.mkdir()
     monkeypatch.setattr(runner, "make_worktree", lambda *_a, **_k: worktree)
@@ -454,12 +459,11 @@ def _stub_cell_dependencies(monkeypatch, tmp_path, removed):
     monkeypatch.setattr(runner, "capture_patch", lambda *_a, **_k: b"diff")
     monkeypatch.setattr(runner, "run_arm", lambda *_a, **_k: {"resolved": True, "ok": True, "error_kind": None})
     monkeypatch.setattr(runner, "remove_clone", lambda path: removed.append(path))
-    return worktree
+    return worktree, removed
 
 
 def test_run_cell_returns_a_row_bound_to_its_task_and_snapshots(monkeypatch, tmp_path):
-    removed: list = []
-    _stub_cell_dependencies(monkeypatch, tmp_path, removed)
+    _, removed = _stub_cell_dependencies(monkeypatch, tmp_path)
 
     record = runner.run_cell(_cell_context(tmp_path), 2, "workflow")
 
@@ -497,8 +501,7 @@ def test_run_cell_returns_a_row_bound_to_its_task_and_snapshots(monkeypatch, tmp
     ids=["managed-process", "sandbox", "os", "runtime", "value"],
 )
 def test_run_cell_records_an_expected_failure_and_still_removes_its_clone(monkeypatch, tmp_path, failure):
-    removed: list = []
-    _stub_cell_dependencies(monkeypatch, tmp_path, removed)
+    _, removed = _stub_cell_dependencies(monkeypatch, tmp_path)
 
     def explode(*_args, **_kwargs):
         raise failure
@@ -514,8 +517,7 @@ def test_run_cell_records_an_expected_failure_and_still_removes_its_clone(monkey
 
 
 def test_run_cell_lets_an_unexpected_failure_escape_rather_than_scoring_it(monkeypatch, tmp_path):
-    removed: list = []
-    _stub_cell_dependencies(monkeypatch, tmp_path, removed)
+    _, removed = _stub_cell_dependencies(monkeypatch, tmp_path)
 
     def explode(*_args, **_kwargs):
         raise KeyError("harness bug")
@@ -529,7 +531,7 @@ def test_run_cell_lets_an_unexpected_failure_escape_rather_than_scoring_it(monke
 
 
 def test_run_cell_reports_a_cleanup_failure_over_its_primary_outcome(monkeypatch, tmp_path):
-    _stub_cell_dependencies(monkeypatch, tmp_path, [])
+    _stub_cell_dependencies(monkeypatch, tmp_path)
 
     def refuse(_path):
         raise OSError("clone is busy")

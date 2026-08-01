@@ -1425,22 +1425,16 @@ def main() -> None:
             per_arm: dict[str, list[dict[str, Any]]] = {a: [] for a in args.arms}
             cells = [(run_idx, arm) for run_idx in range(args.runs) for arm in args.arms]
 
-            def announce(run_idx: int, arm: str, task_id: str = task["id"]) -> None:
+            def announce(run_idx: int, arm: str) -> None:
                 nonlocal started_cells
                 started_cells += 1
                 print(
-                    f"[{task_id}][{arm}][run {run_idx}] starting "
+                    f"[{task['id']}][{arm}][run {run_idx}] starting "
                     f"({started_cells}/{total_cells}, {(time.monotonic() - sweep_started) / 60:.0f}m elapsed)"
                 )
 
-            def keep(
-                run_idx: int,
-                arm: str,
-                record: dict[str, Any],
-                task_id: str = task["id"],
-                rows: dict[str, list[dict[str, Any]]] = per_arm,
-            ) -> None:
-                rows[arm].append(record)
+            def keep(run_idx: int, arm: str, record: dict[str, Any]) -> None:
+                per_arm[arm].append(record)
                 with results_path.open("a") as fh:
                     # Redact any API token a session-error stderr_tail echoed
                     # into error_detail before it enters the uploaded
@@ -1448,7 +1442,7 @@ def main() -> None:
                     # sink was not).
                     fh.write(redact_text(json.dumps(record), [args.auth_token or ""]) + "\n")
                 print(
-                    f"[{task_id}][{arm}][run {run_idx}] resolved={record['resolved']} "
+                    f"[{task['id']}][{arm}][run {run_idx}] resolved={record['resolved']} "
                     f"in={record['input_tokens']} out={record['output_tokens']} "
                     f"cost=${_na(record['cost_usd'])} "
                     f"took={_na(record.get('duration_s'))}s "
