@@ -128,6 +128,7 @@ export function emitKotlinScopeCaptures(
     const springAopTypeNode = [
       nodeIfType(groupedNodes['@scope.class'], 'class_declaration'),
       nodeIfType(groupedNodes['@scope.class'], 'object_declaration'),
+      nodeIfType(groupedNodes['@scope.class'], 'companion_object'),
     ].find((node): node is SyntaxNode => node !== null);
     if (springAopTypeNode !== undefined && !springAopTypeNodeIds.has(springAopTypeNode.id)) {
       springAopTypeNodeIds.add(springAopTypeNode.id);

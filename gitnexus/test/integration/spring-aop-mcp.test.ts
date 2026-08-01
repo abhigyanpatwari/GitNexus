@@ -17,16 +17,20 @@ const PAY_ID = 'Method:src/PaymentService.java:PaymentService.pay#0';
 const CLASS_LEVEL_METHOD_ID = 'Method:src/PaymentService.java:PaymentService.list#0';
 const AUDIT_ID = 'Method:src/AuditAspect.java:AuditAspect.audit#0';
 const UNKNOWN_ADVICE_ID = 'Method:src/AuditAspect.java:AuditAspect.authorize#0';
+const RESOLVED_ADVICE_ID = 'Method:src/AuditAspect.java:AuditAspect.resolvedPointcut#0';
 const HIGH_FAN_IN_ADVICE_ID = 'Method:src/AuditAspect.java:AuditAspect.hotAdvice#0';
 const NOISY_ADVICE_ID = 'Method:src/NoisyAspect.java:NoisyAspect.noisyAdvice#0';
 const NOISY_ADVISED_SOURCE_ID = 'Method:src/NoisySource.java:NoisySource.run#0';
 const NOISY_ADVICE_TARGET_ID = 'Method:src/NoisyTarget.java:NoisyTarget.advise#0';
 const FOREIGN_ADVISED_SOURCE_ID = 'Method:src/ForeignSource.java:ForeignSource.run#0';
 const FOREIGN_ADVICE_TARGET_ID = 'Method:src/ForeignTarget.java:ForeignTarget.advise#0';
+const TRUNCATED_SOURCE_ID = 'Method:src/TruncatedSource.java:TruncatedSource.run#0';
+const TRUNCATED_TARGET_ID = 'Method:src/TruncatedTarget.java:TruncatedTarget.advise#0';
 const PLAIN_ID = 'Method:src/Plain.java:Plain.run#0';
 const CLASS_BEHAVIOR_ID = `CodeElement:spring-aop:${SERVICE_ID}:transactional`;
 const METHOD_BEHAVIOR_ID = `CodeElement:spring-aop:${PAY_ID}:cacheable`;
 const UNKNOWN_POINTCUT_ID = `CodeElement:spring-aop:${UNKNOWN_ADVICE_ID}:pointcut`;
+const RESOLVED_POINTCUT_ID = `CodeElement:spring-aop:${RESOLVED_ADVICE_ID}:pointcut`;
 const UNRELATED_DECLARATION_ID = `CodeElement:spring-bean:${PLAIN_ID}`;
 const ASPECT_EVIDENCE_ID = `CodeElement:spring-aop:${ASPECT_CLASS_ID}:aspect`;
 const NOISY_ASPECT_EVIDENCE_ID = `CodeElement:spring-aop:${NOISY_ASPECT_CLASS_ID}:aspect`;
@@ -66,6 +70,13 @@ const UNKNOWN_POINTCUT_REASON = springReason({
   match: 'unresolved',
   resolution: 'unknown',
 });
+const RESOLVED_POINTCUT_REASON = springReason({
+  kind: 'pointcut',
+  annotation: 'org.aspectj.lang.annotation.Pointcut',
+  pointcut: 'execution(* com.example.PaymentService.pay(..))',
+  match: 'static',
+  resolution: 'resolved',
+});
 const ASPECT_REASON = springReason({
   kind: 'aspect',
   annotation: 'org.aspectj.lang.annotation.Aspect',
@@ -90,12 +101,15 @@ const SEED = [
   `CREATE (m:Method {id:'${CLASS_LEVEL_METHOD_ID}', name:'list', filePath:'src/PaymentService.java', startLine:10, endLine:12, isExported:false, content:'void list() {}', description:'', parameterCount:0, returnType:'void'})`,
   `CREATE (m:Method {id:'${AUDIT_ID}', name:'audit', filePath:'src/AuditAspect.java', startLine:4, endLine:8, isExported:false, content:'Object audit() {}', description:'', parameterCount:0, returnType:'Object'})`,
   `CREATE (m:Method {id:'${UNKNOWN_ADVICE_ID}', name:'authorize', filePath:'src/AuditAspect.java', startLine:10, endLine:12, isExported:false, content:'void authorize() {}', description:'', parameterCount:0, returnType:'void'})`,
+  `CREATE (m:Method {id:'${RESOLVED_ADVICE_ID}', name:'resolvedPointcut', filePath:'src/AuditAspect.java', startLine:12, endLine:13, isExported:false, content:'void resolvedPointcut() {}', description:'', parameterCount:0, returnType:'void'})`,
   `CREATE (m:Method {id:'${HIGH_FAN_IN_ADVICE_ID}', name:'hotAdvice', filePath:'src/AuditAspect.java', startLine:14, endLine:16, isExported:false, content:'void hotAdvice() {}', description:'', parameterCount:0, returnType:'void'})`,
   `CREATE (m:Method {id:'${NOISY_ADVICE_ID}', name:'noisyAdvice', filePath:'src/NoisyAspect.java', startLine:4, endLine:8, isExported:false, content:'void noisyAdvice() {}', description:'', parameterCount:0, returnType:'void'})`,
   `CREATE (m:Method {id:'${NOISY_ADVISED_SOURCE_ID}', name:'run', filePath:'src/NoisySource.java', startLine:1, endLine:2, isExported:false, content:'void run() {}', description:'', parameterCount:0, returnType:'void'})`,
   `CREATE (m:Method {id:'${NOISY_ADVICE_TARGET_ID}', name:'advise', filePath:'src/NoisyTarget.java', startLine:1, endLine:2, isExported:false, content:'void advise() {}', description:'', parameterCount:0, returnType:'void'})`,
   `CREATE (m:Method {id:'${FOREIGN_ADVISED_SOURCE_ID}', name:'run', filePath:'src/ForeignSource.java', startLine:1, endLine:2, isExported:false, content:'void run() {}', description:'', parameterCount:0, returnType:'void'})`,
   `CREATE (m:Method {id:'${FOREIGN_ADVICE_TARGET_ID}', name:'advise', filePath:'src/ForeignTarget.java', startLine:1, endLine:2, isExported:false, content:'void advise() {}', description:'', parameterCount:0, returnType:'void'})`,
+  `CREATE (m:Method {id:'${TRUNCATED_SOURCE_ID}', name:'run', filePath:'src/TruncatedSource.java', startLine:1, endLine:2, isExported:false, content:'void run() {}', description:'', parameterCount:0, returnType:'void'})`,
+  `CREATE (m:Method {id:'${TRUNCATED_TARGET_ID}', name:'advise', filePath:'src/TruncatedTarget.java', startLine:1, endLine:2, isExported:false, content:'void advise() {}', description:'', parameterCount:0, returnType:'void'})`,
   ...HIGH_FAN_IN_ADVISED_IDS.map(
     (id, index) =>
       `CREATE (m:Method {id:'${id}', name:'advised${index}', filePath:'src/FanInService.java', startLine:${index}, endLine:${index}, isExported:false, content:'void advised${index}() {}', description:'', parameterCount:0, returnType:'void'})`,
@@ -108,6 +122,7 @@ const SEED = [
   `CREATE (e:CodeElement {id:'${CLASS_BEHAVIOR_ID}', name:'Transactional', filePath:'src/PaymentService.java', startLine:0, endLine:0, isExported:false, content:'', description:'Spring AOP behavior evidence'})`,
   `CREATE (e:CodeElement {id:'${METHOD_BEHAVIOR_ID}', name:'Cacheable', filePath:'src/PaymentService.java', startLine:4, endLine:4, isExported:false, content:'', description:'Spring AOP behavior evidence'})`,
   `CREATE (e:CodeElement {id:'${UNKNOWN_POINTCUT_ID}', name:'securedOperation()', filePath:'src/AuditAspect.java', startLine:10, endLine:10, isExported:false, content:'', description:'Spring AOP unresolved pointcut evidence'})`,
+  `CREATE (e:CodeElement {id:'${RESOLVED_POINTCUT_ID}', name:'pay()', filePath:'src/AuditAspect.java', startLine:12, endLine:12, isExported:false, content:'', description:'Spring AOP resolved pointcut evidence'})`,
   `CREATE (e:CodeElement {id:'${UNRELATED_DECLARATION_ID}', name:'plain', filePath:'src/Plain.java', startLine:1, endLine:1, isExported:false, content:'', description:'Spring Bean factory declaration'})`,
   `CREATE (e:CodeElement {id:'${ASPECT_EVIDENCE_ID}', name:'Aspect', filePath:'src/AuditAspect.java', startLine:0, endLine:0, isExported:false, content:'', description:'Spring AOP aspect evidence'})`,
   `CREATE (e:CodeElement {id:'${NOISY_ASPECT_EVIDENCE_ID}', name:'Aspect', filePath:'src/NoisyAspect.java', startLine:0, endLine:0, isExported:false, content:'', description:'Spring AOP aspect evidence'})`,
@@ -120,6 +135,7 @@ const SEED = [
   `MATCH (m:Method {id:'${PAY_ID}'}), (e:CodeElement {id:'${METHOD_BEHAVIOR_ID}'}) CREATE (m)-[:CodeRelation {type:'ADVISED_BY', confidence:1.0, reason:'${METHOD_BEHAVIOR_REASON}', step:0}]->(e)`,
   `MATCH (m:Method {id:'${PAY_ID}'}), (a:Method {id:'${AUDIT_ID}'}) CREATE (m)-[:CodeRelation {type:'ADVISED_BY', confidence:0.9, reason:'${ADVICE_REASON}', step:0}]->(a)`,
   `MATCH (a:Method {id:'${UNKNOWN_ADVICE_ID}'}), (e:CodeElement {id:'${UNKNOWN_POINTCUT_ID}'}) CREATE (a)-[:CodeRelation {type:'DECLARES', confidence:1.0, reason:'${UNKNOWN_POINTCUT_REASON}', step:0}]->(e)`,
+  `MATCH (a:Method {id:'${RESOLVED_ADVICE_ID}'}), (e:CodeElement {id:'${RESOLVED_POINTCUT_ID}'}) CREATE (a)-[:CodeRelation {type:'DECLARES', confidence:1.0, reason:'${RESOLVED_POINTCUT_REASON}', step:0}]->(e)`,
   `MATCH (c:Class {id:'${ASPECT_CLASS_ID}'}), (e:CodeElement {id:'${ASPECT_EVIDENCE_ID}'}) CREATE (c)-[:CodeRelation {type:'DECLARES', confidence:1.0, reason:'${ASPECT_REASON}', step:0}]->(e)`,
   `MATCH (m:Method {id:'${PLAIN_ID}'}), (e:CodeElement {id:'${UNRELATED_DECLARATION_ID}'}) CREATE (m)-[:CodeRelation {type:'DECLARES', confidence:1.0, reason:'spring-bean-factory:{"names":["plain"],"namesKnown":true}', step:0}]->(e)`,
   `MATCH (c:Class {id:'${NOISY_ASPECT_CLASS_ID}'}), (e:CodeElement {id:'${UNRELATED_DECLARATION_ID}'}) UNWIND range(1, 1001) AS ignored CREATE (c)-[:CodeRelation {type:'DECLARES', confidence:1.0, reason:'spring-bean-factory:{"names":["noise"],"namesKnown":true}', step:ignored}]->(e)`,
@@ -129,6 +145,7 @@ const SEED = [
   `MATCH (m:Method {id:'${NOISY_ADVISED_SOURCE_ID}'}), (a:Method {id:'${NOISY_ADVICE_TARGET_ID}'}) CREATE (m)-[:CodeRelation {type:'ADVISED_BY', confidence:0.9, reason:'${ADVICE_REASON}', step:0}]->(a)`,
   `MATCH (m:Method {id:'${NOISY_ADVISED_SOURCE_ID}'}), (a:Method {id:'${FOREIGN_ADVICE_TARGET_ID}'}) UNWIND range(1, 1001) AS ignored CREATE (m)-[:CodeRelation {type:'ADVISED_BY', confidence:0.1, reason:'foreign-advice', step:ignored}]->(a)`,
   `MATCH (m:Method {id:'${FOREIGN_ADVISED_SOURCE_ID}'}), (a:Method {id:'${NOISY_ADVICE_TARGET_ID}'}) UNWIND range(1, 1001) AS ignored CREATE (m)-[:CodeRelation {type:'ADVISED_BY', confidence:0.1, reason:'foreign-advice', step:ignored}]->(a)`,
+  `MATCH (m:Method {id:'${TRUNCATED_SOURCE_ID}'}), (a:Method {id:'${TRUNCATED_TARGET_ID}'}) UNWIND range(1, 1001) AS item CREATE (m)-[:CodeRelation {type:'ADVISED_BY', confidence:0.9, reason:'${ADVICE_REASON}', step:item}]->(a)`,
   ...HIGH_FAN_IN_ADVISED_IDS.map(
     (id) =>
       `MATCH (m:Method {id:'${id}'}), (a:Method {id:'${HIGH_FAN_IN_ADVICE_ID}'}) CREATE (m)-[:CodeRelation {type:'ADVISED_BY', confidence:0.9, reason:'${ADVICE_REASON}', step:0}]->(a)`,
@@ -179,6 +196,7 @@ withTestLbugDB(
               advisedFilePath: 'src/PaymentService.java',
             },
           ],
+          resolvedPointcuts: [],
           unresolvedPointcuts: [],
         });
       });
@@ -322,9 +340,46 @@ withTestLbugDB(
           framework: 'spring',
           behaviors: [],
           advices: [],
+          resolvedPointcuts: [],
           unresolvedPointcuts: expected,
         });
         expect(evidenceMetadata?.unresolvedPointcuts).toEqual(expected);
+      });
+
+      it('surfaces resolved standalone pointcut declarations from both endpoints', async () => {
+        const [adviceMetadata, evidenceMetadata] = await Promise.all([
+          querySpringAopMetadata(handle.repoId, RESOLVED_ADVICE_ID, 'Method'),
+          querySpringAopMetadata(handle.repoId, RESOLVED_POINTCUT_ID, 'CodeElement'),
+        ]);
+        const expected = [
+          {
+            annotation: 'org.aspectj.lang.annotation.Pointcut',
+            pointcut: 'execution(* com.example.PaymentService.pay(..))',
+            match: 'static',
+            resolution: 'resolved',
+            adviceId: RESOLVED_ADVICE_ID,
+            adviceName: 'resolvedPointcut',
+            adviceFilePath: 'src/AuditAspect.java',
+            evidenceId: RESOLVED_POINTCUT_ID,
+          },
+        ];
+
+        expect(adviceMetadata?.resolvedPointcuts).toEqual(expected);
+        expect(evidenceMetadata?.resolvedPointcuts).toEqual(expected);
+      });
+
+      it('orders capped rows deterministically and reports positive truncation', async () => {
+        const first = await querySpringAopMetadata(handle.repoId, TRUNCATED_SOURCE_ID, 'Method');
+        const second = await querySpringAopMetadata(handle.repoId, TRUNCATED_SOURCE_ID, 'Method');
+
+        expect(first?.truncated).toBe(true);
+        expect(first?.advices).toEqual([
+          expect.objectContaining({
+            advisedId: TRUNCATED_SOURCE_ID,
+            adviceId: TRUNCATED_TARGET_ID,
+          }),
+        ]);
+        expect(second).toEqual(first);
       });
 
       it('does not let unrelated DECLARES exhaust the Spring AOP query budget', async () => {

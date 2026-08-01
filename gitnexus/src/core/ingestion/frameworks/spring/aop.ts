@@ -1,4 +1,4 @@
-import type { GraphNode, GraphRelationship, ParsedFile, ScopeId } from 'gitnexus-shared';
+import type { GraphNode, ParsedFile, Range, ScopeId } from 'gitnexus-shared';
 import type { KnowledgeGraph } from '../../../graph/types.js';
 import type { ScopeResolutionIndexes } from '../../model/scope-resolution-indexes.js';
 import {
@@ -47,7 +47,10 @@ export interface SpringAopOwnerFact<
 > {
   readonly ownerScopeId: ScopeId;
   readonly ownerKind: 'class' | 'callable';
-  /** The language models this class's members as static, but they are singleton instance methods. */
+  readonly ownerFilePath?: string;
+  /** Exact syntax range used only as a fail-closed bridge for collapsed language scopes. */
+  readonly ownerRange?: Range;
+  /** The language models this owner/member as static, but it belongs to a singleton instance. */
   readonly singletonInstance?: true;
   readonly annotations: readonly Annotation[];
 }
@@ -215,21 +218,28 @@ function ownerGraphNode(
   indexes: ScopeResolutionIndexes,
   nodeLookup: GraphNodeLookup,
   graph: KnowledgeGraph,
+  exactOwnerByRange: ReadonlyMap<string, GraphNode | null>,
 ): GraphNode | undefined {
   const ownerScope = indexes.scopeTree.getScope(fact.ownerScopeId);
-  if (ownerScope === undefined) return undefined;
 
   let ownerId: string | undefined;
-  if (fact.ownerKind === 'class') {
+  if (fact.ownerKind === 'class' && ownerScope !== undefined) {
     const classDef = ownerScope.ownedDefs.find(
       (definition) => definition.type === 'Class' || definition.type === 'Interface',
     );
     if (classDef !== undefined)
       ownerId = resolveDefGraphId(classDef.filePath, classDef, nodeLookup);
-  } else {
+  } else if (ownerScope !== undefined) {
     ownerId = resolveCallerGraphId(fact.ownerScopeId, indexes, nodeLookup);
   }
 
+  if (ownerId === undefined && fact.ownerFilePath !== undefined && fact.ownerRange !== undefined) {
+    const kind = fact.ownerKind === 'class' ? 'class' : 'callable';
+    const fallback = exactOwnerByRange.get(
+      `${kind}\0${fact.ownerFilePath}\0${fact.ownerRange.startLine - 1}\0${fact.ownerRange.endLine - 1}`,
+    );
+    if (fallback !== null && fallback !== undefined) ownerId = fallback.id;
+  }
   if (ownerId === undefined) return undefined;
   const owner = graph.getNode(ownerId);
   return owner === undefined || owner.label === 'File' ? undefined : owner;
@@ -279,6 +289,32 @@ export function createSpringAopMetadataAttacher<Annotation extends SpringAopAnno
   ): void => {
     const resolveAnnotation = createSpringAnnotationNameResolver(indexes);
     const metadata = graphMetadata(graph);
+    const exactOwnerByRange = new Map<string, GraphNode | null>();
+    for (const node of graph.iterNodes()) {
+      const kind =
+        node.label === 'Method'
+          ? 'callable'
+          : node.label === 'Class' || node.label === 'Interface'
+            ? 'class'
+            : undefined;
+      if (kind === undefined || typeof node.properties.filePath !== 'string') continue;
+      const key = `${kind}\0${node.properties.filePath}\0${node.properties.startLine}\0${node.properties.endLine}`;
+      exactOwnerByRange.set(key, exactOwnerByRange.has(key) ? null : node);
+    }
+    let classIdByMethod: ReadonlyMap<string, string> | undefined;
+
+    const singletonOwnerId = (owner: GraphNode): string | undefined => {
+      if (owner.label === 'Class' || owner.label === 'Interface') return owner.id;
+      if (owner.label !== 'Method') return undefined;
+      if (classIdByMethod === undefined) {
+        const owners = new Map<string, string>();
+        for (const relationship of graph.iterRelationshipsByType('HAS_METHOD')) {
+          owners.set(relationship.targetId, relationship.sourceId);
+        }
+        classIdByMethod = owners;
+      }
+      return classIdByMethod.get(owner.id);
+    };
 
     for (const parsed of parsedFiles) {
       // The set is populated only by registered language adapters. The shared
@@ -288,11 +324,12 @@ export function createSpringAopMetadataAttacher<Annotation extends SpringAopAnno
       const incomplete = adapter.isPackageVisibilityIncomplete(parsed.filePath);
       const resolvedAnnotations = new Map<string, string | undefined>();
       for (const fact of adapter.getFacts(parsed.filePath)) {
-        const owner = ownerGraphNode(fact, indexes, nodeLookup, graph);
+        const owner = ownerGraphNode(fact, indexes, nodeLookup, graph, exactOwnerByRange);
         const ownerScope = indexes.scopeTree.getScope(fact.ownerScopeId);
-        if (owner === undefined || ownerScope === undefined) continue;
-        if (fact.ownerKind === 'class' && fact.singletonInstance === true) {
-          metadata.singletonInstanceClassIds.add(owner.id);
+        if (owner === undefined) continue;
+        if (fact.singletonInstance === true) {
+          const singletonId = singletonOwnerId(owner);
+          if (singletonId !== undefined) metadata.singletonInstanceClassIds.add(singletonId);
         }
 
         for (const annotation of fact.annotations) {
@@ -300,13 +337,14 @@ export function createSpringAopMetadataAttacher<Annotation extends SpringAopAnno
           // than the callable represented by this fact. Guessing would overstate
           // proxy behavior, so Kotlin use-site targets fail closed.
           if (annotation.useSiteTarget !== undefined) continue;
-          const cacheKey = `${ownerScope.parent ?? '<root>'}\0${annotation.name}`;
+          const enclosingScope = ownerScope?.parent ?? null;
+          const cacheKey = `${enclosingScope ?? '<root>'}\0${annotation.name}`;
           let resolved = resolvedAnnotations.get(cacheKey);
           if (!resolvedAnnotations.has(cacheKey)) {
             resolved = resolveAnnotation(
               annotation.name,
               parsed,
-              ownerScope.parent,
+              enclosingScope,
               RECOGNIZED_AOP_ANNOTATIONS,
               incomplete,
             );
@@ -438,12 +476,6 @@ export function decodeSpringAopReason(value: unknown): SpringAopReason | undefin
 
 export function isSpringAopEvidenceNode(node: GraphNode): boolean {
   return node.label === 'CodeElement' && node.id.startsWith(SPRING_AOP_EVIDENCE_ID_PREFIX);
-}
-
-export function isSpringAopDeclaration(relationship: GraphRelationship): boolean {
-  return (
-    relationship.type === 'DECLARES' && relationship.reason.startsWith(SPRING_AOP_REASON_PREFIX)
-  );
 }
 
 export interface SpringAopExecutionPointcut {
@@ -655,7 +687,16 @@ export function springAopPointcutMatches(
   if (typeof qualifiedName !== 'string') return false;
   if (!typePatternMatches(pointcut.ownerPattern, qualifiedName)) return false;
   if (pointcut.kind === 'within') return true;
-  if (pointcut.visibility === 'public' && method.properties.visibility !== 'public') return false;
+  if (
+    pointcut.visibility === 'public' &&
+    method.properties.visibility !== 'public' &&
+    // Java and Kotlin interface methods are public when no visibility modifier
+    // is present. Their extractors retain that absence as `package`; explicit
+    // private members remain private and therefore fail this exception.
+    !(owner.label === 'Interface' && method.properties.visibility === 'package')
+  ) {
+    return false;
+  }
   if (
     pointcut.parameterCount !== undefined &&
     method.properties.parameterCount !== pointcut.parameterCount

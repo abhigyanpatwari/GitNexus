@@ -86,6 +86,24 @@ describe('Spring AOP static pointcuts (#2416)', () => {
     ).toBe(true);
   });
 
+  it('treats an unmodified interface method as public for execution(public ...)', () => {
+    const interfaceOwner: GraphNode = { ...owner, label: 'Interface' };
+    const implicitPublicMethod: GraphNode = {
+      ...method,
+      properties: { ...method.properties, visibility: 'package' },
+    };
+    const execution = parseSpringAopPointcut(
+      'execution(public * com.example..OrderService.run(*))',
+    );
+
+    expect(
+      execution && springAopPointcutMatches(execution, interfaceOwner, implicitPublicMethod),
+    ).toBe(true);
+    expect(execution && springAopPointcutMatches(execution, owner, implicitPublicMethod)).toBe(
+      false,
+    );
+  });
+
   it('matches unqualified wildcard type patterns against the owner simple name', () => {
     const within = parseSpringAopPointcut('within(*Service)');
     const execution = parseSpringAopPointcut('execution(* *Service.run(..))');

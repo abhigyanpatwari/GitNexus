@@ -156,6 +156,66 @@ describe('Spring AOP candidate-index regression tripwire (#2416)', () => {
   }, 30_000);
 });
 
+describe('Spring AOP broad-advice budget regression tripwire (#2416)', () => {
+  it('bounds aggregate edge work across multiple broad advices and reports truncation', async () => {
+    const root = writeMixedSpringAopRepo(20);
+    const progressMessages: string[] = [];
+    try {
+      const result = await runPipelineFromRepo(
+        root,
+        (progress) => progressMessages.push(progress.message),
+        {
+          skipGraphPhases: true,
+          workerPoolSize: 1,
+          springAopMaxCandidateInspectionsPerAdvice: 0,
+          springAopMaxCandidateInspections: 0,
+          springAopMaxAdvisedEdgesPerAdvice: 5,
+          springAopMaxAdvisedEdges: 9,
+        },
+      );
+      const adviceEdges = [...result.graph.iterRelationshipsByType('ADVISED_BY')].filter(
+        (relationship) => decodeSpringAopReason(relationship.reason)?.kind === 'advice',
+      );
+
+      expect(adviceEdges).toHaveLength(9);
+      expect(progressMessages).toContain(
+        'Spring AOP advice resolution truncated by configured budgets',
+      );
+    } finally {
+      fs.rmSync(root, { recursive: true, force: true });
+    }
+  }, 30_000);
+
+  it('bounds aggregate candidate inspections across multiple broad advices', async () => {
+    const root = writeMixedSpringAopRepo(20);
+    const progressMessages: string[] = [];
+    try {
+      const result = await runPipelineFromRepo(
+        root,
+        (progress) => progressMessages.push(progress.message),
+        {
+          skipGraphPhases: true,
+          workerPoolSize: 1,
+          springAopMaxCandidateInspectionsPerAdvice: 4,
+          springAopMaxCandidateInspections: 7,
+          springAopMaxAdvisedEdgesPerAdvice: 0,
+          springAopMaxAdvisedEdges: 0,
+        },
+      );
+      const adviceEdges = [...result.graph.iterRelationshipsByType('ADVISED_BY')].filter(
+        (relationship) => decodeSpringAopReason(relationship.reason)?.kind === 'advice',
+      );
+
+      expect(adviceEdges).toHaveLength(7);
+      expect(progressMessages).toContain(
+        'Spring AOP advice resolution truncated by configured budgets',
+      );
+    } finally {
+      fs.rmSync(root, { recursive: true, force: true });
+    }
+  }, 30_000);
+});
+
 function denseKotlinAopSource(classCount: number): string {
   const classes = Array.from({ length: classCount }, (_, index) => {
     const transactional =

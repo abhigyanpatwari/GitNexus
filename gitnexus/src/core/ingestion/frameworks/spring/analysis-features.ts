@@ -32,7 +32,7 @@ export const SPRING_CONDITIONALS_FEATURE: AnalysisFeatureDescriptor = {
  * Candidate-language approximation, not a claim that the file contains AOP.
  * Kotlin scripts are included because `.kts` is a supported Kotlin input.
  */
-function isSpringAopSourceFile(filePath: string): boolean {
+function isJvmSourceFile(filePath: string): boolean {
   const normalized = filePath.replaceAll('\\', '/').toLowerCase();
   return normalized.endsWith('.java') || normalized.endsWith('.kt') || normalized.endsWith('.kts');
 }
@@ -41,5 +41,5 @@ function isSpringAopSourceFile(filePath: string): boolean {
 export const SPRING_AOP_FEATURE: AnalysisFeatureDescriptor = {
   id: 'spring.aop-advice',
   version: 1,
-  appliesTo: (filePaths) => filePaths.some(isSpringAopSourceFile),
+  appliesTo: (filePaths) => filePaths.some(isJvmSourceFile),
 };

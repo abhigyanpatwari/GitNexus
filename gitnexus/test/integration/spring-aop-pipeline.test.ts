@@ -79,6 +79,17 @@ public interface SecuredOperations {
     );
     writeFixture(
       dir,
+      'src/main/java/com/example/service/SecuredOperationsImpl.java',
+      `package com.example.service;
+
+public class SecuredOperationsImpl implements SecuredOperations {
+  @Override
+  public void interfaceSecuredOperation() {}
+}
+`,
+    );
+    writeFixture(
+      dir,
       'src/main/java/com/example/service/ClassLevelService.java',
       `package com.example.service;
 
@@ -102,6 +113,35 @@ import org.springframework.transaction.annotation.Transactional;
 @Transactional
 public interface TransactionalOperations {
   void interfaceInheritedTransaction();
+}
+`,
+    );
+    writeFixture(
+      dir,
+      'src/main/java/com/example/service/TransactionalOperationsImpl.java',
+      `package com.example.service;
+
+public class TransactionalOperationsImpl implements TransactionalOperations {
+  @Override
+  public void interfaceInheritedTransaction() {}
+}
+`,
+    );
+    writeFixture(
+      dir,
+      'src/main/java/com/example/service/InheritedBehaviorService.java',
+      `package com.example.service;
+
+import org.springframework.transaction.annotation.Transactional;
+
+class InheritedBehaviorBase {
+  @Transactional
+  public void overriddenTransaction() {}
+}
+
+public class InheritedBehaviorService extends InheritedBehaviorBase {
+  @Override
+  public void overriddenTransaction() {}
 }
 `,
     );
@@ -132,6 +172,9 @@ public class OrderAspect {
 
   @Before("execution(* *Service.kotlinCachedOperation(..))")
   public void simpleNameExecutionAdvice() {}
+
+  @Before("execution(public * com.example.service.SecuredOperations.interfaceSecuredOperation(..))")
+  public void publicInterfaceAdvice() {}
 
   @Before("within(OrderService)")
   public void unresolvedSimpleTypeAdvice() {}
@@ -180,8 +223,13 @@ object KotlinOrderAspect {
 
 import org.springframework.cache.annotation.CacheEvict
 import org.springframework.cache.annotation.Cacheable
+import org.springframework.cache.annotation.CachePut
+import org.springframework.cache.annotation.Caching
 import org.springframework.security.access.annotation.Secured
+import org.springframework.security.access.prepost.PostAuthorize
+import org.springframework.security.access.prepost.PostFilter
 import org.springframework.security.access.prepost.PreAuthorize
+import org.springframework.security.access.prepost.PreFilter
 import org.springframework.transaction.annotation.Transactional
 
 class KotlinOrderService {
@@ -199,6 +247,33 @@ class KotlinOrderService {
 
   @Secured("ROLE_AUDITOR")
   fun kotlinLegacySecuredOperation() {}
+
+  @CachePut("orders")
+  fun kotlinCachePutOperation() {}
+
+  @Caching(cacheable = [Cacheable("orders")])
+  fun kotlinCachingOperation() {}
+
+  @PostAuthorize("returnObject != null")
+  fun kotlinPostAuthorizeOperation(): String = "ok"
+
+  @PreFilter("filterObject != null")
+  fun kotlinPreFilterOperation(values: List<String>) {}
+
+  @PostFilter("filterObject != null")
+  fun kotlinPostFilterOperation(): List<String> = emptyList()
+
+  @jakarta.annotation.security.RolesAllowed("ADMIN")
+  fun kotlinJakartaRolesAllowedOperation() {}
+
+  @javax.annotation.security.RolesAllowed("AUDITOR")
+  fun kotlinJavaxRolesAllowedOperation() {}
+
+  @jakarta.transaction.Transactional
+  fun kotlinJakartaTransaction() {}
+
+  @javax.transaction.Transactional
+  fun kotlinJavaxTransaction() {}
 
   @Transactional
   suspend fun kotlinSuspendTransaction() {}
@@ -259,6 +334,42 @@ interface KotlinTransactionalOperations {
 interface KotlinMethodAnnotatedOperations {
   @Transactional
   fun kotlinInterfaceExplicitTransaction()
+}
+
+class KotlinTransactionalOperationsImpl : KotlinTransactionalOperations {
+  override fun kotlinInterfaceInheritedTransaction() {}
+  override fun kotlinInterfaceSecuredOperation() {}
+}
+
+class KotlinMethodAnnotatedOperationsImpl : KotlinMethodAnnotatedOperations {
+  override fun kotlinInterfaceExplicitTransaction() {}
+}
+
+open class KotlinBehaviorBase {
+  @Transactional
+  open fun kotlinOverriddenTransaction() {}
+}
+
+class KotlinBehaviorService : KotlinBehaviorBase() {
+  override fun kotlinOverriddenTransaction() {}
+}
+`,
+    );
+    writeFixture(
+      dir,
+      'src/main/kotlin/com/example/service/KotlinCompanionService.kt',
+      `package com.example.service
+
+import org.springframework.transaction.annotation.Transactional
+
+class KotlinCompanionService {
+  companion object {
+    @Transactional
+    fun kotlinCompanionTransaction() {}
+
+    @receiver:Transactional
+    fun String.kotlinReceiverTargetTransaction() {}
+  }
 }
 `,
     );
@@ -329,7 +440,7 @@ class KotlinScriptService {
 `,
     );
 
-    result = await runPipelineFromRepo(dir, () => {}, { skipGraphPhases: true });
+    result = await runPipelineFromRepo(dir, () => {}, { skipGraphPhases: false });
     nodes = [...result.graph.iterNodes()];
     advisedBy = [...result.graph.iterRelationshipsByType('ADVISED_BY')];
     declarations = [...result.graph.iterRelationshipsByType('DECLARES')];
@@ -391,6 +502,15 @@ class KotlinScriptService {
       'kotlinEvictOperation',
       'kotlinSecuredOperation',
       'kotlinLegacySecuredOperation',
+      'kotlinCachePutOperation',
+      'kotlinCachingOperation',
+      'kotlinPostAuthorizeOperation',
+      'kotlinPreFilterOperation',
+      'kotlinPostFilterOperation',
+      'kotlinJakartaRolesAllowedOperation',
+      'kotlinJavaxRolesAllowedOperation',
+      'kotlinJakartaTransaction',
+      'kotlinJavaxTransaction',
       'kotlinSuspendTransaction',
       'kotlinExtensionTransaction',
       'kotlinFullyQualifiedTransaction',
@@ -449,6 +569,86 @@ class KotlinScriptService {
     ]);
   });
 
+  it('covers the complete Kotlin cache, security, and transaction behavior matrix', () => {
+    const behaviorFor = (name: string): string | undefined => {
+      const [edge] = declarativeAdviceFor(name);
+      const reason = decodeSpringAopReason(edge?.reason);
+      return reason?.kind === 'behavior' ? reason.behavior : undefined;
+    };
+
+    expect({
+      cachePut: behaviorFor('kotlinCachePutOperation'),
+      caching: behaviorFor('kotlinCachingOperation'),
+      postAuthorize: behaviorFor('kotlinPostAuthorizeOperation'),
+      preFilter: behaviorFor('kotlinPreFilterOperation'),
+      postFilter: behaviorFor('kotlinPostFilterOperation'),
+      jakartaRoles: behaviorFor('kotlinJakartaRolesAllowedOperation'),
+      javaxRoles: behaviorFor('kotlinJavaxRolesAllowedOperation'),
+      jakartaTransaction: behaviorFor('kotlinJakartaTransaction'),
+      javaxTransaction: behaviorFor('kotlinJavaxTransaction'),
+    }).toEqual({
+      cachePut: 'cache-put',
+      caching: 'caching',
+      postAuthorize: 'authorization',
+      preFilter: 'authorization',
+      postFilter: 'authorization',
+      jakartaRoles: 'authorization',
+      javaxRoles: 'authorization',
+      jakartaTransaction: 'transactional',
+      javaxTransaction: 'transactional',
+    });
+  });
+
+  it('propagates Java and Kotlin behavior through implementations and overrides', () => {
+    expect(
+      behaviorSignaturesForNode(
+        methodNamedOn('SecuredOperationsImpl', 'interfaceSecuredOperation'),
+      ),
+    ).toEqual(['org.springframework.security.access.prepost.PreAuthorize:method']);
+    expect(
+      behaviorSignaturesForNode(
+        methodNamedOn('TransactionalOperationsImpl', 'interfaceInheritedTransaction'),
+      ),
+    ).toEqual(['org.springframework.transaction.annotation.Transactional:class']);
+    expect(
+      behaviorSignaturesForNode(methodNamedOn('InheritedBehaviorService', 'overriddenTransaction')),
+    ).toEqual(['org.springframework.transaction.annotation.Transactional:method']);
+    expect(
+      behaviorSignaturesForNode(
+        methodNamedOn('KotlinTransactionalOperationsImpl', 'kotlinInterfaceSecuredOperation'),
+      ),
+    ).toEqual([
+      'org.springframework.security.access.prepost.PreAuthorize:method',
+      'org.springframework.transaction.annotation.Transactional:class',
+    ]);
+    expect(
+      behaviorSignaturesForNode(
+        methodNamedOn('KotlinMethodAnnotatedOperationsImpl', 'kotlinInterfaceExplicitTransaction'),
+      ),
+    ).toEqual(['org.springframework.transaction.annotation.Transactional:method']);
+    expect(
+      behaviorSignaturesForNode(
+        methodNamedOn('KotlinBehaviorService', 'kotlinOverriddenTransaction'),
+      ),
+    ).toEqual(['org.springframework.transaction.annotation.Transactional:method']);
+  });
+
+  it('captures Kotlin companion methods as singleton behavior and fails closed on use-site targets', () => {
+    expect(behaviorSignaturesFor('kotlinCompanionTransaction')).toEqual([
+      'org.springframework.transaction.annotation.Transactional:method',
+    ]);
+    expect(behaviorSignaturesFor('kotlinReceiverTargetTransaction')).toEqual([]);
+    expect(behaviorSignaturesFor('kotlinAliasedPlainOperation')).toEqual([]);
+  });
+
+  it('matches execution(public ...) against an implicit-public Java interface method', () => {
+    const advice = nodeNamed('publicInterfaceAdvice');
+    const targets = advisedBy
+      .filter((relationship) => relationship.targetId === advice?.id)
+      .map((relationship) => result.graph.getNode(relationship.sourceId)?.properties.name);
+    expect(targets).toEqual(['interfaceSecuredOperation']);
+  });
+
   it('treats Kotlin object members as singleton instance methods for AOP', () => {
     expect(behaviorSignaturesFor('KotlinObjectService')).toEqual([
       'org.springframework.transaction.annotation.Transactional:class',
@@ -498,14 +698,17 @@ class KotlinScriptService {
       .sort();
     expect(advisedMethods).toEqual([
       'kotlinAliasedTransactionalOperation',
+      'kotlinCompanionTransaction',
       'kotlinExtensionTransaction',
       'kotlinFullyQualifiedTransaction',
       'kotlinInterfaceExplicitTransaction',
       'kotlinObjectExplicitTransaction',
+      'kotlinOverriddenTransaction',
       'kotlinScriptTransaction',
       'kotlinSuspendTransaction',
       'kotlinTransactionalOperation',
       'kotlinWildcardTransaction',
+      'overriddenTransaction',
       'transactionalOperation',
     ]);
   });
@@ -546,11 +749,20 @@ class KotlinScriptService {
       .map((relationship) => String(result.graph.getNode(relationship.sourceId)?.properties.name))
       .sort();
     expect(kotlinAdvisedMethods).toEqual([
+      'kotlinCachePutOperation',
       'kotlinCachedOperation',
+      'kotlinCachingOperation',
       'kotlinEvictOperation',
       'kotlinExtensionTransaction',
       'kotlinFullyQualifiedTransaction',
+      'kotlinJakartaRolesAllowedOperation',
+      'kotlinJakartaTransaction',
+      'kotlinJavaxRolesAllowedOperation',
+      'kotlinJavaxTransaction',
       'kotlinLegacySecuredOperation',
+      'kotlinPostAuthorizeOperation',
+      'kotlinPostFilterOperation',
+      'kotlinPreFilterOperation',
       'kotlinSecuredOperation',
       'kotlinSuspendTransaction',
       'kotlinTransactionalOperation',
@@ -582,14 +794,17 @@ class KotlinScriptService {
       .sort();
     expect(advisedByTransactionalAnnotation).toEqual([
       'kotlinAliasedTransactionalOperation',
+      'kotlinCompanionTransaction',
       'kotlinExtensionTransaction',
       'kotlinFullyQualifiedTransaction',
       'kotlinInterfaceExplicitTransaction',
       'kotlinObjectExplicitTransaction',
+      'kotlinOverriddenTransaction',
       'kotlinScriptTransaction',
       'kotlinSuspendTransaction',
       'kotlinTransactionalOperation',
       'kotlinWildcardTransaction',
+      'overriddenTransaction',
       'transactionalOperation',
     ]);
     expect(advisedByTransactionalAnnotation).not.toContain('kotlinInterfaceInheritedTransaction');
@@ -691,6 +906,13 @@ class KotlinService {
   fun kotlinTransaction() {}
 }
 
+class KotlinCompanionHolder {
+  companion object {
+    @Tx
+    fun companionTransaction() {}
+  }
+}
+
 @AopAspect
 object KotlinAspect {
   @AdviceBefore("""@annotation(org.springframework.transaction.annotation.Transactional)""")
@@ -761,8 +983,10 @@ object KotlinAspect {
           .map((edge) => `${edge.reason.kind}:${edge.sourceName}->${edge.targetName}`)
           .sort(),
       ).toEqual([
+        'advice:companionTransaction->beforeTransaction',
         'advice:javaTransaction->beforeTransaction',
         'advice:kotlinTransaction->beforeTransaction',
+        'behavior:companionTransaction->@Transactional',
         'behavior:javaTransaction->@Transactional',
         'behavior:kotlinTransaction->@Transactional',
       ]);

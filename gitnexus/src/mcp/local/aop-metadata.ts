@@ -7,6 +7,7 @@ import {
 type SpringAopBehaviorReason = Extract<SpringAopReason, { kind: 'behavior' }>;
 type SpringAopAdviceReason = Extract<SpringAopReason, { kind: 'advice' }>;
 type SpringAopAspectReason = Extract<SpringAopReason, { kind: 'aspect' }>;
+type SpringAopPointcutReason = Extract<SpringAopReason, { kind: 'pointcut' }>;
 
 export interface SpringAopBehaviorMetadata {
   readonly annotation: string;
@@ -39,6 +40,17 @@ export interface SpringAopUnresolvedPointcutMetadata {
   readonly evidenceId: string;
 }
 
+export interface SpringAopResolvedPointcutMetadata {
+  readonly annotation: string;
+  readonly pointcut: string;
+  readonly match: Extract<SpringAopPointcutReason['match'], 'static'>;
+  readonly resolution: Extract<SpringAopPointcutReason['resolution'], 'resolved'>;
+  readonly adviceId: string;
+  readonly adviceName?: string;
+  readonly adviceFilePath?: string;
+  readonly evidenceId: string;
+}
+
 export interface SpringAopAspectMetadata {
   readonly annotation: string;
   readonly activation: SpringAopAspectReason['activation'];
@@ -53,6 +65,7 @@ export interface SpringAopMetadata {
   readonly aspect?: SpringAopAspectMetadata;
   readonly behaviors: readonly SpringAopBehaviorMetadata[];
   readonly advices: readonly SpringAopAdviceMetadata[];
+  readonly resolvedPointcuts: readonly SpringAopResolvedPointcutMetadata[];
   readonly unresolvedPointcuts: readonly SpringAopUnresolvedPointcutMetadata[];
 }
 
@@ -126,8 +139,10 @@ function stableDedupe<T>(values: readonly T[], keyOf: (value: T) => string): T[]
 const RELATIONSHIP_PROJECTION = `
   RETURN source.id AS sourceId, source.name AS sourceName, source.filePath AS sourceFilePath,
          target.id AS targetId, target.name AS targetName, target.filePath AS targetFilePath,
-         r.reason AS reason
+         r.reason AS reason, r.step AS step
 `;
+
+const DETERMINISTIC_RELATIONSHIP_ORDER = 'ORDER BY sourceId, targetId, reason, step';
 
 /**
  * Read additive Spring proxy/advice metadata for context and impact results.
@@ -153,6 +168,7 @@ export async function querySpringAopMetadata(
            WHERE r.type = 'ADVISED_BY'
              AND r.reason STARTS WITH 'spring-aop:v1:'
            ${RELATIONSHIP_PROJECTION}
+           ${DETERMINISTIC_RELATIONSHIP_ORDER}
            LIMIT 1001`,
           { symbolId },
         ),
@@ -162,6 +178,7 @@ export async function querySpringAopMetadata(
            WHERE r.type = 'ADVISED_BY'
              AND r.reason STARTS WITH 'spring-aop:v1:'
            ${RELATIONSHIP_PROJECTION}
+           ${DETERMINISTIC_RELATIONSHIP_ORDER}
            LIMIT 1001`,
           { symbolId },
         ),
@@ -171,6 +188,7 @@ export async function querySpringAopMetadata(
            WHERE r.type = 'DECLARES'
              AND r.reason STARTS WITH 'spring-aop:v1:'
            ${RELATIONSHIP_PROJECTION}
+           ${DETERMINISTIC_RELATIONSHIP_ORDER}
            LIMIT 1001`,
           { symbolId },
         ),
@@ -180,6 +198,7 @@ export async function querySpringAopMetadata(
            WHERE r.type = 'DECLARES'
              AND r.reason STARTS WITH 'spring-aop:v1:'
            ${RELATIONSHIP_PROJECTION}
+           ${DETERMINISTIC_RELATIONSHIP_ORDER}
            LIMIT 1001`,
           { symbolId },
         ),
@@ -187,6 +206,7 @@ export async function querySpringAopMetadata(
 
     const behaviors: SpringAopBehaviorMetadata[] = [];
     const advices: SpringAopAdviceMetadata[] = [];
+    const resolvedPointcuts: SpringAopResolvedPointcutMetadata[] = [];
     const unresolvedPointcuts: SpringAopUnresolvedPointcutMetadata[] = [];
     const aspects: SpringAopAspectMetadata[] = [];
     const truncated = [
@@ -245,6 +265,22 @@ export async function querySpringAopMetadata(
             registration: reason.registration,
             evidenceId: row.targetId,
           });
+        } else if (
+          reason?.kind === 'pointcut' &&
+          reason.match === 'static' &&
+          reason.resolution === 'resolved' &&
+          typeof reason.pointcut === 'string'
+        ) {
+          resolvedPointcuts.push({
+            annotation: reason.annotation,
+            pointcut: reason.pointcut,
+            match: reason.match,
+            resolution: reason.resolution,
+            adviceId: row.sourceId,
+            ...optionalField('adviceName', row.sourceName),
+            ...optionalField('adviceFilePath', row.sourceFilePath),
+            evidenceId: row.targetId,
+          });
         } else if (reason?.kind === 'pointcut' && reason.match === 'unresolved') {
           unresolvedPointcuts.push({
             annotation: reason.annotation,
@@ -281,11 +317,20 @@ export async function querySpringAopMetadata(
         pointcut.pointcut,
       ]),
     );
+    const dedupedResolvedPointcuts = stableDedupe(resolvedPointcuts, (pointcut) =>
+      JSON.stringify([
+        pointcut.adviceId,
+        pointcut.evidenceId,
+        pointcut.annotation,
+        pointcut.pointcut,
+      ]),
+    );
 
     if (
       dedupedAspects.length === 0 &&
       dedupedBehaviors.length === 0 &&
       dedupedAdvices.length === 0 &&
+      dedupedResolvedPointcuts.length === 0 &&
       dedupedPointcuts.length === 0
     ) {
       return undefined;
@@ -298,6 +343,7 @@ export async function querySpringAopMetadata(
       ...(dedupedAspects[0] === undefined ? {} : { aspect: dedupedAspects[0] }),
       behaviors: dedupedBehaviors,
       advices: dedupedAdvices,
+      resolvedPointcuts: dedupedResolvedPointcuts,
       unresolvedPointcuts: dedupedPointcuts,
     };
   } catch {

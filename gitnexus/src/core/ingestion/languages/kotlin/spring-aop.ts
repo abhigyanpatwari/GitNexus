@@ -20,6 +20,10 @@ function scopeId(filePath: string, node: SyntaxNode, kind: 'Class' | 'Function')
   });
 }
 
+function ownerRange(node: SyntaxNode) {
+  return nodeToCapture('@spring-aop.owner', node).range;
+}
+
 /**
  * Capture Spring AOP syntax from the class node already surfaced by Kotlin's
  * scope query. The shared layer resolves annotations and rejects non-default
@@ -31,7 +35,8 @@ export function captureKotlinSpringAopFacts(
 ): KotlinSpringAopFact[] {
   const facts: KotlinSpringAopFact[] = [];
   const classAnnotations = kotlinSpringAnnotationFacts(classNode);
-  const singletonInstance = classNode.type === 'object_declaration';
+  const singletonInstance =
+    classNode.type === 'object_declaration' || classNode.type === 'companion_object';
   // Kotlin import aliases can give a Spring annotation any local simple name.
   // Capture annotated owners conservatively, then let the post-import shared
   // resolver keep only recognized Spring AOP annotations. Objects also retain
@@ -41,6 +46,8 @@ export function captureKotlinSpringAopFacts(
     facts.push({
       ownerScopeId: scopeId(filePath, classNode, 'Class'),
       ownerKind: 'class',
+      ownerFilePath: filePath,
+      ownerRange: ownerRange(classNode),
       ...(singletonInstance ? { singletonInstance: true } : {}),
       annotations: classAnnotations,
     });
@@ -55,6 +62,9 @@ export function captureKotlinSpringAopFacts(
     facts.push({
       ownerScopeId: scopeId(filePath, member, 'Function'),
       ownerKind: 'callable',
+      ownerFilePath: filePath,
+      ownerRange: ownerRange(member),
+      ...(singletonInstance ? { singletonInstance: true } : {}),
       annotations,
     });
   }
