@@ -613,6 +613,33 @@ export async function runGroupImpact(
       const regName = config.repos[n.neighborRepo];
       if (!regName) continue;
 
+      // A manifest link can prove the repository boundary even when its far
+      // endpoint has no graph symbol of its own (for example, a string-based
+      // RPC dispatch). Those endpoints deliberately use a deterministic
+      // `manifest::...` UID. Calling impactByUid with that synthetic value can
+      // never succeed because it is not a node in the neighbor repository;
+      // dropping the crossing here made `group sync` report the manifest link
+      // while `group impact` silently returned cross=0 (#2722).
+      //
+      // Preserve the proven crossing with an empty local fan-out. Real UIDs
+      // still take the normal impactByUid path below, where failures remain
+      // truncations rather than false successful traversals.
+      if (n.neighborUid.startsWith('manifest::')) {
+        cross.push({
+          repo: regName,
+          repo_path: n.neighborRepo,
+          contract: {
+            id: n.contractId,
+            type: n.contractType as ContractType,
+            match_type: (n.matchType as MatchType) || 'manifest',
+            confidence: n.confidence,
+          },
+          by_depth: {},
+          affected_processes: [],
+        });
+        continue;
+      }
+
       let neighborHandle: GroupRepoHandle;
       try {
         neighborHandle = await deps.port.resolveRepo(regName);
