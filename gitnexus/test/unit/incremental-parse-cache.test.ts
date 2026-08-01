@@ -102,10 +102,11 @@ describe('fileContentHash', () => {
 
 describe('PARSE_CACHE_VERSION', () => {
   // 35 -> 36 for the bound-callable start-line join (#2735), 36 -> 37 for
-  // Java/Kotlin Spring AOP capture side-channels (#2416), 37 -> 38 for
+  // Java/Kotlin Spring AOP capture side-channels (#2416), 37 -> 38 for the Swift
+  // conditional-directive parse-semantics change (#2771), 38 -> 39 for
   // receiver-chain wire format v2: every persisted chain string changed prefix
-  // and a v2 decoder refuses v1 by design, so a cache stamped 37 replays chains
-  // this build silently discards.
+  // and a v2 decoder refuses v1 by design, so a stale cache replays chains this
+  // build silently discards.
   //
   // This pin has now earned its keep EIGHT times, and twice it caught an EXACT
   // clash rather than a near-miss: main took 37 for #2416 while this branch

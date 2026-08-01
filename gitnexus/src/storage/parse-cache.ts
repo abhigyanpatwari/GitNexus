@@ -150,8 +150,11 @@ import type { ParseWorkerResult } from '../core/ingestion/workers/parse-worker.j
 // (#2416). Warm cache entries at v36 do not carry those facts and would silently
 // omit ADVISED_BY evidence.
 // v38: Swift nested conditional-compilation directives are blanked before the
-// parse (#2771) — allocated on `main`, NOT by this branch. Recorded here so the
-// number is not reused a third time.
+// parse (#2771), so a class body that previously error-recovered away now
+// survives. The chunk key hashes raw on-disk bytes and `preprocessSource` runs
+// after it is computed, so unchanged Swift files would otherwise replay their
+// pre-fix `ParseWorkerResult` verbatim — including across `--force`. Allocated
+// on `main`, NOT by this branch — kept so the number is not reused a third time.
 // v39: receiver-chain wire format v2 — the encoded chain gained name-free
 // `await` and `index` step kinds, so the VERSION prefix moved 1 -> 2 and every
 // persisted chain string changed. A v2 decoder REFUSES a v1 payload (that is

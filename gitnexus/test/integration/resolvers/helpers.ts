@@ -113,6 +113,28 @@ export function getNodesByLabel(result: PipelineResult, label: string): string[]
   return names.sort();
 }
 
+/**
+ * Every node a single fixture file contributed, as sorted `Label:name` and
+ * `Label:qualifiedName` strings — for exact `toEqual` assertions on the whole
+ * file's output rather than spot checks.
+ */
+export function getNodesForFile(
+  result: PipelineResult,
+  filePathSuffix: string,
+): { names: string[]; labelled: string[]; qualified: string[] } {
+  const names: string[] = [];
+  const labelled: string[] = [];
+  const qualified: string[] = [];
+  result.graph.forEachNode((n) => {
+    if (!String(n.properties.filePath ?? '').endsWith(filePathSuffix)) return;
+    const name = n.properties.name;
+    names.push(name);
+    labelled.push(`${n.label}:${name}`);
+    qualified.push(`${n.label}:${String(n.properties.qualifiedName ?? name)}`);
+  });
+  return { names: names.sort(), labelled: labelled.sort(), qualified: qualified.sort() };
+}
+
 export function edgeSet(edges: Array<{ source: string; target: string }>): string[] {
   return edges.map((e) => `${e.source} → ${e.target}`).sort();
 }
