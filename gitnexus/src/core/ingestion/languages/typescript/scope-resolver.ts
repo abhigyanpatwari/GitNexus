@@ -23,6 +23,7 @@ import type { ScopeResolutionIndexes } from '../../model/scope-resolution-indexe
 import { typescriptProvider } from '../typescript.js';
 import { loadTsconfigPaths, type TsconfigPaths } from '../../language-config.js';
 import { buildSuffixIndex, type SuffixIndex } from '../../import-resolvers/utils.js';
+import { extractElementTypeFromString } from '../../type-extractors/shared.js';
 import {
   typescriptArityCompatibility,
   typescriptMergeBindings,
@@ -107,24 +108,16 @@ function makeTsResolveImportTarget(): ScopeResolver['resolveImportTarget'] {
 
 const typescriptScopeResolver: ScopeResolver = {
   // Collections only, consulted ONLY by an index step (see the contract field).
-  // A TypeScript parameter annotation carries `User[]` through to the binding,
-  // so `repos[0].save()` needs exactly one unwrap here; a binding path that
-  // already reduced the container returns undefined and the step falls back to
-  // identity. Deliberately NOT part of `stripTypePreservingDecoration`: a
-  // container changes the member set, so unwrapping it at the bare class lookup
-  // would let `repos.find(x)` fold to `User.find`.
-  unwrapCollectionElement: (typeName) => {
-    const trimmed = typeName.trim();
-    if (trimmed.endsWith('[]')) {
-      const inner = trimmed.slice(0, -2).trim();
-      const unparen =
-        inner.startsWith('(') && inner.endsWith(')') ? inner.slice(1, -1).trim() : inner;
-      return unparen.length > 0 ? unparen : undefined;
-    }
-    const generic =
-      /^(?:Readonly)?(?:Array|Set|ReadonlySet|Iterable|AsyncIterable)<([^,<>]+)>$/.exec(trimmed);
-    return generic === null ? undefined : generic[1].trim();
-  },
+  // Delegates to the shared, bracket-balanced extractor rather than a local
+  // regex: that helper is already used by seven language type-extractors, and it
+  // covers `Map<K,V>` / `Record<K,V>` (returning the VALUE type, which is what a
+  // subscript yields) where a hand-rolled single-arg regex returned undefined
+  // and made `cache["k"].save()` decline.
+  //
+  // Deliberately NOT part of `stripTypePreservingDecoration`: a container
+  // changes the member set, so unwrapping it at the bare class lookup would let
+  // `repos.find(x)` fold to `User.find`.
+  unwrapCollectionElement: (typeName) => extractElementTypeFromString(typeName),
 
   // Construction is keyword-prefixed: `new Service(db).doWork()` (#2708).
   constructionSyntax: { keyword: 'new' },

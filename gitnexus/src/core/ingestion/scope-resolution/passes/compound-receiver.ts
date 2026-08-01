@@ -442,7 +442,17 @@ export function foldReceiverChain(
   // The base's own declared type is carried too, so a chain whose FIRST step is
   // an unwrap (`repos[0].save()` — index applied directly to the base) has the
   // container spelling available. Without it that shape declines at step 1.
-  const baseBinding = findReceiverTypeBinding(inScope, chain.baseReceiverName, scopes);
+  // Looked up ONLY when something will read it: the base failed to resolve (so
+  // an unwrap step is the last chance), or an index step will unwrap the
+  // container. `resolveCompoundReceiverClass` already walked the scope chain for
+  // this same name above, so doing it unconditionally duplicated that walk on
+  // every fold — and the U10 census says 86% of chains are pure field/call and
+  // never read it.
+  const needsBaseDeclaredType =
+    baseDef === undefined || chain.steps.some((step) => step.kind === 'index');
+  const baseBinding = needsBaseDeclaredType
+    ? findReceiverTypeBinding(inScope, chain.baseReceiverName, scopes)
+    : undefined;
 
   // A base whose declared type names no class is NOT automatically a dead end:
   // `repos: User[]` binds to the literal `User[]`, which matches no class

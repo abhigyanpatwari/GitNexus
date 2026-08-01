@@ -2,6 +2,7 @@ import type { MixedChainStep } from 'gitnexus-shared';
 
 import type { SyntaxNode } from './ast-helpers.js';
 import { CALL_ARGUMENT_LIST_TYPES } from './ast-helpers.js';
+import { subscriptBase } from './callable-flow-captures.js';
 
 /** Node types representing call expressions across supported languages. */
 export const CALL_EXPRESSION_TYPES = new Set([
@@ -396,6 +397,26 @@ const SUBSCRIPT_NODE_TYPES = new Set([
   'indexing_expression', // Kotlin
 ]);
 
+/**
+ * Can the chain walk descend into this node, or is it the base?
+ *
+ * ONE predicate for all four branches. The call and field branches previously
+ * tested only the call/field sets, so a receiver like `x[0].f().g()` stopped at
+ * the subscript and returned the literal text `x[0]` as the base — which
+ * `isEncodableSegment` accepts, minting a chain whose base binds to nothing. And
+ * `(await f()).g.h()` returned `await f()`, rejected on whitespace, minting no
+ * chain at all. Adding a fifth step kind must not require remembering four
+ * separate call sites.
+ */
+function isChainableReceiverNode(node: SyntaxNode): boolean {
+  return (
+    CALL_EXPRESSION_TYPES.has(node.type) ||
+    FIELD_ACCESS_NODE_TYPES.has(node.type) ||
+    AWAIT_EXPRESSION_NODE_TYPES.has(node.type) ||
+    SUBSCRIPT_NODE_TYPES.has(node.type)
+  );
+}
+
 const FIELD_ACCESS_NODE_TYPES = new Set([
   'member_expression', // TS/JS
   'member_access_expression', // C#
@@ -635,10 +656,7 @@ export function extractMixedChain(
       }
       if (!innerReceiver) break;
 
-      if (
-        CALL_EXPRESSION_TYPES.has(innerReceiver.type) ||
-        FIELD_ACCESS_NODE_TYPES.has(innerReceiver.type)
-      ) {
+      if (isChainableReceiverNode(innerReceiver)) {
         current = innerReceiver;
       } else {
         return {
@@ -687,10 +705,7 @@ export function extractMixedChain(
 
       if (!innerObject) break;
 
-      if (
-        CALL_EXPRESSION_TYPES.has(innerObject.type) ||
-        FIELD_ACCESS_NODE_TYPES.has(innerObject.type)
-      ) {
+      if (isChainableReceiverNode(innerObject)) {
         current = innerObject;
       } else {
         return {
@@ -708,12 +723,7 @@ export function extractMixedChain(
         current.namedChildren?.find((c: SyntaxNode) => c !== null) ??
         null;
       if (!inner) break;
-      if (
-        CALL_EXPRESSION_TYPES.has(inner.type) ||
-        FIELD_ACCESS_NODE_TYPES.has(inner.type) ||
-        AWAIT_EXPRESSION_NODE_TYPES.has(inner.type) ||
-        SUBSCRIPT_NODE_TYPES.has(inner.type)
-      ) {
+      if (isChainableReceiverNode(inner)) {
         current = inner;
       } else {
         return {
@@ -725,7 +735,13 @@ export function extractMixedChain(
       // Name-free: a subscript key is a VALUE, not an identifier the resolver
       // could look up, so there is no member name to record.
       chain.unshift({ kind: 'index' });
+      // Shared per-grammar table — it knows Python's `value` and Java's `array`,
+      // which a locally-written ladder omitted (they worked only because the
+      // container happened to be the first named child, an ordering coincidence
+      // rather than a contract). Falls back for grammars whose subscript node
+      // carries no `index` field.
       const obj =
+        subscriptBase(current) ??
         current.childForFieldName?.('object') ??
         current.childForFieldName?.('argument') ??
         current.childForFieldName?.('operand') ??
@@ -733,12 +749,7 @@ export function extractMixedChain(
         current.namedChildren?.find((c: SyntaxNode) => c !== null) ??
         null;
       if (!obj) break;
-      if (
-        CALL_EXPRESSION_TYPES.has(obj.type) ||
-        FIELD_ACCESS_NODE_TYPES.has(obj.type) ||
-        AWAIT_EXPRESSION_NODE_TYPES.has(obj.type) ||
-        SUBSCRIPT_NODE_TYPES.has(obj.type)
-      ) {
+      if (isChainableReceiverNode(obj)) {
         current = obj;
       } else {
         return {

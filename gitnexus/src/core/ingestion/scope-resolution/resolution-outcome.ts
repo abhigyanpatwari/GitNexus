@@ -1,4 +1,5 @@
 import type { Range, ReferenceKind } from 'gitnexus-shared';
+import type { DecodedReceiverChain } from '../utils/receiver-chain-codec.js';
 
 export type ResolutionSuppressionReason =
   | 'adl-ordinary-lookup-blocked'
@@ -94,25 +95,53 @@ export type ResolutionOutcome =
  * - `chain-call`   every recorded step is a call — `svc.getUser().save()`
  * - `chain-field`  every recorded step is a field — `h.repo.save()`
  * - `chain-mixed`  the chain interleaves both — `svc.getUser().addr.save()`
+ * - `chain-unwrap` the chain contains an `await` or `index` step — the shapes
+ *                  this work exists to expose. They were previously counted as
+ *                  FIELDS, because the classifier's parameter widened `kind` to
+ *                  `string` and they fell into its `else`.
  * - `no-chain`     the site carried no chain, so the receiver was a compound
  *                  expression the capture walk could not reduce to a nameable
  *                  base (it stopped early, or the base was unencodable)
  */
-export type ReceiverShape = 'chain-call' | 'chain-field' | 'chain-mixed' | 'no-chain';
+export type ReceiverShape =
+  | 'chain-call'
+  | 'chain-field'
+  | 'chain-mixed'
+  | 'chain-unwrap'
+  | 'no-chain';
 
 /** Classify a dropped receiver from its encoded chain. `undefined` chain ⇒
  *  `no-chain`; an undecodable one is also `no-chain`, since what we know about
- *  it is exactly that no usable structure survived. */
-export function classifyReceiverShape(
-  decoded: { readonly steps: readonly { readonly kind: string }[] } | undefined,
-): ReceiverShape {
+ *  it is exactly that no usable structure survived.
+ *
+ *  Takes `DecodedReceiverChain` rather than a structural duck-type: widening
+ *  `kind` to `string` let `await` and `index` fall into an `else` branch and be
+ *  counted as FIELDS, so the two shapes this work exists to expose were
+ *  censused as `chain-field`. The discriminated union makes a new step kind a
+ *  compile error instead of a silent bucket. */
+export function classifyReceiverShape(decoded: DecodedReceiverChain | undefined): ReceiverShape {
   if (decoded === undefined || decoded.steps.length === 0) return 'no-chain';
   let calls = 0;
   let fields = 0;
+  let unwraps = 0;
   for (const step of decoded.steps) {
-    if (step.kind === 'call') calls++;
-    else fields++;
+    switch (step.kind) {
+      case 'call':
+        calls++;
+        break;
+      case 'field':
+        fields++;
+        break;
+      case 'await':
+      case 'index':
+        unwraps++;
+        break;
+    }
   }
+  // An unwrap step dominates: a chain containing one fails for reasons a pure
+  // field or call chain does not, so folding it into either bucket would
+  // misattribute the population a fix has to target.
+  if (unwraps > 0) return 'chain-unwrap';
   if (calls > 0 && fields > 0) return 'chain-mixed';
   return calls > 0 ? 'chain-call' : 'chain-field';
 }

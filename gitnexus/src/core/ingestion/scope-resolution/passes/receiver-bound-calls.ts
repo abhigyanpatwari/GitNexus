@@ -1378,9 +1378,9 @@ export function emitReceiverBoundCalls(
           siteKind: site.kind,
           // Structural, from the AST-derived chain the emitter minted — never
           // re-derived from the source line.
-          receiverShape: classifyReceiverShape(
-            site.receiverChain === undefined ? undefined : decodeReceiverChain(site.receiverChain),
-          ),
+          // `decodeReceiverChain` opens with a non-string guard, so the
+          // undefined case needs no ternary here.
+          receiverShape: classifyReceiverShape(decodeReceiverChain(site.receiverChain)),
         });
       }
     }
