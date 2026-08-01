@@ -268,6 +268,7 @@
  * `docs/plans/2026-04-20-001-refactor-emit-pipeline-generalization-plan.md`.
  */
 
+import type { DecorationStripper } from '../scope/walkers.js';
 import type {
   BindingRef,
   Callsite,
@@ -1145,7 +1146,7 @@ export interface ScopeResolver {
    * decoration. Measured: only Go needs it for a receiver base; Rust, C#, Swift,
    * TypeScript and C++ need it for field types.
    */
-  readonly stripTypePreservingDecoration?: (typeName: string) => string | undefined;
+  readonly stripTypePreservingDecoration?: DecorationStripper;
 
   /**
    * Unwrap a COLLECTION spelling to its element type — `User[]` -> `User`,
@@ -1166,7 +1167,7 @@ export interface ScopeResolver {
    * both kinds of path land on the element type without the core needing to know
    * which is which.
    */
-  readonly unwrapCollectionElement?: (typeName: string) => string | undefined;
+  readonly unwrapCollectionElement?: DecorationStripper;
 
   /**
    * Whether the compound-receiver resolver should strip C-style cast

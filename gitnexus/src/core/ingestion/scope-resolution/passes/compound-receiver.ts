@@ -27,6 +27,7 @@ import type { WorkspaceResolutionIndex } from '../workspace-index.js';
 import { stripTemplateArguments } from '../../utils/template-arguments.js';
 import type { DecodedReceiverChain } from '../../utils/receiver-chain-codec.js';
 import { decodeReceiverChain } from '../../utils/receiver-chain-codec.js';
+import type { DecorationStripper } from '../scope/walkers.js';
 import {
   findClassBindingInScope,
   findEnclosingClassDef,
@@ -127,11 +128,11 @@ interface ResolveCompoundReceiverOptions {
    *  languages whose declared types carry no such decoration, and never applied
    *  by the shared lookup's other callers — see the contract's own note on why
    *  this is opt-in rather than global. */
-  readonly stripTypePreservingDecoration?: (typeName: string) => string | undefined;
+  readonly stripTypePreservingDecoration?: DecorationStripper;
   /** Collection -> element unwrap, consulted ONLY by an index step. See the
    *  `ScopeResolver` field of the same name for why this is separate from the
    *  type-preserving stripper. */
-  readonly unwrapCollectionElement?: (typeName: string) => string | undefined;
+  readonly unwrapCollectionElement?: DecorationStripper;
 }
 
 /** Is this hop the language's construction selector applied to the class
@@ -319,19 +320,20 @@ function resolveConstructionExpressionClass(
  * than guessing.
  */
 interface FoldState {
-  /** Absent when the position's declared type named no class — see
-   *  `unresolvedDeclaredType`. Only an unwrapping step can advance from there. */
+  /**
+   * Absent when the position's declared type named no class — `Promise<User>`
+   * and `[]Repo` name nothing in the workspace. ONE signal, not two: an earlier
+   * version carried a separate `unresolvedDeclaredType` flag alongside a `def`
+   * holding the PREVIOUS position, which no path ever read. Two sources of
+   * truth for one fact, and the dead `def` read as intentional.
+   *
+   * Only an unwrapping step (await, index) can advance from an absent `def`;
+   * every other step declines, because folding on against the previous class
+   * would look the next member up on the wrong owner.
+   */
   readonly def: SymbolDefinition | undefined;
   readonly declaredTypeName?: string;
   readonly declaredAtScope?: ScopeId;
-  /**
-   * The declared type named no class in the workspace, so `def` is the PREVIOUS
-   * position rather than this member's type. Only an unwrapping step (await,
-   * index) can make progress from here; any other step must decline, because
-   * folding on against the previous class would silently look the next member up
-   * on the wrong owner.
-   */
-  readonly unresolvedDeclaredType?: boolean;
 }
 
 function typeOfMemberOnClass(
@@ -358,11 +360,12 @@ function typeOfMemberOnClass(
       // await or index step unwrapping them is exactly how they become
       // resolvable. Returning `undefined` here would strand those shapes.
       if (def === undefined) {
+        // `def` absent, NOT the previous owner: nothing may fold a member off
+        // this position except an unwrapping step.
         return {
-          def: owner,
+          def: undefined,
           declaredTypeName: memberType.rawName,
           declaredAtScope: memberType.declaredAtScope,
-          unresolvedDeclaredType: true,
         };
       }
       return {
@@ -472,33 +475,12 @@ export function foldReceiverChain(
       def: undefined,
       declaredTypeName: baseBinding.rawName,
       declaredAtScope: baseBinding.declaredAtScope,
-      unresolvedDeclaredType: true,
     };
   } else {
     return undefined;
   }
 
   for (const step of chain.steps) {
-    // Construction is NOT an ordinary member lookup. `Factory.new` on a class
-    // constant denotes an instance of Factory, and the cascade already encodes
-    // that (`isConstructionSelectorHop`) along with the class-constant test that
-    // separates it from an instance method genuinely named `new`. The fold
-    // carries no such distinction — a chain step records a name, not whether its
-    // base was a class reference or a value — so folding one would resolve
-    // `Factory.new.run` against whatever member named `new` the lookup reaches
-    // first. That turned a correct edge into a WRONG one (Ruby
-    // `Factory.new.run` → `Product.run`), which is the failure mode this whole
-    // line of work exists to avoid. Decline and let the cascade answer.
-    // `step.name !== undefined` is load-bearing, not defensive. The name-free
-    // step kinds (`await`, `index`) carry no name, and a language with no
-    // `constructionSyntax` has no selector — so the bare equality below was
-    // `undefined === undefined`, which matched EVERY name-free step and vetoed
-    // the whole fold before it ran. That is why subscript and await receivers
-    // minted a chain, fired the gate, and still produced no edge.
-    if (step.name !== undefined && options.constructionSyntax?.selector === step.name) {
-      return undefined;
-    }
-
     // A position whose declared type named no class can only be advanced by an
     // unwrapping step. Folding an ordinary member off it would look the member
     // up on the PREVIOUS class — a wrong owner, silently.
@@ -537,20 +519,39 @@ export function foldReceiverChain(
         );
         if (elementClass === undefined) return undefined;
         current = { def: elementClass, declaredTypeName: element, declaredAtScope: scopeForLookup };
-      } else if (current.unresolvedDeclaredType === true) {
+      } else if (current.def === undefined) {
         // No unwrap available and the position never named a class: nothing to
         // fold on. Decline rather than continue against a stale owner.
         return undefined;
       }
       continue;
     }
-    if (current.unresolvedDeclaredType === true || current.def === undefined) return undefined;
+    // Construction is NOT an ordinary member lookup. `Factory.new` on a class
+    // constant denotes an instance of Factory, and the cascade already encodes
+    // that (`isConstructionSelectorHop`) along with the class-constant test that
+    // separates it from an instance method genuinely named `new`. The fold
+    // carries no such distinction — a chain step records a name, not whether its
+    // base was a class reference or a value — so folding one would resolve
+    // `Factory.new.run` against whatever member named `new` the lookup reaches
+    // first. That turned a correct edge into a WRONG one (Ruby
+    // `Factory.new.run` → `Product.run`), which is the failure mode this whole
+    // line of work exists to avoid. Decline and let the cascade answer.
+    //
+    // Placed AFTER the name-free continues above, deliberately. When it sat
+    // first, `options.constructionSyntax?.selector === step.name` compared
+    // `undefined === undefined` for every await/index step in a language with no
+    // construction selector, vetoing the entire fold before it ran — which is
+    // why those receivers minted a chain, fired the gate, and produced no edge.
+    // Position, not a guard, is what makes that unreachable: only named steps
+    // get here.
+    if (options.constructionSyntax?.selector === step.name) return undefined;
+    if (current.def === undefined) return undefined;
     const next = typeOfMemberOnClass(current.def, step.name, scopes, index, options);
     if (next === undefined) return undefined;
     current = next;
   }
-  // A chain that ended on an unresolved declared type never reached a class.
-  if (current.unresolvedDeclaredType === true) return undefined;
+  // A chain that ended without a class returns undefined naturally — no
+  // separate guard, because `def` IS the signal.
   return current.def;
 }
 

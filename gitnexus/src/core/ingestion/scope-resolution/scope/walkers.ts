@@ -336,36 +336,12 @@ export function findAllClassBindingsInScope(
   name: string,
   scopes: ScopeResolutionIndexes,
 ): readonly SymbolDefinition[] {
+  const inScope = findAllBindingsInScope(startScope, name, scopes, (def) => isClassLike(def.type));
+  // The scope chain wins outright when it binds the name: an inner binding
+  // shadows anything the qualified-name index would contribute.
+  if (inScope.length > 0) return inScope;
+
   const byNodeId = new Map<string, SymbolDefinition>();
-  let currentId: ScopeId | null = startScope;
-  const visited = new Set<ScopeId>();
-  while (currentId !== null) {
-    if (visited.has(currentId)) break;
-    visited.add(currentId);
-    const scope = scopes.scopeTree.getScope(currentId);
-    if (scope === undefined) break;
-
-    // `Object` scopes are a hoist boundary only — see walkScopeChain (#2545).
-    if (scope.kind !== 'Object') {
-      const found: SymbolDefinition[] = [];
-      for (const b of scope.bindings.get(name) ?? []) {
-        if (isClassLike(b.def.type)) found.push(b.def);
-      }
-      for (const b of lookupBindingsAt(currentId, name, scopes)) {
-        if (isClassLike(b.def.type)) found.push(b.def);
-      }
-      // Stop at the first scope that binds the name at all: an inner binding
-      // SHADOWS an outer one, so continuing would report a shadowed outer
-      // definition as a competing candidate and decline a name that is actually
-      // unambiguous at this point.
-      if (found.length > 0) {
-        for (const def of found) byNodeId.set(def.nodeId, def);
-        return [...byNodeId.values()];
-      }
-    }
-    currentId = scope.parent;
-  }
-
   for (const id of scopes.qualifiedNames.get(name)) {
     const def = scopes.defs.get(id);
     if (def !== undefined && isClassLike(def.type)) byNodeId.set(def.nodeId, def);
@@ -887,10 +863,28 @@ export function findAllCallableBindingCandidatesInScope(
  * `findCallableBindingInScope`: once any callable binding is found in a
  * scope, outer scopes are not consulted.
  */
-export function findAllCallableBindingsInScope(
+/**
+ * Every definition visible for `name` at the NEAREST scope that binds it,
+ * filtered by `predicate` and deduped by `nodeId`.
+ *
+ * THE shared "collect all at the nearest binding scope" walk. `walkScopeChain`
+ * answers the first-match question; this answers the how-many question, which is
+ * what a caller needs before it can decline on ambiguity.
+ *
+ * Stops at the first scope that binds the name at all: an inner binding SHADOWS
+ * an outer one, so continuing would report a shadowed outer definition as a
+ * competing candidate and decline a name that is unambiguous at this point.
+ *
+ * Returns `[]` on a cycle or a missing scope. That is deliberate and matters:
+ * an earlier copy of this walk `break`-ed instead and fell through to a
+ * qualified-name fallback, so the same malformed input produced a different
+ * answer depending on which copy the caller happened to reach.
+ */
+function findAllBindingsInScope(
   startScope: ScopeId,
-  callableName: string,
+  name: string,
   scopes: ScopeResolutionIndexes,
+  predicate: (def: SymbolDefinition) => boolean,
 ): readonly SymbolDefinition[] {
   let currentId: ScopeId | null = startScope;
   const visited = new Set<ScopeId>();
@@ -905,30 +899,35 @@ export function findAllCallableBindingsInScope(
     if (scope.kind !== 'Object') {
       const out: SymbolDefinition[] = [];
       const seen = new Set<string>();
-      const pushCallable = (def: SymbolDefinition): void => {
-        if (def.type !== 'Function' && def.type !== 'Method' && def.type !== 'Constructor') return;
+      const push = (def: SymbolDefinition): void => {
+        if (!predicate(def)) return;
         if (seen.has(def.nodeId)) return;
         seen.add(def.nodeId);
         out.push(def);
       };
 
-      const localBindings = scope.bindings.get(callableName);
-      if (localBindings !== undefined) {
-        for (const b of localBindings) {
-          pushCallable(b.def);
-        }
-      }
-
-      const importedBindings = lookupBindingsAt(currentId, callableName, scopes);
-      for (const b of importedBindings) {
-        pushCallable(b.def);
-      }
+      // Local first: a binding in this scope shadows an imported one.
+      for (const b of scope.bindings.get(name) ?? []) push(b.def);
+      for (const b of lookupBindingsAt(currentId, name, scopes)) push(b.def);
 
       if (out.length > 0) return out;
     }
     currentId = scope.parent;
   }
   return [];
+}
+
+export function findAllCallableBindingsInScope(
+  startScope: ScopeId,
+  callableName: string,
+  scopes: ScopeResolutionIndexes,
+): readonly SymbolDefinition[] {
+  return findAllBindingsInScope(
+    startScope,
+    callableName,
+    scopes,
+    (def) => def.type === 'Function' || def.type === 'Method' || def.type === 'Constructor',
+  );
 }
 
 /**
