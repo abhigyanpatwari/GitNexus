@@ -63,6 +63,25 @@ withTestLbugDB(
       expect(result.boundaries.join(' ')).toContain('Logger');
     });
 
+    it('publishes causes.dispatchBoundary as untraced SYMBOLS, not the note count', async () => {
+      const result = await backend.callTool('impact', {
+        target: 'EmailLogger',
+        direction: 'upstream',
+      });
+      // One boundary node (Logger) produces exactly one note, so publishing
+      // `boundaries.length` here would print `1` — the number of SENTENCES —
+      // next to a `receiverTyping` that counts call sites, and a consumer
+      // branching on the two would read the smaller cause as the dominant one.
+      // The magnitude behind this boundary is 2 implementations (EmailLogger,
+      // FileLogger) + 1 interface-level consumer (SignupController) = 3.
+      expect(result.boundaries).toHaveLength(1);
+      expect(result.causes).toMatchObject({
+        receiverTyping: 0,
+        dispatchBoundary: 3,
+        externalBoundary: 0,
+      });
+    });
+
     it('flags impact() on the interface itself as lower-bound', async () => {
       const result = await backend.callTool('impact', {
         target: 'Logger',

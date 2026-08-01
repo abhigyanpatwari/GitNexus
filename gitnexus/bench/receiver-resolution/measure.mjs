@@ -40,12 +40,12 @@
  *                      state has no producer in the committed baseline. It
  *                      guards the skip-flag and unsupported-host cases.
  *
- *     INVISIBLE-GAP is why this arm exists. Case 0's recorder is reached only
- *     when the receiver text contains `.` or `(` AND the capture layer produced
- *     a reference site at all. Measured on this corpus, `svc?.getUser().save()`,
- *     `svc.getTyped<User>().save()` and `repos[0].save()` are all INVISIBLE —
- *     so fixing them moves the count arm by exactly zero. Gating solely on a
- *     drop count would read a working fix as "no improvement".
+ *     INVISIBLE-GAP is why this arm exists, and the series proved it: at the
+ *     time this arm was built `svc?.getUser().save()`, `svc.getTyped<User>().save()`
+ *     and `repos[0].save()` were all INVISIBLE, so fixing them moved the count
+ *     arm by exactly zero and a gate reading only the drop count would have
+ *     scored a working change as "no improvement". They resolve for TypeScript
+ *     now; the current per-shape state is `baseline.json`, never this comment.
  *
  *     COMPLETENESS IS ENFORCED: every language must declare a cell for every
  *     SHAPE_ID, and every N/A must carry a reason. A missing cell fails the run
@@ -61,10 +61,16 @@
  * is a lower bound on a KNOWN-BIASED population and any delta measured later
  * must be read against the same bias:
  *
- *   - Case 0's gate is a C-family punctuation test, so PHP `$this->repo->save()`
- *     and `::` receivers never record a drop.
- *   - `repos[0].save()` has neither `.` nor `(` in its receiver, same result.
- *   - `?.` and explicit type arguments produce no reference site to begin with.
+ *   - Case 0 is reached by a receiver-TEXT punctuation test (`.` or `(`) OR by a
+ *     minted receiver chain, so a receiver spelled without that punctuation — a
+ *     subscript, PHP `->`/`::` — records a drop only where its emitter mints a
+ *     chain. Where none is minted the call still vanishes unrecorded.
+ *   - A drop is recorded only while `compoundReceiverUnresolved` stays true: if
+ *     the cascade types the receiver but finds no member, no drop is recorded
+ *     even though no edge was emitted, so an absent drop is not proof of
+ *     resolution. (Superseded claim, kept because it was quoted for several
+ *     units: `?.` and explicit type arguments DO produce a reference site —
+ *     what was absent was the edge and the drop, never the site.)
  *
  * MEASUREMENT HYGIENE — a run that skips this is void:
  *
@@ -1483,9 +1489,8 @@ async function runPerfArm(repoPath, reps) {
 // ---------------------------------------------------------------------------
 
 const KNOWN_BLIND = [
-  "Case 0's gate is a C-family punctuation test (`.` or `(`), so PHP `->` and `::` receivers record no drop.",
-  '`repos[0].save()` has neither `.` nor `(` in its receiver — same result.',
-  '`?.` and explicit type arguments produce no reference site at all, so no drop is recorded.',
+  'Case 0 is reached by a receiver-TEXT punctuation test (`.` or `(`) OR by a minted receiver chain. A receiver spelled without that punctuation — a subscript, PHP `->`/`::` — therefore records a drop only where its emitter mints a chain; where none is minted the call still vanishes with the recorder blind to it.',
+  'A drop is recorded only while `compoundReceiverUnresolved` stays true. When the cascade TYPES the receiver but then finds no member on it, the flag is false and no drop is recorded even though no edge was emitted — so an absent drop is not evidence that a site resolved.',
   'Every count is therefore a LOWER BOUND on a known-biased population. A later delta must be read against the same bias.',
 ];
 

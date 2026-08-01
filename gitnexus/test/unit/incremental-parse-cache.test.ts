@@ -111,7 +111,7 @@ describe('PARSE_CACHE_VERSION', () => {
   // EXACT clash rather than a near-miss: main took 37 for #2416 while this
   // branch already used 37, so two incompatible schemas both claimed the same
   // number. Re-check against origin/main before merge.
-  it('pins SCHEMA_BUMP to 38 so concurrent bumps cannot silently collide (#2736)', () => {
+  it('pins SCHEMA_BUMP to 38 so concurrent bumps cannot silently collide (#2766)', () => {
     expect(Number(PARSE_CACHE_VERSION.split('+', 1)[0])).toBe(38);
   });
 

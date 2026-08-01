@@ -132,15 +132,6 @@ export type ReceiverShape =
   | 'chain-unwrap'
   | 'no-chain';
 
-/** Classify a dropped receiver from its encoded chain. `undefined` chain ⇒
- *  `no-chain`; an undecodable one is also `no-chain`, since what we know about
- *  it is exactly that no usable structure survived.
- *
- *  Takes `DecodedReceiverChain` rather than a structural duck-type: widening
- *  `kind` to `string` let `await` and `index` fall into an `else` branch and be
- *  counted as FIELDS, so the two shapes this work exists to expose were
- *  censused as `chain-field`. The discriminated union makes a new step kind a
- *  compile error instead of a silent bucket. */
 /**
  * Is the receiver rooted inside the analyzed program, or outside it?
  *
@@ -151,6 +142,15 @@ export type ReceiverShape =
  */
 export type ReceiverOrigin = 'in-program' | 'external' | 'unknown';
 
+/** Classify a dropped receiver from its encoded chain. `undefined` chain ⇒
+ *  `no-chain`; an undecodable one is also `no-chain`, since what we know about
+ *  it is exactly that no usable structure survived.
+ *
+ *  Takes `DecodedReceiverChain` rather than a structural duck-type: widening
+ *  `kind` to `string` let `await` and `index` fall into an `else` branch and be
+ *  counted as FIELDS, so the two shapes this work exists to expose were
+ *  censused as `chain-field`. The discriminated union makes a new step kind a
+ *  compile error instead of a silent bucket. */
 export function classifyReceiverShape(decoded: DecodedReceiverChain | undefined): ReceiverShape {
   if (decoded === undefined || decoded.steps.length === 0) return 'no-chain';
   let calls = 0;

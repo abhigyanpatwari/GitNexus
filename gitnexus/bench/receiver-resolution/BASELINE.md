@@ -1,5 +1,13 @@
 # Receiver-resolution baseline
 
+> **`baseline.json` is the source of truth for every number.** It is what
+> `measure.mjs --check` enforces byte-exactly. This file is a lab notebook:
+> each section records what was measured AT THAT UNIT and why it changed the
+> plan. A figure here that disagrees with `baseline.json` is a superseded
+> snapshot, not a live claim — sections carry a snapshot marker where that has
+> already happened. Never quote a count from this file into code, a gate, or a
+> commit message; read it from `baseline.json`.
+
 ## Receiver ORIGIN — three quarters of the hedge was the program boundary
 
 The drop count was measuring two different things and reporting both as
@@ -167,10 +175,11 @@ entry. Now `MAX_TRANSPARENT_WRAPPER_DEPTH`, its own constant.
 `impact` reports `epistemic: 'lower-bound'` for two independent reasons that were
 previously indistinguishable in the output:
 
-| Cause | What it means | Is it a defect? |
-|---|---|---|
-| `receiverTyping` | Call sites dropped because the analyzer could not type the receiver | **Yes** — a resolver gap. This is the population this whole series targets. |
-| `dispatchBoundary` | The symbol sits behind an interface with real consumers or 2+ implementations | **No** — callers binding through DI or dynamic dispatch are genuinely untraceable statically. A compiler refuses here too. |
+| Cause | Unit | What it means | Is it a defect? |
+|---|---|---|---|
+| `receiverTyping` | call sites | Call sites dropped because the analyzer could not type the receiver | **Yes** — a resolver gap. This is the population this whole series targets. |
+| `dispatchBoundary` | symbols | The symbol sits behind an interface with real consumers or 2+ implementations; the number is the implementations plus interface-level consumers behind it | **No** — callers binding through DI or dynamic dispatch are genuinely untraceable statically. A compiler refuses here too. |
+| `externalBoundary` | call sites | The call left the indexed program (`System.out.println`, `fetch(...)`) | **No**, and not even a shortfall — there is no in-graph node an edge could have reached. An `epistemic: 'exact'` result can carry it. |
 
 Both collapsed into one enum plus prose, so a consumer — especially a coding
 agent gating its own edits on the result — could tell THAT a count was short but
@@ -179,11 +188,19 @@ stop appearing" unfalsifiable: with no way to see which producer fired, there wa
 no way to check whether fixing receiver typing had done anything.
 
 `impact` and `context` now carry a structured `causes: { receiverTyping,
-dispatchBoundary }` alongside the prose. `receiverTyping` counts dropped SITES,
-not boundary notes — there is one note per symbol name but it reports N sites, so
-counting notes published `1` next to prose reading "2 call sites" and a consumer
-branching on the number would have read a different magnitude than the human
-reading the text.
+dispatchBoundary, externalBoundary }` alongside the prose. Every field counts
+MISSING THINGS, never notes: there is one note per symbol name (and one per
+boundary node) but each reports N of something, so counting notes published `1`
+next to prose reading "2 call sites", and a consumer branching on the number
+would have read a different magnitude than the human reading the text. The same
+rule applies to `dispatchBoundary`, which counts the implementations plus
+interface-level consumers behind the boundary rather than the boundary sentences
+— one sentence can describe an interface with 40 implementations. Its unit is
+SYMBOLS rather than call sites because per-site multiplicity is not retained on
+those edges (consumers are counted `DISTINCT`, and
+`collapseMemberCallsByCallerTarget` languages emit one CALLS edge per
+caller/target pair); the units are stated per field on `EpistemicCauses` so a
+consumer knows which it is holding.
 
 **Only the `receiverTyping` producer is addressed by this series.** The dispatch
 boundary is untouched and will keep firing for interface-dispatched symbols —
@@ -206,7 +223,9 @@ same textual-shape dispatch the structural-receiver line exists to remove.
 Diagnostic only, so the persisted `RepoMeta.unresolvedReceiverMembers` artifact
 is unchanged.
 
-Census of the 101 call drops on the committed fixture corpus:
+Census of the call drops on the committed fixture corpus, **as measured at U10**
+— it predates the phantom-read fix documented above, which reclassified one drop
+`chain-field` → `chain-unwrap`. `callDropsByShape` in `baseline.json` is current:
 
 | Shape | Count | Share |
 |---|---|---|
@@ -222,18 +241,23 @@ Two decisions come out of it.
 single-bucket status hides a single cause is answered: it does not. It is the
 same population as everywhere else, just more of it.
 
-**Field-receiver chains are where the remaining value is.** At 59% they dominate,
-and they are precisely the shape U1 fixed for Go — whose count fell to 3.
-The same defect class in java (30), csharp (6), cpp (4), php (4), py (3) and
-rust (3) is the largest addressable population the count arm can see.
+**Field-receiver chains are where the remaining value is.** At 59% of the U10
+census they dominate, and they are precisely the shape U1 fixed for Go. The same
+defect class in java, csharp, cpp, php, py and rust is the largest addressable
+population the count arm can see. (This paragraph used to quote a per-extension ×
+per-shape split from the U10 run. `baseline.json` carries `callDropsByExtension`
+and `callDropsByShape` but not their cross-product, so that split has to be
+re-derived from a fresh run rather than read off the committed baseline.)
 
-**What this census CANNOT justify.** Await-wrapped and subscript receivers do not
-appear, because the committed fixture corpus contains no such sites — not
-because they are rare in real code. `indexElement` is an INVISIBLE-GAP in all 14
-languages in the shape arm, so U5's population is real but structurally
-invisible to the count arm. Any decision to fund or drop U4 and U5 has to be
-read off the SHAPE arm; reading it off this census would confuse "absent from
-these fixtures" with "does not happen".
+**What this census CANNOT justify.** Await-wrapped and subscript receivers barely
+appear, because the committed fixture corpus contains almost no such sites — not
+because they are rare in real code. At U10 `indexElement` was a gap in every
+language in the shape arm, so U5's population was real but structurally invisible
+to the count arm. (It no longer is uniform — the subscript route resolves in
+several languages now; read the current per-language state from `indexElement` in
+`baseline.json`, not from this paragraph.) The durable point: any decision to fund
+or drop U4 and U5 has to be read off the SHAPE arm, because reading it off this
+census confuses "absent from these fixtures" with "does not happen".
 
 ## U2 — shape matrix expanded to a canonical axis
 
@@ -266,7 +290,9 @@ language axis now obeys the same no-omitted-cells rule as the shape axis.
 
 ### What the first expanded run found
 
-Three results that redirected the plan they were built to serve:
+Three results that redirected the plan they were built to serve. **Snapshot: the
+first U2 run, before any of the fixes below landed** — these cells state the
+problem, and several have since flipped (`baseline.json` is current):
 
 **Go — the root cause, isolated to one cell.** Three rows vary receiver
 decoration and field decoration independently:
@@ -306,7 +332,10 @@ gap is the field: `Box<User>` is INVISIBLE-GAP.
 
 ### The decoration cells, across all 14
 
-The rows U1 exists to fix. Everything else is a different defect.
+The rows U1 exists to fix. Everything else is a different defect. **Snapshot: as
+measured at U2, i.e. BEFORE U1 landed** — it is the statement of the problem, not
+of the current state. Go's `decoratedReceiverBase` and TypeScript's
+`decoratedFieldType` have since moved; `baseline.json` has the live cells.
 
 | Language | `decoratedReceiverBase` | `decoratedFieldType` |
 |---|---|---|
@@ -338,18 +367,20 @@ none; three languages that do need one were not on the list at all.
   `awaitParen`, `explicitTypeArgs`.
 - **Dart `await` already resolves** — the only language where `awaitParen` is
   green, which makes it the reference for U4's unwrap direction.
-- **`indexElement` is INVISIBLE-GAP in all 14** — uniform, and exactly what U5
-  targets.
+- **`indexElement` was INVISIBLE-GAP in all 14** at U2 — uniform, and exactly what
+  U5 targets. (Superseded: several languages resolve it now; see `baseline.json`.)
 
 ### Coverage status
 
 All 14 languages measured, plus `vue` and `cobol` as language-level `N/A` rows.
-164 cells: 42 RESOLVES, 22 VISIBLE-GAP, 31 INVISIBLE-GAP, 69 N/A, 0
-GRAMMAR-UNAVAILABLE.
+The cell tally recorded at U2 was 164 cells / 42 RESOLVES / 22 VISIBLE-GAP / 31
+INVISIBLE-GAP / 69 N/A / 0 GRAMMAR-UNAVAILABLE — a snapshot, superseded by every
+unit since (the axis also gained TypeScript's declared `fourHopChain` extra).
+Count the states off `baseline.json` rather than quoting this line.
 
-The **count arm is unchanged at 101 call drops** — shape fixtures are built in
-temp directories and never touch the committed corpus, so expanding the shape
-axis moves the shape arm only.
+The **count arm did not move when the shape axis was expanded** — shape fixtures
+are built in temp directories and never touch the committed corpus, so expanding
+the shape axis moves the shape arm only.
 
 ---
 
@@ -364,12 +395,17 @@ axis moves the shape arm only.
 > change as "no improvement" and stopped the series. Nothing regressed: no edge
 > was lost and no new drop appeared.
 >
-> Still gaps after U10, both genuine:
-> - `(await svc.getUserAsync()).save()` — `extractMixedChain` reaches
->   `await …`, which is not a chain node, so no chain is minted. Remains a
->   VISIBLE-GAP and is now the call-kind fixture in the drop-recorder test.
-> - `repos[0].save()` — Case 0's punctuation gate never fires for a subscript
->   receiver, so it stays INVISIBLE.
+> Two gaps remained open **at U10**, both genuine at the time:
+> - `(await svc.getUserAsync()).save()` — `extractMixedChain` reached `await …`,
+>   which is not a chain node, so no chain was minted. It was a VISIBLE-GAP and is
+>   the call-kind fixture in the drop-recorder test.
+> - `repos[0].save()` — Case 0's punctuation gate never fired for a subscript
+>   receiver, so it was INVISIBLE.
+>
+> Both were subsequently closed for TypeScript by the `await`/`index` step kinds
+> (wire format v2) and by Case 0's third gate arm, which admits any site carrying
+> a minted chain regardless of receiver punctuation. Per-language state is in
+> `baseline.json` — `awaitParen` and `indexElement`.
 >
 > The tables below are the pre-U10 measurement, kept as the reference point.
 
@@ -435,13 +471,18 @@ Two consecutive runs were byte-identical, not merely within noise.
 
 ## Count arm — `test/fixtures/lang-resolution`
 
-| Metric | Value |
+**Snapshot: the U7-era measurement (commit `f87b2cbe`), kept as the reference
+point for the A/B above.** The gate enforces `countArm` in `baseline.json`, which
+has moved since — read the live call-drop number, site-kind split, and
+per-extension breakdown from there.
+
+| Metric | Value at U7 |
 |---|---|
 | **Call drops (the gate number)** | **99** |
 | Total drops, all site kinds | 124 |
 | Split by site kind | `call: 99`, `read: 25` |
 
-Call drops by extension:
+Call drops by extension, at U7:
 
 | ext | n | ext | n | ext | n |
 |---|---|---|---|---|---|
@@ -451,10 +492,11 @@ Call drops by extension:
 | `.tsx` | 6 | `.php` | 4 | `.js` | 1 |
 | | | | | `.swift` | 1 |
 
-**Why the split matters (KTD6 defect 1, now measured).** 25 of the 124 drops — 20% —
-are property *reads*, not lost calls. Case 0's recorder gates on the receiver's
+**Why the split matters (KTD6 defect 1, now measured).** About a fifth of the
+drops are property *reads*, not lost calls (25 of 124 at U7; `bySiteKind` in
+`baseline.json` is current). Case 0's recorder gates on the receiver's
 punctuation, not on what the reference is, so `d.source.kind` lands in the same
-bucket as a dropped method call. Gating on the unsplit 124 would have measured a
+bucket as a dropped method call. Gating on the unsplit total would have measured a
 population one fifth of which this work does not target.
 
 ## Shape arm
@@ -463,7 +505,12 @@ population one fifth of which this work does not target.
 name-keyed fallback onto a same-named member reads as `RESOLVES`, so a shape whose
 receiver has no well-defined type is not a usable control.
 
-| Language | Shape | State | siteKind |
+**Snapshot: the pre-U10 measurement over three languages**, kept because it is the
+evidence that the shape arm moves when the count arm does not. Superseded twice —
+by U8's rollout table above and by the canonical shape axis in `baseline.json`.
+The three TypeScript rows marked as gaps here (`?.`, `!`, `<T>`) all resolve now.
+
+| Language | Shape | State at pre-U10 | siteKind |
 |---|---|---|---|
 | TypeScript | `svc.getUser().save()` | RESOLVES | — |
 | TypeScript | `svc.getUser().address.save()` | RESOLVES | — |
@@ -535,12 +582,26 @@ receiver has no well-defined type is not a usable control.
 ## Known blind spots
 
 Every count here is a lower bound on a known-biased population, and any later delta
-must be read against the same bias.
+must be read against the same bias. Kept in sync with `KNOWN_BLIND` in
+`measure.mjs`, which prints these on every run.
 
-- Case 0's gate is a C-family punctuation test (`.` or `(`), so a receiver that is a
-  plain property path (`$this->repo`, `a::b`) never reaches the recorder.
-- `repos[0].save()` has neither `.` nor `(` in its receiver — same result.
-- `?.` and explicit type arguments produce no reference site at all.
+- Case 0 is reached by a receiver-TEXT punctuation test (`.` or `(`) **or** by a
+  minted receiver chain. A receiver spelled without that punctuation — a subscript
+  `repos[0]`, a PHP `->` / `::` property path — therefore reaches the recorder only
+  where its emitter mints a chain. Where no chain is minted, the call still
+  vanishes with the instrument blind to it.
+- A drop is recorded only while `compoundReceiverUnresolved` stays true. When the
+  cascade TYPES the receiver but then finds no member on it, the flag is false and
+  no drop is recorded even though no edge was emitted. So an absent drop is not
+  evidence a site resolved — the recorder can under-report by mis-attribution, not
+  only by a gate. (This is what moved PHP's `arrowCallChain` from VISIBLE-GAP to
+  INVISIBLE-GAP when its fixture parameter was typed; see U8 below.)
+- Retracted, and left here because it was quoted for several units: the earlier
+  claim that `?.` and explicit type arguments *"produce no reference site at all"*.
+  They do — the capture dump under "Corrections to the plan" §2 shows a full call
+  match with `@reference.receiver` for all three of `svc?.getUser()`,
+  `svc.getTyped<User>()` and `repos[0]`. The absence was of an EDGE and of a DROP,
+  never of a site.
 
 ## U8 — per-language rollout
 
@@ -577,6 +638,10 @@ the emitter:
 ```
 name=save   chain=1|$svc|cgetUser   recv=$svc.getUser()
 ```
+
+The leading `1` is the **v1** wire prefix current when this dump was taken; the
+codec is at v2 now (`2|$svc|cgetUser`), and a v2 decoder refuses a v1 payload by
+design — do not copy this literal into a fixture.
 
 The chain is minted correctly. The residual is that the fold's base, `$svc`,
 does not bind in the PHP resolver, so the fold returns `undefined` and the site

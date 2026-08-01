@@ -284,6 +284,16 @@ Handles disambiguation: if multiple symbols share the same name, returns ranked 
 
 NOTE: ACCESSES edges (field read/write tracking) are included in context results with reason 'read' or 'write'. CALLS edges resolve through field access chains and method-call chains (e.g., user.address.getCity().save() produces CALLS edges at each step).
 
+COMPLETENESS OF incoming: alongside symbol/incoming/outgoing the result carries the same epistemic envelope impact() returns:
+- epistemic: 'exact' | 'lower-bound' — 'lower-bound' means callers exist that this view provably does not list.
+- boundaries: string[] — one plain-language sentence per reason. Prose for humans; branch on causes instead.
+- causes: { receiverTyping, dispatchBoundary, externalBoundary } — machine-readable WHY. Every field counts MISSING THINGS, never sentences:
+  - causes.receiverTyping (unit: call sites) > 0 — RESOLVER GAP: the analyzer dropped that many call sites on this name because it could not type the receiver, so they are missing from incoming. Do not read an absent caller as proof none exists.
+  - causes.externalBoundary (unit: call sites) > 0 — the calls left the indexed program (System.out.println, fetch(...)). NOT a defect: no in-graph node could have been reached. An epistemic:'exact' result can carry this.
+  - causes.dispatchBoundary (unit: symbols) > 0 — DI / interface dispatch: implementations plus interface-level consumers behind a boundary static analysis cannot cross. Irreducible.
+
+REQUIRES RE-INDEX: causes.receiverTyping and causes.externalBoundary come from index-time metadata only a current analyzer writes; against an older index they read as absent/0, which is indistinguishable from "nothing was dropped". Re-run \`gitnexus analyze\` before trusting a zero there.
+
 GROUP MODE: set "repo" to "@<groupName>" to run context in each member repo (aggregated list), or "@<groupName>/<groupRepoPath>" for one member. If you use "@<groupName>" only, the member defaults to the lexicographically first key in group.yaml "repos".
 
 SERVICE: optional monorepo path prefix (case-sensitive path segments). When "repo" starts with "@", prefix-matches resolved symbol file paths; when a hit is outside the prefix, that member returns an empty payload for the symbol. Ignored for a normal indexed repo name.`,
@@ -448,6 +458,14 @@ Output includes:
 - affected_processes: which execution flows break and at which step
 - affected_modules: which functional areas are hit (direct vs indirect)
 - byDepth: affected symbols grouped by traversal depth (paginated by limit/offset; omitted when summaryOnly:true — use byDepthCounts for totals per depth, pagination object when truncated). Each item includes a processes:[{id,label,processType,step}] field listing the execution flows that symbol participates in. Empty when the symbol has no process membership. Can ALSO be empty when partial:true is set — either the process-aggregation pass hit its cap before detecting affected processes, or per-symbol enrichment was capped on a very large page. When partial:true, do NOT treat processes:[] as proof of no participation; cross-check the top-level affected_processes list.
+- epistemic: 'exact' | 'lower-bound' — whether impactedCount is the whole story. 'lower-bound' means the walk provably missed callers, so the count is a floor. Absent only on skipped probes (ambiguous-candidate lists, group fan-out).
+- boundaries: string[] — one plain-language sentence per reason the count is short. Prose for humans; branch on causes instead.
+- causes: { receiverTyping, dispatchBoundary, externalBoundary } — the machine-readable split of WHY, so an agent gating its own edits can tell a fixable analyzer gap from an irreducible one. Every field counts MISSING THINGS, never sentences:
+  - causes.receiverTyping (unit: call sites) > 0 — the RESOLVER GAP signal: the analyzer dropped that many call sites because it could not establish the receiver's type (unresolved constructor, factory, chained expression). Those callers are absent from byDepth. Treat the result as incomplete: grep the symbol name before deleting or renaming.
+  - causes.externalBoundary (unit: call sites) > 0 — those calls left the indexed program (System.out.println, fetch(...), os.environ.*). NOT a defect and NOT a reason the count is short: there is no in-graph node any edge could have reached. An epistemic:'exact' result can carry this.
+  - causes.dispatchBoundary (unit: symbols) > 0 — DI / interface dispatch: that many implementations plus interface-level consumers sit on the far side of a boundary a static walk cannot cross. Irreducible; a compiler refuses here too. A symbol count, not a site count — per-site multiplicity is not retained for these edges — so compare its magnitude with receiverTyping, not its exact value.
+
+REQUIRES RE-INDEX: causes.receiverTyping and causes.externalBoundary are read from index-time metadata that only a current analyzer writes. Against an older index they read as absent/0, which is indistinguishable from "nothing was dropped" — re-run \`gitnexus analyze\` before trusting a zero there.
 
 Depth groups:
 - d=1: WILL BREAK (direct callers/importers)
