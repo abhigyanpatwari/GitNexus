@@ -572,7 +572,11 @@ def test_a_task_no_arm_can_resolve_is_reported_but_does_not_veto_promotion():
     # per-task cap; only the gated task ranks.
     assert decision["median_improvement_pct"] == 0.0
     assert not any("above the" in reason for reason in decision["reasons"])
-    assert any("neither arm resolved any of its 3 valid runs" in reason for reason in decision["reasons"])
+    # One aggregate line, so a growing set of unsolvable tasks cannot crowd the
+    # real verdict out of the three reasons the proposer is shown.
+    assert [reason for reason in decision["reasons"] if "not gated on" in reason] == [
+        "not gated on 1 task(s) neither arm resolved: task-impossible"
+    ]
 
 
 def test_candidate_gate_promotes_on_a_two_run_resolution_margin():

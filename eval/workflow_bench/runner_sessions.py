@@ -62,6 +62,16 @@ def measured_cost(raw: Any) -> float | None:
     return float(raw)
 
 
+def _na(value: Any) -> Any:
+    """Render an unmeasured metric as ``n/a`` instead of a misleading number.
+
+    Lives next to ``measured_cost`` because it renders exactly what that
+    returns: every caller reporting a cost has to distinguish "never measured"
+    from a real 0.0.
+    """
+    return "n/a" if value is None else value
+
+
 SANDBOX_GITNEXUS_ENTRYPOINT = f"{SANDBOX_GITNEXUS}/dist/cli/index.js"
 SENSITIVE_EVENT_KEYS = frozenset(
     {
@@ -437,6 +447,10 @@ def run_claude(
         # evidence; any other event after the result still fails closed.
         if any(event.get("type") != "system" for event in events[result_indexes[0] + 1 :]):
             raise ValueError("final result event is not the last event in the captured stream")
+        # Nothing after the result is evidence. Cut the window here so that is
+        # a property of what the evidence readers below can see, rather than an
+        # assumption that a `system` event never carries a tool_use block.
+        events = events[: result_indexes[0] + 1]
     except (UnicodeError, ValueError) as exc:
         event_stream_error = str(exc)
         data = {}

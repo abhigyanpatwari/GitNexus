@@ -497,7 +497,6 @@ def evaluate_candidate(
 
     reasons: list[str] = []
     task_rows: list[dict[str, Any]] = []
-    unsolved_tasks: list[str] = []
     insufficient = False
     quality_regression = False
     quality_floor_failed = False
@@ -567,11 +566,6 @@ def evaluate_candidate(
             }
         )
         if not gated:
-            unsolved_tasks.append(task_id)
-            reasons.append(
-                f"{task_id}: neither arm resolved any of its {incumbent_runs} valid runs — "
-                "outside both arms' capability, so it is reported but not gated on"
-            )
             continue
 
         if incumbent_runs < min_runs or candidate_runs < min_runs:
@@ -615,10 +609,19 @@ def evaluate_candidate(
                 f"{task_id}: {metric} regressed {-improvement:.1f}%, above the {max_task_regression_pct:.1f}% task cap"
             )
 
+    ungated_tasks = [row["task"] for row in task_rows if not row["gated"]]
+    if ungated_tasks:
+        # One line, not one per task: `reasons` is truncated to three entries
+        # when it is fed back to the proposer (evolve.summarize_gate), and a
+        # growing set of unsolvable tasks must not crowd out the reason the
+        # candidate actually won or lost. The full list ships structurally.
+        reasons.append(
+            f"not gated on {len(ungated_tasks)} task(s) neither arm resolved: {', '.join(ungated_tasks)}"
+        )
     if not task_rows:
         insufficient = True
         reasons.append("no paired task results were found")
-    elif len(unsolved_tasks) == len(task_rows):
+    elif len(ungated_tasks) == len(task_rows):
         # Every paired task was ungated, so nothing in this generation says
         # anything about candidate quality. Refuse rather than fall through to
         # an efficiency-only verdict on runs that all failed their oracle.
@@ -669,7 +672,7 @@ def evaluate_candidate(
         "metric": metric,
         "metric_warning": (MAIN_LOOP_ONLY_WARNING if metric in MAIN_LOOP_ONLY_METRICS else None),
         "median_improvement_pct": median_improvement,
-        "ungated_tasks": unsolved_tasks,
+        "ungated_tasks": ungated_tasks,
         "reasons": reasons,
         "tasks": task_rows,
     }

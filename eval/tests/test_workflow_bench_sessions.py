@@ -977,10 +977,8 @@ def test_background_task_teardown_after_the_result_stays_valid_evidence(monkeypa
         {"type": "system", "subtype": "task_updated", "task_id": "bdw43oy7j", "patch": {"status": "killed"}},
         {"type": "system", "subtype": "task_notification", "task_id": "bdw43oy7j", "status": "stopped"},
     ]
-    stream = (
-        "\n".join([*(json.dumps(event) for event in skill_events({"skill": "gitnexus-work"})), VALID_REPORT])
-        + "\n"
-        + "".join(json.dumps(event) + "\n" for event in teardown)
+    stream = event_stream(*skill_events({"skill": "gitnexus-work"})) + "".join(
+        json.dumps(event) + "\n" for event in teardown
     )
     monkeypatch.setattr(runner_sessions, "run_managed", lambda *a, **k: fake_cli_result(stream))
     rec = runner.run_claude(

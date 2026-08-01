@@ -961,7 +961,7 @@ def main() -> int:
                 return 1
             print(
                 f"[gen {generation}] proposal ready in {record['duration_s']:.0f}s "
-                f"({record['num_turns']} turns, ${record['cost_usd'] if record['cost_usd'] is not None else 'n/a'})"
+                f"({record['num_turns']} turns, ${runner_sessions._na(record['cost_usd'])})"
             )
             try:
                 candidate_overlay_files(overlay_dir)

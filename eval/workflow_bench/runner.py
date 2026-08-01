@@ -121,6 +121,7 @@ from .runner_sessions import (
     SANDBOX_GITNEXUS_ENTRYPOINT as SANDBOX_GITNEXUS_ENTRYPOINT,
     SESSION_TIMEOUT_SECONDS,
     USAGE_FIELDS,
+    _na,
     allowed_agent_tools,
     run_claude,
     sandbox_mcp_config,
@@ -737,11 +738,6 @@ def broken_incumbent_arms(
     """
     present = incumbent_arms & {arm for arms in results.values() for arm in arms}
     return sorted(arm for arm in present if all(arms[arm]["resolved"] == 0 for arms in results.values() if arm in arms))
-
-
-def _na(value: Any) -> Any:
-    """Render an unmeasured metric as ``n/a`` instead of a misleading number."""
-    return "n/a" if value is None else value
 
 
 def _cost_cell(value: Any) -> str:
