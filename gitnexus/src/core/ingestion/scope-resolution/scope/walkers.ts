@@ -321,10 +321,67 @@ export function moduleScopeIdOf(
  *
  * Without (2) we'd miss every cross-file class-receiver call.
  */
+/**
+ * Every class-like definition visible for `name`, from the scope chain AND the
+ * qualified-name index, deduped by `nodeId`.
+ *
+ * Exists because `walkScopeChain` returns the FIRST match and cannot report a
+ * collision, so a caller that widens what a name can match (the decoration
+ * normalizer below) has no way to tell "one answer" from "picked the nearest of
+ * several". Mirrors `findAllCallableBindingsInScope`, which solved the same
+ * problem for callables.
+ */
+export function findAllClassBindingsInScope(
+  startScope: ScopeId,
+  name: string,
+  scopes: ScopeResolutionIndexes,
+): readonly SymbolDefinition[] {
+  const inScope = findAllBindingsInScope(startScope, name, scopes, (def) => isClassLike(def.type));
+  // The scope chain wins outright when it binds the name: an inner binding
+  // shadows anything the qualified-name index would contribute.
+  if (inScope.length > 0) return inScope;
+
+  const byNodeId = new Map<string, SymbolDefinition>();
+  for (const id of scopes.qualifiedNames.get(name)) {
+    const def = scopes.defs.get(id);
+    if (def !== undefined && isClassLike(def.type)) byNodeId.set(def.nodeId, def);
+  }
+  return [...byNodeId.values()];
+}
+
+/**
+ * Strip one layer of type-preserving decoration off a declared type name, or
+ * `undefined` when there is nothing left to strip. Supplied per language through
+ * the `ScopeResolver` contract; the core never names a language (AGENTS.md R6).
+ *
+ * TYPE-PRESERVING only — pointer, reference, `const`, nullable, borrow,
+ * deref-transparent smart pointer, sigil. A CONTAINER (array, slice, map,
+ * `Option`) changes the member set, so stripping one here would type
+ * `repos: Repo[]` as `Repo` and let `repos.find(x)` fold to `Repo.find`. Those
+ * are unwrapped only by an index step that consumed a subscript.
+ */
+export type DecorationStripper = (typeName: string) => string | undefined;
+
+/** Bounded so a pathological stripper cannot spin. Real decoration nests
+ *  shallowly (`*[]T`, `const T&`); three layers is generous. */
+const MAX_DECORATION_LAYERS = 3;
+
 export function findClassBindingInScope(
   startScope: ScopeId,
   receiverName: string,
   scopes: ScopeResolutionIndexes,
+  /**
+   * OPT-IN. When supplied, a name that binds nothing is retried with decoration
+   * stripped one layer at a time, and each retry must resolve to exactly ONE
+   * class-like definition or it declines.
+   *
+   * Opt-in rather than global because roughly two dozen call sites use the shape
+   * `findClassBindingInScope(...) ?? otherResolver(...)`: turning a former
+   * `undefined` into a hit SUPPRESSES the fallback that used to answer, which
+   * would retarget inheritance edges and bypass generic-specialization
+   * selection. Only receiver-chain base and step resolution passes this.
+   */
+  stripDecoration?: DecorationStripper,
 ): SymbolDefinition | undefined {
   const local = walkScopeChain(startScope, receiverName, scopes, (def) => isClassLike(def.type));
   if (local !== undefined) return local;
@@ -348,6 +405,25 @@ export function findClassBindingInScope(
         const def = scopes.defs.get(simpleIds[0]!);
         if (def !== undefined && isClassLike(def.type)) return def;
       }
+    }
+  }
+
+  // Decoration fallback (opt-in). Every branch above works on the name exactly
+  // as written; only when none of them bound anything do we consider that the
+  // name may be a decorated spelling of one that would.
+  if (stripDecoration !== undefined) {
+    let current = receiverName;
+    for (let layer = 0; layer < MAX_DECORATION_LAYERS; layer++) {
+      const stripped = stripDecoration(current);
+      if (stripped === undefined || stripped === current || stripped.length === 0) break;
+      current = stripped;
+      const candidates = findAllClassBindingsInScope(startScope, current, scopes);
+      // Exactly one, or decline. Two same-named classes reachable from here mean
+      // the decoration was carrying the only disambiguating information, and
+      // picking the nearest would mint a confident wrong edge — the failure this
+      // whole line of work exists to avoid. A missing edge is recoverable.
+      if (candidates.length === 1) return candidates[0];
+      if (candidates.length > 1) return undefined;
     }
   }
   return undefined;
@@ -787,10 +863,28 @@ export function findAllCallableBindingCandidatesInScope(
  * `findCallableBindingInScope`: once any callable binding is found in a
  * scope, outer scopes are not consulted.
  */
-export function findAllCallableBindingsInScope(
+/**
+ * Every definition visible for `name` at the NEAREST scope that binds it,
+ * filtered by `predicate` and deduped by `nodeId`.
+ *
+ * THE shared "collect all at the nearest binding scope" walk. `walkScopeChain`
+ * answers the first-match question; this answers the how-many question, which is
+ * what a caller needs before it can decline on ambiguity.
+ *
+ * Stops at the first scope that binds the name at all: an inner binding SHADOWS
+ * an outer one, so continuing would report a shadowed outer definition as a
+ * competing candidate and decline a name that is unambiguous at this point.
+ *
+ * Returns `[]` on a cycle or a missing scope. That is deliberate and matters:
+ * an earlier copy of this walk `break`-ed instead and fell through to a
+ * qualified-name fallback, so the same malformed input produced a different
+ * answer depending on which copy the caller happened to reach.
+ */
+function findAllBindingsInScope(
   startScope: ScopeId,
-  callableName: string,
+  name: string,
   scopes: ScopeResolutionIndexes,
+  predicate: (def: SymbolDefinition) => boolean,
 ): readonly SymbolDefinition[] {
   let currentId: ScopeId | null = startScope;
   const visited = new Set<ScopeId>();
@@ -805,30 +899,35 @@ export function findAllCallableBindingsInScope(
     if (scope.kind !== 'Object') {
       const out: SymbolDefinition[] = [];
       const seen = new Set<string>();
-      const pushCallable = (def: SymbolDefinition): void => {
-        if (def.type !== 'Function' && def.type !== 'Method' && def.type !== 'Constructor') return;
+      const push = (def: SymbolDefinition): void => {
+        if (!predicate(def)) return;
         if (seen.has(def.nodeId)) return;
         seen.add(def.nodeId);
         out.push(def);
       };
 
-      const localBindings = scope.bindings.get(callableName);
-      if (localBindings !== undefined) {
-        for (const b of localBindings) {
-          pushCallable(b.def);
-        }
-      }
-
-      const importedBindings = lookupBindingsAt(currentId, callableName, scopes);
-      for (const b of importedBindings) {
-        pushCallable(b.def);
-      }
+      // Local first: a binding in this scope shadows an imported one.
+      for (const b of scope.bindings.get(name) ?? []) push(b.def);
+      for (const b of lookupBindingsAt(currentId, name, scopes)) push(b.def);
 
       if (out.length > 0) return out;
     }
     currentId = scope.parent;
   }
   return [];
+}
+
+export function findAllCallableBindingsInScope(
+  startScope: ScopeId,
+  callableName: string,
+  scopes: ScopeResolutionIndexes,
+): readonly SymbolDefinition[] {
+  return findAllBindingsInScope(
+    startScope,
+    callableName,
+    scopes,
+    (def) => def.type === 'Function' || def.type === 'Method' || def.type === 'Constructor',
+  );
 }
 
 /**

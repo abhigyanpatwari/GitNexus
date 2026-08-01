@@ -94,7 +94,10 @@ import { findImportCycles } from '../../core/graph/import-cycles.js';
 import { decodeTaintPath } from '../../core/ingestion/taint/path-codec.js';
 import { decodeReachingDefReason } from '../../core/ingestion/cfg/reaching-def-reason-codec.js';
 import { EXTENSIONS } from '../../core/ingestion/import-resolvers/utils.js';
-import { lookupUnresolvedCallCount } from '../../core/ingestion/scope-resolution/unresolved-receivers.js';
+import {
+  lookupExternalCallCount,
+  lookupUnresolvedCallCount,
+} from '../../core/ingestion/scope-resolution/unresolved-receivers.js';
 import {
   fnLineOf,
   isPdgDegradedLayerStatus,
@@ -472,13 +475,101 @@ export interface CodebaseContext {
 
 /** Collapse dropped-site boundary notes into an epistemic verdict: any note at
  *  all means the count is a lower bound, none means it is exact (#2744). */
-function epistemicFrom(droppedBoundaries: readonly string[]): {
+/**
+ * Why a count is a lower bound, as a machine-readable split.
+ *
+ * `epistemic` is a single enum and `boundaries` is prose, so a consumer that is
+ * not a human — a coding agent gating its own edits on this result — can tell
+ * THAT the answer is short but not WHY, and cannot branch on the difference.
+ * The two causes are independent and have opposite remedies:
+ *
+ * - `receiverTyping` — the analyzer dropped call sites because it could not
+ *   establish the receiver's type. A resolver defect. Fixable, and shrinking:
+ *   this is the population the structural-receiver work targets.
+ * - `dispatchBoundary` — the symbol sits behind an interface with real
+ *   consumers or multiple implementations, so callers binding through a DI
+ *   container or dynamic dispatch are genuinely untraceable statically. NOT a
+ *   defect; a compiler would refuse here too.
+ *
+ * Collapsing them told the reader "impact may be higher" for both, which made
+ * the fixable cause indistinguishable from the irreducible one — and made
+ * "the hedge should stop appearing" an unfalsifiable goal, because there was no
+ * way to see which producer was still firing.
+ *
+ * Every field counts MISSING THINGS, never notes. The unit is stated per field
+ * because the two producers can only measure at different granularities (see
+ * `dispatchBoundary`), and a consumer comparing the numbers has to know which
+ * it is holding. Counting notes here is the specific mistake to avoid: there is
+ * one note per symbol name / per boundary node, so a note count reports the
+ * number of SENTENCES, which has no relation to how much is missing.
+ */
+export interface EpistemicCauses {
+  /**
+   * Call SITES dropped at index time because the receiver's type could not be
+   * established. Unit: call sites, taken from the index's
+   * `unresolvedReceiverMembers` summary — the same number the prose note quotes.
+   */
+  readonly receiverTyping: number;
+  /**
+   * Symbols on the far side of a dispatch boundary that the traversal could not
+   * attribute to the queried symbol: implementations plus interface-level
+   * consumers, summed over the boundary nodes that were flagged.
+   *
+   * Unit: SYMBOLS, not call sites — deliberately, because a call-site count is
+   * not derivable on this side. The graph does not retain per-site multiplicity
+   * for these edges: consumers are counted with `COUNT(DISTINCT other.id)`, and
+   * languages that set `collapseMemberCallsByCallerTarget` emit one CALLS edge
+   * per (caller, target) pair no matter how many syntactic sites exist. A
+   * symbol reachable through two flagged boundary nodes is counted once per
+   * node, so this is itself a lower bound.
+   *
+   * It is still directly comparable in magnitude with `receiverTyping` — both
+   * answer "how much is missing" — which `boundaries.length` was not.
+   */
+  readonly dispatchBoundary: number;
+  /**
+   * Call sites whose receiver was rooted OUTSIDE the indexed program —
+   * `System.out.println`, `fetch(...)`, `os.environ.*`. Reported, but NOT a
+   * reason the count is short: there is no in-graph node an edge could have
+   * reached, so the analysis is complete for the program as given.
+   *
+   * Surfaced so "no uncertainty" is distinguishable from "we judged 76 calls to
+   * be outside the program". A compiler resolves these against the JDK / BCL /
+   * lib.d.ts; lacking those, this number IS the boundary.
+   *
+   * Unit: call sites — same unit and same source as `receiverTyping`.
+   */
+  readonly externalBoundary: number;
+}
+
+function epistemicFrom(dropped: { notes: readonly string[]; sites: number; external: number }): {
   epistemic: 'exact' | 'lower-bound';
   boundaries?: string[];
+  causes?: EpistemicCauses;
 } {
-  return droppedBoundaries.length === 0
-    ? { epistemic: 'exact' }
-    : { epistemic: 'lower-bound', boundaries: [...droppedBoundaries] };
+  // An index whose only drops were external still reports `exact` — nothing was
+  // lost — but carries the boundary count so "complete" is distinguishable from
+  // "we judged N calls to leave the program".
+  return dropped.notes.length === 0
+    ? dropped.external > 0
+      ? {
+          epistemic: 'exact',
+          causes: { receiverTyping: 0, dispatchBoundary: 0, externalBoundary: dropped.external },
+        }
+      : { epistemic: 'exact' }
+    : {
+        epistemic: 'lower-bound',
+        boundaries: [...dropped.notes],
+        // SITES, not notes. There is one note per symbol name but it reports N
+        // dropped sites, so counting notes would have published `1` next to
+        // prose saying `2 call sites` — a consumer branching on the number
+        // would read a different magnitude than the human reading the text.
+        causes: {
+          receiverTyping: dropped.sites,
+          dispatchBoundary: 0,
+          externalBoundary: dropped.external,
+        },
+      };
 }
 
 interface RepoHandle {
@@ -5738,7 +5829,11 @@ export class LocalBackend {
     symId: string,
     symType: string,
     symName: string,
-  ): Promise<{ epistemic: 'exact' | 'lower-bound'; boundaries?: string[] }> {
+  ): Promise<{
+    epistemic: 'exact' | 'lower-bound';
+    boundaries?: string[];
+    causes?: EpistemicCauses;
+  }> {
     const HERITAGE_TYPES = EPISTEMIC_HERITAGE_RELATION_TYPES;
     const CONSUMER_TYPES = EPISTEMIC_CONSUMER_RELATION_TYPES;
     // #2744 — call sites dropped for want of a receiver type. Checked BEFORE
@@ -5803,6 +5898,12 @@ export class LocalBackend {
       ]);
 
       const boundaries: string[] = [];
+      // Magnitude, not note count: see `EpistemicCauses.dispatchBoundary`. One
+      // note can describe an interface with 40 implementations and hundreds of
+      // interface-level consumers, so publishing `boundaries.length` would put
+      // `1` next to a `receiverTyping` of `12` and tell a consumer branching on
+      // the numbers that receiver typing dominates — the opposite of the truth.
+      let dispatchBoundarySymbols = 0;
       for (const [id, info] of boundary) {
         const impls = implCounts.get(id) ?? 0;
         const consumers = consumerCounts.get(id) ?? 0;
@@ -5811,6 +5912,7 @@ export class LocalBackend {
         // (runtime dispatch is ambiguous). A concrete type implementing an
         // interface nothing references is fully traced → stays exact.
         if (consumers >= 1 || impls >= 2) {
+          dispatchBoundarySymbols += impls + consumers;
           const label = (info.label || 'Interface').toLowerCase();
           const name = info.name || '(unnamed)';
           const article = /^[aeiou]/.test(label) ? 'an' : 'a';
@@ -5829,7 +5931,15 @@ export class LocalBackend {
         }
       }
       if (boundaries.length === 0) return epistemicFrom(droppedBoundaries);
-      return { epistemic: 'lower-bound', boundaries: [...droppedBoundaries, ...boundaries] };
+      return {
+        epistemic: 'lower-bound',
+        boundaries: [...droppedBoundaries.notes, ...boundaries],
+        causes: {
+          receiverTyping: droppedBoundaries.sites,
+          dispatchBoundary: dispatchBoundarySymbols,
+          externalBoundary: droppedBoundaries.external,
+        },
+      };
     } catch {
       // Never let the heritage probe's failure suppress a drop we already know
       // about — the whole point is that silence must not read as certainty.
@@ -5844,8 +5954,11 @@ export class LocalBackend {
    * index written before the summary existed, which is why the schema version
    * was bumped rather than treating "absent" as "none".
    */
-  private async unresolvedReceiverBoundaries(repo: RepoHandle, symName: string): Promise<string[]> {
-    if (symName.length === 0) return [];
+  private async unresolvedReceiverBoundaries(
+    repo: RepoHandle,
+    symName: string,
+  ): Promise<{ notes: string[]; sites: number; external: number }> {
+    if (symName.length === 0) return { notes: [], sites: 0, external: 0 };
     try {
       const meta = await loadMeta(path.dirname(repo.lbugPath));
       const summary = meta?.unresolvedReceiverMembers;
@@ -5853,8 +5966,9 @@ export class LocalBackend {
       // returns a Function for `constructor`/`toString`/… and `NaN <= 0` is false,
       // so the old guard let it through into user-facing text.
       const sites = lookupUnresolvedCallCount(summary, symName);
-      if (sites === undefined) return [];
-      return [
+      const external = lookupExternalCallCount(summary, symName) ?? 0;
+      if (sites === undefined) return { notes: [], sites: 0, external };
+      const notes = [
         `${sites} call ${sites === 1 ? 'site' : 'sites'} invoking \`${symName}\` ${
           sites === 1 ? 'was' : 'were'
         } dropped at index time because the receiver's type could not be ` +
@@ -5862,8 +5976,9 @@ export class LocalBackend {
           `expression). Those callers are absent from this result — actual ` +
           `impact may be higher.`,
       ];
+      return { notes, sites, external };
     } catch {
-      return [];
+      return { notes: [], sites: 0, external: 0 };
     }
   }
 
@@ -5934,9 +6049,14 @@ export class LocalBackend {
     // optional here (the union's `{}` subtype). computeEpistemicBoundary's own
     // return keeps `epistemic` REQUIRED — only this promise widens to the skip
     // subtype.
+    // `causes` is part of the annotation, not just of the runtime value: the
+    // spread below is what publishes these fields, and a narrower annotation
+    // erases `causes` at the type level while still shipping it at runtime —
+    // so every consumer would be reading a field the compiler says is absent.
     const epistemicPromise: Promise<{
       epistemic?: 'exact' | 'lower-bound';
       boundaries?: string[];
+      causes?: EpistemicCauses;
     }> = opts.skipEpistemic
       ? Promise.resolve({})
       : this.computeEpistemicBoundary(repo, symId, symType, (sym.name || sym[1]) as string);

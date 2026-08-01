@@ -1,6 +1,7 @@
 /**
  * Shared test helpers for language resolution integration tests.
  */
+import fs from 'node:fs';
 import path from 'path';
 import { runPipelineFromRepo } from '../../../src/core/ingestion/pipeline.js';
 import type { PipelineOptions } from '../../../src/core/ingestion/pipeline.js';
@@ -15,6 +16,23 @@ export const CROSS_FILE_FIXTURES = path.resolve(
   'fixtures',
   'cross-file-binding',
 );
+
+/**
+ * Materialize an in-memory fixture repo under `root`, creating parent
+ * directories as needed.
+ *
+ * Writes in `Object.entries` order, i.e. the literal's own key order — some
+ * callers depend on that (a fixture whose second file must be written after
+ * the first for the property under test to mean anything), so this must stay
+ * insertion-ordered rather than sorting or parallelizing the writes.
+ */
+export function writeFixtureRepo(root: string, files: Record<string, string>): void {
+  for (const [relPath, content] of Object.entries(files)) {
+    const fullPath = path.join(root, relPath);
+    fs.mkdirSync(path.dirname(fullPath), { recursive: true });
+    fs.writeFileSync(fullPath, content, 'utf8');
+  }
+}
 
 export type RelEdge = {
   source: string;

@@ -13,16 +13,9 @@ import {
   getNodesByLabelFull,
   edgeSet,
   runPipelineFromRepo,
+  writeFixtureRepo,
   type PipelineResult,
 } from './helpers.js';
-
-function writeFixtureRepo(root: string, files: Record<string, string>): void {
-  for (const [relPath, content] of Object.entries(files)) {
-    const fullPath = path.join(root, relPath);
-    fs.mkdirSync(path.dirname(fullPath), { recursive: true });
-    fs.writeFileSync(fullPath, content, 'utf8');
-  }
-}
 
 // ---------------------------------------------------------------------------
 // Heritage: relative imports + class inheritance

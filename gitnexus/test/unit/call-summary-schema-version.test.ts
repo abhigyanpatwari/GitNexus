@@ -73,12 +73,12 @@ describe('CALL_SUMMARY relation-type exclusion (U-C1)', () => {
 });
 
 describe('CALL_SUMMARY incremental reuse gate (U-C5)', () => {
-  it('INCREMENTAL_SCHEMA_VERSION is bumped to 33 (Spring AOP relation pairs, #2416)', () => {
+  it('INCREMENTAL_SCHEMA_VERSION is bumped to 34 (Spring AOP relation pairs #2416, then receiver-chain wire format v2)', () => {
     // Moves with every bump BY DESIGN — that is the point of pinning it. A
     // change that alters emitted ids or edges without bumping would otherwise
     // ship silently, and an existing index would keep serving the old graph
     // through the reuse gate below.
-    expect(INCREMENTAL_SCHEMA_VERSION).toBe(33);
+    expect(INCREMENTAL_SCHEMA_VERSION).toBe(34);
   });
 
   it('a pre-current stamp fails the `=== INCREMENTAL_SCHEMA_VERSION` reuse gate → forces full re-analyze', () => {
@@ -194,7 +194,9 @@ describe('CALL_SUMMARY incremental reuse gate (U-C5)', () => {
     // class — so such an index carries both pre-rollout edges for 13 languages
     // and fabricated ones. The gate is a strict `===`, so it must NOT reuse.
     expect(passesReuseGate(26)).toBe(false);
-    // A pre-v28 (v27) index was stamped mid-series: TypeScript-only structural
+    // A pre-v31 index predates the receiver-chain wire format v2, so its
+    // persisted chains carry the v1 prefix a v2 decoder refuses by design.
+    // Original note: a pre-v28 (v27) index was stamped mid-series: TypeScript-only structural
     // typing, and the fold still typed a local that merely shadowed a class name
     // as that class — so it carries pre-rollout edges AND fabricated ones.
     expect(passesReuseGate(27)).toBe(false);
@@ -216,7 +218,12 @@ describe('CALL_SUMMARY incremental reuse gate (U-C5)', () => {
     // A pre-v33 (v32) index predates the Spring AOP Interface→CodeElement
     // relation pair (#2416), so it cannot persist all evidence edges.
     expect(passesReuseGate(32)).toBe(false);
+    // A pre-v34 (v33) index carries `receiverChain` strings in wire format v1,
+    // which the v2 decoder refuses by design (#2766) — an incremental top-up
+    // would silently fall back to the text cascade for every chain-carrying
+    // site → must NOT reuse.
+    expect(passesReuseGate(33)).toBe(false);
     // The current stamp passes the gate (incremental top-up eligible).
-    expect(passesReuseGate(33)).toBe(true);
+    expect(passesReuseGate(34)).toBe(true);
   });
 });

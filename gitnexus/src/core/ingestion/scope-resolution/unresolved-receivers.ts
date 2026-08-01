@@ -31,6 +31,58 @@ export interface UnresolvedReceiverSummary {
   /** Distinct member names beyond the cap, omitted from `counts`. Absent when
    *  nothing was dropped from the map. */
   readonly omittedNames?: number;
+  /**
+   * Call sites dropped whose receiver was rooted OUTSIDE the indexed program,
+   * by member name — `System.out.println`, `fetch(...)`, `os.environ.*`.
+   *
+   * Kept SEPARATE rather than filtered away. These do not make a count a lower
+   * bound (there is no in-graph node an edge could have reached), but erasing
+   * them at summary time would leave the persisted artifact unable to
+   * distinguish "clean index" from "76 drops we judged external" — with no
+   * audit path and no way back without a re-index. That is the same collapse
+   * `EpistemicCauses` exists to undo, and the judgement being recorded here is a
+   * heuristic, so it must stay reversible.
+   */
+  readonly externalCounts?: Readonly<Record<string, number>>;
+  /** Total external-rooted call sites, including any beyond the cap. */
+  readonly externalSites?: number;
+  /**
+   * Distinct member names beyond the cap, omitted from `externalCounts`. Absent
+   * when nothing was dropped from that map.
+   *
+   * The exact twin of `omittedNames`, and it exists for the same reason. Past
+   * the cap `lookupExternalCallCount` returns `undefined` for a truncated name,
+   * which is indistinguishable from "this member had no external drops" — so a
+   * symbol with real boundary evidence reads as having none. One map carrying a
+   * truncation marker and the other silently losing entries also made the
+   * persisted artifact self-contradictory: `externalSites` would exceed the sum
+   * of `externalCounts` with nothing to explain the difference.
+   */
+  readonly externalOmittedNames?: number;
+}
+
+/**
+ * Rank a name→count map and cap it at {@link MAX_UNRESOLVED_RECEIVER_MEMBERS}.
+ *
+ * Highest count first, name as a tiebreak so the persisted map is stable across
+ * runs — an unstable ordering would churn the metadata file (and its diff) on
+ * every analyze for no behavioural reason. ONE comparator, shared by the
+ * in-program and external maps: two hand-copied comparators that must stay
+ * identical or the artifact churns on one map and not the other is exactly the
+ * drift this contract cannot tolerate.
+ *
+ * `omitted` is the number of distinct names past the cap, so the caller can
+ * report truncation rather than silently losing entries.
+ */
+function rankAndCap(counts: Map<string, number>): {
+  kept: [string, number][];
+  omitted: number;
+} {
+  const ranked = [...counts.entries()].sort(
+    ([aName, aCount], [bName, bCount]) => bCount - aCount || aName.localeCompare(bName),
+  );
+  const kept = ranked.slice(0, MAX_UNRESOLVED_RECEIVER_MEMBERS);
+  return { kept, omitted: ranked.length - kept.length };
 }
 
 /**
@@ -43,7 +95,9 @@ export function summarizeUnresolvedReceivers(
   outcomes: readonly ResolutionOutcome[],
 ): UnresolvedReceiverSummary | undefined {
   const counts = new Map<string, number>();
+  const externalCounts = new Map<string, number>();
   let totalSites = 0;
+  let externalSites = 0;
   for (const outcome of outcomes) {
     if (outcome.kind !== 'suppressed' || outcome.reason !== 'receiver-unresolved') continue;
     if (outcome.name.length === 0) continue;
@@ -56,24 +110,43 @@ export function summarizeUnresolvedReceivers(
     // A missing `siteKind` counts as a call: the only emitter always sets it, and
     // erring toward `lower-bound` is the safe direction for an epistemic signal.
     if (outcome.siteKind !== undefined && outcome.siteKind !== 'call') continue;
+    // Routed, not discarded. External-rooted drops (`console.log(...)`,
+    // `fetch(...)`) reach code this index does not contain, so there is no node
+    // an edge could have pointed at and nothing was lost — they must not hedge.
+    // But they stay in the artifact under their own key so the split is
+    // auditable and reversible.
+    //
+    // `external` is a POSITIVE determination made by `classifyReceiverOrigin`
+    // from a language built-in match, never a fallthrough: a receiver the
+    // classifier could not place lands in `unknown`, which counts here WITH
+    // `in-program`, because assuming a completeness we cannot demonstrate is
+    // the unsafe direction.
+    if (outcome.receiverOrigin === 'external') {
+      externalSites++;
+      externalCounts.set(outcome.name, (externalCounts.get(outcome.name) ?? 0) + 1);
+      continue;
+    }
     totalSites++;
     counts.set(outcome.name, (counts.get(outcome.name) ?? 0) + 1);
   }
-  if (totalSites === 0) return undefined;
+  // An index whose only drops were external-rooted still reports the split, so
+  // "nothing was lost" is distinguishable from "nothing was measured".
+  if (totalSites === 0 && externalSites === 0) return undefined;
 
-  // Highest count first, name as a tiebreak so the persisted map is stable
-  // across runs — an unstable ordering would churn the metadata file (and its
-  // diff) on every analyze for no behavioural reason.
-  const ranked = [...counts.entries()].sort(
-    ([aName, aCount], [bName, bCount]) => bCount - aCount || aName.localeCompare(bName),
-  );
-  const kept = ranked.slice(0, MAX_UNRESOLVED_RECEIVER_MEMBERS);
-  const omittedNames = ranked.length - kept.length;
+  const { kept, omitted: omittedNames } = rankAndCap(counts);
+  const { kept: externalKept, omitted: externalOmittedNames } = rankAndCap(externalCounts);
 
   return {
     counts: Object.fromEntries(kept),
     totalSites,
     ...(omittedNames > 0 ? { omittedNames } : {}),
+    ...(externalSites > 0
+      ? {
+          externalCounts: Object.fromEntries(externalKept),
+          externalSites,
+          ...(externalOmittedNames > 0 ? { externalOmittedNames } : {}),
+        }
+      : {}),
   };
 }
 
@@ -96,6 +169,25 @@ export function lookupUnresolvedCallCount(
   symName: string,
 ): number | undefined {
   const counts = summary?.counts;
+  if (counts === undefined || symName.length === 0) return undefined;
+  if (!Object.hasOwn(counts, symName)) return undefined;
+  const sites = counts[symName];
+  if (typeof sites !== 'number' || !Number.isFinite(sites) || sites <= 0) return undefined;
+  return sites;
+}
+
+/**
+ * Look up the EXTERNAL-rooted dropped-call count for a member name.
+ *
+ * Companion to `lookupUnresolvedCallCount`, and prototype-safe for the same
+ * reason: the map is revived from JSON, so `constructor` / `toString` and
+ * friends would otherwise return a function.
+ */
+export function lookupExternalCallCount(
+  summary: UnresolvedReceiverSummary | undefined,
+  symName: string,
+): number | undefined {
+  const counts = summary?.externalCounts;
   if (counts === undefined || symName.length === 0) return undefined;
   if (!Object.hasOwn(counts, symName)) return undefined;
   const sites = counts[symName];
