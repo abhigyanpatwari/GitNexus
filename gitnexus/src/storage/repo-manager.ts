@@ -639,8 +639,13 @@ export interface RepoMeta {
  * multi-line closure binding joins the scope channel and emits its CALLS edge.
  * Pre-v30 indexes keep the wrapper line on unchanged files and would keep
  * failing closed (no edge) through the reuse gate. Force a full re-analyze.
+ *
+ * v31: Python named imports that resolve to concrete submodules are finalized
+ * as namespace edges (#2746), enabling qualified constructor and method CALLS
+ * edges. Pre-v31 indexes retain the old package-target/missing-edge graph for
+ * unchanged files through the reuse gate. Force a full re-analyze.
  */
-export const INCREMENTAL_SCHEMA_VERSION = 30;
+export const INCREMENTAL_SCHEMA_VERSION = 31;
 
 export interface IndexedRepo {
   repoPath: string;

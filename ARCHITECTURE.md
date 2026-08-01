@@ -247,6 +247,7 @@ Single interface a language implements to plug into the pipeline. Contract fully
 | `populateOwners(parsed)` | Fill deferred `ownerId` fields on method defs (captures can't always know the owning class at parse time) |
 | `buildMro(graph, parsed, nodeLookup)` | Produce `mroByClassDefId: Map<DefId, DefId[]>` — C3, Ruby-mixin, or first-wins per language |
 | `resolveImportTarget(target, fromFile, allFiles)` | `(rawImportPath, sourceFile) → targetFilePath` (PEP-328 for Python, etc.) |
+| `isNamespaceImport(parsedImport, targetFile, fromFile)` | Optionally reclassify a resolved named import as a namespace handle when the imported symbol is itself a module |
 | `mergeBindings(existing, incoming, scopeId)` | Shadowing / LEGB precedence |
 | `arityCompatibility` | Provider consumed by registry during `MethodRegistry.lookup` Step 2 |
 | `importEdgeReason` | Confidence-tier string for IMPORTS edge reason field |

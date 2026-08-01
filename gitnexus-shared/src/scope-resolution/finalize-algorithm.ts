@@ -97,6 +97,16 @@ export interface FinalizeHooks {
   ): string | readonly string[] | null;
 
   /**
+   * Reclassify syntax that names an imported symbol as a namespace import
+   * after target resolution proves the symbol is itself a module.
+   */
+  readonly isNamespaceImport?: (
+    parsedImport: ParsedImport,
+    targetFile: string,
+    fromFile: string,
+  ) => boolean;
+
+  /**
    * For a wildcard `import * from M`, return the names visible in the
    * exporting module scope `M`. The finalize pass looks each name up in
    * `M`'s local defs to produce a concrete `BindingRef`; names with no
@@ -389,7 +399,10 @@ function makeEdgeDrafts(
       localName: extractLocalName(parsed),
       targetFile: tf,
       targetExportedName: extractExportedName(parsed),
-      kind: edgeKindFor(parsed),
+      kind:
+        hooks.isNamespaceImport?.(parsed, tf, file.filePath) === true
+          ? 'namespace'
+          : edgeKindFor(parsed),
     };
     return {
       source: parsed,
@@ -461,7 +474,7 @@ function tryFinalize(
   // languages emit a synthetic module-def), pick it up as the `targetDefId`
   // so consumers can reach the module as a symbol — but its absence is not
   // a failure.
-  if (draft.source.kind === 'namespace') {
+  if (draft.base.kind === 'namespace') {
     const moduleDef = findExportByName(targetModule.localDefs, extractExportedName(draft.source));
     return {
       ...draft.base,
