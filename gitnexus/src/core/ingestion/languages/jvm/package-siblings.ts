@@ -4,7 +4,29 @@ import type { ScopeResolutionIndexes } from '../../model/scope-resolution-indexe
 import { isClassLike } from '../../scope-resolution/scope/walkers.js';
 import type { JvmPackageFact } from './package-facts.js';
 
-const MAX_PACKAGE_FILES = 500;
+/**
+ * Packages with more than this many module-level files are skipped entirely —
+ * the O(N²) all-pairs binding augmentation is too expensive for mega-packages.
+ * Override via `GITNEXUS_MAX_PACKAGE_FILES` for repos with exceptionally large
+ * packages that should still receive sibling visibility.
+ */
+export const MAX_PACKAGE_FILES = (() => {
+  const env = Number(process.env.GITNEXUS_MAX_PACKAGE_FILES);
+  return Number.isInteger(env) && env >= 1 ? env : 500;
+})();
+
+/**
+ * Per-file cap on how many *nearest* siblings are injected. Candidates are
+ * sorted by shared path-segment proximity, then only the top N are kept —
+ * this bounds the per-file augmentation from O(N) to O(N′) where N′ ≤ 200,
+ * keeping the total package cost at O(N × N′) instead of O(N²).
+ * Override via `GITNEXUS_MAX_INJECTED_SIBLINGS` for repos that need wider
+ * sibling visibility within a package.
+ */
+export const MAX_INJECTED_SIBLINGS = (() => {
+  const env = Number(process.env.GITNEXUS_MAX_INJECTED_SIBLINGS);
+  return Number.isInteger(env) && env >= 1 ? env : 200;
+})();
 
 export interface JvmPackageSiblingOptions {
   readonly languageLabel: string;
@@ -107,19 +129,33 @@ export function createJvmPackageSiblingVisibility(
           augmentations.set(scope.id, scopeAug);
         }
 
+        // Compute proximity for every sibling file relative to the current file.
         const proximityCache = new Map<string, number>();
-        const candidates = classDefs.filter((candidate) => candidate.filePath !== filePath);
-        for (const candidate of candidates) {
-          if (!proximityCache.has(candidate.filePath)) {
-            proximityCache.set(
-              candidate.filePath,
-              sharedSegmentCount(candidate.filePath, filePath),
-            );
+        for (const sibling of bucket.moduleScopes) {
+          if (sibling.filePath !== filePath) {
+            proximityCache.set(sibling.filePath, sharedSegmentCount(sibling.filePath, filePath));
           }
         }
-        candidates.sort(
-          (a, b) => (proximityCache.get(b.filePath) ?? 0) - (proximityCache.get(a.filePath) ?? 0),
-        );
+
+        // Sort siblings nearest-first and cap to Top-N. This is the actual
+        // proximity-bounded injection: only the nearest MAX_INJECTED_SIBLINGS
+        // siblings contribute bindings, keeping cost at O(N × N′) not O(N²).
+        const nearestSiblings = bucket.moduleScopes
+          .filter((sibling) => sibling.filePath !== filePath)
+          .sort(
+            (a, b) => (proximityCache.get(b.filePath) ?? 0) - (proximityCache.get(a.filePath) ?? 0),
+          )
+          .slice(0, MAX_INJECTED_SIBLINGS);
+        const nearestPaths = new Set(nearestSiblings.map((sibling) => sibling.filePath));
+
+        // Inject class-definition bindings from nearest siblings only.
+        const candidates = classDefs
+          .filter(
+            (candidate) => candidate.filePath !== filePath && nearestPaths.has(candidate.filePath),
+          )
+          .sort(
+            (a, b) => (proximityCache.get(b.filePath) ?? 0) - (proximityCache.get(a.filePath) ?? 0),
+          );
 
         const injectedIds = new Set<string>();
         for (const { def } of candidates) {
@@ -133,15 +169,15 @@ export function createJvmPackageSiblingVisibility(
           bindings.push({ def, origin: 'namespace' });
         }
 
+        // Inject type bindings from nearest siblings only.
         const typeBindings = scope.typeBindings as Map<string, TypeRef>;
-        for (const sibling of bucket.moduleScopes) {
-          if (sibling.filePath === filePath) continue;
+        for (const sibling of nearestSiblings) {
           for (const [name, ref] of sibling.scope.typeBindings) {
             if (!typeBindings.has(name)) typeBindings.set(name, ref);
           }
         }
         for (const sibling of bucket.parsed) {
-          if (sibling.filePath === filePath) continue;
+          if (sibling.filePath === filePath || !nearestPaths.has(sibling.filePath)) continue;
           for (const siblingScope of sibling.scopes) {
             if (siblingScope.kind !== 'Class') continue;
             for (const [name, ref] of siblingScope.typeBindings) {
