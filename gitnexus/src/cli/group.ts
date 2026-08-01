@@ -250,10 +250,17 @@ export function registerGroupCommands(program: Command): void {
         } else {
           const summary = (raw as { summary?: Record<string, number> })?.summary;
           const risk = (raw as { risk?: string })?.risk;
+          const boundaryOnly =
+            (
+              raw as {
+                cross?: Array<{ fanout_status?: string }>;
+              }
+            )?.cross?.filter((entry) => entry.fanout_status === 'not_attempted').length ?? 0;
           console.log(`Group impact for "${name}" (${String(opts.repo)}): risk=${risk ?? '?'}`);
           if (summary) {
+            const boundaryNote = boundaryOnly > 0 ? ` (${boundaryOnly} boundary-only)` : '';
             console.log(
-              `  direct=${summary.direct ?? 0} processes=${summary.processes_affected ?? 0} cross=${summary.cross_repo_hits ?? 0}`,
+              `  direct=${summary.direct ?? 0} processes=${summary.processes_affected ?? 0} cross=${summary.cross_repo_hits ?? 0}${boundaryNote}`,
             );
           }
         }

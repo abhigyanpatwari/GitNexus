@@ -349,12 +349,29 @@ function extractProcessNames(impact: unknown): string[] {
 // No behavior change — `'UNKNOWN'` was already handled correctly at the
 // `(localRisk === 'LOW' || localRisk === 'UNKNOWN')` branch below.
 export function mergeRisk(localRisk: string, cross: CrossRepoImpact[]): string {
-  const highConf = cross.some((c) => c.contract.confidence >= 0.85);
+  const traversed = cross.filter((c) => c.fanout_status !== 'not_attempted');
+  const highConf = traversed.some((c) => c.contract.confidence >= 0.85);
   if (localRisk === 'CRITICAL') return 'CRITICAL';
-  if (cross.length >= 3) return 'CRITICAL';
+  if (traversed.length >= 3) return 'CRITICAL';
   if (highConf) return 'HIGH';
-  if (cross.length > 0 && (localRisk === 'LOW' || localRisk === 'UNKNOWN')) return 'MEDIUM';
+  if (traversed.length > 0 && (localRisk === 'LOW' || localRisk === 'UNKNOWN')) return 'MEDIUM';
   return localRisk;
+}
+
+function addCrossImpact(cross: CrossRepoImpact[], candidate: CrossRepoImpact): void {
+  const sameBoundary = (entry: CrossRepoImpact): boolean =>
+    entry.repo_path === candidate.repo_path && entry.contract.id === candidate.contract.id;
+
+  if (candidate.fanout_status === 'not_attempted') {
+    if (cross.some(sameBoundary)) return;
+  } else {
+    const boundaryOnlyIndex = cross.findIndex(
+      (entry) => sameBoundary(entry) && entry.fanout_status === 'not_attempted',
+    );
+    if (boundaryOnlyIndex >= 0) cross.splice(boundaryOnlyIndex, 1);
+  }
+
+  cross.push(candidate);
 }
 
 export async function ensureBridgeReady(
@@ -587,7 +604,12 @@ export async function runGroupImpact(
     const seen = new Set<string>();
 
     for (const n of neighbors) {
-      if (servicePrefix && !fileMatchesServicePrefix(n.neighborFilePath, servicePrefix)) {
+      const manifestOnly = n.neighborUid.startsWith('manifest::');
+      if (
+        servicePrefix &&
+        !manifestOnly &&
+        !fileMatchesServicePrefix(n.neighborFilePath, servicePrefix)
+      ) {
         continue;
       }
       if (!repoInSubgroup(n.neighborRepo, subgroup)) {
@@ -604,8 +626,7 @@ export async function runGroupImpact(
       if (seen.has(key)) continue;
       seen.add(key);
 
-      const remainingMs = deadline - Date.now();
-      if (remainingMs <= 0) {
+      if (!manifestOnly && deadline - Date.now() <= 0) {
         truncatedRepos.push(n.neighborRepo);
         continue;
       }
@@ -632,22 +653,24 @@ export async function runGroupImpact(
       // Preserve the proven crossing with an empty local fan-out. Real UIDs
       // still take the normal impactByUid path below, where failures remain
       // truncations rather than false successful traversals.
-      if (n.neighborUid.startsWith('manifest::')) {
-        cross.push({
+      if (manifestOnly) {
+        addCrossImpact(cross, {
           repo: regName,
           repo_path: n.neighborRepo,
           contract: {
             id: n.contractId,
             type: n.contractType as ContractType,
-            match_type: (n.matchType as MatchType) || 'manifest',
+            match_type: 'manifest',
             confidence: n.confidence,
           },
           by_depth: {},
           affected_processes: [],
+          fanout_status: 'not_attempted',
         });
         continue;
       }
 
+      const remainingMs = deadline - Date.now();
       // Phase-2 hardening: race each impactByUid against a per-call
       // timeout derived from the remaining budget. Without this wrap a
       // single hung neighbor would pin the request past the clamped
@@ -671,7 +694,7 @@ export async function runGroupImpact(
         continue;
       }
 
-      cross.push({
+      addCrossImpact(cross, {
         repo: regName,
         repo_path: n.neighborRepo,
         contract: {
