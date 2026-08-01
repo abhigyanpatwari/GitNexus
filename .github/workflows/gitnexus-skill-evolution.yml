@@ -142,10 +142,17 @@ jobs:
       MODEL: ${{ inputs.model || 'claude-sonnet-5' }}
       PROPOSER_MODEL: ${{ inputs.proposer_model || 'claude-opus-4-8' }}
       INCLUDE_EXPENSIVE: ${{ inputs.include_expensive && '1' || '' }}
-      # Fixed, known before the sweep starts: the upload below must not depend
-      # on a step that may have been killed having reported an output.
-      OUT_ROOT: ${{ runner.temp }}/wfevolve
     steps:
+      - name: Pin the evidence path before anything can run
+        # The upload step must not take its path from the sweep step's outputs
+        # — that is the step whose death is the reason the upload matters. A
+        # job-level `env:` cannot hold it either (the `runner` context does not
+        # exist there), so publish it to GITHUB_ENV first: every later step
+        # sees it, including the `if: always()` upload after a killed sweep.
+        run: |
+          set -euo pipefail
+          echo "OUT_ROOT=${RUNNER_TEMP}/wfevolve" >> "${GITHUB_ENV}"
+
       - name: Require the benchmark auth secret
         env:
           HAS_TOKEN: ${{ secrets.GITNEXUS_BENCH_AUTH_TOKEN != '' }}

@@ -152,6 +152,12 @@ describe('gitnexus skill-evolution workflow contract', () => {
   });
 
   it('uploads benchmark evidence unconditionally, on a path fixed before the sweep runs', () => {
+    // OUT_ROOT is published to GITHUB_ENV by the first step, not held in a
+    // job-level `env:` — the `runner` context does not exist there, so
+    // `${{ runner.temp }}/wfevolve` would silently resolve to `/wfevolve`.
+    const first = evolveJob?.steps?.[0];
+    expect(first?.name).toBe('Pin the evidence path before anything can run');
+    expect(first?.run).toContain('echo "OUT_ROOT=${RUNNER_TEMP}/wfevolve" >> "${GITHUB_ENV}"');
     const upload = evolveJob?.steps?.find(({ name }) => name === 'Upload benchmark evidence');
     // The sweep appends results.jsonl and transcripts as it goes, so a killed
     // generation still holds the evidence explaining why — and a path taken
