@@ -1002,6 +1002,12 @@ def main() -> None:
     results: dict[str, dict[str, dict[str, Any]]] = {}
     outage_streak = 0
     outage_tripped = False
+    # Progress accounting for the sweep. A generation runs for hours and each
+    # cell is a full set of agent sessions, so the log needs to say what is in
+    # flight and how much is left, not only what already finished.
+    total_cells = len(tasks) * args.runs * len(args.arms)
+    started_cells = 0
+    sweep_started = time.monotonic()
     with (
         tempfile.TemporaryDirectory(prefix="wfbench-trees-") as trees,
         TaskAssetCache(Path(trees) / ".task-assets") as task_asset_cache,
@@ -1064,6 +1070,11 @@ def main() -> None:
                 for arm in args.arms:
                     if outage_tripped:
                         break
+                    started_cells += 1
+                    print(
+                        f"[{task['id']}][{arm}][run {run_idx}] starting "
+                        f"({started_cells}/{total_cells}, {(time.monotonic() - sweep_started) / 60:.0f}m elapsed)"
+                    )
                     worktree: Path | None = None
                     record: dict[str, Any] | None = None
                     cleanup_error: OSError | None = None
@@ -1304,7 +1315,11 @@ def main() -> None:
                     print(
                         f"[{task['id']}][{arm}][run {run_idx}] resolved={record['resolved']} "
                         f"in={record['input_tokens']} out={record['output_tokens']} "
-                        f"cost=${_na(record['cost_usd'])}"
+                        f"cost=${_na(record['cost_usd'])} "
+                        f"took={_na(record.get('duration_s'))}s "
+                        # An excluded run is what actually blocks promotion, so
+                        # name it here instead of leaving it to results.jsonl.
+                        f"error_kind={record.get('error_kind') or 'none'}"
                     )
                     outage_streak = systemic_outage_streak(record.get("error_kind"), outage_streak)
                     if args.outage_streak and outage_streak >= args.outage_streak:

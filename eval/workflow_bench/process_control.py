@@ -12,6 +12,7 @@ import os
 import shutil
 import signal
 import subprocess
+import sys
 import threading
 import time
 from collections.abc import Mapping, Sequence
@@ -124,12 +125,23 @@ def _drain(
     pipe: BinaryIO,
     tail: _TailBuffer,
     capture: _BoundedCapture | None = None,
+    echo: BinaryIO | None = None,
 ) -> None:
     try:
         while chunk := pipe.read(8192):
             tail.append(chunk)
             if capture is not None:
                 capture.append(chunk)
+            if echo is not None:
+                # Progress passthrough for long child runs whose output is
+                # ordinary log text (see run_managed's echo_stdout). Never
+                # enabled for a Claude session, whose stdout is the evidence
+                # stream and is only written out after redaction.
+                try:
+                    echo.write(chunk)
+                    echo.flush()
+                except (OSError, ValueError):
+                    echo = None
     except (OSError, ValueError):
         # A forced close is part of the reap path. The terminal result records
         # an actual reap failure; a reader seeing the close is not one itself.
@@ -419,6 +431,7 @@ def _run_managed_inner(
     require_pid_namespace: bool = False,
     stdin_data: bytes | None = None,
     capture_stdout_bytes: int | None = None,
+    echo_stdout: bool = False,
     _ownership_slot: list[tuple[subprocess.Popen[bytes], _WindowsJob | None, int | None]],
 ) -> ManagedProcessResult:
     """Implementation registered with an outer post-spawn ownership guard."""
@@ -465,8 +478,9 @@ def _run_managed_inner(
     stdout = _TailBuffer(tail_bytes)
     stderr = _TailBuffer(tail_bytes)
     stdout_capture = _BoundedCapture(capture_stdout_bytes) if capture_stdout_bytes is not None else None
+    echo = getattr(sys.stderr, "buffer", None) if echo_stdout else None
     readers = [
-        threading.Thread(target=_drain, args=(process.stdout, stdout, stdout_capture), daemon=True),
+        threading.Thread(target=_drain, args=(process.stdout, stdout, stdout_capture, echo), daemon=True),
         threading.Thread(target=_drain, args=(process.stderr, stderr), daemon=True),
     ]
     for reader in readers:
@@ -683,8 +697,15 @@ def run_managed(
     require_pid_namespace: bool = False,
     stdin_data: bytes | None = None,
     capture_stdout_bytes: int | None = None,
+    echo_stdout: bool = False,
 ) -> ManagedProcessResult:
-    """Run one command with bounded output and owned-tree termination."""
+    """Run one command with bounded output and owned-tree termination.
+
+    `echo_stdout` streams the child's stdout to this process's stderr as it
+    arrives, so a long child (the benchmark sweep) reports progress in the CI
+    log instead of surfacing only its bounded tail after it finishes. Use it
+    only for children whose stdout is log text.
+    """
 
     ownership_slot: list[tuple[subprocess.Popen[bytes], _WindowsJob | None, int | None]] = []
     try:
@@ -699,6 +720,7 @@ def run_managed(
             require_pid_namespace=require_pid_namespace,
             stdin_data=stdin_data,
             capture_stdout_bytes=capture_stdout_bytes,
+            echo_stdout=echo_stdout,
             _ownership_slot=ownership_slot,
         )
     except BaseException:

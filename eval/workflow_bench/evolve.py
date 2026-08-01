@@ -663,6 +663,10 @@ def runner_environment(args: argparse.Namespace) -> dict[str, str]:
         "LANG": "C.UTF-8",
         "LC_ALL": "C.UTF-8",
         "GIT_TERMINAL_PROMPT": "0",
+        # The sweep writes to a pipe, so CPython would block-buffer its
+        # progress lines for hours. Unbuffered is what makes echo_stdout
+        # actually show progress rather than a burst at the end.
+        "PYTHONUNBUFFERED": "1",
     }
     if args.auth_token:
         env["GITNEXUS_BENCH_AUTH_TOKEN"] = args.auth_token
@@ -955,6 +959,10 @@ def main() -> int:
             if not record["ok"]:
                 print(f"[gen {generation}] proposer session failed: {record['error_detail']}")
                 return 1
+            print(
+                f"[gen {generation}] proposal ready in {record['duration_s']:.0f}s "
+                f"({record['num_turns']} turns, ${record['cost_usd'] if record['cost_usd'] is not None else 'n/a'})"
+            )
             try:
                 candidate_overlay_files(overlay_dir)
                 resolve_incumbent_arms(overlay_dir, args.arms)
@@ -1000,6 +1008,10 @@ def main() -> int:
             ),
             env=runner_environment(args),
             require_pid_namespace=True,
+            # The sweep is the multi-hour phase; without this its per-run
+            # progress lines only reach the log as a bounded tail, and only
+            # when it fails.
+            echo_stdout=True,
         )
         if not bench.ok:
             print(

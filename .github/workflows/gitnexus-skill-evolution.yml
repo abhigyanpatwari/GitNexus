@@ -218,6 +218,10 @@ jobs:
         id: loop
         env:
           GITNEXUS_BENCH_AUTH_TOKEN: ${{ secrets.GITNEXUS_BENCH_AUTH_TOKEN }}
+          # The step's stdout is a pipe, so CPython block-buffers it and a
+          # multi-hour generation would report nothing until it exits (run
+          # 29907431284 emitted every line at the same timestamp, 14h45m in).
+          PYTHONUNBUFFERED: '1'
         run: |
           set -euo pipefail
           out_root="${RUNNER_TEMP}/wfevolve"

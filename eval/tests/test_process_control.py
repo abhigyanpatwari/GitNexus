@@ -124,6 +124,22 @@ def test_parent_stdout_capture_reports_overflow_without_stopping_drain() -> None
     assert result.stdout_tail.endswith("END")
 
 
+def test_echo_stdout_streams_child_progress_and_stays_off_by_default(capfd) -> None:
+    command = [PYTHON, "-c", "import os; os.write(1, b'[task][arm][run 0] starting\\n')"]
+
+    quiet = run_managed(command, timeout=5)
+    assert quiet.ok
+    assert "starting" not in capfd.readouterr().err
+
+    echoed = run_managed(command, timeout=5, echo_stdout=True)
+    assert echoed.ok
+    captured = capfd.readouterr()
+    assert "[task][arm][run 0] starting" in captured.err
+    # Echoing is a passthrough, not a redirect: the tail stays intact for the
+    # caller that reports it after the process ends.
+    assert "starting" in echoed.stdout_tail
+
+
 def test_incomplete_stdin_delivery_cannot_report_success() -> None:
     result = run_managed(
         [PYTHON, "-c", "import os,time; os.close(0); time.sleep(0.05)"],
