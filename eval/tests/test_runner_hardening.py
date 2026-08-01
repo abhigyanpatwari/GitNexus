@@ -516,6 +516,33 @@ def test_run_cell_records_an_expected_failure_and_still_removes_its_clone(monkey
     assert removed == [tmp_path / "clone"]
 
 
+def test_run_cell_redacts_the_auth_token_from_the_failure_it_prints(monkeypatch, tmp_path, capsys):
+    _stub_cell_dependencies(monkeypatch, tmp_path)
+    secret = "sk-ant-not-a-real-key"
+
+    def explode(*_args, **_kwargs):
+        raise ManagedProcessError(
+            ["claude"],
+            ManagedProcessResult(
+                state="exited",
+                returncode=1,
+                stdout_tail="",
+                stderr_tail=f"ANTHROPIC_API_KEY={secret}",
+                duration_s=1.0,
+            ),
+        )
+
+    monkeypatch.setattr(runner, "run_arm", explode)
+    context = _cell_context(tmp_path)
+    context.args.auth_token = secret
+    # ManagedProcessError stringifies up to 1000 raw bytes of stderr_tail, and
+    # this line streams live into the CI log now that the sweep's stdout is
+    # echoed. results.jsonl already redacts the same field.
+    runner.run_cell(context, 0, "workflow")
+
+    assert secret not in capsys.readouterr().out
+
+
 def test_run_cell_lets_an_unexpected_failure_escape_rather_than_scoring_it(monkeypatch, tmp_path):
     _, removed = _stub_cell_dependencies(monkeypatch, tmp_path)
 

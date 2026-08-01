@@ -438,19 +438,20 @@ def run_claude(
         result_indexes = [index for index, event in enumerate(events) if event.get("type") == "result"]
         if len(result_indexes) != 1:
             raise ValueError(f"expected exactly one final result event, observed {len(result_indexes)}")
-        data = events[result_indexes[0]]
+        result_index = result_indexes[0]
+        data = events[result_index]
         # A session that used a background task drains its bookkeeping after
         # the final result event (`background_tasks_changed`, `task_updated`,
         # `task_notification` — all `type: "system"`), so the result is last
         # only among the events that carry evidence. `system` events hold no
         # tool_use/tool_result/usage payload and so cannot forge skill or cost
         # evidence; any other event after the result still fails closed.
-        if any(event.get("type") != "system" for event in events[result_indexes[0] + 1 :]):
+        if any(event.get("type") != "system" for event in events[result_index + 1 :]):
             raise ValueError("final result event is not the last event in the captured stream")
         # Nothing after the result is evidence. Cut the window here so that is
         # a property of what the evidence readers below can see, rather than an
         # assumption that a `system` event never carries a tool_use block.
-        events = events[: result_indexes[0] + 1]
+        events = events[: result_index + 1]
     except (UnicodeError, ValueError) as exc:
         event_stream_error = str(exc)
         data = {}

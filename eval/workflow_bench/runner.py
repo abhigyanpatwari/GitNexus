@@ -905,7 +905,11 @@ def run_cell(ctx: TaskCellContext, run_idx: int, arm: str) -> dict[str, Any]:
         # report.md/promotion.json still get written.
         record = infra_error_record(exc)
         record["arm"] = arm
-        print(f"[{task['id']}][{arm}][run {run_idx}] infra-error: {exc}")
+        # ManagedProcessError carries up to 1000 raw bytes of stderr_tail, and
+        # this line now streams live into the CI log (run_managed echoes the
+        # sweep's stdout). Redact it like every other sink this data reaches.
+        detail = redact_text(str(exc), [args.auth_token or ""])
+        print(f"[{task['id']}][{arm}][run {run_idx}] infra-error: {detail}")
     finally:
         if worktree is not None and worktree.exists():
             try:

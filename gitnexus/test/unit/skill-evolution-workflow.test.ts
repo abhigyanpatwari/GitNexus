@@ -34,8 +34,14 @@ const workflowDocument = load(workflow) as {
 
 const evolveJob = workflowDocument.jobs?.evolve;
 
+type WorkflowStep = NonNullable<NonNullable<typeof evolveJob>['steps']>[number];
+
+function findStep(stepName: string): WorkflowStep | undefined {
+  return evolveJob?.steps?.find(({ name }) => name === stepName);
+}
+
 function stepRun(stepName: string): string {
-  const step = evolveJob?.steps?.find(({ name }) => name === stepName);
+  const step = findStep(stepName);
   return typeof step?.run === 'string' ? step.run : '';
 }
 
@@ -75,9 +81,7 @@ describe('gitnexus skill-evolution workflow contract', () => {
     // The benchmark sandbox-copies node_modules from all three (tasks.scenarios.yaml).
     // The root tree was absent on the first real run because only the two subpackage
     // steps ran, so capture_task_dependency_binding aborted at task binding.
-    const rootStep = evolveJob?.steps?.find(
-      ({ name }) => name === 'Install monorepo root dependencies',
-    );
+    const rootStep = findStep('Install monorepo root dependencies');
     expect(rootStep).toBeDefined();
     expect(rootStep).not.toHaveProperty('working-directory'); // installs at the repo root
     expect(String(rootStep?.run)).toContain('npm ci');
@@ -104,7 +108,7 @@ describe('gitnexus skill-evolution workflow contract', () => {
 
   it('least-privileges the App token and gates the job on a protected Environment', () => {
     expect(evolveJob?.environment).toBe('gitnexus-evolution');
-    const mint = evolveJob?.steps?.find(({ name }) => name === 'Mint GitHub App token');
+    const mint = findStep('Mint GitHub App token');
     expect(mint?.with).toMatchObject({
       'client-id': expect.any(String),
       'permission-contents': 'write',
@@ -137,9 +141,7 @@ describe('gitnexus skill-evolution workflow contract', () => {
     // needs its own, strictly shorter budget: a step timeout only fails that
     // step, and the always() upload below still ships what it wrote.
     const jobBudget = evolveJob?.['timeout-minutes'];
-    const loopStep = evolveJob?.steps?.find(
-      ({ name }) => name === 'Run the propose → benchmark → gate loop',
-    );
+    const loopStep = findStep('Run the propose → benchmark → gate loop');
     const stepBudget = loopStep?.['timeout-minutes'];
     expect(typeof jobBudget).toBe('number');
     expect(typeof stepBudget).toBe('number');
@@ -152,7 +154,7 @@ describe('gitnexus skill-evolution workflow contract', () => {
   });
 
   it('uploads benchmark evidence unconditionally, on a path it addresses itself', () => {
-    const upload = evolveJob?.steps?.find(({ name }) => name === 'Upload benchmark evidence');
+    const upload = findStep('Upload benchmark evidence');
     // The sweep appends results.jsonl and transcripts as it goes, so a killed
     // generation still holds the evidence explaining why — and a path taken
     // from the killed step's outputs is exactly what would not be there.
