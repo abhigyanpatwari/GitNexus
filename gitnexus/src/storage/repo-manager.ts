@@ -645,8 +645,31 @@ export interface RepoMeta {
  * as namespace edges (#2746), enabling qualified constructor and method CALLS
  * edges. Pre-v31 indexes retain the old package-target/missing-edge graph for
  * unchanged files through the reuse gate. Force a full re-analyze.
+ *
+ * v32: the relation DDL (the single shared `CodeRelation` REL TABLE) gains
+ * sixteen FROM/TO pairs carried by `HAS_METHOD`/`HAS_PROPERTY` and
+ * scope-resolution edges: Enum→{Function, Method, Struct, Constructor,
+ * Property, TypeAlias}, Property→{Class, Enum, Function, Struct},
+ * Method→{Variable, Const}, Trait→Function, Impl→Function, Const→Method and
+ * Variable→Method. The Enum/Property set was observed on Swift (enums carry
+ * computed properties, methods, initializers and nested types) and is also
+ * reached by Java/PHP enum members; Trait/Impl→Function covers a Rust
+ * `impl`/`trait` method, which is minted as a `Function` node, not `Method`;
+ * Const/Variable→Method and its sibling Method→Const cover a JS/TS object
+ * literal's shorthand methods, whose owner is labelled `Const`/`Variable`. A
+ * pre-v32 database physically lacks these from-to pairs — see
+ * `assertDeclaredPair` (rel-pair-routing.ts) for why an incremental top-up
+ * fails loudly on one path and silently on the other. Force a full re-analyze.
+ *
+ * (This shipped as v31 on its own branch; `main` took 31 for #2746 first, so
+ * it is renumbered here. Re-check both constants against origin/main
+ * immediately before merging — this is the sixth time that collision has
+ * bitten. If this change is ever reverted, do not free 32 for reuse — the
+ * reuse gate is exact equality, so an index already stamped 32 would satisfy
+ * it against a differently-shaped reverted DB. Start the next allocation at
+ * 33 instead.)
  */
-export const INCREMENTAL_SCHEMA_VERSION = 31;
+export const INCREMENTAL_SCHEMA_VERSION = 32;
 
 export interface IndexedRepo {
   repoPath: string;
