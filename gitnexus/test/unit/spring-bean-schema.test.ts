@@ -5,6 +5,7 @@ import { PARSE_CACHE_VERSION } from '../../src/storage/parse-cache.js';
 import { INCREMENTAL_SCHEMA_VERSION } from '../../src/storage/repo-manager.js';
 import { isSpringBeanCandidateSourceFile } from '../../src/core/ingestion/frameworks/spring/bean-catalog.js';
 import {
+  SPRING_AOP_FEATURE,
   SPRING_BEAN_INVENTORY_FEATURE,
   SPRING_CONDITIONALS_FEATURE,
 } from '../../src/core/ingestion/frameworks/spring/analysis-features.js';
@@ -24,6 +25,7 @@ describe('Spring Bean Class persistence schema', () => {
     expect(parseSchemaVersion).toBeGreaterThanOrEqual(31);
     expect(INCREMENTAL_SCHEMA_VERSION).toBeGreaterThanOrEqual(23);
     expect(CLASS_FRAMEWORK_ANNOTATIONS_FEATURE.version).toBe(1);
+    expect(SPRING_AOP_FEATURE.version).toBe(1);
     expect(SPRING_BEAN_INVENTORY_FEATURE.version).toBe(2);
     expect(SPRING_CONDITIONALS_FEATURE.version).toBe(1);
   });

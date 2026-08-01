@@ -668,8 +668,13 @@ export interface RepoMeta {
  * reuse gate is exact equality, so an index already stamped 32 would satisfy
  * it against a differently-shaped reverted DB. Start the next allocation at
  * 33 instead.)
+ *
+ * v33: Spring AOP evidence adds the Interface→CodeElement relation pair
+ * (#2416). LadybugDB fixes allowed endpoint pairs when the relation table is
+ * created, so an older index cannot persist these edges through incremental
+ * writeback. Force a full re-analyze.
  */
-export const INCREMENTAL_SCHEMA_VERSION = 32;
+export const INCREMENTAL_SCHEMA_VERSION = 33;
 
 export interface IndexedRepo {
   repoPath: string;

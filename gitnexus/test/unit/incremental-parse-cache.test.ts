@@ -101,11 +101,9 @@ describe('fileContentHash', () => {
 });
 
 describe('PARSE_CACHE_VERSION', () => {
-  // 35 -> 36 for the bound-callable start-line join (#2735). Updated
-  // deliberately after main independently took 35 for Spring side-channel
-  // captures (#2413), so the pin continues to catch concurrent bump collisions.
-  it('pins SCHEMA_BUMP to 36 so concurrent bumps cannot silently collide (#2736)', () => {
-    expect(Number(PARSE_CACHE_VERSION.split('+', 1)[0])).toBe(36);
+  // 36 -> 37 for Java/Kotlin Spring AOP capture side-channels (#2416).
+  it('pins SCHEMA_BUMP to 37 so concurrent bumps cannot silently collide (#2416)', () => {
+    expect(Number(PARSE_CACHE_VERSION.split('+', 1)[0])).toBe(37);
   });
 
   it('embeds the gitnexus package version (so upgrades invalidate the cache)', () => {

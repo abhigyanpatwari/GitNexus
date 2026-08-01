@@ -156,6 +156,20 @@ describe('extractChangedSubgraph', () => {
     expect(sub.relationships.map((r) => r.id)).toEqual(['inj1']);
   });
 
+  it('always includes ADVISED_BY edges even between two unchanged files (#2416)', () => {
+    const g = createKnowledgeGraph();
+    g.addNode(makeFileNode('service:Method', '/repo/Service.java', 'Method'));
+    g.addNode(makeFileNode('aspect:Method', '/repo/Aspect.java', 'Method'));
+    g.addRelationship(
+      makeRel('advised1', 'service:Method', 'aspect:Method', 'ADVISED_BY', 'spring-aop:v1:{}'),
+    );
+    g.addRelationship(makeRel('call1', 'service:Method', 'aspect:Method', 'CALLS'));
+
+    const sub = extractChangedSubgraph(g, new Set(['/repo/AnnotationShadow.java']));
+
+    expect(sub.relationships.map((relationship) => relationship.id)).toEqual(['advised1']);
+  });
+
   it('always includes Spring DECLARES edges between unchanged metadata and classes (#2415)', () => {
     const g = createKnowledgeGraph();
     g.addNode(makeFileNode('metadata:File', '/repo/META-INF/spring.factories', 'File'));
@@ -191,6 +205,22 @@ describe('extractChangedSubgraph', () => {
 });
 
 describe('computeEffectiveWriteSet (Finding 1)', () => {
+  it('does not expand through graph-wide ADVISED_BY edges rebuilt by their owner phase', () => {
+    const g = createKnowledgeGraph();
+    g.addNode(makeFileNode('aspect:advice', '/repo/Aspect.java', 'Method'));
+    for (let index = 0; index < 100; index += 1) {
+      const serviceId = `service:${index}`;
+      g.addNode(makeFileNode(serviceId, `/repo/Service${index}.java`, 'Method'));
+      g.addRelationship(
+        makeRel(`advised:${index}`, serviceId, 'aspect:advice', 'ADVISED_BY', 'spring-aop:v1:{}'),
+      );
+    }
+
+    const effective = computeEffectiveWriteSet(g, new Set(['/repo/Aspect.java']));
+
+    expect([...effective]).toEqual(['/repo/Aspect.java']);
+  });
+
   it('barrel re-export — expands the writable set to the consumer file', () => {
     // Scenario: file C (a barrel) used to re-export from B; now re-exports
     // from D. File A is unchanged byte-wise but its CALLS to foo() now

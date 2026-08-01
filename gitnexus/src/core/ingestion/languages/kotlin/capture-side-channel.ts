@@ -49,10 +49,12 @@ import {
 } from '../jvm/package-facts.js';
 import { getCompanionScopesForFile, markCompanionScope } from './companion-scopes.js';
 import { getKotlinPackageFact, setKotlinPackageFact } from './package-facts.js';
+import type { KotlinSpringAopFact } from './spring-aop.js';
 import type { KotlinSpringConditionalFact } from './spring-conditionals.js';
 import type { KotlinSpringDiClassFact } from './spring-di.js';
 
 const classAnnotations = createClassAnnotationFactStore();
+const springAopFacts = new Map<string, readonly KotlinSpringAopFact[]>();
 const springConditionalFacts = new Map<string, readonly KotlinSpringConditionalFact[]>();
 const springDiFacts = new Map<string, readonly KotlinSpringDiClassFact[]>();
 
@@ -70,6 +72,8 @@ export interface KotlinCaptureSideChannel {
   readonly packageFact: JvmPackageFact;
   /** Class annotation syntax collected by the existing scope traversal. */
   readonly classAnnotations: readonly ClassAnnotationFact[];
+  /** Spring proxy/advice syntax captured per class or callable owner. */
+  readonly springAopFacts?: readonly KotlinSpringAopFact[];
   /** Profile, conditional, and auto-configuration syntax captured per owner. */
   readonly springConditionalFacts?: readonly KotlinSpringConditionalFact[];
   /** Constructor, property, and method injection syntax captured per class. */
@@ -78,8 +82,21 @@ export interface KotlinCaptureSideChannel {
 
 export function clearKotlinClassAnnotationFacts(): void {
   classAnnotations.clear();
+  springAopFacts.clear();
   springConditionalFacts.clear();
   springDiFacts.clear();
+}
+
+export function setKotlinSpringAopFacts(
+  filePath: string,
+  facts: readonly KotlinSpringAopFact[],
+): void {
+  if (facts.length === 0) springAopFacts.delete(filePath);
+  else springAopFacts.set(filePath, facts);
+}
+
+export function getKotlinSpringAopFacts(filePath: string): readonly KotlinSpringAopFact[] {
+  return springAopFacts.get(filePath) ?? [];
 }
 
 export function setKotlinClassAnnotationFacts(
@@ -129,12 +146,14 @@ export function collectKotlinCaptureSideChannel(
 ): KotlinCaptureSideChannel | undefined {
   const companionScopes = getCompanionScopesForFile(filePath);
   const annotationFacts = classAnnotations.get(filePath);
+  const aopFacts = springAopFacts.get(filePath) ?? [];
   const conditionFacts = springConditionalFacts.get(filePath) ?? [];
   const diFacts = springDiFacts.get(filePath) ?? [];
   const packageFact = getKotlinPackageFact(filePath);
   if (
     companionScopes.length === 0 &&
     annotationFacts.length === 0 &&
+    aopFacts.length === 0 &&
     conditionFacts.length === 0 &&
     diFacts.length === 0 &&
     packageFact === undefined
@@ -146,6 +165,7 @@ export function collectKotlinCaptureSideChannel(
     companionScopes,
     packageFact: packageFact ?? UNKNOWN_JVM_PACKAGE_FACT,
     classAnnotations: annotationFacts,
+    ...(aopFacts.length > 0 ? { springAopFacts: aopFacts } : {}),
     ...(conditionFacts.length > 0 ? { springConditionalFacts: conditionFacts } : {}),
     ...(diFacts.length > 0 ? { springDiFacts: diFacts } : {}),
   };
@@ -170,6 +190,7 @@ export function applyKotlinCaptureSideChannel(parsed: ParsedFile): void {
     !Array.isArray(data.classAnnotations)
   ) {
     classAnnotations.set(parsed.filePath, []);
+    setKotlinSpringAopFacts(parsed.filePath, []);
     setKotlinSpringConditionalFacts(parsed.filePath, []);
     setKotlinSpringDiFacts(parsed.filePath, []);
     setKotlinPackageFact(parsed.filePath, UNKNOWN_JVM_PACKAGE_FACT);
@@ -179,6 +200,10 @@ export function applyKotlinCaptureSideChannel(parsed: ParsedFile): void {
     markCompanionScope(parsed.filePath, scopeId);
   }
   classAnnotations.set(parsed.filePath, data.classAnnotations);
+  setKotlinSpringAopFacts(
+    parsed.filePath,
+    Array.isArray(data.springAopFacts) ? data.springAopFacts : [],
+  );
   setKotlinSpringConditionalFacts(
     parsed.filePath,
     Array.isArray(data.springConditionalFacts) ? data.springConditionalFacts : [],

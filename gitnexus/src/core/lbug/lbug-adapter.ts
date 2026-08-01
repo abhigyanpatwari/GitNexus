@@ -65,6 +65,7 @@ import {
   SPRING_AUTO_CONFIGURATION_REASONS,
   SPRING_AUTO_CONFIGURATION_SYNTHETIC_ID_PREFIX,
 } from '../ingestion/frameworks/spring/auto-configuration.js';
+import { SPRING_AOP_EVIDENCE_ID_PREFIX } from '../ingestion/frameworks/spring/aop.js';
 // ---------------------------------------------------------------------------
 // Relationship CSV splitting — extracted for testability (PR #818)
 // ---------------------------------------------------------------------------
@@ -2744,6 +2745,53 @@ export const deleteAllCallSummaries = async (): Promise<{ edgesDeleted: number }
  */
 export const deleteAllInjects = async (): Promise<{ edgesDeleted: number }> =>
   deleteAllRelationshipsOfType('INJECTS', 'di', 'duplicate INJECTS edges');
+
+/**
+ * Drop every Spring AOP `ADVISED_BY` relationship before incremental
+ * writeback. Pointcut/annotation resolution is whole-program: adding a type in
+ * a third file can shadow a wildcard annotation import or change a wildcard
+ * execution match between two otherwise unchanged endpoint files.
+ */
+export const deleteAllAdvisedBy = async (): Promise<{ edgesDeleted: number }> =>
+  deleteAllRelationshipsOfType('ADVISED_BY', 'spring-aop', 'duplicate ADVISED_BY edges');
+
+/** Drop all synthetic Spring AOP evidence nodes before incremental writeback. */
+export const deleteSpringAopEvidenceNodes = async (): Promise<{ nodesDeleted: number }> => {
+  const c = conn;
+  if (!c) {
+    throw new Error('LadybugDB not initialized. Call initLbug first.');
+  }
+  return withConnLock(async () => {
+    let countResult: lbug.QueryResult | lbug.QueryResult[] | undefined;
+    const idPrefix = escapeCypherString(SPRING_AOP_EVIDENCE_ID_PREFIX);
+    const predicate = `n.id STARTS WITH '${idPrefix}'`;
+    try {
+      countResult = await c.query(
+        `MATCH (n:CodeElement) WHERE ${predicate} RETURN count(n) AS cnt`,
+      );
+      const result = Array.isArray(countResult) ? countResult[0] : countResult;
+      const rows = await result.getAll();
+      const count = Number(rows[0]?.cnt ?? rows[0]?.[0] ?? 0);
+      if (count > 0) {
+        await closeQueryResults(
+          await c.query(`MATCH (n:CodeElement) WHERE ${predicate} DETACH DELETE n`),
+        );
+      }
+      if (countResult) await closeQueryResults(countResult);
+      return { nodesDeleted: count };
+    } catch (err) {
+      if (countResult) await closeQueryResults(countResult);
+      if (classifyDeleteAllError(err) === 'benign-missing-table') {
+        return { nodesDeleted: 0 };
+      }
+      const message = err instanceof Error ? err.message : String(err);
+      throw new Error(
+        '[spring-aop] failed to clear synthetic evidence before incremental re-write ' +
+          `(${message}) — aborting to avoid stale advice metadata; the next run will full-rebuild`,
+      );
+    }
+  });
+};
 
 /**
  * Drop Spring-owned auto-configuration `DECLARES` relationships before

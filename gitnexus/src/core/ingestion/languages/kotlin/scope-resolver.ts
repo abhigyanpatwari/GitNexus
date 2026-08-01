@@ -21,6 +21,7 @@ import {
 import { isKotlinStaticOnly } from './owners.js';
 import { populateKotlinPackageSiblings } from './package-siblings.js';
 import { attachKotlinSpringBeanCandidateMetadata } from './spring-bean-metadata.js';
+import { attachKotlinSpringAopMetadata } from './spring-aop.js';
 import { clearKotlinPackageFacts } from './package-facts.js';
 import { attachKotlinSpringDiMetadata } from './spring-di.js';
 import { attachKotlinSpringConditionalMetadata } from './spring-conditionals.js';
@@ -127,6 +128,7 @@ export const kotlinScopeResolver: ScopeResolver = {
   populateNamespaceSiblings: populateKotlinPackageSiblings,
   emitPostResolutionEdges: (graph, parsedFiles, nodeLookup, indexes) => {
     attachKotlinSpringBeanCandidateMetadata(graph, parsedFiles, nodeLookup, indexes);
+    attachKotlinSpringAopMetadata(graph, parsedFiles, nodeLookup, indexes);
     attachKotlinSpringConditionalMetadata(graph, parsedFiles, nodeLookup, indexes);
     attachKotlinSpringDiMetadata(graph, parsedFiles, nodeLookup, indexes);
   },
