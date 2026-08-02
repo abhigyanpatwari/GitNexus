@@ -311,6 +311,28 @@ const isEmbeddingItem = (item: unknown): item is EmbeddingItem =>
   Array.isArray((item as { embedding?: unknown }).embedding);
 
 /**
+ * Module-private signal that a 2xx response carried a body this client cannot
+ * use (unparseable, or parseable but wrong-shaped). Deliberately not exported:
+ * it never escapes {@link httpEmbedBatch}, which converts it into the
+ * user-facing {@link HttpEmbeddingError} it carries in `terminalMessage`.
+ *
+ * Thrown from inside the `fetchImpl` callback so `resilientFetch` classifies it
+ * as `retryable-network` — a truncated or HTML body is the same class of
+ * endpoint failure as a 503 and deserves the same backoff loop, and routing it
+ * through the retry loop also makes the circuit breaker see it as a failure
+ * instead of erasing the outage signal with `recordSuccess()`. See #2790.
+ */
+class RetryableEmbeddingBodyError extends Error {
+  constructor(
+    readonly terminalMessage: string,
+    options?: { cause?: unknown },
+  ) {
+    super(terminalMessage, options?.cause !== undefined ? { cause: options.cause } : undefined);
+    this.name = 'RetryableEmbeddingBodyError';
+  }
+}
+
+/**
  * Send a single batch of texts to the embedding endpoint with retry.
  *
  * @param url - Full endpoint URL (e.g. https://host/v1/embeddings)
@@ -347,7 +369,14 @@ const httpEmbedBatch = async (
     requestBody.dimensions = dimensions;
   }
 
+  const unparseableMessage = `Embedding endpoint returned an unparseable response (${safeUrl(url)}, batch ${batchIndex})`;
+  const unexpectedShapeMessage = `Embedding endpoint returned an unexpected response shape (${safeUrl(url)}, batch ${batchIndex})`;
+
   let resp: Response;
+  // Set by `fetchImpl` on the attempt that produced a usable body. Reads back
+  // as `undefined` only on a path that must already have thrown — see the
+  // defensive check after the retry loop.
+  let parsed: EmbeddingItem[] | undefined;
   try {
     throwIfAborted(requestOptions.signal);
     resp = await resilientFetch(
@@ -368,7 +397,29 @@ const httpEmbedBatch = async (
           const signal = requestOptions.signal
             ? AbortSignal.any([requestOptions.signal, timeoutSignal])
             : timeoutSignal;
-          return globalThis.fetch(input, { ...init, signal });
+          const attemptResp = await globalThis.fetch(input, { ...init, signal });
+          // Non-OK bodies are none of our business: hand the response straight
+          // back so `resilientFetch` keeps classifying 4xx/5xx/429 unchanged.
+          if (!attemptResp.ok) return attemptResp;
+
+          // The body is read *here*, inside the retried callback, rather than
+          // after `resilientFetch` returns. A reachable-but-wrong endpoint (a
+          // captive portal, a non-embeddings service, a truncated stream) can
+          // answer 200 with HTML or half a JSON document; parsing outside the
+          // loop made that a one-shot terminal failure while a 503 got three
+          // attempts. Throwing from in here gives a bad body the same backoff
+          // and the same breaker accounting as any other endpoint fault (#2790).
+          let payload: { data: EmbeddingItem[] };
+          try {
+            payload = (await attemptResp.json()) as { data: EmbeddingItem[] };
+          } catch (err) {
+            throw new RetryableEmbeddingBodyError(unparseableMessage, { cause: err });
+          }
+          if (!Array.isArray(payload?.data) || !payload.data.every(isEmbeddingItem)) {
+            throw new RetryableEmbeddingBodyError(unexpectedShapeMessage);
+          }
+          parsed = payload.data;
+          return attemptResp;
         },
         breakerKey: HTTP_BREAKER_KEY,
         retry: {
@@ -389,6 +440,12 @@ const httpEmbedBatch = async (
         `Embedding request cancelled (${safeUrl(url)}, batch ${batchIndex})`,
         { cause: err },
       );
+    }
+    // Retries are exhausted on a bad 2xx body. Surface the message the sentinel
+    // carried, keeping the underlying parse error in `cause` only — the body
+    // text must never reach the `sanitizeReason` fallback and leak to stderr.
+    if (err instanceof RetryableEmbeddingBodyError) {
+      throw new HttpEmbeddingError(err.terminalMessage, { cause: err.cause });
     }
     if (err instanceof CircuitOpenError) {
       throw new HttpEmbeddingError(
@@ -425,25 +482,14 @@ const httpEmbedBatch = async (
     );
   }
 
-  // A reachable-but-wrong endpoint (e.g. a captive portal or a non-embeddings
-  // service) can answer 200 with an HTML/truncated body. Parse inside the
-  // typed-error boundary so that lands as an endpoint failure the CLI can
-  // classify, not a raw SyntaxError/TypeError on the generic stack-dump path.
-  let data: { data: EmbeddingItem[] };
-  try {
-    data = (await resp.json()) as { data: EmbeddingItem[] };
-  } catch (err) {
-    throw new HttpEmbeddingError(
-      `Embedding endpoint returned an unparseable response (${safeUrl(url)}, batch ${batchIndex})`,
-      { cause: err },
-    );
+  if (parsed === undefined) {
+    // Defensively unreachable: an OK response either sets `parsed` or throws
+    // out of `fetchImpl`. Kept so the narrowing holds without a non-null
+    // assertion, and so a future `resilientFetch` change can't return an
+    // unvalidated body silently.
+    throw new HttpEmbeddingError(unparseableMessage);
   }
-  if (!Array.isArray(data?.data) || !data.data.every(isEmbeddingItem)) {
-    throw new HttpEmbeddingError(
-      `Embedding endpoint returned an unexpected response shape (${safeUrl(url)}, batch ${batchIndex})`,
-    );
-  }
-  return data.data;
+  return parsed;
 };
 
 /**

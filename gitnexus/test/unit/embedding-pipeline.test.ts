@@ -247,6 +247,46 @@ describe('runEmbeddingPipeline incremental filter', () => {
     }));
   };
 
+  // Same stubs as mockEmbedderSetup, but with a caller-supplied embedBatch so a
+  // test can make specific sub-batches reject (#2790). The real module's
+  // embedBatch always resolves here, which is why no pre-#2790 test ever
+  // exercised the failure path.
+  const mockEmbedderWith = (embedBatchImpl: (texts: string[]) => Promise<Float32Array[]>) => {
+    vi.doMock('../../src/core/embeddings/embedder.js', () => ({
+      initEmbedder: vi.fn().mockResolvedValue(undefined),
+      embedBatch: vi.fn().mockImplementation(embedBatchImpl),
+      embedText: vi.fn().mockResolvedValue(new Float32Array(384)),
+      embeddingToArray: vi.fn().mockImplementation((emb: Float32Array) => Array.from(emb)),
+      isEmbedderReady: vi.fn().mockReturnValue(true),
+    }));
+    vectorIndexMock = vi.fn().mockResolvedValue(true);
+    vi.doMock('../../src/core/lbug/lbug-adapter.js', () => ({
+      loadVectorExtension: vi.fn().mockResolvedValue(true),
+      createVectorIndex: vectorIndexMock,
+    }));
+  };
+
+  /**
+   * Builds an embedBatch that rejects on the given 1-based call indices and
+   * resolves otherwise. Keyed on call ORDER, never on timing, so the sub-batch
+   * that fails is fully deterministic. `subBatchTexts` records each call's text
+   * count so a test can pin how chunks were split across sub-batches.
+   */
+  const failingEmbedBatch = (
+    failOnCalls: readonly number[],
+    makeError: () => Error,
+    subBatchTexts: number[] = [],
+  ) => {
+    const failing = new Set(failOnCalls);
+    let call = 0;
+    return async (texts: string[]): Promise<Float32Array[]> => {
+      call += 1;
+      subBatchTexts.push(texts.length);
+      if (failing.has(call)) throw makeError();
+      return texts.map(() => new Float32Array(384));
+    };
+  };
+
   const mockExecuteQuery = (nodes: EmbeddableNode[]) => {
     return vi.fn().mockImplementation(async (cypher: string) => {
       queryCalls.push(cypher);
@@ -1107,6 +1147,547 @@ describe('runEmbeddingPipeline incremental filter', () => {
         existingEmbeddings,
       ),
     ).rejects.toThrow('vector-index corruption');
+  });
+
+  // ──────────────────────────────────────────────────────────────────────────
+  // Sub-batch failure tolerance (#2790)
+  //
+  // A single transient embedBatch rejection used to abort the whole pipeline,
+  // discarding hours of work on a large repo. It is now tolerated — but only
+  // safely, because the affected nodes have ALL their rows deleted (see the
+  // straddling-chunk regression test below) and a dead endpoint still aborts.
+  // ──────────────────────────────────────────────────────────────────────────
+  describe('sub-batch failure tolerance (#2790)', () => {
+    // 'Enum' is a chunkable label with no CHUNKING_RULES entry, so chunkNode
+    // falls through to the pure characterChunk sliding window — deterministic
+    // chunk counts with no tree-sitter involvement.
+    const makeEnumNode = (name: string, content: string): EmbeddableNode => ({
+      id: `Enum:src/${name}.ts:${name}`,
+      name,
+      label: 'Enum',
+      filePath: `src/${name}.ts`,
+      content,
+      startLine: 1,
+      endLine: 1,
+    });
+
+    const createdRows = () =>
+      stmtCalls.filter((c) => c.cypher.includes('CREATE')).flatMap((c) => c.params);
+    // The per-nodeId DELETE (`{nodeId: $nodeId}`), i.e. "drop every row this node
+    // has" — distinct from batchInsertEmbeddings' per-row `{id: $id}` DELETE.
+    const nodeIdDeletes = () => stmtCalls.filter((c) => c.cypher.includes('{nodeId: $nodeId}'));
+
+    it('survives a failing sub-batch and reports the dropped nodes', async () => {
+      mockEmbedderWith(failingEmbedBatch([1], () => new Error('endpoint hiccup')));
+
+      // Four one-chunk nodes, sub-batches of two → sub-batch 1 = [a, b] (fails),
+      // sub-batch 2 = [c, d] (succeeds).
+      const a = makeEnumNode('a', 'enum A {}');
+      const b = makeEnumNode('b', 'enum B {}');
+      const c = makeEnumNode('c', 'enum C {}');
+      const d = makeEnumNode('d', 'enum D {}');
+      const executeQuery = mockExecuteQuery([a, b, c, d]);
+      const executeWithReusedStatement = mockExecuteWithReusedStatement();
+
+      const { runEmbeddingPipeline } =
+        await import('../../src/core/embeddings/embedding-pipeline.js');
+
+      const result = await runEmbeddingPipeline(
+        executeQuery,
+        executeWithReusedStatement,
+        onProgress,
+        { chunkSize: 100, overlap: 0, subBatchSize: 2 },
+        undefined,
+        new Map(),
+      );
+
+      // Resolves rather than throwing — the whole point of #2790.
+      expect(result).toMatchObject({
+        failedNodeIds: [a.id, b.id],
+        nodesProcessed: 2,
+      });
+      const insertedIds = createdRows().map((p) => p.nodeId);
+      expect(insertedIds).toEqual([c.id, d.id]);
+      expect(progressUpdates.at(-1)?.phase).toBe('ready');
+      expect(vectorIndexMock).toHaveBeenCalledTimes(1);
+    });
+
+    it('deletes ALL rows of a node whose chunks straddled the failed sub-batch boundary', async () => {
+      // The H1 regression. `allTexts`/`allUpdates` are flat over the outer batch
+      // with no node alignment, so a node's chunks can span a sub-batch boundary.
+      // Keeping the surviving chunks would be silent permanent corruption: they
+      // carry the CURRENT contentHash, and both downstream hash-map builders
+      // collapse a node's rows to one entry per nodeId, so the half-embedded node
+      // would read as FRESH forever and its missing chunks would never return.
+      const subBatchTexts: number[] = [];
+      mockEmbedderWith(failingEmbedBatch([2], () => new Error('endpoint hiccup'), subBatchTexts));
+
+      const solo = makeEnumNode('solo', 'enum S {}'); // 9 chars ≤ chunkSize → 1 chunk
+      const straddler = makeEnumNode('straddler', 'x'.repeat(30)); // 30 chars → 3 chunks
+      const executeQuery = mockExecuteQuery([solo, straddler]);
+      const executeWithReusedStatement = mockExecuteWithReusedStatement();
+
+      const { runEmbeddingPipeline } =
+        await import('../../src/core/embeddings/embedding-pipeline.js');
+
+      const result = await runEmbeddingPipeline(
+        executeQuery,
+        executeWithReusedStatement,
+        onProgress,
+        { chunkSize: 10, overlap: 0, subBatchSize: 2 },
+        undefined,
+        new Map(),
+      );
+
+      // Fixture guard: 4 chunks split 2+2, so sub-batch 1 = [solo#0, straddler#0]
+      // and sub-batch 2 = [straddler#1, straddler#2] — the straddle is real, not
+      // an accident of a chunker change that quietly made this test vacuous.
+      expect(subBatchTexts).toEqual([2, 2]);
+      expect(createdRows().map((p) => p.nodeId)).toEqual([solo.id, straddler.id]);
+      // straddler#0 WAS written by the surviving sub-batch — the corrupting row.
+      const straddlerCreateIndex = stmtCalls.findIndex(
+        (call) =>
+          call.cypher.includes('CREATE') && call.params.some((p) => p.nodeId === straddler.id),
+      );
+      expect(
+        stmtCalls[straddlerCreateIndex].params
+          .filter((p) => p.nodeId === straddler.id)
+          .map((p) => p.chunkIndex),
+      ).toEqual([0]);
+
+      // …and it is deleted afterwards, leaving the node with ZERO rows, so the
+      // next run's incremental filter sees it as a new node and re-embeds it.
+      const straddlerDeleteIndex = stmtCalls.findIndex(
+        (call) =>
+          call.cypher.includes('{nodeId: $nodeId}') &&
+          call.params.some((p) => p.nodeId === straddler.id),
+      );
+      expect(straddlerDeleteIndex).toBeGreaterThan(straddlerCreateIndex);
+      // The untouched node keeps its row — the drop is scoped to the failure.
+      expect(nodeIdDeletes().flatMap((c) => c.params.map((p) => p.nodeId))).toEqual([straddler.id]);
+      expect(result).toMatchObject({ failedNodeIds: [straddler.id], nodesProcessed: 1 });
+    });
+
+    it('rethrows once the consecutive-failure ceiling is reached (endpoint fully down)', async () => {
+      // Five one-chunk nodes, one chunk per sub-batch, every call rejecting →
+      // the 5th consecutive failure trips MAX_CONSECUTIVE_SUB_BATCH_FAILURES.
+      // Without the ceiling a dead endpoint would walk every remaining node
+      // deleting rows as it went, wiping surviving embeddings on an incremental.
+      mockEmbedderWith(failingEmbedBatch([1, 2, 3, 4, 5], () => new Error('endpoint down')));
+
+      const nodes = ['n1', 'n2', 'n3', 'n4', 'n5'].map((n) => makeEnumNode(n, `enum ${n} {}`));
+      const executeQuery = mockExecuteQuery(nodes);
+      const executeWithReusedStatement = mockExecuteWithReusedStatement();
+
+      const { runEmbeddingPipeline } =
+        await import('../../src/core/embeddings/embedding-pipeline.js');
+
+      await expect(
+        runEmbeddingPipeline(
+          executeQuery,
+          executeWithReusedStatement,
+          onProgress,
+          { chunkSize: 100, overlap: 0, subBatchSize: 1 },
+          undefined,
+          new Map(),
+        ),
+      ).rejects.toThrow('endpoint down');
+
+      // The bail-out still cleans up first: nodes touched before the ceiling
+      // tripped must not be left half-embedded just because the run is aborting.
+      expect(nodeIdDeletes().flatMap((c) => c.params.map((p) => p.nodeId))).toEqual(
+        nodes.map((n) => n.id),
+      );
+      expect(createdRows()).toEqual([]);
+    });
+
+    it('rethrows the FIRST error of the streak, not the generic one that tripped the ceiling', async () => {
+      // Verified trace for a permanently misconfigured endpoint (#2790): the HTTP
+      // client's shared circuit breaker opens after 3 rejections, so sub-batches 4
+      // and 5 never reach the network and fail with "circuit open, retry in 30s" —
+      // advice to wait for a condition that will never change. Rethrowing the last
+      // error of the streak buries the only message that names the real defect.
+      let failureCount = 0;
+      mockEmbedderWith(
+        failingEmbedBatch([1, 2, 3, 4, 5], () => {
+          failureCount += 1;
+          return new Error(
+            failureCount <= 3
+              ? `unexpected response shape (attempt ${failureCount})`
+              : `circuit open, retry in 30s (attempt ${failureCount})`,
+          );
+        }),
+      );
+
+      const nodes = ['c1', 'c2', 'c3', 'c4', 'c5'].map((n) => makeEnumNode(n, `enum ${n} {}`));
+      const executeQuery = mockExecuteQuery(nodes);
+      const executeWithReusedStatement = mockExecuteWithReusedStatement();
+
+      const { runEmbeddingPipeline } =
+        await import('../../src/core/embeddings/embedding-pipeline.js');
+
+      // Anchored so "attempt 1" cannot be satisfied by a substring of a later
+      // attempt's message.
+      await expect(
+        runEmbeddingPipeline(
+          executeQuery,
+          executeWithReusedStatement,
+          onProgress,
+          { chunkSize: 100, overlap: 0, subBatchSize: 1 },
+          undefined,
+          new Map(),
+        ),
+      ).rejects.toThrow(/^unexpected response shape \(attempt 1\)$/);
+      // Fixture guard: the ceiling really was reached by five failing sub-batches.
+      expect(failureCount).toBe(5);
+    });
+
+    it('retains the first error of the streak that tripped the ceiling, not an earlier isolated one', async () => {
+      // The counter resets on any success, so the retained error must reset with
+      // it: sub-batch 1 fails in isolation, 2 succeeds, and 3-7 are the unbroken
+      // streak that trips the ceiling. The reported error must be sub-batch 3's.
+      let failureCount = 0;
+      mockEmbedderWith(
+        failingEmbedBatch([1, 3, 4, 5, 6, 7], () => {
+          failureCount += 1;
+          return new Error(`sub-batch failure ${failureCount}`);
+        }),
+      );
+
+      const nodes = ['r1', 'r2', 'r3', 'r4', 'r5', 'r6', 'r7'].map((n) =>
+        makeEnumNode(n, `enum ${n} {}`),
+      );
+      const executeQuery = mockExecuteQuery(nodes);
+      const executeWithReusedStatement = mockExecuteWithReusedStatement();
+
+      const { runEmbeddingPipeline } =
+        await import('../../src/core/embeddings/embedding-pipeline.js');
+
+      await expect(
+        runEmbeddingPipeline(
+          executeQuery,
+          executeWithReusedStatement,
+          onProgress,
+          { chunkSize: 100, overlap: 0, subBatchSize: 1 },
+          undefined,
+          new Map(),
+        ),
+      ).rejects.toThrow(/^sub-batch failure 2$/);
+      expect(failureCount).toBe(6);
+    });
+
+    it('resets the consecutive counter on success — scattered failures do not abort', async () => {
+      mockEmbedderWith(failingEmbedBatch([1, 3, 5], () => new Error('endpoint hiccup')));
+
+      const nodes = ['s1', 's2', 's3', 's4', 's5', 's6'].map((n) =>
+        makeEnumNode(n, `enum ${n} {}`),
+      );
+      const executeQuery = mockExecuteQuery(nodes);
+      const executeWithReusedStatement = mockExecuteWithReusedStatement();
+
+      const { runEmbeddingPipeline } =
+        await import('../../src/core/embeddings/embedding-pipeline.js');
+
+      const result = await runEmbeddingPipeline(
+        executeQuery,
+        executeWithReusedStatement,
+        onProgress,
+        { chunkSize: 100, overlap: 0, subBatchSize: 1 },
+        undefined,
+        new Map(),
+      );
+
+      // Six failures total would trip a cumulative counter; three interleaved
+      // with successes must not, so the run completes.
+      expect(result).toMatchObject({
+        failedNodeIds: [nodes[0].id, nodes[2].id, nodes[4].id],
+        nodesProcessed: 3,
+      });
+      expect(createdRows().map((p) => p.nodeId)).toEqual([nodes[1].id, nodes[3].id, nodes[5].id]);
+    });
+
+    it('aborts immediately when the pipeline signal is cancelled mid sub-batch', async () => {
+      const controller = new AbortController();
+      // Cancellation surfaces as an ordinary rejection from embedBatch here; only
+      // the aborted signal distinguishes it from a tolerable endpoint hiccup.
+      mockEmbedderWith(
+        failingEmbedBatch([1], () => {
+          controller.abort();
+          return new Error('embed aborted by caller');
+        }),
+      );
+
+      const a = makeEnumNode('ca', 'enum CA {}');
+      const b = makeEnumNode('cb', 'enum CB {}');
+      const executeQuery = mockExecuteQuery([a, b]);
+      const executeWithReusedStatement = mockExecuteWithReusedStatement();
+
+      const { runEmbeddingPipeline } =
+        await import('../../src/core/embeddings/embedding-pipeline.js');
+
+      await expect(
+        runEmbeddingPipeline(
+          executeQuery,
+          executeWithReusedStatement,
+          onProgress,
+          { chunkSize: 100, overlap: 0, subBatchSize: 1 },
+          undefined,
+          new Map(),
+          { signal: controller.signal },
+        ),
+      ).rejects.toThrow('embed aborted by caller');
+
+      // A cancel must not be laundered into the tolerant drop-and-continue path:
+      // no rows deleted, nothing embedded after the abort.
+      expect(nodeIdDeletes()).toEqual([]);
+      expect(createdRows()).toEqual([]);
+    });
+
+    it('aborts immediately on an AbortError even when the pipeline owns no signal', async () => {
+      // A transport-level cancel (host signal, fetch abort) reaches us only as
+      // the error's shape, so the name is checked as well as our own signal.
+      mockEmbedderWith(
+        failingEmbedBatch([1], () =>
+          Object.assign(new Error('The operation was aborted'), { name: 'AbortError' }),
+        ),
+      );
+
+      const a = makeEnumNode('aa', 'enum AA {}');
+      const b = makeEnumNode('ab', 'enum AB {}');
+      const executeQuery = mockExecuteQuery([a, b]);
+      const executeWithReusedStatement = mockExecuteWithReusedStatement();
+
+      const { runEmbeddingPipeline } =
+        await import('../../src/core/embeddings/embedding-pipeline.js');
+
+      await expect(
+        runEmbeddingPipeline(
+          executeQuery,
+          executeWithReusedStatement,
+          onProgress,
+          { chunkSize: 100, overlap: 0, subBatchSize: 1 },
+          undefined,
+          new Map(),
+        ),
+      ).rejects.toThrow('The operation was aborted');
+
+      expect(nodeIdDeletes()).toEqual([]);
+      expect(createdRows()).toEqual([]);
+    });
+
+    it('reports an empty failedNodeIds and the real node count on a clean run', async () => {
+      mockEmbedderSetup();
+
+      const a = makeEnumNode('ok1', 'enum OK1 {}');
+      const b = makeEnumNode('ok2', 'enum OK2 {}');
+      const executeQuery = mockExecuteQuery([a, b]);
+      const executeWithReusedStatement = mockExecuteWithReusedStatement();
+
+      const { runEmbeddingPipeline } =
+        await import('../../src/core/embeddings/embedding-pipeline.js');
+
+      const result = await runEmbeddingPipeline(
+        executeQuery,
+        executeWithReusedStatement,
+        onProgress,
+        { chunkSize: 100, overlap: 0, subBatchSize: 2 },
+        undefined,
+        new Map(),
+      );
+
+      expect(result).toMatchObject({
+        failedNodeIds: [],
+        nodesProcessed: 2,
+        chunksProcessed: 2,
+      });
+      expect(nodeIdDeletes()).toEqual([]);
+    });
+
+    it('returns an empty failedNodeIds when nothing needs embedding', async () => {
+      mockEmbedderSetup();
+
+      const node = makeEnumNode('fresh', 'enum Fresh {}');
+      const executeQuery = mockExecuteQuery([node]);
+      const executeWithReusedStatement = mockExecuteWithReusedStatement();
+
+      const { runEmbeddingPipeline } =
+        await import('../../src/core/embeddings/embedding-pipeline.js');
+
+      const result = await runEmbeddingPipeline(
+        executeQuery,
+        executeWithReusedStatement,
+        onProgress,
+        {},
+        undefined,
+        new Map([[node.id, contentHashForNode(node, DEFAULT_EMBEDDING_CONFIG)]]),
+      );
+
+      expect(result).toMatchObject({ failedNodeIds: [], nodesProcessed: 0 });
+    });
+
+    // ────────────────────────────────────────────────────────────────────────
+    // Incremental re-embed against a healthy existing index (#2790)
+    //
+    // The tests above all pass an EMPTY existingEmbeddings map, which makes the
+    // pipeline skip the incremental filter entirely — `staleNodeIds` stays empty
+    // so the pre-existing per-batch stale DELETE never fires, and the recorded
+    // deletes only ever show the failure-path cleanup. These exercise the state
+    // where the new DELETE can destroy live user data: real rows exist, the
+    // per-batch stale DELETE has already removed some of them, and a tolerated
+    // failure must leave the affected nodes at ZERO rows without touching anyone
+    // else's.
+    // ────────────────────────────────────────────────────────────────────────
+    // Every nodeId named by a per-nodeId DELETE, grouped per statement so the
+    // per-batch stale delete and the failure-path cleanup stay distinguishable.
+    const nodeIdDeleteGroups = () => nodeIdDeletes().map((c) => c.params.map((p) => p.nodeId));
+
+    it('leaves a stale node whose sub-batch failed with zero rows (incremental)', async () => {
+      mockEmbedderWith(failingEmbedBatch([1], () => new Error('endpoint hiccup')));
+
+      const staleFail = makeEnumNode('sf', 'enum SF {}');
+      const staleOk = makeEnumNode('so', 'enum SO {}');
+      // Both hashes mismatch → both are stale, so both have their existing rows
+      // deleted up front, before a single text is embedded.
+      const existingEmbeddings = new Map<string, string>([
+        [staleFail.id, 'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa'],
+        [staleOk.id, 'bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb'],
+      ]);
+      const executeQuery = mockExecuteQuery([staleFail, staleOk]);
+      const executeWithReusedStatement = mockExecuteWithReusedStatement();
+
+      const { runEmbeddingPipeline } =
+        await import('../../src/core/embeddings/embedding-pipeline.js');
+
+      const result = await runEmbeddingPipeline(
+        executeQuery,
+        executeWithReusedStatement,
+        onProgress,
+        { chunkSize: 100, overlap: 0, subBatchSize: 1 },
+        undefined,
+        existingEmbeddings,
+      );
+
+      // Statement 1 = the pre-existing per-batch stale DELETE (both nodes),
+      // statement 2 = the #2790 failure cleanup (only the node that lost its
+      // sub-batch). Without the second, the assertion collapses to one group.
+      expect(nodeIdDeleteGroups()).toEqual([[staleFail.id, staleOk.id], [staleFail.id]]);
+      // Nothing re-inserted a partial row for the failed node: it holds zero rows,
+      // which the next run's filter reads as "new node" and re-embeds.
+      expect(createdRows().map((p) => p.nodeId)).toEqual([staleOk.id]);
+      expect(createdRows()[0]).toMatchObject({
+        nodeId: staleOk.id,
+        chunkIndex: 0,
+        contentHash: contentHashForNode(staleOk, DEFAULT_EMBEDDING_CONFIG),
+      });
+      expect(result).toMatchObject({
+        failedNodeIds: [staleFail.id],
+        nodesProcessed: 1,
+        chunksProcessed: 1,
+      });
+    });
+
+    it('never collateral-deletes an unchanged node when another node fails (incremental)', async () => {
+      mockEmbedderWith(failingEmbedBatch([1], () => new Error('endpoint hiccup')));
+
+      const unchanged = makeEnumNode('keep', 'enum Keep {}');
+      const staleFail = makeEnumNode('sf2', 'enum SF2 {}');
+      const fresh = makeEnumNode('new1', 'enum New1 {}');
+      const existingEmbeddings = new Map<string, string>([
+        // Hash matches → filtered out before batching, so it is never embedded and
+        // its healthy rows are the ones a sloppy cleanup would take down with it.
+        [unchanged.id, contentHashForNode(unchanged, DEFAULT_EMBEDDING_CONFIG)],
+        [staleFail.id, 'cccccccccccccccccccccccccccccccccccccccc'],
+        // `fresh` is absent from the map → embedded as a new node, not stale.
+      ]);
+      const executeQuery = mockExecuteQuery([unchanged, staleFail, fresh]);
+      const executeWithReusedStatement = mockExecuteWithReusedStatement();
+
+      const { runEmbeddingPipeline } =
+        await import('../../src/core/embeddings/embedding-pipeline.js');
+
+      const result = await runEmbeddingPipeline(
+        executeQuery,
+        executeWithReusedStatement,
+        onProgress,
+        { chunkSize: 100, overlap: 0, subBatchSize: 1 },
+        undefined,
+        existingEmbeddings,
+      );
+
+      // Only the stale node is ever named by a DELETE — once by the per-batch
+      // stale delete, once by the failure cleanup.
+      const deletedNodeIds = nodeIdDeletes().flatMap((c) => c.params.map((p) => p.nodeId));
+      expect(deletedNodeIds).toEqual([staleFail.id, staleFail.id]);
+      // The data-loss guard, stated directly: a tolerated failure must not remove
+      // embeddings that were fine.
+      expect(deletedNodeIds).not.toContain(unchanged.id);
+      expect(createdRows().map((p) => p.nodeId)).toEqual([fresh.id]);
+      expect(result).toMatchObject({ failedNodeIds: [staleFail.id], nodesProcessed: 1 });
+    });
+
+    it('deletes the surviving chunk of a straddling stale node so it cannot read as fresh (incremental)', async () => {
+      const subBatchTexts: number[] = [];
+      mockEmbedderWith(failingEmbedBatch([2], () => new Error('endpoint hiccup'), subBatchTexts));
+
+      const solo = makeEnumNode('isolo', 'enum S {}'); // 9 chars <= chunkSize → 1 chunk
+      const straddler = makeEnumNode('istraddler', 'x'.repeat(30)); // 30 chars → 3 chunks
+      const staleStraddlerHash = 'dddddddddddddddddddddddddddddddddddddddd';
+      const existingEmbeddings = new Map<string, string>([
+        [solo.id, 'eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee'],
+        [straddler.id, staleStraddlerHash],
+      ]);
+      const executeQuery = mockExecuteQuery([solo, straddler]);
+      const executeWithReusedStatement = mockExecuteWithReusedStatement();
+
+      const { runEmbeddingPipeline } =
+        await import('../../src/core/embeddings/embedding-pipeline.js');
+
+      const result = await runEmbeddingPipeline(
+        executeQuery,
+        executeWithReusedStatement,
+        onProgress,
+        { chunkSize: 10, overlap: 0, subBatchSize: 2 },
+        undefined,
+        existingEmbeddings,
+      );
+
+      // Fixture guard: 4 chunks split 2+2, so sub-batch 1 = [solo#0, straddler#0]
+      // and sub-batch 2 = [straddler#1, straddler#2] — the straddle is real.
+      expect(subBatchTexts).toEqual([2, 2]);
+      expect(nodeIdDeleteGroups()).toEqual([[solo.id, straddler.id], [straddler.id]]);
+
+      // The surviving chunk carries the CURRENT hash, not the stale one that is
+      // still in existingEmbeddings — which is exactly why it must not survive: a
+      // downstream hash map collapses a node's rows to one entry, so this single
+      // row would make the node read as fresh forever.
+      const straddlerCreateIndex = stmtCalls.findIndex(
+        (call) =>
+          call.cypher.includes('CREATE') && call.params.some((p) => p.nodeId === straddler.id),
+      );
+      expect(
+        stmtCalls[straddlerCreateIndex].params.filter((p) => p.nodeId === straddler.id),
+      ).toMatchObject([
+        { chunkIndex: 0, contentHash: contentHashForNode(straddler, DEFAULT_EMBEDDING_CONFIG) },
+      ]);
+      expect(contentHashForNode(straddler, DEFAULT_EMBEDDING_CONFIG)).not.toBe(staleStraddlerHash);
+
+      // …and both of the straddler's DELETEs bracket that write: the stale delete
+      // before it, the failure cleanup after it. Zero rows remain.
+      const straddlerDeletePositions = stmtCalls
+        .map((call, index) => ({ call, index }))
+        .filter(
+          ({ call }) =>
+            call.cypher.includes('{nodeId: $nodeId}') &&
+            call.params.some((p) => p.nodeId === straddler.id),
+        )
+        .map(({ index }) => index > straddlerCreateIndex);
+      expect(straddlerDeletePositions).toEqual([false, true]);
+      expect(result).toMatchObject({
+        failedNodeIds: [straddler.id],
+        nodesProcessed: 1,
+        chunksProcessed: 1,
+      });
+    });
   });
 });
 

@@ -22,6 +22,7 @@ import {
   getStoragePath,
   registryPathEquals,
   type RegistryEntry,
+  type RepoMeta,
 } from '../storage/repo-manager.js';
 import {
   executeQuery,
@@ -781,6 +782,49 @@ export function validateAnalyzeToken(
     return { status: 400, error: '"token" is only supported for github.com URLs' };
   return null;
 }
+
+/**
+ * Decide what POST /api/embed persists and reports once the pipeline returns.
+ *
+ * #2790: the pipeline no longer throws when a sub-batch loses its endpoint — it
+ * deletes the affected nodes' rows and names them in `failedNodeIds`. Dropping
+ * that receipt made the route clear `embeddingCheckpoint` and mark the job
+ * 'complete', so a partial run was indistinguishable from a clean one and the
+ * dropped nodes were never retried. So: retain the checkpoint carrying the
+ * dropped ids as `pendingNodeIds` (the next run's `forceReembedNodeIds`), and
+ * report the run as failed — the AnalyzeJob status union has no partial member
+ * and this is what the pre-#2790 throw produced, so a poller keeps seeing
+ * "not a clean success" without a new status shape.
+ *
+ * `undefined` checkpoint ≡ a clean run: clear it, as before.
+ *
+ * Exported for unit tests (the route body is otherwise only reachable by
+ * booting the server), mirroring validateAnalyzeToken above.
+ */
+export const resolveEmbedRunOutcome = (
+  identity: { model: string; dimensions: number; provider: string },
+  result: { nodesProcessed: number; chunksProcessed: number; failedNodeIds: string[] },
+): { checkpoint: RepoMeta['embeddingCheckpoint']; error?: string } => {
+  if (result.failedNodeIds.length === 0) return { checkpoint: undefined };
+  return {
+    checkpoint: {
+      at: new Date().toISOString(),
+      nodesProcessed: result.nodesProcessed,
+      // `nodesProcessed` counts only the COMPLETE nodes, so the walked total is
+      // those plus the dropped ones (same reconstruction as run-analyze.ts).
+      totalNodes: result.nodesProcessed + result.failedNodeIds.length,
+      chunksProcessed: result.chunksProcessed,
+      model: identity.model,
+      dimensions: identity.dimensions,
+      provider: identity.provider,
+      pendingNodeIds: result.failedNodeIds,
+    },
+    error:
+      `Embedding generation finished partially: ${result.failedNodeIds.length} node(s) lost ` +
+      'their embeddings to endpoint failures and were dropped. They are checkpointed as ' +
+      'pending — run embedding generation again to retry exactly those nodes.',
+  };
+};
 
 export const createServer = async (port: number, host: string = '127.0.0.1') => {
   // Surface a cleartext Azure DevOps PAT config at boot (operators rarely
@@ -1795,6 +1839,8 @@ export const createServer = async (port: number, host: string = '127.0.0.1') => 
 
         // Run embedding pipeline asynchronously
         (async () => {
+          // Set inside withLbugDb, read after it closes (#2790).
+          let partialRunError: string | undefined;
           try {
             const lbugPath = path.join(entry.storagePath, 'lbug');
             await withLbugDb(lbugPath, async () => {
@@ -1861,7 +1907,7 @@ export const createServer = async (port: number, host: string = '127.0.0.1') => 
                   `[embed] ${existingEmbeddings.size} nodes already embedded — incremental run with content-hash comparison`,
                 );
               }
-              await runEmbeddingPipeline(
+              const pipelineResult = await runEmbeddingPipeline(
                 executeQuery,
                 executeWithReusedStatement,
                 (p) => {
@@ -1904,16 +1950,30 @@ export const createServer = async (port: number, host: string = '127.0.0.1') => 
               // handles this during process exit, but the server keeps the
               // connection open for other routes — a CHECKPOINT is enough.
               await flushWAL();
+              const outcome = resolveEmbedRunOutcome(embeddingIdentity, pipelineResult);
+              partialRunError = outcome.error;
               // Same re-read-before-write reasoning as saveEmbeddingCheckpoint above.
               const finalMeta = (await loadMeta(entry.storagePath)) ?? embeddingMeta;
-              embeddingMeta = { ...finalMeta, embeddingCheckpoint: undefined };
+              embeddingMeta = { ...finalMeta, embeddingCheckpoint: outcome.checkpoint };
               await saveMeta(entry.storagePath, embeddingMeta);
             });
 
             // Don't overwrite 'failed' if the job was cancelled while the pipeline was running
             const current = embedJobManager.getJob(job.id);
             if (!current || current.status !== 'failed') {
-              embedJobManager.updateJob(job.id, { status: 'complete' });
+              // The pipeline reported `ready`, which the progress mapper above
+              // already turned into phase 'complete' — restate the real phase so
+              // the job record isn't self-contradictory (#2790).
+              embedJobManager.updateJob(
+                job.id,
+                partialRunError === undefined
+                  ? { status: 'complete' }
+                  : {
+                      status: 'failed',
+                      error: partialRunError,
+                      progress: { phase: 'failed', percent: 100, message: partialRunError },
+                    },
+              );
             }
           } catch (err: any) {
             const current = embedJobManager.getJob(job.id);

@@ -1,7 +1,18 @@
+import { execSync } from 'child_process';
 import fs from 'fs/promises';
-import { afterEach, describe, expect, it, vi } from 'vitest';
-import { getStoragePaths, saveMeta, type RepoMeta } from '../../src/storage/repo-manager.js';
+import { afterEach, describe, expect, it, vi, type Mock } from 'vitest';
+import {
+  getStoragePaths,
+  loadMeta,
+  saveMeta,
+  type RepoMeta,
+} from '../../src/storage/repo-manager.js';
 import { EMBEDDING_DIMS } from '../../src/core/lbug/schema.js';
+import { getIndexIncompleteReasons } from '../../src/core/index-freshness.js';
+import type {
+  EmbeddingPipelineOptions,
+  EmbeddingPipelineResult,
+} from '../../src/core/embeddings/embedding-pipeline.js';
 import { createTempDir } from '../helpers/test-db.js';
 
 const SIMULATED_MISSING_FTS_INDEX_NAME = 'File.file_fts';
@@ -1438,6 +1449,577 @@ describe('runFullAnalysis re-resolves git state under the lock (#2658 review H2)
       expect(release).toHaveBeenCalledTimes(1); // lock freed despite the throw
     } finally {
       vi.doUnmock('../../src/storage/index-lock.js');
+      await tmpRepo.cleanup();
+    }
+  });
+});
+
+/**
+ * ── #2790: the Phase 5 embedding gate ─────────────────────────────────
+ *
+ * Four distinct real states used to collapse into `embeddingCount === 0`, and
+ * the gate hard-crashed the run on three of them. Nothing pinned it in either
+ * direction before this suite (the message string `'without persisted
+ * embeddings'` appeared ONLY in run-analyze.ts). Driven on the wholesale-mock
+ * harness above so each branch is reachable deterministically: the count probe
+ * and the pipeline's `nodesProcessed`/`failedNodeIds` receipt are the only two
+ * inputs the gate reads.
+ */
+describe('runFullAnalysis Phase 5 embedding gate (#2790)', () => {
+  const GATE_NODE_ID = 'Function:src/app.ts:handler:1';
+  const stubNode = {
+    id: GATE_NODE_ID,
+    label: 'Function',
+    name: 'handler',
+    properties: { filePath: 'src/app.ts' },
+  };
+
+  /** The `count(e)` probe's answer; `'throw'` simulates a failed count query. */
+  type CountAnswer = 'throw' | Array<Record<string, unknown>>;
+
+  const mockGateHarness = (
+    countAnswer: CountAnswer,
+    pipelineResult: EmbeddingPipelineResult,
+  ): { runEmbeddingPipeline: Mock } => {
+    vi.doMock('../../src/core/lbug/lbug-adapter.js', () => ({
+      initLbug: vi.fn(async () => undefined),
+      loadGraphToLbug: vi.fn(async () => undefined),
+      getLbugStats: vi.fn(async () => ({ nodes: 2, edges: 0, communities: 0, processes: 0 })),
+      executeQuery: vi.fn(async (cypher: string) => {
+        if (!/RETURN count\(e\) AS cnt/.test(cypher)) return [];
+        if (countAnswer === 'throw') {
+          throw new Error('Binder exception: Table CodeEmbedding does not exist.');
+        }
+        return countAnswer;
+      }),
+      executeWithReusedStatement: vi.fn(async () => []),
+      closeLbug: vi.fn(async () => undefined),
+      wipeLbugDbFiles: vi.fn(async () => undefined),
+      loadCachedEmbeddings: vi.fn(async () => ({
+        embeddingNodeIds: new Set<string>(),
+        embeddings: [],
+      })),
+      deleteNodesForFile: vi.fn(async () => undefined),
+      deleteNodesForFiles: vi.fn(async () => undefined),
+      deleteAllCommunitiesAndProcesses: vi.fn(async () => undefined),
+      queryImporters: vi.fn(async () => []),
+      queryImportersBatch: vi.fn(async () => []),
+      loadFTSExtension: vi.fn(async () => false),
+    }));
+    vi.doMock('../../src/core/search/fts-indexes.js', () => ({
+      initialiseSearchFTSStemmer: vi.fn(() => 'porter'),
+      createSearchFTSIndexes: vi.fn(async () => undefined),
+      verifySearchFTSIndexes: vi.fn(async () => []),
+    }));
+    vi.doMock('../../src/core/ingestion/pipeline.js', () => ({
+      runPipelineFromRepo: vi.fn(async (repoPath: string) => ({
+        repoPath,
+        totalFileCount: 1,
+        graph: {
+          forEachNode: (fn: (node: typeof stubNode) => void) => fn(stubNode),
+          getNode: (id: string) => (id === GATE_NODE_ID ? stubNode : undefined),
+        },
+      })),
+    }));
+    vi.doMock('../../src/storage/repo-manager.js', async (importActual) => ({
+      ...(await importActual<typeof import('../../src/storage/repo-manager.js')>()),
+      registerRepo: vi.fn(async () => 'embedding-gate-repo'),
+      ensureGitNexusIgnored: vi.fn(async () => undefined),
+    }));
+    // Fixed identity: keeps the local embedder (and its native runtime) out of
+    // a gate test that never embeds anything for real.
+    vi.doMock('../../src/core/embeddings/embedding-identity.js', () => ({
+      resolveEmbeddingIdentity: vi.fn(() => ({
+        model: 'gate-test-model',
+        dimensions: EMBEDDING_DIMS,
+        provider: 'local',
+      })),
+    }));
+    const runEmbeddingPipeline = vi.fn(async () => pipelineResult);
+    vi.doMock('../../src/core/embeddings/embedding-pipeline.js', () => ({
+      runEmbeddingPipeline,
+      buildVectorIndex: vi.fn(async () => false),
+    }));
+    return { runEmbeddingPipeline };
+  };
+
+  const cleanPipelineResult = (
+    overrides: Partial<EmbeddingPipelineResult> = {},
+  ): EmbeddingPipelineResult => ({
+    nodesProcessed: 3,
+    chunksProcessed: 3,
+    vectorIndexReady: false,
+    semanticMode: 'exact-scan',
+    failedNodeIds: [],
+    ...overrides,
+  });
+
+  const runGate = async (
+    prefix: string,
+    countAnswer: CountAnswer,
+    pipelineResult: EmbeddingPipelineResult,
+  ): Promise<{ logs: string[]; meta: RepoMeta | null; rawMeta: string; error: unknown }> => {
+    mockGateHarness(countAnswer, pipelineResult);
+    const tmpRepo = await createTempDir(prefix);
+    try {
+      const { storagePath } = getStoragePaths(tmpRepo.dbPath);
+      await fs.mkdir(storagePath, { recursive: true });
+      const logs: string[] = [];
+      const { runFullAnalysis } = await import('../../src/core/run-analyze.js');
+      const error: unknown = await runFullAnalysis(
+        tmpRepo.dbPath,
+        { embeddings: true, skipAgentsMd: true, skipSkills: true },
+        { onProgress: () => {}, onLog: (m: string) => logs.push(m) },
+      ).then(
+        () => null,
+        (e: unknown) => e,
+      );
+      const rawMeta = await fs.readFile(`${storagePath}/meta.json`, 'utf-8').catch(() => '');
+      return {
+        logs,
+        meta: rawMeta === '' ? null : (JSON.parse(rawMeta) as RepoMeta),
+        rawMeta,
+        error,
+      };
+    } finally {
+      await tmpRepo.cleanup();
+    }
+  };
+
+  afterEach(() => {
+    vi.doUnmock('../../src/core/lbug/lbug-adapter.js');
+    vi.doUnmock('../../src/core/search/fts-indexes.js');
+    vi.doUnmock('../../src/core/ingestion/pipeline.js');
+    vi.doUnmock('../../src/storage/repo-manager.js');
+    vi.doUnmock('../../src/core/embeddings/embedding-identity.js');
+    vi.doUnmock('../../src/core/embeddings/embedding-pipeline.js');
+    vi.resetModules();
+    vi.clearAllMocks();
+    vi.unstubAllEnvs();
+  });
+
+  // State 4 — the ONLY genuine failure: work was attempted and nothing landed.
+  it('throws when the pipeline attempted work and the count is a known zero', async () => {
+    const { error, meta } = await runGate(
+      'gitnexus-gate-known-zero-',
+      [{ cnt: 0 }],
+      cleanPipelineResult(),
+    );
+    expect(error).toBeInstanceOf(Error);
+    expect(error).toMatchObject({
+      message: expect.stringContaining('without persisted embeddings'),
+    });
+    // …and the crash now tells the operator how to recover.
+    expect(error).toMatchObject({
+      message: expect.stringMatching(/GITNEXUS_EMBEDDING_URL/),
+    });
+    expect(error).toMatchObject({
+      message: expect.stringMatching(/--drop-embeddings/),
+    });
+    // The index really was not registered: no finalize meta was written.
+    expect(meta).toBeNull();
+  });
+
+  // State 3 — "cannot ask" is not "wrote nothing".
+  it('does not fire when the count query throws, and logs why the count is unknown', async () => {
+    const { error, logs, meta } = await runGate(
+      'gitnexus-gate-count-throws-',
+      'throw',
+      cleanPipelineResult(),
+    );
+    expect(error).toBeNull();
+    // The silent `catch {}` is gone — the operator sees the real reason.
+    expect(logs).toContainEqual(expect.stringContaining('could not count persisted embeddings'));
+    expect(logs).toContainEqual(expect.stringContaining('Table CodeEmbedding does not exist'));
+    expect(logs).toContainEqual(expect.stringContaining('without a verified embedding count'));
+    // The index was registered despite the diagnostic failure.
+    expect(meta).toMatchObject({ repoPath: expect.any(String) });
+  });
+
+  // State 2 — the pipeline ran but had nothing to embed (totalNodes 0 after
+  // the incremental filter). A legitimately empty table is not a defect.
+  it('does not fire when the pipeline had nothing to attempt', async () => {
+    const { error, meta } = await runGate(
+      'gitnexus-gate-nothing-to-do-',
+      [{ cnt: 0 }],
+      cleanPipelineResult({ nodesProcessed: 0, chunksProcessed: 0 }),
+    );
+    expect(error).toBeNull();
+    expect(meta).toMatchObject({ stats: { embeddings: 0 } });
+    expect(meta).toMatchObject({
+      capabilities: { vectorSearch: { status: 'unavailable' } },
+    });
+  });
+
+  // Partial success: honest partial index beats no index.
+  it('warns but does not fire when nodes were dropped and embeddings still persisted', async () => {
+    const { error, logs, meta } = await runGate(
+      'gitnexus-gate-partial-',
+      [{ cnt: 5 }],
+      cleanPipelineResult({ nodesProcessed: 2, failedNodeIds: ['node-a', 'node-b'] }),
+    );
+    expect(error).toBeNull();
+    expect(logs).toContainEqual(expect.stringContaining('2 node(s) lost their embeddings'));
+    // The heal promise names what ACTUALLY heals them. "Zero rows, so the next
+    // run re-embeds them automatically" was false: a plain analyze over an
+    // already-embedded index derives shouldGenerateEmbeddings = false and never
+    // calls the pipeline at all (#2790).
+    expect(logs).toContainEqual(expect.stringMatching(/recorded as an embedding checkpoint/));
+    expect(logs).not.toContainEqual(expect.stringMatching(/re-embeds\s+them automatically/));
+    expect(meta).toMatchObject({ stats: { embeddings: 5 } });
+  });
+
+  // Finding 1: the checkpoint is the heal mechanism, so a partial run must
+  // leave it on disk carrying exactly the dropped ids.
+  it('retains the embedding checkpoint with the dropped ids as pendingNodeIds', async () => {
+    const { error, meta } = await runGate(
+      'gitnexus-gate-partial-checkpoint-',
+      [{ cnt: 5 }],
+      cleanPipelineResult({
+        nodesProcessed: 2,
+        chunksProcessed: 6,
+        failedNodeIds: ['node-a', 'node-b'],
+      }),
+    );
+    expect(error).toBeNull();
+    expect(meta).toMatchObject({
+      embeddingCheckpoint: {
+        pendingNodeIds: ['node-a', 'node-b'],
+        nodesProcessed: 2,
+        // nodesProcessed (complete) + the dropped ones = the nodes walked.
+        totalNodes: 4,
+        chunksProcessed: 6,
+        // The identity of the run that actually wrote it — so a later config
+        // change trips the resume mismatch error, not a foreign-identity resume.
+        model: 'gate-test-model',
+        dimensions: EMBEDDING_DIMS,
+        provider: 'local',
+      },
+    });
+    // The index is registered and honestly reports itself as incomplete.
+    expect(getIndexIncompleteReasons(meta)).toEqual(['embedding-checkpoint-pending']);
+  });
+
+  // …and the clean-run contract is unchanged: nothing pending, nothing retained.
+  it('clears the embedding checkpoint on a clean run', async () => {
+    const { error, meta } = await runGate(
+      'gitnexus-gate-clean-checkpoint-',
+      [{ cnt: 5 }],
+      cleanPipelineResult(),
+    );
+    expect(error).toBeNull();
+    expect(meta?.embeddingCheckpoint).toBeUndefined();
+    expect(getIndexIncompleteReasons(meta)).toEqual([]);
+  });
+
+  /**
+   * Finding 3: an UNVERIFIED count must not certify the vector lane.
+   *
+   * `runGate` above always starts from an empty temp dir, so
+   * `existingMeta?.stats?.embeddings` is undefined there and the carry-forward
+   * branch never runs. Seeded here: prior meta claims 5000 embeddings and a
+   * working vector index, the operator runs --drop-embeddings (so the pipeline
+   * never runs and cannot report anything), and the count probe throws. The
+   * count carries forward — it is the sole input to the NEXT run's
+   * deriveEmbeddingMode and a false 0 would make a later --force discard a live
+   * cache — but a guess may not stamp 'vector-index' over a table holding zero.
+   */
+  it('does not certify the vector lane from a carried-forward count (#2790)', async () => {
+    mockGateHarness('throw', cleanPipelineResult());
+    const tmpRepo = await createTempDir('gitnexus-gate-carryforward-');
+    try {
+      const { storagePath } = getStoragePaths(tmpRepo.dbPath);
+      await fs.mkdir(storagePath, { recursive: true });
+      await saveMeta(storagePath, {
+        repoPath: tmpRepo.dbPath,
+        lastCommit: '',
+        indexedAt: new Date().toISOString(),
+        stats: { nodes: 2, embeddings: 5000 },
+        capabilities: {
+          graph: { provider: 'ladybugdb', status: 'available' },
+          fts: { provider: 'ladybugdb-fts', status: 'available' },
+          vectorSearch: {
+            provider: 'ladybugdb-vector',
+            status: 'vector-index',
+            exactScanLimit: 10_000,
+          },
+        },
+      });
+
+      const { runFullAnalysis } = await import('../../src/core/run-analyze.js');
+      const dropLogs: string[] = [];
+      await runFullAnalysis(
+        tmpRepo.dbPath,
+        { dropEmbeddings: true, skipAgentsMd: true, skipSkills: true },
+        { onProgress: () => {}, onLog: (m: string) => dropLogs.push(m) },
+      );
+
+      const meta = await loadMeta(storagePath);
+      // The carry-forward is deliberate and still happens…
+      expect(meta).toMatchObject({ stats: { embeddings: 5000 } });
+      // …but the unverified figure does not vouch for a vector lane over a DB
+      // whose embedding table the run just dropped. Pre-fix this stamped
+      // 'vector-index' (the persisted stamp fed `effectiveSemanticMode`).
+      expect(meta).toMatchObject({
+        capabilities: { vectorSearch: { status: 'unavailable' } },
+      });
+      expect(dropLogs).toContainEqual(
+        expect.stringContaining('without a verified embedding count'),
+      );
+
+      // The carried-forward count still drives the NEXT run's mode derivation:
+      // a plain re-analyze reads 5000 as `existingEmbeddingCount` rather than
+      // treating the repo as never-embedded (which is what a false 0 would do,
+      // making the run discard the surviving cache).
+      const nextLogs: string[] = [];
+      await runFullAnalysis(
+        tmpRepo.dbPath,
+        { skipAgentsMd: true, skipSkills: true },
+        { onProgress: () => {}, onLog: (m: string) => nextLogs.push(m) },
+      );
+      expect(nextLogs).toContainEqual(expect.stringContaining('5000 existing embeddings'));
+    } finally {
+      await tmpRepo.cleanup();
+    }
+  });
+
+  // The bypass hole: `Number(...)` → NaN, `NaN === 0` is false, so the old gate
+  // waved this through and `stats.embeddings` serialized to null.
+  it('treats a non-finite count as unknown rather than a silent pass', async () => {
+    const { error, logs, meta, rawMeta } = await runGate(
+      'gitnexus-gate-non-finite-',
+      [{ cnt: 'not-a-number' }],
+      cleanPipelineResult(),
+    );
+    expect(error).toBeNull();
+    expect(logs).toContainEqual(
+      expect.stringContaining('count query returned a non-numeric result'),
+    );
+    expect(logs).toContainEqual(expect.stringContaining('without a verified embedding count'));
+    // Not silently stamped: no NaN-derived null lands in meta.json, and the
+    // capability stamp does not claim a working vector lane off an unknown.
+    expect(meta?.stats?.embeddings).toBeUndefined();
+    expect(rawMeta).not.toContain('"embeddings":null');
+    expect(meta).toMatchObject({
+      capabilities: { vectorSearch: { status: 'unavailable' } },
+    });
+  });
+});
+
+/**
+ * ── #2790: an embedding checkpoint writes ONLY the checkpoint ──────────
+ *
+ * `onCheckpointWindowStart` fires at batchIndex 0 — before a single embedding
+ * row exists — and used to persist a full SUCCESS-shaped meta: the new
+ * `lastCommit`, the new `fileHashes`, and `incrementalInProgress: undefined`.
+ * On a full rebuild the graph is still in the unpublished staging DB, so a
+ * Phase 4 crash discarded the build and left a meta claiming the new commit;
+ * the next run hash-diffed to changed=0/added=0/deleted=0, took the incremental
+ * path and "preserved" the OLD graph — while the crash-recovery dirty flag it
+ * had cleared could no longer force the healing rebuild.
+ *
+ * The end-to-end version of this lives in run-analyze.test.ts (real repo, real
+ * pipeline). This one drives the same callbacks through the wholesale-mock
+ * harness so every field is asserted against a KNOWN pre-existing meta and the
+ * assertions need no build artifacts.
+ */
+describe('runFullAnalysis embedding-checkpoint meta write (#2790)', () => {
+  afterEach(() => {
+    vi.doUnmock('../../src/core/lbug/lbug-adapter.js');
+    vi.doUnmock('../../src/core/search/fts-indexes.js');
+    vi.doUnmock('../../src/core/ingestion/pipeline.js');
+    vi.doUnmock('../../src/storage/repo-manager.js');
+    vi.doUnmock('../../src/core/embeddings/embedding-identity.js');
+    vi.doUnmock('../../src/core/embeddings/embedding-pipeline.js');
+    vi.resetModules();
+    vi.clearAllMocks();
+    vi.unstubAllEnvs();
+  });
+
+  it('preserves lastCommit / fileHashes / the dirty flag, and never restates a stale count', async () => {
+    const STALE_COMMIT = '1111111111111111111111111111111111111111';
+    const STALE_HASHES = { 'src/app.ts': 'stale-hash' };
+    const LIVE_EMBEDDING_COUNT = 42;
+
+    vi.doMock('../../src/core/lbug/lbug-adapter.js', () => ({
+      initLbug: vi.fn(async () => undefined),
+      loadGraphToLbug: vi.fn(async () => undefined),
+      getLbugStats: vi.fn(async () => ({ nodes: 2, edges: 0, communities: 0, processes: 0 })),
+      executeQuery: vi.fn(async (cypher: string) =>
+        /RETURN count\(e\) AS cnt/.test(cypher) ? [{ cnt: LIVE_EMBEDDING_COUNT }] : [],
+      ),
+      executeWithReusedStatement: vi.fn(async () => []),
+      closeLbug: vi.fn(async () => undefined),
+      wipeLbugDbFiles: vi.fn(async () => undefined),
+      // The post-window `onCheckpoint` drains the WAL through the real
+      // wal-checkpoint-driver, which flushes via this adapter export.
+      tryFlushWAL: vi.fn(async () => true),
+      loadCachedEmbeddings: vi.fn(async () => ({
+        embeddingNodeIds: new Set<string>(),
+        embeddings: [],
+      })),
+      deleteNodesForFile: vi.fn(async () => undefined),
+      deleteNodesForFiles: vi.fn(async () => undefined),
+      deleteAllCommunitiesAndProcesses: vi.fn(async () => undefined),
+      queryImporters: vi.fn(async () => []),
+      queryImportersBatch: vi.fn(async () => []),
+      loadFTSExtension: vi.fn(async () => false),
+    }));
+    vi.doMock('../../src/core/search/fts-indexes.js', () => ({
+      initialiseSearchFTSStemmer: vi.fn(() => 'porter'),
+      createSearchFTSIndexes: vi.fn(async () => undefined),
+      verifySearchFTSIndexes: vi.fn(async () => []),
+    }));
+    // No File nodes → this run's computed fileHashes are EMPTY, so a save that
+    // wrote them would visibly erase the stale map the assertions pin.
+    vi.doMock('../../src/core/ingestion/pipeline.js', () => ({
+      runPipelineFromRepo: vi.fn(async (repoPath: string) => ({
+        repoPath,
+        totalFileCount: 1,
+        graph: { forEachNode: () => undefined, getNode: () => undefined },
+      })),
+    }));
+    vi.doMock('../../src/storage/repo-manager.js', async (importActual) => ({
+      ...(await importActual<typeof import('../../src/storage/repo-manager.js')>()),
+      registerRepo: vi.fn(async () => 'checkpoint-meta-repo'),
+      ensureGitNexusIgnored: vi.fn(async () => undefined),
+    }));
+    vi.doMock('../../src/core/embeddings/embedding-identity.js', () => ({
+      resolveEmbeddingIdentity: vi.fn(() => ({
+        model: 'checkpoint-test-model',
+        dimensions: EMBEDDING_DIMS,
+        provider: 'local',
+      })),
+    }));
+
+    const tmpRepo = await createTempDir('gitnexus-2790-checkpoint-meta-');
+    try {
+      const { storagePath } = getStoragePaths(tmpRepo.dbPath);
+      await fs.mkdir(storagePath, { recursive: true });
+      // A real commit so `currentCommit` differs from the stale stamp: without
+      // it both are '' and the advancement would be unobservable.
+      const git = (cmd: string) => execSync(cmd, { cwd: tmpRepo.dbPath, stdio: 'pipe' });
+      git('git init');
+      git('git -c user.name=test -c user.email=test@test commit --allow-empty -m init');
+      const currentCommit = execSync('git rev-parse HEAD', {
+        cwd: tmpRepo.dbPath,
+        encoding: 'utf-8',
+      }).trim();
+
+      await saveMeta(storagePath, {
+        repoPath: tmpRepo.dbPath,
+        lastCommit: STALE_COMMIT,
+        indexedAt: new Date().toISOString(),
+        stats: { nodes: 2, embeddings: 7 },
+        fileHashes: STALE_HASHES,
+        // A crashed prior run's dirty flag: the checkpoint save must not clear
+        // it (it is the only thing that can force the healing rebuild).
+        incrementalInProgress: { startedAt: Date.now() - 60_000, toWriteCount: 3 },
+      });
+
+      const snapshots: Record<string, RepoMeta | null> = {};
+      const runEmbeddingPipeline = vi.fn(
+        async (
+          _executeQuery: unknown,
+          _executeWithReusedStatement: unknown,
+          _onProgress: unknown,
+          _config: unknown,
+          _cachedNodeIds: unknown,
+          _existingEmbeddings: unknown,
+          pipelineOptions: EmbeddingPipelineOptions,
+        ): Promise<EmbeddingPipelineResult> => {
+          // Window 1 — fires before ANY embedding row exists.
+          await pipelineOptions.onCheckpointWindowStart?.({
+            nodesProcessed: 0,
+            totalNodes: 4,
+            chunksProcessed: 0,
+            nodeIds: ['node-1', 'node-2'],
+          });
+          snapshots.windowStart = await loadMeta(storagePath);
+          // Post-window checkpoint — this one MEASURED the live count.
+          await pipelineOptions.onCheckpoint?.({
+            nodesProcessed: 2,
+            totalNodes: 4,
+            chunksProcessed: 4,
+          });
+          snapshots.postWindow = await loadMeta(storagePath);
+          // Window 2 — the old code restated the PREVIOUS run's count here and
+          // clobbered the live figure the post-window save had just written.
+          await pipelineOptions.onCheckpointWindowStart?.({
+            nodesProcessed: 2,
+            totalNodes: 4,
+            chunksProcessed: 4,
+            nodeIds: ['node-3', 'node-4'],
+          });
+          snapshots.secondWindow = await loadMeta(storagePath);
+          return {
+            nodesProcessed: 4,
+            chunksProcessed: 8,
+            vectorIndexReady: false,
+            semanticMode: 'exact-scan',
+            failedNodeIds: [],
+          };
+        },
+      );
+      vi.doMock('../../src/core/embeddings/embedding-pipeline.js', () => ({
+        runEmbeddingPipeline,
+        buildVectorIndex: vi.fn(async () => false),
+      }));
+
+      const { runFullAnalysis } = await import('../../src/core/run-analyze.js');
+      await runFullAnalysis(
+        tmpRepo.dbPath,
+        { embeddings: true, force: true, skipAgentsMd: true, skipSkills: true },
+        { onProgress: () => {}, onLog: () => {} },
+      );
+
+      expect(runEmbeddingPipeline).toHaveBeenCalledTimes(1);
+
+      // ── Window 1: the checkpoint landed… ──────────────────────────────
+      expect(snapshots.windowStart).toMatchObject({
+        embeddingCheckpoint: {
+          nodesProcessed: 0,
+          totalNodes: 4,
+          model: 'checkpoint-test-model',
+          pendingNodeIds: ['node-1', 'node-2'],
+        },
+      });
+      // …and NOTHING that certifies freshness moved. lastCommit still points at
+      // the last PUBLISHED index, the stale hash map is intact (this run's own
+      // map is empty), and the dirty flag survives so a crash here still forces
+      // the rebuild.
+      expect(snapshots.windowStart).toMatchObject({
+        lastCommit: STALE_COMMIT,
+        fileHashes: STALE_HASHES,
+        incrementalInProgress: { phase: 'full-rebuild' },
+        stats: { embeddings: 7 },
+      });
+      expect(snapshots.windowStart?.lastCommit).not.toBe(currentCommit);
+
+      // ── Post-window: the one save that legitimately measured the count ──
+      expect(snapshots.postWindow).toMatchObject({
+        lastCommit: STALE_COMMIT,
+        fileHashes: STALE_HASHES,
+        incrementalInProgress: { phase: 'full-rebuild' },
+        stats: { embeddings: LIVE_EMBEDDING_COUNT },
+      });
+
+      // ── Window 2: no stale restatement over the measured figure ────────
+      expect(snapshots.secondWindow).toMatchObject({
+        lastCommit: STALE_COMMIT,
+        stats: { embeddings: LIVE_EMBEDDING_COUNT },
+        embeddingCheckpoint: { pendingNodeIds: ['node-3', 'node-4'] },
+      });
+
+      // Only the finalize write — after the index is published — advances
+      // freshness and clears both the checkpoint and the dirty flag.
+      const finalMeta = JSON.parse(
+        await fs.readFile(`${storagePath}/meta.json`, 'utf-8'),
+      ) as RepoMeta;
+      expect(finalMeta).toMatchObject({ lastCommit: currentCommit });
+      expect(finalMeta.embeddingCheckpoint).toBeUndefined();
+      expect(finalMeta.incrementalInProgress).toBeUndefined();
+    } finally {
       await tmpRepo.cleanup();
     }
   });

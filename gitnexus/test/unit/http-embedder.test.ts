@@ -366,6 +366,9 @@ describe('HTTP embedding backend', () => {
     it('classifies a reachable endpoint that returns a non-JSON 200 body', async () => {
       process.env.GITNEXUS_EMBEDDING_URL = 'http://test:8080/v1';
       process.env.GITNEXUS_EMBEDDING_MODEL = 'test-model';
+      // An unusable 2xx body is retried like a 5xx (#2790); collapse the
+      // backoff so this case still asserts classification, not wall clock.
+      process.env.GITNEXUS_EMBEDDING_RETRY_CAP_MS = '1';
       // A captive portal / wrong service answers 200 with HTML — resp.json() throws.
       vi.stubGlobal(
         'fetch',
@@ -413,6 +416,8 @@ describe('HTTP embedding backend', () => {
     ])('types a malformed response item ($label) on the batch path', async ({ body }) => {
       process.env.GITNEXUS_EMBEDDING_URL = 'http://test:8080/v1';
       process.env.GITNEXUS_EMBEDDING_MODEL = 'test-model';
+      // Wrong-shaped 2xx bodies are retried too (#2790) — collapse the backoff.
+      process.env.GITNEXUS_EMBEDDING_RETRY_CAP_MS = '1';
       vi.stubGlobal('fetch', vi.fn().mockResolvedValue({ ok: true, json: async () => body }));
 
       const { embedText } = await import('../../src/core/embeddings/embedder.js');
@@ -425,6 +430,8 @@ describe('HTTP embedding backend', () => {
     it('types a null item on the query path (httpEmbedQuery, #2385)', async () => {
       process.env.GITNEXUS_EMBEDDING_URL = 'http://test:8080/v1';
       process.env.GITNEXUS_EMBEDDING_MODEL = 'test-model';
+      // Wrong-shaped 2xx bodies are retried too (#2790) — collapse the backoff.
+      process.env.GITNEXUS_EMBEDDING_RETRY_CAP_MS = '1';
       vi.stubGlobal(
         'fetch',
         vi.fn().mockResolvedValue({ ok: true, json: async () => ({ data: [null] }) }),

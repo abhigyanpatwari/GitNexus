@@ -305,11 +305,44 @@ export const buildVectorIndex = async (): Promise<boolean> => {
 };
 
 export interface EmbeddingPipelineResult {
+  /** Nodes that finished the run with a COMPLETE set of embedding rows. */
   nodesProcessed: number;
   chunksProcessed: number;
   vectorIndexReady: boolean;
   semanticMode: 'vector-index' | 'exact-scan';
+  /**
+   * Nodes whose embeddings were dropped this run because at least one of their
+   * chunks lost its sub-batch to a failing endpoint (#2790). Their rows were
+   * deleted, so they now hold ZERO rows and the next incremental run re-embeds
+   * them from scratch. Empty on a clean run.
+   */
+  failedNodeIds: string[];
 }
+
+/**
+ * How many sub-batches may fail back-to-back before the pipeline gives up.
+ *
+ * Surviving a transient endpoint hiccup is the whole point of tolerating a
+ * failed sub-batch (#2790) — but a genuinely dead endpoint would otherwise walk
+ * every remaining node deleting its rows on the way, which on an incremental run
+ * wipes surviving embeddings wholesale. Rethrowing once the ceiling is reached
+ * preserves the pre-#2790 behavior for a dead endpoint. Any successful sub-batch
+ * resets the counter, so only an unbroken run of failures trips it.
+ *
+ * ponytail: flat consecutive-failure ceiling; make it rate-based if flaky
+ * endpoints prove common.
+ */
+const MAX_CONSECUTIVE_SUB_BATCH_FAILURES = 5;
+
+/**
+ * Cancellation is an instruction, not endpoint flakiness — it must abort the run
+ * instead of being absorbed as a tolerable sub-batch failure. Checked on the
+ * error shape as well as on our own signal, because an embed call handed the
+ * signal rejects with a `DOMException`/`Error` named `AbortError` rather than
+ * flipping anything the pipeline owns (e.g. a host-supplied transport signal).
+ */
+const isCancellationError = (err: unknown): boolean =>
+  typeof err === 'object' && err !== null && (err as { name?: unknown }).name === 'AbortError';
 
 export interface EmbeddingPipelineCheckpoint {
   nodesProcessed: number;
@@ -509,6 +542,7 @@ export const runEmbeddingPipeline = async (
         chunksProcessed: 0,
         vectorIndexReady,
         semanticMode: vectorIndexReady ? 'vector-index' : 'exact-scan',
+        failedNodeIds: [],
       };
     }
 
@@ -520,7 +554,25 @@ export const runEmbeddingPipeline = async (
       batchSize,
       Math.ceil(checkpointEveryNodes / batchSize) * batchSize,
     );
+    // Nodes that finished with a COMPLETE row set. Distinct from the number of
+    // nodes traversed (see `traversedNodes` in the loop): a node whose chunks lost
+    // a sub-batch is walked past but NOT processed, and must not be counted as if
+    // its embeddings exist.
     let processedNodes = 0;
+    // Run-level: every node whose rows were dropped by the sub-batch failure path.
+    const failedNodeIds = new Set<string>();
+    // Run-level, not per-batch: a dead endpoint stays dead across batch boundaries.
+    let consecutiveSubBatchFailures = 0;
+    // #2790: the FIRST error of the current streak — the one the ceiling rethrows.
+    // Later failures in a streak degrade into generic noise: a misconfigured
+    // endpoint trips the HTTP client's circuit breaker after 3 rejections, so
+    // failures 4 and 5 are "circuit open … retry in 30s" (advice to wait for a
+    // condition that never changes) while the first still names the real defect
+    // ("unexpected response shape"). Boxed rather than held as a bare `unknown`
+    // so a thrown `undefined` can't be misread as "no error". Cleared with the
+    // counter below, so the rethrown error always belongs to the streak that
+    // actually tripped the ceiling.
+    let streakFirstError: { err: unknown } | undefined;
 
     onProgress({
       phase: 'embedding',
@@ -631,6 +683,13 @@ export const runEmbeddingPipeline = async (
 
       // Embed chunk texts in sub-batches to control memory
       const EMBED_SUB_BATCH = finalConfig.subBatchSize;
+      // Nodes that lost at least one chunk in this batch. Collected as NODE ids,
+      // not sub-batch indices: `allTexts`/`allUpdates` are flat over the whole
+      // batch with no node alignment, so one node's chunks can straddle a
+      // sub-batch boundary and a failure never maps cleanly onto whole nodes.
+      const batchFailedNodeIds = new Set<string>();
+      // Set instead of thrown immediately so the cleanup DELETE below still runs.
+      let ceilingError: { err: unknown } | undefined;
       for (let si = 0; si < allTexts.length; si += EMBED_SUB_BATCH) {
         const subTexts = allTexts.slice(si, si + EMBED_SUB_BATCH);
         const subUpdates = allUpdates.slice(si, si + EMBED_SUB_BATCH);
@@ -639,12 +698,37 @@ export const runEmbeddingPipeline = async (
         try {
           embeddings = await embedBatch(subTexts, { signal: pipelineOptions.signal });
         } catch (embedErr) {
-          logger.error(
-            { embedErr },
-            `❌ embedBatch failed for ${subTexts.length} texts (first: "${subTexts[0]?.substring(0, 80)}..."):`,
+          // Never swallow a cancel as a "tolerable" failure — the operator asked
+          // us to stop, and the run has no business continuing (or deleting rows).
+          if (pipelineOptions.signal?.aborted || isCancellationError(embedErr)) throw embedErr;
+
+          // #2790: one transient hiccup used to discard an entire multi-hour run.
+          // Warn (not error — the run survives), drop this sub-batch's nodes, and
+          // keep going; the cleanup DELETE after this loop makes the drop safe.
+          const droppedNodeIds = new Set(subUpdates.map((u) => u.nodeId));
+          for (const nodeId of droppedNodeIds) batchFailedNodeIds.add(nodeId);
+          consecutiveSubBatchFailures += 1;
+          streakFirstError ??= { err: embedErr };
+          // Log under `err` so pino's standard serializer keeps the message and
+          // stack — the previous `{ embedErr }` key serialized to `{}` (#2114).
+          logger.warn(
+            { err: embedErr },
+            `⚠️ embedBatch failed for ${subTexts.length} texts (first: "${subTexts[0]?.substring(0, 80)}...") — ` +
+              `dropping ${droppedNodeIds.size} node(s) from this run so the next run re-embeds them ` +
+              `(${consecutiveSubBatchFailures}/${MAX_CONSECUTIVE_SUB_BATCH_FAILURES} consecutive failures):`,
           );
-          throw embedErr;
+          if (consecutiveSubBatchFailures >= MAX_CONSECUTIVE_SUB_BATCH_FAILURES) {
+            // Bail out — but via `break`, not `throw`, so the cleanup DELETE below
+            // still runs: sub-batches that succeeded before the endpoint went dark
+            // left partial rows carrying the CURRENT hash, which is exactly the
+            // read-as-fresh corruption this path exists to prevent.
+            ceilingError = streakFirstError;
+            break;
+          }
+          continue;
         }
+        consecutiveSubBatchFailures = 0;
+        streakFirstError = undefined;
 
         const dbUpdates = subUpdates.map((u, i) => ({
           ...u,
@@ -655,10 +739,31 @@ export const runEmbeddingPipeline = async (
         throwIfCancelled();
       }
 
-      processedNodes += batch.length;
-      totalChunks += allUpdates.length;
+      // A failed sub-batch leaves the node HALF embedded, and half is worse than
+      // none: this batch's stale rows were already deleted above, a node's chunks
+      // can straddle a sub-batch boundary, and every surviving row carries the
+      // CURRENT contentHash. Both downstream hash-map builders collapse a node's
+      // rows to one entry (last row wins), so a half-embedded node would read as
+      // FRESH on every future run and its missing chunks would never come back.
+      // Deleting ALL of its rows leaves zero, which the incremental filter reads
+      // as "New node — needs embedding" — it self-heals next run. Kept inside the
+      // per-batch iteration so the inconsistency window stays one batch wide,
+      // matching the U6 / KTD7 delete-window rationale above.
+      if (batchFailedNodeIds.size > 0) {
+        await deleteStaleEmbeddingRows(executeWithReusedStatement, [...batchFailedNodeIds]);
+        for (const nodeId of batchFailedNodeIds) failedNodeIds.add(nodeId);
+      }
+      if (ceilingError) throw ceilingError.err;
 
-      const embeddingProgress = 20 + (processedNodes / totalNodes) * 70;
+      // Nodes walked past in this run so far. Drives progress percent and the
+      // checkpoint cadence, which must stay monotonic and hit `totalNodes`
+      // exactly — `processedNodes` can now lag behind and would silently stop the
+      // window-aligned and terminal checkpoints from ever firing.
+      const traversedNodes = batchIndex + batch.length;
+      processedNodes += batch.length - batchFailedNodeIds.size;
+      totalChunks += allUpdates.filter((u) => !batchFailedNodeIds.has(u.nodeId)).length;
+
+      const embeddingProgress = 20 + (traversedNodes / totalNodes) * 70;
       onProgress({
         phase: 'embedding',
         percent: Math.round(embeddingProgress),
@@ -670,7 +775,7 @@ export const runEmbeddingPipeline = async (
 
       if (
         pipelineOptions.onCheckpoint &&
-        (processedNodes % checkpointWindowNodeCount === 0 || processedNodes === totalNodes)
+        (traversedNodes % checkpointWindowNodeCount === 0 || traversedNodes === totalNodes)
       ) {
         await pipelineOptions.onCheckpoint({
           nodesProcessed: processedNodes,
@@ -683,10 +788,12 @@ export const runEmbeddingPipeline = async (
 
     // Phase 4: Create vector index
     throwIfCancelled();
+    // Report the nodes actually embedded, not `totalNodes`: with a flaky endpoint
+    // those differ, and a caller is about to read this number as truth.
     onProgress({
       phase: 'indexing',
       percent: 90,
-      nodesProcessed: totalNodes,
+      nodesProcessed: processedNodes,
       totalNodes,
     });
 
@@ -699,20 +806,27 @@ export const runEmbeddingPipeline = async (
     onProgress({
       phase: 'ready',
       percent: 100,
-      nodesProcessed: totalNodes,
+      nodesProcessed: processedNodes,
       totalNodes,
     });
 
+    if (failedNodeIds.size > 0) {
+      logger.warn(
+        `⚠️ Embedding pipeline finished with ${failedNodeIds.size} node(s) dropped after embed failures; ` +
+          'their rows were removed so the next run re-embeds them.',
+      );
+    }
     if (isDev) {
       logger.info(
-        `✅ Embedding pipeline complete! (${totalChunks} chunks from ${totalNodes} nodes)`,
+        `✅ Embedding pipeline complete! (${totalChunks} chunks from ${processedNodes}/${totalNodes} nodes)`,
       );
     }
     return {
-      nodesProcessed: totalNodes,
+      nodesProcessed: processedNodes,
       chunksProcessed: totalChunks,
       vectorIndexReady,
       semanticMode: vectorIndexReady ? 'vector-index' : 'exact-scan',
+      failedNodeIds: [...failedNodeIds],
     };
   } catch (error) {
     const errorMessage = error instanceof Error ? error.message : 'Unknown error';
