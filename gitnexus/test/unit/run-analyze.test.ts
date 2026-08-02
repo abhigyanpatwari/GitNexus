@@ -516,11 +516,32 @@ describe('run-analyze module', () => {
           pendingNodeIds: [expect.any(String)],
         },
       });
+      // The marker a COMPLETED run writes is 'partial' (#2790 review, finding
+      // 5a): its nodes provably hold zero rows, so a later run under a
+      // different embedding identity warns and drops them instead of throwing
+      // at the resume gate before any phase runs.
+      expect(partialMeta).toMatchObject({ embeddingCheckpoint: { kind: 'partial' } });
       const pendingNodeIds = partialMeta?.embeddingCheckpoint?.pendingNodeIds ?? [];
       // …and those nodes really hold no rows.
       const embeddedAfterPartial = await readEmbeddingNodeIds(tmpRepo.dbPath);
       expect(embeddedAfterPartial).toEqual(expect.not.arrayContaining(pendingNodeIds as string[]));
-      expect(embeddedAfterPartial.length).toBeGreaterThan(0);
+
+      // ── The containment claim, asserted EXACTLY ────────────────────────
+      // `toBeGreaterThan(0)` passed with 1 survivor out of 5 — it could not
+      // tell a contained sub-batch failure from a run that lost most of the
+      // index. The whole safety argument for shipping a partial index is the
+      // COLLATERAL-DAMAGE direction: every node that did NOT fail kept its
+      // rows. The fixture is fully determined — five exported functions, one
+      // embeddable Function node each, one node per batch and one chunk per
+      // request — so the surviving set is exactly the five handlers minus the
+      // one whose sub-batch lost the endpoint.
+      const ALL_HANDLERS = ['handler1', 'handler2', 'handler3', 'handler4', 'handler5'];
+      const handlerOf = (nodeId: string): string => /handler\d/.exec(nodeId)?.[0] ?? nodeId;
+      const survivingHandlers = [...new Set(embeddedAfterPartial.map(handlerOf))].sort();
+      const droppedHandlers = [...new Set(pendingNodeIds.map(handlerOf))].sort();
+      expect(droppedHandlers).toHaveLength(1);
+      expect([...survivingHandlers, ...droppedHandlers].sort()).toEqual(ALL_HANDLERS);
+      expect(survivingHandlers).toHaveLength(ALL_HANDLERS.length - 1);
 
       // ── Run 2: a PLAIN analyze — no --embeddings, no --force ──────────
       // Pre-fix this early-returned "already up to date" (or derived

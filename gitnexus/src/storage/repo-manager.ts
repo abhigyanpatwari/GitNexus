@@ -293,11 +293,15 @@ export interface RepoMeta {
     droppedImporterChunks?: number;
   };
   /**
-   * Durable embedding-resume marker. Before a bounded write window begins,
-   * `pendingNodeIds` records every node that could become partially persisted;
-   * after the LadybugDB checkpoint it is cleared while progress is retained.
-   * A matching runtime resumes from persisted hashes and regenerates pending
-   * nodes; a model or dimension mismatch fails before mutation.
+   * Durable embedding-resume marker, written in two distinct situations that
+   * `kind` tells apart — see below. A matching runtime resumes from persisted
+   * hashes and regenerates the pending nodes.
+   *
+   * Cleared by a clean run. NOT cleared by a run that completed while dropping
+   * nodes to endpoint failures (#2790): retaining it is what makes those nodes
+   * come back, because a plain `analyze` derives `shouldGenerateEmbeddings:
+   * false` once any embeddings exist, so nothing would ever call the pipeline
+   * again.
    */
   embeddingCheckpoint?: {
     at: string;
@@ -309,10 +313,31 @@ export interface RepoMeta {
     /** `local` or a secret-free SHA-256 fingerprint of the HTTP endpoint identity. */
     provider: string;
     /**
-     * Nodes in the current checkpoint window. Any of these may have only a
-     * subset of their chunks persisted after an abrupt process termination,
-     * so resume must delete and regenerate them even when a persisted row has
-     * the current content hash.
+     * Which situation wrote this marker. Absent ≡ `'interrupted'`, so markers
+     * written by older versions keep the stricter behavior.
+     *
+     * - `'interrupted'` — written BEFORE a bounded write window. Its
+     *   `pendingNodeIds` may be half-persisted if the process died mid-window,
+     *   so resume must delete and regenerate them even when a persisted row
+     *   carries the current content hash, and an identity mismatch must fail
+     *   closed: resuming under a foreign model would mix vector spaces.
+     * - `'partial'` — written AFTER a run that completed but dropped nodes to
+     *   endpoint failures. The pipeline already deleted every row of those
+     *   nodes, so they provably hold ZERO rows. Nothing is at risk from a
+     *   different embedding identity, so an identity mismatch may drop the
+     *   pending set with a warning instead of aborting the run.
+     */
+    kind?: 'interrupted' | 'partial';
+    /**
+     * Consecutive resume attempts that have failed to clear `pendingNodeIds`
+     * (`'partial'` only). Bounds the retry so a node the endpoint rejects
+     * deterministically — an oversized chunk, content it refuses — cannot keep
+     * a repo permanently incomplete. See EMBEDDING_RESUME_MAX_ATTEMPTS.
+     */
+    attempts?: number;
+    /**
+     * Nodes to regenerate on resume. For `'interrupted'` these may hold a
+     * subset of their chunks; for `'partial'` they hold none.
      */
     pendingNodeIds?: string[];
   };

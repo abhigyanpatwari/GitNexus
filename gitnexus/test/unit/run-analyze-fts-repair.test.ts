@@ -8,6 +8,7 @@ import {
   type RepoMeta,
 } from '../../src/storage/repo-manager.js';
 import { EMBEDDING_DIMS } from '../../src/core/lbug/schema.js';
+import type { PersistedEmbeddingCount } from '../../src/core/embedding-count.js';
 import { getIndexIncompleteReasons } from '../../src/core/index-freshness.js';
 import type {
   EmbeddingPipelineOptions,
@@ -2022,5 +2023,699 @@ describe('runFullAnalysis embedding-checkpoint meta write (#2790)', () => {
     } finally {
       await tmpRepo.cleanup();
     }
+  });
+});
+
+/**
+ * ── #2790 review: the four P1s the first cut left behind ───────────────
+ *
+ * Everything above proves Phase 5 reasons correctly once it is REACHED and
+ * once the count probe answers honestly. These prove the four ways it was not:
+ *
+ *  1. the mid-run `onCheckpoint` count query ran bare — a throw there rejected
+ *     the callback, propagated out of `runEmbeddingPipeline` and killed the run
+ *     before Phase 5 executed at all, so the tri-state could never fire;
+ *  2. Phase 5's hand-copied count body ended `?? 0` where the server's ended
+ *     `?? Number.NaN`, so a NO-ROW answer became a MEASURED zero and the gate
+ *     threw on runs where every embedding persisted;
+ *  4. the unknown-count fallback read `existingMeta` — a run-START snapshot —
+ *     and clobbered the fresher count this run's own checkpoint had written;
+ *  5. an exit-0 partial run planted a checkpoint stamped with this run's
+ *     embedding identity that a later plain `analyze` could not resume, could
+ *     not clear, and died on before any phase ran.
+ *
+ * Driven on the same wholesale-mock harness, with MUTABLE controls so one mock
+ * set can drive a multi-run scenario (a checkpoint's whole point is what the
+ * NEXT run does with it).
+ */
+describe('runFullAnalysis embedding-checkpoint resilience (#2790 review)', () => {
+  const RESILIENCE_NODE_ID = 'Function:src/app.ts:handler:1';
+  const stubNode = {
+    id: RESILIENCE_NODE_ID,
+    label: 'Function',
+    name: 'handler',
+    properties: { filePath: 'src/app.ts' },
+  };
+
+  const HARNESS_IDENTITY = {
+    model: 'resilience-test-model',
+    dimensions: EMBEDDING_DIMS,
+    provider: 'local',
+  } as const;
+
+  /** Mutable per-run controls; every mock reads through them at call time. */
+  interface ResilienceControls {
+    /** The `count(e)` probe's answer. `'throw'` ≡ the count is unavailable. */
+    count: 'throw' | Array<Record<string, unknown>>;
+    /** What the mocked pipeline reports, and what it does with its callbacks. */
+    pipeline: (options: EmbeddingPipelineOptions) => Promise<EmbeddingPipelineResult>;
+  }
+
+  const cleanResult = (overrides: Partial<EmbeddingPipelineResult> = {}): EmbeddingPipelineResult =>
+    ({
+      nodesProcessed: 3,
+      chunksProcessed: 3,
+      vectorIndexReady: false,
+      semanticMode: 'exact-scan',
+      failedNodeIds: [],
+      ...overrides,
+    }) satisfies EmbeddingPipelineResult;
+
+  const mockResilienceHarness = (
+    controls: ResilienceControls,
+  ): { runEmbeddingPipeline: Mock; loadCachedEmbeddings: Mock } => {
+    const loadCachedEmbeddings = vi.fn(async () => ({
+      embeddingNodeIds: new Set<string>(),
+      embeddings: [],
+    }));
+    vi.doMock('../../src/core/lbug/lbug-adapter.js', () => ({
+      initLbug: vi.fn(async () => undefined),
+      loadGraphToLbug: vi.fn(async () => undefined),
+      getLbugStats: vi.fn(async () => ({ nodes: 2, edges: 0, communities: 0, processes: 0 })),
+      executeQuery: vi.fn(async (cypher: string) => {
+        if (!/RETURN count\(e\) AS cnt/.test(cypher)) return [];
+        if (controls.count === 'throw') {
+          throw new Error('Binder exception: Table CodeEmbedding does not exist.');
+        }
+        return controls.count;
+      }),
+      executeWithReusedStatement: vi.fn(async () => []),
+      closeLbug: vi.fn(async () => undefined),
+      wipeLbugDbFiles: vi.fn(async () => undefined),
+      // The post-window `onCheckpoint` drains the WAL through the real
+      // wal-checkpoint-driver, which flushes via this adapter export.
+      tryFlushWAL: vi.fn(async () => true),
+      loadCachedEmbeddings,
+      deleteNodesForFile: vi.fn(async () => undefined),
+      deleteNodesForFiles: vi.fn(async () => undefined),
+      deleteAllCommunitiesAndProcesses: vi.fn(async () => undefined),
+      queryImporters: vi.fn(async () => []),
+      queryImportersBatch: vi.fn(async () => []),
+      loadFTSExtension: vi.fn(async () => false),
+    }));
+    vi.doMock('../../src/core/search/fts-indexes.js', () => ({
+      initialiseSearchFTSStemmer: vi.fn(() => 'porter'),
+      createSearchFTSIndexes: vi.fn(async () => undefined),
+      verifySearchFTSIndexes: vi.fn(async () => []),
+    }));
+    vi.doMock('../../src/core/ingestion/pipeline.js', () => ({
+      runPipelineFromRepo: vi.fn(async (repoPath: string) => ({
+        repoPath,
+        totalFileCount: 1,
+        graph: {
+          forEachNode: (fn: (node: typeof stubNode) => void) => fn(stubNode),
+          getNode: (id: string) => (id === RESILIENCE_NODE_ID ? stubNode : undefined),
+        },
+      })),
+    }));
+    vi.doMock('../../src/storage/repo-manager.js', async (importActual) => ({
+      ...(await importActual<typeof import('../../src/storage/repo-manager.js')>()),
+      registerRepo: vi.fn(async () => 'embedding-resilience-repo'),
+      ensureGitNexusIgnored: vi.fn(async () => undefined),
+    }));
+    // Fixed identity: keeps the local embedder (and its native runtime) out of
+    // tests that never embed anything for real. A checkpoint written with a
+    // DIFFERENT provider string is therefore a controlled identity mismatch.
+    vi.doMock('../../src/core/embeddings/embedding-identity.js', () => ({
+      resolveEmbeddingIdentity: vi.fn(() => ({ ...HARNESS_IDENTITY })),
+    }));
+    const runEmbeddingPipeline = vi.fn(
+      async (
+        _executeQuery: unknown,
+        _executeWithReusedStatement: unknown,
+        _onProgress: unknown,
+        _config: unknown,
+        _cachedNodeIds: unknown,
+        _existingEmbeddings: unknown,
+        pipelineOptions: EmbeddingPipelineOptions,
+      ): Promise<EmbeddingPipelineResult> => controls.pipeline(pipelineOptions),
+    );
+    vi.doMock('../../src/core/embeddings/embedding-pipeline.js', () => ({
+      runEmbeddingPipeline,
+      buildVectorIndex: vi.fn(async () => false),
+    }));
+    return { runEmbeddingPipeline, loadCachedEmbeddings };
+  };
+
+  /** A checkpoint shaped exactly as `RepoMeta` declares it. */
+  const checkpointFixture = (
+    overrides: Partial<NonNullable<RepoMeta['embeddingCheckpoint']>> = {},
+  ): NonNullable<RepoMeta['embeddingCheckpoint']> => ({
+    at: new Date(0).toISOString(),
+    nodesProcessed: 2,
+    totalNodes: 3,
+    chunksProcessed: 4,
+    model: HARNESS_IDENTITY.model,
+    dimensions: HARNESS_IDENTITY.dimensions,
+    provider: HARNESS_IDENTITY.provider,
+    ...overrides,
+  });
+
+  const seedMeta = async (
+    storagePath: string,
+    repoPath: string,
+    overrides: Partial<RepoMeta>,
+  ): Promise<void> => {
+    await fs.mkdir(storagePath, { recursive: true });
+    await saveMeta(storagePath, {
+      repoPath,
+      lastCommit: '',
+      indexedAt: new Date(0).toISOString(),
+      stats: { nodes: 2, embeddings: 0 },
+      ...overrides,
+    });
+  };
+
+  /** `runFullAnalysis` that resolves to the thrown error instead of rejecting. */
+  const runAnalyze = async (
+    repoPath: string,
+    options: Record<string, unknown>,
+    logs: string[],
+  ): Promise<unknown> => {
+    const { runFullAnalysis } = await import('../../src/core/run-analyze.js');
+    return await runFullAnalysis(repoPath, options, {
+      onProgress: () => {},
+      onLog: (m: string) => logs.push(m),
+    }).then(
+      () => null,
+      (e: unknown) => e,
+    );
+  };
+
+  afterEach(() => {
+    vi.doUnmock('../../src/core/lbug/lbug-adapter.js');
+    vi.doUnmock('../../src/core/search/fts-indexes.js');
+    vi.doUnmock('../../src/core/ingestion/pipeline.js');
+    vi.doUnmock('../../src/storage/repo-manager.js');
+    vi.doUnmock('../../src/core/embeddings/embedding-identity.js');
+    vi.doUnmock('../../src/core/embeddings/embedding-pipeline.js');
+    vi.resetModules();
+    vi.clearAllMocks();
+    vi.unstubAllEnvs();
+  });
+
+  /**
+   * FINDING 1 — the mid-run count is a diagnostic, not a kill switch.
+   *
+   * `onCheckpoint` used to run the count query bare. Its rejection propagates
+   * out of `runEmbeddingPipeline`, so a DB-busy moment / closed connection /
+   * read-only store / the VECTOR-extension DML lock (#2623) took the entire
+   * analyze down BEFORE Phase 5 — the exact failure Phase 5's tri-state exists
+   * to absorb, and it never got to run.
+   */
+  it('survives a mid-run checkpoint count failure and still reaches Phase 5', async () => {
+    const midRunMetas: Array<RepoMeta | null> = [];
+    const tmpRepo = await createTempDir('gitnexus-2790r-checkpoint-count-throws-');
+    try {
+      const { storagePath } = getStoragePaths(tmpRepo.dbPath);
+      await seedMeta(storagePath, tmpRepo.dbPath, { stats: { nodes: 2, embeddings: 9 } });
+      const controls: ResilienceControls = {
+        count: 'throw',
+        pipeline: async (options) => {
+          await options.onCheckpoint?.({
+            nodesProcessed: 2,
+            totalNodes: 4,
+            chunksProcessed: 4,
+          });
+          midRunMetas.push(await loadMeta(storagePath));
+          return cleanResult();
+        },
+      };
+      mockResilienceHarness(controls);
+
+      const logs: string[] = [];
+      const error = await runAnalyze(
+        tmpRepo.dbPath,
+        { embeddings: true, skipAgentsMd: true, skipSkills: true },
+        logs,
+      );
+
+      // Pre-fix: the callback's rejection killed the run here.
+      expect(error).toBeNull();
+      expect(logs).toContainEqual(
+        expect.stringContaining(
+          'could not measure persisted embeddings at the embedding checkpoint',
+        ),
+      );
+      // The checkpoint still landed — only the count was skipped…
+      expect(midRunMetas[0]).toMatchObject({
+        embeddingCheckpoint: { nodesProcessed: 2, totalNodes: 4, kind: 'interrupted' },
+      });
+      // …and the last known count was left alone rather than overwritten with
+      // NaN (which `JSON.stringify` serializes as `null`).
+      expect(midRunMetas[0]).toMatchObject({ stats: { embeddings: 9 } });
+      // Phase 5 ran: its own probe is unavailable too, and it says so.
+      expect(logs).toContainEqual(expect.stringContaining('without a verified embedding count'));
+    } finally {
+      await tmpRepo.cleanup();
+    }
+  });
+
+  /**
+   * FINDING 2 — a no-row answer is UNKNOWN, never a measured zero.
+   *
+   * An empty CodeEmbedding table still answers `count(e)` with one row holding
+   * `0`, so no row at all means the query did not really answer. Phase 5's copy
+   * ended `?? 0`, which made `Number.isFinite(0)` true, the unknown branch
+   * unreachable, and the "completed without persisted embeddings" gate fire on
+   * a run where every embedding persisted.
+   */
+  it('treats a no-row count as unknown instead of crashing a successful run', async () => {
+    const tmpRepo = await createTempDir('gitnexus-2790r-no-row-count-');
+    try {
+      const { storagePath } = getStoragePaths(tmpRepo.dbPath);
+      await fs.mkdir(storagePath, { recursive: true });
+      mockResilienceHarness({ count: [], pipeline: async () => cleanResult() });
+
+      const logs: string[] = [];
+      const error = await runAnalyze(
+        tmpRepo.dbPath,
+        { embeddings: true, skipAgentsMd: true, skipSkills: true },
+        logs,
+      );
+
+      // Pre-fix this threw "Embedding generation completed without persisted
+      // embeddings" and refused to register the index.
+      expect(error).toBeNull();
+      expect(logs).toContainEqual(expect.stringContaining('the count query returned no row'));
+      expect(logs).toContainEqual(expect.stringContaining('without a verified embedding count'));
+      const meta = await loadMeta(storagePath);
+      expect(meta).toMatchObject({ repoPath: tmpRepo.dbPath });
+    } finally {
+      await tmpRepo.cleanup();
+    }
+  });
+
+  /**
+   * FINDING 4 — the unknown-count fallback must read the LATEST on-disk meta.
+   *
+   * The damage chain in full: prior meta says `embeddings: 0` → a clean run
+   * inserts embeddings and its terminal `onCheckpoint` writes the real count to
+   * disk → the FINAL count probe is unavailable → finalization used to carry
+   * the run-START snapshot's 0 forward and clear the checkpoint, reporting
+   * success → the next `--force` reads 0, `deriveEmbeddingMode` sees
+   * `hasExisting: false`, `shouldLoadCache` is false, and the rebuild destroys
+   * every live embedding.
+   */
+  it('carries the mid-run count forward, not the run-start snapshot, so --force still loads the cache', async () => {
+    const MID_RUN_COUNT = 12;
+    const tmpRepo = await createTempDir('gitnexus-2790r-latest-meta-');
+    try {
+      const { storagePath } = getStoragePaths(tmpRepo.dbPath);
+      // The dangerous starting point: a prior meta claiming zero embeddings.
+      await seedMeta(storagePath, tmpRepo.dbPath, { stats: { nodes: 2, embeddings: 0 } });
+      const controls: ResilienceControls = {
+        count: [{ cnt: MID_RUN_COUNT }],
+        pipeline: async (options) => {
+          // The checkpoint measures the live count and persists it…
+          await options.onCheckpoint?.({
+            nodesProcessed: 3,
+            totalNodes: 3,
+            chunksProcessed: 3,
+          });
+          // …and then the count becomes unavailable for the rest of the run.
+          controls.count = 'throw';
+          return cleanResult();
+        },
+      };
+      const { loadCachedEmbeddings } = mockResilienceHarness(controls);
+
+      const firstLogs: string[] = [];
+      expect(
+        await runAnalyze(
+          tmpRepo.dbPath,
+          { embeddings: true, skipAgentsMd: true, skipSkills: true },
+          firstLogs,
+        ),
+      ).toBeNull();
+
+      const afterRun = await loadMeta(storagePath);
+      // Pre-fix this was 0 — the run-start snapshot — and the checkpoint was
+      // cleared, so nothing on disk remembered the run had never been verified.
+      expect(afterRun).toMatchObject({ stats: { embeddings: MID_RUN_COUNT } });
+      expect(afterRun).toMatchObject({
+        embeddingCheckpoint: { kind: 'partial', pendingNodeIds: [] },
+      });
+      expect(getIndexIncompleteReasons(afterRun)).toEqual(['embedding-checkpoint-pending']);
+      expect(firstLogs).toContainEqual(
+        expect.stringContaining('re-derives the count instead of publishing an unverified one'),
+      );
+
+      // ── The consequence: the next --force must still load the cache ─────
+      controls.count = [{ cnt: MID_RUN_COUNT }];
+      controls.pipeline = async () => cleanResult();
+      loadCachedEmbeddings.mockClear();
+      const forceLogs: string[] = [];
+      expect(
+        await runAnalyze(
+          tmpRepo.dbPath,
+          { force: true, skipAgentsMd: true, skipSkills: true },
+          forceLogs,
+        ),
+      ).toBeNull();
+
+      // With a carried-forward 0 this run derived `hasExisting: false`,
+      // `shouldLoadCache: false`, and wiped the live rows without reading them.
+      expect(loadCachedEmbeddings).toHaveBeenCalled();
+      expect(forceLogs).toContainEqual(
+        expect.stringContaining(`--force on a repo with ${MID_RUN_COUNT} existing embeddings`),
+      );
+    } finally {
+      await tmpRepo.cleanup();
+    }
+  });
+
+  /**
+   * FINDING 5a — a `'partial'` marker may not wedge a repo on identity.
+   *
+   * `GITNEXUS_EMBEDDING_URL=… analyze --embeddings` drops three nodes to a
+   * transient fault, warns, and exits 0 with the checkpoint persisted under
+   * `http:<sha256(endpoint)>`. A later plain `analyze` — a post-commit hook, a
+   * CI job, any shell without those exports — resolves `provider: 'local'` and
+   * threw at the resume gate BEFORE any phase ran. The graph was then never
+   * refreshed again until someone passed `--drop-embeddings`.
+   *
+   * Those nodes hold ZERO rows (the pipeline deleted them), so no vector space
+   * can be mixed and the mismatch is a warning. `'interrupted'` markers — whose
+   * pending nodes may be half-persisted — still fail closed, and so do legacy
+   * markers with no `kind` at all.
+   */
+  it('warns and proceeds on an identity-mismatched partial checkpoint', async () => {
+    const tmpRepo = await createTempDir('gitnexus-2790r-partial-mismatch-');
+    try {
+      const { storagePath } = getStoragePaths(tmpRepo.dbPath);
+      await seedMeta(storagePath, tmpRepo.dbPath, {
+        stats: { nodes: 2, embeddings: 4 },
+        embeddingCheckpoint: checkpointFixture({
+          kind: 'partial',
+          provider: 'http:1f0c9a2b',
+          pendingNodeIds: ['node-a', 'node-b'],
+        }),
+      });
+      mockResilienceHarness({ count: [{ cnt: 4 }], pipeline: async () => cleanResult() });
+
+      const logs: string[] = [];
+      const error = await runAnalyze(
+        tmpRepo.dbPath,
+        { skipAgentsMd: true, skipSkills: true },
+        logs,
+      );
+
+      // Pre-fix: threw at the gate, before any phase, forever.
+      expect(error).toBeNull();
+      expect(logs).toContainEqual(
+        expect.stringContaining('dropping 2 pending node(s) from a partial embedding checkpoint'),
+      );
+      // The landmine is gone and the index is certifiable again.
+      const meta = await loadMeta(storagePath);
+      expect(meta?.embeddingCheckpoint).toBeUndefined();
+      expect(getIndexIncompleteReasons(meta)).toEqual([]);
+    } finally {
+      await tmpRepo.cleanup();
+    }
+  });
+
+  it('still fails closed on an identity-mismatched interrupted checkpoint', async () => {
+    const tmpRepo = await createTempDir('gitnexus-2790r-interrupted-mismatch-');
+    try {
+      const { storagePath } = getStoragePaths(tmpRepo.dbPath);
+      await seedMeta(storagePath, tmpRepo.dbPath, {
+        stats: { nodes: 2, embeddings: 4 },
+        embeddingCheckpoint: checkpointFixture({
+          kind: 'interrupted',
+          provider: 'http:1f0c9a2b',
+          pendingNodeIds: ['node-a'],
+        }),
+      });
+      mockResilienceHarness({ count: [{ cnt: 4 }], pipeline: async () => cleanResult() });
+
+      const logs: string[] = [];
+      expect(
+        await runAnalyze(tmpRepo.dbPath, { skipAgentsMd: true, skipSkills: true }, logs),
+      ).toMatchObject({
+        message: expect.stringContaining('the embedding provider configuration differs'),
+      });
+    } finally {
+      await tmpRepo.cleanup();
+    }
+  });
+
+  it('treats a checkpoint with no kind as interrupted and fails closed', async () => {
+    const tmpRepo = await createTempDir('gitnexus-2790r-legacy-mismatch-');
+    try {
+      const { storagePath } = getStoragePaths(tmpRepo.dbPath);
+      await seedMeta(storagePath, tmpRepo.dbPath, {
+        stats: { nodes: 2, embeddings: 4 },
+        // No `kind` — exactly what versions before this change wrote.
+        embeddingCheckpoint: checkpointFixture({
+          model: 'a-different-model',
+          pendingNodeIds: ['node-a'],
+        }),
+      });
+      mockResilienceHarness({ count: [{ cnt: 4 }], pipeline: async () => cleanResult() });
+
+      const logs: string[] = [];
+      expect(
+        await runAnalyze(tmpRepo.dbPath, { skipAgentsMd: true, skipSkills: true }, logs),
+      ).toMatchObject({
+        message: expect.stringContaining('Cannot resume embedding checkpoint'),
+      });
+    } finally {
+      await tmpRepo.cleanup();
+    }
+  });
+
+  /**
+   * FINDING 5b — `--force` is the documented rebuild escape hatch, so it must
+   * be able to discard a checkpoint. The gate used to inspect only
+   * `options.dropEmbeddings`, which is why a wedged repo could not be freed by
+   * the flag every operator reaches for first.
+   */
+  it('discards a checkpoint under --force and says so', async () => {
+    const tmpRepo = await createTempDir('gitnexus-2790r-force-clears-');
+    try {
+      const { storagePath } = getStoragePaths(tmpRepo.dbPath);
+      await seedMeta(storagePath, tmpRepo.dbPath, {
+        stats: { nodes: 2, embeddings: 4 },
+        embeddingCheckpoint: checkpointFixture({
+          kind: 'interrupted',
+          provider: 'http:1f0c9a2b',
+          pendingNodeIds: ['node-a', 'node-b'],
+        }),
+      });
+      const { runEmbeddingPipeline } = mockResilienceHarness({
+        count: [{ cnt: 4 }],
+        pipeline: async () => cleanResult(),
+      });
+
+      const logs: string[] = [];
+      const error = await runAnalyze(
+        tmpRepo.dbPath,
+        { force: true, skipAgentsMd: true, skipSkills: true },
+        logs,
+      );
+
+      // Not even the identity mismatch fires: --force never reaches the gate.
+      expect(error).toBeNull();
+      expect(logs).toContainEqual(
+        expect.stringContaining(
+          'Discarding the embedding checkpoint (--force) and its 2 pending node(s)',
+        ),
+      );
+      const meta = await loadMeta(storagePath);
+      expect(meta?.embeddingCheckpoint).toBeUndefined();
+      expect(getIndexIncompleteReasons(meta)).toEqual([]);
+      // --force over an embedded repo still regenerates, so the pending nodes
+      // (which hold no rows and therefore look new) come back anyway.
+      expect(runEmbeddingPipeline).toHaveBeenCalled();
+    } finally {
+      await tmpRepo.cleanup();
+    }
+  });
+
+  /**
+   * FINDING 5c — the retry must converge.
+   *
+   * A node the endpoint rejects DETERMINISTICALLY produces a resume run too
+   * small for any of the pipeline's failure guards to fire, so the pending set
+   * never shrank, `getIndexIncompleteReasons` returned
+   * `embedding-checkpoint-pending` forever, and the same-commit fast return was
+   * disabled for the life of the repo. `attempts` bounds it: after
+   * EMBEDDING_RESUME_MAX_ATTEMPTS identical failures the set is abandoned, out
+   * loud, and the index certifies complete again.
+   *
+   * Every run below is a PLAIN `analyze` — no flags. That is the whole point:
+   * the checkpoint is what forces generation, so once it is dropped the loop
+   * genuinely stops instead of being re-armed by an explicit --embeddings.
+   */
+  it('abandons a pending set that fails EMBEDDING_RESUME_MAX_ATTEMPTS times in a row', async () => {
+    const tmpRepo = await createTempDir('gitnexus-2790r-attempts-bound-');
+    try {
+      const { storagePath } = getStoragePaths(tmpRepo.dbPath);
+      // A real (empty) git repo, unlike the single-run tests above. Two things
+      // depend on it: `schemaVersion` is only stamped for git repos, and an
+      // unstamped one trips the schema-mismatch guard into `force` on EVERY
+      // run — which would keep re-arming embedding generation and hide whether
+      // the pending set converged. An empty commit keeps `fileHashes` empty, so
+      // each run still takes the plain full-rebuild path.
+      const git = (cmd: string) => execSync(cmd, { cwd: tmpRepo.dbPath, stdio: 'pipe' });
+      git('git init');
+      git('git -c user.name=test -c user.email=test@test commit --allow-empty -m init');
+      await seedMeta(storagePath, tmpRepo.dbPath, {
+        stats: { nodes: 2, embeddings: 5 },
+        embeddingCheckpoint: checkpointFixture({
+          kind: 'partial',
+          pendingNodeIds: ['node-a'],
+        }),
+      });
+      const forcedSets: Array<readonly string[]> = [];
+      mockResilienceHarness({
+        count: [{ cnt: 5 }],
+        pipeline: async (options) => {
+          forcedSets.push([...(options.forceReembedNodeIds ?? [])]);
+          // The endpoint rejects this node the same way every single time.
+          return cleanResult({ nodesProcessed: 1, failedNodeIds: ['node-a'] });
+        },
+      });
+
+      const { EMBEDDING_RESUME_MAX_ATTEMPTS } = await import('../../src/core/run-analyze.js');
+      const attemptsSeen: Array<number | undefined> = [];
+      for (let run = 0; run < EMBEDDING_RESUME_MAX_ATTEMPTS; run++) {
+        const runLogs: string[] = [];
+        expect(
+          await runAnalyze(tmpRepo.dbPath, { skipAgentsMd: true, skipSkills: true }, runLogs),
+        ).toBeNull();
+        attemptsSeen.push((await loadMeta(storagePath))?.embeddingCheckpoint?.attempts);
+      }
+
+      // Each plain run really did resume and re-offer the same node…
+      expect(forcedSets).toEqual(
+        Array.from({ length: EMBEDDING_RESUME_MAX_ATTEMPTS }, () => ['node-a']),
+      );
+      // …and the counter advanced once per identical failure.
+      expect(attemptsSeen).toEqual(
+        Array.from({ length: EMBEDDING_RESUME_MAX_ATTEMPTS }, (_, i) => i + 1),
+      );
+
+      // The converging run: the budget is spent, so the set is abandoned.
+      const finalLogs: string[] = [];
+      expect(
+        await runAnalyze(tmpRepo.dbPath, { skipAgentsMd: true, skipSkills: true }, finalLogs),
+      ).toBeNull();
+      expect(finalLogs).toContainEqual(
+        expect.stringContaining(
+          `failed to embed on ${EMBEDDING_RESUME_MAX_ATTEMPTS} consecutive resume attempts`,
+        ),
+      );
+      const finalMeta = await loadMeta(storagePath);
+      expect(finalMeta?.embeddingCheckpoint).toBeUndefined();
+      // `gitnexus status` stops reporting the index as incomplete.
+      expect(getIndexIncompleteReasons(finalMeta)).toEqual([]);
+      // The pipeline was not re-armed by the dropped checkpoint.
+      expect(forcedSets).toHaveLength(EMBEDDING_RESUME_MAX_ATTEMPTS);
+    } finally {
+      await tmpRepo.cleanup();
+    }
+  });
+
+  /**
+   * The retry budget is for a DETERMINISTIC rejection, not a flaky endpoint: a
+   * resume that clears the set it was handed and loses different nodes is a
+   * FRESH partial, so the counter resets rather than marching toward abandon.
+   */
+  it('resets the attempt counter when the resume clears the set it was handed', async () => {
+    const tmpRepo = await createTempDir('gitnexus-2790r-attempts-reset-');
+    try {
+      const { storagePath } = getStoragePaths(tmpRepo.dbPath);
+      await seedMeta(storagePath, tmpRepo.dbPath, {
+        stats: { nodes: 2, embeddings: 5 },
+        embeddingCheckpoint: checkpointFixture({
+          kind: 'partial',
+          attempts: 2,
+          pendingNodeIds: ['node-a'],
+        }),
+      });
+      mockResilienceHarness({
+        count: [{ cnt: 5 }],
+        // 'node-a' embedded fine this time; a different node lost its rows.
+        pipeline: async () => cleanResult({ nodesProcessed: 1, failedNodeIds: ['node-z'] }),
+      });
+
+      const logs: string[] = [];
+      expect(
+        await runAnalyze(tmpRepo.dbPath, { skipAgentsMd: true, skipSkills: true }, logs),
+      ).toBeNull();
+
+      const meta = await loadMeta(storagePath);
+      expect(meta).toMatchObject({
+        embeddingCheckpoint: { kind: 'partial', pendingNodeIds: ['node-z'] },
+      });
+      expect(meta?.embeddingCheckpoint?.attempts).toBeUndefined();
+    } finally {
+      await tmpRepo.cleanup();
+    }
+  });
+});
+
+/**
+ * ── #2790 review, finding 2: ONE counter, three call sites ─────────────
+ *
+ * `run-analyze.ts` (Phase 5 + the mid-run checkpoint) and `server/api.ts` both
+ * publish `RepoMeta.stats.embeddings`. Their hand-copied bodies had already
+ * drifted inside a single change — one ended `?? 0`, the other `?? Number.NaN`
+ * — under a comment asserting they measured it "the same way". These pin the
+ * shared implementation both now call, on the three inputs that told the two
+ * copies apart.
+ */
+describe('measurePersistedEmbeddingCount (#2790 review)', () => {
+  const answer = async (
+    rows: Array<Record<string, unknown>> | undefined,
+  ): Promise<PersistedEmbeddingCount> => {
+    const { measurePersistedEmbeddingCount } = await import('../../src/core/embedding-count.js');
+    return await measurePersistedEmbeddingCount(async () => rows);
+  };
+
+  it('reports a real count when the query answers with one', async () => {
+    expect(await answer([{ cnt: 41 }])).toEqual({ kind: 'measured', count: 41 });
+  });
+
+  it('reports an empty table as a measured zero', async () => {
+    // The distinction the whole tri-state rests on: an EMPTY table still
+    // answers with one row holding 0. That is a measurement, not an absence.
+    expect(await answer([{ cnt: 0 }])).toEqual({ kind: 'measured', count: 0 });
+  });
+
+  it('reports a no-row answer as unknown, not as zero', async () => {
+    // `?? 0` made this a measured zero — and `Number.isFinite(0)` is true, so
+    // the unknown branch became unreachable for exactly this case.
+    expect(await answer([])).toMatchObject({ kind: 'unknown' });
+  });
+
+  it('reports a missing cell as unknown', async () => {
+    expect(await answer([{}])).toMatchObject({ kind: 'unknown' });
+  });
+
+  it('reports a non-numeric cell as unknown', async () => {
+    expect(await answer([{ cnt: 'x' }])).toMatchObject({ kind: 'unknown' });
+  });
+
+  it('reports an undefined result set as unknown', async () => {
+    expect(await answer(undefined)).toMatchObject({ kind: 'unknown' });
+  });
+
+  it('reports a thrown query as unknown, carrying the reason', async () => {
+    const { measurePersistedEmbeddingCount } = await import('../../src/core/embedding-count.js');
+    expect(
+      await measurePersistedEmbeddingCount(async () => {
+        throw new Error('Binder exception: Table CodeEmbedding does not exist.');
+      }),
+    ).toEqual({ kind: 'unknown', reason: 'Binder exception: Table CodeEmbedding does not exist.' });
+  });
+
+  it('collapses to the optional number the callers persist', async () => {
+    const { persistedEmbeddingCountOrUndefined } =
+      await import('../../src/core/embedding-count.js');
+    expect(persistedEmbeddingCountOrUndefined({ kind: 'measured', count: 0 })).toBe(0);
+    expect(persistedEmbeddingCountOrUndefined({ kind: 'unknown', reason: 'nope' })).toBeUndefined();
   });
 });
