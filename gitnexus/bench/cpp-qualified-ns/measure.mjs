@@ -397,7 +397,7 @@ function outcomesOf(parsedFiles, sites) {
       callsite,
     );
     outcomes.add(
-      `${siteKey(receiver, member, callsite)} ${hit === undefined ? '<none>' : hit === 'ambiguous' ? '<ambiguous>' : hit.nodeId}`,
+      `${siteKey(receiver, member, callsite)}\u0000${hit === undefined ? '<none>' : hit === 'ambiguous' ? '<ambiguous>' : hit.nodeId}`,
     );
   }
   return outcomes;
