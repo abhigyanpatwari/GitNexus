@@ -177,6 +177,13 @@ export async function getInterModuleCallEdges(filePaths: string[]): Promise<{
 
   const fileList = filePaths.map((f) => `'${escapeCypherString(f)}'`).join(', ');
 
+  // The sort leads with the symbol names, not the file paths. Ordering by
+  // `fromFile` first makes the LIMIT a single-file prefix — on this repo's own
+  // index the 30 outgoing edges of `core/wiki` all came from 1 of its 7 files,
+  // so the module page described one file's external surface as the module's.
+  // The four columns are the whole DISTINCT tuple, so any permutation is a
+  // total order and equally deterministic (#2787); leading with the names just
+  // spreads the window across files (1 → 7 of 7 here).
   const outRows = await executeQuery(
     REPO_ID,
     `
@@ -184,6 +191,7 @@ export async function getInterModuleCallEdges(filePaths: string[]): Promise<{
     WHERE a.filePath IN [${fileList}] AND NOT b.filePath IN [${fileList}]
     RETURN DISTINCT a.filePath AS fromFile, a.name AS fromName,
            b.filePath AS toFile, b.name AS toName
+    ORDER BY fromName, toName, fromFile, toFile
     LIMIT 30
   `,
   );
@@ -195,6 +203,7 @@ export async function getInterModuleCallEdges(filePaths: string[]): Promise<{
     WHERE NOT a.filePath IN [${fileList}] AND b.filePath IN [${fileList}]
     RETURN DISTINCT a.filePath AS fromFile, a.name AS fromName,
            b.filePath AS toFile, b.name AS toName
+    ORDER BY fromName, toName, fromFile, toFile
     LIMIT 30
   `,
   );
@@ -232,7 +241,7 @@ export async function getProcessesForFiles(filePaths: string[], limit = 5): Prom
     WHERE s.filePath IN [${fileList}]
     RETURN DISTINCT p.id AS id, p.heuristicLabel AS label,
            p.processType AS type, p.stepCount AS stepCount
-    ORDER BY stepCount DESC
+    ORDER BY stepCount DESC, id
     LIMIT ${limit}
   `,
   );
@@ -281,7 +290,7 @@ export async function getAllProcesses(limit = 20): Promise<ProcessInfo[]> {
     MATCH (p:Process)
     RETURN p.id AS id, p.heuristicLabel AS label,
            p.processType AS type, p.stepCount AS stepCount
-    ORDER BY stepCount DESC
+    ORDER BY stepCount DESC, id
     LIMIT ${limit}
   `,
   );

@@ -23,7 +23,7 @@ export const CUSTOM_CONTRACT_RESOLVE_QUERY = `MATCH (n)
    WHERE labels(n) IN ['Function','Method','Class','Interface','Struct','Enum','Trait','Constructor','TypeAlias','Impl','Macro','Union','Typedef','Property','Record','Delegate','Annotation','Template','Const','Static','CodeElement']
      AND n.name = $symbolName
    RETURN n.id AS uid, n.name AS name, n.filePath AS filePath
-   ORDER BY n.filePath ASC
+   ORDER BY n.filePath ASC, n.id ASC
    LIMIT 1`;
 
 /**
@@ -242,7 +242,7 @@ export class ManifestExtractor {
           `MATCH (handler)-[r:CodeRelation {type: 'HANDLES_ROUTE'}]->(route:Route)
            WHERE route.name = $normalized
            RETURN handler.id AS uid, handler.name AS name, handler.filePath AS filePath
-           ORDER BY handler.filePath ASC
+           ORDER BY handler.filePath ASC, handler.id ASC
            LIMIT 1`,
           { normalized },
         );
@@ -255,7 +255,7 @@ export class ManifestExtractor {
         rows = await executor(
           `MATCH (n) WHERE labels(n) IN ['Function','Method','Class','Interface'] AND n.name = $contract
            RETURN n.id AS uid, n.name AS name, n.filePath AS filePath
-           ORDER BY n.filePath ASC
+           ORDER BY n.filePath ASC, n.id ASC
            LIMIT 1`,
           { contract: link.contract },
         );
@@ -279,7 +279,7 @@ export class ManifestExtractor {
           rows = await executor(
             `MATCH (n) WHERE labels(n) IN ['Function','Method'] AND n.name = $methodName
              RETURN n.id AS uid, n.name AS name, n.filePath AS filePath
-             ORDER BY n.filePath ASC
+             ORDER BY n.filePath ASC, n.id ASC
              LIMIT 1`,
             { methodName },
           );
@@ -287,7 +287,7 @@ export class ManifestExtractor {
           rows = await executor(
             `MATCH (n) WHERE labels(n) IN ['Class','Interface'] AND n.name = $serviceName
              RETURN n.id AS uid, n.name AS name, n.filePath AS filePath
-             ORDER BY n.filePath ASC
+             ORDER BY n.filePath ASC, n.id ASC
              LIMIT 1`,
             { serviceName },
           );
@@ -304,7 +304,7 @@ export class ManifestExtractor {
         rows = await executor(
           `MATCH (n) WHERE labels(n) IN ['Module'] AND n.name = $contract
            RETURN n.id AS uid, n.name AS name, n.filePath AS filePath
-           ORDER BY n.filePath ASC
+           ORDER BY n.filePath ASC, n.id ASC
            LIMIT 1`,
           { contract: link.contract },
         );
@@ -312,7 +312,7 @@ export class ManifestExtractor {
         rows = await executor(
           `MATCH (f:File) WHERE f.filePath = $contract
            RETURN f.id AS uid, f.name AS name, f.filePath AS filePath
-           ORDER BY f.filePath ASC
+           ORDER BY f.filePath ASC, f.id ASC
            LIMIT 1`,
           { contract: link.contract },
         );

@@ -3,6 +3,21 @@ export const generateId = (label: string, name: string): string => {
 };
 
 /**
+ * Total order on strings by UTF-16 code unit — deliberately NOT `localeCompare`.
+ *
+ * `localeCompare` resolves against the host's default ICU locale, so two machines
+ * can order the same pair differently and a tie-broken cap keeps a different
+ * subset on each (#2787). Code-unit order is host-independent and matches the
+ * binary `ORDER BY` the graph queries use, so a JS re-sort reproduces the DB's
+ * order instead of fighting it.
+ *
+ * Use this for every tiebreak that feeds a `.slice()`, a page boundary, or any
+ * other cut — `Array.prototype.sort` is stable, so a comparator that returns 0
+ * for distinct elements silently falls back to input order.
+ */
+export const compareCodeUnits = (a: string, b: string): number => (a < b ? -1 : a > b ? 1 : 0);
+
+/**
  * How many links of an `Error.cause` chain any walker below visits, counting
  * the head. THE bound — hand-rolled copies had drifted to three different
  * numbers with three different loop conditions (`depth < 5` in two places,
