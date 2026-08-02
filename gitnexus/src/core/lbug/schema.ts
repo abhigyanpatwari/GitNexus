@@ -11,6 +11,7 @@
 
 // Import from shared package (single source of truth) — used in DDL templates below
 import { NODE_TABLES, REL_TABLE_NAME, REL_TYPES, EMBEDDING_TABLE_NAME } from 'gitnexus-shared';
+import { parseRelationSchemaPairs } from './rel-pair-routing.js';
 // Re-export so downstream consumers keep the same import path
 export { NODE_TABLES, REL_TABLE_NAME, REL_TYPES, EMBEDDING_TABLE_NAME };
 export type { NodeTableName, RelType } from 'gitnexus-shared';
@@ -248,9 +249,63 @@ CREATE NODE TABLE BasicBlock (
 // Single table with 'type' property - connects all node tables
 // ============================================================================
 
-export const RELATION_SCHEMA = `
-CREATE REL TABLE ${REL_TABLE_NAME} (
-  FROM File TO File,
+/**
+ * Labels the scope-resolution graph bridge can put on the SOURCE side of a
+ * CALLS / ACCESSES / USES / EXTENDS edge: everything `buildGraphNodeLookup`
+ * registers (`LINKABLE_LABELS`), plus the `File` node `resolveCallerGraphId`
+ * falls back to for a module-level call site.
+ */
+const SCOPE_BRIDGE_SOURCE_LABELS = [
+  'File',
+  'Function',
+  'Method',
+  'Constructor',
+  'Module',
+  'Class',
+  'Interface',
+  'Struct',
+  'Enum',
+  'Trait',
+  'Variable',
+  'Property',
+  'Const',
+  'Macro',
+] as const;
+
+/**
+ * Labels the bridge can put on the TARGET side: `LINKABLE_LABELS` again (every
+ * `resolveDefGraphId` hit), plus `Delegate` — `tryEmitEdgeWithExplicitTargetId`
+ * bypasses the lookup and emits a `CALL_TARGET_TYPES` def's own node id, and
+ * C# delegates are in that set without being linkable.
+ *
+ * Both lists are twins of sets that live in the ingestion layer, which must not
+ * be imported here. `test/unit/schema-pair-coverage.test.ts` is what keeps them
+ * honest — it derives the required pairs from the originals and fails CI when
+ * either set grows without the matching pairs landing in this DDL.
+ */
+const SCOPE_BRIDGE_TARGET_LABELS = [
+  'Function',
+  'Method',
+  'Constructor',
+  'Module',
+  'Class',
+  'Interface',
+  'Struct',
+  'Enum',
+  'Trait',
+  'Variable',
+  'Property',
+  'Const',
+  'Macro',
+  'Delegate',
+] as const;
+
+/**
+ * Pairs carried by containment, inheritance, imports, DI, routes, clustering and
+ * the PDG substrate — the surface no single label predicate describes, so it
+ * stays hand-declared. The scope-resolution surface below is generated instead.
+ */
+const STRUCTURAL_PAIR_DDL = `  FROM File TO File,
   FROM File TO Folder,
   FROM File TO Function,
   FROM File TO Class,
@@ -472,7 +527,33 @@ CREATE REL TABLE ${REL_TABLE_NAME} (
   FROM CodeElement TO Process,
   FROM Route TO Process,
   FROM Tool TO Process,
-  FROM BasicBlock TO BasicBlock,
+  FROM BasicBlock TO BasicBlock`;
+
+/**
+ * Every scope-resolution FROM→TO pair not already declared structurally.
+ *
+ * Generated rather than hand-listed because the two label sets above ARE the
+ * emit surface — any pair drawn from them can reach `assertDeclaredPair`, and
+ * an undeclared one aborts `analyze` on whichever codebase happens to produce
+ * it. Hand-listing is what produced the piecemeal `Const→Method` (#2781) and
+ * `Class→Variable` (#2792) crashes: each fix declared only the pair in the
+ * stack trace and left the rest of the cross product missing.
+ */
+const scopeBridgePairDdl = (): string => {
+  const structural = parseRelationSchemaPairs(STRUCTURAL_PAIR_DDL);
+  const lines: string[] = [];
+  for (const from of SCOPE_BRIDGE_SOURCE_LABELS) {
+    for (const to of SCOPE_BRIDGE_TARGET_LABELS) {
+      if (structural.has(`${from}|${to}`)) continue;
+      lines.push(`  FROM \`${from}\` TO \`${to}\``);
+    }
+  }
+  return lines.join(',\n');
+};
+
+export const RELATION_SCHEMA = `
+CREATE REL TABLE ${REL_TABLE_NAME} (
+${[STRUCTURAL_PAIR_DDL, scopeBridgePairDdl()].filter((block) => block.length > 0).join(',\n')},
   type STRING,
   confidence DOUBLE,
   reason STRING,

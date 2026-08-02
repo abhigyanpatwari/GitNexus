@@ -687,8 +687,18 @@ export interface RepoMeta {
  * Numbered 34, not 33: `main` took 33 for Spring AOP (#2416) mid-flight, landing
  * on exactly this branch's number — the seventh collision in this series and the
  * first exact clash. Re-check against origin/main before merge.
+ *
+ * v35: the relation DDL declares the FULL scope-resolution FROM/TO cross product
+ * instead of the pairs someone happened to hit (#2792) — 99 new pairs, generated
+ * from `LINKABLE_LABELS` (+ the `File` caller fallback, + `CALL_TARGET_TYPES` on
+ * the target side) rather than hand-listed. v32 and v33 were the piecemeal
+ * versions of this same fix; both left the rest of the cross product undeclared,
+ * so `analyze` kept aborting at `assertDeclaredPair` on the next codebase with a
+ * different edge shape (`Class→Variable` on Java static/field initializers was
+ * the report). A pre-v35 database physically lacks these pairs, so force a full
+ * re-analyze.
  */
-export const INCREMENTAL_SCHEMA_VERSION = 34;
+export const INCREMENTAL_SCHEMA_VERSION = 35;
 
 export interface IndexedRepo {
   repoPath: string;

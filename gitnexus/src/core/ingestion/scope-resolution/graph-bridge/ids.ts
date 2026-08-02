@@ -54,17 +54,19 @@ import { definitionIdPosition } from '../utils/definition-id.js';
  * restricted to function/class-likes, those calls correctly fall
  * through to the File-node fallback at the bottom of the walk.
  */
+export const CALLER_ANCHOR_LABELS: ReadonlySet<NodeLabel> = new Set<NodeLabel>([
+  'Function',
+  'Method',
+  'Constructor',
+  'Module',
+  'Class',
+  'Interface',
+  'Struct',
+  'Enum',
+]);
+
 function isCallerAnchorLabel(label: NodeLabel): boolean {
-  return (
-    label === 'Function' ||
-    label === 'Method' ||
-    label === 'Constructor' ||
-    label === 'Module' ||
-    label === 'Class' ||
-    label === 'Interface' ||
-    label === 'Struct' ||
-    label === 'Enum'
-  );
+  return CALLER_ANCHOR_LABELS.has(label);
 }
 
 function rangeContainsPoint(
