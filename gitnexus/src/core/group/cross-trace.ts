@@ -25,7 +25,7 @@
 
 import { GroupNotFoundError, loadGroupConfig } from './config-parser.js';
 import { getGroupDir } from './storage.js';
-import { ensureBridgeReady, MAX_SUPPORTED_CROSS_DEPTH } from './cross-impact.js';
+import { compareCodeUnits, ensureBridgeReady, MAX_SUPPORTED_CROSS_DEPTH } from './cross-impact.js';
 import { closeBridgeDb, queryBridge } from './bridge-db.js';
 import type {
   GroupPdgFlowHop,
@@ -337,11 +337,14 @@ async function listCrossingsBetween(
   }
   // The query already orders by confidence DESC; re-sort defensively so the cap
   // keeps the strongest candidates even if a tuple-mode driver reorders rows.
+  // Mirror the query's ORDER BY key-for-key — a shorter comparator reproduces
+  // less than the order it is defending, leaving ties on raw row order (#2787).
   all.sort(
     (a, b) =>
       b.confidence - a.confidence ||
-      a.contractId.localeCompare(b.contractId) ||
-      a.consumerUid.localeCompare(b.consumerUid),
+      compareCodeUnits(a.contractId, b.contractId) ||
+      compareCodeUnits(a.consumerUid, b.consumerUid) ||
+      compareCodeUnits(a.providerUid, b.providerUid),
   );
   const truncated = all.length > MAX_CROSSINGS_TO_TRY;
   return {
@@ -380,11 +383,13 @@ async function listCrossingsFrom(
     const c = destRowToCrossing(raw);
     if (c) all.push(c);
   }
+  // Same key-for-key mirror of CY_CROSSINGS_FROM's ORDER BY as above (#2787).
   all.sort(
     (a, b) =>
       b.confidence - a.confidence ||
-      a.contractId.localeCompare(b.contractId) ||
-      a.consumerUid.localeCompare(b.consumerUid),
+      compareCodeUnits(a.contractId, b.contractId) ||
+      compareCodeUnits(a.consumerUid, b.consumerUid) ||
+      compareCodeUnits(a.providerUid, b.providerUid),
   );
   const truncated = all.length > MAX_CROSSINGS_TO_TRY;
   return {

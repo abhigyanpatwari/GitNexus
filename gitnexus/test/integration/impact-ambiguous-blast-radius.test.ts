@@ -55,6 +55,18 @@ const SEED = [
   `CREATE (rv:Const {id: 'Const:test/registry.test.ts:Registry', name: 'Registry', filePath: 'test/registry.test.ts', startLine: 3, endLine: 3, content: '', description: ''})`,
   `CREATE (ru:Function {id: 'Function:src/boot.ts:boot', name: 'boot', filePath: 'src/boot.ts', startLine: 1, endLine: 5, isExported: true, content: '', description: ''})`,
   `MATCH (a:Function {id:'Function:src/boot.ts:boot'}), (b:Class {id:'Class:src/registry.ts:Registry'}) CREATE (a)-[:CodeRelation {type:'CALLS', confidence:0.85, reason:'direct', step:0}]->(b)`,
+
+  // #2787 review F4 — the two shapes the Class/Interface collapse must now tell
+  // apart. `Panel`: ONE Class plus its Constructor (the literal #480 case) —
+  // exactly one candidate carries the label, so collapsing is a correct
+  // confident answer. `Widget`: TWO Classes in different files plus a same-named
+  // value binding — more than one candidate carries the label, so there is no
+  // right answer to pick and the caller must be told.
+  `CREATE (:Class {id: 'Class:src/panel.ts:Panel', name: 'Panel', filePath: 'src/panel.ts', startLine: 1, endLine: 12, isExported: true, content: '', description: ''})`,
+  `CREATE (:Constructor {id: 'Constructor:src/panel.ts:Panel', name: 'Panel', filePath: 'src/panel.ts', startLine: 2, endLine: 4, content: '', description: ''})`,
+  `CREATE (:Class {id: 'Class:src/widgets/alpha.ts:Widget', name: 'Widget', filePath: 'src/widgets/alpha.ts', startLine: 1, endLine: 20, isExported: true, content: '', description: ''})`,
+  `CREATE (:Class {id: 'Class:src/widgets/beta.ts:Widget', name: 'Widget', filePath: 'src/widgets/beta.ts', startLine: 1, endLine: 20, isExported: true, content: '', description: ''})`,
+  `CREATE (:Const {id: 'Const:test/widget.test.ts:Widget', name: 'Widget', filePath: 'test/widget.test.ts', startLine: 3, endLine: 3, content: '', description: ''})`,
 ];
 
 withTestLbugDB(
@@ -149,6 +161,41 @@ withTestLbugDB(
         type: 'Class',
       });
       expect(result.impactedCount).toBeGreaterThanOrEqual(1);
+    });
+
+    it('still collapses a lone Class against its same-named Constructor (#480, #2787 review F4)', async () => {
+      // Non-regression half of the F4 fix. The collapse probe went from
+      // `LIMIT 1` to `LIMIT 2` and now requires EXACTLY one row — one Class plus
+      // one Constructor still yields exactly one Class row, so the confident
+      // answer #480 introduced is unchanged. If this flips to `ambiguous`, the
+      // uniqueness guard was made too strict and every resolver-backed tool
+      // loses a previously confident resolution.
+      const result = await backend.callTool('context', { name: 'Panel' });
+
+      expect(result).toMatchObject({ status: 'found' });
+      expect(result.symbol).toMatchObject({ uid: 'Class:src/panel.ts:Panel', kind: 'Class' });
+    });
+
+    it('refuses to collapse when TWO candidates carry the Class label (#2787 review F4)', async () => {
+      // Collapsing returns `kind: 'ok'` — the caller never sees the scorer or
+      // the ambiguity report — and it is the ONLY confident path a bare name can
+      // take (scoreCandidate tops out at 0.60 without a file_path hint; the
+      // confident gate needs >= 0.95). With `LIMIT 1` the probe took whichever
+      // labelled row came back and answered confidently; adding `ORDER BY n.id`
+      // made that wrong pick REPEATABLE rather than right — `context`/`impact`
+      // would silently analyse src/widgets/alpha.ts and never mention beta.
+      // `LIMIT 2` turns the second row into a uniqueness check.
+      const result = await backend.callTool('context', { name: 'Widget' });
+
+      expect(result).toMatchObject({ status: 'ambiguous' });
+      expect((result.candidates as Array<{ uid: string }>).map((c) => c.uid).sort()).toEqual([
+        'Class:src/widgets/alpha.ts:Widget',
+        'Class:src/widgets/beta.ts:Widget',
+        'Const:test/widget.test.ts:Widget',
+      ]);
+      // Both classes are offered, so the caller can disambiguate — the file the
+      // old code silently discarded is the second entry above.
+      expect(result.totalCandidates).toBe(3);
     });
 
     it('reports an undetermined impactedCount for an ambiguous pdg target (#2687)', async () => {

@@ -272,9 +272,19 @@ export function registerGroupCommands(program: Command): void {
             );
           }
           if (riskFloor) {
+            // `truncated` has two independent causes that point at different
+            // subsystems, so the note must name the one that actually fired:
+            // dropped crossings, or a local walk that never finished (most
+            // often the impact chunk cap, which any symbol with more than a
+            // thousand locally-impacted nodes hits on every run). `dropped` is
+            // deduped to distinct repos before it reaches here, so it counts
+            // repos — reporting it as crossings understates a fan-out cap the
+            // same way #2787's totals did.
             const dropped = (raw as { truncatedRepos?: string[] })?.truncatedRepos ?? [];
             console.log(
-              `  risk is a LOWER BOUND — fan-out stopped early, ${dropped.length} crossing(s) not traversed${dropped.length > 0 ? `: ${dropped.join(', ')}` : ''}`,
+              dropped.length > 0
+                ? `  risk is a LOWER BOUND — fan-out stopped early; crossings to ${dropped.length} repo(s) not traversed: ${dropped.join(', ')}`
+                : '  risk is a LOWER BOUND — the local impact walk did not complete (every bridge crossing was traversed)',
             );
           }
         }

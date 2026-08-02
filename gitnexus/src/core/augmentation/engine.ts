@@ -186,55 +186,48 @@ export async function augment(pattern: string, cwd?: string): Promise<string> {
 
     const idList = uniqueSymbols.map((s) => `'${escapeCypherString(s.nodeId)}'`).join(', ');
 
-    // Batch fetch callers
-    const callersMap = new Map<string, string[]>();
-    try {
+    // Callers/callees are windowed PER SYMBOL, not out of one shared budget.
+    // A single `n.id IN [...] ... ORDER BY targetId LIMIT 15` sorts by the very
+    // column the rows are grouped by, which turns the cap into a single-bucket
+    // prefix: the alphabetically-first target takes every row (the hottest
+    // symbol in this repo's own index has 2163 callers) and the other four
+    // render with no callers at all. Raising the cap does not bound that, and
+    // ordering caller-major only moves the bucket. A per-target window is not
+    // expressible in one statement either — LadybugDB does not preserve a
+    // per-branch ORDER BY through UNION ALL — so fan out one bounded query per
+    // symbol (#2787).
+    //
+    // `id STARTS WITH 'File:'` sorts container nodes last: node ids are
+    // `Label:path:name`, so a bare `ORDER BY id` puts `File:` ahead of
+    // `Function:`/`Method:` and the "Called by" line renders bare filenames
+    // instead of the calling symbols the hint exists to name.
+    const NEIGHBOUR_CAP = 3;
+    const neighbourNames = async (nodeId: string, incoming: boolean): Promise<string[]> => {
+      const edge = incoming
+        ? `(other)-[:CodeRelation {type: 'CALLS'}]->(n)`
+        : `(n)-[:CodeRelation {type: 'CALLS'}]->(other)`;
       const rows = await executeQuery(
         repoId,
         `
-        MATCH (caller)-[:CodeRelation {type: 'CALLS'}]->(n)
-        WHERE n.id IN [${idList}]
-        RETURN n.id AS targetId, caller.name AS name
-        ORDER BY targetId, caller.id
-        LIMIT 15
+        MATCH ${edge}
+        WHERE n.id = '${escapeCypherString(nodeId)}'
+        RETURN other.name AS name
+        ORDER BY other.id STARTS WITH 'File:', other.id
+        LIMIT ${NEIGHBOUR_CAP}
       `,
-      );
+      ).catch(() => []);
+      const names: string[] = [];
       for (const r of rows) {
-        const tid = r.targetId || r[0];
-        const name = r.name || r[1];
-        if (tid && name) {
-          if (!callersMap.has(tid)) callersMap.set(tid, []);
-          callersMap.get(tid)!.push(name);
-        }
+        const name = r.name || r[0];
+        if (name) names.push(name);
       }
-    } catch {
-      /* skip */
-    }
+      return names;
+    };
 
-    // Batch fetch callees
-    const calleesMap = new Map<string, string[]>();
-    try {
-      const rows = await executeQuery(
-        repoId,
-        `
-        MATCH (n)-[:CodeRelation {type: 'CALLS'}]->(callee)
-        WHERE n.id IN [${idList}]
-        RETURN n.id AS sourceId, callee.name AS name
-        ORDER BY sourceId, callee.id
-        LIMIT 15
-      `,
-      );
-      for (const r of rows) {
-        const sid = r.sourceId || r[0];
-        const name = r.name || r[1];
-        if (sid && name) {
-          if (!calleesMap.has(sid)) calleesMap.set(sid, []);
-          calleesMap.get(sid)!.push(name);
-        }
-      }
-    } catch {
-      /* skip */
-    }
+    const [callerNames, calleeNames] = await Promise.all([
+      Promise.all(uniqueSymbols.map((s) => neighbourNames(s.nodeId, true))),
+      Promise.all(uniqueSymbols.map((s) => neighbourNames(s.nodeId, false))),
+    ]);
 
     // Batch fetch processes
     const processesMap = new Map<string, string[]>();
@@ -291,12 +284,12 @@ export async function augment(pattern: string, cwd?: string): Promise<string> {
       cohesion: number;
     }> = [];
 
-    for (const sym of uniqueSymbols) {
+    for (const [i, sym] of uniqueSymbols.entries()) {
       enriched.push({
         name: sym.name,
         filePath: sym.filePath,
-        callers: (callersMap.get(sym.nodeId) || []).slice(0, 3),
-        callees: (calleesMap.get(sym.nodeId) || []).slice(0, 3),
+        callers: callerNames[i],
+        callees: calleeNames[i],
         processes: processesMap.get(sym.nodeId) || [],
         cohesion: cohesionMap.get(sym.nodeId) || 0,
       });

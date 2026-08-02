@@ -40,7 +40,7 @@ vi.mock('../../../src/core/group/bridge-db.js', async (importOriginal) => {
   };
 });
 
-const { runGroupImpact, MAX_NEIGHBOR_FANOUT } =
+const { runGroupImpact, MAX_NEIGHBOR_FANOUT, compareCodeUnits } =
   await import('../../../src/core/group/cross-impact.js');
 
 /** Neighbour repo keys, zero-padded so lexicographic order is numeric order. */
@@ -55,6 +55,51 @@ const crossingRow = (i: number, confidence = 1) => ({
   contractId: `custom::c${String(i).padStart(3, '0')}`,
   contractType: 'custom',
 });
+
+/** Contract ids, zero-padded so lexicographic order is numeric order. */
+const contractKey = (i: number) => `custom::k${String(i).padStart(3, '0')}`;
+
+/**
+ * A crossing that shares confidence, repo AND uid with every other one — the
+ * only thing separating these rows is `contractId`, which is part of the
+ * fan-out's dedup key, so all of them survive dedup and reach the cap.
+ */
+const contractVariantRow = (i: number) => ({
+  neighborRepo: repoKey(0),
+  neighborUid: 'Function:src/handler.ts:handle',
+  neighborFilePath: 'src/handler.ts',
+  matchType: 'exact',
+  confidence: 1,
+  contractId: contractKey(i),
+  contractType: 'custom',
+});
+
+/**
+ * A boundary-only crossing: the far endpoint has no graph symbol, so its UID is
+ * the synthetic `manifest::` form and no `impactByUid` is ever issued for it
+ * (#2722 / #2784).
+ */
+const manifestRow = (i: number) => ({
+  neighborRepo: repoKey(i),
+  neighborUid: `manifest::${repoKey(i)}::custom::m${String(i).padStart(3, '0')}`,
+  neighborFilePath: '',
+  matchType: 'manifest',
+  confidence: 1,
+  contractId: `custom::m${String(i).padStart(3, '0')}`,
+  contractType: 'custom',
+});
+
+type CrossEntry = {
+  repo_path: string;
+  contract: { id: string; match_type?: string };
+  fanout_status?: string;
+};
+
+/** No `?? []` fallback on purpose: an `{ error }` result must blow up here. */
+const crossOf = (result: unknown): CrossEntry[] => (result as { cross: CrossEntry[] }).cross;
+
+const fanoutUids = (port: GroupToolPort): string[] =>
+  vi.mocked(port.impactByUid).mock.calls.map((call) => String(call[1]));
 
 describe('group impact fan-out is bounded by a count, not by the clock (#2787)', () => {
   let home: string;
@@ -125,10 +170,16 @@ matching:
     } as GroupToolPort;
   }
 
-  const run = (port: GroupToolPort) =>
+  const run = (port: GroupToolPort, extraParams: Record<string, unknown> = {}) =>
     runGroupImpact(
       { port, gitnexusDir: home },
-      { name: 'waveful', repo: 'backend', target: 'publish', direction: 'upstream' },
+      {
+        name: 'waveful',
+        repo: 'backend',
+        target: 'publish',
+        direction: 'upstream',
+        ...extraParams,
+      },
     );
 
   it('attempts at most MAX_NEIGHBOR_FANOUT crossings and names the ones it dropped', async () => {
@@ -210,5 +261,159 @@ matching:
       crossingRow(2).neighborUid,
       crossingRow(0).neighborUid,
     ]);
+  });
+
+  it('breaks ties on contractId, so bridge row order cannot pick the survivors', async () => {
+    // Every other fixture in this file gives each crossing its own repo, so the
+    // repo tiebreak decides and the contract tiebreak never fires. Here the
+    // rows share confidence, repo AND uid — but `contractId` is part of the
+    // fan-out's dedup key (`repo\0uid\0contractId`), so all of them survive
+    // dedup and compete for the same MAX_NEIGHBOR_FANOUT slots. A comparator
+    // that stops at (confidence, repo, uid) returns 0 for every pair, and a
+    // stable sort then keeps raw bridge row order — which is precisely the
+    // process-varying cutoff #2787 exists to remove. Two fixed permutations,
+    // one expected survivor set: no randomness, no repeats.
+    const ascending = Array.from({ length: MAX_NEIGHBOR_FANOUT + 2 }, (_, i) =>
+      contractVariantRow(i),
+    );
+    const expectedSurvivors = Array.from({ length: MAX_NEIGHBOR_FANOUT }, (_, i) => contractKey(i));
+
+    bridgeRows.value = ascending;
+    const forward = await run(makePort());
+
+    bridgeRows.value = [...ascending].reverse();
+    const reversed = await run(makePort());
+
+    expect(crossOf(forward).map((entry) => entry.contract.id)).toEqual(expectedSurvivors);
+    expect(crossOf(reversed).map((entry) => entry.contract.id)).toEqual(expectedSurvivors);
+    expect(forward).toMatchObject({ truncated: true, truncatedRepos: [repoKey(0)] });
+    expect(reversed).toMatchObject({ truncated: true, truncatedRepos: [repoKey(0)] });
+  });
+
+  it('ranks the neighbour list by code unit, so the host ICU locale cannot reorder it', () => {
+    // The tiebreaks the cap depends on used `localeCompare`, which resolves
+    // against the host's default ICU locale — two machines can order the same
+    // two repo names differently, which is the same process-varying cutoff the
+    // clock bound was. Code-unit order is a property of the strings alone.
+    expect(compareCodeUnits('Billing', 'auth')).toBeLessThan(0);
+    expect(compareCodeUnits('auth', 'Billing')).toBeGreaterThan(0);
+    expect(compareCodeUnits('auth', 'auth')).toBe(0);
+  });
+
+  it('still reports manifest-only crossings after real ones have spent the cap', async () => {
+    // #2784: a manifest link proves the repository boundary even though its far
+    // endpoint has no graph symbol. It costs no `impactByUid`, so the count cap
+    // must not be allowed to drop it — the crossing would vanish from the
+    // report while `group sync` kept listing it.
+    bridgeRows.value = [
+      ...Array.from({ length: MAX_NEIGHBOR_FANOUT + 1 }, (_, i) => crossingRow(i)),
+      manifestRow(REPO_COUNT - 1),
+    ];
+    const port = makePort();
+
+    const result = await run(port);
+
+    expect(fanoutUids(port)).toHaveLength(MAX_NEIGHBOR_FANOUT);
+    expect(
+      crossOf(result).filter((entry) => entry.fanout_status === 'not_attempted'),
+    ).toMatchObject([
+      {
+        repo_path: repoKey(REPO_COUNT - 1),
+        contract: { id: manifestRow(REPO_COUNT - 1).contractId, match_type: 'manifest' },
+      },
+    ]);
+    expect(result).toMatchObject({
+      truncated: true,
+      // Only the real crossing that lost its slot is named — the manifest repo
+      // is not a dropped crossing.
+      truncatedRepos: [repoKey(MAX_NEIGHBOR_FANOUT)],
+      summary: { cross_repo_hits: MAX_NEIGHBOR_FANOUT + 1 },
+    });
+  });
+
+  it('does not spend fan-out budget on manifest-only crossings', async () => {
+    // Manifest crossings sort FIRST here (confidence 1 against the real
+    // crossings' 0.9), so if they consumed a slot each the ten of them would
+    // starve ten real neighbours out of the cap.
+    const reals = Array.from({ length: MAX_NEIGHBOR_FANOUT + 1 }, (_, i) => crossingRow(i, 0.9));
+    const manifests = Array.from({ length: 10 }, (_, i) => manifestRow(i));
+
+    bridgeRows.value = [...manifests, ...reals];
+    const mixedPort = makePort();
+    const mixed = await run(mixedPort);
+
+    bridgeRows.value = reals;
+    const realsOnlyPort = makePort();
+    const realsOnly = await run(realsOnlyPort);
+
+    // Same fan-outs, in the same order, with and without the manifest rows.
+    expect(fanoutUids(mixedPort)).toEqual(fanoutUids(realsOnlyPort));
+    expect(fanoutUids(mixedPort)).toHaveLength(MAX_NEIGHBOR_FANOUT);
+    expect(mixed).toMatchObject({
+      truncatedRepos: [repoKey(MAX_NEIGHBOR_FANOUT)],
+      summary: { cross_repo_hits: MAX_NEIGHBOR_FANOUT + manifests.length },
+    });
+    expect(realsOnly).toMatchObject({
+      truncatedRepos: [repoKey(MAX_NEIGHBOR_FANOUT)],
+      summary: { cross_repo_hits: MAX_NEIGHBOR_FANOUT },
+    });
+  });
+
+  it('reports timeout, not the generic partial, when the fan-out clock is what stopped it', async () => {
+    // The fan-out leg has its own two clock exits — a neighbour call that
+    // outlives the remaining budget, and the deadline check that skips every
+    // neighbour after it. Both must surface as `timeout`; only the LOCAL early
+    // return was ever asserted before. A never-resolving `impactByUid` makes
+    // the budget timer the only thing that can settle the race, so the branch
+    // is taken on every host — nothing here measures elapsed time.
+    bridgeRows.value = [crossingRow(0), crossingRow(1)];
+    const port = makePort({
+      impactByUid: vi.fn(() => new Promise<unknown>(() => {})) as GroupToolPort['impactByUid'],
+    });
+
+    const result = await run(port, { timeoutMs: 200 });
+
+    expect(result).toMatchObject({
+      truncated: true,
+      truncationReason: 'timeout',
+      riskEpistemic: 'lower-bound',
+      truncatedRepos: [repoKey(0), repoKey(1)],
+      // Nothing traversed, so the reported risk is the bare local one — the
+      // marker is the only thing telling a caller it is a floor.
+      risk: 'LOW',
+      cross: [],
+    });
+    // The second neighbour is never fanned out: whichever clock exit fired, the
+    // budget was gone before it.
+    expect(fanoutUids(port)).not.toContain(crossingRow(1).neighborUid);
+  });
+
+  it('marks the floor when the fan-out completed and only the local walk was partial', async () => {
+    // `truncated` has two independent causes. This is the one with an empty
+    // `truncatedRepos`: every bridge crossing was traversed, but the local
+    // impact walk itself came back partial (most often the local chunk cap).
+    // The CLI has to describe this case as "the local walk did not complete",
+    // not "fan-out stopped early".
+    bridgeRows.value = [crossingRow(0), crossingRow(1)];
+    const port = makePort({
+      impact: vi.fn(async () => ({
+        target: { id: 'Function:src/api.ts:publish', filePath: 'src/api.ts' },
+        byDepth: {},
+        partial: true,
+        summary: { direct: 1, processes_affected: 0, modules_affected: 0 },
+        risk: 'LOW',
+      })) as GroupToolPort['impact'],
+    });
+
+    const result = await run(port);
+
+    expect(fanoutUids(port)).toHaveLength(2);
+    expect(result).toMatchObject({
+      truncated: true,
+      truncationReason: 'partial',
+      riskEpistemic: 'lower-bound',
+      truncatedRepos: [],
+      summary: { cross_repo_hits: 2 },
+    });
   });
 });
