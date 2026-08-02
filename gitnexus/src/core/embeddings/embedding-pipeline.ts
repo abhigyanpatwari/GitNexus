@@ -335,6 +335,47 @@ export interface EmbeddingPipelineResult {
 const MAX_CONSECUTIVE_SUB_BATCH_FAILURES = 5;
 
 /**
+ * Cumulative guard: the share of sub-batches allowed to fail across the whole
+ * run, and the minimum sample before that share means anything.
+ *
+ * The ceiling above only catches a total outage — any success resets it, so an
+ * endpoint load-shedding every other sub-batch walks the entire repo dropping
+ * half of it while `analyze` still exits 0 (#2790). Shaped after Resilience4j's
+ * `failureRateThreshold` + `minimumNumberOfCalls`: judge a failure RATE, but
+ * only once enough sub-batches have been attempted for a rate to mean anything
+ * — a 3-node repo losing its single sub-batch is 100% and must not abort. The
+ * rate sits below a live-traffic breaker's 50% (a batch indexer's job is to
+ * index the whole corpus, not to serve degraded traffic) and above Hadoop's
+ * single-digit `mapreduce.map.failures.maxpercent` (tolerating transient
+ * hiccups is the entire point of #2790). At the default subBatchSize of 8 the
+ * floor is ~160 chunks of evidence before the rate can abort anything.
+ *
+ * ponytail: lifetime ratio, evaluated only when a sub-batch fails. A sliding
+ * window would spot an endpoint that degrades late in a long run sooner —
+ * upgrade if partial-corpus reports keep arriving from runs that stayed under
+ * this bar.
+ */
+const MAX_SUB_BATCH_FAILURE_RATIO = 0.25;
+const MIN_SUB_BATCHES_BEFORE_FAILURE_RATIO_GUARD = 20;
+
+/**
+ * The cumulative-ratio abort (#2790). Deliberately NOT the raw endpoint error
+ * the consecutive ceiling rethrows: the operator's next action differs — one bad
+ * batch is noise, a quarter of the corpus failing is an endpoint to fix before
+ * re-running. The retained streak error still names the real defect, carried in
+ * both the message and `cause`.
+ */
+const failureRatioAbortError = (failures: number, attempted: number, cause: unknown): Error =>
+  new Error(
+    `[embed] Aborting: ${failures} of ${attempted} embed sub-batches failed ` +
+      `(${Math.round((failures / attempted) * 100)}%, limit ` +
+      `${Math.round(MAX_SUB_BATCH_FAILURE_RATIO * 100)}%) — too much of the corpus is failing to ` +
+      `embed for this run to produce a usable index. Fix the embedding endpoint and re-run. ` +
+      `Underlying failure: ${cause instanceof Error ? cause.message : String(cause)}`,
+    { cause },
+  );
+
+/**
  * Cancellation is an instruction, not endpoint flakiness — it must abort the run
  * instead of being absorbed as a tolerable sub-batch failure. Checked on the
  * error shape as well as on our own signal, because an embed call handed the
@@ -563,6 +604,11 @@ export const runEmbeddingPipeline = async (
     const failedNodeIds = new Set<string>();
     // Run-level, not per-batch: a dead endpoint stays dead across batch boundaries.
     let consecutiveSubBatchFailures = 0;
+    // Run-level tally behind MAX_SUB_BATCH_FAILURE_RATIO (#2790). Lifetime, never
+    // reset — a steadily-degraded endpoint is exactly the shape the consecutive
+    // counter's reset-on-success blinds it to.
+    let subBatchesAttempted = 0;
+    let subBatchFailures = 0;
     // #2790: the FIRST error of the current streak — the one the ceiling rethrows.
     // Later failures in a streak degrade into generic noise: a misconfigured
     // endpoint trips the HTTP client's circuit breaker after 3 rejections, so
@@ -693,6 +739,7 @@ export const runEmbeddingPipeline = async (
       for (let si = 0; si < allTexts.length; si += EMBED_SUB_BATCH) {
         const subTexts = allTexts.slice(si, si + EMBED_SUB_BATCH);
         const subUpdates = allUpdates.slice(si, si + EMBED_SUB_BATCH);
+        subBatchesAttempted += 1;
 
         let embeddings: Float32Array[];
         try {
@@ -708,21 +755,35 @@ export const runEmbeddingPipeline = async (
           const droppedNodeIds = new Set(subUpdates.map((u) => u.nodeId));
           for (const nodeId of droppedNodeIds) batchFailedNodeIds.add(nodeId);
           consecutiveSubBatchFailures += 1;
-          streakFirstError ??= { err: embedErr };
+          subBatchFailures += 1;
+          const streakError = (streakFirstError ??= { err: embedErr });
           // Log under `err` so pino's standard serializer keeps the message and
           // stack — the previous `{ embedErr }` key serialized to `{}` (#2114).
           logger.warn(
             { err: embedErr },
             `⚠️ embedBatch failed for ${subTexts.length} texts (first: "${subTexts[0]?.substring(0, 80)}...") — ` +
               `dropping ${droppedNodeIds.size} node(s) from this run so the next run re-embeds them ` +
-              `(${consecutiveSubBatchFailures}/${MAX_CONSECUTIVE_SUB_BATCH_FAILURES} consecutive failures):`,
+              `(${consecutiveSubBatchFailures}/${MAX_CONSECUTIVE_SUB_BATCH_FAILURES} consecutive, ` +
+              `${subBatchFailures}/${subBatchesAttempted} sub-batches failed this run):`,
           );
           if (consecutiveSubBatchFailures >= MAX_CONSECUTIVE_SUB_BATCH_FAILURES) {
             // Bail out — but via `break`, not `throw`, so the cleanup DELETE below
             // still runs: sub-batches that succeeded before the endpoint went dark
             // left partial rows carrying the CURRENT hash, which is exactly the
             // read-as-fresh corruption this path exists to prevent.
-            ceilingError = streakFirstError;
+            ceilingError = streakError;
+            break;
+          }
+          if (
+            subBatchesAttempted >= MIN_SUB_BATCHES_BEFORE_FAILURE_RATIO_GUARD &&
+            subBatchFailures / subBatchesAttempted >= MAX_SUB_BATCH_FAILURE_RATIO
+          ) {
+            // Same break-then-cleanup path as the ceiling: a run aborting because
+            // the endpoint is shedding a quarter of the corpus still must not leave
+            // this batch's touched nodes half embedded (#2790).
+            ceilingError = {
+              err: failureRatioAbortError(subBatchFailures, subBatchesAttempted, streakError.err),
+            };
             break;
           }
           continue;

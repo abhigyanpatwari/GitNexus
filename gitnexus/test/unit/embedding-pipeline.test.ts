@@ -1406,6 +1406,158 @@ describe('runEmbeddingPipeline incremental filter', () => {
       expect(createdRows().map((p) => p.nodeId)).toEqual([nodes[1].id, nodes[3].id, nodes[5].id]);
     });
 
+    it('aborts on the cumulative failure ratio when an endpoint sheds every other sub-batch', async () => {
+      // The gap the consecutive ceiling cannot see: alternating fail/succeed
+      // resets it forever, so a load-shedding endpoint used to walk the whole
+      // repo dropping half of it and still exit 0 (#2790).
+      const subBatchTexts: number[] = [];
+      mockEmbedderWith(
+        failingEmbedBatch(
+          Array.from({ length: 12 }, (_, i) => i * 2 + 1), // sub-batches 1,3,…,23
+          () => new Error('load shed by endpoint'),
+          subBatchTexts,
+        ),
+      );
+
+      const nodes = Array.from({ length: 24 }, (_, i) =>
+        makeEnumNode(`alt${i}`, `enum Alt${i} {}`),
+      );
+      const executeQuery = mockExecuteQuery(nodes);
+      const executeWithReusedStatement = mockExecuteWithReusedStatement();
+
+      const { runEmbeddingPipeline } =
+        await import('../../src/core/embeddings/embedding-pipeline.js');
+
+      const promise = runEmbeddingPipeline(
+        executeQuery,
+        executeWithReusedStatement,
+        onProgress,
+        { chunkSize: 100, overlap: 0, batchSize: 24, subBatchSize: 1 },
+        undefined,
+        new Map(),
+      );
+
+      // Fires on sub-batch 21 — the first failure at or past the 20-sub-batch
+      // floor. The message names the corpus-wide cause, not one bad batch…
+      await expect(promise).rejects.toThrow(
+        /^\[embed\] Aborting: 11 of 21 embed sub-batches failed \(52%, limit 25%\)/,
+      );
+      // …while still surfacing the endpoint error that actually caused it.
+      await expect(promise).rejects.toThrow(/Underlying failure: load shed by endpoint$/);
+      // Fixture guard: it aborted mid-run at 21 of 24 sub-batches, and consecutive
+      // failures never exceeded 1 — so the consecutive ceiling was never in play.
+      expect(subBatchTexts).toHaveLength(21);
+
+      // The cleanup DELETE still ran before the rethrow: every node the failed
+      // sub-batches touched is left at zero rows, not half embedded.
+      const failedIds = nodes.filter((_, i) => i % 2 === 0 && i <= 20).map((n) => n.id);
+      expect(nodeIdDeletes().map((c) => c.params.map((p) => p.nodeId))).toEqual([failedIds]);
+      expect(createdRows().map((p) => p.nodeId)).toEqual(
+        nodes.filter((_, i) => i % 2 === 1 && i < 20).map((n) => n.id),
+      );
+    });
+
+    it('completes a run that stays just below the cumulative failure ratio', async () => {
+      // 5 of 24 sub-batches (21%) — past the 20-sub-batch floor but under the
+      // 25% bar, so the guard must not fire early and cost a mostly-good run.
+      const subBatchTexts: number[] = [];
+      mockEmbedderWith(
+        failingEmbedBatch([1, 6, 11, 16, 21], () => new Error('occasional hiccup'), subBatchTexts),
+      );
+
+      const nodes = Array.from({ length: 24 }, (_, i) =>
+        makeEnumNode(`near${i}`, `enum Near${i} {}`),
+      );
+      const executeQuery = mockExecuteQuery(nodes);
+      const executeWithReusedStatement = mockExecuteWithReusedStatement();
+
+      const { runEmbeddingPipeline } =
+        await import('../../src/core/embeddings/embedding-pipeline.js');
+
+      const result = await runEmbeddingPipeline(
+        executeQuery,
+        executeWithReusedStatement,
+        onProgress,
+        { chunkSize: 100, overlap: 0, batchSize: 24, subBatchSize: 1 },
+        undefined,
+        new Map(),
+      );
+
+      // Every sub-batch was attempted — nothing bailed out early.
+      expect(subBatchTexts).toHaveLength(24);
+      expect(result).toMatchObject({
+        failedNodeIds: [nodes[0].id, nodes[5].id, nodes[10].id, nodes[15].id, nodes[20].id],
+        nodesProcessed: 19,
+      });
+      expect(progressUpdates.at(-1)?.phase).toBe('ready');
+    });
+
+    it('never applies the failure ratio to a repo too small to have a meaningful rate', async () => {
+      // 1 of 3 sub-batches is a 33% failure rate but a single failure. Aborting
+      // here would be strictly worse than #2790's tolerate-and-report behavior,
+      // which is why the ratio is gated behind a minimum-sample floor.
+      const subBatchTexts: number[] = [];
+      mockEmbedderWith(failingEmbedBatch([1], () => new Error('endpoint hiccup'), subBatchTexts));
+
+      const nodes = ['t1', 't2', 't3'].map((n) => makeEnumNode(n, `enum ${n} {}`));
+      const executeQuery = mockExecuteQuery(nodes);
+      const executeWithReusedStatement = mockExecuteWithReusedStatement();
+
+      const { runEmbeddingPipeline } =
+        await import('../../src/core/embeddings/embedding-pipeline.js');
+
+      const result = await runEmbeddingPipeline(
+        executeQuery,
+        executeWithReusedStatement,
+        onProgress,
+        { chunkSize: 100, overlap: 0, subBatchSize: 1 },
+        undefined,
+        new Map(),
+      );
+
+      expect(subBatchTexts).toHaveLength(3);
+      expect(result).toMatchObject({ failedNodeIds: [nodes[0].id], nodesProcessed: 2 });
+      expect(createdRows().map((p) => p.nodeId)).toEqual([nodes[1].id, nodes[2].id]);
+    });
+
+    it('still trips the consecutive ceiling first on a total outage long enough to reach the ratio floor', async () => {
+      // Both guards would eventually fire on a 30-sub-batch outage; the ceiling
+      // must get there first so the operator sees the raw endpoint error rather
+      // than a corpus-ratio verdict five sub-batches into a dead endpoint.
+      const subBatchTexts: number[] = [];
+      mockEmbedderWith(
+        failingEmbedBatch(
+          Array.from({ length: 30 }, (_, i) => i + 1),
+          () => new Error('endpoint down'),
+          subBatchTexts,
+        ),
+      );
+
+      const nodes = Array.from({ length: 30 }, (_, i) =>
+        makeEnumNode(`out${i}`, `enum Out${i} {}`),
+      );
+      const executeQuery = mockExecuteQuery(nodes);
+      const executeWithReusedStatement = mockExecuteWithReusedStatement();
+
+      const { runEmbeddingPipeline } =
+        await import('../../src/core/embeddings/embedding-pipeline.js');
+
+      await expect(
+        runEmbeddingPipeline(
+          executeQuery,
+          executeWithReusedStatement,
+          onProgress,
+          { chunkSize: 100, overlap: 0, batchSize: 30, subBatchSize: 1 },
+          undefined,
+          new Map(),
+        ),
+      ).rejects.toThrow(/^endpoint down$/);
+      // Stopped at 5, not at the ratio floor of 20 — the ceiling is still the
+      // faster guard, and its verbatim-rethrow shape is unchanged.
+      expect(subBatchTexts).toHaveLength(5);
+      expect(createdRows()).toEqual([]);
+    });
+
     it('aborts immediately when the pipeline signal is cancelled mid sub-batch', async () => {
       const controller = new AbortController();
       // Cancellation surfaces as an ordinary rejection from embedBatch here; only
