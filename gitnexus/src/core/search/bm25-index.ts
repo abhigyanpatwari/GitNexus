@@ -8,8 +8,10 @@
 // tri-review Residual-1: `classifyFtsQueryError` now lives in lbug-adapter.ts
 // (see its doc comment) so `queryFTS`'s own catch can share the SAME
 // classifier instead of maintaining a second, independently-drifting copy
-// for the identical `QUERY_FTS_INDEX` cypher call.
-import { queryFTS, classifyFtsQueryError } from '../lbug/lbug-adapter.js';
+// for the identical `QUERY_FTS_INDEX` cypher call. `buildFtsQueryCypher` is
+// that identical call itself — shared for the same reason, so the two paths
+// can no longer drift apart the way they had to be edited in lockstep before.
+import { queryFTS, classifyFtsQueryError, buildFtsQueryCypher } from '../lbug/lbug-adapter.js';
 import { normalizeFtsText } from '../lbug/csv-generator.js';
 import { getExtensionCapabilities } from '../lbug/extension-loader.js';
 import { redactPaths } from './fts-indexes.js';
@@ -72,12 +74,7 @@ async function queryFTSViaExecutor(
   query: string,
   limit: number,
 ): Promise<FTSQueryOutcome> {
-  const cypher = `
-    CALL QUERY_FTS_INDEX('${tableName}', '${indexName}', $query, conjunctive := false)
-    RETURN node, score
-    ORDER BY score DESC, node.id
-    LIMIT ${limit}
-  `;
+  const cypher = buildFtsQueryCypher(tableName, indexName, limit);
   try {
     const rows = await executor(cypher, { query });
     return {

@@ -224,55 +224,81 @@ export async function augment(pattern: string, cwd?: string): Promise<string> {
       return names;
     };
 
-    const [callerNames, calleeNames] = await Promise.all([
-      Promise.all(uniqueSymbols.map((s) => neighbourNames(s.nodeId, true))),
-      Promise.all(uniqueSymbols.map((s) => neighbourNames(s.nodeId, false))),
-    ]);
+    // Keyed by nodeId, like the process/cohesion enrichments below — positional
+    // arrays would put two lookup disciplines in one object literal and make
+    // "stays index-aligned with uniqueSymbols" an unenforced invariant.
+    const neighbourMap = async (incoming: boolean): Promise<Map<string, string[]>> =>
+      new Map(
+        await Promise.all(
+          uniqueSymbols.map(
+            async (s) => [s.nodeId, await neighbourNames(s.nodeId, incoming)] as const,
+          ),
+        ),
+      );
 
     // Batch fetch processes
-    const processesMap = new Map<string, string[]>();
-    try {
-      const rows = await executeQuery(
-        repoId,
-        `
+    const fetchProcesses = async (): Promise<Map<string, string[]>> => {
+      const byNode = new Map<string, string[]>();
+      try {
+        const rows = await executeQuery(
+          repoId,
+          `
         MATCH (n)-[r:CodeRelation {type: 'STEP_IN_PROCESS'}]->(p:Process)
         WHERE n.id IN [${idList}]
         RETURN n.id AS nodeId, p.heuristicLabel AS label, r.step AS step, p.stepCount AS stepCount
       `,
-      );
-      for (const r of rows) {
-        const nid = r.nodeId || r[0];
-        const label = r.label || r[1];
-        const step = r.step || r[2];
-        const stepCount = r.stepCount || r[3];
-        if (nid && label) {
-          if (!processesMap.has(nid)) processesMap.set(nid, []);
-          processesMap.get(nid)!.push(`${label} (step ${step}/${stepCount})`);
+        );
+        for (const r of rows) {
+          const nid = r.nodeId || r[0];
+          const label = r.label || r[1];
+          const step = r.step || r[2];
+          const stepCount = r.stepCount || r[3];
+          if (nid && label) {
+            if (!byNode.has(nid)) byNode.set(nid, []);
+            byNode.get(nid)!.push(`${label} (step ${step}/${stepCount})`);
+          }
         }
+      } catch {
+        /* skip */
       }
-    } catch {
-      /* skip */
-    }
+      return byNode;
+    };
 
     // Batch fetch cohesion
-    const cohesionMap = new Map<string, number>();
-    try {
-      const rows = await executeQuery(
-        repoId,
-        `
+    const fetchCohesion = async (): Promise<Map<string, number>> => {
+      const byNode = new Map<string, number>();
+      try {
+        const rows = await executeQuery(
+          repoId,
+          `
         MATCH (n)-[:CodeRelation {type: 'MEMBER_OF'}]->(c:Community)
         WHERE n.id IN [${idList}]
         RETURN n.id AS nodeId, c.cohesion AS cohesion
       `,
-      );
-      for (const r of rows) {
-        const nid = r.nodeId || r[0];
-        const coh = r.cohesion ?? r[1] ?? 0;
-        if (nid) cohesionMap.set(nid, coh);
+        );
+        for (const r of rows) {
+          const nid = r.nodeId || r[0];
+          const coh = r.cohesion ?? r[1] ?? 0;
+          if (nid) byNode.set(nid, coh);
+        }
+      } catch {
+        /* skip */
       }
-    } catch {
-      /* skip */
-    }
+      return byNode;
+    };
+
+    // One wave, not three. `augment` runs from the Claude Code PreToolUse hook
+    // in a cold process against a <500ms budget, so nothing amortizes — and the
+    // process/cohesion queries depend only on `idList`, never on the neighbour
+    // results, so serializing them behind the fan-out bought nothing. Each query
+    // keeps its own try/catch, so one failing still degrades to an empty map
+    // instead of taking the others down.
+    const [callerMap, calleeMap, processesMap, cohesionMap] = await Promise.all([
+      neighbourMap(true),
+      neighbourMap(false),
+      fetchProcesses(),
+      fetchCohesion(),
+    ]);
 
     // Assemble enriched results
     const enriched: Array<{
@@ -284,12 +310,12 @@ export async function augment(pattern: string, cwd?: string): Promise<string> {
       cohesion: number;
     }> = [];
 
-    for (const [i, sym] of uniqueSymbols.entries()) {
+    for (const sym of uniqueSymbols) {
       enriched.push({
         name: sym.name,
         filePath: sym.filePath,
-        callers: callerNames[i],
-        callees: calleeNames[i],
+        callers: callerMap.get(sym.nodeId) || [],
+        callees: calleeMap.get(sym.nodeId) || [],
         processes: processesMap.get(sym.nodeId) || [],
         cohesion: cohesionMap.get(sym.nodeId) || 0,
       });

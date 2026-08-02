@@ -17,6 +17,7 @@ import os from 'node:os';
 import path from 'node:path';
 import type { BridgeHandle } from '../../../src/core/group/types.js';
 import type { GroupToolPort } from '../../../src/core/group/service.js';
+import { makeGroupToolPort, writeGroupYaml } from './fixtures.js';
 
 const bridgeHandle = {
   _db: {},
@@ -108,35 +109,10 @@ describe('group impact fan-out is bounded by a count, not by the clock (#2787)',
   beforeEach(async () => {
     home = await fsp.mkdtemp(path.join(os.tmpdir(), 'gitnexus-fanout-cap-'));
     const groupDir = path.join(home, 'groups', 'waveful');
-    await fsp.mkdir(groupDir, { recursive: true });
-    const repoLines = ['  backend: backend-registry']
-      .concat(
-        Array.from({ length: REPO_COUNT }, (_, i) => `  ${repoKey(i)}: ${repoKey(i)}-registry`),
-      )
-      .join('\n');
-    await fsp.writeFile(
-      path.join(groupDir, 'group.yaml'),
-      `version: 1
-name: waveful
-description: ""
-repos:
-${repoLines}
-links: []
-packages: {}
-detect:
-  http: false
-  grpc: false
-  thrift: false
-  topics: false
-  shared_libs: false
-  embedding_fallback: false
-matching:
-  bm25_threshold: 0.7
-  embedding_threshold: 0.65
-  max_candidates_per_step: 3
-`,
-      'utf8',
-    );
+    await writeGroupYaml(groupDir, [
+      'backend',
+      ...Array.from({ length: REPO_COUNT }, (_, i) => repoKey(i)),
+    ]);
     await fsp.writeFile(path.join(groupDir, 'bridge.lbug'), '');
   });
 
@@ -145,30 +121,9 @@ matching:
     vi.restoreAllMocks();
   });
 
-  function makePort(overrides: Partial<GroupToolPort> = {}): GroupToolPort {
-    return {
-      resolveRepo: vi.fn(async (name: string) => ({
-        id: name,
-        name,
-        repoPath: name,
-        storagePath: path.join(home, name),
-      })),
-      impact: vi.fn(async () => ({
-        target: { id: 'Function:src/api.ts:publish', filePath: 'src/api.ts' },
-        byDepth: {},
-        summary: { direct: 1, processes_affected: 0, modules_affected: 0 },
-        risk: 'LOW',
-      })),
-      impactByUid: vi.fn(async () => ({
-        byDepth: {},
-        summary: { direct: 0, processes_affected: 0, modules_affected: 0 },
-        risk: 'LOW',
-      })),
-      query: vi.fn(),
-      context: vi.fn(),
-      ...overrides,
-    } as GroupToolPort;
-  }
+  /** The shared benign port, bound to this suite's per-test `home`. */
+  const makePort = (overrides: Partial<GroupToolPort> = {}): GroupToolPort =>
+    makeGroupToolPort(home, overrides);
 
   const run = (port: GroupToolPort, extraParams: Record<string, unknown> = {}) =>
     runGroupImpact(

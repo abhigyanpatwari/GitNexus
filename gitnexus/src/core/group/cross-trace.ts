@@ -25,7 +25,8 @@
 
 import { GroupNotFoundError, loadGroupConfig } from './config-parser.js';
 import { getGroupDir } from './storage.js';
-import { compareCodeUnits, ensureBridgeReady, MAX_SUPPORTED_CROSS_DEPTH } from './cross-impact.js';
+import { ensureBridgeReady, MAX_SUPPORTED_CROSS_DEPTH } from './cross-impact.js';
+import { compareCodeUnits } from '../../lib/utils.js';
 import { closeBridgeDb, queryBridge } from './bridge-db.js';
 import type {
   GroupPdgFlowHop,
@@ -321,6 +322,32 @@ function rowToCrossing(r: Record<string, unknown>): CrossingRow | null {
   };
 }
 
+/**
+ * Sort a crossing list on the full crossing identity, then apply
+ * `MAX_CROSSINGS_TO_TRY`.
+ *
+ * Both bridge queries already order by confidence DESC; this re-sorts
+ * defensively so the cap keeps the strongest candidates even if a tuple-mode
+ * driver reorders rows. The comparator mirrors BOTH queries' `ORDER BY`
+ * key-for-key — a shorter comparator reproduces less than the order it is
+ * defending, leaving ties on raw row order (#2787) — so it lives in one place
+ * rather than being hand-synced across the two callers and two Cypher clauses.
+ */
+function capCrossings(all: CrossingRow[]): { crossings: CrossingRow[]; truncated: boolean } {
+  all.sort(
+    (a, b) =>
+      b.confidence - a.confidence ||
+      compareCodeUnits(a.contractId, b.contractId) ||
+      compareCodeUnits(a.consumerUid, b.consumerUid) ||
+      compareCodeUnits(a.providerUid, b.providerUid),
+  );
+  const truncated = all.length > MAX_CROSSINGS_TO_TRY;
+  return {
+    crossings: truncated ? all.slice(0, MAX_CROSSINGS_TO_TRY) : all,
+    truncated,
+  };
+}
+
 async function listCrossingsBetween(
   handle: BridgeHandle,
   fromRepo: string,
@@ -335,22 +362,7 @@ async function listCrossingsBetween(
     const c = rowToCrossing(raw);
     if (c) all.push(c);
   }
-  // The query already orders by confidence DESC; re-sort defensively so the cap
-  // keeps the strongest candidates even if a tuple-mode driver reorders rows.
-  // Mirror the query's ORDER BY key-for-key — a shorter comparator reproduces
-  // less than the order it is defending, leaving ties on raw row order (#2787).
-  all.sort(
-    (a, b) =>
-      b.confidence - a.confidence ||
-      compareCodeUnits(a.contractId, b.contractId) ||
-      compareCodeUnits(a.consumerUid, b.consumerUid) ||
-      compareCodeUnits(a.providerUid, b.providerUid),
-  );
-  const truncated = all.length > MAX_CROSSINGS_TO_TRY;
-  return {
-    crossings: truncated ? all.slice(0, MAX_CROSSINGS_TO_TRY) : all,
-    truncated,
-  };
+  return capCrossings(all);
 }
 
 function destRowToCrossing(r: Record<string, unknown>): CrossingRow | null {
@@ -383,19 +395,7 @@ async function listCrossingsFrom(
     const c = destRowToCrossing(raw);
     if (c) all.push(c);
   }
-  // Same key-for-key mirror of CY_CROSSINGS_FROM's ORDER BY as above (#2787).
-  all.sort(
-    (a, b) =>
-      b.confidence - a.confidence ||
-      compareCodeUnits(a.contractId, b.contractId) ||
-      compareCodeUnits(a.consumerUid, b.consumerUid) ||
-      compareCodeUnits(a.providerUid, b.providerUid),
-  );
-  const truncated = all.length > MAX_CROSSINGS_TO_TRY;
-  return {
-    crossings: truncated ? all.slice(0, MAX_CROSSINGS_TO_TRY) : all,
-    truncated,
-  };
+  return capCrossings(all);
 }
 
 // ── Cross-member symbol resolution ───────────────────────────────────────

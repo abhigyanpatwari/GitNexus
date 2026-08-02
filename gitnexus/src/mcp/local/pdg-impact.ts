@@ -1240,6 +1240,16 @@ function blockAnchorForResolvedSymbol(sym: {
 }
 
 /**
+ * The seed-block query both anchor builders feed — the top-level target seed and
+ * the per-callee span seeds. It was duplicated byte-for-byte at those two call
+ * sites, so the `ORDER BY a.startLine, id` tiebreak (#2787) had to be added
+ * twice; sharing it keeps the anchor and its query together, the way
+ * {@link blockAnchorForResolvedSymbol} already is.
+ */
+const seedBlockQuery = (anchorClause: string, probeLimit: number): string =>
+  `MATCH (a:BasicBlock) WHERE ${anchorClause} RETURN a.id AS id ORDER BY a.startLine, id LIMIT ${probeLimit}`;
+
+/**
  * Build a STATEMENT seed anchor: the BasicBlock(s) starting at a specific
  * 1-based source `line` WITHIN the resolved symbol. This is what makes
  * `mode:'pdg'` useful — seeding the dependence slice on a single statement
@@ -1673,7 +1683,7 @@ async function interproceduralDescent(input: {
         const { anchorClause, queryParams } = blockAnchorForResolvedSymbol(span);
         const rawSeedRows = await exec(
           lbugPath,
-          `MATCH (a:BasicBlock) WHERE ${anchorClause} RETURN a.id AS id ORDER BY a.startLine, id LIMIT ${probeLimit}`,
+          seedBlockQuery(anchorClause, probeLimit),
           queryParams,
         );
         const exceeded = rawSeedRows.length > stepLimit;
@@ -1842,7 +1852,7 @@ export async function runImpactPDG(deps: RunPdgImpactDeps): Promise<PdgImpactRes
   const probeLimit = stepLimit + 1;
   const rawSeedRows = await exec(
     repo.lbugPath,
-    `MATCH (a:BasicBlock) WHERE ${anchorClause} RETURN a.id AS id ORDER BY a.startLine, id LIMIT ${probeLimit}`,
+    seedBlockQuery(anchorClause, probeLimit),
     queryParams,
   );
   const seedRows = rawSeedRows.slice(0, stepLimit) as Array<Record<string, unknown>>;

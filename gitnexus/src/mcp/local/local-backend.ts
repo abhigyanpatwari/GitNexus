@@ -94,6 +94,7 @@ import { findImportCycles } from '../../core/graph/import-cycles.js';
 import { decodeTaintPath } from '../../core/ingestion/taint/path-codec.js';
 import { decodeReachingDefReason } from '../../core/ingestion/cfg/reaching-def-reason-codec.js';
 import { EXTENSIONS } from '../../core/ingestion/import-resolvers/utils.js';
+import { compareCodeUnits } from '../../lib/utils.js';
 import {
   lookupExternalCallCount,
   lookupUnresolvedCallCount,
@@ -134,6 +135,60 @@ const VALUE_CANDIDATE_TYPES: ReadonlySet<string> = new Set(['Const', 'Variable',
  * only truncation signal available when the COUNT leg fails.
  */
 const CANDIDATE_WINDOW = 20;
+
+/**
+ * The pieces every ambiguous-resolution payload shares, derived once.
+ *
+ * `outcome.total` is the resolver's real match count, NOT `candidates.length` —
+ * the window caps at {@link CANDIDATE_WINDOW}, so reporting the array length
+ * claimed 20 matches when 92 existed (and `rename` inherits `context`'s payload
+ * verbatim). `totalIsLowerBound` must travel with that count everywhere it is
+ * reported (#2787 review F3), INCLUDING the prose, because the message is what
+ * an agent actually reads: without it a failed COUNT reads as an exact 20. And
+ * truncation is measured against `total`, never against the window — the old
+ * form said "6 of 20" when 92 matched.
+ *
+ * Six call sites rebuilt all of that by hand with slightly different spellings.
+ * Deriving it in one place is what stops the invariants drifting apart again,
+ * the same reason `truncationFields` exists in `core/group/cross-impact.ts`.
+ *
+ * @param shownCount how many candidates the payload actually carries — the full
+ *   window for `context`/`trace`, the `AMBIGUOUS_MAX_CANDIDATES` slice for
+ *   `impact`.
+ * @param withTotal picks the suffix form: `(showing 6 of 92)` for the `impact`
+ *   paths that slice, `(showing 20)` for the paths that return the whole window.
+ */
+function ambiguityReport(
+  outcome: { total: number; totalIsLowerBound?: boolean },
+  shownCount: number,
+  withTotal = false,
+): {
+  /** `'at least '` when `total` is only a lower bound, else `''`. */
+  atLeast: string;
+  /** ` (showing N[ of M])` when the shown list is short of `total`, else `''`. */
+  showing: string;
+  /** The response fields the payload spreads verbatim. */
+  fields: {
+    totalCandidates: number;
+    totalIsLowerBound?: true;
+    candidatesTruncated?: true;
+  };
+} {
+  const truncated = outcome.total > shownCount;
+  return {
+    atLeast: outcome.totalIsLowerBound ? 'at least ' : '',
+    showing: truncated
+      ? withTotal
+        ? ` (showing ${shownCount} of ${outcome.total})`
+        : ` (showing ${shownCount})`
+      : '',
+    fields: {
+      totalCandidates: outcome.total,
+      ...(outcome.totalIsLowerBound ? { totalIsLowerBound: true as const } : {}),
+      ...(truncated ? { candidatesTruncated: true as const } : {}),
+    },
+  };
+}
 
 /** Real source-file extensions (`.ts`, `.py`, …) from the resolver's list,
  *  excluding the empty entry and the `/index.*` forms — used to decide whether
@@ -381,15 +436,6 @@ export const IMPACT_RELATION_CONFIDENCE: Readonly<Record<string, number>> = {
  */
 const confidenceForRelType = (relType: string | undefined): number =>
   IMPACT_RELATION_CONFIDENCE[relType ?? ''] ?? 0.5;
-
-/**
- * Code-unit string comparison for sort tiebreaks — NOT `localeCompare` (#2787).
- * ICU collation depends on the host's locale data, so two machines reading the
- * same index would break ties differently, which is exactly the cross-host
- * drift the ORDER BY work exists to remove. Matches the ordering convention
- * already documented on `listReposPage`.
- */
-const compareCodeUnits = (a: string, b: string): number => (a < b ? -1 : a > b ? 1 : 0);
 
 /**
  * Structured logging for *swallowed* query failures — replaces empty catch
@@ -1882,12 +1928,11 @@ export class LocalBackend {
     // One consistent snapshot per call (listRepos refreshes the registry once),
     // sorted into a stable total order before slicing.
     const all = await this.listRepos();
-    all.sort((a, b) => {
-      const an = a.name.toLowerCase();
-      const bn = b.name.toLowerCase();
-      if (an !== bn) return an < bn ? -1 : 1;
-      return a.path < b.path ? -1 : a.path > b.path ? 1 : 0;
-    });
+    all.sort(
+      (a, b) =>
+        compareCodeUnits(a.name.toLowerCase(), b.name.toLowerCase()) ||
+        compareCodeUnits(a.path, b.path),
+    );
 
     const total = all.length;
     const repositories = all.slice(offset, offset + limit);
@@ -3345,56 +3390,60 @@ export class LocalBackend {
     // `n.id` is the PRIMARY KEY on every node table: non-null, unique, and a
     // total order, which is what pins WHICH rows come back.
     //
-    // It is NOT a neutral key, though: ids are `Label:filePath:qualifiedName`,
-    // so this sorts label-major then path-major, and the label order is
-    // uncorrelated with scoreCandidate's priority. When the name overflows the
-    // window the page is therefore a biased prefix, not a sample — which is why
-    // a `kind` hint filters in the WHERE clause above instead of relying on
-    // scoring, and why `total`/`candidatesTruncated` must travel with the page.
-    // `labels(n)[0]` is not an alternative: it comes back empty for Class nodes
-    // (see enrichCandidateLabels below), so ordering on the projected type
-    // would sort the HIGHEST-priority kind into the empty bucket.
+    // `labels(n)[0]` is not an alternative ordering key: it comes back empty for
+    // Class nodes (see enrichCandidateLabels below), so ordering on the
+    // projected type would sort the HIGHEST-priority kind into the empty bucket.
     //
-    // The COUNT rides alongside the window in the same `Promise.all` because a
-    // LIMIT-capped page's row count cannot stand in for the true total — the
-    // same rule `_explainImpl` and `_pdgQueryImpl` already follow (#2084 review
-    // P2-4). Without it every "Found N symbols matching 'x'" message and the
-    // `totalCandidates` field report the cap, so 92 collisions read as 20 —
-    // and now that the window is ordered, that undercount is stable, which
-    // makes it look authoritative rather than flaky.
-    let countFailed = false;
-    const fetchWindow = (where: string, params: Record<string, any>) =>
-      Promise.all([
-        executeParameterized(
-          repo.lbugPath,
-          `MATCH (n) ${where} RETURN ${selectClause} ORDER BY n.id LIMIT ${CANDIDATE_WINDOW}`,
-          params,
+    // The COUNT reports the TRUE total, which a LIMIT-capped page's row count
+    // cannot stand in for — the same rule `_explainImpl` and `_pdgQueryImpl`
+    // already follow (#2084 review P2-4). Without it every "Found N symbols
+    // matching 'x'" message and the `totalCandidates` field report the cap, so
+    // 92 collisions read as 20 — and now that the window is ordered, that
+    // undercount is stable, which makes it look authoritative rather than flaky.
+    //
+    // It runs AFTER the window rather than alongside it because a SHORT page
+    // proves the LIMIT never bound, which makes `COUNT(*)` identically
+    // `rows.length`. The COUNT is unlabeled and `n.name` is unindexed, so it is
+    // a full scan of every node table — skipping it halves the cost of the
+    // hottest step in `context`/`impact`/`trace`/`rename`/`pdg_query` (`trace`
+    // resolves twice). Trade-off: the full-window (>= CANDIDATE_WINDOW
+    // homonyms) minority path is now sequential instead of concurrent.
+    const fetchWindow = async (where: string, params: Record<string, any>) => {
+      const rows = await executeParameterized(
+        repo.lbugPath,
+        `MATCH (n) ${where} RETURN ${selectClause} ORDER BY n.id LIMIT ${CANDIDATE_WINDOW}`,
+        params,
+      );
+      if (rows.length < CANDIDATE_WINDOW) return { rows, countedTotal: rows.length };
+      const countRows = await executeParameterized(
+        repo.lbugPath,
+        `MATCH (n) ${where} RETURN COUNT(*) AS total`,
+        params,
+      ).catch((e) => {
+        // Never swallowed (#2787 review F3): a failed COUNT falls through to
+        // the window-length floor below, and without a signal the response
+        // ships `totalCandidates: 20` with no `candidatesTruncated` — byte
+        // identical to a genuine 20-match result. `totalIsLowerBound` is the
+        // caller-visible degradation this log is contracted to accompany.
+        logQueryError('resolve:candidate-count', e);
+        return [] as any[];
+      });
+      return {
+        rows,
+        countedTotal: Number(
+          (countRows[0] as any)?.total ?? (countRows[0] as any)?.[0] ?? Number.NaN,
         ),
-        executeParameterized(
-          repo.lbugPath,
-          `MATCH (n) ${where} RETURN COUNT(*) AS total`,
-          params,
-        ).catch((e) => {
-          // Never swallowed (#2787 review F3): a failed COUNT falls through to
-          // the window-length floor below, and without a signal the response
-          // ships `totalCandidates: 20` with no `candidatesTruncated` — byte
-          // identical to a genuine 20-match result. `totalIsLowerBound` is the
-          // caller-visible degradation this log is contracted to accompany.
-          logQueryError('resolve:candidate-count', e);
-          countFailed = true;
-          return [] as any[];
-        }),
-      ]);
+      };
+    };
 
-    let [rows, countRows] = await fetchWindow(kindClause, kindParams);
+    let { rows, countedTotal } = await fetchWindow(kindClause, kindParams);
     if (rows.length === 0 && hints.kind) {
       // `kind` is a free-form string on the tool schema, so a hint that matches
       // no label prefix (wrong case, or a kind this repo has no nodes for) must
       // not turn a real name into `not_found`. Fall back to the unfiltered
       // window and let scoreCandidate treat the hint as a ranking term, exactly
       // as it did before the filter existed.
-      countFailed = false; // the retry's own COUNT decides whether `total` is exact
-      [rows, countRows] = await fetchWindow(whereClause, queryParams);
+      ({ rows, countedTotal } = await fetchWindow(whereClause, queryParams));
     }
 
     if (rows.length === 0) return { kind: 'not_found' };
@@ -3415,11 +3464,7 @@ export class LocalBackend {
     // unreadable shape. Keep the window size as the floor — reporting zero would
     // be worse — but mark the number a LOWER BOUND so no consumer treats it as
     // the exact match count this PR otherwise promises (#2787 review F3).
-    const countedTotal = Number(
-      (countRows[0] as any)?.total ?? (countRows[0] as any)?.[0] ?? Number.NaN,
-    );
-    const totalIsExact =
-      !countFailed && Number.isFinite(countedTotal) && countedTotal >= normalized.length;
+    const totalIsExact = Number.isFinite(countedTotal) && countedTotal >= normalized.length;
     const totalMatches = totalIsExact ? countedTotal : normalized.length;
 
     // Enrich labels for any candidates where `labels(n)[0]` came back empty.
@@ -3504,7 +3549,7 @@ export class LocalBackend {
       const fpA = (a.filePath || '').length;
       const fpB = (b.filePath || '').length;
       if (fpA !== fpB) return fpA - fpB;
-      return String(a.id).localeCompare(String(b.id));
+      return compareCodeUnits(String(a.id), String(b.id));
     });
 
     // Confident single-result: top score ≥ 0.95 AND beats runner-up by a
@@ -3594,21 +3639,11 @@ export class LocalBackend {
     }
 
     if (outcome.kind === 'ambiguous') {
-      // `total` is the real match count; `candidates` is the 20-row window.
-      // Reporting the window length here claimed 20 matches when 92 existed,
-      // and `rename` inherits this payload verbatim.
-      const shownOf =
-        outcome.total > outcome.candidates.length ? ` (showing ${outcome.candidates.length})` : '';
-      // `totalIsLowerBound` travels with the count everywhere it is reported
-      // (#2787 review F3) — including the prose, because the message is what an
-      // agent actually reads. Without it a failed COUNT reads as an exact 20.
-      const atLeast = outcome.totalIsLowerBound ? 'at least ' : '';
+      const { atLeast, showing, fields } = ambiguityReport(outcome, outcome.candidates.length);
       return {
         status: 'ambiguous',
-        message: `Found ${atLeast}${outcome.total} symbols matching '${name}'${shownOf}. Use uid, file_path, or kind to disambiguate.`,
-        totalCandidates: outcome.total,
-        ...(outcome.totalIsLowerBound && { totalIsLowerBound: true }),
-        ...(outcome.total > outcome.candidates.length && { candidatesTruncated: true }),
+        message: `Found ${atLeast}${outcome.total} symbols matching '${name}'${showing}. Use uid, file_path, or kind to disambiguate.`,
+        ...fields,
         candidates: outcome.candidates.map((c) => ({
           uid: c.id,
           name: c.name,
@@ -4015,16 +4050,15 @@ export class LocalBackend {
       };
     }
     if (outcome.kind === 'ambiguous') {
+      const { atLeast, showing, fields } = ambiguityReport(outcome, outcome.candidates.length);
       return {
         anchorClause: '',
         queryParams: {},
         anchor: { file: '' },
         early: {
           status: 'ambiguous',
-          message: `Found ${outcome.totalIsLowerBound ? 'at least ' : ''}${outcome.total} symbols matching '${target}'${outcome.total > outcome.candidates.length ? ` (showing ${outcome.candidates.length})` : ''}. Re-call ${toolName} with the file path, or disambiguate via context() first.`,
-          totalCandidates: outcome.total,
-          ...(outcome.totalIsLowerBound && { totalIsLowerBound: true }),
-          ...(outcome.total > outcome.candidates.length && { candidatesTruncated: true }),
+          message: `Found ${atLeast}${outcome.total} symbols matching '${target}'${showing}. Re-call ${toolName} with the file path, or disambiguate via context() first.`,
+          ...fields,
           candidates: outcome.candidates.map((c) => ({
             uid: c.id,
             name: c.name,
@@ -5202,13 +5236,15 @@ export class LocalBackend {
       };
     }
     if (fromOutcome.kind === 'ambiguous') {
+      const { atLeast, showing, fields } = ambiguityReport(
+        fromOutcome,
+        fromOutcome.candidates.length,
+      );
       return {
         status: 'ambiguous',
         role: 'from',
-        message: `Found ${fromOutcome.totalIsLowerBound ? 'at least ' : ''}${fromOutcome.total} symbols matching '${params.from}'${fromOutcome.total > fromOutcome.candidates.length ? ` (showing ${fromOutcome.candidates.length})` : ''}. Disambiguate with --from-uid.`,
-        totalCandidates: fromOutcome.total,
-        ...(fromOutcome.totalIsLowerBound && { totalIsLowerBound: true }),
-        ...(fromOutcome.total > fromOutcome.candidates.length && { candidatesTruncated: true }),
+        message: `Found ${atLeast}${fromOutcome.total} symbols matching '${params.from}'${showing}. Disambiguate with --from-uid.`,
+        ...fields,
         candidates: fromOutcome.candidates,
       };
     }
@@ -5227,13 +5263,12 @@ export class LocalBackend {
       };
     }
     if (toOutcome.kind === 'ambiguous') {
+      const { atLeast, showing, fields } = ambiguityReport(toOutcome, toOutcome.candidates.length);
       return {
         status: 'ambiguous',
         role: 'to',
-        message: `Found ${toOutcome.totalIsLowerBound ? 'at least ' : ''}${toOutcome.total} symbols matching '${params.to}'${toOutcome.total > toOutcome.candidates.length ? ` (showing ${toOutcome.candidates.length})` : ''}. Disambiguate with --to-uid.`,
-        totalCandidates: toOutcome.total,
-        ...(toOutcome.totalIsLowerBound && { totalIsLowerBound: true }),
-        ...(toOutcome.total > toOutcome.candidates.length && { candidatesTruncated: true }),
+        message: `Found ${atLeast}${toOutcome.total} symbols matching '${params.to}'${showing}. Disambiguate with --to-uid.`,
+        ...fields,
         candidates: toOutcome.candidates,
       };
     }
@@ -5633,22 +5668,19 @@ export class LocalBackend {
       // returns the candidate list WITHOUT any callgraph probe; the full pdg
       // ambiguous handling (per-candidate PDG summaries / ranking) lands in U4.
       if (mode === 'pdg') {
-        // Truncation is measured against the TRUE match count, not the 20-row
-        // resolver window — with 92 collisions the old form said "6 of 20".
         const shown = outcome.candidates.slice(0, AMBIGUOUS_MAX_CANDIDATES);
-        const truncated = outcome.total > shown.length;
+        const { atLeast, showing, fields } = ambiguityReport(outcome, shown.length, true);
         return {
           status: 'ambiguous',
           mode,
           message:
-            `Found ${outcome.totalIsLowerBound ? 'at least ' : ''}${outcome.total} symbols matching '${target}'` +
-            (truncated ? ` (showing ${shown.length} of ${outcome.total})` : '') +
+            `Found ${atLeast}${outcome.total} symbols matching '${target}'` +
+            showing +
             `. Disambiguate with target_uid (or file_path/kind) for a single ` +
             `authoritative PDG result.`,
           target: { name: target },
           direction,
-          totalCandidates: outcome.total,
-          ...(outcome.totalIsLowerBound && { totalIsLowerBound: true }),
+          ...fields,
           // No single resolved symbol → the blast radius is UNDETERMINED, not
           // zero. `null` (not 0) because no callgraph fan-out runs on this path,
           // so there is not even a `maxImpactedCount` to correct a numeric zero
@@ -5656,7 +5688,6 @@ export class LocalBackend {
           // depends on this" (#2687).
           impactedCount: null,
           risk: 'UNKNOWN',
-          ...(truncated && { candidatesTruncated: true }),
           candidates: shown.map((c) => ({
             uid: c.id,
             name: c.name,
@@ -5753,25 +5784,26 @@ export class LocalBackend {
             'LOW',
           )
         : 'UNKNOWN';
-      // Measured against the TRUE match count, not the 20-row resolver window.
-      const truncated = outcome.total > probed.length;
+      // `candidateSummaries` is `Promise.all` over `probed`, so the two lengths
+      // are the same; `probed` is the one the message and the flag agree on.
+      const { atLeast, showing, fields } = ambiguityReport(outcome, probed.length, true);
 
       return {
         status: 'ambiguous',
         message:
-          `Found ${outcome.totalIsLowerBound ? 'at least ' : ''}${outcome.total} symbols matching '${target}'` +
-          (truncated ? ` (showing ${candidateSummaries.length} of ${outcome.total})` : '') +
+          `Found ${atLeast}${outcome.total} symbols matching '${target}'` +
+          showing +
           `. Blast radius differs per candidate (max ${maxImpactedCount} impacted at risk ${maxRisk}). ` +
           `Disambiguate with target_uid (or file_path/kind) for a single authoritative result.`,
         target: { name: target },
         direction,
-        // Full match count — `candidates[]` is truncated to AMBIGUOUS_MAX_CANDIDATES
-        // and the resolver window itself caps at 20, so consumers (CLI formatter)
-        // need the resolver's COUNT to report "N of M" honestly (#2129 review F11;
-        // the CLI previously read the truncated array length, then the capped
-        // window length — both undercounts).
-        totalCandidates: outcome.total,
-        ...(outcome.totalIsLowerBound && { totalIsLowerBound: true }),
+        // `totalCandidates` is the resolver's COUNT, not `candidates.length`:
+        // that array is truncated to AMBIGUOUS_MAX_CANDIDATES and the resolver
+        // window itself caps at CANDIDATE_WINDOW, so consumers (CLI formatter)
+        // need the COUNT to report "N of M" honestly (#2129 review F11; the CLI
+        // previously read the truncated array length, then the capped window
+        // length — both undercounts).
+        ...fields,
         // `impactedCount` is `null` — UNDETERMINED, not zero — and `risk` stays
         // UNKNOWN, because there is no single resolved symbol. #2129 hoisted
         // `maxImpactedCount` / `maxRisk` here so a real caller could not hide
@@ -5785,7 +5817,6 @@ export class LocalBackend {
         maxImpactedCount,
         maxRisk,
         ...(probeFailed ? { partialProbe: true } : {}),
-        ...(truncated && { candidatesTruncated: true }),
         candidates: candidateSummaries,
       };
     }

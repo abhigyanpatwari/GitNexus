@@ -30,6 +30,7 @@ import {
   readBridgeMeta,
 } from './bridge-db.js';
 import { BRIDGE_SCHEMA_VERSION } from './bridge-schema.js';
+import { compareCodeUnits } from '../../lib/utils.js';
 
 // High limit for the local phase of group impact so collectImpactSymbolUids
 // sees (nearly) all symbols. Bypasses the MCP-facing default of 100.
@@ -53,16 +54,11 @@ export const DEFAULT_LOCAL_IMPACT_TIMEOUT_MS = 30_000;
  * contract), so the cap keeps the strongest crossings rather than an arbitrary
  * prefix.
  *
- * 50 is borrowed from `MAX_CROSSINGS_TO_TRY` in cross-trace.ts on cost, not on
- * scope: a crossing there costs up to two trace BFS queries, one here costs a
- * single `impactByUid` (already running with `skipPerSymbolEnrichment` /
- * `skipEpistemic`), so the per-unit price is the same class or cheaper. The
- * scopes are NOT the same — that constant caps ContractLinks between one repo
- * pair inside a trace, this one caps the total across all neighbour repos in a
- * single impact call — and group impact had no numeric crossing cap at all
- * before #2787, so 50 is a new bound calibrated on cost, not an inherited
- * precedent. The wall clock stays as a hang backstop below; this is the bound
- * that normally binds.
+ * 50 is borrowed from `MAX_CROSSINGS_TO_TRY` (cross-trace.ts) on cost, not on
+ * scope — that one caps ContractLinks per repo pair inside a trace, this one
+ * caps the total across all neighbour repos in one impact call, and group impact
+ * had no numeric cap at all before #2787. The wall clock stays as a hang
+ * backstop below; this is the bound that normally binds.
  */
 export const MAX_NEIGHBOR_FANOUT = 50;
 
@@ -93,16 +89,6 @@ RETURN provider.repo AS neighborRepo,
        l.contractId AS contractId,
        provider.type AS contractType
 `;
-
-/**
- * Code-unit string comparison, shared by every bridge tiebreak (here and in
- * cross-trace.ts). `localeCompare` resolves against the host's default ICU
- * locale, so it can order the same two strings differently on two machines —
- * the exact failure mode these tiebreaks exist to remove (#2787).
- */
-export function compareCodeUnits(a: string, b: string): number {
-  return a < b ? -1 : a > b ? 1 : 0;
-}
 
 export type BridgeNeighborRow = {
   neighborRepo: string;
@@ -406,7 +392,9 @@ export function mergeRisk(localRisk: string, cross: CrossRepoImpact[]): string {
  */
 function truncationFields(
   truncated: boolean,
-  reasonIfTruncated: GroupImpactTruncationReason,
+  // Only read on the truncated branch, so the not-truncated call sites omit it
+  // rather than passing a reason that is thrown away.
+  reasonIfTruncated: GroupImpactTruncationReason = 'partial',
 ): Pick<GroupImpactResult, 'truncated' | 'truncationReason' | 'riskEpistemic'> {
   if (!truncated) return { truncated: false };
   return { truncated: true, truncationReason: reasonIfTruncated, riskEpistemic: 'lower-bound' };
@@ -612,7 +600,7 @@ export async function runGroupImpact(
         group: name,
         cross: [],
         outOfScope: [],
-        ...truncationFields(false, 'partial'),
+        ...truncationFields(false),
         truncatedRepos: [],
         summary: {
           direct: 0,
@@ -822,3 +810,6 @@ export async function runGroupImpact(
 }
 
 export { normalizeServicePrefix, fileMatchesServicePrefix } from './group-path-utils.js';
+// Re-exported, not redefined: the single definition lives in lib/utils.ts, but
+// this module's own surface is what the #2787 regression test imports it from.
+export { compareCodeUnits };

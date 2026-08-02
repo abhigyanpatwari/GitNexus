@@ -642,14 +642,9 @@ withTestLbugDB(
 );
 
 // ─── resolver `kind` hint FILTERS (#2787 review F5) ──────────────────────
-// Production node ids are `Label:filePath:qualifiedName`, so `ORDER BY n.id`
-// on the resolver's 20-row window is a LABEL-MAJOR sort: `Class` < `Const` <
-// `Constructor` < `Function` < `Interface` < `Method`. A caller asking for
-// kind:'Method' on a name with many Function homonyms could therefore have
-// every Method sorted out of the window, and scoreCandidate's +0.20 kind bonus
-// can only re-rank rows that came back — it can never recover one the LIMIT
-// already dropped. The hint is now a WHERE-clause filter
-// (`n.id STARTS WITH 'Method:'`) on BOTH the window and its COUNT.
+// See `resolveSymbolCandidates` (#2787 F5) for why the id order is label-major
+// and why the hint is therefore a WHERE-clause filter on BOTH the window and
+// its COUNT rather than a scoring term.
 //
 // This suite is deliberately seeded with PRODUCTION-shaped ids, unlike the
 // shared `local-backend-seed` fixture whose Function is `func:alpha` — that
@@ -735,13 +730,8 @@ withTestLbugDB(
 );
 
 // ─── context ref window must SPREAD across categories (#2787 review F1) ──
-// The categorized incoming/outgoing windows are `LIMIT 30`. Pinning them with
-// `ORDER BY relType, uid` made them reproducible but harmful: the window then
-// fills in alphabetical CATEGORY order, so any category whose alphabetical
-// predecessors already total 30 is dropped in 100% of runs — and `categorize()`
-// emits whatever buckets it is handed with no truncation flag, so the loss is
-// silent. `ORDER BY uid, relType` is still a total order (uid is a node primary
-// key) but spreads the page across categories.
+// See the incoming-ref window in `_contextImpl` (#2787 F1) for why the 30-row
+// page is keyed `ORDER BY uid, relType` and not category-major.
 //
 // Shape below: 40 incoming refs on one Method — 35 CALLS, 3 ACCESSES, 1 USES,
 // 1 HAS_METHOD (the owning class, which is how `context` names the owner).
