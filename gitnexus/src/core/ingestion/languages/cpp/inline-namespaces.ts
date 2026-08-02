@@ -14,12 +14,14 @@
  *   2. **Transitive qualified visibility.** `outer::foo()` resolves to
  *      `outer::v1::foo()` when `v1` is inline. The qualified-namespace
  *      receiver resolver (`resolveCppQualifiedNamespaceMember`) walks
- *      inline-namespace children transitively when collecting candidates.
+ *      inline-namespace children transitively when collecting candidates —
+ *      once per pipeline run, into {@link QualifiedNsMemberIndex} (#2788).
  *
  * State lifecycle: capture-time `markCppInlineNamespaceRange` records each
  * inline namespace's source range; `populateCppInlineNamespaceScopes`
  * resolves ranges to `ScopeId`s during `populateOwners`. Cleared via
- * `clearCppInlineNamespaces`, called from `clearFileLocalNames`.
+ * `clearCppInlineNamespaces`, called from
+ * `cppScopeResolver.loadResolutionConfig` at the start of every pass.
  *
  * STL idiom this enables: `std::__1::vector` (libc++) and `std::__cxx11`
  * (libstdc++) are inline namespaces of `std`. With this support,
@@ -85,10 +87,13 @@ export function applyCppInlineNamespaceSideChannel(
   for (const r of ranges) set.add(r);
 }
 
-/** Clear all inline-namespace state. Called from `clearFileLocalNames`. */
+/** Clear all inline-namespace state. Called from
+ *  `cppScopeResolver.loadResolutionConfig` at the start of every pass. */
 export function clearCppInlineNamespaces(): void {
   inlineNamespaceRangesByFile.clear();
   inlineNamespaceScopeIds.clear();
+  qualifiedNsIndex = undefined;
+  qualifiedNsIndexSource = undefined;
 }
 
 /** Resolve captured ranges to actual ScopeIds by matching scope ranges
@@ -115,11 +120,136 @@ export function isCppInlineNamespaceScope(scopeId: ScopeId): boolean {
 }
 
 /**
- * Walk every parsed file looking for a Namespace scope whose qualified
- * name matches `receiverName`, collect its callable ownedDefs matching
- * `memberName`, transitively descending into any inline-namespace
- * children (since they're members of the enclosing namespace under ISO
- * C++).
+ * Qualified-namespace member index — built **once** per pipeline run from
+ * `parsedFiles` and reused by every qualified call site.
+ *
+ * The legacy lookup re-scanned every parsed file (rebuilding a per-file
+ * `scopesById` map each time) once **per qualified call site**, making the
+ * scope-resolution emit phase O(callsites × scopes): 25.3 min of a 33-min
+ * analyze on a 1,473-file C++ repo, 75% of total self-time in this one
+ * function (#2788). Mirrors the same fix #1990 applied to ADL
+ * (`pickCppAdlCandidates` → {@link AdlCandidateIndex}); per-site cost drops
+ * to two Map lookups.
+ *
+ * `byReceiver`: namespace simple name → member simple name → callable defs,
+ * in the exact order the legacy linear scan produced them (file-major; within
+ * a file, `parsed.scopes` declaration order; within a namespace, own
+ * `ownedDefs` before inline-namespace children, depth-first). Ordering is
+ * load-bearing: the caller returns `allHits[0]` for the single-hit case and
+ * `narrowOverloadCandidates` is first-wins.
+ */
+interface QualifiedNsMemberIndex {
+  readonly byReceiver: ReadonlyMap<string, ReadonlyMap<string, readonly SymbolDefinition[]>>;
+}
+
+type NsScope = ParsedFile['scopes'][number];
+
+let qualifiedNsIndex: QualifiedNsMemberIndex | undefined;
+let qualifiedNsIndexSource: readonly ParsedFile[] | undefined;
+
+/** Build the index in a single pass over the workspace. Visitation order
+ *  mirrors the legacy scan exactly (see {@link QualifiedNsMemberIndex}). */
+function buildQualifiedNsMemberIndex(parsedFiles: readonly ParsedFile[]): QualifiedNsMemberIndex {
+  const byReceiver = new Map<string, Map<string, SymbolDefinition[]>>();
+  // Legacy dedup was a per-call `seenNodeId` set spanning all files; since a
+  // def only ever lands in one `(receiver, member)` bucket, a per-receiver set
+  // keyed `member \0 nodeId` reproduces it. Only reachable at all via
+  // same-name inline nesting (`namespace ns { inline namespace ns { … } }`),
+  // but kept so a def is never double-counted into `'ambiguous'`.
+  const seenByReceiver = new Map<string, Set<string>>();
+
+  for (const parsed of parsedFiles) {
+    // parent → inline-namespace children. The legacy transitive walk filtered
+    // `scopesById.values()` by `parent` per recursion step — O(scopes) each,
+    // and O(scopes²) per file overall; this is the same order, built once.
+    const inlineChildrenByParent = new Map<ScopeId, (typeof parsed.scopes)[number][]>();
+    for (const sc of parsed.scopes) {
+      if (sc.parent === null) continue;
+      if (sc.kind !== 'Namespace') continue;
+      if (!inlineNamespaceScopeIds.has(sc.id)) continue;
+      let kids = inlineChildrenByParent.get(sc.parent);
+      if (kids === undefined) {
+        kids = [];
+        inlineChildrenByParent.set(sc.parent, kids);
+      }
+      kids.push(sc);
+    }
+
+    for (const scope of parsed.scopes) {
+      if (scope.kind !== 'Namespace') continue;
+      const nsDef = findNamespaceDefInScope(scope);
+      if (nsDef === undefined) continue;
+      const nsName = nsDef.qualifiedName?.split('.').pop() ?? nsDef.qualifiedName ?? '';
+      let byMember = byReceiver.get(nsName);
+      if (byMember === undefined) {
+        byMember = new Map();
+        byReceiver.set(nsName, byMember);
+      }
+      let seen = seenByReceiver.get(nsName);
+      if (seen === undefined) {
+        seen = new Set();
+        seenByReceiver.set(nsName, seen);
+      }
+      collectNamespaceMembers(scope, inlineChildrenByParent, byMember, seen);
+    }
+  }
+  return { byReceiver };
+}
+
+/** Bucket a namespace scope's callable `ownedDefs` by member simple name,
+ *  then descend into inline-namespace children — the index-build twin of the
+ *  legacy `findMemberInNamespaceTransitive`, collecting every member name in
+ *  one walk instead of one walk per `(call site, member name)`. */
+function collectNamespaceMembers(
+  scope: NsScope,
+  inlineChildrenByParent: ReadonlyMap<ScopeId, readonly NsScope[]>,
+  byMember: Map<string, SymbolDefinition[]>,
+  seen: Set<string>,
+): void {
+  for (const def of scope.ownedDefs) {
+    if (def.type !== 'Function' && def.type !== 'Method' && def.type !== 'Constructor') continue;
+    const simple = def.qualifiedName?.split('.').pop() ?? def.qualifiedName ?? '';
+    const dedupKey = `${simple}\u0000${def.nodeId}`;
+    if (seen.has(dedupKey)) continue;
+    seen.add(dedupKey);
+    let arr = byMember.get(simple);
+    if (arr === undefined) {
+      arr = [];
+      byMember.set(simple, arr);
+    }
+    arr.push(def);
+  }
+  for (const child of inlineChildrenByParent.get(scope.id) ?? []) {
+    collectNamespaceMembers(child, inlineChildrenByParent, byMember, seen);
+  }
+}
+
+/** Build the index on first use of a given `parsedFiles` set; reuse it for
+ *  every subsequent call site in the same pipeline run.
+ *
+ *  The index is a function of TWO inputs: `parsedFiles` and the module-level
+ *  `inlineNamespaceScopeIds` (which inline children get descended into).
+ *  Reference identity on `parsedFiles` alone is sound here because
+ *  `populateCppInlineNamespaceScopes` fills `inlineNamespaceScopeIds` during
+ *  `populateOwners` — strictly before any resolution pass calls in — and
+ *  {@link clearCppInlineNamespaces} drops the index at the start of every
+ *  pass. Any future caller that mutates `inlineNamespaceScopeIds` mid-pass
+ *  while reusing the same `parsedFiles` reference MUST call
+ *  `clearCppInlineNamespaces` in between. Same contract as `ensureAdlIndex`. */
+function qualifiedNsMemberIndex(parsedFiles: readonly ParsedFile[]): QualifiedNsMemberIndex {
+  if (qualifiedNsIndex === undefined || qualifiedNsIndexSource !== parsedFiles) {
+    qualifiedNsIndex = buildQualifiedNsMemberIndex(parsedFiles);
+    qualifiedNsIndexSource = parsedFiles;
+  }
+  return qualifiedNsIndex;
+}
+
+/**
+ * Find the Namespace scopes whose simple name matches `receiverName` and
+ * return their callable members matching `memberName`, transitively
+ * including inline-namespace children (since they're members of the
+ * enclosing namespace under ISO C++). Served from a per-pipeline index
+ * ({@link QualifiedNsMemberIndex}), not a per-call-site workspace scan.
  *
  * Returns the most specific (innermost) match — for `outer::foo()`
  * where `inline namespace v1` declares `foo`, returns `v1::foo`. When
@@ -134,27 +264,8 @@ export function resolveCppQualifiedNamespaceMember(
   _scopes: ScopeResolutionIndexes,
   callsite?: Callsite,
 ): SymbolDefinition | 'ambiguous' | undefined {
-  const allHits: SymbolDefinition[] = [];
-  const seenNodeId = new Set<string>();
-  for (const parsed of parsedFiles) {
-    const scopesById = new Map<ScopeId, (typeof parsed.scopes)[number]>();
-    for (const sc of parsed.scopes) scopesById.set(sc.id, sc);
-    for (const scope of parsed.scopes) {
-      if (scope.kind !== 'Namespace') continue;
-      const nsDef = findNamespaceDefInScope(scope);
-      if (nsDef === undefined) continue;
-      const nsName = nsDef.qualifiedName?.split('.').pop() ?? nsDef.qualifiedName ?? '';
-      if (nsName !== receiverName) continue;
-      // Found a matching namespace scope in this file. Collect ALL
-      // members transitively through any inline-namespace children.
-      const hits = findMemberInNamespaceTransitive(scope, scopesById, memberName);
-      for (const hit of hits) {
-        if (seenNodeId.has(hit.nodeId)) continue;
-        seenNodeId.add(hit.nodeId);
-        allHits.push(hit);
-      }
-    }
-  }
+  const allHits =
+    qualifiedNsMemberIndex(parsedFiles).byReceiver.get(receiverName)?.get(memberName) ?? [];
   if (allHits.length === 0) return undefined;
   if (allHits.length === 1) return allHits[0];
 
@@ -180,46 +291,6 @@ export function resolveCppQualifiedNamespaceMember(
   // Multiple surviving candidates (distinct signatures) — conservative
   // suppress because we lack call-site info to disambiguate.
   return 'ambiguous';
-}
-
-/** Recursively search a namespace scope and any inline-namespace
- *  descendants for callable defs with the given simple name. Non-inline
- *  nested namespaces are NOT traversed — they require explicit
- *  qualification (`outer::nested::foo`). Returns ALL matches so the
- *  caller can detect same-name ambiguity across inline children (#1564). */
-function findMemberInNamespaceTransitive(
-  scope: {
-    readonly id: ScopeId;
-    readonly ownedDefs: readonly SymbolDefinition[];
-    readonly parent: ScopeId | null;
-  },
-  scopesById: ReadonlyMap<
-    ScopeId,
-    {
-      readonly id: ScopeId;
-      readonly kind: string;
-      readonly parent: ScopeId | null;
-      readonly ownedDefs: readonly SymbolDefinition[];
-    }
-  >,
-  memberName: string,
-): SymbolDefinition[] {
-  const results: SymbolDefinition[] = [];
-  // Check this scope's own ownedDefs first.
-  for (const def of scope.ownedDefs) {
-    if (def.type !== 'Function' && def.type !== 'Method' && def.type !== 'Constructor') continue;
-    const simple = def.qualifiedName?.split('.').pop() ?? def.qualifiedName ?? '';
-    if (simple === memberName) results.push(def);
-  }
-  // Descend into inline-namespace children.
-  for (const childScope of scopesById.values()) {
-    if (childScope.parent !== scope.id) continue;
-    if (childScope.kind !== 'Namespace') continue;
-    if (!inlineNamespaceScopeIds.has(childScope.id)) continue;
-    const childHits = findMemberInNamespaceTransitive(childScope, scopesById, memberName);
-    for (const hit of childHits) results.push(hit);
-  }
-  return results;
 }
 
 function findNamespaceDefInScope(scope: {

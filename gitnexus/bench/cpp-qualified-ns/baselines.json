@@ -1,0 +1,6 @@
+{
+  "_comment": "Baselines for bench/cpp-qualified-ns/measure.mjs --check (#2788). `fingerprint` is a sha256 over every `receiver::member -> outcome` the synthetic corpus resolves at the LARGE scale (hit nodeId, `<ambiguous>` per #1564, or `<none>`); it is a CORRECTNESS gate, so drift means C++ qualified `ns::member()` lookup started resolving a different symbol set and must be explained, never re-baselined to make CI green. `scaling_budget` is a timing gate and carries deliberate headroom for shared CI runners.",
+  "fingerprint": "30122b086b90fe1d56edc5acfd39ab7f26c00350f0e672123aaf607c7702e1e2",
+  "scaling_budget": 1.8,
+  "_scaling_note": "(t_large/t_small)/(1600/400). ~1.0 is linear; measured 0.93-1.21 on the indexed implementation. The pre-#2788 per-call-site workspace rescan measured 3.45 on the same corpus shape (at a reduced 100/400 scale, since 1600 files x 32k call sites of quadratic work does not finish in a CI step) — so the budget sits between the two bands and cannot be met by reintroducing the scan. Resolution is timed alone; the fingerprint's outcome strings are built in a separate untimed pass because their allocation cost grows with the corpus and would otherwise show up as scaling."
+}

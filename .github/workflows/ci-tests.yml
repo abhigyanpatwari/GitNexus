@@ -500,6 +500,17 @@ jobs:
         run: node --import tsx bench/callable-value-flow/measure.mjs --check
         working-directory: gitnexus
 
+      - name: C++ qualified-namespace resolution guards (#2788)
+        # Build-free: asserts resolveCppQualifiedNamespaceMember resolves an
+        # unchanged symbol set (fingerprint) and that per-call-site cost stays
+        # independent of corpus size. It rescanned every parsed file per
+        # qualified `ns::member()` call site until #2788 — 25 of 33 analyze
+        # minutes on a 1.5k-file C++ repo. #1990 had already fixed the exact
+        # same bug in the sibling ADL path and shipped without a scaling gate,
+        # which is how the bug class came back; this step is that gate.
+        run: node --import tsx bench/cpp-qualified-ns/measure.mjs --check
+        working-directory: gitnexus
+
       - name: Receiver-resolution drop guards
         # NOT build-free: this one runs the real pipeline, so it needs dist/
         # (the setup action above builds). ~2m15s.
