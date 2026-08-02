@@ -505,9 +505,12 @@ jobs:
         # unchanged symbol set (fingerprint) and that per-call-site cost stays
         # independent of corpus size. It rescanned every parsed file per
         # qualified `ns::member()` call site until #2788 — 25 of 33 analyze
-        # minutes on a 1.5k-file C++ repo. #1990 had already fixed the exact
-        # same bug in the sibling ADL path and shipped without a scaling gate,
-        # which is how the bug class came back; this step is that gate.
+        # minutes on a 1.5k-file C++ repo. #1990 fixed the same bug in the
+        # sibling ADL path and did ship a gate (cpp-adl-benchmark.test.ts), but
+        # that one generates only unresolved ADL sites so it never drives the
+        # qualified path — and, being skipIf-gated on GITNEXUS_BENCH and absent
+        # from that job's file list, it has never run in CI. This step is the
+        # always-on gate for the qualified receiver path.
         run: node --import tsx bench/cpp-qualified-ns/measure.mjs --check
         working-directory: gitnexus
 
