@@ -3238,6 +3238,13 @@ export class LocalBackend {
           endLine: number;
           score: number;
         }>;
+        /**
+         * TRUE number of symbols matching the name, which is NOT
+         * `candidates.length` — the window below is capped at 20. Callers must
+         * report this, never the array length, or the cap masquerades as the
+         * match count ("Found 20 symbols" when 92 exist).
+         */
+        total: number;
       }
     | { kind: 'not_found' }
   > {
@@ -3298,11 +3305,26 @@ export class LocalBackend {
     // the projected type would sort the HIGHEST-priority kind into the empty
     // bucket. The caller re-sorts by score anyway, so this only has to pin
     // WHICH 20 rows come back.
-    const rows = await executeParameterized(
-      repo.lbugPath,
-      `MATCH (n) ${whereClause} RETURN ${selectClause} ORDER BY n.id LIMIT 20`,
-      queryParams,
-    );
+    //
+    // The COUNT rides alongside the window in the same `Promise.all` because a
+    // LIMIT-capped page's row count cannot stand in for the true total — the
+    // same rule `_explainImpl` and `_pdgQueryImpl` already follow (#2084 review
+    // P2-4). Without it every "Found N symbols matching 'x'" message and the
+    // `totalCandidates` field report the cap, so 92 collisions read as 20 —
+    // and now that the window is ordered, that undercount is stable, which
+    // makes it look authoritative rather than flaky.
+    const [rows, countRows] = await Promise.all([
+      executeParameterized(
+        repo.lbugPath,
+        `MATCH (n) ${whereClause} RETURN ${selectClause} ORDER BY n.id LIMIT 20`,
+        queryParams,
+      ),
+      executeParameterized(
+        repo.lbugPath,
+        `MATCH (n) ${whereClause} RETURN COUNT(*) AS total`,
+        queryParams,
+      ).catch(() => [] as any[]),
+    ]);
 
     if (rows.length === 0) return { kind: 'not_found' };
 
@@ -3316,6 +3338,15 @@ export class LocalBackend {
       endLine: (r.endLine ?? r[5]) as number,
       ...(include_content ? { content: (r.content ?? r[6]) as string | undefined } : {}),
     }));
+
+    // Floor the total at what the window actually returned. The COUNT can never
+    // legitimately be below the page it accompanies, so this only fires when the
+    // count leg failed or returned an unreadable shape — in which case reporting
+    // the window size is the honest fallback, never zero.
+    const totalMatches = Math.max(
+      Number((countRows[0] as any)?.total ?? (countRows[0] as any)?.[0] ?? 0) || 0,
+      normalized.length,
+    );
 
     // Enrich labels for any candidates where `labels(n)[0]` came back empty.
     // LadybugDB returns an empty string for that projection on certain node
@@ -3417,7 +3448,7 @@ export class LocalBackend {
       return { kind: 'ok', symbol: scored[0], resolvedLabel: scored[0].type };
     }
 
-    return { kind: 'ambiguous', candidates: scored };
+    return { kind: 'ambiguous', candidates: scored, total: totalMatches };
   }
 
   /**
@@ -3478,9 +3509,16 @@ export class LocalBackend {
     }
 
     if (outcome.kind === 'ambiguous') {
+      // `total` is the real match count; `candidates` is the 20-row window.
+      // Reporting the window length here claimed 20 matches when 92 existed,
+      // and `rename` inherits this payload verbatim.
+      const shownOf =
+        outcome.total > outcome.candidates.length ? ` (showing ${outcome.candidates.length})` : '';
       return {
         status: 'ambiguous',
-        message: `Found ${outcome.candidates.length} symbols matching '${name}'. Use uid, file_path, or kind to disambiguate.`,
+        message: `Found ${outcome.total} symbols matching '${name}'${shownOf}. Use uid, file_path, or kind to disambiguate.`,
+        totalCandidates: outcome.total,
+        ...(outcome.total > outcome.candidates.length && { candidatesTruncated: true }),
         candidates: outcome.candidates.map((c) => ({
           uid: c.id,
           name: c.name,
@@ -3880,7 +3918,9 @@ export class LocalBackend {
         anchor: { file: '' },
         early: {
           status: 'ambiguous',
-          message: `Found ${outcome.candidates.length} symbols matching '${target}'. Re-call ${toolName} with the file path, or disambiguate via context() first.`,
+          message: `Found ${outcome.total} symbols matching '${target}'${outcome.total > outcome.candidates.length ? ` (showing ${outcome.candidates.length})` : ''}. Re-call ${toolName} with the file path, or disambiguate via context() first.`,
+          totalCandidates: outcome.total,
+          ...(outcome.total > outcome.candidates.length && { candidatesTruncated: true }),
           candidates: outcome.candidates.map((c) => ({
             uid: c.id,
             name: c.name,
@@ -5061,7 +5101,9 @@ export class LocalBackend {
       return {
         status: 'ambiguous',
         role: 'from',
-        message: `Found ${fromOutcome.candidates.length} symbols matching '${params.from}'. Disambiguate with --from-uid.`,
+        message: `Found ${fromOutcome.total} symbols matching '${params.from}'${fromOutcome.total > fromOutcome.candidates.length ? ` (showing ${fromOutcome.candidates.length})` : ''}. Disambiguate with --from-uid.`,
+        totalCandidates: fromOutcome.total,
+        ...(fromOutcome.total > fromOutcome.candidates.length && { candidatesTruncated: true }),
         candidates: fromOutcome.candidates,
       };
     }
@@ -5083,7 +5125,9 @@ export class LocalBackend {
       return {
         status: 'ambiguous',
         role: 'to',
-        message: `Found ${toOutcome.candidates.length} symbols matching '${params.to}'. Disambiguate with --to-uid.`,
+        message: `Found ${toOutcome.total} symbols matching '${params.to}'${toOutcome.total > toOutcome.candidates.length ? ` (showing ${toOutcome.candidates.length})` : ''}. Disambiguate with --to-uid.`,
+        totalCandidates: toOutcome.total,
+        ...(toOutcome.total > toOutcome.candidates.length && { candidatesTruncated: true }),
         candidates: toOutcome.candidates,
       };
     }
@@ -5483,19 +5527,21 @@ export class LocalBackend {
       // returns the candidate list WITHOUT any callgraph probe; the full pdg
       // ambiguous handling (per-candidate PDG summaries / ranking) lands in U4.
       if (mode === 'pdg') {
-        const truncated = outcome.candidates.length > AMBIGUOUS_MAX_CANDIDATES;
+        // Truncation is measured against the TRUE match count, not the 20-row
+        // resolver window — with 92 collisions the old form said "6 of 20".
         const shown = outcome.candidates.slice(0, AMBIGUOUS_MAX_CANDIDATES);
+        const truncated = outcome.total > shown.length;
         return {
           status: 'ambiguous',
           mode,
           message:
-            `Found ${outcome.candidates.length} symbols matching '${target}'` +
-            (truncated ? ` (showing ${shown.length} of ${outcome.candidates.length})` : '') +
+            `Found ${outcome.total} symbols matching '${target}'` +
+            (truncated ? ` (showing ${shown.length} of ${outcome.total})` : '') +
             `. Disambiguate with target_uid (or file_path/kind) for a single ` +
             `authoritative PDG result.`,
           target: { name: target },
           direction,
-          totalCandidates: outcome.candidates.length,
+          totalCandidates: outcome.total,
           // No single resolved symbol → the blast radius is UNDETERMINED, not
           // zero. `null` (not 0) because no callgraph fan-out runs on this path,
           // so there is not even a `maxImpactedCount` to correct a numeric zero
@@ -5600,23 +5646,24 @@ export class LocalBackend {
             'LOW',
           )
         : 'UNKNOWN';
-      const truncated = outcome.candidates.length > probed.length;
+      // Measured against the TRUE match count, not the 20-row resolver window.
+      const truncated = outcome.total > probed.length;
 
       return {
         status: 'ambiguous',
         message:
-          `Found ${outcome.candidates.length} symbols matching '${target}'` +
-          (truncated
-            ? ` (showing ${candidateSummaries.length} of ${outcome.candidates.length})`
-            : '') +
+          `Found ${outcome.total} symbols matching '${target}'` +
+          (truncated ? ` (showing ${candidateSummaries.length} of ${outcome.total})` : '') +
           `. Blast radius differs per candidate (max ${maxImpactedCount} impacted at risk ${maxRisk}). ` +
           `Disambiguate with target_uid (or file_path/kind) for a single authoritative result.`,
         target: { name: target },
         direction,
-        // Full match count — `candidates[]` is truncated to AMBIGUOUS_MAX_CANDIDATES,
-        // so consumers (CLI formatter) need this to report "N of M" honestly (#2129
-        // review F11; the CLI previously read the truncated array length).
-        totalCandidates: outcome.candidates.length,
+        // Full match count — `candidates[]` is truncated to AMBIGUOUS_MAX_CANDIDATES
+        // and the resolver window itself caps at 20, so consumers (CLI formatter)
+        // need the resolver's COUNT to report "N of M" honestly (#2129 review F11;
+        // the CLI previously read the truncated array length, then the capped
+        // window length — both undercounts).
+        totalCandidates: outcome.total,
         // `impactedCount` is `null` — UNDETERMINED, not zero — and `risk` stays
         // UNKNOWN, because there is no single resolved symbol. #2129 hoisted
         // `maxImpactedCount` / `maxRisk` here so a real caller could not hide

@@ -238,7 +238,11 @@ withTestLbugDB(
       const result = await backend.callTool('context', { name: 'collide' });
 
       expect(result.status).toBe('ambiguous');
-      expect(result.message).toContain(`Found 20 symbols`);
+      // 25 is the TRUE match count (a COUNT alongside the window); 20 is the
+      // window. Reporting the window here claimed the cap was the total.
+      expect(result).toMatchObject({ totalCandidates: COLLIDE_COUNT, candidatesTruncated: true });
+      expect(result.message).toContain(`Found ${COLLIDE_COUNT} symbols`);
+      expect(result.message).toContain('showing 20');
       expect((result.candidates as Array<{ uid: string }>).map((c) => c.uid)).toEqual(
         COLLIDE_IDS.slice(0, 20),
       );

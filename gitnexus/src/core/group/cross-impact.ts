@@ -40,6 +40,26 @@ export const MAX_SUPPORTED_CROSS_DEPTH = 1;
 /** Default wall-clock budget for the Phase 1 `impact` leg when callers omit `timeoutMs`. */
 export const DEFAULT_LOCAL_IMPACT_TIMEOUT_MS = 30_000;
 
+/**
+ * Cap on neighbour fan-outs attempted per group-impact request.
+ *
+ * The bound used to be the wall clock alone, which made the cutoff a function
+ * of machine load: an idle host traversed more crossings and `mergeRisk`
+ * escalated to CRITICAL at three, while a loaded host stopped at two and
+ * reported HIGH or lower — same graph, same arguments, different verdict
+ * (#2787). A count is deterministic, and since a683ada28 the neighbour list
+ * carries a total order (confidence DESC, then repo, then uid), so the cap
+ * keeps the strongest crossings rather than an arbitrary prefix.
+ *
+ * 50 mirrors `MAX_CROSSINGS_TO_TRY` in cross-trace.ts, which bounds the same
+ * unit (ContractLink crossings per group request, from the same bridge, in the
+ * same order). A crossing here costs one `impactByUid` — which already runs
+ * with `skipPerSymbolEnrichment` / `skipEpistemic` — against trace's up to two
+ * BFS queries, so the per-unit cost is the same class or cheaper. The wall
+ * clock stays as a hang backstop below; this is the bound that normally binds.
+ */
+export const MAX_NEIGHBOR_FANOUT = 50;
+
 const CY_NEIGHBORS_UPSTREAM = `
 MATCH (consumer:Contract)-[l:ContractLink]->(provider:Contract)
 WHERE provider.repo = $localRepo
@@ -598,6 +618,10 @@ export async function runGroupImpact(
   const cross: CrossRepoImpact[] = [];
   const outOfScope: OutOfScopeLink[] = [];
   const truncatedRepos: string[] = [];
+  /** Real `impactByUid` fan-outs issued — what MAX_NEIGHBOR_FANOUT bounds. */
+  let attemptedFanouts = 0;
+  /** True when the wall-clock backstop, not the count cap, cut the fan-out. */
+  let fanoutTimedOut = false;
 
   try {
     const neighbors = await resolveBridgeNeighbors(handle, {
@@ -631,7 +655,18 @@ export async function runGroupImpact(
       if (seen.has(key)) continue;
       seen.add(key);
 
+      // Deterministic bound first: the count decides the cutoff on every host.
+      // Manifest-only crossings are exempt because they cost no `impactByUid`
+      // and dropping them regresses #2784.
+      if (!manifestOnly && attemptedFanouts >= MAX_NEIGHBOR_FANOUT) {
+        truncatedRepos.push(n.neighborRepo);
+        continue;
+      }
+      // Wall clock second, as a hang backstop only. It is load-dependent by
+      // construction, so when it is what fired the response must say `timeout`,
+      // not the generic `partial` it used to report.
       if (!manifestOnly && deadline - Date.now() <= 0) {
+        fanoutTimedOut = true;
         truncatedRepos.push(n.neighborRepo);
         continue;
       }
@@ -681,6 +716,7 @@ export async function runGroupImpact(
       // single hung neighbor would pin the request past the clamped
       // timeout, which Codex's adversarial review on PR #1331 flagged
       // as the still-open half of CodeQL #184 / js/resource-exhaustion.
+      attemptedFanouts += 1;
       const { value: fan, timedOut: neighborTimedOut } = await safeNeighborImpact(
         deps.port,
         neighborHandle.id,
@@ -695,6 +731,7 @@ export async function runGroupImpact(
         remainingMs,
       );
       if (neighborTimedOut || fan == null) {
+        if (neighborTimedOut) fanoutTimedOut = true;
         truncatedRepos.push(n.neighborRepo);
         continue;
       }
@@ -735,8 +772,14 @@ export async function runGroupImpact(
       cross_repo_hits: cross.length,
     },
     risk: mergeRisk(localRisk, cross),
+    // The VALUE is never clamped down. `mergeRisk` is monotone increasing in
+    // the traversed-crossing count, so truncation can only under-report — and
+    // under-reporting a blast radius is the unsafe direction (an agent told
+    // LOW proceeds; told CRITICAL it stops). Marking the floor keeps the
+    // warning intact while making the incompleteness legible.
+    ...(truncated ? { riskEpistemic: 'lower-bound' as const } : {}),
     timeoutMs,
-    truncationReason: truncated ? 'partial' : undefined,
+    truncationReason: truncated ? (fanoutTimedOut ? 'timeout' : 'partial') : undefined,
     crossDepthWarning,
   };
   return result;

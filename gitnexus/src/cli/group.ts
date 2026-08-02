@@ -250,17 +250,31 @@ export function registerGroupCommands(program: Command): void {
         } else {
           const summary = (raw as { summary?: Record<string, number> })?.summary;
           const risk = (raw as { risk?: string })?.risk;
+          // A truncated fan-out under-reports risk (mergeRisk only grows with
+          // traversed crossings), and the default human output used to print a
+          // bare `risk=` indistinguishable from a complete run — the JSON
+          // already carried `truncated`, but nobody reading the terminal saw it.
+          const riskFloor =
+            (raw as { riskEpistemic?: string })?.riskEpistemic === 'lower-bound' ? '+' : '';
           const boundaryOnly =
             (
               raw as {
                 cross?: Array<{ fanout_status?: string }>;
               }
             )?.cross?.filter((entry) => entry.fanout_status === 'not_attempted').length ?? 0;
-          console.log(`Group impact for "${name}" (${String(opts.repo)}): risk=${risk ?? '?'}`);
+          console.log(
+            `Group impact for "${name}" (${String(opts.repo)}): risk=${risk ?? '?'}${riskFloor}`,
+          );
           if (summary) {
             const boundaryNote = boundaryOnly > 0 ? ` (${boundaryOnly} boundary-only)` : '';
             console.log(
               `  direct=${summary.direct ?? 0} processes=${summary.processes_affected ?? 0} cross=${summary.cross_repo_hits ?? 0}${boundaryNote}`,
+            );
+          }
+          if (riskFloor) {
+            const dropped = (raw as { truncatedRepos?: string[] })?.truncatedRepos ?? [];
+            console.log(
+              `  risk is a LOWER BOUND — fan-out stopped early, ${dropped.length} crossing(s) not traversed${dropped.length > 0 ? `: ${dropped.join(', ')}` : ''}`,
             );
           }
         }

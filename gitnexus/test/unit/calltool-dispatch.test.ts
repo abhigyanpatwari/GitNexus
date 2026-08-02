@@ -955,22 +955,55 @@ describe('LocalBackend.callTool', () => {
       .filter((q: string) => q.includes('$symName'));
   };
 
-  it('resolver window is pinned by ORDER BY n.id — bare name (#2787)', async () => {
-    const queries = await resolverQueriesFor({ name: 'main' });
-    expect(queries).toHaveLength(1);
-    expect(queries[0]).toMatch(/ORDER BY n\.id LIMIT 20/);
+  // Two queries share `$symName`: the ordered 20-row window, and the COUNT that
+  // reports the TRUE match total (the window length would report the cap — 20
+  // when 92 match). Both halves are pinned; the COUNT must carry no LIMIT of
+  // its own or it would just re-report the cap.
+  const expectWindowAndCount = (queries: string[]): void => {
+    expect(queries).toHaveLength(2);
+    expect(queries.filter((q) => /ORDER BY n\.id LIMIT 20/.test(q))).toHaveLength(1);
+    expect(
+      queries.filter((q) => /RETURN COUNT\(\*\) AS total/.test(q) && !/LIMIT/.test(q)),
+    ).toHaveLength(1);
+  };
+
+  it('resolver window is pinned by ORDER BY n.id, with a COUNT for the true total — bare name (#2787)', async () => {
+    expectWindowAndCount(await resolverQueriesFor({ name: 'main' }));
   });
 
-  it('resolver window is pinned by ORDER BY n.id — file_path hint (#2787)', async () => {
-    const queries = await resolverQueriesFor({ name: 'main', file_path: 'src/a.ts' });
-    expect(queries).toHaveLength(1);
-    expect(queries[0]).toMatch(/ORDER BY n\.id LIMIT 20/);
+  it('resolver window is pinned by ORDER BY n.id, with a COUNT for the true total — file_path hint (#2787)', async () => {
+    expectWindowAndCount(await resolverQueriesFor({ name: 'main', file_path: 'src/a.ts' }));
   });
 
-  it('resolver window is pinned by ORDER BY n.id — qualified name (#2787)', async () => {
-    const queries = await resolverQueriesFor({ name: 'src/a.ts:main' });
-    expect(queries).toHaveLength(1);
-    expect(queries[0]).toMatch(/ORDER BY n\.id LIMIT 20/);
+  it('resolver window is pinned by ORDER BY n.id, with a COUNT for the true total — qualified name (#2787)', async () => {
+    expectWindowAndCount(await resolverQueriesFor({ name: 'src/a.ts:main' }));
+  });
+
+  it('ambiguous context reports the COUNT as the match total, not the capped window (#2787)', async () => {
+    const windowRows = Array.from({ length: 20 }, (_, i) => ({
+      id: `Function:src/f${String(i).padStart(2, '0')}.ts:collide`,
+      name: 'collide',
+      type: 'Function',
+      filePath: `src/f${String(i).padStart(2, '0')}.ts`,
+      startLine: 1,
+      endLine: 3,
+    }));
+    (executeParameterized as any).mockClear();
+    (executeParameterized as any).mockImplementation(async (_repo: string, query: string) =>
+      /RETURN COUNT\(\*\) AS total/.test(query) ? [{ total: 92 }] : windowRows,
+    );
+    const result = await backend.callTool('context', { name: 'collide' });
+    (executeParameterized as any).mockReset();
+    (executeParameterized as any).mockResolvedValue([]);
+
+    expect(result).toMatchObject({
+      status: 'ambiguous',
+      totalCandidates: 92,
+      candidatesTruncated: true,
+    });
+    expect(result.candidates).toHaveLength(20);
+    expect(result.message).toContain('Found 92 symbols');
+    expect(result.message).toContain('showing 20');
   });
 
   it('no multi-row LIMIT on the context path is left unordered (#2787)', async () => {
