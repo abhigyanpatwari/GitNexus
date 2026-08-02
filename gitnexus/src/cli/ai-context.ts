@@ -191,18 +191,18 @@ ${tableBody}`
   return `${GITNEXUS_START_MARKER}
 # GitNexus — Code Intelligence
 
-This project is indexed by GitNexus as **${projectName}**${noStats ? '' : ` (${stats.nodes || 0} symbols, ${stats.edges || 0} relationships, ${stats.processes || 0} execution flows)`}. Use the GitNexus MCP tools to understand code, assess impact, and navigate safely.
+This project is indexed by GitNexus as **${projectName}**${noStats ? '' : ` (${stats.nodes || 0} symbols, ${stats.edges || 0} relationships, ${stats.processes || 0} execution flows)`}. Use GitNexus graph tools to understand code, assess impact, and navigate safely.
 
 > Index stale? Run \`${runner} analyze\` from the project root — it auto-selects an available runner. ${bootstrapNote}
 
 ## Always Do
 
-- **MUST run impact analysis before editing any symbol.** Before modifying a function, class, or method, run \`impact({target: "symbolName", direction: "upstream"})\` and report the blast radius (direct callers, affected processes, risk level) to the user.${
+- **MUST run impact analysis before editing.** Use \`impact({target: "symbolName", direction: "upstream"})\` (MCP) or \`${runner} impact "symbolName" --direction upstream --repo .\` (CLI fallback); report callers, processes, and risk. Never substitute grep for graph analysis.${
     hasPdg
-      ? ` For unified PDG impact, add \`mode: "pdg"\` with optional \`line: <N>\` — it returns statement-level \`affectedStatements\` over CDG + REACHING_DEF and inter-procedural symbols in \`interproceduralByDepth\`/\`byDepth\`; no-layer/degraded PDG results are UNKNOWN-risk notes (\`--pdg\` layer).`
+      ? ` For unified PDG impact, add \`mode: "pdg"\` with optional \`line: <N>\` — it returns statement-level \`affectedStatements\` over CDG + REACHING_DEF and inter-procedural symbols in \`interproceduralByDepth\`/\`byDepth\`; no-layer/degraded PDG results are UNKNOWN-risk notes (\`--pdg\` layer). CLI equivalent: \`${runner} impact "symbolName" --direction upstream --mode pdg --line <N> --repo .\`.`
       : ''
   }
-- **MUST run \`detect_changes()\` before committing** to verify your changes only affect expected symbols and execution flows. For regression review, compare against the default branch: \`detect_changes({scope: "compare", base_ref: ${JSON.stringify(markdownSafeBranch(defaultBranch))}})\`.
+- **MUST analyze graph changes before committing.** Use \`detect_changes({scope: "all"})\` (MCP) or \`${runner} detect-changes --scope all --repo .\` (CLI fallback). For regression review: \`detect_changes({scope: "compare", base_ref: ${JSON.stringify(markdownSafeBranch(defaultBranch))}})\` or \`${runner} detect-changes --scope compare --base-ref ${JSON.stringify(markdownSafeBranch(defaultBranch))} --repo .\`.
 - **MUST warn the user** if impact analysis returns HIGH or CRITICAL risk before proceeding with edits.
 - When exploring unfamiliar code, use \`query({search_query: "concept"})\` to find execution flows instead of grepping. It returns process-grouped results ranked by relevance.
 - When you need full context on a specific symbol — callers, callees, which execution flows it participates in — use \`context({name: "symbolName"})\`.
@@ -214,10 +214,10 @@ This project is indexed by GitNexus as **${projectName}**${noStats ? '' : ` (${s
 
 ## Never Do
 
-- NEVER edit a function, class, or method without first running \`impact\` on it.
+- NEVER edit a function, class, or method before MCP/CLI impact analysis.
 - NEVER ignore HIGH or CRITICAL risk warnings from impact analysis.
 - NEVER rename symbols with find-and-replace — use \`rename\` which understands the call graph.
-- NEVER commit changes without running \`detect_changes()\` to check affected scope.
+- NEVER commit before MCP/CLI graph change analysis.
 
 ## Resources
 
