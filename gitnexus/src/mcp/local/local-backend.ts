@@ -61,6 +61,13 @@ import {
   rankExactEmbeddingRows,
   type ExactEmbeddingRow,
 } from '../../core/embeddings/exact-search.js';
+// These are two bare string constants, but `schema.ts` builds its DDL from
+// `LINKABLE_LABELS` / `CALL_TARGET_TYPES` and so pulls five ingestion modules
+// into the runtime closure (~70ms on a cold MCP start). Re-homing them in
+// `gitnexus-shared` does NOT fix that on its own: `pool-adapter.js` below
+// reaches `schema.ts` anyway via pool-adapter -> lbug-adapter -> csv-generator,
+// all value imports. Cutting `csv-generator` (analyze-only code the MCP server
+// never runs) out of the adapter chain is the change that would make it real.
 import { EMBEDDING_TABLE_NAME, EMBEDDING_INDEX_NAME } from '../../core/lbug/schema.js';
 import { getExactScanLimit } from '../../core/platform/capabilities.js';
 import { PhaseTimer } from '../../core/search/phase-timer.js';

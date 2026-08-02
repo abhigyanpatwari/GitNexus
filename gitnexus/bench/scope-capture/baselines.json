@@ -14,10 +14,11 @@
     "_rebaselined_2766_callee_position_marker": "#2766 review fix: a call's callee selector is no longer DROPPED at capture. An earlier commit on this branch dropped it outright, which also deleted the genuine field read on a func-typed struct field (`h.dep.Work()` where `Work func() error`) - callback/hook/mock structs lost their only ACCESSES evidence. The match is now emitted carrying `@reference.callee-position`, and the phantom is suppressed at EMIT by the resolved target's kind instead. Go only: the other 14 languages' fingerprints are byte-identical, which is the check that this is not a cross-language capture change. Prior 7bb524a32a2eed57a15b454e3a33480e92a496c683e6856ef02179693c0e02e3 -> e47302079e17a5e73711bbed5416557b49327cb67e4932008700ec6b8fb468b3; scaling 1.001 < 1.5; fixtures 102 (unchanged), capture_groups_fp 2103."
   },
   "cobol": {
-    "fingerprint": "d45bb091b0893d0de4fae2486b31ba21719c9377bf35a0908fd3a36fa1c3bf4e",
+    "fingerprint": "c8c00b56a7da24e04080eb885714fbbf45e3903324f0cf9df0754f5b5a92e3aa",
     "scaling_budget": 1.5,
     "_rebaselined_callable_flow_2522_followup": "PR #2522 follow-up: COBOL procedure-pointer callable flow facts; multi-topic extraction now consumes each grouped scope/declaration match once instead of requiring a duplicate declaration-only match. Prior 68ee0e95eb9f86f2d92ca35f730f4c2d4d83abc1b5241ae767ff3437780ec8d1 -> d45bb091b0893d0de4fae2486b31ba21719c9377bf35a0908fd3a36fa1c3bf4e; scaling 0.853 < 1.5.",
-    "_note": "Updated for F17-F23 fixes (P2: TIMES guard, ADD GIVING, SQL AS alias). See PR #1959."
+    "_note": "Updated for F17-F23 fixes (P2: TIMES guard, ADD GIVING, SQL AS alias). See PR #1959.",
+    "_rebaselined_2793_declaratives": "PR #2793: corpus-only re-baseline. `cobol-declaratives` was added to test/fixtures/lang-resolution to reproduce the `Namespace\u2192Record` analyze abort (DECLARATIVES / USE AFTER STANDARD ERROR ON <file>), and this bench globs `lang-resolution/cobol-*`, so the corpus grew 14 -> 15 files. Verified capture-neutral: with that one fixture moved aside the fingerprint is byte-identical to the prior d45bb091b0893d0de4fae2486b31ba21719c9377bf35a0908fd3a36fa1c3bf4e. No COBOL capture code changed in that PR. Scaling 0.677 < 1.5."
   },
   "c": {
     "fingerprint": "3418cded9f7072152f68992f0a426f43ae7d9d553579a47075fc0cab185848a5",
