@@ -26,7 +26,7 @@ export const LOCAL_BACKEND_SEED_DATA = [
   `CREATE (p:Process {id: 'proc:beta-flow', label: 'BetaFlow', heuristicLabel: 'Beta Flow', processType: 'intra_community', stepCount: 3, communities: ['tools'], entryPointId: 'func:beta', terminalId: 'func:validate'})`,
   // Relationships
   `MATCH (a:Function), (b:Function) WHERE a.id = 'func:login' AND b.id = 'func:validate'
-   CREATE (a)-[:CodeRelation {type: 'CALLS', confidence: 1.0, reason: 'direct', step: 0}]->(b)`,
+   CREATE (a)-[:CodeRelation {type: 'CALLS', confidence: 1.0, reason: 'direct', step: 0, callSiteFilePath: 'src/auth.ts', callSiteLine: 4, callSiteColumn: 3}]->(b)`,
   `MATCH (a:Function), (b:Function) WHERE a.id = 'func:login' AND b.id = 'func:hash'
    CREATE (a)-[:CodeRelation {type: 'CALLS', confidence: 0.9, reason: 'import-resolved', step: 0}]->(b)`,
   `MATCH (a:Function), (c:Community) WHERE a.id = 'func:login' AND c.id = 'comm:auth'

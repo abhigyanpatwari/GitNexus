@@ -179,6 +179,9 @@ export function tryEmitEdge(
     type: edgeType,
     confidence,
     reason,
+    callSiteFilePath: scopes.scopeTree.getScope(site.inScope)?.filePath,
+    callSiteLine: site.atRange.startLine,
+    callSiteColumn: site.atRange.startCol + 1,
   });
   return true;
 }
@@ -251,6 +254,9 @@ export function tryEmitEdgeWithExplicitTargetId(
     type: edgeType,
     confidence,
     reason,
+    callSiteFilePath: scopes.scopeTree.getScope(site.inScope)?.filePath,
+    callSiteLine: site.atRange.startLine,
+    callSiteColumn: site.atRange.startCol + 1,
   });
   return true;
 }

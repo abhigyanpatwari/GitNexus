@@ -85,6 +85,12 @@ withTestLbugDB(
         const calleeNames = result.outgoing.calls.map((c: any) => c.name);
         expect(calleeNames).toContain('validate');
         expect(calleeNames).toContain('hash');
+        expect(result.outgoing.calls).toContainEqual(expect.objectContaining({
+          name: 'validate',
+          callSiteFilePath: 'src/auth.ts',
+          callSiteLine: 4,
+          callSiteColumn: 3,
+        }));
       });
 
       it('impact tool returns upstream dependents', async () => {

@@ -559,6 +559,11 @@ describe('callee-id capture — emitFreeCallFallback (inline addRelationship)', 
     expect(emitted).toBe(1);
     const callsEdge = graph.relationships.find((r) => r.type === 'CALLS')!;
     expect(callsEdge.targetId).toBe('fn:helper');
+    expect(callsEdge).toMatchObject({
+      callSiteFilePath: FREE_FILE,
+      callSiteLine: 3,
+      callSiteColumn: 3,
+    });
     expect(snapshot(acc, FREE_FILE)).toEqual({
       [calleeIdPosKey(3, 2)]: ['fn:helper'],
     });
