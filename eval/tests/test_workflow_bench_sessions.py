@@ -355,7 +355,7 @@ def test_mcp_config_uses_only_the_minimal_pinned_harness_runtime(monkeypatch, tm
         directory.mkdir(parents=True)
     (runtime / "dist" / "cli" / "index.js").write_text("")
     (runtime / "hooks" / "claude" / "resolve-analyze-cmd.cjs").write_text("")
-    (runtime / "package.json").write_text(json.dumps({"version": runner.PINNED_GITNEXUS_VERSION}))
+    (runtime / "package.json").write_text(json.dumps({"version": "9.9.9-test"}))
     (runtime / "node_modules" / "gitnexus-shared").symlink_to(shared, target_is_directory=True)
     (shared / "package.json").write_text(json.dumps({"name": "gitnexus-shared"}))
     monkeypatch.setattr(runtime_mounts, "HARNESS_ROOT", tmp_path)
@@ -379,9 +379,6 @@ def test_mcp_config_uses_only_the_minimal_pinned_harness_runtime(monkeypatch, tm
         (shared / "package.json", f"{runner.SANDBOX_GITNEXUS_SHARED}/package.json"),
         (runtime / "hooks" / "claude", f"{runner.SANDBOX_GITNEXUS}/hooks/claude"),
     ]
-    package = json.loads((runtime / "package.json").read_text())
-    assert package["version"] == runner.PINNED_GITNEXUS_VERSION
-
     mounted_sources = {mount.source for mount in mounts}
     mounted_targets = {mount.target for mount in mounts}
     assert runtime not in mounted_sources
@@ -458,7 +455,11 @@ def test_real_bubblewrap_runtime_mount_imports_cli_without_exposing_checkout(tmp
     assert visibility.ok, visibility.stderr_tail
     assert imported.ok, imported.stderr_tail
     assert analyze_imported.ok, analyze_imported.stderr_tail
-    assert imported.stdout_tail.strip() == runner.PINNED_GITNEXUS_VERSION
+    # The runtime the sandbox sees must be the one this checkout built —
+    # compared against the checkout itself rather than a constant, so a release
+    # bump cannot fail a benchmark that is running exactly what it should.
+    built = json.loads((runtime_mounts.HARNESS_ROOT / "gitnexus" / "package.json").read_text())
+    assert imported.stdout_tail.strip() == built["version"]
 
 
 def test_isolated_mcp_registry_contains_only_the_sandbox_clone(tmp_path):

@@ -144,7 +144,6 @@ from .runtime_mounts import (
     CE_ARMS,
     CePluginSnapshot,
     HARNESS_ROOT as HARNESS_ROOT,
-    PINNED_GITNEXUS_VERSION as PINNED_GITNEXUS_VERSION,
     ce_plugin_dir_for_arm,
     ce_plugin_mounts_for_arm,
     staged_ce_plugin_snapshot,

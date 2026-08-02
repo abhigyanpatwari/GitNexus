@@ -28,7 +28,6 @@ from .proposer_sandbox import (
     SandboxError,
 )
 
-PINNED_GITNEXUS_VERSION = "1.6.9"
 HARNESS_ROOT = Path(__file__).resolve().parents[2]
 
 CE_ARMS = frozenset({"ce_workflow", "ce_workflow_direct", "ce_review"})
@@ -233,11 +232,8 @@ def trusted_gitnexus_runtime_mounts() -> tuple[ReadOnlyMount, ...]:
         raise SandboxError(f"pinned GitNexus runtime metadata is invalid: {exc}") from exc
     if stat.S_ISLNK(entrypoint_mode) or not stat.S_ISREG(entrypoint_mode):
         raise SandboxError(f"pinned GitNexus runtime entrypoint must be regular and non-symlink: {entrypoint}")
-    if package.get("version") != PINNED_GITNEXUS_VERSION:
-        raise SandboxError(
-            "pinned GitNexus runtime version drifted: "
-            f"expected {PINNED_GITNEXUS_VERSION}, got {package.get('version')!r}"
-        )
+    if not isinstance(package.get("version"), str) or not package["version"]:
+        raise SandboxError("pinned GitNexus runtime package.json has no version")
 
     linked_shared = mounts[2].source / "gitnexus-shared"
     if not linked_shared.is_symlink() or linked_shared.resolve(strict=True) != shared:
