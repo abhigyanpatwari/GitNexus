@@ -3199,7 +3199,7 @@ export const queryFTS = async (
   const cypher = `
     CALL QUERY_FTS_INDEX('${tableName}', '${indexName}', $query, conjunctive := ${conjunctive})
     RETURN node, score
-    ORDER BY score DESC
+    ORDER BY score DESC, node.id
     LIMIT ${limit}
   `;
 

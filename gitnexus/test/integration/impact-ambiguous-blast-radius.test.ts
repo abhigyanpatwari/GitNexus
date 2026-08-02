@@ -205,3 +205,69 @@ withTestLbugDB(
     },
   },
 );
+
+/**
+ * #2787 — the resolver's LIMIT 20 window must be pinned by ORDER BY.
+ *
+ * 25 Functions share one name, seeded in DESCENDING id order. Without an
+ * ORDER BY, LadybugDB hands back the first 20 it scans (insertion order on a
+ * fixture this small, an arbitrary subset on a real index) — `collide-z25`
+ * down to `collide-z06`. With `ORDER BY n.id` it returns the 20 lowest ids,
+ * `collide-z01` through `collide-z20`. The two sets are disjoint on 10
+ * elements, so the exact-list assertion below distinguishes them.
+ *
+ * `context` is the observable surface, not `impact`: it returns every resolver
+ * candidate untruncated, while `impact` slices to AMBIGUOUS_MAX_CANDIDATES and
+ * re-sorts by blast radius, which would hide the window difference.
+ */
+const COLLIDE_COUNT = 25;
+const COLLIDE_IDS = Array.from(
+  { length: COLLIDE_COUNT },
+  (_, i) => `Function:src/z${String(i + 1).padStart(2, '0')}.ts:collide`,
+);
+
+withTestLbugDB(
+  'resolver-window-ordering-2787',
+  (handle) => {
+    let backend: LocalBackend;
+    beforeAll(() => {
+      backend = (handle as any)._backend;
+    });
+
+    it('returns the 20 lowest-id candidates, not an arbitrary window (#2787)', async () => {
+      const result = await backend.callTool('context', { name: 'collide' });
+
+      expect(result.status).toBe('ambiguous');
+      expect(result.message).toContain(`Found 20 symbols`);
+      expect((result.candidates as Array<{ uid: string }>).map((c) => c.uid)).toEqual(
+        COLLIDE_IDS.slice(0, 20),
+      );
+    });
+  },
+  {
+    // Descending: the highest id is inserted first, so an unordered scan that
+    // follows insertion order returns exactly the wrong half.
+    seed: [...COLLIDE_IDS]
+      .reverse()
+      .map(
+        (id, i) =>
+          `CREATE (:Function {id: '${id}', name: 'collide', filePath: 'src/z${String(COLLIDE_COUNT - i).padStart(2, '0')}.ts', startLine: 1, endLine: 3, isExported: true, content: '', description: ''})`,
+      ),
+    poolAdapter: true,
+    afterSetup: async (handle) => {
+      vi.mocked(listRegisteredRepos).mockResolvedValue([
+        {
+          name: 'test-repo',
+          path: '/test/repo',
+          storagePath: handle.tmpHandle.dbPath,
+          indexedAt: new Date().toISOString(),
+          lastCommit: 'abc123',
+          stats: { files: COLLIDE_COUNT, nodes: COLLIDE_COUNT, communities: 0, processes: 0 },
+        },
+      ]);
+      const backend = new LocalBackend();
+      await backend.init();
+      (handle as any)._backend = backend;
+    },
+  },
+);

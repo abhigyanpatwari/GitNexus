@@ -1334,6 +1334,7 @@ export const createServer = async (port: number, host: string = '127.0.0.1') => 
               MATCH (n:${nodeLabel} {id: $nid})
               MATCH (n)-[:CodeRelation {type: 'MEMBER_OF'}]->(c:Community)
               RETURN c.label AS label, c.description AS description
+              ORDER BY c.id
               LIMIT 1
             `,
                   { nid: nodeId },

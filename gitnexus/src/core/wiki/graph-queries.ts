@@ -184,6 +184,7 @@ export async function getInterModuleCallEdges(filePaths: string[]): Promise<{
     WHERE a.filePath IN [${fileList}] AND NOT b.filePath IN [${fileList}]
     RETURN DISTINCT a.filePath AS fromFile, a.name AS fromName,
            b.filePath AS toFile, b.name AS toName
+    ORDER BY fromFile, fromName, toFile, toName
     LIMIT 30
   `,
   );
@@ -195,6 +196,7 @@ export async function getInterModuleCallEdges(filePaths: string[]): Promise<{
     WHERE NOT a.filePath IN [${fileList}] AND b.filePath IN [${fileList}]
     RETURN DISTINCT a.filePath AS fromFile, a.name AS fromName,
            b.filePath AS toFile, b.name AS toName
+    ORDER BY fromFile, fromName, toFile, toName
     LIMIT 30
   `,
   );
@@ -232,7 +234,7 @@ export async function getProcessesForFiles(filePaths: string[], limit = 5): Prom
     WHERE s.filePath IN [${fileList}]
     RETURN DISTINCT p.id AS id, p.heuristicLabel AS label,
            p.processType AS type, p.stepCount AS stepCount
-    ORDER BY stepCount DESC
+    ORDER BY stepCount DESC, id
     LIMIT ${limit}
   `,
   );
@@ -281,7 +283,7 @@ export async function getAllProcesses(limit = 20): Promise<ProcessInfo[]> {
     MATCH (p:Process)
     RETURN p.id AS id, p.heuristicLabel AS label,
            p.processType AS type, p.stepCount AS stepCount
-    ORDER BY stepCount DESC
+    ORDER BY stepCount DESC, id
     LIMIT ${limit}
   `,
   );

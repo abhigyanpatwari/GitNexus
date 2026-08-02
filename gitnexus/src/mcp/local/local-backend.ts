@@ -1110,7 +1110,7 @@ export class LocalBackend {
       `MATCH (a:BasicBlock)-[r:CodeRelation]->(b:BasicBlock)
        WHERE r.type = 'REACHING_DEF' AND ${anchorClause}
        RETURN a.startLine AS defLine, b.startLine AS useLine, b.text AS useText, r.reason AS reason
-       ORDER BY useLine, defLine, reason
+       ORDER BY useLine, defLine, reason, a.id, b.id
        LIMIT ${limit + 1}`,
       queryParams,
     );
@@ -2231,8 +2231,14 @@ export class LocalBackend {
       }
     }
 
+    // Tiebreak on the key (#2787). `rrfScore` is `1 / (60 + i)` off the ARRAY
+    // POSITION of each hit, so equal scores are routine, and `Array.sort` is
+    // stable — ties would otherwise be resolved by Map insertion order, which
+    // is DB row order. The expansion queries feeding `bm25Results` are ordered
+    // now, so this is belt-and-braces; it also stops a future unordered query
+    // upstream from silently reintroducing the drift at the `slice` boundary.
     const merged = Array.from(scoreMap.entries())
-      .sort((a, b) => b[1].score - a[1].score)
+      .sort((a, b) => b[1].score - a[1].score || a[0].localeCompare(b[0]))
       .slice(0, searchLimit);
     timer.stop(); // merge
 
@@ -2291,6 +2297,7 @@ export class LocalBackend {
           MATCH (n)-[r:CodeRelation {type: 'STEP_IN_PROCESS'}]->(p:Process)
           WHERE n.id IN $nodeIds
           RETURN n.id AS nodeId, p.id AS pid, p.label AS label, p.heuristicLabel AS heuristicLabel, p.processType AS processType, p.stepCount AS stepCount, r.step AS step
+          ORDER BY nodeId, pid, step
         `,
           { nodeIds: ids },
         );
@@ -2308,6 +2315,11 @@ export class LocalBackend {
       // Cluster membership + cohesion. Keep the FIRST community row per node to
       // mirror the prior per-symbol `LIMIT 1` (each symbol keeps ITS community,
       // not one community for the whole batch).
+      //
+      // "First" only means something once the rows are ordered (#2787): a node
+      // can hold several MEMBER_OF edges, and the winner set `cohesion`, which
+      // feeds cohesionBoost -> priority -> the processes `slice` below. ORDER BY
+      // c.id makes the pick the lowest community id, every run.
       try {
         const rows = await executeParameterized(
           repo.lbugPath,
@@ -2315,6 +2327,7 @@ export class LocalBackend {
           MATCH (n)-[:CodeRelation {type: 'MEMBER_OF'}]->(c:Community)
           WHERE n.id IN $nodeIds
           RETURN n.id AS nodeId, c.cohesion AS cohesion, c.heuristicLabel AS module
+          ORDER BY nodeId, c.id
         `,
           { nodeIds: ids },
         );
@@ -2436,7 +2449,7 @@ export class LocalBackend {
         ...p,
         priority: p.totalScore + p.cohesionBoost * 0.1, // cohesion as subtle ranking signal
       }))
-      .sort((a, b) => b.priority - a.priority)
+      .sort((a, b) => b.priority - a.priority || a.id.localeCompare(b.id))
       .slice(0, processLimit);
     timer.stop(); // ranking
 
@@ -2659,6 +2672,7 @@ export class LocalBackend {
               MATCH (n)
               WHERE n.id IN $nodeIds
               RETURN n.id AS id, n.name AS name, labels(n)[0] AS type, n.filePath AS filePath, n.startLine AS startLine, n.endLine AS endLine
+              ORDER BY startLine, id
             `,
               { nodeIds },
             )
@@ -2673,6 +2687,7 @@ export class LocalBackend {
               WHERE n.filePath = $filePath
                 AND NOT n.id STARTS WITH 'BasicBlock:'
               RETURN n.id AS id, n.name AS name, labels(n)[0] AS type, n.filePath AS filePath, n.startLine AS startLine, n.endLine AS endLine
+              ORDER BY startLine, id
               LIMIT 3
             `,
               { filePath: fullPath },
@@ -3005,7 +3020,7 @@ export class LocalBackend {
         subCommunities: g.ids.length,
       }))
       .filter((c) => c.symbolCount >= 5)
-      .sort((a, b) => b.symbolCount - a.symbolCount);
+      .sort((a, b) => b.symbolCount - a.symbolCount || String(a.id).localeCompare(String(b.id)));
   }
 
   private async overview(
@@ -3032,7 +3047,7 @@ export class LocalBackend {
           `
           MATCH (c:Community)
           RETURN c.id AS id, c.label AS label, c.heuristicLabel AS heuristicLabel, c.cohesion AS cohesion, c.symbolCount AS symbolCount
-          ORDER BY c.symbolCount DESC
+          ORDER BY c.symbolCount DESC, c.id
           LIMIT ${rawLimit}
         `,
         );
@@ -3056,7 +3071,7 @@ export class LocalBackend {
           `
           MATCH (p:Process)
           RETURN p.id AS id, p.label AS label, p.heuristicLabel AS heuristicLabel, p.processType AS processType, p.stepCount AS stepCount
-          ORDER BY p.stepCount DESC
+          ORDER BY p.stepCount DESC, p.id
           LIMIT ${limit}
         `,
         );
@@ -3270,9 +3285,22 @@ export class LocalBackend {
 
     // LIMIT 20 (was 10) — scoring is the point now, so give the ranker
     // headroom instead of arbitrary truncation.
+    //
+    // ORDER BY n.id is load-bearing, not cosmetic (#2787). A bare `LIMIT`
+    // hands back an ARBITRARY subset when more nodes share the name than the
+    // cap (`constructor` = 92 in this repo's own index, `get` = 34), and
+    // LadybugDB picks a different subset from one process to the next — so
+    // `impact`/`context` resolved a different symbol on every invocation and
+    // the HIGH/CRITICAL warning the agent workflow depends on fired at random.
+    // `n.id` is the PRIMARY KEY on every node table: non-null, unique, and a
+    // total order. It is also the only viable key — `labels(n)[0]` comes back
+    // empty for Class nodes (see enrichCandidateLabels below), so ordering on
+    // the projected type would sort the HIGHEST-priority kind into the empty
+    // bucket. The caller re-sorts by score anyway, so this only has to pin
+    // WHICH 20 rows come back.
     const rows = await executeParameterized(
       repo.lbugPath,
-      `MATCH (n) ${whereClause} RETURN ${selectClause} LIMIT 20`,
+      `MATCH (n) ${whereClause} RETURN ${selectClause} ORDER BY n.id LIMIT 20`,
       queryParams,
     );
 
@@ -3318,9 +3346,18 @@ export class LocalBackend {
       if (ambiguousType) {
         const candidateIds = normalized.map((s) => s.id).filter(Boolean);
         for (const label of ['Class', 'Interface']) {
+          // ORDER BY id before LIMIT 1 (#2787). This probe is strictly more
+          // dangerous than the windowed query above: when two candidates share
+          // a name and both carry the label (same class name in two files —
+          // routine), an unordered LIMIT 1 picked one arbitrarily and this
+          // returned `kind: 'ok'` — a CONFIDENTLY WRONG answer that never
+          // reaches the scorer or the ambiguity report. It is also the only
+          // confident-resolution path a bare name can take: scoreCandidate
+          // tops out at 0.60 without a file_path hint, and the confident gate
+          // below needs >= 0.95.
           const labelRows = await executeParameterized(
             repo.lbugPath,
-            `MATCH (n:\`${label}\`) WHERE n.id IN $candidateIds RETURN n.id AS id LIMIT 1`,
+            `MATCH (n:\`${label}\`) WHERE n.id IN $candidateIds RETURN n.id AS id ORDER BY n.id LIMIT 1`,
             { candidateIds },
           ).catch(() => []);
           if (labelRows.length > 0) {
@@ -3468,6 +3505,7 @@ export class LocalBackend {
       MATCH (caller)-[r:CodeRelation]->(n {id: $symId})
       WHERE r.type IN ['CALLS', 'IMPORTS', 'EXTENDS', 'IMPLEMENTS', 'USES', 'HAS_METHOD', 'HAS_PROPERTY', 'METHOD_OVERRIDES', 'OVERRIDES', 'METHOD_IMPLEMENTS', 'ACCESSES']
       RETURN r.type AS relType, caller.id AS uid, caller.name AS name, caller.filePath AS filePath, labels(caller)[0] AS kind
+      ORDER BY relType, uid
       LIMIT 30
     `,
         { symId },
@@ -3475,11 +3513,15 @@ export class LocalBackend {
       // Keep high-fan-in advice edges out of the legacy 30-row context window.
       // A broad pointcut can advise hundreds of methods; sharing that LIMIT
       // would make CALLS/HAS_METHOD/etc. disappear nondeterministically.
+      // Splitting the window bounded that; ORDER BY finishes the job (#2787) —
+      // an unordered LIMIT still let the surviving 30 change per process, and
+      // these rows reach the response in query order via categorize().
       executeParameterized(
         repo.lbugPath,
         `
       MATCH (caller)-[r:CodeRelation {type: 'ADVISED_BY'}]->(n {id: $symId})
       RETURN r.type AS relType, caller.id AS uid, caller.name AS name, caller.filePath AS filePath, labels(caller)[0] AS kind
+      ORDER BY uid
       LIMIT 30
     `,
         { symId },
@@ -3531,6 +3573,7 @@ export class LocalBackend {
             MATCH (caller)-[r:CodeRelation]->(ctor)
             WHERE r.type IN ['CALLS', 'IMPORTS', 'EXTENDS', 'IMPLEMENTS', 'USES', 'ACCESSES']
             RETURN r.type AS relType, caller.id AS uid, caller.name AS name, caller.filePath AS filePath, labels(caller)[0] AS kind
+            ORDER BY relType, uid
             LIMIT 30
           `,
               { symId },
@@ -3543,6 +3586,7 @@ export class LocalBackend {
             MATCH (caller)-[r:CodeRelation]->(f)
             WHERE r.type IN ['CALLS', 'IMPORTS']
             RETURN r.type AS relType, caller.id AS uid, caller.name AS name, caller.filePath AS filePath, labels(caller)[0] AS kind
+            ORDER BY relType, uid
             LIMIT 30
           `,
               { symId },
@@ -3557,6 +3601,7 @@ export class LocalBackend {
             MATCH (caller)-[r:CodeRelation]->(p)
             WHERE r.type IN ['CALLS', 'IMPORTS', 'EXTENDS', 'IMPLEMENTS', 'USES', 'ACCESSES']
             RETURN r.type AS relType, caller.id AS uid, caller.name AS name, caller.filePath AS filePath, labels(caller)[0] AS kind
+            ORDER BY relType, uid
             LIMIT 30
           `,
               {
@@ -3574,6 +3619,7 @@ export class LocalBackend {
                OR p.declaredType CONTAINS $genericArg
             RETURN p.id AS uid, p.name AS name, p.filePath AS filePath, labels(p)[0] AS kind,
                    p.declaredType AS declaredType
+            ORDER BY uid
             LIMIT 30
           `,
               {
@@ -3611,6 +3657,7 @@ export class LocalBackend {
       MATCH (n {id: $symId})-[r:CodeRelation]->(target)
       WHERE r.type IN ['CALLS', 'IMPORTS', 'EXTENDS', 'IMPLEMENTS', 'USES', 'HAS_METHOD', 'HAS_PROPERTY', 'METHOD_OVERRIDES', 'OVERRIDES', 'METHOD_IMPLEMENTS', 'ACCESSES']
       RETURN r.type AS relType, target.id AS uid, target.name AS name, target.filePath AS filePath, labels(target)[0] AS kind
+      ORDER BY relType, uid
       LIMIT 30
     `,
         { symId },
@@ -3620,6 +3667,7 @@ export class LocalBackend {
         `
       MATCH (n {id: $symId})-[r:CodeRelation {type: 'ADVISED_BY'}]->(target)
       RETURN r.type AS relType, target.id AS uid, target.name AS name, target.filePath AS filePath, labels(target)[0] AS kind
+      ORDER BY uid
       LIMIT 30
     `,
         { symId },
@@ -3627,14 +3675,23 @@ export class LocalBackend {
     ]);
     outgoingRows.push(...outgoingAdvisedRows);
 
-    // Process participation
+    // Process participation.
+    //
+    // MIN(r.step) is not cosmetic (#2787): a symbol holds one STEP_IN_PROCESS
+    // edge PER STEP, so the un-aggregated form emitted one row per edge and
+    // `processes` reported an edge count, not a process count — inflated well
+    // past the repo's total flow count, and the only uncapped number in the
+    // response, which made it a loud fingerprint of whichever symbol the
+    // resolver happened to pick that run. _runImpactBFS's twin query already
+    // aggregates this way for exactly this reason.
     let processRows: any[] = [];
     try {
       processRows = await executeParameterized(
         repo.lbugPath,
         `
         MATCH (n {id: $symId})-[r:CodeRelation {type: 'STEP_IN_PROCESS'}]->(p:Process)
-        RETURN p.id AS pid, p.heuristicLabel AS label, r.step AS step, p.stepCount AS stepCount
+        RETURN p.id AS pid, p.heuristicLabel AS label, MIN(r.step) AS step, p.stepCount AS stepCount
+        ORDER BY pid
       `,
         { symId },
       );
@@ -4033,7 +4090,7 @@ export class LocalBackend {
           `${matchClause}
       RETURN a.filePath AS file, a.name AS sourceFn, a.startLine AS sourceLine,
              b.name AS sinkFn, b.startLine AS sinkLine, r.reason AS reason
-      ORDER BY sourceFn, sinkFn, reason
+      ORDER BY sourceFn, sinkFn, reason, a.id, b.id
       LIMIT ${limit}`,
           p,
         ),
@@ -4294,7 +4351,7 @@ export class LocalBackend {
         repo.lbugPath,
         `${matchClause}
       RETURN a.id AS srcId, a.startLine AS srcLine, b.startLine AS dstLine, b.text AS dstText, r.reason AS reason
-      ORDER BY srcId, dstLine, reason
+      ORDER BY srcId, dstLine, reason, b.id
       LIMIT ${limit}`,
         queryParams,
       ),
@@ -4413,6 +4470,7 @@ export class LocalBackend {
         MATCH (n)-[:CodeRelation {type: 'MEMBER_OF'}]->(c:Community)
         WHERE c.label = $clusterName OR c.heuristicLabel = $clusterName
         RETURN DISTINCT n.name AS name, labels(n)[0] AS type, n.filePath AS filePath
+        ORDER BY filePath, name, type
         LIMIT 30
       `,
         { clusterName: name },
@@ -4442,6 +4500,7 @@ export class LocalBackend {
         MATCH (p:Process)
         WHERE p.label = $processName OR p.heuristicLabel = $processName
         RETURN p.id AS id, p.label AS label, p.heuristicLabel AS heuristicLabel, p.processType AS processType, p.stepCount AS stepCount
+        ORDER BY id
         LIMIT 1
       `,
         { processName: name },
@@ -5098,6 +5157,14 @@ export class LocalBackend {
       const nextFrontier: string[] = [];
       // LadybugDB/Kuzu does not support a parameterized LIMIT, so the cap is
       // interpolated (it is a derived integer, not user input).
+      //
+      // The ORDER BY below is required for two separate reasons (#2787). When a
+      // level overflows `rowCap`, an unordered LIMIT decided WHICH neighbours
+      // survived per process — so the same trace(from, to) could return a path
+      // on one run and `no_path` on the next. And even with no truncation, the
+      // `parent` map below is first-writer-wins, so among several equal-length
+      // shortest paths the reported hops/edges (and `lastReached`) followed raw
+      // row order.
       const rowCap = Math.min(frontier.length * PER_NODE_FANOUT_CAP, ABS_ROW_CAP);
 
       const rows = await executeParameterized(
@@ -5107,6 +5174,7 @@ export class LocalBackend {
          RETURN n.id AS sourceId, m.id AS id, m.name AS name, labels(m)[0] AS type,
                 m.filePath AS filePath, m.startLine AS startLine,
                 r.type AS edgeType, r.confidence AS confidence
+         ORDER BY sourceId, id, edgeType
          LIMIT ${rowCap}`,
         { frontierIds: frontier, edgeTypes: TRAVERSAL_EDGE_TYPES },
       );
@@ -5855,6 +5923,7 @@ export class LocalBackend {
         `MATCH (x)-[r:CodeRelation]->(iface)
          WHERE x.id = $symId AND r.type IN $heritage
          RETURN DISTINCT iface.id AS id, iface.name AS name, labels(iface)[0] AS label
+         ORDER BY id
          LIMIT 25`,
         { symId, heritage: HERITAGE_TYPES },
       ).catch(() => []);
@@ -6155,10 +6224,19 @@ export class LocalBackend {
 
       // Batch frontier nodes into a single Cypher query per depth level.
       // ids/types/confidence are bound parameters (see above) — no interpolation.
+      //
+      // This level has no LIMIT, so `impactedCount` was already order-stable (a
+      // visited `Set`). ORDER BY still matters (#2787), because three downstream
+      // consumers read `impacted` POSITIONALLY: the relationType/confidence
+      // stamped on a node reached by more than one edge is the first row's; the
+      // process/module enrichment covers only `impacted.slice(0, MAX_CHUNKS *
+      // CHUNK_SIZE)` and feeds the risk thresholds; and byDepth pagination
+      // slices without re-sorting. Row order therefore leaked into `risk` and
+      // into which symbols the user sees.
       const query =
         direction === 'upstream'
-          ? `MATCH (caller)-[r:CodeRelation]->(n) WHERE n.id IN $frontierIds AND r.type IN $relTypes${confidenceFilter} RETURN n.id AS sourceId, caller.id AS id, caller.name AS name, labels(caller)[0] AS type, caller.filePath AS filePath, r.type AS relType, r.confidence AS confidence`
-          : `MATCH (n)-[r:CodeRelation]->(callee) WHERE n.id IN $frontierIds AND r.type IN $relTypes${confidenceFilter} RETURN n.id AS sourceId, callee.id AS id, callee.name AS name, labels(callee)[0] AS type, callee.filePath AS filePath, r.type AS relType, r.confidence AS confidence`;
+          ? `MATCH (caller)-[r:CodeRelation]->(n) WHERE n.id IN $frontierIds AND r.type IN $relTypes${confidenceFilter} RETURN n.id AS sourceId, caller.id AS id, caller.name AS name, labels(caller)[0] AS type, caller.filePath AS filePath, r.type AS relType, r.confidence AS confidence ORDER BY id, relType`
+          : `MATCH (n)-[r:CodeRelation]->(callee) WHERE n.id IN $frontierIds AND r.type IN $relTypes${confidenceFilter} RETURN n.id AS sourceId, callee.id AS id, callee.name AS name, labels(callee)[0] AS type, callee.filePath AS filePath, r.type AS relType, r.confidence AS confidence ORDER BY id, relType`;
 
       try {
         const related = await executeParameterized(repo.lbugPath, query, {
@@ -6424,7 +6502,12 @@ export class LocalBackend {
           earliest_broken_step:
             ep.earliest_broken_step === Infinity ? null : ep.earliest_broken_step,
         }))
-        .sort((a, b) => b.total_hits - a.total_hits);
+        .sort(
+          (a, b) =>
+            b.total_hits - a.total_hits ||
+            a.filePath.localeCompare(b.filePath) ||
+            a.name.localeCompare(b.name),
+        );
 
       // Per-symbol process membership is populated post-pagination (see below)
       // so it covers exactly the symbols returned in byDepth, not a pre-capped
@@ -6453,7 +6536,7 @@ export class LocalBackend {
             MATCH (s)-[:CodeRelation {type: 'MEMBER_OF'}]->(c:Community)
             WHERE s.id IN $ids
             RETURN c.heuristicLabel AS name, COUNT(DISTINCT s.id) AS hits
-            ORDER BY hits DESC
+            ORDER BY hits DESC, name
             LIMIT 20
           `,
             { ids: idsChunk },
@@ -6506,7 +6589,7 @@ export class LocalBackend {
       // Build final moduleRows array from aggregated hits map, sorted & limited
       const moduleRows = Array.from(moduleHitsMap.entries())
         .map(([name, hits]) => ({ name, hits }))
-        .sort((a, b) => b.hits - a.hits)
+        .sort((a, b) => b.hits - a.hits || String(a.name).localeCompare(String(b.name)))
         .slice(0, 20);
 
       const directModuleRows = Array.from(directModuleSet).map((name) => ({ name }));
@@ -7495,7 +7578,7 @@ export class LocalBackend {
         `
         MATCH (c:Community)
         RETURN c.id AS id, c.label AS label, c.heuristicLabel AS heuristicLabel, c.cohesion AS cohesion, c.symbolCount AS symbolCount
-        ORDER BY c.symbolCount DESC
+        ORDER BY c.symbolCount DESC, c.id
         LIMIT ${rawLimit}
       `,
       );
@@ -7526,7 +7609,7 @@ export class LocalBackend {
         `
         MATCH (p:Process)
         RETURN p.id AS id, p.label AS label, p.heuristicLabel AS heuristicLabel, p.processType AS processType, p.stepCount AS stepCount
-        ORDER BY p.stepCount DESC
+        ORDER BY p.stepCount DESC, p.id
         LIMIT ${limit}
       `,
       );
@@ -7585,6 +7668,7 @@ export class LocalBackend {
       MATCH (n)-[:CodeRelation {type: 'MEMBER_OF'}]->(c:Community)
       WHERE c.label = $clusterName OR c.heuristicLabel = $clusterName
       RETURN DISTINCT n.name AS name, labels(n)[0] AS type, n.filePath AS filePath
+      ORDER BY filePath, name, type
       LIMIT 30
     `,
       { clusterName: name },
@@ -7621,6 +7705,7 @@ export class LocalBackend {
       MATCH (p:Process)
       WHERE p.label = $processName OR p.heuristicLabel = $processName
       RETURN p.id AS id, p.label AS label, p.heuristicLabel AS heuristicLabel, p.processType AS processType, p.stepCount AS stepCount
+      ORDER BY id
       LIMIT 1
     `,
       { processName: name },

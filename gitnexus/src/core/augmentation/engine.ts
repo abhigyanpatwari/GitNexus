@@ -132,6 +132,7 @@ export async function augment(pattern: string, cwd?: string): Promise<string> {
           MATCH (n) WHERE n.filePath = '${escaped}'
           AND n.name CONTAINS '${patternFirstWord}'
           RETURN n.id AS id, n.name AS name, labels(n)[0] AS type, n.filePath AS filePath
+          ORDER BY id
           LIMIT 3
         `,
         );
@@ -158,6 +159,7 @@ export async function augment(pattern: string, cwd?: string): Promise<string> {
         MATCH (n)
         WHERE n.name CONTAINS '${patternFirstWord}'
         RETURN n.id AS id, n.name AS name, labels(n)[0] AS type, n.filePath AS filePath
+        ORDER BY id
         LIMIT 5
       `,
       ).catch(() => []);
@@ -193,6 +195,7 @@ export async function augment(pattern: string, cwd?: string): Promise<string> {
         MATCH (caller)-[:CodeRelation {type: 'CALLS'}]->(n)
         WHERE n.id IN [${idList}]
         RETURN n.id AS targetId, caller.name AS name
+        ORDER BY targetId, caller.id
         LIMIT 15
       `,
       );
@@ -217,6 +220,7 @@ export async function augment(pattern: string, cwd?: string): Promise<string> {
         MATCH (n)-[:CodeRelation {type: 'CALLS'}]->(callee)
         WHERE n.id IN [${idList}]
         RETURN n.id AS sourceId, callee.name AS name
+        ORDER BY sourceId, callee.id
         LIMIT 15
       `,
       );

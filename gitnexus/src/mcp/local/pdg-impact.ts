@@ -1323,6 +1323,7 @@ async function bfsReachableBlocks(input: {
       `MATCH (a:BasicBlock)-[r:CodeRelation]->(b:BasicBlock)
          WHERE r.type IN ['CDG', 'REACHING_DEF'] AND ${matchEndpoint}.id IN $frontier
          RETURN DISTINCT ${collectEndpoint}.id AS id
+         ORDER BY id
          LIMIT ${probeLimit}`,
       { frontier },
     );
@@ -1672,7 +1673,7 @@ async function interproceduralDescent(input: {
         const { anchorClause, queryParams } = blockAnchorForResolvedSymbol(span);
         const rawSeedRows = await exec(
           lbugPath,
-          `MATCH (a:BasicBlock) WHERE ${anchorClause} RETURN a.id AS id LIMIT ${probeLimit}`,
+          `MATCH (a:BasicBlock) WHERE ${anchorClause} RETURN a.id AS id ORDER BY a.startLine, id LIMIT ${probeLimit}`,
           queryParams,
         );
         const exceeded = rawSeedRows.length > stepLimit;
@@ -1841,7 +1842,7 @@ export async function runImpactPDG(deps: RunPdgImpactDeps): Promise<PdgImpactRes
   const probeLimit = stepLimit + 1;
   const rawSeedRows = await exec(
     repo.lbugPath,
-    `MATCH (a:BasicBlock) WHERE ${anchorClause} RETURN a.id AS id LIMIT ${probeLimit}`,
+    `MATCH (a:BasicBlock) WHERE ${anchorClause} RETURN a.id AS id ORDER BY a.startLine, id LIMIT ${probeLimit}`,
     queryParams,
   );
   const seedRows = rawSeedRows.slice(0, stepLimit) as Array<Record<string, unknown>>;

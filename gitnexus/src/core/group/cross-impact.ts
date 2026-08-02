@@ -448,7 +448,12 @@ export async function resolveBridgeNeighbors(
     const n = rowToNeighbor(raw);
     if (n) neighbors.push(n);
   }
-  neighbors.sort((a, b) => b.confidence - a.confidence);
+  neighbors.sort(
+    (a, b) =>
+      b.confidence - a.confidence ||
+      a.neighborRepo.localeCompare(b.neighborRepo) ||
+      a.neighborUid.localeCompare(b.neighborUid),
+  );
   return neighbors;
 }
 

@@ -938,6 +938,69 @@ describe('LocalBackend.callTool', () => {
     expect(result.candidates[0].score).toBeGreaterThanOrEqual(result.candidates[1].score);
   });
 
+  // #2787 — LadybugDB returns an ARBITRARY subset when a LIMIT has no ORDER BY,
+  // and a different subset from one process to the next. With 92 nodes named
+  // `constructor` in this repo's own index, the resolver's LIMIT 20 window
+  // moved every run, so `impact`/`context` resolved a different symbol each
+  // time and the HIGH/CRITICAL warning the agent workflow relies on fired at
+  // random. These assert the emitted SQL, which is the only shape that fails
+  // deterministically — a run-N-times-and-compare test would pass by luck at
+  // the ~5-8% flip rate actually measured.
+  const resolverQueriesFor = async (params: Record<string, unknown>): Promise<string[]> => {
+    (executeParameterized as any).mockClear();
+    (executeParameterized as any).mockResolvedValue([]);
+    await backend.callTool('context', params);
+    return (executeParameterized as any).mock.calls
+      .map((c: unknown[]) => String(c[1]))
+      .filter((q: string) => q.includes('$symName'));
+  };
+
+  it('resolver window is pinned by ORDER BY n.id — bare name (#2787)', async () => {
+    const queries = await resolverQueriesFor({ name: 'main' });
+    expect(queries).toHaveLength(1);
+    expect(queries[0]).toMatch(/ORDER BY n\.id LIMIT 20/);
+  });
+
+  it('resolver window is pinned by ORDER BY n.id — file_path hint (#2787)', async () => {
+    const queries = await resolverQueriesFor({ name: 'main', file_path: 'src/a.ts' });
+    expect(queries).toHaveLength(1);
+    expect(queries[0]).toMatch(/ORDER BY n\.id LIMIT 20/);
+  });
+
+  it('resolver window is pinned by ORDER BY n.id — qualified name (#2787)', async () => {
+    const queries = await resolverQueriesFor({ name: 'src/a.ts:main' });
+    expect(queries).toHaveLength(1);
+    expect(queries[0]).toMatch(/ORDER BY n\.id LIMIT 20/);
+  });
+
+  it('no multi-row LIMIT on the context path is left unordered (#2787)', async () => {
+    (executeParameterized as any).mockClear();
+    (executeParameterized as any).mockResolvedValue([
+      {
+        id: 'Class:src/a.ts:Widget',
+        name: 'Widget',
+        type: 'Class',
+        filePath: 'src/a.ts',
+        startLine: 1,
+        endLine: 9,
+      },
+    ]);
+    await backend.callTool('context', { name: 'Widget' });
+    const captured: string[] = (executeParameterized as any).mock.calls.map((c: unknown[]) =>
+      String(c[1]),
+    );
+    // Guard against a vacuous pass: a resolver that bailed early would capture
+    // one query and satisfy the invariant below trivially.
+    expect(captured.length).toBeGreaterThan(1);
+    // `LIMIT 1` anchored on a unique id is a singleton lookup, not a window —
+    // which rows come back cannot vary. Every other cap must be ordered.
+    const unordered = captured
+      .filter((q) => /\bLIMIT\s+\d+/.test(q))
+      .filter((q) => !/LIMIT\s+1\b/.test(q))
+      .filter((q) => !/ORDER BY/.test(q));
+    expect(unordered).toEqual([]);
+  });
+
   it('context tool ranks file_path match higher than non-match (#470)', async () => {
     (executeParameterized as any).mockResolvedValue([
       {

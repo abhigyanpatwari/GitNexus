@@ -257,7 +257,7 @@ RETURN consumer.symbolUid AS consumerUid,
        l.confidence AS confidence,
        l.contractId AS contractId,
        consumer.type AS contractType
-ORDER BY l.confidence DESC
+ORDER BY l.confidence DESC, contractId, consumerUid, providerUid
 LIMIT ${MAX_CROSSINGS_TO_TRY + 1}
 `;
 
@@ -279,7 +279,7 @@ RETURN consumer.symbolUid AS consumerUid,
        l.confidence AS confidence,
        l.contractId AS contractId,
        consumer.type AS contractType
-ORDER BY l.confidence DESC
+ORDER BY l.confidence DESC, contractId, consumerUid, providerUid
 LIMIT ${MAX_CROSSINGS_TO_TRY + 1}
 `;
 
@@ -337,7 +337,12 @@ async function listCrossingsBetween(
   }
   // The query already orders by confidence DESC; re-sort defensively so the cap
   // keeps the strongest candidates even if a tuple-mode driver reorders rows.
-  all.sort((a, b) => b.confidence - a.confidence);
+  all.sort(
+    (a, b) =>
+      b.confidence - a.confidence ||
+      a.contractId.localeCompare(b.contractId) ||
+      a.consumerUid.localeCompare(b.consumerUid),
+  );
   const truncated = all.length > MAX_CROSSINGS_TO_TRY;
   return {
     crossings: truncated ? all.slice(0, MAX_CROSSINGS_TO_TRY) : all,
@@ -375,7 +380,12 @@ async function listCrossingsFrom(
     const c = destRowToCrossing(raw);
     if (c) all.push(c);
   }
-  all.sort((a, b) => b.confidence - a.confidence);
+  all.sort(
+    (a, b) =>
+      b.confidence - a.confidence ||
+      a.contractId.localeCompare(b.contractId) ||
+      a.consumerUid.localeCompare(b.consumerUid),
+  );
   const truncated = all.length > MAX_CROSSINGS_TO_TRY;
   return {
     crossings: truncated ? all.slice(0, MAX_CROSSINGS_TO_TRY) : all,
