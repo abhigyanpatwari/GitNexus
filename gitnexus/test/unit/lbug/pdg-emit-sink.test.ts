@@ -95,7 +95,7 @@ describe('PdgEmitSink — routing', () => {
       reason: 'seq',
     };
     expect(() => sink.addRelationship(undeclared)).toThrow(
-      /Relationship label pair Static→Static is not declared/,
+      /Relationship label pair Static → Static is not declared/,
     );
   });
 
