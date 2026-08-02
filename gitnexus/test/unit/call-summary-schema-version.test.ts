@@ -73,12 +73,12 @@ describe('CALL_SUMMARY relation-type exclusion (U-C1)', () => {
 });
 
 describe('CALL_SUMMARY incremental reuse gate (U-C5)', () => {
-  it('INCREMENTAL_SCHEMA_VERSION is bumped to 34 (Spring AOP relation pairs #2416, then receiver-chain wire format v2)', () => {
+  it('INCREMENTAL_SCHEMA_VERSION is bumped to 35 (receiver-chain wire format v2, then the full scope-resolution relation cross product #2792)', () => {
     // Moves with every bump BY DESIGN — that is the point of pinning it. A
     // change that alters emitted ids or edges without bumping would otherwise
     // ship silently, and an existing index would keep serving the old graph
     // through the reuse gate below.
-    expect(INCREMENTAL_SCHEMA_VERSION).toBe(34);
+    expect(INCREMENTAL_SCHEMA_VERSION).toBe(35);
   });
 
   it('a pre-current stamp fails the `=== INCREMENTAL_SCHEMA_VERSION` reuse gate → forces full re-analyze', () => {
@@ -223,7 +223,11 @@ describe('CALL_SUMMARY incremental reuse gate (U-C5)', () => {
     // would silently fall back to the text cascade for every chain-carrying
     // site → must NOT reuse.
     expect(passesReuseGate(33)).toBe(false);
+    // A pre-v35 (v34) index was created against a relation DDL missing 99 of the
+    // scope-resolution FROM/TO pairs (#2792) — LadybugDB fixes endpoint pairs at
+    // CREATE time, so those edges cannot be written into it at all.
+    expect(passesReuseGate(34)).toBe(false);
     // The current stamp passes the gate (incremental top-up eligible).
-    expect(passesReuseGate(34)).toBe(true);
+    expect(passesReuseGate(35)).toBe(true);
   });
 });

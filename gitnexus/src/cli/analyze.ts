@@ -15,6 +15,8 @@ import v8 from 'v8';
 import cliProgress from 'cli-progress';
 import { isLbugReady, LbugWipeError } from '../core/lbug/lbug-adapter.js';
 import { boundedCheckpointBeforeExit } from '../core/lbug/shutdown-helpers.js';
+import { findUndeclaredRelationPairError } from '../core/lbug/rel-pair-routing.js';
+import { causeChain } from '../lib/utils.js';
 import {
   getOsPageSize,
   isLbugCheckpointIoError,
@@ -101,15 +103,13 @@ const writeFatalToStderr = (label: string, err: unknown): void => {
   // #2068) is only reachable via `.cause`. Without this the user sees the
   // wrapper's main-thread stack and never the real frame. `cause.stack` already
   // begins with the cause's message, so we print the stack alone (not message +
-  // stack) to avoid repeating it. Depth-bounded so a cyclic `cause` can't loop
-  // (the phase runner wraps one level; the bound leaves headroom for future
-  // nesting); uses realStderrWrite so the redirected console.error's ANSI
-  // clear-line wrapping can't erase it (#1169).
-  const MAX_CAUSE_DEPTH = 5;
-  let cause: unknown = isErr ? (err as { cause?: unknown }).cause : undefined;
-  for (let depth = 0; depth < MAX_CAUSE_DEPTH && cause instanceof Error; depth++) {
+  // stack) to avoid repeating it. `causeChain` owns the traversal and the depth
+  // bound that stops a cyclic `cause` looping — this used to be one of four
+  // hand-rolled copies that had already drifted apart on both. Uses
+  // realStderrWrite so the redirected console.error's ANSI clear-line wrapping
+  // can't erase it (#1169). The head is skipped: it was just printed above.
+  for (const cause of causeChain(isErr ? (err as { cause?: unknown }).cause : undefined)) {
     realStderrWrite(`\n  Caused by: ${cause.stack ?? cause.message}\n`);
-    cause = (cause as { cause?: unknown }).cause;
   }
 };
 
@@ -1713,6 +1713,36 @@ const analyzeCommandImpl = async (
           `    3. If the failure persists, run with NODE_OPTIONS="--max-old-space-size=8192 --trace-exit"\n` +
           `       and attach the trace to the GitNexus issue tracker.\n\n`,
       );
+      process.exitCode = 1;
+      return;
+    }
+
+    // An extracted edge whose FROM→TO label pair is missing from GitNexus's own
+    // relation DDL (#2789). `assertDeclaredPair` aborts the run rather than let
+    // the bulk COPY fail late and silently drop the edge, so the user sees a
+    // mid-run crash inside GitNexus internals with nothing to act on. Name the
+    // pair, the relationship and the file that produced it, and say plainly that
+    // a re-run cannot help — this is deterministic for the same input.
+    // Checked by TYPE (repo norm, #2385) BEFORE the message-text heuristics
+    // below, and through the `cause` chain because the ingestion phase runner
+    // rewraps every phase failure as `Phase 'X' failed: …`.
+    const undeclaredPair = findUndeclaredRelationPairError(err);
+    if (undeclaredPair !== undefined) {
+      // Render the error's OWN message indented — same idiom as the
+      // `LbugWipeError` and page-size branches below. `UndeclaredRelationPairError`
+      // builds a fully self-contained message (pair, relationship type, both node
+      // ids, source file, issue URL, `.gitnexusignore` workaround) precisely
+      // because `gitnexus serve` forwards only `err.message` over worker IPC.
+      // Re-rendering those fields here would be a second copy of one string, free
+      // to drift from the first — and the actionable half would reach CLI users
+      // only. `undeclaredPair.message`, not the outer `msg`: the real error may be
+      // several `cause` levels below the phase wrapper `msg` came from.
+      cliError(`  ${undeclaredPair.message.replace(/\n/g, '\n  ')}\n`, {
+        recoveryHint: 'undeclared-relation-pair',
+        labelPair: undeclaredPair.pairKey,
+        relationType: undeclaredPair.relationType,
+        sourceFile: undeclaredPair.sourceFile,
+      });
       process.exitCode = 1;
       return;
     }

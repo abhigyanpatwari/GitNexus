@@ -244,38 +244,53 @@ export function buildGraphNodeLookup(graph: KnowledgeGraph): GraphNodeLookup {
   return lookup;
 }
 
+/**
+ * Every label {@link buildGraphNodeLookup} registers — and therefore the ONLY
+ * labels `resolveDefGraphId` can ever return an id for. Both endpoints of every
+ * scope-resolution edge come from that lookup (the one exception is the File
+ * fallback in `resolveCallerGraphId`), so this set defines the whole FROM/TO
+ * surface those edges can produce.
+ *
+ * That makes it load-bearing for the LadybugDB relation DDL: a label added here
+ * without the matching `FROM x TO y` pairs in `RELATION_SCHEMA` crashes
+ * `analyze` at `assertDeclaredPair` on whichever codebase first emits the pair
+ * (#2792). `test/unit/schema-pair-coverage.test.ts` derives the required pairs
+ * from this set and fails in CI instead.
+ */
+export const LINKABLE_LABELS: ReadonlySet<NodeLabel> = new Set<NodeLabel>([
+  'Function',
+  'Method',
+  'Constructor',
+  // Program-like module declarations are provider-gated callable-value
+  // targets and need the same def→graph bridge.
+  'Module',
+  'Class',
+  'Interface',
+  'Struct',
+  'Enum',
+  // Trait nodes are linkable so MRO builders can bridge PHP/Rust trait
+  // defs between scope-resolution DefIds and the graph's node ids.
+  // IMPLEMENTS edges from classes to traits are otherwise invisible to
+  // the scope-resolution MRO pass.
+  'Trait',
+  // Variable / Property are linkable too — receiver-bound write/read
+  // ACCESSES edges target field nodes (e.g. `user.name = "x"` →
+  // ACCESSES edge to User's `name` Variable/Property node).
+  'Variable',
+  'Property',
+  // Const is linkable so the value-receiver-owner bridge in
+  // `receiver-bound-calls.ts` Case 5 can translate the scope-resolution
+  // `Variable` def for `export const fooService = {...}` to the canonical
+  // `Const:filePath:name` graph node id, against which object-literal
+  // method symbols register their `ownerId` (PR #1718 / issue #1358).
+  'Const',
+  // Macro nodes are linkable so a macro invocation (`log!(…)`) resolved
+  // via `MacroRegistry` can bridge its scope-resolution `Macro` def to
+  // the legacy `@definition.macro` graph node and emit the `USES` edge
+  // (Rust #1934 F72; also covers C/C++ `#define` macro defs).
+  'Macro',
+]);
+
 export function isLinkableLabel(label: NodeLabel): boolean {
-  return (
-    label === 'Function' ||
-    label === 'Method' ||
-    label === 'Constructor' ||
-    // Program-like module declarations are provider-gated callable-value
-    // targets and need the same def→graph bridge.
-    label === 'Module' ||
-    label === 'Class' ||
-    label === 'Interface' ||
-    label === 'Struct' ||
-    label === 'Enum' ||
-    // Trait nodes are linkable so MRO builders can bridge PHP/Rust trait
-    // defs between scope-resolution DefIds and the graph's node ids.
-    // IMPLEMENTS edges from classes to traits are otherwise invisible to
-    // the scope-resolution MRO pass.
-    label === 'Trait' ||
-    // Variable / Property are linkable too — receiver-bound write/read
-    // ACCESSES edges target field nodes (e.g. `user.name = "x"` →
-    // ACCESSES edge to User's `name` Variable/Property node).
-    label === 'Variable' ||
-    label === 'Property' ||
-    // Const is linkable so the value-receiver-owner bridge in
-    // `receiver-bound-calls.ts` Case 5 can translate the scope-resolution
-    // `Variable` def for `export const fooService = {...}` to the canonical
-    // `Const:filePath:name` graph node id, against which object-literal
-    // method symbols register their `ownerId` (PR #1718 / issue #1358).
-    label === 'Const' ||
-    // Macro nodes are linkable so a macro invocation (`log!(…)`) resolved
-    // via `MacroRegistry` can bridge its scope-resolution `Macro` def to
-    // the legacy `@definition.macro` graph node and emit the `USES` edge
-    // (Rust #1934 F72; also covers C/C++ `#define` macro defs).
-    label === 'Macro'
-  );
+  return LINKABLE_LABELS.has(label);
 }
