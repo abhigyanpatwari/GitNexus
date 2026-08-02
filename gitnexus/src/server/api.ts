@@ -35,7 +35,12 @@ import {
   isReadOnlyDbError,
 } from '../core/lbug/lbug-adapter.js';
 import { isValidQueryParams } from '../core/lbug/query-params.js';
-import { NODE_TABLES, type GraphNode, type GraphRelationship } from 'gitnexus-shared';
+import {
+  NODE_TABLES,
+  EMBEDDING_TABLE_NAME,
+  type GraphNode,
+  type GraphRelationship,
+} from 'gitnexus-shared';
 import { searchFTSFromLbug } from '../core/search/bm25-index.js';
 import { hybridSearch } from '../core/search/hybrid-search.js';
 import { ftsDegradedWarning } from '../core/search/fts-indexes.js';
@@ -825,6 +830,67 @@ export const resolveEmbedRunOutcome = (
       'pending — run embedding generation again to retry exactly those nodes.',
   };
 };
+
+/**
+ * Count the embedding rows actually persisted, for the `stats.embeddings` the
+ * /api/embed meta writes stamp. Mirrors run-analyze.ts's counter (same query,
+ * same tri-state) — the CLI and the server publish the SAME field, so they must
+ * measure it the same way.
+ *
+ * TRI-STATE: a real number, or `undefined` ≡ COULD NOT ASK. The query throws
+ * for reasons unrelated to how many rows were written (table missing,
+ * connection closed, DB busy/read-only, the VECTOR-extension DML lock #2623),
+ * and a non-numeric cell is the same class of unknown — `Number()` yields NaN.
+ * A MISSING cell counts as unknown too, not 0: an empty table still answers
+ * with a row holding 0, so no row / no cell means the answer never arrived.
+ * Never a fabricated 0: see `withMeasuredEmbeddingCount`.
+ *
+ * Exported for unit tests, mirroring resolveEmbedRunOutcome above.
+ */
+export const measurePersistedEmbeddingCount = async (
+  runQuery: (cypher: string) => Promise<Array<Record<string, unknown>> | undefined>,
+): Promise<number | undefined> => {
+  try {
+    const rows = await runQuery(`MATCH (e:${EMBEDDING_TABLE_NAME}) RETURN count(e) AS cnt`);
+    const row = rows?.[0];
+    const parsed = Number(row?.cnt ?? row?.[0] ?? Number.NaN);
+    if (Number.isFinite(parsed)) return parsed;
+    logger.warn(
+      '[embed] persisted-embedding count query returned a non-numeric result; ' +
+        'leaving stats.embeddings untouched',
+    );
+    return undefined;
+  } catch (err) {
+    logger.warn(
+      { err: err instanceof Error ? err.message : String(err) },
+      '[embed] could not count persisted embeddings; leaving stats.embeddings untouched',
+    );
+    return undefined;
+  }
+};
+
+/**
+ * Fold a MEASURED embedding count into the meta /api/embed is about to save.
+ *
+ * The /api/embed count omission: this route generated embeddings and wrote
+ * `embeddingCheckpoint`, but never `stats.embeddings` — so a repo embedded
+ * purely through the server kept whatever count the last CLI `analyze` stamped
+ * (0 for a repo analyzed without embeddings). The next CLI run reads that as
+ * `existingEmbeddingCount`, `deriveEmbeddingMode` sees `hasExisting: false` and
+ * returns `shouldLoadCache: false`, and `analyze --force` then wipes the DB
+ * without loading the cache — silently destroying every server-generated
+ * embedding.
+ *
+ * `undefined` ≡ not measured: leave the previous value alone rather than
+ * publish a fabricated 0. Wrong-LOW is the dangerous direction — a false 0 is
+ * exactly what triggers the wipe above (same reasoning as run-analyze.ts's
+ * `persistedEmbeddingCount`).
+ */
+export const withMeasuredEmbeddingCount = (
+  meta: RepoMeta,
+  embeddings: number | undefined,
+): RepoMeta =>
+  embeddings === undefined ? meta : { ...meta, stats: { ...meta.stats, embeddings } };
 
 export const createServer = async (port: number, host: string = '127.0.0.1') => {
   // Surface a cleartext Azure DevOps PAT config at boot (operators rarely
@@ -1878,6 +1944,7 @@ export const createServer = async (port: number, host: string = '127.0.0.1') => 
                   chunksProcessed: number;
                 },
                 pendingNodeIds: string[],
+                embeddings?: number,
               ): Promise<void> => {
                 // tri-review NEW-2: re-read immediately before writing (mirrors
                 // the pattern in run-analyze.ts's --repair-fts stamp) instead of
@@ -1887,15 +1954,24 @@ export const createServer = async (port: number, host: string = '127.0.0.1') => 
                 // --repair-fts capability stamp) would be silently reverted on
                 // every checkpoint save for the job's whole lifetime.
                 const latestMeta = (await loadMeta(entry.storagePath)) ?? embeddingMeta;
-                embeddingMeta = {
-                  ...latestMeta,
-                  embeddingCheckpoint: {
-                    at: new Date().toISOString(),
-                    ...checkpoint,
-                    ...embeddingIdentity,
-                    pendingNodeIds,
+                // `stats.embeddings` only moves when the caller MEASURED the
+                // live count (the post-flush `onCheckpoint`). The window-start
+                // callback measures nothing and passes nothing: restating the
+                // old count there would re-publish a stale number and clobber
+                // what a preceding `onCheckpoint` just wrote (same split as
+                // run-analyze.ts's checkpoint writer).
+                embeddingMeta = withMeasuredEmbeddingCount(
+                  {
+                    ...latestMeta,
+                    embeddingCheckpoint: {
+                      at: new Date().toISOString(),
+                      ...checkpoint,
+                      ...embeddingIdentity,
+                      pendingNodeIds,
+                    },
                   },
-                };
+                  embeddings,
+                );
                 await saveMeta(entry.storagePath, embeddingMeta);
               };
               // Fetch existing content hashes for incremental embedding.
@@ -1939,8 +2015,14 @@ export const createServer = async (port: number, host: string = '127.0.0.1') => 
                     await saveEmbeddingCheckpoint(checkpoint, nodeIds);
                   },
                   onCheckpoint: async (checkpoint) => {
+                    // Count AFTER the flush, so the number describes rows that
+                    // are durable rather than rows still pending in the WAL.
                     await flushWAL();
-                    await saveEmbeddingCheckpoint(checkpoint, []);
+                    await saveEmbeddingCheckpoint(
+                      checkpoint,
+                      [],
+                      await measurePersistedEmbeddingCount(executeQuery),
+                    );
                   },
                 },
               );
@@ -1950,11 +2032,21 @@ export const createServer = async (port: number, host: string = '127.0.0.1') => 
               // handles this during process exit, but the server keeps the
               // connection open for other routes — a CHECKPOINT is enough.
               await flushWAL();
+              // Measure inside withLbugDb, after the flush and while the
+              // connection is still open — this is the route's only chance to
+              // stamp `stats.embeddings`, and the next CLI run's decision to
+              // preserve or wipe these embeddings hangs on it (see
+              // withMeasuredEmbeddingCount). A partial run gets the same stamp:
+              // an honest count of a partial index is what makes it survivable.
+              const measuredEmbeddings = await measurePersistedEmbeddingCount(executeQuery);
               const outcome = resolveEmbedRunOutcome(embeddingIdentity, pipelineResult);
               partialRunError = outcome.error;
               // Same re-read-before-write reasoning as saveEmbeddingCheckpoint above.
               const finalMeta = (await loadMeta(entry.storagePath)) ?? embeddingMeta;
-              embeddingMeta = { ...finalMeta, embeddingCheckpoint: outcome.checkpoint };
+              embeddingMeta = withMeasuredEmbeddingCount(
+                { ...finalMeta, embeddingCheckpoint: outcome.checkpoint },
+                measuredEmbeddings,
+              );
               await saveMeta(entry.storagePath, embeddingMeta);
             });
 
