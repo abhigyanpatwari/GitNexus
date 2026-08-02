@@ -11,7 +11,10 @@
 
 // Import from shared package (single source of truth) — used in DDL templates below
 import { NODE_TABLES, REL_TABLE_NAME, REL_TYPES, EMBEDDING_TABLE_NAME } from 'gitnexus-shared';
+import type { NodeLabel, NodeTableName } from 'gitnexus-shared';
 import { parseRelationSchemaPairs } from './rel-pair-routing.js';
+import { LINKABLE_LABELS } from '../ingestion/scope-resolution/graph-bridge/node-lookup.js';
+import { CALL_TARGET_TYPES } from '../ingestion/model/symbol-table.js';
 // Re-export so downstream consumers keep the same import path
 export { NODE_TABLES, REL_TABLE_NAME, REL_TYPES, EMBEDDING_TABLE_NAME };
 export type { NodeTableName, RelType } from 'gitnexus-shared';
@@ -254,151 +257,209 @@ CREATE NODE TABLE BasicBlock (
  * CALLS / ACCESSES / USES / EXTENDS edge: everything `buildGraphNodeLookup`
  * registers (`LINKABLE_LABELS`), plus the `File` node `resolveCallerGraphId`
  * falls back to for a module-level call site.
+ *
+ * Imported from the ingestion layer, NOT re-listed here: a hand-copied twin is
+ * pure drift risk, since a label added to it (or dropped from the original) is
+ * invisible to every guard. `csv-generator.ts` and `lbug-adapter.ts`, both
+ * siblings in this directory, already import from `../ingestion/`.
+ *
+ * The cost is that importing this module pulls five ingestion modules into the
+ * runtime closure. `gitnexus-web` does not depend on this package at all (only
+ * on `gitnexus-shared`), so nothing here reaches a browser bundle. The MCP
+ * server still pays it, though: `local-backend.ts` no longer imports this
+ * module directly (its two embedding constants come from `gitnexus-shared`),
+ * but pool-adapter -> lbug-adapter -> csv-generator reaches it anyway.
  */
-const SCOPE_BRIDGE_SOURCE_LABELS = [
-  'File',
-  'Function',
-  'Method',
-  'Constructor',
-  'Module',
-  'Class',
-  'Interface',
-  'Struct',
-  'Enum',
-  'Trait',
-  'Variable',
-  'Property',
-  'Const',
-  'Macro',
-] as const;
+const SCOPE_BRIDGE_SOURCE_LABELS: readonly NodeLabel[] = ['File', ...LINKABLE_LABELS];
 
 /**
  * Labels the bridge can put on the TARGET side: `LINKABLE_LABELS` again (every
- * `resolveDefGraphId` hit), plus `Delegate` — `tryEmitEdgeWithExplicitTargetId`
- * bypasses the lookup and emits a `CALL_TARGET_TYPES` def's own node id, and
- * C# delegates are in that set without being linkable.
+ * `resolveDefGraphId` hit), plus `CALL_TARGET_TYPES` —
+ * `tryEmitEdgeWithExplicitTargetId` bypasses the lookup and emits such a def's
+ * own node id, and C# `Delegate` is in that set without being linkable.
  *
- * Both lists are twins of sets that live in the ingestion layer, which must not
- * be imported here. `test/unit/schema-pair-coverage.test.ts` is what keeps them
- * honest — it derives the required pairs from the originals and fails CI when
- * either set grows without the matching pairs landing in this DDL.
+ * Both sets are `NodeLabel`-typed rather than `NodeTableName`-typed because
+ * that is what the originals carry, and `NodeLabel` is the wider union — it
+ * admits five labels with no node table (`Project`, `Package`, `Decorator`,
+ * `Import`, `Type`). A label from that gap would emit DDL naming a table that
+ * does not exist, so `test/unit/schema-pair-coverage.test.ts` asserts every
+ * declared endpoint against `NODE_TABLES`. The hand-written sets below take the
+ * narrower `NodeTableName` constraint, where a typo is the actual risk.
  */
-const SCOPE_BRIDGE_TARGET_LABELS = [
-  'Function',
-  'Method',
-  'Constructor',
-  'Module',
-  'Class',
-  'Interface',
-  'Struct',
-  'Enum',
-  'Trait',
-  'Variable',
-  'Property',
-  'Const',
-  'Macro',
-  'Delegate',
-] as const;
+const SCOPE_BRIDGE_TARGET_LABELS: ReadonlySet<NodeLabel> = new Set<NodeLabel>([
+  ...LINKABLE_LABELS,
+  ...CALL_TARGET_TYPES,
+]);
 
 /**
- * Pairs carried by containment, inheritance, imports, DI, routes, clustering and
- * the PDG substrate — the surface no single label predicate describes, so it
- * stays hand-declared. The scope-resolution surface below is generated instead.
+ * Node tables that are NOT definitions.
  *
- * Being hand-declared, this is the half that can still go stale — and it did:
- * after #2789 declared its one pair, `analyze` still aborted on this repo's own
- * `test/fixtures/lang-resolution` (COBOL containment, and the Vue
- * BINDS_EVENT_HANDLER edge from `languages/vue/scope-resolver.ts`, the only
- * edge whose target is a `File`). Those endpoint labels — `CodeElement`,
- * `Namespace`, `Record`, `File` — are in neither scope-bridge set, so no
- * predicate-derived check can reach them.
- * `test/integration/structural-pair-coverage.test.ts` guards this block from a
- * corpus instead; that is the guard, not this comment.
+ *  - `Community` / `Process` are analysis overlays synthesized after ingestion;
+ *    nothing is ever attached to one, they are only attached TO.
+ *  - `Route` / `Tool` are framework overlays. They do source exactly two edges
+ *    — `ENTRY_POINT_OF` to a `Process` (`pipeline-phases/processes.ts`) — but
+ *    that emitter hard-codes both labels as literals in one file rather than
+ *    resolving an anchor through a lookup, so those two pairs stay in
+ *    {@link STRUCTURAL_PAIR_DDL}. Admitting them as anchors would mint twelve
+ *    further pairs (`Route→Annotation`, `Tool→Record`, …) no emitter can reach.
+ *  - `Folder` is a filesystem container (`Folder→Folder` / `Folder→File` only).
+ *  - `BasicBlock` is the PDG substrate (`BasicBlock→BasicBlock` only; measured
+ *    over 300k PDG edges, no other pair is emitted).
  */
-const STRUCTURAL_PAIR_DDL = `  FROM File TO File,
-  FROM File TO Folder,
-  FROM File TO Function,
-  FROM File TO Class,
-  FROM File TO Interface,
-  FROM File TO Method,
+const NON_DEFINITION_LABELS: readonly NodeTableName[] = [
+  'Community',
+  'Process',
+  'Route',
+  'Tool',
+  'Folder',
+  'BasicBlock',
+];
+
+/**
+ * Every label a DEFINITION node can carry — derived from `NODE_TABLES` by
+ * subtraction so a new node table joins this set automatically and only an
+ * explicit entry above can keep it out.
+ */
+const DEFINITION_ANCHOR_LABELS: readonly NodeTableName[] = NODE_TABLES.filter(
+  (label) => !NON_DEFINITION_LABELS.includes(label),
+);
+
+/**
+ * Labels whose nodes are minted OUTSIDE the scope-resolution bridge, by a
+ * phase or framework emitter, and then hung off whichever definition node that
+ * emitter happened to resolve. For most of them the anchor is a LOOKUP RESULT,
+ * so its label is not constrained by the emitter — which is exactly why
+ * hand-listing these pairs has crashed `analyze` four separate times:
+ *
+ *  | target       | emitter                                        | anchor comes from                     |
+ *  |--------------|------------------------------------------------|---------------------------------------|
+ *  | `Annotation` | `frameworks/spring/conditionals.ts` CONDITIONAL_ON | `resolveDefGraphId` / `resolveCallerGraphId` |
+ *  | `Community`  | `pipeline-phases/communities.ts` MEMBER_OF     | Leiden membership, `isCommunitySymbol`-gated |
+ *  | `Process`    | `pipeline-phases/processes.ts` STEP_IN_PROCESS | trace step node                       |
+ *  | `Route`      | `pipeline-phases/routes.ts` HANDLES_ROUTE      | `generateId('File', handlerPath)` — a literal |
+ *  | `Tool`       | `pipeline-phases/tools.ts` HANDLES_TOOL        | `handlerNodeId` — whatever definition the decorator sat on |
+ *  | `File`       | `languages/vue/scope-resolver.ts` BINDS_EVENT_HANDLER | handler node                    |
+ *  | `Record`     | `cobol-processor.ts` × 8 external-resource sites | `scopedCallerLookup`                |
+ *
+ * The four reproduced hard-aborts are one cell of this table each:
+ * `Method→Annotation` (Spring `@Bean` + `@ConditionalOnMissingBean`),
+ * `Method→File` (Vue Options-API handler), `Namespace→Record` (COBOL
+ * `DECLARATIVES`), `Class→Tool` (`@mcp.tool()` on a class). Declaring
+ * {@link DEFINITION_ANCHOR_LABELS} × this set covers all four plus every
+ * sibling the same emitters can reach.
+ *
+ * TWO TARGETS ARE LABEL-GATED TODAY, and the cross product over-declares for
+ * them ON PURPOSE (~47 of the 182 attachment pairs are unreachable right now):
+ *  - `Community` — `isCommunitySymbol` (`community-processor.ts`) admits only
+ *    `Function` / `Class` / `Method` / `Interface` as members, so the other 22
+ *    anchors cannot source a MEMBER_OF edge until that predicate widens.
+ *  - `Route` — HANDLES_ROUTE sources `generateId('File', handlerPath)`, a
+ *    literal `File`, so every non-`File` anchor is headroom.
+ *
+ * Those pairs stay declared because the two sides of the error are not
+ * symmetric: an UNDECLARED pair makes LadybugDB reject the edge and aborts
+ * `analyze` outright on a user's repo, while an unused DECLARED pair costs
+ * almost nothing — `bench/schema-pairs` measures the whole 332→450 growth
+ * (118 pairs, of which these ~47 are a part) at 0.93–1.05×, i.e. inside
+ * run-to-run noise.
+ * Every one of the four aborts above came from re-narrowing a set to what one
+ * predicate looked like it allowed — so a reading of `isCommunitySymbol` is not
+ * grounds to shrink this. Widening either predicate is then a no-op here.
+ *
+ * `Route` / `Tool` being excluded as ANCHORS (see {@link NON_DEFINITION_LABELS})
+ * is likewise a SIZE choice, not something derived from a rule: they do source
+ * `ENTRY_POINT_OF`, and admitting them would mint twelve further pairs no
+ * emitter can currently reach.
+ *
+ * Sized deliberately: this rule brings the DDL to 450 pairs. `bench/schema-pairs`
+ * measures it against real `@ladybugdb/core` with identical data — untyped-endpoint
+ * anchored queries (`MATCH (a {id: $id})-[r:CodeRelation]->(b)`, the shape
+ * `impact` / `context` / `detect_changes` issue), relative to the 332-pair
+ * hand-list this replaced. Four runs on the same box:
+ *
+ *   450 → 0.93–1.05×   641 → 1.22–1.43×   786 → 1.52–1.75×   1024 → 2.03–2.34×
+ *
+ * 450 is inside run-to-run noise (it came out FASTER than 332 on three of the
+ * four runs); everything past ~640 is not. The knee sits just above 450, so the containment half below
+ * stays hand-declared rather than being folded into a third cross product.
+ * Re-run that bench and quote the range — not one run — before proposing one.
+ */
+const ATTACHMENT_TARGET_LABELS: readonly NodeTableName[] = [
+  'Annotation',
+  'Community',
+  'Process',
+  'Route',
+  'Tool',
+  'File',
+  'Record',
+];
+
+/**
+ * The 72 pairs NEITHER rule above generates — everything left after the two
+ * cross products are subtracted. Carried by CONTAINMENT, inheritance, imports
+ * and DI: a container label crossed with a contained label. No predicate
+ * describes that surface (any container can hold any definition).
+ *
+ * What survives here is characteristic, not arbitrary. Almost all of it is a
+ * TARGET no rule reaches — `CodeElement`, `Impl`, `Namespace`, `Template`,
+ * `TypeAlias`, `Typedef`, `Union`, `Static`, `Section`, `Folder` are in neither
+ * `SCOPE_BRIDGE_TARGET_LABELS` nor {@link ATTACHMENT_TARGET_LABELS} — plus the
+ * `Impl|*` and `Template|*` member rows (Rust `impl`/`trait` bodies, C++
+ * templates), the two `Route|Process` / `Tool|Process` entry points whose
+ * emitter names both labels as literals, and `BasicBlock|BasicBlock`, the PDG
+ * substrate.
+ *
+ * NOTHING A RULE ALREADY COVERS BELONGS HERE. `generatedRelationPairs` skips
+ * any pair present in this block, so a redundant line does not merely duplicate
+ * — it SUPPRESSES generation, and later narrowing a rule would silently keep
+ * that pair alive with no test failing. 161 such lines were deleted from this
+ * block (the DDL's pair set is unchanged: they moved into the generated half);
+ * `test/unit/schema-pair-coverage.test.ts` now fails if one comes back.
+ *
+ * Folding this remainder into a third cross product
+ * (`DEFINITION_ANCHOR_LABELS × {CodeElement, Section, Typedef, Union,
+ * Namespace, Impl, TypeAlias, Static, Template}`) would take the table to 641
+ * pairs and leave only ~29 lines here. `bench/schema-pairs` measures 641 at
+ * 1.22–1.43× on anchored queries, where production's 450 is inside noise — so
+ * that trade buys ~43 fewer hand-written lines for a real ~22–43% on the query
+ * shape `impact` uses, which is why it is deferred rather than taken.
+ *
+ * Exported so `test/unit/schema-pair-coverage.test.ts` can subtract it and
+ * assert the GENERATED region of the DDL for exact equality against the two
+ * rules, rather than one-directional containment.
+ * `test/integration/structural-pair-coverage.test.ts` guards this half from a
+ * corpus — that is the guard, not this comment.
+ */
+export const STRUCTURAL_PAIR_DDL = `  FROM File TO Folder,
   FROM File TO CodeElement,
-  FROM File TO \`Struct\`,
-  FROM File TO \`Enum\`,
-  FROM File TO \`Macro\`,
   FROM File TO \`Typedef\`,
   FROM File TO \`Union\`,
   FROM File TO \`Namespace\`,
-  FROM File TO \`Trait\`,
   FROM File TO \`Impl\`,
   FROM File TO \`TypeAlias\`,
-  FROM File TO \`Const\`,
   FROM File TO \`Static\`,
-  FROM File TO \`Variable\`,
-  FROM File TO \`Property\`,
-  FROM File TO \`Record\`,
-  FROM File TO \`Delegate\`,
-  FROM File TO \`Annotation\`,
-  FROM File TO \`Constructor\`,
   FROM File TO \`Template\`,
-  FROM File TO \`Module\`,
   FROM File TO Section,
   FROM Folder TO Folder,
   FROM Folder TO File,
-  FROM Function TO Function,
-  FROM Function TO Method,
-  FROM Function TO Class,
-  FROM Function TO Community,
-  FROM Function TO \`Macro\`,
-  FROM Function TO \`Struct\`,
   FROM Function TO \`Template\`,
-  FROM Function TO \`Enum\`,
   FROM Function TO \`Namespace\`,
   FROM Function TO \`TypeAlias\`,
-  FROM Function TO \`Module\`,
   FROM Function TO \`Impl\`,
-  FROM Function TO Interface,
-  FROM Function TO \`Constructor\`,
-  FROM Function TO \`Const\`,
   FROM Function TO \`Typedef\`,
   FROM Function TO \`Union\`,
-  FROM Function TO \`Property\`,
   FROM Function TO CodeElement,
-  FROM Class TO Method,
-  FROM Class TO Function,
-  FROM Class TO Class,
-  FROM Class TO Interface,
-  FROM Class TO Community,
   FROM Class TO \`Template\`,
   FROM Class TO \`TypeAlias\`,
-  FROM Class TO \`Struct\`,
-  FROM Class TO \`Enum\`,
-  FROM Class TO \`Annotation\`,
-  FROM Class TO \`Constructor\`,
-  FROM Class TO \`Trait\`,
-  FROM Class TO \`Macro\`,
   FROM Class TO \`Impl\`,
   FROM Class TO \`Union\`,
   FROM Class TO \`Namespace\`,
   FROM Class TO \`Typedef\`,
-  FROM Class TO \`Property\`,
   FROM Class TO CodeElement,
-  FROM Method TO Function,
-  FROM Method TO Method,
-  FROM Method TO Class,
-  FROM Method TO Community,
   FROM Method TO \`Template\`,
-  FROM Method TO \`Struct\`,
   FROM Method TO \`TypeAlias\`,
-  FROM Method TO \`Enum\`,
-  FROM Method TO \`Macro\`,
   FROM Method TO \`Namespace\`,
-  FROM Method TO \`Module\`,
   FROM Method TO \`Impl\`,
-  FROM Method TO Interface,
-  FROM Method TO \`Constructor\`,
-  FROM Method TO \`Property\`,
-  FROM Method TO \`Variable\`,
-  FROM Method TO \`Const\`,
   FROM Method TO CodeElement,
   FROM \`Template\` TO \`Template\`,
   FROM \`Template\` TO Function,
@@ -411,169 +472,89 @@ const STRUCTURAL_PAIR_DDL = `  FROM File TO File,
   FROM \`Template\` TO Interface,
   FROM \`Template\` TO \`Constructor\`,
   FROM \`Module\` TO CodeElement,
-  FROM \`Module\` TO \`Module\`,
   FROM \`Module\` TO \`Namespace\`,
-  FROM \`Module\` TO \`Record\`,
   FROM \`Namespace\` TO Function,
   FROM CodeElement TO CodeElement,
   FROM CodeElement TO \`Module\`,
   FROM CodeElement TO \`Property\`,
-  FROM CodeElement TO \`Record\`,
-  FROM \`Record\` TO \`Record\`,
-  FROM Function TO File,
   FROM Section TO Section,
-  FROM Section TO File,
-  FROM File TO Route,
-  FROM Function TO Route,
-  FROM Method TO Route,
-  FROM File TO Tool,
-  FROM Function TO Tool,
-  FROM Method TO Tool,
-  FROM CodeElement TO Community,
-  FROM Interface TO Community,
-  FROM Interface TO Function,
-  FROM Interface TO Method,
-  FROM Interface TO Class,
-  FROM Interface TO Interface,
   FROM Interface TO CodeElement,
   FROM Interface TO \`TypeAlias\`,
-  FROM Interface TO \`Struct\`,
-  FROM Interface TO \`Constructor\`,
-  FROM Interface TO \`Property\`,
-  FROM \`Struct\` TO Community,
-  FROM \`Struct\` TO \`Trait\`,
-  FROM \`Struct\` TO \`Struct\`,
-  FROM \`Struct\` TO Class,
-  FROM \`Struct\` TO \`Enum\`,
-  FROM \`Struct\` TO Function,
-  FROM \`Struct\` TO Method,
-  FROM \`Struct\` TO Interface,
-  FROM \`Struct\` TO \`Constructor\`,
-  FROM \`Struct\` TO \`Property\`,
-  FROM \`Enum\` TO \`Enum\`,
-  FROM \`Enum\` TO Community,
-  FROM \`Enum\` TO Class,
-  FROM \`Enum\` TO Interface,
-  FROM \`Enum\` TO Function,
-  FROM \`Enum\` TO Method,
-  FROM \`Enum\` TO \`Struct\`,
-  FROM \`Enum\` TO \`Constructor\`,
-  FROM \`Enum\` TO \`Property\`,
   FROM \`Enum\` TO \`TypeAlias\`,
-  FROM \`Macro\` TO Community,
-  FROM \`Macro\` TO Function,
-  FROM \`Macro\` TO Method,
-  FROM \`Module\` TO Function,
-  FROM \`Module\` TO Method,
-  FROM \`Typedef\` TO Community,
-  FROM \`Union\` TO Community,
-  FROM \`Namespace\` TO Community,
   FROM \`Namespace\` TO \`Struct\`,
-  FROM \`Trait\` TO Method,
-  FROM \`Trait\` TO Function,
-  FROM \`Trait\` TO \`Constructor\`,
-  FROM \`Trait\` TO \`Property\`,
-  FROM \`Trait\` TO Community,
   FROM \`Impl\` TO Method,
   FROM \`Impl\` TO Function,
   FROM \`Impl\` TO \`Constructor\`,
   FROM \`Impl\` TO \`Property\`,
-  FROM \`Impl\` TO Community,
   FROM \`Impl\` TO \`Trait\`,
   FROM \`Impl\` TO \`Struct\`,
   FROM \`Impl\` TO \`Impl\`,
-  FROM \`TypeAlias\` TO Community,
   FROM \`TypeAlias\` TO \`Trait\`,
   FROM \`TypeAlias\` TO Class,
-  FROM \`Const\` TO Community,
-  FROM \`Const\` TO Method,
-  FROM \`Static\` TO Community,
-  FROM \`Variable\` TO Community,
-  FROM \`Variable\` TO Method,
-  FROM \`Property\` TO Community,
-  FROM \`Property\` TO \`Property\`,
-  FROM \`Property\` TO Class,
-  FROM \`Property\` TO \`Enum\`,
-  FROM \`Property\` TO Function,
-  FROM \`Property\` TO \`Struct\`,
   FROM \`Record\` TO Method,
   FROM \`Record\` TO \`Constructor\`,
   FROM \`Record\` TO \`Property\`,
-  FROM \`Record\` TO Community,
-  FROM \`Delegate\` TO Community,
-  FROM \`Annotation\` TO Community,
-  FROM \`Constructor\` TO Community,
-  FROM \`Constructor\` TO Interface,
-  FROM \`Constructor\` TO Class,
-  FROM \`Constructor\` TO Method,
-  FROM \`Constructor\` TO Function,
-  FROM \`Constructor\` TO \`Constructor\`,
-  FROM \`Constructor\` TO \`Struct\`,
-  FROM \`Constructor\` TO \`Macro\`,
   FROM \`Constructor\` TO \`Template\`,
   FROM \`Constructor\` TO \`TypeAlias\`,
-  FROM \`Constructor\` TO \`Enum\`,
-  FROM \`Constructor\` TO \`Annotation\`,
   FROM \`Constructor\` TO \`Impl\`,
   FROM \`Constructor\` TO \`Namespace\`,
-  FROM \`Constructor\` TO \`Module\`,
-  FROM \`Constructor\` TO \`Property\`,
   FROM \`Constructor\` TO \`Typedef\`,
-  FROM \`Template\` TO Community,
-  FROM \`Module\` TO Community,
-  FROM Function TO Process,
-  FROM Method TO Process,
-  FROM Class TO Process,
-  FROM Interface TO Process,
-  FROM \`Struct\` TO Process,
-  FROM \`Constructor\` TO Process,
-  FROM \`Module\` TO Process,
-  FROM \`Macro\` TO Process,
-  FROM \`Impl\` TO Process,
-  FROM \`Typedef\` TO Process,
-  FROM \`TypeAlias\` TO Process,
-  FROM \`Enum\` TO Process,
-  FROM \`Union\` TO Process,
-  FROM \`Namespace\` TO Process,
-  FROM \`Trait\` TO Process,
-  FROM \`Const\` TO Process,
-  FROM \`Static\` TO Process,
-  FROM \`Variable\` TO Process,
-  FROM \`Property\` TO Process,
-  FROM \`Record\` TO Process,
-  FROM \`Delegate\` TO Process,
-  FROM \`Annotation\` TO Process,
-  FROM \`Template\` TO Process,
-  FROM CodeElement TO Process,
   FROM Route TO Process,
   FROM Tool TO Process,
   FROM BasicBlock TO BasicBlock`;
 
 /**
- * Every scope-resolution FROM→TO pair not already declared structurally.
+ * The generated half of the DDL — one `  FROM \`x\` TO \`y\`` line per pair of
+ * the two cross products below.
  *
- * Generated rather than hand-listed because the two label sets above ARE the
- * emit surface — any pair drawn from them can reach `assertDeclaredPair`, and
- * an undeclared one aborts `analyze` on whichever codebase happens to produce
- * it. Hand-listing is what produced the piecemeal `Const→Method` (#2781) and
- * `Class→Variable` (#2792) crashes: each fix declared only the pair in the
- * stack trace and left the rest of the cross product missing.
+ * 1. SCOPE BRIDGE — `SCOPE_BRIDGE_SOURCE_LABELS × SCOPE_BRIDGE_TARGET_LABELS`.
+ *    Those sets ARE the bridge's emit surface: `buildGraphNodeLookup` holds
+ *    only `LINKABLE_LABELS`, so every id `resolveDefGraphId` returns wears one
+ *    of those labels (#2792).
+ * 2. ATTACHMENT — `DEFINITION_ANCHOR_LABELS × ATTACHMENT_TARGET_LABELS`, the
+ *    phase/framework overlays hung off a resolved anchor (#2793).
+ *
+ * Generated rather than hand-listed because in both families the endpoint
+ * labels are LOOKUP RESULTS, not literals at the emit site — so any pair drawn
+ * from the sets can reach `assertDeclaredPair`, and an undeclared one aborts
+ * `analyze` outright on whichever codebase happens to produce it. Every
+ * hand-listed fix so far declared only the pair in the stack trace and left the
+ * rest of its family missing: `Const→Method` (#2781), `Class→Variable` (#2792),
+ * `Interface→CodeElement` (#2416), then `Method→Annotation` / `Method→File` /
+ * `Namespace→Record` / `Class→Tool` (#2793) — four more from three different
+ * emitters, all live at once.
+ *
+ * A `Set` guards the emit against a DUPLICATED pair — the asymmetric failure
+ * mode `rel-pair-routing.ts` documents at length: a duplicate makes LadybugDB
+ * reject `CREATE REL TABLE` and kills EVERY `analyze`, where a missing pair only
+ * kills the codebases that emit it. The two target sets are disjoint TODAY, so
+ * nothing is deduped in practice; the Set is here so that moving one label
+ * between the rules can never cause it. Pairs already in
+ * {@link STRUCTURAL_PAIR_DDL} are skipped for the same reason.
  */
-const scopeBridgePairDdl = (): string => {
+const generatedPairDdl = (): string => {
   const structural = parseRelationSchemaPairs(STRUCTURAL_PAIR_DDL);
+  const seen = new Set<string>();
   const lines: string[] = [];
+  const add = (from: NodeLabel, to: NodeLabel): void => {
+    const pairKey = `${from}|${to}`;
+    if (structural.has(pairKey) || seen.has(pairKey)) return;
+    seen.add(pairKey);
+    lines.push(`  FROM \`${from}\` TO \`${to}\``);
+  };
   for (const from of SCOPE_BRIDGE_SOURCE_LABELS) {
-    for (const to of SCOPE_BRIDGE_TARGET_LABELS) {
-      if (structural.has(`${from}|${to}`)) continue;
-      lines.push(`  FROM \`${from}\` TO \`${to}\``);
-    }
+    for (const to of SCOPE_BRIDGE_TARGET_LABELS) add(from, to);
+  }
+  for (const from of DEFINITION_ANCHOR_LABELS) {
+    for (const to of ATTACHMENT_TARGET_LABELS) add(from, to);
   }
   return lines.join(',\n');
 };
 
 export const RELATION_SCHEMA = `
 CREATE REL TABLE ${REL_TABLE_NAME} (
-${[STRUCTURAL_PAIR_DDL, scopeBridgePairDdl()].filter((block) => block.length > 0).join(',\n')},
+${STRUCTURAL_PAIR_DDL},
+${generatedPairDdl()},
   type STRING,
   confidence DOUBLE,
   reason STRING,

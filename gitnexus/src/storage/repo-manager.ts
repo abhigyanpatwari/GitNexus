@@ -688,17 +688,25 @@ export interface RepoMeta {
  * on exactly this branch's number — the seventh collision in this series and the
  * first exact clash. Re-check against origin/main before merge.
  *
- * v35: the relation DDL declares the FULL scope-resolution FROM/TO cross product
- * instead of the pairs someone happened to hit (#2792) — 99 new pairs, generated
- * from `LINKABLE_LABELS` (+ the `File` caller fallback, + `CALL_TARGET_TYPES` on
- * the target side) rather than hand-listed. v32 and v33 were the piecemeal
- * versions of this same fix; both left the rest of the cross product undeclared,
- * so `analyze` kept aborting at `assertDeclaredPair` on the next codebase with a
- * different edge shape (`Class→Variable` on Java static/field initializers was
- * the report). Plus 10 hand-declared structural pairs the generated block cannot
- * reach — COBOL containment and the Vue handler→component edge (#2789), whose
- * endpoint labels are in neither scope-bridge set. A pre-v35 database physically
- * lacks all of these, so force a full re-analyze.
+ * v35: the relation DDL is GENERATED from two closed-form rules instead of the
+ * pairs someone happened to hit — 223 → 450 declared pairs (#2792, #2793).
+ * Rule 1, the scope-resolution bridge: `LINKABLE_LABELS` + the `File` caller
+ * fallback, crossed with `LINKABLE_LABELS` + `CALL_TARGET_TYPES`. Rule 2, the
+ * phase/framework overlays: every definition label (`NODE_TABLES` minus
+ * Community/Process/Route/Tool/Folder/BasicBlock) crossed with the labels those
+ * emitters mint and hang off a resolved anchor — Annotation, Community,
+ * Process, Route, Tool, File, Record. In both families the endpoint labels are
+ * LOOKUP RESULTS, not literals at the emit site, so hand-listing could only
+ * ever declare the pair in the latest stack trace: v32, v33 and #2781 were each
+ * that same piecemeal fix, and `analyze` kept aborting at `assertDeclaredPair`
+ * on the next codebase with a different edge shape (`Class→Variable` on Java
+ * initializers, then `Method→Annotation` on Spring `@Bean`, `Method→File` on a
+ * Vue Options-API handler, `Namespace→Record` on COBOL `DECLARATIVES`, and
+ * `Class→Tool` on `@mcp.tool()` applied to a class — four at once, from three
+ * different emitters). What remains hand-declared is only the containment /
+ * inheritance / import surface, which no label predicate describes and which a
+ * corpus test guards instead. A pre-v35 database physically lacks all of these
+ * from-to pairs, so force a full re-analyze.
  */
 export const INCREMENTAL_SCHEMA_VERSION = 35;
 

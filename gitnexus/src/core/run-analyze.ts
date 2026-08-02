@@ -893,10 +893,6 @@ async function runFullAnalysisInner(
   const progress = (phase: string, percent: number, message: string) =>
     callbacks.onProgress(phase, percent, message);
 
-  // Streamed structural emit (#2680), resolved once so the pipeline flag and the
-  // CSV-dir resolution below cannot disagree.
-  const streamGraphEmitActive = resolveStreamGraphEmit(options);
-
   // FTS-config validation and the degraded-parse counter reset happen in the
   // `runFullAnalysis` wrapper (before the lock is taken).
 
@@ -1503,6 +1499,22 @@ async function runFullAnalysisInner(
   // Loaded into a single ParseCache object that the pipeline mutates
   // in-place (cache hits leave entries unchanged; misses add new ones).
   const parseCache = await loadParseCache(storagePath);
+
+  // Streamed structural emit (#2680). Resolved ONCE, so the pipeline flag and
+  // the CSV-dir resolution below cannot disagree — and resolved HERE, not at
+  // function entry, because the POSITION is load-bearing: the gate is
+  // `options.force`, and every freshness guard above REBINDS `options` with
+  // `force: true` (embedding-checkpoint drop, dirty-flag recovery, pdg-mode
+  // flip, schema-version bump, analysis-feature drift, runner-identity change,
+  // CJK-mode change). Resolving before them froze the answer at `false` for
+  // every rebuild they trigger — including the whole-fleet rebuild an
+  // INCREMENTAL_SCHEMA_VERSION bump forces on every existing index at once,
+  // which is exactly when the #2649 memory relief matters most. So this MUST
+  // stay below the last guard that can set `force` and above its first use.
+  // (The post-pipeline analysis-feature re-check can also set `force`, but the
+  // pipeline has already run by then; that run emits non-streamed, precisely as
+  // `resolveStreamPdgEmit` — read fresh at the same point — behaves.)
+  const streamGraphEmitActive = resolveStreamGraphEmit(options);
 
   // ── Phase 1: Full Pipeline (0–60%) ────────────────────────────────
   const pipelineResult = await runPipelineFromRepo(
