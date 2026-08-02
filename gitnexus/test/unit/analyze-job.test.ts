@@ -1,5 +1,9 @@
 import { describe, it, expect, beforeEach, afterEach } from 'vitest';
-import { JobManager } from '../../src/server/analyze-job.js';
+import {
+  JobManager,
+  isTerminalJobStatus,
+  type AnalyzeJobPartialOutcome,
+} from '../../src/server/analyze-job.js';
 
 describe('JobManager', () => {
   let manager: JobManager;
@@ -169,6 +173,83 @@ describe('JobManager', () => {
       manager.updateJob(job.id, { status: 'failed', error: 'late' });
       expect(events).toHaveLength(1);
       expect(events[0].phase).toBe('complete');
+    });
+  });
+
+  /**
+   * #2790: terminality is a property of the job's STATUS, and a terminal
+   * `failed` job may still have persisted usable work. The SSE relay reads both
+   * — `isTerminalJobStatus` to decide the stream is over, `partial` to tell a
+   * client "retry these N nodes" apart from "nothing worked".
+   */
+  describe('terminal status and partial outcomes (#2790)', () => {
+    it('recognizes exactly the two settled statuses', () => {
+      expect({
+        queued: isTerminalJobStatus('queued'),
+        cloning: isTerminalJobStatus('cloning'),
+        analyzing: isTerminalJobStatus('analyzing'),
+        loading: isTerminalJobStatus('loading'),
+        complete: isTerminalJobStatus('complete'),
+        failed: isTerminalJobStatus('failed'),
+      }).toEqual({
+        queued: false,
+        cloning: false,
+        analyzing: false,
+        loading: false,
+        complete: true,
+        failed: true,
+      });
+    });
+
+    const partial: AnalyzeJobPartialOutcome = {
+      kind: 'embedding-partial',
+      pendingNodeCount: 2,
+      nodesProcessed: 10,
+      retryable: true,
+    };
+
+    it('records a partial outcome on a failed job without changing its status', () => {
+      const job = manager.createJob({ repoPath: '/tmp/embed-partial' });
+      manager.updateJob(job.id, { status: 'analyzing' });
+      manager.updateJob(job.id, {
+        status: 'failed',
+        error: 'Embedding generation finished partially: 2 node(s) lost their embeddings.',
+        partial,
+      });
+
+      expect(manager.getJob(job.id)).toMatchObject({
+        status: 'failed',
+        error: expect.stringContaining('finished partially'),
+        partial: { kind: 'embedding-partial', pendingNodeCount: 2, retryable: true },
+      });
+    });
+
+    it('leaves a clean job with no partial marker at all', () => {
+      const job = manager.createJob({ repoPath: '/tmp/embed-clean' });
+      manager.updateJob(job.id, { status: 'analyzing' });
+      manager.updateJob(job.id, { status: 'complete' });
+
+      // Absent, not `null`/`false` — JSON.stringify omits it, so the wire shape
+      // of every non-partial job is unchanged.
+      expect(manager.getJob(job.id)).toMatchObject({ status: 'complete' });
+      expect(manager.getJob(job.id)?.partial).toBeUndefined();
+    });
+
+    it('still emits exactly one terminal event when a partial outcome is attached', () => {
+      const job = manager.createJob({ repoPath: '/tmp/embed-partial' });
+      const events: Array<{ phase: string; message: string }> = [];
+      manager.updateJob(job.id, { status: 'analyzing' });
+      manager.onProgress(job.id, (data) => events.push(data));
+      manager.updateJob(job.id, {
+        status: 'failed',
+        error: 'Embedding generation finished partially: 2 node(s) lost their embeddings.',
+        partial,
+        progress: { phase: 'failed', percent: 100, message: 'partial' },
+      });
+
+      expect(events).toEqual([
+        { phase: 'failed', percent: 100, message: expect.stringContaining('finished partially') },
+      ]);
     });
   });
 });

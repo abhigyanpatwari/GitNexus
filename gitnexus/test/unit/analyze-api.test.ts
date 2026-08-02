@@ -1,10 +1,32 @@
+import express from 'express';
+import http from 'node:http';
 import fs from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import { describe, it, expect, beforeEach, afterEach } from 'vitest';
 import { JobManager } from '../../src/server/analyze-job.js';
+import { mountSSEProgress } from '../../src/server/sse-progress.js';
+import {
+  inFlightEmbeddingCheckpoint,
+  resolveEmbedRunOutcome,
+  withMeasuredEmbeddingCount,
+  type EmbeddingRunResult,
+} from '../../src/server/embed-run-outcome.js';
+import {
+  measurePersistedEmbeddingCount,
+  persistedEmbeddingCountOrUndefined,
+} from '../../src/core/embedding-count.js';
 import { loadMeta, saveMeta, type RepoMeta } from '../../src/storage/repo-manager.js';
 import { deriveEmbeddingMode } from '../../src/core/embedding-mode.js';
+
+/**
+ * NOTHING in this file imports `src/server/api.ts` for behavior. That module
+ * pulls Express, cors, the LadybugDB native adapter and the whole MCP wiring:
+ * reaching three pure helpers through it cost one 30s TIMEOUT and ~20s/~22s on
+ * the runs that passed, against a 30s `testTimeout` (#2790 review, finding 9).
+ * The helpers now live in `src/server/{sse-progress,embed-run-outcome}.ts` and
+ * `src/core/embedding-count.ts`, none of which import a database or a server.
+ */
 
 describe('analyze API logic', () => {
   let manager: JobManager;
@@ -41,9 +63,9 @@ describe('analyze API logic', () => {
 
   it('SSE progress listener receives all events including terminal', () => {
     const job = manager.createJob({ repoUrl: 'https://github.com/user/sse-test' });
-    const events: any[] = [];
+    const events: Array<{ phase: string; percent: number }> = [];
     const unsub = manager.onProgress(job.id, (progress) => {
-      events.push(progress);
+      events.push({ phase: progress.phase, percent: progress.percent });
     });
 
     manager.updateJob(job.id, {
@@ -57,11 +79,211 @@ describe('analyze API logic', () => {
 
     unsub();
 
-    expect(events.length).toBe(3);
-    expect(events[0].phase).toBe('parsing');
-    expect(events[1].phase).toBe('calls');
-    expect(events[2].phase).toBe('complete');
-    expect(events[2].percent).toBe(100);
+    expect(events).toEqual([
+      { phase: 'parsing', percent: 30 },
+      { phase: 'calls', percent: 50 },
+      { phase: 'complete', percent: 100 },
+    ]);
+  });
+});
+
+const IDENTITY = { model: 'test-model', dimensions: 384, provider: 'local' };
+const CLEAN_RUN: EmbeddingRunResult = {
+  nodesProcessed: 412,
+  chunksProcessed: 900,
+  failedNodeIds: [],
+};
+/** Progress figures an in-flight checkpoint records. */
+const PROGRESS = { nodesProcessed: 4, totalNodes: 12, chunksProcessed: 9 };
+
+/**
+ * ── #2790: an SSE client must not be told a partial run succeeded ──────────
+ *
+ * `runEmbeddingPipeline` emits `phase: 'ready'` / 100% UNCONDITIONALLY before
+ * returning — including when it dropped nodes to endpoint failures — and
+ * /api/embed relayed that as a progress phase before it had measured anything
+ * or decided the outcome. The relay treated a progress PHASE STRING of
+ * 'complete'/'failed' as terminal, so it wrote `event: complete` with
+ * `error: undefined`, called `res.end()` and unsubscribed; the route's later
+ * `updateJob({status:'failed'})` went into a stream with no listener. The web
+ * client fired `onComplete` and showed "ready" while a `GET /api/embed/:jobId`
+ * poller saw `failed` — the two consumers of one job disagreeing about whether
+ * the data is complete, and a regression against the pre-#2790 behavior where
+ * the pipeline threw and the client received the failure.
+ *
+ * These tests drive the REAL relay over a REAL HTTP server (same harness as
+ * server-sse-payload.test.ts) and subscribe BEFORE the misleading event is
+ * emitted — subscribing after it is exactly why the previous version of this
+ * suite passed while the bug was live.
+ */
+describe('mountSSEProgress terminality (#2790)', () => {
+  let manager: JobManager;
+  let server: http.Server | undefined;
+  let baseUrl = '';
+
+  beforeEach(() => {
+    manager = new JobManager();
+    const app = express();
+    // Mirrors both production mounts in createServer().
+    mountSSEProgress(app, '/api/embed/:jobId/progress', manager);
+    return new Promise<void>((resolve) => {
+      server = app.listen(0, '127.0.0.1', () => {
+        const addr = server?.address();
+        const port = typeof addr === 'object' && addr ? addr.port : 0;
+        baseUrl = `http://127.0.0.1:${port}`;
+        resolve();
+      });
+    });
+  });
+
+  afterEach(() => {
+    manager.dispose();
+    return new Promise<void>((resolve, reject) => {
+      if (!server) {
+        resolve();
+        return;
+      }
+      server.close((err) => (err ? reject(err) : resolve()));
+      server = undefined;
+    });
+  });
+
+  /** Parsed payload of the named terminal frame, or `undefined` if absent. */
+  const terminalFrame = (body: string, event: 'complete' | 'failed'): unknown => {
+    const frame = body.split('\n\n').find((f) => f.includes(`event: ${event}`));
+    const dataLine = frame?.split('\n').find((line) => line.startsWith('data: '));
+    return dataLine === undefined ? undefined : JSON.parse(dataLine.slice('data: '.length));
+  };
+
+  /** How many terminal frames of any kind the client received. */
+  const terminalFrameCount = (body: string): number =>
+    body.split('\n\n').filter((f) => /^event: (complete|failed)$/m.test(f)).length;
+
+  it('a partial run reaches the client as a failure, not a success', async () => {
+    const job = manager.createJob({ repoPath: '/ws/embed-partial' });
+    manager.updateJob(job.id, {
+      repoName: 'embed-partial',
+      status: 'analyzing',
+      progress: { phase: 'embedding', percent: 40, message: 'Embedding nodes (40%)...' },
+    });
+
+    // The client is connected and listening BEFORE anything terminal-looking is
+    // emitted. `fetch` resolves once headers arrive, and the handler subscribes
+    // synchronously before that (see server-sse-payload.test.ts).
+    const response = await fetch(`${baseUrl}/api/embed/${job.id}/progress`);
+
+    // A progress event that CLAIMS to be terminal. Production now maps the
+    // pipeline's `ready` to 'finalizing' instead, but a phase string must not be
+    // able to end the stream no matter who sends it — that is the invariant.
+    manager.updateJob(job.id, {
+      progress: { phase: 'complete', percent: 100, message: 'Embeddings complete' },
+    });
+
+    // Only now does the route learn the run dropped nodes.
+    const outcome = resolveEmbedRunOutcome(IDENTITY, {
+      nodesProcessed: 10,
+      chunksProcessed: 24,
+      failedNodeIds: ['node-a', 'node-b'],
+    });
+    manager.updateJob(job.id, {
+      status: 'failed',
+      error: outcome.error,
+      partial: outcome.partial,
+      progress: { phase: 'failed', percent: 100, message: String(outcome.error) },
+    });
+
+    const body = await response.text();
+
+    expect(body).not.toContain('event: complete');
+    expect(terminalFrameCount(body)).toBe(1);
+    expect(terminalFrame(body, 'failed')).toMatchObject({
+      repoName: 'embed-partial',
+      repoPath: '/ws/embed-partial',
+      error: expect.stringContaining('finished partially') as unknown as string,
+      // The distinction a UI needs to offer "retry 2 nodes" instead of a bare
+      // red chip — carried without adding a `status` union member.
+      partial: { kind: 'embedding-partial', pendingNodeCount: 2, nodesProcessed: 10 },
+    });
+  });
+
+  it('a clean run produces exactly one terminal complete event', async () => {
+    const job = manager.createJob({ repoPath: '/ws/embed-clean' });
+    manager.updateJob(job.id, {
+      repoName: 'embed-clean',
+      status: 'analyzing',
+      progress: { phase: 'embedding', percent: 40, message: 'Embedding nodes (40%)...' },
+    });
+
+    const response = await fetch(`${baseUrl}/api/embed/${job.id}/progress`);
+
+    // What the route actually emits between the pipeline returning and the
+    // outcome being known.
+    manager.updateJob(job.id, {
+      progress: { phase: 'finalizing', percent: 100, message: 'Finalizing embeddings...' },
+    });
+    manager.updateJob(job.id, {
+      status: 'complete',
+      progress: { phase: 'complete', percent: 100, message: 'Embeddings complete' },
+    });
+
+    const body = await response.text();
+
+    expect(body).not.toContain('event: failed');
+    // Exactly one — the status update carries a `progress` too, and #2264's
+    // single-emit rule is what keeps that from double-writing the terminal frame.
+    expect(terminalFrameCount(body)).toBe(1);
+    expect(terminalFrame(body, 'complete')).toEqual({
+      repoName: 'embed-clean',
+      repoPath: '/ws/embed-clean',
+    });
+    // The 'finalizing' frame was relayed as ordinary progress, not swallowed.
+    expect(body).toContain('"phase":"finalizing"');
+  });
+
+  it('the analyze path still closes on its own terminal update', async () => {
+    // /api/analyze mounts the same relay. Its worker reports phases like
+    // 'parsing' and 'done' (never 'complete'), so the fix must not leave that
+    // stream open — it closes when the job's STATUS becomes terminal.
+    const job = manager.createJob({ repoPath: '/ws/reels' });
+    manager.updateJob(job.id, {
+      status: 'analyzing',
+      progress: { phase: 'parsing', percent: 30, message: 'Parsing' },
+    });
+
+    const response = await fetch(`${baseUrl}/api/embed/${job.id}/progress`);
+
+    manager.updateJob(job.id, {
+      progress: { phase: 'done', percent: 100, message: 'Done' },
+    });
+    manager.updateJob(job.id, { status: 'complete', repoName: 'reels' });
+
+    const body = await response.text();
+
+    expect(terminalFrameCount(body)).toBe(1);
+    expect(terminalFrame(body, 'complete')).toEqual({ repoName: 'reels', repoPath: '/ws/reels' });
+  });
+
+  it('a job that finished before the client connected replays its outcome', async () => {
+    const job = manager.createJob({ repoPath: '/ws/embed-late' });
+    const outcome = resolveEmbedRunOutcome(IDENTITY, {
+      nodesProcessed: 3,
+      chunksProcessed: 9,
+      failedNodeIds: ['node-a'],
+    });
+    manager.updateJob(job.id, {
+      status: 'failed',
+      repoName: 'embed-late',
+      error: outcome.error,
+      partial: outcome.partial,
+    });
+
+    const body = await (await fetch(`${baseUrl}/api/embed/${job.id}/progress`)).text();
+
+    expect(terminalFrameCount(body)).toBe(1);
+    expect(terminalFrame(body, 'failed')).toMatchObject({
+      error: expect.stringContaining('finished partially') as unknown as string,
+      partial: { kind: 'embedding-partial', pendingNodeCount: 1, retryable: true },
+    });
   });
 });
 
@@ -74,31 +296,17 @@ describe('analyze API logic', () => {
  * 'complete', so a partial run looked identical to a clean one and the dropped
  * nodes were never retried (pre-#2790 the pipeline threw and the catch marked
  * the job failed).
- *
- * The route body is an inline closure inside `createServer` — only reachable by
- * booting an HTTP server over a real repo, a real LadybugDB and a real
- * embedding endpoint. There is no behavioral harness for it (the only existing
- * /api/embed test, api-readonly-wiring.test.ts, is source-text matching), so the
- * decision it makes is exercised through the exported helper it delegates to,
- * and the observable job outcome through the real JobManager the route uses.
  */
-describe('POST /api/embed partial-run outcome (#2790)', () => {
-  const identity = { model: 'test-model', dimensions: 384, provider: 'local' };
-
-  it('clears the checkpoint and reports no error on a clean run', async () => {
-    const { resolveEmbedRunOutcome } = await import('../../src/server/api.js');
-    const outcome = resolveEmbedRunOutcome(identity, {
-      nodesProcessed: 12,
-      chunksProcessed: 30,
-      failedNodeIds: [],
-    });
+describe('resolveEmbedRunOutcome (#2790)', () => {
+  it('clears the checkpoint and reports no error on a clean, measured run', () => {
+    const outcome = resolveEmbedRunOutcome(IDENTITY, CLEAN_RUN, { measuredEmbeddings: 412 });
     expect(outcome.checkpoint).toBeUndefined();
     expect(outcome.error).toBeUndefined();
+    expect(outcome.partial).toBeUndefined();
   });
 
-  it('retains the checkpoint with the dropped ids and reports an error on a partial run', async () => {
-    const { resolveEmbedRunOutcome } = await import('../../src/server/api.js');
-    const outcome = resolveEmbedRunOutcome(identity, {
+  it('retains the checkpoint with the dropped ids and reports an error on a partial run', () => {
+    const outcome = resolveEmbedRunOutcome(IDENTITY, {
       nodesProcessed: 10,
       chunksProcessed: 24,
       failedNodeIds: ['node-a', 'node-b'],
@@ -113,77 +321,81 @@ describe('POST /api/embed partial-run outcome (#2790)', () => {
       model: 'test-model',
       dimensions: 384,
       provider: 'local',
+      // The run COMPLETED: these nodes provably hold zero rows, so a later
+      // identity mismatch may drop the set with a warning instead of wedging
+      // every subsequent run (repo-manager.ts).
+      kind: 'partial',
     });
     expect(outcome.error).toMatch(/2 node\(s\)/);
+    expect(outcome.partial).toEqual({
+      kind: 'embedding-partial',
+      pendingNodeCount: 2,
+      nodesProcessed: 10,
+      retryable: true,
+    });
   });
 
-  it('a partial run is distinguishable from a clean one on the job record and the SSE stream', async () => {
-    const { resolveEmbedRunOutcome } = await import('../../src/server/api.js');
-    const manager = new JobManager();
-    try {
-      const partial = resolveEmbedRunOutcome(identity, {
-        nodesProcessed: 10,
-        chunksProcessed: 24,
-        failedNodeIds: ['node-a'],
-      });
-      const job = manager.createJob({ repoPath: '/tmp/embed-partial' });
-      manager.updateJob(job.id, { status: 'analyzing' });
-      // The pipeline's `ready` phase already mapped to 'complete' before the
-      // route could know anything failed — the terminal update must correct it.
-      manager.updateJob(job.id, {
-        progress: { phase: 'complete', percent: 100, message: 'Embeddings complete' },
-      });
+  it('stamps no attempt count on a fresh partial run', () => {
+    const outcome = resolveEmbedRunOutcome(
+      IDENTITY,
+      { nodesProcessed: 10, chunksProcessed: 24, failedNodeIds: ['node-a'] },
+      // Resumed from an in-flight marker, not a partial one.
+      { resumedFrom: inFlightEmbeddingCheckpoint(IDENTITY, PROGRESS, ['node-a']) },
+    );
+    expect(outcome.checkpoint).toMatchObject({ kind: 'partial' });
+    expect(outcome.checkpoint?.attempts).toBeUndefined();
+  });
 
-      const events: Array<{ phase: string; message: string }> = [];
-      const unsub = manager.onProgress(job.id, (progress) =>
-        events.push({ phase: progress.phase, message: progress.message }),
-      );
-      manager.updateJob(job.id, {
-        status: 'failed',
-        error: partial.error,
-        progress: { phase: 'failed', percent: 100, message: String(partial.error) },
-      });
-      unsub();
+  it('advances the attempt count only when a resumed pending node fails again', () => {
+    const resumedFrom: RepoMeta['embeddingCheckpoint'] = {
+      at: new Date(0).toISOString(),
+      nodesProcessed: 10,
+      totalNodes: 12,
+      chunksProcessed: 24,
+      ...IDENTITY,
+      kind: 'partial',
+      attempts: 1,
+      pendingNodeIds: ['node-a', 'node-b'],
+    };
 
-      expect(manager.getJob(job.id)).toMatchObject({
-        status: 'failed',
-        error: expect.stringContaining('finished partially'),
-        progress: { phase: 'failed' },
-      });
-      expect(events).toEqual([
-        { phase: 'failed', message: expect.stringContaining('finished partially') },
-      ]);
-    } finally {
-      manager.dispose();
-    }
+    // Same node failed again → the retry is not converging; the budget advances.
+    expect(
+      resolveEmbedRunOutcome(
+        IDENTITY,
+        { nodesProcessed: 11, chunksProcessed: 26, failedNodeIds: ['node-a'] },
+        { resumedFrom },
+      ).checkpoint,
+    ).toMatchObject({ kind: 'partial', attempts: 2 });
+
+    // The resumed set cleared and DIFFERENT nodes were lost → a fresh partial,
+    // so the budget resets. The bound exists for a node the endpoint rejects
+    // deterministically, not for an endpoint that is merely flaky.
+    expect(
+      resolveEmbedRunOutcome(
+        IDENTITY,
+        { nodesProcessed: 11, chunksProcessed: 26, failedNodeIds: ['node-z'] },
+        { resumedFrom },
+      ).checkpoint?.attempts,
+    ).toBeUndefined();
   });
 });
 
-/**
- * Wiring guard for the same route. The behavioral tests above pin the DECISION;
- * this pins that the route still asks for it — the helper being right while the
- * call site keeps writing `embeddingCheckpoint: undefined` is exactly the
- * regression #2790 is about, and the route body cannot be reached without
- * booting a server over a real repo + DB + endpoint. Static-analysis layer,
- * same precedent as api-readonly-wiring.test.ts.
- */
-describe('POST /api/embed partial-run wiring (#2790)', () => {
-  it('feeds the pipeline result through resolveEmbedRunOutcome into the finalize write', async () => {
-    const source = await fs.readFile(
-      path.join(__dirname, '..', '..', 'src', 'server', 'api.ts'),
-      'utf-8',
-    );
-    // The result is captured, not discarded…
-    expect(source).toMatch(/const pipelineResult = await runEmbeddingPipeline\(/);
-    // …handed to the helper, and its checkpoint is what the finalize meta write
-    // persists (pre-fix: a hardcoded `embeddingCheckpoint: undefined`).
-    expect(source).toMatch(
-      /resolveEmbedRunOutcome\(embeddingIdentity, pipelineResult\)[\s\S]{0,400}embeddingCheckpoint: outcome\.checkpoint/,
-    );
-    // …and a partial run does not reach `status: 'complete'`.
-    expect(source).toMatch(
-      /partialRunError === undefined[\s\S]{0,80}status: 'complete'[\s\S]{0,120}status: 'failed'/,
-    );
+describe('inFlightEmbeddingCheckpoint (#2790)', () => {
+  it('stamps interrupted, so resume regenerates a possibly half-written window', () => {
+    const checkpoint = inFlightEmbeddingCheckpoint(IDENTITY, PROGRESS, ['node-a', 'node-b']);
+    expect(checkpoint).toMatchObject({
+      kind: 'interrupted',
+      nodesProcessed: 4,
+      totalNodes: 12,
+      chunksProcessed: 9,
+      model: 'test-model',
+      dimensions: 384,
+      provider: 'local',
+      pendingNodeIds: ['node-a', 'node-b'],
+    });
+    // `attempts` bounds retries of a 'partial' set; an in-flight marker has no
+    // such budget because its rows may exist.
+    expect(checkpoint.attempts).toBeUndefined();
   });
 });
 
@@ -198,14 +410,12 @@ describe('POST /api/embed partial-run wiring (#2790)', () => {
  * and `gitnexus analyze --force` wipes the database with no cache load: every
  * server-generated embedding is destroyed with no warning.
  *
- * The route body is an inline closure inside `createServer` (see the #2790
- * block above), so its finalize sequence is replayed here over the SAME
- * exported helpers the route calls, with real meta.json I/O and the real
- * `deriveEmbeddingMode`. The consequence is what these tests pin, not the field.
+ * The route body is an inline closure inside `createServer`, so its finalize
+ * sequence is replayed here over the SAME helpers the route calls, with real
+ * meta.json I/O and the real `deriveEmbeddingMode`. The consequence is what
+ * these tests pin, not the field.
  */
 describe('POST /api/embed records the embedding count it measured', () => {
-  const identity = { model: 'test-model', dimensions: 384, provider: 'local' };
-  const cleanRun = { nodesProcessed: 412, chunksProcessed: 900, failedNodeIds: [] };
   let metaDir: string;
   let seeded: RepoMeta;
 
@@ -217,29 +427,36 @@ describe('POST /api/embed records the embedding count it measured', () => {
     await fs.rm(metaDir, { recursive: true, force: true });
   });
 
-  /** What a CLI `analyze` leaves on disk before the server embeds anything. */
-  const seedMeta = async (embeddings: number | undefined): Promise<void> => {
+  /** What a CLI `analyze` (plus any mid-run checkpoint) leaves on disk. */
+  const seedMeta = async (
+    embeddings: number | undefined,
+    embeddingCheckpoint?: RepoMeta['embeddingCheckpoint'],
+  ): Promise<void> => {
     seeded = {
       repoPath: '/repo/embed-count',
       lastCommit: 'abc123',
       indexedAt: new Date(0).toISOString(),
       stats: { nodes: 500, ...(embeddings === undefined ? {} : { embeddings }) },
+      embeddingCheckpoint,
     };
     await saveMeta(metaDir, seeded);
   };
 
   const rowsWith = (cnt: unknown) => async () => [{ cnt } as Record<string, unknown>];
 
-  /** The route's finalize sequence: measure → resolve outcome → write meta. */
+  /** The route's finalize sequence: measure → re-read meta → resolve → write. */
   const finalizeEmbedRun = async (
     runQuery: (cypher: string) => Promise<Array<Record<string, unknown>> | undefined>,
-    pipelineResult: { nodesProcessed: number; chunksProcessed: number; failedNodeIds: string[] },
+    pipelineResult: EmbeddingRunResult,
   ): Promise<RepoMeta | null> => {
-    const { measurePersistedEmbeddingCount, resolveEmbedRunOutcome, withMeasuredEmbeddingCount } =
-      await import('../../src/server/api.js');
-    const measured = await measurePersistedEmbeddingCount(runQuery);
-    const outcome = resolveEmbedRunOutcome(identity, pipelineResult);
+    const measured = persistedEmbeddingCountOrUndefined(
+      await measurePersistedEmbeddingCount(runQuery),
+    );
     const finalMeta = (await loadMeta(metaDir)) ?? seeded;
+    const outcome = resolveEmbedRunOutcome(IDENTITY, pipelineResult, {
+      measuredEmbeddings: measured,
+      onDisk: finalMeta,
+    });
     await saveMeta(
       metaDir,
       withMeasuredEmbeddingCount(
@@ -258,10 +475,10 @@ describe('POST /api/embed records the embedding count it measured', () => {
     const written = await finalizeEmbedRun(async (cypher) => {
       asked.push(cypher);
       return [{ cnt: 412 }];
-    }, cleanRun);
+    }, CLEAN_RUN);
 
     expect(written).toMatchObject({ stats: { nodes: 500, embeddings: 412 } });
-    // A clean run still clears the checkpoint (#2790 contract, unchanged).
+    // A clean, MEASURED run clears the checkpoint (#2790 contract).
     expect(written?.embeddingCheckpoint).toBeUndefined();
     // Measured, not restated: the count comes from the live embedding table.
     expect(asked).toEqual([expect.stringMatching(/MATCH \(e:\w+\) RETURN count\(e\) AS cnt/)]);
@@ -280,7 +497,7 @@ describe('POST /api/embed records the embedding count it measured', () => {
       preserveExistingEmbeddings: false,
     });
 
-    const written = await finalizeEmbedRun(rowsWith(412), cleanRun);
+    const written = await finalizeEmbedRun(rowsWith(412), CLEAN_RUN);
     const honest = embeddingCountOf(written);
     expect(honest).toBe(412);
 
@@ -300,27 +517,35 @@ describe('POST /api/embed records the embedding count it measured', () => {
   });
 
   it('treats an unanswerable count query as unknown rather than 0', async () => {
-    const { measurePersistedEmbeddingCount } = await import('../../src/server/api.js');
     // The query throws for reasons unrelated to how many rows were written.
     await expect(
       measurePersistedEmbeddingCount(async () => {
         throw new Error('Connection closed');
       }),
-    ).resolves.toBeUndefined();
+    ).resolves.toMatchObject({ kind: 'unknown', reason: 'Connection closed' });
     // No row / no cell: an empty table would still answer with a 0.
-    await expect(measurePersistedEmbeddingCount(async () => [])).resolves.toBeUndefined();
-    await expect(measurePersistedEmbeddingCount(async () => undefined)).resolves.toBeUndefined();
+    await expect(measurePersistedEmbeddingCount(async () => [])).resolves.toMatchObject({
+      kind: 'unknown',
+    });
+    await expect(measurePersistedEmbeddingCount(async () => undefined)).resolves.toMatchObject({
+      kind: 'unknown',
+    });
     // Non-numeric cell — same class of unknown.
-    await expect(measurePersistedEmbeddingCount(rowsWith('many'))).resolves.toBeUndefined();
+    await expect(measurePersistedEmbeddingCount(rowsWith('many'))).resolves.toMatchObject({
+      kind: 'unknown',
+    });
     // A real zero is still a real answer.
-    await expect(measurePersistedEmbeddingCount(rowsWith(0))).resolves.toBe(0);
+    await expect(measurePersistedEmbeddingCount(rowsWith(0))).resolves.toEqual({
+      kind: 'measured',
+      count: 0,
+    });
   });
 
   it('leaves the previous count alone when the measurement fails, never writing a fabricated 0', async () => {
     await seedMeta(137);
     const written = await finalizeEmbedRun(async () => {
       throw new Error('Connection closed');
-    }, cleanRun);
+    }, CLEAN_RUN);
 
     expect(written).toMatchObject({ stats: { embeddings: 137 } });
     // The dangerous direction is wrong-LOW: a fabricated 0 here would arm the
@@ -328,6 +553,41 @@ describe('POST /api/embed records the embedding count it measured', () => {
     expect(deriveEmbeddingMode({ force: true }, embeddingCountOf(written))).toMatchObject({
       shouldLoadCache: true,
     });
+  });
+
+  it('keeps the recovery marker when a clean run cannot verify its own count', async () => {
+    // The state that arms the silent wipe: meta records 0 embeddings (a repo
+    // analyzed without them, embedded through the server), the run succeeded,
+    // and the count query cannot answer — so no honest count can be stamped.
+    const midRunMarker = inFlightEmbeddingCheckpoint(IDENTITY, PROGRESS, ['node-a']);
+    await seedMeta(0, midRunMarker);
+
+    const written = await finalizeEmbedRun(async () => {
+      throw new Error('Connection closed');
+    }, CLEAN_RUN);
+
+    // No fabricated value: neither a 0 nor a NaN/null lands in meta.
+    expect(written).toMatchObject({ stats: { nodes: 500, embeddings: 0 } });
+    // …and the marker this run wrote SURVIVES, so something on disk still
+    // records that embeddings were produced. Clearing it here would leave the
+    // index with zero evidence of its own embeddings.
+    expect(written?.embeddingCheckpoint).toMatchObject({
+      kind: 'interrupted',
+      pendingNodeIds: ['node-a'],
+    });
+  });
+
+  it('still clears the marker on an unverifiable run once meta records embeddings', async () => {
+    // Same unmeasurable run, but the recorded count already proves the index is
+    // accounted for — nothing needs preserving, so the clean-run contract wins.
+    await seedMeta(412, inFlightEmbeddingCheckpoint(IDENTITY, PROGRESS, ['node-a']));
+
+    const written = await finalizeEmbedRun(async () => {
+      throw new Error('Connection closed');
+    }, CLEAN_RUN);
+
+    expect(written).toMatchObject({ stats: { embeddings: 412 } });
+    expect(written?.embeddingCheckpoint).toBeUndefined();
   });
 
   it('records the honest count on a partial run, alongside the pending checkpoint', async () => {
@@ -342,7 +602,11 @@ describe('POST /api/embed records the embedding count it measured', () => {
     // count keeps `--force` from wiping it, the checkpoint re-embeds the rest.
     expect(written).toMatchObject({
       stats: { embeddings: 300 },
-      embeddingCheckpoint: { pendingNodeIds: ['node-a', 'node-b'], nodesProcessed: 300 },
+      embeddingCheckpoint: {
+        pendingNodeIds: ['node-a', 'node-b'],
+        nodesProcessed: 300,
+        kind: 'partial',
+      },
     });
     expect(deriveEmbeddingMode({ force: true }, embeddingCountOf(written))).toMatchObject({
       shouldLoadCache: true,
@@ -351,31 +615,86 @@ describe('POST /api/embed records the embedding count it measured', () => {
 });
 
 /**
- * Wiring guard for the count fix. The behavioral tests above pin the helpers;
- * this pins that the route calls them — and calls them in the one place where
- * the answer is trustworthy: after `flushWAL()` (so the count describes durable
- * rows) and inside `withLbugDb` (so the connection is still open).
+ * Wiring guard for the route. Everything the helpers DECIDE is pinned
+ * behaviorally above; what remains is that the inline route closure inside
+ * `createServer` still asks them — the helper being right while the call site
+ * keeps writing `embeddingCheckpoint: undefined` is exactly the regression
+ * #2790 is about, and that closure cannot be reached without booting a server
+ * over a real repo + LadybugDB + embedding endpoint. Static-analysis layer of
+ * last resort, same precedent as api-readonly-wiring.test.ts.
  */
-describe('POST /api/embed count wiring', () => {
+describe('POST /api/embed route wiring (#2790)', () => {
   const readSource = () =>
     fs.readFile(path.join(__dirname, '..', '..', 'src', 'server', 'api.ts'), 'utf-8');
 
-  it('measures after the WAL flush and folds the result into the finalize write', async () => {
+  /**
+   * The body of the route's `withLbugDb` callback — everything that may only
+   * run while the database connection is open. Sliced rather than matched with
+   * a character-distance regex so a comment edit cannot silently un-assert it.
+   */
+  const insideWithLbugDb = (source: string): string => {
+    const start = source.indexOf('await withLbugDb(lbugPath, async () => {');
+    const end = source.indexOf('\n            });', start);
+    expect(start).toBeGreaterThan(-1);
+    expect(end).toBeGreaterThan(start);
+    return source.slice(start, end);
+  };
+
+  it('feeds the pipeline result through resolveEmbedRunOutcome into the finalize write', async () => {
     const source = await readSource();
+    // The result is captured, not discarded…
+    expect(source).toContain('const pipelineResult = await runEmbeddingPipeline(');
+    // …handed to the helper with the finalize context…
     expect(source).toMatch(
-      /await flushWAL\(\);[\s\S]{0,600}const measuredEmbeddings = await measurePersistedEmbeddingCount\(executeQuery\);[\s\S]{0,600}withMeasuredEmbeddingCount\([\s\S]{0,200}measuredEmbeddings/,
+      /resolveEmbedRunOutcome\(\s*embeddingIdentity,\s*pipelineResult,\s*finalizeContext,\s*\)/,
     );
+    // …and its checkpoint is what the finalize meta write persists (pre-fix: a
+    // hardcoded `embeddingCheckpoint: undefined`).
+    expect(source).toContain('embeddingCheckpoint: outcome.checkpoint');
+    expect(source).toContain('partialRunError = outcome.error;');
+    // A partial run does not reach `status: 'complete'`, and carries its detail.
+    expect(source).toMatch(
+      /partialRunError === undefined[\s\S]{0,400}status: 'complete'[\s\S]{0,600}status: 'failed'/,
+    );
+    expect(source).toContain('partial: partialRunDetail,');
+  });
+
+  it('measures after the WAL flush, inside withLbugDb, and folds the result into the write', async () => {
+    const source = await readSource();
+    const region = insideWithLbugDb(source);
+    // Inside the open connection — this is the route's only chance to stamp
+    // `stats.embeddings`, and the next CLI run's preserve-or-wipe decision
+    // hangs on it.
+    expect(region).toContain('const measuredEmbeddings = await countPersistedEmbeddings();');
+    expect(region).toContain('await saveMeta(entry.storagePath, embeddingMeta);');
+    // Ordering, without brittle character spans: flush → measure → decide →
+    // write. Counting before the flush would describe rows still in the WAL.
+    const flushed = region.lastIndexOf('await flushWAL();');
+    const measured = region.indexOf('const measuredEmbeddings = await countPersistedEmbeddings();');
+    const decided = region.indexOf('const outcome = resolveEmbedRunOutcome(');
+    const folded = region.indexOf('embeddingMeta = withMeasuredEmbeddingCount(', measured);
+    expect(flushed).toBeLessThan(measured);
+    expect(measured).toBeLessThan(decided);
+    expect(decided).toBeLessThan(folded);
+    expect(region.slice(folded)).toContain('measuredEmbeddings,');
   });
 
   it('measures in the post-flush checkpoint callback and nowhere else in the pipeline options', async () => {
     const source = await readSource();
-    expect(source).toMatch(
-      /onCheckpoint: async \(checkpoint\) => \{[\s\S]{0,300}await flushWAL\(\);[\s\S]{0,200}measurePersistedEmbeddingCount\(executeQuery\)/,
+    expect(source).toContain(
+      'await saveEmbeddingCheckpoint(checkpoint, [], await countPersistedEmbeddings());',
     );
     // The window-start callback fires before any row exists — it must pass no
     // count rather than restate a stale one.
     expect(source).toMatch(
       /onCheckpointWindowStart: async \(\{ nodeIds, \.\.\.checkpoint \}\) => \{\s*await saveEmbeddingCheckpoint\(checkpoint, nodeIds\);\s*\},/,
     );
+  });
+
+  it('never maps the pipeline ready phase to a phase a client can read as terminal', async () => {
+    const source = await readSource();
+    // `ready` fires unconditionally before the route knows the outcome (#2790).
+    expect(source).toMatch(/p\.phase === 'ready'\s*\?\s*'finalizing'/);
+    expect(source).not.toMatch(/p\.phase === 'ready' \? 'complete'/);
   });
 });
