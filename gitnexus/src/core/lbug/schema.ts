@@ -304,6 +304,24 @@ const SCOPE_BRIDGE_TARGET_LABELS = [
  * Pairs carried by containment, inheritance, imports, DI, routes, clustering and
  * the PDG substrate — the surface no single label predicate describes, so it
  * stays hand-declared. The scope-resolution surface below is generated instead.
+ *
+ * Because it is hand-declared, this block is the half that can still go stale —
+ * and it did. #2789 was fixed by declaring one pair, but with that fix applied
+ * `analyze` still aborted on this repo's own `test/fixtures/lang-resolution`:
+ *
+ * - COBOL (`cobol-processor.ts`) mints a program as `Module`, a SECTION as
+ *   `Namespace`, an FD/record as `Record`, a working-storage item as `Property`
+ *   and an EXEC/dynamic-call site as `CodeElement`, then wires them with
+ *   CONTAINS/CALLS/ACCESSES.
+ * - Vue (`vue-sfc-extractor.ts`) emits BINDS_EVENT_HANDLER from a handler
+ *   `Function` to the child component's `File` — the only edge in the graph
+ *   whose TARGET is a `File`.
+ *
+ * `CodeElement`, `Namespace`, `Record` and `File` are in neither scope-bridge
+ * label set, so the generated block cannot reach those pairs and
+ * `schema-pair-coverage.test.ts`'s predicate-derived check cannot miss them
+ * either. `structural-pair-coverage.test.ts` covers this block from a corpus
+ * instead — that is the guard, not this comment.
  */
 const STRUCTURAL_PAIR_DDL = `  FROM File TO File,
   FROM File TO Folder,
@@ -400,7 +418,17 @@ const STRUCTURAL_PAIR_DDL = `  FROM File TO File,
   FROM \`Template\` TO \`Macro\`,
   FROM \`Template\` TO Interface,
   FROM \`Template\` TO \`Constructor\`,
+  FROM \`Module\` TO CodeElement,
   FROM \`Module\` TO \`Module\`,
+  FROM \`Module\` TO \`Namespace\`,
+  FROM \`Module\` TO \`Record\`,
+  FROM \`Namespace\` TO Function,
+  FROM CodeElement TO CodeElement,
+  FROM CodeElement TO \`Module\`,
+  FROM CodeElement TO \`Property\`,
+  FROM CodeElement TO \`Record\`,
+  FROM \`Record\` TO \`Record\`,
+  FROM Function TO File,
   FROM Section TO Section,
   FROM Section TO File,
   FROM File TO Route,
