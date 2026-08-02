@@ -175,7 +175,9 @@ const queryEmbeddableNodes = async (
       }
     } catch (error) {
       if (isDev) {
-        logger.warn({ error }, `Query for ${label} nodes failed:`);
+        // `err` is pino's standard serializer key — an arbitrary key serializes an
+        // Error to `{}`, losing the message and stack (#2114).
+        logger.warn({ err: error }, `Query for ${label} nodes failed:`);
       }
     }
   }
@@ -220,7 +222,8 @@ const queryFallbackFileNodes = async (
       );
   } catch (error) {
     if (isDev) {
-      logger.warn({ error }, 'Fallback File-node embedding query failed:');
+      // `err`, not `error` — see the serializer note above (#2114).
+      logger.warn({ err: error }, 'Fallback File-node embedding query failed:');
     }
     return [];
   }
@@ -347,8 +350,43 @@ const MAX_CONSECUTIVE_SUB_BATCH_FAILURES = 5;
  * rate sits below a live-traffic breaker's 50% (a batch indexer's job is to
  * index the whole corpus, not to serve degraded traffic) and above Hadoop's
  * single-digit `mapreduce.map.failures.maxpercent` (tolerating transient
- * hiccups is the entire point of #2790). At the default subBatchSize of 8 the
- * floor is ~160 chunks of evidence before the rate can abort anything.
+ * hiccups is the entire point of #2790).
+ *
+ * The sample floor SCALES with the run; it used to be a flat 20 (~160 chunks of
+ * evidence at the default subBatchSize of 8). A flat floor can exceed a run's
+ * ENTIRE sub-batch budget, and then the guard is not "not yet armed" — it is
+ * structurally off. Every resume run has exactly that shape by construction: its
+ * node set is only the pending ids, so it produces few sub-batches no matter how
+ * large the repo is, and the run whose whole purpose is retrying a suspect
+ * endpoint was the one run this guard could never fire in. Resilience4j can
+ * afford a constant `minimumNumberOfCalls` because a breaker sits on an
+ * unbounded call stream — the sample always arrives eventually; a batch indexer
+ * has a finite budget, so the minimum has to be expressed relative to it.
+ * Hadoop's `mapreduce.map.failures.maxpercent` takes the other extreme, a pure
+ * percentage with no minimum at all, which is why a 1-of-1 failure reads as
+ * "100% failed" there. The clamp below keeps both ends honest:
+ *
+ *   floor = clamp(ceil(totalNodes / 16), 5, 20)
+ *
+ *  - ceil(totalNodes / 16): at the default subBatchSize of 8 and one chunk per
+ *    node this is ~half the run's sub-batches, so the rate is judged over the
+ *    back half of a short run — a real sample, still early enough to stop the
+ *    run before it walks the rest of the corpus. Nodes that chunk into several
+ *    chunks only produce MORE sub-batches, so the guard arms earlier still.
+ *  - min 5: under five attempts a "rate" is one or two coin flips. A 3-node repo
+ *    losing its single sub-batch is 100% and must be tolerated, not aborted —
+ *    the exact case the old flat floor was written to protect, kept intact.
+ *  - max 20 (the previous flat value, reached at 320 nodes): large runs keep
+ *    today's behavior byte for byte, and a purely proportional floor would
+ *    perversely WEAKEN the guard at scale — a sixteenth of a 20k-node repo is
+ *    1250 sub-batches of corpus eaten before a rate could abort anything.
+ *
+ * Honest limit: this bounds the failure RATE, never the absolute loss. A run
+ * that steadily fails just under 25% of its sub-batches never aborts, so a
+ * single run may drop up to a quarter of the corpus and still exit 0 behind one
+ * warning line. That is by design — the dropped nodes are left holding ZERO rows
+ * so the next incremental run re-embeds them, which beats failing the whole
+ * analyze — but it is the real ceiling on what this guard promises.
  *
  * ponytail: lifetime ratio, evaluated only when a sub-batch fails. A sliding
  * window would spot an endpoint that degrades late in a long run sooner —
@@ -356,7 +394,15 @@ const MAX_CONSECUTIVE_SUB_BATCH_FAILURES = 5;
  * this bar.
  */
 const MAX_SUB_BATCH_FAILURE_RATIO = 0.25;
-const MIN_SUB_BATCHES_BEFORE_FAILURE_RATIO_GUARD = 20;
+const MIN_SUB_BATCHES_FLOOR = 5;
+const MAX_SUB_BATCHES_FLOOR = 20;
+const RATIO_GUARD_FLOOR_NODES_PER_SUB_BATCH = 16;
+
+const minSubBatchesBeforeFailureRatioGuard = (totalNodes: number): number =>
+  Math.min(
+    MAX_SUB_BATCHES_FLOOR,
+    Math.max(MIN_SUB_BATCHES_FLOOR, Math.ceil(totalNodes / RATIO_GUARD_FLOOR_NODES_PER_SUB_BATCH)),
+  );
 
 /**
  * The cumulative-ratio abort (#2790). Deliberately NOT the raw endpoint error
@@ -373,6 +419,24 @@ const failureRatioAbortError = (failures: number, attempted: number, cause: unkn
       `embed for this run to produce a usable index. Fix the embedding endpoint and re-run. ` +
       `Underlying failure: ${cause instanceof Error ? cause.message : String(cause)}`,
     { cause },
+  );
+
+/**
+ * Both failed: the run is aborting AND the cleanup DELETE for the dropped nodes
+ * threw (busy/read-only DB). The abort error stays primary — it is the one that
+ * names the real defect and the one the operator must act on — and is kept as
+ * `cause`; the cleanup failure is appended, because it also means those nodes may
+ * still hold partial rows carrying the CURRENT contentHash, which a later
+ * incremental run would read as fresh (the corruption the cleanup exists to
+ * prevent). Without this, a failing DELETE replaced the endpoint error outright.
+ */
+const abortWithFailedCleanupError = (abortErr: unknown, cleanupErr: unknown): Error =>
+  new Error(
+    `${abortErr instanceof Error ? abortErr.message : String(abortErr)} — additionally, ` +
+      `cleanup of the dropped nodes' embedding rows FAILED, so some may still hold partial ` +
+      `rows that a later incremental run would read as fresh: ` +
+      `${cleanupErr instanceof Error ? cleanupErr.message : String(cleanupErr)}`,
+    { cause: abortErr },
   );
 
 /**
@@ -609,6 +673,10 @@ export const runEmbeddingPipeline = async (
     // counter's reset-on-success blinds it to.
     let subBatchesAttempted = 0;
     let subBatchFailures = 0;
+    // Sized from this run's own node set, not a flat constant, so a resume run
+    // (whose node set is only the pending ids) still arms the guard — see
+    // minSubBatchesBeforeFailureRatioGuard.
+    const minSubBatchesForRatioGuard = minSubBatchesBeforeFailureRatioGuard(totalNodes);
     // #2790: the FIRST error of the current streak — the one the ceiling rethrows.
     // Later failures in a streak degrade into generic noise: a misconfigured
     // endpoint trips the HTTP client's circuit breaker after 3 rejections, so
@@ -735,7 +803,9 @@ export const runEmbeddingPipeline = async (
       // sub-batch boundary and a failure never maps cleanly onto whole nodes.
       const batchFailedNodeIds = new Set<string>();
       // Set instead of thrown immediately so the cleanup DELETE below still runs.
-      let ceilingError: { err: unknown } | undefined;
+      // Carries EITHER abort reason — the consecutive-ceiling rethrow or the
+      // cumulative-ratio abort — hence the reason-neutral name.
+      let abortError: { err: unknown } | undefined;
       for (let si = 0; si < allTexts.length; si += EMBED_SUB_BATCH) {
         const subTexts = allTexts.slice(si, si + EMBED_SUB_BATCH);
         const subUpdates = allUpdates.slice(si, si + EMBED_SUB_BATCH);
@@ -771,17 +841,17 @@ export const runEmbeddingPipeline = async (
             // still runs: sub-batches that succeeded before the endpoint went dark
             // left partial rows carrying the CURRENT hash, which is exactly the
             // read-as-fresh corruption this path exists to prevent.
-            ceilingError = streakError;
+            abortError = streakError;
             break;
           }
           if (
-            subBatchesAttempted >= MIN_SUB_BATCHES_BEFORE_FAILURE_RATIO_GUARD &&
+            subBatchesAttempted >= minSubBatchesForRatioGuard &&
             subBatchFailures / subBatchesAttempted >= MAX_SUB_BATCH_FAILURE_RATIO
           ) {
             // Same break-then-cleanup path as the ceiling: a run aborting because
             // the endpoint is shedding a quarter of the corpus still must not leave
             // this batch's touched nodes half embedded (#2790).
-            ceilingError = {
+            abortError = {
               err: failureRatioAbortError(subBatchFailures, subBatchesAttempted, streakError.err),
             };
             break;
@@ -811,10 +881,19 @@ export const runEmbeddingPipeline = async (
       // per-batch iteration so the inconsistency window stays one batch wide,
       // matching the U6 / KTD7 delete-window rationale above.
       if (batchFailedNodeIds.size > 0) {
-        await deleteStaleEmbeddingRows(executeWithReusedStatement, [...batchFailedNodeIds]);
+        try {
+          await deleteStaleEmbeddingRows(executeWithReusedStatement, [...batchFailedNodeIds]);
+        } catch (cleanupErr) {
+          // A failing cleanup DELETE must never swallow a pending abort: that
+          // error names the actual defect (the endpoint), while a busy or
+          // read-only DB is a second, downstream symptom. Without this the
+          // `throw` below is unreachable and the run reports only the DELETE.
+          if (!abortError) throw cleanupErr;
+          throw abortWithFailedCleanupError(abortError.err, cleanupErr);
+        }
         for (const nodeId of batchFailedNodeIds) failedNodeIds.add(nodeId);
       }
-      if (ceilingError) throw ceilingError.err;
+      if (abortError) throw abortError.err;
 
       // Nodes walked past in this run so far. Drives progress percent and the
       // checkpoint cadence, which must stay monotonic and hit `totalNodes`
@@ -893,7 +972,8 @@ export const runEmbeddingPipeline = async (
     const errorMessage = error instanceof Error ? error.message : 'Unknown error';
 
     if (isDev) {
-      logger.error({ error }, '❌ Embedding pipeline error:');
+      // `err`, not `error` — see the serializer note in queryEmbeddableNodes (#2114).
+      logger.error({ err: error }, '❌ Embedding pipeline error:');
     }
 
     onProgress({
