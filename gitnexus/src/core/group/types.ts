@@ -135,6 +135,18 @@ export interface GroupImpactResult {
   };
   risk: string;
   /**
+   * `'lower-bound'` when the fan-out was cut short, so `risk` is a FLOOR, not a
+   * verdict. Same vocabulary as single-repo `impact`'s `epistemic` field.
+   *
+   * `mergeRisk` is monotone increasing in the number of traversed crossings, so
+   * dropping a crossing can only move the reported risk DOWN — a fully
+   * truncated fan-out returns bare `localRisk`, making a symbol whose blast
+   * radius crosses a repo boundary indistinguishable from one with no
+   * cross-repo consumers. Absent this marker a truncated run emits a
+   * confident-looking `risk` byte-identical to a complete one.
+   */
+  riskEpistemic?: 'lower-bound';
+  /**
    * Milliseconds budget applied to the **Phase 1 local impact** leg (`safeLocalImpact`).
    * If the walk hits this wall first, expect `truncationReason: 'timeout'` and a partial `local` payload.
    */
