@@ -1341,6 +1341,157 @@ describe('LocalBackend.callTool', () => {
     });
   });
 
+  // ── #2787 — the impact BFS frontier query was the only `ORDER BY` in the
+  // backend with no `LIMIT` to escape into (every other one pairs its key with a
+  // small limit, so the engine answers from a bounded top-k heap). It now
+  // returns rows unordered and the traversal re-establishes, in JS, exactly the
+  // two properties that key provided. Nothing downstream re-establishes them for
+  // it: `byDepth` slices `impacted` without re-sorting, and the process/module
+  // enrichment reads a positional prefix of the same array.
+  describe('#2787 impact BFS frontier ordering', () => {
+    const TARGET_ROW = {
+      id: 'Function:src/index.ts:main',
+      name: 'main',
+      type: 'Function',
+      filePath: 'src/index.ts',
+      startLine: 1,
+      endLine: 5,
+    };
+    const ROOT = TARGET_ROW.id;
+
+    interface FrontierRow {
+      sourceId: string;
+      id: string;
+      name: string;
+      type: string;
+      filePath: string;
+      relType: string;
+      confidence: number;
+    }
+
+    /** One frontier-query row. `id` is `Label:filePath:name`, as in a real index. */
+    const edge = (
+      sourceId: string,
+      id: string,
+      relType: string,
+      confidence: number,
+    ): FrontierRow => {
+      const [, filePath, name] = id.split(':');
+      return { sourceId, id, name, type: 'Function', filePath, relType, confidence };
+    };
+
+    /**
+     * Drive `_runImpactBFS` with a scripted frontier: `levels[d - 1]` is what the
+     * depth-`d` query returns, in exactly that row order. Every other query
+     * (process/module enrichment, epistemic probe) returns nothing, so `byDepth`
+     * is precisely what the traversal produced.
+     */
+    const impactOverFrontier = async (levels: FrontierRow[][]): Promise<any> => {
+      let level = 0;
+      (executeParameterized as any).mockImplementation(async (_repo: string, query: string) => {
+        if (query.includes('$symName')) return [TARGET_ROW];
+        if (query.includes('$frontierIds')) return levels[level++] ?? [];
+        return [];
+      });
+      return backend.callTool('impact', { target: 'main', direction: 'upstream' });
+    };
+
+    const stamped = (items: any[]): unknown[] =>
+      items.map((it) => ({ id: it.id, relationType: it.relationType, confidence: it.confidence }));
+
+    it('leaves the frontier query unordered — the sort has no top-k escape', async () => {
+      await impactOverFrontier([]);
+
+      const frontierQueries = (executeParameterized as any).mock.calls
+        .map((c: unknown[]) => String(c[1]))
+        .filter((q: string) => q.includes('$frontierIds'));
+      expect(frontierQueries.length).toBeGreaterThan(0);
+      expect(frontierQueries.filter((q: string) => /ORDER BY/.test(q))).toEqual([]);
+      // …and equally: no LIMIT was added in its place. The traversal must see
+      // every neighbour edge; only the ORDERING moved.
+      expect(frontierQueries.filter((q: string) => /LIMIT/.test(q))).toEqual([]);
+    });
+
+    // (a) Diamond: `delta` and `epsilon` are each reached at depth 2 from BOTH
+    // depth-1 frontier nodes. The DB key made the stamped relationType/confidence
+    // the argmax under `relType ASC, confidence DESC, sourceId ASC`; the JS
+    // argmax must pick the same edge, and must pick it from either permutation.
+    const DIAMOND_LEVEL_1 = [
+      edge(ROOT, 'Function:src/alpha.ts:alpha', 'CALLS', 0.9),
+      edge(ROOT, 'Function:src/beta.ts:beta', 'CALLS', 0.9),
+    ];
+    // `delta` discriminates relType (CALLS < IMPORTS) AGAINST confidence — the
+    // weaker-confidence CALLS edge wins, so a "highest confidence" shortcut fails
+    // here. `epsilon` ties on relType and is decided by `confidence DESC`, across
+    // the 0.8 `fuzzy` boundary the tool description publishes.
+    const DIAMOND_LEVEL_2 = [
+      edge('Function:src/alpha.ts:alpha', 'Function:src/delta.ts:delta', 'IMPORTS', 0.6),
+      edge('Function:src/beta.ts:beta', 'Function:src/delta.ts:delta', 'CALLS', 0.55),
+      edge('Function:src/alpha.ts:alpha', 'Function:src/epsilon.ts:epsilon', 'CALLS', 0.7),
+      edge('Function:src/beta.ts:beta', 'Function:src/epsilon.ts:epsilon', 'CALLS', 0.85),
+    ];
+    const DIAMOND_ARGMAX = [
+      { id: 'Function:src/delta.ts:delta', relationType: 'CALLS', confidence: 0.55 },
+      { id: 'Function:src/epsilon.ts:epsilon', relationType: 'CALLS', confidence: 0.85 },
+    ];
+
+    it('stamps the argmax edge on a diamond-reached node', async () => {
+      const result = await impactOverFrontier([DIAMOND_LEVEL_1, DIAMOND_LEVEL_2]);
+      expect(stamped(result.byDepth[2])).toEqual(DIAMOND_ARGMAX);
+    });
+
+    it('stamps the same argmax edge when the rows arrive reversed', async () => {
+      // The second of two fixed permutations — not a randomised or repeat-N
+      // probe. Without the JS argmax the surviving edge is whichever row landed
+      // first, so this permutation would stamp IMPORTS/0.6 on `delta` and 0.7 on
+      // `epsilon` instead.
+      const result = await impactOverFrontier([
+        [...DIAMOND_LEVEL_1].reverse(),
+        [...DIAMOND_LEVEL_2].reverse(),
+      ]);
+      expect(stamped(result.byDepth[2])).toEqual(DIAMOND_ARGMAX);
+    });
+
+    // (b) `impacted` — and therefore `byDepth`, which slices it — is ordered by
+    // node id ascending in UTF-16 code units, whatever order the rows arrive in.
+    // The ids below also separate code-unit order from `localeCompare`: 'Z'
+    // (0x5A) precedes 'a' (0x61) in code units, while a locale collator sorts
+    // `apple` and `mango` ahead of `Zebra`.
+    const SCRAMBLED_LEVEL_1 = [
+      edge(ROOT, 'Function:src/mango.ts:mango', 'CALLS', 0.9),
+      edge(ROOT, 'Function:src/Zebra.ts:Zebra', 'CALLS', 0.9),
+      edge(ROOT, 'Function:src/apple.ts:apple', 'CALLS', 0.9),
+    ];
+    const SCRAMBLED_LEVEL_2 = [
+      edge('Function:src/mango.ts:mango', 'Function:src/quince.ts:quince', 'CALLS', 0.9),
+      edge('Function:src/apple.ts:apple', 'Function:src/Fig.ts:Fig', 'CALLS', 0.9),
+    ];
+    const ID_ASCENDING_1 = [
+      'Function:src/Zebra.ts:Zebra',
+      'Function:src/apple.ts:apple',
+      'Function:src/mango.ts:mango',
+    ];
+    const ID_ASCENDING_2 = ['Function:src/Fig.ts:Fig', 'Function:src/quince.ts:quince'];
+
+    it('orders byDepth by node id ascending, whatever order the rows arrive in', async () => {
+      const result = await impactOverFrontier([SCRAMBLED_LEVEL_1, SCRAMBLED_LEVEL_2]);
+
+      expect(result.byDepth[1].map((it: any) => it.id)).toEqual(ID_ASCENDING_1);
+      expect(result.byDepth[2].map((it: any) => it.id)).toEqual(ID_ASCENDING_2);
+      expect(result.byDepthCounts).toEqual({ 1: 3, 2: 2 });
+    });
+
+    it('orders byDepth identically when the rows arrive reversed', async () => {
+      const result = await impactOverFrontier([
+        [...SCRAMBLED_LEVEL_1].reverse(),
+        [...SCRAMBLED_LEVEL_2].reverse(),
+      ]);
+
+      expect(result.byDepth[1].map((it: any) => it.id)).toEqual(ID_ASCENDING_1);
+      expect(result.byDepth[2].map((it: any) => it.id)).toEqual(ID_ASCENDING_2);
+    });
+  });
+
   it('context tool ranks file_path match higher than non-match (#470)', async () => {
     (executeParameterized as any).mockResolvedValue([
       {

@@ -521,6 +521,9 @@ const queryAndDrain = async (targetConn: lbug.Connection, cypher: string): Promi
   return isSharedSingletonConn(targetConn) ? withConnLock(run) : run();
 };
 
+// determinism: probe — existence only. Every call site runs this through
+// `queryAndDrain`, which drains and discards the rows; the ONLY observable is
+// whether the read-only shadow replay throws, so no row identity is read.
 const READ_ONLY_SHADOW_REPLAY_PROBE = 'MATCH (n) RETURN n LIMIT 1';
 
 /**
@@ -1829,6 +1832,9 @@ export const loadCachedEmbeddings = async (): Promise<{
       // Old schema only had (nodeId, embedding); new schema adds (id, chunkIndex, startLine, endLine, contentHash).
       // If the query fails (column missing), we return empty cache to force a full rebuild.
       try {
+        // determinism: probe — schema probe, not a sample. `readQueryRows` drains
+        // the result and the rows are dropped on the floor; only whether the
+        // new-schema columns parse decides the branch.
         const check = await c.query(
           `MATCH (e:${EMBEDDING_TABLE_NAME}) RETURN e.nodeId AS nodeId, e.chunkIndex AS chunkIndex LIMIT 1`,
         );

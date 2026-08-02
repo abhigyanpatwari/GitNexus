@@ -445,6 +445,63 @@ const confidenceForRelType = (relType: string | undefined): number =>
   IMPACT_RELATION_CONFIDENCE[relType ?? ''] ?? 0.5;
 
 /**
+ * One row of `_runImpactBFS`'s per-depth frontier query, normalized to the seven
+ * columns the traversal consumes. The driver hands rows back keyed by name on
+ * some paths and positionally on others, so each column keeps the exact
+ * named-then-positional fallback the BFS has always used — but reads it once,
+ * here, so everything below the normalization sees a single shape.
+ */
+interface ImpactFrontierEdge {
+  /** Reached node id — `caller.id` upstream, `callee.id` downstream. */
+  id: string;
+  name: unknown;
+  type: unknown;
+  filePath: string;
+  /** `r.type`. Never null: the query filters on `r.type IN $relTypes`. */
+  relType: string;
+  /** `r.confidence`. May be null; those edges fall back to the per-type floor. */
+  confidence: unknown;
+  /** `n.id` — the frontier node this edge was reached FROM. */
+  sourceId: string;
+}
+
+/**
+ * Sort rank for the `confidence DESC` leg of {@link compareImpactEdgeStrength}.
+ * A null/non-numeric confidence ranks LAST (weakest), so a stored measurement
+ * always outranks a missing one. That is the same "keep the strongest evidence"
+ * intent the ordering exists for — and stating it here is the point: what an
+ * engine does with NULLs inside a DESC sort key is its choice, not ours.
+ */
+const impactEdgeConfidenceRank = (confidence: unknown): number =>
+  typeof confidence === 'number' && Number.isFinite(confidence)
+    ? confidence
+    : Number.NEGATIVE_INFINITY;
+
+/**
+ * `relType ASC, confidence DESC, sourceId ASC` — decides which of several edges
+ * reaching the SAME node stamps its `relationType`/`confidence` onto that node's
+ * `impacted` entry. Total over those three columns, so the winner is a genuine
+ * argmax rather than "whichever row the engine happened to emit first".
+ */
+function compareImpactEdgeStrength(a: ImpactFrontierEdge, b: ImpactFrontierEdge): number {
+  const byType = compareCodeUnits(a.relType, b.relType);
+  if (byType !== 0) return byType;
+  const aConfidence = impactEdgeConfidenceRank(a.confidence);
+  const bConfidence = impactEdgeConfidenceRank(b.confidence);
+  if (aConfidence !== bConfidence) return aConfidence > bConfidence ? -1 : 1;
+  return compareCodeUnits(a.sourceId, b.sourceId);
+}
+
+/**
+ * The whole former DB key: `id ASC` then {@link compareImpactEdgeStrength}.
+ * Orders the winning edges appended to `impacted` (distinct nodes, so `id` alone
+ * decides) and — on the `mode:'pdg'` bridge path only — the edge rows themselves.
+ */
+function compareImpactFrontierEdges(a: ImpactFrontierEdge, b: ImpactFrontierEdge): number {
+  return compareCodeUnits(a.id, b.id) || compareImpactEdgeStrength(a, b);
+}
+
+/**
  * Structured logging for *swallowed* query failures — replaces empty catch
  * blocks. The level reflects telemetry severity, NOT a promise about the
  * caller: most callers catch the failure and degrade to a genuinely safe
@@ -2167,6 +2224,8 @@ export class LocalBackend {
     }
     await this.ensureInitialized(repo);
     const rowLimit = 100_001;
+    // determinism: probe — overflow guard, not a window. The one-past cap is compared for exact equality below
+    // and the whole result is REPLACED by an error, so a truncated page never reaches a caller.
     const rows = await executeParameterized(
       repo.lbugPath,
       `MATCH (source:File)-[r:CodeRelation]->(target:File)
@@ -2806,6 +2865,8 @@ export class LocalBackend {
   private async semanticSearch(repo: RepoHandle, query: string, limit: number): Promise<any[]> {
     try {
       // Check if embedding table exists before loading the model (avoids heavy model init when embeddings are off)
+      // determinism: probe — aggregate singleton. COUNT(*) with no grouping key returns exactly one row, and only
+      // the count is read, to decide whether to load the embedding model at all.
       const tableCheck = await executeQuery(
         repo.lbugPath,
         `MATCH (e:${EMBEDDING_TABLE_NAME}) RETURN COUNT(*) AS cnt LIMIT 1`,
@@ -3331,6 +3392,8 @@ export class LocalBackend {
 
     // Direct UID — zero-ambiguity path.
     if (uid) {
+      // determinism: probe — PK-anchored singleton. $uid is a node primary key, so at most one row can match and
+      // the LIMIT never chooses between rows.
       const rows = await executeParameterized(
         repo.lbugPath,
         `MATCH (n {id: $uid}) RETURN ${selectClause} LIMIT 1`,
@@ -3724,6 +3787,8 @@ export class LocalBackend {
     if (!isClassLike && symRawType === '') {
       try {
         // Single UNION query instead of two serial round-trips.
+        // determinism: probe — existence only, and each UNION branch is PK-anchored on $symId. Only typeCheck.length
+        // > 0 is read; the projected label is discarded.
         const typeCheck = await executeParameterized(
           repo.lbugPath,
           `
@@ -3932,6 +3997,8 @@ export class LocalBackend {
     let methodMetadata: Record<string, unknown> | undefined;
     if (isMethodLike) {
       try {
+        // determinism: probe — PK-anchored singleton. $symId is a node primary key, so at most one row of method
+        // metadata can match.
         const metaRows = await executeParameterized(
           repo.lbugPath,
           `
@@ -4320,11 +4387,13 @@ export class LocalBackend {
       // Anchored miss with unreadable meta: one extra bounded probe decides
       // "no findings for this anchor" vs "no taint layer at all". Probe BOTH
       // intra (TAINTED) and inter (TAINT_PATH) existence.
+      // determinism: probe — layer existence. Only probe.length is read; r.reason never leaves this block.
       const probe = await executeParameterized(
         repo.lbugPath,
         `MATCH (a:BasicBlock)-[r:CodeRelation]->(b:BasicBlock) WHERE r.type = 'TAINTED' RETURN r.reason AS reason LIMIT 1`,
         {},
       );
+      // determinism: probe — layer existence. Only ipProbe.length is read; r.reason is discarded.
       const ipProbe =
         probe.length === 0
           ? await executeParameterized(
@@ -4554,6 +4623,7 @@ export class LocalBackend {
     // note is the inconclusive "status unknown" form, not the definitive
     // NO_PDG_NOTE (which is reserved for the meta-stamped absence above).
     if (total === 0 && pdgStamped === undefined) {
+      // determinism: probe — layer existence for one edge type. Only probe.length === 0 is read; r.reason is discarded.
       const probe = await executeParameterized(
         repo.lbugPath,
         `MATCH (:BasicBlock)-[r:CodeRelation]->(:BasicBlock) WHERE r.type = '${edgeType}' RETURN r.reason AS reason LIMIT 1`,
@@ -6418,27 +6488,44 @@ export class LocalBackend {
       // Batch frontier nodes into a single Cypher query per depth level.
       // ids/types/confidence are bound parameters (see above) — no interpolation.
       //
-      // This level has no LIMIT, so `impactedCount` was already order-stable (a
-      // visited `Set`). ORDER BY still matters (#2787), because three downstream
-      // consumers read `impacted` POSITIONALLY: the relationType/confidence
-      // stamped on a node reached by more than one edge is the first row's; the
-      // process/module enrichment covers only `impacted.slice(0, MAX_CHUNKS *
-      // CHUNK_SIZE)` and feeds the risk thresholds; and byDepth pagination
-      // slices without re-sorting. Row order therefore leaked into `risk` and
-      // into which symbols the user sees.
+      // Deliberately NO `ORDER BY` (#2787). Every other ordered query in this
+      // file pairs its key with a small `LIMIT`, so the engine answers it from a
+      // bounded top-k heap and the ordering is nearly free. This one had no such
+      // escape: the engine had to materialize and fully sort EVERY neighbour edge
+      // of the whole frontier — tens of thousands of rows at depth 2 for a hub
+      // symbol — on a four-key comparator led by a long
+      // `Label:filePath:qualifiedName` string, dragging the wide `name`/
+      // `filePath` columns through the sort, once per depth level, on the tool
+      // that runs before every symbol edit.
+      //
+      // The ordering only ever served three POSITIONAL consumers of `impacted`:
+      // the relationType/confidence stamped on a node reached by more than one
+      // edge (the first row won); the process/module enrichment, which covers
+      // only `impacted.slice(0, MAX_CHUNKS * CHUNK_SIZE)` and feeds the risk
+      // thresholds; and byDepth pagination, which slices without re-sorting. All
+      // three need strictly less than a total sort of edges, so the ordering now
+      // lives in JS below, where the guarantee is STRONGER as well as cheaper:
+      // an engine's collation and sort stability are not ours to specify or
+      // version-pin, whereas `compareCodeUnits` is exactly UTF-16 code-unit
+      // order and `impactEdgeConfidenceRank` pins where a NULL confidence lands.
+      // Reproduced there, at O(E) plus a sort of NODES rather than of edges:
+      //   * per reached id, an argmax under `relType ASC, confidence DESC,
+      //     sourceId ASC` — what "first row wins" meant once the key led with
+      //     `id` — via `compareImpactEdgeStrength`, and
+      //   * `impacted` appended id-ascending over the distinct newly-visited
+      //     nodes, via `compareImpactFrontierEdges`.
       //
       // `confidence DESC` is part of the key, not decoration (#2787 review F2):
       // (id, relType) is NOT unique — 2181 of ~10020 groups on this repo's index
       // carry more than one distinct confidence, and 0.7 vs 0.85 straddles the
-      // `< 0.8 = fuzzy` boundary the tool description publishes. Sorting the
-      // strongest edge first makes the stamped pair fully determined by the key
-      // AND retains the strongest evidence, the safer default for a
-      // blast-radius tool. `sourceId` closes the order for edges that tie on
-      // all three.
+      // `< 0.8 = fuzzy` boundary the tool description publishes. Taking the
+      // strongest edge makes the stamped pair fully determined by the key AND
+      // retains the strongest evidence, the safer default for a blast-radius
+      // tool. `sourceId` closes the order for edges that tie on both.
       const query =
         direction === 'upstream'
-          ? `MATCH (caller)-[r:CodeRelation]->(n) WHERE n.id IN $frontierIds AND r.type IN $relTypes${confidenceFilter} RETURN n.id AS sourceId, caller.id AS id, caller.name AS name, labels(caller)[0] AS type, caller.filePath AS filePath, r.type AS relType, r.confidence AS confidence ORDER BY id, relType, confidence DESC, sourceId`
-          : `MATCH (n)-[r:CodeRelation]->(callee) WHERE n.id IN $frontierIds AND r.type IN $relTypes${confidenceFilter} RETURN n.id AS sourceId, callee.id AS id, callee.name AS name, labels(callee)[0] AS type, callee.filePath AS filePath, r.type AS relType, r.confidence AS confidence ORDER BY id, relType, confidence DESC, sourceId`;
+          ? `MATCH (caller)-[r:CodeRelation]->(n) WHERE n.id IN $frontierIds AND r.type IN $relTypes${confidenceFilter} RETURN n.id AS sourceId, caller.id AS id, caller.name AS name, labels(caller)[0] AS type, caller.filePath AS filePath, r.type AS relType, r.confidence AS confidence`
+          : `MATCH (n)-[r:CodeRelation]->(callee) WHERE n.id IN $frontierIds AND r.type IN $relTypes${confidenceFilter} RETURN n.id AS sourceId, callee.id AS id, callee.name AS name, labels(callee)[0] AS type, callee.filePath AS filePath, r.type AS relType, r.confidence AS confidence`;
 
       try {
         const related = await executeParameterized(repo.lbugPath, query, {
@@ -6447,60 +6534,96 @@ export class LocalBackend {
           ...(safeMinConfidence > 0 ? { minConfidence: safeMinConfidence } : {}),
         });
 
-        for (const rel of related) {
-          const sourceId = String(rel.sourceId ?? rel[0] ?? '');
-          const relId = rel.id || rel[1];
-          const filePath = rel.filePath || rel[4] || '';
+        const edges: ImpactFrontierEdge[] = related.map((rel) => ({
+          id: rel.id || rel[1],
+          name: rel.name || rel[2],
+          type: rel.type || rel[3],
+          filePath: rel.filePath || rel[4] || '',
+          relType: rel.relType || rel[5],
+          confidence: rel.confidence ?? rel[6],
+          sourceId: String(rel.sourceId ?? rel[0] ?? ''),
+        }));
 
-          if (!includeTests && isTestFilePath(filePath)) continue;
+        // The pdg bridge is the ONE consumer here that accumulates sequentially
+        // rather than per-node: at depth ≥ 2 an edge inherits
+        // `pdgBridgeEvidenceById.get(sourceId)` — a LIVE read of the very map
+        // this same pass writes under `id` — so an edge from one frontier node
+        // to another can upgrade that parent mid-pass, and every later edge out
+        // of the upgraded parent then inherits the stronger verdict. Row order
+        // is therefore observable on that path alone, and dropping the DB key
+        // without replacing it would have changed `mode:'pdg'` output. Give it
+        // the same key in JS instead. Bounded to that path on purpose: only
+        // `mode:'pdg'` (downstream, line-anchored) ever sets `pdgBridge`, so the
+        // hot `impact()`/`context()` traversal pays no sort at all.
+        if (opts.pdgBridge) edges.sort(compareImpactFrontierEdges);
+
+        // Argmax edge per newly-reached node, under the key the DB used to
+        // carry. Rebuilt per depth level, exactly like `nextFrontier`.
+        const bestEdgeByNode = new Map<string, ImpactFrontierEdge>();
+
+        for (const edge of edges) {
+          if (!includeTests && isTestFilePath(edge.filePath)) continue;
 
           // Bridge evidence is computed for EVERY edge (not just the first to
           // reach a node) and the strongest verdict across all parents is kept
           // (`callgraph-bridge` wins). This makes a diamond-reachable node's
-          // proven/unproven label order-independent of DB row iteration; the
-          // final label is stamped onto the impacted items after the depth loop.
+          // proven/unproven label order-independent of which parent the BFS
+          // visits first; the final label is stamped onto the impacted items
+          // after the depth loop.
           if (opts.pdgBridge) {
             const ev = pdgBridgeEvidenceForImpact({
               bridge: opts.pdgBridge,
               depth,
-              calleeName: rel.name || rel[2],
+              calleeName: edge.name,
               // Sound primary key (KTD3): the reached callee's RESOLVED id — the
-              // same `relId` (`rel.id`) the BFS keys its visited/frontier sets on,
+              // same `edge.id` (`rel.id`) the BFS keys its visited/frontier sets on,
               // which equals the CALLS targetId captured into `BasicBlock.calleeIds`.
               // The bridge proves by id ∈ `sliceCalleeIds` first, falling back to
               // `calleeName` only when ids are absent or the block is capped.
-              calleeId: relId,
-              inherited: pdgBridgeEvidenceById.get(sourceId),
+              calleeId: edge.id,
+              inherited: pdgBridgeEvidenceById.get(edge.sourceId),
             });
             pdgBridgeEvidenceById.set(
-              String(relId),
-              betterBridgeEvidence(pdgBridgeEvidenceById.get(String(relId)), ev),
+              String(edge.id),
+              betterBridgeEvidence(pdgBridgeEvidenceById.get(String(edge.id)), ev),
             );
           }
 
-          if (!visited.has(relId)) {
-            visited.add(relId);
-            nextFrontier.push(relId);
-            const storedConfidence = rel.confidence ?? rel[6];
-            const relationType = rel.relType || rel[5];
-            // Prefer the stored confidence from the graph (set at analysis time);
-            // fall back to the per-type floor for edges without a stored value.
-            const effectiveConfidence =
-              typeof storedConfidence === 'number' && storedConfidence > 0
-                ? storedConfidence
-                : confidenceForRelType(relationType);
-            // pdgEvidence is stamped after the depth loop from the finalized,
-            // order-independent pdgBridgeEvidenceById map.
-            impacted.push({
-              depth,
-              id: relId,
-              name: rel.name || rel[2],
-              type: rel.type || rel[3],
-              filePath,
-              relationType,
-              confidence: effectiveConfidence,
-            });
+          // Nodes seeded or reached at an EARLIER depth contribute no new
+          // `impacted` entry. `visited` no longer grows inside this pass — it
+          // used to double as the "first row wins" argmax, a job
+          // `bestEdgeByNode` now does explicitly — so the guard reads the same
+          // set for every edge of the level, which is what it always meant.
+          if (visited.has(edge.id)) continue;
+
+          const incumbent = bestEdgeByNode.get(edge.id);
+          if (incumbent === undefined || compareImpactEdgeStrength(edge, incumbent) < 0) {
+            bestEdgeByNode.set(edge.id, edge);
           }
+        }
+
+        for (const edge of [...bestEdgeByNode.values()].sort(compareImpactFrontierEdges)) {
+          visited.add(edge.id);
+          nextFrontier.push(edge.id);
+          const storedConfidence = edge.confidence;
+          const relationType = edge.relType;
+          // Prefer the stored confidence from the graph (set at analysis time);
+          // fall back to the per-type floor for edges without a stored value.
+          const effectiveConfidence =
+            typeof storedConfidence === 'number' && storedConfidence > 0
+              ? storedConfidence
+              : confidenceForRelType(relationType);
+          // pdgEvidence is stamped after the depth loop from the finalized,
+          // order-independent pdgBridgeEvidenceById map.
+          impacted.push({
+            depth,
+            id: edge.id,
+            name: edge.name,
+            type: edge.type,
+            filePath: edge.filePath,
+            relationType,
+            confidence: effectiveConfidence,
+          });
         }
       } catch (e) {
         logQueryError('impact:depth-traversal', e);
@@ -7012,6 +7135,7 @@ export class LocalBackend {
 
     let rows: any[];
     try {
+      // determinism: probe — PK-anchored singleton. $uid is a node primary key, so at most one row can match.
       rows = await executeParameterized(
         repo.lbugPath, // pool keyed by the resolved clone's path, not the id
         `MATCH (n) WHERE n.id = $uid
