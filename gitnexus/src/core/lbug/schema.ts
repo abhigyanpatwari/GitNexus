@@ -297,6 +297,7 @@ CREATE REL TABLE ${REL_TABLE_NAME} (
   FROM Function TO \`Typedef\`,
   FROM Function TO \`Union\`,
   FROM Function TO \`Property\`,
+  FROM Function TO \`Variable\`,
   FROM Function TO CodeElement,
   FROM Class TO Method,
   FROM Class TO Function,

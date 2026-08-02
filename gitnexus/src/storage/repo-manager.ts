@@ -687,8 +687,13 @@ export interface RepoMeta {
  * Numbered 34, not 33: `main` took 33 for Spring AOP (#2416) mid-flight, landing
  * on exactly this branch's number — the seventh collision in this series and the
  * first exact clash. Re-check against origin/main before merge.
+ *
+ * v35: Go function-local variables emit Function→Variable containment edges
+ * (#2789). LadybugDB fixes endpoint pairs when the relation table is created,
+ * so a pre-v35 index cannot persist these edges through incremental writeback.
+ * Force a full re-analyze.
  */
-export const INCREMENTAL_SCHEMA_VERSION = 34;
+export const INCREMENTAL_SCHEMA_VERSION = 35;
 
 export interface IndexedRepo {
   repoPath: string;

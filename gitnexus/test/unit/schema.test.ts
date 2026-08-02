@@ -215,6 +215,11 @@ describe('LadybugDB Schema', () => {
       expect(RELATION_SCHEMA).toContain('FROM Interface TO CodeElement');
     });
 
+    it('declares the Go function-local variable containment pair (#2789)', () => {
+      const declaredPairs = parseRelationSchemaPairs(RELATION_SCHEMA);
+      expect(declaredPairs.has('Function|Variable')).toBe(true);
+    });
+
     it('declares the Swift enum/property member-containment pairs (#2769)', () => {
       // Asserted through the runtime's own parser, not raw strings, so a
       // cosmetic DDL formatting change cannot fail this without a semantic
