@@ -41,6 +41,18 @@
 #     most weekly. Revisit if run frequency increases or the threat model
 #     changes; stopping already bounds the exposure window to the job's own
 #     runtime on 1 day out of 7.
+# [ ] Stop the runner box from restarting services under a running job. A run
+#     spans ~15h and apt-daily-upgrade.timer fires daily (~06:34), so every
+#     scheduled run crosses it. On 2026-08-02 unattended-upgrades upgraded
+#     openssl at 07:54:02 and needrestart restarted the Actions runner five
+#     seconds later: the job went to Canceled, and a cancelled job skips even
+#     `if: always()`, so the evidence artifact died with it. Keep installing
+#     updates, but never let them restart services here:
+#         /etc/needrestart/conf.d/90-gitnexus-evolution.conf
+#         $nrconf{restart} = 'l';
+#     A drop-in, so a needrestart package upgrade cannot clobber it. Nothing
+#     is left unpatched in practice — the box is stopped between runs, so the
+#     new binaries take effect at the next boot.
 # [x] Run workflow_dispatch once and confirm: containment preflight passes,
 #     the benchmark completes inside the job timeout, the results artifact
 #     uploads, and a promotion (if any) opens a well-formed PR. Run
