@@ -514,23 +514,38 @@ withTestLbugDB(
         expect(uids).toContain('Tool:alpha');
       });
 
-      it('ranks the kind-matching candidate first when kind is supplied (the --kind flag path)', async () => {
-        // 'alpha' is both a Function (func:alpha) and a Tool (Tool:alpha).
-        // kind only adds +0.20 in scoreCandidate, so 0.50 + 0.20 = 0.70 stays
-        // below the 0.95 confident-resolution threshold — the response is still
-        // ambiguous. What kind buys is ranking: the Function is promoted above
-        // the non-matching Tool. This exercises the scoreCandidate kind branch
-        // against a real DB rather than only through the mocked CLI unit test.
+      it('retries unfiltered and still ranks by kind when the hint matches no id prefix (the --kind flag path, #2787 review F5)', async () => {
+        // WHY THIS FIXTURE TAKES THE FALLBACK, NOT THE FILTER (#2787 review F5):
+        // `kind` is no longer a pure scoring term — it filters with
+        // `n.id STARTS WITH 'Function:'`, which relies on the production node-id
+        // convention `Label:filePath:qualifiedName`. This fixture predates that
+        // convention: its Function node is `func:alpha` (lowercase, in
+        // test/fixtures/local-backend-seed.ts), so NO row in this DB satisfies
+        // the `Function:` prefix and the filtered window comes back EMPTY.
+        // `kind` is a free-form string on the tool schema, so an empty filtered
+        // window must not degrade a real name to `not_found`: the resolver
+        // retries UNFILTERED and the hint reverts to scoreCandidate's +0.20
+        // ranking term. That fallback — not the filter — is what this pins.
+        // The filtering path is covered against production-shaped ids by the
+        // `resolver-kind-filter-2787` suite below.
         const result = await backend.callTool('impact', {
           target: 'alpha',
           kind: 'Function',
           direction: 'upstream',
         });
         expect(result).not.toHaveProperty('error');
+
+        // The unfiltered retry ran: BOTH candidates are back, including the
+        // Tool the filter would have excluded. Without the fallback this is
+        // `{ error: "Symbol 'alpha' not found" }`.
         expect(result.status).toBe('ambiguous');
         const candidates = result.candidates ?? [];
-        expect(candidates[0]?.uid).toBe('func:alpha');
-        expect(candidates[0]?.kind).toBe('Function');
+        expect(candidates.map((c: any) => c.uid).sort()).toEqual(['Tool:alpha', 'func:alpha']);
+
+        // …and the hint still ranks, exactly as it did before the filter
+        // existed: 0.50 + 0.20 = 0.70, below the 0.95 confident gate, so the
+        // response stays ambiguous with the Function promoted.
+        expect(candidates[0]).toMatchObject({ uid: 'func:alpha', kind: 'Function' });
         const tool = candidates.find((c: any) => c.uid === 'Tool:alpha');
         expect(candidates[0]?.score).toBeGreaterThan(tool?.score);
       });
@@ -617,6 +632,206 @@ withTestLbugDB(
           indexedAt: new Date().toISOString(),
           lastCommit: 'abc123',
           stats: { files: 1, nodes: 2, communities: 0, processes: 0 },
+        },
+      ]);
+      const backend = new LocalBackend();
+      await backend.init();
+      (handle as any)._backend = backend;
+    },
+  },
+);
+
+// ─── resolver `kind` hint FILTERS (#2787 review F5) ──────────────────────
+// See `resolveSymbolCandidates` (#2787 F5) for why the id order is label-major
+// and why the hint is therefore a WHERE-clause filter on BOTH the window and
+// its COUNT rather than a scoring term.
+//
+// This suite is deliberately seeded with PRODUCTION-shaped ids, unlike the
+// shared `local-backend-seed` fixture whose Function is `func:alpha` — that
+// legacy shape exercises the unfiltered-retry fallback instead (see the
+// "retries unfiltered…" test above).
+const KIND_RUNNER_METHOD_ID = 'Method:src/pipeline.ts:Runner.run';
+const KIND_RUN_FUNCTION_IDS = ['Function:src/cli/exec.ts:run', 'Function:src/pipeline.ts:run'];
+
+withTestLbugDB(
+  'resolver-kind-filter-2787',
+  (handle) => {
+    describe('resolver kind hint filters rather than scores (#2787 review F5)', () => {
+      let backend: LocalBackend;
+
+      beforeAll(() => {
+        const ext = handle as typeof handle & { _backend?: LocalBackend };
+        if (!ext._backend) {
+          throw new Error('LocalBackend not initialized — afterSetup did not attach _backend');
+        }
+        backend = ext._backend;
+      });
+
+      it('narrows a 3-way name collision to a confident resolution', async () => {
+        // Three symbols are named `run`: two Functions and one Method. As a
+        // scoring term the Method could only reach 0.50 + 0.20 = 0.70, far
+        // below the 0.95 confident gate, so this came back `ambiguous` and the
+        // caller had to round-trip for a uid. As a filter the window contains
+        // exactly one row, which resolves outright.
+        const result = await backend.callTool('impact', {
+          target: 'run',
+          kind: 'Method',
+          direction: 'upstream',
+        });
+
+        expect(result).not.toHaveProperty('error');
+        expect(result.status).not.toBe('ambiguous');
+        expect(result.target).toMatchObject({ id: KIND_RUNNER_METHOD_ID, name: 'run' });
+        // The BFS still ran on the filtered pick: `boot` calls Runner.run.
+        expect(result.impactedCount).toBeGreaterThanOrEqual(1);
+      });
+
+      it('excludes non-matching kinds from the candidate set AND from the match count', async () => {
+        // The load-bearing difference between filtering and scoring: with
+        // kind:'Function' the Method must be ABSENT, not merely ranked last —
+        // and `totalCandidates` (the COUNT leg) must agree with the page, or a
+        // filtered window ships alongside the unfiltered population.
+        const result = await backend.callTool('context', { name: 'run', kind: 'Function' });
+
+        expect(result).toMatchObject({ status: 'ambiguous', totalCandidates: 2 });
+        expect((result.candidates as Array<{ uid: string }>).map((c) => c.uid).sort()).toEqual(
+          KIND_RUN_FUNCTION_IDS,
+        );
+        expect(result).not.toHaveProperty('totalIsLowerBound');
+      });
+    });
+  },
+  {
+    seed: [
+      `CREATE (:Function {id: 'Function:src/pipeline.ts:run', name: 'run', filePath: 'src/pipeline.ts', startLine: 1, endLine: 9, isExported: true, content: 'export function run() {}', description: 'pipeline entry'})`,
+      `CREATE (:Function {id: 'Function:src/cli/exec.ts:run', name: 'run', filePath: 'src/cli/exec.ts', startLine: 1, endLine: 9, isExported: true, content: 'export function run() {}', description: 'cli entry'})`,
+      `CREATE (:Method {id: '${KIND_RUNNER_METHOD_ID}', name: 'run', filePath: 'src/pipeline.ts', startLine: 20, endLine: 30, isExported: false, content: 'run() {}', description: 'Runner.run'})`,
+      `CREATE (:Function {id: 'Function:src/main.ts:boot', name: 'boot', filePath: 'src/main.ts', startLine: 1, endLine: 5, isExported: true, content: 'function boot() {}', description: 'caller of Runner.run'})`,
+      `MATCH (a:Function), (b:Method) WHERE a.id = 'Function:src/main.ts:boot' AND b.id = '${KIND_RUNNER_METHOD_ID}'
+       CREATE (a)-[:CodeRelation {type: 'CALLS', confidence: 0.9, reason: 'direct', step: 0}]->(b)`,
+    ],
+    poolAdapter: true,
+    afterSetup: async (handle) => {
+      vi.mocked(listRegisteredRepos).mockResolvedValue([
+        {
+          name: 'kind-filter-repo',
+          path: '/kind/repo',
+          storagePath: handle.tmpHandle.dbPath,
+          indexedAt: new Date().toISOString(),
+          lastCommit: 'abc123',
+          stats: { files: 4, nodes: 4, communities: 0, processes: 0 },
+        },
+      ]);
+      const backend = new LocalBackend();
+      await backend.init();
+      (handle as any)._backend = backend;
+    },
+  },
+);
+
+// ─── context ref window must SPREAD across categories (#2787 review F1) ──
+// See the incoming-ref window in `_contextImpl` (#2787 F1) for why the 30-row
+// page is keyed `ORDER BY uid, relType` and not category-major.
+//
+// Shape below: 40 incoming refs on one Method — 35 CALLS, 3 ACCESSES, 1 USES,
+// 1 HAS_METHOD (the owning class, which is how `context` names the owner).
+//   relType-major → ACCESSES(3) + CALLS(27); HAS_METHOD and USES gone.
+//   uid-major     → HAS_METHOD(1) + ACCESSES(3) + USES(1) + CALLS(25).
+// The caller ids are spread through the id space on purpose (`a1` in f05, `u1`
+// in f10, `a2` in f15, `a3` in f25), so the rare categories are NOT stacked at
+// the front of the uid order — they survive because the key interleaves them,
+// not because they were placed first.
+const REF_TARGET_ID = 'Method:src/owner.ts:Owner.handle';
+const REF_OWNER_ID = 'Class:src/owner.ts:Owner';
+const REF_ACCESSES_IDS = [
+  'Function:src/f05.ts:a1',
+  'Function:src/f15.ts:a2',
+  'Function:src/f25.ts:a3',
+];
+const REF_USES_ID = 'Function:src/f10.ts:u1';
+
+const refCaller = (id: string, name: string, filePath: string): string =>
+  `CREATE (:Function {id: '${id}', name: '${name}', filePath: '${filePath}', startLine: 1, endLine: 3, isExported: true, content: '', description: ''})`;
+
+const refEdge = (fromLabel: string, fromId: string, relType: string): string =>
+  `MATCH (a:${fromLabel}), (b:Method) WHERE a.id = '${fromId}' AND b.id = '${REF_TARGET_ID}'
+   CREATE (a)-[:CodeRelation {type: '${relType}', confidence: 0.9, reason: 'direct', step: 0}]->(b)`;
+
+const REF_CALLS_IDS = Array.from({ length: 35 }, (_, i) => {
+  const nn = String(i + 1).padStart(2, '0');
+  return `Function:src/f${nn}.ts:c${nn}`;
+});
+
+withTestLbugDB(
+  'context-ref-window-2787',
+  (handle) => {
+    describe('context incoming-ref window spreads across categories (#2787 review F1)', () => {
+      let backend: LocalBackend;
+
+      beforeAll(() => {
+        const ext = handle as typeof handle & { _backend?: LocalBackend };
+        if (!ext._backend) {
+          throw new Error('LocalBackend not initialized — afterSetup did not attach _backend');
+        }
+        backend = ext._backend;
+      });
+
+      it('keeps single-edge categories that a category-major ORDER BY starved', async () => {
+        const result = await backend.callTool('context', { uid: REF_TARGET_ID });
+
+        expect(result).not.toHaveProperty('error');
+        expect(result.status).toBe('found');
+
+        // The rare categories are present at all — this is the assertion the
+        // pre-fix key fails: HAS_METHOD and USES sort after CALLS, whose 35 rows
+        // overflow the window on their own.
+        expect(Object.keys(result.incoming).sort()).toEqual([
+          'accesses',
+          'calls',
+          'has_method',
+          'uses',
+        ]);
+        expect(result.incoming.has_method.map((r: { uid: string }) => r.uid)).toEqual([
+          REF_OWNER_ID,
+        ]);
+        expect(result.incoming.uses.map((r: { uid: string }) => r.uid)).toEqual([REF_USES_ID]);
+        expect(result.incoming.accesses.map((r: { uid: string }) => r.uid)).toEqual(
+          REF_ACCESSES_IDS,
+        );
+
+        // …and the window is still exactly 30 rows: the fix REDISTRIBUTES the
+        // page, it does not widen it. The dominant category gives up the 5 slots
+        // the starved ones need.
+        expect(result.incoming.calls).toHaveLength(25);
+        expect(Object.values(result.incoming).flat()).toHaveLength(30);
+      });
+    });
+  },
+  {
+    seed: [
+      `CREATE (:Method {id: '${REF_TARGET_ID}', name: 'handle', filePath: 'src/owner.ts', startLine: 10, endLine: 20, isExported: false, content: '', description: ''})`,
+      `CREATE (:Class {id: '${REF_OWNER_ID}', name: 'Owner', filePath: 'src/owner.ts', startLine: 1, endLine: 40, isExported: true, content: '', description: ''})`,
+      ...REF_CALLS_IDS.map((id, i) => {
+        const nn = String(i + 1).padStart(2, '0');
+        return refCaller(id, `c${nn}`, `src/f${nn}.ts`);
+      }),
+      ...REF_ACCESSES_IDS.map((id, i) => refCaller(id, `a${i + 1}`, id.split(':')[1])),
+      refCaller(REF_USES_ID, 'u1', 'src/f10.ts'),
+      ...REF_CALLS_IDS.map((id) => refEdge('Function', id, 'CALLS')),
+      ...REF_ACCESSES_IDS.map((id) => refEdge('Function', id, 'ACCESSES')),
+      refEdge('Function', REF_USES_ID, 'USES'),
+      refEdge('Class', REF_OWNER_ID, 'HAS_METHOD'),
+    ],
+    poolAdapter: true,
+    afterSetup: async (handle) => {
+      vi.mocked(listRegisteredRepos).mockResolvedValue([
+        {
+          name: 'ref-window-repo',
+          path: '/ref/repo',
+          storagePath: handle.tmpHandle.dbPath,
+          indexedAt: new Date().toISOString(),
+          lastCommit: 'abc123',
+          stats: { files: 41, nodes: 41, communities: 0, processes: 0 },
         },
       ]);
       const backend = new LocalBackend();

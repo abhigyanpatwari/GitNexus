@@ -460,6 +460,9 @@ const WAITER_TIMEOUT_MS = 15_000;
 // of the lbug-config retry-budget registry.
 const LOCK_RETRY_ATTEMPTS = 3;
 const LOCK_RETRY_DELAY_MS = 2000;
+// determinism: probe — existence only. `probeDatabaseForShadowReplay` calls
+// `getAll()` purely to force the shadow replay and then discards the result;
+// the function returns void, so no row ever reaches a caller.
 const SHADOW_REPLAY_PROBE_QUERY = 'MATCH (n) RETURN n LIMIT 1';
 
 const poolSidecarLogger = {

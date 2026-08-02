@@ -19,7 +19,9 @@ function descentExec(file: string): RunPdgImpactDeps['executeParameterized'] {
   return async (_repo, query) => {
     // Top-level seed fetch is line-anchored (`a.startLine = $line`); the descent's
     // callee seed fetch is range-anchored — route by that.
-    if (query.includes('RETURN a.id AS id LIMIT')) {
+    // Matches the seed fetch without pinning the clauses after the projection —
+    // #2787 added `ORDER BY a.startLine, id` between the RETURN and the LIMIT.
+    if (query.includes('RETURN a.id AS id')) {
       return query.includes('a.startLine = $line') ? [{ id: seed }] : [{ id: calleeSeed }];
     }
     if (query.includes('MATCH (a:BasicBlock)-[r:CodeRelation]->(b:BasicBlock)')) {

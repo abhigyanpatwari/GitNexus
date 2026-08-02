@@ -102,6 +102,10 @@ RETURN sym.id AS uid, sym.name AS name, sym.filePath AS filePath,
 // degenerate edge-less node NOR inflates the uniqueness count and masks the real
 // handler. `LIMIT 2` bounds materialization: distinguishing unique (1) from
 // ambiguous (>=2) never needs more than two rows (the count guard stays exact).
+//
+// determinism: probe — uniqueness discriminator, not a window. `toResolvedSymbol`
+// reads row 0 only when `rows.length === 1`; a 2-row result is discarded whole,
+// so WHICH two rows came back can never reach a caller.
 export const RESOLVE_BY_NAME_QUERY = `
 MATCH (n) WHERE labels(n) IN ['Function','Method','CodeElement']
   AND n.name = $name AND n.filePath <> ''
@@ -114,6 +118,10 @@ LIMIT 2`;
 // the precise rung — it survives aliases and local same-name collisions that a
 // repo-wide name lookup cannot, and only resolves on a unique match within that
 // module. `LIMIT 2` keeps the uniqueness count exact (see RESOLVE_BY_NAME_QUERY).
+//
+// determinism: probe — uniqueness discriminator, not a window. Same consumer as
+// RESOLVE_BY_NAME_QUERY: `toResolvedSymbol` reads row 0 only when exactly one row
+// came back, and discards a 2-row result whole.
 export const RESOLVE_IN_MODULE_QUERY = `
 MATCH (n) WHERE labels(n) IN ['Function','Method','CodeElement']
   AND n.name = $name AND (n.filePath STARTS WITH $fileDot OR n.filePath STARTS WITH $fileSlash)

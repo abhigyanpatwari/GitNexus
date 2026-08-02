@@ -1427,6 +1427,9 @@ export const createServer = async (port: number, host: string = '127.0.0.1') => 
               // Label is validated against NODE_TABLES (compile-time safe identifiers);
               // nodeId uses $nid parameter binding to prevent injection
               const [connRes, clusterRes, procRes] = await Promise.all([
+                // determinism: probe — aggregate singleton. Both projections are
+                // `collect(...)` with no grouping key, which yields exactly one
+                // row, and `n` is PK-anchored on `$nid`; the LIMIT never chooses.
                 executePrepared(
                   `
               MATCH (n:${nodeLabel} {id: $nid})
@@ -1444,6 +1447,7 @@ export const createServer = async (port: number, host: string = '127.0.0.1') => 
               MATCH (n:${nodeLabel} {id: $nid})
               MATCH (n)-[:CodeRelation {type: 'MEMBER_OF'}]->(c:Community)
               RETURN c.label AS label, c.description AS description
+              ORDER BY c.id
               LIMIT 1
             `,
                   { nid: nodeId },

@@ -687,8 +687,28 @@ export interface RepoMeta {
  * Numbered 34, not 33: `main` took 33 for Spring AOP (#2416) mid-flight, landing
  * on exactly this branch's number — the seventh collision in this series and the
  * first exact clash. Re-check against origin/main before merge.
+ *
+ * v35: the relation DDL is GENERATED from two closed-form rules instead of the
+ * pairs someone happened to hit — 223 → 450 declared pairs (#2792, #2793).
+ * Rule 1, the scope-resolution bridge: `LINKABLE_LABELS` + the `File` caller
+ * fallback, crossed with `LINKABLE_LABELS` + `CALL_TARGET_TYPES`. Rule 2, the
+ * phase/framework overlays: every definition label (`NODE_TABLES` minus
+ * Community/Process/Route/Tool/Folder/BasicBlock) crossed with the labels those
+ * emitters mint and hang off a resolved anchor — Annotation, Community,
+ * Process, Route, Tool, File, Record. In both families the endpoint labels are
+ * LOOKUP RESULTS, not literals at the emit site, so hand-listing could only
+ * ever declare the pair in the latest stack trace: v32, v33 and #2781 were each
+ * that same piecemeal fix, and `analyze` kept aborting at `assertDeclaredPair`
+ * on the next codebase with a different edge shape (`Class→Variable` on Java
+ * initializers, then `Method→Annotation` on Spring `@Bean`, `Method→File` on a
+ * Vue Options-API handler, `Namespace→Record` on COBOL `DECLARATIVES`, and
+ * `Class→Tool` on `@mcp.tool()` applied to a class — four at once, from three
+ * different emitters). What remains hand-declared is only the containment /
+ * inheritance / import surface, which no label predicate describes and which a
+ * corpus test guards instead. A pre-v35 database physically lacks all of these
+ * from-to pairs, so force a full re-analyze.
  */
-export const INCREMENTAL_SCHEMA_VERSION = 34;
+export const INCREMENTAL_SCHEMA_VERSION = 35;
 
 export interface IndexedRepo {
   repoPath: string;

@@ -132,6 +132,7 @@ export async function augment(pattern: string, cwd?: string): Promise<string> {
           MATCH (n) WHERE n.filePath = '${escaped}'
           AND n.name CONTAINS '${patternFirstWord}'
           RETURN n.id AS id, n.name AS name, labels(n)[0] AS type, n.filePath AS filePath
+          ORDER BY id
           LIMIT 3
         `,
         );
@@ -158,6 +159,7 @@ export async function augment(pattern: string, cwd?: string): Promise<string> {
         MATCH (n)
         WHERE n.name CONTAINS '${patternFirstWord}'
         RETURN n.id AS id, n.name AS name, labels(n)[0] AS type, n.filePath AS filePath
+        ORDER BY id
         LIMIT 5
       `,
       ).catch(() => []);
@@ -184,98 +186,119 @@ export async function augment(pattern: string, cwd?: string): Promise<string> {
 
     const idList = uniqueSymbols.map((s) => `'${escapeCypherString(s.nodeId)}'`).join(', ');
 
-    // Batch fetch callers
-    const callersMap = new Map<string, string[]>();
-    try {
+    // Callers/callees are windowed PER SYMBOL, not out of one shared budget.
+    // A single `n.id IN [...] ... ORDER BY targetId LIMIT 15` sorts by the very
+    // column the rows are grouped by, which turns the cap into a single-bucket
+    // prefix: the alphabetically-first target takes every row (the hottest
+    // symbol in this repo's own index has 2163 callers) and the other four
+    // render with no callers at all. Raising the cap does not bound that, and
+    // ordering caller-major only moves the bucket. A per-target window is not
+    // expressible in one statement either — LadybugDB does not preserve a
+    // per-branch ORDER BY through UNION ALL — so fan out one bounded query per
+    // symbol (#2787).
+    //
+    // `id STARTS WITH 'File:'` sorts container nodes last: node ids are
+    // `Label:path:name`, so a bare `ORDER BY id` puts `File:` ahead of
+    // `Function:`/`Method:` and the "Called by" line renders bare filenames
+    // instead of the calling symbols the hint exists to name.
+    const NEIGHBOUR_CAP = 3;
+    const neighbourNames = async (nodeId: string, incoming: boolean): Promise<string[]> => {
+      const edge = incoming
+        ? `(other)-[:CodeRelation {type: 'CALLS'}]->(n)`
+        : `(n)-[:CodeRelation {type: 'CALLS'}]->(other)`;
       const rows = await executeQuery(
         repoId,
         `
-        MATCH (caller)-[:CodeRelation {type: 'CALLS'}]->(n)
-        WHERE n.id IN [${idList}]
-        RETURN n.id AS targetId, caller.name AS name
-        LIMIT 15
+        MATCH ${edge}
+        WHERE n.id = '${escapeCypherString(nodeId)}'
+        RETURN other.name AS name
+        ORDER BY other.id STARTS WITH 'File:', other.id
+        LIMIT ${NEIGHBOUR_CAP}
       `,
-      );
+      ).catch(() => []);
+      const names: string[] = [];
       for (const r of rows) {
-        const tid = r.targetId || r[0];
-        const name = r.name || r[1];
-        if (tid && name) {
-          if (!callersMap.has(tid)) callersMap.set(tid, []);
-          callersMap.get(tid)!.push(name);
-        }
+        const name = r.name || r[0];
+        if (name) names.push(name);
       }
-    } catch {
-      /* skip */
-    }
+      return names;
+    };
 
-    // Batch fetch callees
-    const calleesMap = new Map<string, string[]>();
-    try {
-      const rows = await executeQuery(
-        repoId,
-        `
-        MATCH (n)-[:CodeRelation {type: 'CALLS'}]->(callee)
-        WHERE n.id IN [${idList}]
-        RETURN n.id AS sourceId, callee.name AS name
-        LIMIT 15
-      `,
+    // Keyed by nodeId, like the process/cohesion enrichments below — positional
+    // arrays would put two lookup disciplines in one object literal and make
+    // "stays index-aligned with uniqueSymbols" an unenforced invariant.
+    const neighbourMap = async (incoming: boolean): Promise<Map<string, string[]>> =>
+      new Map(
+        await Promise.all(
+          uniqueSymbols.map(
+            async (s) => [s.nodeId, await neighbourNames(s.nodeId, incoming)] as const,
+          ),
+        ),
       );
-      for (const r of rows) {
-        const sid = r.sourceId || r[0];
-        const name = r.name || r[1];
-        if (sid && name) {
-          if (!calleesMap.has(sid)) calleesMap.set(sid, []);
-          calleesMap.get(sid)!.push(name);
-        }
-      }
-    } catch {
-      /* skip */
-    }
 
     // Batch fetch processes
-    const processesMap = new Map<string, string[]>();
-    try {
-      const rows = await executeQuery(
-        repoId,
-        `
+    const fetchProcesses = async (): Promise<Map<string, string[]>> => {
+      const byNode = new Map<string, string[]>();
+      try {
+        const rows = await executeQuery(
+          repoId,
+          `
         MATCH (n)-[r:CodeRelation {type: 'STEP_IN_PROCESS'}]->(p:Process)
         WHERE n.id IN [${idList}]
         RETURN n.id AS nodeId, p.heuristicLabel AS label, r.step AS step, p.stepCount AS stepCount
       `,
-      );
-      for (const r of rows) {
-        const nid = r.nodeId || r[0];
-        const label = r.label || r[1];
-        const step = r.step || r[2];
-        const stepCount = r.stepCount || r[3];
-        if (nid && label) {
-          if (!processesMap.has(nid)) processesMap.set(nid, []);
-          processesMap.get(nid)!.push(`${label} (step ${step}/${stepCount})`);
+        );
+        for (const r of rows) {
+          const nid = r.nodeId || r[0];
+          const label = r.label || r[1];
+          const step = r.step || r[2];
+          const stepCount = r.stepCount || r[3];
+          if (nid && label) {
+            if (!byNode.has(nid)) byNode.set(nid, []);
+            byNode.get(nid)!.push(`${label} (step ${step}/${stepCount})`);
+          }
         }
+      } catch {
+        /* skip */
       }
-    } catch {
-      /* skip */
-    }
+      return byNode;
+    };
 
     // Batch fetch cohesion
-    const cohesionMap = new Map<string, number>();
-    try {
-      const rows = await executeQuery(
-        repoId,
-        `
+    const fetchCohesion = async (): Promise<Map<string, number>> => {
+      const byNode = new Map<string, number>();
+      try {
+        const rows = await executeQuery(
+          repoId,
+          `
         MATCH (n)-[:CodeRelation {type: 'MEMBER_OF'}]->(c:Community)
         WHERE n.id IN [${idList}]
         RETURN n.id AS nodeId, c.cohesion AS cohesion
       `,
-      );
-      for (const r of rows) {
-        const nid = r.nodeId || r[0];
-        const coh = r.cohesion ?? r[1] ?? 0;
-        if (nid) cohesionMap.set(nid, coh);
+        );
+        for (const r of rows) {
+          const nid = r.nodeId || r[0];
+          const coh = r.cohesion ?? r[1] ?? 0;
+          if (nid) byNode.set(nid, coh);
+        }
+      } catch {
+        /* skip */
       }
-    } catch {
-      /* skip */
-    }
+      return byNode;
+    };
+
+    // One wave, not three. `augment` runs from the Claude Code PreToolUse hook
+    // in a cold process against a <500ms budget, so nothing amortizes — and the
+    // process/cohesion queries depend only on `idList`, never on the neighbour
+    // results, so serializing them behind the fan-out bought nothing. Each query
+    // keeps its own try/catch, so one failing still degrades to an empty map
+    // instead of taking the others down.
+    const [callerMap, calleeMap, processesMap, cohesionMap] = await Promise.all([
+      neighbourMap(true),
+      neighbourMap(false),
+      fetchProcesses(),
+      fetchCohesion(),
+    ]);
 
     // Assemble enriched results
     const enriched: Array<{
@@ -291,8 +314,8 @@ export async function augment(pattern: string, cwd?: string): Promise<string> {
       enriched.push({
         name: sym.name,
         filePath: sym.filePath,
-        callers: (callersMap.get(sym.nodeId) || []).slice(0, 3),
-        callees: (calleesMap.get(sym.nodeId) || []).slice(0, 3),
+        callers: callerMap.get(sym.nodeId) || [],
+        callees: calleeMap.get(sym.nodeId) || [],
         processes: processesMap.get(sym.nodeId) || [],
         cohesion: cohesionMap.get(sym.nodeId) || 0,
       });
