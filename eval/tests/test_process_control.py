@@ -9,6 +9,7 @@ import sys
 import time
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
@@ -139,6 +140,48 @@ def test_echo_stdout_streams_child_progress_and_stays_off_by_default(capfd) -> N
     # Echoing is a passthrough, not a redirect: the tail stays intact for the
     # caller that reports it after the process ends.
     assert "starting" in echoed.stdout_tail
+
+
+def test_echo_reaches_the_log_while_the_child_is_still_running(tmp_path: Path, monkeypatch) -> None:
+    """Streaming has to be prompt, not merely eventual.
+
+    A sweep emits one line every ~45 minutes. Draining with `read(8192)` still
+    delivers every byte, so the tail and the capture look correct — but nothing
+    surfaces until the pipe closes, which turns a 15-hour job into a silent one
+    and is the whole reason this passthrough exists.
+
+    The child here refuses to exit until the echoed line has been observed, so
+    an implementation that only flushes at EOF deadlocks and fails on the
+    timeout rather than passing on a technicality.
+    """
+    released = tmp_path / "echo-observed"
+
+    class Sink:
+        def write(self, data: bytes) -> int:
+            if b"first-line" in data:
+                released.write_text("go")
+            return len(data)
+
+        def flush(self) -> None:
+            pass
+
+    monkeypatch.setattr(process_control.sys, "stderr", SimpleNamespace(buffer=Sink()))
+    script = """
+import pathlib, sys, time
+sys.stdout.write('first-line\\n')
+sys.stdout.flush()
+target = pathlib.Path(%r)
+for _ in range(400):
+    if target.exists():
+        break
+    time.sleep(0.05)
+""" % str(released)
+
+    result = run_managed([PYTHON, "-c", script], timeout=15, echo_stdout=True)
+
+    assert released.exists(), "the line never reached the echo sink while the child ran"
+    assert result.ok
+    assert "first-line" in result.stdout_tail
 
 
 def test_incomplete_stdin_delivery_cannot_report_success() -> None:

@@ -128,7 +128,11 @@ def _drain(
     echo: BinaryIO | None = None,
 ) -> None:
     try:
-        while chunk := pipe.read(8192):
+        # read1, not read: on a BufferedReader, read(n) blocks until it has all
+        # n bytes or the pipe closes. A child that emits a line every 45 minutes
+        # never fills 8 KB, so its output would surface only when it exits —
+        # which is precisely what echo_stdout exists to avoid.
+        while chunk := pipe.read1(8192):
             tail.append(chunk)
             if capture is not None:
                 capture.append(chunk)
