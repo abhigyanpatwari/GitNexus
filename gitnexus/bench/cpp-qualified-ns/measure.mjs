@@ -14,10 +14,11 @@
  * `callsResolved === 0`, i.e. it generates only UNRESOLVED ADL sites, so it
  * never drives the qualified-receiver path at all; and it is
  * `describe.skipIf(!BENCH_ENABLED)` while the single CI step that sets
- * `GITNEXUS_BENCH=1` names its test files explicitly and lists neither C++
- * bench — so it has never executed in CI. Hence this bench, wired into an
- * always-on CI step: a per-call-site workspace scan must not be reintroduced
- * silently.
+ * `GITNEXUS_BENCH=1` names its test files explicitly and, until this PR wired
+ * it in, listed neither C++ bench — so it had never executed in CI. Even now
+ * that it runs, the `callsResolved === 0` half stands: it still cannot reach
+ * this path. Hence this bench, in an always-on step: a per-call-site workspace
+ * scan must not be reintroduced silently.
  *
  * For a synthetic corpus at two scales it reports:
  *   - `elapsed_ms` per scale (fastest of REPS, see `fastest`) for resolving
@@ -85,8 +86,8 @@ const CALLS_PER_FILE = 480;
 const REPS = 7;
 const WARMUP = 3;
 
-/** 1 in N receivers names a declared namespace; the rest name nothing. See the
- *  header — this is the ratio production's Case 1.5 actually sees. */
+/** 1 in N receivers names a declared namespace; the rest name nothing. Header
+ *  property 1 is why this ratio, and not an always-hits corpus. */
 const NS_RECEIVER_IN = 5;
 
 const NO_SCOPES = {};
@@ -136,12 +137,10 @@ function mix(n) {
  *     from the namespace's own defs, hit through an inline child, miss), each
  *     a different exit from the resolver.
  *   - `dup` across v1 and v2: `'ambiguous'` (#1564).
- *   - `twin_f`: the same-name inline nest. BOTH scopes register under receiver
- *     `twin_f`, so the walk starts from the outer node (which descends into the
- *     inner) AND from the inner node itself. Without `gatherQualifiedNsMember`'s
- *     `visited` dedup the one `twinned` is collected twice and a resolved def
- *     flips to `'ambiguous'` — a dropped CALLS edge, invisible to a corpus that
- *     only ever uses disjoint v1/v2/detail names.
+ *   - `twin_f`: the same-name inline nest — the only shape that observes
+ *     `gatherQualifiedNsMember`'s `visited` dedup, without which the one
+ *     `twinned` is collected twice and a resolved def flips to `'ambiguous'`
+ *     (that function's comment explains why both scopes land on one receiver).
  *   - `shared_g` declared by files 2g and 2g+1: C++ namespaces are open, so one
  *     receiver's members are spread over however many files reopen it. The
  *     legacy per-call-site scan got this for free; the index has to merge
@@ -150,14 +149,9 @@ function mix(n) {
  *   - `both` at the namespace level and in the inline child: pins BOTH
  *     collection sources by nodeId, via the two `both` call sites that select
  *     between them on argument type. Drop own-def collection and the `int`
- *     probe moves; drop inline-child descent and the `double` probe moves.
- *     (Pure REORDERING of the two within one candidate list stays invisible —
- *     the resolver's return contract is order-blind by construction, as
- *     `QualifiedNsMemberIndex`'s own doc comment states: `allHits[0]` is
- *     reached only when `allHits.length === 1`, and every multi-candidate path
- *     either narrows to a unique survivor or returns `'ambiguous'`. Order is
- *     kept in the implementation for byte-identity with the pre-#2788 walker,
- *     not because anything downstream can see it.)
+ *     probe moves; drop inline-child descent and the `double` probe moves. A
+ *     pure REORDER of the two stays invisible, and correctly so: the return
+ *     contract is order-blind — see `QualifiedNsMemberIndex.rootsByReceiver`.
  *   - `over` / `same` with a real `Callsite`: see `NS_PROBES`.
  */
 function buildCorpus(fileCount) {
@@ -306,16 +300,8 @@ const NS_PROBES = [
  *  the miss is a receiver miss and not a member miss. */
 const MISS_MEMBERS = ['size', 'begin', 'data', 'reset', 'own0', 'dup'];
 
-function nsReceiver(family, key, fileCount, sharedGroups) {
-  if (family === 'twin') return `twin_${key % fileCount}`;
-  if (family === 'shared') return `shared_${key % sharedGroups}`;
-  return `ns_${key % fileCount}`;
-}
-
 /** A plain identifier naming NO namespace in the corpus — a local, a type, a
- *  buffer. This is what Case 1.5 sees for the overwhelming majority of
- *  `receiver.member()` calls in real C++, and the path a receiver-bucket-absent
- *  fallback would blow up on. */
+ *  buffer. The ~4-in-5 majority of header property 1. */
 function missReceiver(key) {
   const shape = key % 3;
   if (shape === 0) return `obj${key % 97}`;
@@ -336,8 +322,14 @@ function callSites(fileCount) {
   const sharedGroups = Math.ceil(fileCount / 2);
   const sites = [];
   let nsReceiverSites = 0;
+  /** The declared-namespace receiver a probe family asks for. */
+  const nsReceiver = (family, key) => {
+    if (family === 'twin') return `twin_${key % fileCount}`;
+    if (family === 'shared') return `shared_${key % sharedGroups}`;
+    return `ns_${key % fileCount}`;
+  };
   const pushNs = (probe, key) => {
-    sites.push([nsReceiver(probe[0], key, fileCount, sharedGroups), probe[1], probe[2]]);
+    sites.push([nsReceiver(probe[0], key), probe[1], probe[2]]);
     nsReceiverSites++;
   };
   // Coverage prelude: every probe at least once at BOTH scales, so the
@@ -382,13 +374,19 @@ function siteKey(receiver, member, callsite) {
   return `${receiver}::${member}(${args})`;
 }
 
-/** Untimed identity pass. Deduped into a Set first: the resolver is a pure
- *  function of `(receiver, member, callsite)` on a fixed corpus, so repeated
- *  sites carry no information the first occurrence does not — only the hashing
- *  cost of ~500k duplicate strings. */
+/** Untimed identity pass, one resolve per DISTINCT `siteKey`. On a fixed corpus
+ *  the resolver is a pure function of `(receiver, member, callsite)`, so a
+ *  repeated site can only re-derive what the first occurrence already put in
+ *  the Set — the same argument that makes collecting into a Set correct makes
+ *  skipping the repeat correct. That is nearly the whole pass: the 192k/768k
+ *  sites carry only 2,330/3,470 distinct outcomes. */
 function outcomesOf(parsedFiles, sites) {
   const outcomes = new Set();
+  const seen = new Set();
   for (const [receiver, member, callsite] of sites) {
+    const key = siteKey(receiver, member, callsite);
+    if (seen.has(key)) continue;
+    seen.add(key);
     const hit = resolveCppQualifiedNamespaceMember(
       receiver,
       member,
@@ -397,7 +395,7 @@ function outcomesOf(parsedFiles, sites) {
       callsite,
     );
     outcomes.add(
-      `${siteKey(receiver, member, callsite)}\u0000${hit === undefined ? '<none>' : hit === 'ambiguous' ? '<ambiguous>' : hit.nodeId}`,
+      `${key}\u0000${hit === undefined ? '<none>' : hit === 'ambiguous' ? '<ambiguous>' : hit.nodeId}`,
     );
   }
   return outcomes;
@@ -450,8 +448,9 @@ for (const [name, fileCount] of [
   scales[name] = {
     files: fileCount,
     call_sites: sites.length,
-    // Reported, not just asserted: the whole point of #2788's review finding is
-    // that a gate whose receivers always hit measures the wrong path.
+    // Reported, not asserted: `ns_receiver_sites` evidences header property 1's
+    // mix and `distinct_outcomes` the fingerprinted surface's size — a corpus
+    // edit collapsing either still yields a "valid" fingerprint over far less.
     ns_receiver_sites: nsReceiverSites,
     distinct_outcomes: outcomes.size,
     ms: Number(ms.toFixed(3)),

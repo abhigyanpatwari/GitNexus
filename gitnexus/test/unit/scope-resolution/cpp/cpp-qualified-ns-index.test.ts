@@ -27,13 +27,12 @@ import {
   markCppInlineNamespaceRange,
   populateCppInlineNamespaceScopes,
   resolveCppQualifiedNamespaceMember,
-} from '../../src/core/ingestion/languages/cpp/inline-namespaces.js';
+} from '../../../../src/core/ingestion/languages/cpp/inline-namespaces.js';
 
 const NO_SCOPES = {} as unknown as ScopeResolutionIndexes;
 
 interface ScopeSpec {
   readonly id: string;
-  readonly kind: 'Namespace' | 'Module';
   readonly parent: string | null;
   readonly defs: readonly SymbolDefinition[];
   /** Distinguishes each scope's range so inline marking targets exactly one. */
@@ -50,6 +49,15 @@ function nsDef(nodeId: string, qualifiedName: string): SymbolDefinition {
 
 function fnDef(nodeId: string, qualifiedName: string): SymbolDefinition {
   return def(nodeId, 'Function', qualifiedName);
+}
+
+function ns(
+  id: string,
+  parent: string | null,
+  defs: readonly SymbolDefinition[],
+  line: number,
+): ScopeSpec {
+  return { id, parent, defs, line };
 }
 
 function range(line: number): {
@@ -76,7 +84,7 @@ function makeParsedFile(
     filePath,
     scopes: specs.map((s) => ({
       id: s.id as unknown as ScopeId,
-      kind: s.kind,
+      kind: 'Namespace',
       parent: s.parent as unknown as ScopeId | null,
       ownedDefs: s.defs,
       range: range(s.line),
@@ -121,20 +129,8 @@ function outerWithInlineChild(
   return makeParsedFiles(
     filePath,
     [
-      {
-        id: 'sc:outer',
-        kind: 'Namespace',
-        parent: null,
-        defs: [nsDef('n:outer', 'outer'), ...ownDefs],
-        line: 1,
-      },
-      {
-        id: 'sc:v1',
-        kind: 'Namespace',
-        parent: 'sc:outer',
-        defs: [nsDef('n:v1', 'outer.v1'), ...inlineDefs],
-        line: 10,
-      },
+      ns('sc:outer', null, [nsDef('n:outer', 'outer'), ...ownDefs], 1),
+      ns('sc:v1', 'sc:outer', [nsDef('n:v1', 'outer.v1'), ...inlineDefs], 10),
     ],
     ['sc:v1'],
   );
@@ -146,14 +142,15 @@ function outerWithInlineChild(
 function inlineChain(filePath: string, depth: number): readonly ParsedFile[] {
   const specs: ScopeSpec[] = [];
   for (let d = 0; d < depth; d++) {
-    const ns = nsDef(`n:ns${d}`, `n${d}`);
-    specs.push({
-      id: `sc:n${d}`,
-      kind: 'Namespace',
-      parent: d === 0 ? null : `sc:n${d - 1}`,
-      defs: d === depth - 1 ? [ns, fnDef('n:leaf', `n${d}.leaf`)] : [ns],
-      line: d * 2 + 1,
-    });
+    const self = nsDef(`n:ns${d}`, `n${d}`);
+    specs.push(
+      ns(
+        `sc:n${d}`,
+        d === 0 ? null : `sc:n${d - 1}`,
+        d === depth - 1 ? [self, fnDef('n:leaf', `n${d}.leaf`)] : [self],
+        d * 2 + 1,
+      ),
+    );
   }
   // Every level below the outermost is `inline`, so the whole chain is one
   // transitively-visible run of namespaces.
@@ -186,20 +183,13 @@ describe('C++ qualified-namespace member index (#2788)', () => {
     const files = makeParsedFiles(
       'a.cpp',
       [
-        {
-          id: 'sc:outer',
-          kind: 'Namespace',
-          parent: null,
-          defs: [nsDef('n:outer', 'outer')],
-          line: 1,
-        },
-        {
-          id: 'sc:nested',
-          kind: 'Namespace',
-          parent: 'sc:outer',
-          defs: [nsDef('n:nested', 'outer.nested'), fnDef('n:foo@nested', 'outer.nested.foo')],
-          line: 10,
-        },
+        ns('sc:outer', null, [nsDef('n:outer', 'outer')], 1),
+        ns(
+          'sc:nested',
+          'sc:outer',
+          [nsDef('n:nested', 'outer.nested'), fnDef('n:foo@nested', 'outer.nested.foo')],
+          10,
+        ),
       ],
       [],
     );
@@ -213,27 +203,9 @@ describe('C++ qualified-namespace member index (#2788)', () => {
     const files = makeParsedFiles(
       'a.cpp',
       [
-        {
-          id: 'sc:outer',
-          kind: 'Namespace',
-          parent: null,
-          defs: [nsDef('n:outer', 'outer')],
-          line: 1,
-        },
-        {
-          id: 'sc:v1',
-          kind: 'Namespace',
-          parent: 'sc:outer',
-          defs: [nsDef('n:v1', 'outer.v1'), fnDef('n:foo@v1', 'outer.v1.foo')],
-          line: 10,
-        },
-        {
-          id: 'sc:v2',
-          kind: 'Namespace',
-          parent: 'sc:outer',
-          defs: [nsDef('n:v2', 'outer.v2'), fnDef('n:foo@v2', 'outer.v2.foo')],
-          line: 20,
-        },
+        ns('sc:outer', null, [nsDef('n:outer', 'outer')], 1),
+        ns('sc:v1', 'sc:outer', [nsDef('n:v1', 'outer.v1'), fnDef('n:foo@v1', 'outer.v1.foo')], 10),
+        ns('sc:v2', 'sc:outer', [nsDef('n:v2', 'outer.v2'), fnDef('n:foo@v2', 'outer.v2.foo')], 20),
       ],
       ['sc:v1', 'sc:v2'],
     );
@@ -241,29 +213,21 @@ describe('C++ qualified-namespace member index (#2788)', () => {
   });
 
   it('resolves through an inline namespace that reuses its parent’s name', () => {
-    // `namespace ns { inline namespace ns { void foo(); } }` — legal C++, and
-    // the shape every other test here avoids by using disjoint v1/v2/detail
-    // names. BOTH scopes register under receiver `ns`, so the walk starts from
-    // the outer node (which descends into the inner) AND from the inner node
-    // itself. Without dedup the one `foo` is collected twice and the call
-    // degrades to 'ambiguous', silently dropping the CALLS edge.
+    // Pins the `visited` dedup: `namespace ns { inline namespace ns { … } }`
+    // registers both scopes under receiver `ns`, and without dedup the one
+    // `foo` is collected twice and degrades to 'ambiguous', dropping the CALLS
+    // edge. Why node identity is the right dedup key: see
+    // `gatherQualifiedNsMember` in `inline-namespaces.ts`.
     const files = makeParsedFiles(
       'a.cpp',
       [
-        {
-          id: 'sc:ns@outer',
-          kind: 'Namespace',
-          parent: null,
-          defs: [nsDef('n:ns@outer', 'ns')],
-          line: 1,
-        },
-        {
-          id: 'sc:ns@inner',
-          kind: 'Namespace',
-          parent: 'sc:ns@outer',
-          defs: [nsDef('n:ns@inner', 'ns.ns'), fnDef('n:foo', 'ns.ns.foo')],
-          line: 10,
-        },
+        ns('sc:ns@outer', null, [nsDef('n:ns@outer', 'ns')], 1),
+        ns(
+          'sc:ns@inner',
+          'sc:ns@outer',
+          [nsDef('n:ns@inner', 'ns.ns'), fnDef('n:foo', 'ns.ns.foo')],
+          10,
+        ),
       ],
       ['sc:ns@inner'],
     );
@@ -291,14 +255,12 @@ describe('C++ qualified-namespace member index (#2788)', () => {
   });
 
   it('resolves through a 20,000-deep inline chain without exhausting the stack', () => {
-    // The first index build walked inline children by recursion, once per
-    // namespace, so a deep generated chain either threw `RangeError: Maximum
-    // call stack size exceeded` (measured from 8,000 levels down, in this same
-    // runner) or exhausted the heap materializing the D + (D−1) + … + 1 member
-    // entries an eager table needs. Neither is caught on the analyze path —
-    // `run.ts` only wraps CFG/PDG emit and `phase.ts`'s `try` has no `catch` —
-    // so one pathological file aborted the whole run. 20,000 keeps margin over
-    // per-platform stack sizes.
+    // Pins that a deep chain neither overflows the stack nor blows the heap —
+    // the two failure modes a recursive build and an eager member table had.
+    // Why an uncaught throw here aborts the whole `analyze`: see
+    // `QualifiedNsMemberIndex` in `inline-namespaces.ts`. 20,000 is ~2.5x the
+    // depth that overflowed in this same runner, for margin over per-platform
+    // stack sizes.
     const files = inlineChain('deep.cpp', 20_000);
     // From the outermost namespace: the full chain is one transitive walk.
     expect(resolveCppQualifiedNamespaceMember('n0', 'leaf', files, NO_SCOPES)).toMatchObject({
@@ -326,28 +288,12 @@ describe('C++ qualified-namespace member index (#2788)', () => {
     const files: readonly ParsedFile[] = [
       makeParsedFile(
         'a.cpp',
-        [
-          {
-            id: 'sc:outer@a',
-            kind: 'Namespace',
-            parent: null,
-            defs: [nsDef('n:outer@a', 'outer'), fnDef('n:a', 'outer.a')],
-            line: 1,
-          },
-        ],
+        [ns('sc:outer@a', null, [nsDef('n:outer@a', 'outer'), fnDef('n:a', 'outer.a')], 1)],
         [],
       ),
       makeParsedFile(
         'b.cpp',
-        [
-          {
-            id: 'sc:outer@b',
-            kind: 'Namespace',
-            parent: null,
-            defs: [nsDef('n:outer@b', 'outer'), fnDef('n:b', 'outer.b')],
-            line: 1,
-          },
-        ],
+        [ns('sc:outer@b', null, [nsDef('n:outer@b', 'outer'), fnDef('n:b', 'outer.b')], 1)],
         [],
       ),
     ];
@@ -373,20 +319,8 @@ describe('C++ qualified-namespace member index (#2788)', () => {
   it('rebuilds after clearCppInlineNamespaces even when parsedFiles is reused', () => {
     // Pass 1: `v1` is inline, so `outer::foo` reaches through it.
     const specs: readonly ScopeSpec[] = [
-      {
-        id: 'sc:outer',
-        kind: 'Namespace',
-        parent: null,
-        defs: [nsDef('n:outer', 'outer')],
-        line: 1,
-      },
-      {
-        id: 'sc:v1',
-        kind: 'Namespace',
-        parent: 'sc:outer',
-        defs: [nsDef('n:v1', 'outer.v1'), fnDef('n:foo@v1', 'outer.v1.foo')],
-        line: 10,
-      },
+      ns('sc:outer', null, [nsDef('n:outer', 'outer')], 1),
+      ns('sc:v1', 'sc:outer', [nsDef('n:v1', 'outer.v1'), fnDef('n:foo@v1', 'outer.v1.foo')], 10),
     ];
     const files = makeParsedFiles('a.cpp', specs, ['sc:v1']);
     expect(resolveCppQualifiedNamespaceMember('outer', 'foo', files, NO_SCOPES)).toMatchObject({

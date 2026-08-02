@@ -503,14 +503,8 @@ jobs:
       - name: C++ qualified-namespace resolution guards (#2788)
         # Build-free: asserts resolveCppQualifiedNamespaceMember resolves an
         # unchanged symbol set (fingerprint) and that per-call-site cost stays
-        # independent of corpus size. It rescanned every parsed file per
-        # qualified `ns::member()` call site until #2788 — 25 of 33 analyze
-        # minutes on a 1.5k-file C++ repo. #1990 fixed the same bug in the
-        # sibling ADL path and did ship a gate (cpp-adl-benchmark.test.ts), but
-        # that one generates only unresolved ADL sites so it never drives the
-        # qualified path — and, being skipIf-gated on GITNEXUS_BENCH and absent
-        # from that job's file list, it has never run in CI. This step is the
-        # always-on gate for the qualified receiver path.
+        # independent of corpus size. Rationale and history: see the header of
+        # bench/cpp-qualified-ns/measure.mjs.
         run: node --import tsx bench/cpp-qualified-ns/measure.mjs --check
         working-directory: gitnexus
 
@@ -580,12 +574,17 @@ jobs:
         working-directory: gitnexus
 
       - name: Cross-language pipeline benchmarks (GITNEXUS_BENCH, serial)
+        # cpp-adl-benchmark.test.ts is not a `*-pipeline-benchmark.test.ts` but
+        # belongs here for the same reason: it is skipIf-gated on GITNEXUS_BENCH,
+        # so it had never run in CI and the PR #1990 ADL emit-scaling guard it
+        # holds was dead. ~45s of test time.
         env:
           GITNEXUS_BENCH: '1'
         run: >-
           npx vitest run --no-file-parallelism
           test/integration/cobol-pipeline-benchmark.test.ts
           test/integration/csharp-pipeline-benchmark.test.ts
+          test/integration/cpp-adl-benchmark.test.ts
           test/integration/instance-ownership-pipeline-benchmark.test.ts
           test/integration/spring-bean-resource-benchmark.test.ts
           test/integration/rust-pipeline-benchmark.test.ts

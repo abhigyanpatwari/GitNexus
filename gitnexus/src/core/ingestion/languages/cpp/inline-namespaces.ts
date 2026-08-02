@@ -34,7 +34,10 @@ import type { ScopeResolutionIndexes } from '../../model/scope-resolution-indexe
 import {
   isOverloadAmbiguousAfterNormalization,
   narrowOverloadCandidates,
+  type OverloadNarrowingHookCtx,
 } from '../../scope-resolution/passes/overload-narrowing.js';
+import { isOverloadableCallable } from '../../utils/callable-labels.js';
+import { isSemanticModelValidatorEnabled } from '../../utils/env.js';
 import { CPP_CONVERSION_ONLY_ARG_TYPE_PREFIXES, cppConversionRank } from './conversion-rank.js';
 
 interface RangeKey {
@@ -46,6 +49,11 @@ interface RangeKey {
 
 const inlineNamespaceRangesByFile = new Map<string, Set<string>>();
 const inlineNamespaceScopeIds = new Set<ScopeId>();
+/** Bumped by every writer of {@link inlineNamespaceScopeIds}. The qualified-ns
+ *  index is a function of both `parsedFiles` and that Set; its WeakMap key sees
+ *  only the first, so the memo stamps this epoch and a missed
+ *  {@link clearCppInlineNamespaces} degrades to a rebuild, not a stale answer. */
+let inlineNamespaceEpoch = 0;
 
 function rangeKey(r: RangeKey): string {
   return `${r.startLine}:${r.startCol}:${r.endLine}:${r.endCol}`;
@@ -90,16 +98,15 @@ export function applyCppInlineNamespaceSideChannel(
 /** Clear all inline-namespace state. Called from
  *  `cppScopeResolver.loadResolutionConfig` at the start of every pass.
  *
- *  The qualified-namespace index is dropped by REASSIGNING a fresh `WeakMap`:
- *  `WeakMap` has no `.clear()`, and swapping the instance discards every
- *  memoized entry at once — the exact invalidation the previous
- *  `qualifiedNsIndex = undefined` provided. Required even though the map is
- *  keyed on `parsedFiles` identity, because the index also depends on
- *  `inlineNamespaceScopeIds`, which the key cannot observe (see
- *  {@link qualifiedNsMemberIndex}). */
+ *  The qualified-namespace index is dropped by REASSIGNING a fresh `WeakMap`
+ *  (`WeakMap` has no `.clear()`) so its entries — and the `SymbolDefinition`
+ *  references they hold — are released here rather than waiting on the key.
+ *  Correctness does not rest on that: {@link inlineNamespaceEpoch} invalidates
+ *  any surviving entry. */
 export function clearCppInlineNamespaces(): void {
   inlineNamespaceRangesByFile.clear();
   inlineNamespaceScopeIds.clear();
+  inlineNamespaceEpoch++;
   qualifiedNsIndexByPass = new WeakMap();
 }
 
@@ -110,6 +117,7 @@ export function clearCppInlineNamespaces(): void {
 export function populateCppInlineNamespaceScopes(parsed: ParsedFile): void {
   const ranges = inlineNamespaceRangesByFile.get(parsed.filePath);
   if (ranges === undefined || ranges.size === 0) return;
+  inlineNamespaceEpoch++;
   for (const scope of parsed.scopes) {
     if (scope.kind !== 'Namespace') continue;
     if (ranges.has(rangeKey(scope.range))) {
@@ -159,21 +167,13 @@ export function isCppInlineNamespaceScope(scopeId: ScopeId): boolean {
  */
 interface QualifiedNsMemberIndex {
   /**
-   * Namespace simple name → the scopes declaring it, in the exact order the
-   * legacy linear scan visited them (file-major, then `parsed.scopes`
-   * declaration order).
-   *
-   * Order is preserved for byte-identity with the pre-#2788 walker, NOT
-   * because {@link resolveCppQualifiedNamespaceMember}'s return contract can
-   * observe it. That contract is order-blind today: `allHits[0]` is reached
-   * only under `allHits.length === 1`, and every multi-candidate path either
-   * narrows to a unique survivor (unique by definition) or falls into the two
-   * tail branches, which BOTH return `'ambiguous'`. In particular
-   * `narrowOverloadCandidates` is not acting first-wins here — on the
-   * callsite-less `resolveAdlCandidates` path its arity and type filters are
-   * pass-throughs, so a multi-hit pair always ends `'ambiguous'`. Keep the
-   * order anyway: it is free, and a future contract that does pick among ties
-   * should inherit the legacy order rather than Map insertion happenstance.
+   * Namespace simple name → the scopes declaring it, in the order the legacy
+   * linear scan visited them (file-major, then `parsed.scopes` declaration
+   * order). Nothing downstream observes that order — every multi-candidate
+   * path in {@link resolveCppQualifiedNamespaceMember} either narrows to a
+   * unique survivor or returns `'ambiguous'` — but it is free to preserve, and
+   * a future tie-break should inherit the legacy order rather than Map
+   * insertion happenstance.
    */
   readonly rootsByReceiver: ReadonlyMap<string, readonly QualifiedNsNode[]>;
   /**
@@ -205,18 +205,40 @@ interface MutableNsNode extends QualifiedNsNode {
 
 type NsScope = ParsedFile['scopes'][number];
 
+/**
+ * Dev/test-only mutation tripwire on the arrays this module shares across call
+ * sites ({@link NO_DEFS} and every `membersByReceiver` memo entry): an in-place
+ * `.sort()`/`.splice()` ever added to `overload-narrowing.ts` would corrupt
+ * every LATER resolution of the same pair, not just its own call, and freezing
+ * makes that a loud `TypeError` instead. DEV-ONLY because the types already
+ * reject it — the memo and `narrowOverloadCandidates`' parameter are both
+ * `readonly SymbolDefinition[]`, so only a cast gets past — while the freeze is
+ * not free: V8 moves a frozen array to `PACKED_FROZEN_ELEMENTS`, off the
+ * builtin fast path for the `.filter`/`.map`/`.some` narrowing runs over it at
+ * every multi-candidate call site (measured 4.6×; large bench arm 100.3 → 70.6ms
+ * with it off). Gated on `isSemanticModelValidatorEnabled()` — the OPT-IN form,
+ * not `adl.ts`'s opt-out `NODE_ENV !== 'production'`: `NODE_ENV` is unset in a
+ * CLI `analyze`, so the opt-out form would keep paying the freeze exactly where
+ * the cost lands. Read once at load because this one is per-call-site.
+ */
+const FREEZE_SHARED_CANDIDATES = isSemanticModelValidatorEnabled();
+
 /** Shared empties: most namespace scopes declare no callables, and most
- *  qualified receivers name no namespace at all. */
+ *  qualified receivers name no namespace at all. `NO_DEFS` is process-wide, so
+ *  it gets the same dev-only freeze the memoized arrays do. */
 const NO_MEMBERS: ReadonlyMap<string, readonly SymbolDefinition[]> = new Map();
-/** Frozen at declaration rather than lazily by the memo's `Object.freeze`, so
- *  this process-wide shared array is never observably mutable — it is also
- *  returned directly for receivers that name no namespace at all. */
-const NO_DEFS: readonly SymbolDefinition[] = Object.freeze([]);
+const NO_DEFS: readonly SymbolDefinition[] = FREEZE_SHARED_CANDIDATES ? Object.freeze([]) : [];
 
 /** Simple (last-segment) name of a def, matching the legacy scan exactly —
- *  including the empty-string fallback for a def with no `qualifiedName`. */
+ *  including the empty-string fallback for a def with no `qualifiedName`, and
+ *  the empty last segment of a trailing-dot name. `lastIndexOf` + `slice`
+ *  rather than `split('.').pop()`: same result, no intermediate array, and this
+ *  runs per callable def and per namespace scope at build. */
 function simpleNameOf(def: SymbolDefinition): string {
-  return def.qualifiedName?.split('.').pop() ?? def.qualifiedName ?? '';
+  const qualified = def.qualifiedName;
+  if (qualified == null) return '';
+  const lastDot = qualified.lastIndexOf('.');
+  return lastDot === -1 ? qualified : qualified.slice(lastDot + 1);
 }
 
 /**
@@ -233,29 +255,36 @@ function simpleNameOf(def: SymbolDefinition): string {
  * reclaim it — C++ is 7th of 16 `SCOPE_RESOLVERS` entries, so the retention
  * survived nine later language passes plus emit (104.2 MB measured).
  */
-let qualifiedNsIndexByPass = new WeakMap<readonly ParsedFile[], QualifiedNsMemberIndex>();
+let qualifiedNsIndexByPass = new WeakMap<readonly ParsedFile[], MemoizedIndex>();
+
+/** Memo cell: the index plus the {@link inlineNamespaceEpoch} it was built under. */
+interface MemoizedIndex {
+  readonly epoch: number;
+  readonly index: QualifiedNsMemberIndex;
+}
 
 /** Build the index in two linear passes per file: one to make a node per
  *  `Namespace` scope, one to link inline children and register receivers.
  *  Linking needs both endpoints to exist and `parsed.scopes` does not promise
- *  parents precede children, hence two passes rather than one. */
+ *  parents precede children, hence two passes rather than one — but only the
+ *  first pass filters `parsed.scopes`; it hands the second the `[scope, node]`
+ *  pairs it already found. */
 function buildQualifiedNsMemberIndex(parsedFiles: readonly ParsedFile[]): QualifiedNsMemberIndex {
   const rootsByReceiver = new Map<string, QualifiedNsNode[]>();
 
   for (const parsed of parsedFiles) {
     const nodesByScope = new Map<ScopeId, MutableNsNode>();
+    const namespaces: [NsScope, MutableNsNode][] = [];
     for (const sc of parsed.scopes) {
       if (sc.kind !== 'Namespace') continue;
-      nodesByScope.set(sc.id, { ownMembers: bucketOwnMembers(sc), inlineChildren: [] });
+      const node: MutableNsNode = { ownMembers: bucketOwnMembers(sc), inlineChildren: [] };
+      nodesByScope.set(sc.id, node);
+      namespaces.push([sc, node]);
     }
 
-    for (const sc of parsed.scopes) {
-      if (sc.kind !== 'Namespace') continue;
-      const node = nodesByScope.get(sc.id);
-      if (node === undefined) continue;
+    for (const [sc, node] of namespaces) {
       // A non-`Namespace` parent (a Module scope, say) has no node, so the
-      // inline child links to nothing — the same dead entry the legacy
-      // `inlineChildrenByParent` map recorded under that parent and never read.
+      // inline child links to nothing — hence the `?.` below.
       if (sc.parent !== null && inlineNamespaceScopeIds.has(sc.id)) {
         nodesByScope.get(sc.parent)?.inlineChildren.push(node);
       }
@@ -278,7 +307,7 @@ function buildQualifiedNsMemberIndex(parsedFiles: readonly ParsedFile[]): Qualif
 function bucketOwnMembers(scope: NsScope): ReadonlyMap<string, readonly SymbolDefinition[]> {
   let members: Map<string, SymbolDefinition[]> | undefined;
   for (const def of scope.ownedDefs) {
-    if (def.type !== 'Function' && def.type !== 'Method' && def.type !== 'Constructor') continue;
+    if (!isOverloadableCallable(def.type)) continue;
     const simple = simpleNameOf(def);
     members ??= new Map();
     let arr = members.get(simple);
@@ -310,15 +339,11 @@ function qualifiedNsMembers(
   }
   let hits = byMember.get(memberName);
   if (hits === undefined) {
-    // Frozen at insertion. `resolveCppQualifiedNamespaceMember` hands this
-    // exact array to `narrowOverloadCandidates`, and memoization means it is
-    // now shared by every call site in the pass rather than rebuilt per call.
-    // `overload-narrowing.ts` only derives (`.filter`/`.map`/`.some`) today, so
-    // nothing mutates it — but if an in-place `.sort()`/`.splice()` is ever
-    // added there it would silently corrupt every LATER resolution of the same
-    // pair, not just its own call. Freezing turns that into a loud `TypeError`
-    // (modules are strict mode) at the offending line.
-    hits = Object.freeze(gatherQualifiedNsMember(roots, memberName));
+    // Memoization makes this array shared by every call site in the pass rather
+    // than rebuilt per call, so it carries the dev-only mutation tripwire (see
+    // {@link FREEZE_SHARED_CANDIDATES}).
+    hits = gatherQualifiedNsMember(roots, memberName);
+    if (FREEZE_SHARED_CANDIDATES) hits = Object.freeze(hits);
     byMember.set(memberName, hits);
   }
   return hits;
@@ -330,8 +355,8 @@ function qualifiedNsMembers(
  *  `findMemberInNamespaceTransitive`.
  *
  *  Iterative, not recursive: nesting depth is whatever the input file says, and
- *  a recursive descent threw `RangeError` past ~8k levels on a path nothing
- *  catches (see {@link QualifiedNsMemberIndex}). */
+ *  a recursive descent threw `RangeError` past ~8k levels (see
+ *  {@link QualifiedNsMemberIndex}). */
 function gatherQualifiedNsMember(
   roots: readonly QualifiedNsNode[],
   memberName: string,
@@ -350,60 +375,52 @@ function gatherQualifiedNsMember(
     stack.push(root);
     while (stack.length > 0) {
       const node = stack.pop();
-      if (node === undefined || visited.has(node)) continue;
+      if (visited.has(node)) continue;
       visited.add(node);
       const own = node.ownMembers.get(memberName);
       if (own !== undefined) for (const def of own) hits.push(def);
-      // Reverse push so children pop in declaration order: the legacy walk was
-      // pre-order depth-first, and this reproduces its candidate order (kept
-      // for byte-identity, not observed by the return contract — see
-      // {@link QualifiedNsMemberIndex}).
+      // Reverse push so children pop in declaration order — the legacy walk's
+      // pre-order depth-first candidate order (see
+      // {@link QualifiedNsMemberIndex.rootsByReceiver}).
       const kids = node.inlineChildren;
-      for (let i = kids.length - 1; i >= 0; i--) {
-        const kid = kids[i];
-        if (kid !== undefined) stack.push(kid);
-      }
+      for (let i = kids.length - 1; i >= 0; i--) stack.push(kids[i]);
     }
   }
   return hits.length === 0 ? NO_DEFS : hits;
 }
 
 /** Build the index on first use of a given `parsedFiles` set; reuse it for
- *  every subsequent call site that passes the same array reference.
+ *  every subsequent call site that passes the same array reference AND the same
+ *  {@link inlineNamespaceEpoch}.
  *
- *  Lifetime: the memoized entry is reachable only while the caller still holds
- *  the `parsedFiles` array. Once the pipeline drops it, the entry — and the
- *  `SymbolDefinition` references it holds into those files' scopes — becomes
- *  collectable; nothing here pins it (see {@link qualifiedNsIndexByPass}).
+ *  Both keys are needed because the index is a function of TWO inputs:
+ *  `parsedFiles` and the module-level `inlineNamespaceScopeIds` (which inline
+ *  children get descended into). A later pass may hand back the same
+ *  `parsedFiles` reference with different inline-namespace state, so identity
+ *  alone would serve a stale index — the epoch is what makes that a checked
+ *  rebuild instead of a documented obligation on the clear site.
  *
- *  The index is a function of TWO inputs: `parsedFiles` and the module-level
- *  `inlineNamespaceScopeIds` (which inline children get descended into). The
- *  WeakMap key covers only the first, so the explicit clear is still REQUIRED
- *  for the second: a later pass may hand back the same `parsedFiles` reference
- *  with different inline-namespace state, and identity alone would serve the
- *  stale index. Reference identity is sufficient within a pass because
- *  `populateCppInlineNamespaceScopes` fills `inlineNamespaceScopeIds` during
- *  `populateOwners` — strictly before any resolution pass calls in — and
- *  {@link clearCppInlineNamespaces} swaps in a fresh WeakMap at the start of
- *  every pass. Any future caller that mutates `inlineNamespaceScopeIds`
- *  mid-pass while reusing the same `parsedFiles` reference MUST call
- *  `clearCppInlineNamespaces` in between.
+ *  Lifetime: the entry is reachable only while the caller still holds the
+ *  `parsedFiles` array; nothing here pins it (see {@link qualifiedNsIndexByPass}).
  *
- *  Same STALENESS contract as `ensureAdlIndex` in `adl.ts` — but without that
- *  sibling's dev-gated `validateAdlSeqCoverage` invariant guard, and none is
- *  needed: that guard exists because `pickCppAdlCandidates` reads
- *  `idx.seqByNodeId.get(def.nodeId) ?? 0`, so a def bucketed without a seq
- *  silently collapses onto slot 0 and evicts another candidate. This index has
- *  no analogous defaulting read — a member is either bucketed under its simple
- *  name or absent — so there is no silent-collision mode for a guard to catch. */
+ *  Same STALENESS contract as `ensureAdlIndex` in `adl.ts`, minus that
+ *  sibling's dev-gated `validateAdlSeqCoverage` guard: this index has no `?? 0`
+ *  defaulting read to silently collide on, so there is nothing for such a guard
+ *  to catch. */
 function qualifiedNsMemberIndex(parsedFiles: readonly ParsedFile[]): QualifiedNsMemberIndex {
-  let index = qualifiedNsIndexByPass.get(parsedFiles);
-  if (index === undefined) {
-    index = buildQualifiedNsMemberIndex(parsedFiles);
-    qualifiedNsIndexByPass.set(parsedFiles, index);
-  }
+  const memo = qualifiedNsIndexByPass.get(parsedFiles);
+  if (memo !== undefined && memo.epoch === inlineNamespaceEpoch) return memo.index;
+  const index = buildQualifiedNsMemberIndex(parsedFiles);
+  qualifiedNsIndexByPass.set(parsedFiles, { epoch: inlineNamespaceEpoch, index });
   return index;
 }
+
+/** Constant narrowing hooks for the C++ qualified-receiver path — hoisted so
+ *  the literal is not reallocated at every multi-candidate call site. */
+const CPP_NARROWING_HOOKS: OverloadNarrowingHookCtx = {
+  conversionRankFn: cppConversionRank,
+  conversionOnlyArgTypePrefixes: CPP_CONVERSION_ONLY_ARG_TYPE_PREFIXES,
+};
 
 /**
  * Find the Namespace scopes whose simple name matches `receiverName` and
@@ -449,12 +466,7 @@ export function resolveCppQualifiedNamespaceMember(
     allHits,
     callsite?.arity,
     callsite?.argumentTypes,
-    callsite !== undefined
-      ? {
-          conversionRankFn: cppConversionRank,
-          conversionOnlyArgTypePrefixes: CPP_CONVERSION_ONLY_ARG_TYPE_PREFIXES,
-        }
-      : undefined,
+    callsite !== undefined ? CPP_NARROWING_HOOKS : undefined,
   );
   if (narrowed.length === 1) return narrowed[0];
   if (narrowed.length === 0) return undefined;
