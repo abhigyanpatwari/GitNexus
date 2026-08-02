@@ -171,9 +171,7 @@ describe('generateAIContextFiles', () => {
         );
         expect(content).toContain('detect_changes({scope: "all"})');
         expect(content).toContain('node .gitnexus/run.cjs detect-changes --scope all --repo .');
-        expect(content).toContain(
-          'detect_changes({scope: "compare", base_ref: "develop"})',
-        );
+        expect(content).toContain('detect_changes({scope: "compare", base_ref: "develop"})');
         expect(content).toContain('--scope compare --base-ref "develop" --repo .');
         expect(content).toContain('Never substitute grep for graph analysis');
         expect(content).not.toContain('gitnexus impact --target');
@@ -196,7 +194,9 @@ describe('generateAIContextFiles', () => {
     expect(content).toContain(
       'node .custom/gitnexus-runner.cjs impact "symbolName" --direction upstream --repo .',
     );
-    expect(content).toContain('node .custom/gitnexus-runner.cjs detect-changes --scope all --repo .');
+    expect(content).toContain(
+      'node .custom/gitnexus-runner.cjs detect-changes --scope all --repo .',
+    );
     expect(content).toContain(
       'node .custom/gitnexus-runner.cjs impact "symbolName" --direction upstream --mode pdg --line <N> --repo .',
     );
