@@ -7,6 +7,7 @@ import os
 import signal
 import sys
 import time
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
 import pytest
@@ -469,3 +470,57 @@ def test_windows_normal_parent_with_grandchild_is_not_successful_evidence(tmp_pa
     assert result.forced_kill
     assert not result.ok
     assert not sentinel.exists()
+
+
+@pytest.mark.skipif(os.name == "nt", reason="POSIX process-group ownership canary")
+def test_concurrent_cells_reap_only_their_own_process_tree(tmp_path: Path) -> None:
+    """One cell timing out must not touch a sibling cell running beside it.
+
+    `run_managed` reaps by process group. Cells only ever ran one at a time
+    before, so nothing exercised what happens when a `killpg` fires while other
+    owned trees are alive — a leaked or shared pgid would take the siblings
+    down with it, and the sweep would read that as two more excluded runs.
+    """
+    survivor_sentinel = tmp_path / "survivor-finished"
+    victim_sentinel = tmp_path / "victim-escaped"
+
+    # Each cell spawns a descendant, like a sandboxed session does.
+    survivor = """
+import pathlib, subprocess, sys, time
+child = subprocess.Popen([sys.executable, '-c', "import time; time.sleep(2)"])
+time.sleep(1.0)
+pathlib.Path(%r).write_text('finished')
+child.wait()
+print('survivor-done', flush=True)
+""" % str(survivor_sentinel)
+    victim = """
+import pathlib, signal, subprocess, sys, time
+signal.signal(signal.SIGTERM, signal.SIG_IGN)
+subprocess.Popen([
+    sys.executable, '-c',
+    "import signal,time,pathlib; signal.signal(signal.SIGTERM, signal.SIG_IGN); time.sleep(1.5); pathlib.Path(%r).write_text('escaped')"
+])
+while True:
+    time.sleep(0.01)
+""" % str(victim_sentinel)
+
+    def cell(source: str, timeout: float):
+        return run_managed([PYTHON, "-c", source], timeout=timeout, terminate_grace=0.1)
+
+    with ThreadPoolExecutor(max_workers=3) as pool:
+        futures = [
+            pool.submit(cell, survivor, 10.0),
+            pool.submit(cell, victim, 0.2),
+            pool.submit(cell, survivor, 10.0),
+        ]
+        first, doomed, second = (future.result() for future in futures)
+
+    time.sleep(1.8)
+
+    assert doomed.state == "forced-kill"
+    assert not victim_sentinel.exists(), "the timed-out cell leaked a descendant"
+    # The siblings were mid-flight when the killpg fired.
+    assert first.ok and second.ok
+    assert "survivor-done" in first.stdout_tail
+    assert "survivor-done" in second.stdout_tail
+    assert survivor_sentinel.exists()
