@@ -695,8 +695,10 @@ export interface RepoMeta {
  * versions of this same fix; both left the rest of the cross product undeclared,
  * so `analyze` kept aborting at `assertDeclaredPair` on the next codebase with a
  * different edge shape (`Class→Variable` on Java static/field initializers was
- * the report). A pre-v35 database physically lacks these pairs, so force a full
- * re-analyze.
+ * the report). Plus 10 hand-declared structural pairs the generated block cannot
+ * reach — COBOL containment and the Vue handler→component edge (#2789), whose
+ * endpoint labels are in neither scope-bridge set. A pre-v35 database physically
+ * lacks all of these, so force a full re-analyze.
  */
 export const INCREMENTAL_SCHEMA_VERSION = 35;
 

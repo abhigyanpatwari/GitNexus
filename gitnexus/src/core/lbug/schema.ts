@@ -305,23 +305,15 @@ const SCOPE_BRIDGE_TARGET_LABELS = [
  * the PDG substrate — the surface no single label predicate describes, so it
  * stays hand-declared. The scope-resolution surface below is generated instead.
  *
- * Because it is hand-declared, this block is the half that can still go stale —
- * and it did. #2789 was fixed by declaring one pair, but with that fix applied
- * `analyze` still aborted on this repo's own `test/fixtures/lang-resolution`:
- *
- * - COBOL (`cobol-processor.ts`) mints a program as `Module`, a SECTION as
- *   `Namespace`, an FD/record as `Record`, a working-storage item as `Property`
- *   and an EXEC/dynamic-call site as `CodeElement`, then wires them with
- *   CONTAINS/CALLS/ACCESSES.
- * - Vue (`vue-sfc-extractor.ts`) emits BINDS_EVENT_HANDLER from a handler
- *   `Function` to the child component's `File` — the only edge in the graph
- *   whose TARGET is a `File`.
- *
- * `CodeElement`, `Namespace`, `Record` and `File` are in neither scope-bridge
- * label set, so the generated block cannot reach those pairs and
- * `schema-pair-coverage.test.ts`'s predicate-derived check cannot miss them
- * either. `structural-pair-coverage.test.ts` covers this block from a corpus
- * instead — that is the guard, not this comment.
+ * Being hand-declared, this is the half that can still go stale — and it did:
+ * after #2789 declared its one pair, `analyze` still aborted on this repo's own
+ * `test/fixtures/lang-resolution` (COBOL containment, and the Vue
+ * BINDS_EVENT_HANDLER edge from `languages/vue/scope-resolver.ts`, the only
+ * edge whose target is a `File`). Those endpoint labels — `CodeElement`,
+ * `Namespace`, `Record`, `File` — are in neither scope-bridge set, so no
+ * predicate-derived check can reach them.
+ * `test/integration/structural-pair-coverage.test.ts` guards this block from a
+ * corpus instead; that is the guard, not this comment.
  */
 const STRUCTURAL_PAIR_DDL = `  FROM File TO File,
   FROM File TO Folder,

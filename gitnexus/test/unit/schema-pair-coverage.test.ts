@@ -73,4 +73,25 @@ describe('RELATION_SCHEMA pair coverage', () => {
       [],
     );
   });
+
+  it('declares the non-bridge structural pairs (#2789)', () => {
+    // COBOL containment/call/access plus the Vue handler→component edge. These
+    // are outside both label sets above, so the derived requirement cannot
+    // reach them; `test/integration/structural-pair-coverage.test.ts` guards
+    // them from a corpus. Pinned here too so deleting a fixture there cannot
+    // silently drop the guard, and so the cheap check does not need a build.
+    const structural = [
+      'CodeElement|CodeElement',
+      'CodeElement|Module',
+      'CodeElement|Property',
+      'CodeElement|Record',
+      'Function|File',
+      'Module|CodeElement',
+      'Module|Namespace',
+      'Module|Record',
+      'Namespace|Function',
+      'Record|Record',
+    ];
+    expect(structural.filter((pair) => !declared.has(pair))).toEqual([]);
+  });
 });
