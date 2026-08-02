@@ -500,6 +500,14 @@ jobs:
         run: node --import tsx bench/callable-value-flow/measure.mjs --check
         working-directory: gitnexus
 
+      - name: C++ qualified-namespace resolution guards (#2788)
+        # Build-free: asserts resolveCppQualifiedNamespaceMember resolves an
+        # unchanged symbol set (fingerprint) and that per-call-site cost stays
+        # independent of corpus size. Rationale and history: see the header of
+        # bench/cpp-qualified-ns/measure.mjs.
+        run: node --import tsx bench/cpp-qualified-ns/measure.mjs --check
+        working-directory: gitnexus
+
       - name: Receiver-resolution drop guards
         # NOT build-free: this one runs the real pipeline, so it needs dist/
         # (the setup action above builds). ~2m15s.
@@ -566,12 +574,17 @@ jobs:
         working-directory: gitnexus
 
       - name: Cross-language pipeline benchmarks (GITNEXUS_BENCH, serial)
+        # cpp-adl-benchmark.test.ts is not a `*-pipeline-benchmark.test.ts` but
+        # belongs here for the same reason: it is skipIf-gated on GITNEXUS_BENCH,
+        # so it had never run in CI and the PR #1990 ADL emit-scaling guard it
+        # holds was dead. ~45s of test time.
         env:
           GITNEXUS_BENCH: '1'
         run: >-
           npx vitest run --no-file-parallelism
           test/integration/cobol-pipeline-benchmark.test.ts
           test/integration/csharp-pipeline-benchmark.test.ts
+          test/integration/cpp-adl-benchmark.test.ts
           test/integration/instance-ownership-pipeline-benchmark.test.ts
           test/integration/spring-bean-resource-benchmark.test.ts
           test/integration/rust-pipeline-benchmark.test.ts
