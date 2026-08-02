@@ -233,6 +233,14 @@ jobs:
           # task `repo` path. The benchmark only clones the repo (copy-on-write)
           # and mounts dependencies read-only, so the checkout is never mutated.
           ln -sfn "${GITHUB_WORKSPACE}" "${HOME}/GitNexus"
+          # Every task in tasks.scenarios.yaml names `ref: main`, and resolving
+          # it is the first thing task binding does. actions/checkout only
+          # creates a local ref for the ref it checked out, so `main^{commit}`
+          # resolves on a main run and fails on any other — a no-op here when
+          # main is already what was checked out.
+          git -C "${GITHUB_WORKSPACE}" fetch --no-tags --quiet \
+            "${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}.git" \
+            '+refs/heads/main:refs/heads/main'
 
       - name: Seed the proposer with the previous run's evidence
         id: seed
