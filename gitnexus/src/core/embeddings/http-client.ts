@@ -11,7 +11,12 @@
  * via `AbortSignal.timeout` on the underlying fetch.
  */
 
-import { CircuitOpenError, ResilientFetchExhaustedError, resilientFetch } from 'gitnexus-shared';
+import {
+  CircuitOpenError,
+  ResilientFetchExhaustedError,
+  isTerminalNetworkError,
+  resilientFetch,
+} from 'gitnexus-shared';
 
 const DEFAULT_HTTP_TIMEOUT_MS = 180_000;
 const MAX_HTTP_TIMEOUT_MS = 300_000;
@@ -333,28 +338,22 @@ class RetryableEmbeddingBodyError extends Error {
 }
 
 /**
- * The two DOMExceptions that must never be laundered into a
- * {@link RetryableEmbeddingBodyError}.
+ * Build the message for a 2xx body carrying the wrong number of vectors.
  *
- * The per-attempt signal (`AbortSignal.any([caller, AbortSignal.timeout(...)])`)
- * is wired to the response's body `ReadableStream`, so a stalled body makes
- * `.json()` reject with the abort reason — a `TimeoutError` when the per-attempt
- * timeout fires, an `AbortError` when the caller cancels — not with a parse
- * error. Wrapping those flips `classifyOutcome`'s verdict from
- * `terminal-network` (returned without retry AND without touching the breaker,
- * via `recordNeutral()`) to `retryable-network` (retried, then
- * `breaker.recordFailure()`): the same timeout would take 3 attempts instead of
- * 1, count toward the process-global `embeddings-http` breaker, and be reported
- * to the operator as "unparseable response" so they never reach for the timeout
- * knob. Re-raise them unchanged instead.
- *
- * The `instanceof DOMException` test mirrors `classifyOutcome` exactly. A looser
- * (name-only) check here would re-raise errors that `resilientFetch` still
- * classifies as retryable — reintroducing the retry-a-timeout behaviour this
- * guard exists to prevent, minus the message. See #2790.
+ * Hoisted to module scope because two layers report this same fault — the
+ * in-loop check inside {@link httpEmbedBatch} and the defensive backstop in
+ * {@link httpEmbed} — and the operator must see one wording regardless of which
+ * one catches it. Names both counts: "0 vectors for 64 texts" is actionable,
+ * "unexpected response shape" is not.
  */
-const isAbortLikeDomException = (err: unknown): err is DOMException =>
-  err instanceof DOMException && (err.name === 'TimeoutError' || err.name === 'AbortError');
+const countMismatchMessage = (
+  received: number,
+  expected: number,
+  safeEndpoint: string,
+  batchIndex: number,
+): string =>
+  `Embedding endpoint returned ${received} vectors for ${expected} texts ` +
+  `(${safeEndpoint}, batch ${batchIndex})`;
 
 /**
  * Send a single batch of texts to the embedding endpoint with retry.
@@ -393,15 +392,15 @@ const httpEmbedBatch = async (
     requestBody.dimensions = dimensions;
   }
 
-  const unparseableMessage = `Embedding endpoint returned an unparseable response (${safeUrl(url)}, batch ${batchIndex})`;
-  const unexpectedShapeMessage = `Embedding endpoint returned an unexpected response shape (${safeUrl(url)}, batch ${batchIndex})`;
-  // Distinct from the two above, and worded identically to the `httpEmbed`
-  // backstop so the operator sees one message for this fault regardless of
-  // which layer catches it. Names both counts — "0 vectors for 64 texts" is
-  // actionable, "unexpected response shape" is not.
-  const countMismatchMessage = (received: number): string =>
-    `Embedding endpoint returned ${received} vectors for ${batch.length} texts ` +
-    `(${safeUrl(url)}, batch ${batchIndex})`;
+  // Built on demand, not up front. Both describe faults, so in a healthy run —
+  // every call of it — they are garbage, and each `safeUrl` parses a URL. A
+  // 300k-chunk run at subBatchSize 8 makes ~37.5k `httpEmbedBatch` calls, so
+  // eager construction spent two `new URL()` per call describing failures that
+  // never happened. Same shape as `countMismatchMessage` above.
+  const unparseableMessage = (): string =>
+    `Embedding endpoint returned an unparseable response (${safeUrl(url)}, batch ${batchIndex})`;
+  const unexpectedShapeMessage = (): string =>
+    `Embedding endpoint returned an unexpected response shape (${safeUrl(url)}, batch ${batchIndex})`;
 
   let resp: Response;
   // Set by `fetchImpl` on the attempt that produced a usable body. Reads back
@@ -445,13 +444,22 @@ const httpEmbedBatch = async (
             payload = (await attemptResp.json()) as { data: EmbeddingItem[] };
           } catch (err) {
             // Not every `.json()` rejection is a parse error: the per-attempt
-            // signal also aborts the body stream. Let those through untouched
-            // so `classifyOutcome` still sees a DOMException.
-            if (isAbortLikeDomException(err)) throw err;
-            throw new RetryableEmbeddingBodyError(unparseableMessage, { cause: err });
+            // signal (`AbortSignal.any([caller, AbortSignal.timeout(...)])`) is
+            // wired to the body stream, so a stalled body rejects with the abort
+            // reason. Re-raise those untouched — `isTerminalNetworkError` is
+            // `resilientFetch`'s own predicate, so this test agrees with
+            // `classifyOutcome` by construction. Wrapping one would flip its
+            // verdict from `terminal-network` (returned without retry AND
+            // without touching the breaker, via `recordNeutral()`) to
+            // `retryable-network` (retried, then `breaker.recordFailure()`): the
+            // same timeout would take 3 attempts instead of 1, count toward the
+            // process-global `embeddings-http` breaker, and reach the operator as
+            // "unparseable response" so they never reach for the timeout knob.
+            if (isTerminalNetworkError(err)) throw err;
+            throw new RetryableEmbeddingBodyError(unparseableMessage(), { cause: err });
           }
           if (!Array.isArray(payload?.data) || !payload.data.every(isEmbeddingItem)) {
-            throw new RetryableEmbeddingBodyError(unexpectedShapeMessage);
+            throw new RetryableEmbeddingBodyError(unexpectedShapeMessage());
           }
           // Cardinality belongs *inside* the retry loop. `every(isEmbeddingItem)`
           // is vacuously true for `[]` and true for any array shorter than the
@@ -461,7 +469,9 @@ const httpEmbedBatch = async (
           // single attempt. A short body is a truncated body: same backoff, same
           // breaker accounting as any other endpoint fault (#2790).
           if (payload.data.length !== batch.length) {
-            throw new RetryableEmbeddingBodyError(countMismatchMessage(payload.data.length));
+            throw new RetryableEmbeddingBodyError(
+              countMismatchMessage(payload.data.length, batch.length, safeUrl(url), batchIndex),
+            );
           }
           parsed = payload.data;
           return attemptResp;
@@ -532,7 +542,7 @@ const httpEmbedBatch = async (
     // out of `fetchImpl`. Kept so the narrowing holds without a non-null
     // assertion, and so a future `resilientFetch` change can't return an
     // unvalidated body silently.
-    throw new HttpEmbeddingError(unparseableMessage);
+    throw new HttpEmbeddingError(unparseableMessage());
   }
   return parsed;
 };
@@ -574,14 +584,14 @@ export const httpEmbed = async (
     );
 
     // Defensive backstop, deliberately kept: `httpEmbedBatch` now rejects a
-    // short body from *inside* the retry loop (with this same wording), so in
-    // practice this branch is unreachable. It stays so a future change to the
-    // in-loop check can't silently hand a short vector list to the caller —
-    // that failure would land as a Kuzu/FLOAT[N] error far from its cause.
+    // short body from *inside* the retry loop (through the same
+    // `countMismatchMessage`), so in practice this branch is unreachable. It
+    // stays so a future change to the in-loop check can't silently hand a short
+    // vector list to the caller — that failure would land as a Kuzu/FLOAT[N]
+    // error far from its cause.
     if (items.length !== batch.length) {
       throw new HttpEmbeddingError(
-        `Embedding endpoint returned ${items.length} vectors for ${batch.length} texts ` +
-          `(${safeUrl(url)}, batch ${batchIndex})`,
+        countMismatchMessage(items.length, batch.length, safeUrl(url), batchIndex),
       );
     }
 

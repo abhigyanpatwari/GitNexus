@@ -326,8 +326,14 @@ export interface RepoMeta {
      *   nodes, so they provably hold ZERO rows. Nothing is at risk from a
      *   different embedding identity, so an identity mismatch may drop the
      *   pending set with a warning instead of aborting the run.
+     * - `'unverified-count'` — written after a run whose embedding count could
+     *   not be measured. `pendingNodeIds` is EMPTY: nothing was dropped and
+     *   nothing needs re-embedding. It exists only to defeat the same-commit
+     *   fast return so the next run re-derives a count, because clearing it
+     *   while `stats.embeddings` still reads a stale zero is what arms a later
+     *   `--force` to wipe live embeddings.
      */
-    kind?: 'interrupted' | 'partial';
+    kind?: 'interrupted' | 'partial' | 'unverified-count';
     /**
      * Consecutive resume attempts that have failed to clear `pendingNodeIds`
      * (`'partial'` only). Bounds the retry so a node the endpoint rejects

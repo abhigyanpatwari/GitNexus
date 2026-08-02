@@ -39,6 +39,7 @@ import {
   resolveEmbeddingConfig,
 } from './config.js';
 import { rankExactEmbeddingRows, type ExactEmbeddingRow } from './exact-search.js';
+import { EMBEDDING_COUNT_CYPHER } from '../embedding-count.js';
 import { EMBEDDING_TABLE_NAME, EMBEDDING_INDEX_NAME, STALE_HASH_SENTINEL } from '../lbug/schema.js';
 import { loadVectorExtension, createVectorIndex } from '../lbug/lbug-adapter.js';
 import { escapeCypherString } from '../lbug/cypher-escape.js';
@@ -352,34 +353,39 @@ const MAX_CONSECUTIVE_SUB_BATCH_FAILURES = 5;
  * single-digit `mapreduce.map.failures.maxpercent` (tolerating transient
  * hiccups is the entire point of #2790).
  *
- * The sample floor SCALES with the run; it used to be a flat 20 (~160 chunks of
- * evidence at the default subBatchSize of 8). A flat floor can exceed a run's
- * ENTIRE sub-batch budget, and then the guard is not "not yet armed" — it is
- * structurally off. Every resume run has exactly that shape by construction: its
- * node set is only the pending ids, so it produces few sub-batches no matter how
- * large the repo is, and the run whose whole purpose is retrying a suspect
- * endpoint was the one run this guard could never fire in. Resilience4j can
- * afford a constant `minimumNumberOfCalls` because a breaker sits on an
- * unbounded call stream — the sample always arrives eventually; a batch indexer
- * has a finite budget, so the minimum has to be expressed relative to it.
- * Hadoop's `mapreduce.map.failures.maxpercent` takes the other extreme, a pure
- * percentage with no minimum at all, which is why a 1-of-1 failure reads as
+ * The sample floor SCALES with the run; it used to be a flat 20. A flat floor
+ * can exceed a run's ENTIRE sub-batch budget, and then the guard is not "not yet
+ * armed" — it is structurally off. Every resume run has exactly that shape by
+ * construction: its node set is only the pending ids, so it produces few
+ * sub-batches no matter how large the repo is, and the run whose whole purpose
+ * is retrying a suspect endpoint was the one run this guard could never fire in.
+ * Resilience4j can afford a constant `minimumNumberOfCalls` because a breaker
+ * sits on an unbounded call stream — the sample always arrives eventually; a
+ * batch indexer has a finite budget, so the minimum has to be expressed relative
+ * to it. Hadoop's `mapreduce.map.failures.maxpercent` takes the other extreme, a
+ * pure percentage with no minimum at all, which is why a 1-of-1 failure reads as
  * "100% failed" there. The clamp below keeps both ends honest:
  *
- *   floor = clamp(ceil(totalNodes / 16), 5, 20)
+ *   floor = clamp(ceil(totalNodes / subBatchSize / 2), 5, 20)
  *
- *  - ceil(totalNodes / 16): at the default subBatchSize of 8 and one chunk per
- *    node this is ~half the run's sub-batches, so the rate is judged over the
- *    back half of a short run — a real sample, still early enough to stop the
- *    run before it walks the rest of the corpus. Nodes that chunk into several
- *    chunks only produce MORE sub-batches, so the guard arms earlier still.
+ *  - ceil(totalNodes / subBatchSize / 2): the run's own sub-batch budget, halved
+ *    — so the rate is judged over the back half of a short run: a real sample,
+ *    still early enough to stop the run before it walks the rest of the corpus.
+ *    Derived from the ACTUAL `subBatchSize` rather than assuming the default of
+ *    8, because `GITNEXUS_EMBEDDING_SUB_BATCH_SIZE` is exactly the knob an
+ *    operator turns for a constrained or flaky endpoint — the population this
+ *    guard protects — and a floor computed against the wrong divisor is the same
+ *    structurally-off guard, just at a different repo size. Nodes that chunk
+ *    into several chunks only produce MORE sub-batches, so the guard arms
+ *    earlier still.
  *  - min 5: under five attempts a "rate" is one or two coin flips. A 3-node repo
  *    losing its single sub-batch is 100% and must be tolerated, not aborted —
  *    the exact case the old flat floor was written to protect, kept intact.
- *  - max 20 (the previous flat value, reached at 320 nodes): large runs keep
- *    today's behavior byte for byte, and a purely proportional floor would
- *    perversely WEAKEN the guard at scale — a sixteenth of a 20k-node repo is
- *    1250 sub-batches of corpus eaten before a rate could abort anything.
+ *  - max 20 (the previous flat value, reached once a run has 40 sub-batches):
+ *    large runs keep today's behavior byte for byte, and a purely proportional
+ *    floor would perversely WEAKEN the guard at scale — half a 20k-node repo's
+ *    sub-batches is 1250 of them (at subBatchSize 8) eaten before a rate could
+ *    abort anything.
  *
  * Honest limit: this bounds the failure RATE, never the absolute loss. A run
  * that steadily fails just under 25% of its sub-batches never aborts, so a
@@ -396,12 +402,16 @@ const MAX_CONSECUTIVE_SUB_BATCH_FAILURES = 5;
 const MAX_SUB_BATCH_FAILURE_RATIO = 0.25;
 const MIN_SUB_BATCHES_FLOOR = 5;
 const MAX_SUB_BATCHES_FLOOR = 20;
-const RATIO_GUARD_FLOOR_NODES_PER_SUB_BATCH = 16;
+/** Judge the rate over the back half of the run: half its sub-batch budget. */
+const RATIO_GUARD_SAMPLE_FRACTION_DIVISOR = 2;
 
-const minSubBatchesBeforeFailureRatioGuard = (totalNodes: number): number =>
+const minSubBatchesBeforeFailureRatioGuard = (totalNodes: number, subBatchSize: number): number =>
   Math.min(
     MAX_SUB_BATCHES_FLOOR,
-    Math.max(MIN_SUB_BATCHES_FLOOR, Math.ceil(totalNodes / RATIO_GUARD_FLOOR_NODES_PER_SUB_BATCH)),
+    Math.max(
+      MIN_SUB_BATCHES_FLOOR,
+      Math.ceil(totalNodes / subBatchSize / RATIO_GUARD_SAMPLE_FRACTION_DIVISOR),
+    ),
   );
 
 /**
@@ -673,10 +683,14 @@ export const runEmbeddingPipeline = async (
     // counter's reset-on-success blinds it to.
     let subBatchesAttempted = 0;
     let subBatchFailures = 0;
-    // Sized from this run's own node set, not a flat constant, so a resume run
-    // (whose node set is only the pending ids) still arms the guard — see
+    // Sized from this run's own node set AND its configured sub-batch size, not
+    // a flat constant, so a resume run (whose node set is only the pending ids)
+    // and an operator-tuned `subBatchSize` both still arm the guard — see
     // minSubBatchesBeforeFailureRatioGuard.
-    const minSubBatchesForRatioGuard = minSubBatchesBeforeFailureRatioGuard(totalNodes);
+    const minSubBatchesForRatioGuard = minSubBatchesBeforeFailureRatioGuard(
+      totalNodes,
+      finalConfig.subBatchSize,
+    );
     // #2790: the FIRST error of the current streak — the one the ceiling rethrows.
     // Later failures in a streak degrade into generic noise: a misconfigured
     // endpoint trips the HTTP client's circuit breaker after 3 rejections, so
@@ -1040,9 +1054,10 @@ export const semanticSearch = async (
   }
 
   if (bestChunks.size === 0) {
-    const countRows = await executeQuery(
-      `MATCH (e:${EMBEDDING_TABLE_NAME}) RETURN count(e) AS cnt`,
-    );
+    // The Cypher only. NOT `measurePersistedEmbeddingCount`: its tri-state
+    // exists so a publisher never writes a fabricated 0, whereas here `?? 0`
+    // is the right answer — an unknown count simply skips the exact scan.
+    const countRows = await executeQuery(EMBEDDING_COUNT_CYPHER);
     const countRow = countRows[0];
     const embeddingCount = Number(countRow?.cnt ?? countRow?.[0] ?? 0);
     const exactLimit = getExactScanLimit();

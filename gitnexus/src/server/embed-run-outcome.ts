@@ -5,23 +5,23 @@
  * reaching them through `await import('../../src/server/api.js')` pulled in
  * Express, cors, the LadybugDB native adapter and the whole MCP wiring — one
  * measured run of the test file TIMED OUT at 30s and the two that passed took
- * ~20s and ~22s. Nothing here imports the database, MCP or Express; the only
- * imports are types.
+ * ~20s and ~22s. Nothing here imports the database, MCP or Express.
  *
- * The CLI's equivalent decisions live in `core/run-analyze.ts` Phase 5. The two
- * paths write the SAME `RepoMeta.embeddingCheckpoint` field, so their rules are
- * deliberately kept in step — see each comment below for the CLI counterpart.
+ * This module ROUTES that decision onto the route's meta write and job status;
+ * it does not author the checkpoint record. Minting and the resume rules live in
+ * `core/embedding-checkpoint.ts`, shared with the CLI's Phase 5, so the two
+ * writers of one field cannot drift apart again.
  */
 
 import type { RepoMeta } from '../storage/repo-manager.js';
+import { mintPartialCheckpoint, type EmbeddingRunIdentity } from '../core/embedding-checkpoint.js';
+import {
+  resolvePersistedEmbeddingCount,
+  type PersistedEmbeddingCount,
+} from '../core/embedding-count.js';
 import type { AnalyzeJobPartialOutcome } from './analyze-job.js';
 
-/** The embedding identity a run resolved — what a checkpoint is stamped with. */
-export interface EmbeddingRunIdentity {
-  model: string;
-  dimensions: number;
-  provider: string;
-}
+export type { EmbeddingRunIdentity };
 
 /** The subset of `EmbeddingPipelineResult` the outcome decision reads. */
 export interface EmbeddingRunResult {
@@ -60,55 +60,21 @@ export interface EmbedRunOutcome {
   partial?: AnalyzeJobPartialOutcome;
 }
 
-/** Progress figures a checkpoint records, whoever writes it. */
-export interface EmbeddingCheckpointProgress {
-  nodesProcessed: number;
-  totalNodes: number;
-  chunksProcessed: number;
-}
-
-/**
- * The marker an IN-FLIGHT run writes — before a bounded write window opens, and
- * again after each LadybugDB checkpoint flush.
- *
- * Always `kind: 'interrupted'`: the run has not finished, so a crash can leave
- * `pendingNodeIds` HALF-persisted. That is what forces resume to delete and
- * regenerate them even when a persisted row carries the current content hash,
- * and to fail closed on an identity mismatch rather than mix vector spaces
- * (repo-manager.ts). No `attempts` — the retry bound applies to `'partial'`
- * markers, whose pending set provably holds zero rows and can be abandoned.
- *
- * Mirrors run-analyze.ts's in-flight `saveEmbeddingCheckpoint` stamp.
- */
-export const inFlightEmbeddingCheckpoint = (
-  identity: EmbeddingRunIdentity,
-  progress: EmbeddingCheckpointProgress,
-  pendingNodeIds: string[],
-): NonNullable<RepoMeta['embeddingCheckpoint']> => ({
-  at: new Date().toISOString(),
-  ...progress,
-  model: identity.model,
-  dimensions: identity.dimensions,
-  provider: identity.provider,
-  kind: 'interrupted',
-  pendingNodeIds,
-});
-
 /**
  * Decide the checkpoint + reported outcome for a finished /api/embed run.
  *
  * PARTIAL RUN: the pipeline no longer throws when a sub-batch loses its
  * endpoint — it deletes the affected nodes' rows and names them in
  * `failedNodeIds`. Dropping that receipt made the route clear
- * `embeddingCheckpoint` and mark the job 'complete', so a partial run was
- * indistinguishable from a clean one and the dropped nodes were never retried:
- * a plain `analyze` derives `shouldGenerateEmbeddings: false` once any
- * embeddings exist, so nothing would ever call the pipeline again. So the
- * checkpoint is RETAINED, carrying the dropped ids as `pendingNodeIds` (the
- * next run's `forceReembedNodeIds`), and the run is reported failed — the
- * `AnalyzeJob` status union has no partial member and this is what the pre-#2790
- * throw produced, so a poller keeps seeing "not a clean success". `partial`
- * carries the distinction a client needs without a new status member.
+ * `embeddingCheckpoint` and mark the job 'complete', and the dropped nodes were
+ * then never retried: a plain `analyze` derives `shouldGenerateEmbeddings:
+ * false` once any embeddings exist, so nothing would ever call the pipeline
+ * again. So the checkpoint is RETAINED, carrying the dropped ids as
+ * `pendingNodeIds` (the next run's `forceReembedNodeIds`), and the run is
+ * reported failed — the `AnalyzeJob` status union has no partial member and this
+ * is what the pre-#2790 throw produced, so a poller keeps seeing "not a clean
+ * success". `partial` carries the distinction a client needs without a new
+ * status member.
  *
  * CLEAN RUN: clear the checkpoint — with one exception, below.
  */
@@ -119,53 +85,22 @@ export const resolveEmbedRunOutcome = (
 ): EmbedRunOutcome => {
   if (result.failedNodeIds.length === 0) {
     // ── Clearing the marker requires PROOF the index is accounted for ──────
-    // `stats.embeddings` is the sole input to the next run's
-    // `existingEmbeddingCount` → `deriveEmbeddingMode` → `shouldLoadCache`. When
-    // the count query did not answer, the route cannot stamp one (a fabricated
-    // value is worse than none), so a repo whose recorded count is still 0 —
-    // the normal state for one analyzed without embeddings, then embedded
-    // through the server — would end this run with NOTHING on disk saying
-    // embeddings exist, and the next `analyze --force` would wipe them without
-    // loading the cache. Keeping the mid-run marker leaves one durable record.
-    // It costs a re-embed of its pending set on the next run and clears itself
-    // as soon as any run can measure the table.
+    // When the count query did not answer, the route cannot stamp
+    // `stats.embeddings` (a fabricated value is worse than none — see
+    // `core/embedding-count.ts`), so a repo whose recorded count is still 0
+    // would end this run with NOTHING on disk saying embeddings exist. Keeping
+    // the mid-run marker leaves one durable record. It costs a re-embed of its
+    // pending set on the next run and clears itself as soon as any run can
+    // measure the table.
     const countIsKnown = context.measuredEmbeddings !== undefined;
     const metaAlreadyRecordsEmbeddings = (context.onDisk?.stats?.embeddings ?? 0) > 0;
     if (countIsKnown || metaAlreadyRecordsEmbeddings) return { checkpoint: undefined };
     return { checkpoint: context.onDisk?.embeddingCheckpoint };
   }
 
-  // ── Bounded retry (#2790) ──────────────────────────────────────────────
-  // "Consecutive resume attempts that failed to clear the pending set", exactly
-  // as repo-manager.ts defines it and run-analyze.ts Phase 5 computes it: the
-  // counter advances only when this run was itself a `'partial'` resume AND at
-  // least one node it was asked to clear failed AGAIN. A resume that cleared
-  // its set and lost different nodes is a FRESH partial, so the budget resets.
-  // Only carried forward here — the cap is enforced on the resume side.
-  const resumed = context.resumedFrom;
-  const resumedPending = new Set(resumed?.kind === 'partial' ? (resumed.pendingNodeIds ?? []) : []);
-  const failedAgain = result.failedNodeIds.some((id) => resumedPending.has(id));
-
   return {
-    checkpoint: {
-      at: new Date().toISOString(),
-      nodesProcessed: result.nodesProcessed,
-      // `nodesProcessed` counts only the COMPLETE nodes, so the walked total is
-      // those plus the dropped ones (same reconstruction as run-analyze.ts).
-      totalNodes: result.nodesProcessed + result.failedNodeIds.length,
-      chunksProcessed: result.chunksProcessed,
-      model: identity.model,
-      dimensions: identity.dimensions,
-      provider: identity.provider,
-      // The run COMPLETED and the pipeline already deleted every row of these
-      // nodes, so they provably hold zero — which is what lets the resume gate
-      // downgrade an identity mismatch to a warning instead of wedging every
-      // later run. A mid-run writer stamps `'interrupted'` instead, because its
-      // pending set may be half-persisted (repo-manager.ts).
-      kind: 'partial',
-      attempts: failedAgain ? (resumed?.attempts ?? 0) + 1 : undefined,
-      pendingNodeIds: result.failedNodeIds,
-    },
+    // `'partial'` + the attempt-chain rule are the minter's (#2790).
+    checkpoint: mintPartialCheckpoint(identity, result, context.resumedFrom),
     error:
       `Embedding generation finished partially: ${result.failedNodeIds.length} node(s) lost ` +
       'their embeddings to endpoint failures and were dropped. They are checkpointed as ' +
@@ -174,30 +109,35 @@ export const resolveEmbedRunOutcome = (
       kind: 'embedding-partial',
       pendingNodeCount: result.failedNodeIds.length,
       nodesProcessed: result.nodesProcessed,
-      retryable: true,
     },
   };
 };
 
+/** A write that did not even ask — folded exactly like a failed measurement. */
+const UNMEASURED: PersistedEmbeddingCount = {
+  kind: 'unknown',
+  reason: 'this write measured nothing',
+};
+
 /**
- * Fold a MEASURED embedding count into the meta /api/embed is about to save.
+ * Fold a measurement into the meta /api/embed is about to save.
  *
  * The /api/embed count omission: this route generated embeddings and wrote
  * `embeddingCheckpoint`, but never `stats.embeddings` — so a repo embedded
  * purely through the server kept whatever count the last CLI `analyze` stamped
- * (0 for a repo analyzed without embeddings). The next CLI run reads that as
- * `existingEmbeddingCount`, `deriveEmbeddingMode` sees `hasExisting: false` and
- * returns `shouldLoadCache: false`, and `analyze --force` then wipes the DB
- * without loading the cache — silently destroying every server-generated
- * embedding.
+ * (0 for a repo analyzed without embeddings), and the next `analyze --force`
+ * wiped every server-generated embedding.
  *
- * `undefined` ≡ not measured: leave the previous value alone rather than
- * publish a fabricated 0. Wrong-LOW is the dangerous direction — a false 0 is
- * exactly what triggers the wipe above (same reasoning as run-analyze.ts's
- * `persistedEmbeddingCount`).
+ * The carry-forward itself is `resolvePersistedEmbeddingCount`'s, not this
+ * module's: the CLI publishes the same field, and "unknown ⇒ carry forward,
+ * never fabricate 0" only holds if both publishers ask the same function
+ * (core/embedding-count.ts).
  */
 export const withMeasuredEmbeddingCount = (
   meta: RepoMeta,
-  embeddings: number | undefined,
-): RepoMeta =>
-  embeddings === undefined ? meta : { ...meta, stats: { ...meta.stats, embeddings } };
+  /** `undefined` ≡ this write measured nothing (e.g. the window-start save). */
+  measured: PersistedEmbeddingCount | undefined,
+): RepoMeta => {
+  const embeddings = resolvePersistedEmbeddingCount(measured ?? UNMEASURED, meta.stats?.embeddings);
+  return embeddings === undefined ? meta : { ...meta, stats: { ...meta.stats, embeddings } };
+};

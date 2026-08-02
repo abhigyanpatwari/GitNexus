@@ -199,6 +199,11 @@ describe('run-analyze module', () => {
       const resumedPending = await loadMeta(storagePath);
       if (!resumedPending) throw new Error('expected pending-window resume metadata');
       fetchMock.mockClear();
+      // Both mismatch stages name a pending node. That is what an 'interrupted'
+      // marker means — nodes that may hold a SUBSET of their chunks — and it is
+      // what the fail-closed gate exists to protect: a marker with an empty
+      // pending set has nothing to regenerate, so `decideEmbeddingResume`
+      // (embedding-checkpoint.ts) clears it without consulting the identity.
       await saveMeta(storagePath, {
         ...resumedPending,
         embeddingCheckpoint: {
@@ -209,6 +214,7 @@ describe('run-analyze module', () => {
           model: 'test-model',
           dimensions: 384,
           provider: 'http:different-provider-fingerprint',
+          pendingNodeIds: [pendingNodeId],
         },
       });
       await expect(
@@ -230,6 +236,7 @@ describe('run-analyze module', () => {
           model: 'different-model',
           dimensions: 384,
           provider: embeddingIdentity.provider,
+          pendingNodeIds: [pendingNodeId],
         },
       });
       await expect(

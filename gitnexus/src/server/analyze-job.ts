@@ -60,8 +60,6 @@ export interface AnalyzeJobPartialOutcome {
   pendingNodeCount: number;
   /** Nodes that completed; their rows are durable. */
   nodesProcessed: number;
-  /** Retrying re-embeds exactly the pending nodes, not the whole repo. */
-  retryable: true;
 }
 
 export interface AnalyzeJob {
@@ -166,7 +164,7 @@ export class JobManager {
     }
 
     // Emit exactly one event per updateJob call to prevent SSE double-write
-    if (update.status === 'complete' || update.status === 'failed') {
+    if (update.status !== undefined && isTerminalJobStatus(update.status)) {
       // Terminal event takes precedence — don't also emit the progress event
       this.emitter.emit(`progress:${id}`, {
         phase: update.status,

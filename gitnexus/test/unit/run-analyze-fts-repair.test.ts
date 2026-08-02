@@ -8,7 +8,6 @@ import {
   type RepoMeta,
 } from '../../src/storage/repo-manager.js';
 import { EMBEDDING_DIMS } from '../../src/core/lbug/schema.js';
-import type { PersistedEmbeddingCount } from '../../src/core/embedding-count.js';
 import { getIndexIncompleteReasons } from '../../src/core/index-freshness.js';
 import type {
   EmbeddingPipelineOptions,
@@ -2353,10 +2352,13 @@ describe('runFullAnalysis embedding-checkpoint resilience (#2790 review)', () =>
       // Pre-fix this was 0 — the run-start snapshot — and the checkpoint was
       // cleared, so nothing on disk remembered the run had never been verified.
       expect(afterRun).toMatchObject({ stats: { embeddings: MID_RUN_COUNT } });
+      // Its own `kind`, not `'partial'`: nothing was dropped, so reporting it
+      // as pending nodes told the operator N node(s) had lost their embeddings
+      // where N is zero.
       expect(afterRun).toMatchObject({
-        embeddingCheckpoint: { kind: 'partial', pendingNodeIds: [] },
+        embeddingCheckpoint: { kind: 'unverified-count', pendingNodeIds: [] },
       });
-      expect(getIndexIncompleteReasons(afterRun)).toEqual(['embedding-checkpoint-pending']);
+      expect(getIndexIncompleteReasons(afterRun)).toEqual(['embedding-count-unverified']);
       expect(firstLogs).toContainEqual(
         expect.stringContaining('re-derives the count instead of publishing an unverified one'),
       );
@@ -2578,7 +2580,8 @@ describe('runFullAnalysis embedding-checkpoint resilience (#2790 review)', () =>
         },
       });
 
-      const { EMBEDDING_RESUME_MAX_ATTEMPTS } = await import('../../src/core/run-analyze.js');
+      const { EMBEDDING_RESUME_MAX_ATTEMPTS } =
+        await import('../../src/core/embedding-checkpoint.js');
       const attemptsSeen: Array<number | undefined> = [];
       for (let run = 0; run < EMBEDDING_RESUME_MAX_ATTEMPTS; run++) {
         const runLogs: string[] = [];
@@ -2654,68 +2657,5 @@ describe('runFullAnalysis embedding-checkpoint resilience (#2790 review)', () =>
     } finally {
       await tmpRepo.cleanup();
     }
-  });
-});
-
-/**
- * ── #2790 review, finding 2: ONE counter, three call sites ─────────────
- *
- * `run-analyze.ts` (Phase 5 + the mid-run checkpoint) and `server/api.ts` both
- * publish `RepoMeta.stats.embeddings`. Their hand-copied bodies had already
- * drifted inside a single change — one ended `?? 0`, the other `?? Number.NaN`
- * — under a comment asserting they measured it "the same way". These pin the
- * shared implementation both now call, on the three inputs that told the two
- * copies apart.
- */
-describe('measurePersistedEmbeddingCount (#2790 review)', () => {
-  const answer = async (
-    rows: Array<Record<string, unknown>> | undefined,
-  ): Promise<PersistedEmbeddingCount> => {
-    const { measurePersistedEmbeddingCount } = await import('../../src/core/embedding-count.js');
-    return await measurePersistedEmbeddingCount(async () => rows);
-  };
-
-  it('reports a real count when the query answers with one', async () => {
-    expect(await answer([{ cnt: 41 }])).toEqual({ kind: 'measured', count: 41 });
-  });
-
-  it('reports an empty table as a measured zero', async () => {
-    // The distinction the whole tri-state rests on: an EMPTY table still
-    // answers with one row holding 0. That is a measurement, not an absence.
-    expect(await answer([{ cnt: 0 }])).toEqual({ kind: 'measured', count: 0 });
-  });
-
-  it('reports a no-row answer as unknown, not as zero', async () => {
-    // `?? 0` made this a measured zero — and `Number.isFinite(0)` is true, so
-    // the unknown branch became unreachable for exactly this case.
-    expect(await answer([])).toMatchObject({ kind: 'unknown' });
-  });
-
-  it('reports a missing cell as unknown', async () => {
-    expect(await answer([{}])).toMatchObject({ kind: 'unknown' });
-  });
-
-  it('reports a non-numeric cell as unknown', async () => {
-    expect(await answer([{ cnt: 'x' }])).toMatchObject({ kind: 'unknown' });
-  });
-
-  it('reports an undefined result set as unknown', async () => {
-    expect(await answer(undefined)).toMatchObject({ kind: 'unknown' });
-  });
-
-  it('reports a thrown query as unknown, carrying the reason', async () => {
-    const { measurePersistedEmbeddingCount } = await import('../../src/core/embedding-count.js');
-    expect(
-      await measurePersistedEmbeddingCount(async () => {
-        throw new Error('Binder exception: Table CodeEmbedding does not exist.');
-      }),
-    ).toEqual({ kind: 'unknown', reason: 'Binder exception: Table CodeEmbedding does not exist.' });
-  });
-
-  it('collapses to the optional number the callers persist', async () => {
-    const { persistedEmbeddingCountOrUndefined } =
-      await import('../../src/core/embedding-count.js');
-    expect(persistedEmbeddingCountOrUndefined({ kind: 'measured', count: 0 })).toBe(0);
-    expect(persistedEmbeddingCountOrUndefined({ kind: 'unknown', reason: 'nope' })).toBeUndefined();
   });
 });

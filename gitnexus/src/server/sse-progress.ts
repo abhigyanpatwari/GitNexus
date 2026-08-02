@@ -7,9 +7,8 @@
  * stream), and a contract that can only be checked by regex over api.ts's source
  * is not a contract. Nothing here imports the database or MCP; `express` is a
  * TYPE-only import, so the runtime cost of loading this module is validation.ts
- * plus analyze-job.ts.
- *
- * api.ts re-exports `mountSSEProgress` so existing importers are unaffected.
+ * plus analyze-job.ts. Import it from HERE — routing through api.ts re-imports
+ * everything the extraction was meant to avoid.
  */
 
 import type express from 'express';

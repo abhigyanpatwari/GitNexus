@@ -1,17 +1,20 @@
-import express from 'express';
-import http from 'node:http';
 import fs from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import { describe, it, expect, beforeEach, afterEach } from 'vitest';
 import { JobManager } from '../../src/server/analyze-job.js';
-import { mountSSEProgress } from '../../src/server/sse-progress.js';
 import {
-  inFlightEmbeddingCheckpoint,
+  startSSEHarness,
+  terminalFrame,
+  terminalFrameCount,
+  type SSEHarness,
+} from '../helpers/sse-harness.js';
+import {
   resolveEmbedRunOutcome,
   withMeasuredEmbeddingCount,
   type EmbeddingRunResult,
 } from '../../src/server/embed-run-outcome.js';
+import { mintInterruptedCheckpoint } from '../../src/core/embedding-checkpoint.js';
 import {
   measurePersistedEmbeddingCount,
   persistedEmbeddingCountOrUndefined,
@@ -25,7 +28,8 @@ import { deriveEmbeddingMode } from '../../src/core/embedding-mode.js';
  * reaching three pure helpers through it cost one 30s TIMEOUT and ~20s/~22s on
  * the runs that passed, against a 30s `testTimeout` (#2790 review, finding 9).
  * The helpers now live in `src/server/{sse-progress,embed-run-outcome}.ts` and
- * `src/core/embedding-count.ts`, none of which import a database or a server.
+ * `src/core/embedding-{count,checkpoint}.ts`, none of which import a database
+ * or a server.
  */
 
 describe('analyze API logic', () => {
@@ -117,47 +121,18 @@ const PROGRESS = { nodesProcessed: 4, totalNodes: 12, chunksProcessed: 9 };
  * suite passed while the bug was live.
  */
 describe('mountSSEProgress terminality (#2790)', () => {
+  let harness: SSEHarness;
   let manager: JobManager;
-  let server: http.Server | undefined;
   let baseUrl = '';
 
-  beforeEach(() => {
-    manager = new JobManager();
-    const app = express();
+  beforeEach(async () => {
     // Mirrors both production mounts in createServer().
-    mountSSEProgress(app, '/api/embed/:jobId/progress', manager);
-    return new Promise<void>((resolve) => {
-      server = app.listen(0, '127.0.0.1', () => {
-        const addr = server?.address();
-        const port = typeof addr === 'object' && addr ? addr.port : 0;
-        baseUrl = `http://127.0.0.1:${port}`;
-        resolve();
-      });
-    });
+    harness = await startSSEHarness('/api/embed/:jobId/progress');
+    manager = harness.manager;
+    baseUrl = harness.baseUrl;
   });
 
-  afterEach(() => {
-    manager.dispose();
-    return new Promise<void>((resolve, reject) => {
-      if (!server) {
-        resolve();
-        return;
-      }
-      server.close((err) => (err ? reject(err) : resolve()));
-      server = undefined;
-    });
-  });
-
-  /** Parsed payload of the named terminal frame, or `undefined` if absent. */
-  const terminalFrame = (body: string, event: 'complete' | 'failed'): unknown => {
-    const frame = body.split('\n\n').find((f) => f.includes(`event: ${event}`));
-    const dataLine = frame?.split('\n').find((line) => line.startsWith('data: '));
-    return dataLine === undefined ? undefined : JSON.parse(dataLine.slice('data: '.length));
-  };
-
-  /** How many terminal frames of any kind the client received. */
-  const terminalFrameCount = (body: string): number =>
-    body.split('\n\n').filter((f) => /^event: (complete|failed)$/m.test(f)).length;
+  afterEach(() => harness.close());
 
   it('a partial run reaches the client as a failure, not a success', async () => {
     const job = manager.createJob({ repoPath: '/ws/embed-partial' });
@@ -282,7 +257,7 @@ describe('mountSSEProgress terminality (#2790)', () => {
     expect(terminalFrameCount(body)).toBe(1);
     expect(terminalFrame(body, 'failed')).toMatchObject({
       error: expect.stringContaining('finished partially') as unknown as string,
-      partial: { kind: 'embedding-partial', pendingNodeCount: 1, retryable: true },
+      partial: { kind: 'embedding-partial', pendingNodeCount: 1, nodesProcessed: 3 },
     });
   });
 });
@@ -331,7 +306,6 @@ describe('resolveEmbedRunOutcome (#2790)', () => {
       kind: 'embedding-partial',
       pendingNodeCount: 2,
       nodesProcessed: 10,
-      retryable: true,
     });
   });
 
@@ -340,7 +314,7 @@ describe('resolveEmbedRunOutcome (#2790)', () => {
       IDENTITY,
       { nodesProcessed: 10, chunksProcessed: 24, failedNodeIds: ['node-a'] },
       // Resumed from an in-flight marker, not a partial one.
-      { resumedFrom: inFlightEmbeddingCheckpoint(IDENTITY, PROGRESS, ['node-a']) },
+      { resumedFrom: mintInterruptedCheckpoint(IDENTITY, PROGRESS, ['node-a']) },
     );
     expect(outcome.checkpoint).toMatchObject({ kind: 'partial' });
     expect(outcome.checkpoint?.attempts).toBeUndefined();
@@ -380,9 +354,9 @@ describe('resolveEmbedRunOutcome (#2790)', () => {
   });
 });
 
-describe('inFlightEmbeddingCheckpoint (#2790)', () => {
+describe('the mid-run marker /api/embed writes (mintInterruptedCheckpoint, #2790)', () => {
   it('stamps interrupted, so resume regenerates a possibly half-written window', () => {
-    const checkpoint = inFlightEmbeddingCheckpoint(IDENTITY, PROGRESS, ['node-a', 'node-b']);
+    const checkpoint = mintInterruptedCheckpoint(IDENTITY, PROGRESS, ['node-a', 'node-b']);
     expect(checkpoint).toMatchObject({
       kind: 'interrupted',
       nodesProcessed: 4,
@@ -449,12 +423,10 @@ describe('POST /api/embed records the embedding count it measured', () => {
     runQuery: (cypher: string) => Promise<Array<Record<string, unknown>> | undefined>,
     pipelineResult: EmbeddingRunResult,
   ): Promise<RepoMeta | null> => {
-    const measured = persistedEmbeddingCountOrUndefined(
-      await measurePersistedEmbeddingCount(runQuery),
-    );
+    const measured = await measurePersistedEmbeddingCount(runQuery);
     const finalMeta = (await loadMeta(metaDir)) ?? seeded;
     const outcome = resolveEmbedRunOutcome(IDENTITY, pipelineResult, {
-      measuredEmbeddings: measured,
+      measuredEmbeddings: persistedEmbeddingCountOrUndefined(measured),
       onDisk: finalMeta,
     });
     await saveMeta(
@@ -559,7 +531,7 @@ describe('POST /api/embed records the embedding count it measured', () => {
     // The state that arms the silent wipe: meta records 0 embeddings (a repo
     // analyzed without them, embedded through the server), the run succeeded,
     // and the count query cannot answer — so no honest count can be stamped.
-    const midRunMarker = inFlightEmbeddingCheckpoint(IDENTITY, PROGRESS, ['node-a']);
+    const midRunMarker = mintInterruptedCheckpoint(IDENTITY, PROGRESS, ['node-a']);
     await seedMeta(0, midRunMarker);
 
     const written = await finalizeEmbedRun(async () => {
@@ -580,7 +552,7 @@ describe('POST /api/embed records the embedding count it measured', () => {
   it('still clears the marker on an unverifiable run once meta records embeddings', async () => {
     // Same unmeasurable run, but the recorded count already proves the index is
     // accounted for — nothing needs preserving, so the clean-run contract wins.
-    await seedMeta(412, inFlightEmbeddingCheckpoint(IDENTITY, PROGRESS, ['node-a']));
+    await seedMeta(412, mintInterruptedCheckpoint(IDENTITY, PROGRESS, ['node-a']));
 
     const written = await finalizeEmbedRun(async () => {
       throw new Error('Connection closed');
@@ -689,6 +661,21 @@ describe('POST /api/embed route wiring (#2790)', () => {
     expect(source).toMatch(
       /onCheckpointWindowStart: async \(\{ nodeIds, \.\.\.checkpoint \}\) => \{\s*await saveEmbeddingCheckpoint\(checkpoint, nodeIds\);\s*\},/,
     );
+  });
+
+  it('resolves a found checkpoint through the shared resume decision', async () => {
+    const source = await readSource();
+    const region = insideWithLbugDb(source);
+    // The route asks the SAME decider the CLI does, instead of hard-throwing on
+    // any identity mismatch and ignoring `attempts` — the disagreement that let
+    // a CLI-written `'partial'` marker wedge every later `POST /api/embed`.
+    expect(region).toMatch(/decideEmbeddingResume\(priorCheckpoint, embeddingIdentity\)/);
+    // Every action is routed: abort fails the run, abandon warns and proceeds
+    // with an empty pending set, resume hands the decision's ids to the pipeline.
+    expect(region).toContain("if (resume?.action === 'abort') throw new Error(resume.error);");
+    expect(region).toMatch(/resume\?\.action === 'resume'\s*\?\s*resume\.pendingNodeIds/);
+    // No second copy of the gate: the route no longer authors its own message.
+    expect(region).not.toContain('Cannot resume embedding checkpoint:');
   });
 
   it('never maps the pipeline ready phase to a phase a client can read as terminal', async () => {

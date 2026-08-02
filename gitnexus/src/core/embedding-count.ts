@@ -72,3 +72,19 @@ export const measurePersistedEmbeddingCount = async (
 export const persistedEmbeddingCountOrUndefined = (
   result: PersistedEmbeddingCount,
 ): number | undefined => (result.kind === 'measured' ? result.count : undefined);
+
+/**
+ * Fold a measurement into the `RepoMeta.stats.embeddings` a run publishes.
+ *
+ * The measurement was already shared; this fold was not, and it is the half
+ * that decides what actually lands on disk — the CLI's finalization and the
+ * server's `withMeasuredEmbeddingCount` each carried their own copy of the same
+ * two lines. NEVER a fabricated `0`: `unknown` carries `priorCount` forward
+ * (see this file's header for the chain a false zero arms), and `undefined` in
+ * means `undefined` out, so a repo that never had a count keeps the field
+ * absent rather than gaining an invented one.
+ */
+export const resolvePersistedEmbeddingCount = (
+  measured: PersistedEmbeddingCount,
+  priorCount: number | undefined,
+): number | undefined => (measured.kind === 'measured' ? measured.count : priorCount);

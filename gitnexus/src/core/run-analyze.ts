@@ -161,15 +161,24 @@ import {
   finalizeAnalyzerRunnerIdentity,
   resolveAnalyzerRunnerIdentity,
 } from './analyzer-identity.js';
-// Static, and deliberately so: `embedding-count.ts` lives outside
-// `core/embeddings/` precisely because the lazy-embeddings convention (#2370 —
-// no embeddings module loads unless a run needs one) must keep holding while
-// this counter runs on the ORDINARY finalization path of every analyze. It
-// imports nothing native.
+// Static, and deliberately so: `embedding-count.ts` and `embedding-checkpoint.ts`
+// live outside `core/embeddings/` precisely because the lazy-embeddings
+// convention (#2370 — no embeddings module loads unless a run needs one) must
+// keep holding while this counter and the checkpoint rules run on the ORDINARY
+// path of every analyze. Neither imports anything native.
 import {
   measurePersistedEmbeddingCount,
   persistedEmbeddingCountOrUndefined,
+  resolvePersistedEmbeddingCount,
 } from './embedding-count.js';
+import {
+  EMBEDDING_RESUME_MAX_ATTEMPTS,
+  decideEmbeddingResume,
+  mintInterruptedCheckpoint,
+  mintPartialCheckpoint,
+  mintUnverifiedCountCheckpoint,
+} from './embedding-checkpoint.js';
+import type { EmbeddingCheckpoint } from './embedding-checkpoint.js';
 
 const ANALYSIS_FEATURES = [
   CLASS_FRAMEWORK_ANNOTATIONS_FEATURE,
@@ -178,30 +187,6 @@ const ANALYSIS_FEATURES = [
   SPRING_CONDITIONALS_FEATURE,
   SPRING_CONFIG_BINDINGS_FEATURE,
 ] as const;
-
-/**
- * How many consecutive resume runs may fail to clear a `'partial'` embedding
- * checkpoint's pending set before the set is abandoned (#2790).
- *
- * Retrying forever is not a safe default here. A node the endpoint rejects
- * DETERMINISTICALLY — an oversized chunk, content a policy filter refuses —
- * produces a resume run too small to trip any other guard, so the pending set
- * never shrinks, `getIndexIncompleteReasons` returns
- * `embedding-checkpoint-pending` on every `gitnexus status`, and the
- * same-commit fast return is disabled for the life of the repo. Bounding the
- * retry converts "permanently incomplete" into "complete minus N nodes, said
- * out loud once".
- *
- * 3 is this repo's established retry budget rather than a fresh guess: the
- * HTTP embedder spends `HTTP_MAX_RETRIES + 1 === 3` attempts per request
- * (http-client.ts) and the WAL driver spends `CHECKPOINT_RETRY_ATTEMPTS === 3`
- * per flush (wal-checkpoint-driver.ts). Each attempt here is a whole analyze
- * invocation with its own per-request retries underneath, so 3 resume runs is
- * already a large real-world budget — enough to ride out an endpoint outage
- * spanning several commits, small enough that a deterministic rejection stops
- * mattering within a day of normal committing.
- */
-export const EMBEDDING_RESUME_MAX_ATTEMPTS = 3;
 
 interface PersistedFrameworkAnnotationRow {
   readonly id?: unknown;
@@ -1137,96 +1122,38 @@ async function runFullAnalysisInner(
   let resumeEmbeddingCheckpoint = false;
   let pendingEmbeddingNodeIds = new Set<string>();
   let embeddingIdentityForRun: EmbeddingIdentity | undefined;
-  // Set only when this run resumed a `'partial'` checkpoint, so Phase 5 can
-  // tell "the retry cleared the set" from "the retry failed the same way
-  // again" and bound the latter (#2790, EMBEDDING_RESUME_MAX_ATTEMPTS).
-  let resumedPartialPendingNodeIds: ReadonlySet<string> | undefined;
-  let resumedPartialAttempts = 0;
+  // The marker this run resumed, so Phase 5 can tell "the retry cleared the
+  // set" from "the retry failed the same way again" and bound the latter — see
+  // `nextAttemptCount` in embedding-checkpoint.ts (#2790).
+  let resumedEmbeddingCheckpoint: EmbeddingCheckpoint | undefined;
   if (existingMeta?.embeddingCheckpoint) {
     const checkpoint = existingMeta.embeddingCheckpoint;
-    // Absent `kind` ≡ 'interrupted': markers written before #2790's follow-up
-    // keep the stricter fail-closed behavior (repo-manager.ts).
-    const checkpointKind = checkpoint.kind ?? 'interrupted';
-    const attempts = checkpoint.attempts ?? 0;
-    if (options.dropEmbeddings) {
-      log('Discarding the interrupted embedding checkpoint (--drop-embeddings).');
-      options = { ...options, force: true };
-    } else if (options.force) {
-      // ── `--force` must be able to clear a checkpoint (#2790) ──────────
-      // This gate used to consult ONLY `--drop-embeddings`, which made an
-      // identity-mismatched checkpoint a landmine no rebuild flag could
-      // defuse: every later run threw here, BEFORE any phase, and the graph
-      // was never refreshed again. `--force` is the documented "rebuild this
-      // index" escape hatch and now behaves like one. Nothing is lost that a
-      // rebuild would not redo: a forced run over an embedded repo derives
-      // `forceRegenerateEmbeddings`, and the pending nodes hold zero rows, so
-      // they look new to the incremental filter and get re-embedded anyway.
-      log(
-        `Discarding the embedding checkpoint (--force)` +
-          `${(checkpoint.pendingNodeIds?.length ?? 0) > 0 ? ` and its ${checkpoint.pendingNodeIds?.length} pending node(s)` : ''}; ` +
-          'this run rebuilds from scratch. Pass --embeddings to regenerate them explicitly.',
-      );
-    } else if (checkpointKind === 'partial' && attempts >= EMBEDDING_RESUME_MAX_ATTEMPTS) {
-      // Bounded retry: the pending set stopped converging. Dropping it is the
-      // only way `gitnexus status` ever reports this index complete again, and
-      // it costs nothing but those nodes' embeddings (the graph is intact).
-      log(
-        `Warning: ${checkpoint.pendingNodeIds?.length ?? 0} node(s) failed to embed on ` +
-          `${attempts} consecutive resume attempts and are being abandoned (#2790). ` +
-          'The index is registered without them; `gitnexus status` stops reporting it as ' +
-          'incomplete. Re-run `gitnexus analyze --embeddings --force` once the embedding ' +
-          'endpoint accepts them.',
-      );
-    } else {
+    // The verdict itself lives in embedding-checkpoint.ts, shared with
+    // `POST /api/embed` — two readers of one marker must not be able to
+    // disagree about what it means.
+    //
+    // The identity stays LAZY, as it has to: the flag and retry-budget verdicts
+    // short-circuit before one is needed, and resolving it means importing an
+    // embeddings module (#2370 — none loads unless a run actually needs one).
+    // `decideEmbeddingResume` asks for it by aborting on `undefined`, which is
+    // the only abort it can reach without one.
+    let decision = decideEmbeddingResume(checkpoint, undefined, options);
+    if (decision.action === 'abort') {
       const { resolveEmbeddingIdentity } = await import('./embeddings/embedding-identity.js');
       embeddingIdentityForRun = resolveEmbeddingIdentity();
-      const identity = embeddingIdentityForRun;
-      const providerDiffers = checkpoint.provider !== identity.provider;
-      const modelDiffers =
-        checkpoint.model !== identity.model || checkpoint.dimensions !== identity.dimensions;
-      // ── An identity mismatch means different things per `kind` (#2790) ──
-      // 'interrupted' markers may name half-persisted nodes, so resuming under
-      // a foreign model would mix vector spaces — that still fails closed.
-      // 'partial' markers name nodes the pipeline already DELETED every row
-      // of: they provably hold zero rows, so there is nothing to mix. Throwing
-      // on those turned an exit-0 partial run into a permanent wedge — a
-      // post-commit hook or CI job without the endpoint's env vars resolves
-      // `provider: 'local'`, mismatches, and dies before any phase runs.
-      if ((providerDiffers || modelDiffers) && checkpointKind === 'partial') {
-        log(
-          `Warning: dropping ${checkpoint.pendingNodeIds?.length ?? 0} pending node(s) from a ` +
-            'partial embedding checkpoint: it was written by a different embedding ' +
-            `configuration (${checkpoint.model} at ${checkpoint.dimensions} dimensions) than ` +
-            `this run resolves (${identity.model} at ${identity.dimensions}). Those nodes hold ` +
-            'no embedding rows, so nothing is discarded and no vector spaces are mixed; the ' +
-            'run continues. Restore the original configuration and re-run ' +
-            '`gitnexus analyze --embeddings` to embed them.',
-        );
-      } else if (providerDiffers) {
-        throw new Error(
-          'Cannot resume embedding checkpoint: the embedding provider configuration differs. ' +
-            'Restore the matching endpoint configuration or pass --drop-embeddings to rebuild without it.',
-        );
-      } else if (modelDiffers) {
-        throw new Error(
-          `Cannot resume embedding checkpoint: it uses ${checkpoint.model} at ` +
-            `${checkpoint.dimensions} dimensions, but this run resolves ` +
-            `${identity.model} at ${identity.dimensions}. ` +
-            'Restore the matching embedding configuration or pass --drop-embeddings to rebuild without it.',
-        );
-      } else {
-        resumeEmbeddingCheckpoint = true;
-        pendingEmbeddingNodeIds = new Set(checkpoint.pendingNodeIds ?? []);
-        if (checkpointKind === 'partial') {
-          resumedPartialPendingNodeIds = pendingEmbeddingNodeIds;
-          resumedPartialAttempts = attempts;
-        }
-        log(
-          `Previous analyze ended at an embedding checkpoint ` +
-            `(${checkpoint.nodesProcessed}/${checkpoint.totalNodes} nodes); resuming from persisted hashes` +
-            `${pendingEmbeddingNodeIds.size > 0 ? ` and regenerating ${pendingEmbeddingNodeIds.size} pending node(s)` : ''}.`,
-        );
-      }
+      decision = decideEmbeddingResume(checkpoint, embeddingIdentityForRun, options);
+    }
+    if (decision.action === 'abort') throw new Error(decision.error);
+    log(decision.log);
+    if (options.dropEmbeddings) {
+      // --drop-embeddings has always implied a rebuild here; the decision only
+      // covers the marker.
+      options = { ...options, force: true };
+    }
+    if (decision.action === 'resume') {
+      resumeEmbeddingCheckpoint = true;
+      pendingEmbeddingNodeIds = new Set(decision.pendingNodeIds);
+      resumedEmbeddingCheckpoint = decision.resumedFrom;
     }
   }
 
@@ -2646,21 +2573,13 @@ async function runFullAnalysisInner(
         await saveMeta(metaDir, {
           ...base,
           ...(embeddings === undefined ? {} : { stats: { ...base.stats, embeddings } }),
-          embeddingCheckpoint: {
-            at: new Date().toISOString(),
-            ...checkpoint,
-            model: embeddingIdentity.model,
-            dimensions: embeddingIdentity.dimensions,
-            provider: embeddingIdentity.provider,
-            // Written by a run that is still IN FLIGHT, so a crash can leave
-            // `pendingNodeIds` half-persisted — that is exactly what
-            // 'interrupted' means, and why the resume gate must fail closed on
-            // an identity mismatch for these (repo-manager.ts). No `attempts`:
-            // the retry bound applies to 'partial' markers, whose pending set
-            // is known-empty of rows and can therefore be safely abandoned.
-            kind: 'interrupted',
+          // Written by a run that is still IN FLIGHT — see the `kind` doc in
+          // repo-manager.ts.
+          embeddingCheckpoint: mintInterruptedCheckpoint(
+            embeddingIdentity,
+            checkpoint,
             pendingNodeIds,
-          },
+          ),
         });
       };
 
@@ -2686,21 +2605,16 @@ async function runFullAnalysisInner(
             await saveEmbeddingCheckpoint(checkpoint, nodeIds);
           },
           // ── The mid-run count is a DIAGNOSTIC, not a gate (#2790) ──────
-          // This used to run the count query bare — no try/catch, no
-          // `Number.isFinite`. The callback's rejection propagates out of
-          // `runEmbeddingPipeline` and kills the whole analyze, so a DB-busy
-          // moment, a closed connection, a read-only store or the
-          // VECTOR-extension DML lock (#2623) took the run down BEFORE Phase 5
+          // This used to run the count query bare. THIS callback's rejection
+          // propagates out of `runEmbeddingPipeline` and kills the whole
+          // analyze, so an unavailable count took the run down BEFORE Phase 5
           // ran at all — meaning the tri-state Phase 5 added for exactly this
-          // case could never execute. A non-numeric cell was worse than a
-          // throw: `Number(...)` yielded NaN, which is `!== undefined`, so it
-          // was written through and `JSON.stringify` serialized
-          // `stats.embeddings: null` into meta.json mid-run.
+          // case could never execute.
           //
-          // The shared counter answers `unknown` for both, and `undefined` is
-          // already `saveEmbeddingCheckpoint`'s "do not touch stats.embeddings"
-          // signal — so the checkpoint still lands, with whatever count is
-          // already on disk left alone.
+          // The shared counter (embedding-count.ts) answers `unknown` instead,
+          // and `undefined` is already `saveEmbeddingCheckpoint`'s "do not
+          // touch stats.embeddings" signal — so the checkpoint still lands,
+          // with whatever count is already on disk left alone.
           onCheckpoint: async (checkpoint) => {
             await checkpointOnce();
             const measured = await measurePersistedEmbeddingCount(executeQuery);
@@ -2730,37 +2644,13 @@ async function runFullAnalysisInner(
       // identity so a later model/provider change trips the resume mismatch
       // error rather than resuming under a foreign identity.
       if (embeddingResult.failedNodeIds.length > 0) {
-        // ── Bounded retry (#2790, EMBEDDING_RESUME_MAX_ATTEMPTS) ─────────
-        // "Consecutive resume attempts that failed to clear the pending set",
-        // exactly as repo-manager.ts defines it: the counter advances only
-        // when this run was itself a 'partial' resume AND at least one node it
-        // was asked to clear failed AGAIN. A resume that cleared its set and
-        // lost different nodes is a FRESH partial, so the budget resets — the
-        // bound exists for a node the endpoint rejects deterministically, not
-        // for an endpoint that is merely flaky.
-        const failedAgain =
-          resumedPartialPendingNodeIds !== undefined &&
-          embeddingResult.failedNodeIds.some((id) => resumedPartialPendingNodeIds.has(id));
-        pendingEmbeddingCheckpoint = {
-          at: new Date().toISOString(),
-          nodesProcessed: embeddingResult.nodesProcessed,
-          // Reconstructed: `nodesProcessed` counts only the COMPLETE nodes, so
-          // the walked total is those plus the dropped ones. Read only by the
-          // resume log line.
-          totalNodes: embeddingResult.nodesProcessed + embeddingResult.failedNodeIds.length,
-          chunksProcessed: embeddingResult.chunksProcessed,
-          model: embeddingIdentity.model,
-          dimensions: embeddingIdentity.dimensions,
-          provider: embeddingIdentity.provider,
-          // The run COMPLETED; the pipeline already deleted every row of these
-          // nodes, so they provably hold zero. That is what lets the resume
-          // gate downgrade an identity mismatch to a warning instead of
-          // wedging every later run (#2790) — an exit-0 partial run must not
-          // plant a marker that only --drop-embeddings can clear.
-          kind: 'partial',
-          attempts: failedAgain ? resumedPartialAttempts + 1 : undefined,
-          pendingNodeIds: embeddingResult.failedNodeIds,
-        };
+        // `'partial'` and its attempt chain — see the `kind` doc in
+        // repo-manager.ts and `nextAttemptCount` in embedding-checkpoint.ts.
+        pendingEmbeddingCheckpoint = mintPartialCheckpoint(
+          embeddingIdentity,
+          embeddingResult,
+          resumedEmbeddingCheckpoint,
+        );
       }
       if (embeddingResult.semanticMode === 'exact-scan') {
         semanticMode = 'exact-scan';
@@ -2776,24 +2666,11 @@ async function runFullAnalysisInner(
     // ── Phase 5: Finalize (98–100%) ───────────────────────────────────
     progress('done', 98, 'Saving metadata...');
 
-    // Count embeddings in the index (cached + newly generated).
-    //
-    // TRI-STATE (#2790): a real number, or `undefined` ≡ COULD NOT ASK. The
-    // query throws for reasons that have nothing to do with how many rows were
-    // written — table missing, connection closed, DB busy or read-only, the
-    // VECTOR-extension DML lock (#2623) — and the old silent `catch {}` left
-    // "cannot ask" indistinguishable from "wrote nothing", crashing the run on
-    // a diagnostic failure with no clue why. A non-numeric cell is the same
-    // class of unknown: `Number(...)` yields NaN and `NaN === 0` is false, so
-    // the old gate was BYPASSED and `stats.embeddings` serialized to null.
-    //
-    // Measured by the SHARED counter (embedding-count.ts), not a local copy.
-    // The copy this replaced ended `?? 0` while the server's ended
-    // `?? Number.NaN`, under a comment claiming both measured the field "the
-    // same way": a no-row answer became a MEASURED zero here, which made the
-    // unknown branch below unreachable for the very case it exists to catch
-    // and let the gate throw "completed without persisted embeddings" on a run
-    // where every embedding persisted.
+    // Count embeddings in the index (cached + newly generated). Tri-state, and
+    // measured by the SHARED counter rather than a local copy — see
+    // embedding-count.ts. What that buys HERE: the old silent `catch {}` left
+    // "cannot ask" indistinguishable from "wrote nothing", so a diagnostic
+    // failure crashed the run at the gate below with no clue why.
     const measuredEmbeddingCount = await measurePersistedEmbeddingCount(executeQuery);
     const embeddingCount = persistedEmbeddingCountOrUndefined(measuredEmbeddingCount);
     if (measuredEmbeddingCount.kind === 'unknown') {
@@ -2843,22 +2720,17 @@ async function runFullAnalysisInner(
     }
 
     // ── An unverifiable count must leave a way back (#2790) ───────────────
-    // The carry-forward above is a GUESS, and the guess is load-bearing: it
-    // becomes the next run's `existingEmbeddingCount`. Clearing the checkpoint
-    // on top of it would report unqualified success and erase the only record
-    // that this index was never verified — so a stale figure could go on
-    // driving `deriveEmbeddingMode` indefinitely, and a later `--force` reading
-    // a stale 0 would wipe live embeddings without loading the cache.
+    // The carry-forward below is a GUESS, and the guess is load-bearing (see
+    // embedding-count.ts). Clearing the checkpoint on top of it would report
+    // unqualified success and erase the only record that this index was never
+    // verified.
     //
-    // Retain an identity-matching recovery marker instead. `pendingNodeIds` is
-    // EMPTY — nothing failed, this is not a partial run — so the resume it
-    // triggers re-embeds nothing; its whole job is to force the next run past
-    // the same-commit fast return so the count can be re-derived. `kind:
-    // 'partial'` is correct for the same reason it is on a dropped-node marker:
-    // no node here holds a half-written row, so an identity mismatch must never
-    // wedge the repo over it. Self-limiting: once the count answers, the marker
-    // is cleared, and a resume with nothing to embed reports `totalNodes: 0` →
-    // `attemptedEmbedding` false → no re-plant.
+    // Retain an identity-matching recovery marker instead — `'unverified-count'`,
+    // whose whole job is to force the next run past the same-commit fast return
+    // so the count can be re-derived (see the `kind` doc in repo-manager.ts).
+    // Self-limiting: once the count answers, the marker is cleared, and the run
+    // it forces embeds nothing, so `attemptedEmbedding` is false and nothing is
+    // re-planted.
     if (
       attemptedEmbedding &&
       embeddingCount === undefined &&
@@ -2869,25 +2741,15 @@ async function runFullAnalysisInner(
         'Retaining an embedding checkpoint so the next `gitnexus analyze` re-derives the count ' +
           'instead of publishing an unverified one as final (#2790).',
       );
-      pendingEmbeddingCheckpoint = {
-        at: new Date().toISOString(),
+      pendingEmbeddingCheckpoint = mintUnverifiedCountCheckpoint(embeddingIdentityForRun, {
         nodesProcessed: embeddingResult?.nodesProcessed ?? 0,
         totalNodes: embeddingResult?.nodesProcessed ?? 0,
         chunksProcessed: embeddingResult?.chunksProcessed ?? 0,
-        model: embeddingIdentityForRun.model,
-        dimensions: embeddingIdentityForRun.dimensions,
-        provider: embeddingIdentityForRun.provider,
-        kind: 'partial',
-        // Carried, never incremented: this marker names no failing node, so it
-        // neither spends nor refills a pending set's retry budget.
-        attempts: resumedPartialAttempts > 0 ? resumedPartialAttempts : undefined,
-        pendingNodeIds: [],
-      };
+      });
     }
 
-    // A partial index that is honest about itself beats no index: the dropped
-    // nodes hold ZERO rows (the pipeline deleted them) and are recorded as the
-    // checkpoint's pending set, which is what actually brings them back.
+    // A partial index that is honest about itself beats no index — see the
+    // `kind` doc in repo-manager.ts for why the dropped nodes are safe to ship.
     if (embeddingResult !== undefined && embeddingResult.failedNodeIds.length > 0) {
       log(
         `Warning: ${embeddingResult.failedNodeIds.length} node(s) lost their embeddings to ` +
@@ -2900,28 +2762,28 @@ async function runFullAnalysisInner(
       );
     }
 
-    // What we can honestly persist as the embedding count. When the count is
-    // unknown, carry the LAST KNOWN figure forward rather than writing
-    // `null`/0 — a wrong-LOW value is the dangerous direction: it is the sole
-    // input to the next run's `existingEmbeddingCount` → deriveEmbeddingMode →
-    // shouldLoadCache, and a false 0 makes the next `--force` run skip the
-    // cache load and discard every surviving embedding.
+    // What we can honestly persist as the embedding count: the measurement when
+    // there is one, else the LAST KNOWN figure — never a fabricated 0 (see
+    // embedding-count.ts). Folded by the shared `resolvePersistedEmbeddingCount`
+    // so the CLI and the server cannot drift apart on the carry-forward the way
+    // they already had on the measurement.
     //
     // "Last known" is the LATEST ON-DISK meta, re-read here (#2790). It used to
     // read `existingMeta`, which is assigned exactly once — before any
     // embedding work — so the fallback republished the pre-run figure and
     // OVERWROTE the fresher count this run's own terminal `onCheckpoint` had
-    // already written to disk. Concretely: prior meta says 0, a clean run
-    // inserts embeddings and checkpoints the real count, the final probe is
-    // unavailable, finalization carries the stale 0 forward and clears the
-    // checkpoint while reporting success — and the next `--force` reads 0,
-    // derives `hasExisting: false`, skips the cache load and destroys the live
-    // embeddings. `loadMeta` never throws (it returns null), and the checkpoint
+    // already written to disk: prior meta says 0, a clean run inserts
+    // embeddings and checkpoints the real count, the final probe is
+    // unavailable, and finalization carries the stale 0 forward while reporting
+    // success. `loadMeta` never throws (it returns null), and the checkpoint
     // writer already re-reads the same way, so this is the same freshness
     // discipline applied to the same field.
     const latestMetaForCount =
       embeddingCount === undefined ? ((await loadMeta(metaDir)) ?? existingMeta) : undefined;
-    const persistedEmbeddingCount = embeddingCount ?? latestMetaForCount?.stats?.embeddings;
+    const persistedEmbeddingCount = resolvePersistedEmbeddingCount(
+      measuredEmbeddingCount,
+      latestMetaForCount?.stats?.embeddings,
+    );
 
     const { getRuntimeCapabilities } = await import('./platform/capabilities.js');
     const runtimeCapabilities = getRuntimeCapabilities();
@@ -3033,8 +2895,8 @@ async function runFullAnalysisInner(
       // so a sibling branch's prune can union it and not evict our shards.
       cacheKeys: [...parseCache.usedKeys],
       incrementalInProgress: undefined as RepoMeta['incrementalInProgress'],
-      // Cleared on a clean run; retained with the dropped nodes as
-      // `pendingNodeIds` when this run lost any to the endpoint (#2790).
+      // Cleared on a clean run; otherwise the marker Phase 4/5 minted above
+      // (see the `kind` doc in repo-manager.ts).
       embeddingCheckpoint: pendingEmbeddingCheckpoint,
       // The effective pdg config this run's DB rows were built under
       // (#2099 F1). `undefined` on pdg-off runs — this meta is a fresh

@@ -205,7 +205,6 @@ describe('JobManager', () => {
       kind: 'embedding-partial',
       pendingNodeCount: 2,
       nodesProcessed: 10,
-      retryable: true,
     };
 
     it('records a partial outcome on a failed job without changing its status', () => {
@@ -220,7 +219,7 @@ describe('JobManager', () => {
       expect(manager.getJob(job.id)).toMatchObject({
         status: 'failed',
         error: expect.stringContaining('finished partially'),
-        partial: { kind: 'embedding-partial', pendingNodeCount: 2, retryable: true },
+        partial: { kind: 'embedding-partial', pendingNodeCount: 2, nodesProcessed: 10 },
       });
     });
 

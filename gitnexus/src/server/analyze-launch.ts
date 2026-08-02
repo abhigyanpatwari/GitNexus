@@ -24,7 +24,7 @@ import {
 } from '../storage/repo-manager.js';
 import { logger } from '../core/logger.js';
 import { autoHeapCapMb } from '../core/ingestion/utils/effective-ram.js';
-import type { JobManager } from './analyze-job.js';
+import { isTerminalJobStatus, type JobManager } from './analyze-job.js';
 import type { WorkerMessage } from './analyze-worker.js';
 
 const _require = createRequire(import.meta.url);
@@ -162,7 +162,7 @@ export function createLaunchAnalysisWorker(deps: LaunchDeps) {
 
     const forkWorker = () => {
       const currentJob = jobManager.getJob(job.id);
-      if (!currentJob || currentJob.status === 'complete' || currentJob.status === 'failed') return;
+      if (!currentJob || isTerminalJobStatus(currentJob.status)) return;
 
       const child = fork(workerPath, [], {
         execArgv: [...tsxHookArgs, `--max-old-space-size=${workerHeapMb}`],
@@ -182,7 +182,7 @@ export function createLaunchAnalysisWorker(deps: LaunchDeps) {
         // re-release the repo lock or flip the reported status. Mirrors the `exit`
         // handler guard below; pairs with the worker's terminal-claim (#2264 P3).
         const current = jobManager.getJob(job.id);
-        if (!current || current.status === 'complete' || current.status === 'failed') return;
+        if (!current || isTerminalJobStatus(current.status)) return;
 
         if (msg.type === 'progress') {
           jobManager.updateJob(job.id, {
@@ -230,7 +230,7 @@ export function createLaunchAnalysisWorker(deps: LaunchDeps) {
 
       child.on('exit', (code) => {
         const j = jobManager.getJob(job.id);
-        if (!j || j.status === 'complete' || j.status === 'failed') return;
+        if (!j || isTerminalJobStatus(j.status)) return;
 
         // Worker crashed — attempt retry if under the limit
         if (j.retryCount < MAX_WORKER_RETRIES) {
