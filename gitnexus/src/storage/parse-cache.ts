@@ -128,7 +128,9 @@ import type { ParseWorkerResult } from '../core/ingestion/workers/parse-worker.j
 // both genuinely shipped as 21 — renumbering would misstate history. Read this
 // as the reason to re-check SCHEMA_BUMP against origin/main immediately before
 // merging, not just when the branch is cut; the same collision hit
-// INCREMENTAL_SCHEMA_VERSION in #2653/#2654.
+// the DB schema version in #2653/#2654 (that constant is gone — the DB side is
+// a derived fingerprint now, see SCHEMA_FINGERPRINT; SCHEMA_BUMP below is still
+// hand-maintained because no declarative artifact describes a capture set).
 // v27: generator EXPRESSIONS bound to a name emit a callable definition capture,
 // and nested-callable caller attribution appends the localIdentity suffix the
 // definition phase already used. Both are parse-time, so a warm cache would

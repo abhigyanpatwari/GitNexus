@@ -82,6 +82,7 @@ type PackageManifest = {
   dependencies?: Record<string, unknown>;
   optionalDependencies?: Record<string, unknown>;
   peerDependencies?: Record<string, unknown>;
+  devDependencies?: Record<string, unknown>;
 };
 
 type StatState = {
@@ -98,6 +99,16 @@ type ReadableFileState = {
   link: StatState;
   target: StatState;
   symlinkTarget?: string;
+};
+
+/**
+ * State of a symbolic link recorded by its link text rather than by its
+ * target's payload. There is deliberately no `target` stat: the whole point of
+ * this shape is that the link was never resolved (see {@link RuntimeArtifact}).
+ */
+type SymlinkArtifactState = {
+  link: StatState;
+  symlinkTarget: string;
 };
 
 type RuntimePackage = {
@@ -137,11 +148,28 @@ type RuntimeArtifactScanBudget = {
   edges: number;
 };
 
-type RuntimeArtifact = {
-  absolutePath: string;
-  canonicalPath: string;
-  kind: 'file' | 'symlink';
-};
+/**
+ * One runtime payload input.
+ *
+ * `file` and `symlink` contribute their target's CONTENT digest; `symlink` also
+ * carries its link text, so both a retarget and a byte change move the receipt.
+ *
+ * `unfollowed-symlink` is a symbolic link that does not resolve to a regular
+ * file — a linked directory, a dangling link, a device node. It contributes its
+ * `readlink` TEXT and nothing else. See {@link collectArtifacts} for why the
+ * scan records such links instead of following them.
+ */
+type RuntimeArtifact =
+  | {
+      absolutePath: string;
+      canonicalPath: string;
+      kind: 'file' | 'symlink';
+    }
+  | {
+      absolutePath: string;
+      canonicalPath: string;
+      kind: 'unfollowed-symlink';
+    };
 
 type BuildEntry = {
   absolutePath: string;
@@ -157,13 +185,21 @@ type CachedBuildEntry = {
   digest?: string;
 };
 
-type CachedArtifactEntry = {
-  absolutePath: string;
-  canonicalPath: string;
-  kind: RuntimeArtifact['kind'];
-  state: ReadableFileState;
-  digest: string;
-};
+type CachedArtifactEntry =
+  | {
+      absolutePath: string;
+      canonicalPath: string;
+      kind: 'file' | 'symlink';
+      state: ReadableFileState;
+      digest: string;
+    }
+  | {
+      absolutePath: string;
+      canonicalPath: string;
+      kind: 'unfollowed-symlink';
+      state: SymlinkArtifactState;
+      digest: string;
+    };
 
 type CachedBuildDirectoryGuard = {
   relativePath: string;
@@ -408,6 +444,28 @@ function snapshotReadableFile(candidate: string): ReadableFileState {
     target: statState(target),
     ...(link.isSymbolicLink() ? { symlinkTarget: readlinkSync(candidate) } : {}),
   };
+}
+
+/**
+ * Snapshot a symbolic link without resolving it. Unlike
+ * {@link snapshotReadableFile} this never stats the target, so it is total over
+ * linked directories, dangling links, and links to device nodes — the inputs
+ * that make the readable-file snapshot throw.
+ */
+function snapshotSymlinkArtifact(candidate: string): SymlinkArtifactState {
+  const link = lstatSync(candidate, { bigint: true });
+  if (!link.isSymbolicLink()) {
+    throw new Error(`Analyzer identity input is not a symbolic link: ${candidate}`);
+  }
+  return { link: statState(link), symlinkTarget: readlinkSync(candidate) };
+}
+
+function snapshotRuntimeArtifact(
+  artifact: RuntimeArtifact,
+): ReadableFileState | SymlinkArtifactState {
+  return artifact.kind === 'unfollowed-symlink'
+    ? snapshotSymlinkArtifact(artifact.absolutePath)
+    : snapshotReadableFile(artifact.absolutePath);
 }
 
 function snapshotDirectory(candidate: string): StatState {
@@ -931,6 +989,100 @@ function runtimePackageLocator(packageRoot: string, runtimeRoot: string): string
   return `relative:${relative}`;
 }
 
+/** Protocols that name a checkout-local package instead of a registry tarball. */
+const LOCAL_LINK_PROTOCOL_PATTERN = /^(?:file|link|workspace|portal):/;
+/** npm's bare local-path shorthands: `./x`, `../x`, `/x`, `~/x`, `C:\x`. */
+const LOCAL_LINK_PATH_PATTERN = /^(?:\.\.?[/\\]|~[/\\]|[/\\]|[A-Za-z]:)/;
+
+function isLocallyLinkedSpecifier(specifier: unknown): boolean {
+  if (typeof specifier !== 'string') return false;
+  const value = specifier.trim();
+  return LOCAL_LINK_PROTOCOL_PATTERN.test(value) || LOCAL_LINK_PATH_PATTERN.test(value);
+}
+
+/**
+ * Whether a REALPATH'd package root lives inside some installed dependency
+ * tree. Used as the resolved-location half of "is this dependency a checkout
+ * this repository owns?" (see {@link undeclaredLocalDevDependencyNames}).
+ *
+ * The input must already be realpath'd: `resolveDependencyPackageRoot` returns
+ * `realpathSync.native`, so a package reached through a link out of
+ * `node_modules` reports its checkout location and a package that merely lives
+ * in `node_modules` reports a path that still carries the segment.
+ *
+ * `pathApi` is injectable so the Windows separator handling is unit-testable
+ * from a POSIX runner, exactly as {@link isInside} does. The separator sets
+ * differ deliberately: `\` is a legal filename character on POSIX, so only
+ * win32 may treat it as a boundary.
+ */
+function hasNodeModulesSegment(candidate: string, pathApi: typeof path = path): boolean {
+  const segments = pathApi.sep === '\\' ? candidate.split(/[\\/]+/) : candidate.split('/');
+  return segments.includes('node_modules');
+}
+
+/** Test seam for {@link hasNodeModulesSegment} (see {@link _isInsideForTests}). */
+export const _hasNodeModulesSegmentForTests = hasNodeModulesSegment;
+
+/**
+ * How many dev dependencies may be admitted by RESOLVED LOCATION alone before
+ * the whole resolved-location channel is treated as untrustworthy and disabled.
+ *
+ * "Realpath carries no `node_modules` segment" is a proxy for "checkout-local",
+ * and a layout that materializes packages outside `node_modules` — pnpm with a
+ * relocated `virtual-store-dir`, a custom linker — makes every dev dependency
+ * pass it. Folding an entire dev tree into the receipt is not a graceful
+ * degradation: `runtimePackages`/`runtimeEntries`/`runtimeBytes` THROW, so a
+ * mis-fired proxy on a legitimate install would abort analyze outright.
+ *
+ * The bound is therefore on ADMISSIONS, and overflow admits NONE of them rather
+ * than an arbitrary prefix. A prefix would not bound the failure — the abort
+ * comes from the transitive payload of whichever trees get folded in — and it
+ * would make the receipt depend on an arbitrary slice of a sorted name list.
+ * Dropping the channel wholesale falls back to the specifier-only receipt,
+ * which is the behaviour that ships today and is known not to abort, and leaves
+ * the declared-intent half in {@link dependencyNames} untouched.
+ *
+ * Four is measured, not guessed. Monorepo and workspace links are declared
+ * (`file:`/`link:`/`workspace:`) and travel the uncapped declared half, so this
+ * channel only ever carries UNDECLARED `npm link <pkg>` — a manual, per-package
+ * developer action, in practice one or two packages. A mis-fire admits the
+ * entire dev-only set instead: 13 names in this repository's own install, tens
+ * in a typical application. The cap sits an order of magnitude below the
+ * mis-fire population and comfortably above realistic link counts.
+ */
+const MAX_UNDECLARED_LOCAL_DEV_DEPENDENCIES = 4;
+
+/**
+ * Dependency names whose resolved packages can contribute analyzer semantics.
+ *
+ * The three runtime sections are enumerated wholesale. `devDependencies` are
+ * deliberately not: a registry dev tool (vitest, eslint, typescript) is never
+ * loaded by the analyzer, and folding the dev tree into the receipt would churn
+ * `dependencyRuntime.digest` — and force a full re-analysis — on every unrelated
+ * devDependency bump.
+ *
+ * Locally linked dev dependencies are the exception. A `file:`/`link:`/
+ * `workspace:` sibling is part of this checkout and ships code the analyzer
+ * imports at runtime: GitNexus links `gitnexus-shared`, whose schema constants
+ * feed `RELATION_SCHEMA`/`NODE_SCHEMA_QUERIES`. In `kind: 'source'` runs that
+ * sibling sits outside `buildRoot`, so leaving it out let a semantic change
+ * there alter analyzer behaviour while moving neither `build.digest` nor
+ * `dependencyRuntime.digest` — DDL-affecting edits were still caught by the
+ * schema fingerprint, semantics-only edits by nothing.
+ *
+ * An unresolvable link (a published install, where the sibling checkout does not
+ * exist) still contributes its `<missing>` edge, so the linked package appearing
+ * or disappearing remains a receipt change rather than a silent one. That is why
+ * the specifier check cannot be replaced by resolution: resolution returns
+ * `null` for an absent linked checkout exactly as it does for an uninstalled
+ * registry dev tool, and the two must not be conflated.
+ *
+ * This function is the DECLARED-INTENT half and is enumerated for every package
+ * in the dependency BFS, so it must stay a pure function of the manifest. The
+ * RESOLVED-LOCATION half — `npm link <pkg>`, which leaves the specifier a
+ * registry range — lives in {@link undeclaredLocalDevDependencyNames} and is
+ * applied to the root package only.
+ */
 function dependencyNames(manifest: PackageManifest): string[] {
   const names = new Set<string>();
   for (const section of [
@@ -940,6 +1092,12 @@ function dependencyNames(manifest: PackageManifest): string[] {
   ]) {
     if (!section || typeof section !== 'object') continue;
     for (const name of Object.keys(section)) names.add(name);
+  }
+  const development = manifest.devDependencies;
+  if (development && typeof development === 'object') {
+    for (const [name, specifier] of Object.entries(development)) {
+      if (isLocallyLinkedSpecifier(specifier)) names.add(name);
+    }
   }
   return [...names].sort(compareBytes);
 }
@@ -980,6 +1138,53 @@ function resolveDependencyPackageRoot(
   }
 }
 
+/**
+ * Dev dependencies that are locally linked by INSTALLED LOCATION rather than by
+ * declared specifier — the `npm link <pkg>` shape, where the manifest still
+ * carries a registry range while `node_modules/<pkg>` is a symlink into a
+ * working checkout. {@link isLocallyLinkedSpecifier} is blind to those, yet the
+ * linked code is exactly as load-bearing for analyzer semantics as a declared
+ * `file:` sibling, so a semantic-only edit there would move neither digest.
+ *
+ * The resolver already knows: {@link resolveDependencyPackageRoot} returns a
+ * realpath, so a linked package reports a root outside every `node_modules`
+ * tree while an ordinary installed package cannot.
+ *
+ * Two properties are load-bearing and must not be relaxed:
+ *
+ * 1. ROOT ONLY. {@link dependencyNames} runs for every package in the BFS, and
+ *    published tarballs keep their `devDependencies`, so probing dev-only names
+ *    everywhere costs 1998 resolutions rather than the ~13 this manifest
+ *    declares — measured on this install, with 0 true positives. Persisted
+ *    `dependencyPathGuards` grow 2220 → 11049, and every guard is re-probed on
+ *    each warm validation, so the cost is recurring and on the `status` path.
+ *    Root-only costs 13 resolutions and ~29 guards.
+ * 2. An unresolvable name is NEVER admitted. `null` here means "uninstalled
+ *    registry dev tool" far more often than "broken link", and admitting it
+ *    would emit a `<missing>` edge for every dev tool absent from a published
+ *    install. Declared links keep that edge through {@link dependencyNames};
+ *    undeclared ones have no declaration to honour.
+ *
+ * The admission count is bounded by {@link MAX_UNDECLARED_LOCAL_DEV_DEPENDENCIES}.
+ */
+function undeclaredLocalDevDependencyNames(
+  rootPackage: RuntimePackage,
+  pathGuards: Map<string, DependencyPathGuardResult>,
+  limits: AnalyzerIdentityTraversalLimits,
+): string[] {
+  const development = rootPackage.manifest.devDependencies;
+  if (!development || typeof development !== 'object') return [];
+  const admitted: string[] = [];
+  for (const [name, specifier] of Object.entries(development)) {
+    // Already carried by the declared half; resolving again would only add
+    // guards. Its `<missing>` edge is that half's responsibility.
+    if (isLocallyLinkedSpecifier(specifier)) continue;
+    const resolved = resolveDependencyPackageRoot(rootPackage.root, name, pathGuards, limits);
+    if (resolved !== null && !hasNodeModulesSegment(resolved)) admitted.push(name);
+  }
+  return admitted.length <= MAX_UNDECLARED_LOCAL_DEV_DEPENDENCIES ? admitted : [];
+}
+
 function collectRuntimePackages(
   packageRoot: string,
   directoryGuards: Map<string, DependencyDirectoryGuard>,
@@ -1010,7 +1215,21 @@ function collectRuntimePackages(
 
   for (let index = 0; index < queue.length; index += 1) {
     const parent = queue[index];
-    for (const dependencyName of dependencyNames(parent.manifest)) {
+    // The declared half is enumerated for every package; the resolved-location
+    // half is scoped to the root package, where the 1998-resolution /
+    // 8829-extra-guard blow-up documented on
+    // `undeclaredLocalDevDependencyNames` cannot occur. Dropping this scope is
+    // the expensive regression, so it is pinned by a guard-count test.
+    const dependencies =
+      parent.root === packageRoot
+        ? [
+            ...new Set([
+              ...dependencyNames(parent.manifest),
+              ...undeclaredLocalDevDependencyNames(parent, pathGuards, limits),
+            ]),
+          ].sort(compareBytes)
+        : dependencyNames(parent.manifest);
+    for (const dependencyName of dependencies) {
       budget.edges += 1;
       if (budget.edges > limits.runtimeEdges) {
         throw new Error(
@@ -1108,16 +1327,24 @@ function collectArtifacts(
       );
     }
     for (const entry of entries) {
+      const absolutePath = path.join(absoluteDir, entry.name);
+      const relativePath = path.relative(root, absolutePath).split(path.sep).join('/');
+      const stat = lstatSync(absolutePath);
       // Nested dependencies are collected from their manifests as separate
       // packages. Only prune those separately traversed trees and VCS
       // metadata; generic cache/model directories can contain loadable code,
       // native addons, Wasm modules, or data consumed by the runtime.
-      if (entry.isDirectory() && PRUNED_RUNTIME_DIRECTORIES.has(entry.name)) {
-        continue;
-      }
-      const absolutePath = path.join(absoluteDir, entry.name);
-      const relativePath = path.relative(root, absolutePath).split(path.sep).join('/');
-      const stat = lstatSync(absolutePath);
+      //
+      // Pruning is decided by NAME alone. These four names never carry analyzer
+      // payload in any form: `node_modules` is traversed separately through
+      // `resolveDependencyPackageRoot` (which follows links and guards each
+      // hop), and a `.git`/`.hg`/`.svn` entry is VCS metadata whether it is a
+      // directory, a symbolic link into a shared store, or — inside a submodule
+      // or linked worktree checkout — a regular file holding a gitdir pointer.
+      // Hashing that pointer would make analyzer identity depend on where the
+      // checkout happens to live, which is a false-stale source, not a
+      // semantic input.
+      if (PRUNED_RUNTIME_DIRECTORIES.has(entry.name)) continue;
       if (stat.isDirectory()) {
         if (depth >= limits.runtimeDepth) {
           throw new Error(
@@ -1125,6 +1352,39 @@ function collectArtifacts(
           );
         }
         pending.push({ absoluteDir: absolutePath, depth: depth + 1 });
+      } else if (stat.isSymbolicLink() && !isFile(absolutePath)) {
+        // A symbolic link that does not resolve to a regular file must never
+        // reach the payload branch below: `snapshotReadableFile` stats the
+        // target, and a directory (or a dangling link) makes it throw, aborting
+        // the entire analyze. Workspace-linked checkouts made this reachable
+        // for every name, not just the pruned four — `dist -> build`, a
+        // vendored-grammar link, anything a sibling checkout ships.
+        //
+        // Such links are RECORDED by their link text rather than followed.
+        // Following them would (a) recurse without cycle protection — this
+        // traversal has none, so `self -> .` would ride the depth limit, which
+        // THROWS, trading one hard abort for another; (b) re-scan trees already
+        // reached by their real path, inflating the entry/byte budgets that
+        // also throw; and (c) need a whole containment/TOCTOU trust boundary
+        // for targets outside the package. Recording the text is cycle-free,
+        // costs one `readlink`, and still moves the receipt when the link is
+        // retargeted. The trade-off is that a link's target contributes no
+        // content of its own: when it points outside the package, only the
+        // link text is covered. Links that DO resolve to a regular file keep
+        // their content digest below, unchanged.
+        if (shouldHashRuntimePayload(relativePath)) {
+          budget.artifacts += 1;
+          if (budget.artifacts > limits.runtimePayloads) {
+            throw new Error(
+              `Analyzer runtime payload scan exceeded ${limits.runtimePayloads} payloads: ${root}`,
+            );
+          }
+          artifacts.push({
+            absolutePath,
+            canonicalPath: `${canonicalPrefix}/${relativePath}`,
+            kind: 'unfollowed-symlink',
+          });
+        }
       } else if (
         (stat.isFile() || stat.isSymbolicLink()) &&
         shouldHashRuntimePayload(relativePath)
@@ -1322,7 +1582,7 @@ function dependencySnapshot(inputs: DependencyInputs): unknown {
       absolutePath: artifact.absolutePath,
       canonicalPath: artifact.canonicalPath,
       kind: artifact.kind,
-      state: snapshotReadableFile(artifact.absolutePath),
+      state: snapshotRuntimeArtifact(artifact),
     })),
     directories: [...inputs.directoryGuards.entries()]
       .map(([absolutePath, guard]) => ({ absolutePath, ...guard }))
@@ -1343,10 +1603,30 @@ function hashRuntimeArtifact(
   artifact: RuntimeArtifact,
   cache: CachedArtifactEntry | undefined,
   options: AnalyzerIdentityResolveOptions,
-): { digest: string; state: ReadableFileState } {
+): CachedArtifactEntry {
+  if (artifact.kind === 'unfollowed-symlink') {
+    // The link text is the entire payload, so there is no file read for a
+    // cached digest to amortize: recompute it and stay independent of the
+    // cache's freshness. The distinct frame label keeps a link recording from
+    // ever colliding with a content digest.
+    const state = snapshotSymlinkArtifact(artifact.absolutePath);
+    return {
+      ...artifact,
+      state,
+      digest: hashCanonicalFrames([
+        ['runtime-payload-link-v1', artifact.kind, state.symlinkTarget],
+      ]),
+    };
+  }
+
   const before = snapshotReadableFile(artifact.absolutePath);
-  if (cache && SHA256_PATTERN.test(cache.digest) && isDeepStrictEqual(cache.state, before)) {
-    return { digest: cache.digest, state: before };
+  if (
+    cache &&
+    cache.kind !== 'unfollowed-symlink' &&
+    SHA256_PATTERN.test(cache.digest) &&
+    isDeepStrictEqual(cache.state, before)
+  ) {
+    return { ...artifact, state: before, digest: cache.digest };
   }
 
   const stable = hashStableFile(artifact.absolutePath);
@@ -1363,7 +1643,7 @@ function hashRuntimeArtifact(
     path: artifact.absolutePath,
     bytes: stable.bytes,
   });
-  return { digest, state: stable.state };
+  return { ...artifact, state: stable.state, digest };
 }
 
 function compareEdges(a: RuntimeDependencyEdge, b: RuntimeDependencyEdge): number {
@@ -1445,7 +1725,7 @@ function hashDependencyRuntime(
       artifact.kind,
       digestBytes(hashed.digest),
     ]);
-    nextArtifacts.push({ ...artifact, state: hashed.state, digest: hashed.digest });
+    nextArtifacts.push(hashed);
   }
 
   return {
@@ -1476,6 +1756,19 @@ function isReadableFileState(value: unknown): value is ReadableFileState {
     isStatState(record.link) &&
     isStatState(record.target) &&
     (record.symlinkTarget === undefined || typeof record.symlinkTarget === 'string')
+  );
+}
+
+function isSymlinkArtifactState(value: unknown): value is SymlinkArtifactState {
+  if (typeof value !== 'object' || value === null) return false;
+  const record = value as Record<string, unknown>;
+  // `target === undefined` keeps a readable-file state from masquerading as an
+  // unresolved link recording, which would otherwise be validated against the
+  // wrong guard mode on the warm path.
+  return (
+    isStatState(record.link) &&
+    typeof record.symlinkTarget === 'string' &&
+    record.target === undefined
   );
 }
 
@@ -1649,15 +1942,18 @@ function isIdentityCachePayload(
   const artifactEntriesValid = record.artifactEntries.every((entry: unknown) => {
     if (typeof entry !== 'object' || entry === null) return false;
     const item = entry as Record<string, unknown>;
-    return (
-      typeof item.absolutePath === 'string' &&
-      path.isAbsolute(item.absolutePath) &&
-      typeof item.canonicalPath === 'string' &&
-      (item.kind === 'file' || item.kind === 'symlink') &&
-      isReadableFileState(item.state) &&
-      typeof item.digest === 'string' &&
-      SHA256_PATTERN.test(item.digest)
-    );
+    if (
+      typeof item.absolutePath !== 'string' ||
+      !path.isAbsolute(item.absolutePath) ||
+      typeof item.canonicalPath !== 'string' ||
+      typeof item.digest !== 'string' ||
+      !SHA256_PATTERN.test(item.digest)
+    ) {
+      return false;
+    }
+    return item.kind === 'unfollowed-symlink'
+      ? isSymlinkArtifactState(item.state)
+      : (item.kind === 'file' || item.kind === 'symlink') && isReadableFileState(item.state);
   });
   const hasBuildRootGuard = record.buildDirectoryGuards.some(
     (entry: unknown) =>
@@ -2146,14 +2442,24 @@ function validateIdentityCache(
     }
   }
   for (const artifact of cache.artifactEntries) {
-    if (
-      !add(
-        { absolutePath: artifact.absolutePath, mode: 'readable-file' },
-        { type: 'readable-file', state: artifact.state },
-      )
-    ) {
-      return false;
-    }
+    // A recorded link is re-probed as a link, never as a readable file: the
+    // readable-file probe resolves the target and would report `null` for the
+    // very inputs this kind exists to describe, failing every warm validation.
+    const probe: { request: CacheGuardRequest; expected: CacheGuardResult } =
+      artifact.kind === 'unfollowed-symlink'
+        ? {
+            request: { absolutePath: artifact.absolutePath, mode: 'link' },
+            expected: {
+              type: 'symlink',
+              state: artifact.state.link,
+              symlinkTarget: artifact.state.symlinkTarget,
+            },
+          }
+        : {
+            request: { absolutePath: artifact.absolutePath, mode: 'readable-file' },
+            expected: { type: 'readable-file', state: artifact.state },
+          };
+    if (!add(probe.request, probe.expected)) return false;
   }
 
   const entries = [...expected.entries()];
