@@ -8,16 +8,28 @@ import type {
   NodeLabel,
 } from 'gitnexus-shared';
 import type { SyntaxNode } from '../../utils/ast-helpers.js';
+import { walkToScope } from '../typescript/simple-hooks.js';
 
 export function rubyBindingScopeFor(
   decl: CaptureMatch,
   innermost: Scope,
-  _tree: ScopeTree,
+  tree: ScopeTree,
 ): ScopeId | null {
   // Keep self typeBindings in the method's Function scope so
   // populateClassOwnedMembers can match Method defs to their receiver types.
   if (decl['@type-binding.self'] !== undefined) {
     return innermost.id;
+  }
+  // `@ivar = Foo.new` in `initialize` (or any method) declares a FIELD of the
+  // enclosing class, so its type binding belongs on the Class scope — the only
+  // place `typeOfMemberOnClass` reads it. Left on the method's own Function
+  // scope it would be invisible to every other method (#2807).
+  //
+  // Gated on the marker that pattern emits, never on `@type-binding.constructor`
+  // at large: that capture also fires for `x = Foo.new` locals, and hoisting
+  // those to the class would leak a method local into every sibling method.
+  if (decl['@type-binding.ivar-field'] !== undefined) {
+    return walkToScope(innermost, tree, 'Class');
   }
   return null;
 }
