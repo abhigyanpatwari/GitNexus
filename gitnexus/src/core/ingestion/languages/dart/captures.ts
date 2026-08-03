@@ -247,6 +247,7 @@ export function emitDartScopeCaptures(
     }
     if (node.type === 'class_definition') {
       emitHeritage(node, out);
+      emitDartFieldAssignmentBindings(node, out);
       return;
     }
     if (node.type === 'extension_declaration') {
@@ -602,6 +603,104 @@ function emitVarTypeBinding(initVarDef: SyntaxNode, out: CaptureMatch[]): void {
 }
 
 // ─── Heritage ───────────────────────────────────────────────────────────────
+
+/**
+ * Type an inference-typed field from a constructor call ASSIGNED to it —
+ * `var r; C() { r = Outer(); }` and `this.r = Outer();` (#2807).
+ *
+ * Dart is the one language here that writes a field with NO receiver prefix, so
+ * `r = Outer()` is syntactically identical to assigning a constructor-local. The
+ * discriminator is the class's own declared field set: a bare name binds only
+ * when the enclosing class declares it AND the enclosing function body does not
+ * declare a local of the same name, which is exactly when Dart itself resolves
+ * `r` to the field. A `this.`-prefixed write is unambiguous and needs neither
+ * test.
+ *
+ * Emitted as `constructor-inferred`, the weakest source, so a field that also
+ * carries an annotation keeps it. The narrow `@type-binding.dart-field` marker
+ * rides the name node for `dartBindingScopeFor` to hoist on — the binding has to
+ * land on the Class scope, since the assignment sits inside a constructor's own
+ * Function scope where `typeOfMemberOnClass` never looks.
+ */
+function emitDartFieldAssignmentBindings(classNode: SyntaxNode, out: CaptureMatch[]): void {
+  const body = classNode.namedChildren.find((c) => c !== null && c.type === 'class_body');
+  if (body === undefined || body === null) return;
+
+  // Field names this class declares, from `declaration(... initialized_identifier)`.
+  const fields = new Set<string>();
+  for (const member of body.namedChildren) {
+    if (member === null || member.type !== 'declaration') continue;
+    const list = member.namedChildren.find((c) => c?.type === 'initialized_identifier_list');
+    if (list === undefined || list === null) continue;
+    for (const init of list.namedChildren) {
+      if (init === null || init.type !== 'initialized_identifier') continue;
+      const nameNode = init.namedChild(0);
+      if (nameNode !== null && nameNode.type === 'identifier') fields.add(nameNode.text);
+    }
+  }
+  if (fields.size === 0) return;
+
+  for (const member of body.namedChildren) {
+    if (member === null || member.type !== 'function_body') continue;
+    // Locals declared anywhere in this body shadow the field for the whole
+    // body — Dart hoists a local's name over the enclosing scope, so a
+    // conservative body-wide check is the right granularity here.
+    const locals = new Set<string>();
+    walkNamedTree(member, (n) => {
+      if (n.type !== 'initialized_variable_definition') return;
+      const nameNode = n.childForFieldName('name');
+      if (nameNode !== null) locals.add(nameNode.text);
+    });
+
+    walkNamedTree(member, (node) => {
+      if (node.type !== 'assignment_expression') return;
+      const target = node.namedChild(0);
+      if (target === null || target.type !== 'assignable_expression') return;
+
+      const first = target.namedChild(0);
+      if (first === null) return;
+      let fieldNameNode: SyntaxNode | null = null;
+      if (first.type === 'identifier' && target.namedChildCount === 1) {
+        // Bare `r = …`: a field only when declared here and not shadowed.
+        if (!fields.has(first.text) || locals.has(first.text)) return;
+        fieldNameNode = first;
+      } else if (first.type === 'this') {
+        const selector = target.namedChild(1);
+        if (selector === null || selector.type !== 'unconditional_assignable_selector') return;
+        const nameNode = selector.namedChild(0);
+        if (nameNode === null || nameNode.type !== 'identifier') return;
+        fieldNameNode = nameNode;
+      } else {
+        return;
+      }
+      if (fieldNameNode === null) return;
+
+      // RHS must be a direct construction: `Outer()` is an identifier followed
+      // by a `selector` carrying an `argument_part`. Anything else is left
+      // alone rather than guessed at.
+      const callee = node.namedChild(1);
+      if (callee === null || callee.type !== 'identifier') return;
+      const selector = node.namedChild(2);
+      if (selector === null || selector.type !== 'selector') return;
+      if (selector.namedChild(0)?.type !== 'argument_part') return;
+
+      out.push({
+        '@type-binding.constructor': nodeToCapture('@type-binding.constructor', node),
+        '@type-binding.dart-field': syntheticCapture(
+          '@type-binding.dart-field',
+          fieldNameNode,
+          '1',
+        ),
+        '@type-binding.name': syntheticCapture(
+          '@type-binding.name',
+          fieldNameNode,
+          fieldNameNode.text,
+        ),
+        '@type-binding.type': syntheticCapture('@type-binding.type', callee, callee.text),
+      });
+    });
+  }
+}
 
 function emitHeritage(classNode: SyntaxNode, out: CaptureMatch[]): void {
   const nameNode = classNode.childForFieldName('name');

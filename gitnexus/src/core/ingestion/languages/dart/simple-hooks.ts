@@ -41,6 +41,21 @@ export function dartBindingScopeFor(
     return null;
   }
 
+  // (1b) A field typed from a constructor assigned to it (`r = Outer();` in a
+  // constructor body) must live on the CLASS scope — the assignment sits inside
+  // the constructor's own Function scope, where `typeOfMemberOnClass` never
+  // looks (#2807). Gated on the dedicated marker, never on
+  // `@type-binding.constructor` at large, which also fires for genuine locals.
+  if (decl['@type-binding.dart-field'] !== undefined) {
+    let cur: Scope | undefined = innermost;
+    while (cur !== undefined) {
+      if (cur.kind === 'Class') return cur.id;
+      if (cur.parent === null) break;
+      cur = tree.getScope(cur.parent);
+    }
+    return null;
+  }
+
   // (2) Function/method/constructor names are visible in the enclosing scope.
   if (
     decl['@declaration.function'] !== undefined ||
