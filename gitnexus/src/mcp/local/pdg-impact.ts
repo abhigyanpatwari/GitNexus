@@ -564,6 +564,77 @@ export type PdgImpactEvidence =
   | 'unproven-bridge'
   | 'degraded';
 
+/**
+ * WHY the callee set the descent EXAMINED for `CALL_SUMMARY` return-flows is a
+ * strict PREFIX of the slice's real callee list. A STRUCTURED vocabulary, in the
+ * spirit of `truncatedByReasons: readonly ('depth'|'limit')[]` — the codes are the
+ * contract, the English phrasing is a rendering of them
+ * ({@link ASCENT_INCOMPLETE_PHRASE}). A caller branches on the code; only the note
+ * reads the phrase, so a rewording can never break a consumer.
+ *  - `'traversal-truncated'` — the traversal stopped at its depth/size budget, so
+ *    a callee that DOES carry a return-flow can sit in a hop never reached (the
+ *    same fact the result's `truncated`/`truncatedByReasons` report, read at the
+ *    ascent's granularity).
+ *  - `'callee-list-capped'` — a slice block's `calleeIds` cell was capped at emit;
+ *    `parseCalleeIdsCell` strips the sentinel, so the dropped ids are invisible to
+ *    BOTH the summary scan and the counters.
+ */
+export type PdgAscentIncompleteReason = 'traversal-truncated' | 'callee-list-capped';
+
+/**
+ * Return-value-ascent coverage, published on {@link PdgImpactEvidenceSummary} so a
+ * consumer can answer "was the ascent complete, and if not why" WITHOUT parsing
+ * the result `note`. This is MCP output read by agents: the same four facts are
+ * also narrated in the note (see {@link AscentCoverage} for the canonical
+ * rationale, and `assemblePdgImpactResult` for the single site that renders both
+ * from one computation), and the prose is the human surface, not the contract.
+ *
+ * Present iff the inter-procedural descent RAN (a downstream slice that reached
+ * the assembly path). Absent ⇒ nothing was scanned — deliberately not a zeroed
+ * object, which would read as "we looked and found nothing".
+ */
+export interface PdgAscentCoverage {
+  /**
+   * Distinct CALL-SITE callee references scanned for a `CALL_SUMMARY`. Reference
+   * granularity, NOT "callees resolved to a body": a cell's ids that
+   * `resolveCalleeSpans` never matches (out-of-repo target, interface method, the
+   * `Class:` id a `new` expression contributes) are scanned all the same. See
+   * {@link AscentCoverage} POPULATION.
+   */
+  referencesScanned: number;
+  /**
+   * Whether ANY scanned callee carried a DECODED non-empty return-flow — i.e.
+   * whether the ascent FIRED anywhere in this slice. `false` with
+   * `referencesScanned > 0` is the structural counterpart of the note's
+   * "no return-value ascent in this slice" sentence.
+   */
+  returnFlowFound: boolean;
+  /**
+   * Scanned callees whose `CALL_SUMMARY` the codec could not decode (version skew
+   * / corruption / NULL reason). Each withholds the ascent exactly like an empty
+   * summary, so a non-zero count means `returnFlowFound: false` is NOT a statement
+   * about what the persisted summaries record — remedy: re-run `analyze --pdg`.
+   */
+  undecodableSummaryCount: number;
+  /**
+   * Whether the examined set is the slice's WHOLE callee list. `false` ⇒ the
+   * counters above range over a strict prefix, so `returnFlowFound: false` is not
+   * a whole-slice claim. Reasons in {@link incompleteReasons}.
+   */
+  examinedComplete: boolean;
+  /** Empty iff {@link examinedComplete}; otherwise every mechanism that fired. */
+  incompleteReasons: readonly PdgAscentIncompleteReason[];
+  /**
+   * Whether the index carries the `CALL_SUMMARY` layer at all. `false` ⇒ a PRE-FU-C
+   * (v3) `--pdg` index, where the scan COULD NOT have found a return-flow — without
+   * this a consumer would read `returnFlowFound: false` as "these callees record no
+   * return-flow" when the truth is "the layer that records it does not exist here"
+   * (the note distinguishes the two in prose; this keeps the structured surface
+   * from being false-safe). Remedy: re-run `analyze --pdg`.
+   */
+  callSummaryLayerPresent: boolean;
+}
+
 export interface PdgImpactEvidenceSummary {
   statements?: PdgImpactEvidence;
   localSymbols?: PdgImpactEvidence;
@@ -572,6 +643,12 @@ export interface PdgImpactEvidenceSummary {
   unresolvedBlockCount?: number;
   ambiguousProjectionCount?: number;
   interproceduralEvidenceCounts?: Partial<Record<PdgImpactEvidence, number>>;
+  /**
+   * Return-value-ascent coverage — the same "counts + classification" kind as the
+   * three counters above, scoped to the U-C4 ascent. Optional because the descent
+   * does not run for every slice; see {@link PdgAscentCoverage}.
+   */
+  ascent?: PdgAscentCoverage;
 }
 
 export interface PdgInterproceduralImpact {
@@ -737,11 +814,14 @@ export function makePdgLayerDegradedResult(input: {
 
 /**
  * What the inter-procedural descent OBSERVED about return-value ascent, threaded
- * from `interproceduralDescent` through `runImpactPDG` to the result note. When
- * references were scanned but none carried a decodable return-flow the note
- * reports that the ascent was structurally empty for this slice. INTERNAL — it is
- * deliberately NOT a field of the returned MCP result. CANONICAL rationale for
- * all four members; the sites that thread it point here.
+ * from `interproceduralDescent` through `runImpactPDG` to `assemblePdgImpactResult`.
+ * When references were scanned but none carried a decodable return-flow the note
+ * reports that the ascent was structurally empty for this slice. This is the
+ * DESCENT-SIDE record; `assemblePdgImpactResult` renders it into TWO surfaces —
+ * the result `note` (prose, for humans) and `pdgEvidence.ascent`
+ * ({@link PdgAscentCoverage}, structured, for agents) — from ONE computation, so
+ * the two can never disagree. CANONICAL rationale for all four members; the sites
+ * that thread it point here.
  *
  * POPULATION. {@link references} is the distinct-id tally of the slice's
  * `BasicBlock.calleeIds` cells — CALL SITES, deliberately NOT "callees the
@@ -769,7 +849,8 @@ export function makePdgLayerDegradedResult(input: {
  * {@link listTruncated} and the traversal's own truncation flags are the two ways
  * the examined set can be a strict PREFIX of the slice's real callee list, which
  * is what stops the note quantifying universally ("none of the N callees …") over
- * a set it knows is incomplete.
+ * a set it knows is incomplete. Those two mechanisms are what
+ * {@link PdgAscentIncompleteReason} names structurally for the published surface.
  */
 interface AscentCoverage {
   /** Distinct call-site callee references scanned for a `CALL_SUMMARY`. */
@@ -781,6 +862,19 @@ interface AscentCoverage {
   /** Whether any gathered block's `calleeIds` cell was CAPPED at emit. */
   readonly listTruncated: boolean;
 }
+
+/**
+ * Render table for {@link PdgAscentIncompleteReason} — the ONLY place a code
+ * becomes English. Keeping the mapping here (rather than building sentences at
+ * the point the mechanism is detected) is what lets the published vocabulary and
+ * the note's wording move independently: a reworded phrase is invisible to every
+ * consumer branching on the code, and a new code cannot silently change the
+ * joiner the existing sentence uses.
+ */
+const ASCENT_INCOMPLETE_PHRASE: Readonly<Record<PdgAscentIncompleteReason, string>> = {
+  'traversal-truncated': 'the traversal stopped at its depth/size budget',
+  'callee-list-capped': "a slice block's call-site list was capped at emit",
+};
 
 /**
  * Assemble the consumer-safe PDG impact result (U4 / KTD8 parity matrix).
@@ -892,6 +986,21 @@ function assemblePdgImpactResult(input: {
   const byDepth: Record<number, unknown[]> = items.length > 0 ? { 1: items } : {};
   const byDepthCounts: Record<number, number> = { 1: items.length };
 
+  // ── Ascent coverage: ONE computation, TWO surfaces ─────────────────────────
+  // The empty-ascent sentence quantifies UNIVERSALLY over the references the
+  // descent actually EXAMINED, and two mechanisms can make that set a strict
+  // subset of the slice's real callee list (rationale: AscentCoverage
+  // INCOMPLETENESS, vocabulary: PdgAscentIncompleteReason). Computed HERE, once,
+  // and consumed twice — by `pdgEvidence.ascent` (structured, the contract) and by
+  // the note's qualifier clause (prose, rendered through
+  // ASCENT_INCOMPLETE_PHRASE). Deriving both from one array is what stops an agent
+  // branching on the codes and a human reading the note from ever disagreeing.
+  const ascentIncompleteReasons: PdgAscentIncompleteReason[] = [];
+  if (input.truncated) ascentIncompleteReasons.push('traversal-truncated');
+  if (input.ascentCoverage?.listTruncated === true) {
+    ascentIncompleteReasons.push('callee-list-capped');
+  }
+
   const noteParts: string[] = statementMode
     ? [
         `mode:'pdg' — intra-procedural slice from line ${input.criterionLine} of ` +
@@ -949,25 +1058,16 @@ function assemblePdgImpactResult(input: {
       const coverage = input.ascentCoverage;
       const references = coverage?.references ?? 0;
       const undecodable = coverage?.undecodable ?? 0;
-      // The sentence quantifies UNIVERSALLY over the references the descent
-      // actually EXAMINED, and two mechanisms can make that set a strict subset of
-      // the slice's real callee list:
-      //  - the traversal stopped at a depth/size budget (`truncated`) — a callee
-      //    that DOES carry a return-flow can sit in a hop never reached;
-      //  - a block's `calleeIds` cell was capped at emit (`listTruncated`) — the
-      //    cap sentinel is stripped, so the dropped ids are invisible to both the
-      //    summary scan and the counters.
-      // When either fired the claim is qualified: the note may describe what was
-      // examined, never assert a property of the whole slice the traversal did not
-      // establish.
-      const incompleteReasons: string[] = [];
-      if (input.truncated) incompleteReasons.push('the traversal stopped at its depth/size budget');
-      if (coverage?.listTruncated === true) {
-        incompleteReasons.push("a slice block's call-site list was capped at emit");
-      }
-      const examinedIncomplete = incompleteReasons.length > 0;
+      // When the examined set is a strict prefix (the codes computed once above)
+      // the claim is qualified: the note may describe what was examined, never
+      // assert a property of the whole slice the traversal did not establish. The
+      // codes are mapped to phrases HERE — the note is a rendering of the same
+      // vocabulary `pdgEvidence.ascent.incompleteReasons` publishes.
+      const examinedIncomplete = ascentIncompleteReasons.length > 0;
       const incompleteClause = examinedIncomplete
-        ? ` (${incompleteReasons.join(' and ')}, so callees past the examined set were not checked)`
+        ? ` (${ascentIncompleteReasons
+            .map((reason) => ASCENT_INCOMPLETE_PHRASE[reason])
+            .join(' and ')}, so callees past the examined set were not checked)`
         : '';
       if (references > 0 && coverage?.anyReturnFlow !== true) {
         // ONE head for both arms — a shared gate and a shared opening sentence, so
@@ -1036,6 +1136,22 @@ function assemblePdgImpactResult(input: {
       localSymbolCount: impactedCount,
       unresolvedBlockCount: unresolvedCount,
       ambiguousProjectionCount: ambiguousCount,
+      // Structured ascent coverage — the note's four facts, published so a caller
+      // never has to regex prose to learn whether the ascent was complete. Emitted
+      // iff the descent RAN (`ascentCoverage` present); a zeroed object on a slice
+      // that scanned nothing would read as "we looked and found nothing".
+      ...(input.ascentCoverage
+        ? {
+            ascent: {
+              referencesScanned: input.ascentCoverage.references,
+              returnFlowFound: input.ascentCoverage.anyReturnFlow,
+              undecodableSummaryCount: input.ascentCoverage.undecodable,
+              examinedComplete: ascentIncompleteReasons.length === 0,
+              incompleteReasons: ascentIncompleteReasons,
+              callSummaryLayerPresent: input.callSummaryAvailable === true,
+            } satisfies PdgAscentCoverage,
+          }
+        : {}),
     },
     // Statement-level slice: the dependent source statements (line + text) the
     // change reaches. This is the primary useful output of statement mode; the
@@ -2146,14 +2262,13 @@ export async function runImpactPDG(deps: RunPdgImpactDeps): Promise<PdgImpactRes
   // call lines (a coalesced call block spans several statements whose results
   // chain through it — the statement-granularity realisation of the ascent).
   let ascentBlocks = new Set<string>();
-  // Observed ascent inputs, plumbed to the result note (rationale: AscentCoverage).
-  // Intra-only slices never run the descent, so nothing was scanned.
-  let ascentCoverage: AscentCoverage = {
-    references: 0,
-    anyReturnFlow: false,
-    undecodable: 0,
-    listTruncated: false,
-  };
+  // Observed ascent inputs, plumbed to the note AND to `pdgEvidence.ascent`
+  // (rationale: AscentCoverage). Left UNDEFINED when the descent never ran (an
+  // upstream slice): "nothing was scanned" is a different fact from "we scanned
+  // and found nothing", and a zeroed record would publish the second. The note's
+  // ascent branch is gated on `interproceduralHops > 0`, which only a descent can
+  // produce, so the prose is unaffected either way.
+  let ascentCoverage: AscentCoverage | undefined;
   if (direction === 'downstream') {
     const interproc = await interproceduralDescent({
       lbugPath: repo.lbugPath,

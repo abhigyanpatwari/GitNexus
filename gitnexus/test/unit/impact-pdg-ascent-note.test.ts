@@ -10,7 +10,12 @@
 // extensions while the CALL_SUMMARY content is held constant.
 
 import { describe, expect, it } from 'vitest';
-import { runImpactPDG, type RunPdgImpactDeps } from '../../src/mcp/local/pdg-impact.js';
+import {
+  runImpactPDG,
+  type PdgAscentCoverage,
+  type PdgAscentIncompleteReason,
+  type RunPdgImpactDeps,
+} from '../../src/mcp/local/pdg-impact.js';
 import { encodeCallSummary } from '../../src/core/ingestion/taint/call-summary-codec.js';
 import { CALLEES_TRUNCATED_SENTINEL, CALLEE_ID_SEP } from '../../src/core/ingestion/cfg/emit.js';
 
@@ -611,5 +616,204 @@ describe('runImpactPDG — cross-hop accumulation and mixed return-flow (P2-5)',
     // rebuild remedy, is suppressed by the hop-0 return-flow. Silent end to end.
     expect(note).not.toContain(CAVEAT);
     expect(note).not.toContain('could not be decoded');
+  });
+});
+
+// ── Structured ascent coverage: pdgEvidence.ascent ───────────────────────────
+// Every fact the note interpolates into English is ALSO published structurally.
+// This is MCP output read by AGENTS, not only humans: the only way to ask "was
+// the ascent complete, and if not why" must not be a regex over prose. The
+// branch already proved the cost — a pure rewording ("resolved callees" →
+// "call-site callee references", P3-7 above) moved ~30 assertions and would have
+// silently broken any consumer keyed on the old phrase.
+//
+// The field is ADDITIVE: every prose assertion above is unchanged, and the cases
+// below are the same scenarios read through the structured surface instead.
+const ascentOf = (result: Awaited<ReturnType<typeof run>>): PdgAscentCoverage | undefined =>
+  'pdgEvidence' in result ? result.pdgEvidence?.ascent : undefined;
+
+// How each structured reason code is expected to READ in the note. The
+// production mapping (`ASCENT_INCOMPLETE_PHRASE`) is module-private by design —
+// the codes are the contract, the phrasing is a rendering — so this table is
+// where the two surfaces are compared, and a reworded phrase fails HERE rather
+// than drifting apart unnoticed.
+const REASON_PHRASE: Readonly<Record<PdgAscentIncompleteReason, string>> = {
+  'traversal-truncated': BUDGET_REASON,
+  'callee-list-capped': EMIT_CAP_REASON,
+};
+
+// The `run` helper above is downstream-only (the descent's direction gate). An
+// UPSTREAM slice never runs the descent at all, which is the case the field has
+// to distinguish from "the descent ran and scanned nothing".
+const runUpstream = (file: string, options: DescentOptions = {}) =>
+  runImpactPDG({
+    repo: { lbugPath: 'repo' },
+    sym: { id: `Function:${file}:run`, name: 'run', filePath: file, startLine: 0, endLine: 7 },
+    symType: 'Function',
+    direction: 'upstream',
+    maxDepth: 3,
+    limit: 50,
+    line: 1,
+    executeParameterized: descentExec(file, options),
+    callSummaryAvailable: true,
+  });
+
+describe('runImpactPDG — structured ascent coverage (pdgEvidence.ascent)', () => {
+  // The whole record is pinned with toEqual rather than toMatchObject: the point
+  // of the field is that a consumer can read it without a fallback, so an
+  // omitted member is a contract break, not a detail.
+  it('ascent fired → returnFlowFound over a complete examined set', async () => {
+    const result = await run(FILE, { summary: flow([0]) });
+    // Premise: this is exactly the run whose note carries NO caveat.
+    expect(noteOf(result)).not.toContain(CAVEAT);
+    expect(ascentOf(result)).toEqual({
+      referencesScanned: 1,
+      returnFlowFound: true,
+      undecodableSummaryCount: 0,
+      examinedComplete: true,
+      incompleteReasons: [],
+      callSummaryLayerPresent: true,
+    });
+  });
+
+  it('nothing flowed → the same scanned set with returnFlowFound false', async () => {
+    const result = await run(FILE);
+    expect(noteOf(result)).toContain(CAVEAT);
+    expect(ascentOf(result)).toEqual({
+      referencesScanned: 1,
+      returnFlowFound: false,
+      undecodableSummaryCount: 0,
+      examinedComplete: true,
+      incompleteReasons: [],
+      callSummaryLayerPresent: true,
+    });
+  });
+
+  // The P2-2 fact, structurally: a non-zero count is what tells a consumer that
+  // `returnFlowFound: false` is NOT a statement about what the summaries record.
+  it.each(UNDECODABLE)('$label → undecodableSummaryCount reports it', async ({ reason }) => {
+    expect(ascentOf(await run(FILE, { summary: raw(reason) }))).toEqual({
+      referencesScanned: 1,
+      returnFlowFound: false,
+      undecodableSummaryCount: 1,
+      examinedComplete: true,
+      incompleteReasons: [],
+      callSummaryLayerPresent: true,
+    });
+  });
+
+  // P2-4 case 1, structurally — the reason is a CODE, not a sentence.
+  it('incomplete via budget truncation → examinedComplete false + traversal-truncated', async () => {
+    const result = await run(FILE, { maxDepth: 1 });
+    expect(truncatedOf(result)).toBe(true);
+    expect(ascentOf(result)).toEqual({
+      referencesScanned: 1,
+      returnFlowFound: false,
+      undecodableSummaryCount: 0,
+      examinedComplete: false,
+      incompleteReasons: ['traversal-truncated'],
+      callSummaryLayerPresent: true,
+    });
+  });
+
+  // P2-4 case 2 in isolation: the traversal COMPLETED, so the emit-time cap is
+  // the only thing that can make the examined set a prefix — and it is a
+  // mechanism the result's own `truncated` flag cannot express.
+  it('incomplete via emit cap → callee-list-capped with nothing else truncated', async () => {
+    const result = await run(FILE, { calleeCellCapped: true });
+    expect(truncatedOf(result)).toBe(false);
+    expect(ascentOf(result)).toEqual({
+      referencesScanned: 1,
+      returnFlowFound: false,
+      undecodableSummaryCount: 0,
+      examinedComplete: false,
+      incompleteReasons: ['callee-list-capped'],
+      callSummaryLayerPresent: true,
+    });
+  });
+
+  it('both mechanisms → both codes, budget first', async () => {
+    const result = await run(FILE, { maxDepth: 1, calleeCellCapped: true });
+    expect(ascentOf(result)).toMatchObject({
+      examinedComplete: false,
+      incompleteReasons: ['traversal-truncated', 'callee-list-capped'],
+    });
+  });
+
+  // The two surfaces are rendered from ONE array, so the note's clause is
+  // exactly the published codes mapped through REASON_PHRASE, in code order.
+  // This is what makes a future third reason a rendering decision instead of a
+  // contract change.
+  it('the note clause is exactly the published codes, in order', async () => {
+    const result = await run(FILE, { maxDepth: 1, calleeCellCapped: true });
+    const codes = ascentOf(result)?.incompleteReasons ?? [];
+    expect(codes).toEqual(['traversal-truncated', 'callee-list-capped']);
+    expect(noteOf(result)).toContain(
+      `(${codes.map((code) => REASON_PHRASE[code]).join(' and ')}, ${QUALIFIER})`,
+    );
+  });
+
+  // The false-safe guard. On a PRE-FU-C (v3) index the scan runs and finds
+  // nothing because the layer that records return-flows does not exist — a
+  // consumer reading only `returnFlowFound: false` would conclude "these callees
+  // record no return-flow", which is exactly the misreading the note's re-index
+  // sentence exists to prevent for humans.
+  it('v3 index → callSummaryLayerPresent false alongside returnFlowFound false', async () => {
+    const result = await run(FILE, { callSummaryAvailable: false });
+    expect(noteOf(result)).toContain('re-index for CALL_SUMMARY');
+    expect(ascentOf(result)).toEqual({
+      referencesScanned: 1,
+      returnFlowFound: false,
+      undecodableSummaryCount: 0,
+      examinedComplete: true,
+      incompleteReasons: [],
+      callSummaryLayerPresent: false,
+    });
+  });
+
+  // "Nothing was scanned" ≠ "we scanned and found nothing". An upstream slice
+  // never runs the descent, so the field is ABSENT rather than a zeroed record
+  // that would read as a completed, empty scan.
+  it('upstream slice → the descent never ran, so no coverage is published', async () => {
+    const [upstream, downstream] = await Promise.all([runUpstream(FILE), run(FILE)]);
+    // The evidence namespace itself is present — only the ascent member is not.
+    expect('pdgEvidence' in upstream && upstream.pdgEvidence?.statements).toBe('local-dependence');
+    expect(ascentOf(upstream)).toBeUndefined();
+    // The discriminator that makes the absence load-bearing rather than vacuous:
+    // the SAME mock run downstream DOES publish coverage, so `undefined` above is
+    // the descent-did-not-run signal and not simply "the field does not exist".
+    expect(ascentOf(downstream)).toMatchObject({ referencesScanned: 1 });
+  });
+
+  // The strongest case for the structured surface: the note is SILENT (the
+  // ascent sentence is gated on a hop being crossed, and a cell of un-enterable
+  // ids resolves no span) while the descent did scan 2 references. Prose reports
+  // nothing here; the field reports exactly what was examined.
+  it('no hop crossed → note silent, coverage still reports the scan', async () => {
+    const result = await run(FILE, { calleeIds: UNENTERABLE_CALLEES });
+    expect(noteOf(result)).not.toContain('inter-procedural hop');
+    expect(noteOf(result)).not.toContain(CAVEAT);
+    expect(ascentOf(result)).toMatchObject({
+      referencesScanned: 2,
+      returnFlowFound: false,
+      examinedComplete: true,
+    });
+  });
+
+  // P2-5's mixed boundary: one return-flow silences the note entirely, so the
+  // prose quotes no count at all. The structured surface still carries both the
+  // population and the outcome.
+  it('mixed callees → note quotes no count, coverage still carries it', async () => {
+    const result = await run(FILE, { summary: flow([0]), calleeIds: MIXED_CALLEES });
+    expect(noteOf(result)).not.toContain('call-site callee reference');
+    expect(ascentOf(result)).toMatchObject({ referencesScanned: 3, returnFlowFound: true });
+  });
+
+  // Cross-hop accumulation (P2-5) read structurally: hop 0 contributes {helper},
+  // hop 1 contributes {helper2} ⇒ 2. A per-hop overwrite would publish 1.
+  it('two hops over DISTINCT callees → referencesScanned is their union', async () => {
+    const result = await run(FILE, { secondSummary: null });
+    expect(noteOf(result)).toContain(TWO_HOPS);
+    expect(ascentOf(result)).toMatchObject({ referencesScanned: 2, returnFlowFound: false });
   });
 });
