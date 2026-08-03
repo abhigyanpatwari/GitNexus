@@ -142,10 +142,12 @@ import { generateAIContextFiles } from '../cli/ai-context.js';
 import { sanitizeDetectedBranch } from '../cli/analyze-config.js';
 import {
   EMBEDDING_TABLE_NAME,
+  EMBEDDING_DIMS,
   STALE_HASH_SENTINEL,
   SCHEMA_FINGERPRINT,
   schemaFingerprintMismatch,
   isSchemaFingerprintShaped,
+  embeddingDimsMismatch,
 } from './lbug/schema.js';
 import { isSpringBeanCandidateSourceFile } from './ingestion/frameworks/spring/bean-catalog.js';
 import { isSpringBeanFactoryDeclaration } from './ingestion/frameworks/spring/bean-factories.js';
@@ -1380,6 +1382,44 @@ async function runFullAnalysisInner(
 
   // ── embedding width mismatch forces full rebuild (#2798) ──────────
   // The half of the schema `SCHEMA_FINGERPRINT` deliberately cannot cover:
+  // `CodeEmbedding.embedding` is declared `FLOAT[EMBEDDING_DIMS]`, and that
+  // width comes from `GITNEXUS_EMBEDDING_DIMS` at module load, so folding it
+  // into a digest of CODE would make the same build disagree with itself under
+  // two envs. Without this block a dims flip on a same-commit clean tree fired
+  // NO guard: the fast path below returned over a FLOAT[384] table while this
+  // process embedded at 768. The one older reaction (in the embedding-restore
+  // block further down) discards the CACHE and re-embeds — into a column whose
+  // width it never revisits.
+  //
+  // Forcing is again what repairs it, and for the same reason as the
+  // fingerprint guard: only a full rebuild wipes the database and re-runs the
+  // DDL, and `runSchemaCreationQueries` suppresses "already exists", so
+  // re-running CREATE over the existing DB would silently keep the old width.
+  // Not conditioned on the index actually holding vectors — the table is
+  // created for every index either way, and nothing but a rebuild can retype it.
+  //
+  // ABSENT is NOT a mismatch here (see embeddingDimsMismatch for the argument):
+  // it means an index predating the field, whose width is unknown but was
+  // consistent with the env that wrote it, and which the fingerprint guard
+  // above already rebuilds — that rebuild is where the stamp lands.
+  if (existingMeta && embeddingDimsMismatch(existingMeta.embeddingDims, EMBEDDING_DIMS)) {
+    // Only NAME a recorded width that could be one, for the reason the
+    // fingerprint guard gates its stamp on `isSchemaFingerprintShaped`:
+    // meta.json is a schema-less JSON.parse of on-disk state, so a value that
+    // is not a positive integer is not worth quoting back at the user.
+    const recordedDims = existingMeta.embeddingDims;
+    const built =
+      typeof recordedDims === 'number' && Number.isInteger(recordedDims) && recordedDims > 0
+        ? `FLOAT[${recordedDims}]`
+        : 'an unrecognized width';
+    log(
+      `embedding dimensions changed (index built with ${built}, this run embeds at ` +
+        `${EMBEDDING_DIMS}); forcing a full rebuild so the vector column is recreated at the ` +
+        `new width. Tip: set GITNEXUS_EMBEDDING_DIMS (or --embedding-dims) to pin it across runs.`,
+    );
+    options = { ...options, force: true };
+  }
+
   // ── Early-return: already up to date ──────────────────────────────
   if (
     existingMeta &&
@@ -2939,6 +2979,7 @@ async function runFullAnalysisInner(
       // Always stamped, like `cjkSegmentation` and unlike `schemaFingerprint`:
       // the CodeEmbedding table is created for every index, git or not, so
       // absence has exactly one meaning — an index older than the field.
+      embeddingDims: EMBEDDING_DIMS,
       fileHashes: hasGitDir(repoPath) ? newFileHashesRecord : undefined,
       // This branch's full live chunk-key set (#2106 R6). `usedKeys` is every
       // chunk hash touched in this scan — cache HITS included (see parse-impl

@@ -251,6 +251,34 @@ export interface RepoMeta {
    */
   cjkSegmentation?: string;
   /**
+   * The `FLOAT[N]` width this index's `CodeEmbedding` vector column was
+   * actually created at — `EMBEDDING_DIMS` (core/lbug/schema.ts), resolved from
+   * `GITNEXUS_EMBEDDING_DIMS` at module load (#2798). On mismatch with the live
+   * process's width, runFullAnalysis forces a full rebuild, which wipes the
+   * database and recreates the table at the new width; an incremental run never
+   * revisits a column's type, so nothing else can.
+   *
+   * Sits beside `schemaFingerprint` rather than inside it on purpose: the
+   * fingerprint is a digest of CODE, and this width comes from the
+   * ENVIRONMENT, so folding it in would make the same build disagree with
+   * itself across two runs and thrash rebuilds.
+   *
+   * ABSENT means an index written before this field existed — NOT a mismatch,
+   * unlike `schemaFingerprint` above. Absence says nothing about the width
+   * (that run used whatever its env resolved, almost always the 384 default,
+   * and the table it wrote agreed with it), and every such index also predates
+   * `schemaFingerprint`, so the guard above already rebuilds it once and this
+   * stamp lands then. See `embeddingDimsMismatch` for the full argument.
+   *
+   * Always stamped, like `cjkSegmentation` and unlike `schemaFingerprint`: the
+   * column is created for every index, git or not, so there is no case where
+   * omitting it is correct — which keeps absence meaning exactly one thing.
+   * A plain number rather than an import of the constant, for the same reason
+   * `schemaFingerprint` is a plain string: storage/ takes no runtime import of
+   * core/lbug/schema.ts.
+   */
+  embeddingDims?: number;
+  /**
    * Member names whose call sites were DROPPED because the receiver's type
    * could not be established (#2744, the second half of #2708). Read by
    * `impact()` / `context()` to report a result as `epistemic: 'lower-bound'`

@@ -686,11 +686,13 @@ export const SCHEMA_QUERIES = [...NODE_SCHEMA_QUERIES, ...REL_SCHEMA_QUERIES, EM
  * this a function of the ENVIRONMENT rather than of code: two runs of the same
  * build under different env would disagree and force alternating full rebuilds.
  * Vector-column drift is therefore a SEPARATE gate, not an ungated hazard:
- * Vector-column drift is therefore a separate hazard, and NOTHING currently
- * gates the column width: a dims change is not a fingerprint mismatch and
- * forces no rebuild. The only reaction is in run-analyze, and it is to the
- * CACHE, not the schema — when the cached vectors' length differs from
- * `EMBEDDING_DIMS` it discards the cache and re-embeds.
+ * {@link embeddingDimsMismatch} compares the width stamped in
+ * `RepoMeta.embeddingDims` against {@link EMBEDDING_DIMS} and run-analyze
+ * forces a rebuild on drift. Do not merge the two — an env-derived value in a
+ * code digest makes the same build disagree with itself. (The older reaction in
+ * run-analyze remains, and is to the CACHE, not the schema: when the cached
+ * vectors' length differs from `EMBEDDING_DIMS` it discards the cache and
+ * re-embeds.)
  */
 export const SCHEMA_FINGERPRINT: string = createHash('sha256')
   .update([...NODE_SCHEMA_QUERIES, ...REL_SCHEMA_QUERIES].join('\n'))
@@ -725,3 +727,52 @@ export const isSchemaFingerprintShaped = (value: unknown): value is string =>
   typeof value === 'string' &&
   value.length === SCHEMA_FINGERPRINT.length &&
   /^[0-9a-f]+$/.test(value);
+
+/**
+ * Whether the vector-column width an index's `CodeEmbedding` table was created
+ * at (as persisted in `RepoMeta.embeddingDims`) differs from the width this
+ * process would embed at ({@link EMBEDDING_DIMS}). The gate
+ * {@link SCHEMA_FINGERPRINT} deliberately cannot be: `FLOAT[N]` comes from
+ * `GITNEXUS_EMBEDDING_DIMS` at module load, so folding it into a digest of the
+ * DDL would make that digest a function of the ENVIRONMENT. Splitting it out
+ * here keeps the fingerprint purely code-derived and still gates the width —
+ * before this, flipping `GITNEXUS_EMBEDDING_DIMS` on a same-commit clean tree
+ * fired no guard at all: `alreadyUpToDate` returned over a `FLOAT[384]` table
+ * while the process embedded at 768. (The one pre-existing reaction, in
+ * run-analyze, discards the embedding CACHE and re-embeds — into a column whose
+ * width was never revisited.) A single scalar, so plain equality suffices.
+ *
+ * ABSENT does NOT count as a mismatch — the opposite of
+ * {@link schemaFingerprintMismatch}, and deliberately:
+ *
+ *  - Absence carries no signal about the width. A missing fingerprint means
+ *    "DDL this build cannot vouch for", and the field ships WITH a DDL change,
+ *    so absence is itself evidence of drift. A missing dims stamp means only
+ *    "written before the field existed"; the width was whatever that run's env
+ *    resolved, almost always the 384 default, and it was consistent with the
+ *    table it wrote. Drift needs the env to CHANGE, which absence says nothing
+ *    about.
+ *  - Forcing on absence would buy no safety anyway. Every index that lacks this
+ *    stamp also lacks `schemaFingerprint` (both landed together in #2798), and
+ *    that guard already forces a rebuild for exactly those indexes — after
+ *    which the width is stamped and the hazard is closed for good. A second
+ *    trigger for the same one rebuild is dead weight that would keep firing
+ *    forever on any future path that legitimately omits the stamp.
+ *  - The cost of guessing wrong is asymmetric: a fleet-wide full re-analyze
+ *    (minutes to hours per repo) for a hazard that requires a rare, deliberate
+ *    env change.
+ *
+ * Absence is precisely `undefined`. Any other recorded value that is not this
+ * build's width — including a malformed one, since `meta.json` is a schema-less
+ * `JSON.parse` of on-disk state — reads as a mismatch and errs toward a
+ * rebuild, which is the safe direction.
+ *
+ * Pure + exported for testing, and takes `current` explicitly rather than
+ * closing over {@link EMBEDDING_DIMS}: that constant is frozen at module load,
+ * so a parameter is the only way to exercise both sides of the comparison.
+ * Lives here rather than in run-analyze for the reason
+ * `cjkSegmentationModeMismatch` lives in `core/search/` — a caller that only
+ * needs the comparator should not have to pull in the analyze pipeline.
+ */
+export const embeddingDimsMismatch = (recorded: number | undefined, current: number): boolean =>
+  recorded !== undefined && recorded !== current;
