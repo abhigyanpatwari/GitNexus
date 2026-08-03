@@ -204,6 +204,19 @@ export function emitDartScopeCaptures(
           '@type-binding.name': syntheticCapture('@type-binding.name', propNode, fieldName),
           '@type-binding.type': syntheticCapture('@type-binding.type', propNode, fieldType),
         });
+      } else {
+        // No written type, so the field's type comes from the constructor its
+        // initializer calls (#2807). `constructor-inferred` is the weakest
+        // source, and the annotated branch above already returned, so an
+        // annotated field is untouched either way.
+        const callee = dartFieldConstructorCallee(propNode);
+        if (callee !== null) {
+          out.push({
+            '@type-binding.constructor': nodeToCapture('@type-binding.constructor', propNode),
+            '@type-binding.name': syntheticCapture('@type-binding.name', propNode, fieldName),
+            '@type-binding.type': syntheticCapture('@type-binding.type', propNode, callee.text),
+          });
+        }
       }
       continue;
     }
@@ -530,6 +543,46 @@ function findDirectCallValue(initVarDef: SyntaxNode): SyntaxNode | null {
       ) {
         return id;
       }
+    }
+  }
+  return null;
+}
+
+/**
+ * Callee identifier of a class field initialized by a direct constructor call —
+ * `var b = Outer();` / `final b = Outer();` — or `null` for anything else.
+ *
+ * Dart spells a class field as `declaration(<keyword>, initialized_identifier_list(
+ * initialized_identifier))`, NOT the `initialized_variable_definition` that
+ * `emitVarTypeBinding` handles — that is the LOCAL form. So an unannotated field
+ * had no type binding and could not act as a call receiver (#2807), even though
+ * its annotated twin resolved fine.
+ *
+ * Accepts the same construction shape `findDirectCallValue` accepts for locals:
+ * a bare identifier followed by a `selector` carrying an `argument_part`.
+ * Anything else — a literal, a member call, an await — is left alone rather than
+ * guessed at.
+ */
+function dartFieldConstructorCallee(propNode: SyntaxNode): SyntaxNode | null {
+  const initialized = firstDescendantOfType(propNode, 'initialized_identifier');
+  if (initialized === null) return null;
+  // namedChild(0) is the field NAME; the initializer starts after it.
+  const value = initialized.namedChild(1);
+  if (value === null || value.type !== 'identifier') return null;
+  const next = value.nextNamedSibling;
+  if (next === null || next.type !== 'selector') return null;
+  return next.namedChild(0)?.type === 'argument_part' ? value : null;
+}
+
+/** First strict descendant of `type`, breadth-first, or `null`. */
+function firstDescendantOfType(root: SyntaxNode, type: string): SyntaxNode | null {
+  const queue: SyntaxNode[] = [root];
+  while (queue.length > 0) {
+    const node = queue.shift()!;
+    if (node !== root && node.type === type) return node;
+    for (let i = 0; i < node.namedChildCount; i++) {
+      const child = node.namedChild(i);
+      if (child !== null) queue.push(child);
     }
   }
   return null;
