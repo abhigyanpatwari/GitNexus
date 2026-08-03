@@ -37,6 +37,12 @@ const raw = (reason: unknown): Summary => ({ kind: 'raw', reason });
 // observable of "the ascent fired"; its absence, of "the ascent was withheld".
 const ascentOnlyBlock = (file: string): string => `BasicBlock:${file}:1:0:9`;
 
+// The one callee id in the mock's `calleeIds` cell that RESOLVES to a span: a
+// `Function` node, which is what `resolveCalleeSpans` matches, so the descent
+// enters its body. Every other id a test puts in the cell (P3-7 below) is
+// deliberately un-enterable.
+const helperCalleeId = (file: string): string => `Function:${file}:helper`;
+
 // A mock that drives ONE real inter-procedural descent hop: the criterion's
 // reachable block calls `helper`, the descent resolves helper's span (so
 // interproceduralHops > 0 and the note block fires). `summary` decides what
@@ -53,15 +59,29 @@ function descentExec(
   // strips the sentinel, which is exactly why the dropped callees are invisible
   // to the summary scan and the note's counters.
   calleeCellCapped = false,
+  // P3-7 case: the exact id list the call block's `calleeIds` cell carries.
+  // Defaults to the single enterable `helper`. A test overrides it to mix in ids
+  // the descent can never enter — `resolveCalleeSpans` matches only
+  // Function/Method/Constructor, so anything else yields no span and is skipped
+  // while still riding the cell (and still being scanned for a CALL_SUMMARY).
+  calleeIds?: readonly string[],
 ): RunPdgImpactDeps['executeParameterized'] {
   const seed = `BasicBlock:${file}:1:0:0`;
   const callBlock = `BasicBlock:${file}:1:0:2`;
   const calleeSeed = `BasicBlock:${file}:5:0:0`;
   const ascentOnly = ascentOnlyBlock(file);
-  const helper = `Function:${file}:helper`;
-  const calleeCell = calleeCellCapped
-    ? `${helper}${CALLEE_ID_SEP}${CALLEES_TRUNCATED_SENTINEL}`
-    : helper;
+  const helper = helperCalleeId(file);
+  const cellIds = calleeIds ?? [helper];
+  const calleeCell = (
+    calleeCellCapped ? [...cellIds, CALLEES_TRUNCATED_SENTINEL] : [...cellIds]
+  ).join(CALLEE_ID_SEP);
+  // Both the span resolve and the CALL_SUMMARY scan bind the ids they ask about
+  // as `$ids`, so the mock answers for `helper` only when `helper` was asked for
+  // — an id the descent cannot enter must not borrow helper's span or summary.
+  const asksForHelper = (params: Record<string, unknown>): boolean => {
+    const ids = params['ids'];
+    return Array.isArray(ids) && ids.map((id) => String(id)).includes(helper);
+  };
   return async (_repo, query, params: Record<string, unknown>) => {
     // Top-level seed fetch is line-anchored (`a.startLine = $line`); the descent's
     // callee seed fetch is range-anchored — route by that.
@@ -83,12 +103,14 @@ function descentExec(
       return [{ id: callBlock, calleeIds: calleeCell }];
     }
     if (query.includes("r.type = 'CALL_SUMMARY'")) {
-      if (summary === null) return [];
+      if (summary === null || !asksForHelper(params)) return [];
       const reason = summary.kind === 'params' ? encodeCallSummary(summary.params) : summary.reason;
       return [{ id: helper, reason }];
     }
     if (query.includes('s.id IN $ids') && query.includes('AS filePath')) {
-      return [{ id: helper, filePath: file, startLine: 4, endLine: 6 }];
+      return asksForHelper(params)
+        ? [{ id: helper, filePath: file, startLine: 4, endLine: 6 }]
+        : [];
     }
     if (query.includes('MATCH (b:BasicBlock) WHERE b.id IN $ids')) {
       return [
@@ -113,6 +135,7 @@ const run = (
   // P2-4 cases below produce a genuinely TRUNCATED traversal.
   maxDepth = 3,
   calleeCellCapped = false,
+  calleeIds?: readonly string[],
 ) =>
   runImpactPDG({
     repo: { lbugPath: 'repo' },
@@ -122,7 +145,7 @@ const run = (
     maxDepth,
     limit: 50,
     line: 1,
-    executeParameterized: descentExec(file, summary, calleeCellCapped),
+    executeParameterized: descentExec(file, summary, calleeCellCapped, calleeIds),
     callSummaryAvailable,
   });
 
@@ -271,7 +294,7 @@ describe('runImpactPDG — undecodable CALL_SUMMARY (P2-2)', () => {
   });
 });
 
-// P2-4 — "none of the N resolved callees carry a … return-flow" is a UNIVERSAL
+// P2-4 — "none of the N … callee references carry a … return-flow" is a UNIVERSAL
 // claim over the callees the descent actually examined, and so is "this is a
 // property of the persisted summaries". Two mechanisms make that examined set a
 // strict subset of the slice's real callee list, and under either the note must
@@ -346,5 +369,89 @@ describe('runImpactPDG — empty-ascent note over an incomplete callee set (P2-4
     expect(note).toContain(QUALIFIER);
     expect(note).toContain('could not be decoded (version skew or corruption)');
     expect(note).not.toContain(PERSISTED_CLAIM);
+  });
+});
+
+// P3-7 — the number the empty-ascent sentence quotes is the count of CALL-SITE
+// callee REFERENCES the descent scanned for a CALL_SUMMARY (the raw `calleeIds`
+// ids), NOT the count of callees it resolved to a body and descended into. The
+// two differ whenever a cell carries an id `resolveCalleeSpans` does not match:
+// an out-of-repo target, an interface method, or a node kind with no CFG body.
+// The scan really is run over all of them, so the claim is exact at reference
+// granularity — but calling them "resolved" asserted a symbol-table lookup that
+// never happened, and the old formals parenthetical ("no formal parameter is
+// recorded as flowing to its return value") asserted a FORMALS-level property
+// about symbols that were never resolved to a body at all.
+const FILE = 'src/svc.ts';
+// Ids a real `calleeIds` cell genuinely carries and the descent can never enter.
+// The `Class:` id is the reproduced case — a `new Outer()` call site contributes
+// it (see test/integration/cfg/pdg-chained-receiver-callees.test.ts), which is
+// what inflated the quoted number from 1 to 3 there.
+const UNENTERABLE_CALLEES = [`Class:${FILE}:Outer`, `Interface:${FILE}:Sink.write`] as const;
+const MIXED_CALLEES = [helperCalleeId(FILE), ...UNENTERABLE_CALLEES] as const;
+
+describe('runImpactPDG — the empty-ascent count is call-site references (P3-7)', () => {
+  it('un-enterable callee ids count, and the note names them as call-site references', async () => {
+    expect(noteOf(await run(FILE, true, null, 3, false, MIXED_CALLEES))).toContain(
+      'none of the 3 call-site callee references carry a CALL_SUMMARY return-flow',
+    );
+  });
+
+  // The same slice with only the enterable callee: the number tracks the CELL,
+  // and the singular form agrees with it.
+  it('dropping the un-enterable ids drops the quoted number to 1', async () => {
+    expect(noteOf(await run(FILE, true, null))).toContain(
+      'none of the 1 call-site callee reference carries a CALL_SUMMARY return-flow',
+    );
+  });
+
+  // The load-bearing discriminator: the two extra ids raise the quoted number by
+  // 2 while adding NOTHING to the traversal — the descent resolved no span for
+  // them, so it entered no body. That gap is exactly what "resolved" papered over.
+  it('the un-enterable ids add to the number without adding any reach', async () => {
+    const [mixed, helperOnly] = await Promise.all([
+      run(FILE, true, null, 3, false, MIXED_CALLEES),
+      run(FILE, true, null),
+    ]);
+    // Same slice, byte-identical reach — the descent entered exactly one body in
+    // both runs …
+    expect(blocksOf(mixed).length).toBeGreaterThan(0);
+    expect(blocksOf(mixed)).toEqual(blocksOf(helperOnly));
+    // … while the quoted number moved 1 → 3, which is only honest because the
+    // note quotes call-site references rather than resolved callees.
+    expect(noteOf(mixed)).toContain('none of the 3 call-site callee references carry');
+    expect(noteOf(helperOnly)).toContain('none of the 1 call-site callee reference carries');
+  });
+
+  it('the note no longer calls the counted ids resolved callees', async () => {
+    expect(noteOf(await run(FILE, true, null, 3, false, MIXED_CALLEES))).not.toContain(
+      'resolved callee',
+    );
+  });
+
+  it('the note drops the formals parenthetical', async () => {
+    expect(noteOf(await run(FILE, true, null, 3, false, MIXED_CALLEES))).not.toContain(
+      'no formal parameter is recorded',
+    );
+  });
+
+  // The undecodable branch quotes the same count and needed the same rewording.
+  it('undecodable branch → same call-site wording over the same count', async () => {
+    const note = noteOf(await run(FILE, true, raw('1|r:zz'), 3, false, MIXED_CALLEES));
+    expect(note).toContain(
+      'none of the 3 call-site callee references carry a decodable CALL_SUMMARY return-flow',
+    );
+    expect(note).not.toContain('resolved callee');
+  });
+
+  // GATE: the sentence fires on the descent having CROSSED a hop, never on the
+  // reference count. A cell whose ids are ALL un-enterable resolves no span, so
+  // no hop is taken and no ascent sentence is emitted — even though the reference
+  // count is 2. Pinned so re-seeding the count from the resolved spans cannot
+  // silently change WHEN the note fires.
+  it('a cell with no enterable callee takes no hop, so no ascent sentence fires', async () => {
+    const note = noteOf(await run(FILE, true, null, 3, false, UNENTERABLE_CALLEES));
+    expect(note).not.toContain('inter-procedural hop');
+    expect(note).not.toContain(CAVEAT);
   });
 });

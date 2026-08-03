@@ -814,22 +814,29 @@ function assemblePdgImpactResult(input: {
   callSummaryAvailable?: boolean;
   /**
    * Observed ascent inputs from the inter-procedural descent: how many distinct
-   * callees it resolved, how many of those carried a DECODED non-empty
-   * CALL_SUMMARY return-flow, and how many carried a summary the codec could not
-   * decode. When callees were resolved but none carried a decodable return-flow,
-   * the note reports that the ascent was structurally empty for this slice —
-   * and, when any summary was undecodable, says so instead of asserting what the
-   * persisted summaries record (it could not read them). Keyed on the data
-   * rather than on the criterion's language — see the note branch below.
+   * callee REFERENCES its slice blocks invoke (the `calleeIds` cells it scanned
+   * for a `CALL_SUMMARY`), how many of those carried a DECODED non-empty
+   * return-flow, and how many carried a summary the codec could not decode. When
+   * references were scanned but none carried a decodable return-flow, the note
+   * reports that the ascent was structurally empty for this slice — and, when any
+   * summary was undecodable, says so instead of asserting what the persisted
+   * summaries record (it could not read them). Keyed on the data rather than on
+   * the criterion's language — see the note branch below.
+   *
+   * {@link calleeReferences} counts CALL-SITE references, NOT callees the descent
+   * resolved to a body: an out-of-repo target, an interface method, and a node
+   * kind with no CFG body (a `Class:` id from a `new` expression) all ride the
+   * same `calleeIds` cell and are all scanned for a summary. The note's wording
+   * must therefore stay at reference granularity — see the sentences below.
    */
-  calleesResolved?: number;
+  calleeReferences?: number;
   calleesReturnFlowing?: number;
   calleesUndecodable?: number;
   /**
    * Whether a slice block the descent gathered callees from had its `calleeIds`
    * cell CAPPED at emit. The cap sentinel is stripped by `splitCalleeIds`, so the
    * dropped callees never reach the `CALL_SUMMARY` scan or the counters above —
-   * making {@link calleesResolved} a prefix of the block's real call-site list.
+   * making {@link calleeReferences} a prefix of the block's real call-site list.
    * Together with {@link truncated} (callees past the traversal frontier) this is
    * what keeps the empty-ascent note from quantifying universally over a set it
    * knows is incomplete.
@@ -930,12 +937,23 @@ function assemblePdgImpactResult(input: {
       // TS/JS callee that genuinely has no return-flow is no longer silently
       // described as if the ascent had covered it. This module must not name
       // languages — nor must the shared core/ingestion pipeline.
-      const calleesResolved = input.calleesResolved ?? 0;
+      const calleeReferences = input.calleeReferences ?? 0;
       const calleesReturnFlowing = input.calleesReturnFlowing ?? 0;
       const calleesUndecodable = input.calleesUndecodable ?? 0;
-      // Both empty-ascent sentences below quantify UNIVERSALLY over the callees
-      // the descent actually EXAMINED, and two mechanisms can make that set a
-      // strict subset of the slice's real callee list:
+      // The population both sentences below quantify over is the set of CALL-SITE
+      // callee references the descent scanned for a `CALL_SUMMARY` — the raw
+      // `calleeIds` ids — NOT the callees it resolved to a body. The two differ:
+      // `resolveCalleeSpans` matches only Function/Method/Constructor, so an
+      // out-of-repo target, an interface method, and a `Class:` id from a `new`
+      // expression produce no span yet still ride the cell and are still scanned.
+      // The summary scan IS run over all of them, so the claim is exact at
+      // reference granularity and would UNDER-state the checking at body
+      // granularity; the wording says "call-site callee references" so the number
+      // is not read as a count of successful symbol-table lookups.
+      //
+      // Both sentences also quantify UNIVERSALLY over the references the descent
+      // actually EXAMINED, and two mechanisms can make that set a strict subset of
+      // the slice's real callee list:
       //  - the traversal stopped at a depth/size budget (`truncated`) — a callee
       //    that DOES carry a return-flow can sit in a hop never reached;
       //  - a block's `calleeIds` cell was capped at emit (`calleeListTruncated`) —
@@ -954,7 +972,7 @@ function assemblePdgImpactResult(input: {
       const incompleteClause = examinedIncomplete
         ? ` (${incompleteReasons.join(' and ')}, so callees past the examined set were not checked)`
         : '';
-      if (calleesResolved > 0 && calleesReturnFlowing === 0 && calleesUndecodable > 0) {
+      if (calleeReferences > 0 && calleesReturnFlowing === 0 && calleesUndecodable > 0) {
         // At least one summary could not be DECODED, so the note must not assert
         // what the persisted summaries record — an undecodable `reason` may well
         // encode a return-flow this reader cannot unpack (`decodeCallSummary`
@@ -962,19 +980,19 @@ function assemblePdgImpactResult(input: {
         // indistinguishable from a cleanly-decoded empty one). The ascent is
         // withheld either way; only the explanation changes.
         noteParts.push(
-          `no return-value ascent in this slice: none of the ${calleesResolved} resolved ` +
-            `${calleesResolved === 1 ? 'callee carries' : 'callees carry'} a decodable ` +
-            `CALL_SUMMARY return-flow${incompleteClause}, and ${calleesUndecodable} callee ` +
+          `no return-value ascent in this slice: none of the ${calleeReferences} call-site ` +
+            `callee ${calleeReferences === 1 ? 'reference carries' : 'references carry'} a ` +
+            `decodable CALL_SUMMARY return-flow${incompleteClause}, and ${calleesUndecodable} callee ` +
             `${calleesUndecodable === 1 ? 'summary' : 'summaries'} could not be decoded (version ` +
             `skew or corruption) — re-run gitnexus analyze --pdg to rebuild them. A caller ` +
             `statement depending on a callee's RETURN value is not in the slice; descent and the ` +
             `intra slice are unaffected.`,
         );
-      } else if (calleesResolved > 0 && calleesReturnFlowing === 0) {
+      } else if (calleeReferences > 0 && calleesReturnFlowing === 0) {
         noteParts.push(
-          `no return-value ascent in this slice: none of the ${calleesResolved} resolved ` +
-            `${calleesResolved === 1 ? 'callee carries' : 'callees carry'} a CALL_SUMMARY ` +
-            `return-flow — no formal parameter is recorded as flowing to its return value` +
+          `no return-value ascent in this slice: none of the ${calleeReferences} call-site ` +
+            `callee ${calleeReferences === 1 ? 'reference carries' : 'references carry'} a ` +
+            `CALL_SUMMARY return-flow` +
             `${incompleteClause}. So a caller statement depending on a callee's RETURN value is ` +
             `not in the slice. ` +
             (examinedIncomplete
@@ -1727,10 +1745,22 @@ async function interproceduralDescent(input: {
    */
   ascentBlocks: Set<string>;
   /**
-   * How many distinct callee symbols the descent resolved across all hops, how
-   * many of those carried a DECODED non-empty `CALL_SUMMARY` return-flow, and how
-   * many carried a summary that could NOT be decoded (version skew / corruption /
-   * NULL reason — see {@link CalleeReturnFlowScan}).
+   * How many distinct callee REFERENCES the descent's slice blocks invoked across
+   * all hops, how many of those carried a DECODED non-empty `CALL_SUMMARY`
+   * return-flow, and how many carried a summary that could NOT be decoded
+   * (version skew / corruption / NULL reason — see {@link CalleeReturnFlowScan}).
+   *
+   * `calleeReferences` counts the distinct ids gathered from the slice's
+   * `BasicBlock.calleeIds` cells — CALL SITES, deliberately NOT "callees the
+   * descent resolved to a body". The two sets differ: `resolveCalleeSpans` matches
+   * only `Function`/`Method`/`Constructor`, so an out-of-repo target, an interface
+   * method, and a node kind with no CFG body (e.g. the `Class:` id a `new`
+   * expression contributes) yield no span and are never descended into — yet they
+   * ride the same cell and ARE scanned for a `CALL_SUMMARY`. This count is the
+   * scan's population, so it is exactly the set the empty-ascent claim ranges
+   * over; anything narrower would under-state what was checked. Consumers must
+   * word it at reference granularity — calling it "resolved" would assert a
+   * symbol-table lookup that did not happen for part of the set.
    *
    * These are the OBSERVED facts behind the return-value ascent, and the result
    * note keys on them rather than on the criterion's language. Whether ascent
@@ -1739,12 +1769,12 @@ async function interproceduralDescent(input: {
    * unreadable summary would be reported as a summary that records no
    * return-flow.
    */
-  calleesResolved: number;
+  calleeReferences: number;
   calleesReturnFlowing: number;
   calleesUndecodable: number;
   /**
    * Whether any slice block the descent gathered callees from carried the
-   * emit-time `calleeIds` cap sentinel — i.e. whether `calleesResolved` (and the
+   * emit-time `calleeIds` cap sentinel — i.e. whether `calleeReferences` (and the
    * summary scan behind the other two counters) saw a PREFIX of that block's real
    * call-site list rather than all of it. Reported so the result note never
    * quantifies universally ("none of the N callees …") over a set it knows is
@@ -1779,7 +1809,12 @@ async function interproceduralDescent(input: {
   const ascentBlocks = new Set<string>();
   // Observed ascent inputs, accumulated across hops so the result note can
   // describe what the ascent actually had to work with (see the return type).
-  const calleesSeen = new Set<string>();
+  // `calleeReferencesSeen` is the CALL-SITE population — every id gathered from a
+  // slice block's `calleeIds` cell, which is exactly what the `CALL_SUMMARY` scan
+  // below runs over. It is deliberately WIDER than the callees the descent enters
+  // (`resolveCalleeSpans` skips ids with no Function/Method/Constructor body), so
+  // the note must never call it "resolved callees".
+  const calleeReferencesSeen = new Set<string>();
   const calleesReturnFlowingSeen = new Set<string>();
   const calleesUndecodableSeen = new Set<string>();
   // Sticky across hops: once ANY gathered block's call-site list was capped at
@@ -1810,7 +1845,7 @@ async function interproceduralDescent(input: {
     // pre-v4 index (no CALL_SUMMARY) yields no return-flowing callees → no-op.
     const summaryScan = await calleesWithReturnFlow(lbugPath, [...calleeIds], exec);
     const returnFlowing = summaryScan.returnFlowing;
-    for (const id of calleeIds) calleesSeen.add(id);
+    for (const id of calleeIds) calleeReferencesSeen.add(id);
     for (const id of returnFlowing) calleesReturnFlowingSeen.add(id);
     // An undecodable summary withholds the ascent exactly like an empty one; it
     // is tracked only so the note reports "could not read" rather than "records
@@ -1966,7 +2001,7 @@ async function interproceduralDescent(input: {
     truncatedByLimit,
     truncatedByNodeCap,
     ascentBlocks,
-    calleesResolved: calleesSeen.size,
+    calleeReferences: calleeReferencesSeen.size,
     calleesReturnFlowing: calleesReturnFlowingSeen.size,
     calleesUndecodable: calleesUndecodableSeen.size,
     calleeListTruncated,
@@ -2170,7 +2205,7 @@ export async function runImpactPDG(deps: RunPdgImpactDeps): Promise<PdgImpactRes
   let ascentBlocks = new Set<string>();
   // Observed ascent inputs, plumbed to the result note so it can report an empty
   // ascent from the persisted summaries rather than from the criterion's language.
-  let calleesResolved = 0;
+  let calleeReferences = 0;
   let calleesReturnFlowing = 0;
   let calleesUndecodable = 0;
   // Emit-time cap on a gathered block's `calleeIds` cell — the second way the
@@ -2203,7 +2238,7 @@ export async function runImpactPDG(deps: RunPdgImpactDeps): Promise<PdgImpactRes
     });
     interproceduralHops = interproc.hopsReached;
     ascentBlocks = interproc.ascentBlocks;
-    calleesResolved = interproc.calleesResolved;
+    calleeReferences = interproc.calleeReferences;
     calleesReturnFlowing = interproc.calleesReturnFlowing;
     calleesUndecodable = interproc.calleesUndecodable;
     calleeListTruncated = interproc.calleeListTruncated;
@@ -2374,7 +2409,7 @@ export async function runImpactPDG(deps: RunPdgImpactDeps): Promise<PdgImpactRes
     truncatedByReasons,
     interproceduralHops,
     callSummaryAvailable,
-    calleesResolved,
+    calleeReferences,
     calleesReturnFlowing,
     calleesUndecodable,
     calleeListTruncated,
