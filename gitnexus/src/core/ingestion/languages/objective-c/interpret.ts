@@ -48,5 +48,10 @@ export function interpretObjectiveCTypeBinding(captures: CaptureMatch): ParsedTy
   else if (captures['@type-binding.return'] !== undefined) source = 'return-annotation';
   else if (captures['@type-binding.assignment'] !== undefined) source = 'assignment-inferred';
 
-  return { boundName: name, rawTypeName: normalizeObjectiveCType(type), source };
+  return {
+    boundName: name,
+    rawTypeName: normalizeObjectiveCType(type),
+    declaredSpelling: type,
+    source,
+  };
 }

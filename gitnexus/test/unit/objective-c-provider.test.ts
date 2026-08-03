@@ -3,7 +3,10 @@ import { describe, expect, it } from 'vitest';
 import { SupportedLanguages } from 'gitnexus-shared';
 
 import { getProvider, getProviderForFile } from '../../src/core/ingestion/languages/index.js';
-import { normalizeObjectiveCType } from '../../src/core/ingestion/languages/objective-c/interpret.js';
+import {
+  interpretObjectiveCTypeBinding,
+  normalizeObjectiveCType,
+} from '../../src/core/ingestion/languages/objective-c/interpret.js';
 import { OBJECTIVE_C_QUERIES } from '../../src/core/ingestion/tree-sitter-queries.js';
 import { getLanguageGrammar } from '../../src/core/tree-sitter/parser-loader.js';
 
@@ -21,6 +24,31 @@ describe('Objective-C language provider registration', () => {
       normalizeObjectiveCType('const NSDictionary<NSString *, NSArray<NSNumber *> *> * nonnull'),
     ).toBe('NSDictionary');
     expect(normalizeObjectiveCType('NSObject<script')).toBe('NSObject');
+  });
+
+  it('keeps the declared spelling for protocol-qualified receiver bindings', () => {
+    expect(
+      interpretObjectiveCTypeBinding({
+        '@type-binding.name': { text: 'delegate' },
+        '@type-binding.type': { text: 'id<StoreDelegate>' },
+      }),
+    ).toEqual({
+      boundName: 'delegate',
+      rawTypeName: 'id',
+      declaredSpelling: 'id<StoreDelegate>',
+      source: 'annotation',
+    });
+    expect(
+      interpretObjectiveCTypeBinding({
+        '@type-binding.name': { text: 'delegateType' },
+        '@type-binding.type': { text: 'Class<StoreDelegate>' },
+      }),
+    ).toEqual({
+      boundName: 'delegateType',
+      rawTypeName: 'Class',
+      declaredSpelling: 'Class<StoreDelegate>',
+      source: 'annotation',
+    });
   });
 
   it('registers .m without stealing ambiguous .h from filename fallback', () => {
