@@ -43,6 +43,7 @@ import {
   stampEmbeddingCount,
 } from '../helpers/embedding-seed.js';
 import { CLASS_FRAMEWORK_ANNOTATIONS_FEATURE } from '../../src/core/analysis-features.js';
+import { SCHEMA_FINGERPRINT } from '../../src/core/lbug/schema.js';
 import {
   SPRING_AOP_FEATURE,
   SPRING_BEAN_INVENTORY_FEATURE,
@@ -459,6 +460,71 @@ describe('runFullAnalysis — incremental orchestration', () => {
       expect(logs.join('\n')).toContain(`missing:${CLASS_FRAMEWORK_ANNOTATIONS_FEATURE.id}`);
       expect((await loadMeta(storagePath))!.analysisFeatures).toEqual({
         [CLASS_FRAMEWORK_ANNOTATIONS_FEATURE.id]: CLASS_FRAMEWORK_ANNOTATIONS_FEATURE.version,
+      });
+    } finally {
+      await repo.cleanup();
+    }
+  }, 300_000);
+
+  it('a same-commit index whose DDL fingerprint differs rebuilds before the fast path (#2798)', async () => {
+    const repo = await setupMiniRepo();
+    try {
+      const { runFullAnalysis } = await import('../../src/core/run-analyze.js');
+      await runFullAnalysis(repo.dbPath, { skipAgentsMd: true }, { onProgress: () => {} });
+      const { storagePath } = getStoragePaths(repo.dbPath);
+      const meta = await loadMeta(storagePath);
+      expect(meta).toMatchObject({
+        schemaVersion: INCREMENTAL_SCHEMA_VERSION,
+        schemaFingerprint: SCHEMA_FINGERPRINT,
+      });
+
+      // The exact clash that has already happened twice: the version stays at
+      // the CURRENT value — so the `===` version test reads this index as
+      // current — while the DDL it was created from is a different one.
+      await saveMeta(storagePath, { ...meta!, schemaFingerprint: 'a0b1c2d3e4f5' });
+      const logs: string[] = [];
+      const reanalyzed = await runFullAnalysis(
+        repo.dbPath,
+        { skipAgentsMd: true },
+        { onProgress: () => {}, onLog: (message) => logs.push(message) },
+      );
+
+      // Must NOT early-return through alreadyUpToDate.
+      expect(reanalyzed.alreadyUpToDate).toBeUndefined();
+      expect(logs.join('\n')).toContain('index DDL changed (stamped a0b1c2d3e4f5');
+      expect(await loadMeta(storagePath)).toMatchObject({
+        schemaVersion: INCREMENTAL_SCHEMA_VERSION,
+        schemaFingerprint: SCHEMA_FINGERPRINT,
+      });
+    } finally {
+      await repo.cleanup();
+    }
+  }, 300_000);
+
+  it('a same-commit index with NO fingerprint (pre-#2798) rebuilds once, not grandfathered', async () => {
+    const repo = await setupMiniRepo();
+    try {
+      const { runFullAnalysis } = await import('../../src/core/run-analyze.js');
+      await runFullAnalysis(repo.dbPath, { skipAgentsMd: true }, { onProgress: () => {} });
+      const { storagePath } = getStoragePaths(repo.dbPath);
+      const meta = await loadMeta(storagePath);
+
+      // Every index built before the field existed. Grandfathering absence
+      // would stamp a fresh fingerprint onto a database whose DDL was never
+      // verified — permanently certifying the very index this guard catches.
+      await saveMeta(storagePath, { ...meta!, schemaFingerprint: undefined });
+      const logs: string[] = [];
+      const reanalyzed = await runFullAnalysis(
+        repo.dbPath,
+        { skipAgentsMd: true },
+        { onProgress: () => {}, onLog: (message) => logs.push(message) },
+      );
+
+      expect(reanalyzed.alreadyUpToDate).toBeUndefined();
+      expect(logs.join('\n')).toContain('index DDL changed (stamped pre-fingerprint');
+      // One-time: the rebuild restamps it, so the next run is eligible again.
+      expect(await loadMeta(storagePath)).toMatchObject({
+        schemaFingerprint: SCHEMA_FINGERPRINT,
       });
     } finally {
       await repo.cleanup();

@@ -21,6 +21,7 @@ import {
   EPISTEMIC_CONSUMER_RELATION_TYPES,
 } from '../../src/mcp/local/local-backend.js';
 import { INCREMENTAL_SCHEMA_VERSION } from '../../src/storage/repo-manager.js';
+import { SCHEMA_FINGERPRINT } from '../../src/core/lbug/schema.js';
 
 const here = path.dirname(fileURLToPath(import.meta.url));
 const repoRoot = path.resolve(here, '..', '..');
@@ -85,8 +86,15 @@ describe('CALL_SUMMARY incremental reuse gate (U-C5)', () => {
     // The reuse gate at run-analyze.ts:920 is exactly this strict equality on
     // the persisted `existingMeta.schemaVersion` (a plain number, possibly
     // absent on a legacy stamp). Replicate it as a typed predicate.
-    const passesReuseGate = (stampedSchemaVersion: number | undefined): boolean =>
-      stampedSchemaVersion === INCREMENTAL_SCHEMA_VERSION;
+    // Since #2798 the gate is TWO strict equalities, not one: the hand-picked
+    // version AND the derived DDL fingerprint. The fingerprint defaults to the
+    // current build's so every version case below still reads as before.
+    const passesReuseGate = (
+      stampedSchemaVersion: number | undefined,
+      stampedFingerprint: string | undefined = SCHEMA_FINGERPRINT,
+    ): boolean =>
+      stampedSchemaVersion === INCREMENTAL_SCHEMA_VERSION &&
+      stampedFingerprint === SCHEMA_FINGERPRINT;
     // A pre-v4 (v3) index has no CALL_SUMMARY edges → must NOT reuse.
     expect(passesReuseGate(3)).toBe(false);
     // A pre-v5 (v4) index predates the multi-verb Route identity change → its
@@ -229,5 +237,32 @@ describe('CALL_SUMMARY incremental reuse gate (U-C5)', () => {
     expect(passesReuseGate(34)).toBe(false);
     // The current stamp passes the gate (incremental top-up eligible).
     expect(passesReuseGate(35)).toBe(true);
+  });
+
+  it('the DDL fingerprint decides when the version alone cannot (#2798)', () => {
+    const passesReuseGate = (
+      stampedSchemaVersion: number | undefined,
+      stampedFingerprint: string | undefined,
+    ): boolean =>
+      stampedSchemaVersion === INCREMENTAL_SCHEMA_VERSION &&
+      stampedFingerprint === SCHEMA_FINGERPRINT;
+
+    // Both halves agree → reuse.
+    expect(passesReuseGate(INCREMENTAL_SCHEMA_VERSION, SCHEMA_FINGERPRINT)).toBe(true);
+
+    // THE #2798 CASE. Two branches allocated the same version over different
+    // DDL — the exact clash that has already happened twice. The version test
+    // alone reads this index as current; the fingerprint is what rejects it.
+    expect(passesReuseGate(INCREMENTAL_SCHEMA_VERSION, 'a0b1c2d3e4f5')).toBe(false);
+
+    // Every index built before this field existed. Absence must NOT be
+    // grandfathered: reusing it would stamp a fresh fingerprint onto a database
+    // whose DDL was never verified, permanently certifying a wrong-shaped index.
+    expect(passesReuseGate(INCREMENTAL_SCHEMA_VERSION, undefined)).toBe(false);
+
+    // The fingerprint does not REPLACE the version. Most ladder entries (v25,
+    // v26, v30, v31, v34) change emitted ids/edges/wire formats with the DDL
+    // byte-identical, so a semantic bump must still force on its own.
+    expect(passesReuseGate(INCREMENTAL_SCHEMA_VERSION - 1, SCHEMA_FINGERPRINT)).toBe(false);
   });
 });
