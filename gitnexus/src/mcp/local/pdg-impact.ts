@@ -14,8 +14,6 @@ import { CALLEES_TRUNCATED_SENTINEL, CALLEE_ID_SEP } from '../../core/ingestion/
 import { toDisplayLine } from './line-display.js';
 import { decodeCallSummary } from '../../core/ingestion/taint/call-summary-codec.js';
 import { decodeReachingDefReason } from '../../core/ingestion/cfg/reaching-def-reason-codec.js';
-import { getProviderForFile } from '../../core/ingestion/languages/index.js';
-import { SupportedLanguages } from 'gitnexus-shared';
 
 /**
  * Parse the `<fnLine>` segment out of a `BasicBlock` id (1-based function start
@@ -795,6 +793,15 @@ function assemblePdgImpactResult(input: {
    * and steers to a re-index. `true` ⇒ ascent active (no extra note).
    */
   callSummaryAvailable?: boolean;
+  /**
+   * Observed ascent inputs from the inter-procedural descent: how many distinct
+   * callees it resolved, and how many of those carried a non-empty CALL_SUMMARY
+   * return-flow. When callees were resolved but none carried a summary, the note
+   * reports that the ascent was structurally empty for this slice. Keyed on the
+   * data rather than on the criterion's language — see the note branch below.
+   */
+  calleesResolved?: number;
+  calleesReturnFlowing?: number;
 }): PdgImpactSuccessResult {
   const { target, direction, reachableBlocks, projection } = input;
   const { symbols, unresolvedCount, ambiguousCount } = projection;
@@ -876,21 +883,31 @@ function assemblePdgImpactResult(input: {
           `CALL_SUMMARY edges and enable it.`,
       );
     } else if (input.callSummaryAvailable === true) {
-      // The CALL_SUMMARY layer is present, but return-value ascent is populated
-      // ONLY for TypeScript/JavaScript today (the formal-index it needs is set
-      // solely by the TS/JS harvester). For a criterion in any other language the
-      // ascent is structurally empty, so say so rather than letting the omission
-      // read as "ascent ran and found nothing". Sound — never claims ascent fired.
-      // Language is derived HERE in mcp/local, which may name languages; the
-      // shared core/ingestion pipeline must not.
-      const lang = getProviderForFile(target.filePath)?.id;
-      const ascentLanguage =
-        lang === SupportedLanguages.TypeScript || lang === SupportedLanguages.JavaScript;
-      if (!ascentLanguage) {
+      // The CALL_SUMMARY layer is present, but that only means the index CAN
+      // carry return-flow summaries — not that the callees in THIS slice have
+      // one. When none of them does, the ascent is structurally empty and the
+      // note says so, rather than letting the omission read as "ascent ran and
+      // found nothing". Sound — never claims the ascent fired.
+      //
+      // Keyed on the OBSERVED summaries, never on the criterion's language
+      // (#2802). Whether a callee's return value can be ascended is a property
+      // of its persisted CALL_SUMMARY, and asking the graph is both correct for
+      // every language and correct as producers change: a language whose
+      // harvester starts recording formal indices needs no edit here, and a
+      // TS/JS callee that genuinely has no return-flow is no longer silently
+      // described as if the ascent had covered it. This module must not name
+      // languages — nor must the shared core/ingestion pipeline.
+      const calleesResolved = input.calleesResolved ?? 0;
+      const calleesReturnFlowing = input.calleesReturnFlowing ?? 0;
+      if (calleesResolved > 0 && calleesReturnFlowing === 0) {
         noteParts.push(
-          `return-value ascent is currently TypeScript/JavaScript-only (only the TS/JS harvester ` +
-            `records the formal-index it needs), so a caller statement depending on a non-TS/JS ` +
-            `callee's RETURN value is not in the slice. Descent and the intra slice are unaffected.`,
+          `no return-value ascent in this slice: none of the ${calleesResolved} resolved ` +
+            `${calleesResolved === 1 ? 'callee carries' : 'callees carry'} a CALL_SUMMARY ` +
+            `return-flow (no formal parameter is recorded as flowing to its return value), so a ` +
+            `caller statement depending on a callee's RETURN value is not in the slice. This is a ` +
+            `property of the persisted summaries, not of the criterion's language — a callee whose ` +
+            `producer records no formal index and one with genuinely no return-flow are ` +
+            `indistinguishable here. Descent and the intra slice are unaffected.`,
         );
       }
     }
@@ -1588,6 +1605,19 @@ async function interproceduralDescent(input: {
    * WHICH blocks got the ascent so the statement projection can expand them.
    */
   ascentBlocks: Set<string>;
+  /**
+   * How many distinct callee symbols the descent resolved across all hops, and
+   * how many of those carried a NON-EMPTY `CALL_SUMMARY` return-flow.
+   *
+   * These are the OBSERVED facts behind the return-value ascent, and the result
+   * note keys on them rather than on the criterion's language. Whether ascent
+   * can fire is a property of the persisted summaries, not of a language name:
+   * a callee has a return-flow summary or it does not, and the reason it lacks
+   * one (its producer records no formal index, or the flow genuinely does not
+   * exist) is not something this layer can or should distinguish.
+   */
+  calleesResolved: number;
+  calleesReturnFlowing: number;
 }> {
   const {
     lbugPath,
@@ -1613,6 +1643,10 @@ async function interproceduralDescent(input: {
   // U-C4 return-value ascent: CALL blocks whose callee has a non-empty
   // CALL_SUMMARY return-flow → the call's result depends on the slice.
   const ascentBlocks = new Set<string>();
+  // Observed ascent inputs, accumulated across hops so the result note can
+  // describe what the ascent actually had to work with (see the return type).
+  const calleesSeen = new Set<string>();
+  const calleesReturnFlowingSeen = new Set<string>();
 
   hopLoop: for (let hop = 0; hop < depthBudget; hop++) {
     if (sliceBlocks.length === 0) break;
@@ -1632,6 +1666,8 @@ async function interproceduralDescent(input: {
     // reusing the shared `visited` set, so it stays bounded + terminating. A
     // pre-v4 index (no CALL_SUMMARY) yields no return-flowing callees → no-op.
     const returnFlowing = await calleesWithReturnFlow(lbugPath, [...calleeIds], exec);
+    for (const id of calleeIds) calleesSeen.add(id);
+    for (const id of returnFlowing) calleesReturnFlowingSeen.add(id);
     if (returnFlowing.size > 0) {
       for (const { blockId, calleeIds: ids } of blockCallees) {
         // Bound the ascent re-seeds the same way the descent bounds its per-span
@@ -1782,6 +1818,8 @@ async function interproceduralDescent(input: {
     truncatedByLimit,
     truncatedByNodeCap,
     ascentBlocks,
+    calleesResolved: calleesSeen.size,
+    calleesReturnFlowing: calleesReturnFlowingSeen.size,
   };
 }
 
@@ -1980,6 +2018,10 @@ export async function runImpactPDG(deps: RunPdgImpactDeps): Promise<PdgImpactRes
   // call lines (a coalesced call block spans several statements whose results
   // chain through it — the statement-granularity realisation of the ascent).
   let ascentBlocks = new Set<string>();
+  // Observed ascent inputs, plumbed to the result note so it can report an empty
+  // ascent from the persisted summaries rather than from the criterion's language.
+  let calleesResolved = 0;
+  let calleesReturnFlowing = 0;
   if (direction === 'downstream') {
     const interproc = await interproceduralDescent({
       lbugPath: repo.lbugPath,
@@ -2006,6 +2048,8 @@ export async function runImpactPDG(deps: RunPdgImpactDeps): Promise<PdgImpactRes
     });
     interproceduralHops = interproc.hopsReached;
     ascentBlocks = interproc.ascentBlocks;
+    calleesResolved = interproc.calleesResolved;
+    calleesReturnFlowing = interproc.calleesReturnFlowing;
     for (const id of interproc.reachable) reachable.add(id);
     if (interproc.truncatedByDepth) truncatedByDepth = true;
     if (interproc.truncatedByLimit) truncatedByLimit = true;
@@ -2173,6 +2217,8 @@ export async function runImpactPDG(deps: RunPdgImpactDeps): Promise<PdgImpactRes
     truncatedByReasons,
     interproceduralHops,
     callSummaryAvailable,
+    calleesResolved,
+    calleesReturnFlowing,
   });
 }
 
