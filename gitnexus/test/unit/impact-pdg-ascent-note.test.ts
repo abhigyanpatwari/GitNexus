@@ -67,6 +67,25 @@ const symStartOf = (span: { readonly startLine: number }): number => span.startL
 const secondCalleeSeedBlock = (file: string): string =>
   `BasicBlock:${file}:${symStartOf(SECOND_SPAN)}:0:0`;
 
+// P1 — `helper`'s body as a straight dependence CHAIN hanging off its seed block
+// (`calleeSeed` → C1 → C2 → C3 → C4, one dependence level per link). The
+// per-callee BFS runs under the same depth clamp as the top-level intra pass, so
+// at the production default `maxDepth: 3` it spends its whole budget on C1..C3 and
+// never reaches C4. That is the only shape in which a callee's OWN traversal, and
+// nothing else, is what stops the slice.
+const CALLEE_CHAIN_LENGTH = 4;
+const calleeChainBlock = (file: string, step: number): string =>
+  `BasicBlock:${file}:${symStartOf(HELPER_SPAN)}:0:${step}`;
+// The callee named ONLY in the deepest chain block's cell, carrying a REAL
+// `encodeCallSummary([0])` return-flow. It is what makes "was the set examined?"
+// observable: reach C4 and `returnFlowFound` flips to true, so a run that reports
+// `examinedComplete: true` without reaching it is publishing a false all-clear.
+const deepCalleeId = (file: string): string => `Function:${file}:deep`;
+
+// A callee id no fixture gives a span or a summary — it can be SCANNED but never
+// entered, so it moves the coverage population without moving the slice.
+const hiddenCalleeId = (file: string): string => `Function:${file}:hidden`;
+
 // The mock's knobs — all orthogonal, each with a safe default.
 interface DescentOptions {
   // What `helper`'s CALL_SUMMARY row holds — the fact the note keys on. Default `null`.
@@ -76,6 +95,11 @@ interface DescentOptions {
   // strips the sentinel, which is exactly why the dropped callees are invisible
   // to the summary scan and the note's counters.
   readonly calleeCellCapped?: boolean;
+  // The OTHER way a block's call sites leave the population: `calleeIdsOfBlock`
+  // writes an EMPTY `calleeIds` cell for a whole file whose resolved-id map is
+  // absent, while the sibling `callees` NAME cell still records the call sites.
+  // An empty cell carries no sentinel, so `calleeCellCapped` cannot report it.
+  readonly calleeCellIdless?: boolean;
   // P3-7 case: the exact id list the call block's `calleeIds` cell carries.
   // Defaults to the single enterable `helper`. A test overrides it to mix in ids
   // the descent can never enter — `resolveCalleeSpans` matches only
@@ -88,6 +112,16 @@ interface DescentOptions {
   // puts `helper2` in the cell of HELPER's body block, so the descent reaches it
   // only by crossing a second call boundary.
   readonly secondSummary?: Summary;
+  // P1: give `helper` the deep body chain described above.
+  readonly calleeChain?: boolean;
+  // The `calleeIds` cell the U-C4 ASCENT-reached block carries. OMITTED ⇒ that
+  // block has no cell at all (the historical fixture). A block reached only by
+  // the ascent is still a slice block, so its call sites must join the scanned
+  // population exactly like a descent-reached block's.
+  readonly ascentBlockCallees?: readonly string[];
+  // How that cell was written: `'capped'` ⇒ ids + the emit sentinel, `'idless'` ⇒
+  // an empty id cell with the NAME cell still populated.
+  readonly ascentBlockCell?: 'capped' | 'idless';
 }
 
 // A mock that drives ONE real inter-procedural descent hop: the criterion's
@@ -99,7 +133,16 @@ interface DescentOptions {
 // from the intra BFS out of the criterion seed.
 function descentExec(
   file: string,
-  { summary = null, calleeCellCapped = false, calleeIds, secondSummary }: DescentOptions = {},
+  {
+    summary = null,
+    calleeCellCapped = false,
+    calleeCellIdless = false,
+    calleeIds,
+    secondSummary,
+    calleeChain = false,
+    ascentBlockCallees,
+    ascentBlockCell,
+  }: DescentOptions = {},
 ): RunPdgImpactDeps['executeParameterized'] {
   const seed = `BasicBlock:${file}:1:0:0`;
   const callBlock = `BasicBlock:${file}:1:0:2`;
@@ -108,10 +151,28 @@ function descentExec(
   const ascentOnly = ascentOnlyBlock(file);
   const helper = helperCalleeId(file);
   const second = secondCalleeId(file);
+  const deep = deepCalleeId(file);
+  const chainTail = calleeChainBlock(file, CALLEE_CHAIN_LENGTH);
   const cellIds = calleeIds ?? [helper];
-  const calleeCell = (
-    calleeCellCapped ? [...cellIds, CALLEES_TRUNCATED_SENTINEL] : [...cellIds]
-  ).join(CALLEE_ID_SEP);
+  // A `calleeIds` cell exactly as the emitter writes it, plus the sibling `callees`
+  // NAME cell it always writes alongside. `'idless'` is the shape the emitter
+  // produces for a file with no resolved-id map — names, no ids, no sentinel.
+  const cellOf = (
+    ids: readonly string[],
+    written?: 'capped' | 'idless',
+  ): { calleeIds: string; callees: string } => ({
+    calleeIds:
+      written === 'idless'
+        ? ''
+        : (written === 'capped' ? [...ids, CALLEES_TRUNCATED_SENTINEL] : [...ids]).join(
+            CALLEE_ID_SEP,
+          ),
+    callees: ids.map((id) => id.slice(id.lastIndexOf(':') + 1)).join(' '),
+  });
+  const calleeCell = cellOf(
+    cellIds,
+    calleeCellIdless ? 'idless' : calleeCellCapped ? 'capped' : undefined,
+  );
   // Both the span resolve and the CALL_SUMMARY scan bind the ids they ask about
   // as `$ids`, so the mock answers PER ASKED ID — an id the descent cannot enter
   // must not borrow another callee's span or summary, and `helper2` must not be
@@ -124,6 +185,9 @@ function descentExec(
     spans.set(second, SECOND_SPAN);
     summaries.set(second, secondSummary);
   }
+  // No span for `deep`: it is scanned for its summary, never entered, so the only
+  // thing reaching C4 changes is whether that return-flow was EXAMINED.
+  if (calleeChain) summaries.set(deep, flow([0]));
   const askedIds = (params: Record<string, unknown>): string[] => {
     const ids = params['ids'];
     return Array.isArray(ids) ? ids.map((id) => String(id)) : [];
@@ -148,17 +212,33 @@ function descentExec(
       // Only the ascent re-seed (and, at maxDepth > 1, the intra BFS's own next
       // level) expands the call block.
       if (ids.includes(callBlock)) return [{ id: ascentOnly }];
+      // `helper`'s own body chain — one dependence level per step, so the callee's
+      // BFS needs CALLEE_CHAIN_LENGTH levels of budget to walk it all.
+      for (let step = 0; calleeChain && step < CALLEE_CHAIN_LENGTH; step++) {
+        const from = step === 0 ? calleeSeed : calleeChainBlock(file, step);
+        if (ids.includes(from)) return [{ id: calleeChainBlock(file, step + 1) }];
+      }
       return [];
     }
     if (query.includes('RETURN b.id AS id, b.calleeIds AS calleeIds')) {
       const asked = askedIds(params);
+      const rows: Array<{ id: string; calleeIds: string; callees: string }> = [];
+      if (asked.includes(callBlock)) rows.push({ id: callBlock, ...calleeCell });
+      // The ascent-reached block's own cell. It is only ever ASKED about once the
+      // block is in the descent's slice, which is the whole point of the case.
+      if (ascentBlockCallees !== undefined && asked.includes(ascentOnly)) {
+        rows.push({ id: ascentOnly, ...cellOf(ascentBlockCallees, ascentBlockCell) });
+      }
       // Hop 1 gathers callees from HELPER's body blocks; that cell — and only that
       // cell — carries the second callee, so the second hop cannot be reached by
       // widening the first block's cell.
       if (secondSummary !== undefined && asked.includes(calleeSeed)) {
-        return [{ id: calleeSeed, calleeIds: second }];
+        rows.push({ id: calleeSeed, ...cellOf([second]) });
       }
-      return asked.includes(callBlock) ? [{ id: callBlock, calleeIds: calleeCell }] : [];
+      // The DEEPEST chain block's cell: askable only once the callee's own BFS had
+      // the budget to reach C4.
+      if (calleeChain && asked.includes(chainTail)) rows.push({ id: chainTail, ...cellOf([deep]) });
+      return rows;
     }
     if (query.includes("r.type = 'CALL_SUMMARY'")) {
       return askedIds(params).flatMap((id) => {
@@ -239,11 +319,12 @@ const CAVEAT = 'no return-value ascent in this slice';
 const PERSISTED_CLAIM = 'property of the persisted summaries';
 
 // P2-4 — the qualifier the note must carry whenever the callee set the descent
-// EXAMINED is known to be a strict subset of the slice's real one, plus the two
+// EXAMINED is known to be a strict subset of the slice's real one, plus the three
 // reasons that can put it there.
 const QUALIFIER = 'so callees past the examined set were not checked';
 const BUDGET_REASON = 'the traversal stopped at its depth/size budget';
 const EMIT_CAP_REASON = "a slice block's call-site list was capped at emit";
+const IDLESS_REASON = 'a slice block records call sites but no resolved callee ids';
 
 const noteOf = (result: Awaited<ReturnType<typeof run>>): string =>
   'affectedStatements' in result ? (result.note ?? '') : '';
@@ -377,26 +458,35 @@ describe('runImpactPDG — undecodable CALL_SUMMARY (P2-2)', () => {
   });
 });
 
-// P2-4 — "none of the N … callee references carry a … return-flow" is a UNIVERSAL
+// P2-4 — "none of the N distinct callees carry a … return-flow" is a UNIVERSAL
 // claim over the callees the descent actually examined, and so is "this is a
-// property of the persisted summaries". Two mechanisms make that examined set a
-// strict subset of the slice's real callee list, and under either the note must
-// describe what it examined rather than assert a property of the whole slice:
-//  1. the traversal stopped at a depth/size budget (`maxDepth: 1` below leaves the
-//     intra BFS frontier non-empty) — a callee that DOES carry a return-flow can
-//     sit past the frontier;
-//  2. a block's `calleeIds` cell was capped at emit (`calleeCellCapped` below,
+// property of the persisted summaries". Four premises make that examined set a
+// strict subset of the slice's real callee list, and under any of them the note
+// must describe what it examined rather than assert a property of the whole slice:
+//  1. the TOP-LEVEL traversal stopped at a depth/size budget (`maxDepth: 1` below
+//     leaves the intra BFS frontier non-empty) — a callee that DOES carry a
+//     return-flow can sit past the frontier;
+//  2. a CALLEE's OWN traversal stopped at the same depth budget (`calleeChain`
+//     below, at the PRODUCTION DEFAULT `maxDepth: 3`, with the top-level intra BFS
+//     completing so the callee's frontier is the only source left). The per-callee
+//     BFS is clamped by the same `maxDepth`, so a callee whose dependence chain
+//     outruns it hides its deeper call sites exactly the way case 1 does — and the
+//     hidden callee here carries a REAL `encodeCallSummary([0])` return-flow, so
+//     "the set was not fully examined" is not a hypothetical;
+//  3. a block's `calleeIds` cell was capped at emit (`calleeCellCapped` below,
 //     with the traversal COMPLETING so the cap is the only source left) —
 //     `splitCalleeIds` strips the sentinel, so those callees reach neither the
-//     summary scan nor the counters.
-// Those two, plus neither (the control that keeps the fix from being "always
+//     summary scan nor the counters;
+//  4. a block records call SITES but no resolved callee ids (`'idless'` below) —
+//     an empty cell carries no sentinel, so case 3's flag cannot see it either.
+// Those four, plus none of them (the control that keeps the fix from being "always
 // hedge"), are the premise rows below, each crossed with the two assertions the
 // note owes: is the qualifier clause present, and does the unqualified
 // persisted-summaries claim survive. `reasons` is the EXACT phrase set the clause
 // must name, so a row also asserts the absence of every phrase it omits;
 // `truncated` is the premise's own observable, asserted rather than assumed so a
 // mock drift that stops truncating fails loudly.
-const REASON_PHRASES = [BUDGET_REASON, EMIT_CAP_REASON] as const;
+const REASON_PHRASES = [BUDGET_REASON, EMIT_CAP_REASON, IDLESS_REASON] as const;
 const INCOMPLETENESS_PREMISES: ReadonlyArray<{
   readonly label: string;
   readonly premise: RunOptions;
@@ -405,10 +495,27 @@ const INCOMPLETENESS_PREMISES: ReadonlyArray<{
 }> = [
   { label: 'depth budget', premise: { maxDepth: 1 }, truncated: true, reasons: [BUDGET_REASON] },
   {
+    // The production default is the point: no caller has to opt into a small
+    // maxDepth for a callee's own chain to outrun the budget.
+    label: "a callee's own depth budget at the default maxDepth 3",
+    premise: { calleeChain: true },
+    truncated: true,
+    reasons: [BUDGET_REASON],
+  },
+  {
     label: 'emit-capped calleeIds cell',
     premise: { calleeCellCapped: true },
     truncated: false,
     reasons: [EMIT_CAP_REASON],
+  },
+  {
+    label: 'a slice block with call sites but no resolved callee ids',
+    premise: {
+      ascentBlockCallees: [hiddenCalleeId('src/svc.ts')],
+      ascentBlockCell: 'idless',
+    },
+    truncated: false,
+    reasons: [IDLESS_REASON],
   },
   { label: 'neither mechanism', premise: {}, truncated: false, reasons: [] },
 ];
@@ -455,16 +562,20 @@ describe('runImpactPDG — empty-ascent note over an incomplete callee set (P2-4
   });
 });
 
-// P3-7 — the number the empty-ascent sentence quotes is the count of CALL-SITE
-// callee REFERENCES the descent scanned for a CALL_SUMMARY (the raw `calleeIds`
-// ids), NOT the count of callees it resolved to a body and descended into. The
-// two differ whenever a cell carries an id `resolveCalleeSpans` does not match:
-// an out-of-repo target, an interface method, or a node kind with no CFG body.
-// The scan really is run over all of them, so the claim is exact at reference
-// granularity — but calling them "resolved" asserted a symbol-table lookup that
-// never happened, and the old formals parenthetical ("no formal parameter is
-// recorded as flowing to its return value") asserted a FORMALS-level property
-// about symbols that were never resolved to a body at all.
+// P3-7 — the number the empty-ascent sentence quotes is the count of DISTINCT
+// CALLEES the descent scanned for a CALL_SUMMARY (the raw `calleeIds` ids,
+// accumulated into a Set), NOT the count of callees it resolved to a body and
+// descended into, and NOT a count of call SITES. Two ways the three differ:
+//  - resolved-to-a-body: a cell can carry an id `resolveCalleeSpans` does not
+//    match (an out-of-repo target, an interface method, a node kind with no CFG
+//    body). The scan really is run over all of them, so the claim is exact at
+//    this granularity — but calling them "resolved" asserted a symbol-table
+//    lookup that never happened, and the old formals parenthetical ("no formal
+//    parameter is recorded as flowing to its return value") asserted a
+//    FORMALS-level property about symbols never resolved to a body at all;
+//  - call SITES: the accumulator is a Set of ids, so two blocks calling the same
+//    callee are ONE member. The earlier "call-site callee reference(s)" wording
+//    described the value as a site count it never was — pinned below.
 const FILE = 'src/svc.ts';
 // Ids a real `calleeIds` cell genuinely carries and the descent can never enter.
 // The `Class:` id is the reproduced case — a `new Outer()` call site contributes
@@ -473,23 +584,41 @@ const FILE = 'src/svc.ts';
 const UNENTERABLE_CALLEES = [`Class:${FILE}:Outer`, `Interface:${FILE}:Sink.write`] as const;
 const MIXED_CALLEES = [helperCalleeId(FILE), ...UNENTERABLE_CALLEES] as const;
 
-describe('runImpactPDG — the empty-ascent count is call-site references (P3-7)', () => {
-  // One render, three readings of it: the wording the note must now carry, plus
-  // the two it must have dropped (both explained in the block comment above).
-  it('un-enterable callee ids count, and the note names them as call-site references', async () => {
+describe('runImpactPDG — the empty-ascent count is distinct callees (P3-7)', () => {
+  // One render, four readings of it: the wording the note must now carry, plus
+  // the three it must have dropped (all explained in the block comment above).
+  it('un-enterable callee ids count, and the note names them as distinct callees', async () => {
     const note = noteOf(await run(FILE, { calleeIds: MIXED_CALLEES }));
-    expect(note).toContain(
-      'none of the 3 call-site callee references carry a CALL_SUMMARY return-flow',
-    );
+    expect(note).toContain('none of the 3 distinct callees carry a CALL_SUMMARY return-flow');
     expect(note).not.toContain('resolved callee');
     expect(note).not.toContain('no formal parameter is recorded');
+    expect(note).not.toContain('call-site callee reference');
+  });
+
+  // The call-SITE distinction, which the old wording got backwards: TWO slice
+  // blocks each recording a call to `helper` are ONE distinct callee, and the
+  // note quotes 1 — because a CALL_SUMMARY is a property of the callee, so
+  // scanning the same id twice could not change the answer.
+  it('two call sites to the SAME callee are one distinct callee, not two', async () => {
+    const result = await run(FILE, { ascentBlockCallees: [helperCalleeId(FILE)] });
+    // Premise: a SECOND slice block, distinct from the criterion's call block,
+    // is in the slice and records its own call to `helper`.
+    expect(blocksOf(result)).toContain(ascentOnlyBlock(FILE));
+    expect(ascentOf(result)).toMatchObject({ referencesScanned: 1 });
+    expect(noteOf(result)).toContain('none of the 1 distinct callee carries');
+    // The discriminator that keeps the 1 from being vacuous: three DISTINCT ids,
+    // in a SINGLE block's cell, do quote 3. The tally counts callees — neither
+    // the blocks nor the cells they sit in.
+    expect(noteOf(await run(FILE, { calleeIds: MIXED_CALLEES }))).toContain(
+      'none of the 3 distinct callees carry',
+    );
   });
 
   // The same slice with only the enterable callee: the number tracks the CELL,
   // and the singular form agrees with it.
   it('dropping the un-enterable ids drops the quoted number to 1', async () => {
     expect(noteOf(await run(FILE))).toContain(
-      'none of the 1 call-site callee reference carries a CALL_SUMMARY return-flow',
+      'none of the 1 distinct callee carries a CALL_SUMMARY return-flow',
     );
   });
 
@@ -506,16 +635,16 @@ describe('runImpactPDG — the empty-ascent count is call-site references (P3-7)
     expect(blocksOf(mixed).length).toBeGreaterThan(0);
     expect(blocksOf(mixed)).toEqual(blocksOf(helperOnly));
     // … while the quoted number moved 1 → 3, which is only honest because the
-    // note quotes call-site references rather than resolved callees.
-    expect(noteOf(mixed)).toContain('none of the 3 call-site callee references carry');
-    expect(noteOf(helperOnly)).toContain('none of the 1 call-site callee reference carries');
+    // note quotes the distinct ids scanned rather than the callees resolved.
+    expect(noteOf(mixed)).toContain('none of the 3 distinct callees carry');
+    expect(noteOf(helperOnly)).toContain('none of the 1 distinct callee carries');
   });
 
   // The undecodable branch quotes the same count and needed the same rewording.
-  it('undecodable branch → same call-site wording over the same count', async () => {
+  it('undecodable branch → same distinct-callee wording over the same count', async () => {
     const note = noteOf(await run(FILE, { summary: raw('1|r:zz'), calleeIds: MIXED_CALLEES }));
     expect(note).toContain(
-      'none of the 3 call-site callee references carry a decodable CALL_SUMMARY return-flow',
+      'none of the 3 distinct callees carry a decodable CALL_SUMMARY return-flow',
     );
     expect(note).not.toContain('resolved callee');
   });
@@ -564,7 +693,7 @@ describe('runImpactPDG — cross-hop accumulation and mixed return-flow (P2-5)',
     // hop 0 contributes {helper}, hop 1 contributes {helper2} ⇒ 2. A per-hop
     // overwrite ends holding only hop 1's set and quotes 1.
     expect(noteOf(result)).toContain(
-      'none of the 2 call-site callee references carry a CALL_SUMMARY return-flow',
+      'none of the 2 distinct callees carry a CALL_SUMMARY return-flow',
     );
   });
 
@@ -597,10 +726,10 @@ describe('runImpactPDG — cross-hop accumulation and mixed return-flow (P2-5)',
     // NO empty-ascent sentence is emitted — the note quotes no count at all rather
     // than reporting "1 of 3 carried a return-flow".
     expect(noteOf(mixed)).not.toContain(CAVEAT);
-    expect(noteOf(mixed)).not.toContain('call-site callee reference');
+    expect(noteOf(mixed)).not.toContain('distinct callee');
     // The discriminator that makes the silence load-bearing: drop that one
     // return-flow and the SAME 3 references do produce the sentence.
-    expect(noteOf(none)).toContain('none of the 3 call-site callee references carry');
+    expect(noteOf(none)).toContain('none of the 3 distinct callees carry');
   });
 
   it('a return-flowing callee alongside an UNDECODABLE one → not even the decode remedy', async () => {
@@ -635,6 +764,7 @@ const ascentOf = (result: Awaited<ReturnType<typeof run>>): PdgAscentCoverage | 
 const REASON_PHRASE: Readonly<Record<PdgAscentIncompleteReason, string>> = {
   'traversal-truncated': BUDGET_REASON,
   'callee-list-capped': EMIT_CAP_REASON,
+  'callee-ids-unrecorded': IDLESS_REASON,
 };
 
 // The `run` helper above is downstream-only (the descent's direction gate). An
@@ -653,21 +783,173 @@ const runUpstream = (file: string, options: DescentOptions = {}) =>
     callSummaryAvailable: true,
   });
 
+// A slice whose seed block has NO outgoing dependence edge, yet DOES record a call
+// site — the shape that routes `runImpactPDG` through its empty-slice exit with a
+// descent already behind it. The single callee id is deliberately un-enterable, so
+// the descent scans it for a `CALL_SUMMARY` and adds no block: `reachableBlocks`
+// stays empty while the coverage is a real, non-zero reading.
+const runEmptySlice = (file: string) => {
+  const seed = `BasicBlock:${file}:1:0:0`;
+  const exec: RunPdgImpactDeps['executeParameterized'] = async (_repo, query, params) => {
+    if (query.includes('RETURN a.id AS id')) {
+      return query.includes('a.startLine = $line') ? [{ id: seed }] : [];
+    }
+    if (query.includes('RETURN b.id AS id, b.calleeIds AS calleeIds')) {
+      const ids = (params as Record<string, unknown>)['ids'];
+      const asked = Array.isArray(ids) ? ids.map((id) => String(id)) : [];
+      return asked.includes(seed)
+        ? [{ id: seed, calleeIds: `Class:${file}:Outer`, callees: 'Outer' }]
+        : [];
+    }
+    // No dependence edges, no CALL_SUMMARY rows, no resolvable callee spans.
+    return [];
+  };
+  return runImpactPDG({
+    repo: { lbugPath: 'repo' },
+    sym: { id: `Function:${file}:run`, name: 'run', filePath: file, startLine: 0, endLine: 7 },
+    symType: 'Function',
+    direction: 'downstream',
+    maxDepth: 3,
+    limit: 50,
+    line: 1,
+    executeParameterized: exec,
+    callSummaryAvailable: true,
+  });
+};
+
 describe('runImpactPDG — structured ascent coverage (pdgEvidence.ascent)', () => {
   // The whole record is pinned with toEqual rather than toMatchObject: the point
   // of the field is that a consumer can read it without a fallback, so an
   // omitted member is a contract break, not a detail.
+  //
+  // FIXTURE NOTE: at maxDepth 3 the block the U-C4 re-seed targets is ALREADY
+  // intra-reachable, so what this row pins is a return-flow being FOUND over a
+  // COMPLETE population — not the ascent adding ground. It is given a `calleeIds`
+  // cell so the population is a real reading of two blocks' cells (2: `helper`
+  // from the criterion's call block, `hidden` from the ascent target) instead of a
+  // vacuous 1 over a block carrying nothing. The case where the ascent adds ground
+  // — and where that block's own call sites have to join the population — is the
+  // separate row below, which is the only shape where the two differ.
   it('ascent fired → returnFlowFound over a complete examined set', async () => {
-    const result = await run(FILE, { summary: flow([0]) });
+    const result = await run(FILE, {
+      summary: flow([0]),
+      ascentBlockCallees: [hiddenCalleeId(FILE)],
+    });
     // Premise: this is exactly the run whose note carries NO caveat.
     expect(noteOf(result)).not.toContain(CAVEAT);
+    expect(blocksOf(result)).toContain(ascentOnlyBlock(FILE));
     expect(ascentOf(result)).toEqual({
-      referencesScanned: 1,
+      referencesScanned: 2,
       returnFlowFound: true,
       undecodableSummaryCount: 0,
       examinedComplete: true,
       incompleteReasons: [],
       callSummaryLayerPresent: true,
+    });
+  });
+
+  // P3 — a block the descent reaches ONLY through the U-C4 re-seed is still a
+  // slice block: it is published in `reachableBlocks`, so its own call sites must
+  // reach the CALL_SUMMARY scan, the distinct-callee tally, AND the emit-cap flag.
+  // `maxDepth: 1` is what makes it ascent-only: the intra BFS stops at the call
+  // block, so nothing but the ascent can put the next block in the slice.
+  it('a block reached only by the ascent contributes its call sites to the scan', async () => {
+    const cell = {
+      ascentBlockCallees: [hiddenCalleeId(FILE)],
+      ascentBlockCell: 'idless',
+    } as const;
+    const [ascended, withheld] = await Promise.all([
+      run(FILE, { maxDepth: 1, summary: flow([0]), ...cell, ascentBlockCell: 'capped' }),
+      run(FILE, { maxDepth: 1, ...cell, ascentBlockCell: 'capped' }),
+    ]);
+    // Premise: the block below is in the slice ONLY because the ascent fired —
+    // withhold the return-flow and it is gone.
+    expect(blocksOf(ascended)).toContain(ascentOnlyBlock(FILE));
+    expect(blocksOf(withheld)).not.toContain(ascentOnlyBlock(FILE));
+    // So its cell has to be read: `hidden` joins the population (1 → 2) and the
+    // cell's emit-cap sentinel is reported, neither of which the descent-visited
+    // blocks could have contributed.
+    expect(ascentOf(ascended)).toEqual({
+      referencesScanned: 2,
+      returnFlowFound: true,
+      undecodableSummaryCount: 0,
+      examinedComplete: false,
+      incompleteReasons: ['traversal-truncated', 'callee-list-capped'],
+      callSummaryLayerPresent: true,
+    });
+    // The discriminator that makes the reading load-bearing: with the ascent
+    // withheld that block is not in the slice, so its call sites are correctly
+    // absent and the cap it carries is correctly unreported.
+    expect(ascentOf(withheld)).toEqual({
+      referencesScanned: 1,
+      returnFlowFound: false,
+      undecodableSummaryCount: 0,
+      examinedComplete: false,
+      incompleteReasons: ['traversal-truncated'],
+      callSummaryLayerPresent: true,
+    });
+  });
+
+  // P1 — the per-callee BFS's OWN depth exhaustion, at the production default.
+  // `helper`'s body is a 4-link dependence chain whose deepest block calls a
+  // callee carrying a real `encodeCallSummary([0])` return-flow; at maxDepth 3 the
+  // callee's BFS stops one link short, so that return-flow is never examined. The
+  // top-level intra BFS completes here, so the callee's frontier is the ONLY thing
+  // cutting the slice — and `examinedComplete` must not read as an all-clear.
+  it('a callee whose own BFS runs out of depth → examinedComplete false', async () => {
+    const result = await run(FILE, { calleeChain: true });
+    expect(truncatedOf(result)).toBe(true);
+    expect(ascentOf(result)).toEqual({
+      referencesScanned: 1,
+      returnFlowFound: false,
+      undecodableSummaryCount: 0,
+      examinedComplete: false,
+      incompleteReasons: ['traversal-truncated'],
+      callSummaryLayerPresent: true,
+    });
+  });
+
+  // The discriminator for the row above: the SAME fixture with budget to walk the
+  // whole chain DOES reach the deepest block, scans the callee it calls, and finds
+  // its return-flow. So maxDepth 3 was hiding a real answer, not an empty region —
+  // which is exactly why publishing `examinedComplete: true` there was false.
+  it('with budget to walk the chain the hidden return-flow IS found', async () => {
+    const result = await run(FILE, { calleeChain: true, maxDepth: CALLEE_CHAIN_LENGTH + 1 });
+    expect(truncatedOf(result)).toBe(false);
+    expect(ascentOf(result)).toEqual({
+      referencesScanned: 2,
+      returnFlowFound: true,
+      undecodableSummaryCount: 0,
+      examinedComplete: true,
+      incompleteReasons: [],
+      callSummaryLayerPresent: true,
+    });
+  });
+
+  // A block that records call SITES but no resolved callee ids shrinks the
+  // population silently: nothing is dropped at emit, so no sentinel exists to
+  // raise the cap flag. Here EVERY id is missing, so the scan's population is
+  // empty — and a zeroed record claiming completeness would be the strongest form
+  // of the false all-clear.
+  it('call sites with no resolved ids → the empty population is reported, not claimed complete', async () => {
+    const [idless, recorded] = await Promise.all([
+      run(FILE, { calleeCellIdless: true }),
+      run(FILE),
+    ]);
+    expect(ascentOf(idless)).toEqual({
+      referencesScanned: 0,
+      returnFlowFound: false,
+      undecodableSummaryCount: 0,
+      examinedComplete: false,
+      incompleteReasons: ['callee-ids-unrecorded'],
+      callSummaryLayerPresent: true,
+    });
+    // The discriminator: the SAME block with its ids recorded scans 1 callee and
+    // is genuinely complete, so the flag tracks the missing ids and not the mock.
+    expect(ascentOf(recorded)).toMatchObject({
+      referencesScanned: 1,
+      examinedComplete: true,
+      incompleteReasons: [],
     });
   });
 
@@ -780,6 +1062,27 @@ describe('runImpactPDG — structured ascent coverage (pdgEvidence.ascent)', () 
     expect(ascentOf(downstream)).toMatchObject({ referencesScanned: 1 });
   });
 
+  // The mirror of the row above, and the case the contract sentence "present iff
+  // the inter-procedural descent RAN" is easiest to break on: a criterion line
+  // whose only dependent is the callee it invokes DIRECTLY reaches no distinct
+  // downstream block, so `runImpactPDG` returns through its empty-slice exit —
+  // which sits BEFORE the result assembler and so has to publish the coverage
+  // itself. The descent ran and scanned; absence here would say it did not.
+  it('empty slice → the descent that already ran is still published', async () => {
+    const result = await runEmptySlice(FILE);
+    // Premise: this really is the empty-slice exit, not the assembled result.
+    expect(blocksOf(result)).toEqual([]);
+    // … and the descent really did scan the seed block's call site before it.
+    expect(ascentOf(result)).toEqual({
+      referencesScanned: 1,
+      returnFlowFound: false,
+      undecodableSummaryCount: 0,
+      examinedComplete: true,
+      incompleteReasons: [],
+      callSummaryLayerPresent: true,
+    });
+  });
+
   // The strongest case for the structured surface: the note is SILENT (the
   // ascent sentence is gated on a hop being crossed, and a cell of un-enterable
   // ids resolves no span) while the descent did scan 2 references. Prose reports
@@ -800,7 +1103,7 @@ describe('runImpactPDG — structured ascent coverage (pdgEvidence.ascent)', () 
   // population and the outcome.
   it('mixed callees → note quotes no count, coverage still carries it', async () => {
     const result = await run(FILE, { summary: flow([0]), calleeIds: MIXED_CALLEES });
-    expect(noteOf(result)).not.toContain('call-site callee reference');
+    expect(noteOf(result)).not.toContain('distinct callee');
     expect(ascentOf(result)).toMatchObject({ referencesScanned: 3, returnFlowFound: true });
   });
 
