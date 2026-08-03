@@ -882,6 +882,40 @@ export const TYPESCRIPT_SCOPE_QUERY = `
   type: (type_annotation
     (type_identifier) @type-binding.type)) @type-binding.annotation
 
+;; Type bindings — class field constructor-inferred: \`private p = new Outer()\`.
+;; The annotation patterns above cover a field that DECLARES its type; a field
+;; whose type must be inferred from its initializer matched nothing, so it had
+;; no typeBinding, so \`this.p\` could not be typed and the receiver fold declined
+;; the whole chain — losing even the first, ordinary named link (#2807).
+;;
+;; Anchored on \`public_field_definition\` exactly like the annotation patterns,
+;; so the binding lands in the same (class body) scope with no bindingScopeFor
+;; override. \`annotation\` outranks \`constructor-inferred\` in
+;; typeBindingStrength, so \`private p: Outer = new Outer()\` still resolves
+;; through its annotation regardless of which pattern matches first.
+;;
+;; Kotlin and Swift express both a local and a stored property with ONE grammar
+;; node (property_declaration) and so needed no separate field pattern; the
+;; TypeScript grammar splits them (variable_declarator vs
+;; public_field_definition), which is why only the local form was ever covered.
+(public_field_definition
+  name: (property_identifier) @type-binding.name
+  value: (new_expression
+    constructor: (identifier) @type-binding.type)) @type-binding.constructor
+
+;; Qualified: \`private p = new models.Outer()\` — mirrors the local form above;
+;; the member_expression's text is resolved via QualifiedNameIndex.
+(public_field_definition
+  name: (property_identifier) @type-binding.name
+  value: (new_expression
+    constructor: (member_expression) @type-binding.type)) @type-binding.constructor
+
+;; Private-name field: \`#p = new Outer()\`.
+(public_field_definition
+  name: (private_property_identifier) @type-binding.name
+  value: (new_expression
+    constructor: (identifier) @type-binding.type)) @type-binding.constructor
+
 ;; Type bindings — method return type: \`save(): User { … }\` / \`function f(): User { … }\`.
 ;; Function/method return-type is the type_annotation that is a direct
 ;; child of the function node (not the parameter's annotation). Anchor on
@@ -1009,6 +1043,37 @@ export const TYPESCRIPT_SCOPE_QUERY = `
   left: (identifier) @type-binding.name
   right: (new_expression
     constructor: (identifier) @type-binding.type)) @type-binding.constructor
+
+;; Type bindings — field assigned through \`this\`: \`this.p = new Outer()\` on a
+;; field that declares no type (#2807). The rebind pattern above only matches a
+;; bare identifier LHS, so an unannotated field assigned in the constructor had
+;; no typeBinding at all. (An ANNOTATED field does not need this — its
+;; annotation already types it, which is why \`private p: Outer;\` + the same
+;; assignment always resolved.)
+;;
+;; \`@type-binding.this-field\` is a MARKER, not the anchor: it sits on the narrow
+;; \`(this)\` node, so anchorCaptureFor's broadest-range rule keeps the whole
+;; assignment_expression (@type-binding.constructor) as the anchor and the
+;; source stays \`constructor-inferred\`. tsBindingScopeFor reads the marker to
+;; hoist the binding onto the enclosing Class scope — without that hoist the
+;; binding would land on the constructor's own Function scope, where
+;; typeOfMemberOnClass never looks. The marker must stay specific to THIS
+;; pattern: hoisting every constructor-inferred binding would move method-local
+;; \`const o = new Outer()\` out of its own scope.
+(assignment_expression
+  left: (member_expression
+    object: (this) @type-binding.this-field
+    property: (property_identifier) @type-binding.name)
+  right: (new_expression
+    constructor: (identifier) @type-binding.type)) @type-binding.constructor
+
+;; Qualified form: \`this.p = new models.Outer()\`.
+(assignment_expression
+  left: (member_expression
+    object: (this) @type-binding.this-field
+    property: (property_identifier) @type-binding.name)
+  right: (new_expression
+    constructor: (member_expression) @type-binding.type)) @type-binding.constructor
 
 (assignment_expression
   left: (identifier) @type-binding.name

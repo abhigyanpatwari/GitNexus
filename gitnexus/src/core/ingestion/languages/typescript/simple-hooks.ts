@@ -55,6 +55,20 @@ export function tsBindingScopeFor(
     return walkToScope(innermost, tree, 'Class');
   }
 
+  // `this.p = new Outer()` binds the FIELD, not a constructor-local, so the
+  // binding belongs on the class the way an annotated field's does — that is
+  // the only place `typeOfMemberOnClass` reads. Left on the innermost scope it
+  // would sit on the constructor's own Function scope and never be found
+  // (#2807). Same shape as the parameter-property branch above.
+  //
+  // Gated on the marker the `this.<field> = new …` pattern emits, never on
+  // `@type-binding.constructor` at large: that capture also fires for
+  // `const o = new Outer()` inside a method, and hoisting THOSE to the class
+  // would take method locals out of their own scope and mistype them.
+  if (decl['@type-binding.this-field'] !== undefined) {
+    return walkToScope(innermost, tree, 'Class');
+  }
+
   // `var` declarations: hoist to nearest enclosing Function or Module.
   const variable = decl['@declaration.variable'];
   if (variable !== undefined && isVarDeclaration(variable.text)) {
