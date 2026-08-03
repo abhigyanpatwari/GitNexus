@@ -13,8 +13,9 @@
  *   - https://gitnexus.vercel.app     → allowed
  *   - Everything else                 → rejected
  */
-import { describe, it, expect } from 'vitest';
+import { describe, it, expect, afterEach } from 'vitest';
 import { isAllowedOrigin } from '../../src/server/api.js';
+import { createPublicOriginMatcher } from '../../src/server/middleware.js';
 
 // ─── No origin (non-browser / curl) ──────────────────────────────────
 
@@ -179,5 +180,123 @@ describe('isAllowedOrigin: rejected origins', () => {
     expect(isAllowedOrigin('http://192.168.1.100')).toBe(true);
     expect(isAllowedOrigin('https://10.0.0.50')).toBe(true);
     expect(isAllowedOrigin('http://172.16.5.1:3000')).toBe(true);
+  });
+});
+
+describe('isAllowedOrigin: GITNEXUS_PUBLIC_ORIGIN', () => {
+  const saved = process.env.GITNEXUS_PUBLIC_ORIGIN;
+  afterEach(() => {
+    if (saved === undefined) delete process.env.GITNEXUS_PUBLIC_ORIGIN;
+    else process.env.GITNEXUS_PUBLIC_ORIGIN = saved;
+  });
+
+  it('allows the configured origin as a full URL or a bare host', () => {
+    process.env.GITNEXUS_PUBLIC_ORIGIN = 'https://app.example.com';
+    expect(isAllowedOrigin('https://app.example.com')).toBe(true);
+    process.env.GITNEXUS_PUBLIC_ORIGIN = 'app.example.com';
+    expect(isAllowedOrigin('https://app.example.com')).toBe(true);
+  });
+
+  it('enforces the port when the configured value carries one', () => {
+    process.env.GITNEXUS_PUBLIC_ORIGIN = 'https://app.example.com:8443';
+    expect(isAllowedOrigin('https://app.example.com:8443')).toBe(true);
+    expect(isAllowedOrigin('https://app.example.com:9999')).toBe(false);
+    // The browser elides the default port, so a bare origin is port 443 here.
+    expect(isAllowedOrigin('https://app.example.com')).toBe(false);
+  });
+
+  it('accepts any port when the configured value carries none', () => {
+    process.env.GITNEXUS_PUBLIC_ORIGIN = 'app.example.com';
+    expect(isAllowedOrigin('https://app.example.com')).toBe(true);
+    expect(isAllowedOrigin('https://app.example.com:8443')).toBe(true);
+    expect(isAllowedOrigin('http://app.example.com:9999')).toBe(true);
+  });
+
+  it('matches a configured default port against an origin that elides it', () => {
+    process.env.GITNEXUS_PUBLIC_ORIGIN = 'https://app.example.com:443';
+    expect(isAllowedOrigin('https://app.example.com')).toBe(true);
+    expect(isAllowedOrigin('https://app.example.com:8443')).toBe(false);
+  });
+
+  it('handles a bracketed IPv6 literal with a port, with and without a scheme', () => {
+    process.env.GITNEXUS_PUBLIC_ORIGIN = '[2001:db8::1]:8080';
+    expect(isAllowedOrigin('http://[2001:db8::1]:8080')).toBe(true);
+    expect(isAllowedOrigin('http://[2001:db8::1]:9090')).toBe(false);
+    process.env.GITNEXUS_PUBLIC_ORIGIN = 'https://[2001:db8::1]:8080';
+    expect(isAllowedOrigin('https://[2001:db8::1]:8080')).toBe(true);
+    expect(isAllowedOrigin('http://[2001:db8::1]:8080')).toBe(false);
+  });
+
+  it('accepts any port on a bare IPv6 literal, which carries none', () => {
+    process.env.GITNEXUS_PUBLIC_ORIGIN = '[2001:db8::1]';
+    expect(isAllowedOrigin('http://[2001:db8::1]:4173')).toBe(true);
+    // Non-canonical forms compress to the same hostname a browser Origin has.
+    process.env.GITNEXUS_PUBLIC_ORIGIN = '2001:db8:0:0:0:0:0:1';
+    expect(isAllowedOrigin('http://[2001:db8::1]:4173')).toBe(true);
+  });
+
+  it('does not widen to other hosts', () => {
+    process.env.GITNEXUS_PUBLIC_ORIGIN = 'app.example.com';
+    expect(isAllowedOrigin('https://evil.example.com')).toBe(false);
+    expect(isAllowedOrigin('https://app.example.com.evil.com')).toBe(false);
+  });
+
+  it('enforces the scheme when the configured value carries one', () => {
+    process.env.GITNEXUS_PUBLIC_ORIGIN = 'https://app.example.com';
+    expect(isAllowedOrigin('http://app.example.com')).toBe(false);
+  });
+
+  it('accepts either scheme when configured as a bare host', () => {
+    process.env.GITNEXUS_PUBLIC_ORIGIN = 'app.example.com';
+    expect(isAllowedOrigin('http://app.example.com')).toBe(true);
+    expect(isAllowedOrigin('https://app.example.com')).toBe(true);
+  });
+
+  it('still rejects non-http protocols on the configured host', () => {
+    process.env.GITNEXUS_PUBLIC_ORIGIN = 'app.example.com';
+    expect(isAllowedOrigin('ftp://app.example.com')).toBe(false);
+  });
+
+  it('is inert when unset', () => {
+    delete process.env.GITNEXUS_PUBLIC_ORIGIN;
+    expect(isAllowedOrigin('https://app.example.com')).toBe(false);
+  });
+});
+
+// A value that yields a matcher no real Origin can satisfy is worse than no
+// value at all: it reads as configured, so the wildcard-bind warning in
+// createServer reports a working origin where there is none.
+describe('createPublicOriginMatcher: values that are not one reachable host', () => {
+  it.each([
+    ['', 'empty'],
+    ['   ', 'whitespace only'],
+    ['*', 'a wildcard'],
+    ['a.com,b.com', 'a comma-separated list'],
+    ['a.com;b.com', 'a semicolon-separated list'],
+    ['8080', 'a bare port number — new URL reads it as the integer IP 0.0.31.144'],
+    ['under score', 'an embedded space'],
+    ['a.com:99999', 'a port out of range'],
+    ['ftp://a.com', 'a non-http scheme'],
+    ['https://a.com/ui', 'a path, which an Origin never has'],
+    ['0.0.0.0', 'a wildcard bind, which has no host identity'],
+  ])('returns undefined for %j (%s)', (raw) => {
+    expect(createPublicOriginMatcher(raw)).toBeUndefined();
+  });
+
+  it('returns undefined when the env var is unset', () => {
+    expect(createPublicOriginMatcher(undefined)).toBeUndefined();
+  });
+
+  it('tolerates the trailing slash a pasted URL carries', () => {
+    const matcher = createPublicOriginMatcher('https://app.example.com/');
+    expect(matcher?.hostname).toBe('app.example.com');
+    expect(matcher?.(new URL('https://app.example.com'))).toBe(true);
+  });
+
+  it('reports the hostname it resolved, for the startup log line', () => {
+    expect(createPublicOriginMatcher('https://App.Example.com:8443')?.hostname).toBe(
+      'app.example.com',
+    );
+    expect(createPublicOriginMatcher('2001:db8:0:0:0:0:0:1')?.hostname).toBe('[2001:db8::1]');
   });
 });
