@@ -186,6 +186,26 @@ const SPAWN_CLI = [
   // exposed a file-backend double-admit race here (#2658 review); the reclaim is
   // now judgment-verified so a live holder is never displaced.
   'test/integration/analyze-index-lock-concurrency.test.ts',
+  // The three `dist/` module-load closure guards, all built on the shared
+  // child-process probe in `test/helpers/module-load-probe.ts`. That probe is
+  // the platform-varying part: it spawns `process.execPath` in array form,
+  // clears NODE_OPTIONS, addresses its target via `pathToFileURL` (Windows
+  // needs the `file:///C:/...` form — a bare absolute path is not a valid ESM
+  // specifier there), and renders every result through a `path.sep`→POSIX
+  // normalisation so the anchors and offender regexes match on backslash paths
+  // too. All of that is exercised only on Ubuntu otherwise. The probes inside
+  // each file run concurrently, so each file is roughly one Node start long.
+  //
+  // #2802: MCP startup must not eagerly load the analyze-only language
+  // provider registry or the group contract extractors.
+  'test/integration/mcp/startup-language-closure.test.ts',
+  // PR #1383: `cli/mcp.js`'s static-import closure must stay leaf-only so no
+  // native binding initialises before the stdout sentinel installs.
+  'test/integration/mcp/import-closure.test.ts',
+  // #2091/#2093/#2116: the scope-resolution registry must not load the
+  // optional tree-sitter grammars at import time. The offender regexes match
+  // grammar paths with either separator, which only the Windows runner proves.
+  'test/integration/optional-grammars/registry-import-closure.test.ts',
 ];
 
 // Worker threads tests — exercise real worker_threads which have

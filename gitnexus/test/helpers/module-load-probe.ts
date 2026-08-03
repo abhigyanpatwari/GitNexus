@@ -34,6 +34,16 @@
  * mode that turns every one of these tests green while asserting nothing, so it
  * is not left to the test author to remember.
  *
+ * An anchor is PER-POLICY, not per-entry. One probe is routinely asserted over
+ * by several INDEPENDENT policies ("loads no language provider" AND "loads no
+ * group extractor"), and each policy is only non-vacuous while the chain IT
+ * polices is still walked. A single anchor on one of those chains, plus the
+ * module-count floor, both stay green when a DIFFERENT chain is severed — and
+ * the policy that rode on it silently stops being able to fail. So `anchor`
+ * takes a list: name one module per policy, e.g.
+ * `anchor: ['dist/mcp/resources.js', 'dist/core/group/service.js']`. A bare
+ * string is the single-policy shorthand.
+ *
  * Lazy `await import(...)` inside a function body remains the sanctioned escape
  * hatch throughout: it does not run at module evaluation, so the probe does not
  * see it. A TOP-LEVEL `await import(...)` does run, and the probe reports it —
@@ -63,6 +73,16 @@ const END = '<<<END_GITNEXUS_PROBE>>>';
  * performance assertion — nothing here asserts on elapsed time.
  */
 const PROBE_TIMEOUT_MS = 60_000;
+
+/**
+ * Grace between `spawn`'s own timeout SIGTERM and an unconditional SIGKILL.
+ * `spawn({ timeout })` signals ONCE; a child wedged inside synchronous native
+ * code (a grammar binding's init, an addon `dlopen`) never reaches a point
+ * where it can handle the signal, so without escalation it is orphaned rather
+ * than reaped and the vitest worker waits on a dead probe. Nothing asserts on
+ * either duration — both are wedge-breakers.
+ */
+const PROBE_KILL_GRACE_MS = 5_000;
 
 const PROBE_SOURCE = `
   import { createRequire, registerHooks } from 'node:module';
@@ -118,16 +138,21 @@ export interface ModuleLoadRequest {
    */
   readonly entry: string;
   /**
-   * A module the entry genuinely loads, as `toRepoRelativePosix` renders it
-   * (e.g. `'dist/mcp/resources.js'`).
+   * Module(s) the entry genuinely loads, as `toRepoRelativePosix` renders them
+   * (e.g. `'dist/mcp/resources.js'`). Every one must be present or the probe
+   * throws.
    *
    * Non-vacuity guard, and REQUIRED: if a refactor severs the entry from its
    * real graph, the probe fails loudly instead of letting "none of the
-   * forbidden modules loaded" pass green over a graph nothing walked. Prefer an
-   * anchor on the same edge the test polices — one whose disappearance would
-   * make the headline assertion meaningless.
+   * forbidden modules loaded" pass green over a graph nothing walked. Each
+   * anchor must sit on the same edge a policy asserted over this probe
+   * polices — one whose disappearance would make that policy's assertion
+   * meaningless. ONE PER POLICY: a file running two independent policies over
+   * one probe needs two anchors (see the module doc), because an anchor on
+   * policy A's chain says nothing about whether policy B's chain is still
+   * walked.
    */
-  readonly anchor: string;
+  readonly anchor: string | readonly string[];
   /**
    * Floor on the number of distinct modules loaded — a coarser second
    * non-vacuity guard, and REQUIRED. Set it well below the observed count so
@@ -180,6 +205,16 @@ function labelOf(entry: string): string {
 }
 
 /**
+ * Normalise {@link ModuleLoadRequest.anchor} to a list. Exported so a test can
+ * derive "which entries does policy X apply to?" from the anchors themselves
+ * rather than from a hand-maintained second list that can drift out of step
+ * with them.
+ */
+export function anchorsOf(anchor: string | readonly string[]): readonly string[] {
+  return typeof anchor === 'string' ? [anchor] : anchor;
+}
+
+/**
  * Run the probe against `targetUrl` in a fresh child process.
  *
  * Async `spawn` rather than `spawnSync` so several entries can be probed
@@ -193,9 +228,22 @@ function spawnProbe(targetUrl: string, extraEnv: Readonly<Record<string, string>
       cwd: REPO_ROOT,
       // NODE_OPTIONS is cleared so a session-pinned --max-old-space-size (or a
       // loader flag) can't perturb which modules the child evaluates.
-      env: { ...process.env, PROBE_TARGET: targetUrl, NODE_OPTIONS: '', ...extraEnv },
+      //
+      // PROBE_TARGET is spread AFTER `extraEnv` deliberately: the harness's own
+      // target must always win. A request whose `env` set PROBE_TARGET would
+      // otherwise redirect the probe at a different module while `anchor` and
+      // `minModules` stayed keyed on `entry` — the exact vacuity this file
+      // exists to make impossible.
+      env: { ...process.env, NODE_OPTIONS: '', ...extraEnv, PROBE_TARGET: targetUrl },
       timeout: PROBE_TIMEOUT_MS,
     });
+    // `timeout` above sends a single SIGTERM. Escalate unconditionally so a
+    // child stuck in synchronous native code is reaped rather than orphaned.
+    // `unref` keeps a healthy sub-second probe from holding the event loop.
+    const escalate = setTimeout(() => {
+      child.kill('SIGKILL');
+    }, PROBE_TIMEOUT_MS + PROBE_KILL_GRACE_MS);
+    escalate.unref();
     let stdout = '';
     let stderr = '';
     child.stdout.setEncoding('utf8');
@@ -206,8 +254,12 @@ function spawnProbe(targetUrl: string, extraEnv: Readonly<Record<string, string>
     child.stderr.on('data', (chunk: string) => {
       stderr += chunk;
     });
-    child.on('error', reject);
+    child.on('error', (error) => {
+      clearTimeout(escalate);
+      reject(error);
+    });
     child.on('close', (status, signal) => {
+      clearTimeout(escalate);
       resolve({ status, signal, stdout, stderr });
     });
   });
@@ -246,7 +298,7 @@ function runProbe(request: ModuleLoadRequest, label: string): Promise<ModuleLoad
       );
     }
 
-    const raw = JSON.parse(result.stdout.slice(begin + BEGIN.length, end)) as string[];
+    const raw = parsePayload(result.stdout.slice(begin + BEGIN.length, end), label);
     // Deduplicate AFTER rendering: a CJS module imported from ESM is reported
     // once per channel (a `file:` URL and an absolute path) and would otherwise
     // appear twice in every offender list. Load order is preserved — it is the
@@ -264,20 +316,47 @@ function runProbe(request: ModuleLoadRequest, label: string): Promise<ModuleLoad
 }
 
 /**
+ * Parse the child's payload back into a module list.
+ *
+ * Validated rather than cast: this crosses a process boundary, so the shape is
+ * an assumption about another process's output, not a fact the type system
+ * knows. A malformed payload must read as a HARNESS failure with the raw text
+ * attached, never as `undefined` flowing into the offender lists.
+ */
+function parsePayload(payload: string, label: string): readonly string[] {
+  const parsed: unknown = JSON.parse(payload);
+  if (!isModuleList(parsed)) {
+    throw new Error(
+      `probe payload for ${label} was not an array of module strings — the child's ` +
+        `protocol changed, or a module wrote between the payload markers. Payload:\n${payload}`,
+    );
+  }
+  return parsed;
+}
+
+function isModuleList(value: unknown): value is readonly string[] {
+  return Array.isArray(value) && value.every((entry: unknown) => typeof entry === 'string');
+}
+
+/**
  * Fail unless the probe demonstrably walked the entry's real graph. Thrown, not
  * asserted, because a vacuous probe is a harness failure: every policy
  * assertion built on it is meaningless, so no test should get the chance to
  * evaluate one.
+ *
+ * EVERY anchor must be present, not merely one: they are one-per-policy, so a
+ * surviving anchor cannot vouch for a severed sibling's chain.
  */
 function assertNonVacuous(
   request: ModuleLoadRequest,
   label: string,
   modules: readonly string[],
 ): void {
-  if (!modules.includes(request.anchor)) {
+  const missing = anchorsOf(request.anchor).filter((anchor) => !modules.includes(anchor));
+  if (missing.length > 0) {
     throw new Error(
-      `${label} did not load its anchor ${request.anchor}. If that edge moved, repoint the ` +
-        `anchor — otherwise this probe is reporting over an unexercised graph and every ` +
+      `${label} did not load its anchor(s) ${missing.join(', ')}. If that edge moved, repoint ` +
+        `the anchor — otherwise this probe is reporting over an unexercised graph and every ` +
         `assertion on it is vacuous. Loaded (${modules.length}):\n${modules.join('\n')}`,
     );
   }

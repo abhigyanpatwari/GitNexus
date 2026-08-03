@@ -31,10 +31,13 @@
  * `dist/cli/mcp.js` is asserted too (it is the process entry, and its
  * deliberately leaf-only static closure is pinned separately by
  * `import-closure.test.ts`), as is `dist/mcp/local/local-backend.js` — the
- * module whose import graph #2802 actually changed.
+ * module whose import graph #2802 actually changed, and
+ * `dist/mcp/http-transport.js`, which is the OTHER startup entry: `gitnexus mcp
+ * --http` reaches it through its own `await import(...)` in `mcpCommand`, not
+ * through `server.js`, so nothing about `server.js` staying clean constrains it.
  *
- * `local-backend.js`'s closure is TODAY a strict subset of `server.js`'s (265
- * of 489 modules, none of them absent from the server's), so it cannot surface
+ * `local-backend.js`'s closure is TODAY a strict subset of `server.js`'s (156
+ * of 380 modules, none of them absent from the server's), so it cannot surface
  * an offender the server probe would miss. It is kept anyway, for two reasons
  * that survive that measurement. The subset relation is an observation about
  * the current graph and nothing enforces it: the day `server.js` stops reaching
@@ -53,6 +56,7 @@
 
 import { describe, it, expect, beforeAll } from 'vitest';
 import {
+  anchorsOf,
   probeModuleLoads,
   type ModuleLoadProbes,
   type ModuleLoadRequest,
@@ -77,29 +81,87 @@ const FORBIDDEN_RE = /(^|\/)core\/ingestion\/languages\//;
  */
 const FORBIDDEN_GROUP_RE = /(^|\/)core\/group\/extractors\/|(^|\/)node_modules\/tree-sitter/;
 
-// Observed on Node 22.18 against a clean build: server.js loads 489 distinct
-// modules, local-backend.js 265, cli/mcp.js 4. The floors sit well below those
-// so normal dependency churn doesn't trip them, while a probe that silently
-// loaded nothing still fails. Each anchor names a module on an edge whose loss
-// would make the offender assertion below vacuous.
+/**
+ * The chain the group policy above polices, and therefore ITS non-vacuity
+ * anchor. `core/group/service.js` is the module that statically imported
+ * `./sync.js` and dragged the extractors in; the fix made that edge lazy. An
+ * anchor on some other chain (`mcp/resources.js`, `mcp/local/pdg-impact.js`)
+ * plus the module-count floor both stay green when `local-backend →
+ * core/group/service` is severed — the obvious next lazy-load step — and the
+ * group assertion would then be vacuous on every row while the file still
+ * reported all-pass. Anchors are per-POLICY, not per-entry; see
+ * `test/helpers/module-load-probe.ts`.
+ */
+const GROUP_ANCHOR = 'dist/core/group/service.js';
+
+// Observed on Node 22.18 against a clean build at the tip of this branch:
+// server.js 380 distinct modules, local-backend.js 156, cli/mcp.js 4. Treat
+// these as a snapshot, not a contract — they moved twice inside this branch
+// alone (the group-extractor and cfg/emit closures each took ~100 and ~7 out),
+// and only the FLOORS below are asserted. The floors sit well under the
+// observed counts so normal dependency churn doesn't trip them, while a probe
+// that silently loaded nothing still fails.
+//
+// `mcp/http-transport.js` is the largest startup entry — measured 516 modules,
+// +136 over server.js for express, cors and the SDK's Streamable-HTTP/SSE
+// transports. It is what `gitnexus mcp --http` starts and the hosted-deploy
+// path, and `mcpCommand` imports it directly, not via `server.js`; because that
+// edge runs one way only, a static import added inside `http-transport.ts`
+// would reinstate #2802 on the HTTP path with every other row here green. The
+// probes run concurrently, so its marginal wall-clock cost is ~0 — it finishes
+// alongside the others rather than after them.
+//
+// `mcp/resources.js` (measured 57 modules, 0 offenders) and `mcp/staleness.js`
+// (53, 0) are named in the #2802 write-up but deliberately get NO rows: both
+// are eagerly inside the closures of `server.js` and `http-transport.js`
+// (each appears in both probes' module lists), so any offender they acquired
+// surfaces on those rows already. They would earn rows only if something made
+// them reachable other than eagerly-from-the-server.
 const ENTRIES = [
-  { entry: 'mcp/server.js', anchor: 'dist/mcp/resources.js', minModules: 100 },
-  { entry: 'cli/mcp.js', anchor: 'dist/mcp/stdio-context.js', minModules: 3 },
+  {
+    entry: 'mcp/server.js',
+    anchor: ['dist/mcp/resources.js', GROUP_ANCHOR],
+    minModules: 100,
+  },
+  {
+    entry: 'mcp/http-transport.js',
+    anchor: ['dist/mcp/server.js', GROUP_ANCHOR],
+    minModules: 100,
+  },
   {
     entry: 'mcp/local/local-backend.js',
-    anchor: 'dist/mcp/local/pdg-impact.js',
+    anchor: ['dist/mcp/local/pdg-impact.js', GROUP_ANCHOR],
     minModules: 50,
   },
+  // The one row with a single anchor, because it is subject to ONE policy. Its
+  // whole design is a 4-module leaf closure that reaches nothing first-party
+  // beyond `stdio-context → stdio-capture`, so it can never reach
+  // `core/group/service.js` and cannot be given the group anchor honestly. It
+  // is excluded from the group policy below for that reason: a row that cannot
+  // fail for any reason related to the policy it is listed under is exactly the
+  // vacuity this file's probe exists to prevent. Its leaf-only closure is
+  // pinned exhaustively by `import-closure.test.ts` instead.
+  { entry: 'cli/mcp.js', anchor: 'dist/mcp/stdio-context.js', minModules: 3 },
 ] as const satisfies readonly ModuleLoadRequest[];
+
+/**
+ * The rows the group policy applies to — DERIVED from the anchors, not
+ * hand-listed beside them, so an entry cannot join that policy without
+ * carrying the anchor that keeps it able to fail.
+ */
+const GROUP_POLICY_ENTRIES = ENTRIES.filter((request) =>
+  anchorsOf(request.anchor).includes(GROUP_ANCHOR),
+).map((request) => request.entry);
 
 describe('MCP startup module-load closure (#2802)', () => {
   let probes: ModuleLoadProbes;
 
-  // All three entries are probed CONCURRENTLY here, not one per test: the probes
-  // are independent child processes and each pays a full Node start, so running
-  // them in parallel cuts this file's wall clock by roughly 60%. The helper
-  // labels every failure with its entry and enforces each entry's anchor and
-  // module floor, so the `it` bodies below are pure policy assertions.
+  // Every entry is probed CONCURRENTLY here, not one per test: the probes are
+  // independent child processes and each pays a full Node start, so running
+  // them in parallel cuts this file's wall clock by roughly 60% and makes each
+  // additional entry near-free. The helper labels every failure with its entry
+  // and enforces each entry's anchors and module floor, so the `it` bodies
+  // below are pure policy assertions.
   beforeAll(async () => {
     probes = await probeModuleLoads(ENTRIES);
   }, 90_000);
@@ -125,7 +187,18 @@ describe('MCP startup module-load closure (#2802)', () => {
     },
   );
 
-  it.each(ENTRIES.map((request) => request.entry))(
+  // Pins the derivation above: if a future edit drops `GROUP_ANCHOR` from every
+  // entry, `GROUP_POLICY_ENTRIES` empties and the `it.each` below silently
+  // registers zero cases — a whole policy disappearing without one red test.
+  it('runs the group policy over exactly the entries that reach core/group/service.js', () => {
+    expect(GROUP_POLICY_ENTRIES).toEqual([
+      'mcp/server.js',
+      'mcp/http-transport.js',
+      'mcp/local/local-backend.js',
+    ]);
+  });
+
+  it.each(GROUP_POLICY_ENTRIES)(
     'importing dist/%s loads no group contract extractor or native parser',
     (entry) => {
       const probe = probes.get(entry);
