@@ -68,7 +68,15 @@ import {
 // reaches `schema.ts` anyway via pool-adapter -> lbug-adapter -> csv-generator,
 // all value imports. Cutting `csv-generator` (analyze-only code the MCP server
 // never runs) out of the adapter chain is the change that would make it real.
-import { EMBEDDING_TABLE_NAME, EMBEDDING_INDEX_NAME } from '../../core/lbug/schema.js';
+// `embeddingDimsMismatch` rides along on this same import on purpose: it was
+// homed in `schema.ts` (not run-analyze.ts) so the QUERY side could reuse the
+// analyze side's comparator without pulling in the analyze pipeline, and this
+// module already takes a value import from `schema.ts`, so it costs nothing.
+import {
+  EMBEDDING_TABLE_NAME,
+  EMBEDDING_INDEX_NAME,
+  embeddingDimsMismatch,
+} from '../../core/lbug/schema.js';
 import { getExactScanLimit } from '../../core/platform/capabilities.js';
 import { PhaseTimer } from '../../core/search/phase-timer.js';
 import { ftsDegradedWarning, ftsQueryFailedWarning } from '../../core/search/fts-indexes.js';
@@ -1073,6 +1081,33 @@ export class LocalBackend {
    * degradation is visible once instead of silent.
    */
   private warnedMissingEmbeddingStack = false;
+
+  /**
+   * Width the semantic lane last produced a QUERY vector at for an index, keyed
+   * by `lbugPath` (like `lastObservedPoolState`, and for the same reason: branch
+   * handles are rebuilt by `applyBranchScope` on every `resolveRepo`, so state
+   * hung off the handle would not survive to the next call).
+   *
+   * Exists so `query()` can raise the vector-column drift warning (#2798) ONLY
+   * where a width actually matters — a call that embedded something. The lane
+   * returns before importing the embedder when the index holds no vectors, and
+   * swallows an unavailable/pruned embedder into `[]`; a width complaint about
+   * either is noise about a comparison that never happened, and every index
+   * analyzed without `--embeddings` would carry it on every query.
+   *
+   * Recorded rather than recomputed at the warning site because the comparand
+   * must be the width the CAST actually binds — `getEmbeddingDims()` (the HTTP
+   * dimensions, else the local model's fixed 384), NOT `schema.ts`'s
+   * env-derived `EMBEDDING_DIMS`. Those two disagree exactly when
+   * `GITNEXUS_EMBEDDING_DIMS` is set on a server embedding LOCALLY, where the
+   * env value is the one the query path ignores — comparing against it would
+   * report drift on a lane that is working fine.
+   *
+   * Written only on definite outcomes (set once a vector exists, deleted where
+   * the lane provably embedded nothing), so concurrent queries against one
+   * index write the same value and an entry never outlives the fact it records.
+   */
+  private lastQueryEmbeddingDims: Map<string, number> = new Map();
 
   /**
    * Cross-repo group tools (CLI). Shares logic with MCP `group_*` handlers.
@@ -2689,8 +2724,14 @@ export class LocalBackend {
     // analyze ran instead). That mismatch affects every CJK query against
     // this repo, not just one whose own text happens to contain CJK, so it's
     // a separate, unconditional check — not folded into the branches above.
+    //
+    // Hoisted out of the try below so the vector-width check after it reads the
+    // same meta instead of paying a second read per query, and so an invalid
+    // GITNEXUS_FTS_CJK_SEGMENTATION (the only thing that actually throws in
+    // there) cannot take an unrelated diagnostic down with it. Needs no guard
+    // of its own: loadMeta() returns null on any read/parse failure.
+    const meta = await loadMeta(path.dirname(repo.lbugPath));
     try {
-      const meta = await loadMeta(path.dirname(repo.lbugPath));
       // meta.json is on-disk state inside the analyzed repo, read via a
       // schema-less JSON.parse — not trusted input. Validate before
       // interpolating it into agent-visible tool output (#2339): an
@@ -2722,6 +2763,51 @@ export class LocalBackend {
       // a separate, independently-guarded diagnostic though, so it gets its
       // own log context rather than sharing 'query:cjk-warning'.
       logQueryError('query:cjk-mode-drift', err);
+    }
+    // #2798: the query-side half of the vector-column width guard. `analyze`
+    // compares `RepoMeta.embeddingDims` against its own live width and forces a
+    // full rebuild; a SERVING process cannot rebuild anything, so it says so
+    // instead. `CodeEmbedding.embedding` is `FLOAT[N]` fixed at build time, and
+    // when this process embeds at a different N the vector CALL fails its CAST
+    // and the exact-scan fallback scores a query vector against stored vectors
+    // of another length — wrong or empty semantic hits whose only trace was a
+    // once-per-process server log the agent driving this tool never sees.
+    //
+    // Warn, never refuse: BM25 results are still good, and the hybrid answer
+    // minus its semantic lane beats no answer at all. Same shape as the CJK
+    // drift check above — composed into `warnings`, recomputed per query rather
+    // than latched, and carrying the fix rather than just the symptom.
+    //
+    // Gated on a width this call actually embedded at (see
+    // `lastQueryEmbeddingDims`) so the tools that never embed — every other
+    // method on this backend — and every index analyzed without `--embeddings`
+    // stay quiet. ABSENT `embeddingDims` is NOT a mismatch: that is
+    // `embeddingDimsMismatch`'s own rule, reused rather than restated so the
+    // two sides of the guard cannot drift apart.
+    const queryEmbeddingDims = this.lastQueryEmbeddingDims.get(repo.lbugPath);
+    if (
+      queryEmbeddingDims !== undefined &&
+      meta &&
+      embeddingDimsMismatch(meta.embeddingDims, queryEmbeddingDims)
+    ) {
+      // Only NAME a recorded width that could be one — meta.json is untrusted,
+      // schema-less on-disk state, so a value that is not a positive integer is
+      // reported generically rather than echoed into agent-visible output (the
+      // reason the CJK stamp above is validated, and what run-analyze does with
+      // the same field).
+      const recordedDims: unknown = meta.embeddingDims;
+      const built =
+        typeof recordedDims === 'number' && Number.isInteger(recordedDims) && recordedDims > 0
+          ? `FLOAT[${recordedDims}]`
+          : 'an unrecognized width';
+      warnings.push(
+        `Index's vector column was built at ${built}, but this server embeds queries at ` +
+          `FLOAT[${queryEmbeddingDims}] — semantic search results may be wrong or missing (the ` +
+          'width is fixed when the index is built, and no incremental run revisits it). Re-run ' +
+          '`gitnexus analyze --force` with the embedding configuration this server uses, or pin ' +
+          'both sides to one width with GITNEXUS_EMBEDDING_DIMS (or `analyze --embedding-dims`). ' +
+          'Keyword results are unaffected.',
+      );
     }
     if (enrichmentDegraded) {
       warnings.push(
@@ -2863,6 +2949,10 @@ export class LocalBackend {
    * Semantic vector search helper
    */
   private async semanticSearch(repo: RepoHandle, query: string, limit: number): Promise<any[]> {
+    // Whether THIS call produced a query vector — see `lastQueryEmbeddingDims`.
+    // A local flag, not a re-read of the map: the map may still hold an earlier
+    // call's width, and the catch below must only clear an entry it did not set.
+    let embeddedDims: number | undefined;
     try {
       // Check if embedding table exists before loading the model (avoids heavy model init when embeddings are off)
       // determinism: probe — aggregate singleton. COUNT(*) with no grouping key returns exactly one row, and only
@@ -2871,11 +2961,22 @@ export class LocalBackend {
         repo.lbugPath,
         `MATCH (e:${EMBEDDING_TABLE_NAME}) RETURN COUNT(*) AS cnt LIMIT 1`,
       );
-      if (!tableCheck.length || (tableCheck[0].cnt ?? tableCheck[0][0]) === 0) return [];
+      if (!tableCheck.length || (tableCheck[0].cnt ?? tableCheck[0][0]) === 0) {
+        // No vectors to search: nothing is embedded below, so drop any width a
+        // previous call recorded rather than let query() warn about a lane that
+        // did not run this time (#2798).
+        this.lastQueryEmbeddingDims.delete(repo.lbugPath);
+        return [];
+      }
 
       const { embedQuery, getEmbeddingDims } = await import('../core/embedder.js');
       const queryVec = await embedQuery(query);
       const dims = getEmbeddingDims();
+      // #2798: the width this query vector really was produced at — the same
+      // value the CAST below binds against the index's `FLOAT[N]` column, and
+      // therefore the only honest comparand for query()'s drift warning.
+      embeddedDims = dims;
+      this.lastQueryEmbeddingDims.set(repo.lbugPath, dims);
       const queryVecStr = `[${queryVec.join(',')}]`;
       const maxDistance = getVectorMaxDistance(DEFAULT_MCP_VECTOR_MAX_DISTANCE);
 
@@ -2994,6 +3095,11 @@ export class LocalBackend {
 
       return results;
     } catch (err) {
+      // Nothing was embedded on this path unless the throw happened after the
+      // vector existed (a failed lookup downstream of a good embedding, where
+      // the width IS still the live one). Clearing only in the former case
+      // keeps the recorded width a fact rather than a leftover (#2798).
+      if (embeddedDims === undefined) this.lastQueryEmbeddingDims.delete(repo.lbugPath);
       // Embeddings disabled is the common, silent case. But a pruned or
       // Node-unloadable optional stack (#2370/#2372) also lands here — surface it
       // once so semantic search doesn't silently degrade to BM25 with no hint
