@@ -9,6 +9,7 @@
  *   MATCH (f:Function)-[r:CodeRelation {type: 'CALLS'}]->(g:Function) RETURN f, g
  */
 
+import { createHash } from 'crypto';
 // Import from shared package (single source of truth) — used in DDL templates below
 import { NODE_TABLES, REL_TABLE_NAME, REL_TYPES, EMBEDDING_TABLE_NAME } from 'gitnexus-shared';
 import type { NodeLabel, NodeTableName } from 'gitnexus-shared';
@@ -655,3 +656,123 @@ export const NODE_SCHEMA_QUERIES = [
 export const REL_SCHEMA_QUERIES = [RELATION_SCHEMA];
 
 export const SCHEMA_QUERIES = [...NODE_SCHEMA_QUERIES, ...REL_SCHEMA_QUERIES, EMBEDDING_SCHEMA];
+
+/**
+ * Digest of the graph DDL this build creates — the exact statements
+ * {@link runSchemaCreationQueries} (lbug-adapter.ts) executes for the node and
+ * relation tables.
+ *
+ * This REPLACED `INCREMENTAL_SCHEMA_VERSION` (#2798), a hand-incremented
+ * integer in repo-manager.ts that had to PREDICT whether an on-disk database
+ * was created from this build's DDL. It could not: the number collided with
+ * `main` eight times, twice EXACTLY, and an exact clash was the quiet failure —
+ * two builds stamp the same number over different DDL, the strict `===` gate
+ * reads the index as current, every `CREATE … TABLE` is skipped as "already
+ * exists" (suppressed in `runSchemaCreationQueries`), and the edges whose
+ * endpoint pair the live DB cannot persist are dropped by
+ * `fallbackRelationshipInserts`' bare `catch`. A wrong graph, not an error.
+ *
+ * A digest cannot collide BY ACCIDENT at this scale: 12 hex chars is 48 bits,
+ * so even 1,000 distinct DDL variants over the project's whole life put the
+ * birthday probability of any pair matching at ≈1.8e-9. Two builds agree
+ * exactly when their DDL agrees, so concurrent branches never need renumbering.
+ * Do not shorten the slice: the odds double per bit dropped. On mismatch —
+ * including the ABSENT stamp every pre-#2798 index carries — run-analyze warns
+ * and forces a full re-analyze, which wipes the database and recreates the
+ * tables from the DDL below.
+ *
+ * {@link EMBEDDING_SCHEMA} is deliberately EXCLUDED. Its `FLOAT[N]` width comes
+ * from `GITNEXUS_EMBEDDING_DIMS` at module load, so folding it in would make
+ * this a function of the ENVIRONMENT rather than of code: two runs of the same
+ * build under different env would disagree and force alternating full rebuilds.
+ * Vector-column drift is therefore a SEPARATE gate, not an ungated hazard:
+ * {@link embeddingDimsMismatch} compares the width stamped in
+ * `RepoMeta.embeddingDims` against {@link EMBEDDING_DIMS} and run-analyze
+ * forces a rebuild on drift. Do not merge the two — an env-derived value in a
+ * code digest makes the same build disagree with itself. (The older reaction in
+ * run-analyze remains, and is to the CACHE, not the schema: when the cached
+ * vectors' length differs from `EMBEDDING_DIMS` it discards the cache and
+ * re-embeds.)
+ */
+export const SCHEMA_FINGERPRINT: string = createHash('sha256')
+  .update([...NODE_SCHEMA_QUERIES, ...REL_SCHEMA_QUERIES].join('\n'))
+  .digest('hex')
+  .slice(0, 12);
+
+/**
+ * Whether an index built under `recorded` can be reused by this build.
+ *
+ * Lives here rather than in run-analyze so the query side can ask the same
+ * question without importing the analyze pipeline — the reason
+ * `cjkSegmentationModeMismatch` sits in `core/search/` rather than beside its
+ * caller. ABSENT counts as a mismatch: that is the backward-compatibility path
+ * for every index written before the field existed, and grandfathering it would
+ * stamp a fresh fingerprint onto a database whose DDL was never verified.
+ */
+export const schemaFingerprintMismatch = (recorded: string | undefined): boolean =>
+  recorded !== SCHEMA_FINGERPRINT;
+
+/**
+ * Whether a stamped value has the shape {@link SCHEMA_FINGERPRINT} produces —
+ * the lowercase-hex prefix of a sha256 digest. The width is read from the live
+ * constant, so changing the slice above needs no edit here.
+ *
+ * Used to decide whether a stamp is worth NAMING in a diagnostic: an index with
+ * no fingerprint and one carrying a malformed value are both "not this build",
+ * but only the first has an explanation worth printing. Not a comparison gate —
+ * {@link schemaFingerprintMismatch} already rejects every value that is not
+ * exactly this build's.
+ */
+export const isSchemaFingerprintShaped = (value: unknown): value is string =>
+  typeof value === 'string' &&
+  value.length === SCHEMA_FINGERPRINT.length &&
+  /^[0-9a-f]+$/.test(value);
+
+/**
+ * Whether the vector-column width an index's `CodeEmbedding` table was created
+ * at (as persisted in `RepoMeta.embeddingDims`) differs from the width this
+ * process would embed at ({@link EMBEDDING_DIMS}). The gate
+ * {@link SCHEMA_FINGERPRINT} deliberately cannot be: `FLOAT[N]` comes from
+ * `GITNEXUS_EMBEDDING_DIMS` at module load, so folding it into a digest of the
+ * DDL would make that digest a function of the ENVIRONMENT. Splitting it out
+ * here keeps the fingerprint purely code-derived and still gates the width —
+ * before this, flipping `GITNEXUS_EMBEDDING_DIMS` on a same-commit clean tree
+ * fired no guard at all: `alreadyUpToDate` returned over a `FLOAT[384]` table
+ * while the process embedded at 768. (The one pre-existing reaction, in
+ * run-analyze, discards the embedding CACHE and re-embeds — into a column whose
+ * width was never revisited.) A single scalar, so plain equality suffices.
+ *
+ * ABSENT does NOT count as a mismatch — the opposite of
+ * {@link schemaFingerprintMismatch}, and deliberately:
+ *
+ *  - Absence carries no signal about the width. A missing fingerprint means
+ *    "DDL this build cannot vouch for", and the field ships WITH a DDL change,
+ *    so absence is itself evidence of drift. A missing dims stamp means only
+ *    "written before the field existed"; the width was whatever that run's env
+ *    resolved, almost always the 384 default, and it was consistent with the
+ *    table it wrote. Drift needs the env to CHANGE, which absence says nothing
+ *    about.
+ *  - Forcing on absence would buy no safety anyway. Every index that lacks this
+ *    stamp also lacks `schemaFingerprint` (both landed together in #2798), and
+ *    that guard already forces a rebuild for exactly those indexes — after
+ *    which the width is stamped and the hazard is closed for good. A second
+ *    trigger for the same one rebuild is dead weight that would keep firing
+ *    forever on any future path that legitimately omits the stamp.
+ *  - The cost of guessing wrong is asymmetric: a fleet-wide full re-analyze
+ *    (minutes to hours per repo) for a hazard that requires a rare, deliberate
+ *    env change.
+ *
+ * Absence is precisely `undefined`. Any other recorded value that is not this
+ * build's width — including a malformed one, since `meta.json` is a schema-less
+ * `JSON.parse` of on-disk state — reads as a mismatch and errs toward a
+ * rebuild, which is the safe direction.
+ *
+ * Pure + exported for testing, and takes `current` explicitly rather than
+ * closing over {@link EMBEDDING_DIMS}: that constant is frozen at module load,
+ * so a parameter is the only way to exercise both sides of the comparison.
+ * Lives here rather than in run-analyze for the reason
+ * `cjkSegmentationModeMismatch` lives in `core/search/` — a caller that only
+ * needs the comparator should not have to pull in the analyze pipeline.
+ */
+export const embeddingDimsMismatch = (recorded: number | undefined, current: number): boolean =>
+  recorded !== undefined && recorded !== current;

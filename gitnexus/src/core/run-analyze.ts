@@ -91,7 +91,6 @@ import {
   reconcileMetadataFiles,
   isMissingFilesystemError,
   INDEX_METADATA_FILE,
-  INCREMENTAL_SCHEMA_VERSION,
   type AnalyzerRunnerIdentity,
   type RepoMeta,
 } from '../storage/repo-manager.js';
@@ -141,8 +140,15 @@ import {
 import type { CachedEmbedding } from './embeddings/types.js';
 import { generateAIContextFiles } from '../cli/ai-context.js';
 import { sanitizeDetectedBranch } from '../cli/analyze-config.js';
-import { EMBEDDING_TABLE_NAME } from './lbug/schema.js';
-import { STALE_HASH_SENTINEL } from './lbug/schema.js';
+import {
+  EMBEDDING_TABLE_NAME,
+  EMBEDDING_DIMS,
+  STALE_HASH_SENTINEL,
+  SCHEMA_FINGERPRINT,
+  schemaFingerprintMismatch,
+  isSchemaFingerprintShaped,
+  embeddingDimsMismatch,
+} from './lbug/schema.js';
 import { isSpringBeanCandidateSourceFile } from './ingestion/frameworks/spring/bean-catalog.js';
 import { isSpringBeanFactoryDeclaration } from './ingestion/frameworks/spring/bean-factories.js';
 import {
@@ -179,6 +185,23 @@ import {
   mintUnverifiedCountCheckpoint,
 } from './embedding-checkpoint.js';
 import type { EmbeddingCheckpoint } from './embedding-checkpoint.js';
+
+/**
+ * Strip C0/C1 control characters from a progress/diagnostic message.
+ *
+ * Several guard notices below interpolate values read straight out of
+ * `.gitnexus/gitnexus.json`, which is parsed with no runtime shape validation
+ * (`loadMeta` does a bare `JSON.parse(...) as RepoMeta`) — the stamped schema
+ * fingerprint, the runner-identity schema, the CJK mode. On the CLI path these
+ * reach `console.log` and therefore the user's terminal, so a crafted value
+ * carrying ANSI escapes (`\x1b[2J`, `\x1b]0;…`) would be replayed verbatim.
+ *
+ * Sanitizing at the funnel rather than per field: every message that ever
+ * interpolates untrusted metadata is covered, including ones not written yet.
+ * Newline and tab are preserved — multi-line notices are intentional.
+ */
+const stripControlCharacters = (msg: string): string =>
+  msg.replace(/[\x00-\x08\x0b\x0c\x0e-\x1f\x7f-\x9f]/g, '');
 
 const ANALYSIS_FEATURES = [
   CLASS_FRAMEWORK_ANNOTATIONS_FEATURE,
@@ -852,7 +875,7 @@ export async function runFullAnalysis(
   // would otherwise stay saturated on a reused process).
   resetDegradedParseCounter();
 
-  const log = (msg: string) => callbacks.onLog?.(msg);
+  const log = (msg: string) => callbacks.onLog?.(stripControlCharacters(msg));
   const acquireOpts = {
     log,
     onWaitStart: () =>
@@ -911,7 +934,7 @@ async function runFullAnalysisInner(
   writeTarget: WriteTarget,
   runnerIdentityAtBootstrap?: AnalyzerRunnerIdentity,
 ): Promise<AnalyzeResult> {
-  const log = (msg: string) => callbacks.onLog?.(msg);
+  const log = (msg: string) => callbacks.onLog?.(stripControlCharacters(msg));
   const progress = (phase: string, percent: number, message: string) =>
     callbacks.onProgress(phase, percent, message);
 
@@ -1259,37 +1282,56 @@ async function runFullAnalysisInner(
     options = { ...options, force: true };
   }
 
-  // ── schema-version mismatch forces full rebuild (#2289 P1) ────────
-  // Mirrors the pdg-mode block above: a stamp from an older
-  // INCREMENTAL_SCHEMA_VERSION (e.g. pre-v5 URL-only Route ids) cannot be
-  // reconciled by an incremental top-up — same-commit re-analyze would
-  // strand stale rows next to new-schema writes. MUST sit before the
+  // ── schema mismatch forces full rebuild (#2289 P1, #2798) ─────────
+  // Mirrors the pdg-mode block above: an index whose tables were created from
+  // a different DDL cannot be reconciled by an incremental top-up — a
+  // same-commit re-analyze would strand stale rows next to new-schema writes,
+  // and LadybugDB fixes a relation table's endpoint pairs at CREATE time, so
+  // edges the old shape cannot hold are simply dropped. MUST sit before the
   // alreadyUpToDate fast path below: an unchanged-commit clean tree would
-  // otherwise early-return without ever reaching the `isIncremental` gate
-  // that consults `schemaVersion`, defeating the bump's whole point.
+  // otherwise early-return without ever reaching the `isIncremental` gate.
   //
-  // `schemaVersion === undefined` covers two cases that should still trip
-  // this guard: a non-git repo (which never stamps the field) and very old
-  // meta from before the field existed. Non-git repos take the
-  // `currentCommit === ''` rebuild branch below regardless, so the redundant
-  // force here is harmless; the friendlier `'pre-versioning'` log avoids a
-  // user-visible "stamped vundefined" line in that edge case.
-  if (existingMeta && existingMeta.schemaVersion !== INCREMENTAL_SCHEMA_VERSION) {
-    const stampedVersion = existingMeta.schemaVersion ?? 'pre-versioning';
+  // Forcing here is what recreates the schema: `force` makes the run a full
+  // rebuild, which wipes the database file and re-runs the DDL against an
+  // empty one. Re-running `CREATE … TABLE` over the EXISTING database would
+  // not help — runSchemaCreationQueries suppresses "already exists", so the
+  // new shape would never be applied.
+  //
+  // ABSENT covers two cases and forces in both: an index from a GitNexus
+  // older than this field (the backward-compatibility path — one rebuild, then
+  // it is stamped), and a non-git repo, which never stamps it (see the meta
+  // literal below) and takes the `currentCommit === ''` rebuild branch below
+  // regardless.
+  //
+  // The two cases must not be told the same story. Blaming "an older GitNexus
+  // version" is FALSE for a non-git repo — the field is absent by design there,
+  // so this build would keep saying it about an index this exact build just
+  // wrote, on every run, forever. A stamp is only named when it has the shape
+  // SCHEMA_FINGERPRINT produces; anything else degrades to a neutral
+  // placeholder, and a non-git repo is additionally told WHY it has no stamp.
+  if (existingMeta && schemaFingerprintMismatch(existingMeta.schemaFingerprint)) {
+    const stamped = existingMeta.schemaFingerprint;
+    const origin = isSchemaFingerprintShaped(stamped) ? stamped : 'an unidentified GitNexus build';
+    const nonGitNote =
+      stamped === undefined && !repoHasGit
+        ? ' Non-git repositories never record a schema fingerprint, so this run rebuilds regardless.'
+        : '';
     log(
-      `index schema changed (stamped v${stampedVersion}, this build is v${INCREMENTAL_SCHEMA_VERSION}); ` +
-        `forcing a full rebuild so persisted rows match the current schema.`,
+      `index schema changed (built by ${origin}, this build is ${SCHEMA_FINGERPRINT}); forcing a ` +
+        `full re-analyze so the database is recreated from the current schema.${nonGitNote}`,
     );
     options = { ...options, force: true };
   }
 
   // ── independently-versioned analysis capabilities ────────────────
-  // `schemaVersion` is reserved for graph-wide incremental invariants. Some
+  // `schemaFingerprint` is reserved for graph-wide incremental invariants. Some
   // persisted semantics apply only to repositories containing relevant source
   // files, so they carry exact feature versions instead. This guard must also
-  // run before alreadyUpToDate: current main and this PR both use schema v8,
-  // while pre-PR v8 indexes lack the Class frameworkAnnotations column and
-  // Java/Kotlin Bean evidence.
+  // run before alreadyUpToDate: a feature can change what is EXTRACTED without
+  // changing the DDL, so an index whose `schemaFingerprint` matches this build
+  // can still be missing that feature's evidence (e.g. the Class
+  // frameworkAnnotations values, or Java/Kotlin Bean evidence) — the fingerprint
+  // guard above would wave it through.
   const persistedFilePaths = Object.keys(existingMeta?.fileHashes ?? {});
   const expectedPersistedAnalysisFeatures = resolveAnalysisFeatureVersions(
     ANALYSIS_FEATURES,
@@ -1335,6 +1377,46 @@ async function runFullAnalysisInner(
       `CJK segmentation mode changed (index built with '${existingMeta.cjkSegmentation ?? 'none'}', ` +
         `this run resolves '${getSearchFTSCjkSegmentation()}'); forcing a full rebuild so indexed ` +
         `text and query-time segmentation stay in sync.`,
+    );
+    options = { ...options, force: true };
+  }
+
+  // ── embedding width mismatch forces full rebuild (#2798) ──────────
+  // The half of the schema `SCHEMA_FINGERPRINT` deliberately cannot cover:
+  // `CodeEmbedding.embedding` is declared `FLOAT[EMBEDDING_DIMS]`, and that
+  // width comes from `GITNEXUS_EMBEDDING_DIMS` at module load, so folding it
+  // into a digest of CODE would make the same build disagree with itself under
+  // two envs. Without this block a dims flip on a same-commit clean tree fired
+  // NO guard: the fast path below returned over a FLOAT[384] table while this
+  // process embedded at 768. The one older reaction (in the embedding-restore
+  // block further down) discards the CACHE and re-embeds — into a column whose
+  // width it never revisits.
+  //
+  // Forcing is again what repairs it, and for the same reason as the
+  // fingerprint guard: only a full rebuild wipes the database and re-runs the
+  // DDL, and `runSchemaCreationQueries` suppresses "already exists", so
+  // re-running CREATE over the existing DB would silently keep the old width.
+  // Not conditioned on the index actually holding vectors — the table is
+  // created for every index either way, and nothing but a rebuild can retype it.
+  //
+  // ABSENT is NOT a mismatch here (see embeddingDimsMismatch for the argument):
+  // it means an index predating the field, whose width is unknown but was
+  // consistent with the env that wrote it, and which the fingerprint guard
+  // above already rebuilds — that rebuild is where the stamp lands.
+  if (existingMeta && embeddingDimsMismatch(existingMeta.embeddingDims, EMBEDDING_DIMS)) {
+    // Only NAME a recorded width that could be one, for the reason the
+    // fingerprint guard gates its stamp on `isSchemaFingerprintShaped`:
+    // meta.json is a schema-less JSON.parse of on-disk state, so a value that
+    // is not a positive integer is not worth quoting back at the user.
+    const recordedDims = existingMeta.embeddingDims;
+    const built =
+      typeof recordedDims === 'number' && Number.isInteger(recordedDims) && recordedDims > 0
+        ? `FLOAT[${recordedDims}]`
+        : 'an unrecognized width';
+    log(
+      `embedding dimensions changed (index built with ${built}, this run embeds at ` +
+        `${EMBEDDING_DIMS}); forcing a full rebuild so the vector column is recreated at the ` +
+        `new width. Tip: set GITNEXUS_EMBEDDING_DIMS (or --embedding-dims) to pin it across runs.`,
     );
     options = { ...options, force: true };
   }
@@ -1527,10 +1609,10 @@ async function runFullAnalysisInner(
   // function entry, because the POSITION is load-bearing: the gate is
   // `options.force`, and every freshness guard above REBINDS `options` with
   // `force: true` (embedding-checkpoint drop, dirty-flag recovery, pdg-mode
-  // flip, schema-version bump, analysis-feature drift, runner-identity change,
+  // flip, schema-fingerprint change, analysis-feature drift, runner-identity change,
   // CJK-mode change). Resolving before them froze the answer at `false` for
   // every rebuild they trigger — including the whole-fleet rebuild an
-  // INCREMENTAL_SCHEMA_VERSION bump forces on every existing index at once,
+  // schema-fingerprint change forces on every existing index at once,
   // which is exactly when the #2649 memory relief matters most. So this MUST
   // stay below the last guard that can set `force` and above its first use.
   // (The post-pipeline analysis-feature re-check can also set `force`, but the
@@ -1625,7 +1707,10 @@ async function runFullAnalysisInner(
   const isIncremental =
     !options.force &&
     !!existingMeta &&
-    existingMeta.schemaVersion === INCREMENTAL_SCHEMA_VERSION &&
+    // Belt and braces, not a second gate: the guard above already set `force`
+    // on exactly this condition, and `!options.force` short-circuits before
+    // this conjunct is reached. Kept so the eligibility contract reads whole.
+    !schemaFingerprintMismatch(existingMeta.schemaFingerprint) &&
     currentAnalysisFeatureMismatches.length === 0 &&
     !!existingMeta.fileHashes &&
     Object.keys(existingMeta.fileHashes).length > 0 &&
@@ -2880,7 +2965,9 @@ async function runFullAnalysisInner(
       // analyze run can take the incremental DB-writeback path. Setting
       // incrementalInProgress to undefined explicitly clears any prior
       // dirty flag (full and incremental success paths converge here).
-      schemaVersion: hasGitDir(repoPath) ? INCREMENTAL_SCHEMA_VERSION : undefined,
+      // Derived digest of the DDL this run created the tables from (#2798).
+      // Git-only: non-git repos never take the incremental path.
+      schemaFingerprint: hasGitDir(repoPath) ? SCHEMA_FINGERPRINT : undefined,
       unresolvedReceiverMembers: summarizeUnresolvedReceivers(
         pipelineResult.resolutionOutcomes ?? [],
       ),
@@ -2889,6 +2976,11 @@ async function runFullAnalysisInner(
       // `pdg` below, 'none' is a meaningful value to compare, not an
       // absence, so this is never conditionally omitted.
       cjkSegmentation: getSearchFTSCjkSegmentation(),
+      // The FLOAT[N] width this run created the vector column at (#2798).
+      // Always stamped, like `cjkSegmentation` and unlike `schemaFingerprint`:
+      // the CodeEmbedding table is created for every index, git or not, so
+      // absence has exactly one meaning — an index older than the field.
+      embeddingDims: EMBEDDING_DIMS,
       fileHashes: hasGitDir(repoPath) ? newFileHashesRecord : undefined,
       // This branch's full live chunk-key set (#2106 R6). `usedKeys` is every
       // chunk hash touched in this scan — cache HITS included (see parse-impl
