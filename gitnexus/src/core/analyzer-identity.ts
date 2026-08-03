@@ -1001,6 +1001,58 @@ function isLocallyLinkedSpecifier(specifier: unknown): boolean {
 }
 
 /**
+ * Whether a REALPATH'd package root lives inside some installed dependency
+ * tree. Used as the resolved-location half of "is this dependency a checkout
+ * this repository owns?" (see {@link undeclaredLocalDevDependencyNames}).
+ *
+ * The input must already be realpath'd: `resolveDependencyPackageRoot` returns
+ * `realpathSync.native`, so a package reached through a link out of
+ * `node_modules` reports its checkout location and a package that merely lives
+ * in `node_modules` reports a path that still carries the segment.
+ *
+ * `pathApi` is injectable so the Windows separator handling is unit-testable
+ * from a POSIX runner, exactly as {@link isInside} does. The separator sets
+ * differ deliberately: `\` is a legal filename character on POSIX, so only
+ * win32 may treat it as a boundary.
+ */
+function hasNodeModulesSegment(candidate: string, pathApi: typeof path = path): boolean {
+  const segments = pathApi.sep === '\\' ? candidate.split(/[\\/]+/) : candidate.split('/');
+  return segments.includes('node_modules');
+}
+
+/** Test seam for {@link hasNodeModulesSegment} (see {@link _isInsideForTests}). */
+export const _hasNodeModulesSegmentForTests = hasNodeModulesSegment;
+
+/**
+ * How many dev dependencies may be admitted by RESOLVED LOCATION alone before
+ * the whole resolved-location channel is treated as untrustworthy and disabled.
+ *
+ * "Realpath carries no `node_modules` segment" is a proxy for "checkout-local",
+ * and a layout that materializes packages outside `node_modules` — pnpm with a
+ * relocated `virtual-store-dir`, a custom linker — makes every dev dependency
+ * pass it. Folding an entire dev tree into the receipt is not a graceful
+ * degradation: `runtimePackages`/`runtimeEntries`/`runtimeBytes` THROW, so a
+ * mis-fired proxy on a legitimate install would abort analyze outright.
+ *
+ * The bound is therefore on ADMISSIONS, and overflow admits NONE of them rather
+ * than an arbitrary prefix. A prefix would not bound the failure — the abort
+ * comes from the transitive payload of whichever trees get folded in — and it
+ * would make the receipt depend on an arbitrary slice of a sorted name list.
+ * Dropping the channel wholesale falls back to the specifier-only receipt,
+ * which is the behaviour that ships today and is known not to abort, and leaves
+ * the declared-intent half in {@link dependencyNames} untouched.
+ *
+ * Four is measured, not guessed. Monorepo and workspace links are declared
+ * (`file:`/`link:`/`workspace:`) and travel the uncapped declared half, so this
+ * channel only ever carries UNDECLARED `npm link <pkg>` — a manual, per-package
+ * developer action, in practice one or two packages. A mis-fire admits the
+ * entire dev-only set instead: 13 names in this repository's own install, tens
+ * in a typical application. The cap sits an order of magnitude below the
+ * mis-fire population and comfortably above realistic link counts.
+ */
+const MAX_UNDECLARED_LOCAL_DEV_DEPENDENCIES = 4;
+
+/**
  * Dependency names whose resolved packages can contribute analyzer semantics.
  *
  * The three runtime sections are enumerated wholesale. `devDependencies` are
@@ -1020,7 +1072,16 @@ function isLocallyLinkedSpecifier(specifier: unknown): boolean {
  *
  * An unresolvable link (a published install, where the sibling checkout does not
  * exist) still contributes its `<missing>` edge, so the linked package appearing
- * or disappearing remains a receipt change rather than a silent one.
+ * or disappearing remains a receipt change rather than a silent one. That is why
+ * the specifier check cannot be replaced by resolution: resolution returns
+ * `null` for an absent linked checkout exactly as it does for an uninstalled
+ * registry dev tool, and the two must not be conflated.
+ *
+ * This function is the DECLARED-INTENT half and is enumerated for every package
+ * in the dependency BFS, so it must stay a pure function of the manifest. The
+ * RESOLVED-LOCATION half — `npm link <pkg>`, which leaves the specifier a
+ * registry range — lives in {@link undeclaredLocalDevDependencyNames} and is
+ * applied to the root package only.
  */
 function dependencyNames(manifest: PackageManifest): string[] {
   const names = new Set<string>();
@@ -1077,6 +1138,53 @@ function resolveDependencyPackageRoot(
   }
 }
 
+/**
+ * Dev dependencies that are locally linked by INSTALLED LOCATION rather than by
+ * declared specifier — the `npm link <pkg>` shape, where the manifest still
+ * carries a registry range while `node_modules/<pkg>` is a symlink into a
+ * working checkout. {@link isLocallyLinkedSpecifier} is blind to those, yet the
+ * linked code is exactly as load-bearing for analyzer semantics as a declared
+ * `file:` sibling, so a semantic-only edit there would move neither digest.
+ *
+ * The resolver already knows: {@link resolveDependencyPackageRoot} returns a
+ * realpath, so a linked package reports a root outside every `node_modules`
+ * tree while an ordinary installed package cannot.
+ *
+ * Two properties are load-bearing and must not be relaxed:
+ *
+ * 1. ROOT ONLY. {@link dependencyNames} runs for every package in the BFS, and
+ *    published tarballs keep their `devDependencies`, so probing dev-only names
+ *    everywhere costs 1998 resolutions rather than the ~13 this manifest
+ *    declares — measured on this install, with 0 true positives. Persisted
+ *    `dependencyPathGuards` grow 2220 → 11049, and every guard is re-probed on
+ *    each warm validation, so the cost is recurring and on the `status` path.
+ *    Root-only costs 13 resolutions and ~29 guards.
+ * 2. An unresolvable name is NEVER admitted. `null` here means "uninstalled
+ *    registry dev tool" far more often than "broken link", and admitting it
+ *    would emit a `<missing>` edge for every dev tool absent from a published
+ *    install. Declared links keep that edge through {@link dependencyNames};
+ *    undeclared ones have no declaration to honour.
+ *
+ * The admission count is bounded by {@link MAX_UNDECLARED_LOCAL_DEV_DEPENDENCIES}.
+ */
+function undeclaredLocalDevDependencyNames(
+  rootPackage: RuntimePackage,
+  pathGuards: Map<string, DependencyPathGuardResult>,
+  limits: AnalyzerIdentityTraversalLimits,
+): string[] {
+  const development = rootPackage.manifest.devDependencies;
+  if (!development || typeof development !== 'object') return [];
+  const admitted: string[] = [];
+  for (const [name, specifier] of Object.entries(development)) {
+    // Already carried by the declared half; resolving again would only add
+    // guards. Its `<missing>` edge is that half's responsibility.
+    if (isLocallyLinkedSpecifier(specifier)) continue;
+    const resolved = resolveDependencyPackageRoot(rootPackage.root, name, pathGuards, limits);
+    if (resolved !== null && !hasNodeModulesSegment(resolved)) admitted.push(name);
+  }
+  return admitted.length <= MAX_UNDECLARED_LOCAL_DEV_DEPENDENCIES ? admitted : [];
+}
+
 function collectRuntimePackages(
   packageRoot: string,
   directoryGuards: Map<string, DependencyDirectoryGuard>,
@@ -1107,7 +1215,21 @@ function collectRuntimePackages(
 
   for (let index = 0; index < queue.length; index += 1) {
     const parent = queue[index];
-    for (const dependencyName of dependencyNames(parent.manifest)) {
+    // The declared half is enumerated for every package; the resolved-location
+    // half is scoped to the root package, where the 1998-resolution /
+    // 8829-extra-guard blow-up documented on
+    // `undeclaredLocalDevDependencyNames` cannot occur. Dropping this scope is
+    // the expensive regression, so it is pinned by a guard-count test.
+    const dependencies =
+      parent.root === packageRoot
+        ? [
+            ...new Set([
+              ...dependencyNames(parent.manifest),
+              ...undeclaredLocalDevDependencyNames(parent, pathGuards, limits),
+            ]),
+          ].sort(compareBytes)
+        : dependencyNames(parent.manifest);
+    for (const dependencyName of dependencies) {
       budget.edges += 1;
       if (budget.edges > limits.runtimeEdges) {
         throw new Error(
