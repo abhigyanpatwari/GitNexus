@@ -19,19 +19,12 @@ import {
   STALE_HASH_SENTINEL,
   NodeTableName,
 } from './schema.js';
-// Analyze-only, but reached from MCP server startup via `pool-adapter.js`. #2802
-// proposed lazy-importing it; rejected, because deferring relocates the cost
-// rather than removing it: `core/search/bm25-index.ts` statically imports
-// `normalizeFtsText` from here and `local-backend.ts` dynamically imports
-// bm25-index on the FTS query path, so first query pays what startup saved.
-// The saving is small regardless — measured 2026-08-03 (#2802): ~1.6 ms beyond
-// the siblings this module imports anyway (`schema.js`, `rel-pair-routing.js`,
-// `graph/types.js`), median of 45 cold imports on local disk. The same import
-// on a network mount measured ~50 ms, so that figure is environment-bound, not
-// a property of the module. The startup cost #2802 was really chasing was
-// `pdg-impact.ts` -> the language provider registry (several hundred modules,
-// ~150 ms cold, same run), cut separately and pinned by
-// `test/integration/mcp/startup-language-closure.test.ts`.
+// Analyze-only, but reached from MCP startup via `pool-adapter.js`. #2802
+// proposed lazy-importing it; rejected — `core/search/bm25-index.ts` statically
+// imports `normalizeFtsText` from `csv-generator.js`, and `local-backend.ts`
+// dynamically imports bm25-index on the FTS query path, so deferring here
+// relocates the startup cost to first query rather than removing it. The
+// measured figures live in #2802; they were environment-bound, this is not.
 import { streamAllCSVsToDisk, type StreamedCSVResult } from './csv-generator.js';
 import type { GraphEmitManifest } from './graph-emit-sink.js';
 import type { PdgEmitManifest } from './pdg-emit-sink.js';
