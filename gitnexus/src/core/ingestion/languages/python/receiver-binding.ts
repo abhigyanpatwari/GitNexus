@@ -126,13 +126,24 @@ export function synthesizeReceiverTypeBinding(fnNode: SyntaxNode): CaptureMatch 
  * (subscript, await, comprehension, bare name) is left alone — that is the
  * "name-only guess" this module deliberately refuses.
  */
-function constructorCallTypeName(right: SyntaxNode | null): string | undefined {
+function constructorCallTypeName(
+  right: SyntaxNode | null,
+  receiverName: string,
+): string | undefined {
   if (right === null || right.type !== 'call') return undefined;
   const callee = right.childForFieldName('function');
   if (callee === null) return undefined;
   if (callee.type !== 'identifier' && callee.type !== 'attribute') return undefined;
   const text = callee.text.trim();
-  return text.length > 0 ? text : undefined;
+  if (text.length === 0) return undefined;
+  // `self.p = self.build()` is a METHOD call, not a construction. Accepting it
+  // bound `p` to the non-type `"self.build"`, which resolves to nothing — and
+  // because it shares this weakest tier, a later such assignment DISPLACED an
+  // earlier real `self.p = Outer()`, leaving the field untyped again. Measured:
+  // both `self.q = self.make()` and the displacement pair emitted no CALLS edge
+  // at all. Rejecting a callee rooted at the receiver keeps the construction.
+  if (text === receiverName || text.startsWith(`${receiverName}.`)) return undefined;
+  return text;
 }
 
 /**
@@ -217,7 +228,7 @@ export function synthesizeConstructorFieldTypeBindings(fnNode: SyntaxNode): Capt
           // an explicit annotation or a parameter annotation still wins.
           const constructedType =
             explicitType === null && parameterType === undefined
-              ? constructorCallTypeName(right)
+              ? constructorCallTypeName(right, receiverName)
               : undefined;
           const typeName = explicitType?.text ?? parameterType ?? constructedType;
           if (typeName !== undefined) {

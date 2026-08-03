@@ -142,6 +142,18 @@ class AssignedField:
 
     def run(self, x):
         return self.q.inner().compute(x)
+
+
+class ReassignedField:
+    def __init__(self):
+        self.r = Outer()
+        self.r = self.rebuild()
+
+    def rebuild(self):
+        return Outer()
+
+    def run(self, x):
+        return self.r.inner().compute(x)
 `;
 
 // ── Ruby ─────────────────────────────────────────────────────────────────────
@@ -373,6 +385,19 @@ const CASES: readonly LanguageCase[] = [
       {
         name: 'assigned-field',
         callerId: `Method:${PY_FILE}:AssignedField.run#1`,
+        targets: [`Method:${PY_FILE}:Outer.inner#0`],
+        status: 'resolves',
+      },
+      // A method call is not a construction. `self.r = Outer()` followed by
+      // `self.r = self.rebuild()` must keep the FIRST binding: both would sit
+      // in the weakest tier, so accepting `self.rebuild()` as a constructor let
+      // the later one displace the real type and the field went untyped again —
+      // measured as zero CALLS edges before `constructorCallTypeName` learned to
+      // reject a callee rooted at the receiver. This row fails without that
+      // rejection, which is the only reason it exists.
+      {
+        name: 'reassigned-from-method-call',
+        callerId: `Method:${PY_FILE}:ReassignedField.run#1`,
         targets: [`Method:${PY_FILE}:Outer.inner#0`],
         status: 'resolves',
       },
