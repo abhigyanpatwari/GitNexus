@@ -49,10 +49,15 @@
  *
  * Dart is the one language here that writes a field with NO receiver prefix, so
  * `r = Outer()` in a constructor is syntactically identical to assigning a
- * local. It binds only when the class declares that field AND the enclosing body
- * declares no local of the same name — exactly when Dart itself resolves the bare
- * name to the field. A `this.`-prefixed write needs neither test. The shadowing
- * case is asserted: a body-local of the same name must leave the field unbound.
+ * local. It binds only when the class declares that field AND the enclosing
+ * member binds no name that shadows it — exactly when Dart itself resolves the
+ * bare name to the field. A `this.`-prefixed write needs neither test. The
+ * shadowing cases are asserted, not described: a body-local, a formal parameter,
+ * a closure parameter, a catch binding and a for-in variable each get a row.
+ * "Local declarations" alone was the first attempt and was wrong in both
+ * directions — a parameter write retyped the field to the wrong class AND
+ * displaced the constructor's correct binding, so the shadow rows below assert
+ * the SURVIVING correct target rather than an absence.
  *
  * Swift reached parity only once a SEPARATE defect was fixed alongside: its
  * methods are emitted as `Function` nodes while the scope extractor derives
@@ -281,6 +286,70 @@ class ShadowedAssignedField {
   }
   int run(int x) {
     return s.inner().compute(x);
+  }
+}
+
+class Other {
+  Other inner() {
+    return Other();
+  }
+}
+
+class ParamShadowedField {
+  var t;
+  ParamShadowedField() {
+    t = Outer();
+  }
+  void reset(Other t) {
+    t = Other();
+  }
+  int run(int x) {
+    return t.inner().compute(x);
+  }
+}
+
+class ClosureShadowedField {
+  var u;
+  ClosureShadowedField() {
+    u = Outer();
+  }
+  void reset(xs) {
+    xs.forEach((u) {
+      u = Other();
+    });
+  }
+  int run(int x) {
+    return u.inner().compute(x);
+  }
+}
+
+class CatchShadowedField {
+  var w;
+  CatchShadowedField() {
+    w = Outer();
+  }
+  void reset() {
+    try {} on Err catch (w) {
+      w = Other();
+    }
+  }
+  int run(int x) {
+    return w.inner().compute(x);
+  }
+}
+
+class LoopShadowedField {
+  var y;
+  LoopShadowedField() {
+    y = Outer();
+  }
+  void reset(xs) {
+    for (var y in xs) {
+      y = Other();
+    }
+  }
+  int run(int x) {
+    return y.inner().compute(x);
   }
 }
 `;
@@ -524,6 +593,46 @@ const CASES: readonly LanguageCase[] = [
         callerId: `Method:${DART_FILE}:ShadowedAssignedField.run#1`,
         targets: [],
         status: 'known-gap',
+      },
+      // A local `var` is only ONE of Dart's binders. These four rows each write
+      // the field's name under a DIFFERENT binder — a formal parameter, a
+      // closure parameter, a catch binding, a for-in variable — in a method
+      // that is not the constructor, while the constructor has already typed
+      // that field `Outer` correctly.
+      //
+      // They assert a POSITIVE target on purpose. An empty-result row passes
+      // vacuously whenever the fixture stops reaching the guard at all, so the
+      // thing being pinned is that the CORRECT `Outer` binding SURVIVES the
+      // shadowed write. Before `collectDartBodyShadows` looked past local
+      // declarations, every one of these bare writes was read as a write to the
+      // field: it retyped the field to `Other` — measured as the WRONG edge
+      // `Other.inner#0`, not merely a missing one — and destroyed the
+      // constructor's binding at the same time. `Other` therefore declares its
+      // own `inner()`, so the fabricated edge is a visible wrong target rather
+      // than silence that an unrelated regression could also produce.
+      {
+        name: 'param-shadowed-assigned-field',
+        callerId: `Method:${DART_FILE}:ParamShadowedField.run#1`,
+        targets: [`Method:${DART_FILE}:Outer.inner#0`],
+        status: 'resolves',
+      },
+      {
+        name: 'closure-param-shadowed-assigned-field',
+        callerId: `Method:${DART_FILE}:ClosureShadowedField.run#1`,
+        targets: [`Method:${DART_FILE}:Outer.inner#0`],
+        status: 'resolves',
+      },
+      {
+        name: 'catch-shadowed-assigned-field',
+        callerId: `Method:${DART_FILE}:CatchShadowedField.run#1`,
+        targets: [`Method:${DART_FILE}:Outer.inner#0`],
+        status: 'resolves',
+      },
+      {
+        name: 'loop-var-shadowed-assigned-field',
+        callerId: `Method:${DART_FILE}:LoopShadowedField.run#1`,
+        targets: [`Method:${DART_FILE}:Outer.inner#0`],
+        status: 'resolves',
       },
     ],
   },

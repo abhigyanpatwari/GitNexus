@@ -611,10 +611,11 @@ function emitVarTypeBinding(initVarDef: SyntaxNode, out: CaptureMatch[]): void {
  * Dart is the one language here that writes a field with NO receiver prefix, so
  * `r = Outer()` is syntactically identical to assigning a constructor-local. The
  * discriminator is the class's own declared field set: a bare name binds only
- * when the enclosing class declares it AND the enclosing function body does not
- * declare a local of the same name, which is exactly when Dart itself resolves
- * `r` to the field. A `this.`-prefixed write is unambiguous and needs neither
- * test.
+ * when the enclosing class declares it AND the enclosing member binds no name of
+ * its own that would shadow it (`collectDartBodyShadows` — parameters, locals,
+ * closure parameters, catch bindings, loop variables), which is exactly when
+ * Dart itself resolves `r` to the field. A `this.`-prefixed write is unambiguous
+ * and needs neither test.
  *
  * Emitted as `constructor-inferred`, the weakest source, so a field that also
  * carries an annotation keeps it. The narrow `@type-binding.dart-field` marker
@@ -642,15 +643,7 @@ function emitDartFieldAssignmentBindings(classNode: SyntaxNode, out: CaptureMatc
 
   for (const member of body.namedChildren) {
     if (member === null || member.type !== 'function_body') continue;
-    // Locals declared anywhere in this body shadow the field for the whole
-    // body — Dart hoists a local's name over the enclosing scope, so a
-    // conservative body-wide check is the right granularity here.
-    const locals = new Set<string>();
-    walkNamedTree(member, (n) => {
-      if (n.type !== 'initialized_variable_definition') return;
-      const nameNode = n.childForFieldName('name');
-      if (nameNode !== null) locals.add(nameNode.text);
-    });
+    const locals = collectDartBodyShadows(member);
 
     walkNamedTree(member, (node) => {
       if (node.type !== 'assignment_expression') return;
@@ -700,6 +693,105 @@ function emitDartFieldAssignmentBindings(classNode: SyntaxNode, out: CaptureMatc
       });
     });
   }
+}
+
+/**
+ * Every name BOUND by one class-member body — the shadow set the bare-name
+ * branch of `emitDartFieldAssignmentBindings` tests against.
+ *
+ * A local `var` is only ONE of Dart's binders, and a bare `r = Outer()` writes
+ * whichever binder wins, so a set built from local declarations alone made a
+ * write to any OTHER binder look like a field write. `void reset(Alpha r) { r =
+ * Alpha(); }` in a class with a field `r` retyped the FIELD to `Alpha` —
+ * fabricating an edge and displacing the type the constructor had correctly
+ * given it. Formal parameters are the sharpest case because they are not even
+ * inside the body: `function_body` is a SIBLING of the `method_signature` that
+ * carries them, so no walk of the body can ever see one.
+ *
+ * Deliberately over-approximate in the shadow direction. The set is body-wide
+ * (a binder in a nested closure shadows for the whole body) and a parameter
+ * shape whose name cannot be read contributes nothing rather than being guessed
+ * at. Both err toward DECLINING to bind, which is the right error: a missed
+ * field type costs an edge, a wrong one produces an edge to the wrong class and
+ * destroys a correct binding — the failure mode this whole line of work exists
+ * to avoid (see `scope-resolution/passes/compound-receiver.ts`).
+ */
+function collectDartBodyShadows(bodyNode: SyntaxNode): Set<string> {
+  const shadows = new Set<string>();
+  // The enclosing function's own formal parameters live OUTSIDE the body, on
+  // the `method_signature` sibling that precedes it — the shape every class
+  // member takes (method, constructor, factory, static, getter, setter,
+  // operator, `async`/`async*`).
+  const signature = bodyNode.previousNamedSibling;
+  if (signature !== null && signature.type === 'method_signature') {
+    walkNamedTree(signature, (n) => addDartBinderName(n, shadows));
+  }
+  walkNamedTree(bodyNode, (n) => addDartBinderName(n, shadows));
+  return shadows;
+}
+
+/** Record the name `node` binds, if it binds one. */
+function addDartBinderName(node: SyntaxNode, out: Set<string>): void {
+  switch (node.type) {
+    // `var s;`, `final r = 1;`, and the FIRST declarator of `var a = 1, b = 2;`.
+    // `for_loop_parts` carries the for-IN variable on the same `name` field
+    // (`for (var r in xs)`); the C-style form instead nests a
+    // `local_variable_declaration` the walk reaches on its own.
+    case 'initialized_variable_definition':
+    case 'for_loop_parts': {
+      const nameNode = node.childForFieldName('name');
+      if (nameNode !== null) out.add(nameNode.text);
+      return;
+    }
+    // Formal parameters — of the enclosing member, of a closure
+    // (`function_expression`), and of a nested `local_function_declaration`.
+    case 'formal_parameter': {
+      const name = dartParameterName(node);
+      if (name !== null) out.add(name);
+      return;
+    }
+    // `on E catch (e, stack)` — every identifier in the list is a binding.
+    case 'catch_parameters': {
+      for (const child of node.namedChildren) {
+        if (child !== null && child.type === 'identifier') out.add(child.text);
+      }
+      return;
+    }
+    // Second and later declarators of `var a = 1, b = 2;` — fieldless, so the
+    // name is the first named child. (A class field is this node type too, but
+    // only ever under `initialized_identifier_list`, which no body contains.)
+    case 'initialized_identifier': {
+      const first = node.namedChild(0);
+      if (first !== null && first.type === 'identifier') out.add(first.text);
+      return;
+    }
+    default:
+      return;
+  }
+}
+
+/** The name a `formal_parameter` binds, across every shape the grammar gives it. */
+function dartParameterName(param: SyntaxNode): string | null {
+  // `Alpha r`, `final Alpha r`, `void Function(int) r`, `{required Beta r}`,
+  // `[Delta r]` — all carry an explicit `name` field.
+  const named = param.childForFieldName('name');
+  if (named !== null) return named.text;
+
+  const only = param.namedChild(0);
+  if (only === null) return null;
+  // An untyped closure parameter (`(r) { … }`) is a bare identifier with no
+  // field to read it from.
+  if (only.type === 'identifier') return only.text;
+  // `this.r` / `super.r` bind a parameter NAMED `r` that is initialized from
+  // the field — a later bare `r = …` writes that parameter, not the field, so
+  // these shadow exactly like any other.
+  if (only.type === 'constructor_param' || only.type === 'super_formal_parameter') {
+    for (let i = only.namedChildCount - 1; i >= 0; i--) {
+      const child = only.namedChild(i);
+      if (child !== null && child.type === 'identifier') return child.text;
+    }
+  }
+  return null;
 }
 
 function emitHeritage(classNode: SyntaxNode, out: CaptureMatch[]): void {
