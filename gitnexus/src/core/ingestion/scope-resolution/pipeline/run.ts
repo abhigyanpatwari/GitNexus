@@ -432,7 +432,9 @@ interface RunScopeResolutionInput {
    * effect of `extractParsedFile` running inside the worker; threading
    * them here is what lets the warm-cache analyze run skip the ~58s
    * scope-resolution re-parse loop on a multi-thousand-file repo.
-   * Cache miss is safe — falls back to fresh extract.
+   * A resolver may reject a foreign-language context artifact through
+   * `acceptPreExtractedParsedFile`; cache miss or rejection falls back to a
+   * fresh extract without mutating the authoritative cache entry.
    */
   readonly preExtractedParsedFiles?: ReadonlyMap<string, ParsedFile>;
   /**
@@ -579,8 +581,12 @@ export function runScopeResolution(
     // directly — skips a tree-sitter re-parse on the main thread.
     let reusedPreExtracted = false;
     if (preExtracted !== undefined) {
-      parsed = preExtracted.get(file.path);
-      if (parsed !== undefined) {
+      const candidate = preExtracted.get(file.path);
+      if (
+        candidate !== undefined &&
+        (provider.acceptPreExtractedParsedFile?.(candidate) ?? true)
+      ) {
+        parsed = candidate;
         preExtractedHits++;
         reusedPreExtracted = true;
       }

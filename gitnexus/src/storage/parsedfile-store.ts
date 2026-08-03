@@ -52,12 +52,19 @@ import { promises as fs, mkdirSync, writeFileSync } from 'node:fs';
 import path from 'node:path';
 import v8 from 'node:v8';
 import vm from 'node:vm';
-import type {
-  CallableFlowSite,
-  ParsedFile,
-  ReferenceSite,
-  SymbolDefinition,
+import {
+  SupportedLanguages,
+  type ParsedFile,
+  type CallableFlowSite,
+  type ReferenceSite,
+  type SymbolDefinition,
 } from 'gitnexus-shared';
+/**
+ * Keep runtime validation beside the untrusted disk boundary. Hand-built
+ * in-memory fixtures may omit ParsedFile.language, but schema-v40 shards may
+ * not: the language selects the resolver that will consume the artifact.
+ */
+const SUPPORTED_LANGUAGE_IDS = new Set<string>(Object.values(SupportedLanguages));
 import { isValidReceiverChain } from '../core/ingestion/utils/receiver-chain-codec.js';
 import { logger } from '../core/logger.js';
 import { mapReplacer, mapReviver } from './parse-cache.js';
@@ -272,6 +279,10 @@ export const loadParsedFilesForPaths = async (
     if (!Array.isArray(parsed)) continue;
     for (const pf of parsed) {
       if (!pf || typeof pf.filePath !== 'string' || !wantPaths.has(pf.filePath)) continue;
+      if (typeof pf.language !== 'string' || !SUPPORTED_LANGUAGE_IDS.has(pf.language)) {
+        rejectedFiles++;
+        continue;
+      }
       const flow = sanitizeCallableFlowSites(pf.callableFlowSites);
       if (flow === undefined) {
         // non-array garbage → distrust the file, re-extract

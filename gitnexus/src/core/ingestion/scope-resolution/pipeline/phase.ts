@@ -28,7 +28,10 @@ import type { PipelinePhase, PipelineContext, PhaseResult } from '../../pipeline
 import { getPhaseOutput } from '../../pipeline-phases/types.js';
 import type { StructureOutput } from '../../pipeline-phases/structure.js';
 import type { ParseOutput } from '../../pipeline-phases/parse.js';
-import { SupportedLanguages, getLanguageFromFilename } from 'gitnexus-shared';
+import {
+  SupportedLanguages,
+  type SourceLanguageClassification,
+} from 'gitnexus-shared';
 import { readFileContents } from '../../filesystem-walker.js';
 import { runScopeResolution, type ScopeResolutionSubPhase } from './run.js';
 import { isLanguageAvailable } from '../../../tree-sitter/parser-loader.js';
@@ -152,6 +155,22 @@ export function selectScopeSourcePathsToRead(
     : primaryFilePaths.filter((filePath) => !preExtractedByPath.has(filePath));
 }
 
+/** Bucket source files by the parse phase's authoritative language manifest. */
+export function partitionSourceFilesByLanguage<T extends { readonly path: string }>(
+  files: readonly T[],
+  sourceClassifications: ReadonlyMap<string, SourceLanguageClassification>,
+): Map<SupportedLanguages, T[]> {
+  const filesByLanguage = new Map<SupportedLanguages, T[]>();
+  for (const file of files) {
+    const language = sourceClassifications.get(file.path)?.language;
+    if (language === null || language === undefined) continue;
+    const bucket = filesByLanguage.get(language);
+    if (bucket === undefined) filesByLanguage.set(language, [file]);
+    else bucket.push(file);
+  }
+  return filesByLanguage;
+}
+
 export const scopeResolutionPhase: PipelinePhase<ScopeResolutionOutput> = {
   name: 'scopeResolution',
   // Depends on `parse` because emit-references attaches edges to
@@ -173,7 +192,7 @@ export const scopeResolutionPhase: PipelinePhase<ScopeResolutionOutput> = {
     logHeapProbe('scopeResolution-enter');
     const { scannedFiles } = getPhaseOutput<StructureOutput>(deps, 'structure');
     const parseOutput = getPhaseOutput<ParseOutput>(deps, 'parse');
-    const { model, parsedFiles: workerParsedFiles } = parseOutput;
+    const { model, parsedFiles: workerParsedFiles, sourceClassifications } = parseOutput;
     // SemanticModel populated during `parse`: scope-resolution consumes
     // TypeRegistry / MethodRegistry / SymbolTable lookups instead of
     // rebuilding parallel indexes. See ARCHITECTURE.md § "Semantic-model
@@ -188,7 +207,10 @@ export const scopeResolutionPhase: PipelinePhase<ScopeResolutionOutput> = {
     // every file from scratch on the main thread.
     const preExtractedByPath = new Map<string, import('gitnexus-shared').ParsedFile>();
     for (const pf of workerParsedFiles) {
-      preExtractedByPath.set(pf.filePath, pf);
+      const language = sourceClassifications.get(pf.filePath)?.language;
+      if (language !== null && language !== undefined && pf.language === language) {
+        preExtractedByPath.set(pf.filePath, pf);
+      }
     }
 
     // Disk-backed ParsedFile store (#1983): on huge repos the parse phase
@@ -206,8 +228,8 @@ export const scopeResolutionPhase: PipelinePhase<ScopeResolutionOutput> = {
     // Drop any stale/cache-sourced entry defensively so provider-owned regex
     // capture logic is always the source of truth for the current content.
     for (const [path] of preExtractedByPath) {
-      const lang = getLanguageFromFilename(path);
-      if (lang === null) continue;
+      const lang = sourceClassifications.get(path)?.language;
+      if (lang === null || lang === undefined) continue;
       const provider = SCOPE_RESOLVERS.get(lang);
       if (provider?.languageProvider.parseStrategy === 'standalone') {
         preExtractedByPath.delete(path);
@@ -247,13 +269,12 @@ export const scopeResolutionPhase: PipelinePhase<ScopeResolutionOutput> = {
     // per-language loop below — O(languages × files), ~2.3M getLanguageFromFilename
     // calls on the Linux kernel. Bucketing once collapses that to O(F).
     // Language-agnostic: keyed by the provider-supplied SupportedLanguages value.
-    const filesByLang = new Map<
-      NonNullable<ReturnType<typeof getLanguageFromFilename>>,
-      (typeof scannedFiles)[number][]
-    >();
-    for (const f of scannedFiles) {
-      const fileLang = getLanguageFromFilename(f.path);
-      if (fileLang === null) continue;
+    const classifiedFilesByLang = partitionSourceFilesByLanguage(
+      scannedFiles,
+      sourceClassifications,
+    );
+    const filesByLang = new Map<SupportedLanguages, (typeof scannedFiles)[number][]>();
+    for (const [fileLang, classifiedFiles] of classifiedFilesByLang) {
       // Tree-sitter providers require an available grammar. Standalone regex
       // providers deliberately have none and re-extract on the main thread.
       const resolver = SCOPE_RESOLVERS.get(fileLang);
@@ -263,12 +284,7 @@ export const scopeResolutionPhase: PipelinePhase<ScopeResolutionOutput> = {
       ) {
         continue;
       }
-      let bucket = filesByLang.get(fileLang);
-      if (bucket === undefined) {
-        bucket = [];
-        filesByLang.set(fileLang, bucket);
-      }
-      bucket.push(f);
+      filesByLang.set(fileLang, classifiedFiles);
     }
     for (const [lang] of SCOPE_RESOLVERS) {
       const count = filesByLang.get(lang)?.length ?? 0;
@@ -398,7 +414,12 @@ export const scopeResolutionPhase: PipelinePhase<ScopeResolutionOutput> = {
         const loadStoreFor = async (paths: ReadonlySet<string>): Promise<void> => {
           if (!parsedFileStorePath) return;
           const fromDisk = await loadParsedFilesForPaths(parsedFileStorePath, paths);
-          for (const [fp, pf] of fromDisk) preExtractedByPath.set(fp, pf);
+          for (const [fp, pf] of fromDisk) {
+            const language = sourceClassifications.get(fp)?.language;
+            if (language !== null && language !== undefined && pf.language === language) {
+              preExtractedByPath.set(fp, pf);
+            }
+          }
         };
 
         let scopeFilePaths: Set<string>;
@@ -414,6 +435,28 @@ export const scopeResolutionPhase: PipelinePhase<ScopeResolutionOutput> = {
             allScannedPaths,
             resolutionConfig,
           });
+          // The out-of-core ParsedFile store is loaded lazily. A context hook
+          // may discover one import frontier from the primary files, then need
+          // those newly loaded ParsedFiles to discover the next frontier. Fold
+          // to a fixed point so transitive closures remain complete without
+          // loading every language's store shards into memory up front.
+          if (parsedFileStorePath !== undefined) {
+            while (true) {
+              await loadStoreFor(scopeFilePaths);
+              const expanded = provider.collectScopeContextPaths({
+                primaryFilePaths,
+                preExtractedByPath,
+                entryFileContents,
+                allScannedPaths,
+                resolutionConfig,
+              });
+              const additions = [...expanded].filter(
+                (filePath) => !scopeFilePaths.has(filePath),
+              );
+              if (additions.length === 0) break;
+              for (const filePath of additions) scopeFilePaths.add(filePath);
+            }
+          }
           // Read only the extra context files (TS/JS etc.) not already loaded.
           const extraPaths = [...scopeFilePaths].filter((p) => !entryFileContents.has(p));
           const extraContents = await readFileContents(ctx.repoPath, extraPaths);

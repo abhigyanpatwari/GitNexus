@@ -490,6 +490,8 @@ export interface ScopeLookup {
 export interface Callsite {
   /** Number of arguments at the call site, if available. */
   readonly arity?: number;
+  /** Candidate member spellings attached by syntax-sugar capture emitters. */
+  readonly candidateNames?: readonly string[];
   /** Inferred argument types at the call site, one per argument.
    *  An empty string entry means the type was not inferred. */
   readonly argumentTypes?: readonly string[];

@@ -1515,7 +1515,7 @@ const TABLES_WITH_EXPORTED = new Set<string>([
 export const getCopyQuery = (table: NodeTableName, filePath: string): string => {
   const t = escapeTableName(table);
   if (table === 'File') {
-    return `COPY ${t}(id, name, filePath, content) FROM "${filePath}" ${COPY_CSV_OPTS}`;
+    return `COPY ${t}(id, name, filePath, content, language, languageReason, languageClassifierVersion) FROM "${filePath}" ${COPY_CSV_OPTS}`;
   }
   if (table === 'Folder') {
     return `COPY ${t}(id, name, filePath) FROM "${filePath}" ${COPY_CSV_OPTS}`;
@@ -1542,20 +1542,29 @@ export const getCopyQuery = (table: NodeTableName, filePath: string): string => 
     return `COPY ${t}(id, filePath, startLine, endLine, text, callees, calleeIds) FROM "${filePath}" ${COPY_CSV_OPTS}`;
   }
   if (table === 'Class') {
-    return `COPY ${t}(id, name, filePath, startLine, endLine, isExported, content, description, frameworkAnnotations) FROM "${filePath}" ${COPY_CSV_OPTS}`;
+    return `COPY ${t}(id, name, filePath, startLine, endLine, isExported, content, description, frameworkAnnotations, language, sourceIdentity, sourceRole, declarationKey) FROM "${filePath}" ${COPY_CSV_OPTS}`;
+  }
+  if (table === 'Interface') {
+    return `COPY ${t}(id, name, filePath, startLine, endLine, isExported, content, description, language, sourceIdentity, sourceRole, declarationKey) FROM "${filePath}" ${COPY_CSV_OPTS}`;
+  }
+  if (table === 'Function') {
+    return `COPY ${t}(id, name, filePath, startLine, endLine, isExported, content, description, language, sourceIdentity) FROM "${filePath}" ${COPY_CSV_OPTS}`;
   }
   if (table === 'Method') {
-    return `COPY ${t}(id, name, filePath, startLine, endLine, isExported, content, description, parameterCount, returnType) FROM "${filePath}" ${COPY_CSV_OPTS}`;
+    return `COPY ${t}(id, name, filePath, startLine, endLine, isExported, content, description, parameterCount, returnType, language, sourceIdentity, selector, isStatic, sourceRole, declarationKey, dispatchKey, categoryName, parameterTypes, annotations) FROM "${filePath}" ${COPY_CSV_OPTS}`;
   }
   if (table === 'Property') {
-    return `COPY ${t}(id, name, filePath, startLine, endLine, content, description, declaredType, isDetail) FROM "${filePath}" ${COPY_CSV_OPTS}`;
+    return `COPY ${t}(id, name, filePath, startLine, endLine, content, description, declaredType, isDetail, language, sourceIdentity, sourceRole, declarationKey, getterSelector, setterSelector, annotations) FROM "${filePath}" ${COPY_CSV_OPTS}`;
+  }
+  if (table === 'CodeElement') {
+    return `COPY ${t}(id, name, filePath, startLine, endLine, isExported, content, description, language, sourceIdentity, sourceRole, categoryName, hostClassName, declarationKey) FROM "${filePath}" ${COPY_CSV_OPTS}`;
   }
   // TypeScript/JS code element tables have isExported; multi-language tables do not
   if (TABLES_WITH_EXPORTED.has(table)) {
     return `COPY ${t}(id, name, filePath, startLine, endLine, isExported, content, description) FROM "${filePath}" ${COPY_CSV_OPTS}`;
   }
   // Multi-language tables (Struct, Impl, Trait, Macro, etc.)
-  return `COPY ${t}(id, name, filePath, startLine, endLine, content, description) FROM "${filePath}" ${COPY_CSV_OPTS}`;
+  return `COPY ${t}(id, name, filePath, startLine, endLine, content, description, language, sourceIdentity) FROM "${filePath}" ${COPY_CSV_OPTS}`;
 };
 
 /**

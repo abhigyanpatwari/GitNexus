@@ -1,4 +1,5 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { SupportedLanguages } from 'gitnexus-shared';
 
 const { createParserForLanguage, getLanguageFromFilename, parseSourceSafeSpy } = vi.hoisted(() => ({
   createParserForLanguage: vi.fn(),
@@ -101,5 +102,34 @@ describe('ensureAndParse', () => {
 
     expect(parseSourceSafeSpy).toHaveBeenCalled();
     expect(result).not.toBeNull();
+  });
+
+  it('uses an explicit language for content-classified Objective-C headers', async () => {
+    const objcParse = vi.fn().mockReturnValue({ lang: 'objective-c' });
+    createParserForLanguage.mockResolvedValue({ parse: objcParse });
+
+    const { ensureAndParse } = await import('../../src/core/embeddings/ast-utils.js');
+    const result = await ensureAndParse(
+      '@interface Store : NSObject\n@end',
+      'Store.h',
+      SupportedLanguages.ObjectiveC,
+    );
+
+    expect(result).toEqual({ lang: 'objective-c' });
+    expect(createParserForLanguage).toHaveBeenCalledWith(
+      SupportedLanguages.ObjectiveC,
+      'Store.h',
+    );
+    expect(getLanguageFromFilename).not.toHaveBeenCalled();
+  });
+
+  it('fails closed for a content-classified path when no explicit language is supplied', async () => {
+    createParserForLanguage.mockResolvedValue({ parse: vi.fn() });
+
+    const { ensureAndParse } = await import('../../src/core/embeddings/ast-utils.js');
+    const result = await ensureAndParse('@interface Store : NSObject\n@end', 'Store.h');
+
+    expect(result).toBeNull();
+    expect(createParserForLanguage).not.toHaveBeenCalled();
   });
 });

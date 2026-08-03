@@ -33,7 +33,7 @@ withTestLbugDB('spring-bean-metadata-roundtrip', (handle) => {
     const classCsvPath = path.join(csvDir, 'class.csv');
     const classCsv = await fs.readFile(classCsvPath, 'utf8');
     expect(classCsv.split('\n')[0]).toBe(
-      'id,name,filePath,startLine,endLine,isExported,content,description,frameworkAnnotations',
+      'id,name,filePath,startLine,endLine,isExported,content,description,frameworkAnnotations,language,sourceIdentity,sourceRole,declarationKey',
     );
     expect(classCsv).toContain('org.springframework.stereotype.Service');
     expect(classCsv).toContain(FRAMEWORK_MARKER);

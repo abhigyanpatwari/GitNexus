@@ -18,6 +18,7 @@ export enum SupportedLanguages {
   PHP = 'php',
   Kotlin = 'kotlin',
   Swift = 'swift',
+  ObjectiveC = 'objective-c',
   Dart = 'dart',
   Vue = 'vue',
   /** Standalone regex processor — no tree-sitter, no LanguageProvider. */

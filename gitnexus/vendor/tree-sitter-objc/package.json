@@ -1,0 +1,10 @@
+{
+  "name": "tree-sitter-objc",
+  "version": "3.0.2",
+  "description": "Objective-C grammar for tree-sitter",
+  "repository": "https://github.com/tree-sitter-grammars/tree-sitter-objc",
+  "license": "MIT",
+  "main": "bindings/node/index.js",
+  "types": "bindings/node/index.d.ts",
+  "_vendoredBy": "gitnexus - runtime package derived from tree-sitter-objc@3.0.2 at commit 181a81b8f23a2d593e7ab4259981f50122909fda. Compatibility with the bundled tree-sitter@0.21.1 runtime is verified by GitNexus load/query/parse smoke tests. Loaded from vendor/ by absolute path and never copied into node_modules."
+}

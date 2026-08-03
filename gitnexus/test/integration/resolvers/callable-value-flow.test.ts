@@ -30,6 +30,7 @@ const CALLABLE_FLOW_PROVIDER_COVERAGE = {
   [SupportedLanguages.PHP]: 'matrix',
   [SupportedLanguages.Kotlin]: 'matrix',
   [SupportedLanguages.Swift]: 'matrix',
+  [SupportedLanguages.ObjectiveC]: 'dedicated',
   [SupportedLanguages.Dart]: 'matrix',
   [SupportedLanguages.Vue]: 'matrix',
   [SupportedLanguages.Cobol]: 'matrix',

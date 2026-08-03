@@ -134,7 +134,7 @@ describe('contentHashForNode', () => {
   });
 
   it('exports a text template version marker', () => {
-    expect(EMBEDDING_TEXT_VERSION).toBe('v4');
+    expect(EMBEDDING_TEXT_VERSION).toBe('v5');
   });
 });
 
@@ -310,12 +310,33 @@ describe('runEmbeddingPipeline incremental filter', () => {
               content: n.content,
               startLine: n.startLine,
               endLine: n.endLine,
+              language: n.language,
             }));
         }
       }
       return [];
     });
   };
+
+  it('requests persisted language metadata for every embeddable node query', async () => {
+    mockEmbedderSetup();
+    const executeQuery = mockExecuteQuery([
+      makeNode({ language: 'objective-c' as EmbeddableNode['language'] }),
+    ]);
+
+    const { runEmbeddingPipeline } =
+      await import('../../src/core/embeddings/embedding-pipeline.js');
+    await runEmbeddingPipeline(
+      executeQuery,
+      mockExecuteWithReusedStatement(),
+      onProgress,
+      { batchSize: 1 },
+    );
+
+    const symbolQueries = queryCalls.filter((query) => query.includes('RETURN n.id AS id'));
+    expect(symbolQueries.length).toBeGreaterThan(0);
+    expect(symbolQueries.every((query) => query.includes('n.language AS language'))).toBe(true);
+  });
 
   /**
    * Records every statement into `stmtCalls`. With `failOn`, statements whose

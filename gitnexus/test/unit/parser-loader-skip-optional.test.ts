@@ -39,6 +39,7 @@ describe('parser-loader GITNEXUS_SKIP_OPTIONAL_GRAMMARS runtime gate', () => {
     expect(isLanguageAvailable(SupportedLanguages.Swift)).toBe(false);
     expect(isLanguageAvailable(SupportedLanguages.Dart)).toBe(false);
     expect(isLanguageAvailable(SupportedLanguages.Kotlin)).toBe(false);
+    expect(isLanguageAvailable(SupportedLanguages.ObjectiveC)).toBe(false);
   });
 
   it('skip=all/true/* also skip every optional grammar', async () => {
@@ -47,6 +48,7 @@ describe('parser-loader GITNEXUS_SKIP_OPTIONAL_GRAMMARS runtime gate', () => {
       expect(isLanguageAvailable(SupportedLanguages.Swift), `value=${v}`).toBe(false);
       expect(isLanguageAvailable(SupportedLanguages.Dart), `value=${v}`).toBe(false);
       expect(isLanguageAvailable(SupportedLanguages.Kotlin), `value=${v}`).toBe(false);
+      expect(isLanguageAvailable(SupportedLanguages.ObjectiveC), `value=${v}`).toBe(false);
     }
   });
 

@@ -13,6 +13,7 @@ import { characterChunk } from './character-chunk.js';
 import type { Chunk } from './character-chunk.js';
 import { ensureAndParse, findDeclarationNode, findFunctionNode } from './ast-utils.js';
 import { buildLineIndex, resolveChunkLines } from './line-index.js';
+import type { SupportedLanguages } from 'gitnexus-shared';
 import {
   CHUNKING_RULES,
   CHUNK_MODE_AST_DECLARATION,
@@ -31,6 +32,7 @@ export const chunkNode = async (
   endLine: number,
   chunkSize: number = 1200,
   overlap: number = 120,
+  language?: SupportedLanguages,
 ): Promise<Chunk[]> => {
   // Content fits in one chunk — no splitting needed
   if (content.length <= chunkSize) {
@@ -61,6 +63,7 @@ export const chunkNode = async (
         chunkSize,
         overlap,
         rule,
+        language,
       );
       if (astChunks.length > 0) return astChunks;
     }
@@ -74,6 +77,7 @@ export const chunkNode = async (
         chunkSize,
         overlap,
         rule,
+        language,
       );
       if (declarationChunks.length > 0) return declarationChunks;
     }
@@ -98,8 +102,9 @@ const astChunk = async (
   chunkSize: number,
   overlap: number,
   rule: ChunkingRule,
+  language?: SupportedLanguages,
 ): Promise<Chunk[]> => {
-  const tree = await ensureAndParse(content, filePath);
+  const tree = await ensureAndParse(content, filePath, language);
   if (!tree) return [];
 
   const root = tree.rootNode;
@@ -167,8 +172,9 @@ const declarationChunk = async (
   chunkSize: number,
   overlap: number,
   rule: ChunkingRule,
+  language?: SupportedLanguages,
 ): Promise<Chunk[]> => {
-  const tree = await ensureAndParse(content, filePath);
+  const tree = await ensureAndParse(content, filePath, language);
   if (!tree) return [];
 
   const targetNode = findDeclarationNode(tree.rootNode);

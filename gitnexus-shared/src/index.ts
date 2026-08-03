@@ -20,9 +20,21 @@ export type { NodeTableName, RelType } from './lbug/schema-constants.js';
 export { SupportedLanguages } from './languages.js';
 export {
   getLanguageFromFilename,
+  getLanguageCandidateFromFilename,
   getSyntaxLanguageFromFilename,
   isBladeTemplateFilename,
 } from './language-detection.js';
+export type { SourceLanguageFilenameCandidate } from './language-detection.js';
+export {
+  SOURCE_LANGUAGE_CLASSIFIER_VERSION,
+  classifySourceLanguage,
+} from './source-language-classifier.js';
+export type {
+  ClassifySourceLanguageInput,
+  SourceLanguageClassification,
+  SourceLanguageClassificationReason,
+  SourceLanguageProjectContext,
+} from './source-language-classifier.js';
 export type { MroStrategy } from './mro-strategy.js';
 
 // Pipeline progress

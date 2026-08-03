@@ -20,7 +20,7 @@ import type { PipelinePhase, PipelineContext, PhaseResult } from './types.js';
 import { getPhaseOutput } from './types.js';
 import type { StructureOutput } from './structure.js';
 import type { BindingAccumulator } from '../binding-accumulator.js';
-import type { ParsedFile } from 'gitnexus-shared';
+import type { ParsedFile, SourceLanguageClassification } from 'gitnexus-shared';
 import type {
   ExtractedFetchCall,
   ExtractedRoute,
@@ -31,6 +31,7 @@ import type {
 } from '../workers/parse-worker.js';
 import { runChunkedParseAndResolve } from './parse-impl.js';
 import type { MutableSemanticModel } from '../model/index.js';
+import { generateId } from '../../../lib/utils.js';
 
 export interface ParseOutput {
   /**
@@ -80,6 +81,8 @@ export interface ParseOutput {
    * costing ~58s on a 1000-file repo).
    */
   readonly parsedFiles: readonly ParsedFile[];
+  /** Authoritative per-source classification used for worker and scope routing. */
+  readonly sourceClassifications: ReadonlyMap<string, SourceLanguageClassification>;
 }
 
 export const parsePhase: PipelinePhase<ParseOutput> = {
@@ -111,6 +114,14 @@ export const parsePhase: PipelinePhase<ParseOutput> = {
       ctx.onProgress,
       ctx.options,
     );
+
+    for (const [filePath, classification] of result.sourceClassifications) {
+      const fileNode = ctx.graph.getNode(generateId('File', filePath));
+      if (fileNode === undefined) continue;
+      if (classification.language !== null) fileNode.properties.language = classification.language;
+      fileNode.properties.languageReason = classification.reason;
+      fileNode.properties.languageClassifierVersion = classification.classifierVersion;
+    }
 
     return {
       ...result,

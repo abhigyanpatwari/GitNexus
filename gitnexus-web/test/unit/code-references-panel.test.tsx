@@ -2,7 +2,10 @@ import { render } from '@testing-library/react';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import type { ReactNode } from 'react';
 import type { GraphNode } from 'gitnexus-shared';
-import { CodeReferencesPanel } from '../../src/components/CodeReferencesPanel';
+import {
+  CodeReferencesPanel,
+  getSyntaxLanguage,
+} from '../../src/components/CodeReferencesPanel';
 import { readFile } from '../../src/services/backend-client';
 
 const fileNode: GraphNode = {
@@ -69,5 +72,15 @@ describe('CodeReferencesPanel repo identity (#2420)', () => {
     render(<CodeReferencesPanel onFocusNode={vi.fn()} />);
 
     expect(readFile).toHaveBeenCalledWith('src/foo.ts', { repo: 'reels' });
+  });
+});
+
+describe('CodeReferencesPanel syntax language', () => {
+  it('uses persisted Objective-C language for ambiguous headers', () => {
+    expect(getSyntaxLanguage('Sources/Store.h', 'objective-c')).toBe('objectivec');
+  });
+
+  it('fails closed for ambiguous headers without persisted language', () => {
+    expect(getSyntaxLanguage('Sources/Store.h')).toBe('text');
   });
 });

@@ -8,7 +8,7 @@ import {
   restoreDurableParsedFileShard,
   loadParsedFilesForPaths,
 } from '../../../src/storage/parsedfile-store.js';
-import type { ParsedFile } from 'gitnexus-shared';
+import { SupportedLanguages, type ParsedFile } from 'gitnexus-shared';
 import type { FunctionCfg } from '../../../src/core/ingestion/cfg/types.js';
 
 // #2082 M2 U5 — the warm/mixed cache seam for statement facts. On a warm (or
@@ -51,6 +51,7 @@ const factCfg: FunctionCfg = {
 const mkParsedFile = (filePath: string): ParsedFile =>
   ({
     filePath,
+    language: SupportedLanguages.TypeScript,
     moduleScope: '',
     scopes: [],
     parsedImports: [],

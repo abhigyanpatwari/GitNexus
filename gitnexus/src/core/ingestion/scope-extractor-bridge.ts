@@ -59,7 +59,7 @@ export function extractParsedFile(
         ? (provider.preprocessSource?.(sourceText, filePath) ?? sourceText)
         : sourceText;
     const captures = provider.emitScopeCaptures(parseText, filePath, cachedTree, { sourceKind });
-    return extractScope(captures, filePath, provider);
+    return { ...extractScope(captures, filePath, provider), language: provider.id };
   } catch (err) {
     const message = `scope extraction failed for ${filePath}: ${
       err instanceof Error ? err.message : String(err)

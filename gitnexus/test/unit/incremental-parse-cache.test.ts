@@ -15,6 +15,7 @@ import {
   type ParseCache,
 } from '../../src/storage/parse-cache.js';
 import type { ParseWorkerResult } from '../../src/core/ingestion/workers/parse-worker.js';
+import { SOURCE_LANGUAGE_CLASSIFIER_VERSION, SupportedLanguages } from 'gitnexus-shared';
 
 const minimalResult = (overrides: Partial<ParseWorkerResult> = {}): ParseWorkerResult => ({
   nodes: [],
@@ -84,6 +85,20 @@ describe('computeChunkHash', () => {
     ];
     const bigger = [...small, { filePath: 'c.ts', contentHash: 'h-c' }];
     expect(computeChunkHash(small)).not.toBe(computeChunkHash(bigger));
+  });
+
+  it('includes authoritative language and classifier version in production entry hashes', () => {
+    const base = {
+      filePath: 'Shared.h',
+      contentHash: 'same-content',
+      classifierVersion: SOURCE_LANGUAGE_CLASSIFIER_VERSION,
+    };
+    const cpp = [{ ...base, language: SupportedLanguages.CPlusPlus }];
+    const objectiveC = [{ ...base, language: SupportedLanguages.ObjectiveC }];
+    const futureClassifier = [{ ...cpp[0], classifierVersion: 2 }];
+
+    expect(computeChunkHash(cpp)).not.toBe(computeChunkHash(objectiveC));
+    expect(computeChunkHash(cpp)).not.toBe(computeChunkHash(futureClassifier));
   });
 });
 
@@ -221,15 +236,17 @@ describe('PARSE_CACHE_VERSION', () => {
   // Moved 68 -> 70 for Spring non-HTTP handler side-channel facts (#2417 /
   // #2891). Main holds 68 and open PR #2972 publishes 69, so 70 is the next
   // free value above every known claim at this merge.
-  it('pins SCHEMA_BUMP to 70 so concurrent bumps cannot silently collide (#2766)', () => {
-    expect(Number(PARSE_CACHE_VERSION.split('+', 1)[0])).toBe(70);
+  // Moved 70 -> 71 because Objective-C adds parse-time language and subscript
+  // selector facts that cannot be reconstructed from a v70 warm cache.
+  it('pins SCHEMA_BUMP to 71 so concurrent bumps cannot silently collide (#2766)', () => {
+    expect(Number(PARSE_CACHE_VERSION.split('+', 1)[0])).toBe(71);
     // The PREVIOUS version must fail the reuse gate, not merely differ from the
     // current one — a hardcoded number outside the conflict hunk rebases cleanly
     // while being wrong, which is exactly how the 37/38 exact clashes landed.
     // Every nearby historical or in-flight value is rejected: this branch
     // previously published 59, origin/main advanced through 68, and #2972
     // publishes 69. Rejecting all of them makes a bad conflict resolution loud.
-    for (const taken of [59, 60, 61, 62, 63, 64, 65, 66, 67, 68, 69]) {
+    for (const taken of [59, 60, 61, 62, 63, 64, 65, 66, 67, 68, 69, 70]) {
       expect(Number(PARSE_CACHE_VERSION.split('+', 1)[0])).not.toBe(taken);
     }
   });

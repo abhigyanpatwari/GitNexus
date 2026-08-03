@@ -2,7 +2,7 @@ import { describe, it, expect } from 'vitest';
 import { mkdtemp, rm, readdir, readFile } from 'fs/promises';
 import { tmpdir } from 'os';
 import path from 'path';
-import type { ParsedFile } from 'gitnexus-shared';
+import { getLanguageFromFilename, SupportedLanguages, type ParsedFile } from 'gitnexus-shared';
 import {
   clearParsedFileStore,
   persistParsedFileChunk,
@@ -19,6 +19,7 @@ import {
 const makeParsedFile = (filePath: string): ParsedFile =>
   ({
     filePath,
+    language: getLanguageFromFilename(filePath) ?? SupportedLanguages.C,
     moduleScope: `${filePath}:module`,
     parsedImports: [],
     localDefs: [
@@ -54,6 +55,20 @@ function makeStoreEntry(filePath: string, overrides: Record<string, unknown>): P
 }
 
 describe('parsedfile-store', () => {
+  it('rejects production shard entries that omit authoritative language', async () => {
+    const dir = await mkdtemp(path.join(tmpdir(), 'pfstore-'));
+    try {
+      await persistParsedFileChunk(dir, 'chunk-0', [
+        makeStoreEntry('missing.c', { language: undefined }),
+      ]);
+
+      const loaded = await loadParsedFilesForPaths(dir, new Set(['missing.c']));
+      expect(loaded.size).toBe(0);
+    } finally {
+      await rm(dir, { recursive: true, force: true });
+    }
+  });
+
   it('round-trips ParsedFiles (incl. Scope Maps) and filters by requested paths', async () => {
     const dir = await mkdtemp(path.join(tmpdir(), 'pfstore-'));
     try {
@@ -410,6 +425,7 @@ describe('parsedfile-store', () => {
       };
       const pf = {
         filePath: 'a.c',
+        language: SupportedLanguages.C,
         moduleScope: 'a.c:module',
         parsedImports: [],
         localDefs: [def], // copy 1
@@ -470,6 +486,7 @@ describe('parsedfile-store', () => {
       };
       const pf = {
         filePath: 'a.c',
+        language: SupportedLanguages.C,
         moduleScope: 'a.c:module',
         parsedImports: [],
         localDefs: [def1, def2],

@@ -130,6 +130,7 @@ type ReceiverBoundProviderSubset = Pick<
   | 'namespaceReceiverPaths'
   | 'resolveReceiverMember'
   | 'resolveThisViaEnclosingClass'
+  | 'isEnclosingClassReceiver'
   | 'conversionRankFn'
   | 'conversionOnlyArgTypePrefixes'
   | 'constraintCompatibility'
@@ -1092,7 +1093,9 @@ export function emitReceiverBoundCalls(
       // future language enables BOTH `resolveThisViaEnclosingClass`
       // AND `isStaticOnly`, the chain-walk below MUST adopt the
       // skip-and-walk-on filter pattern used by Cases 0, 3b, and 4.
-      if (provider.resolveThisViaEnclosingClass === true && receiverName === 'this') {
+      const isEnclosingClassReceiver =
+        provider.isEnclosingClassReceiver?.(receiverName) ?? receiverName === 'this';
+      if (provider.resolveThisViaEnclosingClass === true && isEnclosingClassReceiver) {
         const enclosingClass = findEnclosingClassDef(site.inScope, scopes);
         if (enclosingClass !== undefined) {
           const languageResolution = provider.resolveReceiverMember?.(

@@ -157,6 +157,33 @@ interface LanguageProviderConfig {
    *  Default: undefined (no remapping). */
   readonly resolveEnclosingOwner?: (node: SyntaxNode) => SyntaxNode | null;
 
+  /**
+   * Decide whether a captured definition is structurally owned by its nearest
+   * class-like container. Returning false keeps nested executable values (for
+   * example a closure literal inside a method) out of HAS_METHOD/HAS_PROPERTY.
+   * Default: true for the established worker behavior.
+   */
+  readonly attachDefinitionToEnclosingOwner?: (
+    definitionNode: SyntaxNode,
+    nodeLabel: NodeLabel,
+  ) => boolean;
+
+  /**
+   * Provider-owned metadata for one captured definition. Shared ingestion
+   * transports the generic identity/static/annotation fields and stores the
+   * opaque property bag without interpreting language semantics.
+   */
+  readonly extractDefinitionMetadata?: (
+    definitionNode: SyntaxNode,
+    nodeName: string,
+    nodeLabel: NodeLabel,
+  ) => {
+    readonly sourceIdentity?: string;
+    readonly isStatic?: boolean;
+    readonly annotations?: readonly string[];
+    readonly properties?: Readonly<Record<string, unknown>>;
+  };
+
   // ── Enclosing function resolution ───────────────────────────────
   /** Resolve the enclosing function name + label from an AST ancestor node
    *  that is NOT a standard FUNCTION_NODE_TYPE.  For languages where the

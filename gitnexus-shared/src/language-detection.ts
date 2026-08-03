@@ -50,6 +50,7 @@ const EXTENSION_MAP: Record<SupportedLanguages, readonly string[]> = {
   [SupportedLanguages.PHP]: ['.php', '.phtml', '.php3', '.php4', '.php5', '.php8'],
   [SupportedLanguages.Kotlin]: ['.kt', '.kts'],
   [SupportedLanguages.Swift]: ['.swift'],
+  [SupportedLanguages.ObjectiveC]: ['.m'],
   [SupportedLanguages.Dart]: ['.dart'],
   [SupportedLanguages.Vue]: ['.vue'],
   [SupportedLanguages.Cobol]: ['.cbl', '.cob', '.cpy', '.cobol'],
@@ -74,28 +75,71 @@ for (const [lang, exts] of Object.entries(EXTENSION_MAP) as [
 export const isBladeTemplateFilename = (filePath: string): boolean =>
   filePath.replace(/\\/g, '/').toLowerCase().endsWith('.blade.php');
 
+export type SourceLanguageFilenameCandidate =
+  | {
+      readonly kind: 'language';
+      readonly language: SupportedLanguages;
+      readonly requiresContentClassification: boolean;
+    }
+  | {
+      readonly kind: 'unsupported';
+      readonly reason: 'objective-cpp';
+    };
+
+/**
+ * Classify a path only far enough to decide whether it is a parse candidate.
+ * Content-sensitive extensions deliberately remain candidates; the ingestion
+ * pipeline must call classifySourceLanguage once file content is available.
+ */
+export const getLanguageCandidateFromFilename = (
+  filePath: string,
+): SourceLanguageFilenameCandidate | null => {
+  if (isBladeTemplateFilename(filePath)) return null;
+
+  const lastDot = filePath.lastIndexOf('.');
+  if (lastDot >= 0) {
+    const ext = filePath.slice(lastDot).toLowerCase();
+    if (ext === '.mm') return { kind: 'unsupported', reason: 'objective-cpp' };
+    if (ext === '.h') {
+      return {
+        kind: 'language',
+        language: SupportedLanguages.CPlusPlus,
+        requiresContentClassification: true,
+      };
+    }
+    if (ext === '.m') {
+      return {
+        kind: 'language',
+        language: SupportedLanguages.ObjectiveC,
+        requiresContentClassification: true,
+      };
+    }
+
+    const language = extToLang.get(ext);
+    if (language !== undefined) {
+      return { kind: 'language', language, requiresContentClassification: false };
+    }
+  }
+
+  const basename = filePath.replace(/\\/g, '/').split('/').pop() || filePath;
+  if (RUBY_EXTENSIONLESS_FILES.has(basename)) {
+    return {
+      kind: 'language',
+      language: SupportedLanguages.Ruby,
+      requiresContentClassification: false,
+    };
+  }
+
+  return null;
+};
+
 /**
  * Map file extension to SupportedLanguage enum.
  * Returns null if the file extension is not recognized.
  */
 export const getLanguageFromFilename = (filename: string): SupportedLanguages | null => {
-  if (isBladeTemplateFilename(filename)) return null;
-
-  // Fast path: check the extension map
-  const lastDot = filename.lastIndexOf('.');
-  if (lastDot >= 0) {
-    const ext = filename.slice(lastDot).toLowerCase();
-    const lang = extToLang.get(ext);
-    if (lang !== undefined) return lang;
-  }
-
-  // Ruby extensionless files (Rakefile, Gemfile, etc.)
-  const basename = filename.split('/').pop() || filename;
-  if (RUBY_EXTENSIONLESS_FILES.has(basename)) {
-    return SupportedLanguages.Ruby;
-  }
-
-  return null;
+  const candidate = getLanguageCandidateFromFilename(filename);
+  return candidate?.kind === 'language' ? candidate.language : null;
 };
 
 /**
@@ -118,6 +162,7 @@ const SYNTAX_MAP: Record<SupportedLanguages, string> = {
   [SupportedLanguages.PHP]: 'php',
   [SupportedLanguages.Kotlin]: 'kotlin',
   [SupportedLanguages.Swift]: 'swift',
+  [SupportedLanguages.ObjectiveC]: 'objectivec',
   [SupportedLanguages.Dart]: 'dart',
   [SupportedLanguages.Vue]: 'typescript',
   [SupportedLanguages.Cobol]: 'cobol',
@@ -157,11 +202,20 @@ const AUXILIARY_BASENAME_MAP: Record<string, string> = {
  * Covers all SupportedLanguages (code files) plus common non-code formats.
  * Returns 'text' for unrecognised files.
  */
-export const getSyntaxLanguageFromFilename = (filePath: string): string => {
+export const getSyntaxLanguageFromFilename = (
+  filePath: string,
+  language?: SupportedLanguages,
+): string => {
   if (isBladeTemplateFilename(filePath)) return 'markup';
 
-  const lang = getLanguageFromFilename(filePath);
-  if (lang) return SYNTAX_MAP[lang];
+  if (language !== undefined) return SYNTAX_MAP[language] ?? 'text';
+
+  const candidate = getLanguageCandidateFromFilename(filePath);
+  if (candidate?.kind === 'language' && !candidate.requiresContentClassification) {
+    return SYNTAX_MAP[candidate.language];
+  }
+  if (candidate?.kind === 'unsupported' || candidate?.requiresContentClassification) return 'text';
+
   const ext = filePath.split('.').pop()?.toLowerCase();
   if (ext && ext in AUXILIARY_SYNTAX_MAP) return AUXILIARY_SYNTAX_MAP[ext];
   const basename = filePath.split('/').pop() || '';

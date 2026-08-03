@@ -33,6 +33,10 @@ const C_CALLABLE_CAPTURE_OPTIONS = {
     functionDeclaratorSignature(destination) ?? functionDeclaratorSignature(container),
 } as const;
 
+export interface CFamilyQueryMatch {
+  readonly captures: readonly { readonly name: string; readonly node: SyntaxNode }[];
+}
+
 export function emitCScopeCaptures(
   sourceText: string,
   filePath: string,
@@ -46,6 +50,19 @@ export function emitCScopeCaptures(
   }
 
   const rawMatches = getCScopeQuery().matches(tree.rootNode);
+  return processCFamilyScopeMatches(rawMatches, tree.rootNode, filePath);
+}
+
+/**
+ * Parser-independent C-family capture processor. Objective-C compiles the
+ * unchanged C query source against its C-derived grammar and feeds those
+ * matches through this function, while the C wrapper above remains byte-stable.
+ */
+export function processCFamilyScopeMatches(
+  rawMatches: readonly CFamilyQueryMatch[],
+  rootNode: SyntaxNode,
+  filePath: string,
+): readonly CaptureMatch[] {
   const out: CaptureMatch[] = [];
 
   // Track ranges where typedef-struct/union/enum was captured as its concrete
@@ -173,7 +190,7 @@ export function emitCScopeCaptures(
     out.push(grouped);
   }
 
-  out.push(...synthesizeCallableFlowCaptures(tree.rootNode, C_CALLABLE_CAPTURE_OPTIONS));
+  out.push(...synthesizeCallableFlowCaptures(rootNode, C_CALLABLE_CAPTURE_OPTIONS));
   return out;
 }
 

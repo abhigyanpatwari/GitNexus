@@ -147,6 +147,25 @@ describe('LadybugDB Schema', () => {
       expect(FUNCTION_SCHEMA).toContain('isExported BOOLEAN');
     });
 
+    it('persists authoritative source language and Objective-C source-site metadata', () => {
+      expect(FILE_SCHEMA).toContain('language STRING');
+      expect(FILE_SCHEMA).toContain('languageReason STRING');
+      expect(FILE_SCHEMA).toContain('languageClassifierVersion INT32');
+      for (const schema of [FUNCTION_SCHEMA, CLASS_SCHEMA, INTERFACE_SCHEMA, METHOD_SCHEMA, CODE_ELEMENT_SCHEMA, PROPERTY_SCHEMA]) {
+        expect(schema).toContain('language STRING');
+        expect(schema).toContain('sourceIdentity STRING');
+      }
+      expect(CLASS_SCHEMA).toContain('sourceRole STRING');
+      expect(INTERFACE_SCHEMA).toContain('declarationKey STRING');
+      expect(METHOD_SCHEMA).toContain('selector STRING');
+      expect(METHOD_SCHEMA).toContain('dispatchKey STRING');
+      expect(METHOD_SCHEMA).toContain('parameterTypes STRING');
+      expect(METHOD_SCHEMA).toContain('annotations STRING');
+      expect(PROPERTY_SCHEMA).toContain('getterSelector STRING');
+      expect(PROPERTY_SCHEMA).toContain('setterSelector STRING');
+      expect(CODE_ELEMENT_SCHEMA).toContain('hostClassName STRING');
+    });
+
     it('Property schema preserves declaredType', () => {
       expect(SCHEMA_QUERIES).toContain(PROPERTY_SCHEMA);
       expect(PROPERTY_SCHEMA).toContain('declaredType STRING');

@@ -111,6 +111,12 @@ export interface SymbolDefinition {
    *  source (for example an anonymous class). Consumers may use this only as a
    *  conservative priority hint; it does not change graph-node identity. */
   isSynthetic?: boolean;
+  /** Provider-declared static/class-member semantics. */
+  isStatic?: boolean;
+  /** Provider-owned semantic tags transported without shared interpretation. */
+  annotations?: readonly string[];
+  /** Exact source-site identity used when one logical symbol has multiple declarations. */
+  sourceIdentity?: string;
   /** Links Method/Constructor/Property to owning Class/Struct/Trait nodeId */
   ownerId?: string;
   /** #1982/#1993: bridge-held enclosing-namespace path (e.g. `NS1`, `Outer.Inner`)

@@ -35,7 +35,11 @@ import { createQuarantine } from './quarantine.js';
  * bypasses the pool, so transferring its outputs is safe.
  */
 
-type ParseWorkerItem = { path: string; content: string };
+type ParseWorkerItem = {
+  path: string;
+  content: string;
+  language?: import('gitnexus-shared').SupportedLanguages;
+};
 
 /**
  * Type guard: every element of `items` has the parse-worker shape
@@ -52,6 +56,8 @@ function isParseWorkerItemArray<T>(
     if (it == null || typeof it !== 'object') return false;
     if (typeof (it as { path?: unknown }).path !== 'string') return false;
     if (typeof (it as { content?: unknown }).content !== 'string') return false;
+    const language = (it as { language?: unknown }).language;
+    if (language !== undefined && typeof language !== 'string') return false;
   }
   return true;
 }
@@ -71,7 +77,14 @@ function isParseWorkerItemArray<T>(
  */
 export function buildDispatchMessage<T>(items: readonly T[]): {
   message:
-    | { type: 'sub-batch'; files: Array<{ path: string; content: Uint8Array }> }
+    | {
+        type: 'sub-batch';
+        files: Array<{
+          path: string;
+          content: Uint8Array;
+          language?: import('gitnexus-shared').SupportedLanguages;
+        }>;
+      }
     | {
         type: 'sub-batch';
         files: readonly T[];
@@ -84,11 +97,19 @@ export function buildDispatchMessage<T>(items: readonly T[]): {
 
   // After the type guard, `items` is narrowed to `readonly ParseWorkerItem[]`.
   const encoder = new TextEncoder();
-  const files: Array<{ path: string; content: Uint8Array }> = [];
+  const files: Array<{
+    path: string;
+    content: Uint8Array;
+    language?: import('gitnexus-shared').SupportedLanguages;
+  }> = [];
   const transferList: ArrayBuffer[] = [];
   for (const item of items) {
     const u8 = encoder.encode(item.content);
-    files.push({ path: item.path, content: u8 });
+    files.push({
+      path: item.path,
+      content: u8,
+      ...(item.language !== undefined ? { language: item.language } : {}),
+    });
     transferList.push(u8.buffer as ArrayBuffer);
   }
   return {

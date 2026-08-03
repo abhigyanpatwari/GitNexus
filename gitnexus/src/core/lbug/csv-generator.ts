@@ -477,28 +477,28 @@ export const streamAllCSVsToDisk = async (
     // Create writers for every node type up-front
     const fileWriter = new BufferedCSVWriter(
       path.join(csvDir, 'file.csv'),
-      'id,name,filePath,content',
+      'id,name,filePath,content,language,languageReason,languageClassifierVersion',
     );
     const folderWriter = new BufferedCSVWriter(path.join(csvDir, 'folder.csv'), 'id,name,filePath');
     const codeElementHeader = 'id,name,filePath,startLine,endLine,isExported,content,description';
     const functionWriter = new BufferedCSVWriter(
       path.join(csvDir, 'function.csv'),
-      codeElementHeader,
+      `${codeElementHeader},language,sourceIdentity`,
     );
     const classWriter = new BufferedCSVWriter(
       path.join(csvDir, 'class.csv'),
-      `${codeElementHeader},frameworkAnnotations`,
+      `${codeElementHeader},frameworkAnnotations,language,sourceIdentity,sourceRole,declarationKey`,
     );
     const interfaceWriter = new BufferedCSVWriter(
       path.join(csvDir, 'interface.csv'),
-      codeElementHeader,
+      `${codeElementHeader},language,sourceIdentity,sourceRole,declarationKey`,
     );
     const methodHeader =
-      'id,name,filePath,startLine,endLine,isExported,content,description,parameterCount,returnType';
+      'id,name,filePath,startLine,endLine,isExported,content,description,parameterCount,returnType,language,sourceIdentity,selector,isStatic,sourceRole,declarationKey,dispatchKey,categoryName,parameterTypes,annotations';
     const methodWriter = new BufferedCSVWriter(path.join(csvDir, 'method.csv'), methodHeader);
     const codeElemWriter = new BufferedCSVWriter(
       path.join(csvDir, 'codeelement.csv'),
-      codeElementHeader,
+      `${codeElementHeader},language,sourceIdentity,sourceRole,categoryName,hostClassName,declarationKey`,
     );
     const communityWriter = new BufferedCSVWriter(
       path.join(csvDir, 'community.csv'),
@@ -535,7 +535,7 @@ export const streamAllCSVsToDisk = async (
     );
 
     // Multi-language node types share the same CSV shape (no isExported column)
-    const multiLangHeader = 'id,name,filePath,startLine,endLine,content,description';
+    const multiLangHeader = 'id,name,filePath,startLine,endLine,content,description,language,sourceIdentity';
     const MULTI_LANG_TYPES = [
       'Struct',
       'Enum',
@@ -558,7 +558,7 @@ export const streamAllCSVsToDisk = async (
       'Module',
     ] as const;
     const propertyHeader =
-      'id,name,filePath,startLine,endLine,content,description,declaredType,isDetail';
+      'id,name,filePath,startLine,endLine,content,description,declaredType,isDetail,language,sourceIdentity,sourceRole,declarationKey,getterSelector,setterSelector,annotations';
     const multiLangWriters = new Map<string, BufferedCSVWriter>();
     for (const t of MULTI_LANG_TYPES) {
       multiLangWriters.set(
@@ -600,6 +600,9 @@ export const streamAllCSVsToDisk = async (
               escapeCSVField(node.properties.name || ''),
               escapeCSVField(node.properties.filePath || ''),
               escapeCSVField(content),
+              escapeCSVField(node.properties.language as string | undefined),
+              escapeCSVField(node.properties.languageReason as string | undefined),
+              escapeCSVNumber(node.properties.languageClassifierVersion as number | undefined, 0),
             ].join(','),
           );
           break;
@@ -661,6 +664,16 @@ export const streamAllCSVsToDisk = async (
               escapeCSVField(formatFtsDescription(node.properties.description || '')),
               escapeCSVNumber(node.properties.parameterCount, 0),
               escapeCSVField(node.properties.returnType || ''),
+              escapeCSVField(node.properties.language as string | undefined),
+              escapeCSVField(node.properties.sourceIdentity as string | undefined),
+              escapeCSVField(node.properties.selector as string | undefined),
+              node.properties.isStatic ? 'true' : 'false',
+              escapeCSVField(node.properties.sourceRole as string | undefined),
+              escapeCSVField(node.properties.declarationKey as string | undefined),
+              escapeCSVField(node.properties.dispatchKey as string | undefined),
+              escapeCSVField(node.properties.categoryName as string | undefined),
+              escapeCSVField(JSON.stringify(node.properties.parameterTypes ?? [])),
+              escapeCSVField(JSON.stringify(node.properties.annotations ?? [])),
             ].join(','),
           );
           break;
@@ -735,6 +748,23 @@ export const streamAllCSVsToDisk = async (
             if (node.label === 'Class') {
               row.push(escapeCSVField(formatCSVStringArray(node.properties.frameworkAnnotations)));
             }
+            row.push(
+              escapeCSVField(node.properties.language as string | undefined),
+              escapeCSVField(node.properties.sourceIdentity as string | undefined),
+            );
+            if (node.label === 'Class' || node.label === 'Interface') {
+              row.push(
+                escapeCSVField(node.properties.sourceRole as string | undefined),
+                escapeCSVField(node.properties.declarationKey as string | undefined),
+              );
+            } else if (node.label === 'CodeElement') {
+              row.push(
+                escapeCSVField(node.properties.sourceRole as string | undefined),
+                escapeCSVField(node.properties.categoryName as string | undefined),
+                escapeCSVField(node.properties.hostClassName as string | undefined),
+                escapeCSVField(node.properties.declarationKey as string | undefined),
+              );
+            }
             pending = writer.addRow(row.join(','));
           } else {
             // Multi-language node types (Struct, Impl, Trait, Macro, etc.)
@@ -757,6 +787,17 @@ export const streamAllCSVsToDisk = async (
                         // an explicit boolean so the column is never empty; an
                         // empty BOOLEAN cell fails the COPY.
                         node.properties.isDetail === true ? 'true' : 'false',
+                      ]
+                    : []),
+                  escapeCSVField(node.properties.language as string | undefined),
+                  escapeCSVField(node.properties.sourceIdentity as string | undefined),
+                  ...(node.label === 'Property'
+                    ? [
+                        escapeCSVField(node.properties.sourceRole as string | undefined),
+                        escapeCSVField(node.properties.declarationKey as string | undefined),
+                        escapeCSVField(node.properties.getterSelector as string | undefined),
+                        escapeCSVField(node.properties.setterSelector as string | undefined),
+                        escapeCSVField(JSON.stringify(node.properties.annotations ?? [])),
                       ]
                     : []),
                 ].join(','),

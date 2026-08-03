@@ -8,6 +8,7 @@ import {
   buildGraphNodeLookup,
   qualifiedKey,
   simpleKey,
+  sourceIdentityKey,
 } from '../../../src/core/ingestion/scope-resolution/graph-bridge/node-lookup.js';
 import { resolveDefGraphId } from '../../../src/core/ingestion/scope-resolution/graph-bridge/ids.js';
 import type { ParseWorkerResult } from '../../../src/core/ingestion/workers/parse-worker.js';
@@ -20,6 +21,7 @@ interface Candidate {
   name?: string;
   qualifiedName?: string;
   startLine?: number;
+  sourceIdentity?: string;
 }
 
 function buildLookup(candidates: readonly Candidate[]) {
@@ -34,6 +36,9 @@ function buildLookup(candidates: readonly Candidate[]) {
           qualifiedName: candidate.qualifiedName ?? 'Service.save',
           filePath: FILE,
           ...(candidate.startLine !== undefined ? { startLine: candidate.startLine } : {}),
+          ...(candidate.sourceIdentity !== undefined
+            ? { sourceIdentity: candidate.sourceIdentity }
+            : {}),
         },
       }) satisfies ParseWorkerResult['nodes'][number],
   );
@@ -125,5 +130,35 @@ describe('parse-result graph insertion determinism', () => {
         lookup,
       ),
     ).toBe(record.id);
+  });
+
+  it('joins an exact source identity before ambiguous name and arity fallbacks', () => {
+    const declaration = {
+      id: `Method:${FILE}:Service.-save:#1~src:${'a'.repeat(64)}`,
+      startLine: 10,
+      sourceIdentity: 'objc:v1:["declaration"]',
+    };
+    const implementation = {
+      id: `Method:${FILE}:Service.-save:#1~src:${'b'.repeat(64)}`,
+      startLine: 20,
+      sourceIdentity: 'objc:v1:["implementation"]',
+    };
+    const lookup = buildLookup([implementation, declaration]);
+
+    expect(
+      lookup.get(sourceIdentityKey(FILE, 'Method', implementation.sourceIdentity)),
+    ).toBe(implementation.id);
+    expect(
+      resolveDefGraphId(
+        FILE,
+        {
+          qualifiedName: 'Service.save',
+          type: 'Method',
+          parameterCount: 1,
+          sourceIdentity: implementation.sourceIdentity,
+        },
+        lookup,
+      ),
+    ).toBe(implementation.id);
   });
 });

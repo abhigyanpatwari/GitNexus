@@ -56,9 +56,12 @@ import type { ParsedImport } from './types.js';
 import type { SymbolDefinition } from './symbol-definition.js';
 import type { ReferenceSite } from './reference-site.js';
 import type { CallableFlowSite } from './callable-flow-site.js';
+import type { SupportedLanguages } from '../languages.js';
 
 export interface ParsedFile {
   readonly filePath: string;
+  /** Authoritative language selected before worker dispatch. */
+  readonly language?: SupportedLanguages;
   /** `Scope.id` of the file's root `Module` scope. */
   readonly moduleScope: ScopeId;
   /**

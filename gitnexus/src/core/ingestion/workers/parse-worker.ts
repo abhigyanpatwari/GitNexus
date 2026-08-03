@@ -17,7 +17,7 @@ import Rust from 'tree-sitter-rust';
 import PHP from 'tree-sitter-php';
 import Ruby from 'tree-sitter-ruby';
 import { requireVendoredGrammar } from '../../tree-sitter/vendored-grammars.js';
-import { SupportedLanguages } from 'gitnexus-shared';
+import { getLanguageFromFilename, SupportedLanguages } from 'gitnexus-shared';
 import { getProvider } from '../languages/index.js';
 import {
   getTreeSitterBufferSize,
@@ -81,7 +81,11 @@ let C: TreeSitterLanguage | null = null;
 try {
   C = requireVendoredGrammar('tree-sitter-c') as TreeSitterLanguage;
 } catch {}
-import { getLanguageFromFilename } from 'gitnexus-shared';
+
+let ObjectiveC: TreeSitterLanguage | null = null;
+try {
+  ObjectiveC = requireVendoredGrammar('tree-sitter-objc') as TreeSitterLanguage;
+} catch {}
 import {
   buildDefinitionPreScan,
   FUNCTION_NODE_TYPES,
@@ -135,6 +139,7 @@ import {
   parameterShapeIdTag,
   methodInfoKey,
 } from '../utils/method-props.js';
+import { sourceIdentityIdTag } from '../utils/source-identity.js';
 import {
   extractTemplateArguments,
   templateArgumentsIdTag,
@@ -265,6 +270,7 @@ interface ParsedSymbol {
   isFinal?: boolean;
   isDeleted?: boolean;
   annotations?: string[];
+  sourceIdentity?: string;
 }
 
 export interface ExtractedCall {
@@ -519,6 +525,8 @@ export interface ParseWorkerResult {
 export interface ParseWorkerInput {
   path: string;
   content: string;
+  /** Authoritative language for content-sensitive files; legacy callers may omit it. */
+  language?: SupportedLanguages;
 }
 
 type WorkerIncomingMessage =
@@ -538,6 +546,7 @@ const languageMap: Record<string, TreeSitterLanguage> = {
   [SupportedLanguages.Python]: Python,
   [SupportedLanguages.Java]: Java,
   ...(C ? { [SupportedLanguages.C]: C } : {}),
+  ...(ObjectiveC ? { [SupportedLanguages.ObjectiveC]: ObjectiveC } : {}),
   [SupportedLanguages.CPlusPlus]: CPP,
   [SupportedLanguages.CSharp]: CSharp,
   [SupportedLanguages.Go]: Go,
@@ -954,7 +963,7 @@ const findEnclosingFunctionId = (
           filePath,
           provider.resolveEnclosingOwner,
         );
-        const encLang = getLanguageFromFilename(filePath);
+        const encLang = provider.id;
         const standaloneMethodInfo =
           (finalLabel === 'Method' || finalLabel === 'Constructor') &&
           encLang === SupportedLanguages.Go &&
@@ -1059,7 +1068,7 @@ const findEnclosingFunctionId = (
         let arity2: number | undefined;
         let encTypeTag2 = '';
         if (finalLabel === 'Method' || finalLabel === 'Constructor') {
-          const encLang2 = getLanguageFromFilename(filePath);
+          const encLang2 = provider.id;
           const classNode2 =
             findEnclosingClassNode(sigNode) ?? findClassNodeByQualifiedName(sigNode);
           if (classNode2 && encLang2) {
@@ -1170,8 +1179,8 @@ const processBatch = (
   // Group by language to minimize setLanguage calls
   const byLanguage = new Map<SupportedLanguages, ParseWorkerInput[]>();
   for (const file of files) {
-    const lang = getLanguageFromFilename(file.path);
-    if (!lang) continue;
+    const lang = file.language ?? getLanguageFromFilename(file.path);
+    if (lang === null) continue;
     let list = byLanguage.get(lang);
     if (!list) {
       list = [];
@@ -2123,6 +2132,10 @@ const processFileGroup = (
       if (provider.shouldSkipDefinitionCapture?.(captureMap, defaultNodeLabel) === true) continue;
 
       const nameNode = captureMap['name'];
+      const providerFunctionName =
+        nameNode === undefined && definitionNode !== null && definitionNode !== undefined
+          ? provider.methodExtractor?.extractFunctionName?.(definitionNode, file.path)?.funcName
+          : null;
       const extractedClassSymbol =
         definitionNode && provider.classExtractor?.isTypeDeclaration(definitionNode)
           ? provider.classExtractor.extract(definitionNode, {
@@ -2222,6 +2235,7 @@ const processFileGroup = (
       // Synthesize name for constructors without explicit @name capture (e.g. Swift init)
       if (
         !nameNode &&
+        !providerFunctionName &&
         nodeLabel !== 'Constructor' &&
         !extractedClassSymbol &&
         !defaultExportHocName &&
@@ -2233,7 +2247,29 @@ const processFileGroup = (
         extractedClassSymbol?.name ??
         defaultExportHocName ??
         cjsDefaultExportName ??
+        providerFunctionName ??
         (nameNode ? nameNode.text : 'init');
+      let definitionMetadata:
+        | {
+            readonly sourceIdentity?: string;
+            readonly isStatic?: boolean;
+            readonly annotations?: readonly string[];
+            readonly properties?: Readonly<Record<string, unknown>>;
+          }
+        | undefined;
+      if (definitionNode !== null && provider.extractDefinitionMetadata !== undefined) {
+        try {
+          definitionMetadata = provider.extractDefinitionMetadata(
+            definitionNode,
+            nodeName,
+            nodeLabel,
+          );
+        } catch (err) {
+          reportWarning(
+            `Definition metadata extraction failed for ${file.path}: ${err instanceof Error ? err.message : String(err)}`,
+          );
+        }
+      }
       // Dedup: variable captures (Const/Static/Variable) may overlap with higher-priority
       // captures (e.g. `const fn = () => {}` matches both @definition.function and @definition.const).
       // Multi-name declarations share the same definition node, so include the emitted name.
@@ -2299,10 +2335,12 @@ const processFileGroup = (
 
       // Compute enclosing class BEFORE node ID — needed to qualify method IDs
       const needsOwner =
-        nodeLabel === 'Method' ||
-        nodeLabel === 'Constructor' ||
-        nodeLabel === 'Property' ||
-        nodeLabel === 'Function';
+        (nodeLabel === 'Method' ||
+          nodeLabel === 'Constructor' ||
+          nodeLabel === 'Property' ||
+          nodeLabel === 'Function') &&
+        (definitionNode === undefined ||
+          provider.attachDefinitionToEnclosingOwner?.(definitionNode, nodeLabel) !== false);
       // #1978: thread the class-extractor's qualifier into the owner walk when the
       // language opts into qualified node ids, so a nested member's owner resolves
       // to the *qualified* class id (Outer.Inner). Gated on the flag → byte-identical
@@ -2686,7 +2724,7 @@ const processFileGroup = (
       }
       const nodeId = generateId(
         nodeLabel,
-        `${file.path}:${qualifiedName}${classTemplateTag}${arityTag}${parameterShapeTag}${constraintsTag}`,
+        `${file.path}:${qualifiedName}${classTemplateTag}${arityTag}${parameterShapeTag}${constraintsTag}${sourceIdentityIdTag(definitionMetadata?.sourceIdentity)}`,
       );
 
       let description: string | undefined;
@@ -2821,6 +2859,18 @@ const processFileGroup = (
         }
       }
 
+      if (definitionMetadata?.isStatic !== undefined) {
+        methodProps.isStatic = definitionMetadata.isStatic;
+      }
+      if (definitionMetadata?.annotations !== undefined) {
+        methodProps.annotations = [
+          ...new Set([
+            ...((methodProps.annotations as readonly string[] | undefined) ?? []),
+            ...definitionMetadata.annotations,
+          ]),
+        ];
+      }
+
       result.nodes.push({
         id: nodeId,
         label: nodeLabel,
@@ -2849,6 +2899,10 @@ const processFileGroup = (
             : {}),
           ...(description !== undefined ? { description } : {}),
           ...methodProps,
+          ...(definitionMetadata?.properties ?? {}),
+          ...(definitionMetadata?.sourceIdentity !== undefined
+            ? { sourceIdentity: definitionMetadata.sourceIdentity }
+            : {}),
           ...(declaredType !== undefined ? { declaredType } : {}),
           ...(returnShapeProperty ? { fromReturnShape: true, isDetail: true } : {}),
         },
@@ -2893,6 +2947,9 @@ const processFileGroup = (
           : {}),
         ...(methodProps.annotations !== undefined
           ? { annotations: methodProps.annotations as string[] }
+          : {}),
+        ...(definitionMetadata?.sourceIdentity !== undefined
+          ? { sourceIdentity: definitionMetadata.sourceIdentity }
           : {}),
       });
 
@@ -3071,10 +3128,15 @@ const sharedContentDecoder = new TextDecoder('utf-8');
  * continued main-thread work.
  */
 function decodeSubBatchFiles(
-  files: Array<{ path: string; content: Uint8Array | string }>,
+  files: Array<{
+    path: string;
+    content: Uint8Array | string;
+    language?: SupportedLanguages;
+  }>,
 ): ParseWorkerInput[] {
   return files.map((f) => ({
     path: f.path,
+    language: f.language,
     // Test scaffolding (the writeReadyWorker preamble that wraps
     // parentPort.on) may already convert content to string before
     // calling here; tolerate both shapes so the same worker code
@@ -3093,7 +3155,11 @@ parentPort!.on('message', (msg: WorkerIncomingMessage) => {
     // Sub-batch mode: { type: 'sub-batch', files: [...] }
     if (msg.type === 'sub-batch') {
       const files = decodeSubBatchFiles(
-        msg.files as Array<{ path: string; content: Uint8Array | string }>,
+        msg.files as Array<{
+          path: string;
+          content: Uint8Array | string;
+          language?: SupportedLanguages;
+        }>,
       );
       const result = processBatch(files, (filesProcessed) => {
         parentPort!.postMessage({

@@ -48,9 +48,13 @@ import {
 import { createSemanticModel, type MutableSemanticModel } from '../model/index.js';
 import {
   type PipelineProgress,
+  getLanguageCandidateFromFilename,
   getLanguageFromFilename,
+  classifySourceLanguage,
+  SOURCE_LANGUAGE_CLASSIFIER_VERSION,
   SupportedLanguages,
 } from 'gitnexus-shared';
+import type { SourceLanguageClassification } from 'gitnexus-shared';
 import { readFileContents } from '../filesystem-walker.js';
 import {
   isLanguageAvailable,
@@ -478,38 +482,71 @@ export async function runChunkedParseAndResolve(
    *  cache analyze run can skip the dominant `extractParsedFile` cost
    *  (otherwise ~58s on a 1000-file repo). */
   parsedFiles: import('gitnexus-shared').ParsedFile[];
+  sourceClassifications: ReadonlyMap<string, SourceLanguageClassification>;
 }> {
   const model = createSemanticModel();
   const symbolTable = model.symbols;
+  const sourceClassifications = new Map<string, SourceLanguageClassification>();
+  const projectContext = {
+    hasXcodeProject: allPaths.some((filePath) =>
+      /(?:^|\/)[^/]+\.xcodeproj\/project\.pbxproj$/i.test(filePath.replace(/\\/g, '/')),
+    ),
+  } as const;
 
-  const parseableScanned = scannedFiles.filter((f) => {
-    const lang = getLanguageFromFilename(f.path);
-    return lang && isLanguageAvailable(lang);
-  });
-
-  // Warn about files skipped due to unavailable parsers
+  // Candidate selection is filename-only; ambiguous `.h` / `.m` files stay in
+  // the read set until their full content can be classified. Fixed-extension
+  // and explicitly unsupported files can be classified without source I/O.
+  const parseableScanned: ScannedFile[] = [];
   const skippedByLang = new Map<string, number>();
+  const pdgUnsupportedByLang = new Map<SupportedLanguages, number>();
   for (const f of scannedFiles) {
-    const lang = getLanguageFromFilename(f.path);
-    const provider = lang === null ? undefined : getProvider(lang);
-    if (lang && provider?.parseStrategy !== 'standalone' && !isLanguageAvailable(lang)) {
-      skippedByLang.set(lang, (skippedByLang.get(lang) || 0) + 1);
-    }
-  }
-  for (const [lang, count] of skippedByLang) {
-    // Distinguish a deliberate runtime opt-out from a genuinely-missing binding
-    // so we don't tell a user who set GITNEXUS_SKIP_OPTIONAL_GRAMMARS to
-    // `npm rebuild` a grammar that built fine (#2091/#2093 review).
-    if (isGrammarRuntimeSkipped(lang as SupportedLanguages)) {
-      logger.warn(
-        `Skipping ${count} ${lang} file(s) — ${lang} parsing disabled via GITNEXUS_SKIP_OPTIONAL_GRAMMARS.`,
+    const candidate = getLanguageCandidateFromFilename(f.path);
+    if (candidate === null) continue;
+    if (candidate.kind === 'unsupported') {
+      sourceClassifications.set(
+        f.path,
+        classifySourceLanguage({ filePath: f.path, content: '', projectContext }),
       );
-    } else {
-      logger.warn(
-        `Skipping ${count} ${lang} file(s) — ${lang} parser not available (native binding may not have built). Try: npm rebuild tree-sitter-${lang}`,
-      );
+      continue;
     }
+
+    const provider = getProvider(candidate.language);
+    if (!candidate.requiresContentClassification) {
+      const classification = classifySourceLanguage({
+        filePath: f.path,
+        content: '',
+        projectContext,
+      });
+      sourceClassifications.set(f.path, classification);
+      if (provider.parseStrategy === 'standalone') continue;
+      if (!isLanguageAvailable(candidate.language)) {
+        skippedByLang.set(
+          candidate.language,
+          (skippedByLang.get(candidate.language) ?? 0) + 1,
+        );
+        continue;
+      }
+    }
+
+    parseableScanned.push(f);
   }
+
+  const warnUnavailableParsers = (): void => {
+    for (const [lang, count] of skippedByLang) {
+      // Distinguish a deliberate runtime opt-out from a genuinely-missing binding
+      // so we don't tell a user who set GITNEXUS_SKIP_OPTIONAL_GRAMMARS to
+      // reinstall a grammar that built fine (#2091/#2093 review).
+      if (isGrammarRuntimeSkipped(lang as SupportedLanguages)) {
+        logger.warn(
+          `Skipping ${count} ${lang} file(s) — ${lang} parsing disabled via GITNEXUS_SKIP_OPTIONAL_GRAMMARS.`,
+        );
+      } else {
+        logger.warn(
+          `Skipping ${count} ${lang} file(s) — ${lang} parser not available (native binding may not have built). Reinstall GitNexus without GITNEXUS_SKIP_OPTIONAL_GRAMMARS.`,
+        );
+      }
+    }
+  };
 
   // Sort parseableScanned alphabetically for stable chunk membership
   // across runs (Finding 4). Without this, filesystem-scan order can
@@ -819,11 +856,17 @@ export async function runChunkedParseAndResolve(
     // N+1), which keeps the deferred aggregation deterministic. Cache-hit
     // chunks drain any pending chunk first, then finalize inline (no worker
     // dispatch to overlap).
+    interface ClassifiedChunkFile {
+      readonly path: string;
+      readonly content: string;
+      readonly language: SupportedLanguages;
+    }
     interface PendingWorkerChunk {
       readonly rawResults: ParseWorkerResult[];
       readonly chunkIdx: number;
       readonly chunkHash: string | null;
-      readonly chunkFiles: Array<{ path: string; content: string }>;
+      readonly chunkFiles: ClassifiedChunkFile[];
+      readonly chunkSourceCount: number;
       readonly chunkStartMs: number | null;
     }
     let pendingWorkerChunk: PendingWorkerChunk | null = null;
@@ -836,7 +879,8 @@ export async function runChunkedParseAndResolve(
     const applyChunkResults = async (
       chunkWorkerData: WorkerExtractedData | null,
       chunkIdx: number,
-      chunkFiles: Array<{ path: string; content: string }>,
+      chunkFiles: ClassifiedChunkFile[],
+      chunkSourceCount: number,
       chunkStartMs: number | null,
     ): Promise<void> => {
       if (chunkWorkerData) {
@@ -907,7 +951,7 @@ export async function runChunkedParseAndResolve(
         }
       }
 
-      filesParsedSoFar += chunkFiles.length;
+      filesParsedSoFar += chunkSourceCount;
 
       if (verboseThroughputLog && chunkStartMs !== null) {
         const elapsedMs = Date.now() - chunkStartMs;
@@ -918,7 +962,7 @@ export async function runChunkedParseAndResolve(
             `${stats.quarantined} quarantined${stats.poolBroken ? ', BROKEN' : ''}`
           : ' (cache replay)';
         logger.info(
-          `📊 chunk ${chunkIdx + 1}/${numChunks}: ${chunkFiles.length} files in ${elapsedMs}ms ` +
+          `📊 chunk ${chunkIdx + 1}/${numChunks}: ${chunkSourceCount} source candidates (${chunkFiles.length} parsed) in ${elapsedMs}ms ` +
             `(${filesPerSec.toFixed(1)} files/s)${poolFrag}`,
         );
       }
@@ -952,7 +996,13 @@ export async function runChunkedParseAndResolve(
           }
         }
       }
-      await applyChunkResults(chunkWorkerData, p.chunkIdx, p.chunkFiles, p.chunkStartMs);
+      await applyChunkResults(
+        chunkWorkerData,
+        p.chunkIdx,
+        p.chunkFiles,
+        p.chunkSourceCount,
+        p.chunkStartMs,
+      );
     };
 
     for (let chunkIdx = 0; chunkIdx < numChunks; chunkIdx++) {
@@ -991,10 +1041,40 @@ export async function runChunkedParseAndResolve(
       const chunkContents = await chunkContentPromise;
       chunkContentPromises[chunkIdx] = undefined; // release the in-memory copy
       startChunkPrefetch(chunkIdx + parseChunkConcurrency);
-      const chunkFiles: Array<{ path: string; content: string }> = [];
+      const chunkFiles: ClassifiedChunkFile[] = [];
       for (const p of chunkPaths) {
         const content = chunkContents.get(p);
-        if (content !== undefined) chunkFiles.push({ path: p, content });
+        if (content === undefined) continue;
+        const classification = classifySourceLanguage({ filePath: p, content, projectContext });
+        sourceClassifications.set(p, classification);
+        const language = classification.language;
+        if (language === null) continue;
+        const provider = getProvider(language);
+        if (provider.parseStrategy === 'standalone') continue;
+        if (!isLanguageAvailable(language)) {
+          skippedByLang.set(language, (skippedByLang.get(language) ?? 0) + 1);
+          continue;
+        }
+        if (options?.pdg === true && provider.cfgVisitor === undefined) {
+          pdgUnsupportedByLang.set(
+            language,
+            (pdgUnsupportedByLang.get(language) ?? 0) + 1,
+          );
+        }
+        chunkFiles.push({ path: p, content, language });
+      }
+
+      // A chunk may contain only MATLAB/ambiguous sources or files whose
+      // authoritative grammar is unavailable. Drain the prior worker chunk to
+      // preserve ordering, advance classification progress, and never spawn a
+      // worker for the empty dispatch.
+      if (chunkFiles.length === 0) {
+        if (pendingWorkerChunk) {
+          await finalizeWorkerChunk(pendingWorkerChunk);
+          pendingWorkerChunk = null;
+        }
+        await applyChunkResults(null, chunkIdx, chunkFiles, chunkPaths.length, chunkStartMs);
+        continue;
       }
 
       // Compute the chunk's content-hash signature (if cache available).
@@ -1003,6 +1083,8 @@ export async function runChunkedParseAndResolve(
         const entries = chunkFiles.map((f) => ({
           filePath: f.path,
           contentHash: fileContentHash(f.content),
+          language: f.language,
+          classifierVersion: SOURCE_LANGUAGE_CLASSIFIER_VERSION,
         }));
         chunkHash = computeChunkHash(
           entries,
@@ -1086,7 +1168,13 @@ export async function runChunkedParseAndResolve(
             );
           }
         }
-        await applyChunkResults(chunkWorkerData, chunkIdx, chunkFiles, chunkStartMs);
+        await applyChunkResults(
+          chunkWorkerData,
+          chunkIdx,
+          chunkFiles,
+          chunkPaths.length,
+          chunkStartMs,
+        );
       } else {
         // Cache miss: dispatch to workers, capture the raw results, store
         // them under the chunk hash for the next run.
@@ -1157,6 +1245,7 @@ export async function runChunkedParseAndResolve(
           chunkIdx,
           chunkHash,
           chunkFiles,
+          chunkSourceCount: chunkPaths.length,
           chunkStartMs,
         };
       }
@@ -1242,6 +1331,13 @@ export async function runChunkedParseAndResolve(
     }
   } finally {
     await workerPool?.terminate();
+  }
+  warnUnavailableParsers();
+  for (const [language, count] of pdgUnsupportedByLang) {
+    logger.warn(
+      `  PDG unavailable for ${language}: ${count} file(s) indexed without CFG/PDG ` +
+        'because the language provider has no cfgVisitor.',
+    );
   }
 
   // Fetch calls + ORM queries were already extracted inside each worker
@@ -1548,5 +1644,6 @@ export async function runChunkedParseAndResolve(
     // cache: when the file's ParsedFile is here, scope-resolution skips its own
     // `extractParsedFile` call.
     parsedFiles: allParsedFiles,
+    sourceClassifications,
   };
 }

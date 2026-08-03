@@ -4,6 +4,8 @@
  * Type definitions for the embedding generation and semantic search system.
  */
 
+import type { SupportedLanguages } from 'gitnexus-shared';
+
 export const LABEL_FUNCTION = 'Function' as const;
 export const LABEL_METHOD = 'Method' as const;
 export const LABEL_CONSTRUCTOR = 'Constructor' as const;
@@ -271,6 +273,7 @@ export interface EmbeddableNode {
   description?: string;
   parameterCount?: number;
   returnType?: string;
+  language?: SupportedLanguages;
   repoName?: string;
   serverName?: string;
   methodNames?: string[];

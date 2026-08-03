@@ -541,7 +541,13 @@ import type { ParseWorkerResult } from '../core/ingestion/workers/parse-worker.j
 // value 59 is now part of main's ledger, main currently holds 68, and open PR
 // #2972 publishes 69; 70 is the next free value above every known claim.
 // RE-CHECK AGAINST origin/main IMMEDIATELY BEFORE MERGING.
-const SCHEMA_BUMP = 70;
+//
+// 70 -> 71: authoritative source language is persisted on ParsedFile and folded
+// into every production chunk key together with the classifier version.
+// Objective-C subscript sugar also persists candidate selector names on
+// ReferenceSite records. A warm v70 cache omits these facts and silently loses
+// the corresponding language classification and CALLS edges during resolution.
+const SCHEMA_BUMP = 71;
 const GITNEXUS_PKG_VERSION = (() => {
   try {
     // package.json sits at gitnexus/package.json — two levels up from
@@ -650,11 +656,24 @@ export interface PdgCacheKey {
 }
 
 export const computeChunkHash = (
-  entries: Array<{ filePath: string; contentHash: string }>,
+  entries: Array<{
+    filePath: string;
+    contentHash: string;
+    language?: string;
+    classifierVersion?: number;
+  }>,
   pdg: boolean | PdgCacheKey = false,
 ): string => {
   const sorted = [...entries].sort((a, b) => (a.filePath < b.filePath ? -1 : 1));
-  const joined = sorted.map((e) => `${e.filePath}:${e.contentHash}`).join('\n');
+  const joined = sorted
+    .map((e) => {
+      const classification =
+        e.language === undefined && e.classifierVersion === undefined
+          ? ''
+          : `:${e.language ?? '<unknown>'}:${e.classifierVersion ?? '<unknown>'}`;
+      return `${e.filePath}:${e.contentHash}${classification}`;
+    })
+    .join('\n');
   const opts: PdgCacheKey = typeof pdg === 'boolean' ? { pdg } : pdg;
   // pdg-off path keeps its pre-#2081 chunk-KEY format verbatim. Note this does
   // NOT mean caches survive the M1 upgrade: SCHEMA_BUMP 4→5 changed

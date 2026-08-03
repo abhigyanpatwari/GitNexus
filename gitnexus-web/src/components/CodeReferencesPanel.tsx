@@ -14,14 +14,21 @@ import {
 import { Prism as SyntaxHighlighter } from 'react-syntax-highlighter';
 import { vscDarkPlus } from 'react-syntax-highlighter/dist/esm/styles/prism';
 import { useAppState } from '../hooks/useAppState';
-import { type GraphNode, getSyntaxLanguageFromFilename } from 'gitnexus-shared';
+import {
+  SupportedLanguages,
+  type GraphNode,
+  getSyntaxLanguageFromFilename,
+} from 'gitnexus-shared';
 import { NODE_COLORS } from '../lib/constants';
 import { readFile, type ReadFileResult } from '../services/backend-client';
 import { useTranslation } from 'react-i18next';
 
-const getSyntaxLanguage = (filePath: string | undefined): string => {
+export const getSyntaxLanguage = (
+  filePath: string | undefined,
+  language?: string,
+): string => {
   if (!filePath) return 'text';
-  return getSyntaxLanguageFromFilename(filePath);
+  return getSyntaxLanguageFromFilename(filePath, language as SupportedLanguages | undefined);
 };
 
 // Match the code theme used elsewhere in the app
@@ -392,7 +399,10 @@ export const CodeReferencesPanel = ({ onFocusNode }: CodeReferencesPanelProps) =
                 </div>
               ) : selectedFileContent ? (
                 <SyntaxHighlighter
-                  language={getSyntaxLanguage(selectedFilePath)}
+                  language={getSyntaxLanguage(
+                    selectedFilePath,
+                    selectedNode?.properties.language as string | undefined,
+                  )}
                   style={customTheme as any}
                   showLineNumbers
                   startingLineNumber={fileStartLine + 1}
@@ -466,7 +476,12 @@ export const CodeReferencesPanel = ({ onFocusNode }: CodeReferencesPanelProps) =
                   const hasRange = typeof ref.startLine === 'number';
                   const startDisplay = hasRange ? (ref.startLine ?? 0) + 1 : undefined;
                   const endDisplay = hasRange ? (ref.endLine ?? ref.startLine ?? 0) + 1 : undefined;
-                  const language = getSyntaxLanguage(ref.filePath);
+                  const language = getSyntaxLanguage(
+                    ref.filePath,
+                    ref.nodeId
+                      ? (nodeById.get(ref.nodeId)?.properties.language as string | undefined)
+                      : undefined,
+                  );
 
                   const isGlowing = glowRefId === ref.id;
 

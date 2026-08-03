@@ -27,6 +27,8 @@ interface OptionalGrammar {
   pkg: string;
   /** File extensions this grammar parses */
   extensions: string[];
+  /** Unambiguous extensions suitable for filename-only analyze preflight. */
+  preflightExtensions?: string[];
   /**
    * SupportedLanguages id, when this grammar backs an ingestion language.
    * Used to ask `isGrammarRuntimeSkipped` whether the grammar was disabled via
@@ -56,6 +58,13 @@ const OPTIONAL_GRAMMARS: OptionalGrammar[] = [
     extensions: ['.kt', '.kts'],
     language: SupportedLanguages.Kotlin,
   },
+  {
+    name: 'tree-sitter-objc',
+    pkg: 'tree-sitter-objc',
+    extensions: ['.h', '.m'],
+    preflightExtensions: ['.m'],
+    language: SupportedLanguages.ObjectiveC,
+  },
 ];
 
 /**
@@ -63,7 +72,13 @@ const OPTIONAL_GRAMMARS: OptionalGrammar[] = [
  * the `analyze` preflight glob (so the glob can't drift from this list).
  */
 export function getOptionalGrammarExtensions(): string[] {
-  return [...new Set(OPTIONAL_GRAMMARS.flatMap((g) => g.extensions))];
+  return [
+    ...new Set(
+      OPTIONAL_GRAMMARS.flatMap((grammar) =>
+        grammar.preflightExtensions ?? grammar.extensions,
+      ),
+    ),
+  ];
 }
 
 export interface MissingGrammar {

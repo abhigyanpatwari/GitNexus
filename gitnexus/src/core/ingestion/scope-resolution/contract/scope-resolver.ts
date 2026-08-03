@@ -1214,7 +1214,7 @@ export interface ScopeResolver {
   ) => ReceiverMemberResolution | undefined;
 
   /**
-   * Enable the receiver-bound Case 0.5 fallback for explicit `this`
+   * Enable the receiver-bound Case 0.5 fallback for explicit instance
    * receivers (`this->m()` / `this.m()`) that resolves against the
    * enclosing class + MRO even when no explicit `this` typeBinding is
    * present in scope.
@@ -1224,6 +1224,14 @@ export interface ScopeResolver {
    * suppression must remain unchanged.
    */
   readonly resolveThisViaEnclosingClass?: boolean;
+
+  /**
+   * Optional spelling override for the Case 0.5 instance receiver. When
+   * omitted, the shared default remains exactly `receiverText === 'this'`.
+   * Languages with another explicit self spelling provide the predicate
+   * without adding language names or tokens to the shared resolver.
+   */
+  readonly isEnclosingClassReceiver?: (receiverText: string) => boolean;
 
   /**
    * Optional post-finalize hook to inject cross-file bindings that
@@ -1444,6 +1452,18 @@ export interface ScopeResolver {
     readonly allScannedPaths: ReadonlySet<string>;
     readonly resolutionConfig: unknown;
   }) => Set<string>;
+
+  /**
+   * Decide whether a worker/cache `ParsedFile` can be reused in this
+   * resolver's context pass. The default accepts every pre-extracted file,
+   * which is required by heterogeneous context providers such as Vue.
+   *
+   * A provider that intentionally reparses foreign-language context with its
+   * own grammar can reject the cached artifact here. The shared orchestrator
+   * then performs a fresh extraction from the already-loaded source text and
+   * does not overwrite the authoritative cache entry.
+   */
+  readonly acceptPreExtractedParsedFile?: (parsed: ParsedFile) => boolean;
 
   /**
    * Optional post-resolution hook for emitting language-specific graph edges

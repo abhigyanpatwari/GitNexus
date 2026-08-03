@@ -157,6 +157,16 @@ const SOURCES: Record<string, GrammarSource> = {
       'Likely cause: no prebuilt `.node` for this platform/architecture. ' +
       `See ${ISSUES_URL}/1130.`,
   },
+  [SupportedLanguages.ObjectiveC]: {
+    load: () => requireVendoredGrammar('tree-sitter-objc'),
+    optional: true,
+    userSkippable: true,
+    unavailableNote:
+      'Objective-C parsing disabled: vendored `tree-sitter-objc` (under ' +
+      '`gitnexus/vendor/tree-sitter-objc`) failed to load. ' +
+      'Reinstall without GITNEXUS_SKIP_OPTIONAL_GRAMMARS, or use a supported ' +
+      'platform/toolchain to build the optional native binding.',
+  },
   [SupportedLanguages.Dart]: {
     load: () => requireVendoredGrammar('tree-sitter-dart'),
     optional: true,

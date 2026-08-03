@@ -123,6 +123,12 @@ export interface ReferenceSite {
   /** Argument count at the call site; used by `provider.arityCompatibility`. */
   readonly arity?: number;
   /**
+   * Alternative member spellings for syntax sugar whose concrete target is
+   * determined by receiver membership. Language resolvers must emit an edge
+   * only when this set resolves to one definition.
+   */
+  readonly candidateNames?: readonly string[];
+  /**
    * Object-literal key under which a `value-ref` site registers its value
    * (`{ emitScopeCaptures: emitHook }` → `'emitScopeCaptures'`; shorthand
    * `{ emitHook }` → `'emitHook'`). Consumed by the property-dispatch pass

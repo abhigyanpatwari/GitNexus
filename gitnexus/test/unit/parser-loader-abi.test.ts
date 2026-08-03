@@ -107,6 +107,12 @@ const SMOKE_CASES: Record<string, SmokeCase> = {
     snippet: 'class Foo { func bar() {} }\n',
     rootType: 'source_file',
   },
+  [SupportedLanguages.ObjectiveC]: {
+    language: SupportedLanguages.ObjectiveC,
+    filePath: 'Store.m',
+    snippet: '@interface Store : NSObject\n@end\n',
+    rootType: 'translation_unit',
+  },
   [SupportedLanguages.Dart]: {
     language: SupportedLanguages.Dart,
     snippet: 'void main() {}\n',

@@ -78,6 +78,14 @@ describe('build-tree-sitter-grammars.cjs consolidated activation', () => {
     expect(r.stderr).not.toContain('Swift (.swift) parsing will be unavailable');
   });
 
+  it('Objective-C grammar is optional and honors the install-time opt-out', () => {
+    const r = runBuild('objc', { GITNEXUS_SKIP_OPTIONAL_GRAMMARS: '1' });
+    expect(r.status).toBe(0);
+    expect(r.signal).toBeNull();
+    expect(r.stderr).toContain('[tree-sitter-objc] Skipping build');
+    expect(r.stderr).not.toContain("Unknown grammar 'objc'");
+  });
+
   it('REQUIRED grammar (c): ignores GITNEXUS_SKIP_OPTIONAL_GRAMMARS (no skip message)', () => {
     // c is required — the opt-out must NOT short-circuit it. With nothing
     // materialized it silently exits 0 at the binding.gyp-absent check.
@@ -115,7 +123,7 @@ describe('build-tree-sitter-grammars.cjs consolidated activation', () => {
   });
 
   it('never exits non-zero across grammars and env permutations (postinstall hard invariant)', () => {
-    for (const grammar of ['c', 'dart', 'proto', 'swift', 'kotlin']) {
+    for (const grammar of ['c', 'dart', 'proto', 'swift', 'kotlin', 'objc']) {
       for (const overrides of [{ GITNEXUS_SKIP_OPTIONAL_GRAMMARS: '1' }, {}]) {
         const r = runBuild(grammar, overrides);
         expect(r.status, `${grammar} ${JSON.stringify(overrides)}`).toBe(0);

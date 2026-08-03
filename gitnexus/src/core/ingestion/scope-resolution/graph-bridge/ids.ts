@@ -26,6 +26,7 @@ import {
   positionKey,
   qualifiedKey,
   simpleKey,
+  sourceIdentityKey,
   type GraphNodeLookup,
 } from '../graph-bridge/node-lookup.js';
 import {
@@ -235,12 +236,17 @@ export function resolveDefGraphId(
     templateConstraints?: unknown;
     /** #1982 bridge-held namespace path; see `SymbolDefinition.namespacePrefix`. */
     namespacePrefix?: string;
+    sourceIdentity?: string;
   },
   nodeLookup: GraphNodeLookup,
 ): string | undefined {
   const qn = def.qualifiedName;
   if (qn === undefined || qn.length === 0) return undefined;
   if (def.type !== undefined) {
+    if (def.sourceIdentity !== undefined && def.sourceIdentity.length > 0) {
+      const exact = nodeLookup.get(sourceIdentityKey(filePath, def.type, def.sourceIdentity));
+      if (exact !== undefined) return exact;
+    }
     // ONE binding for all three key families — see `siblingCallableLabel`, which
     // documents why they cannot be given independent answers. What each family
     // is allowed to DO with it still differs, and is documented at each site.

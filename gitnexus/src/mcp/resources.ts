@@ -484,12 +484,15 @@ nodes:
 additional_node_types: "Multi-language: Struct, Enum, Macro, Typedef, Union, Namespace, Trait, Impl, TypeAlias, Const, Static, Property, Record, Delegate, Annotation, Constructor, Template, Module (use backticks in queries: \`Struct\`, \`Enum\`, etc.)"
 
 node_properties:
-  common: "name (STRING), filePath (STRING), startLine (INT32), endLine (INT32)"
+  common: "name (STRING), filePath (STRING), startLine (INT32), endLine (INT32); language (STRING) and sourceIdentity (STRING) are present on persisted source symbols"
   line_numbers: "startLine/endLine on symbol nodes are 0-BASED (tree-sitter rows) in storage AND in raw Cypher results. The context, query, impact, group/cross-repo trace, and explain/pdg_query (symbol anchor) tools present them 1-BASED (editor / sed / less -N aligned), so a symbol spans editor lines (startLine+1)..(endLine+1) — e.g. sed '<startLine+1>,<endLine+1>!d' <file>. Single-repo trace symbol lines stay 0-BASED for now (full-parity follow-up). content holds the exact symbol span. (BasicBlock / PDG statement lines are separately 1-based.) (#2377, #2380)"
-  Method: "parameterCount (INT32), returnType (STRING), isVariadic (BOOL), visibility (STRING), isStatic (BOOL), isAbstract (BOOL), isFinal (BOOL), isVirtual (BOOL), isOverride (BOOL), isAsync (BOOL), isPartial (BOOL), requiredParameterCount (INT32), parameterTypes (STRING[]), annotations (STRING[])"
-  Function: "parameterCount (INT32), returnType (STRING), isVariadic (BOOL), visibility (STRING), isStatic (BOOL), isAbstract (BOOL), isFinal (BOOL), isAsync (BOOL), parameterTypes (STRING[]), annotations (STRING[])"
-  Property: "declaredType (STRING) — the field's type annotation (e.g., 'Address', 'City'). Used for field-access chain resolution."
-  Constructor: "parameterCount (INT32), visibility (STRING), isStatic (BOOL), parameterTypes (STRING[])"
+  File: "language (STRING), languageReason (STRING), languageClassifierVersion (INT32)"
+  Class_Interface: "sourceRole (STRING), declarationKey (STRING); Class also has frameworkAnnotations (STRING[])"
+  Method: "parameterCount (INT32), returnType (STRING), selector (STRING), isStatic (BOOL), sourceRole (STRING), declarationKey (STRING), dispatchKey (STRING), categoryName (STRING), parameterTypes (JSON STRING), annotations (JSON STRING)"
+  Function: "language (STRING), sourceIdentity (STRING)"
+  Property: "declaredType (STRING), sourceRole (STRING), declarationKey (STRING), getterSelector (STRING), setterSelector (STRING), annotations (JSON STRING)"
+  CodeElement: "sourceRole (STRING), categoryName (STRING), hostClassName (STRING), declarationKey (STRING)"
+  Constructor: "language (STRING), sourceIdentity (STRING)"
   Community: "heuristicLabel (STRING), cohesion (DOUBLE), symbolCount (INT32), keywords (STRING[]), description (STRING), enrichedBy (STRING)"
   Process: "heuristicLabel (STRING), processType (STRING — 'intra_community' or 'cross_community'), stepCount (INT32), communities (STRING[]), entryPointId (STRING), terminalId (STRING)"
 
