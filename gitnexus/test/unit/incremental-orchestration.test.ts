@@ -465,42 +465,6 @@ describe('runFullAnalysis — incremental orchestration', () => {
     }
   }, 300_000);
 
-  it('a same-commit index whose DDL fingerprint differs rebuilds before the fast path (#2798)', async () => {
-    const repo = await setupMiniRepo();
-    try {
-      const { runFullAnalysis } = await import('../../src/core/run-analyze.js');
-      await runFullAnalysis(repo.dbPath, { skipAgentsMd: true }, { onProgress: () => {} });
-      const { storagePath } = getStoragePaths(repo.dbPath);
-      const meta = await loadMeta(storagePath);
-      expect(meta).toMatchObject({
-        schemaFingerprint: SCHEMA_FINGERPRINT,
-      });
-
-      // The failure the digest exists to catch (#2798). Under the
-      // hand-incremented `schemaVersion` this index read as CURRENT — same
-      // number, different DDL, the clash that landed twice — so every
-      // `CREATE … TABLE` was skipped as "already exists". A foreign digest is
-      // that same index, now visible: identical commit, clean tree, so this
-      // stamp is the only thing standing between it and the fast path.
-      await saveMeta(storagePath, { ...meta!, schemaFingerprint: 'a0b1c2d3e4f5' });
-      const logs: string[] = [];
-      const reanalyzed = await runFullAnalysis(
-        repo.dbPath,
-        { skipAgentsMd: true },
-        { onProgress: () => {}, onLog: (message) => logs.push(message) },
-      );
-
-      // Must NOT early-return through alreadyUpToDate.
-      expect(reanalyzed.alreadyUpToDate).toBeUndefined();
-      expect(logs.join('\n')).toContain('index schema changed (built by a0b1c2d3e4f5,');
-      expect(await loadMeta(storagePath)).toMatchObject({
-        schemaFingerprint: SCHEMA_FINGERPRINT,
-      });
-    } finally {
-      await repo.cleanup();
-    }
-  }, 300_000);
-
   it('a same-commit index with NO fingerprint (pre-#2798) rebuilds once, not grandfathered', async () => {
     const repo = await setupMiniRepo();
     try {
@@ -1169,18 +1133,19 @@ describe('runFullAnalysis — incremental orchestration', () => {
       // the same commit with a clean tree. Well-formed (12 lowercase hex, so it
       // clears the echo-shape gate) but not this build's — every other fast-path
       // condition holds, so only the schema guard can stop the early return.
-      // A distinct digest from the #2798 log-text test above, to keep a copied
-      // constant from making either test pass on the other's fixture.
       const downgraded: RepoMeta = { ...meta!, schemaFingerprint: 'b1c2d3e4f5a6' };
       await saveMeta(storagePath, downgraded);
 
+      const logs: string[] = [];
       const reanalyzed = await runFullAnalysis(
         repo.dbPath,
         { skipAgentsMd: true },
-        { onProgress: () => {} },
+        { onProgress: () => {}, onLog: (message) => logs.push(message) },
       );
-      // Pipeline actually ran (schemaFingerprint mismatch → force=true).
+      // Pipeline actually ran (schemaFingerprint mismatch → force=true), and the
+      // notice names the stamp it rejected rather than a generic placeholder.
       expect(reanalyzed.alreadyUpToDate).toBeUndefined();
+      expect(logs.join('\n')).toContain('index schema changed (built by b1c2d3e4f5a6,');
       // And the rebuild restamped this build's digest (that path runs saveMeta).
       const restamped = await loadMeta(storagePath);
       expect(restamped!.schemaFingerprint).toBe(SCHEMA_FINGERPRINT);

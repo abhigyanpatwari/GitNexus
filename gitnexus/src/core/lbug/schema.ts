@@ -685,6 +685,7 @@ export const SCHEMA_QUERIES = [...NODE_SCHEMA_QUERIES, ...REL_SCHEMA_QUERIES, EM
  * from `GITNEXUS_EMBEDDING_DIMS` at module load, so folding it in would make
  * this a function of the ENVIRONMENT rather than of code: two runs of the same
  * build under different env would disagree and force alternating full rebuilds.
+ * Vector-column drift is therefore a SEPARATE gate, not an ungated hazard:
  * Vector-column drift is therefore a separate hazard, and NOTHING currently
  * gates the column width: a dims change is not a fingerprint mismatch and
  * forces no rebuild. The only reaction is in run-analyze, and it is to the
@@ -695,3 +696,32 @@ export const SCHEMA_FINGERPRINT: string = createHash('sha256')
   .update([...NODE_SCHEMA_QUERIES, ...REL_SCHEMA_QUERIES].join('\n'))
   .digest('hex')
   .slice(0, 12);
+
+/**
+ * Whether an index built under `recorded` can be reused by this build.
+ *
+ * Lives here rather than in run-analyze so the query side can ask the same
+ * question without importing the analyze pipeline — the reason
+ * `cjkSegmentationModeMismatch` sits in `core/search/` rather than beside its
+ * caller. ABSENT counts as a mismatch: that is the backward-compatibility path
+ * for every index written before the field existed, and grandfathering it would
+ * stamp a fresh fingerprint onto a database whose DDL was never verified.
+ */
+export const schemaFingerprintMismatch = (recorded: string | undefined): boolean =>
+  recorded !== SCHEMA_FINGERPRINT;
+
+/**
+ * Whether a stamped value has the shape {@link SCHEMA_FINGERPRINT} produces —
+ * the lowercase-hex prefix of a sha256 digest. The width is read from the live
+ * constant, so changing the slice above needs no edit here.
+ *
+ * Used to decide whether a stamp is worth NAMING in a diagnostic: an index with
+ * no fingerprint and one carrying a malformed value are both "not this build",
+ * but only the first has an explanation worth printing. Not a comparison gate —
+ * {@link schemaFingerprintMismatch} already rejects every value that is not
+ * exactly this build's.
+ */
+export const isSchemaFingerprintShaped = (value: unknown): value is string =>
+  typeof value === 'string' &&
+  value.length === SCHEMA_FINGERPRINT.length &&
+  /^[0-9a-f]+$/.test(value);

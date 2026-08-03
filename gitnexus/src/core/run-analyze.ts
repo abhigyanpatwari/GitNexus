@@ -140,9 +140,13 @@ import {
 import type { CachedEmbedding } from './embeddings/types.js';
 import { generateAIContextFiles } from '../cli/ai-context.js';
 import { sanitizeDetectedBranch } from '../cli/analyze-config.js';
-import { EMBEDDING_TABLE_NAME } from './lbug/schema.js';
-import { STALE_HASH_SENTINEL } from './lbug/schema.js';
-import { SCHEMA_FINGERPRINT } from './lbug/schema.js';
+import {
+  EMBEDDING_TABLE_NAME,
+  STALE_HASH_SENTINEL,
+  SCHEMA_FINGERPRINT,
+  schemaFingerprintMismatch,
+  isSchemaFingerprintShaped,
+} from './lbug/schema.js';
 import { isSpringBeanCandidateSourceFile } from './ingestion/frameworks/spring/bean-catalog.js';
 import { isSpringBeanFactoryDeclaration } from './ingestion/frameworks/spring/bean-factories.js';
 import {
@@ -180,6 +184,23 @@ import {
 } from './embedding-checkpoint.js';
 import type { EmbeddingCheckpoint } from './embedding-checkpoint.js';
 
+/**
+ * Strip C0/C1 control characters from a progress/diagnostic message.
+ *
+ * Several guard notices below interpolate values read straight out of
+ * `.gitnexus/gitnexus.json`, which is parsed with no runtime shape validation
+ * (`loadMeta` does a bare `JSON.parse(...) as RepoMeta`) — the stamped schema
+ * fingerprint, the runner-identity schema, the CJK mode. On the CLI path these
+ * reach `console.log` and therefore the user's terminal, so a crafted value
+ * carrying ANSI escapes (`\x1b[2J`, `\x1b]0;…`) would be replayed verbatim.
+ *
+ * Sanitizing at the funnel rather than per field: every message that ever
+ * interpolates untrusted metadata is covered, including ones not written yet.
+ * Newline and tab are preserved — multi-line notices are intentional.
+ */
+const stripControlCharacters = (msg: string): string =>
+  msg.replace(/[\x00-\x08\x0b\x0c\x0e-\x1f\x7f-\x9f]/g, '');
+
 const ANALYSIS_FEATURES = [
   CLASS_FRAMEWORK_ANNOTATIONS_FEATURE,
   SPRING_AOP_FEATURE,
@@ -187,24 +208,6 @@ const ANALYSIS_FEATURES = [
   SPRING_CONDITIONALS_FEATURE,
   SPRING_CONFIG_BINDINGS_FEATURE,
 ] as const;
-
-/**
- * Whether an on-disk `schemaFingerprint` has the shape `SCHEMA_FINGERPRINT`
- * actually produces: the lowercase-hex prefix of a sha256 digest (see
- * `core/lbug/schema.ts`). The width is read from the live constant instead of
- * being hardcoded, so changing the digest slice there needs no edit here.
- *
- * Gate for anything that ECHOES the stamped value: `.gitnexus/gitnexus.json` is
- * parsed with no runtime shape validation, and the schema-mismatch notice below
- * reaches `console.log` on the CLI path — a crafted value carrying ANSI escapes
- * (`\x1b[2J`, `\x1b]0;…`) would otherwise be replayed straight into the user's
- * terminal. Not a comparison gate: the mismatch check itself stays a plain
- * `!== SCHEMA_FINGERPRINT`, which already rejects every malformed value.
- */
-const isSchemaFingerprintShaped = (value: unknown): value is string =>
-  typeof value === 'string' &&
-  value.length === SCHEMA_FINGERPRINT.length &&
-  /^[0-9a-f]+$/.test(value);
 
 interface PersistedFrameworkAnnotationRow {
   readonly id?: unknown;
@@ -869,7 +872,7 @@ export async function runFullAnalysis(
   // would otherwise stay saturated on a reused process).
   resetDegradedParseCounter();
 
-  const log = (msg: string) => callbacks.onLog?.(msg);
+  const log = (msg: string) => callbacks.onLog?.(stripControlCharacters(msg));
   const acquireOpts = {
     log,
     onWaitStart: () =>
@@ -928,7 +931,7 @@ async function runFullAnalysisInner(
   writeTarget: WriteTarget,
   runnerIdentityAtBootstrap?: AnalyzerRunnerIdentity,
 ): Promise<AnalyzeResult> {
-  const log = (msg: string) => callbacks.onLog?.(msg);
+  const log = (msg: string) => callbacks.onLog?.(stripControlCharacters(msg));
   const progress = (phase: string, percent: number, message: string) =>
     callbacks.onProgress(phase, percent, message);
 
@@ -1300,21 +1303,19 @@ async function runFullAnalysisInner(
   // The two cases must not be told the same story. Blaming "an older GitNexus
   // version" is FALSE for a non-git repo — the field is absent by design there,
   // so this build would keep saying it about an index this exact build just
-  // wrote, on every run, forever. The stamp is only echoed when it has the shape
-  // SCHEMA_FINGERPRINT produces (isSchemaFingerprintShaped, which also keeps an
-  // unvalidated on-disk string out of the terminal); anything else degrades to a
-  // neutral placeholder, and a non-git repo is additionally told WHY it has no
-  // stamp. One log line either way.
-  if (existingMeta && existingMeta.schemaFingerprint !== SCHEMA_FINGERPRINT) {
+  // wrote, on every run, forever. A stamp is only named when it has the shape
+  // SCHEMA_FINGERPRINT produces; anything else degrades to a neutral
+  // placeholder, and a non-git repo is additionally told WHY it has no stamp.
+  if (existingMeta && schemaFingerprintMismatch(existingMeta.schemaFingerprint)) {
     const stamped = existingMeta.schemaFingerprint;
-    const recognized = isSchemaFingerprintShaped(stamped);
+    const origin = isSchemaFingerprintShaped(stamped) ? stamped : 'an unidentified GitNexus build';
+    const nonGitNote =
+      stamped === undefined && !repoHasGit
+        ? ' Non-git repositories never record a schema fingerprint, so this run rebuilds regardless.'
+        : '';
     log(
-      `index schema changed (built by ${recognized ? stamped : 'an unidentified GitNexus build'}, ` +
-        `this build is ${SCHEMA_FINGERPRINT}); forcing a full re-analyze so the database is ` +
-        `recreated from the current schema.` +
-        (recognized || repoHasGit
-          ? ''
-          : ' Non-git repositories never record a schema fingerprint, so this run rebuilds regardless.'),
+      `index schema changed (built by ${origin}, this build is ${SCHEMA_FINGERPRINT}); forcing a ` +
+        `full re-analyze so the database is recreated from the current schema.${nonGitNote}`,
     );
     options = { ...options, force: true };
   }
@@ -1377,6 +1378,8 @@ async function runFullAnalysisInner(
     options = { ...options, force: true };
   }
 
+  // ── embedding width mismatch forces full rebuild (#2798) ──────────
+  // The half of the schema `SCHEMA_FINGERPRINT` deliberately cannot cover:
   // ── Early-return: already up to date ──────────────────────────────
   if (
     existingMeta &&
@@ -1663,7 +1666,10 @@ async function runFullAnalysisInner(
   const isIncremental =
     !options.force &&
     !!existingMeta &&
-    existingMeta.schemaFingerprint === SCHEMA_FINGERPRINT &&
+    // Belt and braces, not a second gate: the guard above already set `force`
+    // on exactly this condition, and `!options.force` short-circuits before
+    // this conjunct is reached. Kept so the eligibility contract reads whole.
+    !schemaFingerprintMismatch(existingMeta.schemaFingerprint) &&
     currentAnalysisFeatureMismatches.length === 0 &&
     !!existingMeta.fileHashes &&
     Object.keys(existingMeta.fileHashes).length > 0 &&
@@ -2929,6 +2935,10 @@ async function runFullAnalysisInner(
       // `pdg` below, 'none' is a meaningful value to compare, not an
       // absence, so this is never conditionally omitted.
       cjkSegmentation: getSearchFTSCjkSegmentation(),
+      // The FLOAT[N] width this run created the vector column at (#2798).
+      // Always stamped, like `cjkSegmentation` and unlike `schemaFingerprint`:
+      // the CodeEmbedding table is created for every index, git or not, so
+      // absence has exactly one meaning — an index older than the field.
       fileHashes: hasGitDir(repoPath) ? newFileHashesRecord : undefined,
       // This branch's full live chunk-key set (#2106 R6). `usedKeys` is every
       // chunk hash touched in this scan — cache HITS included (see parse-impl

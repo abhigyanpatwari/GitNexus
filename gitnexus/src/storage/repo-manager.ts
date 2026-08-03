@@ -195,8 +195,9 @@ export interface RepoMeta {
    * that `--repair-fts` changed FTS availability (`doctor` still prints
    * platform-derived capabilities separately; `graph`/`vectorSearch` remain
    * forensic-only). The status unions mirror `CapabilityStatus` /
-   * `SemanticSearchMode` in core/platform/capabilities.ts; duplicated here
-   * rather than imported, so the two must be kept in sync by hand.
+   * `SemanticSearchMode` in core/platform/capabilities.ts; inlined so storage/
+   * takes no core/ import for a pair of string unions, at the cost of keeping
+   * the two in sync by hand.
    */
   capabilities?: {
     graph: { provider: string; status: 'available' | 'degraded' | 'unavailable' };

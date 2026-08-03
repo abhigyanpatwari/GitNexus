@@ -182,7 +182,7 @@ carries no fingerprint, so it is rebuilt exactly once.
 upgrading logs one line —
 
 ```
-index schema changed (built by an older GitNexus version, this build is <fingerprint>); forcing a full re-analyze so the database is recreated from the current schema.
+index schema changed (built by an unidentified GitNexus build, this build is <fingerprint>); forcing a full re-analyze so the database is recreated from the current schema.
 ```
 
 — and then performs that full re-analyze itself. The same run stamps the
