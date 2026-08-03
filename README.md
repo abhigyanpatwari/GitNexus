@@ -80,6 +80,20 @@ That's it. `analyze` indexes the codebase, installs agent skills, registers Clau
 
 </details>
 
+### Deploy to Render
+
+[![Deploy to Render](https://render.com/images/deploy-to-render-button.svg)](https://render.com/deploy?repo=https://github.com/abhigyanpatwari/GitNexus)
+
+Render reads [`render.yaml`](render.yaml) and provisions the API server, a
+persistent disk for indexes and cloned repos, and the web UI pointed at it. No
+API key needed, no secret committed; the instance and disk are paid. Indexing is
+memory-bound, so if `gitnexus-server` runs out of memory on a large repo, raise
+its `plan` and `sizeGB`.
+
+The deploy is **unauthenticated**, and `onrender.com` hostnames appear in
+certificate transparency logs. Treat the URL as public: anyone who finds it can
+index and delete repos, and use `AZURE_DEVOPS_PAT` if you set one.
+
 ## Two Ways to Use GitNexus
 
 |             | **CLI + MCP** (recommended)                                                        | **Web UI**                                                           |
@@ -508,6 +522,8 @@ Most `analyze` knobs are also CLI flags (`--workers`, `--worker-timeout`, `--max
 | `GITNEXUS_MCP_ALLOWED_REPOS`                    | unset                     | Comma-separated allowlist of canonical indexed repository names or absolute paths. Invalid, ambiguous, or blank entries fail startup.                                                                                                                                                                       | One MCP process must expose only a bounded subset of the repositories in the global registry.                                                                                         |
 | `GITNEXUS_MCP_DEFAULT_REPO`                     | unset                     | Canonical indexed repository name or absolute path used when a tool or resource omits its repository. Must belong to the allowlist when one is set.                                                                                                                                                         | Several repositories are available but unqualified MCP calls should resolve deterministically.                                                                                        |
 | `GITNEXUS_MCP_DEFAULT_MAX_TOKENS`               | unset                     | Default positive-integer response budget for MCP `query`, `context`, and `impact`, estimated at four UTF-8 bytes per token. Explicit `maxTokens` wins.                                                                                                                                                      | Long MCP responses consume too much model context and callers cannot reliably add a per-request budget.                                                                               |
+| `GITNEXUS_PUBLIC_ORIGIN`                        | unset                     | Public origin browsers reach `serve` through, added to the CORS allowlist and the same-host guard on write routes. A wildcard bind (`0.0.0.0`) has no host identity, so without this a hosted deploy's own UI is refused. A bare host matches either scheme; a scheme, if given, is enforced. Unparseable values are ignored rather than widening the allowlist.                | `gitnexus serve` runs behind a proxy on a wildcard bind and the UI's index/delete requests return `origin_not_allowed`.                                                               |
+| `GITNEXUS_TRUST_PROXY`                          | `loopback, linklocal, uniquelocal` | Express `trust proxy` value — which upstream hops may set `X-Forwarded-*`, and so what the per-IP rate limiter sees as the client IP. Accepts a hop count (`1`), `true`/`false`, or an Express-style list. Prefer a hop count: `true` reads the client-controlled leftmost `X-Forwarded-For` entry, so a spoofed chain buys a fresh IP per request. | `serve` sits behind a public load balancer outside the private ranges (AWS ALB, Cloudflare, CGNAT), where every request otherwise collapses to the proxy hop and rate limiting goes global. |
 
 </details>
 

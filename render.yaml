@@ -1,0 +1,75 @@
+# yaml-language-server: $schema=https://render.com/schema/render.yaml.json
+#
+# One-click deploy of GitNexus: an API server and the web UI that calls it.
+# fromService gives each the other's public URL, so there is nothing to paste.
+#
+# SECURITY: this deploy is UNAUTHENTICATED, and onrender.com hostnames appear in
+# certificate transparency logs. Anyone who finds the URL can index and delete
+# repos. Rate limits bound the cost; they are not access control.
+
+previews:
+  generation: off
+
+projects:
+  - name: gitnexus
+    environments:
+      - name: production
+        services:
+          - type: web
+            name: gitnexus-server
+            runtime: docker
+            region: oregon
+            # Indexing OOMs on the 512MB starter. standard (2GB) covers
+            # small/mid repos; bump to pro (4GB) or larger for a big one.
+            plan: standard
+            dockerfilePath: ./Dockerfile.cli
+            dockerContext: .
+            # No dockerCommand — the image's CMD already binds the port below,
+            # and Render re-wraps dockerCommand in a shell, so `sh -c` exits 127.
+            healthCheckPath: /api/health
+            autoDeploy: true
+            # mountPath must equal GITNEXUS_HOME in Dockerfile.cli.
+            disk:
+              name: gitnexus-data
+              mountPath: /data/gitnexus
+              sizeGB: 10
+            envVars:
+              # Render routes to this port; Dockerfile.cli's CMD binds 4747.
+              - key: PORT
+                value: 4747
+              # Required. The container binds 0.0.0.0, which has no host
+              # identity, so without this the UI's writes fail the same-host
+              # origin check.
+              - key: GITNEXUS_PUBLIC_ORIGIN
+                fromService:
+                  type: web
+                  name: gitnexus-web
+                  envVarKey: RENDER_EXTERNAL_URL
+              # 1, not true: Render's LB is one hop, and true would trust a
+              # spoofed X-Forwarded-For and hand the rate limiter a fake IP.
+              - key: GITNEXUS_TRUST_PROXY
+                value: 1
+              # Optional Azure DevOps integration; leave unset to skip. Any
+              # visitor can use this PAT (see SECURITY above).
+              - key: AZURE_DEVOPS_URL
+                sync: false
+              - key: AZURE_DEVOPS_PAT
+                sync: false
+
+          - type: web
+            name: gitnexus-web
+            runtime: docker
+            region: oregon
+            plan: starter
+            dockerfilePath: ./Dockerfile.web
+            dockerContext: .
+            healthCheckPath: /
+            autoDeploy: true
+            envVars:
+              # Injected into the page as window.__GITNEXUS_CONFIG__.backendUrl,
+              # so a first-time visitor's UI targets this deploy, not localhost.
+              - key: GITNEXUS_BACKEND_URL
+                fromService:
+                  type: web
+                  name: gitnexus-server
+                  envVarKey: RENDER_EXTERNAL_URL

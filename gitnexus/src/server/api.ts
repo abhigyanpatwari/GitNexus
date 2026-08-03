@@ -63,7 +63,14 @@ import {
   GITHUB_TOKEN_HOSTS,
 } from './git-clone.js';
 import { createAnalyzeUploadHandler } from './analyze-upload.js';
-import { createLocalhostOriginGuard, normalizeBoundHost } from './middleware.js';
+import {
+  createLocalhostOriginGuard,
+  createPublicOriginMatcher,
+  normalizeBoundHost,
+  PUBLIC_ORIGIN_ENV,
+  resolveTrustProxy,
+  TRUST_PROXY_ENV,
+} from './middleware.js';
 import { createLaunchAnalysisWorker } from './analyze-launch.js';
 import { UPLOAD_ROOT } from './upload-paths.js';
 import { sweepStaleUploads } from './upload-sweep.js';
@@ -85,6 +92,7 @@ const pkg = _require('../../package.json');
  *     172.16.0.0/12   → 172.16.x.x – 172.31.x.x
  *     192.168.0.0/16  → 192.168.x.x
  * - https://gitnexus.vercel.app — the deployed GitNexus web UI
+ * - the host named by GITNEXUS_PUBLIC_ORIGIN, when set
  *
  * @param origin - The value of the HTTP `Origin` request header, or `undefined`
  *                 when the header is absent (non-browser request).
@@ -123,6 +131,10 @@ export const isAllowedOrigin = (origin: string | undefined): boolean => {
 
   // Only allow HTTP(S) origins — reject ftp://, file://, etc.
   if (protocol !== 'http:' && protocol !== 'https:') return false;
+
+  // Read per-call, not snapshotted — a pure predicate with no construction
+  // step, unlike the write guard in middleware.ts.
+  if (createPublicOriginMatcher(process.env[PUBLIC_ORIGIN_ENV])?.(protocol, hostname)) return true;
 
   return isRfc1918PrivateIpv4(hostname);
 };
@@ -710,26 +722,9 @@ export const createServer = async (port: number, host: string = '127.0.0.1') => 
   const app = express();
   app.disable('x-powered-by');
 
-  // Trust X-Forwarded-* headers only when the connection comes from the
-  // local loopback or RFC1918 private/link-local addresses — exactly the
-  // origins the CORS allowlist accepts. Without this, every request behind
-  // any reverse proxy / Docker bridge counts as the same `req.ip` and a
-  // single user can trip the per-IP rate limiter for everyone.
-  //
-  // SCOPE: this setting is process-wide. Every middleware and route in this
-  // Express app sees req.ip resolved from X-Forwarded-For when the upstream
-  // hop is in the trusted set above — not just the rate-limited routes.
-  // Future IP-based middleware (audit logging, IP-bound authz) inherits this
-  // behavior.
-  //
-  // CLOUD-DEPLOY CAVEAT: a public cloud LB (AWS ALB, Cloudflare, Fly.io
-  // edge, CGNAT 100.64/10) is NOT in the trusted set. In those topologies
-  // req.ip will collapse to the LB hop IP for every request and the per-IP
-  // rate limiter degrades to per-server. Add an explicit env-var override
-  // and document the cloud-deploy story before binding to a non-loopback
-  // host in those topologies (tracked as a follow-up; not blocking for the
-  // local-bound default).
-  app.set('trust proxy', 'loopback, linklocal, uniquelocal');
+  // Which upstream hops may set X-Forwarded-*. Process-wide: every route's
+  // req.ip, and so the per-IP rate limiter, resolves through this.
+  app.set('trust proxy', resolveTrustProxy(process.env[TRUST_PROXY_ENV]));
 
   // Chromium Private Network Access (required since Chrome 130+). Must run before
   // cors: the cors middleware ends OPTIONS preflight responses, so this header
@@ -753,19 +748,23 @@ export const createServer = async (port: number, host: string = '127.0.0.1') => 
   );
   app.use(express.json({ limit: '10mb' }));
 
-  // Same-host origin guard for write routes. Only allows loopback and the
-  // server's own bound host — scoped to prevent CSRF from other LAN devices.
+  // Same-host origin guard for write routes: loopback, the server's own bound
+  // host, and any configured public origin — prevents CSRF from other devices.
   const requireLocalhostOrigin = createLocalhostOriginGuard(host);
 
-  // A wildcard bind (`0.0.0.0`/`::`) has no single host identity for the
-  // same-host check, so browser write routes accept only loopback origins.
-  // Warn the operator so a remote-access deployment isn't silently write-blocked.
-  if (host && normalizeBoundHost(host) === undefined) {
+  // A wildcard bind has no single host identity for the same-host check, so
+  // writes stay loopback-only unless PUBLIC_ORIGIN_ENV declares an origin.
+  if (
+    host &&
+    normalizeBoundHost(host) === undefined &&
+    !createPublicOriginMatcher(process.env[PUBLIC_ORIGIN_ENV])
+  ) {
     logger.warn(
       { host },
       `[gitnexus serve] Bound to a wildcard address (${host}); browser write routes ` +
         `accept only loopback origins (localhost/127.0.0.1/[::1]). To allow writes from a ` +
-        `specific LAN address, bind --host <that-address> instead of a wildcard.`,
+        `specific LAN address, bind --host <that-address> instead of a wildcard; for a ` +
+        `hosted deployment, set ${PUBLIC_ORIGIN_ENV} to its public origin.`,
     );
   }
 

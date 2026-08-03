@@ -384,3 +384,54 @@ describe('createLocalhostOriginGuard (bound host)', () => {
     expect(callWith('192.168.1.100', undefined).passed).toBe(true);
   });
 });
+
+describe('createLocalhostOriginGuard (GITNEXUS_PUBLIC_ORIGIN)', () => {
+  const saved = process.env.GITNEXUS_PUBLIC_ORIGIN;
+  afterEach(() => {
+    if (saved === undefined) delete process.env.GITNEXUS_PUBLIC_ORIGIN;
+    else process.env.GITNEXUS_PUBLIC_ORIGIN = saved;
+  });
+
+  // Sets the env var first: the guard snapshots it at construction.
+  function admits(publicOrigin: string | undefined, origin: string): boolean {
+    if (publicOrigin === undefined) delete process.env.GITNEXUS_PUBLIC_ORIGIN;
+    else process.env.GITNEXUS_PUBLIC_ORIGIN = publicOrigin;
+    const guard = createLocalhostOriginGuard('0.0.0.0');
+    let passed = false;
+    const req = { headers: { origin } } as never;
+    const res = { status: () => ({ json: () => {} }) } as never;
+    guard(req, res, () => {
+      passed = true;
+    });
+    return passed;
+  }
+
+  it('admits the configured origin given as a full URL', () => {
+    expect(admits('https://app.example.com', 'https://app.example.com')).toBe(true);
+  });
+
+  it('admits the configured origin given as a bare host', () => {
+    expect(admits('app.example.com', 'https://app.example.com')).toBe(true);
+  });
+
+  it('admits a bare host carrying a port, comparing on hostname only', () => {
+    expect(admits('app.example.com:8443', 'https://app.example.com')).toBe(true);
+  });
+
+  it('leaves a bare IPv6 literal intact', () => {
+    expect(admits('[2001:db8::1]', 'http://[2001:db8::1]:4173')).toBe(true);
+  });
+
+  it('rejects a plaintext origin when the configured value is https', () => {
+    expect(admits('https://app.example.com', 'http://app.example.com')).toBe(false);
+  });
+
+  it('still rejects every other origin', () => {
+    expect(admits('app.example.com', 'https://evil.example.com')).toBe(false);
+  });
+
+  it('is inert when unset — a wildcard bind stays loopback-only', () => {
+    expect(admits(undefined, 'https://app.example.com')).toBe(false);
+    expect(admits(undefined, 'http://localhost:5173')).toBe(true);
+  });
+});

@@ -23,6 +23,7 @@ import path from 'node:path';
 import fs from 'node:fs/promises';
 import os from 'node:os';
 import { createRouteLimiter } from '../../src/server/validation.js';
+import { DEFAULT_TRUST_PROXY, resolveTrustProxy } from '../../src/server/middleware.js';
 
 let tmpFile: string;
 
@@ -269,10 +270,13 @@ describe('production routes — rate-limit middleware wiring', () => {
     expect(apiSource).not.toMatch(/app\.options\(\s*'\/\*'/);
   });
 
-  it('createServer wires trust proxy to loopback/linklocal/uniquelocal', () => {
-    expect(apiSource).toMatch(
-      /app\.set\(\s*'trust proxy'\s*,\s*'loopback,\s*linklocal,\s*uniquelocal'\s*\)/,
-    );
+  it('createServer wires trust proxy through resolveTrustProxy', () => {
+    expect(apiSource).toMatch(/app\.set\(\s*'trust proxy'\s*,\s*resolveTrustProxy\(/);
+  });
+
+  it('resolveTrustProxy still defaults to loopback/linklocal/uniquelocal', () => {
+    expect(DEFAULT_TRUST_PROXY).toBe('loopback, linklocal, uniquelocal');
+    expect(resolveTrustProxy(undefined)).toBe('loopback, linklocal, uniquelocal');
   });
 
   it('does not register Express-4-only app.options("*") (Express 5 path-to-regexp)', () => {

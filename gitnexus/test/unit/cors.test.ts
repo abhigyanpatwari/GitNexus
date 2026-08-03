@@ -13,7 +13,7 @@
  *   - https://gitnexus.vercel.app     → allowed
  *   - Everything else                 → rejected
  */
-import { describe, it, expect } from 'vitest';
+import { describe, it, expect, afterEach } from 'vitest';
 import { isAllowedOrigin } from '../../src/server/api.js';
 
 // ─── No origin (non-browser / curl) ──────────────────────────────────
@@ -179,5 +179,52 @@ describe('isAllowedOrigin: rejected origins', () => {
     expect(isAllowedOrigin('http://192.168.1.100')).toBe(true);
     expect(isAllowedOrigin('https://10.0.0.50')).toBe(true);
     expect(isAllowedOrigin('http://172.16.5.1:3000')).toBe(true);
+  });
+});
+
+describe('isAllowedOrigin: GITNEXUS_PUBLIC_ORIGIN', () => {
+  const saved = process.env.GITNEXUS_PUBLIC_ORIGIN;
+  afterEach(() => {
+    if (saved === undefined) delete process.env.GITNEXUS_PUBLIC_ORIGIN;
+    else process.env.GITNEXUS_PUBLIC_ORIGIN = saved;
+  });
+
+  it('allows the configured origin as a full URL or a bare host', () => {
+    process.env.GITNEXUS_PUBLIC_ORIGIN = 'https://app.example.com';
+    expect(isAllowedOrigin('https://app.example.com')).toBe(true);
+    process.env.GITNEXUS_PUBLIC_ORIGIN = 'app.example.com';
+    expect(isAllowedOrigin('https://app.example.com')).toBe(true);
+  });
+
+  it('compares on hostname, ignoring the port', () => {
+    process.env.GITNEXUS_PUBLIC_ORIGIN = 'app.example.com:8443';
+    expect(isAllowedOrigin('https://app.example.com')).toBe(true);
+  });
+
+  it('does not widen to other hosts', () => {
+    process.env.GITNEXUS_PUBLIC_ORIGIN = 'app.example.com';
+    expect(isAllowedOrigin('https://evil.example.com')).toBe(false);
+    expect(isAllowedOrigin('https://app.example.com.evil.com')).toBe(false);
+  });
+
+  it('enforces the scheme when the configured value carries one', () => {
+    process.env.GITNEXUS_PUBLIC_ORIGIN = 'https://app.example.com';
+    expect(isAllowedOrigin('http://app.example.com')).toBe(false);
+  });
+
+  it('accepts either scheme when configured as a bare host', () => {
+    process.env.GITNEXUS_PUBLIC_ORIGIN = 'app.example.com';
+    expect(isAllowedOrigin('http://app.example.com')).toBe(true);
+    expect(isAllowedOrigin('https://app.example.com')).toBe(true);
+  });
+
+  it('still rejects non-http protocols on the configured host', () => {
+    process.env.GITNEXUS_PUBLIC_ORIGIN = 'app.example.com';
+    expect(isAllowedOrigin('ftp://app.example.com')).toBe(false);
+  });
+
+  it('is inert when unset', () => {
+    delete process.env.GITNEXUS_PUBLIC_ORIGIN;
+    expect(isAllowedOrigin('https://app.example.com')).toBe(false);
   });
 });
