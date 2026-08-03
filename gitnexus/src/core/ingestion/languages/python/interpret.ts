@@ -120,8 +120,16 @@ export function interpretPythonTypeBinding(captures: CaptureMatch): ParsedTypeBi
   // `Registry.lookup` Step 2 treats them identically.
   else if (captures['@type-binding.cls'] !== undefined) source = 'self';
   else if (captures['@type-binding.instance-field'] !== undefined) {
-    source =
-      captures['@type-binding.parameter'] !== undefined ? 'parameter-annotation' : 'annotation';
+    // Three tiers, weakest last: `self.x = Outer()` is inferred from a
+    // CONSTRUCTOR CALL (#2807) and must stay below both an explicit field
+    // annotation and a parameter annotation, so a class that both annotates
+    // the field and constructs it keeps the annotation. Checked before the
+    // parameter branch because the constructor form carries no
+    // `@type-binding.parameter` marker and would otherwise read as 'annotation'.
+    if (captures['@type-binding.constructor'] !== undefined) source = 'constructor-inferred';
+    else
+      source =
+        captures['@type-binding.parameter'] !== undefined ? 'parameter-annotation' : 'annotation';
   } else if (captures['@type-binding.constructor'] !== undefined) source = 'constructor-inferred';
   else if (captures['@type-binding.annotation'] !== undefined) source = 'annotation';
   else if (captures['@type-binding.alias'] !== undefined) source = 'assignment-inferred';

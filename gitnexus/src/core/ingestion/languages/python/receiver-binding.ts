@@ -115,16 +115,39 @@ export function synthesizeReceiverTypeBinding(fnNode: SyntaxNode): CaptureMatch 
 }
 
 /**
+ * The class name of a direct constructor call — `Outer()` or `pkg.Outer()` —
+ * or `undefined` for anything else. Python has no `new`, so a call is the only
+ * syntactic construction form, and a call to a plain name is the shape every
+ * other language spells `= new X()`.
+ *
+ * A dotted callee keeps its full text: `resolveTypeRef` sends dotted names
+ * through `QualifiedNameIndex`, exactly as the module-level
+ * `u = models.User()` pattern in `query.ts` already relies on. Any other RHS
+ * (subscript, await, comprehension, bare name) is left alone — that is the
+ * "name-only guess" this module deliberately refuses.
+ */
+function constructorCallTypeName(right: SyntaxNode | null): string | undefined {
+  if (right === null || right.type !== 'call') return undefined;
+  const callee = right.childForFieldName('function');
+  if (callee === null) return undefined;
+  if (callee.type !== 'identifier' && callee.type !== 'attribute') return undefined;
+  const text = callee.text.trim();
+  return text.length > 0 ? text : undefined;
+}
+
+/**
  * Synthesize class-scope field bindings for the common Python constructor
- * injection pattern:
+ * injection patterns:
  *
  *   def __init__(self, service: Service):
- *       self.service = service
+ *       self.service = service        # from the PARAMETER's annotation
+ *       self.cache: Cache = build()   # from the FIELD's own annotation
+ *       self.outer = Outer()          # from the CONSTRUCTOR called (#2807)
  *
- * An explicit field annotation (`self.service: Service = ...`) is also
- * accepted and takes precedence over a parameter annotation. Deliberately do
- * not infer from arbitrary unannotated RHS expressions: the receiver resolver
- * needs a declared type, not a name-only guess.
+ * The three tiers rank in that order — an explicit field annotation beats a
+ * parameter annotation, which beats a construction. Anything else is still
+ * refused: the receiver resolver needs positive evidence, not a name-only
+ * guess from an arbitrary RHS.
  */
 export function synthesizeConstructorFieldTypeBindings(fnNode: SyntaxNode): CaptureMatch[] {
   if (fnNode.childForFieldName('name')?.text !== '__init__') return [];
@@ -148,7 +171,14 @@ export function synthesizeConstructorFieldTypeBindings(fnNode: SyntaxNode): Capt
     if (name !== null && annotation !== null) parameterTypes.set(name, annotation.text);
   }
 
-  type Candidate = { readonly match: CaptureMatch; readonly explicit: boolean };
+  // Three evidence tiers for one field, strongest first. A later assignment of
+  // the SAME tier still wins (last write in `__init__` is the live one), but a
+  // weaker one never displaces a stronger: `self.x: Outer = make()` keeps its
+  // annotation even if a later branch does `self.x = Other()`.
+  const TIER_EXPLICIT = 2;
+  const TIER_PARAMETER = 1;
+  const TIER_CONSTRUCTOR = 0;
+  type Candidate = { readonly match: CaptureMatch; readonly tier: number };
   const candidates = new Map<string, Candidate>();
 
   const stack: SyntaxNode[] = [body];
@@ -178,13 +208,30 @@ export function synthesizeConstructorFieldTypeBindings(fnNode: SyntaxNode): Capt
           const explicitType = node.childForFieldName('type');
           const parameterType =
             right?.type === 'identifier' ? parameterTypes.get(right.text) : undefined;
-          const typeName = explicitType?.text ?? parameterType;
+          // `self.x = Outer()` — the type comes from the CONSTRUCTOR being
+          // called (#2807). This is not the "arbitrary unannotated RHS" the
+          // header warns against: a call to a name that resolves to a class is
+          // the same positive evidence every other language reads from
+          // `= new X()`, and without it an unannotated instance field could
+          // never act as a call receiver at all. Weakest of the three tiers, so
+          // an explicit annotation or a parameter annotation still wins.
+          const constructedType =
+            explicitType === null && parameterType === undefined
+              ? constructorCallTypeName(right)
+              : undefined;
+          const typeName = explicitType?.text ?? parameterType ?? constructedType;
           if (typeName !== undefined) {
             const explicit = explicitType !== null;
+            const inferredFromConstructor = constructedType !== undefined;
+            const tier = explicit
+              ? TIER_EXPLICIT
+              : inferredFromConstructor
+                ? TIER_CONSTRUCTOR
+                : TIER_PARAMETER;
             const existing = candidates.get(field.text);
-            if (existing === undefined || explicit || !existing.explicit) {
+            if (existing === undefined || tier >= existing.tier) {
               candidates.set(field.text, {
-                explicit,
+                tier,
                 match: {
                   '@type-binding.name': syntheticCapture('@type-binding.name', field, field.text),
                   '@type-binding.type': syntheticCapture(
@@ -192,15 +239,26 @@ export function synthesizeConstructorFieldTypeBindings(fnNode: SyntaxNode): Capt
                     explicitType ?? right ?? field,
                     typeName,
                   ),
+                  // The marker that tells `interpretPythonTypeBinding` which
+                  // tier this is; an explicit annotation carries neither and
+                  // reads as `annotation`.
                   ...(explicit
                     ? {}
-                    : {
-                        '@type-binding.parameter': syntheticCapture(
-                          '@type-binding.parameter',
-                          right ?? field,
-                          '1',
-                        ),
-                      }),
+                    : inferredFromConstructor
+                      ? {
+                          '@type-binding.constructor': syntheticCapture(
+                            '@type-binding.constructor',
+                            right ?? field,
+                            '1',
+                          ),
+                        }
+                      : {
+                          '@type-binding.parameter': syntheticCapture(
+                            '@type-binding.parameter',
+                            right ?? field,
+                            '1',
+                          ),
+                        }),
                   '@type-binding.instance-field': syntheticCapture(
                     '@type-binding.instance-field',
                     node,
