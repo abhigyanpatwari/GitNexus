@@ -29,8 +29,8 @@
  *   Ruby        both links     n/a — no field decls    both links  (#2807)
  *   Kotlin      both links     both links (was ok)     n/a — needs a type
  *   PHP         Outer.inner    n/a — see below         Outer.inner (was ok)
- *   Dart        Outer.inner    Outer.inner (#2807)     KNOWN GAP
- *   Swift       both links     both links  (#2807)     n/a — needs a type
+ *   Dart        Outer.inner    Outer.inner (#2807)     Outer.inner (#2807)
+ *   Swift       both links     both links  (#2807)     optional field (#2807)
  *
  * Shapes marked n/a do not exist in that language: Python and Ruby have no
  * field DECLARATIONS at all (a field is created by assignment, so only the
@@ -45,21 +45,14 @@
  * that got receiver typing for free are exactly the ones nobody would think to
  * re-check.
  *
- * ── THE REMAINING GAP ─────────────────────────────────────────────────────────
+ * ── HOW THE HARD CASES WERE FIXED ─────────────────────────────────────────────
  *
- * Dart's `assigned-field` row — `var r; C() { r = Outer(); }` — is pinned at its
- * current empty value. Unlike every other assigned shape here, Dart writes the
- * field WITHOUT a receiver prefix (`r = …`, not `this.r = …`), so binding it
- * would mean treating an assignment to a bare identifier as a field write, which
- * is indistinguishable from a constructor-local until the field set is known.
- * Idiomatic Dart writes `final r = Outer();`, which the inferred-field row above
- * now covers.
- *
- * The row asserts the empty value EXACTLY, with a `callerExists` probe in the
- * same object so an empty list can never be read as "resolved fine, wrong node
- * id". It is self-diffing: closing the gap fails this file with the newly
- * resolved ids in the diff, which is the signal to move the row and correct the
- * table above.
+ * Dart is the one language here that writes a field with NO receiver prefix, so
+ * `r = Outer()` in a constructor is syntactically identical to assigning a
+ * local. It binds only when the class declares that field AND the enclosing body
+ * declares no local of the same name — exactly when Dart itself resolves the bare
+ * name to the field. A `this.`-prefixed write needs neither test. The shadowing
+ * case is asserted: a body-local of the same name must leave the field unbound.
  *
  * Swift reached parity only once a SEPARATE defect was fixed alongside: its
  * methods are emitted as `Function` nodes while the scope extractor derives
@@ -304,6 +297,16 @@ class InferredField {
     return self.p.inner().compute(x)
   }
 }
+
+class OptionalAssignedField {
+  var q: Outer?
+  init() {
+    self.q = Outer()
+  }
+  func run(_ x: Int) -> Int {
+    return self.q!.inner().compute(x)
+  }
+}
 `;
 
 const CASES: readonly LanguageCase[] = [
@@ -494,8 +497,8 @@ const CASES: readonly LanguageCase[] = [
       {
         name: 'assigned-field',
         callerId: `Method:${DART_FILE}:AssignedField.run#1`,
-        targets: [],
-        status: 'known-gap',
+        targets: [`Method:${DART_FILE}:Outer.inner#0`],
+        status: 'resolves',
       },
     ],
   },
@@ -513,6 +516,19 @@ const CASES: readonly LanguageCase[] = [
       {
         name: 'inferred-field',
         callerId: `Function:${SWIFT_FILE}:InferredField.run#1`,
+        targets: [`Function:${SWIFT_FILE}:Outer.inner#0`],
+        status: 'resolves',
+      },
+      // Swift cannot declare a stored property with neither a type nor an
+      // initializer, so its "assigned later" shape is an OPTIONAL field written
+      // in `init` and read through a force-unwrap. Both halves were broken:
+      // `var q: Outer?` put an `optional_type` between the annotation and the
+      // `user_type` the query matched, so the field was never typed at all; and
+      // `self.q!` is a `postfix_expression`, which the receiver walk did not
+      // peel. Fixed together — this row needs both.
+      {
+        name: 'optional-assigned-field',
+        callerId: `Function:${SWIFT_FILE}:OptionalAssignedField.run#1`,
         targets: [`Function:${SWIFT_FILE}:Outer.inner#0`],
         status: 'resolves',
       },
