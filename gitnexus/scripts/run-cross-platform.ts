@@ -15,6 +15,7 @@ import path from 'path';
 import { fileURLToPath } from 'url';
 import { ALL_CROSS_PLATFORM } from './cross-platform-tests.js';
 import { parseShardArg } from './shard-arg.js';
+import { shardFiles, shardWeight } from './cross-platform-shard.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const ROOT = path.resolve(__dirname, '..');
@@ -29,8 +30,10 @@ if (missing.length > 0) {
 }
 
 // Optional sharding (CI): `--shard=<i>/<n>` splits the fixed file list across
-// parallel matrix shards so each runner processes ~1/n of it. Passed straight
-// through to vitest, which partitions the *given* files deterministically. The
+// parallel matrix shards. The split is computed HERE, by measured weight, and
+// only this shard's files are handed to vitest — it is NOT passed through,
+// because vitest partitions by file COUNT and this suite's runtimes span three
+// orders of magnitude (see cross-platform-shard.ts). The
 // Windows runner is ~5x slower than macOS/Linux on this spawn-heavy suite (~50
 // CLI/worker process spawns), so a single shard was creeping past the watchdog
 // below; sharding keeps each runner well under it (see ci-tests.yml matrix).
@@ -63,14 +66,22 @@ const timeoutMs =
     ? timeoutMinutes * 60 * 1000
     : DEFAULT_TIMEOUT_MIN * 60 * 1000;
 
+// Resolve the shard to an explicit file list. `--shard=i/n` is consumed here,
+// never forwarded: forwarding it as well would re-partition this slice a second
+// time and silently drop most of it.
+const shardParts = shardArg?.replace('--shard=', '').split('/');
+const shardIndex = shardParts ? Number(shardParts[0]) : 1;
+const shardTotal = shardParts ? Number(shardParts[1]) : 1;
+const files = shardFiles(ALL_CROSS_PLATFORM, shardIndex, shardTotal);
+
 console.log(
-  `Running ${ALL_CROSS_PLATFORM.length} platform-sensitive tests` +
-    `${shardArg ? ` (${shardArg.replace('--shard=', 'shard ')})` : ''}...\n`,
+  `Running ${files.length} of ${ALL_CROSS_PLATFORM.length} platform-sensitive tests` +
+    `${shardArg ? ` (shard ${shardIndex}/${shardTotal}, ~${shardWeight(files)}s measured weight)` : ''}...\n`,
 );
 
 const startedAt = Date.now();
 try {
-  execFileSync('npx', ['vitest', 'run', ...ALL_CROSS_PLATFORM, ...(shardArg ? [shardArg] : [])], {
+  execFileSync('npx', ['vitest', 'run', ...files], {
     cwd: ROOT,
     stdio: 'inherit',
     timeout: timeoutMs,
