@@ -7,27 +7,73 @@
  * plain-call test noticing.
  *
  * This pins the resolver -> PDG seam for a chain: the block holding the chained
- * statement must carry the id of BOTH links, not just the first. The descent's
+ * statement must carry the id of EVERY link, not just the first. The descent's
  * behaviour once the ids are present is covered by impact-pdg-interproc and
- * impact-pdg-fullchain-e2e; what those cannot catch is the chain's SECOND link
- * silently missing from the column they both read.
+ * impact-pdg-fullchain-e2e; what those cannot catch is a chain link silently
+ * missing from the column they both read.
+ *
+ * ── WHERE THE SUPPORT ACTUALLY STOPS ──────────────────────────────────────────
+ *
+ * Chained resolution is NOT general. Measured against this fixture (one repo per
+ * shape and all shapes in one repo agree, so the rows do not contaminate each
+ * other), the discriminator is whether the receiver's type is DECLARED, not
+ * whether it is a local or a field:
+ *
+ *   receiver form                                        calleeIds cell
+ *   ---------------------------------------------------  ------------------------
+ *   local  `const o = new Outer()`                        Outer.inner + Inner.compute
+ *   field  `private p: Outer = new Outer()`               Outer.inner + Inner.compute
+ *   field  `private p: Outer;` + ctor `this.p = new ...`  Outer.inner + Inner.compute
+ *   receiver is a call result `makeOuter().inner()...`    makeOuter + both links
+ *   three links `o.inner().mid().compute()`               all three links
+ *   field  `private p = new Outer()`      (INFERRED)      EMPTY  <- known gap
+ *   field  `private p;` + ctor `this.p = new Outer()`     EMPTY  <- known gap
+ *
+ * An inference-typed receiver does not merely lose the CHAINED link — it empties
+ * the whole cell, so the descent cannot cross into `Outer.inner` either, even
+ * though that call has a perfectly ordinary named receiver. Those two rows are
+ * pinned with `it.fails` (repo precedent: query-compilation.test.ts) plus a hard
+ * assertion of the current empty value, so the day the resolver learns to infer
+ * a field's type from its initializer the suite fails loudly and the table above
+ * has to be corrected — a single-shape fixture would instead have kept implying
+ * that chained receivers work in general.
+ *
+ * This gap is PRE-EXISTING and independent of #2802: nothing on that branch
+ * touches receiver typing.
  *
  * Self-contained fixture rather than an addition to `fixtures/pdg-repo` — that
  * fixture is shared by eight suites including a snapshot test, so growing it to
  * cover one seam churns unrelated expectations.
  */
-import { describe, it, expect, afterAll } from 'vitest';
+import { describe, it, expect, beforeAll, afterAll } from 'vitest';
 import fs from 'fs';
 import os from 'os';
 import path from 'path';
 import { runPipelineFromRepo } from '../../../src/core/ingestion/pipeline.js';
+// The PRODUCTION reader of the cell: splits on `CALLEE_ID_SEP`
+// (src/core/ingestion/cfg/emit.ts) and drops the truncation sentinel. Both the
+// statement-precise bridge and the inter-procedural descent go through it, so
+// asserting on its output is asserting on exactly the ids the descent sees —
+// and it yields whole ids, which a substring match over the raw cell would not.
+import { splitCalleeIds } from '../../../src/mcp/local/pdg-impact.js';
 
-// `run` calls `out.inner()`, and calls `.compute()` on ITS RESULT — the second
-// call has no named receiver, so it resolves only if the receiver's type is
-// carried through the chain.
-const CHAINED_SOURCE = `export class Inner {
+const FIXTURE_PATH = 'src/app.ts';
+
+// Every caller below chains `.compute()` onto the RESULT of `.inner()`; the
+// second call has no named receiver, so it resolves only if the receiver's type
+// is carried through the chain. Only the receiver FORM varies between rows.
+const CHAINED_SOURCE = `export class Mid {
+  compute(v: number): number {
+    return v * 3;
+  }
+}
+
+export class Inner {
   compute(v: number): number {
     return v * 2;
+  }
+  mid(): Mid {
+    return new Mid();
   }
 }
 
@@ -37,48 +83,227 @@ export class Outer {
   }
 }
 
-export function run(x: number): number {
-  const out = new Outer();
-  const r = out.inner().compute(x);
+export function makeOuter(): Outer {
+  return new Outer();
+}
+
+export function runLocalConst(x: number): number {
+  const localConst = new Outer();
+  const r = localConst.inner().compute(x);
   return r;
+}
+
+export function runCallResultReceiver(x: number): number {
+  const r = makeOuter().inner().compute(x);
+  return r;
+}
+
+export function runThreeLink(x: number): number {
+  const threeLink = new Outer();
+  const r = threeLink.inner().mid().compute(x);
+  return r;
+}
+
+export class AnnotatedFieldCaller {
+  private annotated: Outer = new Outer();
+  run(x: number): number {
+    const r = this.annotated.inner().compute(x);
+    return r;
+  }
+}
+
+export class InferredFieldCaller {
+  private inferred = new Outer();
+  run(x: number): number {
+    const r = this.inferred.inner().compute(x);
+    return r;
+  }
+}
+
+export class CtorAssignedAnnotatedCaller {
+  private ctorTyped: Outer;
+  constructor() {
+    this.ctorTyped = new Outer();
+  }
+  run(x: number): number {
+    const r = this.ctorTyped.inner().compute(x);
+    return r;
+  }
+}
+
+export class CtorAssignedInferredCaller {
+  private ctorUntyped;
+  constructor() {
+    this.ctorUntyped = new Outer();
+  }
+  run(x: number): number {
+    const r = this.ctorUntyped.inner().compute(x);
+    return r;
+  }
 }
 `;
 
-const tmpDirs: string[] = [];
-function chainedRepo(): string {
-  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'gn-pdg-chain-'));
-  fs.mkdirSync(path.join(dir, 'src'));
-  fs.writeFileSync(path.join(dir, 'src', 'app.ts'), CHAINED_SOURCE);
-  tmpDirs.push(dir);
-  return dir;
+// EXACT resolved ids — never substrings. `Inner.compute` as a substring is also
+// satisfied by `Inner.computeExtra` and by `OtherInner.compute`, while the
+// descent keys on the whole id for its span and CALL_SUMMARY lookups. The `#N`
+// suffix is the arity disambiguator the resolver mints.
+const OUTER_INNER = `Method:${FIXTURE_PATH}:Outer.inner#0`;
+const INNER_COMPUTE = `Method:${FIXTURE_PATH}:Inner.compute#1`;
+const INNER_MID = `Method:${FIXTURE_PATH}:Inner.mid#0`;
+const MID_COMPUTE = `Method:${FIXTURE_PATH}:Mid.compute#1`;
+const MAKE_OUTER = `Function:${FIXTURE_PATH}:makeOuter`;
+
+/**
+ * `reaches-pdg` — every link's id lands in the cell today.
+ * `known-gap-empty-cell` — the resolver cannot type the receiver, so the cell is
+ * emitted EMPTY and the descent cannot cross ANY link of the chain.
+ */
+type ChainResolution = 'reaches-pdg' | 'known-gap-empty-cell';
+
+interface ReceiverShape {
+  /** Row name; also the key of the known-gap pin below. */
+  readonly name: string;
+  /** Unique fragment of the chained statement, used to find its block. */
+  readonly marker: string;
+  /** Every link of the chain, as an exact resolved id. */
+  readonly links: readonly string[];
+  readonly resolution: ChainResolution;
 }
 
-describe('PDG calleeIds — chained receiver calls (#2802 follow-up)', () => {
+const RECEIVER_SHAPES: readonly ReceiverShape[] = [
+  {
+    name: 'local-const',
+    marker: 'localConst.inner().compute(',
+    links: [OUTER_INNER, INNER_COMPUTE],
+    resolution: 'reaches-pdg',
+  },
+  {
+    name: 'annotated-field',
+    marker: 'this.annotated.inner().compute(',
+    links: [OUTER_INNER, INNER_COMPUTE],
+    resolution: 'reaches-pdg',
+  },
+  {
+    name: 'ctor-assigned-annotated',
+    marker: 'this.ctorTyped.inner().compute(',
+    links: [OUTER_INNER, INNER_COMPUTE],
+    resolution: 'reaches-pdg',
+  },
+  {
+    name: 'call-result-receiver',
+    marker: 'makeOuter().inner().compute(',
+    links: [MAKE_OUTER, OUTER_INNER, INNER_COMPUTE],
+    resolution: 'reaches-pdg',
+  },
+  {
+    name: 'three-link-chain',
+    marker: 'threeLink.inner().mid().compute(',
+    links: [OUTER_INNER, INNER_MID, MID_COMPUTE],
+    resolution: 'reaches-pdg',
+  },
+  // ── Known gaps ────────────────────────────────────────────────────────────
+  // Identical to the two rows above except that the field has no type
+  // annotation, so its type would have to be inferred from the initializer.
+  {
+    name: 'inferred-field',
+    marker: 'this.inferred.inner().compute(',
+    links: [OUTER_INNER, INNER_COMPUTE],
+    resolution: 'known-gap-empty-cell',
+  },
+  {
+    name: 'ctor-assigned-inferred',
+    marker: 'this.ctorUntyped.inner().compute(',
+    links: [OUTER_INNER, INNER_COMPUTE],
+    resolution: 'known-gap-empty-cell',
+  },
+];
+
+interface BlockCell {
+  readonly text: string;
+  readonly ids: readonly string[];
+}
+
+const tmpDirs: string[] = [];
+let blocks: readonly BlockCell[] = [];
+
+function blocksFor(marker: string): readonly BlockCell[] {
+  return blocks.filter((b) => b.text.includes(marker));
+}
+
+function idsFor(marker: string): readonly string[] {
+  const matched = blocksFor(marker);
+  // Exactly one block spans each chained statement; a fixture drift that split
+  // or dropped it would otherwise make the id assertions vacuous.
+  expect(matched).toHaveLength(1);
+  return matched[0].ids;
+}
+
+/** The behaviour every row SHOULD have — shared by the passing and the pinned rows. */
+function assertChainReachesPdg(shape: ReceiverShape): void {
+  const ids = idsFor(shape.marker);
+  // Non-empty first: an unresolvable receiver drops EVERY link, so this
+  // separates "the chained link regressed" from "the whole cell went away".
+  expect(ids).not.toHaveLength(0);
+  expect(ids).toEqual(expect.arrayContaining([...shape.links]));
+}
+
+describe('PDG calleeIds — chained receiver calls by receiver form (#2802 follow-up)', () => {
+  beforeAll(async () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'gn-pdg-chain-'));
+    fs.mkdirSync(path.join(dir, path.dirname(FIXTURE_PATH)));
+    fs.writeFileSync(path.join(dir, FIXTURE_PATH), CHAINED_SOURCE);
+    tmpDirs.push(dir);
+
+    const result = await runPipelineFromRepo(dir, () => {}, { pdg: true });
+    const collected: BlockCell[] = [];
+    result.graph.forEachNode((n) => {
+      if (n.label !== 'BasicBlock') return;
+      collected.push({
+        text: typeof n.properties.text === 'string' ? n.properties.text : '',
+        ids: splitCalleeIds(n.properties.calleeIds),
+      });
+    });
+    blocks = collected;
+  }, 180000);
+
   afterAll(() => {
     for (const d of tmpDirs) fs.rmSync(d, { recursive: true, force: true });
   });
 
-  it('records BOTH links of a chained call on the calling block', async () => {
-    const result = await runPipelineFromRepo(chainedRepo(), () => {}, { pdg: true });
+  it('every receiver shape contributes exactly one chained-call block', () => {
+    const counts = Object.fromEntries(
+      RECEIVER_SHAPES.map((s) => [s.name, blocksFor(s.marker).length]),
+    );
+    expect(counts).toEqual(Object.fromEntries(RECEIVER_SHAPES.map((s) => [s.name, 1])));
+  });
 
-    const chainedBlocks: string[] = [];
-    result.graph.forEachNode((n) => {
-      if (n.label !== 'BasicBlock') return;
-      const text = typeof n.properties.text === 'string' ? n.properties.text : '';
-      if (!text.includes('out.inner().compute(')) return;
-      chainedBlocks.push(typeof n.properties.calleeIds === 'string' ? n.properties.calleeIds : '');
-    });
+  // Title suffix so a known gap is legible in the reporter output, not only in
+  // vitest's "expected fail" tally.
+  const TITLE_SUFFIX: Readonly<Record<ChainResolution, string>> = {
+    'reaches-pdg': '',
+    'known-gap-empty-cell': ' [KNOWN GAP — expected to fail]',
+  };
 
-    // Exactly one block spans the chained statement; a fixture drift that split
-    // or dropped it would otherwise make the assertions below vacuous.
-    expect(chainedBlocks).toHaveLength(1);
-    const calleeIds = chainedBlocks[0];
+  for (const shape of RECEIVER_SHAPES) {
+    // Known-failing rows stay VISIBLE and executing (never `describe.skip`):
+    // `it.fails` passes only while the assertion still throws, so a resolver fix
+    // turns this file red until the row is promoted to `reaches-pdg`.
+    const testFn = shape.resolution === 'known-gap-empty-cell' ? it.fails : it;
 
-    // First link — resolves from a named receiver (`out`), the plain path.
-    expect(calleeIds).toContain('Outer.inner');
-    // Second link — resolves ONLY through the chain's carried receiver type.
-    // This is the assertion that fails if chained resolution stops reaching the
-    // PDG, which would silently make the descent unable to cross into `compute`.
-    expect(calleeIds).toContain('Inner.compute');
-  }, 60000);
+    testFn(
+      `${shape.name}: every chain link's exact id reaches calleeIds${TITLE_SUFFIX[shape.resolution]}`,
+      () => {
+        assertChainReachesPdg(shape);
+      },
+    );
+  }
+
+  // Pins the CURRENT broken value, not just "it fails": both known gaps emit an
+  // EMPTY cell — the first link (`Outer.inner`, a plainly named receiver) is
+  // gone too. Update this together with the header table when the gap closes.
+  it('KNOWN GAP: an inference-typed receiver empties the WHOLE calleeIds cell', () => {
+    const gaps = RECEIVER_SHAPES.filter((s) => s.resolution === 'known-gap-empty-cell');
+    const observed = Object.fromEntries(gaps.map((s) => [s.name, idsFor(s.marker)]));
+    expect(observed).toEqual({ 'inferred-field': [], 'ctor-assigned-inferred': [] });
+  });
 });
