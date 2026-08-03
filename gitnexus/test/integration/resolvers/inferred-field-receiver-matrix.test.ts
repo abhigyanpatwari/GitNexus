@@ -29,8 +29,8 @@
  *   Ruby        both links     n/a — no field decls    both links  (#2807)
  *   Kotlin      both links     both links (was ok)     n/a — needs a type
  *   PHP         Outer.inner    n/a — see below         Outer.inner (was ok)
- *   Dart        Outer.inner    KNOWN GAP               KNOWN GAP
- *   Swift       both links     KNOWN GAP               n/a — needs a type
+ *   Dart        Outer.inner    Outer.inner (#2807)     KNOWN GAP
+ *   Swift       both links     both links  (#2807)     n/a — needs a type
  *
  * Shapes marked n/a do not exist in that language: Python and Ruby have no
  * field DECLARATIONS at all (a field is created by assignment, so only the
@@ -45,27 +45,29 @@
  * that got receiver typing for free are exactly the ones nobody would think to
  * re-check.
  *
- * ── THE TWO REMAINING GAPS ────────────────────────────────────────────────────
+ * ── THE REMAINING GAP ─────────────────────────────────────────────────────────
  *
- * Dart and Swift are pinned at their CURRENT broken value, deliberately not
- * fixed in #2807:
+ * Dart's `assigned-field` row — `var r; C() { r = Outer(); }` — is pinned at its
+ * current empty value. Unlike every other assigned shape here, Dart writes the
+ * field WITHOUT a receiver prefix (`r = …`, not `this.r = …`), so binding it
+ * would mean treating an assignment to a bare identifier as a field write, which
+ * is indistinguishable from a constructor-local until the field set is known.
+ * Idiomatic Dart writes `final r = Outer();`, which the inferred-field row above
+ * now covers.
  *
- *   Dart  — its type bindings are synthesized programmatically in
- *           `languages/dart/captures.ts`, not by a tree-sitter query, and its
- *           annotated control row DOES resolve, so the gap is real and narrow.
- *   Swift — blocked by a DIFFERENT defect. In a fixture with several classes
- *           each defining `run`, every `run`'s call edges are attributed to the
- *           FIRST-declared one: it collects duplicates while its siblings — the
- *           ANNOTATED control among them — collect nothing. Until that caller
- *           attribution is fixed, a Swift inferred-field row cannot be measured
- *           at all, and "fixing" receiver typing against it would be fitting to
- *           a broken observable.
- *
- * Both rows assert the empty value EXACTLY, with a `callerExists` probe in the
+ * The row asserts the empty value EXACTLY, with a `callerExists` probe in the
  * same object so an empty list can never be read as "resolved fine, wrong node
- * id". They are self-diffing: closing either gap fails this file with the newly
+ * id". It is self-diffing: closing the gap fails this file with the newly
  * resolved ids in the diff, which is the signal to move the row and correct the
  * table above.
+ *
+ * Swift reached parity only once a SEPARATE defect was fixed alongside: its
+ * methods are emitted as `Function` nodes while the scope extractor derives
+ * `Method` from the declaration anchor, so every label-scoped bridge key missed
+ * and two same-named methods in one file collapsed onto whichever registered
+ * first — the second method's calls were attributed to the first. That masked
+ * this row entirely; Swift's `let p = Outer()` binding had been correct all
+ * along.
  */
 import { describe, it, expect, beforeAll } from 'vitest';
 import fs from 'node:fs';
@@ -486,8 +488,8 @@ const CASES: readonly LanguageCase[] = [
       {
         name: 'inferred-field',
         callerId: `Method:${DART_FILE}:InferredField.run#1`,
-        targets: [],
-        status: 'known-gap',
+        targets: [`Method:${DART_FILE}:Outer.inner#0`],
+        status: 'resolves',
       },
       {
         name: 'assigned-field',
@@ -511,8 +513,8 @@ const CASES: readonly LanguageCase[] = [
       {
         name: 'inferred-field',
         callerId: `Function:${SWIFT_FILE}:InferredField.run#1`,
-        targets: [],
-        status: 'known-gap',
+        targets: [`Function:${SWIFT_FILE}:Outer.inner#0`],
+        status: 'resolves',
       },
     ],
   },
