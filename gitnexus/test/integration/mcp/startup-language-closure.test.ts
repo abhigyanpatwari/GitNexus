@@ -37,8 +37,8 @@
  * which is the point.
  */
 
-import { describe, it, expect } from 'vitest';
-import { spawnSync } from 'node:child_process';
+import { describe, it, expect, beforeAll } from 'vitest';
+import { spawn } from 'node:child_process';
 import path from 'node:path';
 import fs from 'node:fs';
 import { fileURLToPath, pathToFileURL } from 'node:url';
@@ -107,8 +107,49 @@ interface ProbeOutcome {
   readonly offenders: readonly string[];
 }
 
+interface ProbeProcessResult {
+  readonly status: number | null;
+  readonly signal: NodeJS.Signals | null;
+  readonly stdout: string;
+  readonly stderr: string;
+}
+
+/**
+ * Run the probe against `targetUrl` in a fresh child process.
+ *
+ * Async `spawn` rather than `spawnSync` so the three entries below can probe
+ * CONCURRENTLY: `spawnSync` blocks the event loop, and vitest runs a file's tests
+ * sequentially, so a per-test sync probe serialises three ~3 s Node starts that
+ * share nothing.
+ */
+function spawnProbe(targetUrl: string): Promise<ProbeProcessResult> {
+  return new Promise<ProbeProcessResult>((resolve, reject) => {
+    const child = spawn(process.execPath, ['--input-type=module', '-e', PROBE], {
+      cwd: REPO_ROOT,
+      // NODE_OPTIONS is cleared so a session-pinned --max-old-space-size (or a
+      // loader flag) can't perturb which modules the child evaluates.
+      env: { ...process.env, PROBE_TARGET: targetUrl, NODE_OPTIONS: '' },
+      timeout: 60_000,
+    });
+    let stdout = '';
+    let stderr = '';
+    child.stdout.setEncoding('utf8');
+    child.stderr.setEncoding('utf8');
+    child.stdout.on('data', (chunk: string) => {
+      stdout += chunk;
+    });
+    child.stderr.on('data', (chunk: string) => {
+      stderr += chunk;
+    });
+    child.on('error', reject);
+    child.on('close', (status, signal) => {
+      resolve({ status, signal, stdout, stderr });
+    });
+  });
+}
+
 /** Import `distRelative` in a fresh child process and report what it loaded. */
-function probeStartupClosure(distRelative: readonly string[]): ProbeOutcome {
+async function probeStartupClosure(distRelative: readonly string[]): Promise<ProbeOutcome> {
   const target = path.join(REPO_ROOT, 'dist', ...distRelative);
   if (!fs.existsSync(target)) {
     throw new Error(
@@ -117,14 +158,7 @@ function probeStartupClosure(distRelative: readonly string[]): ProbeOutcome {
     );
   }
 
-  const result = spawnSync(process.execPath, ['--input-type=module', '-e', PROBE], {
-    cwd: REPO_ROOT,
-    // NODE_OPTIONS is cleared so a session-pinned --max-old-space-size (or a
-    // loader flag) can't perturb which modules the child evaluates.
-    env: { ...process.env, PROBE_TARGET: pathToFileURL(target).href, NODE_OPTIONS: '' },
-    timeout: 60_000,
-    encoding: 'utf8',
-  });
+  const result = await spawnProbe(pathToFileURL(target).href);
 
   if (result.status !== 0) {
     // `status` is null when the child died to a signal (e.g. a native addon
@@ -188,34 +222,84 @@ const ENTRIES: ReadonlyArray<readonly [string, StartupEntry]> = [
   ],
 ];
 
+/** A settled probe: the outcome, or the failure that stopped it, always labelled. */
+type ProbeResult =
+  | { readonly label: string; readonly outcome: ProbeOutcome }
+  | { readonly label: string; readonly error: Error };
+
+const outcomes = new Map<string, ProbeOutcome>();
+
+/**
+ * The probe of `label`, as recorded by `beforeAll`. Missing means the hook did
+ * not populate it — which it cannot do silently, since it throws on any failed
+ * probe — so this reads as a harness error rather than a vacuous pass.
+ */
+function outcomeOf(label: string): ProbeOutcome {
+  const outcome = outcomes.get(label);
+  if (outcome === undefined) throw new Error(`no probe outcome recorded for ${label}`);
+  return outcome;
+}
+
 describe('MCP startup module-load closure (#2802)', () => {
-  it.each(ENTRIES)(
-    'importing %s loads no language provider module',
-    (label, entry) => {
-      const { modules, offenders } = probeStartupClosure(entry.dist);
+  // All three entries are probed CONCURRENTLY here, not one per test: the probes
+  // are independent child processes and each pays a full Node start, so running
+  // them in parallel cuts this file's wall clock by roughly 60%. The `it` bodies
+  // below are then pure assertions over what the hook recorded.
+  beforeAll(async () => {
+    const results = await Promise.all(
+      ENTRIES.map(
+        ([label, entry]): Promise<ProbeResult> =>
+          probeStartupClosure(entry.dist).then(
+            (outcome) => ({ label, outcome }),
+            (error: unknown) => ({
+              label,
+              error: error instanceof Error ? error : new Error(String(error)),
+            }),
+          ),
+      ),
+    );
 
-      // Non-vacuity: the probe reached the entry's real graph.
-      expect(
-        modules,
-        `Expected ${label} to load ${entry.anchor}. If that edge moved, repoint the ` +
-          `anchor — otherwise this guard is asserting over an unexercised graph. ` +
-          `Loaded (${modules.length}):\n${modules.join('\n')}`,
-      ).toContain(entry.anchor);
-      expect(
-        modules.length,
-        `Probe of ${label} loaded suspiciously few modules:\n${modules.join('\n')}`,
-      ).toBeGreaterThanOrEqual(entry.minModules);
+    // Every failure is named with its entry — a shared hook must not turn three
+    // distinct probes into one anonymous "beforeAll failed". `Promise.all` over
+    // already-caught results (rather than raw rejections) also guarantees all
+    // three children are reaped before the hook returns.
+    const failures = results.flatMap((r) =>
+      'error' in r ? [`${r.label}: ${r.error.message}`] : [],
+    );
+    if (failures.length > 0) {
+      throw new Error(
+        `${failures.length} of ${ENTRIES.length} startup probes failed:\n\n${failures.join('\n\n')}`,
+      );
+    }
 
-      // Headline assertion: named chains, not a bare boolean, so whoever
-      // reintroduces the edge sees exactly which modules did it.
-      expect(
-        offenders,
-        `${label} eagerly loads the analyze-only language provider registry. ` +
-          `MCP startup never analyzes anything — route the lookup through a lazy ` +
-          `\`await import(...)\` inside the function that needs it (see #2802). ` +
-          `Offending modules:\n${offenders.join('\n')}`,
-      ).toEqual([]);
-    },
-    90_000,
-  );
+    for (const r of results) {
+      if ('outcome' in r) outcomes.set(r.label, r.outcome);
+    }
+  }, 90_000);
+
+  it.each(ENTRIES)('importing %s loads no language provider module', (label, entry) => {
+    const { modules, offenders } = outcomeOf(label);
+
+    // Non-vacuity: the probe reached the entry's real graph.
+    expect(
+      modules,
+      `Expected ${label} to load ${entry.anchor}. If that edge moved, repoint the ` +
+        `anchor — otherwise this guard is asserting over an unexercised graph. ` +
+        `Loaded (${modules.length}):\n${modules.join('\n')}`,
+    ).toContain(entry.anchor);
+    expect(
+      modules.length,
+      `Probe of ${label} loaded suspiciously few modules:\n${modules.join('\n')}`,
+    ).toBeGreaterThanOrEqual(entry.minModules);
+
+    // Headline assertion: named chains, not a bare boolean, so whoever
+    // reintroduces the edge sees exactly which modules did it.
+    expect(
+      offenders,
+      `${label} eagerly loads the analyze-only language provider registry. ` +
+        `MCP startup never analyzes anything — route the lookup through a lazy ` +
+        `\`await import(...)\` inside the function that needs it (see #2802). ` +
+        `Offending modules:\n${offenders.join('\n')}`,
+    ).toEqual([]);
+  });
 });

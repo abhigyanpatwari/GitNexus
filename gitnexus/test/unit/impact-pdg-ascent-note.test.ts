@@ -46,9 +46,9 @@ const helperCalleeId = (file: string): string => `Function:${file}:helper`;
 // P2-5 — the SECOND, DISTINCT callee. It is named ONLY in the `calleeIds` cell of
 // `helper`'s own body block, so the descent has to cross a second call boundary
 // before it ever sees the id. That is the only shape under which the cross-hop
-// unions (`calleeReferencesSeen` / `calleesReturnFlowingSeen`) do any work — a
-// cell carrying several ids is still one hop, and one hop cannot tell a union
-// apart from an overwrite.
+// accumulators (`calleeReferencesSeen`, and the sticky `anyReturnFlow`) do any
+// work — a cell carrying several ids is still one hop, and one hop cannot tell an
+// accumulation apart from an overwrite.
 const secondCalleeId = (file: string): string => `Function:${file}:helper2`;
 // The two callees' 0-based symbol spans. `blockAnchorForResolvedSymbol` binds
 // `$symStart = startLine + 1` on the RANGE-anchored per-callee seed fetch, so the
@@ -62,34 +62,39 @@ const symStartOf = (span: { readonly startLine: number }): number => span.startL
 const secondCalleeSeedBlock = (file: string): string =>
   `BasicBlock:${file}:${symStartOf(SECOND_SPAN)}:0:0`;
 
+// The mock's knobs — all orthogonal, each with a safe default.
+interface DescentOptions {
+  // What `helper`'s CALL_SUMMARY row holds — the fact the note keys on. Default `null`.
+  readonly summary?: Summary;
+  // P2-4 case 2: emit capped this block's `calleeIds` cell, so the cell carries
+  // the truncation sentinel alongside the ids that survived. `splitCalleeIds`
+  // strips the sentinel, which is exactly why the dropped callees are invisible
+  // to the summary scan and the note's counters.
+  readonly calleeCellCapped?: boolean;
+  // P3-7 case: the exact id list the call block's `calleeIds` cell carries.
+  // Defaults to the single enterable `helper`. A test overrides it to mix in ids
+  // the descent can never enter — `resolveCalleeSpans` matches only
+  // Function/Method/Constructor, so anything else yields no span and is skipped
+  // while still riding the cell (and still being scanned for a CALL_SUMMARY).
+  readonly calleeIds?: readonly string[];
+  // P2-5 case: what the SECOND, distinct callee's CALL_SUMMARY row holds.
+  // OMITTED ⇒ no second hop at all (every case above the P2-5 block). Any
+  // `Summary` — including `null`, meaning "a callee with no CALL_SUMMARY row" —
+  // puts `helper2` in the cell of HELPER's body block, so the descent reaches it
+  // only by crossing a second call boundary.
+  readonly secondSummary?: Summary;
+}
+
 // A mock that drives ONE real inter-procedural descent hop: the criterion's
 // reachable block calls `helper`, the descent resolves helper's span (so
-// interproceduralHops > 0 and the note block fires). `summary` decides what
-// `helper`'s CALL_SUMMARY row holds — the fact the note now keys on.
+// interproceduralHops > 0 and the note block fires).
 //
 // The dependence BFS is routed by its bound `$frontier` (never by call order),
 // so the ascent re-seed FROM the call block is deterministically distinguishable
 // from the intra BFS out of the criterion seed.
 function descentExec(
   file: string,
-  summary: Summary,
-  // P2-4 case 2: emit capped this block's `calleeIds` cell, so the cell carries
-  // the truncation sentinel alongside the ids that survived. `splitCalleeIds`
-  // strips the sentinel, which is exactly why the dropped callees are invisible
-  // to the summary scan and the note's counters.
-  calleeCellCapped = false,
-  // P3-7 case: the exact id list the call block's `calleeIds` cell carries.
-  // Defaults to the single enterable `helper`. A test overrides it to mix in ids
-  // the descent can never enter — `resolveCalleeSpans` matches only
-  // Function/Method/Constructor, so anything else yields no span and is skipped
-  // while still riding the cell (and still being scanned for a CALL_SUMMARY).
-  calleeIds?: readonly string[],
-  // P2-5 case: what the SECOND, distinct callee's CALL_SUMMARY row holds.
-  // `undefined` ⇒ no second hop at all (every case above the P2-5 block).
-  // Any `Summary` — including `null`, meaning "a callee with no CALL_SUMMARY row"
-  // — puts `helper2` in the cell of HELPER's body block, so the descent reaches
-  // it only by crossing a second call boundary.
-  secondSummary?: Summary,
+  { summary = null, calleeCellCapped = false, calleeIds, secondSummary }: DescentOptions = {},
 ): RunPdgImpactDeps['executeParameterized'] {
   const seed = `BasicBlock:${file}:1:0:0`;
   const callBlock = `BasicBlock:${file}:1:0:2`;
@@ -193,20 +198,22 @@ function descentExec(
   };
 }
 
-const run = (
-  file: string,
-  callSummaryAvailable: boolean,
-  summary: Summary = null,
+// `run`'s own knobs on top of the mock's; the rest pass through untouched, so
+// every default is written once, at the function that consumes it.
+interface RunOptions extends DescentOptions {
+  // `false` ⇒ a v3 index with no CALL_SUMMARY layer, which gets the re-index note
+  // instead of the empty-ascent caveat. Defaults to `true`.
+  readonly callSummaryAvailable?: boolean;
   // `1` confines the intra BFS to a single dependence level, so the call block is
   // expanded ONLY by the ascent re-seed — the ascent's observable is then exact.
   // It also leaves the BFS frontier non-empty at the budget, which is how the
-  // P2-4 cases below produce a genuinely TRUNCATED traversal.
-  maxDepth = 3,
-  calleeCellCapped = false,
-  calleeIds?: readonly string[],
-  // P2-5: `undefined` ⇒ the single-hop descent every case above uses; any
-  // `Summary` drives a genuine SECOND hop to a DISTINCT callee holding it.
-  secondSummary?: Summary,
+  // P2-4 cases below produce a genuinely TRUNCATED traversal. Defaults to `3`.
+  readonly maxDepth?: number;
+}
+
+const run = (
+  file: string,
+  { callSummaryAvailable = true, maxDepth = 3, ...descent }: RunOptions = {},
 ) =>
   runImpactPDG({
     repo: { lbugPath: 'repo' },
@@ -216,7 +223,7 @@ const run = (
     maxDepth,
     limit: 50,
     line: 1,
-    executeParameterized: descentExec(file, summary, calleeCellCapped, calleeIds, secondSummary),
+    executeParameterized: descentExec(file, descent),
     callSummaryAvailable,
   });
 
@@ -262,30 +269,30 @@ const EXTENSIONS = [
 
 describe('runImpactPDG — empty-ascent note (U7)', () => {
   it('callees with no CALL_SUMMARY row → notes the ascent was structurally empty', async () => {
-    const result = await run('src/svc.ts', true, null);
+    const result = await run('src/svc.ts');
     expect('affectedStatements' in result).toBe(true);
     expect(noteOf(result)).toContain(CAVEAT);
   });
 
   it('callee with a non-empty return-flow summary → no empty-ascent caveat', async () => {
-    expect(noteOf(await run('src/svc.ts', true, flow([0])))).not.toContain(CAVEAT);
+    expect(noteOf(await run('src/svc.ts', { summary: flow([0]) }))).not.toContain(CAVEAT);
   });
 
   // An `r:0` summary decodes cleanly but records no formal→return flow, so the
   // ascent is still structurally empty. Pins that the note keys on the DECODED
   // return-flow rather than on the mere presence of a CALL_SUMMARY edge.
   it('callee with an empty (r:0) return-flow summary → caveat present', async () => {
-    expect(noteOf(await run('src/svc.ts', true, flow([])))).toContain(CAVEAT);
+    expect(noteOf(await run('src/svc.ts', { summary: flow([]) }))).toContain(CAVEAT);
   });
 
   // A cleanly-decoded EMPTY summary is the one case where the note may speak for
   // the persisted data — every summary in the slice was read.
   it('every summary decodes → the note keeps the persisted-summaries claim', async () => {
-    expect(noteOf(await run('src/svc.ts', true, flow([])))).toContain(PERSISTED_CLAIM);
+    expect(noteOf(await run('src/svc.ts', { summary: flow([]) }))).toContain(PERSISTED_CLAIM);
   });
 
   it('v3 index (callSummaryAvailable false) → re-index note, not the empty-ascent caveat', async () => {
-    const note = noteOf(await run('src/svc.ts', false, null));
+    const note = noteOf(await run('src/svc.ts', { callSummaryAvailable: false }));
     expect(note).toContain('re-index for CALL_SUMMARY');
     expect(note).not.toContain(CAVEAT);
   });
@@ -294,11 +301,11 @@ describe('runImpactPDG — empty-ascent note (U7)', () => {
   // to reintroduce: the note cannot vary by extension because nothing in
   // `pdg-impact.ts` reads one.
   it.each(EXTENSIONS)('%s with no return-flow summary → caveat present', async (file) => {
-    expect(noteOf(await run(file, true, null))).toContain(CAVEAT);
+    expect(noteOf(await run(file))).toContain(CAVEAT);
   });
 
   it.each(EXTENSIONS)('%s with a return-flow summary → no caveat', async (file) => {
-    expect(noteOf(await run(file, true, flow([0])))).not.toContain(CAVEAT);
+    expect(noteOf(await run(file, { summary: flow([0]) }))).not.toContain(CAVEAT);
   });
 
   // The strongest form of the language-agnosticism claim: hold CALL_SUMMARY
@@ -307,7 +314,7 @@ describe('runImpactPDG — empty-ascent note (U7)', () => {
   it('note text does not vary with the criterion file extension', async () => {
     const notes = await Promise.all(
       EXTENSIONS.map(async (file) =>
-        noteOf(await run(file, true, null))
+        noteOf(await run(file))
           .split(file)
           .join('<FILE>'),
       ),
@@ -333,7 +340,7 @@ const UNDECODABLE: ReadonlyArray<{ label: string; reason: unknown }> = [
 
 describe('runImpactPDG — undecodable CALL_SUMMARY (P2-2)', () => {
   it.each(UNDECODABLE)('$label → note drops the persisted-summaries claim', async ({ reason }) => {
-    const note = noteOf(await run('src/svc.ts', true, raw(reason)));
+    const note = noteOf(await run('src/svc.ts', { summary: raw(reason) }));
     expect(note).toContain(CAVEAT);
     expect(note).not.toContain(PERSISTED_CLAIM);
   });
@@ -341,7 +348,7 @@ describe('runImpactPDG — undecodable CALL_SUMMARY (P2-2)', () => {
   it.each(UNDECODABLE)(
     '$label → note reports the undecodable summary + remedy',
     async ({ reason }) => {
-      const note = noteOf(await run('src/svc.ts', true, raw(reason)));
+      const note = noteOf(await run('src/svc.ts', { summary: raw(reason) }));
       expect(note).toContain('1 callee summary could not be decoded (version skew or corruption)');
       expect(note).toContain('re-run gitnexus analyze --pdg to rebuild them');
     },
@@ -351,7 +358,7 @@ describe('runImpactPDG — undecodable CALL_SUMMARY (P2-2)', () => {
   // `maxDepth: 1` confines the intra BFS to one dependence level, so the
   // ascent-only block is reachable through the U-C4 re-seed and nothing else.
   it.each(UNDECODABLE)('$label → the return-value ascent is still withheld', async ({ reason }) => {
-    const result = await run('src/svc.ts', true, raw(reason), 1);
+    const result = await run('src/svc.ts', { summary: raw(reason), maxDepth: 1 });
     expect(blocksOf(result)).not.toContain(ascentOnlyBlock('src/svc.ts'));
     expect(noteOf(result)).toContain(CAVEAT);
   });
@@ -359,7 +366,7 @@ describe('runImpactPDG — undecodable CALL_SUMMARY (P2-2)', () => {
   // The discriminator for the row above: the SAME mock with a decodable
   // `p0 -> return` summary does re-seed the caller continuation.
   it('a decodable p0->return summary licenses the ascent', async () => {
-    const result = await run('src/svc.ts', true, flow([0]), 1);
+    const result = await run('src/svc.ts', { summary: flow([0]), maxDepth: 1 });
     expect(blocksOf(result)).toContain(ascentOnlyBlock('src/svc.ts'));
     expect(noteOf(result)).not.toContain(CAVEAT);
   });
@@ -378,7 +385,7 @@ describe('runImpactPDG — empty-ascent note over an incomplete callee set (P2-4
   // `maxDepth: 1` leaves the intra BFS frontier non-empty at the budget, which is
   // a genuinely truncated traversal (asserted, not assumed).
   it('truncated traversal → the empty-ascent claim is qualified', async () => {
-    const result = await run('src/svc.ts', true, null, 1);
+    const result = await run('src/svc.ts', { maxDepth: 1 });
     expect(truncatedOf(result)).toBe(true);
     expect(noteOf(result)).toContain(CAVEAT);
     expect(noteOf(result)).toContain(BUDGET_REASON);
@@ -389,7 +396,7 @@ describe('runImpactPDG — empty-ascent note over an incomplete callee set (P2-4
   // property of the persisted summaries" — a whole-slice claim a truncated
   // traversal did not establish.
   it('truncated traversal → the unqualified persisted-summaries claim is dropped', async () => {
-    const note = noteOf(await run('src/svc.ts', true, flow([]), 1));
+    const note = noteOf(await run('src/svc.ts', { summary: flow([]), maxDepth: 1 }));
     expect(note).toContain(QUALIFIER);
     expect(note).not.toContain(PERSISTED_CLAIM);
   });
@@ -397,7 +404,7 @@ describe('runImpactPDG — empty-ascent note over an incomplete callee set (P2-4
   // The control that keeps the fix from being "always hedge": the SAME mock with
   // a budget large enough to exhaust the frontier keeps the flat claim.
   it('untruncated traversal → the claim stays unqualified', async () => {
-    const result = await run('src/svc.ts', true, null);
+    const result = await run('src/svc.ts');
     expect(truncatedOf(result)).toBe(false);
     expect(noteOf(result)).toContain(CAVEAT);
     expect(noteOf(result)).not.toContain(QUALIFIER);
@@ -405,7 +412,7 @@ describe('runImpactPDG — empty-ascent note over an incomplete callee set (P2-4
   });
 
   it('untruncated traversal → the persisted-summaries claim survives', async () => {
-    const note = noteOf(await run('src/svc.ts', true, flow([])));
+    const note = noteOf(await run('src/svc.ts', { summary: flow([]) }));
     expect(note).toContain(PERSISTED_CLAIM);
     expect(note).not.toContain(QUALIFIER);
   });
@@ -413,7 +420,7 @@ describe('runImpactPDG — empty-ascent note over an incomplete callee set (P2-4
   // Case 2 in isolation: the traversal completes (truncated === false), so the
   // emit-time cap sentinel is the ONLY thing the qualifier can come from.
   it('emit-capped calleeIds cell → the claim is qualified with nothing else truncated', async () => {
-    const result = await run('src/svc.ts', true, null, 3, true);
+    const result = await run('src/svc.ts', { calleeCellCapped: true });
     expect(truncatedOf(result)).toBe(false);
     expect(noteOf(result)).toContain(EMIT_CAP_REASON);
     expect(noteOf(result)).toContain(QUALIFIER);
@@ -421,14 +428,14 @@ describe('runImpactPDG — empty-ascent note over an incomplete callee set (P2-4
   });
 
   it('emit-capped calleeIds cell → the unqualified persisted-summaries claim is dropped', async () => {
-    const note = noteOf(await run('src/svc.ts', true, flow([]), 3, true));
+    const note = noteOf(await run('src/svc.ts', { summary: flow([]), calleeCellCapped: true }));
     expect(note).toContain(QUALIFIER);
     expect(note).not.toContain(PERSISTED_CLAIM);
   });
 
   // Both mechanisms at once: ONE clause naming both reasons, never two clauses.
   it('both mechanisms → one qualifier clause names both reasons', async () => {
-    const note = noteOf(await run('src/svc.ts', true, null, 1, true));
+    const note = noteOf(await run('src/svc.ts', { maxDepth: 1, calleeCellCapped: true }));
     expect(note).toContain(`(${BUDGET_REASON} and ${EMIT_CAP_REASON}, ${QUALIFIER})`);
     expect(note.split(QUALIFIER)).toHaveLength(2);
   });
@@ -436,7 +443,7 @@ describe('runImpactPDG — empty-ascent note over an incomplete callee set (P2-4
   // The undecodable-summary branch carries the same universal quantifier, so it
   // gets the same qualifier — alongside its own (unrelated) P2-2 wording.
   it('undecodable summary + truncated traversal → both qualifications appear', async () => {
-    const note = noteOf(await run('src/svc.ts', true, raw('1|r:zz'), 1));
+    const note = noteOf(await run('src/svc.ts', { summary: raw('1|r:zz'), maxDepth: 1 }));
     expect(note).toContain(QUALIFIER);
     expect(note).toContain('could not be decoded (version skew or corruption)');
     expect(note).not.toContain(PERSISTED_CLAIM);
@@ -463,7 +470,7 @@ const MIXED_CALLEES = [helperCalleeId(FILE), ...UNENTERABLE_CALLEES] as const;
 
 describe('runImpactPDG — the empty-ascent count is call-site references (P3-7)', () => {
   it('un-enterable callee ids count, and the note names them as call-site references', async () => {
-    expect(noteOf(await run(FILE, true, null, 3, false, MIXED_CALLEES))).toContain(
+    expect(noteOf(await run(FILE, { calleeIds: MIXED_CALLEES }))).toContain(
       'none of the 3 call-site callee references carry a CALL_SUMMARY return-flow',
     );
   });
@@ -471,7 +478,7 @@ describe('runImpactPDG — the empty-ascent count is call-site references (P3-7)
   // The same slice with only the enterable callee: the number tracks the CELL,
   // and the singular form agrees with it.
   it('dropping the un-enterable ids drops the quoted number to 1', async () => {
-    expect(noteOf(await run(FILE, true, null))).toContain(
+    expect(noteOf(await run(FILE))).toContain(
       'none of the 1 call-site callee reference carries a CALL_SUMMARY return-flow',
     );
   });
@@ -481,8 +488,8 @@ describe('runImpactPDG — the empty-ascent count is call-site references (P3-7)
   // them, so it entered no body. That gap is exactly what "resolved" papered over.
   it('the un-enterable ids add to the number without adding any reach', async () => {
     const [mixed, helperOnly] = await Promise.all([
-      run(FILE, true, null, 3, false, MIXED_CALLEES),
-      run(FILE, true, null),
+      run(FILE, { calleeIds: MIXED_CALLEES }),
+      run(FILE),
     ]);
     // Same slice, byte-identical reach — the descent entered exactly one body in
     // both runs …
@@ -495,20 +502,18 @@ describe('runImpactPDG — the empty-ascent count is call-site references (P3-7)
   });
 
   it('the note no longer calls the counted ids resolved callees', async () => {
-    expect(noteOf(await run(FILE, true, null, 3, false, MIXED_CALLEES))).not.toContain(
-      'resolved callee',
-    );
+    expect(noteOf(await run(FILE, { calleeIds: MIXED_CALLEES }))).not.toContain('resolved callee');
   });
 
   it('the note drops the formals parenthetical', async () => {
-    expect(noteOf(await run(FILE, true, null, 3, false, MIXED_CALLEES))).not.toContain(
+    expect(noteOf(await run(FILE, { calleeIds: MIXED_CALLEES }))).not.toContain(
       'no formal parameter is recorded',
     );
   });
 
   // The undecodable branch quotes the same count and needed the same rewording.
   it('undecodable branch → same call-site wording over the same count', async () => {
-    const note = noteOf(await run(FILE, true, raw('1|r:zz'), 3, false, MIXED_CALLEES));
+    const note = noteOf(await run(FILE, { summary: raw('1|r:zz'), calleeIds: MIXED_CALLEES }));
     expect(note).toContain(
       'none of the 3 call-site callee references carry a decodable CALL_SUMMARY return-flow',
     );
@@ -521,24 +526,25 @@ describe('runImpactPDG — the empty-ascent count is call-site references (P3-7)
   // count is 2. Pinned so re-seeding the count from the resolved spans cannot
   // silently change WHEN the note fires.
   it('a cell with no enterable callee takes no hop, so no ascent sentence fires', async () => {
-    const note = noteOf(await run(FILE, true, null, 3, false, UNENTERABLE_CALLEES));
+    const note = noteOf(await run(FILE, { calleeIds: UNENTERABLE_CALLEES }));
     expect(note).not.toContain('inter-procedural hop');
     expect(note).not.toContain(CAVEAT);
   });
 });
 
-// P2-5 — the counters the note quotes are CROSS-HOP unions
-// (`calleeReferencesSeen` / `calleesReturnFlowingSeen` in `interproceduralDescent`),
+// P2-5 — what the note quotes is CROSS-HOP: `calleeReferencesSeen` in
+// `interproceduralDescent` is a union of every hop's callee set, and
+// `anyReturnFlow` is a flag that sticks once ANY hop found a return-flow. Both are
 // accumulated once per hop and read only after the hop loop ends. Every case above
-// takes exactly ONE hop, so none of them can tell a union from a per-hop
+// takes exactly ONE hop, so none of them can tell that accumulation from a per-hop
 // overwrite: with one hop both produce the same numbers. The cases below take TWO
 // hops reaching DIFFERENT callees — `helper` on hop 0, `helper2` (named only in
 // helper's own body block) on hop 1 — which is the only shape where the two
 // implementations disagree.
 //
-// They also pin the MIXED boundary. The production condition for both empty-ascent
-// sentences is `calleesReturnFlowing === 0`, so a single return-flowing callee
-// silences the note entirely — no caveat, no "1 of 3" partial figure, not even the
+// They also pin the MIXED boundary. The empty-ascent sentence is gated on
+// `anyReturnFlow` being false, so a single return-flowing callee silences the note
+// entirely — no caveat, no "1 of 3" partial figure, not even the
 // undecodable-summary remedy. That binary behavior is deliberate (partial-coverage
 // reporting was considered and dropped); pinned here so changing it is a decision
 // rather than an accident.
@@ -546,7 +552,7 @@ const TWO_HOPS = 'crosses 2 inter-procedural hops';
 
 describe('runImpactPDG — cross-hop accumulation and mixed return-flow (P2-5)', () => {
   it('two hops over DISTINCT callees → the reference count is their UNION', async () => {
-    const result = await run(FILE, true, null, 3, false, undefined, null);
+    const result = await run(FILE, { secondSummary: null });
     // Premise, asserted rather than assumed: the descent crossed TWO call
     // boundaries and the second one reached ground the first did not.
     expect(noteOf(result)).toContain(TWO_HOPS);
@@ -563,32 +569,32 @@ describe('runImpactPDG — cross-hop accumulation and mixed return-flow (P2-5)',
   });
 
   it('a return-flow found on hop 0 survives a later hop that finds none', async () => {
-    const result = await run(FILE, true, flow([0]), 3, false, undefined, null);
+    const result = await run(FILE, { summary: flow([0]), secondSummary: null });
     expect(noteOf(result)).toContain(TWO_HOPS);
     expect(blocksOf(result)).toContain(secondCalleeSeedBlock(FILE));
-    // `helper` return-flows, `helper2` does not. The union keeps `helper`, so the
-    // note stays silent; a per-hop overwrite would end on hop 1's EMPTY set and
-    // wrongly emit the caveat over 2 references.
+    // `helper` return-flows, `helper2` does not. The flag raised on hop 0 sticks,
+    // so the note stays silent; a per-hop overwrite would end on hop 1's EMPTY
+    // result and wrongly emit the caveat over 2 references.
     expect(noteOf(result)).not.toContain(CAVEAT);
   });
 
   it('a return-flow found only on hop 1 also silences the note', async () => {
-    const result = await run(FILE, true, null, 3, false, undefined, flow([0]));
+    const result = await run(FILE, { secondSummary: flow([0]) });
     expect(noteOf(result)).toContain(TWO_HOPS);
     expect(blocksOf(result)).toContain(secondCalleeSeedBlock(FILE));
     // The mirror image of the row above: hop 0 found nothing, hop 1 did. The note
-    // keys on the ACCUMULATED set, never on the first hop's view of it.
+    // keys on the ACCUMULATED flag, never on the first hop's view of it.
     expect(noteOf(result)).not.toContain(CAVEAT);
   });
 
   it('mixed callees in ONE examined set → the note goes silent, never partial', async () => {
     const [mixed, none] = await Promise.all([
-      run(FILE, true, flow([0]), 3, false, MIXED_CALLEES),
-      run(FILE, true, null, 3, false, MIXED_CALLEES),
+      run(FILE, { summary: flow([0]), calleeIds: MIXED_CALLEES }),
+      run(FILE, { calleeIds: MIXED_CALLEES }),
     ]);
     // Same 3 call-site references in both runs; only `helper`'s summary differs.
-    // One return-flow is enough to fail `calleesReturnFlowing === 0`, so NO
-    // empty-ascent sentence is emitted — the note quotes no count at all rather
+    // One return-flow raises `anyReturnFlow`, which is enough to close the gate, so
+    // NO empty-ascent sentence is emitted — the note quotes no count at all rather
     // than reporting "1 of 3 carried a return-flow".
     expect(noteOf(mixed)).not.toContain(CAVEAT);
     expect(noteOf(mixed)).not.toContain('call-site callee reference');
@@ -598,11 +604,11 @@ describe('runImpactPDG — cross-hop accumulation and mixed return-flow (P2-5)',
   });
 
   it('a return-flowing callee alongside an UNDECODABLE one → not even the decode remedy', async () => {
-    const note = noteOf(await run(FILE, true, flow([0]), 3, false, undefined, raw('1|r:zz')));
+    const note = noteOf(await run(FILE, { summary: flow([0]), secondSummary: raw('1|r:zz') }));
     expect(note).toContain(TWO_HOPS);
-    // Both empty-ascent branches are gated on `calleesReturnFlowing === 0`, so the
-    // hop-1 undecodable summary — normally reported with a rebuild remedy — is
-    // suppressed by the hop-0 return-flow. The mixed case is silent end to end.
+    // The empty-ascent sentence — and so both of its tails — is gated on
+    // `anyReturnFlow`, so the hop-1 undecodable summary, normally reported with a
+    // rebuild remedy, is suppressed by the hop-0 return-flow. Silent end to end.
     expect(note).not.toContain(CAVEAT);
     expect(note).not.toContain('could not be decoded');
   });

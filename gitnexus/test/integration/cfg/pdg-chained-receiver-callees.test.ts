@@ -32,11 +32,13 @@
  * An inference-typed receiver does not merely lose the CHAINED link — it empties
  * the whole cell, so the descent cannot cross into `Outer.inner` either, even
  * though that call has a perfectly ordinary named receiver. Those two rows are
- * pinned with `it.fails` (repo precedent: query-compilation.test.ts) plus a hard
- * assertion of the current empty value, so the day the resolver learns to infer
- * a field's type from its initializer the suite fails loudly and the table above
- * has to be corrected — a single-shape fixture would instead have kept implying
- * that chained receivers work in general.
+ * pinned by `KNOWN GAP: an inference-typed receiver empties the WHOLE calleeIds
+ * cell` below, which asserts the current empty value EXACTLY. That pin is the
+ * durable record of the gap: it is self-diffing, so the day the resolver learns
+ * to infer a field's type from its initializer it fails loudly with the newly
+ * resolved ids in the diff, and the table above has to be corrected together with
+ * the row's `resolution` — a single-shape fixture would instead have kept
+ * implying that chained receivers work in general.
  *
  * This gap is PRE-EXISTING and independent of #2802: nothing on that branch
  * touches receiver typing.
@@ -238,7 +240,7 @@ function idsFor(marker: string): readonly string[] {
   return matched[0].ids;
 }
 
-/** The behaviour every row SHOULD have — shared by the passing and the pinned rows. */
+/** The behaviour a `reaches-pdg` row has today. */
 function assertChainReachesPdg(shape: ReceiverShape): void {
   const ids = idsFor(shape.marker);
   // Non-empty first: an unresolvable receiver drops EVERY link, so this
@@ -277,30 +279,21 @@ describe('PDG calleeIds — chained receiver calls by receiver form (#2802 follo
     expect(counts).toEqual(Object.fromEntries(RECEIVER_SHAPES.map((s) => [s.name, 1])));
   });
 
-  // Title suffix so a known gap is legible in the reporter output, not only in
-  // vitest's "expected fail" tally.
-  const TITLE_SUFFIX: Readonly<Record<ChainResolution, string>> = {
-    'reaches-pdg': '',
-    'known-gap-empty-cell': ' [KNOWN GAP — expected to fail]',
-  };
-
-  for (const shape of RECEIVER_SHAPES) {
-    // Known-failing rows stay VISIBLE and executing (never `describe.skip`):
-    // `it.fails` passes only while the assertion still throws, so a resolver fix
-    // turns this file red until the row is promoted to `reaches-pdg`.
-    const testFn = shape.resolution === 'known-gap-empty-cell' ? it.fails : it;
-
-    testFn(
-      `${shape.name}: every chain link's exact id reaches calleeIds${TITLE_SUFFIX[shape.resolution]}`,
-      () => {
-        assertChainReachesPdg(shape);
-      },
-    );
+  // The `known-gap-empty-cell` rows are deliberately absent here — an `it.fails`
+  // row over them would be strictly weaker than the exact pin below, since
+  // `it.fails` is satisfied by ANY throw, including `idsFor`'s own non-vacuity
+  // guard. Fixture drift that renamed a marker would keep it green while the
+  // premise had rotted.
+  for (const shape of RECEIVER_SHAPES.filter((s) => s.resolution === 'reaches-pdg')) {
+    it(`${shape.name}: every chain link's exact id reaches calleeIds`, () => {
+      assertChainReachesPdg(shape);
+    });
   }
 
-  // Pins the CURRENT broken value, not just "it fails": both known gaps emit an
-  // EMPTY cell — the first link (`Outer.inner`, a plainly named receiver) is
-  // gone too. Update this together with the header table when the gap closes.
+  // Pins the CURRENT broken value, not merely that the chain fails: both known
+  // gaps emit an EMPTY cell — the first link (`Outer.inner`, a plainly named
+  // receiver) is gone too. Update this together with the header table and the
+  // rows' `resolution` when the gap closes.
   it('KNOWN GAP: an inference-typed receiver empties the WHOLE calleeIds cell', () => {
     const gaps = RECEIVER_SHAPES.filter((s) => s.resolution === 'known-gap-empty-cell');
     const observed = Object.fromEntries(gaps.map((s) => [s.name, idsFor(s.marker)]));
