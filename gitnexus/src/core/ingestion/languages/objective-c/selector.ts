@@ -83,8 +83,7 @@ export function extractObjectiveCMethodSignature(
   }
   if (selectorPieces.length === 0) return null;
 
-  const selector =
-    parameters.length === 0 ? selectorPieces[0] : `${selectorPieces.join(':')}:`;
+  const selector = parameters.length === 0 ? selectorPieces[0] : `${selectorPieces.join(':')}:`;
   const kind = methodKind(node);
   return {
     selector,
@@ -141,26 +140,17 @@ export function extractObjectiveCMessageSend(node: SyntaxNode): ObjectiveCMessag
 }
 
 /** Lower Objective-C subscripting to its receiver-dependent selector candidates. */
-export function extractObjectiveCSubscriptSend(
-  node: SyntaxNode,
-): ObjectiveCSubscriptSend | null {
+export function extractObjectiveCSubscriptSend(node: SyntaxNode): ObjectiveCSubscriptSend | null {
   if (node.type !== 'subscript_expression') return null;
   const receiver = node.childForFieldName('argument')?.text.trim() ?? '';
   if (receiver === '') return null;
   const parent = node.parent;
   const isWrite =
-    parent?.type === 'assignment_expression' &&
-    parent.childForFieldName('left')?.id === node.id;
+    parent?.type === 'assignment_expression' && parent.childForFieldName('left')?.id === node.id;
   const kind = messageKind(node, receiver);
   const candidateNames = isWrite
-    ? [
-        signed('setObject:atIndexedSubscript:', kind),
-        signed('setObject:forKeyedSubscript:', kind),
-      ]
-    : [
-        signed('objectAtIndexedSubscript:', kind),
-        signed('objectForKeyedSubscript:', kind),
-      ];
+    ? [signed('setObject:atIndexedSubscript:', kind), signed('setObject:forKeyedSubscript:', kind)]
+    : [signed('objectAtIndexedSubscript:', kind), signed('objectForKeyedSubscript:', kind)];
   return {
     referenceName: isWrite ? '$objc-subscript-write' : '$objc-subscript-read',
     candidateNames,

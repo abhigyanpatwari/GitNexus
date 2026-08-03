@@ -2,10 +2,7 @@ import type { ParsedFile, SymbolDefinition } from 'gitnexus-shared';
 
 import { objectiveCSourceIdentity } from './identity.js';
 
-const annotationValue = (
-  definition: SymbolDefinition,
-  prefix: string,
-): string | undefined =>
+const annotationValue = (definition: SymbolDefinition, prefix: string): string | undefined =>
   definition.annotations?.find((annotation) => annotation.startsWith(prefix))?.slice(prefix.length);
 
 const hasAnnotation = (definition: SymbolDefinition, value: string): boolean =>
@@ -102,7 +99,9 @@ export function populateObjectiveCWorkspaceOwners(parsedFiles: readonly ParsedFi
           member: signedSelector,
         });
         definition.annotations = [
-          ...(definition.annotations ?? []).filter((annotation) => !annotation.startsWith('objc:site:')),
+          ...(definition.annotations ?? []).filter(
+            (annotation) => !annotation.startsWith('objc:site:'),
+          ),
           'objc:site:synthesized',
         ];
       }

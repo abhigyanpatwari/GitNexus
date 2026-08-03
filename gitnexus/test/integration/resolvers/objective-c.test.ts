@@ -21,7 +21,9 @@ describe.skipIf(!objectiveCAvailable)('Objective-C scope resolution', () => {
   }, 60_000);
 
   it('emits classes, properties, and complete signed selector identities', () => {
-    expect(getNodesByLabel(result, 'Class')).toEqual(expect.arrayContaining(['BaseStore', 'Store']));
+    expect(getNodesByLabel(result, 'Class')).toEqual(
+      expect.arrayContaining(['BaseStore', 'Store']),
+    );
     expect(getNodesByLabel(result, 'Property')).toContain('name');
     expect(getNodesByLabel(result, 'Method')).toEqual(
       expect.arrayContaining(['-save:completion:', '-run']),
@@ -71,9 +73,7 @@ describe.skipIf(!objectiveCAvailable)('Objective-C scope resolution', () => {
 
   it('emits Objective-C superclass inheritance', () => {
     expect(getRelationships(result, 'EXTENDS')).toEqual(
-      expect.arrayContaining([
-        expect.objectContaining({ source: 'Store', target: 'BaseStore' }),
-      ]),
+      expect.arrayContaining([expect.objectContaining({ source: 'Store', target: 'BaseStore' })]),
     );
   });
 
@@ -247,9 +247,7 @@ describe.skipIf(!objectiveCAvailable)('Objective-C scope resolution', () => {
       ]),
     );
     expect(getRelationships(result, 'METHOD_IMPLEMENTS')).toEqual(
-      expect.arrayContaining([
-        expect.objectContaining({ source: '-run', target: '-run' }),
-      ]),
+      expect.arrayContaining([expect.objectContaining({ source: '-run', target: '-run' })]),
     );
     expect(getNodesByLabelFull(result, 'Method')).toEqual(
       expect.arrayContaining([
@@ -271,9 +269,7 @@ describe.skipIf(!objectiveCAvailable)('Objective-C scope resolution', () => {
 
   it('emits property dot-syntax reads and writes as ACCESSES without accessor CALLS', () => {
     expect(getRelationships(result, 'ACCESSES')).toEqual(
-      expect.arrayContaining([
-        expect.objectContaining({ source: '-run', target: 'ready' }),
-      ]),
+      expect.arrayContaining([expect.objectContaining({ source: '-run', target: 'ready' })]),
     );
   });
 });

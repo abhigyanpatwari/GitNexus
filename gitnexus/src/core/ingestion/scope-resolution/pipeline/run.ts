@@ -582,10 +582,7 @@ export function runScopeResolution(
     let reusedPreExtracted = false;
     if (preExtracted !== undefined) {
       const candidate = preExtracted.get(file.path);
-      if (
-        candidate !== undefined &&
-        (provider.acceptPreExtractedParsedFile?.(candidate) ?? true)
-      ) {
+      if (candidate !== undefined && (provider.acceptPreExtractedParsedFile?.(candidate) ?? true)) {
         parsed = candidate;
         preExtractedHits++;
         reusedPreExtracted = true;

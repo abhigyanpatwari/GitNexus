@@ -168,9 +168,7 @@ const queryEmbeddableNodes = async (
           endLine: row.endLine ?? row[6],
           isExported: hasExportedColumn ? (row.isExported ?? row[7]) : undefined,
           description: row.description ?? (hasExportedColumn ? row[8] : row[7]),
-          language:
-            row.language ??
-            row[label === LABEL_METHOD ? 11 : hasExportedColumn ? 9 : 8],
+          language: row.language ?? row[label === LABEL_METHOD ? 11 : hasExportedColumn ? 9 : 8],
           ...(label === LABEL_METHOD
             ? {
                 parameterCount: row.parameterCount ?? row[9],

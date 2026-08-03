@@ -147,10 +147,7 @@ export function buildGraphNodeLookup(graph: KnowledgeGraph): GraphNodeLookup {
     if (!isLinkableLabel(node.label)) continue;
 
     if (props.sourceIdentity !== undefined && props.sourceIdentity.length > 0) {
-      lookup.set(
-        sourceIdentityKey(props.filePath, node.label, props.sourceIdentity),
-        node.id,
-      );
+      lookup.set(sourceIdentityKey(props.filePath, node.label, props.sourceIdentity), node.id);
     }
 
     // Position key (#2699) — see `positionKey`. Second write on a key marks it

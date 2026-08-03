@@ -326,12 +326,9 @@ describe('runEmbeddingPipeline incremental filter', () => {
 
     const { runEmbeddingPipeline } =
       await import('../../src/core/embeddings/embedding-pipeline.js');
-    await runEmbeddingPipeline(
-      executeQuery,
-      mockExecuteWithReusedStatement(),
-      onProgress,
-      { batchSize: 1 },
-    );
+    await runEmbeddingPipeline(executeQuery, mockExecuteWithReusedStatement(), onProgress, {
+      batchSize: 1,
+    });
 
     const symbolQueries = queryCalls.filter((query) => query.includes('RETURN n.id AS id'));
     expect(symbolQueries.length).toBeGreaterThan(0);

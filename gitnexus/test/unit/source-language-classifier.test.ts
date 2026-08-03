@@ -122,9 +122,11 @@ describe('authoritative source-language classification', () => {
   });
 
   it('treats postfix single quotes as MATLAB transpose instead of character literals', () => {
-    expect(
-      classify('analysis/transpose.m', "A = [1, 2]';\nB = A .* 2;\n", true),
-    ).toMatchObject({ language: null, confidence: 0.99, reason: 'matlab-syntax' });
+    expect(classify('analysis/transpose.m', "A = [1, 2]';\nB = A .* 2;\n", true)).toMatchObject({
+      language: null,
+      confidence: 0.99,
+      reason: 'matlab-syntax',
+    });
 
     expect(
       classify(

@@ -2,11 +2,7 @@ import type { Capture, CaptureMatch } from 'gitnexus-shared';
 
 import { processCFamilyScopeMatches } from '../c/captures.js';
 import { getTreeSitterBufferSize } from '../../constants.js';
-import {
-  nodeToCapture,
-  syntheticCapture,
-  type SyntaxNode,
-} from '../../utils/ast-helpers.js';
+import { nodeToCapture, syntheticCapture, type SyntaxNode } from '../../utils/ast-helpers.js';
 import { parseSourceSafe } from '../../../tree-sitter/safe-parse.js';
 import {
   extractObjectiveCMessageSend,
@@ -89,10 +85,7 @@ function declarationMetadata(
 function containerTags(node: SyntaxNode): readonly string[] {
   const identity = objectiveCContainerIdentity(node);
   if (identity === null) return [];
-  const tags = [
-    `objc:site:${identity.sourceRole}`,
-    `objc:owner:${identity.owner}`,
-  ];
+  const tags = [`objc:site:${identity.sourceRole}`, `objc:owner:${identity.owner}`];
   if (identity.isCategory) tags.push(`objc:category:${identity.category}`);
   if (identity.isClassExtension) tags.push('objc:class-extension');
   return tags;
@@ -122,9 +115,7 @@ function propertyAttributes(node: SyntaxNode): string[] {
 function declarationTypeAndName(
   declaration: SyntaxNode,
 ): { readonly nameNode: SyntaxNode; readonly declaredType: string } | null {
-  const declarator = declaration.namedChildren.find(
-    (child) => child.type === 'struct_declarator',
-  );
+  const declarator = declaration.namedChildren.find((child) => child.type === 'struct_declarator');
   if (declarator === undefined) return null;
   const nameNode = declarator.descendantsOfType('identifier').at(-1);
   if (nameNode === undefined) return null;
@@ -194,11 +185,7 @@ function propertyAccessorCaptures(property: SyntaxNode, ownerNode: SyntaxNode): 
       property,
       JSON.stringify(parameterTypes),
     ),
-    '@declaration.return-type': syntheticCapture(
-      '@declaration.return-type',
-      property,
-      returnType,
-    ),
+    '@declaration.return-type': syntheticCapture('@declaration.return-type', property, returnType),
     '@declaration.is-static': syntheticCapture(
       '@declaration.is-static',
       property,
@@ -316,11 +303,7 @@ function advancedDeclarationCaptures(root: SyntaxNode): CaptureMatch[] {
         declarationScope: objectiveCSourceScope(owner),
         sourceRole: owner.sourceRole,
         member: info.nameNode.text,
-        annotations: [
-          `objc:site:${owner.sourceRole}`,
-          `objc:owner:${owner.owner}`,
-          'objc:ivar',
-        ],
+        annotations: [`objc:site:${owner.sourceRole}`, `objc:owner:${owner.owner}`, 'objc:ivar'],
       }),
     });
   }
@@ -458,11 +441,7 @@ function advancedDeclarationCaptures(root: SyntaxNode): CaptureMatch[] {
           call,
           'indirect',
         ),
-        '@callable-flow.arity': syntheticCapture(
-          '@callable-flow.arity',
-          call,
-          String(arity),
-        ),
+        '@callable-flow.arity': syntheticCapture('@callable-flow.arity', call, String(arity)),
       });
     }
   }
@@ -485,7 +464,10 @@ function synthesizeMethodBindings(node: SyntaxNode, owner: string): CaptureMatch
       .reverse()
       .find((child) => child.type === 'identifier');
     if (typeNode === undefined || nameNode === undefined) continue;
-    const rawType = typeNode.text.trim().replace(/^\(|\)$/g, '').trim();
+    const rawType = typeNode.text
+      .trim()
+      .replace(/^\(|\)$/g, '')
+      .trim();
     out.push({
       '@type-binding.parameter': nodeToCapture('@type-binding.parameter', parameter),
       '@type-binding.name': nodeToCapture('@type-binding.name', nameNode),
@@ -614,8 +596,7 @@ export function emitObjectiveCScopeCaptures(
       continue;
     }
 
-    const typeNode =
-      nodes['@declaration.class'] ?? nodes['@declaration.interface'];
+    const typeNode = nodes['@declaration.class'] ?? nodes['@declaration.interface'];
     if (typeNode !== undefined) {
       const nameNode = typeNode.namedChildren.find((child) => child.type === 'identifier');
       if (nameNode === undefined) continue;

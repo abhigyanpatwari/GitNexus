@@ -85,11 +85,16 @@ function protocolRequirementTag(node: SyntaxNode): string | undefined {
 }
 
 function propertyName(node: SyntaxNode): string | null {
-  return node.descendantsOfType('struct_declarator')[0]?.descendantsOfType('identifier').at(-1)
-    ?.text ?? null;
+  return (
+    node.descendantsOfType('struct_declarator')[0]?.descendantsOfType('identifier').at(-1)?.text ??
+    null
+  );
 }
 
-function propertyAccessors(name: string, attributes: readonly string[]): {
+function propertyAccessors(
+  name: string,
+  attributes: readonly string[],
+): {
   readonly getterSelector: string;
   readonly setterSelector?: string;
 } {
@@ -149,20 +154,11 @@ export function extractObjectiveCDefinitionMetadata(
     const sourceRole = 'forward-declaration' as const;
     const label = node.type === 'protocol_forward_declaration' ? 'Interface' : 'Class';
     return {
-      sourceIdentity: sourceIdentity(
-        label,
-        nodeName,
-        '<primary>',
-        sourceRole,
-        nodeName,
-      ),
+      sourceIdentity: sourceIdentity(label, nodeName, '<primary>', sourceRole, nodeName),
       annotations: ['objc:site:forward-declaration', `objc:owner:${nodeName}`],
       properties: {
         sourceRole,
-        declarationKey: objectiveCKeyV1([
-          label === 'Interface' ? 'protocol' : 'type',
-          nodeName,
-        ]),
+        declarationKey: objectiveCKeyV1([label === 'Interface' ? 'protocol' : 'type', nodeName]),
       },
     };
   }
@@ -175,13 +171,7 @@ export function extractObjectiveCDefinitionMetadata(
         ? '<file>'
         : (objectiveCContainerIdentity(blockContainer)?.owner ?? '<file>');
     return {
-      sourceIdentity: sourceIdentity(
-        'Function',
-        owner,
-        '<block>',
-        'implementation',
-        member,
-      ),
+      sourceIdentity: sourceIdentity('Function', owner, '<block>', 'implementation', member),
       annotations: ['objc:block-literal'],
       properties: { sourceRole: 'implementation' },
     };
@@ -243,11 +233,7 @@ export function extractObjectiveCDefinitionMetadata(
         selector: method.selector,
         sourceRole: identity.sourceRole,
         declarationKey,
-        dispatchKey: objectiveCKeyV1([
-          'dispatch',
-          identity.owner,
-          method.signedSelector,
-        ]),
+        dispatchKey: objectiveCKeyV1(['dispatch', identity.owner, method.signedSelector]),
         ...(identity.isCategory
           ? { categoryName: identity.category, hostClassName: identity.owner }
           : identity.isClassExtension
@@ -298,10 +284,7 @@ export function extractObjectiveCDefinitionMetadata(
         identity.sourceRole,
         nodeName,
       ),
-      annotations: [
-        ...containerAnnotations(identity),
-        'objc:ivar',
-      ],
+      annotations: [...containerAnnotations(identity), 'objc:ivar'],
       properties: { sourceRole: identity.sourceRole, hostClassName: identity.owner },
     };
   }

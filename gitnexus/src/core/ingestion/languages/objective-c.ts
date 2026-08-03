@@ -73,8 +73,7 @@ export const objectiveCProvider = defineLanguage({
   bindingScopeFor: objectiveCBindingScopeFor,
   importOwningScope: objectiveCImportOwningScope,
   receiverBinding: objectiveCReceiverBinding,
-  attachDefinitionToEnclosingOwner: (definitionNode) =>
-    definitionNode.type !== 'block_literal',
+  attachDefinitionToEnclosingOwner: (definitionNode) => definitionNode.type !== 'block_literal',
   extractDefinitionMetadata: extractObjectiveCDefinitionMetadata,
   importResolver: createImportResolver({
     language: SupportedLanguages.ObjectiveC,

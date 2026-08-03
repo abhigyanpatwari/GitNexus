@@ -535,7 +535,8 @@ export const streamAllCSVsToDisk = async (
     );
 
     // Multi-language node types share the same CSV shape (no isExported column)
-    const multiLangHeader = 'id,name,filePath,startLine,endLine,content,description,language,sourceIdentity';
+    const multiLangHeader =
+      'id,name,filePath,startLine,endLine,content,description,language,sourceIdentity';
     const MULTI_LANG_TYPES = [
       'Struct',
       'Enum',

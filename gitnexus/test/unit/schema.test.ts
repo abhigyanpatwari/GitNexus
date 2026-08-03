@@ -151,7 +151,14 @@ describe('LadybugDB Schema', () => {
       expect(FILE_SCHEMA).toContain('language STRING');
       expect(FILE_SCHEMA).toContain('languageReason STRING');
       expect(FILE_SCHEMA).toContain('languageClassifierVersion INT32');
-      for (const schema of [FUNCTION_SCHEMA, CLASS_SCHEMA, INTERFACE_SCHEMA, METHOD_SCHEMA, CODE_ELEMENT_SCHEMA, PROPERTY_SCHEMA]) {
+      for (const schema of [
+        FUNCTION_SCHEMA,
+        CLASS_SCHEMA,
+        INTERFACE_SCHEMA,
+        METHOD_SCHEMA,
+        CODE_ELEMENT_SCHEMA,
+        PROPERTY_SCHEMA,
+      ]) {
         expect(schema).toContain('language STRING');
         expect(schema).toContain('sourceIdentity STRING');
       }

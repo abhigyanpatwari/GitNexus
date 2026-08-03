@@ -145,9 +145,9 @@ describe('parse-result graph insertion determinism', () => {
     };
     const lookup = buildLookup([implementation, declaration]);
 
-    expect(
-      lookup.get(sourceIdentityKey(FILE, 'Method', implementation.sourceIdentity)),
-    ).toBe(implementation.id);
+    expect(lookup.get(sourceIdentityKey(FILE, 'Method', implementation.sourceIdentity))).toBe(
+      implementation.id,
+    );
     expect(
       resolveDefGraphId(
         FILE,

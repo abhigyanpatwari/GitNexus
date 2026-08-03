@@ -47,9 +47,7 @@ function directIdentifier(node: SyntaxNode): SyntaxNode | undefined {
 }
 
 /** Identify the logical Objective-C owner/category represented by a type container. */
-export function objectiveCContainerIdentity(
-  node: SyntaxNode,
-): ObjectiveCContainerIdentity | null {
+export function objectiveCContainerIdentity(node: SyntaxNode): ObjectiveCContainerIdentity | null {
   if (
     node.type !== 'class_interface' &&
     node.type !== 'class_implementation' &&

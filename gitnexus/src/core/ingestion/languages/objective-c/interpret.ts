@@ -9,16 +9,17 @@ export function interpretObjectiveCImport(captures: CaptureMatch): ParsedImport 
 export function normalizeObjectiveCType(text: string): string {
   return text
     .trim()
-    .replace(/\b(?:const|volatile|nullable|nonnull|__kindof|__weak|__strong|__unsafe_unretained)\b/g, '')
+    .replace(
+      /\b(?:const|volatile|nullable|nonnull|__kindof|__weak|__strong|__unsafe_unretained)\b/g,
+      '',
+    )
     .replace(/\s*<[^>]+>/g, '')
     .replace(/\*+/g, '')
     .replace(/\s+/g, ' ')
     .trim();
 }
 
-export function interpretObjectiveCTypeBinding(
-  captures: CaptureMatch,
-): ParsedTypeBinding | null {
+export function interpretObjectiveCTypeBinding(captures: CaptureMatch): ParsedTypeBinding | null {
   const name = captures['@type-binding.name']?.text;
   const type = captures['@type-binding.type']?.text;
   if (name === undefined || type === undefined) return null;

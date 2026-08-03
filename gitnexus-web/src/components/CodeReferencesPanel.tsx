@@ -14,19 +14,12 @@ import {
 import { Prism as SyntaxHighlighter } from 'react-syntax-highlighter';
 import { vscDarkPlus } from 'react-syntax-highlighter/dist/esm/styles/prism';
 import { useAppState } from '../hooks/useAppState';
-import {
-  SupportedLanguages,
-  type GraphNode,
-  getSyntaxLanguageFromFilename,
-} from 'gitnexus-shared';
+import { SupportedLanguages, type GraphNode, getSyntaxLanguageFromFilename } from 'gitnexus-shared';
 import { NODE_COLORS } from '../lib/constants';
 import { readFile, type ReadFileResult } from '../services/backend-client';
 import { useTranslation } from 'react-i18next';
 
-export const getSyntaxLanguage = (
-  filePath: string | undefined,
-  language?: string,
-): string => {
+export const getSyntaxLanguage = (filePath: string | undefined, language?: string): string => {
   if (!filePath) return 'text';
   return getSyntaxLanguageFromFilename(filePath, language as SupportedLanguages | undefined);
 };

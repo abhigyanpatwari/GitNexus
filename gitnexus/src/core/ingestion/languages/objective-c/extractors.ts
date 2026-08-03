@@ -15,10 +15,7 @@ import type {
   VariableExtractorContext,
   VariableInfo,
 } from '../../variable-types.js';
-import {
-  extractObjectiveCMessageSend,
-  extractObjectiveCMethodSignature,
-} from './selector.js';
+import { extractObjectiveCMessageSend, extractObjectiveCMethodSignature } from './selector.js';
 import {
   objectiveCBlockName,
   objectiveCCategoryDisplayName,
@@ -241,17 +238,19 @@ export const objectiveCVariableExtractor: VariableExtractor = {
     if (!this.isVariableDeclaration(node)) return [];
     const extracted = variableNameAndType(node);
     if (extracted === null) return [];
-    return [{
-      name: extracted.name,
-      type: extracted.type,
-      visibility: node.type === 'instance_variable' ? 'private' : 'public',
-      isConst: false,
-      isStatic: false,
-      isMutable: true,
-      scope: node.type === 'instance_variable' ? 'file' : 'block',
-      sourceFile: context.filePath,
-      line: node.startPosition.row + 1,
-    }];
+    return [
+      {
+        name: extracted.name,
+        type: extracted.type,
+        visibility: node.type === 'instance_variable' ? 'private' : 'public',
+        isConst: false,
+        isStatic: false,
+        isMutable: true,
+        scope: node.type === 'instance_variable' ? 'file' : 'block',
+        sourceFile: context.filePath,
+        line: node.startPosition.row + 1,
+      },
+    ];
   },
 };
 

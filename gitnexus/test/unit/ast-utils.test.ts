@@ -116,10 +116,7 @@ describe('ensureAndParse', () => {
     );
 
     expect(result).toEqual({ lang: 'objective-c' });
-    expect(createParserForLanguage).toHaveBeenCalledWith(
-      SupportedLanguages.ObjectiveC,
-      'Store.h',
-    );
+    expect(createParserForLanguage).toHaveBeenCalledWith(SupportedLanguages.ObjectiveC, 'Store.h');
     expect(getLanguageFromFilename).not.toHaveBeenCalled();
   });
 

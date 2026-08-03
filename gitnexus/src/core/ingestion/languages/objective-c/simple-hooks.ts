@@ -1,4 +1,11 @@
-import type { CaptureMatch, ParsedImport, Scope, ScopeId, ScopeTree, TypeRef } from 'gitnexus-shared';
+import type {
+  CaptureMatch,
+  ParsedImport,
+  Scope,
+  ScopeId,
+  ScopeTree,
+  TypeRef,
+} from 'gitnexus-shared';
 
 export function objectiveCBindingScopeFor(
   declaration: CaptureMatch,

@@ -16,8 +16,7 @@ withTestLbugDB('objective-c-language-metadata-roundtrip', (handle) => {
     await streamAllCSVsToDisk(graph, FIXTURE, csvDir);
 
     const storeHeader = graph.nodes.find(
-      (node) =>
-        node.label === 'File' && node.properties.filePath === 'Store.h',
+      (node) => node.label === 'File' && node.properties.filePath === 'Store.h',
     );
     const runMethod = graph.nodes.find(
       (node) =>
@@ -43,7 +42,14 @@ withTestLbugDB('objective-c-language-metadata-roundtrip', (handle) => {
     expect(readyProperty).toBeDefined();
     expect(category).toBeDefined();
 
-    for (const table of ['File', 'Class', 'Interface', 'Method', 'Property', 'CodeElement'] as const) {
+    for (const table of [
+      'File',
+      'Class',
+      'Interface',
+      'Method',
+      'Property',
+      'CodeElement',
+    ] as const) {
       const csvPath = path.join(csvDir, `${table.toLowerCase()}.csv`).replace(/\\/g, '/');
       await adapter.executeQuery(adapter.getCopyQuery(table, csvPath));
     }
@@ -89,7 +95,9 @@ withTestLbugDB('objective-c-language-metadata-roundtrip', (handle) => {
       ),
     ).toEqual([{ categoryName: 'Testing', hostClassName: 'Store', sourceRole: 'implementation' }]);
 
-    const methodHeader = (await fs.readFile(path.join(csvDir, 'method.csv'), 'utf8')).split('\n')[0];
+    const methodHeader = (await fs.readFile(path.join(csvDir, 'method.csv'), 'utf8')).split(
+      '\n',
+    )[0];
     expect(methodHeader).toContain('language,sourceIdentity,selector,isStatic,sourceRole');
   });
 });

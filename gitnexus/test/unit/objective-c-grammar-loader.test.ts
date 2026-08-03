@@ -39,9 +39,9 @@ describe('vendored Objective-C grammar', () => {
   });
 
   it('loads, compiles the core query, and parses Objective-C with tree-sitter 0.21', () => {
-    const language = requireVendoredGrammar(
-      'tree-sitter-objc',
-    ) as ConstructorParameters<typeof Parser.Query>[0];
+    const language = requireVendoredGrammar('tree-sitter-objc') as ConstructorParameters<
+      typeof Parser.Query
+    >[0];
     const parser = new Parser();
     parser.setLanguage(language);
 
@@ -50,13 +50,12 @@ describe('vendored Objective-C grammar', () => {
     expect(tree.rootNode.hasError).toBe(false);
 
     const query = new Parser.Query(language, CORE_QUERY);
-    const captureCounts = query.captures(tree.rootNode).reduce<Record<string, number>>(
-      (counts, capture) => {
+    const captureCounts = query
+      .captures(tree.rootNode)
+      .reduce<Record<string, number>>((counts, capture) => {
         counts[capture.name] = (counts[capture.name] ?? 0) + 1;
         return counts;
-      },
-      {},
-    );
+      }, {});
 
     expect(captureCounts).toEqual({
       protocol: 1,
@@ -70,15 +69,14 @@ describe('vendored Objective-C grammar', () => {
   });
 
   it('compiles the registered ingestion query and captures Objective-C definitions', () => {
-    const querySource = (
-      ingestionQueries as unknown as { OBJECTIVE_C_QUERIES?: string }
-    ).OBJECTIVE_C_QUERIES;
+    const querySource = (ingestionQueries as unknown as { OBJECTIVE_C_QUERIES?: string })
+      .OBJECTIVE_C_QUERIES;
     expect(querySource).toBeTypeOf('string');
     if (!querySource) return;
 
-    const language = getLanguageGrammar(
-      SupportedLanguages.ObjectiveC,
-    ) as ConstructorParameters<typeof Parser.Query>[0];
+    const language = getLanguageGrammar(SupportedLanguages.ObjectiveC) as ConstructorParameters<
+      typeof Parser.Query
+    >[0];
     const parser = new Parser();
     parser.setLanguage(language);
     const tree = parser.parse(SOURCE);

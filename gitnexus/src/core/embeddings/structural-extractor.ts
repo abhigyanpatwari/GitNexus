@@ -33,9 +33,7 @@ export const extractStructuralNames = async (
   filePath: string,
   explicitLanguage?: SupportedLanguages,
 ): Promise<StructuralNames> => {
-  const provider = explicitLanguage
-    ? getProvider(explicitLanguage)
-    : getProviderForFile(filePath);
+  const provider = explicitLanguage ? getProvider(explicitLanguage) : getProviderForFile(filePath);
   if (!provider) return { methodNames: [], fieldNames: [] };
 
   const tree = await ensureAndParse(content, filePath, explicitLanguage);

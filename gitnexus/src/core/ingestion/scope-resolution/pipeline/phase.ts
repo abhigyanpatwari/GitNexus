@@ -28,10 +28,7 @@ import type { PipelinePhase, PipelineContext, PhaseResult } from '../../pipeline
 import { getPhaseOutput } from '../../pipeline-phases/types.js';
 import type { StructureOutput } from '../../pipeline-phases/structure.js';
 import type { ParseOutput } from '../../pipeline-phases/parse.js';
-import {
-  SupportedLanguages,
-  type SourceLanguageClassification,
-} from 'gitnexus-shared';
+import { SupportedLanguages, type SourceLanguageClassification } from 'gitnexus-shared';
 import { readFileContents } from '../../filesystem-walker.js';
 import { runScopeResolution, type ScopeResolutionSubPhase } from './run.js';
 import { isLanguageAvailable } from '../../../tree-sitter/parser-loader.js';
@@ -450,9 +447,7 @@ export const scopeResolutionPhase: PipelinePhase<ScopeResolutionOutput> = {
                 allScannedPaths,
                 resolutionConfig,
               });
-              const additions = [...expanded].filter(
-                (filePath) => !scopeFilePaths.has(filePath),
-              );
+              const additions = [...expanded].filter((filePath) => !scopeFilePaths.has(filePath));
               if (additions.length === 0) break;
               for (const filePath of additions) scopeFilePaths.add(filePath);
             }

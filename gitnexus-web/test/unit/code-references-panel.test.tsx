@@ -2,10 +2,7 @@ import { render } from '@testing-library/react';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import type { ReactNode } from 'react';
 import type { GraphNode } from 'gitnexus-shared';
-import {
-  CodeReferencesPanel,
-  getSyntaxLanguage,
-} from '../../src/components/CodeReferencesPanel';
+import { CodeReferencesPanel, getSyntaxLanguage } from '../../src/components/CodeReferencesPanel';
 import { readFile } from '../../src/services/backend-client';
 
 const fileNode: GraphNode = {

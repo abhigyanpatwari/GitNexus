@@ -55,26 +55,34 @@ describe('Objective-C language provider registration', () => {
       name: 'StoreDelegate',
       type: 'Interface',
     });
-    expect(provider.methodExtractor?.extract(interfaceNode, {
-      filePath: 'Store.h',
-      language: SupportedLanguages.ObjectiveC,
-    })?.methods.map((method) => [method.name, method.isStatic, method.parameters.length])).toEqual([
+    expect(
+      provider.methodExtractor
+        ?.extract(interfaceNode, {
+          filePath: 'Store.h',
+          language: SupportedLanguages.ObjectiveC,
+        })
+        ?.methods.map((method) => [method.name, method.isStatic, method.parameters.length]),
+    ).toEqual([
       ['+shared', true, 0],
       ['-save:completion:', false, 2],
     ]);
-    expect(provider.methodExtractor?.extract(implementationNode, {
-      filePath: 'Store.m',
-      language: SupportedLanguages.ObjectiveC,
-    })?.methods[0]).toMatchObject({
+    expect(
+      provider.methodExtractor?.extract(implementationNode, {
+        filePath: 'Store.m',
+        language: SupportedLanguages.ObjectiveC,
+      })?.methods[0],
+    ).toMatchObject({
       name: '-save:completion:',
       returnType: 'void',
     });
-    expect(provider.fieldExtractor?.extract(interfaceNode, {
-      filePath: 'Store.h',
-      language: SupportedLanguages.ObjectiveC,
-      typeEnv: {} as never,
-      symbolTable: {} as never,
-    })?.fields[0]).toMatchObject({
+    expect(
+      provider.fieldExtractor?.extract(interfaceNode, {
+        filePath: 'Store.h',
+        language: SupportedLanguages.ObjectiveC,
+        typeEnv: {} as never,
+        symbolTable: {} as never,
+      })?.fields[0],
+    ).toMatchObject({
       name: 'name',
       type: 'NSString',
       isReadonly: true,

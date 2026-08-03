@@ -60,10 +60,7 @@ describe('parse phase authoritative Objective-C classification', () => {
   });
 
   it('rejects MATLAB instead of dispatching it to the Objective-C worker', async () => {
-    const result = await runSource(
-      'analysis.m',
-      'function y = analysis(x)\n  y = x .* x;\nend\n',
-    );
+    const result = await runSource('analysis.m', 'function y = analysis(x)\n  y = x .* x;\nend\n');
 
     expect(result.usedWorkerPool).toBe(false);
     expect(result.sourceClassifications.get('analysis.m')).toMatchObject({

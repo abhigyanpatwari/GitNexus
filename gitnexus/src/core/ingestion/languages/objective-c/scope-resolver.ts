@@ -6,11 +6,7 @@ import { populateClassOwnedMembers } from '../../scope-resolution/scope/walkers.
 import type { ScopeResolver } from '../../scope-resolution/contract/scope-resolver.js';
 import { cArityCompatibility } from '../c/arity.js';
 import { cMergeBindings } from '../c/merge-bindings.js';
-import {
-  clearStaticNames,
-  expandCWildcardNames,
-  isStaticName,
-} from '../c/static-linkage.js';
+import { clearStaticNames, expandCWildcardNames, isStaticName } from '../c/static-linkage.js';
 import { objectiveCProvider } from '../objective-c.js';
 import { applyObjectiveCCaptureSideChannel } from './capture-side-channel.js';
 import { populateObjectiveCWorkspaceOwners } from './ownership.js';
@@ -77,11 +73,9 @@ export const objectiveCScopeResolver: ScopeResolver = {
 
   expandsWildcardTo: expandCWildcardNames,
 
-  mergeBindings: (existing, incoming, scopeId) =>
-    cMergeBindings(existing, incoming, scopeId),
+  mergeBindings: (existing, incoming, scopeId) => cMergeBindings(existing, incoming, scopeId),
 
-  arityCompatibility: (callsite, definition) =>
-    cArityCompatibility(definition, callsite),
+  arityCompatibility: (callsite, definition) => cArityCompatibility(definition, callsite),
 
   buildMro: (graph, parsedFiles, nodeLookup) =>
     buildMro(graph, parsedFiles, nodeLookup, defaultLinearize),

@@ -51,9 +51,7 @@ describe('Objective-C import target resolution', () => {
     const paths = collect?.({
       primaryFilePaths: ['Sources/App.m'],
       preExtractedByPath: new Map(),
-      entryFileContents: new Map([
-        ['Sources/App.m', '#import "Legacy.h"\n@interface App\n@end\n'],
-      ]),
+      entryFileContents: new Map([['Sources/App.m', '#import "Legacy.h"\n@interface App\n@end\n']]),
       allScannedPaths: new Set(['Sources/App.m', 'Sources/Legacy.h']),
       resolutionConfig: undefined,
     });

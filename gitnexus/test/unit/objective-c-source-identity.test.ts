@@ -19,9 +19,7 @@ function parse(source: string): Parser.Tree {
 
 describe('Objective-C source identity', () => {
   it('uses deterministic NFC-normalized, delimiter-safe keys', () => {
-    expect(objectiveCKeyV1(['type', 'Cafe\u0301'])).toBe(
-      objectiveCKeyV1(['type', 'Café']),
-    );
+    expect(objectiveCKeyV1(['type', 'Cafe\u0301'])).toBe(objectiveCKeyV1(['type', 'Café']));
     expect(
       objectiveCSourceIdentity({
         label: 'Method',
@@ -30,9 +28,7 @@ describe('Objective-C source identity', () => {
         sourceRole: 'implementation',
         member: '-save:completion:',
       }),
-    ).toBe(
-      'objc:v1:["source","Method","Store","<primary>","implementation","-save:completion:"]',
-    );
+    ).toBe('objc:v1:["source","Method","Store","<primary>","implementation","-save:completion:"]');
   });
 
   it('separates primary declaration, implementation, extension, and categories', () => {
@@ -55,8 +51,7 @@ describe('Objective-C source identity', () => {
       ...tree.rootNode.descendantsOfType('method_definition'),
     ].sort((left, right) => left.startIndex - right.startIndex);
     const identities = methods.map(
-      (method) =>
-        extractObjectiveCDefinitionMetadata(method, '-run', 'Method').sourceIdentity,
+      (method) => extractObjectiveCDefinitionMetadata(method, '-run', 'Method').sourceIdentity,
     );
 
     expect(new Set(identities).size).toBe(4);

@@ -53,8 +53,7 @@ describe('Objective-C scope captures', () => {
         .map((match) => match['@reference.name']?.text),
     ).toEqual(expect.arrayContaining(['NSObject', 'StoreDelegate']));
     expect(
-      captures.find((match) => match['@import.statement'] !== undefined)?.['@import.source']
-        ?.text,
+      captures.find((match) => match['@import.statement'] !== undefined)?.['@import.source']?.text,
     ).toBe('StoreDelegate.h');
     expect(
       captures.some(
@@ -69,7 +68,9 @@ describe('Objective-C scope captures', () => {
   it('feeds the shared scope extractor without losing Objective-C semantics', () => {
     const parsed = extractParsedFile(objectiveCProvider, SOURCE, 'Sources/Store.m');
 
-    expect(parsed?.localDefs.map((definition) => [definition.type, definition.qualifiedName])).toEqual(
+    expect(
+      parsed?.localDefs.map((definition) => [definition.type, definition.qualifiedName]),
+    ).toEqual(
       expect.arrayContaining([
         ['Class', 'Store'],
         ['Interface', 'StoreDelegate'],

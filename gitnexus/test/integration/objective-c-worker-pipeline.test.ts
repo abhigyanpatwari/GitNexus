@@ -50,10 +50,12 @@ describe('Objective-C real worker pipeline', () => {
       reason: 'objective-c-syntax',
     });
     const sourceNodes = graph.nodes.filter((node) => node.properties.filePath === filePath);
-    expect(sourceNodes.some((node) => node.label === 'Class' && node.properties.name === 'Service'))
-      .toBe(true);
-    expect(sourceNodes.every((node) => node.properties.language === SupportedLanguages.ObjectiveC))
-      .toBe(true);
+    expect(
+      sourceNodes.some((node) => node.label === 'Class' && node.properties.name === 'Service'),
+    ).toBe(true);
+    expect(
+      sourceNodes.every((node) => node.properties.language === SupportedLanguages.ObjectiveC),
+    ).toBe(true);
   });
 
   it('warns when --pdg indexes Objective-C without a CFG visitor', async () => {
@@ -130,9 +132,7 @@ describe('Objective-C real worker pipeline', () => {
 
     expect(cold.usedWorkerPool).toBe(true);
     expect(warm.usedWorkerPool).toBe(false);
-    expect(cold.sourceClassifications.get(filePath)?.language).toBe(
-      SupportedLanguages.ObjectiveC,
-    );
+    expect(cold.sourceClassifications.get(filePath)?.language).toBe(SupportedLanguages.ObjectiveC);
     expect(warm.sourceClassifications).toEqual(cold.sourceClassifications);
     expect(
       warmGraph.nodes
@@ -183,9 +183,7 @@ describe('Objective-C real worker pipeline', () => {
       expect.arrayContaining(['-save:completion:', '-run']),
     );
     expect(
-      graph.nodes.some(
-        (node) => node.label === 'Property' && node.properties.name === 'name',
-      ),
+      graph.nodes.some((node) => node.label === 'Property' && node.properties.name === 'name'),
     ).toBe(true);
   });
 
@@ -228,13 +226,34 @@ describe('Objective-C real worker pipeline', () => {
     const sourceNodes = graph.nodes.filter((node) => node.properties.filePath === filePath);
     expect(sourceNodes).toEqual(
       expect.arrayContaining([
-        expect.objectContaining({ label: 'CodeElement', properties: expect.objectContaining({ name: 'Store(Testing)' }) }),
-        expect.objectContaining({ label: 'CodeElement', properties: expect.objectContaining({ name: 'Store(<extension>)' }) }),
-        expect.objectContaining({ label: 'Class', properties: expect.objectContaining({ name: 'Foo' }) }),
-        expect.objectContaining({ label: 'Class', properties: expect.objectContaining({ name: 'Bar' }) }),
-        expect.objectContaining({ label: 'Interface', properties: expect.objectContaining({ name: 'Forward' }) }),
-        expect.objectContaining({ label: 'Variable', properties: expect.objectContaining({ name: '_token', declaredType: 'NSString *' }) }),
-        expect.objectContaining({ label: 'Function', properties: expect.objectContaining({ name: expect.stringMatching(/^block@/) }) }),
+        expect.objectContaining({
+          label: 'CodeElement',
+          properties: expect.objectContaining({ name: 'Store(Testing)' }),
+        }),
+        expect.objectContaining({
+          label: 'CodeElement',
+          properties: expect.objectContaining({ name: 'Store(<extension>)' }),
+        }),
+        expect.objectContaining({
+          label: 'Class',
+          properties: expect.objectContaining({ name: 'Foo' }),
+        }),
+        expect.objectContaining({
+          label: 'Class',
+          properties: expect.objectContaining({ name: 'Bar' }),
+        }),
+        expect.objectContaining({
+          label: 'Interface',
+          properties: expect.objectContaining({ name: 'Forward' }),
+        }),
+        expect.objectContaining({
+          label: 'Variable',
+          properties: expect.objectContaining({ name: '_token', declaredType: 'NSString *' }),
+        }),
+        expect.objectContaining({
+          label: 'Function',
+          properties: expect.objectContaining({ name: expect.stringMatching(/^block@/) }),
+        }),
       ]),
     );
 

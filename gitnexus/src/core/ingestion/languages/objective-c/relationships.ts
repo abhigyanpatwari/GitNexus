@@ -19,10 +19,7 @@ interface DefinitionEntry {
   readonly definition: SymbolDefinition;
 }
 
-const annotationValue = (
-  definition: SymbolDefinition,
-  prefix: string,
-): string | undefined =>
+const annotationValue = (definition: SymbolDefinition, prefix: string): string | undefined =>
   definition.annotations?.find((annotation) => annotation.startsWith(prefix))?.slice(prefix.length);
 
 const hasAnnotation = (definition: SymbolDefinition, value: string): boolean =>
@@ -76,7 +73,9 @@ function uniqueByOwner(entries: readonly DefinitionEntry[]): ReadonlyMap<string,
   return result;
 }
 
-function relationshipEmitter(graph: KnowledgeGraph): (
+function relationshipEmitter(
+  graph: KnowledgeGraph,
+): (
   type: RelationshipType,
   sourceId: string,
   targetId: string,
@@ -159,7 +158,9 @@ function matchingSourceContainer(
     if (candidate.parsed.filePath !== member.parsed.filePath) return false;
     if (ownerName(candidate.definition) !== owner) return false;
     if (isProtocolMember) {
-      return candidate.definition.type === 'Interface' && sourceRole(candidate.definition) === memberRole;
+      return (
+        candidate.definition.type === 'Interface' && sourceRole(candidate.definition) === memberRole
+      );
     }
     if (candidate.definition.type !== 'Class') return false;
     if (category !== undefined || isExtension) {
@@ -291,7 +292,9 @@ function emitSyntheticPropertyAccessors(
       concreteClass.parsed.filePath,
     );
     const annotations = [
-      ...(definition.annotations ?? []).filter((annotation) => !annotation.startsWith('objc:site:')),
+      ...(definition.annotations ?? []).filter(
+        (annotation) => !annotation.startsWith('objc:site:'),
+      ),
       'objc:site:synthesized',
     ];
     graph.addNode({
@@ -319,7 +322,9 @@ function emitSyntheticPropertyAccessors(
   }
 }
 
-function primaryPropertyDeclarations(entries: readonly DefinitionEntry[]): ReadonlyMap<string, DefinitionEntry> {
+function primaryPropertyDeclarations(
+  entries: readonly DefinitionEntry[],
+): ReadonlyMap<string, DefinitionEntry> {
   const candidates = new Map<string, DefinitionEntry | null>();
   for (const entry of entries) {
     const { definition } = entry;
@@ -372,7 +377,8 @@ function emitPropertyRuntimeState(
 
   const explicitIvars = new Set<string>();
   for (const entry of entries) {
-    if (entry.definition.type !== 'Variable' || !hasAnnotation(entry.definition, 'objc:ivar')) continue;
+    if (entry.definition.type !== 'Variable' || !hasAnnotation(entry.definition, 'objc:ivar'))
+      continue;
     const owner = ownerName(entry.definition);
     if (owner !== undefined) explicitIvars.add(`${owner}\0${simpleName(entry.definition)}`);
   }
@@ -534,7 +540,8 @@ function emitCategoryModel(
         ownerName(candidate.definition) === owner &&
         sourceScope(candidate.definition) === category,
     );
-    const hostId = host === undefined ? undefined : resolveEntry(host, nodeLookup, bySourceIdentity);
+    const hostId =
+      host === undefined ? undefined : resolveEntry(host, nodeLookup, bySourceIdentity);
     const elementId = resolveEntry(element, nodeLookup, bySourceIdentity);
     if (hostId !== undefined && elementId !== undefined) {
       emit('DECLARES', hostId, elementId, 'objective-c: category-extension');
@@ -604,7 +611,10 @@ function mirrorHeritage(
   classLinks: readonly { declarationId: string; implementationId: string }[],
   emit: ReturnType<typeof relationshipEmitter>,
 ): void {
-  const heritage = [...graph.iterRelationshipsByType('EXTENDS'), ...graph.iterRelationshipsByType('IMPLEMENTS')];
+  const heritage = [
+    ...graph.iterRelationshipsByType('EXTENDS'),
+    ...graph.iterRelationshipsByType('IMPLEMENTS'),
+  ];
   for (const link of classLinks) {
     for (const relationship of heritage) {
       if (relationship.sourceId !== link.declarationId) continue;

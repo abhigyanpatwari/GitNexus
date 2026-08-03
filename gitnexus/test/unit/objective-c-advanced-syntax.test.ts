@@ -85,10 +85,9 @@ describe('Objective-C advanced syntax captures', () => {
       declarationMatches('interface').map((match) => match['@declaration.name']?.text),
     ).toContain('Forward');
 
-    const moduleImport = emitObjectiveCScopeCaptures(
-      SOURCE,
-      'Sources/Store+Testing.m',
-    ).find((match) => match['@import.module'] !== undefined);
+    const moduleImport = emitObjectiveCScopeCaptures(SOURCE, 'Sources/Store+Testing.m').find(
+      (match) => match['@import.module'] !== undefined,
+    );
     expect(moduleImport?.['@import.source']?.text).toBe('Foundation');
 
     expect(
@@ -96,7 +95,12 @@ describe('Objective-C advanced syntax captures', () => {
         match['@declaration.name']?.text,
         match['@declaration.field-type']?.text,
       ]),
-    ).toEqual(expect.arrayContaining([['_token', 'NSString *'], ['count', 'int']]));
+    ).toEqual(
+      expect.arrayContaining([
+        ['_token', 'NSString *'],
+        ['count', 'int'],
+      ]),
+    );
 
     const properties = declarationMatches('property');
     const nameProperty = properties.find((match) => match['@declaration.name']?.text === 'name');
@@ -125,7 +129,9 @@ describe('Objective-C advanced syntax captures', () => {
     );
     expect(
       methods
-        .filter((method) => ['+currentName', '-callback', '-setCallback:'].includes(method.name ?? ''))
+        .filter((method) =>
+          ['+currentName', '-callback', '-setCallback:'].includes(method.name ?? ''),
+        )
         .every((method) => method.annotations.includes('objc:site:declaration')),
     ).toBe(true);
 
@@ -140,7 +146,8 @@ describe('Objective-C advanced syntax captures', () => {
   it('preserves advanced metadata through ParsedFile extraction', () => {
     const parsed = extractParsedFile(objectiveCProvider, SOURCE, 'Sources/Store+Testing.m');
     const category = parsed?.localDefs.find(
-      (definition) => definition.type === 'CodeElement' && definition.qualifiedName === 'Store(Testing)',
+      (definition) =>
+        definition.type === 'CodeElement' && definition.qualifiedName === 'Store(Testing)',
     );
     const classProperty = parsed?.localDefs.find(
       (definition) => definition.type === 'Property' && definition.qualifiedName === 'name',
@@ -175,7 +182,8 @@ describe('Objective-C advanced syntax captures', () => {
     );
     expect(
       parsed?.localDefs.find(
-        (definition) => definition.type === 'Property' && definition.qualifiedName === 'optionalName',
+        (definition) =>
+          definition.type === 'Property' && definition.qualifiedName === 'optionalName',
       )?.annotations,
     ).toContain('objc:protocol:optional');
     expect(

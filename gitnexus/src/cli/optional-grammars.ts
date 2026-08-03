@@ -74,9 +74,7 @@ const OPTIONAL_GRAMMARS: OptionalGrammar[] = [
 export function getOptionalGrammarExtensions(): string[] {
   return [
     ...new Set(
-      OPTIONAL_GRAMMARS.flatMap((grammar) =>
-        grammar.preflightExtensions ?? grammar.extensions,
-      ),
+      OPTIONAL_GRAMMARS.flatMap((grammar) => grammar.preflightExtensions ?? grammar.extensions),
     ),
   ];
 }

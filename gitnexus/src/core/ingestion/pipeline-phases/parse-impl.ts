@@ -520,10 +520,7 @@ export async function runChunkedParseAndResolve(
       sourceClassifications.set(f.path, classification);
       if (provider.parseStrategy === 'standalone') continue;
       if (!isLanguageAvailable(candidate.language)) {
-        skippedByLang.set(
-          candidate.language,
-          (skippedByLang.get(candidate.language) ?? 0) + 1,
-        );
+        skippedByLang.set(candidate.language, (skippedByLang.get(candidate.language) ?? 0) + 1);
         continue;
       }
     }
@@ -1056,10 +1053,7 @@ export async function runChunkedParseAndResolve(
           continue;
         }
         if (options?.pdg === true && provider.cfgVisitor === undefined) {
-          pdgUnsupportedByLang.set(
-            language,
-            (pdgUnsupportedByLang.get(language) ?? 0) + 1,
-          );
+          pdgUnsupportedByLang.set(language, (pdgUnsupportedByLang.get(language) ?? 0) + 1);
         }
         chunkFiles.push({ path: p, content, language });
       }
