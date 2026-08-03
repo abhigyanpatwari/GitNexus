@@ -18,9 +18,7 @@ function parse(source: string): Parser.Tree {
 describe('Objective-C language provider registration', () => {
   it('drops nested and unterminated protocol qualifiers without preserving markup', () => {
     expect(
-      normalizeObjectiveCType(
-        'const NSDictionary<NSString *, NSArray<NSNumber *> *> * nonnull',
-      ),
+      normalizeObjectiveCType('const NSDictionary<NSString *, NSArray<NSNumber *> *> * nonnull'),
     ).toBe('NSDictionary');
     expect(normalizeObjectiveCType('NSObject<script')).toBe('NSObject');
   });
