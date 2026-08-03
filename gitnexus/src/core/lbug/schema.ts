@@ -9,6 +9,7 @@
  *   MATCH (f:Function)-[r:CodeRelation {type: 'CALLS'}]->(g:Function) RETURN f, g
  */
 
+import { createHash } from 'crypto';
 // Import from shared package (single source of truth) — used in DDL templates below
 import { NODE_TABLES, REL_TABLE_NAME, REL_TYPES, EMBEDDING_TABLE_NAME } from 'gitnexus-shared';
 import type { NodeLabel, NodeTableName } from 'gitnexus-shared';
@@ -655,3 +656,34 @@ export const NODE_SCHEMA_QUERIES = [
 export const REL_SCHEMA_QUERIES = [RELATION_SCHEMA];
 
 export const SCHEMA_QUERIES = [...NODE_SCHEMA_QUERIES, ...REL_SCHEMA_QUERIES, EMBEDDING_SCHEMA];
+
+/**
+ * Digest of the graph DDL this build creates — the exact statements
+ * {@link runSchemaCreationQueries} (lbug-adapter.ts) executes for the node and
+ * relation tables.
+ *
+ * `INCREMENTAL_SCHEMA_VERSION` (repo-manager.ts) is a hand-picked integer that
+ * has to PREDICT whether an on-disk database was created from this build's DDL,
+ * and it has collided with `main` eight times — twice EXACTLY. The reuse gate is
+ * a strict `===`, so an exact clash is the quiet one: two builds stamp the same
+ * number over different DDL, the index reads as current, every `CREATE … TABLE`
+ * is skipped as "already exists" (suppressed in `runSchemaCreationQueries`), and
+ * the edges whose endpoint pair the live DB cannot persist are dropped by
+ * `fallbackRelationshipInserts`' bare `catch`. A wrong graph, not an error.
+ *
+ * This derives that fact instead of predicting it (#2798). It does not REPLACE
+ * the integer: most entries in the version ladder are semantic (node ids, wire
+ * formats, resolution tiers) and leave the DDL byte-identical, so both values
+ * are necessary conditions for reuse. What it buys is that two branches picking
+ * the same number no longer have to be renumbered — the fingerprint decides.
+ *
+ * {@link EMBEDDING_SCHEMA} is deliberately EXCLUDED. Its `FLOAT[N]` width comes
+ * from `GITNEXUS_EMBEDDING_DIMS` at module load, so folding it in would make
+ * this a function of the ENVIRONMENT rather than of code: two runs of the same
+ * build under different env would disagree and force alternating full rebuilds.
+ * Vector-column drift is a real but separate hazard (see cli/analyze-config.ts).
+ */
+export const SCHEMA_FINGERPRINT: string = createHash('sha256')
+  .update([...NODE_SCHEMA_QUERIES, ...REL_SCHEMA_QUERIES].join('\n'))
+  .digest('hex')
+  .slice(0, 12);
