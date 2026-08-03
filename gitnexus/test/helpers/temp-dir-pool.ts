@@ -19,6 +19,11 @@
  * would register the hook once, for whichever file imported it first).
  * Directories are registered at creation, before any seeding runs, so a
  * fixture copy or a pipeline run that throws still leaves them cleaned up.
+ *
+ * Cleanup is best-effort PER DIRECTORY — see `removeTempDirs`. Every one of the
+ * hand-rolled copies looped bare `rmSync` calls, so the first failure aborted
+ * the removal of every directory after it; consolidating them made that one
+ * loop the single point of failure for four suites.
  */
 
 import fs from 'fs';
@@ -31,6 +36,63 @@ export interface TempDirPool {
   dir(): string;
   /** A fresh temp dir seeded with a recursive copy of `fixture`. */
   fromFixture(fixture: string): string;
+}
+
+/** Removes one registered directory. A seam, so the failure path is testable. */
+export type TempDirRemover = (dir: string) => void;
+
+/** Reports one cleanup failure. A seam, for the same reason. */
+export type CleanupWarner = (message: string) => void;
+
+/**
+ * `force` suppresses only `ENOENT`. A handle a pipeline test left open on the
+ * directory surfaces on Windows as `EBUSY`/`EPERM`, which `force` does not
+ * suppress — hence `maxRetries`, Node's own mitigation for exactly that class
+ * (it retries `EBUSY`/`EMFILE`/`ENFILE`/`ENOTEMPTY`/`EPERM` with a linear
+ * backoff). The retries only ever run on the failing path.
+ *
+ * Exported so the cleanup pin can inject a failure for ONE directory while the
+ * others still go through the removal that actually ships — a proof against a
+ * stand-in `fs.rmSync` call in the test would not be one.
+ */
+export const removeTempDirRecursive: TempDirRemover = (dir) => {
+  fs.rmSync(dir, { recursive: true, force: true, maxRetries: 3, retryDelay: 50 });
+};
+
+const warnToConsole: CleanupWarner = (message) => {
+  console.warn(message);
+};
+
+/**
+ * Remove every registered directory, best-effort: one failure must not abort
+ * the removal of the directories after it.
+ *
+ * WARN — not throw, not swallow. Throwing would fail an otherwise green suite
+ * over housekeeping the OS reclaims anyway, and it would do so from `afterAll`,
+ * where it reads as a test failure and buries the real result. Swallowing is
+ * its own hazard: a systematic leak (a runner whose tmpdir keeps filling) would
+ * then be invisible, with nothing naming the suite responsible. A warning
+ * carrying the path costs nothing on the happy path, and the path's `mkdtemp`
+ * prefix is per-pool, so it names the suite that made it.
+ *
+ * Exported so the failure path can be pinned by injecting a throwing `remove`:
+ * a real `EBUSY` is not reproducible on demand, and a test that waited for one
+ * would be non-deterministic. The `afterAll` below calls exactly this function,
+ * so that pin is over the loop that actually ships.
+ */
+export function removeTempDirs(
+  dirs: readonly string[],
+  remove: TempDirRemover = removeTempDirRecursive,
+  warn: CleanupWarner = warnToConsole,
+): void {
+  for (const dir of dirs) {
+    try {
+      remove(dir);
+    } catch (error) {
+      const reason = error instanceof Error ? error.message : String(error);
+      warn(`[temp-dir-pool] could not remove ${dir}: ${reason}`);
+    }
+  }
 }
 
 /**
@@ -48,7 +110,7 @@ export function createTempDirPool(prefix: string): TempDirPool {
   };
 
   afterAll(() => {
-    for (const d of created) fs.rmSync(d, { recursive: true, force: true });
+    removeTempDirs(created);
   });
 
   return {
