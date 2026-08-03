@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { CLASS_SCHEMA } from '../../src/core/lbug/schema.js';
+import { CLASS_SCHEMA, NODE_SCHEMA_QUERIES } from '../../src/core/lbug/schema.js';
 import { getCopyQuery } from '../../src/core/lbug/lbug-adapter.js';
 import { PARSE_CACHE_VERSION } from '../../src/storage/parse-cache.js';
 import { isSpringBeanCandidateSourceFile } from '../../src/core/ingestion/frameworks/spring/bean-catalog.js';
@@ -26,6 +26,13 @@ describe('Spring Bean Class persistence schema', () => {
     expect(SPRING_AOP_FEATURE.version).toBe(1);
     expect(SPRING_BEAN_INVENTORY_FEATURE.version).toBe(2);
     expect(SPRING_CONDITIONALS_FEATURE.version).toBe(1);
+
+    // Stands in for the deleted `INCREMENTAL_SCHEMA_VERSION >= 23` floor (#2798).
+    // There's no hand-incremented counter to bump anymore — reuse now hinges on
+    // a fingerprint over the DDL set, so what needs pinning is CLASS_SCHEMA's
+    // membership in that set: an index built before `frameworkAnnotations`
+    // existed hashes differently and gets rebuilt.
+    expect(NODE_SCHEMA_QUERIES).toContain(CLASS_SCHEMA);
   });
 
   it('limits incremental drift queries to Java and Kotlin Bean source files', () => {
