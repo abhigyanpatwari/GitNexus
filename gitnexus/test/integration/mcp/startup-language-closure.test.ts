@@ -78,8 +78,18 @@ const FORBIDDEN_RE = /(^|\/)core\/ingestion\/languages\//;
  *
  * Matching the parser by its package prefix rather than a bare substring so a
  * source file that merely mentions the word cannot satisfy or trip this.
+ *
+ * The separator is `[\\/]`, matching the sibling probes' `ANY_GRAMMAR_RE` and
+ * `OPTIONAL_GRAMMAR_RE`, NOT a bare `/`. Native bindings reach the probe through
+ * the `require.cache` channel as absolute paths, and `toRepoRelativePosix` only
+ * POSIX-normalises paths INSIDE the repo root — a hoisted `node_modules` renders
+ * verbatim, so on Windows this is `…\node_modules\tree-sitter\…` and a
+ * forward-slash-only pattern silently matches nothing. This file now runs on the
+ * Windows matrix, where that would have made the parser half of the assertion
+ * vacuous. The `core/group/extractors/` half is first-party `dist/**`, always
+ * in-repo and therefore already normalised.
  */
-const FORBIDDEN_GROUP_RE = /(^|\/)core\/group\/extractors\/|(^|\/)node_modules\/tree-sitter/;
+const FORBIDDEN_GROUP_RE = /(^|\/)core\/group\/extractors\/|[\\/]node_modules[\\/]tree-sitter/;
 
 /**
  * The chain the group policy above polices, and therefore ITS non-vacuity
@@ -93,6 +103,33 @@ const FORBIDDEN_GROUP_RE = /(^|\/)core\/group\/extractors\/|(^|\/)node_modules\/
  * `test/helpers/module-load-probe.ts`.
  */
 const GROUP_ANCHOR = 'dist/core/group/service.js';
+
+/**
+ * Third instance of the same defect class, and the one this file could not see.
+ *
+ * `pdg-impact.ts` imported two format constants from `core/ingestion/cfg/emit.ts`.
+ * ESM evaluates a module to import any binding from it, so those two strings
+ * pulled the whole analyze-only CFG closure — `emit`, `reaching-defs`,
+ * `reaching-defs-graph`, `control-dependence`, `post-dominators`,
+ * `synthetic-escape`, `call-site-harvest` — into every MCP start. The constants
+ * moved to the leaf `cfg/callee-cell-format.ts`, but `emit.ts` still RE-EXPORTS
+ * them, so pointing the import back at `emit.js` typechecks identically and
+ * restores all seven modules. Neither existing policy matches
+ * `core/ingestion/cfg/`, so nothing was stopping that.
+ *
+ * Allowlist rather than a denylist of the seven: the failure mode is a module
+ * nobody has thought of yet, and a denylist only ever names the regressions
+ * already suffered. Everything here is a genuine LEAF — zero imports — which is
+ * why it can sit on the startup path at all; that is a real convention in
+ * `core/ingestion` (each file's header calls itself the one shared codec), and
+ * this is the only thing enforcing it.
+ */
+const CFG_ANCHOR = 'dist/core/ingestion/cfg/callee-cell-format.js';
+const INGESTION_CFG_RE = /(^|\/)core\/ingestion\/cfg\//;
+const CFG_LEAVES_ALLOWED: ReadonlySet<string> = new Set([
+  CFG_ANCHOR,
+  'dist/core/ingestion/cfg/reaching-def-reason-codec.js',
+]);
 
 // Observed on Node 22.18 against a clean build at the tip of this branch:
 // server.js 380 distinct modules, local-backend.js 156, cli/mcp.js 4. Treat
@@ -120,17 +157,17 @@ const GROUP_ANCHOR = 'dist/core/group/service.js';
 const ENTRIES = [
   {
     entry: 'mcp/server.js',
-    anchor: ['dist/mcp/resources.js', GROUP_ANCHOR],
+    anchor: ['dist/mcp/resources.js', GROUP_ANCHOR, CFG_ANCHOR],
     minModules: 100,
   },
   {
     entry: 'mcp/http-transport.js',
-    anchor: ['dist/mcp/server.js', GROUP_ANCHOR],
+    anchor: ['dist/mcp/server.js', GROUP_ANCHOR, CFG_ANCHOR],
     minModules: 100,
   },
   {
     entry: 'mcp/local/local-backend.js',
-    anchor: ['dist/mcp/local/pdg-impact.js', GROUP_ANCHOR],
+    anchor: ['dist/mcp/local/pdg-impact.js', GROUP_ANCHOR, CFG_ANCHOR],
     minModules: 50,
   },
   // The one row with a single anchor, because it is subject to ONE policy. Its
@@ -151,6 +188,11 @@ const ENTRIES = [
  */
 const GROUP_POLICY_ENTRIES = ENTRIES.filter((request) =>
   anchorsOf(request.anchor).includes(GROUP_ANCHOR),
+).map((request) => request.entry);
+
+/** Same derivation for the CFG-leaf policy. */
+const CFG_POLICY_ENTRIES = ENTRIES.filter((request) =>
+  anchorsOf(request.anchor).includes(CFG_ANCHOR),
 ).map((request) => request.entry);
 
 describe('MCP startup module-load closure (#2802)', () => {
@@ -187,16 +229,48 @@ describe('MCP startup module-load closure (#2802)', () => {
     },
   );
 
-  // Pins the derivation above: if a future edit drops `GROUP_ANCHOR` from every
-  // entry, `GROUP_POLICY_ENTRIES` empties and the `it.each` below silently
-  // registers zero cases — a whole policy disappearing without one red test.
-  it('runs the group policy over exactly the entries that reach core/group/service.js', () => {
-    expect(GROUP_POLICY_ENTRIES).toEqual([
-      'mcp/server.js',
-      'mcp/http-transport.js',
-      'mcp/local/local-backend.js',
-    ]);
+  // Pins the two derivations above. The risk each guards is a policy going
+  // SILENT, not its exact membership: drop an anchor from every entry and the
+  // derived list empties, so the `it.each` registers zero cases and the whole
+  // policy disappears without one red test. Asserting non-emptiness catches
+  // exactly that; asserting the literal list would reinstate, one layer down,
+  // the hand-maintained list the derivation exists to remove — every entry
+  // added or removed would then need editing in two places.
+  //
+  // `cli/mcp.js` is pinned OUT of both policies deliberately. It is a 4-module
+  // leaf closure that cannot reach either policed chain, so listing it would
+  // give each policy a row that cannot fail — the vacuity this file exists to
+  // prevent. That exclusion is a real property, so it is asserted rather than
+  // left to the comment above.
+  it.each([
+    ['group', GROUP_POLICY_ENTRIES],
+    ['cfg-leaf', CFG_POLICY_ENTRIES],
+  ])('the %s policy runs over a non-empty entry set that excludes cli/mcp.js', (_name, entries) => {
+    expect(entries.length).toBeGreaterThan(0);
+    expect(entries).not.toContain('cli/mcp.js');
   });
+
+  // The #2802 defect class, third instance: an analyze-only closure reached
+  // through a constant. Allowlist, not denylist — see CFG_LEAVES_ALLOWED.
+  it.each(CFG_POLICY_ENTRIES)(
+    'importing dist/%s loads no non-leaf core/ingestion/cfg module',
+    (entry) => {
+      const probe = probes.get(entry);
+      const offenders = probe
+        .matching(INGESTION_CFG_RE)
+        .filter((module) => !CFG_LEAVES_ALLOWED.has(module));
+
+      expect(
+        offenders,
+        `${probe.label} eagerly loads analyze-only CFG modules. ESM evaluates a ` +
+          `module to import ANY binding from it, so importing a constant from ` +
+          `\`cfg/emit.js\` drags its whole closure onto startup — take format ` +
+          `constants from the leaf \`cfg/callee-cell-format.js\` instead, and add ` +
+          `a new module here only if it genuinely imports nothing (see #2802). ` +
+          `Offending modules:\n${offenders.join('\n')}`,
+      ).toEqual([]);
+    },
+  );
 
   it.each(GROUP_POLICY_ENTRIES)(
     'importing dist/%s loads no group contract extractor or native parser',

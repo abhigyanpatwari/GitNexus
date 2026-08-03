@@ -587,11 +587,30 @@ export type PdgImpactEvidence =
  *    `parseCalleeIdsCell` strips the sentinel, so the dropped ids are invisible to
  *    BOTH the summary scan and the counters.
  *  - `'callee-ids-unrecorded'` — a slice block records CALL SITES (a non-empty
- *    `callees` name cell) but NO resolved callee ids. The emitter writes an empty
- *    `calleeIds` cell for a whole file whose resolved-id map is absent, and an
- *    empty cell carries no sentinel, so those call sites are invisible to the
- *    summary scan without raising `'callee-list-capped'`. Distinct from the cap:
- *    nothing was dropped at emit — the ids were never recorded.
+ *    `callees` name cell) but NO resolved callee ids. An empty `calleeIds` cell
+ *    carries no sentinel, so those call sites are invisible to the summary scan
+ *    without raising `'callee-list-capped'`. Distinct from the cap: nothing was
+ *    dropped at emit — the ids were never recorded.
+ *
+ *    THREE producer paths yield it, and the consumer cannot tell them apart —
+ *    do not read this code as naming any one of them (`cfg/emit.ts`,
+ *    `calleeIdsOfBlock`):
+ *      1. the file's resolved-id map is absent entirely (`fileMap === undefined`);
+ *      2. a call site has no position anchor;
+ *      3. a call site's position IS in the map but did not RESOLVE.
+ *    (3) is the ordinary one — it is exactly the receiver-resolution gaps this
+ *    repo pins (e.g. #2807's inference-typed field receivers, where `calleeIds`
+ *    empties while `calleesOfBlock` still writes the leaf names). So on a real
+ *    index this fires broadly and is driven by resolution quality, NOT by a
+ *    missing `--pdg` layer: "re-run analyze --pdg" is the wrong remedy for it,
+ *    and `examinedComplete: false` here is a statement about how much of the
+ *    call graph resolved, not about the traversal giving up.
+ *
+ *    Consequence worth knowing before branching on it: because (3) is common,
+ *    `examinedComplete: true` is the strong, rare signal and `false` is close to
+ *    the default on a large repo. Distinguishing the three needs a marker at
+ *    emit time, which would move the persisted cell format — deliberately out of
+ *    scope here, and tracked separately.
  */
 export type PdgAscentIncompleteReason =
   | 'traversal-truncated'
@@ -1763,7 +1782,14 @@ async function calleeIdsByBlock(
     // Ids absent while NAMES are present ⇒ recorded call sites with no resolved
     // id. Gated on `!truncated` so a capped-to-nothing cell keeps reporting the
     // cap (the more specific mechanism) rather than both.
-    if (calleeIds.length === 0 && !truncated && String(r['callees'] ?? '').trim().length > 0) {
+    // `!idlessCallSites` first: the flag is sticky, so once it is set the string
+    // allocation below is pure waste on every remaining row of every later hop.
+    if (
+      !idlessCallSites &&
+      calleeIds.length === 0 &&
+      !truncated &&
+      String(r['callees'] ?? '').trim().length > 0
+    ) {
       idlessCallSites = true;
     }
     if (calleeIds.length > 0) out.push({ blockId, calleeIds });

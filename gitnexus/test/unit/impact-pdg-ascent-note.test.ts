@@ -856,11 +856,11 @@ describe('runImpactPDG — structured ascent coverage (pdgEvidence.ascent)', () 
   it('a block reached only by the ascent contributes its call sites to the scan', async () => {
     const cell = {
       ascentBlockCallees: [hiddenCalleeId(FILE)],
-      ascentBlockCell: 'idless',
+      ascentBlockCell: 'capped',
     } as const;
     const [ascended, withheld] = await Promise.all([
-      run(FILE, { maxDepth: 1, summary: flow([0]), ...cell, ascentBlockCell: 'capped' }),
-      run(FILE, { maxDepth: 1, ...cell, ascentBlockCell: 'capped' }),
+      run(FILE, { maxDepth: 1, summary: flow([0]), ...cell }),
+      run(FILE, { maxDepth: 1, ...cell }),
     ]);
     // Premise: the block below is in the slice ONLY because the ascent fired —
     // withhold the return-flow and it is gone.

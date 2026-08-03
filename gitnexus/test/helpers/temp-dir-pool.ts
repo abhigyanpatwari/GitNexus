@@ -30,6 +30,7 @@ import fs from 'fs';
 import os from 'os';
 import path from 'path';
 import { afterAll } from 'vitest';
+import { cleanupTempDirSync } from './test-db.js';
 
 export interface TempDirPool {
   /** A fresh empty temp dir, registered for cleanup. Seed it yourself. */
@@ -42,26 +43,31 @@ export interface TempDirPool {
 export type TempDirRemover = (dir: string) => void;
 
 /** Reports one cleanup failure. A seam, for the same reason. */
-export type CleanupWarner = (message: string) => void;
+type CleanupWarner = (message: string) => void;
 
 /**
- * `force` suppresses only `ENOENT`. A handle a pipeline test left open on the
- * directory surfaces on Windows as `EBUSY`/`EPERM`, which `force` does not
- * suppress — hence `maxRetries`, Node's own mitigation for exactly that class
- * (it retries `EBUSY`/`EMFILE`/`ENFILE`/`ENOTEMPTY`/`EPERM` with a linear
- * backoff). The retries only ever run on the failing path.
+ * Delegates to `cleanupTempDirSync`, the repo's existing Windows-lock-aware
+ * remover — do NOT re-roll `fs.rmSync` here. It already encodes the whole
+ * problem this pool hit: `force` suppresses only `ENOENT`, while a handle a
+ * pipeline test left open surfaces as `EBUSY`/`EPERM`, so it retries 5× with a
+ * 100–400 ms backoff and then swallows exactly the Windows lock codes and
+ * `ENOTEMPTY` — rethrowing anything else, so a genuine bug still surfaces
+ * through `removeTempDirs`' per-directory catch below.
+ *
+ * A second copy here had already drifted from it on both knobs that matter
+ * (3 retries at 50 ms, and warn-on-everything), which is how one half of the
+ * suite ends up green-with-a-warning on the same `EBUSY` the other half fails on.
  *
  * Exported so the cleanup pin can inject a failure for ONE directory while the
  * others still go through the removal that actually ships — a proof against a
  * stand-in `fs.rmSync` call in the test would not be one.
  */
 export const removeTempDirRecursive: TempDirRemover = (dir) => {
-  fs.rmSync(dir, { recursive: true, force: true, maxRetries: 3, retryDelay: 50 });
+  cleanupTempDirSync(dir);
 };
 
-const warnToConsole: CleanupWarner = (message) => {
-  console.warn(message);
-};
+// Node's console methods are bound, so this can be the default directly.
+const warnToConsole: CleanupWarner = console.warn;
 
 /**
  * Remove every registered directory, best-effort: one failure must not abort

@@ -74,16 +74,6 @@ const END = '<<<END_GITNEXUS_PROBE>>>';
  */
 const PROBE_TIMEOUT_MS = 60_000;
 
-/**
- * Grace between `spawn`'s own timeout SIGTERM and an unconditional SIGKILL.
- * `spawn({ timeout })` signals ONCE; a child wedged inside synchronous native
- * code (a grammar binding's init, an addon `dlopen`) never reaches a point
- * where it can handle the signal, so without escalation it is orphaned rather
- * than reaped and the vitest worker waits on a dead probe. Nothing asserts on
- * either duration — both are wedge-breakers.
- */
-const PROBE_KILL_GRACE_MS = 5_000;
-
 const PROBE_SOURCE = `
   import { createRequire, registerHooks } from 'node:module';
 
@@ -236,14 +226,12 @@ function spawnProbe(targetUrl: string, extraEnv: Readonly<Record<string, string>
       // exists to make impossible.
       env: { ...process.env, NODE_OPTIONS: '', ...extraEnv, PROBE_TARGET: targetUrl },
       timeout: PROBE_TIMEOUT_MS,
+      // SIGKILL rather than the default SIGTERM, which is catchable and
+      // ignorable — a child wedged in synchronous native code (the failure this
+      // guards) would survive it. Same reasoning as `lbug-config.ts`'s spawn.
+      // Node's own `timeout` delivers this, so no second timer to keep in step.
+      killSignal: 'SIGKILL',
     });
-    // `timeout` above sends a single SIGTERM. Escalate unconditionally so a
-    // child stuck in synchronous native code is reaped rather than orphaned.
-    // `unref` keeps a healthy sub-second probe from holding the event loop.
-    const escalate = setTimeout(() => {
-      child.kill('SIGKILL');
-    }, PROBE_TIMEOUT_MS + PROBE_KILL_GRACE_MS);
-    escalate.unref();
     let stdout = '';
     let stderr = '';
     child.stdout.setEncoding('utf8');
@@ -255,11 +243,9 @@ function spawnProbe(targetUrl: string, extraEnv: Readonly<Record<string, string>
       stderr += chunk;
     });
     child.on('error', (error) => {
-      clearTimeout(escalate);
       reject(error);
     });
     child.on('close', (status, signal) => {
-      clearTimeout(escalate);
       resolve({ status, signal, stdout, stderr });
     });
   });

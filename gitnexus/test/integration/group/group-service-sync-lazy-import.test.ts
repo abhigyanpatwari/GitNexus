@@ -32,6 +32,7 @@ import { createTempDirPool } from '../../helpers/temp-dir-pool.js';
 import { makeGroupToolPort } from '../../unit/group/fixtures.js';
 import { GroupService } from '../../../src/core/group/service.js';
 import { readContractRegistry } from '../../../src/core/group/storage.js';
+import { causeChain } from '../../../src/lib/utils.js';
 
 const tempDirs = createTempDirPool('gn-group-lazy-sync-');
 
@@ -90,15 +91,11 @@ matching:
  * assertion about the failure that happened, not about how vitest wraps it.
  */
 function errorChainText(err: unknown): string {
-  const messages: string[] = [];
-  const seen = new Set<unknown>();
-  let current: unknown = err;
-  while (current instanceof Error && !seen.has(current)) {
-    seen.add(current);
-    messages.push(current.message);
-    current = current.cause;
-  }
-  return messages.join(' | ');
+  // `causeChain` is the repo's single cause-chain traversal — its own doc asks
+  // callers not to re-roll the loop, because every hand-rolled copy re-decides
+  // the bound and they disagree. Its default depth is 5; real chains here are
+  // the runner's wrapper plus the original, so 2.
+  return [...causeChain(err)].map((link) => link.message).join(' | ');
 }
 
 /**
