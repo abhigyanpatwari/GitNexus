@@ -82,17 +82,13 @@ That's it. `analyze` indexes the codebase, installs agent skills, registers Clau
 
 ### Deploy to Render
 
+Deploy GitNexus in one click:
+
 [![Deploy to Render](https://render.com/images/deploy-to-render-button.svg)](https://render.com/deploy?repo=https://github.com/abhigyanpatwari/GitNexus)
 
-Render reads [`render.yaml`](render.yaml) and provisions the API server, a
-persistent disk for indexes and cloned repos, and the web UI pointed at it. No
-API key needed, no secret committed; the instance and disk are paid. Indexing is
-memory-bound, so if `gitnexus-server` runs out of memory on a large repo, raise
-its `plan` and `sizeGB`.
+Render provisions the API server, a persistent disk for indexes and cloned repos, and the web UI pointed at it, with no API keys required.
 
-The deploy is **unauthenticated**, and `onrender.com` hostnames appear in
-certificate transparency logs. Treat the URL as public: anyone who finds it can
-index and delete repos, and use `AZURE_DEVOPS_PAT` if you set one.
+Indexing is memory-bound, so if `gitnexus-server` runs out of memory on a large repo, raise its `plan` and `sizeGB`.
 
 ## Two Ways to Use GitNexus
 
