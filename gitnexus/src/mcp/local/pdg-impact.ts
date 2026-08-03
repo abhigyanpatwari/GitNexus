@@ -10,7 +10,15 @@ import path from 'path';
 import type { executeParameterized } from '../../core/lbug/pool-adapter.js';
 import { loadMeta } from '../../storage/repo-manager.js';
 import { IMPACT_MAX_DEPTH, PDG_QUERY_DEFAULT_LIMIT, PDG_QUERY_MAX_LIMIT } from '../tools.js';
-import { CALLEES_TRUNCATED_SENTINEL, CALLEE_ID_SEP } from '../../core/ingestion/cfg/emit.js';
+// Imported from the LEAF `callee-cell-format.js`, NOT from `cfg/emit.js` which
+// re-exports them: ESM evaluates a module to import any binding from it, and
+// `emit.ts` drags the analyze-only CFG closure (reaching-defs, control-
+// dependence, post-dominators, synthetic-escape, call-site-harvest) with it —
+// 8 modules on every MCP server start, to read two strings (#2802 review).
+import {
+  CALLEES_TRUNCATED_SENTINEL,
+  CALLEE_ID_SEP,
+} from '../../core/ingestion/cfg/callee-cell-format.js';
 import { toDisplayLine } from './line-display.js';
 import { decodeCallSummary } from '../../core/ingestion/taint/call-summary-codec.js';
 import { decodeReachingDefReason } from '../../core/ingestion/cfg/reaching-def-reason-codec.js';
