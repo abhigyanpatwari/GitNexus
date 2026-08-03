@@ -5,9 +5,16 @@
  * these tests each run against a throwaway copy of a fixture. Every consumer
  * had hand-rolled the SAME three parts — a `string[]` of created dirs, a
  * `mkdtempSync` that pushes onto it, and an `afterAll` that `rmSync`s the lot.
- * Extracted at the fourth consumer (`pipeline-pdg`, `pipeline-pdg-streaming`,
- * `interproc-taint`, `pdg-chained-receiver-callees`); the copies had already
- * drifted — `pipeline-pdg` registered two cleanup hooks over one array.
+ * Extracted at the fourth consumer on the branch it came from (`pipeline-pdg`,
+ * `pipeline-pdg-streaming`, `interproc-taint`, `pdg-chained-receiver-callees`),
+ * where the copies had already drifted — `pipeline-pdg` registered two cleanup
+ * hooks over one array.
+ *
+ * ON THIS BRANCH it arrives with exactly ONE consumer,
+ * `pdg-chained-receiver-callees`, which is the only file here that needs it; the
+ * other three still hand-roll their own cleanup and convert on #2802. The file
+ * is byte-identical to that branch's copy on purpose, so if both land the add
+ * resolves as a duplicate rather than a divergence.
  *
  * Only the LIFECYCLE is shared, deliberately: seeding differs per test (a
  * recursive fixture copy, a single file, an inline-written source, or nothing

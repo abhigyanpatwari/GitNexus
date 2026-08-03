@@ -23,6 +23,7 @@ import type {
   TypeRef,
   CaptureMatch,
 } from 'gitnexus-shared';
+import { walkToScope } from '../typescript/simple-hooks.js';
 
 export function dartBindingScopeFor(
   decl: CaptureMatch,
@@ -47,13 +48,7 @@ export function dartBindingScopeFor(
   // looks (#2807). Gated on the dedicated marker, never on
   // `@type-binding.constructor` at large, which also fires for genuine locals.
   if (decl['@type-binding.dart-field'] !== undefined) {
-    let cur: Scope | undefined = innermost;
-    while (cur !== undefined) {
-      if (cur.kind === 'Class') return cur.id;
-      if (cur.parent === null) break;
-      cur = tree.getScope(cur.parent);
-    }
-    return null;
+    return walkToScope(innermost, tree, 'Class');
   }
 
   // (2) Function/method/constructor names are visible in the enclosing scope.

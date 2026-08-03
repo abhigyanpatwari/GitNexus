@@ -272,6 +272,17 @@ class AssignedField {
     return r.inner().compute(x);
   }
 }
+
+class ShadowedAssignedField {
+  var s;
+  ShadowedAssignedField() {
+    var s;
+    s = Outer();
+  }
+  int run(int x) {
+    return s.inner().compute(x);
+  }
+}
 `;
 
 // ── Swift ────────────────────────────────────────────────────────────────────
@@ -499,6 +510,20 @@ const CASES: readonly LanguageCase[] = [
         callerId: `Method:${DART_FILE}:AssignedField.run#1`,
         targets: [`Method:${DART_FILE}:Outer.inner#0`],
         status: 'resolves',
+      },
+      // The shadowing guard, asserted rather than asserted-in-a-comment. Dart
+      // writes a field with no receiver prefix, so `s = Outer()` is
+      // syntactically identical to assigning a constructor-local. Here the
+      // constructor declares its OWN `var s`, so the write targets that local
+      // and the FIELD must stay untyped — `run` reads the field and must
+      // therefore resolve nothing. Without the `locals.has(...)` guard in
+      // `emitDartFieldAssignmentBindings` this row goes green with a WRONG edge,
+      // which is the failure mode the guard exists to prevent.
+      {
+        name: 'shadowed-assigned-field',
+        callerId: `Method:${DART_FILE}:ShadowedAssignedField.run#1`,
+        targets: [],
+        status: 'known-gap',
       },
     ],
   },

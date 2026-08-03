@@ -574,7 +574,13 @@ const TRANSPARENT_RECEIVER_WRAPPERS = new Set([
  * type-preserving.
  */
 const OPERATOR_GATED_RECEIVER_WRAPPERS = new Map<string, string>([
-  ['postfix_expression', '!'], // Swift `self.a!`
+  // NOT Swift-only: Kotlin's `!!` non-null assertion parses as the same node type
+  // and is equally type-preserving, so it is peeled too. Measured — the
+  // receiver-resolution bench moved `kotlin.nonNullAssert` VISIBLE-GAP ->
+  // RESOLVES when this landed, which is how the Kotlin effect was discovered
+  // rather than assumed. Any other grammar emitting `postfix_expression` is
+  // affected as well; the `!` gate, not the language, is what bounds this.
+  ['postfix_expression', '!'], // Swift `self.a!`, Kotlin `a!!`
 ]);
 
 /** Is `node` a wrapper that denotes exactly what its operand denotes? */
