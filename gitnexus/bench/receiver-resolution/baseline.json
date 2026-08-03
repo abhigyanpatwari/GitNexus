@@ -1,0 +1,44 @@
+{
+  "shapeArm": {
+    "typescript": {
+      "plainChain": "RESOLVES",
+      "plainDeepChain": "RESOLVES",
+      "optionalChain": "RESOLVES",
+      "nonNullAssert": "RESOLVES",
+      "awaitParen": "VISIBLE-GAP",
+      "explicitTypeArgs": "RESOLVES",
+      "indexElement": "INVISIBLE-GAP"
+    },
+    "php": {
+      "arrowCallChain": "INVISIBLE-GAP",
+      "arrowPropertyPath": "RESOLVES"
+    },
+    "cpp": {
+      "pointerArrowChain": "RESOLVES",
+      "valueDotChain": "RESOLVES"
+    }
+  },
+  "countArm": {
+    "callDrops": 100,
+    "totalDropsAllKinds": 127,
+    "bySiteKind": {
+      "call": 100,
+      "read": 27
+    },
+    "callDropsByExtension": {
+      ".java": 48,
+      ".cs": 8,
+      ".ts": 7,
+      ".cpp": 7,
+      ".tsx": 6,
+      ".py": 5,
+      ".go": 5,
+      ".php": 4,
+      ".rs": 3,
+      ".kt": 3,
+      ".rb": 2,
+      ".js": 1,
+      ".swift": 1
+    }
+  }
+}
