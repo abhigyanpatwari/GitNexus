@@ -3,6 +3,7 @@ import { describe, expect, it } from 'vitest';
 import { SupportedLanguages } from 'gitnexus-shared';
 
 import { getProvider, getProviderForFile } from '../../src/core/ingestion/languages/index.js';
+import { normalizeObjectiveCType } from '../../src/core/ingestion/languages/objective-c/interpret.js';
 import { OBJECTIVE_C_QUERIES } from '../../src/core/ingestion/tree-sitter-queries.js';
 import { getLanguageGrammar } from '../../src/core/tree-sitter/parser-loader.js';
 
@@ -15,6 +16,15 @@ function parse(source: string): Parser.Tree {
 }
 
 describe('Objective-C language provider registration', () => {
+  it('drops nested and unterminated protocol qualifiers without preserving markup', () => {
+    expect(
+      normalizeObjectiveCType(
+        'const NSDictionary<NSString *, NSArray<NSNumber *> *> * nonnull',
+      ),
+    ).toBe('NSDictionary');
+    expect(normalizeObjectiveCType('NSObject<script')).toBe('NSObject');
+  });
+
   it('registers .m without stealing ambiguous .h from filename fallback', () => {
     const provider = getProvider(SupportedLanguages.ObjectiveC);
     expect(provider.id).toBe(SupportedLanguages.ObjectiveC);
