@@ -685,11 +685,12 @@ export function emitObjectiveCScopeCaptures(
         callNode,
         String(call.arity),
       );
-      if (subscript !== null) {
+      const candidateNames = message?.candidateNames ?? subscript?.candidateNames;
+      if (candidateNames !== undefined) {
         grouped['@reference.candidate-names'] = syntheticCapture(
           '@reference.candidate-names',
           callNode,
-          JSON.stringify(subscript.candidateNames),
+          JSON.stringify(candidateNames),
         );
       }
     }

@@ -61,21 +61,45 @@ describe('Objective-C selector normalization', () => {
     expect(extractObjectiveCMessageSend(messages[0])).toEqual({
       selector: 'save:completion:',
       signedSelector: '-save:completion:',
+      candidateNames: ['-save:completion:', '+save:completion:'],
       receiver: 'service',
       kind: 'instance',
       arity: 2,
     });
     expect(extractObjectiveCMessageSend(messages[1])).toMatchObject({
-      signedSelector: '+shared',
+      signedSelector: '-shared',
+      candidateNames: ['-shared', '+shared'],
       receiver: 'Store',
-      kind: 'class',
+      kind: 'instance',
       arity: 0,
     });
     expect(extractObjectiveCMessageSend(messages[2])).toMatchObject({
       signedSelector: '+shared',
+      candidateNames: ['+shared'],
       receiver: 'self',
       kind: 'class',
       arity: 0,
+    });
+  });
+
+  it('keeps both dispatch candidates for a receiver whose type is not lexical', () => {
+    const tree = parse(`
+      @implementation Store
+      - (void)run {
+        [lowercaseReceiver work];
+        [UppercaseReceiver work];
+      }
+      @end
+    `);
+    const messages = tree.rootNode.descendantsOfType('message_expression');
+
+    expect(extractObjectiveCMessageSend(messages[0])).toMatchObject({
+      selector: 'work',
+      candidateNames: ['-work', '+work'],
+    });
+    expect(extractObjectiveCMessageSend(messages[1])).toMatchObject({
+      selector: 'work',
+      candidateNames: ['-work', '+work'],
     });
   });
 });

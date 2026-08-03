@@ -19,6 +19,7 @@ export interface ObjectiveCMethodSignature {
 export interface ObjectiveCMessageSend {
   readonly selector: string;
   readonly signedSelector: string;
+  readonly candidateNames: readonly string[];
   readonly receiver: string;
   readonly kind: ObjectiveCMethodKind;
   readonly arity: number;
@@ -110,7 +111,7 @@ function messageKind(node: SyntaxNode, receiver: string): ObjectiveCMethodKind {
   if (receiver === 'self' || receiver === 'super') {
     return enclosingMethodKind(node) ?? 'instance';
   }
-  return /^[A-Z]/.test(receiver) ? 'class' : 'instance';
+  return 'instance';
 }
 
 /** Normalize a message expression into the same signed selector used by definitions. */
@@ -130,9 +131,14 @@ export function extractObjectiveCMessageSend(node: SyntaxNode): ObjectiveCMessag
 
   const selector = arity === 0 ? selectorPieces[0] : `${selectorPieces.join(':')}:`;
   const kind = messageKind(node, receiver);
+  const candidateNames =
+    receiver === 'self' || receiver === 'super'
+      ? [signed(selector, kind)]
+      : [signed(selector, 'instance'), signed(selector, 'class')];
   return {
     selector,
     signedSelector: signed(selector, kind),
+    candidateNames,
     receiver,
     kind,
     arity,
