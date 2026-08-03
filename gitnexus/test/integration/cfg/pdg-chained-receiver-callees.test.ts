@@ -47,11 +47,11 @@
  * fixture is shared by eight suites including a snapshot test, so growing it to
  * cover one seam churns unrelated expectations.
  */
-import { describe, it, expect, beforeAll, afterAll } from 'vitest';
+import { describe, it, expect, beforeAll } from 'vitest';
 import fs from 'fs';
-import os from 'os';
 import path from 'path';
 import { runPipelineFromRepo } from '../../../src/core/ingestion/pipeline.js';
+import { createTempDirPool } from '../../helpers/temp-dir-pool.js';
 // The PRODUCTION reader of the cell: splits on `CALLEE_ID_SEP`
 // (src/core/ingestion/cfg/emit.ts) and drops the truncation sentinel. Both the
 // statement-precise bridge and the inter-procedural descent go through it, so
@@ -225,7 +225,7 @@ interface BlockCell {
   readonly ids: readonly string[];
 }
 
-const tmpDirs: string[] = [];
+const repos = createTempDirPool('gn-pdg-chain-');
 let blocks: readonly BlockCell[] = [];
 
 function blocksFor(marker: string): readonly BlockCell[] {
@@ -251,10 +251,9 @@ function assertChainReachesPdg(shape: ReceiverShape): void {
 
 describe('PDG calleeIds — chained receiver calls by receiver form (#2802 follow-up)', () => {
   beforeAll(async () => {
-    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'gn-pdg-chain-'));
+    const dir = repos.dir();
     fs.mkdirSync(path.join(dir, path.dirname(FIXTURE_PATH)));
     fs.writeFileSync(path.join(dir, FIXTURE_PATH), CHAINED_SOURCE);
-    tmpDirs.push(dir);
 
     const result = await runPipelineFromRepo(dir, () => {}, { pdg: true });
     const collected: BlockCell[] = [];
@@ -267,10 +266,6 @@ describe('PDG calleeIds — chained receiver calls by receiver form (#2802 follo
     });
     blocks = collected;
   }, 180000);
-
-  afterAll(() => {
-    for (const d of tmpDirs) fs.rmSync(d, { recursive: true, force: true });
-  });
 
   it('every receiver shape contributes exactly one chained-call block', () => {
     const counts = Object.fromEntries(
