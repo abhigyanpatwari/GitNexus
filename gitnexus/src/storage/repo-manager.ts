@@ -216,6 +216,29 @@ export interface RepoMeta {
    */
   schemaVersion?: number;
   /**
+   * Digest of the graph DDL this index's tables were actually created from
+   * (`SCHEMA_FINGERPRINT`, core/lbug/schema.ts) — the DERIVED half of the
+   * reuse gate (#2798).
+   *
+   * `schemaVersion` above is hand-picked, so it can only PREDICT whether an
+   * on-disk database matches this build's DDL, and it has clashed EXACTLY with
+   * a concurrently-merged branch twice. Both values are compared, and both must
+   * match: the integer still carries the many ladder entries that change
+   * emitted content with the DDL byte-identical (node ids, wire formats,
+   * resolution tiers), while this catches same-number/different-DDL — which is
+   * why colliding branches no longer need renumbering.
+   *
+   * ABSENT ≡ mismatch, not "assume fine". Grandfathering absence would let an
+   * incremental top-up stamp a fresh fingerprint onto a database whose DDL was
+   * never verified, permanently certifying exactly the index this field exists
+   * to catch. The cost is one full rebuild per pre-#2798 index, once.
+   *
+   * Stamped only for git repos, like `schemaVersion` — non-git repos never take
+   * the incremental path. Declared as a plain string rather than importing the
+   * constant, keeping storage/ free of a core/ dependency (see `capabilities`).
+   */
+  schemaFingerprint?: string;
+  /**
    * Exact versions of independently-gated analysis capabilities produced by
    * the successful run. Unlike schemaVersion, these may apply only to repos
    * containing relevant source files.
@@ -738,6 +761,21 @@ export interface RepoMeta {
  * inheritance / import surface, which no label predicate describes and which a
  * corpus test guards instead. A pre-v35 database physically lacks all of these
  * from-to pairs, so force a full re-analyze.
+ *
+ * ── The pre-merge re-check is now HALF as load-bearing (#2798) ──
+ * Every note above ending "re-check against origin/main before merge" was
+ * written because this number is the only thing standing between a colliding
+ * branch and a silently-reused, wrong-shaped index. That is no longer true for
+ * DDL changes: `RepoMeta.schemaFingerprint` records a digest of the actual DDL
+ * (`SCHEMA_FINGERPRINT`, core/lbug/schema.ts) and is compared ALONGSIDE this
+ * number, so two branches that pick the same value over different DDL are
+ * detected regardless — no renumbering needed when that happens again.
+ *
+ * The re-check still matters for SEMANTIC bumps — v25, v26, v30, v31 and v34
+ * above all changed emitted node ids, edges or wire formats while leaving the
+ * DDL byte-identical, and the fingerprint cannot see any of them. If your bump
+ * changes what is emitted rather than what is declared, this number is still
+ * the only defence: check it against origin/main immediately before merging.
  */
 export const INCREMENTAL_SCHEMA_VERSION = 35;
 
