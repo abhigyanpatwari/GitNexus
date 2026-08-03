@@ -28,6 +28,13 @@ export function rubyBindingScopeFor(
   // Gated on the marker that pattern emits, never on `@type-binding.constructor`
   // at large: that capture also fires for `x = Foo.new` locals, and hoisting
   // those to the class would leak a method local into every sibling method.
+  //
+  // Reaching this hook already means the write is an INSTANCE write. `Capture`
+  // carries only name/range/text — no AST node — so this hook cannot ask whose
+  // `self` owns the ivar; `isRubyInstanceIvarWrite` (captures.ts) answers that
+  // upstream and discards the binding entirely when `self` is the class object
+  // (`def self.x`, `class << self`, or the class body), which never reaches an
+  // instance and must not be published as an instance field.
   if (decl['@type-binding.ivar-field'] !== undefined) {
     return walkToScope(innermost, tree, 'Class');
   }

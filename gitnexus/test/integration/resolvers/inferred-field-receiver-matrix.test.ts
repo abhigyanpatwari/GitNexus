@@ -186,6 +186,60 @@ class AssignedField
     @q.inner.compute(x)
   end
 end
+
+class SingletonMethodSelfField
+  def self.build
+    @pool = Outer.new
+  end
+
+  def initialize
+    @q = Outer.new
+  end
+
+  def run_self_ivar(x)
+    @pool.inner.compute(x)
+  end
+
+  def run(x)
+    @q.inner.compute(x)
+  end
+end
+
+class SingletonClassSelfField
+  class << self
+    def build
+      @cache = Outer.new
+    end
+  end
+
+  def initialize
+    @q = Outer.new
+  end
+
+  def run_self_ivar(x)
+    @cache.inner.compute(x)
+  end
+
+  def run(x)
+    @q.inner.compute(x)
+  end
+end
+
+class ClassBodySelfField
+  @shared = Outer.new
+
+  def initialize
+    @q = Outer.new
+  end
+
+  def run_self_ivar(x)
+    @shared.inner.compute(x)
+  end
+
+  def run(x)
+    @q.inner.compute(x)
+  end
+end
 `;
 
 // ── Kotlin ───────────────────────────────────────────────────────────────────
@@ -502,6 +556,59 @@ const CASES: readonly LanguageCase[] = [
       {
         name: 'assigned-field',
         callerId: `Method:${RB_FILE}:AssignedField.run#1`,
+        targets: [`Method:${RB_FILE}:Inner.compute#1`, `Method:${RB_FILE}:Outer.inner#0`],
+        status: 'resolves',
+      },
+      // ── An `@ivar` is only an INSTANCE field when `self` is an instance ────
+      //
+      // The three `*-self-ivar` rows below all write `@x = Outer.new` where
+      // Ruby's `self` is the CLASS object, not an instance: inside
+      // `def self.build`, inside a `class << self` body, and directly in the
+      // class body. None of those ivars exists on an instance, so an instance
+      // method reading them reads `nil` and must resolve NOTHING. Hoisting the
+      // binding to the Class scope regardless of whose `self` owns it fabricated
+      // an `Outer.inner` edge from a receiver that is never assigned.
+      //
+      // Each is PAIRED with an `*-instance-ivar` row on the SAME class that
+      // writes `@q` from `initialize` and must still resolve both links. The
+      // pairing is what keeps the empty rows honest: an empty expectation passes
+      // vacuously if the fixture never reached the ivar-field machinery at all,
+      // so the partner row asserts a NON-empty result through the very same
+      // class. Break the hoist entirely and the partner goes red; keep the
+      // unconditional hoist and the empty row goes red.
+      {
+        name: 'singleton-method-self-ivar',
+        callerId: `Method:${RB_FILE}:SingletonMethodSelfField.run_self_ivar#1`,
+        targets: [],
+        status: 'known-gap',
+      },
+      {
+        name: 'singleton-method-instance-ivar',
+        callerId: `Method:${RB_FILE}:SingletonMethodSelfField.run#1`,
+        targets: [`Method:${RB_FILE}:Inner.compute#1`, `Method:${RB_FILE}:Outer.inner#0`],
+        status: 'resolves',
+      },
+      {
+        name: 'singleton-class-self-ivar',
+        callerId: `Method:${RB_FILE}:SingletonClassSelfField.run_self_ivar#1`,
+        targets: [],
+        status: 'known-gap',
+      },
+      {
+        name: 'singleton-class-instance-ivar',
+        callerId: `Method:${RB_FILE}:SingletonClassSelfField.run#1`,
+        targets: [`Method:${RB_FILE}:Inner.compute#1`, `Method:${RB_FILE}:Outer.inner#0`],
+        status: 'resolves',
+      },
+      {
+        name: 'class-body-self-ivar',
+        callerId: `Method:${RB_FILE}:ClassBodySelfField.run_self_ivar#1`,
+        targets: [],
+        status: 'known-gap',
+      },
+      {
+        name: 'class-body-instance-ivar',
+        callerId: `Method:${RB_FILE}:ClassBodySelfField.run#1`,
         targets: [`Method:${RB_FILE}:Inner.compute#1`, `Method:${RB_FILE}:Outer.inner#0`],
         status: 'resolves',
       },

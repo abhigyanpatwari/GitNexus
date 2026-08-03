@@ -189,6 +189,12 @@ const RUBY_SCOPE_QUERY = `
 ;; node for \`rubyBindingScopeFor\` to hoist on; anchorCaptureFor takes the
 ;; broadest range, so the assignment stays the anchor and the source stays
 ;; \`constructor-inferred\`.
+;;
+;; These patterns match unconditionally HERE; captures.ts then discards the
+;; whole binding via \`isRubyInstanceIvarWrite\` when \`self\` is the class object
+;; rather than an instance (\`def self.x\`, \`class << self\`, or the class body
+;; itself). A tree-sitter pattern cannot state "and no singleton ancestor", so
+;; the ownership test has to be a walk.
 
 (assignment
   left: (instance_variable) @type-binding.name @type-binding.ivar-field

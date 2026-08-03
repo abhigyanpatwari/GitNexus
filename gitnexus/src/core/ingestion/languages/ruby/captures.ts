@@ -93,6 +93,64 @@ function buildEnclosingQualifiedName(callNode: SyntaxNode): string | undefined {
   return segments.length > 0 ? segments.join('.') : undefined;
 }
 
+/**
+ * Does this `@ivar` write land on an INSTANCE of the enclosing class?
+ *
+ * In Ruby an instance variable belongs to whatever `self` is at the point of
+ * the write, and `self` is only an instance inside an ordinary `def` body.
+ * Three shapes put `self` on the CLASS object instead, and the ivars they
+ * write are invisible to every instance:
+ *
+ *   class C
+ *     @shared = Outer.new        # class body:       self == C
+ *     def self.build             # singleton_method: self == C
+ *       @pool = Outer.new
+ *     end
+ *     class << self              # singleton_class:  self == C
+ *       def warm; @cache = Outer.new; end
+ *     end
+ *     def run; @pool.inner; end  # reads nil — @pool was never set on an instance
+ *   end
+ *
+ * So the walk stops on the first ancestor that decides who `self` is, and
+ * answers true only for an ordinary `method` reached without crossing a
+ * singleton boundary. `method` alone is NOT sufficient: a `def` nested in a
+ * `class << self` body is a class-level method and is reached through a
+ * `method` node first — hence the flag rather than an early return (#2807).
+ *
+ * A non-`self` singleton (`def obj.build`, `class << obj`) is rejected by the
+ * same node types: that ivar belongs to `obj`, which is not this class's
+ * instance either.
+ *
+ * Deliberately conservative. A write this returns false for simply binds no
+ * type at all, which costs at most a missed edge; returning true too eagerly
+ * invents a call from a receiver that is always nil.
+ */
+function isRubyInstanceIvarWrite(ivarNode: SyntaxNode | undefined): boolean {
+  if (ivarNode === undefined) return false;
+  let insideMethodBody = false;
+  for (let ancestor = ivarNode.parent; ancestor !== null; ancestor = ancestor.parent) {
+    switch (ancestor.type) {
+      // `def self.x` / `def obj.x`, and `class << self` / `class << obj`.
+      case 'singleton_method':
+      case 'singleton_class':
+        return false;
+      case 'method':
+        insideMethodBody = true;
+        break;
+      // The owning body. Reaching it without crossing a singleton means the
+      // write is an instance write exactly when a `def` body enclosed it.
+      case 'class':
+      case 'module':
+      case 'program':
+        return insideMethodBody;
+      default:
+        break;
+    }
+  }
+  return false;
+}
+
 export function emitRubyScopeCaptures(
   sourceText: string,
   _filePath: string,
@@ -136,6 +194,25 @@ export function emitRubyScopeCaptures(
       nodeMap[tag] = c.node;
     }
     if (Object.keys(grouped).length === 0) continue;
+
+    // A tree-sitter pattern cannot say "and no singleton ancestor", so the
+    // ownership test is a walk and the whole binding is dropped here when `self`
+    // is the class object rather than an instance.
+    //
+    // Dropping the MARKER alone is not enough, and the class-body shape is why:
+    // with the marker gone `rubyBindingScopeFor` declines to hoist and the
+    // binding falls back to its innermost scope — which for `@shared = Outer.new`
+    // written straight in the class body already IS the Class scope. It would
+    // arrive at the wrong place by default. Discarding the match is the only
+    // uniform answer, and it costs nothing that existed before: these ivar
+    // patterns are new in #2807, so a class-object ivar simply goes back to
+    // binding nothing, exactly as it did before the pattern was added.
+    if (
+      grouped['@type-binding.ivar-field'] !== undefined &&
+      !isRubyInstanceIvarWrite(nodeMap['@type-binding.ivar-field'])
+    ) {
+      continue;
+    }
 
     // Decompose require/require_relative/load into import captures
     if (grouped['@import.statement'] !== undefined) {
