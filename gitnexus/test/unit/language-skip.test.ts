@@ -23,6 +23,10 @@ describe('isLanguageAvailable', () => {
     expect(isLanguageAvailable(SupportedLanguages.Swift)).toBe(true);
   });
 
+  it('returns true for Lua in the default install (vendored grammar)', () => {
+    expect(isLanguageAvailable(SupportedLanguages.Lua)).toBe(true);
+  });
+
   it('handles Kotlin based on optional dependency availability', () => {
     // Kotlin is now optional — result depends on whether tree-sitter-kotlin is installed
     const result = isLanguageAvailable(SupportedLanguages.Kotlin);
