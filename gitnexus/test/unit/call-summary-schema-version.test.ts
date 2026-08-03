@@ -41,6 +41,8 @@ import {
   REL_SCHEMA_QUERIES,
   SCHEMA_FINGERPRINT,
 } from '../../src/core/lbug/schema.js';
+import { analyzerRunnerIdentitiesEqual } from '../../src/core/analyzer-identity.js';
+import type { AnalyzerRunnerIdentity } from '../../src/storage/repo-manager.js';
 
 const here = path.dirname(fileURLToPath(import.meta.url));
 const repoRoot = path.resolve(here, '..', '..');
@@ -276,3 +278,21 @@ const RUNNER_IDENTITY_CASES: ReadonlyArray<{
     reusable: false,
   },
 ];
+
+describe('semantic (non-DDL) analyzer changes ride the runner-identity receipt (#2798)', () => {
+  it('run-analyze.ts still forces a full rebuild when the stamped runner identity differs', () => {
+    // The invariant the INCREMENTAL_SCHEMA_VERSION ladder used to backstop. It
+    // is implicit nowhere else: no other gate observes analyzer code that emits
+    // no DDL. Deleting this block silently re-opens same-commit top-ups across
+    // an analyzer that changed how the graph is shaped.
+    expect(runAnalyzeSource).toMatch(
+      /!analyzerRunnerIdentitiesEqual\(\s*existingMeta\.runnerIdentity,\s*runnerIdentity,?\s*\)[\s\S]{0,900}?options = \{ \.\.\.options, force: true \};/,
+    );
+  });
+
+  it.each(RUNNER_IDENTITY_CASES)('$name', ({ indexed, reusable }) => {
+    expect({ reusable: analyzerRunnerIdentitiesEqual(indexed, BASELINE_RECEIPT) }).toMatchObject({
+      reusable,
+    });
+  });
+});
