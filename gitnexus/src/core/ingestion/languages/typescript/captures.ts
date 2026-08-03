@@ -43,6 +43,7 @@ import {
   isUnexportedMemberAssignmentValue,
   isUndeclarableThisMemberValue,
 } from './cjs-export-assignment.js';
+import { hasKeyword } from '../../field-extractors/configs/helpers.js';
 import { getTreeSitterBufferSize } from '../../constants.js';
 import { parseSourceSafe } from '../../../tree-sitter/safe-parse.js';
 import { synthesizeCallableFlowCaptures } from '../../utils/callable-flow-captures.js';
@@ -211,23 +212,25 @@ function shouldEmitReadMember(memberNode: SyntaxNode): boolean {
  * field name and patterns cannot negate one.
  *
  * The caller only reaches here for a capture the query already pinned inside a
- * class method, so the `method_definition` lookup is a short walk. Only the
- * modifiers BEFORE the `name` field are inspected — the grammar puts
- * `accessibility_modifier`, `static`, `override`, `readonly`, `async` and
- * `get`/`set`/`*` there, and stopping at the name keeps a method whose body
- * merely mentions `static` from being misread.
+ * class method, so the `method_definition` lookup is a short walk. Detection is
+ * the shared `hasKeyword`, which is what the TypeScript METHOD EXTRACTOR already
+ * uses to decide the same question — matching on child TEXT, and skipping the
+ * `name` field so a method literally called `static()` is not misread.
+ *
+ * Text, not node type: `static` reaches the tree as an anonymous token in some
+ * grammar versions and as a keyword node in others (see `isStaticMember` in
+ * `receiver-binding.ts`), so a `child.type === 'static'` test silently stops
+ * firing on a grammar bump and every static `this.x = new Y()` starts typing the
+ * instance field of that name. `hasKeyword` scans the whole `method_definition`
+ * rather than stopping at the name, which is safe here because a
+ * `method_definition`'s own children are its modifiers, name, parameters and
+ * body — a mention of `static` inside the BODY is a descendant of the body node,
+ * never a direct child.
  */
 function isStaticMethodThis(thisNode: SyntaxNode): boolean {
   const method = findSelfOrAncestorOfType(thisNode, 'method_definition');
   if (method === null) return false;
-  const nameId = method.childForFieldName('name')?.id;
-  for (let i = 0; i < method.childCount; i++) {
-    const child = method.child(i);
-    if (child === null) continue;
-    if (child.id === nameId) break;
-    if (child.type === 'static') return true;
-  }
-  return false;
+  return hasKeyword(method, 'static');
 }
 
 /** Walks the parent chain from `node` (inclusive), returning the first node

@@ -8,7 +8,7 @@ import type {
   NodeLabel,
 } from 'gitnexus-shared';
 import type { SyntaxNode } from '../../utils/ast-helpers.js';
-import { walkToScope } from '../typescript/simple-hooks.js';
+import { walkToScope } from '../../utils/scope-tree-walk.js';
 
 export function rubyBindingScopeFor(
   decl: CaptureMatch,

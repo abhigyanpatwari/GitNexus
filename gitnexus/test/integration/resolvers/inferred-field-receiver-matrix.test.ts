@@ -85,6 +85,7 @@ import path from 'node:path';
 import os from 'node:os';
 import { getRelationships, runPipelineFromRepo, writeFixtureRepo } from './helpers.js';
 import type { PipelineResult } from './helpers.js';
+import { cleanupTempDirSync } from '../../helpers/test-db.js';
 
 /** One receiver form under test, with the exact CALLS targets it emits today. */
 interface Row {
@@ -441,6 +442,13 @@ class LoopShadowedField {
   }
   int run(int x) {
     return y.inner().compute(x);
+  }
+}
+
+class MultiDeclaratorField {
+  var m = Other(), n = Outer();
+  int run(int x) {
+    return n.inner().compute(x);
   }
 }
 `;
@@ -832,6 +840,24 @@ const CASES: readonly LanguageCase[] = [
         targets: [`Method:${DART_FILE}:Outer.inner#0`],
         status: 'resolves',
       },
+      // ONE `declaration` can hold SEVERAL declarators — `var m = Other(), n =
+      // Outer();` — and the field query matches it once per declarator with the
+      // SAME `@declaration.property` node. `dartFieldConstructorCallee` therefore
+      // cannot search DOWN from that node for an initializer: it would hand every
+      // declarator the FIRST one's, typing `n` as `Other`. It reads the
+      // initializer as the next named sibling of the declarator's OWN name node
+      // instead.
+      //
+      // Ordered so the declarator under test is the SECOND and the first has a
+      // DIFFERENT type: under the first-descendant search `n` took `Other` and
+      // this row went green on the WRONG edge `Other.inner#0` — a visible wrong
+      // target, not silence an unrelated regression could also produce.
+      {
+        name: 'multi-declarator-inferred-field',
+        callerId: `Method:${DART_FILE}:MultiDeclaratorField.run#1`,
+        targets: [`Method:${DART_FILE}:Outer.inner#0`],
+        status: 'resolves',
+      },
     ],
   },
   {
@@ -884,7 +910,10 @@ describe('inference-typed field receivers across languages (#2807)', () => {
           await runPipelineFromRepo(dir, () => {}, { skipGraphPhases: true }),
         );
       } finally {
-        fs.rmSync(dir, { recursive: true, force: true });
+        // Not a bare `rmSync`: a pipeline run can still hold a handle open when
+        // this fires, which surfaces as EBUSY/EPERM on Windows — `force` does
+        // not suppress that — and this suite runs in the sharded Windows CI.
+        cleanupTempDirSync(dir);
       }
     }
   }, 600000);

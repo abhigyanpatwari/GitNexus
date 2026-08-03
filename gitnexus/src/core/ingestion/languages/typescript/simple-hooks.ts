@@ -13,6 +13,7 @@ import type {
   ScopeTree,
   TypeRef,
 } from 'gitnexus-shared';
+import { walkToScope } from '../../utils/scope-tree-walk.js';
 
 // ─── bindingScopeFor ──────────────────────────────────────────────────────
 
@@ -89,31 +90,6 @@ export function tsBindingScopeFor(
   // about placing the binding in a different scope). The scope tree
   // already attaches their name to the enclosing scope. No override
   // needed.
-  return null;
-}
-
-/**
- * Walk up the scope chain to find the first scope whose `kind` matches
- * any of `kinds`. Returns the matching scope's id or `null` when no
- * ancestor matches (e.g., a return type binding emitted outside any
- * Module scope — shouldn't happen in well-formed input).
- *
- * Exported so language-specific hook wrappers (e.g. `jsBindingScopeFor`)
- * can reuse it without duplicating the traversal logic.
- */
-export function walkToScope(
-  from: Scope,
-  tree: ScopeTree,
-  ...kinds: readonly Scope['kind'][]
-): ScopeId | null {
-  let cur: Scope | undefined = from;
-  const kindSet = new Set(kinds);
-  while (cur !== undefined) {
-    if (kindSet.has(cur.kind)) return cur.id;
-    const parentId: ScopeId | null = cur.parent ?? null;
-    if (parentId === null) break;
-    cur = tree.getScope(parentId);
-  }
   return null;
 }
 

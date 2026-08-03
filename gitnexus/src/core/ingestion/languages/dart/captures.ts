@@ -209,7 +209,7 @@ export function emitDartScopeCaptures(
         // initializer calls (#2807). `constructor-inferred` is the weakest
         // source, and the annotated branch above already returned, so an
         // annotated field is untouched either way.
-        const callee = dartFieldConstructorCallee(propNode);
+        const callee = dartFieldConstructorCallee(nodeMap['@declaration.name']!);
         if (callee !== null) {
           out.push({
             '@type-binding.constructor': nodeToCapture('@type-binding.constructor', propNode),
@@ -511,6 +511,22 @@ function emitCascadeReference(cascade: SyntaxNode, out: CaptureMatch[]): void {
 
 // ─── Local-variable constructor / call-result type inference ────────────────
 
+/**
+ * Is `node` the callee of a construction / free call written directly at this
+ * position — a bare identifier whose next named sibling is a `selector`
+ * carrying an `argument_part` (`Outer()`)?
+ *
+ * Dart has no `new` keyword, so a constructor call and a free call are the same
+ * shape; the resolver decides which by looking the name up. Anything else — a
+ * literal, a member call, an index — is NOT this shape and is left alone rather
+ * than guessed at.
+ */
+function isDirectConstruction(node: SyntaxNode | null): node is SyntaxNode {
+  if (node === null || node.type !== 'identifier') return false;
+  const next = node.nextNamedSibling;
+  return next !== null && next.type === 'selector' && next.namedChild(0)?.type === 'argument_part';
+}
+
 /** Find the callee identifier of a `var x = Callee(…)` / `await Callee(…)`
  *  initializer (a direct free-call / constructor); returns null for member
  *  calls or non-call values. */
@@ -519,11 +535,7 @@ function findDirectCallValue(initVarDef: SyntaxNode): SyntaxNode | null {
   if (firstValue === null) return null;
 
   if (firstValue.type === 'identifier') {
-    const next = firstValue.nextNamedSibling;
-    if (next !== null && next.type === 'selector' && next.namedChild(0)?.type === 'argument_part') {
-      return firstValue;
-    }
-    return null;
+    return isDirectConstruction(firstValue) ? firstValue : null;
   }
   if (firstValue.type === 'unary_expression' || firstValue.type === 'await_expression') {
     let aw = firstValue;
@@ -533,17 +545,11 @@ function findDirectCallValue(initVarDef: SyntaxNode): SyntaxNode | null {
       aw = inner;
     }
     if (aw.type === 'await_expression') {
+      // `namedChild(0)` is the awaited callee; its next named sibling is
+      // `namedChild(1)`, so `isDirectConstruction` asks exactly the same
+      // question this branch used to spell out.
       const id = aw.namedChild(0);
-      const sel = aw.namedChild(1);
-      if (
-        id !== null &&
-        id.type === 'identifier' &&
-        sel !== null &&
-        sel.type === 'selector' &&
-        sel.namedChild(0)?.type === 'argument_part'
-      ) {
-        return id;
-      }
+      if (isDirectConstruction(id)) return id;
     }
   }
   return null;
@@ -559,34 +565,16 @@ function findDirectCallValue(initVarDef: SyntaxNode): SyntaxNode | null {
  * had no type binding and could not act as a call receiver (#2807), even though
  * its annotated twin resolved fine.
  *
- * Accepts the same construction shape `findDirectCallValue` accepts for locals:
- * a bare identifier followed by a `selector` carrying an `argument_part`.
- * Anything else — a literal, a member call, an await — is left alone rather than
- * guessed at.
+ * Takes the field's own `@declaration.name` node, whose next named sibling IS
+ * the initializer — `initialized_identifier(<name> <value> …)`. Deliberately NOT
+ * a search down from the `@declaration.property` node: one `declaration` can
+ * hold SEVERAL declarators (`var a = X(), b = Y();`), which the query matches
+ * once each with the same property node, so a first-descendant search hands
+ * every declarator the FIRST one's initializer and types `b` as `X`.
  */
-function dartFieldConstructorCallee(propNode: SyntaxNode): SyntaxNode | null {
-  const initialized = firstDescendantOfType(propNode, 'initialized_identifier');
-  if (initialized === null) return null;
-  // namedChild(0) is the field NAME; the initializer starts after it.
-  const value = initialized.namedChild(1);
-  if (value === null || value.type !== 'identifier') return null;
-  const next = value.nextNamedSibling;
-  if (next === null || next.type !== 'selector') return null;
-  return next.namedChild(0)?.type === 'argument_part' ? value : null;
-}
-
-/** First strict descendant of `type`, breadth-first, or `null`. */
-function firstDescendantOfType(root: SyntaxNode, type: string): SyntaxNode | null {
-  const queue: SyntaxNode[] = [root];
-  while (queue.length > 0) {
-    const node = queue.shift()!;
-    if (node !== root && node.type === type) return node;
-    for (let i = 0; i < node.namedChildCount; i++) {
-      const child = node.namedChild(i);
-      if (child !== null) queue.push(child);
-    }
-  }
-  return null;
+function dartFieldConstructorCallee(nameNode: SyntaxNode): SyntaxNode | null {
+  const value = nameNode.nextNamedSibling;
+  return isDirectConstruction(value) ? value : null;
 }
 
 function emitVarTypeBinding(initVarDef: SyntaxNode, out: CaptureMatch[]): void {
@@ -624,15 +612,19 @@ function emitVarTypeBinding(initVarDef: SyntaxNode, out: CaptureMatch[]): void {
  * Function scope where `typeOfMemberOnClass` never looks.
  */
 function emitDartFieldAssignmentBindings(classNode: SyntaxNode, out: CaptureMatch[]): void {
-  const body = classNode.namedChildren.find((c) => c !== null && c.type === 'class_body');
-  if (body === undefined || body === null) return;
+  const body = findChild(classNode, 'class_body');
+  if (body === null) return;
+
+  // `namedChildren` allocates a fresh wrapper array on every access
+  // (node-tree-sitter), and both loops below walk the same list — read it once.
+  const members = body.namedChildren;
 
   // Field names this class declares, from `declaration(... initialized_identifier)`.
   const fields = new Set<string>();
-  for (const member of body.namedChildren) {
+  for (const member of members) {
     if (member === null || member.type !== 'declaration') continue;
-    const list = member.namedChildren.find((c) => c?.type === 'initialized_identifier_list');
-    if (list === undefined || list === null) continue;
+    const list = findChild(member, 'initialized_identifier_list');
+    if (list === null) continue;
     for (const init of list.namedChildren) {
       if (init === null || init.type !== 'initialized_identifier') continue;
       const nameNode = init.namedChild(0);
@@ -641,9 +633,21 @@ function emitDartFieldAssignmentBindings(classNode: SyntaxNode, out: CaptureMatc
   }
   if (fields.size === 0) return;
 
-  for (const member of body.namedChildren) {
+  for (const member of members) {
     if (member === null || member.type !== 'function_body') continue;
-    const locals = collectDartBodyShadows(member);
+
+    // LAZY, memoised per body. The shadow set is read on ONE branch — a bare
+    // `r = …` whose name the class declares — so a body of `this.`-prefixed
+    // writes, or of no field assignment at all, never needs it. Measured on the
+    // scope-capture corpus: 87-100% of the sets built eagerly here were
+    // discarded, ~15% of total Dart emission. Deferring cannot change WHICH
+    // names it contains: `collectDartBodyShadows` is a function of the whole
+    // body, not of the assignment that triggers it.
+    //
+    // Not visible to `bench/scope-capture`, which is a RATIO gate — this work is
+    // linear, so a constant factor leaves the ratio at 1.0.
+    let locals: ReadonlySet<string> | undefined;
+    const shadowsOf = (): ReadonlySet<string> => (locals ??= collectDartBodyShadows(member));
 
     walkNamedTree(member, (node) => {
       if (node.type !== 'assignment_expression') return;
@@ -654,8 +658,10 @@ function emitDartFieldAssignmentBindings(classNode: SyntaxNode, out: CaptureMatc
       if (first === null) return;
       let fieldNameNode: SyntaxNode | null = null;
       if (first.type === 'identifier' && target.namedChildCount === 1) {
-        // Bare `r = …`: a field only when declared here and not shadowed.
-        if (!fields.has(first.text) || locals.has(first.text)) return;
+        // Bare `r = …`: a field only when declared here and not shadowed. The
+        // `fields` test runs FIRST so the shadow set is only ever built for a
+        // name the class actually declares.
+        if (!fields.has(first.text) || shadowsOf().has(first.text)) return;
         fieldNameNode = first;
       } else if (first.type === 'this') {
         const selector = target.namedChild(1);
@@ -668,14 +674,10 @@ function emitDartFieldAssignmentBindings(classNode: SyntaxNode, out: CaptureMatc
       }
       if (fieldNameNode === null) return;
 
-      // RHS must be a direct construction: `Outer()` is an identifier followed
-      // by a `selector` carrying an `argument_part`. Anything else is left
-      // alone rather than guessed at.
+      // RHS must be a direct construction; anything else is left alone rather
+      // than guessed at.
       const callee = node.namedChild(1);
-      if (callee === null || callee.type !== 'identifier') return;
-      const selector = node.namedChild(2);
-      if (selector === null || selector.type !== 'selector') return;
-      if (selector.namedChild(0)?.type !== 'argument_part') return;
+      if (!isDirectConstruction(callee)) return;
 
       out.push({
         '@type-binding.constructor': nodeToCapture('@type-binding.constructor', node),

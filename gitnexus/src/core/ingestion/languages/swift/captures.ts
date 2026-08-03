@@ -43,7 +43,10 @@ import {
 import { splitSwiftImport } from './import-decomposer.js';
 import { swiftQualifiedBaseTail } from './base-type.js';
 import { computeSwiftArityMetadata } from './arity-metadata.js';
-import { synthesizeSwiftReceiverBinding } from './receiver-binding.js';
+import {
+  findEnclosingTypeDeclaration,
+  synthesizeSwiftReceiverBinding,
+} from './receiver-binding.js';
 import { synthesizeSwiftSignatureBindings } from './signature-bindings.js';
 import { getSwiftParser, getSwiftScopeQuery } from './query.js';
 import { preprocessSwiftConditionalDirectives } from './conditional-directive-preprocess.js';
@@ -69,23 +72,25 @@ import { synthesizeReceiverChainCapture } from '../../utils/receiver-chain-captu
  * both resolve — which is what identified the collision as name-keyed and
  * per-file rather than positional.
  *
- * An `extension Foo` wraps the extended type in a `user_type`, and a generic
- * `class Box<T>` carries its parameters in the same field, so the dotted tail is
- * taken and any generic argument list dropped — the spelling has to match the
- * owner the structure phase used to build the node id.
+ * An `extension Foo` wraps the extended type in a `user_type`, which may be
+ * qualified (`extension Outer.Inner`) or carry generic arguments
+ * (`extension Set<Int>`), so the trailing `type_identifier` is taken — the
+ * spelling has to match the owner the structure phase used to build the node id.
+ *
+ * Both halves delegate rather than re-derive: `findEnclosingTypeDeclaration`
+ * (receiver-binding.ts) decides what the enclosing type IS, so a method's owner
+ * qualifier and its `self` binding cannot disagree, and `swiftBaseTypeIdentifier`
+ * reads the name STRUCTURALLY. An earlier version split the node text on `<` and
+ * `.`, which only approximates the tree: generic arguments live in a sibling
+ * `type_arguments` node that the walk skips outright.
  */
 function swiftEnclosingTypeName(node: SyntaxNode): string | null {
-  let cur: SyntaxNode | null = node.parent;
-  while (cur !== null) {
-    if (cur.type === 'class_declaration' || cur.type === 'protocol_declaration') {
-      const nameNode = cur.childForFieldName('name');
-      if (nameNode === null) return null;
-      const tail = nameNode.text.trim().split('<')[0]!.split('.').pop()?.trim() ?? '';
-      return tail.length > 0 ? tail : null;
-    }
-    cur = cur.parent;
-  }
-  return null;
+  const typeNode = findEnclosingTypeDeclaration(node);
+  if (typeNode === null) return null;
+  const nameNode = typeNode.childForFieldName('name');
+  if (nameNode === null) return null;
+  const tail = swiftBaseTypeIdentifier(nameNode)?.text.trim() ?? '';
+  return tail.length > 0 ? tail : null;
 }
 
 /** Declaration anchors that carry function-like arity metadata. */

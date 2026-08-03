@@ -23,7 +23,7 @@ import type {
   TypeRef,
   CaptureMatch,
 } from 'gitnexus-shared';
-import { walkToScope } from '../typescript/simple-hooks.js';
+import { walkToScope } from '../../utils/scope-tree-walk.js';
 
 export function dartBindingScopeFor(
   decl: CaptureMatch,

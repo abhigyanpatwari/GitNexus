@@ -27,6 +27,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { getRelationships, runPipelineFromRepo, writeFixtureRepo } from './helpers.js';
 import type { PipelineResult } from './helpers.js';
+import { cleanupTempDirSync } from '../../helpers/test-db.js';
 import { isLanguageAvailable } from '../../../src/core/tree-sitter/parser-loader.js';
 import { SupportedLanguages } from '../../../src/config/supported-languages.js';
 
@@ -73,7 +74,10 @@ describe.skipIf(!swiftAvailable)('a function-local callable keeps its own node (
       // reads what they produce.
       result = await runPipelineFromRepo(dir, () => {}, { skipGraphPhases: true });
     } finally {
-      fs.rmSync(dir, { recursive: true, force: true });
+      // Not a bare `rmSync`: a pipeline run can still hold a handle open when
+      // this fires, which surfaces as EBUSY/EPERM on Windows — `force` does not
+      // suppress that — and this suite runs in the sharded Windows CI.
+      cleanupTempDirSync(dir);
     }
   }, 120000);
 

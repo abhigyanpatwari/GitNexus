@@ -237,6 +237,10 @@ export function resolveDefGraphId(
   const qn = def.qualifiedName;
   if (qn === undefined || qn.length === 0) return undefined;
   if (def.type !== undefined) {
+    // ONE binding for all three key families — see `siblingCallableLabel`, which
+    // documents why they cannot be given independent answers. What each family
+    // is allowed to DO with it still differs, and is documented at each site.
+    const siblingLabel = siblingCallableLabel(def.type);
     // Position key FIRST (#2699). A def and its graph node are the same
     // construct, so they share a source line — the only evidence that
     // separates a function-local declaration from a same-named file-level one
@@ -251,7 +255,6 @@ export function resolveDefGraphId(
     const line = defStartLine(def.nodeId, filePath);
     if (line !== undefined && isPositionQualifiedLocalLabel(def.type)) {
       const simple = simpleNameOf(qn);
-      const sibling = siblingCallableLabel(def.type);
       const posHit = nodeLookup.get(positionKey(filePath, def.type, line - 1, simple));
       if (posHit !== undefined && posHit !== AMBIGUOUS_POSITION) return posHit;
       // Retry under the sibling callable label when the def's OWN label
@@ -271,8 +274,8 @@ export function resolveDefGraphId(
       // Gated on `posHit === undefined` so an `AMBIGUOUS_POSITION` tombstone
       // keeps meaning ambiguous: two callables already claim this line under the
       // def's own label, and relabelling must not resolve by picking a third.
-      if (posHit === undefined && sibling !== undefined) {
-        const siblingPosHit = nodeLookup.get(positionKey(filePath, sibling, line - 1, simple));
+      if (posHit === undefined && siblingLabel !== undefined) {
+        const siblingPosHit = nodeLookup.get(positionKey(filePath, siblingLabel, line - 1, simple));
         if (siblingPosHit !== undefined && siblingPosHit !== AMBIGUOUS_POSITION) {
           return siblingPosHit;
         }
@@ -300,8 +303,8 @@ export function resolveDefGraphId(
       // returns `undefined`, and a missing edge is the correct failure
       // direction; declining to check would be the risky choice, not this.
       if (
-        sibling !== undefined &&
-        nodeLookup.get(localNameKey(filePath, sibling, simple)) !== undefined
+        siblingLabel !== undefined &&
+        nodeLookup.get(localNameKey(filePath, siblingLabel, simple)) !== undefined
       ) {
         return undefined;
       }
@@ -343,7 +346,6 @@ export function resolveDefGraphId(
     // to prevent (a top-level `save` vs a class's `save`). Hence the dot gate —
     // it keeps the original guarantee intact for unqualified names. The
     // position key above needs no such gate because it is not a name.
-    const siblingLabel = siblingCallableLabel(defType);
     const lookupTagged = (tag: string): string | undefined => {
       for (const form of nameForms) {
         const hit = nodeLookup.get(qualifiedKey(filePath, defType, `${form}${tag}`));
