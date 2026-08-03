@@ -302,30 +302,30 @@ describe('runImpactPDG — empty-ascent note (U7)', () => {
     expect(note).not.toContain(CAVEAT);
   });
 
-  // #2802 — the two cases the language check used to get wrong, now impossible
-  // to reintroduce: the note cannot vary by extension because nothing in
-  // `pdg-impact.ts` reads one.
-  it.each(EXTENSIONS)('%s with no return-flow summary → caveat present', async (file) => {
-    expect(noteOf(await run(file))).toContain(CAVEAT);
-  });
-
-  it.each(EXTENSIONS)('%s with a return-flow summary → no caveat', async (file) => {
-    expect(noteOf(await run(file, { summary: flow([0]) }))).not.toContain(CAVEAT);
-  });
-
-  // The strongest form of the language-agnosticism claim: hold CALL_SUMMARY
-  // content fixed, vary only the extension, and require the note text to be
-  // byte-identical modulo the file path the note legitimately echoes.
-  it('note text does not vary with the criterion file extension', async () => {
-    const notes = await Promise.all(
-      EXTENSIONS.map(async (file) =>
-        noteOf(await run(file))
-          .split(file)
-          .join('<FILE>'),
-      ),
-    );
-    expect(new Set(notes).size).toBe(1);
-  });
+  // #2802 — THE language-agnosticism pin, and the only test carrying it: the whole
+  // observable (note text AND reachable blocks) must be byte-identical across every
+  // extension once the path it legitimately echoes is masked — on BOTH sides of the
+  // caveat gate, since the CALL_SUMMARY content is the only thing allowed to flip
+  // the note. That SUBSUMES the per-extension caveat sweeps it replaces: identity
+  // across EXTENSIONS plus the two single-extension content assertions above
+  // entails "every extension gets the caveat" / "no extension gets it", and entails
+  // it more strongly — a `.py`-only note change that still CONTAINED the caveat
+  // slips past a substring sweep and fails here.
+  it.each([
+    { label: 'no return-flow summary (caveat branch)', options: {} },
+    { label: 'a return-flow summary (silent branch)', options: { summary: flow([0]) } },
+  ])(
+    'note and reach do not vary with the criterion file extension — $label',
+    async ({ options }) => {
+      const fingerprints = await Promise.all(
+        EXTENSIONS.map(async (file) => {
+          const result = await run(file, options);
+          return [noteOf(result), ...blocksOf(result)].join('\n').split(file).join('<FILE>');
+        }),
+      );
+      expect(new Set(fingerprints).size).toBe(1);
+    },
+  );
 });
 
 // P2-2 — `decodeCallSummary` NEVER throws, so an unreadable `reason` yields no
@@ -382,61 +382,61 @@ describe('runImpactPDG — undecodable CALL_SUMMARY (P2-2)', () => {
 // property of the persisted summaries". Two mechanisms make that examined set a
 // strict subset of the slice's real callee list, and under either the note must
 // describe what it examined rather than assert a property of the whole slice:
-//  1. the traversal stopped at a depth/size budget — a callee that DOES carry a
-//     return-flow can sit past the frontier;
-//  2. a block's `calleeIds` cell was capped at emit — `splitCalleeIds` strips the
-//     sentinel, so those callees reach neither the summary scan nor the counters.
+//  1. the traversal stopped at a depth/size budget (`maxDepth: 1` below leaves the
+//     intra BFS frontier non-empty) — a callee that DOES carry a return-flow can
+//     sit past the frontier;
+//  2. a block's `calleeIds` cell was capped at emit (`calleeCellCapped` below,
+//     with the traversal COMPLETING so the cap is the only source left) —
+//     `splitCalleeIds` strips the sentinel, so those callees reach neither the
+//     summary scan nor the counters.
+// Those two, plus neither (the control that keeps the fix from being "always
+// hedge"), are the premise rows below, each crossed with the two assertions the
+// note owes: is the qualifier clause present, and does the unqualified
+// persisted-summaries claim survive. `reasons` is the EXACT phrase set the clause
+// must name, so a row also asserts the absence of every phrase it omits;
+// `truncated` is the premise's own observable, asserted rather than assumed so a
+// mock drift that stops truncating fails loudly.
+const REASON_PHRASES = [BUDGET_REASON, EMIT_CAP_REASON] as const;
+const INCOMPLETENESS_PREMISES: ReadonlyArray<{
+  readonly label: string;
+  readonly premise: RunOptions;
+  readonly truncated: boolean;
+  readonly reasons: readonly string[];
+}> = [
+  { label: 'depth budget', premise: { maxDepth: 1 }, truncated: true, reasons: [BUDGET_REASON] },
+  {
+    label: 'emit-capped calleeIds cell',
+    premise: { calleeCellCapped: true },
+    truncated: false,
+    reasons: [EMIT_CAP_REASON],
+  },
+  { label: 'neither mechanism', premise: {}, truncated: false, reasons: [] },
+];
+
 describe('runImpactPDG — empty-ascent note over an incomplete callee set (P2-4)', () => {
-  // `maxDepth: 1` leaves the intra BFS frontier non-empty at the budget, which is
-  // a genuinely truncated traversal (asserted, not assumed).
-  it('truncated traversal → the empty-ascent claim is qualified', async () => {
-    const result = await run('src/svc.ts', { maxDepth: 1 });
-    expect(truncatedOf(result)).toBe(true);
-    expect(noteOf(result)).toContain(CAVEAT);
-    expect(noteOf(result)).toContain(BUDGET_REASON);
-    expect(noteOf(result)).toContain(QUALIFIER);
-  });
+  it.each(INCOMPLETENESS_PREMISES)(
+    '$label → the qualifier clause names exactly this premise',
+    async ({ premise, truncated, reasons }) => {
+      const result = await run('src/svc.ts', premise);
+      expect(truncatedOf(result)).toBe(truncated);
+      const note = noteOf(result);
+      expect(note).toContain(CAVEAT);
+      expect(note.includes(QUALIFIER)).toBe(reasons.length > 0);
+      expect(REASON_PHRASES.filter((phrase) => note.includes(phrase))).toEqual(reasons);
+    },
+  );
 
   // An `r:0` summary decodes cleanly, so this is the branch that asserts "a
-  // property of the persisted summaries" — a whole-slice claim a truncated
-  // traversal did not establish.
-  it('truncated traversal → the unqualified persisted-summaries claim is dropped', async () => {
-    const note = noteOf(await run('src/svc.ts', { summary: flow([]), maxDepth: 1 }));
-    expect(note).toContain(QUALIFIER);
-    expect(note).not.toContain(PERSISTED_CLAIM);
-  });
-
-  // The control that keeps the fix from being "always hedge": the SAME mock with
-  // a budget large enough to exhaust the frontier keeps the flat claim.
-  it('untruncated traversal → the claim stays unqualified', async () => {
-    const result = await run('src/svc.ts');
-    expect(truncatedOf(result)).toBe(false);
-    expect(noteOf(result)).toContain(CAVEAT);
-    expect(noteOf(result)).not.toContain(QUALIFIER);
-    expect(noteOf(result)).not.toContain(BUDGET_REASON);
-  });
-
-  it('untruncated traversal → the persisted-summaries claim survives', async () => {
-    const note = noteOf(await run('src/svc.ts', { summary: flow([]) }));
-    expect(note).toContain(PERSISTED_CLAIM);
-    expect(note).not.toContain(QUALIFIER);
-  });
-
-  // Case 2 in isolation: the traversal completes (truncated === false), so the
-  // emit-time cap sentinel is the ONLY thing the qualifier can come from.
-  it('emit-capped calleeIds cell → the claim is qualified with nothing else truncated', async () => {
-    const result = await run('src/svc.ts', { calleeCellCapped: true });
-    expect(truncatedOf(result)).toBe(false);
-    expect(noteOf(result)).toContain(EMIT_CAP_REASON);
-    expect(noteOf(result)).toContain(QUALIFIER);
-    expect(noteOf(result)).not.toContain(BUDGET_REASON);
-  });
-
-  it('emit-capped calleeIds cell → the unqualified persisted-summaries claim is dropped', async () => {
-    const note = noteOf(await run('src/svc.ts', { summary: flow([]), calleeCellCapped: true }));
-    expect(note).toContain(QUALIFIER);
-    expect(note).not.toContain(PERSISTED_CLAIM);
-  });
+  // property of the persisted summaries" — a whole-slice claim an incomplete
+  // examined set did not establish, and a complete one did.
+  it.each(INCOMPLETENESS_PREMISES)(
+    '$label → the unqualified persisted-summaries claim survives iff the set is complete',
+    async ({ premise, reasons }) => {
+      const note = noteOf(await run('src/svc.ts', { ...premise, summary: flow([]) }));
+      expect(note.includes(QUALIFIER)).toBe(reasons.length > 0);
+      expect(note.includes(PERSISTED_CLAIM)).toBe(reasons.length === 0);
+    },
+  );
 
   // Both mechanisms at once: ONE clause naming both reasons, never two clauses.
   it('both mechanisms → one qualifier clause names both reasons', async () => {
@@ -474,10 +474,15 @@ const UNENTERABLE_CALLEES = [`Class:${FILE}:Outer`, `Interface:${FILE}:Sink.writ
 const MIXED_CALLEES = [helperCalleeId(FILE), ...UNENTERABLE_CALLEES] as const;
 
 describe('runImpactPDG — the empty-ascent count is call-site references (P3-7)', () => {
+  // One render, three readings of it: the wording the note must now carry, plus
+  // the two it must have dropped (both explained in the block comment above).
   it('un-enterable callee ids count, and the note names them as call-site references', async () => {
-    expect(noteOf(await run(FILE, { calleeIds: MIXED_CALLEES }))).toContain(
+    const note = noteOf(await run(FILE, { calleeIds: MIXED_CALLEES }));
+    expect(note).toContain(
       'none of the 3 call-site callee references carry a CALL_SUMMARY return-flow',
     );
+    expect(note).not.toContain('resolved callee');
+    expect(note).not.toContain('no formal parameter is recorded');
   });
 
   // The same slice with only the enterable callee: the number tracks the CELL,
@@ -504,16 +509,6 @@ describe('runImpactPDG — the empty-ascent count is call-site references (P3-7)
     // note quotes call-site references rather than resolved callees.
     expect(noteOf(mixed)).toContain('none of the 3 call-site callee references carry');
     expect(noteOf(helperOnly)).toContain('none of the 1 call-site callee reference carries');
-  });
-
-  it('the note no longer calls the counted ids resolved callees', async () => {
-    expect(noteOf(await run(FILE, { calleeIds: MIXED_CALLEES }))).not.toContain('resolved callee');
-  });
-
-  it('the note drops the formals parenthetical', async () => {
-    expect(noteOf(await run(FILE, { calleeIds: MIXED_CALLEES }))).not.toContain(
-      'no formal parameter is recorded',
-    );
   });
 
   // The undecodable branch quotes the same count and needed the same rewording.
