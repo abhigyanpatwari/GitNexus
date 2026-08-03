@@ -14,9 +14,9 @@ import {
   loadMeta,
   registerRepo,
   saveMeta,
-  INCREMENTAL_SCHEMA_VERSION,
   type RepoMeta,
 } from '../../src/storage/repo-manager.js';
+import { SCHEMA_FINGERPRINT } from '../../src/core/lbug/schema.js';
 import { taintModelVersion } from '../../src/core/ingestion/taint/typescript-model.js';
 import { createTempDir } from '../helpers/test-db.js';
 import { readEmbeddingNodeIds } from '../helpers/embedding-seed.js';
@@ -64,7 +64,7 @@ describe('run-analyze module', () => {
         // Stamp current schema version so the run-analyze schema-mismatch
         // guard (#2289 P1) does not force a rebuild and short-circuit the
         // alreadyUpToDate fast path this test exercises.
-        schemaVersion: INCREMENTAL_SCHEMA_VERSION,
+        schemaFingerprint: SCHEMA_FINGERPRINT,
         analysisFeatures: CURRENT_ANALYSIS_FEATURES,
         runnerIdentity: currentRunnerIdentity(),
       };
@@ -622,7 +622,7 @@ describe('run-analyze module', () => {
         lastCommit: commit,
         indexedAt: new Date().toISOString(),
         branch: 'main',
-        schemaVersion: INCREMENTAL_SCHEMA_VERSION,
+        schemaFingerprint: SCHEMA_FINGERPRINT,
         analysisFeatures: CURRENT_ANALYSIS_FEATURES,
         runnerIdentity,
       };
@@ -633,7 +633,7 @@ describe('run-analyze module', () => {
         lastCommit: commit,
         indexedAt: new Date().toISOString(),
         branch: 'feature/x',
-        schemaVersion: INCREMENTAL_SCHEMA_VERSION,
+        schemaFingerprint: SCHEMA_FINGERPRINT,
         analysisFeatures: CURRENT_ANALYSIS_FEATURES,
         runnerIdentity,
       });
@@ -690,7 +690,7 @@ describe('run-analyze module', () => {
         lastCommit: commit,
         indexedAt: new Date().toISOString(),
         branch: 'main',
-        schemaVersion: INCREMENTAL_SCHEMA_VERSION,
+        schemaFingerprint: SCHEMA_FINGERPRINT,
         analysisFeatures: CURRENT_ANALYSIS_FEATURES,
         runnerIdentity,
       });
@@ -700,7 +700,7 @@ describe('run-analyze module', () => {
         lastCommit: commit,
         indexedAt: new Date().toISOString(),
         branch: 'feature/x',
-        schemaVersion: INCREMENTAL_SCHEMA_VERSION,
+        schemaFingerprint: SCHEMA_FINGERPRINT,
         analysisFeatures: CURRENT_ANALYSIS_FEATURES,
         runnerIdentity,
       });
@@ -749,7 +749,7 @@ describe('run-analyze module', () => {
         lastCommit: commit,
         indexedAt: new Date().toISOString(),
         branch: 'main',
-        schemaVersion: INCREMENTAL_SCHEMA_VERSION,
+        schemaFingerprint: SCHEMA_FINGERPRINT,
         analysisFeatures: CURRENT_ANALYSIS_FEATURES,
         runnerIdentity,
       });
@@ -793,7 +793,7 @@ describe('run-analyze module', () => {
         lastCommit: commit,
         indexedAt: new Date().toISOString(),
         branch: 'main',
-        schemaVersion: INCREMENTAL_SCHEMA_VERSION,
+        schemaFingerprint: SCHEMA_FINGERPRINT,
         analysisFeatures: CURRENT_ANALYSIS_FEATURES,
         runnerIdentity,
       });
@@ -803,7 +803,7 @@ describe('run-analyze module', () => {
         lastCommit: commit,
         indexedAt: new Date().toISOString(),
         branch: 'feature/x',
-        schemaVersion: INCREMENTAL_SCHEMA_VERSION,
+        schemaFingerprint: SCHEMA_FINGERPRINT,
         analysisFeatures: CURRENT_ANALYSIS_FEATURES,
         runnerIdentity,
       });

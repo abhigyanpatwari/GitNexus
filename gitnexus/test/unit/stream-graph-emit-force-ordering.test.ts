@@ -21,11 +21,7 @@ import { describe, it, expect, vi, afterEach } from 'vitest';
 import fsp from 'node:fs/promises';
 import path from 'node:path';
 
-import {
-  getStoragePaths,
-  saveMeta,
-  INCREMENTAL_SCHEMA_VERSION,
-} from '../../src/storage/repo-manager.js';
+import { getStoragePaths, saveMeta } from '../../src/storage/repo-manager.js';
 import { createTempDir } from '../helpers/test-db.js';
 
 type PipelineModule = typeof import('../../src/core/ingestion/pipeline.js');
@@ -57,7 +53,7 @@ afterEach(() => {
 });
 
 describe('streamGraphEmit is resolved after the force-mutating freshness guards', () => {
-  it('arms streaming for the rebuild an INCREMENTAL_SCHEMA_VERSION bump forces', async () => {
+  it('arms streaming for the rebuild a schema-fingerprint mismatch forces', async () => {
     // Pin the escape hatch ON so the assertion cannot be moved by ambient env.
     // Before the fix this changed nothing: `force` was still unset at the entry
     // read, and the `force !== true` short-circuit precedes the env lookup.
@@ -69,13 +65,13 @@ describe('streamGraphEmit is resolved after the force-mutating freshness guards'
       const { metaPath } = getStoragePaths(repoPath);
       const metaDir = path.dirname(metaPath);
       await fsp.mkdir(metaDir, { recursive: true });
-      // An index stamped by the PREVIOUS schema — what every already-indexed
-      // repo looks like on its first analyze after the bump.
+      // An index built from a DIFFERENT schema — what an already-indexed repo
+      // looks like on its first analyze after the DDL changes.
       await saveMeta(metaDir, {
         repoPath,
         lastCommit: '',
         indexedAt: new Date(0).toISOString(),
-        schemaVersion: INCREMENTAL_SCHEMA_VERSION - 1,
+        schemaFingerprint: 'a0b1c2d3e4f5',
         fileHashes: { 'src/a.ts': 'stale-hash' },
       });
 
