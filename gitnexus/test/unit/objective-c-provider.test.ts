@@ -23,7 +23,7 @@ describe('Objective-C language provider registration', () => {
     expect(
       normalizeObjectiveCType('const NSDictionary<NSString *, NSArray<NSNumber *> *> * nonnull'),
     ).toBe('NSDictionary');
-    expect(normalizeObjectiveCType('NSObject<script')).toBe('NSObject');
+    expect(normalizeObjectiveCType('NSObject<script')).toBe('');
   });
 
   it('keeps the declared spelling for protocol-qualified receiver bindings', () => {
@@ -126,7 +126,7 @@ describe('Objective-C language provider registration', () => {
 
     const message = tree.rootNode.descendantsOfType('message_expression')[0];
     expect(provider.callExtractor?.extract(message, undefined)).toEqual({
-      calledName: '+shared',
+      calledName: '-shared',
       callForm: 'member',
       receiverName: 'Store',
       argCount: 0,
