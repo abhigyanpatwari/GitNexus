@@ -562,6 +562,32 @@ const TRANSPARENT_RECEIVER_WRAPPERS = new Set([
 ]);
 
 /**
+ * Wrappers that are transparent only for SOME operators, keyed by the operator
+ * text that makes them so.
+ *
+ * Swift force-unwrap (`self.a!`) is the exact semantic of TypeScript's
+ * `non_null_expression` above — it yields the wrapped type — but Swift parses it
+ * as the general `postfix_expression`, which ALSO carries user-defined postfix
+ * operators. Those can return anything, so peeling the node type unconditionally
+ * would type the receiver as the operand and could produce a confidently wrong
+ * owner. Reading the operator keeps the peel to the case that is provably
+ * type-preserving.
+ */
+const OPERATOR_GATED_RECEIVER_WRAPPERS = new Map<string, string>([
+  ['postfix_expression', '!'], // Swift `self.a!`
+]);
+
+/** Is `node` a wrapper that denotes exactly what its operand denotes? */
+function isTransparentReceiverWrapper(node: SyntaxNode): boolean {
+  if (TRANSPARENT_RECEIVER_WRAPPERS.has(node.type)) return true;
+  const operator = OPERATOR_GATED_RECEIVER_WRAPPERS.get(node.type);
+  if (operator === undefined) return false;
+  // The operator is an anonymous token, so it is not in `namedChildren`; the
+  // node's own text is the reliable place to read it.
+  return node.text.trimEnd().endsWith(operator);
+}
+
+/**
  * Iteration bound for the wrapper peel. Its OWN constant, not `MAX_CHAIN_DEPTH`.
  *
  * The two answer unrelated questions — "how many chain hops do we type?" versus
@@ -575,11 +601,7 @@ const MAX_TRANSPARENT_WRAPPER_DEPTH = 3;
 /** Peel transparent wrappers off a base receiver node. */
 function unwrapTransparentReceiver(node: SyntaxNode): SyntaxNode {
   let current = node;
-  for (
-    let i = 0;
-    i < MAX_TRANSPARENT_WRAPPER_DEPTH && TRANSPARENT_RECEIVER_WRAPPERS.has(current.type);
-    i++
-  ) {
+  for (let i = 0; i < MAX_TRANSPARENT_WRAPPER_DEPTH && isTransparentReceiverWrapper(current); i++) {
     const inner = current.namedChildren?.find((c) => c !== null);
     if (inner === undefined || inner === null) break;
     current = inner;
