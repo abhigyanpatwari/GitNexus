@@ -638,6 +638,13 @@ function synthesizeConstructorFieldBindings(root: SyntaxNode, out: CaptureMatch[
     }
     // Only process constructor method definitions
     if (node.type !== 'method_definition') continue;
+    // …and only a CLASS's. An object literal's members are `method_definition`
+    // too, so `{ constructor() { this.p = new Alien(); } }` reached here and
+    // typed a field on whatever class the hoist walked up to — an object
+    // literal's `this` is the literal, never that class's instance (#2807).
+    // TypeScript's sibling pattern carries the same constraint in its query
+    // nesting; the two must not read one source differently.
+    if (node.parent?.type !== 'class_body') continue;
     const nameNode = node.childForFieldName('name');
     if (nameNode?.text !== 'constructor') continue;
 

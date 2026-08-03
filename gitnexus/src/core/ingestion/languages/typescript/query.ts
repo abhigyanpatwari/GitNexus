@@ -1051,29 +1051,70 @@ export const TYPESCRIPT_SCOPE_QUERY = `
 ;; annotation already types it, which is why \`private p: Outer;\` + the same
 ;; assignment always resolved.)
 ;;
+;; The nesting is the whole safety property. \`this.x = new Y()\` is a legal
+;; statement ANYWHERE, and the binding it produces is hoisted onto the nearest
+;; enclosing Class — so a context-free version of this pattern typed a class's
+;; field from an assignment whose \`this\` was some OTHER object, overwriting the
+;; field's real type (pass4CollectTypeBindings resolves a same-source tie in
+;; favour of the LATER match). Requiring the chain
+;; \`class_body → method_definition → statement_block → expression_statement\`
+;; makes the marker fire only where \`this\` provably IS an instance of the class
+;; the binding lands on. It rejects, in order of how easily each was hit:
+;; a non-arrow callback inside a method (\`function () { this.x = new Y(); }\` —
+;; \`this\` is the call's receiver), an object-literal method (also a
+;; \`method_definition\`, but under \`object\`, not \`class_body\`), and module top
+;; level (no enclosing Class at all, where the hoist used to fall back to the
+;; innermost scope and could overwrite a module local of the same name).
+;;
+;; This mirrors \`synthesizeConstructorFieldBindings\` in
+;; \`languages/javascript/captures.ts\`, which walks only \`method_definition\`
+;; bodies and only their DIRECT \`expression_statement\` children — the two
+;; languages must not read the same source differently. TypeScript accepts any
+;; method rather than only \`constructor\` (a later \`setUp()\` assignment types
+;; the field just as well), which is the one intended divergence.
+;;
+;; Two shapes are deliberately NOT matched, both erring toward no binding:
+;; an assignment nested in a block (\`if (…) { this.p = new Outer(); }\`) and one
+;; inside an arrow (\`() => { this.p = new Outer(); }\`, where \`this\` IS the
+;; instance). Both are only ever a MISSING binding, never a wrong one, and JS
+;; declines them too.
+;;
 ;; \`@type-binding.this-field\` is a MARKER, not the anchor: it sits on the narrow
 ;; \`(this)\` node, so anchorCaptureFor's broadest-range rule keeps the whole
 ;; assignment_expression (@type-binding.constructor) as the anchor and the
 ;; source stays \`constructor-inferred\`. tsBindingScopeFor reads the marker to
 ;; hoist the binding onto the enclosing Class scope — without that hoist the
-;; binding would land on the constructor's own Function scope, where
+;; binding would land on the method's own Function scope, where
 ;; typeOfMemberOnClass never looks. The marker must stay specific to THIS
 ;; pattern: hoisting every constructor-inferred binding would move method-local
 ;; \`const o = new Outer()\` out of its own scope.
-(assignment_expression
-  left: (member_expression
-    object: (this) @type-binding.this-field
-    property: (property_identifier) @type-binding.name)
-  right: (new_expression
-    constructor: (identifier) @type-binding.type)) @type-binding.constructor
+;;
+;; One constraint the grammar cannot carry: \`static\` is an ANONYMOUS token on
+;; \`method_definition\` with no field name, and tree-sitter patterns cannot
+;; negate one. \`this\` in a static method is the class object, so that last
+;; wrong receiver is dropped by \`emitTsScopeCaptures\` instead.
+(class_body
+  (method_definition
+    body: (statement_block
+      (expression_statement
+        (assignment_expression
+          left: (member_expression
+            object: (this) @type-binding.this-field
+            property: (property_identifier) @type-binding.name)
+          right: (new_expression
+            constructor: (identifier) @type-binding.type)) @type-binding.constructor))))
 
 ;; Qualified form: \`this.p = new models.Outer()\`.
-(assignment_expression
-  left: (member_expression
-    object: (this) @type-binding.this-field
-    property: (property_identifier) @type-binding.name)
-  right: (new_expression
-    constructor: (member_expression) @type-binding.type)) @type-binding.constructor
+(class_body
+  (method_definition
+    body: (statement_block
+      (expression_statement
+        (assignment_expression
+          left: (member_expression
+            object: (this) @type-binding.this-field
+            property: (property_identifier) @type-binding.name)
+          right: (new_expression
+            constructor: (member_expression) @type-binding.type)) @type-binding.constructor))))
 
 (assignment_expression
   left: (identifier) @type-binding.name

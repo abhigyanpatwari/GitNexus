@@ -199,6 +199,37 @@ function shouldEmitReadMember(memberNode: SyntaxNode): boolean {
   }
 }
 
+/**
+ * Is this `(this)` node the `this` of a STATIC method?
+ *
+ * `this` in a static method is the class object, so `this.x = new Y()` there
+ * assigns a STATIC property and must never type the instance field of the same
+ * name (#2807). Every other context that rebinds `this` is excluded
+ * structurally, by the query's `class_body → method_definition →
+ * statement_block → expression_statement` nesting; `static` is the one
+ * constraint tree-sitter cannot carry, because it is an ANONYMOUS token with no
+ * field name and patterns cannot negate one.
+ *
+ * The caller only reaches here for a capture the query already pinned inside a
+ * class method, so the `method_definition` lookup is a short walk. Only the
+ * modifiers BEFORE the `name` field are inspected — the grammar puts
+ * `accessibility_modifier`, `static`, `override`, `readonly`, `async` and
+ * `get`/`set`/`*` there, and stopping at the name keeps a method whose body
+ * merely mentions `static` from being misread.
+ */
+function isStaticMethodThis(thisNode: SyntaxNode): boolean {
+  const method = findSelfOrAncestorOfType(thisNode, 'method_definition');
+  if (method === null) return false;
+  const nameId = method.childForFieldName('name')?.id;
+  for (let i = 0; i < method.childCount; i++) {
+    const child = method.child(i);
+    if (child === null) continue;
+    if (child.id === nameId) break;
+    if (child.type === 'static') return true;
+  }
+  return false;
+}
+
 /** Walks the parent chain from `node` (inclusive), returning the first node
  *  whose type matches, or null. Faster than `findNodeAtRange` when the caller
  *  already holds the anchor node — avoids re-scanning the tree from the root. */
@@ -343,6 +374,16 @@ export function emitTsScopeCaptures(
       if (memberNode === null || !shouldEmitReadMember(memberNode)) {
         continue;
       }
+    }
+
+    // `this.<field> = new …` inside a STATIC method types a static property,
+    // not the instance field of the same name (#2807). Every other `this`-
+    // rebinding context is already excluded by the pattern's nesting — see the
+    // note on it in `query.ts`; `static` is an anonymous token, so no pattern
+    // can negate it and the last case is dropped here.
+    const thisFieldNode = groupedNodes['@type-binding.this-field'];
+    if (thisFieldNode !== undefined && isStaticMethodThis(thisFieldNode)) {
+      continue;
     }
 
     // #1876: drop @declaration.function for array higher-order-method

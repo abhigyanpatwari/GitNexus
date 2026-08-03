@@ -45,6 +45,18 @@
  * that got receiver typing for free are exactly the ones nobody would think to
  * re-check.
  *
+ * ── THE OTHER HALF: A FIELD MUST NOT BE TYPED BY AN ALIEN `this` ─────────────
+ *
+ * Typing a field from `this.p = new Outer()` is only half the question; the
+ * other half is WHICH `this`. The first cut of the TypeScript pattern was
+ * context-free, so it typed a class's field from any `this.p = new …` in the
+ * file — inside a non-arrow callback, an object-literal method, a static
+ * method, or at module top level, none of which are that class's instance. The
+ * TypeScript section carries one guard row per shape; see the comment on them.
+ * They are written so a regression SWAPS a target rather than emptying the set,
+ * because a row that asserts an empty result passes just as well when the
+ * fixture stopped working.
+ *
  * ── HOW THE HARD CASES WERE FIXED ─────────────────────────────────────────────
  *
  * Dart is the one language here that writes a field with NO receiver prefix, so
@@ -99,6 +111,25 @@ export class ControlLocal { run(x: number): number { const o = new Outer(); retu
 export class ControlTypedField { private p: Outer = new Outer(); run(x: number): number { return this.p.inner().compute(x); } }
 export class InferredField { private p = new Outer(); run(x: number): number { return this.p.inner().compute(x); } }
 export class AssignedField { private q; constructor() { this.q = new Outer(); } run(x: number): number { return this.q.inner().compute(x); } }
+export class Alien { inner(): Inner { return new Inner(); } }
+export class CallbackThis {
+  private p = new Outer();
+  attach(el: any): void { el.addEventListener('click', function () { this.p = new Alien(); }); }
+  run(x: number): number { return this.p.inner().compute(x); }
+}
+export class ObjectLiteralThis {
+  private p = new Outer();
+  build(): unknown { return { m() { this.p = new Alien(); } }; }
+  run(x: number): number { return this.p.inner().compute(x); }
+}
+export class StaticThis {
+  private p = new Outer();
+  static make(): void { this.p = new Alien(); }
+  run(x: number): number { return this.p.inner().compute(x); }
+}
+export const moduleLocal = new Outer();
+export function runModuleLocal(x: number): number { return moduleLocal.inner().compute(x); }
+this.moduleLocal = new Alien();
 `;
 
 // ── JavaScript ───────────────────────────────────────────────────────────────
@@ -108,6 +139,12 @@ export class Outer { inner() { return new Inner(); } }
 export class ControlLocal { run(x) { const o = new Outer(); return o.inner().compute(x); } }
 export class InferredField { p = new Outer(); run(x) { return this.p.inner().compute(x); } }
 export class AssignedField { constructor() { this.q = new Outer(); } run(x) { return this.q.inner().compute(x); } }
+export class Alien { inner() { return new Inner(); } }
+export class ObjectLiteralCtorThis {
+  p = new Outer();
+  build() { return { constructor() { this.p = new Alien(); } }; }
+  run(x) { return this.p.inner().compute(x); }
+}
 `;
 
 // ── Python ───────────────────────────────────────────────────────────────────
@@ -477,6 +514,46 @@ const CASES: readonly LanguageCase[] = [
         targets: [`Method:${TS_FILE}:Inner.compute#1`, `Method:${TS_FILE}:Outer.inner#0`],
         status: 'resolves',
       },
+      // ── The wrong-`this` guard rows ────────────────────────────────────────
+      //
+      // Each of the next four writes `this.p = new Alien()` from a context
+      // where `this` is NOT an instance of the class the binding would land on,
+      // and each one is a shape the context-free version of the `this.<field> =
+      // new …` pattern accepted. The receiver they must NOT retype is
+      // `private p = new Outer()`, already typed by its initializer, so the
+      // pattern's `>=` tie-break (later match wins at equal source strength)
+      // OVERWROTE the field's real type.
+      //
+      // `Alien` deliberately declares `inner()` too. That is what keeps these
+      // rows honest: a wrong binding does not empty the target set, it swaps
+      // `Outer.inner#0` for `Alien.inner#0`. Asserting the exact set therefore
+      // fails on the defect instead of passing vacuously the way an
+      // expected-empty row would — and the last row is a module local, not a
+      // field, so it also pins that the marker cannot escape a class at all.
+      {
+        name: 'callback-this-does-not-retype-the-field',
+        callerId: `Method:${TS_FILE}:CallbackThis.run#1`,
+        targets: [`Method:${TS_FILE}:Inner.compute#1`, `Method:${TS_FILE}:Outer.inner#0`],
+        status: 'resolves',
+      },
+      {
+        name: 'object-literal-this-does-not-retype-the-field',
+        callerId: `Method:${TS_FILE}:ObjectLiteralThis.run#1`,
+        targets: [`Method:${TS_FILE}:Inner.compute#1`, `Method:${TS_FILE}:Outer.inner#0`],
+        status: 'resolves',
+      },
+      {
+        name: 'static-this-does-not-retype-the-instance-field',
+        callerId: `Method:${TS_FILE}:StaticThis.run#1`,
+        targets: [`Method:${TS_FILE}:Inner.compute#1`, `Method:${TS_FILE}:Outer.inner#0`],
+        status: 'resolves',
+      },
+      {
+        name: 'module-level-this-does-not-retype-a-module-local',
+        callerId: `Function:${TS_FILE}:runModuleLocal`,
+        targets: [`Method:${TS_FILE}:Inner.compute#1`, `Method:${TS_FILE}:Outer.inner#0`],
+        status: 'resolves',
+      },
     ],
   },
   {
@@ -499,6 +576,20 @@ const CASES: readonly LanguageCase[] = [
       {
         name: 'assigned-field',
         callerId: `Method:${JS_FILE}:AssignedField.run#1`,
+        targets: [`Method:${JS_FILE}:Outer.inner#0`],
+        status: 'resolves',
+      },
+      // JavaScript's half of the wrong-`this` guard above. Its binding comes
+      // from `synthesizeConstructorFieldBindings`, which was already bounded to
+      // a `constructor` body's direct statements — but matched a
+      // `method_definition` anywhere, and an object literal's members are
+      // `method_definition` too. So a literal named-`constructor` method typed
+      // the enclosing class's field, the one shape where `.js` still read this
+      // source differently from `.ts` once TypeScript's pattern was nested.
+      // Same swap-not-empty construction: `Alien` declares `inner()`.
+      {
+        name: 'object-literal-constructor-this-does-not-retype-the-field',
+        callerId: `Method:${JS_FILE}:ObjectLiteralCtorThis.run#1`,
         targets: [`Method:${JS_FILE}:Outer.inner#0`],
         status: 'resolves',
       },
