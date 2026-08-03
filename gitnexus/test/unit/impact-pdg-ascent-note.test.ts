@@ -43,6 +43,25 @@ const ascentOnlyBlock = (file: string): string => `BasicBlock:${file}:1:0:9`;
 // deliberately un-enterable.
 const helperCalleeId = (file: string): string => `Function:${file}:helper`;
 
+// P2-5 — the SECOND, DISTINCT callee. It is named ONLY in the `calleeIds` cell of
+// `helper`'s own body block, so the descent has to cross a second call boundary
+// before it ever sees the id. That is the only shape under which the cross-hop
+// unions (`calleeReferencesSeen` / `calleesReturnFlowingSeen`) do any work — a
+// cell carrying several ids is still one hop, and one hop cannot tell a union
+// apart from an overwrite.
+const secondCalleeId = (file: string): string => `Function:${file}:helper2`;
+// The two callees' 0-based symbol spans. `blockAnchorForResolvedSymbol` binds
+// `$symStart = startLine + 1` on the RANGE-anchored per-callee seed fetch, so the
+// spans are what route that fetch to each callee's own body block — the descent
+// never asks for a body by callee id, only by span.
+const HELPER_SPAN = { startLine: 4, endLine: 6 } as const;
+const SECOND_SPAN = { startLine: 8, endLine: 10 } as const;
+const symStartOf = (span: { readonly startLine: number }): number => span.startLine + 1;
+// `helper2`'s body seed — the direct observable of "hop 1 reached new ground",
+// which is what separates a genuine second hop from a wider first one.
+const secondCalleeSeedBlock = (file: string): string =>
+  `BasicBlock:${file}:${symStartOf(SECOND_SPAN)}:0:0`;
+
 // A mock that drives ONE real inter-procedural descent hop: the criterion's
 // reachable block calls `helper`, the descent resolves helper's span (so
 // interproceduralHops > 0 and the note block fires). `summary` decides what
@@ -65,22 +84,39 @@ function descentExec(
   // Function/Method/Constructor, so anything else yields no span and is skipped
   // while still riding the cell (and still being scanned for a CALL_SUMMARY).
   calleeIds?: readonly string[],
+  // P2-5 case: what the SECOND, distinct callee's CALL_SUMMARY row holds.
+  // `undefined` ⇒ no second hop at all (every case above the P2-5 block).
+  // Any `Summary` — including `null`, meaning "a callee with no CALL_SUMMARY row"
+  // — puts `helper2` in the cell of HELPER's body block, so the descent reaches
+  // it only by crossing a second call boundary.
+  secondSummary?: Summary,
 ): RunPdgImpactDeps['executeParameterized'] {
   const seed = `BasicBlock:${file}:1:0:0`;
   const callBlock = `BasicBlock:${file}:1:0:2`;
-  const calleeSeed = `BasicBlock:${file}:5:0:0`;
+  const calleeSeed = `BasicBlock:${file}:${symStartOf(HELPER_SPAN)}:0:0`;
+  const secondSeed = secondCalleeSeedBlock(file);
   const ascentOnly = ascentOnlyBlock(file);
   const helper = helperCalleeId(file);
+  const second = secondCalleeId(file);
   const cellIds = calleeIds ?? [helper];
   const calleeCell = (
     calleeCellCapped ? [...cellIds, CALLEES_TRUNCATED_SENTINEL] : [...cellIds]
   ).join(CALLEE_ID_SEP);
   // Both the span resolve and the CALL_SUMMARY scan bind the ids they ask about
-  // as `$ids`, so the mock answers for `helper` only when `helper` was asked for
-  // — an id the descent cannot enter must not borrow helper's span or summary.
-  const asksForHelper = (params: Record<string, unknown>): boolean => {
+  // as `$ids`, so the mock answers PER ASKED ID — an id the descent cannot enter
+  // must not borrow another callee's span or summary, and `helper2` must not be
+  // answerable until the hop that actually asks for it.
+  const spans = new Map<string, { readonly startLine: number; readonly endLine: number }>([
+    [helper, HELPER_SPAN],
+  ]);
+  const summaries = new Map<string, Summary>([[helper, summary]]);
+  if (secondSummary !== undefined) {
+    spans.set(second, SECOND_SPAN);
+    summaries.set(second, secondSummary);
+  }
+  const askedIds = (params: Record<string, unknown>): string[] => {
     const ids = params['ids'];
-    return Array.isArray(ids) && ids.map((id) => String(id)).includes(helper);
+    return Array.isArray(ids) ? ids.map((id) => String(id)) : [];
   };
   return async (_repo, query, params: Record<string, unknown>) => {
     // Top-level seed fetch is line-anchored (`a.startLine = $line`); the descent's
@@ -88,7 +124,12 @@ function descentExec(
     // Matches the seed fetch without pinning the clauses after the projection —
     // #2787 added `ORDER BY a.startLine, id` between the RETURN and the LIMIT.
     if (query.includes('RETURN a.id AS id')) {
-      return query.includes('a.startLine = $line') ? [{ id: seed }] : [{ id: calleeSeed }];
+      if (query.includes('a.startLine = $line')) return [{ id: seed }];
+      // Range-anchored, so `$symStart` (= the callee span's startLine + 1) is the
+      // only thing distinguishing the two callees' bodies.
+      return params['symStart'] === symStartOf(SECOND_SPAN)
+        ? [{ id: secondSeed }]
+        : [{ id: calleeSeed }];
     }
     if (query.includes('MATCH (a:BasicBlock)-[r:CodeRelation]->(b:BasicBlock)')) {
       const frontier = params['frontier'];
@@ -100,24 +141,51 @@ function descentExec(
       return [];
     }
     if (query.includes('RETURN b.id AS id, b.calleeIds AS calleeIds')) {
-      return [{ id: callBlock, calleeIds: calleeCell }];
+      const asked = askedIds(params);
+      // Hop 1 gathers callees from HELPER's body blocks; that cell — and only that
+      // cell — carries the second callee, so the second hop cannot be reached by
+      // widening the first block's cell.
+      if (secondSummary !== undefined && asked.includes(calleeSeed)) {
+        return [{ id: calleeSeed, calleeIds: second }];
+      }
+      return asked.includes(callBlock) ? [{ id: callBlock, calleeIds: calleeCell }] : [];
     }
     if (query.includes("r.type = 'CALL_SUMMARY'")) {
-      if (summary === null || !asksForHelper(params)) return [];
-      const reason = summary.kind === 'params' ? encodeCallSummary(summary.params) : summary.reason;
-      return [{ id: helper, reason }];
+      return askedIds(params).flatMap((id) => {
+        const row = summaries.get(id);
+        // Not in the table (an id no test gave a callee fixture) or an explicit
+        // `null` (a callee whose summary was never persisted) ⇒ no row.
+        if (row === undefined || row === null) return [];
+        const reason = row.kind === 'params' ? encodeCallSummary(row.params) : row.reason;
+        return [{ id, reason }];
+      });
     }
     if (query.includes('s.id IN $ids') && query.includes('AS filePath')) {
-      return asksForHelper(params)
-        ? [{ id: helper, filePath: file, startLine: 4, endLine: 6 }]
-        : [];
+      return askedIds(params).flatMap((id) => {
+        const span = spans.get(id);
+        return span === undefined
+          ? []
+          : [{ id, filePath: file, startLine: span.startLine, endLine: span.endLine }];
+      });
     }
     if (query.includes('MATCH (b:BasicBlock) WHERE b.id IN $ids')) {
       return [
         { id: seed, line: 1, endLine: 1, text: 'run()' },
         { id: callBlock, line: 3, endLine: 3, text: 'x = helper()' },
         { id: ascentOnly, line: 4, endLine: 4, text: 'y = x + 1' },
-        { id: calleeSeed, line: 5, endLine: 5, text: 'return 1' },
+        {
+          id: calleeSeed,
+          line: 5,
+          endLine: 5,
+          text: secondSummary === undefined ? 'return 1' : 'return helper2()',
+        },
+        // Only ever reachable — and so only ever projected — on a second hop.
+        {
+          id: secondSeed,
+          line: symStartOf(SECOND_SPAN),
+          endLine: symStartOf(SECOND_SPAN),
+          text: 'return 2',
+        },
       ];
     }
     if (query.includes('MATCH (s:`Function`)')) return [];
@@ -136,6 +204,9 @@ const run = (
   maxDepth = 3,
   calleeCellCapped = false,
   calleeIds?: readonly string[],
+  // P2-5: `undefined` ⇒ the single-hop descent every case above uses; any
+  // `Summary` drives a genuine SECOND hop to a DISTINCT callee holding it.
+  secondSummary?: Summary,
 ) =>
   runImpactPDG({
     repo: { lbugPath: 'repo' },
@@ -145,7 +216,7 @@ const run = (
     maxDepth,
     limit: 50,
     line: 1,
-    executeParameterized: descentExec(file, summary, calleeCellCapped, calleeIds),
+    executeParameterized: descentExec(file, summary, calleeCellCapped, calleeIds, secondSummary),
     callSummaryAvailable,
   });
 
@@ -453,5 +524,86 @@ describe('runImpactPDG — the empty-ascent count is call-site references (P3-7)
     const note = noteOf(await run(FILE, true, null, 3, false, UNENTERABLE_CALLEES));
     expect(note).not.toContain('inter-procedural hop');
     expect(note).not.toContain(CAVEAT);
+  });
+});
+
+// P2-5 — the counters the note quotes are CROSS-HOP unions
+// (`calleeReferencesSeen` / `calleesReturnFlowingSeen` in `interproceduralDescent`),
+// accumulated once per hop and read only after the hop loop ends. Every case above
+// takes exactly ONE hop, so none of them can tell a union from a per-hop
+// overwrite: with one hop both produce the same numbers. The cases below take TWO
+// hops reaching DIFFERENT callees — `helper` on hop 0, `helper2` (named only in
+// helper's own body block) on hop 1 — which is the only shape where the two
+// implementations disagree.
+//
+// They also pin the MIXED boundary. The production condition for both empty-ascent
+// sentences is `calleesReturnFlowing === 0`, so a single return-flowing callee
+// silences the note entirely — no caveat, no "1 of 3" partial figure, not even the
+// undecodable-summary remedy. That binary behavior is deliberate (partial-coverage
+// reporting was considered and dropped); pinned here so changing it is a decision
+// rather than an accident.
+const TWO_HOPS = 'crosses 2 inter-procedural hops';
+
+describe('runImpactPDG — cross-hop accumulation and mixed return-flow (P2-5)', () => {
+  it('two hops over DISTINCT callees → the reference count is their UNION', async () => {
+    const result = await run(FILE, true, null, 3, false, undefined, null);
+    // Premise, asserted rather than assumed: the descent crossed TWO call
+    // boundaries and the second one reached ground the first did not.
+    expect(noteOf(result)).toContain(TWO_HOPS);
+    expect(blocksOf(result)).toContain(secondCalleeSeedBlock(FILE));
+    // Nothing truncated, so the count is quoted flat and the P2-4 qualifier is
+    // not what is being read here.
+    expect(truncatedOf(result)).toBe(false);
+    expect(noteOf(result)).not.toContain(QUALIFIER);
+    // hop 0 contributes {helper}, hop 1 contributes {helper2} ⇒ 2. A per-hop
+    // overwrite ends holding only hop 1's set and quotes 1.
+    expect(noteOf(result)).toContain(
+      'none of the 2 call-site callee references carry a CALL_SUMMARY return-flow',
+    );
+  });
+
+  it('a return-flow found on hop 0 survives a later hop that finds none', async () => {
+    const result = await run(FILE, true, flow([0]), 3, false, undefined, null);
+    expect(noteOf(result)).toContain(TWO_HOPS);
+    expect(blocksOf(result)).toContain(secondCalleeSeedBlock(FILE));
+    // `helper` return-flows, `helper2` does not. The union keeps `helper`, so the
+    // note stays silent; a per-hop overwrite would end on hop 1's EMPTY set and
+    // wrongly emit the caveat over 2 references.
+    expect(noteOf(result)).not.toContain(CAVEAT);
+  });
+
+  it('a return-flow found only on hop 1 also silences the note', async () => {
+    const result = await run(FILE, true, null, 3, false, undefined, flow([0]));
+    expect(noteOf(result)).toContain(TWO_HOPS);
+    expect(blocksOf(result)).toContain(secondCalleeSeedBlock(FILE));
+    // The mirror image of the row above: hop 0 found nothing, hop 1 did. The note
+    // keys on the ACCUMULATED set, never on the first hop's view of it.
+    expect(noteOf(result)).not.toContain(CAVEAT);
+  });
+
+  it('mixed callees in ONE examined set → the note goes silent, never partial', async () => {
+    const [mixed, none] = await Promise.all([
+      run(FILE, true, flow([0]), 3, false, MIXED_CALLEES),
+      run(FILE, true, null, 3, false, MIXED_CALLEES),
+    ]);
+    // Same 3 call-site references in both runs; only `helper`'s summary differs.
+    // One return-flow is enough to fail `calleesReturnFlowing === 0`, so NO
+    // empty-ascent sentence is emitted — the note quotes no count at all rather
+    // than reporting "1 of 3 carried a return-flow".
+    expect(noteOf(mixed)).not.toContain(CAVEAT);
+    expect(noteOf(mixed)).not.toContain('call-site callee reference');
+    // The discriminator that makes the silence load-bearing: drop that one
+    // return-flow and the SAME 3 references do produce the sentence.
+    expect(noteOf(none)).toContain('none of the 3 call-site callee references carry');
+  });
+
+  it('a return-flowing callee alongside an UNDECODABLE one → not even the decode remedy', async () => {
+    const note = noteOf(await run(FILE, true, flow([0]), 3, false, undefined, raw('1|r:zz')));
+    expect(note).toContain(TWO_HOPS);
+    // Both empty-ascent branches are gated on `calleesReturnFlowing === 0`, so the
+    // hop-1 undecodable summary — normally reported with a rebuild remedy — is
+    // suppressed by the hop-0 return-flow. The mixed case is silent end to end.
+    expect(note).not.toContain(CAVEAT);
+    expect(note).not.toContain('could not be decoded');
   });
 });
