@@ -430,6 +430,34 @@ export const JAVASCRIPT_SCOPE_QUERY = `
   value: (new_expression
     constructor: (member_expression) @type-binding.type)) @type-binding.constructor
 
+;; Class field initializer: \`class C { p = new Outer(); }\` (#2807).
+;; JavaScript has no field annotations at all, so a class field's type can only
+;; ever come from its initializer — without this pattern \`this.p.inner()\` had
+;; nothing to type the receiver with and the receiver fold declined the whole
+;; chain. \`synthesizeConstructorFieldBindings\` in captures.ts already covers the
+;; sibling shape (\`this.p = new Outer()\`), but only inside a \`constructor\`
+;; body, so a field initialized at its declaration matched nothing.
+;;
+;; Anchored on \`field_definition\` so the binding lands in the class body scope,
+;; where \`typeOfMemberOnClass\` reads it — the same anchoring TypeScript uses for
+;; \`public_field_definition\`. Note the JS grammar names the field \`property:\`,
+;; not \`name:\`.
+(field_definition
+  property: (property_identifier) @type-binding.name
+  value: (new_expression
+    constructor: (identifier) @type-binding.type)) @type-binding.constructor
+
+(field_definition
+  property: (property_identifier) @type-binding.name
+  value: (new_expression
+    constructor: (member_expression) @type-binding.type)) @type-binding.constructor
+
+;; Private-name field: \`#p = new Outer()\`.
+(field_definition
+  property: (private_property_identifier) @type-binding.name
+  value: (new_expression
+    constructor: (identifier) @type-binding.type)) @type-binding.constructor
+
 ;; Call-result alias: const u = getUser()
 (variable_declarator
   name: (identifier) @type-binding.name
