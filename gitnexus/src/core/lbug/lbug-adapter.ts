@@ -19,6 +19,17 @@ import {
   STALE_HASH_SENTINEL,
   NodeTableName,
 } from './schema.js';
+// Analyze-only, and reached from MCP server startup via `pool-adapter.js`. #2802
+// proposed lazy-importing it to shorten startup; measured, that is not worth it:
+//   - marginal import cost is ~1.6 ms on a native filesystem, beyond the siblings
+//     (`schema.js`, `rel-pair-routing.js`, `graph/types.js`) this module imports
+//     independently — the 9p-mount figures in the issue are ~40x inflated;
+//   - `core/search/bm25-index.ts` statically imports `normalizeFtsText` from here
+//     and `local-backend.ts` dynamically imports bm25-index on the FTS query path,
+//     so deferring here moves the cost to first query rather than removing it.
+// The startup cost #2802 was chasing was `pdg-impact.ts` -> the language provider
+// registry (~226 modules, ~130 ms), cut separately and pinned by
+// `test/unit/mcp-startup-import-closure.test.ts`.
 import { streamAllCSVsToDisk, type StreamedCSVResult } from './csv-generator.js';
 import type { GraphEmitManifest } from './graph-emit-sink.js';
 import type { PdgEmitManifest } from './pdg-emit-sink.js';
