@@ -33,15 +33,22 @@
  * the whole cell, so the descent cannot cross into `Outer.inner` either, even
  * though that call has a perfectly ordinary named receiver. Those two rows are
  * pinned by `KNOWN GAP: an inference-typed receiver empties the WHOLE calleeIds
- * cell` below, which asserts the current empty value EXACTLY. That pin is the
- * durable record of the gap: it is self-diffing, so the day the resolver learns
- * to infer a field's type from its initializer it fails loudly with the newly
- * resolved ids in the diff, and the table above has to be corrected together with
- * the row's `resolution` — a single-shape fixture would instead have kept
- * implying that chained receivers work in general.
+ * cell` below, which asserts the current empty value EXACTLY.
  *
- * This gap is PRE-EXISTING and independent of #2802: nothing on that branch
- * touches receiver typing.
+ * ── THIS PIN IS SELF-DIFFING: IT WILL GO RED ON PURPOSE ───────────────────────
+ *
+ * The gap is tracked as issue #2807 ("Inference-typed field receivers resolve to
+ * no CALLS edges at all"); PR #2810 is open against it at the time of writing.
+ * The `KNOWN GAP` test asserts that the gap EXISTS — the empty cell, exactly —
+ * so it is not a regression guard, it is a record. Whoever closes #2807 will see
+ * it fail with the newly resolved ids in the diff; that is the intended signal,
+ * and the fix is to update this file (the table above, the rows' `resolution`,
+ * and the pin's expected value), not to relax the assertion. A single-shape
+ * fixture, or an `it.fails` row, would instead have kept quietly implying that
+ * chained receivers work in general.
+ *
+ * The gap was FOUND during #2802 work but is PRE-EXISTING and independent of it:
+ * nothing on that branch touches receiver typing. Track the gap itself at #2807.
  *
  * Self-contained fixture rather than an addition to `fixtures/pdg-repo` — that
  * fixture is shared by eight suites including a snapshot test, so growing it to
@@ -249,7 +256,7 @@ function assertChainReachesPdg(shape: ReceiverShape): void {
   expect(ids).toEqual(expect.arrayContaining([...shape.links]));
 }
 
-describe('PDG calleeIds — chained receiver calls by receiver form (#2802 follow-up)', () => {
+describe('PDG calleeIds — chained receiver calls by receiver form (known gap: #2807)', () => {
   beforeAll(async () => {
     const dir = repos.dir();
     fs.mkdirSync(path.join(dir, path.dirname(FIXTURE_PATH)));
@@ -287,9 +294,10 @@ describe('PDG calleeIds — chained receiver calls by receiver form (#2802 follo
 
   // Pins the CURRENT broken value, not merely that the chain fails: both known
   // gaps emit an EMPTY cell — the first link (`Outer.inner`, a plainly named
-  // receiver) is gone too. Update this together with the header table and the
-  // rows' `resolution` when the gap closes.
-  it('KNOWN GAP: an inference-typed receiver empties the WHOLE calleeIds cell', () => {
+  // receiver) is gone too. This asserts the gap EXISTS (issue #2807), so closing
+  // #2807 turns it red BY DESIGN; update it together with the header table and
+  // the rows' `resolution` rather than loosening it.
+  it('KNOWN GAP (#2807): an inference-typed receiver empties the WHOLE calleeIds cell', () => {
     const gaps = RECEIVER_SHAPES.filter((s) => s.resolution === 'known-gap-empty-cell');
     const observed = Object.fromEntries(gaps.map((s) => [s.name, idsFor(s.marker)]));
     expect(observed).toEqual({ 'inferred-field': [], 'ctor-assigned-inferred': [] });

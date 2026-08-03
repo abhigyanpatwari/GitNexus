@@ -35,12 +35,21 @@
  *
  * The annotated twins are pinned in the same file on purpose — a gap test that
  * shows only the broken shape does not tell the next engineer where the
- * boundary is. When the resolver learns to infer a field's type from its
- * initializer, `KNOWN GAP` fails with the newly resolved ids in the diff, and
- * the table above must be corrected together with the rows' `resolution`.
+ * boundary is.
  *
- * This gap is PRE-EXISTING and independent of #2802: nothing on that branch
- * touches receiver typing.
+ * ── THIS PIN IS SELF-DIFFING: IT WILL GO RED ON PURPOSE ───────────────────────
+ *
+ * The gap is tracked as issue #2807 ("Inference-typed field receivers resolve to
+ * no CALLS edges at all"); PR #2810 is open against it at the time of writing.
+ * `KNOWN GAP` asserts that the gap EXISTS — no CALLS edges, exactly — so it is a
+ * record rather than a regression guard. When the resolver learns to infer a
+ * field's type from its initializer it fails with the newly resolved ids in the
+ * diff; that is the intended signal. The fix is to update this file (the table
+ * above, the rows' `resolution`, and the pin's expected value), not to relax the
+ * assertion into something a passing fix would also satisfy.
+ *
+ * The gap was FOUND during #2802 work but is PRE-EXISTING and independent of it:
+ * nothing on that branch touches receiver typing. Track the gap itself at #2807.
  *
  * The same fact is also observable one layer down, as an empty
  * `BasicBlock.calleeIds` cell, in `test/integration/cfg/
@@ -251,7 +260,7 @@ const RECEIVER_SHAPES: readonly ReceiverShape[] = [
   },
 ];
 
-describe('TypeScript chained receiver calls by field-type form (#2802 follow-up)', () => {
+describe('TypeScript chained receiver calls by field-type form (known gap: #2807)', () => {
   let result: PipelineResult;
   let repoDir: string | undefined;
 
@@ -300,9 +309,10 @@ describe('TypeScript chained receiver calls by field-type form (#2802 follow-up)
   // throw, so a renamed fixture symbol would keep it green on a rotted
   // premise. `callerExists` is folded into the same object so an empty
   // `calls` list can never be read as "resolved fine, wrong node id".
-  // Update this together with the header table and the rows' `resolution`
-  // when the gap closes.
-  it('KNOWN GAP: an inference-typed field receiver emits NO CALLS edges at all', () => {
+  // This asserts the gap EXISTS (issue #2807), so closing #2807 turns it red
+  // BY DESIGN; update it together with the header table and the rows'
+  // `resolution` rather than loosening it.
+  it('KNOWN GAP (#2807): an inference-typed field receiver emits NO CALLS edges at all', () => {
     const gaps = RECEIVER_SHAPES.filter((s) => s.resolution === 'known-gap-no-calls-edges');
     const observed = Object.fromEntries(
       gaps.map((s) => [
