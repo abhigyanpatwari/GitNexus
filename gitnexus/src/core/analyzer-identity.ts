@@ -82,6 +82,7 @@ type PackageManifest = {
   dependencies?: Record<string, unknown>;
   optionalDependencies?: Record<string, unknown>;
   peerDependencies?: Record<string, unknown>;
+  devDependencies?: Record<string, unknown>;
 };
 
 type StatState = {
@@ -931,6 +932,39 @@ function runtimePackageLocator(packageRoot: string, runtimeRoot: string): string
   return `relative:${relative}`;
 }
 
+/** Protocols that name a checkout-local package instead of a registry tarball. */
+const LOCAL_LINK_PROTOCOL_PATTERN = /^(?:file|link|workspace|portal):/;
+/** npm's bare local-path shorthands: `./x`, `../x`, `/x`, `~/x`, `C:\x`. */
+const LOCAL_LINK_PATH_PATTERN = /^(?:\.\.?[/\\]|~[/\\]|[/\\]|[A-Za-z]:)/;
+
+function isLocallyLinkedSpecifier(specifier: unknown): boolean {
+  if (typeof specifier !== 'string') return false;
+  const value = specifier.trim();
+  return LOCAL_LINK_PROTOCOL_PATTERN.test(value) || LOCAL_LINK_PATH_PATTERN.test(value);
+}
+
+/**
+ * Dependency names whose resolved packages can contribute analyzer semantics.
+ *
+ * The three runtime sections are enumerated wholesale. `devDependencies` are
+ * deliberately not: a registry dev tool (vitest, eslint, typescript) is never
+ * loaded by the analyzer, and folding the dev tree into the receipt would churn
+ * `dependencyRuntime.digest` — and force a full re-analysis — on every unrelated
+ * devDependency bump.
+ *
+ * Locally linked dev dependencies are the exception. A `file:`/`link:`/
+ * `workspace:` sibling is part of this checkout and ships code the analyzer
+ * imports at runtime: GitNexus links `gitnexus-shared`, whose schema constants
+ * feed `RELATION_SCHEMA`/`NODE_SCHEMA_QUERIES`. In `kind: 'source'` runs that
+ * sibling sits outside `buildRoot`, so leaving it out let a semantic change
+ * there alter analyzer behaviour while moving neither `build.digest` nor
+ * `dependencyRuntime.digest` — DDL-affecting edits were still caught by the
+ * schema fingerprint, semantics-only edits by nothing.
+ *
+ * An unresolvable link (a published install, where the sibling checkout does not
+ * exist) still contributes its `<missing>` edge, so the linked package appearing
+ * or disappearing remains a receipt change rather than a silent one.
+ */
 function dependencyNames(manifest: PackageManifest): string[] {
   const names = new Set<string>();
   for (const section of [
@@ -940,6 +974,12 @@ function dependencyNames(manifest: PackageManifest): string[] {
   ]) {
     if (!section || typeof section !== 'object') continue;
     for (const name of Object.keys(section)) names.add(name);
+  }
+  const development = manifest.devDependencies;
+  if (development && typeof development === 'object') {
+    for (const [name, specifier] of Object.entries(development)) {
+      if (isLocallyLinkedSpecifier(specifier)) names.add(name);
+    }
   }
   return [...names].sort(compareBytes);
 }
@@ -1108,16 +1148,26 @@ function collectArtifacts(
       );
     }
     for (const entry of entries) {
+      const absolutePath = path.join(absoluteDir, entry.name);
+      const relativePath = path.relative(root, absolutePath).split(path.sep).join('/');
+      const stat = lstatSync(absolutePath);
       // Nested dependencies are collected from their manifests as separate
       // packages. Only prune those separately traversed trees and VCS
       // metadata; generic cache/model directories can contain loadable code,
       // native addons, Wasm modules, or data consumed by the runtime.
-      if (entry.isDirectory() && PRUNED_RUNTIME_DIRECTORIES.has(entry.name)) {
+      //
+      // The linked form is pruned too. Workspace checkouts and shared-store
+      // installers routinely expose `node_modules` as a symbolic link, which is
+      // not a directory entry: it would otherwise fall through to the payload
+      // branch and abort the whole scan on a tree this function exists to skip.
+      // Nothing is dropped — packages beneath it are still discovered through
+      // `resolveDependencyPackageRoot`, which follows links and guards each hop.
+      if (
+        PRUNED_RUNTIME_DIRECTORIES.has(entry.name) &&
+        (stat.isDirectory() || stat.isSymbolicLink())
+      ) {
         continue;
       }
-      const absolutePath = path.join(absoluteDir, entry.name);
-      const relativePath = path.relative(root, absolutePath).split(path.sep).join('/');
-      const stat = lstatSync(absolutePath);
       if (stat.isDirectory()) {
         if (depth >= limits.runtimeDepth) {
           throw new Error(
