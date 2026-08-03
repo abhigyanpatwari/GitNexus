@@ -15,13 +15,13 @@
  * for its CSV dir), differing ONLY in `streamPdgEmit`, so streaming is the only
  * variable.
  */
-import { describe, it, expect, afterAll } from 'vitest';
+import { describe, it, expect } from 'vitest';
 import fs from 'fs';
-import os from 'os';
 import path from 'path';
 import { runPipelineFromRepo } from '../../../src/core/ingestion/pipeline.js';
 import { loadParseCache } from '../../../src/storage/parse-cache.js';
 import type { PipelineResult } from '../../../src/types/pipeline.js';
+import { createTempDirPool } from '../../helpers/temp-dir-pool.js';
 
 const FIXTURE = path.join(__dirname, 'fixtures', 'pdg-repo');
 // A `.vue` SFC importing a `.ts` module: the TS module is PDG-emitted in BOTH
@@ -36,18 +36,10 @@ const PDG_EDGE_TYPES = new Set([
   'SANITIZES',
 ]);
 
-const tmpDirs: string[] = [];
-function freshRepo(fixture: string = FIXTURE): string {
-  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'gn-pdg-stream-'));
-  fs.cpSync(fixture, dir, { recursive: true });
-  tmpDirs.push(dir);
-  return dir;
-}
-function freshStorage(): string {
-  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'gn-pdg-store-'));
-  tmpDirs.push(dir);
-  return dir;
-}
+const repos = createTempDirPool('gn-pdg-stream-');
+const storages = createTempDirPool('gn-pdg-store-');
+const freshRepo = (fixture: string = FIXTURE): string => repos.fromFixture(fixture);
+const freshStorage = (): string => storages.dir();
 
 function pdgCounts(result: PipelineResult): { basicBlocks: number; pdgEdges: number } {
   let basicBlocks = 0;
@@ -62,10 +54,6 @@ function pdgCounts(result: PipelineResult): { basicBlocks: number; pdgEdges: num
 }
 
 describe('#2202 — streaming PDG emit end-to-end', () => {
-  afterAll(() => {
-    for (const d of tmpDirs) fs.rmSync(d, { recursive: true, force: true });
-  });
-
   it('streams the PDG layer out of the graph while preserving the emitted set', async () => {
     // ── Baseline: --pdg on, streaming OFF (durable cache, same as streamed) ──
     const baseStorage = freshStorage();
