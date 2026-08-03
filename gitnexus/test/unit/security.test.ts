@@ -42,6 +42,8 @@ describe('VALID_RELATION_TYPES', () => {
     // Conditional activation and metadata declaration/discovery (#2415)
     'CONDITIONAL_ON',
     'DECLARES',
+    // Spring proxy/advice evidence (#2416)
+    'ADVISED_BY',
   ] as const;
 
   it('contains all expected relation types', () => {

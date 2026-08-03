@@ -1092,7 +1092,10 @@ function unaryOperator(node: SyntaxNode): string | undefined {
  * `tbl[i]()` join (#2522 review). Field names cover the grammars that field
  * their subscript nodes; others keep the generic traversal.
  */
-function subscriptBase(node: SyntaxNode): SyntaxNode | null {
+/** The container operand of a subscript node, per grammar. Exported because the
+ *  receiver-chain walk needs the same per-grammar answer — two divergent field
+ *  tables for one question is how a new grammar gets half-supported. */
+export function subscriptBase(node: SyntaxNode): SyntaxNode | null {
   if (node.childForFieldName('index') === null) return null;
   return (
     node.childForFieldName('argument') ?? // C/C++ subscript_expression

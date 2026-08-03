@@ -85,9 +85,10 @@
  * ## Correctness contract
  *
  * Structural sibling of {@link PdgEmitSink}, and reuses its row builder
- * (`buildRelRow`), header (`REL_CSV_HEADER`), label derivation (`getNodeLabel`)
- * and `RelPairRouter` validity check, so the streamed row SET equals the
- * whole-graph emit's and the bulk COPY loads the same rows. Set-level, not
+ * (`buildRelRow`), header (`REL_CSV_HEADER`) and pair classification
+ * (`relPairKeyFor`, which is also what `RelPairRouter` routes and skips by), so
+ * the streamed row SET equals the whole-graph emit's and the bulk COPY loads
+ * the same rows. Set-level, not
  * byte-level: rows stream in emit order and are not re-sorted under
  * `GITNEXUS_SORT_GRAPH_OUTPUT`.
  */
@@ -96,8 +97,12 @@ import path from 'path';
 import type { GraphNode, GraphRelationship, RelationshipType } from 'gitnexus-shared';
 import type { KnowledgeGraph } from '../graph/types.js';
 import { DECLARED_RELATION_PAIRS, REL_CSV_HEADER, buildRelRow } from './csv-generator.js';
-import { assertDeclaredPair, getNodeLabel } from './rel-pair-routing.js';
-import { NODE_TABLES } from './schema.js';
+import {
+  VALID_NODE_TABLES,
+  assertDeclaredPair,
+  relPairKeyFor,
+  splitRelPairKey,
+} from './rel-pair-routing.js';
 import { DEFAULT_EMIT_CHUNK_ROWS, SyncCsvWriter } from './sync-csv-writer.js';
 
 /**
@@ -127,8 +132,8 @@ import { DEFAULT_EMIT_CHUNK_ROWS, SyncCsvWriter } from './sync-csv-writer.js';
  * `routes`/`tools`, never read back mid-pipeline).
  *
  * Adding a relationship type that a phase reads back WITHOUT adding it here is
- * a silent-wrong-graph bug, not a crash — and NOTHING automated catches it.
- * The differential round-trip test cannot: `addRelationship` partitions edges
+ * a silent-wrong-graph bug, not a crash. The differential round-trip test cannot:
+ * `addRelationship` partitions edges
  * between the graph and the CSVs, and the union of a partition is invariant
  * under where the partition line falls, so that test stays green no matter how
  * this set is drawn. Only the read-site audit protects this invariant; re-run it
@@ -144,6 +149,8 @@ export const RETAINED_REL_TYPES: ReadonlySet<RelationshipType> = new Set<Relatio
   'METHOD_IMPLEMENTS',
   'DEFINES',
   'INJECTS',
+  // springAopInheritance reads direct behavior evidence after MRO.
+  'ADVISED_BY',
 ]);
 
 /**
@@ -227,7 +234,6 @@ export class StreamedRelationshipRemovalError extends Error {
  * {@link finalize} once after the pipeline, before `loadGraphToLbug`.
  */
 export class GraphEmitSink implements KnowledgeGraph, GraphEmitControl {
-  private readonly validTables: Set<string>;
   private readonly relWriters = new Map<string, SyncCsvWriter>();
   /**
    * Ids of relationships already streamed. `KnowledgeGraph.addRelationship`
@@ -301,7 +307,6 @@ export class GraphEmitSink implements KnowledgeGraph, GraphEmitControl {
     private readonly csvDir: string,
     private readonly chunkRows: number = DEFAULT_EMIT_CHUNK_ROWS,
   ) {
-    this.validTables = new Set<string>(NODE_TABLES as readonly string[]);
     // Own directory, distinct from the PDG sink's: PdgEmitSink wipes and
     // recreates its dir on construction and opens with O_EXCL, so a shared dir
     // would destroy the other sink's manifest on a combined --pdg run.
@@ -405,16 +410,24 @@ export class GraphEmitSink implements KnowledgeGraph, GraphEmitControl {
     }
     // Mirror KnowledgeGraph.addRelationship's first-writer-wins dedup.
 
-    const fromLabel = getNodeLabel(relationship.sourceId);
-    const toLabel = getNodeLabel(relationship.targetId);
-    // Skip edges whose endpoint labels are not valid node tables — mirrors
-    // `RelPairRouter` exactly so the streamed set matches the whole-graph set.
-    if (!this.validTables.has(fromLabel) || !this.validTables.has(toLabel)) return;
+    // Classify + skip via the SHARED `relPairKeyFor`, not a local copy of its
+    // three lines, so the streamed set cannot drift from the whole-graph set
+    // `RelPairRouter` produces. `undefined` = an endpoint label is not a node
+    // table, so the edge is dropped exactly as the router drops it.
+    const pairKey = relPairKeyFor(relationship.sourceId, relationship.targetId, VALID_NODE_TABLES);
+    if (pairKey === undefined) return;
 
-    const pairKey = `${fromLabel}|${toLabel}`;
-    assertDeclaredPair(pairKey, DECLARED_RELATION_PAIRS);
+    assertDeclaredPair(
+      pairKey,
+      DECLARED_RELATION_PAIRS,
+      relationship.type,
+      relationship.sourceId,
+      relationship.targetId,
+    );
     let writer = this.relWriters.get(pairKey);
     if (writer === undefined) {
+      // Cold: once per pair, so decoding the key back into its labels is free.
+      const [fromLabel, toLabel] = splitRelPairKey(pairKey);
       try {
         writer = new SyncCsvWriter(
           path.join(this.csvDir, `rel_${fromLabel}_${toLabel}.csv`),

@@ -149,6 +149,62 @@ describe('generateAIContextFiles', () => {
     expect(content).not.toMatch(/npx gitnexus group/);
   });
 
+  it('pairs mandatory MCP checks with project-local CLI fallbacks (#2671)', async () => {
+    const dir = await fs.mkdtemp(path.join(os.tmpdir(), 'gn-ai-ctx-transport-fallback-'));
+    const storage = path.join(dir, '.gitnexus');
+    await fs.mkdir(storage, { recursive: true });
+    try {
+      await generateAIContextFiles(
+        dir,
+        storage,
+        'TransportFallback',
+        { nodes: 50, edges: 100, processes: 5 },
+        undefined,
+        { defaultBranch: 'develop' },
+      );
+
+      for (const file of ['AGENTS.md', 'CLAUDE.md']) {
+        const content = await fs.readFile(path.join(dir, file), 'utf-8');
+        expect(content).toContain('impact({target: "symbolName", direction: "upstream"})');
+        expect(content).toContain(
+          'node .gitnexus/run.cjs impact "symbolName" --direction upstream --repo .',
+        );
+        expect(content).toContain('detect_changes({scope: "all"})');
+        expect(content).toContain('node .gitnexus/run.cjs detect-changes --scope all --repo .');
+        expect(content).toContain('detect_changes({scope: "compare", base_ref: "develop"})');
+        expect(content).toContain('--scope compare --base-ref "develop" --repo .');
+        expect(content).toContain('Never substitute grep for graph analysis');
+        expect(content).not.toContain('gitnexus impact --target');
+      }
+    } finally {
+      await fs.rm(dir, { recursive: true, force: true });
+    }
+  });
+
+  it('uses the configured runner for transport fallbacks, including PDG impact (#2671)', () => {
+    const content = generateGitNexusContent(
+      'TransportFallback',
+      { nodes: 50, edges: 100, processes: 5 },
+      {
+        runnerPath: '.custom/gitnexus-runner.cjs',
+        hasPdg: true,
+      },
+    );
+
+    expect(content).toContain(
+      'node .custom/gitnexus-runner.cjs impact "symbolName" --direction upstream --repo .',
+    );
+    expect(content).toContain(
+      'node .custom/gitnexus-runner.cjs detect-changes --scope all --repo .',
+    );
+    expect(content).toContain(
+      'node .custom/gitnexus-runner.cjs impact "symbolName" --direction upstream --mode pdg --line <N> --repo .',
+    );
+    expect(content).toContain('--mode pdg');
+    expect(content).toContain('--line <N>');
+    expect(content).not.toContain('node .gitnexus/run.cjs impact');
+  });
+
   it('gates the pdg_query line on hasPdg (#2086 M6 — no existing taint gate to mirror)', () => {
     const stats = { nodes: 50, edges: 100, processes: 5 };
     // hasPdg=true → the pdg_query line is present.
@@ -1181,7 +1237,7 @@ Indexed as **placeholder** (1 symbols, 1 relationships, 1 execution flows). Cust
     // tool that does not exist.
     expect(content).not.toMatch(/gitnexus_(impact|query|context|detect_changes|rename|cypher)/);
     expect(content).toContain('impact({target: "symbolName", direction: "upstream"})');
-    expect(content).toContain('detect_changes()');
+    expect(content).toContain('detect_changes({scope: "all"})');
     // #2175: the generated guidance must advertise the renamed param, never the
     // legacy "query" key (Claude Code drops a tool arg named exactly "query").
     expect(content).toContain('query({search_query: "concept"})');
@@ -1194,6 +1250,7 @@ Indexed as **placeholder** (1 symbols, 1 relationships, 1 execution flows). Cust
     // raw, so it stays inside the inline code span.
     const content = generateGitNexusContent('P', { nodes: 1 }, { defaultBranch: 'we"ird' });
     expect(content).toContain('base_ref: "we\\"ird"');
+    expect(content).toContain('--base-ref "we\\"ird" --repo .');
   });
 
   it('a backtick branch cannot break the generated Markdown code span (#1996 P1)', () => {

@@ -35,6 +35,7 @@ import { getTreeSitterBufferSize } from '../../constants.js';
 import { parseSourceSafe } from '../../../tree-sitter/safe-parse.js';
 import {
   setJavaClassAnnotationFacts,
+  setJavaSpringAopFacts,
   setJavaSpringConfigConsumerFacts,
   setJavaSpringConditionalFacts,
   setJavaSpringDiFacts,
@@ -44,6 +45,7 @@ import { synthesizeCallableFlowCaptures } from '../../utils/callable-flow-captur
 import { captureJavaSpringConfigConsumerFacts } from './spring-config-bindings.js';
 import { captureJavaSpringDiClassFact, type JavaSpringDiClassFact } from './spring-di.js';
 import { synthesizeReceiverChainCapture } from '../../utils/receiver-chain-captures.js';
+import { captureJavaSpringAopFacts, type JavaSpringAopFact } from './spring-aop.js';
 import {
   captureJavaSpringConditionalFacts,
   type JavaSpringConditionalFact,
@@ -132,6 +134,8 @@ export function emitJavaScopeCaptures(
   const rawMatches = getJavaScopeQuery().matches(tree.rootNode);
   const out: CaptureMatch[] = [];
   const classAnnotations = new Map<ScopeId, Set<string>>();
+  const springAopFacts: JavaSpringAopFact[] = [];
+  const springAopTypeNodeIds = new Set<number>();
   const springConditionalFacts: JavaSpringConditionalFact[] = [];
   const springDiFacts: JavaSpringDiClassFact[] = [];
   const springDiClassNodeIds = new Set<number>();
@@ -153,6 +157,15 @@ export function emitJavaScopeCaptures(
       nodeMap[tag] = c.node;
     }
     if (Object.keys(grouped).length === 0) continue;
+
+    const springAopTypeNode = [
+      nodeIfType(nodeMap['@scope.class'], 'class_declaration'),
+      nodeIfType(nodeMap['@scope.class'], 'interface_declaration'),
+    ].find((node): node is SyntaxNode => node !== null);
+    if (springAopTypeNode !== undefined && !springAopTypeNodeIds.has(springAopTypeNode.id)) {
+      springAopTypeNodeIds.add(springAopTypeNode.id);
+      springAopFacts.push(...captureJavaSpringAopFacts(springAopTypeNode, filePath));
+    }
 
     const springDiClassNode = nodeIfType(nodeMap['@scope.class'], 'class_declaration');
     if (springDiClassNode !== null && !springDiClassNodeIds.has(springDiClassNode.id)) {
@@ -375,6 +388,7 @@ export function emitJavaScopeCaptures(
     filePath,
     captureJavaSpringConfigConsumerFacts(tree.rootNode, filePath),
   );
+  setJavaSpringAopFacts(filePath, springAopFacts);
   setJavaSpringConditionalFacts(filePath, springConditionalFacts);
   setJavaSpringDiFacts(filePath, springDiFacts);
 

@@ -500,6 +500,14 @@ jobs:
         run: node --import tsx bench/callable-value-flow/measure.mjs --check
         working-directory: gitnexus
 
+      - name: C++ qualified-namespace resolution guards (#2788)
+        # Build-free: asserts resolveCppQualifiedNamespaceMember resolves an
+        # unchanged symbol set (fingerprint) and that per-call-site cost stays
+        # independent of corpus size. Rationale and history: see the header of
+        # bench/cpp-qualified-ns/measure.mjs.
+        run: node --import tsx bench/cpp-qualified-ns/measure.mjs --check
+        working-directory: gitnexus
+
       - name: Receiver-resolution drop guards
         # NOT build-free: this one runs the real pipeline, so it needs dist/
         # (the setup action above builds). ~2m15s.
@@ -509,9 +517,19 @@ jobs:
         # recorder gates on the receiver's punctuation, not on what the
         # reference is, so property reads would inflate it by ~20%. The shape
         # arm asserts the state of each receiver spelling by EDGE PRESENCE,
-        # which is the only arm that can see the shapes the recorder is blind
-        # to (`?.`, explicit type args, `repos[0]`): those emit no edge AND no
-        # drop, so fixing them moves the count by zero.
+        # which is the only arm that can see shapes the recorder is blind to:
+        # they emit no edge AND no drop, so fixing them moves the count by zero.
+        #
+        # `repos[0]` is no longer among them (#2766): Case 0's gate now accepts
+        # a minted receiver chain instead of testing the receiver's punctuation,
+        # so subscript receivers record a drop and ARE countable. 13 shapes moved
+        # INVISIBLE -> VISIBLE that way. `?.` and explicit type args remain
+        # invisible on some languages, so the shape arm still earns its keep.
+        #
+        # The check is EXACT-MATCH, which is strictly stronger than a ratchet:
+        # the count cannot rise without a deliberate rebaseline, and the
+        # rebaseline path demands the movement be explained. No separate
+        # drop-ratchet gate is needed on top of this.
         run: node --import tsx bench/receiver-resolution/measure.mjs --check
         working-directory: gitnexus
 
@@ -556,12 +574,17 @@ jobs:
         working-directory: gitnexus
 
       - name: Cross-language pipeline benchmarks (GITNEXUS_BENCH, serial)
+        # cpp-adl-benchmark.test.ts is not a `*-pipeline-benchmark.test.ts` but
+        # belongs here for the same reason: it is skipIf-gated on GITNEXUS_BENCH,
+        # so it had never run in CI and the PR #1990 ADL emit-scaling guard it
+        # holds was dead. ~45s of test time.
         env:
           GITNEXUS_BENCH: '1'
         run: >-
           npx vitest run --no-file-parallelism
           test/integration/cobol-pipeline-benchmark.test.ts
           test/integration/csharp-pipeline-benchmark.test.ts
+          test/integration/cpp-adl-benchmark.test.ts
           test/integration/instance-ownership-pipeline-benchmark.test.ts
           test/integration/spring-bean-resource-benchmark.test.ts
           test/integration/rust-pipeline-benchmark.test.ts

@@ -138,6 +138,30 @@ export interface ReferenceSite {
    * majority of sites — the field costs nothing where it is not needed.
    */
   readonly receiverChain?: string;
+  /**
+   * This site sits in CALLEE position: it is the expression being invoked by an
+   * enclosing call, not a value the program otherwise consumes. Only ever set on
+   * `kind: 'read'` sites, and only by languages whose member-read capture also
+   * matches the callee of a member call (`obj.f()` yields both a `call` site on
+   * `f` and a `read` site on `obj.f`).
+   *
+   * It is a POSITION FACT, not a decision. Whether that read is redundant
+   * depends on what the tail resolves to, which the capture layer cannot know:
+   *
+   *   - tail is a METHOD  → the read duplicates the call's own edge and must be
+   *                         suppressed (an `ACCESSES → m` beside a `CALLS → m`
+   *                         at the same position is a phantom).
+   *   - tail is a FIELD   → the read is GENUINE. `h.dep.Work()` where
+   *                         `Work func() error` selects a func-typed field and
+   *                         then calls the value it holds; deleting the read
+   *                         erases the only evidence that the field was used
+   *                         (callback/hook structs, hand-rolled mocks).
+   *
+   * The suppression is therefore applied at edge emission, where the resolved
+   * target's kind is known — see `tryEmitEdge`. Absent on every site that is not
+   * in callee position, so nothing changes for languages that never set it.
+   */
+  readonly inCalleePosition?: boolean;
 }
 
 /**
@@ -153,4 +177,16 @@ export interface ReferenceSite {
  * (`extractMixedChain`) walks a tree-sitter AST and so must stay in the
  * analyzer, but the shape it yields crosses into resolution.
  */
-export type MixedChainStep = { kind: 'field' | 'call'; name: string };
+/**
+ * One hop in a receiver chain.
+ *
+ * `field` and `call` carry the member name they reach. `await` and `index` are
+ * NAME-FREE: the call step already holds the method name for an awaited call,
+ * and a subscript has no member name at all — an index expression's key is a
+ * value, not an identifier the resolver could look up. The codec encodes them
+ * as a bare sigil and rejects any trailing characters, so the encoder's
+ * non-empty-name guard stays live for exactly the two kinds it was written for.
+ */
+export type MixedChainStep =
+  | { kind: 'field' | 'call'; name: string }
+  | { kind: 'await' | 'index'; name?: undefined };

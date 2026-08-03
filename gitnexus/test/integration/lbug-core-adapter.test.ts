@@ -174,6 +174,70 @@ withTestLbugDB(
         expect(Number((queriesLeft[0] as { cnt: number }).cnt)).toBe(1);
       });
 
+      it('deleteAllAdvisedBy: removes only ADVISED_BY edges and is benign when none exist (#2416)', async () => {
+        const { executeQuery: coreExecuteQuery, deleteAllAdvisedBy } =
+          await import('../../src/core/lbug/lbug-adapter.js');
+
+        await expect(deleteAllAdvisedBy()).resolves.toEqual({ edgesDeleted: 0 });
+        const fns = (await coreExecuteQuery('MATCH (n:Function) RETURN n.id AS id')) as Array<{
+          id: string;
+        }>;
+        expect(fns.length).toBe(2);
+        await coreExecuteQuery(
+          `MATCH (a:Function {id: '${fns[0].id}'}), (b:Function {id: '${fns[1].id}'}) ` +
+            `CREATE (a)-[:CodeRelation {type: 'ADVISED_BY', confidence: 0.95, reason: 'spring-aop:v1:{}', step: 0}]->(b)`,
+        );
+
+        await expect(deleteAllAdvisedBy()).resolves.toEqual({ edgesDeleted: 1 });
+        const advisedLeft = await coreExecuteQuery(
+          `MATCH ()-[r:CodeRelation]->() WHERE r.type = 'ADVISED_BY' RETURN count(r) AS cnt`,
+        );
+        expect(Number((advisedLeft[0] as { cnt: number }).cnt)).toBe(0);
+      });
+
+      it('deleteSpringAopEvidenceNodes: keys deletion to the owned ID namespace (#2416)', async () => {
+        const { executeQuery: coreExecuteQuery, deleteSpringAopEvidenceNodes } =
+          await import('../../src/core/lbug/lbug-adapter.js');
+
+        await expect(deleteSpringAopEvidenceNodes()).resolves.toEqual({ nodesDeleted: 0 });
+        await coreExecuteQuery(
+          `CREATE (:CodeElement {id: 'CodeElement:spring-aop:test-evidence', name: 'Aop', filePath: 'A.java', startLine: 1, endLine: 1, isExported: false, content: '', description: 'ordinary text'})`,
+        );
+        await coreExecuteQuery(
+          `CREATE (:CodeElement {id: 'CodeElement:ordinary-lookalike', name: 'Other', filePath: 'B.java', startLine: 1, endLine: 1, isExported: false, content: '', description: 'Spring AOP: lookalike'})`,
+        );
+
+        await expect(deleteSpringAopEvidenceNodes()).resolves.toEqual({ nodesDeleted: 1 });
+        const rows = await coreExecuteQuery(
+          `MATCH (n:CodeElement) WHERE n.id IN ['CodeElement:spring-aop:test-evidence', 'CodeElement:ordinary-lookalike'] RETURN n.id AS id`,
+        );
+        expect(rows).toEqual([{ id: 'CodeElement:ordinary-lookalike' }]);
+        await coreExecuteQuery(
+          `MATCH (n:CodeElement {id: 'CodeElement:ordinary-lookalike'}) DETACH DELETE n`,
+        );
+      });
+
+      it('persists the Interface Spring AOP evidence relation pair (#2416)', async () => {
+        const { executeQuery: coreExecuteQuery } =
+          await import('../../src/core/lbug/lbug-adapter.js');
+        await coreExecuteQuery(
+          `CREATE (:Interface {id: 'Interface:aop-test', name: 'AdvisedInterface', filePath: 'I.java', startLine: 1, endLine: 2, isExported: true, content: '', description: ''})`,
+        );
+        await coreExecuteQuery(
+          `CREATE (:CodeElement {id: 'CodeElement:aop-interface-evidence', name: 'Transactional', filePath: 'I.java', startLine: 1, endLine: 1, isExported: false, content: '', description: 'Spring AOP evidence'})`,
+        );
+        await coreExecuteQuery(
+          `MATCH (source:Interface {id: 'Interface:aop-test'}), (target:CodeElement {id: 'CodeElement:aop-interface-evidence'}) CREATE (source)-[:CodeRelation {type: 'ADVISED_BY', confidence: 1.0, reason: 'spring-aop:v1:{}', step: 0}]->(target)`,
+        );
+        const rows = await coreExecuteQuery(
+          `MATCH (source)-[r:CodeRelation]->() WHERE source.id = 'Interface:aop-test' AND r.type = 'ADVISED_BY' RETURN source.id AS id`,
+        );
+        expect(rows).toEqual([{ id: 'Interface:aop-test' }]);
+        await coreExecuteQuery(
+          `MATCH (n) WHERE n.id IN ['Interface:aop-test', 'CodeElement:aop-interface-evidence'] DETACH DELETE n`,
+        );
+      });
+
       it('deleteSpringAutoConfigurationDeclarations: removes only Spring DECLARES edges (#2415)', async () => {
         const { executeQuery: coreExecuteQuery, deleteSpringAutoConfigurationDeclarations } =
           await import('../../src/core/lbug/lbug-adapter.js');

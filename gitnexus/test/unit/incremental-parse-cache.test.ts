@@ -101,11 +101,22 @@ describe('fileContentHash', () => {
 });
 
 describe('PARSE_CACHE_VERSION', () => {
-  // 35 -> 36 for the bound-callable start-line join (#2735). Updated
-  // deliberately after main independently took 35 for Spring side-channel
-  // captures (#2413), so the pin continues to catch concurrent bump collisions.
-  it('pins SCHEMA_BUMP to 36 so concurrent bumps cannot silently collide (#2736)', () => {
-    expect(Number(PARSE_CACHE_VERSION.split('+', 1)[0])).toBe(36);
+  // 35 -> 36 for the bound-callable start-line join (#2735), 36 -> 37 for
+  // Java/Kotlin Spring AOP capture side-channels (#2416), 37 -> 38 for the Swift
+  // conditional-directive parse-semantics change (#2771), 38 -> 39 for
+  // receiver-chain wire format v2: every persisted chain string changed prefix
+  // and a v2 decoder refuses v1 by design, so a stale cache replays chains this
+  // build silently discards.
+  //
+  // This pin has now earned its keep EIGHT times, and twice it caught an EXACT
+  // clash rather than a near-miss: main took 37 for #2416 while this branch
+  // already used 37, and then took 38 for #2771 after this branch had moved to
+  // 38. Both times two incompatible schemas claimed one number. Note when the
+  // second clash was caught — after review, while the branch sat waiting to
+  // merge — which is precisely the window in which `main` allocates. Re-check
+  // against origin/main immediately before merge, not at review time.
+  it('pins SCHEMA_BUMP to 39 so concurrent bumps cannot silently collide (#2766)', () => {
+    expect(Number(PARSE_CACHE_VERSION.split('+', 1)[0])).toBe(39);
   });
 
   it('embeds the gitnexus package version (so upgrades invalidate the cache)', () => {

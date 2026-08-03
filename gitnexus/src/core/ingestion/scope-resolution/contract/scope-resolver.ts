@@ -15,7 +15,7 @@
  *        - propagatesReturnTypesAcrossImports (default true)
  *        - fieldFallbackOnMethodLookup (default true — turn OFF for
  *          statically-typed languages; the heuristic over-connects)
- *        - unwrapCollectionAccessor — property-style collection views
+ *        - elementTypeOf — container element type, by subscript or accessor
  *        - collapseMemberCallsByCallerTarget — one edge per caller/target
  *        - populateNamespaceSiblings — cross-file implicit visibility
  *        - hoistTypeBindingsToModule — enable ONLY when method return
@@ -268,6 +268,7 @@
  * `docs/plans/2026-04-20-001-refactor-emit-pipeline-generalization-plan.md`.
  */
 
+import type { DecorationStripper } from '../scope/walkers.js';
 import type {
   BindingRef,
   Callsite,
@@ -312,6 +313,11 @@ export interface ImportResolutionContext {
 /** Re-exported for ScopeResolver consumers — same shape as
  *  `RegistryProviders.constraintCompatibility`'s third parameter. */
 export type { ConstraintContext } from 'gitnexus-shared';
+
+/** How a container's element was reached in the source. */
+export type ElementAccessRoute =
+  | { readonly kind: 'index' }
+  | { readonly kind: 'accessor'; readonly name: string };
 
 export interface ScopeResolver {
   /** Identity for telemetry + per-language flag check. */
@@ -708,22 +714,56 @@ export interface ScopeResolver {
   readonly fieldFallbackOnMethodLookup?: boolean;
 
   /**
-   * Unwrap a property-style collection accessor on a typed receiver
-   * to its element type. Called by `resolveCompoundReceiverClass`
-   * when walking dotted member-access chains of the form
-   * `receiver.Accessor`. The provider returns the element type's
-   * simple name, or `undefined` when the accessor doesn't unwrap —
-   * in which case the regular field-walk resumes.
+   * Element type of a container, reached either by a subscript (`repos[0]`) or
+   * by a property-style collection view (`dict.Values`). Returns the element
+   * type's simple name, or `undefined` when the container does not unwrap by
+   * that route — in which case the caller resumes its normal walk.
    *
-   * Use this only for languages that expose collection views as
-   * properties rather than method calls; languages whose collection
-   * views are `.values()` / `.keys()` method calls leave this
-   * undefined and let the normal call-expression branch handle them.
+   * ONE hook for both routes, deliberately. They were previously two
+   * (`unwrapCollectionAccessor` for the property route, `unwrapCollectionElement`
+   * for the subscript route), which meant a language implementing one silently
+   * got nothing for the other: C# parsed `Dictionary<K,V>` for `.Values` but
+   * returned nothing for `list[0]`, and TypeScript did the reverse. Two entries
+   * answering one question, each accreting an implementation per language.
+   *
+   * `via` carries the route so a provider can distinguish them where it matters
+   * (a `Dictionary` yields its VALUE type by subscript but either type by
+   * accessor name); a provider that does not care can ignore it.
+   *
+   * Consulted ONLY where the source actually performed the access. It is NOT a
+   * general type-name normalizer: unwrapping a container at a bare class lookup
+   * would let `repos.find(x)` fold to `Repo.find`, because a container's member
+   * set is not its element's. For the same reason it is deliberately separate
+   * from `stripTypePreservingDecoration`: a pointer or a nullable leaves the
+   * member set unchanged and is safe to strip at the lookup; a container is not.
+   *
+   * ## The `index` route is REQUIRED, and `undefined` means "not a container"
+   *
+   * A language that leaves the `index` route unanswered gets NO index folding —
+   * the structural fold declines the step rather than passing the position
+   * through. That is not a default worth softening. `undefined` used to mean
+   * "fall back to identity", on the theory that a capture layer which already
+   * reduced the container (Go's `normalizeGoTypeName`, C#/TypeScript's
+   * `stripGeneric`) leaves nothing to unwrap. The theory holds for a container;
+   * it is false for an ordinary class the source happened to subscript, and
+   * `rawName` cannot tell those apart — `repos: User[]` and `grid: Grid` both
+   * arrive as a bare resolvable class name. Identity there typed `grid[0].run()`
+   * as `Grid.run` and `t[0].Render()` as `Table.Render`: a wrong owner, which
+   * this pipeline ranks strictly below a missing edge.
+   *
+   * The hook is therefore handed `TypeRef.declaredSpelling` — the annotation AS
+   * WRITTEN, retained by the scope extractor precisely because capture-time
+   * normalization destroys it — falling back to `rawName` only when nothing was
+   * normalized away. So a provider sees `User[]`, `List[User]`, `[]*User` or
+   * `Dictionary<string, User>`, never the post-reduction `User`, and answering
+   * `undefined` for a spelling it does not recognize as a container is an
+   * ANSWER, not an absence.
+   *
+   * Implementations may return a still-DECORATED element name (Go's `[]*User`
+   * yields `*User`): the index step looks the element up through
+   * `stripTypePreservingDecoration`, so the pointer resolves.
    */
-  readonly unwrapCollectionAccessor?: (
-    receiverType: string,
-    accessor: string,
-  ) => string | undefined;
+  readonly elementTypeOf?: (containerType: string, via: ElementAccessRoute) => string | undefined;
 
   /**
    * Collapse member-call CALLS edges by `(caller, target)` rather
@@ -1115,6 +1155,39 @@ export interface ScopeResolver {
   readonly hoistTypeBindingsToModule?: boolean;
 
   /**
+   * Strip ONE layer of type-preserving decoration off a declared type name,
+   * or return `undefined` when there is nothing left to strip.
+   *
+   * Exists because a declared type is stored as written. Go's
+   * `synthesizeGoReceiverBinding` keeps `typeNode.text`, so a pointer-receiver
+   * method binds its receiver to the literal `*Host` — which matches no class
+   * binding, so receiver-chain resolution declines at the base and every
+   * `h.field.method()` in the dominant Go idiom loses its `CALLS` edge (#2766).
+   * The stored binding is deliberately left decorated (`method-owners.ts`
+   * consumes `*T` vs `T` to model Go's value and pointer method sets), so the
+   * normalization belongs at LOOKUP, never as a rewrite of the binding.
+   *
+   * TYPE-PRESERVING ONLY. Pointer, reference, `const`, nullable, borrow,
+   * deref-transparent smart pointer and sigil all leave the member set
+   * unchanged. A CONTAINER — array, slice, map, `Option` — does not: stripping
+   * one here would type `repos: Repo[]` as `Repo` and let `repos.find(x)` fold
+   * to `Repo.find`, a confident wrong edge the ambiguity gate cannot catch
+   * because `Repo` binds uniquely. Containers are unwrapped only by an index
+   * step that consumed a subscript.
+   *
+   * Consulted ONLY after every undecorated lookup has failed, and only by
+   * receiver-chain base and step resolution — the shared class lookup keeps
+   * exact-name behaviour for its other ~two dozen callers, several of which are
+   * shaped `findClassBindingInScope(...) ?? otherResolver(...)` and would have
+   * their fallback suppressed by a global widening.
+   *
+   * Leave undefined for languages whose declared types carry no type-preserving
+   * decoration. Measured: only Go needs it for a receiver base; Rust, C#, Swift,
+   * TypeScript and C++ need it for field types.
+   */
+  readonly stripTypePreservingDecoration?: DecorationStripper;
+
+  /**
    * Whether the compound-receiver resolver should strip C-style cast
    * expressions from receiver-position text before resolving it —
    * `((Target)((Object)expr)).method()` peels to receiver `expr` with
@@ -1140,7 +1213,7 @@ export interface ScopeResolver {
    *
    * A second opting language must extend the classifier grammar or
    * convert this toggle into a per-language classifier hook (the
-   * `unwrapCollectionAccessor` pattern) — do not flip this flag for
+   * `elementTypeOf` pattern) — do not flip this flag for
    * another language as-is.
    *
    * Known non-goal: the compound-receiver options built from this

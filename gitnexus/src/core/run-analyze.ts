@@ -33,6 +33,8 @@ import {
   deleteAllInterprocTaintPaths,
   deleteAllCallSummaries,
   deleteAllInjects,
+  deleteAllAdvisedBy,
+  deleteSpringAopEvidenceNodes,
   deleteSpringAutoConfigurationDeclarations,
   deleteSpringAutoConfigurationSyntheticClasses,
   queryImportersBatch,
@@ -72,6 +74,9 @@ import {
   inspectLbugSidecars,
 } from './lbug/sidecar-recovery.js';
 import type { EmbeddingIdentity } from './embeddings/embedding-identity.js';
+// Type-only (erased at compile time), so the lazy-embeddings convention
+// (#2370: no embeddings module loads unless a run actually needs one) holds.
+import type { EmbeddingPipelineResult } from './embeddings/embedding-pipeline.js';
 import {
   getStoragePaths,
   resolveBranchPlacement,
@@ -86,7 +91,6 @@ import {
   reconcileMetadataFiles,
   isMissingFilesystemError,
   INDEX_METADATA_FILE,
-  INCREMENTAL_SCHEMA_VERSION,
   type AnalyzerRunnerIdentity,
   type RepoMeta,
 } from '../storage/repo-manager.js';
@@ -136,11 +140,19 @@ import {
 import type { CachedEmbedding } from './embeddings/types.js';
 import { generateAIContextFiles } from '../cli/ai-context.js';
 import { sanitizeDetectedBranch } from '../cli/analyze-config.js';
-import { EMBEDDING_TABLE_NAME } from './lbug/schema.js';
-import { STALE_HASH_SENTINEL } from './lbug/schema.js';
+import {
+  EMBEDDING_TABLE_NAME,
+  EMBEDDING_DIMS,
+  STALE_HASH_SENTINEL,
+  SCHEMA_FINGERPRINT,
+  schemaFingerprintMismatch,
+  isSchemaFingerprintShaped,
+  embeddingDimsMismatch,
+} from './lbug/schema.js';
 import { isSpringBeanCandidateSourceFile } from './ingestion/frameworks/spring/bean-catalog.js';
 import { isSpringBeanFactoryDeclaration } from './ingestion/frameworks/spring/bean-factories.js';
 import {
+  SPRING_AOP_FEATURE,
   SPRING_BEAN_INVENTORY_FEATURE,
   SPRING_CONDITIONALS_FEATURE,
 } from './ingestion/frameworks/spring/analysis-features.js';
@@ -155,9 +167,45 @@ import {
   finalizeAnalyzerRunnerIdentity,
   resolveAnalyzerRunnerIdentity,
 } from './analyzer-identity.js';
+// Static, and deliberately so: `embedding-count.ts` and `embedding-checkpoint.ts`
+// live outside `core/embeddings/` precisely because the lazy-embeddings
+// convention (#2370 — no embeddings module loads unless a run needs one) must
+// keep holding while this counter and the checkpoint rules run on the ORDINARY
+// path of every analyze. Neither imports anything native.
+import {
+  measurePersistedEmbeddingCount,
+  persistedEmbeddingCountOrUndefined,
+  resolvePersistedEmbeddingCount,
+} from './embedding-count.js';
+import {
+  EMBEDDING_RESUME_MAX_ATTEMPTS,
+  decideEmbeddingResume,
+  mintInterruptedCheckpoint,
+  mintPartialCheckpoint,
+  mintUnverifiedCountCheckpoint,
+} from './embedding-checkpoint.js';
+import type { EmbeddingCheckpoint } from './embedding-checkpoint.js';
+
+/**
+ * Strip C0/C1 control characters from a progress/diagnostic message.
+ *
+ * Several guard notices below interpolate values read straight out of
+ * `.gitnexus/gitnexus.json`, which is parsed with no runtime shape validation
+ * (`loadMeta` does a bare `JSON.parse(...) as RepoMeta`) — the stamped schema
+ * fingerprint, the runner-identity schema, the CJK mode. On the CLI path these
+ * reach `console.log` and therefore the user's terminal, so a crafted value
+ * carrying ANSI escapes (`\x1b[2J`, `\x1b]0;…`) would be replayed verbatim.
+ *
+ * Sanitizing at the funnel rather than per field: every message that ever
+ * interpolates untrusted metadata is covered, including ones not written yet.
+ * Newline and tab are preserved — multi-line notices are intentional.
+ */
+const stripControlCharacters = (msg: string): string =>
+  msg.replace(/[\x00-\x08\x0b\x0c\x0e-\x1f\x7f-\x9f]/g, '');
 
 const ANALYSIS_FEATURES = [
   CLASS_FRAMEWORK_ANNOTATIONS_FEATURE,
+  SPRING_AOP_FEATURE,
   SPRING_BEAN_INVENTORY_FEATURE,
   SPRING_CONDITIONALS_FEATURE,
   SPRING_CONFIG_BINDINGS_FEATURE,
@@ -723,8 +771,9 @@ export const pdgModeMismatch = (recorded: RepoMeta['pdg'], options: PdgOptions):
   // different runs would always be `!==`, tripping pdgModeMismatch on every
   // re-analyze and forcing a needless full writeback. e.g. do NOT change
   // `hasCallSummary: true` to a per-language object like `{ ts: true, ... }`; keep
-  // the diagnostic per-language refinement in the impact CONSUMER (see
-  // pdg-impact.ts assemblePdgImpactResult), not in this version discriminator.
+  // any diagnostic refinement in the impact CONSUMER (see pdg-impact.ts
+  // assemblePdgImpactResult, which reports empty ascent from the persisted
+  // CALL_SUMMARY data), not in this version discriminator.
   for (const key of new Set([...Object.keys(reqRecord), ...Object.keys(recRecord)])) {
     if (reqRecord[key] !== recRecord[key]) return true;
   }
@@ -826,7 +875,7 @@ export async function runFullAnalysis(
   // would otherwise stay saturated on a reused process).
   resetDegradedParseCounter();
 
-  const log = (msg: string) => callbacks.onLog?.(msg);
+  const log = (msg: string) => callbacks.onLog?.(stripControlCharacters(msg));
   const acquireOpts = {
     log,
     onWaitStart: () =>
@@ -885,13 +934,9 @@ async function runFullAnalysisInner(
   writeTarget: WriteTarget,
   runnerIdentityAtBootstrap?: AnalyzerRunnerIdentity,
 ): Promise<AnalyzeResult> {
-  const log = (msg: string) => callbacks.onLog?.(msg);
+  const log = (msg: string) => callbacks.onLog?.(stripControlCharacters(msg));
   const progress = (phase: string, percent: number, message: string) =>
     callbacks.onProgress(phase, percent, message);
-
-  // Streamed structural emit (#2680), resolved once so the pipeline flag and the
-  // CSV-dir resolution below cannot disagree.
-  const streamGraphEmitActive = resolveStreamGraphEmit(options);
 
   // FTS-config validation and the degraded-parse counter reset happen in the
   // `runFullAnalysis` wrapper (before the lock is taken).
@@ -1101,38 +1146,38 @@ async function runFullAnalysisInner(
   let resumeEmbeddingCheckpoint = false;
   let pendingEmbeddingNodeIds = new Set<string>();
   let embeddingIdentityForRun: EmbeddingIdentity | undefined;
+  // The marker this run resumed, so Phase 5 can tell "the retry cleared the
+  // set" from "the retry failed the same way again" and bound the latter — see
+  // `nextAttemptCount` in embedding-checkpoint.ts (#2790).
+  let resumedEmbeddingCheckpoint: EmbeddingCheckpoint | undefined;
   if (existingMeta?.embeddingCheckpoint) {
-    if (options.dropEmbeddings) {
-      log('Discarding the interrupted embedding checkpoint (--drop-embeddings).');
-      options = { ...options, force: true };
-    } else {
+    const checkpoint = existingMeta.embeddingCheckpoint;
+    // The verdict itself lives in embedding-checkpoint.ts, shared with
+    // `POST /api/embed` — two readers of one marker must not be able to
+    // disagree about what it means.
+    //
+    // The identity stays LAZY, as it has to: the flag and retry-budget verdicts
+    // short-circuit before one is needed, and resolving it means importing an
+    // embeddings module (#2370 — none loads unless a run actually needs one).
+    // `decideEmbeddingResume` asks for it by aborting on `undefined`, which is
+    // the only abort it can reach without one.
+    let decision = decideEmbeddingResume(checkpoint, undefined, options);
+    if (decision.action === 'abort') {
       const { resolveEmbeddingIdentity } = await import('./embeddings/embedding-identity.js');
       embeddingIdentityForRun = resolveEmbeddingIdentity();
-      const checkpoint = existingMeta.embeddingCheckpoint;
-      if (checkpoint.provider !== embeddingIdentityForRun.provider) {
-        throw new Error(
-          'Cannot resume embedding checkpoint: the embedding provider configuration differs. ' +
-            'Restore the matching endpoint configuration or pass --drop-embeddings to rebuild without it.',
-        );
-      }
-      if (
-        checkpoint.model !== embeddingIdentityForRun.model ||
-        checkpoint.dimensions !== embeddingIdentityForRun.dimensions
-      ) {
-        throw new Error(
-          `Cannot resume embedding checkpoint: it uses ${checkpoint.model} at ` +
-            `${checkpoint.dimensions} dimensions, but this run resolves ` +
-            `${embeddingIdentityForRun.model} at ${embeddingIdentityForRun.dimensions}. ` +
-            'Restore the matching embedding configuration or pass --drop-embeddings to rebuild without it.',
-        );
-      }
+      decision = decideEmbeddingResume(checkpoint, embeddingIdentityForRun, options);
+    }
+    if (decision.action === 'abort') throw new Error(decision.error);
+    log(decision.log);
+    if (options.dropEmbeddings) {
+      // --drop-embeddings has always implied a rebuild here; the decision only
+      // covers the marker.
+      options = { ...options, force: true };
+    }
+    if (decision.action === 'resume') {
       resumeEmbeddingCheckpoint = true;
-      pendingEmbeddingNodeIds = new Set(checkpoint.pendingNodeIds ?? []);
-      log(
-        `Previous analyze ended at an embedding checkpoint ` +
-          `(${checkpoint.nodesProcessed}/${checkpoint.totalNodes} nodes); resuming from persisted hashes` +
-          `${pendingEmbeddingNodeIds.size > 0 ? ` and regenerating ${pendingEmbeddingNodeIds.size} pending node(s)` : ''}.`,
-      );
+      pendingEmbeddingNodeIds = new Set(decision.pendingNodeIds);
+      resumedEmbeddingCheckpoint = decision.resumedFrom;
     }
   }
 
@@ -1237,37 +1282,56 @@ async function runFullAnalysisInner(
     options = { ...options, force: true };
   }
 
-  // ── schema-version mismatch forces full rebuild (#2289 P1) ────────
-  // Mirrors the pdg-mode block above: a stamp from an older
-  // INCREMENTAL_SCHEMA_VERSION (e.g. pre-v5 URL-only Route ids) cannot be
-  // reconciled by an incremental top-up — same-commit re-analyze would
-  // strand stale rows next to new-schema writes. MUST sit before the
+  // ── schema mismatch forces full rebuild (#2289 P1, #2798) ─────────
+  // Mirrors the pdg-mode block above: an index whose tables were created from
+  // a different DDL cannot be reconciled by an incremental top-up — a
+  // same-commit re-analyze would strand stale rows next to new-schema writes,
+  // and LadybugDB fixes a relation table's endpoint pairs at CREATE time, so
+  // edges the old shape cannot hold are simply dropped. MUST sit before the
   // alreadyUpToDate fast path below: an unchanged-commit clean tree would
-  // otherwise early-return without ever reaching the `isIncremental` gate
-  // that consults `schemaVersion`, defeating the bump's whole point.
+  // otherwise early-return without ever reaching the `isIncremental` gate.
   //
-  // `schemaVersion === undefined` covers two cases that should still trip
-  // this guard: a non-git repo (which never stamps the field) and very old
-  // meta from before the field existed. Non-git repos take the
-  // `currentCommit === ''` rebuild branch below regardless, so the redundant
-  // force here is harmless; the friendlier `'pre-versioning'` log avoids a
-  // user-visible "stamped vundefined" line in that edge case.
-  if (existingMeta && existingMeta.schemaVersion !== INCREMENTAL_SCHEMA_VERSION) {
-    const stampedVersion = existingMeta.schemaVersion ?? 'pre-versioning';
+  // Forcing here is what recreates the schema: `force` makes the run a full
+  // rebuild, which wipes the database file and re-runs the DDL against an
+  // empty one. Re-running `CREATE … TABLE` over the EXISTING database would
+  // not help — runSchemaCreationQueries suppresses "already exists", so the
+  // new shape would never be applied.
+  //
+  // ABSENT covers two cases and forces in both: an index from a GitNexus
+  // older than this field (the backward-compatibility path — one rebuild, then
+  // it is stamped), and a non-git repo, which never stamps it (see the meta
+  // literal below) and takes the `currentCommit === ''` rebuild branch below
+  // regardless.
+  //
+  // The two cases must not be told the same story. Blaming "an older GitNexus
+  // version" is FALSE for a non-git repo — the field is absent by design there,
+  // so this build would keep saying it about an index this exact build just
+  // wrote, on every run, forever. A stamp is only named when it has the shape
+  // SCHEMA_FINGERPRINT produces; anything else degrades to a neutral
+  // placeholder, and a non-git repo is additionally told WHY it has no stamp.
+  if (existingMeta && schemaFingerprintMismatch(existingMeta.schemaFingerprint)) {
+    const stamped = existingMeta.schemaFingerprint;
+    const origin = isSchemaFingerprintShaped(stamped) ? stamped : 'an unidentified GitNexus build';
+    const nonGitNote =
+      stamped === undefined && !repoHasGit
+        ? ' Non-git repositories never record a schema fingerprint, so this run rebuilds regardless.'
+        : '';
     log(
-      `index schema changed (stamped v${stampedVersion}, this build is v${INCREMENTAL_SCHEMA_VERSION}); ` +
-        `forcing a full rebuild so persisted rows match the current schema.`,
+      `index schema changed (built by ${origin}, this build is ${SCHEMA_FINGERPRINT}); forcing a ` +
+        `full re-analyze so the database is recreated from the current schema.${nonGitNote}`,
     );
     options = { ...options, force: true };
   }
 
   // ── independently-versioned analysis capabilities ────────────────
-  // `schemaVersion` is reserved for graph-wide incremental invariants. Some
+  // `schemaFingerprint` is reserved for graph-wide incremental invariants. Some
   // persisted semantics apply only to repositories containing relevant source
   // files, so they carry exact feature versions instead. This guard must also
-  // run before alreadyUpToDate: current main and this PR both use schema v8,
-  // while pre-PR v8 indexes lack the Class frameworkAnnotations column and
-  // Java/Kotlin Bean evidence.
+  // run before alreadyUpToDate: a feature can change what is EXTRACTED without
+  // changing the DDL, so an index whose `schemaFingerprint` matches this build
+  // can still be missing that feature's evidence (e.g. the Class
+  // frameworkAnnotations values, or Java/Kotlin Bean evidence) — the fingerprint
+  // guard above would wave it through.
   const persistedFilePaths = Object.keys(existingMeta?.fileHashes ?? {});
   const expectedPersistedAnalysisFeatures = resolveAnalysisFeatureVersions(
     ANALYSIS_FEATURES,
@@ -1313,6 +1377,46 @@ async function runFullAnalysisInner(
       `CJK segmentation mode changed (index built with '${existingMeta.cjkSegmentation ?? 'none'}', ` +
         `this run resolves '${getSearchFTSCjkSegmentation()}'); forcing a full rebuild so indexed ` +
         `text and query-time segmentation stay in sync.`,
+    );
+    options = { ...options, force: true };
+  }
+
+  // ── embedding width mismatch forces full rebuild (#2798) ──────────
+  // The half of the schema `SCHEMA_FINGERPRINT` deliberately cannot cover:
+  // `CodeEmbedding.embedding` is declared `FLOAT[EMBEDDING_DIMS]`, and that
+  // width comes from `GITNEXUS_EMBEDDING_DIMS` at module load, so folding it
+  // into a digest of CODE would make the same build disagree with itself under
+  // two envs. Without this block a dims flip on a same-commit clean tree fired
+  // NO guard: the fast path below returned over a FLOAT[384] table while this
+  // process embedded at 768. The one older reaction (in the embedding-restore
+  // block further down) discards the CACHE and re-embeds — into a column whose
+  // width it never revisits.
+  //
+  // Forcing is again what repairs it, and for the same reason as the
+  // fingerprint guard: only a full rebuild wipes the database and re-runs the
+  // DDL, and `runSchemaCreationQueries` suppresses "already exists", so
+  // re-running CREATE over the existing DB would silently keep the old width.
+  // Not conditioned on the index actually holding vectors — the table is
+  // created for every index either way, and nothing but a rebuild can retype it.
+  //
+  // ABSENT is NOT a mismatch here (see embeddingDimsMismatch for the argument):
+  // it means an index predating the field, whose width is unknown but was
+  // consistent with the env that wrote it, and which the fingerprint guard
+  // above already rebuilds — that rebuild is where the stamp lands.
+  if (existingMeta && embeddingDimsMismatch(existingMeta.embeddingDims, EMBEDDING_DIMS)) {
+    // Only NAME a recorded width that could be one, for the reason the
+    // fingerprint guard gates its stamp on `isSchemaFingerprintShaped`:
+    // meta.json is a schema-less JSON.parse of on-disk state, so a value that
+    // is not a positive integer is not worth quoting back at the user.
+    const recordedDims = existingMeta.embeddingDims;
+    const built =
+      typeof recordedDims === 'number' && Number.isInteger(recordedDims) && recordedDims > 0
+        ? `FLOAT[${recordedDims}]`
+        : 'an unrecognized width';
+    log(
+      `embedding dimensions changed (index built with ${built}, this run embeds at ` +
+        `${EMBEDDING_DIMS}); forcing a full rebuild so the vector column is recreated at the ` +
+        `new width. Tip: set GITNEXUS_EMBEDDING_DIMS (or --embedding-dims) to pin it across runs.`,
     );
     options = { ...options, force: true };
   }
@@ -1500,6 +1604,22 @@ async function runFullAnalysisInner(
   // in-place (cache hits leave entries unchanged; misses add new ones).
   const parseCache = await loadParseCache(storagePath);
 
+  // Streamed structural emit (#2680). Resolved ONCE, so the pipeline flag and
+  // the CSV-dir resolution below cannot disagree — and resolved HERE, not at
+  // function entry, because the POSITION is load-bearing: the gate is
+  // `options.force`, and every freshness guard above REBINDS `options` with
+  // `force: true` (embedding-checkpoint drop, dirty-flag recovery, pdg-mode
+  // flip, schema-fingerprint change, analysis-feature drift, runner-identity change,
+  // CJK-mode change). Resolving before them froze the answer at `false` for
+  // every rebuild they trigger — including the whole-fleet rebuild an
+  // schema-fingerprint change forces on every existing index at once,
+  // which is exactly when the #2649 memory relief matters most. So this MUST
+  // stay below the last guard that can set `force` and above its first use.
+  // (The post-pipeline analysis-feature re-check can also set `force`, but the
+  // pipeline has already run by then; that run emits non-streamed, precisely as
+  // `resolveStreamPdgEmit` — read fresh at the same point — behaves.)
+  const streamGraphEmitActive = resolveStreamGraphEmit(options);
+
   // ── Phase 1: Full Pipeline (0–60%) ────────────────────────────────
   const pipelineResult = await runPipelineFromRepo(
     repoPath,
@@ -1587,7 +1707,10 @@ async function runFullAnalysisInner(
   const isIncremental =
     !options.force &&
     !!existingMeta &&
-    existingMeta.schemaVersion === INCREMENTAL_SCHEMA_VERSION &&
+    // Belt and braces, not a second gate: the guard above already set `force`
+    // on exactly this condition, and `!options.force` short-circuits before
+    // this conjunct is reached. Kept so the eligibility contract reads whole.
+    !schemaFingerprintMismatch(existingMeta.schemaFingerprint) &&
     currentAnalysisFeatureMismatches.length === 0 &&
     !!existingMeta.fileHashes &&
     Object.keys(existingMeta.fileHashes).length > 0 &&
@@ -2121,16 +2244,21 @@ async function runFullAnalysisInner(
         //     deleting on every non-pdg incremental run (N runs = N copies of
         //     every INJECTS row; CodeRelation has no PK and no read-side dedup).
         await deleteAllInjects();
-        // 2b. Drop Spring-owned DECLARES edges (#2415). The
+        // 2b. Spring AOP pointcuts are matched against the full resolved graph;
+        // a third-file change can invalidate an edge between unchanged files.
+        // Rebuild the complete ADVISED_BY set on every incremental writeback.
+        await deleteAllAdvisedBy();
+        await deleteSpringAopEvidenceNodes();
+        // 2c. Drop Spring-owned DECLARES edges (#2415). The
         //     auto-configuration phase scans every metadata file and recomputes
         //     the full set each run; exact reason filtering leaves declarations
         //     owned by other metadata systems untouched.
         await deleteSpringAutoConfigurationDeclarations();
-        // 2c. Drop source-unavailable auto-configuration placeholders. Fresh
+        // 2d. Drop source-unavailable auto-configuration placeholders. Fresh
         //     synthetic nodes are graph-wide in extractChangedSubgraph, so this
         //     also removes an orphan when a newly-added real class takes over.
         await deleteSpringAutoConfigurationSyntheticClasses();
-        // 2d. Drop interprocedural TAINT_PATH edges (#2084 M4 U6) when pdg is on
+        // 2e. Drop interprocedural TAINT_PATH edges (#2084 M4 U6) when pdg is on
         //     — their validity is a whole-program property (an A→C flow can be
         //     invalidated by a change to an intermediate function on a third
         //     file), so endpoint-writability extraction can't refresh them.
@@ -2138,7 +2266,7 @@ async function runFullAnalysisInner(
         //     graph (isGraphWideRelType), mirroring Community/Process.
         if (options.pdg === true) {
           await deleteAllInterprocTaintPaths();
-          // 2e. Drop CALL_SUMMARY edges (PDG FU-C) on an incremental `--pdg`
+          // 2f. Drop CALL_SUMMARY edges (PDG FU-C) on an incremental `--pdg`
           //     writeback. They are re-included from the FULL fresh graph
           //     (isGraphWideRelType) and the callSummaries phase recomputes every
           //     summary each run, so delete-all-then-rebuild keeps an unchanged
@@ -2391,6 +2519,14 @@ async function runFullAnalysisInner(
     const stats = await getLbugStats();
     let embeddingSkipped = true;
     let semanticMode: 'vector-index' | 'exact-scan' | undefined;
+    // Hoisted out of the Phase 4 block so the Phase 5 gate can tell "the
+    // pipeline attempted work and produced nothing" apart from "the pipeline
+    // had nothing to attempt" (#2790). `undefined` ≡ the pipeline never ran.
+    let embeddingResult: EmbeddingPipelineResult | undefined;
+    // What Phase 5 stamps as `embeddingCheckpoint`. `undefined` ≡ clear it
+    // (the clean-run contract). Built inside Phase 4 so it carries the identity
+    // of the run that actually wrote it — see the assignment below (#2790).
+    let pendingEmbeddingCheckpoint: RepoMeta['embeddingCheckpoint'];
 
     if (shouldGenerateEmbeddings) {
       const { skipForCap, capDisabled, nodeLimit } = deriveEmbeddingCap(
@@ -2475,6 +2611,31 @@ async function runFullAnalysisInner(
         }
       }
 
+      // ── A checkpoint save writes ONLY the checkpoint (#2790) ──────────
+      // This used to write a full, SUCCESS-shaped meta: new `lastCommit`, new
+      // `fileHashes`, `incrementalInProgress: undefined`. All three are lies at
+      // this point in the run. The first `onCheckpointWindowStart` fires at
+      // batchIndex 0 — before a single embedding row exists — and on a full
+      // rebuild the graph is still in the unpublished staging DB
+      // (`${lbugPath}.staging.<uuid>`), which the atomic swap only renames into
+      // place AFTER Phase 5. A Phase 4 crash therefore threw the whole staging
+      // build away while leaving a meta claiming the new commit and the new
+      // file hashes: the next run diffed those advanced hashes, got
+      // changed=0/added=0/deleted=0, took the incremental path and "preserved"
+      // the OLD graph forever — the exact log line reported in #2790 — with the
+      // `incrementalInProgress` crash-recovery contract (repo-manager.ts) also
+      // cleared mid-run, so nothing could force the rebuild that would heal it.
+      //
+      // Freshness fields may only advance once the index is published. So:
+      // re-read the on-disk meta immediately before writing (the shape the
+      // /api/embed checkpoint writer in server/api.ts already uses, which also
+      // keeps a concurrent writer's update from being reverted by a stale
+      // snapshot) and replace ONLY `embeddingCheckpoint` — plus
+      // `stats.embeddings` when the caller actually MEASURED the live count
+      // (the post-window `onCheckpoint`). The window-start callback passes
+      // nothing: restating the previous run's count there both re-published a
+      // stale number and clobbered the live count a preceding `onCheckpoint`
+      // had just written.
       const saveEmbeddingCheckpoint = async (
         checkpoint: {
           nodesProcessed: number;
@@ -2482,48 +2643,33 @@ async function runFullAnalysisInner(
           chunksProcessed: number;
         },
         pendingNodeIds: string[],
-        embeddings: number | undefined,
+        embeddings?: number,
       ): Promise<void> => {
-        const fileHashes: Record<string, string> = {};
-        for (const [key, value] of newFileHashes) fileHashes[key] = value;
-        await saveMeta(metaDir, {
-          ...(existingMeta ?? {}),
+        const latestMeta = (await loadMeta(metaDir)) ?? existingMeta;
+        // First-ever analyze of this repo: no meta exists on disk yet (the
+        // pre-wipe dirty stamp only fires when one does). Mint the minimum
+        // RepoMeta requires, with `lastCommit: ''` — never `currentCommit` —
+        // so a crash here cannot make the next run mistake the discarded
+        // staging build for an indexed commit.
+        const base: RepoMeta = latestMeta ?? {
           repoPath,
-          lastCommit: currentCommit,
+          lastCommit: '',
           indexedAt: new Date().toISOString(),
-          runnerIdentity,
-          branch: branchLabel ?? existingMeta?.branch,
-          remoteUrl: hasGitDir(repoPath) ? getRemoteUrl(repoPath) : undefined,
-          stats: {
-            files: pipelineResult.totalFileCount,
-            nodes: stats.nodes,
-            edges: stats.edges,
-            communities: pipelineResult.communityResult?.stats.totalCommunities,
-            processes: pipelineResult.processResult?.stats.totalProcesses,
-            embeddings,
-          },
-          schemaVersion: hasGitDir(repoPath) ? INCREMENTAL_SCHEMA_VERSION : undefined,
-          unresolvedReceiverMembers: summarizeUnresolvedReceivers(
-            pipelineResult.resolutionOutcomes ?? [],
-          ),
-          analysisFeatures: currentAnalysisFeatures,
-          cjkSegmentation: getSearchFTSCjkSegmentation(),
-          fileHashes: hasGitDir(repoPath) ? fileHashes : undefined,
-          cacheKeys: [...parseCache.usedKeys],
-          incrementalInProgress: undefined,
-          embeddingCheckpoint: {
-            at: new Date().toISOString(),
-            ...checkpoint,
-            model: embeddingIdentity.model,
-            dimensions: embeddingIdentity.dimensions,
-            provider: embeddingIdentity.provider,
+        };
+        await saveMeta(metaDir, {
+          ...base,
+          ...(embeddings === undefined ? {} : { stats: { ...base.stats, embeddings } }),
+          // Written by a run that is still IN FLIGHT — see the `kind` doc in
+          // repo-manager.ts.
+          embeddingCheckpoint: mintInterruptedCheckpoint(
+            embeddingIdentity,
+            checkpoint,
             pendingNodeIds,
-          },
-          pdg: resolvePdgConfig(options),
+          ),
         });
       };
 
-      const embeddingResult = await runEmbeddingPipeline(
+      embeddingResult = await runEmbeddingPipeline(
         executeQuery,
         executeWithReusedStatement,
         (p) => {
@@ -2542,19 +2688,56 @@ async function runFullAnalysisInner(
         {
           forceReembedNodeIds: pendingEmbeddingNodeIds,
           onCheckpointWindowStart: async ({ nodeIds, ...checkpoint }) => {
-            await saveEmbeddingCheckpoint(checkpoint, nodeIds, existingMeta?.stats?.embeddings);
+            await saveEmbeddingCheckpoint(checkpoint, nodeIds);
           },
+          // ── The mid-run count is a DIAGNOSTIC, not a gate (#2790) ──────
+          // This used to run the count query bare. THIS callback's rejection
+          // propagates out of `runEmbeddingPipeline` and kills the whole
+          // analyze, so an unavailable count took the run down BEFORE Phase 5
+          // ran at all — meaning the tri-state Phase 5 added for exactly this
+          // case could never execute.
+          //
+          // The shared counter (embedding-count.ts) answers `unknown` instead,
+          // and `undefined` is already `saveEmbeddingCheckpoint`'s "do not
+          // touch stats.embeddings" signal — so the checkpoint still lands,
+          // with whatever count is already on disk left alone.
           onCheckpoint: async (checkpoint) => {
             await checkpointOnce();
-            const countResult = await executeQuery(
-              `MATCH (e:${EMBEDDING_TABLE_NAME}) RETURN count(e) AS cnt`,
+            const measured = await measurePersistedEmbeddingCount(executeQuery);
+            if (measured.kind === 'unknown') {
+              log(
+                `Warning: could not measure persisted embeddings at the embedding checkpoint ` +
+                  `(${measured.reason}); the checkpoint is saved with the last known count.`,
+              );
+            }
+            await saveEmbeddingCheckpoint(
+              checkpoint,
+              [],
+              persistedEmbeddingCountOrUndefined(measured),
             );
-            const countRow = countResult?.[0];
-            const embeddings = Number(countRow?.cnt ?? countRow?.[0] ?? 0);
-            await saveEmbeddingCheckpoint(checkpoint, [], embeddings);
           },
         },
       );
+      // ── A partial run must NOT clear the checkpoint (#2790) ───────────
+      // Dropped nodes hold zero embedding rows, but "zero rows" alone heals
+      // nothing: a plain `gitnexus analyze` derives shouldGenerateEmbeddings
+      // = false whenever the index already has embeddings, so the pipeline is
+      // never called and the nodes stay missing until someone passes
+      // --embeddings/--force/--drop-embeddings. Retaining the checkpoint is
+      // what restores the pre-#2790 heal: the resume path above forces
+      // shouldGenerateEmbeddings regardless of flags and feeds
+      // `pendingNodeIds` into `forceReembedNodeIds`. Stamped with THIS run's
+      // identity so a later model/provider change trips the resume mismatch
+      // error rather than resuming under a foreign identity.
+      if (embeddingResult.failedNodeIds.length > 0) {
+        // `'partial'` and its attempt chain — see the `kind` doc in
+        // repo-manager.ts and `nextAttemptCount` in embedding-checkpoint.ts.
+        pendingEmbeddingCheckpoint = mintPartialCheckpoint(
+          embeddingIdentity,
+          embeddingResult,
+          resumedEmbeddingCheckpoint,
+        );
+      }
       if (embeddingResult.semanticMode === 'exact-scan') {
         semanticMode = 'exact-scan';
         log(
@@ -2569,24 +2752,124 @@ async function runFullAnalysisInner(
     // ── Phase 5: Finalize (98–100%) ───────────────────────────────────
     progress('done', 98, 'Saving metadata...');
 
-    // Count embeddings in the index (cached + newly generated)
-    let embeddingCount = 0;
-    try {
-      const embResult = await executeQuery(
-        `MATCH (e:${EMBEDDING_TABLE_NAME}) RETURN count(e) AS cnt`,
+    // Count embeddings in the index (cached + newly generated). Tri-state, and
+    // measured by the SHARED counter rather than a local copy — see
+    // embedding-count.ts. What that buys HERE: the old silent `catch {}` left
+    // "cannot ask" indistinguishable from "wrote nothing", so a diagnostic
+    // failure crashed the run at the gate below with no clue why.
+    const measuredEmbeddingCount = await measurePersistedEmbeddingCount(executeQuery);
+    const embeddingCount = persistedEmbeddingCountOrUndefined(measuredEmbeddingCount);
+    if (measuredEmbeddingCount.kind === 'unknown') {
+      // Not silent any more: the operator gets the reason the count is unknown.
+      log(
+        `Warning: could not count persisted embeddings ` +
+          `(${measuredEmbeddingCount.reason}); treating the embedding count as unknown.`,
       );
-      const row = embResult?.[0];
-      embeddingCount = Number(row?.cnt ?? row?.[0] ?? 0);
-    } catch {
-      /* table may not exist if embeddings never ran */
     }
 
-    if (!embeddingSkipped && stats.nodes > 0 && embeddingCount === 0) {
+    // ── Phase 5 embedding gate (#2790) ────────────────────────────────
+    // Four genuinely different states used to collapse into
+    // `embeddingCount === 0`, and the gate hard-crashed on three of them:
+    //   1. the pipeline never ran (cap-skipped / not requested) —
+    //      `embeddingSkipped`, still short-circuited;
+    //   2. the pipeline ran but had NOTHING to embed (totalNodes 0 after the
+    //      incremental filter — e.g. a resume whose pending sweep deleted the
+    //      last rows) over a legitimately empty table;
+    //   3. the count query failed or answered non-numerically (above) — a
+    //      diagnostic failure, not an indexing failure;
+    //   4. the pipeline embedded and NOTHING persisted — the real defect.
+    // Only (4) throws. `attemptedEmbedding` is what separates it from (2):
+    // `nodesProcessed` is now the REAL completed-node count and
+    // `failedNodeIds` names the nodes whose rows were dropped, so
+    // "attempted" ≡ at least one node was walked to a conclusion.
+    const attemptedEmbedding =
+      !embeddingSkipped &&
+      embeddingResult !== undefined &&
+      (embeddingResult.nodesProcessed > 0 || embeddingResult.failedNodeIds.length > 0);
+
+    if (attemptedEmbedding && stats.nodes > 0 && embeddingCount === 0) {
       throw new Error(
         'Embedding generation completed without persisted embeddings. ' +
-          'The index was not registered to avoid silently reporting embeddings: 0.',
+          'The index was not registered to avoid silently reporting embeddings: 0. ' +
+          'Check the embedding endpoint/model configuration (GITNEXUS_EMBEDDING_URL / ' +
+          'GITNEXUS_EMBEDDING_MODEL) and re-run `gitnexus analyze --embeddings`; ' +
+          'the graph itself is unaffected, so `--drop-embeddings` indexes without them.',
       );
     }
+
+    if (embeddingCount === undefined) {
+      log(
+        'Warning: registering the index without a verified embedding count — the count query ' +
+          'did not answer, so stats.embeddings falls back to the last known value. ' +
+          'Re-run `gitnexus analyze --embeddings` if semantic search comes back empty.',
+      );
+    }
+
+    // ── An unverifiable count must leave a way back (#2790) ───────────────
+    // The carry-forward below is a GUESS, and the guess is load-bearing (see
+    // embedding-count.ts). Clearing the checkpoint on top of it would report
+    // unqualified success and erase the only record that this index was never
+    // verified.
+    //
+    // Retain an identity-matching recovery marker instead — `'unverified-count'`,
+    // whose whole job is to force the next run past the same-commit fast return
+    // so the count can be re-derived (see the `kind` doc in repo-manager.ts).
+    // Self-limiting: once the count answers, the marker is cleared, and the run
+    // it forces embeds nothing, so `attemptedEmbedding` is false and nothing is
+    // re-planted.
+    if (
+      attemptedEmbedding &&
+      embeddingCount === undefined &&
+      pendingEmbeddingCheckpoint === undefined &&
+      embeddingIdentityForRun !== undefined
+    ) {
+      log(
+        'Retaining an embedding checkpoint so the next `gitnexus analyze` re-derives the count ' +
+          'instead of publishing an unverified one as final (#2790).',
+      );
+      pendingEmbeddingCheckpoint = mintUnverifiedCountCheckpoint(embeddingIdentityForRun, {
+        nodesProcessed: embeddingResult?.nodesProcessed ?? 0,
+        totalNodes: embeddingResult?.nodesProcessed ?? 0,
+        chunksProcessed: embeddingResult?.chunksProcessed ?? 0,
+      });
+    }
+
+    // A partial index that is honest about itself beats no index — see the
+    // `kind` doc in repo-manager.ts for why the dropped nodes are safe to ship.
+    if (embeddingResult !== undefined && embeddingResult.failedNodeIds.length > 0) {
+      log(
+        `Warning: ${embeddingResult.failedNodeIds.length} node(s) lost their embeddings to ` +
+          'embedding-endpoint failures and were dropped from this index (#2790). ' +
+          'They are recorded as an embedding checkpoint, so the next `gitnexus analyze` run ' +
+          'resumes from it and re-embeds exactly those nodes — `gitnexus status` reports the ' +
+          `index as incomplete until it succeeds, and the retry gives up after ` +
+          `${EMBEDDING_RESUME_MAX_ATTEMPTS} consecutive failures rather than staying incomplete ` +
+          'forever. Pass --force or --drop-embeddings to abandon them instead.',
+      );
+    }
+
+    // What we can honestly persist as the embedding count: the measurement when
+    // there is one, else the LAST KNOWN figure — never a fabricated 0 (see
+    // embedding-count.ts). Folded by the shared `resolvePersistedEmbeddingCount`
+    // so the CLI and the server cannot drift apart on the carry-forward the way
+    // they already had on the measurement.
+    //
+    // "Last known" is the LATEST ON-DISK meta, re-read here (#2790). It used to
+    // read `existingMeta`, which is assigned exactly once — before any
+    // embedding work — so the fallback republished the pre-run figure and
+    // OVERWROTE the fresher count this run's own terminal `onCheckpoint` had
+    // already written to disk: prior meta says 0, a clean run inserts
+    // embeddings and checkpoints the real count, the final probe is
+    // unavailable, and finalization carries the stale 0 forward while reporting
+    // success. `loadMeta` never throws (it returns null), and the checkpoint
+    // writer already re-reads the same way, so this is the same freshness
+    // discipline applied to the same field.
+    const latestMetaForCount =
+      embeddingCount === undefined ? ((await loadMeta(metaDir)) ?? existingMeta) : undefined;
+    const persistedEmbeddingCount = resolvePersistedEmbeddingCount(
+      measuredEmbeddingCount,
+      latestMetaForCount?.stats?.embeddings,
+    );
 
     const { getRuntimeCapabilities } = await import('./platform/capabilities.js');
     const runtimeCapabilities = getRuntimeCapabilities();
@@ -2646,7 +2929,7 @@ async function runFullAnalysisInner(
         edges: stats.edges,
         communities: pipelineResult.communityResult?.stats.totalCommunities,
         processes: pipelineResult.processResult?.stats.totalProcesses,
-        embeddings: embeddingCount,
+        embeddings: persistedEmbeddingCount,
       },
       capabilities: {
         graph: { provider: 'ladybugdb', status: runtimeCapabilities.graph },
@@ -2660,7 +2943,20 @@ async function runFullAnalysisInner(
         },
         vectorSearch: {
           provider: effectiveSemanticMode === 'vector-index' ? 'ladybugdb-vector' : 'exact-scan',
-          status: embeddingCount > 0 ? effectiveSemanticMode : 'unavailable',
+          // Reads the MEASURED count, not `persistedEmbeddingCount` (#2790).
+          // The carry-forward exists so a later `--force` doesn't discard a
+          // live cache — it is a guess, and a guess must never certify the
+          // vector lane: `--drop-embeddings` + a failed count probe would
+          // otherwise stamp 'vector-index' with 5000 embeddings over a table
+          // holding zero. Unknown reads as 'unavailable' (the status union has
+          // no unknown member, and adding one would touch every consumer);
+          // the downgrade is recoverable — 'unavailable' is not carried
+          // forward as `persistedSemanticMode`, so the next run that can
+          // count restamps the real mode.
+          status:
+            embeddingCount !== undefined && embeddingCount > 0
+              ? effectiveSemanticMode
+              : 'unavailable',
           exactScanLimit: runtimeCapabilities.exactScanLimit,
           reason: runtimeCapabilities.reason,
         },
@@ -2669,7 +2965,9 @@ async function runFullAnalysisInner(
       // analyze run can take the incremental DB-writeback path. Setting
       // incrementalInProgress to undefined explicitly clears any prior
       // dirty flag (full and incremental success paths converge here).
-      schemaVersion: hasGitDir(repoPath) ? INCREMENTAL_SCHEMA_VERSION : undefined,
+      // Derived digest of the DDL this run created the tables from (#2798).
+      // Git-only: non-git repos never take the incremental path.
+      schemaFingerprint: hasGitDir(repoPath) ? SCHEMA_FINGERPRINT : undefined,
       unresolvedReceiverMembers: summarizeUnresolvedReceivers(
         pipelineResult.resolutionOutcomes ?? [],
       ),
@@ -2678,6 +2976,11 @@ async function runFullAnalysisInner(
       // `pdg` below, 'none' is a meaningful value to compare, not an
       // absence, so this is never conditionally omitted.
       cjkSegmentation: getSearchFTSCjkSegmentation(),
+      // The FLOAT[N] width this run created the vector column at (#2798).
+      // Always stamped, like `cjkSegmentation` and unlike `schemaFingerprint`:
+      // the CodeEmbedding table is created for every index, git or not, so
+      // absence has exactly one meaning — an index older than the field.
+      embeddingDims: EMBEDDING_DIMS,
       fileHashes: hasGitDir(repoPath) ? newFileHashesRecord : undefined,
       // This branch's full live chunk-key set (#2106 R6). `usedKeys` is every
       // chunk hash touched in this scan — cache HITS included (see parse-impl
@@ -2685,7 +2988,9 @@ async function runFullAnalysisInner(
       // so a sibling branch's prune can union it and not evict our shards.
       cacheKeys: [...parseCache.usedKeys],
       incrementalInProgress: undefined as RepoMeta['incrementalInProgress'],
-      embeddingCheckpoint: undefined,
+      // Cleared on a clean run; otherwise the marker Phase 4/5 minted above
+      // (see the `kind` doc in repo-manager.ts).
+      embeddingCheckpoint: pendingEmbeddingCheckpoint,
       // The effective pdg config this run's DB rows were built under
       // (#2099 F1). `undefined` on pdg-off runs — this meta is a fresh
       // literal (no spread of existingMeta), so omission is what CLEARS the

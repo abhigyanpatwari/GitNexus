@@ -61,6 +61,7 @@ import {
   findReceiverTypeBinding,
   findValueBindingInScope,
   isClassLike,
+  type DecorationStripper,
 } from '../scope/walkers.js';
 import {
   tryEmitEdge,
@@ -82,6 +83,10 @@ import type {
   ResolutionOutcomeRecorder,
   ResolutionSuppressionReason,
 } from '../resolution-outcome.js';
+import { classifyReceiverShape } from '../resolution-outcome.js';
+import type { ReceiverOrigin } from '../resolution-outcome.js';
+import { decodeReceiverChain } from '../../utils/receiver-chain-codec.js';
+import type { DecodedReceiverChain } from '../../utils/receiver-chain-codec.js';
 
 /** Subset of `ScopeResolver` consumed by this pass. Accepting the
  *  subset rather than the full provider keeps tests and partial
@@ -92,10 +97,11 @@ type ReceiverBoundProviderSubset = Pick<
   | 'isSuperReceiverInContext'
   | 'fieldFallbackOnMethodLookup'
   | 'collapseMemberCallsByCallerTarget'
-  | 'unwrapCollectionAccessor'
+  | 'elementTypeOf'
   | 'hoistTypeBindingsToModule'
   | 'stripReceiverCastExpressions'
   | 'constructionSyntax'
+  | 'stripTypePreservingDecoration'
   | 'resolveQualifiedReceiverMember'
   | 'resolveReceiverMember'
   | 'resolveThisViaEnclosingClass'
@@ -113,8 +119,17 @@ function resolveClassBindingForName(
   scopeId: string,
   rawClassName: string,
   scopes: ScopeResolutionIndexes,
+  /**
+   * OPT-IN, and deliberately not passed by the emitting cases. `findClass
+   * BindingInScope`'s own docstring explains why the stripper is opt-in: a name
+   * that previously bound nothing starts binding, which SUPPRESSES the
+   * `?? otherResolver(...)` fallbacks several callers rely on. Case 4 therefore
+   * keeps exact-name behaviour and only `classifyReceiverOrigin` — which emits
+   * no edge and can only change a diagnostic label — passes it.
+   */
+  stripDecoration?: DecorationStripper,
 ): SymbolDefinition | undefined {
-  const direct = findClassBindingInScope(scopeId, rawClassName, scopes);
+  const direct = findClassBindingInScope(scopeId, rawClassName, scopes, stripDecoration);
   if (direct !== undefined) return direct;
 
   if (!rawClassName.includes('<')) return undefined;
@@ -128,7 +143,7 @@ function resolveClassBindingForName(
     // default to [] before checking `.length`.
     const qnameIds = scopes.qualifiedNames.get(baseName) ?? [];
     if (qnameIds.length === 0) {
-      return findClassBindingInScope(scopeId, baseName, scopes);
+      return findClassBindingInScope(scopeId, baseName, scopes, stripDecoration);
     }
     const matches: SymbolDefinition[] = [];
     for (const id of qnameIds) {
@@ -149,7 +164,123 @@ function resolveClassBindingForName(
     // safety in non-ODR or mixed-language edge cases.
   }
 
-  return findClassBindingInScope(scopeId, baseName, scopes);
+  return findClassBindingInScope(scopeId, baseName, scopes, stripDecoration);
+}
+
+/** A bare, undecorated identifier and nothing else — see {@link isBareTypeName}. */
+const BARE_TYPE_NAME_RE = /^[A-Za-z_$][\w$]*$/;
+
+/**
+ * A type name a built-in test may be asked about: a bare, undecorated
+ * identifier and nothing else.
+ *
+ * `Promise<User>`, `[]Repo` and `Option<Repo>` all name a built-in CONTAINER
+ * whose ELEMENT is very often in-program, and an await/index/unwrap step is
+ * exactly how a receiver chain reaches that element. Answering "external"
+ * because the outer spelling matched a built-in would relabel a real in-program
+ * drop, which is the failure this whole function exists to stop. A decorated or
+ * dotted spelling is likewise not a built-in name, it merely contains one.
+ */
+function isBareTypeName(rawName: string): boolean {
+  return BARE_TYPE_NAME_RE.test(rawName);
+}
+
+/**
+ * Is this dropped receiver rooted inside the analyzed program?
+ *
+ * Asks of the receiver's BASE — the leftmost name the chain hangs off — what
+ * this index can DEMONSTRATE. Three answers, and the asymmetry between them is
+ * the whole point:
+ *
+ * - `in-program` — the base's declared type resolves here, or the base itself is
+ *   a class, a qualified name, or a value this program declares. A real edge was
+ *   lost; the hedge must fire.
+ * - `external` — POSITIVE evidence that the target is outside: the language
+ *   itself names the base (or its bare declared type) a built-in. `console.log`,
+ *   `fetch(...)`, `JSON.stringify` reach code no index contains, so there is no
+ *   node an edge could have pointed at and nothing was lost.
+ * - `unknown` — everything else. An absence of evidence is NOT evidence of
+ *   externality: an unannotated parameter (`function f(svc) { svc.a().b(); }`)
+ *   is recorded nowhere in the scope model at all, and calling that "external"
+ *   published `epistemic: 'exact'` over a genuinely missing in-program caller —
+ *   strictly worse than hedging, because it is a confident wrong answer rather
+ *   than an admitted gap. `unknown` counts WITH `in-program` in
+ *   `summarizeUnresolvedReceivers`, which is the safe direction.
+ *
+ * Uses the AST-derived chain base when one was minted, and falls back to the
+ * head of the receiver text otherwise — never a regex over the source line.
+ *
+ * Exported for the unit tests that pin the three-way split; the pass is its only
+ * production caller.
+ */
+export function classifyReceiverOrigin(
+  decoded: DecodedReceiverChain | undefined,
+  inScope: string,
+  receiverName: string,
+  scopes: ScopeResolutionIndexes,
+  options: {
+    /** The language's type-preserving decoration stripper. Without it a Go
+     *  pointer receiver — `func (h *Host)` binds `h` to the literal `*Host` —
+     *  resolves to no class and the whole method body's drops were reported as
+     *  external. Same hook the three receiver-chain lookups in
+     *  `compound-receiver.ts` already receive. */
+    readonly stripTypePreservingDecoration?: DecorationStripper;
+    /** `LanguageProvider.isBuiltInName`, threaded through the pass options the
+     *  same way `emitFreeCallFallback` receives it. THE only source of positive
+     *  external evidence available here; languages that declare no built-in set
+     *  simply never produce an `external` verdict, which is the safe default. */
+    readonly isBuiltInName?: (name: string) => boolean;
+  } = {},
+): ReceiverOrigin {
+  // The chain's base is authoritative. Without one, take the head of the
+  // receiver text up to the first member/call punctuation.
+  const base = decoded?.baseReceiverName ?? /^[A-Za-z_$][\w$]*/.exec(receiverName)?.[0];
+  if (base === undefined || base.length === 0) return 'unknown';
+  const strip = options.stripTypePreservingDecoration;
+  const isBuiltIn = options.isBuiltInName;
+
+  // The base's declared TYPE, when it has one, is the strongest signal about
+  // where the member lives: `inputs.stream()` has an in-program base bound to
+  // `List<String>`, whose `stream` is in the JDK.
+  const binding = findReceiverTypeBinding(inScope, base, scopes);
+  if (binding !== undefined) {
+    // `resolveClassBindingForName`, not a bare lookup: it also strips template
+    // arguments, so an in-program generic base (`Box<String> b; b.open()`)
+    // resolves instead of being mislabelled and dropped from the hedge.
+    if (
+      resolveClassBindingForName(binding.declaredAtScope, binding.rawName, scopes, strip) !==
+      undefined
+    ) {
+      return 'in-program';
+    }
+    // The declared type is not one this index contains. That is only proof of
+    // externality when the language itself names it — otherwise the type merely
+    // failed to resolve (an alias, an inferred callable, a generic parameter),
+    // and we fall through to ask what the index knows about the base itself.
+    if (isBareTypeName(binding.rawName) && isBuiltIn?.(binding.rawName) === true) {
+      return 'external';
+    }
+  }
+  // Anything else this index knows by that name (namespace, module, free fn).
+  // O(1), so it goes ahead of the scope-chain walks below: all three checks are
+  // arms of the same `in-program` disjunction and none has a side effect, so
+  // answering from the index first is free and changes no verdict.
+  if (scopes.qualifiedNames.has(base)) return 'in-program';
+  // A type the program declares, used as a static receiver.
+  if (findClassBindingInScope(inScope, base, scopes, strip) !== undefined) return 'in-program';
+  // A VALUE the program declares — an object-literal service, a local whose
+  // initializer we could not type (`const loc = makeIt(); loc.getUser().save()`),
+  // a field. The type channel had nothing usable to say about these, but the
+  // program demonstrably declares the name, so the lost edge is in-program and
+  // failing to type it is a resolver defect. This is the channel Case 5 already
+  // dispatches on; consulting it here keeps the diagnostic honest about the
+  // same population.
+  if (findValueBindingInScope(inScope, base, scopes) !== undefined) return 'in-program';
+
+  // Positive external evidence, and the only kind reachable from this pass.
+  if (isBuiltIn?.(base) === true) return 'external';
+
+  return 'unknown';
 }
 
 export function emitReceiverBoundCalls(
@@ -168,6 +299,14 @@ export function emitReceiverBoundCalls(
      *  `undefined` ⇒ zero overhead, byte-identity (R4). Per-file capture
      *  contexts are built from this + `parsed.filePath` in the loop. */
     readonly calleeIdSink?: CalleeIdSink;
+    /** `LanguageProvider.isBuiltInName`. Passed through the options bag rather
+     *  than widened into `ReceiverBoundProviderSubset`, mirroring how
+     *  `emitFreeCallFallback` receives the same hook — the subset exists to keep
+     *  test providers small, and this pass reads nothing else off the language
+     *  provider. Consumed ONLY by `classifyReceiverOrigin`, so leaving it unset
+     *  degrades a drop's label to `unknown` (the safe direction) and changes no
+     *  edge. */
+    readonly isBuiltInName?: (name: string) => boolean;
   } = {},
 ): number {
   let emitted = 0;
@@ -180,10 +319,17 @@ export function emitReceiverBoundCalls(
   const hoistTypeBindingsToModule = provider.hoistTypeBindingsToModule === true;
   const compoundOpts = {
     fieldFallback,
-    unwrapCollectionAccessor: provider.unwrapCollectionAccessor,
+    elementTypeOf: provider.elementTypeOf,
     hoistTypeBindingsToModule,
     stripReceiverCastExpressions: provider.stripReceiverCastExpressions === true,
     constructionSyntax: provider.constructionSyntax,
+    stripTypePreservingDecoration: provider.stripTypePreservingDecoration,
+  };
+  // Loop-invariant: both hooks come off the pass arguments, so the options bag
+  // for `classifyReceiverOrigin` is built once here rather than per dropped site.
+  const receiverOriginOpts = {
+    stripTypePreservingDecoration: provider.stripTypePreservingDecoration,
+    isBuiltInName: options.isBuiltInName,
   };
 
   // Build an interface → implementors map from IMPLEMENTS edges.
@@ -402,7 +548,23 @@ export function emitReceiverBoundCalls(
       // the end of the site loop, not here — a later case may still resolve
       // the site, and only a site that survives every case is a real drop.
       let compoundReceiverUnresolved = false;
-      if (receiverName.includes('.') || receiverName.includes('(')) {
+      // The punctuation test is a C-family heuristic and it is the reason
+      // `repos[0].save()` is INVISIBLE in all 14 languages: a subscript receiver
+      // contains neither `.` nor `(`, so this case never fired, the fold was
+      // never consulted, and no drop was recorded either — the call vanished
+      // with the instrument blind to it. PHP `->` and `::` receivers are lost
+      // the same way.
+      //
+      // A minted receiver chain is the STRUCTURAL answer to the same question:
+      // the capture layer walked the real AST and found the receiver is an
+      // expression, whatever punctuation it happens to be spelled with. Trusting
+      // that instead of the text is the substitution this whole line of work
+      // exists to make.
+      if (
+        receiverName.includes('.') ||
+        receiverName.includes('(') ||
+        site.receiverChain !== undefined
+      ) {
         const currentClass = resolveCompoundReceiverClass(
           receiverName,
           site.inScope,
@@ -1341,6 +1503,10 @@ export function emitReceiverBoundCalls(
       // dropped site (its callee is unknown by definition, so the drop cannot
       // be attributed to any target symbol).
       if (compoundReceiverUnresolved && !handledSites.has(siteKey)) {
+        // Decoded once: both the shape census and the origin classifier read the
+        // same chain, and this is inside the drop guard so a resolved site pays
+        // nothing.
+        const decodedChain = decodeReceiverChain(site.receiverChain);
         options.recordResolutionOutcome?.({
           kind: 'suppressed',
           reason: 'receiver-unresolved',
@@ -1354,6 +1520,22 @@ export function emitReceiverBoundCalls(
           // recorded here too. Carry the kind so a consumer can separate a
           // dropped CALL from a dropped property access.
           siteKind: site.kind,
+          // Structural, from the AST-derived chain the emitter minted — never
+          // re-derived from the source line.
+          // `decodeReceiverChain` opens with a non-string guard, so the
+          // undefined case needs no ternary here.
+          receiverShape: classifyReceiverShape(decodedChain),
+          // Whether anything was actually lost. An external target has no node
+          // to point at, so its absence is completeness, not uncertainty — but
+          // ONLY a positive built-in match may say so. Everything the index
+          // cannot demonstrate stays `unknown` and keeps hedging.
+          receiverOrigin: classifyReceiverOrigin(
+            decodedChain,
+            site.inScope,
+            receiverName,
+            scopes,
+            receiverOriginOpts,
+          ),
         });
       }
     }

@@ -186,6 +186,33 @@ const SPAWN_CLI = [
   // exposed a file-backend double-admit race here (#2658 review); the reclaim is
   // now judgment-verified so a live holder is never displaced.
   'test/integration/analyze-index-lock-concurrency.test.ts',
+  // The three `dist/` module-load closure guards, all built on the shared
+  // child-process probe in `test/helpers/module-load-probe.ts`. That probe IS
+  // the platform-varying part: it spawns `process.execPath` in array form,
+  // clears NODE_OPTIONS, addresses its target via `pathToFileURL` (Windows needs
+  // the `file:///C:/...` form — a bare absolute path is not a valid ESM
+  // specifier there), and renders every result through a `path.sep`→POSIX
+  // normalisation the anchors and offender regexes depend on. None of that is
+  // proven anywhere else.
+  //
+  // Cheap: measured on the Windows runner at 448 ms, 53 ms and sub-second. An
+  // earlier attempt to register them still turned the matrix red — not from
+  // their own cost, but because vitest sharded by file COUNT, so inserting any
+  // file re-partitioned the list and happened to cluster `cli-e2e` (361 s) with
+  // `cli-limit-e2e` (75 s) on one shard. The split is weight-aware now
+  // (`scripts/cross-platform-shard.ts`), so a cheap file can no longer move a
+  // heavy one.
+  //
+  // #2802: MCP startup must not eagerly load the analyze-only language
+  // provider registry or the group contract extractors.
+  'test/integration/mcp/startup-language-closure.test.ts',
+  // PR #1383: `cli/mcp.js`'s static-import closure must stay leaf-only so no
+  // native binding initialises before the stdout sentinel installs.
+  'test/integration/mcp/import-closure.test.ts',
+  // #2091/#2093/#2116: the scope-resolution registry must not load the optional
+  // tree-sitter grammars at import time. The offender regexes match grammar
+  // paths with either separator, which only the Windows runner proves.
+  'test/integration/optional-grammars/registry-import-closure.test.ts',
 ];
 
 // Worker threads tests — exercise real worker_threads which have

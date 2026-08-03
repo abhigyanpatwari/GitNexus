@@ -523,12 +523,12 @@ describe('parsedfile-store receiverChain sanitation', () => {
     const dir = await mkdtemp(path.join(tmpdir(), 'pfstore-chain-'));
     try {
       await persistParsedFileChunk(dir, 'chunk-0', [
-        makeStoreEntry('x.ts', { referenceSites: [siteWith('1|svc|cgetUser')] }),
+        makeStoreEntry('x.ts', { referenceSites: [siteWith('2|svc|cgetUser')] }),
       ]);
       const loaded = (await loadParsedFilesForPaths(dir, new Set(['x.ts']))).get('x.ts')!;
       expect(loaded.referenceSites[0]).toMatchObject({
         name: 'save',
-        receiverChain: '1|svc|cgetUser',
+        receiverChain: '2|svc|cgetUser',
       });
     } finally {
       await rm(dir, { recursive: true, force: true });
@@ -551,8 +551,9 @@ describe('parsedfile-store receiverChain sanitation', () => {
 
   it.each([
     ['malformed', 'not-a-chain'],
-    ['wrong version', '2|svc|cgetUser'],
-    ['over depth', '1|svc|ca|cb|cc|cd'],
+    ['unknown future version', '3|svc|cgetUser'],
+    ['superseded v1 payload', '1|svc|cgetUser'],
+    ['over depth', '2|svc|ca|cb|cc|cd'],
     ['non-string', 42],
   ])(
     'strips a %s chain but KEEPS the site — it still resolves via the text cascade',
@@ -577,7 +578,7 @@ describe('parsedfile-store receiverChain sanitation', () => {
     try {
       await persistParsedFileChunk(dir, 'chunk-0', [
         makeStoreEntry('garbage.ts', { referenceSites: 'nonsense' }),
-        makeStoreEntry('ok.ts', { referenceSites: [siteWith('1|svc|cgetUser')] }),
+        makeStoreEntry('ok.ts', { referenceSites: [siteWith('2|svc|cgetUser')] }),
       ]);
       const loaded = await loadParsedFilesForPaths(dir, new Set(['garbage.ts', 'ok.ts']));
       expect(loaded.has('garbage.ts')).toBe(false);
@@ -596,17 +597,17 @@ describe('parsedfile-store receiverChain sanitation', () => {
       await persistParsedFileChunk(dir, 'chunk-0', [
         makeStoreEntry('x.ts', {
           referenceSites: [
-            siteWith('1|svc|cgetUser'),
+            siteWith('2|svc|cgetUser'),
             siteWith('not-a-chain'),
-            siteWith('1|other|ffield'),
+            siteWith('2|other|ffield'),
           ],
         }),
       ]);
       const loaded = (await loadParsedFilesForPaths(dir, new Set(['x.ts']))).get('x.ts')!;
       expect(loaded.referenceSites).toHaveLength(3);
-      expect(loaded.referenceSites[0]).toMatchObject({ receiverChain: '1|svc|cgetUser' });
+      expect(loaded.referenceSites[0]).toMatchObject({ receiverChain: '2|svc|cgetUser' });
       expect(loaded.referenceSites[1]).not.toHaveProperty('receiverChain');
-      expect(loaded.referenceSites[2]).toMatchObject({ receiverChain: '1|other|ffield' });
+      expect(loaded.referenceSites[2]).toMatchObject({ receiverChain: '2|other|ffield' });
     } finally {
       await rm(dir, { recursive: true, force: true });
     }

@@ -490,6 +490,46 @@ describe('Pass 5: reference sites', () => {
     );
     expect(result.referenceSites[0]!.arity).toBe(2);
   });
+
+  // #2782: languages whose member-read pattern also matches the callee of a
+  // member call mark that site rather than dropping it — the phantom-vs-genuine
+  // decision needs the resolved tail's kind and so belongs at edge emission.
+  it('records @reference.callee-position as inCalleePosition without becoming the anchor', () => {
+    const result = extract(
+      [
+        scopeMatch('module', 1, 0, 100, 0),
+        refMatch('read', 'Work', 3, 0, 3, 10, {
+          // Widest capture in the match: if it were not a known sub-tag it
+          // would win `anchorCaptureFor` and route the site to an unknown kind.
+          '@reference.callee-position': cap(
+            '@reference.callee-position',
+            3,
+            0,
+            3,
+            20,
+            'h.dep.Work',
+          ),
+        }),
+      ],
+      'a.ts',
+      mockProvider(),
+    );
+    expect(result.referenceSites).toHaveLength(1);
+    expect(result.referenceSites[0]).toMatchObject({
+      name: 'Work',
+      kind: 'read',
+      inCalleePosition: true,
+    });
+  });
+
+  it('leaves inCalleePosition unset on an ordinary read', () => {
+    const result = extract(
+      [scopeMatch('module', 1, 0, 100, 0), refMatch('read', 'Label', 3, 0, 3, 10)],
+      'a.ts',
+      mockProvider(),
+    );
+    expect(result.referenceSites[0]!.inCalleePosition).toBeUndefined();
+  });
 });
 
 // ─── §Pass 6: callable-value-flow facts ───────────────────────────────────

@@ -13,16 +13,9 @@ import {
   edgeSet,
   getResolutionOutcomes,
   runPipelineFromRepo,
+  writeFixtureRepo,
   type PipelineResult,
 } from './helpers.js';
-
-function writeFixtureRepo(root: string, files: Record<string, string>): void {
-  for (const [relPath, content] of Object.entries(files)) {
-    const fullPath = path.join(root, relPath);
-    fs.mkdirSync(path.dirname(fullPath), { recursive: true });
-    fs.writeFileSync(fullPath, content, 'utf8');
-  }
-}
 
 // ---------------------------------------------------------------------------
 // Generic-base heritage (#1951): extends Box<T> already worked (value: identifier
@@ -3344,12 +3337,17 @@ export class Service {
 `,
       'main.ts': `import { Service } from './models';
 
-export async function droppedCall(svc: Service): Promise<void> {
-  // An await-parenthesized receiver. Structural typing does NOT cover this
-  // shape — \`extractMixedChain\` reaches \`await …\`, which is not a chain node,
-  // so no chain is minted and the site still reaches the drop recorder. The
-  // \`!\` spelling used to serve here until structural typing resolved it.
-  (await svc.getUserAsync()).save();
+export async function droppedCall(svc): Promise<void> {
+  // An UNANNOTATED parameter. The chain mints fine, but the base has no type
+  // binding to resolve against, so the site reaches the drop recorder.
+  //
+  // Third fixture for this case: \`!\` served until structural typing resolved
+  // it, then the await-parenthesized form served until name-free step kinds
+  // resolved that too. Both were shapes the resolver merely did not SUPPORT
+  // yet, so each fix moved the goalposts. An untyped receiver carries no type
+  // information at all, so no amount of resolver work can type it — which is
+  // what makes it a stable choice rather than the next one to be fixed.
+  svc.getUser().save();
 }
 
 export function droppedWrite(svc: Service | null): void {
@@ -3378,6 +3376,24 @@ export function droppedWrite(svc: Service | null): void {
       (outcome) => outcome.kind === 'suppressed' && outcome.reason === 'receiver-unresolved',
     );
     expect(drops).toContainEqual(expect.objectContaining({ name: 'name', siteKind: 'write' }));
+  });
+
+  // The origin travels with the drop too, and its value here is the whole
+  // point: `svc` is an UNANNOTATED parameter, so the scope model records it
+  // nowhere — no type binding, no value binding, no qualified name. A
+  // classifier that read that silence as `external` published
+  // `epistemic: 'exact'` over a call it had genuinely lost. `unknown` is the
+  // honest answer and it counts toward the hedge exactly like `in-program`.
+  it('does not call an untyped in-program receiver external', () => {
+    const drops = getResolutionOutcomes(result).filter(
+      (outcome) => outcome.kind === 'suppressed' && outcome.reason === 'receiver-unresolved',
+    );
+    expect(drops).toContainEqual(
+      expect.objectContaining({ name: 'save', siteKind: 'call', receiverOrigin: 'unknown' }),
+    );
+    expect(drops).not.toContainEqual(
+      expect.objectContaining({ name: 'save', receiverOrigin: 'external' }),
+    );
   });
 });
 

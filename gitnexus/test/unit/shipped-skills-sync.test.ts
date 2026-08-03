@@ -120,6 +120,19 @@ describe('intended standard-skill improvements stay in every applicable copy', (
     }
   });
 
+  it('documents CLI fallbacks in every impact-analysis copy', () => {
+    const required = [
+      'node .gitnexus/run.cjs impact <symbol> --direction upstream --repo .',
+      'node .gitnexus/run.cjs detect-changes --scope all --repo .',
+      'replace `node .gitnexus/run.cjs` with `npx gitnexus`',
+      'detect_changes({scope: "all"})',
+    ];
+    for (const file of standardSkillCopies('gitnexus-impact-analysis')) {
+      const content = fs.readFileSync(file, 'utf-8');
+      for (const fragment of required) expect(content).toContain(fragment);
+    }
+  });
+
   it('documents the current tools, schema, and cross-repo trace in every guide copy', () => {
     const required = [
       '`route_map`',

@@ -71,14 +71,63 @@ describe('isBuiltInOrNoise (per-language)', () => {
   });
 
   describe('languages without builtInNames', () => {
-    it('Java has no language-specific noise', () => {
-      expect(isBuiltIn('System', SupportedLanguages.Java)).toBe(false);
-      expect(isBuiltIn('println', SupportedLanguages.Java)).toBe(false);
-    });
-
     it('Go has no language-specific noise', () => {
       expect(isBuiltIn('fmt', SupportedLanguages.Go)).toBe(false);
       expect(isBuiltIn('Println', SupportedLanguages.Go)).toBe(false);
+    });
+  });
+
+  // Java's set exists so `classifyReceiverOrigin` can name the program boundary
+  // (#2744): without it no Java drop could ever be judged `external` and every
+  // one of them hedged `impact()` to `lower-bound`. It lists TYPE names only —
+  // the shape a receiver base actually has — never method names.
+  describe('Java platform types (#2744)', () => {
+    it('names the java.lang types that appear unqualified as receiver bases', () => {
+      expect(isBuiltIn('System', SupportedLanguages.Java)).toBe(true);
+      expect(isBuiltIn('String', SupportedLanguages.Java)).toBe(true);
+      expect(isBuiltIn('Integer', SupportedLanguages.Java)).toBe(true);
+      expect(isBuiltIn('Math', SupportedLanguages.Java)).toBe(true);
+      expect(isBuiltIn('Thread', SupportedLanguages.Java)).toBe(true);
+      expect(isBuiltIn('StringBuilder', SupportedLanguages.Java)).toBe(true);
+      expect(isBuiltIn('RuntimeException', SupportedLanguages.Java)).toBe(true);
+      expect(isBuiltIn('Object', SupportedLanguages.Java)).toBe(true);
+    });
+
+    it('names the java.util utility holders whose imports never resolve in-workspace', () => {
+      expect(isBuiltIn('Optional', SupportedLanguages.Java)).toBe(true);
+      expect(isBuiltIn('List', SupportedLanguages.Java)).toBe(true);
+      expect(isBuiltIn('Arrays', SupportedLanguages.Java)).toBe(true);
+      expect(isBuiltIn('Collections', SupportedLanguages.Java)).toBe(true);
+      expect(isBuiltIn('Objects', SupportedLanguages.Java)).toBe(true);
+    });
+
+    // The asymmetry that governs the set: an entry here can NEVER be reported
+    // as in-program, so every name an application plausibly declares itself
+    // stays out. Missing one only costs a hedge.
+    it('omits platform names that double as ordinary domain nouns', () => {
+      expect(isBuiltIn('Map', SupportedLanguages.Java)).toBe(false);
+      expect(isBuiltIn('Set', SupportedLanguages.Java)).toBe(false);
+      expect(isBuiltIn('Collection', SupportedLanguages.Java)).toBe(false);
+      expect(isBuiltIn('Stream', SupportedLanguages.Java)).toBe(false);
+      expect(isBuiltIn('Record', SupportedLanguages.Java)).toBe(false);
+      expect(isBuiltIn('Error', SupportedLanguages.Java)).toBe(false);
+      expect(isBuiltIn('Number', SupportedLanguages.Java)).toBe(false);
+    });
+
+    // The same hook gates `type-env.ts` return-type inference and the #2545
+    // free-call shadow guard, both keyed on the CALLEE name. Java method names
+    // are camelCase and collide with user code, so none are listed.
+    it('lists no method names, so Java callee resolution is untouched', () => {
+      expect(isBuiltIn('println', SupportedLanguages.Java)).toBe(false);
+      expect(isBuiltIn('format', SupportedLanguages.Java)).toBe(false);
+      expect(isBuiltIn('toString', SupportedLanguages.Java)).toBe(false);
+      expect(isBuiltIn('run', SupportedLanguages.Java)).toBe(false);
+      expect(isBuiltIn('get', SupportedLanguages.Java)).toBe(false);
+    });
+
+    it('does not name user-defined types', () => {
+      expect(isBuiltIn('UserService', SupportedLanguages.Java)).toBe(false);
+      expect(isBuiltIn('OrderRepository', SupportedLanguages.Java)).toBe(false);
     });
   });
 

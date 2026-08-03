@@ -338,7 +338,7 @@ describeIfWorkerBuilt('function-local VALUES carry their own identity (#2699 A1)
     // The churn this was deferred for is real and was accepted deliberately:
     // it re-keys ~14,700 build-time nodes to change ~800 persisted ones,
     // because `pruneLocalSymbols` deletes most locals. Hence the paired
-    // INCREMENTAL_SCHEMA_VERSION / parse-cache SCHEMA_BUMP bumps — without them
+    // schema-fingerprint changes / parse-cache SCHEMA_BUMP bumps — without them
     // a warm cache or an incremental top-up replays the old un-suffixed ids.
     //
     // Only LOCALS move. The prefix comes from `enclosingCallablePrefix`, which
