@@ -143,6 +143,7 @@ import { generateAIContextFiles } from '../cli/ai-context.js';
 import { sanitizeDetectedBranch } from '../cli/analyze-config.js';
 import { EMBEDDING_TABLE_NAME } from './lbug/schema.js';
 import { STALE_HASH_SENTINEL } from './lbug/schema.js';
+import { SCHEMA_FINGERPRINT } from './lbug/schema.js';
 import { isSpringBeanCandidateSourceFile } from './ingestion/frameworks/spring/bean-catalog.js';
 import { isSpringBeanFactoryDeclaration } from './ingestion/frameworks/spring/bean-factories.js';
 import {
@@ -1280,6 +1281,26 @@ async function runFullAnalysisInner(
         `forcing a full rebuild so persisted rows match the current schema.`,
     );
     options = { ...options, force: true };
+  } else if (existingMeta && existingMeta.schemaFingerprint !== SCHEMA_FINGERPRINT) {
+    // The DERIVED half of the same gate (#2798). The version above is
+    // hand-picked and has clashed EXACTLY with a concurrently-merged branch
+    // twice: both sides stamp the same number over different DDL, `===` reads
+    // the index as current, `CREATE … TABLE` is then skipped as "already
+    // exists" (suppressed in lbug-adapter's runSchemaCreationQueries), and the
+    // edges the missing pairs carry are dropped by fallbackRelationshipInserts'
+    // bare catch — a wrong graph, with no error anywhere.
+    //
+    // Reached only when the version MATCHED, so this is exactly the collision
+    // case plus the one-time migration of every pre-#2798 index (absent
+    // fingerprint). Absence must force too: reusing it would stamp a fresh
+    // fingerprint onto a database whose DDL was never verified.
+    const stampedFingerprint = existingMeta.schemaFingerprint ?? 'pre-fingerprint';
+    log(
+      `index DDL changed (stamped ${stampedFingerprint}, this build is ${SCHEMA_FINGERPRINT}) ` +
+        `while the schema version matched at v${INCREMENTAL_SCHEMA_VERSION}; ` +
+        `forcing a full rebuild so persisted rows match the current DDL.`,
+    );
+    options = { ...options, force: true };
   }
 
   // ── independently-versioned analysis capabilities ────────────────
@@ -1625,6 +1646,7 @@ async function runFullAnalysisInner(
     !options.force &&
     !!existingMeta &&
     existingMeta.schemaVersion === INCREMENTAL_SCHEMA_VERSION &&
+    existingMeta.schemaFingerprint === SCHEMA_FINGERPRINT &&
     currentAnalysisFeatureMismatches.length === 0 &&
     !!existingMeta.fileHashes &&
     Object.keys(existingMeta.fileHashes).length > 0 &&
@@ -2880,6 +2902,9 @@ async function runFullAnalysisInner(
       // incrementalInProgress to undefined explicitly clears any prior
       // dirty flag (full and incremental success paths converge here).
       schemaVersion: hasGitDir(repoPath) ? INCREMENTAL_SCHEMA_VERSION : undefined,
+      // The derived companion to schemaVersion (#2798) — same git gating, since
+      // the pair is only ever consulted on the incremental path.
+      schemaFingerprint: hasGitDir(repoPath) ? SCHEMA_FINGERPRINT : undefined,
       unresolvedReceiverMembers: summarizeUnresolvedReceivers(
         pipelineResult.resolutionOutcomes ?? [],
       ),
