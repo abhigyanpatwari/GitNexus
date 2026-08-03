@@ -662,26 +662,34 @@ export const SCHEMA_QUERIES = [...NODE_SCHEMA_QUERIES, ...REL_SCHEMA_QUERIES, EM
  * {@link runSchemaCreationQueries} (lbug-adapter.ts) executes for the node and
  * relation tables.
  *
- * `INCREMENTAL_SCHEMA_VERSION` (repo-manager.ts) is a hand-picked integer that
- * has to PREDICT whether an on-disk database was created from this build's DDL,
- * and it has collided with `main` eight times — twice EXACTLY. The reuse gate is
- * a strict `===`, so an exact clash is the quiet one: two builds stamp the same
- * number over different DDL, the index reads as current, every `CREATE … TABLE`
- * is skipped as "already exists" (suppressed in `runSchemaCreationQueries`), and
- * the edges whose endpoint pair the live DB cannot persist are dropped by
+ * This REPLACED `INCREMENTAL_SCHEMA_VERSION` (#2798), a hand-incremented
+ * integer in repo-manager.ts that had to PREDICT whether an on-disk database
+ * was created from this build's DDL. It could not: the number collided with
+ * `main` eight times, twice EXACTLY, and an exact clash was the quiet failure —
+ * two builds stamp the same number over different DDL, the strict `===` gate
+ * reads the index as current, every `CREATE … TABLE` is skipped as "already
+ * exists" (suppressed in `runSchemaCreationQueries`), and the edges whose
+ * endpoint pair the live DB cannot persist are dropped by
  * `fallbackRelationshipInserts`' bare `catch`. A wrong graph, not an error.
  *
- * This derives that fact instead of predicting it (#2798). It does not REPLACE
- * the integer: most entries in the version ladder are semantic (node ids, wire
- * formats, resolution tiers) and leave the DDL byte-identical, so both values
- * are necessary conditions for reuse. What it buys is that two branches picking
- * the same number no longer have to be renumbered — the fingerprint decides.
+ * A digest cannot collide BY ACCIDENT at this scale: 12 hex chars is 48 bits,
+ * so even 1,000 distinct DDL variants over the project's whole life put the
+ * birthday probability of any pair matching at ≈1.8e-9. Two builds agree
+ * exactly when their DDL agrees, so concurrent branches never need renumbering.
+ * Do not shorten the slice: the odds double per bit dropped. On mismatch —
+ * including the ABSENT stamp every pre-#2798 index carries — run-analyze warns
+ * and forces a full re-analyze, which wipes the database and recreates the
+ * tables from the DDL below.
  *
  * {@link EMBEDDING_SCHEMA} is deliberately EXCLUDED. Its `FLOAT[N]` width comes
  * from `GITNEXUS_EMBEDDING_DIMS` at module load, so folding it in would make
  * this a function of the ENVIRONMENT rather than of code: two runs of the same
  * build under different env would disagree and force alternating full rebuilds.
- * Vector-column drift is a real but separate hazard (see cli/analyze-config.ts).
+ * Vector-column drift is therefore a separate hazard, and NOTHING currently
+ * gates the column width: a dims change is not a fingerprint mismatch and
+ * forces no rebuild. The only reaction is in run-analyze, and it is to the
+ * CACHE, not the schema — when the cached vectors' length differs from
+ * `EMBEDDING_DIMS` it discards the cache and re-embeds.
  */
 export const SCHEMA_FINGERPRINT: string = createHash('sha256')
   .update([...NODE_SCHEMA_QUERIES, ...REL_SCHEMA_QUERIES].join('\n'))

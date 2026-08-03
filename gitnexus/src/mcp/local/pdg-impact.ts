@@ -89,7 +89,7 @@ export function splitCalleeIds(raw: unknown): string[] {
 
 /**
  * Contract version of the mode:'pdg' impact result shape. A stable discriminator
- * for external MCP/agent consumers — distinct from the DB INCREMENTAL_SCHEMA_VERSION.
+ * for external MCP/agent consumers — distinct from the DB schema fingerprint.
  * Bump on any breaking change to the PDG result fields.
  * v2: `startLine` in the result is now 1-based display (#2380), matching the
  * context/query/impact tools (was 0-based).

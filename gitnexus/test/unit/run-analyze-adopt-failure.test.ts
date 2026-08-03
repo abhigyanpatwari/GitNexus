@@ -41,9 +41,9 @@ import {
   getStoragePaths,
   registerRepo,
   loadMeta,
-  INCREMENTAL_SCHEMA_VERSION,
   type RepoMeta,
 } from '../../src/storage/repo-manager.js';
+import { SCHEMA_FINGERPRINT } from '../../src/core/lbug/schema.js';
 import { runFullAnalysis } from '../../src/core/run-analyze.js';
 import { resolveAnalyzerRunnerIdentity } from '../../src/core/analyzer-identity.js';
 import { createTempDir } from '../helpers/test-db.js';
@@ -100,7 +100,7 @@ describe('fast-path restamp failure modes (#2364 F3)', () => {
       lastCommit: commit,
       indexedAt: new Date().toISOString(),
       branch,
-      schemaVersion: INCREMENTAL_SCHEMA_VERSION,
+      schemaFingerprint: SCHEMA_FINGERPRINT,
       analysisFeatures: {
         [CLASS_FRAMEWORK_ANNOTATIONS_FEATURE.id]: CLASS_FRAMEWORK_ANNOTATIONS_FEATURE.version,
       },

@@ -2,7 +2,6 @@ import { describe, expect, it } from 'vitest';
 import { CLASS_SCHEMA } from '../../src/core/lbug/schema.js';
 import { getCopyQuery } from '../../src/core/lbug/lbug-adapter.js';
 import { PARSE_CACHE_VERSION } from '../../src/storage/parse-cache.js';
-import { INCREMENTAL_SCHEMA_VERSION } from '../../src/storage/repo-manager.js';
 import { isSpringBeanCandidateSourceFile } from '../../src/core/ingestion/frameworks/spring/bean-catalog.js';
 import {
   SPRING_AOP_FEATURE,
@@ -23,7 +22,6 @@ describe('Spring Bean Class persistence schema', () => {
   it('meets the cache-version baselines required by the merged implementation', () => {
     const parseSchemaVersion = Number.parseInt(PARSE_CACHE_VERSION, 10);
     expect(parseSchemaVersion).toBeGreaterThanOrEqual(31);
-    expect(INCREMENTAL_SCHEMA_VERSION).toBeGreaterThanOrEqual(23);
     expect(CLASS_FRAMEWORK_ANNOTATIONS_FEATURE.version).toBe(1);
     expect(SPRING_AOP_FEATURE.version).toBe(1);
     expect(SPRING_BEAN_INVENTORY_FEATURE.version).toBe(2);

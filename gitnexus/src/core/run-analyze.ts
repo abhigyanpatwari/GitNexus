@@ -91,7 +91,6 @@ import {
   reconcileMetadataFiles,
   isMissingFilesystemError,
   INDEX_METADATA_FILE,
-  INCREMENTAL_SCHEMA_VERSION,
   type AnalyzerRunnerIdentity,
   type RepoMeta,
 } from '../storage/repo-manager.js';
@@ -188,6 +187,24 @@ const ANALYSIS_FEATURES = [
   SPRING_CONDITIONALS_FEATURE,
   SPRING_CONFIG_BINDINGS_FEATURE,
 ] as const;
+
+/**
+ * Whether an on-disk `schemaFingerprint` has the shape `SCHEMA_FINGERPRINT`
+ * actually produces: the lowercase-hex prefix of a sha256 digest (see
+ * `core/lbug/schema.ts`). The width is read from the live constant instead of
+ * being hardcoded, so changing the digest slice there needs no edit here.
+ *
+ * Gate for anything that ECHOES the stamped value: `.gitnexus/gitnexus.json` is
+ * parsed with no runtime shape validation, and the schema-mismatch notice below
+ * reaches `console.log` on the CLI path — a crafted value carrying ANSI escapes
+ * (`\x1b[2J`, `\x1b]0;…`) would otherwise be replayed straight into the user's
+ * terminal. Not a comparison gate: the mismatch check itself stays a plain
+ * `!== SCHEMA_FINGERPRINT`, which already rejects every malformed value.
+ */
+const isSchemaFingerprintShaped = (value: unknown): value is string =>
+  typeof value === 'string' &&
+  value.length === SCHEMA_FINGERPRINT.length &&
+  /^[0-9a-f]+$/.test(value);
 
 interface PersistedFrameworkAnnotationRow {
   readonly id?: unknown;
@@ -1259,57 +1276,58 @@ async function runFullAnalysisInner(
     options = { ...options, force: true };
   }
 
-  // ── schema-version mismatch forces full rebuild (#2289 P1) ────────
-  // Mirrors the pdg-mode block above: a stamp from an older
-  // INCREMENTAL_SCHEMA_VERSION (e.g. pre-v5 URL-only Route ids) cannot be
-  // reconciled by an incremental top-up — same-commit re-analyze would
-  // strand stale rows next to new-schema writes. MUST sit before the
+  // ── schema mismatch forces full rebuild (#2289 P1, #2798) ─────────
+  // Mirrors the pdg-mode block above: an index whose tables were created from
+  // a different DDL cannot be reconciled by an incremental top-up — a
+  // same-commit re-analyze would strand stale rows next to new-schema writes,
+  // and LadybugDB fixes a relation table's endpoint pairs at CREATE time, so
+  // edges the old shape cannot hold are simply dropped. MUST sit before the
   // alreadyUpToDate fast path below: an unchanged-commit clean tree would
-  // otherwise early-return without ever reaching the `isIncremental` gate
-  // that consults `schemaVersion`, defeating the bump's whole point.
+  // otherwise early-return without ever reaching the `isIncremental` gate.
   //
-  // `schemaVersion === undefined` covers two cases that should still trip
-  // this guard: a non-git repo (which never stamps the field) and very old
-  // meta from before the field existed. Non-git repos take the
-  // `currentCommit === ''` rebuild branch below regardless, so the redundant
-  // force here is harmless; the friendlier `'pre-versioning'` log avoids a
-  // user-visible "stamped vundefined" line in that edge case.
-  if (existingMeta && existingMeta.schemaVersion !== INCREMENTAL_SCHEMA_VERSION) {
-    const stampedVersion = existingMeta.schemaVersion ?? 'pre-versioning';
+  // Forcing here is what recreates the schema: `force` makes the run a full
+  // rebuild, which wipes the database file and re-runs the DDL against an
+  // empty one. Re-running `CREATE … TABLE` over the EXISTING database would
+  // not help — runSchemaCreationQueries suppresses "already exists", so the
+  // new shape would never be applied.
+  //
+  // ABSENT covers two cases and forces in both: an index from a GitNexus
+  // older than this field (the backward-compatibility path — one rebuild, then
+  // it is stamped), and a non-git repo, which never stamps it (see the meta
+  // literal below) and takes the `currentCommit === ''` rebuild branch below
+  // regardless.
+  //
+  // The two cases must not be told the same story. Blaming "an older GitNexus
+  // version" is FALSE for a non-git repo — the field is absent by design there,
+  // so this build would keep saying it about an index this exact build just
+  // wrote, on every run, forever. The stamp is only echoed when it has the shape
+  // SCHEMA_FINGERPRINT produces (isSchemaFingerprintShaped, which also keeps an
+  // unvalidated on-disk string out of the terminal); anything else degrades to a
+  // neutral placeholder, and a non-git repo is additionally told WHY it has no
+  // stamp. One log line either way.
+  if (existingMeta && existingMeta.schemaFingerprint !== SCHEMA_FINGERPRINT) {
+    const stamped = existingMeta.schemaFingerprint;
+    const recognized = isSchemaFingerprintShaped(stamped);
     log(
-      `index schema changed (stamped v${stampedVersion}, this build is v${INCREMENTAL_SCHEMA_VERSION}); ` +
-        `forcing a full rebuild so persisted rows match the current schema.`,
-    );
-    options = { ...options, force: true };
-  } else if (existingMeta && existingMeta.schemaFingerprint !== SCHEMA_FINGERPRINT) {
-    // The DERIVED half of the same gate (#2798). The version above is
-    // hand-picked and has clashed EXACTLY with a concurrently-merged branch
-    // twice: both sides stamp the same number over different DDL, `===` reads
-    // the index as current, `CREATE … TABLE` is then skipped as "already
-    // exists" (suppressed in lbug-adapter's runSchemaCreationQueries), and the
-    // edges the missing pairs carry are dropped by fallbackRelationshipInserts'
-    // bare catch — a wrong graph, with no error anywhere.
-    //
-    // Reached only when the version MATCHED, so this is exactly the collision
-    // case plus the one-time migration of every pre-#2798 index (absent
-    // fingerprint). Absence must force too: reusing it would stamp a fresh
-    // fingerprint onto a database whose DDL was never verified.
-    const stampedFingerprint = existingMeta.schemaFingerprint ?? 'pre-fingerprint';
-    log(
-      `index DDL changed (stamped ${stampedFingerprint}, this build is ${SCHEMA_FINGERPRINT}) ` +
-        `while the schema version matched at v${INCREMENTAL_SCHEMA_VERSION}; ` +
-        `forcing a full rebuild so persisted rows match the current DDL.`,
+      `index schema changed (built by ${recognized ? stamped : 'an unidentified GitNexus build'}, ` +
+        `this build is ${SCHEMA_FINGERPRINT}); forcing a full re-analyze so the database is ` +
+        `recreated from the current schema.` +
+        (recognized || repoHasGit
+          ? ''
+          : ' Non-git repositories never record a schema fingerprint, so this run rebuilds regardless.'),
     );
     options = { ...options, force: true };
   }
 
   // ── independently-versioned analysis capabilities ────────────────
-  // `schemaVersion` is reserved for graph-wide incremental invariants. Some
+  // `schemaFingerprint` is reserved for graph-wide incremental invariants. Some
   // persisted semantics apply only to repositories containing relevant source
   // files, so they carry exact feature versions instead. This guard must also
-  // run before alreadyUpToDate: current main and this PR both use schema v8,
-  // while pre-PR v8 indexes lack the Class frameworkAnnotations column and
-  // Java/Kotlin Bean evidence.
+  // run before alreadyUpToDate: a feature can change what is EXTRACTED without
+  // changing the DDL, so an index whose `schemaFingerprint` matches this build
+  // can still be missing that feature's evidence (e.g. the Class
+  // frameworkAnnotations values, or Java/Kotlin Bean evidence) — the fingerprint
+  // guard above would wave it through.
   const persistedFilePaths = Object.keys(existingMeta?.fileHashes ?? {});
   const expectedPersistedAnalysisFeatures = resolveAnalysisFeatureVersions(
     ANALYSIS_FEATURES,
@@ -1547,10 +1565,10 @@ async function runFullAnalysisInner(
   // function entry, because the POSITION is load-bearing: the gate is
   // `options.force`, and every freshness guard above REBINDS `options` with
   // `force: true` (embedding-checkpoint drop, dirty-flag recovery, pdg-mode
-  // flip, schema-version bump, analysis-feature drift, runner-identity change,
+  // flip, schema-fingerprint change, analysis-feature drift, runner-identity change,
   // CJK-mode change). Resolving before them froze the answer at `false` for
   // every rebuild they trigger — including the whole-fleet rebuild an
-  // INCREMENTAL_SCHEMA_VERSION bump forces on every existing index at once,
+  // schema-fingerprint change forces on every existing index at once,
   // which is exactly when the #2649 memory relief matters most. So this MUST
   // stay below the last guard that can set `force` and above its first use.
   // (The post-pipeline analysis-feature re-check can also set `force`, but the
@@ -1645,7 +1663,6 @@ async function runFullAnalysisInner(
   const isIncremental =
     !options.force &&
     !!existingMeta &&
-    existingMeta.schemaVersion === INCREMENTAL_SCHEMA_VERSION &&
     existingMeta.schemaFingerprint === SCHEMA_FINGERPRINT &&
     currentAnalysisFeatureMismatches.length === 0 &&
     !!existingMeta.fileHashes &&
@@ -2901,9 +2918,8 @@ async function runFullAnalysisInner(
       // analyze run can take the incremental DB-writeback path. Setting
       // incrementalInProgress to undefined explicitly clears any prior
       // dirty flag (full and incremental success paths converge here).
-      schemaVersion: hasGitDir(repoPath) ? INCREMENTAL_SCHEMA_VERSION : undefined,
-      // The derived companion to schemaVersion (#2798) — same git gating, since
-      // the pair is only ever consulted on the incremental path.
+      // Derived digest of the DDL this run created the tables from (#2798).
+      // Git-only: non-git repos never take the incremental path.
       schemaFingerprint: hasGitDir(repoPath) ? SCHEMA_FINGERPRINT : undefined,
       unresolvedReceiverMembers: summarizeUnresolvedReceivers(
         pipelineResult.resolutionOutcomes ?? [],

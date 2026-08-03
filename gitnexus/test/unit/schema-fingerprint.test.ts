@@ -1,11 +1,12 @@
 /**
  * #2798 — SCHEMA_FINGERPRINT, the derived half of the incremental reuse gate.
  *
- * `INCREMENTAL_SCHEMA_VERSION` is hand-picked and has to PREDICT whether an
- * on-disk database was created from this build's DDL. It has clashed exactly
- * with a concurrently-merged branch twice, and the gate is a strict `===`, so
- * such an index reads as current while its tables physically cannot hold the
- * edges this build emits. The fingerprint derives that fact instead.
+ * The replaced `INCREMENTAL_SCHEMA_VERSION` was hand-picked and had to PREDICT whether an
+ * on-disk database was created from this build's DDL. It clashed exactly
+ * with a concurrently-merged branch twice, and the gate was a strict `===`, so
+ * such an index read as current while its tables physically could not hold the
+ * edges the build emitted. The fingerprint derives that fact instead, and is now
+ * the only schema gate.
  *
  * These tests pin the three properties the gate depends on:
  *   1. it covers the DDL that is actually executed (input-set pinning);
@@ -50,12 +51,6 @@ describe('SCHEMA_FINGERPRINT (#2798)', () => {
       [...NODE_SCHEMA_QUERIES, ...REL_SCHEMA_QUERIES, EMBEDDING_SCHEMA].join('\n'),
     );
     expect(withEmbedding).not.toBe(SCHEMA_FINGERPRINT);
-  });
-
-  it('is stable across repeated evaluation (no per-call randomness)', () => {
-    expect(digest([...NODE_SCHEMA_QUERIES, ...REL_SCHEMA_QUERIES].join('\n'))).toBe(
-      SCHEMA_FINGERPRINT,
-    );
   });
 
   it('moves when a relation FROM/TO pair is added', () => {
