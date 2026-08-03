@@ -61,6 +61,22 @@ import {
 /** Modules under this directory are the analyze-only provider registry. */
 const FORBIDDEN_RE = /(^|\/)core\/ingestion\/languages\//;
 
+/**
+ * The group contract extractors, and the native parser binding they reach.
+ *
+ * Same defect class as #2802, found immediately after it: `core/group/service.ts`
+ * statically imported `./sync.js`, which pulls all six contract extractors, five
+ * of which statically import `tree-sitter`. Only `group_sync` ever needs them —
+ * the other seven group tools do not — so a static import put the whole parser
+ * stack on every MCP server start. Measured cost of that one edge on a native
+ * filesystem: `dist/mcp/server.js` 521 ms -> 133 ms, `local-backend.js` 453 ms
+ * -> 66 ms.
+ *
+ * Matching the parser by its package prefix rather than a bare substring so a
+ * source file that merely mentions the word cannot satisfy or trip this.
+ */
+const FORBIDDEN_GROUP_RE = /(^|\/)core\/group\/extractors\/|(^|\/)node_modules\/tree-sitter/;
+
 // Observed on Node 22.18 against a clean build: server.js loads 489 distinct
 // modules, local-backend.js 265, cli/mcp.js 4. The floors sit well below those
 // so normal dependency churn doesn't trip them, while a probe that silently
@@ -104,6 +120,23 @@ describe('MCP startup module-load closure (#2802)', () => {
         `${probe.label} eagerly loads the analyze-only language provider registry. ` +
           `MCP startup never analyzes anything — route the lookup through a lazy ` +
           `\`await import(...)\` inside the function that needs it (see #2802). ` +
+          `Offending modules:\n${offenders.join('\n')}`,
+      ).toEqual([]);
+    },
+  );
+
+  it.each(ENTRIES.map((request) => request.entry))(
+    'importing dist/%s loads no group contract extractor or native parser',
+    (entry) => {
+      const probe = probes.get(entry);
+      const offenders = probe.matching(FORBIDDEN_GROUP_RE);
+
+      expect(
+        offenders,
+        `${probe.label} eagerly loads the group contract extractors and/or the ` +
+          `native tree-sitter binding. Only \`group_sync\` needs them, and MCP ` +
+          `startup never syncs — keep \`core/group/sync.js\` behind the lazy ` +
+          `\`await import(...)\` in \`GroupService.groupSync\`. ` +
           `Offending modules:\n${offenders.join('\n')}`,
       ).toEqual([]);
     },
