@@ -820,14 +820,11 @@ function assemblePdgImpactResult(input: {
    * references were scanned but none carried a decodable return-flow, the note
    * reports that the ascent was structurally empty for this slice — and, when any
    * summary was undecodable, says so instead of asserting what the persisted
-   * summaries record (it could not read them). Keyed on the data rather than on
-   * the criterion's language — see the note branch below.
-   *
-   * {@link calleeReferences} counts CALL-SITE references, NOT callees the descent
-   * resolved to a body: an out-of-repo target, an interface method, and a node
-   * kind with no CFG body (a `Class:` id from a `new` expression) all ride the
-   * same `calleeIds` cell and are all scanned for a summary. The note's wording
-   * must therefore stay at reference granularity — see the sentences below.
+   * summaries record (it could not read them). These are CALL-SITE references,
+   * not callees resolved to a body, so the note's wording stays at reference
+   * granularity. Rationale — the population, and why the note keys on observed
+   * data rather than the criterion's language — at `interproceduralDescent`'s
+   * return-type doc.
    */
   calleeReferences?: number;
   calleesReturnFlowing?: number;
@@ -927,29 +924,17 @@ function assemblePdgImpactResult(input: {
       // carry return-flow summaries — not that the callees in THIS slice have
       // one. When none of them does, the ascent is structurally empty and the
       // note says so, rather than letting the omission read as "ascent ran and
-      // found nothing". Sound — never claims the ascent fired.
-      //
-      // Keyed on the OBSERVED summaries, never on the criterion's language
-      // (#2802). Whether a callee's return value can be ascended is a property
-      // of its persisted CALL_SUMMARY, and asking the graph is both correct for
-      // every language and correct as producers change: a language whose
-      // harvester starts recording formal indices needs no edit here, and a
-      // TS/JS callee that genuinely has no return-flow is no longer silently
-      // described as if the ascent had covered it. This module must not name
-      // languages — nor must the shared core/ingestion pipeline.
+      // found nothing". Sound — never claims the ascent fired. Keyed on the
+      // OBSERVED summaries, never on the criterion's language (#2802) — see
+      // `interproceduralDescent`'s return-type doc for why.
       const calleeReferences = input.calleeReferences ?? 0;
       const calleesReturnFlowing = input.calleesReturnFlowing ?? 0;
       const calleesUndecodable = input.calleesUndecodable ?? 0;
-      // The population both sentences below quantify over is the set of CALL-SITE
-      // callee references the descent scanned for a `CALL_SUMMARY` — the raw
-      // `calleeIds` ids — NOT the callees it resolved to a body. The two differ:
-      // `resolveCalleeSpans` matches only Function/Method/Constructor, so an
-      // out-of-repo target, an interface method, and a `Class:` id from a `new`
-      // expression produce no span yet still ride the cell and are still scanned.
-      // The summary scan IS run over all of them, so the claim is exact at
-      // reference granularity and would UNDER-state the checking at body
-      // granularity; the wording says "call-site callee references" so the number
-      // is not read as a count of successful symbol-table lookups.
+      // The population both sentences below quantify over is the raw `calleeIds`
+      // tally — CALL-SITE references, NOT callees resolved to a body — which is
+      // why the wording says "call-site callee references", so the number is not
+      // read as a count of successful symbol-table lookups. (Why that is the right
+      // population: `interproceduralDescent`'s return-type doc.)
       //
       // Both sentences also quantify UNIVERSALLY over the references the descent
       // actually EXAMINED, and two mechanisms can make that set a strict subset of
@@ -1749,25 +1734,31 @@ async function interproceduralDescent(input: {
    * all hops, how many of those carried a DECODED non-empty `CALL_SUMMARY`
    * return-flow, and how many carried a summary that could NOT be decoded
    * (version skew / corruption / NULL reason — see {@link CalleeReturnFlowScan}).
+   * CANONICAL rationale for the three — the consuming sites point here.
    *
-   * `calleeReferences` counts the distinct ids gathered from the slice's
+   * POPULATION. `calleeReferences` is the distinct-id tally of the slice's
    * `BasicBlock.calleeIds` cells — CALL SITES, deliberately NOT "callees the
-   * descent resolved to a body". The two sets differ: `resolveCalleeSpans` matches
-   * only `Function`/`Method`/`Constructor`, so an out-of-repo target, an interface
+   * descent resolved to a body". The two differ: `resolveCalleeSpans` matches only
+   * `Function`/`Method`/`Constructor`, so an out-of-repo target, an interface
    * method, and a node kind with no CFG body (e.g. the `Class:` id a `new`
    * expression contributes) yield no span and are never descended into — yet they
-   * ride the same cell and ARE scanned for a `CALL_SUMMARY`. This count is the
-   * scan's population, so it is exactly the set the empty-ascent claim ranges
-   * over; anything narrower would under-state what was checked. Consumers must
-   * word it at reference granularity — calling it "resolved" would assert a
-   * symbol-table lookup that did not happen for part of the set.
+   * ride the same cell and ARE scanned for a `CALL_SUMMARY`. That raw tally is
+   * exactly the scan's population, hence exactly the set an empty-ascent claim may
+   * range over; anything narrower would under-state what was checked. Consumers
+   * must word it at REFERENCE granularity — "resolved" would assert a symbol-table
+   * lookup that did not happen for part of the set.
    *
-   * These are the OBSERVED facts behind the return-value ascent, and the result
-   * note keys on them rather than on the criterion's language. Whether ascent
-   * can fire is a property of the persisted summaries, not of a language name.
-   * The undecodable count is what keeps the note honest: without it, an
-   * unreadable summary would be reported as a summary that records no
-   * return-flow.
+   * OBSERVED DATA, NEVER THE CRITERION'S LANGUAGE (#2802 — a reviewer asked why
+   * the note does not just look the language up). Whether a callee's return value
+   * can be ascended is a property of its persisted `CALL_SUMMARY`, not of a
+   * language name, so asking the graph is both correct for every language and
+   * correct as producers change: a harvester that starts recording formal indices
+   * needs no edit at the note site, and a callee that genuinely has no return-flow
+   * is never described as if the ascent had covered it. This module must not name
+   * languages — nor must the shared `core/ingestion` pipeline.
+   *
+   * `calleesUndecodable` keeps the note honest: without it an unreadable summary
+   * would be reported as one that records no return-flow.
    */
   calleeReferences: number;
   calleesReturnFlowing: number;
@@ -1807,13 +1798,11 @@ async function interproceduralDescent(input: {
   // U-C4 return-value ascent: CALL blocks whose callee has a non-empty
   // CALL_SUMMARY return-flow → the call's result depends on the slice.
   const ascentBlocks = new Set<string>();
-  // Observed ascent inputs, accumulated across hops so the result note can
-  // describe what the ascent actually had to work with (see the return type).
-  // `calleeReferencesSeen` is the CALL-SITE population — every id gathered from a
-  // slice block's `calleeIds` cell, which is exactly what the `CALL_SUMMARY` scan
-  // below runs over. It is deliberately WIDER than the callees the descent enters
-  // (`resolveCalleeSpans` skips ids with no Function/Method/Constructor body), so
-  // the note must never call it "resolved callees".
+  // Observed ascent inputs, accumulated across hops (population + the note's
+  // rationale: the return type above). The `Seen` suffix is deliberate, not drift:
+  // unlike every other local here, these three are NOT what gets returned — the
+  // fields are their `.size`. They are Sets so a callee invoked from two hops is
+  // tallied once, and the suffix keeps the accumulator distinct from the count.
   const calleeReferencesSeen = new Set<string>();
   const calleesReturnFlowingSeen = new Set<string>();
   const calleesUndecodableSeen = new Set<string>();
@@ -2203,8 +2192,8 @@ export async function runImpactPDG(deps: RunPdgImpactDeps): Promise<PdgImpactRes
   // call lines (a coalesced call block spans several statements whose results
   // chain through it — the statement-granularity realisation of the ascent).
   let ascentBlocks = new Set<string>();
-  // Observed ascent inputs, plumbed to the result note so it can report an empty
-  // ascent from the persisted summaries rather than from the criterion's language.
+  // Observed ascent inputs, plumbed to the result note; keyed on observed data,
+  // not the criterion's language (rationale: `interproceduralDescent` return doc).
   let calleeReferences = 0;
   let calleesReturnFlowing = 0;
   let calleesUndecodable = 0;
