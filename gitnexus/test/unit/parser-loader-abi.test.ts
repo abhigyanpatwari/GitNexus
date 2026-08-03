@@ -113,6 +113,11 @@ const SMOKE_CASES: Record<string, SmokeCase> = {
     snippet: 'void main() {}\n',
     rootType: 'program',
   },
+  [SupportedLanguages.Lua]: {
+    language: SupportedLanguages.Lua,
+    snippet: 'local x = 1\n',
+    rootType: 'chunk',
+  },
   [SupportedLanguages.Kotlin]: {
     language: SupportedLanguages.Kotlin,
     snippet: 'fun main() {}\n',
