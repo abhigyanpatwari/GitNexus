@@ -53,6 +53,41 @@ import { parseSourceSafe } from '../../../tree-sitter/safe-parse.js';
 import { synthesizeCallableFlowCaptures } from '../../utils/callable-flow-captures.js';
 import { synthesizeReceiverChainCapture } from '../../utils/receiver-chain-captures.js';
 
+/**
+ * Name of the type that lexically owns `node` — the nearest enclosing
+ * `class_declaration` (which in tree-sitter-swift is also how `struct` and
+ * `extension` parse) or `protocol_declaration`.
+ *
+ * Qualifies a method def as `<Type>.<method>` (#2807 follow-up). Swift's
+ * structure phase already keys the graph node that way (`A.run#1`), but the
+ * resolver-side def carried only `run`, and the bridge's every label-scoped key
+ * is built from the def's name — so two classes in one file each declaring
+ * `func run` fell through to the label-agnostic simple key, which is
+ * first-write-wins. The result: EVERY call in both bodies was attributed to
+ * whichever `run` registered first, which collected duplicate edges while its
+ * twin collected none. Renaming one method, or moving it to another file, made
+ * both resolve — which is what identified the collision as name-keyed and
+ * per-file rather than positional.
+ *
+ * An `extension Foo` wraps the extended type in a `user_type`, and a generic
+ * `class Box<T>` carries its parameters in the same field, so the dotted tail is
+ * taken and any generic argument list dropped — the spelling has to match the
+ * owner the structure phase used to build the node id.
+ */
+function swiftEnclosingTypeName(node: SyntaxNode): string | null {
+  let cur: SyntaxNode | null = node.parent;
+  while (cur !== null) {
+    if (cur.type === 'class_declaration' || cur.type === 'protocol_declaration') {
+      const nameNode = cur.childForFieldName('name');
+      if (nameNode === null) return null;
+      const tail = nameNode.text.trim().split('<')[0]!.split('.').pop()?.trim() ?? '';
+      return tail.length > 0 ? tail : null;
+    }
+    cur = cur.parent;
+  }
+  return null;
+}
+
 /** Declaration anchors that carry function-like arity metadata. */
 const FUNCTION_DECL_TAGS = ['@declaration.method', '@declaration.constructor'] as const;
 
@@ -244,6 +279,25 @@ export function emitSwiftScopeCaptures(
       const initNode = nodeIfType(nodeMap['@declaration.constructor'], 'init_declaration');
       if (initNode !== null) {
         grouped['@declaration.name'] = syntheticCapture('@declaration.name', initNode, 'init');
+      }
+    }
+
+    // ── Qualify a method/constructor def with its owning type (#2807). ──
+    // Emitted before the `@scope.function` branch below, which pushes and
+    // `continue`s; a Swift `function_declaration` matches both patterns.
+    if (grouped['@declaration.qualified_name'] === undefined) {
+      const ownerTag = FUNCTION_DECL_TAGS.find((t) => grouped[t] !== undefined);
+      const declaredName = grouped['@declaration.name']?.text;
+      const declNode = ownerTag === undefined ? null : nodeMap[ownerTag];
+      if (ownerTag !== undefined && declaredName !== undefined && declNode != null) {
+        const owner = swiftEnclosingTypeName(declNode);
+        if (owner !== null) {
+          grouped['@declaration.qualified_name'] = syntheticCapture(
+            '@declaration.qualified_name',
+            declNode,
+            `${owner}.${declaredName}`,
+          );
+        }
       }
     }
 

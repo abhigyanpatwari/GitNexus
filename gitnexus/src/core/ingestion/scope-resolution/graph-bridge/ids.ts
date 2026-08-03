@@ -268,9 +268,33 @@ export function resolveDefGraphId(
     const nsPrefix = def.namespacePrefix;
     const nameForms =
       nsPrefix !== undefined && nsPrefix.length > 0 ? [`${nsPrefix}.${qn}`, qn] : [qn];
+    // A def and its graph node describe the same construct, but they do not
+    // always agree on the LABEL: some structure phases emit a type's methods as
+    // `Function` nodes while the scope extractor derives `Method` from the
+    // `@declaration.method` anchor. Every key above is label-scoped, so such a
+    // pair misses all of them and lands on the label-agnostic simple key at the
+    // bottom of this function — which is first-write-wins, so two same-named
+    // methods in ONE file both resolved to whichever was registered first. That
+    // silently misattributed every call in the second method's body to the
+    // first (#2807 follow-up; measured in Swift, where `class A { func run }` +
+    // `class B { func run }` gave A.run both bodies' edges and B.run none).
+    //
+    // Crossing the two callable labels is sound ONLY for a name that carries
+    // its owner: `A.run` names exactly one construct whatever the label, while
+    // a bare `run` is precisely the aliasing the label was added to prevent
+    // (a top-level `save` vs a class's `save`). Hence the dot gate — it keeps
+    // the original guarantee intact for unqualified names.
+    const siblingLabel: NodeLabel | undefined =
+      defType === 'Method' ? 'Function' : defType === 'Function' ? 'Method' : undefined;
     const lookupTagged = (tag: string): string | undefined => {
       for (const form of nameForms) {
         const hit = nodeLookup.get(qualifiedKey(filePath, defType, `${form}${tag}`));
+        if (hit !== undefined) return hit;
+      }
+      if (siblingLabel === undefined) return undefined;
+      for (const form of nameForms) {
+        if (!form.includes('.')) continue;
+        const hit = nodeLookup.get(qualifiedKey(filePath, siblingLabel, `${form}${tag}`));
         if (hit !== undefined) return hit;
       }
       return undefined;
