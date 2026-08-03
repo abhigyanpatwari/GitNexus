@@ -795,13 +795,17 @@ function assemblePdgImpactResult(input: {
   callSummaryAvailable?: boolean;
   /**
    * Observed ascent inputs from the inter-procedural descent: how many distinct
-   * callees it resolved, and how many of those carried a non-empty CALL_SUMMARY
-   * return-flow. When callees were resolved but none carried a summary, the note
-   * reports that the ascent was structurally empty for this slice. Keyed on the
-   * data rather than on the criterion's language — see the note branch below.
+   * callees it resolved, how many of those carried a DECODED non-empty
+   * CALL_SUMMARY return-flow, and how many carried a summary the codec could not
+   * decode. When callees were resolved but none carried a decodable return-flow,
+   * the note reports that the ascent was structurally empty for this slice —
+   * and, when any summary was undecodable, says so instead of asserting what the
+   * persisted summaries record (it could not read them). Keyed on the data
+   * rather than on the criterion's language — see the note branch below.
    */
   calleesResolved?: number;
   calleesReturnFlowing?: number;
+  calleesUndecodable?: number;
 }): PdgImpactSuccessResult {
   const { target, direction, reachableBlocks, projection } = input;
   const { symbols, unresolvedCount, ambiguousCount } = projection;
@@ -899,15 +903,33 @@ function assemblePdgImpactResult(input: {
       // languages — nor must the shared core/ingestion pipeline.
       const calleesResolved = input.calleesResolved ?? 0;
       const calleesReturnFlowing = input.calleesReturnFlowing ?? 0;
-      if (calleesResolved > 0 && calleesReturnFlowing === 0) {
+      const calleesUndecodable = input.calleesUndecodable ?? 0;
+      if (calleesResolved > 0 && calleesReturnFlowing === 0 && calleesUndecodable > 0) {
+        // At least one summary could not be DECODED, so the note must not assert
+        // what the persisted summaries record — an undecodable `reason` may well
+        // encode a return-flow this reader cannot unpack (`decodeCallSummary`
+        // never throws, so a version-skewed / corrupt / NULL reason is otherwise
+        // indistinguishable from a cleanly-decoded empty one). The ascent is
+        // withheld either way; only the explanation changes.
+        noteParts.push(
+          `no return-value ascent in this slice: none of the ${calleesResolved} resolved ` +
+            `${calleesResolved === 1 ? 'callee carries' : 'callees carry'} a decodable ` +
+            `CALL_SUMMARY return-flow, and ${calleesUndecodable} callee ` +
+            `${calleesUndecodable === 1 ? 'summary' : 'summaries'} could not be decoded (version ` +
+            `skew or corruption) — re-run gitnexus analyze --pdg to rebuild them. A caller ` +
+            `statement depending on a callee's RETURN value is not in the slice; descent and the ` +
+            `intra slice are unaffected.`,
+        );
+      } else if (calleesResolved > 0 && calleesReturnFlowing === 0) {
         noteParts.push(
           `no return-value ascent in this slice: none of the ${calleesResolved} resolved ` +
             `${calleesResolved === 1 ? 'callee carries' : 'callees carry'} a CALL_SUMMARY ` +
             `return-flow (no formal parameter is recorded as flowing to its return value), so a ` +
-            `caller statement depending on a callee's RETURN value is not in the slice. This is a ` +
-            `property of the persisted summaries, not of the criterion's language — a callee whose ` +
-            `producer records no formal index and one with genuinely no return-flow are ` +
-            `indistinguishable here. Descent and the intra slice are unaffected.`,
+            `caller statement depending on a callee's RETURN value is not in the slice. Every ` +
+            `summary in this slice decoded, so this is a property of the persisted summaries, not ` +
+            `of the criterion's language — a callee whose producer records no formal index and ` +
+            `one with genuinely no return-flow are indistinguishable here. Descent and the intra ` +
+            `slice are unaffected.`,
         );
       }
     }
@@ -1446,27 +1468,54 @@ async function calleeIdsByBlock(
 }
 
 /**
- * Of a set of resolved callee symbol ids, which ones have a persisted
- * `CALL_SUMMARY` self-loop edge recording a NON-EMPTY return-value ascent
- * (≥1 formal parameter flows to the callee's return). This is the FU-C consumer
- * side of the producer's per-callee summary (see `call-summary-codec.ts`).
+ * The THREE outcomes a persisted `CALL_SUMMARY` can have for one callee. The
+ * ascent itself only ever consults {@link returnFlowing}; {@link undecodable} is
+ * carried so the result `note` can tell "the summaries say there is no return-
+ * flow" apart from "we could not read the summaries" — two facts a single
+ * has-flow/has-no-flow boolean conflates (`decodeCallSummary` never throws, so a
+ * version-skewed / corrupt / NULL `reason` is otherwise indistinguishable from a
+ * cleanly-decoded EMPTY summary).
+ */
+interface CalleeReturnFlowScan {
+  /**
+   * Callees whose summary DECODED and records ≥1 formal parameter flowing to the
+   * return value — the only ones that license a return-value ascent.
+   */
+  returnFlowing: Set<string>;
+  /**
+   * Callees that HAVE a `CALL_SUMMARY` row whose `reason` did not decode
+   * (unsupported version prefix, malformed segment, invalid hex payload, or a
+   * NULL/non-string reason). Never licenses an ascent — a decode failure means
+   * "no usable ascent fact", the codec's documented sound default.
+   */
+  undecodable: Set<string>;
+}
+
+/**
+ * Scan the persisted `CALL_SUMMARY` self-loops of a set of resolved callee
+ * symbol ids. This is the FU-C consumer side of the producer's per-callee
+ * summary (see `call-summary-codec.ts`).
  *
  * The summary is a self-loop on the Function/Method/Constructor node:
  * `(c)-[r:CodeRelation {type:'CALL_SUMMARY'}]->(c) WHERE c.id IN $ids`. The
  * `reason` carries the param→return bitset; `decodeCallSummary` unpacks it and
- * NEVER throws — a malformed / absent / empty (`r:0`) summary yields NO entry
- * (the sound default: never claim a false return-flow). A PRE-FU-C (v3) `--pdg`
- * index has NO `CALL_SUMMARY` edges, so this returns the empty set and the
- * ascent is a clean no-op (the intra slice is unchanged — the documented
- * "re-index for CALL_SUMMARY" degradation).
+ * NEVER throws. Three outcomes, per {@link CalleeReturnFlowScan}: a non-empty
+ * decoded return-flow, a cleanly-decoded EMPTY (`r:0`) summary, and an
+ * UNDECODABLE reason. Only the first licenses an ascent — the other two yield no
+ * ascent (the sound default: never claim a false return-flow) but are reported
+ * separately so the note never states a fact about summaries it could not read.
+ * A PRE-FU-C (v3) `--pdg` index has NO `CALL_SUMMARY` edges, so both sets come
+ * back empty and the ascent is a clean no-op (the intra slice is unchanged — the
+ * documented "re-index for CALL_SUMMARY" degradation).
  */
 async function calleesWithReturnFlow(
   lbugPath: string,
   calleeIds: string[],
   exec: typeof executeParameterized,
-): Promise<Set<string>> {
-  const out = new Set<string>();
-  if (calleeIds.length === 0) return out;
+): Promise<CalleeReturnFlowScan> {
+  const returnFlowing = new Set<string>();
+  const undecodable = new Set<string>();
+  if (calleeIds.length === 0) return { returnFlowing, undecodable };
   const rows = await exec(
     lbugPath,
     `MATCH (c)-[r:CodeRelation]->(c)
@@ -1478,6 +1527,13 @@ async function calleesWithReturnFlow(
     const id = String(r['id'] ?? '');
     if (!id) continue;
     const decoded = decodeCallSummary(r['reason']);
+    // A typed decode failure is NOT an empty summary — record it separately and
+    // withhold the ascent all the same (the codec's contract: a decode failure
+    // means "no usable ascent fact"). Only the note's wording depends on this.
+    if (!decoded.ok) {
+      undecodable.add(id);
+      continue;
+    }
     // ARG→FORMAL trace precision: the conservative-but-sound default — ascend if
     // ANY formal is return-flowing (the call site's argument is, by construction
     // of the descent, in the slice: the call block is itself a slice block). A
@@ -1486,9 +1542,9 @@ async function calleesWithReturnFlow(
     // per-arg list), so this never drops a real ascent; it may over-include
     // (bounded — the result still flows to a slice statement). See the descent
     // doc-comment + the result `note` caveat.
-    if (decoded.ok && decoded.returnFlowParams.length > 0) out.add(id);
+    if (decoded.returnFlowParams.length > 0) returnFlowing.add(id);
   }
-  return out;
+  return { returnFlowing, undecodable };
 }
 
 /**
@@ -1606,18 +1662,21 @@ async function interproceduralDescent(input: {
    */
   ascentBlocks: Set<string>;
   /**
-   * How many distinct callee symbols the descent resolved across all hops, and
-   * how many of those carried a NON-EMPTY `CALL_SUMMARY` return-flow.
+   * How many distinct callee symbols the descent resolved across all hops, how
+   * many of those carried a DECODED non-empty `CALL_SUMMARY` return-flow, and how
+   * many carried a summary that could NOT be decoded (version skew / corruption /
+   * NULL reason — see {@link CalleeReturnFlowScan}).
    *
    * These are the OBSERVED facts behind the return-value ascent, and the result
    * note keys on them rather than on the criterion's language. Whether ascent
-   * can fire is a property of the persisted summaries, not of a language name:
-   * a callee has a return-flow summary or it does not, and the reason it lacks
-   * one (its producer records no formal index, or the flow genuinely does not
-   * exist) is not something this layer can or should distinguish.
+   * can fire is a property of the persisted summaries, not of a language name.
+   * The undecodable count is what keeps the note honest: without it, an
+   * unreadable summary would be reported as a summary that records no
+   * return-flow.
    */
   calleesResolved: number;
   calleesReturnFlowing: number;
+  calleesUndecodable: number;
 }> {
   const {
     lbugPath,
@@ -1647,6 +1706,7 @@ async function interproceduralDescent(input: {
   // describe what the ascent actually had to work with (see the return type).
   const calleesSeen = new Set<string>();
   const calleesReturnFlowingSeen = new Set<string>();
+  const calleesUndecodableSeen = new Set<string>();
 
   hopLoop: for (let hop = 0; hop < depthBudget; hop++) {
     if (sliceBlocks.length === 0) break;
@@ -1665,9 +1725,14 @@ async function interproceduralDescent(input: {
     // that consumes the result is captured. Monotone: only ADDS to `reachable`,
     // reusing the shared `visited` set, so it stays bounded + terminating. A
     // pre-v4 index (no CALL_SUMMARY) yields no return-flowing callees → no-op.
-    const returnFlowing = await calleesWithReturnFlow(lbugPath, [...calleeIds], exec);
+    const summaryScan = await calleesWithReturnFlow(lbugPath, [...calleeIds], exec);
+    const returnFlowing = summaryScan.returnFlowing;
     for (const id of calleeIds) calleesSeen.add(id);
     for (const id of returnFlowing) calleesReturnFlowingSeen.add(id);
+    // An undecodable summary withholds the ascent exactly like an empty one; it
+    // is tracked only so the note reports "could not read" rather than "records
+    // no return-flow".
+    for (const id of summaryScan.undecodable) calleesUndecodableSeen.add(id);
     if (returnFlowing.size > 0) {
       for (const { blockId, calleeIds: ids } of blockCallees) {
         // Bound the ascent re-seeds the same way the descent bounds its per-span
@@ -1820,6 +1885,7 @@ async function interproceduralDescent(input: {
     ascentBlocks,
     calleesResolved: calleesSeen.size,
     calleesReturnFlowing: calleesReturnFlowingSeen.size,
+    calleesUndecodable: calleesUndecodableSeen.size,
   };
 }
 
@@ -2022,6 +2088,7 @@ export async function runImpactPDG(deps: RunPdgImpactDeps): Promise<PdgImpactRes
   // ascent from the persisted summaries rather than from the criterion's language.
   let calleesResolved = 0;
   let calleesReturnFlowing = 0;
+  let calleesUndecodable = 0;
   if (direction === 'downstream') {
     const interproc = await interproceduralDescent({
       lbugPath: repo.lbugPath,
@@ -2050,6 +2117,7 @@ export async function runImpactPDG(deps: RunPdgImpactDeps): Promise<PdgImpactRes
     ascentBlocks = interproc.ascentBlocks;
     calleesResolved = interproc.calleesResolved;
     calleesReturnFlowing = interproc.calleesReturnFlowing;
+    calleesUndecodable = interproc.calleesUndecodable;
     for (const id of interproc.reachable) reachable.add(id);
     if (interproc.truncatedByDepth) truncatedByDepth = true;
     if (interproc.truncatedByLimit) truncatedByLimit = true;
@@ -2219,6 +2287,7 @@ export async function runImpactPDG(deps: RunPdgImpactDeps): Promise<PdgImpactRes
     callSummaryAvailable,
     calleesResolved,
     calleesReturnFlowing,
+    calleesUndecodable,
   });
 }
 
