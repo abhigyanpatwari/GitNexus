@@ -12,6 +12,7 @@
 import { describe, expect, it } from 'vitest';
 import { runImpactPDG, type RunPdgImpactDeps } from '../../src/mcp/local/pdg-impact.js';
 import { encodeCallSummary } from '../../src/core/ingestion/taint/call-summary-codec.js';
+import { CALLEES_TRUNCATED_SENTINEL, CALLEE_ID_SEP } from '../../src/core/ingestion/cfg/emit.js';
 
 /**
  * What the mock's CALL_SUMMARY query returns for `helper`:
@@ -44,12 +45,23 @@ const ascentOnlyBlock = (file: string): string => `BasicBlock:${file}:1:0:9`;
 // The dependence BFS is routed by its bound `$frontier` (never by call order),
 // so the ascent re-seed FROM the call block is deterministically distinguishable
 // from the intra BFS out of the criterion seed.
-function descentExec(file: string, summary: Summary): RunPdgImpactDeps['executeParameterized'] {
+function descentExec(
+  file: string,
+  summary: Summary,
+  // P2-4 case 2: emit capped this block's `calleeIds` cell, so the cell carries
+  // the truncation sentinel alongside the ids that survived. `splitCalleeIds`
+  // strips the sentinel, which is exactly why the dropped callees are invisible
+  // to the summary scan and the note's counters.
+  calleeCellCapped = false,
+): RunPdgImpactDeps['executeParameterized'] {
   const seed = `BasicBlock:${file}:1:0:0`;
   const callBlock = `BasicBlock:${file}:1:0:2`;
   const calleeSeed = `BasicBlock:${file}:5:0:0`;
   const ascentOnly = ascentOnlyBlock(file);
   const helper = `Function:${file}:helper`;
+  const calleeCell = calleeCellCapped
+    ? `${helper}${CALLEE_ID_SEP}${CALLEES_TRUNCATED_SENTINEL}`
+    : helper;
   return async (_repo, query, params: Record<string, unknown>) => {
     // Top-level seed fetch is line-anchored (`a.startLine = $line`); the descent's
     // callee seed fetch is range-anchored — route by that.
@@ -68,7 +80,7 @@ function descentExec(file: string, summary: Summary): RunPdgImpactDeps['executeP
       return [];
     }
     if (query.includes('RETURN b.id AS id, b.calleeIds AS calleeIds')) {
-      return [{ id: callBlock, calleeIds: helper }];
+      return [{ id: callBlock, calleeIds: calleeCell }];
     }
     if (query.includes("r.type = 'CALL_SUMMARY'")) {
       if (summary === null) return [];
@@ -97,7 +109,10 @@ const run = (
   summary: Summary = null,
   // `1` confines the intra BFS to a single dependence level, so the call block is
   // expanded ONLY by the ascent re-seed — the ascent's observable is then exact.
+  // It also leaves the BFS frontier non-empty at the budget, which is how the
+  // P2-4 cases below produce a genuinely TRUNCATED traversal.
   maxDepth = 3,
+  calleeCellCapped = false,
 ) =>
   runImpactPDG({
     repo: { lbugPath: 'repo' },
@@ -107,7 +122,7 @@ const run = (
     maxDepth,
     limit: 50,
     line: 1,
-    executeParameterized: descentExec(file, summary),
+    executeParameterized: descentExec(file, summary, calleeCellCapped),
     callSummaryAvailable,
   });
 
@@ -117,11 +132,24 @@ const CAVEAT = 'no return-value ascent in this slice';
 // an unreadable `reason` is otherwise reported as one recording no return-flow).
 const PERSISTED_CLAIM = 'property of the persisted summaries';
 
+// P2-4 — the qualifier the note must carry whenever the callee set the descent
+// EXAMINED is known to be a strict subset of the slice's real one, plus the two
+// reasons that can put it there.
+const QUALIFIER = 'so callees past the examined set were not checked';
+const BUDGET_REASON = 'the traversal stopped at its depth/size budget';
+const EMIT_CAP_REASON = "a slice block's call-site list was capped at emit";
+
 const noteOf = (result: Awaited<ReturnType<typeof run>>): string =>
   'affectedStatements' in result ? (result.note ?? '') : '';
 
 const blocksOf = (result: Awaited<ReturnType<typeof run>>): readonly string[] =>
   'reachableBlocks' in result ? result.reachableBlocks : [];
+
+// The traversal-truncation premise of the P2-4 cases, asserted directly so a
+// mock drift that stops truncating fails loudly instead of quietly turning the
+// "qualifier appears" cases into copies of the "claim stays flat" ones.
+const truncatedOf = (result: Awaited<ReturnType<typeof run>>): boolean =>
+  'reachableBlocks' in result && result.truncated === true;
 
 // Held constant across the language-agnosticism cases below. One per language
 // family the analyzer supports parsing, including the module-suffix variants the
@@ -240,5 +268,83 @@ describe('runImpactPDG — undecodable CALL_SUMMARY (P2-2)', () => {
     const result = await run('src/svc.ts', true, flow([0]), 1);
     expect(blocksOf(result)).toContain(ascentOnlyBlock('src/svc.ts'));
     expect(noteOf(result)).not.toContain(CAVEAT);
+  });
+});
+
+// P2-4 — "none of the N resolved callees carry a … return-flow" is a UNIVERSAL
+// claim over the callees the descent actually examined, and so is "this is a
+// property of the persisted summaries". Two mechanisms make that examined set a
+// strict subset of the slice's real callee list, and under either the note must
+// describe what it examined rather than assert a property of the whole slice:
+//  1. the traversal stopped at a depth/size budget — a callee that DOES carry a
+//     return-flow can sit past the frontier;
+//  2. a block's `calleeIds` cell was capped at emit — `splitCalleeIds` strips the
+//     sentinel, so those callees reach neither the summary scan nor the counters.
+describe('runImpactPDG — empty-ascent note over an incomplete callee set (P2-4)', () => {
+  // `maxDepth: 1` leaves the intra BFS frontier non-empty at the budget, which is
+  // a genuinely truncated traversal (asserted, not assumed).
+  it('truncated traversal → the empty-ascent claim is qualified', async () => {
+    const result = await run('src/svc.ts', true, null, 1);
+    expect(truncatedOf(result)).toBe(true);
+    expect(noteOf(result)).toContain(CAVEAT);
+    expect(noteOf(result)).toContain(BUDGET_REASON);
+    expect(noteOf(result)).toContain(QUALIFIER);
+  });
+
+  // An `r:0` summary decodes cleanly, so this is the branch that asserts "a
+  // property of the persisted summaries" — a whole-slice claim a truncated
+  // traversal did not establish.
+  it('truncated traversal → the unqualified persisted-summaries claim is dropped', async () => {
+    const note = noteOf(await run('src/svc.ts', true, flow([]), 1));
+    expect(note).toContain(QUALIFIER);
+    expect(note).not.toContain(PERSISTED_CLAIM);
+  });
+
+  // The control that keeps the fix from being "always hedge": the SAME mock with
+  // a budget large enough to exhaust the frontier keeps the flat claim.
+  it('untruncated traversal → the claim stays unqualified', async () => {
+    const result = await run('src/svc.ts', true, null);
+    expect(truncatedOf(result)).toBe(false);
+    expect(noteOf(result)).toContain(CAVEAT);
+    expect(noteOf(result)).not.toContain(QUALIFIER);
+    expect(noteOf(result)).not.toContain(BUDGET_REASON);
+  });
+
+  it('untruncated traversal → the persisted-summaries claim survives', async () => {
+    const note = noteOf(await run('src/svc.ts', true, flow([])));
+    expect(note).toContain(PERSISTED_CLAIM);
+    expect(note).not.toContain(QUALIFIER);
+  });
+
+  // Case 2 in isolation: the traversal completes (truncated === false), so the
+  // emit-time cap sentinel is the ONLY thing the qualifier can come from.
+  it('emit-capped calleeIds cell → the claim is qualified with nothing else truncated', async () => {
+    const result = await run('src/svc.ts', true, null, 3, true);
+    expect(truncatedOf(result)).toBe(false);
+    expect(noteOf(result)).toContain(EMIT_CAP_REASON);
+    expect(noteOf(result)).toContain(QUALIFIER);
+    expect(noteOf(result)).not.toContain(BUDGET_REASON);
+  });
+
+  it('emit-capped calleeIds cell → the unqualified persisted-summaries claim is dropped', async () => {
+    const note = noteOf(await run('src/svc.ts', true, flow([]), 3, true));
+    expect(note).toContain(QUALIFIER);
+    expect(note).not.toContain(PERSISTED_CLAIM);
+  });
+
+  // Both mechanisms at once: ONE clause naming both reasons, never two clauses.
+  it('both mechanisms → one qualifier clause names both reasons', async () => {
+    const note = noteOf(await run('src/svc.ts', true, null, 1, true));
+    expect(note).toContain(`(${BUDGET_REASON} and ${EMIT_CAP_REASON}, ${QUALIFIER})`);
+    expect(note.split(QUALIFIER)).toHaveLength(2);
+  });
+
+  // The undecodable-summary branch carries the same universal quantifier, so it
+  // gets the same qualifier — alongside its own (unrelated) P2-2 wording.
+  it('undecodable summary + truncated traversal → both qualifications appear', async () => {
+    const note = noteOf(await run('src/svc.ts', true, raw('1|r:zz'), 1));
+    expect(note).toContain(QUALIFIER);
+    expect(note).toContain('could not be decoded (version skew or corruption)');
+    expect(note).not.toContain(PERSISTED_CLAIM);
   });
 });
