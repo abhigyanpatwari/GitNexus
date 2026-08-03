@@ -53,6 +53,26 @@ const PROPERTY_IMPLEMENTATION_SOURCE = `
 @end
 `;
 
+const SELECTOR_SOURCE = `
+@interface Store : NSObject
+- (void)save:(id)value;
+@end
+@implementation Store
+- (void)configure {
+  SEL selector = @selector(save:);
+}
+@end
+`;
+
+const APPLE_DECLARATIONS_SOURCE = `
+typedef NS_ENUM(NSInteger, Mode) {
+  ModeA,
+};
+API_AVAILABLE(ios(17.0)) @interface Store : NSObject
+@property NSString * _Nullable name;
+@end
+`;
+
 function declarationMatches(kind: string) {
   return emitObjectiveCScopeCaptures(SOURCE, 'Sources/Store+Testing.m').filter(
     (match) => match[`@declaration.${kind}`] !== undefined,
@@ -201,6 +221,46 @@ describe('Objective-C advanced syntax captures', () => {
             'objc:property-implementation:synthesize',
             'objc:backing-ivar:_aliasStorage',
           ]),
+        }),
+      ]),
+    );
+  });
+
+  it('records @selector as a source fact without creating a method reference', () => {
+    const parsed = extractParsedFile(objectiveCProvider, SELECTOR_SOURCE, 'Sources/Store.m');
+
+    expect(parsed?.localDefs).toContainEqual(
+      expect.objectContaining({
+        type: 'CodeElement',
+        qualifiedName: '@selector(save:)',
+        annotations: expect.arrayContaining(['objc:selector-reference', 'objc:selector:save:']),
+      }),
+    );
+    expect(parsed?.referenceSites).not.toEqual(
+      expect.arrayContaining([expect.objectContaining({ name: '-save:' })]),
+    );
+  });
+
+  it('records Apple macro, availability, and nullability declaration facts', () => {
+    const parsed = extractParsedFile(
+      objectiveCProvider,
+      APPLE_DECLARATIONS_SOURCE,
+      'Sources/Store.h',
+    );
+
+    expect(parsed?.localDefs).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          qualifiedName: 'Mode',
+          annotations: expect.arrayContaining(['objc:ns-enum']),
+        }),
+        expect.objectContaining({
+          qualifiedName: 'Store',
+          annotations: expect.arrayContaining(['objc:availability:API_AVAILABLE(ios(17.0))']),
+        }),
+        expect.objectContaining({
+          qualifiedName: 'name',
+          annotations: expect.arrayContaining(['objc:nullability:_Nullable']),
         }),
       ]),
     );

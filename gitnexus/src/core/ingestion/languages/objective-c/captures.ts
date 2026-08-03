@@ -21,6 +21,10 @@ import {
   getObjectiveCParser,
   getObjectiveCScopeQuery,
 } from './query.js';
+import {
+  objectiveCMacroAnnotation,
+  preprocessObjectiveCMacroWrappers,
+} from './macro-semantics.js';
 
 function enclosingTypeName(node: SyntaxNode): string | null {
   let current = node.parent;
@@ -86,9 +90,21 @@ function containerTags(node: SyntaxNode): readonly string[] {
   const identity = objectiveCContainerIdentity(node);
   if (identity === null) return [];
   const tags = [`objc:site:${identity.sourceRole}`, `objc:owner:${identity.owner}`];
+  for (const availability of node.descendantsOfType('availability_attribute_specifier')) {
+    const text = availability.text.trim();
+    if (text.length > 0) tags.push(`objc:availability:${text}`);
+  }
   if (identity.isCategory) tags.push(`objc:category:${identity.category}`);
   if (identity.isClassExtension) tags.push('objc:class-extension');
   return tags;
+}
+
+function nullabilityTags(node: SyntaxNode): readonly string[] {
+  return node
+    .descendantsOfType('type_qualifier')
+    .map((qualifier) => qualifier.text.trim())
+    .filter((qualifier) => /^_(?:Nullable|Nonnull|Null_unspecified)$/.test(qualifier))
+    .map((qualifier) => `objc:nullability:${qualifier}`);
 }
 
 function protocolRequirementTag(node: SyntaxNode): string | undefined {
@@ -159,6 +175,7 @@ function propertyAccessorCaptures(property: SyntaxNode, ownerNode: SyntaxNode): 
     ...(ownerIdentity.isCategory ? [`objc:category:${ownerIdentity.category}`] : []),
     ...(ownerIdentity.isClassExtension ? ['objc:class-extension'] : []),
     ...(protocolRequirement === undefined ? [] : [protocolRequirement]),
+    ...nullabilityTags(property),
     'objc:property-accessor',
     `objc:property-name:${propertyInfo.nameNode.text}`,
   ];
@@ -229,6 +246,47 @@ function advancedDeclarationCaptures(root: SyntaxNode): CaptureMatch[] {
         sourceRole: identity.sourceRole,
         member: name,
         annotations,
+      }),
+    });
+  }
+
+  for (const selectorExpression of root.descendantsOfType('selector_expression')) {
+    const match = selectorExpression.text.trim().match(/^@selector\((.*)\)$/s);
+    const selector = match?.[1]?.trim();
+    if (selector === undefined || selector.length === 0) continue;
+    const container = enclosingTypeNode(selectorExpression);
+    const identity = container === null ? null : objectiveCContainerIdentity(container);
+    const owner = identity?.owner ?? '<file>';
+    const sourceRole = identity?.sourceRole ?? 'implementation';
+    const name = `@selector(${selector})`;
+    out.push({
+      '@declaration.code-element': nodeToCapture('@declaration.code-element', selectorExpression),
+      '@declaration.name': syntheticCapture('@declaration.name', selectorExpression, name),
+      ...declarationMetadata(selectorExpression, {
+        label: 'CodeElement',
+        owner,
+        declarationScope: '<selector>',
+        sourceRole,
+        member: name,
+        annotations: ['objc:selector-reference', `objc:selector:${selector}`],
+      }),
+    });
+  }
+
+  for (const enumSpecifier of root.descendantsOfType('enum_specifier')) {
+    const annotation = objectiveCMacroAnnotation(enumSpecifier.text);
+    const name = enumSpecifier.namedChildren.find((child) => child.type === 'type_identifier')?.text;
+    if (annotation === null || name === undefined || name.length === 0) continue;
+    out.push({
+      '@declaration.code-element': nodeToCapture('@declaration.code-element', enumSpecifier),
+      '@declaration.name': syntheticCapture('@declaration.name', enumSpecifier, name),
+      ...declarationMetadata(enumSpecifier, {
+        label: 'CodeElement',
+        owner: name,
+        declarationScope: '<primary>',
+        sourceRole: 'declaration',
+        member: name,
+        annotations: [annotation, `objc:owner:${name}`],
       }),
     });
   }
@@ -511,10 +569,12 @@ export function emitObjectiveCScopeCaptures(
   _filePath: string,
   cachedTree?: unknown,
 ): readonly CaptureMatch[] {
+  const parseText =
+    cachedTree === undefined ? preprocessObjectiveCMacroWrappers(sourceText, _filePath) : sourceText;
   const tree =
     (cachedTree as ReturnType<ReturnType<typeof getObjectiveCParser>['parse']> | undefined) ??
-    parseSourceSafe(getObjectiveCParser(), sourceText, undefined, {
-      bufferSize: getTreeSitterBufferSize(sourceText),
+    parseSourceSafe(getObjectiveCParser(), parseText, undefined, {
+      bufferSize: getTreeSitterBufferSize(parseText),
     });
   const out: CaptureMatch[] = [
     ...processCFamilyScopeMatches(
@@ -585,6 +645,7 @@ export function emitObjectiveCScopeCaptures(
               ...(protocolRequirementTag(methodNode) === undefined
                 ? []
                 : [protocolRequirementTag(methodNode)!]),
+              ...nullabilityTags(methodNode),
               `objc:method-kind:${signature.kind}`,
             ],
           }),
@@ -620,6 +681,7 @@ export function emitObjectiveCScopeCaptures(
               `objc:owner:${identity.owner}`,
               ...(identity.isCategory ? [`objc:category:${identity.category}`] : []),
               ...(identity.isClassExtension ? ['objc:class-extension'] : []),
+              ...containerTags(typeNode).filter((tag) => tag.startsWith('objc:availability:')),
             ],
           }),
         );
@@ -657,6 +719,7 @@ export function emitObjectiveCScopeCaptures(
               ...containerTags(ownerNode!),
               ...(protocolRequirement === undefined ? [] : [protocolRequirement]),
               ...attributes.map((attribute) => `objc:property:${attribute}`),
+              ...nullabilityTags(propertyNode),
             ],
           }),
         );

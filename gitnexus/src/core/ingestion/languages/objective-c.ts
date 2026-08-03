@@ -33,6 +33,7 @@ import {
 import { collectObjectiveCCaptureSideChannel } from './objective-c/capture-side-channel.js';
 import { assertCloneable } from '../workers/clone-safety.js';
 import { extractObjectiveCDefinitionMetadata } from './objective-c/metadata.js';
+import { preprocessObjectiveCMacroWrappers } from './objective-c/macro-semantics.js';
 
 /**
  * Public declarations live in interfaces/protocols. Concrete implementation
@@ -58,6 +59,7 @@ export const objectiveCProvider = defineLanguage({
   id: SupportedLanguages.ObjectiveC,
   extensions: ['.m'],
   treeSitterQueries: OBJECTIVE_C_QUERIES,
+  preprocessSource: preprocessObjectiveCMacroWrappers,
   typeConfig: cFamilyTypeConfig,
   exportChecker: objectiveCExportChecker,
   callExtractor: objectiveCCallExtractor,
