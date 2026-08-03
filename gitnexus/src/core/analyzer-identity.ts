@@ -101,6 +101,16 @@ type ReadableFileState = {
   symlinkTarget?: string;
 };
 
+/**
+ * State of a symbolic link recorded by its link text rather than by its
+ * target's payload. There is deliberately no `target` stat: the whole point of
+ * this shape is that the link was never resolved (see {@link RuntimeArtifact}).
+ */
+type SymlinkArtifactState = {
+  link: StatState;
+  symlinkTarget: string;
+};
+
 type RuntimePackage = {
   root: string;
   locator: string;
@@ -138,11 +148,28 @@ type RuntimeArtifactScanBudget = {
   edges: number;
 };
 
-type RuntimeArtifact = {
-  absolutePath: string;
-  canonicalPath: string;
-  kind: 'file' | 'symlink';
-};
+/**
+ * One runtime payload input.
+ *
+ * `file` and `symlink` contribute their target's CONTENT digest; `symlink` also
+ * carries its link text, so both a retarget and a byte change move the receipt.
+ *
+ * `unfollowed-symlink` is a symbolic link that does not resolve to a regular
+ * file — a linked directory, a dangling link, a device node. It contributes its
+ * `readlink` TEXT and nothing else. See {@link collectArtifacts} for why the
+ * scan records such links instead of following them.
+ */
+type RuntimeArtifact =
+  | {
+      absolutePath: string;
+      canonicalPath: string;
+      kind: 'file' | 'symlink';
+    }
+  | {
+      absolutePath: string;
+      canonicalPath: string;
+      kind: 'unfollowed-symlink';
+    };
 
 type BuildEntry = {
   absolutePath: string;
@@ -158,13 +185,21 @@ type CachedBuildEntry = {
   digest?: string;
 };
 
-type CachedArtifactEntry = {
-  absolutePath: string;
-  canonicalPath: string;
-  kind: RuntimeArtifact['kind'];
-  state: ReadableFileState;
-  digest: string;
-};
+type CachedArtifactEntry =
+  | {
+      absolutePath: string;
+      canonicalPath: string;
+      kind: 'file' | 'symlink';
+      state: ReadableFileState;
+      digest: string;
+    }
+  | {
+      absolutePath: string;
+      canonicalPath: string;
+      kind: 'unfollowed-symlink';
+      state: SymlinkArtifactState;
+      digest: string;
+    };
 
 type CachedBuildDirectoryGuard = {
   relativePath: string;
@@ -409,6 +444,28 @@ function snapshotReadableFile(candidate: string): ReadableFileState {
     target: statState(target),
     ...(link.isSymbolicLink() ? { symlinkTarget: readlinkSync(candidate) } : {}),
   };
+}
+
+/**
+ * Snapshot a symbolic link without resolving it. Unlike
+ * {@link snapshotReadableFile} this never stats the target, so it is total over
+ * linked directories, dangling links, and links to device nodes — the inputs
+ * that make the readable-file snapshot throw.
+ */
+function snapshotSymlinkArtifact(candidate: string): SymlinkArtifactState {
+  const link = lstatSync(candidate, { bigint: true });
+  if (!link.isSymbolicLink()) {
+    throw new Error(`Analyzer identity input is not a symbolic link: ${candidate}`);
+  }
+  return { link: statState(link), symlinkTarget: readlinkSync(candidate) };
+}
+
+function snapshotRuntimeArtifact(
+  artifact: RuntimeArtifact,
+): ReadableFileState | SymlinkArtifactState {
+  return artifact.kind === 'unfollowed-symlink'
+    ? snapshotSymlinkArtifact(artifact.absolutePath)
+    : snapshotReadableFile(artifact.absolutePath);
 }
 
 function snapshotDirectory(candidate: string): StatState {
@@ -1156,18 +1213,16 @@ function collectArtifacts(
       // metadata; generic cache/model directories can contain loadable code,
       // native addons, Wasm modules, or data consumed by the runtime.
       //
-      // The linked form is pruned too. Workspace checkouts and shared-store
-      // installers routinely expose `node_modules` as a symbolic link, which is
-      // not a directory entry: it would otherwise fall through to the payload
-      // branch and abort the whole scan on a tree this function exists to skip.
-      // Nothing is dropped — packages beneath it are still discovered through
-      // `resolveDependencyPackageRoot`, which follows links and guards each hop.
-      if (
-        PRUNED_RUNTIME_DIRECTORIES.has(entry.name) &&
-        (stat.isDirectory() || stat.isSymbolicLink())
-      ) {
-        continue;
-      }
+      // Pruning is decided by NAME alone. These four names never carry analyzer
+      // payload in any form: `node_modules` is traversed separately through
+      // `resolveDependencyPackageRoot` (which follows links and guards each
+      // hop), and a `.git`/`.hg`/`.svn` entry is VCS metadata whether it is a
+      // directory, a symbolic link into a shared store, or — inside a submodule
+      // or linked worktree checkout — a regular file holding a gitdir pointer.
+      // Hashing that pointer would make analyzer identity depend on where the
+      // checkout happens to live, which is a false-stale source, not a
+      // semantic input.
+      if (PRUNED_RUNTIME_DIRECTORIES.has(entry.name)) continue;
       if (stat.isDirectory()) {
         if (depth >= limits.runtimeDepth) {
           throw new Error(
@@ -1175,6 +1230,39 @@ function collectArtifacts(
           );
         }
         pending.push({ absoluteDir: absolutePath, depth: depth + 1 });
+      } else if (stat.isSymbolicLink() && !isFile(absolutePath)) {
+        // A symbolic link that does not resolve to a regular file must never
+        // reach the payload branch below: `snapshotReadableFile` stats the
+        // target, and a directory (or a dangling link) makes it throw, aborting
+        // the entire analyze. Workspace-linked checkouts made this reachable
+        // for every name, not just the pruned four — `dist -> build`, a
+        // vendored-grammar link, anything a sibling checkout ships.
+        //
+        // Such links are RECORDED by their link text rather than followed.
+        // Following them would (a) recurse without cycle protection — this
+        // traversal has none, so `self -> .` would ride the depth limit, which
+        // THROWS, trading one hard abort for another; (b) re-scan trees already
+        // reached by their real path, inflating the entry/byte budgets that
+        // also throw; and (c) need a whole containment/TOCTOU trust boundary
+        // for targets outside the package. Recording the text is cycle-free,
+        // costs one `readlink`, and still moves the receipt when the link is
+        // retargeted. The trade-off is that a link's target contributes no
+        // content of its own: when it points outside the package, only the
+        // link text is covered. Links that DO resolve to a regular file keep
+        // their content digest below, unchanged.
+        if (shouldHashRuntimePayload(relativePath)) {
+          budget.artifacts += 1;
+          if (budget.artifacts > limits.runtimePayloads) {
+            throw new Error(
+              `Analyzer runtime payload scan exceeded ${limits.runtimePayloads} payloads: ${root}`,
+            );
+          }
+          artifacts.push({
+            absolutePath,
+            canonicalPath: `${canonicalPrefix}/${relativePath}`,
+            kind: 'unfollowed-symlink',
+          });
+        }
       } else if (
         (stat.isFile() || stat.isSymbolicLink()) &&
         shouldHashRuntimePayload(relativePath)
@@ -1372,7 +1460,7 @@ function dependencySnapshot(inputs: DependencyInputs): unknown {
       absolutePath: artifact.absolutePath,
       canonicalPath: artifact.canonicalPath,
       kind: artifact.kind,
-      state: snapshotReadableFile(artifact.absolutePath),
+      state: snapshotRuntimeArtifact(artifact),
     })),
     directories: [...inputs.directoryGuards.entries()]
       .map(([absolutePath, guard]) => ({ absolutePath, ...guard }))
@@ -1393,10 +1481,30 @@ function hashRuntimeArtifact(
   artifact: RuntimeArtifact,
   cache: CachedArtifactEntry | undefined,
   options: AnalyzerIdentityResolveOptions,
-): { digest: string; state: ReadableFileState } {
+): CachedArtifactEntry {
+  if (artifact.kind === 'unfollowed-symlink') {
+    // The link text is the entire payload, so there is no file read for a
+    // cached digest to amortize: recompute it and stay independent of the
+    // cache's freshness. The distinct frame label keeps a link recording from
+    // ever colliding with a content digest.
+    const state = snapshotSymlinkArtifact(artifact.absolutePath);
+    return {
+      ...artifact,
+      state,
+      digest: hashCanonicalFrames([
+        ['runtime-payload-link-v1', artifact.kind, state.symlinkTarget],
+      ]),
+    };
+  }
+
   const before = snapshotReadableFile(artifact.absolutePath);
-  if (cache && SHA256_PATTERN.test(cache.digest) && isDeepStrictEqual(cache.state, before)) {
-    return { digest: cache.digest, state: before };
+  if (
+    cache &&
+    cache.kind !== 'unfollowed-symlink' &&
+    SHA256_PATTERN.test(cache.digest) &&
+    isDeepStrictEqual(cache.state, before)
+  ) {
+    return { ...artifact, state: before, digest: cache.digest };
   }
 
   const stable = hashStableFile(artifact.absolutePath);
@@ -1413,7 +1521,7 @@ function hashRuntimeArtifact(
     path: artifact.absolutePath,
     bytes: stable.bytes,
   });
-  return { digest, state: stable.state };
+  return { ...artifact, state: stable.state, digest };
 }
 
 function compareEdges(a: RuntimeDependencyEdge, b: RuntimeDependencyEdge): number {
@@ -1495,7 +1603,7 @@ function hashDependencyRuntime(
       artifact.kind,
       digestBytes(hashed.digest),
     ]);
-    nextArtifacts.push({ ...artifact, state: hashed.state, digest: hashed.digest });
+    nextArtifacts.push(hashed);
   }
 
   return {
@@ -1526,6 +1634,19 @@ function isReadableFileState(value: unknown): value is ReadableFileState {
     isStatState(record.link) &&
     isStatState(record.target) &&
     (record.symlinkTarget === undefined || typeof record.symlinkTarget === 'string')
+  );
+}
+
+function isSymlinkArtifactState(value: unknown): value is SymlinkArtifactState {
+  if (typeof value !== 'object' || value === null) return false;
+  const record = value as Record<string, unknown>;
+  // `target === undefined` keeps a readable-file state from masquerading as an
+  // unresolved link recording, which would otherwise be validated against the
+  // wrong guard mode on the warm path.
+  return (
+    isStatState(record.link) &&
+    typeof record.symlinkTarget === 'string' &&
+    record.target === undefined
   );
 }
 
@@ -1699,15 +1820,18 @@ function isIdentityCachePayload(
   const artifactEntriesValid = record.artifactEntries.every((entry: unknown) => {
     if (typeof entry !== 'object' || entry === null) return false;
     const item = entry as Record<string, unknown>;
-    return (
-      typeof item.absolutePath === 'string' &&
-      path.isAbsolute(item.absolutePath) &&
-      typeof item.canonicalPath === 'string' &&
-      (item.kind === 'file' || item.kind === 'symlink') &&
-      isReadableFileState(item.state) &&
-      typeof item.digest === 'string' &&
-      SHA256_PATTERN.test(item.digest)
-    );
+    if (
+      typeof item.absolutePath !== 'string' ||
+      !path.isAbsolute(item.absolutePath) ||
+      typeof item.canonicalPath !== 'string' ||
+      typeof item.digest !== 'string' ||
+      !SHA256_PATTERN.test(item.digest)
+    ) {
+      return false;
+    }
+    return item.kind === 'unfollowed-symlink'
+      ? isSymlinkArtifactState(item.state)
+      : (item.kind === 'file' || item.kind === 'symlink') && isReadableFileState(item.state);
   });
   const hasBuildRootGuard = record.buildDirectoryGuards.some(
     (entry: unknown) =>
@@ -2196,14 +2320,24 @@ function validateIdentityCache(
     }
   }
   for (const artifact of cache.artifactEntries) {
-    if (
-      !add(
-        { absolutePath: artifact.absolutePath, mode: 'readable-file' },
-        { type: 'readable-file', state: artifact.state },
-      )
-    ) {
-      return false;
-    }
+    // A recorded link is re-probed as a link, never as a readable file: the
+    // readable-file probe resolves the target and would report `null` for the
+    // very inputs this kind exists to describe, failing every warm validation.
+    const probe: { request: CacheGuardRequest; expected: CacheGuardResult } =
+      artifact.kind === 'unfollowed-symlink'
+        ? {
+            request: { absolutePath: artifact.absolutePath, mode: 'link' },
+            expected: {
+              type: 'symlink',
+              state: artifact.state.link,
+              symlinkTarget: artifact.state.symlinkTarget,
+            },
+          }
+        : {
+            request: { absolutePath: artifact.absolutePath, mode: 'readable-file' },
+            expected: { type: 'readable-file', state: artifact.state },
+          };
+    if (!add(probe.request, probe.expected)) return false;
   }
 
   const entries = [...expected.entries()];
