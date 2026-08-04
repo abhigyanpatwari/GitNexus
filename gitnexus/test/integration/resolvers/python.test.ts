@@ -3228,9 +3228,13 @@ def builds():
   });
 
   it('resolves construction through a dotted namespace receiver', () => {
-    const edge = getRelationships(result, 'CALLS').find(
-      (c) => c.source === 'builds' && c.targetFilePath === 'pkg/db.py',
-    );
-    expect(edge).toMatchObject({ source: 'builds', targetFilePath: 'pkg/db.py' });
+    // Pin the callee NAME, not just the file: pkg/db.py also exports
+    // `session_scope`, so a file-only assertion would stay green if the
+    // construction resolved to the wrong member of the right module.
+    const edges = getRelationships(result, 'CALLS')
+      .filter((c) => c.sourceFilePath === 'caller_construct.py')
+      .map((c) => `${c.source}->${c.target}@${c.targetFilePath}`)
+      .sort();
+    expect(edges).toEqual(['builds->Model@pkg/db.py']);
   });
 });
