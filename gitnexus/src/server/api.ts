@@ -64,12 +64,14 @@ import {
 } from './git-clone.js';
 import { createAnalyzeUploadHandler } from './analyze-upload.js';
 import {
+  assertServeAuthForPublicOrigin,
   createPublicOriginMatcher,
   createWriteOriginGuard,
   logOriginPolicy,
   PUBLIC_ORIGIN_ENV,
   resolveTrustProxy,
   TRUST_PROXY_ENV,
+  warnIfRateLimitKeysCollapse,
 } from './middleware.js';
 import { createLaunchAnalysisWorker } from './analyze-launch.js';
 import { UPLOAD_ROOT } from './upload-paths.js';
@@ -713,6 +715,11 @@ export function validateAnalyzeToken(
 }
 
 export const createServer = async (port: number, host: string = '127.0.0.1') => {
+  // Refuse a public-origin config before anything is opened or bound: `serve`
+  // has no authentication yet, so the setting that makes a public bind usable
+  // must not be usable either. Throws — `serve` reports it and exits non-zero.
+  assertServeAuthForPublicOrigin();
+
   // Surface a cleartext Azure DevOps PAT config at boot (operators rarely
   // read per-request logs). Warn-only — http:// self-hosted stays supported.
   warnIfInsecureAzureConfig();
@@ -723,6 +730,10 @@ export const createServer = async (port: number, host: string = '127.0.0.1') => 
   // Which upstream hops may set X-Forwarded-*. Process-wide: every route's
   // req.ip, and so the per-IP rate limiter, resolves through this.
   app.set('trust proxy', resolveTrustProxy(process.env[TRUST_PROXY_ENV]));
+  // resolveTrustProxy validates the value in isolation; only here do we know
+  // what we bound, and so whether the default is about to collapse the per-IP
+  // rate limit to one global limit behind a load balancer.
+  warnIfRateLimitKeysCollapse(host);
 
   // Chromium Private Network Access (required since Chrome 130+). Must run before
   // cors: the cors middleware ends OPTIONS preflight responses, so this header

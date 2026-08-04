@@ -15,6 +15,18 @@ function effectivePort(url: URL): string {
 }
 
 /**
+ * The three loopback spellings a browser can send, and that
+ * {@link normalizeBoundHost} can return.
+ *
+ * Takes a hostname already through WHATWG URL parsing, so IPv6 arrives
+ * bracketed — unlike `isLoopbackHost` in `mcp/http-transport.ts`, which compares
+ * a raw `--host` value and so matches bare `::1`.
+ */
+function isLoopbackHostname(hostname: string | undefined): boolean {
+  return hostname === 'localhost' || hostname === '127.0.0.1' || hostname === '[::1]';
+}
+
+/**
  * Canonicalize a configured host — `--host`, or the one inside
  * {@link PUBLIC_ORIGIN_ENV} — into the form a browser `Origin` hostname takes
  * after WHATWG URL parsing, so the comparisons in
@@ -66,9 +78,9 @@ export interface PublicOriginMatcher {
 }
 
 /**
- * Build a matcher for {@link PUBLIC_ORIGIN_ENV}. Compares hostname always,
- * scheme only when the configured value carried one, and port only when it
- * carried an explicit one.
+ * Build a matcher for {@link PUBLIC_ORIGIN_ENV}. Compares hostname and scheme
+ * always — a value with no scheme is read as `https`, never as either — and
+ * port only when the configured value carried an explicit one.
  *
  * `undefined` when unset or not a single reachable host, mirroring
  * {@link normalizeBoundHost}: an invalid origin must never widen the
@@ -87,9 +99,13 @@ export function createPublicOriginMatcher(rawOrigin?: string): PublicOriginMatch
   const hostname = normalizeBoundHost(authority.host);
   if (!hostname) return undefined;
 
-  // A bare host stays deliberately permissive on scheme and port: platform
-  // service-discovery fields resolve to a hostname with neither.
-  const expectedProtocol = scheme ? `${scheme}:` : undefined;
+  // A bare host stays permissive on the port, since platform service-discovery
+  // fields resolve to a hostname with neither — but it defaults to https rather
+  // than to any scheme, because those platforms always terminate TLS, and
+  // accepting either would make `app.example.com` an http downgrade path into
+  // both the CORS read allowlist and the write guard. Plain http needs the
+  // explicit `http://` form.
+  const expectedProtocol = `${scheme ?? 'https'}:`;
   let expectedPort: string | undefined;
   if (authority.port) {
     let configured: URL;
@@ -97,7 +113,7 @@ export function createPublicOriginMatcher(rawOrigin?: string): PublicOriginMatch
       // Round-trip through `new URL` so the configured port normalizes the same
       // way a request Origin's does — an elided default, a leading zero — and so
       // an out-of-range port throws here rather than yielding a dead matcher.
-      configured = new URL(`${scheme ?? 'http'}://${hostname}:${authority.port}`);
+      configured = new URL(`${expectedProtocol}//${hostname}:${authority.port}`);
     } catch {
       return undefined;
     }
@@ -113,7 +129,7 @@ export function createPublicOriginMatcher(rawOrigin?: string): PublicOriginMatch
     hostname,
     matches: (origin: URL): boolean =>
       origin.hostname === hostname &&
-      (expectedProtocol === undefined || origin.protocol === expectedProtocol) &&
+      origin.protocol === expectedProtocol &&
       (expectedPort === undefined || effectivePort(origin) === expectedPort),
   };
 }
@@ -136,8 +152,10 @@ function splitAuthority(authority: string): { host: string; port?: string } | un
   const host = parts[1];
   // `new URL` is far laxer than DNS: it takes `a.com,b.com` verbatim and reads
   // `8080` as the integer IP 0.0.31.144, either of which yields a matcher that
-  // can never match a real Origin while still reading as configured.
-  if (/[\s,;*/?#@\\]/.test(host) || /^\d+$/.test(host)) return undefined;
+  // can never match a real Origin while still reading as configured. A trailing
+  // dot is the same failure — it is a legal FQDN that survives parsing as
+  // `example.com.`, but a browser sends `example.com`, so the matcher is dead.
+  if (/[\s,;*/?#@\\]/.test(host) || /^\d+$/.test(host) || host.endsWith('.')) return undefined;
   return { host, port: parts[2] };
 }
 
@@ -181,13 +199,7 @@ export function createWriteOriginGuard(boundHost?: string, boundPort?: number) {
       const matchesBoundHost =
         hostname === normalizedBoundHost &&
         (normalizedBoundPort === undefined || effectivePort(parsed) === normalizedBoundPort);
-      if (
-        hostname === 'localhost' ||
-        hostname === '127.0.0.1' ||
-        hostname === '[::1]' ||
-        matchesBoundHost ||
-        publicOrigin?.matches(parsed)
-      ) {
+      if (isLoopbackHostname(hostname) || matchesBoundHost || publicOrigin?.matches(parsed)) {
         next();
         return;
       }
@@ -199,6 +211,49 @@ export function createWriteOriginGuard(boundHost?: string, boundPort?: number) {
       code: 'origin_not_allowed',
     });
   };
+}
+
+/**
+ * Whether `serve` has any request authentication configured.
+ *
+ * Nothing can configure it yet: `serve` has no authentication of any kind, and
+ * {@link createWriteOriginGuard} passes every request that carries no `Origin`
+ * header, so `curl` reaches `POST /api/analyze` and `DELETE /api/repo`
+ * unauthenticated. That has been safe only because `serve` bound loopback.
+ *
+ * So this returns `false` unconditionally, and it is a placeholder on purpose:
+ * the `serve` auth change replaces this body, and {@link assertServeAuthForPublicOrigin}
+ * and its tests then hold without being rewritten.
+ */
+export function isServeAuthConfigured(): boolean {
+  return false;
+}
+
+/**
+ * Refuse to start when {@link PUBLIC_ORIGIN_ENV} is set and no `serve`
+ * authentication is configured.
+ *
+ * {@link PUBLIC_ORIGIN_ENV} is the setting that makes a public bind usable — it
+ * is what admits a non-loopback browser origin to the write routes. Until
+ * {@link isServeAuthConfigured} can return `true`, setting it opens the door
+ * with nothing behind it, so the door does not open at all. There is
+ * deliberately no override flag: an escape hatch is the thing an operator sets
+ * once and forgets, which is exactly the state this guards against.
+ *
+ * @throws when {@link PUBLIC_ORIGIN_ENV} is set without authentication. `serve`
+ *   surfaces it as `serve.startFailed` and exits non-zero.
+ */
+export function assertServeAuthForPublicOrigin(): void {
+  const raw = process.env[PUBLIC_ORIGIN_ENV]?.trim();
+  if (!raw || isServeAuthConfigured()) return;
+  throw new Error(
+    `${PUBLIC_ORIGIN_ENV} is set (${raw}), but 'gitnexus serve' has no authentication yet. ` +
+      `It would admit browser writes from that origin, and requests without an Origin header ` +
+      `(curl, any script) already reach POST /api/analyze and DELETE /api/repo unauthenticated — ` +
+      `so a reachable deployment would let anyone index and delete repositories. Unset ` +
+      `${PUBLIC_ORIGIN_ENV} and bind loopback (the default), or reach the server through a proxy ` +
+      `that authenticates for it.`,
+  );
 }
 
 /**
@@ -242,29 +297,41 @@ export const DEFAULT_TRUST_PROXY = 'loopback, linklocal, uniquelocal';
 /** Overrides {@link DEFAULT_TRUST_PROXY}; a public cloud LB needs it set. */
 export const TRUST_PROXY_ENV = 'GITNEXUS_TRUST_PROXY';
 
-/** Upper bound on a hop count, well past any real proxy chain. */
+/**
+ * Sanity ceiling on a hop count, well past any real proxy chain — it exists to
+ * catch a digit string long enough to overflow to `Infinity`, not to make any
+ * value under it safe. The correct hop count is the exact number of proxies you
+ * control; each extra hop hands the caller one more entry of the chain.
+ */
 export const MAX_TRUST_PROXY_HOPS = 16;
 
 /**
  * Resolve {@link TRUST_PROXY_ENV} to a value Express accepts for `trust proxy`:
- * a boolean (`true`/`false`/`yes`/`no`/`on`/`off`), a hop count in
- * `0..{@link MAX_TRUST_PROXY_HOPS}`, or a proxy list Express can compile.
+ * `false` (`false`/`no`/`off`, and a `0` hop count), a hop count in
+ * `1..{@link MAX_TRUST_PROXY_HOPS}`, or a proxy list Express can compile.
  * Anything else warns and returns {@link DEFAULT_TRUST_PROXY}. Express compiles
  * this value inside `app.set`, so an unvalidated bad one takes `serve` down at
  * startup; a number it accepts without any range check at all.
+ *
+ * `true` is rejected, not accepted-with-a-warning. It makes `req.ip` the
+ * client-controlled leftmost `X-Forwarded-For` entry, so a spoofed chain earns a
+ * fresh rate-limit key per request — and the limiter is the only thing in front
+ * of `/api/analyze` and `/api/embed`, both of which spawn workers. It is also
+ * not a working configuration: express-rate-limit's own `validations.trustProxy`
+ * throws `ERR_ERL_PERMISSIVE_TRUST_PROXY` on it. Any real chain has a knowable
+ * length, so a hop count or a proxy list covers every legitimate case.
  */
 export function resolveTrustProxy(raw?: string): string | number | boolean {
   const value = raw?.trim();
   if (!value) return DEFAULT_TRUST_PROXY;
 
   if (/^(true|yes|on)$/i.test(value)) {
-    logger.warn(
-      { [TRUST_PROXY_ENV]: value },
-      `[gitnexus serve] ${TRUST_PROXY_ENV}=${value} trusts every hop, so req.ip is read from ` +
-        `the client-controlled leftmost X-Forwarded-For entry and a spoofed chain earns a fresh ` +
-        `rate-limit key per request. Prefer the number of proxies in front of this server.`,
+    return rejectTrustProxy(
+      value,
+      `it trusts every hop, so req.ip is read from the client-controlled leftmost ` +
+        `X-Forwarded-For entry and a spoofed chain earns a fresh rate-limit key per request; ` +
+        `express-rate-limit rejects it too. Set the number of proxies you control instead`,
     );
-    return true;
   }
   if (/^(false|no|off)$/i.test(value)) return false;
 
@@ -289,6 +356,36 @@ export function resolveTrustProxy(raw?: string): string | number | boolean {
     return rejectTrustProxy(value, err instanceof Error ? err.message : String(err));
   }
   return value;
+}
+
+/**
+ * Warn when the rate limiter is about to key every request to the same address.
+ *
+ * {@link resolveTrustProxy} cannot detect this — it sees the env value and not
+ * what the server bound. A non-loopback bind is the shape of a deployment behind
+ * a load balancer, and {@link DEFAULT_TRUST_PROXY} matches only loopback and the
+ * private ranges, so a cloud LB outside them is never trusted: `req.ip` is the
+ * LB on every request and the per-IP limit silently becomes one global limit.
+ *
+ * Silent when {@link TRUST_PROXY_ENV} is set — including to a value that then
+ * fails validation, which {@link resolveTrustProxy} has already warned about.
+ *
+ * @param boundHost - `createServer`'s `host`. A wildcard bind warns too: it
+ *   accepts traffic on every interface, a load balancer included.
+ */
+export function warnIfRateLimitKeysCollapse(boundHost?: string): void {
+  if (process.env[TRUST_PROXY_ENV]?.trim()) return;
+  if (!boundHost) return;
+  // normalizeBoundHost returns undefined for a wildcard or unparseable host,
+  // neither of which is loopback — so both warn.
+  if (isLoopbackHostname(normalizeBoundHost(boundHost))) return;
+  logger.warn(
+    { host: boundHost, trustProxy: DEFAULT_TRUST_PROXY },
+    `[gitnexus serve] Bound to ${boundHost} with ${TRUST_PROXY_ENV} unset, so 'trust proxy' is ` +
+      `'${DEFAULT_TRUST_PROXY}'. A load balancer outside those ranges is not trusted, so req.ip ` +
+      `is the balancer on every request and the per-IP rate limit becomes one shared limit across ` +
+      `all callers. Set ${TRUST_PROXY_ENV} to the number of proxies you control.`,
+  );
 }
 
 function rejectTrustProxy(value: string, reason: string): string {

@@ -10,7 +10,9 @@
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it } from 'vitest';
 import {
   PUBLIC_ORIGIN_ENV,
+  assertServeAuthForPublicOrigin,
   createWriteOriginGuard,
+  isServeAuthConfigured,
   logOriginPolicy,
 } from '../../src/server/middleware.js';
 import { _captureLogger, type LoggerCapture } from '../../src/core/logger.js';
@@ -121,18 +123,38 @@ describe('createWriteOriginGuard — public origin is matched on its port', () =
     expect(callGuard('0.0.0.0', 3000, 'http://app.example.com').passed).toBe(false);
   });
 
-  it('admits any scheme and port for a bare configured host', () => {
+  // A bare host is permissive on the port but NOT on the scheme: it defaults to
+  // https, so `app.example.com` is not an http downgrade path into the write
+  // routes. Plain http needs the explicit form.
+  it('admits any port for a bare configured host, but only over https', () => {
     setPublicOrigin('app.example.com');
-    expect(callGuard('0.0.0.0', 3000, 'http://app.example.com:9999').passed).toBe(true);
+    expect(callGuard('0.0.0.0', 3000, 'https://app.example.com:9999').passed).toBe(true);
     expect(callGuard('0.0.0.0', 3000, 'https://app.example.com').passed).toBe(true);
+    expect(callGuard('0.0.0.0', 3000, 'http://app.example.com').passed).toBe(false);
+    expect(callGuard('0.0.0.0', 3000, 'http://app.example.com:9999').passed).toBe(false);
+  });
+
+  it('admits http for a bare host only when http:// is spelled out', () => {
+    setPublicOrigin('http://app.example.com');
+    expect(callGuard('0.0.0.0', 3000, 'http://app.example.com:9999').passed).toBe(true);
+    expect(callGuard('0.0.0.0', 3000, 'https://app.example.com').passed).toBe(false);
   });
 
   it('admits a bracketed IPv6 literal, on any port when configured without one', () => {
     setPublicOrigin('[2001:db8::1]');
-    expect(callGuard('0.0.0.0', 3000, 'http://[2001:db8::1]:4173').passed).toBe(true);
-    setPublicOrigin('[2001:db8::1]:8080');
-    expect(callGuard('0.0.0.0', 3000, 'http://[2001:db8::1]:8080').passed).toBe(true);
-    expect(callGuard('0.0.0.0', 3000, 'http://[2001:db8::1]:4173').passed).toBe(false);
+    expect(callGuard('0.0.0.0', 3000, 'https://[2001:db8::1]:4173').passed).toBe(true);
+    setPublicOrigin('https://[2001:db8::1]:8080');
+    expect(callGuard('0.0.0.0', 3000, 'https://[2001:db8::1]:8080').passed).toBe(true);
+    expect(callGuard('0.0.0.0', 3000, 'https://[2001:db8::1]:4173').passed).toBe(false);
+  });
+
+  // A trailing dot is a legal FQDN that survives `new URL` as `example.com.`,
+  // but a browser sends `example.com` — so it built a matcher nothing could
+  // satisfy while logOriginPolicy reported it as working.
+  it('admits nothing for a trailing-dot hostname', () => {
+    setPublicOrigin('app.example.com.');
+    expect(callGuard('0.0.0.0', 3000, 'https://app.example.com').passed).toBe(false);
+    expect(callGuard('0.0.0.0', 3000, 'https://app.example.com.').passed).toBe(false);
   });
 
   it('admits nothing extra when the configured value is not one reachable host', () => {
@@ -212,5 +234,61 @@ describe('logOriginPolicy', () => {
     logOriginPolicy('192.168.1.10');
     expect(warns()).toHaveLength(1);
     expect(String(warns()[0].msg)).toContain(PUBLIC_ORIGIN_ENV);
+  });
+
+  it('does not report a trailing-dot hostname as a working origin', () => {
+    setPublicOrigin('app.example.com.');
+    logOriginPolicy('0.0.0.0');
+    expect(infos()).toEqual([]);
+    expect(String(warns()[0].msg)).toContain('app.example.com.');
+  });
+});
+
+/**
+ * `serve` has no authentication, and the guard above passes every request with
+ * no Origin header — so GITNEXUS_PUBLIC_ORIGIN, the setting that makes a public
+ * bind usable, must not be usable until the lock exists.
+ */
+describe('assertServeAuthForPublicOrigin', () => {
+  it('is a no-op when no public origin is configured', () => {
+    setPublicOrigin(undefined);
+    expect(() => assertServeAuthForPublicOrigin()).not.toThrow();
+  });
+
+  it.each(['   ', ''])('treats a blank value (%j) as unset', (raw) => {
+    setPublicOrigin(raw);
+    expect(() => assertServeAuthForPublicOrigin()).not.toThrow();
+  });
+
+  it('throws when a public origin is configured and no auth is', () => {
+    setPublicOrigin('https://app.example.com');
+    expect(() => assertServeAuthForPublicOrigin()).toThrow(/has no authentication yet/);
+  });
+
+  it('names the variable and the value in the failure, and points at both remedies', () => {
+    setPublicOrigin('https://app.example.com');
+    let message = '';
+    try {
+      assertServeAuthForPublicOrigin();
+    } catch (err) {
+      message = err instanceof Error ? err.message : String(err);
+    }
+    expect(message).toContain(PUBLIC_ORIGIN_ENV);
+    expect(message).toContain('https://app.example.com');
+    expect(message).toContain('DELETE /api/repo');
+    expect(message).toContain('loopback');
+  });
+
+  // Even a value the matcher would reject throws: the operator's intent to serve
+  // a public origin is the risk, and an unusable value is not a safer one.
+  it.each(['a.com,b.com', '*', '8080'])('throws on an unusable value too: %s', (raw) => {
+    setPublicOrigin(raw);
+    expect(() => assertServeAuthForPublicOrigin()).toThrow();
+  });
+
+  // The auth change flips this predicate; the gate above is then satisfiable
+  // without rewriting it. Pinned so the flip cannot happen unnoticed.
+  it('reports no auth configured, since serve has none', () => {
+    expect(isServeAuthConfigured()).toBe(false);
   });
 });

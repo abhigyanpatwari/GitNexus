@@ -220,7 +220,7 @@ describe('isAllowedOrigin: GITNEXUS_PUBLIC_ORIGIN', () => {
     process.env.GITNEXUS_PUBLIC_ORIGIN = 'app.example.com';
     expect(isAllowedOrigin('https://app.example.com')).toBe(true);
     expect(isAllowedOrigin('https://app.example.com:8443')).toBe(true);
-    expect(isAllowedOrigin('http://app.example.com:9999')).toBe(true);
+    expect(isAllowedOrigin('https://app.example.com:9999')).toBe(true);
   });
 
   it('matches a configured default port against an origin that elides it', () => {
@@ -230,20 +230,22 @@ describe('isAllowedOrigin: GITNEXUS_PUBLIC_ORIGIN', () => {
   });
 
   it('handles a bracketed IPv6 literal with a port, with and without a scheme', () => {
+    // No scheme means https, so the http probes below are scheme mismatches.
     process.env.GITNEXUS_PUBLIC_ORIGIN = '[2001:db8::1]:8080';
-    expect(isAllowedOrigin('http://[2001:db8::1]:8080')).toBe(true);
-    expect(isAllowedOrigin('http://[2001:db8::1]:9090')).toBe(false);
-    process.env.GITNEXUS_PUBLIC_ORIGIN = 'https://[2001:db8::1]:8080';
     expect(isAllowedOrigin('https://[2001:db8::1]:8080')).toBe(true);
+    expect(isAllowedOrigin('https://[2001:db8::1]:9090')).toBe(false);
     expect(isAllowedOrigin('http://[2001:db8::1]:8080')).toBe(false);
+    process.env.GITNEXUS_PUBLIC_ORIGIN = 'http://[2001:db8::1]:8080';
+    expect(isAllowedOrigin('http://[2001:db8::1]:8080')).toBe(true);
+    expect(isAllowedOrigin('https://[2001:db8::1]:8080')).toBe(false);
   });
 
   it('accepts any port on a bare IPv6 literal, which carries none', () => {
     process.env.GITNEXUS_PUBLIC_ORIGIN = '[2001:db8::1]';
-    expect(isAllowedOrigin('http://[2001:db8::1]:4173')).toBe(true);
+    expect(isAllowedOrigin('https://[2001:db8::1]:4173')).toBe(true);
     // Non-canonical forms compress to the same hostname a browser Origin has.
     process.env.GITNEXUS_PUBLIC_ORIGIN = '2001:db8:0:0:0:0:0:1';
-    expect(isAllowedOrigin('http://[2001:db8::1]:4173')).toBe(true);
+    expect(isAllowedOrigin('https://[2001:db8::1]:4173')).toBe(true);
   });
 
   it('does not widen to other hosts', () => {
@@ -257,10 +259,19 @@ describe('isAllowedOrigin: GITNEXUS_PUBLIC_ORIGIN', () => {
     expect(isAllowedOrigin('http://app.example.com')).toBe(false);
   });
 
-  it('accepts either scheme when configured as a bare host', () => {
+  // A bare host is the platform service-discovery form, and those terminate
+  // TLS — so it means https, not either scheme. Accepting either would make it
+  // an http downgrade path into the read allowlist and the write guard alike.
+  it('reads a bare host as https, not as either scheme', () => {
     process.env.GITNEXUS_PUBLIC_ORIGIN = 'app.example.com';
-    expect(isAllowedOrigin('http://app.example.com')).toBe(true);
     expect(isAllowedOrigin('https://app.example.com')).toBe(true);
+    expect(isAllowedOrigin('http://app.example.com')).toBe(false);
+  });
+
+  it('accepts http on a bare host only when http:// is spelled out', () => {
+    process.env.GITNEXUS_PUBLIC_ORIGIN = 'http://app.example.com';
+    expect(isAllowedOrigin('http://app.example.com')).toBe(true);
+    expect(isAllowedOrigin('https://app.example.com')).toBe(false);
   });
 
   it('still rejects non-http protocols on the configured host', () => {
@@ -292,6 +303,8 @@ describe('createPublicOriginMatcher: values that are not one reachable host', ()
     ['ftp://a.com', 'a non-http scheme'],
     ['https://a.com/ui', 'a path, which an Origin never has'],
     ['0.0.0.0', 'a wildcard bind, which has no host identity'],
+    ['a.com.', 'a trailing dot — a legal FQDN, but not what a browser sends'],
+    ['https://a.com.:8443', 'a trailing dot with a scheme and a port'],
   ])('returns undefined for %j (%s)', (raw) => {
     expect(createPublicOriginMatcher(raw)).toBeUndefined();
   });

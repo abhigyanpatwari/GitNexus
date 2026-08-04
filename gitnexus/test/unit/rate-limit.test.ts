@@ -375,12 +375,22 @@ describe('trust proxy — effective value from GITNEXUS_TRUST_PROXY', () => {
     expect(effectiveTrustProxy('garbage')).toBe(DEFAULT_TRUST_PROXY);
     expect(effectiveTrustProxy('9'.repeat(400))).toBe(DEFAULT_TRUST_PROXY);
   });
+
+  // The behaviour the describe block below demonstrates is why: `true` cannot
+  // reach Express through the env var at all.
+  it('never hands Express `true`', () => {
+    expect(effectiveTrustProxy('true')).toBe(DEFAULT_TRUST_PROXY);
+    expect(effectiveTrustProxy('yes')).toBe(DEFAULT_TRUST_PROXY);
+    expect(effectiveTrustProxy('on')).toBe(DEFAULT_TRUST_PROXY);
+  });
 });
 
-// Why resolveTrustProxy warns on `true`: Express then reads the leftmost
+// Why resolveTrustProxy rejects `true`: Express then reads the leftmost
 // X-Forwarded-For entry, which the client controls, so rotating it hands the
-// limiter a fresh key per request. A hop count reads from the right instead and
-// is immune. Both apps below see the same requests; only the setting differs.
+// limiter a fresh key per request — unbounded, in front of the two routes that
+// spawn workers. A hop count reads from the right instead and is immune. Both
+// apps below see the same requests; only the setting differs. `true` is set
+// directly here, since the env var can no longer produce it.
 describe('trust proxy — a rotating X-Forwarded-For defeats `true` but not a hop count', () => {
   const buildProxiedApp = (trustProxy: boolean | number): Express => {
     const app = express();

@@ -12,6 +12,7 @@ import {
   MAX_TRUST_PROXY_HOPS,
   TRUST_PROXY_ENV,
   resolveTrustProxy,
+  warnIfRateLimitKeysCollapse,
 } from '../../src/server/middleware.js';
 import { _captureLogger, type LoggerCapture } from '../../src/core/logger.js';
 
@@ -85,13 +86,25 @@ describe('resolveTrustProxy — accepted', () => {
   );
 });
 
-describe('resolveTrustProxy — warns on a trust-everything value', () => {
-  it.each(['true', 'TRUE', 'yes', 'YES', 'on', 'ON'])('accepts %s but warns', (raw) => {
-    expect(resolveTrustProxy(raw)).toBe(true);
+// `true` trusts every hop, which makes req.ip the client-controlled leftmost
+// X-Forwarded-For entry — a fresh rate-limit key per spoofed request, in front
+// of the two routes that spawn workers. express-rate-limit's own
+// validations.trustProxy throws ERR_ERL_PERMISSIVE_TRUST_PROXY on it, so it was
+// never a working configuration either. Rejected, not warned.
+describe('resolveTrustProxy — rejects a trust-everything value', () => {
+  it.each(['true', 'TRUE', 'yes', 'YES', 'on', 'ON'])('falls back to the default on %s', (raw) => {
+    expect(resolveTrustProxy(raw)).toBe(DEFAULT_TRUST_PROXY);
     const warned = warnings();
     expect(warned).toHaveLength(1);
     expect(warned[0]).toContain(TRUST_PROXY_ENV);
+    expect(warned[0]).toContain(raw);
     expect(warned[0]).toContain('X-Forwarded-For');
+  });
+
+  it('never returns true, so express-rate-limit cannot reject the value we set', () => {
+    for (const raw of ['true', 'yes', 'on', 'TRUE', '1', '16', 'loopback', '0', 'false']) {
+      expect(resolveTrustProxy(raw)).not.toBe(true);
+    }
   });
 });
 
@@ -110,6 +123,60 @@ describe('resolveTrustProxy — rejected', () => {
     expect(warned).toHaveLength(1);
     expect(warned[0]).toContain(TRUST_PROXY_ENV);
     expect(warned[0]).toContain(raw);
+  });
+});
+
+// resolveTrustProxy sees only the env value; whether the default is about to
+// collapse the per-IP rate limit to one global limit depends on what we bound.
+describe('warnIfRateLimitKeysCollapse', () => {
+  const original = process.env[TRUST_PROXY_ENV];
+  beforeEach(() => {
+    delete process.env[TRUST_PROXY_ENV];
+  });
+  afterEach(() => {
+    if (original === undefined) delete process.env[TRUST_PROXY_ENV];
+    else process.env[TRUST_PROXY_ENV] = original;
+  });
+
+  it.each(['localhost', '127.0.0.1', '::1', '[::1]'])('stays silent on a %s bind', (host) => {
+    warnIfRateLimitKeysCollapse(host);
+    expect(warnings()).toEqual([]);
+  });
+
+  it.each([undefined, ''])('stays silent when no host is given (%o)', (host) => {
+    warnIfRateLimitKeysCollapse(host);
+    expect(warnings()).toEqual([]);
+  });
+
+  it.each([
+    ['0.0.0.0', 'a wildcard bind accepts LB traffic too'],
+    ['::', 'the IPv6 wildcard likewise'],
+    ['192.168.1.10', 'a LAN bind'],
+    ['203.0.113.7', 'a public bind'],
+  ])('warns on %s (%s)', (host) => {
+    warnIfRateLimitKeysCollapse(host);
+    const warned = warnings();
+    expect(warned).toHaveLength(1);
+    expect(warned[0]).toContain(TRUST_PROXY_ENV);
+    expect(warned[0]).toContain(host);
+    expect(warned[0]).toContain('one shared limit');
+  });
+
+  it.each(['1', 'loopback', 'garbage'])(
+    'stays silent when %s is configured, valid or not',
+    (raw) => {
+      // An invalid value is resolveTrustProxy's warning to make, not a second one
+      // here — the operator has already been told about that value.
+      process.env[TRUST_PROXY_ENV] = raw;
+      warnIfRateLimitKeysCollapse('0.0.0.0');
+      expect(warnings()).toEqual([]);
+    },
+  );
+
+  it('treats a whitespace-only value as unset', () => {
+    process.env[TRUST_PROXY_ENV] = '   ';
+    warnIfRateLimitKeysCollapse('0.0.0.0');
+    expect(warnings()).toHaveLength(1);
   });
 });
 
