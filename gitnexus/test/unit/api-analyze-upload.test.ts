@@ -1,10 +1,21 @@
-import { afterEach, describe, expect, it, vi } from 'vitest';
+import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from 'vitest';
 import path from 'node:path';
 import fs from 'node:fs/promises';
 import { Readable } from 'node:stream';
 import type { IncomingMessage } from 'node:http';
 import { createAnalyzeUploadHandler } from '../../src/server/analyze-upload.js';
-import { createWriteOriginGuard } from '../../src/server/middleware.js';
+import { PUBLIC_ORIGIN_ENV, createWriteOriginGuard } from '../../src/server/middleware.js';
+
+// The guard admits GITNEXUS_PUBLIC_ORIGIN as well as loopback, and the
+// rejection cases below assume none is configured. Clear the developer's
+// ambient value for the file rather than inheriting it.
+const ambientPublicOrigin = process.env[PUBLIC_ORIGIN_ENV];
+beforeAll(() => {
+  delete process.env[PUBLIC_ORIGIN_ENV];
+});
+afterAll(() => {
+  if (ambientPublicOrigin !== undefined) process.env[PUBLIC_ORIGIN_ENV] = ambientPublicOrigin;
+});
 
 const BOUNDARY = '----gitnexusuploadtest';
 

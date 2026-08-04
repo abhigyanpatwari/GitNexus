@@ -15,8 +15,9 @@ function effectivePort(url: URL): string {
 }
 
 /**
- * Canonicalize a bound-host string into the form a browser `Origin` hostname
- * takes after WHATWG URL parsing, so the same-host comparison in
+ * Canonicalize a configured host — `--host`, or the one inside
+ * {@link PUBLIC_ORIGIN_ENV} — into the form a browser `Origin` hostname takes
+ * after WHATWG URL parsing, so the comparisons in
  * {@link createWriteOriginGuard} can use a plain `===`.
  *
  * Returns `undefined` when the host carries no single comparable identity:
@@ -240,7 +241,7 @@ export const MAX_TRUST_PROXY_HOPS = 16;
 /**
  * Resolve {@link TRUST_PROXY_ENV} to a value Express accepts for `trust proxy`:
  * a boolean (`true`/`false`/`yes`/`no`/`on`/`off`), a hop count in
- * `1..{@link MAX_TRUST_PROXY_HOPS}`, or a proxy list Express can compile.
+ * `0..{@link MAX_TRUST_PROXY_HOPS}`, or a proxy list Express can compile.
  * Anything else warns and returns {@link DEFAULT_TRUST_PROXY}. Express compiles
  * this value inside `app.set`, so an unvalidated bad one takes `serve` down at
  * startup; a number it accepts without any range check at all.
@@ -262,10 +263,14 @@ export function resolveTrustProxy(raw?: string): string | number | boolean {
 
   if (/^\d+$/.test(value)) {
     const hops = Number(value);
-    if (Number.isInteger(hops) && hops >= 1 && hops <= MAX_TRUST_PROXY_HOPS) return hops;
-    // Express tests a hop count as `i < hops`, so a digit string long enough to
-    // overflow to Infinity trusts the whole chain rather than failing loudly.
-    return rejectTrustProxy(value, `expected a hop count of 1..${MAX_TRUST_PROXY_HOPS}`);
+    // Express tests a hop count as `i < hops`, so 0 trusts nothing, exactly as
+    // `false` does. Rejecting it would fall back to a default that trusts more
+    // than was asked for.
+    if (hops === 0) return false;
+    // The same test means a digit string long enough to overflow to Infinity
+    // trusts the whole chain rather than failing loudly.
+    if (Number.isInteger(hops) && hops <= MAX_TRUST_PROXY_HOPS) return hops;
+    return rejectTrustProxy(value, `expected a hop count of 0..${MAX_TRUST_PROXY_HOPS}`);
   }
 
   try {

@@ -92,7 +92,8 @@ const pkg = _require('../../package.json');
  *     172.16.0.0/12   → 172.16.x.x – 172.31.x.x
  *     192.168.0.0/16  → 192.168.x.x
  * - https://gitnexus.vercel.app — the deployed GitNexus web UI
- * - the host named by GITNEXUS_PUBLIC_ORIGIN, when set
+ * - the origin named by GITNEXUS_PUBLIC_ORIGIN, when set — matched on hostname
+ *   always, and on scheme and port when the configured value carries them
  *
  * @param origin - The value of the HTTP `Origin` request header, or `undefined`
  *                 when the header is absent (non-browser request).
@@ -1517,8 +1518,9 @@ export const createServer = async (port: number, host: string = '127.0.0.1') => 
         // slashes, so it is dropped. Analyzing a local path the operator names
         // is the tool's intended capability (same as the CLI); the dangerous
         // part was cross-origin reach, which is closed by requireTrustedOrigin
-        // on this route (scoped to the server's own bound host — other LAN
-        // devices are NOT trusted). We only require an absolute path here and
+        // on this route (scoped to loopback, the server's own bound host, and a
+        // configured GITNEXUS_PUBLIC_ORIGIN — other LAN devices are NOT
+        // trusted). We only require an absolute path here and
         // let the analyze worker surface a clear error if it does not exist.
         // (We do NOT realpath/stat the path in-route: that would be a
         // user-controlled filesystem read — CodeQL js/path-injection — for no

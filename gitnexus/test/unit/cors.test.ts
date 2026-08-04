@@ -13,9 +13,20 @@
  *   - https://gitnexus.vercel.app     → allowed
  *   - Everything else                 → rejected
  */
-import { describe, it, expect, afterEach } from 'vitest';
+import { describe, it, expect, afterAll, afterEach, beforeAll } from 'vitest';
 import { isAllowedOrigin } from '../../src/server/api.js';
 import { createPublicOriginMatcher } from '../../src/server/middleware.js';
+
+// isAllowedOrigin consults GITNEXUS_PUBLIC_ORIGIN, so every expectation below
+// assumes it is unset unless the test sets it. Clear the developer's ambient
+// value for the file rather than inheriting it.
+const ambientPublicOrigin = process.env.GITNEXUS_PUBLIC_ORIGIN;
+beforeAll(() => {
+  delete process.env.GITNEXUS_PUBLIC_ORIGIN;
+});
+afterAll(() => {
+  if (ambientPublicOrigin !== undefined) process.env.GITNEXUS_PUBLIC_ORIGIN = ambientPublicOrigin;
+});
 
 // ─── No origin (non-browser / curl) ──────────────────────────────────
 
@@ -184,10 +195,10 @@ describe('isAllowedOrigin: rejected origins', () => {
 });
 
 describe('isAllowedOrigin: GITNEXUS_PUBLIC_ORIGIN', () => {
-  const saved = process.env.GITNEXUS_PUBLIC_ORIGIN;
+  // Back to the file's cleared baseline, not to the ambient value afterAll
+  // restores — the tests above assume it stays unset.
   afterEach(() => {
-    if (saved === undefined) delete process.env.GITNEXUS_PUBLIC_ORIGIN;
-    else process.env.GITNEXUS_PUBLIC_ORIGIN = saved;
+    delete process.env.GITNEXUS_PUBLIC_ORIGIN;
   });
 
   it('allows the configured origin as a full URL or a bare host', () => {

@@ -7,7 +7,7 @@
  * mismatch is a 403 rather than a missing CORS header, plus the port-aware
  * bound-host comparison and logOriginPolicy's startup diagnostics.
  */
-import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it } from 'vitest';
 import {
   PUBLIC_ORIGIN_ENV,
   createWriteOriginGuard,
@@ -15,11 +15,18 @@ import {
 } from '../../src/server/middleware.js';
 import { _captureLogger, type LoggerCapture } from '../../src/core/logger.js';
 
-const savedPublicOrigin = process.env[PUBLIC_ORIGIN_ENV];
+// The bound-host cases never set the var, so clear the developer's ambient
+// value for the file and return each test to that cleared baseline.
+const ambientPublicOrigin = process.env[PUBLIC_ORIGIN_ENV];
+beforeAll(() => {
+  delete process.env[PUBLIC_ORIGIN_ENV];
+});
+afterAll(() => {
+  if (ambientPublicOrigin !== undefined) process.env[PUBLIC_ORIGIN_ENV] = ambientPublicOrigin;
+});
 
 afterEach(() => {
-  if (savedPublicOrigin === undefined) delete process.env[PUBLIC_ORIGIN_ENV];
-  else process.env[PUBLIC_ORIGIN_ENV] = savedPublicOrigin;
+  delete process.env[PUBLIC_ORIGIN_ENV];
 });
 
 function setPublicOrigin(value: string | undefined): void {

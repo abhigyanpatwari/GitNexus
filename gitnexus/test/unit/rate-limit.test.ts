@@ -275,9 +275,13 @@ describe('production routes — rate-limit middleware wiring', () => {
     expect(apiSource).not.toMatch(/app\.options\(\s*'\/\*'/);
   });
 
+  // Source-level because createServer listens and cannot be built here. Kept
+  // deliberately loose: the effective-value describe below covers resolution,
+  // so all this has to pin down is that createServer routes the env var
+  // through resolveTrustProxy rather than setting a literal.
   it('createServer reads trust proxy from GITNEXUS_TRUST_PROXY', () => {
     expect(apiSource).toMatch(
-      /app\.set\(\s*'trust proxy'\s*,\s*resolveTrustProxy\(process\.env\[TRUST_PROXY_ENV\]\)\s*\)/,
+      /app\.set\(\s*'trust proxy'\s*,\s*resolveTrustProxy\([^)]*TRUST_PROXY_ENV/,
     );
   });
 

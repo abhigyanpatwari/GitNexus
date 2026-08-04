@@ -56,6 +56,13 @@ describe('resolveTrustProxy — accepted', () => {
     expect(resolveTrustProxy(' 2 ')).toBe(2);
   });
 
+  // Express tests a hop count as `i < hops`, so 0 and false are the same
+  // setting. Rejecting 0 would fall back to a default that trusts more.
+  it('normalizes a hop count of 0 to false rather than rejecting it', () => {
+    expect(resolveTrustProxy('0')).toBe(false);
+    expect(warnings()).toEqual([]);
+  });
+
   it.each([
     ['false', false],
     ['FALSE', false],
@@ -93,7 +100,6 @@ describe('resolveTrustProxy — rejected', () => {
     ['garbage', 'an unknown subnet name'],
     ['*', 'a wildcard'],
     ['9'.repeat(400), 'a hop count that overflows to Infinity'],
-    ['0', 'a hop count below the range'],
     [String(MAX_TRUST_PROXY_HOPS + 1), 'a hop count above the range'],
     ['-1', 'a negative hop count'],
     ['1.5', 'a fractional hop count'],
