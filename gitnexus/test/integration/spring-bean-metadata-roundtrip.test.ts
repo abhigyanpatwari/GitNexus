@@ -4,6 +4,7 @@ import { expect, it } from 'vitest';
 import { buildTestGraph } from '../helpers/test-graph.js';
 import { withTestLbugDB } from '../helpers/test-indexed-db.js';
 import { streamAllCSVsToDisk } from '../../src/core/lbug/csv-generator.js';
+import { runPipelineFromRepo } from '../../src/core/ingestion/pipeline.js';
 
 const CLASS_ID = 'Class:src/BillingService.java:BillingService';
 const FRAMEWORK_MARKER = 'com.acme.FrameworkMarker';
@@ -122,4 +123,87 @@ withTestLbugDB('spring-bean-metadata-roundtrip', (handle) => {
       'Cannot safely encode CSV string-list item',
     );
   });
+
+  it('persists pipeline-produced Class and Method INJECTS edges to Bean declarations', async () => {
+    const adapter = await import('../../src/core/lbug/lbug-adapter.js');
+    const root = path.join(handle.tmpHandle.dbPath, 'spring-bean-injects-roundtrip');
+    const repoDir = path.join(root, 'repo');
+    const storageDir = path.join(root, 'storage');
+    await fs.mkdir(repoDir, { recursive: true });
+    await fs.mkdir(storageDir, { recursive: true });
+    await Promise.all([
+      fs.writeFile(
+        path.join(repoDir, 'Gateway.java'),
+        `package com.persisted;
+public interface Gateway {}
+`,
+      ),
+      fs.writeFile(
+        path.join(repoDir, 'DefaultGateway.java'),
+        `package com.persisted;
+public class DefaultGateway implements Gateway {}
+`,
+      ),
+      fs.writeFile(
+        path.join(repoDir, 'PersistedConfig.java'),
+        `package com.persisted;
+import org.springframework.context.annotation.Bean;
+import org.springframework.context.annotation.Configuration;
+@Configuration
+public class PersistedConfig {
+  @Bean Gateway persistedGateway() { return new DefaultGateway(); }
+  @Bean Object persistedAggregate(Gateway gateway) { return new Object(); }
+}
+`,
+      ),
+      fs.writeFile(
+        path.join(repoDir, 'PersistedConsumer.java'),
+        `package com.persisted;
+import jakarta.annotation.Resource;
+public class PersistedConsumer {
+  @Resource(name = "persistedGateway") Gateway selected;
+}
+`,
+      ),
+    ]);
+
+    const { graph } = await runPipelineFromRepo(repoDir, () => {}, {});
+    expect(
+      graph.relationships.some(
+        (relationship) =>
+          relationship.type === 'INJECTS' &&
+          graph.getNode(relationship.sourceId)?.properties.name === 'PersistedConsumer' &&
+          graph.getNode(relationship.targetId)?.properties.name === 'persistedGateway',
+      ),
+    ).toBe(true);
+    expect(
+      graph.relationships.some(
+        (relationship) =>
+          relationship.type === 'INJECTS' &&
+          graph.getNode(relationship.sourceId)?.properties.name === 'persistedAggregate' &&
+          graph.getNode(relationship.targetId)?.properties.name === 'persistedGateway',
+      ),
+    ).toBe(true);
+
+    await adapter.loadGraphToLbug(graph, repoDir, storageDir);
+
+    expect(
+      await adapter.executeQuery(
+        `MATCH (source:Class)-[r:CodeRelation]->(target:CodeElement)
+         WHERE r.type = 'INJECTS'
+           AND source.name = 'PersistedConsumer'
+           AND target.name = 'persistedGateway'
+         RETURN source.name AS source, target.name AS target`,
+      ),
+    ).toEqual([{ source: 'PersistedConsumer', target: 'persistedGateway' }]);
+    expect(
+      await adapter.executeQuery(
+        `MATCH (source:Method)-[r:CodeRelation]->(target:CodeElement)
+         WHERE r.type = 'INJECTS'
+           AND source.name = 'persistedAggregate'
+           AND target.name = 'persistedGateway'
+         RETURN source.name AS source, target.name AS target`,
+      ),
+    ).toEqual([{ source: 'persistedAggregate', target: 'persistedGateway' }]);
+  }, 90_000);
 });

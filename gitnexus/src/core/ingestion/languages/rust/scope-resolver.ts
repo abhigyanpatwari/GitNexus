@@ -2,9 +2,11 @@ import type { ParsedFile } from 'gitnexus-shared';
 import { SupportedLanguages } from 'gitnexus-shared';
 import { buildMro, defaultLinearize } from '../../scope-resolution/passes/mro.js';
 import type { ScopeResolver } from '../../scope-resolution/contract/scope-resolver.js';
+import { indexOnlyElementType } from '../../type-extractors/shared.js';
 import { rustProvider } from '../rust.js';
 import { rustArityCompatibility, rustMergeBindings, resolveRustImportTarget } from './index.js';
 import { populateRustOwners } from './method-owners.js';
+import { resolveRustQualifiedFreeCall } from './qualified-call.js';
 import { populateRustRangeBindings } from './range-binding.js';
 import {
   isClassLike,
@@ -152,6 +154,9 @@ export const rustScopeResolver: ScopeResolver = {
 
   arityCompatibility: (callsite, def) => rustArityCompatibility(def, callsite),
 
+  resolveQualifiedFreeCall: (site, callerParsed, scopes, workspaceIndex, allFilePaths) =>
+    resolveRustQualifiedFreeCall(site, callerParsed, scopes, workspaceIndex, allFilePaths),
+
   buildMro: (graph, parsedFiles, nodeLookup) => buildRustMro(graph, parsedFiles, nodeLookup),
 
   emitHeritageEdges: (graph, parsedFiles, nodeLookup, scopes) =>
@@ -160,6 +165,16 @@ export const rustScopeResolver: ScopeResolver = {
   populateOwners: (parsed: ParsedFile) => populateRustOwners(parsed),
 
   isSuperReceiver: () => false,
+
+  // Subscript route only — Rust has no property-style collection view; `.iter()`
+  // / `.values()` are method calls the compound resolver's call branch handles.
+  //
+  // Fed the annotation AS WRITTEN (`&Vec<User>`, `HashMap<String, User>`), which
+  // `normalizeRustTypeName` had already collapsed to `User` by the time the fold
+  // saw it. Returning `undefined` is the answer "not a container" and makes the
+  // index step decline rather than fold onto the receiver's own class — an
+  // `Index`-impl type would otherwise take its own members as the element's.
+  elementTypeOf: indexOnlyElementType,
 
   populateRangeBindings: populateRustRangeBindings,
 

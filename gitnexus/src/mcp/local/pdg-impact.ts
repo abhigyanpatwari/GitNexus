@@ -1166,6 +1166,9 @@ export async function pdgLayerStatus(deps: {
   let edgesVisible = false;
   let probeError: string | undefined;
   try {
+    // determinism: probe — layer existence. Only `rows.length > 0` is read; the
+    // projected `r.type` is never consumed, so which of the two edge types the
+    // one row happens to carry cannot change the returned state or note.
     const rows = await deps.executeParameterized(
       deps.lbugPath,
       `MATCH (:BasicBlock)-[r:CodeRelation]->(:BasicBlock) WHERE r.type IN ['CDG', 'REACHING_DEF'] RETURN r.type AS type LIMIT 1`,
@@ -1238,6 +1241,16 @@ function blockAnchorForResolvedSymbol(sym: {
   }
   return { anchorClause: 'a.id STARTS WITH $idPrefix', queryParams: { idPrefix } };
 }
+
+/**
+ * The seed-block query both anchor builders feed — the top-level target seed and
+ * the per-callee span seeds. It was duplicated byte-for-byte at those two call
+ * sites, so the `ORDER BY a.startLine, id` tiebreak (#2787) had to be added
+ * twice; sharing it keeps the anchor and its query together, the way
+ * {@link blockAnchorForResolvedSymbol} already is.
+ */
+const seedBlockQuery = (anchorClause: string, probeLimit: number): string =>
+  `MATCH (a:BasicBlock) WHERE ${anchorClause} RETURN a.id AS id ORDER BY a.startLine, id LIMIT ${probeLimit}`;
 
 /**
  * Build a STATEMENT seed anchor: the BasicBlock(s) starting at a specific
@@ -1323,6 +1336,7 @@ async function bfsReachableBlocks(input: {
       `MATCH (a:BasicBlock)-[r:CodeRelation]->(b:BasicBlock)
          WHERE r.type IN ['CDG', 'REACHING_DEF'] AND ${matchEndpoint}.id IN $frontier
          RETURN DISTINCT ${collectEndpoint}.id AS id
+         ORDER BY id
          LIMIT ${probeLimit}`,
       { frontier },
     );
@@ -1672,7 +1686,7 @@ async function interproceduralDescent(input: {
         const { anchorClause, queryParams } = blockAnchorForResolvedSymbol(span);
         const rawSeedRows = await exec(
           lbugPath,
-          `MATCH (a:BasicBlock) WHERE ${anchorClause} RETURN a.id AS id LIMIT ${probeLimit}`,
+          seedBlockQuery(anchorClause, probeLimit),
           queryParams,
         );
         const exceeded = rawSeedRows.length > stepLimit;
@@ -1841,7 +1855,7 @@ export async function runImpactPDG(deps: RunPdgImpactDeps): Promise<PdgImpactRes
   const probeLimit = stepLimit + 1;
   const rawSeedRows = await exec(
     repo.lbugPath,
-    `MATCH (a:BasicBlock) WHERE ${anchorClause} RETURN a.id AS id LIMIT ${probeLimit}`,
+    seedBlockQuery(anchorClause, probeLimit),
     queryParams,
   );
   const seedRows = rawSeedRows.slice(0, stepLimit) as Array<Record<string, unknown>>;

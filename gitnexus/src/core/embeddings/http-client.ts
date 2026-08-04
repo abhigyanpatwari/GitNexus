@@ -11,15 +11,23 @@
  * via `AbortSignal.timeout` on the underlying fetch.
  */
 
-import { CircuitOpenError, ResilientFetchExhaustedError, resilientFetch } from 'gitnexus-shared';
+import {
+  CircuitOpenError,
+  ResilientFetchExhaustedError,
+  isTerminalNetworkError,
+  resilientFetch,
+} from 'gitnexus-shared';
 
-const HTTP_TIMEOUT_MS = 30_000;
+const DEFAULT_HTTP_TIMEOUT_MS = 180_000;
+const MAX_HTTP_TIMEOUT_MS = 300_000;
 const HTTP_MAX_RETRIES = 2;
 const HTTP_RETRY_BACKOFF_MS = 1_000;
 const HTTP_RETRY_CAP_MS = 5_000;
 const HTTP_BATCH_SIZE = 64;
 const DEFAULT_DIMS = 384;
 const HTTP_BREAKER_KEY = 'embeddings-http';
+
+const HTTP_TIMEOUT_ENV = 'GITNEXUS_EMBEDDING_HTTP_TIMEOUT_MS';
 
 interface HttpConfig {
   baseUrl: string;
@@ -29,6 +37,7 @@ interface HttpConfig {
   maxAttempts: number;
   retryCapMs: number;
   minIntervalMs: number;
+  timeoutMs: number;
   requestDimensions?: number;
 }
 
@@ -187,6 +196,11 @@ const readConfig = (): HttpConfig | null => {
       300_000,
     ),
     minIntervalMs: parseNonNegativeIntegerEnv('GITNEXUS_EMBEDDING_MIN_INTERVAL_MS', 0, 300_000),
+    timeoutMs: parsePositiveIntegerEnv(
+      HTTP_TIMEOUT_ENV,
+      DEFAULT_HTTP_TIMEOUT_MS,
+      MAX_HTTP_TIMEOUT_MS,
+    ),
     requestDimensions,
   };
 };
@@ -209,6 +223,11 @@ export const isHttpMode = (): boolean =>
  */
 export const getHttpDimensions = (): number | undefined => readConfig()?.dimensions;
 
+/**
+ * Return the configured per-request HTTP timeout for HTTP mode, or undefined
+ * when HTTP mode is not active.
+ */
+export const getHttpTimeoutMs = (): number | undefined => readConfig()?.timeoutMs;
 /**
  * Return a safe representation of a URL for logs and error messages.
  * Strips query string (may contain tokens) and userinfo (may contain
@@ -297,6 +316,46 @@ const isEmbeddingItem = (item: unknown): item is EmbeddingItem =>
   Array.isArray((item as { embedding?: unknown }).embedding);
 
 /**
+ * Module-private signal that a 2xx response carried a body this client cannot
+ * use (unparseable, or parseable but wrong-shaped). Deliberately not exported:
+ * it never escapes {@link httpEmbedBatch}, which converts it into the
+ * user-facing {@link HttpEmbeddingError} it carries in `terminalMessage`.
+ *
+ * Thrown from inside the `fetchImpl` callback so `resilientFetch` classifies it
+ * as `retryable-network` — a truncated or HTML body is the same class of
+ * endpoint failure as a 503 and deserves the same backoff loop, and routing it
+ * through the retry loop also makes the circuit breaker see it as a failure
+ * instead of erasing the outage signal with `recordSuccess()`. See #2790.
+ */
+class RetryableEmbeddingBodyError extends Error {
+  constructor(
+    readonly terminalMessage: string,
+    options?: { cause?: unknown },
+  ) {
+    super(terminalMessage, options?.cause !== undefined ? { cause: options.cause } : undefined);
+    this.name = 'RetryableEmbeddingBodyError';
+  }
+}
+
+/**
+ * Build the message for a 2xx body carrying the wrong number of vectors.
+ *
+ * Hoisted to module scope because two layers report this same fault — the
+ * in-loop check inside {@link httpEmbedBatch} and the defensive backstop in
+ * {@link httpEmbed} — and the operator must see one wording regardless of which
+ * one catches it. Names both counts: "0 vectors for 64 texts" is actionable,
+ * "unexpected response shape" is not.
+ */
+const countMismatchMessage = (
+  received: number,
+  expected: number,
+  safeEndpoint: string,
+  batchIndex: number,
+): string =>
+  `Embedding endpoint returned ${received} vectors for ${expected} texts ` +
+  `(${safeEndpoint}, batch ${batchIndex})`;
+
+/**
  * Send a single batch of texts to the embedding endpoint with retry.
  *
  * @param url - Full endpoint URL (e.g. https://host/v1/embeddings)
@@ -323,6 +382,7 @@ const httpEmbedBatch = async (
   maxAttempts = HTTP_MAX_RETRIES + 1,
   retryCapMs = HTTP_RETRY_CAP_MS,
   minIntervalMs = 0,
+  timeoutMs = DEFAULT_HTTP_TIMEOUT_MS,
 ): Promise<EmbeddingItem[]> => {
   const requestBody: { input: string[]; model: string; dimensions?: number } = {
     input: batch,
@@ -332,7 +392,21 @@ const httpEmbedBatch = async (
     requestBody.dimensions = dimensions;
   }
 
+  // Built on demand, not up front. Both describe faults, so in a healthy run —
+  // every call of it — they are garbage, and each `safeUrl` parses a URL. A
+  // 300k-chunk run at subBatchSize 8 makes ~37.5k `httpEmbedBatch` calls, so
+  // eager construction spent two `new URL()` per call describing failures that
+  // never happened. Same shape as `countMismatchMessage` above.
+  const unparseableMessage = (): string =>
+    `Embedding endpoint returned an unparseable response (${safeUrl(url)}, batch ${batchIndex})`;
+  const unexpectedShapeMessage = (): string =>
+    `Embedding endpoint returned an unexpected response shape (${safeUrl(url)}, batch ${batchIndex})`;
+
   let resp: Response;
+  // Set by `fetchImpl` on the attempt that produced a usable body. Reads back
+  // as `undefined` only on a path that must already have thrown — see the
+  // defensive check after the retry loop.
+  let parsed: EmbeddingItem[] | undefined;
   try {
     throwIfAborted(requestOptions.signal);
     resp = await resilientFetch(
@@ -349,11 +423,58 @@ const httpEmbedBatch = async (
         fetchImpl: async (input, init) => {
           await paceHttpRequest(minIntervalMs, requestOptions.signal);
           throwIfAborted(requestOptions.signal);
-          const timeoutSignal = AbortSignal.timeout(HTTP_TIMEOUT_MS);
+          const timeoutSignal = AbortSignal.timeout(timeoutMs);
           const signal = requestOptions.signal
             ? AbortSignal.any([requestOptions.signal, timeoutSignal])
             : timeoutSignal;
-          return globalThis.fetch(input, { ...init, signal });
+          const attemptResp = await globalThis.fetch(input, { ...init, signal });
+          // Non-OK bodies are none of our business: hand the response straight
+          // back so `resilientFetch` keeps classifying 4xx/5xx/429 unchanged.
+          if (!attemptResp.ok) return attemptResp;
+
+          // The body is read *here*, inside the retried callback, rather than
+          // after `resilientFetch` returns. A reachable-but-wrong endpoint (a
+          // captive portal, a non-embeddings service, a truncated stream) can
+          // answer 200 with HTML or half a JSON document; parsing outside the
+          // loop made that a one-shot terminal failure while a 503 got three
+          // attempts. Throwing from in here gives a bad body the same backoff
+          // and the same breaker accounting as any other endpoint fault (#2790).
+          let payload: { data: EmbeddingItem[] };
+          try {
+            payload = (await attemptResp.json()) as { data: EmbeddingItem[] };
+          } catch (err) {
+            // Not every `.json()` rejection is a parse error: the per-attempt
+            // signal (`AbortSignal.any([caller, AbortSignal.timeout(...)])`) is
+            // wired to the body stream, so a stalled body rejects with the abort
+            // reason. Re-raise those untouched — `isTerminalNetworkError` is
+            // `resilientFetch`'s own predicate, so this test agrees with
+            // `classifyOutcome` by construction. Wrapping one would flip its
+            // verdict from `terminal-network` (returned without retry AND
+            // without touching the breaker, via `recordNeutral()`) to
+            // `retryable-network` (retried, then `breaker.recordFailure()`): the
+            // same timeout would take 3 attempts instead of 1, count toward the
+            // process-global `embeddings-http` breaker, and reach the operator as
+            // "unparseable response" so they never reach for the timeout knob.
+            if (isTerminalNetworkError(err)) throw err;
+            throw new RetryableEmbeddingBodyError(unparseableMessage(), { cause: err });
+          }
+          if (!Array.isArray(payload?.data) || !payload.data.every(isEmbeddingItem)) {
+            throw new RetryableEmbeddingBodyError(unexpectedShapeMessage());
+          }
+          // Cardinality belongs *inside* the retry loop. `every(isEmbeddingItem)`
+          // is vacuously true for `[]` and true for any array shorter than the
+          // request, so a 200 carrying `{"data": []}` — or half the vectors —
+          // used to be classified `success`, call `breaker.recordSuccess()`
+          // (erasing the outage signal), and only then fail terminally after a
+          // single attempt. A short body is a truncated body: same backoff, same
+          // breaker accounting as any other endpoint fault (#2790).
+          if (payload.data.length !== batch.length) {
+            throw new RetryableEmbeddingBodyError(
+              countMismatchMessage(payload.data.length, batch.length, safeUrl(url), batchIndex),
+            );
+          }
+          parsed = payload.data;
+          return attemptResp;
         },
         breakerKey: HTTP_BREAKER_KEY,
         retry: {
@@ -375,6 +496,12 @@ const httpEmbedBatch = async (
         { cause: err },
       );
     }
+    // Retries are exhausted on a bad 2xx body. Surface the message the sentinel
+    // carried, keeping the underlying parse error in `cause` only — the body
+    // text must never reach the `sanitizeReason` fallback and leak to stderr.
+    if (err instanceof RetryableEmbeddingBodyError) {
+      throw new HttpEmbeddingError(err.terminalMessage, { cause: err.cause });
+    }
     if (err instanceof CircuitOpenError) {
       throw new HttpEmbeddingError(
         `Embedding endpoint circuit open (${safeUrl(url)}, batch ${batchIndex}): retry in ${Math.ceil(err.retryAfterMs / 1000)}s`,
@@ -383,7 +510,7 @@ const httpEmbedBatch = async (
     }
     if (err instanceof DOMException && err.name === 'TimeoutError') {
       throw new HttpEmbeddingError(
-        `Embedding request timed out after ${HTTP_TIMEOUT_MS}ms (${safeUrl(url)}, batch ${batchIndex})`,
+        `Embedding request timed out after ${timeoutMs}ms (${safeUrl(url)}, batch ${batchIndex})`,
         { cause: err },
       );
     }
@@ -410,25 +537,14 @@ const httpEmbedBatch = async (
     );
   }
 
-  // A reachable-but-wrong endpoint (e.g. a captive portal or a non-embeddings
-  // service) can answer 200 with an HTML/truncated body. Parse inside the
-  // typed-error boundary so that lands as an endpoint failure the CLI can
-  // classify, not a raw SyntaxError/TypeError on the generic stack-dump path.
-  let data: { data: EmbeddingItem[] };
-  try {
-    data = (await resp.json()) as { data: EmbeddingItem[] };
-  } catch (err) {
-    throw new HttpEmbeddingError(
-      `Embedding endpoint returned an unparseable response (${safeUrl(url)}, batch ${batchIndex})`,
-      { cause: err },
-    );
+  if (parsed === undefined) {
+    // Defensively unreachable: an OK response either sets `parsed` or throws
+    // out of `fetchImpl`. Kept so the narrowing holds without a non-null
+    // assertion, and so a future `resilientFetch` change can't return an
+    // unvalidated body silently.
+    throw new HttpEmbeddingError(unparseableMessage());
   }
-  if (!Array.isArray(data?.data) || !data.data.every(isEmbeddingItem)) {
-    throw new HttpEmbeddingError(
-      `Embedding endpoint returned an unexpected response shape (${safeUrl(url)}, batch ${batchIndex})`,
-    );
-  }
-  return data.data;
+  return parsed;
 };
 
 /**
@@ -464,12 +580,18 @@ export const httpEmbed = async (
       config.maxAttempts,
       config.retryCapMs,
       config.minIntervalMs,
+      config.timeoutMs,
     );
 
+    // Defensive backstop, deliberately kept: `httpEmbedBatch` now rejects a
+    // short body from *inside* the retry loop (through the same
+    // `countMismatchMessage`), so in practice this branch is unreachable. It
+    // stays so a future change to the in-loop check can't silently hand a short
+    // vector list to the caller — that failure would land as a Kuzu/FLOAT[N]
+    // error far from its cause.
     if (items.length !== batch.length) {
       throw new HttpEmbeddingError(
-        `Embedding endpoint returned ${items.length} vectors for ${batch.length} texts ` +
-          `(${safeUrl(url)}, batch ${batchIndex})`,
+        countMismatchMessage(items.length, batch.length, safeUrl(url), batchIndex),
       );
     }
 
@@ -477,6 +599,18 @@ export const httpEmbed = async (
       const vec = new Float32Array(item.embedding);
       // Fail fast on dimension mismatch rather than inserting bad vectors
       // into the FLOAT[N] column which would cause a cryptic Kuzu error.
+      //
+      // Unlike the cardinality check this one stays *outside* the retry loop,
+      // deliberately. The expected width is `config.dimensions ?? DEFAULT_DIMS`
+      // (GITNEXUS_EMBEDDING_DIMS), which is NOT the `dimensions` value
+      // `httpEmbedBatch` receives — that is `config.requestDimensions`, which
+      // `GITNEXUS_EMBEDDING_REQUEST_DIMS` can set to a different number or to
+      // `undefined` (`omit`). More importantly a width mismatch is an operator
+      // *configuration* error, not an endpoint fault: retrying it three times
+      // can never change the answer, and routing it through the retry loop
+      // would count a healthy endpoint's responses toward the shared circuit
+      // breaker. The message is an actionable config hint, so it is terminal
+      // on the first attempt by design (#2790).
       const expected = config.dimensions ?? DEFAULT_DIMS;
       if (vec.length !== expected) {
         const hint = config.dimensions
@@ -521,7 +655,11 @@ export const httpEmbedQuery = async (
     config.maxAttempts,
     config.retryCapMs,
     config.minIntervalMs,
+    config.timeoutMs,
   );
+  // Defensive backstop like the `httpEmbed` one above: an empty `data` array is
+  // now a cardinality mismatch (0 vectors for 1 text) rejected and retried
+  // inside `httpEmbedBatch`, so this branch is unreachable in practice.
   if (!items.length) {
     throw new HttpEmbeddingError(`Embedding endpoint returned empty response (${safeUrl(url)})`);
   }

@@ -219,6 +219,73 @@ describe('filesystem-walker', () => {
     });
   });
 
+  describe('.gitnexusignore negation of hardcoded directories', () => {
+    let partsDir: string;
+
+    beforeAll(async () => {
+      partsDir = await fs.mkdtemp(path.join(os.tmpdir(), 'gn-walker-parts-'));
+
+      await fs.mkdir(path.join(partsDir, 'parts', 'src', 'main', 'java', 'com', 'example'), {
+        recursive: true,
+      });
+      await fs.mkdir(
+        path.join(
+          partsDir,
+          'admin',
+          'src',
+          'main',
+          'java',
+          'com',
+          'example',
+          'controller',
+          'parts',
+        ),
+        { recursive: true },
+      );
+      await fs.mkdir(path.join(partsDir, 'node_modules', 'pkg'), { recursive: true });
+
+      await fs.writeFile(path.join(partsDir, '.gitnexusignore'), '!parts/\n');
+      await fs.writeFile(
+        path.join(partsDir, 'parts', 'src', 'main', 'java', 'com', 'example', 'Part.java'),
+        'package com.example; class Part {}',
+      );
+      await fs.writeFile(
+        path.join(
+          partsDir,
+          'admin',
+          'src',
+          'main',
+          'java',
+          'com',
+          'example',
+          'controller',
+          'parts',
+          'PartsController.java',
+        ),
+        'package com.example.controller.parts; class PartsController {}',
+      );
+      await fs.writeFile(
+        path.join(partsDir, 'node_modules', 'pkg', 'index.js'),
+        'module.exports = {}',
+      );
+    });
+
+    afterAll(async () => {
+      await fs.rm(partsDir, { recursive: true, force: true });
+    });
+
+    it('traverses top-level and nested parts directories when explicitly unignored (#2673)', async () => {
+      const files = await walkRepositoryPaths(partsDir);
+      const paths = files.map((f) => f.path.replace(/\\/g, '/'));
+
+      expect(paths).toContain('parts/src/main/java/com/example/Part.java');
+      expect(paths).toContain(
+        'admin/src/main/java/com/example/controller/parts/PartsController.java',
+      );
+      expect(paths.every((p) => !p.includes('node_modules/'))).toBe(true);
+    });
+  });
+
   describe('combined .gitignore + .gitnexusignore', () => {
     let combinedDir: string;
 

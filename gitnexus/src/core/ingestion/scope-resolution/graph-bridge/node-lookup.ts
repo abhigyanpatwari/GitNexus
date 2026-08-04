@@ -20,7 +20,10 @@
 
 import type { NodeLabel, ParameterTypeClass } from 'gitnexus-shared';
 import type { KnowledgeGraph } from '../../../graph/types.js';
-import { isOverloadableCallable } from '../../utils/callable-labels.js';
+import {
+  isOverloadableCallable,
+  isPositionQualifiedLocalLabel,
+} from '../../utils/callable-labels.js';
 import { templateConstraintsIdTag } from '../../utils/template-arguments.js';
 import { parameterShapeIdTag } from '../../utils/method-props.js';
 
@@ -67,6 +70,59 @@ export function simpleKey(filePath: string, name: string): string {
   return `${filePath}::${name}`;
 }
 
+/**
+ * Position key: `(filePath, label, 0-based startLine, simple name)` (#2699).
+ *
+ * The strongest evidence there is, and the only one that needs no name
+ * qualification at all — a definition and its graph node are the same
+ * construct, so they share a source position. That makes it correct for
+ * exactly the cases a name-based key cannot express: a function-local
+ * declaration shadowing a file-level one, a local inside an ANONYMOUS
+ * function (no name to qualify with), and two same-named declarations in
+ * sibling blocks. ECMAScript gives each of those its own environment record;
+ * position is what distinguishes them without having to model the chain.
+ *
+ * Registered only for callable labels, and only when the (line, name) pair is
+ * unique in the file — a genuine tie (overloads declared on one line) stores
+ * the `AMBIGUOUS_POSITION` tombstone so the caller falls through to the
+ * name-based keys rather than picking by source order.
+ */
+export function positionKey(
+  filePath: string,
+  label: NodeLabel,
+  startLine: number,
+  name: string,
+): string {
+  return `<p>:${filePath}::${label}::${startLine}::${name}`;
+}
+
+/**
+ * Key recording that a FUNCTION-LOCAL callable with this simple name exists in the
+ * file (#2699 follow-up).
+ *
+ * `resolveDefGraphId`'s last resort is a label-agnostic, first-write-wins
+ * `simpleKey(filePath, simpleName)`. That is safe while at most one callable in a file
+ * carries a given simple name — but #2699 deliberately creates function-locals that
+ * share a name with a file-level callable, and the local's graph node is keyed by
+ * position (`run.pick@1:2`) while the scope def is not. When the position join misses —
+ * the two id phases anchor on different nodes, so a multiline `const pick =` puts the
+ * declaration and its initializer on different lines — the simple-name fallback aliases
+ * the local onto whichever same-named callable was registered FIRST and mints a
+ * fabricated edge. That is the exact failure class #2693 already shipped once.
+ *
+ * This lets the resolver fail CLOSED for precisely that case and only that case: if a
+ * local of this name exists, a position miss is a genuine ambiguity rather than a lookup
+ * gap, so emitting no edge is correct. Files with no such local are untouched, which
+ * keeps legitimate anchor differences (e.g. a Vue SFC `lineOffset`) resolving through the
+ * name keys exactly as before.
+ */
+export function localNameKey(filePath: string, label: NodeLabel, name: string): string {
+  return `<l>:${filePath}::${label}::${name}`;
+}
+
+/** Tombstone for a position claimed by two nodes — see `positionKey`. */
+export const AMBIGUOUS_POSITION = '';
+
 export function buildGraphNodeLookup(graph: KnowledgeGraph): GraphNodeLookup {
   const lookup = new Map<string, string>();
   for (const node of graph.iterNodes()) {
@@ -78,6 +134,21 @@ export function buildGraphNodeLookup(graph: KnowledgeGraph): GraphNodeLookup {
     };
     if (props.filePath === undefined || props.name === undefined) continue;
     if (!isLinkableLabel(node.label)) continue;
+
+    // Position key (#2699) — see `positionKey`. Second write on a key marks it
+    // ambiguous rather than letting source order decide.
+    const startLine = (props as { startLine?: number }).startLine;
+    if (startLine !== undefined && isPositionQualifiedLocalLabel(node.label)) {
+      const posK = positionKey(props.filePath, node.label, startLine, props.name);
+      lookup.set(posK, lookup.has(posK) ? AMBIGUOUS_POSITION : node.id);
+      // A local-identity node carries `@<row>:<col>` on its last name segment. Record
+      // that a local of this simple name exists, so the resolver can fail closed on a
+      // position miss instead of aliasing through the simple-name fallback.
+      const qualForLocal = parseQualifiedFromId(node.id, node.label, props.filePath);
+      if (qualForLocal !== undefined && /@\d+:\d+$/.test(qualForLocal)) {
+        lookup.set(localNameKey(props.filePath, node.label, props.name), node.id);
+      }
+    }
 
     // Primary key: fully-qualified name + label, in a separate
     // keyspace from simple names. Class nodes carry `qualifiedName`
@@ -173,38 +244,53 @@ export function buildGraphNodeLookup(graph: KnowledgeGraph): GraphNodeLookup {
   return lookup;
 }
 
+/**
+ * Every label {@link buildGraphNodeLookup} registers — and therefore the ONLY
+ * labels `resolveDefGraphId` can ever return an id for. Both endpoints of every
+ * scope-resolution edge come from that lookup (the one exception is the File
+ * fallback in `resolveCallerGraphId`), so this set defines the whole FROM/TO
+ * surface those edges can produce.
+ *
+ * That makes it load-bearing for the LadybugDB relation DDL: a label added here
+ * without the matching `FROM x TO y` pairs in `RELATION_SCHEMA` crashes
+ * `analyze` at `assertDeclaredPair` on whichever codebase first emits the pair
+ * (#2792). `test/unit/schema-pair-coverage.test.ts` derives the required pairs
+ * from this set and fails in CI instead.
+ */
+export const LINKABLE_LABELS: ReadonlySet<NodeLabel> = new Set<NodeLabel>([
+  'Function',
+  'Method',
+  'Constructor',
+  // Program-like module declarations are provider-gated callable-value
+  // targets and need the same def→graph bridge.
+  'Module',
+  'Class',
+  'Interface',
+  'Struct',
+  'Enum',
+  // Trait nodes are linkable so MRO builders can bridge PHP/Rust trait
+  // defs between scope-resolution DefIds and the graph's node ids.
+  // IMPLEMENTS edges from classes to traits are otherwise invisible to
+  // the scope-resolution MRO pass.
+  'Trait',
+  // Variable / Property are linkable too — receiver-bound write/read
+  // ACCESSES edges target field nodes (e.g. `user.name = "x"` →
+  // ACCESSES edge to User's `name` Variable/Property node).
+  'Variable',
+  'Property',
+  // Const is linkable so the value-receiver-owner bridge in
+  // `receiver-bound-calls.ts` Case 5 can translate the scope-resolution
+  // `Variable` def for `export const fooService = {...}` to the canonical
+  // `Const:filePath:name` graph node id, against which object-literal
+  // method symbols register their `ownerId` (PR #1718 / issue #1358).
+  'Const',
+  // Macro nodes are linkable so a macro invocation (`log!(…)`) resolved
+  // via `MacroRegistry` can bridge its scope-resolution `Macro` def to
+  // the legacy `@definition.macro` graph node and emit the `USES` edge
+  // (Rust #1934 F72; also covers C/C++ `#define` macro defs).
+  'Macro',
+]);
+
 export function isLinkableLabel(label: NodeLabel): boolean {
-  return (
-    label === 'Function' ||
-    label === 'Method' ||
-    label === 'Constructor' ||
-    // Program-like module declarations are provider-gated callable-value
-    // targets and need the same def→graph bridge.
-    label === 'Module' ||
-    label === 'Class' ||
-    label === 'Interface' ||
-    label === 'Struct' ||
-    label === 'Enum' ||
-    // Trait nodes are linkable so MRO builders can bridge PHP/Rust trait
-    // defs between scope-resolution DefIds and the graph's node ids.
-    // IMPLEMENTS edges from classes to traits are otherwise invisible to
-    // the scope-resolution MRO pass.
-    label === 'Trait' ||
-    // Variable / Property are linkable too — receiver-bound write/read
-    // ACCESSES edges target field nodes (e.g. `user.name = "x"` →
-    // ACCESSES edge to User's `name` Variable/Property node).
-    label === 'Variable' ||
-    label === 'Property' ||
-    // Const is linkable so the value-receiver-owner bridge in
-    // `receiver-bound-calls.ts` Case 5 can translate the scope-resolution
-    // `Variable` def for `export const fooService = {...}` to the canonical
-    // `Const:filePath:name` graph node id, against which object-literal
-    // method symbols register their `ownerId` (PR #1718 / issue #1358).
-    label === 'Const' ||
-    // Macro nodes are linkable so a macro invocation (`log!(…)`) resolved
-    // via `MacroRegistry` can bridge its scope-resolution `Macro` def to
-    // the legacy `@definition.macro` graph node and emit the `USES` edge
-    // (Rust #1934 F72; also covers C/C++ `#define` macro defs).
-    label === 'Macro'
-  );
+  return LINKABLE_LABELS.has(label);
 }

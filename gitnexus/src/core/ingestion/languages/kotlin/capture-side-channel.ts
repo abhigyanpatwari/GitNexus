@@ -9,6 +9,8 @@
  *     from the `@scope.companion` marker capture.
  *   - Spring Bean class-annotation facts collected during the same scope-query
  *     traversal, consumed only after imports and package visibility finalize.
+ *   - Spring DI class facts (constructor/property/method injection syntax),
+ *     resolved and attached only after imports finalize.
  *   - A JVM package fact read from the already-parsed root, so package-sibling
  *     visibility never re-parses Kotlin source on the main thread.
  *
@@ -29,7 +31,8 @@
  * The single generic `ParsedFile.captureSideChannel` field is shared with C++,
  * which is safe because each file is one language (a `.kt` file uses the kotlin
  * provider, a `.cpp` file the cpp provider). The payload is self-describing
- * (`{ kind: 'kotlin', companionScopes, packageFact, classAnnotations }`) so
+ * (`{ kind: 'kotlin', companionScopes, packageFact, classAnnotations,
+ * springDiFacts }`) so
  * `applyKotlinCaptureSideChannel` only restores kotlin state and ignores a
  * foreign-shaped snapshot.
  */
@@ -46,8 +49,14 @@ import {
 } from '../jvm/package-facts.js';
 import { getCompanionScopesForFile, markCompanionScope } from './companion-scopes.js';
 import { getKotlinPackageFact, setKotlinPackageFact } from './package-facts.js';
+import type { KotlinSpringAopFact } from './spring-aop.js';
+import type { KotlinSpringConditionalFact } from './spring-conditionals.js';
+import type { KotlinSpringDiClassFact } from './spring-di.js';
 
 const classAnnotations = createClassAnnotationFactStore();
+const springAopFacts = new Map<string, readonly KotlinSpringAopFact[]>();
+const springConditionalFacts = new Map<string, readonly KotlinSpringConditionalFact[]>();
+const springDiFacts = new Map<string, readonly KotlinSpringDiClassFact[]>();
 
 /**
  * Plain JSON-serializable snapshot of the per-file Kotlin capture-time
@@ -63,10 +72,31 @@ export interface KotlinCaptureSideChannel {
   readonly packageFact: JvmPackageFact;
   /** Class annotation syntax collected by the existing scope traversal. */
   readonly classAnnotations: readonly ClassAnnotationFact[];
+  /** Spring proxy/advice syntax captured per class or callable owner. */
+  readonly springAopFacts?: readonly KotlinSpringAopFact[];
+  /** Profile, conditional, and auto-configuration syntax captured per owner. */
+  readonly springConditionalFacts?: readonly KotlinSpringConditionalFact[];
+  /** Constructor, property, and method injection syntax captured per class. */
+  readonly springDiFacts?: readonly KotlinSpringDiClassFact[];
 }
 
 export function clearKotlinClassAnnotationFacts(): void {
   classAnnotations.clear();
+  springAopFacts.clear();
+  springConditionalFacts.clear();
+  springDiFacts.clear();
+}
+
+export function setKotlinSpringAopFacts(
+  filePath: string,
+  facts: readonly KotlinSpringAopFact[],
+): void {
+  if (facts.length === 0) springAopFacts.delete(filePath);
+  else springAopFacts.set(filePath, facts);
+}
+
+export function getKotlinSpringAopFacts(filePath: string): readonly KotlinSpringAopFact[] {
+  return springAopFacts.get(filePath) ?? [];
 }
 
 export function setKotlinClassAnnotationFacts(
@@ -80,6 +110,32 @@ export function getKotlinClassAnnotationFacts(filePath: string): readonly ClassA
   return classAnnotations.get(filePath);
 }
 
+export function setKotlinSpringConditionalFacts(
+  filePath: string,
+  facts: readonly KotlinSpringConditionalFact[],
+): void {
+  if (facts.length === 0) springConditionalFacts.delete(filePath);
+  else springConditionalFacts.set(filePath, facts);
+}
+
+export function getKotlinSpringConditionalFacts(
+  filePath: string,
+): readonly KotlinSpringConditionalFact[] {
+  return springConditionalFacts.get(filePath) ?? [];
+}
+
+export function setKotlinSpringDiFacts(
+  filePath: string,
+  facts: readonly KotlinSpringDiClassFact[],
+): void {
+  if (facts.length === 0) springDiFacts.delete(filePath);
+  else springDiFacts.set(filePath, facts);
+}
+
+export function getKotlinSpringDiFacts(filePath: string): readonly KotlinSpringDiClassFact[] {
+  return springDiFacts.get(filePath) ?? [];
+}
+
 /**
  * `LanguageProvider.collectCaptureSideChannel` implementation for Kotlin.
  * Returns `undefined` when this file recorded no side-channel state at all, so
@@ -90,8 +146,18 @@ export function collectKotlinCaptureSideChannel(
 ): KotlinCaptureSideChannel | undefined {
   const companionScopes = getCompanionScopesForFile(filePath);
   const annotationFacts = classAnnotations.get(filePath);
+  const aopFacts = springAopFacts.get(filePath) ?? [];
+  const conditionFacts = springConditionalFacts.get(filePath) ?? [];
+  const diFacts = springDiFacts.get(filePath) ?? [];
   const packageFact = getKotlinPackageFact(filePath);
-  if (companionScopes.length === 0 && annotationFacts.length === 0 && packageFact === undefined) {
+  if (
+    companionScopes.length === 0 &&
+    annotationFacts.length === 0 &&
+    aopFacts.length === 0 &&
+    conditionFacts.length === 0 &&
+    diFacts.length === 0 &&
+    packageFact === undefined
+  ) {
     return undefined;
   }
   return {
@@ -99,6 +165,9 @@ export function collectKotlinCaptureSideChannel(
     companionScopes,
     packageFact: packageFact ?? UNKNOWN_JVM_PACKAGE_FACT,
     classAnnotations: annotationFacts,
+    ...(aopFacts.length > 0 ? { springAopFacts: aopFacts } : {}),
+    ...(conditionFacts.length > 0 ? { springConditionalFacts: conditionFacts } : {}),
+    ...(diFacts.length > 0 ? { springDiFacts: diFacts } : {}),
   };
 }
 
@@ -121,6 +190,9 @@ export function applyKotlinCaptureSideChannel(parsed: ParsedFile): void {
     !Array.isArray(data.classAnnotations)
   ) {
     classAnnotations.set(parsed.filePath, []);
+    setKotlinSpringAopFacts(parsed.filePath, []);
+    setKotlinSpringConditionalFacts(parsed.filePath, []);
+    setKotlinSpringDiFacts(parsed.filePath, []);
     setKotlinPackageFact(parsed.filePath, UNKNOWN_JVM_PACKAGE_FACT);
     return;
   }
@@ -128,6 +200,18 @@ export function applyKotlinCaptureSideChannel(parsed: ParsedFile): void {
     markCompanionScope(parsed.filePath, scopeId);
   }
   classAnnotations.set(parsed.filePath, data.classAnnotations);
+  setKotlinSpringAopFacts(
+    parsed.filePath,
+    Array.isArray(data.springAopFacts) ? data.springAopFacts : [],
+  );
+  setKotlinSpringConditionalFacts(
+    parsed.filePath,
+    Array.isArray(data.springConditionalFacts) ? data.springConditionalFacts : [],
+  );
+  setKotlinSpringDiFacts(
+    parsed.filePath,
+    Array.isArray(data.springDiFacts) ? data.springDiFacts : [],
+  );
   setKotlinPackageFact(
     parsed.filePath,
     isJvmPackageFact(data.packageFact) ? data.packageFact : UNKNOWN_JVM_PACKAGE_FACT,

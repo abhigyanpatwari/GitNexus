@@ -6,6 +6,53 @@
  * callable signatures, protocol invocation names). The central extractor
  * never sees a parser node and shared ingestion code never branches on a
  * language name.
+ *
+ * ## The cell/site model
+ *
+ * A *cell* is a named storage location that may hold a callable — a variable,
+ * parameter, field or pointer, canonicalized to a binding key by the scope
+ * tree. A *site* is one observed fact about cells, emitted here as a capture
+ * match and consumed by `passes/callable-value-flow.ts`, which runs them to a
+ * fixpoint. The site kinds (`CallableFlowSite`) are:
+ *
+ * - `seed` — a cell acquires a named callable: `f = target`. Carries
+ *   `@callable-flow.target-name`, the name the pass resolves against.
+ * - `copy` / `alias` — a cell takes another cell's contents, so targets flow
+ *   between them.
+ * - `address` / `store` / `load` — indirection through a pointer cell.
+ * - `formal` — a parameter cell of a known function, by index.
+ * - `argument` — a callable passed at a call site, binding to that `formal`.
+ * - `invoke` — a call THROUGH a cell (`f()`), the site that ultimately becomes
+ *   a `CALLS` edge once the cell's target set is known.
+ *
+ * ## The anonymous-callable convention
+ *
+ * A closure literal has no name to resolve against, so a `seed` whose source
+ * is an anonymous callable takes its **destination's** name as
+ * `@callable-flow.target-name` — `val f = { }` seeds "the cell `f` holds the
+ * callable named `f`". That is deliberately self-referential and only resolves
+ * because the binding itself is a callable target: `buildGraphTargetIndex`
+ * admits it on the label of the graph node it resolves to, which #2687 makes a
+ * `Function` for exactly this construct. Languages whose closure binding does
+ * NOT emit a callable graph node get no resolution from the convention alone
+ * (#2693).
+ *
+ * ## Adding a language
+ *
+ * Supply `CallableFlowCaptureOptions` from `<lang>/captures.ts` and call
+ * `synthesizeCallableFlowCaptures`. Two recurring traps:
+ *
+ * - A **fieldless** assignment/binding node decomposes to nothing under the
+ *   shared `left`/`name`/`value` fallback in `assignmentParts`. Supply
+ *   `extractAssignment` (Kotlin's `assignment`, Dart's
+ *   `initialized_identifier`). Returning `undefined` falls back to the shared
+ *   path, so one callback can handle the odd node and leave the rest alone.
+ * - A binding needs a `SymbolDefinition` for the pass to attach to. Captures
+ *   alone are not enough: without a `@declaration.*` for the bound name, the
+ *   seed has no cell to key on.
+ *
+ * `c/captures.ts` is the fullest worked example (pointers, signatures,
+ * overload selection); `dart/captures.ts` the smallest interesting one.
  */
 
 import type { CaptureMatch, ParameterTypeClass } from 'gitnexus-shared';
@@ -1045,7 +1092,10 @@ function unaryOperator(node: SyntaxNode): string | undefined {
  * `tbl[i]()` join (#2522 review). Field names cover the grammars that field
  * their subscript nodes; others keep the generic traversal.
  */
-function subscriptBase(node: SyntaxNode): SyntaxNode | null {
+/** The container operand of a subscript node, per grammar. Exported because the
+ *  receiver-chain walk needs the same per-grammar answer — two divergent field
+ *  tables for one question is how a new grammar gets half-supported. */
+export function subscriptBase(node: SyntaxNode): SyntaxNode | null {
   if (node.childForFieldName('index') === null) return null;
   return (
     node.childForFieldName('argument') ?? // C/C++ subscript_expression

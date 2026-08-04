@@ -18,6 +18,7 @@ from .proposer_sandbox import (
     SANDBOX_GITNEXUS,
     SANDBOX_GITNEXUS_REGISTRY,
     SANDBOX_HOME,
+    SANDBOX_NODE,
     SANDBOX_TMP,
     SANDBOX_WORKSPACE,
     SandboxError,
@@ -50,6 +51,8 @@ def measured_cost(raw: Any) -> float | None:
     if not math.isfinite(raw) or raw < 0:
         return None
     return float(raw)
+
+
 SANDBOX_GITNEXUS_ENTRYPOINT = f"{SANDBOX_GITNEXUS}/dist/cli/index.js"
 SENSITIVE_EVENT_KEYS = frozenset(
     {
@@ -113,7 +116,7 @@ def sandbox_mcp_config() -> str:
                     "PATH=/usr/local/bin:/usr/bin:/bin",
                     "LANG=C.UTF-8",
                     "GIT_TERMINAL_PROMPT=0",
-                    "/usr/local/bin/node",
+                    SANDBOX_NODE,
                     SANDBOX_GITNEXUS_ENTRYPOINT,
                     "mcp",
                 ],

@@ -8,6 +8,7 @@ import {
 import { getCppParser, getCppScopeQuery } from './query.js';
 import { getTreeSitterBufferSize } from '../../constants.js';
 import { parseSourceSafe } from '../../../tree-sitter/safe-parse.js';
+import { stripUeMacros } from '../../cpp-ue-preprocessor.js';
 import { normalizeQualifiedName } from '../../utils/qualified-name.js';
 import { splitCppInclude, splitCppUsingDecl } from './import-decomposer.js';
 import {
@@ -24,6 +25,7 @@ import { extractCppTemplateConstraints } from './constraint-extractor.js';
 import { captureCppMemberLookupFacts } from './member-lookup.js';
 import { CPP_BRACED_INIT_TYPE_PREFIX } from './conversion-rank.js';
 import { logger } from '../../../logger.js';
+import { synthesizeReceiverChainCapture } from '../../utils/receiver-chain-captures.js';
 import {
   synthesizeCallableFlowCaptures,
   type CallableCaptureSignature,
@@ -158,8 +160,12 @@ export function emitCppScopeCaptures(
 ): readonly CaptureMatch[] {
   let tree = cachedTree as ReturnType<ReturnType<typeof getCppParser>['parse']> | undefined;
   if (tree === undefined) {
-    tree = parseSourceSafe(getCppParser(), sourceText, undefined, {
-      bufferSize: getTreeSitterBufferSize(sourceText),
+    // Idempotent re-application: `extractParsedFile` already preprocesses, but
+    // direct emitter callers (benchmarks, capture goldens) must see the same
+    // program the pipeline does.
+    const parseText = stripUeMacros(sourceText);
+    tree = parseSourceSafe(getCppParser(), parseText, undefined, {
+      bufferSize: getTreeSitterBufferSize(parseText),
     });
   }
 
@@ -604,6 +610,12 @@ export function emitCppScopeCaptures(
       }
     }
 
+    // Structural receiver chain for a call whose receiver is itself an
+    // expression, so resolution can type it by folding over structure
+    // instead of re-parsing the receiver's source text. Self-gating: a
+    // non-call match, an absent receiver, or a chain with no nameable base
+    // all leave `grouped` untouched.
+    synthesizeReceiverChainCapture(grouped, nodeMap['@reference.receiver']);
     out.push(grouped);
   }
 

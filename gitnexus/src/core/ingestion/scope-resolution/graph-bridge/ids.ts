@@ -20,10 +20,21 @@
 import type { NodeLabel, ParameterTypeClass, ScopeId, SymbolDefinition } from 'gitnexus-shared';
 import type { ScopeResolutionIndexes } from '../../model/scope-resolution-indexes.js';
 import { generateId } from '../../../../lib/utils.js';
-import { qualifiedKey, simpleKey, type GraphNodeLookup } from '../graph-bridge/node-lookup.js';
-import { isOverloadableCallable } from '../../utils/callable-labels.js';
+import {
+  AMBIGUOUS_POSITION,
+  localNameKey,
+  positionKey,
+  qualifiedKey,
+  simpleKey,
+  type GraphNodeLookup,
+} from '../graph-bridge/node-lookup.js';
+import {
+  isOverloadableCallable,
+  isPositionQualifiedLocalLabel,
+} from '../../utils/callable-labels.js';
 import { templateConstraintsIdTag } from '../../utils/template-arguments.js';
 import { parameterShapeIdTag } from '../../utils/method-props.js';
+import { definitionIdPosition } from '../utils/definition-id.js';
 /**
  * Labels that may legitimately ANCHOR a CALLS/ACCESSES edge as the
  * source ("caller"). A Variable / Property can be the TARGET of an
@@ -43,17 +54,19 @@ import { parameterShapeIdTag } from '../../utils/method-props.js';
  * restricted to function/class-likes, those calls correctly fall
  * through to the File-node fallback at the bottom of the walk.
  */
+export const CALLER_ANCHOR_LABELS: ReadonlySet<NodeLabel> = new Set<NodeLabel>([
+  'Function',
+  'Method',
+  'Constructor',
+  'Module',
+  'Class',
+  'Interface',
+  'Struct',
+  'Enum',
+]);
+
 function isCallerAnchorLabel(label: NodeLabel): boolean {
-  return (
-    label === 'Function' ||
-    label === 'Method' ||
-    label === 'Constructor' ||
-    label === 'Module' ||
-    label === 'Class' ||
-    label === 'Interface' ||
-    label === 'Struct' ||
-    label === 'Enum'
-  );
+  return CALLER_ANCHOR_LABELS.has(label);
 }
 
 function rangeContainsPoint(
@@ -66,6 +79,34 @@ function rangeContainsPoint(
   return true;
 }
 
+/**
+ * Adapter over the canonical {@link isOverloadableCallable} — deliberately NOT a
+ * second spelling of the label set. An earlier revision of this file inlined
+ * `Function | Method | Constructor` here, which recreated the exact twin-list
+ * drift this PR adds a guard test for elsewhere.
+ */
+const isCallableDef = (d: SymbolDefinition): boolean => isOverloadableCallable(d.type);
+
+/**
+ * True when `range` is the body of `def` itself — the scope's start position
+ * equals the def's declaration position.
+ *
+ * Safe to compare directly: `scope-extractor.ts` builds a def id as
+ * `def:<filePath>#<startLine>:<startCol>:<type>:<name>` from the same `Range`
+ * a scope carries, so both sides share one coordinate base and need no
+ * conversion. (Do not "fix" this against the 1-based reading in
+ * `defStartLine`'s docblock — what matters here is that the two sides agree
+ * with each other, not which base they use.)
+ */
+function scopeIsCallableBody(
+  range: { startLine: number; startCol: number },
+  def: SymbolDefinition,
+): boolean {
+  const position = definitionIdPosition(def.nodeId, def.filePath);
+  if (position === undefined) return false;
+  return position.line === range.startLine && position.column === range.startCol;
+}
+
 /** Pick the callable that owns `atRange` when multiple overloads share a class scope. */
 function pickCallerCallableDef(
   scope: {
@@ -75,21 +116,35 @@ function pickCallerCallableDef(
   },
   scopes: ScopeResolutionIndexes,
   atRange?: { startLine: number; startCol: number },
-): SymbolDefinition | undefined {
+): { def: SymbolDefinition; fromChildScope: boolean } | undefined {
   if (atRange !== undefined) {
     for (const childId of scopes.scopeTree.getChildren(scope.id)) {
       const child = scopes.scopeTree.getScope(childId);
-      if (child === undefined || child.kind !== 'Function') continue;
+      if (child === undefined) continue;
       if (!rangeContainsPoint(child.range, atRange)) continue;
-      const childCallable = child.ownedDefs.find(
-        (d) => d.type === 'Function' || d.type === 'Method' || d.type === 'Constructor',
-      );
-      if (childCallable !== undefined) return childCallable;
+      const childCallable = child.ownedDefs.find(isCallableDef);
+      if (childCallable === undefined) continue;
+      if (child.kind === 'Function') return { def: childCallable, fromChildScope: true };
+      // A Block-kind scope is a callable boundary ONLY when the scope IS that
+      // callable's own body. Kotlin `lambda_literal` and Ruby `do_block`/`block`
+      // are @scope.block deliberately (#1757 smart casts), so the kind gate
+      // alone would never let a closure there become a call SOURCE (#2699).
+      //
+      // But relaxing the gate to accept ANY Block owning a callable is wrong:
+      // a nested `fun foo()` declared inside a block is owned by that block, so
+      // a call made at BLOCK level — outside foo — would be misattributed to
+      // foo. The alignment test discriminates them. For a closure the
+      // declaration and the scope sit on the SAME node (the anchor discipline
+      // documented in javascript/query.ts), so their start positions match; for
+      // a nested function the block starts at `{` and the def starts at the
+      // declaration, so they do not.
+      if (child.kind === 'Block' && scopeIsCallableBody(child.range, childCallable)) {
+        return { def: childCallable, fromChildScope: true };
+      }
     }
   }
-  return scope.ownedDefs.find(
-    (d) => d.type === 'Function' || d.type === 'Method' || d.type === 'Constructor',
-  );
+  const own = scope.ownedDefs.find(isCallableDef);
+  return own === undefined ? undefined : { def: own, fromChildScope: false };
 }
 
 /**
@@ -109,9 +164,41 @@ function pickCallerCallableDef(
  * resolution working for languages that don't yet synthesize
  * qualifiers).
  */
+/**
+ * Extract the 1-based declaration line from a scope-resolution def id.
+ * Shape: `def:<filePath>#<line>:<col>:<...>`; `undefined` when it doesn't match.
+ */
+function defStartLine(nodeId: string | undefined, filePath: string): number | undefined {
+  return definitionIdPosition(nodeId, filePath)?.line;
+}
+
+/**
+ * Trailing segment of a dotted qualified name (`Outer.inner` -> `inner`),
+ * with any function-local `@line:col` identity suffix stripped
+ * (`run.pick@5:10` -> `pick`).
+ *
+ * The graph node's `name` property is the bare source name, so the position
+ * key must compare against that — the position it carries is already the
+ * disambiguator, and leaving the suffix on would make every local miss.
+ */
+function simpleNameOf(qualifiedName: string): string {
+  const dot = qualifiedName.lastIndexOf('.');
+  const tail = dot === -1 ? qualifiedName : qualifiedName.slice(dot + 1);
+  return tail.replace(LOCAL_IDENTITY_SUFFIX, '');
+}
+
+/**
+ * The function-local identity marker appended by `localIdentity` (`name@row:col`).
+ * Shared so the stripper above and the fail-closed guard in
+ * `resolveCallerGraphId` cannot disagree about what counts as a local.
+ */
+const LOCAL_IDENTITY_SUFFIX = /@\d+:\d+$/;
+
 export function resolveDefGraphId(
   filePath: string,
   def: {
+    /** Scope-resolution def id — carries the declaration position (#2699). */
+    nodeId?: string;
     qualifiedName?: string;
     type?: NodeLabel;
     parameterTypes?: readonly string[];
@@ -127,6 +214,68 @@ export function resolveDefGraphId(
   const qn = def.qualifiedName;
   if (qn === undefined || qn.length === 0) return undefined;
   if (def.type !== undefined) {
+    // Position key FIRST (#2699). A def and its graph node are the same
+    // construct, so they share a source line — the only evidence that
+    // separates a function-local declaration from a same-named file-level one
+    // without either side having to model the scope chain. Node ids are
+    // 0-based, def ids 1-based. An `AMBIGUOUS_POSITION` tombstone (two
+    // callables on one line) falls through to the name-based keys below.
+    //
+    // For a closure binding the two query channels still anchor on different
+    // AST nodes (outer wrapper vs inner callable), but the graph node's
+    // `startLine` follows the initializer (#2735) so this join matches even
+    // when the binding is split across lines.
+    const line = defStartLine(def.nodeId, filePath);
+    if (line !== undefined && isPositionQualifiedLocalLabel(def.type)) {
+      const simple = simpleNameOf(qn);
+      const posHit = nodeLookup.get(positionKey(filePath, def.type, line - 1, simple));
+      if (posHit !== undefined && posHit !== AMBIGUOUS_POSITION) return posHit;
+      // FAIL CLOSED when a function-local of this name exists in the file (#2699
+      // follow-up). Falling through to the name keys would end at the label-agnostic,
+      // first-write-wins `simpleKey` below and alias this def onto whichever same-named
+      // callable was registered first — reproducibly minting a FALSE edge. A missing
+      // edge is the correct failure direction for a graph whose consumers include
+      // `impact`; a fabricated caller is not. Gated on `localNameKey` so this ONLY
+      // fires where the collision is real — a file with no such local keeps its
+      // previous fallback behaviour, which is what preserves legitimate anchor
+      // differences such as a Vue SFC's `lineOffset`.
+      //
+      // Multi-line closure bindings are NOT this case anymore (#2735): their graph
+      // `startLine` follows the initializer, so the position key above hits.
+      if (nodeLookup.get(localNameKey(filePath, def.type, simple)) !== undefined) {
+        return undefined;
+      }
+    }
+    // Name forms to try for every keyed lookup below, most specific first.
+    //
+    // #1982/#2742: some scope-extractors qualify a def by its enclosing CLASS
+    // chain (`A.Inner`) or leave it a bare tail, while the structure-phase node is
+    // keyed by the full path (`NS.A.Inner`, or a Rust `mod` chain). The
+    // namespace-prefixed form is therefore the more specific one and must be tried
+    // first — the bare form happily matches a same-named item at a DIFFERENT
+    // namespace depth in the same file and returns it before any retry is reached
+    // (#2742: a call into `mod inner { fn dispatch }` bound to the crate-root
+    // `fn dispatch` and rendered as a self-loop).
+    //
+    // Applied to the TAGGED keys too, not just the plain one. Previously only the
+    // plain key had the prefixed retry, so for a namespace/mod-qualified def every
+    // tagged key — constraints, parameter types, parameter shape, arity, template
+    // arguments — composed from the bare tail and simply missed the node
+    // `node-lookup.ts` had registered under the qualified name. Those keys exist to
+    // separate overloads, so leaving them dead meant a mod-scoped overload set
+    // depended on whichever later key happened to catch it.
+    const defType = def.type;
+    const nsPrefix = def.namespacePrefix;
+    const nameForms =
+      nsPrefix !== undefined && nsPrefix.length > 0 ? [`${nsPrefix}.${qn}`, qn] : [qn];
+    const lookupTagged = (tag: string): string | undefined => {
+      for (const form of nameForms) {
+        const hit = nodeLookup.get(qualifiedKey(filePath, defType, `${form}${tag}`));
+        if (hit !== undefined) return hit;
+      }
+      return undefined;
+    };
+
     // SFINAE / `requires`-clause disambiguation (issue #1579) — try the
     // constraint-fingerprinted key FIRST. Two function-template overloads
     // with identical `parameterTypes` but mutually-exclusive SFINAE
@@ -137,12 +286,7 @@ export function resolveDefGraphId(
       (def.type === 'Function' || def.type === 'Method') &&
       def.templateConstraints !== undefined
     ) {
-      const cKey = qualifiedKey(
-        filePath,
-        def.type,
-        `${qn}${templateConstraintsIdTag(def.templateConstraints)}`,
-      );
-      const cHit = nodeLookup.get(cKey);
+      const cHit = lookupTagged(templateConstraintsIdTag(def.templateConstraints));
       if (cHit !== undefined) return cHit;
     }
     if (
@@ -152,8 +296,7 @@ export function resolveDefGraphId(
     ) {
       const shapeTag = parameterShapeIdTag(def.parameterTypes, def.parameterTypeClasses);
       if (shapeTag !== '') {
-        const shapeKey = qualifiedKey(filePath, def.type, `${qn}${shapeTag}`);
-        const shapeHit = nodeLookup.get(shapeKey);
+        const shapeHit = lookupTagged(shapeTag);
         if (shapeHit !== undefined) return shapeHit;
       }
     }
@@ -169,8 +312,7 @@ export function resolveDefGraphId(
       def.parameterTypes !== undefined &&
       def.parameterTypes.length > 0
     ) {
-      const pKey = qualifiedKey(filePath, def.type, `${qn}~${def.parameterTypes.join(',')}`);
-      const pHit = nodeLookup.get(pKey);
+      const pHit = lookupTagged(`~${def.parameterTypes.join(',')}`);
       if (pHit !== undefined) return pHit;
     }
     // Arity-disambiguating key (see node-lookup.ts): route a same-name overload
@@ -178,8 +320,7 @@ export function resolveDefGraphId(
     // zero-arg overload (no parameterTypes) that would otherwise collapse onto a
     // sibling overload via the source-order-dependent qualified key.
     if (isOverloadableCallable(def.type) && def.parameterCount !== undefined) {
-      const aKey = qualifiedKey(filePath, def.type, `${qn}#${def.parameterCount}`);
-      const aHit = nodeLookup.get(aKey);
+      const aHit = lookupTagged(`#${def.parameterCount}`);
       if (aHit !== undefined) return aHit;
     }
     if (
@@ -191,23 +332,11 @@ export function resolveDefGraphId(
       def.templateArguments !== undefined &&
       def.templateArguments.length > 0
     ) {
-      const tKey = qualifiedKey(filePath, def.type, `${qn}~${def.templateArguments.join(',')}`);
-      const tHit = nodeLookup.get(tKey);
+      const tHit = lookupTagged(`~${def.templateArguments.join(',')}`);
       if (tHit !== undefined) return tHit;
     }
-    const qualifiedHit = nodeLookup.get(qualifiedKey(filePath, def.type, qn));
+    const qualifiedHit = lookupTagged('');
     if (qualifiedHit !== undefined) return qualifiedHit;
-    // #1982: some scope-extractors qualify a type by its enclosing CLASS chain
-    // (`A.Inner`) but drop the enclosing NAMESPACE, while the structure-phase
-    // node is keyed by the full path (`NS.A.Inner`). Retry with the
-    // namespace-prefixed key (tagged by `tagNamespacePrefixes`) BEFORE the
-    // simple-name fallback, so same-tail nested bases don't collapse across
-    // sibling namespace members via `simpleKey`.
-    const nsPrefix = def.namespacePrefix;
-    if (nsPrefix !== undefined && nsPrefix.length > 0) {
-      const nsHit = nodeLookup.get(qualifiedKey(filePath, def.type, `${nsPrefix}.${qn}`));
-      if (nsHit !== undefined) return nsHit;
-    }
   }
   const simpleName = qn.lastIndexOf('.') === -1 ? qn : qn.slice(qn.lastIndexOf('.') + 1);
   return nodeLookup.get(simpleKey(filePath, simpleName));
@@ -251,10 +380,34 @@ export function resolveCallerGraphId(
     // Prefer Function/Method/Constructor anchors; fall back to
     // Class/Interface/Struct/Enum. Variable/Property are NOT valid
     // caller anchors — see `isCallerAnchorLabel` for why.
-    const fnDef = pickCallerCallableDef(scope, scopes, atRange);
-    if (fnDef !== undefined) {
+    const picked = pickCallerCallableDef(scope, scopes, atRange);
+    if (picked !== undefined) {
+      const fnDef = picked.def;
       const id = resolveDefGraphId(fnDef.filePath, fnDef, nodeLookup);
       if (id !== undefined) return id;
+      // FAIL CLOSED at a FUNCTION-LOCAL boundary (#2699 review P1-1).
+      //
+      // `fnDef` is the callable that genuinely owns this call site. When its
+      // graph node cannot be named, climbing to the parent scope does not
+      // degrade gracefully — it ATTRIBUTES THE CALL TO A FUNCTION THAT DOES NOT
+      // MAKE IT. Measured before this guard, a closure whose literal starts on
+      // the line after its binding
+      //     $multi =
+      //         function ($x) { return target($x); };
+      // emitted `outer -> target` while the real `outer.$multi` node sat with no
+      // outgoing edges: a CALLS edge present nowhere in the source, which is the
+      // exact defect class #2699 exists to remove.
+      //
+      // Restricted to defs carrying the function-local `@line:col` identity,
+      // because that is precisely the set whose position join can miss (the two
+      // query channels anchor on different nodes by design). For every other
+      // callable the historical climb is preserved, so this cannot silently
+      // delete edges outside the local-identity path.
+      // The scope we are standing in OWNS this call site and we have identified
+      // its callable — we simply cannot name that callable's graph node. Climbing
+      // to an ancestor here does not degrade gracefully: it credits the call to a
+      // function that does not make it. Fail closed instead.
+      return undefined;
     }
     const classDef = scope.ownedDefs.find((d) => isCallerAnchorLabel(d.type));
     if (classDef !== undefined) {

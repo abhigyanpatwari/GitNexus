@@ -5,6 +5,7 @@ import type { ScopeResolver } from '../../scope-resolution/contract/scope-resolv
 import { resolveDefGraphId } from '../../scope-resolution/graph-bridge/ids.js';
 import type { GraphNodeLookup } from '../../scope-resolution/graph-bridge/node-lookup.js';
 import { isClassLike } from '../../scope-resolution/scope/walkers.js';
+import { indexOnlyElementType } from '../../type-extractors/shared.js';
 import { kotlinProvider } from '../kotlin.js';
 import {
   kotlinArityCompatibility,
@@ -21,7 +22,10 @@ import {
 import { isKotlinStaticOnly } from './owners.js';
 import { populateKotlinPackageSiblings } from './package-siblings.js';
 import { attachKotlinSpringBeanCandidateMetadata } from './spring-bean-metadata.js';
+import { attachKotlinSpringAopMetadata } from './spring-aop.js';
 import { clearKotlinPackageFacts } from './package-facts.js';
+import { attachKotlinSpringDiMetadata } from './spring-di.js';
+import { attachKotlinSpringConditionalMetadata } from './spring-conditionals.js';
 
 /**
  * Kotlin scope resolver for RFC #909 Ring 3.
@@ -114,15 +118,31 @@ export const kotlinScopeResolver: ScopeResolver = {
 
   isSuperReceiver: (text) => text.trim() === 'super',
 
+  // Subscript route only — Kotlin's collection views (`.values`, `.keys`) are
+  // properties on the stdlib types, resolved by the ordinary member walk rather
+  // than by unwrapping a generic here.
+  //
+  // Fed the annotation AS WRITTEN (`List<User>`, `Map<String, User>`), which
+  // `normalizeKotlinType` had already reduced to `User`. `undefined` means "not
+  // a container", so an `operator fun get` class does not fold `cache[k]` onto
+  // `Cache` itself.
+  elementTypeOf: indexOnlyElementType,
+
   isStaticOnly: isKotlinStaticOnly,
 
   fieldFallbackOnMethodLookup: false,
   propagatesReturnTypesAcrossImports: true,
   collapseMemberCallsByCallerTarget: false,
   hoistTypeBindingsToModule: true,
+  freeCallsRequireInstanceOwnership: true,
   postExtractSourceTextPolicy: 'uncached-files',
   populateNamespaceSiblings: populateKotlinPackageSiblings,
-  emitPostResolutionEdges: attachKotlinSpringBeanCandidateMetadata,
+  emitPostResolutionEdges: (graph, parsedFiles, nodeLookup, indexes) => {
+    attachKotlinSpringBeanCandidateMetadata(graph, parsedFiles, nodeLookup, indexes);
+    attachKotlinSpringAopMetadata(graph, parsedFiles, nodeLookup, indexes);
+    attachKotlinSpringConditionalMetadata(graph, parsedFiles, nodeLookup, indexes);
+    attachKotlinSpringDiMetadata(graph, parsedFiles, nodeLookup, indexes);
+  },
 };
 
 /**

@@ -1,7 +1,8 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
-const { loadFTSExtensionMock } = vi.hoisted(() => ({
+const { loadFTSExtensionMock, loadVectorExtensionMock } = vi.hoisted(() => ({
   loadFTSExtensionMock: vi.fn(),
+  loadVectorExtensionMock: vi.fn(),
 }));
 
 vi.mock('@ladybugdb/core', () => ({
@@ -16,6 +17,7 @@ vi.mock('@ladybugdb/core', () => ({
 vi.mock('../../src/core/lbug/lbug-adapter.js', () => ({
   isReadOnlyDbError: vi.fn(() => false),
   loadFTSExtension: loadFTSExtensionMock,
+  loadVectorExtension: loadVectorExtensionMock,
 }));
 
 vi.mock('../../src/core/lbug/lbug-config.js', () => ({
@@ -31,10 +33,13 @@ describe('read-pool FTS loading', () => {
   afterEach(async () => {
     await closeLbug().catch(() => {});
     loadFTSExtensionMock.mockReset();
+    loadVectorExtensionMock.mockReset();
+    loadVectorExtensionMock.mockResolvedValue(false);
   });
 
   it('loads FTS with load-only policy and caches a successful load', async () => {
     loadFTSExtensionMock.mockResolvedValue(true);
+    loadVectorExtensionMock.mockResolvedValue(true);
     const db = {} as any;
 
     await initLbugWithDb('repo-a', db, '/tmp/shared-fts-db');
@@ -46,6 +51,7 @@ describe('read-pool FTS loading', () => {
 
   it('does not fake a successful load when FTS is unavailable', async () => {
     loadFTSExtensionMock.mockResolvedValue(false);
+    loadVectorExtensionMock.mockResolvedValue(false);
     const db = {} as any;
 
     await initLbugWithDb('repo-a', db, '/tmp/shared-fts-db');
@@ -58,5 +64,30 @@ describe('read-pool FTS loading', () => {
     expect(loadFTSExtensionMock).toHaveBeenNthCalledWith(2, expect.anything(), {
       policy: 'load-only',
     });
+  });
+
+  it('loads VECTOR with load-only policy and caches a successful load (#2623 follow-up)', async () => {
+    loadFTSExtensionMock.mockResolvedValue(true);
+    loadVectorExtensionMock.mockResolvedValue(true);
+    const db = {} as any;
+
+    await initLbugWithDb('repo-a', db, '/tmp/shared-vec-db');
+    await initLbugWithDb('repo-b', db, '/tmp/shared-vec-db');
+
+    expect(loadVectorExtensionMock).toHaveBeenCalledTimes(1);
+    expect(loadVectorExtensionMock).toHaveBeenCalledWith(expect.anything(), {
+      policy: 'load-only',
+    });
+  });
+
+  it('retries the VECTOR load on the next open when it was unavailable', async () => {
+    loadFTSExtensionMock.mockResolvedValue(true);
+    loadVectorExtensionMock.mockResolvedValue(false);
+    const db = {} as any;
+
+    await initLbugWithDb('repo-a', db, '/tmp/shared-vec-db');
+    await initLbugWithDb('repo-b', db, '/tmp/shared-vec-db');
+
+    expect(loadVectorExtensionMock).toHaveBeenCalledTimes(2);
   });
 });

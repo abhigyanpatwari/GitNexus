@@ -70,6 +70,9 @@ export const REL_TYPES = [
   'WRAPS',
   'QUERIES',
   'INJECTS',
+  'CONDITIONAL_ON',
+  'DECLARES',
+  'ADVISED_BY',
   // Taint/PDG substrate (issue #2080) — reserved edge types, emitted by no
   // phase yet (CFG → M1, REACHING_DEF → M2, TAINTED/SANITIZES/TAINT_PATH →
   // M3/M4). REACHING_DEF's variable name rides the relation's `reason` column.

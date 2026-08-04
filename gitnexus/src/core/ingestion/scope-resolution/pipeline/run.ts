@@ -605,6 +605,8 @@ export function runScopeResolution(
           parsedFiles,
           parsedImport,
         }),
+      isNamespaceImport: (parsedImport, targetFile, fromFile) =>
+        provider.isNamespaceImport?.(parsedImport, targetFile, fromFile) ?? false,
       expandsWildcardTo: (targetModuleScope) =>
         provider.expandsWildcardTo?.(targetModuleScope, parsedFiles) ?? [],
       mergeBindings: (existing, incoming, scopeId) =>
@@ -711,6 +713,7 @@ export function runScopeResolution(
     propagateImportedReturnTypes(parsedFiles, indexes, workspaceIndex);
   }
 
+  const tRangeBindStart = PROF ? process.hrtime.bigint() : 0n;
   if (provider.populateRangeBindings !== undefined) {
     provider.populateRangeBindings(parsedFiles, indexes, {
       fileContents: getFileContents(),
@@ -807,6 +810,10 @@ export function runScopeResolution(
         {
           recordResolutionOutcome,
           calleeIdSink: calleeIdAccumulator,
+          // The pass's only source of positive EXTERNAL evidence for a dropped
+          // receiver (`console.log`, `fetch(...)`). Same hook, same spelling as
+          // the `emitFreeCallFallback` wiring below.
+          isBuiltInName: provider.languageProvider.isBuiltInName,
         },
       );
   const unresolvedReceiverExtras =
@@ -839,6 +846,7 @@ export function runScopeResolution(
           freeCallsRequireInstanceOwnership: provider.freeCallsRequireInstanceOwnership === true,
           isCallableVisibleFromCaller: provider.isCallableVisibleFromCaller,
           resolveAdlCandidates: provider.resolveAdlCandidates,
+          resolveQualifiedFreeCall: provider.resolveQualifiedFreeCall,
           conversionRankFn: provider.conversionRankFn,
           conversionOnlyArgTypePrefixes: provider.conversionOnlyArgTypePrefixes,
           constraintCompatibility: provider.constraintCompatibility,
@@ -1309,6 +1317,7 @@ export function runScopeResolution(
       `[scope-resolution prof] extract=${ns(tStart, tExtract).toFixed(0)}ms` +
         ` finalize=${ns(tExtract, tFinalize).toFixed(0)}ms` +
         ` propagate=${ns(tFinalize, tPropagate).toFixed(0)}ms` +
+        ` rangeBind=${ns(tRangeBindStart, tPropagate).toFixed(1)}ms` +
         ` resolve=${ns(tPropagate, tResolve).toFixed(0)}ms` +
         ` emit=${ns(tResolve, tEnd).toFixed(0)}ms` +
         // pdg ⊆ emit: the M2 reaching-defs share of the emit bucket (#2082 U4).

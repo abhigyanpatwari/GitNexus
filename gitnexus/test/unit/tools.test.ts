@@ -134,6 +134,13 @@ describe('GITNEXUS_TOOLS', () => {
     expect(contextTool.inputSchema.properties.file).toMatchObject({ type: 'string' });
   });
 
+  it('trace tool advertises file as a compatibility alias for from_file', () => {
+    const traceTool = GITNEXUS_TOOLS.find((t) => t.name === 'trace')!;
+    expect(traceTool.inputSchema.properties.from_file).toBeDefined();
+    expect(traceTool.inputSchema.properties.file).toMatchObject({ type: 'string' });
+    expect(traceTool.inputSchema.properties.file.description).toContain('from_file');
+  });
+
   it('api_impact tool avoids top-level schema combinators for Bedrock compatibility (#2487)', () => {
     const apiImpactTool = GITNEXUS_TOOLS.find((t) => t.name === 'api_impact')!;
     expect(apiImpactTool.inputSchema).not.toHaveProperty('anyOf');

@@ -23,7 +23,8 @@ import {
   registryPathEquals,
 } from '../storage/repo-manager.js';
 import { logger } from '../core/logger.js';
-import type { JobManager } from './analyze-job.js';
+import { autoHeapCapMb } from '../core/ingestion/utils/effective-ram.js';
+import { isTerminalJobStatus, type JobManager } from './analyze-job.js';
 import type { WorkerMessage } from './analyze-worker.js';
 
 const _require = createRequire(import.meta.url);
@@ -151,12 +152,20 @@ export function createLaunchAnalysisWorker(deps: LaunchDeps) {
       ? ['--import', pathToFileURL(_require.resolve('tsx/esm')).href]
       : [];
 
+    // Worker heap: 8192MB historical default, but never above what this
+    // machine/container actually has (#2649 review — a fixed 8192 inside a
+    // smaller cgroup limit died to the kernel with a misleading remedy).
+    // GITNEXUS_SERVER_ANALYZE_HEAP_MB overrides as an absolute value.
+    const envHeapMb = Number(process.env.GITNEXUS_SERVER_ANALYZE_HEAP_MB);
+    const workerHeapMb =
+      Number.isInteger(envHeapMb) && envHeapMb > 0 ? envHeapMb : Math.min(8192, autoHeapCapMb());
+
     const forkWorker = () => {
       const currentJob = jobManager.getJob(job.id);
-      if (!currentJob || currentJob.status === 'complete' || currentJob.status === 'failed') return;
+      if (!currentJob || isTerminalJobStatus(currentJob.status)) return;
 
       const child = fork(workerPath, [], {
-        execArgv: [...tsxHookArgs, '--max-old-space-size=8192'],
+        execArgv: [...tsxHookArgs, `--max-old-space-size=${workerHeapMb}`],
         stdio: ['ignore', 'pipe', 'pipe', 'ipc'],
       });
 
@@ -173,7 +182,7 @@ export function createLaunchAnalysisWorker(deps: LaunchDeps) {
         // re-release the repo lock or flip the reported status. Mirrors the `exit`
         // handler guard below; pairs with the worker's terminal-claim (#2264 P3).
         const current = jobManager.getJob(job.id);
-        if (!current || current.status === 'complete' || current.status === 'failed') return;
+        if (!current || isTerminalJobStatus(current.status)) return;
 
         if (msg.type === 'progress') {
           jobManager.updateJob(job.id, {
@@ -221,7 +230,7 @@ export function createLaunchAnalysisWorker(deps: LaunchDeps) {
 
       child.on('exit', (code) => {
         const j = jobManager.getJob(job.id);
-        if (!j || j.status === 'complete' || j.status === 'failed') return;
+        if (!j || isTerminalJobStatus(j.status)) return;
 
         // Worker crashed — attempt retry if under the limit
         if (j.retryCount < MAX_WORKER_RETRIES) {

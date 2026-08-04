@@ -250,10 +250,41 @@ export function registerGroupCommands(program: Command): void {
         } else {
           const summary = (raw as { summary?: Record<string, number> })?.summary;
           const risk = (raw as { risk?: string })?.risk;
-          console.log(`Group impact for "${name}" (${String(opts.repo)}): risk=${risk ?? '?'}`);
+          // A truncated fan-out under-reports risk (mergeRisk only grows with
+          // traversed crossings), and the default human output used to print a
+          // bare `risk=` indistinguishable from a complete run — the JSON
+          // already carried `truncated`, but nobody reading the terminal saw it.
+          const riskFloor =
+            (raw as { riskEpistemic?: string })?.riskEpistemic === 'lower-bound' ? '+' : '';
+          const boundaryOnly =
+            (
+              raw as {
+                cross?: Array<{ fanout_status?: string }>;
+              }
+            )?.cross?.filter((entry) => entry.fanout_status === 'not_attempted').length ?? 0;
+          console.log(
+            `Group impact for "${name}" (${String(opts.repo)}): risk=${risk ?? '?'}${riskFloor}`,
+          );
           if (summary) {
+            const boundaryNote = boundaryOnly > 0 ? ` (${boundaryOnly} boundary-only)` : '';
             console.log(
-              `  direct=${summary.direct ?? 0} processes=${summary.processes_affected ?? 0} cross=${summary.cross_repo_hits ?? 0}`,
+              `  direct=${summary.direct ?? 0} processes=${summary.processes_affected ?? 0} cross=${summary.cross_repo_hits ?? 0}${boundaryNote}`,
+            );
+          }
+          if (riskFloor) {
+            // `truncated` has two independent causes that point at different
+            // subsystems, so the note must name the one that actually fired:
+            // dropped crossings, or a local walk that never finished (most
+            // often the impact chunk cap, which any symbol with more than a
+            // thousand locally-impacted nodes hits on every run). `dropped` is
+            // deduped to distinct repos before it reaches here, so it counts
+            // repos — reporting it as crossings understates a fan-out cap the
+            // same way #2787's totals did.
+            const dropped = (raw as { truncatedRepos?: string[] })?.truncatedRepos ?? [];
+            console.log(
+              dropped.length > 0
+                ? `  risk is a LOWER BOUND — fan-out stopped early; crossings to ${dropped.length} repo(s) not traversed: ${dropped.join(', ')}`
+                : '  risk is a LOWER BOUND — the local impact walk did not complete (every bridge crossing was traversed)',
             );
           }
         }

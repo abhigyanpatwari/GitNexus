@@ -18,9 +18,21 @@ import { normalizeKotlinType } from './interpret.js';
 import { synthesizeKotlinReceiverBinding } from './receiver-binding.js';
 import { getKotlinParser, getKotlinScopeQuery } from './query.js';
 import { markCompanionScope } from './companion-scopes.js';
-import { setKotlinClassAnnotationFacts } from './capture-side-channel.js';
+import {
+  setKotlinClassAnnotationFacts,
+  setKotlinSpringAopFacts,
+  setKotlinSpringConditionalFacts,
+  setKotlinSpringDiFacts,
+} from './capture-side-channel.js';
 import { captureKotlinPackageFact } from './package-facts.js';
 import { synthesizeCallableFlowCaptures } from '../../utils/callable-flow-captures.js';
+import { captureKotlinSpringDiClassFact, type KotlinSpringDiClassFact } from './spring-di.js';
+import { synthesizeReceiverChainCapture } from '../../utils/receiver-chain-captures.js';
+import { captureKotlinSpringAopFacts, type KotlinSpringAopFact } from './spring-aop.js';
+import {
+  captureKotlinSpringConditionalFacts,
+  type KotlinSpringConditionalFact,
+} from './spring-conditionals.js';
 
 const FUNCTION_DECL_TAGS = ['@declaration.function'] as const;
 
@@ -83,6 +95,11 @@ export function emitKotlinScopeCaptures(
 
   const out: CaptureMatch[] = [];
   const classAnnotations = new Map<ScopeId, Set<string>>();
+  const springAopFacts: KotlinSpringAopFact[] = [];
+  const springAopTypeNodeIds = new Set<number>();
+  const springConditionalFacts: KotlinSpringConditionalFact[] = [];
+  const springDiFacts: KotlinSpringDiClassFact[] = [];
+  const springDiClassNodeIds = new Set<number>();
   const returnTypes = collectKotlinReturnTypeTexts(tree.rootNode);
   out.push(...synthesizeKotlinLocalAssignmentBindings(tree.rootNode, returnTypes));
   out.push(...synthesizeKotlinLoopBindings(tree.rootNode, returnTypes));
@@ -105,6 +122,28 @@ export function emitKotlinScopeCaptures(
       groupedNodes[tag] = capture.node;
     }
     if (Object.keys(grouped).length === 0) continue;
+
+    // tree-sitter-kotlin represents both classes and interfaces with
+    // `class_declaration`; `object_declaration` is the separate object form.
+    const springAopTypeNode = [
+      nodeIfType(groupedNodes['@scope.class'], 'class_declaration'),
+      nodeIfType(groupedNodes['@scope.class'], 'object_declaration'),
+      nodeIfType(groupedNodes['@scope.class'], 'companion_object'),
+    ].find((node): node is SyntaxNode => node !== null);
+    if (springAopTypeNode !== undefined && !springAopTypeNodeIds.has(springAopTypeNode.id)) {
+      springAopTypeNodeIds.add(springAopTypeNode.id);
+      springAopFacts.push(...captureKotlinSpringAopFacts(springAopTypeNode, filePath));
+    }
+
+    const springDiClassNode = nodeIfType(groupedNodes['@scope.class'], 'class_declaration');
+    if (springDiClassNode !== null && !springDiClassNodeIds.has(springDiClassNode.id)) {
+      springDiClassNodeIds.add(springDiClassNode.id);
+      springConditionalFacts.push(
+        ...captureKotlinSpringConditionalFacts(springDiClassNode, filePath),
+      );
+      const fact = captureKotlinSpringDiClassFact(springDiClassNode, filePath);
+      if (fact !== null) springDiFacts.push(fact);
+    }
 
     const annotatedClass = grouped['@class-annotation.class'];
     const annotationName = grouped['@class-annotation.name'];
@@ -224,6 +263,12 @@ export function emitKotlinScopeCaptures(
     }
 
     if (grouped['@scope.function'] !== undefined) {
+      // Structural receiver chain for a call whose receiver is itself an
+      // expression, so resolution can type it by folding over structure
+      // instead of re-parsing the receiver's source text. Self-gating: a
+      // non-call match, an absent receiver, or a chain with no nameable base
+      // all leave `grouped` untouched.
+      synthesizeReceiverChainCapture(grouped, groupedNodes['@reference.receiver']);
       out.push(grouped);
       const fnNode = nodeIfType(groupedNodes['@scope.function'], 'function_declaration');
       if (fnNode !== null) {
@@ -281,6 +326,12 @@ export function emitKotlinScopeCaptures(
       }
     }
 
+    // Structural receiver chain for a call whose receiver is itself an
+    // expression, so resolution can type it by folding over structure
+    // instead of re-parsing the receiver's source text. Self-gating: a
+    // non-call match, an absent receiver, or a chain with no nameable base
+    // all leave `grouped` untouched.
+    synthesizeReceiverChainCapture(grouped, groupedNodes['@reference.receiver']);
     out.push(grouped);
 
     const extensionFallback = extensionFreeCallFallback(grouped, groupedNodes);
@@ -288,6 +339,9 @@ export function emitKotlinScopeCaptures(
   }
 
   setKotlinClassAnnotationFacts(filePath, materializeClassAnnotationFacts(classAnnotations));
+  setKotlinSpringAopFacts(filePath, springAopFacts);
+  setKotlinSpringConditionalFacts(filePath, springConditionalFacts);
+  setKotlinSpringDiFacts(filePath, springDiFacts);
   out.push(...synthesizeCallableFlowCaptures(tree.rootNode, KOTLIN_CALLABLE_CAPTURE_OPTIONS));
   return out;
 }

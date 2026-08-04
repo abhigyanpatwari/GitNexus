@@ -233,8 +233,8 @@ EXAMPLES:
 • Find method overrides (MRO resolution):
   MATCH (winner:Method)-[r:CodeRelation {type: 'METHOD_OVERRIDES'}]->(loser:Method) RETURN winner.name, winner.filePath, loser.filePath, r.reason
 
-• Find DI-injected implementations (beans injected into a consumer class):
-  MATCH (c:Class {name: 'OrderService'})-[r:CodeRelation]->(impl:Class) WHERE r.type = 'INJECTS' RETURN impl.name, r.reason
+• Find DI-injected providers (provider Classes or synthetic factory declarations):
+  MATCH (c:Class {name: 'OrderService'})-[r:CodeRelation]->(provider) WHERE r.type = 'INJECTS' RETURN provider.name, r.reason
 
 • Detect diamond inheritance:
   MATCH (d:Class)-[:CodeRelation {type: 'EXTENDS'}]->(b1), (d)-[:CodeRelation {type: 'EXTENDS'}]->(b2), (b1)-[:CodeRelation {type: 'EXTENDS'}]->(a), (b2)-[:CodeRelation {type: 'EXTENDS'}]->(a) WHERE b1 <> b2 RETURN d.name, b1.name, b2.name, a.name
@@ -280,9 +280,19 @@ Shows categorized incoming/outgoing references (calls, imports, extends, impleme
 WHEN TO USE: After query() to understand a specific symbol in depth. When you need to know all callers, callees, and what execution flows a symbol participates in.
 AFTER THIS: Use impact() if planning changes, or READ gitnexus://repo/{name}/process/{processName} for full execution trace.
 
-Handles disambiguation: if multiple symbols share the same name, returns ranked candidates (each with a relevance score) for you to pick from. Use uid for zero-ambiguity lookup, or narrow the search with file_path and/or kind hints.
+Handles disambiguation: if multiple symbols share the same name, returns ranked candidates (each with a relevance score) for you to pick from. Use uid for zero-ambiguity lookup, or narrow the search with file_path and/or kind hints. The ambiguous response carries totalCandidates — the TRUE match count, not candidates[].length — plus candidatesTruncated:true and a "(showing M)" suffix on message when candidates[] is the shorter window.
 
 NOTE: ACCESSES edges (field read/write tracking) are included in context results with reason 'read' or 'write'. CALLS edges resolve through field access chains and method-call chains (e.g., user.address.getCity().save() produces CALLS edges at each step).
+
+COMPLETENESS OF incoming: alongside symbol/incoming/outgoing the result carries the same epistemic envelope impact() returns:
+- epistemic: 'exact' | 'lower-bound' — 'lower-bound' means callers exist that this view provably does not list.
+- boundaries: string[] — one plain-language sentence per reason. Prose for humans; branch on causes instead.
+- causes: { receiverTyping, dispatchBoundary, externalBoundary } — machine-readable WHY. Every field counts MISSING THINGS, never sentences:
+  - causes.receiverTyping (unit: call sites) > 0 — RESOLVER GAP: the analyzer dropped that many call sites on this name because it could not type the receiver, so they are missing from incoming. Do not read an absent caller as proof none exists.
+  - causes.externalBoundary (unit: call sites) > 0 — the calls left the indexed program (System.out.println, fetch(...)). NOT a defect: no in-graph node could have been reached. An epistemic:'exact' result can carry this.
+  - causes.dispatchBoundary (unit: symbols) > 0 — DI / interface dispatch: implementations plus interface-level consumers behind a boundary static analysis cannot cross. Irreducible.
+
+REQUIRES RE-INDEX: causes.receiverTyping and causes.externalBoundary come from index-time metadata only a current analyzer writes; against an older index they read as absent/0, which is indistinguishable from "nothing was dropped". Re-run \`gitnexus analyze\` before trusting a zero there.
 
 GROUP MODE: set "repo" to "@<groupName>" to run context in each member repo (aggregated list), or "@<groupName>/<groupRepoPath>" for one member. If you use "@<groupName>" only, the member defaults to the lexicographically first key in group.yaml "repos".
 
@@ -403,7 +413,9 @@ AFTER THIS: Run detect_changes() to verify no unexpected side effects.
 
 Each edit is tagged with confidence:
 - "graph": found via knowledge graph relationships (high confidence, safe to accept)
-- "text_search": found via regex text search (lower confidence, review carefully)`,
+- "text_search": found via regex text search (lower confidence, review carefully)
+
+Handles disambiguation via context()'s payload verbatim: an ambiguous symbol_name returns status "ambiguous" with ranked candidates and totalCandidates — the TRUE match count, not candidates[].length — plus candidatesTruncated:true and a "(showing M)" suffix on message when candidates[] is the shorter window. Re-call with symbol_uid.`,
     annotations: DESTRUCTIVE_TOOL_ANNOTATIONS,
     inputSchema: {
       type: 'object',
@@ -448,6 +460,14 @@ Output includes:
 - affected_processes: which execution flows break and at which step
 - affected_modules: which functional areas are hit (direct vs indirect)
 - byDepth: affected symbols grouped by traversal depth (paginated by limit/offset; omitted when summaryOnly:true — use byDepthCounts for totals per depth, pagination object when truncated). Each item includes a processes:[{id,label,processType,step}] field listing the execution flows that symbol participates in. Empty when the symbol has no process membership. Can ALSO be empty when partial:true is set — either the process-aggregation pass hit its cap before detecting affected processes, or per-symbol enrichment was capped on a very large page. When partial:true, do NOT treat processes:[] as proof of no participation; cross-check the top-level affected_processes list.
+- epistemic: 'exact' | 'lower-bound' — whether impactedCount is the whole story. 'lower-bound' means the walk provably missed callers, so the count is a floor. Absent only on skipped probes (ambiguous-candidate lists, group fan-out).
+- boundaries: string[] — one plain-language sentence per reason the count is short. Prose for humans; branch on causes instead.
+- causes: { receiverTyping, dispatchBoundary, externalBoundary } — the machine-readable split of WHY, so an agent gating its own edits can tell a fixable analyzer gap from an irreducible one. Every field counts MISSING THINGS, never sentences:
+  - causes.receiverTyping (unit: call sites) > 0 — the RESOLVER GAP signal: the analyzer dropped that many call sites because it could not establish the receiver's type (unresolved constructor, factory, chained expression). Those callers are absent from byDepth. Treat the result as incomplete: grep the symbol name before deleting or renaming.
+  - causes.externalBoundary (unit: call sites) > 0 — those calls left the indexed program (System.out.println, fetch(...), os.environ.*). NOT a defect and NOT a reason the count is short: there is no in-graph node any edge could have reached. An epistemic:'exact' result can carry this.
+  - causes.dispatchBoundary (unit: symbols) > 0 — DI / interface dispatch: that many implementations plus interface-level consumers sit on the far side of a boundary a static walk cannot cross. Irreducible; a compiler refuses here too. A symbol count, not a site count — per-site multiplicity is not retained for these edges — so compare its magnitude with receiverTyping, not its exact value.
+
+REQUIRES RE-INDEX: causes.receiverTyping and causes.externalBoundary are read from index-time metadata that only a current analyzer writes. Against an older index they read as absent/0, which is indistinguishable from "nothing was dropped" — re-run \`gitnexus analyze\` before trusting a zero there.
 
 Depth groups:
 - d=1: WILL BREAK (direct callers/importers)
@@ -458,12 +478,12 @@ TIP: For hub symbols (base error classes, shared utilities) with many direct cal
 
 TIP: Default traversal uses CALLS/IMPORTS/EXTENDS/IMPLEMENTS. For class members, include HAS_METHOD and HAS_PROPERTY in relationTypes. For field access analysis, include ACCESSES in relationTypes.
 
-Handles disambiguation: when multiple symbols share the target name, returns ranked candidates (each with a relevance score) instead of silently picking one. Use target_uid for zero-ambiguity lookup, or narrow with file_path and/or kind hints.
+Handles disambiguation: when multiple symbols share the target name, returns ranked candidates (each with a relevance score) instead of silently picking one. Use target_uid for zero-ambiguity lookup, or narrow with file_path and/or kind hints. totalCandidates is the TRUE match count — it reported the capped resolver window before #2787, so it can now exceed candidates.length; candidatesTruncated:true and a "(showing M of N)" suffix on message mark the shorter window.
 
 EdgeType: CALLS, IMPORTS, EXTENDS, IMPLEMENTS, HAS_METHOD, HAS_PROPERTY, METHOD_OVERRIDES, METHOD_IMPLEMENTS, ACCESSES
 Confidence: 1.0 = certain, <0.8 = fuzzy match
 
-GROUP MODE: set "repo" to "@<groupName>" for cross-repo impact anchored at the default member (lexicographically first key in group.yaml "repos"), or "@<groupName>/<groupRepoPath>" to choose the member (same path keys as in group.yaml). Phase-1 walk runs in that member; cross-boundary fan-out uses the group bridge.
+GROUP MODE: set "repo" to "@<groupName>" for cross-repo impact anchored at the default member (lexicographically first key in group.yaml "repos"), or "@<groupName>/<groupRepoPath>" to choose the member (same path keys as in group.yaml). Phase-1 walk runs in that member; cross-boundary fan-out uses the group bridge. A cross entry with fanout_status:"not_attempted" proves the declared repository boundary, but its far endpoint has no graph symbol; do not interpret empty by_depth or affected_processes on that entry as a completed zero-impact walk. The fan-out attempts at most 50 neighbour crossings, strongest-confidence first; when it stops early the response carries truncated:true, truncatedRepos, and riskEpistemic:"lower-bound" — dropping a crossing can only move risk DOWN, so treat that risk as a floor, never as a verdict.
 
 SERVICE: optional monorepo path prefix (case-sensitive path segments). When "repo" starts with "@", scopes the local impact walk and cross-repo symbol paths to files under that prefix; ignored for a normal indexed repo name.`,
     annotations: READ_ONLY_TOOL_ANNOTATIONS,
@@ -534,7 +554,7 @@ SERVICE: optional monorepo path prefix (case-sensitive path segments). When "rep
           type: 'array',
           items: { type: 'string' },
           description:
-            'Filter: CALLS, IMPORTS, EXTENDS, IMPLEMENTS, HAS_METHOD, HAS_PROPERTY, METHOD_OVERRIDES, METHOD_IMPLEMENTS, ACCESSES (default: usage-based, ACCESSES excluded by default). DI fan-out (consumer→implementer) requires explicitly including INJECTS.',
+            'Filter: CALLS, IMPORTS, EXTENDS, IMPLEMENTS, HAS_METHOD, HAS_PROPERTY, METHOD_OVERRIDES, METHOD_IMPLEMENTS, ACCESSES (default: usage-based, ACCESSES excluded by default). DI edges require INJECTS; Spring proxy/advice edges require ADVISED_BY.',
         },
         includeTests: { type: 'boolean', description: 'Include test files (default: false)' },
         minConfidence: {
@@ -614,7 +634,7 @@ Each finding carries the sink category (command-injection, code-injection, path-
 WHEN TO USE: Security review — "what taint findings exist in this repo / file / function?". Requires the repo to be indexed with \`gitnexus analyze --pdg\`; without that layer the tool returns a clear "no taint layer" note, not an error.
 
 ANCHORLESS (no "target"): enumerates all persisted findings for the repo — bounded ("limit", deterministic order), with "totalFindings" and a "truncated" flag.
-ANCHORED ("target" = file path or symbol/function name): full hop detail for that anchor. A file-ish target (contains "/" or an extension) filters by file; a symbol name resolves like context() — ambiguous names return ranked candidates, unknown names return not-found. Symbol anchoring is line-range granular for intra-procedural findings; cross-function findings match when the symbol is the source OR sink function.
+ANCHORED ("target" = file path or symbol/function name): full hop detail for that anchor. A file-ish target (contains "/" or an extension) filters by file; a symbol name resolves like context() — ambiguous names return ranked candidates plus totalCandidates (the TRUE match count, not candidates[].length), candidatesTruncated:true and a "(showing M)" suffix on message when candidates[] is the shorter window; unknown names return not-found. Symbol anchoring is line-range granular for intra-procedural findings; cross-function findings match when the symbol is the source OR sink function.
 
 CONTRACT CAVEATS (absent flows are NOT proof of safety):
 - Cross-function flows ARE modeled (#2084 M4): a source flowing through helper functions into a sink is found, via summary composition over the call graph (context-insensitive — return/call-site merging is accepted).
@@ -660,7 +680,7 @@ MODES:
 
 WHEN TO USE: comprehension ("what guards this statement?"), data-flow tracing within a function, guard-clause discovery. Requires \`gitnexus analyze --pdg\`; without that layer the tool returns a clear "no PDG layer" note, not an error.
 
-ANCHORING (required): \`target\` is a file path or a symbol/function name (resolved like context()). PDG queries are ALWAYS anchored — there is no whole-repo enumeration (an unanchored basic-block path scan is unbounded; LadybugDB has no rel-property index). A symbol target is line-range granular; an ambiguous name returns ranked candidates, unknown returns not-found.
+ANCHORING (required): \`target\` is a file path or a symbol/function name (resolved like context()). PDG queries are ALWAYS anchored — there is no whole-repo enumeration (an unanchored basic-block path scan is unbounded; LadybugDB has no rel-property index). A symbol target is line-range granular; an ambiguous name returns ranked candidates plus totalCandidates (the TRUE match count, not candidates[].length), candidatesTruncated:true and a "(showing M)" suffix on message when candidates[] is the shorter window; unknown returns not-found.
 
 CONTRACT CAVEATS:
 - CDG labels are binary 'T'/'F' in M5/M6; per-case \`switch\` arm conditions are not yet distinguished (every case dispatch is 'T').
@@ -837,6 +857,8 @@ Traverses CALLS edges plus HAS_METHOD (class → member) edges, so a trace can d
 
 Returns: ordered hops with file:line, and an aligned edges[] of edge type + confidence. When no path exists, reports the furthest reachable node so you know where the chain breaks (and truncated: true if a traversal cap was hit first).
 
+Handles disambiguation: an ambiguous from/to name returns status "ambiguous" with role ("from" or "to"), ranked candidates and totalCandidates — the TRUE match count, not candidates[].length — plus candidatesTruncated:true and a "(showing M)" suffix on message when candidates[] is the shorter window. Re-call with from_uid/to_uid.
+
 CROSS-REPO (experimental): pass repo as "@groupName" to trace across repositories in a group. When from/to live in different member repos, the trace stitches the two repo-local segments across a single ContractLink boundary (e.g. an HTTP consumer→provider link), clamped to one crossing. The result adds crossings[] (the bridged contract with matchType/confidence), tags each hop with its member repo, and a notes[] channel for degraded states. The boundary hop is reported with edge type CONTRACT_LINK. Pass pdg:true to also attach the intra-procedural data-flow (REACHING_DEF) for boundary-adjacent segments when those repos were indexed with --pdg; absent a PDG layer it degrades to call-level hops with a note.
 
 DESTINATION TRACE (cross-repo): for an "@groupName" trace, OMIT to/to_uid/to_file to trace 'from' to wherever its outgoing HTTP call lands. The result ends at the provider endpoint (reported by route + file even when the handler is an anonymous function with no nameable symbol). This is the way to follow a client call to a backend handler you cannot name.`,
@@ -846,6 +868,10 @@ DESTINATION TRACE (cross-repo): for an "@groupName" trace, OMIT to/to_uid/to_fil
       properties: {
         from: { type: 'string', description: 'Source symbol name' },
         from_uid: { type: 'string', description: 'Source symbol UID (zero-ambiguity)' },
+        file: {
+          type: 'string',
+          description: 'Source file path hint for disambiguation (alias for from_file)',
+        },
         from_file: { type: 'string', description: 'Source file path hint for disambiguation' },
         to: {
           type: 'string',
@@ -906,7 +932,7 @@ DESTINATION TRACE (cross-repo): for an "@groupName" trace, OMIT to/to_uid/to_fil
  * `list_repos` and the `group_*` tools are intentionally excluded — they are
  * not single-repo, single-branch operations.
  */
-const BRANCH_SCOPED_TOOLS = new Set([
+export const REPO_SCOPED_TOOLS = new Set([
   'query',
   'cypher',
   'context',
@@ -924,7 +950,7 @@ const BRANCH_SCOPED_TOOLS = new Set([
 ]);
 
 for (const tool of GITNEXUS_TOOLS) {
-  if (!BRANCH_SCOPED_TOOLS.has(tool.name)) continue;
+  if (!REPO_SCOPED_TOOLS.has(tool.name)) continue;
   if (tool.inputSchema.properties.branch) continue;
   // Optional — `required` is left unchanged so omitting `branch` keeps today's
   // workspace-index behavior. Ignored in group mode (repo starts "@").

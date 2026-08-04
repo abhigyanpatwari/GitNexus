@@ -1,6 +1,8 @@
 import { execFileSync, execSync } from 'child_process';
-import { statSync } from 'fs';
+import { statSync, existsSync } from 'fs';
 import path from 'path';
+import os from 'os';
+import { logger } from '../core/logger.js';
 
 // Git utilities for repository detection, commit tracking, and diff analysis
 
@@ -9,10 +11,13 @@ const chompGitOutput = (value: Buffer): string => value.toString().replace(/\r?\
 /**
  * True when the working tree has uncommitted changes that analyze would
  * re-index, even at a matching HEAD. Excludes the paths GitNexus writes during
- * analyze (.gitnexus/, .claude/, .cursor/, AGENTS.md, CLAUDE.md) so its own
- * output never counts as dirty (regression vs PR #1233 behavior). Conservative
- * on any git failure. Shared so `analyze`'s fast-path gate and `status`'s
- * freshness report agree on what "dirty" means.
+ * analyze (.gitnexus/, .claude/, .cursor/, AGENTS.md, CLAUDE.md, and the
+ * repo-local .agents/ mirror) so its own output never counts as dirty
+ * (regression vs PR #1233 behavior). The entire .agents/ tree is excluded,
+ * matching the .claude/ treatment, because the skill mirror writes across
+ * .agents/skills/ and deeper paths. Conservative on any git failure. Shared
+ * so `analyze`'s fast-path gate and `status`'s freshness report agree on what
+ * "dirty" means.
  */
 export const isWorkingTreeDirty = (repoPath: string): boolean => {
   try {
@@ -31,6 +36,8 @@ export const isWorkingTreeDirty = (repoPath: string): boolean => {
         ':(exclude).cursor/**',
         ':(exclude)AGENTS.md',
         ':(exclude)CLAUDE.md',
+        ':(exclude).agents',
+        ':(exclude).agents/**',
       ],
       {
         cwd: repoPath,
@@ -42,6 +49,123 @@ export const isWorkingTreeDirty = (repoPath: string): boolean => {
     return out.trim().length > 0;
   } catch {
     return true; // conservative on git failure
+  }
+};
+
+/**
+ * Snapshot, per candidate file, whether it is safe for `selfCommitContextFiles`
+ * to auto-commit — call this BEFORE `analyze` writes AGENTS.md/CLAUDE.md.
+ * A file is safe when it does not exist yet (first-time creation, the normal
+ * case) or is currently clean (`git status --porcelain` reports nothing for
+ * it). A file that already has an uncommitted user edit is unsafe: without
+ * this check `selfCommitContextFiles` cannot tell that edit apart from the
+ * stats refresh `analyze` is about to write, and would silently sweep both
+ * into one generated-looking commit. Fails closed — a git failure marks the
+ * file unsafe rather than assuming it's clean. See #2639 review round 2.
+ */
+export const snapshotSelfCommitSafety = (
+  repoPath: string,
+  candidateFiles: string[],
+): Map<string, boolean> => {
+  const safety = new Map<string, boolean>();
+  for (const name of candidateFiles) {
+    if (!existsSync(path.join(repoPath, name))) {
+      safety.set(name, true);
+      continue;
+    }
+    try {
+      const status = execFileSync('git', ['status', '--porcelain', '--', name], {
+        cwd: repoPath,
+        stdio: ['ignore', 'pipe', 'ignore'],
+        windowsHide: true,
+        encoding: 'utf8',
+      });
+      safety.set(name, status.trim().length === 0);
+    } catch {
+      safety.set(name, false);
+    }
+  }
+  return safety;
+};
+
+/**
+ * Best-effort auto-commit for the AGENTS.md/CLAUDE.md files `analyze --self-commit`
+ * just (re)wrote. Filters `candidateFiles` down to the ones that actually exist
+ * under `repoPath` AND were marked safe by `snapshotSelfCommitSafety` — a file
+ * that already had an uncommitted edit before this run is skipped (logged),
+ * never swept into the generated commit. Never `git add -A`. `git status
+ * --porcelain` (not `diff --quiet`) is deliberate: a first-time `analyze` run
+ * creates AGENTS.md/CLAUDE.md fresh, and untracked files never show up in
+ * `git diff`, only in `git status` — the same reason `isWorkingTreeDirty`
+ * above uses `--porcelain`. If `git commit` fails after `git add` already
+ * staged the safe files (e.g. missing git identity), the staged files are
+ * reset back to unstaged so the user's index isn't silently left mutated.
+ * No-ops silently (never throws) when: none of the candidate files exist or
+ * are safe, none changed, or any git step fails. Must never fail the
+ * surrounding `analyze` run. See #2639.
+ */
+export const selfCommitContextFiles = (
+  repoPath: string,
+  candidateFiles: string[],
+  preRunSafety: Map<string, boolean>,
+): void => {
+  const existing = candidateFiles.filter((name) => existsSync(path.join(repoPath, name)));
+  if (existing.length === 0) return;
+
+  const safe = existing.filter((name) => preRunSafety.get(name) === true);
+  const skippedDirty = existing.filter((name) => preRunSafety.get(name) !== true);
+  if (skippedDirty.length > 0) {
+    logger.warn(
+      { files: skippedDirty },
+      'gitnexus: --self-commit skipping file(s) with uncommitted changes from before this analyze run',
+    );
+  }
+  if (safe.length === 0) return;
+
+  try {
+    const status = execFileSync('git', ['status', '--porcelain', '--', ...safe], {
+      cwd: repoPath,
+      stdio: ['ignore', 'pipe', 'ignore'],
+      windowsHide: true,
+      encoding: 'utf8',
+    });
+    if (status.trim().length === 0) return; // nothing to commit
+  } catch {
+    return; // git failed (not a repo, git missing, etc.) — nothing to do
+  }
+
+  try {
+    execFileSync('git', ['add', '--', ...safe], {
+      cwd: repoPath,
+      stdio: 'ignore',
+      windowsHide: true,
+    });
+  } catch (err) {
+    logger.warn({ err, files: safe }, 'gitnexus: --self-commit failed to stage context files');
+    return;
+  }
+
+  try {
+    execFileSync(
+      'git',
+      ['commit', '-m', 'chore(gitnexus): refresh index stats [skip ci]', '--', ...safe],
+      { cwd: repoPath, stdio: 'ignore', windowsHide: true },
+    );
+  } catch (err) {
+    // Commit failed after `git add` already staged `safe` (e.g. missing git
+    // identity). Restore the index to its pre-add state for exactly those
+    // files rather than leaving them silently staged — `analyze` reporting
+    // "success" must not leave the user's index mutated.
+    try {
+      execFileSync('git', ['reset', '--', ...safe], {
+        cwd: repoPath,
+        stdio: 'ignore',
+        windowsHide: true,
+      });
+    } catch {
+      /* best-effort restore; nothing more we can do */
+    }
+    logger.warn({ err, files: safe }, 'gitnexus: --self-commit failed to commit context files');
   }
 };
 
@@ -207,6 +331,84 @@ export const getCanonicalRepoRoot = (fromPath: string): string | null => {
   } catch {
     return null;
   }
+};
+
+// getGitInfoExcludePath/getCoreExcludesFilePath are called once per repo
+// PER language/contract extractor during group sync (#2606) — an N-repo
+// group fans out to 6+ extractors each calling these, so an uncached
+// execSync per call turns into O(extractors × repos) blocking subprocess
+// spawns. Both resolve to the same value for the same fromPath for the
+// life of the process (git config/exclude files don't change mid-run), so
+// memoize by fromPath. ponytail: process-lifetime cache, never invalidated
+// — fine for one-shot CLI runs; the long-lived MCP server would need a
+// TTL or explicit invalidation if a user edits core.excludesFile mid-session.
+const gitInfoExcludePathCache = new Map<string, string | null>();
+const coreExcludesFilePathCache = new Map<string, string>();
+
+/**
+ * Path to the repo's `$GIT_COMMON_DIR/info/exclude` file — git's own
+ * per-repo, untracked exclude list (same tier as `.gitignore` in
+ * precedence, but never committed, so it works even when the caller has
+ * no write access to the repo's tracked content). Shared across every
+ * linked worktree of a repo, matching git's own resolution (#2606).
+ *
+ * Returns `null` when `fromPath` is not inside a git repository or `git`
+ * is unavailable; callers should treat that the same as "no file".
+ */
+export const getGitInfoExcludePath = (fromPath: string): string | null => {
+  const cached = gitInfoExcludePathCache.get(fromPath);
+  if (cached !== undefined) return cached;
+
+  let result: string | null;
+  try {
+    const commonDir = chompGitOutput(
+      execSync('git rev-parse --path-format=absolute --git-common-dir', {
+        cwd: fromPath,
+        stdio: ['ignore', 'pipe', 'ignore'],
+        windowsHide: true,
+      }),
+    );
+    result = commonDir ? path.join(path.resolve(commonDir), 'info', 'exclude') : null;
+  } catch {
+    result = null;
+  }
+  gitInfoExcludePathCache.set(fromPath, result);
+  return result;
+};
+
+/**
+ * Path to git's own global, all-repos ignore file: the value of
+ * `core.excludesFile` (any config scope — system/global/local, resolved
+ * the same way `git` itself would from `fromPath`), or git's documented
+ * default of `$XDG_CONFIG_HOME/git/ignore` when unset (gitignore(5)).
+ * Lowest-precedence source, mirroring git's own behavior (#2606).
+ *
+ * Never throws: an unset key or unavailable `git` falls through to the
+ * default path, which is always computable without `git`.
+ */
+export const getCoreExcludesFilePath = (fromPath: string): string => {
+  const cached = coreExcludesFilePathCache.get(fromPath);
+  if (cached !== undefined) return cached;
+
+  let result: string | undefined;
+  try {
+    const configured = chompGitOutput(
+      execSync('git config --get --type=path core.excludesFile', {
+        cwd: fromPath,
+        stdio: ['ignore', 'pipe', 'ignore'],
+        windowsHide: true,
+      }),
+    );
+    if (configured) result = configured;
+  } catch {
+    // Unset, or git unavailable — fall through to git's documented default.
+  }
+  if (!result) {
+    const xdgConfigHome = process.env.XDG_CONFIG_HOME || path.join(os.homedir(), '.config');
+    result = path.join(xdgConfigHome, 'git', 'ignore');
+  }
+  coreExcludesFilePathCache.set(fromPath, result);
+  return result;
 };
 
 /**

@@ -11,6 +11,7 @@ import type {
   CrossRepoImpact,
   GroupConfig,
   GroupImpactResult,
+  GroupImpactTruncationReason,
   MatchType,
   OutOfScopeLink,
 } from './types.js';
@@ -29,6 +30,7 @@ import {
   readBridgeMeta,
 } from './bridge-db.js';
 import { BRIDGE_SCHEMA_VERSION } from './bridge-schema.js';
+import { compareCodeUnits } from '../../lib/utils.js';
 
 // High limit for the local phase of group impact so collectImpactSymbolUids
 // sees (nearly) all symbols. Bypasses the MCP-facing default of 100.
@@ -39,6 +41,26 @@ export const MAX_SUPPORTED_CROSS_DEPTH = 1;
 
 /** Default wall-clock budget for the Phase 1 `impact` leg when callers omit `timeoutMs`. */
 export const DEFAULT_LOCAL_IMPACT_TIMEOUT_MS = 30_000;
+
+/**
+ * Cap on neighbour fan-outs attempted per group-impact request.
+ *
+ * The bound used to be the wall clock alone, which made the cutoff a function
+ * of machine load: an idle host traversed more crossings and `mergeRisk`
+ * escalated to CRITICAL at three, while a loaded host stopped at two and
+ * reported HIGH or lower — same graph, same arguments, different verdict
+ * (#2787). A count is deterministic, and the neighbour list carries a total
+ * order over the full crossing identity (confidence DESC, then repo, uid,
+ * contract), so the cap keeps the strongest crossings rather than an arbitrary
+ * prefix.
+ *
+ * 50 is borrowed from `MAX_CROSSINGS_TO_TRY` (cross-trace.ts) on cost, not on
+ * scope — that one caps ContractLinks per repo pair inside a trace, this one
+ * caps the total across all neighbour repos in one impact call, and group impact
+ * had no numeric cap at all before #2787. The wall clock stays as a hang
+ * backstop below; this is the bound that normally binds.
+ */
+export const MAX_NEIGHBOR_FANOUT = 50;
 
 const CY_NEIGHBORS_UPSTREAM = `
 MATCH (consumer:Contract)-[l:ContractLink]->(provider:Contract)
@@ -349,12 +371,49 @@ function extractProcessNames(impact: unknown): string[] {
 // No behavior change — `'UNKNOWN'` was already handled correctly at the
 // `(localRisk === 'LOW' || localRisk === 'UNKNOWN')` branch below.
 export function mergeRisk(localRisk: string, cross: CrossRepoImpact[]): string {
-  const highConf = cross.some((c) => c.contract.confidence >= 0.85);
+  const traversed = cross.filter((c) => c.fanout_status !== 'not_attempted');
+  const highConf = traversed.some((c) => c.contract.confidence >= 0.85);
   if (localRisk === 'CRITICAL') return 'CRITICAL';
-  if (cross.length >= 3) return 'CRITICAL';
+  if (traversed.length >= 3) return 'CRITICAL';
   if (highConf) return 'HIGH';
-  if (cross.length > 0 && (localRisk === 'LOW' || localRisk === 'UNKNOWN')) return 'MEDIUM';
+  if (traversed.length > 0 && (localRisk === 'LOW' || localRisk === 'UNKNOWN')) return 'MEDIUM';
   return localRisk;
+}
+
+/**
+ * Build the truncation fields every `runGroupImpact` return path shares.
+ *
+ * `riskEpistemic` must follow `truncated` mechanically: it is the marker that
+ * tells a caller the `risk` value is a floor rather than a verdict, and
+ * `mergeRisk` can only under-report once a crossing is dropped. Attaching it at
+ * each return let two of the four paths set `truncated` without it, so a
+ * truncated result read as complete — deriving it in one place is what keeps
+ * the invariant from drifting again (#2787).
+ */
+function truncationFields(
+  truncated: boolean,
+  // Only read on the truncated branch, so the not-truncated call sites omit it
+  // rather than passing a reason that is thrown away.
+  reasonIfTruncated: GroupImpactTruncationReason = 'partial',
+): Pick<GroupImpactResult, 'truncated' | 'truncationReason' | 'riskEpistemic'> {
+  if (!truncated) return { truncated: false };
+  return { truncated: true, truncationReason: reasonIfTruncated, riskEpistemic: 'lower-bound' };
+}
+
+function addCrossImpact(cross: CrossRepoImpact[], candidate: CrossRepoImpact): void {
+  const sameBoundary = (entry: CrossRepoImpact): boolean =>
+    entry.repo_path === candidate.repo_path && entry.contract.id === candidate.contract.id;
+
+  if (candidate.fanout_status === 'not_attempted') {
+    if (cross.some(sameBoundary)) return;
+  } else {
+    const boundaryOnlyIndex = cross.findIndex(
+      (entry) => sameBoundary(entry) && entry.fanout_status === 'not_attempted',
+    );
+    if (boundaryOnlyIndex >= 0) cross.splice(boundaryOnlyIndex, 1);
+  }
+
+  cross.push(candidate);
 }
 
 export async function ensureBridgeReady(
@@ -431,7 +490,18 @@ export async function resolveBridgeNeighbors(
     const n = rowToNeighbor(raw);
     if (n) neighbors.push(n);
   }
-  neighbors.sort((a, b) => b.confidence - a.confidence);
+  // Sort on the FULL crossing identity — the same triple the fan-out dedups on
+  // below (`repo\0uid\0contractId`). Two links that share (confidence, repo,
+  // uid) but differ in contract both survive that dedup, so leaving contractId
+  // out of the comparator makes them compare 0 and fall back to raw bridge row
+  // order, which is what decides who lands past MAX_NEIGHBOR_FANOUT (#2787).
+  neighbors.sort(
+    (a, b) =>
+      b.confidence - a.confidence ||
+      compareCodeUnits(a.neighborRepo, b.neighborRepo) ||
+      compareCodeUnits(a.neighborUid, b.neighborUid) ||
+      compareCodeUnits(a.contractId, b.contractId),
+  );
   return neighbors;
 }
 
@@ -497,7 +567,7 @@ export async function runGroupImpact(
       group: name,
       cross: [],
       outOfScope: [],
-      truncated: true,
+      ...truncationFields(true, 'timeout'),
       truncatedRepos: [],
       summary: {
         direct: 0,
@@ -507,7 +577,6 @@ export async function runGroupImpact(
       },
       risk: 'UNKNOWN',
       timeoutMs,
-      truncationReason: 'timeout',
       crossDepthWarning,
     };
   }
@@ -531,7 +600,7 @@ export async function runGroupImpact(
         group: name,
         cross: [],
         outOfScope: [],
-        truncated: false,
+        ...truncationFields(false),
         truncatedRepos: [],
         summary: {
           direct: 0,
@@ -554,7 +623,7 @@ export async function runGroupImpact(
       group: name,
       cross: [],
       outOfScope: [],
-      truncated: Boolean((local as { partial?: boolean }).partial),
+      ...truncationFields(Boolean((local as { partial?: boolean }).partial), 'partial'),
       truncatedRepos: [],
       summary: {
         direct: s.direct ?? 0,
@@ -564,7 +633,6 @@ export async function runGroupImpact(
       },
       risk: String((local as { risk?: string }).risk ?? 'LOW'),
       timeoutMs,
-      truncationReason: (local as { partial?: boolean }).partial ? 'partial' : undefined,
       crossDepthWarning,
     };
   }
@@ -576,6 +644,10 @@ export async function runGroupImpact(
   const cross: CrossRepoImpact[] = [];
   const outOfScope: OutOfScopeLink[] = [];
   const truncatedRepos: string[] = [];
+  /** Real `impactByUid` fan-outs issued — what MAX_NEIGHBOR_FANOUT bounds. */
+  let attemptedFanouts = 0;
+  /** True when the wall-clock backstop, not the count cap, cut the fan-out. */
+  let fanoutTimedOut = false;
 
   try {
     const neighbors = await resolveBridgeNeighbors(handle, {
@@ -587,7 +659,12 @@ export async function runGroupImpact(
     const seen = new Set<string>();
 
     for (const n of neighbors) {
-      if (servicePrefix && !fileMatchesServicePrefix(n.neighborFilePath, servicePrefix)) {
+      const manifestOnly = n.neighborUid.startsWith('manifest::');
+      if (
+        servicePrefix &&
+        !manifestOnly &&
+        !fileMatchesServicePrefix(n.neighborFilePath, servicePrefix)
+      ) {
         continue;
       }
       if (!repoInSubgroup(n.neighborRepo, subgroup)) {
@@ -604,8 +681,18 @@ export async function runGroupImpact(
       if (seen.has(key)) continue;
       seen.add(key);
 
-      const remainingMs = deadline - Date.now();
-      if (remainingMs <= 0) {
+      // Deterministic bound first: the count decides the cutoff on every host.
+      // Manifest-only crossings are exempt because they cost no `impactByUid`
+      // and dropping them regresses #2784.
+      if (!manifestOnly && attemptedFanouts >= MAX_NEIGHBOR_FANOUT) {
+        truncatedRepos.push(n.neighborRepo);
+        continue;
+      }
+      // Wall clock second, as a hang backstop only. It is load-dependent by
+      // construction, so when it is what fired the response must say `timeout`,
+      // not the generic `partial` it used to report.
+      if (!manifestOnly && deadline - Date.now() <= 0) {
+        fanoutTimedOut = true;
         truncatedRepos.push(n.neighborRepo);
         continue;
       }
@@ -621,11 +708,41 @@ export async function runGroupImpact(
         continue;
       }
 
+      // A manifest link can prove the repository boundary even when its far
+      // endpoint has no graph symbol of its own (for example, a string-based
+      // RPC dispatch). Those endpoints deliberately use a deterministic
+      // `manifest::...` UID. Calling impactByUid with that synthetic value can
+      // never succeed because it is not a node in the verified neighbor
+      // repository; dropping the crossing here made `group sync` report the
+      // manifest link while `group impact` silently returned cross=0 (#2722).
+      //
+      // Preserve the proven crossing with an empty local fan-out. Real UIDs
+      // still take the normal impactByUid path below, where failures remain
+      // truncations rather than false successful traversals.
+      if (manifestOnly) {
+        addCrossImpact(cross, {
+          repo: regName,
+          repo_path: n.neighborRepo,
+          contract: {
+            id: n.contractId,
+            type: n.contractType as ContractType,
+            match_type: 'manifest',
+            confidence: n.confidence,
+          },
+          by_depth: {},
+          affected_processes: [],
+          fanout_status: 'not_attempted',
+        });
+        continue;
+      }
+
+      const remainingMs = deadline - Date.now();
       // Phase-2 hardening: race each impactByUid against a per-call
       // timeout derived from the remaining budget. Without this wrap a
       // single hung neighbor would pin the request past the clamped
       // timeout, which Codex's adversarial review on PR #1331 flagged
       // as the still-open half of CodeQL #184 / js/resource-exhaustion.
+      attemptedFanouts += 1;
       const { value: fan, timedOut: neighborTimedOut } = await safeNeighborImpact(
         deps.port,
         neighborHandle.id,
@@ -640,11 +757,12 @@ export async function runGroupImpact(
         remainingMs,
       );
       if (neighborTimedOut || fan == null) {
+        if (neighborTimedOut) fanoutTimedOut = true;
         truncatedRepos.push(n.neighborRepo);
         continue;
       }
 
-      cross.push({
+      addCrossImpact(cross, {
         repo: regName,
         repo_path: n.neighborRepo,
         contract: {
@@ -671,7 +789,12 @@ export async function runGroupImpact(
     group: name,
     cross,
     outOfScope,
-    truncated,
+    // The risk VALUE is never clamped down. `mergeRisk` is monotone increasing
+    // in the traversed-crossing count, so truncation can only under-report —
+    // and under-reporting a blast radius is the unsafe direction (an agent told
+    // LOW proceeds; told CRITICAL it stops). Marking the floor keeps the
+    // warning intact while making the incompleteness legible.
+    ...truncationFields(truncated, fanoutTimedOut ? 'timeout' : 'partial'),
     truncatedRepos: [...new Set(truncatedRepos)],
     summary: {
       direct: localSum.direct ?? 0,
@@ -681,10 +804,12 @@ export async function runGroupImpact(
     },
     risk: mergeRisk(localRisk, cross),
     timeoutMs,
-    truncationReason: truncated ? 'partial' : undefined,
     crossDepthWarning,
   };
   return result;
 }
 
 export { normalizeServicePrefix, fileMatchesServicePrefix } from './group-path-utils.js';
+// Re-exported, not redefined: the single definition lives in lib/utils.ts, but
+// this module's own surface is what the #2787 regression test imports it from.
+export { compareCodeUnits };

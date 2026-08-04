@@ -24,8 +24,8 @@
  * `storage/parsedfile-store.ts`.
  *
  * Byte-identity (issue acceptance): the sink reuses the SAME shared row
- * builders (`buildBasicBlockRow`, `buildRelRow`) and label derivation
- * (`getNodeLabel`) as `streamAllCSVsToDisk`, so the streamed CSV line SET is
+ * builders (`buildBasicBlockRow`, `buildRelRow`) and pair classification
+ * (`relPairKeyFor`) as `streamAllCSVsToDisk`, so the streamed CSV line SET is
  * identical to the whole-graph emit's, and the bulk COPY loads the same rows →
  * the persisted graph is SET-identical and DB-identical. The guarantee is
  * set-level, not byte-level on the CSV file: the sink streams rows in emit
@@ -49,12 +49,19 @@ import type { GraphNode, GraphRelationship, RelationshipType } from 'gitnexus-sh
 import type { KnowledgeGraph } from '../graph/types.js';
 import {
   BASICBLOCK_CSV_HEADER,
+  DECLARED_RELATION_PAIRS,
   REL_CSV_HEADER,
   buildBasicBlockRow,
   buildRelRow,
 } from './csv-generator.js';
-import { getNodeLabel } from './rel-pair-routing.js';
-import { NODE_TABLES, type NodeTableName } from './schema.js';
+import {
+  VALID_NODE_TABLES,
+  assertDeclaredPair,
+  relPairKeyFor,
+  splitRelPairKey,
+} from './rel-pair-routing.js';
+import { DEFAULT_EMIT_CHUNK_ROWS, SyncCsvWriter } from './sync-csv-writer.js';
+import { type NodeTableName } from './schema.js';
 
 /**
  * PDG edge types streamed per-file (all intra-block BasicBlock→BasicBlock).
@@ -73,103 +80,9 @@ const PDG_EDGE_TYPES: ReadonlySet<RelationshipType> = new Set<RelationshipType>(
 ]);
 
 /** Default streamed-write buffer (rows). Matches the whole-graph emit's
- *  `FLUSH_EVERY` order of magnitude; overridable via `GITNEXUS_PDG_EMIT_CHUNK_SIZE`. */
-export const DEFAULT_PDG_EMIT_CHUNK_ROWS = 500;
-
-/**
- * Synchronous buffered CSV writer. Buffers up to `chunkRows` rows, then issues
- * one `fs.writeSync` straight to the OS (no in-process stream buffer). Header
- * is written into the buffer at construction and is NOT counted in `rows`
- * (matching `BufferedCSVWriter` semantics, so manifest row counts line up).
- */
-class SyncCsvWriter {
-  private fd: number;
-  private buf: string[] = [];
-  private readonly chunkRows: number;
-  rows = 0;
-  /**
-   * First IO error this writer hit (a `fs.writeSync` short-write loop throwing
-   * on e.g. disk-full). Once poisoned the writer refuses further rows and
-   * skips its final flush; the sink surfaces it from {@link PdgEmitSink.finalize}
-   * so a truncated CSV is never handed to the bulk COPY (#2202 review #4). A
-   * streamed-write failure is an IO fault, not the CFG-logic error that the
-   * emit loop's per-file try/catch is built to swallow — poisoning routes it
-   * past that catch to a loud failure.
-   */
-  poison: unknown | undefined = undefined;
-
-  constructor(
-    readonly csvPath: string,
-    header: string,
-    chunkRows: number,
-  ) {
-    // Guard a 0/negative buffer: the flush modulo would never fire and `buf`
-    // would grow unbounded, defeating the whole point of streaming.
-    this.chunkRows = Math.max(1, chunkRows);
-    // Exclusive create (O_EXCL): the streamed-CSV dir is wiped + recreated fresh
-    // by the PdgEmitSink constructor before any writer opens a file, so the path
-    // never pre-exists — 'wx' both matches that invariant and refuses to follow
-    // a pre-planted symlink at the path (CWE-377 / CodeQL js/insecure-temporary-file).
-    this.fd = fs.openSync(csvPath, 'wx');
-    this.buf.push(header);
-  }
-
-  addRow(row: string): void {
-    // A poisoned writer is dead — stop buffering so memory can't grow on a
-    // writer whose fd is already in a bad state; finalize will report the fault.
-    if (this.poison !== undefined) return;
-    this.buf.push(row);
-    this.rows++;
-    // Flush on DATA-row count, not buffer length: the header occupies buf[0]
-    // until the first flush, so a `buf.length >= chunkRows` test would fire one
-    // row early on the first chunk. Counting rows makes every flush exactly
-    // `chunkRows` rows.
-    if (this.rows % this.chunkRows === 0) this.flushOrPoison();
-  }
-
-  /** Flush, recording (and re-throwing) any IO error as poison. Re-throwing
-   *  lets the immediate caller log the per-file failure; the persisted `poison`
-   *  is the backstop that makes finalize fail loudly even when that throw is
-   *  swallowed by the emit loop's CFG try/catch. */
-  private flushOrPoison(): void {
-    try {
-      this.flush();
-    } catch (e) {
-      this.poison ??= e;
-      throw e;
-    }
-  }
-
-  private flush(): void {
-    if (this.buf.length === 0) return;
-    const data = Buffer.from(this.buf.join('\n') + '\n', 'utf8');
-    // fs.writeSync can return a short byte count; loop until the whole buffer
-    // lands so a partial write never truncates a CSV row mid-field.
-    let offset = 0;
-    while (offset < data.length) {
-      offset += fs.writeSync(this.fd, data, offset, data.length - offset);
-    }
-    this.buf.length = 0;
-  }
-
-  /** Flush remaining rows (unless already poisoned) and close the fd. Never
-   *  throws: a final-flush IO error is recorded as poison and the fd is still
-   *  closed, so a write error neither leaks an fd nor escapes here — the sink
-   *  reads {@link poison} after closing every writer and fails loudly then. */
-  close(): void {
-    try {
-      if (this.poison === undefined) this.flush();
-    } catch (e) {
-      this.poison ??= e;
-    } finally {
-      try {
-        fs.closeSync(this.fd);
-      } catch {
-        /* fd may already be invalid after an IO fault — nothing to recover */
-      }
-    }
-  }
-}
+ *  `FLUSH_EVERY` order of magnitude; overridable via `GITNEXUS_PDG_EMIT_CHUNK_SIZE`.
+ *  Aliases the shared default in `sync-csv-writer.ts` (#2680 extraction). */
+export const DEFAULT_PDG_EMIT_CHUNK_ROWS = DEFAULT_EMIT_CHUNK_ROWS;
 
 /**
  * COPY manifest produced by {@link PdgEmitSink.finalize}. Shaped to merge
@@ -190,7 +103,6 @@ export interface PdgEmitManifest {
  * `--pdg` emit, then {@link finalize} once after the last language.
  */
 export class PdgEmitSink implements KnowledgeGraph {
-  private readonly validTables: Set<string>;
   private bbWriter: SyncCsvWriter | undefined;
   /** pairKey (`From|To`) → writer. PDG edges are all `BasicBlock|BasicBlock`,
    *  but the map keeps the sink general and the manifest pair-keyed. */
@@ -221,7 +133,6 @@ export class PdgEmitSink implements KnowledgeGraph {
     private readonly pdgCsvDir: string,
     private readonly chunkRows: number = DEFAULT_PDG_EMIT_CHUNK_ROWS,
   ) {
-    this.validTables = new Set<string>(NODE_TABLES as readonly string[]);
     // Clear any streamed CSVs left by a previous (possibly crashed) run so a
     // later COPY never picks up stale rows.
     fs.rmSync(pdgCsvDir, { recursive: true, force: true });
@@ -252,14 +163,27 @@ export class PdgEmitSink implements KnowledgeGraph {
 
   addRelationship(relationship: GraphRelationship): void {
     if (PDG_EDGE_TYPES.has(relationship.type)) {
-      const fromLabel = getNodeLabel(relationship.sourceId);
-      const toLabel = getNodeLabel(relationship.targetId);
-      // Skip edges whose endpoint labels are not valid node tables — mirrors
-      // `RelPairRouter` exactly so the streamed set matches the whole-graph set.
-      if (!this.validTables.has(fromLabel) || !this.validTables.has(toLabel)) return;
-      const pairKey = `${fromLabel}|${toLabel}`;
+      // Classify + skip via the SHARED `relPairKeyFor`, not a local copy of its
+      // three lines, so the streamed set cannot drift from the whole-graph set
+      // `RelPairRouter` produces. `undefined` = an endpoint label is not a node
+      // table, so the edge is dropped exactly as the router drops it.
+      const pairKey = relPairKeyFor(
+        relationship.sourceId,
+        relationship.targetId,
+        VALID_NODE_TABLES,
+      );
+      if (pairKey === undefined) return;
+      assertDeclaredPair(
+        pairKey,
+        DECLARED_RELATION_PAIRS,
+        relationship.type,
+        relationship.sourceId,
+        relationship.targetId,
+      );
       let writer = this.relWriters.get(pairKey);
       if (writer === undefined) {
+        // Cold: once per pair, so decoding the key back into labels is free.
+        const [fromLabel, toLabel] = splitRelPairKey(pairKey);
         try {
           writer = new SyncCsvWriter(
             path.join(this.pdgCsvDir, `rel_${fromLabel}_${toLabel}.csv`),
@@ -373,6 +297,11 @@ export class PdgEmitSink implements KnowledgeGraph {
   }
   forEachRelationship(fn: (rel: GraphRelationship) => void): void {
     this.real.forEachRelationship(fn);
+  }
+  forEachRelationshipFields(
+    fn: (sourceId: string, targetId: string, type: RelationshipType, confidence: number) => void,
+  ): void {
+    this.real.forEachRelationshipFields(fn);
   }
   getNode(id: string): GraphNode | undefined {
     return this.real.getNode(id);

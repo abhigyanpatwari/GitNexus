@@ -352,13 +352,13 @@ jobs:
         with:
           persist-credentials: false # this job uploads artifacts (artipacked)
 
-      - uses: actions/setup-node@48b55a011bda9f5d6aeb4c2d9c7362e8dae4041e # v6.4.0
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
         with:
           node-version: 22
 
       - name: Ensure Python (arm64 Windows only)
         if: matrix.platform_arch == 'win32-arm64'
-        uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6.3.0
+        uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
         with:
           python-version: '3.12'
 
@@ -414,7 +414,13 @@ jobs:
           # prebuilds/<platform>-<arch>/<something>.node.
           ( cd "$pkgdir" && npx --no-install prebuildify --napi --strip )
 
-          out=$(find "$pkgdir/prebuilds" -name '*.node' -print -quit)
+          # `|| true` so the `test -n` below is the thing that reports a missing
+          # prebuild.  `rm -rf` above deletes the directory, so a prebuildify
+          # run that emits nothing without failing leaves `find` searching a
+          # path that no longer exists — it exits 1 and `-e` would kill the step
+          # before the `::error::` line, which is exactly the case that line
+          # exists to explain.
+          out=$(find "$pkgdir/prebuilds" -name '*.node' -print -quit || true)
           test -n "$out" || { echo "::error::prebuildify produced no .node"; exit 1; }
           produced=$(basename "$(dirname "$out")")
           [ "$produced" = "$PLATFORM_ARCH" ] || { echo "::error::built $produced, expected $PLATFORM_ARCH"; exit 1; }

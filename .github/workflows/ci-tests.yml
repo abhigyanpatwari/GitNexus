@@ -46,7 +46,7 @@ jobs:
         with:
           path: ~/.lbdb/extension
           key: lbug-fts-${{ runner.os }}-${{ hashFiles('gitnexus/package-lock.json') }}
-      - name: Ensure FTS extension installed
+      - name: Ensure FTS + VECTOR extensions installed
         run: npx tsx scripts/ensure-fts.ts
         working-directory: gitnexus
       - name: Run sharded tests with coverage (blob)
@@ -205,6 +205,10 @@ jobs:
     # tsx-on-source path in CI (both entry points stay covered).
     env:
       GITNEXUS_REQUIRE_FTS: '1'
+      # #2623: the win32 VECTOR gate is gone, so the vector suites genuinely
+      # run here — require the extension so an unavailable VECTOR is a loud
+      # failure, never a silent skip (same contract as GITNEXUS_REQUIRE_FTS).
+      GITNEXUS_REQUIRE_VECTOR: '1'
       GITNEXUS_E2E_CLI: dist
       # #2449: hosted Windows runners intermittently push the busiest shard past
       # the default 15-minute watchdog. 20 minutes restores real headroom while
@@ -219,19 +223,21 @@ jobs:
       - uses: ./.github/actions/setup-gitnexus
         with:
           build: 'true'
-      # Warm-cache the installed LadybugDB FTS extension (~/.lbdb/extension) per
-      # OS + lockfile so a warm run skips the network install entirely, and the
-      # parallel shards share one download across runs. Pure reliability/speed:
-      # on a cache miss the tests self-install FTS on demand (see
-      # test/helpers/fts-availability.ts), so a miss just falls back to install —
-      # never a correctness dependency. Keyed by lockfile hash so a LadybugDB
-      # version bump re-installs; per-OS because the extension is a native binary.
+      # Warm-cache the installed LadybugDB FTS + VECTOR extensions
+      # (~/.lbdb/extension) per OS + lockfile so a warm run skips the network
+      # install entirely, and the parallel shards share one download across
+      # runs. Pure reliability/speed: on a cache miss the tests self-install on
+      # demand (see test/helpers/fts-availability.ts), so a miss just falls
+      # back to install — never a correctness dependency. Keyed by lockfile
+      # hash so a LadybugDB version bump re-installs; per-OS because the
+      # extensions are native binaries. (Key name kept as lbug-fts for cache
+      # continuity — the path covers every extension in the shared home.)
       - name: Cache LadybugDB FTS extension
         uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v5
         with:
           path: ~/.lbdb/extension
           key: lbug-fts-${{ runner.os }}-${{ hashFiles('gitnexus/package-lock.json') }}
-      - name: Ensure FTS extension installed
+      - name: Ensure FTS + VECTOR extensions installed
         run: npx tsx scripts/ensure-fts.ts
         working-directory: gitnexus
       - name: Run platform-sensitive tests
@@ -378,15 +384,16 @@ jobs:
             "$PREFIX/bin/gitnexus" --version
           fi
 
-  # Node engines-floor gate (#2372). The embedding resolvers statically named
-  # `module.registerHooks`, which only exists on Node >= 22.15 / >= 23.5, so on
-  # the supported floor (engines: >=22.0.0) those ESM modules failed to LINK —
-  # a class vitest/tsx transforms structurally mask, and the default
-  # `node-version: 22` (resolves to latest) never hits. Build the dist on 22.x,
-  # then import-link every module R1 names as a load surface on a pinned 22.14
-  # so a regression fails here instead of shipping to users on that Node range.
+  # Node engines-floor gate (#2372). A module that statically names an API
+  # newer than the supported floor (e.g. `module.registerHooks`, added in
+  # 22.15) fails to LINK on the floor — a class vitest/tsx transforms
+  # structurally mask, and the default `node-version: 22` (resolves to latest)
+  # never hits. Build the dist on 22.x, then import-link every module R1 names
+  # as a load surface on the pinned engines floor (22.18.0, per package.json
+  # `engines: ^22.18.0 || >=24.11.0`) so a regression fails here instead of
+  # shipping to users on the minimum supported Node.
   node-floor-compat:
-    name: node floor compat (22.14)
+    name: node floor compat (22.18)
     runs-on: ubuntu-latest
     timeout-minutes: 15
     steps:
@@ -395,7 +402,7 @@ jobs:
       - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
         with:
           persist-credentials: false
-      - uses: actions/setup-node@48b55a011bda9f5d6aeb4c2d9c7362e8dae4041e # v6.4.0
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
         with:
           node-version: '22'
           cache: npm
@@ -413,16 +420,16 @@ jobs:
       # Switch to the engines-floor Node AFTER building — native deps built on
       # 22.x load across the whole 22.x ABI line, and nothing installs after this
       # (so no package-manager cache is needed).
-      - uses: actions/setup-node@48b55a011bda9f5d6aeb4c2d9c7362e8dae4041e # v6.4.0
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
         with:
-          node-version: '22.14.0'
+          node-version: '22.18.0'
           package-manager-cache: false
-      - name: Import-link the built dist on Node 22.14
+      - name: Import-link the built dist on Node 22.18
         shell: bash
         run: |
           set -euo pipefail
           node --version
-          node --version | grep -q '^v22\.14\.' || { echo "expected Node 22.14.x" >&2; exit 1; }
+          node --version | grep -q '^v22\.18\.' || { echo "expected Node 22.18.x" >&2; exit 1; }
           for m in \
             core/embeddings/runtime-install \
             core/embeddings/onnxruntime-node-resolver \
@@ -481,6 +488,63 @@ jobs:
         run: node --import tsx bench/scope-capture/measure.mjs --check
         working-directory: gitnexus
 
+      - name: Callable-value-flow target-index guards (#2693)
+        # Build-free: asserts buildGraphTargetIndex resolves an unchanged target
+        # set (fingerprint), stays linear in def count, and that the #2693
+        # widened gate — which now considers VALUE bindings, a population that
+        # outnumbers callables in real source — stays within its measured
+        # overhead of the pre-#2693 callable-only cost. The overhead budget also
+        # guards the DESIGN: value bindings are joined to their callable node by
+        # position, never by name through resolveDefGraphId, whose label-agnostic
+        # simpleKey fallback would alias a binding onto any same-named callable.
+        run: node --import tsx bench/callable-value-flow/measure.mjs --check
+        working-directory: gitnexus
+
+      - name: C++ qualified-namespace resolution guards (#2788)
+        # Build-free: asserts resolveCppQualifiedNamespaceMember resolves an
+        # unchanged symbol set (fingerprint) and that per-call-site cost stays
+        # independent of corpus size. Rationale and history: see the header of
+        # bench/cpp-qualified-ns/measure.mjs.
+        run: node --import tsx bench/cpp-qualified-ns/measure.mjs --check
+        working-directory: gitnexus
+
+      - name: Receiver-resolution drop guards
+        # NOT build-free: this one runs the real pipeline, so it needs dist/
+        # (the setup action above builds). ~2m15s.
+        #
+        # Two arms, because neither gates alone. The count arm asserts the
+        # call-only drop count per language — call-only because Case 0's
+        # recorder gates on the receiver's punctuation, not on what the
+        # reference is, so property reads would inflate it by ~20%. The shape
+        # arm asserts the state of each receiver spelling by EDGE PRESENCE,
+        # which is the only arm that can see shapes the recorder is blind to:
+        # they emit no edge AND no drop, so fixing them moves the count by zero.
+        #
+        # `repos[0]` is no longer among them (#2766): Case 0's gate now accepts
+        # a minted receiver chain instead of testing the receiver's punctuation,
+        # so subscript receivers record a drop and ARE countable. 13 shapes moved
+        # INVISIBLE -> VISIBLE that way. `?.` and explicit type args remain
+        # invisible on some languages, so the shape arm still earns its keep.
+        #
+        # The check is EXACT-MATCH, which is strictly stronger than a ratchet:
+        # the count cannot rise without a deliberate rebaseline, and the
+        # rebaseline path demands the movement be explained. No separate
+        # drop-ratchet gate is needed on top of this.
+        run: node --import tsx bench/receiver-resolution/measure.mjs --check
+        working-directory: gitnexus
+
+      - name: Scope-emission guards (#2699)
+        # Build-free: asserts the JS/TS scope set is unchanged. Block scopes are
+        # what make `let`/`const` in sibling blocks distinct bindings, but a
+        # scope per `statement_block` triples the count and deepens every
+        # scope-chain walk in every function for no semantic gain. Two emit-side
+        # filters drop the waste — function-body blocks (the Function scope
+        # already covers them) and blocks that declare nothing — and this gate
+        # fails if either regresses. Counts are exact, so it catches a change
+        # wall-clock CI could never resolve from noise.
+        run: node --import tsx bench/scope-emission/measure.mjs --check
+        working-directory: gitnexus
+
       - name: CFG construction time / disk / memory guards (#2081 M1)
         # Build-free: asserts collectFunctionCfgs output is unchanged
         # (fingerprint) and that wall-time, cfgSideChannel disk bytes, AND
@@ -510,12 +574,19 @@ jobs:
         working-directory: gitnexus
 
       - name: Cross-language pipeline benchmarks (GITNEXUS_BENCH, serial)
+        # cpp-adl-benchmark.test.ts is not a `*-pipeline-benchmark.test.ts` but
+        # belongs here for the same reason: it is skipIf-gated on GITNEXUS_BENCH,
+        # so it had never run in CI and the PR #1990 ADL emit-scaling guard it
+        # holds was dead. ~45s of test time.
         env:
           GITNEXUS_BENCH: '1'
         run: >-
           npx vitest run --no-file-parallelism
           test/integration/cobol-pipeline-benchmark.test.ts
           test/integration/csharp-pipeline-benchmark.test.ts
+          test/integration/cpp-adl-benchmark.test.ts
+          test/integration/instance-ownership-pipeline-benchmark.test.ts
+          test/integration/spring-bean-resource-benchmark.test.ts
           test/integration/rust-pipeline-benchmark.test.ts
           test/integration/php-pipeline-benchmark.test.ts
           test/integration/ruby-pipeline-benchmark.test.ts
@@ -554,9 +625,9 @@ jobs:
       - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
         with:
           persist-credentials: false
-      - uses: actions/setup-node@48b55a011bda9f5d6aeb4c2d9c7362e8dae4041e # v6.4.0
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
         with:
-          node-version: '22.16.0'
+          node-version: '22.18.0'
           cache: npm
           cache-dependency-path: |
             gitnexus/package-lock.json

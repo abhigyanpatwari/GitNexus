@@ -78,6 +78,7 @@ from .proposer_sandbox import (
     SANDBOX_GITNEXUS as SANDBOX_GITNEXUS,
     SANDBOX_GITNEXUS_REGISTRY,
     SANDBOX_GITNEXUS_SHARED as SANDBOX_GITNEXUS_SHARED,
+    SANDBOX_NODE as SANDBOX_NODE,
     SANDBOX_WORKSPACE,
     ReadOnlyMount,
     SandboxError,
@@ -679,13 +680,21 @@ def aggregate(records: list[dict[str, Any]]) -> dict[str, Any]:
     # unmeasured run makes the whole median unavailable so the gate won't rank
     # a candidate on a cost that was never actually captured.
     valid_costs = [r.get("cost_usd") for r in valid]
-    out["cost_usd"] = None if (not valid or any(cost is None for cost in valid_costs)) else statistics.median(valid_costs)
+    out["cost_usd"] = (
+        None if (not valid or any(cost is None for cost in valid_costs)) else statistics.median(valid_costs)
+    )
     out["resolved"] = sum(1 for r in records if r["resolved"])
     out["runs"] = len(records)
     out["valid_runs"] = len(valid)
     out["excluded_runs"] = len(records) - len(valid)
     out["transcripts_missing"] = sum(1 for r in records if r.get("transcript_missing"))
     out["class"] = records[0].get("class", "")
+    error_kinds: dict[str, int] = {}
+    for r in records:
+        kind = r.get("error_kind")
+        if kind:
+            error_kinds[kind] = error_kinds.get(kind, 0) + 1
+    out["error_kinds"] = error_kinds
     return out
 
 
@@ -700,6 +709,33 @@ def savings(baseline: dict[str, Any], workflow: dict[str, Any]) -> dict[str, Any
         else:
             out[metric] = round(100 * (base - arm) / base, 1) if base else 0.0
     return out
+
+
+def broken_incumbent_arms(
+    results: dict[str, dict[str, dict[str, Any]]],
+    incumbent_arms: set[str],
+) -> list[str]:
+    """Incumbent arms that resolved nothing across every task they ran.
+
+    An incumbent arm is the currently-shipped, presumably-working skill: if it
+    resolves NOTHING across every task it ran, that reads as an environment or
+    harness failure (missing trusted interpreter, stale skill fingerprint,
+    sandbox misconfiguration), not a skill regression. A candidate merely
+    underperforming is a normal, expected outcome and must not trip this —
+    only checking incumbents keeps that distinction.
+
+    Deliberately does NOT require valid_runs > 0 per task: an incumbent that
+    fails every run with an excluded-but-non-systemic error_kind (e.g.
+    "evidence-unverified", which the outage-streak breaker explicitly resets
+    on rather than accumulates) would otherwise never accumulate a single
+    valid run and sail through silently — the exact "quiet no-promotion"
+    outcome this guard exists to catch, and arguably worse than the
+    some-runs-resolved-zero case since here nothing completed at all.
+    aggregate() never marks an excluded/unverifiable row resolved=True, so
+    resolved == 0 alone already covers both cases.
+    """
+    present = incumbent_arms & {arm for arms in results.values() for arm in arms}
+    return sorted(arm for arm in present if all(arms[arm]["resolved"] == 0 for arms in results.values() if arm in arms))
 
 
 def _na(value: Any) -> Any:
@@ -726,8 +762,8 @@ def render_report(results: dict[str, dict[str, dict[str, Any]]]) -> str:
         "efficiency, sum usage from the session transcripts instead",
         "(dedup events sharing one message.id).",
         "",
-        "| task | class | arm | resolved | input | cache_create | cache_read | output | cost $ | wall s | turns | churn |",
-        "| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |",
+        "| task | class | arm | resolved | input | cache_create | cache_read | output | cost $ | wall s | turns | churn | errors |",
+        "| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |",
     ]
     for task_id, arms in results.items():
         for arm, agg in arms.items():
@@ -735,12 +771,14 @@ def render_report(results: dict[str, dict[str, dict[str, Any]]]) -> str:
             resolved_cell = f"{agg['resolved']}/{agg.get('valid_runs', agg['runs'])}"
             if excluded:
                 resolved_cell += f" ({excluded} excluded)"
+            error_cell = ", ".join(f"{kind}×{count}" for kind, count in sorted(agg.get("error_kinds", {}).items()))
             lines.append(
                 f"| {task_id} | {agg['class']} | {arm} | {resolved_cell} "
                 f"| {agg['input_tokens']:.0f} | {agg['cache_creation_input_tokens']:.0f} "
                 f"| {agg['cache_read_input_tokens']:.0f} | {agg['output_tokens']:.0f} "
                 f"| {_cost_cell(agg['cost_usd'])} | {agg['duration_s']:.0f} | {agg['num_turns']:.0f} "
-                f"| {agg['diff_files']:.0f}/+{agg['diff_insertions']:.0f}/−{agg['diff_deletions']:.0f} |"
+                f"| {agg['diff_files']:.0f}/+{agg['diff_insertions']:.0f}/−{agg['diff_deletions']:.0f} "
+                f"| {error_cell} |"
             )
         for arm in arms:
             if arm != "baseline" and "baseline" in arms:
@@ -749,7 +787,7 @@ def render_report(results: dict[str, dict[str, dict[str, Any]]]) -> str:
                     f"| {task_id} | {arms[arm]['class']} | **{arm} savings %** | — "
                     f"| {s['input_tokens']} | {s['cache_creation_input_tokens']} "
                     f"| {s['cache_read_input_tokens']} | {s['output_tokens']} "
-                    f"| {_na(s['cost_usd'])} | {s['duration_s']} | — | — |"
+                    f"| {_na(s['cost_usd'])} | {s['duration_s']} | — | — | — |"
                 )
     lines.append("")
     all_aggs = [agg for arms in results.values() for agg in arms.values()]
@@ -1333,6 +1371,17 @@ def main() -> None:
         }
         (out_dir / "promotion.json").write_text(json.dumps(promotion, indent=2) + "\n")
     print(f"\n{report}\n\nWritten to {out_dir}/")
+    broken_incumbents = broken_incumbent_arms(results, set(CANDIDATE_ARMS.values()))
+    if broken_incumbents:
+        # Fail loudly rather than let a broken environment read as a quiet
+        # "no promotion, incumbent stands."
+        print(
+            f"[harness-health] incumbent arm(s) {', '.join(broken_incumbents)} resolved zero "
+            "tasks across every valid run — this looks like an environment/harness failure, "
+            "not a normal candidate miss. See the errors column in report.md and error_detail "
+            "in results.jsonl. Exiting non-zero rather than reporting a quiet no-promotion."
+        )
+        raise SystemExit(1)
     if outage_tripped:
         # Non-zero exit so a driver (evolve.py) treats the partial benchmark as a
         # failed run and halts instead of proposing from outage-truncated evidence.

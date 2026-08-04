@@ -25,9 +25,9 @@ import path from 'path';
 import fs from 'fs';
 import os from 'os';
 
-import lbug from '@ladybugdb/core';
 import { getExtensionInstallChildProcessArgs } from '../../src/core/lbug/extension-loader.js';
 import { cleanupTempDirSync } from '../helpers/test-db.js';
+import { findInstalledFtsExtension } from '../helpers/fts-availability.js';
 
 /** `.lbdb/extension/<version>/<platform>/fts/libfts.lbug_extension`, discovered not hardcoded. */
 let extensionRelPath: string;
@@ -52,16 +52,12 @@ const makeTmpDir = (label: string): string => {
  * home — the production installer script, not a reimplementation.
  */
 const resolveSeedExtension = (): void => {
-  const relBase = path.join('.lbdb', 'extension', lbug.VERSION);
-  const realVersionDir = path.join(os.homedir(), relBase);
-  const platformDirs = fs.existsSync(realVersionDir) ? fs.readdirSync(realVersionDir) : [];
-  for (const platform of platformDirs) {
-    const candidate = path.join(realVersionDir, platform, 'fts', 'libfts.lbug_extension');
-    if (fs.existsSync(candidate) && fs.statSync(candidate).size > 1024 * 1024) {
-      extensionRelPath = path.join(relBase, platform, 'fts', 'libfts.lbug_extension');
-      seedExtensionFile = candidate;
-      return;
-    }
+  const realExtensionRoot = path.join(os.homedir(), '.lbdb', 'extension');
+  const installed = findInstalledFtsExtension(realExtensionRoot);
+  if (installed) {
+    extensionRelPath = path.relative(os.homedir(), installed);
+    seedExtensionFile = installed;
+    return;
   }
   // No local copy — run the real installer against a hermetic probe home.
   const probeHome = makeTmpDir('seed-home');
@@ -70,16 +66,13 @@ const resolveSeedExtension = (): void => {
     timeout: 120_000,
     env: { ...process.env, HOME: probeHome, USERPROFILE: probeHome },
   });
-  const probeVersionDir = path.join(probeHome, relBase);
-  const probePlatforms = fs.existsSync(probeVersionDir) ? fs.readdirSync(probeVersionDir) : [];
-  for (const platform of probePlatforms) {
-    const candidate = path.join(probeVersionDir, platform, 'fts', 'libfts.lbug_extension');
-    if (install.status === 0 && fs.existsSync(candidate)) {
-      extensionRelPath = path.join(relBase, platform, 'fts', 'libfts.lbug_extension');
-      seedExtensionFile = candidate;
-      networkAvailable = true;
-      return;
-    }
+  const probeExtensionRoot = path.join(probeHome, '.lbdb', 'extension');
+  const probeInstalled = findInstalledFtsExtension(probeExtensionRoot);
+  if (install.status === 0 && probeInstalled) {
+    extensionRelPath = path.relative(probeHome, probeInstalled);
+    seedExtensionFile = probeInstalled;
+    networkAvailable = true;
+    return;
   }
 };
 

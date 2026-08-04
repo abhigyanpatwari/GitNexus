@@ -46,10 +46,12 @@ import { computeSwiftArityMetadata } from './arity-metadata.js';
 import { synthesizeSwiftReceiverBinding } from './receiver-binding.js';
 import { synthesizeSwiftSignatureBindings } from './signature-bindings.js';
 import { getSwiftParser, getSwiftScopeQuery } from './query.js';
+import { preprocessSwiftConditionalDirectives } from './conditional-directive-preprocess.js';
 import { recordCacheHit, recordCacheMiss } from './cache-stats.js';
 import { getTreeSitterBufferSize } from '../../constants.js';
 import { parseSourceSafe } from '../../../tree-sitter/safe-parse.js';
 import { synthesizeCallableFlowCaptures } from '../../utils/callable-flow-captures.js';
+import { synthesizeReceiverChainCapture } from '../../utils/receiver-chain-captures.js';
 
 /** Declaration anchors that carry function-like arity metadata. */
 const FUNCTION_DECL_TAGS = ['@declaration.method', '@declaration.constructor'] as const;
@@ -88,10 +90,16 @@ export function emitSwiftScopeCaptures(
   cachedTree?: unknown,
 ): readonly CaptureMatch[] {
   // Reuse the parse phase's cached Tree when available; otherwise parse.
+  // `extractParsedFile` already applies `preprocessSource` on this path, but
+  // this emitter is also called directly (benchmarks, capture goldens, the
+  // scope-capture tripwire), and those callers must see the same program the
+  // pipeline does. The transform is idempotent, so applying it twice is a
+  // no-op; it is length-preserving, so offsets still index `sourceText`.
   let tree = cachedTree as ReturnType<ReturnType<typeof getSwiftParser>['parse']> | undefined;
   if (tree === undefined) {
-    tree = parseSourceSafe(getSwiftParser(), sourceText, undefined, {
-      bufferSize: getTreeSitterBufferSize(sourceText),
+    const parseText = preprocessSwiftConditionalDirectives(sourceText);
+    tree = parseSourceSafe(getSwiftParser(), parseText, undefined, {
+      bufferSize: getTreeSitterBufferSize(parseText),
     });
     recordCacheMiss();
   } else {
@@ -129,6 +137,12 @@ export function emitSwiftScopeCaptures(
           continue;
         }
       }
+      // Structural receiver chain for a call whose receiver is itself an
+      // expression, so resolution can type it by folding over structure
+      // instead of re-parsing the receiver's source text. Self-gating: a
+      // non-call match, an absent receiver, or a chain with no nameable base
+      // all leave `grouped` untouched.
+      synthesizeReceiverChainCapture(grouped, nodeMap['@reference.receiver']);
       out.push(grouped); // defensive fallback
       continue;
     }
@@ -174,6 +188,12 @@ export function emitSwiftScopeCaptures(
       const span = `${navNode.startIndex}-${navNode.endIndex}`;
       if (seenReadSpans.has(span)) continue;
       seenReadSpans.add(span);
+      // Structural receiver chain for a call whose receiver is itself an
+      // expression, so resolution can type it by folding over structure
+      // instead of re-parsing the receiver's source text. Self-gating: a
+      // non-call match, an absent receiver, or a chain with no nameable base
+      // all leave `grouped` untouched.
+      synthesizeReceiverChainCapture(grouped, nodeMap['@reference.receiver']);
       out.push(grouped);
       continue;
     }
@@ -236,6 +256,12 @@ export function emitSwiftScopeCaptures(
         ...FUNCTION_NODE_TYPES,
       );
       if (fnNodeForArity !== null) attachArityMetadata(grouped, fnNodeForArity);
+      // Structural receiver chain for a call whose receiver is itself an
+      // expression, so resolution can type it by folding over structure
+      // instead of re-parsing the receiver's source text. Self-gating: a
+      // non-call match, an absent receiver, or a chain with no nameable base
+      // all leave `grouped` untouched.
+      synthesizeReceiverChainCapture(grouped, nodeMap['@reference.receiver']);
       out.push(grouped);
 
       const recvNode = nodeIfType(nodeMap['@scope.function'], ...RECEIVER_NODE_TYPES);
@@ -296,6 +322,12 @@ export function emitSwiftScopeCaptures(
       }
     }
 
+    // Structural receiver chain for a call whose receiver is itself an
+    // expression, so resolution can type it by folding over structure
+    // instead of re-parsing the receiver's source text. Self-gating: a
+    // non-call match, an absent receiver, or a chain with no nameable base
+    // all leave `grouped` untouched.
+    synthesizeReceiverChainCapture(grouped, nodeMap['@reference.receiver']);
     out.push(grouped);
   }
 

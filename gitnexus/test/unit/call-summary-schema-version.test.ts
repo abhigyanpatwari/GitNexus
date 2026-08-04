@@ -73,8 +73,12 @@ describe('CALL_SUMMARY relation-type exclusion (U-C1)', () => {
 });
 
 describe('CALL_SUMMARY incremental reuse gate (U-C5)', () => {
-  it('INCREMENTAL_SCHEMA_VERSION is bumped to 9 (Java enum-constant-body + JLS-naming re-index window)', () => {
-    expect(INCREMENTAL_SCHEMA_VERSION).toBe(9);
+  it('INCREMENTAL_SCHEMA_VERSION is bumped to 35 (receiver-chain wire format v2, then the full scope-resolution relation cross product #2792)', () => {
+    // Moves with every bump BY DESIGN — that is the point of pinning it. A
+    // change that alters emitted ids or edges without bumping would otherwise
+    // ship silently, and an existing index would keep serving the old graph
+    // through the reuse gate below.
+    expect(INCREMENTAL_SCHEMA_VERSION).toBe(35);
   });
 
   it('a pre-current stamp fails the `=== INCREMENTAL_SCHEMA_VERSION` reuse gate → forces full re-analyze', () => {
@@ -108,7 +112,122 @@ describe('CALL_SUMMARY incremental reuse gate (U-C5)', () => {
     // topmost-anchored `EnumWrap$1`-style ids would be stranded alongside
     // the re-keyed ones on unchanged files → must NOT reuse.
     expect(passesReuseGate(8)).toBe(false);
-    // A current-version stamp passes the gate (incremental top-up eligible).
-    expect(passesReuseGate(9)).toBe(true);
+    // A pre-v10 (v9) index predates the Java record container-node fix
+    // (#2564) — a record's methods would keep being ownerless Method nodes
+    // with no HAS_METHOD edge on unchanged files → must NOT reuse.
+    expect(passesReuseGate(9)).toBe(false);
+    // A pre-v11 (v10) index predates the Rust dyn-trait-object dispatch fix
+    // (#2604) — abstract trait methods would keep being uncaptured (no
+    // ownerId/CALLS resolution) on unchanged Rust trait files → must NOT reuse.
+    expect(passesReuseGate(10)).toBe(false);
+    // A pre-v12 (v11) index predates the #2514 Rust range-binding fix — the
+    // ambiguity latch removes spurious cross-file CALLS edges and the
+    // import-disambiguated resolution adds new ones on unchanged Rust files,
+    // neither of which reach an incremental write set → must NOT reuse.
+    expect(passesReuseGate(11)).toBe(false);
+    // A pre-v13 (v12) index predates javac-compatible Java local-type
+    // identities and lexical visibility scopes (#2562), so unchanged
+    // simple-name-keyed type/member ids must not survive.
+    expect(passesReuseGate(12)).toBe(false);
+    // A pre-v14 (v13) index predates the C#/Kotlin instance-ownership gate,
+    // so unchanged files may retain spurious same-file CALLS edges.
+    expect(passesReuseGate(13)).toBe(false);
+    // A pre-v15 (v14) index predates the #2687 const-arrow twin removal — an
+    // edgeless `Const:<file>:X` twin survives beside its `Function` node on
+    // every unchanged TS/JS file, and the incremental write set never touches
+    // those files → must NOT reuse.
+    expect(passesReuseGate(14)).toBe(false);
+    // A pre-v16 (v15) index predates #2693: calls through a closure-valued
+    // binding do not resolve in Kotlin/Swift/Dart, and the incremental write
+    // set never revisits unchanged files, so those symbols would keep reporting
+    // a zero blast radius → must NOT reuse.
+    expect(passesReuseGate(15)).toBe(false);
+    // A pre-v17 (v16) index predates #2701: `this` inside an ordinary JS/TS
+    // `function` still resolves to the enclosing class, so every unchanged
+    // TS/JS file keeps its fabricated `this` edges → must NOT reuse.
+    expect(passesReuseGate(16)).toBe(false);
+    // A pre-v18 (v17) index predates #2699: a function-local callable still
+    // shares a node id with a same-named file-level one, and the incremental
+    // write set would mix old and new ids → must NOT reuse.
+    expect(passesReuseGate(17)).toBe(false);
+    // A pre-v19 (v18) index holds the WRONG Java anonymous-class ids — v18 bounded the
+    // enclosing-callable walk on class DECLARATIONS only, so `Worker$1.run` was re-keyed
+    // as `Worker.makeHandler.run@7:12`. Reusing it would keep those on unchanged files.
+    expect(passesReuseGate(18)).toBe(false);
+    // A pre-v20 (v19) index holds the false CALLS/ACCESSES a NAMED explicit receiver
+    // used to mint through the lexical chain (`options.baseUrl` → a function-local
+    // `const baseUrl`) — 709 of them on a 762-file corpus. Reusing it would keep
+    // every one on unchanged files.
+    expect(passesReuseGate(19)).toBe(false);
+    // A pre-v21 (v20) index predates closure bindings becoming call SOURCES in
+    // PHP/Rust/Kotlin/Ruby/Dart, the Rust graph node for `let f = || …`, the Dart
+    // closure scope + enclosing-callable identity, and position-qualified
+    // function-local VALUES. All of those change emitted ids and edges on files
+    // that did not themselves change, so reusing a v20 index keeps serving the
+    // old attribution — including the Dart case where two same-named closures
+    // collapsed onto one node and asserted a CALLS edge present nowhere in the
+    // source.
+    expect(passesReuseGate(20)).toBe(false);
+    // A pre-v22 (v21) index predates CommonJS export indexing (#2723): every
+    // unchanged CJS file would keep its pre-fix graph → must NOT reuse.
+    expect(passesReuseGate(21)).toBe(false);
+    // A pre-v23 (v22) index predates Rust module-qualified call resolution
+    // (#2730): every unchanged Rust file would keep the same-name self-loop and
+    // keep reporting the real callee as unreached → must NOT reuse.
+    expect(passesReuseGate(22)).toBe(false);
+    // A pre-v24 (v23) index predates the #2708 inline-constructor receivers.
+    expect(passesReuseGate(23)).toBe(false);
+    // A pre-v25 (v24) index predates `unresolvedReceiverMembers` (#2744). An
+    // absent summary is indistinguishable from "nothing was dropped", so a
+    // top-up would keep reporting `epistemic: 'exact'` for exactly the symbols
+    // whose callers were dropped → must NOT reuse.
+    expect(passesReuseGate(24)).toBe(false);
+    // A pre-v26 (v25) index typed receivers from source TEXT, so `svc?.m().n()`,
+    // `svc!.m().n()` and `svc.m<T>().n()` emitted no CALLS edge — and two of the
+    // three recorded no drop either, so the count still claimed `exact`. A
+    // changed-files top-up keeps both the missing edge and the false confidence
+    // for every unchanged file → must NOT reuse.
+    expect(passesReuseGate(25)).toBe(false);
+    // A pre-v27 (v26) index was stamped by an intermediate build of this same
+    // series: structural typing was TypeScript-only at that point, and the fold
+    // still typed a bare identifier that merely shadowed a class name as that
+    // class — so such an index carries both pre-rollout edges for 13 languages
+    // and fabricated ones. The gate is a strict `===`, so it must NOT reuse.
+    expect(passesReuseGate(26)).toBe(false);
+    // A pre-v31 index predates the receiver-chain wire format v2, so its
+    // persisted chains carry the v1 prefix a v2 decoder refuses by design.
+    // Original note: a pre-v28 (v27) index was stamped mid-series: TypeScript-only structural
+    // typing, and the fold still typed a local that merely shadowed a class name
+    // as that class — so it carries pre-rollout edges AND fabricated ones.
+    expect(passesReuseGate(27)).toBe(false);
+    // A pre-v29 (v28) index lacks Class→CodeElement relation schema support,
+    // so Spring @Bean injection edges (#2413) would be dropped during
+    // persistence → must NOT reuse.
+    expect(passesReuseGate(28)).toBe(false);
+    // A pre-v30 (v29) index keeps wrapper-line startLines for multi-line closure
+    // bindings (#2735), so the graph-to-scope join still drops the CALLS edge.
+    expect(passesReuseGate(29)).toBe(false);
+    // A pre-v31 (v30) index treats `from pkg import models` as a named package
+    // import, so unchanged files retain the old missing qualified CALLS edges.
+    expect(passesReuseGate(30)).toBe(false);
+    // A pre-v32 (v31) index predates the Rust impl/trait, JS/TS object-literal
+    // and Swift member-containment relation pairs (#2769), so an incremental
+    // top-up emitting one of those edges would fail the bulk COPY (or silently
+    // drop it on the streamed path) → must NOT reuse.
+    expect(passesReuseGate(31)).toBe(false);
+    // A pre-v33 (v32) index predates the Spring AOP Interface→CodeElement
+    // relation pair (#2416), so it cannot persist all evidence edges.
+    expect(passesReuseGate(32)).toBe(false);
+    // A pre-v34 (v33) index carries `receiverChain` strings in wire format v1,
+    // which the v2 decoder refuses by design (#2766) — an incremental top-up
+    // would silently fall back to the text cascade for every chain-carrying
+    // site → must NOT reuse.
+    expect(passesReuseGate(33)).toBe(false);
+    // A pre-v35 (v34) index was created against a relation DDL missing 99 of the
+    // scope-resolution FROM/TO pairs (#2792) — LadybugDB fixes endpoint pairs at
+    // CREATE time, so those edges cannot be written into it at all.
+    expect(passesReuseGate(34)).toBe(false);
+    // The current stamp passes the gate (incremental top-up eligible).
+    expect(passesReuseGate(35)).toBe(true);
   });
 });

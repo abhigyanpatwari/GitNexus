@@ -21,6 +21,10 @@ vi.mock('../../src/mcp/local/local-backend.js', () => ({
 
 vi.mock('node:fs', () => ({ writeSync: vi.fn() }));
 
+vi.mock('../../src/core/lbug/native-check.js', () => ({
+  checkLbugNative: () => ({ ok: true }),
+}));
+
 import { traceCommand } from '../../src/cli/tool.js';
 
 describe('CLI trace command', () => {
@@ -72,6 +76,45 @@ describe('CLI trace command', () => {
     );
   });
 
+  it('forwards -f/--file as the source file hint', async () => {
+    await traceCommand('A', 'B', {
+      file: 'src/a.ts',
+    });
+
+    expect(callTool).toHaveBeenCalledWith(
+      'trace',
+      expect.objectContaining({
+        from_file: 'src/a.ts',
+      }),
+    );
+  });
+
+  it('accepts matching --file and --from-file values', async () => {
+    await traceCommand('A', 'B', {
+      file: 'src/a.ts',
+      fromFile: 'src/a.ts',
+    });
+
+    expect(callTool).toHaveBeenCalledWith(
+      'trace',
+      expect.objectContaining({
+        from_file: 'src/a.ts',
+      }),
+    );
+  });
+
+  it('exits with usage when --file and --from-file disagree', async () => {
+    const exitSpy = vi.spyOn(process, 'exit').mockImplementation(() => {
+      throw new Error('process.exit');
+    });
+    await expect(
+      traceCommand('A', 'B', { file: 'src/a.ts', fromFile: 'src/other.ts' }),
+    ).rejects.toThrow('process.exit');
+    expect(exitSpy).toHaveBeenCalledWith(1);
+    expect(callTool).not.toHaveBeenCalled();
+    exitSpy.mockRestore();
+  });
+
   it('forwards --depth as maxDepth', async () => {
     await traceCommand('A', 'B', { depth: '5' });
 
@@ -119,5 +162,26 @@ describe('CLI trace command', () => {
     await traceCommand('A', 'B', { includeTests: true });
 
     expect(callTool).toHaveBeenCalledWith('trace', expect.objectContaining({ includeTests: true }));
+  });
+
+  it('parses -f through the real CLI dispatcher', async () => {
+    const originalArgv = process.argv;
+    process.argv = ['node', 'gitnexus', 'trace', 'A', 'B', '-f', 'src/a.ts'];
+    try {
+      vi.resetModules();
+      await import('../../src/cli/index.js');
+      await vi.waitFor(() => {
+        expect(callTool).toHaveBeenCalledWith(
+          'trace',
+          expect.objectContaining({
+            from: 'A',
+            to: 'B',
+            from_file: 'src/a.ts',
+          }),
+        );
+      });
+    } finally {
+      process.argv = originalArgv;
+    }
   });
 });

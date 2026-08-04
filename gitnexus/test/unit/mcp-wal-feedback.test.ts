@@ -3,16 +3,13 @@
  */
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
-const { lbugMocks, platformMocks, repoMocks } = vi.hoisted(() => ({
+const { lbugMocks, repoMocks } = vi.hoisted(() => ({
   lbugMocks: {
     initLbug: vi.fn().mockResolvedValue(undefined),
     executeQuery: vi.fn(),
     executeParameterized: vi.fn(),
     closeLbug: vi.fn().mockResolvedValue(undefined),
     isLbugReady: vi.fn().mockReturnValue(true),
-  },
-  platformMocks: {
-    isVectorExtensionSupportedByPlatform: vi.fn().mockReturnValue(true),
   },
   repoMocks: {
     listRegisteredRepos: vi.fn(),
@@ -39,14 +36,6 @@ vi.mock('../../src/core/git-staleness.js', () => ({
   checkStaleness: vi.fn().mockReturnValue({ isStale: false, commitsBehind: 0 }),
   checkCwdMatch: vi.fn().mockResolvedValue({ match: 'none' }),
 }));
-
-vi.mock('../../src/core/platform/capabilities.js', async (importOriginal) => {
-  const actual = await importOriginal<typeof import('../../src/core/platform/capabilities.js')>();
-  return {
-    ...actual,
-    isVectorExtensionSupportedByPlatform: platformMocks.isVectorExtensionSupportedByPlatform,
-  };
-});
 
 vi.mock('../../src/core/search/bm25-index.js', () => ({
   searchFTSFromLbug: vi.fn().mockResolvedValue([]),

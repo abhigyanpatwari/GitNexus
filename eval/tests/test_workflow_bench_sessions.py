@@ -438,11 +438,11 @@ def test_real_bubblewrap_runtime_mount_imports_cli_without_exposing_checkout(tmp
         preflight=True,
     ) as sandbox:
         visibility = sandbox.run(
-            ["/usr/local/bin/node", "-e", visibility_script],
+            [runner.SANDBOX_NODE, "-e", visibility_script],
             timeout=10,
         )
         imported = sandbox.run(
-            ["/usr/local/bin/node", runner.SANDBOX_GITNEXUS_ENTRYPOINT, "--version"],
+            [runner.SANDBOX_NODE, runner.SANDBOX_GITNEXUS_ENTRYPOINT, "--version"],
             timeout=10,
         )
         # --version never reaches the `analyze` command, which is loaded via a
@@ -451,7 +451,7 @@ def test_real_bubblewrap_runtime_mount_imports_cli_without_exposing_checkout(tmp
         # resolve-analyze-cmd.cjs. Require the compiled analyze module
         # directly so this canary actually exercises that chain.
         analyze_imported = sandbox.run(
-            ["/usr/local/bin/node", "-e", f"require('{runner.SANDBOX_GITNEXUS}/dist/cli/analyze.js')"],
+            [runner.SANDBOX_NODE, "-e", f"require('{runner.SANDBOX_GITNEXUS}/dist/cli/analyze.js')"],
             timeout=10,
         )
 

@@ -1,0 +1,21 @@
+{
+  "_comment": "Baselines for bench/scope-emission/measure.mjs --check (#2699), one entry per language. `scopes` is an EXACT count over a synthetic corpus fixed in measure.mjs — a correctness gate, not a timing one, so drift means the emitted scope set moved and must be explained, never re-baselined to make CI green. The two emit-side filters this guards (function-body blocks, and blocks that declare no binding) cut block scopes 19389 -> 5331 on a 762-file TypeScript corpus and took the block-scope overhead from ~+10% to ~+2% of analyze wall time. `@scope.block` = 400 is 2 per module: only the two `if`/`else` branches that declare `const chosen`. If that number jumps, the filters regressed and every scope-chain walk in every function got deeper. BOTH languages are baselined because the filters are implemented twice — FUNCTION_BODY_OWNER_TYPES in typescript/captures.ts and JS_FUNCTION_BODY_OWNER_TYPES in javascript/captures.ts, each with its own blockDeclaresBinding — so a TypeScript-only gate would let a JavaScript-only regression ship green. The two agree exactly on this corpus; that is a measured result, not an invariant the gate depends on. `emit_ms_budget` carries deliberate headroom for shared CI runners and exists to catch an order-of-magnitude regression, not a few percent.",
+  "typescript": {
+    "scopes": {
+      "@scope.block": 400,
+      "@scope.class": 200,
+      "@scope.function": 1400,
+      "@scope.module": 200
+    },
+    "emit_ms_budget": 1500
+  },
+  "javascript": {
+    "scopes": {
+      "@scope.block": 400,
+      "@scope.class": 200,
+      "@scope.function": 1400,
+      "@scope.module": 200
+    },
+    "emit_ms_budget": 1500
+  }
+}

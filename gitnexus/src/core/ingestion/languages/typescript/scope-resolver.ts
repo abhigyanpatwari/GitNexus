@@ -23,6 +23,7 @@ import type { ScopeResolutionIndexes } from '../../model/scope-resolution-indexe
 import { typescriptProvider } from '../typescript.js';
 import { loadTsconfigPaths, type TsconfigPaths } from '../../language-config.js';
 import { buildSuffixIndex, type SuffixIndex } from '../../import-resolvers/utils.js';
+import { indexOnlyElementType } from '../../type-extractors/shared.js';
 import {
   typescriptArityCompatibility,
   typescriptMergeBindings,
@@ -106,6 +107,14 @@ function makeTsResolveImportTarget(): ScopeResolver['resolveImportTarget'] {
 }
 
 const typescriptScopeResolver: ScopeResolver = {
+  // One hook, both routes. TypeScript exposes collection views as METHOD calls
+  // (`.values()`), which the call-expression branch already handles, so the
+  // accessor route yields nothing here — but it is now the same hook rather
+  // than a second one left undefined.
+  elementTypeOf: indexOnlyElementType,
+
+  // Construction is keyword-prefixed: `new Service(db).doWork()` (#2708).
+  constructionSyntax: { keyword: 'new' },
   language: SupportedLanguages.TypeScript,
   languageProvider: typescriptProvider,
   importEdgeReason: 'typescript-scope: import',
@@ -153,10 +162,10 @@ const typescriptScopeResolver: ScopeResolver = {
   fieldFallbackOnMethodLookup: false,
   propagatesReturnTypesAcrossImports: true,
 
-  // TypeScript uses `.values()` / `.keys()` method-call syntax for
-  // collection views -- no property-style accessors like C#'s
-  // `Dictionary<K,V>.Values`. Leave `unwrapCollectionAccessor`
-  // undefined and let the regular member-call branch handle them.
+  // TypeScript uses `.values()` / `.keys()` method-call syntax for collection
+  // views -- no property-style accessors like C#'s `Dictionary<K,V>.Values` --
+  // so `elementTypeOf` answers only the `index` route and lets the regular
+  // member-call branch handle the rest.
   //
   // `collapseMemberCallsByCallerTarget` left undefined (= false) --
   // TypeScript legacy DAG emits one edge per call site, so

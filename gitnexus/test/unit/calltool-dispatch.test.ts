@@ -7,7 +7,8 @@
  * These are pure unit tests that mock the LadybugDB layer to test
  * the dispatch and error handling logic in isolation.
  */
-import { describe, it, expect, vi, beforeEach, afterAll } from 'vitest';
+import { describe, it, expect, vi, beforeEach, afterEach, afterAll } from 'vitest';
+import type { StalenessInfo } from '../../src/core/git-staleness.js';
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'fs';
 import fsPromises from 'fs/promises';
 import os from 'os';
@@ -17,16 +18,13 @@ import path from 'path';
 // local-backend.ts imports from core/lbug/pool-adapter.js; the mcp/core/lbug-adapter.js
 // re-exports from the same module, so we mock the canonical source.
 // vi.hoisted runs before vi.mock hoisting, making the fns available to both factories.
-const { lbugMocks, platformMocks } = vi.hoisted(() => ({
+const { lbugMocks } = vi.hoisted(() => ({
   lbugMocks: {
     initLbug: vi.fn().mockResolvedValue(undefined),
     executeQuery: vi.fn().mockResolvedValue([]),
     executeParameterized: vi.fn().mockResolvedValue([]),
     closeLbug: vi.fn().mockResolvedValue(undefined),
     isLbugReady: vi.fn().mockReturnValue(true),
-  },
-  platformMocks: {
-    isVectorExtensionSupportedByPlatform: vi.fn().mockReturnValue(true),
   },
 }));
 
@@ -73,14 +71,6 @@ vi.mock('../../src/storage/git.js', async (importOriginal) => {
   return {
     ...actual,
     getGitRoot: vi.fn().mockReturnValue(null),
-  };
-});
-
-vi.mock('../../src/core/platform/capabilities.js', async (importOriginal) => {
-  const actual = await importOriginal<typeof import('../../src/core/platform/capabilities.js')>();
-  return {
-    ...actual,
-    isVectorExtensionSupportedByPlatform: platformMocks.isVectorExtensionSupportedByPlatform,
   };
 });
 
@@ -300,7 +290,6 @@ describe('LocalBackend.callTool', () => {
 
   beforeEach(async () => {
     vi.clearAllMocks();
-    platformMocks.isVectorExtensionSupportedByPlatform.mockReturnValue(true);
     backend = new LocalBackend();
     setupSingleRepo();
     await backend.init();
@@ -549,11 +538,18 @@ describe('LocalBackend.callTool', () => {
     }
   });
 
-  it('skips vector index query when VECTOR is unsupported by the platform', async () => {
+  it('falls back to the exact scan with a once-per-backend warning when the vector index query fails', async () => {
+    // The platform gate is gone (#2623 follow-up): the vector lane is always
+    // ATTEMPTED, and a runtime failure (extension unloadable, index absent) is
+    // what routes semantic search onto the exact scan.
     const cap = _captureLogger();
-    platformMocks.isVectorExtensionSupportedByPlatform.mockReturnValue(false);
     (executeQuery as any).mockImplementation(async (_repoId: string, cypher: string) => {
       if (cypher.includes('COUNT(*) AS cnt')) return [{ cnt: 1 }];
+      if (cypher.includes('QUERY_VECTOR_INDEX')) {
+        throw new Error(
+          'Binder exception: Trying to read from an index on table CodeEmbedding but its extension is not loaded.',
+        );
+      }
       if (cypher.includes('MATCH (e:CodeEmbedding)')) return [];
       return [];
     });
@@ -565,7 +561,9 @@ describe('LocalBackend.callTool', () => {
       const queries = (executeQuery as any).mock.calls.map(
         ([, cypher]: [string, string]) => cypher,
       );
-      expect(queries.some((cypher: string) => cypher.includes('QUERY_VECTOR_INDEX'))).toBe(false);
+      // The vector lane was attempted…
+      expect(queries.some((cypher: string) => cypher.includes('QUERY_VECTOR_INDEX'))).toBe(true);
+      // …and its failure routed the query onto the exact scan.
       expect(
         queries.some(
           (cypher: string) =>
@@ -578,7 +576,7 @@ describe('LocalBackend.callTool', () => {
           .records()
           .some((r) =>
             String(r.msg ?? '').includes(
-              'GitNexus [query:vector]: VECTOR extension not supported on this platform',
+              'GitNexus [query:vector]: vector index query failed; using exact scan fallback',
             ),
           ),
       ).toBe(true);
@@ -588,7 +586,6 @@ describe('LocalBackend.callTool', () => {
   });
 
   it('issues vector index query when VECTOR is supported by the platform', async () => {
-    platformMocks.isVectorExtensionSupportedByPlatform.mockReturnValue(true);
     (executeQuery as any).mockImplementation(async (_repoId: string, cypher: string) => {
       if (cypher.includes('COUNT(*) AS cnt')) return [{ cnt: 1 }];
       return [];
@@ -605,7 +602,6 @@ describe('LocalBackend.callTool', () => {
   });
 
   it('threads GITNEXUS_VECTOR_MAX_DISTANCE into the vector index WHERE clause', async () => {
-    platformMocks.isVectorExtensionSupportedByPlatform.mockReturnValue(true);
     vi.mocked(executeQuery).mockImplementation(async (_repoId: string, cypher: string) => {
       if (cypher.includes('COUNT(*) AS cnt')) return [{ cnt: 1 }];
       return [];
@@ -942,6 +938,560 @@ describe('LocalBackend.callTool', () => {
     expect(result.candidates[0].score).toBeGreaterThanOrEqual(result.candidates[1].score);
   });
 
+  // #2787 — LadybugDB returns an ARBITRARY subset when a LIMIT has no ORDER BY,
+  // and a different subset from one process to the next. With 92 nodes named
+  // `constructor` in this repo's own index, the resolver's LIMIT 20 window
+  // moved every run, so `impact`/`context` resolved a different symbol each
+  // time and the HIGH/CRITICAL warning the agent workflow relies on fired at
+  // random. These assert the emitted SQL, which is the only shape that fails
+  // deterministically — a run-N-times-and-compare test would pass by luck at
+  // the ~5-8% flip rate actually measured.
+  /** N same-named Function rows, ids ascending so the window order is obvious. */
+  const collideRows = (count: number) =>
+    Array.from({ length: count }, (_, i) => ({
+      id: `Function:src/f${String(i).padStart(2, '0')}.ts:collide`,
+      name: 'collide',
+      type: 'Function',
+      filePath: `src/f${String(i).padStart(2, '0')}.ts`,
+      startLine: 1,
+      endLine: 3,
+    }));
+
+  // The window must come back FULL (20 rows). The resolver only issues the COUNT
+  // when the window saturated its own LIMIT — a short page already proves the
+  // exact total, so counting again would be a second unlabeled full scan for a
+  // number we hold. A 0-row fixture would therefore assert the wrong shape.
+  const resolverQueriesFor = async (params: Record<string, unknown>): Promise<string[]> => {
+    (executeParameterized as any).mockClear();
+    (executeParameterized as any).mockResolvedValue(collideRows(20));
+    await backend.callTool('context', params);
+    return (executeParameterized as any).mock.calls
+      .map((c: unknown[]) => String(c[1]))
+      .filter((q: string) => q.includes('$symName'));
+  };
+
+  // Two queries share `$symName`: the ordered 20-row window, and the COUNT that
+  // reports the TRUE match total (the window length would report the cap — 20
+  // when 92 match). Both halves are pinned; the COUNT must carry no LIMIT of
+  // its own or it would just re-report the cap.
+  const expectWindowAndCount = (queries: string[]): void => {
+    expect(queries).toHaveLength(2);
+    expect(queries.filter((q) => /ORDER BY n\.id LIMIT 20/.test(q))).toHaveLength(1);
+    expect(
+      queries.filter((q) => /RETURN COUNT\(\*\) AS total/.test(q) && !/LIMIT/.test(q)),
+    ).toHaveLength(1);
+  };
+
+  // One case per WHERE-clause shape the resolver builds — all three must carry
+  // the ordered window and its COUNT.
+  it.each([
+    ['bare name', { name: 'main' }],
+    ['file_path hint', { name: 'main', file_path: 'src/a.ts' }],
+    ['qualified name', { name: 'src/a.ts:main' }],
+  ] as Array<[string, Record<string, unknown>]>)(
+    'resolver window is pinned by ORDER BY n.id, with a COUNT for the true total — %s (#2787)',
+    async (_label, params) => {
+      expectWindowAndCount(await resolverQueriesFor(params));
+    },
+  );
+
+  it('ambiguous context reports the COUNT as the match total, not the capped window (#2787)', async () => {
+    const windowRows = Array.from({ length: 20 }, (_, i) => ({
+      id: `Function:src/f${String(i).padStart(2, '0')}.ts:collide`,
+      name: 'collide',
+      type: 'Function',
+      filePath: `src/f${String(i).padStart(2, '0')}.ts`,
+      startLine: 1,
+      endLine: 3,
+    }));
+    (executeParameterized as any).mockClear();
+    (executeParameterized as any).mockImplementation(async (_repo: string, query: string) =>
+      /RETURN COUNT\(\*\) AS total/.test(query) ? [{ total: 92 }] : windowRows,
+    );
+    const result = await backend.callTool('context', { name: 'collide' });
+    (executeParameterized as any).mockReset();
+    (executeParameterized as any).mockResolvedValue([]);
+
+    expect(result).toMatchObject({
+      status: 'ambiguous',
+      totalCandidates: 92,
+      candidatesTruncated: true,
+    });
+    expect(result.candidates).toHaveLength(20);
+    expect(result.message).toContain('Found 92 symbols');
+    expect(result.message).toContain('showing 20');
+  });
+
+  it('no multi-row LIMIT on the context path is left unordered (#2787)', async () => {
+    (executeParameterized as any).mockClear();
+    (executeParameterized as any).mockResolvedValue([
+      {
+        id: 'Class:src/a.ts:Widget',
+        name: 'Widget',
+        type: 'Class',
+        filePath: 'src/a.ts',
+        startLine: 1,
+        endLine: 9,
+      },
+    ]);
+    await backend.callTool('context', { name: 'Widget' });
+    const captured: string[] = (executeParameterized as any).mock.calls.map((c: unknown[]) =>
+      String(c[1]),
+    );
+    // Guard against a vacuous pass: a resolver that bailed early would capture
+    // one query and satisfy the invariant below trivially.
+    expect(captured.length).toBeGreaterThan(1);
+    // `LIMIT 1` anchored on a unique id is a singleton lookup, not a window —
+    // which rows come back cannot vary. Every other cap must be ordered.
+    const unordered = captured
+      .filter((q) => /\bLIMIT\s+\d+/.test(q))
+      .filter((q) => !/LIMIT\s+1\b/.test(q))
+      .filter((q) => !/ORDER BY/.test(q));
+    expect(unordered).toEqual([]);
+  });
+
+  // ── #2787 review fixes ────────────────────────────────────────────────
+  // Each of these pins a behaviour the ORDER BY work itself introduced or left
+  // exposed. `executeParameterized` is routed on QUERY TEXT (mock-internal
+  // `if`s, the established pattern in this file) so a single leg can be made to
+  // fail or return a shaped page without touching the others.
+  describe('#2787 review fixes', () => {
+    /** Restore the file-wide default (`executeParameterized` → `[]`). */
+    const restoreQueryMock = (): void => {
+      (executeParameterized as any).mockReset();
+      (executeParameterized as any).mockResolvedValue([]);
+    };
+
+    // Every test below installs its own query routing. `afterEach` puts the
+    // file-wide default back — on the throwing path as well as the clean one,
+    // exactly like the per-test `finally` blocks it replaces — so a failure
+    // here still cannot leak a mock into the rest of the suite.
+    afterEach(restoreQueryMock);
+
+    /** The two `$symName` legs the resolver emits, with their bound params. */
+    const resolverCalls = (): Array<{ query: string; params: Record<string, unknown> }> =>
+      (executeParameterized as any).mock.calls
+        .filter((c: unknown[]) => String(c[1]).includes('$symName'))
+        .map((c: unknown[]) => ({
+          query: String(c[1]),
+          params: (c[2] ?? {}) as Record<string, unknown>,
+        }));
+
+    it('keys every multi-relType ref window uid-major, not category-major (#2787 review F1)', async () => {
+      // Supplement to the real-DB spread test in
+      // test/integration/local-backend-calltool.test.ts: that one proves the
+      // BEHAVIOUR on the primary incoming window; this one proves the same key
+      // reaches the four windows a single fixture cannot exercise at once (the
+      // Class-only Constructor / File / typed-Property expansions, plus outgoing).
+      // See the incoming-ref window in `_contextImpl` (#2787 F1) for why a
+      // category-major key starves whole buckets silently.
+      (executeParameterized as any).mockImplementation(async (_repo: string, query: string) =>
+        query.includes('$uid')
+          ? [
+              {
+                id: 'Class:src/a.ts:Widget',
+                name: 'Widget',
+                type: 'Class',
+                filePath: 'src/a.ts',
+                startLine: 1,
+                endLine: 9,
+              },
+            ]
+          : [],
+      );
+      // A Class target opens the #480 expansion windows as well as the two
+      // primary ones.
+      await backend.callTool('context', { uid: 'Class:src/a.ts:Widget' });
+
+      const windows = (executeParameterized as any).mock.calls
+        .map((c: unknown[]) => String(c[1]))
+        // The single-relType ADVISED_BY windows are keyed `ORDER BY uid` alone
+        // (one category, nothing to starve) and are excluded by `r.type IN [`.
+        .filter((q: string) => /RETURN r\.type AS relType/.test(q) && /r\.type IN \[/.test(q));
+      expect(windows).toHaveLength(5);
+      expect(windows.filter((q: string) => /ORDER BY uid, relType/.test(q))).toHaveLength(5);
+    });
+
+    it('marks the match total as a LOWER BOUND when only the COUNT leg fails (#2787 review F3)', async () => {
+      // The COUNT rides alongside the window so the response can report the TRUE
+      // match count instead of the cap. When that leg fails the code falls back to
+      // the window length — which, un-marked, is byte-identical to a genuine
+      // N-match result and silently reinstates the pre-PR undercount. The failure
+      // must therefore be BOTH marked on the payload and logged.
+      (executeParameterized as any).mockImplementation(async (_repo: string, query: string) => {
+        // Both legs carry `$symName`, so the COUNT must be matched first.
+        if (/RETURN COUNT\(\*\) AS total/.test(query)) throw new Error('count leg exploded');
+        if (query.includes('$symName')) return collideRows(20);
+        return [];
+      });
+      const cap = _captureLogger();
+      try {
+        const result = await backend.callTool('context', { name: 'collide' });
+
+        expect(result).toMatchObject({
+          status: 'ambiguous',
+          totalCandidates: 20,
+          totalIsLowerBound: true,
+        });
+        expect(result.candidates).toHaveLength(20);
+        // The prose is what an agent actually reads, so the hedge has to be there
+        // too — "Found 20 symbols" asserts an exactness the resolver no longer has.
+        expect(result.message).toContain("Found at least 20 symbols matching 'collide'");
+        // `candidatesTruncated` is driven by `total > candidates.length`, and with
+        // the COUNT dead the total floors at the window length — so the flag is
+        // absent here and CANNOT stand in for the lower-bound marker. That is the
+        // whole point: without `totalIsLowerBound` this response is byte-identical
+        // to a genuine, exactly-20-match result.
+        expect(result).not.toHaveProperty('candidatesTruncated');
+        // …and the swallowed failure is observable in telemetry, not silent.
+        expect(
+          cap.records().filter((r) => String(r.context) === 'resolve:candidate-count'),
+        ).toHaveLength(1);
+      } finally {
+        cap.restore();
+      }
+    });
+
+    it('a successful COUNT leg reports an EXACT total with no lower-bound marker (#2787 review F3)', async () => {
+      // Negative control for the test above: the marker must be absent on the
+      // healthy path, or it degrades into noise that consumers learn to ignore.
+      (executeParameterized as any).mockImplementation(async (_repo: string, query: string) => {
+        if (/RETURN COUNT\(\*\) AS total/.test(query)) return [{ total: 92 }];
+        if (query.includes('$symName')) return collideRows(20);
+        return [];
+      });
+      const result = await backend.callTool('context', { name: 'collide' });
+
+      expect(result).toMatchObject({ status: 'ambiguous', totalCandidates: 92 });
+      expect(result).not.toHaveProperty('totalIsLowerBound');
+      expect(result.message).toContain("Found 92 symbols matching 'collide'");
+      expect(result.message).not.toContain('at least');
+    });
+
+    it('a kind hint filters in the WHERE clause on BOTH legs, it does not merely score (#2787 review F5)', async () => {
+      // See `resolveSymbolCandidates` (#2787 F5) for why the id order is
+      // label-major and why the hint therefore has to filter, not merely score.
+      (executeParameterized as any).mockImplementation(async (_repo: string, query: string) =>
+        query.includes('$symName') ? collideRows(20) : [],
+      );
+      await backend.callTool('context', { name: 'collide', kind: 'Function' });
+
+      const calls = resolverCalls();
+      // The filtered window returned rows, so the unfiltered fallback stays out:
+      // exactly the window + its COUNT.
+      expect(calls).toHaveLength(2);
+      expect(calls.filter((c) => /AND n\.id STARTS WITH \$kindPrefix/.test(c.query))).toHaveLength(
+        2,
+      );
+      // The COUNT must carry the SAME filter, or `totalCandidates` reports the
+      // unfiltered population next to a filtered page.
+      expect(calls.map((c) => c.params.kindPrefix)).toEqual(['Function:', 'Function:']);
+    });
+
+    it('a kind hint on a qualified name keeps the id/name OR-clause parenthesised (#2787 review F5)', async () => {
+      // `AND` binds tighter than `OR`: an unparenthesised
+      // `n.id = $symName OR n.name = $symName AND n.id STARTS WITH $kindPrefix`
+      // applies the kind filter to the name branch ONLY, so a qualified-id lookup
+      // silently ignores the hint.
+      (executeParameterized as any).mockImplementation(async (_repo: string, query: string) =>
+        query.includes('$symName') ? collideRows(20) : [],
+      );
+      await backend.callTool('context', { name: 'src/a.ts:collide', kind: 'Function' });
+
+      const parenthesised =
+        /WHERE \(n\.id = \$symName OR n\.name = \$symName\) AND n\.id STARTS WITH \$kindPrefix/;
+      const calls = resolverCalls();
+      expect(calls).toHaveLength(2);
+      expect(calls.filter((c) => parenthesised.test(c.query))).toHaveLength(2);
+    });
+
+    it('retries UNFILTERED when the kind hint matches no label prefix (#2787 review F5)', async () => {
+      // `kind` is a free-form string on the tool schema. A miscased or
+      // repo-absent kind must not turn a real name into `not_found` — the
+      // resolver falls back to the unfiltered window and treats the hint as a
+      // ranking term again. Modelled by failing the `$kindPrefix` leg to zero rows.
+      (executeParameterized as any).mockImplementation(async (_repo: string, query: string) => {
+        if (query.includes('$kindPrefix')) return [];
+        if (query.includes('$symName')) return collideRows(20);
+        return [];
+      });
+      const result = await backend.callTool('context', { name: 'collide', kind: 'function' });
+
+      // Filtered window (empty), THEN unfiltered window + its COUNT. The filtered
+      // leg issues NO count: a window shorter than its own LIMIT already proves
+      // the total, so counting again would be a second unlabeled full scan for a
+      // number we hold — here, zero.
+      expect(resolverCalls().map((c) => c.query.includes('$kindPrefix'))).toEqual([
+        true,
+        false,
+        false,
+      ]);
+      // Not `{ error: "Symbol 'collide' not found" }`.
+      expect(result).toMatchObject({ status: 'ambiguous' });
+      expect(result.candidates).toHaveLength(20);
+    });
+
+    // #2787 review F6 — two distinct entry points can collide on (total_hits,
+    // filePath, name); equal `total_hits` is the norm. The old three-key
+    // comparator therefore tied, and a tie in `Array.prototype.sort` (stable in
+    // V8) falls through to `Map` insertion order — i.e. raw DB row order, the
+    // exact nondeterminism this issue is about. The entry-point id (the map key)
+    // is the unique key that closes the order.
+    const COLLIDING_ENTRY_POINT_ROWS = [
+      {
+        pId: 'proc:zeta-flow',
+        name: 'Zeta Flow',
+        processType: 'intra_community',
+        entryPointId: 'ep:zeta',
+        hits: 3,
+        minStep: 5,
+        stepCount: 4,
+        epName: 'step',
+        epType: 'Function',
+        epFilePath: 'src/hooks/useSigma.ts',
+      },
+      {
+        pId: 'proc:alpha-flow',
+        name: 'Alpha Flow',
+        processType: 'intra_community',
+        entryPointId: 'ep:alpha',
+        hits: 3,
+        minStep: 2,
+        stepCount: 4,
+        epName: 'step',
+        epType: 'Method',
+        epFilePath: 'src/hooks/useSigma.ts',
+      },
+    ];
+
+    const impactWithCollidingEntryPoints = async (): Promise<any> => {
+      (executeParameterized as any).mockImplementation(async (_repo: string, query: string) => {
+        if (query.includes('$symName')) {
+          return [
+            {
+              id: 'func:main',
+              name: 'main',
+              type: 'Function',
+              filePath: 'src/index.ts',
+              startLine: 1,
+              endLine: 5,
+            },
+          ];
+        }
+        if (query.includes('$frontierIds')) {
+          return [
+            {
+              sourceId: 'func:main',
+              id: 'func:caller',
+              name: 'caller',
+              type: 'Function',
+              filePath: 'src/caller.ts',
+              relType: 'CALLS',
+              confidence: 0.9,
+            },
+          ];
+        }
+        // The chunked process/entry-point aggregation.
+        if (query.includes('p.entryPointId')) return COLLIDING_ENTRY_POINT_ROWS;
+        return [];
+      });
+      return backend.callTool('impact', { target: 'main', direction: 'upstream' });
+    };
+
+    it('orders affected_processes by entry-point id when name/filePath/hits all tie (#2787 review F6)', async () => {
+      const result = await impactWithCollidingEntryPoints();
+
+      // Both entry points are named `step`, live in the same file and carry the
+      // same hit count, so ONLY the id tiebreak can decide: `ep:alpha` before
+      // `ep:zeta`, regardless of the row order the DB handed back (here, zeta
+      // first). The id itself stays out of the payload — `earliest_broken_step`
+      // and `type` are what make the order observable.
+      expect(result.affected_processes).toEqual([
+        {
+          name: 'step',
+          type: 'Method',
+          filePath: 'src/hooks/useSigma.ts',
+          affected_process_count: 1,
+          total_hits: 3,
+          earliest_broken_step: 2,
+        },
+        {
+          name: 'step',
+          type: 'Function',
+          filePath: 'src/hooks/useSigma.ts',
+          affected_process_count: 1,
+          total_hits: 3,
+          earliest_broken_step: 5,
+        },
+      ]);
+    });
+
+    it('pins the process-chunk row order with ORDER BY pId (#2787 review F6)', async () => {
+      await impactWithCollidingEntryPoints();
+
+      // The comparator tiebreak above only fixes the FINAL order. Aggregation
+      // (`affected_process_count`, `total_hits`, `Math.min` on the step) reads
+      // rows as they arrive and the map is keyed on first sight, so the chunk
+      // query needs its own total order too.
+      const chunkQueries = (executeParameterized as any).mock.calls
+        .map((c: unknown[]) => String(c[1]))
+        .filter((q: string) => q.includes('p.entryPointId'));
+      expect(chunkQueries).toHaveLength(1);
+      expect(chunkQueries[0]).toMatch(/ORDER BY pId/);
+    });
+  });
+
+  // ── #2787 — the impact BFS frontier query was the only `ORDER BY` in the
+  // backend with no `LIMIT` to escape into (every other one pairs its key with a
+  // small limit, so the engine answers from a bounded top-k heap). It now
+  // returns rows unordered and the traversal re-establishes, in JS, exactly the
+  // two properties that key provided. Nothing downstream re-establishes them for
+  // it: `byDepth` slices `impacted` without re-sorting, and the process/module
+  // enrichment reads a positional prefix of the same array.
+  describe('#2787 impact BFS frontier ordering', () => {
+    const TARGET_ROW = {
+      id: 'Function:src/index.ts:main',
+      name: 'main',
+      type: 'Function',
+      filePath: 'src/index.ts',
+      startLine: 1,
+      endLine: 5,
+    };
+    const ROOT = TARGET_ROW.id;
+
+    interface FrontierRow {
+      sourceId: string;
+      id: string;
+      name: string;
+      type: string;
+      filePath: string;
+      relType: string;
+      confidence: number;
+    }
+
+    /** One frontier-query row. `id` is `Label:filePath:name`, as in a real index. */
+    const edge = (
+      sourceId: string,
+      id: string,
+      relType: string,
+      confidence: number,
+    ): FrontierRow => {
+      const [, filePath, name] = id.split(':');
+      return { sourceId, id, name, type: 'Function', filePath, relType, confidence };
+    };
+
+    /**
+     * Drive `_runImpactBFS` with a scripted frontier: `levels[d - 1]` is what the
+     * depth-`d` query returns, in exactly that row order. Every other query
+     * (process/module enrichment, epistemic probe) returns nothing, so `byDepth`
+     * is precisely what the traversal produced.
+     */
+    const impactOverFrontier = async (levels: FrontierRow[][]): Promise<any> => {
+      let level = 0;
+      (executeParameterized as any).mockImplementation(async (_repo: string, query: string) => {
+        if (query.includes('$symName')) return [TARGET_ROW];
+        if (query.includes('$frontierIds')) return levels[level++] ?? [];
+        return [];
+      });
+      return backend.callTool('impact', { target: 'main', direction: 'upstream' });
+    };
+
+    const stamped = (items: any[]): unknown[] =>
+      items.map((it) => ({ id: it.id, relationType: it.relationType, confidence: it.confidence }));
+
+    it('leaves the frontier query unordered — the sort has no top-k escape', async () => {
+      await impactOverFrontier([]);
+
+      const frontierQueries = (executeParameterized as any).mock.calls
+        .map((c: unknown[]) => String(c[1]))
+        .filter((q: string) => q.includes('$frontierIds'));
+      expect(frontierQueries.length).toBeGreaterThan(0);
+      expect(frontierQueries.filter((q: string) => /ORDER BY/.test(q))).toEqual([]);
+      // …and equally: no LIMIT was added in its place. The traversal must see
+      // every neighbour edge; only the ORDERING moved.
+      expect(frontierQueries.filter((q: string) => /LIMIT/.test(q))).toEqual([]);
+    });
+
+    // (a) Diamond: `delta` and `epsilon` are each reached at depth 2 from BOTH
+    // depth-1 frontier nodes. The DB key made the stamped relationType/confidence
+    // the argmax under `relType ASC, confidence DESC, sourceId ASC`; the JS
+    // argmax must pick the same edge, and must pick it from either permutation.
+    const DIAMOND_LEVEL_1 = [
+      edge(ROOT, 'Function:src/alpha.ts:alpha', 'CALLS', 0.9),
+      edge(ROOT, 'Function:src/beta.ts:beta', 'CALLS', 0.9),
+    ];
+    // `delta` discriminates relType (CALLS < IMPORTS) AGAINST confidence — the
+    // weaker-confidence CALLS edge wins, so a "highest confidence" shortcut fails
+    // here. `epsilon` ties on relType and is decided by `confidence DESC`, across
+    // the 0.8 `fuzzy` boundary the tool description publishes.
+    const DIAMOND_LEVEL_2 = [
+      edge('Function:src/alpha.ts:alpha', 'Function:src/delta.ts:delta', 'IMPORTS', 0.6),
+      edge('Function:src/beta.ts:beta', 'Function:src/delta.ts:delta', 'CALLS', 0.55),
+      edge('Function:src/alpha.ts:alpha', 'Function:src/epsilon.ts:epsilon', 'CALLS', 0.7),
+      edge('Function:src/beta.ts:beta', 'Function:src/epsilon.ts:epsilon', 'CALLS', 0.85),
+    ];
+    const DIAMOND_ARGMAX = [
+      { id: 'Function:src/delta.ts:delta', relationType: 'CALLS', confidence: 0.55 },
+      { id: 'Function:src/epsilon.ts:epsilon', relationType: 'CALLS', confidence: 0.85 },
+    ];
+
+    it('stamps the argmax edge on a diamond-reached node', async () => {
+      const result = await impactOverFrontier([DIAMOND_LEVEL_1, DIAMOND_LEVEL_2]);
+      expect(stamped(result.byDepth[2])).toEqual(DIAMOND_ARGMAX);
+    });
+
+    it('stamps the same argmax edge when the rows arrive reversed', async () => {
+      // The second of two fixed permutations — not a randomised or repeat-N
+      // probe. Without the JS argmax the surviving edge is whichever row landed
+      // first, so this permutation would stamp IMPORTS/0.6 on `delta` and 0.7 on
+      // `epsilon` instead.
+      const result = await impactOverFrontier([
+        [...DIAMOND_LEVEL_1].reverse(),
+        [...DIAMOND_LEVEL_2].reverse(),
+      ]);
+      expect(stamped(result.byDepth[2])).toEqual(DIAMOND_ARGMAX);
+    });
+
+    // (b) `impacted` — and therefore `byDepth`, which slices it — is ordered by
+    // node id ascending in UTF-16 code units, whatever order the rows arrive in.
+    // The ids below also separate code-unit order from `localeCompare`: 'Z'
+    // (0x5A) precedes 'a' (0x61) in code units, while a locale collator sorts
+    // `apple` and `mango` ahead of `Zebra`.
+    const SCRAMBLED_LEVEL_1 = [
+      edge(ROOT, 'Function:src/mango.ts:mango', 'CALLS', 0.9),
+      edge(ROOT, 'Function:src/Zebra.ts:Zebra', 'CALLS', 0.9),
+      edge(ROOT, 'Function:src/apple.ts:apple', 'CALLS', 0.9),
+    ];
+    const SCRAMBLED_LEVEL_2 = [
+      edge('Function:src/mango.ts:mango', 'Function:src/quince.ts:quince', 'CALLS', 0.9),
+      edge('Function:src/apple.ts:apple', 'Function:src/Fig.ts:Fig', 'CALLS', 0.9),
+    ];
+    const ID_ASCENDING_1 = [
+      'Function:src/Zebra.ts:Zebra',
+      'Function:src/apple.ts:apple',
+      'Function:src/mango.ts:mango',
+    ];
+    const ID_ASCENDING_2 = ['Function:src/Fig.ts:Fig', 'Function:src/quince.ts:quince'];
+
+    it('orders byDepth by node id ascending, whatever order the rows arrive in', async () => {
+      const result = await impactOverFrontier([SCRAMBLED_LEVEL_1, SCRAMBLED_LEVEL_2]);
+
+      expect(result.byDepth[1].map((it: any) => it.id)).toEqual(ID_ASCENDING_1);
+      expect(result.byDepth[2].map((it: any) => it.id)).toEqual(ID_ASCENDING_2);
+      expect(result.byDepthCounts).toEqual({ 1: 3, 2: 2 });
+    });
+
+    it('orders byDepth identically when the rows arrive reversed', async () => {
+      const result = await impactOverFrontier([
+        [...SCRAMBLED_LEVEL_1].reverse(),
+        [...SCRAMBLED_LEVEL_2].reverse(),
+      ]);
+
+      expect(result.byDepth[1].map((it: any) => it.id)).toEqual(ID_ASCENDING_1);
+      expect(result.byDepth[2].map((it: any) => it.id)).toEqual(ID_ASCENDING_2);
+    });
+  });
+
   it('context tool ranks file_path match higher than non-match (#470)', async () => {
     (executeParameterized as any).mockResolvedValue([
       {
@@ -1096,7 +1646,9 @@ describe('LocalBackend.callTool', () => {
 
     expect(result.status).toBe('ambiguous');
     expect(result.candidates).toHaveLength(2);
-    expect(result.impactedCount).toBe(0);
+    // #2687: undetermined, NOT a numeric zero — a measured 0 is indistinguishable
+    // from a genuine "nothing depends on this".
+    expect(result.impactedCount).toBeNull();
     expect(result.risk).toBe('UNKNOWN');
     expect(result.target.name).toBe('login');
     for (const c of result.candidates) {
@@ -1924,7 +2476,6 @@ describe('LocalBackend impact mode (KTD1/KTD5/KTD12)', () => {
 
   beforeEach(async () => {
     vi.clearAllMocks();
-    platformMocks.isVectorExtensionSupportedByPlatform.mockReturnValue(true);
     // U2: stamp a READY PDG layer (both caps) so the layer-presence probe in
     // `_impactImpl` falls THROUGH to the mode-dispatch surface these tests pin
     // (the `_runImpactPDG` delegate / the ambiguous fan-out under `mode:'pdg'`).
@@ -2521,7 +3072,9 @@ describe('LocalBackend impact mode (KTD1/KTD5/KTD12)', () => {
     expect(result.status).toBe('ambiguous');
     expect(result.mode).toBe('pdg');
     expect(result.candidates).toHaveLength(2);
-    expect(result.impactedCount).toBe(0);
+    // #2687: undetermined, NOT a numeric zero. This branch runs no per-candidate
+    // fan-out, so it carries no maxImpactedCount to correct a zero against.
+    expect(result.impactedCount).toBeNull();
     expect(result.risk).toBe('UNKNOWN');
     // The callgraph per-candidate probe fan-out MUST NOT run under pdg.
     expect(bfsSpy).not.toHaveBeenCalled();
@@ -3338,7 +3891,6 @@ describe('LocalBackend.listReposPage / callTool list_repos pagination (#2119)', 
 
   beforeEach(async () => {
     vi.clearAllMocks();
-    platformMocks.isVectorExtensionSupportedByPlatform.mockReturnValue(true);
     backend = new LocalBackend();
   });
 
@@ -3898,5 +4450,298 @@ describe('LocalBackend.resolveRepo branch scope (#2106)', () => {
     await backend.init();
     const closedPaths = lbugMocks.closeLbug.mock.calls.map((c: any[]) => String(c[0]));
     expect(closedPaths.some((p) => p.includes(path.join('.gitnexus', 'branches')))).toBe(true);
+  });
+});
+
+// #2655 review: the per-index tool-staleness cache must key by lbugPath, not
+// repoPath — flat and branch handles for one repo share a repoPath but carry
+// different lastCommit values, so a repoPath key would serve one handle's
+// freshness for the other within the TTL window.
+describe('LocalBackend tool-staleness cache keying (#2655 review)', () => {
+  let backend: LocalBackend;
+
+  beforeEach(async () => {
+    vi.clearAllMocks();
+    backend = new LocalBackend();
+    setupSingleRepo();
+    await backend.init();
+  });
+
+  it('does not share a staleness entry between flat and branch handles of one repo', async () => {
+    const flat = {
+      id: 'r',
+      name: 'r',
+      repoPath: '/r',
+      storagePath: '/r/.gitnexus',
+      lbugPath: '/r/.gitnexus/lbug',
+      indexedAt: '',
+      lastCommit: 'FLATSHA',
+    };
+    const branch = {
+      ...flat,
+      lbugPath: `/r/.gitnexus/${path.join('branches', 'x', 'lbug')}`,
+      lastCommit: 'BRANCHSHA',
+    };
+    vi.spyOn(backend, 'resolveRepo')
+      .mockResolvedValueOnce(flat as any)
+      .mockResolvedValueOnce(branch as any);
+    // The tool itself returns a plain (staleness-carryable) object.
+    vi.spyOn(backend as any, 'query').mockResolvedValue({ ok: true });
+
+    const { checkStalenessAsync } = await import('../../src/core/git-staleness.js');
+    (checkStalenessAsync as any).mockImplementation((_repoPath: string, lastCommit: string) =>
+      Promise.resolve(
+        lastCommit === 'FLATSHA'
+          ? { isStale: true, commitsBehind: 5, hint: '5 behind' }
+          : { isStale: false, commitsBehind: 0 },
+      ),
+    );
+
+    const flatRes = await backend.callTool('query', { search_query: 'x', repo: 'r' });
+    const branchRes = await backend.callTool('query', {
+      search_query: 'x',
+      repo: 'r',
+      branch: 'x',
+    });
+
+    // Flat index (lastCommit=FLATSHA) is 5 behind -> field present.
+    expect(flatRes).toMatchObject({ staleness: { commitsBehind: 5 } });
+    // Branch index (different lbugPath + lastCommit) is current; it must NOT
+    // inherit the flat handle's cached staleness (the pre-fix repoPath-keyed bug).
+    expect(branchRes).not.toHaveProperty('staleness');
+  });
+});
+
+// #2655 review F1–F4: the staleness signal wired into query/cypher/context/impact
+// must degrade gracefully on a rejecting freshness check, attach on every wrapped
+// tool (not just query), leave the adjacent read tools alone, and dedupe/expire
+// its per-index cache.
+describe('LocalBackend tool-staleness signal (#2655 review)', () => {
+  let backend: LocalBackend;
+
+  beforeEach(async () => {
+    vi.clearAllMocks();
+    backend = new LocalBackend();
+    setupSingleRepo();
+    await backend.init();
+  });
+
+  const handle = {
+    id: 'r',
+    name: 'r',
+    repoPath: '/r',
+    storagePath: '/r/.gitnexus',
+    lbugPath: '/r/.gitnexus/lbug',
+    indexedAt: '',
+    lastCommit: 'HEADSHA',
+  };
+
+  const stubResolve = () => vi.spyOn(backend, 'resolveRepo').mockResolvedValue(handle as any);
+
+  const stubStale = async () => {
+    const { checkStalenessAsync } = await import('../../src/core/git-staleness.js');
+    (checkStalenessAsync as any).mockResolvedValue({
+      isStale: true,
+      commitsBehind: 3,
+      hint: '3 behind',
+    });
+    return checkStalenessAsync as unknown as ReturnType<typeof vi.fn>;
+  };
+
+  // F1: a rejecting checkStalenessAsync must never fail the tool nor poison the
+  // 5s cache entry — the result comes back without a staleness field, and a
+  // later call (after the poisoned entry is evicted) still works.
+  it('degrades to no-staleness when the freshness check rejects, then recovers', async () => {
+    stubResolve();
+    vi.spyOn(backend as any, 'query').mockResolvedValue({ ok: true });
+    const { checkStalenessAsync } = await import('../../src/core/git-staleness.js');
+    (checkStalenessAsync as any)
+      .mockRejectedValueOnce(new Error('git blew up'))
+      .mockResolvedValue({ isStale: true, commitsBehind: 2, hint: '2 behind' });
+
+    const rejected = await backend.callTool('query', { search_query: 'x', repo: 'r' });
+    expect(rejected).toMatchObject({ ok: true });
+    expect(rejected).not.toHaveProperty('staleness');
+
+    // The rejected entry must not be cached — the next call re-runs and attaches.
+    const recovered = await backend.callTool('query', { search_query: 'x', repo: 'r' });
+    expect(recovered).toMatchObject({ ok: true, staleness: { commitsBehind: 2 } });
+  });
+
+  // F2: every wrapped tool attaches the field on a carryable object result.
+  it('attaches staleness on query, context, and impact object results', async () => {
+    stubResolve();
+    await stubStale();
+    vi.spyOn(backend as any, 'query').mockResolvedValue({ ok: true });
+    vi.spyOn(backend as any, 'context').mockResolvedValue({ symbol: 'x' });
+    vi.spyOn(backend as any, 'impact').mockResolvedValue({ impactedCount: 0 });
+
+    expect(await backend.callTool('query', { search_query: 'x', repo: 'r' })).toMatchObject({
+      staleness: { commitsBehind: 3, hint: '3 behind' },
+    });
+    expect(await backend.callTool('context', { name: 'x', repo: 'r' })).toMatchObject({
+      staleness: { commitsBehind: 3 },
+    });
+    expect(await backend.callTool('impact', { target: 'x', repo: 'r' })).toMatchObject({
+      staleness: { commitsBehind: 3 },
+    });
+  });
+
+  // F2: cypher's tabular {markdown,row_count} object gets the field; a raw-array
+  // (non-tabular) result keeps its shape untouched so Array.isArray consumers work.
+  it('attaches staleness to the cypher table object but never to a raw-array result', async () => {
+    stubResolve();
+    await stubStale();
+
+    // Non-empty array of keyed objects -> formatCypherAsMarkdown returns {markdown,row_count}.
+    lbugMocks.executeParameterized.mockResolvedValueOnce([{ a: 1 }]);
+    const tabular = await backend.callTool('cypher', {
+      statement: 'MATCH (n) RETURN n',
+      repo: 'r',
+    });
+    expect(tabular).toMatchObject({ row_count: 1, staleness: { commitsBehind: 3 } });
+
+    // Empty result -> formatCypherAsMarkdown passes the raw array through unchanged.
+    lbugMocks.executeParameterized.mockResolvedValueOnce([]);
+    const raw = await backend.callTool('cypher', { statement: 'MATCH (n) RETURN n', repo: 'r' });
+    expect(Array.isArray(raw)).toBe(true);
+    expect(raw).toHaveLength(0);
+  });
+
+  // F3: drift guard — exactly the four read tools route through stalenessForTool;
+  // the adjacent read-ish tools must not, so a future tool added without staleness
+  // (or one dropped) is caught.
+  it('routes only query/cypher/context/impact through the freshness check', async () => {
+    stubResolve();
+    await stubStale();
+    const spy = vi.spyOn(backend as any, 'stalenessForTool');
+    // Stub each tool to a benign object so dispatch reaches withToolStaleness.
+    for (const m of [
+      'query',
+      'context',
+      'impact',
+      'explain',
+      'pdgQuery',
+      'detectChanges',
+      'check',
+    ]) {
+      vi.spyOn(backend as any, m).mockResolvedValue({ ok: true });
+    }
+    // cypher runs its real path; a keyed-object row makes formatCypherAsMarkdown
+    // return a carryable {markdown,row_count} so the freshness check is reached.
+    lbugMocks.executeParameterized.mockResolvedValue([{ a: 1 }]);
+
+    await backend.callTool('query', { search_query: 'x', repo: 'r' });
+    await backend.callTool('cypher', { statement: 'RETURN 1', repo: 'r' });
+    await backend.callTool('context', { name: 'x', repo: 'r' });
+    await backend.callTool('impact', { target: 'x', repo: 'r' });
+    const wrappedCalls = spy.mock.calls.length;
+
+    await backend.callTool('explain', { target: 'x', repo: 'r' });
+    await backend.callTool('pdg_query', { anchor: 'x', repo: 'r' });
+    await backend.callTool('detect_changes', { scope: 'unstaged', repo: 'r' });
+    await backend.callTool('check', { cycles: true, repo: 'r' });
+
+    expect(wrappedCalls).toBe(4);
+    expect(spy.mock.calls.length).toBe(4);
+  });
+
+  // F4: the per-index freshness result is deduped within TOOL_STALENESS_TTL_MS and
+  // recomputed once the window elapses. Drive time via Date.now (not fake timers,
+  // which would entangle the awaited async dispatch with the microtask queue).
+  it('dedupes the freshness check within the TTL and recomputes after it expires', async () => {
+    stubResolve();
+    vi.spyOn(backend as any, 'query').mockResolvedValue({ ok: true });
+    const check = await stubStale();
+    check.mockClear();
+
+    const dateSpy = vi.spyOn(Date, 'now').mockReturnValue(1000);
+    await backend.callTool('query', { search_query: 'x', repo: 'r' });
+    await backend.callTool('query', { search_query: 'x', repo: 'r' });
+    expect(check).toHaveBeenCalledTimes(1); // deduped within the window
+
+    dateSpy.mockReturnValue(1000 + 5000 + 1); // past TOOL_STALENESS_TTL_MS
+    await backend.callTool('query', { search_query: 'x', repo: 'r' });
+    expect(check).toHaveBeenCalledTimes(2); // recomputed after expiry
+
+    dateSpy.mockRestore();
+  });
+
+  // @group-routed calls forward to callToolAtGroupRepo BEFORE the wrapping
+  // switch, so they deliberately never get the staleness signal (multi-repo,
+  // single-commit staleness is ill-defined). Pin that so it can't silently flip.
+  it('does not attach staleness to an @group-routed call', async () => {
+    const groupSpy = vi
+      .spyOn(backend as any, 'callToolAtGroupRepo')
+      .mockResolvedValue({ ok: true });
+    const freshSpy = vi.spyOn(backend as any, 'stalenessForTool');
+    await stubStale(); // stale — but @group must skip the signal regardless
+
+    const res = await backend.callTool('query', { search_query: 'x', repo: '@grp' });
+
+    expect(groupSpy).toHaveBeenCalledOnce();
+    expect(freshSpy).not.toHaveBeenCalled();
+    expect(res).not.toHaveProperty('staleness');
+  });
+
+  // The freshness check is deduped by sharing the IN-FLIGHT promise, not merely
+  // by reusing an already-resolved value: two calls that arrive before the first
+  // `checkStalenessAsync` settles must still spawn only one.
+  it('shares one in-flight freshness check across truly concurrent calls', async () => {
+    stubResolve();
+    vi.spyOn(backend as any, 'query').mockResolvedValue({ ok: true });
+    const dateSpy = vi.spyOn(Date, 'now').mockReturnValue(2000);
+    const { checkStalenessAsync } = await import('../../src/core/git-staleness.js');
+    let settle: (v: StalenessInfo) => void = () => {};
+    const pending = new Promise<StalenessInfo>((res) => {
+      settle = res;
+    });
+    (checkStalenessAsync as any).mockClear();
+    (checkStalenessAsync as any).mockReturnValue(pending);
+
+    // Both dispatched before the check resolves — they must share the entry.
+    const p1 = backend.callTool('query', { search_query: 'x', repo: 'r' });
+    const p2 = backend.callTool('query', { search_query: 'x', repo: 'r' });
+    await new Promise((r) => setTimeout(r, 0)); // let both reach stalenessForTool
+    settle({ isStale: true, commitsBehind: 1, hint: '1 behind' });
+    const [r1, r2] = await Promise.all([p1, p2]);
+
+    expect(checkStalenessAsync).toHaveBeenCalledTimes(1); // one spawn, shared
+    expect(r1).toMatchObject({ staleness: { commitsBehind: 1 } });
+    expect(r2).toMatchObject({ staleness: { commitsBehind: 1 } });
+    dateSpy.mockRestore();
+  });
+
+  // The evict-on-reject is guarded by object identity (=== entry), so a LATE
+  // rejection from a superseded entry must not drop the newer entry that
+  // replaced it after the TTL rolled over.
+  it('a late rejection does not evict the newer cache entry', async () => {
+    stubResolve();
+    vi.spyOn(backend as any, 'query').mockResolvedValue({ ok: true });
+    const dateSpy = vi.spyOn(Date, 'now').mockReturnValue(1000);
+    const { checkStalenessAsync } = await import('../../src/core/git-staleness.js');
+    let rejectFirst: (e: unknown) => void = () => {};
+    const first = new Promise<StalenessInfo>((_res, rej) => {
+      rejectFirst = rej;
+    });
+    (checkStalenessAsync as any)
+      .mockReturnValueOnce(first) // entry 1 — held open, will reject late
+      .mockResolvedValue({ isStale: true, commitsBehind: 7, hint: '7 behind' }); // entry 2+
+
+    const p1 = backend.callTool('query', { search_query: 'x', repo: 'r' }); // installs entry1 @1000
+    await new Promise((r) => setTimeout(r, 0)); // entry1 installed, awaiting `first`
+
+    dateSpy.mockReturnValue(1000 + 5000 + 1); // past TTL → next call installs entry2
+    const r2 = await backend.callTool('query', { search_query: 'x', repo: 'r' });
+    expect(r2).toMatchObject({ staleness: { commitsBehind: 7 } });
+
+    rejectFirst(new Error('late git failure')); // entry1's guarded catch must NOT evict entry2
+    await p1.catch(() => {}); // p1 degrades to no-staleness
+
+    const callsBefore = (checkStalenessAsync as any).mock.calls.length;
+    const r3 = await backend.callTool('query', { search_query: 'x', repo: 'r' }); // still within entry2 TTL
+    expect((checkStalenessAsync as any).mock.calls.length).toBe(callsBefore); // cache hit → entry2 survived
+    expect(r3).toMatchObject({ staleness: { commitsBehind: 7 } });
+    dateSpy.mockRestore();
   });
 });

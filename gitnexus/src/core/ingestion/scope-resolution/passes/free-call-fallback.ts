@@ -18,6 +18,7 @@
  */
 
 import type {
+  DefId,
   ParameterTypeClass,
   ParsedFile,
   Reference,
@@ -37,11 +38,13 @@ import type {
 import { resolveCallerGraphId, resolveDefGraphId } from '../graph-bridge/ids.js';
 import type { CalleeIdSink } from '../graph-bridge/callee-id-sink.js';
 import {
+  findAllCallableBindingCandidatesInScope,
   findAllCallableBindingsInScope,
   findCallableBindingInScope,
   findCallableBindingsAndAdlBlocker,
   findEnclosingClassDef,
   resolveInheritanceBaseInScope,
+  type CallableBindingCandidate,
 } from '../scope/walkers.js';
 import {
   isOverloadAmbiguousAfterNormalization,
@@ -81,6 +84,9 @@ export function emitFreeCallFallback(
       scopes: ScopeResolutionIndexes,
       parsedFiles: readonly ParsedFile[],
     ) => readonly SymbolDefinition[] | undefined;
+    /** Module-qualified free-call resolver (#2730) — see
+     *  `ScopeResolver.resolveQualifiedFreeCall`. */
+    readonly resolveQualifiedFreeCall?: ScopeResolver['resolveQualifiedFreeCall'];
     readonly conversionRankFn?: ConversionRankFn;
     readonly conversionOnlyArgTypePrefixes?: readonly string[];
     /** Optional per-language constraint hook threaded into
@@ -122,6 +128,12 @@ export function emitFreeCallFallback(
   // defs.byId.values() at every constructor call. Same simple-name keying
   // and class-like kind filter the previous per-site scan applied.
   const globalClassesBySimpleName = buildGlobalClassIndex(scopes);
+  // Workspace file-path set for `resolveQualifiedFreeCall` (a module path maps
+  // to a file by language convention). Built lazily and once: languages without
+  // the hook never pay for it.
+  let allFilePathsMemo: ReadonlySet<string> | undefined;
+  const allFilePaths = (): ReadonlySet<string> =>
+    (allFilePathsMemo ??= new Set(parsedFiles.map((p) => p.filePath)));
   // Per-pass memo of pickUniqueGlobalCallable's post-filter candidate list,
   // keyed (simpleName, callerFilePath). Only created when no per-caller
   // visibility filter applies (the list is then a pure function of name+file —
@@ -131,8 +143,46 @@ export function emitFreeCallFallback(
     options.isCallableVisibleFromCaller === undefined
       ? new Map<string, readonly SymbolDefinition[]>()
       : undefined;
+  const enclosingInstanceOwnerByScope =
+    options.freeCallsRequireInstanceOwnership === true
+      ? new Map<ScopeId, SymbolDefinition | null>()
+      : undefined;
+  const reachableInstanceOwnersByOwner =
+    options.freeCallsRequireInstanceOwnership === true
+      ? new Map<string, ReadonlySet<string>>()
+      : undefined;
+  const instanceOwnerKey = (ownerId: string): string => {
+    const owner = scopes.defs.get(ownerId as DefId);
+    const qualifiedName = owner?.qualifiedName;
+    if (qualifiedName === undefined || qualifiedName === '') return ownerId;
+    const namespacePrefix = owner.namespacePrefix ?? '';
+    return `${namespacePrefix.length}:${namespacePrefix}:${qualifiedName}`;
+  };
+  const isReachableInstanceOwner = (scopeId: ScopeId, ownerId: string): boolean => {
+    let enclosing = enclosingInstanceOwnerByScope?.get(scopeId);
+    if (enclosing === undefined) {
+      enclosing = findEnclosingClassDef(scopeId, scopes) ?? null;
+      enclosingInstanceOwnerByScope?.set(scopeId, enclosing);
+    }
+    if (enclosing === null) return false;
+
+    let owners = reachableInstanceOwnersByOwner?.get(enclosing.nodeId);
+    if (owners === undefined) {
+      const mutableOwners = new Set<string>([instanceOwnerKey(enclosing.nodeId)]);
+      for (const inheritedOwnerId of scopes.methodDispatch.mroFor(enclosing.nodeId)) {
+        mutableOwners.add(instanceOwnerKey(inheritedOwnerId));
+      }
+      owners = mutableOwners;
+      reachableInstanceOwnersByOwner?.set(enclosing.nodeId, owners);
+    }
+    return owners.has(instanceOwnerKey(ownerId));
+  };
 
   for (const parsed of parsedFiles) {
+    const bindingCandidatesByScope =
+      options.freeCallsRequireInstanceOwnership === true
+        ? new Map<ScopeId, Map<string, readonly CallableBindingCandidate[]>>()
+        : undefined;
     for (const site of parsed.referenceSites) {
       if (site.kind !== 'call') continue;
       if (site.explicitReceiver !== undefined) continue;
@@ -176,6 +226,26 @@ export function emitFreeCallFallback(
           }
         }
       }
+      // Module-qualified free call (`mod::fn()`): the source named the module
+      // explicitly, so that path outranks every lexical tier below — otherwise
+      // the scope-chain walk binds the bare tail to a same-named definition in
+      // the caller's own file and emits a self-loop instead of the real
+      // cross-module edge (#2730). Only fires when the language populated
+      // `rawQualifiedName` AND provides the hook; `undefined` falls through to
+      // the unchanged chain, so this tier is strictly additive.
+      if (
+        fnDef === undefined &&
+        options.resolveQualifiedFreeCall !== undefined &&
+        site.rawQualifiedName !== undefined
+      ) {
+        fnDef = options.resolveQualifiedFreeCall(
+          site,
+          parsed,
+          scopes,
+          workspaceIndex,
+          allFilePaths(),
+        );
+      }
       // Implicit-this overload narrowing: an unqualified call inside
       // a method body might be calling a sibling overload on the
       // enclosing class. When the workspace has multiple methods of
@@ -202,11 +272,61 @@ export function emitFreeCallFallback(
           // (local shadows import). When a conversion-rank function is
           // available AND the binding scope contains multiple overloads,
           // refine with narrowOverloadCandidates (#1578).
-          fnDef = findCallableBindingInScope(site.inScope, site.name, scopes);
+          let bindingCandidates: readonly CallableBindingCandidate[] | undefined;
+          if (bindingCandidatesByScope !== undefined) {
+            let byName = bindingCandidatesByScope.get(site.inScope);
+            if (byName === undefined) {
+              byName = new Map();
+              bindingCandidatesByScope.set(site.inScope, byName);
+            }
+            bindingCandidates = byName.get(site.name);
+            if (bindingCandidates === undefined) {
+              bindingCandidates = findAllCallableBindingCandidatesInScope(
+                site.inScope,
+                site.name,
+                scopes,
+              );
+              byName.set(site.name, bindingCandidates);
+            }
+          }
+          let eligibleBindingCandidates: readonly CallableBindingCandidate[] | undefined;
+          if (bindingCandidates === undefined) {
+            fnDef = findCallableBindingInScope(site.inScope, site.name, scopes);
+          } else {
+            eligibleBindingCandidates = bindingCandidates.filter((candidate) => {
+              const def = candidate.def;
+              if (
+                def.type !== 'Method' ||
+                def.ownerId === undefined ||
+                def.filePath !== parsed.filePath
+              ) {
+                return true;
+              }
+              const ownerReachable = isReachableInstanceOwner(site.inScope, def.ownerId);
+              const staticallyImported = candidate.bindings.some(
+                (binding) => binding.visibility === 'static-member-import',
+              );
+              return ownerReachable || staticallyImported;
+            });
+            fnDef = eligibleBindingCandidates[0]?.def;
+            if (fnDef === undefined && bindingCandidates.length > 0) {
+              recordSuppressedOutcome(options.recordResolutionOutcome, {
+                phase: 'free-call-fallback',
+                filePath: parsed.filePath,
+                name: site.name,
+                range: site.atRange,
+                reason: 'free-call-instance-ownership',
+                candidates: bindingCandidates.map((candidate) => candidate.def),
+              });
+            }
+          }
           if (
             fnDef !== undefined &&
             options.isBuiltInName?.(site.name) === true &&
             fnDef.filePath === parsed.filePath &&
+            eligibleBindingCandidates?.some((candidate) =>
+              candidate.bindings.some((binding) => binding.visibility === 'static-member-import'),
+            ) !== true &&
             !hasGenuineLexicalBinding(site.inScope, site.name, scopes)
           ) {
             // A platform/language built-in (e.g. `fetch`, `setTimeout`)
@@ -234,48 +354,14 @@ export function emitFreeCallFallback(
             // stopped resolving (verified via a scratch probe fixture).
             fnDef = undefined;
           }
-          // Instance-ownership gate (#2550). Placement matters: after the
-          // scope-chain lookup, BEFORE overload narrowing -- a suppressed
-          // candidate must not participate in overload selection. The
-          // legitimate same-class bare call already resolved earlier via
-          // `pickImplicitThisOverload`; an inherited bare call passes the
-          // MRO arm here; what remains is the finalize-bucket leak (an
-          // unrelated same-file method matched by bare name).
-          //
-          // Same-file only (mirrors the #2545 guard's load-bearing
-          // condition): the `materializeBindings` bucket is per-file, so
-          // the leak is ALWAYS same-file. A cross-file Method match here
-          // came through a genuine import channel -- e.g. the arity-
-          // narrowing parity fixtures resolve a bare `writeAudit(u)` to
-          // an imported class's method, which must keep working
-          // (suppressing it broke `java.test.ts`'s arity-filtering suite,
-          // verified empirically).
           if (
             fnDef !== undefined &&
-            options.freeCallsRequireInstanceOwnership === true &&
-            fnDef.type === 'Method' &&
-            fnDef.ownerId !== undefined &&
-            fnDef.filePath === parsed.filePath
+            (options.conversionRankFn !== undefined || bindingCandidates !== undefined)
           ) {
-            const enclosing = findEnclosingClassDef(site.inScope, scopes);
-            const ownerReachable =
-              enclosing !== undefined &&
-              (enclosing.nodeId === fnDef.ownerId ||
-                scopes.methodDispatch.mroFor(enclosing.nodeId).includes(fnDef.ownerId));
-            if (!ownerReachable) {
-              recordSuppressedOutcome(options.recordResolutionOutcome, {
-                phase: 'free-call-fallback',
-                filePath: parsed.filePath,
-                name: site.name,
-                range: site.atRange,
-                reason: 'free-call-instance-ownership',
-                candidates: [fnDef],
-              });
-              fnDef = undefined;
-            }
-          }
-          if (fnDef !== undefined && options.conversionRankFn !== undefined) {
-            const allCallables = findAllCallableBindingsInScope(site.inScope, site.name, scopes);
+            const allCallables =
+              eligibleBindingCandidates === undefined
+                ? findAllCallableBindingsInScope(site.inScope, site.name, scopes)
+                : eligibleBindingCandidates.map((candidate) => candidate.def);
             if (allCallables.length > 1) {
               const narrowed = narrowOverloadCandidates(
                 allCallables,

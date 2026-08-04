@@ -31,6 +31,7 @@ vi.mock('@ladybugdb/core', () => ({
 
 vi.mock('../../src/core/lbug/lbug-adapter.js', () => ({
   loadFTSExtension: vi.fn().mockResolvedValue(true),
+  loadVectorExtension: vi.fn().mockResolvedValue(true),
 }));
 
 vi.mock('../../src/core/lbug/lbug-config.js', () => ({

@@ -258,6 +258,41 @@ describe('ExtensionManager — observability', () => {
 
     expect(warn).toHaveBeenCalledTimes(1);
   });
+
+  // initLbug's writable FTS pre-load is a speculative probe — on a cold
+  // machine it misses, then analyze Phase 3 installs and every FTS index builds.
+  // The probe must not report a degradation that the same run repairs.
+  it('stays silent on a quiet probe that a later install-capable call repairs', async () => {
+    const installExtension = vi.fn().mockResolvedValue(okInstall);
+    const warn = vi.fn();
+    const manager = new ExtensionManager({ installExtension, warn });
+    const query = vi
+      .fn()
+      .mockRejectedValueOnce(new Error('Extension "fts" not found'))
+      .mockRejectedValueOnce(new Error('Extension "fts" not found'))
+      .mockResolvedValueOnce({});
+
+    await expect(
+      manager.ensure(query, 'fts', 'FTS', { policy: 'load-only', quiet: true }),
+    ).resolves.toBe(false);
+    expect(warn).not.toHaveBeenCalled();
+
+    await expect(manager.ensure(query, 'fts', 'FTS', { policy: 'auto' })).resolves.toBe(true);
+    expect(warn).not.toHaveBeenCalled();
+    expect(manager.getCapabilities()).toEqual([{ name: 'fts', loaded: true }]);
+  });
+
+  it('still warns on a genuine load-only miss that follows a quiet probe of the same reason', async () => {
+    const warn = vi.fn();
+    const manager = new ExtensionManager({ policy: 'load-only', warn });
+    const query = vi.fn().mockRejectedValue(new Error('Extension "fts" not found'));
+
+    await manager.ensure(query, 'fts', 'FTS', { quiet: true });
+    await manager.ensure(query, 'fts', 'FTS');
+
+    expect(warn).toHaveBeenCalledTimes(1);
+    expect(warn).toHaveBeenCalledWith(expect.stringContaining('continuing without FTS features'));
+  });
 });
 
 describe('ExtensionManager — input validation', () => {

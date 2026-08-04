@@ -17,13 +17,20 @@ and the caller supplied none of `target_uid` / `file_path` / `kind`,
   "message": "Found N symbols matching '<target>'. Use target_uid, file_path, or kind to disambiguate.",
   "target": { "name": "<target>" },
   "direction": "upstream",
-  "impactedCount": 0,
+  "impactedCount": null,
   "risk": "UNKNOWN",
   "candidates": [
     { "uid": "...", "name": "...", "kind": "Function", "filePath": "...", "line": 42, "score": 0.76 }
   ]
 }
 ```
+
+> `impactedCount` is `null`, not `0`, on an ambiguous result (#2687): no single
+> symbol was resolved, so the blast radius is *undetermined*. A numeric `0` was
+> indistinguishable from a genuine "nothing depends on this", so a caller
+> testing `impactedCount === 0` read a false all-clear. Read `maxImpactedCount`
+> (callgraph ambiguity) or the per-candidate counts in `candidates[]` for the
+> real figure. Callers written as `impactedCount || 0` are unaffected.
 
 ### Do I need to migrate?
 
@@ -110,3 +117,48 @@ repo as never analyzed.
 
 The `meta.json` mirror will remain until a future major version. Removal
 will be announced in this file and in the changelog before it happens.
+
+## Ambiguous responses report the true match count (PR #2796, issue #2787)
+
+The MCP symbol resolver returns at most 20 candidate rows. Every ambiguous
+response used to take its count from that capped window, so a name with 92
+matches (`constructor`, in this repo's own index) reported 20. The same PR
+pinned the window with an `ORDER BY`, which turned that undercount from
+flaky into stable — and a stable wrong number reads as authoritative.
+
+Three consumer-visible changes follow:
+
+- **`impact`'s `totalCandidates` changed meaning.** It was the length of the
+  capped 20-row window; it is now the true `COUNT(*)` of matching symbols.
+  Callers using `totalCandidates === candidates.length` as a "not truncated"
+  proxy will now see the two diverge. This is a bug fix — the old number was
+  wrong — but it is still a value change on a published field.
+- **`totalCandidates` and `candidatesTruncated` are new on other tools.**
+  They now also appear on `context`, `trace`, the `explain` / `pdg_query`
+  block-anchor path, and on `rename` (which returns `context`'s ambiguous
+  payload verbatim). `candidatesTruncated: true` is present only when
+  `candidates[]` is shorter than `totalCandidates` — absent otherwise, never
+  `false`.
+- **The `message` template gained a `(showing M)` suffix.** It follows the
+  total — `Found 92 symbols matching 'constructor' (showing 20). …` — and
+  appears only when the returned window is smaller than the total. `impact`
+  uses the longer `(showing M of N)` form.
+
+### Do I need to migrate?
+
+**Only if you read `totalCandidates` or parse `message`.** The last two
+changes are purely additive — no field was removed or renamed and
+`candidates[]` keeps its shape — so PR #888's "no existing field has changed.
+No migration required for `context` callers" still holds for `context`.
+
+- Reading `totalCandidates` on `impact`: it is a true total now. Detect a
+  shortened window with `candidatesTruncated` (or `totalCandidates >
+  candidates.length`) rather than by comparing it to an array length.
+- Parsing `message` for a count: the total is still the first number, but a
+  `(showing M)` parenthetical may now follow it. Prefer the structured
+  `totalCandidates` field over the string.
+
+### What happens on re-index?
+
+Nothing — this is an MCP-surface change only. The graph schema, indexer,
+and stored data are untouched.

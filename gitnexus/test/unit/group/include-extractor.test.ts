@@ -477,8 +477,11 @@ int main(){return 0;}`,
       writeFile('map/base/view.h', '#pragma once\nclass View {};');
       writeFile('utils/types.hpp', '#pragma once');
 
-      // Stub the Cypher executor to return absolute paths the way
-      // gitnexus analyze actually persists them.
+      // Stub the Cypher executor to return absolute paths. Current `gitnexus
+      // analyze` does NOT persist them this way — File.filePath is repo-relative
+      // with forward slashes (see the comment on extractProvidersGraph, #2667) —
+      // so this exercises the defensive relativisation against rows written by an
+      // older version or carried over from another machine.
       const absolute1 = path.join(tmpDir, 'map/base/view.h');
       const absolute2 = path.join(tmpDir, 'utils/types.hpp');
       const stubDb = async () => [
@@ -491,6 +494,33 @@ int main(){return 0;}`,
 
       const ids = providers.map((p) => p.contractId).sort();
       expect(ids).toEqual(['include::map/base/view.h', 'include::utils/types.hpp']);
+      expect(providers.every((p) => p.meta?.source === 'graph')).toBe(true);
+    });
+
+    // #2667 review: the rows analyze ACTUALLY writes are repo-relative, and
+    // `path.relative(repoRoot, 'src/a.h')` resolves its second argument against
+    // the process cwd. Vitest runs from `gitnexus/`, never from `tmpDir`, so
+    // before the isAbsolute guard every row here came back `..`-prefixed and was
+    // dropped — this strategy silently returned [] and fell through to the
+    // filesystem fallback.
+    it('keeps repo-relative graph rows when cwd is not the repo root', async () => {
+      writeFile('map/base/view.h', '#pragma once\nclass View {};');
+      writeFile('utils/types.hpp', '#pragma once');
+
+      expect(process.cwd()).not.toBe(tmpDir);
+
+      const stubDb = async () => [
+        { filePath: 'map/base/view.h', fileId: 'File:rel:1' },
+        { filePath: 'utils/types.hpp', fileId: 'File:rel:2' },
+      ];
+
+      const contracts = await extractor.extract(stubDb, tmpDir, makeRepo(tmpDir));
+      const providers = contracts.filter((c) => c.role === 'provider');
+
+      expect(providers.map((p) => p.contractId).sort()).toEqual([
+        'include::map/base/view.h',
+        'include::utils/types.hpp',
+      ]);
       expect(providers.every((p) => p.meta?.source === 'graph')).toBe(true);
     });
 

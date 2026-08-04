@@ -38,9 +38,16 @@ import { recordCacheHit, recordCacheMiss } from './cache-stats.js';
 import { synthesizeTsReceiverBinding } from './receiver-binding.js';
 import { computeTsArityMetadata } from './arity-metadata.js';
 import { isArrayMethodCallbackArrow } from './array-callback.js';
+import {
+  isShadowedCjsExportAssignment,
+  isUnexportedMemberAssignmentValue,
+  isUndeclarableThisMemberValue,
+} from './cjs-export-assignment.js';
 import { getTreeSitterBufferSize } from '../../constants.js';
 import { parseSourceSafe } from '../../../tree-sitter/safe-parse.js';
 import { synthesizeCallableFlowCaptures } from '../../utils/callable-flow-captures.js';
+import { synthesizeCjsModuleExports } from './cjs-module-exports.js';
+import { synthesizeReceiverChainCapture } from '../../utils/receiver-chain-captures.js';
 import {
   deriveDefaultExportHocName,
   isBlockedDefaultExportHoc,
@@ -50,7 +57,7 @@ import {
 /** tree-sitter-typescript node types for function-like scopes that may
  *  carry a synthesized `this` binding. Kept in sync with the
  *  `@scope.function` patterns in `query.ts`. */
-const FUNCTION_NODE_TYPES = [
+export const FUNCTION_NODE_TYPES = [
   'method_definition',
   'method_signature',
   'abstract_method_signature',
@@ -58,8 +65,49 @@ const FUNCTION_NODE_TYPES = [
   'function_expression',
   'function_declaration',
   'generator_function_declaration',
+  // The EXPRESSION form (`const g = function* () {}`). Both queries capture it
+  // as `@scope.function`, and both `this`-boundary lists already carry it, but
+  // this list did not — so callable-flow synthesis and the body-block filter
+  // treated a generator expression as a non-function.
+  //
+  // Measured: adding it changes no graph output today. A generator-expression
+  // binding still emits a `Const` node rather than a `Function` one, so the
+  // call never resolves either way — that label comes from the definition
+  // rules, not from here, and closing it is a separate change. This entry is
+  // list consistency, enforced by
+  // `test/unit/ts-js-function-node-type-lists.test.ts`.
+  'generator_function',
   'function_signature',
 ] as const;
+
+/** Nodes whose `statement_block` child is their BODY, not a nested block.
+ *  Such a block duplicates the enclosing Function scope — see the emit-side
+ *  filter in `emitTsScopeCaptures`. */
+const FUNCTION_BODY_OWNER_TYPES: ReadonlySet<string> = new Set(FUNCTION_NODE_TYPES);
+
+/** Direct-child node types that create a BINDING in their enclosing block.
+ *  `variable_declaration` (`var`) is deliberately absent: it hoists past the
+ *  block to the function, so a block containing only `var` binds nothing. */
+const BLOCK_BINDING_CHILD_TYPES: ReadonlySet<string> = new Set([
+  'lexical_declaration',
+  'class_declaration',
+  'function_declaration',
+  'generator_function_declaration',
+]);
+
+/** True when `block` directly declares a name, i.e. it is a real environment
+ *  record rather than punctuation. A block that binds nothing is transparent to
+ *  every scope-chain walk — a lookup finds nothing in it and continues to the
+ *  parent — so emitting a scope for it costs tree size and walk depth and buys
+ *  exactly nothing. Only DIRECT children count: a declaration in a nested block
+ *  belongs to that block, which gets its own scope by the same rule. */
+const blockDeclaresBinding = (block: SyntaxNode): boolean => {
+  for (let i = 0; i < block.namedChildCount; i++) {
+    const child = block.namedChild(i);
+    if (child !== null && BLOCK_BINDING_CHILD_TYPES.has(child.type)) return true;
+  }
+  return false;
+};
 
 /** Declaration anchors that carry function-like arity metadata. */
 const FUNCTION_DECL_TAGS = ['@declaration.method', '@declaration.function'] as const;
@@ -266,6 +314,23 @@ export function emitTsScopeCaptures(
       continue;
     }
 
+    // A `statement_block` that IS a function body adds nothing: the enclosing
+    // Function scope already provides that environment record, so emitting one
+    // here just puts a redundant level inside EVERY function for every
+    // scope-chain walk to step through. Measured on a 762-file TypeScript
+    // corpus, keeping them cost ~6% of total analyze wall time; dropping them
+    // keeps the block scopes that matter (if/else/for/while/try/bare blocks,
+    // where `let`/`const` genuinely shadow) at no measurable cost.
+    //
+    // Semantically safe: nothing can be declared between a function and its
+    // own body, so a binding in either resolves identically.
+    if (grouped['@scope.block'] !== undefined) {
+      const blockNode = groupedNodes['@scope.block'];
+      const parentType = blockNode?.parent?.type;
+      if (parentType !== undefined && FUNCTION_BODY_OWNER_TYPES.has(parentType)) continue;
+      if (blockNode === undefined || !blockDeclaresBinding(blockNode)) continue;
+    }
+
     // Filter out `@reference.read.member` matches whose AST parent tells
     // us they are actually calls / writes / constructor invocations. The
     // tree-sitter pattern is context-free and matches every member_expression;
@@ -298,6 +363,28 @@ export function emitTsScopeCaptures(
         continue;
       }
       if (arrowNode !== null && isBlockedDefaultExportHoc(arrowNode)) {
+        continue;
+      }
+      // #2723: a CJS export assignment must not register a SECOND module-scope
+      // declaration for a name the file already declares lexically — the name
+      // would become ambiguous and the resolver would drop the intra-module
+      // edge that resolved before #2723.
+      if (arrowNode !== null && isShadowedCjsExportAssignment(arrowNode, tree.rootNode)) {
+        continue;
+      }
+      // #2723 follow-up: the member-assignment rule matches ANY identifier
+      // receiver so an `exports` alias can be recognised. A receiver that is
+      // not the exports object declares nothing at module scope — drop it, or
+      // every `obj.handler = fn` would bind `handler` as a module symbol.
+      if (arrowNode !== null && isUnexportedMemberAssignmentValue(arrowNode, tree.rootNode)) {
+        continue;
+      }
+
+      // A `this.X = fn` declares a module symbol ONLY at the top level of a
+      // CommonJS file, where `this` is `module.exports`. Inside a function it
+      // is an instance member (a Method with an owner, no module binding), and
+      // in ESM top-level `this` is undefined and exports nothing.
+      if (arrowNode !== null && isUndeclarableThisMemberValue(arrowNode, tree.rootNode)) {
         continue;
       }
     }
@@ -408,6 +495,12 @@ export function emitTsScopeCaptures(
       }
     }
 
+    // Structural receiver chain for a call whose receiver is itself an
+    // expression, so resolution can type it by folding over structure
+    // instead of re-parsing the receiver's source text. Self-gating: a
+    // non-call match, an absent receiver, or a chain with no nameable base
+    // all leave `grouped` untouched.
+    synthesizeReceiverChainCapture(grouped, groupedNodes['@reference.receiver']);
     out.push(grouped);
 
     // Synthesize `this` receiver type-bindings on every function-like
@@ -443,6 +536,12 @@ export function emitTsScopeCaptures(
   synthesizeInstanceofNarrowings(tree.rootNode, out);
   synthesizeTsInheritanceReferences(tree.rootNode, out);
   out.push(...synthesizeCallableFlowCaptures(tree.rootNode, TS_CALLABLE_CAPTURE_OPTIONS));
+
+  // CommonJS module-export declarations (#2723). Shared with the JavaScript
+  // emitter: a `.ts` file in a CommonJS package uses the same forms, and
+  // without this the default-export NODE was emitted with nothing declaring it
+  // — the "found, zero callers" state this work exists to remove (#2729 F7).
+  synthesizeCjsModuleExports(tree.rootNode, filePath, out);
 
   return out;
 }

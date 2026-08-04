@@ -21,9 +21,11 @@ import {
 } from './index.js';
 import { populateCsharpNamespaceSiblings } from './namespace-siblings.js';
 import { loadCsharpResolutionConfig, type CsharpResolutionConfig } from './resolution-config.js';
-import { unwrapCsharpCollectionAccessor } from './accessor-unwrap.js';
+import { unwrapCsharpElementType } from './accessor-unwrap.js';
 
 const csharpScopeResolver: ScopeResolver = {
+  // Construction is keyword-prefixed: `new Service(db).doWork()` (#2708).
+  constructionSyntax: { keyword: 'new' },
   language: SupportedLanguages.CSharp,
   languageProvider: csharpProvider,
   importEdgeReason: 'csharp-scope: using',
@@ -87,12 +89,13 @@ const csharpScopeResolver: ScopeResolver = {
   // `data.Values` / `data.Keys` on Dictionary-like receivers unwrap
   // to the value / key element type. Other languages use method-call
   // syntax for the same access and leave this hook undefined.
-  unwrapCollectionAccessor: unwrapCsharpCollectionAccessor,
+  elementTypeOf: unwrapCsharpElementType,
 
   // C# matches legacy DAG by collapsing member-call CALLS edges to
   // `(caller, target)` — multiple `g.Greet(...)` sites from Main
   // yield ONE edge, not one per site.
   collapseMemberCallsByCallerTarget: true,
+  freeCallsRequireInstanceOwnership: true,
 
   // C# hoists method return-type bindings to the enclosing Module
   // scope so `propagateImportedReturnTypes` can mirror them across

@@ -20,6 +20,7 @@ Maintainer may widen scope per task.
 3. **Run impact analysis before editing shared symbols** — `impact` (upstream) for functions/classes/methods others call. Do not ignore HIGH/CRITICAL without maintainer sign-off.
 4. **Run `detect_changes` before commit** — confirm diffs map to expected symbols/processes when the graph is available.
 5. **Preserve embeddings** — plain `npx gitnexus analyze` now preserves any embeddings recorded in the index metadata (`.gitnexus/gitnexus.json`, mirrored to the legacy `meta.json`) — the previous behavior wiped them. Use `--embeddings` to also generate vectors for new/changed nodes; use `--drop-embeddings` only when an explicit wipe is intended (e.g., model swap).
+6. **Never `terminate()` a worker that may be inside a native call** — killing a worker thread mid-N-API aborts the entire process (`Napi::Error` → `std::terminate` → SIGABRT, #2432), so a timeout meant to trigger a graceful fallback takes the whole run down instead. Any worker running native code (tree-sitter grammars, LadybugDB, Icebug) must either reach a JS-visible safe point first — the parse pool's `shutdownDrainMs` handshake in `src/core/ingestion/workers/worker-pool.ts` — or be abandoned with `unref()` and left to exit on its own. A one-shot worker that ends after a single `postMessage` needs no `terminate()` at all: it exits by itself. This bites hardest on the path you cannot test locally, because the abort only reproduces once the native module actually loads.
 
 ---
 
@@ -43,7 +44,13 @@ Format: **Trigger → Instruction → Reason**. Append new Signs when the same m
 
 - **Trigger:** Semantic search quality drops; `stats.embeddings` in the index metadata (`gitnexus.json` / legacy `meta.json`) is 0 after refresh.
 - **Do:** Re-run `npx gitnexus analyze --embeddings` to regenerate. Check the analyze log for a `Warning: could not load cached embeddings` line — if present, the cache restore failed (corrupt DB / schema mismatch) and the rebuild had nothing to preserve. If you intentionally passed `--drop-embeddings`, this is expected.
-- **Why:** Plain `analyze` preserves prior vectors by re-inserting them after the rebuild; the only ways to end up at zero are an explicit `--drop-embeddings`, a cache-load failure (now logged), or a model/dimension change that invalidates the cache. A dirty-recovery run that cannot move the crashed WAL aside now either discards it (logged: forensics lost, embeddings still preserved) or fails fast with a lock error naming the holder — it never silently zeroes embeddings.
+- **Why:** Plain `analyze` preserves prior vectors by re-inserting them after the rebuild; ways to end up at zero include an explicit `--drop-embeddings`, a cache-load failure (now logged), or a model/dimension change that invalidates the cache — but zero is no longer the only embedding-loss signature to watch for; see the Sign below for the non-zero, partial-failure case. A dirty-recovery run that cannot move the crashed WAL aside now either discards it (logged: forensics lost, embeddings still preserved) or fails fast with a lock error naming the holder — it never silently zeroes embeddings.
+
+### Analyze finishes but embeddings are incomplete (partial embedding index)
+
+- **Trigger:** `npx gitnexus status` reports `incompleteReasons: ["embedding-checkpoint-pending"]` (or the human-readable "Index incomplete reasons" line); `stats.embeddings` is honest and **non-zero**, and the preceding analyze log showed a `Warning: N node(s) lost their embeddings to embedding-endpoint failures` line (#2790).
+- **Do:** Re-run plain `npx gitnexus analyze` — no `--embeddings` flag needed. A retained `embeddingCheckpoint` in the index metadata forces embedding generation for exactly the pending nodes regardless of flags, and clears once they succeed. `--drop-embeddings` abandons the pending nodes instead of retrying them; `--force` also discards the checkpoint (with a warning) and rebuilds without resuming it.
+- **Why:** A long analyze run against a flaky HTTP embedding endpoint tolerates bounded sub-batch failures instead of aborting the whole run: it deletes the affected nodes' embedding rows (so they hold zero rows, never a partial set) and records those nodes as pending in `embeddingCheckpoint`. `stats.embeddings` stays an honest, non-zero count of everything that did succeed, so this state never trips the "Embeddings vanished" Sign above — `embedding-checkpoint-pending` is the only reliable signal.
 
 ### MCP lists no repos
 

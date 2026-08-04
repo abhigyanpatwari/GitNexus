@@ -13,16 +13,9 @@ import {
   getNodesByLabelFull,
   edgeSet,
   runPipelineFromRepo,
+  writeFixtureRepo,
   type PipelineResult,
 } from './helpers.js';
-
-function writeFixtureRepo(root: string, files: Record<string, string>): void {
-  for (const [relPath, content] of Object.entries(files)) {
-    const fullPath = path.join(root, relPath);
-    fs.mkdirSync(path.dirname(fullPath), { recursive: true });
-    fs.writeFileSync(fullPath, content, 'utf8');
-  }
-}
 
 // ---------------------------------------------------------------------------
 // Heritage: relative imports + class inheritance
@@ -2337,6 +2330,44 @@ describe('Python module import CALLS resolution (Issue #337)', () => {
 });
 
 // ---------------------------------------------------------------------------
+// Module reached through `from pkg import models` (#2746)
+// ---------------------------------------------------------------------------
+
+describe('Python from-import module alias resolution', () => {
+  let result: PipelineResult;
+
+  beforeAll(async () => {
+    result = await runPipelineFromRepo(path.join(FIXTURES, 'python-from-module-alias'), () => {});
+  }, 60000);
+
+  it('links the imported module rather than the package initializer', () => {
+    const imports = getRelationships(result, 'IMPORTS');
+    const appImports = imports.filter((edge) => edge.sourceFilePath === 'pkg/app.py');
+
+    expect(appImports.length).toBeGreaterThan(0);
+    expect(appImports.every((edge) => edge.targetFilePath === 'pkg/models.py')).toBe(true);
+  });
+
+  it('resolves inline and assigned calls through the module alias', () => {
+    const calls = getRelationships(result, 'CALLS').filter(
+      (edge) => edge.sourceFilePath === 'pkg/app.py',
+    );
+
+    expect(calls.filter((edge) => edge.target === 'User')).toHaveLength(2);
+    expect(calls.filter((edge) => edge.target === 'save')).toHaveLength(3);
+    expect(calls.every((edge) => edge.targetFilePath === 'pkg/models.py')).toBe(true);
+  });
+
+  it('does not bind the same-named class from an unrelated module', () => {
+    const wrongCalls = getRelationships(result, 'CALLS').filter(
+      (edge) => edge.sourceFilePath === 'pkg/app.py' && edge.targetFilePath === 'decoy/models.py',
+    );
+
+    expect(wrongCalls).toHaveLength(0);
+  });
+});
+
+// ---------------------------------------------------------------------------
 // External dotted imports: framework modules like django.apps must not resolve
 // to unrelated local basename matches such as accounts/apps.py or config/urls.py.
 // ---------------------------------------------------------------------------
@@ -3018,5 +3049,56 @@ def create_utf8_user():
       expect(save).toBeDefined();
       expect(save!.targetFilePath).toBe('models.py');
     }
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Inline constructor receiver: User(db).save() (#2708)
+// The receiver is a constructor expression rather than a binding, so the
+// compound-receiver resolver has to recognise that a free call naming a class
+// yields that class. Before #2708 the call was dropped entirely — the caller
+// was missing from impact(direction: 'upstream') while the two-step spelling
+// of the same call resolved.
+// ---------------------------------------------------------------------------
+
+describe('Python inline constructor receiver resolution', () => {
+  let result: PipelineResult;
+
+  beforeAll(async () => {
+    result = await runPipelineFromRepo(
+      path.join(FIXTURES, 'python-inline-constructor-receiver'),
+      () => {},
+    );
+  }, 60000);
+
+  it('resolves User(db).save() to User.save', () => {
+    const calls = getRelationships(result, 'CALLS');
+    const inlineSave = calls.find((c) => c.source === 'process_inline' && c.target === 'save');
+    expect(inlineSave).toMatchObject({
+      source: 'process_inline',
+      target: 'save',
+      targetFilePath: 'models/user.py',
+    });
+  });
+
+  it('keeps the two-step spelling resolving to Repo.save', () => {
+    const calls = getRelationships(result, 'CALLS');
+    const twostepSave = calls.find((c) => c.source === 'process_twostep' && c.target === 'save');
+    expect(twostepSave).toMatchObject({
+      source: 'process_twostep',
+      target: 'save',
+      targetFilePath: 'models/repo.py',
+    });
+  });
+
+  it('binds each caller to exactly one save() — no cross-class fan-out', () => {
+    const saveCalls = getRelationships(result, 'CALLS')
+      .filter((c) => c.target === 'save')
+      .map((c) => `${c.source}->${c.targetFilePath}`)
+      .sort();
+    expect(saveCalls).toEqual([
+      'process_inline->models/user.py',
+      'process_twostep->models/repo.py',
+    ]);
   });
 });

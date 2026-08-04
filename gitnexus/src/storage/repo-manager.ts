@@ -20,9 +20,12 @@ import path from 'path';
 import os from 'os';
 import { randomBytes } from 'crypto';
 import { getInferredRepoName, resolveRepoIdentityRoot } from './git.js';
+import { stripWindowsLongPathPrefix } from '../lib/utils.js';
 import { retryRename } from './fs-atomic.js';
 import { acquireFileLock } from './file-lock.js';
 import { logger } from '../core/logger.js';
+import type { UnresolvedReceiverSummary } from '../core/ingestion/scope-resolution/unresolved-receivers.js';
+import { acquireIndexLock, IndexLockTimeoutError, type IndexLockHandle } from './index-lock.js';
 import {
   branchSlug,
   BRANCHES_DIR,
@@ -50,6 +53,20 @@ export type { BranchSummary };
  *     form (`RUNNERA~1\...`), but `process.cwd()` often returns the
  *     long form (`runneradmin\...`). `realpathSync.native` normalises
  *     both sides to the long-name canonical path.
+ *   - **Windows, extended-length paths** (#2667): a caller can supply a
+ *     `\\?\`-prefixed path — the usual MAX_PATH workaround — and
+ *     `path.resolve` preserves the prefix, so the string compare below
+ *     never matches the un-prefixed entry the registry stores. The
+ *     realpath branch already dropped it (libuv strips the prefix inside
+ *     `fs__realpath`), but the fallback branch did not, which is exactly
+ *     the branch a missing path takes. `stripWindowsLongPathPrefix` is
+ *     applied to both so the two branches agree.
+ *
+ * This normalisation is safe here precisely because the result is only ever
+ * compared, never opened: Node does NOT re-add `\\?\` for over-MAX_PATH
+ * paths, so an fs-facing path must keep whatever form the caller gave it.
+ * See the `registerRepo` comment on applying canonicalisation at COMPARE
+ * points only.
  *
  * Fallback behaviour: if the path does not exist on disk (e.g. a user
  * passed `gitnexus remove some-alias` and the alias misses every
@@ -61,16 +78,16 @@ export type { BranchSummary };
  * Backwards compatibility: this function is applied to BOTH the
  * caller-supplied input AND each stored `entry.path` at compare time
  * inside `resolveRegistryEntry`, so registries written by older
- * versions (where `registerRepo` only ran `path.resolve`) still match
- * correctly. Newly-written entries are canonicalised at write time too
- * so the registry stabilises over analyze/re-analyze cycles.
+ * versions still match correctly. Entries are NOT canonicalised at
+ * write time — `registerRepo` stores `path.resolve(repoPath)` — which
+ * is what makes the compare-only rule above hold.
  */
 export const canonicalizePath = (p: string): string => {
   const resolved = path.resolve(p);
   try {
-    return realpathSync.native(resolved);
+    return stripWindowsLongPathPrefix(realpathSync.native(resolved));
   } catch {
-    return resolved;
+    return stripWindowsLongPathPrefix(resolved);
   }
 };
 
@@ -173,9 +190,12 @@ export interface RepoMeta {
    * the meta literal in run-analyze.ts — typed here so the stamp site is
    * compile-checked; tri-review 4669518496 P1/U3: `vectorSearch.status`
    * must never claim 'vector-index' unless the run verified or recreated
-   * the HNSW index). Forensic today — no programmatic readers (`doctor`
-   * prints platform-derived capabilities, query routing never consults
-   * meta). The status unions mirror `CapabilityStatus` /
+   * the HNSW index). `fts.status` gained its first programmatic reader in
+   * #2767: `LocalBackend.ensureInitialized()` compares it against the
+   * warm connection pool's last-observed value as the dedicated signal
+   * that `--repair-fts` changed FTS availability (`doctor` still prints
+   * platform-derived capabilities separately; `graph`/`vectorSearch` remain
+   * forensic-only). The status unions mirror `CapabilityStatus` /
    * `SemanticSearchMode` in core/platform/capabilities.ts; inlined to keep
    * storage/ free of a core/ type dependency.
    */
@@ -212,6 +232,24 @@ export interface RepoMeta {
    * compare, not an absence.
    */
   cjkSegmentation?: string;
+  /**
+   * Member names whose call sites were DROPPED because the receiver's type
+   * could not be established (#2744, the second half of #2708). Read by
+   * `impact()` / `context()` to report a result as `epistemic: 'lower-bound'`
+   * instead of `'exact'` when the queried symbol's name appears here.
+   *
+   * Keyed by member name, not by target symbol, on purpose: a dropped site's
+   * callee is unknown by definition, so the drop cannot be attributed to any
+   * target. Absent when a run dropped nothing, which is the common case and
+   * keeps `epistemic` exact for cleanly-resolving repos.
+   *
+   * The persisted shape IS `UnresolvedReceiverSummary` — referenced, not
+   * re-declared. The writer stores the whole summary, so a structural mirror
+   * here silently drops any field added on the producing side (a reader then
+   * sees `undefined` for keys that are present on disk). Type-only import, so
+   * this adds no runtime dependency from storage/ on core/.
+   */
+  unresolvedReceiverMembers?: UnresolvedReceiverSummary;
   /**
    * SHA-256 of every file's content at the time of the last successful
    * indexing run. The next run computes current hashes and diffs against
@@ -256,11 +294,15 @@ export interface RepoMeta {
     droppedImporterChunks?: number;
   };
   /**
-   * Durable embedding-resume marker. Before a bounded write window begins,
-   * `pendingNodeIds` records every node that could become partially persisted;
-   * after the LadybugDB checkpoint it is cleared while progress is retained.
-   * A matching runtime resumes from persisted hashes and regenerates pending
-   * nodes; a model or dimension mismatch fails before mutation.
+   * Durable embedding-resume marker, written in two distinct situations that
+   * `kind` tells apart — see below. A matching runtime resumes from persisted
+   * hashes and regenerates the pending nodes.
+   *
+   * Cleared by a clean run. NOT cleared by a run that completed while dropping
+   * nodes to endpoint failures (#2790): retaining it is what makes those nodes
+   * come back, because a plain `analyze` derives `shouldGenerateEmbeddings:
+   * false` once any embeddings exist, so nothing would ever call the pipeline
+   * again.
    */
   embeddingCheckpoint?: {
     at: string;
@@ -272,10 +314,37 @@ export interface RepoMeta {
     /** `local` or a secret-free SHA-256 fingerprint of the HTTP endpoint identity. */
     provider: string;
     /**
-     * Nodes in the current checkpoint window. Any of these may have only a
-     * subset of their chunks persisted after an abrupt process termination,
-     * so resume must delete and regenerate them even when a persisted row has
-     * the current content hash.
+     * Which situation wrote this marker. Absent ≡ `'interrupted'`, so markers
+     * written by older versions keep the stricter behavior.
+     *
+     * - `'interrupted'` — written BEFORE a bounded write window. Its
+     *   `pendingNodeIds` may be half-persisted if the process died mid-window,
+     *   so resume must delete and regenerate them even when a persisted row
+     *   carries the current content hash, and an identity mismatch must fail
+     *   closed: resuming under a foreign model would mix vector spaces.
+     * - `'partial'` — written AFTER a run that completed but dropped nodes to
+     *   endpoint failures. The pipeline already deleted every row of those
+     *   nodes, so they provably hold ZERO rows. Nothing is at risk from a
+     *   different embedding identity, so an identity mismatch may drop the
+     *   pending set with a warning instead of aborting the run.
+     * - `'unverified-count'` — written after a run whose embedding count could
+     *   not be measured. `pendingNodeIds` is EMPTY: nothing was dropped and
+     *   nothing needs re-embedding. It exists only to defeat the same-commit
+     *   fast return so the next run re-derives a count, because clearing it
+     *   while `stats.embeddings` still reads a stale zero is what arms a later
+     *   `--force` to wipe live embeddings.
+     */
+    kind?: 'interrupted' | 'partial' | 'unverified-count';
+    /**
+     * Consecutive resume attempts that have failed to clear `pendingNodeIds`
+     * (`'partial'` only). Bounds the retry so a node the endpoint rejects
+     * deterministically — an oversized chunk, content it refuses — cannot keep
+     * a repo permanently incomplete. See EMBEDDING_RESUME_MAX_ATTEMPTS.
+     */
+    attempts?: number;
+    /**
+     * Nodes to regenerate on resume. For `'interrupted'` these may hold a
+     * subset of their chunks; for `'partial'` they hold none.
      */
     pendingNodeIds?: string[];
   };
@@ -430,8 +499,248 @@ export interface RepoMeta {
  * `E.hook` to `E$1.hook`, and nested-host anonymous names re-key
  * (`EnumWrap$1` → `EnumWrap$Mode$1`). Same contract as v8: identities move
  * on unchanged files; force a full re-analyze.
+ * v10: Java `record_declaration` now emits a first-class `Record` graph node
+ * (#2564): a record's container node was previously never created (JAVA_QUERIES
+ * had no capture for it), so its methods existed as ownerless Method nodes
+ * with no `HAS_METHOD` edge. The incremental write set only covers changed
+ * files — a top-up against a pre-v10 index would keep silently omitting the
+ * `Record` node and its `HAS_METHOD` edges for every unchanged record file
+ * (same v7 contract: new nodes/edges the incremental path would otherwise
+ * never backfill); force a full re-analyze instead.
+ * v11: Rust abstract trait methods (`fn foo(&self) -> T;`, no body) now get a
+ * scope + declaration capture (#2604): RUST_SCOPE_QUERY had no
+ * `function_signature_item` pattern, so a `&dyn Trait` receiver could never
+ * dispatch a CALLS edge to the trait's own method. Same v7/v10 contract: the
+ * incremental write set only covers changed files, so a top-up against a
+ * pre-v11 index would keep silently missing these CALLS edges for every
+ * unchanged Rust trait file; force a full re-analyze instead.
+ * v12: Rust range-binding stopped restoring ambiguous duplicate type names
+ * (#2514): a function/struct name defined three or more times used to
+ * re-resolve to the last-scanned file (a presence toggle), so odd duplicate
+ * counts emitted a wrong cross-file CALLS edge. Same v7/v11 contract: the
+ * incremental write set only covers changed files, so a top-up against a
+ * pre-v12 index would keep these spurious CALLS edges on every unchanged Rust
+ * file. v12 also changes edges in the other direction: range-binding now
+ * RESOLVES import-disambiguated duplicate names (`for item in make()` /
+ * `let Struct { f } = ..` where a `use` or `use x::*` import pins one of several
+ * same-named definitions) to the imported definition's type. Both the removed
+ * spurious edges and these new resolved edges are cross-file, so a pre-v12
+ * top-up would leave unchanged Rust files stale either way; force a full
+ * re-analyze instead.
+ * v13: Java local classes, enums, records, and interfaces use
+ * source-type-relative JLS 13.1 identities (`Outer$1Local`). Number allocation
+ * matches javac: one sequence per (enclosing type, local simple name), with a
+ * separate sequence for anonymous types. Existing type/member ids, lexical
+ * bindings, and ownership edges must not be mixed with newly named unchanged
+ * Java files; force a full re-analyze.
+ * v14: C# and Kotlin free-call fallback now rejects same-file methods whose
+ * instance owner is outside the caller's enclosing class/MRO (#2563). The
+ * incremental write set would otherwise retain those stale CALLS edges on
+ * every unchanged C# and Kotlin file; force a full re-analyze instead.
+ * v15: `const X = <arrow | function-expression>` no longer emits an edgeless
+ * `Const:<file>:X` twin beside its `Function` node (#2687). The incremental
+ * write set only covers changed files, so every unchanged TS/JS file would
+ * keep its twin and `impact`/`context` would stay ambiguous on those names;
+ * force a full re-analyze instead.
+ * v16: calls through a closure-valued binding (`val f = { }; f()`) now resolve
+ * in Kotlin, Swift, Dart, Ruby, Java, C# and PHP (#2693). These are NEW `CALLS`
+ * edges, and those languages also gain callable graph nodes for closure
+ * bindings that previously carried a value label or no node at all (including
+ * JS/TS `var f = () => {}`). The incremental write set only covers changed
+ * files, so unchanged files would keep reporting a zero blast radius for those
+ * symbols; force a full re-analyze instead.
+ * v17: `this` inside a JS/TS ordinary `function` no longer resolves to the
+ * lexically enclosing class (#2701). This REMOVES `CALLS`/`ACCESSES` edges —
+ * including ones that are correct at runtime via `.bind(this)`, `.call`, or a
+ * `forEach` thisArg, which the graph does not model. The incremental write set
+ * only covers changed files, so every unchanged TS/JS file would keep its
+ * fabricated `this` edges; force a full re-analyze instead.
+ * v18: function-local callables carry their enclosing-callable chain plus their
+ * own position, so a local closure no longer shares a node id with a same-named
+ * file-level function (#2699) — `Function:f.ts:save` ->
+ * `Function:f.ts:run.save@2:2`. JavaScript/TypeScript also gain block scopes
+ * (`statement_block`), without which two `const` of one name in sibling blocks
+ * stay indistinguishable to the resolver and each call resolves to BOTH. This
+ * CHANGES PERSISTED NODE IDS for every function-local callable and changes
+ * which node a local call resolves to. An incremental top-up would leave
+ * unchanged files pointing at the old ids while changed files emit the new
+ * ones, splitting each symbol in two; force a full re-analyze instead.
+ * v19: the enclosing-callable walk now stops at class BODIES and anonymous-class
+ * construction sites, not only at class DECLARATIONS (#2699 follow-up). v18 shipped
+ * with `CLASS_CONTAINER_TYPES` as the only boundary, which lists no node for a Java
+ * anonymous class (`object_creation_expression > class_body`), so the walk reached the
+ * enclosing method and re-keyed `Worker$1.run` as `Worker.makeHandler.run@7:12` —
+ * destroying the javac-compatible JLS identity of #2550/#2555/#2562. An index stamped
+ * v18 therefore holds WRONG Java ids, and without this bump it passes the reuse gate
+ * and keeps them on every unchanged file; force a full re-analyze instead.
+ * v20: a NAMED explicit receiver no longer resolves its member through the lexical
+ * scope chain (#2699 follow-up). `options.baseUrl` used to bind to an unrelated
+ * function-local `const baseUrl`; measured on a 762-file corpus this removes 709
+ * such edges and adds none. `this`/`self` are exempt, so the 2 genuine self-alias
+ * reads it also covered are kept. A v19 index holds those false CALLS/ACCESSES on
+ * every unchanged file and would keep serving them through the reuse gate; force a
+ * full re-analyze instead.
+ * v21: a closure bound to a name is a call SOURCE in every language, not only a
+ * TARGET (#2699 part B). PHP/Rust/Kotlin/Ruby/Dart closure bindings gained the
+ * declaration rule, Rust gained the graph NODE it never emitted, and Dart locals
+ * gained the enclosing-callable + position identity that made two same-named
+ * closures collapse onto one node — which had them asserting a CALLS edge
+ * present nowhere in the source. All of that changes emitted node ids AND edges
+ * on files that did not themselves change, so a v20 index topped up
+ * incrementally keeps serving the old attribution; force a full re-analyze.
+ *
+ * v22: CommonJS export forms are indexed (#2723) — `exports.X`/`module.exports.X`,
+ * aliased receivers, module-level `this`, re-export forwarding, `module.exports = fn`,
+ * plus prototype/`this` members as Methods with owner edges; and the #2729 review
+ * fixes that stopped a text-only exports receiver inventing exports inside UMD
+ * factories and stopped the shadow guard deleting or fabricating call edges.
+ * These change what is emitted for source whose CONTENT has not changed, so a v21
+ * index would keep serving the pre-fix graph for every unchanged CommonJS file —
+ * the exact "Target not found" symptom #2723 reported. Force a full re-analyze.
+ * v23: Rust module-qualified calls resolve against the module tree (#2730).
+ * RUST_SCOPE_QUERY gained `@declaration.namespace` on `mod_item` and
+ * `@reference.qualified-name` on scoped call sites, and a new resolution tier
+ * binds `tools::dispatch(..)` to the module the path names instead of the
+ * lexically nearest same-named fn. Same v11/v12 contract: the incremental
+ * write set only covers CHANGED files, so a top-up against a pre-v23 index
+ * would keep the wrong self-loop — and keep reporting the callee as unreached
+ * — for every unchanged Rust file, which is exactly the symptom #2730
+ * reported. Force a full re-analyze.
+ *
+ * v28: structural receiver typing is active for ALL 14 languages, and the fold no
+ * longer types a bare identifier that merely SHADOWS a class name as that class.
+ * v27 landed with TypeScript-only emission and with the permissive base lookup, so
+ * an index stamped 27 by an intermediate build carries both pre-rollout edges for 13
+ * languages AND the fabricated edges the shadowing bug produced. The reuse gate is a
+ * strict `===`, so such an index would be treated as current. Re-bumped here so the
+ * version tracks the final edge semantics. Force a full re-analyze.
+ *
+ * v26: receiver expressions are typed from captured structure rather than from
+ * their source text. `svc?.getUser().save()`, `svc!.getUser().save()` and
+ * `svc.getTyped<User>().save()` previously emitted NO `CALLS` edge — the text
+ * cascade split the receiver on punctuation it could not parse — and two of the
+ * three recorded no drop either, because a later case marked the site handled,
+ * which suppresses the drop record. So the caller was missing from
+ * `impact(direction: "upstream")` and `context()` AND the count still claimed
+ * `epistemic: 'exact'`. Same v11/v12 contract: the incremental write set covers
+ * only CHANGED files, so a top-up against a pre-v26 index keeps serving the
+ * pre-fix graph — and the pre-fix confident count — for every unchanged file.
+ * Worse than merely incomplete: the drop summary is a whole-repo recompute while
+ * the edges are a changed-files write, so the two would disagree. Force a full
+ * re-analyze.
+ *
+ * v24: inline constructor receivers resolve — `Service(db).do_work()` (Python),
+ * `new Service(db).doWork()` (JS/TS, C#), `Service.new.do_work` (Ruby), plus the
+ * generic, qualified, chain-head and keyword-trivia spellings of the same shape
+ * (#2708). These calls previously emitted NO `CALLS` edge, so the caller was
+ * missing from `impact(direction: "upstream")` and `context()`. The Ruby
+ * selector fix also moves an edge: `factory.new.run`, where the class defines an
+ * instance method named `new`, now resolves through that method again instead of
+ * being read as construction. All of it changes what is emitted for source whose
+ * CONTENT has not changed, so a v22 index topped up incrementally — or served by
+ * the same-commit "already up to date" fast path — keeps returning the pre-fix
+ * graph for every unchanged file, which is exactly the missing-caller symptom
+ * #2708 reported. Force a full re-analyze.
+ *
+ * v29: Spring @Bean declarations are CodeElement providers and INJECTS may run
+ * from a consumer Class or factory Method to that CodeElement (#2413). The
+ * relation DDL gained Class→CodeElement; a pre-v29 database cannot persist that
+ * label pair, so force a one-time rebuild against the expanded schema.
+ *
+ * (This shipped as v25 on its own branch; `main` took 25 through 28 first, so it
+ * is renumbered at merge time. Re-check both constants against origin/main
+ * immediately before merging — this is the fifth time that collision has bitten.)
+ *
+ * v26: unresolved-receiver member names are persisted
+ * (`unresolvedReceiverMembers`) so `impact()`/`context()` can report
+ * `epistemic: 'lower-bound'` instead of a confident `'exact'` when a call site
+ * was dropped for want of a receiver type (#2744). A pre-v26 index carries no
+ * such summary, and an absent summary is indistinguishable from "nothing was
+ * dropped" — so topping one up incrementally would keep reporting `exact` for
+ * exactly the symbols the signal exists to flag. Force a full re-analyze.
+ *
+ * (This shipped as v25 on its own branch; `main` took 25 for #2742 first, so it
+ * is renumbered here. Re-check both constants against origin/main immediately
+ * before merging — this is the fourth time that collision has bitten.)
+ *
+ * v25: Rust items are qualified by their enclosing `mod` chain (#2742), so
+ * `mod inner { fn dispatch }` and a crate-root `fn dispatch` in one file are
+ * finally DISTINCT nodes instead of collapsing onto `Function:<file>:dispatch`
+ * first-wins. Node IDS CHANGE for every Rust item inside any `mod` block —
+ * `#[cfg(test)] mod tests` makes that close to every Rust repo — so a pre-v25
+ * index holds ids an incremental top-up cannot reconcile and would simply
+ * strand. Force a full re-analyze.
+ *
+ * v30: bound-callable graph `startLine` follows the initializer (#2735), so a
+ * multi-line closure binding joins the scope channel and emits its CALLS edge.
+ * Pre-v30 indexes keep the wrapper line on unchanged files and would keep
+ * failing closed (no edge) through the reuse gate. Force a full re-analyze.
+ *
+ * v31: Python named imports that resolve to concrete submodules are finalized
+ * as namespace edges (#2746), enabling qualified constructor and method CALLS
+ * edges. Pre-v31 indexes retain the old package-target/missing-edge graph for
+ * unchanged files through the reuse gate. Force a full re-analyze.
+ *
+ * v32: the relation DDL (the single shared `CodeRelation` REL TABLE) gains
+ * sixteen FROM/TO pairs carried by `HAS_METHOD`/`HAS_PROPERTY` and
+ * scope-resolution edges: Enum→{Function, Method, Struct, Constructor,
+ * Property, TypeAlias}, Property→{Class, Enum, Function, Struct},
+ * Method→{Variable, Const}, Trait→Function, Impl→Function, Const→Method and
+ * Variable→Method. The Enum/Property set was observed on Swift (enums carry
+ * computed properties, methods, initializers and nested types) and is also
+ * reached by Java/PHP enum members; Trait/Impl→Function covers a Rust
+ * `impl`/`trait` method, which is minted as a `Function` node, not `Method`;
+ * Const/Variable→Method and its sibling Method→Const cover a JS/TS object
+ * literal's shorthand methods, whose owner is labelled `Const`/`Variable`. A
+ * pre-v32 database physically lacks these from-to pairs — see
+ * `assertDeclaredPair` (rel-pair-routing.ts) for why an incremental top-up
+ * fails loudly on one path and silently on the other. Force a full re-analyze.
+ *
+ * (This shipped as v31 on its own branch; `main` took 31 for #2746 first, so
+ * it is renumbered here. Re-check both constants against origin/main
+ * immediately before merging — this is the sixth time that collision has
+ * bitten. If this change is ever reverted, do not free 32 for reuse — the
+ * reuse gate is exact equality, so an index already stamped 32 would satisfy
+ * it against a differently-shaped reverted DB. Start the next allocation at
+ * 33 instead.)
+ *
+ * v33: Spring AOP evidence adds the Interface→CodeElement relation pair
+ * (#2416). LadybugDB fixes allowed endpoint pairs when the relation table is
+ * created, so an older index cannot persist these edges through incremental
+ * writeback. Force a full re-analyze.
+ *
+ * v34: receiver-chain wire format v2 (name-free `await` / `index` steps). Every
+ * persisted `ReferenceSite.receiverChain` string changed prefix, and a v2
+ * decoder refuses a v1 payload by design, so a pre-v34 index carries chains this
+ * build cannot read. Resolution would silently fall back to the text cascade for
+ * every chain-carrying site — no error, just quietly worse edges. Force a full
+ * re-analyze.
+ *
+ * Numbered 34, not 33: `main` took 33 for Spring AOP (#2416) mid-flight, landing
+ * on exactly this branch's number — the seventh collision in this series and the
+ * first exact clash. Re-check against origin/main before merge.
+ *
+ * v35: the relation DDL is GENERATED from two closed-form rules instead of the
+ * pairs someone happened to hit — 223 → 450 declared pairs (#2792, #2793).
+ * Rule 1, the scope-resolution bridge: `LINKABLE_LABELS` + the `File` caller
+ * fallback, crossed with `LINKABLE_LABELS` + `CALL_TARGET_TYPES`. Rule 2, the
+ * phase/framework overlays: every definition label (`NODE_TABLES` minus
+ * Community/Process/Route/Tool/Folder/BasicBlock) crossed with the labels those
+ * emitters mint and hang off a resolved anchor — Annotation, Community,
+ * Process, Route, Tool, File, Record. In both families the endpoint labels are
+ * LOOKUP RESULTS, not literals at the emit site, so hand-listing could only
+ * ever declare the pair in the latest stack trace: v32, v33 and #2781 were each
+ * that same piecemeal fix, and `analyze` kept aborting at `assertDeclaredPair`
+ * on the next codebase with a different edge shape (`Class→Variable` on Java
+ * initializers, then `Method→Annotation` on Spring `@Bean`, `Method→File` on a
+ * Vue Options-API handler, `Namespace→Record` on COBOL `DECLARATIVES`, and
+ * `Class→Tool` on `@mcp.tool()` applied to a class — four at once, from three
+ * different emitters). What remains hand-declared is only the containment /
+ * inheritance / import surface, which no label predicate describes and which a
+ * corpus test guards instead. A pre-v35 database physically lacks all of these
+ * from-to pairs, so force a full re-analyze.
  */
-export const INCREMENTAL_SCHEMA_VERSION = 9;
+export const INCREMENTAL_SCHEMA_VERSION = 35;
 
 export interface IndexedRepo {
   repoPath: string;
@@ -926,6 +1235,69 @@ export const getGlobalRegistryPath = (): string => {
 };
 
 /**
+ * Lock namespace for the global registry.
+ *
+ * Deliberately a dedicated sub-directory rather than {@link getGlobalDir}
+ * itself: an index slot's lock dir is always `<repo>/.gitnexus` (or
+ * `<repo>/.gitnexus/branches/<slug>`), so for a repository rooted at the
+ * user's home directory — dotfiles-at-`$HOME` is a real layout — the per-repo
+ * analyze lock and the global-dir lock would resolve to the SAME directory.
+ * `acquireIndexLock` is not reentrant, so `runFullAnalysis` (which holds the
+ * per-repo lock across its whole pipeline) would then self-deadlock the moment
+ * it reached `registerRepo`/`adoptFlatBranchLabel`. No repo's index slot can
+ * ever be named `registry-lock`, so this namespace cannot collide.
+ */
+const getRegistryLockDir = (): string => path.join(getGlobalDir(), 'registry-lock');
+
+/**
+ * Wait ceiling for the registry lock. A registry transaction is a sub-second
+ * JSON read/merge/write, so it must NOT inherit the index lock's 10-minute
+ * default (sized for multi-minute analyze runs): `gitnexus augment` runs on
+ * every editor/agent tool call with a documented sub-500ms cold-start budget
+ * and reaches this lock via `listRegisteredRepos({ validate: true })`.
+ */
+const REGISTRY_LOCK_TIMEOUT_MS = 5_000;
+
+/**
+ * Serialize global registry read/merge/write transactions across processes.
+ *
+ * The registry is shared by every indexed repository, so per-index locks do
+ * not protect this file. Reuse the cross-platform index lock primitive with a
+ * registry-private lock namespace; the handle is kernel-owned on supported
+ * platforms and crash-reclaimable by the existing fallback.
+ *
+ * On timeout the transaction proceeds UNLOCKED rather than throwing: the lock
+ * closes a lost-update race that existed unguarded before #2716, so degrading
+ * to the old best-effort behaviour is strictly better than failing an
+ * `analyze`/`list`/`augment` outright on a wedged lock (a stale pid-reuse
+ * ghost on platforms without start-time verification can look live forever).
+ */
+const withRegistryLock = async <T>(operation: () => Promise<T>): Promise<T> => {
+  let lock: IndexLockHandle | null = null;
+  try {
+    lock = await acquireIndexLock(getRegistryLockDir(), {
+      timeoutMs: REGISTRY_LOCK_TIMEOUT_MS,
+      // Registry contention was previously invisible: `acquireIndexLock`'s own
+      // `log` texts name an "analyze" holder, which misattributes a registry
+      // wait, so surface a registry-specific line instead (#2716 review).
+      onWaitStart: () =>
+        logger.info('Waiting for another GitNexus process to finish a registry update…'),
+    });
+  } catch (err) {
+    if (!(err instanceof IndexLockTimeoutError)) throw err;
+    logger.warn(
+      { timeoutMs: REGISTRY_LOCK_TIMEOUT_MS },
+      'Timed out waiting for the global registry lock; proceeding without it. A concurrent registry write may be lost.',
+    );
+  }
+  try {
+    return await operation();
+  } finally {
+    lock?.release();
+  }
+};
+
+/**
  * Read the global registry. Returns empty array if not found.
  */
 export const readRegistry = async (): Promise<RegistryEntry[]> => {
@@ -1264,18 +1636,20 @@ export const registerRepo = async (
  * Remove a repo from the global registry.
  * Called after `gitnexus clean`.
  */
+const unregisterRepoUnlocked = async (repoPath: string): Promise<void> => {
+  // Canonicalise BOTH sides so an unregister call issued with the
+  // symlink form (`/var/folders/.../repo`) still matches an entry
+  // written with the realpath form (`/private/var/folders/.../repo`),
+  // and vice versa. Matches the semantics of `registerRepo` and
+  // `resolveRegistryEntry` post-#1003 review.
+  const resolved = canonicalizePath(repoPath);
+  const entries = await readRegistry();
+  const filtered = entries.filter((e) => !registryPathEquals(canonicalizePath(e.path), resolved));
+  await writeRegistry(filtered);
+};
+
 export const unregisterRepo = async (repoPath: string): Promise<void> =>
-  withRegistryLock(async () => {
-    // Canonicalise BOTH sides so an unregister call issued with the
-    // symlink form (`/var/folders/.../repo`) still matches an entry
-    // written with the realpath form (`/private/var/folders/.../repo`),
-    // and vice versa. Matches the semantics of `registerRepo` and
-    // `resolveRegistryEntry` post-#1003 review.
-    const resolved = canonicalizePath(repoPath);
-    const entries = await readRegistry();
-    const filtered = entries.filter((e) => !registryPathEquals(canonicalizePath(e.path), resolved));
-    await writeRegistry(filtered);
-  });
+  withRegistryLock(() => unregisterRepoUnlocked(repoPath));
 
 /**
  * Remove a single non-primary branch's summary from a repo's registry entry
@@ -1285,23 +1659,25 @@ export const unregisterRepo = async (repoPath: string): Promise<void> =>
  * primary entry is left intact; an empty `branches[]` is dropped to keep the
  * registry shape legacy-clean.
  */
+const removeBranchIndexUnlocked = async (repoPath: string, branch: string): Promise<boolean> => {
+  const resolved = canonicalizePath(repoPath);
+  const entries = await readRegistry();
+  const idx = entries.findIndex((e) => registryPathEquals(canonicalizePath(e.path), resolved));
+  if (idx < 0) return false;
+  const entry = entries[idx];
+  const before = entry.branches?.length ?? 0;
+  if (!entry.branches || before === 0) return false;
+  const remaining = entry.branches.filter((b) => b.branch !== branch);
+  if (remaining.length === before) return false; // branch not recorded
+  if (remaining.length > 0) entry.branches = remaining;
+  else delete entry.branches;
+  entries[idx] = entry;
+  await writeRegistry(entries);
+  return true;
+};
+
 export const removeBranchIndex = async (repoPath: string, branch: string): Promise<boolean> =>
-  withRegistryLock(async () => {
-    const resolved = canonicalizePath(repoPath);
-    const entries = await readRegistry();
-    const idx = entries.findIndex((e) => registryPathEquals(canonicalizePath(e.path), resolved));
-    if (idx < 0) return false;
-    const entry = entries[idx];
-    const before = entry.branches?.length ?? 0;
-    if (!entry.branches || before === 0) return false;
-    const remaining = entry.branches.filter((b) => b.branch !== branch);
-    if (remaining.length === before) return false; // branch not recorded
-    if (remaining.length > 0) entry.branches = remaining;
-    else delete entry.branches;
-    entries[idx] = entry;
-    await writeRegistry(entries);
-    return true;
-  });
+  withRegistryLock(() => removeBranchIndexUnlocked(repoPath, branch));
 
 /**
  * Record that the flat workspace slot now serves `branch` (#2354).
@@ -1319,6 +1695,12 @@ export const removeBranchIndex = async (repoPath: string, branch: string): Promi
  * a no-op — including the sub-index deletion, which only runs for registered
  * repos (never self-heals an unregistered repo, per #2264/#1169; the registry
  * check precedes the rm per #2364 review F2) — and no subprocess is spawned.
+ *
+ * Only the closing re-read/mutate/write runs under the registry lock. The
+ * recursive `rm` stays outside it — mirroring `clean.ts`, which deletes the
+ * branch directory before calling the (locked) `removeBranchIndex` — so a slow
+ * delete (large sub-index, AV scan, network mount) never blocks every other
+ * registry operation on the machine.
  */
 export const adoptFlatBranchLabel = async (repoPath: string, branch: string): Promise<void> => {
   const canonicalInput = canonicalizePath(repoPath);
@@ -1369,10 +1751,10 @@ export const adoptFlatBranchLabel = async (repoPath: string, branch: string): Pr
     }
   }
 
-  // Re-read AFTER the potentially slow recursive rm: the registry is a
-  // multi-writer whole-file overwrite, and writing a pre-rm snapshot would
-  // silently clobber concurrent registerRepo/removeBranchIndex writers —
-  // the #2106 R9 re-read-before-write discipline registerRepo follows.
+  // Re-read AFTER the potentially slow recursive rm, and under the lock: the
+  // registry is a multi-writer whole-file overwrite, and writing a pre-rm
+  // snapshot would silently clobber concurrent registerRepo/removeBranchIndex
+  // writers — the #2106 R9 re-read-before-write discipline registerRepo follows.
   await withRegistryLock(async () => {
     const entries = await readRegistry();
     const idx = isRegistered(entries);
@@ -1722,16 +2104,20 @@ export const listRegisteredRepos = async (opts?: {
     }
   }
 
-  // Re-apply only the confirmed removals to a fresh snapshot while holding
-  // the registry lock; concurrent registrations must survive validation cleanup.
-  if (prunedPaths.length > 0) {
+  // If we pruned any entries, save the cleaned registry — under the lock, and
+  // only then. The validation walk above is read-only (an fs.access per entry,
+  // slow on a network mount or a large registry) and the common case prunes
+  // nothing, so holding the global lock across it would serialize every
+  // `gitnexus augment` behind unrelated registry work for no benefit. Re-read
+  // inside the lock and drop the provably-absent paths from that fresh
+  // snapshot, so a concurrent registration in the validation window survives.
+  if (valid.length !== entries.length) {
+    const pruned = new Set(
+      entries.filter((entry) => !valid.includes(entry)).map((entry) => entry.path),
+    );
     await withRegistryLock(async () => {
       const fresh = await readRegistry();
-      const cleaned = fresh.filter(
-        (entry) =>
-          !prunedPaths.some((pruned) => registryPathEquals(canonicalizePath(entry.path), pruned)),
-      );
-      if (cleaned.length !== fresh.length) await writeRegistry(cleaned);
+      await writeRegistry(fresh.filter((entry) => !pruned.has(entry.path)));
     });
   }
 

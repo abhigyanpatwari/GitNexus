@@ -11,17 +11,62 @@ import { FTS_INDEXES } from './fts-schema.js';
  * ELF header", "has not been installed") have no leading path separator and
  * survive. CLI/doctor/log surfaces keep the full path (they read the reason
  * directly, not through this function).
+ *
+ * tri-review Residual-3: every real message shape observed from LadybugDB
+ * wraps the path in single quotes (`Failed to load library '<path>': ...`),
+ * so a QUOTED path is redacted first, consuming through its closing quote —
+ * spaces included (e.g. a Windows username like `alice smith`). The original
+ * unquoted-stop-at-first-whitespace pattern still runs afterward as a
+ * fallback for the rare case of a path appearing without quotes; that path's
+ * own known limitation (partial redaction if it itself contains a space) is
+ * unchanged, but is no longer the ONLY path this function knows how to redact.
  */
-const redactPaths = (reason: string): string =>
-  reason.replace(/(?:[A-Za-z]:\\|\/)[^\s'"]+/g, '<path>');
+export const redactPaths = (reason: string): string =>
+  reason
+    .replace(/'((?:[A-Za-z]:\\|\/)[^']*)'/g, "'<path>'")
+    .replace(/(?:[A-Za-z]:\\|\/)[^\s'"]+/g, '<path>');
+
+/**
+ * Resolved-repo/index identity a caller can attach to a degraded-FTS warning
+ * (#2767) so a reader can tell whether *this* session even resolved the index
+ * they expect, instead of guessing between a stale connection, a different
+ * repo/branch, or a genuine build failure. MCP-`query`-only today — never
+ * forwarded into the HTTP `/api/search` response (see that call site).
+ */
+export interface FtsWarningContext {
+  repoName: string;
+  branch?: string;
+  indexedAt?: string;
+  /** Already redacted by the caller (e.g. via {@link redactPaths} on a captured query error). */
+  lastErrorRedacted?: string;
+}
+
+/** The repo/branch/indexed-at portion shared by both warning-context formatters below. */
+const formatResolvedSuffix = (context: FtsWarningContext): string => {
+  const branchSuffix = context.branch ? `/branch:${context.branch}` : '';
+  const indexedSuffix = context.indexedAt ? `, indexed ${context.indexedAt}` : '';
+  return `${context.repoName}${branchSuffix}${indexedSuffix}`;
+};
+
+const formatWarningContext = (context: FtsWarningContext): string => {
+  const errorSuffix = context.lastErrorRedacted ? `; last error: ${context.lastErrorRedacted}` : '';
+  return ` (resolved: ${formatResolvedSuffix(context)}${errorSuffix})`;
+};
 
 /**
  * Warning attached to search responses when BM25/FTS is degraded. Prefers the
  * live extension-load failure (with LadybugDB's real reason, #2374) over the
  * generic indexes-missing message, so "indexes exist but the extension broke"
  * is not misreported as missing indexes.
+ *
+ * `context`, when supplied, appends the resolved repo/branch/indexed-at (and
+ * redacted query-error detail, if captured) so a CLI/MCP mismatch — or a real
+ * query error masquerading as "indexes missing" — is visible in the warning
+ * text itself (#2767). Optional and additive: omitting it reproduces today's
+ * exact message.
  */
-export const ftsDegradedWarning = (): string => {
+export const ftsDegradedWarning = (context?: FtsWarningContext): string => {
+  const suffix = context ? formatWarningContext(context) : '';
   const fts = getExtensionCapabilities().find((c) => c.name === 'fts');
   if (fts && !fts.loaded) {
     const reason = fts.reason ? redactPaths(fts.reason).replace(/\.$/, '') : undefined;
@@ -38,11 +83,32 @@ export const ftsDegradedWarning = (): string => {
     return (
       'FTS extension failed to load — keyword search degraded' +
       (reason ? ` (${reason})` : '') +
-      tail
+      tail +
+      suffix
     );
   }
-  return 'FTS indexes missing — keyword search degraded. Run: gitnexus analyze --repair-fts (or gitnexus analyze --force) to rebuild indexes.';
+  return (
+    'FTS indexes missing — keyword search degraded. Run: gitnexus analyze --repair-fts ' +
+    '(or gitnexus analyze --force) to rebuild indexes.' +
+    suffix
+  );
 };
+
+/**
+ * Warning for when the FTS extension is loaded and indexes exist, but every
+ * configured table's query failed for a real, non-benign reason (timeout,
+ * connection reset, native fault) — as opposed to `ftsDegradedWarning`'s
+ * missing-index case. `--repair-fts` will not fix a query/connection error,
+ * so this deliberately does NOT suggest it: reusing the missing-index
+ * message here would reproduce, for this cause, the exact misleading
+ * "run --repair-fts" guidance #2767 itself was about (tri-review NEW-1).
+ */
+export const ftsQueryFailedWarning = (context: FtsWarningContext): string =>
+  'FTS keyword search failed — every configured index query returned an error' +
+  (context.lastErrorRedacted ? ` (${context.lastErrorRedacted})` : '') +
+  '; results do not include keyword matches. This is not a missing-index ' +
+  'condition — see server logs for details.' +
+  ` (resolved: ${formatResolvedSuffix(context)})`;
 
 // Stemmers shipped by the LadybugDB FTS extension. Mirrors the lowercase token
 // set in the extension bundled with @ladybugdb/core 0.18.x (see package.json).
@@ -121,6 +187,20 @@ export function getSearchFTSStemmer(): string {
   return resolvedStemmer ?? resolveFTSStemmer();
 }
 
+/**
+ * Drop every configured FTS index (no-op per index when absent or unloadable
+ * — `dropFTSIndex` tolerates both). Callable ahead of any DML that mutates an
+ * FTS-indexed table's rows: LadybugDB's FTS extension is not proven to
+ * survive a DETACH DELETE against a table that still carries a live index
+ * from a prior run (#2589) — dropping first removes that hazard entirely,
+ * regardless of whether it also fixed a specific native inconsistency.
+ */
+export async function dropSearchFTSIndexes(): Promise<void> {
+  for (const { table, indexName } of FTS_INDEXES) {
+    await dropFTSIndex(table, indexName);
+  }
+}
+
 export async function createSearchFTSIndexes(
   options?: CreateSearchFTSIndexesOptions,
 ): Promise<void> {
@@ -179,9 +259,81 @@ export async function verifySearchFTSIndexes(
   return missing;
 }
 
+/**
+ * Why an FTS build failed, so the caller can react correctly (#2658):
+ *
+ *  - `capability`: the environment can't support FTS this run, or a single
+ *    pre-existing row can't be tokenized (#2544/#2546 "Invalid UTF-8"). The
+ *    graph/embeddings work is sound — degrade keyword search and keep exit 0.
+ *  - `integrity`: an IO / rename / checkpoint / corruption failure while
+ *    writing the index. With the single-writer lock (#2658) this is no longer
+ *    "some other analyze racing us" — it's a genuinely broken build on this
+ *    disk, so the run must fail loudly rather than publish a clean-looking
+ *    index whose search silently never worked.
+ */
+export type FtsBuildFailureClass = 'capability' | 'integrity';
+
+// Checked before integrity signatures: a row-level tokenizer error that happens
+// to mention an integrity word still degrades (it isn't a broken build).
+const FTS_CAPABILITY_SIGNATURES = ['invalid utf-8', 'failed calling lower', 'tokeniz'] as const;
+// IO / durability / corruption signatures that mean the build itself broke.
+// Deliberately SPECIFIC (#2658 review L1): generic OS errors a capability/config
+// failure can also carry — bare 'no such file or directory' (ENOENT, e.g. a
+// missing FTS extension asset) and 'bad file descriptor'/'ebadf' — are NOT here,
+// so an ambiguous failure degrades (the pre-#2658 safe behavior) instead of
+// newly aborting the whole analyze. A genuine write/rename/checkpoint integrity
+// failure still matches via 'error renaming' / 'io exception' / 'checkpoint'
+// (the #2658 repro message "Error renaming … : No such file or directory" hits
+// both 'io exception' and 'error renaming').
+const FTS_INTEGRITY_SIGNATURES = [
+  'io exception',
+  'i/o error',
+  'io error',
+  'error renaming',
+  'checkpoint',
+  'corrupt',
+  'no space',
+  'enospc',
+  'double free',
+  'segmentation',
+] as const;
+
+/**
+ * Classify an FTS build failure message. Defaults to `capability` (degrade) —
+ * only clearly-integrity failures escalate, so the long-standing resilience to
+ * row-level tokenizer errors is preserved and we never newly fail a run on an
+ * unrecognised message.
+ */
+export const classifyFtsBuildError = (message: string): FtsBuildFailureClass => {
+  const m = message.toLowerCase();
+  if (FTS_CAPABILITY_SIGNATURES.some((s) => m.includes(s))) return 'capability';
+  if (FTS_INTEGRITY_SIGNATURES.some((s) => m.includes(s))) return 'integrity';
+  return 'capability';
+};
+
+/**
+ * Whether an FTS build failure should ABORT the analyze (throw before publish)
+ * rather than degrade to a search-less-but-queryable index (#2658).
+ *
+ * Only an `integrity` failure on the atomic-swap path is fatal: there the graph
+ * was built into a throwaway staging DB, so throwing abandons the staging file
+ * and leaves the previous live index intact. On an in-place build
+ * (`useAtomicSwap === false`: incremental, Windows default) the graph DML
+ * already mutated the LIVE database, so there is nothing to roll back by
+ * throwing — degrading to a queryable index with FTS marked unavailable is
+ * strictly better than exiting mid-finalization over a dirty, partially-indexed
+ * live DB. `capability` failures always degrade.
+ */
+export const ftsFailureIsFatal = (
+  failureClass: FtsBuildFailureClass | undefined,
+  useAtomicSwap: boolean,
+): boolean => failureClass === 'integrity' && useAtomicSwap;
+
 export interface BuildSearchIndexesResult {
   ok: boolean;
   error?: string;
+  /** Present only when `ok` is false. See {@link FtsBuildFailureClass}. */
+  failureClass?: FtsBuildFailureClass;
 }
 
 /**
@@ -202,10 +354,15 @@ export async function buildSearchIndexesOrDegrade(
     await createSearchFTSIndexes(options);
     const missing = await verifySearchFTSIndexes(executeQuery);
     if (missing.length > 0) {
-      return { ok: false, error: `missing indexes after build: ${missing.join(', ')}` };
+      // Structural incompleteness with no thrown error — treat as capability
+      // (degrade), matching prior behavior; a broken *write* surfaces as a
+      // thrown IO/checkpoint error below and is classified integrity there.
+      const error = `missing indexes after build: ${missing.join(', ')}`;
+      return { ok: false, error, failureClass: classifyFtsBuildError(error) };
     }
     return { ok: true };
   } catch (e) {
-    return { ok: false, error: e instanceof Error ? e.message : String(e) };
+    const error = e instanceof Error ? e.message : String(e);
+    return { ok: false, error, failureClass: classifyFtsBuildError(error) };
   }
 }

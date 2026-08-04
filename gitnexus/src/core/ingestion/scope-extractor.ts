@@ -81,6 +81,7 @@ import type {
 } from 'gitnexus-shared';
 import { buildPositionIndex, buildScopeTree, canParentScope, makeScopeId } from 'gitnexus-shared';
 import type { LanguageProvider } from './language-provider.js';
+import { isValidReceiverChain } from './utils/receiver-chain-codec.js';
 import { extractTemplateArguments } from './utils/template-arguments.js';
 
 // ─── Narrow hook surface the extractor actually uses ───────────────────────
@@ -101,6 +102,7 @@ import { extractTemplateArguments } from './utils/template-arguments.js';
 export type ScopeExtractorHooks = Pick<
   LanguageProvider,
   | 'resolveScopeKind'
+  | 'scopeOwnsReceivers'
   | 'bindingScopeFor'
   | 'interpretImport'
   | 'interpretTypeBinding'
@@ -137,7 +139,19 @@ export function extract(
   for (let i = 0; i < scopeDrafts.length; i++) {
     const d = scopeDrafts[i];
     if (d.parent === null && d.kind !== 'Module') {
-      scopeDrafts[i] = makeDraft(d.id, moduleScope.id, d.kind, d.range, d.filePath);
+      // `ownsReceivers` must be carried across: it is decided from the scope's
+      // own capture in pass 1 and re-parenting does not change what the scope
+      // binds. Dropping it here would silently un-mark every function scope in
+      // a file whose root parsed as ERROR (the only way a scope is orphaned).
+      scopeDrafts[i] = makeDraft(
+        d.id,
+        moduleScope.id,
+        d.kind,
+        d.range,
+        d.filePath,
+        d.ownsReceivers,
+        d.lexicalNames,
+      );
     }
   }
   const scopes = scopeDrafts.map(draftToScope);
@@ -301,6 +315,9 @@ interface ScopeDraft {
   readonly ownedDefs: SymbolDefinition[];
   readonly imports: ImportEdge[];
   readonly typeBindings: Map<string, TypeRef>;
+  readonly lexicalNames?: ReadonlySet<string>;
+  /** See `Scope.ownsReceivers` — set once at pass 1, never mutated. */
+  readonly ownsReceivers?: ReadonlySet<string>;
 }
 
 function ensureModuleScope(
@@ -356,6 +373,8 @@ function draftToScope(draft: ScopeDraft): Scope {
     ownedDefs: Object.freeze(draft.ownedDefs.slice()),
     imports: Object.freeze(draft.imports.slice()),
     typeBindings: new Map(draft.typeBindings),
+    lexicalNames: draft.lexicalNames,
+    ownsReceivers: draft.ownsReceivers,
   };
 }
 
@@ -424,7 +443,17 @@ function pass1BuildScopes(
     }
 
     const parent = stack.length > 0 ? stack[stack.length - 1]!.id : null;
-    drafts.push(makeDraft(cand.id, parent, cand.kind, cand.range, filePath));
+    drafts.push(
+      makeDraft(
+        cand.id,
+        parent,
+        cand.kind,
+        cand.range,
+        filePath,
+        provider.scopeOwnsReceivers?.(cand.match),
+        parseScopeLexicalNames(cand.match),
+      ),
+    );
     stack.push(cand);
   }
 
@@ -468,6 +497,8 @@ function makeDraft(
   kind: ScopeKind,
   range: Range,
   filePath: string,
+  ownsReceivers?: ReadonlySet<string>,
+  lexicalNames?: ReadonlySet<string>,
 ): ScopeDraft {
   return {
     id,
@@ -479,7 +510,24 @@ function makeDraft(
     ownedDefs: [],
     imports: [],
     typeBindings: new Map(),
+    lexicalNames,
+    ownsReceivers,
   };
+}
+
+function parseScopeLexicalNames(match: CaptureMatch): ReadonlySet<string> | undefined {
+  const raw = match['@scope.lexical-names']?.text;
+  if (raw === undefined) return undefined;
+  try {
+    const parsed: unknown = JSON.parse(raw);
+    if (!Array.isArray(parsed)) return undefined;
+    const names = parsed.filter(
+      (name): name is string => typeof name === 'string' && name.length > 0,
+    );
+    return names.length > 0 ? new Set(names) : undefined;
+  } catch {
+    return undefined;
+  }
 }
 
 // ─── Pass 2: attach declarations + local bindings ──────────────────────────
@@ -705,6 +753,7 @@ function parseJsonStringArrayCapture(
 
 function deriveDeclarationName(match: CaptureMatch, def: SymbolDefinition): string | undefined {
   const nameCap =
+    match['@declaration.binding-name'] ??
     match['@declaration.name'] ??
     match[
       Object.keys(match).find((k) => k.startsWith('@declaration.') && k.endsWith('.name')) ?? ''
@@ -862,6 +911,13 @@ function pass3CollectImports(
 
 // ─── Pass 4: collect type bindings ─────────────────────────────────────────
 
+/** Cap on the retained as-written annotation. Real container spellings are a
+ *  handful of characters; a multi-line mapped/conditional type is neither a
+ *  container any `elementTypeOf` parses nor worth keeping one copy of per
+ *  binding on a kernel-scale repo. Over the cap the spelling is dropped, which
+ *  makes an index step decline — the safe direction. */
+const MAX_DECLARED_SPELLING_LENGTH = 256;
+
 function pass4CollectTypeBindings(
   matches: readonly CaptureMatch[],
   drafts: readonly ScopeDraft[],
@@ -904,11 +960,41 @@ function pass4CollectTypeBindings(
       provider.bindingScopeFor?.(match, draftToScope(innermost), scopeTree) ?? autoHostedId;
     const host = draftById.get(hostId) ?? innermost;
 
-    const typeRef: TypeRef = {
-      rawName: parsed.rawTypeName,
-      declaredAtScope: host.id,
-      source: parsed.source,
-    };
+    // The annotation as the source wrote it, kept only when the provider's
+    // interpretation is not already it. `interpretTypeBinding` normalizes
+    // container spellings away (`User[]` → `User`, `List[User]` → `User`,
+    // `[]*User` → `User`), which makes a reduced container indistinguishable
+    // from a class of the same name — and an index step folding on that
+    // ambiguity typed `grid[0]` as `Grid`. Read at the one place the
+    // distinction matters; see `TypeRef.declaredSpelling`.
+    //
+    // Read from the capture rather than from `ParsedTypeBinding` deliberately:
+    // `@type-binding.type` is the shared anchor EVERY provider already reads to
+    // build `rawTypeName`, so nothing has to be threaded through fourteen
+    // interpreters (and none can forget to).
+    // A provider may override when its grammar keeps part of the written type
+    // outside `@type-binding.type` (C++ hangs `*` on the declarator).
+    const writtenType = (parsed.declaredSpelling ?? match['@type-binding.type']?.text)?.trim();
+    const declaredSpelling =
+      writtenType !== undefined &&
+      writtenType.length > 0 &&
+      writtenType.length <= MAX_DECLARED_SPELLING_LENGTH &&
+      writtenType !== parsed.rawTypeName
+        ? writtenType
+        : undefined;
+    const typeRef: TypeRef =
+      declaredSpelling === undefined
+        ? {
+            rawName: parsed.rawTypeName,
+            declaredAtScope: host.id,
+            source: parsed.source,
+          }
+        : {
+            rawName: parsed.rawTypeName,
+            declaredSpelling,
+            declaredAtScope: host.id,
+            source: parsed.source,
+          };
     // Prefer stronger sources when multiple matches fire for the same
     // bound name in the same scope. Example: `u: User = find()` matches
     // both the annotation and constructor-inferred patterns; the explicit
@@ -982,13 +1068,15 @@ function followChainedRef(start: TypeRef, draftById: ReadonlyMap<ScopeId, ScopeD
  * name in the same scope. Higher number wins; ties keep the later match
  * (last-write-wins preserves historical order within a tier).
  *
- * Rationale: explicit annotations always beat inferred ones because they
- * reflect user intent. `self`/`cls` are treated as strongly as annotations
- * because they are language-required receiver types.
+ * Rationale: explicit variable and field annotations always beat bindings
+ * derived from parameter annotations or inference because they reflect the
+ * most specific user intent. `self`/`cls` are treated as strongly as other
+ * declared types because they are language-required receiver types.
  */
 function typeBindingStrength(source: TypeRef['source']): number {
   switch (source) {
     case 'annotation':
+      return 3;
     case 'parameter-annotation':
     case 'return-annotation':
     case 'self':
@@ -1047,6 +1135,21 @@ function pass5CollectReferences(
     // consumed by the property-dispatch pass (#2437).
     const propertyKeyCap = match['@reference.property-key'];
 
+    // Compact receiver chain, when the emitter produced one. Validated HERE as
+    // well as at the store boundary: bounds applied only on load are a
+    // recurring defect in this codebase — the writer keeps minting payloads the
+    // reader keeps rejecting, which is a permanent warm-cache-miss reparse loop
+    // that logs nothing.
+    const receiverChain = extractReceiverChain(match);
+
+    // Callee-position marker: a member-read capture that is actually the callee
+    // of an enclosing call (`obj.f` in `obj.f()`). Recorded, not acted on —
+    // whether the read is a phantom or a genuine func-typed-field read depends
+    // on the resolved tail's kind, which only edge emission knows. Emitted by
+    // languages whose read pattern has no call-position exclusion; absent
+    // everywhere else, so the site stays byte-identical for them.
+    const inCalleePosition = match['@reference.callee-position'] !== undefined;
+
     const site: ReferenceSite = {
       name: nameCap.text,
       atRange: anchor.range,
@@ -1063,6 +1166,8 @@ function pass5CollectReferences(
       ...(arity !== undefined ? { arity } : {}),
       ...(argumentTypes !== undefined ? { argumentTypes } : {}),
       ...(argumentTypeClasses !== undefined ? { argumentTypeClasses } : {}),
+      ...(receiverChain !== undefined ? { receiverChain } : {}),
+      ...(inCalleePosition ? { inCalleePosition: true } : {}),
     };
     referenceSites.push(site);
   }
@@ -1131,6 +1236,19 @@ function extractExplicitReceiver(match: CaptureMatch): { readonly name: string }
   const cap = match['@reference.receiver'];
   if (cap === undefined) return undefined;
   return { name: cap.text };
+}
+
+/**
+ * The compact receiver chain, when the language emitter synthesized one.
+ *
+ * Returns `undefined` for anything that does not decode, so a malformed or
+ * over-bound payload degrades to the existing text cascade rather than
+ * poisoning the durable store. Never throws — this runs per reference site.
+ */
+function extractReceiverChain(match: CaptureMatch): string | undefined {
+  const cap = match['@reference.receiver-chain'];
+  if (cap === undefined) return undefined;
+  return isValidReceiverChain(cap.text) ? cap.text : undefined;
 }
 
 function extractArity(match: CaptureMatch): number | undefined {
@@ -1439,6 +1557,7 @@ function rangesEqual(a: Range, b: Range): boolean {
  * change.
  */
 const KNOWN_SUB_TAGS: ReadonlySet<string> = new Set<string>([
+  '@scope.lexical-names',
   '@declaration.name',
   '@declaration.qualified_name',
   '@import.name',
@@ -1449,6 +1568,7 @@ const KNOWN_SUB_TAGS: ReadonlySet<string> = new Set<string>([
   '@reference.name',
   '@reference.qualified-name',
   '@reference.property-key',
+  '@reference.callee-position',
   '@reference.receiver',
   '@reference.operator',
   '@reference.arity',

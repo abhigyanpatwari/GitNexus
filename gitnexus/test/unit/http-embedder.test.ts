@@ -6,6 +6,7 @@ const ENV_KEYS = [
   'GITNEXUS_EMBEDDING_MODEL',
   'GITNEXUS_EMBEDDING_API_KEY',
   'GITNEXUS_EMBEDDING_DIMS',
+  'GITNEXUS_EMBEDDING_HTTP_TIMEOUT_MS',
   'GITNEXUS_EMBEDDING_MAX_ATTEMPTS',
   'GITNEXUS_EMBEDDING_RETRY_CAP_MS',
   'GITNEXUS_EMBEDDING_MIN_INTERVAL_MS',
@@ -365,6 +366,9 @@ describe('HTTP embedding backend', () => {
     it('classifies a reachable endpoint that returns a non-JSON 200 body', async () => {
       process.env.GITNEXUS_EMBEDDING_URL = 'http://test:8080/v1';
       process.env.GITNEXUS_EMBEDDING_MODEL = 'test-model';
+      // An unusable 2xx body is retried like a 5xx (#2790); collapse the
+      // backoff so this case still asserts classification, not wall clock.
+      process.env.GITNEXUS_EMBEDDING_RETRY_CAP_MS = '1';
       // A captive portal / wrong service answers 200 with HTML — resp.json() throws.
       vi.stubGlobal(
         'fetch',
@@ -412,6 +416,8 @@ describe('HTTP embedding backend', () => {
     ])('types a malformed response item ($label) on the batch path', async ({ body }) => {
       process.env.GITNEXUS_EMBEDDING_URL = 'http://test:8080/v1';
       process.env.GITNEXUS_EMBEDDING_MODEL = 'test-model';
+      // Wrong-shaped 2xx bodies are retried too (#2790) — collapse the backoff.
+      process.env.GITNEXUS_EMBEDDING_RETRY_CAP_MS = '1';
       vi.stubGlobal('fetch', vi.fn().mockResolvedValue({ ok: true, json: async () => body }));
 
       const { embedText } = await import('../../src/core/embeddings/embedder.js');
@@ -424,6 +430,8 @@ describe('HTTP embedding backend', () => {
     it('types a null item on the query path (httpEmbedQuery, #2385)', async () => {
       process.env.GITNEXUS_EMBEDDING_URL = 'http://test:8080/v1';
       process.env.GITNEXUS_EMBEDDING_MODEL = 'test-model';
+      // Wrong-shaped 2xx bodies are retried too (#2790) — collapse the backoff.
+      process.env.GITNEXUS_EMBEDDING_RETRY_CAP_MS = '1';
       vi.stubGlobal(
         'fetch',
         vi.fn().mockResolvedValue({ ok: true, json: async () => ({ data: [null] }) }),
@@ -608,6 +616,8 @@ describe('HTTP embedding backend', () => {
     it('throws on empty response from endpoint', async () => {
       process.env.GITNEXUS_EMBEDDING_URL = 'http://test:8080/v1';
       process.env.GITNEXUS_EMBEDDING_MODEL = 'test-model';
+      // A short body is retried like a 5xx now (#2790) — collapse the backoff.
+      process.env.GITNEXUS_EMBEDDING_RETRY_CAP_MS = '1';
 
       vi.stubGlobal(
         'fetch',
@@ -620,15 +630,21 @@ describe('HTTP embedding backend', () => {
       const mod = await import('../../src/mcp/core/embedder.js');
       const { isHttpEmbeddingError } = await import('../../src/core/embeddings/http-client.js');
       const err = await mod.embedQuery('test').catch((e: unknown) => e);
-      expect(String(err)).toContain('empty response');
+      // `{"data": []}` is a cardinality mismatch caught inside the retry loop,
+      // so it reports both counts rather than reaching httpEmbedQuery's
+      // (now defensive) "empty response" backstop (#2790).
+      expect(String(err)).toContain('0 vectors for 1 texts');
       // Type-completeness fence: this conversion must stay typed so the CLI
       // routes it to the endpoint branch, not the HF branch (#2385).
       expect(isHttpEmbeddingError(err)).toBe(true);
+      expect(fetch).toHaveBeenCalledTimes(3);
     });
 
     it('throws when endpoint returns fewer embeddings than texts', async () => {
       process.env.GITNEXUS_EMBEDDING_URL = 'http://test:8080/v1';
       process.env.GITNEXUS_EMBEDDING_MODEL = 'test-model';
+      // A short body is retried like a 5xx now (#2790) — collapse the backoff.
+      process.env.GITNEXUS_EMBEDDING_RETRY_CAP_MS = '1';
 
       vi.stubGlobal(
         'fetch',
@@ -644,6 +660,9 @@ describe('HTTP embedding backend', () => {
       expect(String(err)).toContain('1 vectors for 3 texts');
       // Type-completeness fence (#2385).
       expect(isHttpEmbeddingError(err)).toBe(true);
+      // The short body now gets the full retry budget instead of failing after
+      // one attempt with a `recordSuccess()` already booked (#2790).
+      expect(fetch).toHaveBeenCalledTimes(3);
     });
 
     it('throws on dimension mismatch when GITNEXUS_EMBEDDING_DIMS is set', async () => {
@@ -682,6 +701,19 @@ describe('HTTP embedding backend', () => {
   });
 
   describe('timeout and network error handling', () => {
+    it('uses a 180-second default timeout and accepts a bounded override', async () => {
+      process.env.GITNEXUS_EMBEDDING_URL = 'http://test:8080/v1';
+      process.env.GITNEXUS_EMBEDDING_MODEL = 'test-model';
+
+      const { getHttpTimeoutMs } = await import('../../src/core/embeddings/http-client.js');
+      expect(getHttpTimeoutMs()).toBe(180_000);
+
+      process.env.GITNEXUS_EMBEDDING_HTTP_TIMEOUT_MS = '120000';
+      expect(getHttpTimeoutMs()).toBe(120_000);
+      process.env.GITNEXUS_EMBEDDING_HTTP_TIMEOUT_MS = '300001';
+      expect(() => getHttpTimeoutMs()).toThrow('GITNEXUS_EMBEDDING_HTTP_TIMEOUT_MS');
+    });
+
     it('does not retry on timeout', async () => {
       process.env.GITNEXUS_EMBEDDING_URL = 'http://test:8080/v1';
       process.env.GITNEXUS_EMBEDDING_MODEL = 'test-model';
@@ -814,6 +846,7 @@ describe('HTTP embedding backend', () => {
     });
 
     it.each([
+      ['GITNEXUS_EMBEDDING_HTTP_TIMEOUT_MS', '0'],
       ['GITNEXUS_EMBEDDING_MAX_ATTEMPTS', '0'],
       ['GITNEXUS_EMBEDDING_RETRY_CAP_MS', '-1'],
       ['GITNEXUS_EMBEDDING_MIN_INTERVAL_MS', 'nope'],

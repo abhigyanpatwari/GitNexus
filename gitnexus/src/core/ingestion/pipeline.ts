@@ -16,6 +16,7 @@
  */
 
 import { createKnowledgeGraph } from '../graph/graph.js';
+import { GraphEmitSink, type GraphEmitManifest } from '../lbug/graph-emit-sink.js';
 import { type PipelineProgress } from 'gitnexus-shared';
 import { PipelineResult } from '../../types/pipeline.js';
 import {
@@ -31,6 +32,10 @@ import {
   ormPhase,
   crossFilePhase,
   scopeResolutionPhase,
+  springConfigPhase,
+  springAutoConfigurationPhase,
+  springAopPhase,
+  springAopInheritancePhase,
   pruneLocalSymbolsPhase,
   taintSummariesPhase,
   callSummariesPhase,
@@ -53,6 +58,14 @@ export interface PipelineOptions {
    * to retain those nodes under `skipGraphPhases`.
    */
   skipGraphPhases?: boolean;
+  /** Per-advice Spring AOP candidate inspection cap. `0` disables this cap. */
+  springAopMaxCandidateInspectionsPerAdvice?: number;
+  /** Aggregate Spring AOP candidate inspection cap for one analysis. `0` disables this cap. */
+  springAopMaxCandidateInspections?: number;
+  /** Per-advice Spring AOP `ADVISED_BY` edge cap. `0` disables this cap. */
+  springAopMaxAdvisedEdgesPerAdvice?: number;
+  /** Aggregate Spring AOP advice-edge cap for one analysis. `0` disables this cap. */
+  springAopMaxAdvisedEdges?: number;
   /**
    * Build the control-flow-graph / PDG substrate (#2081 M1, opt-in via `--pdg`).
    * Off by default: workers skip all CFG work and emit no `cfgSideChannel`, and
@@ -141,6 +154,22 @@ export interface PipelineOptions {
    * whole-graph emit.
    */
   streamPdgEmit?: boolean;
+  /**
+   * Streamed structural graph emit (#2680). When true, relationships that no
+   * mid-pipeline phase reads back (CALLS, IMPORTS, ACCESSES, CONTAINS, ...) are
+   * streamed to CSV-on-disk from the parse boundary onward instead of being
+   * retained in the in-memory graph — measured ~2.9x reduction of graph heap.
+   *
+   * NOT free: the `communities`, `processes`, `taintSummaries` and
+   * `callSummaries` phases all consume the whole CALLS graph and are disabled
+   * under this flag. The caller (`run-analyze`) gates it to full rebuilds.
+   * Requires `graphEmitCsvDir`.
+   */
+  streamGraphEmit?: boolean;
+  /** Directory for the streamed structural CSVs. Required when
+   *  `streamGraphEmit` is on; supplied by the caller, which owns storage-path
+   *  resolution (and its native-safe relocation). */
+  graphEmitCsvDir?: string;
   /** Streamed PDG-emit write buffer (rows) when `streamPdgEmit` is on (#2202).
    *  `undefined` ⇒ `DEFAULT_PDG_EMIT_CHUNK_ROWS`. Memory-only; does not affect
    *  emitted bytes. */
@@ -242,9 +271,9 @@ export interface PipelineOptions {
  *
  * Phase dependency graph:
  *
- *   scan → structure → [markdown, cobol] → parse → [routes, tools, orm]
- *     → crossFile → scopeResolution → pruneLocalSymbols
- *     → mro → di → communities → processes
+ *   scan → structure → [springConfig, markdown, cobol] → parse → [routes, tools, orm]
+ *     → crossFile → scopeResolution → [springAutoConfiguration, springAop] → pruneLocalSymbols
+ *     → mro → springAopInheritance → di → communities → processes
  *
  * To add a new phase: create a file in pipeline-phases/, export the phase
  * object, and `.register()` it at the appropriate position below. Opt-in
@@ -261,6 +290,7 @@ export function buildPhaseList(options?: PipelineOptions): PipelinePhase[] {
     new PhaseRegistry<PipelineOptions>()
       .register(scanPhase)
       .register(structurePhase)
+      .register(springConfigPhase)
       .register(markdownPhase)
       .register(cobolPhase)
       .register(parsePhase)
@@ -269,6 +299,8 @@ export function buildPhaseList(options?: PipelineOptions): PipelinePhase[] {
       .register(ormPhase)
       .register(crossFilePhase)
       .register(scopeResolutionPhase)
+      .register(springAutoConfigurationPhase)
+      .register(springAopPhase)
       .register(pruneLocalSymbolsPhase)
       // M4 (#2084): interprocedural taint fixpoint — the first real opt-in
       // pdg-gated phase. Off ⇒ absent ⇒ byte-identical graph. No always-on
@@ -276,6 +308,7 @@ export function buildPhaseList(options?: PipelineOptions): PipelinePhase[] {
       .register(taintSummariesPhase, { enabledWhen: (o) => o.pdg === true })
       .register(callSummariesPhase, { enabledWhen: (o) => o.pdg === true })
       .register(mroPhase, { enabledWhen: (o) => !o.skipGraphPhases })
+      .register(springAopInheritancePhase, { enabledWhen: (o) => !o.skipGraphPhases })
       .register(diPhase, { enabledWhen: (o) => !o.skipGraphPhases })
       .register(communitiesPhase, { enabledWhen: (o) => !o.skipGraphPhases })
       .register(processesPhase, { enabledWhen: (o) => !o.skipGraphPhases })
@@ -295,15 +328,46 @@ export const runPipelineFromRepo = async (
   const graph = createKnowledgeGraph();
   const pipelineStart = Date.now();
 
+  // Streamed structural emit (#2680). The sink is a write-routing façade over
+  // `graph`; it streams nothing until `beginStreaming()` fires at the parse
+  // boundary.
+  //
+  // A missing `graphEmitCsvDir` is a caller bug, not a reason to quietly skip
+  // streaming: this is on by default, so a programmatic host that builds its own
+  // `PipelineOptions` (eval-server, the MCP daemon, a test) would otherwise ask
+  // for streaming, silently not get it, and still see a successful run. Fail
+  // loudly instead — the whole point of the surrounding work is that a degraded
+  // outcome must never look like a clean one.
+  let graphEmitSink: GraphEmitSink | undefined;
+  if (options?.streamGraphEmit === true) {
+    if (options.graphEmitCsvDir === undefined) {
+      throw new Error(
+        'streamGraphEmit was requested but graphEmitCsvDir is missing. The caller owns ' +
+          'storage-path resolution (see resolveNativeSafeStorageDir in run-analyze.ts); ' +
+          'pass the directory, or leave streamGraphEmit unset to run without streaming.',
+      );
+    }
+    graphEmitSink = new GraphEmitSink(graph, options.graphEmitCsvDir);
+  }
+
   const phases = buildPhaseList(options);
 
-  const results = await runPipeline(phases, {
-    repoPath,
-    graph,
-    onProgress,
-    options,
-    pipelineStart,
-  });
+  let graphEmitManifest: GraphEmitManifest | undefined;
+  let results;
+  try {
+    results = await runPipeline(phases, {
+      repoPath,
+      graph: graphEmitSink ?? graph,
+      onProgress,
+      options,
+      pipelineStart,
+      graphEmit: graphEmitSink,
+    });
+    graphEmitManifest = graphEmitSink?.finalize();
+  } finally {
+    // Release per-pair fds when the pipeline threw before finalize ran.
+    graphEmitSink?.close();
+  }
 
   // Extract final results for the PipelineResult contract
   const { totalFiles, usedWorkerPool } = getPhaseOutput<{
@@ -318,7 +382,12 @@ export const runPipelineFromRepo = async (
   // Streamed PDG-emit manifest (#2202): present only when streaming was on.
   const pdgEmitManifest = scopeResolutionOutput.pdgEmitManifest;
 
-  if (!options?.skipGraphPhases) {
+  // Presence check, not `!skipGraphPhases`: phases can now be filtered out by
+  // any `enabledWhen` predicate (streamGraphEmit disables communities/processes
+  // too), and `getPhaseOutput` THROWS on a phase that was never resolved. Keying
+  // off the options flag alone made every filtered-out combination crash here
+  // rather than return undefined results.
+  if (results.has('communities') && results.has('processes')) {
     communityResult = getPhaseOutput<CommunitiesOutput>(results, 'communities').communityResult;
     processResult = getPhaseOutput<ProcessesOutput>(results, 'processes').processResult;
   }
@@ -338,9 +407,16 @@ export const runPipelineFromRepo = async (
   });
 
   return {
+    // The RAW graph, deliberately — NOT `graphEmitSink`. Phases above received
+    // the sink so their reads are complete, but `loadGraphToLbug` feeds this to
+    // `streamAllCSVsToDisk`, and the sink's complete iterator would then emit
+    // every streamed edge a SECOND time on top of the per-pair CSVs the sink
+    // already wrote and the manifest already COPYs. Returning the sink here
+    // silently doubles every streamed relationship in the persisted graph.
     graph,
     repoPath,
     totalFileCount: totalFiles,
+    graphEmitManifest,
     communityResult,
     processResult,
     resolutionOutcomes,

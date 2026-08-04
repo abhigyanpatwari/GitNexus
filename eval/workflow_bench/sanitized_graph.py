@@ -16,6 +16,7 @@ from .process_control import ManagedProcessError, run_managed
 from .proposer_sandbox import (
     SANDBOX_GITNEXUS,
     SANDBOX_HOME,
+    SANDBOX_NODE,
     SANDBOX_WORKSPACE,
     ReadOnlyMount,
     SandboxError,
@@ -248,7 +249,7 @@ def _run_graph_cli(
 ) -> bytes | None:
     command = [
         *prefix,
-        "/usr/local/bin/node",
+        SANDBOX_NODE,
         SANDBOX_GITNEXUS_ENTRYPOINT,
         *arguments,
     ]

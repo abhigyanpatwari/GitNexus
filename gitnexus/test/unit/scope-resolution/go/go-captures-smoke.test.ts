@@ -63,6 +63,41 @@ func main() {
     expect(tags).toContain('@reference.write');
   });
 
+  // #2782: a selector in CALLEE position is MARKED, not dropped. The capture
+  // layer cannot tell `h.dep.Work()` dispatching through a method from the same
+  // syntax dispatching through a `Work func() error` struct field — only the
+  // resolved tail's kind can, so the position is recorded and edge emission
+  // decides. Dropping the site here deleted the func-typed field's only read.
+  it('marks a member call callee as callee-position instead of dropping the read', () => {
+    const src = `
+package main
+
+type Dep struct{ Work func() error }
+type Host struct{ dep *Dep }
+
+func (h *Host) Run() error {
+	f := h.dep.Work
+	_ = f
+	return h.dep.Work()
+}
+`;
+    const reads = emitGoScopeCaptures(src, 'main.go')
+      .filter((m) => m['@reference.read'] !== undefined)
+      .map((m) => ({
+        text: m['@reference.read']!.text,
+        calleePosition: m['@reference.callee-position'] !== undefined,
+      }));
+    // Four reads, in source order: the method VALUE's inner `h.dep` and outer
+    // `h.dep.Work` (neither in callee position), then the CALL's inner `h.dep`
+    // and its outer `h.dep.Work` — the only one in callee position.
+    expect(reads).toEqual([
+      { text: 'h.dep', calleePosition: false },
+      { text: 'h.dep.Work', calleePosition: false },
+      { text: 'h.dep', calleePosition: false },
+      { text: 'h.dep.Work', calleePosition: true },
+    ]);
+  });
+
   it('emits every name from multi-name const, var, and field declarations', () => {
     const src = `
 package main

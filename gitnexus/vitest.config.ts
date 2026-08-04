@@ -9,6 +9,12 @@ export default defineConfig({
     pool: 'forks',
     globals: true,
     teardownTimeout: 3000,
+    // E2E harnesses pin a small NODE_OPTIONS heap so spawned CLI children
+    // stay light; without this opt-out the #2649 auto-heap override would
+    // respawn every such child with a RAM-sized cap. Children inherit it via
+    // the harnesses' `{ ...process.env }` spreads. Tests that exercise the
+    // respawn behavior itself delete GITNEXUS_MEMORY in their own setup.
+    env: { GITNEXUS_MEMORY: 'off' },
     // N-API destructors can crash worker forks on macOS during process exit.
     // This is independent of the QueryResult lifetime fix in @ladybugdb/core 0.15.2 —
     // it's a vitest forks + native addon interaction where destructors run in
@@ -64,6 +70,7 @@ export default defineConfig({
             'test/integration/lbug-pool-stability.test.ts',
             'test/integration/local-backend.test.ts',
             'test/integration/local-backend-calltool.test.ts',
+            'test/integration/spring-aop-mcp.test.ts',
             'test/integration/search-core.test.ts',
             'test/integration/search-pool.test.ts',
             'test/integration/fts-description-search.test.ts',
@@ -84,12 +91,14 @@ export default defineConfig({
             'test/integration/lbug-non-ascii-path.test.ts',
             'test/integration/lbug-conn-serialization.test.ts',
             'test/integration/group/manifest-resolve-symbol-2325.test.ts',
+            'test/integration/group/manifest-synthetic-impact-lbug.test.ts',
             'test/integration/group/http-route-resolve-symbol.test.ts',
             'test/integration/fts-stemmer-sweep.test.ts',
             'test/integration/lbug-multiwriter-deadlock.test.ts',
             'test/integration/extension-binary-real.test.ts',
             'test/integration/lbug-delete-nodes-for-files.test.ts',
             'test/integration/lbug-query-importers-batch.test.ts',
+            'test/integration/impact-ambiguous-blast-radius.test.ts',
             'test/unit/incremental-dirty-recovery.test.ts',
             'test/unit/incremental-orchestration.test.ts',
           ],
@@ -110,6 +119,7 @@ export default defineConfig({
             'test/integration/lbug-pool-stability.test.ts',
             'test/integration/local-backend.test.ts',
             'test/integration/local-backend-calltool.test.ts',
+            'test/integration/spring-aop-mcp.test.ts',
             'test/integration/search-core.test.ts',
             'test/integration/search-pool.test.ts',
             'test/integration/fts-description-search.test.ts',
@@ -130,6 +140,7 @@ export default defineConfig({
             'test/integration/lbug-non-ascii-path.test.ts',
             'test/integration/lbug-conn-serialization.test.ts',
             'test/integration/group/manifest-resolve-symbol-2325.test.ts',
+            'test/integration/group/manifest-synthetic-impact-lbug.test.ts',
             'test/integration/group/http-route-resolve-symbol.test.ts',
             'test/integration/skills-e2e.test.ts',
             'test/integration/fts-extension-e2e.test.ts',
@@ -138,6 +149,7 @@ export default defineConfig({
             'test/integration/extension-binary-real.test.ts',
             'test/integration/lbug-delete-nodes-for-files.test.ts',
             'test/integration/lbug-query-importers-batch.test.ts',
+            'test/integration/impact-ambiguous-blast-radius.test.ts',
             'test/unit/incremental-dirty-recovery.test.ts',
             'test/unit/incremental-orchestration.test.ts',
           ],

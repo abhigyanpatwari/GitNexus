@@ -5,9 +5,20 @@ import {
   resolveAnalysisFeatureVersions,
   type AnalysisFeatureDescriptor,
 } from '../../src/core/analysis-features.js';
-import { SPRING_BEAN_INVENTORY_FEATURE } from '../../src/core/ingestion/frameworks/spring/analysis-features.js';
+import {
+  SPRING_AOP_FEATURE,
+  SPRING_BEAN_INVENTORY_FEATURE,
+  SPRING_CONDITIONALS_FEATURE,
+} from '../../src/core/ingestion/frameworks/spring/analysis-features.js';
+import { SPRING_CONFIG_BINDINGS_FEATURE } from '../../src/core/ingestion/languages/java/analysis-features.js';
 
-const FEATURES = [CLASS_FRAMEWORK_ANNOTATIONS_FEATURE, SPRING_BEAN_INVENTORY_FEATURE] as const;
+const FEATURES = [
+  CLASS_FRAMEWORK_ANNOTATIONS_FEATURE,
+  SPRING_AOP_FEATURE,
+  SPRING_BEAN_INVENTORY_FEATURE,
+  SPRING_CONDITIONALS_FEATURE,
+  SPRING_CONFIG_BINDINGS_FEATURE,
+] as const;
 
 describe('analysis feature versions', () => {
   it('separates the global Class schema capability from JVM-only Bean evidence', () => {
@@ -16,18 +27,40 @@ describe('analysis feature versions', () => {
     });
     expect(resolveAnalysisFeatureVersions(FEATURES, ['src/App.java'])).toEqual({
       'graph.class-framework-annotations': 1,
-      'spring.bean-inventory': 1,
+      'spring.aop-advice': 1,
+      'spring.bean-inventory': 2,
+      'spring.conditionals-auto-configuration': 1,
+      'spring.config-bindings': 1,
     });
     expect(resolveAnalysisFeatureVersions(FEATURES, ['BUILD.GRADLE.KTS'])).toEqual({
       'graph.class-framework-annotations': 1,
-      'spring.bean-inventory': 1,
+      'spring.aop-advice': 1,
+      'spring.bean-inventory': 2,
+      'spring.conditionals-auto-configuration': 1,
+    });
+    expect(
+      resolveAnalysisFeatureVersions(FEATURES, [
+        'src/main/resources/application-local.yml',
+        'README.md',
+      ]),
+    ).toEqual({
+      'graph.class-framework-annotations': 1,
+      'spring.config-bindings': 1,
+    });
+    expect(
+      resolveAnalysisFeatureVersions(FEATURES, [
+        'src/main/resources/META-INF/spring/org.springframework.boot.autoconfigure.AutoConfiguration.imports',
+      ]),
+    ).toEqual({
+      'graph.class-framework-annotations': 1,
+      'spring.conditionals-auto-configuration': 1,
     });
   });
 
   it('requires an exact, well-formed feature set', () => {
     const expected = {
       'graph.class-framework-annotations': 1,
-      'spring.bean-inventory': 1,
+      'spring.bean-inventory': 2,
     };
 
     expect(findAnalysisFeatureMismatches(expected, expected)).toEqual([]);
@@ -37,7 +70,7 @@ describe('analysis feature versions', () => {
     ]);
     expect(
       findAnalysisFeatureMismatches(
-        { 'graph.class-framework-annotations': 1, 'spring.bean-inventory': 2 },
+        { 'graph.class-framework-annotations': 1, 'spring.bean-inventory': 1 },
         expected,
       ),
     ).toEqual(['version:spring.bean-inventory']);

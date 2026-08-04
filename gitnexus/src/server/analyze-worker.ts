@@ -42,6 +42,16 @@ export interface CompleteMessage {
 export interface ErrorMessage {
   type: 'error';
   message: string;
+  /**
+   * Machine-readable failure code for a parent that wants to branch instead of
+   * only surfacing the string. `index-lock-timeout` (#2658 review M2) means
+   * another analyze held the single-writer lock past the wait ceiling — a
+   * transient, retryable condition, not a broken build. Absent for a generic
+   * failure.
+   */
+  code?: 'index-lock-timeout';
+  /** True when the failure is expected to clear on retry (e.g. lock contention). */
+  retryable?: boolean;
 }
 
 /** Child → parent IPC messages. Shared with the parent-side launcher. */

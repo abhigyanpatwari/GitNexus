@@ -92,6 +92,43 @@ const DART_SCOPE_QUERY = `
   (function_signature
     name: (identifier) @declaration.name) @declaration.function)
 
+; ── Declarations — closure bound to a local ──────────────────────────────────
+;
+; var handler = (int x) => target(x);   /   var blk = (int y) { ... };
+;
+; Anchor discipline (same contract as javascript/query.ts): @declaration.function
+; sits on the INNER function_expression, NOT on the local_variable_declaration
+; wrapper. Dart is the one language that declares NO @scope.function in this
+; file — its function scopes are SYNTHESIZED in captures.ts from
+; declNode + findFunctionBody(declNode). So this rule deliberately does not add
+; a @scope.function of its own: doing that would collide with the synthesized
+; one at identical range, and duplicate scope ids make buildScopeTree throw,
+; which drops the whole file. Instead findFunctionBody now understands a
+; closure's child function_expression_body, so the existing synthesis produces
+; exactly one scope, anchored on the same node as the declaration (#2699 S4).
+;; THREE binding shapes, not one. Dart wraps only the FIRST local declarator in
+;; initialized_variable_definition; a top-level var and every later declarator
+;; are initialized_identifier, and a top-level final/const is
+;; static_final_declaration. Matching only the first shape left idiomatic
+;; top-level closures and the g of "var f = ..., g = ..." with no declaration
+;; capture, so findFunctionBody never synthesized their scope and they could
+;; never be call SOURCES.
+;;
+;; This mirrors DART_CALLABLE_CAPTURE_OPTIONS.bindingNodeTypes in captures.ts,
+;; which already listed all three for callable-flow. The two lists must stay in
+;; step; dart-closure-binding-shapes.test.ts pins that.
+(initialized_variable_definition
+  (identifier) @declaration.name
+  (function_expression) @declaration.function)
+
+(initialized_identifier
+  (identifier) @declaration.name
+  (function_expression) @declaration.function)
+
+(static_final_declaration
+  (identifier) @declaration.name
+  (function_expression) @declaration.function)
+
 ; ── Declarations — methods (inside class/mixin/extension bodies) ─────────────
 (method_signature
   (function_signature
@@ -125,6 +162,37 @@ const DART_SCOPE_QUERY = `
   (initialized_identifier_list
     (initialized_identifier
       . (identifier) @declaration.name))) @declaration.property
+
+; ── Declarations — closure bindings (#2693) ──────────────────────────────────
+; \`var f = (x) => x;\` binds a callable. Without a declaration the binding has
+; no SymbolDefinition, so callable-value-flow has nothing to attach its seed to
+; and \`f()\` stays unresolved even though the graph emits a Function node for it.
+;
+; Restricted to a function_expression value on purpose: declaring every Dart
+; variable would mint defs repo-wide for no resolution benefit. The top-level
+; rule is anchored under (program) — the same disambiguation the graph-node
+; query uses — so class-body fields, which reuse initialized_identifier_list
+; and are already @declaration.property, are never matched twice.
+(program
+  (initialized_identifier_list
+    (initialized_identifier
+      (identifier) @declaration.name
+      (function_expression))) @declaration.variable)
+(program
+  (static_final_declaration_list
+    (static_final_declaration
+      (identifier) @declaration.name
+      (function_expression))) @declaration.variable)
+(initialized_variable_definition
+  name: (identifier) @declaration.name
+  value: (function_expression)) @declaration.variable
+; Second and later declarators of \`var f = .., g = ..;\` are nested
+; initialized_identifier children of the same initialized_variable_definition,
+; which the field-based rule above only reaches for the first name.
+(initialized_variable_definition
+  (initialized_identifier
+    (identifier) @declaration.name
+    (function_expression)) @declaration.variable)
 
 ; ── Imports / re-exports ─────────────────────────────────────────────────────
 (import_or_export

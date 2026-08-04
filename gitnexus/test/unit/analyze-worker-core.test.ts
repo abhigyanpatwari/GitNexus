@@ -20,6 +20,7 @@ import {
 import type { AnalyzeResult } from '../../src/core/run-analyze.js';
 import type { WorkerMessage } from '../../src/server/analyze-worker.js';
 import type { AnalyzerRunnerIdentity } from '../../src/storage/repo-manager.js';
+import { IndexLockTimeoutError, type LockRecord } from '../../src/storage/index-lock.js';
 
 const baseResult: AnalyzeResult = {
   repoName: 'repo',
@@ -150,6 +151,37 @@ describe('runWorkerAnalysis — finalize guard (#2264 P2)', () => {
 
     expect(send).toHaveBeenCalledWith({ type: 'error', message: 'boom' });
     expect(finalize).not.toHaveBeenCalled();
+  });
+
+  it('tags an index-lock timeout as a retryable index-lock-timeout error (#2658 review M2)', async () => {
+    const send = vi.fn<(msg: WorkerMessage) => void>();
+    const holder: LockRecord = {
+      v: 1,
+      pid: -1,
+      hostname: 'host',
+      startTime: null,
+      token: '',
+      invocationId: 'unknown',
+      acquiredAt: '',
+    };
+    const lockContended: WorkerAnalysisDeps['runFullAnalysis'] = vi.fn(async () => {
+      throw new IndexLockTimeoutError(holder, 600_000, false);
+    });
+
+    await runWorkerAnalysis(
+      '/repo',
+      {},
+      {
+        runFullAnalysis: lockContended,
+        assertAnalysisFinalized: okFinalize,
+        send,
+        claimTerminal: alwaysClaim,
+      },
+    );
+
+    expect(send).toHaveBeenCalledWith(
+      expect.objectContaining({ type: 'error', code: 'index-lock-timeout', retryable: true }),
+    );
   });
 });
 

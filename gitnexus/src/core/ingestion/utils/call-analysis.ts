@@ -1,5 +1,8 @@
+import type { MixedChainStep } from 'gitnexus-shared';
+
 import type { SyntaxNode } from './ast-helpers.js';
 import { CALL_ARGUMENT_LIST_TYPES } from './ast-helpers.js';
+import { subscriptBase } from './callable-flow-captures.js';
 
 /** Node types representing call expressions across supported languages. */
 export const CALL_EXPRESSION_TYPES = new Set([
@@ -14,6 +17,24 @@ export const CALL_EXPRESSION_TYPES = new Set([
 /**
  * Hard limit on chain depth to prevent runaway recursion.
  * For `a.b().c().d()`, the chain has depth 2 (b and c before d).
+ *
+ * A chain deeper than this is DISCARDED WHOLE, not truncated:
+ * `extractMixedChain` returns an undefined base and the encoder refuses to mint
+ * a partial chain, because a base-side prefix decodes cleanly as a shorter,
+ * complete-looking chain and would type the receiver against the wrong member.
+ * Correct, but it means a builder chain one hop too long contributes nothing at
+ * all rather than degrading.
+ *
+ * DELIBERATELY NOT RAISED. Measured (see bench/receiver-resolution/BASELINE.md,
+ * `fourHopChain`): a 4-step chain mints NOTHING at this cap — confirmed by
+ * probing the emitter directly — and the site still RESOLVES, because the text
+ * cascade that owns the fallback path runs to `COMPOUND_RECEIVER_MAX_DEPTH` (8)
+ * and answers where the structural fold declined.
+ *
+ * So the cap bounds which chains are typed STRUCTURALLY, not which calls
+ * resolve. Raising it moves work from the cascade to the fold without changing
+ * any edge, and the fixture that proves it is committed so the next person to
+ * reach for this number has the measurement rather than the intuition.
  */
 export const MAX_CHAIN_DEPTH = 3;
 
@@ -351,6 +372,51 @@ export const extractReceiverNode = (nameNode: SyntaxNode): SyntaxNode | undefine
 // ── Chained-call extraction ───────────────────────────────────────────────
 
 /** Node types representing member/field access across languages. */
+/**
+ * Await expressions, per grammar. The walk previously stopped here — an await
+ * node is neither a call nor a field access — so `(await svc.getUserAsync()).save()`
+ * minted NO chain at all and the receiver fell to the text cascade.
+ */
+const AWAIT_EXPRESSION_NODE_TYPES = new Set([
+  'await_expression', // TS/JS/C#/Rust
+  'await', // Python
+]);
+
+/**
+ * Subscript / index expressions, per grammar. Same story as await: the walk
+ * stopped, so `repos[0].save()` minted no chain — which is why `indexElement`
+ * is an INVISIBLE-GAP (no edge AND no recorded drop) in all 14 languages, the
+ * most uniform cell in the matrix.
+ */
+const SUBSCRIPT_NODE_TYPES = new Set([
+  'subscript_expression', // TS/JS/PHP/C/C++
+  'subscript', // Python
+  'index_expression', // Go/Rust
+  'element_access_expression', // C#
+  'array_access', // Java
+  'indexing_expression', // Kotlin
+]);
+
+/**
+ * Can the chain walk descend into this node, or is it the base?
+ *
+ * ONE predicate for all four branches. The call and field branches previously
+ * tested only the call/field sets, so a receiver like `x[0].f().g()` stopped at
+ * the subscript and returned the literal text `x[0]` as the base — which
+ * `isEncodableSegment` accepts, minting a chain whose base binds to nothing. And
+ * `(await f()).g.h()` returned `await f()`, rejected on whitespace, minting no
+ * chain at all. Adding a fifth step kind must not require remembering four
+ * separate call sites.
+ */
+function isChainableReceiverNode(node: SyntaxNode): boolean {
+  return (
+    CALL_EXPRESSION_TYPES.has(node.type) ||
+    FIELD_ACCESS_NODE_TYPES.has(node.type) ||
+    AWAIT_EXPRESSION_NODE_TYPES.has(node.type) ||
+    SUBSCRIPT_NODE_TYPES.has(node.type)
+  );
+}
+
 const FIELD_ACCESS_NODE_TYPES = new Set([
   'member_expression', // TS/JS
   'member_access_expression', // C#
@@ -362,8 +428,14 @@ const FIELD_ACCESS_NODE_TYPES = new Set([
   'member_binding_expression', // C# null-conditional (user?.Address)
 ]);
 
-/** One step in a mixed receiver chain. */
-export type MixedChainStep = { kind: 'field' | 'call'; name: string };
+/**
+ * One step in a mixed receiver chain.
+ *
+ * Owned by `gitnexus-shared` — it is part of the ScopeExtractor output
+ * contract, and resolution consumes it. Re-exported here so the producer's
+ * existing importers keep a single import site.
+ */
+export type { MixedChainStep };
 
 /**
  * Walk a receiver AST node that is itself a call expression, accumulating the
@@ -446,7 +518,10 @@ export function extractCallChain(
       current = innerReceiver; // continue walking
     } else {
       // Reached a simple identifier — the base receiver
-      return { chain, baseReceiverName: innerReceiver.text || undefined };
+      return {
+        chain,
+        baseReceiverName: unwrapTransparentReceiver(innerReceiver).text || undefined,
+      };
     }
   }
 
@@ -469,6 +544,49 @@ export function extractCallChain(
  *
  * Pure field chains and pure call chains are special cases (all steps same kind).
  */
+/**
+ * Node types that wrap an expression without changing what it denotes, so a
+ * receiver chain's BASE can be read through them.
+ *
+ * `svc!` (TS non-null assertion) and `(svc)` denote exactly `svc`; taking the
+ * wrapper's own text instead yields `svc!` / `(svc)`, which matches no binding
+ * and silently costs the chain its base.
+ *
+ * Deliberately EXCLUDES a cast (`x as T`, `(T)x`): a cast changes the type an
+ * expression denotes, so reading through one would type the receiver as the
+ * operand rather than as the cast target.
+ */
+const TRANSPARENT_RECEIVER_WRAPPERS = new Set([
+  'non_null_expression', // TypeScript `svc!`
+  'parenthesized_expression', // `(svc)`
+]);
+
+/**
+ * Iteration bound for the wrapper peel. Its OWN constant, not `MAX_CHAIN_DEPTH`.
+ *
+ * The two answer unrelated questions — "how many chain hops do we type?" versus
+ * "how many redundant parens might someone write?" — and sharing one number
+ * meant raising the chain cap silently widened this loop as a side effect. That
+ * coupling is easy to miss precisely because the shared name reads as
+ * intentional. `((x))` nests twice; nothing real nests deeply.
+ */
+const MAX_TRANSPARENT_WRAPPER_DEPTH = 3;
+
+/** Peel transparent wrappers off a base receiver node. */
+function unwrapTransparentReceiver(node: SyntaxNode): SyntaxNode {
+  let current = node;
+  for (
+    let i = 0;
+    i < MAX_TRANSPARENT_WRAPPER_DEPTH && TRANSPARENT_RECEIVER_WRAPPERS.has(current.type);
+    i++
+  ) {
+    const inner = current.namedChildren?.find((c) => c !== null);
+    if (inner === undefined || inner === null) break;
+    current = inner;
+  }
+  return current;
+}
+
 export function extractMixedChain(
   receiverNode: SyntaxNode,
 ): { chain: MixedChainStep[]; baseReceiverName: string | undefined } | undefined {
@@ -476,6 +594,12 @@ export function extractMixedChain(
   let current: SyntaxNode = receiverNode;
 
   while (chain.length < MAX_CHAIN_DEPTH) {
+    // Peel transparent wrappers at LOOP ENTRY, not only where a base is
+    // returned. `(await svc.getUserAsync()).save()` hands this walk a
+    // `parenthesized_expression`, which matches no branch below, so the walk
+    // fell straight through to the base case with an empty chain and minted
+    // nothing — the await step could never be reached.
+    current = unwrapTransparentReceiver(current);
     if (CALL_EXPRESSION_TYPES.has(current.type)) {
       // ── Call expression: extract method name + inner receiver ────────────
       const funcNode =
@@ -532,13 +656,13 @@ export function extractMixedChain(
       }
       if (!innerReceiver) break;
 
-      if (
-        CALL_EXPRESSION_TYPES.has(innerReceiver.type) ||
-        FIELD_ACCESS_NODE_TYPES.has(innerReceiver.type)
-      ) {
+      if (isChainableReceiverNode(innerReceiver)) {
         current = innerReceiver;
       } else {
-        return { chain, baseReceiverName: innerReceiver.text || undefined };
+        return {
+          chain,
+          baseReceiverName: unwrapTransparentReceiver(innerReceiver).text || undefined,
+        };
       }
     } else if (FIELD_ACCESS_NODE_TYPES.has(current.type)) {
       // ── Field/member access: extract property name + inner object ─────────
@@ -581,13 +705,57 @@ export function extractMixedChain(
 
       if (!innerObject) break;
 
-      if (
-        CALL_EXPRESSION_TYPES.has(innerObject.type) ||
-        FIELD_ACCESS_NODE_TYPES.has(innerObject.type)
-      ) {
+      if (isChainableReceiverNode(innerObject)) {
         current = innerObject;
       } else {
-        return { chain, baseReceiverName: innerObject.text || undefined };
+        return {
+          chain,
+          baseReceiverName: unwrapTransparentReceiver(innerObject).text || undefined,
+        };
+      }
+    } else if (AWAIT_EXPRESSION_NODE_TYPES.has(current.type)) {
+      // Name-free: the awaited call's method name already lives on its own
+      // `call` step, so this records only that an await happened.
+      chain.unshift({ kind: 'await' });
+      const inner =
+        current.childForFieldName?.('argument') ??
+        current.childForFieldName?.('expression') ??
+        current.namedChildren?.find((c: SyntaxNode) => c !== null) ??
+        null;
+      if (!inner) break;
+      if (isChainableReceiverNode(inner)) {
+        current = inner;
+      } else {
+        return {
+          chain,
+          baseReceiverName: unwrapTransparentReceiver(inner).text || undefined,
+        };
+      }
+    } else if (SUBSCRIPT_NODE_TYPES.has(current.type)) {
+      // Name-free: a subscript key is a VALUE, not an identifier the resolver
+      // could look up, so there is no member name to record.
+      chain.unshift({ kind: 'index' });
+      // Shared per-grammar table — it knows Python's `value` and Java's `array`,
+      // which a locally-written ladder omitted (they worked only because the
+      // container happened to be the first named child, an ordering coincidence
+      // rather than a contract). Falls back for grammars whose subscript node
+      // carries no `index` field.
+      const obj =
+        subscriptBase(current) ??
+        current.childForFieldName?.('object') ??
+        current.childForFieldName?.('argument') ??
+        current.childForFieldName?.('operand') ??
+        current.childForFieldName?.('expression') ??
+        current.namedChildren?.find((c: SyntaxNode) => c !== null) ??
+        null;
+      if (!obj) break;
+      if (isChainableReceiverNode(obj)) {
+        current = obj;
+      } else {
+        return {
+          chain,
+          baseReceiverName: unwrapTransparentReceiver(obj).text || undefined,
+        };
       }
     } else if (current.type === 'selector') {
       // ── Dart: flat selector siblings (user.address.save() uses selector nodes) ──

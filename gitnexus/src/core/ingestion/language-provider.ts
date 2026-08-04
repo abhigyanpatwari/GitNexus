@@ -114,9 +114,17 @@ interface LanguageProviderConfig {
    * The current C++ UE-macro preprocessor relies on the practical fact that
    * UE reflection macros and module-export tokens are ASCII-only.
    *
-   * Must be a pure function — same input always yields the same output. Called
-   * once per file, on every code path that re-parses (parsing-processor, import
-   * processor, heritage processor, call processor, parse worker).
+   * Must be a pure function — same input always yields the same output, and
+   * re-applying it to its own output changes nothing.
+   *
+   * Applied by the parse worker (`parse-worker.ts`), by `extractParsedFile`
+   * (`scope-extractor-bridge.ts`) on the parse-cache-miss path, and by the
+   * embedding parse (`embeddings/ast-utils.ts`, which does not go through the
+   * bridge). Any *new* path that re-parses a file must apply it too, or the two
+   * halves of the pipeline analyze different programs — and note the set is not
+   * closed today: language-owned re-parse helpers reached through other
+   * provider hooks (e.g. `populateRangeBindings`) still see raw text.
+   * `test/unit/preprocess-source-parity.test.ts` pins the bridge equivalence.
    *
    * Default: undefined (no preprocessing — `file.content` is parsed verbatim).
    */
@@ -457,6 +465,20 @@ interface LanguageProviderConfig {
    * suffix — `@scope.function` → `'Function'`, etc.).
    */
   readonly resolveScopeKind?: (captures: CaptureMatch) => ScopeKind | null;
+
+  /**
+   * Report the receiver names this scope BINDS rather than inherits — see
+   * `Scope.ownsReceivers` (#2701).
+   *
+   * Called once per `@scope.*` capture during scope-tree construction.
+   * Return the shared frozen set for a scope that starts a fresh receiver
+   * (a JS/TS ordinary `function`, whose `this` is bound at call time), and
+   * `undefined` for one that inherits it (an arrow function, and every
+   * closure form in languages that capture the receiver lexically).
+   *
+   * Default: undefined everywhere — the receiver walk is unchanged.
+   */
+  readonly scopeOwnsReceivers?: (captures: CaptureMatch) => ReadonlySet<string> | undefined;
 
   /**
    * Override where a declaration's name becomes visible. By default the name

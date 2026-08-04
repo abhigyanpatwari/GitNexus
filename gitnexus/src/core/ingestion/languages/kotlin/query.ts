@@ -115,6 +115,17 @@ const KOTLIN_SCOPE_QUERY = `
 (function_declaration
   (simple_identifier) @declaration.name) @declaration.function
 
+;; Lambda bound to a val/var: val handler = { x: Int -> target(x) }
+;; Anchor discipline (same contract as javascript/query.ts): @declaration.function
+;; sits on the INNER lambda_literal, NOT on the property_declaration wrapper, so
+;; anchor.range aligns with the (lambda_literal) @scope.block range. That
+;; alignment is what lets pickCallerCallableDef accept a Block-kind scope as a
+;; callable boundary: the scope IS the callable's body. The lambda stays
+;; @scope.block deliberately (#1757 smart casts) — do NOT re-kind it.
+(property_declaration
+  (variable_declaration (simple_identifier) @declaration.name)
+  (lambda_literal) @declaration.function)
+
 (property_declaration
   (variable_declaration
     (simple_identifier) @declaration.name)) @declaration.property
