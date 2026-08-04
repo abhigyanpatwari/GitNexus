@@ -12,7 +12,6 @@ type MethodSetEntry = {
   readonly ambiguous: boolean;
 };
 type MutableMethodSetEntries = Map<string, MethodSetEntry>;
-type GoMethodDefinition = SymbolDefinition & { readonly goReceiverKind?: 'value' | 'pointer' };
 type SignatureContext = {
   readonly packageQualifier: string | undefined;
   readonly importQualifiers: ReadonlyMap<string, string>;
@@ -71,7 +70,35 @@ function buildDetectionIndexes(
       }
       if (def.type !== 'Method' && def.type !== 'Function') continue;
       if (def.ownerId === undefined) continue;
-      if (isPointerReceiverMethod(def)) continue;
+      // POINTER-receiver methods count toward the method set (#2813).
+      //
+      // Go's rule is per-type, and there are two types here: the method set of
+      // `T` holds only its value-receiver methods, while the method set of `*T`
+      // holds BOTH. #1966 kept only the value-receiver half, which makes the
+      // `T` answer exactly right — and the `*T` answer permanently empty, so a
+      // struct whose methods all read `func (r *T)` satisfied nothing and got
+      // no IMPLEMENTS edge at all.
+      //
+      // That is the shape idiomatic Go actually writes: methods take pointer
+      // receivers so they can mutate, and `*T` is what gets stored in an
+      // interface-typed field. Excluding it did not make the graph
+      // conservative, it made it silent — every call through such a field
+      // resolved to the interface DECLARATION and `impact()` on the
+      // implementation reported zero callers, indistinguishable from a symbol
+      // that genuinely has none.
+      //
+      // GitNexus models one Struct node per type with no separate `*T` node, so
+      // the two method sets cannot both be represented. This picks the `*T`
+      // reading: the graph now answers "which types provide this interface's
+      // behaviour", and no longer proves `var x I = T{}` invalid. That trade is
+      // deliberate — blast radius is what every consumer of IMPLEMENTS asks for
+      // (verified: MRO/METHOD_IMPLEMENTS derivation, community clustering, the
+      // receiver-dispatch fan-out index, and the epistemic heritage probe; none
+      // performs value-assignability checking).
+      //
+      // `goReceiverKind` is still stamped in method-owners.ts and is the hook a
+      // future value/pointer-aware model would read; it is deliberately no
+      // longer a filter here.
       const methodName = simpleQualifiedName(def);
       if (methodName === undefined || methodName.length === 0) continue;
 
@@ -473,10 +500,6 @@ function methodSetHasVerifiableSignatures(methods: MethodSet): boolean {
     if (!overloads.some(hasVerifiableSignature)) return false;
   }
   return true;
-}
-
-function isPointerReceiverMethod(def: SymbolDefinition): boolean {
-  return (def as GoMethodDefinition).goReceiverKind === 'pointer';
 }
 
 function hasVerifiableSignature(def: SymbolDefinition): boolean {

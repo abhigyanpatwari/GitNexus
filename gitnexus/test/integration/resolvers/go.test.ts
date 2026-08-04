@@ -409,9 +409,18 @@ describe('Go structural interface dispatch', () => {
     expect(edgeSet(implementsEdges)).not.toContain('ShadowReadFile → ReadCloser');
   });
 
-  it('does not emit value-type IMPLEMENTS for pointer-receiver-only methods', () => {
+  // POLARITY DELIBERATELY REVERSED in #2813 (was: `.not.toContain`).
+  //
+  // #1966 read Go's method-set rule for the VALUE type `T`, where pointer-
+  // receiver methods genuinely do not count. But GitNexus has one Struct node
+  // per type and no separate `*T` node, so that reading left `*T` — the shape
+  // idiomatic Go stores in an interface-typed field — unable to implement
+  // anything. The cost was silence, not caution: calls through such a field
+  // stopped at the interface declaration and `impact()` on the implementation
+  // reported zero callers. See the rationale block in interface-impls.ts.
+  it('emits IMPLEMENTS for a pointer-receiver-only implementor', () => {
     const implementsEdges = getRelationships(result, 'IMPLEMENTS');
-    expect(edgeSet(implementsEdges)).not.toContain('PointerOnlyThing → PointerOnly');
+    expect(edgeSet(implementsEdges)).toContain('PointerOnlyThing → PointerOnly');
   });
 
   it('fans out embedded-interface receivers only to complete implementors', () => {

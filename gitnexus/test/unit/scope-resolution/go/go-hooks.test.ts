@@ -322,7 +322,12 @@ describe('Go structural interface detection', () => {
     expect(result.get(iface.nodeId)).toEqual([struct.nodeId]);
   });
 
-  it('does not treat pointer-receiver-only methods as value type implementations', () => {
+  // POLARITY DELIBERATELY REVERSED in #2813 (was: expected `undefined`).
+  // A type whose methods use pointer receivers is exactly what idiomatic Go
+  // stores in an interface-typed field; excluding it emitted no IMPLEMENTS edge
+  // at all, so calls through such a field never reached the implementation.
+  // See the rationale block in interface-impls.ts.
+  it('treats pointer-receiver-only methods as implementations', () => {
     const iface = goDef('iface:Closer', 'Interface', 'Closer');
     const struct = goDef('struct:PointerOnlyCloser', 'Struct', 'PointerOnlyCloser');
     const ifaceClose = goDef('iface:Closer.Close', 'Method', 'Closer.Close', iface.nodeId, {
@@ -347,7 +352,7 @@ describe('Go structural interface detection', () => {
       {} as any,
     );
 
-    expect(result.get(iface.nodeId)).toBeUndefined();
+    expect(result.get(iface.nodeId)).toEqual([struct.nodeId]);
   });
 
   it('rejects same-name methods with incompatible parameter types', () => {
