@@ -363,6 +363,12 @@ describe('Go structural interface dispatch', () => {
       'File → Reader',
       'FileBase → Reader',
       'MemoryRepository → Repository',
+      // ADDED in #2813, same deliberate reversal as the PointerOnlyThing pin
+      // below: `func (p *PointerOnlyThing) Touch()` puts Touch in the method
+      // set of *PointerOnlyThing, which is the type idiomatic Go stores in a
+      // PointerOnly-typed field. This exact-set assertion was the second place
+      // the #1966 value-only reading was encoded.
+      'PointerOnlyThing → PointerOnly',
       'SqlRepository → Repository',
     ]);
     expect(implementsEdges.every((edge) => edge.rel.confidence === 0.85)).toBe(true);

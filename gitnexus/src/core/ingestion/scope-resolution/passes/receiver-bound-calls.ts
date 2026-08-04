@@ -644,6 +644,36 @@ export function emitReceiverBoundCalls(
               calleeCapture,
             );
             if (ok) emitted++;
+            // Interface dispatch, exactly as Case 4 does it (#2813). When the
+            // folded receiver type is an Interface, the primary edge above
+            // lands on the interface's own method DECLARATION; these secondary
+            // edges are what reach the implementations.
+            //
+            // Case 4 had this and Case 0 did not, which made the gap a property
+            // of receiver SYNTAX rather than of types: a struct-field receiver
+            // (`s.orderRepo`) contains a dot, so it always takes Case 0, while
+            // the same interface reached through a local or parameter is a bare
+            // name and reaches Case 4. Field-held interfaces — dependency
+            // injection, in other words — were the half that silently lost every
+            // implementation edge.
+            //
+            // `currentClass` is the receiver's own folded type, matching what
+            // Case 4 passes. `emitInterfaceDispatchFor` self-gates on
+            // `ownerDef.type !== 'Interface'`, so this is inert for every
+            // concrete receiver and needs no language check of its own — a
+            // member whose owner resolved to a Struct emits nothing extra.
+            //
+            // Confidence is Case 0's own 0.85 literal from the primary emit
+            // above, NOT Case 4's site.kind-dependent value: Case 0 has no
+            // read/write branch, so there is no 1.0 arm to mirror.
+            emitted += emitInterfaceDispatchFor(
+              currentClass,
+              memberName,
+              memberDef,
+              site,
+              0.85,
+              calleeCapture,
+            );
             // Always mark handled when the site was resolved, even
             // if the edge was deduplicated (collapse mode), so
             // `emitReferencesViaLookup` doesn't re-emit from the
