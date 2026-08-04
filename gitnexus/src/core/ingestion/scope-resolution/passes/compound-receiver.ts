@@ -159,12 +159,21 @@ function escapeForRegExp(literal: string): string {
 /** True when a local declaration between the call site and its module scope
  * shadows a file-level namespace import with the same name. Namespace targets
  * are collected per file, so callers must apply this lexical guard before
- * trusting them at an inner scope. */
+ * trusting them at an inner scope.
+ *
+ * A namespace key may itself be a dotted import path (`pkg.db`, #2826), but
+ * the name a local declaration can shadow is always the ROOT identifier —
+ * `pkg = Decoy()` shadows `pkg.db` too. Testing the whole dotted string would
+ * never match a binding, so the guard would silently stop guarding for exactly
+ * the keys this check was extended to cover. Single-segment names are
+ * unaffected: their root is themselves. */
 function isNamespaceNameShadowed(
   namespaceName: string,
   inScope: ScopeId,
   scopes: ScopeResolutionIndexes,
 ): boolean {
+  const firstDot = namespaceName.indexOf('.');
+  const rootName = firstDot === -1 ? namespaceName : namespaceName.slice(0, firstDot);
   let currentId: ScopeId | null = inScope;
   const visited = new Set<ScopeId>();
   while (currentId !== null) {
@@ -174,14 +183,14 @@ function isNamespaceNameShadowed(
     if (scope === undefined) return true;
     if (
       scope.kind !== 'Object' &&
-      (scope.bindings.has(namespaceName) ||
-        scope.typeBindings.has(namespaceName) ||
-        scope.lexicalNames?.has(namespaceName) === true ||
+      (scope.bindings.has(rootName) ||
+        scope.typeBindings.has(rootName) ||
+        scope.lexicalNames?.has(rootName) === true ||
         scope.ownedDefs.some((def) => {
           const qualifiedName = def.qualifiedName;
           if (qualifiedName === undefined) return false;
           const dot = qualifiedName.lastIndexOf('.');
-          return (dot === -1 ? qualifiedName : qualifiedName.slice(dot + 1)) === namespaceName;
+          return (dot === -1 ? qualifiedName : qualifiedName.slice(dot + 1)) === rootName;
         }))
     ) {
       return true;
