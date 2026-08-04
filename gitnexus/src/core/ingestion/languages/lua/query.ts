@@ -14,7 +14,7 @@
  * analyze even for repos with no Lua files (#2091/#2093).
  *
  * Node names verified against the vendored tree-sitter-lua grammar via the
- * smoke test in ~/gitnexus-lua-work/abi-test/smoke2.cjs:
+ * parser-loader-abi smoke test:
  *   (chunk) (function_definition_statement name: (identifier|variable))
  *   (local_function_definition_statement name: (identifier))
  *   (call function: (variable name:|table:+method:|table:+field:) arguments: (argument_list (expression_list ...)))
