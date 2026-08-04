@@ -148,8 +148,9 @@ function splitAuthority(authority: string): { host: string; port?: string } | un
  * @param boundHost - The hostname/IP the server is listening on (from
  *   `createServer`'s `host` parameter). When `undefined`, `'localhost'`, or a
  *   wildcard (`0.0.0.0`/`::`), only loopback origins are admitted.
- * @param boundPort - The port the server is listening on. Omit to match the
- *   bound host on any port.
+ * @param boundPort - The port the server actually listens on. Omit it — and
+ *   match the bound host on any port — when that is not known, as it is not
+ *   for an ephemeral `--port 0` bind.
  */
 export function createWriteOriginGuard(boundHost?: string, boundPort?: number) {
   const normalizedBoundHost = normalizeBoundHost(boundHost);
