@@ -40,6 +40,12 @@ import { computeTsArityMetadata } from '../typescript/arity-metadata.js';
 import { synthesizeTsReceiverBinding } from '../typescript/receiver-binding.js';
 import { isArrayMethodCallbackArrow } from '../typescript/array-callback.js';
 import { isStaticClassFieldBinding } from '../typescript/captures.js';
+
+/** JavaScript's spelling of a class-field declaration — the TypeScript grammar
+ *  calls the same construct `public_field_definition`. Named here, not in the
+ *  shared predicate, so each literal is checked against the grammar of the file
+ *  it lives in (`grammar-literal-validation`). */
+const JS_CLASS_FIELD_DEFINITION_TYPES: ReadonlySet<string> = new Set(['field_definition']);
 import { hasKeyword } from '../../field-extractors/configs/helpers.js';
 import { synthesizeCjsModuleExports } from '../typescript/cjs-module-exports.js';
 import {
@@ -894,7 +900,12 @@ export function emitJsScopeCaptures(
     // annotations, so `field_definition` initializers are the only class-field
     // type binding its query emits and `@type-binding.constructor` is the only
     // anchor that can carry the modifier.
-    if (isStaticClassFieldBinding(groupedNodes['@type-binding.constructor'])) {
+    if (
+      isStaticClassFieldBinding(
+        groupedNodes['@type-binding.constructor'],
+        JS_CLASS_FIELD_DEFINITION_TYPES,
+      )
+    ) {
       continue;
     }
 

@@ -233,13 +233,16 @@ function isStaticMethodThis(thisNode: SyntaxNode): boolean {
   return hasKeyword(method, 'static');
 }
 
-/** The class-field declaration nodes a field `@type-binding.*` match anchors on.
- *  `public_field_definition` is the TypeScript/TSX spelling of a class field,
- *  `field_definition` the JavaScript one; both grammars carry `static` the same
- *  way, which is why one predicate serves both languages. */
-const CLASS_FIELD_DEFINITION_TYPES: ReadonlySet<string> = new Set([
+/** The class-field declaration node a field `@type-binding.*` match anchors on
+ *  in TypeScript/TSX. JavaScript spells the same construct `field_definition`
+ *  and passes its own set in — the predicate below is shared because both
+ *  grammars carry `static` identically, but each language must NAME its own
+ *  node type. Listing both here made `field_definition` a dead literal in the
+ *  typescript grammar, which `grammar-literal-validation` fails on: the gate
+ *  checks every literal against the grammar of the FILE it appears in, and a
+ *  node type that is dead there is exactly how a guard silently stops firing. */
+export const TS_CLASS_FIELD_DEFINITION_TYPES: ReadonlySet<string> = new Set([
   'public_field_definition',
-  'field_definition',
 ]);
 
 /**
@@ -278,8 +281,11 @@ const CLASS_FIELD_DEFINITION_TYPES: ReadonlySet<string> = new Set([
  * `isStaticMember` in `receiver-binding.ts`); a node-type test silently stops
  * firing on a grammar bump and every static field starts retyping its instance
  * twin again. Verified against both grammars in use here: `static` is an
- * anonymous direct child of `public_field_definition` / `field_definition`,
- * ahead of the name.
+ * anonymous direct child of the caller's field-definition node —
+ * `public_field_definition` in TypeScript, `field_definition` in JavaScript —
+ * ahead of the name. Each language passes its OWN node-type set rather than the
+ * predicate holding both: a literal is only valid in the grammar of the file it
+ * appears in, and `grammar-literal-validation` fails a dead one.
  *
  * One deliberate over-fire: `hasKeyword` skips the node's `name` FIELD, and the
  * JavaScript grammar names a field's name `property:`, not `name:` — so the
@@ -287,9 +293,12 @@ const CLASS_FIELD_DEFINITION_TYPES: ReadonlySet<string> = new Set([
  * (`class C { static = new Right(); }`) reads as static and goes untyped. That
  * is a declined binding, the safe direction of the same trade.
  */
-export function isStaticClassFieldBinding(anchorNode: SyntaxNode | undefined): boolean {
+export function isStaticClassFieldBinding(
+  anchorNode: SyntaxNode | undefined,
+  fieldDefinitionTypes: ReadonlySet<string>,
+): boolean {
   if (anchorNode === undefined) return false;
-  if (!CLASS_FIELD_DEFINITION_TYPES.has(anchorNode.type)) return false;
+  if (!fieldDefinitionTypes.has(anchorNode.type)) return false;
   return hasKeyword(anchorNode, 'static');
 }
 
@@ -458,8 +467,14 @@ export function emitTsScopeCaptures(
     // the anchor's node type, so the local `variable_declarator` patterns that
     // share these tags are untouched.
     if (
-      isStaticClassFieldBinding(groupedNodes['@type-binding.constructor']) ||
-      isStaticClassFieldBinding(groupedNodes['@type-binding.annotation'])
+      isStaticClassFieldBinding(
+        groupedNodes['@type-binding.constructor'],
+        TS_CLASS_FIELD_DEFINITION_TYPES,
+      ) ||
+      isStaticClassFieldBinding(
+        groupedNodes['@type-binding.annotation'],
+        TS_CLASS_FIELD_DEFINITION_TYPES,
+      )
     ) {
       continue;
     }
