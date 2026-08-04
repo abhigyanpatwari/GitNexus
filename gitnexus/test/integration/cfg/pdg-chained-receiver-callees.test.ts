@@ -12,12 +12,11 @@
  * impact-pdg-fullchain-e2e; what those cannot catch is a chain link silently
  * missing from the column they both read.
  *
- * ── WHERE THE SUPPORT ACTUALLY STOPS ──────────────────────────────────────────
+ * ── WHAT REACHES THE CELL ─────────────────────────────────────────────────────
  *
- * Chained resolution is NOT general. Measured against this fixture (one repo per
- * shape and all shapes in one repo agree, so the rows do not contaminate each
- * other), the discriminator is whether the receiver's type is DECLARED, not
- * whether it is a local or a field:
+ * Measured against this fixture (one repo per shape and all shapes in one repo
+ * agree, so the rows do not contaminate each other). Every receiver form now
+ * carries its whole chain, whether the receiver's type is declared or inferred:
  *
  *   receiver form                                        calleeIds cell
  *   ---------------------------------------------------  ------------------------
@@ -26,29 +25,16 @@
  *   field  `private p: Outer;` + ctor `this.p = new ...`  Outer.inner + Inner.compute
  *   receiver is a call result `makeOuter().inner()...`    makeOuter + both links
  *   three links `o.inner().mid().compute()`               all three links
- *   field  `private p = new Outer()`      (INFERRED)      EMPTY  <- known gap
- *   field  `private p;` + ctor `this.p = new Outer()`     EMPTY  <- known gap
+ *   field  `private p = new Outer()`      (INFERRED)      Outer.inner + Inner.compute
+ *   field  `private p;` + ctor `this.p = new Outer()`     Outer.inner + Inner.compute
  *
- * An inference-typed receiver does not merely lose the CHAINED link — it empties
- * the whole cell, so the descent cannot cross into `Outer.inner` either, even
- * though that call has a perfectly ordinary named receiver. Those two rows are
- * pinned by `KNOWN GAP: an inference-typed receiver empties the WHOLE calleeIds
- * cell` below, which asserts the current empty value EXACTLY.
- *
- * ── THIS PIN IS SELF-DIFFING: IT WILL GO RED ON PURPOSE ───────────────────────
- *
- * The gap is tracked as issue #2807 ("Inference-typed field receivers resolve to
- * no CALLS edges at all"); PR #2810 is open against it at the time of writing.
- * The `KNOWN GAP` test asserts that the gap EXISTS — the empty cell, exactly —
- * so it is not a regression guard, it is a record. Whoever closes #2807 will see
- * it fail with the newly resolved ids in the diff; that is the intended signal,
- * and the fix is to update this file (the table above, the rows' `resolution`,
- * and the pin's expected value), not to relax the assertion. A single-shape
- * fixture, or an `it.fails` row, would instead have kept quietly implying that
- * chained receivers work in general.
- *
- * The gap was FOUND during #2802 work but is PRE-EXISTING and independent of it:
- * nothing on that branch touches receiver typing. Track the gap itself at #2807.
+ * The last two rows were EMPTY before #2807 — not a truncated chain, an empty
+ * cell, so the descent could not cross into `Outer.inner` either even though
+ * that call has a perfectly ordinary named receiver. The cause was upstream of
+ * the PDG entirely: an untyped field had no type binding, so the receiver fold
+ * declined at its first step and no link was ever resolved to put here. The
+ * resolver-level view of the same fact, with the full shape table, lives in
+ * `test/integration/resolvers/typescript-inferred-field-receiver.test.ts`.
  *
  * Self-contained fixture rather than an addition to `fixtures/pdg-repo` — that
  * fixture is shared by eight suites including a snapshot test, so growing it to
@@ -162,15 +148,13 @@ const INNER_MID = `Method:${FIXTURE_PATH}:Inner.mid#0`;
 const MID_COMPUTE = `Method:${FIXTURE_PATH}:Mid.compute#1`;
 const MAKE_OUTER = `Function:${FIXTURE_PATH}:makeOuter`;
 
-/**
- * `reaches-pdg` — every link's id lands in the cell today.
- * `known-gap-empty-cell` — the resolver cannot type the receiver, so the cell is
- * emitted EMPTY and the descent cannot cross ANY link of the chain.
- */
-type ChainResolution = 'reaches-pdg' | 'known-gap-empty-cell';
+/** Every link's id lands in the cell. The only value today — the
+ *  inference-typed rows joined it in #2807 — but kept as a named type so a
+ *  future gap row has somewhere to say so instead of being a bare boolean. */
+type ChainResolution = 'reaches-pdg';
 
 interface ReceiverShape {
-  /** Row name; also the key of the known-gap pin below. */
+  /** Row name; also the assertion key in the diff when a row moves. */
   readonly name: string;
   /** Unique fragment of the chained statement, used to find its block. */
   readonly marker: string;
@@ -210,20 +194,22 @@ const RECEIVER_SHAPES: readonly ReceiverShape[] = [
     links: [OUTER_INNER, INNER_MID, MID_COMPUTE],
     resolution: 'reaches-pdg',
   },
-  // ── Known gaps ────────────────────────────────────────────────────────────
-  // Identical to the two rows above except that the field has no type
-  // annotation, so its type would have to be inferred from the initializer.
+  // ── Inference-typed fields (#2807) ────────────────────────────────────────
+  // Identical to the two annotated rows above except that the field declares no
+  // type, so its type comes from the initializer. Both emitted an EMPTY cell
+  // until #2807 — the descent could not cross even `Outer.inner`, a plainly
+  // named receiver call.
   {
     name: 'inferred-field',
     marker: 'this.inferred.inner().compute(',
     links: [OUTER_INNER, INNER_COMPUTE],
-    resolution: 'known-gap-empty-cell',
+    resolution: 'reaches-pdg',
   },
   {
     name: 'ctor-assigned-inferred',
     marker: 'this.ctorUntyped.inner().compute(',
     links: [OUTER_INNER, INNER_COMPUTE],
-    resolution: 'known-gap-empty-cell',
+    resolution: 'reaches-pdg',
   },
 ];
 
@@ -256,7 +242,7 @@ function assertChainReachesPdg(shape: ReceiverShape): void {
   expect(ids).toEqual(expect.arrayContaining([...shape.links]));
 }
 
-describe('PDG calleeIds — chained receiver calls by receiver form (known gap: #2807)', () => {
+describe('PDG calleeIds — chained receiver calls by receiver form (#2802 follow-up)', () => {
   beforeAll(async () => {
     const dir = repos.dir();
     fs.mkdirSync(path.join(dir, path.dirname(FIXTURE_PATH)));
@@ -281,25 +267,28 @@ describe('PDG calleeIds — chained receiver calls by receiver form (known gap: 
     expect(counts).toEqual(Object.fromEntries(RECEIVER_SHAPES.map((s) => [s.name, 1])));
   });
 
-  // The `known-gap-empty-cell` rows are deliberately absent here — an `it.fails`
-  // row over them would be strictly weaker than the exact pin below, since
-  // `it.fails` is satisfied by ANY throw, including `idsFor`'s own non-vacuity
-  // guard. Fixture drift that renamed a marker would keep it green while the
-  // premise had rotted.
   for (const shape of RECEIVER_SHAPES.filter((s) => s.resolution === 'reaches-pdg')) {
     it(`${shape.name}: every chain link's exact id reaches calleeIds`, () => {
       assertChainReachesPdg(shape);
     });
   }
 
-  // Pins the CURRENT broken value, not merely that the chain fails: both known
-  // gaps emit an EMPTY cell — the first link (`Outer.inner`, a plainly named
-  // receiver) is gone too. This asserts the gap EXISTS (issue #2807), so closing
-  // #2807 turns it red BY DESIGN; update it together with the header table and
-  // the rows' `resolution` rather than loosening it.
-  it('KNOWN GAP (#2807): an inference-typed receiver empties the WHOLE calleeIds cell', () => {
-    const gaps = RECEIVER_SHAPES.filter((s) => s.resolution === 'known-gap-empty-cell');
-    const observed = Object.fromEntries(gaps.map((s) => [s.name, idsFor(s.marker)]));
-    expect(observed).toEqual({ 'inferred-field': [], 'ctor-assigned-inferred': [] });
+  // The inference-typed rows are asserted as a SET, in one assertion, on top of
+  // their per-row checks above: #2807's signature was that both of them emptied
+  // together, so a regression that reopened the gap for only one shape has to
+  // show up as a diff here rather than as a single quiet row failure.
+  it('both inference-typed receivers carry the whole chain, not just the first link', () => {
+    const inferred = ['inferred-field', 'ctor-assigned-inferred'] as const;
+    const observed = Object.fromEntries(
+      inferred.map((name) => {
+        const shape = RECEIVER_SHAPES.find((s) => s.name === name);
+        if (shape === undefined) throw new Error(`fixture drift: no row named ${name}`);
+        return [name, [...idsFor(shape.marker)].sort()];
+      }),
+    );
+    expect(observed).toEqual({
+      'inferred-field': [INNER_COMPUTE, OUTER_INNER].sort(),
+      'ctor-assigned-inferred': [INNER_COMPUTE, OUTER_INNER].sort(),
+    });
   });
 });
