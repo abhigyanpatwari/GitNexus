@@ -3102,3 +3102,135 @@ describe('Python inline constructor receiver resolution', () => {
     ]);
   });
 });
+
+// ---------------------------------------------------------------------------
+// #2826 — unaliased multi-segment namespace import.
+//
+// `import pkg.db` binds only `pkg`, but the receiver text at the call site is
+// the whole dotted path `pkg.db`. Every sibling spelling binds a single-segment
+// name and so already resolved; this one fell between the namespace-receiver
+// case (keyed on the local binding) and the qualified-receiver hook (C++ only).
+//
+// The three sibling rows are controls, not decoration: a run where they also
+// broke would say nothing about the row under test.
+// ---------------------------------------------------------------------------
+
+describe('Python unaliased multi-segment namespace import (#2826)', () => {
+  let repoDir: string;
+  let result: PipelineResult;
+
+  beforeAll(async () => {
+    repoDir = fs.mkdtempSync(path.join(os.tmpdir(), 'gn-python-dotted-ns-'));
+    writeFixtureRepo(repoDir, {
+      'pkg/__init__.py': '',
+      'pkg/db.py': `class Model:
+    pass
+
+
+def session_scope():
+    return "db"
+`,
+      // Same member name in a sibling module: makes a cross-resolution visible
+      // instead of letting the right answer and a lucky answer look identical.
+      'pkg/cache.py': `def session_scope():
+    return "cache"
+`,
+      'pkg/sub/__init__.py': '',
+      'pkg/sub/deep.py': `def deep_fn():
+    return "deep"
+`,
+      'caller_dotted.py': `import pkg.db
+
+def uses_dotted():
+    return pkg.db.session_scope()
+`,
+      'caller_from.py': `from pkg.db import session_scope
+
+def uses_from():
+    return session_scope()
+`,
+      'caller_alias.py': `import pkg.db as pdb
+
+def uses_alias():
+    return pdb.session_scope()
+`,
+      'caller_frommod.py': `from pkg import db
+
+def uses_from_module_attr():
+    return db.session_scope()
+`,
+      'caller_two_pkgs.py': `import pkg.db
+import pkg.cache
+
+def uses_db():
+    return pkg.db.session_scope()
+
+def uses_cache():
+    return pkg.cache.session_scope()
+`,
+      'caller_deep.py': `import pkg.sub.deep
+
+def uses_deep():
+    return pkg.sub.deep.deep_fn()
+`,
+      'caller_construct.py': `import pkg.db
+
+def builds():
+    return pkg.db.Model()
+`,
+    });
+    result = await runPipelineFromRepo(repoDir, () => {});
+  }, 60000);
+
+  afterAll(() => {
+    if (repoDir !== undefined) fs.rmSync(repoDir, { recursive: true, force: true });
+  });
+
+  const sessionScopeCallers = (targetFile: string): string[] =>
+    getRelationships(result, 'CALLS')
+      .filter((c) => c.target === 'session_scope' && c.targetFilePath === targetFile)
+      .map((c) => c.source)
+      .sort();
+
+  it('resolves the unaliased dotted receiver to the imported module', () => {
+    const edge = getRelationships(result, 'CALLS').find(
+      (c) => c.source === 'uses_dotted' && c.target === 'session_scope',
+    );
+    expect(edge).toMatchObject({
+      source: 'uses_dotted',
+      target: 'session_scope',
+      targetFilePath: 'pkg/db.py',
+      sourceFilePath: 'caller_dotted.py',
+    });
+  });
+
+  it('keeps the three sibling spellings resolving (control)', () => {
+    expect(sessionScopeCallers('pkg/db.py')).toEqual(
+      expect.arrayContaining(['uses_alias', 'uses_from', 'uses_from_module_attr']),
+    );
+  });
+
+  it('does not cross-resolve two same-package imports in one file', () => {
+    // Both modules export `session_scope`, so a receiver-blind fallback would
+    // be invisible in a presence-only assertion. Pin the exact pairing.
+    const pairs = getRelationships(result, 'CALLS')
+      .filter((c) => c.sourceFilePath === 'caller_two_pkgs.py' && c.target === 'session_scope')
+      .map((c) => `${c.source}->${c.targetFilePath}`)
+      .sort();
+    expect(pairs).toEqual(['uses_cache->pkg/cache.py', 'uses_db->pkg/db.py']);
+  });
+
+  it('resolves a three-segment dotted receiver', () => {
+    const edge = getRelationships(result, 'CALLS').find(
+      (c) => c.source === 'uses_deep' && c.target === 'deep_fn',
+    );
+    expect(edge).toMatchObject({ target: 'deep_fn', targetFilePath: 'pkg/sub/deep.py' });
+  });
+
+  it('resolves construction through a dotted namespace receiver', () => {
+    const edge = getRelationships(result, 'CALLS').find(
+      (c) => c.source === 'builds' && c.targetFilePath === 'pkg/db.py',
+    );
+    expect(edge).toMatchObject({ source: 'builds', targetFilePath: 'pkg/db.py' });
+  });
+});

@@ -103,6 +103,7 @@ type ReceiverBoundProviderSubset = Pick<
   | 'constructionSyntax'
   | 'stripTypePreservingDecoration'
   | 'resolveQualifiedReceiverMember'
+  | 'namespaceReceiverIncludesImportPath'
   | 'resolveReceiverMember'
   | 'resolveThisViaEnclosingClass'
   | 'conversionRankFn'
@@ -402,7 +403,9 @@ export function emitReceiverBoundCalls(
   };
 
   for (const parsed of parsedFiles) {
-    const namespaceTargets = collectNamespaceTargets(parsed, scopes);
+    const namespaceTargets = collectNamespaceTargets(parsed, scopes, {
+      includeImportPath: provider.namespaceReceiverIncludesImportPath === true,
+    });
     const fileCompoundOpts = { ...compoundOpts, namespaceTargets };
     // Per-file resolved-callee-id capture context (#2227 U2). Built once per
     // file; `undefined` when the sink is absent (pdg off) so the `tryEmitEdge`

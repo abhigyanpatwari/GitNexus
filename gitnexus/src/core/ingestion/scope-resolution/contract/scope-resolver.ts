@@ -1077,6 +1077,30 @@ export interface ScopeResolver {
   ) => SymbolDefinition | 'ambiguous' | undefined;
 
   /**
+   * Enable keying a namespace import's target by the dotted module path it
+   * was imported under, in addition to the name it binds locally (#2826).
+   *
+   * Python's `import a.b` binds only `a`, yet the receiver written at the
+   * call site is the whole path `a.b`. Both halves already reach the
+   * finalized edge — `localName` and `targetExportedName` — so the shared
+   * collector can key on either; what it cannot decide on its own is whether
+   * the dotted path NAMES the imported target in this language.
+   *
+   * It cannot, because the shape is ambiguous across languages. Swift's
+   * `import Foo.Bar` produces the identical pair (`localName: 'Foo'`,
+   * `targetExportedName: 'Foo.Bar'`), but there the FIRST segment is the
+   * resolved target and `Foo.Bar` names a nested type inside it — keying it
+   * would hand `resolveConstructionExpressionClass` an authoritative
+   * namespace that does not fall through on a miss, breaking construction
+   * that resolves correctly today. Hence an opt-in rather than a structural
+   * predicate.
+   *
+   * Languages where the dotted import path is not itself a receiver
+   * spelling leave this undefined.
+   */
+  readonly namespaceReceiverIncludesImportPath?: boolean;
+
+  /**
    * Optional language-specific member-lattice lookup. Runs for a resolved
    * simple receiver type before the generic flattened-MRO walk. Languages
    * with lookup-set semantics that cannot be represented by one linear MRO

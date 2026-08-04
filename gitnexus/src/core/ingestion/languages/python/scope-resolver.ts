@@ -57,6 +57,12 @@ const pythonScopeResolver: ScopeResolver = {
   isNamespaceImport: (parsedImport, targetFile, fromFile) =>
     isPythonImportedModule(parsedImport, targetFile, fromFile),
 
+  // `import a.b` binds only `a` (see interpret.ts's plain arm), so the
+  // receiver written at the call site — `a.b` — is not the bound name. Both
+  // spellings must key the namespace map or every caller using Python's
+  // absolute-import style is invisible to the call graph (#2826).
+  namespaceReceiverIncludesImportPath: true,
+
   // Python LEGB precedence: local > import/namespace/reexport > wildcard.
   // The per-scope id is unused by pythonMergeBindings (tier ordering
   // is computed purely from BindingRef.origin), so we don't need to
