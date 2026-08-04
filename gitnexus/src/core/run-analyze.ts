@@ -771,8 +771,9 @@ export const pdgModeMismatch = (recorded: RepoMeta['pdg'], options: PdgOptions):
   // different runs would always be `!==`, tripping pdgModeMismatch on every
   // re-analyze and forcing a needless full writeback. e.g. do NOT change
   // `hasCallSummary: true` to a per-language object like `{ ts: true, ... }`; keep
-  // the diagnostic per-language refinement in the impact CONSUMER (see
-  // pdg-impact.ts assemblePdgImpactResult), not in this version discriminator.
+  // any diagnostic refinement in the impact CONSUMER (see pdg-impact.ts
+  // assemblePdgImpactResult, which reports empty ascent from the persisted
+  // CALL_SUMMARY data), not in this version discriminator.
   for (const key of new Set([...Object.keys(reqRecord), ...Object.keys(recRecord)])) {
     if (reqRecord[key] !== recRecord[key]) return true;
   }
