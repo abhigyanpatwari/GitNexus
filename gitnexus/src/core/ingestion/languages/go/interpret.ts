@@ -29,8 +29,12 @@ export function interpretGoTypeBinding(captures: CaptureMatch): ParsedTypeBindin
   if (captures['@type-binding.self'] !== undefined) {
     source = 'self';
     // Preserve pointer shape on receiver self-bindings (`*T` vs `T`).
-    // Method-owner enrichment consumes that raw shape to model Go value and
-    // pointer receiver method sets conservatively.
+    // Method-owner enrichment consumes that raw shape to stamp `goReceiverKind`
+    // on each method. Since #2813 that stamp is metadata, NOT a filter:
+    // structural interface satisfaction counts pointer-receiver methods, because
+    // `*T`'s method set is what an interface-typed field actually holds. The
+    // preserved distinction is the hook a future value/pointer-aware model would
+    // read — do not reintroduce it as an exclusion.
     normalizedType = type.trim();
   } else if (captures['@type-binding.constructor'] !== undefined) {
     source = 'constructor-inferred';

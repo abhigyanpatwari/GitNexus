@@ -118,8 +118,10 @@ describe('PARSE_CACHE_VERSION', () => {
   // second clash was caught — after review, while the branch sat waiting to
   // merge — which is precisely the window in which `main` allocates. Re-check
   // against origin/main immediately before merge, not at review time.
-  it('pins SCHEMA_BUMP to 42 so concurrent bumps cannot silently collide (#2766)', () => {
-    expect(Number(PARSE_CACHE_VERSION.split('+', 1)[0])).toBe(42);
+  // Moved 42 -> 43 for #2813's `@reference.embedded-pointer` capture, which is
+  // parse-time emission and so cannot be served from a v42 warm cache.
+  it('pins SCHEMA_BUMP to 43 so concurrent bumps cannot silently collide (#2766)', () => {
+    expect(Number(PARSE_CACHE_VERSION.split('+', 1)[0])).toBe(43);
   });
 
   it('embeds the gitnexus package version (so upgrades invalidate the cache)', () => {
