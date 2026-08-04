@@ -1888,6 +1888,34 @@ describe('Go interface-typed struct field dispatch (#2813)', () => {
     expect(callsToFile()).toContain('StartSession → DeleteItem@interfaces.go');
   });
 
+  // The epistemic half of #2813, pinned at its MECHANISM.
+  //
+  // The reporter's disqualifying complaint was that `impact()` returned
+  // `impactedCount 0, epistemic "exact"` for a method reached only through an
+  // interface field — byte-identical to a symbol that genuinely has no callers,
+  // so a zero could not be trusted defensively. That verdict is produced by
+  // `computeEpistemicBoundary`, which walks HERITAGE edges out of the queried
+  // symbol; with no IMPLEMENTS/METHOD_IMPLEMENTS edge it found no boundary, and
+  // the call sites were never *dropped* (they resolved, to the wrong node), so
+  // neither of its two producers fired.
+  //
+  // These are the edges that make the hedge fire. Measured on this fixture
+  // after the fix, `impact(OrderRepo.DeleteItem, upstream)` returns
+  // impactedCount 3 with epistemic "lower-bound" and an interface-boundary
+  // note, while the concrete `CartRepo.Get` still returns "exact" — so the
+  // signal discriminates rather than hedging on everything. Asserting the edges
+  // here keeps that mechanism from silently regressing without requiring the
+  // resolver suite to reach into the MCP layer.
+  it('emits METHOD_IMPLEMENTS from the implementation to the interface method', () => {
+    const methodImpls = getRelationships(result, 'METHOD_IMPLEMENTS').map(
+      (e) =>
+        `${e.sourceFilePath.split('/').slice(-1)[0]}:${e.source} → ` +
+        `${e.targetFilePath.split('/').slice(-1)[0]}:${e.target}`,
+    );
+    expect(methodImpls).toContain('order_repo.go:DeleteItem → interfaces.go:DeleteItem');
+    expect(methodImpls).toContain('mock_repo.go:DeleteItem → interfaces.go:DeleteItem');
+  });
+
   // Concrete-field control: resolved before #2813 and must be untouched.
   it('keeps resolving a concrete-typed field to its implementation', () => {
     expect(callsToFile()).toContain('GetPickQueue → LogAuditEventAsync@audit_repo.go');
