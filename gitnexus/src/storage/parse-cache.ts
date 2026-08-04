@@ -194,7 +194,18 @@ import type { ParseWorkerResult } from '../core/ingestion/workers/parse-worker.j
 // still reaches the class field — i.e. it keeps serving the WRONG edge this
 // bump's fix removes, silently. Same bump-or-nothing situation as v40.
 // RE-CHECK AGAINST origin/main IMMEDIATELY BEFORE MERGING.
-const SCHEMA_BUMP = 41;
+// v42: the v40/v41 Python constructor-field arm stopped accepting a DOTTED
+// callee (#2807 review). `self.svc = f.Alpha()` no longer emits a
+// `@type-binding.constructor` capture at all, which is what removes the
+// fabricated edge to the same-named class `Alpha` and what stops
+// `self.conn = Registry.get()` displacing an earlier real `self.conn = Outer()`.
+// A within-PR re-bump, not a collision fix: v41 was allocated by this same
+// unmerged branch, so v41-stamped caches exist only on it — but they exist on
+// every reviewer's and CI runner's checkout of it, and parse-time emission means
+// they replay the pre-fix capture set for byte-unchanged files and keep serving
+// the fabricated edge. main is at 39, so 40/41/42 are all this branch's.
+// RE-CHECK AGAINST origin/main IMMEDIATELY BEFORE MERGING.
+const SCHEMA_BUMP = 42;
 const GITNEXUS_PKG_VERSION = (() => {
   try {
     // package.json sits at gitnexus/package.json — two levels up from

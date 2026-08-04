@@ -115,16 +115,44 @@ export function synthesizeReceiverTypeBinding(fnNode: SyntaxNode): CaptureMatch 
 }
 
 /**
- * The class name of a direct constructor call — `Outer()` or `pkg.Outer()` —
- * or `undefined` for anything else. Python has no `new`, so a call is the only
- * syntactic construction form, and a call to a plain name is the shape every
- * other language spells `= new X()`.
+ * The class name of a direct constructor call — `Outer()` — or `undefined` for
+ * anything else. Python has no `new`, so a call is the only syntactic
+ * construction form, and a call to a plain name is the shape every other
+ * language spells `= new X()`.
  *
- * A dotted callee keeps its full text: `resolveTypeRef` sends dotted names
- * through `QualifiedNameIndex`, exactly as the module-level
- * `u = models.User()` pattern in `query.ts` already relies on. Any other RHS
- * (subscript, await, comprehension, bare name) is left alone — that is the
- * "name-only guess" this module deliberately refuses.
+ * BARE NAMES ONLY. A dotted callee (`models.User()`, `f.Alpha()`) is refused.
+ * The first cut of #2807 returned the callee's full dotted text, on the theory
+ * that a dotted name resolves through `QualifiedNameIndex` the way the
+ * module-level `u = models.User()` capture in `query.ts` does. Measured on a
+ * fixture carrying both shapes, that arm produced no correct edge and did
+ * produce wrong ones:
+ *
+ *   - `self.svc = f.Alpha()`, where `Alpha` is a METHOD on an unrelated object
+ *     and `Alpha` is also a class elsewhere: the dotted lookup matches the
+ *     TRAILING segment against a same-named class, so `self.svc.ping()` emitted
+ *     a FABRICATED edge to `Alpha.ping`. The root does not have to be a
+ *     parameter — a module-level `shared_factory.Alpha()` fabricates the same
+ *     way — so no test on the root's binding form contains this.
+ *   - `self.u = models.User()`, the shape the arm was written FOR, emitted no
+ *     edge with the arm or without it. An instance field's binding lands in
+ *     CLASS scope, which never reaches the namespace split that makes the
+ *     module-level local form resolve.
+ *
+ * Accepted cost, stated plainly: `self.u = models.User()` still does not type
+ * its field. It did not before this narrowing either, so nothing that worked is
+ * given up — and declining to bind is the doctrine `compound-receiver.ts`
+ * states, that a confidently WRONG owner is strictly worse than a missing edge.
+ * Re-enabling dotted callees is a RESOLUTION-side change (teach the field path
+ * the namespace split that #2826/#2828 is reworking); redoing it here could
+ * only re-open the trailing-segment fabrication.
+ *
+ * This is also why the tier tie-break below can stay last-write-wins: the
+ * displacement it used to suffer — `self.conn = Outer()` then
+ * `self.conn = Registry.get()`, where the second, dotted, non-type candidate
+ * overwrote the real constructor binding at the shared weakest tier and left
+ * the field untyped — cannot arise once a dotted callee yields no candidate at
+ * all. The weakest tier now ranks only REAL constructions against each other,
+ * where the last write in `__init__` genuinely is the live one.
  */
 function constructorCallTypeName(
   right: SyntaxNode | null,
@@ -133,16 +161,15 @@ function constructorCallTypeName(
   if (right === null || right.type !== 'call') return undefined;
   const callee = right.childForFieldName('function');
   if (callee === null) return undefined;
-  if (callee.type !== 'identifier' && callee.type !== 'attribute') return undefined;
+  // An `attribute` callee is the dotted path refused above; `self.p =
+  // self.build()` is one instance of it, and a method call is not a
+  // construction.
+  if (callee.type !== 'identifier') return undefined;
   const text = callee.text.trim();
   if (text.length === 0) return undefined;
-  // `self.p = self.build()` is a METHOD call, not a construction. Accepting it
-  // bound `p` to the non-type `"self.build"`, which resolves to nothing — and
-  // because it shares this weakest tier, a later such assignment DISPLACED an
-  // earlier real `self.p = Outer()`, leaving the field untyped again. Measured:
-  // both `self.q = self.make()` and the displacement pair emitted no CALLS edge
-  // at all. Rejecting a callee rooted at the receiver keeps the construction.
-  if (text === receiverName || text.startsWith(`${receiverName}.`)) return undefined;
+  // `self.p = self()` invokes the instance's own `__call__`. It is a call to a
+  // bare name, but that name is the receiver, not a type.
+  if (text === receiverName) return undefined;
   return text;
 }
 
@@ -186,6 +213,10 @@ export function synthesizeConstructorFieldTypeBindings(fnNode: SyntaxNode): Capt
   // the SAME tier still wins (last write in `__init__` is the live one), but a
   // weaker one never displaces a stronger: `self.x: Outer = make()` keeps its
   // annotation even if a later branch does `self.x = Other()`.
+  //
+  // Same-tier last-write-wins is only sound because `constructorCallTypeName`
+  // admits nothing but real constructions into the weakest tier — see the note
+  // there on the `self.conn = Registry.get()` displacement it used to allow.
   const TIER_EXPLICIT = 2;
   const TIER_PARAMETER = 1;
   const TIER_CONSTRUCTOR = 0;
