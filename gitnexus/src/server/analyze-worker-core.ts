@@ -20,6 +20,7 @@ import { projectAnalyzeResultForIpc } from './analyze-worker-ipc.js';
 export interface WorkerAnalysisDeps {
   runFullAnalysis: typeof import('../core/run-analyze.js').runFullAnalysis;
   assertAnalysisFinalized: typeof import('../storage/repo-manager.js').assertAnalysisFinalized;
+  acquireAnalysisLock: (repoPath: string) => Promise<() => Promise<void>>;
   send: (msg: WorkerMessage) => void;
   /**
    * Claim the single terminal-outcome slot. Returns `true` for the first caller
@@ -44,33 +45,38 @@ export async function runWorkerAnalysis(
 ): Promise<void> {
   let terminal: WorkerMessage;
   try {
-    const bootstrapArgs: [] | [AnalyzerRunnerIdentity] = runnerIdentityAtBootstrap
-      ? [runnerIdentityAtBootstrap]
-      : [];
-    const result = await deps.runFullAnalysis(
-      repoPath,
-      // This worker force-exits right after reporting, so skip the native close
-      // (it can double-free in LadybugDB's ClientContext destructor after --pdg
-      // writes); flushWAL still persists the index, process.exit reclaims handles.
-      { ...options, skipNativeCloseOnExit: true },
-      {
-        onProgress: (phase, percent, message) =>
-          deps.send({ type: 'progress', phase, percent, message }),
-        onLog: (message) => deps.send({ type: 'progress', phase: 'log', percent: -1, message }),
-      },
-      ...bootstrapArgs,
-    );
-    // P2 (#2264): a half-finalized repo — meta.json written but the global
-    // registry entry missing (e.g. a prior collision-aborted run, or a wiped
-    // registry) — must NOT be reported as a successful analysis. Mirror the CLI's
-    // assertAnalysisFinalized guard so the worker surfaces it as an error instead
-    // of a false `complete` that leaves the repo invisible to list_repos.
-    await deps.assertAnalysisFinalized(repoPath);
+    const releaseAnalysisLock = await deps.acquireAnalysisLock(repoPath);
+    try {
+      const bootstrapArgs: [] | [AnalyzerRunnerIdentity] = runnerIdentityAtBootstrap
+        ? [runnerIdentityAtBootstrap]
+        : [];
+      const result = await deps.runFullAnalysis(
+        repoPath,
+        // This worker force-exits right after reporting, so skip the native close
+        // (it can double-free in LadybugDB's ClientContext destructor after --pdg
+        // writes); flushWAL still persists the index, process.exit reclaims handles.
+        { ...options, skipNativeCloseOnExit: true },
+        {
+          onProgress: (phase, percent, message) =>
+            deps.send({ type: 'progress', phase, percent, message }),
+          onLog: (message) => deps.send({ type: 'progress', phase: 'log', percent: -1, message }),
+        },
+        ...bootstrapArgs,
+      );
+      // P2 (#2264): a half-finalized repo — meta.json written but the global
+      // registry entry missing (e.g. a prior collision-aborted run, or a wiped
+      // registry) — must NOT be reported as a successful analysis. Mirror the CLI's
+      // assertAnalysisFinalized guard so the worker surfaces it as an error instead
+      // of a false `complete` that leaves the repo invisible to list_repos.
+      await deps.assertAnalysisFinalized(repoPath);
 
-    // Send a JSON-safe projection, NOT the raw result: the IPC channel is
-    // default-JSON serialization and `result.pipelineResult` carries the live
-    // KnowledgeGraph. See analyze-worker-ipc.ts.
-    terminal = { type: 'complete', result: projectAnalyzeResultForIpc(result) };
+      // Send a JSON-safe projection, NOT the raw result: the IPC channel is
+      // default-JSON serialization and `result.pipelineResult` carries the live
+      // KnowledgeGraph. See analyze-worker-ipc.ts.
+      terminal = { type: 'complete', result: projectAnalyzeResultForIpc(result) };
+    } finally {
+      await releaseAnalysisLock();
+    }
   } catch (err: unknown) {
     // Report the failure to the parent over IPC (the parent surfaces the message).
     const message = err instanceof Error ? err.message : 'Analysis failed';

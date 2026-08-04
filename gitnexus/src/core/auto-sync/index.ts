@@ -13,10 +13,12 @@ export {
 } from './config.js';
 export {
   buildStateKey,
+  getAutoSyncMutexPath,
   getAutoSyncWatchDir,
   getAutoSyncStatePath,
   getProjectCommitInfoPath,
   loadAutoSyncState,
+  resetAutoSyncState,
   saveAutoSyncState,
   shouldAnalyzeCommit,
   writeProjectCommitInfo,
@@ -49,6 +51,7 @@ export {
   startAutoSyncWatch,
   stopAutoSyncWatch,
   type AutoSyncStartHandle,
+  type AutoSyncWatchStopResult,
   type AutoSyncWatchPaths,
   type WatchStatusRecord,
 } from './starter.js';

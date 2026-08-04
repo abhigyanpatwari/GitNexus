@@ -2,7 +2,9 @@ import fs from 'node:fs/promises';
 import path from 'node:path';
 import {
   getAutoSyncConfigPath,
+  getAutoSyncMutexPath,
   readAutoSyncWatchStatus,
+  resetAutoSyncState,
   startAutoSyncWatch,
   stopAutoSyncWatch,
   type WatchStatusRecord,
@@ -13,17 +15,28 @@ export async function watchCommand(action = 'start'): Promise<void> {
     await initWatchConfig();
     return;
   }
+  if (action === 'reset') {
+    if (!(await resetAutoSyncState())) {
+      process.stderr.write(
+        `[auto-sync] Cannot reset analysis state while the watch mutex is held. Confirm no watch process is running, then remove ${getAutoSyncMutexPath()}.\n`,
+      );
+      process.exitCode = 1;
+      return;
+    }
+    process.stdout.write('[auto-sync] Reset analysis state.\n');
+    return;
+  }
   if (action === 'status') {
     printStatus(await readAutoSyncWatchStatus());
     return;
   }
   if (action === 'stop') {
-    await stopAutoSyncWatch();
+    if ((await stopAutoSyncWatch()) !== 'stopped') process.exitCode = 1;
     return;
   }
   if (action === 'restart') {
-    const stopped = await stopAutoSyncWatch();
-    if (!stopped) {
+    const result = await stopAutoSyncWatch();
+    if (result === 'refused' || result === 'timeout') {
       process.exitCode = 1;
       return;
     }
@@ -46,10 +59,17 @@ async function startWatchProcess(): Promise<void> {
   }
 
   const stop = () => {
-    void handle.stop().finally(() => {
-      process.stderr.write('[auto-sync] Watch stopped.\n');
-      process.exit(0);
-    });
+    void handle.stop().then(
+      () => {
+        process.stderr.write('[auto-sync] Watch stopped.\n');
+        process.exit(0);
+      },
+      (error: unknown) => {
+        const message = error instanceof Error ? error.message : String(error);
+        process.stderr.write(`[auto-sync] Failed to stop watch: ${message}\n`);
+        process.exit(1);
+      },
+    );
   };
   process.once('SIGINT', stop);
   process.once('SIGTERM', stop);
@@ -70,7 +90,7 @@ async function initWatchConfig(): Promise<void> {
     await fs.mkdir(path.dirname(configPath), { recursive: true });
     await fs.writeFile(
       configPath,
-      defaultSyncConfig(path.resolve(path.dirname(configPath), 'repo')),
+      defaultSyncConfig(path.resolve(path.dirname(configPath), 'repos')),
       {
         flag: 'wx',
       },
@@ -96,7 +116,6 @@ function defaultSyncConfig(localPath: string): string {
     'projects:',
     `  - local_path: ${localPath}`,
     '    branches: [master, main]',
-    '    group_name: back_end',
     '    overwrite_local_changes: false',
     '    remote_urls:',
     '      - git@github.com:owner/repo.git',

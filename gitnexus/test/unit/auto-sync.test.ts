@@ -5,20 +5,25 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import {
   extractRepoNameFromRemoteUrl,
+  getAutoSyncMutexPath,
   getAutoSyncStatePath,
   getAutoSyncWatchDir,
   getProjectCommitInfoPath,
   loadAutoSyncConfig,
+  parseAutoSyncConfig,
   parseBranchCandidates,
   parseDurationMs,
+  quarantineAutoSyncPartial,
   resolveConfiguredCloneRoot,
   loadAutoSyncState,
+  resetAutoSyncState,
   saveAutoSyncState,
   shouldAnalyzeCommit,
   validateAutoSyncRemoteUrl,
   validateAutoSyncBranchName,
   writeProjectCommitInfo,
 } from '../../src/core/auto-sync/index.js';
+import { acquireFileLock } from '../../src/storage/file-lock.js';
 
 describe('auto-sync', () => {
   let tempDir: string;
@@ -44,12 +49,47 @@ describe('auto-sync', () => {
 
   it('places watch runtime artifacts under the watch directory by default', () => {
     expect(getAutoSyncWatchDir(gitnexusHome)).toBe(path.join(gitnexusHome, 'watch'));
+    expect(getAutoSyncMutexPath(gitnexusHome)).toBe(
+      path.join(gitnexusHome, 'watch', 'watch.mutex'),
+    );
     expect(getAutoSyncStatePath(gitnexusHome)).toBe(
       path.join(gitnexusHome, 'watch', 'auto-sync-state.json'),
     );
     expect(getProjectCommitInfoPath(gitnexusHome)).toBe(
       path.join(gitnexusHome, 'watch', 'project_commit_info.txt'),
     );
+  });
+
+  it('refuses to reset state while the watch mutex is held', async () => {
+    const statePath = getAutoSyncStatePath(gitnexusHome);
+    const infoPath = getProjectCommitInfoPath(gitnexusHome);
+    await fs.mkdir(path.dirname(statePath), { recursive: true });
+    await fs.writeFile(statePath, '{"kept":true}\n');
+    await fs.writeFile(infoPath, 'kept\n');
+    const release = await acquireFileLock(getAutoSyncMutexPath(gitnexusHome));
+
+    try {
+      await expect(resetAutoSyncState(gitnexusHome)).resolves.toBe(false);
+      await expect(fs.readFile(statePath, 'utf-8')).resolves.toContain('kept');
+      await expect(fs.readFile(infoPath, 'utf-8')).resolves.toBe('kept\n');
+    } finally {
+      await release();
+    }
+  });
+
+  it('resets derived state while holding the watch mutex', async () => {
+    const statePath = getAutoSyncStatePath(gitnexusHome);
+    const infoPath = getProjectCommitInfoPath(gitnexusHome);
+    const mutexPath = getAutoSyncMutexPath(gitnexusHome);
+    await fs.mkdir(path.dirname(statePath), { recursive: true });
+    await fs.writeFile(statePath, '{}\n');
+    await fs.writeFile(infoPath, 'derived\n');
+
+    await expect(resetAutoSyncState(gitnexusHome)).resolves.toBe(true);
+
+    await expect(fs.access(statePath)).rejects.toThrow();
+    await expect(fs.access(infoPath)).rejects.toThrow();
+    await expect(fs.access(mutexPath)).rejects.toThrow();
   });
 
   it('loads watch_config.yml from GITNEXUS_HOME and normalizes branch candidates', async () => {
@@ -114,6 +154,23 @@ describe('auto-sync', () => {
     expect(loaded.config.analyzeFailureThreshold).toBe(3);
     expect(loaded.config.projects[0].groupName).toBeUndefined();
     expect(loaded.config.projects[0].overwriteLocalChanges).toBe(false);
+  });
+
+  it('rejects repo_git_timeout values above the Node timer limit', () => {
+    expect(() =>
+      parseAutoSyncConfig(
+        [
+          'sync_interval_minutes: 10',
+          'repo_git_timeout: 2147483648ms',
+          'projects:',
+          '  - local_path: /tmp/repos',
+          '    branch: main',
+          '    remote_urls:',
+          '      - https://github.com/owner/repo.git',
+        ].join('\n'),
+        '/tmp/watch_config.yml',
+      ),
+    ).toThrow('repo_git_timeout must not exceed 2147483647ms');
   });
 
   it('rejects analyze_timeout values above half the sync interval', async () => {
@@ -256,6 +313,60 @@ describe('auto-sync', () => {
         quarantineRetentionDays: 14,
       }),
     );
+  });
+
+  it('removes expired quarantine entries while preserving recent and unrelated files', async () => {
+    const root = path.join(tempDir, 'repos');
+    const quarantineRoot = path.join(gitnexusHome, 'watch', 'quarantine');
+    const expired = path.join(quarantineRoot, 'auto-sync-expired-repo');
+    const recent = path.join(quarantineRoot, 'auto-sync-recent-repo');
+    const unrelated = path.join(quarantineRoot, 'operator-note.txt');
+    await fs.mkdir(expired, { recursive: true });
+    await fs.mkdir(recent);
+    await fs.writeFile(unrelated, 'keep');
+    const old = new Date(Date.now() - 15 * 24 * 60 * 60 * 1_000);
+    await fs.utimes(expired, old, old);
+
+    await resolveConfiguredCloneRoot(root);
+
+    await expect(fs.access(expired)).rejects.toThrow();
+    await expect(fs.access(recent)).resolves.toBeUndefined();
+    await expect(fs.readFile(unrelated, 'utf-8')).resolves.toBe('keep');
+  });
+
+  it('falls back to copy and remove when quarantine crosses filesystems', async () => {
+    const target = path.join(tempDir, 'partial-repo');
+    const quarantineRoot = path.join(gitnexusHome, 'watch', 'quarantine');
+    await fs.mkdir(target);
+    await fs.writeFile(path.join(target, 'partial.txt'), 'partial');
+    vi.spyOn(fs, 'rename').mockRejectedValueOnce(
+      Object.assign(new Error('cross-device link'), { code: 'EXDEV' }),
+    );
+
+    const destination = await quarantineAutoSyncPartial(target, quarantineRoot);
+
+    await expect(fs.readFile(path.join(destination, 'partial.txt'), 'utf-8')).resolves.toBe(
+      'partial',
+    );
+    await expect(fs.access(target)).rejects.toThrow();
+  });
+
+  it('rejects group-writable configured clone roots', async () => {
+    if (process.platform === 'win32') return;
+    const root = path.join(tempDir, 'group-writable-repos');
+    await fs.mkdir(root, { mode: 0o770 });
+    await fs.chmod(root, 0o770);
+
+    await expect(resolveConfiguredCloneRoot(root)).rejects.toThrow('group-writable');
+  });
+
+  it('rejects sticky world-writable configured clone roots', async () => {
+    if (process.platform === 'win32') return;
+    const root = path.join(tempDir, 'sticky-world-writable-repos');
+    await fs.mkdir(root);
+    await fs.chmod(root, 0o1777);
+
+    await expect(resolveConfiguredCloneRoot(root)).rejects.toThrow('world-writable');
   });
 
   it('creates missing configured clone roots before watch clone work', async () => {

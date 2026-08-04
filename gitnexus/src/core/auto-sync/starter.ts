@@ -2,16 +2,19 @@ import fs from 'node:fs/promises';
 import crypto from 'node:crypto';
 import path from 'node:path';
 import { execFileSync } from 'node:child_process';
+import { acquireFileLock, FileLockBusyError } from '../../storage/file-lock.js';
 import { getGlobalDir } from '../../storage/repo-manager.js';
+import { isProcessAlive, readProcessStartTime } from '../../utils/process-identity.js';
 import { loadAutoSyncConfig } from './config.js';
 import { runAutoSyncOnce } from './runner.js';
-import { getAutoSyncWatchDir } from './state.js';
+import { getAutoSyncMutexPath, getAutoSyncWatchDir } from './state.js';
 
 export interface AutoSyncStartHandle {
   stop(): Promise<void>;
 }
 
 export type WatchStatusState = 'running' | 'stopping' | 'stopped' | 'stale' | 'error';
+export type AutoSyncWatchStopResult = 'stopped' | 'not_running' | 'refused' | 'timeout';
 
 export interface WatchStatusRecord {
   state: WatchStatusState;
@@ -22,21 +25,24 @@ export interface WatchStatusRecord {
   updatedAt: string;
 }
 
-export interface WatchLockRecord {
+export interface WatchOwnerRecord {
   pid: number;
   ownerId: string;
+  processStartTime: string;
   createdAt: string;
 }
 
 export interface AutoSyncWatchPaths {
   pidPath: string;
-  lockPath: string;
+  mutexPath: string;
+  ownerPath: string;
   statusPath: string;
 }
 
 export interface AutoSyncWatchControlDeps {
   isProcessAlive(pid: number): boolean;
   readProcessCommand(pid: number): string | undefined;
+  readProcessStartTime(pid: number): string | undefined;
   killProcess(pid: number, signal?: NodeJS.Signals): void;
   sleep(ms: number): Promise<void>;
 }
@@ -45,7 +51,8 @@ export function getAutoSyncWatchPaths(gitnexusDir = getGlobalDir()): AutoSyncWat
   const watchDir = getAutoSyncWatchDir(gitnexusDir);
   return {
     pidPath: path.join(watchDir, 'watch.pid'),
-    lockPath: path.join(watchDir, 'watch.lock'),
+    mutexPath: getAutoSyncMutexPath(gitnexusDir),
+    ownerPath: path.join(watchDir, 'watch.owner.json'),
     statusPath: path.join(watchDir, 'watch.status.json'),
   };
 }
@@ -65,169 +72,152 @@ export async function startAutoSyncWatch(
   const paths = options.paths ?? getAutoSyncWatchPaths();
   const deps = resolveWatchDeps(options.deps);
   const ownerId = crypto.randomUUID();
-  await fs.mkdir(path.dirname(paths.pidPath), { recursive: true });
-  const lockHandle = await acquireWatchLock(paths, deps, stderr);
-  if (!lockHandle) return null;
-  await lockHandle.writeFile(
-    `${JSON.stringify({ pid: process.pid, ownerId, createdAt: new Date().toISOString() })}\n`,
-    'utf-8',
-  );
-  await fs.writeFile(paths.pidPath, `${process.pid}\n`, 'utf-8');
-
-  const loaded = await loadAutoSyncConfig();
-  if (loaded.ok === false) {
-    stderr.write(`${loaded.message}\n`);
-    await writeWatchStatus(paths, {
-      state: 'error',
-      pid: process.pid,
-      ownerId,
-      message: loaded.message,
-      updatedAt: new Date().toISOString(),
-    });
-    await cleanupWatchFiles(paths, lockHandle);
+  const processStartTime = deps.readProcessStartTime(process.pid);
+  if (!processStartTime) {
+    stderr.write('[auto-sync] Unable to verify the watch process start time.\n');
     return null;
   }
-  await writeWatchStatus(paths, {
-    state: 'running',
-    pid: process.pid,
-    ownerId,
-    configPath: loaded.config.configPath,
-    updatedAt: new Date().toISOString(),
-  });
+  await fs.mkdir(path.dirname(paths.pidPath), { recursive: true });
+  const releaseLock = await acquireWatchLock(paths, deps, stderr, processStartTime);
+  if (!releaseLock) return null;
 
-  const runOnce = options.runOnce ?? runAutoSyncOnce;
-  let activeRun: Promise<void> | undefined;
-  let activeAbortController: AbortController | undefined;
-  const runSafely = () => {
-    if (activeRun) {
-      stderr.write('[auto-sync] Previous run is still active; skipping overlapping run.\n');
-      return;
-    }
-    const startedAt = new Date();
-    stderr.write(`[auto-sync] Watch loop started at ${startedAt.toISOString()}.\n`);
-    const abortController = new AbortController();
-    const run = runOnce(loaded.config, { signal: abortController.signal })
-      .then((result) => {
-        stderr.write(
-          `[auto-sync] Watch loop finished: synced=${result.synced} analyzed=${result.analyzed} skipped=${result.skippedAnalysis} failed=${result.failed}.\n`,
-        );
-      })
-      .catch((err: unknown) => {
-        stderr.write(`[auto-sync] Scheduled run failed: ${(err as Error).message}\n`);
-        stderr.write('[auto-sync] Watch loop finished: failed.\n');
-      });
-    activeRun = run;
-    activeAbortController = abortController;
-    void run.finally(() => {
-      if (activeRun === run) {
-        activeRun = undefined;
-        activeAbortController = undefined;
-      }
+  try {
+    await writeWatchOwner(paths, {
+      pid: process.pid,
+      ownerId,
+      processStartTime,
+      createdAt: new Date().toISOString(),
     });
-  };
+    await writeAtomicText(paths.pidPath, `${process.pid}\n`);
 
-  runSafely();
-  const intervalMs = loaded.config.syncIntervalMinutes * 60_000;
-  const setIntervalFn = options.setIntervalFn ?? setInterval;
-  const clearIntervalFn = options.clearIntervalFn ?? clearInterval;
-  const timer = setIntervalFn(runSafely, intervalMs);
-  if (options.keepAlive === false) timer.unref?.();
-  return {
-    stop: async () => {
-      clearIntervalFn(timer);
-      activeAbortController?.abort();
+    const loaded = await loadAutoSyncConfig();
+    if (loaded.ok === false) {
+      stderr.write(`${loaded.message}\n`);
       await writeWatchStatus(paths, {
-        state: 'stopping',
+        state: 'error',
         pid: process.pid,
         ownerId,
-        configPath: loaded.config.configPath,
+        message: loaded.message,
         updatedAt: new Date().toISOString(),
       });
-      await activeRun?.catch(() => {});
-      await writeWatchStatus(paths, {
-        state: 'stopped',
-        pid: process.pid,
-        ownerId,
-        configPath: loaded.config.configPath,
-        updatedAt: new Date().toISOString(),
-      }).finally(() => cleanupWatchFiles(paths, lockHandle));
-    },
-  };
+      await cleanupWatchFiles(paths, ownerId, releaseLock);
+      return null;
+    }
+    await writeWatchStatus(paths, {
+      state: 'running',
+      pid: process.pid,
+      ownerId,
+      configPath: loaded.config.configPath,
+      updatedAt: new Date().toISOString(),
+    });
+
+    const runOnce = options.runOnce ?? runAutoSyncOnce;
+    let activeRun: Promise<void> | undefined;
+    let activeAbortController: AbortController | undefined;
+    const runSafely = () => {
+      if (activeRun) {
+        stderr.write('[auto-sync] Previous run is still active; skipping overlapping run.\n');
+        return;
+      }
+      const startedAt = new Date();
+      stderr.write(`[auto-sync] Watch loop started at ${startedAt.toISOString()}.\n`);
+      const abortController = new AbortController();
+      const run = runOnce(loaded.config, { signal: abortController.signal })
+        .then((result) => {
+          stderr.write(
+            `[auto-sync] Watch loop finished: synced=${result.synced} analyzed=${result.analyzed} skipped=${result.skippedAnalysis} failed=${result.failed}.\n`,
+          );
+        })
+        .catch((err: unknown) => {
+          stderr.write(`[auto-sync] Scheduled run failed: ${(err as Error).message}\n`);
+          stderr.write('[auto-sync] Watch loop finished: failed.\n');
+        });
+      activeRun = run;
+      activeAbortController = abortController;
+      void run.finally(() => {
+        if (activeRun === run) {
+          activeRun = undefined;
+          activeAbortController = undefined;
+        }
+      });
+    };
+
+    runSafely();
+    const intervalMs = loaded.config.syncIntervalMinutes * 60_000;
+    const setIntervalFn = options.setIntervalFn ?? setInterval;
+    const clearIntervalFn = options.clearIntervalFn ?? clearInterval;
+    const timer = setIntervalFn(runSafely, intervalMs);
+    if (options.keepAlive === false) timer.unref?.();
+    let stopPromise: Promise<void> | undefined;
+    return {
+      stop: () =>
+        (stopPromise ??= (async () => {
+          clearIntervalFn(timer);
+          activeAbortController?.abort();
+          try {
+            await writeWatchStatus(paths, {
+              state: 'stopping',
+              pid: process.pid,
+              ownerId,
+              configPath: loaded.config.configPath,
+              updatedAt: new Date().toISOString(),
+            });
+            await activeRun?.catch(() => {});
+            await writeWatchStatus(paths, {
+              state: 'stopped',
+              pid: process.pid,
+              ownerId,
+              configPath: loaded.config.configPath,
+              updatedAt: new Date().toISOString(),
+            });
+          } finally {
+            await cleanupWatchFiles(paths, ownerId, releaseLock);
+          }
+        })()),
+    };
+  } catch (error) {
+    await cleanupWatchFiles(paths, ownerId, releaseLock).catch(() => {});
+    throw error;
+  }
 }
 
 async function acquireWatchLock(
   paths: AutoSyncWatchPaths,
   deps: AutoSyncWatchControlDeps,
   stderr: Pick<NodeJS.WriteStream, 'write'>,
-): Promise<fs.FileHandle | null> {
+  processStartTime: string,
+): Promise<(() => Promise<void>) | null> {
   try {
-    return await fs.open(paths.lockPath, 'wx');
+    return await acquireFileLock(paths.mutexPath, {
+      pid: process.pid,
+      processStartTime,
+      isProcessAlive: deps.isProcessAlive,
+      readProcessStartTime: deps.readProcessStartTime,
+    });
   } catch (err: unknown) {
-    if ((err as NodeJS.ErrnoException).code !== 'EEXIST') throw err;
+    if (!(err instanceof FileLockBusyError)) throw err;
   }
 
-  const lock = await readLockFile(paths.lockPath);
-  if (!lock) {
-    const message = 'watch lock already exists but has no readable owner; refusing to start';
-    stderr.write(`[auto-sync] ${message}.\n`);
-    await writeWatchStatus(paths, {
-      state: 'error',
-      message,
-      updatedAt: new Date().toISOString(),
-    });
+  const owner = await readOwnerFile(paths.ownerPath);
+  if (!owner) {
+    stderr.write(
+      `[auto-sync] Watch mutex is held but owner metadata is not ready or invalid. Confirm no watch process is running, then remove ${paths.mutexPath}.\n`,
+    );
     return null;
   }
-
-  if (deps.isProcessAlive(lock.pid)) {
-    const reason = getWatchProcessIdentityError(lock.pid, deps);
-    if (reason) {
-      stderr.write(`[auto-sync] Refusing to trust existing watch pid ${lock.pid}; ${reason}.\n`);
-      await writeWatchStatus(paths, {
-        state: 'error',
-        pid: lock.pid,
-        ownerId: lock.ownerId,
-        message: reason,
-        updatedAt: new Date().toISOString(),
-      });
-      return null;
-    }
-    stderr.write(`[auto-sync] Watch is already running with pid ${lock.pid}.\n`);
-    await writeWatchStatus(paths, {
-      state: 'running',
-      pid: lock.pid,
-      ownerId: lock.ownerId,
-      message: 'watch already running',
-      updatedAt: new Date().toISOString(),
-    });
+  if (!deps.isProcessAlive(owner.pid)) {
+    stderr.write(
+      `[auto-sync] Watch mutex remains after owner pid ${owner.pid} exited. Confirm no watch process is running, then remove ${paths.mutexPath}.\n`,
+    );
     return null;
   }
-
-  stderr.write(`[auto-sync] Removing stale watch lock for pid ${lock.pid}.\n`);
-  await removeIfExists(paths.pidPath);
-  await removeIfExists(paths.lockPath);
-  await writeWatchStatus(paths, {
-    state: 'stale',
-    pid: lock.pid,
-    ownerId: lock.ownerId,
-    message: 'removed stale lock and pid',
-    updatedAt: new Date().toISOString(),
-  });
-
-  try {
-    return await fs.open(paths.lockPath, 'wx');
-  } catch (err: unknown) {
-    if ((err as NodeJS.ErrnoException).code === 'EEXIST') {
-      const message = 'watch lock was reacquired by another process; refusing to start';
-      stderr.write(`[auto-sync] ${message}.\n`);
-      await writeWatchStatus(paths, {
-        state: 'error',
-        message,
-        updatedAt: new Date().toISOString(),
-      });
-      return null;
-    }
-    throw err;
+  const reason = getWatchProcessIdentityError(owner, deps);
+  if (reason) {
+    stderr.write(`[auto-sync] Refusing to trust existing watch pid ${owner.pid}; ${reason}.\n`);
+    return null;
   }
+  stderr.write(`[auto-sync] Watch is already running with pid ${owner.pid}.\n`);
+  return null;
 }
 
 export async function stopAutoSyncWatch(
@@ -238,7 +228,7 @@ export async function stopAutoSyncWatch(
     timeoutMs?: number;
     pollMs?: number;
   } = {},
-): Promise<boolean> {
+): Promise<AutoSyncWatchStopResult> {
   const stderr = options.stderr ?? process.stderr;
   const paths = options.paths ?? getAutoSyncWatchPaths();
   const deps = resolveWatchDeps(options.deps);
@@ -246,105 +236,54 @@ export async function stopAutoSyncWatch(
   const pollMs = options.pollMs ?? 100;
   const pid = await readPid(paths.pidPath);
   if (!pid) {
-    const lock = await readLockFile(paths.lockPath);
-    if (lock && deps.isProcessAlive(lock.pid)) {
-      const message = `watch appears to be starting with pid ${lock.pid}; pid file is not ready`;
-      stderr.write(`[auto-sync] ${message}.\n`);
-      await writeWatchStatus(paths, {
-        state: 'error',
-        pid: lock.pid,
-        ownerId: lock.ownerId,
-        message,
-        updatedAt: new Date().toISOString(),
-      });
-      return false;
+    const owner = await readOwnerFile(paths.ownerPath);
+    if (owner && deps.isProcessAlive(owner.pid)) {
+      stderr.write(
+        `[auto-sync] Watch appears to be starting with pid ${owner.pid}; pid file is not ready.\n`,
+      );
+      return 'refused';
     }
-    if (lock) {
-      stderr.write(`[auto-sync] Removing stale watch lock for pid ${lock.pid}.\n`);
-      await removeIfExists(paths.lockPath);
-      await writeWatchStatus(paths, {
-        state: 'stale',
-        pid: lock.pid,
-        ownerId: lock.ownerId,
-        message: 'removed stale lock without pid file',
-        updatedAt: new Date().toISOString(),
-      });
-      return false;
-    }
-    if (await fileExists(paths.lockPath)) {
-      const message = 'watch lock exists but has no readable owner; refusing to stop';
-      stderr.write(`[auto-sync] ${message}.\n`);
-      await writeWatchStatus(paths, {
-        state: 'error',
-        message,
-        updatedAt: new Date().toISOString(),
-      });
-      return false;
+    if (owner || (await fileExists(paths.mutexPath))) {
+      stderr.write(
+        `[auto-sync] Watch ownership is stale or incomplete. Confirm no watch process is running, then remove ${paths.mutexPath}.\n`,
+      );
+      return 'refused';
     }
     stderr.write('[auto-sync] Watch is not running.\n');
-    await writeWatchStatus(paths, {
-      state: 'stopped',
-      message: 'no pid file',
-      updatedAt: new Date().toISOString(),
-    });
-    return false;
+    return 'not_running';
   }
   if (!deps.isProcessAlive(pid)) {
-    stderr.write(`[auto-sync] Removing stale watch pid ${pid}.\n`);
-    await removeIfExists(paths.pidPath);
-    await removeIfExists(paths.lockPath);
-    await writeWatchStatus(paths, {
-      state: 'stale',
-      pid,
-      message: 'removed stale pid and lock',
-      updatedAt: new Date().toISOString(),
-    });
-    return false;
+    stderr.write(
+      `[auto-sync] Watch pid ${pid} is stale. Confirm no watch process is running, then remove ${paths.mutexPath}.\n`,
+    );
+    return 'refused';
   }
+
   const owner = await readVerifiedWatchOwner(paths, pid, deps);
   if (owner.ok === false) {
-    const message = `refusing to stop pid ${pid}; ${owner.reason}`;
-    stderr.write(`[auto-sync] ${message}.\n`);
-    await writeWatchStatus(paths, {
-      state: 'error',
-      pid,
-      message,
-      updatedAt: new Date().toISOString(),
-    });
-    return false;
+    stderr.write(`[auto-sync] Refusing to stop pid ${pid}; ${owner.reason}.\n`);
+    return 'refused';
   }
-  await writeWatchStatus(paths, {
-    state: 'stopping',
-    pid,
-    ownerId: owner.owner.ownerId,
-    message: 'stop signal sent; waiting for watch process to exit',
-    updatedAt: new Date().toISOString(),
-  });
+
+  const currentPid = await readPid(paths.pidPath);
+  const currentOwner = await readVerifiedWatchOwner(paths, pid, deps);
+  if (
+    currentPid !== pid ||
+    currentOwner.ok === false ||
+    currentOwner.owner.ownerId !== owner.owner.ownerId
+  ) {
+    stderr.write(`[auto-sync] Refusing to stop pid ${pid}; watch ownership changed.\n`);
+    return 'refused';
+  }
+
   deps.killProcess(pid, 'SIGTERM');
   stderr.write(`[auto-sync] Stop signal sent to watch pid ${pid}.\n`);
   const stopped = await waitForProcessExit(pid, { deps, timeoutMs, pollMs });
   if (!stopped) {
-    const message = `watch pid ${pid} did not exit within ${timeoutMs}ms`;
-    stderr.write(`[auto-sync] ${message}.\n`);
-    await writeWatchStatus(paths, {
-      state: 'stopping',
-      pid,
-      ownerId: owner.owner.ownerId,
-      message,
-      updatedAt: new Date().toISOString(),
-    });
-    return false;
+    stderr.write(`[auto-sync] Watch pid ${pid} did not exit within ${timeoutMs}ms.\n`);
+    return 'timeout';
   }
-  await removeIfExists(paths.pidPath);
-  await removeIfExists(paths.lockPath);
-  await writeWatchStatus(paths, {
-    state: 'stopped',
-    pid,
-    ownerId: owner.owner.ownerId,
-    message: 'watch stopped',
-    updatedAt: new Date().toISOString(),
-  });
-  return true;
+  return 'stopped';
 }
 
 export async function readAutoSyncWatchStatus(
@@ -388,17 +327,19 @@ export async function readAutoSyncWatchStatus(
   return stored ?? { state: 'stopped', updatedAt: new Date().toISOString() };
 }
 
-async function readLockFile(lockPath: string): Promise<WatchLockRecord | undefined> {
+async function readOwnerFile(ownerPath: string): Promise<WatchOwnerRecord | undefined> {
   try {
-    const raw = await fs.readFile(lockPath, 'utf-8');
-    const parsed = JSON.parse(raw) as WatchLockRecord;
+    const raw = await fs.readFile(ownerPath, 'utf-8');
+    const parsed = JSON.parse(raw) as WatchOwnerRecord;
     if (
       parsed &&
       typeof parsed === 'object' &&
       Number.isInteger(parsed.pid) &&
       parsed.pid > 0 &&
       typeof parsed.ownerId === 'string' &&
-      parsed.ownerId
+      parsed.ownerId &&
+      typeof parsed.processStartTime === 'string' &&
+      parsed.processStartTime
     ) {
       return parsed;
     }
@@ -413,28 +354,31 @@ async function readVerifiedWatchOwner(
   paths: AutoSyncWatchPaths,
   pid: number,
   deps: AutoSyncWatchControlDeps,
-): Promise<{ ok: true; owner: WatchLockRecord } | { ok: false; reason: string }> {
-  const [status, lock] = await Promise.all([
+): Promise<{ ok: true; owner: WatchOwnerRecord } | { ok: false; reason: string }> {
+  const [status, owner] = await Promise.all([
     readStatusFile(paths.statusPath),
-    readLockFile(paths.lockPath),
+    readOwnerFile(paths.ownerPath),
   ]);
-  if (!lock) return { ok: false, reason: 'watch lock is missing or invalid' };
+  if (!owner) return { ok: false, reason: 'watch owner is missing or invalid' };
   if (!status) return { ok: false, reason: 'watch status is missing or invalid' };
-  if (lock.pid !== pid) return { ok: false, reason: 'watch lock pid does not match pid file' };
+  if (owner.pid !== pid) return { ok: false, reason: 'watch owner pid does not match pid file' };
   if (status.pid !== pid) return { ok: false, reason: 'watch status pid does not match pid file' };
-  if (!status.ownerId || status.ownerId !== lock.ownerId) {
-    return { ok: false, reason: 'watch status owner does not match lock owner' };
+  if (!status.ownerId || status.ownerId !== owner.ownerId) {
+    return { ok: false, reason: 'watch status owner does not match watch owner' };
   }
-  const identityError = getWatchProcessIdentityError(pid, deps);
+  const identityError = getWatchProcessIdentityError(owner, deps);
   if (identityError) return { ok: false, reason: identityError };
-  return { ok: true, owner: lock };
+  return { ok: true, owner };
 }
 
 function getWatchProcessIdentityError(
-  pid: number,
+  owner: WatchOwnerRecord,
   deps: AutoSyncWatchControlDeps,
 ): string | undefined {
-  const command = deps.readProcessCommand(pid);
+  const processStartTime = deps.readProcessStartTime(owner.pid);
+  if (!processStartTime) return 'unable to verify process start time';
+  if (processStartTime !== owner.processStartTime) return 'pid belongs to a different process';
+  const command = deps.readProcessCommand(owner.pid);
   if (!command) return 'unable to verify process command';
   if (
     !/(?:^|\s)watch(?:\s|$)/.test(command) ||
@@ -492,13 +436,33 @@ async function writeWatchStatus(
   await fs.rename(tmpPath, paths.statusPath);
 }
 
+async function writeWatchOwner(paths: AutoSyncWatchPaths, record: WatchOwnerRecord): Promise<void> {
+  await writeAtomicText(paths.ownerPath, `${JSON.stringify(record, null, 2)}\n`);
+}
+
 async function cleanupWatchFiles(
   paths: AutoSyncWatchPaths,
-  lockHandle?: fs.FileHandle,
+  ownerId: string,
+  releaseLock: () => Promise<void>,
 ): Promise<void> {
-  await lockHandle?.close().catch(() => {});
-  await removeIfExists(paths.pidPath);
-  await removeIfExists(paths.lockPath);
+  try {
+    const owner = await readOwnerFile(paths.ownerPath);
+    if (owner?.ownerId === ownerId) {
+      if ((await readPid(paths.pidPath)) === owner.pid) await removeIfExists(paths.pidPath);
+      if ((await readOwnerFile(paths.ownerPath))?.ownerId === ownerId) {
+        await removeIfExists(paths.ownerPath);
+      }
+    }
+  } finally {
+    await releaseLock();
+  }
+}
+
+async function writeAtomicText(filePath: string, content: string): Promise<void> {
+  await fs.mkdir(path.dirname(filePath), { recursive: true });
+  const tmpPath = `${filePath}.tmp.${process.pid}.${Date.now()}`;
+  await fs.writeFile(tmpPath, content, 'utf-8');
+  await fs.rename(tmpPath, filePath);
 }
 
 async function removeIfExists(filePath: string): Promise<void> {
@@ -514,29 +478,33 @@ async function fileExists(filePath: string): Promise<boolean> {
 
 function resolveWatchDeps(deps: Partial<AutoSyncWatchControlDeps> = {}): AutoSyncWatchControlDeps {
   return {
-    isProcessAlive:
-      deps.isProcessAlive ??
-      ((pid) => {
-        try {
-          process.kill(pid, 0);
-          return true;
-        } catch {
-          return false;
-        }
-      }),
+    isProcessAlive: deps.isProcessAlive ?? isProcessAlive,
     readProcessCommand:
       deps.readProcessCommand ??
       ((pid) => {
         try {
-          const command = execFileSync('ps', ['-p', String(pid), '-o', 'command='], {
-            encoding: 'utf-8',
-            stdio: ['ignore', 'pipe', 'ignore'],
-          }).trim();
+          const command =
+            process.platform === 'win32'
+              ? execFileSync(
+                  'powershell.exe',
+                  [
+                    '-NoProfile',
+                    '-NonInteractive',
+                    '-Command',
+                    `(Get-CimInstance Win32_Process -Filter \"ProcessId = ${pid}\").CommandLine`,
+                  ],
+                  { encoding: 'utf-8', stdio: ['ignore', 'pipe', 'ignore'] },
+                ).trim()
+              : execFileSync('ps', ['-p', String(pid), '-o', 'command='], {
+                  encoding: 'utf-8',
+                  stdio: ['ignore', 'pipe', 'ignore'],
+                }).trim();
           return command || undefined;
         } catch {
           return undefined;
         }
       }),
+    readProcessStartTime: deps.readProcessStartTime ?? readProcessStartTime,
     killProcess:
       deps.killProcess ??
       ((pid, signal = 'SIGTERM') => {

@@ -404,7 +404,7 @@ describe('git-clone', () => {
     });
   });
 
-  describe('buildGitEnv — token injection', () => {
+  describe('buildGitEnv — managed git environment', () => {
     // The token MUST travel via GIT_CONFIG_* env vars (git ≥2.31), not via
     // argv or URL. This keeps it out of `ps`, shell history, and stderr.
 
@@ -428,33 +428,33 @@ describe('git-clone', () => {
       expect(env.GIT_CURL_VERBOSE).toBeUndefined();
     });
 
-    it('does not set GIT_CONFIG_* env vars when no token is provided', () => {
+    it('disables repository hooks even when no token is provided', () => {
       const env = buildGitEnv({});
-      expect(env.GIT_CONFIG_COUNT).toBeUndefined();
-      expect(env.GIT_CONFIG_KEY_0).toBeUndefined();
-      expect(env.GIT_CONFIG_VALUE_0).toBeUndefined();
+      expect(env.GIT_CONFIG_COUNT).toBe('1');
+      expect(env.GIT_CONFIG_KEY_0).toBe('core.hooksPath');
+      expect(env.GIT_CONFIG_VALUE_0).toBe(os.devNull);
     });
 
-    it('also leaves GIT_CONFIG_* unset when token is empty string', () => {
+    it('only disables repository hooks when token is empty string', () => {
       const env = buildGitEnv({}, { token: '' });
-      expect(env.GIT_CONFIG_COUNT).toBeUndefined();
-      expect(env.GIT_CONFIG_KEY_0).toBeUndefined();
-      expect(env.GIT_CONFIG_VALUE_0).toBeUndefined();
+      expect(env.GIT_CONFIG_COUNT).toBe('1');
+      expect(env.GIT_CONFIG_KEY_0).toBe('core.hooksPath');
+      expect(env.GIT_CONFIG_VALUE_0).toBe(os.devNull);
     });
 
     it('injects a host-scoped Basic-auth header when a github.com token is provided', () => {
       const env = buildGitEnv({}, { token: 'ghp_secret123', url: 'https://github.com/owner/repo' });
-      expect(env.GIT_CONFIG_COUNT).toBe('1');
+      expect(env.GIT_CONFIG_COUNT).toBe('2');
       // Host-scoped key: the header attaches only to this origin's requests.
-      expect(env.GIT_CONFIG_KEY_0).toBe('http.https://github.com/owner/repo.extraHeader');
+      expect(env.GIT_CONFIG_KEY_1).toBe('http.https://github.com/owner/repo.extraHeader');
       const expected =
         'Authorization: Basic ' + Buffer.from('x-access-token:ghp_secret123').toString('base64');
-      expect(env.GIT_CONFIG_VALUE_0).toBe(expected);
+      expect(env.GIT_CONFIG_VALUE_1).toBe(expected);
     });
 
     it('does not inject a token for a non-github host (defense-in-depth host bind)', () => {
       const env = buildGitEnv({}, { token: 'ghp_secret123', url: 'https://gitlab.com/owner/repo' });
-      expect(env.GIT_CONFIG_COUNT).toBeUndefined();
+      expect(env.GIT_CONFIG_COUNT).toBe('1');
     });
 
     it('never includes the raw token value in any env entry', () => {
@@ -463,7 +463,7 @@ describe('git-clone', () => {
       const token = 'ghp_uniqueRawSecret_98765';
       const env = buildGitEnv({ EXISTING: 'value' }, { token, url: 'https://github.com/o/r' });
       for (const [key, value] of Object.entries(env)) {
-        if (key === 'GIT_CONFIG_VALUE_0') continue;
+        if (key === 'GIT_CONFIG_VALUE_1') continue;
         expect(String(value)).not.toContain(token);
       }
     });
@@ -473,12 +473,12 @@ describe('git-clone', () => {
       process.env.AZURE_DEVOPS_PAT = 'azure-pat-xyz';
       try {
         const env = buildGitEnv({}, { url: 'https://dev.azure.com/org/proj/_git/repo' });
-        expect(env.GIT_CONFIG_COUNT).toBe('1');
-        expect(env.GIT_CONFIG_KEY_0).toBe(
+        expect(env.GIT_CONFIG_COUNT).toBe('2');
+        expect(env.GIT_CONFIG_KEY_1).toBe(
           'http.https://dev.azure.com/org/proj/_git/repo.extraHeader',
         );
         const expected = 'Authorization: Basic ' + Buffer.from(':azure-pat-xyz').toString('base64');
-        expect(env.GIT_CONFIG_VALUE_0).toBe(expected);
+        expect(env.GIT_CONFIG_VALUE_1).toBe(expected);
       } finally {
         if (prev === undefined) delete process.env.AZURE_DEVOPS_PAT;
         else process.env.AZURE_DEVOPS_PAT = prev;
@@ -492,8 +492,8 @@ describe('git-clone', () => {
       process.env.AZURE_DEVOPS_PAT = 'azure-pat-xyz';
       try {
         const env = buildGitEnv({}, { token: 'ghp_secret123', url: 'https://github.com/o/r' });
-        expect(env.GIT_CONFIG_COUNT).toBe('1');
-        expect(env.GIT_CONFIG_VALUE_1).toBeUndefined();
+        expect(env.GIT_CONFIG_COUNT).toBe('2');
+        expect(env.GIT_CONFIG_VALUE_2).toBeUndefined();
         for (const value of Object.values(env)) {
           expect(String(value)).not.toContain('azure-pat-xyz');
         }
@@ -508,13 +508,48 @@ describe('git-clone', () => {
         { GIT_CONFIG_COUNT: '1', GIT_CONFIG_KEY_0: 'http.sslVerify', GIT_CONFIG_VALUE_0: 'true' },
         { token: 'ghp_secret123', url: 'https://github.com/o/r' },
       );
-      expect(env.GIT_CONFIG_COUNT).toBe('2');
+      expect(env.GIT_CONFIG_COUNT).toBe('3');
       // Operator's pre-existing config is preserved at index 0.
       expect(env.GIT_CONFIG_KEY_0).toBe('http.sslVerify');
       expect(env.GIT_CONFIG_VALUE_0).toBe('true');
-      // Our credential is appended at index 1.
-      expect(env.GIT_CONFIG_KEY_1).toBe('http.https://github.com/o/r.extraHeader');
-      expect(env.GIT_CONFIG_VALUE_1).toContain('Authorization: Basic ');
+      expect(env.GIT_CONFIG_KEY_1).toBe('core.hooksPath');
+      expect(env.GIT_CONFIG_VALUE_1).toBe(os.devNull);
+      expect(env.GIT_CONFIG_KEY_2).toBe('http.https://github.com/o/r.extraHeader');
+      expect(env.GIT_CONFIG_VALUE_2).toContain('Authorization: Basic ');
+    });
+
+    it('overrides an inherited hooks path with the managed safe value', () => {
+      const env = buildGitEnv({
+        GIT_CONFIG_COUNT: '1',
+        GIT_CONFIG_KEY_0: 'core.hooksPath',
+        GIT_CONFIG_VALUE_0: '/tmp/untrusted-hooks',
+      });
+      expect(env.GIT_CONFIG_COUNT).toBe('2');
+      expect(env.GIT_CONFIG_KEY_1).toBe('core.hooksPath');
+      expect(env.GIT_CONFIG_VALUE_1).toBe(os.devNull);
+    });
+
+    it('does not execute hooks from an existing repository', async () => {
+      if (process.platform === 'win32') return;
+      const root = await mkControlledRoot('gitnexus-managed-git-');
+      const marker = path.join(root, 'hook-ran');
+      try {
+        await runGit(['init', '--initial-branch=main'], root);
+        await runGit(['config', 'user.email', 'test@example.com'], root);
+        await runGit(['config', 'user.name', 'GitNexus Test'], root);
+        await fs.writeFile(path.join(root, 'README.md'), 'test\n');
+        await runGit(['add', 'README.md'], root);
+        await runGit(['commit', '-m', 'initial'], root);
+        const hook = path.join(root, '.git', 'hooks', 'post-checkout');
+        await fs.writeFile(hook, `#!/bin/sh\ntouch ${JSON.stringify(marker)}\n`);
+        await fs.chmod(hook, 0o700);
+
+        await runGitForTest(['checkout', '-b', 'next'], root);
+
+        await expect(fs.access(marker)).rejects.toThrow();
+      } finally {
+        await fs.rm(root, { recursive: true, force: true });
+      }
     });
 
     it('strips control characters from the config key (no key injection)', () => {
@@ -522,7 +557,7 @@ describe('git-clone', () => {
         {},
         { token: 'ghp_secret123', url: 'https://github.com/o/r%0Anewline' },
       );
-      const key = env.GIT_CONFIG_KEY_0 ?? '';
+      const key = env.GIT_CONFIG_KEY_1 ?? '';
       expect(key).not.toContain('\n');
       expect(key).not.toContain('\r');
     });
@@ -686,6 +721,69 @@ describe('git-clone', () => {
       }
     });
 
+    it('rejects writable existing directories below a controlled clone root', async () => {
+      if (process.platform === 'win32') return;
+      const root = await mkControlledRoot('gitnexus-controlled-root-');
+      const namespace = path.join(root, 'team');
+      try {
+        await fs.mkdir(namespace);
+        await fs.chmod(namespace, 0o777);
+        await expect(
+          cloneOrPull(
+            'https://example.com/team/repo.git',
+            path.join(namespace, 'repo'),
+            undefined,
+            {
+              allowedCloneRoot: root,
+              expectedRepoName: 'repo',
+            },
+          ),
+        ).rejects.toThrow('world-writable');
+      } finally {
+        await fs.chmod(namespace, 0o700).catch(() => {});
+        await fs.rm(root, { recursive: true, force: true });
+      }
+    });
+
+    it('rejects writable .git metadata in an existing controlled clone', async () => {
+      if (process.platform === 'win32') return;
+      const root = await mkControlledRoot('gitnexus-controlled-root-');
+      const target = path.join(root, 'repo');
+      const gitDir = path.join(target, '.git');
+      try {
+        await fs.mkdir(gitDir, { recursive: true });
+        await fs.chmod(gitDir, 0o777);
+        await expect(
+          cloneOrPull('https://example.com/team/repo.git', target, undefined, {
+            allowedCloneRoot: root,
+            expectedRepoName: 'repo',
+          }),
+        ).rejects.toThrow('world-writable');
+      } finally {
+        await fs.chmod(gitDir, 0o700).catch(() => {});
+        await fs.rm(root, { recursive: true, force: true });
+      }
+    });
+
+    it('rejects symlinked .git metadata in an existing controlled clone', async () => {
+      const root = await mkControlledRoot('gitnexus-controlled-root-');
+      const outside = await mkControlledRoot('gitnexus-outside-git-dir-');
+      const target = path.join(root, 'repo');
+      try {
+        await fs.mkdir(target);
+        await fs.symlink(outside, path.join(target, '.git'));
+        await expect(
+          cloneOrPull('https://example.com/team/repo.git', target, undefined, {
+            allowedCloneRoot: root,
+            expectedRepoName: 'repo',
+          }),
+        ).rejects.toThrow('symlink');
+      } finally {
+        await fs.rm(root, { recursive: true, force: true });
+        await fs.rm(outside, { recursive: true, force: true });
+      }
+    });
+
     it('rejects existing clones whose remote origin mismatches the requested URL', async () => {
       const root = await mkControlledRoot('gitnexus-controlled-root-');
       const target = path.join(root, 'repo');
@@ -792,6 +890,25 @@ describe('git-clone', () => {
         else process.env.GIT_CONFIG_GLOBAL = previousGlobalConfig;
         if (previousNoSystemConfig === undefined) delete process.env.GIT_CONFIG_NOSYSTEM;
         else process.env.GIT_CONFIG_NOSYSTEM = previousNoSystemConfig;
+        await fs.rm(root, { recursive: true, force: true });
+      }
+    });
+
+    it('clones into a pre-existing empty target directory', async () => {
+      const root = await mkControlledRoot('gitnexus-controlled-root-');
+      const target = path.join(root, 'repo');
+      const runGitForTest = vi.fn(async () => '');
+      try {
+        await fs.mkdir(target);
+        await expect(
+          cloneOrPull('https://example.com/team/repo.git', target, undefined, {
+            allowedCloneRoot: root,
+            expectedRepoName: 'repo',
+            runGitForTest,
+          }),
+        ).resolves.toBe(target);
+        expect(runGitForTest).toHaveBeenCalled();
+      } finally {
         await fs.rm(root, { recursive: true, force: true });
       }
     });
@@ -1179,7 +1296,7 @@ describe('git-clone', () => {
   });
 
   describe('runGit timeout', () => {
-    it('waits for close and sends SIGKILL after the grace period before returning timeout', async () => {
+    it('rejects after SIGKILL even when the child never closes', async () => {
       vi.useFakeTimers();
       try {
         const child = new EventEmitter() as EventEmitter & {
@@ -1209,7 +1326,6 @@ describe('git-clone', () => {
 
         await vi.advanceTimersByTimeAsync(25);
         expect(child.kill).toHaveBeenCalledWith('SIGKILL');
-        child.emit('close', null);
         await expect(promise).rejects.toThrow('timed out after 20ms');
       } finally {
         vi.useRealTimers();

@@ -50,18 +50,7 @@ program
   .description(
     'Control scheduled repository clone/pull and analysis from GITNEXUS_HOME/watch_config.yml',
   )
-  .addHelpText(
-    'after',
-    [
-      '',
-      'Actions: init, start (default), restart, stop, status',
-      'Configuration: GITNEXUS_HOME/watch_config.yml',
-      'Runtime files: GITNEXUS_HOME/watch/watch.pid, watch.lock, watch.status.json, auto-sync-state.json',
-      'Writes: GITNEXUS_HOME/watch/project_commit_info.txt',
-      'Remote URLs: only git@github.com:owner/repo.git, git@gitlab.com:group/repo.git, and git@gitee.com:owner/repo.git are allowed.',
-      'Runs once immediately, then repeats on sync_interval_minutes.',
-    ].join('\n'),
-  )
+  .addHelpText('after', () => t('help.watch.details'))
   .action(createLazyAction(() => import('./watch.js'), 'watchCommand'));
 
 // Baseline of GITNEXUS_EMBEDDING_DIMS captured by the analyze preAction hook

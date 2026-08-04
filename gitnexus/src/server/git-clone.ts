@@ -9,6 +9,7 @@ import { spawn } from 'child_process';
 import path from 'path';
 import fs from 'fs/promises';
 import { isIP } from 'net';
+import os from 'node:os';
 import { logger } from '../core/logger.js';
 import { getGlobalDir } from '../storage/repo-manager.js';
 import { sanitizeRepoName } from '../storage/git.js';
@@ -416,27 +417,14 @@ export function normalizeGitUrlForCompare(url: string): string {
  * remote means for its threat model — for cloneOrPull, a missing remote
  * on an existing clone is treated as a refuse-to-pull condition.
  */
-export function getRemoteOriginUrl(cwd: string): Promise<string | null> {
-  return new Promise((resolve) => {
-    const proc = spawn('git', ['config', '--get', 'remote.origin.url'], {
-      cwd,
-      stdio: ['ignore', 'pipe', 'pipe'],
-      windowsHide: true,
-      env: { ...process.env, GIT_TERMINAL_PROMPT: '0' },
-    });
-    let stdout = '';
-    proc.stdout.on('data', (chunk: Buffer) => {
-      stdout += chunk;
-    });
-    proc.on('close', (code) => {
-      if (code === 0 && stdout.trim()) {
-        resolve(stdout.trim());
-      } else {
-        resolve(null);
-      }
-    });
-    proc.on('error', () => resolve(null));
-  });
+export async function getRemoteOriginUrl(cwd: string, timeoutMs?: number): Promise<string | null> {
+  try {
+    const stdout = await runGit(['config', '--get', 'remote.origin.url'], cwd, { timeoutMs });
+    return stdout.trim() || null;
+  } catch (error) {
+    if ((error as Error).message.includes('timed out')) throw error;
+    return null;
+  }
 }
 
 /**
@@ -456,8 +444,9 @@ export function getRemoteOriginUrl(cwd: string): Promise<string | null> {
 export async function assertRemoteMatchesRequestedUrl(
   targetDir: string,
   requestedUrl: string,
+  timeoutMs?: number,
 ): Promise<void> {
-  const remoteUrl = await getRemoteOriginUrl(targetDir);
+  const remoteUrl = await getRemoteOriginUrl(targetDir, timeoutMs);
   if (remoteUrl === null) {
     throw new Error(`Existing clone at ${targetDir} has no remote.origin — refusing to pull`);
   }
@@ -530,7 +519,7 @@ export async function cloneOrPull(
   if (options?.allowedCloneRoot) {
     await assertDirectoryOwnerAndPermissions(cloneRoot);
   }
-  await assertNoSymlinkPath(cloneRoot, safeTarget);
+  await assertNoSymlinkPath(cloneRoot, safeTarget, Boolean(options?.allowedCloneRoot));
   await assertPreRealpathContainment(cloneRoot, safeTarget);
 
   const exists = await fs.access(path.join(safeTarget, '.git')).then(
@@ -544,11 +533,14 @@ export async function cloneOrPull(
   );
 
   if (exists) {
+    if (options?.allowedCloneRoot) {
+      await assertNoSymlinkPath(cloneRoot, path.join(safeTarget, '.git'), true);
+    }
     await assertPostRealpathContainment(cloneRoot, safeTarget);
     // Confirm the existing clone is actually the same repository the caller
     // requested. Without this check, a pull would silently succeed against
     // whatever remote the dir was originally cloned from.
-    await assertRemoteMatchesRequestedUrl(safeTarget, url);
+    await assertRemoteMatchesRequestedUrl(safeTarget, url, options?.timeoutMs);
     onProgress?.({ phase: 'pulling', message: 'Pulling latest changes...' });
     const runGitImpl = options?.runGitForTest ?? runGit;
     if (options?.branch) {
@@ -602,11 +594,11 @@ export async function cloneOrPull(
       });
     }
   } else {
-    if (targetExists) {
+    if (targetExists && (await fs.readdir(safeTarget)).length > 0) {
       throw new Error(`Clone target already exists but is not a git repository: ${safeTarget}`);
     }
     await fs.mkdir(path.dirname(safeTarget), { recursive: true });
-    await assertNoSymlinkPath(cloneRoot, safeTarget);
+    await assertNoSymlinkPath(cloneRoot, safeTarget, Boolean(options?.allowedCloneRoot));
     await assertPreRealpathContainment(cloneRoot, safeTarget);
     onProgress?.({ phase: 'cloning', message: `Cloning ${url}...` });
     try {
@@ -622,12 +614,20 @@ export async function cloneOrPull(
       await assertPostRealpathContainment(cloneRoot, safeTarget);
     } catch (err: unknown) {
       if (options?.quarantineRoot) {
-        await fs
-          .access(safeTarget)
-          .then(async () => {
-            await quarantineAutoSyncPartial(safeTarget, options.quarantineRoot!);
-          })
-          .catch(() => {});
+        const partialExists = await fs.access(safeTarget).then(
+          () => true,
+          () => false,
+        );
+        if (partialExists) {
+          try {
+            await quarantineAutoSyncPartial(safeTarget, options.quarantineRoot);
+          } catch (quarantineError) {
+            throw new AggregateError(
+              [err, quarantineError],
+              `Clone failed and partial checkout could not be quarantined: ${safeTarget}`,
+            );
+          }
+        }
       }
       throw err;
     }
@@ -654,7 +654,11 @@ async function assertPostRealpathContainment(root: string, target: string): Prom
   }
 }
 
-async function assertNoSymlinkPath(root: string, target: string): Promise<void> {
+async function assertNoSymlinkPath(
+  root: string,
+  target: string,
+  verifyOwnership = false,
+): Promise<void> {
   const resolvedRoot = path.resolve(root);
   const resolvedTarget = path.resolve(target);
   const relativeTarget = path.relative(resolvedRoot, resolvedTarget);
@@ -672,6 +676,7 @@ async function assertNoSymlinkPath(root: string, target: string): Promise<void> 
     if (stat.isSymbolicLink()) {
       throw new Error(`Refusing symlink in clone target path: ${current}`);
     }
+    if (verifyOwnership) await assertDirectoryOwnerAndPermissions(current);
   }
 }
 
@@ -776,11 +781,10 @@ function warnIfCleartextCredential(url?: string): void {
 }
 
 /**
- * Build the spawn env for `git`. Suppresses credential prompts and, when a
- * credential resolves (see resolveGitCredential), injects a single
- * host-scoped Authorization header via the `GIT_CONFIG_*` env protocol
- * (git ≥2.31) so credentials never appear in argv or the URL. Appends after
- * any existing `GIT_CONFIG_COUNT` rather than overwriting it. Exported for
+ * Build the spawn env for managed `git` commands. Suppresses credential
+ * prompts, disables repository hooks, and injects at most one host-scoped
+ * Authorization header via the `GIT_CONFIG_*` env protocol (git ≥2.31).
+ * Managed settings append after any existing GIT_CONFIG_COUNT. Exported for
  * unit tests.
  */
 export function buildGitEnv(
@@ -803,18 +807,21 @@ export function buildGitEnv(
     GIT_CURL_VERBOSE: undefined,
   };
 
+  const existing = Number.parseInt(env.GIT_CONFIG_COUNT ?? '', 10);
+  let next = Number.isInteger(existing) && existing > 0 ? existing : 0;
+  env[`GIT_CONFIG_KEY_${next}`] = 'core.hooksPath';
+  env[`GIT_CONFIG_VALUE_${next}`] = os.devNull;
+  next += 1;
+
   const credential = resolveGitCredential(options);
   const key = options?.url ? buildExtraHeaderKey(options.url) : undefined;
   if (credential && key) {
-    // Append after any GIT_CONFIG_* the operator already set, so we never
-    // clobber their git config (e.g. an enforced http.sslVerify).
-    const existing = Number.parseInt(env.GIT_CONFIG_COUNT ?? '', 10);
-    const base = Number.isInteger(existing) && existing > 0 ? existing : 0;
-    env.GIT_CONFIG_COUNT = String(base + 1);
-    env[`GIT_CONFIG_KEY_${base}`] = key;
-    env[`GIT_CONFIG_VALUE_${base}`] = `Authorization: Basic ${credential}`;
+    env[`GIT_CONFIG_KEY_${next}`] = key;
+    env[`GIT_CONFIG_VALUE_${next}`] = `Authorization: Basic ${credential}`;
+    next += 1;
     warnIfCleartextCredential(options?.url);
   }
+  env.GIT_CONFIG_COUNT = String(next);
 
   return env;
 }
@@ -824,7 +831,7 @@ export function buildGitEnv(
 // host-scoped Authorization header (GitHub PAT for github.com, else the
 // server's AZURE_DEVOPS_PAT for Azure hosts) via the GIT_CONFIG_* protocol —
 // never in argv. See resolveGitCredential / buildExtraHeaderKey.
-function runGit(args: string[], cwd?: string, options?: RunGitOptions): Promise<string> {
+export function runGit(args: string[], cwd?: string, options?: RunGitOptions): Promise<string> {
   return new Promise((resolve, reject) => {
     const spawnGit = options?.spawnForTest ?? spawn;
     const proc = spawnGit('git', args, {
@@ -853,6 +860,9 @@ function runGit(args: string[], cwd?: string, options?: RunGitOptions): Promise<
             proc.kill('SIGTERM');
             killTimer = setTimeout(() => {
               proc.kill('SIGKILL');
+              finish(() =>
+                reject(new Error(`git ${args[0]} timed out after ${options.timeoutMs}ms`)),
+              );
             }, options.timeoutKillGraceMs ?? 1_000);
           }, options.timeoutMs)
         : undefined;

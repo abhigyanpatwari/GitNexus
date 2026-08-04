@@ -1,5 +1,6 @@
 import fs from 'node:fs/promises';
 import path from 'node:path';
+import { acquireFileLock, FileLockBusyError } from '../../storage/file-lock.js';
 import { getGlobalDir } from '../../storage/repo-manager.js';
 
 export type AutoSyncAnalyzeStatus = 'success' | 'failed' | 'skipped' | 'threshold_skipped';
@@ -19,12 +20,36 @@ export function getAutoSyncWatchDir(gitnexusDir = getGlobalDir()): string {
   return path.join(gitnexusDir, 'watch');
 }
 
+export function getAutoSyncMutexPath(gitnexusDir = getGlobalDir()): string {
+  return path.join(getAutoSyncWatchDir(gitnexusDir), 'watch.mutex');
+}
+
 export function getAutoSyncStatePath(gitnexusDir = getGlobalDir()): string {
   return path.join(getAutoSyncWatchDir(gitnexusDir), 'auto-sync-state.json');
 }
 
 export function getProjectCommitInfoPath(gitnexusDir = getGlobalDir()): string {
   return path.join(getAutoSyncWatchDir(gitnexusDir), 'project_commit_info.txt');
+}
+
+export async function resetAutoSyncState(gitnexusDir = getGlobalDir()): Promise<boolean> {
+  let releaseLock: () => Promise<void>;
+  try {
+    releaseLock = await acquireFileLock(getAutoSyncMutexPath(gitnexusDir));
+  } catch (error) {
+    if (error instanceof FileLockBusyError) return false;
+    throw error;
+  }
+
+  try {
+    await Promise.all([
+      fs.rm(getAutoSyncStatePath(gitnexusDir), { force: true }),
+      fs.rm(getProjectCommitInfoPath(gitnexusDir), { force: true }),
+    ]);
+    return true;
+  } finally {
+    await releaseLock();
+  }
 }
 
 export function buildStateKey(repoPath: string, branch: string): string {

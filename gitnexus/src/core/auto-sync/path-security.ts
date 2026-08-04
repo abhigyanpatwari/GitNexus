@@ -4,6 +4,16 @@ import path from 'node:path';
 import { getGlobalDir } from '../../storage/repo-manager.js';
 import { getAutoSyncWatchDir } from './state.js';
 
+const WINDOWS_DANGEROUS_ROOTS =
+  process.platform === 'win32'
+    ? [
+        process.env.SystemRoot,
+        process.env.ProgramData,
+        process.env.ProgramFiles,
+        process.env['ProgramFiles(x86)'],
+      ].filter((entry): entry is string => Boolean(entry))
+    : [];
+
 const DANGEROUS_ROOTS = new Set(
   [
     '/',
@@ -25,6 +35,7 @@ const DANGEROUS_ROOTS = new Set(
     '/tmp',
     '/usr',
     '/var',
+    ...WINDOWS_DANGEROUS_ROOTS,
   ].map((entry) => path.resolve(entry)),
 );
 
@@ -47,6 +58,7 @@ const DANGEROUS_PARENT_ROOTS = new Set(
     '/tmp',
     '/usr',
     '/var',
+    ...WINDOWS_DANGEROUS_ROOTS,
   ].map((entry) => path.resolve(entry)),
 );
 
@@ -72,10 +84,12 @@ export async function resolveConfiguredCloneRoot(localPath: string): Promise<Aut
   );
   assertNotDangerousRoot(realRoot);
   assertNotGitNexusInternalRoot(realRoot);
+  const quarantineRoot = path.join(getAutoSyncWatchDir(), 'quarantine');
+  await removeExpiredQuarantineEntries(quarantineRoot);
 
   return {
     root: realRoot,
-    quarantineRoot: path.join(getAutoSyncWatchDir(), 'quarantine'),
+    quarantineRoot,
     quarantineRetentionDays: QUARANTINE_RETENTION_DAYS,
   };
 }
@@ -102,7 +116,13 @@ export async function quarantineAutoSyncPartial(
   const base = path.basename(targetDir);
   const stamp = new Date().toISOString().replace(/[:.]/g, '-');
   const destination = path.join(quarantineRoot, `auto-sync-${stamp}-${process.pid}-${base}`);
-  await fs.rename(targetDir, destination);
+  try {
+    await fs.rename(targetDir, destination);
+  } catch (err: unknown) {
+    if ((err as NodeJS.ErrnoException).code !== 'EXDEV') throw err;
+    await fs.cp(targetDir, destination, { recursive: true });
+    await fs.rm(targetDir, { recursive: true, force: true });
+  }
   await fs.writeFile(
     `${destination}.README.txt`,
     [
@@ -118,7 +138,30 @@ export async function quarantineAutoSyncPartial(
   return destination;
 }
 
+async function removeExpiredQuarantineEntries(quarantineRoot: string): Promise<void> {
+  const cutoff = Date.now() - QUARANTINE_RETENTION_DAYS * 24 * 60 * 60 * 1_000;
+  let entries;
+  try {
+    entries = await fs.readdir(quarantineRoot);
+  } catch (err: unknown) {
+    if ((err as NodeJS.ErrnoException).code === 'ENOENT') return;
+    throw err;
+  }
+  await Promise.all(
+    entries
+      .filter((entry) => entry.startsWith('auto-sync-'))
+      .map(async (entry) => {
+        const entryPath = path.join(quarantineRoot, entry);
+        const stat = await fs.stat(entryPath).catch(() => undefined);
+        if (stat && stat.mtimeMs < cutoff) {
+          await fs.rm(entryPath, { recursive: true, force: true });
+        }
+      }),
+  );
+}
+
 function assertNotDangerousRoot(root: string): void {
+  if (root === path.resolve(getGlobalDir(), 'repos')) return;
   if (DANGEROUS_ROOTS.has(root)) throw new Error(`Refusing unsafe auto-sync clone root: ${root}`);
   for (const dangerousRoot of DANGEROUS_PARENT_ROOTS) {
     const rel = path.relative(dangerousRoot, root);
@@ -167,14 +210,20 @@ async function assertNoSymlinkPath(root: string): Promise<void> {
 export async function assertDirectoryOwnerAndPermissions(root: string): Promise<void> {
   const stat = await fs.stat(root);
   if (!stat.isDirectory()) throw new Error(`auto-sync clone root is not a directory: ${root}`);
+  if (process.platform === 'win32') {
+    throw new Error('auto-sync clone root ownership/ACL verification is not supported on Windows');
+  }
   if (typeof process.getuid === 'function' && stat.uid !== process.getuid()) {
     throw new Error(`auto-sync clone root is owned by uid ${stat.uid}, not current process uid`);
   }
   const mode = stat.mode & 0o777;
+  const groupWritable = (mode & 0o020) !== 0;
   const worldWritable = (mode & 0o002) !== 0;
-  const sticky = (stat.mode & 0o1000) !== 0;
-  if (worldWritable && !sticky) {
-    throw new Error(`Refusing world-writable auto-sync clone root without sticky bit: ${root}`);
+  if (worldWritable) {
+    throw new Error(`Refusing world-writable auto-sync clone root: ${root}`);
+  }
+  if (groupWritable) {
+    throw new Error(`Refusing group-writable auto-sync clone root: ${root}`);
   }
 }
 

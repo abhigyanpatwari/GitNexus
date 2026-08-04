@@ -3,6 +3,52 @@ import { describe, expect, it, vi } from 'vitest';
 import { createAutoSyncAnalysisRunner } from '../../src/core/auto-sync/analysis-worker-launch.js';
 
 describe('auto-sync analysis worker', () => {
+  it('ignores progress and resolves from the terminal complete message', async () => {
+    const child = Object.assign(new EventEmitter(), {
+      send: vi.fn(),
+      kill: vi.fn(),
+      stdout: { resume: vi.fn() },
+      stderr: { resume: vi.fn() },
+    });
+    const run = createAutoSyncAnalysisRunner({ forkWorker: vi.fn(() => child as any) });
+
+    const result = run('/tmp/repo', { branch: 'main' }, 50);
+    child.emit('message', { type: 'progress', phase: 'parsing', progress: 20 });
+    child.emit('message', { type: 'complete', result: { stats: { files: 3 } } });
+    child.emit('exit', 0, null);
+
+    await expect(result).resolves.toEqual({ stats: { files: 3 } });
+    expect(child.stdout.resume).toHaveBeenCalled();
+    expect(child.stderr.resume).toHaveBeenCalled();
+  });
+
+  it('rejects immediately when the worker emits an error without exiting', async () => {
+    const child = Object.assign(new EventEmitter(), {
+      send: vi.fn(),
+      kill: vi.fn(),
+    });
+    const run = createAutoSyncAnalysisRunner({ forkWorker: vi.fn(() => child as any) });
+
+    const result = run('/tmp/repo', { branch: 'main' }, 50);
+    child.emit('error', new Error('spawn failed'));
+
+    await expect(result).rejects.toThrow('Auto-sync analyze worker error: spawn failed');
+  });
+
+  it('preserves a worker error after progress messages', async () => {
+    const child = Object.assign(new EventEmitter(), {
+      send: vi.fn(),
+      kill: vi.fn(),
+    });
+    const run = createAutoSyncAnalysisRunner({ forkWorker: vi.fn(() => child as any) });
+
+    const result = run('/tmp/repo', { branch: 'main' }, 50);
+    child.emit('message', { type: 'progress', phase: 'parsing', progress: 20 });
+    child.emit('message', { type: 'error', message: 'parser crashed' });
+    child.emit('exit', 1, null);
+
+    await expect(result).rejects.toThrow('parser crashed');
+  });
   it('waits for timed-out worker exit before releasing the scheduled run', async () => {
     const child = Object.assign(new EventEmitter(), {
       send: vi.fn(),

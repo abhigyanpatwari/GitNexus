@@ -16,7 +16,10 @@ export type AutoSyncAnalysisRunner = (
   signal?: AbortSignal,
 ) => Promise<Pick<AnalyzeResult, 'stats'>>;
 
-interface AnalysisWorker extends Pick<ChildProcess, 'send' | 'kill' | 'on'> {}
+interface AnalysisWorker extends Pick<ChildProcess, 'send' | 'kill' | 'on'> {
+  stdout?: Pick<NodeJS.ReadableStream, 'resume'> | null;
+  stderr?: Pick<NodeJS.ReadableStream, 'resume'> | null;
+}
 
 export interface AutoSyncAnalysisLaunchDeps {
   forkWorker: (workerPath: string, execArgv: string[]) => AnalysisWorker;
@@ -59,61 +62,73 @@ export function createAutoSyncAnalysisRunner(
         ? ['--import', pathToFileURL(_require.resolve('tsx/esm')).href, '--max-old-space-size=8192']
         : ['--max-old-space-size=8192'];
       const child = deps.forkWorker(workerPath, execArgv);
-      let outcome: WorkerMessage | undefined;
-      let timedOut = false;
-      let cancelled = false;
+      child.stdout?.resume();
+      child.stderr?.resume();
+
+      let terminalOutcome: WorkerMessage | undefined;
       let terminationGrace: ReturnType<typeof setTimeout> | undefined;
-      const timeout = deps.setTimeoutFn(() => {
-        timedOut = true;
-        child.kill('SIGTERM');
-        terminationGrace = deps.setTimeoutFn(() => child.kill('SIGKILL'), TERMINATION_GRACE_MS);
-      }, timeoutMs);
-      const onAbort = () => {
-        cancelled = true;
+      let settled = false;
+      const cleanup = () => {
         deps.clearTimeoutFn(timeout);
         if (terminationGrace) deps.clearTimeoutFn(terminationGrace);
+        signal?.removeEventListener('abort', onAbort);
+      };
+      const settle = (error?: Error, result?: Pick<AnalyzeResult, 'stats'>) => {
+        if (settled) return;
+        settled = true;
+        cleanup();
+        if (error) reject(error);
+        else resolve(result!);
+      };
+      const timeout = deps.setTimeoutFn(() => {
+        child.kill('SIGTERM');
+        terminationGrace = deps.setTimeoutFn(() => {
+          child.kill('SIGKILL');
+          settle(new Error(`Analysis timed out after ${timeoutMs}ms.`));
+        }, TERMINATION_GRACE_MS);
+      }, timeoutMs);
+      const onAbort = () => {
         child.kill('SIGKILL');
+        settle(new Error('Analysis cancelled.'));
       };
       signal?.addEventListener('abort', onAbort, { once: true });
 
       child.on('message', (message: WorkerMessage) => {
-        if (message.type !== 'progress') outcome ??= message;
-        else outcome = message;
+        if (message.type !== 'progress') terminalOutcome ??= message;
       });
       child.on('error', (error) => {
-        outcome = { type: 'error', message: `Auto-sync analyze worker error: ${error.message}` };
+        settle(new Error(`Auto-sync analyze worker error: ${error.message}`));
       });
       child.on('exit', (code, childSignal) => {
-        deps.clearTimeoutFn(timeout);
-        if (terminationGrace) deps.clearTimeoutFn(terminationGrace);
-        signal?.removeEventListener('abort', onAbort);
-        if (cancelled) {
-          reject(new Error('Analysis cancelled.'));
-          return;
-        }
-        if (timedOut) {
-          reject(
+        if (settled) return;
+        if (terminationGrace) {
+          settle(
             new Error(
               `Analysis timed out after ${timeoutMs}ms and worker exited (${childSignal ?? code ?? 'unknown'}).`,
             ),
           );
           return;
         }
-        if (outcome?.type === 'complete') {
-          resolve({ stats: outcome.result.stats });
+        if (terminalOutcome?.type === 'complete') {
+          settle(undefined, { stats: terminalOutcome.result.stats });
           return;
         }
-        if (outcome?.type === 'error') {
-          reject(new Error(outcome.message));
+        if (terminalOutcome?.type === 'error') {
+          settle(new Error(terminalOutcome.message));
           return;
         }
-        reject(
+        settle(
           new Error(
-            `Auto-sync analyze worker exited before completion (${signal ?? code ?? 'unknown'}).`,
+            `Auto-sync analyze worker exited before completion (${childSignal ?? code ?? 'unknown'}).`,
           ),
         );
       });
-      child.send({ type: 'start', repoPath, options });
+      try {
+        child.send({ type: 'start', repoPath, options });
+      } catch (error) {
+        child.kill('SIGKILL');
+        settle(new Error(`Failed to start auto-sync analyze worker: ${(error as Error).message}`));
+      }
     });
 }
 

@@ -434,6 +434,7 @@ gitnexus watch start              # `gitnexus watch` is equivalent
 gitnexus watch status
 gitnexus watch restart            # Required after config changes
 gitnexus watch stop
+gitnexus watch reset             # Clear failure state; leaves clones and indexes intact
 ```
 
 `GITNEXUS_HOME` defaults to `~/.gitnexus`. A minimal configuration:
@@ -449,11 +450,11 @@ projects:
       - git@github.com:owner/repo.git
 ```
 
-- `sync_interval_minutes` must be at least `5`; `local_path` must be an absolute path.
+- `sync_interval_minutes` must be at least `5`; `local_path` must be an absolute path. Clones are stored below it as `host/namespace/repo`.
 - Remote URLs must use SSH SCP form and are limited to GitHub, GitLab, or Gitee.
 - `branches` are tried in order. The legacy `branch` field is supported, but do not set both.
-- Analysis runs in an isolated worker; `analyze_timeout` defaults to, and cannot exceed, half of `sync_interval_minutes`. `overwrite_local_changes` defaults to `false`, so a dirty local clone is skipped rather than overwritten. Stopping watch cancels an active analysis immediately.
-- Add `group_name` only after creating that group with `gitnexus group create <name>`.
+- Analysis runs in an isolated worker; `analyze_timeout` defaults to, and cannot exceed, half of `sync_interval_minutes`. Timed-out workers are terminated before scheduling resumes. `overwrite_local_changes` defaults to `false`, so a dirty local clone is skipped rather than overwritten. Stopping watch cancels an active analysis immediately.
+- Add `group_name` only after creating that group with `gitnexus group create <name>`. Partial clone output is isolated and removed after 14 days.
 
 See the [full watch configuration and runtime reference](gitnexus/README.md#gitnexus-watch) for concurrency, timeouts, failure thresholds, and runtime files.
 

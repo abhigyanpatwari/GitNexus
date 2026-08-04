@@ -1,5 +1,6 @@
 import { spawnSync } from 'node:child_process';
 import fs from 'node:fs';
+import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { Command, Option } from 'commander';
@@ -251,14 +252,14 @@ describe('CLI help surface', () => {
 
     expect(result.status).toBe(0);
     expect(result.stdout).toContain('gitnexus watch [options] [action]');
-    expect(result.stdout).toContain('Actions: init, start (default), restart, stop, status');
+    expect(result.stdout).toContain('Actions: init, start (default), restart, stop, status, reset');
     expect(result.stdout).toContain('GITNEXUS_HOME/watch_config.yml');
     expect(result.stdout).toContain('GITNEXUS_HOME/watch/watch.pid');
     expect(result.stdout).toContain('GITNEXUS_HOME/watch/project_commit_info.txt');
   });
 
   it('watch init creates the default watch_config.yml and does not overwrite it', () => {
-    const home = fs.mkdtempSync(path.join(repoRoot, '.tmp-test/gitnexus-watch-init-'));
+    const home = fs.mkdtempSync(path.join(os.tmpdir(), 'gitnexus-watch-init-'));
     try {
       const first = runCliArgs(['watch', 'init'], { GITNEXUS_HOME: home });
       const configPath = path.join(home, 'watch_config.yml');
@@ -270,15 +271,62 @@ describe('CLI help surface', () => {
       expect(config).toContain('analyze_failure_threshold: 3');
       expect(config).toContain('analyze_timeout: 5m');
       expect(config).toContain('overwrite_local_changes: false');
-      expect(config).toContain(`local_path: ${path.join(home, 'repo')}`);
+      expect(config).toContain(`local_path: ${path.join(home, 'repos')}`);
       expect(config).not.toContain('/abs/path/to/repos');
       expect(config).toContain('git@github.com:owner/repo.git');
+      expect(config).not.toContain('group_name:');
 
       const second = runCliArgs(['watch', 'init'], { GITNEXUS_HOME: home });
 
       expect(second.status).toBe(1);
       expect(second.stderr).toContain(`Config already exists: ${configPath}`);
       expect(fs.readFileSync(configPath, 'utf8')).toBe(config);
+    } finally {
+      fs.rmSync(home, { recursive: true, force: true });
+    }
+  });
+
+  it('watch reset removes only derived auto-sync state files', () => {
+    const home = fs.mkdtempSync(path.join(os.tmpdir(), 'gitnexus-watch-reset-'));
+    const watchDir = path.join(home, 'watch');
+    const cloneMarker = path.join(home, 'repos', 'repo', 'keep.txt');
+    try {
+      fs.mkdirSync(path.dirname(cloneMarker), { recursive: true });
+      fs.writeFileSync(cloneMarker, 'keep');
+      fs.mkdirSync(watchDir, { recursive: true });
+      fs.writeFileSync(path.join(watchDir, 'auto-sync-state.json'), '{}');
+      fs.writeFileSync(path.join(watchDir, 'project_commit_info.txt'), 'derived');
+
+      const result = runCliArgs(['watch', 'reset'], { GITNEXUS_HOME: home });
+
+      expect(result.status).toBe(0);
+      expect(result.stdout).toContain('Reset analysis state');
+      expect(fs.existsSync(path.join(watchDir, 'auto-sync-state.json'))).toBe(false);
+      expect(fs.existsSync(path.join(watchDir, 'project_commit_info.txt'))).toBe(false);
+      expect(fs.readFileSync(cloneMarker, 'utf8')).toBe('keep');
+    } finally {
+      fs.rmSync(home, { recursive: true, force: true });
+    }
+  });
+
+  it('watch stop exits non-zero when no watch was stopped', () => {
+    const home = fs.mkdtempSync(path.join(os.tmpdir(), 'gitnexus-watch-stop-'));
+    try {
+      const result = runCliArgs(['watch', 'stop'], { GITNEXUS_HOME: home });
+      expect(result.status).toBe(1);
+      expect(result.stderr).toContain('Watch is not running');
+    } finally {
+      fs.rmSync(home, { recursive: true, force: true });
+    }
+  });
+
+  it('watch restart starts when the watch is not running', () => {
+    const home = fs.mkdtempSync(path.join(os.tmpdir(), 'gitnexus-watch-restart-'));
+    try {
+      const result = runCliArgs(['watch', 'restart'], { GITNEXUS_HOME: home });
+      expect(result.status).toBe(1);
+      expect(result.stderr).toContain('Watch is not running');
+      expect(result.stderr).toContain('Missing config file');
     } finally {
       fs.rmSync(home, { recursive: true, force: true });
     }

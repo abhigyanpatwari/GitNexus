@@ -120,6 +120,8 @@ export function parseAutoSyncConfig(content: string, configPath: string): AutoSy
       : parseDurationMs(raw.repo_git_timeout);
   if (!Number.isInteger(repoGitTimeoutMs) || repoGitTimeoutMs <= 0) {
     errors.push('repo_git_timeout must be a positive duration such as 10s');
+  } else if (repoGitTimeoutMs > MAX_TIMER_DELAY_MS) {
+    errors.push(`repo_git_timeout must not exceed ${MAX_TIMER_DELAY_MS}ms`);
   }
 
   const maxAnalyzeTimeoutMs =

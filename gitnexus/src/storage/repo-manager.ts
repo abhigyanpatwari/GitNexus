@@ -21,6 +21,7 @@ import os from 'os';
 import { randomBytes } from 'crypto';
 import { getInferredRepoName, resolveRepoIdentityRoot } from './git.js';
 import { retryRename } from './fs-atomic.js';
+import { acquireFileLock } from './file-lock.js';
 import { logger } from '../core/logger.js';
 import {
   branchSlug,
@@ -947,9 +948,25 @@ const writeRegistry = async (entries: RegistryEntry[]): Promise<void> => {
   // truncated/half-written registry.json that the next load would treat as
   // empty and silently drop every registered repo (#2106 R9).
   const target = getGlobalRegistryPath();
-  const tmp = `${target}.tmp`;
-  await fs.writeFile(tmp, JSON.stringify(entries, null, 2), 'utf-8');
-  await fs.rename(tmp, target);
+  const tmp = `${target}.${process.pid}.${randomBytes(8).toString('hex')}.tmp`;
+  try {
+    await fs.writeFile(tmp, JSON.stringify(entries, null, 2), 'utf-8');
+    await fs.rename(tmp, target);
+  } finally {
+    await fs.unlink(tmp).catch(() => {});
+  }
+};
+
+const withRegistryLock = async <T>(operation: () => Promise<T>): Promise<T> => {
+  const release = await acquireFileLock(`${getGlobalRegistryPath()}.lock`, {
+    retries: 400,
+    retryDelayMs: 25,
+  });
+  try {
+    return await operation();
+  } finally {
+    await release();
+  }
 };
 
 /**
@@ -1070,7 +1087,7 @@ const hasCustomAlias = (entry: RegistryEntry, inferredName: string | null): bool
  * caller can re-use it to keep AGENTS.md / skill files aligned with the
  * MCP-visible repo name (#979).
  */
-export const registerRepo = async (
+const registerRepoUnlocked = async (
   repoPath: string,
   meta: RepoMeta,
   opts?: RegisterRepoOptions,
@@ -1237,21 +1254,28 @@ export const registerRepo = async (
   return name;
 };
 
+export const registerRepo = async (
+  repoPath: string,
+  meta: RepoMeta,
+  opts?: RegisterRepoOptions,
+): Promise<string> => withRegistryLock(() => registerRepoUnlocked(repoPath, meta, opts));
+
 /**
  * Remove a repo from the global registry.
  * Called after `gitnexus clean`.
  */
-export const unregisterRepo = async (repoPath: string): Promise<void> => {
-  // Canonicalise BOTH sides so an unregister call issued with the
-  // symlink form (`/var/folders/.../repo`) still matches an entry
-  // written with the realpath form (`/private/var/folders/.../repo`),
-  // and vice versa. Matches the semantics of `registerRepo` and
-  // `resolveRegistryEntry` post-#1003 review.
-  const resolved = canonicalizePath(repoPath);
-  const entries = await readRegistry();
-  const filtered = entries.filter((e) => !registryPathEquals(canonicalizePath(e.path), resolved));
-  await writeRegistry(filtered);
-};
+export const unregisterRepo = async (repoPath: string): Promise<void> =>
+  withRegistryLock(async () => {
+    // Canonicalise BOTH sides so an unregister call issued with the
+    // symlink form (`/var/folders/.../repo`) still matches an entry
+    // written with the realpath form (`/private/var/folders/.../repo`),
+    // and vice versa. Matches the semantics of `registerRepo` and
+    // `resolveRegistryEntry` post-#1003 review.
+    const resolved = canonicalizePath(repoPath);
+    const entries = await readRegistry();
+    const filtered = entries.filter((e) => !registryPathEquals(canonicalizePath(e.path), resolved));
+    await writeRegistry(filtered);
+  });
 
 /**
  * Remove a single non-primary branch's summary from a repo's registry entry
@@ -1261,22 +1285,23 @@ export const unregisterRepo = async (repoPath: string): Promise<void> => {
  * primary entry is left intact; an empty `branches[]` is dropped to keep the
  * registry shape legacy-clean.
  */
-export const removeBranchIndex = async (repoPath: string, branch: string): Promise<boolean> => {
-  const resolved = canonicalizePath(repoPath);
-  const entries = await readRegistry();
-  const idx = entries.findIndex((e) => registryPathEquals(canonicalizePath(e.path), resolved));
-  if (idx < 0) return false;
-  const entry = entries[idx];
-  const before = entry.branches?.length ?? 0;
-  if (!entry.branches || before === 0) return false;
-  const remaining = entry.branches.filter((b) => b.branch !== branch);
-  if (remaining.length === before) return false; // branch not recorded
-  if (remaining.length > 0) entry.branches = remaining;
-  else delete entry.branches;
-  entries[idx] = entry;
-  await writeRegistry(entries);
-  return true;
-};
+export const removeBranchIndex = async (repoPath: string, branch: string): Promise<boolean> =>
+  withRegistryLock(async () => {
+    const resolved = canonicalizePath(repoPath);
+    const entries = await readRegistry();
+    const idx = entries.findIndex((e) => registryPathEquals(canonicalizePath(e.path), resolved));
+    if (idx < 0) return false;
+    const entry = entries[idx];
+    const before = entry.branches?.length ?? 0;
+    if (!entry.branches || before === 0) return false;
+    const remaining = entry.branches.filter((b) => b.branch !== branch);
+    if (remaining.length === before) return false; // branch not recorded
+    if (remaining.length > 0) entry.branches = remaining;
+    else delete entry.branches;
+    entries[idx] = entry;
+    await writeRegistry(entries);
+    return true;
+  });
 
 /**
  * Record that the flat workspace slot now serves `branch` (#2354).
@@ -1348,18 +1373,20 @@ export const adoptFlatBranchLabel = async (repoPath: string, branch: string): Pr
   // multi-writer whole-file overwrite, and writing a pre-rm snapshot would
   // silently clobber concurrent registerRepo/removeBranchIndex writers —
   // the #2106 R9 re-read-before-write discipline registerRepo follows.
-  const entries = await readRegistry();
-  const idx = isRegistered(entries);
-  if (idx < 0) return; // unregistered concurrently → still a no-op
-  const entry = entries[idx];
-  const remaining = dirGone ? entry.branches?.filter((b) => b.branch !== branch) : entry.branches;
-  const droppedSummary = (entry.branches?.length ?? 0) !== (remaining?.length ?? 0);
-  if (entry.branch === branch && !droppedSummary) return; // already coherent
-  entry.branch = branch;
-  if (remaining && remaining.length > 0) entry.branches = remaining;
-  else delete entry.branches;
-  entries[idx] = entry;
-  await writeRegistry(entries);
+  await withRegistryLock(async () => {
+    const entries = await readRegistry();
+    const idx = isRegistered(entries);
+    if (idx < 0) return; // unregistered concurrently → still a no-op
+    const entry = entries[idx];
+    const remaining = dirGone ? entry.branches?.filter((b) => b.branch !== branch) : entry.branches;
+    const droppedSummary = (entry.branches?.length ?? 0) !== (remaining?.length ?? 0);
+    if (entry.branch === branch && !droppedSummary) return; // already coherent
+    entry.branch = branch;
+    if (remaining && remaining.length > 0) entry.branches = remaining;
+    else delete entry.branches;
+    entries[idx] = entry;
+    await writeRegistry(entries);
+  });
 };
 
 /**
@@ -1651,6 +1678,7 @@ export const listRegisteredRepos = async (opts?: {
 
   // Validate each entry still has a .gitnexus/ directory with metadata
   const valid: RegistryEntry[] = [];
+  const prunedPaths: string[] = [];
   for (const entry of entries) {
     // Named to avoid shadowing the exported `hasIndex` function above.
     let indexFound = false;
@@ -1681,6 +1709,7 @@ export const listRegisteredRepos = async (opts?: {
       valid.push(entry);
     } else if (!firstNonMissingError && lastMissingError) {
       // Index genuinely removed — safe to prune
+      prunedPaths.push(canonicalizePath(entry.path));
     } else {
       // Not provably absent — keep entry to prevent mass registry wipe.
       // Warn so an I/O storm becomes observable instead of silently
@@ -1693,9 +1722,17 @@ export const listRegisteredRepos = async (opts?: {
     }
   }
 
-  // If we pruned any entries, save the cleaned registry
-  if (valid.length !== entries.length) {
-    await writeRegistry(valid);
+  // Re-apply only the confirmed removals to a fresh snapshot while holding
+  // the registry lock; concurrent registrations must survive validation cleanup.
+  if (prunedPaths.length > 0) {
+    await withRegistryLock(async () => {
+      const fresh = await readRegistry();
+      const cleaned = fresh.filter(
+        (entry) =>
+          !prunedPaths.some((pruned) => registryPathEquals(canonicalizePath(entry.path), pruned)),
+      );
+      if (cleaned.length !== fresh.length) await writeRegistry(cleaned);
+    });
   }
 
   return valid;

@@ -128,7 +128,6 @@ local_docs/
 !.agents/plugins/marketplace.json
 .context/
 gitnexus/web/
-/log/
 
 # Machine-local skill-evolution evidence (consumed by eval/workflow_bench/evolve.py)
 eval/workflow_bench/learnings.jsonl

@@ -1,14 +1,12 @@
 import fs from 'node:fs/promises';
 import path from 'node:path';
-import yaml from 'js-yaml';
+import { createRequire } from 'node:module';
 import { loadGroupConfig } from '../group/config-parser.js';
 import { getDefaultGitnexusDir, getGroupDir } from '../group/storage.js';
 import { syncGroup } from '../group/sync.js';
-import { runFullAnalysis } from '../run-analyze.js';
-import { getCurrentBranch, getCurrentCommit } from '../../storage/git.js';
 import { registerRepo, type RepoMeta } from '../../storage/repo-manager.js';
 import { extractRepoNameFromRemoteUrl } from './repo.js';
-import { cloneOrPull } from '../../server/git-clone.js';
+import { cloneOrPull, runGit } from '../../server/git-clone.js';
 import { resolveConfiguredCloneRoot } from './path-security.js';
 import {
   buildStateKey,
@@ -32,9 +30,8 @@ export interface AutoSyncLogger {
 
 export interface AutoSyncRunDeps {
   cloneOrPull: typeof cloneOrPull;
-  getCurrentBranch: typeof getCurrentBranch;
-  getCurrentCommit: typeof getCurrentCommit;
-  runFullAnalysis?: typeof runFullAnalysis;
+  getCurrentBranch: (repoPath: string, timeoutMs: number) => Promise<string | undefined>;
+  getCurrentCommit: (repoPath: string, timeoutMs: number) => Promise<string>;
   runAnalysis: AutoSyncAnalysisRunner;
   registerRepo: typeof registerRepo;
   loadState: typeof loadAutoSyncState;
@@ -53,6 +50,9 @@ export interface AutoSyncRunResult {
   failed: number;
 }
 
+const _require = createRequire(import.meta.url);
+const yaml = _require('js-yaml') as typeof import('js-yaml');
+
 const DEFAULT_LOGGER: AutoSyncLogger = {
   info: (message) => process.stderr.write(`${message}\n`),
   warn: (message) => process.stderr.write(`${message}\n`),
@@ -61,8 +61,12 @@ const DEFAULT_LOGGER: AutoSyncLogger = {
 
 const DEFAULT_DEPS: AutoSyncRunDeps = {
   cloneOrPull,
-  getCurrentBranch,
-  getCurrentCommit,
+  getCurrentBranch: async (repoPath, timeoutMs) => {
+    const branch = (await runGit(['branch', '--show-current'], repoPath, { timeoutMs })).trim();
+    return branch || undefined;
+  },
+  getCurrentCommit: async (repoPath, timeoutMs) =>
+    (await runGit(['rev-parse', 'HEAD'], repoPath, { timeoutMs })).trim(),
   runAnalysis: runAutoSyncAnalysis,
   registerRepo,
   loadState: loadAutoSyncState,
@@ -109,9 +113,11 @@ export async function runAutoSyncOnce(
       const lastSyncTime = now().toISOString();
       try {
         throwIfAborted(options.signal);
-        validateAutoSyncRemoteUrl(item.remoteUrl);
-        const repoName = extractRepoNameFromRemoteUrl(item.remoteUrl);
-        const targetDir = getConfiguredRepoPath({ localPath: item.cloneRoot.root }, repoName);
+        if (!item.cloneRoot || !item.repoName || !item.targetDir) {
+          throw new Error(item.error ?? 'Invalid auto-sync work item');
+        }
+        const repoName = item.repoName;
+        const targetDir = item.targetDir;
         const syncResult = await syncFirstAvailableBranch({
           item,
           repoName,
@@ -139,7 +145,7 @@ export async function runAutoSyncOnce(
 
         const currentBranch = syncResult.branch;
 
-        const currentCommit = deps.getCurrentCommit(targetDir);
+        const currentCommit = await deps.getCurrentCommit(targetDir, config.repoGitTimeoutMs);
         const stateKey = buildStateKey(targetDir, currentBranch);
         const previous = state[stateKey];
         let analyzeStatus: AutoSyncAnalyzeStatus = 'skipped';
@@ -166,18 +172,12 @@ export async function runAutoSyncOnce(
           })
         ) {
           try {
-            const analysis = deps.runFullAnalysis
-              ? await deps.runFullAnalysis(
-                  targetDir,
-                  { branch: currentBranch, skipAgentsMd: true, skipSkills: true },
-                  { onProgress: () => {} },
-                )
-              : await deps.runAnalysis(
-                  targetDir,
-                  { branch: currentBranch, skipAgentsMd: true, skipSkills: true },
-                  config.analyzeTimeoutMs,
-                  options.signal,
-                );
+            const analysis = await deps.runAnalysis(
+              targetDir,
+              { branch: currentBranch, skipAgentsMd: true, skipSkills: true },
+              config.analyzeTimeoutMs,
+              options.signal,
+            );
             throwIfAborted(options.signal);
             stats = analysis.stats;
             analyzeStatus = 'success';
@@ -245,16 +245,11 @@ export async function runAutoSyncOnce(
     }
 
     result.synced += 1;
-    const stateEntry: AutoSyncCommitStateEntry = {
-      codeCommitId: repoResult.currentCommit,
-      analyzedCommitId: repoResult.analyzedCommitId,
-      lastAnalyzeStatus: repoResult.analyzeStatus,
-      analyzeConsecutiveFailures: repoResult.analyzeConsecutiveFailures,
-      lastAnalyzeError: repoResult.lastAnalyzeError,
-      lastSyncTime: repoResult.lastSyncTime,
-    };
-    state[repoResult.stateKey] = stateEntry;
-    if (repoResult.analyzeStatus === 'success') {
+    let analyzeStatus = repoResult.analyzeStatus;
+    let analyzeConsecutiveFailures = repoResult.analyzeConsecutiveFailures;
+    let lastAnalyzeError = repoResult.lastAnalyzeError;
+    let analyzedCommitId = repoResult.analyzedCommitId;
+    if (analyzeStatus === 'success') {
       const meta: RepoMeta = {
         repoPath: repoResult.targetDir,
         lastCommit: repoResult.currentCommit,
@@ -262,28 +257,45 @@ export async function runAutoSyncOnce(
         stats: repoResult.stats!,
         branch: repoResult.branch,
       };
-      await deps.registerRepo(repoResult.targetDir, meta, {
-        name: getAutoSyncRepoIdentity(repoResult.remoteUrl),
-      });
-      result.analyzed += 1;
-    } else if (repoResult.analyzeStatus === 'failed') {
+      try {
+        await deps.registerRepo(repoResult.targetDir, meta, {
+          name: getAutoSyncRepoIdentity(repoResult.remoteUrl),
+        });
+        result.analyzed += 1;
+      } catch (err: unknown) {
+        analyzeStatus = 'failed';
+        analyzedCommitId = undefined;
+        analyzeConsecutiveFailures += 1;
+        lastAnalyzeError = `Repository registration failed: ${shortErrorMessage(err)}`;
+        result.failed += 1;
+        logger.error(`[auto-sync] ${lastAnalyzeError}`);
+      }
+    } else if (analyzeStatus === 'failed') {
       result.failed += 1;
-    } else if (repoResult.analyzeStatus === 'threshold_skipped') {
-      result.skippedAnalysis += 1;
     } else {
       result.skippedAnalysis += 1;
     }
+
+    const stateEntry: AutoSyncCommitStateEntry = {
+      codeCommitId: repoResult.currentCommit,
+      analyzedCommitId,
+      lastAnalyzeStatus: analyzeStatus,
+      analyzeConsecutiveFailures,
+      lastAnalyzeError,
+      lastSyncTime: repoResult.lastSyncTime,
+    };
+    state[repoResult.stateKey] = stateEntry;
 
     commitInfoEntries.push({
       remoteUrl: repoResult.remoteUrl,
       localPath: repoResult.targetDir,
       branch: repoResult.branch,
       codeCommitId: repoResult.currentCommit,
-      analyzedCommitId: repoResult.analyzedCommitId,
-      status: repoResult.analyzeStatus,
-      analyzeConsecutiveFailures: repoResult.analyzeConsecutiveFailures,
+      analyzedCommitId,
+      status: analyzeStatus,
+      analyzeConsecutiveFailures,
       analyzeFailureThreshold: config.analyzeFailureThreshold,
-      lastAnalyzeError: repoResult.lastAnalyzeError,
+      lastAnalyzeError,
       lastSyncTime: repoResult.lastSyncTime,
     });
 
@@ -302,7 +314,7 @@ export async function runAutoSyncOnce(
           `[auto-sync] Group update failed for ${repoResult.project.groupName}: ${(err as Error).message}`,
         );
       }
-      if (groupMembershipOk && repoResult.analyzeStatus === 'success') {
+      if (groupMembershipOk && analyzeStatus === 'success') {
         groupsToSync.add(repoResult.project.groupName);
       }
     }
@@ -329,8 +341,11 @@ function shortErrorMessage(err: unknown): string {
 export function getConfiguredRepoPath(
   project: Pick<AutoSyncProjectConfig, 'localPath'>,
   repoName: string,
+  remoteUrl?: string,
 ): string {
-  return path.resolve(project.localPath, repoName);
+  if (!remoteUrl) return path.resolve(project.localPath, repoName);
+  const identity = getAutoSyncRepoIdentity(remoteUrl);
+  return path.resolve(project.localPath, ...identity.split('/').slice(0, -1), repoName);
 }
 
 export async function addRepoToGroup(
@@ -380,11 +395,19 @@ async function buildWorkItems(
   const items: AutoSyncWorkItem[] = [];
   const targetOwners = new Map<string, string>();
   for (const project of config.projects) {
-    const cloneRoot = await deps.resolveCloneRoot(project.localPath);
+    let cloneRoot: AutoSyncWorkItem['cloneRoot'];
+    try {
+      cloneRoot = await deps.resolveCloneRoot(project.localPath);
+    } catch (err: unknown) {
+      for (const remoteUrl of project.remoteUrls) {
+        items.push({ project, remoteUrl, error: shortErrorMessage(err) });
+      }
+      continue;
+    }
     for (const remoteUrl of project.remoteUrls) {
       try {
         const repoName = extractRepoNameFromRemoteUrl(remoteUrl);
-        const targetDir = getConfiguredRepoPath({ localPath: cloneRoot.root }, repoName);
+        const targetDir = getConfiguredRepoPath({ localPath: cloneRoot.root }, repoName, remoteUrl);
         const previous = targetOwners.get(targetDir);
         if (previous !== undefined) {
           throw new Error(
@@ -392,10 +415,10 @@ async function buildWorkItems(
           );
         }
         targetOwners.set(targetDir, remoteUrl);
+        items.push({ project, remoteUrl, cloneRoot, repoName, targetDir });
       } catch (err: unknown) {
-        if ((err as Error).message.startsWith('Duplicate auto-sync targetDir')) throw err;
+        items.push({ project, remoteUrl, error: shortErrorMessage(err) });
       }
-      items.push({ project, remoteUrl, cloneRoot });
     }
   }
   return items;
@@ -429,7 +452,10 @@ function throwIfAborted(signal: AbortSignal | undefined): void {
 interface AutoSyncWorkItem {
   project: AutoSyncProjectConfig;
   remoteUrl: string;
-  cloneRoot: Awaited<ReturnType<typeof resolveConfiguredCloneRoot>>;
+  cloneRoot?: Awaited<ReturnType<typeof resolveConfiguredCloneRoot>>;
+  repoName?: string;
+  targetDir?: string;
+  error?: string;
 }
 
 async function syncFirstAvailableBranch(input: {
@@ -448,15 +474,15 @@ async function syncFirstAvailableBranch(input: {
   for (const branch of input.item.project.branches) {
     try {
       await input.deps.cloneOrPull(input.item.remoteUrl, input.targetDir, undefined, {
-        allowedCloneRoot: input.item.cloneRoot.root,
+        allowedCloneRoot: input.item.cloneRoot!.root,
         expectedRepoName: input.repoName,
-        quarantineRoot: input.item.cloneRoot.quarantineRoot,
+        quarantineRoot: input.item.cloneRoot!.quarantineRoot,
         allowAutoSyncSsh: true,
         timeoutMs: input.timeoutMs,
         branch,
         overwriteLocalChanges: input.item.project.overwriteLocalChanges,
       });
-      const currentBranch = input.deps.getCurrentBranch(input.targetDir);
+      const currentBranch = await input.deps.getCurrentBranch(input.targetDir, input.timeoutMs);
       if (currentBranch === branch) return { ok: true, branch };
       failures.push(`${branch}: checked out ${currentBranch ?? '<detached>'}`);
       input.logger.warn(
