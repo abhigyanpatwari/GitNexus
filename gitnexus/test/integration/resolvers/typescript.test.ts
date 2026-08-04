@@ -3562,3 +3562,53 @@ export function alreadyWorked(svc: Service): void {
     ).toHaveLength(1);
   });
 });
+
+// ---------------------------------------------------------------------------
+// Case 3b (chain-typebinding) interface dispatch (#2832). `const r = d.repo`
+// binds `r` to the member expression `d.repo`, so the receiver is a bare name
+// with a DOTTED typeBinding rawName — Case 3b's entry condition. Case 0 cannot
+// take the site (`r` has no `.`/`(`, and no receiver chain is minted for a
+// bare identifier), and Case 4 excludes itself on the dot. The fold lands on
+// an Interface, so the implementations are reachable only via the fan-out.
+// ---------------------------------------------------------------------------
+
+describe('TypeScript chain-typed receiver folding to an interface (Case 3b, #2832)', () => {
+  let result: PipelineResult;
+
+  beforeAll(async () => {
+    result = await runPipelineFromRepo(
+      path.join(FIXTURES, 'ts-chain-interface-dispatch'),
+      () => {},
+    );
+  }, 60000);
+
+  const saveCalls = () =>
+    getRelationships(result, 'CALLS').filter((e) => e.source === 'runSave' && e.target === 'save');
+  const fanout = () => saveCalls().filter((e) => e.rel.reason === 'interface-dispatch');
+  const basename = (p: string) => p.slice(p.lastIndexOf('/') + 1);
+
+  it('emits the primary edge to the interface declaration', () => {
+    const primary = saveCalls().filter((e) => e.rel.reason !== 'interface-dispatch');
+    expect(primary.map((e) => basename(e.targetFilePath))).toEqual(['repository.ts']);
+  });
+
+  it('fans out to every implementation of the folded interface', () => {
+    expect(
+      fanout()
+        .map((e) => basename(e.targetFilePath))
+        .sort(),
+    ).toEqual(['mem-repo.ts', 'sql-repo.ts']);
+  });
+
+  it('never targets the interface declaration in the fan-out', () => {
+    expect(fanout().map((e) => basename(e.targetFilePath))).not.toContain('repository.ts');
+  });
+
+  it('emits no fan-out when the chain folds to a concrete class', () => {
+    const runCalls = getRelationships(result, 'CALLS').filter(
+      (e) => e.source === 'runCache' && e.target === 'run',
+    );
+    expect(runCalls.map((e) => e.rel.reason).filter((r) => r === 'interface-dispatch')).toEqual([]);
+    expect(runCalls.map((e) => basename(e.targetFilePath))).toEqual(['plain-cache.ts']);
+  });
+});

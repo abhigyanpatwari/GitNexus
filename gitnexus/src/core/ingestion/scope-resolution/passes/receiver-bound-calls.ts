@@ -1341,6 +1341,43 @@ export function emitReceiverBoundCalls(
               calleeCapture,
             );
             if (ok) emitted++;
+            // Interface dispatch, exactly as Cases 0 and 4 do it (#2832). Case
+            // 3b folds a chain to a receiver type through the SAME
+            // `resolveCompoundReceiverClass` call and the same MRO walk Case 0
+            // uses, so when that fold lands on an Interface the primary edge
+            // above names the interface's own bodiless DECLARATION and nothing
+            // reaches the implementations.
+            //
+            // Leaving 3b out made the fan-out a property of how the receiver
+            // was SPELLED rather than of what it resolved to: `d.repo.save()`
+            // took Case 0 and fanned out, while binding the identical field to
+            // a local first (`const r = d.repo; r.save()`) took Case 3b and
+            // did not. #2829 closed that gap for Case 0 and left this half of
+            // it open (#2832).
+            //
+            // `ownerDef` is the receiver's own folded type — matching Case 0's
+            // `currentClass` and Case 4's `ownerDef` — NOT the owner of the
+            // member the MRO walk settled on. That distinction matters: a
+            // receiver that folds to a concrete class merely INHERITING an
+            // interface method must not fan out, because its runtime type is
+            // that class. `emitInterfaceDispatchFor` self-gates on
+            // `ownerDef.type !== 'Interface'`, so this is inert for every
+            // concrete receiver and needs no language check of its own.
+            //
+            // Confidence mirrors THIS case's own primary emit above — the 0.85
+            // literal — so a site's dispatch edges never claim more certainty
+            // than the edge they hang off. Case 4 passes a site.kind-dependent
+            // value instead because ITS primary varies that way; Case 3b's
+            // primary, like Case 0's, does not, so there is no 1.0 arm here to
+            // mirror.
+            emitted += emitInterfaceDispatchFor(
+              ownerDef,
+              memberName,
+              memberDef,
+              site,
+              0.85,
+              calleeCapture,
+            );
             // Always mark handled when the site was resolved, even
             // if the edge was deduplicated (collapse mode), so
             // `emitReferencesViaLookup` doesn't re-emit from the
