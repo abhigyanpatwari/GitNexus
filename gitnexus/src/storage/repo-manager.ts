@@ -22,7 +22,6 @@ import { randomBytes } from 'crypto';
 import { getInferredRepoName, resolveRepoIdentityRoot } from './git.js';
 import { stripWindowsLongPathPrefix } from '../lib/utils.js';
 import { retryRename } from './fs-atomic.js';
-import { acquireFileLock } from './file-lock.js';
 import { logger } from '../core/logger.js';
 import type { UnresolvedReceiverSummary } from '../core/ingestion/scope-resolution/unresolved-receivers.js';
 import { acquireIndexLock, IndexLockTimeoutError, type IndexLockHandle } from './index-lock.js';
@@ -1329,18 +1328,6 @@ const writeRegistry = async (entries: RegistryEntry[]): Promise<void> => {
   }
 };
 
-const withRegistryLock = async <T>(operation: () => Promise<T>): Promise<T> => {
-  const release = await acquireFileLock(`${getGlobalRegistryPath()}.lock`, {
-    retries: 400,
-    retryDelayMs: 25,
-  });
-  try {
-    return await operation();
-  } finally {
-    await release();
-  }
-};
-
 /**
  * Options for {@link registerRepo}. All optional — callers without any
  * disambiguation requirement can keep calling `registerRepo(path, meta)`
@@ -2060,7 +2047,6 @@ export const listRegisteredRepos = async (opts?: {
 
   // Validate each entry still has a .gitnexus/ directory with metadata
   const valid: RegistryEntry[] = [];
-  const prunedPaths: string[] = [];
   for (const entry of entries) {
     // Named to avoid shadowing the exported `hasIndex` function above.
     let indexFound = false;
@@ -2091,7 +2077,6 @@ export const listRegisteredRepos = async (opts?: {
       valid.push(entry);
     } else if (!firstNonMissingError && lastMissingError) {
       // Index genuinely removed — safe to prune
-      prunedPaths.push(canonicalizePath(entry.path));
     } else {
       // Not provably absent — keep entry to prevent mass registry wipe.
       // Warn so an I/O storm becomes observable instead of silently
