@@ -133,7 +133,7 @@
       "awaitParen": "N/A",
       "explicitTypeArgs": "N/A",
       "indexElement": "INVISIBLE-GAP",
-      "fieldReceiverCall": "INVISIBLE-GAP",
+      "fieldReceiverCall": "RESOLVES",
       "decoratedReceiverBase": "N/A",
       "decoratedFieldType": "N/A"
     },
@@ -165,7 +165,7 @@
       "plainChain": "RESOLVES",
       "plainDeepChain": "RESOLVES",
       "optionalChain": "RESOLVES",
-      "nonNullAssert": "VISIBLE-GAP",
+      "nonNullAssert": "RESOLVES",
       "awaitParen": "RESOLVES",
       "explicitTypeArgs": "RESOLVES",
       "indexElement": "RESOLVES",
@@ -183,7 +183,7 @@
       "indexElement": "INVISIBLE-GAP",
       "fieldReceiverCall": "RESOLVES",
       "decoratedReceiverBase": "N/A",
-      "decoratedFieldType": "INVISIBLE-GAP"
+      "decoratedFieldType": "RESOLVES"
     },
     "dart": {
       "plainChain": "VISIBLE-GAP",
