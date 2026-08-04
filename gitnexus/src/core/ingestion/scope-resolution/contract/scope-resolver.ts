@@ -114,13 +114,16 @@
  *          languages that set `resolveThisViaEnclosingClass === true`;
  *          it intercepts every bare-`this` call/read/write site ahead of
  *          Case 4 and does NOT emit the interface-dispatch fan-out that
- *          Cases 0 and 4 both perform (Case 0 gained it in #2829), so
- *          enabling the toggle for a language changes that language's
- *          `this` dispatch semantics (see the toggle's doc below)
+ *          Cases 0, 3b and 4 all perform (Case 0 gained it in #2829 and
+ *          Case 3b in #2832, leaving 0.5 the ONLY case that folds or walks
+ *          to a receiver type without fanning out), so enabling the toggle
+ *          for a language changes that language's `this` dispatch
+ *          semantics (see the toggle's doc below)
  *       4. Case 1 namespace-receiver
  *       5. Case 2 class-name receiver
  *       6. Case 3 dotted typeBinding for namespace prefix
- *       7. Case 3b chain-typebinding (compound resolver)
+ *       7. Case 3b chain-typebinding (compound resolver + interface-dispatch
+ *          fan-out on an Interface fold, #2832)
  *       8. Case 4 simple typeBinding (MRO walk + findOwnedMember)
  *     Reordering or merging cases changes resolution semantics. The
  *     numbering is part of the contract — keep the comments.
