@@ -163,6 +163,27 @@ const DART_SCOPE_QUERY = `
     (initialized_identifier
       . (identifier) @declaration.name))) @declaration.property
 
+; Inference-typed fields — \`var b = Outer();\`, \`final b = Outer();\`,
+; \`late final b = Outer();\`, \`static var b = Outer();\` (#2807). The two
+; patterns above require a written type, so a field whose type comes from its
+; initializer produced NO property declaration at all — no Property node, and
+; nothing for captures.ts to hang a type binding on, so \`b.inner()\` could not
+; resolve its receiver while the annotated twin resolved fine.
+;
+; Dart spells the keyword as \`inferred_type\` for \`var\` and \`final_builtin\`
+; for \`final\` / \`late final\`; both are class fields and both are idiomatic,
+; so covering only one would leave the more common Dart style broken.
+(declaration
+  (inferred_type)
+  (initialized_identifier_list
+    (initialized_identifier
+      . (identifier) @declaration.name))) @declaration.property
+(declaration
+  (final_builtin)
+  (initialized_identifier_list
+    (initialized_identifier
+      . (identifier) @declaration.name))) @declaration.property
+
 ; ── Declarations — closure bindings (#2693) ──────────────────────────────────
 ; \`var f = (x) => x;\` binds a callable. Without a declaration the binding has
 ; no SymbolDefinition, so callable-value-flow has nothing to attach its seed to
