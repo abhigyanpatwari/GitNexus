@@ -227,6 +227,70 @@ export function isReceiverOwnedButUnbound(
   return false;
 }
 
+/**
+ * True when a declaration between the call site and its module scope shadows a
+ * file-level namespace import of the same name. Namespace targets are collected
+ * per FILE, so every consumer of that map must apply this lexical guard before
+ * trusting it at an inner scope — otherwise `def f(pkg): pkg.db.query()`
+ * resolves through the import that the parameter shadows, producing a wrong
+ * edge rather than a missing one.
+ *
+ * A namespace key may itself be a dotted import path (`pkg.db`, #2826), but the
+ * name a declaration can shadow is always the ROOT identifier — `pkg = Decoy()`
+ * shadows `pkg.db` too. Testing the whole dotted string would never match a
+ * binding, so the guard would silently stop guarding for exactly the keys it
+ * was extended to cover. Single-segment names are unaffected: their root is
+ * themselves.
+ *
+ * Fails closed (returns `true`) on a missing scope or a parent cycle: for every
+ * caller, suppressing a resolution costs a missing edge, while trusting a
+ * corrupt scope chain costs a wrong one.
+ *
+ * Reads `scope.bindings` DIRECTLY rather than through `lookupBindingsAt`, and
+ * that is deliberate — the opposite of the fix #2745 applied to Rust's
+ * `headBoundLocally`. There the question was "is this name bound at all?", so
+ * missing the finalized/augmented import channels lost real bindings. Here the
+ * question is "does something LOCAL shadow the import?", and the import's own
+ * finalized binding is the one thing that must NOT count: routing this through
+ * `lookupBindingsAt` would find the namespace import shadowing itself and
+ * suppress every namespace receiver in the workspace. Locals, parameters and
+ * lexical names all live in the scope's own tables, which is exactly the set
+ * this walk wants.
+ */
+export function isNamespaceNameShadowed(
+  namespaceName: string,
+  inScope: ScopeId,
+  scopes: ScopeResolutionIndexes,
+): boolean {
+  const firstDot = namespaceName.indexOf('.');
+  const rootName = firstDot === -1 ? namespaceName : namespaceName.slice(0, firstDot);
+  let currentId: ScopeId | null = inScope;
+  const visited = new Set<ScopeId>();
+  while (currentId !== null) {
+    if (visited.has(currentId)) return true;
+    visited.add(currentId);
+    const scope = scopes.scopeTree.getScope(currentId);
+    if (scope === undefined) return true;
+    if (
+      scope.kind !== 'Object' &&
+      (scope.bindings.has(rootName) ||
+        scope.typeBindings.has(rootName) ||
+        scope.lexicalNames?.has(rootName) === true ||
+        scope.ownedDefs.some((def) => {
+          const qualifiedName = def.qualifiedName;
+          if (qualifiedName === undefined) return false;
+          const dot = qualifiedName.lastIndexOf('.');
+          return (dot === -1 ? qualifiedName : qualifiedName.slice(dot + 1)) === rootName;
+        }))
+    ) {
+      return true;
+    }
+    if (scope.kind === 'Module') return false;
+    currentId = scope.parent;
+  }
+  return true;
+}
+
 export function findReceiverTypeBinding(
   startScope: ScopeId,
   receiverName: string,

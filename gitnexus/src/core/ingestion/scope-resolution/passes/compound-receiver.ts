@@ -35,6 +35,7 @@ import {
   findExportedDefByName,
   findReceiverTypeBinding,
   isClassLike,
+  isNamespaceNameShadowed,
 } from '../scope/walkers.js';
 
 /** Max depth for compound-receiver chain resolution (`a().b().c().d()`).
@@ -154,51 +155,6 @@ function isConstructionSelectorHop(
  *  a metacharacter would otherwise silently build a wrong pattern. */
 function escapeForRegExp(literal: string): string {
   return literal.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
-}
-
-/** True when a local declaration between the call site and its module scope
- * shadows a file-level namespace import with the same name. Namespace targets
- * are collected per file, so callers must apply this lexical guard before
- * trusting them at an inner scope.
- *
- * A namespace key may itself be a dotted import path (`pkg.db`, #2826), but
- * the name a local declaration can shadow is always the ROOT identifier —
- * `pkg = Decoy()` shadows `pkg.db` too. Testing the whole dotted string would
- * never match a binding, so the guard would silently stop guarding for exactly
- * the keys this check was extended to cover. Single-segment names are
- * unaffected: their root is themselves. */
-function isNamespaceNameShadowed(
-  namespaceName: string,
-  inScope: ScopeId,
-  scopes: ScopeResolutionIndexes,
-): boolean {
-  const firstDot = namespaceName.indexOf('.');
-  const rootName = firstDot === -1 ? namespaceName : namespaceName.slice(0, firstDot);
-  let currentId: ScopeId | null = inScope;
-  const visited = new Set<ScopeId>();
-  while (currentId !== null) {
-    if (visited.has(currentId)) return true;
-    visited.add(currentId);
-    const scope = scopes.scopeTree.getScope(currentId);
-    if (scope === undefined) return true;
-    if (
-      scope.kind !== 'Object' &&
-      (scope.bindings.has(rootName) ||
-        scope.typeBindings.has(rootName) ||
-        scope.lexicalNames?.has(rootName) === true ||
-        scope.ownedDefs.some((def) => {
-          const qualifiedName = def.qualifiedName;
-          if (qualifiedName === undefined) return false;
-          const dot = qualifiedName.lastIndexOf('.');
-          return (dot === -1 ? qualifiedName : qualifiedName.slice(dot + 1)) === rootName;
-        }))
-    ) {
-      return true;
-    }
-    if (scope.kind === 'Module') return false;
-    currentId = scope.parent;
-  }
-  return true;
 }
 
 /**
