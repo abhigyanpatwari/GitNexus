@@ -3,14 +3,14 @@
  * reports at startup.
  *
  * cors.test.ts covers the read side (isAllowedOrigin) of the same matcher.
- * This file covers the write side — createLocalhostOriginGuard — where a
+ * This file covers the write side — createWriteOriginGuard — where a
  * mismatch is a 403 rather than a missing CORS header, plus the port-aware
  * bound-host comparison and logOriginPolicy's startup diagnostics.
  */
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import {
   PUBLIC_ORIGIN_ENV,
-  createLocalhostOriginGuard,
+  createWriteOriginGuard,
   logOriginPolicy,
 } from '../../src/server/middleware.js';
 import { _captureLogger, type LoggerCapture } from '../../src/core/logger.js';
@@ -39,7 +39,7 @@ function callGuard(
   boundPort: number | undefined,
   origin: string,
 ): GuardResult {
-  const guard = createLocalhostOriginGuard(boundHost, boundPort);
+  const guard = createWriteOriginGuard(boundHost, boundPort);
   let passed = false;
   let status = 0;
   let body: { error?: string; code?: string } | undefined;
@@ -60,7 +60,7 @@ function callGuard(
   return { passed, status, body };
 }
 
-describe('createLocalhostOriginGuard — bound host is matched on its port', () => {
+describe('createWriteOriginGuard — bound host is matched on its port', () => {
   it('admits the bound host on the bound port', () => {
     expect(callGuard('192.168.1.10', 8443, 'http://192.168.1.10:8443').passed).toBe(true);
   });
@@ -95,7 +95,7 @@ describe('createLocalhostOriginGuard — bound host is matched on its port', () 
   });
 });
 
-describe('createLocalhostOriginGuard — public origin is matched on its port', () => {
+describe('createWriteOriginGuard — public origin is matched on its port', () => {
   it('admits an exact scheme/host/port match on a wildcard bind', () => {
     setPublicOrigin('https://app.example.com:8443');
     expect(callGuard('0.0.0.0', 3000, 'https://app.example.com:8443').passed).toBe(true);
@@ -136,7 +136,7 @@ describe('createLocalhostOriginGuard — public origin is matched on its port', 
 
   it('leaves the Origin-less passthrough alone — the CLI sends no Origin', () => {
     setPublicOrigin('app.example.com');
-    const guard = createLocalhostOriginGuard('0.0.0.0', 3000);
+    const guard = createWriteOriginGuard('0.0.0.0', 3000);
     let passed = false;
     guard({ headers: {} } as never, {} as never, () => {
       passed = true;

@@ -1,5 +1,7 @@
 /**
- * Shared Express route guards (alongside createRouteLimiter in validation.ts).
+ * Shared Express route guards (alongside createRouteLimiter in validation.ts),
+ * plus the `serve` configuration surface they read: GITNEXUS_PUBLIC_ORIGIN and
+ * GITNEXUS_TRUST_PROXY.
  */
 
 import type { Request, Response } from 'express';
@@ -15,7 +17,7 @@ function effectivePort(url: URL): string {
 /**
  * Canonicalize a bound-host string into the form a browser `Origin` hostname
  * takes after WHATWG URL parsing, so the same-host comparison in
- * {@link createLocalhostOriginGuard} can use a plain `===`.
+ * {@link createWriteOriginGuard} can use a plain `===`.
  *
  * Returns `undefined` when the host carries no single comparable identity:
  *   - empty / not provided
@@ -57,9 +59,10 @@ export const PUBLIC_ORIGIN_ENV = 'GITNEXUS_PUBLIC_ORIGIN';
  * Matches a parsed browser `Origin` against {@link PUBLIC_ORIGIN_ENV}. Carries
  * the hostname the env value resolved to, so startup can log what it parsed.
  */
-export type PublicOriginMatcher = ((origin: URL) => boolean) & {
+export interface PublicOriginMatcher {
   readonly hostname: string;
-};
+  matches(origin: URL): boolean;
+}
 
 /**
  * Build a matcher for {@link PUBLIC_ORIGIN_ENV}. Compares hostname always,
@@ -89,17 +92,22 @@ export function createPublicOriginMatcher(rawOrigin?: string): PublicOriginMatch
   let expectedPort: string | undefined;
   if (authority.port) {
     try {
+      // Round-trip through `new URL` so the configured port normalizes the same
+      // way a request Origin's does — an elided default, a leading zero — and so
+      // an out-of-range port throws here rather than yielding a dead matcher.
       expectedPort = effectivePort(new URL(`${scheme ?? 'http'}://${hostname}:${authority.port}`));
     } catch {
       return undefined;
     }
   }
 
-  const matcher = (origin: URL): boolean =>
-    origin.hostname === hostname &&
-    (expectedProtocol === undefined || origin.protocol === expectedProtocol) &&
-    (expectedPort === undefined || effectivePort(origin) === expectedPort);
-  return Object.assign(matcher, { hostname });
+  return {
+    hostname,
+    matches: (origin: URL): boolean =>
+      origin.hostname === hostname &&
+      (expectedProtocol === undefined || origin.protocol === expectedProtocol) &&
+      (expectedPort === undefined || effectivePort(origin) === expectedPort),
+  };
 }
 
 /**
@@ -126,7 +134,7 @@ function splitAuthority(authority: string): { host: string; port?: string } | un
 }
 
 /**
- * Restrict a route to same-host browser origins. Allows:
+ * Restrict a route to the browser origins this server trusts. Allows:
  *   - loopback (`localhost`, `127.0.0.1`, `[::1]`)
  *   - the server's own bound host (when non-loopback, e.g. a LAN IP)
  *   - the configured public origin ({@link PUBLIC_ORIGIN_ENV}), if any
@@ -143,13 +151,13 @@ function splitAuthority(authority: string): { host: string; port?: string } | un
  * @param boundPort - The port the server is listening on. Omit to match the
  *   bound host on any port.
  */
-export function createLocalhostOriginGuard(boundHost?: string, boundPort?: number) {
+export function createWriteOriginGuard(boundHost?: string, boundPort?: number) {
   const normalizedBoundHost = normalizeBoundHost(boundHost);
   const normalizedBoundPort = boundPort === undefined ? undefined : String(boundPort);
   // Snapshotted at construction like normalizedBoundHost, so a later env
   // mutation cannot widen a running server's write surface.
-  const matchesPublicOrigin = createPublicOriginMatcher(process.env[PUBLIC_ORIGIN_ENV]);
-  return function requireLocalhostOrigin(req: Request, res: Response, next: () => void): void {
+  const publicOrigin = createPublicOriginMatcher(process.env[PUBLIC_ORIGIN_ENV]);
+  return function requireTrustedOrigin(req: Request, res: Response, next: () => void): void {
     const origin = req.headers.origin;
     if (origin === undefined) {
       next();
@@ -169,7 +177,7 @@ export function createLocalhostOriginGuard(boundHost?: string, boundPort?: numbe
         hostname === '127.0.0.1' ||
         hostname === '[::1]' ||
         matchesBoundHost ||
-        matchesPublicOrigin?.(parsed)
+        publicOrigin?.matches(parsed)
       ) {
         next();
         return;
@@ -178,20 +186,14 @@ export function createLocalhostOriginGuard(boundHost?: string, boundPort?: numbe
       /* malformed origin → reject */
     }
     res.status(403).json({
-      error: 'This endpoint is restricted to same-host origins',
+      error: 'This endpoint is restricted to trusted browser origins',
       code: 'origin_not_allowed',
     });
   };
 }
 
 /**
- * Default guard that only allows loopback origins. For use in tests or when
- * the bound host is not available.
- */
-export const requireLocalhostOrigin = createLocalhostOriginGuard();
-
-/**
- * Report at startup what {@link createLocalhostOriginGuard} will admit, so an
+ * Report at startup what {@link createWriteOriginGuard} will admit, so an
  * operator can see it without reproducing a 403. A wildcard bind always warns —
  * gating that on {@link PUBLIC_ORIGIN_ENV} being constructible would diagnose a
  * misconfigured value worse than an absent one.
@@ -213,14 +215,15 @@ export function logOriginPolicy(boundHost?: string): void {
   }
 
   if (!boundHost || normalizeBoundHost(boundHost) !== undefined) return;
-  const remedy = publicOrigin
-    ? `Writes from ${publicOrigin.hostname} are admitted via ${PUBLIC_ORIGIN_ENV}.`
-    : `To admit writes from a specific LAN address, bind --host <that-address> instead of a ` +
-      `wildcard; to admit them from a public origin, set ${PUBLIC_ORIGIN_ENV} to it.`;
+  const admitted = publicOrigin
+    ? `accept loopback origins (localhost/127.0.0.1/[::1]) and ${publicOrigin.hostname} via ` +
+      `${PUBLIC_ORIGIN_ENV}.`
+    : `accept only loopback origins (localhost/127.0.0.1/[::1]). To admit writes from a specific ` +
+      `LAN address, bind --host <that-address> instead of a wildcard; to admit them from a ` +
+      `public origin, set ${PUBLIC_ORIGIN_ENV} to it.`;
   logger.warn(
     { host: boundHost },
-    `[gitnexus serve] Bound to a wildcard address (${boundHost}); browser write routes ` +
-      `accept only loopback origins (localhost/127.0.0.1/[::1]). ${remedy}`,
+    `[gitnexus serve] Bound to a wildcard address (${boundHost}); browser write routes ${admitted}`,
   );
 }
 
@@ -239,7 +242,7 @@ export const MAX_TRUST_PROXY_HOPS = 16;
  * `1..{@link MAX_TRUST_PROXY_HOPS}`, or a proxy list Express can compile.
  * Anything else warns and returns {@link DEFAULT_TRUST_PROXY}. Express compiles
  * this value inside `app.set`, so an unvalidated bad one takes `serve` down at
- * startup — except a number, which it range-checks not at all.
+ * startup; a number it accepts without any range check at all.
  */
 export function resolveTrustProxy(raw?: string): string | number | boolean {
   const value = raw?.trim();
@@ -259,8 +262,8 @@ export function resolveTrustProxy(raw?: string): string | number | boolean {
   if (/^\d+$/.test(value)) {
     const hops = Number(value);
     if (Number.isInteger(hops) && hops >= 1 && hops <= MAX_TRUST_PROXY_HOPS) return hops;
-    // A hop count reaches Express as `i < hops`, so an overflowed 1e400 → Infinity
-    // would trust the whole chain rather than fail loudly.
+    // Express tests a hop count as `i < hops`, so a digit string long enough to
+    // overflow to Infinity trusts the whole chain rather than failing loudly.
     return rejectTrustProxy(value, `expected a hop count of 1..${MAX_TRUST_PROXY_HOPS}`);
   }
 

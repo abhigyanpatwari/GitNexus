@@ -64,8 +64,8 @@ import {
 } from './git-clone.js';
 import { createAnalyzeUploadHandler } from './analyze-upload.js';
 import {
-  createLocalhostOriginGuard,
   createPublicOriginMatcher,
+  createWriteOriginGuard,
   logOriginPolicy,
   PUBLIC_ORIGIN_ENV,
   resolveTrustProxy,
@@ -131,7 +131,7 @@ export const isAllowedOrigin = (origin: string | undefined): boolean => {
 
   // The matcher is rebuilt per call, so changing the env var takes effect
   // without a restart. The write guard in middleware.ts snapshots it instead.
-  if (createPublicOriginMatcher(process.env[PUBLIC_ORIGIN_ENV])?.(parsed)) return true;
+  if (createPublicOriginMatcher(process.env[PUBLIC_ORIGIN_ENV])?.matches(parsed)) return true;
 
   return isRfc1918PrivateIpv4(parsed.hostname);
 };
@@ -745,9 +745,9 @@ export const createServer = async (port: number, host: string = '127.0.0.1') => 
   );
   app.use(express.json({ limit: '10mb' }));
 
-  // Same-host origin guard for write routes: loopback, the server's own bound
-  // host, and any configured public origin — prevents CSRF from other devices.
-  const requireLocalhostOrigin = createLocalhostOriginGuard(host, port);
+  // Origin guard for write routes: loopback, the server's own bound host, and
+  // any configured public origin — prevents CSRF from other devices.
+  const requireTrustedOrigin = createWriteOriginGuard(host, port);
   logOriginPolicy(host);
 
   // No explicit OPTIONS route is registered. The Chromium Private Network
@@ -969,7 +969,7 @@ export const createServer = async (port: number, host: string = '127.0.0.1') => 
   // Rate-limited (CodeQL js/missing-rate-limiting): destructive operation
   // doing fs.rm of clone + storage dirs. Default 60 rpm/IP is generous for
   // delete; tighten if abuse is observed.
-  app.delete('/api/repo', createRouteLimiter(), requireLocalhostOrigin, async (req, res) => {
+  app.delete('/api/repo', createRouteLimiter(), requireTrustedOrigin, async (req, res) => {
     try {
       const repoName = requestedRepo(req);
       if (!repoName) {
@@ -1477,7 +1477,7 @@ export const createServer = async (port: number, host: string = '127.0.0.1') => 
   app.post(
     '/api/analyze',
     createRouteLimiter({ limit: 10 }),
-    requireLocalhostOrigin,
+    requireTrustedOrigin,
     async (req, res) => {
       try {
         const {
@@ -1516,7 +1516,7 @@ export const createServer = async (port: number, host: string = '127.0.0.1') => 
         // (both collapse `..` identically) and only false-rejected trailing
         // slashes, so it is dropped. Analyzing a local path the operator names
         // is the tool's intended capability (same as the CLI); the dangerous
-        // part was cross-origin reach, which is closed by requireLocalhostOrigin
+        // part was cross-origin reach, which is closed by requireTrustedOrigin
         // on this route (scoped to the server's own bound host — other LAN
         // devices are NOT trusted). We only require an absolute path here and
         // let the analyze worker surface a clear error if it does not exist.
@@ -1608,7 +1608,7 @@ export const createServer = async (port: number, host: string = '127.0.0.1') => 
   app.post(
     '/api/analyze/upload',
     createRouteLimiter({ limit: 5 }),
-    requireLocalhostOrigin,
+    requireTrustedOrigin,
     createAnalyzeUploadHandler({
       createJob: (params) => jobManager.createJob(params),
       launch: (job, targetPath, opts) => launchAnalysisWorker(job, targetPath, opts),
@@ -1640,7 +1640,7 @@ export const createServer = async (port: number, host: string = '127.0.0.1') => 
   mountSSEProgress(app, '/api/analyze/:jobId/progress', jobManager);
 
   // DELETE /api/analyze/:jobId — cancel a running analysis job
-  app.delete('/api/analyze/:jobId', requireLocalhostOrigin, (req, res) => {
+  app.delete('/api/analyze/:jobId', requireTrustedOrigin, (req, res) => {
     const jobId = req.params.jobId as string;
     const job = jobManager.getJob(jobId);
     if (!job) {
@@ -1663,7 +1663,7 @@ export const createServer = async (port: number, host: string = '127.0.0.1') => 
   app.post(
     '/api/embed',
     createRouteLimiter({ limit: 20 }),
-    requireLocalhostOrigin,
+    requireTrustedOrigin,
     async (req, res) => {
       try {
         const entry = await resolveRepo(requestedRepo(req));
@@ -1962,7 +1962,7 @@ export const createServer = async (port: number, host: string = '127.0.0.1') => 
   mountSSEProgress(app, '/api/embed/:jobId/progress', embedJobManager);
 
   // DELETE /api/embed/:jobId — cancel embedding job
-  app.delete('/api/embed/:jobId', requireLocalhostOrigin, (req, res) => {
+  app.delete('/api/embed/:jobId', requireTrustedOrigin, (req, res) => {
     const jobId = req.params.jobId as string;
     const job = embedJobManager.getJob(jobId);
     if (!job) {

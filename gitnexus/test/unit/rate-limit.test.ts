@@ -28,6 +28,7 @@ import {
   TRUST_PROXY_ENV,
   resolveTrustProxy,
 } from '../../src/server/middleware.js';
+import { _captureLogger, type LoggerCapture } from '../../src/core/logger.js';
 
 let tmpFile: string;
 
@@ -251,13 +252,13 @@ describe('production routes — rate-limit middleware wiring', () => {
 
   it('POST /api/analyze is wired with createRouteLimiter', () => {
     // Tolerate Prettier wrapping the registration across lines (it does once
-    // the route carries extra middleware like requireLocalhostOrigin).
+    // the route carries extra middleware like requireTrustedOrigin).
     expect(apiSource).toMatch(/app\.post\(\s*'\/api\/analyze',\s*createRouteLimiter\(/);
   });
 
   it('POST /api/embed is wired with createRouteLimiter', () => {
     // Tolerate Prettier wrapping the registration across lines (it does once
-    // the route carries extra middleware like requireLocalhostOrigin).
+    // the route carries extra middleware like requireTrustedOrigin).
     expect(apiSource).toMatch(/app\.post\(\s*'\/api\/embed',\s*createRouteLimiter\(/);
   });
 
@@ -330,7 +331,14 @@ describe('validation.ts — IPv6 key normalisation (#1360)', () => {
 describe('trust proxy — effective value from GITNEXUS_TRUST_PROXY', () => {
   const saved = process.env[TRUST_PROXY_ENV];
 
+  // The rejection cases below warn; capture keeps them out of the suite output.
+  let cap: LoggerCapture;
+  beforeEach(() => {
+    cap = _captureLogger();
+  });
+
   afterEach(() => {
+    cap.restore();
     if (saved === undefined) delete process.env[TRUST_PROXY_ENV];
     else process.env[TRUST_PROXY_ENV] = saved;
   });

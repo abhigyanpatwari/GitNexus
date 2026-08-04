@@ -286,11 +286,13 @@ describe('createPublicOriginMatcher: values that are not one reachable host', ()
   it('returns undefined when the env var is unset', () => {
     expect(createPublicOriginMatcher(undefined)).toBeUndefined();
   });
+});
 
+describe('createPublicOriginMatcher: values that resolve to one host', () => {
   it('tolerates the trailing slash a pasted URL carries', () => {
     const matcher = createPublicOriginMatcher('https://app.example.com/');
     expect(matcher?.hostname).toBe('app.example.com');
-    expect(matcher?.(new URL('https://app.example.com'))).toBe(true);
+    expect(matcher?.matches(new URL('https://app.example.com'))).toBe(true);
   });
 
   it('reports the hostname it resolved, for the startup log line', () => {

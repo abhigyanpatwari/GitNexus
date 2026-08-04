@@ -4,7 +4,7 @@ import fs from 'node:fs/promises';
 import { Readable } from 'node:stream';
 import type { IncomingMessage } from 'node:http';
 import { createAnalyzeUploadHandler } from '../../src/server/analyze-upload.js';
-import { requireLocalhostOrigin, createLocalhostOriginGuard } from '../../src/server/middleware.js';
+import { createWriteOriginGuard } from '../../src/server/middleware.js';
 
 const BOUNDARY = '----gitnexusuploadtest';
 
@@ -258,7 +258,7 @@ describe('createAnalyzeUploadHandler', () => {
   });
 });
 
-describe('requireLocalhostOrigin', () => {
+describe('createWriteOriginGuard (no bound host)', () => {
   function call(origin: string | undefined): { passed: boolean; status: number } {
     let passed = false;
     let status = 0;
@@ -269,7 +269,7 @@ describe('requireLocalhostOrigin', () => {
         return { json: () => {} };
       },
     } as never;
-    requireLocalhostOrigin(req, res, () => {
+    createWriteOriginGuard()(req, res, () => {
       passed = true;
     });
     return { passed, status };
@@ -288,7 +288,7 @@ describe('requireLocalhostOrigin', () => {
     expect(r.status).toBe(403);
   });
 
-  it('rejects RFC1918 origins when no boundHost is set (default guard)', () => {
+  it('rejects RFC1918 origins when no boundHost is set', () => {
     expect(call('http://10.0.0.1:4173').passed).toBe(false);
     expect(call('http://172.16.1.21:4173').passed).toBe(false);
     expect(call('http://192.168.1.100:4173').passed).toBe(false);
@@ -301,12 +301,12 @@ describe('requireLocalhostOrigin', () => {
   });
 });
 
-describe('createLocalhostOriginGuard (bound host)', () => {
+describe('createWriteOriginGuard (bound host)', () => {
   function callWith(
     boundHost: string,
     origin: string | undefined,
   ): { passed: boolean; status: number; body?: { error?: string; code?: string } } {
-    const guard = createLocalhostOriginGuard(boundHost);
+    const guard = createWriteOriginGuard(boundHost);
     let passed = false;
     let status = 0;
     let body: { error?: string; code?: string } | undefined;
