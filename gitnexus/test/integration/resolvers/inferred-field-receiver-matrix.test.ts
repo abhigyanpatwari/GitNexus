@@ -83,6 +83,21 @@
  * displaced the constructor's correct binding, so the shadow rows below assert
  * the SURVIVING correct target rather than an absence.
  *
+ * That shadow set gated WRITES only, which left the mirror-image defect on the
+ * READ side: a bare-name read of a shadowing binder the resolver cannot type
+ * (`for (final conn in xs) { conn.inner(); }`) walked past the local and picked
+ * up the very class binding the write side had just minted, so a missing edge
+ * became a WRONG one. The fix publishes `shadows ∩ fields` on the member's
+ * Function scope as `Scope.ownsReceivers` (#2701) — the same language-neutral
+ * masking primitive TypeScript uses for a non-arrow `this`. Because the receiver
+ * walk consults `typeBindings` before the mask at every scope, a shadow the
+ * resolver CAN type still wins, which the annotated-parameter and typed-local
+ * rows pin. Two costs are taken knowingly and are visible in the rows: the mask
+ * is body-wide, so a read of the genuine field elsewhere in a shadowing member
+ * loses its edge; and only names the class declares as FIELDS are masked, so the
+ * same defect against a library-level variable is still open. Both are recorded
+ * on `dartShadowedFieldsCapture` in `languages/dart/captures.ts`.
+ *
  * Swift reached parity only once a SEPARATE defect was fixed alongside: its
  * methods are emitted as `Function` nodes while the scope extractor derives
  * `Method` from the declaration anchor, so every label-scoped bridge key missed
@@ -886,6 +901,56 @@ class StaticFieldDecl {
     return sd.inner().compute(x);
   }
 }
+
+class Alien {
+  Inner inner() {
+    return Inner();
+  }
+}
+
+class LoopVarReadShadowedField {
+  var za;
+  LoopVarReadShadowedField() {
+    za = Outer();
+  }
+  int probe(xs) {
+    var wit = Alien();
+    for (final za in xs) {
+      za.inner();
+    }
+    return wit.inner().compute(1);
+  }
+  int use(int x) {
+    return za.inner().compute(x);
+  }
+  int annotated(Other za) {
+    return za.inner().compute(1);
+  }
+}
+
+class PatternReadShadowedField {
+  var zb;
+  PatternReadShadowedField() {
+    zb = Outer();
+  }
+  int probe(xs) {
+    var wit = Alien();
+    var (zb, _) = xs;
+    zb.inner();
+    return wit.inner().compute(1);
+  }
+}
+
+class TypedLocalReadShadowedField {
+  var zc;
+  TypedLocalReadShadowedField() {
+    zc = Outer();
+  }
+  int probe(int x) {
+    var zc = Other();
+    return zc.inner().compute(x);
+  }
+}
 `;
 
 // ── Swift ────────────────────────────────────────────────────────────────────
@@ -1653,6 +1718,78 @@ const CASES: readonly LanguageCase[] = [
         name: 'static-field-declaration-still-types-its-receiver',
         callerId: `Method:${DART_FILE}:StaticFieldDecl.run#1`,
         targets: [`Method:${DART_FILE}:Other.inner#0`],
+        status: 'resolves',
+      },
+      // ── The READ side of the same shadow set ──────────────────────────────
+      //
+      // Every Dart row above tests the WRITE: does a shadowed bare-name
+      // assignment retype the field. The shadow set gated writes ONLY, and a
+      // bare-name READ of a shadowing binder the resolver cannot type walked
+      // straight past the local to the class binding this feature mints. In
+      // `probe` below, `za` is an ELEMENT of `xs`; measured pre-fix it resolved
+      // to `Outer.inner#0` — the constructor's type — turning "no edge" into a
+      // WRONG edge, the failure mode `compound-receiver.ts:519-537` forbids.
+      // The field binding is what made it wrong, not a pre-existing gap: delete
+      // the constructor and the same read emits nothing at all.
+      //
+      // `Alien` exists so these two rows keep a SURVIVING POSITIVE target. `za`
+      // untyped is correctly typeless, so the row's own call has nothing to
+      // assert; `var wit = Alien(); wit.inner()` in the same method is the
+      // witness, and the pre-fix value is the strictly LARGER set
+      // {Alien, Alien.inner, Outer.inner}. A regression that merely breaks the
+      // fixture empties the set and the row still fails — it cannot pass
+      // vacuously in either direction.
+      {
+        name: 'loop-var-read-does-not-see-the-field',
+        callerId: `Method:${DART_FILE}:LoopVarReadShadowedField.probe#1`,
+        targets: [`Class:${DART_FILE}:Alien`, `Method:${DART_FILE}:Alien.inner#0`],
+        status: 'resolves',
+      },
+      // Dart 3 patterns are the binder family this branch widened twice, so the
+      // read side gets one too — `var (zb, _) = xs;` binds through node types
+      // the pre-Dart-3 list never named.
+      {
+        name: 'pattern-read-does-not-see-the-field',
+        callerId: `Method:${DART_FILE}:PatternReadShadowedField.probe#1`,
+        targets: [`Class:${DART_FILE}:Alien`, `Method:${DART_FILE}:Alien.inner#0`],
+        status: 'resolves',
+      },
+      // THE COUNTERWEIGHT. `use` reads the same field by bare name and binds
+      // NOTHING, so it must still resolve to the constructor's `Outer`. It sits
+      // in the SAME class as the masked `probe` above deliberately: it is the
+      // row that distinguishes "mask the names THIS BODY rebinds" from "mask
+      // every field name the class declares". Measured: dropping the
+      // `shadows.has(name)` test in `dartShadowedFieldsCapture` — the exact
+      // over-widening this guards — turns 28 Dart rows red, and this row is one
+      // of them, while the fix as written leaves it green.
+      {
+        name: 'unshadowed-read-in-a-shadowing-class-still-resolves',
+        callerId: `Method:${DART_FILE}:LoopVarReadShadowedField.use#1`,
+        targets: [`Method:${DART_FILE}:Outer.inner#0`],
+        status: 'resolves',
+      },
+      // THE OVERREACH CONTROL, and the reason the mask is `ownsReceivers` rather
+      // than a deletion. `collectDartBodyShadows` includes formal parameters, so
+      // an ANNOTATED `Other za` is masked exactly like the loop variable — but
+      // `findReceiverTypeBinding` consults `typeBindings` FIRST at every scope
+      // and `synthesizeDartSignatureBindings` anchors parameter bindings on this
+      // same body node, so the annotation wins on the same scope the mask sits
+      // on. Asserted rather than assumed: if the mask were placed anywhere the
+      // parameter binding is not, this row would go from `Other` to empty.
+      {
+        name: 'annotated-param-read-keeps-its-own-type',
+        callerId: `Method:${DART_FILE}:LoopVarReadShadowedField.annotated#1`,
+        targets: [`Method:${DART_FILE}:Other.inner#0`],
+        status: 'resolves',
+      },
+      // The same precedence one level in: a typed LOCAL (`var zc = Other();`)
+      // shadowing the field keeps `Other`, because its binding lands at or below
+      // the masked Function scope. Together with the row above this pins both
+      // halves of "a shadow the resolver CAN type still wins".
+      {
+        name: 'typed-local-read-keeps-its-own-type',
+        callerId: `Method:${DART_FILE}:TypedLocalReadShadowedField.probe#1`,
+        targets: [`Class:${DART_FILE}:Other`, `Method:${DART_FILE}:Other.inner#0`],
         status: 'resolves',
       },
     ],

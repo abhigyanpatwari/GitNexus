@@ -20,7 +20,7 @@
  *   - `cache-stats.ts`       — PROF_SCOPE_RESOLUTION cache hit/miss counters
  */
 
-export { emitDartScopeCaptures } from './captures.js';
+export { emitDartScopeCaptures, dartScopeOwnsReceivers } from './captures.js';
 export { getDartCaptureCacheStats, resetDartCaptureCacheStats } from './cache-stats.js';
 export {
   interpretDartImport,

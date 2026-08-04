@@ -118,8 +118,8 @@ describe('PARSE_CACHE_VERSION', () => {
   // second clash was caught — after review, while the branch sat waiting to
   // merge — which is precisely the window in which `main` allocates. Re-check
   // against origin/main immediately before merge, not at review time.
-  it('pins SCHEMA_BUMP to 40 so concurrent bumps cannot silently collide (#2766)', () => {
-    expect(Number(PARSE_CACHE_VERSION.split('+', 1)[0])).toBe(40);
+  it('pins SCHEMA_BUMP to 41 so concurrent bumps cannot silently collide (#2766)', () => {
+    expect(Number(PARSE_CACHE_VERSION.split('+', 1)[0])).toBe(41);
   });
 
   it('embeds the gitnexus package version (so upgrades invalidate the cache)', () => {

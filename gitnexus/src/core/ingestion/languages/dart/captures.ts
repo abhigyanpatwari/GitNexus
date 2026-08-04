@@ -49,6 +49,31 @@ import { synthesizeCallableFlowCaptures } from '../../utils/callable-flow-captur
 import { synthesizeReceiverChainCapture } from '../../utils/receiver-chain-captures.js';
 import { hasKeyword } from '../../field-extractors/configs/helpers.js';
 
+/**
+ * `LanguageProvider.scopeOwnsReceivers` for Dart — the read side of
+ * `dartShadowedFieldsCapture`, which is where the full rationale lives.
+ *
+ * Reads the marker rather than re-deriving anything: the names were computed at
+ * capture time, where the AST is, and a `CaptureMatch` carries only
+ * name/range/text. Kept beside the emitter so the tag string has exactly one
+ * producer and one consumer, both in this file's line of sight.
+ */
+export function dartScopeOwnsReceivers(match: CaptureMatch): ReadonlySet<string> | undefined {
+  const raw = match['@receiver-owner.shadowed-fields']?.text;
+  if (raw === undefined) return undefined;
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(raw);
+  } catch {
+    return undefined;
+  }
+  if (!Array.isArray(parsed)) return undefined;
+  const names = parsed.filter(
+    (name): name is string => typeof name === 'string' && name.length > 0,
+  );
+  return names.length > 0 ? new Set(names) : undefined;
+}
+
 const FUNCTION_DECL_TAGS = [
   '@declaration.function',
   '@declaration.method',
@@ -140,6 +165,13 @@ export function emitDartScopeCaptures(
   // declarations by their statement node so each is emitted exactly once.
   const seenFnDeclNodes = new Set<string>();
 
+  // Shared, per-file. Pass A (the receiver mask below) and Pass B
+  // (`emitDartFieldAssignmentBindings`) ask the SAME two questions of the same
+  // nodes — "what does this class declare as a field" and "what does this
+  // member body bind" — so the memo makes each answer cost one walk per node
+  // for the whole file instead of one per consumer.
+  const memo: DartClassMemo = { fieldsByClassBody: new Map(), shadowsByBody: new Map() };
+
   // ── Pass A: query-driven scopes / declarations / imports ────────────────
   for (const match of getDartScopeQuery().matches(root)) {
     const grouped: Record<string, Capture> = {};
@@ -169,7 +201,15 @@ export function emitDartScopeCaptures(
       out.push(grouped);
 
       if (bodyNode !== null) {
-        out.push({ '@scope.function': spanCapture('@scope.function', declNode, bodyNode) });
+        // The READ-side half of the bare-name field discipline (#2807 review).
+        // Rides the SAME synthesized match as `@scope.function` so the mask
+        // lands on this member's Function scope; outside the `@scope.`
+        // namespace so `anchorCaptureFor` cannot mistake it for the anchor.
+        const mask = dartShadowedFieldsCapture(bodyNode, memo);
+        out.push({
+          '@scope.function': spanCapture('@scope.function', declNode, bodyNode),
+          ...(mask === undefined ? {} : { '@receiver-owner.shadowed-fields': mask }),
+        });
         for (const cm of synthesizeDartReceiverBinding(declNode, bodyNode)) out.push(cm);
       }
       for (const cm of synthesizeDartSignatureBindings(declNode, bodyNode)) out.push(cm);
@@ -248,7 +288,7 @@ export function emitDartScopeCaptures(
     }
     if (node.type === 'class_definition') {
       emitHeritage(node, out);
-      emitDartFieldAssignmentBindings(node, out);
+      emitDartFieldAssignmentBindings(node, out, memo);
       return;
     }
     if (node.type === 'extension_declaration') {
@@ -612,26 +652,19 @@ function emitVarTypeBinding(initVarDef: SyntaxNode, out: CaptureMatch[]): void {
  * land on the Class scope, since the assignment sits inside a constructor's own
  * Function scope where `typeOfMemberOnClass` never looks.
  */
-function emitDartFieldAssignmentBindings(classNode: SyntaxNode, out: CaptureMatch[]): void {
+function emitDartFieldAssignmentBindings(
+  classNode: SyntaxNode,
+  out: CaptureMatch[],
+  memo: DartClassMemo,
+): void {
   const body = findChild(classNode, 'class_body');
   if (body === null) return;
 
   // `namedChildren` allocates a fresh wrapper array on every access
-  // (node-tree-sitter), and both loops below walk the same list — read it once.
+  // (node-tree-sitter), and the loop below walks the same list — read it once.
   const members = body.namedChildren;
 
-  // Field names this class declares, from `declaration(... initialized_identifier)`.
-  const fields = new Set<string>();
-  for (const member of members) {
-    if (member === null || member.type !== 'declaration') continue;
-    const list = findChild(member, 'initialized_identifier_list');
-    if (list === null) continue;
-    for (const init of list.namedChildren) {
-      if (init === null || init.type !== 'initialized_identifier') continue;
-      const nameNode = init.namedChild(0);
-      if (nameNode !== null && nameNode.type === 'identifier') fields.add(nameNode.text);
-    }
-  }
+  const fields = dartClassFieldNames(body, memo);
   if (fields.size === 0) return;
 
   for (const member of members) {
@@ -665,18 +698,18 @@ function emitDartFieldAssignmentBindings(classNode: SyntaxNode, out: CaptureMatc
     if (signature === null || signature.type !== 'method_signature') continue;
     if (hasKeyword(signature, 'static')) continue;
 
-    // LAZY, memoised per body. The shadow set is read on ONE branch — a bare
-    // `r = …` whose name the class declares — so a body of `this.`-prefixed
-    // writes, or of no field assignment at all, never needs it. Measured on the
-    // scope-capture corpus: 87-100% of the sets built eagerly here were
-    // discarded, ~15% of total Dart emission. Deferring cannot change WHICH
-    // names it contains: `collectDartBodyShadows` is a function of the whole
-    // body, not of the assignment that triggers it.
+    // Still lazy per assignment, but the memo is now FILE-wide and shared with
+    // Pass A's read-side mask, which asks the same question of the same body.
+    // The laziness that used to matter here (87-100% of eagerly built sets were
+    // discarded, ~15% of total Dart emission) no longer buys much for a class
+    // that declares fields — Pass A has already forced those bodies — so this
+    // reads the memo rather than paying a second walk. It still short-circuits
+    // for a body whose class declares no fields, since `fields.size === 0`
+    // returned above before either pass touched it.
     //
     // Not visible to `bench/scope-capture`, which is a RATIO gate — this work is
     // linear, so a constant factor leaves the ratio at 1.0.
-    let locals: ReadonlySet<string> | undefined;
-    const shadowsOf = (): ReadonlySet<string> => (locals ??= collectDartBodyShadows(member));
+    const shadowsOf = (): ReadonlySet<string> => dartBodyShadows(member, memo);
 
     walkNamedTree(member, (node) => {
       if (node.type !== 'assignment_expression') return;
@@ -724,6 +757,133 @@ function emitDartFieldAssignmentBindings(classNode: SyntaxNode, out: CaptureMatc
       });
     });
   }
+}
+
+/**
+ * Per-file memo for the two class-shaped questions the passes share, keyed by
+ * node span. `emitDartScopeCaptures` owns one and threads it; nothing survives
+ * the call, so a re-parse cannot serve a stale answer.
+ */
+interface DartClassMemo {
+  readonly fieldsByClassBody: Map<string, ReadonlySet<string>>;
+  readonly shadowsByBody: Map<string, ReadonlySet<string>>;
+}
+
+const nodeSpanKey = (node: SyntaxNode): string => `${node.startIndex}:${node.endIndex}`;
+
+/**
+ * The names a `class_body` declares as INSTANCE-or-static fields, from
+ * `declaration(… initialized_identifier_list … initialized_identifier)` — the
+ * shape every stored Dart field takes, annotated or not.
+ */
+function dartClassFieldNames(classBody: SyntaxNode, memo: DartClassMemo): ReadonlySet<string> {
+  const key = nodeSpanKey(classBody);
+  const cached = memo.fieldsByClassBody.get(key);
+  if (cached !== undefined) return cached;
+
+  const fields = new Set<string>();
+  for (const member of classBody.namedChildren) {
+    if (member === null || member.type !== 'declaration') continue;
+    const list = findChild(member, 'initialized_identifier_list');
+    if (list === null) continue;
+    for (const init of list.namedChildren) {
+      if (init === null || init.type !== 'initialized_identifier') continue;
+      const nameNode = init.namedChild(0);
+      if (nameNode !== null && nameNode.type === 'identifier') fields.add(nameNode.text);
+    }
+  }
+  memo.fieldsByClassBody.set(key, fields);
+  return fields;
+}
+
+function dartBodyShadows(bodyNode: SyntaxNode, memo: DartClassMemo): ReadonlySet<string> {
+  const key = nodeSpanKey(bodyNode);
+  const cached = memo.shadowsByBody.get(key);
+  if (cached !== undefined) return cached;
+  const shadows = collectDartBodyShadows(bodyNode);
+  memo.shadowsByBody.set(key, shadows);
+  return shadows;
+}
+
+/**
+ * The READ half of the bare-name field discipline: the field names a member
+ * body REBINDS, published on that member's Function scope as
+ * `Scope.ownsReceivers` (#2701) so the receiver walk stops there instead of
+ * reaching the Class scope (#2807 review).
+ *
+ * `emitDartFieldAssignmentBindings` above declines to WRITE a binding for a name
+ * the body shadows, but the shadow set gated writes only. A bare-name READ of a
+ * shadowing binder the resolver cannot type — `for (final conn in xs) {
+ * conn.inner(); }`, where the element type of `xs` is not modelled — therefore
+ * walked straight past the local and hit the class field binding this same
+ * feature mints, resolving `conn.inner()` to the CONSTRUCTOR's type. That turns
+ * "no edge" into a WRONG edge, the one failure mode
+ * `scope-resolution/passes/compound-receiver.ts` says must never happen, and it
+ * was introduced by the write side rather than pre-existing: delete the
+ * constructor and the same read emits nothing.
+ *
+ * `ownsReceivers` is the right primitive because the walk consults
+ * `typeBindings` FIRST at every scope (`scope/walkers.ts`) and only then honours
+ * the mask. A shadow the resolver CAN type still wins — an annotated parameter
+ * `void probe(Beta conn)` keeps `Beta`, because
+ * `synthesizeDartSignatureBindings` anchors parameter bindings on this same
+ * body node, so they land on this same Function scope. The mask only fires
+ * where the alternative was a fabricated type.
+ *
+ * ── SCOPE OF THE MASK, AND ITS ACCEPTED COSTS ────────────────────────────────
+ *
+ * `shadows ∩ fields`, and nothing wider. Three consequences are taken knowingly
+ * rather than hidden:
+ *
+ *  1. NOT every locally bound name is masked — only ones the enclosing class
+ *     also declares as a field. A library-level `var logger = Logger();`
+ *     shadowed by a loop variable of the same name still resolves against the
+ *     library binding and can still produce the wrong edge. That is the general
+ *     form of the same defect and arguably the more correct fix, but it changes
+ *     resolution for code this feature never touched; it is recorded here as a
+ *     known limitation rather than implemented.
+ *  2. The mask is BODY-WIDE, exactly as `collectDartBodyShadows` is on the write
+ *     side. A member that binds `conn` anywhere — a nested closure, one `case`
+ *     arm — masks `conn` for the whole member, so a read of the genuine field
+ *     elsewhere in that member loses its edge. Deliberate symmetry: the write
+ *     side already declines body-wide, and losing an edge is the error this
+ *     whole line of work chooses over inventing one.
+ *  3. `fields` is EVERY field the class declares, not only the ones the
+ *     constructor-write feature types. An ANNOTATED field shadowed by a binder
+ *     is masked too, so this reaches resolution that predates #2807 — and it is
+ *     meant to: which name a body's bare read refers to is a fact about Dart, not
+ *     about how the field acquired its type. `mixin` bodies are reached for the
+ *     same reason (the grammar gives a mixin a `class_body` as well), even though
+ *     `emitDartFieldAssignmentBindings` mints nothing for them. `extension`
+ *     bodies are a different node (`extension_body`) and are left alone.
+ *
+ * Returns `undefined` — not an empty marker — when nothing is masked, so the
+ * emitted capture set is unchanged for every body that does not shadow a field.
+ * Names are sorted so the capture text (and every fingerprint over it) is
+ * order-stable.
+ */
+function dartShadowedFieldsCapture(bodyNode: SyntaxNode, memo: DartClassMemo): Capture | undefined {
+  // Only a CLASS-MEMBER body can shadow a field: `function_body` whose parent is
+  // the `class_body`. A closure's `function_expression_body` and a top-level
+  // function are both excluded, and neither needs the mask — a closure's binders
+  // are already in its enclosing member's body-wide shadow set, and the walk
+  // passes through the enclosing member's Function scope on its way out.
+  if (bodyNode.type !== 'function_body') return undefined;
+  const classBody = bodyNode.parent;
+  if (classBody === null || classBody.type !== 'class_body') return undefined;
+
+  const fields = dartClassFieldNames(classBody, memo);
+  if (fields.size === 0) return undefined;
+  const shadows = dartBodyShadows(bodyNode, memo);
+  if (shadows.size === 0) return undefined;
+
+  const masked: string[] = [];
+  for (const name of fields) {
+    if (shadows.has(name)) masked.push(name);
+  }
+  if (masked.length === 0) return undefined;
+  masked.sort();
+  return syntheticCapture('@receiver-owner.shadowed-fields', bodyNode, JSON.stringify(masked));
 }
 
 /**

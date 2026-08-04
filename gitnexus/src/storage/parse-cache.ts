@@ -186,7 +186,15 @@ import type { ParseWorkerResult } from '../core/ingestion/workers/parse-worker.j
 // re-analyze does NOT surface them without this bump.
 // RE-CHECK AGAINST origin/main IMMEDIATELY BEFORE MERGING — main was also at 39
 // when this was allocated, and this file records eight prior collisions.
-const SCHEMA_BUMP = 40;
+// v41: the v40 Dart field-write binding gained its READ-side mask (#2807 review)
+// — a Dart class-member body that rebinds one of its class's field names now
+// emits `@receiver-owner.shadowed-fields` on its synthesized `@scope.function`
+// match, which becomes `Scope.ownsReceivers`. Parse-time capture emission again,
+// so a v40 warm cache replays scope matches with no marker and the receiver walk
+// still reaches the class field — i.e. it keeps serving the WRONG edge this
+// bump's fix removes, silently. Same bump-or-nothing situation as v40.
+// RE-CHECK AGAINST origin/main IMMEDIATELY BEFORE MERGING.
+const SCHEMA_BUMP = 41;
 const GITNEXUS_PKG_VERSION = (() => {
   try {
     // package.json sits at gitnexus/package.json — two levels up from
