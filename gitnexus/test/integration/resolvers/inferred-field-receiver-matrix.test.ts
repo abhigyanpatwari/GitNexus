@@ -92,11 +92,17 @@
  * masking primitive TypeScript uses for a non-arrow `this`. Because the receiver
  * walk consults `typeBindings` before the mask at every scope, a shadow the
  * resolver CAN type still wins, which the annotated-parameter and typed-local
- * rows pin. Two costs are taken knowingly and are visible in the rows: the mask
- * is body-wide, so a read of the genuine field elsewhere in a shadowing member
- * loses its edge; and only names the class declares as FIELDS are masked, so the
- * same defect against a library-level variable is still open. Both are recorded
- * on `dartShadowedFieldsCapture` in `languages/dart/captures.ts`.
+ * rows pin. All SEVEN binder shapes the read-side defect was measured in get a
+ * row of their own — for-in (`final` and `var`), untyped formal parameter, plain
+ * local, catch binding, closure parameter and record pattern — rather than the
+ * two it shipped with plus an argument that the rest route through the same
+ * enumeration: the grammar-derived coverage test at the bottom of this file
+ * gates the PATTERN family only, so it never covered the other four (#2807
+ * review, S8). Two costs are taken knowingly and are visible in the rows: the
+ * mask is body-wide, so a read of the genuine field elsewhere in a shadowing
+ * member loses its edge; and only names the class declares as FIELDS are masked,
+ * so the same defect against a library-level variable is still open. Both are
+ * recorded on `dartShadowedFieldsCapture` in `languages/dart/captures.ts`.
  *
  * Swift reached parity only once a SEPARATE defect was fixed alongside: its
  * methods are emitted as `Function` nodes while the scope extractor derives
@@ -166,6 +172,18 @@ export class StaticAnnotatedFieldSameName {
   private r: Outer = new Outer();
   static r: Alien = new Alien();
   run(x: number): number { return this.r.inner().compute(x); }
+}
+export class StaticReadTwin {
+  private p = new Outer();
+  static p = new Alien();
+  run(x: number): number { return this.p.inner().compute(x); }
+}
+export class StaticReadOnly {
+  static q = new Alien();
+}
+export class StaticReader {
+  readTwin(x: number): number { return StaticReadTwin.p.inner().compute(x); }
+  readOnly(x: number): number { return StaticReadOnly.q.inner().compute(x); }
 }
 export const moduleLocal = new Outer();
 export function runModuleLocal(x: number): number { return moduleLocal.inner().compute(x); }
@@ -951,6 +969,73 @@ class TypedLocalReadShadowedField {
     return zc.inner().compute(x);
   }
 }
+
+class ParamReadShadowedField {
+  var zd;
+  ParamReadShadowedField() {
+    zd = Outer();
+  }
+  int probe(zd) {
+    var wit = Alien();
+    zd.inner();
+    return wit.inner().compute(1);
+  }
+}
+
+class LocalReadShadowedField {
+  var ze;
+  LocalReadShadowedField() {
+    ze = Outer();
+  }
+  int probe(int x) {
+    var wit = Alien();
+    var ze;
+    ze.inner();
+    return wit.inner().compute(x);
+  }
+}
+
+class CatchReadShadowedField {
+  var zf;
+  CatchReadShadowedField() {
+    zf = Outer();
+  }
+  int probe() {
+    var wit = Alien();
+    try {} catch (zf) {
+      zf.inner();
+    }
+    return wit.inner().compute(1);
+  }
+}
+
+class ClosureParamReadShadowedField {
+  var zg;
+  ClosureParamReadShadowedField() {
+    zg = Outer();
+  }
+  int probe(xs) {
+    var wit = Alien();
+    xs.forEach((zg) {
+      zg.inner();
+    });
+    return wit.inner().compute(1);
+  }
+}
+
+class LoopVarVarReadShadowedField {
+  var zh;
+  LoopVarVarReadShadowedField() {
+    zh = Outer();
+  }
+  int probe(xs) {
+    var wit = Alien();
+    for (var zh in xs) {
+      zh.inner();
+    }
+    return wit.inner().compute(1);
+  }
+}
 `;
 
 // ── Swift ────────────────────────────────────────────────────────────────────
@@ -1091,6 +1176,57 @@ const CASES: readonly LanguageCase[] = [
         callerId: `Method:${TS_FILE}:StaticAnnotatedFieldSameName.run#1`,
         targets: [`Method:${TS_FILE}:Inner.compute#1`, `Method:${TS_FILE}:Outer.inner#0`],
         status: 'resolves',
+      },
+      // ── WHAT DROPPING THE STATIC BINDING COSTS, MEASURED ──────────────────
+      //
+      // The three rows above are bought by DROPPING a `static` field's type
+      // binding outright (`isStaticClassFieldBinding` in
+      // `languages/typescript/captures.ts`), because `Scope.typeBindings` is one
+      // map per Class scope with no static/instance split, so the static twin
+      // cannot be recorded without colliding with the instance one. The two rows
+      // here are the other side of that trade. They exist because the cost was
+      // described in a comment and pinned by nothing — a cost no row measures is
+      // a cost nobody notices changing (#2807 review, S7).
+      //
+      // Both were measured by disabling the drop and rebuilding. What the trade
+      // actually bought and sold:
+      //
+      //   shape                      with the drop      without it
+      //   -------------------------  -----------------  ------------------
+      //   `this.p` (instance twin)   Outer  ✓ correct    Alien  ✗ wrong
+      //   `Host.p` (static twin)     Outer  ✗ WRONG      Alien  ✓ correct
+      //   `Host.q` (static, no twin) — none, missed      Alien  ✓ correct
+      //
+      // So the trade is NOT the "missed edge beats a wrong one" the comment on
+      // `isStaticClassFieldBinding` claims, and this row is why that comment now
+      // says otherwise. For a class with BOTH twins the wrong edge did not go
+      // away, it MOVED — a static read now picks up the INSTANCE twin's type.
+      // The trade is still right, because `this.p` is overwhelmingly the more
+      // common access and a rarely-written `Host.p` is the cheaper place to be
+      // wrong; but it is a wrong edge, and it is recorded as one rather than
+      // described as a missing one.
+      //
+      // Asserted as a POSITIVE target: this row goes red when the static read
+      // starts resolving `Alien` — which is what closing S7 properly looks like.
+      // It is a pin on today's measured behaviour, NOT an endorsement of it.
+      {
+        name: 'static-read-of-a-same-name-twin-picks-up-the-instance-type',
+        callerId: `Method:${TS_FILE}:StaticReader.readTwin#1`,
+        targets: [`Method:${TS_FILE}:Inner.compute#1`, `Method:${TS_FILE}:Outer.inner#0`],
+        status: 'resolves',
+      },
+      // The static-only shape — no instance twin, so nothing at all is left in
+      // the map and the chain simply loses its type. This is the genuine MISSED
+      // edge, and the common static shape; the row above is the rarer one. A
+      // `known-gap` row rather than a positive assertion because there is no
+      // surviving target to name — the whole point is that the edge is gone. It
+      // is protected from vacuity by the `every row has a live caller node`
+      // guard, the same way this file's other known-gap rows are.
+      {
+        name: 'static-read-without-a-twin-loses-its-type',
+        callerId: `Method:${TS_FILE}:StaticReader.readOnly#1`,
+        targets: [],
+        status: 'known-gap',
       },
     ],
   },
@@ -1751,6 +1887,77 @@ const CASES: readonly LanguageCase[] = [
       {
         name: 'pattern-read-does-not-see-the-field',
         callerId: `Method:${DART_FILE}:PatternReadShadowedField.probe#1`,
+        targets: [`Class:${DART_FILE}:Alien`, `Method:${DART_FILE}:Alien.inner#0`],
+        status: 'resolves',
+      },
+      // ONE ROW PER BINDER SHAPE, because the two rows above pin two of the
+      // SEVEN shapes the defect was measured reproducing in (#2807 review, S8).
+      // The argument offered for the other five was that they all route through
+      // `collectDartBodyShadows`, whose completeness is guarded by the
+      // grammar-derived pattern-coverage test at the bottom of this file. That
+      // argument is narrower than it looks: the coverage test filters
+      // `nodeTypeInfo` on `type.includes('pattern')`, so it gates the PATTERN
+      // family and nothing else. A catch binding, a closure parameter, an
+      // untyped formal parameter and a plain local are invisible to it —
+      // narrowing `addDartBinderName`'s `catch_parameters` arm turned no row
+      // red. Each shape is therefore pinned by a row rather than by an argument.
+      //
+      // Same construction as the two rows above, for the same reason: `Alien` is
+      // a SURVIVING POSITIVE witness, so the pre-fix value is the strictly larger
+      // {Class:Alien, Alien.inner, Outer.inner} and a regression that merely
+      // breaks the fixture empties the set and still fails the row. All five were
+      // measured pre-fix by unwiring `scopeOwnsReceivers`: every one gained the
+      // wrong edge `Outer.inner#0` — the constructor's type reached through a
+      // binder the resolver cannot type — so none of them passes vacuously.
+      {
+        name: 'param-read-does-not-see-the-field',
+        callerId: `Method:${DART_FILE}:ParamReadShadowedField.probe#1`,
+        targets: [`Class:${DART_FILE}:Alien`, `Method:${DART_FILE}:Alien.inner#0`],
+        status: 'resolves',
+      },
+      // A local `var ze;` with NO initializer: the resolver has nothing to type
+      // it from, which is exactly the condition that let the read walk out to the
+      // class binding. The typed-local counterweight below is the other half.
+      {
+        name: 'local-read-does-not-see-the-field',
+        callerId: `Method:${DART_FILE}:LocalReadShadowedField.probe#1`,
+        targets: [`Class:${DART_FILE}:Alien`, `Method:${DART_FILE}:Alien.inner#0`],
+        status: 'resolves',
+      },
+      // Deliberately a BARE `catch (zf)` rather than the `on Err catch (w)` the
+      // write-side rows use. An `on` clause names a type, and a row whose binder
+      // could acquire one would stop measuring the mask and start measuring
+      // whether `Err` resolves. `probe#0` — this is the one new row whose method
+      // takes no parameters.
+      {
+        name: 'catch-read-does-not-see-the-field',
+        callerId: `Method:${DART_FILE}:CatchReadShadowedField.probe#0`,
+        targets: [`Class:${DART_FILE}:Alien`, `Method:${DART_FILE}:Alien.inner#0`],
+        status: 'resolves',
+      },
+      // The closure parameter is the shape that pins WHERE the mask is emitted.
+      // `dartShadowedFieldsCapture` returns early unless the node is a
+      // `function_body` whose parent is a `class_body`, so a closure's own
+      // `function_expression_body` never carries a mask — the read is covered
+      // only because the closure's binders are in the enclosing member's
+      // body-wide shadow set AND the walk passes out through that member's
+      // Function scope. Measured: the call is attributed to the enclosing
+      // `probe#1`, not to a separate node for the closure.
+      {
+        name: 'closure-param-read-does-not-see-the-field',
+        callerId: `Method:${DART_FILE}:ClosureParamReadShadowedField.probe#1`,
+        targets: [`Class:${DART_FILE}:Alien`, `Method:${DART_FILE}:Alien.inner#0`],
+        status: 'resolves',
+      },
+      // The second for-in form. `for (var zh in xs)` and the `final` form of
+      // `loop-var-read-does-not-see-the-field` are different parses — the `var`
+      // form puts an `inferred_type` where the `final` form puts a
+      // `final_builtin` — so the reported pair is two shapes, not one written
+      // twice, and `addDartBinderName` reaches both only via `for_loop_parts`'
+      // `name` field.
+      {
+        name: 'loop-var-var-read-does-not-see-the-field',
+        callerId: `Method:${DART_FILE}:LoopVarVarReadShadowedField.probe#1`,
         targets: [`Class:${DART_FILE}:Alien`, `Method:${DART_FILE}:Alien.inner#0`],
         status: 'resolves',
       },

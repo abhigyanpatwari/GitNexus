@@ -265,9 +265,35 @@ export const TS_CLASS_FIELD_DEFINITION_TYPES: ReadonlySet<string> = new Set([
  * `Wrong.hit`: not a missing edge but a wrong one, the failure mode
  * `scope-resolution/passes/compound-receiver.ts` exists to avoid. The scope
  * tree has one `typeBindings` map per scope with no static/instance split, so a
- * static field cannot be recorded separately — it is dropped instead. That
- * costs typing on a `Host.p.hit()` STATIC receiver chain, which is the right
- * trade: a missed edge beats a wrong one.
+ * static field cannot be recorded separately — it is dropped instead.
+ *
+ * WHAT THAT COSTS, MEASURED rather than assumed (#2807 review, S7). An earlier
+ * version of this comment called the cost "a missed edge beats a wrong one".
+ * Only half of that is true, and the false half is the one that matters:
+ *
+ *   shape                       with the drop     without it
+ *   --------------------------  ----------------  ----------------
+ *   `this.p` (instance twin)    Right  ✓          Wrong  ✗
+ *   `Host.p` (static twin)      Right  ✗ WRONG    Wrong  ✓
+ *   `Host.q` (static, no twin)  — none, missed    Wrong  ✓
+ *
+ * For a class declaring BOTH twins the wrong edge does not disappear, it MOVES:
+ * `Host.p` now reads the INSTANCE twin's binding, because that is what is left
+ * in the map under that name. Only the no-twin case — the common static shape —
+ * is a true missed edge.
+ *
+ * The trade is still the right one, since `this.p` is overwhelmingly the more
+ * common access and a `Host.p` static chain is the cheaper place to be wrong.
+ * It is recorded here as a wrong edge rather than described as a missing one so
+ * that the next person weighing it is weighing the real thing. Closing it
+ * properly needs a static/instance split that the shared receiver fold cannot
+ * express today — `foldReceiverChain` in
+ * `scope-resolution/passes/compound-receiver.ts` explicitly discards whether a
+ * chain's base was a class reference or a value — so it is a separate change
+ * with a `SCHEMA_BUMP`, not a tweak here. Both shapes are pinned by rows in
+ * `test/integration/resolvers/inferred-field-receiver-matrix.test.ts`
+ * (`static-read-of-a-same-name-twin-picks-up-the-instance-type`,
+ * `static-read-without-a-twin-loses-its-type`), so the cost moves visibly.
  *
  * Sibling of {@link isStaticMethodThis}, which drops the ASSIGNMENT form
  * (`this.x = new Y()` inside a static method). Together they cover both ways a
