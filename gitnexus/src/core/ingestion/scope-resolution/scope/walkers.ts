@@ -271,6 +271,14 @@ export function isNamespaceNameShadowed(
     visited.add(currentId);
     const scope = scopes.scopeTree.getScope(currentId);
     if (scope === undefined) return true;
+    // Stop AT the module scope without inspecting it. In languages where a
+    // namespace import IS a variable declaration — CommonJS
+    // `const svc = require('./svc')` — the import puts its own name into the
+    // module scope's tables, so inspecting them reads the import as its own
+    // shadow and suppresses every receiver it was meant to enable (#2723).
+    // The contract is "a declaration BETWEEN the call site and its module
+    // scope", and the module scope is the floor, not a rung.
+    if (scope.kind === 'Module') return false;
     if (
       scope.kind !== 'Object' &&
       (scope.bindings.has(rootName) ||
@@ -285,7 +293,6 @@ export function isNamespaceNameShadowed(
     ) {
       return true;
     }
-    if (scope.kind === 'Module') return false;
     currentId = scope.parent;
   }
   return true;
