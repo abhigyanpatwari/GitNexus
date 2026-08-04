@@ -1794,3 +1794,104 @@ describe('Go pointer-receiver field chains (#2766)', () => {
     expect(imports.map((e) => `${e.source} → ${e.target}`)).toContain('handler.go → repo.go');
   });
 });
+
+// ---------------------------------------------------------------------------
+// #2813: calls through an interface-typed struct field must reach the
+// IMPLEMENTATION, not stop at the interface declaration.
+// ---------------------------------------------------------------------------
+//
+// Two stacked defects produced the reported symptom, and either alone is
+// enough to reproduce it — which is why the pre-existing fixtures, uniformly
+// value-receiver, could not observe it:
+//
+//   D1  `buildDetectionIndexes` skipped every POINTER-receiver method, so a
+//       struct whose methods are all `func (r *T)` had an empty method set,
+//       structurally satisfied nothing, and got no IMPLEMENTS edge. Go's rule
+//       is that the method set of *T includes pointer-receiver methods, and
+//       idiomatic Go stores *T in an interface-typed field.
+//   D2  Case 0 (compound receiver) emitted its primary edge and short-circuited
+//       without the interface-dispatch fan-out Case 4 performs. A struct-field
+//       receiver `s.orderRepo` contains a dot, so it always takes Case 0; a
+//       local or parameter receiver is a bare name and reaches Case 4.
+//
+// The fixture is deliberately pointer-receiver throughout, cross-package, and
+// carries concrete-field controls in the same structs.
+describe('Go interface-typed struct field dispatch (#2813)', () => {
+  let result: PipelineResult;
+
+  beforeAll(async () => {
+    result = await runPipelineFromRepo(
+      path.join(FIXTURES, 'go-interface-field-dispatch'),
+      () => {},
+    );
+  }, 120000);
+
+  const calls = (): string[] => edgeSet(getRelationships(result, 'CALLS'));
+  const implementsEdges = (): string[] => edgeSet(getRelationships(result, 'IMPLEMENTS'));
+  /** CALLS rows carrying the emitting reason, so a fan-out edge is
+   *  distinguishable from the primary edge to the interface declaration. */
+  const callsWithReason = (): string[] =>
+    getRelationships(result, 'CALLS').map((e) => `${e.source} → ${e.target}:${e.rel.reason}`);
+  /** CALLS rows qualified by the target's FILE — `→ DeleteItem` alone cannot
+   *  tell the interface declaration apart from the implementation, which is
+   *  the entire distinction under test. */
+  const callsToFile = (): string[] =>
+    getRelationships(result, 'CALLS').map(
+      (e) => `${e.source} → ${e.target}@${e.targetFilePath.split('/').slice(-1)[0]}`,
+    );
+
+  // D1: a pointer-receiver implementor must be discoverable at all.
+  it('detects a pointer-receiver struct as an interface implementor', () => {
+    expect(implementsEdges()).toContain('OrderRepo → OrderRepository');
+  });
+
+  it('detects every pointer-receiver implementor, not just the first', () => {
+    expect(implementsEdges()).toContain('MockOrderRepo → OrderRepository');
+  });
+
+  // D2: the headline defect. Before the fix these were absent entirely.
+  it('resolves an interface-typed field call to the implementation', () => {
+    expect(callsToFile()).toContain('StartSession → DeleteItem@order_repo.go');
+  });
+
+  it('resolves an interface-typed field call from a handler to the implementation', () => {
+    expect(callsToFile()).toContain('Delete → DeleteItem@order_repo.go');
+  });
+
+  it('fans out to every implementor, not only the first', () => {
+    expect(callsToFile()).toContain('StartSession → DeleteItem@mock_repo.go');
+  });
+
+  it('emits the implementation edge with reason interface-dispatch', () => {
+    expect(callsWithReason()).toContain('StartSession → DeleteItem:interface-dispatch');
+  });
+
+  // R11-style control: the fan-out must ADD edges, never MOVE them. If the
+  // primary edge disappears, the fix relocated resolution instead of widening
+  // it and every consumer of the interface node silently loses its callers.
+  it('keeps the primary edge to the interface declaration', () => {
+    expect(callsToFile()).toContain('StartSession → DeleteItem@interfaces.go');
+  });
+
+  // Concrete-field control: resolved before #2813 and must be untouched.
+  it('keeps resolving a concrete-typed field to its implementation', () => {
+    expect(callsToFile()).toContain('GetPickQueue → LogAuditEventAsync@audit_repo.go');
+  });
+
+  it('does not fan out a concrete-typed field receiver', () => {
+    expect(callsWithReason()).not.toContain('GetPickQueue → LogAuditEventAsync:interface-dispatch');
+  });
+
+  // Negative control for structural detection: a partial match is not an
+  // implementation. Without this, "everything implements everything" passes.
+  it('does not treat a partial signature match as an implementation', () => {
+    expect(implementsEdges()).not.toContain('OrderRepo → PartialRepository');
+  });
+
+  // The issue reported these two files behaving differently at scale despite
+  // declaring the same field shape; both must resolve here.
+  it('resolves the same field shape identically across two service files', () => {
+    expect(callsToFile()).toContain('Release → DeleteItem@order_repo.go');
+    expect(callsToFile()).toContain('Queue → GetPickQueue@order_repo.go');
+  });
+});
