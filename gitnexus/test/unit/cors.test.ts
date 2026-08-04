@@ -287,6 +287,8 @@ describe('createPublicOriginMatcher: values that are not one reachable host', ()
     ['8080', 'a bare port number — new URL reads it as the integer IP 0.0.31.144'],
     ['under score', 'an embedded space'],
     ['a.com:99999', 'a port out of range'],
+    ['a.com:0', 'port 0, which parses but which no browser ever sends'],
+    ['https://a.com:00', 'port 00, which normalizes to 0 rather than to a default'],
     ['ftp://a.com', 'a non-http scheme'],
     ['https://a.com/ui', 'a path, which an Origin never has'],
     ['0.0.0.0', 'a wildcard bind, which has no host identity'],
@@ -304,6 +306,15 @@ describe('createPublicOriginMatcher: values that resolve to one host', () => {
     const matcher = createPublicOriginMatcher('https://app.example.com/');
     expect(matcher?.hostname).toBe('app.example.com');
     expect(matcher?.matches(new URL('https://app.example.com'))).toBe(true);
+  });
+
+  // Guards the port-0 rejection above from over-reaching: a leading zero on a
+  // real port normalizes to that port, not to 0.
+  it('reads a leading-zero port as the port it normalizes to', () => {
+    const matcher = createPublicOriginMatcher('http://a.com:0080');
+    expect(matcher?.matches(new URL('http://a.com'))).toBe(true);
+    expect(matcher?.matches(new URL('http://a.com:80'))).toBe(true);
+    expect(matcher?.matches(new URL('http://a.com:8080'))).toBe(false);
   });
 
   it('reports the hostname it resolved, for the startup log line', () => {

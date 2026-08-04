@@ -92,14 +92,21 @@ export function createPublicOriginMatcher(rawOrigin?: string): PublicOriginMatch
   const expectedProtocol = scheme ? `${scheme}:` : undefined;
   let expectedPort: string | undefined;
   if (authority.port) {
+    let configured: URL;
     try {
       // Round-trip through `new URL` so the configured port normalizes the same
       // way a request Origin's does — an elided default, a leading zero — and so
       // an out-of-range port throws here rather than yielding a dead matcher.
-      expectedPort = effectivePort(new URL(`${scheme ?? 'http'}://${hostname}:${authority.port}`));
+      configured = new URL(`${scheme ?? 'http'}://${hostname}:${authority.port}`);
     } catch {
       return undefined;
     }
+    // Port 0 survives that round-trip (so does `:00`) but no browser ever sends
+    // it, so keeping it would build exactly the dead-but-configured matcher this
+    // function exists to reject. `:0080` is unaffected — it normalizes to the
+    // elided default, not to 0.
+    if (configured.port === '0') return undefined;
+    expectedPort = effectivePort(configured);
   }
 
   return {
