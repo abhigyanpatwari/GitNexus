@@ -1004,10 +1004,18 @@ export function emitReceiverBoundCalls(
       // emits a wrong edge, not a missing one. The compound-receiver
       // construction path has applied this guard since #2770; Case 1 never did,
       // for dotted and single-segment receivers alike.
+      // Map lookup FIRST: it is an O(1) miss for almost every site, and the
+      // guard is a scope-chain walk (a Set allocation plus a linear `ownedDefs`
+      // scan per level). Guarding before looking up would charge that walk to
+      // every explicit-receiver site in every language, for a candidate set
+      // that is usually empty. Mirrors the order the compound-receiver
+      // construction path already uses.
+      const namespaceCandidates = namespaceTargets.get(receiverName);
       const targetFiles =
-        isNamespaceNameShadowed(receiverName, site.inScope, scopes) === true
-          ? undefined
-          : namespaceTargets.get(receiverName);
+        namespaceCandidates !== undefined &&
+        !isNamespaceNameShadowed(receiverName, site.inScope, scopes)
+          ? namespaceCandidates
+          : undefined;
       if (targetFiles !== undefined && provider.resolveQualifiedReceiverMember === undefined) {
         let found = false;
         for (const targetFile of targetFiles) {

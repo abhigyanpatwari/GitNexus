@@ -476,18 +476,39 @@ export function pythonNamespaceReceiverPaths(
   if (segments[0] !== edge.localName) return undefined;
 
   const out: (readonly [string, string])[] = [[edge.importPath, edge.targetFile]];
+
+  // Anchor the prefix packages on the RESOLVED leaf, never on the import
+  // spelling. `resolvePythonImportTarget` resolves off-root in two of its three
+  // tiers (suffix match and ancestor-relative), so `import utils.db` can land on
+  // `libs/common/utils/db.py`. Building `utils/__init__.py` from the spelling
+  // would then name a DIFFERENT package that merely shares the root segment —
+  // a wrong edge — and in a `src/` layout it would match nothing at all,
+  // silently making prefix keying inert for the most common Python layout.
+  //
+  // Walking back from the leaf also inherits that path's own separator, so no
+  // POSIX-vs-Windows probing is needed: workspace paths are not normalized at
+  // ingestion, and `moduleScopeByFile` is keyed by the raw `ParsedFile.filePath`.
+  const dirs = edge.targetFile.split('/').slice(0, -1);
+  // The import's leading segments name the leaf's innermost directories.
+  const offset = dirs.length - (segments.length - 1);
+  if (offset < 0) return out;
+
   for (let i = 1; i < segments.length; i++) {
-    const prefix = segments.slice(0, i);
-    // Workspace file paths are NOT normalized to POSIX at ingestion — this
-    // module already re-normalizes at five other comparison points, and
-    // `moduleScopeByFile` is keyed by the raw `ParsedFile.filePath`. Probing
-    // only the `/` spelling would silently mint no prefix keys on Windows,
-    // degrading `a.b.mid()` back to unresolved with nothing to show for it.
-    const packageFile = [
-      prefix.join('/') + '/__init__.py',
-      prefix.join('\\') + '\\__init__.py',
-    ].find(moduleFileExists);
-    if (packageFile !== undefined) out.push([prefix.join('.'), packageFile]);
+    const spelling = segments.slice(0, i).join('.');
+    const packageFile = dirs.slice(0, offset + i).join('/') + '/__init__.py';
+    // Package FIRST, then the leaf as a fallback — order is the whole point.
+    //
+    // `findExportedDef` only accepts a binding whose `origin === 'local'`, and
+    // the canonical package re-exports (`from .b.c import helper` in
+    // `__init__.py`) produce an IMPORT binding. Keying the prefix at the
+    // package alone therefore loses `a.helper()` entirely for the most common
+    // package shape — the fixtures here all define members locally in
+    // `__init__.py`, which is precisely the one layout where that mistake is
+    // invisible. Keeping the leaf behind the package restores that resolution
+    // while still letting a real definition in `__init__.py` win over a
+    // same-named decoy deeper in the package.
+    if (moduleFileExists(packageFile)) out.push([spelling, packageFile]);
+    out.push([spelling, edge.targetFile]);
   }
   return out;
 }

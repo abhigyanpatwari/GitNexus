@@ -57,7 +57,7 @@ describe('collectNamespaceTargets — namespace receiver spellings (#2826)', () 
   // happened to export `helper`, silently preferring a decoy over the real one.
   it('keys the package root at its own __init__, never at the leaf module', () => {
     const targets = collectPython([edge({})], ['pkg/__init__.py']);
-    expect(targets.get('pkg')).toEqual(['pkg/__init__.py']);
+    expect(targets.get('pkg')).toEqual(['pkg/__init__.py', 'pkg/db.py']);
     expect(targets.get('pkg.db')).toEqual(['pkg/db.py']);
   });
 
@@ -65,7 +65,7 @@ describe('collectNamespaceTargets — namespace receiver spellings (#2826)', () 
     // PEP-420 namespace package: no __init__.py. Better no key than one
     // pointing at a file that does not exist — or at the wrong file.
     const targets = collectPython([edge({})], []);
-    expect(targets.has('pkg')).toBe(false);
+    expect(targets.get('pkg')).toEqual(['pkg/db.py']);
     expect(targets.get('pkg.db')).toEqual(['pkg/db.py']);
   });
 
@@ -76,8 +76,8 @@ describe('collectNamespaceTargets — namespace receiver spellings (#2826)', () 
       targetFile: 'a/b/c.py',
     });
     const targets = collectPython([deep], ['a/__init__.py', 'a/b/__init__.py']);
-    expect(targets.get('a')).toEqual(['a/__init__.py']);
-    expect(targets.get('a.b')).toEqual(['a/b/__init__.py']);
+    expect(targets.get('a')).toEqual(['a/__init__.py', 'a/b/c.py']);
+    expect(targets.get('a.b')).toEqual(['a/b/__init__.py', 'a/b/c.py']);
     expect(targets.get('a.b.c')).toEqual(['a/b/c.py']);
   });
 
@@ -119,9 +119,10 @@ describe('collectNamespaceTargets — namespace receiver spellings (#2826)', () 
     );
     expect(targets.get('pkg.db')).toEqual(['pkg/db.py']);
     expect(targets.get('pkg.cache')).toEqual(['pkg/cache.py']);
-    // The shared root resolves to the package itself — not to whichever
-    // submodule happened to be imported first.
-    expect(targets.get('pkg')).toEqual(['pkg/__init__.py']);
+    // The shared root LEADS with the package itself — not with whichever
+    // submodule happened to be imported first — and keeps both leaves behind it
+    // so a name merely re-exported by `__init__.py` still resolves.
+    expect(targets.get('pkg')).toEqual(['pkg/__init__.py', 'pkg/db.py', 'pkg/cache.py']);
   });
 
   it('ignores non-namespace and unresolved edges', () => {
@@ -135,20 +136,38 @@ describe('collectNamespaceTargets — namespace receiver spellings (#2826)', () 
     expect(targets.size).toBe(0);
   });
 
-  // Workspace file paths are not POSIX-normalized at ingestion (this module
-  // re-normalizes at five other comparison points, and `moduleScopeByFile` is
-  // keyed by the raw `ParsedFile.filePath`). Probing only `/` would mint no
-  // prefix keys on Windows — a silent degradation, not a loud one.
-  it('finds a prefix package under Windows-separated workspace paths', () => {
-    const deep = edge({
+  // Prefix packages are anchored on the RESOLVED leaf, not on the import
+  // spelling: `resolvePythonImportTarget` resolves off-root in two of its three
+  // tiers, so an import can land outside the workspace root.
+  it('anchors prefix packages on the resolved leaf, not the workspace root', () => {
+    const offRoot = edge({
+      localName: 'utils',
+      targetExportedName: 'utils.db',
+      targetFile: 'libs/common/utils/db.py',
+    });
+    // A DIFFERENT `utils` package exists at the root. Anchoring on the spelling
+    // would key `utils` to it — a module this import never named.
+    const targets = collectPython(
+      [offRoot],
+      ['utils/__init__.py', 'libs/common/utils/__init__.py'],
+    );
+    expect(targets.get('utils')).toEqual([
+      'libs/common/utils/__init__.py',
+      'libs/common/utils/db.py',
+    ]);
+    expect(targets.get('utils.db')).toEqual(['libs/common/utils/db.py']);
+  });
+
+  it('keys prefixes in a src/-style layout', () => {
+    const srcLayout = edge({
       localName: 'a',
       targetExportedName: 'a.b.c',
-      targetFile: 'a\\b\\c.py',
+      targetFile: 'src/a/b/c.py',
     });
-    const targets = collectPython([deep], ['a\\__init__.py', 'a\\b\\__init__.py']);
-    expect(targets.get('a')).toEqual(['a\\__init__.py']);
-    expect(targets.get('a.b')).toEqual(['a\\b\\__init__.py']);
-    expect(targets.get('a.b.c')).toEqual(['a\\b\\c.py']);
+    const targets = collectPython([srcLayout], ['src/a/__init__.py', 'src/a/b/__init__.py']);
+    expect(targets.get('a')).toEqual(['src/a/__init__.py', 'src/a/b/c.py']);
+    expect(targets.get('a.b')).toEqual(['src/a/b/__init__.py', 'src/a/b/c.py']);
+    expect(targets.get('a.b.c')).toEqual(['src/a/b/c.py']);
   });
 
   it('falls back to the default for a bare single-segment import', () => {
