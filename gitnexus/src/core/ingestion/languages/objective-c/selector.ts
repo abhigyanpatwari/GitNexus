@@ -1,4 +1,8 @@
+import type { MixedChainStep } from 'gitnexus-shared';
+
 import type { SyntaxNode } from '../../utils/ast-helpers.js';
+import { MAX_CHAIN_DEPTH } from '../../utils/call-analysis.js';
+import { encodeReceiverChain } from '../../utils/receiver-chain-codec.js';
 
 export type ObjectiveCMethodKind = 'instance' | 'class';
 
@@ -74,7 +78,11 @@ export function extractObjectiveCMethodSignature(
       continue;
     }
     if (child.type !== 'method_parameter') continue;
-    if (pendingSelectorPiece !== null) selectorPieces.push(pendingSelectorPiece);
+    // Objective-C permits empty keyword pieces (`foo::` and even `::`).
+    // tree-sitter represents those as adjacent method_parameter nodes with no
+    // intervening identifier, so absence is a real empty piece, not a reason
+    // to discard the selector segment.
+    selectorPieces.push(pendingSelectorPiece ?? '');
     parameters.push(parameterSignature(child));
     pendingSelectorPiece = null;
   }
@@ -84,7 +92,10 @@ export function extractObjectiveCMethodSignature(
   }
   if (selectorPieces.length === 0) return null;
 
-  const selector = parameters.length === 0 ? selectorPieces[0] : `${selectorPieces.join(':')}:`;
+  const selector =
+    parameters.length === 0
+      ? selectorPieces[0]
+      : selectorPieces.map((piece) => `${piece}:`).join('');
   const kind = methodKind(node);
   return {
     selector,
@@ -119,17 +130,42 @@ export function extractObjectiveCMessageSend(node: SyntaxNode): ObjectiveCMessag
   if (node.type !== 'message_expression') return null;
   const receiver = node.childForFieldName('receiver')?.text.trim() ?? '';
   const selectorPieces: string[] = [];
+  let pendingSelectorPiece: string | null = null;
+  let skipLeadingArgument = false;
   let arity = 0;
 
   for (let index = 0; index < node.childCount; index += 1) {
     const child = node.child(index);
     if (child === null) continue;
-    if (node.fieldNameForChild(index) === 'method') selectorPieces.push(child.text);
-    if (child.type === ':') arity += 1;
+    const fieldName = node.fieldNameForChild(index);
+    // The grammar recovers a leading empty keyword (`[obj :arg ...]`) as a
+    // receiver-labelled ERROR ':' followed by a method-labelled argument.
+    // Preserve the empty piece and ignore that one recovered argument label.
+    if (fieldName === 'receiver' && child.type === 'ERROR' && child.text.trim() === ':') {
+      selectorPieces.push('');
+      arity += 1;
+      skipLeadingArgument = true;
+      continue;
+    }
+    if (fieldName === 'method') {
+      if (skipLeadingArgument) {
+        skipLeadingArgument = false;
+      } else {
+        pendingSelectorPiece = child.text;
+      }
+      continue;
+    }
+    if (child.type === ':') {
+      selectorPieces.push(pendingSelectorPiece ?? '');
+      pendingSelectorPiece = null;
+      arity += 1;
+    }
   }
+  if (arity === 0 && pendingSelectorPiece !== null) selectorPieces.push(pendingSelectorPiece);
   if (receiver === '' || selectorPieces.length === 0) return null;
 
-  const selector = arity === 0 ? selectorPieces[0] : `${selectorPieces.join(':')}:`;
+  const selector =
+    arity === 0 ? selectorPieces[0] : selectorPieces.map((piece) => `${piece}:`).join('');
   const kind = messageKind(node, receiver);
   const candidateNames =
     receiver === 'self' || receiver === 'super'
@@ -143,6 +179,24 @@ export function extractObjectiveCMessageSend(node: SyntaxNode): ObjectiveCMessag
     kind,
     arity,
   };
+}
+
+/** Encode nested bracket-message receivers through the shared chain codec. */
+export function encodeObjectiveCReceiverChain(receiverNode: SyntaxNode): string | undefined {
+  const steps: MixedChainStep[] = [];
+  let current = receiverNode;
+
+  while (current.type === 'message_expression') {
+    if (steps.length >= MAX_CHAIN_DEPTH) return undefined;
+    const message = extractObjectiveCMessageSend(current);
+    const innerReceiver = current.childForFieldName('receiver');
+    if (message === null || innerReceiver === null) return undefined;
+    steps.unshift({ kind: 'call', name: message.selector });
+    current = innerReceiver;
+  }
+
+  if (steps.length === 0) return undefined;
+  return encodeReceiverChain(current.text.trim(), steps);
 }
 
 /** Lower Objective-C subscripting to its receiver-dependent selector candidates. */

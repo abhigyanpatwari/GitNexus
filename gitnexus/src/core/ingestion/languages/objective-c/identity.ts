@@ -42,6 +42,117 @@ export function objectiveCSourceIdentity(input: {
   ]);
 }
 
+/** Source-site identity for selector literals, which may repeat within one owner. */
+export function objectiveCSelectorSourceIdentity(
+  input: {
+    readonly owner: string;
+    readonly sourceRole: ObjectiveCSourceRole;
+    readonly member: string;
+  },
+  node: SyntaxNode,
+): string {
+  return objectiveCKeyV1([
+    'source',
+    'CodeElement',
+    input.owner,
+    '<selector>',
+    input.sourceRole,
+    input.member,
+    'site',
+    `${node.startPosition.row}:${node.startPosition.column}`,
+    `${node.endPosition.row}:${node.endPosition.column}`,
+  ]);
+}
+
+const MAX_SELECTOR_LITERAL_LENGTH = 4_096;
+const SELECTOR_IDENTIFIER = /[$_\p{ID_Start}][$\p{ID_Continue}\u200C\u200D]*/uy;
+
+function selectorTokens(body: string): readonly string[] | null {
+  // C translation removes escaped newlines before comments are recognized.
+  const source = body.replace(/\\(?:\r\n|[\r\n])/g, '');
+  const tokens: string[] = [];
+  let cursor = 0;
+
+  while (cursor < source.length) {
+    if (/\s/u.test(source[cursor] ?? '')) {
+      cursor += 1;
+      continue;
+    }
+    if (source.startsWith('/*', cursor)) {
+      const end = source.indexOf('*/', cursor + 2);
+      if (end === -1) return null;
+      cursor = end + 2;
+      continue;
+    }
+    if (source.startsWith('//', cursor)) {
+      const end = source.slice(cursor + 2).search(/[\r\n]/u);
+      if (end === -1) return null;
+      cursor += end + 2;
+      continue;
+    }
+    if (source[cursor] === ':') {
+      tokens.push(':');
+      cursor += 1;
+      continue;
+    }
+
+    SELECTOR_IDENTIFIER.lastIndex = cursor;
+    const identifier = SELECTOR_IDENTIFIER.exec(source);
+    if (identifier === null) return null;
+    tokens.push(identifier[0]!.normalize('NFC'));
+    cursor = SELECTOR_IDENTIFIER.lastIndex;
+  }
+  return tokens;
+}
+
+export function objectiveCSelectorName(node: SyntaxNode): string | null {
+  if (node.type !== 'selector_expression') return null;
+  const text = node.text.trim();
+  if (text.length > MAX_SELECTOR_LITERAL_LENGTH || !text.startsWith('@selector')) return null;
+
+  let openParen = '@selector'.length;
+  while (openParen < text.length) {
+    if (/\s/u.test(text[openParen] ?? '')) {
+      openParen += 1;
+      continue;
+    }
+    if (text[openParen] === '\\') {
+      const newline = /^(?:\r\n|[\r\n])/u.exec(text.slice(openParen + 1));
+      if (newline !== null) {
+        openParen += newline[0].length + 1;
+        continue;
+      }
+    }
+    if (text.startsWith('/*', openParen)) {
+      const end = text.indexOf('*/', openParen + 2);
+      if (end === -1) return null;
+      openParen = end + 2;
+      continue;
+    }
+    if (text.startsWith('//', openParen)) {
+      const end = text.slice(openParen + 2).search(/[\r\n]/u);
+      if (end === -1) return null;
+      openParen += end + 2;
+      continue;
+    }
+    break;
+  }
+  if (text[openParen] !== '(' || !text.endsWith(')')) return null;
+
+  const tokens = selectorTokens(text.slice(openParen + 1, -1));
+  if (tokens === null || tokens.length === 0) return null;
+
+  if (!tokens.includes(':')) {
+    return tokens.length === 1 ? tokens[0]! : null;
+  }
+  for (let index = 0; index < tokens.length; ) {
+    if (tokens[index] !== ':') index += 1;
+    if (tokens[index] !== ':') return null;
+    index += 1;
+  }
+  return tokens.join('');
+}
+
 function directIdentifier(node: SyntaxNode): SyntaxNode | undefined {
   return node.namedChildren.find((child) => child.type === 'identifier');
 }

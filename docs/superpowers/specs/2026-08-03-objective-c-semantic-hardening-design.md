@@ -1,6 +1,6 @@
 # Objective-C 核心语义强化设计
 
-> 状态：设计已逐节确认，待书面复核
+> 状态：已实施，待完整 CI 验收
 > 日期：2026-08-03
 > 证据基线：`566affc842c8e19b2b7514584c2c6590b0e3d32d`
 > 前置设计：`2026-08-03-objective-c-core-language-design.md`
@@ -18,8 +18,8 @@
 - dynamic/ambiguous 场景的显式 unresolved 结果。
 
 总体方案仍以 `LanguageProvider` / `ScopeResolver` 为扩展边界。共享 ingestion 不识别
-Objective-C 名称、token 或类型；只增加两个可选、语言无关的 resolver hook，以及现有
-`resolveReceiverMember` 的可选尾部上下文。未实现这些扩展的 Provider 保持原路径。
+Objective-C 名称、token 或类型；增加一组可选、语言无关的 receiver/type/chain hook，以及
+现有 `resolveReceiverMember` 的可选尾部上下文。未实现这些扩展的 Provider 保持原路径。
 
 ## 2. 目标与非目标
 
@@ -188,7 +188,7 @@ contract。Foo 上存在多个 category implementation 时保持 ambiguous。
 
 ## 6. Related result 与嵌套消息链
 
-新增第二个语言无关的可选 hook：
+related result 使用语言无关的可选 hook：
 
 ```ts
 resolveRelatedResultOwner?(
@@ -200,6 +200,18 @@ resolveRelatedResultOwner?(
 
 compound receiver fold 在读取 Method return type 前调用。Objective-C 实现仅在显式
 `instancetype` 或满足方法族规则时返回 `receiverOwner`；其他返回类型交给既有逻辑。
+
+实际链式解析还使用以下均为可选、默认关闭的 provider-neutral 能力：
+
+- `resolveReceiverChainResultOwner`：解析非 receiver-relative 的声明返回 owner；
+- `receiverChainResultTypeRef`：跨 hop 保留完整 `TypeRef`（包括 protocol constraints）；
+- `receiverChainMemberCandidates`：生成该分派种类下的候选成员名；
+- `receiverChainBaseKind` / `receiverChainResultKind`：携带 class/instance 分派种类；
+- `resolveTypedReceiverChainsViaMemberHook`：让完整 `TypeRef` 参与中间与最终 hop；
+- `resolveSuperReceiverOwner`：把词法宿主规范化为 logical owner，供直接父类查找。
+
+这些扩展只携带通用 owner、类型、候选名和分派种类；共享代码不包含 Objective-C token 或
+类型规则。未配置时，compound resolver 不创建额外状态，也不改变旧的文本/MRO 路径。
 
 嵌套消息使用现有 receiver-chain codec，不引入平行 wire format。例如：
 
@@ -403,7 +415,7 @@ packaged smoke、Docker、benchmark、CodeQL、Gitleaks、workflow lint 和 Depe
 6. cold、warm、incremental、full canonical graph 完全一致。
 7. 既有 Objective-C 测试零回归。
 8. Java、Kotlin、Swift、C/C++ 等既有测试零新增失败。
-9. 两个可选 resolver hook 未配置时，其他 Provider 结果保持不变。
+9. 全部可选 receiver-chain hook 未配置时，其他 Provider 结果保持不变。
 10. 宏扫描器无异常、无超时、无 ReDoS；unknown input fail-open to original parse。
 11. 完整 CI 全绿后才允许合并。
 
@@ -450,7 +462,7 @@ Objective-C 支持等级仍保持 `experimental`；本阶段完成不自动升�
 | selector 任意绑定 Method | 高 | 独立 CodeElement；不发 target edge |
 | 多 protocol/category 任取首项 | 高 | candidate set + ambiguity suppression |
 | 宏补偿改变源码位置 | 高 | AST 优先；等长/换行 parity；synthetic captures 去重 |
-| 新 hook 影响其他语言 | 中 | 可选 hook；未配置 contract tests；全语言 graph parity |
+| 新 hook 影响其他语言 | 中 | 可选 hook；未配置路径 contract tests；全语言 graph parity |
 | selector CodeElement 增加图体积 | 低 | 仅显式 `@selector` occurrence；纳入 benchmark |
 | 类型扫描器受恶意输入拖慢 | 中 | 长度/深度/候选上限；线性 scanner；安全测试 |
 
@@ -458,7 +470,8 @@ Objective-C 支持等级仍保持 `experimental`；本阶段完成不自动升�
 
 方案在修正 `instancetype`、protocol-qualified metaclass、selector identity 和 receiver kind 后可实施。
 它没有把 Objective-C 语义塞入共享 ingestion，也不要求重构所有语言的 `TypeRef`。共享变化限于
-两个通用可选 hook 和一个可选上下文；主要复杂度由 Objective-C Provider/ScopeResolver 自己承担。
+一组默认关闭的通用 receiver/type/chain hook 和一个可选上下文；主要复杂度由 Objective-C
+Provider/ScopeResolver 自己承担。
 
 满足第 13 节验收门槛后，可认为 GitNexus 对常见纯 Objective-C iOS 源码的核心类型与消息语义
 达到可用于项目索引、调用图和影响分析的强化状态，但仍不等同于 Clang/Xcode 完整编译语义。

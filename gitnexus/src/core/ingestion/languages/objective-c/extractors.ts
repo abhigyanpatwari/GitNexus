@@ -20,6 +20,7 @@ import {
   objectiveCBlockName,
   objectiveCCategoryDisplayName,
   objectiveCContainerIdentity,
+  objectiveCSelectorName,
 } from './identity.js';
 
 const TYPE_DECLARATIONS = new Set([
@@ -119,6 +120,10 @@ export const objectiveCMethodExtractor: MethodExtractor = {
   },
 
   extractFunctionName(node) {
+    const selector = objectiveCSelectorName(node);
+    if (selector !== null) {
+      return { funcName: `@selector(${selector})`, label: 'CodeElement' };
+    }
     if (node.type === 'block_literal') {
       return { funcName: objectiveCBlockName(node), label: 'Function' };
     }

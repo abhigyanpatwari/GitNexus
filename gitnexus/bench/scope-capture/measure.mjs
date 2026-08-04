@@ -40,6 +40,7 @@ import { emitKotlinScopeCaptures } from '../../src/core/ingestion/languages/kotl
 import { emitJavaScopeCaptures } from '../../src/core/ingestion/languages/java/index.ts';
 import { emitCScopeCaptures } from '../../src/core/ingestion/languages/c/index.ts';
 import { emitCppScopeCaptures } from '../../src/core/ingestion/languages/cpp/index.ts';
+import { emitObjectiveCScopeCaptures } from '../../src/core/ingestion/languages/objective-c/captures.ts';
 import { emitDartScopeCaptures } from '../../src/core/ingestion/languages/dart/index.ts';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
@@ -227,6 +228,29 @@ const LANGS = [
       `  std::vector<Entity${n}> items;\n` +
       `  long getId() const { return id; }\n` +
       `  void setName(std::string v) { name = v; }\n};\n\n`,
+  },
+  {
+    name: 'objective-c',
+    emit: emitObjectiveCScopeCaptures,
+    fixturePrefix: 'objective-c',
+    exts: ['.m', '.h'],
+    file: 'bench.m',
+    // Cover inheritance/protocol adoption, properties, methods, and indirect
+    // block invokes together. Reusing `handler` in every method exercises the
+    // lexical binding index without permitting cross-method matches.
+    header:
+      '@protocol BenchEntity <NSObject>\n- (void)run;\n@end\n\n' +
+      '@interface BenchBase : NSObject\n@end\n\n' +
+      '@implementation BenchBase\n@end\n\n',
+    unit: (n) =>
+      `@interface Entity${n} : BenchBase <BenchEntity>\n` +
+      `@property(nonatomic) NSInteger identifier;\n` +
+      `- (void)run;\n@end\n\n` +
+      `@implementation Entity${n}\n` +
+      `- (void)run {\n` +
+      `  void (^handler)(void) = ^{ };\n` +
+      `  handler();\n` +
+      `}\n@end\n\n`,
   },
   {
     name: 'swift',

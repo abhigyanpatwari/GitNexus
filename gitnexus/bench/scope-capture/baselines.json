@@ -56,6 +56,12 @@
     "capture_groups_fp": 4605,
     "fixture_count": 279
   },
+  "objective-c": {
+    "fingerprint": "e3620b260798ace72308ad638deb6c1ca78c74c5e7553baf1c3120bc3561f7bf",
+    "scaling_budget": 1.5,
+    "_added": "Objective-C scope-capture coverage over .m/.h fixtures plus a synthetic inheritance, protocol-adoption, property, method, block-binding, and indirect-invoke workload. Initial measured scaling ratio 0.769 < 1.5.",
+    "_rebaselined_unsigned_selector_and_super_chains": "Ordinary message references now keep an unsigned selector while candidateNames preserve +/- dispatch, and the Objective-C resolver fixture adds instance/class/category nested-super related-result chains. Prior 8a632d6d82e1d08c4d99f95f936af836bcff30e73955261f762386db49e468c2 -> e3620b260798ace72308ad638deb6c1ca78c74c5e7553baf1c3120bc3561f7bf."
+  },
   "csharp": {
     "_rebaselined": "#1956 synth-widening: + csharp-qualified-base fixture; the synth now walks record_declaration + struct_declaration base_lists and handles alias_qualified_name (matching the #1940 legacy leg), so record/struct heritage now emits. csharp-record-base gains a record inherits capture. (record->record SAME-namespace EXTENDS is a separate registry resolution gap, tracked as follow-up.) Linear (~1.00). (Earlier #1956: heritage-bearing scale source.) | #942: scope-resolution-only cleanup reworded fixture comments; capture byte-positions shift, capture LOGIC unchanged. | #1924 F16: record primary-constructor base bindings now exclude constructor arguments; capture fingerprint changes, scaling remains linear. | #2036 review follow-up: csharp-record-base now exercises primary-constructor base dispatch end to end; +2 capture groups, scaling remains linear.",
     "fingerprint": "2930ef49fdce984a4c051409880bddfe8445e30e1c6bf802bd90a0a0f8f6b094",

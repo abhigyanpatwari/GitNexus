@@ -545,8 +545,10 @@ import type { ParseWorkerResult } from '../core/ingestion/workers/parse-worker.j
 // 70 -> 71: authoritative source language is persisted on ParsedFile and folded
 // into every production chunk key together with the classifier version.
 // Objective-C subscript sugar also persists candidate selector names on
-// ReferenceSite records. A warm v70 cache omits these facts and silently loses
-// the corresponding language classification and CALLS edges during resolution.
+// ReferenceSite records. Selector source sites, availability/nullability, and
+// Apple enum macro annotations are persisted into worker graph facts as well.
+// A warm v70 cache omits or collapses these facts and silently loses the
+// corresponding language classification, semantics, and CALLS edges.
 const SCHEMA_BUMP = 71;
 const GITNEXUS_PKG_VERSION = (() => {
   try {

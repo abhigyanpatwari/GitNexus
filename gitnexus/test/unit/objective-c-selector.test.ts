@@ -102,4 +102,44 @@ describe('Objective-C selector normalization', () => {
       candidateNames: ['-work', '+work'],
     });
   });
+
+  it('preserves empty selector keywords in declarations and message sends', () => {
+    const tree = parse(`
+      @interface EmptyKeywords
+      - (void)foo:(id)first :(id)second;
+      - (void):(id)first :(id)second;
+      @end
+      @implementation EmptyKeywords
+      - (void)run:(id)target {
+        [target foo:first :second];
+        [target :first :second];
+      }
+      @end
+    `);
+    const methods = tree.rootNode.descendantsOfType('method_declaration');
+    const messages = tree.rootNode.descendantsOfType('message_expression');
+
+    expect(extractObjectiveCMethodSignature(methods[0])).toMatchObject({
+      selector: 'foo::',
+      signedSelector: '-foo::',
+      arity: 2,
+    });
+    expect(extractObjectiveCMethodSignature(methods[1])).toMatchObject({
+      selector: '::',
+      signedSelector: '-::',
+      arity: 2,
+    });
+    expect(extractObjectiveCMessageSend(messages[0])).toMatchObject({
+      receiver: 'target',
+      selector: 'foo::',
+      candidateNames: ['-foo::', '+foo::'],
+      arity: 2,
+    });
+    expect(extractObjectiveCMessageSend(messages[1])).toMatchObject({
+      receiver: 'target',
+      selector: '::',
+      candidateNames: ['-::', '+::'],
+      arity: 2,
+    });
+  });
 });

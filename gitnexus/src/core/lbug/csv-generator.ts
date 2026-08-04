@@ -487,18 +487,18 @@ export const streamAllCSVsToDisk = async (
     );
     const classWriter = new BufferedCSVWriter(
       path.join(csvDir, 'class.csv'),
-      `${codeElementHeader},frameworkAnnotations,language,sourceIdentity,sourceRole,declarationKey`,
+      `${codeElementHeader},frameworkAnnotations,language,sourceIdentity,sourceRole,declarationKey,annotations`,
     );
     const interfaceWriter = new BufferedCSVWriter(
       path.join(csvDir, 'interface.csv'),
-      `${codeElementHeader},language,sourceIdentity,sourceRole,declarationKey`,
+      `${codeElementHeader},language,sourceIdentity,sourceRole,declarationKey,annotations`,
     );
     const methodHeader =
       'id,name,filePath,startLine,endLine,isExported,content,description,parameterCount,returnType,language,sourceIdentity,selector,isStatic,sourceRole,declarationKey,dispatchKey,categoryName,parameterTypes,annotations';
     const methodWriter = new BufferedCSVWriter(path.join(csvDir, 'method.csv'), methodHeader);
     const codeElemWriter = new BufferedCSVWriter(
       path.join(csvDir, 'codeelement.csv'),
-      `${codeElementHeader},language,sourceIdentity,sourceRole,categoryName,hostClassName,declarationKey`,
+      `${codeElementHeader},language,sourceIdentity,sourceRole,categoryName,hostClassName,declarationKey,selector,annotations`,
     );
     const communityWriter = new BufferedCSVWriter(
       path.join(csvDir, 'community.csv'),
@@ -560,14 +560,17 @@ export const streamAllCSVsToDisk = async (
     ] as const;
     const propertyHeader =
       'id,name,filePath,startLine,endLine,content,description,declaredType,isDetail,language,sourceIdentity,sourceRole,declarationKey,getterSelector,setterSelector,annotations';
+    const enumHeader = `${multiLangHeader},annotations,underlyingType`;
+    const variableHeader = `${multiLangHeader},annotations`;
     const multiLangWriters = new Map<string, BufferedCSVWriter>();
     for (const t of MULTI_LANG_TYPES) {
+      let header = multiLangHeader;
+      if (t === 'Property') header = propertyHeader;
+      if (t === 'Enum') header = enumHeader;
+      if (t === 'Variable') header = variableHeader;
       multiLangWriters.set(
         t,
-        new BufferedCSVWriter(
-          path.join(csvDir, `${t.toLowerCase()}.csv`),
-          t === 'Property' ? propertyHeader : multiLangHeader,
-        ),
+        new BufferedCSVWriter(path.join(csvDir, `${t.toLowerCase()}.csv`), header),
       );
     }
 
@@ -757,6 +760,7 @@ export const streamAllCSVsToDisk = async (
               row.push(
                 escapeCSVField(node.properties.sourceRole as string | undefined),
                 escapeCSVField(node.properties.declarationKey as string | undefined),
+                escapeCSVField(JSON.stringify(node.properties.annotations ?? [])),
               );
             } else if (node.label === 'CodeElement') {
               row.push(
@@ -764,6 +768,8 @@ export const streamAllCSVsToDisk = async (
                 escapeCSVField(node.properties.categoryName as string | undefined),
                 escapeCSVField(node.properties.hostClassName as string | undefined),
                 escapeCSVField(node.properties.declarationKey as string | undefined),
+                escapeCSVField(node.properties.selector as string | undefined),
+                escapeCSVField(JSON.stringify(node.properties.annotations ?? [])),
               );
             }
             pending = writer.addRow(row.join(','));
@@ -772,37 +778,45 @@ export const streamAllCSVsToDisk = async (
             const mlWriter = multiLangWriters.get(node.label);
             if (mlWriter) {
               const content = await extractContent(node, contentCache);
-              pending = mlWriter.addRow(
-                [
-                  escapeCSVField(node.id),
-                  escapeCSVField(node.properties.name || ''),
-                  escapeCSVField(node.properties.filePath || ''),
-                  escapeCSVNumber(node.properties.startLine, -1),
-                  escapeCSVNumber(node.properties.endLine, -1),
-                  escapeCSVField(content),
-                  escapeCSVField(formatFtsDescription(node.properties.description || '')),
-                  ...(node.label === 'Property'
-                    ? [
-                        escapeCSVField(node.properties.declaredType || ''),
-                        // R3-4 detail symbols — see PROPERTY_SCHEMA. Written as
-                        // an explicit boolean so the column is never empty; an
-                        // empty BOOLEAN cell fails the COPY.
-                        node.properties.isDetail === true ? 'true' : 'false',
-                      ]
-                    : []),
-                  escapeCSVField(node.properties.language as string | undefined),
-                  escapeCSVField(node.properties.sourceIdentity as string | undefined),
-                  ...(node.label === 'Property'
-                    ? [
-                        escapeCSVField(node.properties.sourceRole as string | undefined),
-                        escapeCSVField(node.properties.declarationKey as string | undefined),
-                        escapeCSVField(node.properties.getterSelector as string | undefined),
-                        escapeCSVField(node.properties.setterSelector as string | undefined),
-                        escapeCSVField(JSON.stringify(node.properties.annotations ?? [])),
-                      ]
-                    : []),
-                ].join(','),
+              const row = [
+                escapeCSVField(node.id),
+                escapeCSVField(node.properties.name || ''),
+                escapeCSVField(node.properties.filePath || ''),
+                escapeCSVNumber(node.properties.startLine, -1),
+                escapeCSVNumber(node.properties.endLine, -1),
+                escapeCSVField(content),
+                escapeCSVField(formatFtsDescription(node.properties.description || '')),
+              ];
+              if (node.label === 'Property') {
+                row.push(
+                  escapeCSVField(node.properties.declaredType || ''),
+                  // R3-4 detail symbols — see PROPERTY_SCHEMA. Written as
+                  // an explicit boolean so the column is never empty; an
+                  // empty BOOLEAN cell fails the COPY.
+                  node.properties.isDetail === true ? 'true' : 'false',
+                );
+              }
+              row.push(
+                escapeCSVField(node.properties.language as string | undefined),
+                escapeCSVField(node.properties.sourceIdentity as string | undefined),
               );
+              if (node.label === 'Property') {
+                row.push(
+                  escapeCSVField(node.properties.sourceRole as string | undefined),
+                  escapeCSVField(node.properties.declarationKey as string | undefined),
+                  escapeCSVField(node.properties.getterSelector as string | undefined),
+                  escapeCSVField(node.properties.setterSelector as string | undefined),
+                  escapeCSVField(JSON.stringify(node.properties.annotations ?? [])),
+                );
+              } else if (node.label === 'Enum') {
+                row.push(
+                  escapeCSVField(JSON.stringify(node.properties.annotations ?? [])),
+                  escapeCSVField(node.properties.underlyingType as string | undefined),
+                );
+              } else if (node.label === 'Variable') {
+                row.push(escapeCSVField(JSON.stringify(node.properties.annotations ?? [])));
+              }
+              pending = mlWriter.addRow(row.join(','));
             } else {
               // Unknown label: not in codeWriterMap or multiLangWriters, so there
               // is no CSV table for it and it is intentionally NOT persisted —

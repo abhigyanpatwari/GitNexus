@@ -99,4 +99,99 @@ describe('Objective-C scope captures', () => {
       ),
     ).toBe(true);
   });
+
+  it('keeps ordinary receiver selectors unsigned until receiver resolution', () => {
+    const captures = emitObjectiveCScopeCaptures(
+      [
+        '@interface Worker : NSObject',
+        '- (void)work;',
+        '@end',
+        'void run(Worker *worker) {',
+        '  [worker work];',
+        '}',
+      ].join('\n'),
+      'Sources/Worker.m',
+    );
+    const call = captures.find((match) => match['@reference.call.member'] !== undefined);
+
+    expect(call?.['@reference.name']?.text).toBe('work');
+    expect(JSON.parse(call?.['@reference.candidate-names']?.text ?? '[]')).toEqual([
+      '-work',
+      '+work',
+    ]);
+  });
+
+  it('does not treat lightweight generic parameters as adopted protocols', () => {
+    const captures = emitObjectiveCScopeCaptures(
+      `
+      @protocol ObjectType
+      @end
+      @protocol Trackable
+      @end
+      @interface VariantRoot<__covariant ObjectType>
+      @end
+      @interface Box<__covariant ObjectType> : NSObject <Trackable>
+      @end
+      @interface InvariantBox<ObjectType> : NSObject <Trackable>
+      @end
+      `,
+      'Sources/Box.h',
+    );
+
+    expect(
+      captures
+        .filter((match) => match['@reference.inherits'] !== undefined)
+        .map((match) => match['@reference.name']?.text),
+    ).toEqual(['NSObject', 'Trackable', 'NSObject', 'Trackable']);
+  });
+
+  it('captures protocols adopted with no superclass, after a superclass, and by a category', () => {
+    const captures = emitObjectiveCScopeCaptures(
+      [
+        '@protocol Trackable',
+        '@end',
+        '@interface Root <Trackable>',
+        '@end',
+        '@interface Store : NSObject <Trackable>',
+        '@end',
+        '@interface Store (Extras) <Trackable>',
+        '@end',
+      ].join('\n'),
+      'Sources/Adoption.h',
+    );
+
+    expect(
+      captures
+        .filter((match) => match['@reference.inherits'] !== undefined)
+        .map((match) => match['@reference.name']?.text),
+    ).toEqual(['Trackable', 'NSObject', 'Trackable', 'Trackable']);
+  });
+
+  it('emits one lexical callable-flow invoke for each shadowed block binding', () => {
+    const captures = emitObjectiveCScopeCaptures(
+      [
+        'void first(void) {',
+        '  void (^handler)(void) = ^{ };',
+        '  handler();',
+        '}',
+        'void second(void) {',
+        '  void (^handler)(void) = ^{ };',
+        '  handler();',
+        '}',
+      ].join('\n'),
+      'Sources/Blocks.m',
+    );
+    const seeds = captures.filter((match) => match['@callable-flow.seed'] !== undefined);
+    const invokes = captures.filter(
+      (match) =>
+        match['@callable-flow.invoke'] !== undefined &&
+        match['@callable-flow.callee']?.text === 'handler',
+    );
+
+    expect(seeds).toHaveLength(2);
+    expect(new Set(seeds.map((match) => match['@callable-flow.target-name']?.text))).toHaveLength(
+      2,
+    );
+    expect(invokes.map((match) => match['@callable-flow.invoke']?.range.startLine)).toEqual([3, 7]);
+  });
 });

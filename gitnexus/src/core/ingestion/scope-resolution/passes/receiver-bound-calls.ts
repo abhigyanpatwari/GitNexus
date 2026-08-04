@@ -59,11 +59,11 @@
  * resolved to a wrong target.
  */
 
-import type { ParsedFile, SymbolDefinition } from 'gitnexus-shared';
+import type { ParsedFile, ReferenceSite, SymbolDefinition, TypeRef } from 'gitnexus-shared';
 import type { KnowledgeGraph } from '../../../graph/types.js';
 import type { ScopeResolutionIndexes } from '../../model/scope-resolution-indexes.js';
 import type { SemanticModel } from '../../model/semantic-model.js';
-import type { ScopeResolver } from '../contract/scope-resolver.js';
+import type { ReceiverMemberResolution, ScopeResolver } from '../contract/scope-resolver.js';
 import type { GraphNodeLookup } from '../graph-bridge/node-lookup.js';
 import type { WorkspaceResolutionIndex } from '../workspace-index.js';
 import { collectNamespaceTargets } from '../scope/namespace-targets.js';
@@ -90,6 +90,7 @@ import type { CalleeIdSink } from '../graph-bridge/callee-id-sink.js';
 import {
   resolveCompoundReceiverClass,
   resolveCompoundReceiverTyped,
+  type ReceiverChainFoldResolution,
 } from '../passes/compound-receiver.js';
 import { erasedTypeApplication, typeApplicationArguments } from '../../utils/template-arguments.js';
 import {
@@ -129,6 +130,16 @@ type ReceiverBoundProviderSubset = Pick<
   | 'resolveQualifiedReceiverMember'
   | 'namespaceReceiverPaths'
   | 'resolveReceiverMember'
+  | 'resolveClassNameReceiversViaMemberHook'
+  | 'resolveTypedReceiverMember'
+  | 'resolveTypedReceiverChainsViaMemberHook'
+  | 'resolveRelatedResultOwner'
+  | 'resolveReceiverChainResultOwner'
+  | 'receiverChainResultTypeRef'
+  | 'receiverChainMemberCandidates'
+  | 'receiverChainBaseKind'
+  | 'receiverChainResultKind'
+  | 'resolveSuperReceiverOwner'
   | 'resolveThisViaEnclosingClass'
   | 'isEnclosingClassReceiver'
   | 'conversionRankFn'
@@ -137,6 +148,39 @@ type ReceiverBoundProviderSubset = Pick<
   | 'isStaticOnly'
   | 'normalizeTypeArgument'
 >;
+
+/** Find the receiver-relative type fact without naming a language's receiver
+ * token. Providers that model caller-context-dependent ancestor dispatch use
+ * the `source: 'self'` semantic channel even when the surface token differs. */
+function findReceiverRelativeTypeRef(
+  startScope: string,
+  scopes: ScopeResolutionIndexes,
+): TypeRef | undefined {
+  let currentId: string | null = startScope;
+  const visited = new Set<string>();
+  while (currentId !== null) {
+    if (visited.has(currentId)) return undefined;
+    visited.add(currentId);
+    const scope = scopes.scopeTree.getScope(currentId);
+    if (scope === undefined) return undefined;
+    for (const typeRef of scope.typeBindings.values()) {
+      if (typeRef.source === 'self') return typeRef;
+    }
+    currentId = scope.parent;
+  }
+  return undefined;
+}
+
+function isSuperReceiverAtScope(
+  provider: ReceiverBoundProviderSubset,
+  receiverName: string,
+  inScope: string,
+  scopes: ScopeResolutionIndexes,
+): boolean {
+  return provider.isSuperReceiverInContext !== undefined
+    ? provider.isSuperReceiverInContext(receiverName, inScope, scopes)
+    : provider.isSuperReceiver(receiverName);
+}
 
 /** A bare, undecorated identifier and nothing else — see {@link isBareTypeName}. */
 const BARE_TYPE_NAME_RE = /^[A-Za-z_$][\w$]*$/;
@@ -339,6 +383,15 @@ export function emitReceiverBoundCalls(
     stripTypePreservingDecoration: provider.stripTypePreservingDecoration,
     resolveThisViaEnclosingClass: provider.resolveThisViaEnclosingClass,
   };
+  const hasReceiverChainHooks =
+    provider.receiverChainMemberCandidates !== undefined ||
+    provider.resolveClassNameReceiversViaMemberHook === true ||
+    provider.resolveRelatedResultOwner !== undefined ||
+    provider.resolveReceiverChainResultOwner !== undefined ||
+    provider.receiverChainResultTypeRef !== undefined ||
+    provider.resolveTypedReceiverChainsViaMemberHook === true ||
+    provider.receiverChainBaseKind !== undefined ||
+    provider.receiverChainResultKind !== undefined;
   // Loop-invariant: both hooks come off the pass arguments, so the options bag
   // for `classifyReceiverOrigin` is built once here rather than per dropped site.
   const receiverOriginOpts = {
@@ -795,6 +848,252 @@ export function emitReceiverBoundCalls(
       const receiverName = site.explicitReceiver.name;
       const memberName = site.name;
       const siteKey = `${parsed.filePath}:${site.atRange.startLine}:${site.atRange.startCol}`;
+      let receiverChainTerminalResolution:
+        | Extract<ReceiverMemberResolution, { readonly kind: 'unresolved' | 'ambiguous' }>
+        | undefined;
+      let receiverChainFolded: ReceiverChainFoldResolution | undefined;
+      const typedChainEnabled =
+        provider.resolveTypedReceiverChainsViaMemberHook === true &&
+        provider.resolveTypedReceiverMember !== undefined;
+      const terminalChainEnabled =
+        typedChainEnabled || provider.resolveClassNameReceiversViaMemberHook === true;
+      const siteCompoundOpts = {
+        ...fileCompoundOpts,
+        receiverChain: site.receiverChain,
+        memberNameCandidates: provider.receiverChainMemberCandidates,
+        receiverChainBaseKind: provider.receiverChainBaseKind,
+        receiverChainResultKind: provider.receiverChainResultKind,
+        onReceiverChainFolded: hasReceiverChainHooks
+          ? (resolution: ReceiverChainFoldResolution) => {
+              receiverChainFolded = resolution;
+            }
+          : undefined,
+        resolveReceiverChainBase:
+          provider.resolveSuperReceiverOwner === undefined
+            ? undefined
+            : (chainBaseName: string) => {
+                if (!isSuperReceiverAtScope(provider, chainBaseName, site.inScope, scopes)) {
+                  return undefined;
+                }
+                const lexicalOwner = findEnclosingClassDef(site.inScope, scopes);
+                if (lexicalOwner === undefined) return undefined;
+                const logicalOwner = provider.resolveSuperReceiverOwner?.(lexicalOwner, scopes);
+                if (logicalOwner === undefined) return undefined;
+                const receiverTypeRef = findReceiverRelativeTypeRef(site.inScope, scopes);
+                const receiverKind = provider.receiverChainBaseKind?.(
+                  chainBaseName,
+                  receiverTypeRef,
+                  logicalOwner,
+                  scopes,
+                );
+                return {
+                  owner: logicalOwner,
+                  receiverName: chainBaseName,
+                  ...(receiverTypeRef === undefined ? {} : { receiverTypeRef }),
+                  ...(receiverKind === undefined ? {} : { receiverKind }),
+                };
+              },
+        onReceiverChainTerminal: terminalChainEnabled
+          ? (
+              resolution: Extract<
+                ReceiverMemberResolution,
+                { readonly kind: 'unresolved' | 'ambiguous' }
+              >,
+            ) => {
+              receiverChainTerminalResolution = resolution;
+            }
+          : undefined,
+        resolveTypedChainMember: typedChainEnabled
+          ? (
+              receiverTypeRef: TypeRef,
+              chainReceiverName: string,
+              chainMemberName: string,
+              receiverKind?: 'class' | 'instance',
+            ) => {
+              const candidateNames = provider.receiverChainMemberCandidates?.(
+                chainMemberName,
+                receiverKind,
+              ) ?? [chainMemberName];
+              const chainCallsite = { candidateNames };
+              const resolution = provider.resolveTypedReceiverMember?.(
+                receiverTypeRef,
+                chainReceiverName,
+                chainMemberName,
+                chainCallsite,
+                scopes,
+                model,
+              );
+              if (resolution === undefined) return undefined;
+              if (resolution.kind === 'unresolved' || resolution.kind === 'ambiguous') {
+                return resolution;
+              }
+              if (resolution.definition.isDeleted === true) {
+                return {
+                  kind: 'unresolved' as const,
+                  reason: 'selected-callable-deleted' as const,
+                  candidateIds: [resolution.definition.nodeId],
+                };
+              }
+              const receiverOwner =
+                findClassBindingInScope(
+                  receiverTypeRef.declaredAtScope,
+                  receiverTypeRef.rawName,
+                  scopes,
+                  provider.stripTypePreservingDecoration,
+                ) ??
+                (resolution.definition.ownerId === undefined
+                  ? undefined
+                  : scopes.defs.get(resolution.definition.ownerId));
+              const relatedOwner =
+                receiverOwner === undefined
+                  ? undefined
+                  : provider.resolveRelatedResultOwner?.(
+                      resolution.definition,
+                      receiverOwner,
+                      chainCallsite,
+                      scopes,
+                    );
+              const resultOwner =
+                relatedOwner === undefined && receiverOwner !== undefined
+                  ? provider.resolveReceiverChainResultOwner?.(
+                      resolution.definition,
+                      receiverOwner,
+                      chainCallsite,
+                      scopes,
+                    )
+                  : undefined;
+              return {
+                kind: 'resolved' as const,
+                method: resolution.definition,
+                ...(relatedOwner === undefined ? {} : { relatedOwner }),
+                ...(resultOwner === undefined ? {} : { resultOwner }),
+                resultTypeRef: provider.receiverChainResultTypeRef?.(
+                  resolution.definition,
+                  scopes,
+                  index,
+                ),
+              };
+            }
+          : undefined,
+        resolveChainMember:
+          provider.resolveRelatedResultOwner === undefined &&
+          provider.resolveReceiverChainResultOwner === undefined &&
+          provider.receiverChainResultKind === undefined &&
+          provider.resolveClassNameReceiversViaMemberHook !== true
+            ? undefined
+            : (
+                receiverOwner: SymbolDefinition,
+                chainReceiverName: string,
+                chainMemberName: string,
+                candidateNames: readonly string[],
+                receiverKind?: 'class' | 'instance',
+              ) => {
+                const chainCallsite = { candidateNames };
+                let memberLookupOwner = receiverOwner;
+                if (
+                  provider.resolveSuperReceiverOwner !== undefined &&
+                  isSuperReceiverAtScope(provider, chainReceiverName, site.inScope, scopes)
+                ) {
+                  const ancestors =
+                    scopes.methodDispatch.extendsOnlyMroFor?.(receiverOwner.nodeId) ??
+                    scopes.methodDispatch.mroFor(receiverOwner.nodeId);
+                  const directAncestorId = ancestors[0];
+                  const directAncestor =
+                    directAncestorId === undefined ? undefined : scopes.defs.get(directAncestorId);
+                  if (directAncestor === undefined) {
+                    return {
+                      kind: 'unresolved' as const,
+                      reason: 'receiver-unresolved' as const,
+                      candidateIds: [],
+                    };
+                  }
+                  memberLookupOwner = directAncestor;
+                }
+                const resolvedChainMember = (method: SymbolDefinition) => {
+                  if (method.isDeleted === true) {
+                    return {
+                      kind: 'unresolved' as const,
+                      reason: 'selected-callable-deleted' as const,
+                      candidateIds: [method.nodeId],
+                    };
+                  }
+                  const relatedOwner = provider.resolveRelatedResultOwner?.(
+                    method,
+                    receiverOwner,
+                    chainCallsite,
+                    scopes,
+                  );
+                  const resultOwner =
+                    relatedOwner === undefined
+                      ? provider.resolveReceiverChainResultOwner?.(
+                          method,
+                          receiverOwner,
+                          chainCallsite,
+                          scopes,
+                        )
+                      : undefined;
+                  const resultTypeRef = provider.receiverChainResultTypeRef?.(
+                    method,
+                    scopes,
+                    index,
+                  );
+                  return {
+                    kind: 'resolved' as const,
+                    method,
+                    ...(relatedOwner === undefined ? {} : { relatedOwner }),
+                    ...(resultOwner === undefined ? {} : { resultOwner }),
+                    ...(resultTypeRef === undefined ? {} : { resultTypeRef }),
+                  };
+                };
+
+                if (provider.resolveClassNameReceiversViaMemberHook === true) {
+                  const providerResolution = provider.resolveReceiverMember?.(
+                    memberLookupOwner,
+                    chainMemberName,
+                    chainCallsite,
+                    scopes,
+                    model,
+                    receiverKind === undefined
+                      ? undefined
+                      : {
+                          receiverName: chainReceiverName,
+                          receiverKind,
+                        },
+                  );
+                  if (providerResolution !== undefined) {
+                    if (
+                      providerResolution.kind === 'unresolved' ||
+                      providerResolution.kind === 'ambiguous'
+                    ) {
+                      return providerResolution;
+                    }
+                    return resolvedChainMember(providerResolution.definition);
+                  }
+                }
+
+                for (const ownerId of [
+                  memberLookupOwner.nodeId,
+                  ...scopes.methodDispatch.mroFor(memberLookupOwner.nodeId),
+                ]) {
+                  const candidates = new Map<string, SymbolDefinition>();
+                  for (const candidateName of candidateNames) {
+                    for (const method of model.methods.lookupAllByOwner(ownerId, candidateName)) {
+                      candidates.set(method.nodeId, method);
+                    }
+                  }
+                  if (candidates.size > 1) {
+                    return {
+                      kind: 'ambiguous' as const,
+                      candidateIds: [...candidates.keys()].sort(),
+                    };
+                  }
+                  if (candidates.size === 1) {
+                    return resolvedChainMember(candidates.values().next().value!);
+                  }
+                }
+                return undefined;
+              },
+      };
 
       // ── owned-but-unbound receiver ───────────────────────────────
       // The language declared this scope REBINDS the receiver and gave
@@ -822,12 +1121,15 @@ export function emitReceiverBoundCalls(
       // Languages with caller-context-dependent super classification
       // (C++) define `isSuperReceiverInContext`; we prefer it. Simple
       // text-only languages (Python, Java, PHP) use the plain hook.
-      const isSuper =
-        provider.isSuperReceiverInContext !== undefined
-          ? provider.isSuperReceiverInContext(receiverName, site.inScope, scopes)
-          : provider.isSuperReceiver(receiverName);
+      const isSuper = isSuperReceiverAtScope(provider, receiverName, site.inScope, scopes);
       if (isSuper) {
-        const enclosingClass = findEnclosingClassDef(site.inScope, scopes);
+        const lexicalEnclosingClass = findEnclosingClassDef(site.inScope, scopes);
+        const enclosingClass =
+          lexicalEnclosingClass === undefined
+            ? undefined
+            : provider.resolveSuperReceiverOwner === undefined
+              ? lexicalEnclosingClass
+              : provider.resolveSuperReceiverOwner(lexicalEnclosingClass, scopes);
         if (enclosingClass !== undefined) {
           // For super-receiver dispatch (`parent::`, `base.`, `super()`),
           // walk the inheritance-only ancestor chain when the language
@@ -917,6 +1219,25 @@ export function emitReceiverBoundCalls(
             continue;
           }
         }
+        // A provider that normalizes the lexical super owner is also taking
+        // ownership of super dispatch semantics. For that opt-in path, a
+        // missing host, ancestor, or member is terminal: falling through to
+        // receiver-blind lookup would hide the dropped dispatch (and could
+        // become a wrong edge if the generic index later gains a candidate).
+        // Providers without the hook keep their historical fallback.
+        if (provider.resolveSuperReceiverOwner !== undefined) {
+          options.recordResolutionOutcome?.({
+            kind: 'suppressed',
+            phase: 'receiver-bound-calls',
+            filePath: parsed.filePath,
+            name: site.name,
+            range: site.atRange,
+            reason: 'receiver-unresolved',
+            candidateIds: [],
+          });
+          handledSites.add(siteKey);
+          continue;
+        }
       }
 
       // ── Case 0: compound receiver ────────────────────────────────
@@ -948,14 +1269,76 @@ export function emitReceiverBoundCalls(
           index,
           // Group A: the receiver IS this site's expression, so the site's
           // captured chain describes it and the structural fold applies.
-          { ...fileCompoundOpts, receiverChain: site.receiverChain },
+          siteCompoundOpts,
         );
         const currentClass = resolved?.def;
         compoundReceiverUnresolved = currentClass === undefined;
+        if (currentClass === undefined && receiverChainTerminalResolution !== undefined) {
+          recordReceiverMemberSuppression(
+            options.recordResolutionOutcome,
+            parsed.filePath,
+            site,
+            receiverChainTerminalResolution,
+          );
+          handledSites.add(siteKey);
+          continue;
+        }
         if (resolved !== undefined && currentClass !== undefined) {
           const chain = [currentClass.nodeId, ...scopes.methodDispatch.mroFor(currentClass.nodeId)];
           let memberDef: SymbolDefinition | undefined;
+          let memberReason: string | undefined;
+          let memberConfidence: number | undefined;
           let ambiguousOwnerId: string | undefined;
+          if (
+            receiverChainFolded !== undefined &&
+            receiverChainFolded.receiverKind !== undefined &&
+            provider.resolveClassNameReceiversViaMemberHook === true
+          ) {
+            const foldedReceiverName = receiverChainFolded.receiverName ?? receiverName;
+            const providerResolution =
+              typedChainEnabled && receiverChainFolded.receiverTypeRef !== undefined
+                ? provider.resolveTypedReceiverMember?.(
+                    receiverChainFolded.receiverTypeRef,
+                    foldedReceiverName,
+                    memberName,
+                    site,
+                    scopes,
+                    model,
+                  )
+                : provider.resolveReceiverMember?.(currentClass, memberName, site, scopes, model, {
+                    receiverName: foldedReceiverName,
+                    receiverKind: receiverChainFolded.receiverKind,
+                    ...(receiverChainFolded.receiverTypeRef === undefined
+                      ? {}
+                      : { receiverTypeRef: receiverChainFolded.receiverTypeRef }),
+                  });
+            if (
+              providerResolution?.kind === 'unresolved' ||
+              providerResolution?.kind === 'ambiguous'
+            ) {
+              recordReceiverMemberSuppression(
+                options.recordResolutionOutcome,
+                parsed.filePath,
+                site,
+                providerResolution,
+              );
+              handledSites.add(siteKey);
+              continue;
+            }
+            if (providerResolution === undefined) {
+              recordReceiverMemberSuppression(
+                options.recordResolutionOutcome,
+                parsed.filePath,
+                site,
+                { kind: 'unresolved', reason: 'receiver-unresolved', candidateIds: [] },
+              );
+              handledSites.add(siteKey);
+              continue;
+            }
+            memberDef = providerResolution.definition;
+            memberReason = providerResolution.reason;
+            memberConfidence = providerResolution.confidence;
+          }
           // Static-only filter (#1756 / U3): same shape as Case 4's
           // overload-aware chain walk (skip-and-walk-on). When
           // an owner's resolved candidate is static-only (Kotlin
@@ -968,7 +1351,7 @@ export function emitReceiverBoundCalls(
           // reference index has no compound-receiver entry for
           // shapes like `Logger.create("a")`), so there's no wrong
           // target to suppress.
-          for (const ownerId of chain) {
+          for (const ownerId of memberDef === undefined ? chain : []) {
             const picked =
               site.kind === 'call'
                 ? pickFirstNonStaticOnly(ownerId, memberName, site, model, provider)
@@ -1014,9 +1397,12 @@ export function emitReceiverBoundCalls(
               nodeLookup,
               site,
               memberDef,
-              memberDef.filePath !== parsed.filePath ? 'import-resolved' : 'global',
+              site.kind === 'write' || site.kind === 'read'
+                ? site.kind
+                : (memberReason ??
+                    (memberDef.filePath !== parsed.filePath ? 'import-resolved' : 'global')),
               seen,
-              0.85,
+              site.kind === 'write' || site.kind === 'read' ? 1.0 : (memberConfidence ?? 0.85),
               collapse,
               calleeCapture,
             );
@@ -1104,17 +1490,18 @@ export function emitReceiverBoundCalls(
             site,
             scopes,
             model,
+            { receiverName, receiverKind: 'self' },
           );
-          if (languageResolution?.kind === 'ambiguous') {
-            options.recordResolutionOutcome?.({
-              kind: 'suppressed',
-              phase: 'receiver-bound-calls',
-              filePath: parsed.filePath,
-              name: site.name,
-              range: site.atRange,
-              reason: 'member-lookup-ambiguous',
-              candidateIds: languageResolution.candidateIds,
-            });
+          if (
+            languageResolution?.kind === 'unresolved' ||
+            languageResolution?.kind === 'ambiguous'
+          ) {
+            recordReceiverMemberSuppression(
+              options.recordResolutionOutcome,
+              parsed.filePath,
+              site,
+              languageResolution,
+            );
             handledSites.add(siteKey);
             continue;
           }
@@ -1371,9 +1758,73 @@ export function emitReceiverBoundCalls(
         }
       }
 
+      const typeRef = findReceiverTypeBinding(site.inScope, receiverName, scopes);
+
       // ── Case 2: class-name receiver ──────────────────────────────
-      const classDef = findClassBindingInScope(site.inScope, receiverName, scopes);
+      // A provider that distinguishes class/instance dispatch must let an
+      // explicit lexical type binding win when a parameter/local shadows a
+      // same-named class. Other providers retain the historical lookup order.
+      const classDef =
+        provider.resolveClassNameReceiversViaMemberHook === true && typeRef !== undefined
+          ? undefined
+          : findClassBindingInScope(site.inScope, receiverName, scopes);
       if (classDef !== undefined) {
+        const languageResolution =
+          provider.resolveClassNameReceiversViaMemberHook === true
+            ? provider.resolveReceiverMember?.(classDef, memberName, site, scopes, model, {
+                receiverName,
+                receiverKind: 'class',
+              })
+            : undefined;
+        if (languageResolution?.kind === 'unresolved' || languageResolution?.kind === 'ambiguous') {
+          recordReceiverMemberSuppression(
+            options.recordResolutionOutcome,
+            parsed.filePath,
+            site,
+            languageResolution,
+          );
+          handledSites.add(siteKey);
+          continue;
+        }
+        if (languageResolution?.kind === 'resolved') {
+          const memberDef = languageResolution.definition;
+          if (
+            suppressDeletedCallTarget(
+              options.recordResolutionOutcome,
+              parsed.filePath,
+              site,
+              memberDef,
+            )
+          ) {
+            handledSites.add(siteKey);
+            continue;
+          }
+          const reason =
+            site.kind === 'write' || site.kind === 'read'
+              ? site.kind
+              : (languageResolution.reason ??
+                (memberDef.filePath !== parsed.filePath ? 'import-resolved' : 'global'));
+          const confidence =
+            site.kind === 'write' || site.kind === 'read'
+              ? 1.0
+              : (languageResolution.confidence ?? 0.85);
+          const ok = tryEmitEdge(
+            graph,
+            scopes,
+            nodeLookup,
+            site,
+            memberDef,
+            reason,
+            seen,
+            confidence,
+            collapse,
+            calleeCapture,
+          );
+          if (ok) emitted++;
+          handledSites.add(siteKey);
+          continue;
+        }
+
         const chain = [classDef.nodeId, ...scopes.methodDispatch.mroFor(classDef.nodeId)];
         let memberDef: SymbolDefinition | undefined;
         let ambiguousOwnerId: string | undefined;
@@ -1454,7 +1905,6 @@ export function emitReceiverBoundCalls(
       }
 
       // ── Case 3: dotted typeBinding (`u: models.User`) ────────────
-      const typeRef = findReceiverTypeBinding(site.inScope, receiverName, scopes);
       if (typeRef !== undefined && typeRef.rawName.includes('.')) {
         const [nsName, ...classNameParts] = typeRef.rawName.split('.');
         const className = classNameParts.join('.');
@@ -1532,6 +1982,7 @@ export function emitReceiverBoundCalls(
           ? (typeRef.rawName.split('.', 1)[0] ?? '')
           : undefined;
       if (typeRef !== undefined && chainHead !== undefined && !namespaceTargets.has(chainHead)) {
+        const case3bCompoundOpts = hasReceiverChainHooks ? siteCompoundOpts : fileCompoundOpts;
         // Try the plain dotted-field walk first — covers property /
         // collection-accessor shapes (`.Values`, Kotlin `.size`) and
         // field chains. Fall back to call-form (`x()`) which treats
@@ -1547,7 +1998,7 @@ export function emitReceiverBoundCalls(
           typeRef.declaredAtScope,
           scopes,
           index,
-          fileCompoundOpts,
+          case3bCompoundOpts,
         );
         if (resolved === undefined && !typeRef.rawName.includes('(')) {
           resolved = resolveCompoundReceiverTyped(
@@ -1555,7 +2006,7 @@ export function emitReceiverBoundCalls(
             typeRef.declaredAtScope,
             scopes,
             index,
-            fileCompoundOpts,
+            case3bCompoundOpts,
           );
         }
         const ownerDef = resolved?.def;
@@ -1682,6 +2133,62 @@ export function emitReceiverBoundCalls(
 
       // ── Case 4: simple typeBinding (`u: U`) ──────────────────────
       if (typeRef !== undefined && !typeRef.rawName.includes('.')) {
+        const typedResolution = provider.resolveTypedReceiverMember?.(
+          typeRef,
+          receiverName,
+          memberName,
+          site,
+          scopes,
+          model,
+        );
+        if (typedResolution !== undefined) {
+          if (typedResolution.kind === 'unresolved' || typedResolution.kind === 'ambiguous') {
+            recordReceiverMemberSuppression(
+              options.recordResolutionOutcome,
+              parsed.filePath,
+              site,
+              typedResolution,
+            );
+            handledSites.add(siteKey);
+            continue;
+          }
+          const memberDef = typedResolution.definition;
+          if (
+            suppressDeletedCallTarget(
+              options.recordResolutionOutcome,
+              parsed.filePath,
+              site,
+              memberDef,
+            )
+          ) {
+            handledSites.add(siteKey);
+            continue;
+          }
+          const reason =
+            site.kind === 'write' || site.kind === 'read'
+              ? site.kind
+              : (typedResolution.reason ??
+                (memberDef.filePath !== parsed.filePath ? 'import-resolved' : 'global'));
+          const confidence =
+            site.kind === 'write' || site.kind === 'read'
+              ? 1.0
+              : (typedResolution.confidence ?? 0.85);
+          const ok = tryEmitEdge(
+            graph,
+            scopes,
+            nodeLookup,
+            site,
+            memberDef,
+            reason,
+            seen,
+            confidence,
+            collapse,
+            calleeCapture,
+          );
+          if (ok) emitted++;
+          handledSites.add(siteKey);
+          continue;
+        }
         // A `rawName` the capture layer reduced from a type application is
         // resolved through the application it was written as, so the erasure
         // takes the GROUNDED route rather than binding whatever the workspace
@@ -1734,7 +2241,7 @@ export function emitReceiverBoundCalls(
             scopes,
             index,
             // Group A, same reasoning as Case 0 above.
-            { ...fileCompoundOpts, receiverChain: site.receiverChain },
+            siteCompoundOpts,
           );
         }
         // The receiver has a declared type, that type is a type APPLICATION,
@@ -1775,17 +2282,18 @@ export function emitReceiverBoundCalls(
             site,
             scopes,
             model,
+            { receiverName, receiverKind: 'instance', receiverTypeRef: typeRef },
           );
-          if (languageResolution?.kind === 'ambiguous') {
-            options.recordResolutionOutcome?.({
-              kind: 'suppressed',
-              phase: 'receiver-bound-calls',
-              filePath: parsed.filePath,
-              name: site.name,
-              range: site.atRange,
-              reason: 'member-lookup-ambiguous',
-              candidateIds: languageResolution.candidateIds,
-            });
+          if (
+            languageResolution?.kind === 'unresolved' ||
+            languageResolution?.kind === 'ambiguous'
+          ) {
+            recordReceiverMemberSuppression(
+              options.recordResolutionOutcome,
+              parsed.filePath,
+              site,
+              languageResolution,
+            );
             handledSites.add(siteKey);
             continue;
           }
@@ -2479,6 +2987,23 @@ function pickFirstNonStaticOnly(
   if (isOverloadAmbiguousAfterNormalization(candidates, site.arity)) return OVERLOAD_AMBIGUOUS;
   if (candidates.length > 1) return OVERLOAD_AMBIGUOUS;
   return candidates[0] ?? overloads[0];
+}
+
+function recordReceiverMemberSuppression(
+  record: ResolutionOutcomeRecorder | undefined,
+  filePath: string,
+  site: ReferenceSite,
+  resolution: Extract<ReceiverMemberResolution, { readonly kind: 'unresolved' | 'ambiguous' }>,
+): void {
+  record?.({
+    kind: 'suppressed',
+    phase: 'receiver-bound-calls',
+    filePath,
+    name: site.name,
+    range: site.atRange,
+    reason: resolution.kind === 'unresolved' ? resolution.reason : 'member-lookup-ambiguous',
+    candidateIds: resolution.candidateIds ?? [],
+  });
 }
 
 function suppressDeletedCallTarget(

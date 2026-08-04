@@ -1349,6 +1349,10 @@ export const OBJECTIVE_C_QUERIES = `${C_QUERIES}
   "("
   ")")
 
+; Selector literals are source facts, not callable references. The provider
+; supplies the complete @selector(...) display name and a position-stable id.
+(selector_expression) @definition.code_element
+
 ; Lightweight forward declarations.
 (class_declaration (identifier) @name) @definition.class
 (protocol_forward_declaration (identifier) @name) @definition.interface

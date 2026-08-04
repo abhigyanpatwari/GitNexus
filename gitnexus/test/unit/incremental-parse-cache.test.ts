@@ -236,8 +236,8 @@ describe('PARSE_CACHE_VERSION', () => {
   // Moved 68 -> 70 for Spring non-HTTP handler side-channel facts (#2417 /
   // #2891). Main holds 68 and open PR #2972 publishes 69, so 70 is the next
   // free value above every known claim at this merge.
-  // Moved 70 -> 71 because Objective-C adds parse-time language and subscript
-  // selector facts that cannot be reconstructed from a v70 warm cache.
+  // Moved 70 -> 71 because Objective-C adds parse-time language, selector, and
+  // semantic graph facts that cannot be reconstructed from a v70 warm cache.
   it('pins SCHEMA_BUMP to 71 so concurrent bumps cannot silently collide (#2766)', () => {
     expect(Number(PARSE_CACHE_VERSION.split('+', 1)[0])).toBe(71);
     // The PREVIOUS version must fail the reuse gate, not merely differ from the

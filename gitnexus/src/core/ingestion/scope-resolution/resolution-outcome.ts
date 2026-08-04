@@ -21,7 +21,10 @@ export type ResolutionSuppressionReason =
    *  this to report `impact()`/`context()` counts as a lower bound rather
    *  than as exact, since a dropped site's callee is by definition unknown
    *  and cannot be attributed to any target. */
-  | 'receiver-unresolved';
+  | 'receiver-unresolved'
+  /** Provider-owned, namespaced suppression reason. The shared pipeline keeps
+   *  the value opaque so language semantics stay behind resolver hooks. */
+  | `${string}: ${string}`;
 
 export type ResolutionOutcome =
   | {

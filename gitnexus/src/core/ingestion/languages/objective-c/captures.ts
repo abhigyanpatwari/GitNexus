@@ -5,6 +5,7 @@ import { getTreeSitterBufferSize } from '../../constants.js';
 import { nodeToCapture, syntheticCapture, type SyntaxNode } from '../../utils/ast-helpers.js';
 import { parseSourceSafe } from '../../../tree-sitter/safe-parse.js';
 import {
+  encodeObjectiveCReceiverChain,
   extractObjectiveCMessageSend,
   extractObjectiveCMethodSignature,
   extractObjectiveCSubscriptSend,
@@ -13,6 +14,8 @@ import {
   objectiveCBlockName,
   objectiveCCategoryDisplayName,
   objectiveCContainerIdentity,
+  objectiveCSelectorName,
+  objectiveCSelectorSourceIdentity,
   objectiveCSourceIdentity,
   objectiveCSourceScope,
 } from './identity.js';
@@ -21,10 +24,15 @@ import {
   getObjectiveCParser,
   getObjectiveCScopeQuery,
 } from './query.js';
+import { objectiveCMacroAnnotation, preprocessObjectiveCMacroWrappers } from './macro-semantics.js';
 import {
-  objectiveCMacroAnnotation,
-  preprocessObjectiveCMacroWrappers,
-} from './macro-semantics.js';
+  objectiveCAdoptedProtocolNames,
+  objectiveCProtocolParentsAnnotation,
+} from './protocol-heritage.js';
+import {
+  objectiveCAvailabilityAnnotations,
+  objectiveCNullabilityAnnotations,
+} from './declaration-semantics.js';
 
 function enclosingTypeName(node: SyntaxNode): string | null {
   let current = node.parent;
@@ -70,6 +78,7 @@ function declarationMetadata(
       | 'synthesized';
     readonly member: string;
     readonly annotations: readonly string[];
+    readonly sourceIdentity?: string;
   },
 ): Pick<CaptureMatch, '@declaration.annotations' | '@declaration.source-identity'> {
   return {
@@ -81,7 +90,7 @@ function declarationMetadata(
     '@declaration.source-identity': syntheticCapture(
       '@declaration.source-identity',
       anchor,
-      objectiveCSourceIdentity(input),
+      input.sourceIdentity ?? objectiveCSourceIdentity(input),
     ),
   };
 }
@@ -89,22 +98,14 @@ function declarationMetadata(
 function containerTags(node: SyntaxNode): readonly string[] {
   const identity = objectiveCContainerIdentity(node);
   if (identity === null) return [];
-  const tags = [`objc:site:${identity.sourceRole}`, `objc:owner:${identity.owner}`];
-  for (const availability of node.descendantsOfType('availability_attribute_specifier')) {
-    const text = availability.text.trim();
-    if (text.length > 0) tags.push(`objc:availability:${text}`);
-  }
+  const tags = [
+    `objc:site:${identity.sourceRole}`,
+    `objc:owner:${identity.owner}`,
+    ...objectiveCAvailabilityAnnotations(node),
+  ];
   if (identity.isCategory) tags.push(`objc:category:${identity.category}`);
   if (identity.isClassExtension) tags.push('objc:class-extension');
   return tags;
-}
-
-function nullabilityTags(node: SyntaxNode): readonly string[] {
-  return node
-    .descendantsOfType('type_qualifier')
-    .map((qualifier) => qualifier.text.trim())
-    .filter((qualifier) => /^_(?:Nullable|Nonnull|Null_unspecified)$/.test(qualifier))
-    .map((qualifier) => `objc:nullability:${qualifier}`);
 }
 
 function protocolRequirementTag(node: SyntaxNode): string | undefined {
@@ -175,7 +176,7 @@ function propertyAccessorCaptures(property: SyntaxNode, ownerNode: SyntaxNode): 
     ...(ownerIdentity.isCategory ? [`objc:category:${ownerIdentity.category}`] : []),
     ...(ownerIdentity.isClassExtension ? ['objc:class-extension'] : []),
     ...(protocolRequirement === undefined ? [] : [protocolRequirement]),
-    ...nullabilityTags(property),
+    ...objectiveCNullabilityAnnotations(property),
     'objc:property-accessor',
     `objc:property-name:${propertyInfo.nameNode.text}`,
   ];
@@ -251,9 +252,8 @@ function advancedDeclarationCaptures(root: SyntaxNode): CaptureMatch[] {
   }
 
   for (const selectorExpression of root.descendantsOfType('selector_expression')) {
-    const match = selectorExpression.text.trim().match(/^@selector\((.*)\)$/s);
-    const selector = match?.[1]?.trim();
-    if (selector === undefined || selector.length === 0) continue;
+    const selector = objectiveCSelectorName(selectorExpression);
+    if (selector === null) continue;
     const container = enclosingTypeNode(selectorExpression);
     const identity = container === null ? null : objectiveCContainerIdentity(container);
     const owner = identity?.owner ?? '<file>';
@@ -269,13 +269,19 @@ function advancedDeclarationCaptures(root: SyntaxNode): CaptureMatch[] {
         sourceRole,
         member: name,
         annotations: ['objc:selector-reference', `objc:selector:${selector}`],
+        sourceIdentity: objectiveCSelectorSourceIdentity(
+          { owner, sourceRole, member: name },
+          selectorExpression,
+        ),
       }),
     });
   }
 
   for (const enumSpecifier of root.descendantsOfType('enum_specifier')) {
     const annotation = objectiveCMacroAnnotation(enumSpecifier.text);
-    const name = enumSpecifier.namedChildren.find((child) => child.type === 'type_identifier')?.text;
+    const name = enumSpecifier.namedChildren.find(
+      (child) => child.type === 'type_identifier',
+    )?.text;
     if (annotation === null || name === undefined || name.length === 0) continue;
     out.push({
       '@declaration.code-element': nodeToCapture('@declaration.code-element', enumSpecifier),
@@ -481,29 +487,11 @@ function advancedDeclarationCaptures(root: SyntaxNode): CaptureMatch[] {
       ),
     });
 
-    for (const call of root.descendantsOfType('call_expression')) {
-      const callee = call.childForFieldName('function');
-      if (callee?.type !== 'identifier' || callee.text !== destination.text) continue;
-      const argumentsNode = call.childForFieldName('arguments');
-      const arity = argumentsNode?.namedChildCount ?? 0;
-      out.push({
-        '@callable-flow.invoke': nodeToCapture('@callable-flow.invoke', call),
-        '@callable-flow.callee': nodeToCapture('@callable-flow.callee', callee),
-        '@callable-flow.callee-kind': syntheticCapture(
-          '@callable-flow.callee-kind',
-          callee,
-          'binding',
-        ),
-        '@callable-flow.invocation-kind': syntheticCapture(
-          '@callable-flow.invocation-kind',
-          call,
-          'indirect',
-        ),
-        '@callable-flow.arity': syntheticCapture('@callable-flow.arity', call, String(arity)),
-      });
-    }
+    // `processCFamilyScopeMatches` already emits callable invokes through one
+    // AST walk and its lexical value-binding index. Objective-C only needs the
+    // block-literal seed above; rescanning every call for every block both
+    // duplicated invoke facts and cross-wired shadowed names across functions.
   }
-
   return out;
 }
 
@@ -532,6 +520,7 @@ function synthesizeMethodBindings(node: SyntaxNode, owner: string): CaptureMatch
       '@type-binding.type': syntheticCapture('@type-binding.type', typeNode, rawType),
     });
   }
+
   return out;
 }
 
@@ -544,15 +533,44 @@ function inheritanceReferences(root: SyntaxNode): CaptureMatch[] {
     const bases: SyntaxNode[] = [];
     const superclass = node.childForFieldName('superclass');
     if (superclass !== null) bases.push(superclass);
-    for (const list of node.namedChildren.filter(
-      (child) =>
-        child.type === 'parameterized_arguments' || child.type === 'protocol_reference_list',
-    )) {
-      bases.push(
-        ...list
-          .descendantsOfType(['identifier', 'type_identifier'])
-          .filter((base) => base.text.length > 0),
-      );
+    if (node.type === 'protocol_declaration') {
+      const adopted = new Set(objectiveCAdoptedProtocolNames(node));
+      for (const list of node.namedChildren.filter(
+        (child) =>
+          child.type === 'parameterized_arguments' || child.type === 'protocol_reference_list',
+      )) {
+        bases.push(
+          ...list
+            .descendantsOfType(['identifier', 'type_identifier'])
+            .filter((base) => adopted.has(base.text.trim())),
+        );
+      }
+    } else {
+      for (const list of node.namedChildren) {
+        if (list.type === 'protocol_reference_list') {
+          bases.push(
+            ...list
+              .descendantsOfType(['identifier', 'type_identifier'])
+              .filter((base) => base.text.length > 0),
+          );
+          continue;
+        }
+        if (list.type !== 'parameterized_arguments') continue;
+        const isGenericParameterList =
+          superclass !== null
+            ? list.startIndex < superclass.startIndex
+            : /\b__(?:co|contra)variant\b/.test(list.text);
+        if (isGenericParameterList) continue;
+        // In Objective-C grammar both lightweight generics and protocol
+        // adoption may be parameterized_arguments. Clang disambiguates by
+        // placement around the superclass; without one, variance marks a
+        // generic declaration while an unqualified `<P>` adopts a protocol.
+        bases.push(
+          ...list
+            .descendantsOfType(['identifier', 'type_identifier'])
+            .filter((base) => base.text.length > 0),
+        );
+      }
     }
     for (const base of bases) {
       out.push({
@@ -570,7 +588,9 @@ export function emitObjectiveCScopeCaptures(
   cachedTree?: unknown,
 ): readonly CaptureMatch[] {
   const parseText =
-    cachedTree === undefined ? preprocessObjectiveCMacroWrappers(sourceText, _filePath) : sourceText;
+    cachedTree === undefined
+      ? preprocessObjectiveCMacroWrappers(sourceText, _filePath)
+      : sourceText;
   const tree =
     (cachedTree as ReturnType<ReturnType<typeof getObjectiveCParser>['parse']> | undefined) ??
     parseSourceSafe(getObjectiveCParser(), parseText, undefined, {
@@ -642,10 +662,11 @@ export function emitObjectiveCScopeCaptures(
             member: signature.signedSelector,
             annotations: [
               ...containerTags(ownerNode!),
+              ...objectiveCAvailabilityAnnotations(methodNode),
               ...(protocolRequirementTag(methodNode) === undefined
                 ? []
                 : [protocolRequirementTag(methodNode)!]),
-              ...nullabilityTags(methodNode),
+              ...objectiveCNullabilityAnnotations(methodNode),
               `objc:method-kind:${signature.kind}`,
             ],
           }),
@@ -679,6 +700,9 @@ export function emitObjectiveCScopeCaptures(
             annotations: [
               `objc:site:${sourceRole}`,
               `objc:owner:${identity.owner}`,
+              ...(objectiveCProtocolParentsAnnotation(typeNode) === undefined
+                ? []
+                : [objectiveCProtocolParentsAnnotation(typeNode)!]),
               ...(identity.isCategory ? [`objc:category:${identity.category}`] : []),
               ...(identity.isClassExtension ? ['objc:class-extension'] : []),
               ...containerTags(typeNode).filter((tag) => tag.startsWith('objc:availability:')),
@@ -717,9 +741,10 @@ export function emitObjectiveCScopeCaptures(
             member: info.nameNode.text,
             annotations: [
               ...containerTags(ownerNode!),
+              ...objectiveCAvailabilityAnnotations(propertyNode),
               ...(protocolRequirement === undefined ? [] : [protocolRequirement]),
               ...attributes.map((attribute) => `objc:property:${attribute}`),
-              ...nullabilityTags(propertyNode),
+              ...objectiveCNullabilityAnnotations(propertyNode),
             ],
           }),
         );
@@ -736,13 +761,29 @@ export function emitObjectiveCScopeCaptures(
       grouped['@reference.name'] = syntheticCapture(
         '@reference.name',
         callNode,
-        message?.signedSelector ?? subscript!.referenceName,
+        message === null
+          ? subscript!.referenceName
+          : message.receiver === 'self' || message.receiver === 'super'
+            ? message.signedSelector
+            : message.selector,
       );
       grouped['@reference.receiver'] = syntheticCapture(
         '@reference.receiver',
         callNode,
         call.receiver,
       );
+      const receiverNode = callNode.childForFieldName('receiver');
+      const receiverChain =
+        message === null || receiverNode === null
+          ? undefined
+          : encodeObjectiveCReceiverChain(receiverNode);
+      if (receiverChain !== undefined) {
+        grouped['@reference.receiver-chain'] = syntheticCapture(
+          '@reference.receiver-chain',
+          receiverNode,
+          receiverChain,
+        );
+      }
       grouped['@reference.arity'] = syntheticCapture(
         '@reference.arity',
         callNode,

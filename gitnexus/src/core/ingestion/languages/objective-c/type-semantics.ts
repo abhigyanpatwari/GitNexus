@@ -17,6 +17,12 @@ const QUALIFIERS = new Set([
   'nullable',
   'nonnull',
   'null_unspecified',
+  '_Nullable',
+  '_Nonnull',
+  '_Null_unspecified',
+  '__nullable',
+  '__nonnull',
+  '__null_unspecified',
   '__kindof',
   '__weak',
   '__strong',
@@ -24,6 +30,11 @@ const QUALIFIERS = new Set([
   '__autoreleasing',
 ]);
 const GENERIC_BASES = new Set(['NSArray', 'NSDictionary', 'NSSet', 'NSOrderedSet']);
+const IDENTIFIER_PATTERN = /^[_\p{ID_Start}][_\p{ID_Continue}\u200C\u200D]*/u;
+
+function readIdentifier(text: string): string | null {
+  return IDENTIFIER_PATTERN.exec(text)?.[0] ?? null;
+}
 
 function dynamicDescriptor(raw: string): ObjectiveCTypeDescriptor {
   return {
@@ -79,7 +90,7 @@ function splitTopLevel(text: string): string[] | null {
 
 function isProtocolList(parts: readonly string[], baseName: string): boolean {
   if (GENERIC_BASES.has(baseName)) return false;
-  return parts.every((part) => /^[A-Za-z_][A-Za-z0-9_]*$/.test(part));
+  return parts.every((part) => readIdentifier(part) === part);
 }
 
 /**
@@ -97,19 +108,18 @@ export function parseObjectiveCTypeDescriptor(text: string): ObjectiveCTypeDescr
     while (/\s/.test(normalized[cursor] ?? '')) cursor += 1;
   };
   const consumeQualifier = (): boolean => {
-    const match = normalized.slice(cursor).match(/^([A-Za-z_][A-Za-z0-9_]*)\b/);
-    if (match === null || !QUALIFIERS.has(match[1])) return false;
-    qualifiers.push(match[1]);
-    cursor += match[1].length;
+    const identifier = readIdentifier(normalized.slice(cursor));
+    if (identifier === null || !QUALIFIERS.has(identifier)) return false;
+    qualifiers.push(identifier);
+    cursor += identifier.length;
     return true;
   };
 
   consumeWhitespace();
   while (consumeQualifier()) consumeWhitespace();
 
-  const baseMatch = normalized.slice(cursor).match(/^([A-Za-z_][A-Za-z0-9_]*)/);
-  if (baseMatch === null) return dynamicDescriptor(raw);
-  const baseName = baseMatch[1];
+  const baseName = readIdentifier(normalized.slice(cursor));
+  if (baseName === null) return dynamicDescriptor(raw);
   cursor += baseName.length;
   consumeWhitespace();
 
@@ -144,28 +154,24 @@ export function parseObjectiveCTypeDescriptor(text: string): ObjectiveCTypeDescr
     };
   }
   if (baseName === 'id') {
-    return parts.length === 0
-      ? dynamicDescriptor(raw)
-      : {
-          raw,
-          baseName,
-          protocols: parts,
-          typeArguments: [],
-          qualifiers,
-          receiverForm: 'instance',
-        };
+    return {
+      raw,
+      baseName,
+      protocols: parts,
+      typeArguments: [],
+      qualifiers,
+      receiverForm: parts.length === 0 ? 'dynamic' : 'instance',
+    };
   }
   if (baseName === 'Class') {
-    return parts.length === 0
-      ? dynamicDescriptor(raw)
-      : {
-          raw,
-          baseName,
-          protocols: parts,
-          typeArguments: [],
-          qualifiers,
-          receiverForm: 'class-object',
-        };
+    return {
+      raw,
+      baseName,
+      protocols: parts,
+      typeArguments: [],
+      qualifiers,
+      receiverForm: 'class-object',
+    };
   }
 
   const protocolList = isProtocolList(parts, baseName);

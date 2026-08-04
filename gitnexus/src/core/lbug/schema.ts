@@ -74,6 +74,7 @@ CREATE NODE TABLE Class (
   sourceIdentity STRING,
   sourceRole STRING,
   declarationKey STRING,
+  annotations STRING,
   PRIMARY KEY (id)
 )`;
 
@@ -91,6 +92,7 @@ CREATE NODE TABLE Interface (
   sourceIdentity STRING,
   sourceRole STRING,
   declarationKey STRING,
+  annotations STRING,
   PRIMARY KEY (id)
 )`;
 
@@ -135,6 +137,8 @@ CREATE NODE TABLE CodeElement (
   categoryName STRING,
   hostClassName STRING,
   declarationKey STRING,
+  selector STRING,
+  annotations STRING,
   PRIMARY KEY (id)
 )`;
 
@@ -193,7 +197,21 @@ CREATE NODE TABLE \`${name}\` (
 )`;
 
 export const STRUCT_SCHEMA = CODE_ELEMENT_BASE('Struct');
-export const ENUM_SCHEMA = CODE_ELEMENT_BASE('Enum');
+export const ENUM_SCHEMA = `
+CREATE NODE TABLE \`Enum\` (
+  id STRING,
+  name STRING,
+  filePath STRING,
+  startLine INT64,
+  endLine INT64,
+  content STRING,
+  description STRING,
+  language STRING,
+  sourceIdentity STRING,
+  annotations STRING,
+  underlyingType STRING,
+  PRIMARY KEY (id)
+)`;
 export const MACRO_SCHEMA = CODE_ELEMENT_BASE('Macro');
 export const TYPEDEF_SCHEMA = CODE_ELEMENT_BASE('Typedef');
 export const UNION_SCHEMA = CODE_ELEMENT_BASE('Union');
@@ -203,7 +221,20 @@ export const IMPL_SCHEMA = CODE_ELEMENT_BASE('Impl');
 export const TYPE_ALIAS_SCHEMA = CODE_ELEMENT_BASE('TypeAlias');
 export const CONST_SCHEMA = CODE_ELEMENT_BASE('Const');
 export const STATIC_SCHEMA = CODE_ELEMENT_BASE('Static');
-export const VARIABLE_SCHEMA = CODE_ELEMENT_BASE('Variable');
+export const VARIABLE_SCHEMA = `
+CREATE NODE TABLE \`Variable\` (
+  id STRING,
+  name STRING,
+  filePath STRING,
+  startLine INT64,
+  endLine INT64,
+  content STRING,
+  description STRING,
+  language STRING,
+  sourceIdentity STRING,
+  annotations STRING,
+  PRIMARY KEY (id)
+)`;
 export const PROPERTY_SCHEMA = `
 CREATE NODE TABLE \`Property\` (
   id STRING,

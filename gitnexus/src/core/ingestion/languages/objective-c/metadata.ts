@@ -6,11 +6,19 @@ import {
   objectiveCBlockName,
   objectiveCContainerIdentity,
   objectiveCKeyV1,
+  objectiveCSelectorName,
+  objectiveCSelectorSourceIdentity,
   objectiveCSourceIdentity,
   objectiveCSourceScope,
   type ObjectiveCContainerIdentity,
   type ObjectiveCSourceRole,
 } from './identity.js';
+import { objectiveCMacroAnnotation, objectiveCMacroUnderlyingType } from './macro-semantics.js';
+import { objectiveCProtocolParentsAnnotation } from './protocol-heritage.js';
+import {
+  objectiveCAvailabilityAnnotations,
+  objectiveCNullabilityAnnotations,
+} from './declaration-semantics.js';
 
 export interface ObjectiveCDefinitionMetadata {
   readonly sourceIdentity?: string;
@@ -52,11 +60,13 @@ function sourceIdentity(
 
 function containerAnnotations(
   identity: ObjectiveCContainerIdentity,
+  node: SyntaxNode,
   sourceRole: ObjectiveCSourceRole = identity.sourceRole,
 ): string[] {
   return [
     `objc:site:${sourceRole}`,
     `objc:owner:${identity.owner}`,
+    ...objectiveCAvailabilityAnnotations(node),
     ...(identity.isCategory ? [`objc:category:${identity.category}`] : []),
     ...(identity.isClassExtension ? ['objc:class-extension'] : []),
   ];
@@ -132,7 +142,7 @@ function categorySourceSite(
       identity.sourceRole,
       nodeName,
     ),
-    annotations: containerAnnotations(identity),
+    annotations: containerAnnotations(identity, container),
     properties: {
       sourceRole: identity.sourceRole,
       declarationKey,
@@ -148,7 +158,35 @@ export function extractObjectiveCDefinitionMetadata(
   nodeName: string,
   nodeLabel: NodeLabel,
 ): ObjectiveCDefinitionMetadata {
-  if (nodeLabel === 'CodeElement') return categorySourceSite(node, nodeName) ?? {};
+  if (nodeLabel === 'CodeElement') {
+    const selector = objectiveCSelectorName(node);
+    if (selector !== null) {
+      const container = enclosingContainer(node);
+      const identity = container === null ? null : objectiveCContainerIdentity(container);
+      const owner = identity?.owner ?? '<file>';
+      const sourceRole = identity?.sourceRole ?? 'implementation';
+      return {
+        sourceIdentity: objectiveCSelectorSourceIdentity(
+          { owner, sourceRole, member: nodeName },
+          node,
+        ),
+        annotations: ['objc:selector-reference', `objc:selector:${selector}`],
+        properties: { sourceRole, selector },
+      };
+    }
+    return categorySourceSite(node, nodeName) ?? {};
+  }
+
+  if (nodeLabel === 'Enum') {
+    const macroAnnotation = objectiveCMacroAnnotation(node.text);
+    if (macroAnnotation !== null) {
+      const underlyingType = objectiveCMacroUnderlyingType(node.text);
+      return {
+        annotations: [macroAnnotation],
+        ...(underlyingType === null ? {} : { properties: { underlyingType } }),
+      };
+    }
+  }
 
   if (node.type === 'class_declaration' || node.type === 'protocol_forward_declaration') {
     const sourceRole = 'forward-declaration' as const;
@@ -185,6 +223,7 @@ export function extractObjectiveCDefinitionMetadata(
     const hostRole: ObjectiveCSourceRole =
       identity.isCategory || identity.isClassExtension ? 'category-host' : identity.sourceRole;
     const keyKind = nodeLabel === 'Interface' ? 'protocol' : 'type';
+    const protocolParents = objectiveCProtocolParentsAnnotation(containerNode);
     return {
       sourceIdentity: sourceIdentity(
         nodeLabel,
@@ -193,7 +232,10 @@ export function extractObjectiveCDefinitionMetadata(
         hostRole,
         identity.owner,
       ),
-      annotations: containerAnnotations(identity, hostRole),
+      annotations: [
+        ...containerAnnotations(identity, containerNode, hostRole),
+        ...(protocolParents === undefined ? [] : [protocolParents]),
+      ],
       properties: {
         sourceRole: hostRole,
         declarationKey: objectiveCKeyV1([keyKind, identity.owner]),
@@ -225,7 +267,9 @@ export function extractObjectiveCDefinitionMetadata(
       ),
       isStatic: method.kind === 'class',
       annotations: [
-        ...containerAnnotations(identity),
+        ...containerAnnotations(identity, containerNode),
+        ...objectiveCAvailabilityAnnotations(node),
+        ...objectiveCNullabilityAnnotations(node),
         ...(protocolRequirementTag(node) === undefined ? [] : [protocolRequirementTag(node)!]),
         `objc:method-kind:${method.kind}`,
       ],
@@ -258,9 +302,11 @@ export function extractObjectiveCDefinitionMetadata(
       ),
       isStatic: attributes.includes('class'),
       annotations: [
-        ...containerAnnotations(identity),
+        ...containerAnnotations(identity, containerNode),
+        ...objectiveCAvailabilityAnnotations(node),
         ...(protocolRequirement === undefined ? [] : [protocolRequirement]),
         ...attributes.map((attribute) => `objc:property:${attribute}`),
+        ...objectiveCNullabilityAnnotations(node),
       ],
       properties: {
         sourceRole: identity.sourceRole,
@@ -284,7 +330,7 @@ export function extractObjectiveCDefinitionMetadata(
         identity.sourceRole,
         nodeName,
       ),
-      annotations: [...containerAnnotations(identity), 'objc:ivar'],
+      annotations: [...containerAnnotations(identity, containerNode), 'objc:ivar'],
       properties: { sourceRole: identity.sourceRole, hostClassName: identity.owner },
     };
   }
