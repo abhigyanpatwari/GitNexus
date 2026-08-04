@@ -32,9 +32,11 @@ export function rubyBindingScopeFor(
   // Reaching this hook already means the write is an INSTANCE write. `Capture`
   // carries only name/range/text — no AST node — so this hook cannot ask whose
   // `self` owns the ivar; `isRubyInstanceIvarWrite` (captures.ts) answers that
-  // upstream and discards the binding entirely when `self` is the class object
-  // (`def self.x`, `class << self`, or the class body), which never reaches an
-  // instance and must not be published as an instance field.
+  // upstream and discards the binding entirely whenever `self` is anything but
+  // an instance of the enclosing lexical class — the class object itself
+  // (`def self.x`, `class << self`, the class body), or whatever object a block
+  // receiver rebinds it to (`class_eval`, `Class.new`, `instance_eval`, …).
+  // None of those reach an instance, so none may be published as its field.
   if (decl['@type-binding.ivar-field'] !== undefined) {
     return walkToScope(innermost, tree, 'Class');
   }

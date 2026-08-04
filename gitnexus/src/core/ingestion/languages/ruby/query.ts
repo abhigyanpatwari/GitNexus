@@ -191,10 +191,13 @@ const RUBY_SCOPE_QUERY = `
 ;; \`constructor-inferred\`.
 ;;
 ;; These patterns match unconditionally HERE; captures.ts then discards the
-;; whole binding via \`isRubyInstanceIvarWrite\` when \`self\` is the class object
-;; rather than an instance (\`def self.x\`, \`class << self\`, or the class body
-;; itself). A tree-sitter pattern cannot state "and no singleton ancestor", so
-;; the ownership test has to be a walk.
+;; whole binding via \`isRubyInstanceIvarWrite\` unless \`self\` at the write is
+;; provably an instance of the enclosing lexical class — which rules out
+;; \`def self.x\`, \`class << self\`, the class body itself, and any write reached
+;; through a block, whose \`self\` its receiver chooses (\`class_eval\`,
+;; \`Class.new\`, \`instance_eval\`, \`define_method\`, …). A tree-sitter pattern
+;; cannot state "and no singleton or block ancestor", so the ownership test has
+;; to be a walk.
 
 (assignment
   left: (instance_variable) @type-binding.name @type-binding.ivar-field

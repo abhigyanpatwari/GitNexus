@@ -57,6 +57,18 @@
  * because a row that asserts an empty result passes just as well when the
  * fixture stopped working.
  *
+ * A `static` member reaches the same Class scope by a SECOND route that has no
+ * `this` in it at all — its own declaration. JavaScript and TypeScript keep
+ * static and instance members in separate namespaces, so `p = new Outer();
+ * static p = new Alien();` is legal and `this.p` is `Outer`; both bindings
+ * landed on one scope at one strength and the `>=` tie-break gave the field to
+ * whichever matched last. Dart forbids that same-name pair outright, so its
+ * version of the defect is a static METHOD's receiver-less write
+ * (`libraryZ = Other()`, which in Dart's static scope names a library variable)
+ * displacing the constructor's binding. All three languages carry a row, and
+ * Dart carries the counterweight too: a static field DECLARATION is read by
+ * bare name from instance methods in ordinary Dart, so its binding must survive.
+ *
  * ── HOW THE HARD CASES WERE FIXED ─────────────────────────────────────────────
  *
  * Dart is the one language here that writes a field with NO receiver prefix, so
@@ -86,6 +98,8 @@ import os from 'node:os';
 import { getRelationships, runPipelineFromRepo, writeFixtureRepo } from './helpers.js';
 import type { PipelineResult } from './helpers.js';
 import { cleanupTempDirSync } from '../../helpers/test-db.js';
+import { getDartParser } from '../../../src/core/ingestion/languages/dart/query.js';
+import type { SyntaxNode } from '../../../src/core/ingestion/utils/ast-helpers.js';
 
 /** One receiver form under test, with the exact CALLS targets it emits today. */
 interface Row {
@@ -128,6 +142,16 @@ export class StaticThis {
   static make(): void { this.p = new Alien(); }
   run(x: number): number { return this.p.inner().compute(x); }
 }
+export class StaticFieldSameName {
+  private p = new Outer();
+  static p = new Alien();
+  run(x: number): number { return this.p.inner().compute(x); }
+}
+export class StaticAnnotatedFieldSameName {
+  private r: Outer = new Outer();
+  static r: Alien = new Alien();
+  run(x: number): number { return this.r.inner().compute(x); }
+}
 export const moduleLocal = new Outer();
 export function runModuleLocal(x: number): number { return moduleLocal.inner().compute(x); }
 this.moduleLocal = new Alien();
@@ -144,6 +168,16 @@ export class Alien { inner() { return new Inner(); } }
 export class ObjectLiteralCtorThis {
   p = new Outer();
   build() { return { constructor() { this.p = new Alien(); } }; }
+  run(x) { return this.p.inner().compute(x); }
+}
+export class StaticFieldSameName {
+  p = new Outer();
+  static p = new Alien();
+  run(x) { return this.p.inner().compute(x); }
+}
+export class StaticCtorThis {
+  p = new Outer();
+  static constructor() { this.p = new Alien(); }
   run(x) { return this.p.inner().compute(x); }
 }
 `;
@@ -278,6 +312,142 @@ class ClassBodySelfField
     @q.inner.compute(x)
   end
 end
+
+class Alien
+  def inner
+    Inner.new
+  end
+end
+
+class ClassEvalBlockField
+  Alien.class_eval do
+    def warm
+      @shared = Alien.new
+    end
+  end
+
+  def initialize
+    @q = Outer.new
+  end
+
+  def run_self_ivar(x)
+    @shared.inner.compute(x)
+  end
+
+  def run(x)
+    @q.inner.compute(x)
+  end
+end
+
+class ClassNewBlockField
+  Anon = Class.new do
+    def warm
+      @shared = Alien.new
+    end
+  end
+
+  def initialize
+    @q = Outer.new
+  end
+
+  def run_self_ivar(x)
+    @shared.inner.compute(x)
+  end
+
+  def run(x)
+    @q.inner.compute(x)
+  end
+end
+
+class StructNewBlockField
+  Pair = Struct.new(:x) do
+    def warm
+      @shared = Alien.new
+    end
+  end
+
+  def initialize
+    @q = Outer.new
+  end
+
+  def run_self_ivar(x)
+    @shared.inner.compute(x)
+  end
+
+  def run(x)
+    @q.inner.compute(x)
+  end
+end
+
+class InstanceEvalBlockField
+  def seed(other)
+    other.instance_eval { @shared = Alien.new }
+  end
+
+  def initialize
+    @q = Outer.new
+  end
+
+  def run_self_ivar(x)
+    @shared.inner.compute(x)
+  end
+
+  def run(x)
+    @q.inner.compute(x)
+  end
+end
+
+class InstanceExecBlockField
+  def seed(other)
+    other.instance_exec { @shared = Alien.new }
+  end
+
+  def initialize
+    @q = Outer.new
+  end
+
+  def run_self_ivar(x)
+    @shared.inner.compute(x)
+  end
+
+  def run(x)
+    @q.inner.compute(x)
+  end
+end
+
+class DefineMethodBlockField
+  define_method(:warm) { @shared = Alien.new }
+
+  def initialize
+    @q = Outer.new
+  end
+
+  def run_self_ivar(x)
+    @shared.inner.compute(x)
+  end
+
+  def run(x)
+    @q.inner.compute(x)
+  end
+end
+
+class PlainBlockField
+  def seed
+    [1].each { @shared = Alien.new }
+  end
+
+  def initialize
+    @q = Outer.new
+  end
+
+  def run_self_ivar(x)
+    @shared.inner.compute(x)
+  end
+
+  def run(x)
+    @q.inner.compute(x)
+  end
+end
 `;
 
 // ── Kotlin ───────────────────────────────────────────────────────────────────
@@ -327,7 +497,9 @@ class AssignedField {
 
 // ── Dart ─────────────────────────────────────────────────────────────────────
 const DART_FILE = 'src/app.dart';
-const DART_SOURCE = `class Inner {
+const DART_SOURCE = `Other libraryZ = Other();
+
+class Inner {
   int compute(int v) {
     return v * 2;
   }
@@ -451,6 +623,269 @@ class MultiDeclaratorField {
     return n.inner().compute(x);
   }
 }
+
+class RecordPatternShadowedField {
+  var pa;
+  RecordPatternShadowedField() {
+    pa = Outer();
+  }
+  void reset(xs) {
+    var (pa, _) = xs;
+    pa = Other();
+  }
+  int run(int x) {
+    return pa.inner().compute(x);
+  }
+}
+
+class ListPatternShadowedField {
+  var pb;
+  ListPatternShadowedField() {
+    pb = Outer();
+  }
+  void reset(xs) {
+    var [pb, _] = xs;
+    pb = Other();
+  }
+  int run(int x) {
+    return pb.inner().compute(x);
+  }
+}
+
+class RestPatternShadowedField {
+  var pc;
+  RestPatternShadowedField() {
+    pc = Outer();
+  }
+  void reset(xs) {
+    var [_, ...pc] = xs;
+    pc = Other();
+  }
+  int run(int x) {
+    return pc.inner().compute(x);
+  }
+}
+
+class MapPatternShadowedField {
+  var pd;
+  MapPatternShadowedField() {
+    pd = Outer();
+  }
+  void reset(xs) {
+    var {'k': pd} = xs;
+    pd = Other();
+  }
+  int run(int x) {
+    return pd.inner().compute(x);
+  }
+}
+
+class ObjectPatternShadowedField {
+  var pe;
+  ObjectPatternShadowedField() {
+    pe = Outer();
+  }
+  void reset(o) {
+    var Outer(inner: pe) = o;
+    pe = Other();
+  }
+  int run(int x) {
+    return pe.inner().compute(x);
+  }
+}
+
+class ObjectShorthandPatternShadowedField {
+  var pf;
+  ObjectShorthandPatternShadowedField() {
+    pf = Outer();
+  }
+  void reset(o) {
+    var Outer(:pf) = o;
+    pf = Other();
+  }
+  int run(int x) {
+    return pf.inner().compute(x);
+  }
+}
+
+class IfCasePatternShadowedField {
+  var pg;
+  IfCasePatternShadowedField() {
+    pg = Outer();
+  }
+  void reset(o) {
+    if (o case Other pg) {
+      pg = Other();
+    }
+  }
+  int run(int x) {
+    return pg.inner().compute(x);
+  }
+}
+
+class CastPatternShadowedField {
+  var ph;
+  CastPatternShadowedField() {
+    ph = Outer();
+  }
+  void reset(o) {
+    if (o case var ph as Other) {
+      ph = Other();
+    }
+  }
+  int run(int x) {
+    return ph.inner().compute(x);
+  }
+}
+
+class NullCheckPatternShadowedField {
+  var pj;
+  NullCheckPatternShadowedField() {
+    pj = Outer();
+  }
+  void reset(o) {
+    if (o case var pj?) {
+      pj = Other();
+    }
+  }
+  int run(int x) {
+    return pj.inner().compute(x);
+  }
+}
+
+class NullAssertPatternShadowedField {
+  var pk;
+  NullAssertPatternShadowedField() {
+    pk = Outer();
+  }
+  void reset(o) {
+    if (o case var pk!) {
+      pk = Other();
+    }
+  }
+  int run(int x) {
+    return pk.inner().compute(x);
+  }
+}
+
+class OrPatternShadowedField {
+  var pl;
+  OrPatternShadowedField() {
+    pl = Outer();
+  }
+  void reset(o) {
+    if (o case Other pl || Other pl) {
+      pl = Other();
+    }
+  }
+  int run(int x) {
+    return pl.inner().compute(x);
+  }
+}
+
+class SwitchCasePatternShadowedField {
+  var pm;
+  SwitchCasePatternShadowedField() {
+    pm = Outer();
+  }
+  void reset(o) {
+    switch (o) {
+      case Other pm:
+        pm = Other();
+    }
+  }
+  int run(int x) {
+    return pm.inner().compute(x);
+  }
+}
+
+class SwitchExpressionPatternShadowedField {
+  var pn;
+  SwitchExpressionPatternShadowedField() {
+    pn = Outer();
+  }
+  void reset(o) {
+    var v = switch (o) { Other pn => pn = Other(), _ => o };
+  }
+  int run(int x) {
+    return pn.inner().compute(x);
+  }
+}
+
+class ForInPatternShadowedField {
+  var pp;
+  ForInPatternShadowedField() {
+    pp = Outer();
+  }
+  void reset(xs) {
+    for (var (pp, _) in xs) {
+      pp = Other();
+    }
+  }
+  int run(int x) {
+    return pp.inner().compute(x);
+  }
+}
+
+class PatternAssignmentShadowedField {
+  var pq;
+  PatternAssignmentShadowedField() {
+    pq = Outer();
+  }
+  void reset(xs) {
+    (pq, _) = xs;
+    pq = Other();
+  }
+  int run(int x) {
+    return pq.inner().compute(x);
+  }
+}
+
+class CollectionIfElementPatternShadowedField {
+  var pr;
+  CollectionIfElementPatternShadowedField() {
+    pr = Outer();
+  }
+  void reset(o) {
+    var l = [if (o case Other pr) pr = Other()];
+  }
+  int run(int x) {
+    return pr.inner().compute(x);
+  }
+}
+
+class CollectionForElementPatternShadowedField {
+  var ps;
+  CollectionForElementPatternShadowedField() {
+    ps = Outer();
+  }
+  void reset(xs) {
+    var l = [for (var (ps, _) in xs) ps = Other()];
+  }
+  int run(int x) {
+    return ps.inner().compute(x);
+  }
+}
+
+class StaticMethodBareWrite {
+  var libraryZ;
+  StaticMethodBareWrite() {
+    libraryZ = Outer();
+  }
+  static void make() {
+    libraryZ = Other();
+  }
+  int run(int x) {
+    return libraryZ.inner().compute(x);
+  }
+}
+
+class StaticFieldDecl {
+  static var sd = Other();
+  int run(int x) {
+    return sd.inner().compute(x);
+  }
+}
 `;
 
 // ── Swift ────────────────────────────────────────────────────────────────────
@@ -562,6 +997,36 @@ const CASES: readonly LanguageCase[] = [
         targets: [`Method:${TS_FILE}:Inner.compute#1`, `Method:${TS_FILE}:Outer.inner#0`],
         status: 'resolves',
       },
+      // ── …and a static FIELD is not the instance field of that name ────────
+      //
+      // The four rows above all guard the ASSIGNMENT form (`this.x = new …`).
+      // A static field DECLARATION reaches the same Class scope without any
+      // `this` at all, and JS/TS keep static and instance members in separate
+      // namespaces, so `p = new Outer(); static p = new Alien();` is legal and
+      // `this.p` is `Outer`. Both bindings carried the same source strength, so
+      // the `>=` tie-break handed the field to whichever pattern matched LAST —
+      // the static one — and `this.p.inner()` resolved to `Alien.inner`.
+      //
+      // Written the same swap-not-empty way as the guard rows: `Alien` declares
+      // `inner()`, so the defect produces a DIFFERENT non-empty target set and
+      // this positive assertion cannot pass vacuously.
+      //
+      // The annotated twin is a separate row because it is a separate pattern
+      // (`@type-binding.annotation`, not `@type-binding.constructor`) and it
+      // collides at the `annotation` strength rather than `constructor-inferred`
+      // — a fix that only guarded the initializer form would leave it red.
+      {
+        name: 'static-field-does-not-retype-the-instance-field',
+        callerId: `Method:${TS_FILE}:StaticFieldSameName.run#1`,
+        targets: [`Method:${TS_FILE}:Inner.compute#1`, `Method:${TS_FILE}:Outer.inner#0`],
+        status: 'resolves',
+      },
+      {
+        name: 'static-annotated-field-does-not-retype-the-instance-field',
+        callerId: `Method:${TS_FILE}:StaticAnnotatedFieldSameName.run#1`,
+        targets: [`Method:${TS_FILE}:Inner.compute#1`, `Method:${TS_FILE}:Outer.inner#0`],
+        status: 'resolves',
+      },
     ],
   },
   {
@@ -598,6 +1063,28 @@ const CASES: readonly LanguageCase[] = [
       {
         name: 'object-literal-constructor-this-does-not-retype-the-field',
         callerId: `Method:${JS_FILE}:ObjectLiteralCtorThis.run#1`,
+        targets: [`Method:${JS_FILE}:Outer.inner#0`],
+        status: 'resolves',
+      },
+      // JavaScript's half of the static-FIELD guard. Class fields are the one
+      // place `.js` and `.ts` write the same declaration under different grammar
+      // node names (`field_definition` vs `public_field_definition`), so the
+      // predicate that reads `static` off them is shared rather than duplicated
+      // — this row is what proves the JavaScript spelling is actually covered.
+      {
+        name: 'static-field-does-not-retype-the-instance-field',
+        callerId: `Method:${JS_FILE}:StaticFieldSameName.run#1`,
+        targets: [`Method:${JS_FILE}:Outer.inner#0`],
+        status: 'resolves',
+      },
+      // `static constructor() {}` is legal JavaScript — the reserved-name rule
+      // applies to instance methods only — and its `this` is the CLASS. The
+      // JavaScript constructor-field walk matched on the NAME alone, so this
+      // shape typed the instance field exactly the way TypeScript's static
+      // method did before `isStaticMethodThis`. Same swap-not-empty shape.
+      {
+        name: 'static-constructor-this-does-not-retype-the-field',
+        callerId: `Method:${JS_FILE}:StaticCtorThis.run#1`,
         targets: [`Method:${JS_FILE}:Outer.inner#0`],
         status: 'resolves',
       },
@@ -708,6 +1195,135 @@ const CASES: readonly LanguageCase[] = [
       {
         name: 'class-body-instance-ivar',
         callerId: `Method:${RB_FILE}:ClassBodySelfField.run#1`,
+        targets: [`Method:${RB_FILE}:Inner.compute#1`, `Method:${RB_FILE}:Outer.inner#0`],
+        status: 'resolves',
+      },
+      // ── A BLOCK's `self` is chosen by its RECEIVER, not by where it is written ─
+      //
+      // The three shapes above are the ones a `self`-keyword search finds. They
+      // are not the whole family: a `def` written inside a BLOCK attaches to
+      // whatever that block's receiver made the default definee, so
+      // `Other.class_eval do def warm; @shared = Alien.new; end end` writes a
+      // field of `Other` — while the walk that only knew about singletons fell
+      // straight through the block, reached the enclosing LEXICAL class, and
+      // published `Alien` as that class's field type. Measured, before the fix:
+      // every `run_self_ivar` below emitted `Alien.inner#0` + `Inner.compute#1`
+      // from a receiver that is `nil` on every instance of its own class.
+      //
+      // The rows use `Alien` rather than `Outer` on purpose. A wrong bind then
+      // shows up as the ALIEN type's edge, which is unmistakably an ownership
+      // failure; had they reused `Outer` a regression would emit the same
+      // targets the correct rows expect and read as an ordinary miss.
+      //
+      // The fix keys on the block NODES (`do … end`, `{ … }`), never on the
+      // call that owns them, so these row names are representative rather than
+      // exhaustive: `module_eval`, `class_exec`, `Module.new`, `Data.define`
+      // and `refine` all parse to one of the same two block nodes and are
+      // covered by the identical path. An enumeration of rebinding call NAMES
+      // could not be complete anyway — `def helper(&b) = Foo.class_eval(&b)`
+      // rebinds a block it merely receives, and nothing at the block's own
+      // syntax reveals that.
+      {
+        name: 'class-eval-block-self-ivar',
+        callerId: `Method:${RB_FILE}:ClassEvalBlockField.run_self_ivar#1`,
+        targets: [],
+        status: 'known-gap',
+      },
+      {
+        name: 'class-eval-block-instance-ivar',
+        callerId: `Method:${RB_FILE}:ClassEvalBlockField.run#1`,
+        targets: [`Method:${RB_FILE}:Inner.compute#1`, `Method:${RB_FILE}:Outer.inner#0`],
+        status: 'resolves',
+      },
+      {
+        name: 'class-new-block-self-ivar',
+        callerId: `Method:${RB_FILE}:ClassNewBlockField.run_self_ivar#1`,
+        targets: [],
+        status: 'known-gap',
+      },
+      {
+        name: 'class-new-block-instance-ivar',
+        callerId: `Method:${RB_FILE}:ClassNewBlockField.run#1`,
+        targets: [`Method:${RB_FILE}:Inner.compute#1`, `Method:${RB_FILE}:Outer.inner#0`],
+        status: 'resolves',
+      },
+      {
+        name: 'struct-new-block-self-ivar',
+        callerId: `Method:${RB_FILE}:StructNewBlockField.run_self_ivar#1`,
+        targets: [],
+        status: 'known-gap',
+      },
+      {
+        name: 'struct-new-block-instance-ivar',
+        callerId: `Method:${RB_FILE}:StructNewBlockField.run#1`,
+        targets: [`Method:${RB_FILE}:Inner.compute#1`, `Method:${RB_FILE}:Outer.inner#0`],
+        status: 'resolves',
+      },
+      // `instance_eval` / `instance_exec` differ from the three above in shape,
+      // not just in name: the write is DIRECT in a brace block inside an
+      // ordinary instance method, with no `def` between it and the block. The
+      // old walk reached `method(seed)`, set its flag, and bound the field —
+      // the same wrong answer by a different route, so it needs its own row.
+      {
+        name: 'instance-eval-block-self-ivar',
+        callerId: `Method:${RB_FILE}:InstanceEvalBlockField.run_self_ivar#1`,
+        targets: [],
+        status: 'known-gap',
+      },
+      {
+        name: 'instance-eval-block-instance-ivar',
+        callerId: `Method:${RB_FILE}:InstanceEvalBlockField.run#1`,
+        targets: [`Method:${RB_FILE}:Inner.compute#1`, `Method:${RB_FILE}:Outer.inner#0`],
+        status: 'resolves',
+      },
+      {
+        name: 'instance-exec-block-self-ivar',
+        callerId: `Method:${RB_FILE}:InstanceExecBlockField.run_self_ivar#1`,
+        targets: [],
+        status: 'known-gap',
+      },
+      {
+        name: 'instance-exec-block-instance-ivar',
+        callerId: `Method:${RB_FILE}:InstanceExecBlockField.run#1`,
+        targets: [`Method:${RB_FILE}:Inner.compute#1`, `Method:${RB_FILE}:Outer.inner#0`],
+        status: 'resolves',
+      },
+      // `define_method` is the one member of the family the ORIGINAL walk
+      // already answered correctly, and only by accident: its block holds the
+      // write directly in a class body, so the walk hit `class` with the
+      // `method` flag still false. Pinned so the block rule cannot be removed
+      // in favour of "it already worked" — under a name-based deny-list this
+      // row would be the only survivor, and it is the least informative one.
+      {
+        name: 'define-method-block-self-ivar',
+        callerId: `Method:${RB_FILE}:DefineMethodBlockField.run_self_ivar#1`,
+        targets: [],
+        status: 'known-gap',
+      },
+      {
+        name: 'define-method-block-instance-ivar',
+        callerId: `Method:${RB_FILE}:DefineMethodBlockField.run#1`,
+        targets: [`Method:${RB_FILE}:Inner.compute#1`, `Method:${RB_FILE}:Outer.inner#0`],
+        status: 'resolves',
+      },
+      // A DELIBERATE over-discard, asserted so the cost is visible rather than
+      // discovered. `[1].each { @shared = Alien.new }` inside an instance method
+      // really does write that instance's field — Ruby's `each` does not rebind
+      // `self` — and this row records that the fix drops it anyway. It has to:
+      // the block's syntax is identical to the `instance_eval` block two rows
+      // up, and only the receiver's IMPLEMENTATION distinguishes them. Per the
+      // safety doctrine (`scope-resolution/passes/compound-receiver.ts`) a
+      // missed edge is the acceptable cost of never inventing a wrong one. If a
+      // later change makes ownership provable, this row is the one to flip.
+      {
+        name: 'plain-block-self-ivar',
+        callerId: `Method:${RB_FILE}:PlainBlockField.run_self_ivar#1`,
+        targets: [],
+        status: 'known-gap',
+      },
+      {
+        name: 'plain-block-instance-ivar',
+        callerId: `Method:${RB_FILE}:PlainBlockField.run#1`,
         targets: [`Method:${RB_FILE}:Inner.compute#1`, `Method:${RB_FILE}:Outer.inner#0`],
         status: 'resolves',
       },
@@ -858,6 +1474,187 @@ const CASES: readonly LanguageCase[] = [
         targets: [`Method:${DART_FILE}:Outer.inner#0`],
         status: 'resolves',
       },
+      // ── Dart 3 PATTERN binders ────────────────────────────────────────────
+      //
+      // The four rows above cover the binders that existed before Dart 3. A
+      // pattern binds too, and every pattern form parses into node types that
+      // the pre-Dart-3 list did not name — so each write below was read as a
+      // write to the FIELD and retyped it to `Other`, exactly the way the
+      // parameter case did. Same construction as the rows above and for the same
+      // reason: `Other` declares its own `inner()`, so the pre-fix value of each
+      // row is the WRONG target `Other.inner#0`, not an empty set. Nothing here
+      // can pass vacuously — an unrelated regression that stopped the fixture
+      // reaching this machinery empties the set and the row still fails.
+      //
+      // One row per grammar shape, not per bug report. `_pattern_field`,
+      // `_map_pattern_entry`, `_list_pattern_element`, `_parenthesized_pattern`,
+      // `_outer_pattern` and `_guarded_pattern` are all HIDDEN rules, so the
+      // twelve visible pattern node types below are the entire surface, and the
+      // fixture is checked to produce all twelve.
+      //
+      // Declaring contexts — `pattern_variable_declaration` over each of the
+      // five `_outer_pattern` alternatives, plus the nested `rest_pattern`. The
+      // bare names in these (`pa`, `pb`, …) are `constant_pattern` nodes: Dart
+      // reads a bare pattern name as a binder only because the enclosing `var`
+      // distributes over it, and the grammar records no such distinction.
+      {
+        name: 'record-pattern-shadowed-assigned-field',
+        callerId: `Method:${DART_FILE}:RecordPatternShadowedField.run#1`,
+        targets: [`Method:${DART_FILE}:Outer.inner#0`],
+        status: 'resolves',
+      },
+      {
+        name: 'list-pattern-shadowed-assigned-field',
+        callerId: `Method:${DART_FILE}:ListPatternShadowedField.run#1`,
+        targets: [`Method:${DART_FILE}:Outer.inner#0`],
+        status: 'resolves',
+      },
+      {
+        name: 'rest-pattern-shadowed-assigned-field',
+        callerId: `Method:${DART_FILE}:RestPatternShadowedField.run#1`,
+        targets: [`Method:${DART_FILE}:Outer.inner#0`],
+        status: 'resolves',
+      },
+      {
+        name: 'map-pattern-shadowed-assigned-field',
+        callerId: `Method:${DART_FILE}:MapPatternShadowedField.run#1`,
+        targets: [`Method:${DART_FILE}:Outer.inner#0`],
+        status: 'resolves',
+      },
+      // `var Outer(inner: pe) = o;` — the getter name `inner` is a NON-binder
+      // identifier that the hidden `_pattern_field` drops directly onto
+      // `object_pattern`, next to the binder. That inlining is why the container
+      // pattern types are handled and not only the two leaf types.
+      {
+        name: 'object-pattern-shadowed-assigned-field',
+        callerId: `Method:${DART_FILE}:ObjectPatternShadowedField.run#1`,
+        targets: [`Method:${DART_FILE}:Outer.inner#0`],
+        status: 'resolves',
+      },
+      {
+        name: 'object-shorthand-pattern-shadowed-assigned-field',
+        callerId: `Method:${DART_FILE}:ObjectShorthandPatternShadowedField.run#1`,
+        targets: [`Method:${DART_FILE}:Outer.inner#0`],
+        status: 'resolves',
+      },
+      // Matching contexts — `variable_pattern` (`Other pg` / `var ph`) reached
+      // through if-case, the three `_unary_pattern` wrappers, an or-pattern, a
+      // switch statement case and a switch EXPRESSION arm. The or-pattern binds
+      // the same name at the same type in both branches because Dart requires
+      // that; the redundancy is the point, not an oversight.
+      {
+        name: 'if-case-pattern-shadowed-assigned-field',
+        callerId: `Method:${DART_FILE}:IfCasePatternShadowedField.run#1`,
+        targets: [`Method:${DART_FILE}:Outer.inner#0`],
+        status: 'resolves',
+      },
+      {
+        name: 'cast-pattern-shadowed-assigned-field',
+        callerId: `Method:${DART_FILE}:CastPatternShadowedField.run#1`,
+        targets: [`Method:${DART_FILE}:Outer.inner#0`],
+        status: 'resolves',
+      },
+      {
+        name: 'null-check-pattern-shadowed-assigned-field',
+        callerId: `Method:${DART_FILE}:NullCheckPatternShadowedField.run#1`,
+        targets: [`Method:${DART_FILE}:Outer.inner#0`],
+        status: 'resolves',
+      },
+      {
+        name: 'null-assert-pattern-shadowed-assigned-field',
+        callerId: `Method:${DART_FILE}:NullAssertPatternShadowedField.run#1`,
+        targets: [`Method:${DART_FILE}:Outer.inner#0`],
+        status: 'resolves',
+      },
+      {
+        name: 'or-pattern-shadowed-assigned-field',
+        callerId: `Method:${DART_FILE}:OrPatternShadowedField.run#1`,
+        targets: [`Method:${DART_FILE}:Outer.inner#0`],
+        status: 'resolves',
+      },
+      {
+        name: 'switch-case-pattern-shadowed-assigned-field',
+        callerId: `Method:${DART_FILE}:SwitchCasePatternShadowedField.run#1`,
+        targets: [`Method:${DART_FILE}:Outer.inner#0`],
+        status: 'resolves',
+      },
+      {
+        name: 'switch-expression-pattern-shadowed-assigned-field',
+        callerId: `Method:${DART_FILE}:SwitchExpressionPatternShadowedField.run#1`,
+        targets: [`Method:${DART_FILE}:Outer.inner#0`],
+        status: 'resolves',
+      },
+      // `for (var (pp, _) in xs)` is the pattern arm of `_for_loop_parts`, which
+      // carries NO `name` field — so the `for_loop_parts` case that handles
+      // `for (var y in xs)` reads null here and saw no binder at all.
+      {
+        name: 'for-in-pattern-shadowed-assigned-field',
+        callerId: `Method:${DART_FILE}:ForInPatternShadowedField.run#1`,
+        targets: [`Method:${DART_FILE}:Outer.inner#0`],
+        status: 'resolves',
+      },
+      // `pattern_assignment` — `(pq, _) = xs;` — is the one shape here that
+      // DECLARES nothing; it writes names that already exist. Shadowing it is
+      // deliberate over-approximation: if those names are locals some other
+      // binder already shadows them, and if they are fields the write is real
+      // but produces no binding either way, so declining costs at most an edge.
+      {
+        name: 'pattern-assignment-shadowed-assigned-field',
+        callerId: `Method:${DART_FILE}:PatternAssignmentShadowedField.run#1`,
+        targets: [`Method:${DART_FILE}:Outer.inner#0`],
+        status: 'resolves',
+      },
+      // Collection-literal `if_element` / `for_element` — the same patterns in
+      // the one context that is an ELEMENT rather than a statement, so a walk
+      // keyed on statement nodes would miss them.
+      {
+        name: 'collection-if-element-pattern-shadowed-assigned-field',
+        callerId: `Method:${DART_FILE}:CollectionIfElementPatternShadowedField.run#1`,
+        targets: [`Method:${DART_FILE}:Outer.inner#0`],
+        status: 'resolves',
+      },
+      {
+        name: 'collection-for-element-pattern-shadowed-assigned-field',
+        callerId: `Method:${DART_FILE}:CollectionForElementPatternShadowedField.run#1`,
+        targets: [`Method:${DART_FILE}:Outer.inner#0`],
+        status: 'resolves',
+      },
+      // ── A STATIC member's bare write is not an instance-field write ───────
+      //
+      // Dart's static scope holds only the class's STATIC members, so the bare
+      // `libraryZ = Other()` inside `static void make()` binds the LIBRARY-level
+      // `libraryZ` this fixture declares at the top — never the same-named
+      // instance field. (The library variable is what makes the fixture legal
+      // Dart: without it a static method naming an instance field is a compile
+      // error. Dart also forbids a class from declaring a static and an instance
+      // member of one name, which is why the TypeScript/JavaScript same-name
+      // field collision has no Dart twin and this is the only shape the defect
+      // takes here.)
+      //
+      // Treating it as a field write did not just add an edge: it landed on the
+      // Class scope at the same `constructor-inferred` strength as the
+      // constructor's own binding and DISPLACED it, so `run` resolved
+      // `Other.inner#0`. Asserting the surviving `Outer` — the same construction
+      // the shadow rows above use, and for the same reason.
+      {
+        name: 'static-method-bare-write-does-not-retype-the-field',
+        callerId: `Method:${DART_FILE}:StaticMethodBareWrite.run#1`,
+        targets: [`Method:${DART_FILE}:Outer.inner#0`],
+        status: 'resolves',
+      },
+      // The counterweight, and the reason the guard above is scoped to member
+      // BODIES rather than to `static` anywhere. A static field DECLARATION is
+      // read by a bare name from an instance method in ordinary Dart
+      // (`sd.inner()` below is how you read a static), so its type binding must
+      // SURVIVE. Over-correcting the row above into "drop every static field
+      // binding" turns this row red instead — which is exactly the signal
+      // wanted, since Dart, unlike TypeScript, loses nothing by keeping it.
+      {
+        name: 'static-field-declaration-still-types-its-receiver',
+        callerId: `Method:${DART_FILE}:StaticFieldDecl.run#1`,
+        targets: [`Method:${DART_FILE}:Other.inner#0`],
+        status: 'resolves',
+      },
     ],
   },
   {
@@ -988,5 +1785,42 @@ describe('inference-typed field receivers across languages (#2807)', () => {
       ]),
     );
     expect(controls).toEqual(Object.fromEntries(CASES.map((c) => [c.language, true])));
+  });
+
+  // The Dart pattern rows above were written to cover a FAMILY, not the handful
+  // of shapes a bug report carried — because an incomplete enumeration of binder
+  // forms is precisely what this file has now had to fix twice (formal
+  // parameters, then patterns). A comment claiming full coverage rots silently,
+  // so the claim is derived from the grammar instead of asserted: tree-sitter
+  // ships the node types it can produce in `nodeTypeInfo`, and every NAMED one
+  // whose name contains `pattern` must appear somewhere in the Dart fixture.
+  //
+  // A grammar bump that adds a thirteenth pattern node type therefore turns this
+  // red, which is the whole point — it forces someone back to
+  // `addDartBinderName` before the new form can silently retype a field. It goes
+  // red on removal too, which catches a fixture edit that quietly drops a shape.
+  it('the Dart fixture exercises every pattern node type the grammar declares', () => {
+    const parser = getDartParser();
+    const language = parser.getLanguage() as {
+      readonly nodeTypeInfo: readonly { readonly type: string; readonly named: boolean }[];
+    };
+    const declared = language.nodeTypeInfo
+      .filter((entry) => entry.named && entry.type.includes('pattern'))
+      .map((entry) => entry.type)
+      .sort();
+
+    const exercised = new Set<string>();
+    const walk = (node: SyntaxNode): void => {
+      if (node.type.includes('pattern')) exercised.add(node.type);
+      for (let i = 0; i < node.namedChildCount; i++) {
+        const child = node.namedChild(i);
+        if (child !== null) walk(child);
+      }
+    };
+    walk(parser.parse(DART_SOURCE).rootNode);
+
+    // Compared as sorted lists, not "size >= n": a set comparison names the
+    // missing type in the failure output, which is the fact the next reader needs.
+    expect([...exercised].sort()).toEqual(declared);
   });
 });

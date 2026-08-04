@@ -47,6 +47,7 @@ import { encodeMarker } from '../../utils/heritage-marker.js';
 import { DART_BUILT_INS } from './built-ins.js';
 import { synthesizeCallableFlowCaptures } from '../../utils/callable-flow-captures.js';
 import { synthesizeReceiverChainCapture } from '../../utils/receiver-chain-captures.js';
+import { hasKeyword } from '../../field-extractors/configs/helpers.js';
 
 const FUNCTION_DECL_TAGS = [
   '@declaration.function',
@@ -636,6 +637,34 @@ function emitDartFieldAssignmentBindings(classNode: SyntaxNode, out: CaptureMatc
   for (const member of members) {
     if (member === null || member.type !== 'function_body') continue;
 
+    // A STATIC member's body can never write this class's INSTANCE fields.
+    // Dart's static scope holds only the class's static members, so a bare
+    // `z = Outer()` inside `static void make()` binds a LIBRARY-level `z` (or is
+    // a compile error) — never the same-named instance field. Binding it anyway
+    // did not merely add an edge: the write landed on the Class scope at the
+    // same `constructor-inferred` strength as the constructor's own, and the
+    // `>=` tie-break in `scope-extractor` let it DISPLACE the correct type, so
+    // `z.inner()` resolved to the wrong class (#2807 review). The instance
+    // static-vs-instance collision TypeScript and JavaScript allow cannot arise
+    // in Dart — one class may not declare a static and an instance member of the
+    // same name — so this is the only shape the defect takes here.
+    //
+    // Grammar: every class-member body is a `function_body` whose PREVIOUS named
+    // sibling is a `method_signature` (method, constructor, factory, getter,
+    // setter, operator, `async`), and `static` is an anonymous direct child of
+    // that signature, ahead of the inner `*_signature` node. Detection is the
+    // shared `hasKeyword` on child TEXT, never `child.type === 'static'`, which
+    // a grammar bump silently breaks — the same rule TypeScript's
+    // `isStaticMethodThis` follows.
+    //
+    // A body whose signature cannot be read at all (a null or unexpected
+    // previous sibling — parse recovery) DECLINES to bind: staticness is
+    // undecidable there, and a missed field type costs an edge while a wrong one
+    // destroys a correct binding.
+    const signature = member.previousNamedSibling;
+    if (signature === null || signature.type !== 'method_signature') continue;
+    if (hasKeyword(signature, 'static')) continue;
+
     // LAZY, memoised per body. The shadow set is read on ONE branch — a bare
     // `r = …` whose name the class declares — so a body of `this.`-prefixed
     // writes, or of no field assignment at all, never needs it. Measured on the
@@ -710,13 +739,22 @@ function emitDartFieldAssignmentBindings(classNode: SyntaxNode, out: CaptureMatc
  * inside the body: `function_body` is a SIBLING of the `method_signature` that
  * carries them, so no walk of the body can ever see one.
  *
+ * Dart 3 patterns are the SAME defect a second time: `var (r, n) = …;`,
+ * `if (o case Beta r)`, `case Beta r:`, `for (var (r, _) in xs)`, list / map /
+ * object / rest / cast / null-check / null-assert patterns and pattern
+ * assignments all bind `r` through node types no earlier list named, so each of
+ * them let a write retype the field. `addDartBinderName` now enumerates the
+ * pattern family from the grammar rather than from reported shapes.
+ *
  * Deliberately over-approximate in the shadow direction. The set is body-wide
- * (a binder in a nested closure shadows for the whole body) and a parameter
- * shape whose name cannot be read contributes nothing rather than being guessed
- * at. Both err toward DECLINING to bind, which is the right error: a missed
- * field type costs an edge, a wrong one produces an edge to the wrong class and
- * destroys a correct binding — the failure mode this whole line of work exists
- * to avoid (see `scope-resolution/passes/compound-receiver.ts`).
+ * (a binder in a nested closure, a `case` arm or a collection-literal element
+ * shadows for the whole body), a parameter shape whose name cannot be read
+ * contributes nothing rather than being guessed at, and a bare name inside a
+ * pattern shadows whether it binds or merely references a constant. All err
+ * toward DECLINING to bind, which is the right error: a missed field type costs
+ * an edge, a wrong one produces an edge to the wrong class and destroys a
+ * correct binding — the failure mode this whole line of work exists to avoid
+ * (see `scope-resolution/passes/compound-receiver.ts`).
  */
 function collectDartBodyShadows(bodyNode: SyntaxNode): Set<string> {
   const shadows = new Set<string>();
@@ -732,7 +770,15 @@ function collectDartBodyShadows(bodyNode: SyntaxNode): Set<string> {
   return shadows;
 }
 
-/** Record the name `node` binds, if it binds one. */
+/**
+ * Record the name `node` binds, if it binds one.
+ *
+ * The `case` list is the whole point of this function and the reason it is
+ * separate: an INCOMPLETE list of binder forms is the exact defect this file has
+ * now shipped twice (formal parameters, then every Dart 3 pattern). It is
+ * enumerated against `vendor/tree-sitter-dart/grammar.js`, not against the
+ * shapes a bug report happened to carry.
+ */
 function addDartBinderName(node: SyntaxNode, out: Set<string>): void {
   switch (node.type) {
     // `var s;`, `final r = 1;`, and the FIRST declarator of `var a = 1, b = 2;`.
@@ -765,6 +811,60 @@ function addDartBinderName(node: SyntaxNode, out: Set<string>): void {
     case 'initialized_identifier': {
       const first = node.namedChild(0);
       if (first !== null && first.type === 'identifier') out.add(first.text);
+      return;
+    }
+    // ── Dart 3 patterns ──────────────────────────────────────────────────────
+    //
+    // EVERY pattern node the grammar emits, and every one of them takes its
+    // DIRECT `identifier` children. The grammar rules that would carry a binder
+    // are `_pattern_field`, `_map_pattern_entry`, `_list_pattern_element`,
+    // `_parenthesized_pattern`, `_outer_pattern`, `_guarded_pattern` and the
+    // logical/relational tiers — ALL hidden (`_`-prefixed), so they emit no node
+    // of their own and inline their children onto whichever visible pattern node
+    // encloses them. Reading direct children is therefore what actually sees a
+    // binder; there is no field to ask for (`variable_pattern`,
+    // `pattern_variable_declaration` and `constant_pattern` declare none).
+    //
+    // The first two are where a binder truly lands, and are alone sufficient:
+    //   `variable_pattern` — `Beta s` / `final s` / `var s`.
+    //   `constant_pattern` — a BARE name (`(s, n)`, `[s, t]`, `{'k': s}`,
+    //      `Point(:s)`, `...s`, `(s)`). Dart itself decides bare-name-binds-vs-
+    //      references-a-constant from the enclosing `final`/`var`, and
+    //      tree-sitter gives both the same node, so `case kLimit:` shadows too.
+    //      Over-shadowing a constant reference costs an edge; the other
+    //      direction fabricates one.
+    // The containers after them are DEFENCE, not routing — the walk reaches
+    // nested patterns on its own. They matter because the hidden `_pattern_field`
+    // already drops a NON-binder label identifier straight onto `record_pattern`
+    // / `object_pattern` (and a key onto `map_pattern`), which is proof that this
+    // grammar inlines identifiers onto containers. If a grammar revision ever
+    // inlines a real binder the same way, it is shadowed here on arrival instead
+    // of becoming the third instance of this bug.
+    //
+    // DELIBERATELY EXCLUDED — `pattern_variable_declaration`, `pattern_assignment`
+    // and `for_loop_parts` hold the pattern and the `=`/`in` RHS at the SAME
+    // child level (`var [s, t] = xs` → `identifier xs` is a direct child), so
+    // taking their direct identifiers would shadow the SOURCE expression's name,
+    // which binds nothing. Their pattern child is a case below. Also excluded:
+    // `type_identifier` (never an `identifier`, so `Beta` in `Beta s` and `Point`
+    // in `Point(…)` cannot be mistaken for binders), `qualified` inside a
+    // `constant_pattern` (`Colors.red` nests one level deeper — a qualified name
+    // is always a constant reference), and relational/equality operands
+    // (`case > kLimit`), which the hidden tier drops onto the enclosing
+    // STATEMENT rather than any pattern node.
+    case 'variable_pattern':
+    case 'constant_pattern':
+    case 'record_pattern':
+    case 'list_pattern':
+    case 'map_pattern':
+    case 'object_pattern':
+    case 'rest_pattern':
+    case 'cast_pattern':
+    case 'null_check_pattern':
+    case 'null_assert_pattern': {
+      for (const child of node.namedChildren) {
+        if (child !== null && child.type === 'identifier') out.add(child.text);
+      }
       return;
     }
     default:

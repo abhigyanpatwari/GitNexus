@@ -233,6 +233,66 @@ function isStaticMethodThis(thisNode: SyntaxNode): boolean {
   return hasKeyword(method, 'static');
 }
 
+/** The class-field declaration nodes a field `@type-binding.*` match anchors on.
+ *  `public_field_definition` is the TypeScript/TSX spelling of a class field,
+ *  `field_definition` the JavaScript one; both grammars carry `static` the same
+ *  way, which is why one predicate serves both languages. */
+const CLASS_FIELD_DEFINITION_TYPES: ReadonlySet<string> = new Set([
+  'public_field_definition',
+  'field_definition',
+]);
+
+/**
+ * Is this type-binding anchored on a **`static`** class field?
+ *
+ * A static member belongs to the CLASS OBJECT; an instance field belongs to
+ * instances. JavaScript and TypeScript keep the two in separate namespaces, so
+ * one class may legally declare both under one name:
+ *
+ *     class Host {
+ *       p = new Right();
+ *       static p = new Wrong();      // legal — a different member
+ *       hit() { return this.p.hit(); }   // `this.p` is Right
+ *     }
+ *
+ * Both field patterns anchor their binding on the same CLASS scope with the
+ * same `constructor-inferred` source, and `scope-extractor` breaks a
+ * same-strength tie with `>=` — last match wins. So the static field silently
+ * RETYPED the instance field of that name and `this.p.hit()` resolved to
+ * `Wrong.hit`: not a missing edge but a wrong one, the failure mode
+ * `scope-resolution/passes/compound-receiver.ts` exists to avoid. The scope
+ * tree has one `typeBindings` map per scope with no static/instance split, so a
+ * static field cannot be recorded separately — it is dropped instead. That
+ * costs typing on a `Host.p.hit()` STATIC receiver chain, which is the right
+ * trade: a missed edge beats a wrong one.
+ *
+ * Sibling of {@link isStaticMethodThis}, which drops the ASSIGNMENT form
+ * (`this.x = new Y()` inside a static method). Together they cover both ways a
+ * static member can reach the field-typing path. This is an emit-side filter
+ * for the same reason that one is: `static` is an ANONYMOUS token on the
+ * declaration node, and a tree-sitter pattern cannot negate one.
+ *
+ * Detection is the shared `hasKeyword` — matching on child TEXT, never
+ * `child.type === 'static'`, because the token reaches the tree as an anonymous
+ * token in some grammar versions and a keyword node in others (see
+ * `isStaticMember` in `receiver-binding.ts`); a node-type test silently stops
+ * firing on a grammar bump and every static field starts retyping its instance
+ * twin again. Verified against both grammars in use here: `static` is an
+ * anonymous direct child of `public_field_definition` / `field_definition`,
+ * ahead of the name.
+ *
+ * One deliberate over-fire: `hasKeyword` skips the node's `name` FIELD, and the
+ * JavaScript grammar names a field's name `property:`, not `name:` — so the
+ * legal-but-rare JavaScript field literally called `static`
+ * (`class C { static = new Right(); }`) reads as static and goes untyped. That
+ * is a declined binding, the safe direction of the same trade.
+ */
+export function isStaticClassFieldBinding(anchorNode: SyntaxNode | undefined): boolean {
+  if (anchorNode === undefined) return false;
+  if (!CLASS_FIELD_DEFINITION_TYPES.has(anchorNode.type)) return false;
+  return hasKeyword(anchorNode, 'static');
+}
+
 /** Walks the parent chain from `node` (inclusive), returning the first node
  *  whose type matches, or null. Faster than `findNodeAtRange` when the caller
  *  already holds the anchor node — avoids re-scanning the tree from the root. */
@@ -386,6 +446,21 @@ export function emitTsScopeCaptures(
     // can negate it and the last case is dropped here.
     const thisFieldNode = groupedNodes['@type-binding.this-field'];
     if (thisFieldNode !== undefined && isStaticMethodThis(thisFieldNode)) {
+      continue;
+    }
+
+    // …and a `static` FIELD is a member of the class object, not of instances,
+    // so it must not type the instance field of the same name either — see
+    // `isStaticClassFieldBinding`. Both class-field anchors are tested: the
+    // initializer form (`static p = new Wrong()`, `@type-binding.constructor`)
+    // and the annotated form (`static p: Wrong`, `@type-binding.annotation`),
+    // which collide on the Class scope the same way. The predicate self-gates on
+    // the anchor's node type, so the local `variable_declarator` patterns that
+    // share these tags are untouched.
+    if (
+      isStaticClassFieldBinding(groupedNodes['@type-binding.constructor']) ||
+      isStaticClassFieldBinding(groupedNodes['@type-binding.annotation'])
+    ) {
       continue;
     }
 
