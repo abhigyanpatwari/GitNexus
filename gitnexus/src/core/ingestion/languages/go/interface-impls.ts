@@ -12,7 +12,22 @@ type MethodSetEntry = {
   readonly ambiguous: boolean;
 };
 type MutableMethodSetEntries = Map<string, MethodSetEntry>;
-type GoMethodDefinition = SymbolDefinition & { readonly goReceiverKind?: 'value' | 'pointer' };
+/** A struct embedded in another, plus HOW it was embedded (`T` vs `*T`). */
+type EmbeddedParent = { readonly structId: string; readonly asPointer: boolean };
+/**
+ * The two method sets Go defines for a defined type, kept separately because
+ * they answer different questions and only one of them is assignability.
+ *   `pointer` = MS(*T) — every method callable on a *T value.
+ *   `value`   = MS(T)  — the subset callable on a T value.
+ */
+type DualMethodSet = { readonly value: MutableMethodSet; readonly pointer: MutableMethodSet };
+/** Which method set satisfied an interface. `value` implies pointer too. */
+export type GoReceiverForm = 'value' | 'pointer';
+/** One structural implementor plus the form in which it implements. */
+export type GoStructuralImplementor = {
+  readonly structDefId: string;
+  readonly receiverForm: GoReceiverForm;
+};
 type SignatureContext = {
   readonly packageQualifier: string | undefined;
   readonly importQualifiers: ReadonlyMap<string, string>;
@@ -25,7 +40,8 @@ type DetectionIndexes = {
   readonly interfaceById: ReadonlyMap<string, SymbolDefinition>;
   readonly interfaceOwnMethodsById: ReadonlyMap<string, MethodSet>;
   readonly embeddedSitesByInterfaceId: ReadonlyMap<string, readonly ReferenceSite[]>;
-  readonly parentStructIdsByStructId: ReadonlyMap<string, readonly string[]>;
+  readonly parentStructIdsByStructId: ReadonlyMap<string, readonly EmbeddedParent[]>;
+  readonly valueMethodsByStructId: ReadonlyMap<string, MethodSet>;
   readonly structIdsByMethodName: ReadonlyMap<string, ReadonlySet<string>>;
   readonly signatureContextByDefId: ReadonlyMap<string, SignatureContext>;
   readonly scopeIndexes: ScopeResolutionIndexes;
@@ -35,7 +51,7 @@ export function detectGoInterfaceImplementations(
   parsedFiles: readonly ParsedFile[],
   _indexes: ScopeResolutionIndexes,
   _model: SemanticModel,
-): Map<string, string[]> {
+): Map<string, GoStructuralImplementor[]> {
   return detectGoInterfaceImplementationsFromIndexes(buildDetectionIndexes(parsedFiles, _indexes));
 }
 
@@ -50,7 +66,8 @@ function buildDetectionIndexes(
   const interfaceById = new Map<string, SymbolDefinition>();
   const interfaceOwnMethodsById = new Map<string, MethodSet>();
   const embeddedSitesByInterfaceId = new Map<string, ReferenceSite[]>();
-  const parentStructIdsByStructId = new Map<string, string[]>();
+  const parentStructIdsByStructId = new Map<string, EmbeddedParent[]>();
+  const valueMethodsByStructId = new Map<string, MethodSet>();
   const structIdsByMethodName = new Map<string, Set<string>>();
   const signatureContextByDefId = new Map<string, SignatureContext>();
   const interfaceIdByScopeId = new Map<string, string>();
@@ -71,11 +88,44 @@ function buildDetectionIndexes(
       }
       if (def.type !== 'Method' && def.type !== 'Function') continue;
       if (def.ownerId === undefined) continue;
-      if (isPointerReceiverMethod(def)) continue;
-      const methodName = simpleQualifiedName(def);
-      if (methodName === undefined || methodName.length === 0) continue;
+      // POINTER-receiver methods count toward the method set (#2813).
+      //
+      // Go's rule is per-type, and there are two types here: the method set of
+      // `T` holds only its value-receiver methods, while the method set of `*T`
+      // holds BOTH. #1966 kept only the value-receiver half, which makes the
+      // `T` answer exactly right — and the `*T` answer permanently empty, so a
+      // struct whose methods all read `func (r *T)` satisfied nothing and got
+      // no IMPLEMENTS edge at all.
+      //
+      // That is the shape idiomatic Go actually writes: methods take pointer
+      // receivers so they can mutate, and `*T` is what gets stored in an
+      // interface-typed field. Excluding it did not make the graph
+      // conservative, it made it silent — every call through such a field
+      // resolved to the interface DECLARATION and `impact()` on the
+      // implementation reported zero callers, indistinguishable from a symbol
+      // that genuinely has none.
+      //
+      // GitNexus models one Struct node per type with no separate `*T` node, so
+      // the two method sets cannot both be represented. This picks the `*T`
+      // reading: the graph now answers "which types provide this interface's
+      // behaviour", and no longer proves `var x I = T{}` invalid. That trade is
+      // deliberate — blast radius is what every consumer of IMPLEMENTS asks for
+      // (verified: MRO/METHOD_IMPLEMENTS derivation, community clustering, the
+      // receiver-dispatch fan-out index, and the epistemic heritage probe; none
+      // performs value-assignability checking).
+      //
+      // `goReceiverKind` is still stamped in method-owners.ts and is the hook a
+      // future value/pointer-aware model would read; it is deliberately no
+      // longer a filter here.
+      const simpleName = simpleQualifiedName(def);
+      if (simpleName === undefined || simpleName.length === 0) continue;
 
-      addMethod(methodsByOwner, def.ownerId, methodName, def);
+      addMethod(
+        methodsByOwner,
+        def.ownerId,
+        methodSetKey(simpleName, def, signatureContextByDefId),
+        def,
+      );
     }
   }
 
@@ -104,9 +154,11 @@ function buildDetectionIndexes(
       for (const childScope of childScopesByParent.get(scope.id) ?? []) {
         for (const def of childScope.ownedDefs) {
           if (def.type !== 'Method' && def.type !== 'Function') continue;
-          const methodName = simpleQualifiedName(def);
-          if (methodName === undefined || methodName.length === 0) continue;
-          addMethodOverload(methods, methodName, def);
+          const simpleName = simpleQualifiedName(def);
+          if (simpleName === undefined || simpleName.length === 0) continue;
+          // Same key function as the struct side — an interface requiring an
+          // unexported `seal()` must only be satisfied from its own package.
+          addMethodOverload(methods, methodSetKey(simpleName, def, signatureContextByDefId), def);
         }
       }
       interfaceOwnMethodsById.set(ifaceId, methods);
@@ -126,13 +178,20 @@ function buildDetectionIndexes(
       if (structId === undefined) continue;
       const parent = resolveInheritanceBaseInScope(site.inScope, site.name, indexes);
       if (parent === undefined || parent.type !== 'Struct') continue;
-      addParentStruct(parentStructIdsByStructId, structId, parent.nodeId);
+      // `embeddedAsPointer` is the capture-layer record of `*T` vs `T`; the two
+      // promote different method sets (go.dev/ref/spec#Struct_types).
+      addParentStruct(
+        parentStructIdsByStructId,
+        structId,
+        parent.nodeId,
+        site.embeddedAsPointer === true,
+      );
     }
   }
 
-  const structMethodSetCache = new Map<string, MutableMethodSetEntries>();
+  const structMethodSetCache = new Map<string, DualEntries>();
   for (const structId of structsById.keys()) {
-    const effective = collectStructMethodSet(
+    const dual = collectStructMethodSet(
       structId,
       {
         parentStructIdsByStructId,
@@ -141,9 +200,12 @@ function buildDetectionIndexes(
       new Set(),
       structMethodSetCache,
     );
-    if (effective === undefined) continue;
-    effectiveMethodsByStructId.set(structId, effective);
-    for (const methodName of effective.keys()) {
+    if (dual === undefined) continue;
+    // `pointer` is MS(*T) and is the superset, so it drives candidate lookup:
+    // a type that implements only in pointer form is still an implementor.
+    effectiveMethodsByStructId.set(structId, dual.pointer);
+    valueMethodsByStructId.set(structId, dual.value);
+    for (const methodName of dual.pointer.keys()) {
       addStructMethodCandidate(structIdsByMethodName, methodName, structId);
     }
   }
@@ -158,6 +220,7 @@ function buildDetectionIndexes(
     embeddedSitesByInterfaceId,
     parentStructIdsByStructId,
     structIdsByMethodName,
+    valueMethodsByStructId,
     signatureContextByDefId,
     scopeIndexes: indexes,
   };
@@ -165,26 +228,76 @@ function buildDetectionIndexes(
 
 function detectGoInterfaceImplementationsFromIndexes(
   indexes: DetectionIndexes,
-): Map<string, string[]> {
-  const implementations = new Map<string, string[]>();
+): Map<string, GoStructuralImplementor[]> {
+  const implementations = new Map<string, GoStructuralImplementor[]>();
   const methodSetCache = new Map<string, MutableMethodSet>();
   for (const iface of indexes.interfaces) {
     const required = collectInterfaceMethodSet(iface, indexes, new Set(), methodSetCache);
     if (required === undefined || required.size === 0) continue;
     if (!methodSetHasVerifiableSignatures(required)) continue;
 
-    const implementors: string[] = [];
+    const implementors: GoStructuralImplementor[] = [];
     for (const structId of candidateStructIdsFor(required, indexes)) {
-      const actual = indexes.effectiveMethodsByStructId.get(structId);
-      if (actual === undefined) continue;
-      if (methodSetSatisfies(actual, required, indexes.signatureContextByDefId)) {
-        implementors.push(structId);
-      }
+      const pointerSet = indexes.effectiveMethodsByStructId.get(structId);
+      if (pointerSet === undefined) continue;
+      // MS(*T) is the superset: if it does not satisfy, neither does MS(T).
+      if (!methodSetSatisfies(pointerSet, required, indexes.signatureContextByDefId)) continue;
+      // Then ask the narrower question separately — does the VALUE type satisfy?
+      // This is the distinction `var x I = T{}` turns on, and it is a fact about
+      // the program, not a heuristic.
+      const valueSet = indexes.valueMethodsByStructId.get(structId);
+      const satisfiesByValue =
+        valueSet !== undefined &&
+        methodSetSatisfies(valueSet, required, indexes.signatureContextByDefId);
+      implementors.push({
+        structDefId: structId,
+        receiverForm: satisfiesByValue ? 'value' : 'pointer',
+      });
     }
     if (implementors.length > 0) implementations.set(iface.nodeId, implementors);
   }
 
   return implementations;
+}
+
+/**
+ * The key a method occupies in a method set.
+ *
+ * Go spec, Uniqueness of identifiers: "Two identifiers are different if they are
+ * spelled differently, **or if they appear in different packages and are not
+ * exported**." So an UNEXPORTED method name is scoped to its declaring package —
+ * `seal` in package `sealed` is a different identifier from `seal` in package
+ * `foreign`, and a type outside `sealed` can never satisfy `interface { seal() }`.
+ * That is the whole basis of the sealed-interface idiom.
+ *
+ * Matching on the bare name made those types satisfy each other, which is a
+ * FALSE implementation rather than an over-approximation. Qualifying the key
+ * with the declaring package for unexported names makes the comparison exact.
+ *
+ * Exported names are deliberately left unqualified: the spec makes them the same
+ * identifier across packages, which is what allows cross-package interface
+ * satisfaction to work at all.
+ */
+function methodSetKey(
+  simpleName: string,
+  def: SymbolDefinition,
+  signatureContextByDefId: ReadonlyMap<string, SignatureContext>,
+): string {
+  if (isExportedGoIdentifier(simpleName)) return simpleName;
+  const pkg = signatureContextByDefId.get(def.nodeId)?.packageQualifier;
+  return pkg === undefined ? simpleName : `${pkg}\u0000${simpleName}`;
+}
+
+/**
+ * Go spec, Exported identifiers: exported iff the first character is a Unicode
+ * uppercase letter (category Lu). Method names always satisfy the second clause
+ * (they are method names), so the first character is the whole test.
+ */
+function isExportedGoIdentifier(name: string): boolean {
+  const first = name.codePointAt(0);
+  if (first === undefined) return false;
+  const ch = String.fromCodePoint(first);
+  return ch !== ch.toLowerCase() && ch === ch.toUpperCase();
 }
 
 function addMethod(
@@ -222,58 +335,114 @@ function addStructMethodCandidate(
 }
 
 function addParentStruct(
-  parentStructIdsByStructId: Map<string, string[]>,
+  parentStructIdsByStructId: Map<string, EmbeddedParent[]>,
   structId: string,
   parentStructId: string,
+  asPointer: boolean,
 ): void {
   const parents = parentStructIdsByStructId.get(structId) ?? [];
-  parents.push(parentStructId);
+  parents.push({ structId: parentStructId, asPointer });
   parentStructIdsByStructId.set(structId, parents);
 }
+
+/** The two entry maps built in parallel: MS(T) and MS(*T). */
+type DualEntries = {
+  readonly value: MutableMethodSetEntries;
+  readonly pointer: MutableMethodSetEntries;
+};
 
 function collectStructMethodSet(
   structId: string,
   indexes: Pick<DetectionIndexes, 'methodsByOwner' | 'parentStructIdsByStructId'>,
   visiting: Set<string>,
-  cache: Map<string, MutableMethodSetEntries>,
-): MutableMethodSet | undefined {
+  cache: Map<string, DualEntries>,
+): DualMethodSet | undefined {
   const entries = collectStructMethodEntries(structId, indexes, visiting, cache);
-  return entries === undefined ? undefined : methodEntriesToMethodSet(entries);
+  if (entries === undefined) return undefined;
+  return {
+    value: methodEntriesToMethodSet(entries.value),
+    pointer: methodEntriesToMethodSet(entries.pointer),
+  };
 }
 
+/**
+ * Build MS(T) and MS(*T) together, applying the spec's promotion table exactly
+ * (go.dev/ref/spec#Method_sets, #Struct_types):
+ *
+ *   declared receiver T   -> in MS(T) and MS(*T)
+ *   declared receiver *T  -> in MS(*T) only
+ *   S embeds T  (value)   -> MS(S) gets P's MS(T); MS(*S) gets P's MS(*T)
+ *   S embeds *T (pointer) -> MS(S) AND MS(*S) both get P's MS(*T)
+ *
+ * The last row is the one that makes the embed FORM load-bearing: with
+ * `func (b *Base) Ping()`, `struct{ Base }` does not implement a `Ping`
+ * interface by value while `struct{ *Base }` does. Collapsing the forms gives
+ * both the same answer and one of them is then wrong.
+ */
 function collectStructMethodEntries(
   structId: string,
   indexes: Pick<DetectionIndexes, 'methodsByOwner' | 'parentStructIdsByStructId'>,
   visiting: Set<string>,
-  cache: Map<string, MutableMethodSetEntries>,
-): MutableMethodSetEntries | undefined {
+  cache: Map<string, DualEntries>,
+): DualEntries | undefined {
   const cached = cache.get(structId);
-  if (cached !== undefined) return cloneMethodEntries(cached);
+  if (cached !== undefined) {
+    return { value: cloneMethodEntries(cached.value), pointer: cloneMethodEntries(cached.pointer) };
+  }
   if (visiting.has(structId)) return undefined;
   visiting.add(structId);
 
-  const merged = directMethodEntries(indexes.methodsByOwner.get(structId));
+  const own = indexes.methodsByOwner.get(structId);
+  // MS(*T) holds every declared method; MS(T) drops the pointer-receiver ones.
+  const pointer = directMethodEntries(own);
+  const value = directMethodEntries(filterValueReceiverMethods(own));
 
-  for (const parentStructId of indexes.parentStructIdsByStructId.get(structId) ?? []) {
-    const parentEntries = collectStructMethodEntries(parentStructId, indexes, visiting, cache);
+  for (const parent of indexes.parentStructIdsByStructId.get(structId) ?? []) {
+    const parentEntries = collectStructMethodEntries(parent.structId, indexes, visiting, cache);
     if (parentEntries === undefined) {
       visiting.delete(structId);
       return undefined;
     }
-    for (const [methodName, entry] of parentEntries) {
-      if (entry.ambiguous) continue;
-      mergePromotedMethodEntry(merged, methodName, {
-        overloads: entry.overloads,
-        depth: entry.depth + 1,
-        ambiguous: false,
-      });
-    }
+    // Embedding by POINTER lifts the parent's pointer-receiver methods into the
+    // embedder's VALUE method set; embedding by value does not.
+    const promotedIntoValue = parent.asPointer ? parentEntries.pointer : parentEntries.value;
+    promoteEntries(value, promotedIntoValue);
+    promoteEntries(pointer, parentEntries.pointer);
   }
 
   visiting.delete(structId);
-  cache.set(structId, cloneMethodEntries(merged));
-  return merged;
+  cache.set(structId, { value: cloneMethodEntries(value), pointer: cloneMethodEntries(pointer) });
+  return { value, pointer };
 }
+
+/** Merge one depth-level of promoted entries, preserving the shallowest-depth
+ *  and ambiguity rules the selector spec defines. */
+function promoteEntries(target: MutableMethodSetEntries, source: MutableMethodSetEntries): void {
+  for (const [methodName, entry] of source) {
+    if (entry.ambiguous) continue;
+    mergePromotedMethodEntry(target, methodName, {
+      overloads: entry.overloads,
+      depth: entry.depth + 1,
+      ambiguous: false,
+    });
+  }
+}
+
+/** MS(T) excludes methods declared with a `*T` receiver. */
+function filterValueReceiverMethods(methods: MethodSet | undefined): MutableMethodSet | undefined {
+  if (methods === undefined) return undefined;
+  const out = new Map<string, SymbolDefinition[]>();
+  for (const [name, overloads] of methods) {
+    const valueOnly = overloads.filter(
+      (def) => (def as GoMethodDefinition).goReceiverKind !== 'pointer',
+    );
+    if (valueOnly.length > 0) out.set(name, valueOnly);
+  }
+  return out;
+}
+
+/** Receiver-kind sidecar stamped by `populateGoOwners` (method-owners.ts). */
+type GoMethodDefinition = SymbolDefinition & { readonly goReceiverKind?: 'value' | 'pointer' };
 
 function collectInterfaceMethodSet(
   iface: SymbolDefinition,
@@ -473,10 +642,6 @@ function methodSetHasVerifiableSignatures(methods: MethodSet): boolean {
     if (!overloads.some(hasVerifiableSignature)) return false;
   }
   return true;
-}
-
-function isPointerReceiverMethod(def: SymbolDefinition): boolean {
-  return (def as GoMethodDefinition).goReceiverKind === 'pointer';
 }
 
 function hasVerifiableSignature(def: SymbolDefinition): boolean {
