@@ -439,3 +439,47 @@ export function isPythonImportedModule(
     normalizedTarget.endsWith('/' + packageFile)
   );
 }
+
+/**
+ * The receiver spellings `import a.b.c` makes callable, and the file each one
+ * names (#2826).
+ *
+ * `import a.b.c` binds ONE name — `a` — but makes three attribute paths
+ * reachable, and they name three different files:
+ *
+ *   a        → a/__init__.py
+ *   a.b      → a/b/__init__.py
+ *   a.b.c    → a/b/c.py        (the edge's own target)
+ *
+ * The shared default keyed `a` to the LEAF, which is wrong in both directions:
+ * `a.helper()` resolved into `a/b/c.py` whenever that module happened to export
+ * `helper`, and `a.b.mid()` resolved to nothing.
+ *
+ * Returns `undefined` — meaning "use the shared default" — for every spelling
+ * where the bound name is not the path's root:
+ *   - `import single`            — no dotted path to expand;
+ *   - `import a.b as x`          — binds only `x`; writing `a.b.f()` there is a
+ *                                  NameError, so `a.b` must NOT become a key;
+ *   - `from pkg import db`       — reclassified to a namespace edge whose
+ *                                  importPath is the bare name `db`.
+ *
+ * Prefix files are proposed, not asserted: `moduleFileExists` drops any that
+ * the workspace did not parse, so a PEP-420 namespace package (no
+ * `__init__.py`) contributes no key rather than one pointing at a missing file.
+ */
+export function pythonNamespaceReceiverPaths(
+  edge: { readonly localName: string; readonly importPath: string; readonly targetFile: string },
+  moduleFileExists: (filePath: string) => boolean,
+): readonly (readonly [string, string])[] | undefined {
+  const segments = edge.importPath.split('.');
+  if (segments.length < 2) return undefined;
+  if (segments[0] !== edge.localName) return undefined;
+
+  const out: (readonly [string, string])[] = [[edge.importPath, edge.targetFile]];
+  for (let i = 1; i < segments.length; i++) {
+    const prefix = segments.slice(0, i);
+    const packageFile = prefix.join('/') + '/__init__.py';
+    if (moduleFileExists(packageFile)) out.push([prefix.join('.'), packageFile]);
+  }
+  return out;
+}

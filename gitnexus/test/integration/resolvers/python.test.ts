@@ -3238,3 +3238,136 @@ def builds():
     expect(edges).toEqual(['builds->Model@pkg/db.py']);
   });
 });
+
+// ---------------------------------------------------------------------------
+// #2826 follow-up — a namespace receiver shadowed by a local declaration.
+//
+// Case 1 (namespace receiver) in `receiver-bound-calls.ts` consulted the
+// per-file namespace map with no lexical guard at all, so a parameter or local
+// named like the imported package still resolved through the import. That is a
+// WRONG edge, not a missing one, and it predates the dotted-path key — the
+// single-segment rows below fail the same way without the guard.
+// ---------------------------------------------------------------------------
+
+describe('Python namespace receiver shadowed by a local binding (#2826)', () => {
+  let repoDir: string;
+  let result: PipelineResult;
+
+  beforeAll(async () => {
+    repoDir = fs.mkdtempSync(path.join(os.tmpdir(), 'gn-python-ns-shadow-'));
+    writeFixtureRepo(repoDir, {
+      'pkg/__init__.py': '',
+      'pkg/db.py': `def session_scope():
+    return "db"
+`,
+      'single.py': `def session_scope():
+    return "single"
+`,
+      'caller_dotted.py': `import pkg.db
+
+def clean_dotted():
+    return pkg.db.session_scope()
+
+def param_shadow_dotted(pkg):
+    return pkg.db.session_scope()
+
+def local_shadow_dotted():
+    pkg = object()
+    return pkg.db.session_scope()
+`,
+      'caller_single.py': `import single
+
+def clean_single():
+    return single.session_scope()
+
+def param_shadow_single(single):
+    return single.session_scope()
+
+def local_shadow_single():
+    single = object()
+    return single.session_scope()
+`,
+    });
+    result = await runPipelineFromRepo(repoDir, () => {});
+  }, 60000);
+
+  afterAll(() => {
+    if (repoDir !== undefined) fs.rmSync(repoDir, { recursive: true, force: true });
+  });
+
+  it('emits an edge only from the unshadowed callers', () => {
+    // Exact edge set: an assertion on absence alone would also pass if the
+    // guard over-suppressed and killed the clean rows too.
+    const edges = getRelationships(result, 'CALLS')
+      .filter((c) => c.target === 'session_scope')
+      .map((c) => `${c.source}->${c.targetFilePath}`)
+      .sort();
+    expect(edges).toEqual(['clean_dotted->pkg/db.py', 'clean_single->single.py']);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// #2826 follow-up — `import a.b.c` binds THREE receiver spellings, not one.
+//
+// Python makes `a`, `a.b` and `a.b.c` all callable off a single import, and
+// each names a DIFFERENT file. The namespace map originally keyed only the
+// bound name `a`, pointed at the LEAF module — wrong in both directions:
+// `a.helper()` resolved into the leaf whenever it happened to export `helper`
+// (a wrong edge, preferring a decoy over the real definition), and `a.b.mid()`
+// resolved to nothing.
+// ---------------------------------------------------------------------------
+
+describe('Python dotted import binds every package prefix (#2826)', () => {
+  let repoDir: string;
+  let result: PipelineResult;
+
+  beforeAll(async () => {
+    repoDir = fs.mkdtempSync(path.join(os.tmpdir(), 'gn-python-prefix-'));
+    writeFixtureRepo(repoDir, {
+      // `helper` exists in BOTH the package and the leaf. Without the fix the
+      // root key points at the leaf and the decoy wins, so this pair is what
+      // makes the wrong edge visible rather than merely plausible.
+      'a/__init__.py': `def helper():
+    return "package"
+`,
+      'a/b/__init__.py': `def mid_fn():
+    return "mid"
+`,
+      'a/b/c.py': `def helper():
+    return "leaf-decoy"
+
+
+def leaf_fn():
+    return "leaf"
+`,
+      'caller.py': `import a.b.c
+
+def uses_leaf():
+    return a.b.c.leaf_fn()
+
+def uses_mid():
+    return a.b.mid_fn()
+
+def uses_root():
+    return a.helper()
+`,
+    });
+    result = await runPipelineFromRepo(repoDir, () => {});
+  }, 60000);
+
+  afterAll(() => {
+    if (repoDir !== undefined) fs.rmSync(repoDir, { recursive: true, force: true });
+  });
+
+  it('resolves each prefix to its own module', () => {
+    const edges = getRelationships(result, 'CALLS')
+      .filter((c) => c.sourceFilePath === 'caller.py')
+      .map((c) => `${c.source}->${c.target}@${c.targetFilePath}`)
+      .sort();
+    expect(edges).toEqual([
+      'uses_leaf->leaf_fn@a/b/c.py',
+      'uses_mid->mid_fn@a/b/__init__.py',
+      'uses_root->helper@a/__init__.py',
+    ]);
+  });
+});

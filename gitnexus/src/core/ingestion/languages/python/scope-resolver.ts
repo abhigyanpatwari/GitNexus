@@ -21,6 +21,7 @@ import { indexOnlyElementType } from '../../type-extractors/shared.js';
 import { pythonProvider } from '../python.js';
 import {
   isPythonImportedModule,
+  pythonNamespaceReceiverPaths,
   pythonArityCompatibility,
   pythonMergeBindings,
   resolvePythonImportTarget,
@@ -57,11 +58,11 @@ const pythonScopeResolver: ScopeResolver = {
   isNamespaceImport: (parsedImport, targetFile, fromFile) =>
     isPythonImportedModule(parsedImport, targetFile, fromFile),
 
-  // `import a.b` binds only `a` (see interpret.ts's plain arm), so the
-  // receiver written at the call site — `a.b` — is not the bound name. Both
-  // spellings must key the namespace map or every caller using Python's
-  // absolute-import style is invisible to the call graph (#2826).
-  namespaceReceiverIncludesImportPath: true,
+  // `import a.b.c` binds only `a`, yet makes `a`, `a.b` and `a.b.c` all
+  // callable — each naming a different file. Without this the absolute-import
+  // style is invisible to the call graph, and the root key points at the leaf
+  // module instead of the package (#2826).
+  namespaceReceiverPaths: pythonNamespaceReceiverPaths,
 
   // Python LEGB precedence: local > import/namespace/reexport > wildcard.
   // The per-scope id is unused by pythonMergeBindings (tier ordering

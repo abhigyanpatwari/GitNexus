@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import type { ImportEdge, ParsedFile, ScopeId } from 'gitnexus-shared';
 import { collectNamespaceTargets } from '../../../src/core/ingestion/scope-resolution/scope/namespace-targets.js';
+import { pythonNamespaceReceiverPaths } from '../../../src/core/ingestion/languages/python/import-target.js';
 import type { ScopeResolutionIndexes } from '../../../src/core/ingestion/model/scope-resolution-indexes.js';
 
 // `collectNamespaceTargets` reads exactly two things: the file's module scope
@@ -21,74 +22,125 @@ function edge(partial: Partial<ImportEdge>): ImportEdge {
   } as ImportEdge;
 }
 
-function collect(edges: readonly ImportEdge[], includeImportPath: boolean) {
+/** Collect with Python's hook, against a workspace containing `files`. */
+function collectPython(edges: readonly ImportEdge[], files: readonly string[] = []) {
   const parsed = { filePath: 'caller.py', moduleScope: MODULE_SCOPE } as ParsedFile;
   const scopes = { imports: new Map([[MODULE_SCOPE, edges]]) } as unknown as ScopeResolutionIndexes;
-  return collectNamespaceTargets(parsed, scopes, { includeImportPath });
+  const present = new Set(files);
+  return collectNamespaceTargets(parsed, scopes, {
+    receiverPaths: pythonNamespaceReceiverPaths,
+    moduleFileExists: (filePath) => present.has(filePath),
+  });
 }
 
-describe('collectNamespaceTargets — dotted import-path keys (#2826)', () => {
-  it('keys the local binding name whether or not the provider opts in', () => {
-    for (const optIn of [false, true]) {
-      expect(collect([edge({})], optIn).get('pkg')).toEqual(['pkg/db.py']);
-    }
+/** Collect the way a provider with no hook does. */
+function collectDefault(edges: readonly ImportEdge[]) {
+  const parsed = { filePath: 'caller.ts', moduleScope: MODULE_SCOPE } as ParsedFile;
+  const scopes = { imports: new Map([[MODULE_SCOPE, edges]]) } as unknown as ScopeResolutionIndexes;
+  return collectNamespaceTargets(parsed, scopes);
+}
+
+describe('collectNamespaceTargets — namespace receiver spellings (#2826)', () => {
+  it('keys only the bound name when no provider hook is supplied', () => {
+    const targets = collectDefault([edge({})]);
+    expect(targets.get('pkg')).toEqual(['pkg/db.py']);
+    expect(targets.has('pkg.db')).toBe(false);
   });
 
-  it('adds the dotted import path only when the provider opts in', () => {
-    expect(collect([edge({})], false).has('pkg.db')).toBe(false);
-    expect(collect([edge({})], true).get('pkg.db')).toEqual(['pkg/db.py']);
+  it('keys the dotted import path for Python', () => {
+    expect(collectPython([edge({})]).get('pkg.db')).toEqual(['pkg/db.py']);
   });
 
-  // Swift's `import Foo.Bar` produces localName 'Foo' / targetExportedName
-  // 'Foo.Bar' — structurally identical to Python's `import pkg.db`. Swift
-  // resolves the FIRST segment as the SPM target, so 'Foo.Bar' names a nested
-  // type, not the imported file. Minting a key for it would hand
+  // The root key is the reason this is a hook and not a flag. `import pkg.db`
+  // binds `pkg`, but `pkg` names the PACKAGE, not the submodule — keying it to
+  // pkg/db.py made `pkg.helper()` resolve into the submodule whenever that file
+  // happened to export `helper`, silently preferring a decoy over the real one.
+  it('keys the package root at its own __init__, never at the leaf module', () => {
+    const targets = collectPython([edge({})], ['pkg/__init__.py']);
+    expect(targets.get('pkg')).toEqual(['pkg/__init__.py']);
+    expect(targets.get('pkg.db')).toEqual(['pkg/db.py']);
+  });
+
+  it('omits a prefix whose package file the workspace never parsed', () => {
+    // PEP-420 namespace package: no __init__.py. Better no key than one
+    // pointing at a file that does not exist — or at the wrong file.
+    const targets = collectPython([edge({})], []);
+    expect(targets.has('pkg')).toBe(false);
+    expect(targets.get('pkg.db')).toEqual(['pkg/db.py']);
+  });
+
+  it('keys every intermediate package of a deep import', () => {
+    const deep = edge({
+      localName: 'a',
+      targetExportedName: 'a.b.c',
+      targetFile: 'a/b/c.py',
+    });
+    const targets = collectPython([deep], ['a/__init__.py', 'a/b/__init__.py']);
+    expect(targets.get('a')).toEqual(['a/__init__.py']);
+    expect(targets.get('a.b')).toEqual(['a/b/__init__.py']);
+    expect(targets.get('a.b.c')).toEqual(['a/b/c.py']);
+  });
+
+  // Swift's `import Foo.Bar` produces an edge structurally identical to
+  // Python's `import pkg.db` — localName 'Foo', targetExportedName 'Foo.Bar'.
+  // Swift resolves the FIRST segment as the SPM target, so 'Foo.Bar' names a
+  // nested type, not the imported file. Minting a key for it would hand
   // `resolveConstructionExpressionClass` an authoritative-but-wrong namespace,
   // and that function deliberately does not fall through on a miss — so a
-  // working `Foo.Bar(x)` would start resolving to nothing. The opt-in is what
-  // keeps the two apart; a bare structural predicate cannot.
-  it('mints nothing for a non-opted-in provider with a Swift-shaped edge', () => {
+  // working `Foo.Bar(x)` would start resolving to nothing. Only the provider
+  // opt-in keeps the two apart; a structural predicate cannot.
+  it('mints nothing extra for a provider without the hook, on a Swift-shaped edge', () => {
     const swiftShaped = edge({
       localName: 'Foo',
       targetExportedName: 'Foo.Bar',
       targetFile: 'Sources/Foo/Foo.swift',
     });
-    const targets = collect([swiftShaped], false);
+    const targets = collectDefault([swiftShaped]);
     expect(targets.get('Foo')).toEqual(['Sources/Foo/Foo.swift']);
     expect(targets.has('Foo.Bar')).toBe(false);
   });
 
   it('does not key an alias import under the module path it does not bind', () => {
     // `import pkg.db as pdb` binds ONLY `pdb`; `pkg.db.f()` is a NameError.
-    // The root-segment check is what rejects it.
     const aliased = edge({ localName: 'pdb', targetExportedName: 'pkg.db' });
-    const targets = collect([aliased], true);
+    const targets = collectPython([aliased], ['pkg/__init__.py']);
     expect(targets.get('pdb')).toEqual(['pkg/db.py']);
     expect(targets.has('pkg.db')).toBe(false);
+    expect(targets.has('pkg')).toBe(false);
   });
 
   it('keeps two same-package imports on separate keys', () => {
-    const targets = collect(
+    const targets = collectPython(
       [
         edge({ targetExportedName: 'pkg.db', targetFile: 'pkg/db.py' }),
         edge({ targetExportedName: 'pkg.cache', targetFile: 'pkg/cache.py' }),
       ],
-      true,
+      ['pkg/__init__.py'],
     );
     expect(targets.get('pkg.db')).toEqual(['pkg/db.py']);
     expect(targets.get('pkg.cache')).toEqual(['pkg/cache.py']);
-    // The shared root stays ambiguous, exactly as before this change.
-    expect(targets.get('pkg')).toEqual(['pkg/db.py', 'pkg/cache.py']);
+    // The shared root resolves to the package itself — not to whichever
+    // submodule happened to be imported first.
+    expect(targets.get('pkg')).toEqual(['pkg/__init__.py']);
   });
 
   it('ignores non-namespace and unresolved edges', () => {
-    const targets = collect(
+    const targets = collectPython(
       [
         edge({ kind: 'named', localName: 'db', targetExportedName: 'pkg.db' }),
         edge({ targetFile: null, targetExportedName: 'pkg.gone' }),
       ],
-      true,
+      ['pkg/__init__.py'],
     );
     expect(targets.size).toBe(0);
+  });
+
+  it('falls back to the default for a bare single-segment import', () => {
+    const bare = edge({
+      localName: 'single',
+      targetExportedName: 'single',
+      targetFile: 'single.py',
+    });
+    expect(collectPython([bare]).get('single')).toEqual(['single.py']);
   });
 });

@@ -1077,28 +1077,42 @@ export interface ScopeResolver {
   ) => SymbolDefinition | 'ambiguous' | undefined;
 
   /**
-   * Enable keying a namespace import's target by the dotted module path it
-   * was imported under, in addition to the name it binds locally (#2826).
+   * Every receiver spelling under which a namespace import's target is
+   * reachable, and the file each spelling names (#2826). Returning
+   * `undefined` keeps the shared default: the local binding name alone,
+   * mapped to the edge's own target file.
    *
-   * Python's `import a.b` binds only `a`, yet the receiver written at the
-   * call site is the whole path `a.b`. Both halves already reach the
-   * finalized edge — `localName` and `targetExportedName` — so the shared
-   * collector can key on either; what it cannot decide on its own is whether
-   * the dotted path NAMES the imported target in this language.
+   * Python needs this because one `import a.b.c` statement binds THREE
+   * spellings at once — `a`, `a.b` and `a.b.c` — each naming a DIFFERENT
+   * file (`a/__init__.py`, `a/b/__init__.py`, `a/b/c.py`), while
+   * `ImportEdge` carries only the leaf. The default keyed `a` (its
+   * `localName`) to the LEAF, so `a.helper()` resolved into `a/b/c.py`
+   * whenever that module happened to export `helper` — a wrong edge — and
+   * `a.b.mid()` resolved to nothing at all.
    *
-   * It cannot, because the shape is ambiguous across languages. Swift's
-   * `import Foo.Bar` produces the identical pair (`localName: 'Foo'`,
-   * `targetExportedName: 'Foo.Bar'`), but there the FIRST segment is the
-   * resolved target and `Foo.Bar` names a nested type inside it — keying it
-   * would hand `resolveConstructionExpressionClass` an authoritative
-   * namespace that does not fall through on a miss, breaking construction
-   * that resolves correctly today. Hence an opt-in rather than a structural
-   * predicate.
+   * Shared code cannot derive this. Swift's `import Foo.Bar` produces an
+   * edge shape identical to Python's (`localName: 'Foo'`,
+   * `targetExportedName: 'Foo.Bar'`), yet there the FIRST segment is the
+   * resolved target and `Foo.Bar` names a nested TYPE; keying it would hand
+   * `resolveConstructionExpressionClass` an authoritative namespace — that
+   * branch deliberately does not fall through on a miss — and break
+   * `Foo.Bar(x)` construction that resolves correctly today. And the
+   * `__init__.py` convention that turns a dotted prefix into a file is
+   * Python's alone.
    *
-   * Languages where the dotted import path is not itself a receiver
-   * spelling leave this undefined.
+   * `moduleFileExists` reports whether a path is a module the workspace
+   * actually parsed, so a provider can propose a prefix file and have it
+   * dropped when absent (a PEP-420 namespace package has no `__init__.py`)
+   * rather than minting a key to a file that is not there.
    */
-  readonly namespaceReceiverIncludesImportPath?: boolean;
+  readonly namespaceReceiverPaths?: (
+    edge: {
+      readonly localName: string;
+      readonly importPath: string;
+      readonly targetFile: string;
+    },
+    moduleFileExists: (filePath: string) => boolean,
+  ) => readonly (readonly [spelling: string, targetFile: string])[] | undefined;
 
   /**
    * Optional language-specific member-lattice lookup. Runs for a resolved

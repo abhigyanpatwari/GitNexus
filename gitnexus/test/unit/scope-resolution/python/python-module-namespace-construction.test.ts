@@ -80,9 +80,10 @@ function build() {
   const index = buildWorkspaceResolutionIndex(parsedFiles);
   const namespaceTargetsFor = (file: ParsedFile) =>
     collectNamespaceTargets(file, scopes, {
-      // Mirror the production wiring in receiver-bound-calls.ts: the dotted
-      // import-path key is the provider's opt-in, not a default.
-      includeImportPath: pythonScopeResolver.namespaceReceiverIncludesImportPath === true,
+      // Mirror the production wiring in receiver-bound-calls.ts: the extra
+      // receiver spellings come from the provider hook, not from a default.
+      receiverPaths: pythonScopeResolver.namespaceReceiverPaths,
+      moduleFileExists: (filePath) => index.moduleScopeByFile.has(filePath),
     });
   const app = parsedFiles.find((file) => file.filePath === 'pkg/app.py');
   if (app === undefined) throw new Error('missing app fixture');

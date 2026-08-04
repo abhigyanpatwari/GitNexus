@@ -45,11 +45,17 @@
 
 import type { ParsedFile } from 'gitnexus-shared';
 import type { ScopeResolutionIndexes } from '../../model/scope-resolution-indexes.js';
+import type { ScopeResolver } from '../contract/scope-resolver.js';
 
 export interface NamespaceTargetOptions {
-  /** `ScopeResolver.namespaceReceiverIncludesImportPath` for the file's
-   *  language. Off by default: the extra key is opt-in, never inferred. */
-  readonly includeImportPath?: boolean;
+  /** `ScopeResolver.namespaceReceiverPaths` for the file's language. Absent
+   *  (or returning `undefined` per edge) keeps the local-name-only default:
+   *  the extra spellings are opt-in, never inferred from the edge shape. */
+  readonly receiverPaths?: ScopeResolver['namespaceReceiverPaths'];
+  /** Whether a path is a module the workspace parsed. Lets a provider propose
+   *  a prefix file and have it dropped when absent, instead of minting a key
+   *  to a file that does not exist. Defaults to "nothing exists". */
+  readonly moduleFileExists?: (filePath: string) => boolean;
 }
 
 export function collectNamespaceTargets(
@@ -70,20 +76,27 @@ export function collectNamespaceTargets(
     if (!targets.includes(targetFile)) targets.push(targetFile);
   };
 
+  const moduleFileExists = options?.moduleFileExists ?? ((): boolean => false);
+
   for (const edge of moduleEdges) {
     if (edge.targetFile === null || edge.kind !== 'namespace') continue;
-    addTarget(edge.localName, edge.targetFile);
 
-    if (options?.includeImportPath !== true) continue;
-    // Only a path ROOTED at the local binding is a real receiver spelling.
-    // `import a.b` binds `a`, so `a.b` is written at the call site; but
-    // `import a.b as x` binds only `x` — writing `a.b` there is a NameError,
-    // and its edge (localName `x`, path `a.b`) is rejected by this check.
-    const importPath = edge.targetExportedName;
-    const firstDot = importPath.indexOf('.');
-    if (firstDot <= 0) continue;
-    if (importPath.slice(0, firstDot) !== edge.localName) continue;
-    addTarget(importPath, edge.targetFile);
+    const spellings = options?.receiverPaths?.(
+      {
+        localName: edge.localName,
+        importPath: edge.targetExportedName,
+        targetFile: edge.targetFile,
+      },
+      moduleFileExists,
+    );
+
+    // A provider that declines this edge — or has no hook — gets the default:
+    // the bound name alone, pointing at this edge's own target.
+    if (spellings === undefined) {
+      addTarget(edge.localName, edge.targetFile);
+      continue;
+    }
+    for (const [spelling, targetFile] of spellings) addTarget(spelling, targetFile);
   }
   return out;
 }
