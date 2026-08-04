@@ -2447,6 +2447,7 @@ export const DART_QUERIES = `
   right: (_)) @assignment
 `;
 
+<<<<<<< HEAD
 // ── Zig ──────────────────────────────────────────────────────────────────────
 // Verified against @tree-sitter-grammars/tree-sitter-zig 1.1.2.
 // Container declarations (struct/enum/union) are anonymous in the grammar; the
