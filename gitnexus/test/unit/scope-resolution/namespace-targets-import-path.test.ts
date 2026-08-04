@@ -135,6 +135,22 @@ describe('collectNamespaceTargets — namespace receiver spellings (#2826)', () 
     expect(targets.size).toBe(0);
   });
 
+  // Workspace file paths are not POSIX-normalized at ingestion (this module
+  // re-normalizes at five other comparison points, and `moduleScopeByFile` is
+  // keyed by the raw `ParsedFile.filePath`). Probing only `/` would mint no
+  // prefix keys on Windows — a silent degradation, not a loud one.
+  it('finds a prefix package under Windows-separated workspace paths', () => {
+    const deep = edge({
+      localName: 'a',
+      targetExportedName: 'a.b.c',
+      targetFile: 'a\\b\\c.py',
+    });
+    const targets = collectPython([deep], ['a\\__init__.py', 'a\\b\\__init__.py']);
+    expect(targets.get('a')).toEqual(['a\\__init__.py']);
+    expect(targets.get('a.b')).toEqual(['a\\b\\__init__.py']);
+    expect(targets.get('a.b.c')).toEqual(['a\\b\\c.py']);
+  });
+
   it('falls back to the default for a bare single-segment import', () => {
     const bare = edge({
       localName: 'single',

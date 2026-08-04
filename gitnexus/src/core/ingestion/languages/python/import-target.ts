@@ -478,8 +478,16 @@ export function pythonNamespaceReceiverPaths(
   const out: (readonly [string, string])[] = [[edge.importPath, edge.targetFile]];
   for (let i = 1; i < segments.length; i++) {
     const prefix = segments.slice(0, i);
-    const packageFile = prefix.join('/') + '/__init__.py';
-    if (moduleFileExists(packageFile)) out.push([prefix.join('.'), packageFile]);
+    // Workspace file paths are NOT normalized to POSIX at ingestion — this
+    // module already re-normalizes at five other comparison points, and
+    // `moduleScopeByFile` is keyed by the raw `ParsedFile.filePath`. Probing
+    // only the `/` spelling would silently mint no prefix keys on Windows,
+    // degrading `a.b.mid()` back to unresolved with nothing to show for it.
+    const packageFile = [
+      prefix.join('/') + '/__init__.py',
+      prefix.join('\\') + '\\__init__.py',
+    ].find(moduleFileExists);
+    if (packageFile !== undefined) out.push([prefix.join('.'), packageFile]);
   }
   return out;
 }
