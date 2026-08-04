@@ -4,6 +4,7 @@ import { SupportedLanguages } from 'gitnexus-shared';
 
 import { getProvider, getProviderForFile } from '../../src/core/ingestion/languages/index.js';
 import {
+  interpretObjectiveCImport,
   interpretObjectiveCTypeBinding,
   normalizeObjectiveCType,
 } from '../../src/core/ingestion/languages/objective-c/interpret.js';
@@ -19,6 +20,19 @@ function parse(source: string): Parser.Tree {
 }
 
 describe('Objective-C language provider registration', () => {
+  it('retains angle-bracket imports for workspace-local framework resolution', () => {
+    expect(
+      interpretObjectiveCImport({
+        '@import.source': { text: 'FeatureKit/FeatureKit.h' },
+        '@import.system': { text: 'true' },
+      }),
+    ).toEqual({
+      kind: 'wildcard',
+      targetRaw: 'FeatureKit/FeatureKit.h',
+      isSystem: true,
+    });
+  });
+
   it('drops nested and unterminated protocol qualifiers without preserving markup', () => {
     expect(
       normalizeObjectiveCType('const NSDictionary<NSString *, NSArray<NSNumber *> *> * nonnull'),

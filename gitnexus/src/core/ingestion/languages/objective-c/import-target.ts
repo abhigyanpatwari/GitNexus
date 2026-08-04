@@ -5,18 +5,28 @@ interface WorkspacePath {
   readonly normalized: string;
 }
 
-const normalizedWorkspacePaths = new WeakMap<ReadonlySet<string>, readonly WorkspacePath[]>();
+interface WorkspacePathIndex {
+  readonly byBasename: ReadonlyMap<string, readonly WorkspacePath[]>;
+}
 
-function workspacePaths(allFilePaths: ReadonlySet<string>): readonly WorkspacePath[] {
-  let paths = normalizedWorkspacePaths.get(allFilePaths);
-  if (paths === undefined) {
-    paths = [...allFilePaths].map((original) => ({
-      original,
-      normalized: original.replace(/\\/g, '/'),
-    }));
-    normalizedWorkspacePaths.set(allFilePaths, paths);
+const workspacePathIndexes = new WeakMap<ReadonlySet<string>, WorkspacePathIndex>();
+const resolutionCaches = new WeakMap<ReadonlySet<string>, Map<string, string | null>>();
+
+function workspacePathIndex(allFilePaths: ReadonlySet<string>): WorkspacePathIndex {
+  let index = workspacePathIndexes.get(allFilePaths);
+  if (index === undefined) {
+    const byBasename = new Map<string, WorkspacePath[]>();
+    for (const original of allFilePaths) {
+      const candidate = { original, normalized: original.replace(/\\/g, '/') };
+      const basename = posix.basename(candidate.normalized);
+      const bucket = byBasename.get(basename) ?? [];
+      bucket.push(candidate);
+      byBasename.set(basename, bucket);
+    }
+    index = { byBasename };
+    workspacePathIndexes.set(allFilePaths, index);
   }
-  return paths;
+  return index;
 }
 
 function normalizeImportTarget(targetRaw: string): string | null {
@@ -48,6 +58,23 @@ function uniqueMatch(
   return match;
 }
 
+function candidatesForTarget(index: WorkspacePathIndex, target: string): readonly WorkspacePath[] {
+  return index.byBasename.get(posix.basename(target)) ?? [];
+}
+
+function containsContiguousPath(haystack: readonly string[], needle: readonly string[]): boolean {
+  if (needle.length === 0 || needle.length > haystack.length) return false;
+  for (let start = 0; start <= haystack.length - needle.length; start++) {
+    if (needle.every((part, offset) => haystack[start + offset] === part)) return true;
+  }
+  return false;
+}
+
+export interface ObjectiveCImportTargetOptions {
+  /** True for `#import <...>`; angle imports do not use quoted-header sibling precedence. */
+  readonly isSystem?: boolean;
+}
+
 /**
  * Resolve project-local Objective-C imports without build-setting guesses.
  * Every fallback requires a unique workspace match; ambiguity fails closed.
@@ -56,24 +83,76 @@ export function resolveObjectiveCImportTarget(
   targetRaw: string,
   fromFile: string,
   allFilePaths: ReadonlySet<string>,
+  options: ObjectiveCImportTargetOptions = {},
+): string | null {
+  let cache = resolutionCaches.get(allFilePaths);
+  if (cache === undefined) {
+    cache = new Map();
+    resolutionCaches.set(allFilePaths, cache);
+  }
+  const from = fromFile.replace(/\\/g, '/');
+  const cacheKey = `${options.isSystem === true ? 'system' : 'quoted'}\0${
+    options.isSystem === true ? '' : from
+  }\0${targetRaw}`;
+  if (cache.has(cacheKey)) return cache.get(cacheKey) ?? null;
+
+  const resolved = resolveObjectiveCImportTargetUncached(
+    targetRaw,
+    from,
+    workspacePathIndex(allFilePaths),
+    options,
+  );
+  cache.set(cacheKey, resolved);
+  return resolved;
+}
+
+function resolveObjectiveCImportTargetUncached(
+  targetRaw: string,
+  fromFile: string,
+  index: WorkspacePathIndex,
+  options: ObjectiveCImportTargetOptions,
 ): string | null {
   const target = normalizeImportTarget(targetRaw);
   if (target === null) return null;
-  const paths = workspacePaths(allFilePaths);
-  const from = fromFile.replace(/\\/g, '/');
 
-  const sibling = posix.normalize(posix.join(posix.dirname(from), target));
-  if (!sibling.startsWith('../')) {
-    const siblingMatch = uniqueMatch(paths, (candidate) => candidate.normalized === sibling);
-    if (siblingMatch !== null) return siblingMatch;
+  if (options.isSystem !== true) {
+    const sibling = posix.normalize(posix.join(posix.dirname(fromFile), target));
+    if (!sibling.startsWith('../')) {
+      const siblingMatch = uniqueMatch(
+        candidatesForTarget(index, sibling),
+        (candidate) => candidate.normalized === sibling,
+      );
+      if (siblingMatch !== null) return siblingMatch;
+    }
+
+    const exact = uniqueMatch(
+      candidatesForTarget(index, target),
+      (candidate) => candidate.normalized === target,
+    );
+    if (exact !== null) return exact;
   }
 
-  const exact = uniqueMatch(paths, (candidate) => candidate.normalized === target);
-  if (exact !== null) return exact;
+  // CocoaPods source layouts commonly place public headers below an
+  // intermediate `Classes/` directory, so `<Module/Header.h>` is not a
+  // literal path suffix. Treat literal and module-scoped system-header paths
+  // as one candidate tier so ambiguity across those layouts also fails closed.
+  const targetParts = target.split('/');
+  if (options.isSystem === true && target.endsWith('.h') && targetParts.length > 1) {
+    const suffix = `/${target}`;
+    const moduleParts = targetParts.slice(0, -1);
+    return uniqueMatch(candidatesForTarget(index, target), (candidate) => {
+      const candidateParts = candidate.normalized.split('/');
+      return (
+        candidate.normalized === target ||
+        candidate.normalized.endsWith(suffix) ||
+        containsContiguousPath(candidateParts.slice(0, -1), moduleParts)
+      );
+    });
+  }
 
   const suffix = `/${target}`;
   const suffixMatch = uniqueMatch(
-    paths,
+    candidatesForTarget(index, target),
     (candidate) => candidate.normalized === target || candidate.normalized.endsWith(suffix),
   );
   if (suffixMatch !== null) return suffixMatch;
@@ -82,7 +161,10 @@ export function resolveObjectiveCImportTarget(
     const modulePath = target.replace(/\./g, '/');
     const leaf = modulePath.slice(modulePath.lastIndexOf('/') + 1);
     const moduleCandidates = [`${modulePath}.h`, `${modulePath}/${leaf}.h`];
-    return uniqueMatch(paths, (candidate) =>
+    const candidates = moduleCandidates.flatMap((candidate) =>
+      candidatesForTarget(index, candidate),
+    );
+    return uniqueMatch(candidates, (candidate) =>
       moduleCandidates.some(
         (moduleCandidate) =>
           candidate.normalized === moduleCandidate ||
@@ -94,7 +176,7 @@ export function resolveObjectiveCImportTarget(
   if (!target.endsWith('.h')) {
     const umbrella = `${target}/${target}.h`;
     return uniqueMatch(
-      paths,
+      candidatesForTarget(index, umbrella),
       (candidate) =>
         candidate.normalized === umbrella || candidate.normalized.endsWith(`/${umbrella}`),
     );

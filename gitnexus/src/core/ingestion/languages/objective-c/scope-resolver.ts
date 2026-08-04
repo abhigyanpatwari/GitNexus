@@ -11,6 +11,7 @@ import { objectiveCProvider } from '../objective-c.js';
 import { applyObjectiveCCaptureSideChannel } from './capture-side-channel.js';
 import { populateObjectiveCWorkspaceOwners } from './ownership.js';
 import { emitObjectiveCSourceSiteEdges } from './relationships.js';
+import { resolveObjectiveCImportClosure } from './import-closure.js';
 import { resolveObjectiveCImportTarget } from './import-target.js';
 import { extractParsedFile } from '../../scope-extractor-bridge.js';
 import { parseObjectiveCTypeDescriptor } from './type-semantics.js';
@@ -601,8 +602,15 @@ export const objectiveCScopeResolver: ScopeResolver = {
 
   applyCaptureSideChannel: applyObjectiveCCaptureSideChannel,
 
-  resolveImportTarget: (targetRaw, fromFile, allFilePaths) =>
-    resolveObjectiveCImportTarget(targetRaw, fromFile, allFilePaths),
+  resolveImportTarget: (targetRaw, fromFile, allFilePaths, _resolutionConfig, context) => {
+    const isSystem =
+      context?.parsedImport?.kind === 'wildcard' && context.parsedImport.isSystem === true;
+    return context?.parsedFiles === undefined
+      ? resolveObjectiveCImportTarget(targetRaw, fromFile, allFilePaths, { isSystem })
+      : resolveObjectiveCImportClosure(targetRaw, fromFile, allFilePaths, context.parsedFiles, {
+          isSystem,
+        });
+  },
 
   collectScopeContextPaths({
     primaryFilePaths,
@@ -631,6 +639,9 @@ export const objectiveCScopeResolver: ScopeResolver = {
           parsedImport.targetRaw,
           current,
           allScannedPaths,
+          {
+            isSystem: parsedImport.kind === 'wildcard' && parsedImport.isSystem,
+          },
         );
         if (target === null || !/\.h$/i.test(target) || visited.has(target)) continue;
         visited.add(target);

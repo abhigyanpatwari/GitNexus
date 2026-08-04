@@ -4,8 +4,16 @@ import { parseObjectiveCTypeDescriptor } from './type-semantics.js';
 
 export function interpretObjectiveCImport(captures: CaptureMatch): ParsedImport | null {
   const source = captures['@import.source']?.text;
-  if (source === undefined || captures['@import.system'] !== undefined) return null;
-  return { kind: 'wildcard', targetRaw: source };
+  // Angle-bracket imports are not necessarily SDK headers in an iOS
+  // workspace: local frameworks conventionally use
+  // `#import <FeatureKit/PublicHeader.h>`. Keep them as candidates and let
+  // the workspace resolver fail closed when no unique local file exists.
+  if (source === undefined) return null;
+  return {
+    kind: 'wildcard',
+    targetRaw: source,
+    ...(captures['@import.system'] === undefined ? {} : { isSystem: true }),
+  };
 }
 
 export function normalizeObjectiveCType(text: string): string {

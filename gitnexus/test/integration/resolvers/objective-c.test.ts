@@ -102,6 +102,41 @@ describe.skipIf(!objectiveCAvailable)('Objective-C scope resolution', () => {
     );
   });
 
+  it('resolves inheritance and super calls through a local framework umbrella header', () => {
+    expect(getRelationships(result, 'IMPORTS')).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          sourceFilePath: 'FrameworkChild.h',
+          targetFilePath: 'FeatureKit/FeatureKit.h',
+        }),
+        expect.objectContaining({
+          sourceFilePath: 'FrameworkChild.h',
+          targetFilePath: 'FeatureKit/FrameworkBase.h',
+        }),
+      ]),
+    );
+    expect(getRelationships(result, 'EXTENDS')).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ source: 'FrameworkChild', target: 'FrameworkBase' }),
+      ]),
+    );
+    expect(getRelationships(result, 'IMPLEMENTS')).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ source: 'FrameworkChild', target: 'FrameworkProtocol' }),
+      ]),
+    );
+    expect(getRelationships(result, 'CALLS')).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          source: '-refresh',
+          sourceFilePath: 'FrameworkChild.m',
+          target: '-refresh',
+          targetFilePath: 'FeatureKit/FrameworkBase.h',
+        }),
+      ]),
+    );
+  });
+
   it('keeps declaration, implementation, extension, and category source sites distinct', () => {
     const storeNodes = result.graph.nodes.filter(
       (node) => node.label === 'Class' && node.properties.name === 'Store',

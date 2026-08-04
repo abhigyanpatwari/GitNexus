@@ -368,6 +368,9 @@ export type ParsedImport =
        *  deferred — `use` does not execute
        *  (`LanguageProvider.importsExecuteWhereWritten`). */
       readonly runsOnlyWhenCalled?: boolean;
+      /** C-family angle-bracket/system form. Resolvers may use this to avoid
+       * quoted-header sibling precedence while still resolving local frameworks. */
+      readonly isSystem?: boolean;
     }
   /**
    * Runtime-computed target — the import path is not a static literal at

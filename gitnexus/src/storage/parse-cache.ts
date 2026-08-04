@@ -546,9 +546,10 @@ import type { ParseWorkerResult } from '../core/ingestion/workers/parse-worker.j
 // into every production chunk key together with the classifier version.
 // Objective-C subscript sugar also persists candidate selector names on
 // ReferenceSite records. Selector source sites, availability/nullability, and
-// Apple enum macro annotations are persisted into worker graph facts as well.
+// Apple enum macro annotations are persisted into worker graph facts as well;
+// wildcard ParsedImports persist whether they came from angle-bracket form.
 // A warm v70 cache omits or collapses these facts and silently loses the
-// corresponding language classification, semantics, and CALLS edges.
+// corresponding classification, framework imports, semantics, and CALLS edges.
 const SCHEMA_BUMP = 71;
 const GITNEXUS_PKG_VERSION = (() => {
   try {
