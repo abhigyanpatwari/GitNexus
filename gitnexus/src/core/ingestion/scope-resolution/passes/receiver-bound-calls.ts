@@ -8,14 +8,18 @@
  *
  *   1. **super branch** — `provider.isSuperReceiver(receiverName)` →
  *      MRO walk skipping self
- *   2. **Case 0 (compound)** — receiver has `.` or `(` → compound resolver
+ *   2. **Case 0 (compound)** — receiver has `.` or `(` → compound resolver.
+ *      Also emits the interface-dispatch fan-out when the folded receiver type
+ *      is an Interface (#2829) — see Case 4, which does the same.
  *   3. **Case 0.5 (implicit `this` receiver)** — GATED: fires only when
  *      the language sets `resolveThisViaEnclosingClass === true` AND the
  *      receiver is literally `this` → enclosing-class + MRO chain walk
  *      with C++ member-name-hiding semantics. Languages that leave the
  *      toggle unset skip this case entirely; their `this` sites fall
  *      through to Case 4 via the synthesized `this` typeBinding (which
- *      also emits interface-dispatch fan-out that this case does not).
+ *      emits the interface-dispatch fan-out that this case does not —
+ *      as does Case 0 since #2829; Case 0.5 remains the only resolving
+ *      case without it).
  *   4. **Case 1 (namespace)** — receiver in `namespaceTargets` → exported def
  *   5. **Case 2 (class-name / static receiver)** — receiver resolves to a
  *      class-like binding (Class/Interface/Struct/Record/Enum/Trait) → MRO
@@ -283,6 +287,38 @@ export function classifyReceiverOrigin(
   return 'unknown';
 }
 
+/**
+ * Upper bound on how many implementors ONE interface member may fan out to at a
+ * single call site (#2829).
+ *
+ * Mirrors `MAX_PROPERTY_DISPATCH_FANOUT` in `property-dispatch.ts`, deliberately
+ * including its reporting half: a bare cap would silently discard valid dispatch
+ * targets, which is the same false-safe silence #2813 was filed about. The
+ * default matches that sibling's 32 — the fan-out is a per-call-site product, so
+ * an interface with hundreds of implementors (mock proliferation is the usual
+ * cause) multiplies the graph without adding information a reader can act on.
+ *
+ * Override with `GITNEXUS_MAX_INTERFACE_DISPATCH_FANOUT` for a repo with
+ * legitimately high implementor counts.
+ */
+export const MAX_INTERFACE_DISPATCH_FANOUT = (() => {
+  const env = Number(process.env.GITNEXUS_MAX_INTERFACE_DISPATCH_FANOUT);
+  return Number.isInteger(env) && env >= 1 ? env : 32;
+})();
+
+/** Bound on the sample of over-cap interface members kept for the warning. */
+const MAX_REPORTED_SKIPPED_INTERFACES = 20;
+
+/** What `emitReceiverBoundCalls` reports back to the orchestrator. */
+export interface ReceiverBoundResult {
+  /** CALLS/ACCESSES edges emitted by this pass. */
+  readonly emitted: number;
+  /** Dispatch targets DROPPED because a member exceeded the fan-out cap. */
+  readonly dispatchFanoutSkipped: number;
+  /** Bounded sample naming which interface members lost targets. */
+  readonly dispatchFanoutSkippedNames: readonly string[];
+}
+
 export function emitReceiverBoundCalls(
   graph: KnowledgeGraph,
   scopes: ScopeResolutionIndexes,
@@ -308,8 +344,10 @@ export function emitReceiverBoundCalls(
      *  edge. */
     readonly isBuiltInName?: (name: string) => boolean;
   } = {},
-): number {
+): ReceiverBoundResult {
   let emitted = 0;
+  let dispatchFanoutSkipped = 0;
+  const dispatchFanoutSkippedNames: string[] = [];
   // Per-pass dedup so the multiple cases don't double-emit if two of
   // them resolve the same site to the same target. NEVER pre-seed
   // from the reference index — see Contract Invariant I5.
@@ -345,23 +383,73 @@ export function emitReceiverBoundCalls(
       if (graphId !== undefined) graphIdToClassDef.set(graphId, def);
     }
   }
-  const implementorsByInterfaceDefId = new Map<string, SymbolDefinition[]>();
-  for (const rel of graph.iterRelationshipsByType('IMPLEMENTS')) {
-    const ifaceDef = graphIdToClassDef.get(rel.targetId);
-    const implDef = graphIdToClassDef.get(rel.sourceId);
-    if (ifaceDef === undefined || implDef === undefined) continue;
-    let list = implementorsByInterfaceDefId.get(ifaceDef.nodeId);
+  // Direct subtypes of a type, keyed by the SUPERtype's def id.
+  //
+  // Built from IMPLEMENTS **and** EXTENDS (#2829). IMPLEMENTS alone is not the
+  // set of implementations: `preEmitInheritanceEdges` classifies heritage by the
+  // TARGET's kind, so `interface B extends A` is stored as `B IMPLEMENTS A` and
+  // an INTERFACE lands in A's list; and a concrete class reaches its interface
+  // through `class C extends AbstractBase` (EXTENDS) + `AbstractBase implements
+  // I` (IMPLEMENTS), so it is two hops away and invisible to a depth-1 walk.
+  // Both shapes previously ended the fan-out on a bodiless declaration while the
+  // only executable target got no edge at all.
+  const subtypesBySupertypeDefId = new Map<string, SymbolDefinition[]>();
+  const addSubtype = (superId: string, sub: SymbolDefinition): void => {
+    let list = subtypesBySupertypeDefId.get(superId);
     if (list === undefined) {
       list = [];
-      implementorsByInterfaceDefId.set(ifaceDef.nodeId, list);
+      subtypesBySupertypeDefId.set(superId, list);
     }
-    list.push(implDef);
+    list.push(sub);
+  };
+  for (const relType of ['IMPLEMENTS', 'EXTENDS'] as const) {
+    for (const rel of graph.iterRelationshipsByType(relType)) {
+      const superDef = graphIdToClassDef.get(rel.targetId);
+      const subDef = graphIdToClassDef.get(rel.sourceId);
+      if (superDef === undefined || subDef === undefined) continue;
+      addSubtype(superDef.nodeId, subDef);
+    }
   }
 
-  /** Emit secondary CALLS edges with reason='interface-dispatch'
-   *  when the primary receiver-typed edge targeted an Interface's
-   *  method. Each implementing class's same-named method gets a
-   *  secondary edge (excluding the primary target itself). */
+  /**
+   * Is this member a bodiless DECLARATION rather than an implementation?
+   *
+   * An interface method, and an `abstract` method on an abstract base, are
+   * both declarations: dispatching to them names something with no body while
+   * the executable target sits further down the hierarchy. `isAbstract` lives
+   * on the graph NODE (the structure phase sets it), not on `SymbolDefinition`,
+   * so this resolves the def to its node. A def that cannot be resolved is
+   * treated as NOT abstract — the fail-open direction, matching how the rest of
+   * this pass treats an unresolvable lookup.
+   */
+  const isDeclarationOnly = (def: SymbolDefinition): boolean => {
+    const graphId = resolveDefGraphId(def.filePath, def, nodeLookup);
+    if (graphId === undefined) return false;
+    return graph.getNode(graphId)?.properties.isAbstract === true;
+  };
+
+  /**
+   * Emit secondary CALLS edges with reason='interface-dispatch' when the primary
+   * receiver-typed edge targeted an Interface's method.
+   *
+   * Walks the SUBTYPE CLOSURE of the interface rather than its direct
+   * implementors (#2829). Two shapes made the depth-1 walk both wrong and
+   * incomplete, each reproduced in plain Java:
+   *
+   *   interface ReadCloser extends Reader { int read(String p); }   // re-declares
+   *   abstract class AbstractHandler implements Handler { public abstract void handle(String s); }
+   *
+   * In both, the depth-1 list contains a type whose `read`/`handle` is a bodiless
+   * declaration, so the fan-out emitted an edge to *that* — while the only class
+   * with a body (`FileRC`, `RealHandler`) is one hop further down and received
+   * nothing at all. Descending and skipping declarations fixes both directions
+   * at once: the wrong edge disappears and the real implementation gains one.
+   *
+   * Descent continues THROUGH a type that supplied a concrete member, because an
+   * override further down is an equally real runtime target — dispatch is an
+   * over-approximation by design, and stopping early would silently prefer the
+   * base.
+   */
   const emitInterfaceDispatchFor = (
     ownerDef: SymbolDefinition,
     memberName: string,
@@ -371,19 +459,53 @@ export function emitReceiverBoundCalls(
     calleeCapture: CalleeIdCaptureCtx | undefined,
   ): number => {
     if (ownerDef.type !== 'Interface') return 0;
-    const impls = implementorsByInterfaceDefId.get(ownerDef.nodeId);
-    if (impls === undefined) return 0;
-    let n = 0;
-    for (const implDef of impls) {
-      const implMember = pickOverload(implDef.nodeId, memberName, site, model, provider);
-      if (
-        implMember === undefined ||
-        implMember === OVERLOAD_AMBIGUOUS ||
-        implMember.isDeleted === true
-      ) {
-        continue;
+    if (subtypesBySupertypeDefId.get(ownerDef.nodeId) === undefined) return 0;
+
+    // Collect concrete targets across the closure first, so the cap below counts
+    // real dispatch targets rather than types visited.
+    const targets: SymbolDefinition[] = [];
+    const seenTypes = new Set<string>([ownerDef.nodeId]);
+    const queue: string[] = [ownerDef.nodeId];
+    while (queue.length > 0) {
+      const superId = queue.shift() as string;
+      for (const subDef of subtypesBySupertypeDefId.get(superId) ?? []) {
+        if (seenTypes.has(subDef.nodeId)) continue;
+        seenTypes.add(subDef.nodeId);
+        queue.push(subDef.nodeId);
+        const implMember = pickOverload(subDef.nodeId, memberName, site, model, provider);
+        if (
+          implMember === undefined ||
+          implMember === OVERLOAD_AMBIGUOUS ||
+          implMember.isDeleted === true
+        ) {
+          continue;
+        }
+        if (implMember.nodeId === primaryMemberDef.nodeId) continue;
+        // A re-declared interface method or an `abstract` override is not an
+        // implementation — keep descending past it rather than emitting to it.
+        if (isDeclarationOnly(implMember)) continue;
+        targets.push(implMember);
       }
-      if (implMember.nodeId === primaryMemberDef.nodeId) continue;
+    }
+
+    // Bounded, and NEVER silently (#2829). An interface with a very large
+    // implementor set multiplies edges by every call site — Go, TypeScript and
+    // Kotlin do not set `collapseMemberCallsByCallerTarget`, so the product is
+    // per SITE. Truncating without saying so would recreate the false-safe
+    // silence this whole issue is about, which is why the sibling
+    // `MAX_PROPERTY_DISPATCH_FANOUT` reports its dropped keys too.
+    if (targets.length > MAX_INTERFACE_DISPATCH_FANOUT) {
+      dispatchFanoutSkipped += targets.length - MAX_INTERFACE_DISPATCH_FANOUT;
+      if (dispatchFanoutSkippedNames.length < MAX_REPORTED_SKIPPED_INTERFACES) {
+        dispatchFanoutSkippedNames.push(
+          `${ownerDef.qualifiedName ?? ownerDef.nodeId}.${memberName} (${targets.length} targets)`,
+        );
+      }
+      targets.length = MAX_INTERFACE_DISPATCH_FANOUT;
+    }
+
+    let n = 0;
+    for (const implMember of targets) {
       const ok = tryEmitEdge(
         graph,
         scopes,
@@ -663,9 +785,21 @@ export function emitReceiverBoundCalls(
             // concrete receiver and needs no language check of its own — a
             // member whose owner resolved to a Struct emits nothing extra.
             //
-            // Confidence is Case 0's own 0.85 literal from the primary emit
-            // above, NOT Case 4's site.kind-dependent value: Case 0 has no
-            // read/write branch, so there is no 1.0 arm to mirror.
+            // Confidence mirrors THIS case's own primary emit above — the 0.85
+            // literal — so a site's dispatch edges never claim more certainty
+            // than the edge they hang off.
+            //
+            // Case 4 passes a site.kind-dependent value instead (1.0 for
+            // read/write, `:1399-1405`) because ITS primary varies the same way.
+            // Case 0 does branch on `site.kind` when picking the member
+            // (`:713-716`), it simply does not vary reason/confidence with it,
+            // so there is no 1.0 arm here to mirror. That leaves a read/write
+            // ACCESSES through a compound receiver at 0.85 while the same access
+            // through a bare name is 1.0 — a PRE-EXISTING difference between the
+            // two cases' primaries, not something this fan-out introduces.
+            // Deliberately not "fixed" here: changing Case 0's primary
+            // confidence is a separate behavioural change affecting every
+            // language, and is out of scope for #2813.
             emitted += emitInterfaceDispatchFor(
               currentClass,
               memberName,
@@ -1571,7 +1705,7 @@ export function emitReceiverBoundCalls(
     }
   }
 
-  return emitted;
+  return { emitted, dispatchFanoutSkipped, dispatchFanoutSkippedNames };
 }
 
 /** Resolve a member by name on a class def, narrowing by argument

@@ -1149,6 +1149,12 @@ function pass5CollectReferences(
     // languages whose read pattern has no call-position exclusion; absent
     // everywhere else, so the site stays byte-identical for them.
     const inCalleePosition = match['@reference.callee-position'] !== undefined;
+    // Pointer-embedding marker: `struct S { *T }` rather than `struct S { T }`.
+    // Recorded, not acted on — Go's method-set rules make the two forms differ
+    // (see `ReferenceSite.embeddedAsPointer`), and only structural interface
+    // detection knows what to do with that. Absent for every language without
+    // pointer embedding, so their sites stay byte-identical.
+    const embeddedAsPointer = match['@reference.embedded-pointer'] !== undefined;
 
     const site: ReferenceSite = {
       name: nameCap.text,
@@ -1168,6 +1174,7 @@ function pass5CollectReferences(
       ...(argumentTypeClasses !== undefined ? { argumentTypeClasses } : {}),
       ...(receiverChain !== undefined ? { receiverChain } : {}),
       ...(inCalleePosition ? { inCalleePosition: true } : {}),
+      ...(embeddedAsPointer ? { embeddedAsPointer: true } : {}),
     };
     referenceSites.push(site);
   }
@@ -1569,6 +1576,7 @@ const KNOWN_SUB_TAGS: ReadonlySet<string> = new Set<string>([
   '@reference.qualified-name',
   '@reference.property-key',
   '@reference.callee-position',
+  '@reference.embedded-pointer',
   '@reference.receiver',
   '@reference.operator',
   '@reference.arity',

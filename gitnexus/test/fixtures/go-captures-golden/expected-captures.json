@@ -144,8 +144,8 @@
     "digest": "ee5b78fc03ea3283b2e06b9b8d0cf4999c2de091262571966d1d4670036c479d"
   },
   "go-interface-field-dispatch/internal/repository/mock_repo.go": {
-    "captureGroups": 24,
-    "digest": "09f067817d102af4d4cec833c0657a52dbd9dc643402274862742394bd428725"
+    "captureGroups": 47,
+    "digest": "7b9219cc06e8c45fb08c304b71ebc58e1a9e052cb9c92fd01b9f22ab8328a91d"
   },
   "go-interface-field-dispatch/internal/repository/order_repo.go": {
     "captureGroups": 26,
@@ -156,8 +156,8 @@
     "digest": "036d1a4b7304bbbf963f640710fd286702ed34809df2940411c14da8f9de9a6f"
   },
   "go-interface-field-dispatch/internal/services/wave_service.go": {
-    "captureGroups": 33,
-    "digest": "a402201c7bbfd56ffc2ce48f24c15cdde1ef00b01b8b1c9c6ce933b567ff58c9"
+    "captureGroups": 46,
+    "digest": "62a3830311106e4a349c5b604e914531249aacc47001a888ecf5d38e2bc4c821"
   },
   "go-local-shadow/cmd/main.go": {
     "captureGroups": 14,
@@ -317,7 +317,7 @@
   },
   "go-qualified-base/consumers/qualified.go": {
     "captureGroups": 14,
-    "digest": "01fe99cadcdf3ce6f00cafce8db0474ad152983f766c8dee9b9da42c9256ae2f"
+    "digest": "4680bb7a7c62a54a91d1d7b8ab3150dfb0c54b1683bee8cf7fc747afe99ca0f8"
   },
   "go-receiver-method-free-call/example.go": {
     "captureGroups": 8,

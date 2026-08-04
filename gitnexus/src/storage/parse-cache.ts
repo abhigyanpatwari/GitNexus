@@ -205,7 +205,24 @@ import type { ParseWorkerResult } from '../core/ingestion/workers/parse-worker.j
 // they replay the pre-fix capture set for byte-unchanged files and keep serving
 // the fabricated edge. main is at 39, so 40/41/42 are all this branch's.
 // RE-CHECK AGAINST origin/main IMMEDIATELY BEFORE MERGING.
-const SCHEMA_BUMP = 42;
+// v43: Go embedded fields now emit `@reference.embedded-pointer` when written
+// as `*T` rather than `T` (#2813 exact method sets). Go's method-set rules make
+// the two forms genuinely different — `struct{ Base }` does NOT get Base's
+// pointer-receiver methods in its value method set while `struct{ *Base }` does
+// — so structural interface satisfaction cannot be exact without the spelling.
+// This is PARSE-TIME capture emission, so a warm cache replays the pre-fix
+// capture set for byte-unchanged files and the distinction never appears:
+// silently, with no error, the v27/v30 failure mode. `analyze` skips tree-sitter
+// dispatch for unchanged chunks (GUARDRAILS.md), so a plain re-analyze does NOT
+// surface it without this bump.
+//
+// 42 -> 43: this branch originally allocated 43 while sitting at 39, because
+// main had already taken 40/41/42 for #2807. main has since merged those and
+// this branch rebased onto it, so 43 remains the next free number and the
+// value is unchanged by the rebase — the reason it was chosen is simply now
+// visible in the history above. RE-CHECK AGAINST origin/main IMMEDIATELY
+// BEFORE MERGING; this file records eight prior collisions, two EXACT.
+const SCHEMA_BUMP = 43;
 const GITNEXUS_PKG_VERSION = (() => {
   try {
     // package.json sits at gitnexus/package.json — two levels up from
