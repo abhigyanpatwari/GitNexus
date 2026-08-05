@@ -2,11 +2,20 @@
  * Lua import interpretation (RFC #909).
  *
  * `require("a.b.c")` loads the module and (conventionally) returns its table.
- * We emit a `wildcard` ParsedImport so the IMPORTS edge (this file → required
- * file) is materialized and the target's exported names become resolvable as
- * the module's local name. Call-target linking for `util.split` style member
- * calls is handled by the scope-resolution registry against the import
- * binding — refined in Phase B3 (receiver/arity polish).
+ * Two forms:
+ *   - `local X = require("a.b.c")`: emits a `namespace` ParsedImport so the
+ *     IMPORTS edge materializes AND `X.foo()` member calls resolve across files
+ *     (collectNamespaceTargets registers `X → target file`; Case 1 of the
+ *     receiver-bound-calls pass links `X.foo()` to the target's `foo`).
+ *   - bare `require("a.b.c")` (side-effect, no binding): emits `wildcard`; the
+ *     IMPORTS edge materializes but no receiver is bound.
+ *
+ * `importedName` is the last dot-segment of the module path (e.g. `util` for
+ * `lib.util`) — used by finalize to bind the target's self-named export when
+ * present; harmless when the module returns an unnamed table.
+ *
+ * Receiver/arity precision beyond the namespace-receiver path (e.g. resolving
+ * `local f = M.answer; f()`) remains Phase B3.
  */
 import type { CaptureMatch, ParsedImport } from 'gitnexus-shared';
 
@@ -19,5 +28,11 @@ export function interpretLuaImport(captures: CaptureMatch): ParsedImport | null 
   if (source === undefined) return null;
   const targetRaw = stripQuotes(source);
   if (!targetRaw) return null;
+  const localName = captures['@import.localName']?.text;
+  if (localName) {
+    const segments = targetRaw.split('.').filter(Boolean);
+    const importedName = segments[segments.length - 1] ?? localName;
+    return { kind: 'namespace', localName, importedName, targetRaw };
+  }
   return { kind: 'wildcard', targetRaw };
 }

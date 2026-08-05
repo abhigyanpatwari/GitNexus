@@ -58,8 +58,21 @@ const LUA_SCOPE_QUERY = `
 
 ;; ── Imports — require("a.b.c") ──────────────────────────────────────────────
 ;;   require is a plain (call) whose function is a (variable name: (identifier)).
-;;   The string arg is captured as @import.source; interpretLuaImport strips
-;;   quotes and resolves it via the legacy luaRequireStrategy (suffixResolve).
+;;   Two forms:
+;;   1. local X = require("a.b.c") — @import.localName captures the LHS binding
+;;      so interpretLuaImport emits a namespace import. This makes X.foo()
+;;      receiver-linkable: collectNamespaceTargets registers X -> target file,
+;;      and the member call resolves via Case 1 (namespace).
+;;   2. bare require("a.b.c") (side-effect, no binding) — emits wildcard;
+;;      the IMPORTS edge still materializes but no receiver is bound.
+(local_variable_declaration
+  (variable_list (variable name: (identifier) @import.localName))
+  (expression_list
+    (call
+      function: (variable name: (identifier) @_req)
+      arguments: (argument_list (expression_list (string) @import.source)))
+      (#eq? @_req "require"))) @import.statement
+
 (call
   function: (variable name: (identifier) @_req)
   arguments: (argument_list (expression_list (string) @import.source))
