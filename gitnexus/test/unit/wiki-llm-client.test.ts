@@ -96,6 +96,40 @@ describe('buildRequestUrl', () => {
   });
 });
 
+describe('resolveLLMConfig provider isolation', () => {
+  afterEach(() => {
+    vi.unstubAllEnvs();
+    vi.restoreAllMocks();
+  });
+
+  it('does not use OpenAI environment credentials for the default MiniMax provider', async () => {
+    vi.stubEnv('OPENAI_API_KEY', 'openai-key');
+    vi.stubEnv('GITNEXUS_API_KEY', 'gitnexus-key');
+    vi.stubEnv('MINIMAX_API_KEY', '');
+
+    const config = await resolveLLMConfig();
+
+    expect(config.provider).toBe('minimax');
+    expect(config.apiKey).toBe('');
+  });
+
+  it('does not reuse saved credentials or API versions after switching providers', async () => {
+    vi.spyOn(await import('../../src/storage/repo-manager.js'), 'loadCLIConfig').mockResolvedValue({
+      provider: 'minimax',
+      apiKey: 'minimax-key',
+      baseUrl: MINIMAX_OPENAI_BASE_URLS.global_en,
+      model: MINIMAX_MODEL_IDS[0],
+      apiVersion: 'minimax-version',
+    });
+
+    const config = await resolveLLMConfig({ provider: 'openai' });
+
+    expect(config.apiKey).toBe('');
+    expect(config.apiVersion).toBeUndefined();
+    expect(config.baseUrl).toBe('https://openrouter.ai/api/v1');
+  });
+});
+
 describe('callLLM — auth header', () => {
   afterEach(() => vi.unstubAllGlobals());
 

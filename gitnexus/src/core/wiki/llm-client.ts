@@ -122,9 +122,9 @@ export async function resolveLLMConfig(overrides?: Partial<LLMConfig>): Promise<
   const apiKey =
     overrides?.apiKey ||
     (savedProvider === 'minimax' ? process.env.MINIMAX_API_KEY : undefined) ||
-    process.env.GITNEXUS_API_KEY ||
-    process.env.OPENAI_API_KEY ||
-    savedConfig.apiKey ||
+    (savedProvider !== 'minimax' ? process.env.GITNEXUS_API_KEY : undefined) ||
+    (savedProvider !== 'minimax' ? process.env.OPENAI_API_KEY : undefined) ||
+    (reuseSavedHttpConfig ? savedConfig.apiKey : undefined) ||
     '';
 
   return {
@@ -148,7 +148,9 @@ export async function resolveLLMConfig(overrides?: Partial<LLMConfig>): Promise<
     temperature: overrides?.temperature ?? 0,
     provider: savedProvider,
     apiVersion:
-      overrides?.apiVersion || process.env.GITNEXUS_AZURE_API_VERSION || savedConfig.apiVersion,
+      overrides?.apiVersion ||
+      (savedProvider === 'azure' ? process.env.GITNEXUS_AZURE_API_VERSION : undefined) ||
+      (reuseSavedHttpConfig ? savedConfig.apiVersion : undefined),
     isReasoningModel:
       overrides?.isReasoningModel ??
       (reuseSavedHttpConfig ? savedConfig.isReasoningModel : undefined),

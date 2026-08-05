@@ -224,6 +224,13 @@ const wikiCommandImpl = async (inputPath?: string, options?: WikiCommandOptions)
     if (options.apiVersion) updates.apiVersion = options.apiVersion;
     if (options.reasoningModel !== undefined) updates.isReasoningModel = options.reasoningModel;
     const providerChanged = !!options.provider && options.provider !== existing.provider;
+    if (providerChanged) {
+      updates.apiKey = undefined;
+      updates.baseUrl = undefined;
+      updates.model = undefined;
+      updates.apiVersion = undefined;
+      updates.isReasoningModel = undefined;
+    }
     if (options.provider === 'minimax') {
       if (providerChanged && options.reasoningModel === undefined) {
         updates.isReasoningModel = undefined;
@@ -488,7 +495,15 @@ const wikiCommandImpl = async (inputPath?: string, options?: WikiCommandOptions)
         }
 
         // Save
-        await saveCLIConfig({ apiKey: key, baseUrl, model, provider });
+        await saveCLIConfig({
+          ...savedConfig,
+          apiKey: key,
+          baseUrl,
+          model,
+          provider,
+          apiVersion: undefined,
+          isReasoningModel: undefined,
+        });
         console.log('  Config saved to ~/.gitnexus/config.json\n');
 
         llmConfig = { ...llmConfig, apiKey: key, baseUrl, model, provider };
