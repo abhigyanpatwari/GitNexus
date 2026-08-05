@@ -7050,8 +7050,27 @@ export class LocalBackend {
     // Risk scoring
     const processCount = affectedProcesses.length;
     const moduleCount = affectedModules.length;
-    let risk = 'LOW';
-    if (directCount >= 30 || processCount >= 5 || moduleCount >= 5 || impacted.length >= 200) {
+    let risk: string;
+    if (direction === 'upstream' && impacted.length === 0) {
+      // An upstream walk that resolved NO callers cannot support `LOW`. "Safe
+      // to change" is a claim ABOUT callers, and this walk found none to reason
+      // about: the symbol may be genuinely unused, or reached only through a
+      // reference class this index does not record — a property access on a
+      // plain object, or a bare-identifier read of a module-scope `Const`,
+      // neither of which mints a reference site today. Seeding `LOW` from an
+      // empty result is the same false-safe signal `anyKnownRisk` refuses to
+      // emit on the ambiguous-candidate path, and that #2687 removed by making
+      // an undetermined `impactedCount` `null` instead of `0`.
+      //
+      // Downstream is deliberately untouched: an empty downstream walk reports
+      // that this symbol resolved no callees, which is not a safety verdict.
+      risk = 'UNKNOWN';
+    } else if (
+      directCount >= 30 ||
+      processCount >= 5 ||
+      moduleCount >= 5 ||
+      impacted.length >= 200
+    ) {
       risk = 'CRITICAL';
     } else if (
       directCount >= 15 ||
@@ -7062,6 +7081,8 @@ export class LocalBackend {
       risk = 'HIGH';
     } else if (directCount >= 5 || impacted.length >= 30) {
       risk = 'MEDIUM';
+    } else {
+      risk = 'LOW';
     }
 
     // Build per-depth counts (always included, even in summaryOnly mode)
@@ -7090,6 +7111,16 @@ export class LocalBackend {
       direction,
       impactedCount: impacted.length,
       risk,
+      ...(risk === 'UNKNOWN'
+        ? {
+            riskNote:
+              'No callers resolved. Absence of edges is not evidence the symbol is unused: ' +
+              'a caller reaching it through a reference class this index does not record — ' +
+              'plain-object property access, a bare-identifier read of a module-scope const — ' +
+              'produces no edge to find. Confirm with a text search before treating the ' +
+              'change as safe.',
+          }
+        : {}),
       ...epistemic,
       ...(!traversalComplete && { partial: true }),
       summary: {
