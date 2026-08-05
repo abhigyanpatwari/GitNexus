@@ -75,7 +75,7 @@
     "typescript": "^5.4.5",
     "vite": "^8.1.5",
     "vitest": "^4.1.10",
-    "wait-on": "^9.0.10"
+    "wait-on": "^9.1.0"
   },
   "overrides": {
     "@vercel/static-config": {
