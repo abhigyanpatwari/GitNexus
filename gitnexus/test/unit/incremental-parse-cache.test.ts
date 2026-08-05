@@ -120,8 +120,13 @@ describe('PARSE_CACHE_VERSION', () => {
   // against origin/main immediately before merge, not at review time.
   // Moved 42 -> 43 for #2813's `@reference.embedded-pointer` capture, which is
   // parse-time emission and so cannot be served from a v42 warm cache.
-  it('pins SCHEMA_BUMP to 43 so concurrent bumps cannot silently collide (#2766)', () => {
-    expect(Number(PARSE_CACHE_VERSION.split('+', 1)[0])).toBe(43);
+  // Moved 43 -> 44 for #2837, which re-anchors Go's struct/interface captures
+  // from the `type_declaration` onto the `type_spec`: every Go type declaration
+  // emits different capture ranges, and a grouped `type (...)` block emits nodes
+  // it previously omitted entirely. Parse-time again, so a v43 warm cache would
+  // replay pre-fix ParsedFiles and the fix would be a silent no-op.
+  it('pins SCHEMA_BUMP to 44 so concurrent bumps cannot silently collide (#2766)', () => {
+    expect(Number(PARSE_CACHE_VERSION.split('+', 1)[0])).toBe(44);
   });
 
   it('embeds the gitnexus package version (so upgrades invalidate the cache)', () => {

@@ -222,7 +222,19 @@ import type { ParseWorkerResult } from '../core/ingestion/workers/parse-worker.j
 // value is unchanged by the rebase — the reason it was chosen is simply now
 // visible in the history above. RE-CHECK AGAINST origin/main IMMEDIATELY
 // BEFORE MERGING; this file records eight prior collisions, two EXACT.
-const SCHEMA_BUMP = 43;
+//
+// 43 -> 44: #2837 re-anchors Go's struct/interface captures from the
+// `type_declaration` onto the `type_spec` (`languages/go/query.ts`
+// @scope.class/@declaration.struct/@declaration.interface, and GO_QUERIES
+// @definition.struct/@definition.interface in `tree-sitter-queries.ts`). Every
+// Go file declaring a type therefore emits DIFFERENT capture ranges — measured:
+// 70 fixture digests moved with zero change in capture COUNT — and a grouped
+// `type (...)` block emits nodes it previously did not emit at all. That is a
+// parse-time capture change, so a warm parse cache would replay pre-fix
+// ParsedFiles and the fix would be a silent no-op on every incremental analyze
+// while still passing every cold-run test. Re-checked against origin/main at
+// a857f4c5a: still 43 there, so 44 was free.
+const SCHEMA_BUMP = 44;
 const GITNEXUS_PKG_VERSION = (() => {
   try {
     // package.json sits at gitnexus/package.json — two levels up from
