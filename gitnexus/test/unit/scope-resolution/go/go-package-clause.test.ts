@@ -1,4 +1,6 @@
 import { describe, expect, it } from 'vitest';
+import Parser from 'tree-sitter';
+import Go from 'tree-sitter-go';
 import {
   goPackageDir,
   inferGoPackageName,
@@ -66,6 +68,17 @@ describe('inferGoPackageName (#2837)', () => {
     expect(inferGoPackageName('//go:build linux\r\rpackage services\r')).toBe('services');
   });
 
+  // `gorun`-style scripts. Not legal Go, but the regex this replaced skipped it
+  // via `/m`, so rejecting it would be a silent regression rather than a
+  // principled tightening.
+  it('reads past a leading shebang line', () => {
+    expect(inferGoPackageName('#!/usr/bin/env gorun\n\npackage main\n')).toBe('main');
+  });
+
+  it('still stops on a # that is not a first-line shebang', () => {
+    expect(inferGoPackageName('// doc\n#!/usr/bin/env gorun\npackage main\n')).toBeNull();
+  });
+
   it('returns null when the first real token is not a package clause', () => {
     expect(inferGoPackageName('func main() {}\n')).toBeNull();
   });
@@ -94,5 +107,62 @@ describe('goPackageDir', () => {
 
   it('returns an empty string for a repo-root file', () => {
     expect(goPackageDir('main.go')).toBe('');
+  });
+});
+
+/**
+ * The scope/def range contract, asserted directly (#2843 review).
+ *
+ * #2837 moved five Go captures from the `type_declaration` onto the `type_spec`.
+ * That contract was previously observable only as 70 changed digests in the
+ * captures golden, where a future edit that moved ranges again would look
+ * identical. These rows state it outright, and pin the LOCKSTEP requirement:
+ * the scope capture and the def capture must name the SAME node, or the def is
+ * larger than its own scope and nothing is owned.
+ */
+describe('Go type capture anchoring (#2837)', () => {
+  const parse = (src: string) => {
+    const parser = new Parser();
+    parser.setLanguage(Go as Parameters<Parser['setLanguage']>[0]);
+    return parser.parse(src).rootNode;
+  };
+  const captures = (root: Parser.SyntaxNode, query: string, name: string) =>
+    new Parser.Query(Go as Parameters<Parser['setLanguage']>[0], query)
+      .captures(root)
+      .filter((c) => c.name === name)
+      .map((c) => c.node);
+
+  const SCOPE =
+    '(type_declaration (type_spec type: [(struct_type) (interface_type)]) @scope.class)';
+  const DEF =
+    '(type_declaration (type_spec name: (type_identifier) @name type: (struct_type)) @definition.struct)';
+
+  it('anchors the class scope on the type_spec, one per declared type', () => {
+    const root = parse(
+      'package p\ntype ( A struct{ x int }\n B struct{ y int } )\ntype C struct{}\n',
+    );
+    const nodes = captures(root, SCOPE, 'scope.class');
+    expect(nodes.map((n) => n.type)).toEqual(['type_spec', 'type_spec', 'type_spec']);
+    expect(nodes.map((n) => n.childForFieldName('name')?.text)).toEqual(['A', 'B', 'C']);
+  });
+
+  it('starts the scope range at the type name, not the `type` keyword', () => {
+    const root = parse('package p\ntype C struct{}\n');
+    const [scope] = captures(root, SCOPE, 'scope.class');
+    expect(scope!.startIndex).toBe(scope!.childForFieldName('name')!.startIndex);
+  });
+
+  // The lockstep invariant. Moving one capture without the other made the def
+  // strictly larger than its own scope and deleted every Go field-receiver edge.
+  it('anchors scope and definition on the same node', () => {
+    const root = parse('package p\ntype ( A struct{ x int }\n B struct{ y int } )\n');
+    const scopes = captures(root, SCOPE, 'scope.class');
+    const defs = captures(root, DEF, 'definition.struct');
+    expect(defs.map((d) => d.id)).toEqual(scopes.map((s) => s.id));
+  });
+
+  it('emits no class scope for an alias or a named non-struct type', () => {
+    const root = parse('package p\ntype Alias = Other\ntype Named int\n');
+    expect(captures(root, SCOPE, 'scope.class')).toHaveLength(0);
   });
 });

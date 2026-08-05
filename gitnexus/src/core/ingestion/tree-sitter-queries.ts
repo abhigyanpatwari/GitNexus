@@ -1126,9 +1126,10 @@ export const GO_QUERIES = `
 ; grouped declaration
 ;   type ( Decoy struct{...}; PickService struct{...} )
 ; matches this pattern once per type_spec, but with the capture on the
-; type_declaration every match named the SAME node -- so the emitter produced
-; ONE node for the whole block and every type after the first had no graph node
-; at all. Measured on go-grouped-type-decl before the fix: PickService and
+; type_declaration every match named the SAME node. The consumers then read that
+; one node: goClassConfig.extractName finds the FIRST type_spec under it, so
+; every match resolved to the first type's name and the block collapsed to a
+; single node. Measured on go-grouped-type-decl before the fix: PickService and
 ; MetricSink were absent from the node inventory entirely, which also cost
 ; MetricSink its IMPLEMENTS edge.
 ;

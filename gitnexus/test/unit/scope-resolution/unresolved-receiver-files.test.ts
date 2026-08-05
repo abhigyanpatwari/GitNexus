@@ -1,5 +1,7 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
+const emit = vi.hoisted(() => vi.fn());
+
 vi.mock('../../../src/core/logger.js', () => ({
   logger: {
     warn: vi.fn(),
@@ -9,9 +11,18 @@ vi.mock('../../../src/core/logger.js', () => ({
     trace: vi.fn(),
     fatal: vi.fn(),
   },
+  // The diagnostic is opt-in via `createLogger(name, { debugEnvVar })` and emits
+  // at `debug`, so the assertions drive that child logger, not the singleton.
+  createLogger: () => ({
+    warn: vi.fn(),
+    info: vi.fn(),
+    error: vi.fn(),
+    debug: emit,
+    trace: vi.fn(),
+    fatal: vi.fn(),
+  }),
 }));
 
-import { logger } from '../../../src/core/logger.js';
 import { logUnresolvedReceiverFiles } from '../../../src/core/ingestion/scope-resolution/unresolved-receivers.js';
 import type { ResolutionOutcome } from '../../../src/core/ingestion/scope-resolution/resolution-outcome.js';
 
@@ -23,7 +34,7 @@ import type { ResolutionOutcome } from '../../../src/core/ingestion/scope-resolu
  * nothing (measured on this repo: the top three were all test files).
  */
 describe('logUnresolvedReceiverFiles (#2843 review)', () => {
-  beforeEach(() => vi.mocked(logger.info).mockClear());
+  beforeEach(() => emit.mockClear());
 
   const drop = (filePath: string, over: Partial<ResolutionOutcome> = {}): ResolutionOutcome =>
     ({
@@ -41,11 +52,11 @@ describe('logUnresolvedReceiverFiles (#2843 review)', () => {
     totalSites: number;
     filesAffected: number;
     topFiles: { filePath: string; sites: number }[];
-  } => vi.mocked(logger.info).mock.calls[0]![0] as never;
+  } => emit.mock.calls[0]![0] as never;
 
   it('says nothing when there are no receiver-unresolved drops', () => {
     logUnresolvedReceiverFiles([]);
-    expect(vi.mocked(logger.info)).not.toHaveBeenCalled();
+    expect(emit).not.toHaveBeenCalled();
   });
 
   it('counts in-program call drops per file', () => {

@@ -13,7 +13,7 @@
  * symbol stays exact.
  */
 
-import { logger } from '../../logger.js';
+import { createLogger } from '../../logger.js';
 import { compareCodeUnits } from '../../../lib/utils.js';
 
 import type { ResolutionOutcome } from './resolution-outcome.js';
@@ -198,6 +198,19 @@ export function lookupExternalCallCount(
   return sites;
 }
 
+/**
+ * Opt-in, following the repo's established diagnostic pattern
+ * (`createLogger(name, { debugEnvVar })`). Every repository in every language
+ * drops SOME receivers, so emitting this at `info` unconditionally would add a
+ * line to every analyze anyone ever runs — the noise ADV-6 flagged. #2837's
+ * reporter turns it on deliberately:
+ *
+ *     GITNEXUS_DEBUG_RECEIVER_DROPS=1 gitnexus analyze
+ */
+const receiverDropLog = createLogger('receiver-drops', {
+  debugEnvVar: 'GITNEXUS_DEBUG_RECEIVER_DROPS',
+});
+
 /** Files named in the per-file receiver-drop line. Bounded: this is a signpost
  *  pointing at where to look, not an inventory. */
 const UNRESOLVED_RECEIVER_FILE_SAMPLE = 10;
@@ -249,7 +262,7 @@ export function logUnresolvedReceiverFiles(outcomes: readonly ResolutionOutcome[
     .map(([filePath, sites]) => ({ filePath, sites }));
   let total = 0;
   for (const [, n] of byFile) total += n;
-  logger.info(
+  receiverDropLog.debug(
     { totalSites: total, filesAffected: byFile.size, topFiles: ranked },
     'receiver-unresolved call sites by file (top offenders; a file far above its ' +
       'siblings usually means its receivers were never typed, not that it has more calls)',

@@ -45,6 +45,18 @@ const PACKAGE_CLAUSE = /package\s+([A-Za-z_][A-Za-z0-9_]*)/y;
 export function inferGoPackageName(sourceText: string): string | null {
   const n = sourceText.length;
   let i = 0;
+  // A leading `#!` line. Not legal Go — `gofmt` rejects it — but `gorun`-style
+  // scripts carry one and the regex this replaced skipped straight past it via
+  // `/m`. Tolerated here for the same reason the separator is `\s+`: a file this
+  // returns `null` for is dropped from BOTH Go cross-file passes, so refusing a
+  // shape the previous implementation accepted is a silent regression, not a
+  // principled tightening. Only a FIRST-line `#!` is skipped; `#` anywhere else
+  // still ends the scan.
+  if (sourceText.startsWith('#!')) {
+    const nl = sourceText.search(/[\n\r]/);
+    if (nl === -1) return null;
+    i = nl + 1;
+  }
   for (;;) {
     // `\s` covers the BOM (U+FEFF) as well as ordinary whitespace and CRLF.
     while (i < n && /\s/.test(sourceText.charAt(i))) i += 1;
