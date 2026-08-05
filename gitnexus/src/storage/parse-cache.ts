@@ -234,6 +234,16 @@ import type { ParseWorkerResult } from '../core/ingestion/workers/parse-worker.j
 // ParsedFiles and the fix would be a silent no-op on every incremental analyze
 // while still passing every cold-run test. Re-checked against origin/main at
 // a857f4c5a: still 43 there, so 44 was free.
+//
+// RE-CHECK AGAINST origin/main IMMEDIATELY BEFORE MERGING. 44 is CONTESTED at
+// the time of writing: PR #2842 (open, non-draft) and PR #2840 (draft) both also
+// move 43 -> 44. Whichever lands first takes it and the others MUST move to the
+// next free integer. Note that the pin test cannot catch this for you — every
+// competing PR asserts `toBe(44)`, so the assertion passes even when main is
+// already 44, and two different capture schemas then share one
+// PARSE_CACHE_VERSION. Because the durable ParsedFile store replays cached
+// ParsedFiles verbatim on a version hit, the losing PR's capture change becomes
+// a silent no-op for warm-cache users with every cold-run test still green.
 const SCHEMA_BUMP = 44;
 const GITNEXUS_PKG_VERSION = (() => {
   try {

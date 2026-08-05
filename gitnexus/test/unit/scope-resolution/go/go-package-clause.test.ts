@@ -55,6 +55,17 @@ describe('inferGoPackageName (#2837)', () => {
     expect(inferGoPackageName(src)).toBe('services');
   });
 
+  // Go separates tokens by any whitespace, so this is legal and tree-sitter
+  // parses it without error. A stricter matcher would drop the file from BOTH
+  // Go cross-file passes (#2843 review).
+  it('accepts a newline between the keyword and the package name', () => {
+    expect(inferGoPackageName('package\nmain\n\nfunc f() {}\n')).toBe('main');
+  });
+
+  it('accepts CR-only line endings', () => {
+    expect(inferGoPackageName('//go:build linux\r\rpackage services\r')).toBe('services');
+  });
+
   it('returns null when the first real token is not a package clause', () => {
     expect(inferGoPackageName('func main() {}\n')).toBeNull();
   });
