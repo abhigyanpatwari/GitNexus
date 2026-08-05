@@ -312,6 +312,25 @@ export interface RepoMeta {
    * run sees the flag and forces a full rebuild — the cheapest path back
    * to a known-good index.
    */
+  /**
+   * Set when a run finished but the persisted edge count came back far short
+   * of what the pipeline produced — the B2 "refresh reports SUCCESS while the
+   * index is unusable" failure (observed as edges collapsing 23009 -> 2170,
+   * and as a missing `CodeRelation` table, which reads here as a persisted
+   * count of zero).
+   *
+   * Recorded rather than thrown because the metadata IS written and the DB
+   * does hold rows; what is false is the claim that the index is complete.
+   * `getIndexIncompleteReasons` turns this into `graph-write-collapsed` so
+   * `status` and the MCP resources report the index as incomplete instead of
+   * fresh. Absent on a healthy run.
+   */
+  graphWriteCollapsed?: {
+    /** Relationships the pipeline produced in memory. */
+    expected: number;
+    /** Relationships readable from the DB after the write. */
+    persisted: number;
+  };
   incrementalInProgress?: {
     /** When the run started (epoch ms). */
     startedAt: number;

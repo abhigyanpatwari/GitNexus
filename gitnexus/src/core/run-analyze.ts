@@ -502,6 +502,20 @@ export interface AnalyzeResult {
 // Class-neutral lead, reused for the missing-dependency degrade path (#2383 F2):
 // its remedy already explains that reinstalling will NOT help, so appending the
 // generic "install with network access" tail below would contradict it.
+/**
+ * Fraction of the pipeline's relationship count that must survive into the DB
+ * before the write is treated as a collapse. Deliberately generous: this is a
+ * catastrophe detector for "most of the graph did not persist" (the reported
+ * case lost ~91%), not a reconciliation of every edge.
+ */
+const GRAPH_WRITE_COLLAPSE_RATIO = 0.5;
+
+/**
+ * Below this many relationships the ratio is meaningless — a handful of edges
+ * lost to legitimate filtering would trip it — so small repos are exempt.
+ */
+const GRAPH_WRITE_COLLAPSE_MIN_EDGES = 100;
+
 const FTS_UNAVAILABLE_LEAD = 'FTS extension unavailable; skipping search-index creation.';
 const FTS_UNAVAILABLE_MESSAGE =
   `${FTS_UNAVAILABLE_LEAD} ` +
@@ -2520,6 +2534,37 @@ async function runFullAnalysisInner(
 
     // ── Phase 4: Embeddings (90–98%) ──────────────────────────────────
     const stats = await getLbugStats();
+
+    // Post-write integrity: the pipeline knows exactly how many relationships
+    // it produced, and `stats` is what the DB hands back after the write, so a
+    // large shortfall is provable rather than inferred — no comparison against
+    // the previous index needed. This is the guard for a refresh that reports
+    // SUCCESS while leaving the index unusable: edges collapsing to a fraction
+    // of what was built, or a `CodeRelation` table that never materialized
+    // (which surfaces here as a persisted count of zero).
+    //
+    // A RATIO, not equality: some relationship types legitimately do not round
+    // -trip one-for-one, and `--pdg` writes MORE rows into the same table than
+    // the call-graph produced, so demanding equality would fire on healthy
+    // runs. Only a collapse is a defect.
+    //
+    // Fail-safe when `expected` reads 0: an implementation that offloads
+    // relationships out of memory may no longer be able to report a total, and
+    // a false "your index is broken" is worse than a missed one.
+    const expectedRelationships = pipelineResult.graph.relationshipCount;
+    const graphWriteCollapsed =
+      expectedRelationships >= GRAPH_WRITE_COLLAPSE_MIN_EDGES &&
+      stats.edges < expectedRelationships * GRAPH_WRITE_COLLAPSE_RATIO
+        ? { expected: expectedRelationships, persisted: stats.edges }
+        : undefined;
+    if (graphWriteCollapsed) {
+      log(
+        `Warning: graph write incomplete — the pipeline produced ${expectedRelationships} ` +
+          `relationships but only ${stats.edges} are readable from the index. Recording the ` +
+          `index as INCOMPLETE (graph-write-collapsed) rather than fresh; re-run ` +
+          `\`gitnexus analyze --force\`.`,
+      );
+    }
     let embeddingSkipped = true;
     let semanticMode: 'vector-index' | 'exact-scan' | undefined;
     // Hoisted out of the Phase 4 block so the Phase 5 gate can tell "the
@@ -2929,6 +2974,9 @@ async function runFullAnalysisInner(
       // origin remote, which is fine: paths-only repos behave as
       // before.
       remoteUrl: hasGitDir(repoPath) ? getRemoteUrl(repoPath) : undefined,
+      // Absent on a healthy run; present it and the index reports as
+      // incomplete rather than fresh (`graph-write-collapsed`).
+      ...(graphWriteCollapsed ? { graphWriteCollapsed } : {}),
       stats: {
         files: pipelineResult.totalFileCount,
         nodes: stats.nodes,
