@@ -266,6 +266,14 @@ it('does not inject config into static assets', async () => {
 });
 // -- API reverse proxy (GITNEXUS_UPSTREAM_URL) -----------------------------
 
+// Every proxy fixture below runs the server with this token: the proxy refuses
+// to start without one, and refuses one under 32 characters.
+const TEST_AUTH_TOKEN = 'proxy-test-token-0123456789abcdefghij';
+const TEST_BEARER = `Bearer ${TEST_AUTH_TOKEN}`;
+
+// rawRequest never sends credentials; apiRequest does. In a file whose subject
+// is who gets let through, no test should pass because a helper quietly
+// authenticated for it.
 function rawRequest(port, path, { method = 'GET', headers = {}, body } = {}) {
   // Send an explicit Content-Length like a browser fetch() does — the proxy
   // only buffers (and so only retries) bodies of known length.
@@ -293,6 +301,16 @@ function rawRequest(port, path, { method = 'GET', headers = {}, body } = {}) {
     req.on('error', reject);
     if (body !== undefined) req.write(body);
     req.end();
+  });
+}
+
+// An authenticated /api/* call. An explicit `authorization` header wins, so the
+// auth tests can send a wrong one.
+function apiRequest(port, path, { headers = {}, ...rest } = {}) {
+  const hasAuth = Object.keys(headers).some((h) => h.toLowerCase() === 'authorization');
+  return rawRequest(port, path, {
+    ...rest,
+    headers: hasAuth ? headers : { ...headers, authorization: TEST_BEARER },
   });
 }
 
@@ -357,6 +375,7 @@ async function withProxy(
   const target = `127.0.0.1:${upstreamPort}`;
   const proc = spawnServerWithEnv(dir, port, {
     GITNEXUS_UPSTREAM_URL: schemeless ? target : `http://${target}`,
+    GITNEXUS_SERVE_AUTH_TOKEN: TEST_AUTH_TOKEN,
     ...env,
   });
   proc.stderr.setEncoding('utf8');
@@ -379,7 +398,7 @@ async function withProxy(
 
 it('proxies /api/* requests to the upstream server', async () => {
   await withProxy({}, async (port, ctx) => {
-    const res = await rawRequest(port, '/api/info?x=1');
+    const res = await apiRequest(port, '/api/info?x=1');
     assert.equal(res.status, 200);
     assert.match(res.body, /"ok":true/);
     assert.equal(ctx.received.url, '/api/info?x=1', 'path + query forwarded verbatim');
@@ -388,7 +407,7 @@ it('proxies /api/* requests to the upstream server', async () => {
 
 it('forwards the request method and body to the upstream', async () => {
   await withProxy({}, async (port, ctx) => {
-    await rawRequest(port, '/api/query', {
+    await apiRequest(port, '/api/query', {
       method: 'POST',
       headers: { 'content-type': 'application/json' },
       body: '{"q":"hello"}',
@@ -400,7 +419,7 @@ it('forwards the request method and body to the upstream', async () => {
 
 it('strips the browser Origin and Referer before forwarding to the API', async () => {
   await withProxy({}, async (port, ctx) => {
-    await rawRequest(port, '/api/info', {
+    await apiRequest(port, '/api/info', {
       headers: { origin: 'https://gitnexus-web.onrender.com', referer: 'https://x/y' },
     });
     assert.equal(
@@ -414,7 +433,7 @@ it('strips the browser Origin and Referer before forwarding to the API', async (
 
 it('strips hop-by-hop headers before forwarding to the API', async () => {
   await withProxy({}, async (port, ctx) => {
-    await rawRequest(port, '/api/info', {
+    await apiRequest(port, '/api/info', {
       headers: {
         'keep-alive': 'timeout=5',
         upgrade: 'h2c',
@@ -434,7 +453,7 @@ it('strips request headers that Connection names as single-hop', async () => {
     // RFC 7230 §6.1 lets Connection name hop-by-hop headers beyond the
     // well-known eight, and those must not be forwarded either. Against a fixed
     // list alone, x-custom-hop reaches the upstream.
-    await rawRequest(port, '/api/info', {
+    await apiRequest(port, '/api/info', {
       headers: { connection: 'x-custom-hop', 'x-custom-hop': 'private' },
     });
     assert.equal(ctx.received.headers['x-custom-hop'], undefined);
@@ -444,20 +463,86 @@ it('strips request headers that Connection names as single-hop', async () => {
   });
 });
 
-it('collapses a spoofed X-Forwarded-For chain to the load balancer entry', async () => {
-  await withProxy({}, async (port, ctx) => {
-    // Only the last entry is Render's; the rest is client-supplied and would
-    // otherwise let a caller fake req.ip and evade the API's rate limits.
-    await rawRequest(port, '/api/info', {
+it('collapses a spoofed X-Forwarded-For chain to the load balancer entry when XFF is trusted', async () => {
+  const env = { GITNEXUS_PROXY_TRUST_XFF: '1' };
+  await withProxy({ env }, async (port, ctx) => {
+    // With a load balancer in front, only the last entry is the LB's; the rest
+    // is client-supplied and would otherwise let a caller fake req.ip and evade
+    // the API's rate limits.
+    await apiRequest(port, '/api/info', {
       headers: { 'x-forwarded-for': '10.0.0.1, 1.2.3.4, 203.0.113.9' },
     });
     assert.equal(ctx.received.headers['x-forwarded-for'], '203.0.113.9');
   });
 });
 
+it('ignores an inbound X-Forwarded-For chain when GITNEXUS_PROXY_TRUST_XFF is unset', async () => {
+  await withProxy({}, async (port, ctx) => {
+    // With nothing in front of the proxy, the whole chain is the caller's to
+    // write, so popping it would forward an address they chose.
+    await apiRequest(port, '/api/info', {
+      headers: { 'x-forwarded-for': '10.0.0.1, 1.2.3.4, 203.0.113.9' },
+    });
+    assert.match(ctx.received.headers['x-forwarded-for'], /127\.0\.0\.1$/);
+  });
+});
+
+it('ignores an inbound X-Forwarded-For chain when GITNEXUS_PROXY_TRUST_XFF is off', async () => {
+  const env = { GITNEXUS_PROXY_TRUST_XFF: 'off' };
+  await withProxy({ env }, async (port, ctx) => {
+    await apiRequest(port, '/api/info', {
+      headers: { 'x-forwarded-for': '203.0.113.9' },
+    });
+    assert.match(ctx.received.headers['x-forwarded-for'], /127\.0\.0\.1$/);
+  });
+});
+
+it('warns and falls back to ignoring XFF when GITNEXUS_PROXY_TRUST_XFF is "true"', async () => {
+  // Rejected for the same reason resolveTrustProxy rejects it server-side: it
+  // reads as "trust everything", the configuration this knob exists to make
+  // deliberate.
+  const env = { GITNEXUS_PROXY_TRUST_XFF: 'true' };
+  await withProxy({ env }, async (port, ctx) => {
+    await apiRequest(port, '/api/info', {
+      headers: { 'x-forwarded-for': '203.0.113.9' },
+    });
+    assert.match(ctx.received.headers['x-forwarded-for'], /127\.0\.0\.1$/);
+    assert.match(
+      ctx.stderr,
+      /GITNEXUS_PROXY_TRUST_XFF "true" is not a recognized boolean/,
+      'an unrecognized value must warn rather than fail silently',
+    );
+  });
+});
+
+it('forwards the socket peer, not the rotating header, on every authenticated request', async () => {
+  // A caller rotating X-Forwarded-For per request earns a fresh limiter key
+  // upstream unless this proxy overwrites it. Hitting the API server directly
+  // would test its own trust-proxy handling instead of this hop.
+  await withProxy({}, async (port, ctx) => {
+    const forwarded = [];
+    for (const spoofed of ['1.1.1.1', '2.2.2.2', '3.3.3.3', '4.4.4.4']) {
+      await apiRequest(port, '/api/query', {
+        method: 'POST',
+        headers: { 'content-type': 'application/json', 'x-forwarded-for': spoofed },
+        body: '{"q":"hi"}',
+      });
+      forwarded.push(ctx.received.headers['x-forwarded-for']);
+    }
+    assert.equal(ctx.calls, 4);
+    for (const address of forwarded) {
+      assert.match(
+        address,
+        /127\.0\.0\.1$/,
+        'every request must key off the socket peer, not the value the client rotated',
+      );
+    }
+  });
+});
+
 it('sets X-Forwarded-For from the socket peer when the client sends none', async () => {
   await withProxy({}, async (port, ctx) => {
-    await rawRequest(port, '/api/info');
+    await apiRequest(port, '/api/info');
     assert.match(
       ctx.received.headers['x-forwarded-for'],
       /127\.0\.0\.1$/,
@@ -472,7 +557,7 @@ it('strips hop-by-hop headers from the upstream response', async () => {
     res.end('ok');
   };
   await withProxy({ upstream }, async (port) => {
-    const res = await rawRequest(port, '/api/info');
+    const res = await apiRequest(port, '/api/info');
     assert.equal(res.status, 200);
     assert.equal(res.headers.trailer, undefined, 'Trailer describes the upstream hop only');
     assert.equal(res.body, 'ok');
@@ -489,7 +574,7 @@ it('strips response headers that Connection names as single-hop', async () => {
     res.end('ok');
   };
   await withProxy({ upstream }, async (port) => {
-    const res = await rawRequest(port, '/api/info');
+    const res = await apiRequest(port, '/api/info');
     assert.equal(res.status, 200);
     assert.equal(res.headers['x-upstream-hop'], undefined, 'named on the upstream hop only');
   });
@@ -514,7 +599,7 @@ it('streams a chunked upstream response through to the client', async () => {
     }, 20);
   };
   await withProxy({ upstream }, async (port) => {
-    const res = await rawRequest(port, '/api/stream');
+    const res = await apiRequest(port, '/api/stream');
     assert.equal(res.status, 200);
     assert.equal(res.headers['content-type'], 'text/event-stream');
     assert.match(res.body, /data: one/);
@@ -524,7 +609,7 @@ it('streams a chunked upstream response through to the client', async () => {
 
 it('accepts a scheme-less host:port upstream (Render fromService hostport)', async () => {
   await withProxy({ schemeless: true }, async (port, ctx) => {
-    const res = await rawRequest(port, '/api/info');
+    const res = await apiRequest(port, '/api/info');
     assert.equal(res.status, 200);
     assert.equal(ctx.received.url, '/api/info', 'scheme-less upstream should still be proxied');
   });
@@ -546,7 +631,7 @@ it('returns 504 when the upstream does not respond within the timeout', async ()
   // Upstream accepts the connection but never responds — an idle hang.
   const env = { GITNEXUS_PROXY_TIMEOUT_MS: '300' };
   await withProxy({ upstream: () => {}, env }, async (port) => {
-    const res = await rawRequest(port, '/api/info');
+    const res = await apiRequest(port, '/api/info');
     assert.equal(res.status, 504);
   });
 });
@@ -555,7 +640,7 @@ it('returns 502 when the upstream is unreachable', async () => {
   // Retry disabled so this fails fast (the unreachable-upstream contract).
   const env = { GITNEXUS_PROXY_RETRY_ATTEMPTS: '1' };
   await withProxy({ upstream: null, env }, async (port) => {
-    const res = await rawRequest(port, '/api/info');
+    const res = await apiRequest(port, '/api/info');
     assert.equal(res.status, 502);
   });
 });
@@ -568,7 +653,7 @@ it('returns 502 when the upstream is unreachable', async () => {
 
 it('retries a connection-refused POST and succeeds once the upstream is up', async () => {
   await withProxy({ listenAfterMs: 400 }, async (port, ctx) => {
-    const res = await rawRequest(port, '/api/analyze', {
+    const res = await apiRequest(port, '/api/analyze', {
       method: 'POST',
       headers: { 'content-type': 'application/json' },
       body: '{"repo":"x"}',
@@ -585,7 +670,7 @@ it('retries a bodyless DELETE, which frames no body to replay', async () => {
   // Content-Length nor Transfer-Encoding has nothing to buffer, so it replays
   // safely even though it isn't a GET.
   await withProxy({ listenAfterMs: 400 }, async (port, ctx) => {
-    const res = await rawRequest(port, '/api/repo', { method: 'DELETE' });
+    const res = await apiRequest(port, '/api/repo', { method: 'DELETE' });
     assert.equal(res.status, 200, 'a bodyless DELETE must ride out the restart gap');
     assert.equal(ctx.calls, 1);
   });
@@ -596,7 +681,7 @@ it('falls back to the default retry budget when the knob is out of range', async
   // window into a 502, silently.
   const env = { GITNEXUS_PROXY_RETRY_ATTEMPTS: '-1' };
   await withProxy({ listenAfterMs: 400, env }, async (port, ctx) => {
-    const res = await rawRequest(port, '/api/info');
+    const res = await apiRequest(port, '/api/info');
     assert.equal(res.status, 200);
     assert.equal(ctx.calls, 1);
   });
@@ -625,7 +710,11 @@ it('does NOT retry after the client aborts during the backoff window', async () 
         port,
         path: '/api/analyze',
         method: 'POST',
-        headers: { 'content-type': 'application/json', 'content-length': '12' },
+        headers: {
+          'content-type': 'application/json',
+          'content-length': '12',
+          authorization: TEST_BEARER,
+        },
       });
       req.on('error', () => {}); // aborting surfaces a local socket error; ignore
       req.write('{"repo":"x"}');
@@ -647,7 +736,7 @@ it('does NOT retry after the client aborts during the backoff window', async () 
 it('returns 502 after exhausting the retry budget when the upstream stays down', async () => {
   const env = { GITNEXUS_PROXY_RETRY_ATTEMPTS: '3' };
   await withProxy({ upstream: null, env }, async (port) => {
-    const res = await rawRequest(port, '/api/analyze', {
+    const res = await apiRequest(port, '/api/analyze', {
       method: 'POST',
       headers: { 'content-type': 'application/json' },
       body: '{"repo":"x"}',
@@ -665,7 +754,7 @@ it('does NOT retry a POST that connects then resets before responding', async ()
   const upstream = (_req, res) => res.socket.destroy();
   const env = { GITNEXUS_PROXY_RETRY_ATTEMPTS: '3' };
   await withProxy({ upstream, env }, async (port, ctx) => {
-    const res = await rawRequest(port, '/api/analyze', {
+    const res = await apiRequest(port, '/api/analyze', {
       method: 'POST',
       headers: { 'content-type': 'application/json' },
       body: '{"repo":"x"}',
@@ -700,7 +789,11 @@ it('does NOT retry after the upstream starts streaming, then drops mid-body', as
           port,
           path: '/api/analyze',
           method: 'POST',
-          headers: { 'content-type': 'application/json', 'content-length': '12' },
+          headers: {
+            'content-type': 'application/json',
+            'content-length': '12',
+            authorization: TEST_BEARER,
+          },
         },
         (res) => {
           res.on('data', () => {});
@@ -724,7 +817,7 @@ it('does NOT buffer or retry a body larger than the retry cap', async () => {
   const env = { GITNEXUS_PROXY_RETRY_MAX_BODY_BYTES: '16' };
   const bigBody = 'x'.repeat(1024);
   await withProxy({ env }, async (port, ctx) => {
-    const res = await rawRequest(port, '/api/analyze/upload', {
+    const res = await apiRequest(port, '/api/analyze/upload', {
       method: 'POST',
       headers: { 'content-type': 'application/octet-stream' },
       body: bigBody,
@@ -752,6 +845,7 @@ it('returns 400 when the client declares a body but never finishes sending it', 
           'POST /api/analyze HTTP/1.1\r\n' +
             'Host: 127.0.0.1\r\n' +
             'Content-Type: application/json\r\n' +
+            `Authorization: ${TEST_BEARER}\r\n` +
             'Content-Length: 100\r\n' +
             '\r\n' +
             'x'.repeat(10), // fewer than 100 bytes, then stall
@@ -792,5 +886,200 @@ it('returns 400 when the client declares a body but never finishes sending it', 
       'the 400 for a stalled body must advertise Connection: close',
     );
     assert.equal(ctx.calls, 0, 'proxy must not connect upstream when the body never arrives');
+  });
+});
+
+// -- Token gate at the public edge (GITNEXUS_SERVE_AUTH_TOKEN) --------------
+//
+// The proxy terminates the browser Origin, so the API's own write guard can't
+// see a cross-site request coming. The token replaces it, checked on the way in.
+
+it('answers an /api/* request with no Authorization header with a well-formed 401', async () => {
+  await withProxy({}, async (port, ctx) => {
+    const res = await rawRequest(port, '/api/health');
+    assert.equal(res.status, 401);
+    assert.equal(res.headers['www-authenticate'], 'Bearer');
+    assert.match(res.headers['content-type'], /application\/json/);
+    // The UI dispatches on the stable code, not on message text.
+    assert.deepEqual(JSON.parse(res.body), { error: 'unauthorized', code: 'unauthorized' });
+    assert.equal(ctx.calls, 0, 'an unauthenticated request must cost nothing upstream');
+  });
+});
+
+it('closes the connection on a rejected request rather than draining its body', async () => {
+  // The 401 is answered before the body is read, so without Connection: close
+  // Node drains up to 64KB of an unauthenticated upload to keep the socket
+  // reusable. Same reasoning as the stalled-body 400 above.
+  await withProxy({}, async (port, ctx) => {
+    const res = await rawRequest(port, '/api/analyze', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ path: '/etc' }),
+    });
+    assert.equal(res.status, 401);
+    assert.equal(res.headers.connection, 'close');
+    assert.equal(ctx.calls, 0);
+  });
+});
+
+it('rejects a wrong token of the same length', async () => {
+  await withProxy({}, async (port, ctx) => {
+    const wrong = 'x'.repeat(TEST_AUTH_TOKEN.length);
+    const res = await apiRequest(port, '/api/health', {
+      headers: { authorization: `Bearer ${wrong}` },
+    });
+    assert.equal(res.status, 401);
+    assert.equal(ctx.calls, 0);
+  });
+});
+
+it('rejects a wrong token of a different length', async () => {
+  // The unequal-length branch takes a different path through the comparison
+  // (dummy compare, no timingSafeEqual on the real buffers) and still must 401.
+  await withProxy({}, async (port, ctx) => {
+    const res = await apiRequest(port, '/api/health', {
+      headers: { authorization: 'Bearer short' },
+    });
+    assert.equal(res.status, 401);
+    assert.equal(ctx.calls, 0);
+  });
+});
+
+it('rejects the raw token without the Bearer prefix', async () => {
+  await withProxy({}, async (port, ctx) => {
+    const res = await apiRequest(port, '/api/health', {
+      headers: { authorization: TEST_AUTH_TOKEN },
+    });
+    assert.equal(res.status, 401);
+    assert.equal(ctx.calls, 0);
+  });
+});
+
+it('forwards an /api/* request that carries the correct token', async () => {
+  await withProxy({}, async (port, ctx) => {
+    const res = await apiRequest(port, '/api/health', {
+      headers: { authorization: TEST_BEARER },
+    });
+    assert.equal(res.status, 200);
+    assert.equal(ctx.calls, 1);
+  });
+});
+
+it('strips the Authorization header instead of forwarding the edge token', async () => {
+  // The token is spent at this hop. `serve` reads no Authorization header, so
+  // forwarding would only copy a live credential into another service's logs.
+  await withProxy({}, async (port, ctx) => {
+    const res = await apiRequest(port, '/api/mcp', { method: 'POST', body: '{}' });
+    assert.equal(res.status, 200, 'the request itself must still be proxied');
+    assert.equal(ctx.received.headers.authorization, undefined);
+  });
+});
+
+it('never gates static assets behind the token', async () => {
+  // The UI has to load before it can prompt for a token.
+  await withProxy({}, async (port, ctx) => {
+    for (const path of ['/', '/index.html', '/some/app/route']) {
+      const res = await rawRequest(port, path);
+      assert.equal(res.status, 200, `${path} must be served without a token`);
+      assert.match(res.body, /spa/);
+    }
+    assert.equal(ctx.calls, 0);
+  });
+});
+
+// Run docker-server.mjs to completion and report how it exited. Used for the
+// boot-time refusal, which never reaches a listening state.
+function runUntilExit(cwd, env) {
+  return new Promise((resolve, reject) => {
+    const proc = spawn(process.execPath, [serverScript], {
+      cwd,
+      env: { ...process.env, ...env },
+      stdio: 'pipe',
+    });
+    let stderr = '';
+    proc.stderr.setEncoding('utf8');
+    proc.stderr.on('data', (chunk) => {
+      stderr += chunk;
+    });
+    proc.on('error', reject);
+    proc.on('exit', (code) => resolve({ code, stderr }));
+    // A server that starts instead of refusing never exits, so name that failure
+    // here rather than letting it surface as a timeout or a null exit code.
+    setTimeout(() => {
+      proc.kill();
+      reject(new Error('docker-server.mjs kept running; it was expected to refuse and exit'));
+    }, 5000).unref();
+  });
+}
+
+async function withDistDir(fn) {
+  const dir = await mkdtemp(join(tmpdir(), 'gitnexus-boot-'));
+  await mkdir(join(dir, 'dist'), { recursive: true });
+  await writeFile(join(dir, 'dist', 'index.html'), '<html><body>spa</body></html>');
+  try {
+    await fn(dir);
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+}
+
+it('refuses to start when the proxy is enabled without a token', async () => {
+  await withDistDir(async (dir) => {
+    const port = await getFreePort();
+    const { code, stderr } = await runUntilExit(dir, {
+      PORT: String(port),
+      GITNEXUS_UPSTREAM_URL: '127.0.0.1:4747',
+      GITNEXUS_SERVE_AUTH_TOKEN: undefined,
+    });
+    assert.equal(code, 1, 'an unauthenticated public proxy must fail closed at boot');
+    assert.match(stderr, /Refusing to start/);
+    assert.match(stderr, /GITNEXUS_SERVE_AUTH_TOKEN/);
+  });
+});
+
+it('refuses to start when the token is short enough to guess', async () => {
+  // Nothing rate-limits a failed token, so a weak one is guessable at network
+  // speed. The floor is what makes the missing limiter safe.
+  await withDistDir(async (dir) => {
+    const port = await getFreePort();
+    const { code, stderr } = await runUntilExit(dir, {
+      PORT: String(port),
+      GITNEXUS_UPSTREAM_URL: '127.0.0.1:4747',
+      GITNEXUS_SERVE_AUTH_TOKEN: 'hunter2',
+    });
+    assert.equal(code, 1);
+    assert.match(stderr, /shorter than 32 characters/);
+    assert.ok(!stderr.includes('hunter2'), 'the refusal must never echo the token');
+  });
+});
+
+it('treats a whitespace-only token as absent rather than as a short one', async () => {
+  // '   ' trims to empty, so this must hit the missing-token refusal, not the
+  // length one.
+  await withDistDir(async (dir) => {
+    const port = await getFreePort();
+    const { code, stderr } = await runUntilExit(dir, {
+      PORT: String(port),
+      GITNEXUS_UPSTREAM_URL: '127.0.0.1:4747',
+      GITNEXUS_SERVE_AUTH_TOKEN: '   ',
+    });
+    assert.equal(code, 1);
+    assert.match(stderr, /is set without GITNEXUS_SERVE_AUTH_TOKEN/);
+  });
+});
+
+it('starts normally with neither the proxy nor a token configured', async () => {
+  // docker-compose's default: static assets only, nothing to gate, no refusal.
+  await withDistDir(async (dir) => {
+    const port = await getFreePort();
+    const proc = spawnServerWithEnv(dir, port, { GITNEXUS_SERVE_AUTH_TOKEN: undefined });
+    try {
+      await waitForServer(port);
+      const res = await rawRequest(port, '/');
+      assert.equal(res.status, 200);
+      assert.match(res.body, /spa/);
+    } finally {
+      await killAndWait(proc);
+    }
   });
 });

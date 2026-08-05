@@ -1,3 +1,5 @@
+import { timingSafeEqual } from 'node:crypto';
+import { writeSync } from 'node:fs';
 import { open } from 'node:fs/promises';
 import { createServer, request as httpRequest } from 'node:http';
 import { request as httpsRequest } from 'node:https';
@@ -29,6 +31,13 @@ function sanitizeForLog(value) {
   return String(value)
     .replace(/[\x00-\x1f\x7f]/g, ' ')
     .slice(0, 200);
+}
+
+// console.error is asynchronous when stderr is a pipe, so pairing it with
+// process.exit can drop the one message explaining the refusal. writeSync isn't.
+function exitWithRefusal(message) {
+  writeSync(2, `${message}\n`);
+  process.exit(1);
 }
 
 // `value` if it's a usable http/https URL, else null + a warning naming `label`.
@@ -88,6 +97,58 @@ const rawUpstreamUrl = rawUpstream
 const upstreamBase = validHttpUrl('GITNEXUS_UPSTREAM_URL', rawUpstreamUrl, rawUpstream);
 // The one origin this proxy will ever connect to (see proxyToUpstream).
 const upstreamOrigin = upstreamBase ? new URL(upstreamBase).origin : null;
+
+// The Bearer token every /api/* request must carry. The private upstream has no
+// auth of its own and loses its Origin guard one hop below (see
+// proxyToUpstream), so the gate belongs here. The browser holds it — never
+// inject it next to `backendUrl`. Blank-is-absent follows resolveAuthToken
+// (gitnexus/src/mcp/http-transport.ts).
+const authToken = process.env.GITNEXUS_SERVE_AUTH_TOKEN?.trim() || null;
+
+// Mirrors the non-loopback refusal in http-transport.ts (startMcpHttpServer),
+// relocated because the trust boundary is here: an unguarded `serve` behind a
+// private service is legitimate, an unguarded public proxy is not.
+if (upstreamBase && !authToken) {
+  exitWithRefusal(
+    '[gitnexus-web] Refusing to start: GITNEXUS_UPSTREAM_URL is set without ' +
+      'GITNEXUS_SERVE_AUTH_TOKEN. The proxy would expose every indexed repo — ' +
+      'index, read source, and delete — to anyone with this URL. Set a token, ' +
+      'or unset GITNEXUS_UPSTREAM_URL to serve static assets only.',
+  );
+}
+
+// Rejected requests never reach the upstream limiter, so guesses are free. A
+// throttle would add per-address state to a stateless proxy and a lockout an
+// attacker can aim at a real user; a length floor makes guessing hopeless and
+// only ever rejects a hand-picked token.
+const MIN_AUTH_TOKEN_LENGTH = 32;
+if (authToken && authToken.length < MIN_AUTH_TOKEN_LENGTH) {
+  exitWithRefusal(
+    `[gitnexus-web] Refusing to start: GITNEXUS_SERVE_AUTH_TOKEN is shorter than ` +
+      `${MIN_AUTH_TOKEN_LENGTH} characters. It is the only thing standing between the ` +
+      'public internet and every indexed repo, and a failed guess is not rate-limited. ' +
+      'Use a generated random value.',
+  );
+}
+
+// Whether an inbound X-Forwarded-For may be believed (see clientAddressFor).
+// Default off, so a wrong deployment fails toward over-restriction rather than
+// toward an address the caller picks. `true` is rejected as it is server-side
+// (resolveTrustProxy, which also takes hop counts and so rejects `yes`/`on`
+// too): it reads as "trust the whole chain".
+function resolveTrustXff(raw) {
+  const value = raw?.trim();
+  if (!value) return false;
+  if (/^(1|yes|on)$/i.test(value)) return true;
+  if (/^(0|no|off|false)$/i.test(value)) return false;
+  console.warn(
+    `[gitnexus-web] GITNEXUS_PROXY_TRUST_XFF "${sanitizeForLog(value)}" is not a recognized ` +
+      'boolean -- ignoring the inbound X-Forwarded-For chain. Set 1 only when a load balancer ' +
+      'that appends the real peer sits in front of this service.',
+  );
+  return false;
+}
+const trustInboundXff = resolveTrustXff(process.env.GITNEXUS_PROXY_TRUST_XFF);
 
 // Idle timeout for a proxied request → 504. Socket activity (SSE heartbeats)
 // resets it, so long-lived streams are unaffected. 0 disables.
@@ -158,6 +219,41 @@ function readBodyCapped(req, cap, timeoutMs) {
   });
 }
 
+// Constant-time Bearer check, mirroring createAuthMiddleware in
+// gitnexus/src/mcp/http-transport.ts — dummy comparison included, so an absent
+// or wrong-length header costs the same and the timing can't leak the length.
+// Duplicated because this file is plain ESM and can't import from gitnexus/src.
+function authorized(req) {
+  if (!authToken) return true; // static-only: no proxy, nothing to gate
+  const header = req.headers['authorization'];
+  const expected = Buffer.from(`Bearer ${authToken}`);
+  if (typeof header !== 'string') {
+    timingSafeEqual(Buffer.alloc(expected.length), expected);
+    return false;
+  }
+  const provided = Buffer.from(header);
+  if (provided.length !== expected.length) {
+    timingSafeEqual(Buffer.alloc(expected.length), expected);
+    return false;
+  }
+  return timingSafeEqual(provided, expected);
+}
+
+// WWW-Authenticate names the scheme; the stable `code` is what the web client
+// dispatches on, not message text. The body must not distinguish "no token
+// configured" from "wrong token". `Connection: close` because we answer before
+// reading the body, which Node would otherwise drain (as with the 400 below).
+function sendUnauthorized(res) {
+  const body = JSON.stringify({ error: 'unauthorized', code: 'unauthorized' });
+  res.writeHead(401, {
+    'Content-Type': 'application/json; charset=utf-8',
+    'Content-Length': Buffer.byteLength(body),
+    'WWW-Authenticate': 'Bearer',
+    Connection: 'close',
+  });
+  res.end(body);
+}
+
 // Fail a proxied request. Once headers are sent the body is partially written
 // and can't be replaced, so the socket is all we can destroy.
 function failGateway(res, status, message) {
@@ -194,12 +290,14 @@ function stripHopByHopHeaders(headers) {
   return headers;
 }
 
-// The client address this proxy vouches for upstream. The API trusts
-// private-network hops and keys its rate limiter off req.ip, so forwarding a
-// client-supplied X-Forwarded-For would let anyone rotate a fake address per
-// request and slip the limits. Render's LB appends the real peer, so only the
-// last entry is trustworthy; with no chain at all the socket peer is the client.
+// The client address this proxy vouches for upstream. The API keys its rate
+// limiter off req.ip, so forwarding a client-supplied X-Forwarded-For would let
+// anyone rotate a fake address per request. Which entry is real depends on a
+// deployment fact this process can't observe (is anything in front appending the
+// peer?), so the operator asserts it via GITNEXUS_PROXY_TRUST_XFF; until then we
+// forward the socket peer.
 function clientAddressFor(req) {
+  if (!trustInboundXff) return req.socket.remoteAddress || null;
   const forwarded = String(req.headers['x-forwarded-for'] ?? '')
     .split(',')
     .map((part) => part.trim())
@@ -236,6 +334,11 @@ async function proxyToUpstream(req, res) {
   // talks to this same-origin web service.
   delete headers.origin;
   delete headers.referer;
+  // The edge token is spent here. `serve` reads no Authorization header
+  // (gitnexus/src/server/mcp-http.ts mounts /api/mcp unguarded), so forwarding
+  // it would only copy a live credential into another service's logs. Pinned by
+  // test.
+  delete headers.authorization;
   headers.host = upstream.host;
   // Replace, never forward, the inbound chain (see clientAddressFor).
   const clientAddress = clientAddressFor(req);
@@ -375,6 +478,13 @@ const server = createServer(async (req, res) => {
 
   // Same-origin API proxy; everything else falls through to the SPA below.
   if (upstreamBase && (urlPath === '/api' || urlPath.startsWith('/api/'))) {
+    // Before body buffering and the upstream socket, so an unauthenticated
+    // request costs nothing upstream. Static assets are never gated: the UI has
+    // to load in order to prompt for the token.
+    if (!authorized(req)) {
+      sendUnauthorized(res);
+      return;
+    }
     // Fire-and-forget, so guard the boundary against unhandledRejection.
     proxyToUpstream(req, res).catch((err) => {
       console.error('[gitnexus-web] proxy handler crashed:', err?.message ?? err);
