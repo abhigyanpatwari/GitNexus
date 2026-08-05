@@ -52,7 +52,7 @@
     "react-zoom-pan-pinch": "^4.0.3",
     "remark-gfm": "^4.0.1",
     "sigma": "^3.0.3",
-    "tailwindcss": "^4.2.4",
+    "tailwindcss": "^4.3.3",
     "uuid": "^14.0.1",
     "zod": "^4.4.3"
   },
