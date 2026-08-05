@@ -23,7 +23,12 @@ import path from 'node:path';
 import fs from 'node:fs/promises';
 import os from 'node:os';
 import { createRouteLimiter } from '../../src/server/validation.js';
-import { DEFAULT_TRUST_PROXY, resolveTrustProxy } from '../../src/server/middleware.js';
+import {
+  DEFAULT_TRUST_PROXY,
+  TRUST_PROXY_ENV,
+  resolveTrustProxy,
+} from '../../src/server/middleware.js';
+import { _captureLogger, type LoggerCapture } from '../../src/core/logger.js';
 
 let tmpFile: string;
 
@@ -247,13 +252,13 @@ describe('production routes — rate-limit middleware wiring', () => {
 
   it('POST /api/analyze is wired with createRouteLimiter', () => {
     // Tolerate Prettier wrapping the registration across lines (it does once
-    // the route carries extra middleware like requireLocalhostOrigin).
+    // the route carries extra middleware like requireTrustedOrigin).
     expect(apiSource).toMatch(/app\.post\(\s*'\/api\/analyze',\s*createRouteLimiter\(/);
   });
 
   it('POST /api/embed is wired with createRouteLimiter', () => {
     // Tolerate Prettier wrapping the registration across lines (it does once
-    // the route carries extra middleware like requireLocalhostOrigin).
+    // the route carries extra middleware like requireTrustedOrigin).
     expect(apiSource).toMatch(/app\.post\(\s*'\/api\/embed',\s*createRouteLimiter\(/);
   });
 
@@ -270,13 +275,14 @@ describe('production routes — rate-limit middleware wiring', () => {
     expect(apiSource).not.toMatch(/app\.options\(\s*'\/\*'/);
   });
 
-  it('createServer wires trust proxy through resolveTrustProxy', () => {
-    expect(apiSource).toMatch(/app\.set\(\s*'trust proxy'\s*,\s*resolveTrustProxy\(/);
-  });
-
-  it('resolveTrustProxy still defaults to loopback/linklocal/uniquelocal', () => {
-    expect(DEFAULT_TRUST_PROXY).toBe('loopback, linklocal, uniquelocal');
-    expect(resolveTrustProxy(undefined)).toBe('loopback, linklocal, uniquelocal');
+  // Source-level because createServer listens and cannot be built here. Kept
+  // deliberately loose: the effective-value describe below covers resolution,
+  // so all this has to pin down is that createServer routes the env var
+  // through resolveTrustProxy rather than setting a literal.
+  it('createServer reads trust proxy from GITNEXUS_TRUST_PROXY', () => {
+    expect(apiSource).toMatch(
+      /app\.set\(\s*'trust proxy'\s*,\s*resolveTrustProxy\([^)]*TRUST_PROXY_ENV/,
+    );
   });
 
   it('does not register Express-4-only app.options("*") (Express 5 path-to-regexp)', () => {
@@ -320,5 +326,109 @@ describe('validation.ts — IPv6 key normalisation (#1360)', () => {
 
   it('keyGenerator body calls ipKeyGenerator', () => {
     expect(validationSource).toMatch(/ipKeyGenerator\(ip\)/);
+  });
+});
+
+// The effective `trust proxy` Express ends up with, rather than the text of the
+// line that sets it. `createServer` listens and installs signal handlers, so it
+// cannot be built here; this mirrors its one `app.set` expression instead.
+describe('trust proxy — effective value from GITNEXUS_TRUST_PROXY', () => {
+  const saved = process.env[TRUST_PROXY_ENV];
+
+  // The rejection cases below warn; capture keeps them out of the suite output.
+  let cap: LoggerCapture;
+  beforeEach(() => {
+    cap = _captureLogger();
+  });
+
+  afterEach(() => {
+    cap.restore();
+    if (saved === undefined) delete process.env[TRUST_PROXY_ENV];
+    else process.env[TRUST_PROXY_ENV] = saved;
+  });
+
+  const effectiveTrustProxy = (value: string | undefined): unknown => {
+    if (value === undefined) delete process.env[TRUST_PROXY_ENV];
+    else process.env[TRUST_PROXY_ENV] = value;
+    const app = express();
+    app.set('trust proxy', resolveTrustProxy(process.env[TRUST_PROXY_ENV]));
+    return app.get('trust proxy');
+  };
+
+  it('defaults to the loopback-scoped list when the env var is unset', () => {
+    expect(DEFAULT_TRUST_PROXY).toBe('loopback, linklocal, uniquelocal');
+    expect(effectiveTrustProxy(undefined)).toBe('loopback, linklocal, uniquelocal');
+  });
+
+  it('carries a configured hop count through to Express', () => {
+    expect(effectiveTrustProxy('3')).toBe(3);
+  });
+
+  it('carries a configured proxy list through to Express', () => {
+    expect(effectiveTrustProxy('10.0.0.0/8, 127.0.0.1')).toBe('10.0.0.0/8, 127.0.0.1');
+  });
+
+  // Express 5 compiles `trust proxy` inside `app.set`, so an unvalidated bad
+  // value would throw during createServer instead of resolving to a default.
+  it('never hands Express a value it rejects', () => {
+    expect(() => effectiveTrustProxy('garbage')).not.toThrow();
+    expect(effectiveTrustProxy('garbage')).toBe(DEFAULT_TRUST_PROXY);
+    expect(effectiveTrustProxy('9'.repeat(400))).toBe(DEFAULT_TRUST_PROXY);
+  });
+
+  // The behaviour the describe block below demonstrates is why: `true` cannot
+  // reach Express through the env var at all.
+  it('never hands Express `true`', () => {
+    expect(effectiveTrustProxy('true')).toBe(DEFAULT_TRUST_PROXY);
+    expect(effectiveTrustProxy('yes')).toBe(DEFAULT_TRUST_PROXY);
+    expect(effectiveTrustProxy('on')).toBe(DEFAULT_TRUST_PROXY);
+  });
+});
+
+// Why resolveTrustProxy rejects `true`: Express then reads the leftmost
+// X-Forwarded-For entry, which the client controls, so rotating it hands the
+// limiter a fresh key per request — unbounded, in front of the two routes that
+// spawn workers. A hop count reads from the right instead and is immune. Both
+// apps below see the same requests; only the setting differs. `true` is set
+// directly here, since the env var can no longer produce it.
+describe('trust proxy — a rotating X-Forwarded-For defeats `true` but not a hop count', () => {
+  const buildProxiedApp = (trustProxy: boolean | number): Express => {
+    const app = express();
+    app.set('trust proxy', trustProxy);
+    app.get('/test/file', createRouteLimiter({ windowMs: 2000, limit: 2 }), async (_req, res) => {
+      const content = await fs.readFile(tmpFile, 'utf-8');
+      res.json({ content });
+    });
+    return app;
+  };
+
+  // Leftmost entry rotates per request; the rightmost (the hop the loopback
+  // proxy claims to have received from) stays fixed.
+  const statusesUnderRotatingForwardedFor = async (app: Express): Promise<number[]> => {
+    const { server, baseUrl } = await startServer(app);
+    try {
+      const statuses: number[] = [];
+      for (let i = 1; i <= 4; i++) {
+        const res = await fetch(`${baseUrl}/test/file`, {
+          headers: { 'X-Forwarded-For': `203.0.113.${i}, 198.51.100.7` },
+        });
+        statuses.push(res.status);
+      }
+      return statuses;
+    } finally {
+      await stopServer(server);
+    }
+  };
+
+  it('collapses to a single limiter key with a hop count of 1', async () => {
+    expect(await statusesUnderRotatingForwardedFor(buildProxiedApp(1))).toEqual([
+      200, 200, 429, 429,
+    ]);
+  });
+
+  it('gets a fresh limiter key per request with `true`', async () => {
+    expect(await statusesUnderRotatingForwardedFor(buildProxiedApp(true))).toEqual([
+      200, 200, 200, 200,
+    ]);
   });
 });

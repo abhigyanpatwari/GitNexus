@@ -1,10 +1,21 @@
-import { afterEach, describe, expect, it, vi } from 'vitest';
+import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from 'vitest';
 import path from 'node:path';
 import fs from 'node:fs/promises';
 import { Readable } from 'node:stream';
 import type { IncomingMessage } from 'node:http';
 import { createAnalyzeUploadHandler } from '../../src/server/analyze-upload.js';
-import { requireLocalhostOrigin, createLocalhostOriginGuard } from '../../src/server/middleware.js';
+import { PUBLIC_ORIGIN_ENV, createWriteOriginGuard } from '../../src/server/middleware.js';
+
+// The guard admits GITNEXUS_PUBLIC_ORIGIN as well as loopback, and the
+// rejection cases below assume none is configured. Clear the developer's
+// ambient value for the file rather than inheriting it.
+const ambientPublicOrigin = process.env[PUBLIC_ORIGIN_ENV];
+beforeAll(() => {
+  delete process.env[PUBLIC_ORIGIN_ENV];
+});
+afterAll(() => {
+  if (ambientPublicOrigin !== undefined) process.env[PUBLIC_ORIGIN_ENV] = ambientPublicOrigin;
+});
 
 const BOUNDARY = '----gitnexusuploadtest';
 
@@ -258,7 +269,7 @@ describe('createAnalyzeUploadHandler', () => {
   });
 });
 
-describe('requireLocalhostOrigin', () => {
+describe('createWriteOriginGuard (no bound host)', () => {
   function call(origin: string | undefined): { passed: boolean; status: number } {
     let passed = false;
     let status = 0;
@@ -269,7 +280,7 @@ describe('requireLocalhostOrigin', () => {
         return { json: () => {} };
       },
     } as never;
-    requireLocalhostOrigin(req, res, () => {
+    createWriteOriginGuard()(req, res, () => {
       passed = true;
     });
     return { passed, status };
@@ -288,7 +299,7 @@ describe('requireLocalhostOrigin', () => {
     expect(r.status).toBe(403);
   });
 
-  it('rejects RFC1918 origins when no boundHost is set (default guard)', () => {
+  it('rejects RFC1918 origins when no boundHost is set', () => {
     expect(call('http://10.0.0.1:4173').passed).toBe(false);
     expect(call('http://172.16.1.21:4173').passed).toBe(false);
     expect(call('http://192.168.1.100:4173').passed).toBe(false);
@@ -301,12 +312,12 @@ describe('requireLocalhostOrigin', () => {
   });
 });
 
-describe('createLocalhostOriginGuard (bound host)', () => {
+describe('createWriteOriginGuard (bound host)', () => {
   function callWith(
     boundHost: string,
     origin: string | undefined,
   ): { passed: boolean; status: number; body?: { error?: string; code?: string } } {
-    const guard = createLocalhostOriginGuard(boundHost);
+    const guard = createWriteOriginGuard(boundHost);
     let passed = false;
     let status = 0;
     let body: { error?: string; code?: string } | undefined;
@@ -382,56 +393,5 @@ describe('createLocalhostOriginGuard (bound host)', () => {
 
   it('passes no-origin (non-browser) requests', () => {
     expect(callWith('192.168.1.100', undefined).passed).toBe(true);
-  });
-});
-
-describe('createLocalhostOriginGuard (GITNEXUS_PUBLIC_ORIGIN)', () => {
-  const saved = process.env.GITNEXUS_PUBLIC_ORIGIN;
-  afterEach(() => {
-    if (saved === undefined) delete process.env.GITNEXUS_PUBLIC_ORIGIN;
-    else process.env.GITNEXUS_PUBLIC_ORIGIN = saved;
-  });
-
-  // Sets the env var first: the guard snapshots it at construction.
-  function admits(publicOrigin: string | undefined, origin: string): boolean {
-    if (publicOrigin === undefined) delete process.env.GITNEXUS_PUBLIC_ORIGIN;
-    else process.env.GITNEXUS_PUBLIC_ORIGIN = publicOrigin;
-    const guard = createLocalhostOriginGuard('0.0.0.0');
-    let passed = false;
-    const req = { headers: { origin } } as never;
-    const res = { status: () => ({ json: () => {} }) } as never;
-    guard(req, res, () => {
-      passed = true;
-    });
-    return passed;
-  }
-
-  it('admits the configured origin given as a full URL', () => {
-    expect(admits('https://app.example.com', 'https://app.example.com')).toBe(true);
-  });
-
-  it('admits the configured origin given as a bare host', () => {
-    expect(admits('app.example.com', 'https://app.example.com')).toBe(true);
-  });
-
-  it('admits a bare host carrying a port, comparing on hostname only', () => {
-    expect(admits('app.example.com:8443', 'https://app.example.com')).toBe(true);
-  });
-
-  it('leaves a bare IPv6 literal intact', () => {
-    expect(admits('[2001:db8::1]', 'http://[2001:db8::1]:4173')).toBe(true);
-  });
-
-  it('rejects a plaintext origin when the configured value is https', () => {
-    expect(admits('https://app.example.com', 'http://app.example.com')).toBe(false);
-  });
-
-  it('still rejects every other origin', () => {
-    expect(admits('app.example.com', 'https://evil.example.com')).toBe(false);
-  });
-
-  it('is inert when unset — a wildcard bind stays loopback-only', () => {
-    expect(admits(undefined, 'https://app.example.com')).toBe(false);
-    expect(admits(undefined, 'http://localhost:5173')).toBe(true);
   });
 });
