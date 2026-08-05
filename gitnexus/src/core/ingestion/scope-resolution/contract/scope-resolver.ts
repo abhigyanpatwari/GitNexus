@@ -113,8 +113,9 @@
  *       3. Case 0.5 implicit-`this` chain walk — GATED: fires only for
  *          languages that set `resolveThisViaEnclosingClass === true`;
  *          it intercepts every bare-`this` call/read/write site ahead of
- *          Case 4 and does NOT emit Case 4's interface-dispatch fan-out,
- *          so enabling the toggle for a language changes that language's
+ *          Case 4 and does NOT emit the interface-dispatch fan-out that
+ *          Cases 0 and 4 both perform (Case 0 gained it in #2829), so
+ *          enabling the toggle for a language changes that language's
  *          `this` dispatch semantics (see the toggle's doc below)
  *       4. Case 1 namespace-receiver
  *       5. Case 2 class-name receiver
@@ -318,6 +319,13 @@ export type { ConstraintContext } from 'gitnexus-shared';
 export type ElementAccessRoute =
   | { readonly kind: 'index' }
   | { readonly kind: 'accessor'; readonly name: string };
+
+/** One structurally-detected implementor plus the receiver form in which it
+ *  satisfies the interface (see `detectInterfaceImplementations`). */
+export interface StructuralImplementor {
+  readonly structDefId: string;
+  readonly receiverForm: 'value' | 'pointer';
+}
 
 export interface ScopeResolver {
   /** Identity for telemetry + per-language flag check. */
@@ -1230,14 +1238,23 @@ export interface ScopeResolver {
    * Languages like Go use structural typing — a struct satisfies an
    * interface if its method set is a superset, without an explicit
    * `implements` keyword. Runs after finalize, before resolution passes.
-   * Returns: Map<interface_DefId, implementing_struct_DefId[]>.
+   * Returns: Map<interface_DefId, StructuralImplementor[]>, where each entry
+   * names the implementing type AND the form in which it implements.
+   *
+   * `receiverForm` is not a confidence signal — it is the language's own
+   * distinction. In Go the method set of `T` and of `*T` differ (a
+   * pointer-receiver method belongs only to `*T`), so `receiverForm: 'pointer'`
+   * means the VALUE type does not implement the interface and only `*T` does.
+   * `'value'` means both do. Consumers that only want blast radius can ignore
+   * it; consumers reasoning about assignability must not.
+   *
    * Default: undefined (no structural interface detection).
    */
   readonly detectInterfaceImplementations?: (
     parsedFiles: readonly ParsedFile[],
     indexes: ScopeResolutionIndexes,
     model: SemanticModel,
-  ) => Map<string, string[]>;
+  ) => Map<string, readonly StructuralImplementor[]>;
 
   /**
    * Optional: mirror typeBindings from namespace-import target modules

@@ -19,6 +19,12 @@ import {
   STALE_HASH_SENTINEL,
   NodeTableName,
 } from './schema.js';
+// Analyze-only, but reached from MCP startup via `pool-adapter.js`. #2802
+// proposed lazy-importing it; rejected — `core/search/bm25-index.ts` statically
+// imports `normalizeFtsText` from `csv-generator.js`, and `local-backend.ts`
+// dynamically imports bm25-index on the FTS query path, so deferring here
+// relocates the startup cost to first query rather than removing it. The
+// measured figures live in #2802; they were environment-bound, this is not.
 import { streamAllCSVsToDisk, type StreamedCSVResult } from './csv-generator.js';
 import type { GraphEmitManifest } from './graph-emit-sink.js';
 import type { PdgEmitManifest } from './pdg-emit-sink.js';
@@ -521,6 +527,9 @@ const queryAndDrain = async (targetConn: lbug.Connection, cypher: string): Promi
   return isSharedSingletonConn(targetConn) ? withConnLock(run) : run();
 };
 
+// determinism: probe — existence only. Every call site runs this through
+// `queryAndDrain`, which drains and discards the rows; the ONLY observable is
+// whether the read-only shadow replay throws, so no row identity is read.
 const READ_ONLY_SHADOW_REPLAY_PROBE = 'MATCH (n) RETURN n LIMIT 1';
 
 /**
@@ -1829,6 +1838,9 @@ export const loadCachedEmbeddings = async (): Promise<{
       // Old schema only had (nodeId, embedding); new schema adds (id, chunkIndex, startLine, endLine, contentHash).
       // If the query fails (column missing), we return empty cache to force a full rebuild.
       try {
+        // determinism: probe — schema probe, not a sample. `readQueryRows` drains
+        // the result and the rows are dropped on the floor; only whether the
+        // new-schema columns parse decides the branch.
         const check = await c.query(
           `MATCH (e:${EMBEDDING_TABLE_NAME}) RETURN e.nodeId AS nodeId, e.chunkIndex AS chunkIndex LIMIT 1`,
         );
@@ -3175,6 +3187,26 @@ export const classifyFtsQueryError = (message: string): FtsQueryFailureClass => 
 };
 
 /**
+ * Build the `QUERY_FTS_INDEX` statement shared by BOTH FTS read paths —
+ * `queryFTS` below and `queryFTSViaExecutor` in `core/search/bm25-index.ts`
+ * (the MCP connection-pool path). The two ran byte-identical cypher from two
+ * places, so every change had to be applied twice in lockstep — the `, node.id`
+ * ORDER BY tiebreak for #2787 being the latest. Lives beside
+ * {@link classifyFtsQueryError}, which was already shared for exactly this call.
+ */
+export const buildFtsQueryCypher = (
+  tableName: string,
+  indexName: string,
+  limit: number,
+  conjunctive: boolean = false,
+): string => `
+    CALL QUERY_FTS_INDEX('${tableName}', '${indexName}', $query, conjunctive := ${conjunctive})
+    RETURN node, score
+    ORDER BY score DESC, node.id
+    LIMIT ${limit}
+  `;
+
+/**
  * Query a full-text search index
  * @param tableName - The node table name
  * @param indexName - FTS index name
@@ -3196,12 +3228,7 @@ export const queryFTS = async (
     throw new Error('LadybugDB not initialized. Call initLbug first.');
   }
 
-  const cypher = `
-    CALL QUERY_FTS_INDEX('${tableName}', '${indexName}', $query, conjunctive := ${conjunctive})
-    RETURN node, score
-    ORDER BY score DESC
-    LIMIT ${limit}
-  `;
+  const cypher = buildFtsQueryCypher(tableName, indexName, limit, conjunctive);
 
   try {
     const rows = await executePrepared(cypher, { query });

@@ -4,6 +4,7 @@ import os from 'node:os';
 import path from 'node:path';
 import type { BridgeHandle } from '../../../src/core/group/types.js';
 import type { GroupToolPort } from '../../../src/core/group/service.js';
+import { makeGroupToolPort, writeGroupYaml } from './fixtures.js';
 
 const bridgeHandle = {
   _db: {},
@@ -46,31 +47,7 @@ describe('group impact through manifest-only endpoints', () => {
     ];
     home = await fsp.mkdtemp(path.join(os.tmpdir(), 'gitnexus-manifest-impact-'));
     const groupDir = path.join(home, 'groups', 'waveful');
-    await fsp.mkdir(groupDir, { recursive: true });
-    await fsp.writeFile(
-      path.join(groupDir, 'group.yaml'),
-      `version: 1
-name: waveful
-description: ""
-repos:
-  backend: backend-registry
-  app: app-registry
-links: []
-packages: {}
-detect:
-  http: false
-  grpc: false
-  thrift: false
-  topics: false
-  shared_libs: false
-  embedding_fallback: false
-matching:
-  bm25_threshold: 0.7
-  embedding_threshold: 0.65
-  max_candidates_per_step: 3
-`,
-      'utf8',
-    );
+    await writeGroupYaml(groupDir, ['backend', 'app']);
     await fsp.writeFile(path.join(groupDir, 'bridge.lbug'), '');
   });
 
@@ -79,14 +56,16 @@ matching:
     vi.restoreAllMocks();
   });
 
-  function makePort(impactByUid: GroupToolPort['impactByUid']): GroupToolPort {
-    return {
-      resolveRepo: vi.fn(async (name: string) => ({
-        id: name,
-        name,
-        repoPath: name,
-        storagePath: path.join(home, name),
-      })),
+  /**
+   * The shared benign port with this suite's local target: the walk that
+   * resolves `executeAddDynamicLinkMS` in the local repo, reporting no local
+   * dependents so every assertion below is about the CROSSING alone.
+   */
+  const makePort = (
+    impactByUid: GroupToolPort['impactByUid'],
+    overrides: Partial<GroupToolPort> = {},
+  ): GroupToolPort =>
+    makeGroupToolPort(home, {
       impact: vi.fn(async () => ({
         target: {
           id: 'Function:src/functions.ts:executeAddDynamicLinkMS',
@@ -95,36 +74,24 @@ matching:
         byDepth: {},
         summary: { direct: 0, processes_affected: 0, modules_affected: 0 },
         risk: 'LOW',
-      })),
+      })) as GroupToolPort['impact'],
       impactByUid,
-      query: vi.fn(),
-      context: vi.fn(),
-    };
-  }
+      ...overrides,
+    });
 
   it('reports a proven manifest crossing when the far endpoint has only a synthetic UID', async () => {
     const impactByUid = vi.fn(async () => null);
+    // Named so the assertion below can pin WHICH repo was resolved — the
+    // registry name, not the member name.
     const resolveRepo = vi.fn(async (name: string) => ({
       id: name,
       name,
       repoPath: name,
       storagePath: path.join(home, name),
     }));
-    const port: GroupToolPort = {
-      resolveRepo,
-      impact: vi.fn(async () => ({
-        target: {
-          id: 'Function:src/functions.ts:executeAddDynamicLinkMS',
-          filePath: 'src/functions.ts',
-        },
-        byDepth: {},
-        summary: { direct: 0, processes_affected: 0, modules_affected: 0 },
-        risk: 'LOW',
-      })),
-      impactByUid,
-      query: vi.fn(),
-      context: vi.fn(),
-    };
+    const port = makePort(impactByUid, {
+      resolveRepo: resolveRepo as GroupToolPort['resolveRepo'],
+    });
 
     const result = await runGroupImpact(
       { port, gitnexusDir: home },
@@ -277,8 +244,8 @@ matching:
 
   it('keeps an unavailable synthetic neighbor truncated instead of reporting a hit', async () => {
     const impactByUid = vi.fn(async () => null);
-    const port: GroupToolPort = {
-      resolveRepo: vi.fn(async (name) => {
+    const port = makePort(impactByUid, {
+      resolveRepo: vi.fn(async (name: string) => {
         if (name === 'app-registry') throw new Error('repository unavailable');
         return {
           id: name,
@@ -286,20 +253,8 @@ matching:
           repoPath: name,
           storagePath: path.join(home, name),
         };
-      }),
-      impact: vi.fn(async () => ({
-        target: {
-          id: 'Function:src/functions.ts:executeAddDynamicLinkMS',
-          filePath: 'src/functions.ts',
-        },
-        byDepth: {},
-        summary: { direct: 0, processes_affected: 0, modules_affected: 0 },
-        risk: 'LOW',
-      })),
-      impactByUid,
-      query: vi.fn(),
-      context: vi.fn(),
-    };
+      }) as GroupToolPort['resolveRepo'],
+    });
 
     const result = await runGroupImpact(
       { port, gitnexusDir: home },

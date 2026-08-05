@@ -7,7 +7,7 @@
  * These are pure unit tests that mock the LadybugDB layer to test
  * the dispatch and error handling logic in isolation.
  */
-import { describe, it, expect, vi, beforeEach, afterAll } from 'vitest';
+import { describe, it, expect, vi, beforeEach, afterEach, afterAll } from 'vitest';
 import type { StalenessInfo } from '../../src/core/git-staleness.js';
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'fs';
 import fsPromises from 'fs/promises';
@@ -936,6 +936,560 @@ describe('LocalBackend.callTool', () => {
       expect(c.score).toBeLessThanOrEqual(1);
     }
     expect(result.candidates[0].score).toBeGreaterThanOrEqual(result.candidates[1].score);
+  });
+
+  // #2787 — LadybugDB returns an ARBITRARY subset when a LIMIT has no ORDER BY,
+  // and a different subset from one process to the next. With 92 nodes named
+  // `constructor` in this repo's own index, the resolver's LIMIT 20 window
+  // moved every run, so `impact`/`context` resolved a different symbol each
+  // time and the HIGH/CRITICAL warning the agent workflow relies on fired at
+  // random. These assert the emitted SQL, which is the only shape that fails
+  // deterministically — a run-N-times-and-compare test would pass by luck at
+  // the ~5-8% flip rate actually measured.
+  /** N same-named Function rows, ids ascending so the window order is obvious. */
+  const collideRows = (count: number) =>
+    Array.from({ length: count }, (_, i) => ({
+      id: `Function:src/f${String(i).padStart(2, '0')}.ts:collide`,
+      name: 'collide',
+      type: 'Function',
+      filePath: `src/f${String(i).padStart(2, '0')}.ts`,
+      startLine: 1,
+      endLine: 3,
+    }));
+
+  // The window must come back FULL (20 rows). The resolver only issues the COUNT
+  // when the window saturated its own LIMIT — a short page already proves the
+  // exact total, so counting again would be a second unlabeled full scan for a
+  // number we hold. A 0-row fixture would therefore assert the wrong shape.
+  const resolverQueriesFor = async (params: Record<string, unknown>): Promise<string[]> => {
+    (executeParameterized as any).mockClear();
+    (executeParameterized as any).mockResolvedValue(collideRows(20));
+    await backend.callTool('context', params);
+    return (executeParameterized as any).mock.calls
+      .map((c: unknown[]) => String(c[1]))
+      .filter((q: string) => q.includes('$symName'));
+  };
+
+  // Two queries share `$symName`: the ordered 20-row window, and the COUNT that
+  // reports the TRUE match total (the window length would report the cap — 20
+  // when 92 match). Both halves are pinned; the COUNT must carry no LIMIT of
+  // its own or it would just re-report the cap.
+  const expectWindowAndCount = (queries: string[]): void => {
+    expect(queries).toHaveLength(2);
+    expect(queries.filter((q) => /ORDER BY n\.id LIMIT 20/.test(q))).toHaveLength(1);
+    expect(
+      queries.filter((q) => /RETURN COUNT\(\*\) AS total/.test(q) && !/LIMIT/.test(q)),
+    ).toHaveLength(1);
+  };
+
+  // One case per WHERE-clause shape the resolver builds — all three must carry
+  // the ordered window and its COUNT.
+  it.each([
+    ['bare name', { name: 'main' }],
+    ['file_path hint', { name: 'main', file_path: 'src/a.ts' }],
+    ['qualified name', { name: 'src/a.ts:main' }],
+  ] as Array<[string, Record<string, unknown>]>)(
+    'resolver window is pinned by ORDER BY n.id, with a COUNT for the true total — %s (#2787)',
+    async (_label, params) => {
+      expectWindowAndCount(await resolverQueriesFor(params));
+    },
+  );
+
+  it('ambiguous context reports the COUNT as the match total, not the capped window (#2787)', async () => {
+    const windowRows = Array.from({ length: 20 }, (_, i) => ({
+      id: `Function:src/f${String(i).padStart(2, '0')}.ts:collide`,
+      name: 'collide',
+      type: 'Function',
+      filePath: `src/f${String(i).padStart(2, '0')}.ts`,
+      startLine: 1,
+      endLine: 3,
+    }));
+    (executeParameterized as any).mockClear();
+    (executeParameterized as any).mockImplementation(async (_repo: string, query: string) =>
+      /RETURN COUNT\(\*\) AS total/.test(query) ? [{ total: 92 }] : windowRows,
+    );
+    const result = await backend.callTool('context', { name: 'collide' });
+    (executeParameterized as any).mockReset();
+    (executeParameterized as any).mockResolvedValue([]);
+
+    expect(result).toMatchObject({
+      status: 'ambiguous',
+      totalCandidates: 92,
+      candidatesTruncated: true,
+    });
+    expect(result.candidates).toHaveLength(20);
+    expect(result.message).toContain('Found 92 symbols');
+    expect(result.message).toContain('showing 20');
+  });
+
+  it('no multi-row LIMIT on the context path is left unordered (#2787)', async () => {
+    (executeParameterized as any).mockClear();
+    (executeParameterized as any).mockResolvedValue([
+      {
+        id: 'Class:src/a.ts:Widget',
+        name: 'Widget',
+        type: 'Class',
+        filePath: 'src/a.ts',
+        startLine: 1,
+        endLine: 9,
+      },
+    ]);
+    await backend.callTool('context', { name: 'Widget' });
+    const captured: string[] = (executeParameterized as any).mock.calls.map((c: unknown[]) =>
+      String(c[1]),
+    );
+    // Guard against a vacuous pass: a resolver that bailed early would capture
+    // one query and satisfy the invariant below trivially.
+    expect(captured.length).toBeGreaterThan(1);
+    // `LIMIT 1` anchored on a unique id is a singleton lookup, not a window —
+    // which rows come back cannot vary. Every other cap must be ordered.
+    const unordered = captured
+      .filter((q) => /\bLIMIT\s+\d+/.test(q))
+      .filter((q) => !/LIMIT\s+1\b/.test(q))
+      .filter((q) => !/ORDER BY/.test(q));
+    expect(unordered).toEqual([]);
+  });
+
+  // ── #2787 review fixes ────────────────────────────────────────────────
+  // Each of these pins a behaviour the ORDER BY work itself introduced or left
+  // exposed. `executeParameterized` is routed on QUERY TEXT (mock-internal
+  // `if`s, the established pattern in this file) so a single leg can be made to
+  // fail or return a shaped page without touching the others.
+  describe('#2787 review fixes', () => {
+    /** Restore the file-wide default (`executeParameterized` → `[]`). */
+    const restoreQueryMock = (): void => {
+      (executeParameterized as any).mockReset();
+      (executeParameterized as any).mockResolvedValue([]);
+    };
+
+    // Every test below installs its own query routing. `afterEach` puts the
+    // file-wide default back — on the throwing path as well as the clean one,
+    // exactly like the per-test `finally` blocks it replaces — so a failure
+    // here still cannot leak a mock into the rest of the suite.
+    afterEach(restoreQueryMock);
+
+    /** The two `$symName` legs the resolver emits, with their bound params. */
+    const resolverCalls = (): Array<{ query: string; params: Record<string, unknown> }> =>
+      (executeParameterized as any).mock.calls
+        .filter((c: unknown[]) => String(c[1]).includes('$symName'))
+        .map((c: unknown[]) => ({
+          query: String(c[1]),
+          params: (c[2] ?? {}) as Record<string, unknown>,
+        }));
+
+    it('keys every multi-relType ref window uid-major, not category-major (#2787 review F1)', async () => {
+      // Supplement to the real-DB spread test in
+      // test/integration/local-backend-calltool.test.ts: that one proves the
+      // BEHAVIOUR on the primary incoming window; this one proves the same key
+      // reaches the four windows a single fixture cannot exercise at once (the
+      // Class-only Constructor / File / typed-Property expansions, plus outgoing).
+      // See the incoming-ref window in `_contextImpl` (#2787 F1) for why a
+      // category-major key starves whole buckets silently.
+      (executeParameterized as any).mockImplementation(async (_repo: string, query: string) =>
+        query.includes('$uid')
+          ? [
+              {
+                id: 'Class:src/a.ts:Widget',
+                name: 'Widget',
+                type: 'Class',
+                filePath: 'src/a.ts',
+                startLine: 1,
+                endLine: 9,
+              },
+            ]
+          : [],
+      );
+      // A Class target opens the #480 expansion windows as well as the two
+      // primary ones.
+      await backend.callTool('context', { uid: 'Class:src/a.ts:Widget' });
+
+      const windows = (executeParameterized as any).mock.calls
+        .map((c: unknown[]) => String(c[1]))
+        // The single-relType ADVISED_BY windows are keyed `ORDER BY uid` alone
+        // (one category, nothing to starve) and are excluded by `r.type IN [`.
+        .filter((q: string) => /RETURN r\.type AS relType/.test(q) && /r\.type IN \[/.test(q));
+      expect(windows).toHaveLength(5);
+      expect(windows.filter((q: string) => /ORDER BY uid, relType/.test(q))).toHaveLength(5);
+    });
+
+    it('marks the match total as a LOWER BOUND when only the COUNT leg fails (#2787 review F3)', async () => {
+      // The COUNT rides alongside the window so the response can report the TRUE
+      // match count instead of the cap. When that leg fails the code falls back to
+      // the window length — which, un-marked, is byte-identical to a genuine
+      // N-match result and silently reinstates the pre-PR undercount. The failure
+      // must therefore be BOTH marked on the payload and logged.
+      (executeParameterized as any).mockImplementation(async (_repo: string, query: string) => {
+        // Both legs carry `$symName`, so the COUNT must be matched first.
+        if (/RETURN COUNT\(\*\) AS total/.test(query)) throw new Error('count leg exploded');
+        if (query.includes('$symName')) return collideRows(20);
+        return [];
+      });
+      const cap = _captureLogger();
+      try {
+        const result = await backend.callTool('context', { name: 'collide' });
+
+        expect(result).toMatchObject({
+          status: 'ambiguous',
+          totalCandidates: 20,
+          totalIsLowerBound: true,
+        });
+        expect(result.candidates).toHaveLength(20);
+        // The prose is what an agent actually reads, so the hedge has to be there
+        // too — "Found 20 symbols" asserts an exactness the resolver no longer has.
+        expect(result.message).toContain("Found at least 20 symbols matching 'collide'");
+        // `candidatesTruncated` is driven by `total > candidates.length`, and with
+        // the COUNT dead the total floors at the window length — so the flag is
+        // absent here and CANNOT stand in for the lower-bound marker. That is the
+        // whole point: without `totalIsLowerBound` this response is byte-identical
+        // to a genuine, exactly-20-match result.
+        expect(result).not.toHaveProperty('candidatesTruncated');
+        // …and the swallowed failure is observable in telemetry, not silent.
+        expect(
+          cap.records().filter((r) => String(r.context) === 'resolve:candidate-count'),
+        ).toHaveLength(1);
+      } finally {
+        cap.restore();
+      }
+    });
+
+    it('a successful COUNT leg reports an EXACT total with no lower-bound marker (#2787 review F3)', async () => {
+      // Negative control for the test above: the marker must be absent on the
+      // healthy path, or it degrades into noise that consumers learn to ignore.
+      (executeParameterized as any).mockImplementation(async (_repo: string, query: string) => {
+        if (/RETURN COUNT\(\*\) AS total/.test(query)) return [{ total: 92 }];
+        if (query.includes('$symName')) return collideRows(20);
+        return [];
+      });
+      const result = await backend.callTool('context', { name: 'collide' });
+
+      expect(result).toMatchObject({ status: 'ambiguous', totalCandidates: 92 });
+      expect(result).not.toHaveProperty('totalIsLowerBound');
+      expect(result.message).toContain("Found 92 symbols matching 'collide'");
+      expect(result.message).not.toContain('at least');
+    });
+
+    it('a kind hint filters in the WHERE clause on BOTH legs, it does not merely score (#2787 review F5)', async () => {
+      // See `resolveSymbolCandidates` (#2787 F5) for why the id order is
+      // label-major and why the hint therefore has to filter, not merely score.
+      (executeParameterized as any).mockImplementation(async (_repo: string, query: string) =>
+        query.includes('$symName') ? collideRows(20) : [],
+      );
+      await backend.callTool('context', { name: 'collide', kind: 'Function' });
+
+      const calls = resolverCalls();
+      // The filtered window returned rows, so the unfiltered fallback stays out:
+      // exactly the window + its COUNT.
+      expect(calls).toHaveLength(2);
+      expect(calls.filter((c) => /AND n\.id STARTS WITH \$kindPrefix/.test(c.query))).toHaveLength(
+        2,
+      );
+      // The COUNT must carry the SAME filter, or `totalCandidates` reports the
+      // unfiltered population next to a filtered page.
+      expect(calls.map((c) => c.params.kindPrefix)).toEqual(['Function:', 'Function:']);
+    });
+
+    it('a kind hint on a qualified name keeps the id/name OR-clause parenthesised (#2787 review F5)', async () => {
+      // `AND` binds tighter than `OR`: an unparenthesised
+      // `n.id = $symName OR n.name = $symName AND n.id STARTS WITH $kindPrefix`
+      // applies the kind filter to the name branch ONLY, so a qualified-id lookup
+      // silently ignores the hint.
+      (executeParameterized as any).mockImplementation(async (_repo: string, query: string) =>
+        query.includes('$symName') ? collideRows(20) : [],
+      );
+      await backend.callTool('context', { name: 'src/a.ts:collide', kind: 'Function' });
+
+      const parenthesised =
+        /WHERE \(n\.id = \$symName OR n\.name = \$symName\) AND n\.id STARTS WITH \$kindPrefix/;
+      const calls = resolverCalls();
+      expect(calls).toHaveLength(2);
+      expect(calls.filter((c) => parenthesised.test(c.query))).toHaveLength(2);
+    });
+
+    it('retries UNFILTERED when the kind hint matches no label prefix (#2787 review F5)', async () => {
+      // `kind` is a free-form string on the tool schema. A miscased or
+      // repo-absent kind must not turn a real name into `not_found` — the
+      // resolver falls back to the unfiltered window and treats the hint as a
+      // ranking term again. Modelled by failing the `$kindPrefix` leg to zero rows.
+      (executeParameterized as any).mockImplementation(async (_repo: string, query: string) => {
+        if (query.includes('$kindPrefix')) return [];
+        if (query.includes('$symName')) return collideRows(20);
+        return [];
+      });
+      const result = await backend.callTool('context', { name: 'collide', kind: 'function' });
+
+      // Filtered window (empty), THEN unfiltered window + its COUNT. The filtered
+      // leg issues NO count: a window shorter than its own LIMIT already proves
+      // the total, so counting again would be a second unlabeled full scan for a
+      // number we hold — here, zero.
+      expect(resolverCalls().map((c) => c.query.includes('$kindPrefix'))).toEqual([
+        true,
+        false,
+        false,
+      ]);
+      // Not `{ error: "Symbol 'collide' not found" }`.
+      expect(result).toMatchObject({ status: 'ambiguous' });
+      expect(result.candidates).toHaveLength(20);
+    });
+
+    // #2787 review F6 — two distinct entry points can collide on (total_hits,
+    // filePath, name); equal `total_hits` is the norm. The old three-key
+    // comparator therefore tied, and a tie in `Array.prototype.sort` (stable in
+    // V8) falls through to `Map` insertion order — i.e. raw DB row order, the
+    // exact nondeterminism this issue is about. The entry-point id (the map key)
+    // is the unique key that closes the order.
+    const COLLIDING_ENTRY_POINT_ROWS = [
+      {
+        pId: 'proc:zeta-flow',
+        name: 'Zeta Flow',
+        processType: 'intra_community',
+        entryPointId: 'ep:zeta',
+        hits: 3,
+        minStep: 5,
+        stepCount: 4,
+        epName: 'step',
+        epType: 'Function',
+        epFilePath: 'src/hooks/useSigma.ts',
+      },
+      {
+        pId: 'proc:alpha-flow',
+        name: 'Alpha Flow',
+        processType: 'intra_community',
+        entryPointId: 'ep:alpha',
+        hits: 3,
+        minStep: 2,
+        stepCount: 4,
+        epName: 'step',
+        epType: 'Method',
+        epFilePath: 'src/hooks/useSigma.ts',
+      },
+    ];
+
+    const impactWithCollidingEntryPoints = async (): Promise<any> => {
+      (executeParameterized as any).mockImplementation(async (_repo: string, query: string) => {
+        if (query.includes('$symName')) {
+          return [
+            {
+              id: 'func:main',
+              name: 'main',
+              type: 'Function',
+              filePath: 'src/index.ts',
+              startLine: 1,
+              endLine: 5,
+            },
+          ];
+        }
+        if (query.includes('$frontierIds')) {
+          return [
+            {
+              sourceId: 'func:main',
+              id: 'func:caller',
+              name: 'caller',
+              type: 'Function',
+              filePath: 'src/caller.ts',
+              relType: 'CALLS',
+              confidence: 0.9,
+            },
+          ];
+        }
+        // The chunked process/entry-point aggregation.
+        if (query.includes('p.entryPointId')) return COLLIDING_ENTRY_POINT_ROWS;
+        return [];
+      });
+      return backend.callTool('impact', { target: 'main', direction: 'upstream' });
+    };
+
+    it('orders affected_processes by entry-point id when name/filePath/hits all tie (#2787 review F6)', async () => {
+      const result = await impactWithCollidingEntryPoints();
+
+      // Both entry points are named `step`, live in the same file and carry the
+      // same hit count, so ONLY the id tiebreak can decide: `ep:alpha` before
+      // `ep:zeta`, regardless of the row order the DB handed back (here, zeta
+      // first). The id itself stays out of the payload — `earliest_broken_step`
+      // and `type` are what make the order observable.
+      expect(result.affected_processes).toEqual([
+        {
+          name: 'step',
+          type: 'Method',
+          filePath: 'src/hooks/useSigma.ts',
+          affected_process_count: 1,
+          total_hits: 3,
+          earliest_broken_step: 2,
+        },
+        {
+          name: 'step',
+          type: 'Function',
+          filePath: 'src/hooks/useSigma.ts',
+          affected_process_count: 1,
+          total_hits: 3,
+          earliest_broken_step: 5,
+        },
+      ]);
+    });
+
+    it('pins the process-chunk row order with ORDER BY pId (#2787 review F6)', async () => {
+      await impactWithCollidingEntryPoints();
+
+      // The comparator tiebreak above only fixes the FINAL order. Aggregation
+      // (`affected_process_count`, `total_hits`, `Math.min` on the step) reads
+      // rows as they arrive and the map is keyed on first sight, so the chunk
+      // query needs its own total order too.
+      const chunkQueries = (executeParameterized as any).mock.calls
+        .map((c: unknown[]) => String(c[1]))
+        .filter((q: string) => q.includes('p.entryPointId'));
+      expect(chunkQueries).toHaveLength(1);
+      expect(chunkQueries[0]).toMatch(/ORDER BY pId/);
+    });
+  });
+
+  // ── #2787 — the impact BFS frontier query was the only `ORDER BY` in the
+  // backend with no `LIMIT` to escape into (every other one pairs its key with a
+  // small limit, so the engine answers from a bounded top-k heap). It now
+  // returns rows unordered and the traversal re-establishes, in JS, exactly the
+  // two properties that key provided. Nothing downstream re-establishes them for
+  // it: `byDepth` slices `impacted` without re-sorting, and the process/module
+  // enrichment reads a positional prefix of the same array.
+  describe('#2787 impact BFS frontier ordering', () => {
+    const TARGET_ROW = {
+      id: 'Function:src/index.ts:main',
+      name: 'main',
+      type: 'Function',
+      filePath: 'src/index.ts',
+      startLine: 1,
+      endLine: 5,
+    };
+    const ROOT = TARGET_ROW.id;
+
+    interface FrontierRow {
+      sourceId: string;
+      id: string;
+      name: string;
+      type: string;
+      filePath: string;
+      relType: string;
+      confidence: number;
+    }
+
+    /** One frontier-query row. `id` is `Label:filePath:name`, as in a real index. */
+    const edge = (
+      sourceId: string,
+      id: string,
+      relType: string,
+      confidence: number,
+    ): FrontierRow => {
+      const [, filePath, name] = id.split(':');
+      return { sourceId, id, name, type: 'Function', filePath, relType, confidence };
+    };
+
+    /**
+     * Drive `_runImpactBFS` with a scripted frontier: `levels[d - 1]` is what the
+     * depth-`d` query returns, in exactly that row order. Every other query
+     * (process/module enrichment, epistemic probe) returns nothing, so `byDepth`
+     * is precisely what the traversal produced.
+     */
+    const impactOverFrontier = async (levels: FrontierRow[][]): Promise<any> => {
+      let level = 0;
+      (executeParameterized as any).mockImplementation(async (_repo: string, query: string) => {
+        if (query.includes('$symName')) return [TARGET_ROW];
+        if (query.includes('$frontierIds')) return levels[level++] ?? [];
+        return [];
+      });
+      return backend.callTool('impact', { target: 'main', direction: 'upstream' });
+    };
+
+    const stamped = (items: any[]): unknown[] =>
+      items.map((it) => ({ id: it.id, relationType: it.relationType, confidence: it.confidence }));
+
+    it('leaves the frontier query unordered — the sort has no top-k escape', async () => {
+      await impactOverFrontier([]);
+
+      const frontierQueries = (executeParameterized as any).mock.calls
+        .map((c: unknown[]) => String(c[1]))
+        .filter((q: string) => q.includes('$frontierIds'));
+      expect(frontierQueries.length).toBeGreaterThan(0);
+      expect(frontierQueries.filter((q: string) => /ORDER BY/.test(q))).toEqual([]);
+      // …and equally: no LIMIT was added in its place. The traversal must see
+      // every neighbour edge; only the ORDERING moved.
+      expect(frontierQueries.filter((q: string) => /LIMIT/.test(q))).toEqual([]);
+    });
+
+    // (a) Diamond: `delta` and `epsilon` are each reached at depth 2 from BOTH
+    // depth-1 frontier nodes. The DB key made the stamped relationType/confidence
+    // the argmax under `relType ASC, confidence DESC, sourceId ASC`; the JS
+    // argmax must pick the same edge, and must pick it from either permutation.
+    const DIAMOND_LEVEL_1 = [
+      edge(ROOT, 'Function:src/alpha.ts:alpha', 'CALLS', 0.9),
+      edge(ROOT, 'Function:src/beta.ts:beta', 'CALLS', 0.9),
+    ];
+    // `delta` discriminates relType (CALLS < IMPORTS) AGAINST confidence — the
+    // weaker-confidence CALLS edge wins, so a "highest confidence" shortcut fails
+    // here. `epsilon` ties on relType and is decided by `confidence DESC`, across
+    // the 0.8 `fuzzy` boundary the tool description publishes.
+    const DIAMOND_LEVEL_2 = [
+      edge('Function:src/alpha.ts:alpha', 'Function:src/delta.ts:delta', 'IMPORTS', 0.6),
+      edge('Function:src/beta.ts:beta', 'Function:src/delta.ts:delta', 'CALLS', 0.55),
+      edge('Function:src/alpha.ts:alpha', 'Function:src/epsilon.ts:epsilon', 'CALLS', 0.7),
+      edge('Function:src/beta.ts:beta', 'Function:src/epsilon.ts:epsilon', 'CALLS', 0.85),
+    ];
+    const DIAMOND_ARGMAX = [
+      { id: 'Function:src/delta.ts:delta', relationType: 'CALLS', confidence: 0.55 },
+      { id: 'Function:src/epsilon.ts:epsilon', relationType: 'CALLS', confidence: 0.85 },
+    ];
+
+    it('stamps the argmax edge on a diamond-reached node', async () => {
+      const result = await impactOverFrontier([DIAMOND_LEVEL_1, DIAMOND_LEVEL_2]);
+      expect(stamped(result.byDepth[2])).toEqual(DIAMOND_ARGMAX);
+    });
+
+    it('stamps the same argmax edge when the rows arrive reversed', async () => {
+      // The second of two fixed permutations — not a randomised or repeat-N
+      // probe. Without the JS argmax the surviving edge is whichever row landed
+      // first, so this permutation would stamp IMPORTS/0.6 on `delta` and 0.7 on
+      // `epsilon` instead.
+      const result = await impactOverFrontier([
+        [...DIAMOND_LEVEL_1].reverse(),
+        [...DIAMOND_LEVEL_2].reverse(),
+      ]);
+      expect(stamped(result.byDepth[2])).toEqual(DIAMOND_ARGMAX);
+    });
+
+    // (b) `impacted` — and therefore `byDepth`, which slices it — is ordered by
+    // node id ascending in UTF-16 code units, whatever order the rows arrive in.
+    // The ids below also separate code-unit order from `localeCompare`: 'Z'
+    // (0x5A) precedes 'a' (0x61) in code units, while a locale collator sorts
+    // `apple` and `mango` ahead of `Zebra`.
+    const SCRAMBLED_LEVEL_1 = [
+      edge(ROOT, 'Function:src/mango.ts:mango', 'CALLS', 0.9),
+      edge(ROOT, 'Function:src/Zebra.ts:Zebra', 'CALLS', 0.9),
+      edge(ROOT, 'Function:src/apple.ts:apple', 'CALLS', 0.9),
+    ];
+    const SCRAMBLED_LEVEL_2 = [
+      edge('Function:src/mango.ts:mango', 'Function:src/quince.ts:quince', 'CALLS', 0.9),
+      edge('Function:src/apple.ts:apple', 'Function:src/Fig.ts:Fig', 'CALLS', 0.9),
+    ];
+    const ID_ASCENDING_1 = [
+      'Function:src/Zebra.ts:Zebra',
+      'Function:src/apple.ts:apple',
+      'Function:src/mango.ts:mango',
+    ];
+    const ID_ASCENDING_2 = ['Function:src/Fig.ts:Fig', 'Function:src/quince.ts:quince'];
+
+    it('orders byDepth by node id ascending, whatever order the rows arrive in', async () => {
+      const result = await impactOverFrontier([SCRAMBLED_LEVEL_1, SCRAMBLED_LEVEL_2]);
+
+      expect(result.byDepth[1].map((it: any) => it.id)).toEqual(ID_ASCENDING_1);
+      expect(result.byDepth[2].map((it: any) => it.id)).toEqual(ID_ASCENDING_2);
+      expect(result.byDepthCounts).toEqual({ 1: 3, 2: 2 });
+    });
+
+    it('orders byDepth identically when the rows arrive reversed', async () => {
+      const result = await impactOverFrontier([
+        [...SCRAMBLED_LEVEL_1].reverse(),
+        [...SCRAMBLED_LEVEL_2].reverse(),
+      ]);
+
+      expect(result.byDepth[1].map((it: any) => it.id)).toEqual(ID_ASCENDING_1);
+      expect(result.byDepth[2].map((it: any) => it.id)).toEqual(ID_ASCENDING_2);
+    });
   });
 
   it('context tool ranks file_path match higher than non-match (#470)', async () => {

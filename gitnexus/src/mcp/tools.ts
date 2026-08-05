@@ -280,7 +280,7 @@ Shows categorized incoming/outgoing references (calls, imports, extends, impleme
 WHEN TO USE: After query() to understand a specific symbol in depth. When you need to know all callers, callees, and what execution flows a symbol participates in.
 AFTER THIS: Use impact() if planning changes, or READ gitnexus://repo/{name}/process/{processName} for full execution trace.
 
-Handles disambiguation: if multiple symbols share the same name, returns ranked candidates (each with a relevance score) for you to pick from. Use uid for zero-ambiguity lookup, or narrow the search with file_path and/or kind hints.
+Handles disambiguation: if multiple symbols share the same name, returns ranked candidates (each with a relevance score) for you to pick from. Use uid for zero-ambiguity lookup, or narrow the search with file_path and/or kind hints. The ambiguous response carries totalCandidates — the TRUE match count, not candidates[].length — plus candidatesTruncated:true and a "(showing M)" suffix on message when candidates[] is the shorter window.
 
 NOTE: ACCESSES edges (field read/write tracking) are included in context results with reason 'read' or 'write'. CALLS edges resolve through field access chains and method-call chains (e.g., user.address.getCity().save() produces CALLS edges at each step).
 
@@ -413,7 +413,9 @@ AFTER THIS: Run detect_changes() to verify no unexpected side effects.
 
 Each edit is tagged with confidence:
 - "graph": found via knowledge graph relationships (high confidence, safe to accept)
-- "text_search": found via regex text search (lower confidence, review carefully)`,
+- "text_search": found via regex text search (lower confidence, review carefully)
+
+Handles disambiguation via context()'s payload verbatim: an ambiguous symbol_name returns status "ambiguous" with ranked candidates and totalCandidates — the TRUE match count, not candidates[].length — plus candidatesTruncated:true and a "(showing M)" suffix on message when candidates[] is the shorter window. Re-call with symbol_uid.`,
     annotations: DESTRUCTIVE_TOOL_ANNOTATIONS,
     inputSchema: {
       type: 'object',
@@ -447,7 +449,7 @@ MODE (opt-in): "callgraph" (default) walks symbol→symbol edges (CALLS/IMPORTS/
 
 STATEMENT-ANCHORED PDG SLICE: with mode:'pdg', pass "line" (1-based source line within the target symbol) to seed the dependence slice on the statement at that line and return what depends on it in affectedStatements (line + text). Inter-procedural symbols are still reported through interproceduralByDepth/pdgInterprocedural and the compatibility byDepth bucket. Without "line", pdg returns whole-symbol inter-procedural reach plus local whole-symbol PDG diagnostics.
 
-PDG OUTPUT CONTRACT: every mode:'pdg' result (success, empty, degraded, or error) carries pdgResultVersion:2 — a stable discriminator for external consumers that bumps on any breaking change to the PDG result shape (distinct from the DB schema version). Successful PDG results include mode:'pdg', a full target envelope (id/name/type/filePath), affectedStatements, affectedStatementCount, interproceduralByDepth/pdgInterprocedural for cross-function reach, compatibility byDepth/byDepthCounts, risk:'UNKNOWN', and a note describing the unified contract. Degraded PDG results (no-layer, sub-layer-missing, unknown) keep mode:'pdg', pdgResultVersion:2, target metadata when the target resolves, risk:'UNKNOWN', note/remediation, and empty byDepth parity fields — never a false-safe zero. If depth and limit both bound the slice, truncatedByReasons reports both causes while truncatedBy remains scalar.
+PDG OUTPUT CONTRACT: every mode:'pdg' result (success, empty, degraded, or error) carries pdgResultVersion:2 — a stable discriminator for external consumers that bumps on any breaking change to the PDG result shape (distinct from the DB schema version). Successful PDG results include mode:'pdg', a full target envelope (id/name/type/filePath), affectedStatements, affectedStatementCount, interproceduralByDepth/pdgInterprocedural for cross-function reach, compatibility byDepth/byDepthCounts, risk:'UNKNOWN', and a note describing the unified contract. Degraded PDG results (no-layer, sub-layer-missing, unknown) keep mode:'pdg', pdgResultVersion:2, target metadata when the target resolves, risk:'UNKNOWN', note/remediation, and empty byDepth parity fields — never a false-safe zero. If depth and limit both bound the slice, truncatedByReasons reports both causes while truncatedBy remains scalar. Return-value-ascent coverage is published structurally at pdgEvidence.ascent — present iff the inter-procedural descent ran, including on an empty slice — with referencesScanned (DISTINCT callees scanned for a CALL_SUMMARY: a distinct-id tally, not a call-site count — two call sites to the same callee count once), returnFlowFound (whether the ascent fired anywhere in the slice), undecodableSummaryCount, examinedComplete (whether that scan covered every callee the index recorded a resolved id for on the visited blocks), incompleteReasons ('traversal-truncated' | 'callee-list-capped' | 'callee-ids-unrecorded'), and callSummaryLayerPresent. Read callSummaryLayerPresent FIRST: false ⇒ a pre-CALL_SUMMARY index, so {referencesScanned:N>0, returnFlowFound:false} is self-consistent and says nothing about the callees — the scan ran, but no layer existed in which a return-flow could be recorded (remedy: re-run gitnexus analyze --pdg). Branch on those fields; the note narrates the same facts in prose for humans and is not a stable contract.
 
 WHEN TO USE: Before making code changes — especially refactoring, renaming, or modifying shared code. Shows what would break.
 AFTER THIS: Review d=1 items (WILL BREAK). Use context() on high-risk symbols.
@@ -476,12 +478,12 @@ TIP: For hub symbols (base error classes, shared utilities) with many direct cal
 
 TIP: Default traversal uses CALLS/IMPORTS/EXTENDS/IMPLEMENTS. For class members, include HAS_METHOD and HAS_PROPERTY in relationTypes. For field access analysis, include ACCESSES in relationTypes.
 
-Handles disambiguation: when multiple symbols share the target name, returns ranked candidates (each with a relevance score) instead of silently picking one. Use target_uid for zero-ambiguity lookup, or narrow with file_path and/or kind hints.
+Handles disambiguation: when multiple symbols share the target name, returns ranked candidates (each with a relevance score) instead of silently picking one. Use target_uid for zero-ambiguity lookup, or narrow with file_path and/or kind hints. totalCandidates is the TRUE match count — it reported the capped resolver window before #2787, so it can now exceed candidates.length; candidatesTruncated:true and a "(showing M of N)" suffix on message mark the shorter window.
 
 EdgeType: CALLS, IMPORTS, EXTENDS, IMPLEMENTS, HAS_METHOD, HAS_PROPERTY, METHOD_OVERRIDES, METHOD_IMPLEMENTS, ACCESSES
 Confidence: 1.0 = certain, <0.8 = fuzzy match
 
-GROUP MODE: set "repo" to "@<groupName>" for cross-repo impact anchored at the default member (lexicographically first key in group.yaml "repos"), or "@<groupName>/<groupRepoPath>" to choose the member (same path keys as in group.yaml). Phase-1 walk runs in that member; cross-boundary fan-out uses the group bridge. A cross entry with fanout_status:"not_attempted" proves the declared repository boundary, but its far endpoint has no graph symbol; do not interpret empty by_depth or affected_processes on that entry as a completed zero-impact walk.
+GROUP MODE: set "repo" to "@<groupName>" for cross-repo impact anchored at the default member (lexicographically first key in group.yaml "repos"), or "@<groupName>/<groupRepoPath>" to choose the member (same path keys as in group.yaml). Phase-1 walk runs in that member; cross-boundary fan-out uses the group bridge. A cross entry with fanout_status:"not_attempted" proves the declared repository boundary, but its far endpoint has no graph symbol; do not interpret empty by_depth or affected_processes on that entry as a completed zero-impact walk. The fan-out attempts at most 50 neighbour crossings, strongest-confidence first; when it stops early the response carries truncated:true, truncatedRepos, and riskEpistemic:"lower-bound" — dropping a crossing can only move risk DOWN, so treat that risk as a floor, never as a verdict.
 
 SERVICE: optional monorepo path prefix (case-sensitive path segments). When "repo" starts with "@", scopes the local impact walk and cross-repo symbol paths to files under that prefix; ignored for a normal indexed repo name.`,
     annotations: READ_ONLY_TOOL_ANNOTATIONS,
@@ -632,7 +634,7 @@ Each finding carries the sink category (command-injection, code-injection, path-
 WHEN TO USE: Security review — "what taint findings exist in this repo / file / function?". Requires the repo to be indexed with \`gitnexus analyze --pdg\`; without that layer the tool returns a clear "no taint layer" note, not an error.
 
 ANCHORLESS (no "target"): enumerates all persisted findings for the repo — bounded ("limit", deterministic order), with "totalFindings" and a "truncated" flag.
-ANCHORED ("target" = file path or symbol/function name): full hop detail for that anchor. A file-ish target (contains "/" or an extension) filters by file; a symbol name resolves like context() — ambiguous names return ranked candidates, unknown names return not-found. Symbol anchoring is line-range granular for intra-procedural findings; cross-function findings match when the symbol is the source OR sink function.
+ANCHORED ("target" = file path or symbol/function name): full hop detail for that anchor. A file-ish target (contains "/" or an extension) filters by file; a symbol name resolves like context() — ambiguous names return ranked candidates plus totalCandidates (the TRUE match count, not candidates[].length), candidatesTruncated:true and a "(showing M)" suffix on message when candidates[] is the shorter window; unknown names return not-found. Symbol anchoring is line-range granular for intra-procedural findings; cross-function findings match when the symbol is the source OR sink function.
 
 CONTRACT CAVEATS (absent flows are NOT proof of safety):
 - Cross-function flows ARE modeled (#2084 M4): a source flowing through helper functions into a sink is found, via summary composition over the call graph (context-insensitive — return/call-site merging is accepted).
@@ -678,7 +680,7 @@ MODES:
 
 WHEN TO USE: comprehension ("what guards this statement?"), data-flow tracing within a function, guard-clause discovery. Requires \`gitnexus analyze --pdg\`; without that layer the tool returns a clear "no PDG layer" note, not an error.
 
-ANCHORING (required): \`target\` is a file path or a symbol/function name (resolved like context()). PDG queries are ALWAYS anchored — there is no whole-repo enumeration (an unanchored basic-block path scan is unbounded; LadybugDB has no rel-property index). A symbol target is line-range granular; an ambiguous name returns ranked candidates, unknown returns not-found.
+ANCHORING (required): \`target\` is a file path or a symbol/function name (resolved like context()). PDG queries are ALWAYS anchored — there is no whole-repo enumeration (an unanchored basic-block path scan is unbounded; LadybugDB has no rel-property index). A symbol target is line-range granular; an ambiguous name returns ranked candidates plus totalCandidates (the TRUE match count, not candidates[].length), candidatesTruncated:true and a "(showing M)" suffix on message when candidates[] is the shorter window; unknown returns not-found.
 
 CONTRACT CAVEATS:
 - CDG labels are binary 'T'/'F' in M5/M6; per-case \`switch\` arm conditions are not yet distinguished (every case dispatch is 'T').
@@ -854,6 +856,8 @@ WHEN TO USE: Debugging "how does A reach B?" — answers in one call what would 
 Traverses CALLS edges plus HAS_METHOD (class → member) edges, so a trace can descend from a class into its methods. Each hop's edge type is reported in edges[], so call hops and containment hops remain distinguishable.
 
 Returns: ordered hops with file:line, and an aligned edges[] of edge type + confidence. When no path exists, reports the furthest reachable node so you know where the chain breaks (and truncated: true if a traversal cap was hit first).
+
+Handles disambiguation: an ambiguous from/to name returns status "ambiguous" with role ("from" or "to"), ranked candidates and totalCandidates — the TRUE match count, not candidates[].length — plus candidatesTruncated:true and a "(showing M)" suffix on message when candidates[] is the shorter window. Re-call with from_uid/to_uid.
 
 CROSS-REPO (experimental): pass repo as "@groupName" to trace across repositories in a group. When from/to live in different member repos, the trace stitches the two repo-local segments across a single ContractLink boundary (e.g. an HTTP consumer→provider link), clamped to one crossing. The result adds crossings[] (the bridged contract with matchType/confidence), tags each hop with its member repo, and a notes[] channel for degraded states. The boundary hop is reported with edge type CONTRACT_LINK. Pass pdg:true to also attach the intra-procedural data-flow (REACHING_DEF) for boundary-adjacent segments when those repos were indexed with --pdg; absent a PDG layer it degrades to call-level hops with a note.
 

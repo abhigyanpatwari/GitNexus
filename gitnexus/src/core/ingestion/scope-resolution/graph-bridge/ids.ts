@@ -194,6 +194,29 @@ function simpleNameOf(qualifiedName: string): string {
  */
 const LOCAL_IDENTITY_SUFFIX = /@\d+:\d+$/;
 
+/**
+ * The OTHER callable label the same construct may be registered under.
+ *
+ * A def and its graph node describe one construct, but they do not always agree
+ * on its LABEL: some structure phases emit a type's methods as `Function` nodes
+ * while the scope extractor derives `Method` from the `@declaration.method`
+ * anchor. Every key `resolveDefGraphId` builds is label-scoped, so such a pair
+ * misses ALL of them and lands on the label-agnostic, first-write-wins
+ * `simpleKey` at the bottom (#2807 follow-up, measured in Swift).
+ *
+ * ONE definition, consulted by all three key families — position, local-name
+ * guard, qualified — because they are not independent: leaving it out of the
+ * position key makes the fail-closed guard beside it UNREACHABLE for exactly the
+ * split the qualified retry serves, so the retry inherits a case the guard was
+ * written to stop (a function-local aliased onto a same-named class method).
+ * What each family may do with it differs and is documented at each site.
+ */
+function siblingCallableLabel(label: NodeLabel): NodeLabel | undefined {
+  if (label === 'Method') return 'Function';
+  if (label === 'Function') return 'Method';
+  return undefined;
+}
+
 export function resolveDefGraphId(
   filePath: string,
   def: {
@@ -214,6 +237,10 @@ export function resolveDefGraphId(
   const qn = def.qualifiedName;
   if (qn === undefined || qn.length === 0) return undefined;
   if (def.type !== undefined) {
+    // ONE binding for all three key families — see `siblingCallableLabel`, which
+    // documents why they cannot be given independent answers. What each family
+    // is allowed to DO with it still differs, and is documented at each site.
+    const siblingLabel = siblingCallableLabel(def.type);
     // Position key FIRST (#2699). A def and its graph node are the same
     // construct, so they share a source line — the only evidence that
     // separates a function-local declaration from a same-named file-level one
@@ -230,6 +257,29 @@ export function resolveDefGraphId(
       const simple = simpleNameOf(qn);
       const posHit = nodeLookup.get(positionKey(filePath, def.type, line - 1, simple));
       if (posHit !== undefined && posHit !== AMBIGUOUS_POSITION) return posHit;
+      // Retry under the sibling callable label when the def's OWN label
+      // registered NOTHING here — see `siblingCallableLabel`. Both keys in this
+      // block are label-scoped, so under a split the position join misses and
+      // the guard below cannot fire, and the def falls through to the qualified
+      // retry that ends on the class method of the same name: a function-local
+      // `func helper` inside `Host.run` was aliased onto `Host.helper`, taking
+      // its calls with it, even at a different arity.
+      //
+      // Deliberately NOT dot-gated the way the qualified retry is: this key is
+      // not a name. `(file, line, simple name)` identifies one declaration by
+      // itself — that is why `positionKey` needs no qualifier at all — so
+      // crossing the two callable labels here cannot alias a top-level `save`
+      // onto a class's `save` the way a bare NAME would.
+      //
+      // Gated on `posHit === undefined` so an `AMBIGUOUS_POSITION` tombstone
+      // keeps meaning ambiguous: two callables already claim this line under the
+      // def's own label, and relabelling must not resolve by picking a third.
+      if (posHit === undefined && siblingLabel !== undefined) {
+        const siblingPosHit = nodeLookup.get(positionKey(filePath, siblingLabel, line - 1, simple));
+        if (siblingPosHit !== undefined && siblingPosHit !== AMBIGUOUS_POSITION) {
+          return siblingPosHit;
+        }
+      }
       // FAIL CLOSED when a function-local of this name exists in the file (#2699
       // follow-up). Falling through to the name keys would end at the label-agnostic,
       // first-write-wins `simpleKey` below and alias this def onto whichever same-named
@@ -243,6 +293,19 @@ export function resolveDefGraphId(
       // Multi-line closure bindings are NOT this case anymore (#2735): their graph
       // `startLine` follows the initializer, so the position key above hits.
       if (nodeLookup.get(localNameKey(filePath, def.type, simple)) !== undefined) {
+        return undefined;
+      }
+      // Same guard under the sibling label: a local the structure phase
+      // registered as `Function` must still stop a `Method`-labelled def of that
+      // name from reaching `simpleKey`, or the split re-opens the fabricated
+      // edge this guard exists to close. Unlike the position retry above this
+      // arm is NOT conditioned on the own-label lookup missing — it only ever
+      // returns `undefined`, and a missing edge is the correct failure
+      // direction; declining to check would be the risky choice, not this.
+      if (
+        siblingLabel !== undefined &&
+        nodeLookup.get(localNameKey(filePath, siblingLabel, simple)) !== undefined
+      ) {
         return undefined;
       }
     }
@@ -268,9 +331,30 @@ export function resolveDefGraphId(
     const nsPrefix = def.namespacePrefix;
     const nameForms =
       nsPrefix !== undefined && nsPrefix.length > 0 ? [`${nsPrefix}.${qn}`, qn] : [qn];
+    // The label split described on `siblingCallableLabel` also kills every key
+    // above: they are all label-scoped, so a split pair misses all of them and
+    // lands on the label-agnostic simple key at the bottom of this function —
+    // which is first-write-wins, so two same-named methods in ONE file both
+    // resolved to whichever was registered first. That silently misattributed
+    // every call in the second method's body to the first (#2807 follow-up;
+    // measured in Swift, where `class A { func run }` + `class B { func run }`
+    // gave A.run both bodies' edges and B.run none).
+    //
+    // Crossing the two callable labels is sound HERE only for a name that
+    // carries its owner: `A.run` names exactly one construct whatever the
+    // label, while a bare `run` is precisely the aliasing the label was added
+    // to prevent (a top-level `save` vs a class's `save`). Hence the dot gate —
+    // it keeps the original guarantee intact for unqualified names. The
+    // position key above needs no such gate because it is not a name.
     const lookupTagged = (tag: string): string | undefined => {
       for (const form of nameForms) {
         const hit = nodeLookup.get(qualifiedKey(filePath, defType, `${form}${tag}`));
+        if (hit !== undefined) return hit;
+      }
+      if (siblingLabel === undefined) return undefined;
+      for (const form of nameForms) {
+        if (!form.includes('.')) continue;
+        const hit = nodeLookup.get(qualifiedKey(filePath, siblingLabel, `${form}${tag}`));
         if (hit !== undefined) return hit;
       }
       return undefined;

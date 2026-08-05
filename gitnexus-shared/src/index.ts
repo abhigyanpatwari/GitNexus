@@ -190,6 +190,7 @@ export {
   ResilientFetchExhaustedError,
   RETRY_AFTER_CAP_MS,
   parseRetryAfter,
+  isTerminalNetworkError,
 } from './integrations/resilient-fetch.js';
 export type { ResilientFetchOptions } from './integrations/resilient-fetch.js';
 

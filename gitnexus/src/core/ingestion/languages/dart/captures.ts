@@ -47,6 +47,32 @@ import { encodeMarker } from '../../utils/heritage-marker.js';
 import { DART_BUILT_INS } from './built-ins.js';
 import { synthesizeCallableFlowCaptures } from '../../utils/callable-flow-captures.js';
 import { synthesizeReceiverChainCapture } from '../../utils/receiver-chain-captures.js';
+import { hasKeyword } from '../../field-extractors/configs/helpers.js';
+
+/**
+ * `LanguageProvider.scopeOwnsReceivers` for Dart — the read side of
+ * `dartShadowedFieldsCapture`, which is where the full rationale lives.
+ *
+ * Reads the marker rather than re-deriving anything: the names were computed at
+ * capture time, where the AST is, and a `CaptureMatch` carries only
+ * name/range/text. Kept beside the emitter so the tag string has exactly one
+ * producer and one consumer, both in this file's line of sight.
+ */
+export function dartScopeOwnsReceivers(match: CaptureMatch): ReadonlySet<string> | undefined {
+  const raw = match['@receiver-owner.shadowed-fields']?.text;
+  if (raw === undefined) return undefined;
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(raw);
+  } catch {
+    return undefined;
+  }
+  if (!Array.isArray(parsed)) return undefined;
+  const names = parsed.filter(
+    (name): name is string => typeof name === 'string' && name.length > 0,
+  );
+  return names.length > 0 ? new Set(names) : undefined;
+}
 
 const FUNCTION_DECL_TAGS = [
   '@declaration.function',
@@ -139,6 +165,13 @@ export function emitDartScopeCaptures(
   // declarations by their statement node so each is emitted exactly once.
   const seenFnDeclNodes = new Set<string>();
 
+  // Shared, per-file. Pass A (the receiver mask below) and Pass B
+  // (`emitDartFieldAssignmentBindings`) ask the SAME two questions of the same
+  // nodes — "what does this class declare as a field" and "what does this
+  // member body bind" — so the memo makes each answer cost one walk per node
+  // for the whole file instead of one per consumer.
+  const memo: DartClassMemo = { fieldsByClassBody: new Map(), shadowsByBody: new Map() };
+
   // ── Pass A: query-driven scopes / declarations / imports ────────────────
   for (const match of getDartScopeQuery().matches(root)) {
     const grouped: Record<string, Capture> = {};
@@ -168,7 +201,15 @@ export function emitDartScopeCaptures(
       out.push(grouped);
 
       if (bodyNode !== null) {
-        out.push({ '@scope.function': spanCapture('@scope.function', declNode, bodyNode) });
+        // The READ-side half of the bare-name field discipline (#2807 review).
+        // Rides the SAME synthesized match as `@scope.function` so the mask
+        // lands on this member's Function scope; outside the `@scope.`
+        // namespace so `anchorCaptureFor` cannot mistake it for the anchor.
+        const mask = dartShadowedFieldsCapture(bodyNode, memo);
+        out.push({
+          '@scope.function': spanCapture('@scope.function', declNode, bodyNode),
+          ...(mask === undefined ? {} : { '@receiver-owner.shadowed-fields': mask }),
+        });
         for (const cm of synthesizeDartReceiverBinding(declNode, bodyNode)) out.push(cm);
       }
       for (const cm of synthesizeDartSignatureBindings(declNode, bodyNode)) out.push(cm);
@@ -204,6 +245,19 @@ export function emitDartScopeCaptures(
           '@type-binding.name': syntheticCapture('@type-binding.name', propNode, fieldName),
           '@type-binding.type': syntheticCapture('@type-binding.type', propNode, fieldType),
         });
+      } else {
+        // No written type, so the field's type comes from the constructor its
+        // initializer calls (#2807). `constructor-inferred` is the weakest
+        // source, and the annotated branch above already returned, so an
+        // annotated field is untouched either way.
+        const callee = dartFieldConstructorCallee(nodeMap['@declaration.name']!);
+        if (callee !== null) {
+          out.push({
+            '@type-binding.constructor': nodeToCapture('@type-binding.constructor', propNode),
+            '@type-binding.name': syntheticCapture('@type-binding.name', propNode, fieldName),
+            '@type-binding.type': syntheticCapture('@type-binding.type', propNode, callee.text),
+          });
+        }
       }
       continue;
     }
@@ -234,6 +288,7 @@ export function emitDartScopeCaptures(
     }
     if (node.type === 'class_definition') {
       emitHeritage(node, out);
+      emitDartFieldAssignmentBindings(node, out, memo);
       return;
     }
     if (node.type === 'extension_declaration') {
@@ -497,6 +552,22 @@ function emitCascadeReference(cascade: SyntaxNode, out: CaptureMatch[]): void {
 
 // ─── Local-variable constructor / call-result type inference ────────────────
 
+/**
+ * Is `node` the callee of a construction / free call written directly at this
+ * position — a bare identifier whose next named sibling is a `selector`
+ * carrying an `argument_part` (`Outer()`)?
+ *
+ * Dart has no `new` keyword, so a constructor call and a free call are the same
+ * shape; the resolver decides which by looking the name up. Anything else — a
+ * literal, a member call, an index — is NOT this shape and is left alone rather
+ * than guessed at.
+ */
+function isDirectConstruction(node: SyntaxNode | null): node is SyntaxNode {
+  if (node === null || node.type !== 'identifier') return false;
+  const next = node.nextNamedSibling;
+  return next !== null && next.type === 'selector' && next.namedChild(0)?.type === 'argument_part';
+}
+
 /** Find the callee identifier of a `var x = Callee(…)` / `await Callee(…)`
  *  initializer (a direct free-call / constructor); returns null for member
  *  calls or non-call values. */
@@ -505,11 +576,7 @@ function findDirectCallValue(initVarDef: SyntaxNode): SyntaxNode | null {
   if (firstValue === null) return null;
 
   if (firstValue.type === 'identifier') {
-    const next = firstValue.nextNamedSibling;
-    if (next !== null && next.type === 'selector' && next.namedChild(0)?.type === 'argument_part') {
-      return firstValue;
-    }
-    return null;
+    return isDirectConstruction(firstValue) ? firstValue : null;
   }
   if (firstValue.type === 'unary_expression' || firstValue.type === 'await_expression') {
     let aw = firstValue;
@@ -519,20 +586,36 @@ function findDirectCallValue(initVarDef: SyntaxNode): SyntaxNode | null {
       aw = inner;
     }
     if (aw.type === 'await_expression') {
+      // `namedChild(0)` is the awaited callee; its next named sibling is
+      // `namedChild(1)`, so `isDirectConstruction` asks exactly the same
+      // question this branch used to spell out.
       const id = aw.namedChild(0);
-      const sel = aw.namedChild(1);
-      if (
-        id !== null &&
-        id.type === 'identifier' &&
-        sel !== null &&
-        sel.type === 'selector' &&
-        sel.namedChild(0)?.type === 'argument_part'
-      ) {
-        return id;
-      }
+      if (isDirectConstruction(id)) return id;
     }
   }
   return null;
+}
+
+/**
+ * Callee identifier of a class field initialized by a direct constructor call —
+ * `var b = Outer();` / `final b = Outer();` — or `null` for anything else.
+ *
+ * Dart spells a class field as `declaration(<keyword>, initialized_identifier_list(
+ * initialized_identifier))`, NOT the `initialized_variable_definition` that
+ * `emitVarTypeBinding` handles — that is the LOCAL form. So an unannotated field
+ * had no type binding and could not act as a call receiver (#2807), even though
+ * its annotated twin resolved fine.
+ *
+ * Takes the field's own `@declaration.name` node, whose next named sibling IS
+ * the initializer — `initialized_identifier(<name> <value> …)`. Deliberately NOT
+ * a search down from the `@declaration.property` node: one `declaration` can
+ * hold SEVERAL declarators (`var a = X(), b = Y();`), which the query matches
+ * once each with the same property node, so a first-descendant search hands
+ * every declarator the FIRST one's initializer and types `b` as `X`.
+ */
+function dartFieldConstructorCallee(nameNode: SyntaxNode): SyntaxNode | null {
+  const value = nameNode.nextNamedSibling;
+  return isDirectConstruction(value) ? value : null;
 }
 
 function emitVarTypeBinding(initVarDef: SyntaxNode, out: CaptureMatch[]): void {
@@ -549,6 +632,429 @@ function emitVarTypeBinding(initVarDef: SyntaxNode, out: CaptureMatch[]): void {
 }
 
 // ─── Heritage ───────────────────────────────────────────────────────────────
+
+/**
+ * Type an inference-typed field from a constructor call ASSIGNED to it —
+ * `var r; C() { r = Outer(); }` and `this.r = Outer();` (#2807).
+ *
+ * Dart is the one language here that writes a field with NO receiver prefix, so
+ * `r = Outer()` is syntactically identical to assigning a constructor-local. The
+ * discriminator is the class's own declared field set: a bare name binds only
+ * when the enclosing class declares it AND the enclosing member binds no name of
+ * its own that would shadow it (`collectDartBodyShadows` — parameters, locals,
+ * closure parameters, catch bindings, loop variables), which is exactly when
+ * Dart itself resolves `r` to the field. A `this.`-prefixed write is unambiguous
+ * and needs neither test.
+ *
+ * Emitted as `constructor-inferred`, the weakest source, so a field that also
+ * carries an annotation keeps it. The narrow `@type-binding.dart-field` marker
+ * rides the name node for `dartBindingScopeFor` to hoist on — the binding has to
+ * land on the Class scope, since the assignment sits inside a constructor's own
+ * Function scope where `typeOfMemberOnClass` never looks.
+ */
+function emitDartFieldAssignmentBindings(
+  classNode: SyntaxNode,
+  out: CaptureMatch[],
+  memo: DartClassMemo,
+): void {
+  const body = findChild(classNode, 'class_body');
+  if (body === null) return;
+
+  // `namedChildren` allocates a fresh wrapper array on every access
+  // (node-tree-sitter), and the loop below walks the same list — read it once.
+  const members = body.namedChildren;
+
+  const fields = dartClassFieldNames(body, memo);
+  if (fields.size === 0) return;
+
+  for (const member of members) {
+    if (member === null || member.type !== 'function_body') continue;
+
+    // A STATIC member's body can never write this class's INSTANCE fields.
+    // Dart's static scope holds only the class's static members, so a bare
+    // `z = Outer()` inside `static void make()` binds a LIBRARY-level `z` (or is
+    // a compile error) — never the same-named instance field. Binding it anyway
+    // did not merely add an edge: the write landed on the Class scope at the
+    // same `constructor-inferred` strength as the constructor's own, and the
+    // `>=` tie-break in `scope-extractor` let it DISPLACE the correct type, so
+    // `z.inner()` resolved to the wrong class (#2807 review). The instance
+    // static-vs-instance collision TypeScript and JavaScript allow cannot arise
+    // in Dart — one class may not declare a static and an instance member of the
+    // same name — so this is the only shape the defect takes here.
+    //
+    // Grammar: every class-member body is a `function_body` whose PREVIOUS named
+    // sibling is a `method_signature` (method, constructor, factory, getter,
+    // setter, operator, `async`), and `static` is an anonymous direct child of
+    // that signature, ahead of the inner `*_signature` node. Detection is the
+    // shared `hasKeyword` on child TEXT, never `child.type === 'static'`, which
+    // a grammar bump silently breaks — the same rule TypeScript's
+    // `isStaticMethodThis` follows.
+    //
+    // A body whose signature cannot be read at all (a null or unexpected
+    // previous sibling — parse recovery) DECLINES to bind: staticness is
+    // undecidable there, and a missed field type costs an edge while a wrong one
+    // destroys a correct binding.
+    const signature = member.previousNamedSibling;
+    if (signature === null || signature.type !== 'method_signature') continue;
+    if (hasKeyword(signature, 'static')) continue;
+
+    // Still lazy per assignment, but the memo is now FILE-wide and shared with
+    // Pass A's read-side mask, which asks the same question of the same body.
+    // The laziness that used to matter here (87-100% of eagerly built sets were
+    // discarded, ~15% of total Dart emission) no longer buys much for a class
+    // that declares fields — Pass A has already forced those bodies — so this
+    // reads the memo rather than paying a second walk. It still short-circuits
+    // for a body whose class declares no fields, since `fields.size === 0`
+    // returned above before either pass touched it.
+    //
+    // Not visible to `bench/scope-capture`, which is a RATIO gate — this work is
+    // linear, so a constant factor leaves the ratio at 1.0.
+    const shadowsOf = (): ReadonlySet<string> => dartBodyShadows(member, memo);
+
+    walkNamedTree(member, (node) => {
+      if (node.type !== 'assignment_expression') return;
+      const target = node.namedChild(0);
+      if (target === null || target.type !== 'assignable_expression') return;
+
+      const first = target.namedChild(0);
+      if (first === null) return;
+      let fieldNameNode: SyntaxNode | null = null;
+      if (first.type === 'identifier' && target.namedChildCount === 1) {
+        // Bare `r = …`: a field only when declared here and not shadowed. The
+        // `fields` test runs FIRST so the shadow set is only ever built for a
+        // name the class actually declares.
+        if (!fields.has(first.text) || shadowsOf().has(first.text)) return;
+        fieldNameNode = first;
+      } else if (first.type === 'this') {
+        const selector = target.namedChild(1);
+        if (selector === null || selector.type !== 'unconditional_assignable_selector') return;
+        const nameNode = selector.namedChild(0);
+        if (nameNode === null || nameNode.type !== 'identifier') return;
+        fieldNameNode = nameNode;
+      } else {
+        return;
+      }
+      if (fieldNameNode === null) return;
+
+      // RHS must be a direct construction; anything else is left alone rather
+      // than guessed at.
+      const callee = node.namedChild(1);
+      if (!isDirectConstruction(callee)) return;
+
+      out.push({
+        '@type-binding.constructor': nodeToCapture('@type-binding.constructor', node),
+        '@type-binding.dart-field': syntheticCapture(
+          '@type-binding.dart-field',
+          fieldNameNode,
+          '1',
+        ),
+        '@type-binding.name': syntheticCapture(
+          '@type-binding.name',
+          fieldNameNode,
+          fieldNameNode.text,
+        ),
+        '@type-binding.type': syntheticCapture('@type-binding.type', callee, callee.text),
+      });
+    });
+  }
+}
+
+/**
+ * Per-file memo for the two class-shaped questions the passes share, keyed by
+ * node span. `emitDartScopeCaptures` owns one and threads it; nothing survives
+ * the call, so a re-parse cannot serve a stale answer.
+ */
+interface DartClassMemo {
+  readonly fieldsByClassBody: Map<string, ReadonlySet<string>>;
+  readonly shadowsByBody: Map<string, ReadonlySet<string>>;
+}
+
+const nodeSpanKey = (node: SyntaxNode): string => `${node.startIndex}:${node.endIndex}`;
+
+/**
+ * The names a `class_body` declares as INSTANCE-or-static fields, from
+ * `declaration(… initialized_identifier_list … initialized_identifier)` — the
+ * shape every stored Dart field takes, annotated or not.
+ */
+function dartClassFieldNames(classBody: SyntaxNode, memo: DartClassMemo): ReadonlySet<string> {
+  const key = nodeSpanKey(classBody);
+  const cached = memo.fieldsByClassBody.get(key);
+  if (cached !== undefined) return cached;
+
+  const fields = new Set<string>();
+  for (const member of classBody.namedChildren) {
+    if (member === null || member.type !== 'declaration') continue;
+    const list = findChild(member, 'initialized_identifier_list');
+    if (list === null) continue;
+    for (const init of list.namedChildren) {
+      if (init === null || init.type !== 'initialized_identifier') continue;
+      const nameNode = init.namedChild(0);
+      if (nameNode !== null && nameNode.type === 'identifier') fields.add(nameNode.text);
+    }
+  }
+  memo.fieldsByClassBody.set(key, fields);
+  return fields;
+}
+
+function dartBodyShadows(bodyNode: SyntaxNode, memo: DartClassMemo): ReadonlySet<string> {
+  const key = nodeSpanKey(bodyNode);
+  const cached = memo.shadowsByBody.get(key);
+  if (cached !== undefined) return cached;
+  const shadows = collectDartBodyShadows(bodyNode);
+  memo.shadowsByBody.set(key, shadows);
+  return shadows;
+}
+
+/**
+ * The READ half of the bare-name field discipline: the field names a member
+ * body REBINDS, published on that member's Function scope as
+ * `Scope.ownsReceivers` (#2701) so the receiver walk stops there instead of
+ * reaching the Class scope (#2807 review).
+ *
+ * `emitDartFieldAssignmentBindings` above declines to WRITE a binding for a name
+ * the body shadows, but the shadow set gated writes only. A bare-name READ of a
+ * shadowing binder the resolver cannot type — `for (final conn in xs) {
+ * conn.inner(); }`, where the element type of `xs` is not modelled — therefore
+ * walked straight past the local and hit the class field binding this same
+ * feature mints, resolving `conn.inner()` to the CONSTRUCTOR's type. That turns
+ * "no edge" into a WRONG edge, the one failure mode
+ * `scope-resolution/passes/compound-receiver.ts` says must never happen, and it
+ * was introduced by the write side rather than pre-existing: delete the
+ * constructor and the same read emits nothing.
+ *
+ * `ownsReceivers` is the right primitive because the walk consults
+ * `typeBindings` FIRST at every scope (`scope/walkers.ts`) and only then honours
+ * the mask. A shadow the resolver CAN type still wins — an annotated parameter
+ * `void probe(Beta conn)` keeps `Beta`, because
+ * `synthesizeDartSignatureBindings` anchors parameter bindings on this same
+ * body node, so they land on this same Function scope. The mask only fires
+ * where the alternative was a fabricated type.
+ *
+ * ── SCOPE OF THE MASK, AND ITS ACCEPTED COSTS ────────────────────────────────
+ *
+ * `shadows ∩ fields`, and nothing wider. Three consequences are taken knowingly
+ * rather than hidden:
+ *
+ *  1. NOT every locally bound name is masked — only ones the enclosing class
+ *     also declares as a field. A library-level `var logger = Logger();`
+ *     shadowed by a loop variable of the same name still resolves against the
+ *     library binding and can still produce the wrong edge. That is the general
+ *     form of the same defect and arguably the more correct fix, but it changes
+ *     resolution for code this feature never touched; it is recorded here as a
+ *     known limitation rather than implemented.
+ *  2. The mask is BODY-WIDE, exactly as `collectDartBodyShadows` is on the write
+ *     side. A member that binds `conn` anywhere — a nested closure, one `case`
+ *     arm — masks `conn` for the whole member, so a read of the genuine field
+ *     elsewhere in that member loses its edge. Deliberate symmetry: the write
+ *     side already declines body-wide, and losing an edge is the error this
+ *     whole line of work chooses over inventing one.
+ *  3. `fields` is EVERY field the class declares, not only the ones the
+ *     constructor-write feature types. An ANNOTATED field shadowed by a binder
+ *     is masked too, so this reaches resolution that predates #2807 — and it is
+ *     meant to: which name a body's bare read refers to is a fact about Dart, not
+ *     about how the field acquired its type. `mixin` bodies are reached for the
+ *     same reason (the grammar gives a mixin a `class_body` as well), even though
+ *     `emitDartFieldAssignmentBindings` mints nothing for them. `extension`
+ *     bodies are a different node (`extension_body`) and are left alone.
+ *
+ * Returns `undefined` — not an empty marker — when nothing is masked, so the
+ * emitted capture set is unchanged for every body that does not shadow a field.
+ * Names are sorted so the capture text (and every fingerprint over it) is
+ * order-stable.
+ */
+function dartShadowedFieldsCapture(bodyNode: SyntaxNode, memo: DartClassMemo): Capture | undefined {
+  // Only a CLASS-MEMBER body can shadow a field: `function_body` whose parent is
+  // the `class_body`. A closure's `function_expression_body` and a top-level
+  // function are both excluded, and neither needs the mask — a closure's binders
+  // are already in its enclosing member's body-wide shadow set, and the walk
+  // passes through the enclosing member's Function scope on its way out.
+  if (bodyNode.type !== 'function_body') return undefined;
+  const classBody = bodyNode.parent;
+  if (classBody === null || classBody.type !== 'class_body') return undefined;
+
+  const fields = dartClassFieldNames(classBody, memo);
+  if (fields.size === 0) return undefined;
+  const shadows = dartBodyShadows(bodyNode, memo);
+  if (shadows.size === 0) return undefined;
+
+  const masked: string[] = [];
+  for (const name of fields) {
+    if (shadows.has(name)) masked.push(name);
+  }
+  if (masked.length === 0) return undefined;
+  masked.sort();
+  return syntheticCapture('@receiver-owner.shadowed-fields', bodyNode, JSON.stringify(masked));
+}
+
+/**
+ * Every name BOUND by one class-member body — the shadow set the bare-name
+ * branch of `emitDartFieldAssignmentBindings` tests against.
+ *
+ * A local `var` is only ONE of Dart's binders, and a bare `r = Outer()` writes
+ * whichever binder wins, so a set built from local declarations alone made a
+ * write to any OTHER binder look like a field write. `void reset(Alpha r) { r =
+ * Alpha(); }` in a class with a field `r` retyped the FIELD to `Alpha` —
+ * fabricating an edge and displacing the type the constructor had correctly
+ * given it. Formal parameters are the sharpest case because they are not even
+ * inside the body: `function_body` is a SIBLING of the `method_signature` that
+ * carries them, so no walk of the body can ever see one.
+ *
+ * Dart 3 patterns are the SAME defect a second time: `var (r, n) = …;`,
+ * `if (o case Beta r)`, `case Beta r:`, `for (var (r, _) in xs)`, list / map /
+ * object / rest / cast / null-check / null-assert patterns and pattern
+ * assignments all bind `r` through node types no earlier list named, so each of
+ * them let a write retype the field. `addDartBinderName` now enumerates the
+ * pattern family from the grammar rather than from reported shapes.
+ *
+ * Deliberately over-approximate in the shadow direction. The set is body-wide
+ * (a binder in a nested closure, a `case` arm or a collection-literal element
+ * shadows for the whole body), a parameter shape whose name cannot be read
+ * contributes nothing rather than being guessed at, and a bare name inside a
+ * pattern shadows whether it binds or merely references a constant. All err
+ * toward DECLINING to bind, which is the right error: a missed field type costs
+ * an edge, a wrong one produces an edge to the wrong class and destroys a
+ * correct binding — the failure mode this whole line of work exists to avoid
+ * (see `scope-resolution/passes/compound-receiver.ts`).
+ */
+function collectDartBodyShadows(bodyNode: SyntaxNode): Set<string> {
+  const shadows = new Set<string>();
+  // The enclosing function's own formal parameters live OUTSIDE the body, on
+  // the `method_signature` sibling that precedes it — the shape every class
+  // member takes (method, constructor, factory, static, getter, setter,
+  // operator, `async`/`async*`).
+  const signature = bodyNode.previousNamedSibling;
+  if (signature !== null && signature.type === 'method_signature') {
+    walkNamedTree(signature, (n) => addDartBinderName(n, shadows));
+  }
+  walkNamedTree(bodyNode, (n) => addDartBinderName(n, shadows));
+  return shadows;
+}
+
+/**
+ * Record the name `node` binds, if it binds one.
+ *
+ * The `case` list is the whole point of this function and the reason it is
+ * separate: an INCOMPLETE list of binder forms is the exact defect this file has
+ * now shipped twice (formal parameters, then every Dart 3 pattern). It is
+ * enumerated against `vendor/tree-sitter-dart/grammar.js`, not against the
+ * shapes a bug report happened to carry.
+ */
+function addDartBinderName(node: SyntaxNode, out: Set<string>): void {
+  switch (node.type) {
+    // `var s;`, `final r = 1;`, and the FIRST declarator of `var a = 1, b = 2;`.
+    // `for_loop_parts` carries the for-IN variable on the same `name` field
+    // (`for (var r in xs)`); the C-style form instead nests a
+    // `local_variable_declaration` the walk reaches on its own.
+    case 'initialized_variable_definition':
+    case 'for_loop_parts': {
+      const nameNode = node.childForFieldName('name');
+      if (nameNode !== null) out.add(nameNode.text);
+      return;
+    }
+    // Formal parameters — of the enclosing member, of a closure
+    // (`function_expression`), and of a nested `local_function_declaration`.
+    case 'formal_parameter': {
+      const name = dartParameterName(node);
+      if (name !== null) out.add(name);
+      return;
+    }
+    // `on E catch (e, stack)` — every identifier in the list is a binding.
+    case 'catch_parameters': {
+      for (const child of node.namedChildren) {
+        if (child !== null && child.type === 'identifier') out.add(child.text);
+      }
+      return;
+    }
+    // Second and later declarators of `var a = 1, b = 2;` — fieldless, so the
+    // name is the first named child. (A class field is this node type too, but
+    // only ever under `initialized_identifier_list`, which no body contains.)
+    case 'initialized_identifier': {
+      const first = node.namedChild(0);
+      if (first !== null && first.type === 'identifier') out.add(first.text);
+      return;
+    }
+    // ── Dart 3 patterns ──────────────────────────────────────────────────────
+    //
+    // EVERY pattern node the grammar emits, and every one of them takes its
+    // DIRECT `identifier` children. The grammar rules that would carry a binder
+    // are `_pattern_field`, `_map_pattern_entry`, `_list_pattern_element`,
+    // `_parenthesized_pattern`, `_outer_pattern`, `_guarded_pattern` and the
+    // logical/relational tiers — ALL hidden (`_`-prefixed), so they emit no node
+    // of their own and inline their children onto whichever visible pattern node
+    // encloses them. Reading direct children is therefore what actually sees a
+    // binder; there is no field to ask for (`variable_pattern`,
+    // `pattern_variable_declaration` and `constant_pattern` declare none).
+    //
+    // The first two are where a binder truly lands, and are alone sufficient:
+    //   `variable_pattern` — `Beta s` / `final s` / `var s`.
+    //   `constant_pattern` — a BARE name (`(s, n)`, `[s, t]`, `{'k': s}`,
+    //      `Point(:s)`, `...s`, `(s)`). Dart itself decides bare-name-binds-vs-
+    //      references-a-constant from the enclosing `final`/`var`, and
+    //      tree-sitter gives both the same node, so `case kLimit:` shadows too.
+    //      Over-shadowing a constant reference costs an edge; the other
+    //      direction fabricates one.
+    // The containers after them are DEFENCE, not routing — the walk reaches
+    // nested patterns on its own. They matter because the hidden `_pattern_field`
+    // already drops a NON-binder label identifier straight onto `record_pattern`
+    // / `object_pattern` (and a key onto `map_pattern`), which is proof that this
+    // grammar inlines identifiers onto containers. If a grammar revision ever
+    // inlines a real binder the same way, it is shadowed here on arrival instead
+    // of becoming the third instance of this bug.
+    //
+    // DELIBERATELY EXCLUDED — `pattern_variable_declaration`, `pattern_assignment`
+    // and `for_loop_parts` hold the pattern and the `=`/`in` RHS at the SAME
+    // child level (`var [s, t] = xs` → `identifier xs` is a direct child), so
+    // taking their direct identifiers would shadow the SOURCE expression's name,
+    // which binds nothing. Their pattern child is a case below. Also excluded:
+    // `type_identifier` (never an `identifier`, so `Beta` in `Beta s` and `Point`
+    // in `Point(…)` cannot be mistaken for binders), `qualified` inside a
+    // `constant_pattern` (`Colors.red` nests one level deeper — a qualified name
+    // is always a constant reference), and relational/equality operands
+    // (`case > kLimit`), which the hidden tier drops onto the enclosing
+    // STATEMENT rather than any pattern node.
+    case 'variable_pattern':
+    case 'constant_pattern':
+    case 'record_pattern':
+    case 'list_pattern':
+    case 'map_pattern':
+    case 'object_pattern':
+    case 'rest_pattern':
+    case 'cast_pattern':
+    case 'null_check_pattern':
+    case 'null_assert_pattern': {
+      for (const child of node.namedChildren) {
+        if (child !== null && child.type === 'identifier') out.add(child.text);
+      }
+      return;
+    }
+    default:
+      return;
+  }
+}
+
+/** The name a `formal_parameter` binds, across every shape the grammar gives it. */
+function dartParameterName(param: SyntaxNode): string | null {
+  // `Alpha r`, `final Alpha r`, `void Function(int) r`, `{required Beta r}`,
+  // `[Delta r]` — all carry an explicit `name` field.
+  const named = param.childForFieldName('name');
+  if (named !== null) return named.text;
+
+  const only = param.namedChild(0);
+  if (only === null) return null;
+  // An untyped closure parameter (`(r) { … }`) is a bare identifier with no
+  // field to read it from.
+  if (only.type === 'identifier') return only.text;
+  // `this.r` / `super.r` bind a parameter NAMED `r` that is initialized from
+  // the field — a later bare `r = …` writes that parameter, not the field, so
+  // these shadow exactly like any other.
+  if (only.type === 'constructor_param' || only.type === 'super_formal_parameter') {
+    for (let i = only.namedChildCount - 1; i >= 0; i--) {
+      const child = only.namedChild(i);
+      if (child !== null && child.type === 'identifier') return child.text;
+    }
+  }
+  return null;
+}
 
 function emitHeritage(classNode: SyntaxNode, out: CaptureMatch[]): void {
   const nameNode = classNode.childForFieldName('name');

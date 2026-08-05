@@ -10,12 +10,18 @@ import path from 'path';
 import type { executeParameterized } from '../../core/lbug/pool-adapter.js';
 import { loadMeta } from '../../storage/repo-manager.js';
 import { IMPACT_MAX_DEPTH, PDG_QUERY_DEFAULT_LIMIT, PDG_QUERY_MAX_LIMIT } from '../tools.js';
-import { CALLEES_TRUNCATED_SENTINEL, CALLEE_ID_SEP } from '../../core/ingestion/cfg/emit.js';
+// Imported from the LEAF `callee-cell-format.js`, NOT from `cfg/emit.js` which
+// re-exports them: ESM evaluates a module to import any binding from it, and
+// `emit.ts` drags the analyze-only CFG closure (reaching-defs, control-
+// dependence, post-dominators, synthetic-escape, call-site-harvest) with it —
+// 8 modules on every MCP server start, to read two strings (#2802 review).
+import {
+  CALLEES_TRUNCATED_SENTINEL,
+  CALLEE_ID_SEP,
+} from '../../core/ingestion/cfg/callee-cell-format.js';
 import { toDisplayLine } from './line-display.js';
 import { decodeCallSummary } from '../../core/ingestion/taint/call-summary-codec.js';
 import { decodeReachingDefReason } from '../../core/ingestion/cfg/reaching-def-reason-codec.js';
-import { getProviderForFile } from '../../core/ingestion/languages/index.js';
-import { SupportedLanguages } from 'gitnexus-shared';
 
 /**
  * Parse the `<fnLine>` segment out of a `BasicBlock` id (1-based function start
@@ -66,30 +72,44 @@ const INTERPROC_DEPTH_BUDGET = 3;
 const INTERPROC_NODE_BUDGET = 5000;
 
 /**
- * Split a tab-joined ({@link CALLEE_ID_SEP}) `BasicBlock.calleeIds` cell into its resolved callee
- * symbol ids, dropping the truncation sentinel (a capped block carries the
- * sentinel to mark an incomplete call-site list; it is NOT a resolved symbol id
- * and must never enter a `has(realId)` set). Empty/whitespace cells yield no ids.
+ * Parse a tab-joined ({@link CALLEE_ID_SEP}) `BasicBlock.calleeIds` cell in ONE
+ * pass into its resolved callee symbol ids plus whether the cell was CAPPED at
+ * emit. The truncation sentinel is NOT a resolved symbol id and must never enter
+ * a `has(realId)` set, so it is dropped from `ids` — which is exactly why
+ * `truncated` has to come back alongside them: without it a capped block is
+ * indistinguishable from a complete one and the dropped callees are invisible to
+ * every consumer that only reads `ids` (they reach neither the `CALL_SUMMARY`
+ * scan nor the ascent counters). Empty/whitespace cells yield no ids.
  *
- * Extracted here (U1) so the two callers — `LocalBackend.calleeIdsOfBlocks` (the
- * statement-precise bridge key) and the inter-procedural descent's
- * `calleeIdsFromCalleeRows` — cannot diverge on the split-and-drop-sentinel
- * logic. Both consume rows of `BasicBlock.calleeIds`; this is the single source.
+ * The callgraph bridge already treats a capped block as callee-INCOMPLETE (see
+ * `classifyPdgBridgeEvidence`); this is the same fact, read at the descent side.
  */
-export function splitCalleeIds(raw: unknown): string[] {
-  const out: string[] = [];
+function parseCalleeIdsCell(raw: unknown): { ids: string[]; truncated: boolean } {
+  const ids: string[] = [];
+  let truncated = false;
   // Split on the SHARED CALLEE_ID_SEP (tab) — ids embed file paths / multi-word
   // C++ type tokens that can contain a space, so a space split would fragment
   // them. Producer (calleeIdsOfBlock) joins with the same constant.
   for (const id of String(raw ?? '').split(CALLEE_ID_SEP)) {
-    if (id && id !== CALLEES_TRUNCATED_SENTINEL) out.push(id);
+    if (id === CALLEES_TRUNCATED_SENTINEL) truncated = true;
+    else if (id) ids.push(id);
   }
-  return out;
+  return { ids, truncated };
+}
+
+/**
+ * Ids-only view of {@link parseCalleeIdsCell}. Exported (U1) so the two callers —
+ * `LocalBackend.calleeIdsOfBlocks` (the statement-precise bridge key) and the
+ * inter-procedural descent — cannot diverge on the split-and-drop-sentinel logic.
+ * Both consume rows of `BasicBlock.calleeIds`; this is the single source.
+ */
+export function splitCalleeIds(raw: unknown): string[] {
+  return parseCalleeIdsCell(raw).ids;
 }
 
 /**
  * Contract version of the mode:'pdg' impact result shape. A stable discriminator
- * for external MCP/agent consumers — distinct from the DB INCREMENTAL_SCHEMA_VERSION.
+ * for external MCP/agent consumers — distinct from the DB schema fingerprint.
  * Bump on any breaking change to the PDG result fields.
  * v2: `startLine` in the result is now 1-based display (#2380), matching the
  * context/query/impact tools (was 0-based).
@@ -552,6 +572,132 @@ export type PdgImpactEvidence =
   | 'unproven-bridge'
   | 'degraded';
 
+/**
+ * WHY the callee set the descent EXAMINED for `CALL_SUMMARY` return-flows is a
+ * strict PREFIX of the slice's real callee list. A STRUCTURED vocabulary, in the
+ * spirit of `truncatedByReasons: readonly ('depth'|'limit')[]` — the codes are the
+ * contract, the English phrasing is a rendering of them
+ * ({@link ASCENT_INCOMPLETE_PHRASE}). A caller branches on the code; only the note
+ * reads the phrase, so a rewording can never break a consumer.
+ *  - `'traversal-truncated'` — the traversal stopped at its depth/size budget, so
+ *    a callee that DOES carry a return-flow can sit in a hop never reached (the
+ *    same fact the result's `truncated`/`truncatedByReasons` report, read at the
+ *    ascent's granularity).
+ *  - `'callee-list-capped'` — a slice block's `calleeIds` cell was capped at emit;
+ *    `parseCalleeIdsCell` strips the sentinel, so the dropped ids are invisible to
+ *    BOTH the summary scan and the counters.
+ *  - `'callee-ids-unrecorded'` — a slice block records CALL SITES (a non-empty
+ *    `callees` name cell) but NO resolved callee ids. An empty `calleeIds` cell
+ *    carries no sentinel, so those call sites are invisible to the summary scan
+ *    without raising `'callee-list-capped'`. Distinct from the cap: nothing was
+ *    dropped at emit — the ids were never recorded.
+ *
+ *    THREE producer paths yield it, and the consumer cannot tell them apart —
+ *    do not read this code as naming any one of them (`cfg/emit.ts`,
+ *    `calleeIdsOfBlock`):
+ *      1. the file's resolved-id map is absent entirely (`fileMap === undefined`);
+ *      2. a call site has no position anchor;
+ *      3. a call site's position IS in the map but did not RESOLVE.
+ *    (3) is the ordinary one — it is exactly the receiver-resolution gaps this
+ *    repo pins (e.g. #2807's inference-typed field receivers, where `calleeIds`
+ *    empties while `calleesOfBlock` still writes the leaf names). So on a real
+ *    index this fires broadly and is driven by resolution quality, NOT by a
+ *    missing `--pdg` layer: "re-run analyze --pdg" is the wrong remedy for it,
+ *    and `examinedComplete: false` here is a statement about how much of the
+ *    call graph resolved, not about the traversal giving up.
+ *
+ *    Consequence worth knowing before branching on it: because (3) is common,
+ *    `examinedComplete: true` is the strong, rare signal and `false` is close to
+ *    the default on a large repo. Distinguishing the three needs a marker at
+ *    emit time, which would move the persisted cell format — deliberately out of
+ *    scope here, and tracked separately.
+ */
+export type PdgAscentIncompleteReason =
+  | 'traversal-truncated'
+  | 'callee-list-capped'
+  | 'callee-ids-unrecorded';
+
+/**
+ * Return-value-ascent coverage, published on {@link PdgImpactEvidenceSummary} so a
+ * consumer can answer "was the ascent complete, and if not why" WITHOUT parsing
+ * the result `note`. This is MCP output read by agents: the same four facts are
+ * also narrated in the note (see {@link AscentCoverage} for the canonical
+ * rationale, and `assemblePdgImpactResult` for the single site that renders both
+ * from one computation), and the prose is the human surface, not the contract.
+ *
+ * Present iff the inter-procedural descent RAN (a downstream slice that reached
+ * the assembly path). Absent ⇒ nothing was scanned — deliberately not a zeroed
+ * object, which would read as "we looked and found nothing".
+ */
+export interface PdgAscentCoverage {
+  /**
+   * Count of DISTINCT callee ids scanned for a `CALL_SUMMARY` — a distinct-callee
+   * tally, NOT a call-site count: two slice blocks invoking the same callee
+   * contribute 1, and one block invoking it twice also contributes 1. That is the
+   * correct population for the claim `returnFlowFound` makes, because a
+   * `CALL_SUMMARY` is a property of the CALLEE, not of the call site.
+   *
+   * Callee granularity, NOT "callees resolved to a body": a cell's ids that
+   * `resolveCalleeSpans` never matches (out-of-repo target, interface method, the
+   * `Class:` id a `new` expression contributes) are scanned all the same. See
+   * {@link AscentCoverage} POPULATION. (The field NAME is historical — the
+   * published shape is versioned by `pdgResultVersion`, so it is kept while the
+   * prose on both surfaces says "distinct callees".)
+   */
+  referencesScanned: number;
+  /**
+   * Whether ANY scanned callee carried a DECODED non-empty return-flow — i.e.
+   * whether the ascent FIRED anywhere in this slice. `false` with
+   * `referencesScanned > 0` is the structural counterpart of the note's
+   * "no return-value ascent in this slice" sentence.
+   */
+  returnFlowFound: boolean;
+  /**
+   * Scanned callees whose `CALL_SUMMARY` the codec could not decode (version skew
+   * / corruption / NULL reason). Each withholds the ascent exactly like an empty
+   * summary, so a non-zero count means `returnFlowFound: false` is NOT a statement
+   * about what the persisted summaries record — remedy: re-run `analyze --pdg`.
+   */
+  undecodableSummaryCount: number;
+  /**
+   * Whether {@link referencesScanned} ranges over EVERY callee the descent's slice
+   * blocks recorded a resolved id for. `false` ⇒ the counters above range over a
+   * strict subset, so `returnFlowFound: false` is not a whole-slice claim. Reasons
+   * in {@link incompleteReasons}.
+   *
+   * SCOPE — the population is "callees the INDEX recorded resolved ids for on the
+   * blocks the DESCENT visited", never "every call the source text makes". Two
+   * gaps are named structurally rather than assumed away: a block whose ids the
+   * emitter capped raises `'callee-list-capped'`, and a block that records call
+   * sites but no ids at all raises `'callee-ids-unrecorded'`. What is NOT modelled
+   * (and cannot be, from the persisted graph) is a call the CFG never materialised
+   * as a call site — so `true` means "nothing the index recorded was skipped", not
+   * "the program makes no other calls".
+   */
+  examinedComplete: boolean;
+  /** Empty iff {@link examinedComplete}; otherwise every mechanism that fired. */
+  incompleteReasons: readonly PdgAscentIncompleteReason[];
+  /**
+   * Whether the index carries the `CALL_SUMMARY` layer at all. `false` ⇒ a PRE-FU-C
+   * (v3) `--pdg` index, where the scan COULD NOT have found a return-flow — without
+   * this a consumer would read `returnFlowFound: false` as "these callees record no
+   * return-flow" when the truth is "the layer that records it does not exist here"
+   * (the note distinguishes the two in prose; this keeps the structured surface
+   * from being false-safe). Remedy: re-run `analyze --pdg`.
+   *
+   * READING IT WITH THE OTHER FIELDS. `{referencesScanned: N>0, returnFlowFound:
+   * false, callSummaryLayerPresent: false}` is SELF-CONSISTENT and expected on a
+   * v3 index, not a contradiction: the scan really did run over N callees and
+   * really did find nothing, because there was no layer in which a return-flow
+   * could be recorded. Read this field FIRST — while it is `false`,
+   * `returnFlowFound` and `undecodableSummaryCount` say nothing about the callees
+   * themselves and must not be used to conclude "no callee returns a
+   * slice-dependent value". `examinedComplete` is orthogonal to all of this: it
+   * reports coverage of the callee POPULATION, never the presence of the layer.
+   */
+  callSummaryLayerPresent: boolean;
+}
+
 export interface PdgImpactEvidenceSummary {
   statements?: PdgImpactEvidence;
   localSymbols?: PdgImpactEvidence;
@@ -560,6 +706,12 @@ export interface PdgImpactEvidenceSummary {
   unresolvedBlockCount?: number;
   ambiguousProjectionCount?: number;
   interproceduralEvidenceCounts?: Partial<Record<PdgImpactEvidence, number>>;
+  /**
+   * Return-value-ascent coverage — the same "counts + classification" kind as the
+   * three counters above, scoped to the U-C4 ascent. Optional because the descent
+   * does not run for every slice; see {@link PdgAscentCoverage}.
+   */
+  ascent?: PdgAscentCoverage;
 }
 
 export interface PdgInterproceduralImpact {
@@ -724,6 +876,130 @@ export function makePdgLayerDegradedResult(input: {
 }
 
 /**
+ * What the inter-procedural descent OBSERVED about return-value ascent, threaded
+ * from `interproceduralDescent` through `runImpactPDG` to `assemblePdgImpactResult`.
+ * When references were scanned but none carried a decodable return-flow the note
+ * reports that the ascent was structurally empty for this slice. This is the
+ * DESCENT-SIDE record; `assemblePdgImpactResult` renders it into TWO surfaces —
+ * the result `note` (prose, for humans) and `pdgEvidence.ascent`
+ * ({@link PdgAscentCoverage}, structured, for agents) — from ONE computation, so
+ * the two can never disagree. CANONICAL rationale for all four members; the sites
+ * that thread it point here.
+ *
+ * POPULATION. {@link references} is the DISTINCT-ID tally of the slice's
+ * `BasicBlock.calleeIds` cells — distinct CALLEES, deliberately NOT call sites
+ * and NOT "callees the descent resolved to a body". Two distinctions, both
+ * load-bearing:
+ *  - not call SITES: the accumulator is a `Set` of callee ids, so two blocks
+ *    invoking the same callee are tallied once. That is the right population,
+ *    because a `CALL_SUMMARY` is a property of the CALLEE — scanning the same id
+ *    twice could not change the answer, and quoting a site count would over-state
+ *    the size of the set the universal claim ranges over;
+ *  - not "resolved to a body": `resolveCalleeSpans` matches only
+ *    `Function`/`Method`/`Constructor`, so an out-of-repo target, an interface
+ *    method, and a node kind with no CFG body (e.g. the `Class:` id a `new`
+ *    expression contributes) yield no span and are never descended into — yet
+ *    they ride the same cell and ARE scanned for a `CALL_SUMMARY`. Narrowing to
+ *    the descended set would under-state what was checked, and "resolved" would
+ *    assert a symbol-table lookup that did not happen for part of the set.
+ * Both surfaces must word it at DISTINCT-CALLEE granularity.
+ *
+ * OBSERVED DATA, NEVER THE CRITERION'S LANGUAGE (#2802 — a reviewer asked why
+ * the note does not just look the language up). Whether a callee's return value
+ * can be ascended is a property of its persisted `CALL_SUMMARY`, not of a
+ * language name, so asking the graph is both correct for every language and
+ * correct as producers change: a harvester that starts recording formal indices
+ * needs no edit at the note site, and a callee that genuinely has no return-flow
+ * is never described as if the ascent had covered it. This module must not name
+ * languages — nor must the shared `core/ingestion` pipeline.
+ *
+ * INCOMPLETENESS. {@link undecodable} keeps the note honest: without it an
+ * unreadable summary would be reported as one that records no return-flow. Three
+ * mechanisms can make the examined set a strict SUBSET of the slice's real callee
+ * list — the traversal's own truncation flags, {@link listTruncated}, and
+ * {@link idlessCallSites} — which is what stops the note quantifying universally
+ * ("none of the N callees …") over a set it knows is incomplete. Those three are
+ * what {@link PdgAscentIncompleteReason} names structurally for the published
+ * surface. The traversal flags are DELIBERATELY the result-level ones: a callee's
+ * own intra BFS exhausting the depth budget hides deeper call sites exactly the
+ * way the top-level intra BFS does, so both fold into the same signal.
+ */
+interface AscentCoverage {
+  /** Count of DISTINCT callee ids scanned for a `CALL_SUMMARY`. */
+  readonly references: number;
+  /** Whether ANY scanned callee carried a DECODED non-empty return-flow. */
+  readonly anyReturnFlow: boolean;
+  /** Scanned callees whose `CALL_SUMMARY` the codec could not decode. */
+  readonly undecodable: number;
+  /** Whether any gathered block's `calleeIds` cell was CAPPED at emit. */
+  readonly listTruncated: boolean;
+  /**
+   * Whether any gathered block recorded CALL SITES (a non-empty `callees` name
+   * cell) but NO resolved callee ids — an empty `calleeIds` cell, which carries no
+   * cap sentinel and so is invisible to {@link listTruncated}. Those call sites
+   * are silently outside {@link references}.
+   */
+  readonly idlessCallSites: boolean;
+}
+
+/**
+ * Render table for {@link PdgAscentIncompleteReason} — the ONLY place a code
+ * becomes English. Keeping the mapping here (rather than building sentences at
+ * the point the mechanism is detected) is what lets the published vocabulary and
+ * the note's wording move independently: a reworded phrase is invisible to every
+ * consumer branching on the code, and a new code cannot silently change the
+ * joiner the existing sentence uses.
+ */
+const ASCENT_INCOMPLETE_PHRASE: Readonly<Record<PdgAscentIncompleteReason, string>> = {
+  'traversal-truncated': 'the traversal stopped at its depth/size budget',
+  'callee-list-capped': "a slice block's call-site list was capped at emit",
+  'callee-ids-unrecorded': 'a slice block records call sites but no resolved callee ids',
+};
+
+/**
+ * The ONE place {@link AscentCoverage} plus the result-level truncation flag
+ * become the published {@link PdgAscentIncompleteReason} codes. Extracted so the
+ * two exits that publish coverage — `assemblePdgImpactResult` (the slice result,
+ * which also renders the codes into the note) and `runImpactPDG`'s empty-slice
+ * return — cannot classify the same descent differently.
+ *
+ * Emission order is the array order below and is part of what the note renders,
+ * so a new code appends rather than inserts.
+ */
+function ascentIncompleteReasonsOf(input: {
+  truncated: boolean;
+  coverage: AscentCoverage | undefined;
+}): PdgAscentIncompleteReason[] {
+  const reasons: PdgAscentIncompleteReason[] = [];
+  if (input.truncated) reasons.push('traversal-truncated');
+  if (input.coverage?.listTruncated === true) reasons.push('callee-list-capped');
+  if (input.coverage?.idlessCallSites === true) reasons.push('callee-ids-unrecorded');
+  return reasons;
+}
+
+/**
+ * Project the descent's {@link AscentCoverage} onto the published
+ * {@link PdgAscentCoverage}. Shared by both exits that publish `pdgEvidence.ascent`
+ * so the contract sentence "present iff the inter-procedural descent ran" holds on
+ * BOTH — a descent that ran and scanned callees must not go unreported merely
+ * because the slice happened to reach no DISTINCT downstream block.
+ */
+function publishedAscentCoverage(input: {
+  coverage: AscentCoverage;
+  incompleteReasons: readonly PdgAscentIncompleteReason[];
+  callSummaryAvailable: boolean;
+}): PdgAscentCoverage {
+  return {
+    referencesScanned: input.coverage.references,
+    returnFlowFound: input.coverage.anyReturnFlow,
+    undecodableSummaryCount: input.coverage.undecodable,
+    examinedComplete: input.incompleteReasons.length === 0,
+    incompleteReasons: input.incompleteReasons,
+    callSummaryLayerPresent: input.callSummaryAvailable,
+  };
+}
+
+/**
  * Assemble the consumer-safe PDG impact result (U4 / KTD8 parity matrix).
  *
  * Takes the U3 traversal output (reachable block set + truncation signalling)
@@ -795,6 +1071,8 @@ function assemblePdgImpactResult(input: {
    * and steers to a re-index. `true` ⇒ ascent active (no extra note).
    */
   callSummaryAvailable?: boolean;
+  /** Observed ascent inputs from the descent — rationale on {@link AscentCoverage}. */
+  ascentCoverage?: AscentCoverage;
 }): PdgImpactSuccessResult {
   const { target, direction, reachableBlocks, projection } = input;
   const { symbols, unresolvedCount, ambiguousCount } = projection;
@@ -830,6 +1108,21 @@ function assemblePdgImpactResult(input: {
 
   const byDepth: Record<number, unknown[]> = items.length > 0 ? { 1: items } : {};
   const byDepthCounts: Record<number, number> = { 1: items.length };
+
+  // ── Ascent coverage: ONE computation, TWO surfaces ─────────────────────────
+  // The empty-ascent sentence quantifies UNIVERSALLY over the callees the descent
+  // actually EXAMINED, and three mechanisms can make that set a strict
+  // subset of the slice's real callee list (rationale: AscentCoverage
+  // INCOMPLETENESS, vocabulary: PdgAscentIncompleteReason). Classified ONCE by the
+  // shared `ascentIncompleteReasonsOf` and consumed twice — by `pdgEvidence.ascent`
+  // (structured, the contract) and by the note's qualifier clause (prose, rendered
+  // through ASCENT_INCOMPLETE_PHRASE). Deriving both from one array is what stops
+  // an agent branching on the codes and a human reading the note from ever
+  // disagreeing.
+  const ascentIncompleteReasons = ascentIncompleteReasonsOf({
+    truncated: input.truncated,
+    coverage: input.ascentCoverage,
+  });
 
   const noteParts: string[] = statementMode
     ? [
@@ -876,21 +1169,58 @@ function assemblePdgImpactResult(input: {
           `CALL_SUMMARY edges and enable it.`,
       );
     } else if (input.callSummaryAvailable === true) {
-      // The CALL_SUMMARY layer is present, but return-value ascent is populated
-      // ONLY for TypeScript/JavaScript today (the formal-index it needs is set
-      // solely by the TS/JS harvester). For a criterion in any other language the
-      // ascent is structurally empty, so say so rather than letting the omission
-      // read as "ascent ran and found nothing". Sound — never claims ascent fired.
-      // Language is derived HERE in mcp/local, which may name languages; the
-      // shared core/ingestion pipeline must not.
-      const lang = getProviderForFile(target.filePath)?.id;
-      const ascentLanguage =
-        lang === SupportedLanguages.TypeScript || lang === SupportedLanguages.JavaScript;
-      if (!ascentLanguage) {
+      // The CALL_SUMMARY layer is present, but that only means the index CAN
+      // carry return-flow summaries — not that the callees in THIS slice have
+      // one. When none of them does, the ascent is structurally empty and the
+      // note says so, rather than letting the omission read as "ascent ran and
+      // found nothing". Sound — never claims the ascent fired. Keyed on the
+      // OBSERVED summaries, never on the criterion's language (#2802) — see
+      // {@link AscentCoverage} for why, and for the population the sentence below
+      // quantifies over: DISTINCT CALLEES (a `Set` of callee ids — two call sites
+      // to the same callee count once), NOT callees resolved to a body. Hence the
+      // "distinct callee(s)" wording; a call-SITE count would over-state the set.
+      const coverage = input.ascentCoverage;
+      const references = coverage?.references ?? 0;
+      const undecodable = coverage?.undecodable ?? 0;
+      // When the examined set is a strict prefix (the codes computed once above)
+      // the claim is qualified: the note may describe what was examined, never
+      // assert a property of the whole slice the traversal did not establish. The
+      // codes are mapped to phrases HERE — the note is a rendering of the same
+      // vocabulary `pdgEvidence.ascent.incompleteReasons` publishes.
+      const examinedIncomplete = ascentIncompleteReasons.length > 0;
+      const incompleteClause = examinedIncomplete
+        ? ` (${ascentIncompleteReasons
+            .map((reason) => ASCENT_INCOMPLETE_PHRASE[reason])
+            .join(' and ')}, so callees past the examined set were not checked)`
+        : '';
+      if (references > 0 && coverage?.anyReturnFlow !== true) {
+        // ONE head for both arms — a shared gate and a shared opening sentence, so
+        // the two cannot drift on wording or pluralization. When at least one
+        // summary could not be DECODED the note must not assert what the persisted
+        // summaries record: an undecodable `reason` may well encode a return-flow
+        // this reader cannot unpack (`decodeCallSummary` never throws, so a
+        // version-skewed / corrupt / NULL reason is otherwise indistinguishable
+        // from a cleanly-decoded empty one). The ascent is withheld either way;
+        // only the tail that explains it changes.
         noteParts.push(
-          `return-value ascent is currently TypeScript/JavaScript-only (only the TS/JS harvester ` +
-            `records the formal-index it needs), so a caller statement depending on a non-TS/JS ` +
-            `callee's RETURN value is not in the slice. Descent and the intra slice are unaffected.`,
+          `no return-value ascent in this slice: none of the ${references} distinct ` +
+            `${references === 1 ? 'callee carries' : 'callees carry'} a ` +
+            `${undecodable > 0 ? 'decodable ' : ''}CALL_SUMMARY return-flow${incompleteClause}` +
+            (undecodable > 0
+              ? `, and ${undecodable} callee ` +
+                `${undecodable === 1 ? 'summary' : 'summaries'} could not be decoded (version ` +
+                `skew or corruption) — re-run gitnexus analyze --pdg to rebuild them. A caller ` +
+                `statement depending on a callee's RETURN value is not in the slice; descent and ` +
+                `the intra slice are unaffected.`
+              : `. So a caller statement depending on a callee's RETURN value is ` +
+                `not in the slice. ` +
+                (examinedIncomplete
+                  ? `Every summary examined decoded, so this is a property of those summaries, not `
+                  : `Every summary in this slice decoded, so this is a property of the persisted ` +
+                    `summaries, not `) +
+                `of the criterion's language — a callee whose producer records no formal index and ` +
+                `one with genuinely no return-flow are indistinguishable here. Descent and the ` +
+                `intra slice are unaffected.`),
         );
       }
     }
@@ -930,6 +1260,28 @@ function assemblePdgImpactResult(input: {
       localSymbolCount: impactedCount,
       unresolvedBlockCount: unresolvedCount,
       ambiguousProjectionCount: ambiguousCount,
+      // Structured ascent coverage — the note's facts, published so a caller never
+      // has to regex prose to learn whether the ascent was complete. Emitted iff
+      // the DESCENT RAN (`ascentCoverage` present), which is exactly the contract
+      // sentence on {@link PdgAscentCoverage}: absent ⇒ nothing was scanned because
+      // the descent never ran (an upstream slice), present ⇒ it ran and these are
+      // its counts.
+      //
+      // A zeroed-but-PRESENT record is therefore a real, honest reading — "the
+      // descent ran and the slice's blocks recorded no callee ids to scan" — not a
+      // placeholder. What used to make that reading unsafe was a block carrying
+      // call sites the index left id-less, which vanished from the population with
+      // no signal; that case now raises `'callee-ids-unrecorded'`, so a zero here
+      // with `examinedComplete: true` really does mean there was nothing to scan.
+      ...(input.ascentCoverage
+        ? {
+            ascent: publishedAscentCoverage({
+              coverage: input.ascentCoverage,
+              incompleteReasons: ascentIncompleteReasons,
+              callSummaryAvailable: input.callSummaryAvailable === true,
+            }),
+          }
+        : {}),
     },
     // Statement-level slice: the dependent source statements (line + text) the
     // change reaches. This is the primary useful output of statement mode; the
@@ -1166,6 +1518,9 @@ export async function pdgLayerStatus(deps: {
   let edgesVisible = false;
   let probeError: string | undefined;
   try {
+    // determinism: probe — layer existence. Only `rows.length > 0` is read; the
+    // projected `r.type` is never consumed, so which of the two edge types the
+    // one row happens to carry cannot change the returned state or note.
     const rows = await deps.executeParameterized(
       deps.lbugPath,
       `MATCH (:BasicBlock)-[r:CodeRelation]->(:BasicBlock) WHERE r.type IN ['CDG', 'REACHING_DEF'] RETURN r.type AS type LIMIT 1`,
@@ -1238,6 +1593,16 @@ function blockAnchorForResolvedSymbol(sym: {
   }
   return { anchorClause: 'a.id STARTS WITH $idPrefix', queryParams: { idPrefix } };
 }
+
+/**
+ * The seed-block query both anchor builders feed — the top-level target seed and
+ * the per-callee span seeds. It was duplicated byte-for-byte at those two call
+ * sites, so the `ORDER BY a.startLine, id` tiebreak (#2787) had to be added
+ * twice; sharing it keeps the anchor and its query together, the way
+ * {@link blockAnchorForResolvedSymbol} already is.
+ */
+const seedBlockQuery = (anchorClause: string, probeLimit: number): string =>
+  `MATCH (a:BasicBlock) WHERE ${anchorClause} RETURN a.id AS id ORDER BY a.startLine, id LIMIT ${probeLimit}`;
 
 /**
  * Build a STATEMENT seed anchor: the BasicBlock(s) starting at a specific
@@ -1323,6 +1688,7 @@ async function bfsReachableBlocks(input: {
       `MATCH (a:BasicBlock)-[r:CodeRelation]->(b:BasicBlock)
          WHERE r.type IN ['CDG', 'REACHING_DEF'] AND ${matchEndpoint}.id IN $frontier
          RETURN DISTINCT ${collectEndpoint}.id AS id
+         ORDER BY id
          LIMIT ${probeLimit}`,
       { frontier },
     );
@@ -1356,25 +1722,6 @@ interface CalleeSpan {
   endLine: number;
 }
 
-/**
- * Gather the resolved callee symbol ids invoked across a set of slice blocks
- * (`BasicBlock.calleeIds`). Reuses the SHARED `splitCalleeIds` so the descent
- * cannot diverge from `LocalBackend.calleeIdsOfBlocks` on the split/drop-sentinel
- * logic. A pre-namespace-v4 index (no `calleeIds` column → empty cells) yields no
- * ids, so the descent degrades cleanly to intra-only (no inter-procedural hop).
- */
-async function calleeIdsFromBlocks(
-  lbugPath: string,
-  blockIds: string[],
-  exec: typeof executeParameterized,
-): Promise<Set<string>> {
-  const ids = new Set<string>();
-  for (const { calleeIds } of await calleeIdsByBlock(lbugPath, blockIds, exec)) {
-    for (const id of calleeIds) ids.add(id);
-  }
-  return ids;
-}
-
 /** One slice block paired with the resolved callee ids it invokes. */
 interface BlockCallees {
   blockId: string;
@@ -1382,60 +1729,123 @@ interface BlockCallees {
 }
 
 /**
- * Per-block variant of {@link calleeIdsFromBlocks}: keep the CALL block → its
- * `calleeIds` mapping rather than flattening it. The return-value ascent (U-C4)
- * needs this association — it re-seeds the caller's intra closure FROM the
- * specific call block whose callee's `CALL_SUMMARY` licenses the ascent, so the
- * flattened id-only set is insufficient. Reuses the SHARED `splitCalleeIds` so
- * the split/drop-sentinel logic cannot diverge from the flattening caller. A
- * block with no callee ids (empty/whitespace cell, or a pre-v4 index with no
- * `calleeIds` column) yields an empty `calleeIds` — skipped by the consumer.
+ * Gather the resolved callee ids (`BasicBlock.calleeIds`) invoked across a set of
+ * slice blocks, keeping the CALL block → callees association rather than
+ * flattening it: the return-value ascent (U-C4) re-seeds the caller's intra
+ * closure FROM the specific call block whose callee's `CALL_SUMMARY` licenses the
+ * ascent, so a flat id set is insufficient. Reuses the SHARED
+ * {@link parseCalleeIdsCell} so the split/drop-sentinel logic cannot diverge from
+ * `LocalBackend.calleeIdsOfBlocks`. A block with no callee ids (empty/whitespace
+ * cell, or a pre-namespace-v4 index with no `calleeIds` column) yields an empty
+ * `calleeIds` — skipped by the consumer, so such an index degrades cleanly to
+ * intra-only (no inter-procedural hop).
+ *
+ * `calleeListTruncated` reports whether ANY of the queried blocks carried the
+ * emit-time cap sentinel. It is read from the RAW cell, so a block whose entire
+ * list was capped away (sentinel only ⇒ no ids ⇒ not emitted as a `BlockCallees`
+ * row) still raises it.
+ *
+ * `idlessCallSites` is the OTHER way a block's call sites leave the population
+ * unannounced: `calleeIdsOfBlock` emits an EMPTY `calleeIds` cell for a whole file
+ * whose resolved-id map is absent, and an empty cell carries no sentinel, so the
+ * cap flag cannot see it. The sibling `callees` (leaf NAMES) cell is read purely
+ * to tell that case apart from a block that genuinely calls nothing — names
+ * present + ids absent means the index recorded call sites it could not resolve.
+ * The name cell is never used for the descent itself (the resolved id is the sound
+ * key); it only keeps the coverage claim honest.
  */
 async function calleeIdsByBlock(
   lbugPath: string,
   blockIds: string[],
   exec: typeof executeParameterized,
-): Promise<BlockCallees[]> {
-  if (blockIds.length === 0) return [];
+): Promise<{ blocks: BlockCallees[]; calleeListTruncated: boolean; idlessCallSites: boolean }> {
+  if (blockIds.length === 0)
+    return { blocks: [], calleeListTruncated: false, idlessCallSites: false };
   const rows = await exec(
     lbugPath,
-    `MATCH (b:BasicBlock) WHERE b.id IN $ids RETURN b.id AS id, b.calleeIds AS calleeIds`,
+    `MATCH (b:BasicBlock) WHERE b.id IN $ids
+       RETURN b.id AS id, b.calleeIds AS calleeIds, b.callees AS callees`,
     { ids: blockIds },
   );
   const out: BlockCallees[] = [];
+  let calleeListTruncated = false;
+  let idlessCallSites = false;
   // Narrow the awaited rows ONCE at the boundary to a typed record shape; read
   // the aliased cells via bracket access — no per-field `as any`.
   for (const r of rows as Array<Record<string, unknown>>) {
     const blockId = String(r['id'] ?? '');
     if (!blockId) continue;
-    const calleeIds = splitCalleeIds(r['calleeIds']);
+    // ONE pass over the cell classifies BOTH facts — a second full split just to
+    // re-test the sentinel doubled the per-row parse cost.
+    const { ids: calleeIds, truncated } = parseCalleeIdsCell(r['calleeIds']);
+    if (truncated) calleeListTruncated = true;
+    // Ids absent while NAMES are present ⇒ recorded call sites with no resolved
+    // id. Gated on `!truncated` so a capped-to-nothing cell keeps reporting the
+    // cap (the more specific mechanism) rather than both.
+    // `!idlessCallSites` first: the flag is sticky, so once it is set the string
+    // allocation below is pure waste on every remaining row of every later hop.
+    if (
+      !idlessCallSites &&
+      calleeIds.length === 0 &&
+      !truncated &&
+      String(r['callees'] ?? '').trim().length > 0
+    ) {
+      idlessCallSites = true;
+    }
     if (calleeIds.length > 0) out.push({ blockId, calleeIds });
   }
-  return out;
+  return { blocks: out, calleeListTruncated, idlessCallSites };
 }
 
 /**
- * Of a set of resolved callee symbol ids, which ones have a persisted
- * `CALL_SUMMARY` self-loop edge recording a NON-EMPTY return-value ascent
- * (≥1 formal parameter flows to the callee's return). This is the FU-C consumer
- * side of the producer's per-callee summary (see `call-summary-codec.ts`).
+ * The THREE outcomes a persisted `CALL_SUMMARY` can have for one callee. The
+ * ascent itself only ever consults {@link returnFlowing}; {@link undecodable} is
+ * carried so the result `note` can tell "the summaries say there is no return-
+ * flow" apart from "we could not read the summaries" — two facts a single
+ * has-flow/has-no-flow boolean conflates (`decodeCallSummary` never throws, so a
+ * version-skewed / corrupt / NULL `reason` is otherwise indistinguishable from a
+ * cleanly-decoded EMPTY summary).
+ */
+interface CalleeReturnFlowScan {
+  /**
+   * Callees whose summary DECODED and records ≥1 formal parameter flowing to the
+   * return value — the only ones that license a return-value ascent.
+   */
+  returnFlowing: Set<string>;
+  /**
+   * Callees that HAVE a `CALL_SUMMARY` row whose `reason` did not decode
+   * (unsupported version prefix, malformed segment, invalid hex payload, or a
+   * NULL/non-string reason). Never licenses an ascent — a decode failure means
+   * "no usable ascent fact", the codec's documented sound default.
+   */
+  undecodable: Set<string>;
+}
+
+/**
+ * Scan the persisted `CALL_SUMMARY` self-loops of a set of resolved callee
+ * symbol ids. This is the FU-C consumer side of the producer's per-callee
+ * summary (see `call-summary-codec.ts`).
  *
  * The summary is a self-loop on the Function/Method/Constructor node:
  * `(c)-[r:CodeRelation {type:'CALL_SUMMARY'}]->(c) WHERE c.id IN $ids`. The
  * `reason` carries the param→return bitset; `decodeCallSummary` unpacks it and
- * NEVER throws — a malformed / absent / empty (`r:0`) summary yields NO entry
- * (the sound default: never claim a false return-flow). A PRE-FU-C (v3) `--pdg`
- * index has NO `CALL_SUMMARY` edges, so this returns the empty set and the
- * ascent is a clean no-op (the intra slice is unchanged — the documented
- * "re-index for CALL_SUMMARY" degradation).
+ * NEVER throws. Three outcomes, per {@link CalleeReturnFlowScan}: a non-empty
+ * decoded return-flow, a cleanly-decoded EMPTY (`r:0`) summary, and an
+ * UNDECODABLE reason. Only the first licenses an ascent — the other two yield no
+ * ascent (the sound default: never claim a false return-flow) but are reported
+ * separately so the note never states a fact about summaries it could not read.
+ * A PRE-FU-C (v3) `--pdg` index has NO `CALL_SUMMARY` edges, so both sets come
+ * back empty and the ascent is a clean no-op (the intra slice is unchanged — the
+ * documented "re-index for CALL_SUMMARY" degradation).
  */
 async function calleesWithReturnFlow(
   lbugPath: string,
   calleeIds: string[],
   exec: typeof executeParameterized,
-): Promise<Set<string>> {
-  const out = new Set<string>();
-  if (calleeIds.length === 0) return out;
+): Promise<CalleeReturnFlowScan> {
+  const returnFlowing = new Set<string>();
+  const undecodable = new Set<string>();
+  if (calleeIds.length === 0) return { returnFlowing, undecodable };
   const rows = await exec(
     lbugPath,
     `MATCH (c)-[r:CodeRelation]->(c)
@@ -1447,6 +1857,13 @@ async function calleesWithReturnFlow(
     const id = String(r['id'] ?? '');
     if (!id) continue;
     const decoded = decodeCallSummary(r['reason']);
+    // A typed decode failure is NOT an empty summary — record it separately and
+    // withhold the ascent all the same (the codec's contract: a decode failure
+    // means "no usable ascent fact"). Only the note's wording depends on this.
+    if (!decoded.ok) {
+      undecodable.add(id);
+      continue;
+    }
     // ARG→FORMAL trace precision: the conservative-but-sound default — ascend if
     // ANY formal is return-flowing (the call site's argument is, by construction
     // of the descent, in the slice: the call block is itself a slice block). A
@@ -1455,9 +1872,9 @@ async function calleesWithReturnFlow(
     // per-arg list), so this never drops a real ascent; it may over-include
     // (bounded — the result still flows to a slice statement). See the descent
     // doc-comment + the result `note` caveat.
-    if (decoded.ok && decoded.returnFlowParams.length > 0) out.add(id);
+    if (decoded.returnFlowParams.length > 0) returnFlowing.add(id);
   }
-  return out;
+  return { returnFlowing, undecodable };
 }
 
 /**
@@ -1574,6 +1991,12 @@ async function interproceduralDescent(input: {
    * WHICH blocks got the ascent so the statement projection can expand them.
    */
   ascentBlocks: Set<string>;
+  /**
+   * What the descent observed about return-value ascent across all hops, for the
+   * result note. Rationale — population, why it keys on observed data, and why
+   * the incompleteness flags matter — on {@link AscentCoverage}.
+   */
+  ascentCoverage: AscentCoverage;
 }> {
   const {
     lbugPath,
@@ -1599,13 +2022,37 @@ async function interproceduralDescent(input: {
   // U-C4 return-value ascent: CALL blocks whose callee has a non-empty
   // CALL_SUMMARY return-flow → the call's result depends on the slice.
   const ascentBlocks = new Set<string>();
+  // Ascent-coverage accumulators (rationale: {@link AscentCoverage}). Sets so a
+  // callee invoked from two hops is tallied once; the `Seen` suffix marks them as
+  // accumulators whose `.size` — not the set — is what gets returned.
+  const calleeReferencesSeen = new Set<string>();
+  const calleesUndecodableSeen = new Set<string>();
+  // Sticky across hops. `anyReturnFlow` is the cross-hop union being non-empty,
+  // which holds iff SOME hop's return-flowing set was — so the flag is set inside
+  // the hop's existing non-empty branch rather than accumulating another Set.
+  let anyReturnFlow = false;
+  let calleeListTruncated = false;
+  let idlessCallSites = false;
 
   hopLoop: for (let hop = 0; hop < depthBudget; hop++) {
     if (sliceBlocks.length === 0) break;
+    // Blocks this hop newly reached — the NEXT hop's slice, and therefore the set
+    // whose `calleeIds` cells the next hop gathers. Declared BEFORE the U-C4
+    // ascent below so the ascent's own newly-reached blocks land in it: they are
+    // slice blocks (they are unioned into `reachable` and published in
+    // `reachableBlocks`), so their call sites must reach the CALL_SUMMARY scan and
+    // the coverage counters exactly like a descent-reached block's.
+    const hopReached = new Set<string>();
     // Keep the CALL block → callee association (U-C4 needs it to re-seed the
     // caller's intra closure FROM the specific call block the ascent licenses);
     // the flattened id set still drives the descent's fresh-callee bookkeeping.
-    const blockCallees = await calleeIdsByBlock(lbugPath, sliceBlocks, exec);
+    const {
+      blocks: blockCallees,
+      calleeListTruncated: hopCellCapped,
+      idlessCallSites: hopIdless,
+    } = await calleeIdsByBlock(lbugPath, sliceBlocks, exec);
+    if (hopCellCapped) calleeListTruncated = true;
+    if (hopIdless) idlessCallSites = true;
     const calleeIds = new Set<string>();
     for (const { calleeIds: ids } of blockCallees) for (const id of ids) calleeIds.add(id);
 
@@ -1617,8 +2064,15 @@ async function interproceduralDescent(input: {
     // that consumes the result is captured. Monotone: only ADDS to `reachable`,
     // reusing the shared `visited` set, so it stays bounded + terminating. A
     // pre-v4 index (no CALL_SUMMARY) yields no return-flowing callees → no-op.
-    const returnFlowing = await calleesWithReturnFlow(lbugPath, [...calleeIds], exec);
+    const summaryScan = await calleesWithReturnFlow(lbugPath, [...calleeIds], exec);
+    const returnFlowing = summaryScan.returnFlowing;
+    for (const id of calleeIds) calleeReferencesSeen.add(id);
+    // An undecodable summary withholds the ascent exactly like an empty one; it
+    // is tracked only so the note reports "could not read" rather than "records
+    // no return-flow".
+    for (const id of summaryScan.undecodable) calleesUndecodableSeen.add(id);
     if (returnFlowing.size > 0) {
+      anyReturnFlow = true;
       for (const { blockId, calleeIds: ids } of blockCallees) {
         // Bound the ascent re-seeds the same way the descent bounds its per-span
         // BFS (line ~1496): a wide fan-out of return-flowing call blocks must not
@@ -1647,8 +2101,24 @@ async function interproceduralDescent(input: {
           stepLimit,
           probeLimit,
         });
+        // BOTH budgets, not just the row budget: the re-seed runs the SAME BFS
+        // under the SAME depth clamp as the top-level intra pass, whose depth
+        // exhaustion is result-level truncation.
+        //
+        // The depth fold here is a CONSISTENCY guard with no independent
+        // observable, and deliberately so — do not go hunting for the test that
+        // pins it. The re-seed shares the caller's `visited` set, so it can only
+        // discover new ground past the depth budget when the traversal that
+        // already covered this closure (the top-level intra BFS, or the callee's
+        // own BFS at a later hop) was ITSELF cut short — which has already raised
+        // one of these flags. Keeping it is what stops that reasoning from
+        // silently becoming load-bearing if the sharing of `visited` ever changes.
         if (ascent.truncatedByLimit) truncatedByLimit = true;
-        for (const id of ascent.reachable) reachable.add(id);
+        if (ascent.truncatedByDepth) truncatedByDepth = true;
+        for (const id of ascent.reachable) {
+          reachable.add(id);
+          hopReached.add(id);
+        }
       }
     }
 
@@ -1672,7 +2142,7 @@ async function interproceduralDescent(input: {
         const { anchorClause, queryParams } = blockAnchorForResolvedSymbol(span);
         const rawSeedRows = await exec(
           lbugPath,
-          `MATCH (a:BasicBlock) WHERE ${anchorClause} RETURN a.id AS id LIMIT ${probeLimit}`,
+          seedBlockQuery(anchorClause, probeLimit),
           queryParams,
         );
         const exceeded = rawSeedRows.length > stepLimit;
@@ -1714,7 +2184,6 @@ async function interproceduralDescent(input: {
       ),
     );
 
-    const hopReached = new Set<string>();
     for (let si = 0; si < spans.length; si++) {
       // Node budget is checked INSIDE the per-span MERGE (in span order) so the
       // mid-hop short-circuit stays byte-identical: the cumulative reachable size
@@ -1740,6 +2209,13 @@ async function interproceduralDescent(input: {
       const bfs = spanBfs[si];
       if (bfs === null) continue;
       if (bfs.truncatedByLimit) truncatedByLimit = true;
+      // A callee whose own dependence chain outruns `intraDepthBudget` is the SAME
+      // kind of incompleteness the top-level intra BFS reports through this flag
+      // (the budget is deliberately the same clamp — see `intraDepthBudget`), so
+      // it folds into the same result-level signal. Without this the slice could
+      // stop mid-callee while `truncated` stayed false and `examinedComplete`
+      // published a false all-clear over the callees past the frontier.
+      if (bfs.truncatedByDepth) truncatedByDepth = true;
       // The per-callee BFS ran against a clone, so fold its discovered blocks
       // into the shared `visited`/`reachable` here (the sequential path did this
       // inside the BFS); Sets dedup, so order across siblings is irrelevant.
@@ -1756,9 +2232,12 @@ async function interproceduralDescent(input: {
     }
     sliceBlocks = [...hopReached];
   }
-  // Frontier of callees still expandable after the hop budget ⇒ depth truncation.
-  // (Conservative: if the last hop reached blocks AND we used the full budget,
-  // deeper callees may exist.)
+  // Frontier of callees still expandable after the FUNCTION-hop budget ⇒ depth
+  // truncation. (Conservative: if the last hop reached blocks AND we used the full
+  // budget, deeper callees may exist.) This is the hop-level source; the per-callee
+  // and ascent BFS passes above fold their own block-hop depth exhaustion into the
+  // same flag, so `truncatedByDepth` means "some dependence frontier was cut by a
+  // depth budget", at either granularity.
   if (hopsReached >= depthBudget && sliceBlocks.length > 0) truncatedByDepth = true;
 
   return {
@@ -1768,6 +2247,13 @@ async function interproceduralDescent(input: {
     truncatedByLimit,
     truncatedByNodeCap,
     ascentBlocks,
+    ascentCoverage: {
+      references: calleeReferencesSeen.size,
+      anyReturnFlow,
+      undecodable: calleesUndecodableSeen.size,
+      listTruncated: calleeListTruncated,
+      idlessCallSites,
+    },
   };
 }
 
@@ -1841,7 +2327,7 @@ export async function runImpactPDG(deps: RunPdgImpactDeps): Promise<PdgImpactRes
   const probeLimit = stepLimit + 1;
   const rawSeedRows = await exec(
     repo.lbugPath,
-    `MATCH (a:BasicBlock) WHERE ${anchorClause} RETURN a.id AS id LIMIT ${probeLimit}`,
+    seedBlockQuery(anchorClause, probeLimit),
     queryParams,
   );
   const seedRows = rawSeedRows.slice(0, stepLimit) as Array<Record<string, unknown>>;
@@ -1966,6 +2452,13 @@ export async function runImpactPDG(deps: RunPdgImpactDeps): Promise<PdgImpactRes
   // call lines (a coalesced call block spans several statements whose results
   // chain through it — the statement-granularity realisation of the ascent).
   let ascentBlocks = new Set<string>();
+  // Observed ascent inputs, plumbed to the note AND to `pdgEvidence.ascent`
+  // (rationale: AscentCoverage). Left UNDEFINED when the descent never ran (an
+  // upstream slice): "nothing was scanned" is a different fact from "we scanned
+  // and found nothing", and a zeroed record would publish the second. The note's
+  // ascent branch is gated on `interproceduralHops > 0`, which only a descent can
+  // produce, so the prose is unaffected either way.
+  let ascentCoverage: AscentCoverage | undefined;
   if (direction === 'downstream') {
     const interproc = await interproceduralDescent({
       lbugPath: repo.lbugPath,
@@ -1992,6 +2485,7 @@ export async function runImpactPDG(deps: RunPdgImpactDeps): Promise<PdgImpactRes
     });
     interproceduralHops = interproc.hopsReached;
     ascentBlocks = interproc.ascentBlocks;
+    ascentCoverage = interproc.ascentCoverage;
     for (const id of interproc.reachable) reachable.add(id);
     if (interproc.truncatedByDepth) truncatedByDepth = true;
     if (interproc.truncatedByLimit) truncatedByLimit = true;
@@ -2128,6 +2622,27 @@ export async function runImpactPDG(deps: RunPdgImpactDeps): Promise<PdgImpactRes
       ...(truncated ? { truncated: true } : {}),
       ...(truncatedBy ? { truncatedBy } : {}),
       ...(truncatedByReasons ? { truncatedByReasons } : {}),
+      // The descent may well have RUN and scanned callees before the slice turned
+      // out to reach no DISTINCT downstream block (a seed line whose only callee
+      // is invoked directly on it). `pdgEvidence.ascent` is contracted as "present
+      // iff the inter-procedural descent ran", so it must be published here too —
+      // omitting it made the documented "absent ⇒ nothing was scanned" reading
+      // false on exactly this exit. Classified through the SAME shared helpers the
+      // assembled slice result uses, so the two exits cannot disagree.
+      ...(ascentCoverage
+        ? {
+            pdgEvidence: {
+              ascent: publishedAscentCoverage({
+                coverage: ascentCoverage,
+                incompleteReasons: ascentIncompleteReasonsOf({
+                  truncated,
+                  coverage: ascentCoverage,
+                }),
+                callSummaryAvailable,
+              }),
+            },
+          }
+        : {}),
       ...emptyPdgParityFields(),
     };
   }
@@ -2159,6 +2674,7 @@ export async function runImpactPDG(deps: RunPdgImpactDeps): Promise<PdgImpactRes
     truncatedByReasons,
     interproceduralHops,
     callSummaryAvailable,
+    ascentCoverage,
   });
 }
 

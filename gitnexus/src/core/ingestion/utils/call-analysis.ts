@@ -555,11 +555,48 @@ export function extractCallChain(
  * Deliberately EXCLUDES a cast (`x as T`, `(T)x`): a cast changes the type an
  * expression denotes, so reading through one would type the receiver as the
  * operand rather than as the cast target.
+ *
+ * Keyed by node type; the value is the operator text that has to TERMINATE the
+ * node for the peel to apply, or `null` for a node type that is transparent
+ * unconditionally.
+ *
+ * The gated entry exists because Swift force-unwrap (`self.a!`) is the exact
+ * semantic of TypeScript's `non_null_expression` — it yields the wrapped type —
+ * but Swift parses it as the general `postfix_expression`, which ALSO carries
+ * user-defined postfix operators. Those can return anything, so peeling that
+ * node type unconditionally would type the receiver as the operand and could
+ * produce a confidently wrong owner. Reading the operator keeps the peel to the
+ * case that is provably type-preserving.
  */
-const TRANSPARENT_RECEIVER_WRAPPERS = new Set([
-  'non_null_expression', // TypeScript `svc!`
-  'parenthesized_expression', // `(svc)`
+const TRANSPARENT_RECEIVER_WRAPPERS = new Map<string, string | null>([
+  ['non_null_expression', null], // TypeScript `svc!`
+  ['parenthesized_expression', null], // `(svc)`
+  // NOT Swift-only: Kotlin's `!!` non-null assertion parses as the same node type
+  // and is equally type-preserving, so it is peeled too. Measured — the
+  // receiver-resolution bench moved `kotlin.nonNullAssert` VISIBLE-GAP ->
+  // RESOLVES when this landed, which is how the Kotlin effect was discovered
+  // rather than assumed. Any other grammar emitting `postfix_expression` is
+  // affected as well; the `!` gate, not the language, is what bounds this.
+  ['postfix_expression', '!'], // Swift `self.a!`, Kotlin `a!!`
 ]);
+
+/** Is `node` a wrapper that denotes exactly what its operand denotes? */
+function isTransparentReceiverWrapper(node: SyntaxNode): boolean {
+  // `node.type` is a native getter, and this predicate runs on every receiver
+  // node. Crossing it twice for two separate table lookups measured 376 ns/check
+  // against 188 ns for the single read below.
+  const operator = TRANSPARENT_RECEIVER_WRAPPERS.get(node.type);
+  // `undefined` is "not in the table"; `null` is "in the table, ungated". The
+  // two are distinguishable, so one `get` answers both questions — no separate
+  // `has` probe, and one crossing of the native `node.type` getter.
+  if (operator === undefined) return false;
+  if (operator === null) return true;
+  // The operator is an anonymous token, so it is not in `namedChildren`; the
+  // node's own text is the reliable place to read it. Deliberately NOT
+  // `node.lastChild` — measured 3x SLOWER (the child wrapper allocation
+  // dominates), and the token surfaces with type `bang`, not `!`.
+  return node.text.trimEnd().endsWith(operator);
+}
 
 /**
  * Iteration bound for the wrapper peel. Its OWN constant, not `MAX_CHAIN_DEPTH`.
@@ -575,11 +612,7 @@ const MAX_TRANSPARENT_WRAPPER_DEPTH = 3;
 /** Peel transparent wrappers off a base receiver node. */
 function unwrapTransparentReceiver(node: SyntaxNode): SyntaxNode {
   let current = node;
-  for (
-    let i = 0;
-    i < MAX_TRANSPARENT_WRAPPER_DEPTH && TRANSPARENT_RECEIVER_WRAPPERS.has(current.type);
-    i++
-  ) {
+  for (let i = 0; i < MAX_TRANSPARENT_WRAPPER_DEPTH && isTransparentReceiverWrapper(current); i++) {
     const inner = current.namedChildren?.find((c) => c !== null);
     if (inner === undefined || inner === null) break;
     current = inner;
