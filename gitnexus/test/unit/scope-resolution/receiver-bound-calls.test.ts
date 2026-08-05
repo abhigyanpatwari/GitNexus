@@ -27,6 +27,10 @@ vi.mock(
       typeof import('../../../src/core/ingestion/scope-resolution/passes/compound-receiver.js')
     >()),
     resolveCompoundReceiverClass: resolveCompoundReceiverClassMock,
+    resolveCompoundReceiverTyped: (...args: Parameters<typeof resolveCompoundReceiverClassMock>) => {
+      const def = resolveCompoundReceiverClassMock(...args);
+      return def === undefined ? undefined : { def, declaredSpelling: undefined };
+    },
   }),
 );
 
@@ -198,7 +202,7 @@ describe('emitReceiverBoundCalls provider outcomes', () => {
     const handledSites = new Set<string>();
     const outcomes: ResolutionOutcome[] = [];
 
-    const emitted = emitReceiverBoundCalls(
+    const result = emitReceiverBoundCalls(
       graph,
       resolutionIndexes,
       [parsed],
@@ -218,7 +222,7 @@ describe('emitReceiverBoundCalls provider outcomes', () => {
       { recordResolutionOutcome: (outcome) => outcomes.push(outcome) },
     );
 
-    expect(emitted).toBe(0);
+    expect(result.emitted).toBe(0);
     expect(graph.relationships.filter((relationship) => relationship.type === 'CALLS')).toEqual([]);
     expect(handledSites).toContain(`${FILE}:30:4`);
     expect(outcomes).toEqual([

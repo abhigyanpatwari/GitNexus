@@ -69,6 +69,7 @@ function buildMethodInfo(node: SyntaxNode, context: MethodExtractorContext): Met
       annotations: ['objc:block-literal'],
       sourceFile: context.filePath,
       line: node.startPosition.row + 1,
+      column: node.startPosition.column,
     };
   }
   const signature = extractObjectiveCMethodSignature(node);
@@ -91,6 +92,7 @@ function buildMethodInfo(node: SyntaxNode, context: MethodExtractorContext): Met
     annotations: [],
     sourceFile: context.filePath,
     line: node.startPosition.row + 1,
+    column: node.startPosition.column,
   };
 }
 

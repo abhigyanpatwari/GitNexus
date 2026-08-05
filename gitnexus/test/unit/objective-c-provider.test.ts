@@ -147,4 +147,22 @@ describe('Objective-C language provider registration', () => {
       typeAsReceiverHeuristic: true,
     });
   });
+
+  it('records zero-based source columns for methods and block literals', () => {
+    const provider = getProvider(SupportedLanguages.ObjectiveC);
+    const tree = parse(`@implementation Store
+  - (void)save {
+    void (^handler)(void) = ^{ };
+  }
+@end`);
+    const method = tree.rootNode.descendantsOfType('method_definition')[0];
+    const block = tree.rootNode.descendantsOfType('block_literal')[0];
+    const context = {
+      filePath: 'Store.m',
+      language: SupportedLanguages.ObjectiveC,
+    };
+
+    expect(provider.methodExtractor?.extractFromNode?.(method, context)?.column).toBe(2);
+    expect(provider.methodExtractor?.extractFromNode?.(block, context)?.column).toBe(28);
+  });
 });
