@@ -63,7 +63,16 @@ import {
   GITHUB_TOKEN_HOSTS,
 } from './git-clone.js';
 import { createAnalyzeUploadHandler } from './analyze-upload.js';
-import { createLocalhostOriginGuard, normalizeBoundHost } from './middleware.js';
+import {
+  assertServeAuthForPublicOrigin,
+  createPublicOriginMatcher,
+  createWriteOriginGuard,
+  logOriginPolicy,
+  PUBLIC_ORIGIN_ENV,
+  resolveTrustProxy,
+  TRUST_PROXY_ENV,
+  warnIfRateLimitKeysCollapse,
+} from './middleware.js';
 import { createLaunchAnalysisWorker } from './analyze-launch.js';
 import { UPLOAD_ROOT } from './upload-paths.js';
 import { sweepStaleUploads } from './upload-sweep.js';
@@ -85,6 +94,8 @@ const pkg = _require('../../package.json');
  *     172.16.0.0/12   → 172.16.x.x – 172.31.x.x
  *     192.168.0.0/16  → 192.168.x.x
  * - https://gitnexus.vercel.app — the deployed GitNexus web UI
+ * - the origin named by GITNEXUS_PUBLIC_ORIGIN, when set — matched on hostname
+ *   always, and on scheme and port when the configured value carries them
  *
  * @param origin - The value of the HTTP `Origin` request header, or `undefined`
  *                 when the header is absent (non-browser request).
@@ -110,21 +121,22 @@ export const isAllowedOrigin = (origin: string | undefined): boolean => {
 
   // RFC 1918 private network ranges — allow any port on these hosts.
   // We parse the hostname out of the origin URL and check against each range.
-  let hostname: string;
-  let protocol: string;
+  let parsed: URL;
   try {
-    const parsed = new URL(origin);
-    hostname = parsed.hostname;
-    protocol = parsed.protocol;
+    parsed = new URL(origin);
   } catch {
     // Malformed origin — reject
     return false;
   }
 
   // Only allow HTTP(S) origins — reject ftp://, file://, etc.
-  if (protocol !== 'http:' && protocol !== 'https:') return false;
+  if (parsed.protocol !== 'http:' && parsed.protocol !== 'https:') return false;
 
-  return isRfc1918PrivateIpv4(hostname);
+  // The matcher is rebuilt per call, so changing the env var takes effect
+  // without a restart. The write guard in middleware.ts snapshots it instead.
+  if (createPublicOriginMatcher(process.env[PUBLIC_ORIGIN_ENV])?.matches(parsed)) return true;
+
+  return isRfc1918PrivateIpv4(parsed.hostname);
 };
 
 type GraphStreamRecord =
@@ -703,6 +715,11 @@ export function validateAnalyzeToken(
 }
 
 export const createServer = async (port: number, host: string = '127.0.0.1') => {
+  // Refuse a public-origin config before anything is opened or bound: `serve`
+  // has no authentication yet, so the setting that makes a public bind usable
+  // must not be usable either. Throws — `serve` reports it and exits non-zero.
+  assertServeAuthForPublicOrigin();
+
   // Surface a cleartext Azure DevOps PAT config at boot (operators rarely
   // read per-request logs). Warn-only — http:// self-hosted stays supported.
   warnIfInsecureAzureConfig();
@@ -710,26 +727,13 @@ export const createServer = async (port: number, host: string = '127.0.0.1') => 
   const app = express();
   app.disable('x-powered-by');
 
-  // Trust X-Forwarded-* headers only when the connection comes from the
-  // local loopback or RFC1918 private/link-local addresses — exactly the
-  // origins the CORS allowlist accepts. Without this, every request behind
-  // any reverse proxy / Docker bridge counts as the same `req.ip` and a
-  // single user can trip the per-IP rate limiter for everyone.
-  //
-  // SCOPE: this setting is process-wide. Every middleware and route in this
-  // Express app sees req.ip resolved from X-Forwarded-For when the upstream
-  // hop is in the trusted set above — not just the rate-limited routes.
-  // Future IP-based middleware (audit logging, IP-bound authz) inherits this
-  // behavior.
-  //
-  // CLOUD-DEPLOY CAVEAT: a public cloud LB (AWS ALB, Cloudflare, Fly.io
-  // edge, CGNAT 100.64/10) is NOT in the trusted set. In those topologies
-  // req.ip will collapse to the LB hop IP for every request and the per-IP
-  // rate limiter degrades to per-server. Add an explicit env-var override
-  // and document the cloud-deploy story before binding to a non-loopback
-  // host in those topologies (tracked as a follow-up; not blocking for the
-  // local-bound default).
-  app.set('trust proxy', 'loopback, linklocal, uniquelocal');
+  // Which upstream hops may set X-Forwarded-*. Process-wide: every route's
+  // req.ip, and so the per-IP rate limiter, resolves through this.
+  app.set('trust proxy', resolveTrustProxy(process.env[TRUST_PROXY_ENV]));
+  // resolveTrustProxy validates the value in isolation; only here do we know
+  // what we bound, and so whether the default is about to collapse the per-IP
+  // rate limit to one global limit behind a load balancer.
+  warnIfRateLimitKeysCollapse(host);
 
   // Chromium Private Network Access (required since Chrome 130+). Must run before
   // cors: the cors middleware ends OPTIONS preflight responses, so this header
@@ -753,21 +757,10 @@ export const createServer = async (port: number, host: string = '127.0.0.1') => 
   );
   app.use(express.json({ limit: '10mb' }));
 
-  // Same-host origin guard for write routes. Only allows loopback and the
-  // server's own bound host — scoped to prevent CSRF from other LAN devices.
-  const requireLocalhostOrigin = createLocalhostOriginGuard(host);
-
-  // A wildcard bind (`0.0.0.0`/`::`) has no single host identity for the
-  // same-host check, so browser write routes accept only loopback origins.
-  // Warn the operator so a remote-access deployment isn't silently write-blocked.
-  if (host && normalizeBoundHost(host) === undefined) {
-    logger.warn(
-      { host },
-      `[gitnexus serve] Bound to a wildcard address (${host}); browser write routes ` +
-        `accept only loopback origins (localhost/127.0.0.1/[::1]). To allow writes from a ` +
-        `specific LAN address, bind --host <that-address> instead of a wildcard.`,
-    );
-  }
+  // Origin guard for write routes: loopback, the server's own bound host, and
+  // any configured public origin — prevents CSRF from other devices.
+  const requireTrustedOrigin = createWriteOriginGuard(host, port);
+  logOriginPolicy(host);
 
   // No explicit OPTIONS route is registered. The Chromium Private Network
   // Access header is set by the global middleware above (pre-cors), and
@@ -988,7 +981,7 @@ export const createServer = async (port: number, host: string = '127.0.0.1') => 
   // Rate-limited (CodeQL js/missing-rate-limiting): destructive operation
   // doing fs.rm of clone + storage dirs. Default 60 rpm/IP is generous for
   // delete; tighten if abuse is observed.
-  app.delete('/api/repo', createRouteLimiter(), requireLocalhostOrigin, async (req, res) => {
+  app.delete('/api/repo', createRouteLimiter(), requireTrustedOrigin, async (req, res) => {
     try {
       const repoName = requestedRepo(req);
       if (!repoName) {
@@ -1496,7 +1489,7 @@ export const createServer = async (port: number, host: string = '127.0.0.1') => 
   app.post(
     '/api/analyze',
     createRouteLimiter({ limit: 10 }),
-    requireLocalhostOrigin,
+    requireTrustedOrigin,
     async (req, res) => {
       try {
         const {
@@ -1535,9 +1528,10 @@ export const createServer = async (port: number, host: string = '127.0.0.1') => 
         // (both collapse `..` identically) and only false-rejected trailing
         // slashes, so it is dropped. Analyzing a local path the operator names
         // is the tool's intended capability (same as the CLI); the dangerous
-        // part was cross-origin reach, which is closed by requireLocalhostOrigin
-        // on this route (scoped to the server's own bound host — other LAN
-        // devices are NOT trusted). We only require an absolute path here and
+        // part was cross-origin reach, which is closed by requireTrustedOrigin
+        // on this route (scoped to loopback, the server's own bound host, and a
+        // configured GITNEXUS_PUBLIC_ORIGIN — other LAN devices are NOT
+        // trusted). We only require an absolute path here and
         // let the analyze worker surface a clear error if it does not exist.
         // (We do NOT realpath/stat the path in-route: that would be a
         // user-controlled filesystem read — CodeQL js/path-injection — for no
@@ -1627,7 +1621,7 @@ export const createServer = async (port: number, host: string = '127.0.0.1') => 
   app.post(
     '/api/analyze/upload',
     createRouteLimiter({ limit: 5 }),
-    requireLocalhostOrigin,
+    requireTrustedOrigin,
     createAnalyzeUploadHandler({
       createJob: (params) => jobManager.createJob(params),
       launch: (job, targetPath, opts) => launchAnalysisWorker(job, targetPath, opts),
@@ -1659,7 +1653,7 @@ export const createServer = async (port: number, host: string = '127.0.0.1') => 
   mountSSEProgress(app, '/api/analyze/:jobId/progress', jobManager);
 
   // DELETE /api/analyze/:jobId — cancel a running analysis job
-  app.delete('/api/analyze/:jobId', requireLocalhostOrigin, (req, res) => {
+  app.delete('/api/analyze/:jobId', requireTrustedOrigin, (req, res) => {
     const jobId = req.params.jobId as string;
     const job = jobManager.getJob(jobId);
     if (!job) {
@@ -1682,7 +1676,7 @@ export const createServer = async (port: number, host: string = '127.0.0.1') => 
   app.post(
     '/api/embed',
     createRouteLimiter({ limit: 20 }),
-    requireLocalhostOrigin,
+    requireTrustedOrigin,
     async (req, res) => {
       try {
         const entry = await resolveRepo(requestedRepo(req));
@@ -1981,7 +1975,7 @@ export const createServer = async (port: number, host: string = '127.0.0.1') => 
   mountSSEProgress(app, '/api/embed/:jobId/progress', embedJobManager);
 
   // DELETE /api/embed/:jobId — cancel embedding job
-  app.delete('/api/embed/:jobId', requireLocalhostOrigin, (req, res) => {
+  app.delete('/api/embed/:jobId', requireTrustedOrigin, (req, res) => {
     const jobId = req.params.jobId as string;
     const job = embedJobManager.getJob(jobId);
     if (!job) {
