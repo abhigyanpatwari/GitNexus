@@ -15,6 +15,8 @@ import { randomUUID } from 'node:crypto';
 import { retryRename } from '../storage/fs-atomic.js';
 import { acquireIndexLock } from '../storage/index-lock.js';
 import { runPipelineFromRepo } from './ingestion/pipeline.js';
+import { logger } from './logger.js';
+import type { ResolutionOutcome } from './ingestion/scope-resolution/resolution-outcome.js';
 import { summarizeUnresolvedReceivers } from './ingestion/scope-resolution/unresolved-receivers.js';
 import type { KnowledgeGraph } from './graph/types.js';
 import { resetDegradedParseCounter } from './tree-sitter/safe-parse.js';
@@ -2899,6 +2901,8 @@ async function runFullAnalysisInner(
     const newFileHashesRecord: Record<string, string> = {};
     for (const [k, v] of newFileHashes) newFileHashesRecord[k] = v;
 
+    logUnresolvedReceiverFiles(pipelineResult.resolutionOutcomes ?? []);
+
     // Annotated so the capabilities stamp below is compile-checked against
     // RepoMeta's status unions (tri-review 4669518496 P1/U3) — an unannotated
     // literal widens the vectorSearch.status ternary to `string` and the
@@ -3235,4 +3239,48 @@ async function runFullAnalysisInner(
     }
     throw err;
   }
+}
+
+/** Files named in the per-file receiver-drop line. Bounded: this is a signpost
+ *  pointing at where to look, not an inventory. */
+const UNRESOLVED_RECEIVER_FILE_SAMPLE = 10;
+
+/**
+ * Report which FILES lost the most call sites to an untyped receiver (#2837).
+ *
+ * `summarizeUnresolvedReceivers` persists the same drops keyed by member NAME,
+ * capped at 500 distinct names, and discards `filePath` — deliberately, because
+ * its consumer (`impact()`'s exact-vs-lower-bound verdict) asks "is this
+ * symbol's caller count trustworthy", a question about names.
+ *
+ * That leaves "why does THIS file resolve nothing while its sibling resolves
+ * everything" unanswerable from any artifact, which is exactly what #2837 asked
+ * for and could not run: comparing the drop records of two files with identical
+ * declared shapes separates "receiver never typed" from "typed but no edge
+ * emitted", and narrows a per-file split in one run instead of a bisect.
+ *
+ * A log line rather than a persisted field on purpose — nothing queries it, and
+ * a new `RepoMeta` field would move SCHEMA_FINGERPRINT and force a rebuild for
+ * a diagnostic.
+ */
+function logUnresolvedReceiverFiles(outcomes: readonly ResolutionOutcome[]): void {
+  const byFile = new Map<string, number>();
+  for (const outcome of outcomes) {
+    if (outcome.kind !== 'suppressed' || outcome.reason !== 'receiver-unresolved') continue;
+    byFile.set(outcome.filePath, (byFile.get(outcome.filePath) ?? 0) + 1);
+  }
+  if (byFile.size === 0) return;
+  const ranked = [...byFile.entries()]
+    // Count first, then path — a stable order so two runs over the same repo
+    // produce the same line and a diff of analyze output means something.
+    .sort((a, b) => b[1] - a[1] || a[0].localeCompare(b[0]))
+    .slice(0, UNRESOLVED_RECEIVER_FILE_SAMPLE)
+    .map(([filePath, sites]) => ({ filePath, sites }));
+  let total = 0;
+  for (const [, n] of byFile) total += n;
+  logger.info(
+    { totalSites: total, filesAffected: byFile.size, topFiles: ranked },
+    'receiver-unresolved call sites by file (top offenders; a file far above its ' +
+      'siblings usually means its receivers were never typed, not that it has more calls)',
+  );
 }
