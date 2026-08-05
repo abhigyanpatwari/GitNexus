@@ -3592,7 +3592,16 @@ describe('TypeScript chain-typed receiver folding to an interface (Case 3b, #283
     expect(primary.map((e) => basename(e.targetFilePath))).toEqual(['repository.ts']);
   });
 
-  it('fans out to every implementation of the folded interface', () => {
+  // KNOWN GAP: "every implementation" holds for this fixture's hierarchy shape
+  // (`class X implements I`) only. TypeScript emits heritage edges for
+  // `class_declaration` alone (languages/typescript/captures.ts:749, stated in
+  // its own docstring at :732-733), so `abstract class X implements I` and
+  // `interface B extends A` produce NO heritage edge and the subtype closure
+  // has nothing to descend — both shapes still dead-end on the bodiless
+  // declaration. That is a capture-layer gap predating this fan-out, not
+  // something Case 3b can fix; this assertion must not be read as proof the
+  // closure is complete.
+  it('fans out to every implementation declared as a direct `implements`', () => {
     expect(
       fanout()
         .map((e) => basename(e.targetFilePath))
@@ -3606,10 +3615,17 @@ describe('TypeScript chain-typed receiver folding to an interface (Case 3b, #283
 
   // Stronger negative than the PlainCache case below: here an interface IS in
   // scope (SqlRepo implements Repo) and `save` is a name Repo declares, yet the
-  // receiver's folded type is the concrete class, so nothing may fan out. Note
-  // this cannot catch "member owner passed instead of folded type" in
-  // TypeScript — an implementing class always declares the member itself, so
-  // the MRO walk never settles on the interface's bodiless declaration.
+  // receiver's folded type is the concrete class, so nothing may fan out.
+  //
+  // This does NOT catch "member owner passed instead of folded type". The
+  // reason is a property of TypeScript, not of the control: TS's MRO chain
+  // never contains an implemented interface, so the walk cannot settle on an
+  // interface declaration for a concrete receiver and the two values coincide.
+  // (Not, as an earlier draft of this comment claimed, because an implementing
+  // class always declares the member itself — `class C extends Base implements
+  // I {}` is valid TS and inherits it.) The mutation IS expressible where a
+  // concrete class inherits a `default` interface method — Java or Kotlin —
+  // and is tracked for a follow-up fixture there.
   it('emits no fan-out when the chain folds to a concrete implementor', () => {
     const concrete = getRelationships(result, 'CALLS').filter(
       (e) => e.source === 'runConcrete' && e.target === 'save',

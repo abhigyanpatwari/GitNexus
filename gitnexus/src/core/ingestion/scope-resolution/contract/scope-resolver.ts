@@ -115,8 +115,13 @@
  *          it intercepts every bare-`this` call/read/write site ahead of
  *          Case 4 and does NOT emit the interface-dispatch fan-out that
  *          Cases 0, 3b and 4 all perform (Case 0 gained it in #2829 and
- *          Case 3b in #2832, leaving 0.5 the ONLY case that folds or walks
- *          to a receiver type without fanning out), so enabling the toggle
+ *          Case 3b in #2832, leaving 0.5 the only case that FOLDS or walks
+ *          an MRO to a receiver type without fanning out — Cases 3 and 5
+ *          also resolve a receiver type without fanning out, but by direct
+ *          lookup rather than a fold or MRO walk, and no language is known
+ *          to reach either with an Interface: every one that could strips
+ *          the namespace qualifier first, sending it to Case 4), so
+ *          enabling the toggle
  *          for a language changes that language's `this` dispatch
  *          semantics (see the toggle's doc below)
  *       4. Case 1 namespace-receiver

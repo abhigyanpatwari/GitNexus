@@ -18,8 +18,8 @@
  *      toggle unset skip this case entirely; their `this` sites fall
  *      through to Case 4 via the synthesized `this` typeBinding (which
  *      emits the interface-dispatch fan-out that this case does not —
- *      as does Case 0 since #2829; Case 0.5 remains the only resolving
- *      case without it).
+ *      as do Cases 0 since #2829 and 3b since #2832; Case 0.5 remains
+ *      the only fold-or-walk case without it).
  *   4. **Case 1 (namespace)** — receiver in `namespaceTargets` → exported def
  *   5. **Case 2 (class-name / static receiver)** — receiver resolves to a
  *      class-like binding (Class/Interface/Struct/Record/Enum/Trait) → MRO
@@ -29,7 +29,9 @@
  *   6. **Case 3 (dotted typeBinding for namespace prefix)** —
  *      `typeRef.rawName` like `models.User`
  *   7. **Case 3b (chain-typebinding)** — `typeRef.rawName` has a dot
- *      but not a namespace prefix → compound resolver
+ *      but not a namespace prefix → compound resolver. Also emits the
+ *      interface-dispatch fan-out when the folded receiver type is an
+ *      Interface (#2832) — same call Cases 0 and 4 make.
  *   8. **Case 4 (simple typeBinding)** — `typeRef.rawName` has no dot →
  *      MRO walk + `findOwnedMember`
  *   9. **Case 5 (value-receiver bridge)** — receiver is a `Const`/`Variable`
@@ -1363,6 +1365,13 @@ export function emitReceiverBoundCalls(
             // that class. `emitInterfaceDispatchFor` self-gates on
             // `ownerDef.type !== 'Interface'`, so this is inert for every
             // concrete receiver and needs no language check of its own.
+            //
+            // That gate is deliberately narrower than "the primary landed on
+            // something bodiless": a chain folding to an ABSTRACT class also
+            // dead-ends on a declaration-only member and does NOT fan out
+            // here. Widening it to `|| isDeclarationOnly(memberDef)` would
+            // cover that, but it changes Cases 0 and 4 identically and for
+            // every language, so it is not #2832's to make.
             //
             // Confidence mirrors THIS case's own primary emit above — the 0.85
             // literal — so a site's dispatch edges never claim more certainty
