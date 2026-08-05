@@ -78,6 +78,7 @@ export { pythonMergeBindings } from './merge-bindings.js';
 export { pythonArityCompatibility } from './arity.js';
 export {
   isPythonImportedModule,
+  pythonNamespaceReceiverPaths,
   resolvePythonImportTarget,
   type PythonResolveContext,
 } from './import-target.js';

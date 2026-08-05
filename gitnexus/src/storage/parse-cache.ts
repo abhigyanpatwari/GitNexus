@@ -222,29 +222,33 @@ import type { ParseWorkerResult } from '../core/ingestion/workers/parse-worker.j
 // value is unchanged by the rebase — the reason it was chosen is simply now
 // visible in the history above. RE-CHECK AGAINST origin/main IMMEDIATELY
 // BEFORE MERGING; this file records eight prior collisions, two EXACT.
-//
-// 43 -> 44: #2837 re-anchors Go's struct/interface captures from the
+// Moved 43 -> 44 for #2842's TypeScript heritage capture, which now emits
+// `@reference.inherits` for `interface_declaration` and
+// `abstract_class_declaration`. That is PARSE-TIME emission, so a v43 warm
+// cache would serve entries that are missing those matches entirely — the
+// exact failure a bump exists to prevent. Verified against origin/main at
+// a857f4c5a, which is still on 43, so 44 is free. RE-CHECK BEFORE MERGE.
+
+// 44 -> 45: #2837 re-anchors Go's struct/interface captures from the
 // `type_declaration` onto the `type_spec` (`languages/go/query.ts`
 // @scope.class/@declaration.struct/@declaration.interface, and GO_QUERIES
 // @definition.struct/@definition.interface in `tree-sitter-queries.ts`). Every
 // Go file declaring a type therefore emits DIFFERENT capture ranges — measured:
 // 70 fixture digests moved with zero change in capture COUNT — and a grouped
-// `type (...)` block emits nodes it previously did not emit at all. That is a
-// parse-time capture change, so a warm parse cache would replay pre-fix
-// ParsedFiles and the fix would be a silent no-op on every incremental analyze
-// while still passing every cold-run test. Re-checked against origin/main at
-// a857f4c5a: still 43 there, so 44 was free.
+// `type (...)` block emits nodes it previously did not emit at all. Parse-time,
+// so a warm cache would replay pre-fix ParsedFiles and the fix would be a silent
+// no-op on every incremental analyze while still passing every cold-run test.
 //
-// RE-CHECK AGAINST origin/main IMMEDIATELY BEFORE MERGING. 44 is CONTESTED at
-// the time of writing: PR #2842 (open, non-draft) and PR #2840 (draft) both also
-// move 43 -> 44. Whichever lands first takes it and the others MUST move to the
-// next free integer. Note that the pin test cannot catch this for you — every
-// competing PR asserts `toBe(44)`, so the assertion passes even when main is
-// already 44, and two different capture schemas then share one
-// PARSE_CACHE_VERSION. Because the durable ParsedFile store replays cached
-// ParsedFiles verbatim on a version hit, the losing PR's capture change becomes
-// a silent no-op for warm-cache users with every cold-run test still green.
-const SCHEMA_BUMP = 44;
+// This branch originally took 44 and it COLLIDED: #2842 above merged first and
+// claimed it. The ninth entry in this ledger, and the third EXACT clash. Worth
+// recording HOW it was caught, because the pin test cannot catch it — both PRs
+// asserted `toBe(44)`, which passes even when main is already 44, so the two
+// capture schemas would have shared one PARSE_CACHE_VERSION and the durable
+// ParsedFile store would have replayed pre-fix ParsedFiles verbatim for one of
+// them. Only comparing against origin/main at MERGE time surfaces it.
+// PR #2840 (Objective-C, draft) still claims 44 as well — it must move too.
+// RE-CHECK AGAINST origin/main IMMEDIATELY BEFORE MERGING.
+const SCHEMA_BUMP = 45;
 const GITNEXUS_PKG_VERSION = (() => {
   try {
     // package.json sits at gitnexus/package.json — two levels up from
