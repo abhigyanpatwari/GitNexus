@@ -49,8 +49,10 @@ const LUA_SCOPE_QUERY = `
 
 ;; ── Declarations — middleclass classes: class("Name"[, Parent]) ──────────────
 ;;   local Foo = class("Foo", Parent) — class() is a plain call; the first
-;;   string arg is the class name (quotes stripped in captures.ts). The second
-;;   arg (Parent) → EXTENDS is Phase B2b (heritage marker).
+;;   string arg is the class name (quotes stripped in captures.ts) and emits a
+;;   Class node. The parent arg (Parent) → EXTENDS is captured by the separate
+;;   HERITAGE_QUERY below (snapshotted via the capture side channel; see
+;;   captures.ts + heritage.ts) — this pattern only matches the 1-arg form.
 (call
   function: (variable name: (identifier) @_class)
   arguments: (argument_list (expression_list (string) @declaration.name))
@@ -99,8 +101,43 @@ const LUA_SCOPE_QUERY = `
     field: (identifier) @reference.name)) @reference.call.member
 `;
 
+// ── Heritage queries (run in the parse worker where the AST is live; the
+//    pairs are snapshotted onto ParsedFile.captureSideChannel so the main-
+//    thread heritage hook emits edges WITHOUT re-reading/re-parsing). ────────
+
+// local Foo = class("Foo", Parent) — 2nd arg is a bare (variable name:).
+// class("Foo") (no parent) does not match: this pattern requires the trailing
+// variable, so parentless classes correctly emit no EXTENDS edge.
+const HERITAGE_QUERY = `
+(call
+  function: (variable name: (identifier) @_class)
+  arguments: (argument_list
+    (expression_list
+      (string) @child.name
+      (variable name: (identifier) @parent.name)))
+  (#eq? @_class "class")) @heritage
+`;
+
+// function ClassName:method() (colon) and function ClassName.method() (dot).
+// The receiver (table) is captured as @method.owner; resolves to a Class node
+// for HAS_METHOD. middleclass methods are file-top-level (not in a class body),
+// so lexical HAS_METHOD cannot produce these.
+const METHOD_OWNER_QUERY = `
+(function_definition_statement
+  name: (variable
+    table: (identifier) @method.owner
+    method: (identifier) @method.name)) @method.def
+
+(function_definition_statement
+  name: (variable
+    table: (identifier) @method.owner
+    field: (identifier) @method.name)) @method.def
+`;
+
 let _parser: Parser | null = null;
 let _query: Parser.Query | null = null;
+let _heritageQuery: Parser.Query | null = null;
+let _methodOwnerQuery: Parser.Query | null = null;
 
 export function getLuaParser(): Parser {
   if (_parser === null) {
@@ -120,4 +157,24 @@ export function getLuaScopeQuery(): Parser.Query {
     );
   }
   return _query;
+}
+
+export function getHeritageQuery(): Parser.Query {
+  if (_heritageQuery === null) {
+    _heritageQuery = new Parser.Query(
+      getLanguageGrammar(SupportedLanguages.Lua) as Parameters<Parser['setLanguage']>[0],
+      HERITAGE_QUERY,
+    );
+  }
+  return _heritageQuery;
+}
+
+export function getMethodOwnerQuery(): Parser.Query {
+  if (_methodOwnerQuery === null) {
+    _methodOwnerQuery = new Parser.Query(
+      getLanguageGrammar(SupportedLanguages.Lua) as Parameters<Parser['setLanguage']>[0],
+      METHOD_OWNER_QUERY,
+    );
+  }
+  return _methodOwnerQuery;
 }

@@ -4,8 +4,10 @@
  *
  * Minimal Phase B1 wiring: Lua's scope model (Module + Function/Method, no
  * static types) plugs into `runScopeResolution` with the least configuration
- * that unlocks CALLS + IMPORTS edges. middleclass class inheritance (EXTENDS,
- * HAS_METHOD, MRO) is Phase B2; receiver/arity polish is Phase B3.
+ * that unlocks CALLS + IMPORTS edges. middleclass EXTENDS + HAS_METHOD are
+ * emitted by `emitLuaHeritageEdges` (heritage.ts), fed by the capture side
+ * channel; middleclass MRO + `__base` super calls are Phase B2; the
+ * receiver/arity polish for indirect value receivers is Phase B3.
  *
  * Reference: `languages/cobol/scope-resolver.ts` (minimal) + `languages/go/`.
  */
@@ -34,7 +36,10 @@ const luaScopeResolver: ScopeResolver = {
   // targetRaw arrives quote-stripped (interpretLuaImport); Lua's module
   // separator is `.`, so split on it before joining to a path.
   resolveImportTarget: (targetRaw, _fromFile, allFilePaths) => {
-    const parts = targetRaw.replace(/^["']|["']$/g, '').split('.').filter(Boolean);
+    const parts = targetRaw
+      .replace(/^["']|["']$/g, '')
+      .split('.')
+      .filter(Boolean);
     if (parts.length === 0) return null;
     if (_cachedSet !== allFilePaths) {
       const list = [...allFilePaths];
