@@ -28,9 +28,16 @@ function jsonForScriptTag(obj) {
 // Warnings echo operator input back, so strip control characters (log forging)
 // and cap the length first.
 function sanitizeForLog(value) {
-  return String(value)
-    .replace(/[\x00-\x1f\x7f]/g, ' ')
-    .slice(0, 200);
+  return (
+    String(value)
+      // The line-break strip is redundant with the range below, but CodeQL's
+      // js/log-injection recognizes only this shape as a sanitizer: a global
+      // replace of a literal \n with the empty string.
+      .replace(/\n/g, '')
+      .replace(/\r/g, '')
+      .replace(/[\x00-\x1f\x7f]/g, ' ')
+      .slice(0, 200)
+  );
 }
 
 // console.error is asynchronous when stderr is a pipe, so pairing it with
