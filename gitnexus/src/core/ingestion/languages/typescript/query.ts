@@ -498,6 +498,16 @@ export const TYPESCRIPT_SCOPE_QUERY = `
 (method_signature
   name: (property_identifier) @declaration.name) @declaration.method
 
+;; Members of a declared SHAPE — interface bodies and object-type aliases both
+;; spell them as property_signature (A4). The sibling method_signature rule
+;; above declared interface METHODS, so only properties were missing: a typed
+;; receiver resolved to the shape's scope and then found no member there, and
+;; the field's consumers were unreachable. TypeScript sets
+;; fieldFallbackOnMethodLookup:false, so there is no name-based safety net
+;; here — the precise path is the only one, and it needs the declaration.
+(property_signature
+  name: (property_identifier) @declaration.name) @declaration.property
+
 ;; Declarations — class fields
 (public_field_definition
   name: (property_identifier) @declaration.name) @declaration.property

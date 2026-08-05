@@ -24,6 +24,21 @@ export const TYPESCRIPT_QUERIES = `
 (interface_declaration
   name: (type_identifier) @name) @definition.interface
 
+; Type aliases (A4). TypeScript was the only language whose aliases minted no
+; node: Rust (type_item), Kotlin (type_alias), Swift (typealias_declaration)
+; and Dart all emit @definition.type. The alias was declared for scope
+; resolution but never became a graph symbol, so a context() lookup on an
+; exported API-contract type answered "Symbol not found".
+(type_alias_declaration
+  name: (type_identifier) @name) @definition.type
+
+; Members of a declared SHAPE — interface bodies and object-type aliases both
+; spell them as property_signature, so one pattern covers both. A TS frontend
+; models its API contracts this way, and without these there is no graph path
+; from a contract field to the code that reads it.
+(property_signature
+  name: (property_identifier) @name) @definition.property
+
 (function_declaration
   name: (identifier) @name) @definition.function
 
