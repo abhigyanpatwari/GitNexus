@@ -107,6 +107,15 @@ export const JAVASCRIPT_SCOPE_QUERY = `
 (field_definition
   property: (property_identifier) @declaration.name) @declaration.property
 
+;; Object-literal keys of a NAMED object (A1/A5) — the scope-resolution half of
+;; the same rule in TYPESCRIPT/JAVASCRIPT_QUERIES. The parse query mints the
+;; Property NODE; this mints the DEF the resolver can point a read/write at.
+(variable_declarator
+  name: (identifier)
+  value: (object
+    (pair
+      key: (property_identifier) @declaration.name) @declaration.property))
+
 ;; Declarations — free functions
 (function_declaration
   name: (identifier) @declaration.name) @declaration.function

@@ -15,27 +15,35 @@
  *     that dominates idiomatic JS. Not precisely solvable without types;
  *     covered by name-based fallback at reduced confidence.
  *
- * STATUS — not yet implemented; these are the acceptance criteria.
+ * STATUS — definition nodes DONE, edge resolution REMAINING.
  *
- * Established so far:
- *   - A parse-query pattern scoped to object literals BOUND TO A VARIABLE
- *     (`(variable_declarator name: (identifier) value: (object (pair key:
- *     (property_identifier) @name) @definition.property))`) matches correctly:
- *     verified against the raw JAVASCRIPT_QUERIES, 4 captures on this fixture
- *     with the right names. It is NOT enough on its own — no `Property` node
- *     reaches the graph, and `local-symbol-pruner` is not the cause (it drops
- *     only Const/Variable/Static). The remaining gate is in the parse worker's
- *     node-creation path for `@definition.property` captures.
- *   - The two receiver shapes need different mechanisms. Through the holding
- *     variable the receiver is typeable and must resolve precisely. Through an
- *     untyped param it is not, and needs name-based matching — sanctioned for
- *     dynamic languages here (`fieldFallbackOnMethodLookup` defaults on, and
- *     the Vue provider documents it recovering plain-object-literal cases) but
- *     it must carry reduced confidence so precision is not overclaimed.
+ * Done: object-literal keys bound to a variable now mint both halves — the
+ * graph `Property` node (JAVASCRIPT_QUERIES) and the scope-resolution def
+ * (languages/javascript/query.ts). A config field is findable by name where it
+ * previously did not exist as a symbol at all.
+ *
+ * Remaining: the ACCESSES edges. The two receiver shapes need different
+ * mechanisms and neither is implemented:
+ *   - Through the holding variable (`exitRules.exitMinAtrMult`) the receiver is
+ *     typeable, so it must resolve precisely — the Const holding the literal
+ *     has to be typed to the literal's scope, the way `classScopeByDefId` maps
+ *     a class def to its scope.
+ *   - Through an untyped param (`cfg.exitMinAtrMult`) it is not typeable in
+ *     plain JS and needs name-based matching — sanctioned for dynamic languages
+ *     here (`fieldFallbackOnMethodLookup` defaults on, and the Vue provider
+ *     documents it recovering plain-object-literal cases) but it must carry
+ *     reduced confidence so precision is not overclaimed.
+ *
+ * TRAP, learned the hard way and recorded so the next reader does not repeat
+ * it: under vitest the PARSE WORKER runs the BUILT `dist/` code, because
+ * `parse-impl.ts` resolves `../workers/parse-worker.js`, which does not exist
+ * under `src/`, and falls back to dist. Scope resolution runs from `src`. So a
+ * change to TYPESCRIPT/JAVASCRIPT_QUERIES is invisible to tests until
+ * `npm run build` — it reads exactly like a failed hypothesis.
  */
-import { describe, it, beforeAll } from 'vitest';
+import { describe, it, expect, beforeAll } from 'vitest';
 import path from 'path';
-import { FIXTURES, runPipelineFromRepo, type PipelineResult } from './helpers.js';
+import { FIXTURES, getRelationships, runPipelineFromRepo, type PipelineResult } from './helpers.js';
 
 describe('JavaScript plain-object property access (A1/A5)', () => {
   let result: PipelineResult;
@@ -47,8 +55,39 @@ describe('JavaScript plain-object property access (A1/A5)', () => {
     );
   }, 60000);
 
-  it.todo('indexes object-literal keys as Property nodes');
+  const propertyNames = (): string[] =>
+    Array.from(
+      (result as unknown as { graph: { iterNodes(): Iterable<PropNode> } }).graph.iterNodes(),
+    )
+      .filter((n) => n.label === 'Property')
+      .map((n) => String(n.properties.name));
+
+  const readersOf = (field: string): string[] =>
+    getRelationships(result, 'ACCESSES')
+      .filter((e) => e.target === field)
+      .map((e) => e.source);
+
+  it('indexes object-literal keys as Property nodes', () => {
+    const props = propertyNames();
+    expect(props).toContain('exitMinAtrMult');
+    expect(props).toContain('stopAtrMult');
+  });
+
+  it('gives every indexed key a distinct node, not one merged symbol', () => {
+    const props = propertyNames().filter((n) => n === 'exitMinAtrMult' || n === 'stopAtrMult');
+    expect(new Set(props).size).toBe(2);
+  });
+
+  // Blocked on receiver resolution — see STATUS above. `readersOf` is the
+  // assertion these become once the receiver can be typed to the literal.
   it.todo('emits ACCESSES for a read through the holding variable');
   it.todo('emits ACCESSES for the property WRITE (A5)');
   it.todo('emits ACCESSES for a read through an untyped param (option bag)');
+
+  void readersOf;
 });
+
+interface PropNode {
+  readonly label: string;
+  readonly properties: Record<string, unknown>;
+}

@@ -848,6 +848,20 @@ export const JAVASCRIPT_QUERIES = `
 (field_definition
   property: (property_identifier) @name) @definition.property
 
+; Object-literal keys of a NAMED object (A1/A5). Idiomatic JS models config as
+; an object literal, not a class, so without these the fields of an options bag
+; have no node and "who reads/writes this setting?" answers a confident zero.
+;
+; Deliberately scoped to a literal BOUND TO A VARIABLE. An unbound literal is
+; usually an inline call argument or a JSX prop bag, whose keys are call-site
+; data rather than a named surface other code references — minting a node per
+; key there would add volume without adding an answerable question.
+(variable_declarator
+  name: (identifier)
+  value: (object
+    (pair
+      key: (property_identifier) @name) @definition.property))
+
 ; Closure-valued class fields (#2693) — see the TypeScript block for why these
 ; are Method rather than Property.
 (field_definition
