@@ -3592,21 +3592,39 @@ describe('TypeScript chain-typed receiver folding to an interface (Case 3b, #283
     expect(primary.map((e) => basename(e.targetFilePath))).toEqual(['repository.ts']);
   });
 
-  // KNOWN GAP: "every implementation" holds for this fixture's hierarchy shape
-  // (`class X implements I`) only. TypeScript emits heritage edges for
-  // `class_declaration` alone (languages/typescript/captures.ts:749, stated in
-  // its own docstring at :732-733), so `abstract class X implements I` and
-  // `interface B extends A` produce NO heritage edge and the subtype closure
-  // has nothing to descend — both shapes still dead-end on the bodiless
-  // declaration. That is a capture-layer gap predating this fan-out, not
-  // something Case 3b can fix; this assertion must not be read as proof the
-  // closure is complete.
-  it('fans out to every implementation declared as a direct `implements`', () => {
+  // A static member can never be reached through an instance-typed receiver —
+  // TypeScript rejects `class C implements I { static save() {} }` as TS2420,
+  // "Property 'save' is missing". ShadowRepo inherits the real SqlRepo.save and
+  // adds a same-named static; only the inherited instance method is a dispatch
+  // target. Before the guard this emitted an edge to the static one.
+  it('never fans out to a static member', () => {
+    const targets = fanout().map((e) => `${basename(e.targetFilePath)}`);
+    expect(targets).not.toContain('shadow-repo.ts');
+  });
+
+  // Covers all three hierarchy shapes, now that TypeScript emits heritage for
+  // interfaces and abstract classes too (#2842 review): a direct implementor
+  // (sql-repo, mem-repo), a concrete class below an ABSTRACT intermediate
+  // (hierarchy.ts DiskRepo, reachable only through BaseRepo), and an
+  // implementor of an EXTENDING interface (hierarchy.ts ColdRepo, two hops from
+  // the receiver's type). Exact-set, so a target appearing OR vanishing fails.
+  // Two hierarchy.ts entries because that file holds two of the four targets.
+  it('fans out through abstract intermediates and interface extension', () => {
     expect(
       fanout()
         .map((e) => basename(e.targetFilePath))
         .sort(),
-    ).toEqual(['mem-repo.ts', 'sql-repo.ts']);
+    ).toEqual(['hierarchy.ts', 'hierarchy.ts', 'mem-repo.ts', 'sql-repo.ts']);
+  });
+
+  // The abstract declaration is bodiless: it must be WALKED THROUGH to reach
+  // DiskRepo, never emitted to. tsc's own Go-to-Implementation behaves the same
+  // way — the rule everywhere is "does it have a body?", not "is it in a class?".
+  it('walks through the abstract declaration without targeting it', () => {
+    const names = fanout()
+      .filter((e) => basename(e.targetFilePath) === 'hierarchy.ts')
+      .map((e) => e.target);
+    expect(names).toEqual(['save', 'save']);
   });
 
   it('never targets the interface declaration in the fan-out', () => {

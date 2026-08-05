@@ -433,6 +433,48 @@ export function emitReceiverBoundCalls(
   };
 
   /**
+   * Can an INSTANCE-typed receiver reach this member? A static member cannot be,
+   * ever — `class C implements I { static save() {} }` does not satisfy `I`
+   * (TypeScript rejects it outright as TS2420, "Property 'save' is missing"), so
+   * an edge to it from an `I`-typed receiver names a target no dispatch can
+   * produce. Every comparable tool draws the same line: tsserver partitions
+   * static from instance results, clangd gates on `isVirtual()` (C++ forbids
+   * virtual statics), jdtls filters abstract-or-static, and class-hierarchy
+   * analysis expands only VIRTUAL call sites — a static call already has exactly
+   * one target and needs no fan-out.
+   *
+   * Two sources answer this, and the order matters:
+   *
+   *   1. `provider.isStaticOnly` when the language declares it. It is the
+   *      precise answer, because a language that needs the distinction defines
+   *      it exactly — Kotlin marks only COMPANION-promoted defs, so a Kotlin
+   *      `object Impl : Iface { override fun handle() }` is correctly kept: an
+   *      `object` is a singleton INSTANCE and its members really are reachable
+   *      through an `Iface`-typed receiver.
+   *   2. Otherwise the graph node's `isStatic`. For every language that does not
+   *      declare the hook, that flag comes from the member's own modifier (or,
+   *      for Ruby, from `singleton_class` — `def self.foo`, which is likewise
+   *      unreachable through an instance), so it means what we need here.
+   *
+   * Getting that order wrong is a live regression, not a hypothetical: the
+   * method extractor derives `isStatic` from the OWNER type as well as the
+   * member (`method-extractors/generic.ts`, `staticOwnerTypes`), and the JVM
+   * config lists `object_declaration`. Reading the flag first would delete
+   * Kotlin object implementations from the fan-out. A language that needs
+   * precision declares the hook; that is the upgrade path.
+   *
+   * Unresolvable defs fail open (treated as reachable), matching
+   * `isDeclarationOnly` and the rest of this pass.
+   */
+  const isUnreachableByInstanceDispatch = (def: SymbolDefinition): boolean => {
+    const staticOnly = provider.isStaticOnly;
+    if (staticOnly !== undefined) return staticOnly(def) === true;
+    const graphId = resolveDefGraphId(def.filePath, def, nodeLookup);
+    if (graphId === undefined) return false;
+    return graph.getNode(graphId)?.properties.isStatic === true;
+  };
+
+  /**
    * Emit secondary CALLS edges with reason='interface-dispatch' when the primary
    * receiver-typed edge targeted an Interface's method.
    *
@@ -488,6 +530,9 @@ export function emitReceiverBoundCalls(
         // A re-declared interface method or an `abstract` override is not an
         // implementation — keep descending past it rather than emitting to it.
         if (isDeclarationOnly(implMember)) continue;
+        // Nor is a static member: no instance-typed receiver can reach one, so
+        // an edge to it is a target dispatch cannot produce (#2842 review).
+        if (isUnreachableByInstanceDispatch(implMember)) continue;
         targets.push(implMember);
       }
     }

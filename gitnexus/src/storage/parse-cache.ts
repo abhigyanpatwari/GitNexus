@@ -222,7 +222,13 @@ import type { ParseWorkerResult } from '../core/ingestion/workers/parse-worker.j
 // value is unchanged by the rebase — the reason it was chosen is simply now
 // visible in the history above. RE-CHECK AGAINST origin/main IMMEDIATELY
 // BEFORE MERGING; this file records eight prior collisions, two EXACT.
-const SCHEMA_BUMP = 43;
+// Moved 43 -> 44 for #2842's TypeScript heritage capture, which now emits
+// `@reference.inherits` for `interface_declaration` and
+// `abstract_class_declaration`. That is PARSE-TIME emission, so a v43 warm
+// cache would serve entries that are missing those matches entirely — the
+// exact failure a bump exists to prevent. Verified against origin/main at
+// a857f4c5a, which is still on 43, so 44 is free. RE-CHECK BEFORE MERGE.
+const SCHEMA_BUMP = 44;
 const GITNEXUS_PKG_VERSION = (() => {
   try {
     // package.json sits at gitnexus/package.json — two levels up from
