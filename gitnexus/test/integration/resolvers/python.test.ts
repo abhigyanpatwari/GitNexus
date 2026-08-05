@@ -3102,3 +3102,272 @@ describe('Python inline constructor receiver resolution', () => {
     ]);
   });
 });
+
+// ---------------------------------------------------------------------------
+// #2826 — unaliased multi-segment namespace import.
+//
+// `import pkg.db` binds only `pkg`, but the receiver text at the call site is
+// the whole dotted path `pkg.db`. Every sibling spelling binds a single-segment
+// name and so already resolved; this one fell between the namespace-receiver
+// case (keyed on the local binding) and the qualified-receiver hook (C++ only).
+//
+// The three sibling rows are controls, not decoration: a run where they also
+// broke would say nothing about the row under test.
+// ---------------------------------------------------------------------------
+
+describe('Python unaliased multi-segment namespace import (#2826)', () => {
+  let repoDir: string;
+  let result: PipelineResult;
+
+  beforeAll(async () => {
+    repoDir = fs.mkdtempSync(path.join(os.tmpdir(), 'gn-python-dotted-ns-'));
+    writeFixtureRepo(repoDir, {
+      'pkg/__init__.py': '',
+      'pkg/db.py': `class Model:
+    pass
+
+
+def session_scope():
+    return "db"
+`,
+      // Same member name in a sibling module: makes a cross-resolution visible
+      // instead of letting the right answer and a lucky answer look identical.
+      'pkg/cache.py': `def session_scope():
+    return "cache"
+`,
+      'pkg/sub/__init__.py': '',
+      'pkg/sub/deep.py': `def deep_fn():
+    return "deep"
+`,
+      'caller_dotted.py': `import pkg.db
+
+def uses_dotted():
+    return pkg.db.session_scope()
+`,
+      'caller_from.py': `from pkg.db import session_scope
+
+def uses_from():
+    return session_scope()
+`,
+      'caller_alias.py': `import pkg.db as pdb
+
+def uses_alias():
+    return pdb.session_scope()
+`,
+      'caller_frommod.py': `from pkg import db
+
+def uses_from_module_attr():
+    return db.session_scope()
+`,
+      'caller_two_pkgs.py': `import pkg.db
+import pkg.cache
+
+def uses_db():
+    return pkg.db.session_scope()
+
+def uses_cache():
+    return pkg.cache.session_scope()
+`,
+      'caller_deep.py': `import pkg.sub.deep
+
+def uses_deep():
+    return pkg.sub.deep.deep_fn()
+`,
+      'caller_construct.py': `import pkg.db
+
+def builds():
+    return pkg.db.Model()
+`,
+    });
+    result = await runPipelineFromRepo(repoDir, () => {});
+  }, 60000);
+
+  afterAll(() => {
+    if (repoDir !== undefined) fs.rmSync(repoDir, { recursive: true, force: true });
+  });
+
+  const sessionScopeCallers = (targetFile: string): string[] =>
+    getRelationships(result, 'CALLS')
+      .filter((c) => c.target === 'session_scope' && c.targetFilePath === targetFile)
+      .map((c) => c.source)
+      .sort();
+
+  it('resolves the unaliased dotted receiver to the imported module', () => {
+    const edge = getRelationships(result, 'CALLS').find(
+      (c) => c.source === 'uses_dotted' && c.target === 'session_scope',
+    );
+    expect(edge).toMatchObject({
+      source: 'uses_dotted',
+      target: 'session_scope',
+      targetFilePath: 'pkg/db.py',
+      sourceFilePath: 'caller_dotted.py',
+    });
+  });
+
+  it('keeps the three sibling spellings resolving (control)', () => {
+    expect(sessionScopeCallers('pkg/db.py')).toEqual(
+      expect.arrayContaining(['uses_alias', 'uses_from', 'uses_from_module_attr']),
+    );
+  });
+
+  it('does not cross-resolve two same-package imports in one file', () => {
+    // Both modules export `session_scope`, so a receiver-blind fallback would
+    // be invisible in a presence-only assertion. Pin the exact pairing.
+    const pairs = getRelationships(result, 'CALLS')
+      .filter((c) => c.sourceFilePath === 'caller_two_pkgs.py' && c.target === 'session_scope')
+      .map((c) => `${c.source}->${c.targetFilePath}`)
+      .sort();
+    expect(pairs).toEqual(['uses_cache->pkg/cache.py', 'uses_db->pkg/db.py']);
+  });
+
+  it('resolves a three-segment dotted receiver', () => {
+    const edge = getRelationships(result, 'CALLS').find(
+      (c) => c.source === 'uses_deep' && c.target === 'deep_fn',
+    );
+    expect(edge).toMatchObject({ target: 'deep_fn', targetFilePath: 'pkg/sub/deep.py' });
+  });
+
+  it('resolves construction through a dotted namespace receiver', () => {
+    // Pin the callee NAME, not just the file: pkg/db.py also exports
+    // `session_scope`, so a file-only assertion would stay green if the
+    // construction resolved to the wrong member of the right module.
+    const edges = getRelationships(result, 'CALLS')
+      .filter((c) => c.sourceFilePath === 'caller_construct.py')
+      .map((c) => `${c.source}->${c.target}@${c.targetFilePath}`)
+      .sort();
+    expect(edges).toEqual(['builds->Model@pkg/db.py']);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// #2826 follow-up — a namespace receiver shadowed by a local declaration.
+//
+// Case 1 (namespace receiver) in `receiver-bound-calls.ts` consulted the
+// per-file namespace map with no lexical guard at all, so a parameter or local
+// named like the imported package still resolved through the import. That is a
+// WRONG edge, not a missing one, and it predates the dotted-path key — the
+// single-segment rows below fail the same way without the guard.
+// ---------------------------------------------------------------------------
+
+describe('Python namespace receiver shadowed by a local binding (#2826)', () => {
+  let repoDir: string;
+  let result: PipelineResult;
+
+  beforeAll(async () => {
+    repoDir = fs.mkdtempSync(path.join(os.tmpdir(), 'gn-python-ns-shadow-'));
+    writeFixtureRepo(repoDir, {
+      'pkg/__init__.py': '',
+      'pkg/db.py': `def session_scope():
+    return "db"
+`,
+      'single.py': `def session_scope():
+    return "single"
+`,
+      'caller_dotted.py': `import pkg.db
+
+def clean_dotted():
+    return pkg.db.session_scope()
+
+def param_shadow_dotted(pkg):
+    return pkg.db.session_scope()
+
+def local_shadow_dotted():
+    pkg = object()
+    return pkg.db.session_scope()
+`,
+      'caller_single.py': `import single
+
+def clean_single():
+    return single.session_scope()
+
+def param_shadow_single(single):
+    return single.session_scope()
+
+def local_shadow_single():
+    single = object()
+    return single.session_scope()
+`,
+    });
+    result = await runPipelineFromRepo(repoDir, () => {});
+  }, 60000);
+
+  afterAll(() => {
+    if (repoDir !== undefined) fs.rmSync(repoDir, { recursive: true, force: true });
+  });
+
+  it('emits an edge only from the unshadowed callers', () => {
+    // Exact edge set: an assertion on absence alone would also pass if the
+    // guard over-suppressed and killed the clean rows too.
+    const edges = getRelationships(result, 'CALLS')
+      .filter((c) => c.target === 'session_scope')
+      .map((c) => `${c.source}->${c.targetFilePath}`)
+      .sort();
+    expect(edges).toEqual(['clean_dotted->pkg/db.py', 'clean_single->single.py']);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// #2826 follow-up — `import a.b.c` binds THREE receiver spellings, not one.
+//
+// Python makes `a`, `a.b` and `a.b.c` all callable off a single import, and
+// each names a DIFFERENT file. The namespace map originally keyed only the
+// bound name `a`, pointed at the LEAF module — wrong in both directions:
+// `a.helper()` resolved into the leaf whenever it happened to export `helper`
+// (a wrong edge, preferring a decoy over the real definition), and `a.b.mid()`
+// resolved to nothing.
+// ---------------------------------------------------------------------------
+
+describe('Python dotted import binds every package prefix (#2826)', () => {
+  let repoDir: string;
+  let result: PipelineResult;
+
+  beforeAll(async () => {
+    repoDir = fs.mkdtempSync(path.join(os.tmpdir(), 'gn-python-prefix-'));
+    writeFixtureRepo(repoDir, {
+      // `helper` exists in BOTH the package and the leaf. Without the fix the
+      // root key points at the leaf and the decoy wins, so this pair is what
+      // makes the wrong edge visible rather than merely plausible.
+      'a/__init__.py': `def helper():
+    return "package"
+`,
+      'a/b/__init__.py': `def mid_fn():
+    return "mid"
+`,
+      'a/b/c.py': `def helper():
+    return "leaf-decoy"
+
+
+def leaf_fn():
+    return "leaf"
+`,
+      'caller.py': `import a.b.c
+
+def uses_leaf():
+    return a.b.c.leaf_fn()
+
+def uses_mid():
+    return a.b.mid_fn()
+
+def uses_root():
+    return a.helper()
+`,
+    });
+    result = await runPipelineFromRepo(repoDir, () => {});
+  }, 60000);
+
+  afterAll(() => {
+    if (repoDir !== undefined) fs.rmSync(repoDir, { recursive: true, force: true });
+  });
+
+  it('resolves each prefix to its own module', () => {
+    const edges = getRelationships(result, 'CALLS')
+      .filter((c) => c.sourceFilePath === 'caller.py')
+      .map((c) => `${c.source}->${c.target}@${c.targetFilePath}`)
+      .sort();
+    expect(edges).toEqual([
+      'uses_leaf->leaf_fn@a/b/c.py',
+      'uses_mid->mid_fn@a/b/__init__.py',
+      'uses_root->helper@a/__init__.py',
+    ]);
+  });
+});

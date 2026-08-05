@@ -439,3 +439,76 @@ export function isPythonImportedModule(
     normalizedTarget.endsWith('/' + packageFile)
   );
 }
+
+/**
+ * The receiver spellings `import a.b.c` makes callable, and the file each one
+ * names (#2826).
+ *
+ * `import a.b.c` binds ONE name — `a` — but makes three attribute paths
+ * reachable, and they name three different files:
+ *
+ *   a        → a/__init__.py
+ *   a.b      → a/b/__init__.py
+ *   a.b.c    → a/b/c.py        (the edge's own target)
+ *
+ * The shared default keyed `a` to the LEAF, which is wrong in both directions:
+ * `a.helper()` resolved into `a/b/c.py` whenever that module happened to export
+ * `helper`, and `a.b.mid()` resolved to nothing.
+ *
+ * Returns `undefined` — meaning "use the shared default" — for every spelling
+ * where the bound name is not the path's root:
+ *   - `import single`            — no dotted path to expand;
+ *   - `import a.b as x`          — binds only `x`; writing `a.b.f()` there is a
+ *                                  NameError, so `a.b` must NOT become a key;
+ *   - `from pkg import db`       — reclassified to a namespace edge whose
+ *                                  importPath is the bare name `db`.
+ *
+ * Prefix files are proposed, not asserted: `moduleFileExists` drops any that
+ * the workspace did not parse, so a PEP-420 namespace package (no
+ * `__init__.py`) contributes no key rather than one pointing at a missing file.
+ */
+export function pythonNamespaceReceiverPaths(
+  edge: { readonly localName: string; readonly importPath: string; readonly targetFile: string },
+  moduleFileExists: (filePath: string) => boolean,
+): readonly (readonly [string, string])[] | undefined {
+  const segments = edge.importPath.split('.');
+  if (segments.length < 2) return undefined;
+  if (segments[0] !== edge.localName) return undefined;
+
+  const out: (readonly [string, string])[] = [[edge.importPath, edge.targetFile]];
+
+  // Anchor the prefix packages on the RESOLVED leaf, never on the import
+  // spelling. `resolvePythonImportTarget` resolves off-root in two of its three
+  // tiers (suffix match and ancestor-relative), so `import utils.db` can land on
+  // `libs/common/utils/db.py`. Building `utils/__init__.py` from the spelling
+  // would then name a DIFFERENT package that merely shares the root segment —
+  // a wrong edge — and in a `src/` layout it would match nothing at all,
+  // silently making prefix keying inert for the most common Python layout.
+  //
+  // Walking back from the leaf also inherits that path's own separator, so no
+  // POSIX-vs-Windows probing is needed: workspace paths are not normalized at
+  // ingestion, and `moduleScopeByFile` is keyed by the raw `ParsedFile.filePath`.
+  const dirs = edge.targetFile.split('/').slice(0, -1);
+  // The import's leading segments name the leaf's innermost directories.
+  const offset = dirs.length - (segments.length - 1);
+  if (offset < 0) return out;
+
+  for (let i = 1; i < segments.length; i++) {
+    const spelling = segments.slice(0, i).join('.');
+    const packageFile = dirs.slice(0, offset + i).join('/') + '/__init__.py';
+    // Package FIRST, then the leaf as a fallback — order is the whole point.
+    //
+    // `findExportedDef` only accepts a binding whose `origin === 'local'`, and
+    // the canonical package re-exports (`from .b.c import helper` in
+    // `__init__.py`) produce an IMPORT binding. Keying the prefix at the
+    // package alone therefore loses `a.helper()` entirely for the most common
+    // package shape — the fixtures here all define members locally in
+    // `__init__.py`, which is precisely the one layout where that mistake is
+    // invisible. Keeping the leaf behind the package restores that resolution
+    // while still letting a real definition in `__init__.py` win over a
+    // same-named decoy deeper in the package.
+    if (moduleFileExists(packageFile)) out.push([spelling, packageFile]);
+    out.push([spelling, edge.targetFile]);
+  }
+  return out;
+}
