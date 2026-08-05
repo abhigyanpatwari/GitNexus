@@ -41,6 +41,21 @@ const CALLEE_POSITION_MARKER: Capture = Object.freeze({
   text: '',
 });
 
+/**
+ * Presence-only marker for an embedded field written as `*T` rather than `T`.
+ *
+ * Go's method-set rules treat the two forms differently — `S{T}` promotes only
+ * the value-receiver methods of `T` into `MS(S)`, while `S{*T}` promotes both
+ * value- and pointer-receiver ones (go.dev/ref/spec#Struct_types). Structural
+ * interface detection cannot give an exact answer without knowing which was
+ * written, so the spelling is recorded here and interpreted downstream.
+ */
+const EMBEDDED_POINTER_MARKER: Capture = Object.freeze({
+  name: '@reference.embedded-pointer',
+  range: ZERO_RANGE,
+  text: '',
+});
+
 const GO_CALLABLE_CAPTURE_OPTIONS = {
   functionNodeTypes: new Set(['function_declaration', 'method_declaration', 'func_literal']),
   callNodeTypes: new Set(['call_expression']),
@@ -358,7 +373,12 @@ function synthesizeGoInheritanceReferences(root: SyntaxNode): CaptureMatch[] {
           if (field.childForFieldName('name') !== null) continue;
           // `field.type` is the embedded base — bare/qualified/generic, with any
           // `*` pointer marker as an unnamed sibling token (already unwrapped).
-          emitGoEmbedInheritance(field.childForFieldName('type'), out);
+          // That token is the ONLY record of `*T` versus `T`, and the two have
+          // different method sets, so read it off the field text before it is
+          // lost. An embedded field has no name, so a leading `*` can only be
+          // the pointer marker.
+          const embeddedAsPointer = field.text.trimStart().startsWith('*');
+          emitGoEmbedInheritance(field.childForFieldName('type'), out, embeddedAsPointer);
         }
       } else if (typeNode.type === 'interface_type') {
         for (const elem of typeNode.namedChildren) {
@@ -367,7 +387,8 @@ function synthesizeGoInheritanceReferences(root: SyntaxNode): CaptureMatch[] {
           // `type_elem` with >1 named child — skip them (legacy
           // `shouldSkipExtends`); a single-element `type_elem` is the embed.
           if (elem.type !== 'type_elem' || elem.namedChildCount !== 1) continue;
-          emitGoEmbedInheritance(elem.namedChild(0), out);
+          // An interface embed is never a pointer form.
+          emitGoEmbedInheritance(elem.namedChild(0), out, false);
         }
       }
     }
@@ -380,13 +401,20 @@ function synthesizeGoInheritanceReferences(root: SyntaxNode): CaptureMatch[] {
  * node, reducing the name to its bare simple identifier. No-ops when `baseNode`
  * is null or not one of the embed shapes.
  */
-function emitGoEmbedInheritance(baseNode: SyntaxNode | null, out: CaptureMatch[]): void {
+function emitGoEmbedInheritance(
+  baseNode: SyntaxNode | null,
+  out: CaptureMatch[],
+  embeddedAsPointer: boolean,
+): void {
   if (baseNode === null) return;
   const nameNode = goEmbedBaseNameNode(baseNode);
   if (nameNode === null) return;
   out.push({
     '@reference.inherits': nodeToCapture('@reference.inherits', baseNode),
     '@reference.name': nodeToCapture('@reference.name', nameNode),
+    // Added ONLY for the pointer form, so a value embed's capture set is
+    // byte-identical to what it was before this marker existed.
+    ...(embeddedAsPointer ? { '@reference.embedded-pointer': EMBEDDED_POINTER_MARKER } : {}),
   });
 }
 

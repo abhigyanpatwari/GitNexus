@@ -119,10 +119,17 @@ export function interpretPythonTypeBinding(captures: CaptureMatch): ParsedTypeBi
   // `cls` is a self-like receiver; share the source label so downstream
   // `Registry.lookup` Step 2 treats them identically.
   else if (captures['@type-binding.cls'] !== undefined) source = 'self';
-  else if (captures['@type-binding.instance-field'] !== undefined) {
+  // Before the instance-field arm, not after it: `self.x = Outer()` (#2807)
+  // carries BOTH markers, and its type is inferred from the CONSTRUCTOR CALL —
+  // the weakest of the three tiers — so a class that also annotates the field
+  // keeps the annotation. Testing constructor first is what lets the
+  // instance-field arm below stay flat; the two orders agree on every input,
+  // since they differ only where both markers are present and both then say
+  // 'constructor-inferred'.
+  else if (captures['@type-binding.constructor'] !== undefined) source = 'constructor-inferred';
+  else if (captures['@type-binding.instance-field'] !== undefined)
     source =
       captures['@type-binding.parameter'] !== undefined ? 'parameter-annotation' : 'annotation';
-  } else if (captures['@type-binding.constructor'] !== undefined) source = 'constructor-inferred';
   else if (captures['@type-binding.annotation'] !== undefined) source = 'annotation';
   else if (captures['@type-binding.alias'] !== undefined) source = 'assignment-inferred';
   else if (captures['@type-binding.return'] !== undefined) source = 'return-annotation';
