@@ -589,6 +589,17 @@ export const JAVASCRIPT_SCOPE_QUERY = `
 
 (object
   (shorthand_property_identifier) @reference.name @reference.property-key @reference.value-ref)
+
+;; Bare-identifier reads (A2). VALUE POSITIONS ONLY — a blanket
+;; \`(identifier)\` rule would mint a site for every token in the file.
+(arguments
+  (identifier) @reference.name @reference.read.identifier)
+
+(assignment_pattern
+  right: (identifier) @reference.name @reference.read.identifier)
+
+(return_statement
+  (identifier) @reference.name @reference.read.identifier)
 `;
 
 /** JSX-only suffix — appended when compiling against the JSX grammar for .jsx files. */

@@ -248,7 +248,25 @@ import type { ParseWorkerResult } from '../core/ingestion/workers/parse-worker.j
 // them. Only comparing against origin/main at MERGE time surfaces it.
 // PR #2840 (Objective-C, draft) still claims 44 as well — it must move too.
 // RE-CHECK AGAINST origin/main IMMEDIATELY BEFORE MERGING.
-const SCHEMA_BUMP = 45;
+// 45 -> 46 for the JavaScript bare-identifier read captures (A2), which emit
+// `@reference.read.identifier` in value positions (call arguments,
+// default-parameter values, return statements) so a module-scope `const` read
+// only by bare name finally mints a reference site, plus the object-literal
+// `@definition.property` rule and the TypeScript shape-member captures. All
+// PARSE-TIME emission, so a warm cache serves entries carrying none of those
+// matches and the new nodes and edges never appear — observed directly while
+// developing: a full `analyze --force` produced a byte-identical graph and read
+// as a failed hypothesis until the cache was cleared by hand.
+//
+// This branch originally took 45 and it COLLIDED: #2837 above merged first and
+// claimed it. The TENTH entry in this ledger and the FOURTH exact clash, caught
+// exactly as the note above says it must be — by comparing against origin/main
+// at merge time, not at review time. The pin test cannot catch it: both sides
+// asserted `toBe(45)`, which passes while main is already 45, so two capture
+// schemas would have shared one PARSE_CACHE_VERSION and the durable ParsedFile
+// store would have replayed pre-fix ParsedFiles verbatim for one of them.
+// RE-CHECK AGAINST origin/main IMMEDIATELY BEFORE MERGING.
+const SCHEMA_BUMP = 46;
 const GITNEXUS_PKG_VERSION = (() => {
   try {
     // package.json sits at gitnexus/package.json — two levels up from
