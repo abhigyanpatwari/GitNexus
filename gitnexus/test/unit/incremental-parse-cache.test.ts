@@ -131,8 +131,18 @@ describe('PARSE_CACHE_VERSION', () => {
   // already 44); only the merge-time diff against origin/main surfaced it. What
   // the pin DOES do is fail loudly the moment the constant and this expectation
   // drift apart, which is what forces the re-check to happen at all.
-  it('pins SCHEMA_BUMP to 45 so concurrent bumps cannot silently collide (#2766)', () => {
-    expect(Number(PARSE_CACHE_VERSION.split('+', 1)[0])).toBe(45);
+  // Moved 45 -> 46 for the JavaScript bare-identifier read captures, the
+  // object-literal `@definition.property` rule and the TypeScript shape-member
+  // captures (A1/A2/A4/A5) — all parse-time, so a v45 warm cache serves entries
+  // carrying neither the new reference sites nor the new Property nodes.
+  //
+  // This branch first took 45 and COLLIDED with #2837 above, which merged
+  // first: the TENTH ledger entry and the FOURTH exact clash, and the second in
+  // a row. Same lesson as the note above — the pin cannot detect the tie, since
+  // both sides asserted `toBe(45)` and that passes while main is already 45.
+  // Only the merge-time diff against origin/main surfaces it.
+  it('pins SCHEMA_BUMP to 46 so concurrent bumps cannot silently collide (#2766)', () => {
+    expect(Number(PARSE_CACHE_VERSION.split('+', 1)[0])).toBe(46);
   });
 
   it('embeds the gitnexus package version (so upgrades invalidate the cache)', () => {
