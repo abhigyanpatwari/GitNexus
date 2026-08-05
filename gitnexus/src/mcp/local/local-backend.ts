@@ -799,6 +799,21 @@ export function resolveWorktreeCwd(repoPath: string, launchCwd: string): string 
   return repoPath;
 }
 
+export function buildDetectChangesDiffArgs(scope: string, baseRef?: string): string[] | null {
+  const args = ['diff', '--ignore-cr-at-eol'];
+  switch (scope) {
+    case 'staged':
+      return [...args, '--staged', '-U0'];
+    case 'all':
+      return [...args, 'HEAD', '-U0'];
+    case 'compare':
+      return baseRef ? [...args, baseRef, '-U0'] : null;
+    case 'unstaged':
+    default:
+      return [...args, '-U0'];
+  }
+}
+
 /**
  * Length of the path-derived suffix appended to a colliding repo id.
  * Exported so tests can pin the suffix shape without re-deriving the
@@ -4917,24 +4932,10 @@ export class LocalBackend {
     const scope = params.scope || 'unstaged';
     const { execFileSync } = await import('child_process');
 
-    // Build git diff args based on scope (using execFileSync to avoid shell injection)
-    let diffArgs: string[];
-    switch (scope) {
-      case 'staged':
-        diffArgs = ['diff', '--staged', '-U0'];
-        break;
-      case 'all':
-        diffArgs = ['diff', 'HEAD', '-U0'];
-        break;
-      case 'compare':
-        if (!params.base_ref) return { error: 'base_ref is required for "compare" scope' };
-        diffArgs = ['diff', params.base_ref, '-U0'];
-        break;
-      case 'unstaged':
-      default:
-        diffArgs = ['diff', '-U0'];
-        break;
-    }
+    // Ignore CR-only EOL differences, while preserving meaningful whitespace changes.
+    // execFileSync receives an argv array, so refs never pass through a shell.
+    const diffArgs = buildDetectChangesDiffArgs(scope, params.base_ref);
+    if (!diffArgs) return { error: 'base_ref is required for "compare" scope' };
 
     let diffOutput: string;
     try {

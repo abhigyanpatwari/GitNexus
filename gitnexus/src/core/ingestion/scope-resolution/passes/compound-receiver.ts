@@ -35,6 +35,7 @@ import {
   findExportedDefByName,
   findReceiverTypeBinding,
   isClassLike,
+  isNamespaceNameShadowed,
 } from '../scope/walkers.js';
 
 /** Max depth for compound-receiver chain resolution (`a().b().c().d()`).
@@ -154,42 +155,6 @@ function isConstructionSelectorHop(
  *  a metacharacter would otherwise silently build a wrong pattern. */
 function escapeForRegExp(literal: string): string {
   return literal.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
-}
-
-/** True when a local declaration between the call site and its module scope
- * shadows a file-level namespace import with the same name. Namespace targets
- * are collected per file, so callers must apply this lexical guard before
- * trusting them at an inner scope. */
-function isNamespaceNameShadowed(
-  namespaceName: string,
-  inScope: ScopeId,
-  scopes: ScopeResolutionIndexes,
-): boolean {
-  let currentId: ScopeId | null = inScope;
-  const visited = new Set<ScopeId>();
-  while (currentId !== null) {
-    if (visited.has(currentId)) return true;
-    visited.add(currentId);
-    const scope = scopes.scopeTree.getScope(currentId);
-    if (scope === undefined) return true;
-    if (
-      scope.kind !== 'Object' &&
-      (scope.bindings.has(namespaceName) ||
-        scope.typeBindings.has(namespaceName) ||
-        scope.lexicalNames?.has(namespaceName) === true ||
-        scope.ownedDefs.some((def) => {
-          const qualifiedName = def.qualifiedName;
-          if (qualifiedName === undefined) return false;
-          const dot = qualifiedName.lastIndexOf('.');
-          return (dot === -1 ? qualifiedName : qualifiedName.slice(dot + 1)) === namespaceName;
-        }))
-    ) {
-      return true;
-    }
-    if (scope.kind === 'Module') return false;
-    currentId = scope.parent;
-  }
-  return true;
 }
 
 /**
