@@ -335,6 +335,15 @@ export const CLASS_CONTAINER_TYPES = new Set([
   'class_declaration',
   'abstract_class_declaration',
   'interface_declaration',
+  // A TypeScript object-type alias owns its members exactly as the interface
+  // beside it does — same `property_signature` members, same "who reads this
+  // contract field?" question. Without it an alias member is minted with a
+  // bare id and no owner, so two aliases in one file sharing a field name
+  // collapse onto one node and nothing links the field to its consumers,
+  // while the identical interface resolves. Aliases with no object type
+  // (`type Id = string`) declare no members, so they own nothing and are
+  // unaffected.
+  'type_alias_declaration',
   'struct_declaration',
   'record_declaration',
   'class_specifier',
@@ -398,6 +407,9 @@ export const CONTAINER_TYPE_TO_LABEL: Record<string, string> = {
   class_declaration: 'Class',
   abstract_class_declaration: 'Class',
   interface_declaration: 'Interface',
+  // Required by the CLASS_CONTAINER_TYPES invariant above: a container missing
+  // here gets orphaned member edges or a wrong owner label.
+  type_alias_declaration: 'TypeAlias',
   struct_declaration: 'Struct',
   struct_specifier: 'Struct',
   class_specifier: 'Class',

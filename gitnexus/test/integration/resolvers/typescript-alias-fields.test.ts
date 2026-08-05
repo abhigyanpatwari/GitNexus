@@ -73,8 +73,19 @@ describe('TypeScript type-alias and interface members (A4)', () => {
   // `fieldFallbackOnMethodLookup: false` (scope-resolver.ts) because name
   // matching over-connects in a typed language, and the unique-name pass
   // honors that opt-out. The precise path is the only route for TS, by design.
-  it.todo('links an alias field to its consumer');
-  it.todo('links an interface field to its consumer');
+  it('links an interface field to its consumer', () => {
+    expect(readersOf('ifaceSlots')).toContain('renderIface');
+  });
 
-  void readersOf;
+  // The ALIAS half still does not link, and the remaining blocker is now
+  // exact: resolving `cfg: LiveModeConfig` to its members requires the name
+  // `LiveModeConfig` to resolve to a CLASS-LIKE def, and `isClassLike` is
+  // Class|Interface|Struct|Record|Enum|Trait — no TypeAlias. That predicate is
+  // consulted from ~12 sites including MRO and heritage, and every language
+  // mints TypeAlias (Rust type_item, Kotlin/Swift/Dart typealias, C typedef),
+  // so widening it would enrol aliases in linearization where they do not
+  // belong. Widening only the scope index was tried and is NOT sufficient —
+  // the type-name walkers gate on it independently. Needs a deliberate
+  // "shape-like" concept rather than more call-site widening.
+  it.todo('links an alias field to its consumer');
 });
