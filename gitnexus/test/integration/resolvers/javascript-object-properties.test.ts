@@ -93,6 +93,21 @@ describe('JavaScript plain-object property access (A1/A5)', () => {
     expect(readersOf('exitMinAtrMult')).toContain('applyRules');
   });
 
+  // The safety property. Name inference is only defensible because it refuses
+  // to choose between candidates: two objects sharing a key name means a read
+  // through an untyped receiver could mean either, and a wrong edge in the
+  // pre-edit safety gate is worse than a missing one. Without this, the pass
+  // would silently link generic keys (id, name, data) across unrelated objects.
+  it('emits NOTHING when two objects share the key name', () => {
+    expect(readersOf('sharedTimeoutMs')).toEqual([]);
+  });
+
+  it('still indexes both ambiguous keys as nodes — only the EDGE is withheld', () => {
+    // The symbols must remain findable; it is the inference that is unsafe,
+    // not the definitions.
+    expect(propertyNames().filter((n) => n === 'sharedTimeoutMs')).toHaveLength(2);
+  });
+
   it('marks a name-inferred edge at reduced confidence, not as precise', () => {
     const inferred = getRelationships(result, 'ACCESSES').filter(
       (e) => e.target === 'exitMinAtrMult' && (e.rel.reason ?? '').includes('unique-name'),

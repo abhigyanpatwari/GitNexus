@@ -10,6 +10,41 @@ export const INDEX_INCOMPLETE_REASONS = [
 
 export type IndexIncompleteReason = (typeof INDEX_INCOMPLETE_REASONS)[number];
 
+/**
+ * Fraction of the pipeline's relationship count that must survive into the DB
+ * before the write counts as collapsed. Deliberately generous: this detects
+ * "most of the graph did not persist" (the reported case lost ~91%), not a
+ * per-edge reconciliation.
+ */
+export const GRAPH_WRITE_COLLAPSE_RATIO = 0.5;
+
+/**
+ * Below this many relationships the ratio is meaningless — a handful of edges
+ * lost to legitimate filtering would trip it — so small repos are exempt.
+ */
+export const GRAPH_WRITE_COLLAPSE_MIN_EDGES = 100;
+
+/**
+ * Decide whether a finished write collapsed, comparing what the pipeline
+ * produced against what the DB hands back.
+ *
+ * A RATIO, not equality: some relationship types do not round-trip one-for-one
+ * and `--pdg` writes MORE rows into the same table, so demanding equality would
+ * fire on healthy runs. Only a collapse is a defect.
+ *
+ * FAIL-SAFE at `expected === 0`: an implementation that offloads relationships
+ * out of memory may not be able to report a total, and a false "your index is
+ * broken" is worse than a missed one.
+ */
+export function detectGraphWriteCollapse(
+  expected: number,
+  persisted: number,
+): { expected: number; persisted: number } | undefined {
+  if (expected < GRAPH_WRITE_COLLAPSE_MIN_EDGES) return undefined;
+  if (persisted >= expected * GRAPH_WRITE_COLLAPSE_RATIO) return undefined;
+  return { expected, persisted };
+}
+
 /** Stable machine-readable reasons an index cannot be certified complete. */
 export function getIndexIncompleteReasons(
   meta:

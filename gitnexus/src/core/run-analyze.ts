@@ -9,6 +9,7 @@
  * wrapper or server worker) is responsible for process lifecycle.
  */
 
+import { detectGraphWriteCollapse } from './index-freshness.js';
 import path from 'path';
 import fs from 'fs/promises';
 import { randomUUID } from 'node:crypto';
@@ -502,20 +503,6 @@ export interface AnalyzeResult {
 // Class-neutral lead, reused for the missing-dependency degrade path (#2383 F2):
 // its remedy already explains that reinstalling will NOT help, so appending the
 // generic "install with network access" tail below would contradict it.
-/**
- * Fraction of the pipeline's relationship count that must survive into the DB
- * before the write is treated as a collapse. Deliberately generous: this is a
- * catastrophe detector for "most of the graph did not persist" (the reported
- * case lost ~91%), not a reconciliation of every edge.
- */
-const GRAPH_WRITE_COLLAPSE_RATIO = 0.5;
-
-/**
- * Below this many relationships the ratio is meaningless — a handful of edges
- * lost to legitimate filtering would trip it — so small repos are exempt.
- */
-const GRAPH_WRITE_COLLAPSE_MIN_EDGES = 100;
-
 const FTS_UNAVAILABLE_LEAD = 'FTS extension unavailable; skipping search-index creation.';
 const FTS_UNAVAILABLE_MESSAGE =
   `${FTS_UNAVAILABLE_LEAD} ` +
@@ -2552,11 +2539,7 @@ async function runFullAnalysisInner(
     // relationships out of memory may no longer be able to report a total, and
     // a false "your index is broken" is worse than a missed one.
     const expectedRelationships = pipelineResult.graph.relationshipCount;
-    const graphWriteCollapsed =
-      expectedRelationships >= GRAPH_WRITE_COLLAPSE_MIN_EDGES &&
-      stats.edges < expectedRelationships * GRAPH_WRITE_COLLAPSE_RATIO
-        ? { expected: expectedRelationships, persisted: stats.edges }
-        : undefined;
+    const graphWriteCollapsed = detectGraphWriteCollapse(expectedRelationships, stats.edges);
     if (graphWriteCollapsed) {
       log(
         `Warning: graph write incomplete — the pipeline produced ${expectedRelationships} ` +

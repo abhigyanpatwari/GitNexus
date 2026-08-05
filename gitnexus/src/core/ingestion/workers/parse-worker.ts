@@ -2345,10 +2345,23 @@ const processFileGroup = (
       // syntax rather than from an ancestor walk, and both are language-shaped
       // helpers behind the provider's own label decision — shared code here
       // only asks "does this Method name an owner".
+      // `Property` joins `Method` here because object-literal KEYS are now
+      // indexed (A1/A5), and a key is owned by the object that holds it exactly
+      // as a literal's function-valued member is. Without it, two config
+      // objects in one file sharing a key name (`httpConfig.timeoutMs` and
+      // `dbConfig.timeoutMs`) generate the same `Property:<file>:timeoutMs` id
+      // and COLLAPSE INTO ONE node — two distinct settings become one symbol,
+      // and the merged name then looks workspace-unique to name inference,
+      // which resolves reads of it to a node representing both.
       const objectLiteralOwnerInfo =
-        !enclosingClassId && nodeLabel === 'Method' && definitionNode
+        !enclosingClassId && (nodeLabel === 'Method' || nodeLabel === 'Property') && definitionNode
           ? (findMemberAssignmentOwnerInfo(definitionNode, file.path) ??
-            findObjectLiteralBindingInfo(definitionNode, file.path))
+            findObjectLiteralBindingInfo(definitionNode, file.path, {
+              // Only `Property` opts into the qualifier; `Method` ids must stay
+              // byte-identical or every object-literal method in every indexed
+              // repo changes id.
+              includeOwnerName: nodeLabel === 'Property',
+            }))
           : null;
 
       // #1978: hoisted ABOVE qualifiedName/node-id (load-bearing order) so a

@@ -1103,8 +1103,15 @@ export interface ObjectLiteralBindingInfo {
    *
    * Set by {@link findMemberAssignmentOwnerInfo} so a prototype method keys as
    * `Foo.bar` — without it two constructors in one file that each define
-   * `bar` collapse onto a single `Method:<file>:bar` id. Left undefined by
-   * {@link findObjectLiteralBindingInfo}, whose ids stay exactly as they were.
+   * `bar` collapse onto a single `Method:<file>:bar` id.
+   *
+   * {@link findObjectLiteralBindingInfo} sets it ONLY when the caller opts in
+   * via `includeOwnerName`. Its `Method` ids must stay exactly as they were —
+   * qualifying them would rewrite every object-literal method id in every
+   * indexed repo — but object-literal KEYS (indexed since A1/A5) genuinely
+   * need it: two config objects in one file sharing a key name otherwise
+   * collapse onto a single `Property:<file>:<key>` id, merging two distinct
+   * settings into one symbol.
    */
   ownerName?: string;
 }
@@ -1161,6 +1168,13 @@ const BLOCK_SCOPE_BOUNDARY_TYPES = new Set([
 export const findObjectLiteralBindingInfo = (
   node: SyntaxNode,
   filePath: string,
+  options?: {
+    /**
+     * Also return `ownerName` so the member qualifies as `<owner>.<member>`.
+     * Opt-in because turning it on for `Method` would rewrite existing ids.
+     */
+    readonly includeOwnerName?: boolean;
+  },
 ): ObjectLiteralBindingInfo | null => {
   // ── Phase A: walk up from node, count `object` ancestors, find declarator
   let current: SyntaxNode | null = node;
@@ -1218,6 +1232,7 @@ export const findObjectLiteralBindingInfo = (
   const ownerLabel = declaration?.type === 'variable_declaration' ? 'Variable' : 'Const';
   return {
     ownerId: generateId(ownerLabel, `${filePath}:${nameNode.text}`),
+    ...(options?.includeOwnerName === true ? { ownerName: nameNode.text } : {}),
   };
 };
 

@@ -15,9 +15,57 @@
  */
 import { describe, it, expect } from 'vitest';
 import {
+  detectGraphWriteCollapse,
   getIndexIncompleteReasons,
+  GRAPH_WRITE_COLLAPSE_MIN_EDGES,
+  GRAPH_WRITE_COLLAPSE_RATIO,
   INDEX_INCOMPLETE_REASONS,
 } from '../../src/core/index-freshness.js';
+
+describe('detectGraphWriteCollapse (B2 detection)', () => {
+  it('flags the reported field failure (23009 built, 2170 persisted)', () => {
+    expect(detectGraphWriteCollapse(23009, 2170)).toEqual({ expected: 23009, persisted: 2170 });
+  });
+
+  it('flags a missing relation table, which reads back as zero persisted', () => {
+    expect(detectGraphWriteCollapse(23009, 0)).toEqual({ expected: 23009, persisted: 0 });
+  });
+
+  it('stays silent on a healthy write', () => {
+    expect(detectGraphWriteCollapse(23009, 23009)).toBeUndefined();
+  });
+
+  it('stays silent when MORE rows persist than the call graph built (--pdg)', () => {
+    // PDG layers write into the same table, so persisted > expected is normal.
+    expect(detectGraphWriteCollapse(1000, 4000)).toBeUndefined();
+  });
+
+  it('is fail-safe when the expected count is unavailable', () => {
+    // An implementation that offloads relationships out of memory may report 0;
+    // a false "your index is broken" is worse than a missed one.
+    expect(detectGraphWriteCollapse(0, 0)).toBeUndefined();
+    expect(detectGraphWriteCollapse(0, 5000)).toBeUndefined();
+  });
+
+  it('exempts small repos where the ratio is meaningless', () => {
+    const justUnder = GRAPH_WRITE_COLLAPSE_MIN_EDGES - 1;
+    expect(detectGraphWriteCollapse(justUnder, 0)).toBeUndefined();
+  });
+
+  it('applies exactly at the minimum-edge boundary', () => {
+    expect(detectGraphWriteCollapse(GRAPH_WRITE_COLLAPSE_MIN_EDGES, 0)).toEqual({
+      expected: GRAPH_WRITE_COLLAPSE_MIN_EDGES,
+      persisted: 0,
+    });
+  });
+
+  it('treats the ratio as inclusive — exactly at threshold is not a collapse', () => {
+    const expected = 1000;
+    const atThreshold = expected * GRAPH_WRITE_COLLAPSE_RATIO;
+    expect(detectGraphWriteCollapse(expected, atThreshold)).toBeUndefined();
+    expect(detectGraphWriteCollapse(expected, atThreshold - 1)).toBeDefined();
+  });
+});
 
 describe('graph-write-collapsed incomplete reason (B2)', () => {
   it('is part of the stable reason vocabulary', () => {
