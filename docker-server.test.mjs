@@ -621,8 +621,11 @@ it('serves RENDER_EXTERNAL_URL as the backend origin when GITNEXUS_BACKEND_URL i
     async (port) => {
       const res = await rawGet(port, '/');
       assert.equal(res.status, 200);
-      assert.ok(res.body.includes('window.__GITNEXUS_CONFIG__'));
-      assert.ok(res.body.includes('https://gitnexus-web.onrender.com'));
+      // Assert on the parsed value, not a substring of the page: a bare
+      // includes() would also pass if the URL appeared in a comment.
+      const injected = /window\.__GITNEXUS_CONFIG__=(\{.*?\});/.exec(res.body)?.[1];
+      assert.ok(injected, 'Expected __GITNEXUS_CONFIG__ in response body');
+      assert.equal(JSON.parse(injected).backendUrl, 'https://gitnexus-web.onrender.com');
     },
   );
 });

@@ -408,7 +408,7 @@ async function proxyToUpstream(req, res) {
       if (retryEligible && !res.headersSent && n < proxyRetryAttempts && retryableError) {
         const delay = 250 * 2 ** (n - 1); // 250ms, 500ms, ...
         console.warn(
-          `[gitnexus-web] upstream ${err.code}; retry ${n}/${proxyRetryAttempts - 1} in ${delay}ms`,
+          `[gitnexus-web] upstream ${sanitizeForLog(err.code)}; retry ${n}/${proxyRetryAttempts - 1} in ${delay}ms`,
         );
         setTimeout(() => {
           // The client may have aborted during the backoff window; don't fire a
@@ -418,7 +418,7 @@ async function proxyToUpstream(req, res) {
         }, delay);
         return;
       }
-      console.error('[gitnexus-web] upstream proxy error:', err.message);
+      console.error('[gitnexus-web] upstream proxy error:', sanitizeForLog(err.message));
       failGateway(res, 502, 'Bad gateway');
     });
     if (proxyTimeoutMs > 0) {
@@ -487,7 +487,7 @@ const server = createServer(async (req, res) => {
     }
     // Fire-and-forget, so guard the boundary against unhandledRejection.
     proxyToUpstream(req, res).catch((err) => {
-      console.error('[gitnexus-web] proxy handler crashed:', err?.message ?? err);
+      console.error('[gitnexus-web] proxy handler crashed:', sanitizeForLog(err?.message ?? err));
       failGateway(res, 502, 'Bad gateway');
     });
     return;
