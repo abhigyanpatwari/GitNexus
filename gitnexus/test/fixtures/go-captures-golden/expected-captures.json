@@ -127,6 +127,38 @@
     "captureGroups": 23,
     "digest": "fd35d917bc7a039ef4bcb0a6501c31ffbea0fe39bf3604938191597415aa33f7"
   },
+  "go-interface-field-dispatch/internal/handlers/orders.go": {
+    "captureGroups": 22,
+    "digest": "438b02c0990fa6c830767327d07de642f7aff6287e95217c3dfd7423a520942c"
+  },
+  "go-interface-field-dispatch/internal/handlers/picking.go": {
+    "captureGroups": 28,
+    "digest": "0ad401ba19e7cf7deace88ea7973572cb6ee2a63a6006aa5cc06f55bac56e14b"
+  },
+  "go-interface-field-dispatch/internal/repository/audit_repo.go": {
+    "captureGroups": 18,
+    "digest": "2710feb4bee288248e346d7ab0a32a8511b002d8c0fad4cd7db3588ee1926bc2"
+  },
+  "go-interface-field-dispatch/internal/repository/interfaces.go": {
+    "captureGroups": 10,
+    "digest": "ee5b78fc03ea3283b2e06b9b8d0cf4999c2de091262571966d1d4670036c479d"
+  },
+  "go-interface-field-dispatch/internal/repository/mock_repo.go": {
+    "captureGroups": 47,
+    "digest": "7b9219cc06e8c45fb08c304b71ebc58e1a9e052cb9c92fd01b9f22ab8328a91d"
+  },
+  "go-interface-field-dispatch/internal/repository/order_repo.go": {
+    "captureGroups": 26,
+    "digest": "00e0f98586043ff84f96af92d9e6b3593018b6b37f92d183b5c05c6de745e2b0"
+  },
+  "go-interface-field-dispatch/internal/services/pick_service.go": {
+    "captureGroups": 39,
+    "digest": "036d1a4b7304bbbf963f640710fd286702ed34809df2940411c14da8f9de9a6f"
+  },
+  "go-interface-field-dispatch/internal/services/wave_service.go": {
+    "captureGroups": 46,
+    "digest": "62a3830311106e4a349c5b604e914531249aacc47001a888ecf5d38e2bc4c821"
+  },
   "go-local-shadow/cmd/main.go": {
     "captureGroups": 14,
     "digest": "ce7220df98df08741f772150b5572bec0364d576741bc8c76647615fab859f92"
@@ -285,7 +317,7 @@
   },
   "go-qualified-base/consumers/qualified.go": {
     "captureGroups": 14,
-    "digest": "01fe99cadcdf3ce6f00cafce8db0474ad152983f766c8dee9b9da42c9256ae2f"
+    "digest": "4680bb7a7c62a54a91d1d7b8ab3150dfb0c54b1683bee8cf7fc747afe99ca0f8"
   },
   "go-receiver-method-free-call/example.go": {
     "captureGroups": 8,

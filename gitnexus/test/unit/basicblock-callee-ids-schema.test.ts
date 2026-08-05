@@ -9,7 +9,7 @@
  *   3. bulk COPY column list     (getCopyQuery('BasicBlock'))
  *   4. single-node CREATE        (insertNodeToLbug)
  *   5. incremental MERGE         (batchInsertNodesToLbug)
- * plus the INCREMENTAL_SCHEMA_VERSION 2 → 3 bump (KTD5).
+ * plus its presence in the fingerprinted DDL set (KTD5).
  *
  * `calleeIds` is added LAST in the CSV/COPY/CREATE/MERGE tuple, so the column
  * order MUST stay identical across header, COPY list, and row array — the
@@ -24,8 +24,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 import type { GraphNode, NodeProperties } from 'gitnexus-shared';
 import { BASICBLOCK_CSV_HEADER, buildBasicBlockRow } from '../../src/core/lbug/csv-generator.js';
 import { getCopyQuery } from '../../src/core/lbug/lbug-adapter.js';
-import { BASICBLOCK_SCHEMA } from '../../src/core/lbug/schema.js';
-import { INCREMENTAL_SCHEMA_VERSION } from '../../src/storage/repo-manager.js';
+import { BASICBLOCK_SCHEMA, NODE_SCHEMA_QUERIES } from '../../src/core/lbug/schema.js';
 
 // ── helpers ─────────────────────────────────────────────────────────────────
 
@@ -117,19 +116,21 @@ describe('BasicBlock calleeIds — header/COPY/row column parity', () => {
   });
 });
 
-// ── 3. schema DDL + incremental version bump (pure) ───────────────────────────
+// ── 3. schema DDL + fingerprint coverage (pure) ───────────────────────────────
 
-describe('BasicBlock calleeIds — schema DDL + version bump', () => {
+describe('BasicBlock calleeIds — schema DDL + fingerprint coverage', () => {
   it('BASICBLOCK_SCHEMA declares the calleeIds STRING column', () => {
     expect(BASICBLOCK_SCHEMA).toContain('callees STRING');
     expect(BASICBLOCK_SCHEMA).toContain('calleeIds STRING');
   });
 
-  it('INCREMENTAL_SCHEMA_VERSION is at least 3 (calleeIds column bump, KTD5)', () => {
-    // The exact value advances as later milestones add re-index-forcing changes
-    // (v4 = CALL_SUMMARY, PDG FU-C). This guard pins the floor the calleeIds
-    // column established; the v3→4 reuse-gate guard lives in its own test.
-    expect(INCREMENTAL_SCHEMA_VERSION).toBeGreaterThanOrEqual(3);
+  it('the calleeIds column is inside the schema fingerprint, so a pre-column index cannot be reused', () => {
+    // This replaces the old `INCREMENTAL_SCHEMA_VERSION >= 3` floor (#2798).
+    // The hand-incremented integer is gone: reuse is now gated on a digest of
+    // the DDL itself, so the invariant to pin is that BASICBLOCK_SCHEMA is one
+    // of the strings that digest covers. An index built before the column
+    // existed therefore carries a different fingerprint and is rebuilt.
+    expect(NODE_SCHEMA_QUERIES).toContain(BASICBLOCK_SCHEMA);
   });
 });
 

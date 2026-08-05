@@ -19,6 +19,12 @@ import {
   STALE_HASH_SENTINEL,
   NodeTableName,
 } from './schema.js';
+// Analyze-only, but reached from MCP startup via `pool-adapter.js`. #2802
+// proposed lazy-importing it; rejected — `core/search/bm25-index.ts` statically
+// imports `normalizeFtsText` from `csv-generator.js`, and `local-backend.ts`
+// dynamically imports bm25-index on the FTS query path, so deferring here
+// relocates the startup cost to first query rather than removing it. The
+// measured figures live in #2802; they were environment-bound, this is not.
 import { streamAllCSVsToDisk, type StreamedCSVResult } from './csv-generator.js';
 import type { GraphEmitManifest } from './graph-emit-sink.js';
 import type { PdgEmitManifest } from './pdg-emit-sink.js';

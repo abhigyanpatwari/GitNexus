@@ -31,34 +31,19 @@ import { augmentForPostDom } from './synthetic-escape.js';
 import { DEFAULT_PDG_MAX_SITES_PER_STATEMENT } from './visitors/call-site-harvest.js';
 import { calleeIdPosKey } from '../scope-resolution/graph-bridge/callee-id-sink.js';
 import { encodeReachingDefReasonPairs } from './reaching-def-reason-codec.js';
+import { CALLEES_TRUNCATED_SENTINEL, CALLEE_ID_SEP } from './callee-cell-format.js';
 import type { BasicBlockData, BindingEntry, FunctionCfg } from './types.js';
 
 /**
- * Reserved token placed in `BasicBlock.callees` when a statement's call sites
- * were truncated at {@link DEFAULT_PDG_MAX_SITES_PER_STATEMENT}: the recorded
- * callee list is then INCOMPLETE, so over-cap callees are absent. `*` is not a
- * valid identifier leaf, so it cannot collide with a real callee name. The
- * impact bridge treats a slice containing this sentinel as "callees unknown" and
- * keeps reach callgraph-equal (proven), rather than falsely labeling an
- * absent-but-real callee `unproven-bridge`.
+ * Cell-format constants live in the LEAF module `callee-cell-format.ts` and are
+ * re-exported here so every existing importer keeps working. The consumer side
+ * (`mcp/local/pdg-impact.ts`) imports them from the leaf directly: importing any
+ * binding from THIS module evaluates it, and with it the whole analyze-only CFG
+ * closure — 8 modules on every MCP server start to read two strings (#2802
+ * review). Producer and consumer still resolve to one definition, so the drift
+ * these shared constants exist to prevent stays impossible.
  */
-export const CALLEES_TRUNCATED_SENTINEL = '*';
-
-/**
- * Inner separator for the `BasicBlock.calleeIds` cell (resolved callee symbol
- * ids). A TAB is used — NOT a space — because resolved ids embed `filePath` and
- * C++ overload shape tags with multi-word primitive types (e.g. `unsigned char`,
- * `long double`), so an id can legitimately contain a space; a space-joined cell
- * then fragments on read and silently drops inter-procedural reach to that
- * callee (#2227 tri-review). A tab cannot appear in a tree-sitter-derived id
- * token (paths/identifiers/type tokens are tab-free) and round-trips intact
- * through `escapeCSVField` (tab is in its preserved set) and the RFC-4180 COPY
- * reader (every cell is quoted). Producer ({@link calleeIdsOfBlock}) and
- * consumer (`splitCalleeIds`) import this single constant so they cannot drift.
- * The sibling `callees` (leaf-name) cell stays space-joined — leaf names are
- * bare identifiers and never contain a space.
- */
-export const CALLEE_ID_SEP = '\t';
+export { CALLEES_TRUNCATED_SENTINEL, CALLEE_ID_SEP } from './callee-cell-format.js';
 
 /**
  * Default per-function CFG edge cap. A pathological generated function could

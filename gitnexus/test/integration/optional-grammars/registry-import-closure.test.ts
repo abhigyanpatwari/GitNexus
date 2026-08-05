@@ -17,114 +17,79 @@
  * to be an always-present npm dependency.)
  *
  * This test locks the fix in WITHOUT needing to simulate a missing grammar:
- * spawn a child Node process, import the built scope-resolution `registry.js`
- * (the crash-chain root), and assert no OPTIONAL tree-sitter binding
- * (swift/dart/kotlin) appears in the module cache. Pre-fix the static imports
- * loaded those bindings at import time (this assertion fails); post-fix they
- * are lazy (it passes). Required grammars (python/typescript/...) still load
- * eagerly via their own `query.ts` — that is expected and NOT asserted against.
+ * import the built scope-resolution `registry.js` (the crash-chain root) in a
+ * child process and assert no OPTIONAL tree-sitter binding (swift/dart/kotlin/c)
+ * appears in the loaded-module set. Pre-fix the static imports loaded those
+ * bindings at import time (this assertion fails); post-fix they are lazy (it
+ * passes). Required grammars (python/typescript/...) still load eagerly via
+ * their own `query.ts` — that is expected and NOT asserted against.
+ *
+ * The probe is `test/helpers/module-load-probe.ts`. This file used to carry its
+ * own copy that diffed Node's CJS module cache and nothing else. That is the
+ * right channel for the headline — a grammar binding is native CJS and always
+ * surfaces there — but it was structurally BLIND to the ESM `dist/**` graph the
+ * registry actually is, which is why its non-vacuity guard had to be indirect
+ * ("at least one REQUIRED binding loaded"). The shared probe adds the ESM
+ * channel, so this file can now anchor DIRECTLY on
+ * `dist/core/ingestion/languages/swift/query.js`: the module that must be
+ * reached-but-lazy, whose disappearance would make the swift half of the
+ * headline vacuous. Both guards are kept — one pins the ESM chain to an
+ * optional language, the other pins the native channel to a required one.
  *
  * Characterization-first: this MUST fail against the pre-fix code (run against
  * the parent commit to verify the regression signal works).
  */
 
-import { describe, it, expect } from 'vitest';
-import { spawnSync } from 'node:child_process';
-import path from 'node:path';
-import fs from 'node:fs';
-import { fileURLToPath, pathToFileURL } from 'node:url';
-
-const __dirname = path.dirname(fileURLToPath(import.meta.url));
-const REPO_ROOT = path.resolve(__dirname, '..', '..', '..');
-const DIST_REGISTRY = path.join(
-  REPO_ROOT,
-  'dist',
-  'core',
-  'ingestion',
-  'scope-resolution',
-  'pipeline',
-  'registry.js',
-);
-const DIST_REGISTRY_URL = pathToFileURL(DIST_REGISTRY).href;
-
-// Import the registry, then report every newly-loaded CJS-cache key. The cache
-// tracks native/.node bindings loaded by either ESM or CJS importers, which is
-// exactly how a tree-sitter grammar binding surfaces.
-const PROBE = `
-  import { createRequire } from 'node:module';
-  const req = createRequire(import.meta.url);
-  const before = new Set(Object.keys(req.cache));
-  await import(process.env.PROBE_TARGET);
-  const after = new Set(Object.keys(req.cache));
-  process.stdout.write(JSON.stringify([...after].filter((k) => !before.has(k))));
-`;
+import { describe, it, expect, beforeAll } from 'vitest';
+import { probeModuleLoad, type ModuleLoadProbe } from '../../helpers/module-load-probe.js';
 
 // `tree-sitter-c[\\/]` matches only the exact `tree-sitter-c/` package — NOT
 // `tree-sitter-cpp/` or `tree-sitter-c-sharp/` (those need a non-separator after
 // the `c`), so the required C++/C# eager loads are unaffected.
 const OPTIONAL_GRAMMAR_RE = /tree-sitter-(swift|dart|kotlin|c)[\\/]/;
 
+/** Any tree-sitter grammar package — required ones included. */
+const ANY_GRAMMAR_RE = /tree-sitter-[a-z-]+[\\/]/;
+
 describe('optional-grammar static-import closure (#2091/#2093, #2116)', () => {
-  it('importing the scope-resolution registry loads NO lazy grammar binding (swift/dart/kotlin/c)', () => {
-    if (!fs.existsSync(DIST_REGISTRY)) {
-      throw new Error(
-        `${DIST_REGISTRY} missing — run \`npm run build\` first (or \`npm run test:integration\`, ` +
-          `which builds via pretest:integration).`,
-      );
-    }
+  let probe: ModuleLoadProbe;
 
-    const result = spawnSync(process.execPath, ['--input-type=module', '-e', PROBE], {
-      cwd: REPO_ROOT,
-      // NODE_OPTIONS cleared so a session-pinned --max-old-space-size etc. can't
-      // perturb the child. The skip env is cleared so install state is probed.
-      env: {
-        ...process.env,
-        PROBE_TARGET: DIST_REGISTRY_URL,
-        NODE_OPTIONS: '',
-        GITNEXUS_SKIP_OPTIONAL_GRAMMARS: '',
-      },
-      timeout: 60_000,
-      encoding: 'utf8',
+  beforeAll(async () => {
+    probe = await probeModuleLoad({
+      entry: 'core/ingestion/scope-resolution/pipeline/registry.js',
+      // The registry's closure MUST still reach the OPTIONAL languages'
+      // query.ts modules — that is precisely what makes "no optional binding
+      // loaded" meaningful rather than trivially true. If a refactor severs
+      // registry → swift/query.js, this fails loudly instead of letting the
+      // assertion below pass green on a no-longer-exercised path.
+      anchor: 'dist/core/ingestion/languages/swift/query.js',
+      // Observed on Node 22.18 against a clean build: 553 distinct modules.
+      minModules: 100,
+      // Cleared so install state — not a skip flag inherited from the caller —
+      // is what the child probes.
+      env: { GITNEXUS_SKIP_OPTIONAL_GRAMMARS: '' },
     });
+  }, 90_000);
 
-    // Post-fix, importing the registry must not throw even though the chain
-    // reaches swift/dart/kotlin query.ts. (Pre-fix on a machine missing a
-    // grammar this would be ERR_MODULE_NOT_FOUND; here the grammar is present
-    // so pre-fix it would instead surface as a loaded binding below.)
-    if (result.status !== 0) {
-      // status is null when the child was killed by a signal (e.g. a native
-      // addon SIGSEGV) — surface the signal so that's distinguishable from a
-      // non-zero exit / module-not-found.
-      const exit =
-        result.status !== null ? `status ${result.status}` : `signal ${result.signal ?? 'unknown'}`;
-      throw new Error(
-        `importing the scope-resolution registry failed (${exit}):\n` +
-          `stderr:\n${result.stderr}\nstdout:\n${result.stdout}`,
-      );
-    }
-
-    const newlyLoaded = JSON.parse(result.stdout) as string[];
-
-    // Non-vacuity guard: the registry's static-import closure MUST still reach
-    // the per-language query.ts modules (which is what makes "no optional
-    // binding loaded" meaningful). The REQUIRED grammars (python/typescript/…)
-    // still import their binding eagerly in their own query.ts, so at least one
-    // non-optional tree-sitter binding must appear. If a future refactor severs
-    // the registry→query.ts edge, this fails loudly instead of letting the
-    // optional-binding assertion pass green on a no-longer-exercised path.
-    const requiredLoaded = newlyLoaded.filter(
-      (p) => /tree-sitter-[a-z-]+[\\/]/.test(p) && !OPTIONAL_GRAMMAR_RE.test(p),
-    );
+  it('importing the scope-resolution registry loads NO lazy grammar binding (swift/dart/kotlin/c)', () => {
+    // Second non-vacuity guard, on the native channel: the REQUIRED grammars
+    // (python/typescript/…) still import their binding eagerly in their own
+    // query.ts, so at least one non-optional tree-sitter binding must appear.
+    // Losing this would mean the probe no longer observes grammar loads at all,
+    // which the module-count floor alone would not catch.
+    const requiredLoaded = probe
+      .matching(ANY_GRAMMAR_RE)
+      .filter((p) => !OPTIONAL_GRAMMAR_RE.test(p));
     expect(
       requiredLoaded.length,
       `Expected the registry import closure to load at least one REQUIRED tree-sitter ` +
         `binding (proving the chain still reaches the per-language query.ts modules). ` +
-        `Newly-loaded (${newlyLoaded.length}):\n${newlyLoaded.join('\n')}`,
+        `Loaded (${probe.modules.length}):\n${probe.modules.join('\n')}`,
     ).toBeGreaterThan(0);
 
     // Headline assertion: no lazy grammar binding (swift/dart/kotlin/c) is
     // loaded at registry static-import time — they must load lazily.
-    const optionalLoaded = newlyLoaded.filter((p) => OPTIONAL_GRAMMAR_RE.test(p));
+    const optionalLoaded = probe.matching(OPTIONAL_GRAMMAR_RE);
     expect(
       optionalLoaded,
       `Lazy tree-sitter grammar binding(s) loaded at registry static-import time. ` +
