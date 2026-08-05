@@ -76,6 +76,7 @@ import {
   MAX_PROPERTY_DISPATCH_FANOUT,
 } from '../passes/property-dispatch.js';
 import { emitReferencesViaLookup } from '../graph-bridge/references-to-edges.js';
+import { emitUniqueNamePropertyAccesses } from '../passes/unique-name-properties.js';
 import {
   createCalleeIdAccumulator,
   type CalleeIdAccumulator,
@@ -438,6 +439,17 @@ interface RunScopeResolutionStats {
    * #2437 false-safe gap for exactly those keys (names are in the warn log).
    */
   readonly propertyDispatchSkippedKeys: number;
+  /**
+   * ACCESSES edges recovered by workspace-unique property name (A1/A5) — the
+   * last-resort pass for receivers no precise pass could type.
+   */
+  readonly uniqueNamePropertyEdges: number;
+  /**
+   * Read/write sites left unresolved because two or more `Property` defs share
+   * the name, so a unique-name match would have been a coin flip. This is the
+   * population a receiver-typing improvement would convert into precise edges.
+   */
+  readonly uniqueNamePropertyAmbiguous: number;
   readonly resolutionOutcomes: readonly ResolutionOutcome[];
   /**
    * Per-function taint summaries harvested in the pdg window (#2084 M4 U1).
@@ -566,6 +578,8 @@ export function runScopeResolution(
       referenceEdgesEmitted: 0,
       referenceSkipped: 0,
       propertyDispatchSkippedKeys: 0,
+      uniqueNamePropertyEdges: 0,
+      uniqueNamePropertyAmbiguous: 0,
       resolutionOutcomes,
       functionSummaries: [],
       callSummaries: [],
@@ -595,6 +609,8 @@ export function runScopeResolution(
       referenceEdgesEmitted: 0,
       referenceSkipped: 0,
       propertyDispatchSkippedKeys: 0,
+      uniqueNamePropertyEdges: 0,
+      uniqueNamePropertyAmbiguous: 0,
       resolutionOutcomes,
       functionSummaries: [],
       callSummaries: [],
@@ -900,6 +916,37 @@ export function runScopeResolution(
         referenceSkipSites,
         calleeIdAccumulator,
       );
+  // Last-resort property resolution by workspace-unique name (A1/A5). Runs
+  // after every precise pass and only sees what they left behind, so a
+  // scope-resolved target always wins. Sites the generic bridge already
+  // resolved are excluded explicitly: `graph.addRelationship` is
+  // first-write-wins per edge id, which stops a DUPLICATE but not a second
+  // edge to a DIFFERENT target, and second-guessing a resolved receiver is
+  // exactly the wrong-edge-in-the-safety-gate case this must not create.
+  const uniqueNameSkipSites = new Set(referenceSkipSites);
+  for (const [fromScope, refs] of referenceIndex.bySourceScope) {
+    const fromFilePath = indexes.scopeTree.getScope(fromScope)?.filePath;
+    if (fromFilePath === undefined) continue;
+    for (const ref of refs) {
+      uniqueNameSkipSites.add(`${fromFilePath}:${ref.atRange.startLine}:${ref.atRange.startCol}`);
+    }
+  }
+  // Gated on the language's own field-name-fallback policy. A statically-typed
+  // language sets `fieldFallbackOnMethodLookup: false` precisely because
+  // matching a member by name over-connects when a real type system could have
+  // answered exactly; inferring an ACCESSES edge by name is the same claim, so
+  // it must obey the same opt-out rather than route around it.
+  const uniqueNameProperties =
+    callableFlowOnly || provider.fieldFallbackOnMethodLookup === false
+      ? { emitted: 0, ambiguous: 0 }
+      : emitUniqueNamePropertyAccesses(
+          graph,
+          indexes,
+          emitParsedFiles,
+          postHeritageNodeLookup,
+          uniqueNameSkipSites,
+        );
+
   // value-ref registrations (#2437): USES edges at the registration sites
   // plus field-based dispatch — synthesized CALLS from member-call sites to
   // functions registered under the same property key. This runs after the
@@ -1378,6 +1425,8 @@ export function runScopeResolution(
       propertyDispatch.callsEmitted,
     referenceSkipped: skipped,
     propertyDispatchSkippedKeys: propertyDispatch.skippedKeys,
+    uniqueNamePropertyEdges: uniqueNameProperties.emitted,
+    uniqueNamePropertyAmbiguous: uniqueNameProperties.ambiguous,
     resolutionOutcomes,
     functionSummaries: harvestedSummaries,
     callSummaries: harvestedCallSummaries,

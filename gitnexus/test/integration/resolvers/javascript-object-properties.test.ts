@@ -78,13 +78,28 @@ describe('JavaScript plain-object property access (A1/A5)', () => {
     expect(new Set(props).size).toBe(2);
   });
 
-  // Blocked on receiver resolution — see STATUS above. `readersOf` is the
-  // assertion these become once the receiver can be typed to the literal.
-  it.todo('emits ACCESSES for a read through the holding variable');
-  it.todo('emits ACCESSES for the property WRITE (A5)');
-  it.todo('emits ACCESSES for a read through an untyped param (option bag)');
+  it('emits ACCESSES for a read through the holding variable', () => {
+    expect(readersOf('exitMinAtrMult')).toContain('readViaVariable');
+  });
 
-  void readersOf;
+  it('emits ACCESSES for the property WRITE (A5)', () => {
+    const writes = getRelationships(result, 'ACCESSES').filter(
+      (e) => e.target === 'exitMinAtrMult' && (e.rel.reason ?? '').includes('write'),
+    );
+    expect(writes.map((e) => e.source)).toContain('tightenExit');
+  });
+
+  it('emits ACCESSES for a read through an untyped param (option bag)', () => {
+    expect(readersOf('exitMinAtrMult')).toContain('applyRules');
+  });
+
+  it('marks a name-inferred edge at reduced confidence, not as precise', () => {
+    const inferred = getRelationships(result, 'ACCESSES').filter(
+      (e) => e.target === 'exitMinAtrMult' && (e.rel.reason ?? '').includes('unique-name'),
+    );
+    expect(inferred.length).toBeGreaterThan(0);
+    for (const e of inferred) expect(e.rel.confidence).toBeLessThan(0.85);
+  });
 });
 
 interface PropNode {
