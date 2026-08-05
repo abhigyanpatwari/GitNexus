@@ -2101,9 +2101,25 @@ describe('Go grouped type declaration scoping (#2837)', () => {
     );
   });
 
-  // Grouped INTERFACE declarations collapse the same way.
+  // Grouped INTERFACE declarations collapse the same way. This row is also what
+  // discriminates the `tree-sitter-queries.ts` half of the fix: with only
+  // `languages/go/query.ts` re-anchored, MetricSink has a scope but still no
+  // graph NODE, so its implementor edge cannot exist.
   it('detects implementors of both interfaces in a grouped interface block', () => {
     expect(implementsEdges()).toContain('AuditWriter → AuditSink');
     expect(implementsEdges()).toContain('MetricWriter → MetricSink');
+  });
+
+  // The node-level symptom, asserted directly for STRUCTS rather than only
+  // inferred from the interface row above. Before the fix the whole grouped
+  // block collapsed to one node and `PickService` was absent from the inventory
+  // entirely — `impact("PickService")` would have returned a clean, wrong zero.
+  it('emits a graph node for every struct in a grouped block', () => {
+    const structs = getNodesByLabel(result, 'Struct');
+    expect(structs).toContain('WaveService'); // plain — control
+    expect(structs).toContain('Decoy'); // grouped, first
+    expect(structs).toContain('PickService'); // grouped, second
+    expect(structs).toContain('SortService'); // grouped, first (reverse-order file)
+    expect(structs).toContain('SortDecoy'); // grouped, second (reverse-order file)
   });
 });
