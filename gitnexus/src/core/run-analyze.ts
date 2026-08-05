@@ -2902,7 +2902,8 @@ async function runFullAnalysisInner(
     const newFileHashesRecord: Record<string, string> = {};
     for (const [k, v] of newFileHashes) newFileHashesRecord[k] = v;
 
-    logUnresolvedReceiverFiles(pipelineResult.resolutionOutcomes ?? []);
+    const resolutionOutcomes = pipelineResult.resolutionOutcomes ?? [];
+    logUnresolvedReceiverFiles(resolutionOutcomes);
 
     // Annotated so the capabilities stamp below is compile-checked against
     // RepoMeta's status unions (tri-review 4669518496 P1/U3) — an unannotated
@@ -2973,9 +2974,7 @@ async function runFullAnalysisInner(
       // Derived digest of the DDL this run created the tables from (#2798).
       // Git-only: non-git repos never take the incremental path.
       schemaFingerprint: hasGitDir(repoPath) ? SCHEMA_FINGERPRINT : undefined,
-      unresolvedReceiverMembers: summarizeUnresolvedReceivers(
-        pipelineResult.resolutionOutcomes ?? [],
-      ),
+      unresolvedReceiverMembers: summarizeUnresolvedReceivers(resolutionOutcomes),
       analysisFeatures: currentAnalysisFeatures,
       // Always stamped with the live resolved mode (#2331/#2339) — unlike
       // `pdg` below, 'none' is a meaningful value to compare, not an

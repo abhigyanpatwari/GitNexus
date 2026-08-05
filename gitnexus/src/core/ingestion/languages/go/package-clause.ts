@@ -23,15 +23,19 @@
  * run of whitespace and comments, then require the very next token to be the
  * clause. Anything else is `null` — a truncated read, a misrouted non-Go file,
  * an unparseable header — reported by the caller rather than guessed at.
+ *
+ * ONE rule governs every leniency below (the `\s+` separator, the shebang skip,
+ * CR-only line endings): a file this returns `null` for is dropped from BOTH
+ * passes, so refusing a shape the previous regex accepted is a silent
+ * regression, not a principled tightening. Be no stricter than the grammar.
  */
 
-/** Sticky (anchored at `lastIndex`) so the clause is matched in place, without
- *  slicing a copy of the file for what is always a header-length check. */
-// `\s+`, not `[ \t]+`: Go's grammar separates tokens by any whitespace, so
-// `package\nmain` is legal and tree-sitter parses it without error. The narrower
-// class rejected it (and CR-only line endings) where the regex it replaced did
-// not — a file returning `null` is dropped from BOTH Go cross-file passes, so
-// being stricter than the grammar is the expensive direction to be wrong in.
+/** Leading trivia: whitespace, `//` lines, block comments. Sticky. */
+const LEADING_TRIVIA = /(?:\s+|\/\/[^\n\r]*|\/\*[\s\S]*?\*\/)*/y;
+
+/** The clause itself, anchored at the first non-trivia byte. `\s+` (not
+ *  `[ \t]+`) because Go separates tokens by any whitespace: `package\nmain` is
+ *  legal and tree-sitter parses it without error. */
 const PACKAGE_CLAUSE = /package\s+([A-Za-z_][A-Za-z0-9_]*)/y;
 
 /**
@@ -43,45 +47,22 @@ const PACKAGE_CLAUSE = /package\s+([A-Za-z_][A-Za-z0-9_]*)/y;
  * also have to model string literals to stay correct.
  */
 export function inferGoPackageName(sourceText: string): string | null {
-  const n = sourceText.length;
   let i = 0;
-  // A leading `#!` line. Not legal Go — `gofmt` rejects it — but `gorun`-style
-  // scripts carry one and the regex this replaced skipped straight past it via
-  // `/m`. Tolerated here for the same reason the separator is `\s+`: a file this
-  // returns `null` for is dropped from BOTH Go cross-file passes, so refusing a
-  // shape the previous implementation accepted is a silent regression, not a
-  // principled tightening. Only a FIRST-line `#!` is skipped; `#` anywhere else
-  // still ends the scan.
+  // A leading `#!` line: `gorun`-style scripts carry one. Only a FIRST-line
+  // `#!` is skipped; a `#` anywhere else still ends the scan.
   if (sourceText.startsWith('#!')) {
-    const nl = sourceText.search(/[\n\r]/);
-    if (nl === -1) return null;
-    i = nl + 1;
+    const eol = sourceText.search(/[\n\r]/);
+    if (eol === -1) return null;
+    i = eol + 1;
   }
-  for (;;) {
-    // `\s` covers the BOM (U+FEFF) as well as ordinary whitespace and CRLF.
-    while (i < n && /\s/.test(sourceText.charAt(i))) i += 1;
-    if (sourceText.startsWith('//', i)) {
-      // Terminate on CR *or* LF. Scanning for `\n` alone swallowed the rest of a
-      // CR-only file — the leading `//go:build` comment ate the package clause
-      // with it and the file was dropped from both Go cross-file passes. Rare,
-      // but the regex this replaced handled it, so losing it is a regression.
-      let end = i + 2;
-      while (end < n && sourceText.charAt(end) !== '\n' && sourceText.charAt(end) !== '\r') {
-        end += 1;
-      }
-      if (end >= n) return null; // comment runs to EOF: no clause follows
-      i = end + 1;
-      continue;
-    }
-    if (sourceText.startsWith('/*', i)) {
-      const end = sourceText.indexOf('*/', i + 2);
-      if (end === -1) return null; // unterminated block comment
-      i = end + 2;
-      continue;
-    }
-    break;
-  }
-  PACKAGE_CLAUSE.lastIndex = i;
+  // Whitespace (`\s` covers the BOM and every line ending), `//` lines and block
+  // comments — the run a Go file may carry before its clause. Sticky, so the
+  // header is skipped in place without slicing a copy of the file. An
+  // unterminated `/*` or a `//` running to EOF simply leaves `lastIndex` where
+  // the clause cannot match, so neither needs its own early return.
+  LEADING_TRIVIA.lastIndex = i;
+  LEADING_TRIVIA.exec(sourceText);
+  PACKAGE_CLAUSE.lastIndex = LEADING_TRIVIA.lastIndex;
   return PACKAGE_CLAUSE.exec(sourceText)?.[1] ?? null;
 }
 

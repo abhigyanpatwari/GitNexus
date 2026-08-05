@@ -1122,19 +1122,12 @@ export const GO_QUERIES = `
 
 ; Types
 ;
-; Anchored on the type_spec, not the enclosing type_declaration (#2837). A
-; grouped declaration
-;   type ( Decoy struct{...}; PickService struct{...} )
-; matches this pattern once per type_spec, but with the capture on the
-; type_declaration every match named the SAME node. The consumers then read that
-; one node: goClassConfig.extractName finds the FIRST type_spec under it, so
-; every match resolved to the first type's name and the block collapsed to a
-; single node. Measured on go-grouped-type-decl before the fix: PickService and
-; MetricSink were absent from the node inventory entirely, which also cost
-; MetricSink its IMPLEMENTS edge.
-;
-; This must stay in lockstep with @scope.class / @declaration.struct in
-; languages/go/query.ts, which are anchored the same way for the same reason.
+; Anchored on the type_spec, NOT the enclosing type_declaration (#2837) — a
+; grouped type ( A struct{}; B struct{} ) block otherwise gave every match the
+; same capture node, and goClassConfig.extractName resolved all of them to the
+; FIRST spec's name, collapsing the block to one node. Must stay in lockstep
+; with @scope.class / @declaration.struct in languages/go/query.ts, which
+; carries the full rationale. (No backticks here: this is a template literal.)
 (type_declaration (type_spec name: (type_identifier) @name type: (struct_type)) @definition.struct)
 (type_declaration (type_spec name: (type_identifier) @name type: (interface_type)) @definition.interface)
 

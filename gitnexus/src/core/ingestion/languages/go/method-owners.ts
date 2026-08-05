@@ -38,11 +38,15 @@ export function populateGoWorkspaceOwners(
   // sibling file. That used to be a bare `continue` with no trace, which is the
   // same false-safe silence #2813 was filed about. Report it once, bounded
   // (mirrors the fan-out-cap warning in scope-resolution/pipeline/run.ts).
-  const skipped: string[] = [];
+  let skippedCount = 0;
+  const skippedSample: string[] = [];
   for (const parsed of parsedFiles) {
     const pkgName = inferGoPackageName(ctx.fileContents.get(parsed.filePath) ?? '');
     if (pkgName === null) {
-      skipped.push(parsed.filePath);
+      // Count everything, retain only the sample — a misrouted vendored tree
+      // would otherwise accumulate one path reference per file to print five.
+      skippedCount += 1;
+      if (skippedSample.length < SKIPPED_SAMPLE_CAP) skippedSample.push(parsed.filePath);
       continue;
     }
     const key = `${goPackageDir(parsed.filePath)}\0${pkgName}`;
@@ -50,9 +54,9 @@ export function populateGoWorkspaceOwners(
     bucket.push(parsed);
     filesByPackage.set(key, bucket);
   }
-  if (skipped.length > 0) {
+  if (skippedCount > 0) {
     logger.warn(
-      { skippedFiles: skipped.length, sample: skipped.slice(0, SKIPPED_SAMPLE_CAP) },
+      { skippedFiles: skippedCount, sample: skippedSample },
       'go: files with no resolvable package clause were excluded from method-owner ' +
         'resolution (their methods cannot attach to structs declared in sibling files)',
     );

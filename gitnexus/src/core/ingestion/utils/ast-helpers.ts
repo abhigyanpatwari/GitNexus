@@ -881,36 +881,26 @@ export const findEnclosingClassInfo = (
         }
       }
     }
-    // Go: type_declaration wrapping a struct_type (type User struct { ... })
+    // Go: the `type_spec` IS the declared type (`type User struct { ... }`, and
+    // one per member of a grouped `type ( A struct{…}; B struct{…} )` block).
     //
-    // Pick the `type_spec` that CONTAINS the node we walked up from, not the
-    // first one (#2837). A grouped declaration
-    //   type ( Decoy struct{ orderRepo *LocalThing }; PickService struct{ orderRepo Repo } )
-    // is ONE `type_declaration` holding several specs, so `find(...)` filed every
-    // member of every struct under the FIRST spec: `PickService`'s fields and
-    // methods were attributed to `Decoy`, and two same-named fields minted one
-    // id (`Property:…:Decoy.orderRepo`), where first-write-wins silently dropped
-    // the second. Pre-existing, but #2837 made the later structs exist as nodes,
-    // so the symptom changed from "type missing" to "type present, no members".
-    if (current.type === 'type_declaration') {
-      const specs = (current.children ?? []).filter((c: SyntaxNode) => c.type === 'type_spec');
-      const typeSpec =
-        specs.find((c) => c.startIndex <= node.startIndex && node.startIndex < c.endIndex) ??
-        // Not inside any spec (the walk started on the declaration itself, or on
-        // punctuation between specs): a single-spec declaration is unambiguous,
-        // a grouped one is not, so only the former falls back.
-        (specs.length === 1 ? specs[0] : undefined);
-      if (typeSpec) {
-        const typeBody = typeSpec.childForFieldName?.('type');
-        if (typeBody?.type === 'struct_type' || typeBody?.type === 'interface_type') {
-          const nameNode = typeSpec.childForFieldName?.('name');
-          if (nameNode) {
-            const label = typeBody.type === 'struct_type' ? 'Struct' : 'Interface';
-            return {
-              classId: generateId(label, `${filePath}:${nameNode.text}`),
-              className: nameNode.text,
-            };
-          }
+    // Matched here rather than on the enclosing `type_declaration` (#2837): this
+    // walk climbs `node.parent`, so it passes THROUGH the containing spec on its
+    // way up from any member, and the structure it already has is the answer.
+    // Keying on the wrapper instead meant picking one spec out of several with
+    // no reference point — which filed every member of a grouped block under its
+    // FIRST struct, so two same-named fields minted one id and first-write-wins
+    // dropped the second.
+    if (current.type === 'type_spec') {
+      const typeBody = current.childForFieldName?.('type');
+      if (typeBody?.type === 'struct_type' || typeBody?.type === 'interface_type') {
+        const nameNode = current.childForFieldName?.('name');
+        if (nameNode) {
+          const label = typeBody.type === 'struct_type' ? 'Struct' : 'Interface';
+          return {
+            classId: generateId(label, `${filePath}:${nameNode.text}`),
+            className: nameNode.text,
+          };
         }
       }
     }

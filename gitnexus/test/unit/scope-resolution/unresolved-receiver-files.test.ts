@@ -2,17 +2,10 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 const emit = vi.hoisted(() => vi.fn());
 
+// Only `createLogger` is mocked: the module under test imports nothing else
+// from the logger. The diagnostic is opt-in via `debugEnvVar` and emits at
+// `debug`, so the assertions drive that child logger.
 vi.mock('../../../src/core/logger.js', () => ({
-  logger: {
-    warn: vi.fn(),
-    info: vi.fn(),
-    error: vi.fn(),
-    debug: vi.fn(),
-    trace: vi.fn(),
-    fatal: vi.fn(),
-  },
-  // The diagnostic is opt-in via `createLogger(name, { debugEnvVar })` and emits
-  // at `debug`, so the assertions drive that child logger, not the singleton.
   createLogger: () => ({
     warn: vi.fn(),
     info: vi.fn(),
@@ -20,6 +13,7 @@ vi.mock('../../../src/core/logger.js', () => ({
     debug: emit,
     trace: vi.fn(),
     fatal: vi.fn(),
+    isLevelEnabled: () => true,
   }),
 }));
 

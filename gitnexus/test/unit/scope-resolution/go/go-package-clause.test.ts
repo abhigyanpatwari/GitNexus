@@ -5,6 +5,8 @@ import {
   goPackageDir,
   inferGoPackageName,
 } from '../../../../src/core/ingestion/languages/go/package-clause.js';
+import { getGoParser, getGoScopeQuery } from '../../../../src/core/ingestion/languages/go/query.js';
+import { GO_QUERIES } from '../../../../src/core/ingestion/tree-sitter-queries.js';
 
 /**
  * #2837. Both Go package-bucketing passes used to carry their own copy of
@@ -121,48 +123,45 @@ describe('goPackageDir', () => {
  * larger than its own scope and nothing is owned.
  */
 describe('Go type capture anchoring (#2837)', () => {
-  const parse = (src: string) => {
-    const parser = new Parser();
-    parser.setLanguage(Go as Parameters<Parser['setLanguage']>[0]);
-    return parser.parse(src).rootNode;
-  };
-  const captures = (root: Parser.SyntaxNode, query: string, name: string) =>
-    new Parser.Query(Go as Parameters<Parser['setLanguage']>[0], query)
-      .captures(root)
+  // The SHIPPED queries, not copies of them. Inlining the patterns here would
+  // make every row below assert against the test's own string, so reverting the
+  // real re-anchor would leave them green — the exact regression they exist to
+  // catch. `getGoScopeQuery()` is the memoized `GO_SCOPE_QUERY`; `GO_QUERIES` is
+  // what the parse worker runs.
+  const goQueries = new Parser.Query(Go as Parameters<Parser['setLanguage']>[0], GO_QUERIES);
+  const nodesNamed = (src: string, query: Parser.Query, name: string) =>
+    query
+      .captures(getGoParser().parse(src).rootNode)
       .filter((c) => c.name === name)
       .map((c) => c.node);
-
-  const SCOPE =
-    '(type_declaration (type_spec type: [(struct_type) (interface_type)]) @scope.class)';
-  const DEF =
-    '(type_declaration (type_spec name: (type_identifier) @name type: (struct_type)) @definition.struct)';
+  const classScopes = (src: string) => nodesNamed(src, getGoScopeQuery(), 'scope.class');
 
   it('anchors the class scope on the type_spec, one per declared type', () => {
-    const root = parse(
+    const nodes = classScopes(
       'package p\ntype ( A struct{ x int }\n B struct{ y int } )\ntype C struct{}\n',
     );
-    const nodes = captures(root, SCOPE, 'scope.class');
     expect(nodes.map((n) => n.type)).toEqual(['type_spec', 'type_spec', 'type_spec']);
     expect(nodes.map((n) => n.childForFieldName('name')?.text)).toEqual(['A', 'B', 'C']);
   });
 
   it('starts the scope range at the type name, not the `type` keyword', () => {
-    const root = parse('package p\ntype C struct{}\n');
-    const [scope] = captures(root, SCOPE, 'scope.class');
+    const [scope] = classScopes('package p\ntype C struct{}\n');
     expect(scope!.startIndex).toBe(scope!.childForFieldName('name')!.startIndex);
   });
 
-  // The lockstep invariant. Moving one capture without the other made the def
-  // strictly larger than its own scope and deleted every Go field-receiver edge.
+  // The lockstep invariant, checked ACROSS the two shipped queries: the scope
+  // capture in languages/go/query.ts and the definition capture in
+  // tree-sitter-queries.ts must name the same node. Moving one without the other
+  // made the def strictly larger than its own scope and deleted every Go
+  // field-receiver edge, plain declarations included.
   it('anchors scope and definition on the same node', () => {
-    const root = parse('package p\ntype ( A struct{ x int }\n B struct{ y int } )\n');
-    const scopes = captures(root, SCOPE, 'scope.class');
-    const defs = captures(root, DEF, 'definition.struct');
-    expect(defs.map((d) => d.id)).toEqual(scopes.map((s) => s.id));
+    const src = 'package p\ntype ( A struct{ x int }\n B struct{ y int } )\n';
+    const defs = nodesNamed(src, goQueries, 'definition.struct');
+    expect(defs.map((d) => d.type)).toEqual(['type_spec', 'type_spec']);
+    expect(defs.map((d) => d.startIndex)).toEqual(classScopes(src).map((s) => s.startIndex));
   });
 
   it('emits no class scope for an alias or a named non-struct type', () => {
-    const root = parse('package p\ntype Alias = Other\ntype Named int\n');
-    expect(captures(root, SCOPE, 'scope.class')).toHaveLength(0);
+    expect(classScopes('package p\ntype Alias = Other\ntype Named int\n')).toHaveLength(0);
   });
 });
