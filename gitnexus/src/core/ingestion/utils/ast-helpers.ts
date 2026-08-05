@@ -881,20 +881,26 @@ export const findEnclosingClassInfo = (
         }
       }
     }
-    // Go: type_declaration wrapping a struct_type (type User struct { ... })
-    if (current.type === 'type_declaration') {
-      const typeSpec = current.children?.find((c: SyntaxNode) => c.type === 'type_spec');
-      if (typeSpec) {
-        const typeBody = typeSpec.childForFieldName?.('type');
-        if (typeBody?.type === 'struct_type' || typeBody?.type === 'interface_type') {
-          const nameNode = typeSpec.childForFieldName?.('name');
-          if (nameNode) {
-            const label = typeBody.type === 'struct_type' ? 'Struct' : 'Interface';
-            return {
-              classId: generateId(label, `${filePath}:${nameNode.text}`),
-              className: nameNode.text,
-            };
-          }
+    // Go: the `type_spec` IS the declared type (`type User struct { ... }`, and
+    // one per member of a grouped `type ( A struct{…}; B struct{…} )` block).
+    //
+    // Matched here rather than on the enclosing `type_declaration` (#2837): this
+    // walk climbs `node.parent`, so it passes THROUGH the containing spec on its
+    // way up from any member, and the structure it already has is the answer.
+    // Keying on the wrapper instead meant picking one spec out of several with
+    // no reference point — which filed every member of a grouped block under its
+    // FIRST struct, so two same-named fields minted one id and first-write-wins
+    // dropped the second.
+    if (current.type === 'type_spec') {
+      const typeBody = current.childForFieldName?.('type');
+      if (typeBody?.type === 'struct_type' || typeBody?.type === 'interface_type') {
+        const nameNode = current.childForFieldName?.('name');
+        if (nameNode) {
+          const label = typeBody.type === 'struct_type' ? 'Struct' : 'Interface';
+          return {
+            classId: generateId(label, `${filePath}:${nameNode.text}`),
+            className: nameNode.text,
+          };
         }
       }
     }

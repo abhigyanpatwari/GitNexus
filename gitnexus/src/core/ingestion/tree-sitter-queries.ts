@@ -1121,8 +1121,15 @@ export const GO_QUERIES = `
 (method_elem name: (field_identifier) @name) @definition.method
 
 ; Types
-(type_declaration (type_spec name: (type_identifier) @name type: (struct_type))) @definition.struct
-(type_declaration (type_spec name: (type_identifier) @name type: (interface_type))) @definition.interface
+;
+; Anchored on the type_spec, NOT the enclosing type_declaration (#2837) — a
+; grouped type ( A struct{}; B struct{} ) block otherwise gave every match the
+; same capture node, and goClassConfig.extractName resolved all of them to the
+; FIRST spec's name, collapsing the block to one node. Must stay in lockstep
+; with @scope.class / @declaration.struct in languages/go/query.ts, which
+; carries the full rationale. (No backticks here: this is a template literal.)
+(type_declaration (type_spec name: (type_identifier) @name type: (struct_type)) @definition.struct)
+(type_declaration (type_spec name: (type_identifier) @name type: (interface_type)) @definition.interface)
 
 ; Imports
 (import_declaration (import_spec path: (interpreted_string_literal) @import.source)) @import

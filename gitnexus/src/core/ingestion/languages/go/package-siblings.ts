@@ -2,6 +2,7 @@ import type { BindingRef, ParsedFile, ScopeId, SymbolDefinition } from 'gitnexus
 import type { ScopeResolutionIndexes } from '../../model/scope-resolution-indexes.js';
 
 import { expandGoDotImports } from './expand-wildcards.js';
+import { goPackageDir, inferGoPackageName } from './package-clause.js';
 
 /**
  * O(n²×d) where n = files per package, d = defs per file.
@@ -27,9 +28,13 @@ export function populateGoPackageSiblings(
   //    must not see each other's unqualified names.
   const packageByFile = new Map<string, string>();
   for (const parsed of nonTestFiles) {
-    const pkgName = inferPackageName(ctx.fileContents.get(parsed.filePath) ?? '');
+    // Same derivation as `populateGoWorkspaceOwners` — one shared resolver, so
+    // the two passes cannot disagree about a file's package (#2837). The
+    // no-clause case is reported there; warning twice for one fact would be
+    // noise.
+    const pkgName = inferGoPackageName(ctx.fileContents.get(parsed.filePath) ?? '');
     if (pkgName !== null) {
-      packageByFile.set(parsed.filePath, `${packageDir(parsed.filePath)}\0${pkgName}`);
+      packageByFile.set(parsed.filePath, `${goPackageDir(parsed.filePath)}\0${pkgName}`);
     }
   }
 
@@ -69,17 +74,6 @@ export function populateGoPackageSiblings(
       }
     }
   }
-}
-
-function inferPackageName(sourceText: string): string | null {
-  const match = sourceText.match(/^\s*package\s+([A-Za-z_][A-Za-z0-9_]*)/m);
-  return match?.[1] ?? null;
-}
-
-function packageDir(filePath: string): string {
-  const normalized = filePath.replace(/\\/g, '/');
-  const idx = normalized.lastIndexOf('/');
-  return idx === -1 ? '' : normalized.slice(0, idx);
 }
 
 function getAugmentationBucket(
