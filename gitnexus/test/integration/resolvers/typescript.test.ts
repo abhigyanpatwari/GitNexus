@@ -3562,3 +3562,101 @@ export function alreadyWorked(svc: Service): void {
     ).toHaveLength(1);
   });
 });
+
+// ---------------------------------------------------------------------------
+// Case 3b (chain-typebinding) interface dispatch (#2832). `const r = d.repo`
+// binds `r` to the member expression `d.repo`, so the receiver is a bare name
+// with a DOTTED typeBinding rawName — Case 3b's entry condition. Case 0 cannot
+// take the site (`r` has no `.`/`(`, and no receiver chain is minted for a
+// bare identifier), and Case 4 excludes itself on the dot. The fold lands on
+// an Interface, so the implementations are reachable only via the fan-out.
+// ---------------------------------------------------------------------------
+
+describe('TypeScript chain-typed receiver folding to an interface (Case 3b, #2832)', () => {
+  let result: PipelineResult;
+
+  beforeAll(async () => {
+    result = await runPipelineFromRepo(
+      path.join(FIXTURES, 'ts-chain-interface-dispatch'),
+      () => {},
+    );
+  }, 60000);
+
+  const saveCalls = () =>
+    getRelationships(result, 'CALLS').filter((e) => e.source === 'runSave' && e.target === 'save');
+  const fanout = () => saveCalls().filter((e) => e.rel.reason === 'interface-dispatch');
+  const basename = (p: string) => p.slice(p.lastIndexOf('/') + 1);
+
+  it('emits the primary edge to the interface declaration', () => {
+    const primary = saveCalls().filter((e) => e.rel.reason !== 'interface-dispatch');
+    expect(primary.map((e) => basename(e.targetFilePath))).toEqual(['repository.ts']);
+  });
+
+  // A static member can never be reached through an instance-typed receiver —
+  // TypeScript rejects `class C implements I { static save() {} }` as TS2420,
+  // "Property 'save' is missing". ShadowRepo inherits the real SqlRepo.save and
+  // adds a same-named static; only the inherited instance method is a dispatch
+  // target. Before the guard this emitted an edge to the static one.
+  it('never fans out to a static member', () => {
+    const targets = fanout().map((e) => `${basename(e.targetFilePath)}`);
+    expect(targets).not.toContain('shadow-repo.ts');
+  });
+
+  // Covers all three hierarchy shapes, now that TypeScript emits heritage for
+  // interfaces and abstract classes too (#2842 review): a direct implementor
+  // (sql-repo, mem-repo), a concrete class below an ABSTRACT intermediate
+  // (hierarchy.ts DiskRepo, reachable only through BaseRepo), and an
+  // implementor of an EXTENDING interface (hierarchy.ts ColdRepo, two hops from
+  // the receiver's type). Exact-set, so a target appearing OR vanishing fails.
+  // Two hierarchy.ts entries because that file holds two of the four targets.
+  it('fans out through abstract intermediates and interface extension', () => {
+    expect(
+      fanout()
+        .map((e) => basename(e.targetFilePath))
+        .sort(),
+    ).toEqual(['hierarchy.ts', 'hierarchy.ts', 'mem-repo.ts', 'sql-repo.ts']);
+  });
+
+  // The abstract declaration is bodiless: it must be WALKED THROUGH to reach
+  // DiskRepo, never emitted to. tsc's own Go-to-Implementation behaves the same
+  // way — the rule everywhere is "does it have a body?", not "is it in a class?".
+  it('walks through the abstract declaration without targeting it', () => {
+    const names = fanout()
+      .filter((e) => basename(e.targetFilePath) === 'hierarchy.ts')
+      .map((e) => e.target);
+    expect(names).toEqual(['save', 'save']);
+  });
+
+  it('never targets the interface declaration in the fan-out', () => {
+    expect(fanout().map((e) => basename(e.targetFilePath))).not.toContain('repository.ts');
+  });
+
+  // Stronger negative than the PlainCache case below: here an interface IS in
+  // scope (SqlRepo implements Repo) and `save` is a name Repo declares, yet the
+  // receiver's folded type is the concrete class, so nothing may fan out.
+  //
+  // This does NOT catch "member owner passed instead of folded type". The
+  // reason is a property of TypeScript, not of the control: TS's MRO chain
+  // never contains an implemented interface, so the walk cannot settle on an
+  // interface declaration for a concrete receiver and the two values coincide.
+  // (Not, as an earlier draft of this comment claimed, because an implementing
+  // class always declares the member itself — `class C extends Base implements
+  // I {}` is valid TS and inherits it.) The mutation IS expressible where a
+  // concrete class inherits a `default` interface method — Java or Kotlin —
+  // and is tracked for a follow-up fixture there.
+  it('emits no fan-out when the chain folds to a concrete implementor', () => {
+    const concrete = getRelationships(result, 'CALLS').filter(
+      (e) => e.source === 'runConcrete' && e.target === 'save',
+    );
+    expect(concrete.map((e) => e.rel.reason).filter((r) => r === 'interface-dispatch')).toEqual([]);
+    expect(concrete.map((e) => basename(e.targetFilePath))).toEqual(['sql-repo.ts']);
+  });
+
+  it('emits no fan-out when the chain folds to a concrete class', () => {
+    const runCalls = getRelationships(result, 'CALLS').filter(
+      (e) => e.source === 'runCache' && e.target === 'run',
+    );
+    expect(runCalls.map((e) => e.rel.reason).filter((r) => r === 'interface-dispatch')).toEqual([]);
+    expect(runCalls.map((e) => basename(e.targetFilePath))).toEqual(['plain-cache.ts']);
+  });
+});

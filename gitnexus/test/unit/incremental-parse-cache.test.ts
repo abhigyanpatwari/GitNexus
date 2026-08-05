@@ -120,8 +120,11 @@ describe('PARSE_CACHE_VERSION', () => {
   // against origin/main immediately before merge, not at review time.
   // Moved 42 -> 43 for #2813's `@reference.embedded-pointer` capture, which is
   // parse-time emission and so cannot be served from a v42 warm cache.
-  it('pins SCHEMA_BUMP to 43 so concurrent bumps cannot silently collide (#2766)', () => {
-    expect(Number(PARSE_CACHE_VERSION.split('+', 1)[0])).toBe(43);
+  // Moved 43 -> 44 for #2842's TypeScript heritage capture (interface and
+  // abstract-class `@reference.inherits`), which is parse-time emission and so
+  // cannot be served from a v43 warm cache.
+  it('pins SCHEMA_BUMP to 44 so concurrent bumps cannot silently collide (#2766)', () => {
+    expect(Number(PARSE_CACHE_VERSION.split('+', 1)[0])).toBe(44);
   });
 
   it('embeds the gitnexus package version (so upgrades invalidate the cache)', () => {

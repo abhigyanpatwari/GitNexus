@@ -18,8 +18,8 @@
  *      toggle unset skip this case entirely; their `this` sites fall
  *      through to Case 4 via the synthesized `this` typeBinding (which
  *      emits the interface-dispatch fan-out that this case does not —
- *      as does Case 0 since #2829; Case 0.5 remains the only resolving
- *      case without it).
+ *      as do Cases 0 since #2829 and 3b since #2832; Case 0.5 remains
+ *      the only fold-or-walk case without it).
  *   4. **Case 1 (namespace)** — receiver in `namespaceTargets` → exported def
  *   5. **Case 2 (class-name / static receiver)** — receiver resolves to a
  *      class-like binding (Class/Interface/Struct/Record/Enum/Trait) → MRO
@@ -29,7 +29,9 @@
  *   6. **Case 3 (dotted typeBinding for namespace prefix)** —
  *      `typeRef.rawName` like `models.User`
  *   7. **Case 3b (chain-typebinding)** — `typeRef.rawName` has a dot
- *      but not a namespace prefix → compound resolver
+ *      but not a namespace prefix → compound resolver. Also emits the
+ *      interface-dispatch fan-out when the folded receiver type is an
+ *      Interface (#2832) — same call Cases 0 and 4 make.
  *   8. **Case 4 (simple typeBinding)** — `typeRef.rawName` has no dot →
  *      MRO walk + `findOwnedMember`
  *   9. **Case 5 (value-receiver bridge)** — receiver is a `Const`/`Variable`
@@ -431,6 +433,48 @@ export function emitReceiverBoundCalls(
   };
 
   /**
+   * Can an INSTANCE-typed receiver reach this member? A static member cannot be,
+   * ever — `class C implements I { static save() {} }` does not satisfy `I`
+   * (TypeScript rejects it outright as TS2420, "Property 'save' is missing"), so
+   * an edge to it from an `I`-typed receiver names a target no dispatch can
+   * produce. Every comparable tool draws the same line: tsserver partitions
+   * static from instance results, clangd gates on `isVirtual()` (C++ forbids
+   * virtual statics), jdtls filters abstract-or-static, and class-hierarchy
+   * analysis expands only VIRTUAL call sites — a static call already has exactly
+   * one target and needs no fan-out.
+   *
+   * Two sources answer this, and the order matters:
+   *
+   *   1. `provider.isStaticOnly` when the language declares it. It is the
+   *      precise answer, because a language that needs the distinction defines
+   *      it exactly — Kotlin marks only COMPANION-promoted defs, so a Kotlin
+   *      `object Impl : Iface { override fun handle() }` is correctly kept: an
+   *      `object` is a singleton INSTANCE and its members really are reachable
+   *      through an `Iface`-typed receiver.
+   *   2. Otherwise the graph node's `isStatic`. For every language that does not
+   *      declare the hook, that flag comes from the member's own modifier (or,
+   *      for Ruby, from `singleton_class` — `def self.foo`, which is likewise
+   *      unreachable through an instance), so it means what we need here.
+   *
+   * Getting that order wrong is a live regression, not a hypothetical: the
+   * method extractor derives `isStatic` from the OWNER type as well as the
+   * member (`method-extractors/generic.ts`, `staticOwnerTypes`), and the JVM
+   * config lists `object_declaration`. Reading the flag first would delete
+   * Kotlin object implementations from the fan-out. A language that needs
+   * precision declares the hook; that is the upgrade path.
+   *
+   * Unresolvable defs fail open (treated as reachable), matching
+   * `isDeclarationOnly` and the rest of this pass.
+   */
+  const isUnreachableByInstanceDispatch = (def: SymbolDefinition): boolean => {
+    const staticOnly = provider.isStaticOnly;
+    if (staticOnly !== undefined) return staticOnly(def) === true;
+    const graphId = resolveDefGraphId(def.filePath, def, nodeLookup);
+    if (graphId === undefined) return false;
+    return graph.getNode(graphId)?.properties.isStatic === true;
+  };
+
+  /**
    * Emit secondary CALLS edges with reason='interface-dispatch' when the primary
    * receiver-typed edge targeted an Interface's method.
    *
@@ -486,6 +530,9 @@ export function emitReceiverBoundCalls(
         // A re-declared interface method or an `abstract` override is not an
         // implementation — keep descending past it rather than emitting to it.
         if (isDeclarationOnly(implMember)) continue;
+        // Nor is a static member: no instance-typed receiver can reach one, so
+        // an edge to it is a target dispatch cannot produce (#2842 review).
+        if (isUnreachableByInstanceDispatch(implMember)) continue;
         targets.push(implMember);
       }
     }
@@ -1363,6 +1410,50 @@ export function emitReceiverBoundCalls(
               calleeCapture,
             );
             if (ok) emitted++;
+            // Interface dispatch, exactly as Cases 0 and 4 do it (#2832). Case
+            // 3b folds a chain to a receiver type through the SAME
+            // `resolveCompoundReceiverClass` call and the same MRO walk Case 0
+            // uses, so when that fold lands on an Interface the primary edge
+            // above names the interface's own bodiless DECLARATION and nothing
+            // reaches the implementations.
+            //
+            // Leaving 3b out made the fan-out a property of how the receiver
+            // was SPELLED rather than of what it resolved to: `d.repo.save()`
+            // took Case 0 and fanned out, while binding the identical field to
+            // a local first (`const r = d.repo; r.save()`) took Case 3b and
+            // did not. #2829 closed that gap for Case 0 and left this half of
+            // it open (#2832).
+            //
+            // `ownerDef` is the receiver's own folded type — matching Case 0's
+            // `currentClass` and Case 4's `ownerDef` — NOT the owner of the
+            // member the MRO walk settled on. That distinction matters: a
+            // receiver that folds to a concrete class merely INHERITING an
+            // interface method must not fan out, because its runtime type is
+            // that class. `emitInterfaceDispatchFor` self-gates on
+            // `ownerDef.type !== 'Interface'`, so this is inert for every
+            // concrete receiver and needs no language check of its own.
+            //
+            // That gate is deliberately narrower than "the primary landed on
+            // something bodiless": a chain folding to an ABSTRACT class also
+            // dead-ends on a declaration-only member and does NOT fan out
+            // here. Widening it to `|| isDeclarationOnly(memberDef)` would
+            // cover that, but it changes Cases 0 and 4 identically and for
+            // every language, so it is not #2832's to make.
+            //
+            // Confidence mirrors THIS case's own primary emit above — the 0.85
+            // literal — so a site's dispatch edges never claim more certainty
+            // than the edge they hang off. Case 4 passes a site.kind-dependent
+            // value instead because ITS primary varies that way; Case 3b's
+            // primary, like Case 0's, does not, so there is no 1.0 arm here to
+            // mirror.
+            emitted += emitInterfaceDispatchFor(
+              ownerDef,
+              memberName,
+              memberDef,
+              site,
+              0.85,
+              calleeCapture,
+            );
             // Always mark handled when the site was resolved, even
             // if the edge was deduplicated (collapse mode), so
             // `emitReferencesViaLookup` doesn't re-emit from the
