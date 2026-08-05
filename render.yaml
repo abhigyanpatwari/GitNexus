@@ -49,12 +49,6 @@ projects:
               # is RFC1918. `true` is rejected outright.
               - key: GITNEXUS_TRUST_PROXY
                 value: 1
-              # Deliberately unset: GITNEXUS_PUBLIC_ORIGIN, which has no job
-              # behind the proxy and makes `serve` refuse to start
-              # (assertServeAuthForPublicOrigin); AZURE_DEVOPS_URL /
-              # AZURE_DEVOPS_PAT, since /api/analyze would spend the PAT and
-              # /api/file could read the private repo back. Set the Azure pair
-              # in the dashboard if you want it.
 
           # Public: the UI, plus a token-gated same-origin proxy to the server.
           - type: web
