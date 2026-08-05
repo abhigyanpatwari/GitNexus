@@ -3604,6 +3604,20 @@ describe('TypeScript chain-typed receiver folding to an interface (Case 3b, #283
     expect(fanout().map((e) => basename(e.targetFilePath))).not.toContain('repository.ts');
   });
 
+  // Stronger negative than the PlainCache case below: here an interface IS in
+  // scope (SqlRepo implements Repo) and `save` is a name Repo declares, yet the
+  // receiver's folded type is the concrete class, so nothing may fan out. Note
+  // this cannot catch "member owner passed instead of folded type" in
+  // TypeScript — an implementing class always declares the member itself, so
+  // the MRO walk never settles on the interface's bodiless declaration.
+  it('emits no fan-out when the chain folds to a concrete implementor', () => {
+    const concrete = getRelationships(result, 'CALLS').filter(
+      (e) => e.source === 'runConcrete' && e.target === 'save',
+    );
+    expect(concrete.map((e) => e.rel.reason).filter((r) => r === 'interface-dispatch')).toEqual([]);
+    expect(concrete.map((e) => basename(e.targetFilePath))).toEqual(['sql-repo.ts']);
+  });
+
   it('emits no fan-out when the chain folds to a concrete class', () => {
     const runCalls = getRelationships(result, 'CALLS').filter(
       (e) => e.source === 'runCache' && e.target === 'run',

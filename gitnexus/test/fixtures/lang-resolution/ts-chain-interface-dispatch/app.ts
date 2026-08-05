@@ -15,3 +15,14 @@ export function runCache(d: Deps): void {
     const c = d.cache;
     c.run();
 }
+
+// Stronger negative than runCache: SqlRepo IMPLEMENTS Repo, so an interface is
+// in scope at this site and `save` is a name Repo also declares. The fan-out
+// must still stay inert, because the fold produced the concrete class — the
+// receiver's runtime type is SqlRepo, not "any Repo". This is what fails if a
+// later change fans out from the interface a member is DECLARED in rather than
+// from the receiver's own folded type.
+export function runConcrete(d: Deps): void {
+    const s = d.sql;
+    s.save('row');
+}

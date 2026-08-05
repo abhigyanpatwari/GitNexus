@@ -1,5 +1,6 @@
 import { Repo } from './repository';
 import { PlainCache } from './plain-cache';
+import { SqlRepo } from './sql-repo';
 
 /**
  * Declared field types only. No initializer and no constructor assignment, so
@@ -8,4 +9,5 @@ import { PlainCache } from './plain-cache';
 export class Deps {
     repo!: Repo;
     cache!: PlainCache;
+    sql!: SqlRepo;
 }
