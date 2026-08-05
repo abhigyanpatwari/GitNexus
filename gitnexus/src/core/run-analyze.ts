@@ -2539,11 +2539,20 @@ async function runFullAnalysisInner(
     // relationships out of memory may no longer be able to report a total, and
     // a false "your index is broken" is worse than a missed one.
     const expectedRelationships = pipelineResult.graph.relationshipCount;
-    const graphWriteCollapsed = detectGraphWriteCollapse(expectedRelationships, stats.edges);
+    // `getLbugStats` flattens "no connection", "query threw" and "empty table"
+    // into `edges: 0`, so a bare `stats.edges` would make every run without a
+    // readable DB look like a total collapse — the confident-zero error this
+    // check exists to catch. `nodes > 0` is independent evidence the DB was
+    // readable at all; without it the count is UNKNOWN, not zero.
+    const persistedRelationships = stats.nodes > 0 ? stats.edges : undefined;
+    const graphWriteCollapsed = detectGraphWriteCollapse(
+      expectedRelationships,
+      persistedRelationships,
+    );
     if (graphWriteCollapsed) {
       log(
         `Warning: graph write incomplete — the pipeline produced ${expectedRelationships} ` +
-          `relationships but only ${stats.edges} are readable from the index. Recording the ` +
+          `relationships but only ${persistedRelationships} are readable from the index. Recording the ` +
           `index as INCOMPLETE (graph-write-collapsed) rather than fresh; re-run ` +
           `\`gitnexus analyze --force\`.`,
       );

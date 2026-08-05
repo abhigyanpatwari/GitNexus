@@ -40,6 +40,24 @@ describe('detectGraphWriteCollapse (B2 detection)', () => {
     expect(detectGraphWriteCollapse(1000, 4000)).toBeUndefined();
   });
 
+  // REGRESSION. A non-numeric `expected` does not merely skip the guards, it
+  // INVERTS them: `undefined < 100` is false so the small-repo exemption never
+  // fires, and `0 >= undefined * 0.5` is `0 >= NaN`, also false, so the ratio
+  // check "passes" too. Shipped briefly and reported healthy runs as total
+  // collapses — the exact false certainty this check exists to prevent.
+  it('never fires when the expected count is not a number', () => {
+    expect(detectGraphWriteCollapse(undefined as unknown as number, 0)).toBeUndefined();
+    expect(detectGraphWriteCollapse(NaN, 0)).toBeUndefined();
+    expect(detectGraphWriteCollapse(Infinity, 0)).toBeUndefined();
+  });
+
+  it('never fires when the persisted count is not a number', () => {
+    // `getLbugStats` returns `{}` under some mocks/degraded paths, so
+    // `stats.edges` arrives as undefined rather than a measured zero.
+    expect(detectGraphWriteCollapse(23009, undefined)).toBeUndefined();
+    expect(detectGraphWriteCollapse(23009, NaN)).toBeUndefined();
+  });
+
   it('is fail-safe when the expected count is unavailable', () => {
     // An implementation that offloads relationships out of memory may report 0;
     // a false "your index is broken" is worse than a missed one.

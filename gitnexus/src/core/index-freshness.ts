@@ -38,11 +38,33 @@ export const GRAPH_WRITE_COLLAPSE_MIN_EDGES = 100;
  */
 export function detectGraphWriteCollapse(
   expected: number,
-  persisted: number,
+  /**
+   * Relationships readable from the DB, or `undefined` when the count could
+   * not be READ at all (no connection, a query that threw).
+   *
+   * The distinction is load-bearing and was got wrong once: `getLbugStats`
+   * reports `edges: 0` for "no connection", "query threw" AND "empty table"
+   * alike, so passing it straight in made every run without a readable DB look
+   * like a total collapse. An unmeasurable count is not a measured zero —
+   * accepting `undefined` here is what keeps this check from committing the
+   * same confident-zero error it exists to catch.
+   */
+  persisted: number | undefined,
 ): { expected: number; persisted: number } | undefined {
-  if (expected < GRAPH_WRITE_COLLAPSE_MIN_EDGES) return undefined;
-  if (persisted >= expected * GRAPH_WRITE_COLLAPSE_RATIO) return undefined;
-  return { expected, persisted };
+  // Both sides must be REAL NUMBERS before any comparison. A non-numeric
+  // `expected` (a graph implementation that reports no total, a lightweight
+  // pipeline result) does not merely skip the guards — it INVERTS them:
+  // `undefined < 100` is false, so the min-edges exemption never fires, and
+  // `0 >= undefined * 0.5` is `0 >= NaN`, also false, so the ratio check
+  // "passes" too and a healthy run is reported as a total collapse. Comparing
+  // against a non-number is the one way this check can manufacture the exact
+  // false certainty it was written to prevent.
+  if (!Number.isFinite(expected) || !Number.isFinite(persisted as number)) return undefined;
+  const expectedCount = expected as number;
+  const persistedCount = persisted as number;
+  if (expectedCount < GRAPH_WRITE_COLLAPSE_MIN_EDGES) return undefined;
+  if (persistedCount >= expectedCount * GRAPH_WRITE_COLLAPSE_RATIO) return undefined;
+  return { expected: expectedCount, persisted: persistedCount };
 }
 
 /** Stable machine-readable reasons an index cannot be certified complete. */
