@@ -1,5 +1,11 @@
 import type { ParsedFile } from 'gitnexus-shared';
+import { logger } from '../../../logger.js';
 import { isClassLike, populateClassOwnedMembers } from '../../scope-resolution/scope/walkers.js';
+
+import { goPackageDir, inferGoPackageName } from './package-clause.js';
+
+/** Bound on the sample of no-package-clause paths named in the warning. */
+const SKIPPED_SAMPLE_CAP = 5;
 
 /**
  * Populate `ownerId` on Go Method defs by matching receiver types
@@ -27,13 +33,29 @@ export function populateGoWorkspaceOwners(
   ctx: { readonly fileContents: ReadonlyMap<string, string> },
 ): void {
   const filesByPackage = new Map<string, ParsedFile[]>();
+  // A file with no resolvable package clause is dropped from ownership
+  // resolution entirely — its methods never attach to a struct declared in a
+  // sibling file. That used to be a bare `continue` with no trace, which is the
+  // same false-safe silence #2813 was filed about. Report it once, bounded
+  // (mirrors the fan-out-cap warning in scope-resolution/pipeline/run.ts).
+  const skipped: string[] = [];
   for (const parsed of parsedFiles) {
-    const pkgName = inferPackageName(ctx.fileContents.get(parsed.filePath) ?? '');
-    if (pkgName === null) continue;
-    const key = `${packageDir(parsed.filePath)}\0${pkgName}`;
+    const pkgName = inferGoPackageName(ctx.fileContents.get(parsed.filePath) ?? '');
+    if (pkgName === null) {
+      skipped.push(parsed.filePath);
+      continue;
+    }
+    const key = `${goPackageDir(parsed.filePath)}\0${pkgName}`;
     const bucket = filesByPackage.get(key) ?? [];
     bucket.push(parsed);
     filesByPackage.set(key, bucket);
+  }
+  if (skipped.length > 0) {
+    logger.warn(
+      { skippedFiles: skipped.length, sample: skipped.slice(0, SKIPPED_SAMPLE_CAP) },
+      'go: files with no resolvable package clause were excluded from method-owner ' +
+        'resolution (their methods cannot attach to structs declared in sibling files)',
+    );
   }
 
   for (const bucket of filesByPackage.values()) {
@@ -106,15 +128,4 @@ function populateGoOwnersInPackage(parsedFiles: readonly ParsedFile[]): void {
       }
     }
   }
-}
-
-function inferPackageName(sourceText: string): string | null {
-  const match = sourceText.match(/^\s*package\s+([A-Za-z_][A-Za-z0-9_]*)/m);
-  return match?.[1] ?? null;
-}
-
-function packageDir(filePath: string): string {
-  const normalized = filePath.replace(/\\/g, '/');
-  const idx = normalized.lastIndexOf('/');
-  return idx === -1 ? '' : normalized.slice(0, idx);
 }
