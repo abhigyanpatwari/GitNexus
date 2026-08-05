@@ -8,14 +8,20 @@
  * Phase B1 (scope resolution): `emitScopeCaptures` (lua/captures.ts) runs the
  * scope query (lua/query.ts) and the central ScopeExtractor builds the scope
  * tree + declarations + imports + reference sites. `interpretImport` turns
- * require()'s `@import.source` into a wildcard ParsedImport; the legacy
+ * require()'s `@import.source` into a `namespace` ParsedImport when a local
+ * binding is captured (`local X = require(...)`) so `X.foo()` resolves across
+ * files, or `wildcard` for bare side-effect requires; the legacy
  * `importResolver` (luaRequireStrategy / suffixResolve) is bridged to resolve
  * `targetRaw` → file (no separate resolveImportTarget needed, mirroring
  * Ruby). This unlocks CALLS edges (from @reference.call.*) and IMPORTS edges.
  *
- * Still Phase B (pending): middleclass `class("Name", Parent)` → Class nodes
- * + EXTENDS + HAS_METHOD (call-router pattern); receiverBinding/arity polish
- * for higher-quality call-target linking.
+ * `collectCaptureSideChannel` snapshots middleclass heritage pairs
+ * (`class("Name", Parent)` + `function Obj:m()`) collected in the worker onto
+ * `ParsedFile.captureSideChannel`, so `emitLuaHeritageEdges` emits EXTENDS +
+ * HAS_METHOD on the main thread without re-reading or re-parsing (#1983).
+ *
+ * Pending: middleclass MRO + `__base` super-call resolution (Phase B2);
+ * indirect value-receiver + arity precision (Phase B3).
  */
 import { SupportedLanguages } from 'gitnexus-shared';
 import { defineLanguage } from '../language-provider.js';
@@ -26,6 +32,8 @@ import { createImportResolver } from '../import-resolvers/resolver-factory.js';
 import { luaImportConfig } from '../import-resolvers/configs/lua.js';
 import { createCallExtractor } from '../call-extractors/generic.js';
 import { luaCallConfig } from '../call-extractors/configs/lua.js';
+import { assertCloneable } from '../workers/clone-safety.js';
+import { collectLuaCaptureSideChannel } from './lua/capture-side-channel.js';
 import { emitLuaScopeCaptures, interpretLuaImport } from './lua/index.js';
 
 export const luaProvider = defineLanguage({
@@ -37,5 +45,6 @@ export const luaProvider = defineLanguage({
   importResolver: createImportResolver(luaImportConfig),
   callExtractor: createCallExtractor(luaCallConfig),
   emitScopeCaptures: emitLuaScopeCaptures,
+  collectCaptureSideChannel: (filePath) => assertCloneable(collectLuaCaptureSideChannel(filePath)),
   interpretImport: interpretLuaImport,
 });

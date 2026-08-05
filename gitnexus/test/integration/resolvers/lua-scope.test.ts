@@ -80,3 +80,56 @@ run()
     expect(getNodesByLabel(result, 'Function')).toContain('run');
   });
 });
+
+// ---------------------------------------------------------------------------
+// middleclass: class("Name", Parent) → EXTENDS + HAS_METHOD across files
+// ---------------------------------------------------------------------------
+
+describe('Lua scope: middleclass EXTENDS + HAS_METHOD', () => {
+  let result: PipelineResult;
+  let tmpDir: string;
+
+  beforeAll(async () => {
+    tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'lua-scope-heritage-'));
+    writeFixtureRepo(tmpDir, {
+      'base.lua': `local class = require("lib.class")
+local Animal = class("Animal")
+function Animal:speak()
+  return "..."
+end
+return Animal
+`,
+      'dog.lua': `local class = require("lib.class")
+local Animal = require("base")
+local Dog = class("Dog", Animal)
+function Dog:bark()
+  return "woof"
+end
+return Dog
+`,
+    });
+    result = await runPipelineFromRepo(tmpDir, () => {});
+  }, 60000);
+
+  afterAll(() => {
+    fs.rmSync(tmpDir, { recursive: true, force: true });
+  });
+
+  it('emits EXTENDS from Dog to Animal across files', () => {
+    const extends_ = getRelationships(result, 'EXTENDS');
+    const dogExtendsAnimal = extends_.find((e) => e.source === 'Dog' && e.target === 'Animal');
+    expect(dogExtendsAnimal).toBeDefined();
+  });
+
+  it('emits HAS_METHOD from each class to its methods', () => {
+    const hasMethod = getRelationships(result, 'HAS_METHOD');
+    expect(hasMethod.find((e) => e.source === 'Animal' && e.target === 'speak')).toBeDefined();
+    expect(hasMethod.find((e) => e.source === 'Dog' && e.target === 'bark')).toBeDefined();
+  });
+
+  it('detects Dog and Animal as Class nodes', () => {
+    const classes = getNodesByLabel(result, 'Class');
+    expect(classes).toContain('Dog');
+    expect(classes).toContain('Animal');
+  });
+});
