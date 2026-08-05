@@ -1121,8 +1121,21 @@ export const GO_QUERIES = `
 (method_elem name: (field_identifier) @name) @definition.method
 
 ; Types
-(type_declaration (type_spec name: (type_identifier) @name type: (struct_type))) @definition.struct
-(type_declaration (type_spec name: (type_identifier) @name type: (interface_type))) @definition.interface
+;
+; Anchored on the type_spec, not the enclosing type_declaration (#2837). A
+; grouped declaration
+;   type ( Decoy struct{...}; PickService struct{...} )
+; matches this pattern once per type_spec, but with the capture on the
+; type_declaration every match named the SAME node -- so the emitter produced
+; ONE node for the whole block and every type after the first had no graph node
+; at all. Measured on go-grouped-type-decl before the fix: PickService and
+; MetricSink were absent from the node inventory entirely, which also cost
+; MetricSink its IMPLEMENTS edge.
+;
+; This must stay in lockstep with @scope.class / @declaration.struct in
+; languages/go/query.ts, which are anchored the same way for the same reason.
+(type_declaration (type_spec name: (type_identifier) @name type: (struct_type)) @definition.struct)
+(type_declaration (type_spec name: (type_identifier) @name type: (interface_type)) @definition.interface)
 
 ; Imports
 (import_declaration (import_spec path: (interpreted_string_literal) @import.source)) @import

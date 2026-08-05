@@ -2027,3 +2027,83 @@ describe('Go interface-typed struct field dispatch (#2813)', () => {
     expect(callsFromFileToFile()).toContain('picking.go:Queue → GetPickQueue@order_repo.go');
   });
 });
+
+// ---------------------------------------------------------------------------
+// #2837 — grouped `type (...)` declarations collapse N types into ONE Class
+// scope.
+//
+// `languages/go/query.ts` captures `@scope.class` on the `type_declaration`,
+// not on the `type_spec`. An idiomatic grouped declaration is therefore a
+// SINGLE capture owning every struct in the block, and
+// `buildWorkspaceResolutionIndex` keeps only the FIRST class-like def per Class
+// scope (`workspace-index.ts:156-164`). Every struct after the first has no
+// `classScopeByDefId` entry, so `typeOfMemberOnClass` cannot find its fields,
+// the Case 0 compound-receiver fold declines, and every field-receiver call
+// site in that file emits ZERO edges — silently, and independently of file
+// size. That is the per-file split #2837 reported and #2829 could not explain.
+//
+// Not caught before because ZERO of this repo's 115 Go fixture files used a
+// grouped `type (...)` block, including #2829's own fixture.
+describe('Go grouped type declaration scoping (#2837)', () => {
+  let result: PipelineResult;
+
+  beforeAll(async () => {
+    result = await runPipelineFromRepo(path.join(FIXTURES, 'go-grouped-type-decl'), () => {});
+  }, 120000);
+
+  /** Both ends file-qualified: three services declare a method named `Release`,
+   *  so a target-only row cannot tell which file resolved. */
+  const callsFromFileToFile = (): string[] =>
+    getRelationships(result, 'CALLS').map(
+      (e) =>
+        `${e.sourceFilePath.split('/').slice(-1)[0]}:${e.source} → ` +
+        `${e.target}@${e.targetFilePath.split('/').slice(-1)[0]}`,
+    );
+  const implementsEdges = (): string[] => edgeSet(getRelationships(result, 'IMPLEMENTS'));
+
+  // Control: the plain declaration resolves today and must keep resolving.
+  it('resolves a field receiver whose struct is declared plainly', () => {
+    expect(callsFromFileToFile()).toContain('wave_service.go:Release → DeleteItem@order_repo.go');
+  });
+
+  // The headline defect: identical field shape, declared SECOND in a grouped
+  // block, currently emits nothing at all.
+  it('resolves a field receiver whose struct is declared second in a grouped block', () => {
+    expect(callsFromFileToFile()).toContain('pick_service.go:Release → DeleteItem@order_repo.go');
+  });
+
+  // Order control. If only the first-declared struct resolves, the fix is
+  // order-luck rather than a fix.
+  it('resolves a field receiver whose struct is declared first in a grouped block', () => {
+    expect(callsFromFileToFile()).toContain('sort_service.go:Release → DeleteItem@order_repo.go');
+  });
+
+  // Equality, not mere presence: a one-sided fix fails here.
+  it('emits the same field-receiver edges for plain and grouped declarations', () => {
+    const rows = callsFromFileToFile();
+    const forFile = (f: string): string[] =>
+      rows
+        .filter((r) => r.startsWith(`${f}:`))
+        .map((r) => r.slice(f.length + 1))
+        .sort();
+    expect(forFile('pick_service.go')).toEqual(forFile('wave_service.go'));
+    expect(forFile('sort_service.go')).toEqual(forFile('wave_service.go'));
+  });
+
+  // The field-binding-collision half. While the grouped structs share ONE Class
+  // scope they also share one name-keyed `typeBindings` map, so `orderRepo`
+  // declared by `Decoy` as `*LocalThing` can type `PickService.orderRepo`.
+  // A fix that only made `workspace-index` map every class-like def would leave
+  // this map shared and would fail this row — which is why it is not the fix.
+  it('does not type a grouped struct field from a sibling struct of the same name', () => {
+    expect(callsFromFileToFile()).not.toContain(
+      'pick_service.go:Release → DeleteItem@pick_service.go',
+    );
+  });
+
+  // Grouped INTERFACE declarations collapse the same way.
+  it('detects implementors of both interfaces in a grouped interface block', () => {
+    expect(implementsEdges()).toContain('AuditWriter → AuditSink');
+    expect(implementsEdges()).toContain('MetricWriter → MetricSink');
+  });
+});
