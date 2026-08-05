@@ -13,6 +13,9 @@
  * symbol stays exact.
  */
 
+import { logger } from '../../logger.js';
+import { compareCodeUnits } from '../../../lib/utils.js';
+
 import type { ResolutionOutcome } from './resolution-outcome.js';
 
 /** Cap on distinct member names persisted. Well above what a real repo
@@ -193,4 +196,62 @@ export function lookupExternalCallCount(
   const sites = counts[symName];
   if (typeof sites !== 'number' || !Number.isFinite(sites) || sites <= 0) return undefined;
   return sites;
+}
+
+/** Files named in the per-file receiver-drop line. Bounded: this is a signpost
+ *  pointing at where to look, not an inventory. */
+const UNRESOLVED_RECEIVER_FILE_SAMPLE = 10;
+
+/**
+ * Report which FILES lost the most call sites to an untyped receiver (#2837).
+ *
+ * `summarizeUnresolvedReceivers` persists the same drops keyed by member NAME,
+ * capped at 500 distinct names, and discards `filePath` — deliberately, because
+ * its consumer (`impact()`'s exact-vs-lower-bound verdict) asks "is this
+ * symbol's caller count trustworthy", a question about names.
+ *
+ * That leaves "why does THIS file resolve nothing while its sibling resolves
+ * everything" unanswerable from any artifact, which is exactly what #2837 asked
+ * for and could not run: comparing the drop records of two files with identical
+ * declared shapes separates "receiver never typed" from "typed but no edge
+ * emitted", and narrows a per-file split in one run instead of a bisect.
+ *
+ * A log line rather than a persisted field on purpose — nothing queries it, and
+ * a new `RepoMeta` field would move SCHEMA_FINGERPRINT and force a rebuild for
+ * a diagnostic.
+ */
+export function logUnresolvedReceiverFiles(outcomes: readonly ResolutionOutcome[]): void {
+  const byFile = new Map<string, number>();
+  for (const outcome of outcomes) {
+    if (outcome.kind !== 'suppressed' || outcome.reason !== 'receiver-unresolved') continue;
+    // The SAME two guards `summarizeUnresolvedReceivers` applies — deliberately,
+    // not incidentally. Without them this line counted property reads/writes
+    // (measured there at 25 of 124 drops on the fixture corpus) and
+    // external-rooted drops (`fmt.Println`, where no in-graph node could ever
+    // have been the target) as lost call sites, so the ranking was led by files
+    // that lost nothing. On this repo the pre-guard top three were all test
+    // files. A diagnostic that exists to point at the file that lost its
+    // receivers must not point at the file that calls `fmt` the most.
+    if (outcome.siteKind !== undefined && outcome.siteKind !== 'call') continue;
+    if (outcome.receiverOrigin === 'external') continue;
+    byFile.set(outcome.filePath, (byFile.get(outcome.filePath) ?? 0) + 1);
+  }
+  if (byFile.size === 0) return;
+  const ranked = [...byFile.entries()]
+    // Count first, then path — a stable order so two runs over the same repo
+    // produce the same line and a diff of analyze output means something.
+    // `compareCodeUnits`, not `localeCompare` (#2787): this ordering feeds a
+    // `.slice()`, so a locale-dependent tiebreak decides WHICH files survive the
+    // cap, not merely how they are listed. Locale-sensitive collation is exactly
+    // the unordered-LIMIT nondeterminism that helper exists to forbid.
+    .sort((a, b) => b[1] - a[1] || compareCodeUnits(a[0], b[0]))
+    .slice(0, UNRESOLVED_RECEIVER_FILE_SAMPLE)
+    .map(([filePath, sites]) => ({ filePath, sites }));
+  let total = 0;
+  for (const [, n] of byFile) total += n;
+  logger.info(
+    { totalSites: total, filesAffected: byFile.size, topFiles: ranked },
+    'receiver-unresolved call sites by file (top offenders; a file far above its ' +
+      'siblings usually means its receivers were never typed, not that it has more calls)',
+  );
 }
