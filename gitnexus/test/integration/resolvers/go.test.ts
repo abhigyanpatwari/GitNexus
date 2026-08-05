@@ -2122,4 +2122,39 @@ describe('Go grouped type declaration scoping (#2837)', () => {
     expect(structs).toContain('SortService'); // grouped, first (reverse-order file)
     expect(structs).toContain('SortDecoy'); // grouped, second (reverse-order file)
   });
+
+  // Anchoring the captures on `type_spec` moved the node the class extractor and
+  // the doc-comment extractor are handed. Both had to be taught the new shape,
+  // and NEITHER is covered by the edge assertions above — the first pass of this
+  // change silently dropped both properties from every Go type while all seven
+  // rows above stayed green (#2843 review).
+  const structProps = (name: string): Record<string, unknown> =>
+    getNodesByLabelFull(result, 'Struct').find((n) => n.name === name)?.properties ?? {};
+  const ifaceProps = (name: string): Record<string, unknown> =>
+    getNodesByLabelFull(result, 'Interface').find((n) => n.name === name)?.properties ?? {};
+
+  it('keeps the package-qualified name on every Go type', () => {
+    expect(structProps('WaveService').qualifiedName).toBe('services.WaveService'); // plain
+    expect(structProps('PickService').qualifiedName).toBe('services.PickService'); // grouped, second
+    expect(ifaceProps('MetricSink').qualifiedName).toBe('repository.MetricSink'); // grouped iface, second
+  });
+
+  it('keeps the godoc description on every Go type', () => {
+    expect(structProps('WaveService').description).toBeTruthy(); // plain
+    expect(structProps('PickService').description).toBeTruthy(); // grouped, second
+    expect(ifaceProps('OrderRepository').description).toBeTruthy(); // plain interface
+  });
+
+  // Members must attribute to the struct that actually declares them. The owner
+  // walk took the FIRST `type_spec` of the declaration, so before the fix every
+  // field and method of a grouped block was filed under its first struct — and
+  // the two same-named `orderRepo` fields minted one id, dropping the second.
+  it('attributes grouped-block members to their own struct', () => {
+    const props = getRelationships(result, 'HAS_PROPERTY').map((e) => `${e.source}.${e.target}`);
+    expect(props).toContain('PickService.orderRepo');
+    expect(props).toContain('Decoy.orderRepo');
+    const methods = getRelationships(result, 'HAS_METHOD').map((e) => `${e.source}.${e.target}`);
+    expect(methods).toContain('MetricSink.Observe');
+    expect(methods).not.toContain('AuditSink.Observe');
+  });
 });
