@@ -39,6 +39,14 @@ import { getJsParser, getJsScopeQuery, jsCachedTreeMatchesGrammar } from './quer
 import { computeTsArityMetadata } from '../typescript/arity-metadata.js';
 import { synthesizeTsReceiverBinding } from '../typescript/receiver-binding.js';
 import { isArrayMethodCallbackArrow } from '../typescript/array-callback.js';
+import { isStaticClassFieldBinding } from '../typescript/captures.js';
+
+/** JavaScript's spelling of a class-field declaration — the TypeScript grammar
+ *  calls the same construct `public_field_definition`. Named here, not in the
+ *  shared predicate, so each literal is checked against the grammar of the file
+ *  it lives in (`grammar-literal-validation`). */
+const JS_CLASS_FIELD_DEFINITION_TYPES: ReadonlySet<string> = new Set(['field_definition']);
+import { hasKeyword } from '../../field-extractors/configs/helpers.js';
 import { synthesizeCjsModuleExports } from '../typescript/cjs-module-exports.js';
 import {
   isShadowedCjsExportAssignment,
@@ -638,8 +646,23 @@ function synthesizeConstructorFieldBindings(root: SyntaxNode, out: CaptureMatch[
     }
     // Only process constructor method definitions
     if (node.type !== 'method_definition') continue;
+    // …and only a CLASS's. An object literal's members are `method_definition`
+    // too, so `{ constructor() { this.p = new Alien(); } }` reached here and
+    // typed a field on whatever class the hoist walked up to — an object
+    // literal's `this` is the literal, never that class's instance (#2807).
+    // TypeScript's sibling pattern carries the same constraint in its query
+    // nesting; the two must not read one source differently.
+    if (node.parent?.type !== 'class_body') continue;
     const nameNode = node.childForFieldName('name');
     if (nameNode?.text !== 'constructor') continue;
+    // `static constructor() {}` is legal JavaScript — the reserved-name rule
+    // applies to instance methods only — and its `this` is the CLASS object, so
+    // `this.p = new Alien()` there writes a static property and must not type
+    // the instance field `p`. TypeScript's sibling guard (`isStaticMethodThis`)
+    // already drops this shape; without the same test here `.js` and `.ts` read
+    // one source differently. `hasKeyword` skips the `name` field, so a method
+    // named `static` cannot false-positive.
+    if (hasKeyword(node, 'static')) continue;
 
     const body = node.childForFieldName('body');
     if (body === null) continue;
@@ -866,6 +889,24 @@ export function emitJsScopeCaptures(
       if (memberNode === null || !shouldEmitReadMember(memberNode)) {
         continue;
       }
+    }
+
+    // A `static` class field is a member of the class object, not of instances,
+    // so `static p = new Wrong()` must not retype the `p = new Right()` beside
+    // it — the two land on one Class scope and the later match wins the `>=`
+    // tie-break. Shared with TypeScript (`isStaticClassFieldBinding`), which is
+    // where the reasoning and the grammar evidence live; the two languages read
+    // the same source and must not read it differently. JavaScript has no type
+    // annotations, so `field_definition` initializers are the only class-field
+    // type binding its query emits and `@type-binding.constructor` is the only
+    // anchor that can carry the modifier.
+    if (
+      isStaticClassFieldBinding(
+        groupedNodes['@type-binding.constructor'],
+        JS_CLASS_FIELD_DEFINITION_TYPES,
+      )
+    ) {
+      continue;
     }
 
     // #1876: drop @declaration.function for array higher-order-method

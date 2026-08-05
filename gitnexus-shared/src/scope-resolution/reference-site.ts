@@ -162,6 +162,30 @@ export interface ReferenceSite {
    * in callee position, so nothing changes for languages that never set it.
    */
   readonly inCalleePosition?: boolean;
+  /**
+   * This `inherits` site describes an embedded field written as a POINTER
+   * (`struct S { *T }`) rather than as a value (`struct S { T }`).
+   *
+   * Go's method-set rules make the two forms genuinely different, so the
+   * distinction cannot be normalized away without producing wrong answers
+   * (go.dev/ref/spec#Struct_types):
+   *
+   *   - `S` embeds `T`  → `MS(S)` and `MS(*S)` get promoted methods with
+   *                       receiver `T`; only `MS(*S)` also gets those with
+   *                       receiver `*T`.
+   *   - `S` embeds `*T` → `MS(S)` AND `MS(*S)` get promoted methods with
+   *                       receiver `T` **or** `*T`.
+   *
+   * So with `func (t *T) Ping()`, `S{T}` does not implement a `Ping` interface
+   * by value while `S{*T}` does. Collapsing the forms makes both answers the
+   * same, and one of them is then wrong.
+   *
+   * A POSITION FACT, like `inCalleePosition`: the capture layer records how the
+   * field was spelled and resolution decides what it means. Set only by
+   * languages with pointer-embedding semantics (Go today); absent everywhere
+   * else, so every other language's sites stay byte-identical.
+   */
+  readonly embeddedAsPointer?: boolean;
 }
 
 /**

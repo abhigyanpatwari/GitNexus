@@ -28,6 +28,18 @@ def locally_shadowed():
 `,
   ],
   [
+    'pkg/dotted.py',
+    `import pkg.models
+
+def dotted():
+    return pkg.models.User()
+
+def dotted_root_shadowed():
+    pkg = object()
+    return pkg.models.User()
+`,
+  ],
+  [
     'pkg/models.py',
     `class User:
     pass
@@ -66,9 +78,16 @@ function build() {
     },
   });
   const index = buildWorkspaceResolutionIndex(parsedFiles);
+  const namespaceTargetsFor = (file: ParsedFile) =>
+    collectNamespaceTargets(file, scopes, {
+      // Mirror the production wiring in receiver-bound-calls.ts: the extra
+      // receiver spellings come from the provider hook, not from a default.
+      receiverPaths: pythonScopeResolver.namespaceReceiverPaths,
+      moduleFileExists: (filePath) => index.moduleScopeByFile.has(filePath),
+    });
   const app = parsedFiles.find((file) => file.filePath === 'pkg/app.py');
   if (app === undefined) throw new Error('missing app fixture');
-  const namespaceTargets = collectNamespaceTargets(app, scopes);
+  const namespaceTargets = namespaceTargetsFor(app);
 
   const resolveIn = (functionName: string, expression: string) => {
     const functionScope = app.scopes.find(
@@ -83,11 +102,28 @@ function build() {
     });
   };
 
-  return { resolveIn };
+  const dotted = parsedFiles.find((file) => file.filePath === 'pkg/dotted.py');
+  if (dotted === undefined) throw new Error('missing dotted fixture');
+  const dottedNamespaceTargets = namespaceTargetsFor(dotted);
+
+  const resolveDottedIn = (functionName: string, expression: string) => {
+    const functionScope = dotted.scopes.find(
+      (scope) =>
+        scope.kind === 'Function' &&
+        scope.ownedDefs.some((def) => def.qualifiedName === functionName),
+    );
+    if (functionScope === undefined) throw new Error(`missing scope for ${functionName}`);
+    return resolveCompoundReceiverClass(expression, functionScope.id, scopes, index, {
+      constructionSyntax: { bare: true },
+      namespaceTargets: dottedNamespaceTargets,
+    });
+  };
+
+  return { resolveIn, resolveDottedIn };
 }
 
 describe('Python module namespace construction', () => {
-  const { resolveIn } = build();
+  const { resolveIn, resolveDottedIn } = build();
 
   it('resolves an exported class from the verified module target', () => {
     expect(resolveIn('valid', 'models.User()')).toMatchObject({
@@ -106,5 +142,21 @@ describe('Python module namespace construction', () => {
 
   it('does not reuse a file-level namespace when a local shadows it', () => {
     expect(resolveIn('locally_shadowed', 'models.User()')).toBeUndefined();
+  });
+
+  // #2826: `import pkg.models` binds only `pkg`, so the namespace key is the
+  // dotted path `pkg.models` while the shadowable name is the root `pkg`.
+  it('resolves construction through a dotted import-path namespace', () => {
+    expect(resolveDottedIn('dotted', 'pkg.models.User()')).toMatchObject({
+      filePath: 'pkg/models.py',
+      qualifiedName: 'User',
+    });
+  });
+
+  it('does not reuse a dotted namespace when a local shadows its ROOT segment', () => {
+    // Fails without the root-segment fix: testing the whole `pkg.models`
+    // string against scope bindings never matches, so the guard would pass a
+    // shadowed receiver straight through to the authoritative namespace branch.
+    expect(resolveDottedIn('dotted_root_shadowed', 'pkg.models.User()')).toBeUndefined();
   });
 });
