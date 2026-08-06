@@ -41,7 +41,25 @@ export const METHOD_ANNOTATION_TO_HTTP: Record<string, string> = {
  * Runtime expressions fail closed instead of producing a guessed route.
  */
 function parseRequestMethodValues(value: string): readonly string[] | null {
-  const trimmed = value.trim();
+  let trimmed = '';
+  for (let index = 0; index < value.length; index += 1) {
+    const char = value[index];
+    const next = value[index + 1];
+    if (/\s/.test(char)) continue;
+    if (char === '/' && next === '*') {
+      const commentEnd = value.indexOf('*/', index + 2);
+      if (commentEnd < 0) return null;
+      index = commentEnd + 1;
+      continue;
+    }
+    if (char === '/' && next === '/') {
+      const lineEnd = value.slice(index + 2).search(/[\r\n]/);
+      if (lineEnd < 0) return null;
+      index += lineEnd + 1;
+      continue;
+    }
+    trimmed += char;
+  }
   const hasOpeningBrace = trimmed.startsWith('{');
   const hasClosingBrace = trimmed.endsWith('}');
   if (hasOpeningBrace !== hasClosingBrace) return null;

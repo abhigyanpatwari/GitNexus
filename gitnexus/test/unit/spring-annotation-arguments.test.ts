@@ -118,6 +118,24 @@ describe('Spring request mapping methods', () => {
     expect(intersectSpringHttpMethods(['GET'], ['POST'])).toEqual([]);
   });
 
+  it('accepts Java whitespace and comments around static RequestMethod values', () => {
+    expect(
+      springAnnotationHttpMethods(
+        'RequestMapping',
+        '@RequestMapping(path = "/x", method = RequestMethod . GET)',
+      ),
+    ).toEqual(['GET']);
+    expect(
+      springAnnotationHttpMethods(
+        'RequestMapping',
+        `@RequestMapping(method = {
+          RequestMethod.GET, // read
+          /* write */ RequestMethod.POST,
+        })`,
+      ),
+    ).toEqual(['GET', 'POST']);
+  });
+
   it('fails closed for runtime, malformed, and duplicate method members', () => {
     expect(
       springAnnotationHttpMethods('RequestMapping', '@RequestMapping(path = "/x", method = VERB)'),
@@ -126,6 +144,12 @@ describe('Spring request mapping methods', () => {
       springAnnotationHttpMethods(
         'RequestMapping',
         '@RequestMapping(path = "/x", method = RequestMethod.GET, method = RequestMethod.POST)',
+      ),
+    ).toEqual([]);
+    expect(
+      springAnnotationHttpMethods(
+        'RequestMapping',
+        '@RequestMapping(path = "/x", method = RequestMethod./* unterminated)',
       ),
     ).toEqual([]);
   });

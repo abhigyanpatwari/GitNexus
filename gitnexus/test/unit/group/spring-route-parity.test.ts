@@ -149,6 +149,13 @@ public class LegacyController {
   public Object crossProduct() { return null; }
   @RequestMapping(path = "/empty", method = {})
   public Object empty() { return null; }
+  @RequestMapping(path = "/spaced", method = RequestMethod . PUT)
+  public Object spaced() { return null; }
+  @RequestMapping(path = "/commented", method = {
+    RequestMethod.GET, // read
+    /* write */ RequestMethod.POST,
+  })
+  public Object commented() { return null; }
   @org.springframework.web.bind.annotation.RequestMapping(
     path = "/fqn",
     method = org.springframework.web.bind.annotation.RequestMethod.DELETE
@@ -167,6 +174,9 @@ public class LegacyController {
       'GET /api/two',
       'POST /api/two',
       '* /api/empty',
+      'PUT /api/spaced',
+      'GET /api/commented',
+      'POST /api/commented',
       'DELETE /api/fqn',
     ]);
 
