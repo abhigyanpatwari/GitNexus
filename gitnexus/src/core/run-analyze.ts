@@ -474,6 +474,14 @@ export interface AnalyzeResult {
    * full-text/BM25 search is disabled. Lets callers (CLI summary, server) and
    * the persisted meta surface the degraded state instead of reporting healthy.
    */
+  /**
+   * Set when the post-write integrity check found far fewer relationships in
+   * the DB than the pipeline produced. Surfaced on the RESULT, not only in
+   * metadata, because the CLI and the analyze worker both report completion
+   * from this object — and a run whose edges are mostly gone must not be able
+   * to print "indexed successfully" and exit 0.
+   */
+  graphWriteCollapsed?: { expected: number; persisted: number };
   ftsSkipped?: boolean;
   /**
    * Why FTS was skipped, when `ftsSkipped` is true (#2658 review L2):
@@ -1901,6 +1909,10 @@ async function runFullAnalysisInner(
     // process already holds and — worse — ran a read against the DB between
     // writeback and finalize for no recovery benefit.
     let deletedFilePathsForRestore: Set<string> | null = null;
+    // True once this run has persisted only a CHANGED SUBGRAPH. The post-write
+    // collapse check compares the whole in-memory graph against the whole DB,
+    // which is only a like-for-like comparison on a full rebuild.
+    let wroteChangedSubgraphOnly = false;
     if (isIncremental && hashDiff) {
       // ── Incremental DB writeback ───────────────────────────────────
       // 0. Expand the writable set with transitive importers of
@@ -2283,6 +2295,7 @@ async function runFullAnalysisInner(
         //    the SAME effectiveWriteSet so the subgraph and the deletes
         //    cover identical files (asymmetry would silently corrupt).
         const subgraph = extractChangedSubgraph(pipelineResult.graph, effectiveWriteSet);
+        wroteChangedSubgraphOnly = true;
         await saveIncrementalDirtyState('load-graph', {
           importerExpansion,
           shadowSeedCount: shadowSeed.length,
@@ -2538,17 +2551,36 @@ async function runFullAnalysisInner(
     // Fail-safe when `expected` reads 0: an implementation that offloads
     // relationships out of memory may no longer be able to report a total, and
     // a false "your index is broken" is worse than a missed one.
-    const expectedRelationships = pipelineResult.graph.relationshipCount;
-    // `getLbugStats` flattens "no connection", "query threw" and "empty table"
-    // into `edges: 0`, so a bare `stats.edges` would make every run without a
-    // readable DB look like a total collapse — the confident-zero error this
-    // check exists to catch. `nodes > 0` is independent evidence the DB was
-    // readable at all; without it the count is UNKNOWN, not zero.
-    const persistedRelationships = stats.nodes > 0 ? stats.edges : undefined;
-    const graphWriteCollapsed = detectGraphWriteCollapse(
-      expectedRelationships,
-      persistedRelationships,
-    );
+    //
+    // STREAMED EDGES COUNT. When `GraphEmitSink` streaming is active the bulk
+    // types (CALLS/IMPORTS/REFERENCES/ACCESSES) leave the heap at parse time and
+    // never enter `relationshipCount`, so a bare count understates `expected` by
+    // most of the edge volume and the ratio passes trivially. Streaming is on for
+    // any `force === true` run — which includes the crash/schema-mismatch
+    // recovery paths AND the `analyze --force` retry this check's own warning
+    // tells the operator to run. Same correction, and for the same reason, as
+    // the buffer-pool hint earlier in this file.
+    const expectedRelationships =
+      pipelineResult.graph.relationshipCount + (pipelineResult.graphEmitManifest?.totalRows ?? 0);
+    // `getLbugStats` returns `edges: undefined` when the count could not be
+    // taken, which is a different fact from zero — an edge query that throws
+    // must not read as a measured collapse. `nodes > 0` is independent evidence
+    // the DB was readable at all, but it says nothing about whether the EDGE
+    // query threw, so both conditions are required.
+    const persistedRelationships =
+      stats.nodes > 0 && stats.edges !== undefined ? stats.edges : undefined;
+    // NOT COMPARABLE ON AN INCREMENTAL WRITE. That path persists only
+    // `extractChangedSubgraph(...)` while both counts here are whole-scope: the
+    // full in-memory graph against the entire DB. A 10,000-edge index whose
+    // incremental rewrite lost 200 replacements reads 9,800 against 10,000 —
+    // comfortably above the ratio — so a corrupt index would be certified
+    // complete, and the reverse (a small change to a large index) would report
+    // a collapse that did not happen. Producing no verdict is the honest answer
+    // until the check is given the write-set delta to compare against; that is
+    // the same fail-safe the `expected === 0` case already takes.
+    const graphWriteCollapsed = wroteChangedSubgraphOnly
+      ? undefined
+      : detectGraphWriteCollapse(expectedRelationships, persistedRelationships);
     if (graphWriteCollapsed) {
       log(
         `Warning: graph write incomplete — the pipeline produced ${expectedRelationships} ` +
@@ -3252,6 +3284,7 @@ async function runFullAnalysisInner(
       repoPath,
       stats: meta.stats,
       pipelineResult,
+      ...(graphWriteCollapsed ? { graphWriteCollapsed } : {}),
       ftsSkipped: !ftsReady,
       ftsSkipReason: ftsReady ? undefined : ftsSkipReason,
       isPrimaryBranch: !placement.branch,

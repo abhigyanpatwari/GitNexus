@@ -59,9 +59,20 @@ export function detectGraphWriteCollapse(
   // "passes" too and a healthy run is reported as a total collapse. Comparing
   // against a non-number is the one way this check can manufacture the exact
   // false certainty it was written to prevent.
-  if (!Number.isFinite(expected) || !Number.isFinite(persisted as number)) return undefined;
-  const expectedCount = expected as number;
-  const persistedCount = persisted as number;
+  if (!Number.isFinite(expected) || typeof persisted !== 'number' || !Number.isFinite(persisted)) {
+    return undefined;
+  }
+  const expectedCount = expected;
+  const persistedCount = persisted;
+  // A TOTAL loss is never small enough to excuse. The min-edges exemption
+  // exists for "a handful of edges lost to legitimate filtering", which its own
+  // docstring says — it does not describe a persisted count of zero. Evaluated
+  // before the exemption because the exemption looked only at `expected`:
+  // `expected = 99, persisted = 0` lost every single edge and still returned
+  // `undefined`, leaving the metadata fresh and the CLI reporting success.
+  if (expectedCount > 0 && persistedCount === 0) {
+    return { expected: expectedCount, persisted: persistedCount };
+  }
   if (expectedCount < GRAPH_WRITE_COLLAPSE_MIN_EDGES) return undefined;
   if (persistedCount >= expectedCount * GRAPH_WRITE_COLLAPSE_RATIO) return undefined;
   return { expected: expectedCount, persisted: persistedCount };

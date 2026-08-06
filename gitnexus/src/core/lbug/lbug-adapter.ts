@@ -1797,9 +1797,23 @@ export const executeWithReusedStatement = async (
   }
 };
 
-export const getLbugStats = async (): Promise<{ nodes: number; edges: number }> => {
+/**
+ * Node and edge totals for the open index.
+ *
+ * `edges` is `undefined` when the count could NOT BE TAKEN, and that is a
+ * different fact from zero. It used to be initialised to 0 with the query in a
+ * swallowing `catch`, so a WAL/lock contention throw during finalize — a
+ * documented hazard on this exact call — returned a measured-looking 0. The
+ * collapse check downstream then read a perfectly healthy index as a total
+ * write collapse, which is precisely the confident-zero failure that check
+ * exists to prevent.
+ */
+export const getLbugStats = async (): Promise<{
+  nodes: number;
+  edges: number | undefined;
+}> => {
   const c = conn;
-  if (!c) return { nodes: 0, edges: 0 };
+  if (!c) return { nodes: 0, edges: undefined };
 
   // Called during analyze finalize while the WAL-checkpoint driver is still
   // running; each count read takes the connection lock so it cannot execute
@@ -1820,7 +1834,7 @@ export const getLbugStats = async (): Promise<{ nodes: number; edges: number }> 
     }
   }
 
-  let totalEdges = 0;
+  let totalEdges: number | undefined;
   try {
     totalEdges = await withConnLock(async () => {
       const queryResult = await c.query(
@@ -1830,7 +1844,8 @@ export const getLbugStats = async (): Promise<{ nodes: number; edges: number }> 
       return edgeRows.length > 0 ? Number(edgeRows[0]?.cnt ?? edgeRows[0]?.[0] ?? 0) : 0;
     });
   } catch {
-    // ignore
+    // Leave `totalEdges` undefined: the count was not obtained. Reporting 0
+    // here is what made a throwing query indistinguishable from an empty table.
   }
 
   return { nodes: totalNodes, edges: totalEdges };

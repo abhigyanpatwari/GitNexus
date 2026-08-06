@@ -1624,6 +1624,27 @@ const analyzeCommandImpl = async (
 
     // ── Summary ────────────────────────────────────────────────────
     const s = result.stats;
+    // A collapsed graph write is NOT a successful index. The other incomplete
+    // reasons (`incremental-in-progress`, `embedding-checkpoint-pending`)
+    // describe a run that did what it said and left work for next time; this
+    // one means most of your edges are gone, so every query answers a confident
+    // empty and the exit code is the only thing automation reads. Printing
+    // "indexed successfully" and exiting 0 here would be the same class of
+    // false certainty the check itself was written to remove.
+    if (result.graphWriteCollapsed) {
+      const { expected, persisted } = result.graphWriteCollapsed;
+      console.log(`\n  Repository indexed INCOMPLETELY (${totalTime}s)\n`);
+      console.log(
+        `  Graph write collapsed: the pipeline produced ${expected.toLocaleString()} relationships\n` +
+          `  but only ${persisted.toLocaleString()} are readable from the index. Queries will answer\n` +
+          `  with missing edges rather than an error.\n\n` +
+          `  The index is recorded INCOMPLETE (graph-write-collapsed). Re-run\n` +
+          `  \`gitnexus analyze --force\`; if it recurs, check disk space and run \`gitnexus doctor\`.`,
+      );
+      console.log(`  ${repoPath}`);
+      process.exitCode = 1;
+      return;
+    }
     console.log(`\n  Repository indexed successfully (${totalTime}s)\n`);
     console.log(
       `  ${(s.nodes ?? 0).toLocaleString()} nodes | ${(s.edges ?? 0).toLocaleString()} edges | ${s.communities ?? 0} clusters | ${s.processes ?? 0} flows`,

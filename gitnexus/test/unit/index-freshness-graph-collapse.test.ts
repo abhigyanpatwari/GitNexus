@@ -66,8 +66,38 @@ describe('detectGraphWriteCollapse (B2 detection)', () => {
   });
 
   it('exempts small repos where the ratio is meaningless', () => {
+    // A PARTIAL shortfall under the threshold — the case the exemption was
+    // written for ("a handful of edges lost to legitimate filtering").
     const justUnder = GRAPH_WRITE_COLLAPSE_MIN_EDGES - 1;
-    expect(detectGraphWriteCollapse(justUnder, 0)).toBeUndefined();
+    expect(detectGraphWriteCollapse(justUnder, justUnder - 1)).toBeUndefined();
+    expect(detectGraphWriteCollapse(justUnder, 1)).toBeUndefined();
+  });
+
+  // This assertion previously read `detectGraphWriteCollapse(99, 0) === undefined`,
+  // pinning the defect rather than the behaviour: the exemption tested
+  // `expected` before looking at `persisted` at all, so a repo that lost EVERY
+  // edge was excused for being small, metadata stayed fresh and the CLI
+  // reported success. Losing all of a small graph is still losing all of it.
+  it('never exempts a TOTAL loss, however small the repo', () => {
+    expect(detectGraphWriteCollapse(GRAPH_WRITE_COLLAPSE_MIN_EDGES - 1, 0)).toEqual({
+      expected: GRAPH_WRITE_COLLAPSE_MIN_EDGES - 1,
+      persisted: 0,
+    });
+    expect(detectGraphWriteCollapse(1, 0)).toEqual({ expected: 1, persisted: 0 });
+  });
+
+  // The boundary the total-loss rule must NOT cross: zero expected is the
+  // fail-safe "cannot measure" case, not a collapse.
+  it('still says nothing when nothing was expected', () => {
+    expect(detectGraphWriteCollapse(0, 0)).toBeUndefined();
+  });
+
+  // An unreadable edge count is not a measured zero. `getLbugStats` now returns
+  // `undefined` when the query threw, and the total-loss rule must not treat
+  // that as a total loss.
+  it('does not call an unreadable count a total loss', () => {
+    expect(detectGraphWriteCollapse(50, undefined)).toBeUndefined();
+    expect(detectGraphWriteCollapse(5000, undefined)).toBeUndefined();
   });
 
   it('applies exactly at the minimum-edge boundary', () => {
