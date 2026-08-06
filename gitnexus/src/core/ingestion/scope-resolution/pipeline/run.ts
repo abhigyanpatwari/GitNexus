@@ -1047,25 +1047,32 @@ export function runScopeResolution(
         uniqueNameSkipSites,
       );
 
-  const uniqueNameProperties =
-    callableFlowOnly || provider.fieldFallbackOnMethodLookup === false
-      ? {
-          emitted: 0,
-          ambiguous: 0,
-          narrowed: 0,
-          ambiguousNames: [],
-          crossLanguageOnly: 0,
-          crossLanguageOnlyNames: [],
-        }
-      : emitUniqueNamePropertyAccesses(
-          graph,
-          indexes,
-          emitParsedFiles,
-          postHeritageNodeLookup,
-          uniqueNameSkipSites,
-          finalized,
-          input.prebuiltPropertyNameIndex,
-        );
+  // A language that opts out of name fallback still gets DETECTION. Skipping
+  // the pass outright also skipped its reporting, so a TypeScript read whose
+  // only anchor is JavaScript answered the same silent empty as the JS-read /
+  // TS-anchor case R3-1 was filed about — the identical defect, mirrored.
+  // `reportOnly` counts without emitting: no edge, no inference, no change to
+  // what the opt-out protects.
+  const nameFallbackDisabled = provider.fieldFallbackOnMethodLookup === false;
+  const uniqueNameProperties = callableFlowOnly
+    ? {
+        emitted: 0,
+        ambiguous: 0,
+        narrowed: 0,
+        ambiguousNames: [],
+        crossLanguageOnly: 0,
+        crossLanguageOnlyNames: [],
+      }
+    : emitUniqueNamePropertyAccesses(
+        graph,
+        indexes,
+        emitParsedFiles,
+        postHeritageNodeLookup,
+        uniqueNameSkipSites,
+        finalized,
+        input.prebuiltPropertyNameIndex,
+        nameFallbackDisabled,
+      );
 
   // value-ref registrations (#2437): USES edges at the registration sites
   // plus field-based dispatch — synthesized CALLS from member-call sites to

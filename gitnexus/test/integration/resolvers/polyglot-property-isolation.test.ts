@@ -75,5 +75,30 @@ describe('cross-language property inference (RV-5)', () => {
     it('does not count a cross-language decline as an ambiguity', () => {
       expect(inference().ambiguousNames).not.toContain('loyaltyPointsBalance');
     });
+
+    // The MIRROR, found by asking what else shares this shape rather than
+    // waiting for it to be reported. TypeScript opts out of name inference
+    // (`fieldFallbackOnMethodLookup: false`) because a type system should
+    // answer precisely — that stays. But skipping the pass wholesale also
+    // skipped its reporting, so a TypeScript read anchored only in JavaScript
+    // gave the identical silent empty this whole item is about.
+    //
+    // Detection is not inference: counting what could not be linked asserts
+    // nothing about what it means, so the opt-out loses nothing.
+    it('reports the same fact for a language that opts OUT of name inference', () => {
+      const hit = inference().crossLanguageNames.find((e) => e.name === 'jsOnlyThreshold');
+      expect(hit).toBeDefined();
+      expect(hit?.languages).toContain('javascript');
+    });
+
+    // The assertion that makes `reportOnly` load-bearing. The cross-language
+    // case cannot show it — the language filter blocks those edges anyway — so
+    // this is a SAME-language TypeScript read that name inference could link,
+    // and which `fieldFallbackOnMethodLookup: false` forbids linking. Running
+    // the pass for reporting must not quietly re-enable inference.
+    it('still emits no edge for the opted-out language', () => {
+      expect(readersOf('tsOnlyBudget')).not.toContain('readsTsOnly');
+      expect(readersOf('jsOnlyThreshold')).not.toContain('renderJsOnly');
+    });
   });
 });

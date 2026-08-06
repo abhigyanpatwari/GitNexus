@@ -320,6 +320,17 @@ export function emitUniqueNamePropertyAccesses(
    * omitted (tests / isolated calls).
    */
   prebuiltPropertyNameIndex?: PropertyNameIndex,
+  /**
+   * DETECT WITHOUT EMITTING. A language that sets
+   * `fieldFallbackOnMethodLookup: false` (TypeScript) opts out of name
+   * inference because a real type system should answer precisely — that opt-out
+   * is right and stays. But skipping the pass wholesale also skipped its
+   * REPORTING, so a TypeScript read whose only anchor is JavaScript got the
+   * same silent empty answer R3-1 exists to remove, just in the other
+   * direction. Detection is not inference: counting what could not be linked
+   * asserts nothing about what it means.
+   */
+  reportOnly = false,
 ): UniqueNamePropertyStats {
   const byName = prebuiltPropertyNameIndex ?? buildPropertyNameIndex(graph);
   const ownFilePaths = new Set(parsedFiles.map((p) => p.filePath));
@@ -404,6 +415,7 @@ export function emitUniqueNamePropertyAccesses(
       if (seen.has(dedupKey)) continue;
       seen.add(dedupKey);
 
+      if (reportOnly) continue;
       // `addRelationship` is first-write-wins, so a precise edge already
       // emitted for this exact id keeps ownership over the inference.
       graph.addRelationship({
