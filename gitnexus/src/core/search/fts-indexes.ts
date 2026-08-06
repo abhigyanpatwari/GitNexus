@@ -1,4 +1,9 @@
-import { createFTSIndex, dropFTSIndex, DEFAULT_FTS_STEMMER } from '../lbug/lbug-adapter.js';
+import {
+  createFTSIndex,
+  dropFTSIndex,
+  readIndexCatalogRows,
+  DEFAULT_FTS_STEMMER,
+} from '../lbug/lbug-adapter.js';
 import { getExtensionCapabilities } from '../lbug/extension-loader.js';
 import { classifyExtensionLoadError } from '../lbug/extension-load-error.js';
 import { FTS_INDEXES } from './fts-schema.js';
@@ -188,14 +193,42 @@ export function getSearchFTSStemmer(): string {
 }
 
 /**
- * Drop every configured FTS index (no-op per index when absent or unloadable
- * — `dropFTSIndex` tolerates both). Callable ahead of any DML that mutates an
- * FTS-indexed table's rows: LadybugDB's FTS extension is not proven to
- * survive a DETACH DELETE against a table that still carries a live index
- * from a prior run (#2589) — dropping first removes that hazard entirely,
- * regardless of whether it also fixed a specific native inconsistency.
+ * Drop every configured FTS index ahead of any DML that mutates an FTS-indexed
+ * table's rows: LadybugDB's FTS extension is not proven to survive a DETACH
+ * DELETE against a table that still carries a live index from a prior run
+ * (#2589) — dropping first removes that hazard entirely, regardless of whether
+ * it also fixed a specific native inconsistency.
+ *
+ * CALLER OBLIGATION (#2841). `dropFTSIndex` still no-ops per index when the
+ * index is ABSENT, but "unloadable" is no longer unconditionally tolerated: a
+ * LIVE index plus an FTS extension that cannot load now THROWS, naming FTS and
+ * its remedies, instead of reporting a drop that never happened and letting the
+ * next insert/delete die at bind time with a message that never mentions FTS.
+ * Nothing in the type system enforces that — callers must have already proven
+ * the extension is loadable (`ensureFtsRowDmlSafe()` returning `true`, or a
+ * direct `loadFTSExtension()`) before calling this. `run-analyze.ts` settles it
+ * at the incremental extension gate and escalates to a full wipe-and-rebuild
+ * write plan when the gate says no, so this function is only reached on the
+ * branch where the drops can actually succeed.
  */
 export async function dropSearchFTSIndexes(): Promise<void> {
+  // One catalog read for the whole sweep. `undefined` = the catalog could not
+  // be read, which proves nothing — fall through to the loop rather than skip
+  // real drops, the same fail-closed reading `ensureFtsRowDmlSafe` applies.
+  // Keyed on index TYPE like that gate, so an index left over from an older
+  // `FTS_INDEXES` (different name/table set) still keeps the sweep alive.
+  const indexRows = await readIndexCatalogRows();
+  const carriesFtsIndex =
+    indexRows === undefined || indexRows.some((row) => (row?.index_type ?? row?.[2]) === 'FTS');
+  // Nothing to drop. Without this, a machine whose FTS extension cannot load,
+  // analyzing a DB that never carried an FTS index, pays one failed
+  // `CALL DROP_FTS_INDEX` per configured table on EVERY incremental run — and
+  // each of those failures now costs a fresh catalog read inside `dropFTSIndex`'s
+  // liveness guard, forever, with nothing to heal (#2841 review). The
+  // `ensuredFTSIndexes` memo needs no clearing here either: an index absent from
+  // the catalog cannot be memoized as ensured on this connection, and
+  // `createSearchFTSIndexes` drops per index itself before creating.
+  if (!carriesFtsIndex) return;
   for (const { table, indexName } of FTS_INDEXES) {
     await dropFTSIndex(table, indexName);
   }
