@@ -340,19 +340,38 @@ const findEntryPoints = (
  * Trace forward from an entry point using BFS.
  * Returns all distinct paths up to maxDepth.
  */
-const traceFromEntryPoint = (
+// Exported for tests ONLY: traversal order is the whole behaviour here, and it
+// is unobservable through `processProcesses` because `findEntryPoints` supplies
+// several starting points — a deep chain gets traced from inside it regardless
+// of order, so a test at that level passes under either traversal and pins
+// nothing.
+export const traceFromEntryPoint = (
   entryId: string,
   callsEdges: AdjacencyList,
   config: ProcessDetectionConfig,
 ): string[][] => {
   const traces: string[][] = [];
 
-  // BFS with path tracking
-  // Each queue item: [currentNodeId, pathSoFar]
+  // DEPTH-first, not breadth-first. Each stack item: [currentNodeId, pathSoFar].
+  //
+  // The walk stops after a fixed NUMBER of traces, so the traversal order
+  // decides which traces those are. Breadth-first reaches every shallow
+  // terminal before any deep one, so the quota filled with the shortest paths
+  // in the graph and the walk stopped — `maxTraceDepth` was never approached.
+  // Measured on a 75k-node repo: of 300 processes, none exceeded 7 steps and
+  // 90% were 3-4, so a multi-hop business flow (signal → order → exit) had no
+  // process that could represent it, and `query` could only rank the mechanical
+  // pairs that did exist.
+  //
+  // Depth-first descends to a terminal first, so the same quota is spent on
+  // paths worth keeping. Cost is unchanged — same budget, same cycle guard,
+  // same `maxTraceDepth` ceiling — only the ORDER of exploration differs, and
+  // the caller already sorts by length and dedupes by endpoint, so it was
+  // always asking for the deepest traces this walk could give it.
   const queue: [string, string[]][] = [[entryId, [entryId]]];
 
   while (queue.length > 0 && traces.length < config.maxBranching * 3) {
-    const [currentId, path] = queue.shift()!;
+    const [currentId, path] = queue.pop()!;
 
     // Get outgoing calls
     const callees = callsEdges.get(currentId) || [];

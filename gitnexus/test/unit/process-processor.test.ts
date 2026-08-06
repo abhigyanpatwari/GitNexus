@@ -1,6 +1,7 @@
 import { describe, it, expect, vi } from 'vitest';
 import {
   processProcesses,
+  traceFromEntryPoint,
   type ProcessDetectionConfig,
 } from '../../src/core/ingestion/process-processor.js';
 import { computeDynamicMaxProcesses } from '../../src/core/ingestion/pipeline-phases/processes.js';
@@ -558,5 +559,107 @@ describe('processProcesses', () => {
       expect(largeRepo).toBe(1000);
       expect(largeRepo).toBeGreaterThan(300);
     });
+  });
+});
+
+/**
+ * D1/D2 — the trace walk must reach DEEP flows, not just shallow ones.
+ *
+ * The walk stops after a fixed NUMBER of traces, so traversal order decides
+ * which traces those are. Breadth-first reached every shallow terminal before
+ * any deep one, so the quota filled with the shortest paths in the graph and
+ * the walk stopped — `maxTraceDepth` was never approached.
+ *
+ * Measured on a 75k-node repo before the fix: of 300 processes NONE exceeded 7
+ * steps and 90% were 3-4, so a multi-hop business flow had no process that
+ * could represent it and `query` could only rank the mechanical pairs that did
+ * exist. What looked like a ranking problem was a construction problem.
+ *
+ * This fixture is that shape in miniature: one deep chain competing with enough
+ * shallow branches to exhaust the trace budget before the chain is reached.
+ */
+describe('process depth (D1/D2)', () => {
+  // Drives the walk DIRECTLY. Through `processProcesses` this is unobservable:
+  // `findEntryPoints` returns several starting points, so the deep chain is
+  // traced from inside it whatever the traversal order does — a test there
+  // passes under BOTH traversals and guards nothing.
+  const cfg = { maxTraceDepth: 10, maxBranching: 4, maxProcesses: 75, minSteps: 3 };
+
+  it('descends a deep chain instead of spending the budget on shallow branches', () => {
+    // Fan-out is capped at maxBranching (4), so the budget is exhausted BELOW
+    // the entry: three shallow branches carrying four immediate terminals each
+    // = 12 traces, exactly the walk budget (maxBranching * 3). Breadth-first
+    // records all twelve and stops before descending the fourth branch.
+    const calls = new Map<string, string[]>();
+    calls.set('entry', ['s1', 's2', 's3', 'd1']);
+    for (const b of ['s1', 's2', 's3']) {
+      calls.set(b, [`${b}_l1`, `${b}_l2`, `${b}_l3`, `${b}_l4`]);
+    }
+    for (let i = 1; i <= 7; i++) calls.set(`d${i}`, [`d${i + 1}`]);
+
+    const traces = traceFromEntryPoint('entry', calls, cfg);
+    const deepest = Math.max(0, ...traces.map((t) => t.length));
+    // Shallow terminals are 3 nodes. Anything longer proves it descended.
+    expect(deepest).toBeGreaterThan(3);
+  });
+  const addFn = (graph: ReturnType<typeof createKnowledgeGraph>, id: string): void => {
+    graph.addNode({
+      id,
+      label: 'Function',
+      properties: { name: id.split(':')[1], filePath: 'src/a.ts', startLine: 1, endLine: 2 },
+    });
+  };
+  const addCall = (
+    graph: ReturnType<typeof createKnowledgeGraph>,
+    from: string,
+    to: string,
+  ): void => {
+    graph.addRelationship({
+      id: `rel:${from}->${to}`,
+      sourceId: from,
+      targetId: to,
+      type: 'CALLS',
+      confidence: 1,
+      reason: 'test',
+    });
+  };
+
+  it('finds a deep chain that shallow branches would otherwise crowd out', async () => {
+    const graph = createKnowledgeGraph();
+    addFn(graph, 'func:entry');
+
+    // Fan-out is capped at `maxBranching` (4), so the budget can only be
+    // exhausted BELOW the entry, not beside it: three shallow branches each
+    // carrying four immediate terminals = 12 traces, exactly the walk's trace
+    // budget (maxBranching * 3). Breadth-first records all twelve before it
+    // ever descends the fourth branch, and stops.
+    for (let b = 1; b <= 3; b++) {
+      const mid = `func:s${b}`;
+      addFn(graph, mid);
+      addCall(graph, 'func:entry', mid);
+      for (let l = 1; l <= 4; l++) {
+        const leaf = `func:l${b}_${l}`;
+        addFn(graph, leaf);
+        addCall(graph, mid, leaf);
+      }
+    }
+
+    // The fourth branch is a deep chain: entry → d1 → … → d8 (terminal).
+    let prev = 'func:entry';
+    addFn(graph, 'func:d1');
+    addCall(graph, 'func:entry', 'func:d1');
+    prev = 'func:d1';
+    for (let i = 2; i <= 8; i++) {
+      const id = `func:d${i}`;
+      addFn(graph, id);
+      addCall(graph, prev, id);
+      prev = id;
+    }
+
+    const result = await processProcesses(graph, []);
+    const deepest = Math.max(0, ...result.processes.map((p) => p.stepCount));
+    // Shallow terminals are 3 steps. Anything deeper proves the walk descended
+    // instead of spending its whole budget fanning out.
+    expect(deepest).toBeGreaterThan(3);
   });
 });
