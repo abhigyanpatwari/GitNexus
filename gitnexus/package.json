@@ -97,6 +97,11 @@
     "@huggingface/transformers": "^4.1.0",
     "onnxruntime-node": "^1.24.0"
   },
+  "trustedDependencies": [
+    "@ladybugdb/core",
+    "gitnexus",
+    "tree-sitter"
+  ],
   "devDependencies": {
     "@babel/generator": "^8.0.0",
     "@babel/parser": "^8.0.0",
