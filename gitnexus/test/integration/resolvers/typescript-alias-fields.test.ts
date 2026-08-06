@@ -80,4 +80,25 @@ describe('TypeScript type-alias and interface members (A4)', () => {
   it('links an alias field to its consumer', () => {
     expect(readersOf('bookNotionalUsdt')).toContain('renderAlias');
   });
+
+  // R2-2. Owning the members was only half of it: with no edge INTO the type,
+  // `context()` on an exported contract answered `incoming: {}`, so "what
+  // breaks if I remove this field?" — the question a contract type exists to
+  // answer — had nothing to walk. Measured on the reporting repo, all 324
+  // TypeAlias nodes and every Interface node had DEFINES as their ONLY
+  // incoming edge, because TypeScript captured no type references at all.
+  describe('type consumers (R2-2)', () => {
+    const usersOf = (typeName: string): string[] =>
+      getRelationships(result, 'USES')
+        .filter((e) => e.target === typeName)
+        .map((e) => e.source);
+
+    it('links a parameter annotation to the alias it names', () => {
+      expect(usersOf('LiveModeConfig')).toContain('renderAlias');
+    });
+
+    it('links a parameter annotation to the interface it names', () => {
+      expect(usersOf('LiveModeIface')).toContain('renderIface');
+    });
+  });
 });

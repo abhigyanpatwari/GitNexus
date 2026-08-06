@@ -1218,6 +1218,37 @@ export const TYPESCRIPT_SCOPE_QUERY = `
 
 (object
   (shorthand_property_identifier) @reference.name @reference.property-key @reference.value-ref)
+
+;; References — TYPE POSITION (R2-2). An annotation naming a declared type is
+;; the only thing that makes that type's declaration reachable from the code
+;; that depends on it, and TypeScript captured none: only cpp and csharp emitted
+;; type references at all. So an exported API-contract type owned its members
+;; (round 1) but had \`incoming: {}\`, and "what breaks if I remove this field?"
+;; — the question a contract type exists to answer — had no edge to walk.
+;;
+;; The resolution path was already complete on the other side:
+;; \`type-reference\` routes to the ClassRegistry, whose CLASS_KINDS already
+;; lists TypeAlias, Interface and Enum, and \`edges.ts\` already maps the kind to
+;; USES. Only the capture was missing.
+;;
+;; Anchored to the CONTEXTS a type is used in — annotations, type arguments,
+;; and heritage \`implements\` — never a bare \`(type_identifier)\`. A blanket rule
+;; would also match the identifier in \`type X = …\` and \`interface X\`, making
+;; every declaration a consumer of itself.
+(type_annotation
+  (type_identifier) @reference.name @reference.type_reference)
+
+(type_annotation
+  (generic_type
+    name: (type_identifier) @reference.name @reference.type_reference))
+
+(type_arguments
+  (type_identifier) @reference.name @reference.type_reference)
+
+;; \`x as SomeType\` / \`satisfies SomeType\` — an assertion is a claim ABOUT a
+;; declared type, so the code making it depends on that declaration.
+(as_expression
+  (type_identifier) @reference.name @reference.type_reference)
 `;
 
 /**

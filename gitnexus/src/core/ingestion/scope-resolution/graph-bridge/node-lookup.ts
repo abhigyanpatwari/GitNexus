@@ -273,6 +273,21 @@ export const LINKABLE_LABELS: ReadonlySet<NodeLabel> = new Set<NodeLabel>([
   // IMPLEMENTS edges from classes to traits are otherwise invisible to
   // the scope-resolution MRO pass.
   'Trait',
+  // TypeAlias is linkable for the same reason Trait is (R2-2). The alias
+  // resolves fine — `CLASS_KINDS` has always listed it, and the ClassRegistry
+  // returns the def — but without an entry here `resolveDefGraphId` cannot
+  // bridge that def to its graph node, so the edge is dropped after a
+  // SUCCESSFUL lookup. That is why an exported contract type owned its members
+  // and still reported `incoming: {}`: the failure was one table away from
+  // everything that appeared to be responsible.
+  //
+  // Covers every language that spells an alias this way — TypeScript, Kotlin,
+  // Dart and Rust all emit `@declaration.type_alias`. The remaining
+  // `CLASS_KINDS` entries (Typedef, Record, Union, Delegate, Annotation,
+  // Template) plausibly have the same gap, but nothing exercises them today
+  // and adding labels no test covers is how this list drifts out of sync with
+  // what it claims.
+  'TypeAlias',
   // Variable / Property are linkable too — receiver-bound write/read
   // ACCESSES edges target field nodes (e.g. `user.name = "x"` →
   // ACCESSES edge to User's `name` Variable/Property node).

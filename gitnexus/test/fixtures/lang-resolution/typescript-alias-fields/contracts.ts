@@ -17,3 +17,4 @@ export function renderAlias(cfg: LiveModeConfig): number {
 export function renderIface(cfg: LiveModeIface): number {
   return cfg.ifaceSlots;
 }
+
