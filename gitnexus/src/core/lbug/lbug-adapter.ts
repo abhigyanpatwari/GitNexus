@@ -1,5 +1,5 @@
 import fs from 'fs/promises';
-import { createReadStream, createWriteStream, constants as fsConstants } from 'fs';
+import { createReadStream, createWriteStream, existsSync, constants as fsConstants } from 'fs';
 import { createInterface } from 'readline';
 import { once } from 'events';
 import { finished } from 'stream/promises';
@@ -986,6 +986,25 @@ const copyCsvWithRetry = async (
  * keeps the IGNORE_ERRORS=true retry; a hard failure throws (no node rows ⇒ the
  * relationship COPY would dangle on missing endpoints).
  */
+/**
+ * A staging CSV named in the COPY manifest is gone by the time COPY runs.
+ *
+ * Only tables with `rows > 0` enter the manifest (see `csv-generator.ts`), so
+ * the file WAS written during this run and something removed it since. Raw,
+ * that surfaces as a LadybugDB "Binder exception: No file found that matches
+ * the pattern …" and then an ENOENT on the next file — two engine-level
+ * messages that name neither the cause nor a remedy, and which the field
+ * reports show operators hitting on a forced rebuild with nothing to act on.
+ */
+export const missingStagingCsvError = (table: string, csvPath: string, rows: number): Error =>
+  new Error(
+    `Staging CSV for ${table} is missing: ${csvPath}. It was written with ` +
+      `${rows.toLocaleString()} rows during this run, so it was removed mid-run — most often a ` +
+      `second \`gitnexus analyze\` on the same repo (both use .gitnexus/csv), or an external ` +
+      `cleanup of .gitnexus/. Ensure no other analyze is running, then re-run ` +
+      `\`gitnexus analyze --force\`.`,
+  );
+
 const copyNodeCSVs = async (
   targetConn: lbug.Connection,
   nodeFileEntries: [NodeTableName, { csvPath: string; rows: number }][],
@@ -996,6 +1015,8 @@ const copyNodeCSVs = async (
   for (const [table, { csvPath, rows }] of nodeFileEntries) {
     stepsDone++;
     log(`Loading nodes ${stepsDone}/${totalSteps}: ${table} (${rows.toLocaleString()} rows)`);
+
+    if (!existsSync(csvPath)) throw missingStagingCsvError(table, csvPath, rows);
 
     const copyQuery = getCopyQuery(table, normalizeCopyPath(csvPath));
     await copyCsvWithRetry(targetConn, copyQuery, (retryErr) => {
@@ -1214,6 +1235,12 @@ export const loadGraphToLbug = async (
     for (const { pairKey, csvPath: pairCsvPath, rows } of copyJobs) {
       pairIdx++;
       const [fromLabel, toLabel] = pairKey.split('|');
+      // Same guarantee as the node COPY: a pair file only reaches this loop
+      // with rows on it, so an absent file means it vanished mid-run. This is
+      // the `rel_Folder_File.csv` ENOENT the field reports end on.
+      if (!existsSync(pairCsvPath)) {
+        throw missingStagingCsvError(`${fromLabel} -> ${toLabel}`, pairCsvPath, rows);
+      }
       const normalizedPath = normalizeCopyPath(pairCsvPath);
       // PARALLEL=false is load-bearing here too — see COPY_CSV_OPTS (#2203 / kuzudb/kuzu#5778).
       const copyQuery = `COPY ${REL_TABLE_NAME} FROM "${normalizedPath}" (from="${fromLabel}", to="${toLabel}", HEADER=true, ESCAPE='"', DELIM=',', QUOTE='"', PARALLEL=false, auto_detect=false)`;
