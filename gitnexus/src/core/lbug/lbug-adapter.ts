@@ -32,9 +32,13 @@ import { getNodeLabel as deriveNodeLabel, type WriteStreamFactory } from './rel-
 import { EMBEDDABLE_LABELS, type CachedEmbedding } from '../embeddings/types.js';
 import {
   extensionManager,
+  getExtensionCapabilities,
   resolveAnalyzeInstallPolicy,
   type ExtensionEnsureOptions,
 } from './extension-loader.js';
+// Remedy classification for LOAD failures (#2374/#2383). Pure + node:fs only, so
+// this adds no cycle: `extension-loader.ts` already depends on it.
+import { diagnoseExtensionLoad } from './extension-load-error.js';
 import {
   classifyDeleteAllError,
   closeLbugConnection,
@@ -3027,11 +3031,24 @@ export const createVectorIndex = async (): Promise<boolean> => {
 };
 
 /**
- * One row of `CALL SHOW_INDEXES()`. Columns are engine-provided
- * (`table_name`, `index_name`, `index_type`, `property_names`,
- * `extension_loaded`, `index_definition` on @ladybugdb/core 0.18.x); the
- * positional fallbacks used by readers below mirror the long-standing access
- * pattern here, since older builds returned unnamed tuples.
+ * One row of `CALL SHOW_INDEXES()`.
+ *
+ * Kept EXPORTED although nothing outside this module names it (#2841 review
+ * §5.H): it is the element type of {@link readIndexCatalogRows}' and
+ * {@link IndexCatalogSnapshot}'s public signatures, and `declaration: true`
+ * requires every type reachable from an exported signature to be exported too.
+ *
+ * LADYBUGDB-CONTRACT: on @ladybugdb/core 0.18.x rows arrive as NAMED records —
+ * `table_name`, `index_name`, `index_type`, `property_names`,
+ * `extension_loaded`, `index_definition` — and the readers below key on those
+ * names plus the literal `'FTS'` / `'HASH'` index-type spellings. Probe-recorded
+ * on 0.18.3: `rows[0][0] === undefined`, so the positional fallbacks (`row?.[0]`
+ * &c.) those readers carry are DEAD on this version. They are deliberately kept
+ * rather than deleted (#2841 review §5.H): they cost nothing, and removing the
+ * hedge would turn a future return to the unnamed-tuple form older builds used
+ * into a silently fail-OPEN gate — the exact #2841 failure class this file
+ * exists to close. When bumping LadybugDB, re-validate — `git grep
+ * "LADYBUGDB-CONTRACT"` enumerates every version-coupled spot.
  */
 export type IndexCatalogRow = Record<string, unknown>;
 
@@ -3046,7 +3063,11 @@ export type IndexCatalogRow = Record<string, unknown>;
  * like every other `CALL` procedure here (#2114).
  *
  * `undefined` means "could not prove anything" and every caller must treat it
- * as fail-closed (assume an index may be present), never as "no indexes".
+ * as fail-closed (assume an index may be present), never as "no indexes". All
+ * three readers below honour that, `ftsIndexExistsInCatalog` included since
+ * #2841 review H3. To hand ONE read to several gates, use
+ * {@link readIndexCatalogSnapshot} — passing this `undefined` on cannot be
+ * distinguished from passing nothing at all.
  */
 export const readIndexCatalogRows = async (): Promise<IndexCatalogRow[] | undefined> => {
   const targetConn = conn;
@@ -3065,6 +3086,55 @@ export const readIndexCatalogRows = async (): Promise<IndexCatalogRow[] | undefi
     );
     return undefined;
   }
+};
+
+/**
+ * The failed half of an {@link IndexCatalogSnapshot}: the caller DID read the
+ * catalog and could not prove anything.
+ *
+ * It exists because `undefined` was overloaded (#2841 review §5.A). The gates
+ * below took `indexRows?: IndexCatalogRow[]`, so "my read failed" and "I passed
+ * you nothing" were the SAME value, and each gate's `?? (await
+ * readIndexCatalogRows())` silently re-read the catalog — turning the one shared
+ * read the call site documents into three round-trips and three identical
+ * warnings on the failure path, with the two gates free to decide from DIFFERENT
+ * snapshots. A distinct sentinel makes "read, unreadable" a value the parameter
+ * can carry, so a supplied snapshot is never re-read.
+ */
+export const INDEX_CATALOG_UNREADABLE: unique symbol = Symbol('gitnexus:index-catalog-unreadable');
+
+/**
+ * One `CALL SHOW_INDEXES()` read in a form that survives being handed from one
+ * gate to the next: the rows, or {@link INDEX_CATALOG_UNREADABLE} when the read
+ * failed.
+ */
+export type IndexCatalogSnapshot = IndexCatalogRow[] | typeof INDEX_CATALOG_UNREADABLE;
+
+/**
+ * {@link readIndexCatalogRows} in snapshot form — what callers should read once
+ * and pass to EVERY extension-gated-DML gate in a run, so the "one shared
+ * `SHOW_INDEXES` read" invariant holds on the failure branch too (#2841 review
+ * §5.A). The `IndexCatalogRow[] | undefined` spelling stays available for
+ * callers that only want the rows.
+ */
+export const readIndexCatalogSnapshot = async (): Promise<IndexCatalogSnapshot> =>
+  (await readIndexCatalogRows()) ?? INDEX_CATALOG_UNREADABLE;
+
+/**
+ * Resolve a gate's optional `indexRows` argument into the rows it must judge,
+ * reading the catalog AT MOST ONCE and ONLY when the caller supplied nothing.
+ *
+ * The `??` is meaningful again (#2841 review §5.A): `undefined` in can now only
+ * mean "no snapshot supplied", because a caller whose own read failed passes
+ * {@link INDEX_CATALOG_UNREADABLE}, which is truthy and short-circuits it.
+ * `undefined` OUT keeps its documented meaning — "could not prove anything",
+ * which every caller of {@link readIndexCatalogRows} treats as fail-closed.
+ */
+const resolveGateRows = async (
+  indexRows: IndexCatalogSnapshot | undefined,
+): Promise<IndexCatalogRow[] | undefined> => {
+  const snapshot = indexRows ?? (await readIndexCatalogSnapshot());
+  return snapshot === INDEX_CATALOG_UNREADABLE ? undefined : snapshot;
 };
 
 /**
@@ -3092,24 +3162,40 @@ export const readIndexCatalogRows = async (): Promise<IndexCatalogRow[] | undefi
  * escalating to the wipe-and-rebuild write plan instead of failing
  * mid-writeback.
  *
- * Cheap by construction: one local `SHOW_INDEXES` read settles the common
- * "this repo never built an embedding index" case without touching the
- * extension machinery at all, so a VECTOR-less machine is not charged a
- * bounded INSTALL attempt on every incremental analyze. `SHOW_INDEXES` is
- * readable WITHOUT the extension and reports `extension_loaded` per index, so
- * no error-string sniffing is needed; it runs through the unprepared
- * `conn.query()` path like every other `CALL` procedure here (#2114).
+ * Cheap by construction: one {@link readIndexCatalogRows} read settles the
+ * common "this repo never built an embedding index" case without touching the
+ * extension machinery at all, so a VECTOR-less machine is not charged a bounded
+ * INSTALL attempt on every incremental analyze. (That read's own mechanics and
+ * fail-closed contract are documented there, not re-explained here — #2841
+ * review §5.H.)
+ *
+ * @param indexRows An {@link IndexCatalogSnapshot} the caller already read, so
+ * one `SHOW_INDEXES` read can settle every gate in a run. FRESHNESS CONTRACT:
+ * the snapshot must have been taken on THIS connection with nothing in between
+ * that creates or drops an index — the gate's verdict is only as current as the
+ * rows it is handed. Pass {@link INDEX_CATALOG_UNREADABLE} (what
+ * {@link readIndexCatalogSnapshot} returns) when your own read failed; that
+ * fails closed here WITHOUT a second read. Omit the argument entirely to have
+ * the gate read the catalog itself.
  */
 export const ensureEmbeddingRowDmlSafe = async (
-  indexRows?: IndexCatalogRow[],
+  indexRows?: IndexCatalogSnapshot,
 ): Promise<boolean> => {
+  // Unconditional precondition (#2841 review §5.B). This check used to run on
+  // every call; adding `indexRows` moved it inside `readIndexCatalogRows`, where
+  // a caller-supplied snapshot skips it — so a closed DB could be answered
+  // `true` where it previously threw. The verdict is only meaningful for the
+  // live writable connection, so assert that before looking at the argument.
+  if (!conn) {
+    throw new Error('LadybugDB not initialized. Call initLbug first.');
+  }
   // Catalog FIRST. The overwhelmingly common case on a repo that never enabled
   // embeddings is "no index at all", and that is provable with one local read
   // — no extension needed. Loading first would make every incremental analyze
   // on a VECTOR-less machine pay a bounded out-of-process INSTALL attempt (the
   // `auto` policy) plus an "extension unavailable" warning, for a repo that
   // can never hit this hazard.
-  const rows = indexRows ?? (await readIndexCatalogRows());
+  const rows = await resolveGateRows(indexRows);
   // Any non-HASH index on the embedding table gates DML. Keyed on index TYPE,
   // not name, so an index built under a different name still counts; the
   // implicit primary-key HASH index is engine-internal and never gates.
@@ -3148,11 +3234,39 @@ export const ensureEmbeddingRowDmlSafe = async (
  * never carried FTS must not pay a bounded INSTALL attempt on every
  * incremental analyze. Keyed on index TYPE, so an index left over from an
  * older `FTS_INDEXES` (different name/table set) still counts.
+ *
+ * @param indexRows Same contract as {@link ensureEmbeddingRowDmlSafe}'s: an
+ * {@link IndexCatalogSnapshot} read on THIS connection with no index created or
+ * dropped since, so both gates decide from the SAME snapshot and the catalog is
+ * read once per run. {@link INDEX_CATALOG_UNREADABLE} fails closed here without
+ * a second read; omitting the argument makes the gate read for itself.
  */
-export const ensureFtsRowDmlSafe = async (indexRows?: IndexCatalogRow[]): Promise<boolean> => {
-  const rows = indexRows ?? (await readIndexCatalogRows());
+export const ensureFtsRowDmlSafe = async (indexRows?: IndexCatalogSnapshot): Promise<boolean> => {
+  // Unconditional precondition, same regression as the VECTOR twin's (#2841
+  // review §5.B): a caller-supplied snapshot must not let a closed DB be
+  // answered `true`.
+  if (!conn) {
+    throw new Error('LadybugDB not initialized. Call initLbug first.');
+  }
+  const rows = await resolveGateRows(indexRows);
+  // LADYBUGDB-CONTRACT: the `'FTS'` index_type spelling — see {@link IndexCatalogRow}.
+  //
+  // Polarity (#2841 review §6.A): a row whose type cannot be read gates DML.
+  // A bare `=== 'FTS'` answers `undefined === 'FTS'` → false → *no gate*, i.e.
+  // it falls OPEN in the one gate whose only job is preventing an unsafe write,
+  // while the VECTOR twin above falls CLOSED for the same input. Deliberately
+  // NOT expressed as the twin's `!== 'HASH'`: that predicate is safe there only
+  // because it is scoped to `EMBEDDING_TABLE_NAME` first, whereas this gate is
+  // table-agnostic, so `!== 'HASH'` would let the HNSW vector index gate FTS
+  // DML and charge every embeddings-enabled repo an FTS load it does not need.
   const indexGatesDml =
-    rows === undefined || rows.some((row) => (row?.index_type ?? row?.[2]) === 'FTS');
+    rows === undefined ||
+    rows.some((row) => {
+      const indexType = row?.index_type ?? row?.[2];
+      // Unreadable shape ⇒ "might be FTS" ⇒ gate. Only a positively-identified
+      // non-FTS index is waved through.
+      return indexType === undefined || indexType === 'FTS';
+    });
   if (!indexGatesDml) return true;
   return await loadFTSExtension(undefined, { policy: resolveAnalyzeInstallPolicy() });
 };
@@ -3345,12 +3459,21 @@ export const isBenignDropFtsIndexError = (message: string): boolean =>
  */
 const DROP_FTS_INDEX_UNDEFINED_SIGNATURE = 'function DROP_FTS_INDEX is not defined';
 
-/** Whether `indexName` is currently present on `tableName` in the catalog. */
+/**
+ * Whether `indexName` is currently present on `tableName` in the catalog —
+ * fail-CLOSED, like every other reader of {@link readIndexCatalogRows}.
+ */
 const ftsIndexExistsInCatalog = async (tableName: string, indexName: string): Promise<boolean> => {
   const rows = await readIndexCatalogRows();
-  // Unreadable catalog: cannot prove the index is live, so keep the
-  // long-standing tolerate-and-continue rather than inventing a failure.
-  if (rows === undefined) return false;
+  // Unreadable catalog ⇒ "an index may be present" (#2841 review H3). This
+  // returned `false` — reporting an unprovable catalog as "index absent", the
+  // one meaning `readIndexCatalogRows` explicitly forbids — which made
+  // `dropFTSIndex` swallow the very error this guard exists to raise and handed
+  // the caller a drop that never happened, reproducing the silent #2841 crash
+  // one DML statement later. The asymmetric cost settles it: a false positive
+  // raises a loud, FTS-naming, remedy-carrying error on a run that had already
+  // lost its catalog; a false negative resumes a writeback that cannot succeed.
+  if (rows === undefined) return true;
   return rows.some(
     (row) =>
       (row?.table_name ?? row?.[0]) === tableName && (row?.index_name ?? row?.[1]) === indexName,
@@ -3370,7 +3493,8 @@ const ftsIndexExistsInCatalog = async (tableName: string, indexName: string): Pr
  * message that never mentions FTS — the #2841 crash. So the liveness question
  * is settled with a catalog read on the ERROR path only (the healthy path
  * still costs nothing) and a live-but-undroppable index is raised loudly,
- * naming FTS and both remedies.
+ * naming FTS and both remedies — the load-side one CLASSIFIED, never
+ * hand-rolled (#2841 review §5.G).
  */
 export const dropFTSIndex = async (tableName: string, indexName: string): Promise<void> => {
   if (!conn) {
@@ -3388,12 +3512,32 @@ export const dropFTSIndex = async (tableName: string, indexName: string): Promis
       msg.includes(DROP_FTS_INDEX_UNDEFINED_SIGNATURE) &&
       (await ftsIndexExistsInCatalog(tableName, indexName))
     ) {
+      // Remedy via the shared classifier, NOT hand-rolled (#2841 review §5.G):
+      // `extension-load-error.ts` exists because "set
+      // GITNEXUS_LBUG_EXTENSION_INSTALL=auto" is the WRONG advice for the
+      // missing-runtime-dependency class (Windows error 126 / OpenSSL, #2374) —
+      // the file is already on disk and reinstalling is a no-op. `--repair-fts`
+      // (run-analyze.ts) and `ftsDegradedWarning` (core/search/fts-indexes.ts)
+      // both branch on exactly this `kind`; this is the third such surface.
+      // Prefer the diagnosis cached at mark-unavailable time (#2383 F3) so the
+      // extension binary is not re-inspected, falling back to a fresh structural
+      // diagnosis when nothing recorded one.
+      const ftsCapability = getExtensionCapabilities().find((c) => c.name === 'fts');
+      const { kind, remedy } =
+        ftsCapability?.diagnosis ?? diagnoseExtensionLoad(ftsCapability?.reason);
+      // Deliberately message-only: `remedy` is generated text (fixed system paths
+      // at most), and LadybugDB's own path-bearing `reason` is NEVER interpolated
+      // here — the #2374/#2375 redaction contract.
+      const loadRemedy =
+        kind === 'missing_dependency'
+          ? remedy
+          : 'Make the extension loadable (`gitnexus doctor` reports live FTS status; ' +
+            'GITNEXUS_LBUG_EXTENSION_INSTALL=auto allows one bounded install attempt).';
       throw new Error(
         `FTS index '${indexName}' on table ${tableName} exists but the LadybugDB FTS extension ` +
           'is not loaded, so it cannot be dropped in this environment. Every insert and delete ' +
-          'against that table fails while the index is present. Make the extension loadable ' +
-          '(`gitnexus doctor` for live status; GITNEXUS_LBUG_EXTENSION_INSTALL=auto allows one ' +
-          'bounded install attempt), or rebuild the index without FTS via `gitnexus analyze --force`.',
+          `against that table fails while the index is present. ${loadRemedy} Otherwise rebuild ` +
+          'the index without FTS via `gitnexus analyze --force`.',
       );
     }
   } finally {
