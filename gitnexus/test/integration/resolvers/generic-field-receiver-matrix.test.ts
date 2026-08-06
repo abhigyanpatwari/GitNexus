@@ -130,9 +130,8 @@ export class ControlSvc {
       },
       {
         caller: 'runGeneric',
-        targets: [],
-        status: 'known-gap',
-        whenFixed: ['Method:a.ts:Repo.save#1', 'Method:a.ts:UserRepo.save#1'],
+        targets: ['Method:a.ts:Repo.save#1', 'Method:a.ts:UserRepo.save#1'],
+        status: 'resolves',
         note: '#2833 step 3: generic-typed field must match the control exactly',
       },
     ],
@@ -164,9 +163,8 @@ class ControlSvc {
       },
       {
         caller: 'RunGeneric',
-        targets: [],
-        status: 'known-gap',
-        whenFixed: ['Method:A.cs:IRepo.Save#1', 'Method:A.cs:UserRepo.Save#1'],
+        targets: ['Method:A.cs:IRepo.Save#1', 'Method:A.cs:UserRepo.Save#1'],
+        status: 'resolves',
         note: '#2833 step 3',
       },
     ],
@@ -483,9 +481,8 @@ export class Svc {
       },
       {
         caller: 'viaField',
-        targets: [],
-        status: 'known-gap',
-        whenFixed: ['Method:a.ts:Repo.save#1', 'Method:a.ts:UserRepo.save#1'],
+        targets: ['Method:a.ts:Repo.save#1', 'Method:a.ts:UserRepo.save#1'],
+        status: 'resolves',
         note: 'the whole bug in one file — same type, same class, only the FIELD lost it',
       },
     ],
@@ -646,8 +643,8 @@ describe('generic-typed field receivers across languages (#2833)', () => {
   // so the four open gaps are visible in the expectation itself. Steps 3, 5 and
   // 6 flip their entries to `true`; nothing else in this file needs to change.
   const PAIRED = [
-    { name: 'typescript', control: 'runControl', generic: 'runGeneric', matches: false },
-    { name: 'csharp', control: 'RunControl', generic: 'RunGeneric', matches: false },
+    { name: 'typescript', control: 'runControl', generic: 'runGeneric', matches: true },
+    { name: 'csharp', control: 'RunControl', generic: 'RunGeneric', matches: true },
     { name: 'cpp', control: 'runControl', generic: 'runGeneric', matches: false },
     { name: 'python', control: 'run_control', generic: 'run_generic', matches: false },
     { name: 'java', control: 'runControl', generic: 'runGeneric', matches: true },

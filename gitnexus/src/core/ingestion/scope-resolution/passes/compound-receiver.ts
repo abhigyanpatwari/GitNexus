@@ -30,6 +30,7 @@ import { decodeReceiverChain } from '../../utils/receiver-chain-codec.js';
 import type { DecorationStripper } from '../scope/walkers.js';
 import {
   findClassBindingInScope,
+  resolveClassBindingForName,
   findEnclosingClassDef,
   findExportedDef,
   findExportedDefByName,
@@ -302,7 +303,7 @@ function typeOfMemberOnClass(
     const classScope = classScopeByDefId.get(ownerId);
     const memberType = classScope?.typeBindings.get(memberName);
     if (memberType !== undefined) {
-      const def = findClassBindingInScope(
+      const def = resolveClassBindingForName(
         memberType.declaredAtScope,
         memberType.rawName,
         scopes,
@@ -334,7 +335,7 @@ function typeOfMemberOnClass(
         if (curScope === undefined) break;
         const hoisted = curScope.typeBindings.get(memberName);
         if (hoisted !== undefined) {
-          const def = findClassBindingInScope(
+          const def = resolveClassBindingForName(
             hoisted.declaredAtScope,
             hoisted.rawName,
             scopes,
@@ -600,7 +601,7 @@ export function resolveCompoundReceiverClass(
         return findClassBindingInScope(rhsTb.declaredAtScope, arg, scopes);
       }
 
-      const viaTb = findClassBindingInScope(
+      const viaTb = resolveClassBindingForName(
         tb.declaredAtScope,
         tb.rawName,
         scopes,
