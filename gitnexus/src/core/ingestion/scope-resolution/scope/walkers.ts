@@ -29,6 +29,10 @@ import {
   splitQualifiedName,
   stripTrailingTypeArguments,
 } from '../../utils/qualified-name.js';
+import {
+  extractTemplateArguments,
+  stripTemplateArguments,
+} from '../../utils/template-arguments.js';
 
 const EMPTY_BINDINGS: readonly BindingRef[] = Object.freeze([]);
 
@@ -498,6 +502,62 @@ export function findClassBindingInScope(
     }
   }
   return undefined;
+}
+
+function normalizeTemplateArgToken(value: string): string {
+  return value.replace(/\s+/g, '');
+}
+
+export function resolveClassBindingForName(
+  scopeId: string,
+  rawClassName: string,
+  scopes: ScopeResolutionIndexes,
+  /**
+   * OPT-IN, and deliberately not passed by the emitting cases. `findClass
+   * BindingInScope`'s own docstring explains why the stripper is opt-in: a name
+   * that previously bound nothing starts binding, which SUPPRESSES the
+   * `?? otherResolver(...)` fallbacks several callers rely on. Case 4 therefore
+   * keeps exact-name behaviour and only `classifyReceiverOrigin` — which emits
+   * no edge and can only change a diagnostic label — passes it.
+   */
+  stripDecoration?: DecorationStripper,
+): SymbolDefinition | undefined {
+  const direct = findClassBindingInScope(scopeId, rawClassName, scopes, stripDecoration);
+  if (direct !== undefined) return direct;
+
+  if (!rawClassName.includes('<')) return undefined;
+  const baseName = stripTemplateArguments(rawClassName).replace(/\s+/g, '');
+  if (baseName.length === 0) return undefined;
+
+  const wantedArgs = extractTemplateArguments(rawClassName)?.map(normalizeTemplateArgToken);
+  if (wantedArgs !== undefined && wantedArgs.length > 0) {
+    // qualifiedNames is a Map and may not contain the stripped base name at all
+    // (e.g., unresolved type binding or only template-qualified entries), so
+    // default to [] before checking `.length`.
+    const qnameIds = scopes.qualifiedNames.get(baseName) ?? [];
+    if (qnameIds.length === 0) {
+      return findClassBindingInScope(scopeId, baseName, scopes, stripDecoration);
+    }
+    const matches: SymbolDefinition[] = [];
+    for (const id of qnameIds) {
+      const def = scopes.defs.get(id);
+      if (def === undefined || !isClassLike(def.type)) continue;
+      const defArgs = def.templateArguments?.map(normalizeTemplateArgToken);
+      if (
+        defArgs !== undefined &&
+        defArgs.length === wantedArgs.length &&
+        defArgs.every((value, i) => value === wantedArgs[i])
+      ) {
+        matches.push(def);
+      }
+    }
+    if (matches.length === 1) return matches[0];
+    // Scope extractor only records class definitions with bodies in C++, so
+    // forward declarations are not expected here. Keep fallback behavior for
+    // safety in non-ODR or mixed-language edge cases.
+  }
+
+  return findClassBindingInScope(scopeId, baseName, scopes, stripDecoration);
 }
 
 /**
