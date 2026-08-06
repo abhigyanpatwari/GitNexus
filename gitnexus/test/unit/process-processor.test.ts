@@ -585,83 +585,54 @@ describe('process depth (D1/D2)', () => {
   // passes under BOTH traversals and guards nothing.
   const cfg = { maxTraceDepth: 10, maxBranching: 4, maxProcesses: 75, minSteps: 3 };
 
-  it('descends a deep chain instead of spending the budget on shallow branches', () => {
+  const deepAndShallow = (order: readonly string[]): Map<string, string[]> => {
     // Fan-out is capped at maxBranching (4), so the budget is exhausted BELOW
     // the entry: three shallow branches carrying four immediate terminals each
     // = 12 traces, exactly the walk budget (maxBranching * 3). Breadth-first
-    // records all twelve and stops before descending the fourth branch.
+    // records all twelve and stops before descending the deep branch at all.
     const calls = new Map<string, string[]>();
-    calls.set('entry', ['s1', 's2', 's3', 'd1']);
+    calls.set('entry', [...order]);
     for (const b of ['s1', 's2', 's3']) {
       calls.set(b, [`${b}_l1`, `${b}_l2`, `${b}_l3`, `${b}_l4`]);
     }
     for (let i = 1; i <= 7; i++) calls.set(`d${i}`, [`d${i + 1}`]);
+    return calls;
+  };
 
-    const traces = traceFromEntryPoint('entry', calls, cfg);
+  it('descends a deep chain instead of spending the budget on shallow branches', () => {
+    const traces = traceFromEntryPoint('entry', deepAndShallow(['d1', 's1', 's2', 's3']), cfg);
     const deepest = Math.max(0, ...traces.map((t) => t.length));
     // Shallow terminals are 3 nodes. Anything longer proves it descended.
     expect(deepest).toBeGreaterThan(3);
   });
-  const addFn = (graph: ReturnType<typeof createKnowledgeGraph>, id: string): void => {
-    graph.addNode({
-      id,
-      label: 'Function',
-      properties: { name: id.split(':')[1], filePath: 'src/a.ts', startLine: 1, endLine: 2 },
-    });
-  };
-  const addCall = (
-    graph: ReturnType<typeof createKnowledgeGraph>,
-    from: string,
-    to: string,
-  ): void => {
-    graph.addRelationship({
-      id: `rel:${from}->${to}`,
-      sourceId: from,
-      targetId: to,
-      type: 'CALLS',
-      confidence: 1,
-      reason: 'test',
-    });
-  };
 
-  it('finds a deep chain that shallow branches would otherwise crowd out', async () => {
-    const graph = createKnowledgeGraph();
-    addFn(graph, 'func:entry');
-
-    // Fan-out is capped at `maxBranching` (4), so the budget can only be
-    // exhausted BELOW the entry, not beside it: three shallow branches each
-    // carrying four immediate terminals = 12 traces, exactly the walk's trace
-    // budget (maxBranching * 3). Breadth-first records all twelve before it
-    // ever descends the fourth branch, and stops.
-    for (let b = 1; b <= 3; b++) {
-      const mid = `func:s${b}`;
-      addFn(graph, mid);
-      addCall(graph, 'func:entry', mid);
-      for (let l = 1; l <= 4; l++) {
-        const leaf = `func:l${b}_${l}`;
-        addFn(graph, leaf);
-        addCall(graph, mid, leaf);
-      }
-    }
-
-    // The fourth branch is a deep chain: entry → d1 → … → d8 (terminal).
-    let prev = 'func:entry';
-    addFn(graph, 'func:d1');
-    addCall(graph, 'func:entry', 'func:d1');
-    prev = 'func:d1';
-    for (let i = 2; i <= 8; i++) {
-      const id = `func:d${i}`;
-      addFn(graph, id);
-      addCall(graph, prev, id);
-      prev = id;
-    }
-
-    const result = await processProcesses(graph, []);
-    const deepest = Math.max(0, ...result.processes.map((p) => p.stepCount));
-    // Shallow terminals are 3 steps. Anything deeper proves the walk descended
-    // instead of spending its whole budget fanning out.
-    expect(deepest).toBeGreaterThan(3);
+  // Sibling ORDER, which the walk previously got backwards: `slice` selected
+  // the first N callees while `pop()` explored them last-first, so the budget
+  // went to the LAST-declared branch. For `main() { init(); …; shutdown(); }`
+  // that spends the walk on `shutdown` and can drop `init` — the earliest steps
+  // of a flow, which is the opposite of what a process describes.
+  //
+  // The consequence is honest and worth pinning: with a fixed trace budget, a
+  // deep branch declared AFTER enough shallow ones is not reached. That is a
+  // budget limitation, not a traversal one, and it must not be silent.
+  it('follows source order, so an early deep branch wins and a late one may not', () => {
+    const early = traceFromEntryPoint('entry', deepAndShallow(['d1', 's1', 's2', 's3']), cfg);
+    const late = traceFromEntryPoint('entry', deepAndShallow(['s1', 's2', 's3', 'd1']), cfg);
+    expect(Math.max(0, ...early.map((t) => t.length))).toBeGreaterThan(3);
+    // Not asserted as a desirable outcome — asserted so a change to the budget
+    // shows up here rather than silently altering which flows exist.
+    expect(Math.max(0, ...late.map((t) => t.length))).toBe(3);
   });
+  // The `processProcesses`-level depth test that used to sit here was VACUOUS,
+  // and the note at the top of this describe says exactly why: `findEntryPoints`
+  // returns several starting points, so the deep chain gets traced from inside
+  // it whatever the traversal does. Measured: under breadth-first the same
+  // fixture still yielded a deepest stepCount of 8, so the assertion passed
+  // with the production change reverted and guarded nothing.
+  //
+  // What IS observable at this level is which traces survive SELECTION, and
+  // that is asserted in the diversity describe below. Traversal order is
+  // asserted against `traceFromEntryPoint` directly, above.
 });
 
 describe('process selection diversity (R2-3)', () => {

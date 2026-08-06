@@ -3,7 +3,7 @@
  *
  * Detects execution flows (Processes) in the code graph by:
  * 1. Finding entry points (functions with no internal callers)
- * 2. Tracing forward via CALLS edges (BFS)
+ * 2. Tracing forward via CALLS edges (DFS)
  * 3. Grouping and deduplicating similar paths
  * 4. Labeling with heuristic names
  *
@@ -386,11 +386,11 @@ const findEntryPoints = (
 };
 
 // ============================================================================
-// HELPER: Trace from entry point (BFS)
+// HELPER: Trace from entry point (DFS)
 // ============================================================================
 
 /**
- * Trace forward from an entry point using BFS.
+ * Trace forward from an entry point using DEPTH-first search.
  * Returns all distinct paths up to maxDepth.
  */
 // Exported for tests ONLY: traversal order is the whole behaviour here, and it
@@ -421,10 +421,13 @@ export const traceFromEntryPoint = (
   // same `maxTraceDepth` ceiling — only the ORDER of exploration differs, and
   // the caller already sorts by length and dedupes by endpoint, so it was
   // always asking for the deepest traces this walk could give it.
-  const queue: [string, string[]][] = [[entryId, [entryId]]];
+  // A LIFO stack, not a queue — the name followed the traversal when this was
+  // breadth-first and was left behind by the change to depth-first.
+  const stack: [string, string[]][] = [[entryId, [entryId]]];
 
-  while (queue.length > 0 && traces.length < config.maxBranching * 3) {
-    const [currentId, path] = queue.pop()!;
+  const traceBudget = config.maxBranching * 3;
+  while (stack.length > 0 && traces.length < traceBudget) {
+    const [currentId, path] = stack.pop()!;
 
     // Get outgoing calls
     const callees = callsEdges.get(currentId) || [];
@@ -444,10 +447,18 @@ export const traceFromEntryPoint = (
       const limitedCallees = callees.slice(0, config.maxBranching);
       let addedBranch = false;
 
-      for (const calleeId of limitedCallees) {
+      // PUSHED IN REVERSE so the stack POPS them in source order. `slice`
+      // selects the first N callees while `pop()` takes the last pushed, so
+      // without this the walk spends its trace budget on the LAST-declared
+      // branch first: for `main() { init(); loadConfig(); run(); shutdown(); }`
+      // it explores `shutdown` first and can exhaust the quota before reaching
+      // `init` — dropping the earliest steps of a flow, which is the opposite
+      // of what a process is meant to describe. Selecting the first N and then
+      // exploring them last-first was simply inconsistent.
+      for (const calleeId of [...limitedCallees].reverse()) {
         // Avoid cycles
         if (!path.includes(calleeId)) {
-          queue.push([calleeId, [...path, calleeId]]);
+          stack.push([calleeId, [...path, calleeId]]);
           addedBranch = true;
         }
       }
@@ -457,6 +468,17 @@ export const traceFromEntryPoint = (
         traces.push([...path]);
       }
     }
+  }
+
+  // A silently truncating cap reads as "this is everything", which is the same
+  // class of confident-empty answer this work is about. The repo already sets
+  // this precedent for `dispatchFanoutSkipped` and
+  // `propertyDispatch.skippedKeys`.
+  if (stack.length > 0) {
+    logger.debug(
+      { entryId, traceBudget, unexploredBranches: stack.length },
+      'process-processor: trace budget exhausted; unexplored branches remain for this entry point',
+    );
   }
 
   return traces;
