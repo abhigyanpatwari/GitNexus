@@ -61,6 +61,14 @@ function groupProviders(src: string): Set<string> {
   );
 }
 
+function groupConsumers(src: string): Set<string> {
+  return new Set(
+    JAVA_HTTP_PLUGIN.scan(parse(src))
+      .filter((d) => d.role === 'consumer' && d.framework === 'openfeign')
+      .map((d) => canon(d.method, d.path)),
+  );
+}
+
 describe('Spring route extractor parity — ingestion spring.ts vs group java.ts', () => {
   it('agree on bare, named-arg, and array-form method routes under a class prefix', () => {
     const src = `package com.example;
@@ -166,6 +174,41 @@ public class LegacyController {
     expect(ingestionProviders(src)).toEqual(expected);
   });
 
+  it('intersects class verbs and emits pathless method mappings at the class prefix', () => {
+    const src = `package com.example;
+import org.springframework.web.bind.annotation.*;
+
+@RestController
+@RequestMapping(path = "/api", method = RequestMethod.GET)
+public class ConstrainedController {
+  @RequestMapping("/wild") public Object wildcard() { return null; }
+  @RequestMapping(method = RequestMethod.GET) public Object root() { return null; }
+  @GetMapping public Object shortcut() { return null; }
+  @PostMapping("/blocked") public Object blocked() { return null; }
+}
+`;
+
+    const expected = new Set(['GET /api/wild', 'GET /api']);
+    expect(groupProviders(src)).toEqual(expected);
+    expect(ingestionProviders(src)).toEqual(expected);
+  });
+
+  it('uses GET for verb-less Feign RequestMapping and rejects multi-method contracts', () => {
+    const src = `package com.example;
+import org.springframework.cloud.openfeign.FeignClient;
+import org.springframework.web.bind.annotation.*;
+
+@FeignClient(name = "orders")
+@RequestMapping("/api")
+public interface OrdersClient {
+  @RequestMapping("/default") Object defaultCall();
+  @RequestMapping(path = "/multi", method = {RequestMethod.GET, RequestMethod.POST})
+  Object ambiguous();
+}
+`;
+
+    expect(groupConsumers(src)).toEqual(new Set(['GET /api/default']));
+  });
   it('fails closed when @RequestMapping method is not statically resolvable', () => {
     const src = `package com.example;
 import org.springframework.web.bind.annotation.*;
@@ -199,13 +242,12 @@ public class ContentTypeController {
 `;
     const ingestion = ingestionProviders(src);
     const group = groupProviders(src);
-    // Only the explicit path leaks through; the consumes/produces arrays do not,
-    // and the path-less @PostMapping contributes nothing.
-    expect(group).toEqual(new Set(['GET /v']));
+    // Non-route arrays never become paths; the pathless POST binds to root.
+    expect(group).toEqual(new Set(['GET /v', 'POST /']));
     expect(ingestion).toEqual(group);
 
-    // Pure-consumes controller (no path anywhere) → EMPTY provider set on both
-    // sides: a consumes/produces array must never be misread as a route path.
+    // Pure consumes/produces members still describe pathless root mappings;
+    // their media-type values must never be misread as route paths.
     const consumesOnly = `package com.example;
 import org.springframework.web.bind.annotation.*;
 
@@ -217,8 +259,8 @@ public class ConsumesOnlyController {
   public Object b() { return null; }
 }
 `;
-    expect(groupProviders(consumesOnly)).toEqual(new Set());
-    expect(ingestionProviders(consumesOnly)).toEqual(new Set());
+    expect(groupProviders(consumesOnly)).toEqual(new Set(['POST /', 'PUT /']));
+    expect(ingestionProviders(consumesOnly)).toEqual(new Set(['POST /', 'PUT /']));
   });
 
   it('pins the deliberate class-array divergence: ingestion suppresses, group emits cross-product (#2280)', () => {

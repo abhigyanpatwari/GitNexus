@@ -15,7 +15,10 @@ import {
   springResourceDefaultName,
   springResourceInjectionMatch,
 } from '../../src/core/ingestion/frameworks/spring/resource-injection.js';
-import { springAnnotationHttpMethods } from '../../src/core/ingestion/route-extractors/spring-shared.js';
+import {
+  intersectSpringHttpMethods,
+  springAnnotationHttpMethods,
+} from '../../src/core/ingestion/route-extractors/spring-shared.js';
 
 describe('Spring annotation static arguments', () => {
   it('parses Java and Kotlin named arrays without splitting nested values', () => {
@@ -100,6 +103,19 @@ describe('Spring request mapping methods', () => {
     expect(
       springAnnotationHttpMethods('RequestMapping', '@RequestMapping(path = "/x", method = {})'),
     ).toEqual(['*']);
+  });
+
+  it('accepts a terminal array comma and intersects class/method constraints', () => {
+    expect(
+      springAnnotationHttpMethods(
+        'RequestMapping',
+        '@RequestMapping(method = {RequestMethod.GET, RequestMethod.HEAD,})',
+      ),
+    ).toEqual(['GET', 'HEAD']);
+    expect(intersectSpringHttpMethods(['GET'], ['*'])).toEqual(['GET']);
+    expect(intersectSpringHttpMethods(['*'], ['POST'])).toEqual(['POST']);
+    expect(intersectSpringHttpMethods(['GET', 'HEAD'], ['HEAD', 'POST'])).toEqual(['HEAD']);
+    expect(intersectSpringHttpMethods(['GET'], ['POST'])).toEqual([]);
   });
 
   it('fails closed for runtime, malformed, and duplicate method members', () => {

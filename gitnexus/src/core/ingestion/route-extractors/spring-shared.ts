@@ -35,17 +35,6 @@ export const METHOD_ANNOTATION_TO_HTTP: Record<string, string> = {
   PatchMapping: 'PATCH',
 };
 
-const SPRING_REQUEST_METHODS = new Set([
-  'GET',
-  'HEAD',
-  'POST',
-  'PUT',
-  'PATCH',
-  'DELETE',
-  'OPTIONS',
-  'TRACE',
-]);
-
 /**
  * Parse one `RequestMethod.X` literal or a Java annotation array of literals.
  * An empty array is valid and means Spring's unrestricted/default method set.
@@ -61,13 +50,15 @@ function parseRequestMethodValues(value: string): readonly string[] | null {
   if (!hasOpeningBrace && body.includes(',')) return null;
 
   const methods: string[] = [];
-  for (const rawPart of body.split(',')) {
+  const parts = body.split(',');
+  if (hasOpeningBrace && parts[parts.length - 1].trim() === '') parts.pop();
+  for (const rawPart of parts) {
     const part = rawPart.trim();
     const match =
       /^(?:(?:[A-Za-z_$][A-Za-z0-9_$]*\.)*RequestMethod\.)?(GET|HEAD|POST|PUT|PATCH|DELETE|OPTIONS|TRACE)$/.exec(
         part,
       );
-    if (!match || !SPRING_REQUEST_METHODS.has(match[1])) return null;
+    if (!match) return null;
     if (!methods.includes(match[1])) methods.push(match[1]);
   }
   return methods;
@@ -98,6 +89,17 @@ export function springAnnotationHttpMethods(
   const methods = parseRequestMethodValues(methodArgs[0].value);
   if (methods === null) return [];
   return methods.length > 0 ? methods : ['*'];
+}
+
+/** Intersect class- and method-level Spring mapping constraints. */
+export function intersectSpringHttpMethods(
+  classMethods: readonly string[],
+  methodMethods: readonly string[],
+): readonly string[] {
+  if (classMethods.length === 0 || methodMethods.length === 0) return [];
+  if (classMethods.includes('*')) return methodMethods;
+  if (methodMethods.includes('*')) return classMethods;
+  return methodMethods.filter((method) => classMethods.includes(method));
 }
 
 /**
