@@ -513,12 +513,18 @@ export function resolveClassBindingForName(
   rawClassName: string,
   scopes: ScopeResolutionIndexes,
   /**
-   * OPT-IN, and deliberately not passed by the emitting cases. `findClass
-   * BindingInScope`'s own docstring explains why the stripper is opt-in: a name
-   * that previously bound nothing starts binding, which SUPPRESSES the
-   * `?? otherResolver(...)` fallbacks several callers rely on. Case 4 therefore
-   * keeps exact-name behaviour and only `classifyReceiverOrigin` — which emits
-   * no edge and can only change a diagnostic label — passes it.
+   * OPT-IN. `findClassBindingInScope`'s own docstring explains why: a name that
+   * previously bound nothing starts binding, which SUPPRESSES the
+   * `?? otherResolver(...)` fallbacks several callers rely on.
+   *
+   * Passed by exactly the receiver-TYPING callers, which is the population that
+   * docstring already sanctions ("receiver-chain base and step resolution"):
+   * `classifyReceiverOrigin`, which emits no edge and can only change a
+   * diagnostic label, and the three lookups in `compound-receiver.ts` that type
+   * a field receiver (#2833) — they forward the same
+   * `options.stripTypePreservingDecoration` they always passed to the bare
+   * lookup, so a Go pointer receiver keeps resolving through this path.
+   * Case 4 still calls without it, keeping exact-name behaviour.
    */
   stripDecoration?: DecorationStripper,
 ): SymbolDefinition | undefined {

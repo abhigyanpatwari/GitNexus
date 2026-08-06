@@ -181,18 +181,95 @@ function stripGeneric(text: string): string {
   // same `class Repo(Generic[T])` — so reduce to that base, exactly as Java's
   // and Swift's interpreters already do for their `<…>` spelling (#2833).
   //
-  // This is the LAST resort deliberately. A container must reach its own rule
-  // first: erasing `list[User]` to `list` would type the receiver as the
-  // container rather than the element and silently retarget every call in a
-  // for-loop chain. Only what neither rule recognized reaches here.
+  // Guarded by a DENY set rather than reached by fallthrough, because "the two
+  // rules above did not match" is NOT the same as "not a container". Two
+  // measured counterexamples, both of which this branch got wrong before the
+  // guard existed:
+  //   - `dict[str, list[User]]` — the dict rule's value group cannot span a
+  //     nested `]`, so it declines and the shape falls through. Reducing it to
+  //     `dict` destroys the value type the dict rule explicitly leaves "for a
+  //     downstream strip pass"; the annotation must survive intact instead.
+  //   - `Callable[[int], User]`, `Literal["a"]`, `Annotated[int, F()]`,
+  //     `Union[A, B]`, `tuple[int, ...]` — typing SPECIAL FORMS, not classes.
+  //     Reducing them yields a bare `Callable`/`Literal`/`Union`, which binds
+  //     to a workspace class of that name if one exists — a fabricated edge,
+  //     and those names are ordinary enough for a real codebase to declare.
+  // Anything named here keeps its as-written text and resolves as it did
+  // before #2833.
+  //
+  // Only reached for genuine annotations: every Python `@type-binding.type`
+  // capture is a `(type)`, `(identifier)`, `(attribute)` or `(dotted_name)`
+  // node, so a subscripted VALUE expression (`arr[0]`) never arrives here.
   //
   // The as-written spelling is not lost — `scope-extractor` keeps it on
   // `TypeRef.declaredSpelling` whenever it differs from the reduced name,
   // which is what the receiver fold's index step reads.
   const userGeneric = text.match(/^((?:[A-Za-z_][A-Za-z0-9_]*\.)*[A-Za-z_][A-Za-z0-9_]*)\[.+\]$/s);
-  if (userGeneric !== null) return userGeneric[1].trim();
+  if (userGeneric !== null) {
+    const qualified = userGeneric[1].trim();
+    const base = qualified.slice(qualified.lastIndexOf('.') + 1);
+    if (!NOT_A_USER_GENERIC.has(base)) return qualified;
+  }
   return text;
 }
+
+/**
+ * Bases a subscripted annotation may carry that are NOT user-defined generics:
+ * the containers the two allow-lists above already own (whose nested-value
+ * shapes legitimately fall through), plus the `typing` special forms, which are
+ * not classes at all. Reducing any of these to its base name would either
+ * discard a value type or fabricate an edge to a same-named workspace class.
+ */
+const NOT_A_USER_GENERIC: ReadonlySet<string> = new Set([
+  // containers owned by the single-arg and dict rules above
+  'list',
+  'List',
+  'set',
+  'Set',
+  'frozenset',
+  'FrozenSet',
+  'tuple',
+  'Tuple',
+  'dict',
+  'Dict',
+  'Mapping',
+  'MutableMapping',
+  'OrderedDict',
+  'DefaultDict',
+  'defaultdict',
+  'deque',
+  'Counter',
+  'ChainMap',
+  'Iterable',
+  'Iterator',
+  'Sequence',
+  'MutableSequence',
+  'MutableSet',
+  'AbstractSet',
+  'Collection',
+  'Container',
+  'Reversible',
+  'Generator',
+  'AsyncIterable',
+  'AsyncIterator',
+  'AsyncGenerator',
+  'Awaitable',
+  'Coroutine',
+  // typing special forms — not classes
+  'Callable',
+  'Literal',
+  'Annotated',
+  'Union',
+  'Optional',
+  'Final',
+  'ClassVar',
+  'Type',
+  'type',
+  'TypeGuard',
+  'Unpack',
+  'Required',
+  'NotRequired',
+]);
 
 /**
  * Unwrap nullable type annotations so downstream resolution treats
