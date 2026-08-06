@@ -404,6 +404,39 @@ export const TYPESCRIPT_QUERIES = `
 (public_field_definition
   name: (property_identifier) @name) @definition.property
 
+; Object-literal keys of a NAMED object, and the same shape behind an
+; identity-preserving wrapper. Both rules existed only in JAVASCRIPT_QUERIES, so
+; a .ts file writing the single most common config idiom in the language —
+; const CONFIG = { retries: 3 } — minted no node for any key: context() answered
+; "Symbol not found" and a precise read through the holding variable had nothing
+; to resolve to.
+;
+; TypeScript sets fieldFallbackOnMethodLookup:false, so these do NOT gain
+; name-based inference; they gain the PRECISE path, which is the one TypeScript
+; is supposed to use. A read through an untyped receiver stays unresolved, and
+; is now reported as such rather than answering an empty set.
+;
+; Scoped exactly as the JavaScript rules are: bound to a variable, and for the
+; wrapper only the three functions that return the argument they were given.
+(variable_declarator
+  name: (identifier)
+  value: (object
+    (pair
+      key: (property_identifier) @name) @definition.property))
+
+(variable_declarator
+  name: (identifier)
+  value: (call_expression
+    function: (member_expression
+      object: (identifier) @_ts.identity.obj
+      property: (property_identifier) @_ts.identity.fn)
+    arguments: (arguments
+      (object
+        (pair
+          key: (property_identifier) @name) @definition.property)))
+  (#eq? @_ts.identity.obj "Object")
+  (#match? @_ts.identity.fn "^(freeze|seal|preventExtensions)$"))
+
 ; Private class fields: #address: Address
 (public_field_definition
   name: (private_property_identifier) @name) @definition.property

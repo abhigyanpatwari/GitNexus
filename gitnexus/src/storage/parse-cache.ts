@@ -277,7 +277,19 @@ import type { ParseWorkerResult } from '../core/ingestion/workers/parse-worker.j
 // still serves ParsedFiles from the durable store, so it does not substitute
 // for this bump.
 // RE-CHECK AGAINST origin/main IMMEDIATELY BEFORE MERGING.
-const SCHEMA_BUMP = 47;
+//
+// 47 -> 48 for the TypeScript object-literal captures (R3-3): named
+// object-literal keys and the identity-wrapper form now mint `@definition.property`
+// in TYPESCRIPT_QUERIES, as they already did for JavaScript. Parse-time, so a
+// warm cache would replay ParsedFiles carrying none of those matches and the
+// keys would stay invisible.
+//
+// #2860 adds a CI check comparing this against the base branch — the merge-time
+// re-check this ledger has asked for by hand across ten entries and four exact
+// clashes. It is NOT on this branch, so until that one merges the re-check
+// below is still manual.
+// RE-CHECK AGAINST origin/main IMMEDIATELY BEFORE MERGING.
+const SCHEMA_BUMP = 48;
 const GITNEXUS_PKG_VERSION = (() => {
   try {
     // package.json sits at gitnexus/package.json — two levels up from

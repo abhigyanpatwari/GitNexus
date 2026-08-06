@@ -136,6 +136,40 @@ describe('TypeScript type-alias and interface members (A4)', () => {
     });
   });
 
+  // R3-3. Found while building a fixture for the opt-out reporting change, not
+  // from a report: the object-literal rules were JavaScript-only, so the most
+  // common config idiom in TypeScript had invisible keys.
+  describe('object-literal keys in TypeScript (R3-3)', () => {
+    const names = (): string[] =>
+      Array.from(
+        (result as unknown as { graph: { iterNodes(): Iterable<PropNode> } }).graph.iterNodes(),
+      )
+        .filter((n) => n.label === 'Property')
+        .map((n) => String(n.properties.name));
+
+    it('indexes keys of a named object literal', () => {
+      expect(names()).toContain('tsConfigRetries');
+      expect(names()).toContain('tsConfigTimeoutMs');
+    });
+
+    it('indexes keys behind an identity-preserving wrapper', () => {
+      expect(names()).toContain('tsFrozenMaxNotional');
+    });
+
+    // The half that matters for TypeScript specifically. It opts out of
+    // name inference, so the value of minting these nodes is that the PRECISE
+    // path — a read through the holding variable — now has something to
+    // resolve to.
+    it('resolves a precise read through the holding variable', () => {
+      expect(readersOf('tsConfigRetries')).toContain('readsTsConfig');
+      expect(readersOf('tsFrozenMaxNotional')).toContain('readsTsConfig');
+    });
+
+    it('keeps the same allowlist bound as the JavaScript rule', () => {
+      expect(names()).not.toContain('tsNotAMember');
+    });
+  });
+
   describe('type consumers (R2-2)', () => {
     const usersOf = (typeName: string): string[] =>
       getRelationships(result, 'USES')

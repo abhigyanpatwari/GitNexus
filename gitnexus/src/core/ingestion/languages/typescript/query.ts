@@ -517,6 +517,28 @@ export const TYPESCRIPT_SCOPE_QUERY = `
   (property_signature
     name: (property_identifier) @declaration.name) @declaration.property)
 
+;; Object-literal keys of a NAMED object — the scope-resolution half of the
+;; matching rule in TYPESCRIPT_QUERIES. The parse query mints the Property NODE;
+;; this mints the DEF a precise read can resolve to.
+(variable_declarator
+  name: (identifier)
+  value: (object
+    (pair
+      key: (property_identifier) @declaration.name) @declaration.property))
+
+(variable_declarator
+  name: (identifier)
+  value: (call_expression
+    function: (member_expression
+      object: (identifier) @_ts.identity.obj
+      property: (property_identifier) @_ts.identity.fn)
+    arguments: (arguments
+      (object
+        (pair
+          key: (property_identifier) @declaration.name) @declaration.property)))
+  (#eq? @_ts.identity.obj "Object")
+  (#match? @_ts.identity.fn "^(freeze|seal|preventExtensions)$"))
+
 (type_alias_declaration
   value: (object_type
     (property_signature
