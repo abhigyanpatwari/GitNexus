@@ -3001,6 +3001,17 @@ async function runFullAnalysisInner(
       // Absent on a healthy run; present it and the index reports as
       // incomplete rather than fresh (`graph-write-collapsed`).
       ...(graphWriteCollapsed ? { graphWriteCollapsed } : {}),
+      // R3-1. Not a health signal — the index is complete and correct. This
+      // records which fields the per-language inference declined to link so a
+      // later query can say WHY it is returning nothing, instead of leaving an
+      // empty result that reads as "unused".
+      ...(pipelineResult.propertyInference?.crossLanguageNames?.length
+        ? {
+            crossLanguageProperties: pipelineResult.propertyInference.crossLanguageNames.map(
+              (e) => ({ name: e.name, languages: [...e.languages] }),
+            ),
+          }
+        : {}),
       stats: {
         files: pipelineResult.totalFileCount,
         nodes: stats.nodes,

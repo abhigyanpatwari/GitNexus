@@ -4115,6 +4115,46 @@ export class LocalBackend {
     const beanMetadataPromise = queryClassBeanMetadata(repo.lbugPath, symId, epistemicSymType);
     const aopMetadataPromise = querySpringAopMetadata(repo.lbugPath, symId, epistemicSymType);
 
+    // R3-1. A `Property` whose name the analyzer declined to link — because
+    // every definition of it lives in another language — otherwise returns an
+    // incoming list byte-identical to a genuinely unread field. Those demand
+    // opposite actions ("look in the other language / grep" vs "delete it"), so
+    // the difference has to travel with the answer.
+    //
+    // The graph cannot answer this: the unlinked reads mint no edge and no
+    // node, so the only record is the analyze pass that declined them. Hence the
+    // meta read — bounded to Property lookups, since `ensureInitialized`
+    // deliberately avoids a per-call `loadMeta` on the hot path.
+    let crossLanguageAnchor: {
+      unresolved?: string;
+      anchorLanguages?: readonly string[];
+    } = {};
+    {
+      try {
+        // Keyed on the NAME, not on the resolved label. Gating on
+        // `=== 'Property'` was tried and is wrong: the label is not always
+        // populated on this path (it reads `''` for a plain Property node), so
+        // the gate silently suppressed the whole feature. The meta list only
+        // ever contains property names, so matching the name IS the type check.
+        const hit = (await this.crossLanguagePropertiesFor(repo)).get(
+          (sym.name || sym[1]) as string,
+        );
+        if (hit) {
+          crossLanguageAnchor = {
+            unresolved:
+              `property reads of this name were NOT linked: every definition of it is ` +
+              `${hit.join('/')}, and name inference does not cross languages. ` +
+              `An empty or short incoming list here is not evidence the field is unused — ` +
+              `confirm with a text search, or give it an anchor in the reading language.`,
+            anchorLanguages: hit,
+          };
+        }
+      } catch {
+        // A missing or unreadable meta is not worth failing a context lookup
+        // over; the answer is merely less explained, which is the status quo.
+      }
+    }
+
     let methodMetadata: Record<string, unknown> | undefined;
     if (isMethodLike) {
       try {
@@ -4175,6 +4215,7 @@ export class LocalBackend {
         ...(aopMetadata ? { aop: aopMetadata } : {}),
       },
       ...epistemic,
+      ...crossLanguageAnchor,
       incoming: categorize(incomingRows),
       outgoing: categorize(outgoingRows),
       ...(typedPropertyRows.length > 0
@@ -6288,6 +6329,39 @@ export class LocalBackend {
    * Never throws: on query error it returns 'exact', so it can only add signal,
    * never suppress a result.
    */
+  /**
+   * Fields the analyzer declined to link because every definition of the name
+   * lives in another language (R3-1), keyed by name.
+   *
+   * Cached per index version. `ensureInitialized` deliberately avoids a
+   * per-call `loadMeta` because every tool call routes through it; this is one
+   * small read per (index, indexedAt), which re-reads exactly when a re-analyze
+   * could have changed the answer and never otherwise.
+   */
+  private readonly crossLanguagePropertyCache = new Map<
+    string,
+    { indexedAt: string | undefined; byName: ReadonlyMap<string, readonly string[]> }
+  >();
+
+  private async crossLanguagePropertiesFor(
+    repo: RepoHandle,
+  ): Promise<ReadonlyMap<string, readonly string[]>> {
+    const cached = this.crossLanguagePropertyCache.get(repo.lbugPath);
+    if (cached !== undefined && cached.indexedAt === repo.indexedAt) return cached.byName;
+    const byName = new Map<string, readonly string[]>();
+    try {
+      const meta = await loadMeta(path.dirname(repo.lbugPath));
+      for (const entry of meta?.crossLanguageProperties ?? []) {
+        byName.set(entry.name, entry.languages);
+      }
+    } catch {
+      // A missing or unreadable meta is not worth failing a lookup over; the
+      // answer is merely less explained, which is the status quo.
+    }
+    this.crossLanguagePropertyCache.set(repo.lbugPath, { indexedAt: repo.indexedAt, byName });
+    return byName;
+  }
+
   private async computeEpistemicBoundary(
     repo: RepoHandle,
     symId: string,

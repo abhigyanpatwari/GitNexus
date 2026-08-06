@@ -316,6 +316,19 @@ export interface RepoMeta {
    * `status` and the MCP resources report the index as incomplete instead of
    * fresh. Absent on a healthy run.
    */
+  /**
+   * Fields whose property reads could not be linked because every definition of
+   * the name lives in ANOTHER language (R3-1).
+   *
+   * Persisted because the graph cannot answer this at query time: the unlinked
+   * reads mint no edge and no node, so the only record that they existed is the
+   * analyze pass that declined them. Without it, `context()` on such a field
+   * shows an empty incoming list that is byte-identical to a genuinely unread
+   * field — and the two demand opposite actions.
+   *
+   * Capped at analyze time; a long tail is not more actionable than a short one.
+   */
+  crossLanguageProperties?: readonly { name: string; languages: string[] }[];
   graphWriteCollapsed?: {
     /** Relationships the pipeline produced in memory. */
     expected: number;
