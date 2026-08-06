@@ -3027,6 +3027,47 @@ export const createVectorIndex = async (): Promise<boolean> => {
 };
 
 /**
+ * One row of `CALL SHOW_INDEXES()`. Columns are engine-provided
+ * (`table_name`, `index_name`, `index_type`, `property_names`,
+ * `extension_loaded`, `index_definition` on @ladybugdb/core 0.18.x); the
+ * positional fallbacks used by readers below mirror the long-standing access
+ * pattern here, since older builds returned unnamed tuples.
+ */
+export type IndexCatalogRow = Record<string, unknown>;
+
+/**
+ * Read the index catalog on the writable connection, or `undefined` when it
+ * cannot be read.
+ *
+ * `SHOW_INDEXES` is readable WITHOUT any extension loaded and reports
+ * `extension_loaded` per index, so the extension-gated-DML checks below settle
+ * the common "this DB carries no such index" case with one local read and no
+ * error-string sniffing. It runs through the unprepared `conn.query()` path
+ * like every other `CALL` procedure here (#2114).
+ *
+ * `undefined` means "could not prove anything" and every caller must treat it
+ * as fail-closed (assume an index may be present), never as "no indexes".
+ */
+export const readIndexCatalogRows = async (): Promise<IndexCatalogRow[] | undefined> => {
+  const targetConn = conn;
+  if (!targetConn) {
+    throw new Error('LadybugDB not initialized. Call initLbug first.');
+  }
+  try {
+    return (await withConnLock(async () =>
+      readQueryRows(await targetConn.query('CALL SHOW_INDEXES() RETURN *')),
+    )) as IndexCatalogRow[];
+  } catch (err) {
+    logger.warn(
+      { err },
+      'Could not read the LadybugDB index catalog (CALL SHOW_INDEXES()); ' +
+        'extension-gated DML checks must assume an index may be present.',
+    );
+    return undefined;
+  }
+};
+
+/**
  * Make DML against {@link EMBEDDING_TABLE_NAME} legal on the writable
  * connection when it can be, and report whether it is.
  *
@@ -3059,43 +3100,61 @@ export const createVectorIndex = async (): Promise<boolean> => {
  * no error-string sniffing is needed; it runs through the unprepared
  * `conn.query()` path like every other `CALL` procedure here (#2114).
  */
-export const ensureEmbeddingRowDmlSafe = async (): Promise<boolean> => {
-  const targetConn = conn;
-  if (!targetConn) {
-    throw new Error('LadybugDB not initialized. Call initLbug first.');
-  }
+export const ensureEmbeddingRowDmlSafe = async (
+  indexRows?: IndexCatalogRow[],
+): Promise<boolean> => {
   // Catalog FIRST. The overwhelmingly common case on a repo that never enabled
   // embeddings is "no index at all", and that is provable with one local read
   // — no extension needed. Loading first would make every incremental analyze
   // on a VECTOR-less machine pay a bounded out-of-process INSTALL attempt (the
   // `auto` policy) plus an "extension unavailable" warning, for a repo that
   // can never hit this hazard.
-  let indexRows: any[] | undefined;
-  try {
-    indexRows = await withConnLock(async () =>
-      readQueryRows(await targetConn.query('CALL SHOW_INDEXES() RETURN *')),
-    );
-  } catch (err) {
-    // Fall through to the load attempt: unable to prove the index is absent,
-    // so the extension is the only thing that can make DML safe.
-    logger.warn(
-      { err },
-      `Could not read the index catalog to check for a ${EMBEDDING_TABLE_NAME} vector index; ` +
-        'falling back to loading the VECTOR extension.',
-    );
-  }
+  const rows = indexRows ?? (await readIndexCatalogRows());
   // Any non-HASH index on the embedding table gates DML. Keyed on index TYPE,
   // not name, so an index built under a different name still counts; the
   // implicit primary-key HASH index is engine-internal and never gates.
   const indexGatesDml =
-    indexRows === undefined ||
-    indexRows.some((row) => {
+    rows === undefined ||
+    rows.some((row) => {
       const table = row?.table_name ?? row?.[0];
       if (table !== EMBEDDING_TABLE_NAME) return false;
       return (row?.index_type ?? row?.[2]) !== 'HASH';
     });
   if (!indexGatesDml) return true;
   return await loadVectorExtension(undefined, { policy: resolveAnalyzeInstallPolicy() });
+};
+
+/**
+ * The FTS twin of {@link ensureEmbeddingRowDmlSafe} (#2841).
+ *
+ * LadybugDB refuses DML against a table carrying an FTS index while the FTS
+ * extension is not loaded on that connection, and it refuses it at BIND time —
+ * probed against @ladybugdb/core 0.18.3, a DETACH DELETE matching ZERO rows
+ * fails just as hard as one matching thousands ("Binder exception: Trying to
+ * delete from an index on table File but its extension is not loaded"). Every
+ * table in `FTS_INDEXES` is therefore immutable until the extension loads, and
+ * there is no narrower escape: `CALL DROP_FTS_INDEX` is itself an
+ * FTS-extension function ("Catalog exception: function DROP_FTS_INDEX is not
+ * defined" in exactly the state that would need rescuing), and LadybugDB has
+ * no SQL `DROP INDEX` at all (both spellings are Parser exceptions). Rebuilding
+ * the DB file is the only way to clear the indexes without the extension.
+ *
+ * `true` = FTS-indexed-table DML is safe: either FTS is now loaded, or the DB
+ * carries no FTS index to trip over. `false` = genuinely blocked; the analyze
+ * orchestrator answers that by escalating to the wipe-and-rebuild write plan
+ * instead of dying mid-writeback with an engine error that never says "FTS".
+ *
+ * Catalog-first for the same reason as the VECTOR twin: a repo whose index
+ * never carried FTS must not pay a bounded INSTALL attempt on every
+ * incremental analyze. Keyed on index TYPE, so an index left over from an
+ * older `FTS_INDEXES` (different name/table set) still counts.
+ */
+export const ensureFtsRowDmlSafe = async (indexRows?: IndexCatalogRow[]): Promise<boolean> => {
+  const rows = indexRows ?? (await readIndexCatalogRows());
+  const indexGatesDml =
+    rows === undefined || rows.some((row) => (row?.index_type ?? row?.[2]) === 'FTS');
+  if (!indexGatesDml) return true;
+  return await loadFTSExtension(undefined, { policy: resolveAnalyzeInstallPolicy() });
 };
 
 /**
@@ -3280,9 +3339,38 @@ export const isBenignDropFtsIndexError = (message: string): boolean =>
   message.startsWith('Binder exception:') || message.startsWith('Catalog exception:');
 
 /**
+ * The half of {@link isBenignDropFtsIndexError}'s catalog case that means "the
+ * FTS extension is not loaded", as opposed to "this index does not exist".
+ * Benign only when there is genuinely nothing to drop — see `dropFTSIndex`.
+ */
+const DROP_FTS_INDEX_UNDEFINED_SIGNATURE = 'function DROP_FTS_INDEX is not defined';
+
+/** Whether `indexName` is currently present on `tableName` in the catalog. */
+const ftsIndexExistsInCatalog = async (tableName: string, indexName: string): Promise<boolean> => {
+  const rows = await readIndexCatalogRows();
+  // Unreadable catalog: cannot prove the index is live, so keep the
+  // long-standing tolerate-and-continue rather than inventing a failure.
+  if (rows === undefined) return false;
+  return rows.some(
+    (row) =>
+      (row?.table_name ?? row?.[0]) === tableName && (row?.index_name ?? row?.[1]) === indexName,
+  );
+};
+
+/**
  * Drop an FTS index. Tolerates only {@link isBenignDropFtsIndexError} —
  * anything else rethrows instead of being silently masked, which previously
  * let a corrupted index persist across analyze runs undetected.
+ *
+ * One benign class is conditional (#2841): `Catalog exception: function
+ * DROP_FTS_INDEX is not defined` says the FTS extension is not loaded, which
+ * is "nothing to drop" only when the named index does not exist. When it DOES
+ * exist, swallowing that error reports a drop that never happened, and the
+ * next insert/delete against that table dies at bind time with an engine
+ * message that never mentions FTS — the #2841 crash. So the liveness question
+ * is settled with a catalog read on the ERROR path only (the healthy path
+ * still costs nothing) and a live-but-undroppable index is raised loudly,
+ * naming FTS and both remedies.
  */
 export const dropFTSIndex = async (tableName: string, indexName: string): Promise<void> => {
   if (!conn) {
@@ -3295,6 +3383,18 @@ export const dropFTSIndex = async (tableName: string, indexName: string): Promis
     const msg = e instanceof Error ? e.message : String(e);
     if (!isBenignDropFtsIndexError(msg)) {
       throw e;
+    }
+    if (
+      msg.includes(DROP_FTS_INDEX_UNDEFINED_SIGNATURE) &&
+      (await ftsIndexExistsInCatalog(tableName, indexName))
+    ) {
+      throw new Error(
+        `FTS index '${indexName}' on table ${tableName} exists but the LadybugDB FTS extension ` +
+          'is not loaded, so it cannot be dropped in this environment. Every insert and delete ' +
+          'against that table fails while the index is present. Make the extension loadable ' +
+          '(`gitnexus doctor` for live status; GITNEXUS_LBUG_EXTENSION_INSTALL=auto allows one ' +
+          'bounded install attempt), or rebuild the index without FTS via `gitnexus analyze --force`.',
+      );
     }
   } finally {
     ensuredFTSIndexes.delete(ftsIndexKey(tableName, indexName));
