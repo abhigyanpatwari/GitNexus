@@ -104,6 +104,26 @@ describe('JavaScript plain-object property access (A1/A5)', () => {
     for (const e of inferred) expect(e.rel.confidence).toBeLessThan(0.85);
   });
 
+  // R2-1c. The function that implements a behaviour usually destructures its
+  // settings out of the argument rather than reaching through a receiver, so
+  // the most relevant reader was the one shape with no read site at all.
+  describe('destructured parameters (R2-1c)', () => {
+    it('emits ACCESSES for a destructured key with a default', () => {
+      expect(readersOf('destructuredOnlyField')).toContain('appliesDestructured');
+    });
+
+    it('emits ACCESSES for bare shorthand destructuring', () => {
+      expect(readersOf('destructuredOnlyField')).toContain('appliesShorthand');
+    });
+
+    // `{ field: alias }` reads `field` and binds `alias`; the READ is of the
+    // key, so the edge must point at the key rather than the local name.
+    it('follows the key, not the local alias, when renamed', () => {
+      expect(readersOf('destructuredOnlyField')).toContain('appliesRenamed');
+      expect(propertyNames()).not.toContain('aliased');
+    });
+  });
+
   // R2. Strict workspace uniqueness was measurably too blunt: in the reporting
   // repo `exitMinAtrMult` had 26 definitions, 16 of them in one-off scripts the
   // backend has no relationship with, so every backend read was refused because

@@ -609,6 +609,44 @@ export const JAVASCRIPT_SCOPE_QUERY = `
 
 (return_statement
   (identifier) @reference.name @reference.read.identifier)
+
+;; Destructured PARAMETER keys (R2-1c). \`function exit({ exitMinAtrMult = 0 })\`
+;; reads that property off whatever the caller passes, exactly as
+;; \`cfg.exitMinAtrMult\` would — the field just never appears in a
+;; member_expression, so the read had no site at all and the function that
+;; implements the behaviour was missing from "who reads this setting?".
+;;
+;; A distinct anchor rather than @reference.read.member: that tag is filtered
+;; emit-side to matches with a member_expression ancestor (calls and writes
+;; share its shape), and a destructuring pattern has none, so it would be
+;; dropped. The \`read.\` head is what maps this to a read kind, so the new tag
+;; needs no mapping change.
+;;
+;; The object_pattern is the receiver. It is anonymous — there is no name to
+;; type — which is precisely the untyped-receiver case the name-narrowing pass
+;; exists to serve.
+;;
+;; Scoped to formal_parameters deliberately. A destructuring binding elsewhere
+;; (\`const { x } = require('m')\`) is often an import rather than a field read,
+;; and minting a property read for it would attribute module bindings to
+;; unrelated same-named keys.
+(formal_parameters
+  (object_pattern
+    (shorthand_property_identifier_pattern) @reference.name
+      @reference.read.destructured) @reference.receiver)
+
+(formal_parameters
+  (object_pattern
+    (object_assignment_pattern
+      left: (shorthand_property_identifier_pattern) @reference.name
+        @reference.read.destructured)) @reference.receiver)
+
+(formal_parameters
+  (object_pattern
+    (pair_pattern
+      key: (property_identifier) @reference.name
+        @reference.read.destructured)) @reference.receiver)
+
 `;
 
 /** JSX-only suffix — appended when compiling against the JSX grammar for .jsx files. */
