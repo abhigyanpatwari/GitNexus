@@ -508,20 +508,93 @@ function normalizeTemplateArgToken(value: string): string {
   return value.replace(/\s+/g, '');
 }
 
+/**
+ * A definition that pins its OWN concrete type arguments (`templateArguments`
+ * is set) — the shape a scope extractor records for a declaration written
+ * against particular arguments rather than against its parameters, e.g. C++
+ * `template <> struct Vec<bool>` (`['bool']`) or `template <class T> struct
+ * Vec<T*>` (`['T*']`).
+ *
+ * The distinction that matters to the lookup below: such a definition serves
+ * exactly ONE family of instantiations, so the only sound way to select it is
+ * the exact-argument match. A declaration written against its parameters —
+ * `template <class T> struct Vec`, `class Repo<T>` in TypeScript, C# and every
+ * other language measured — carries NOTHING here (the extractor reads arguments
+ * off the declared name, and the name is bare), which is precisely why it can
+ * never win that match and must be reachable by the base-name route instead.
+ */
+function carriesOwnTemplateArguments(def: SymbolDefinition): boolean {
+  return def.templateArguments !== undefined && def.templateArguments.length > 0;
+}
+
+/** Class-like defs registered in the workspace-wide qualified-name index under
+ *  `name`. Workspace-WIDE: no scope filtering, so a caller must treat this as
+ *  the weaker source and prefer lexically visible candidates. */
+function classDefsByQualifiedName(
+  name: string,
+  scopes: ScopeResolutionIndexes,
+): readonly SymbolDefinition[] {
+  const out: SymbolDefinition[] = [];
+  for (const id of scopes.qualifiedNames.get(name)) {
+    const def = scopes.defs.get(id);
+    if (def !== undefined && isClassLike(def.type)) out.push(def);
+  }
+  return out;
+}
+
+/** Defs from `candidates` whose own template arguments equal `wantedArgs`
+ *  token-for-token (whitespace already squeezed on both sides). */
+function matchingTemplateArguments(
+  candidates: readonly SymbolDefinition[],
+  wantedArgs: readonly string[],
+): readonly SymbolDefinition[] {
+  return candidates.filter((def) => {
+    const defArgs = def.templateArguments?.map(normalizeTemplateArgToken);
+    return (
+      defArgs !== undefined &&
+      defArgs.length === wantedArgs.length &&
+      defArgs.every((value, i) => value === wantedArgs[i])
+    );
+  });
+}
+
+/**
+ * Resolve a class-like binding for a declared type name, tolerating a spelling
+ * that carries TYPE ARGUMENTS (`Repo<User>`, `Vec<int>`) where the declaration
+ * itself is registered under the bare base name.
+ *
+ * Two normalizations, and they are not the same thing:
+ *
+ *   1. DECORATION stripping (`stripDecoration`, opt-in — see the parameter).
+ *      Peels type-PRESERVING wrappers (`*T`, `const T&`) off the name.
+ *   2. Type-argument ERASURE (unconditional, and the wider of the two).
+ *      `Repo<User>` → `Repo`. This is what actually widens what binds, because
+ *      it makes one declaration answer for EVERY instantiation of it — right
+ *      for a language where a generic class has a single declaration, and a
+ *      hazard where it does not, which is why the exact-argument match runs
+ *      first and why the base-name route below refuses to return a
+ *      declaration that pinned its own arguments.
+ *
+ * Order: exact spelling → exact type-argument match (lexically visible
+ * candidates first, workspace-wide index second) → base name.
+ */
 export function resolveClassBindingForName(
   scopeId: string,
   rawClassName: string,
   scopes: ScopeResolutionIndexes,
   /**
-   * OPT-IN. `findClassBindingInScope`'s own docstring explains why: a name that
+   * OPT-IN, and it governs (1) only — argument erasure happens either way.
+   * `findClassBindingInScope`'s own docstring explains the opt-in: a name that
    * previously bound nothing starts binding, which SUPPRESSES the
    * `?? otherResolver(...)` fallbacks several callers rely on.
    *
    * Passed by exactly the receiver-TYPING callers, which is the population that
    * docstring already sanctions ("receiver-chain base and step resolution"):
    * `classifyReceiverOrigin`, which emits no edge and can only change a
-   * diagnostic label, and the three lookups in `compound-receiver.ts` that type
-   * a field receiver (#2833) — they forward the same
+   * diagnostic label, and three lookups in `compound-receiver.ts` — two that
+   * type a FIELD receiver off a class scope (#2833) and one that types a BARE
+   * identifier off its typeBinding, i.e. every local and parameter in every
+   * language. All three forward the same
    * `options.stripTypePreservingDecoration` they always passed to the bare
    * lookup, so a Go pointer receiver keeps resolving through this path.
    * Case 4 still calls without it, keeping exact-name behaviour.
@@ -535,35 +608,58 @@ export function resolveClassBindingForName(
   const baseName = stripTemplateArguments(rawClassName).replace(/\s+/g, '');
   if (baseName.length === 0) return undefined;
 
+  // Lazily computed: the class-like defs the base name can see from HERE —
+  // everything bound at the nearest scope in the chain that binds it, or the
+  // workspace-wide index when the chain binds it nowhere. One extra chain walk,
+  // paid only by a spelling that carries type arguments.
+  let visibleCandidates: readonly SymbolDefinition[] | undefined;
+  const visible = (): readonly SymbolDefinition[] =>
+    (visibleCandidates ??= findAllClassBindingsInScope(scopeId, baseName, scopes));
+
   const wantedArgs = extractTemplateArguments(rawClassName)?.map(normalizeTemplateArgToken);
   if (wantedArgs !== undefined && wantedArgs.length > 0) {
-    // qualifiedNames is a Map and may not contain the stripped base name at all
-    // (e.g., unresolved type binding or only template-qualified entries), so
-    // default to [] before checking `.length`.
-    const qnameIds = scopes.qualifiedNames.get(baseName) ?? [];
-    if (qnameIds.length === 0) {
-      return findClassBindingInScope(scopeId, baseName, scopes, stripDecoration);
+    // LEXICAL FIRST. The workspace-wide index is not scoped, so matching against
+    // it up front let a field inside `namespace N` be answered by the GLOBAL
+    // `Box<bool>` — or, when both namespaces declare one, by neither: two
+    // matches, a decline, and a fall through to whatever base-name declaration
+    // the walk reached first. Candidates the scope chain actually offers are
+    // ranked ahead of it, exactly as every other lookup in this file does.
+    const lexicalMatches = matchingTemplateArguments(visible(), wantedArgs);
+    if (lexicalMatches.length === 1) return lexicalMatches[0];
+    if (lexicalMatches.length === 0) {
+      // Workspace-wide fallback — consulted ONLY when the scope chain offered no
+      // exact match, which is how a declaration specialized in a different file
+      // than the one instantiating it still binds.
+      const indexMatches = matchingTemplateArguments(
+        classDefsByQualifiedName(baseName, scopes),
+        wantedArgs,
+      );
+      if (indexMatches.length === 1) return indexMatches[0];
     }
-    const matches: SymbolDefinition[] = [];
-    for (const id of qnameIds) {
-      const def = scopes.defs.get(id);
-      if (def === undefined || !isClassLike(def.type)) continue;
-      const defArgs = def.templateArguments?.map(normalizeTemplateArgToken);
-      if (
-        defArgs !== undefined &&
-        defArgs.length === wantedArgs.length &&
-        defArgs.every((value, i) => value === wantedArgs[i])
-      ) {
-        matches.push(def);
-      }
-    }
-    if (matches.length === 1) return matches[0];
-    // Scope extractor only records class definitions with bodies in C++, so
-    // forward declarations are not expected here. Keep fallback behavior for
-    // safety in non-ODR or mixed-language edge cases.
   }
 
-  return findClassBindingInScope(scopeId, baseName, scopes, stripDecoration);
+  // ── Base-name route ────────────────────────────────────────────────────────
+  // Nothing matched the arguments as written, so what is left to find is the
+  // declaration written against its PARAMETERS — the one instantiation-agnostic
+  // declaration the erasure is entitled to reach.
+  const fallback = findClassBindingInScope(scopeId, baseName, scopes, stripDecoration);
+  if (fallback === undefined || !carriesOwnTemplateArguments(fallback)) return fallback;
+
+  // The walk landed on a declaration that pinned its own arguments — arguments
+  // the branch above just proved are NOT the ones written. It won on nothing but
+  // being reached first: `Vec<int> vi` bound the `Vec<bool>` specialization when
+  // the specialization happened to be declared above the primary template, and
+  // the primary when it did not. Source order deciding a call target is a wrong
+  // edge, not a missing one.
+  //
+  // Re-decide over the same visible candidates with those declarations removed.
+  // Exactly one, or decline — the rule `findClassBindingInScope` already applies
+  // on its decoration path, for the same reason: a missing edge is recoverable
+  // and a confident wrong one is not. This can only ever REPLACE an answer that
+  // was already unsound, so a name whose declarations pin no arguments (every
+  // one measured outside C++ specializations) never reaches here.
+  const parameterized = visible().filter((def) => !carriesOwnTemplateArguments(def));
+  return parameterized.length === 1 ? parameterized[0] : undefined;
 }
 
 /**

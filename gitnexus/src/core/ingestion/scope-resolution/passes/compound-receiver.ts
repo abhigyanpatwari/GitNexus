@@ -205,8 +205,8 @@ function resolveConstructionExpressionClass(
 
   // Generic construction — `new Box<string>()` arrives here as `Box<string>`,
   // which names no class binding. Retry on the base name, the same
-  // normalization `resolveClassBindingForName` in `receiver-bound-calls`
-  // already applies for typed receivers (#2708).
+  // normalization `resolveClassBindingForName` (in `scope/walkers.ts`) already
+  // applies for typed receivers (#2708).
   const baseName = stripTemplateArguments(calleeName).trim();
   const lastDot = baseName.lastIndexOf('.');
   if (lastDot !== -1) {
