@@ -39,17 +39,19 @@ describe('JavaScript module-scope const references (A2)', () => {
     expect(readers).toContain('pageSize');
   });
 
-  // Cross-file is NOT yet covered. The reference site exists (the capture
-  // fires on `return DEFAULT_FETCH_LIMIT` in consumer.js, verified against the
-  // raw query) and a CALL through the very same import statement resolves
-  // (`consumerCall → pageSize`, reason `import-resolved`), so the gap is
-  // specific to linking a value-kind def across the import edge. Prime
-  // suspect: exported-def resolution is callable-only — `findExportedDefByName`
-  // returns a def only when `def.type` is `Function`/`Method`
-  // (scope/walkers.ts:1323) and its workspace fallback index is
-  // `exportedCallableByName`. Both export spellings (`export const X` and
-  // `export { X }`) fail identically, so it is not the export syntax.
-  it.todo('emits an edge for the cross-file named-import reader');
+  it('emits an edge for the cross-file named-import reader', () => {
+    expect(readersOfConst()).toContain('consumerLimit');
+  });
+
+  it('does not emit edges to block-local values', () => {
+    // The cross-file pass resolves through finalized bindings, which include
+    // Const/Variable — block-locals among them. Same-file hits are skipped so
+    // an inert local cannot gain an edge and survive pruning.
+    const toLocal = getRelationships(result, 'ACCESSES').filter(
+      (e) => e.target === 'localScratchValue',
+    );
+    expect(toLocal).toEqual([]);
+  });
 
   it('targets the Const node itself, not a same-named local', () => {
     const toConst = getRelationships(result, 'ACCESSES').filter(

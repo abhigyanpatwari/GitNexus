@@ -77,6 +77,7 @@ import {
 } from '../passes/property-dispatch.js';
 import { emitReferencesViaLookup } from '../graph-bridge/references-to-edges.js';
 import { emitUniqueNamePropertyAccesses } from '../passes/unique-name-properties.js';
+import { emitImportedValueReferences } from '../passes/imported-value-refs.js';
 import {
   createCalleeIdAccumulator,
   type CalleeIdAccumulator,
@@ -443,6 +444,8 @@ interface RunScopeResolutionStats {
    * ACCESSES edges recovered by workspace-unique property name (A1/A5) — the
    * last-resort pass for receivers no precise pass could type.
    */
+  /** Cross-file value references resolved through finalized import bindings. */
+  readonly importedValueRefEdges: number;
   readonly uniqueNamePropertyEdges: number;
   /**
    * Read/write sites left unresolved because two or more `Property` defs share
@@ -578,6 +581,7 @@ export function runScopeResolution(
       referenceEdgesEmitted: 0,
       referenceSkipped: 0,
       propertyDispatchSkippedKeys: 0,
+      importedValueRefEdges: 0,
       uniqueNamePropertyEdges: 0,
       uniqueNamePropertyAmbiguous: 0,
       resolutionOutcomes,
@@ -609,6 +613,7 @@ export function runScopeResolution(
       referenceEdgesEmitted: 0,
       referenceSkipped: 0,
       propertyDispatchSkippedKeys: 0,
+      importedValueRefEdges: 0,
       uniqueNamePropertyEdges: 0,
       uniqueNamePropertyAmbiguous: 0,
       resolutionOutcomes,
@@ -906,6 +911,22 @@ export function runScopeResolution(
       );
   const referenceSkipSites = new Set(handledSites);
   for (const key of deferredIndirectSites) referenceSkipSites.add(key);
+  // Value defs bound at MODULE scope. A read of a block-local `const` must not
+  // mint an edge — that would retain the inert locals `pruneLocalSymbols`
+  // drops. Built once here, where the parsed scopes are already in hand.
+  const moduleScopeValueDefIds = new Set<string>();
+  for (const parsed of emitParsedFiles) {
+    const moduleScope = parsed.scopes.find((sc) => sc.kind === 'Module');
+    if (moduleScope === undefined) continue;
+    for (const [, refs] of moduleScope.bindings) {
+      for (const ref of refs) {
+        const t = ref.def.type;
+        if (t === 'Const' || t === 'Variable' || t === 'Static') {
+          moduleScopeValueDefIds.add(ref.def.nodeId);
+        }
+      }
+    }
+  }
   const { emitted, skipped } = callableFlowOnly
     ? { emitted: 0, skipped: 0 }
     : emitReferencesViaLookup(
@@ -915,6 +936,7 @@ export function runScopeResolution(
         postHeritageNodeLookup,
         referenceSkipSites,
         calleeIdAccumulator,
+        moduleScopeValueDefIds,
       );
   // Last-resort property resolution by workspace-unique name (A1/A5). Runs
   // after every precise pass and only sees what they left behind, so a
@@ -936,6 +958,19 @@ export function runScopeResolution(
   // matching a member by name over-connects when a real type system could have
   // answered exactly; inferring an ACCESSES edge by name is the same claim, so
   // it must obey the same opt-out rather than route around it.
+  // Cross-file value references (A2): the read/write counterpart to
+  // `emitFreeCallFallback`. Runs BEFORE unique-name inference so a precise
+  // import-resolved target always wins over a name guess.
+  const importedValueRefs = callableFlowOnly
+    ? { emitted: 0 }
+    : emitImportedValueReferences(
+        graph,
+        indexes,
+        emitParsedFiles,
+        postHeritageNodeLookup,
+        uniqueNameSkipSites,
+      );
+
   const uniqueNameProperties =
     callableFlowOnly || provider.fieldFallbackOnMethodLookup === false
       ? { emitted: 0, ambiguous: 0 }
@@ -1425,6 +1460,7 @@ export function runScopeResolution(
       propertyDispatch.callsEmitted,
     referenceSkipped: skipped,
     propertyDispatchSkippedKeys: propertyDispatch.skippedKeys,
+    importedValueRefEdges: importedValueRefs.emitted,
     uniqueNamePropertyEdges: uniqueNameProperties.emitted,
     uniqueNamePropertyAmbiguous: uniqueNameProperties.ambiguous,
     resolutionOutcomes,
