@@ -23,6 +23,7 @@ import type { KnowledgeGraph } from './graph/types.js';
 import { resetDegradedParseCounter } from './tree-sitter/safe-parse.js';
 import {
   initLbug,
+  withLbugDb,
   loadGraphToLbug,
   getLbugStats,
   executeQuery,
@@ -69,7 +70,9 @@ import {
   initialiseSearchFTSCjkSegmentation,
 } from './search/cjk-segmentation.js';
 import {
+  getExtensionCapability,
   getExtensionCapabilities,
+  getFtsCapability,
   getExtensionInstallPolicy,
   resolveAnalyzeInstallPolicy,
 } from './lbug/extension-loader.js';
@@ -866,21 +869,29 @@ async function resolveWriteTarget(repoPath: string, options: AnalyzeOptions): Pr
  * the user to install the extension "then rerun". Only `--repair-fts` or a later
  * content change healed it. This probe is what lets that advice be true.
  *
- * Two questions, cheapest first, and BOTH must answer yes:
+ * Two questions, and BOTH must answer yes:
  *
  *  1. Are search indexes actually missing? Asked of the catalog, never of the
  *     meta stamp — `--repair-fts` writes `capabilities.fts` best-effort, so a
  *     failed stamp leaves meta claiming 'unavailable' over a perfectly healthy
  *     index, and bypassing the fast path on that alone would re-analyze forever.
  *     `verifySearchFTSIndexes` needs no extension (a plain `SHOW_INDEXES` read).
- *  2. Can the FTS extension be loaded NOW? Under {@link getExtensionInstallPolicy}
- *     (env-explicit wins, default `load-only`) — NOT the analyze policy: a
- *     fast-path run must not spend a bounded network INSTALL on every rerun of a
- *     permanently-offline machine. An operator who exports
- *     `GITNEXUS_LBUG_EXTENSION_INSTALL=auto` — precisely what the CLI's remedy
- *     tells them to do — still gets the install attempt. `quiet` because a
- *     failed probe is the EXPECTED answer here and Phase 3 owns the real
- *     degradation report.
+ *  2. Can the FTS extension be loaded NOW? `quiet` because a failed probe is the
+ *     EXPECTED answer here and Phase 3 owns the real degradation report.
+ *
+ * READ-ONLY, and that is load-bearing on both counts (#2841 cleanup F1/F2).
+ * Measured on a 391 MB index, a cold WRITABLE open costs ~1 s and drags in
+ * `runSchemaCreationQueries`' DDL, the cross-process write lock, sidecar
+ * reclaim, and a real `CHECKPOINT` on `closeLbug` — all charged to the path
+ * whose entire contract is "return in milliseconds". A read-only open answers
+ * both questions (`SHOW_INDEXES` and `LOAD EXTENSION` are reads) with none of
+ * it. It also fixes the install trap: `doInitLbug`'s own FTS pre-load resolves
+ * the ENV policy on the writable branch, so an operator who exports
+ * `GITNEXUS_LBUG_EXTENSION_INSTALL=auto` — precisely what our own remedy tells
+ * them to do — was paying a forked 15 s installer on EVERY up-to-date run,
+ * forever, because the attempt is memoized per process and the CLI is a fresh
+ * process each time. The read-only branch pins `load-only` explicitly, so the
+ * probe can never spawn one.
  *
  * Fail-safe by construction: any error (missing/unopenable DB, read-only mount,
  * #1549) answers `false` and the fast path stands — an up-to-date run must never
@@ -888,19 +899,25 @@ async function resolveWriteTarget(repoPath: string, options: AnalyzeOptions): Pr
  */
 async function degradedFtsCanBeRebuiltNow(lbugPath: string): Promise<boolean> {
   try {
-    await initLbug(lbugPath);
-    const missing = await verifySearchFTSIndexes(executeQuery);
-    if (missing.length === 0) return false;
-    return await loadFTSExtension(undefined, {
-      policy: getExtensionInstallPolicy(),
-      quiet: true,
-    });
+    return await withLbugDb(
+      lbugPath,
+      async () => {
+        const missing = await verifySearchFTSIndexes(executeQuery);
+        if (missing.length === 0) return false;
+        return await loadFTSExtension(undefined, {
+          policy: getExtensionInstallPolicy(),
+          quiet: true,
+        });
+      },
+      { readOnly: true },
+    );
   } catch {
     return false;
   } finally {
     // Always hand the run back a closed DB: the pipeline below opens
-    // `buildPath` itself, and `closeLbug` is what resets the per-connection
-    // `ftsLoaded` memo so that open re-probes instead of trusting this one.
+    // `buildPath` itself (writable), and `closeLbug` is what resets the
+    // per-connection `ftsLoaded` memo so that open re-probes instead of
+    // trusting this read-only one.
     await closeLbug().catch(() => {});
   }
 }
@@ -1099,6 +1116,12 @@ async function runFullAnalysisInner(
         // Surface the load-side reason (#2374): "not pre-installed" was wrong
         // and doctor never installed anything, so the old message trapped
         // users in a query → repair-fts → doctor loop with no way out.
+        // NOTE: deliberately the exported `getExtensionCapabilities()` rather
+        // than `getFtsCapability()`. The #2383 regression tests stub that
+        // export to inject a classified load failure; routing through the
+        // helper bypasses the stub (ESM internal calls do not see a module
+        // mock), and the classified VC++/ELF remedy silently degrades to
+        // generic text — which is exactly the contradiction #2383 fixed.
         const rawFtsReason = getExtensionCapabilities().find((c) => c.name === 'fts')?.reason;
         const ftsReason = rawFtsReason?.replace(/\.$/, '');
         // A missing runtime dependency (Windows error 126, #2374) is not healed
@@ -1533,6 +1556,23 @@ async function runFullAnalysisInner(
         // above refuses to quote back a value it cannot type-check), so a
         // legacy/hand-edited file can carry `capabilities` without `fts`.
         existingMeta.capabilities?.fts?.status === 'unavailable' &&
+        // …and only for the cause a rerun can actually fix. `status` is the
+        // same value for both causes, so without the stamped discriminator
+        // this probe treats a `build-failed` run as a missing extension:
+        // `verifySearchFTSIndexes` reports the indexes missing (they are),
+        // `loadFTSExtension` succeeds (the extension was never the problem),
+        // and the run re-analyzes the entire repo — where Phase 3 hits the same
+        // un-tokenizable row (#2544/#2546, deterministic), degrades identically,
+        // and restamps. That is a permanent full-re-analyze loop in place of a
+        // single `stat`, so `build-failed` is excluded here and left to
+        // `--repair-fts` / the next content change, which is exactly what its
+        // Phase 3 log line tells the user to run.
+        //
+        // `!== 'build-failed'`, NOT `=== 'extension-unavailable'`: metas written
+        // before #2841 carry no `skipReason` at all, and `undefined` must keep
+        // the pre-existing behaviour (probe) rather than silently freezing a
+        // genuinely healable degraded index behind the fast path forever.
+        existingMeta.capabilities.fts.skipReason !== 'build-failed' &&
         (await degradedFtsCanBeRebuiltNow(lbugPath));
       if (healDegradedFts) {
         log(
@@ -1849,11 +1889,12 @@ async function runFullAnalysisInner(
   if (wantAtomicIncremental && !atomicIncremental) {
     log('atomic-incremental: live index carries orphan sidecars — using in-place writeback');
   }
-  // `let` (#2841 review H2): an extension-forced escalation discovered ~440
-  // lines below can upgrade an in-place incremental write to a staged one —
-  // see the upgrade at the escalation valve. Nothing between here and there
-  // reads either binding except `initLbug(buildPath)`, which the upgrade
-  // re-runs against the staging path.
+  // `let` (#2841 review H2): an escalation discovered ~440 lines below — from
+  // EITHER cause, a blocked extension or an oversized write set — can upgrade
+  // an in-place incremental write to a staged one, because that valve's plan is
+  // wipe-then-COPY over this very path. See the upgrade at the escalation
+  // valve. Nothing between here and there reads either binding except
+  // `initLbug(buildPath)`, which the upgrade re-runs against the staging path.
   let useAtomicSwap = (isFullRebuild || atomicIncremental) && (posixSwap || windowsSwapOk);
   // #2658: a per-run staging name (was the fixed `lbug.new`). Even under the
   // single-writer lock, a unique name means a crashed run's half-built staging
@@ -2348,12 +2389,42 @@ async function runFullAnalysisInner(
               `files (${Math.min(100, Math.round(writeFraction * 100))}%)`,
           );
         }
+        // Remedy by CLASSIFICATION, never hand-written (#2841 review H3). The
+        // old tail always said "run `gitnexus doctor` … or set
+        // GITNEXUS_LBUG_EXTENSION_INSTALL=auto", which is affirmatively WRONG
+        // for the `missing_dependency` class (Windows error 126 / absent
+        // OpenSSL 3, #2374/#2669): its own remedy states that reinstalling will
+        // not help, and that class is precisely the environment this escalation
+        // path was registered for on the Windows matrix. Every other rendering
+        // in this file already routes through `diagnoseExtensionLoad` — the
+        // FTS_UNAVAILABLE_LEAD degrade log and the `--repair-fts` failure tail
+        // — so this one does too, once per BLOCKED extension and with that
+        // extension's own label, because the FTS-specific advice the classifier
+        // emits (`gitnexus analyze --repair-fts`) must never be dispensed for
+        // VECTOR. Emitted verbatim and alone: only the classified remedy
+        // reaches the user, never the raw load `reason`, so the message stays
+        // path-free (#2374/#2375 redaction contract). Reached exactly when an
+        // extension blocked the write — `degradedEffects` is pushed by the two
+        // `!…RowDmlSafe` branches above and by nothing else, and each of those
+        // gates only answers `false` after its own load attempt failed, so the
+        // capability record it reads is always populated. Looked up through the
+        // shared `getExtensionCapability`/`getFtsCapability` accessors rather
+        // than a sixth hand-spelled `.find((c) => c.name === …)`: the extension
+        // NAME is the one string the lookup is keyed on, and it belongs in
+        // extension-loader.ts.
+        const extensionRemedies = [
+          !embeddingRowDmlSafe
+            ? { reason: getExtensionCapability('VECTOR')?.reason, label: 'VECTOR' }
+            : undefined,
+          !ftsRowDmlSafe ? { reason: getFtsCapability()?.reason, label: 'FTS' } : undefined,
+        ]
+          .filter((e): e is { reason: string | undefined; label: string } => e !== undefined)
+          .map(({ reason, label }) => diagnoseExtensionLoad(reason, label).remedy);
         log(
           `Incremental: ${escalationCauses.join('; and ')} — switching to a full DB write ` +
             `(wipe + bulk COPY) for this run; file-level incremental bookkeeping is unaffected.` +
             (degradedEffects.length > 0
-              ? ` ${degradedEffects.join(' ')} Run \`gitnexus doctor\` for live extension status, ` +
-                `or set GITNEXUS_LBUG_EXTENSION_INSTALL=auto to allow one bounded install attempt.`
+              ? ` ${degradedEffects.join(' ')} ${extensionRemedies.join(' ')}`
               : ''),
         );
         // toWriteCount: 0 is the established full-path dirty-flag sentinel;
@@ -2373,15 +2444,22 @@ async function runFullAnalysisInner(
         // surviving family member throws a typed LbugWipeError here instead
         // of letting the reopen below resurrect the rows this run just chose
         // to replace wholesale.
-        // #2841 review H2 — do not delete the live index for a MACHINE-level
-        // cause. `buildPath` was frozen ~440 lines above, while this run was
-        // still classified incremental, so an extension-forced rebuild would
-        // otherwise `wipeLbugDbFiles(lbugPath)` and bulk-COPY in place: an
-        // interrupt, ENOSPC, or COPY failure would then leave NO complete index,
-        // where `main` failed at LadybugDB bind time with the index fully
-        // intact. A size-forced escalation keeps the in-place plan (its trigger
-        // is this repo's own churn, and the write set is large by definition);
-        // an extension-forced one is environmental and must be recoverable.
+        // #2841 review H2 — never destroy the only complete index before its
+        // replacement is durable. `buildPath` was frozen ~440 lines above, while
+        // this run was still classified incremental, so it still points AT the
+        // live index: escalating without this upgrade means
+        // `wipeLbugDbFiles(lbugPath)` followed by a bulk COPY in place, and an
+        // interrupt, ENOSPC, or COPY failure anywhere in that window leaves NO
+        // complete index at all.
+        //
+        // That invariant is about RECOVERABILITY, which does not depend on why
+        // the run escalated — the wipe-then-COPY plan below is identical for
+        // both causes, so a size-forced escalation loses the index to a Ctrl-C
+        // exactly as an extension-forced one does. Both stage. The escalation
+        // rebuilds from the in-memory graph the pipeline already produced, so
+        // staging costs no `fs.copyFile` of the old DB: it is peak disk plus a
+        // rename — precisely what a plain `--force` full rebuild already pays
+        // unconditionally on POSIX.
         //
         // Safe because the gate runs BEFORE any row DML: the DB open at
         // `buildPath` is unmutated, so switching targets loses nothing. The
@@ -2396,7 +2474,7 @@ async function runFullAnalysisInner(
         // throwaway file and keeps the live index) — and `forceRealCloseForSwap`
         // engages on Windows, which is why the upgrade is gated on the same
         // `posixSwap || windowsSwapOk` policy that governs every other swap.
-        if (extensionForcedRebuild && !useAtomicSwap && (posixSwap || windowsSwapOk)) {
+        if (!useAtomicSwap && (posixSwap || windowsSwapOk)) {
           useAtomicSwap = true;
           buildPath = `${lbugPath}.staging.${randomUUID()}`;
           log(
@@ -2427,7 +2505,11 @@ async function runFullAnalysisInner(
         //     removes the hazard outright; Phase 3's createSearchFTSIndexes
         //     rebuilds every index from the final row set regardless, so
         //     this is a no-op on its own drop step there.
-        await dropSearchFTSIndexes();
+        // Reuse the snapshot read at the gate above (#2841 cleanup): same run,
+        // same connection, and nothing on this branch creates or drops an index
+        // in between — so re-reading would only weaken the one-read invariant
+        // the snapshot type exists to enforce.
+        await dropSearchFTSIndexes(indexCatalogRows);
         // 1b. Remove the write set's existing rows — batched (#2409): one
         //     DETACH DELETE per table per 200-file chunk. The former per-file
         //     loop issued a count + delete per table per FILE — ~13k
@@ -2609,6 +2691,8 @@ async function runFullAnalysisInner(
       // generic "install it with network access" tail in FTS_UNAVAILABLE_MESSAGE
       // contradicts the remedy's own "reinstalling will NOT help" (#2383 F2). Lead
       // with the class-neutral sentence and append only the classified remedy.
+      // Same #2383 mock seam as the repair path above — keep the exported
+      // `getExtensionCapabilities()` lookup here.
       const ftsReason = getExtensionCapabilities().find((c) => c.name === 'fts')?.reason;
       const { kind, remedy } = diagnoseExtensionLoad(ftsReason);
       log(
@@ -3165,6 +3249,17 @@ async function runFullAnalysisInner(
         fts: {
           provider: 'ladybugdb-fts',
           status: ftsReady ? runtimeCapabilities.fts : 'unavailable',
+          // Persist WHICH cause degraded FTS, not merely THAT it degraded
+          // (#2841 review H1). `status` alone collapses "the extension could
+          // not load" and "the extension loaded but the build failed" into one
+          // value, and §5.C's fast-path probe reads that value: with the cause
+          // erased it must guess, guesses `extension-unavailable`, and a
+          // `build-failed` run therefore re-analyzes the whole repo on every
+          // subsequent no-op run — the build fails identically (an
+          // un-tokenizable stored row, #2544/#2546, is deterministic), restamps
+          // 'unavailable', and the next run does it again. Stamping the
+          // discriminator the run already computed makes the read exact instead.
+          skipReason: ftsReady ? undefined : ftsSkipReason,
         },
         vectorSearch: {
           provider: effectiveSemanticMode === 'vector-index' ? 'ladybugdb-vector' : 'exact-scan',
@@ -3455,6 +3550,22 @@ async function runFullAnalysisInner(
       await (options.skipNativeCloseOnExit ? closeLbugBeforeExit() : closeLbug());
     } catch {
       /* swallow */
+    }
+    // Reclaim the staging index this run created (#2841 cleanup). Without this
+    // a failed staged build orphans a FULL copy of the index — hundreds of MB on
+    // a large repo — until the next `acquireIndexLock` sweeps `lbug.staging.`
+    // artifacts, and the failure most likely to leave one (a machine whose
+    // extension cannot load) is also the one least likely to be followed by
+    // another analyze. Only ever removes a path this run minted: `buildPath`
+    // differs from `lbugPath` exactly when the atomic-swap plan is in effect,
+    // and the live index is never that path. Best-effort by construction — the
+    // rethrow below is the surface, and the lock's sweep remains the backstop.
+    if (useAtomicSwap && buildPath !== lbugPath) {
+      try {
+        await wipeLbugDbFiles(buildPath);
+      } catch {
+        /* swallow — orphan reclamation must never mask the real failure */
+      }
     }
     throw err;
   }

@@ -547,8 +547,15 @@ withTestLbugDB('embedding-row-dml-vector-gate', (handle) => {
       // unprovable catalog as "index absent" and handing the caller a drop that
       // never happened, one DML statement before the #2841 crash.
       await withUnreadableIndexCatalog(async (seen) => {
+        // The message must claim only what the run can prove. This branch is
+        // reached when the catalog is UNREADABLE, and the only path into it
+        // (`ensureFtsRowDmlSafe` waved the surgical plan through because the
+        // catalog showed no FTS index, then a later read failed) is one where
+        // the same run already established the opposite of "exists" — so
+        // asserting existence here would state a fabricated fact while
+        // failing the run.
         await expect(dropFTSIndex('File', ABSENT_INDEX)).rejects.toThrow(
-          /FTS index '.*' on table File exists but the LadybugDB FTS extension is not loaded/,
+          /FTS index '.*' on table File could not be verified as absent/,
         );
         expect(seen.some((s) => s.includes('DROP_FTS_INDEX'))).toBe(true);
         expect(seen.some((s) => s.includes('SHOW_INDEXES'))).toBe(true);

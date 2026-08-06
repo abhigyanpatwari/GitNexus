@@ -566,8 +566,8 @@ describe('runFullAnalysis incremental writeback — extension-gated DML decided 
       ).resolves.toBeDefined();
       expect(logs.some((m) => m.includes('full DB write'))).toBe(true);
 
-      // REVERSION: delete the `if (extensionForcedRebuild && !useAtomicSwap &&
-      // (posixSwap || windowsSwapOk)) { useAtomicSwap = true; buildPath =
+      // REVERSION: delete the `if (!useAtomicSwap && (posixSwap ||
+      // windowsSwapOk)) { useAtomicSwap = true; buildPath =
       // `${lbugPath}.staging.${randomUUID()}` }` block in run-analyze.ts and
       // `buildPath` stays the LIVE `lbug` file — frozen ~440 lines earlier while
       // the run was still classified incremental — so the wipe destroys the only

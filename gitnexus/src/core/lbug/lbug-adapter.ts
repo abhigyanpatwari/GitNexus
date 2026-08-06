@@ -32,7 +32,7 @@ import { getNodeLabel as deriveNodeLabel, type WriteStreamFactory } from './rel-
 import { EMBEDDABLE_LABELS, type CachedEmbedding } from '../embeddings/types.js';
 import {
   extensionManager,
-  getExtensionCapabilities,
+  getFtsCapability,
   resolveAnalyzeInstallPolicy,
   type ExtensionEnsureOptions,
 } from './extension-loader.js';
@@ -3043,14 +3043,37 @@ export const createVectorIndex = async (): Promise<boolean> => {
  * `extension_loaded`, `index_definition` — and the readers below key on those
  * names plus the literal `'FTS'` / `'HASH'` index-type spellings. Probe-recorded
  * on 0.18.3: `rows[0][0] === undefined`, so the positional fallbacks (`row?.[0]`
- * &c.) those readers carry are DEAD on this version. They are deliberately kept
- * rather than deleted (#2841 review §5.H): they cost nothing, and removing the
- * hedge would turn a future return to the unnamed-tuple form older builds used
- * into a silently fail-OPEN gate — the exact #2841 failure class this file
- * exists to close. When bumping LadybugDB, re-validate — `git grep
- * "LADYBUGDB-CONTRACT"` enumerates every version-coupled spot.
+ * &c.) the accessors below carry are DEAD on this version. They are deliberately
+ * kept rather than deleted (#2841 review §5.H): they cost nothing, and removing
+ * the hedge would turn a future return to the unnamed-tuple form older builds
+ * used into a silently fail-OPEN read for the VECTOR gate,
+ * `ftsIndexPresenceInCatalog` and the `dropSearchFTSIndexes` sweep — the #2841
+ * failure class this file exists to close. (`ensureFtsRowDmlSafe` is the one
+ * exception: it treats an unreadable type as "might be FTS" and gates, so it
+ * fails CLOSED on the tuple form — see its §6.A note. Losing the fallback would
+ * cost it precision, not safety.) When bumping LadybugDB, re-validate — `git
+ * grep "LADYBUGDB-CONTRACT"` enumerates every version-coupled spot, and the
+ * column/position coupling itself is reachable ONLY through the three accessors
+ * below, so that enumeration is true by construction rather than by discipline.
  */
 export type IndexCatalogRow = Record<string, unknown>;
+
+/**
+ * The three field reads every index-catalog consumer needs, each hedging the
+ * named-record form against the positional one exactly once.
+ *
+ * They exist because the hedge used to be inlined at five call sites across two
+ * modules (#2841 review), one of which — the `dropSearchFTSIndexes` sweep in
+ * `core/search/fts-indexes.ts` — carried no LADYBUGDB-CONTRACT marker at all, so
+ * the doc above claimed a grep that could not find it. Exported for that module;
+ * everything version-coupled about the row shape now lives in this one block.
+ */
+export const indexRowTable = (row: IndexCatalogRow | undefined): unknown =>
+  row?.table_name ?? row?.[0];
+export const indexRowName = (row: IndexCatalogRow | undefined): unknown =>
+  row?.index_name ?? row?.[1];
+export const indexRowType = (row: IndexCatalogRow | undefined): unknown =>
+  row?.index_type ?? row?.[2];
 
 /**
  * Read the index catalog on the writable connection, or `undefined` when it
@@ -3129,8 +3152,12 @@ export const readIndexCatalogSnapshot = async (): Promise<IndexCatalogSnapshot> 
  * {@link INDEX_CATALOG_UNREADABLE}, which is truthy and short-circuits it.
  * `undefined` OUT keeps its documented meaning — "could not prove anything",
  * which every caller of {@link readIndexCatalogRows} treats as fail-closed.
+ *
+ * Exported for the `dropSearchFTSIndexes` sweep in `core/search/fts-indexes.ts`,
+ * which takes the same optional-snapshot parameter and must resolve it by the
+ * same rules — including the "a supplied snapshot is never re-read" half.
  */
-const resolveGateRows = async (
+export const resolveGateRows = async (
   indexRows: IndexCatalogSnapshot | undefined,
 ): Promise<IndexCatalogRow[] | undefined> => {
   const snapshot = indexRows ?? (await readIndexCatalogSnapshot());
@@ -3202,9 +3229,8 @@ export const ensureEmbeddingRowDmlSafe = async (
   const indexGatesDml =
     rows === undefined ||
     rows.some((row) => {
-      const table = row?.table_name ?? row?.[0];
-      if (table !== EMBEDDING_TABLE_NAME) return false;
-      return (row?.index_type ?? row?.[2]) !== 'HASH';
+      if (indexRowTable(row) !== EMBEDDING_TABLE_NAME) return false;
+      return indexRowType(row) !== 'HASH';
     });
   if (!indexGatesDml) return true;
   return await loadVectorExtension(undefined, { policy: resolveAnalyzeInstallPolicy() });
@@ -3262,7 +3288,7 @@ export const ensureFtsRowDmlSafe = async (indexRows?: IndexCatalogSnapshot): Pro
   const indexGatesDml =
     rows === undefined ||
     rows.some((row) => {
-      const indexType = row?.index_type ?? row?.[2];
+      const indexType = indexRowType(row);
       // Unreadable shape ⇒ "might be FTS" ⇒ gate. Only a positively-identified
       // non-FTS index is waved through.
       return indexType === undefined || indexType === 'FTS';
@@ -3460,24 +3486,35 @@ export const isBenignDropFtsIndexError = (message: string): boolean =>
 const DROP_FTS_INDEX_UNDEFINED_SIGNATURE = 'function DROP_FTS_INDEX is not defined';
 
 /**
- * Whether `indexName` is currently present on `tableName` in the catalog —
- * fail-CLOSED, like every other reader of {@link readIndexCatalogRows}.
+ * What the catalog can say about one index's liveness. Three-valued on purpose:
+ * "the catalog proves it is there" and "the catalog could not be read" both
+ * BLOCK (fail-closed), but they are not the same fact, and the caller reports
+ * them differently (#2841 cleanup review).
  */
-const ftsIndexExistsInCatalog = async (tableName: string, indexName: string): Promise<boolean> => {
+type FtsIndexPresence = 'present' | 'absent' | 'unverifiable';
+
+/**
+ * Whether `indexName` is currently present on `tableName` in the catalog.
+ *
+ * `unverifiable` ⇒ "an index may be present" (#2841 review H3), and the caller
+ * must treat it exactly as it treats `present`. This used to answer a bare
+ * `false` there — reporting an unprovable catalog as "index absent", the one
+ * meaning {@link readIndexCatalogRows} explicitly forbids — which made
+ * `dropFTSIndex` swallow the very error this guard exists to raise and handed
+ * the caller a drop that never happened, reproducing the silent #2841 crash one
+ * DML statement later. The asymmetric cost settles it: a false positive raises a
+ * loud, FTS-naming, remedy-carrying error on a run that had already lost its
+ * catalog; a false negative resumes a writeback that cannot succeed.
+ */
+const ftsIndexPresenceInCatalog = async (
+  tableName: string,
+  indexName: string,
+): Promise<FtsIndexPresence> => {
   const rows = await readIndexCatalogRows();
-  // Unreadable catalog ⇒ "an index may be present" (#2841 review H3). This
-  // returned `false` — reporting an unprovable catalog as "index absent", the
-  // one meaning `readIndexCatalogRows` explicitly forbids — which made
-  // `dropFTSIndex` swallow the very error this guard exists to raise and handed
-  // the caller a drop that never happened, reproducing the silent #2841 crash
-  // one DML statement later. The asymmetric cost settles it: a false positive
-  // raises a loud, FTS-naming, remedy-carrying error on a run that had already
-  // lost its catalog; a false negative resumes a writeback that cannot succeed.
-  if (rows === undefined) return true;
-  return rows.some(
-    (row) =>
-      (row?.table_name ?? row?.[0]) === tableName && (row?.index_name ?? row?.[1]) === indexName,
-  );
+  if (rows === undefined) return 'unverifiable';
+  return rows.some((row) => indexRowTable(row) === tableName && indexRowName(row) === indexName)
+    ? 'present'
+    : 'absent';
 };
 
 /**
@@ -3495,6 +3532,10 @@ const ftsIndexExistsInCatalog = async (tableName: string, indexName: string): Pr
  * still costs nothing) and a live-but-undroppable index is raised loudly,
  * naming FTS and both remedies — the load-side one CLASSIFIED, never
  * hand-rolled (#2841 review §5.G).
+ *
+ * A catalog that cannot be read blocks identically (see
+ * {@link ftsIndexPresenceInCatalog}) but is reported as an inability to verify,
+ * not as an assertion that the index exists.
  */
 export const dropFTSIndex = async (tableName: string, indexName: string): Promise<void> => {
   if (!conn) {
@@ -3508,36 +3549,47 @@ export const dropFTSIndex = async (tableName: string, indexName: string): Promis
     if (!isBenignDropFtsIndexError(msg)) {
       throw e;
     }
-    if (
-      msg.includes(DROP_FTS_INDEX_UNDEFINED_SIGNATURE) &&
-      (await ftsIndexExistsInCatalog(tableName, indexName))
-    ) {
-      // Remedy via the shared classifier, NOT hand-rolled (#2841 review §5.G):
-      // `extension-load-error.ts` exists because "set
+    const presence = msg.includes(DROP_FTS_INDEX_UNDEFINED_SIGNATURE)
+      ? await ftsIndexPresenceInCatalog(tableName, indexName)
+      : 'absent';
+    if (presence !== 'absent') {
+      // Remedy via the shared classifier, UNCONDITIONALLY and never hand-rolled
+      // (#2841 review §5.G). `extension-load-error.ts` exists because "set
       // GITNEXUS_LBUG_EXTENSION_INSTALL=auto" is the WRONG advice for the
       // missing-runtime-dependency class (Windows error 126 / OpenSSL, #2374) —
-      // the file is already on disk and reinstalling is a no-op. `--repair-fts`
-      // (run-analyze.ts) and `ftsDegradedWarning` (core/search/fts-indexes.ts)
-      // both branch on exactly this `kind`; this is the third such surface.
+      // the file is already on disk and reinstalling is a no-op. This used to
+      // honour the classifier for `missing_dependency` only and hand-write the
+      // other three, which handed a corrupt / wrong-platform extension file the
+      // very "allow one bounded install attempt" advice #2383 removed, and
+      // discarded `missingFileRemedy` / `corruptFileRemedy` outright. Every one
+      // of the four kinds already carries a class-correct remedy by
+      // construction, so take it as-is.
+      //
       // Prefer the diagnosis cached at mark-unavailable time (#2383 F3) so the
       // extension binary is not re-inspected, falling back to a fresh structural
       // diagnosis when nothing recorded one.
-      const ftsCapability = getExtensionCapabilities().find((c) => c.name === 'fts');
-      const { kind, remedy } =
-        ftsCapability?.diagnosis ?? diagnoseExtensionLoad(ftsCapability?.reason);
+      const ftsCapability = getFtsCapability();
+      const { remedy } = ftsCapability?.diagnosis ?? diagnoseExtensionLoad(ftsCapability?.reason);
       // Deliberately message-only: `remedy` is generated text (fixed system paths
       // at most), and LadybugDB's own path-bearing `reason` is NEVER interpolated
       // here — the #2374/#2375 redaction contract.
-      const loadRemedy =
-        kind === 'missing_dependency'
-          ? remedy
-          : 'Make the extension loadable (`gitnexus doctor` reports live FTS status; ' +
-            'GITNEXUS_LBUG_EXTENSION_INSTALL=auto allows one bounded install attempt).';
+      //
+      // `unverifiable` blocks exactly as hard as `present`, but must not be
+      // WORDED as `present`: the one reachable path into it is a run whose
+      // `ensureFtsRowDmlSafe` already answered "safe" because the catalog showed
+      // no FTS index, after which this later read failed — so asserting the index
+      // exists would contradict what the same run just proved (#2841 cleanup
+      // review).
+      const lead =
+        presence === 'present'
+          ? `FTS index '${indexName}' on table ${tableName} exists but the LadybugDB FTS ` +
+            'extension is not loaded, so it cannot be dropped in this environment.'
+          : `FTS index '${indexName}' on table ${tableName} could not be verified as absent — ` +
+            'the LadybugDB index catalog could not be read — and the FTS extension is not ' +
+            'loaded, so the index could not be dropped either.';
       throw new Error(
-        `FTS index '${indexName}' on table ${tableName} exists but the LadybugDB FTS extension ` +
-          'is not loaded, so it cannot be dropped in this environment. Every insert and delete ' +
-          `against that table fails while the index is present. ${loadRemedy} Otherwise rebuild ` +
-          'the index without FTS via `gitnexus analyze --force`.',
+        `${lead} Every insert and delete against that table fails while the index is present. ` +
+          `${remedy} Otherwise rebuild the index without FTS via \`gitnexus analyze --force\`.`,
       );
     }
   } finally {

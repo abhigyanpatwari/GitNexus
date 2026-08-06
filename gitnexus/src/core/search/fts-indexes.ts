@@ -1,10 +1,13 @@
 import {
   createFTSIndex,
   dropFTSIndex,
-  readIndexCatalogRows,
+  indexRowName,
+  indexRowTable,
+  resolveGateRows,
   DEFAULT_FTS_STEMMER,
+  type IndexCatalogSnapshot,
 } from '../lbug/lbug-adapter.js';
-import { getExtensionCapabilities } from '../lbug/extension-loader.js';
+import { getFtsCapability } from '../lbug/extension-loader.js';
 import { classifyExtensionLoadError } from '../lbug/extension-load-error.js';
 import { FTS_INDEXES } from './fts-schema.js';
 
@@ -72,7 +75,7 @@ const formatWarningContext = (context: FtsWarningContext): string => {
  */
 export const ftsDegradedWarning = (context?: FtsWarningContext): string => {
   const suffix = context ? formatWarningContext(context) : '';
-  const fts = getExtensionCapabilities().find((c) => c.name === 'fts');
+  const fts = getFtsCapability();
   if (fts && !fts.loaded) {
     const reason = fts.reason ? redactPaths(fts.reason).replace(/\.$/, '') : undefined;
     // A missing *runtime dependency* (Windows error 126, etc.) is not healed by
@@ -210,26 +213,46 @@ export function getSearchFTSStemmer(): string {
  * at the incremental extension gate and escalates to a full wipe-and-rebuild
  * write plan when the gate says no, so this function is only reached on the
  * branch where the drops can actually succeed.
+ *
+ * @param indexRows An {@link IndexCatalogSnapshot} the caller already read on
+ * THIS connection with no index created or dropped since — the same freshness
+ * contract, and the same one-shared-`SHOW_INDEXES`-read purpose, as the gates in
+ * `lbug-adapter.ts`. Omit it to have the sweep read the catalog itself.
  */
-export async function dropSearchFTSIndexes(): Promise<void> {
-  // One catalog read for the whole sweep. `undefined` = the catalog could not
-  // be read, which proves nothing — fall through to the loop rather than skip
-  // real drops, the same fail-closed reading `ensureFtsRowDmlSafe` applies.
-  // Keyed on index TYPE like that gate, so an index left over from an older
-  // `FTS_INDEXES` (different name/table set) still keeps the sweep alive.
-  const indexRows = await readIndexCatalogRows();
-  const carriesFtsIndex =
-    indexRows === undefined || indexRows.some((row) => (row?.index_type ?? row?.[2]) === 'FTS');
-  // Nothing to drop. Without this, a machine whose FTS extension cannot load,
-  // analyzing a DB that never carried an FTS index, pays one failed
-  // `CALL DROP_FTS_INDEX` per configured table on EVERY incremental run — and
-  // each of those failures now costs a fresh catalog read inside `dropFTSIndex`'s
-  // liveness guard, forever, with nothing to heal (#2841 review). The
-  // `ensuredFTSIndexes` memo needs no clearing here either: an index absent from
-  // the catalog cannot be memoized as ensured on this connection, and
-  // `createSearchFTSIndexes` drops per index itself before creating.
-  if (!carriesFtsIndex) return;
+export async function dropSearchFTSIndexes(indexRows?: IndexCatalogSnapshot): Promise<void> {
+  // One catalog read for the whole sweep, decided PER CONFIGURED INDEX on
+  // IDENTITY (#2841 cleanup review). `undefined` = the catalog could not be
+  // read, which proves nothing — attempt every drop rather than skip a real one,
+  // the same fail-closed reading `ensureFtsRowDmlSafe` applies to its own rows.
+  //
+  // Deliberately NOT an all-or-nothing early return keyed on index TYPE. That
+  // shape put a second `=== 'FTS'` predicate over the same rows next to the
+  // gate's `undefined || === 'FTS'` one, disagreeing on the polarity of an
+  // unreadable index_type: the gate treats it as "might be FTS" and blocks,
+  // while a bare `=== 'FTS'` here read it as "no FTS index anywhere" and skipped
+  // the entire sweep. If the row shape ever changes while FTS still loads, the
+  // gate would answer SAFE (surgical path), the sweep would drop nothing, and
+  // `deleteNodesForFiles` would run against tables carrying live FTS indexes —
+  // the exact #2589 hazard this sweep exists to prevent. Keying on identity
+  // removes the polarity question entirely. Its stated justification was also
+  // unreachable: the loop only ever drops the CONFIGURED `FTS_INDEXES` entries,
+  // so an index left over from an older, differently-named set was never dropped
+  // whether the sweep ran or not.
+  const rows = await resolveGateRows(indexRows);
   for (const { table, indexName } of FTS_INDEXES) {
+    // Skip only what the catalog POSITIVELY proves absent. Without this, a
+    // machine whose FTS extension cannot load, analyzing a DB that never carried
+    // an FTS index, pays one failed `CALL DROP_FTS_INDEX` per configured table on
+    // EVERY incremental run — and each of those failures now costs a fresh
+    // catalog read inside `dropFTSIndex`'s liveness guard, forever, with nothing
+    // to heal (#2841 review). The `ensuredFTSIndexes` memo needs no clearing here
+    // either: an index absent from the catalog cannot be memoized as ensured on
+    // this connection, and `createSearchFTSIndexes` drops per index itself before
+    // creating.
+    const provenAbsent =
+      rows !== undefined &&
+      !rows.some((row) => indexRowTable(row) === table && indexRowName(row) === indexName);
+    if (provenAbsent) continue;
     await dropFTSIndex(table, indexName);
   }
 }
@@ -272,7 +295,13 @@ export async function verifySearchFTSIndexes(
   for (const row of rows) {
     if (typeof row !== 'object' || row === null) continue;
     const record = row as Record<string, unknown>;
-    const indexName = record.index_name;
+    const indexName = indexRowName(record);
+    // LADYBUGDB-CONTRACT: `property_names` is the one SHOW_INDEXES column with a
+    // single reader, so it has no shared accessor — see {@link IndexCatalogRow}
+    // in lbug-adapter.ts for the full column list and the re-validation rule.
+    // Unlike the gates, an unreadable shape here is safe: it reports the index as
+    // not covering its columns, i.e. "missing", which degrades keyword search
+    // loudly rather than passing a broken index off as verified.
     const propertyNames = record.property_names;
     if (typeof indexName !== 'string' || !Array.isArray(propertyNames)) continue;
     propsByIndex.set(
