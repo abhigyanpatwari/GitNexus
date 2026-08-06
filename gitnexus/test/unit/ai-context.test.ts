@@ -312,6 +312,12 @@ describe('generateAIContextFiles', () => {
     // load-bearing per-repo `base_ref` line on the detect_changes bullet) is a
     // legitimate addition, not a revert of the trim — the block stays roughly
     // half the original size.
+    //
+    // Raised 2900 → 2950 for the bunx lane: the bootstrap note has to name every
+    // install-free runner, because the machine that most needs it (bun-only: no
+    // npm, npx or pnpm at all) is the one an npx-only note strands with a command
+    // it cannot run. Same test: a legitimate load-bearing line, still ~54% of the
+    // pre-#856 5465-char block.
     const stats = { nodes: 50, edges: 100, processes: 5 };
     await generateAIContextFiles(tmpDir, storagePath, 'TestProject', stats);
 
@@ -320,7 +326,7 @@ describe('generateAIContextFiles', () => {
       content.indexOf('<!-- gitnexus:start -->'),
       content.indexOf('<!-- gitnexus:end -->'),
     );
-    expect(block.length).toBeLessThan(2900);
+    expect(block.length).toBeLessThan(2950);
   });
 
   it('handles empty stats', async () => {

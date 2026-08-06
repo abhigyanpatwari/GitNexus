@@ -193,7 +193,7 @@ ${tableBody}`
   // it with a bootstrap command it could not run.
   const bootstrapNote =
     `No \`${runnerPath}\` yet? Bootstrap with \`npx\`, \`bunx\`, or \`pnpm dlx\` — ` +
-    'e.g. `bunx gitnexus@latest analyze` (npm 11 npx crash → use bunx or pnpm dlx; #1939).';
+    'e.g. `bunx gitnexus@latest analyze` (npm 11 npx crash; #1939).';
 
   return `${GITNEXUS_START_MARKER}
 # GitNexus — Code Intelligence

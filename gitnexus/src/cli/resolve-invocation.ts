@@ -84,7 +84,11 @@ export function getNpmMajorVersion(): number | null {
 /**
  * One-line stderr nudge when an npm 11+ user is on the npx install path (#1939).
  * Skipped when a global `gitnexus`, `pnpm` or `bunx` is already preferred, so it
- * never nags users who are not exposed to the npx/arborist crash.
+ * never nags users who are not exposed to the npx/arborist crash. "Preferred"
+ * means usable, not merely on PATH: a `bunx` shim that no longer runs fails the
+ * cjs liveness probe, resolves back to `npx`, and so still gets warned here —
+ * without that, a broken bunx would suppress the warning AND emit a command that
+ * cannot run.
  */
 export function warnIfNpm11NpxRisk(): void {
   if (resolveInvocationMode() !== 'npx') return;

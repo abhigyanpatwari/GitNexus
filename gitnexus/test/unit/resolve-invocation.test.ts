@@ -54,6 +54,7 @@ interface CjsModule {
       pnpmMajor?: number | null;
       pnpmPresent?: boolean;
       bunPresent?: boolean;
+      bunRuns?: boolean;
     },
   ) => 'gitnexus' | 'pnpm' | 'npx' | 'bun';
   resolveOnPath: (
@@ -73,10 +74,13 @@ interface CjsModule {
 // the tests exercise production code, not a TypeScript mirror of it.
 //
 // Determinism invariant: createRequire bypasses vitest's node:child_process mock,
-// so the only live subprocess this module can run is probeVersion (`npm`/`pnpm
-// --version`). resolveOnPath is now spawn-free — a pure PATH scan — so tests pin
-// it by passing an injected `{ platform, env }` (never the host PATH). Mode tests
-// inject a fake `probe` or force GITNEXUS_INVOCATION; version tests inject `deps`.
+// so the live subprocesses this module can run are probeVersion (`npm`/`pnpm
+// --version`) and probeRuns (`bunx --version`). resolveOnPath is now spawn-free —
+// a pure PATH scan — so tests pin it by passing an injected `{ platform, env }`
+// (never the host PATH). Mode tests inject a fake `probe` or force
+// GITNEXUS_INVOCATION; version tests inject `deps`. Any test whose `probe`
+// reports a bunx PATH hit MUST also inject `bunRuns`, or the liveness probe
+// spawns the host's real bunx and the result depends on whether bun is installed.
 // Keep new tests on one of those paths so results never depend on the host.
 const cjs = cjsRequire(CANONICAL_CJS) as CjsModule;
 
@@ -209,36 +213,54 @@ describe('resolve-analyze-cmd.cjs (canonical invocation resolver)', () => {
     // The headline gap: with no npm/npx/pnpm on PATH every rung used to fall
     // through to `npx`, emitting a command the machine cannot run at all.
     const probe = (c: string) => (c === 'bunx' ? '/usr/local/bin/bunx' : null);
-    expect(cjs.resolveInvocationMode(probe, { npmMajor: null })).toBe('bun');
+    expect(cjs.resolveInvocationMode(probe, { npmMajor: null, bunRuns: true })).toBe('bun');
   });
 
   it('auto-selects bunx on npm 11+ when pnpm is absent but bunx is present', () => {
     // Same #1939 crash avoidance as the pnpm rung — bunx is install-free too.
     const probe = (c: string) => (c === 'bunx' ? '/usr/local/bin/bunx' : null);
-    expect(cjs.resolveInvocationMode(probe, { npmMajor: 11 })).toBe('bun');
+    expect(cjs.resolveInvocationMode(probe, { npmMajor: 11, bunRuns: true })).toBe('bun');
   });
 
   it('still prefers pnpm over bunx on npm 11+ when both are present', () => {
     const probe = (c: string) =>
       c === 'pnpm' ? '/usr/local/bin/pnpm' : c === 'bunx' ? '/usr/local/bin/bunx' : null;
-    expect(cjs.resolveInvocationMode(probe, { npmMajor: 11 })).toBe('pnpm');
+    expect(cjs.resolveInvocationMode(probe, { npmMajor: 11, bunRuns: true })).toBe('pnpm');
   });
 
   it('still prefers npx on npm 10 even when bunx is present (no behavior change)', () => {
     // Regression guard: the bun rungs must not steal the working npm<11 path.
     const probe = (c: string) => (c === 'bunx' ? '/usr/local/bin/bunx' : null);
-    expect(cjs.resolveInvocationMode(probe, { npmMajor: 10 })).toBe('npx');
+    expect(cjs.resolveInvocationMode(probe, { npmMajor: 10, bunRuns: true })).toBe('npx');
   });
 
   it('still prefers pnpm over bunx when npm is absent and both are present', () => {
     const probe = (c: string) =>
       c === 'pnpm' ? '/usr/local/bin/pnpm' : c === 'bunx' ? '/usr/local/bin/bunx' : null;
-    expect(cjs.resolveInvocationMode(probe, { npmMajor: null })).toBe('pnpm');
+    expect(cjs.resolveInvocationMode(probe, { npmMajor: null, bunRuns: true })).toBe('pnpm');
   });
 
   it('honors bunPresent:false as explicit absence (overrides a PATH hit)', () => {
     const probe = (c: string) => (c === 'bunx' ? '/usr/local/bin/bunx' : null);
-    expect(cjs.resolveInvocationMode(probe, { npmMajor: null, bunPresent: false })).toBe('npx');
+    expect(
+      cjs.resolveInvocationMode(probe, { npmMajor: null, bunPresent: false, bunRuns: true }),
+    ).toBe('npx');
+  });
+
+  it('rejects a bunx that is on PATH but does not run (stale shim)', () => {
+    // A partial bun uninstall leaves an executable `bunx` behind that no longer
+    // runs. PATH existence alone would select bun, emit `bunx gitnexus@latest`,
+    // AND suppress the npm-11 npx warning — a silent dead end until execution.
+    const probe = (c: string) => (c === 'bunx' ? '/usr/local/bin/bunx' : null);
+    expect(cjs.resolveInvocationMode(probe, { npmMajor: null, bunRuns: false })).toBe('npx');
+    expect(cjs.resolveInvocationMode(probe, { npmMajor: 11, bunRuns: false })).toBe('npx');
+  });
+
+  it('skips the liveness spawn entirely when bunx is not on PATH', () => {
+    // The two gates are ordered cheapest-first: no PATH hit, no subprocess.
+    // Injecting neither bunPresent nor bunRuns proves it — a spawn here would
+    // reach the host's real bunx and make the result environment-dependent.
+    expect(cjs.resolveInvocationMode(() => null, { npmMajor: null })).toBe('npx');
   });
 
   it('never probes bunx when npm or pnpm already decides the mode', () => {

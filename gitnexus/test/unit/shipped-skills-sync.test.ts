@@ -120,6 +120,18 @@ describe('intended standard-skill improvements stay in every applicable copy', (
     }
   });
 
+  // These copies are NOT byte-compared (only the engineering FAMILY above is),
+  // so a runner added to resolve-analyze-cmd.cjs can silently miss them. The
+  // audience that most needs bunx documented — a bun-only machine with no npm,
+  // npx or pnpm — is exactly the one an npx/pnpm-only bootstrap line strands.
+  it('documents the bunx runner and bootstrap in every CLI copy', () => {
+    for (const file of standardSkillCopies('gitnexus-cli')) {
+      const content = fs.readFileSync(file, 'utf-8');
+      expect(content).toContain('else `bunx`');
+      expect(content).toContain('bunx gitnexus@latest analyze');
+    }
+  });
+
   it('documents CLI fallbacks in every impact-analysis copy', () => {
     const required = [
       'node .gitnexus/run.cjs impact <symbol> --direction upstream --repo .',

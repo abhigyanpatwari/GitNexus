@@ -25,6 +25,34 @@ export interface NativeCheckResult {
 }
 
 /**
+ * Outcome of the prebuilt-binary restore below. Not a boolean, because the two
+ * failure modes need OPPOSITE remedies: `no-prebuilt` means nothing was there to
+ * copy (a genuinely skipped/absent install — the lifecycle-script advice
+ * applies), while `copy-failed` means the binary IS on disk and only writing it
+ * into place failed, which is a filesystem permission problem that allowing
+ * build scripts cannot fix. Collapsing them sent read-only-`node_modules` users
+ * (a baked container layer mounted read-only, a common CI pattern) around the
+ * `trustedDependencies` / `--allow-build` loop forever.
+ */
+type RestoreOutcome = 'restored' | 'no-prebuilt' | 'copy-failed';
+
+/**
+ * bun repair advice, shared by both failure messages so they cannot drift.
+ *
+ * `trustedDependencies` in a package.json is NOT what makes `bunx gitnexus@latest`
+ * work — see the note on restorePrebuiltNativeBinary — so a one-shot user, who
+ * has no package.json to edit, gets an actionable alternative instead of advice
+ * they cannot follow. The package list matches gitnexus/package.json's own
+ * `trustedDependencies` field; a partial list leaves tree-sitter unbuilt.
+ */
+const BUN_REPAIR_LINES = [
+  '  - bun: inside a project, add to package.json and reinstall:',
+  '      "trustedDependencies": ["@ladybugdb/core", "gitnexus", "tree-sitter"]',
+  '    A one-shot `bunx gitnexus@latest …` has no package.json to put that in —',
+  '    install once instead:  bun install -g gitnexus',
+];
+
+/**
  * Re-do the copy `@ladybugdb/core`'s install script performs, when a package
  * manager skipped that script but still downloaded the prebuilt binary.
  *
@@ -42,16 +70,23 @@ export interface NativeCheckResult {
  * that can work. Also covers `pnpm dlx` without `--allow-build` and
  * `npm --ignore-scripts`.
  *
+ * This — not the `trustedDependencies` field in gitnexus/package.json — is what
+ * makes the bunx lane work. That field only takes effect for someone running
+ * `bun install` / `pnpm install` INSIDE this repo: a `bunx gitnexus@latest`
+ * one-shot never reads it, and neither does `bun add gitnexus` in a consumer
+ * project (trust is read from the consumer's own root manifest, not from a
+ * dependency's). Do not delete this function as redundant with that field.
+ *
  * Best-effort by construction: any failure (read-only node_modules, absent
- * sub-package, unsupported platform) returns false and the caller falls through
- * to the existing diagnostics unchanged.
+ * sub-package, unsupported platform) returns a non-`'restored'` outcome and the
+ * caller falls through to the existing diagnostics unchanged.
  */
-function restorePrebuiltNativeBinary(pkgDir: string, binaryPath: string): boolean {
+function restorePrebuiltNativeBinary(pkgDir: string, binaryPath: string): RestoreOutcome {
   try {
     const manifest = JSON.parse(fs.readFileSync(path.join(pkgDir, 'package.json'), 'utf-8')) as {
       name?: unknown;
     };
-    if (typeof manifest.name !== 'string' || manifest.name.length === 0) return false;
+    if (typeof manifest.name !== 'string' || manifest.name.length === 0) return 'no-prebuilt';
 
     const candidates: string[] = [];
     try {
@@ -72,12 +107,19 @@ function restorePrebuiltNativeBinary(pkgDir: string, binaryPath: string): boolea
     );
 
     const prebuilt = candidates.find((candidate) => fs.existsSync(candidate));
-    if (prebuilt === undefined) return false;
+    if (prebuilt === undefined) return 'no-prebuilt';
 
-    fs.copyFileSync(prebuilt, binaryPath);
-    return fs.existsSync(binaryPath);
+    // The copy gets its own catch: an EACCES/EROFS here is the one failure that
+    // proves the binary exists and only the write was refused, and the outer
+    // catch would flatten that back into "nothing to restore".
+    try {
+      fs.copyFileSync(prebuilt, binaryPath);
+    } catch {
+      return 'copy-failed';
+    }
+    return fs.existsSync(binaryPath) ? 'restored' : 'copy-failed';
   } catch {
-    return false;
+    return 'no-prebuilt';
   }
 }
 
@@ -109,32 +151,51 @@ export function checkLbugNative(overridePkgDir?: string): NativeCheckResult {
   // — the install script's copy is all that was skipped. Try that before
   // reporting failure, so runners that cannot opt into lifecycle scripts (bunx)
   // work instead of dead-ending on instructions they have no way to follow.
-  if (!fs.existsSync(binaryPath) && !restorePrebuiltNativeBinary(pkgDir, binaryPath)) {
+  const restore = fs.existsSync(binaryPath)
+    ? 'restored'
+    : restorePrebuiltNativeBinary(pkgDir, binaryPath);
+  if (restore !== 'restored') {
+    // `copy-failed` proves the prebuilt binary is on disk and only the write was
+    // refused, so the entire skipped-lifecycle-script cause list below is the
+    // wrong remedy — a read-only node_modules cannot be repaired in place no
+    // matter which build scripts are allowed. Route that case to its own advice.
+    const cause =
+      restore === 'copy-failed'
+        ? [
+            'The prebuilt binary IS present in the platform sub-package — only copying it into',
+            `  ${pkgDir}`,
+            'was refused, which is a filesystem permission problem (read-only or non-writable',
+            'node_modules), not a skipped install script.',
+            '',
+            'To repair, make that directory writable, or reinstall gitnexus somewhere writable:',
+            '  npm i -g gitnexus@latest   # or: bun install -g gitnexus',
+            '',
+            'Allowing build scripts (trustedDependencies, --allow-build, ignore-scripts) will',
+            'NOT help here — the install script fails on the same write.',
+          ]
+        : [
+            'This usually happens when the install lifecycle script was skipped.',
+            '',
+            'To repair:',
+            `  node ${path.join(pkgDir, 'install.js')}`,
+            '',
+            'Common causes:',
+            '  - pnpm dlx / pnpx skip build scripts by default (security model). Options:',
+            '      # Keep pnpm dlx — explicitly allow the required builds:',
+            '      pnpm --allow-build=@ladybugdb/core --allow-build=gitnexus --allow-build=tree-sitter \\',
+            '        dlx gitnexus@latest serve',
+            '      # Or install globally with build scripts allowed (pnpm 10.2+):',
+            '      pnpm add -g --allow-build=@ladybugdb/core --allow-build=gitnexus --allow-build=tree-sitter gitnexus',
+            '      # Or npm i -g gitnexus@latest (bare npx on npm 11 may crash before gitnexus runs).',
+            ...BUN_REPAIR_LINES,
+            '  - npm configured with ignore-scripts=true',
+            '    (in .npmrc or via --ignore-scripts).',
+          ];
     return {
       ok: false,
       binaryPath,
       kind: 'binary_missing',
-      message: [
-        'LadybugDB native binary (lbugjs.node) is missing.',
-        '',
-        'This usually happens when the install lifecycle script was skipped.',
-        '',
-        'To repair:',
-        `  node ${path.join(pkgDir, 'install.js')}`,
-        '',
-        'Common causes:',
-        '  - pnpm dlx / pnpx skip build scripts by default (security model). Options:',
-        '      # Keep pnpm dlx — explicitly allow the required builds:',
-        '      pnpm --allow-build=@ladybugdb/core --allow-build=gitnexus --allow-build=tree-sitter \\',
-        '        dlx gitnexus@latest serve',
-        '      # Or install globally with build scripts allowed (pnpm 10.2+):',
-        '      pnpm add -g --allow-build=@ladybugdb/core --allow-build=gitnexus --allow-build=tree-sitter gitnexus',
-        '      # Or npm i -g gitnexus@latest (bare npx on npm 11 may crash before gitnexus runs).',
-        '  - bun: add to package.json and reinstall:',
-        '      "trustedDependencies": ["@ladybugdb/core"]',
-        '  - npm configured with ignore-scripts=true',
-        '    (in .npmrc or via --ignore-scripts).',
-      ].join('\n'),
+      message: ['LadybugDB native binary (lbugjs.node) is missing.', '', ...cause].join('\n'),
     };
   }
 
@@ -200,9 +261,7 @@ export function checkLbugNative(overridePkgDir?: string): NativeCheckResult {
       '  pnpm --allow-build=@ladybugdb/core --allow-build=gitnexus --allow-build=tree-sitter \\',
       '    dlx gitnexus@latest serve',
       '  pnpm add -g --allow-build=@ladybugdb/core --allow-build=gitnexus --allow-build=tree-sitter gitnexus',
-      '',
-      'If using bun, add to package.json and reinstall:',
-      '  "trustedDependencies": ["@ladybugdb/core"]',
+      ...BUN_REPAIR_LINES,
     ].join('\n'),
   };
 }
