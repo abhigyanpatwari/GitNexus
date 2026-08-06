@@ -140,6 +140,7 @@ export interface UniqueNamePropertyStats {
  */
 function indexPropertyNodesByName(
   graph: KnowledgeGraph,
+  ownFilePaths: ReadonlySet<string>,
 ): ReadonlyMap<string, readonly PropertyCandidate[] | null> {
   const byName = new Map<string, PropertyCandidate[] | null>();
   for (const node of graph.iterNodes()) {
@@ -147,12 +148,21 @@ function indexPropertyNodesByName(
     const name = node.properties.name;
     if (typeof name !== 'string' || name.length === 0) continue;
     const filePath = node.properties.filePath;
+    // SAME LANGUAGE ONLY. The graph is shared across every language in the
+    // repo, and `fieldFallbackOnMethodLookup` only decides whether this pass
+    // RUNS for a language — it never restricted which nodes could be TARGETS.
+    // So a Java backend declaring `private int loyaltyPoints` was the unique
+    // carrier of that name, and a JS frontend writing `cfg.loyaltyPoints` on an
+    // untyped parameter got an edge to it: no owner, file, or language evidence,
+    // and inference across a language boundary that has no call path at all.
+    // The confidence tier does not save it, since `minConfidence` defaults to 0.
+    //
+    // `parsedFiles` is exactly this language's file set, so matching on it is a
+    // precise restriction rather than a heuristic — no node property needed.
+    if (typeof filePath !== 'string' || !ownFilePaths.has(filePath)) continue;
     const existing = byName.get(name);
     if (existing === OVERSATURATED) continue;
-    const candidate: PropertyCandidate = {
-      id: node.id,
-      filePath: typeof filePath === 'string' ? filePath : '',
-    };
+    const candidate: PropertyCandidate = { id: node.id, filePath };
     if (existing === undefined) {
       byName.set(name, [candidate]);
       continue;
@@ -245,7 +255,7 @@ export function emitUniqueNamePropertyAccesses(
   /** Finalized import graph; narrows a name carried by several definitions. */
   finalized?: FinalizedImportView,
 ): UniqueNamePropertyStats {
-  const byName = indexPropertyNodesByName(graph);
+  const byName = indexPropertyNodesByName(graph, new Set(parsedFiles.map((p) => p.filePath)));
   if (byName.size === 0) {
     return { emitted: 0, ambiguous: 0, narrowed: 0, ambiguousNames: [] };
   }
