@@ -76,7 +76,10 @@ import {
   MAX_PROPERTY_DISPATCH_FANOUT,
 } from '../passes/property-dispatch.js';
 import { emitReferencesViaLookup } from '../graph-bridge/references-to-edges.js';
-import { emitUniqueNamePropertyAccesses } from '../passes/unique-name-properties.js';
+import {
+  emitUniqueNamePropertyAccesses,
+  type PropertyNameIndex,
+} from '../passes/unique-name-properties.js';
 import { emitImportedValueReferences } from '../passes/imported-value-refs.js';
 import {
   createCalleeIdAccumulator,
@@ -376,6 +379,14 @@ interface RunScopeResolutionInput {
    * (tests / isolated calls) it is built locally for the pdg-enabled language.
    */
   readonly prebuiltFunctionNodeIndex?: FunctionNodeIndex;
+  /**
+   * `Property`-by-name index built ONCE by the caller and shared across every
+   * language pass. Like the two above it is a whole-graph scan and is
+   * language-agnostic; the per-language restriction is applied at lookup time
+   * against that language's own file set, so sharing the index does not widen
+   * what any single language can resolve to. Built locally when omitted.
+   */
+  readonly prebuiltPropertyNameIndex?: PropertyNameIndex;
   /**
    * Opaque per-language import-resolution config (e.g. tsconfig path
    * aliases for TypeScript). Loaded once by the caller via
@@ -1030,6 +1041,7 @@ export function runScopeResolution(
           postHeritageNodeLookup,
           uniqueNameSkipSites,
           finalized,
+          input.prebuiltPropertyNameIndex,
         );
 
   // value-ref registrations (#2437): USES edges at the registration sites

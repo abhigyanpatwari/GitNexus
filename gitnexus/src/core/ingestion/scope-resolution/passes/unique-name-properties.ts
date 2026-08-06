@@ -133,49 +133,76 @@ export interface UniqueNamePropertyStats {
 }
 
 /**
- * Index `Property` nodes by name, keeping each name's candidates up to
- * {@link MAX_TRACKED_CANDIDATES} so a multi-candidate name can still be
- * narrowed by scope. Past the cap the list is dropped for {@link OVERSATURATED}
- * — that many same-named keys is a generic name no tier can disambiguate, and
- * holding the array would cost memory for a question that has no answer.
+ * Every `Property` node in the graph, grouped by name.
+ *
+ * WHOLE-GRAPH AND LANGUAGE-AGNOSTIC, so it is built ONCE by the caller and
+ * shared across every language pass — the same treatment `sharedNodeLookup` and
+ * `sharedFnNodeIndex` already get in `phase.ts`, and for the same reason: a
+ * per-language rebuild scans every node in the repo N times, and on a large
+ * repo a small language's full copy overlaps the next language's.
+ *
+ * Deliberately NOT capped here. The cap belongs after the language filter (see
+ * {@link candidatesForLanguage}) — a name carried by forty properties across a
+ * polyglot monorepo but only two in the language being resolved is answerable,
+ * and capping globally would refuse it. One entry per Property node is the same
+ * order as the node-lookup map built beside it.
  */
-function indexPropertyNodesByName(
-  graph: KnowledgeGraph,
-  ownFilePaths: ReadonlySet<string>,
-): ReadonlyMap<string, readonly PropertyCandidate[] | null> {
-  const byName = new Map<string, PropertyCandidate[] | null>();
+export type PropertyNameIndex = ReadonlyMap<string, readonly PropertyCandidate[]>;
+
+export function buildPropertyNameIndex(graph: KnowledgeGraph): PropertyNameIndex {
+  const byName = new Map<string, PropertyCandidate[]>();
   for (const node of graph.iterNodes()) {
     if (node.label !== 'Property') continue;
     const name = node.properties.name;
     if (typeof name !== 'string' || name.length === 0) continue;
     const filePath = node.properties.filePath;
-    // SAME LANGUAGE ONLY. The graph is shared across every language in the
-    // repo, and `fieldFallbackOnMethodLookup` only decides whether this pass
-    // RUNS for a language — it never restricted which nodes could be TARGETS.
-    // So a Java backend declaring `private int loyaltyPoints` was the unique
-    // carrier of that name, and a JS frontend writing `cfg.loyaltyPoints` on an
-    // untyped parameter got an edge to it: no owner, file, or language evidence,
-    // and inference across a language boundary that has no call path at all.
-    // The confidence tier does not save it, since `minConfidence` defaults to 0.
-    //
-    // `parsedFiles` is exactly this language's file set, so matching on it is a
-    // precise restriction rather than a heuristic — no node property needed.
-    if (typeof filePath !== 'string' || !ownFilePaths.has(filePath)) continue;
+    if (typeof filePath !== 'string') continue;
     const existing = byName.get(name);
-    if (existing === OVERSATURATED) continue;
-    const candidate: PropertyCandidate = { id: node.id, filePath };
     if (existing === undefined) {
-      byName.set(name, [candidate]);
+      byName.set(name, [{ id: node.id, filePath }]);
       continue;
     }
-    if (existing.some((c) => c.id === candidate.id)) continue;
-    if (existing.length >= MAX_TRACKED_CANDIDATES) {
-      byName.set(name, OVERSATURATED);
-      continue;
-    }
-    existing.push(candidate);
+    if (existing.some((c) => c.id === node.id)) continue;
+    existing.push({ id: node.id, filePath });
   }
   return byName;
+}
+
+/**
+ * The candidates a read in THIS language may consider, or {@link OVERSATURATED}
+ * when there are too many to disambiguate.
+ *
+ * SAME LANGUAGE ONLY. The graph is shared across every language in the repo, and
+ * `fieldFallbackOnMethodLookup` only decides whether this pass RUNS for a
+ * language — it never restricted which nodes could be TARGETS. So a Java backend
+ * declaring `private int loyaltyPoints` was the unique carrier of that name, and
+ * a JS frontend writing `cfg.loyaltyPoints` on an untyped parameter got an edge
+ * to it: no owner, file, or language evidence, and inference across a language
+ * boundary that has no call path at all. The confidence tier does not save it,
+ * since `minConfidence` defaults to 0.
+ *
+ * `parsedFiles` is exactly this language's file set, so matching on it is a
+ * precise restriction rather than a heuristic — no node property needed.
+ *
+ * The cap is applied HERE, to the filtered set, so it means what it says: this
+ * many same-named keys IN THE LANGUAGE BEING RESOLVED is a generic name no tier
+ * can disambiguate.
+ */
+function candidatesForLanguage(
+  all: readonly PropertyCandidate[],
+  ownFilePaths: ReadonlySet<string>,
+): readonly PropertyCandidate[] | null | undefined {
+  const mine: PropertyCandidate[] = [];
+  for (const candidate of all) {
+    if (!ownFilePaths.has(candidate.filePath)) continue;
+    if (mine.length >= MAX_TRACKED_CANDIDATES) return OVERSATURATED;
+    mine.push(candidate);
+  }
+  // Three outcomes, and they are not interchangeable: `undefined` means no
+  // property of this name exists in this language (nothing to say, and NOT an
+  // ambiguity), `null` means too many to choose between (reportable), and a
+  // list means proceed to narrowing.
+  return mine.length === 0 ? undefined : mine;
 }
 
 /**
@@ -255,8 +282,17 @@ export function emitUniqueNamePropertyAccesses(
   skipSites: ReadonlySet<string>,
   /** Finalized import graph; narrows a name carried by several definitions. */
   finalized?: FinalizedImportView,
+  /**
+   * Whole-graph `Property`-by-name index built ONCE by the caller and shared
+   * across every language pass. It is a full node scan and language-agnostic,
+   * so rebuilding it per language repeats that scan N times — the pattern
+   * `phase.ts` already hoisted out for `sharedNodeLookup`. Built locally when
+   * omitted (tests / isolated calls).
+   */
+  prebuiltPropertyNameIndex?: PropertyNameIndex,
 ): UniqueNamePropertyStats {
-  const byName = indexPropertyNodesByName(graph, new Set(parsedFiles.map((p) => p.filePath)));
+  const byName = prebuiltPropertyNameIndex ?? buildPropertyNameIndex(graph);
+  const ownFilePaths = new Set(parsedFiles.map((p) => p.filePath));
   if (byName.size === 0) {
     return { emitted: 0, ambiguous: 0, narrowed: 0, ambiguousNames: [] };
   }
@@ -281,7 +317,9 @@ export function emitUniqueNamePropertyAccesses(
       const siteKey = callableFlowSiteKey(parsed.filePath, site.atRange);
       if (skipSites.has(siteKey)) continue;
 
-      const candidates = byName.get(site.name);
+      const allWithName = byName.get(site.name);
+      if (allWithName === undefined) continue;
+      const candidates = candidatesForLanguage(allWithName, ownFilePaths);
       if (candidates === undefined) continue;
       if (candidates === OVERSATURATED) {
         ambiguous++;
