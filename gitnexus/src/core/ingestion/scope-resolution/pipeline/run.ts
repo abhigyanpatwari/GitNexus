@@ -453,6 +453,18 @@ interface RunScopeResolutionStats {
    * population a receiver-typing improvement would convert into precise edges.
    */
   readonly uniqueNamePropertyAmbiguous: number;
+  /**
+   * Of `uniqueNamePropertyEdges`, how many the name carried several definitions
+   * for and same-file or direct-import evidence narrowed to one. Strict
+   * workspace uniqueness refused every one of these (R2).
+   */
+  readonly uniqueNamePropertyNarrowed: number;
+  /**
+   * The distinct field names behind `uniqueNamePropertyAmbiguous`, capped. A
+   * count says a coverage gap exists; the names say WHICH fields are
+   * unanswerable, so the gap is actionable rather than merely measured.
+   */
+  readonly uniqueNamePropertyAmbiguousNames: readonly string[];
   readonly resolutionOutcomes: readonly ResolutionOutcome[];
   /**
    * Per-function taint summaries harvested in the pdg window (#2084 M4 U1).
@@ -584,6 +596,8 @@ export function runScopeResolution(
       importedValueRefEdges: 0,
       uniqueNamePropertyEdges: 0,
       uniqueNamePropertyAmbiguous: 0,
+      uniqueNamePropertyNarrowed: 0,
+      uniqueNamePropertyAmbiguousNames: [],
       resolutionOutcomes,
       functionSummaries: [],
       callSummaries: [],
@@ -616,6 +630,8 @@ export function runScopeResolution(
       importedValueRefEdges: 0,
       uniqueNamePropertyEdges: 0,
       uniqueNamePropertyAmbiguous: 0,
+      uniqueNamePropertyNarrowed: 0,
+      uniqueNamePropertyAmbiguousNames: [],
       resolutionOutcomes,
       functionSummaries: [],
       callSummaries: [],
@@ -973,13 +989,14 @@ export function runScopeResolution(
 
   const uniqueNameProperties =
     callableFlowOnly || provider.fieldFallbackOnMethodLookup === false
-      ? { emitted: 0, ambiguous: 0 }
+      ? { emitted: 0, ambiguous: 0, narrowed: 0, ambiguousNames: [] }
       : emitUniqueNamePropertyAccesses(
           graph,
           indexes,
           emitParsedFiles,
           postHeritageNodeLookup,
           uniqueNameSkipSites,
+          finalized,
         );
 
   // value-ref registrations (#2437): USES edges at the registration sites
@@ -1463,6 +1480,8 @@ export function runScopeResolution(
     importedValueRefEdges: importedValueRefs.emitted,
     uniqueNamePropertyEdges: uniqueNameProperties.emitted,
     uniqueNamePropertyAmbiguous: uniqueNameProperties.ambiguous,
+    uniqueNamePropertyNarrowed: uniqueNameProperties.narrowed,
+    uniqueNamePropertyAmbiguousNames: uniqueNameProperties.ambiguousNames,
     resolutionOutcomes,
     functionSummaries: harvestedSummaries,
     callSummaries: harvestedCallSummaries,

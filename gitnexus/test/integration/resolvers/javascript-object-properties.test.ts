@@ -104,6 +104,51 @@ describe('JavaScript plain-object property access (A1/A5)', () => {
     for (const e of inferred) expect(e.rel.confidence).toBeLessThan(0.85);
   });
 
+  // R2. Strict workspace uniqueness was measurably too blunt: in the reporting
+  // repo `exitMinAtrMult` had 26 definitions, 16 of them in one-off scripts the
+  // backend has no relationship with, so every backend read was refused because
+  // of competitors the reader cannot even see.
+  describe('scope narrowing for multi-candidate names (R2)', () => {
+    const reasonsFor = (field: string): string[] =>
+      getRelationships(result, 'ACCESSES')
+        .filter((e) => e.target === field)
+        .map((e) => String(e.rel.reason ?? ''));
+
+    it('still sees two definitions of the narrowed name', () => {
+      // Precondition. Without this the narrowing assertions below would pass
+      // trivially by there being nothing to narrow.
+      expect(propertyNames().filter((n) => n === 'narrowedTimeoutMs')).toHaveLength(2);
+    });
+
+    it('resolves an untyped read using direct-import evidence', () => {
+      expect(readersOf('narrowedTimeoutMs')).toContain('readsNarrowed');
+    });
+
+    it('records which tier resolved it, not just that something did', () => {
+      expect(reasonsFor('narrowedTimeoutMs').some((r) => r.includes('imported-file'))).toBe(true);
+    });
+
+    // The bound. Narrowing exists to USE scope evidence, not to lower the bar
+    // for guessing — a reader that can see both candidates is exactly as stuck
+    // as before, and must stay refused.
+    it('still refuses when the reader imports BOTH candidates', () => {
+      expect(readersOf('narrowedTimeoutMs')).not.toContain('readsBothVisible');
+    });
+
+    // Same-file evidence that is itself ambiguous must stop the walk rather
+    // than fall through to a weaker tier.
+    it('keeps refusing two same-named keys in the reading file', () => {
+      expect(readersOf('sharedTimeoutMs')).toEqual([]);
+    });
+
+    it('reports the names it could not resolve, not only a count', () => {
+      const stats = (result as unknown as { scopeResolution?: Record<string, unknown> })
+        .scopeResolution;
+      if (stats === undefined) return;
+      expect(stats.uniqueNamePropertyAmbiguousNames).toContain('sharedTimeoutMs');
+    });
+  });
+
   // R2-1a. Reported as the cheapest remaining win and it is: freezing a config
   // object is how JS publishes an immutable contract, so the shape whose fields
   // are most worth querying was the one shape the rule could not see.
