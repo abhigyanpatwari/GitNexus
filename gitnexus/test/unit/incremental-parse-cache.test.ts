@@ -137,7 +137,7 @@ describe('PARSE_CACHE_VERSION', () => {
   // Both are serialized into the cached ParsedFile, so a v45 warm cache replays
   // the pre-fix bindings and the fix becomes a silent no-op on incremental
   // analyze while every cold-run test still passes.
-  it('pins SCHEMA_BUMP to 46 so concurrent bumps cannot silently collide (#2766)', () => {
+  it('pins SCHEMA_BUMP to 46 so concurrent bumps cannot silently collide (#2833)', () => {
     expect(Number(PARSE_CACHE_VERSION.split('+', 1)[0])).toBe(46);
   });
 

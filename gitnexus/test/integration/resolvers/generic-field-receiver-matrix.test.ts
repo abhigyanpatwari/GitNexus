@@ -45,7 +45,9 @@
  * none of them and the member got no type binding at all. Both spellings failed
  * while a LOCAL of the same type resolved, because the local declaration rules
  * had gained their `template_type` variant long ago. Three mirrored rules close
- * it.
+ * the bare spelling and six more close the QUALIFIED one (`std::vector<Item>`,
+ * which tree-sitter parses as a `qualified_identifier` WRAPPING the
+ * `template_type`, so it matched none of the three either).
  *
  * ── MEASURED STATE (all rows below are measured, none predicted) ─────────────
  *
@@ -65,19 +67,29 @@
  *   Ruby, C,     n/a             no generics in the language
  *   COBOL
  *
- * Two pre-existing gaps were measured during this work and are NOT #2833:
- * C++ `this->field.m()` emits nothing even for a NON-generic field (its control
- * fails identically), and JavaScript/PHP docblock-declared field types bind
- * nothing at all (their controls fail identically too). Both are reported
- * separately rather than folded in here, because in each case the generic row
- * behaves exactly like that language's own control row — which is the bar this
- * file measures against.
+ * ── PRE-EXISTING GAPS MEASURED HERE, NONE OF THEM #2833 ──────────────────────
+ *
+ * Each is pinned with a CONTROL that fails identically, which is what makes it
+ * a gap in some other mechanism rather than in generic typing:
+ *
+ *   - C++ `this->field.m()` emits nothing even for a NON-generic field.
+ *   - JavaScript/PHP docblock-declared field types bind nothing at all.
+ *   - A STATIC/class-level member receiver (`Holder.repo.save(u)`) emits nothing
+ *     in TypeScript — and `Holder.plain.save(u)`, a non-generic static of the
+ *     same class, emits nothing either (`ts-reach-shapes`).
+ *   - A C++ generic field whose type is qualified THREE deep
+ *     (`a::b::c::Deeper<User>`) is not captured; two deep is
+ *     (`cpp-qualified-generic-field`). That boundary is the documented cost of
+ *     one query pattern per qualifier depth.
+ *   - A C++ specialization declared in ANOTHER file binds, but the PRIMARY
+ *     template does not when the instantiating file names it nowhere lexically
+ *     (`cpp-spec-cross-file` / `runIntCrossFile`).
  *
  * ── THE NEGATIVE CONTROLS ─────────────────────────────────────────────────────
  *
  * Erasing `Repo<User>` to `Repo` is right for finding a DECLARATION — one
- * declaration serves every instantiation in each language here. Two shapes must
- * not be swept up with it, and each gets a row:
+ * declaration serves every instantiation in each language here. Three shapes
+ * must not be swept up with it, and each gets a row:
  *
  *   - A bare TYPE PARAMETER (`class Box<TItem> { t: TItem }`) denotes no
  *     declaration at all. Inventing one is a false edge, which is strictly worse
@@ -90,11 +102,34 @@
  *     a different class from the primary template. Erasing to `Vec` before
  *     trying an exact argument match would silently retarget it, which is why
  *     `resolveClassBindingForName` matches `templateArguments` FIRST and only
- *     then falls back to the base name.
+ *     then falls back to the base name — and why, when the base-name walk lands
+ *     on a declaration that pinned arguments the caller did NOT write, it
+ *     re-decides over the parameterized declarations instead of keeping it.
+ *     Without that last step the answer depended on SOURCE ORDER: `Vec<int> vi`
+ *     bound `Vec<bool>` when the specialization happened to be written above the
+ *     primary. `cpp-spec-order-*` pins both arrangements.
+ *   - A workspace class whose name collides with a CONTAINER
+ *     (`class Map` beside `m: Map<string, User>`) now binds where it did not
+ *     before, because base-name erasure reaches it. `container-name-collision`
+ *     makes that policy visible instead of accidental.
  *
  * A bounded type parameter (`T extends Repo`) resolves to nothing today. Making
  * it resolve to its bound is defensible but is a semantics EXPANSION beyond this
- * bug, so the row pins current behaviour rather than asserting a wish.
+ * bug, so the row pins current behaviour rather than asserting a wish — beside a
+ * sibling in the same fixture that DOES resolve, so the empty set can never be
+ * the sound of a fixture that stopped parsing.
+ *
+ * ── WHY THIS IS STILL ONE FILE ────────────────────────────────────────────────
+ *
+ * Four assertions at the bottom compare cases AGAINST EACH OTHER: the
+ * control/generic pairing sweep, the control-non-emptiness sweep, the
+ * duplicate-edge sweep, and the C++ source-order property (which is only
+ * meaningful as an equality between two separately-built fixtures). Splitting
+ * out, say, a `-cpp` sibling would either duplicate those sweeps or drop the
+ * cases they cover, and a matrix whose sweeps do not see every row is the thing
+ * this file exists to prevent. The cost is linear in cases — one pipeline run
+ * each, in one vitest worker — not quadratic, so the file grows in wall time the
+ * way a list does, not the way a matrix does.
  */
 import { describe, it, expect, beforeAll } from 'vitest';
 import fs from 'node:fs';
@@ -111,7 +146,8 @@ interface Row {
   readonly caller: string;
   /** Sorted, deduplicated target node ids AS MEASURED TODAY. An EMPTY array is
    *  only ever written next to a `caller` the suite has separately proven
-   *  exists, so an empty expectation can never pass vacuously. */
+   *  exists, in a fixture some other row proves resolved, so an empty
+   *  expectation can never pass vacuously. */
   readonly targets: readonly string[];
   readonly note: string;
 }
@@ -120,6 +156,11 @@ interface Case {
   readonly name: string;
   readonly file: string;
   readonly source: string;
+  /** Further files in the same fixture repo, for the shapes a single file
+   *  cannot express: a declaration split across files, a specialization
+   *  declared away from its instantiation, or two languages whose answers are
+   *  compared side by side. Written after `file`, in literal order. */
+  readonly extraFiles?: Readonly<Record<string, string>>;
   readonly rows: readonly Row[];
 }
 
@@ -344,7 +385,7 @@ class ControlSvc {
       {
         caller: 'runGeneric',
         targets: ['Function:A.swift:BoxRepo.save#1'],
-        note: 'ALREADY CORRECT. Pinned against regression.',
+        note: 'ALREADY CORRECT — but the initializer is a constructor of the SAME generic type, so this row cannot separate "the annotation resolved" from "the construction resolved". It pins the INITIALIZER path only; `annotation-only-swift-dart` pins the annotation on its own.',
       },
     ],
   },
@@ -373,7 +414,7 @@ class ControlSvc {
       {
         caller: 'runGeneric',
         targets: ['Method:a.dart:Repo.save#1'],
-        note: 'ALREADY CORRECT. Pinned against regression.',
+        note: 'ALREADY CORRECT — same caveat as the Swift row: initializer of the identical generic type, so it pins the INITIALIZER path. `annotation-only-swift-dart` pins the annotation on its own.',
       },
     ],
   },
@@ -519,10 +560,13 @@ export class Box2<T> {
     file: 'a.ts',
     source: `
 export interface Repo { save(): void; }
+export class RepoImpl implements Repo { save(): void {} }
 export class Box<T extends Repo> {
   private t: T;
-  constructor(t: T) { this.t = t; }
+  private direct: Repo;
+  constructor(t: T, d: Repo) { this.t = t; this.direct = d; }
   run(): void { this.t.save(); }
+  runDirect(): void { this.direct.save(); }
 }
 `,
     rows: [
@@ -530,6 +574,11 @@ export class Box<T extends Repo> {
         caller: 'run',
         targets: [],
         note: 'Pins current behaviour. Resolving a bound is a semantics expansion beyond #2833.',
+      },
+      {
+        caller: 'runDirect',
+        targets: ['Method:a.ts:Repo.save#0', 'Method:a.ts:RepoImpl.save#0'],
+        note: "ANTI-VACUITY SIBLING for the row above: a field of the BOUND itself, in the same class of the same fixture, resolves with fan-out. Without it, `run`'s empty set would also be what a fixture that never parsed produces, and the negative would pass for the wrong reason.",
       },
     ],
   },
@@ -559,13 +608,424 @@ struct Svc {
       },
     ],
   },
+  // ── C++ specialization must not depend on SOURCE ORDER ────────────────────
+  // The two cases below are byte-identical except for the order of the two
+  // `Vec` declarations, and both are asserted to the SAME target ids. That is
+  // the property, and it was measured false before the fix: with the
+  // specialization written first, `Vec<int> vi` bound `Vec<bool>`, because the
+  // base-name walk returned whichever declaration it reached first and
+  // `Vec<bool>` had pinned arguments the instantiation never wrote. A wrong
+  // edge, not a missing one — which is why the base-name route now refuses a
+  // declaration that carries its own template arguments and re-decides over the
+  // parameterized ones.
+  //
+  // The forward declaration is what makes the specialization-first arrangement
+  // legal C++ rather than merely parseable; it registers no definition of its
+  // own (the C++ scope extractor records only class specifiers WITH bodies), so
+  // it does not itself change what is visible.
+  {
+    name: 'cpp-spec-order-specialization-first',
+    file: 'a.cpp',
+    source: `
+template <class T> struct Vec;
+template <> struct Vec<bool> { void save() {} };
+template <class T> struct Vec { void save() {} };
+struct Svc {
+  Vec<bool> vb;
+  Vec<int> vi;
+  void runBool() { vb.save(); }
+  void runInt() { vi.save(); }
+};
+`,
+    rows: [
+      {
+        caller: 'runBool',
+        targets: ['Method:a.cpp:Vec<bool>.save#0'],
+        note: 'the exact-argument match still wins when the specialization is declared FIRST',
+      },
+      {
+        caller: 'runInt',
+        targets: ['Method:a.cpp:Vec.save#0~c:16619u1'],
+        note: 'THE ORDER BUG: `Vec<int>` bound the `Vec<bool>` specialization in this arrangement before the fix, purely because that declaration was written above the primary. Must be the primary.',
+      },
+    ],
+  },
+  {
+    name: 'cpp-spec-order-primary-first',
+    file: 'a.cpp',
+    source: `
+template <class T> struct Vec;
+template <class T> struct Vec { void save() {} };
+template <> struct Vec<bool> { void save() {} };
+struct Svc {
+  Vec<bool> vb;
+  Vec<int> vi;
+  void runBool() { vb.save(); }
+  void runInt() { vi.save(); }
+};
+`,
+    rows: [
+      {
+        caller: 'runBool',
+        targets: ['Method:a.cpp:Vec<bool>.save#0'],
+        note: 'mirror arrangement — same answer as specialization-first',
+      },
+      {
+        caller: 'runInt',
+        targets: ['Method:a.cpp:Vec.save#0~c:16619u1'],
+        note: 'mirror arrangement — same answer as specialization-first. Asserted as an equality between the two cases as well, below.',
+      },
+    ],
+  },
+  // ── Partial specialization: DETERMINISM, not deduction ────────────────────
+  // `Vec<int*>` against `template<class T> struct Vec<T*>` would need
+  // template-argument DEDUCTION to select the partial specialization, and
+  // deduction was ruled out of scope for #2833. So the answer these two rows
+  // pin is deliberately the PRIMARY template, and the point of pinning it is
+  // that it is the same in both declaration orders instead of whichever
+  // declaration the walk happened to reach first.
+  //
+  // If deduction is ever implemented, these rows SHOULD change to
+  // `Vec<T*>.save` — that is a deliberate semantics expansion, not a
+  // regression. Do not "fix" them by accident in the other direction.
+  {
+    name: 'cpp-partial-spec-primary-first',
+    file: 'a.cpp',
+    source: `
+template <class T> struct Vec;
+template <class T> struct Vec { void save() {} };
+template <class T> struct Vec<T*> { void save() {} };
+struct Svc {
+  Vec<int*> vp;
+  void runPtrArg() { vp.save(); }
+};
+`,
+    rows: [
+      {
+        caller: 'runPtrArg',
+        targets: ['Method:a.cpp:Vec.save#0~c:16619u1'],
+        note: 'primary template — `Vec<T*>` would require deduction (out of scope)',
+      },
+    ],
+  },
+  {
+    name: 'cpp-partial-spec-partial-first',
+    file: 'a.cpp',
+    source: `
+template <class T> struct Vec;
+template <class T> struct Vec<T*> { void save() {} };
+template <class T> struct Vec { void save() {} };
+struct Svc {
+  Vec<int*> vp;
+  void runPtrArg() { vp.save(); }
+};
+`,
+    rows: [
+      {
+        caller: 'runPtrArg',
+        targets: ['Method:a.cpp:Vec.save#0~c:16619u1'],
+        note: 'same target as primary-first: the partial specialization pins `T*`, which is not the `int*` written, so it cannot win the exact match and is excluded from the base-name re-decision',
+      },
+    ],
+  },
+  {
+    name: 'cpp-spec-lexical-shadowing',
+    file: 'global.cpp',
+    source: `
+template <class T> struct Box { void save() {} };
+template <> struct Box<bool> { void save() {} };
+struct OuterSvc {
+  Box<bool> b;
+  void runOuter() { b.save(); }
+};
+`,
+    extraFiles: {
+      'ns.cpp': `
+namespace N {
+template <class T> struct Box { void save() {} };
+template <> struct Box<bool> { void save() {} };
+struct InnerSvc {
+  Box<bool> b;
+  void runInner() { b.save(); }
+};
+}
+`,
+    },
+    rows: [
+      {
+        caller: 'runOuter',
+        targets: ['Method:global.cpp:Box<bool>.save#0'],
+        note: 'the GLOBAL specialization, from a field declared at global scope',
+      },
+      {
+        caller: 'runInner',
+        targets: ['Method:ns.cpp:Box<bool>.save#0'],
+        note: 'LEXICAL SHADOWING: the namespace-local `N::Box<bool>` wins for a field inside `N`. The two specializations are separated into two FILES because a same-named specialization in the same file collapses to one node id, which would make this row unable to tell the two apart. Before the fix the workspace-wide index was consulted first: it offered two `Box<bool>` matches, declined, and fell through to the base-name walk — landing on a PRIMARY template for both services.',
+      },
+    ],
+  },
+  {
+    name: 'cpp-spec-cross-file',
+    file: 'vec_primary.cpp',
+    source: `
+template <class T> struct Vec { void save() {} };
+`,
+    extraFiles: {
+      'vec_bool.cpp': `
+template <class T> struct Vec;
+template <> struct Vec<bool> { void save() {} };
+`,
+      'svc.cpp': `
+template <class T> struct Vec;
+struct Svc {
+  Vec<bool> vb;
+  Vec<int> vi;
+  void runBoolCrossFile() { vb.save(); }
+  void runIntCrossFile() { vi.save(); }
+};
+`,
+    },
+    rows: [
+      {
+        caller: 'runBoolCrossFile',
+        targets: ['Method:vec_bool.cpp:Vec<bool>.save#0'],
+        note: 'NON-REGRESSION: a specialization declared in a DIFFERENT file than the instantiation binds through the workspace-wide index. This is the row that ruled out narrowing the exact-argument match to lexically visible candidates only — the scope chain of `svc.cpp` offers no `Vec` at all.',
+      },
+      {
+        caller: 'runIntCrossFile',
+        targets: [],
+        note: 'PRE-EXISTING GAP, pinned: the PRIMARY template does not bind cross-file. Nothing matches `int` exactly, and the base-name walk declines because two workspace defs are registered under `Vec` and neither is lexically visible. Not caused by #2833 and not fixed by it; the sibling row above proves resolution ran in this fixture.',
+      },
+    ],
+  },
+  {
+    name: 'csharp-partial-generic-cross-file',
+    file: 'RepoA.cs',
+    source: `
+partial class Repo<T> { public void Save(T x) {} }
+`,
+    extraFiles: {
+      'RepoB.cs': `
+partial class Repo<T> { public void Load(T x) {} }
+`,
+      'Svc.cs': `
+class User {}
+class Plain { public void Save(User x) {} }
+class Svc {
+  private Repo<User> repo;
+  private Plain plain;
+  public void RunPartial(User u) { this.repo.Save(u); }
+  public void RunPartialControl(User u) { this.plain.Save(u); }
+}
+`,
+    },
+    rows: [
+      {
+        caller: 'RunPartialControl',
+        targets: ['Method:Svc.cs:Plain.Save#1'],
+        note: 'control',
+      },
+      {
+        caller: 'RunPartial',
+        targets: ['Method:RepoA.cs:Repo.Save#1'],
+        note: 'NON-REGRESSION: a generic `partial class` split across two files, with the field in a third, resolves — and TWO defs are registered under the base name `Repo`. This is the row that ruled out "return only on exactly one base-name candidate": that rule would have deleted this edge. The base-name route keeps `findClassBindingInScope`\'s own single-match-or-decline behaviour instead, which the partial halves survive because neither pins template arguments.',
+      },
+    ],
+  },
+  // ── C++ field DECORATION and QUALIFICATION ────────────────────────────────
+  // The bare `Repo<User> repo;` rule was only one of the three the fix added;
+  // the pointer and reference forms had no row at all until now, and the
+  // qualified forms (six more rules) none either.
+  {
+    name: 'cpp-pointer-reference-generic-field',
+    file: 'a.cpp',
+    source: `
+struct User {};
+template <class T> struct Repo { void save(User x) {} };
+struct Plain { void save(User x) {} };
+struct Svc {
+  Repo<User>* gp;
+  Repo<User>& gr;
+  Repo<Repo<User>> gn;
+  Plain* cp;
+  Plain& cr;
+  void runGenericPtr(User u) { gp->save(u); }
+  void runGenericRef(User u) { gr.save(u); }
+  void runGenericNested(User u) { gn.save(u); }
+  void runControlPtr(User u) { cp->save(u); }
+  void runControlRef(User u) { cr.save(u); }
+};
+`,
+    rows: [
+      { caller: 'runControlPtr', targets: ['Method:a.cpp:Plain.save#1'], note: 'control, pointer' },
+      {
+        caller: 'runControlRef',
+        targets: ['Method:a.cpp:Plain.save#1'],
+        note: 'control, reference',
+      },
+      {
+        caller: 'runGenericPtr',
+        targets: ['Method:a.cpp:Repo.save#1~c:16619u1'],
+        note: 'the `pointer_declarator` rule of the three the fix added — previously untested',
+      },
+      {
+        caller: 'runGenericRef',
+        targets: ['Method:a.cpp:Repo.save#1~c:16619u1'],
+        note: 'the `reference_declarator` rule — previously untested',
+      },
+      {
+        caller: 'runGenericNested',
+        targets: ['Method:a.cpp:Repo.save#1~c:16619u1'],
+        note: 'nested `Repo<Repo<User>>` — the depth-aware argument scan must not stop at the inner `>`',
+      },
+    ],
+  },
+  {
+    name: 'cpp-qualified-generic-field',
+    file: 'a.cpp',
+    source: `
+struct Item {};
+struct User {};
+struct Payload { void reset() {} };
+struct Plain { void save(User x) {} };
+namespace std {
+template <class T> struct vector { void push_back(Item x) {} };
+template <class T> struct unique_ptr { void reset() {} };
+}
+namespace ns {
+template <class T> struct Repo { void save(User x) {} };
+}
+namespace a { namespace b {
+template <class T> struct Deep { void go(User x) {} };
+} }
+namespace a { namespace b { namespace c {
+template <class T> struct Deeper { void go3(User x) {} };
+} } }
+struct Svc {
+  std::vector<Item> items;
+  ns::Repo<User> r;
+  a::b::Deep<User> d;
+  std::vector<Item>* pitems;
+  ns::Repo<User>& rr;
+  std::unique_ptr<Payload> up;
+  a::b::c::Deeper<User> tooDeep;
+  Plain plain;
+  void runQualStd(Item i) { items.push_back(i); }
+  void runQualNs(User u) { r.save(u); }
+  void runQualDeep(User u) { d.go(u); }
+  void runQualPtr(Item i) { pitems->push_back(i); }
+  void runQualRef(User u) { rr.save(u); }
+  void runQualUnique() { up.reset(); }
+  void runQualTooDeep(User u) { tooDeep.go3(u); }
+  void runQualControl(User u) { plain.save(u); }
+};
+`,
+    rows: [
+      {
+        caller: 'runQualControl',
+        targets: ['Method:a.cpp:Plain.save#1'],
+        note: 'control: unqualified, non-generic field in the same struct',
+      },
+      {
+        caller: 'runQualStd',
+        targets: ['Method:a.cpp:vector.push_back#1~c:16619u1'],
+        note: 'depth-1 qualifier, `std::vector<Item>` — the commonest real spelling of a generic member and the one the six new rules exist for',
+      },
+      {
+        caller: 'runQualNs',
+        targets: ['Method:a.cpp:Repo.save#1~c:16619u1'],
+        note: 'depth-1 qualifier, user namespace `ns::Repo<User>`',
+      },
+      {
+        caller: 'runQualPtr',
+        targets: ['Method:a.cpp:vector.push_back#1~c:16619u1'],
+        note: 'depth-1 qualifier, pointer form',
+      },
+      {
+        caller: 'runQualRef',
+        targets: ['Method:a.cpp:Repo.save#1~c:16619u1'],
+        note: 'depth-1 qualifier, reference form',
+      },
+      {
+        caller: 'runQualDeep',
+        targets: ['Method:a.cpp:Deep.go#1~c:16619u1'],
+        note: 'depth-2 qualifier, `a::b::Deep<User>` — the deepest the rules cover',
+      },
+      {
+        caller: 'runQualUnique',
+        targets: ['Method:a.cpp:unique_ptr.reset#0~c:16619u1'],
+        note: 'MEASURED, and worth stating: `std::unique_ptr<Payload>` types to `unique_ptr`, NOT deref-stripped to `Payload` — `Payload` also declares `reset()` and does not receive the edge. The capture drops the qualifier and keeps the template head, so smart-pointer transparency is not applied on this path.',
+      },
+      {
+        caller: 'runQualTooDeep',
+        targets: [],
+        note: 'DOCUMENTED BOUNDARY, pinned: qualifier depth 3 (`a::b::c::Deeper<User>`) is NOT captured — a tree-sitter query cannot match a node at arbitrary nesting depth and each level costs three more patterns. Everything else in this fixture resolves, so the empty set is the boundary and not a dead fixture. Raising the depth means adding rules AND flipping this row.',
+      },
+    ],
+  },
+  // ── Container-name collision: making an unguarded policy visible ───────────
+  // Base-name erasure is not scoped to user-defined types. A workspace class
+  // whose name collides with a standard container now answers for a field
+  // annotated with that container, and the multi-argument shape is exactly
+  // where the container ALLOW-LISTS decline to help, so nothing else competes.
+  // Both rows are measured; both are what this project wants when the workspace
+  // really does declare the class (the annotation names it, so the edge is
+  // right), and both would emit nothing if it did not.
+  {
+    name: 'container-name-collision',
+    file: 'a.ts',
+    source: `
+export class User { save(): void {} }
+export class Map { save(): void {} }
+export class Plain { save(): void {} }
+export class TsSvc {
+  private m: Map<string, User>;
+  private plain: Plain;
+  constructor(m: Map<string, User>, p: Plain) { this.m = m; this.plain = p; }
+  runTsContainer(): void { this.m.save(); }
+  runTsControl(): void { this.plain.save(); }
+}
+`,
+    extraFiles: {
+      'A.cs': `
+class CsUser { public void Save() {} }
+class Dictionary { public void Save() {} }
+class CsPlain { public void Save() {} }
+class CsSvc {
+  private Dictionary<string, CsUser> d;
+  private CsPlain plain;
+  public void RunCsContainer() { this.d.Save(); }
+  public void RunCsControl() { this.plain.Save(); }
+}
+`,
+    },
+    rows: [
+      { caller: 'runTsControl', targets: ['Method:a.ts:Plain.save#0'], note: 'control (TS)' },
+      { caller: 'RunCsControl', targets: ['Method:A.cs:CsPlain.Save#0'], note: 'control (C#)' },
+      {
+        caller: 'runTsContainer',
+        targets: ['Method:a.ts:Map.save#0'],
+        note: 'INTENDED, and new: `Map<string, User>` binds the workspace `class Map`, not the value type `User`. The annotation names `Map`, so naming `Map` is the right answer; the row exists because base-name erasure reaches it on the shared path with no container guard, and that policy should be readable here rather than inferred from an absence.',
+      },
+      {
+        caller: 'RunCsContainer',
+        targets: ['Method:A.cs:Dictionary.Save#0'],
+        note: 'INTENDED, and new: same policy in C# for `Dictionary<string, CsUser>`. `CsUser` also declares `Save()` and does NOT receive the edge, which is what proves the base name won rather than the container allow-list unwrapping to the value type.',
+      },
+    ],
+  },
   // ── Generic SPELLINGS ─────────────────────────────────────────────────────
   // The rows above all use the simplest possible generic, `Repo<User>`. A fix
   // that only handles that spelling is not a fix, so these pin the shapes real
   // code actually writes: a nullable generic, a wildcard, a raw type, a nested
-  // generic, and a multi-argument one. All are measured, none needed extra work
-  // beyond the shared lookup — which is the evidence that erasing to the base
-  // name is the right primitive rather than a special case.
+  // generic, and a multi-argument one.
+  //
+  // READ THE LANGUAGE BEFORE READING THE ROW. Java, Kotlin and Rust erase type
+  // arguments at INTERPRET time, so their spellings never reach the shared
+  // lookup at all and their rows pass with or without it — they are regression
+  // pins for the interpret-time path, and they cannot fail on a revert of the
+  // shared change. The discriminating spelling rows are the TypeScript, C# and
+  // Python ones: `ts-multiarg-generic` and `ts-python-nested-and-multiarg`.
   {
     name: 'kotlin-nullable-generic',
     file: 'A.kt',
@@ -581,7 +1041,7 @@ class Svc(private val repo: Repo<User>?) {
       {
         caller: 'runNullableGeneric',
         targets: ['Method:A.kt:Repo.save#1', 'Method:A.kt:UserRepo.save#1'],
-        note: 'nullable generic `Repo<User>?` — decoration and type arguments compose',
+        note: 'nullable generic `Repo<User>?` — decoration and type arguments compose. INTERPRET-TIME PATH: cannot fail on a revert of the shared lookup.',
       },
     ],
   },
@@ -603,12 +1063,12 @@ class Svc {
       {
         caller: 'runWildcard',
         targets: ['Method:A.java:Repo.save#1', 'Method:A.java:UserRepo.save#1'],
-        note: 'bounded wildcard `Repo<? extends User>` names the same declaration',
+        note: 'bounded wildcard `Repo<? extends User>` names the same declaration. INTERPRET-TIME PATH: cannot fail on a revert of the shared lookup.',
       },
       {
         caller: 'runRaw',
         targets: ['Method:A.java:Repo.save#1', 'Method:A.java:UserRepo.save#1'],
-        note: 'raw type `Repo` — the erased spelling Java itself permits',
+        note: 'raw type `Repo` — the erased spelling Java itself permits. Carries no type arguments at all, so it never enters the generic path in any build.',
       },
     ],
   },
@@ -626,7 +1086,7 @@ impl Svc { pub fn run_nested(&self, u: &User) { self.repo.save(u); } }
       {
         caller: 'run_nested',
         targets: ['Function:a.rs:Repo.save#1'],
-        note: 'nested generic `Repo<Repo<User>>` — the depth-aware scan must not stop at the inner `>`',
+        note: 'nested generic `Repo<Repo<User>>` — the depth-aware scan must not stop at the inner `>`. INTERPRET-TIME PATH: cannot fail on a revert of the shared lookup.',
       },
     ],
   },
@@ -647,7 +1107,242 @@ export class Svc {
       {
         caller: 'run',
         targets: ['Method:a.ts:Handler.handle#2'],
-        note: 'multi-argument generic `Handler<Key, User>` — the container allow-lists deliberately ignore multi-arg shapes, so this only resolves via base-name erasure',
+        note: 'multi-argument generic `Handler<Key, User>` — the container allow-lists deliberately ignore multi-arg shapes, so this only resolves via base-name erasure. DISCRIMINATING: TypeScript is on the shared path.',
+      },
+    ],
+  },
+  {
+    name: 'ts-python-nested-and-multiarg',
+    file: 'a.ts',
+    source: `
+export class User {}
+export interface Repo<T> { save(x: T): void; }
+export class UserRepo implements Repo<User> { save(x: User): void {} }
+export class NestSvc {
+  private nested: Repo<Repo<User>>;
+  constructor(n: Repo<Repo<User>>) { this.nested = n; }
+  runTsNested(u: User): void { this.nested.save(u); }
+}
+`,
+    extraFiles: {
+      'a.py': `
+from typing import Generic, TypeVar
+
+T = TypeVar("T")
+K = TypeVar("K")
+V = TypeVar("V")
+
+class PyUser:
+    pass
+
+class PyKey:
+    pass
+
+class PyRepo(Generic[T]):
+    def save(self, x):
+        pass
+
+class PyHandler(Generic[K, V]):
+    def handle(self, k, v):
+        pass
+
+class PyNestSvc:
+    def __init__(self, nested: PyRepo[PyRepo[PyUser]]):
+        self.nested = nested
+
+    def run_py_nested(self, u: PyUser) -> None:
+        self.nested.save(u)
+
+class PyMultiSvc:
+    def __init__(self, h: PyHandler[PyKey, PyUser]):
+        self.h = h
+
+    def run_py_multiarg(self, k: PyKey, u: PyUser) -> None:
+        self.h.handle(k, u)
+`,
+    },
+    rows: [
+      {
+        caller: 'runTsNested',
+        targets: ['Method:a.ts:Repo.save#1', 'Method:a.ts:UserRepo.save#1'],
+        note: 'DISCRIMINATING nested generic: TypeScript reaches the shared lookup, unlike the Java/Kotlin/Rust spelling rows above',
+      },
+      {
+        caller: 'run_py_nested',
+        targets: ['Method:a.py:PyRepo.save#1'],
+        note: 'DISCRIMINATING nested generic in the SQUARE-bracket spelling, `PyRepo[PyRepo[PyUser]]`',
+      },
+      {
+        caller: 'run_py_multiarg',
+        targets: ['Method:a.py:PyHandler.handle#2'],
+        note: 'DISCRIMINATING multi-argument generic in the square-bracket spelling, `PyHandler[PyKey, PyUser]` — the shape the container allow-lists decline',
+      },
+    ],
+  },
+  // ── Annotation-only Swift and Dart ────────────────────────────────────────
+  // The `swift` and `dart` cases above give the field an initializer of the
+  // SAME generic type, so they cannot separate "the annotation resolved" from
+  // "the construction resolved". Here the initializer cannot be the source: the
+  // Swift property is an optional with no initializer, and the Dart one is
+  // `late` with no initializer. Each has a non-generic control declared exactly
+  // the same way, so a failure of the DECORATION (`?`, `late`) reads
+  // differently from a failure of the type argument.
+  {
+    name: 'annotation-only-swift-dart',
+    file: 'A.swift',
+    source: `
+class User {}
+class BoxRepo<T> { func save(x: User) {} }
+class Plain { func save(x: User) {} }
+class AnnSvc {
+  var repo: BoxRepo<User>?
+  func runSwiftAnnotationOnly(u: User) { repo?.save(x: u) }
+}
+class AnnControl {
+  var plain: Plain?
+  func runSwiftAnnotationControl(u: User) { plain?.save(x: u) }
+}
+`,
+    extraFiles: {
+      'a.dart': `
+class DUser {}
+class DRepo<T> { void save(DUser x) {} }
+class DPlain { void save(DUser x) {} }
+class DAnnSvc {
+  late DRepo<DUser> repo;
+  void runDartAnnotationOnly(DUser u) { this.repo.save(u); }
+}
+class DAnnControl {
+  late DPlain plain;
+  void runDartAnnotationControl(DUser u) { this.plain.save(u); }
+}
+`,
+    },
+    rows: [
+      {
+        caller: 'runSwiftAnnotationControl',
+        targets: ['Function:A.swift:Plain.save#1'],
+        note: 'control (Swift), same optional decoration and no initializer',
+      },
+      {
+        caller: 'runDartAnnotationControl',
+        targets: ['Method:a.dart:DPlain.save#1'],
+        note: 'control (Dart), same `late` and no initializer',
+      },
+      {
+        caller: 'runSwiftAnnotationOnly',
+        targets: ['Function:A.swift:BoxRepo.save#1'],
+        note: 'the ANNOTATION alone types the receiver — no initializer exists to be the source',
+      },
+      {
+        caller: 'runDartAnnotationOnly',
+        targets: ['Method:a.dart:DRepo.save#1'],
+        note: 'the ANNOTATION alone types the receiver — `late` with no initializer',
+      },
+    ],
+  },
+  // ── How the field is REACHED ──────────────────────────────────────────────
+  // Every row above declares and uses the generic field in one file, in one
+  // class, off `this`. These are the other ways `typeOfMemberOnClass` gets
+  // there, in one fixture repo: through an import, through the MRO, through a
+  // renamed import, through the module-HOISTED type-binding branch (the second
+  // `resolveClassBindingForName` call this PR switched, which TypeScript is the
+  // only language to reach today), and through a static member.
+  {
+    name: 'ts-reach-shapes',
+    file: 'repo.ts',
+    source: `
+export class User {}
+export interface Repo<T> { save(x: T): void; }
+export class UserRepo implements Repo<User> { save(x: User): void {} }
+export class Plain { save(x: User): void {} }
+`,
+    extraFiles: {
+      'base.ts': `
+import { Repo, User } from './repo';
+export class Base {
+  protected repo: Repo<User>;
+  constructor(r: Repo<User>) { this.repo = r; }
+}
+`,
+      'derived.ts': `
+import { Base } from './base';
+import { User } from './repo';
+export class Derived extends Base {
+  runInherited(u: User): void { this.repo.save(u); }
+}
+`,
+      'holder.ts': `
+import { Repo, User, Plain } from './repo';
+export class Holder {
+  static repo: Repo<User>;
+  static plain: Plain;
+}
+export class StaticSvc {
+  runStatic(u: User): void { Holder.repo.save(u); }
+  runStaticControl(u: User): void { Holder.plain.save(u); }
+}
+`,
+      'aliased.ts': `
+import { Repo as R, User } from './repo';
+export class AliasSvc {
+  private r: R<User>;
+  constructor(r: R<User>) { this.r = r; }
+  runAliased(u: User): void { this.r.save(u); }
+}
+`,
+      'hoist.ts': `
+import { Repo, User } from './repo';
+export class HoistSvc {
+  private inner: Repo<User>;
+  constructor(i: Repo<User>) { this.inner = i; }
+  getRepo(): Repo<User> { return this.inner; }
+  runHoisted(u: User): void { this.getRepo().save(u); }
+}
+`,
+      'crossfile.ts': `
+import { Repo, User } from './repo';
+export class CrossSvc {
+  private repo: Repo<User>;
+  constructor(r: Repo<User>) { this.repo = r; }
+  runCrossFile(u: User): void { this.repo.save(u); }
+}
+`,
+    },
+    rows: [
+      {
+        caller: 'runCrossFile',
+        targets: ['Method:repo.ts:Repo.save#1', 'Method:repo.ts:UserRepo.save#1'],
+        note: 'CROSS-FILE: the generic type is declared and imported from another file. Every other #2833 row is single-file.',
+      },
+      {
+        caller: 'runInherited',
+        targets: ['Method:repo.ts:Repo.save#1', 'Method:repo.ts:UserRepo.save#1'],
+        note: 'INHERITANCE: the field is declared on the BASE class, so `typeOfMemberOnClass` finds it by walking the MRO — a different owner scope than the one the call is written in',
+      },
+      {
+        caller: 'runAliased',
+        targets: ['Method:repo.ts:Repo.save#1', 'Method:repo.ts:UserRepo.save#1'],
+        note: 'IMPORT ALIAS: the field is annotated `R<User>` where `R` is `Repo` renamed at import. Base-name erasure yields `R`, which must still resolve through the alias.',
+      },
+      {
+        caller: 'runHoisted',
+        targets: [
+          'Method:hoist.ts:HoistSvc.getRepo#0',
+          'Method:repo.ts:Repo.save#1',
+          'Method:repo.ts:UserRepo.save#1',
+        ],
+        note: 'MODULE-HOIST BRANCH: `this.getRepo().save(u)` types its step off a RETURN-type binding, which TypeScript hoists out of the class body onto the module scope — the second of the two `typeOfMemberOnClass` lookups this PR switched, and the one no other row reaches. The `getRepo` edge is the call itself and is part of the expectation.',
+      },
+      {
+        caller: 'runStaticControl',
+        targets: [],
+        note: 'PRE-EXISTING GAP, and the control that classifies it: a NON-generic static member receiver emits nothing either. So the empty row below is a static/class-level member gap, not a generics one.',
+      },
+      {
+        caller: 'runStatic',
+        targets: [],
+        note: 'PRE-EXISTING GAP, pinned: `Holder.repo.save(u)` through a STATIC generic member emits nothing. Behaves exactly like its non-generic control above, which is the bar this file measures against. Four other rows in this same fixture resolve, so the empty set is a gap and not a dead fixture.',
       },
     ],
   },
@@ -688,7 +1383,7 @@ describe('generic-typed field receivers across languages (#2833)', () => {
   beforeAll(async () => {
     for (const testCase of CASES) {
       const dir = fs.mkdtempSync(path.join(os.tmpdir(), `gn-2833-${testCase.name}-`));
-      writeFixtureRepo(dir, { [testCase.file]: testCase.source });
+      writeFixtureRepo(dir, { [testCase.file]: testCase.source, ...(testCase.extraFiles ?? {}) });
       // CALLS resolution is complete before the graph phases run and nothing
       // here reads what they produce, so skipping them narrows each run to the
       // phase under test.
@@ -718,19 +1413,23 @@ describe('generic-typed field receivers across languages (#2833)', () => {
     return ids.sort();
   }
 
-  /** Distinct CALLS target ids emitted by the one node named `caller`, sorted.
-   *  Deduplicated deliberately: Swift emits the same edge more than once for a
-   *  single call site, and edge MULTIPLICITY is a different question from
-   *  whether the receiver typed at all. */
-  function callTargets(name: string, caller: string): string[] {
+  /** Every CALLS target id emitted by the one node named `caller`, sorted and
+   *  WITH multiplicity. Row assertions use the deduplicated view below; the
+   *  duplicate sweep at the bottom of this file is the only reader of this one,
+   *  and exists so that deduplicating cannot hide a double-emit regression. */
+  function rawCallTargets(name: string, caller: string): string[] {
     const ids = new Set(callerIds(name, caller));
-    return [
-      ...new Set(
-        getRelationships(resultFor(name), 'CALLS')
-          .filter((edge) => ids.has(edge.rel.sourceId))
-          .map((edge) => edge.rel.targetId),
-      ),
-    ].sort();
+    return getRelationships(resultFor(name), 'CALLS')
+      .filter((edge) => ids.has(edge.rel.sourceId))
+      .map((edge) => edge.rel.targetId)
+      .sort();
+  }
+
+  /** Distinct CALLS target ids emitted by the one node named `caller`, sorted.
+   *  Edge MULTIPLICITY is a different question from whether the receiver typed
+   *  at all, and every row here asks the second one. */
+  function callTargets(name: string, caller: string): string[] {
+    return [...new Set(rawCallTargets(name, caller))].sort();
   }
 
   for (const testCase of CASES) {
@@ -753,9 +1452,10 @@ describe('generic-typed field receivers across languages (#2833)', () => {
   // A generic-typed field must not merely emit SOMETHING — it must emit exactly
   // as many targets as the SAME language's non-generic control field. Asserted
   // across the whole matrix in one place so adding a language cannot quietly
-  // skip it, and stated as an explicit per-language map rather than "all true"
-  // so the four open gaps are visible in the expectation itself. Steps 3, 5 and
-  // 6 flip their entries to `true`; nothing else in this file needs to change.
+  // skip it, and stated as an explicit per-pair map rather than "all true" so
+  // the pinned non-matches are visible in the expectation itself. Keyed by
+  // case AND generic caller, because one case can pin several pairs (the C++
+  // pointer/reference forms, and the two languages of a shared fixture).
   const PAIRED = [
     { name: 'typescript', control: 'runControl', generic: 'runGeneric', matches: true },
     { name: 'csharp', control: 'RunControl', generic: 'RunGeneric', matches: true },
@@ -766,16 +1466,94 @@ describe('generic-typed field receivers across languages (#2833)', () => {
     { name: 'dart', control: 'runControl', generic: 'runGeneric', matches: true },
     { name: 'swift', control: 'runControl', generic: 'runGeneric', matches: true },
     { name: 'rust', control: 'run_control', generic: 'run_generic', matches: true },
+    {
+      name: 'cpp-pointer-reference-generic-field',
+      control: 'runControlPtr',
+      generic: 'runGenericPtr',
+      matches: true,
+    },
+    {
+      name: 'cpp-pointer-reference-generic-field',
+      control: 'runControlRef',
+      generic: 'runGenericRef',
+      matches: true,
+    },
+    {
+      name: 'cpp-pointer-reference-generic-field',
+      control: 'runControlRef',
+      generic: 'runGenericNested',
+      matches: true,
+    },
+    {
+      name: 'cpp-qualified-generic-field',
+      control: 'runQualControl',
+      generic: 'runQualNs',
+      matches: true,
+    },
+    {
+      name: 'cpp-qualified-generic-field',
+      control: 'runQualControl',
+      generic: 'runQualDeep',
+      matches: true,
+    },
+    {
+      // PINNED NON-MATCH: qualifier depth 3 is uncaptured (see the row note).
+      name: 'cpp-qualified-generic-field',
+      control: 'runQualControl',
+      generic: 'runQualTooDeep',
+      matches: false,
+    },
+    {
+      name: 'csharp-partial-generic-cross-file',
+      control: 'RunPartialControl',
+      generic: 'RunPartial',
+      matches: true,
+    },
+    {
+      name: 'container-name-collision',
+      control: 'runTsControl',
+      generic: 'runTsContainer',
+      matches: true,
+    },
+    {
+      name: 'container-name-collision',
+      control: 'RunCsControl',
+      generic: 'RunCsContainer',
+      matches: true,
+    },
+    {
+      name: 'annotation-only-swift-dart',
+      control: 'runSwiftAnnotationControl',
+      generic: 'runSwiftAnnotationOnly',
+      matches: true,
+    },
+    {
+      name: 'annotation-only-swift-dart',
+      control: 'runDartAnnotationControl',
+      generic: 'runDartAnnotationOnly',
+      matches: true,
+    },
+    {
+      // PINNED NON-MATCH: a bounded type parameter resolves to nothing while a
+      // field of its BOUND resolves with fan-out (see the row notes).
+      name: 'neg-bounded-type-parameter',
+      control: 'runDirect',
+      generic: 'run',
+      matches: false,
+    },
   ] as const;
+
+  const pairKey = (pair: { readonly name: string; readonly generic: string }): string =>
+    `${pair.name}/${pair.generic}`;
 
   it('each language generic field matches (or, where pinned, does not match) its own control row', () => {
     const observed = Object.fromEntries(
       PAIRED.map((p) => [
-        p.name,
+        pairKey(p),
         callTargets(p.name, p.generic).length === callTargets(p.name, p.control).length,
       ]),
     );
-    expect(observed).toEqual(Object.fromEntries(PAIRED.map((p) => [p.name, p.matches])));
+    expect(observed).toEqual(Object.fromEntries(PAIRED.map((p) => [pairKey(p), p.matches])));
   });
 
   // Every control row must emit SOMETHING. Without this, a fixture that stopped
@@ -783,8 +1561,60 @@ describe('generic-typed field receivers across languages (#2833)', () => {
   // exact way a matrix rots into a green lie.
   it('every control row emits at least one edge', () => {
     const observed = Object.fromEntries(
-      PAIRED.map((p) => [p.name, callTargets(p.name, p.control).length > 0]),
+      PAIRED.map((p) => [pairKey(p), callTargets(p.name, p.control).length > 0]),
     );
-    expect(observed).toEqual(Object.fromEntries(PAIRED.map((p) => [p.name, true])));
+    expect(observed).toEqual(Object.fromEntries(PAIRED.map((p) => [pairKey(p), true])));
+  });
+
+  // Which target a C++ instantiation lands on must be a function of the
+  // arguments written, never of which declaration the file happens to write
+  // first. Asserted as an EQUALITY between two independently-built fixtures
+  // rather than against literals, so it states the property; the literals are
+  // pinned by the four rows those fixtures already own.
+  it('C++ specialization selection does not depend on declaration order', () => {
+    expect({
+      explicitBool: callTargets('cpp-spec-order-primary-first', 'runBool'),
+      explicitInt: callTargets('cpp-spec-order-primary-first', 'runInt'),
+      partial: callTargets('cpp-partial-spec-primary-first', 'runPtrArg'),
+    }).toEqual({
+      explicitBool: callTargets('cpp-spec-order-specialization-first', 'runBool'),
+      explicitInt: callTargets('cpp-spec-order-specialization-first', 'runInt'),
+      partial: callTargets('cpp-partial-spec-partial-first', 'runPtrArg'),
+    });
+  });
+
+  // `callTargets` deduplicates, which is right for the question every row asks
+  // and wrong as a blanket policy: a language that started emitting each CALLS
+  // edge twice would go unnoticed. This is the counterweight — the number of
+  // SURPLUS edges (raw minus distinct) summed over a case's rows, pinned per
+  // case. Anything not listed must be exactly zero, so a new duplicate anywhere
+  // fails here even though the rows themselves stay green.
+  //
+  // MEASURED: the map is EMPTY. The dedup was originally justified by Swift
+  // emitting the same edge twice for one call site — no fixture in this file
+  // reproduces that, Swift's included, so every case is pinned at zero surplus
+  // rather than the dedup being excused wholesale on one language's behalf. If
+  // a Swift shape that really does double-emit is added here, pin it as a
+  // number on that case and leave every other case at zero.
+  const SURPLUS_EDGES: Readonly<Record<string, number>> = {};
+
+  it('no case emits a CALLS edge more than once per call site, except where pinned', () => {
+    const observed = Object.fromEntries(
+      CASES.map((testCase) => [
+        testCase.name,
+        testCase.rows.reduce(
+          (surplus, row) =>
+            surplus +
+            rawCallTargets(testCase.name, row.caller).length -
+            callTargets(testCase.name, row.caller).length,
+          0,
+        ),
+      ]),
+    );
+    expect(observed).toEqual(
+      Object.fromEntries(
+        CASES.map((testCase) => [testCase.name, SURPLUS_EDGES[testCase.name] ?? 0]),
+      ),
+    );
   });
 });
