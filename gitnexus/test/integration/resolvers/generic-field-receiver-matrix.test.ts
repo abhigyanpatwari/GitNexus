@@ -31,16 +31,47 @@
  * ARGUMENT, and a user-defined `Repo<User>` matches nothing in it, so the
  * literal spelling survives into a lookup that binds nothing.
  *
- * Python is affected twice over: it spells type application with SQUARE brackets
- * (`Repo[User]`), and the generic branch of `resolveClassBindingForName` is
- * gated on `.includes('<')`. That is why Python loses its local and parameter
- * rows too, where TypeScript and C# keep theirs — and why the shared fix alone
- * does not lift it.
+ * Python was affected twice over: it spells type application with SQUARE
+ * brackets (`Repo[User]`), and the generic branch of the shared lookup is gated
+ * on `.includes('<')`. That is why Python lost its local and parameter rows too,
+ * where TypeScript and C# kept theirs, and why the shared lookup change alone
+ * did not lift it. Its interpreter now reduces a subscripted type its container
+ * allow-lists do not claim to the base name — the same rule Java and Swift
+ * already applied to `<…>`.
  *
- * C++ is affected for a third, still-undiagnosed reason (#2833 step 5): it
- * writes the receiver bare (`repo.save(u)`, no `this->`), so it already takes
- * Case 4 and the generic-aware lookup — and still fails, while a C++ LOCAL of
- * the same type and a C++ non-generic FIELD both resolve.
+ * C++ failed for a third reason entirely, and it was a CAPTURE gap rather than a
+ * resolution one: all three `field_declaration` type-binding rules required
+ * `type: (type_identifier)`, so `Repo<User> repo;` — a `template_type` — matched
+ * none of them and the member got no type binding at all. Both spellings failed
+ * while a LOCAL of the same type resolved, because the local declaration rules
+ * had gained their `template_type` variant long ago. Three mirrored rules close
+ * it.
+ *
+ * ── MEASURED STATE (all rows below are measured, none predicted) ─────────────
+ *
+ *   language     generic field   why
+ *   -----------  --------------  ------------------------------------------
+ *   TypeScript   fixed           shared lookup now generic-aware
+ *   C#           fixed           same
+ *   C++          fixed           + new template_type field captures
+ *   Python       fixed           + base-name erasure for `Name[...]`
+ *   Java         already ok      erases generics at interpret time
+ *   Kotlin       already ok      same
+ *   Go           already ok      same, for its `[T]` spelling
+ *   Rust         already ok      same
+ *   Swift        already ok      same
+ *   Dart         already ok      same
+ *   PHP          n/a             no generic syntax; typed property pinned
+ *   Ruby, C,     n/a             no generics in the language
+ *   COBOL
+ *
+ * Two pre-existing gaps were measured during this work and are NOT #2833:
+ * C++ `this->field.m()` emits nothing even for a NON-generic field (its control
+ * fails identically), and JavaScript/PHP docblock-declared field types bind
+ * nothing at all (their controls fail identically too). Both are reported
+ * separately rather than folded in here, because in each case the generic row
+ * behaves exactly like that language's own control row — which is the bar this
+ * file measures against.
  *
  * ── THE NEGATIVE CONTROLS ─────────────────────────────────────────────────────
  *
@@ -82,14 +113,6 @@ interface Row {
    *  only ever written next to a `caller` the suite has separately proven
    *  exists, so an empty expectation can never pass vacuously. */
   readonly targets: readonly string[];
-  /** `known-gap` rows are the defect, pinned at its current value so the file
-   *  is green on main and flipping it is a visible edit rather than a silent
-   *  drift. */
-  readonly status: 'resolves' | 'known-gap';
-  /** What the row must become once its step lands. Documentation for the
-   *  executor and the reviewer; no assertion reads it, because asserting a
-   *  wish is how a suite goes red for months. */
-  readonly whenFixed?: readonly string[];
   readonly note: string;
 }
 
@@ -125,14 +148,12 @@ export class ControlSvc {
       {
         caller: 'runControl',
         targets: ['Method:a.ts:Plain.save#1', 'Method:a.ts:PlainRepo.save#1'],
-        status: 'resolves',
         note: 'control: interface-typed field, primary + dispatch fan-out',
       },
       {
         caller: 'runGeneric',
         targets: ['Method:a.ts:Repo.save#1', 'Method:a.ts:UserRepo.save#1'],
-        status: 'resolves',
-        note: '#2833 step 3: generic-typed field must match the control exactly',
+        note: '#2833: generic-typed field matches the control exactly, primary + fan-out',
       },
     ],
   },
@@ -158,14 +179,12 @@ class ControlSvc {
       {
         caller: 'RunControl',
         targets: ['Method:A.cs:IPlain.Save#1', 'Method:A.cs:PlainRepo.Save#1'],
-        status: 'resolves',
         note: 'control',
       },
       {
         caller: 'RunGeneric',
         targets: ['Method:A.cs:IRepo.Save#1', 'Method:A.cs:UserRepo.Save#1'],
-        status: 'resolves',
-        note: '#2833 step 3',
+        note: '#2833: matches the control exactly, primary + fan-out',
       },
     ],
   },
@@ -191,13 +210,11 @@ class ControlSvc {
       {
         caller: 'runControl',
         targets: ['Method:A.java:Plain.save#1', 'Method:A.java:PlainRepo.save#1'],
-        status: 'resolves',
         note: 'control',
       },
       {
         caller: 'runGeneric',
         targets: ['Method:A.java:Repo.save#1', 'Method:A.java:UserRepo.save#1'],
-        status: 'resolves',
         note: 'ALREADY CORRECT — interpret-time erasure. Pinned against regression.',
       },
     ],
@@ -222,13 +239,11 @@ class ControlSvc(private val plain: Plain) {
       {
         caller: 'runControl',
         targets: ['Method:A.kt:Plain.save#1', 'Method:A.kt:PlainRepo.save#1'],
-        status: 'resolves',
         note: 'control',
       },
       {
         caller: 'runGeneric',
         targets: ['Method:A.kt:Repo.save#1', 'Method:A.kt:UserRepo.save#1'],
-        status: 'resolves',
         note: 'ALREADY CORRECT. Pinned against regression.',
       },
     ],
@@ -268,13 +283,11 @@ func (s ControlSvc) RunControl(u User) { s.plain.Save(u) }
           'Method:a.go:PlainRepo.Save#1',
           'Method:a.go:UserRepo.Save#1',
         ],
-        status: 'resolves',
         note: 'control: Go structural satisfaction fans out to both value-receiver impls (#2829)',
       },
       {
         caller: 'RunGeneric',
         targets: ['Method:a.go:Repo.Save#1'],
-        status: 'resolves',
         note: 'ALREADY CORRECT for the bracket spelling. Pinned against regression.',
       },
     ],
@@ -297,13 +310,11 @@ impl ControlSvc { pub fn run_control(&self, u: &User) { self.plain.save(u); } }
       {
         caller: 'run_control',
         targets: ['Function:a.rs:Plain.save#1'],
-        status: 'resolves',
         note: 'control: concrete receiver, no fan-out',
       },
       {
         caller: 'run_generic',
         targets: ['Function:a.rs:Repo.save#1'],
-        status: 'resolves',
         note: 'ALREADY CORRECT. Pinned against regression.',
       },
     ],
@@ -328,13 +339,11 @@ class ControlSvc {
       {
         caller: 'runControl',
         targets: ['Function:A.swift:Plain.save#1'],
-        status: 'resolves',
         note: 'control',
       },
       {
         caller: 'runGeneric',
         targets: ['Function:A.swift:BoxRepo.save#1'],
-        status: 'resolves',
         note: 'ALREADY CORRECT. Pinned against regression.',
       },
     ],
@@ -359,13 +368,11 @@ class ControlSvc {
       {
         caller: 'runControl',
         targets: ['Method:a.dart:Plain.save#1'],
-        status: 'resolves',
         note: 'control',
       },
       {
         caller: 'runGeneric',
         targets: ['Method:a.dart:Repo.save#1'],
-        status: 'resolves',
         note: 'ALREADY CORRECT. Pinned against regression.',
       },
     ],
@@ -390,15 +397,12 @@ struct ControlSvc {
       {
         caller: 'runControl',
         targets: ['Method:a.cpp:Plain.save#1'],
-        status: 'resolves',
         note: 'control',
       },
       {
         caller: 'runGeneric',
-        targets: [],
-        status: 'known-gap',
-        whenFixed: ['Method:a.cpp:Repo.save#1'],
-        note: '#2833 step 5 — C++ takes Case 4 (bare receiver) and still fails',
+        targets: ['Method:a.cpp:Repo.save#1~c:16619u1'],
+        note: '#2833: fixed by the new template_type field_declaration captures — a C++ member whose type carried template arguments previously bound nothing at all',
       },
     ],
   },
@@ -439,15 +443,12 @@ class ControlSvc:
       {
         caller: 'run_control',
         targets: ['Method:a.py:Plain.save#1'],
-        status: 'resolves',
         note: 'control',
       },
       {
         caller: 'run_generic',
-        targets: [],
-        status: 'known-gap',
-        whenFixed: ['Method:a.py:Repo.save#1'],
-        note: '#2833 step 6 — bracket spelling never enters the `<`-gated generic branch',
+        targets: ['Method:a.py:Repo.save#1'],
+        note: '#2833: fixed by base-name erasure in the Python interpreter — the bracket spelling never reached the `<`-gated generic branch',
       },
     ],
   },
@@ -470,19 +471,16 @@ export class Svc {
       {
         caller: 'viaLocal',
         targets: ['Method:a.ts:Repo.save#1', 'Method:a.ts:UserRepo.save#1'],
-        status: 'resolves',
         note: 'MUTATION CONTROL: a local of the identical generic type resolves today',
       },
       {
         caller: 'viaParam',
         targets: ['Method:a.ts:Repo.save#1', 'Method:a.ts:UserRepo.save#1'],
-        status: 'resolves',
         note: 'MUTATION CONTROL: a parameter of the identical generic type resolves today',
       },
       {
         caller: 'viaField',
         targets: ['Method:a.ts:Repo.save#1', 'Method:a.ts:UserRepo.save#1'],
-        status: 'resolves',
         note: 'the whole bug in one file — same type, same class, only the FIELD lost it',
       },
     ],
@@ -507,13 +505,11 @@ export class Box2<T> {
       {
         caller: 'run',
         targets: [],
-        status: 'resolves',
         note: 'NEGATIVE: an unbounded type parameter denotes no declaration — no edge, ever',
       },
       {
         caller: 'run2',
         targets: ['Method:a.ts:T.foo#0'],
-        status: 'resolves',
         note: 'PRE-EXISTING GAP, pinned: a workspace class named T shadows the type parameter. `T` carries no type arguments so it never enters the generic path — measured unchanged by the #2833 fix. Tracked separately; this row exists so it cannot be mistaken for fallout.',
       },
     ],
@@ -533,7 +529,6 @@ export class Box<T extends Repo> {
       {
         caller: 'run',
         targets: [],
-        status: 'resolves',
         note: 'Pins current behaviour. Resolving a bound is a semantics expansion beyond #2833.',
       },
     ],
@@ -554,15 +549,134 @@ struct Svc {
     rows: [
       {
         caller: 'runBool',
-        targets: [],
-        status: 'known-gap',
-        note: 'NEGATIVE, blocked behind the C++ gap (step 5). Once C++ fields type, this must land on the SPECIALIZATION rather than the primary template — asserted by node id because both members are named `save`. The expected id is deliberately not written here: it must come from measurement in step 5, not from a guess about how a specialization is registered.',
+        targets: ['Method:a.cpp:Vec<bool>.save#0'],
+        note: 'NEGATIVE: lands on the SPECIALIZATION, not the primary template. Asserted by node id because both members are named `save` — the ids differ (`Vec<bool>.save` vs `Vec.save~c:…`), which is exactly what would collapse if a naive strip ran before the arity/token match.',
       },
       {
         caller: 'runInt',
-        targets: [],
-        status: 'known-gap',
-        note: 'the primary template instantiation, blocked behind the same C++ gap',
+        targets: ['Method:a.cpp:Vec.save#0~c:16619u1'],
+        note: 'the primary template instantiation — distinct target id from the specialization above',
+      },
+    ],
+  },
+  // ── Generic SPELLINGS ─────────────────────────────────────────────────────
+  // The rows above all use the simplest possible generic, `Repo<User>`. A fix
+  // that only handles that spelling is not a fix, so these pin the shapes real
+  // code actually writes: a nullable generic, a wildcard, a raw type, a nested
+  // generic, and a multi-argument one. All are measured, none needed extra work
+  // beyond the shared lookup — which is the evidence that erasing to the base
+  // name is the right primitive rather than a special case.
+  {
+    name: 'kotlin-nullable-generic',
+    file: 'A.kt',
+    source: `
+class User
+interface Repo<T> { fun save(x: T) }
+class UserRepo : Repo<User> { override fun save(x: User) {} }
+class Svc(private val repo: Repo<User>?) {
+  fun runNullableGeneric(u: User) { repo?.save(u) }
+}
+`,
+    rows: [
+      {
+        caller: 'runNullableGeneric',
+        targets: ['Method:A.kt:Repo.save#1', 'Method:A.kt:UserRepo.save#1'],
+        note: 'nullable generic `Repo<User>?` — decoration and type arguments compose',
+      },
+    ],
+  },
+  {
+    name: 'java-wildcard-and-raw-generic',
+    file: 'A.java',
+    source: `
+class User {}
+interface Repo<T> { void save(T x); }
+class UserRepo implements Repo<User> { public void save(User x) {} }
+class Svc {
+  private Repo<? extends User> wild;
+  private Repo raw;
+  void runWildcard(User u) { this.wild.save(u); }
+  void runRaw(User u) { this.raw.save(u); }
+}
+`,
+    rows: [
+      {
+        caller: 'runWildcard',
+        targets: ['Method:A.java:Repo.save#1', 'Method:A.java:UserRepo.save#1'],
+        note: 'bounded wildcard `Repo<? extends User>` names the same declaration',
+      },
+      {
+        caller: 'runRaw',
+        targets: ['Method:A.java:Repo.save#1', 'Method:A.java:UserRepo.save#1'],
+        note: 'raw type `Repo` — the erased spelling Java itself permits',
+      },
+    ],
+  },
+  {
+    name: 'rust-nested-generic',
+    file: 'a.rs',
+    source: `
+pub struct User {}
+pub struct Repo<T> { pub item: T }
+impl<T> Repo<T> { pub fn save(&self, x: &User) {} }
+pub struct Svc { repo: Repo<Repo<User>> }
+impl Svc { pub fn run_nested(&self, u: &User) { self.repo.save(u); } }
+`,
+    rows: [
+      {
+        caller: 'run_nested',
+        targets: ['Function:a.rs:Repo.save#1'],
+        note: 'nested generic `Repo<Repo<User>>` — the depth-aware scan must not stop at the inner `>`',
+      },
+    ],
+  },
+  {
+    name: 'ts-multiarg-generic',
+    file: 'a.ts',
+    source: `
+export class User {}
+export class Key {}
+export interface Handler<K, V> { handle(k: K, v: V): void; }
+export class Svc {
+  private h: Handler<Key, User>;
+  constructor(h: Handler<Key, User>) { this.h = h; }
+  run(k: Key, u: User): void { this.h.handle(k, u); }
+}
+`,
+    rows: [
+      {
+        caller: 'run',
+        targets: ['Method:a.ts:Handler.handle#2'],
+        note: 'multi-argument generic `Handler<Key, User>` — the container allow-lists deliberately ignore multi-arg shapes, so this only resolves via base-name erasure',
+      },
+    ],
+  },
+  {
+    name: 'php-typed-property',
+    file: 'a.php',
+    source: `<?php
+class User {}
+class Repo { public function save(User $x) {} }
+class Plain { public function save(User $x) {} }
+class GenericSvc {
+    private Repo $repo;
+    public function runGeneric(User $u) { $this->repo->save($u); }
+}
+class ControlSvc {
+    private Plain $plain;
+    public function runControl(User $u) { $this->plain->save($u); }
+}
+`,
+    rows: [
+      {
+        caller: 'runControl',
+        targets: ['Method:a.php:Plain.save#1'],
+        note: 'control',
+      },
+      {
+        caller: 'runGeneric',
+        targets: ['Method:a.php:Repo.save#1'],
+        note: 'PHP has no generic type syntax — a typed property is the closest analogue and is pinned so the shared change cannot regress it. PHP expresses generics only in docblocks, which bind no field type at all (its CONTROL fails identically); that is a separate pre-existing gap, not a generics one.',
       },
     ],
   },
@@ -645,8 +759,8 @@ describe('generic-typed field receivers across languages (#2833)', () => {
   const PAIRED = [
     { name: 'typescript', control: 'runControl', generic: 'runGeneric', matches: true },
     { name: 'csharp', control: 'RunControl', generic: 'RunGeneric', matches: true },
-    { name: 'cpp', control: 'runControl', generic: 'runGeneric', matches: false },
-    { name: 'python', control: 'run_control', generic: 'run_generic', matches: false },
+    { name: 'cpp', control: 'runControl', generic: 'runGeneric', matches: true },
+    { name: 'python', control: 'run_control', generic: 'run_generic', matches: true },
     { name: 'java', control: 'runControl', generic: 'runGeneric', matches: true },
     { name: 'kotlin', control: 'runControl', generic: 'runGeneric', matches: true },
     { name: 'dart', control: 'runControl', generic: 'runGeneric', matches: true },

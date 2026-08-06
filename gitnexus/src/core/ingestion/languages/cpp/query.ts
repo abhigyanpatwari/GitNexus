@@ -537,6 +537,33 @@ const CPP_SCOPE_QUERY = `
   declarator: (reference_declarator
     (field_identifier) @type-binding.name)) @type-binding.field
 
+;; Generic field type: Repo<User> repo; (#2833)
+;; The three rules above all require type: (type_identifier), so a member whose
+;; type carries template arguments is a template_type and matched NONE of them —
+;; the field got no type binding at all, and every call through it lost its edge
+;; in BOTH spellings (repo.save() and this->repo.save()), while the same type in
+;; a LOCAL resolved fine because the local declaration rules gained their
+;; template_type variant long ago (see "Covers: List<User> users;" above).
+;; These three mirror the three above, one per declarator shape. Written as
+;; separate patterns rather than one alternation: a node-type alternation in a
+;; field position is the tree-sitter 0.21 hazard this repo has been bitten by
+;; before.
+(field_declaration
+  type: (template_type) @type-binding.type
+  declarator: (field_identifier) @type-binding.name) @type-binding.field
+
+;; Generic field, pointer: Repo<User>* repo;
+(field_declaration
+  type: (template_type) @type-binding.type
+  declarator: (pointer_declarator
+    declarator: (field_identifier) @type-binding.name)) @type-binding.field
+
+;; Generic field, reference: Repo<User>& repo;
+(field_declaration
+  type: (template_type) @type-binding.type
+  declarator: (reference_declarator
+    (field_identifier) @type-binding.name)) @type-binding.field
+
 ;; ─── References — constructor calls (new Foo()) ─────────────────────
 (new_expression
   type: (type_identifier) @reference.name) @reference.call.constructor

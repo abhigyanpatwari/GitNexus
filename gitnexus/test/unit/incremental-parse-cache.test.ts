@@ -131,8 +131,14 @@ describe('PARSE_CACHE_VERSION', () => {
   // already 44); only the merge-time diff against origin/main surfaced it. What
   // the pin DOES do is fail loudly the moment the constant and this expectation
   // drift apart, which is what forces the re-check to happen at all.
-  it('pins SCHEMA_BUMP to 45 so concurrent bumps cannot silently collide (#2766)', () => {
-    expect(Number(PARSE_CACHE_VERSION.split('+', 1)[0])).toBe(45);
+  // Moved 45 -> 46 for #2833: new C++ `field_declaration` captures whose type is
+  // a `template_type` (the member had NO type binding before), and a Python
+  // interpret change that reduces `Repo[User]` to `Repo` in `TypeRef.rawName`.
+  // Both are serialized into the cached ParsedFile, so a v45 warm cache replays
+  // the pre-fix bindings and the fix becomes a silent no-op on incremental
+  // analyze while every cold-run test still passes.
+  it('pins SCHEMA_BUMP to 46 so concurrent bumps cannot silently collide (#2766)', () => {
+    expect(Number(PARSE_CACHE_VERSION.split('+', 1)[0])).toBe(46);
   });
 
   it('embeds the gitnexus package version (so upgrades invalidate the cache)', () => {

@@ -248,7 +248,24 @@ import type { ParseWorkerResult } from '../core/ingestion/workers/parse-worker.j
 // them. Only comparing against origin/main at MERGE time surfaces it.
 // PR #2840 (Objective-C, draft) still claims 44 as well — it must move too.
 // RE-CHECK AGAINST origin/main IMMEDIATELY BEFORE MERGING.
-const SCHEMA_BUMP = 45;
+// 45 -> 46: #2833 makes a generic-typed FIELD usable as a call receiver, and
+// both halves are parse-time.
+//   - C++ (`languages/cpp/query.ts`) gains three `field_declaration` rules whose
+//     `type:` is a `template_type`. The three that existed all required a
+//     `type_identifier`, so `Repo<User> repo;` matched NONE of them and the
+//     member got no type binding at all — new captures where there were none.
+//   - Python (`languages/python/interpret.ts`) reduces a subscripted type its
+//     container allow-lists do not claim to the base name, so `Repo[User]`
+//     binds as `Repo`. That rewrites `TypeRef.rawName`, which is serialized
+//     into the cached ParsedFile.
+// A warm cache would replay the pre-fix bindings and the whole fix would be a
+// silent no-op on every incremental analyze while passing every cold-run test —
+// the exact failure this constant exists to prevent.
+// Verified against origin/main at this branch's base: main is on 45, so 46 is
+// free. RE-CHECK AGAINST origin/main IMMEDIATELY BEFORE MERGING — this ledger
+// records three EXACT clashes already, and the pin test cannot catch one
+// (`toBe(46)` passes just as well when main has already taken 46).
+const SCHEMA_BUMP = 46;
 const GITNEXUS_PKG_VERSION = (() => {
   try {
     // package.json sits at gitnexus/package.json — two levels up from

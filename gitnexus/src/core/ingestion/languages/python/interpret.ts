@@ -174,6 +174,23 @@ function stripGeneric(text: string): string {
     /^(?:[A-Za-z_][A-Za-z0-9_]*\.)?(?:dict|Dict|Mapping|MutableMapping|OrderedDict|DefaultDict)\[[^,\]]+,\s*([^\]]+)\]$/,
   );
   if (dict !== null) return dict[1].trim();
+
+  // A subscripted type the two allow-lists above did NOT claim is a
+  // user-defined GENERIC, not a container: `Repo[User]`, `Handler[Req, Res]`.
+  // Its base names one declaration — `Repo[User]` and `Repo[Order]` are the
+  // same `class Repo(Generic[T])` — so reduce to that base, exactly as Java's
+  // and Swift's interpreters already do for their `<…>` spelling (#2833).
+  //
+  // This is the LAST resort deliberately. A container must reach its own rule
+  // first: erasing `list[User]` to `list` would type the receiver as the
+  // container rather than the element and silently retarget every call in a
+  // for-loop chain. Only what neither rule recognized reaches here.
+  //
+  // The as-written spelling is not lost — `scope-extractor` keeps it on
+  // `TypeRef.declaredSpelling` whenever it differs from the reduced name,
+  // which is what the receiver fold's index step reads.
+  const userGeneric = text.match(/^((?:[A-Za-z_][A-Za-z0-9_]*\.)*[A-Za-z_][A-Za-z0-9_]*)\[.+\]$/s);
+  if (userGeneric !== null) return userGeneric[1].trim();
   return text;
 }
 
