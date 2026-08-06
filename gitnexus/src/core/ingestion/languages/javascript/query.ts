@@ -647,6 +647,39 @@ export const JAVASCRIPT_SCOPE_QUERY = `
       key: (property_identifier) @reference.name
         @reference.read.destructured)) @reference.receiver)
 
+;; Object-literal keys in RECORD CONSTRUCTION position (R2-1b). Building
+;; \`{ exitContract: { exitMinAtrMult: settings.x } }\` SETS that field, so this
+;; is the write counterpart to the destructured read above — without it
+;; "who reads this setting?" answers well and "who SETS it?" misses the code
+;; that stamps the value.
+;;
+;; A WRITE REFERENCE, deliberately not a definition. The round-1 rule already
+;; mints Property nodes for literals bound to a variable; minting more for
+;; anonymous records would add same-named competitors to the very name-narrowing
+;; that makes these reads resolvable — measured at 26 competing definitions for
+;; one field on the reporting repo. A construction site is a USE of a field, not
+;; another declaration of it.
+;;
+;; Two positions only: nested under a key, and returned. Both are records with a
+;; name attached (the key, or the function). An inline call argument
+;; (\`doThing({ id: 1 })\`) stays excluded for the same reason round 1 excluded
+;; it from definitions — it is call-site data, not a named surface.
+;;
+;; The enclosing literal is the receiver, and it is anonymous, which routes
+;; these through the same narrowing and the same refusal-to-guess as every other
+;; untyped receiver.
+(pair
+  value: (object
+    (pair
+      key: (property_identifier) @reference.name
+        @reference.write.property-key) @_r2b.nested) @reference.receiver)
+
+(return_statement
+  (object
+    (pair
+      key: (property_identifier) @reference.name
+        @reference.write.property-key) @_r2b.returned) @reference.receiver)
+
 `;
 
 /** JSX-only suffix — appended when compiling against the JSX grammar for .jsx files. */

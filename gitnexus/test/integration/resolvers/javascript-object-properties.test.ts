@@ -124,6 +124,36 @@ describe('JavaScript plain-object property access (A1/A5)', () => {
     });
   });
 
+  // R2-1b. The read side answered well while "who SETS this field?" missed the
+  // code that stamps the value, because a record built inline is bound to no
+  // variable and so mints no definition to point at.
+  describe('record construction writes (R2-1b)', () => {
+    const writersOf = (field: string): string[] =>
+      getRelationships(result, 'ACCESSES')
+        .filter((e) => e.target === field && (e.rel.reason ?? '').includes('write'))
+        .map((e) => e.source);
+
+    it('emits a WRITE for a literal nested under a key', () => {
+      expect(writersOf('destructuredOnlyField')).toContain('buildPlan');
+    });
+
+    it('emits a WRITE for a returned literal', () => {
+      expect(writersOf('destructuredOnlyField')).toContain('buildFlat');
+    });
+
+    // The point of modelling these as writes rather than definitions: more
+    // definitions would add same-named competitors to the narrowing that makes
+    // these fields resolvable in the first place.
+    it('mints NO new definition for a constructed record', () => {
+      expect(propertyNames().filter((n) => n === 'destructuredOnlyField')).toHaveLength(1);
+    });
+
+    it('leaves an inline call-argument prop bag alone', () => {
+      expect(propertyNames()).not.toContain('notAConstructedField');
+      expect(writersOf('notAConstructedField')).toEqual([]);
+    });
+  });
+
   // R2. Strict workspace uniqueness was measurably too blunt: in the reporting
   // repo `exitMinAtrMult` had 26 definitions, 16 of them in one-off scripts the
   // backend has no relationship with, so every backend read was refused because
