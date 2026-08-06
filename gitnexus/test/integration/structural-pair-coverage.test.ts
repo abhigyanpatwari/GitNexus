@@ -121,6 +121,17 @@ const NON_BRIDGE_CORPUS = [
     emitter: 'object-type alias HAS_PROPERTY',
     sentinels: ['TypeAlias|Property', 'Interface|Property'],
   },
+  {
+    // The other direction on the same fixture (R2-2): an annotation naming a
+    // declared type emits USES INTO a `TypeAlias`, so the pair is
+    // `Function|TypeAlias` rather than the `TypeAlias|Property` above. Same
+    // eleven-table label, a different table, and a separate way for the same
+    // class of failure to reach a released build — the entry above would stay
+    // green with this one undeclared.
+    fixture: 'typescript-alias-fields',
+    emitter: 'type-annotation USES',
+    sentinels: ['Function|TypeAlias', 'Function|Interface'],
+  },
 ] as const satisfies readonly CorpusEntry[];
 
 /*
