@@ -77,15 +77,31 @@ describe('TypeScript type-alias and interface members (A4)', () => {
     expect(readersOf('ifaceSlots')).toContain('renderIface');
   });
 
-  // The ALIAS half still does not link, and the remaining blocker is now
-  // exact: resolving `cfg: LiveModeConfig` to its members requires the name
-  // `LiveModeConfig` to resolve to a CLASS-LIKE def, and `isClassLike` is
-  // Class|Interface|Struct|Record|Enum|Trait — no TypeAlias. That predicate is
-  // consulted from ~12 sites including MRO and heritage, and every language
-  // mints TypeAlias (Rust type_item, Kotlin/Swift/Dart typealias, C typedef),
-  // so widening it would enrol aliases in linearization where they do not
-  // belong. Widening only the scope index was tried and is NOT sufficient —
-  // the type-name walkers gate on it independently. Needs a deliberate
-  // "shape-like" concept rather than more call-site widening.
+  // ALIAS field -> consumer is still unlinked. Diagnosis, traced to the end so
+  // the next attempt starts from facts rather than from this list again:
+  //
+  //   1. The graph side is COMPLETE and symmetric with the interface:
+  //      `Property:contracts.ts:LiveModeConfig.bookSlots` is owner-qualified
+  //      and carries `HAS_PROPERTY LiveModeConfig->bookSlots`.
+  //   2. Resolution enters `resolveClassBindingForName('LiveModeConfig')`
+  //      (verified by instrumentation) and misses.
+  //   3. It misses because the module scope binds `LiveModeIface:Interface`,
+  //      `renderAlias`, `renderIface` — and NOT `LiveModeConfig`. The alias has
+  //      no binding on the receiver's scope chain at all.
+  //   4. The TS scope query tags aliases `@declaration.type`, but
+  //      `normalizeNodeLabel` accepts only `typealias` / `type_alias` and has
+  //      no `type` case, so it returns undefined. Kotlin and Dart use
+  //      `@declaration.type_alias`; TypeScript is alone on the dead tag.
+  //   5. Retagging it to `@declaration.type_alias` is NECESSARY BUT NOT
+  //      SUFFICIENT — tried, and the binding still does not appear on the
+  //      chain, so a second gate exists in how a declaration anchored on a
+  //      node that is ALSO a `@scope.class` anchor gets attached (the alias
+  //      appears to bind inside its own scope instead of hoisting to Module,
+  //      where `interface_declaration` evidently does hoist).
+  //
+  // A widened predicate (`isShapeLike`) plus a mirrored
+  // `findShapeBindingInScope` were also built and REVERTED: with no binding on
+  // the chain they never fire, and shipping inert widening is worse than none.
+  // Fix step 5 first; the rest is then a small, testable change.
   it.todo('links an alias field to its consumer');
 });
