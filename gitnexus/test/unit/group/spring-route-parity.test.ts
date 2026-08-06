@@ -124,6 +124,64 @@ public class NamedArrayController {
     expect(ingestionProviders(src)).toEqual(group);
   });
 
+  it('agree on method-level @RequestMapping verbs and wildcard mappings', () => {
+    const src = `package com.example;
+import org.springframework.web.bind.annotation.*;
+
+@RestController
+@RequestMapping("/api")
+public class LegacyController {
+  @RequestMapping("/bare") public Object bare() { return null; }
+  @RequestMapping(value = "/named") public Object named() { return null; }
+  @RequestMapping(value = "/save", method = RequestMethod.POST)
+  public Object save() { return null; }
+  @RequestMapping(path = "/multi", method = {RequestMethod.GET, RequestMethod.HEAD})
+  public Object multi() { return null; }
+  @RequestMapping(path = {"/one", "/two"}, method = {RequestMethod.GET, RequestMethod.POST})
+  public Object crossProduct() { return null; }
+  @RequestMapping(path = "/empty", method = {})
+  public Object empty() { return null; }
+  @org.springframework.web.bind.annotation.RequestMapping(
+    path = "/fqn",
+    method = org.springframework.web.bind.annotation.RequestMethod.DELETE
+  )
+  public Object fqn() { return null; }
+}
+`;
+    const expected = new Set([
+      '* /api/bare',
+      '* /api/named',
+      'POST /api/save',
+      'GET /api/multi',
+      'HEAD /api/multi',
+      'GET /api/one',
+      'POST /api/one',
+      'GET /api/two',
+      'POST /api/two',
+      '* /api/empty',
+      'DELETE /api/fqn',
+    ]);
+
+    expect(groupProviders(src)).toEqual(expected);
+    expect(ingestionProviders(src)).toEqual(expected);
+  });
+
+  it('fails closed when @RequestMapping method is not statically resolvable', () => {
+    const src = `package com.example;
+import org.springframework.web.bind.annotation.*;
+
+@RestController
+public class DynamicController {
+  private static final RequestMethod VERB = RequestMethod.POST;
+  @RequestMapping(path = "/dynamic", method = VERB)
+  public Object dynamic() { return null; }
+}
+`;
+
+    expect(groupProviders(src)).toEqual(new Set());
+    expect(ingestionProviders(src)).toEqual(new Set());
+  });
+
   it('do not leak non-route arrays (consumes/produces) as routes — array analogue', () => {
     // The scalar `produces` anti-regression already exists in the route tests;
     // this is its array form. `consumes`/`produces` arrays must never surface as

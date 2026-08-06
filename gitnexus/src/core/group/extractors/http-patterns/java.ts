@@ -7,7 +7,7 @@ import {
   type LanguagePatterns,
 } from '../tree-sitter-scanner.js';
 import {
-  METHOD_ANNOTATION_TO_HTTP,
+  springAnnotationHttpMethods,
   isRouteMemberKey,
   findEnclosingClass,
   joinPath,
@@ -44,7 +44,7 @@ import type {
 
 /**
  * Java HTTP plugin. Handles:
- *   - Spring `@RequestMapping` class prefixes + `@(Get|Post|...)Mapping` method annotations
+ *   - Spring `@RequestMapping` class prefixes + shortcut/`@RequestMapping` method annotations
  *   - Spring `RestTemplate.getForObject/...`, `exchange(...)`
  *   - Spring `WebClient.method(HttpMethod.X, ...)`, `WebClient.get().uri(...)`
  *   - OkHttp `new Request.Builder().url("...")`
@@ -452,7 +452,7 @@ interface RouteAnnotationScan {
   feignPrefixByInterfaceId: Map<number, string[]>;
   /** Spring HTTP Interface `@HttpExchange(url|value)` type-level prefixes per class/interface node id. */
   httpExchangePrefixByTypeId: Map<number, string[]>;
-  /** One entry per resolved Spring `@(Get|...)Mapping` route — a method with N mappings yields N entries. */
+  /** Resolved Spring shortcut/`@RequestMapping` routes — paths × verbs yield one entry each. */
   methodRoutes: MethodRouteAnnotation[];
   /** One entry per OpenFeign `@RequestLine` whose value parses to a verb + path. */
   requestLines: RequestLineAnnotation[];
@@ -505,18 +505,20 @@ function scanRouteAnnotations(tree: Parser.Tree): RouteAnnotationScan {
     const keyNode = captures.key; // undefined for the positional shape
 
     if (node.type === 'method_declaration') {
-      // Method-level: a Spring `@(Get|...)Mapping` route, or native `@RequestLine`.
-      const httpMethod = METHOD_ANNOTATION_TO_HTTP[ann];
-      if (httpMethod) {
+      // Method-level: a Spring shortcut/`@RequestMapping` route, or native `@RequestLine`.
+      const httpMethods = springAnnotationHttpMethods(ann, annNode.parent?.text ?? '');
+      if (httpMethods.length > 0) {
         if (!isRouteMemberKey(keyNode)) continue;
         const rawPath = unquoteLiteral(valueNode.text);
         if (rawPath !== null) {
-          methodRoutes.push({
-            methodNode: node,
-            methodName: captures.member?.text ?? null,
-            httpMethod,
-            rawPath,
-          });
+          for (const httpMethod of httpMethods) {
+            methodRoutes.push({
+              methodNode: node,
+              methodName: captures.member?.text ?? null,
+              httpMethod,
+              rawPath,
+            });
+          }
         }
       } else if (ann === 'RequestLine') {
         // Feign packs verb + path in one literal; its only named argument is `value`.
@@ -705,7 +707,7 @@ export const JAVA_HTTP_PLUGIN: HttpLanguagePlugin = {
 
     // ─── Spring providers + OpenFeign consumers (one query pass) ────
     // `scanRouteAnnotations` resolves every route-defining annotation —
-    // class/interface prefixes, method `@(Get|...)Mapping`s and native
+    // class/interface prefixes, method shortcut/`@RequestMapping`s and native
     // `@RequestLine`s — from a single `matches()` pass over the tree.
     const {
       prefixByTypeId,

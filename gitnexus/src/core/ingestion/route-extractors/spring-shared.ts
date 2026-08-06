@@ -17,6 +17,7 @@
  */
 
 import type Parser from 'tree-sitter';
+import { parseSpringAnnotationArguments } from '../frameworks/spring/annotation-arguments.js';
 
 /**
  * Spring shortcut method-annotation → HTTP verb.
@@ -33,6 +34,71 @@ export const METHOD_ANNOTATION_TO_HTTP: Record<string, string> = {
   DeleteMapping: 'DELETE',
   PatchMapping: 'PATCH',
 };
+
+const SPRING_REQUEST_METHODS = new Set([
+  'GET',
+  'HEAD',
+  'POST',
+  'PUT',
+  'PATCH',
+  'DELETE',
+  'OPTIONS',
+  'TRACE',
+]);
+
+/**
+ * Parse one `RequestMethod.X` literal or a Java annotation array of literals.
+ * An empty array is valid and means Spring's unrestricted/default method set.
+ * Runtime expressions fail closed instead of producing a guessed route.
+ */
+function parseRequestMethodValues(value: string): readonly string[] | null {
+  const trimmed = value.trim();
+  const hasOpeningBrace = trimmed.startsWith('{');
+  const hasClosingBrace = trimmed.endsWith('}');
+  if (hasOpeningBrace !== hasClosingBrace) return null;
+  const body = hasOpeningBrace ? trimmed.slice(1, -1).trim() : trimmed;
+  if (body.length === 0) return [];
+  if (!hasOpeningBrace && body.includes(',')) return null;
+
+  const methods: string[] = [];
+  for (const rawPart of body.split(',')) {
+    const part = rawPart.trim();
+    const match =
+      /^(?:(?:[A-Za-z_$][A-Za-z0-9_$]*\.)*RequestMethod\.)?(GET|HEAD|POST|PUT|PATCH|DELETE|OPTIONS|TRACE)$/.exec(
+        part,
+      );
+    if (!match || !SPRING_REQUEST_METHODS.has(match[1])) return null;
+    if (!methods.includes(match[1])) methods.push(match[1]);
+  }
+  return methods;
+}
+
+/**
+ * Resolve a method-level Spring mapping annotation to its HTTP method(s).
+ *
+ * Shortcut annotations have one implicit verb. `@RequestMapping` may declare
+ * one or more static `RequestMethod.X` values; when its `method` member is
+ * absent or an empty array, `'*'` preserves Spring's method-agnostic semantics.
+ * A present but non-static method expression yields no methods (fail closed).
+ */
+export function springAnnotationHttpMethods(
+  annotationName: string,
+  annotationText: string,
+): readonly string[] {
+  const shortcut = METHOD_ANNOTATION_TO_HTTP[annotationName];
+  if (shortcut) return [shortcut];
+  if (annotationName !== 'RequestMapping') return [];
+
+  const args = parseSpringAnnotationArguments(annotationText);
+  if (args === null) return [];
+  const methodArgs = args.filter((arg) => arg.name === 'method');
+  if (methodArgs.length === 0) return ['*'];
+  if (methodArgs.length !== 1) return [];
+
+  const methods = parseRequestMethodValues(methodArgs[0].value);
+  if (methods === null) return [];
+  return methods.length > 0 ? methods : ['*'];
+}
 
 /**
  * A named annotation argument contributes a route only when its member key is

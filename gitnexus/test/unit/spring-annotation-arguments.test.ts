@@ -15,6 +15,7 @@ import {
   springResourceDefaultName,
   springResourceInjectionMatch,
 } from '../../src/core/ingestion/frameworks/spring/resource-injection.js';
+import { springAnnotationHttpMethods } from '../../src/core/ingestion/route-extractors/spring-shared.js';
 
 describe('Spring annotation static arguments', () => {
   it('parses Java and Kotlin named arrays without splitting nested values', () => {
@@ -77,6 +78,40 @@ describe('Spring annotation static arguments', () => {
     expect(normalizeSpringBeanType('outputStream')).toBe('outputStream');
     expect(normalizeSpringBeanType('inside.Type')).toBe('inside.Type');
     expect(normalizeSpringBeanType('Unit')).toBeNull();
+  });
+});
+
+describe('Spring request mapping methods', () => {
+  it('resolves shortcut, wildcard, scalar, and array method declarations', () => {
+    expect(springAnnotationHttpMethods('GetMapping', '@GetMapping("/x")')).toEqual(['GET']);
+    expect(springAnnotationHttpMethods('RequestMapping', '@RequestMapping("/x")')).toEqual(['*']);
+    expect(
+      springAnnotationHttpMethods(
+        'RequestMapping',
+        '@RequestMapping(path = "/x", method = RequestMethod.POST)',
+      ),
+    ).toEqual(['POST']);
+    expect(
+      springAnnotationHttpMethods(
+        'RequestMapping',
+        '@RequestMapping(path = "/x", method = {RequestMethod.GET, RequestMethod.HEAD})',
+      ),
+    ).toEqual(['GET', 'HEAD']);
+    expect(
+      springAnnotationHttpMethods('RequestMapping', '@RequestMapping(path = "/x", method = {})'),
+    ).toEqual(['*']);
+  });
+
+  it('fails closed for runtime, malformed, and duplicate method members', () => {
+    expect(
+      springAnnotationHttpMethods('RequestMapping', '@RequestMapping(path = "/x", method = VERB)'),
+    ).toEqual([]);
+    expect(
+      springAnnotationHttpMethods(
+        'RequestMapping',
+        '@RequestMapping(path = "/x", method = RequestMethod.GET, method = RequestMethod.POST)',
+      ),
+    ).toEqual([]);
   });
 });
 

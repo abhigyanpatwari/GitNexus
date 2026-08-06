@@ -224,6 +224,37 @@ public class C implements Api {
     expect(ingestionInheritedKeys(files)).toEqual(group);
   });
 
+  it('agrees on inherited @RequestMapping verbs and wildcard mappings', () => {
+    const files = [
+      {
+        path: 'LegacyApi.java',
+        src: `package com.example;
+import org.springframework.web.bind.annotation.*;
+@RequestMapping("/api")
+public interface LegacyApi {
+  @RequestMapping(path = "/save", method = RequestMethod.POST) Object save();
+  @RequestMapping("/all") Object all();
+}
+`,
+      },
+      {
+        path: 'LegacyController.java',
+        src: `package com.example;
+import org.springframework.web.bind.annotation.*;
+@RestController
+public class LegacyController implements LegacyApi {
+  public Object save() { return null; }
+  public Object all() { return null; }
+}
+`,
+      },
+    ];
+
+    const expected = new Set(['POST /api/save', '* /api/all']);
+    expect(groupInheritedKeys(files)).toEqual(expected);
+    expect(ingestionInheritedKeys(files)).toEqual(expected);
+  });
+
   it('agrees on fully-qualified annotation names', () => {
     // Both sides normalise an FQN annotation to its trailing segment, so an
     // interface using `@org.springframework...GetMapping` still resolves.
