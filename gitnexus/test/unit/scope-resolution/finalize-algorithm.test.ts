@@ -98,6 +98,37 @@ const reexport = (localName: string, importedName: string, targetRaw: string): P
 
 const wildcard = (targetRaw: string): ParsedImport => ({ kind: 'wildcard', targetRaw });
 
+/**
+ * A named import that ALSO republishes the name from the importing module —
+ * Python's `from m import X`, which has no dedicated re-export form. See
+ * `reexportsName` on `ParsedImport`.
+ */
+const namedReexporting = (
+  localName: string,
+  importedName: string,
+  targetRaw: string,
+): ParsedImport => ({
+  kind: 'named',
+  localName,
+  importedName,
+  targetRaw,
+  reexportsName: true,
+});
+
+/** The `from m import X as Y` form of {@link namedReexporting}. */
+const aliasReexporting = (
+  localName: string,
+  importedName: string,
+  targetRaw: string,
+): ParsedImport => ({
+  kind: 'alias',
+  localName,
+  importedName,
+  alias: localName,
+  targetRaw,
+  reexportsName: true,
+});
+
 const dynamic = (localName: string, targetRaw: string | null): ParsedImport => ({
   kind: 'dynamic-unresolved',
   localName,
@@ -401,6 +432,81 @@ describe('finalize', () => {
       expect(edge.linkStatus).toBeUndefined();
       expect(edge.targetDefId).toBe('def:d.X');
       expect(edge.transitiveVia).toEqual(['b', 'c', 'd']);
+    });
+
+    // ── Languages with no dedicated re-export form (Python) ──────────────
+    //
+    // Python's `from pkg.impl import X` inside `pkg/__init__.py` both binds X
+    // locally and publishes it as `pkg.X` — the standard way a package declares
+    // its public surface. There is no `export … from` equivalent to emit as
+    // `kind: 'reexport'`, so the provider flags the ordinary named import with
+    // `reexportsName` instead. `kind: 'reexport'` would be wrong here: it drops
+    // the local binding, which Python's form does create.
+    it('resolves through a named import flagged reexportsName (Python __init__.py surface)', () => {
+      const c = file('c', [def('def:c.X', 'Function', 'c.X')]);
+      // `pkg/__init__.py`: re-publishes X without surfacing it in localDefs.
+      const b = file('b', [], [namedReexporting('X', 'X', 'c')]);
+      const a = file('a', [], [named('X', 'X', 'b')]);
+      const files = [a, b, c];
+      const out = finalize({ files, workspaceIndex: undefined }, defaultHooks(files));
+      const edge = firstImport(out, a.moduleScope)!;
+      expect(edge.linkStatus).toBeUndefined();
+      expect(edge.targetDefId).toBe('def:c.X');
+      expect(edge.transitiveVia).toEqual(['b', 'c']);
+    });
+
+    it('leaves a plain named import out of the closure (no reexportsName → unchanged behavior)', () => {
+      // Negative control: this is the pre-existing behavior every language
+      // without the flag still gets. Only the flag opts a named import in, so
+      // adding it cannot silently widen resolution for TS/Java/Go/etc.
+      const c = file('c', [def('def:c.X', 'Function', 'c.X')]);
+      const b = file('b', [], [named('X', 'X', 'c')]);
+      const a = file('a', [], [named('X', 'X', 'b')]);
+      const files = [a, b, c];
+      const out = finalize({ files, workspaceIndex: undefined }, defaultHooks(files));
+      const edge = firstImport(out, a.moduleScope)!;
+      expect(edge.targetDefId).toBeUndefined();
+    });
+
+    it('resolves a 3-hop chain of reexportsName named imports', () => {
+      // `pkg/__init__.py` → `pkg/sub/__init__.py` → defining module: the shape
+      // a nested Python package produces.
+      const d = file('d', [def('def:d.X', 'Function', 'd.X')]);
+      const c = file('c', [], [namedReexporting('X', 'X', 'd')]);
+      const b = file('b', [], [namedReexporting('X', 'X', 'c')]);
+      const a = file('a', [], [named('X', 'X', 'b')]);
+      const files = [a, b, c, d];
+      const out = finalize({ files, workspaceIndex: undefined }, defaultHooks(files));
+      const edge = firstImport(out, a.moduleScope)!;
+      expect(edge.targetDefId).toBe('def:d.X');
+      expect(edge.transitiveVia).toEqual(['b', 'c', 'd']);
+    });
+
+    it('keys the closure by the published alias for `from m import X as Y`', () => {
+      // `from c import X as Y` publishes `Y`, so an importer asking for Y must
+      // reach X's definition, and one asking for X must not.
+      const c = file('c', [def('def:c.X', 'Function', 'c.X')]);
+      const b = file('b', [], [aliasReexporting('Y', 'X', 'c')]);
+      const aY = file('a', [], [named('Y', 'Y', 'b')]);
+      const filesY = [aY, b, c];
+      const outY = finalize({ files: filesY, workspaceIndex: undefined }, defaultHooks(filesY));
+      expect(firstImport(outY, aY.moduleScope)!.targetDefId).toBe('def:c.X');
+
+      const aX = file('a', [], [named('X', 'X', 'b')]);
+      const filesX = [aX, b, c];
+      const outX = finalize({ files: filesX, workspaceIndex: undefined }, defaultHooks(filesX));
+      expect(firstImport(outX, aX.moduleScope)!.targetDefId).toBeUndefined();
+    });
+
+    it('terminates when reexportsName named imports cycle (package __init__ cycle)', () => {
+      // Same bounded-fixpoint guarantee the explicit `reexport` cycle test
+      // relies on — the flag must not open a non-terminating path.
+      const c = file('c', [], [namedReexporting('X', 'X', 'b')]);
+      const b = file('b', [], [namedReexporting('X', 'X', 'c')]);
+      const a = file('a', [], [named('X', 'X', 'b')]);
+      const files = [a, b, c];
+      const out = finalize({ files, workspaceIndex: undefined }, defaultHooks(files));
+      expect(firstImport(out, a.moduleScope)!.targetDefId).toBeUndefined();
     });
 
     it('terminates without infinite recursion when re-exports cycle back through the chain', () => {

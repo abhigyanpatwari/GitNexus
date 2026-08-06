@@ -587,6 +587,39 @@ type FileReexportClosure = ReadonlyMap<string, ReexportClosureEntry>;
  *     in full and are bounded only by available memory — the
  *     iterative formulation has no call-stack ceiling.
  */
+/**
+ * Does this import republish names from its target under the *importing* file,
+ * making it an edge in the re-export sub-graph?
+ *
+ * `reexport` and `wildcard` are the explicit forms. A `named`/`alias` import
+ * carrying `reexportsName` covers languages whose ordinary import syntax also
+ * re-exports: Python has no dedicated form, so a module-level
+ * `from pkg.impl import X` both binds `X` locally and publishes it as `pkg.X`,
+ * which is how a package `__init__.py` defines its public surface. Without this,
+ * `from pkg import X` in a third file finds nothing — `X` is absent from
+ * `pkg/__init__.py`'s `localDefs`, and the closure that would carry it was never
+ * populated.
+ */
+function contributesReexportEdge(source: ParsedImport): boolean {
+  if (source.kind === 'wildcard') return true;
+  return isNamedReexport(source);
+}
+
+/**
+ * Named (non-wildcard) re-export — carries both `localName` and `importedName`,
+ * so `populateFileClosure` can key the closure by the name the importing file
+ * publishes while looking the definition up under the name the target exports.
+ *
+ * Narrowing to those two fields (rather than to the union members) is what lets
+ * the caller read them without re-discriminating on `kind`.
+ */
+function isNamedReexport(
+  source: ParsedImport,
+): source is ParsedImport & { readonly localName: string; readonly importedName: string } {
+  if (source.kind === 'reexport') return true;
+  return (source.kind === 'named' || source.kind === 'alias') && source.reexportsName === true;
+}
+
 function buildReexportClosures(
   files: readonly FinalizeFile[],
   byFilePath: ReadonlyMap<string, FinalizeFile>,
@@ -603,7 +636,7 @@ function buildReexportClosures(
     const drafts = edgeIndex.get(file.filePath);
     if (drafts !== undefined) {
       for (const d of drafts) {
-        if (d.source.kind !== 'reexport' && d.source.kind !== 'wildcard') continue;
+        if (!contributesReexportEdge(d.source)) continue;
         if (d.targetFile === null) continue;
         if (!byFilePath.has(d.targetFile)) continue;
         targets.add(d.targetFile);
@@ -676,7 +709,7 @@ function populateFileClosure(
   // Named re-exports — precedence over wildcards, declaration order
   // first-wins for duplicates of the same exported name.
   for (const draft of drafts) {
-    if (draft.source.kind !== 'reexport') continue;
+    if (!isNamedReexport(draft.source)) continue;
     const targetFile = draft.targetFile;
     if (targetFile === null) continue;
     const targetModule = byFilePath.get(targetFile);

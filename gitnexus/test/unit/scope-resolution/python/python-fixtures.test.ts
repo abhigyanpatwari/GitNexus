@@ -215,24 +215,33 @@ describe('Python imports — interpretImport', () => {
 
   it('case 14: `from m import x` → named import', () => {
     const f = parse('from m import x\n');
+    // `reexportsName`: Python republishes the name as `<module>.x`, so it must
+    // enter the re-export closure for `from <module> import x` elsewhere.
     expect(f.parsedImports).toEqual([
-      { kind: 'named', localName: 'x', importedName: 'x', targetRaw: 'm' },
+      { kind: 'named', localName: 'x', importedName: 'x', targetRaw: 'm', reexportsName: true },
     ]);
   });
 
   it('case 15: `from m import x as y` → alias import', () => {
     const f = parse('from m import x as y\n');
     expect(f.parsedImports).toEqual([
-      { kind: 'alias', localName: 'y', importedName: 'x', alias: 'y', targetRaw: 'm' },
+      {
+        kind: 'alias',
+        localName: 'y',
+        importedName: 'x',
+        alias: 'y',
+        targetRaw: 'm',
+        reexportsName: true,
+      },
     ]);
   });
 
   it('case 16: `from m import x, y, z` decomposes into three ParsedImports', () => {
     const f = parse('from m import x, y, z\n');
     expect(f.parsedImports).toEqual([
-      { kind: 'named', localName: 'x', importedName: 'x', targetRaw: 'm' },
-      { kind: 'named', localName: 'y', importedName: 'y', targetRaw: 'm' },
-      { kind: 'named', localName: 'z', importedName: 'z', targetRaw: 'm' },
+      { kind: 'named', localName: 'x', importedName: 'x', targetRaw: 'm', reexportsName: true },
+      { kind: 'named', localName: 'y', importedName: 'y', targetRaw: 'm', reexportsName: true },
+      { kind: 'named', localName: 'z', importedName: 'z', targetRaw: 'm', reexportsName: true },
     ]);
   });
 
@@ -244,14 +253,20 @@ describe('Python imports — interpretImport', () => {
   it('case 18: PEP-328 dotted relative import `from .pkg import x`', () => {
     const f = parse('from .pkg import x\n');
     expect(f.parsedImports).toEqual([
-      { kind: 'named', localName: 'x', importedName: 'x', targetRaw: '.pkg' },
+      { kind: 'named', localName: 'x', importedName: 'x', targetRaw: '.pkg', reexportsName: true },
     ]);
   });
 
   it('case 19: PEP-328 parent-relative import `from ..pkg.sub import x`', () => {
     const f = parse('from ..pkg.sub import x\n');
     expect(f.parsedImports).toEqual([
-      { kind: 'named', localName: 'x', importedName: 'x', targetRaw: '..pkg.sub' },
+      {
+        kind: 'named',
+        localName: 'x',
+        importedName: 'x',
+        targetRaw: '..pkg.sub',
+        reexportsName: true,
+      },
     ]);
   });
 });
@@ -263,7 +278,7 @@ describe('Python imports — function-local', () => {
     const f = parse('def loader():\n    from m import X\n');
     // Decomposed at parse time; finalize will route via importOwningScope.
     expect(f.parsedImports).toEqual([
-      { kind: 'named', localName: 'X', importedName: 'X', targetRaw: 'm' },
+      { kind: 'named', localName: 'X', importedName: 'X', targetRaw: 'm', reexportsName: true },
     ]);
   });
 });

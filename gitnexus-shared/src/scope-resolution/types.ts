@@ -128,6 +128,21 @@ export type ParsedImport =
        * duplicating `importedName`.
        */
       readonly targetIncludesImportedName?: boolean;
+      /**
+       * Set by providers whose import syntax *also* re-exports the name from
+       * the importing module, so downstream files can import it from there.
+       *
+       * Python has no dedicated re-export form: a module-level
+       * `from pkg.impl import X` binds `X` locally **and** publishes it as
+       * `pkg.X`, which is the standard way a package `__init__.py` defines its
+       * public surface. Languages with an explicit form (TS `export … from`,
+       * Rust `pub use`) emit `kind: 'reexport'` instead and leave this unset.
+       *
+       * Setting it lets the name participate in `buildReexportClosures` while
+       * keeping the ordinary local `named` binding intact — `kind: 'reexport'`
+       * would drop the local binding, which for Python would be wrong.
+       */
+      readonly reexportsName?: boolean;
     }
   /**
    * Per-name import with rename.
@@ -146,6 +161,8 @@ export type ParsedImport =
       readonly importedSymbolKind?: 'type' | 'function' | 'const';
       /** See the same field on the `named` variant. */
       readonly targetIncludesImportedName?: boolean;
+      /** See the same field on the `named` variant. */
+      readonly reexportsName?: boolean;
     }
   /**
    * Qualified module handle, with or without rename. `importedName` is the

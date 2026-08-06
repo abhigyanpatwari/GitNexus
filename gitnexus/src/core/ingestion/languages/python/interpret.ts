@@ -52,16 +52,26 @@ export function interpretPythonImport(captures: CaptureMatch): ParsedImport | nu
     }
     case 'from': {
       // `from m import x`
+      // `reexportsName`: Python has no dedicated re-export form — this binds `x`
+      // locally AND publishes it as `<this module>.x`, which is how a package
+      // `__init__.py` defines its public surface. Flagging it lets the name
+      // enter the re-export closure so `from <this module> import x` elsewhere
+      // resolves to the original definition. See `ParsedImport` in
+      // gitnexus-shared.
       if (sourceCap === undefined || nameCap === undefined) return null;
       return {
         kind: 'named',
         localName: nameCap.text,
         importedName: nameCap.text,
         targetRaw: sourceCap.text,
+        reexportsName: true,
       };
     }
     case 'from-alias': {
-      // `from m import x as y`
+      // `from m import x as y` — republished under the alias (`<module>.y`).
+      // PEP 484 treats `import x as x` as an explicit re-export; Python's
+      // runtime namespace makes every module-level form republish, so the flag
+      // is set uniformly here rather than only for the redundant-alias case.
       if (sourceCap === undefined || nameCap === undefined || aliasCap === undefined) return null;
       return {
         kind: 'alias',
@@ -69,6 +79,7 @@ export function interpretPythonImport(captures: CaptureMatch): ParsedImport | nu
         importedName: nameCap.text,
         alias: aliasCap.text,
         targetRaw: sourceCap.text,
+        reexportsName: true,
       };
     }
     case 'wildcard': {
