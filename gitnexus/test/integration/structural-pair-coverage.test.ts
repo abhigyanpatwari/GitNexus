@@ -117,21 +117,28 @@ const NON_BRIDGE_CORPUS = [
     // died on any repo containing `type X = { ... }`. Every resolver test still
     // passed, because they build an in-memory graph and never write to the DB —
     // this suite is the only place that difference shows up.
-    // `TypeAlias|Property` is the LOAD-BEARING sentinel: `TypeAlias` is on the
-    // eleven-table list this suite exists for, so no cross-product generates it.
-    // `Interface|Property` was listed alongside it and is tautological — both
-    // labels are in the SCOPE_BRIDGE cross-product, so that pair is emitted by
-    // construction and the sentinel cannot fail. Dropped rather than left to
-    // read as coverage.
+    // `TypeAlias` USED to be off the generated grid, which is why round 1 hand-
+    // declared its pairs. It is now in `LINKABLE_LABELS` (the def→graph-node
+    // bridge needs it), which makes it a SCOPE_BRIDGE source and target, so the
+    // cross-product generates these pairs and the hand declarations were
+    // removed as redundant.
+    //
+    // The sentinel is still load-bearing, for a different reason than before:
+    // it now depends on `TypeAlias` being in `LINKABLE_LABELS`. Take it out and
+    // the pair stops being generated AND the hand declaration is gone, so this
+    // fails — which is exactly the state that also silently breaks alias
+    // consumer edges. `Interface|Property` was dropped from this entry because
+    // it is tautological in the ordinary way: both labels were always in the
+    // cross-product, so nothing about it could ever fail.
     fixture: 'typescript-alias-fields',
     emitter: 'object-type alias HAS_PROPERTY',
     sentinels: ['TypeAlias|Property'],
   },
   {
-    // `TypeAlias|Method` is declared in `schema.ts` but no fixture contained a
-    // method-shaped alias member, so nothing proved it was the right pair for
-    // what is actually emitted — a declared pair that no emitter exercises is
-    // indistinguishable from a missing one until an analyze aborts on it.
+    // Nothing in the corpus contained a method-shaped alias member, so nothing
+    // proved `TypeAlias|Method` was the right pair for what is actually
+    // emitted — a pair no emitter exercises is indistinguishable from a missing
+    // one until an analyze aborts on a real repo.
     fixture: 'typescript-alias-methods',
     emitter: 'object-type alias HAS_METHOD',
     sentinels: ['TypeAlias|Method'],
