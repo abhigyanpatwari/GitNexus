@@ -33,7 +33,8 @@ import {
   deleteNodesForFiles,
   ensureEmbeddingRowDmlSafe,
   ensureFtsRowDmlSafe,
-  readIndexCatalogRows,
+  readIndexCatalogSnapshot,
+  INDEX_CATALOG_UNREADABLE,
   deleteAllCommunitiesAndProcesses,
   deleteAllInterprocTaintPaths,
   deleteAllCallSummaries,
@@ -67,7 +68,11 @@ import {
   getSearchFTSCjkSegmentation,
   initialiseSearchFTSCjkSegmentation,
 } from './search/cjk-segmentation.js';
-import { getExtensionCapabilities, resolveAnalyzeInstallPolicy } from './lbug/extension-loader.js';
+import {
+  getExtensionCapabilities,
+  getExtensionInstallPolicy,
+  resolveAnalyzeInstallPolicy,
+} from './lbug/extension-loader.js';
 import { diagnoseExtensionLoad } from './lbug/extension-load-error.js';
 import {
   startWalCheckpointDriver,
@@ -852,6 +857,55 @@ async function resolveWriteTarget(repoPath: string, options: AnalyzeOptions): Pr
 }
 
 /**
+ * §5.C — can a previously-degraded FTS index be rebuilt on THIS run?
+ *
+ * After an FTS-forced escalation (#2841) the rebuild stamps `lastCommit`, so a
+ * plain rerun on a clean tree at the same commit hits the `alreadyUpToDate` fast
+ * path and returns long before Phase 3 ever retries `loadFTSExtension` — the
+ * indexes are never rebuilt, while the CLI's own degraded-search warning tells
+ * the user to install the extension "then rerun". Only `--repair-fts` or a later
+ * content change healed it. This probe is what lets that advice be true.
+ *
+ * Two questions, cheapest first, and BOTH must answer yes:
+ *
+ *  1. Are search indexes actually missing? Asked of the catalog, never of the
+ *     meta stamp — `--repair-fts` writes `capabilities.fts` best-effort, so a
+ *     failed stamp leaves meta claiming 'unavailable' over a perfectly healthy
+ *     index, and bypassing the fast path on that alone would re-analyze forever.
+ *     `verifySearchFTSIndexes` needs no extension (a plain `SHOW_INDEXES` read).
+ *  2. Can the FTS extension be loaded NOW? Under {@link getExtensionInstallPolicy}
+ *     (env-explicit wins, default `load-only`) — NOT the analyze policy: a
+ *     fast-path run must not spend a bounded network INSTALL on every rerun of a
+ *     permanently-offline machine. An operator who exports
+ *     `GITNEXUS_LBUG_EXTENSION_INSTALL=auto` — precisely what the CLI's remedy
+ *     tells them to do — still gets the install attempt. `quiet` because a
+ *     failed probe is the EXPECTED answer here and Phase 3 owns the real
+ *     degradation report.
+ *
+ * Fail-safe by construction: any error (missing/unopenable DB, read-only mount,
+ * #1549) answers `false` and the fast path stands — an up-to-date run must never
+ * be turned into a failure by a diagnostic.
+ */
+async function degradedFtsCanBeRebuiltNow(lbugPath: string): Promise<boolean> {
+  try {
+    await initLbug(lbugPath);
+    const missing = await verifySearchFTSIndexes(executeQuery);
+    if (missing.length === 0) return false;
+    return await loadFTSExtension(undefined, {
+      policy: getExtensionInstallPolicy(),
+      quiet: true,
+    });
+  } catch {
+    return false;
+  } finally {
+    // Always hand the run back a closed DB: the pipeline below opens
+    // `buildPath` itself, and `closeLbug` is what resets the per-connection
+    // `ftsLoaded` memo so that open re-probes instead of trusting this one.
+    await closeLbug().catch(() => {});
+  }
+}
+
+/**
  * Run the full analysis under an exclusive, index-directory-scoped write lock
  * (#2658). A second concurrent `analyze` on the same slot waits here for the
  * first to finish, then falls through to the normal freshness check inside —
@@ -1462,7 +1516,31 @@ async function runFullAnalysisInner(
       // opt-in branch so the common fast path keeps its single-stat cost.
       const healUnregistered =
         options.allowDuplicateName === true && !(await isRepoRegistered(repoPath));
-      if (!dirty && !healUnregistered) {
+      // ── §5.C: don't freeze a degraded search index behind the fast path ──
+      // Phase 3 stamps `capabilities.fts.status = 'unavailable'` (the same
+      // signal `ftsSkipped` reports to the CLI) whenever this run could not
+      // build the search indexes. An #2841 FTS-forced rebuild then stamps
+      // `lastCommit` as well, so the very rerun the CLI advises — "install it
+      // once with network access … then rerun" — would land here and
+      // early-return, leaving keyword search dead until the next content
+      // change. Probe only in that recorded-degraded state, and only when the
+      // run would otherwise return: a healthy index still costs one stat.
+      const healDegradedFts =
+        !dirty &&
+        !healUnregistered &&
+        // `?.` on `fts` as well as `capabilities`: meta.json is a schema-less
+        // JSON.parse of on-disk state (same reason the embedding-dims guard
+        // above refuses to quote back a value it cannot type-check), so a
+        // legacy/hand-edited file can carry `capabilities` without `fts`.
+        existingMeta.capabilities?.fts?.status === 'unavailable' &&
+        (await degradedFtsCanBeRebuiltNow(lbugPath));
+      if (healDegradedFts) {
+        log(
+          'Index is up to date but its search indexes are missing and the FTS extension now ' +
+            'loads — re-analyzing so Phase 3 can rebuild them.',
+        );
+      }
+      if (!dirty && !healUnregistered && !healDegradedFts) {
         // ── #2354: restamp the workspace label on a same-commit branch flip ──
         // The flat slot follows the checked-out working tree; a branch switch
         // at the SAME commit with a clean tree changes nothing the pipeline
@@ -1771,13 +1849,18 @@ async function runFullAnalysisInner(
   if (wantAtomicIncremental && !atomicIncremental) {
     log('atomic-incremental: live index carries orphan sidecars — using in-place writeback');
   }
-  const useAtomicSwap = (isFullRebuild || atomicIncremental) && (posixSwap || windowsSwapOk);
+  // `let` (#2841 review H2): an extension-forced escalation discovered ~440
+  // lines below can upgrade an in-place incremental write to a staged one —
+  // see the upgrade at the escalation valve. Nothing between here and there
+  // reads either binding except `initLbug(buildPath)`, which the upgrade
+  // re-runs against the staging path.
+  let useAtomicSwap = (isFullRebuild || atomicIncremental) && (posixSwap || windowsSwapOk);
   // #2658: a per-run staging name (was the fixed `lbug.new`). Even under the
   // single-writer lock, a unique name means a crashed run's half-built staging
   // file can never be mistaken for — or clobber — a live run's; the lock's
   // orphan sweep (sweepStagingArtifacts) reclaims stragglers on the next
   // acquire. The `.staging.` prefix is what that sweep matches.
-  const buildPath = useAtomicSwap ? `${lbugPath}.staging.${randomUUID()}` : lbugPath;
+  let buildPath = useAtomicSwap ? `${lbugPath}.staging.${randomUUID()}` : lbugPath;
 
   if (isIncremental && hashDiff) {
     log(
@@ -2133,11 +2216,31 @@ async function runFullAnalysisInner(
       // share ONE `SHOW_INDEXES` read — they answer different questions about the
       // same catalog snapshot, and nothing between here and the write plan
       // creates or drops an index.
-      const indexCatalogRows = await readIndexCatalogRows();
+      const indexCatalogRows = await readIndexCatalogSnapshot();
       const embeddingRowDmlSafe = await ensureEmbeddingRowDmlSafe(indexCatalogRows);
       const ftsRowDmlSafe = await ensureFtsRowDmlSafe(indexCatalogRows);
       const extensionForcedRebuild = !embeddingRowDmlSafe || !ftsRowDmlSafe;
-      if (extensionForcedRebuild && cachedEmbeddings.length === 0) {
+      // `!options.dropEmbeddings` (H1): this rescue reads the rows back OUT of
+      // the DB, so it must never fire on the one path whose entire purpose is to
+      // destroy them. `--drop-embeddings` deliberately leaves `cachedEmbeddings`
+      // empty (`deriveEmbeddingMode` returns `shouldLoadCache: false` for it by
+      // construction — see the four-mode comment at the cache-load site), and its
+      // `options.force = true` conversion sits INSIDE
+      // `if (existingMeta?.embeddingCheckpoint)`, so a repo without a checkpoint
+      // stays incremental and arrives here holding exactly the state the rescue
+      // reads as "the index metadata did not account for them" — restoring the N
+      // rows the operator just asked to wipe, printing `Preserving N` on top of
+      // this run's own `Dropping N` line, and exiting 0.
+      //
+      // The predicate has to be the FLAG, not `shouldLoadCache`: that would also
+      // disable the rescue in the case it exists for (meta says 0 embeddings
+      // while rows survive ⇒ `hasExisting` false ⇒ `shouldLoadCache` false), i.e.
+      // it would fix the wipe by deleting the safeguard. Covers
+      // `--drop-embeddings --embeddings` too — the rescue repopulates
+      // `cachedEmbeddingNodeIds`, which Phase 4 hands `runEmbeddingPipeline` as
+      // the already-embedded set, so the very nodes the user asked to REGENERATE
+      // would be skipped.
+      if (extensionForcedRebuild && !options.dropEmbeddings && cachedEmbeddings.length === 0) {
         // The escalation below WIPES the DB files, and Phase 3.5 restores
         // embedding rows from `cachedEmbeddings` — which is only populated when
         // `deriveEmbeddingMode` saw `meta.stats.embeddings > 0`. A DB whose meta
@@ -2157,50 +2260,101 @@ async function runFullAnalysisInner(
           );
         }
       }
-      if (
-        extensionForcedRebuild ||
-        shouldEscalateIncrementalWrite(
-          filesToDelete.length,
-          effectiveWriteSet.size,
-          allFilePaths.length,
-        )
-      ) {
+      // Hoisted out of the `||` below (§5.D): the size verdict has to be KNOWN
+      // even when a blocked extension already forced the rebuild, or the message
+      // cannot report both. Pure predicate over three numbers
+      // (incremental/escalation-gate.ts), so evaluating it unconditionally costs
+      // nothing and has no side effects.
+      const sizeForcedRebuild = shouldEscalateIncrementalWrite(
+        filesToDelete.length,
+        effectiveWriteSet.size,
+        allFilePaths.length,
+      );
+      if (extensionForcedRebuild || sizeForcedRebuild) {
         escalatedFullWrite = true;
-        // Every blocked extension is named, not just the first: a DB can carry
-        // BOTH a vector index and FTS indexes, and reporting one cause while the
-        // other is equally fatal is how #2841 stayed mis-diagnosed for so long.
-        const blockedCauses: string[] = [];
+        // Every live cause is named, not just the first: a DB can carry BOTH a
+        // vector index and FTS indexes, and reporting one cause while the other
+        // is equally fatal is how #2841 stayed mis-diagnosed for so long. §5.D:
+        // that argument crosses the extension/size boundary too, so the size
+        // cause is APPENDED here rather than selected between — the old either/or
+        // ternary dropped the write-set line whenever an extension also blocked.
+        const escalationCauses: string[] = [];
         const degradedEffects: string[] = [];
-        if (!embeddingRowDmlSafe) {
-          blockedCauses.push(
-            `the ${EMBEDDING_TABLE_NAME} vector index exists but the VECTOR extension could not be ` +
-              `loaded, so embedding rows cannot be rewritten in place`,
+        // H5: `readIndexCatalogRows()` returning nothing means "could not prove
+        // anything", and both gates correctly fail CLOSED on it — but a
+        // fail-closed sentinel is not evidence. Asserting "the CodeEmbedding
+        // vector index exists" from it is affirmatively FALSE on a repo that
+        // never enabled embeddings, and the only truthful signal (the adapter's
+        // `Could not read the LadybugDB index catalog` warning) goes to the pino
+        // stderr stream, NOT this `onLog` callback — so `gitnexus serve` and the
+        // analyze worker UI would show the invented claim alone. Emit one honest
+        // cause naming the unsettled read instead of two fabricated ones.
+        // Tested against the explicit sentinel, NOT truthiness: §5.A made the
+        // failed read representable (`INDEX_CATALOG_UNREADABLE`) precisely so
+        // "the caller passed nothing" and "the caller tried and could not prove
+        // anything" stop sharing one value — and the sentinel is a Symbol, so a
+        // `!indexCatalogRows` test would silently never fire here.
+        const indexCatalogUnreadable = indexCatalogRows === INDEX_CATALOG_UNREADABLE;
+        // `extensionForcedRebuild &&`: an unreadable catalog is only a CAUSE
+        // when it actually blocked something. A size-only escalation whose
+        // catalog read happened to fail still had both gates answer "safe"
+        // (both extensions loaded), and claiming otherwise would trade one
+        // invented cause for another.
+        if (extensionForcedRebuild && indexCatalogUnreadable) {
+          const blockedExtensions = [
+            !embeddingRowDmlSafe ? 'VECTOR' : undefined,
+            !ftsRowDmlSafe ? 'FTS' : undefined,
+          ].filter((name): name is string => name !== undefined);
+          escalationCauses.push(
+            `the LadybugDB index catalog could not be read (the read error is on the analyzer's ` +
+              `warning stream), so neither a live ${EMBEDDING_TABLE_NAME} vector index nor a live ` +
+              `FTS search index could be ruled out, and the ${blockedExtensions.join(' and ')} ` +
+              `extension${blockedExtensions.length > 1 ? 's' : ''} could not be loaded to rewrite ` +
+              `indexed rows in place either`,
           );
+        }
+        if (!embeddingRowDmlSafe) {
+          if (!indexCatalogUnreadable) {
+            escalationCauses.push(
+              `the ${EMBEDDING_TABLE_NAME} vector index exists but the VECTOR extension could not be ` +
+                `loaded, so embedding rows cannot be rewritten in place`,
+            );
+          }
           degradedEffects.push(
             'Semantic search falls back to exact scan until VECTOR is available.',
           );
         }
         if (!ftsRowDmlSafe) {
-          blockedCauses.push(
-            `this index carries FTS search indexes but the FTS extension could not be loaded, so no ` +
-              `indexed table can be written in place (LadybugDB refuses the write at bind time, and ` +
-              `the indexes cannot be dropped without the extension either)`,
-          );
+          if (!indexCatalogUnreadable) {
+            // Self-contained subject (H5): `join('; and ')` used to render "…the
+            // CodeEmbedding vector index exists … and THIS INDEX carries FTS
+            // search indexes…", pointing "this index" at the vector index just
+            // named — and an index does not carry indexes.
+            escalationCauses.push(
+              `the graph store carries one or more FTS search indexes but the FTS extension could ` +
+                `not be loaded, so no indexed table can be written in place (LadybugDB refuses the ` +
+                `write at bind time, and the indexes cannot be dropped without the extension either)`,
+            );
+          }
           degradedEffects.push('Full-text/BM25 search stays degraded until FTS is available.');
         }
+        if (sizeForcedRebuild) {
+          escalationCauses.push(
+            `the effective write set covers ${effectiveWriteSet.size}/${allFilePaths.length} ` +
+              // Display clamp only (predicate unchanged): BFS-found deleted
+              // importers can push the numerator past the CURRENT file list, so
+              // the raw fraction can exceed 1 — see the population-mismatch note
+              // on shouldEscalateIncrementalWrite (tri-review 4669518496).
+              `files (${Math.min(100, Math.round(writeFraction * 100))}%)`,
+          );
+        }
         log(
-          blockedCauses.length > 0
-            ? `Incremental: ${blockedCauses.join('; and ')} — switching to a full DB write ` +
-                `(wipe + bulk COPY) for this run. ${degradedEffects.join(' ')} Run ` +
-                `\`gitnexus doctor\` for live extension status, or set ` +
-                `GITNEXUS_LBUG_EXTENSION_INSTALL=auto to allow one bounded install attempt.`
-            : `Incremental: effective write set covers ${effectiveWriteSet.size}/${allFilePaths.length} ` +
-                // Display clamp only (predicate unchanged): BFS-found deleted
-                // importers can push the numerator past the CURRENT file list, so
-                // the raw fraction can exceed 1 — see the population-mismatch note
-                // on shouldEscalateIncrementalWrite (tri-review 4669518496).
-                `files (${Math.min(100, Math.round(writeFraction * 100))}%) — switching to a full DB write ` +
-                `(wipe + bulk COPY) for this run; file-level incremental bookkeeping is unaffected.`,
+          `Incremental: ${escalationCauses.join('; and ')} — switching to a full DB write ` +
+            `(wipe + bulk COPY) for this run; file-level incremental bookkeeping is unaffected.` +
+            (degradedEffects.length > 0
+              ? ` ${degradedEffects.join(' ')} Run \`gitnexus doctor\` for live extension status, ` +
+                `or set GITNEXUS_LBUG_EXTENSION_INSTALL=auto to allow one bounded install attempt.`
+              : ''),
         );
         // toWriteCount: 0 is the established full-path dirty-flag sentinel;
         // the real counters ride along for crash diagnostics.
@@ -2219,6 +2373,37 @@ async function runFullAnalysisInner(
         // surviving family member throws a typed LbugWipeError here instead
         // of letting the reopen below resurrect the rows this run just chose
         // to replace wholesale.
+        // #2841 review H2 — do not delete the live index for a MACHINE-level
+        // cause. `buildPath` was frozen ~440 lines above, while this run was
+        // still classified incremental, so an extension-forced rebuild would
+        // otherwise `wipeLbugDbFiles(lbugPath)` and bulk-COPY in place: an
+        // interrupt, ENOSPC, or COPY failure would then leave NO complete index,
+        // where `main` failed at LadybugDB bind time with the index fully
+        // intact. A size-forced escalation keeps the in-place plan (its trigger
+        // is this repo's own churn, and the write set is large by definition);
+        // an extension-forced one is environmental and must be recoverable.
+        //
+        // Safe because the gate runs BEFORE any row DML: the DB open at
+        // `buildPath` is unmutated, so switching targets loses nothing. The
+        // end-of-run swap publishes the staging file atomically, and a failure
+        // anywhere before it leaves the previous index live (its own comment
+        // says so) with the dirty flag already stamped above for recovery.
+        //
+        // Knock-on effects of flipping `useAtomicSwap` here, both intended:
+        // `ftsFailureIsFatal(..., useAtomicSwap)` now aborts instead of
+        // degrading on an FTS *integrity* error — which is exactly that
+        // predicate's documented staging contract (throwing abandons a
+        // throwaway file and keeps the live index) — and `forceRealCloseForSwap`
+        // engages on Windows, which is why the upgrade is gated on the same
+        // `posixSwap || windowsSwapOk` policy that governs every other swap.
+        if (extensionForcedRebuild && !useAtomicSwap && (posixSwap || windowsSwapOk)) {
+          useAtomicSwap = true;
+          buildPath = `${lbugPath}.staging.${randomUUID()}`;
+          log(
+            'Incremental: building the replacement index alongside the live one and swapping it in ' +
+              'at the end, so an interrupted rebuild leaves the current index intact.',
+          );
+        }
         await walCheckpointDriver.stop();
         await closeLbug();
         await wipeLbugDbFiles(buildPath);
