@@ -62,7 +62,11 @@ describe('JavaScript plain-object property access (A1/A5)', () => {
   });
 
   it('gives every indexed key a distinct node, not one merged symbol', () => {
+    // Asserted on the RAW array, not on a Set of it. `new Set([...]).size === 2`
+    // over two different literal strings can only ever be 2 — it cannot detect
+    // the merge the title promises, which is a difference in COUNT.
     const props = propertyNames().filter((n) => n === 'exitMinAtrMult' || n === 'stopAtrMult');
+    expect(props).toHaveLength(2);
     expect(new Set(props).size).toBe(2);
   });
 
@@ -195,6 +199,10 @@ describe('JavaScript plain-object property access (A1/A5)', () => {
       const stats = (result as unknown as { scopeResolution?: Record<string, unknown> })
         .scopeResolution;
       if (stats === undefined) return;
+      // Both halves. Asserting only the empty edge set is satisfied equally by
+      // "the ambiguity gate fired" and "the name was never looked up at all",
+      // so the counter must be shown to have MOVED.
+      expect(Number(stats.uniqueNamePropertyAmbiguous ?? 0)).toBeGreaterThan(0);
       expect(stats.uniqueNamePropertyAmbiguousNames).toContain('sharedTimeoutMs');
     });
   });

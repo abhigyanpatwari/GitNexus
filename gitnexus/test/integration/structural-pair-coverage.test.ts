@@ -117,9 +117,24 @@ const NON_BRIDGE_CORPUS = [
     // died on any repo containing `type X = { ... }`. Every resolver test still
     // passed, because they build an in-memory graph and never write to the DB —
     // this suite is the only place that difference shows up.
+    // `TypeAlias|Property` is the LOAD-BEARING sentinel: `TypeAlias` is on the
+    // eleven-table list this suite exists for, so no cross-product generates it.
+    // `Interface|Property` was listed alongside it and is tautological — both
+    // labels are in the SCOPE_BRIDGE cross-product, so that pair is emitted by
+    // construction and the sentinel cannot fail. Dropped rather than left to
+    // read as coverage.
     fixture: 'typescript-alias-fields',
     emitter: 'object-type alias HAS_PROPERTY',
-    sentinels: ['TypeAlias|Property', 'Interface|Property'],
+    sentinels: ['TypeAlias|Property'],
+  },
+  {
+    // `TypeAlias|Method` is declared in `schema.ts` but no fixture contained a
+    // method-shaped alias member, so nothing proved it was the right pair for
+    // what is actually emitted — a declared pair that no emitter exercises is
+    // indistinguishable from a missing one until an analyze aborts on it.
+    fixture: 'typescript-alias-methods',
+    emitter: 'object-type alias HAS_METHOD',
+    sentinels: ['TypeAlias|Method'],
   },
   {
     // The other direction on the same fixture (R2-2): an annotation naming a
