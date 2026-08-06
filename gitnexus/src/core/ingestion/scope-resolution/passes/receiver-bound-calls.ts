@@ -60,6 +60,7 @@ import type { WorkspaceResolutionIndex } from '../workspace-index.js';
 import { collectNamespaceTargets } from '../scope/namespace-targets.js';
 import {
   findClassBindingInScope,
+  findShapeBindingInScope,
   findEnclosingClassDef,
   isReceiverOwnedButUnbound,
   findExportedDef,
@@ -139,6 +140,16 @@ function resolveClassBindingForName(
 ): SymbolDefinition | undefined {
   const direct = findClassBindingInScope(scopeId, rawClassName, scopes, stripDecoration);
   if (direct !== undefined) return direct;
+
+  // A receiver may be typed as an object-type ALIAS, which declares members
+  // exactly as an interface does but is not class-like, so it binds nothing
+  // above. Tried only after the class lookup misses, so a class of the same
+  // name always wins and nothing that resolved before changes. Confined to
+  // this helper on purpose: its two callers are member dispatch and an
+  // origin-classifying diagnostic, never inheritance — see `isShapeLike` for
+  // why the two questions must not share a predicate.
+  const shape = findShapeBindingInScope(scopeId, rawClassName, scopes);
+  if (shape !== undefined) return shape;
 
   if (!rawClassName.includes('<')) return undefined;
   const baseName = stripTemplateArguments(rawClassName).replace(/\s+/g, '');

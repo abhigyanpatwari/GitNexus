@@ -162,8 +162,12 @@ export const TYPESCRIPT_SCOPE_QUERY = `
 (enum_declaration
   name: (identifier) @declaration.name) @declaration.enum
 
+;; Tagged @declaration.type_alias, NOT @declaration.type: normalizeNodeLabel
+;; accepts typealias / type_alias and has no "type" case, so the old tag mapped
+;; to no label and TypeScript aliases produced NO scope-resolution def at all.
+;; Kotlin and Dart already spell it this way.
 (type_alias_declaration
-  name: (type_identifier) @declaration.name) @declaration.type
+  name: (type_identifier) @declaration.name) @declaration.type_alias
 
 (internal_module
   name: (identifier) @declaration.name) @declaration.namespace
