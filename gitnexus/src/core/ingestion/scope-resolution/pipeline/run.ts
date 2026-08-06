@@ -94,6 +94,7 @@ import { buildWorkspaceResolutionIndex } from '../workspace-index.js';
 import type { ResolutionOutcome, ResolutionOutcomeRecorder } from '../resolution-outcome.js';
 import { logHeapProbe } from '../../utils/heap-probe.js';
 import { parseTruthyEnv } from '../../utils/env.js';
+import { isValueDefinitionLabel } from '../../utils/ast-helpers.js';
 import { TransitionalScopeTree } from '../../../../storage/scope-index-store.js';
 import { forceGc } from '../../../../storage/parsedfile-store.js';
 
@@ -794,6 +795,51 @@ export function runScopeResolution(
   const tResolve = PROF ? process.hrtime.bigint() : 0n;
   logHeapProbe('sr-post-resolve', `lang=${provider.language}`);
 
+  // Value defs bound at MODULE LEVEL. A read of a block-local `const` must not
+  // mint an edge — that would retain the inert locals `pruneLocalSymbols` drops.
+  //
+  // Built HERE, above the out-of-core seal, and deliberately from `parsedFiles`
+  // rather than `emitParsedFiles`. The seal below replaces the latter with a
+  // scope-STRIPPED copy, so building this after it walked `scopes: []` for every
+  // file and produced an empty set — which the filter then reads as "no def is
+  // module-level" and drops EVERY `Const`/`Variable`/`Static` ACCESSES edge in
+  // the repo, in all languages, on the one path (`GITNEXUS_DISK_SCOPE_INDEX=1`)
+  // taken by the largest repos. Nothing failed and nothing logged; the edges
+  // were simply absent, which is the confident-empty answer this PR exists to
+  // remove.
+  //
+  // `Module` is also not the only module level. A `Namespace` scope (TS
+  // `namespace`, Rust `mod`, C++/C# `namespace`) holds importable values too,
+  // and treating its consts as function-locals dropped their edges as well.
+  // Included when the whole chain to the root is Module/Namespace — a namespace
+  // declared inside a function body is a local like anything else there.
+  const moduleScopeValueDefIds = new Set<string>();
+  let moduleScopesInspected = false;
+  for (const parsed of parsedFiles) {
+    const scopeById = new Map(parsed.scopes.map((sc) => [sc.id, sc]));
+    for (const scope of parsed.scopes) {
+      if (scope.kind !== 'Module' && scope.kind !== 'Namespace') continue;
+      let ancestor = scope.parent === null ? undefined : scopeById.get(scope.parent);
+      let atModuleLevel = true;
+      while (ancestor !== undefined) {
+        if (ancestor.kind !== 'Module' && ancestor.kind !== 'Namespace') {
+          atModuleLevel = false;
+          break;
+        }
+        ancestor = ancestor.parent === null ? undefined : scopeById.get(ancestor.parent);
+      }
+      if (!atModuleLevel) continue;
+      moduleScopesInspected = true;
+      for (const [, refs] of scope.bindings) {
+        for (const ref of refs) {
+          if (isValueDefinitionLabel(ref.def.type)) {
+            moduleScopeValueDefIds.add(ref.def.nodeId);
+          }
+        }
+      }
+    }
+  }
+
   // ── Out-of-core scope seal boundary ─────────────────────────────────────
   // Pass-A (finalize + propagate + resolve) is done; all whole-language reads
   // of `Scope.bindings` are behind us. Emit reaches scopes ONLY via
@@ -927,22 +973,6 @@ export function runScopeResolution(
       );
   const referenceSkipSites = new Set(handledSites);
   for (const key of deferredIndirectSites) referenceSkipSites.add(key);
-  // Value defs bound at MODULE scope. A read of a block-local `const` must not
-  // mint an edge — that would retain the inert locals `pruneLocalSymbols`
-  // drops. Built once here, where the parsed scopes are already in hand.
-  const moduleScopeValueDefIds = new Set<string>();
-  for (const parsed of emitParsedFiles) {
-    const moduleScope = parsed.scopes.find((sc) => sc.kind === 'Module');
-    if (moduleScope === undefined) continue;
-    for (const [, refs] of moduleScope.bindings) {
-      for (const ref of refs) {
-        const t = ref.def.type;
-        if (t === 'Const' || t === 'Variable' || t === 'Static') {
-          moduleScopeValueDefIds.add(ref.def.nodeId);
-        }
-      }
-    }
-  }
   const { emitted, skipped } = callableFlowOnly
     ? { emitted: 0, skipped: 0 }
     : emitReferencesViaLookup(
@@ -952,7 +982,12 @@ export function runScopeResolution(
         postHeritageNodeLookup,
         referenceSkipSites,
         calleeIdAccumulator,
-        moduleScopeValueDefIds,
+        // FAIL OPEN, not closed. An empty set is a legitimate answer ("this repo
+        // has no module-level value defs, so every such target is a local"), but
+        // it is indistinguishable from "the scopes could not be inspected" — and
+        // in the second case arming the filter deletes a whole edge class. Only
+        // pass the set when scopes were actually walked.
+        moduleScopesInspected ? moduleScopeValueDefIds : undefined,
       );
   // Last-resort property resolution by workspace-unique name (A1/A5). Runs
   // after every precise pass and only sees what they left behind, so a

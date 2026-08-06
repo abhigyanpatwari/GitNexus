@@ -25,6 +25,7 @@ import { resolveCallerGraphId, resolveDefGraphId } from '../graph-bridge/ids.js'
 import { mapReferenceKindToEdgeType } from '../graph-bridge/edges.js';
 import type { GraphNodeLookup } from '../graph-bridge/node-lookup.js';
 import type { CalleeIdSink } from '../graph-bridge/callee-id-sink.js';
+import { isValueDefinitionLabel } from '../../utils/ast-helpers.js';
 
 /**
  * Optional opaque skip key — providers may pre-emit edges (e.g. via
@@ -40,7 +41,6 @@ type ReferenceSiteSkipSet = ReadonlySet<string>;
  * only worth an edge when the def lives at module scope — see
  * `moduleScopeValueDefIds`.
  */
-const LOCALIZABLE_VALUE_LABELS: ReadonlySet<string> = new Set(['Const', 'Variable', 'Static']);
 
 export function emitReferencesViaLookup(
   graph: KnowledgeGraph,
@@ -112,7 +112,7 @@ export function emitReferencesViaLookup(
       if (
         moduleScopeValueDefIds !== undefined &&
         edgeType === 'ACCESSES' &&
-        LOCALIZABLE_VALUE_LABELS.has(targetDef.type) &&
+        isValueDefinitionLabel(targetDef.type) &&
         !moduleScopeValueDefIds.has(targetDef.nodeId)
       ) {
         skipped++;

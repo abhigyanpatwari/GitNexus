@@ -1219,6 +1219,34 @@ export const TYPESCRIPT_SCOPE_QUERY = `
 (object
   (shorthand_property_identifier) @reference.name @reference.property-key @reference.value-ref)
 
+;; Bare-identifier reads (A2), VALUE POSITIONS ONLY — a blanket \`(identifier)\`
+;; rule would mint a site for every token in the file.
+;;
+;; These existed only in the JavaScript query, so A2 did not work for
+;; TypeScript AT ALL: a \`.ts\` module reading its own \`const\` by bare name
+;; produced no reference site, and "who uses this constant?" answered a
+;; confident zero for an entire language. Found by writing the namespace
+;; fixture below and watching it fail for the wrong reason.
+(arguments
+  (identifier) @reference.name @reference.read.identifier)
+
+(assignment_pattern
+  right: (identifier) @reference.name @reference.read.identifier)
+
+(return_statement
+  (identifier) @reference.name @reference.read.identifier)
+
+;; \`const next = LIMIT\` and \`n > LIMIT\` — both plainly value reads, and both
+;; named in review as gaps between what A2 claimed and what it matched.
+(variable_declarator
+  value: (identifier) @reference.name @reference.read.identifier)
+
+(binary_expression
+  left: (identifier) @reference.name @reference.read.identifier)
+
+(binary_expression
+  right: (identifier) @reference.name @reference.read.identifier)
+
 ;; References — TYPE POSITION (R2-2). An annotation naming a declared type is
 ;; the only thing that makes that type's declaration reachable from the code
 ;; that depends on it, and TypeScript captured none: only cpp and csharp emitted

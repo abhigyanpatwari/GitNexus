@@ -610,6 +610,17 @@ export const JAVASCRIPT_SCOPE_QUERY = `
 (return_statement
   (identifier) @reference.name @reference.read.identifier)
 
+;; \`const next = LIMIT\` and \`n > LIMIT\` — both plainly value reads, and both
+;; named in review as gaps between what A2 claimed and what it matched.
+(variable_declarator
+  value: (identifier) @reference.name @reference.read.identifier)
+
+(binary_expression
+  left: (identifier) @reference.name @reference.read.identifier)
+
+(binary_expression
+  right: (identifier) @reference.name @reference.read.identifier)
+
 ;; Destructured PARAMETER keys (R2-1c). \`function exit({ exitMinAtrMult = 0 })\`
 ;; reads that property off whatever the caller passes, exactly as
 ;; \`cfg.exitMinAtrMult\` would — the field just never appears in a

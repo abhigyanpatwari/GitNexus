@@ -53,6 +53,54 @@ describe('JavaScript module-scope const references (A2)', () => {
     expect(toLocal).toEqual([]);
   });
 
+  // The out-of-core path (#RV-2). Nothing in the suite exercised
+  // `GITNEXUS_DISK_SCOPE_INDEX`, and that is where the module-level set was
+  // being built from scope-STRIPPED files: it came out empty, which the filter
+  // read as "no def is module-level" and used to drop every
+  // `Const`/`Variable`/`Static` ACCESSES edge in the repo — including the ones
+  // this suite exists to prove exist. It failed silently, on the path large
+  // repos take, and no test could see it.
+  //
+  // Parity is the assertion: the seal is a memory optimization and must not
+  // change a single edge.
+  describe('under the out-of-core scope seal', () => {
+    let sealed: PipelineResult;
+
+    beforeAll(async () => {
+      const prev = process.env.GITNEXUS_DISK_SCOPE_INDEX;
+      process.env.GITNEXUS_DISK_SCOPE_INDEX = '1';
+      try {
+        sealed = await runPipelineFromRepo(
+          path.join(FIXTURES, 'javascript-const-references'),
+          () => {},
+        );
+      } finally {
+        if (prev === undefined) delete process.env.GITNEXUS_DISK_SCOPE_INDEX;
+        else process.env.GITNEXUS_DISK_SCOPE_INDEX = prev;
+      }
+    }, 60000);
+
+    const sealedReaders = (): Set<string> =>
+      new Set(
+        getRelationships(sealed, 'ACCESSES')
+          .filter((e) => e.target === 'DEFAULT_FETCH_LIMIT')
+          .map((e) => e.source),
+      );
+
+    it('keeps the const edges the unsealed run produced', () => {
+      expect([...sealedReaders()].sort()).toEqual([...readersOfConst()].sort());
+    });
+
+    it('still withholds the block-local edge', () => {
+      // The filter must fail OPEN when scopes are unavailable, not be disabled:
+      // the block-local exclusion is a correctness property, not an optimization.
+      const toLocal = getRelationships(sealed, 'ACCESSES').filter(
+        (e) => e.target === 'localScratchValue',
+      );
+      expect(toLocal).toEqual([]);
+    });
+  });
+
   it('targets the Const node itself, not a same-named local', () => {
     const toConst = getRelationships(result, 'ACCESSES').filter(
       (e) => e.target === 'DEFAULT_FETCH_LIMIT',
