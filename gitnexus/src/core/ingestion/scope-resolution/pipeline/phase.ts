@@ -45,6 +45,7 @@ import type { ResolutionOutcome } from '../resolution-outcome.js';
 import type { FunctionSummary } from '../../taint/summary-model.js';
 import type { CallSummary } from '../../taint/call-summary-model.js';
 import { buildFunctionNodeIndex } from '../../taint/summary-harvest-driver.js';
+import { buildPropertyNameIndex } from '../passes/unique-name-properties.js';
 import { PdgEmitSink, type PdgEmitManifest } from '../../../lbug/pdg-emit-sink.js';
 import { resolveNativeSafeStorageDir } from '../../../lbug/lbug-config.js';
 import type { ScopeResolver } from '../contract/scope-resolver.js';
@@ -282,6 +283,14 @@ export const scopeResolutionPhase: PipelinePhase<ScopeResolutionOutput> = {
       ctx.options?.pdg === true && totalScopeFiles > 0
         ? buildFunctionNodeIndex(ctx.graph)
         : undefined;
+    // Same treatment for the `Property`-by-name index the unique-name pass
+    // consults: a whole-graph node scan, language-agnostic, and previously
+    // rebuilt inside every qualifying language pass. Language filtering happens
+    // at LOOKUP time against that language's own file set, so one shared index
+    // serves all of them without widening what any single language can resolve
+    // to.
+    const sharedPropertyNameIndex =
+      totalScopeFiles > 0 ? buildPropertyNameIndex(ctx.graph) : undefined;
 
     // Streaming/chunked PDG emit (#2202): when enabled (the caller has already
     // gated this to full-rebuild + `--pdg`), route the BasicBlock + intra-file
@@ -430,6 +439,7 @@ export const scopeResolutionPhase: PipelinePhase<ScopeResolutionOutput> = {
             files,
             resolutionConfig,
             prebuiltNodeLookup: sharedNodeLookup,
+            prebuiltPropertyNameIndex: sharedPropertyNameIndex,
             prebuiltFunctionNodeIndex: sharedFnNodeIndex,
             preExtractedParsedFiles: preExtractedByPath,
             scopeIndexStorePath: parsedFileStorePath,
