@@ -87,6 +87,59 @@ describe('TypeScript type-alias and interface members (A4)', () => {
   // answer — had nothing to walk. Measured on the reporting repo, all 324
   // TypeAlias nodes and every Interface node had DEFINES as their ONLY
   // incoming edge, because TypeScript captured no type references at all.
+  // RV-4. `property_signature` occurs in EVERY object_type, not only in a
+  // declared shape, so inline parameter types, inline return types and nested
+  // object types matched too and the enclosing-container walk hung them off the
+  // nearest class/interface/alias. `addNode` is first-write-wins, so when the
+  // inline member shared a name with a real one the two symbols merged onto a
+  // single node and every answer about that field described the merge.
+  //
+  // Each inline member below is UNIQUELY named on purpose. A merge and a
+  // correct exclusion both leave exactly one node behind, so counting ids
+  // cannot tell them apart — the only discriminator is a name that the
+  // unanchored rule alone could produce. Measured against it, all four appeared:
+  // `Svc.inlineParamOnlyKey`, `Repo.inlineQueryOnlyKey`,
+  // `NestedConfig.nestedOnlyKey` and `buildInline.inlineReturnOnlyKey`.
+  describe('shape anchoring (RV-4)', () => {
+    const propertyIds = (): string[] =>
+      Array.from(
+        (result as unknown as { graph: { iterNodes(): Iterable<PropNode> } }).graph.iterNodes(),
+      )
+        .filter((n) => n.label === 'Property')
+        .map((n) => String(n.id));
+
+    it('does not attribute an inline PARAMETER type member to the class', () => {
+      expect(propertyIds().some((id) => id.includes('inlineParamOnlyKey'))).toBe(false);
+    });
+
+    it('does not attribute an inline parameter type member to the interface', () => {
+      expect(propertyIds().some((id) => id.includes('inlineQueryOnlyKey'))).toBe(false);
+    });
+
+    it('does not attribute a NESTED object type member to the alias', () => {
+      expect(propertyIds().some((id) => id.includes('nestedOnlyKey'))).toBe(false);
+    });
+
+    it('does not mint a member for an inline RETURN type', () => {
+      expect(propertyIds().some((id) => id.includes('inlineReturnOnlyKey'))).toBe(false);
+    });
+
+    // The other half: anchoring must not cost real members.
+    it('still indexes every member of a declared shape', () => {
+      const ids = propertyIds();
+      for (const expected of [
+        'LiveModeConfig.bookSlots',
+        'LiveModeConfig.bookNotionalUsdt',
+        'LiveModeIface.ifaceSlots',
+        'NestedConfig.host',
+        'Svc.retries',
+        'Repo.retries',
+      ]) {
+        expect(ids.some((id) => id.endsWith(expected))).toBe(true);
+      }
+    });
+  });
+
   describe('type consumers (R2-2)', () => {
     const usersOf = (typeName: string): string[] =>
       getRelationships(result, 'USES')
@@ -102,3 +155,9 @@ describe('TypeScript type-alias and interface members (A4)', () => {
     });
   });
 });
+
+interface PropNode {
+  readonly id: string;
+  readonly label: string;
+  readonly properties: Record<string, unknown>;
+}

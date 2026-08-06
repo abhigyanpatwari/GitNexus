@@ -509,8 +509,18 @@ export const TYPESCRIPT_SCOPE_QUERY = `
 ;; the field's consumers were unreachable. TypeScript sets
 ;; fieldFallbackOnMethodLookup:false, so there is no name-based safety net
 ;; here — the precise path is the only one, and it needs the declaration.
-(property_signature
-  name: (property_identifier) @declaration.name) @declaration.property
+;; ANCHORED to declared shapes — see the matching rule in TYPESCRIPT_QUERIES
+;; for why. Unanchored this matched inline parameter and return types and
+;; nested object types, whose members then collided onto the enclosing
+;; class/interface/alias.
+(interface_body
+  (property_signature
+    name: (property_identifier) @declaration.name) @declaration.property)
+
+(type_alias_declaration
+  value: (object_type
+    (property_signature
+      name: (property_identifier) @declaration.name) @declaration.property))
 
 ;; Declarations — class fields
 (public_field_definition

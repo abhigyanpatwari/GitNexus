@@ -36,8 +36,30 @@ export const TYPESCRIPT_QUERIES = `
 ; spell them as property_signature, so one pattern covers both. A TS frontend
 ; models its API contracts this way, and without these there is no graph path
 ; from a contract field to the code that reads it.
-(property_signature
-  name: (property_identifier) @name) @definition.property
+; ANCHORED to declared shapes. Unanchored, property_signature matches every
+; object_type in the grammar — an inline parameter type, an inline return
+; type, a nested object type — and the enclosing-container walk then hangs the
+; node off the nearest class/interface/alias. class Svc { retries = 1;
+; run(opts: { retries: number }) {} } minted Property:a.ts:Svc.retries twice,
+; and graph.addNode is first-write-wins, so two distinct symbols merged into
+; one and every context()/impact()/rename() answer about that field described
+; the merge. It also emitted the outright false Svc HAS_PROPERTY retries for a
+; field belonging to an anonymous parameter type.
+;
+; The sibling JS object-literal rule in this same PR is anchored for exactly
+; this reason; this is the TypeScript half of the same fix.
+;
+; (A (B)) matches DIRECT children, so a nested object type
+; (type Config = { host: string; db: { host: string } }) is excluded here as
+; well — its members are not direct children of the alias's own object_type.
+(interface_body
+  (property_signature
+    name: (property_identifier) @name) @definition.property)
+
+(type_alias_declaration
+  value: (object_type
+    (property_signature
+      name: (property_identifier) @name) @definition.property))
 
 (function_declaration
   name: (identifier) @name) @definition.function
