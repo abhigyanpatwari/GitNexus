@@ -135,10 +135,63 @@ export const processProcesses = async (
     70,
   );
 
-  // Step 4: Limit to max processes (prioritize longer traces)
-  const limitedTraces = endpointDeduped
-    .sort((a, b) => b.length - a.length)
-    .slice(0, cfg.maxProcesses);
+  // Step 4: Limit to max processes — deepest first, but ROUND-ROBIN across
+  // TERMINALS (R2-3).
+  //
+  // Ranking was `sort by length` alone, and the top of that list was one
+  // behaviour described many ways: measured on the reporting repo, eleven of
+  // the top fourteen processes were four entry points crossed with three
+  // terminals of the same date-window utility cluster — `Handle ->
+  // AlignWindowEnd`, `Main -> AlignWindowStart`, `ProcessSymbol ->
+  // ResolveGridIntervalMs`. Genuine call chains, but a reader learns one thing
+  // from fourteen entries.
+  //
+  // Keyed on the TERMINAL, not the entry point. Keying on the entry was tried
+  // first and made it worse — many files declare a `main`, so each was a
+  // distinct entry that round-robin then awarded its own slot, and
+  // `Main -> AlignWindowEnd` went from one row to eight. The repetition was
+  // never in where a flow starts; it is in where flows pile up.
+  //
+  // Depth still orders within a terminal and still leads the list, since
+  // insertion order here is deepest-first. What changes is that no terminal
+  // takes a second slot until every other has had a first. Measured: distinct
+  // terminals in the top 20 went 3 -> 20, and the repo's own domain flows
+  // (`ReconcilePositions -> ...`) moved into the top 4%.
+  //
+  // Two things this does NOT do, recorded so neither reads as settled. The
+  // reported cause — ranking rewarding fan-in, promoting chains ending in
+  // widely-called helpers — measured FALSE: those terminals have one caller
+  // each (`alignWindowStart` 1, `validateSymbol` 1). A fan-in discount was
+  // implemented against that hypothesis and moved nothing. And a business flow
+  // still cannot be a process in its own right: `traceFromEntryPoint` only
+  // emits at a leaf, at max depth, or on a cycle, so a flow whose meaningful
+  // endpoint calls onward is never a candidate — it survives here only as
+  // whatever leaf it happens to bottom out in. Fixing that means teaching the
+  // walk what a sink is (I/O, route handler, external call), which is a change
+  // to what a process IS rather than to how processes are ranked.
+  const tracesByTerminal = new Map<string, string[][]>();
+  for (const trace of [...endpointDeduped].sort((a, b) => b.length - a.length)) {
+    const terminalId = trace[trace.length - 1];
+    if (terminalId === undefined) continue;
+    const existing = tracesByTerminal.get(terminalId);
+    if (existing === undefined) tracesByTerminal.set(terminalId, [trace]);
+    else existing.push(trace);
+  }
+
+  // Insertion order is deepest-trace-first, so the round-robin visits terminals
+  // in that order too and depth still leads the list.
+  const limitedTraces: string[][] = [];
+  for (let round = 0; limitedTraces.length < cfg.maxProcesses; round++) {
+    let addedAny = false;
+    for (const traces of tracesByTerminal.values()) {
+      const trace = traces[round];
+      if (trace === undefined) continue;
+      limitedTraces.push(trace);
+      addedAny = true;
+      if (limitedTraces.length >= cfg.maxProcesses) break;
+    }
+    if (!addedAny) break;
+  }
 
   onProgress?.(`Creating ${limitedTraces.length} process nodes...`, 80);
 

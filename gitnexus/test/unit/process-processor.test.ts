@@ -663,3 +663,89 @@ describe('process depth (D1/D2)', () => {
     expect(deepest).toBeGreaterThan(3);
   });
 });
+
+describe('process selection diversity (R2-3)', () => {
+  const addFn = (graph: ReturnType<typeof createKnowledgeGraph>, id: string): void => {
+    graph.addNode({
+      id,
+      label: 'Function',
+      properties: { name: id.split(':')[1], filePath: 'src/a.ts', startLine: 1, endLine: 2 },
+    });
+  };
+  const addCall = (
+    graph: ReturnType<typeof createKnowledgeGraph>,
+    from: string,
+    to: string,
+  ): void => {
+    graph.addRelationship({
+      id: `rel:${from}->${to}`,
+      sourceId: from,
+      targetId: to,
+      type: 'CALLS',
+      confidence: 1,
+      reason: 'test',
+    });
+  };
+
+  // The shape that crowded the reporting repo's list: many entry points whose
+  // deepest chains all bottom out in the SAME utility, plus a shorter flow
+  // ending somewhere of its own. Ranking on depth alone hands every slot to
+  // the first group and the reader learns one thing many times.
+  it('does not let one terminal take every slot', async () => {
+    const graph = createKnowledgeGraph();
+
+    // Six entry points, each with a 5-node chain into one shared utility.
+    addFn(graph, 'func:sharedUtil');
+    for (let e = 1; e <= 6; e++) {
+      let prev = `func:entry${e}`;
+      addFn(graph, prev);
+      for (let i = 1; i <= 3; i++) {
+        const mid = `func:e${e}_m${i}`;
+        addFn(graph, mid);
+        addCall(graph, prev, mid);
+        prev = mid;
+      }
+      addCall(graph, prev, 'func:sharedUtil');
+    }
+
+    // One shorter, distinct flow — the "business flow" analogue.
+    addFn(graph, 'func:ownEntry');
+    addFn(graph, 'func:ownMid');
+    addFn(graph, 'func:ownTerminal');
+    addCall(graph, 'func:ownEntry', 'func:ownMid');
+    addCall(graph, 'func:ownMid', 'func:ownTerminal');
+
+    const result = await processProcesses(graph, [], undefined, { maxProcesses: 4 });
+    const terminals = result.processes.map((p) => p.terminalId);
+    const sharedCount = terminals.filter((t) => t === 'func:sharedUtil').length;
+
+    // Under depth-only ranking every one of the four slots goes to a
+    // five-node chain ending in sharedUtil.
+    expect(sharedCount).toBeLessThan(terminals.length);
+    expect(new Set(terminals).size).toBeGreaterThan(1);
+  });
+
+  it('keeps a shorter flow with its own terminal rather than a fifth duplicate', async () => {
+    const graph = createKnowledgeGraph();
+    addFn(graph, 'func:sharedUtil');
+    for (let e = 1; e <= 6; e++) {
+      let prev = `func:entry${e}`;
+      addFn(graph, prev);
+      for (let i = 1; i <= 3; i++) {
+        const mid = `func:e${e}_m${i}`;
+        addFn(graph, mid);
+        addCall(graph, prev, mid);
+        prev = mid;
+      }
+      addCall(graph, prev, 'func:sharedUtil');
+    }
+    addFn(graph, 'func:ownEntry');
+    addFn(graph, 'func:ownMid');
+    addFn(graph, 'func:ownTerminal');
+    addCall(graph, 'func:ownEntry', 'func:ownMid');
+    addCall(graph, 'func:ownMid', 'func:ownTerminal');
+
+    const result = await processProcesses(graph, [], undefined, { maxProcesses: 4 });
+    expect(result.processes.map((p) => p.terminalId)).toContain('func:ownTerminal');
+  });
+});
