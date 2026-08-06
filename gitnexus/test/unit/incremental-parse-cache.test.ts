@@ -141,8 +141,8 @@ describe('PARSE_CACHE_VERSION', () => {
   // a row. Same lesson as the note above — the pin cannot detect the tie, since
   // both sides asserted `toBe(45)` and that passes while main is already 45.
   // Only the merge-time diff against origin/main surfaces it.
-  it('pins SCHEMA_BUMP to 46 so concurrent bumps cannot silently collide (#2766)', () => {
-    expect(Number(PARSE_CACHE_VERSION.split('+', 1)[0])).toBe(46);
+  it('pins SCHEMA_BUMP to 47 so concurrent bumps cannot silently collide (#2766)', () => {
+    expect(Number(PARSE_CACHE_VERSION.split('+', 1)[0])).toBe(47);
   });
 
   it('embeds the gitnexus package version (so upgrades invalidate the cache)', () => {

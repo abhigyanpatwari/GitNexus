@@ -877,6 +877,33 @@ export const JAVASCRIPT_QUERIES = `
     (pair
       key: (property_identifier) @name) @definition.property))
 
+; Same named shape, behind an IDENTITY-PRESERVING wrapper (R2-1a):
+;
+;   export const INERT_EXIT_CONTRACT = Object.freeze({ exitModel: 'bracket', ... });
+;
+; Freezing a config object is the idiomatic way to publish an immutable
+; contract, so the fields most worth querying are exactly the ones a bare
+; "value: (object)" pattern cannot see — one call expression sits between the
+; declarator and the literal.
+;
+; The allowlist is deliberately three functions rather than "any call". Only
+; these RETURN THE ARGUMENT THEY WERE GIVEN, which is what makes the literal's
+; keys members of the bound name. For an arbitrary "const x = compute({a: 1})"
+; the literal is an argument and x is compute's return value, so attributing
+; "a" to x would be a fabrication.
+(variable_declarator
+  name: (identifier)
+  value: (call_expression
+    function: (member_expression
+      object: (identifier) @_identity.obj
+      property: (property_identifier) @_identity.fn)
+    arguments: (arguments
+      (object
+        (pair
+          key: (property_identifier) @name) @definition.property)))
+  (#eq? @_identity.obj "Object")
+  (#match? @_identity.fn "^(freeze|seal|preventExtensions)$"))
+
 ; Closure-valued class fields (#2693) — see the TypeScript block for why these
 ; are Method rather than Property.
 (field_definition

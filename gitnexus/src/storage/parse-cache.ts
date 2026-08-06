@@ -266,7 +266,18 @@ import type { ParseWorkerResult } from '../core/ingestion/workers/parse-worker.j
 // schemas would have shared one PARSE_CACHE_VERSION and the durable ParsedFile
 // store would have replayed pre-fix ParsedFiles verbatim for one of them.
 // RE-CHECK AGAINST origin/main IMMEDIATELY BEFORE MERGING.
-const SCHEMA_BUMP = 46;
+//
+// 46 -> 47 for the round-2 capture work: object literals behind an
+// identity-preserving wrapper (`const X = Object.freeze({ ... })`) now mint
+// `@definition.property` for their keys. Parse-time like every entry above, and
+// this one was ALSO observed as a false negative first: `analyze --force`
+// against a fixture carrying the new shape returned the pre-change node set and
+// read as "the query does not match", until the on-disk cache was removed by
+// hand and the same run produced the node. `--force` re-runs the pipeline but
+// still serves ParsedFiles from the durable store, so it does not substitute
+// for this bump.
+// RE-CHECK AGAINST origin/main IMMEDIATELY BEFORE MERGING.
+const SCHEMA_BUMP = 47;
 const GITNEXUS_PKG_VERSION = (() => {
   try {
     // package.json sits at gitnexus/package.json — two levels up from

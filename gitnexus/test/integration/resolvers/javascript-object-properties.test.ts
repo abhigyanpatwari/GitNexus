@@ -103,6 +103,41 @@ describe('JavaScript plain-object property access (A1/A5)', () => {
     expect(inferred.length).toBeGreaterThan(0);
     for (const e of inferred) expect(e.rel.confidence).toBeLessThan(0.85);
   });
+
+  // R2-1a. Reported as the cheapest remaining win and it is: freezing a config
+  // object is how JS publishes an immutable contract, so the shape whose fields
+  // are most worth querying was the one shape the rule could not see.
+  describe('identity-preserving wrappers (R2-1a)', () => {
+    it('indexes keys of a literal wrapped in Object.freeze', () => {
+      const props = propertyNames();
+      expect(props).toContain('frozenExitModel');
+      expect(props).toContain('frozenMaxHoldMs');
+    });
+
+    it('indexes keys wrapped in Object.seal', () => {
+      expect(propertyNames()).toContain('sealedMaxNotional');
+    });
+
+    it('resolves a read through the frozen binding', () => {
+      expect(readersOf('frozenMaxHoldMs')).toContain('readsFrozen');
+    });
+
+    // The bound of the fix. Only freeze/seal/preventExtensions return the
+    // argument they were given; for any other call the literal is an argument
+    // and the binding holds the callee's return value, so minting members here
+    // would attribute fields to an object that does not have them.
+    it('does NOT index a literal passed to a non-identity call', () => {
+      expect(propertyNames()).not.toContain('notAMemberOfDerived');
+    });
+
+    // The case above is rejected structurally (identifier callee), so it holds
+    // even with no allowlist at all. `Object.entries` differs from
+    // `Object.freeze` by name alone, so this is the assertion that actually
+    // pins the predicate.
+    it('does NOT index Object.entries — same shape, non-identity name', () => {
+      expect(propertyNames()).not.toContain('notAMemberOfEntries');
+    });
+  });
 });
 
 interface PropNode {
