@@ -93,7 +93,10 @@ function makeResolveMock(
   bfsRowsByFrontier?: Record<string, any[]>,
 ) {
   const bfsMap = bfsRowsByFrontier ?? {};
-  return (_db: string, _query: string, params: any) => {
+  // `async` matters: the real executeParameterized returns a promise, and
+  // callers chain `.catch()` on it directly. A mock returning a bare array made
+  // that chain a TypeError, so the sync shape was never a faithful stand-in.
+  return async (_db: string, _query: string, params: any) => {
     // UID lookup keys on params.uid — the real query is `MATCH (n {id: $uid})`,
     // so matching on query text ('WHERE n.id = $uid') never fired.
     if (params.uid) {
@@ -648,12 +651,14 @@ describe('trace: BFS core', () => {
   });
 
   it('returns status:error with a suggestion when the BFS query throws', async () => {
-    (executeParameterized as any).mockImplementation((_db: string, _q: string, params: any) => {
-      if (params.frontierIds) throw new Error('boom: graph exploded');
-      if (params.symName === 'A') return [SYMBOL_A];
-      if (params.symName === 'B') return [SYMBOL_B];
-      return [];
-    });
+    (executeParameterized as any).mockImplementation(
+      async (_db: string, _q: string, params: any) => {
+        if (params.frontierIds) throw new Error('boom: graph exploded');
+        if (params.symName === 'A') return [SYMBOL_A];
+        if (params.symName === 'B') return [SYMBOL_B];
+        return [];
+      },
+    );
 
     const result = await backend.callTool('trace', { from: 'A', to: 'B' });
 
@@ -663,45 +668,47 @@ describe('trace: BFS core', () => {
   });
 
   it('resolves from_uid/to_uid without name-based lookup', async () => {
-    (executeParameterized as any).mockImplementation((_db: string, query: string, params: any) => {
-      if (params.uid === 'uid:from')
-        return [
-          {
-            id: 'uid:from',
-            name: 'A',
-            type: 'Function',
-            filePath: 'src/a.ts',
-            startLine: 1,
-            endLine: 10,
-          },
-        ];
-      if (params.uid === 'uid:to')
-        return [
-          {
-            id: 'uid:to',
-            name: 'B',
-            type: 'Function',
-            filePath: 'src/b.ts',
-            startLine: 1,
-            endLine: 5,
-          },
-        ];
-      if (params.frontierIds?.includes('uid:from')) {
-        return [
-          {
-            sourceId: 'uid:from',
-            id: 'uid:to',
-            name: 'B',
-            type: 'Function',
-            filePath: 'src/b.ts',
-            startLine: 1,
-            edgeType: 'CALLS',
-            confidence: 1.0,
-          },
-        ];
-      }
-      return [];
-    });
+    (executeParameterized as any).mockImplementation(
+      async (_db: string, query: string, params: any) => {
+        if (params.uid === 'uid:from')
+          return [
+            {
+              id: 'uid:from',
+              name: 'A',
+              type: 'Function',
+              filePath: 'src/a.ts',
+              startLine: 1,
+              endLine: 10,
+            },
+          ];
+        if (params.uid === 'uid:to')
+          return [
+            {
+              id: 'uid:to',
+              name: 'B',
+              type: 'Function',
+              filePath: 'src/b.ts',
+              startLine: 1,
+              endLine: 5,
+            },
+          ];
+        if (params.frontierIds?.includes('uid:from')) {
+          return [
+            {
+              sourceId: 'uid:from',
+              id: 'uid:to',
+              name: 'B',
+              type: 'Function',
+              filePath: 'src/b.ts',
+              startLine: 1,
+              edgeType: 'CALLS',
+              confidence: 1.0,
+            },
+          ];
+        }
+        return [];
+      },
+    );
 
     const result = await backend.callTool('trace', { from_uid: 'uid:from', to_uid: 'uid:to' });
 
@@ -897,25 +904,27 @@ describe('trace: BFS core', () => {
       startLine: 1,
       endLine: 5,
     };
-    (executeParameterized as any).mockImplementation((_db: string, _q: string, params: any) => {
-      if (params.symName === 'helper' && params.filePath === 'src/a.ts') return [helperA];
-      if (params.symName === 'target') return [target];
-      if (params.frontierIds?.includes('func:helperA')) {
-        return [
-          {
-            sourceId: 'func:helperA',
-            id: 'func:target',
-            name: 'target',
-            type: 'Function',
-            filePath: 'src/t.ts',
-            startLine: 1,
-            edgeType: 'CALLS',
-            confidence: 1.0,
-          },
-        ];
-      }
-      return [];
-    });
+    (executeParameterized as any).mockImplementation(
+      async (_db: string, _q: string, params: any) => {
+        if (params.symName === 'helper' && params.filePath === 'src/a.ts') return [helperA];
+        if (params.symName === 'target') return [target];
+        if (params.frontierIds?.includes('func:helperA')) {
+          return [
+            {
+              sourceId: 'func:helperA',
+              id: 'func:target',
+              name: 'target',
+              type: 'Function',
+              filePath: 'src/t.ts',
+              startLine: 1,
+              edgeType: 'CALLS',
+              confidence: 1.0,
+            },
+          ];
+        }
+        return [];
+      },
+    );
 
     const result = await backend.callTool('trace', {
       from: 'helper',

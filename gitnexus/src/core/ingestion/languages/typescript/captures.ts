@@ -43,6 +43,7 @@ import {
   isUnexportedMemberAssignmentValue,
   isUndeclarableThisMemberValue,
 } from './cjs-export-assignment.js';
+import { hasKeyword } from '../../field-extractors/configs/helpers.js';
 import { getTreeSitterBufferSize } from '../../constants.js';
 import { parseSourceSafe } from '../../../tree-sitter/safe-parse.js';
 import { synthesizeCallableFlowCaptures } from '../../utils/callable-flow-captures.js';
@@ -199,6 +200,134 @@ function shouldEmitReadMember(memberNode: SyntaxNode): boolean {
   }
 }
 
+/**
+ * Is this `(this)` node the `this` of a STATIC method?
+ *
+ * `this` in a static method is the class object, so `this.x = new Y()` there
+ * assigns a STATIC property and must never type the instance field of the same
+ * name (#2807). Every other context that rebinds `this` is excluded
+ * structurally, by the query's `class_body → method_definition →
+ * statement_block → expression_statement` nesting; `static` is the one
+ * constraint tree-sitter cannot carry, because it is an ANONYMOUS token with no
+ * field name and patterns cannot negate one.
+ *
+ * The caller only reaches here for a capture the query already pinned inside a
+ * class method, so the `method_definition` lookup is a short walk. Detection is
+ * the shared `hasKeyword`, which is what the TypeScript METHOD EXTRACTOR already
+ * uses to decide the same question — matching on child TEXT, and skipping the
+ * `name` field so a method literally called `static()` is not misread.
+ *
+ * Text, not node type: `static` reaches the tree as an anonymous token in some
+ * grammar versions and as a keyword node in others (see `isStaticMember` in
+ * `receiver-binding.ts`), so a `child.type === 'static'` test silently stops
+ * firing on a grammar bump and every static `this.x = new Y()` starts typing the
+ * instance field of that name. `hasKeyword` scans the whole `method_definition`
+ * rather than stopping at the name, which is safe here because a
+ * `method_definition`'s own children are its modifiers, name, parameters and
+ * body — a mention of `static` inside the BODY is a descendant of the body node,
+ * never a direct child.
+ */
+function isStaticMethodThis(thisNode: SyntaxNode): boolean {
+  const method = findSelfOrAncestorOfType(thisNode, 'method_definition');
+  if (method === null) return false;
+  return hasKeyword(method, 'static');
+}
+
+/** The class-field declaration node a field `@type-binding.*` match anchors on
+ *  in TypeScript/TSX. JavaScript spells the same construct `field_definition`
+ *  and passes its own set in — the predicate below is shared because both
+ *  grammars carry `static` identically, but each language must NAME its own
+ *  node type. Listing both here made `field_definition` a dead literal in the
+ *  typescript grammar, which `grammar-literal-validation` fails on: the gate
+ *  checks every literal against the grammar of the FILE it appears in, and a
+ *  node type that is dead there is exactly how a guard silently stops firing. */
+export const TS_CLASS_FIELD_DEFINITION_TYPES: ReadonlySet<string> = new Set([
+  'public_field_definition',
+]);
+
+/**
+ * Is this type-binding anchored on a **`static`** class field?
+ *
+ * A static member belongs to the CLASS OBJECT; an instance field belongs to
+ * instances. JavaScript and TypeScript keep the two in separate namespaces, so
+ * one class may legally declare both under one name:
+ *
+ *     class Host {
+ *       p = new Right();
+ *       static p = new Wrong();      // legal — a different member
+ *       hit() { return this.p.hit(); }   // `this.p` is Right
+ *     }
+ *
+ * Both field patterns anchor their binding on the same CLASS scope with the
+ * same `constructor-inferred` source, and `scope-extractor` breaks a
+ * same-strength tie with `>=` — last match wins. So the static field silently
+ * RETYPED the instance field of that name and `this.p.hit()` resolved to
+ * `Wrong.hit`: not a missing edge but a wrong one, the failure mode
+ * `scope-resolution/passes/compound-receiver.ts` exists to avoid. The scope
+ * tree has one `typeBindings` map per scope with no static/instance split, so a
+ * static field cannot be recorded separately — it is dropped instead.
+ *
+ * WHAT THAT COSTS, MEASURED rather than assumed (#2807 review, S7). An earlier
+ * version of this comment called the cost "a missed edge beats a wrong one".
+ * Only half of that is true, and the false half is the one that matters:
+ *
+ *   shape                       with the drop     without it
+ *   --------------------------  ----------------  ----------------
+ *   `this.p` (instance twin)    Right  ✓          Wrong  ✗
+ *   `Host.p` (static twin)      Right  ✗ WRONG    Wrong  ✓
+ *   `Host.q` (static, no twin)  — none, missed    Wrong  ✓
+ *
+ * For a class declaring BOTH twins the wrong edge does not disappear, it MOVES:
+ * `Host.p` now reads the INSTANCE twin's binding, because that is what is left
+ * in the map under that name. Only the no-twin case — the common static shape —
+ * is a true missed edge.
+ *
+ * The trade is still the right one, since `this.p` is overwhelmingly the more
+ * common access and a `Host.p` static chain is the cheaper place to be wrong.
+ * It is recorded here as a wrong edge rather than described as a missing one so
+ * that the next person weighing it is weighing the real thing. Closing it
+ * properly needs a static/instance split that the shared receiver fold cannot
+ * express today — `foldReceiverChain` in
+ * `scope-resolution/passes/compound-receiver.ts` explicitly discards whether a
+ * chain's base was a class reference or a value — so it is a separate change
+ * with a `SCHEMA_BUMP`, not a tweak here. Both shapes are pinned by rows in
+ * `test/integration/resolvers/inferred-field-receiver-matrix.test.ts`
+ * (`static-read-of-a-same-name-twin-picks-up-the-instance-type`,
+ * `static-read-without-a-twin-loses-its-type`), so the cost moves visibly.
+ *
+ * Sibling of {@link isStaticMethodThis}, which drops the ASSIGNMENT form
+ * (`this.x = new Y()` inside a static method). Together they cover both ways a
+ * static member can reach the field-typing path. This is an emit-side filter
+ * for the same reason that one is: `static` is an ANONYMOUS token on the
+ * declaration node, and a tree-sitter pattern cannot negate one.
+ *
+ * Detection is the shared `hasKeyword` — matching on child TEXT, never
+ * `child.type === 'static'`, because the token reaches the tree as an anonymous
+ * token in some grammar versions and a keyword node in others (see
+ * `isStaticMember` in `receiver-binding.ts`); a node-type test silently stops
+ * firing on a grammar bump and every static field starts retyping its instance
+ * twin again. Verified against both grammars in use here: `static` is an
+ * anonymous direct child of the caller's field-definition node —
+ * `public_field_definition` in TypeScript, `field_definition` in JavaScript —
+ * ahead of the name. Each language passes its OWN node-type set rather than the
+ * predicate holding both: a literal is only valid in the grammar of the file it
+ * appears in, and `grammar-literal-validation` fails a dead one.
+ *
+ * One deliberate over-fire: `hasKeyword` skips the node's `name` FIELD, and the
+ * JavaScript grammar names a field's name `property:`, not `name:` — so the
+ * legal-but-rare JavaScript field literally called `static`
+ * (`class C { static = new Right(); }`) reads as static and goes untyped. That
+ * is a declined binding, the safe direction of the same trade.
+ */
+export function isStaticClassFieldBinding(
+  anchorNode: SyntaxNode | undefined,
+  fieldDefinitionTypes: ReadonlySet<string>,
+): boolean {
+  if (anchorNode === undefined) return false;
+  if (!fieldDefinitionTypes.has(anchorNode.type)) return false;
+  return hasKeyword(anchorNode, 'static');
+}
+
 /** Walks the parent chain from `node` (inclusive), returning the first node
  *  whose type matches, or null. Faster than `findNodeAtRange` when the caller
  *  already holds the anchor node — avoids re-scanning the tree from the root. */
@@ -343,6 +472,37 @@ export function emitTsScopeCaptures(
       if (memberNode === null || !shouldEmitReadMember(memberNode)) {
         continue;
       }
+    }
+
+    // `this.<field> = new …` inside a STATIC method types a static property,
+    // not the instance field of the same name (#2807). Every other `this`-
+    // rebinding context is already excluded by the pattern's nesting — see the
+    // note on it in `query.ts`; `static` is an anonymous token, so no pattern
+    // can negate it and the last case is dropped here.
+    const thisFieldNode = groupedNodes['@type-binding.this-field'];
+    if (thisFieldNode !== undefined && isStaticMethodThis(thisFieldNode)) {
+      continue;
+    }
+
+    // …and a `static` FIELD is a member of the class object, not of instances,
+    // so it must not type the instance field of the same name either — see
+    // `isStaticClassFieldBinding`. Both class-field anchors are tested: the
+    // initializer form (`static p = new Wrong()`, `@type-binding.constructor`)
+    // and the annotated form (`static p: Wrong`, `@type-binding.annotation`),
+    // which collide on the Class scope the same way. The predicate self-gates on
+    // the anchor's node type, so the local `variable_declarator` patterns that
+    // share these tags are untouched.
+    if (
+      isStaticClassFieldBinding(
+        groupedNodes['@type-binding.constructor'],
+        TS_CLASS_FIELD_DEFINITION_TYPES,
+      ) ||
+      isStaticClassFieldBinding(
+        groupedNodes['@type-binding.annotation'],
+        TS_CLASS_FIELD_DEFINITION_TYPES,
+      )
+    ) {
+      continue;
     }
 
     // #1876: drop @declaration.function for array higher-order-method
@@ -569,8 +729,12 @@ export function emitTsScopeCaptures(
  * matching arms (member_expression for extends, nested_type_identifier plain +
  * generic-wrapped for implements).
  *
- * `interface_declaration` / `abstract_class_declaration` heritage is NOT emitted
- * by the synth. The EXTENDS-vs-IMPLEMENTS split is decided downstream from the
+ * `interface_declaration` and `abstract_class_declaration` heritage IS emitted
+ * (#2842 review; both were silently skipped before, so `interface B extends A`
+ * and `abstract class X implements I` produced no edge and every dispatch walk
+ * dead-ended on a bodiless declaration). They reach their bases by different
+ * shapes: an abstract class carries the same `class_heritage` child a concrete
+ * one does, while an interface's bases hang off `extends_type_clause` directly. The EXTENDS-vs-IMPLEMENTS split is decided downstream from the
  * resolved target's symbol kind in `preEmitInheritanceEdges` (class-extends →
  * EXTENDS, implements-interface / interface-target → IMPLEMENTS), so all bases
  * are emitted with the same `inherits` kind here. The base lookup name is
@@ -586,7 +750,26 @@ function synthesizeTsInheritanceReferences(root: SyntaxNode, out: CaptureMatch[]
       if (child !== null) stack.push(child);
     }
 
-    if (node.type !== 'class_declaration') continue;
+    // `interface B extends A, C` hangs its bases off an `extends_type_clause`
+    // DIRECTLY on the interface — there is no `class_heritage` wrapper, so the
+    // class path below cannot reach them (#2842 review). The clause's `type`
+    // field is `multiple: true`, so `childForFieldName('type')` would silently
+    // return only `A` and drop `C`; iterate the named children instead.
+    if (node.type === 'interface_declaration') {
+      for (const child of node.namedChildren) {
+        if (child === null || child.type !== 'extends_type_clause') continue;
+        for (const base of child.namedChildren) {
+          emitTsInheritanceBase(base, out);
+        }
+      }
+      continue;
+    }
+
+    // `abstract class X implements I` carries an identical `class_heritage`
+    // child, so the existing body handles it once the node type is admitted.
+    // Omitting it severed the only link between an interface and the concrete
+    // classes below an abstract base — a whole subtree, not a leaf.
+    if (node.type !== 'class_declaration' && node.type !== 'abstract_class_declaration') continue;
 
     // Find the `class_heritage` child (holds extends / implements clauses).
     let heritage: SyntaxNode | null = null;

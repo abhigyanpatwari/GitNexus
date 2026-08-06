@@ -17,9 +17,11 @@ import { SupportedLanguages } from 'gitnexus-shared';
 import { buildMro, defaultLinearize } from '../../scope-resolution/passes/mro.js';
 import { populateClassOwnedMembers } from '../../scope-resolution/scope/walkers.js';
 import type { ScopeResolver } from '../../scope-resolution/contract/scope-resolver.js';
+import { indexOnlyElementType } from '../../type-extractors/shared.js';
 import { pythonProvider } from '../python.js';
 import {
   isPythonImportedModule,
+  pythonNamespaceReceiverPaths,
   pythonArityCompatibility,
   pythonMergeBindings,
   resolvePythonImportTarget,
@@ -56,6 +58,12 @@ const pythonScopeResolver: ScopeResolver = {
   isNamespaceImport: (parsedImport, targetFile, fromFile) =>
     isPythonImportedModule(parsedImport, targetFile, fromFile),
 
+  // `import a.b.c` binds only `a`, yet makes `a`, `a.b` and `a.b.c` all
+  // callable — each naming a different file. Without this the absolute-import
+  // style is invisible to the call graph, and the root key points at the leaf
+  // module instead of the package (#2826).
+  namespaceReceiverPaths: pythonNamespaceReceiverPaths,
+
   // Python LEGB precedence: local > import/namespace/reexport > wildcard.
   // The per-scope id is unused by pythonMergeBindings (tier ordering
   // is computed purely from BindingRef.origin), so we don't need to
@@ -74,6 +82,17 @@ const pythonScopeResolver: ScopeResolver = {
   populateOwners: (parsed: ParsedFile) => populateClassOwnedMembers(parsed),
 
   isSuperReceiver: (text) => /^super\s*\(/.test(text),
+
+  // Subscript route only — Python spells collection views as method calls
+  // (`.values()`), which the compound resolver's call branch already handles.
+  //
+  // The hook receives the annotation AS WRITTEN (`List[User]`, `Dict[str, User]`),
+  // not the name `interpret.ts`'s `stripGeneric` reduced it to, so `undefined`
+  // here means "this spelling is not a container" — which is what stops
+  // `cfg['k'].run()` on a `__getitem__`-bearing class from folding onto the
+  // class itself. Answering the route at all is what keeps `repos[0].save()`
+  // resolving.
+  elementTypeOf: indexOnlyElementType,
 
   // Python is dynamically typed — field-fallback heuristic on, return-
   // type propagation across imports on. Both default to true; listed

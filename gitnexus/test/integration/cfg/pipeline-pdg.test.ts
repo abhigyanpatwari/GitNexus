@@ -1,12 +1,12 @@
-import { describe, it, expect, afterAll } from 'vitest';
+import { describe, it, expect } from 'vitest';
 import fs from 'fs';
-import os from 'os';
 import path from 'path';
 import crypto from 'crypto';
 import { runPipelineFromRepo } from '../../../src/core/ingestion/pipeline.js';
 import type { PipelineResult } from '../../../src/types/pipeline.js';
 import { decodeTaintPath } from '../../../src/core/ingestion/taint/path-codec.js';
 import { fixtureTaintTotals } from '../../helpers/taint-fixture.js';
+import { createTempDirPool } from '../../helpers/temp-dir-pool.js';
 import { isLanguageAvailable } from '../../../src/core/tree-sitter/parser-loader.js';
 import { SupportedLanguages } from '../../../src/config/supported-languages.js';
 
@@ -45,19 +45,10 @@ function counts(result: PipelineResult): {
   return { basicBlocks, cfgEdges, reachingDefs, tainted, sanitizes, cdg };
 }
 
-const tmpDirs: string[] = [];
-function freshRepo(): string {
-  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'gn-pdg-'));
-  fs.cpSync(FIXTURE, dir, { recursive: true });
-  tmpDirs.push(dir);
-  return dir;
-}
+const repos = createTempDirPool('gn-pdg-');
+const freshRepo = (): string => repos.fromFixture(FIXTURE);
 
 describe('U7 — end-to-end --pdg pipeline', () => {
-  afterAll(() => {
-    for (const d of tmpDirs) fs.rmSync(d, { recursive: true, force: true });
-  });
-
   it('with --pdg on: emits BasicBlock nodes + CFG edges into the graph', async () => {
     const result = await runPipelineFromRepo(freshRepo(), () => {}, { pdg: true });
     const { basicBlocks, cfgEdges, reachingDefs } = counts(result);
@@ -288,11 +279,11 @@ const REMAINING_LANGS: ReadonlyArray<{
   { lang: 'Vue', fixture: 'vue-hazards.vue', hazard: 'shouldStop' }, // eventLoop: while(true)
 ];
 
-const cFamilyTmpDirs: string[] = [];
+// Single-file seeding, so this pool uses `dir()` rather than `fromFixture()`.
+const langRepos = createTempDirPool('gn-pdg-lang-');
 function freshLangRepo(fixture: string): string {
-  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'gn-pdg-lang-'));
+  const dir = langRepos.dir();
   fs.copyFileSync(path.join(C_FAMILY_FIXTURES, fixture), path.join(dir, fixture));
-  cFamilyTmpDirs.push(dir);
   return dir;
 }
 
@@ -396,10 +387,6 @@ function cdgSourcedInHazardFunction(result: PipelineResult, hazardMarker: string
 }
 
 describe('U7 — C-family worker-mode --pdg pipeline', () => {
-  afterAll(() => {
-    for (const d of cFamilyTmpDirs) fs.rmSync(d, { recursive: true, force: true });
-  });
-
   for (const { lang, fixture, hazard } of C_FAMILY) {
     it(`${lang}: --pdg on emits BasicBlock + CFG + REACHING_DEF + CDG (> 0) via the worker`, async () => {
       const result = await runPipelineFromRepo(freshLangRepo(fixture), () => {}, WORKER_PDG);
@@ -478,10 +465,6 @@ describe('U7 — C-family worker-mode --pdg pipeline', () => {
 });
 
 describe('U7 — remaining languages worker-mode --pdg pipeline (#2195 capstone)', () => {
-  afterAll(() => {
-    for (const d of cFamilyTmpDirs) fs.rmSync(d, { recursive: true, force: true });
-  });
-
   for (const { lang, fixture, hazard, vendored } of REMAINING_LANGS) {
     // Vendored grammars (Swift/Kotlin/Dart) may lack a prebuild on the CI
     // platform — skip rather than fail when the grammar can't load (#2197 U4).

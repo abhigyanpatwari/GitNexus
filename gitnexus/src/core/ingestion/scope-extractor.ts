@@ -911,6 +911,13 @@ function pass3CollectImports(
 
 // ─── Pass 4: collect type bindings ─────────────────────────────────────────
 
+/** Cap on the retained as-written annotation. Real container spellings are a
+ *  handful of characters; a multi-line mapped/conditional type is neither a
+ *  container any `elementTypeOf` parses nor worth keeping one copy of per
+ *  binding on a kernel-scale repo. Over the cap the spelling is dropped, which
+ *  makes an index step decline — the safe direction. */
+const MAX_DECLARED_SPELLING_LENGTH = 256;
+
 function pass4CollectTypeBindings(
   matches: readonly CaptureMatch[],
   drafts: readonly ScopeDraft[],
@@ -953,11 +960,41 @@ function pass4CollectTypeBindings(
       provider.bindingScopeFor?.(match, draftToScope(innermost), scopeTree) ?? autoHostedId;
     const host = draftById.get(hostId) ?? innermost;
 
-    const typeRef: TypeRef = {
-      rawName: parsed.rawTypeName,
-      declaredAtScope: host.id,
-      source: parsed.source,
-    };
+    // The annotation as the source wrote it, kept only when the provider's
+    // interpretation is not already it. `interpretTypeBinding` normalizes
+    // container spellings away (`User[]` → `User`, `List[User]` → `User`,
+    // `[]*User` → `User`), which makes a reduced container indistinguishable
+    // from a class of the same name — and an index step folding on that
+    // ambiguity typed `grid[0]` as `Grid`. Read at the one place the
+    // distinction matters; see `TypeRef.declaredSpelling`.
+    //
+    // Read from the capture rather than from `ParsedTypeBinding` deliberately:
+    // `@type-binding.type` is the shared anchor EVERY provider already reads to
+    // build `rawTypeName`, so nothing has to be threaded through fourteen
+    // interpreters (and none can forget to).
+    // A provider may override when its grammar keeps part of the written type
+    // outside `@type-binding.type` (C++ hangs `*` on the declarator).
+    const writtenType = (parsed.declaredSpelling ?? match['@type-binding.type']?.text)?.trim();
+    const declaredSpelling =
+      writtenType !== undefined &&
+      writtenType.length > 0 &&
+      writtenType.length <= MAX_DECLARED_SPELLING_LENGTH &&
+      writtenType !== parsed.rawTypeName
+        ? writtenType
+        : undefined;
+    const typeRef: TypeRef =
+      declaredSpelling === undefined
+        ? {
+            rawName: parsed.rawTypeName,
+            declaredAtScope: host.id,
+            source: parsed.source,
+          }
+        : {
+            rawName: parsed.rawTypeName,
+            declaredSpelling,
+            declaredAtScope: host.id,
+            source: parsed.source,
+          };
     // Prefer stronger sources when multiple matches fire for the same
     // bound name in the same scope. Example: `u: User = find()` matches
     // both the annotation and constructor-inferred patterns; the explicit
@@ -1105,6 +1142,20 @@ function pass5CollectReferences(
     // that logs nothing.
     const receiverChain = extractReceiverChain(match);
 
+    // Callee-position marker: a member-read capture that is actually the callee
+    // of an enclosing call (`obj.f` in `obj.f()`). Recorded, not acted on —
+    // whether the read is a phantom or a genuine func-typed-field read depends
+    // on the resolved tail's kind, which only edge emission knows. Emitted by
+    // languages whose read pattern has no call-position exclusion; absent
+    // everywhere else, so the site stays byte-identical for them.
+    const inCalleePosition = match['@reference.callee-position'] !== undefined;
+    // Pointer-embedding marker: `struct S { *T }` rather than `struct S { T }`.
+    // Recorded, not acted on — Go's method-set rules make the two forms differ
+    // (see `ReferenceSite.embeddedAsPointer`), and only structural interface
+    // detection knows what to do with that. Absent for every language without
+    // pointer embedding, so their sites stay byte-identical.
+    const embeddedAsPointer = match['@reference.embedded-pointer'] !== undefined;
+
     const site: ReferenceSite = {
       name: nameCap.text,
       atRange: anchor.range,
@@ -1122,6 +1173,8 @@ function pass5CollectReferences(
       ...(argumentTypes !== undefined ? { argumentTypes } : {}),
       ...(argumentTypeClasses !== undefined ? { argumentTypeClasses } : {}),
       ...(receiverChain !== undefined ? { receiverChain } : {}),
+      ...(inCalleePosition ? { inCalleePosition: true } : {}),
+      ...(embeddedAsPointer ? { embeddedAsPointer: true } : {}),
     };
     referenceSites.push(site);
   }
@@ -1522,6 +1575,8 @@ const KNOWN_SUB_TAGS: ReadonlySet<string> = new Set<string>([
   '@reference.name',
   '@reference.qualified-name',
   '@reference.property-key',
+  '@reference.callee-position',
+  '@reference.embedded-pointer',
   '@reference.receiver',
   '@reference.operator',
   '@reference.arity',

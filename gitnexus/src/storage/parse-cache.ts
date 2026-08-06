@@ -128,7 +128,9 @@ import type { ParseWorkerResult } from '../core/ingestion/workers/parse-worker.j
 // both genuinely shipped as 21 — renumbering would misstate history. Read this
 // as the reason to re-check SCHEMA_BUMP against origin/main immediately before
 // merging, not just when the branch is cut; the same collision hit
-// INCREMENTAL_SCHEMA_VERSION in #2653/#2654.
+// the DB schema version in #2653/#2654 (that constant is gone — the DB side is
+// a derived fingerprint now, see SCHEMA_FINGERPRINT; SCHEMA_BUMP below is still
+// hand-maintained because no declarative artifact describes a capture set).
 // v27: generator EXPRESSIONS bound to a name emit a callable definition capture,
 // and nested-callable caller attribution appends the localIdentity suffix the
 // definition phase already used. Both are parse-time, so a warm cache would
@@ -149,7 +151,104 @@ import type { ParseWorkerResult } from '../core/ingestion/workers/parse-worker.j
 // v37: Java/Kotlin capture side-channels include Spring AOP owner/advice facts
 // (#2416). Warm cache entries at v36 do not carry those facts and would silently
 // omit ADVISED_BY evidence.
-const SCHEMA_BUMP = 37;
+// v38: Swift nested conditional-compilation directives are blanked before the
+// parse (#2771), so a class body that previously error-recovered away now
+// survives. The chunk key hashes raw on-disk bytes and `preprocessSource` runs
+// after it is computed, so unchanged Swift files would otherwise replay their
+// pre-fix `ParseWorkerResult` verbatim — including across `--force`. Allocated
+// on `main`, NOT by this branch — kept so the number is not reused a third time.
+// v39: receiver-chain wire format v2 — the encoded chain gained name-free
+// `await` and `index` step kinds, so the VERSION prefix moved 1 -> 2 and every
+// persisted chain string changed. A v2 decoder REFUSES a v1 payload (that is
+// the point: a chain missing its await or index hop decodes cleanly as a
+// different, shorter chain and would type the receiver against the wrong
+// member), so a stale cache replays chains this build silently discards —
+// the feature degrades to the text cascade with no error anywhere. Bumped so
+// the stale cache is rejected rather than half-read.
+//
+// NUMBERED 39, AFTER TWO REALLOCATIONS. This branch first used 37; `main` took
+// 37 for Spring AOP (#2416) mid-flight, so it moved to 38; `main` then took 38
+// for the Swift directive fix (#2771), landing on the branch's number AGAIN.
+// That is the EIGHTH collision in this series and the SECOND exact clash — two
+// incompatible schemas claiming one number, twice running. The lesson is not
+// "pick a bigger number": it is that the check must happen immediately before
+// merge, because the window between review and merge is exactly when `main`
+// allocates. Re-check against origin/main before merging this.
+// v40: inference-typed class fields emit type-binding captures in SIX languages
+// (#2807) — TypeScript/JavaScript `public_field_definition|field_definition` with a
+// `new_expression` value and `this.<field> = new X()`; Python `self.x = Outer()`;
+// Ruby `@ivar = Foo.new`; Swift optional property annotations; Dart inferred-type
+// and final field declarations plus constructor-body field writes. Every one of
+// these is PARSE-TIME capture emission, so a warm cache replays the pre-fix
+// capture set verbatim for byte-unchanged files and the new receiver edges never
+// appear — silently, with no error, exactly the v27/v30 failure mode. `analyze`
+// skips tree-sitter dispatch for unchanged chunks (GUARDRAILS.md), so a plain
+// re-analyze does NOT surface them without this bump.
+// RE-CHECK AGAINST origin/main IMMEDIATELY BEFORE MERGING — main was also at 39
+// when this was allocated, and this file records eight prior collisions.
+// v41: the v40 Dart field-write binding gained its READ-side mask (#2807 review)
+// — a Dart class-member body that rebinds one of its class's field names now
+// emits `@receiver-owner.shadowed-fields` on its synthesized `@scope.function`
+// match, which becomes `Scope.ownsReceivers`. Parse-time capture emission again,
+// so a v40 warm cache replays scope matches with no marker and the receiver walk
+// still reaches the class field — i.e. it keeps serving the WRONG edge this
+// bump's fix removes, silently. Same bump-or-nothing situation as v40.
+// RE-CHECK AGAINST origin/main IMMEDIATELY BEFORE MERGING.
+// v42: the v40/v41 Python constructor-field arm stopped accepting a DOTTED
+// callee (#2807 review). `self.svc = f.Alpha()` no longer emits a
+// `@type-binding.constructor` capture at all, which is what removes the
+// fabricated edge to the same-named class `Alpha` and what stops
+// `self.conn = Registry.get()` displacing an earlier real `self.conn = Outer()`.
+// A within-PR re-bump, not a collision fix: v41 was allocated by this same
+// unmerged branch, so v41-stamped caches exist only on it — but they exist on
+// every reviewer's and CI runner's checkout of it, and parse-time emission means
+// they replay the pre-fix capture set for byte-unchanged files and keep serving
+// the fabricated edge. main is at 39, so 40/41/42 are all this branch's.
+// RE-CHECK AGAINST origin/main IMMEDIATELY BEFORE MERGING.
+// v43: Go embedded fields now emit `@reference.embedded-pointer` when written
+// as `*T` rather than `T` (#2813 exact method sets). Go's method-set rules make
+// the two forms genuinely different — `struct{ Base }` does NOT get Base's
+// pointer-receiver methods in its value method set while `struct{ *Base }` does
+// — so structural interface satisfaction cannot be exact without the spelling.
+// This is PARSE-TIME capture emission, so a warm cache replays the pre-fix
+// capture set for byte-unchanged files and the distinction never appears:
+// silently, with no error, the v27/v30 failure mode. `analyze` skips tree-sitter
+// dispatch for unchanged chunks (GUARDRAILS.md), so a plain re-analyze does NOT
+// surface it without this bump.
+//
+// 42 -> 43: this branch originally allocated 43 while sitting at 39, because
+// main had already taken 40/41/42 for #2807. main has since merged those and
+// this branch rebased onto it, so 43 remains the next free number and the
+// value is unchanged by the rebase — the reason it was chosen is simply now
+// visible in the history above. RE-CHECK AGAINST origin/main IMMEDIATELY
+// BEFORE MERGING; this file records eight prior collisions, two EXACT.
+// Moved 43 -> 44 for #2842's TypeScript heritage capture, which now emits
+// `@reference.inherits` for `interface_declaration` and
+// `abstract_class_declaration`. That is PARSE-TIME emission, so a v43 warm
+// cache would serve entries that are missing those matches entirely — the
+// exact failure a bump exists to prevent. Verified against origin/main at
+// a857f4c5a, which is still on 43, so 44 is free. RE-CHECK BEFORE MERGE.
+
+// 44 -> 45: #2837 re-anchors Go's struct/interface captures from the
+// `type_declaration` onto the `type_spec` (`languages/go/query.ts`
+// @scope.class/@declaration.struct/@declaration.interface, and GO_QUERIES
+// @definition.struct/@definition.interface in `tree-sitter-queries.ts`). Every
+// Go file declaring a type therefore emits DIFFERENT capture ranges — measured:
+// 70 fixture digests moved with zero change in capture COUNT — and a grouped
+// `type (...)` block emits nodes it previously did not emit at all. Parse-time,
+// so a warm cache would replay pre-fix ParsedFiles and the fix would be a silent
+// no-op on every incremental analyze while still passing every cold-run test.
+//
+// This branch originally took 44 and it COLLIDED: #2842 above merged first and
+// claimed it. The ninth entry in this ledger, and the third EXACT clash. Worth
+// recording HOW it was caught, because the pin test cannot catch it — both PRs
+// asserted `toBe(44)`, which passes even when main is already 44, so the two
+// capture schemas would have shared one PARSE_CACHE_VERSION and the durable
+// ParsedFile store would have replayed pre-fix ParsedFiles verbatim for one of
+// them. Only comparing against origin/main at MERGE time surfaces it.
+// PR #2840 (Objective-C, draft) still claims 44 as well — it must move too.
+// RE-CHECK AGAINST origin/main IMMEDIATELY BEFORE MERGING.
+const SCHEMA_BUMP = 45;
 const GITNEXUS_PKG_VERSION = (() => {
   try {
     // package.json sits at gitnexus/package.json — two levels up from

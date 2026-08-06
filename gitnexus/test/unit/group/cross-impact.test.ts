@@ -138,11 +138,13 @@ describe('cross-impact', () => {
         },
       );
       expect(impactCalls).toBe(1);
-      expect('error' in r).toBe(false);
-      if (!('error' in r)) {
-        expect(r.truncationReason).toBe('timeout');
-        expect(r.truncated).toBe(true);
-      }
+      expect(r).toMatchObject({
+        truncated: true,
+        truncationReason: 'timeout',
+        // The marker travels with `truncated` on EVERY return path, not just
+        // the terminal one — see the invariant table below (#2787).
+        riskEpistemic: 'lower-bound',
+      });
     } finally {
       vi.unstubAllEnvs();
       cleanup();
@@ -233,6 +235,140 @@ describe('cross-impact', () => {
       vi.unstubAllEnvs();
       cleanup();
     }
+  });
+
+  /**
+   * `truncated: true` ⇒ `riskEpistemic: 'lower-bound'`, on every return path.
+   *
+   * `riskEpistemic` is the only field that tells a consumer the `risk` value is
+   * a floor rather than a verdict, and the MCP tool description now instructs
+   * callers to key on it. Two of `runGroupImpact`'s four returns used to set
+   * `truncated` without it — and the `uids.length === 0` path returns a REAL
+   * risk (not `UNKNOWN`), so a truncated analysis read as a complete `HIGH`.
+   *
+   * Every case below returns before the bridge is opened, so no bridge mock is
+   * involved; the local port shape alone decides which return is taken.
+   */
+  const runLocalOnlyImpact = async (
+    impact: GroupToolPort['impact'],
+    params: Record<string, unknown> = {},
+  ): Promise<unknown> => {
+    const { tmpDir, cleanup } = tmpGroup();
+    vi.stubEnv('GITNEXUS_HOME', tmpDir);
+    try {
+      const port: GroupToolPort = {
+        resolveRepo: vi.fn(async () => ({
+          id: 'be',
+          name: 'reg-be',
+          repoPath: '/r',
+          storagePath: '/r/.gitnexus',
+        })),
+        impact,
+        query: vi.fn(),
+        impactByUid: vi.fn(),
+        context: vi.fn(),
+      };
+      return await runGroupImpact(
+        { port, gitnexusDir: tmpDir },
+        {
+          name: 'g1',
+          repo: 'app/backend',
+          target: 'Sym',
+          direction: 'upstream',
+          ...params,
+        },
+      );
+    } finally {
+      vi.unstubAllEnvs();
+      cleanup();
+    }
+  };
+
+  type LocalReturnCase = {
+    name: string;
+    impact: GroupToolPort['impact'];
+    params: Record<string, unknown>;
+    expected: Record<string, unknown>;
+  };
+
+  const truncatedReturns: LocalReturnCase[] = [
+    {
+      name: 'the local walk times out',
+      // Resolves later than the (clamped) budget, so the timeout arm of the
+      // race wins on any host — the assertion is on the returned shape, never
+      // on how long it took.
+      impact: async () => {
+        await new Promise((r) => setTimeout(r, 200));
+        return { summary: { direct: 1 }, byDepth: { 1: [{ id: 'x' }] } };
+      },
+      params: { timeoutMs: 15 },
+      expected: {
+        truncated: true,
+        truncationReason: 'timeout',
+        riskEpistemic: 'lower-bound',
+        risk: 'UNKNOWN',
+      },
+    },
+    {
+      name: 'a partial local walk yields no symbol uids',
+      impact: async () => ({
+        partial: true,
+        byDepth: {},
+        summary: { direct: 4, processes_affected: 2, modules_affected: 1 },
+        risk: 'HIGH',
+      }),
+      params: {},
+      expected: {
+        truncated: true,
+        truncationReason: 'partial',
+        riskEpistemic: 'lower-bound',
+        // A real risk, not UNKNOWN: without the marker this reads as a
+        // complete HIGH verdict on a walk that never finished.
+        risk: 'HIGH',
+        summary: { direct: 4, processes_affected: 2, modules_affected: 1 },
+      },
+    },
+  ];
+
+  const completeReturns: LocalReturnCase[] = [
+    {
+      name: 'a complete local walk yields no symbol uids',
+      impact: async () => ({
+        byDepth: {},
+        summary: { direct: 0, processes_affected: 0, modules_affected: 0 },
+        risk: 'HIGH',
+      }),
+      params: {},
+      expected: { truncated: false, risk: 'HIGH' },
+    },
+    {
+      name: 'the target sits outside the requested service prefix',
+      impact: async () => ({
+        target: { id: 'u1', filePath: 'src/other.ts' },
+        byDepth: {},
+        summary: { direct: 1, processes_affected: 0, modules_affected: 0 },
+        risk: 'HIGH',
+      }),
+      params: { service: 'services/auth' },
+      expected: { truncated: false, risk: 'LOW' },
+    },
+  ];
+
+  it.each(truncatedReturns)(
+    'marks risk as a lower bound when $name',
+    async ({ impact, params, expected }) => {
+      const r = await runLocalOnlyImpact(impact, params);
+
+      expect(r).toMatchObject(expected);
+    },
+  );
+
+  it.each(completeReturns)('claims no floor when $name', async ({ impact, params, expected }) => {
+    const r = await runLocalOnlyImpact(impact, params);
+
+    expect(r).toMatchObject(expected);
+    expect(r).not.toHaveProperty('riskEpistemic');
+    expect(r).not.toHaveProperty('truncationReason');
   });
 
   it('test_runGroupImpact_bridge_schema_mismatch_returns_error', async () => {

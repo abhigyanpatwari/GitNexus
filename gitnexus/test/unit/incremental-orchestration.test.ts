@@ -28,7 +28,6 @@ import {
   getStoragePaths,
   saveMeta,
   loadMeta,
-  INCREMENTAL_SCHEMA_VERSION,
   type RepoMeta,
 } from '../../src/storage/repo-manager.js';
 import { setupMiniRepo as setupSharedMiniRepo } from '../helpers/mini-repo.js';
@@ -43,6 +42,7 @@ import {
   stampEmbeddingCount,
 } from '../helpers/embedding-seed.js';
 import { CLASS_FRAMEWORK_ANNOTATIONS_FEATURE } from '../../src/core/analysis-features.js';
+import { SCHEMA_FINGERPRINT } from '../../src/core/lbug/schema.js';
 import {
   SPRING_AOP_FEATURE,
   SPRING_BEAN_INVENTORY_FEATURE,
@@ -398,7 +398,7 @@ describe('runFullAnalysis — incremental orchestration', () => {
       const { storagePath } = getStoragePaths(repo.dbPath);
       const meta = await loadMeta(storagePath);
       expect(meta).not.toBeNull();
-      expect(meta!.schemaVersion).toBe(INCREMENTAL_SCHEMA_VERSION);
+      expect(meta!.schemaFingerprint).toBe(SCHEMA_FINGERPRINT);
       expect(meta!.fileHashes).toBeDefined();
       expect(Object.keys(meta!.fileHashes ?? {}).length).toBeGreaterThan(0);
       expect(meta!.analysisFeatures).toEqual({
@@ -442,7 +442,7 @@ describe('runFullAnalysis — incremental orchestration', () => {
       await runFullAnalysis(repo.dbPath, { skipAgentsMd: true }, { onProgress: () => {} });
       const { storagePath } = getStoragePaths(repo.dbPath);
       const meta = await loadMeta(storagePath);
-      expect(meta!.schemaVersion).toBe(INCREMENTAL_SCHEMA_VERSION);
+      expect(meta!.schemaFingerprint).toBe(SCHEMA_FINGERPRINT);
 
       await saveMeta(
         storagePath,
@@ -459,6 +459,45 @@ describe('runFullAnalysis — incremental orchestration', () => {
       expect(logs.join('\n')).toContain(`missing:${CLASS_FRAMEWORK_ANNOTATIONS_FEATURE.id}`);
       expect((await loadMeta(storagePath))!.analysisFeatures).toEqual({
         [CLASS_FRAMEWORK_ANNOTATIONS_FEATURE.id]: CLASS_FRAMEWORK_ANNOTATIONS_FEATURE.version,
+      });
+    } finally {
+      await repo.cleanup();
+    }
+  }, 300_000);
+
+  it('a same-commit index with NO fingerprint (pre-#2798) rebuilds once, not grandfathered', async () => {
+    const repo = await setupMiniRepo();
+    try {
+      const { runFullAnalysis } = await import('../../src/core/run-analyze.js');
+      await runFullAnalysis(repo.dbPath, { skipAgentsMd: true }, { onProgress: () => {} });
+      const { storagePath } = getStoragePaths(repo.dbPath);
+      const meta = await loadMeta(storagePath);
+
+      // Every index built before the field existed. Grandfathering absence
+      // would stamp a fresh fingerprint onto a database whose DDL was never
+      // verified — permanently certifying the very index this guard catches.
+      await saveMeta(storagePath, { ...meta!, schemaFingerprint: undefined });
+      const logs: string[] = [];
+      const reanalyzed = await runFullAnalysis(
+        repo.dbPath,
+        { skipAgentsMd: true },
+        { onProgress: () => {}, onLog: (message) => logs.push(message) },
+      );
+
+      expect(reanalyzed.alreadyUpToDate).toBeUndefined();
+      // An absent stamp is unattributable — this build cannot tell a pre-#2798
+      // index from a hand-cleared one — so the notice names no version.
+      expect(logs.join('\n')).toContain(
+        'index schema changed (built by an unidentified GitNexus build,',
+      );
+      // The extra "non-git repositories never record a schema fingerprint"
+      // sentence is conditional on the repo having no git dir. setupMiniRepo
+      // builds a real git repo, so appending it here would be a false
+      // explanation for an absence this build is genuinely responsible for.
+      expect(logs.join('\n')).not.toContain('Non-git repositories never record');
+      // One-time: the rebuild restamps it, so the next run is eligible again.
+      expect(await loadMeta(storagePath)).toMatchObject({
+        schemaFingerprint: SCHEMA_FINGERPRINT,
       });
     } finally {
       await repo.cleanup();
@@ -1074,42 +1113,49 @@ describe('runFullAnalysis — incremental orchestration', () => {
     }
   }, 300_000);
 
-  // A pre-current index must not take the alreadyUpToDate fast path. The
-  // schema mismatch guard runs before lastCommit equality can short-circuit
-  // the pipeline, so node-identity migrations receive a full rebuild.
-  it('a pre-current schemaVersion stamp forces a full rebuild on an unchanged-commit re-analyze', async () => {
+  // An index carrying a schema stamp that is not this build's must not take the
+  // alreadyUpToDate fast path. The schema mismatch guard runs before lastCommit
+  // equality can short-circuit the pipeline, so node-identity migrations receive
+  // a full rebuild. Pinned on the RESULT (no fast path, restamped meta) rather
+  // than the log line, so the ordering invariant survives a reworded notice.
+  it('a foreign schema fingerprint forces a full rebuild on an unchanged-commit re-analyze', async () => {
     const repo = await setupMiniRepo();
     try {
       const { runFullAnalysis } = await import('../../src/core/run-analyze.js');
-      // First run stamps the current schema version (v8).
+      // First run stamps the digest of the DDL this build creates.
       await runFullAnalysis(repo.dbPath, { skipAgentsMd: true }, { onProgress: () => {} });
       const { storagePath } = getStoragePaths(repo.dbPath);
       const meta = await loadMeta(storagePath);
       expect(meta).not.toBeNull();
-      expect(meta!.schemaVersion).toBe(INCREMENTAL_SCHEMA_VERSION);
+      expect(meta!.schemaFingerprint).toBe(SCHEMA_FINGERPRINT);
 
-      // Simulate a pre-v8 index at the same commit. Without the schema guard,
-      // this would return alreadyUpToDate before the pipeline runs.
-      const downgraded: RepoMeta = { ...meta!, schemaVersion: 7 };
+      // Simulate an index whose tables were created from a different DDL, at
+      // the same commit with a clean tree. Well-formed (12 lowercase hex, so it
+      // clears the echo-shape gate) but not this build's — every other fast-path
+      // condition holds, so only the schema guard can stop the early return.
+      const downgraded: RepoMeta = { ...meta!, schemaFingerprint: 'b1c2d3e4f5a6' };
       await saveMeta(storagePath, downgraded);
 
+      const logs: string[] = [];
       const reanalyzed = await runFullAnalysis(
         repo.dbPath,
         { skipAgentsMd: true },
-        { onProgress: () => {} },
+        { onProgress: () => {}, onLog: (message) => logs.push(message) },
       );
-      // Pipeline actually ran (schemaVersion mismatch → force=true).
+      // Pipeline actually ran (schemaFingerprint mismatch → force=true), and the
+      // notice names the stamp it rejected rather than a generic placeholder.
       expect(reanalyzed.alreadyUpToDate).toBeUndefined();
-      // And the meta is stamped back to v8 (the rebuild path runs saveMeta).
+      expect(logs.join('\n')).toContain('index schema changed (built by b1c2d3e4f5a6,');
+      // And the rebuild restamped this build's digest (that path runs saveMeta).
       const restamped = await loadMeta(storagePath);
-      expect(restamped!.schemaVersion).toBe(INCREMENTAL_SCHEMA_VERSION);
+      expect(restamped!.schemaFingerprint).toBe(SCHEMA_FINGERPRINT);
     } finally {
       await repo.cleanup();
     }
   }, 300_000);
 
-  // #2331/#2339: mirrors the schemaVersion mismatch test above, but for the
-  // CJK segmentation mode stamp. Uses a non-default mode ('bigram') rather
+  // #2331/#2339: mirrors the schema-fingerprint mismatch test above, but for
+  // the CJK segmentation mode stamp. Uses a non-default mode ('bigram') rather
   // than 'none' — with the default, (undefined ?? 'none') !== 'none' is
   // false regardless of whether the stamp was ever actually written, so a
   // dropped-stamp bug would pass this test vacuously. 'bigram' makes an

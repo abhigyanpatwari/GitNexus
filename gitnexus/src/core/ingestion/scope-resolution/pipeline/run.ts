@@ -66,7 +66,10 @@ import type { FunctionCfg } from '../../cfg/types.js';
 import { resolveDefGraphId } from '../graph-bridge/ids.js';
 import { buildPopulatedMethodDispatch } from '../graph-bridge/method-dispatch.js';
 import { propagateImportedReturnTypes } from '../passes/imported-return-types.js';
-import { emitReceiverBoundCalls } from '../passes/receiver-bound-calls.js';
+import {
+  emitReceiverBoundCalls,
+  MAX_INTERFACE_DISPATCH_FANOUT,
+} from '../passes/receiver-bound-calls.js';
 import { emitFreeCallFallback } from '../passes/free-call-fallback.js';
 import {
   emitPropertyDispatchCalls,
@@ -244,8 +247,8 @@ function emitDetectedInterfaceImplementations(
   for (const [interfaceDefId, implementorDefIds] of detected) {
     const targetId = graphIdByDefId.get(interfaceDefId);
     if (targetId === undefined) continue;
-    for (const implementorDefId of implementorDefIds) {
-      const sourceId = graphIdByDefId.get(implementorDefId);
+    for (const implementor of implementorDefIds) {
+      const sourceId = graphIdByDefId.get(implementor.structDefId);
       if (sourceId === undefined) continue;
       const edgeKey = `${sourceId}->${targetId}`;
       if (existing.has(edgeKey)) continue;
@@ -256,7 +259,17 @@ function emitDetectedInterfaceImplementations(
         targetId,
         type: 'IMPLEMENTS',
         confidence: 0.85,
-        reason: `${provider.language}-structural-implements`,
+        // The receiver form rides in `reason` because relationships carry no
+        // arbitrary properties — adding one would change the relation DDL and
+        // move SCHEMA_FINGERPRINT, forcing a full re-analyze for a fact that a
+        // string already expresses. `-pointer` means ONLY the pointer type
+        // implements: `var x I = T{}` is invalid, `var x I = &T{}` is fine.
+        // The unsuffixed form is unchanged from before, so a consumer matching
+        // the old string keeps seeing exactly the value-form implementors.
+        reason:
+          implementor.receiverForm === 'pointer'
+            ? `${provider.language}-structural-implements-pointer`
+            : `${provider.language}-structural-implements`,
       });
       emitted++;
     }
@@ -796,8 +809,12 @@ export function runScopeResolution(
             : (filePath, line, col) => callableArgumentSites.has(`${filePath}:${line}:${col}`),
         )
       : undefined;
-  const receiverExtras = callableFlowOnly
-    ? 0
+  const receiverBound = callableFlowOnly
+    ? {
+        emitted: 0,
+        dispatchFanoutSkipped: 0,
+        dispatchFanoutSkippedNames: [] as readonly string[],
+      }
     : emitReceiverBoundCalls(
         graph,
         indexes,
@@ -810,8 +827,28 @@ export function runScopeResolution(
         {
           recordResolutionOutcome,
           calleeIdSink: calleeIdAccumulator,
+          // The pass's only source of positive EXTERNAL evidence for a dropped
+          // receiver (`console.log`, `fetch(...)`). Same hook, same spelling as
+          // the `emitFreeCallFallback` wiring below.
+          isBuiltInName: provider.languageProvider.isBuiltInName,
         },
       );
+  const receiverExtras = receiverBound.emitted;
+  if (receiverBound.dispatchFanoutSkipped > 0) {
+    // Never drop dispatch coverage silently (#2829) — same contract as the
+    // property-dispatch cap below. An interface member over the cap loses real
+    // implementors, so `impact()` on those implementations under-reports; an
+    // operator has to be able to see WHICH member lost them.
+    logger.warn(
+      {
+        lang: provider.language,
+        dispatchFanoutSkipped: receiverBound.dispatchFanoutSkipped,
+        dispatchFanoutSkippedNames: receiverBound.dispatchFanoutSkippedNames,
+        fanoutCap: MAX_INTERFACE_DISPATCH_FANOUT,
+      },
+      'interface-dispatch: members over the fan-out cap dropped implementors (their CALLS edges were not emitted)',
+    );
+  }
   const unresolvedReceiverExtras =
     !callableFlowOnly && provider.emitUnresolvedReceiverEdges !== undefined
       ? provider.emitUnresolvedReceiverEdges(

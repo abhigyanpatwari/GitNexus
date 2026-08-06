@@ -188,22 +188,31 @@ describe('LadybugDB Schema', () => {
       expect(RELATION_SCHEMA).toContain('step INT32');
     });
 
+    // These four go through `parseRelationSchemaPairs`, not a raw substring:
+    // each of their pairs is now emitted by a cross product rather than
+    // hand-written, and the generated half backticks EVERY label
+    // (`FROM \`Function\` TO \`Function\``) while the hand-written half
+    // backticks only multi-language names. Asserting the runtime's own parse
+    // keeps them about the pair being declared, which is what LadybugDB
+    // enforces — a cosmetic DDL formatting change cannot fail them.
     it('connects Function to Function (CALLS)', () => {
-      expect(RELATION_SCHEMA).toContain('FROM Function TO Function');
+      expect(parseRelationSchemaPairs(RELATION_SCHEMA).has('Function|Function')).toBe(true);
     });
 
     it('connects File to Function (CONTAINS/DEFINES)', () => {
-      expect(RELATION_SCHEMA).toContain('FROM File TO Function');
+      expect(parseRelationSchemaPairs(RELATION_SCHEMA).has('File|Function')).toBe(true);
     });
 
     it('connects symbols to Community (MEMBER_OF)', () => {
-      expect(RELATION_SCHEMA).toContain('FROM Function TO Community');
-      expect(RELATION_SCHEMA).toContain('FROM Class TO Community');
+      const declaredPairs = parseRelationSchemaPairs(RELATION_SCHEMA);
+      expect(declaredPairs.has('Function|Community')).toBe(true);
+      expect(declaredPairs.has('Class|Community')).toBe(true);
     });
 
     it('connects symbols to Process (STEP_IN_PROCESS)', () => {
-      expect(RELATION_SCHEMA).toContain('FROM Function TO Process');
-      expect(RELATION_SCHEMA).toContain('FROM Method TO Process');
+      const declaredPairs = parseRelationSchemaPairs(RELATION_SCHEMA);
+      expect(declaredPairs.has('Function|Process')).toBe(true);
+      expect(declaredPairs.has('Method|Process')).toBe(true);
     });
 
     it('connects BasicBlock to BasicBlock (taint/PDG substrate edges, #2080)', () => {

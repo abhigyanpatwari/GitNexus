@@ -15,6 +15,7 @@ import {
   goReceiverBinding,
 } from '../../../../src/core/ingestion/languages/go/index.js';
 import { detectGoInterfaceImplementations } from '../../../../src/core/ingestion/languages/go/interface-impls.js';
+import { populateGoOwners } from '../../../../src/core/ingestion/languages/go/method-owners.js';
 
 describe('Go arity compatibility', () => {
   const makeDef = (overrides: Partial<SymbolDefinition> = {}): SymbolDefinition => ({
@@ -272,6 +273,23 @@ function inheritsSite(name: string, inScope: ScopeId): ReferenceSite {
   };
 }
 
+/**
+ * Structural detection now returns the receiver FORM alongside each
+ * implementor (`{ structDefId, receiverForm }`), because Go's method sets for
+ * `T` and `*T` genuinely differ. Most rows below only care about WHICH types
+ * implement, so this extracts the ids; the rows that care about the form assert
+ * it explicitly.
+ */
+function implIds(
+  result: Map<string, readonly { readonly structDefId: string }[]>,
+  ifaceId: string,
+): string[] | undefined {
+  const found = result.get(ifaceId);
+  // Deliberately NOT sorted: several rows below assert detection ORDER
+  // (shallowest-promoted-first), which sorting would silently destroy.
+  return found === undefined ? undefined : found.map((i) => i.structDefId);
+}
+
 describe('Go structural interface detection', () => {
   it('detects a struct implementing every interface method with matching signatures', () => {
     const iface = goDef('iface:Repository', 'Interface', 'Repository');
@@ -319,10 +337,18 @@ describe('Go structural interface detection', () => {
       {} as any,
     );
 
-    expect(result.get(iface.nodeId)).toEqual([struct.nodeId]);
+    expect(implIds(result, iface.nodeId)).toEqual([struct.nodeId]);
   });
 
-  it('does not treat pointer-receiver-only methods as value type implementations', () => {
+  // POLARITY DELIBERATELY REVERSED in #2813 (was: expected `undefined`).
+  // A type whose methods use pointer receivers is exactly what idiomatic Go
+  // stores in an interface-typed field; excluding it emitted no IMPLEMENTS edge
+  // at all, so calls through such a field never reached the implementation.
+  // See the rationale block in interface-impls.ts.
+  // Exactness, not just presence: a pointer-receiver-only type implements the
+  // interface ONLY in pointer form. `var x Closer = PointerOnlyCloser{}` is a
+  // compile error in Go and the graph must be able to say so.
+  it('treats pointer-receiver-only methods as implementations in POINTER form only', () => {
     const iface = goDef('iface:Closer', 'Interface', 'Closer');
     const struct = goDef('struct:PointerOnlyCloser', 'Struct', 'PointerOnlyCloser');
     const ifaceClose = goDef('iface:Closer.Close', 'Method', 'Closer.Close', iface.nodeId, {
@@ -347,7 +373,8 @@ describe('Go structural interface detection', () => {
       {} as any,
     );
 
-    expect(result.get(iface.nodeId)).toBeUndefined();
+    expect(implIds(result, iface.nodeId)).toEqual([struct.nodeId]);
+    expect(result.get(iface.nodeId)?.[0]?.receiverForm).toBe('pointer');
   });
 
   it('rejects same-name methods with incompatible parameter types', () => {
@@ -577,7 +604,7 @@ describe('Go structural interface detection', () => {
       {} as any,
     );
 
-    expect(result.get(readCloser.nodeId)).toEqual([struct.nodeId]);
+    expect(implIds(result, readCloser.nodeId)).toEqual([struct.nodeId]);
   });
 
   it('accepts structs implementing interface methods through promoted embedded struct methods', () => {
@@ -606,7 +633,7 @@ describe('Go structural interface detection', () => {
       {} as any,
     );
 
-    expect(result.get(reader.nodeId)).toEqual([base.nodeId, file.nodeId]);
+    expect(implIds(result, reader.nodeId)).toEqual([base.nodeId, file.nodeId]);
   });
 
   it('lets direct struct methods shadow promoted embedded struct methods', () => {
@@ -650,7 +677,7 @@ describe('Go structural interface detection', () => {
       {} as any,
     );
 
-    expect(result.get(reader.nodeId)).toEqual([base.nodeId]);
+    expect(implIds(result, reader.nodeId)).toEqual([base.nodeId]);
   });
 
   it('does not use ambiguous promoted embedded struct methods for interface matching', () => {
@@ -689,7 +716,7 @@ describe('Go structural interface detection', () => {
       {} as any,
     );
 
-    expect(result.get(reader.nodeId)).toEqual([baseA.nodeId, baseB.nodeId]);
+    expect(implIds(result, reader.nodeId)).toEqual([baseA.nodeId, baseB.nodeId]);
   });
 
   it('uses the shallowest promoted embedded struct method when deeper methods share the name', () => {
@@ -734,7 +761,7 @@ describe('Go structural interface detection', () => {
       {} as any,
     );
 
-    expect(result.get(reader.nodeId)).toEqual([
+    expect(implIds(result, reader.nodeId)).toEqual([
       shallow.nodeId,
       deepBase.nodeId,
       deepWrapper.nodeId,
@@ -840,7 +867,7 @@ describe('Go structural interface detection', () => {
       {} as any,
     );
 
-    expect(result.get(readCloser.nodeId)).toEqual([file.nodeId]);
+    expect(implIds(result, readCloser.nodeId)).toEqual([file.nodeId]);
   });
 
   it('does not emit implementations for cyclic embedded interfaces', () => {
@@ -908,8 +935,8 @@ describe('Go structural interface detection', () => {
       {} as any,
     );
 
-    expect(result.get(reader.nodeId)).toEqual([file.nodeId]);
-    expect(result.get(closer.nodeId)).toEqual([file.nodeId]);
+    expect(implIds(result, reader.nodeId)).toEqual([file.nodeId]);
+    expect(implIds(result, closer.nodeId)).toEqual([file.nodeId]);
   });
 
   it('does not emit implementations when an embedded interface cannot be resolved', () => {
@@ -977,7 +1004,7 @@ describe('Go structural interface detection', () => {
       {} as any,
     );
 
-    expect(result.get(iface.nodeId)).toEqual([struct.nodeId]);
+    expect(implIds(result, iface.nodeId)).toEqual([struct.nodeId]);
   });
 
   it('preserves package qualifiers when checking signatures', () => {
@@ -1111,5 +1138,56 @@ describe('Go structural interface detection', () => {
     );
 
     expect(result.get(iface.nodeId)).toBeUndefined();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// #2829 review: `goReceiverKind` must stay stamped even though nothing filters
+// on it any more.
+// ---------------------------------------------------------------------------
+//
+// #2813 removed the only functional READER of `goReceiverKind` (the
+// pointer-receiver exclusion in `buildDetectionIndexes`). The field is kept
+// deliberately — it is the hook a future value/pointer-aware model would read,
+// and `interpret.ts` preserves the raw `*T` shape specifically to feed it. But
+// a written-and-never-read field rots: before these rows you could delete the
+// assignment in `method-owners.ts` and the whole suite stayed green.
+//
+// These pin the stamp itself, so the promise the comment makes stays true.
+describe('Go method-owner receiver-kind stamping (#2829)', () => {
+  const ownerScope = (receiverRaw: string, methodDef: SymbolDefinition): Scope => {
+    const s = scope('fn:1' as ScopeId, 'Function', [methodDef]);
+    (s.typeBindings as Map<string, unknown>).set('r', {
+      rawName: receiverRaw,
+      source: 'self',
+    });
+    return s;
+  };
+
+  const stampFor = (receiverRaw: string): SymbolDefinition => {
+    const struct = goDef('struct:Repo', 'Struct', 'Repo');
+    const method = goDef('struct:Repo.Save', 'Method', 'Save');
+    const parsed = {
+      filePath: 'repo.go',
+      language: 'go',
+      scopes: [scope('mod' as ScopeId, 'Module', [struct]), ownerScope(receiverRaw, method)],
+      imports: [],
+      localDefs: [struct, method],
+      referenceSites: [],
+    } as any;
+    populateGoOwners(parsed);
+    return method;
+  };
+
+  it('stamps a POINTER receiver as pointer', () => {
+    const m = stampFor('*Repo') as SymbolDefinition & { goReceiverKind?: string };
+    expect(m.goReceiverKind).toBe('pointer');
+    expect(m.ownerId).toBe('struct:Repo');
+  });
+
+  it('stamps a VALUE receiver as value', () => {
+    const m = stampFor('Repo') as SymbolDefinition & { goReceiverKind?: string };
+    expect(m.goReceiverKind).toBe('value');
+    expect(m.ownerId).toBe('struct:Repo');
   });
 });

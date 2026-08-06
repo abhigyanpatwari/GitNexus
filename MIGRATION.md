@@ -117,3 +117,122 @@ repo as never analyzed.
 
 The `meta.json` mirror will remain until a future major version. Removal
 will be announced in this file and in the changelog before it happens.
+
+## Ambiguous responses report the true match count (PR #2796, issue #2787)
+
+The MCP symbol resolver returns at most 20 candidate rows. Every ambiguous
+response used to take its count from that capped window, so a name with 92
+matches (`constructor`, in this repo's own index) reported 20. The same PR
+pinned the window with an `ORDER BY`, which turned that undercount from
+flaky into stable — and a stable wrong number reads as authoritative.
+
+Three consumer-visible changes follow:
+
+- **`impact`'s `totalCandidates` changed meaning.** It was the length of the
+  capped 20-row window; it is now the true `COUNT(*)` of matching symbols.
+  Callers using `totalCandidates === candidates.length` as a "not truncated"
+  proxy will now see the two diverge. This is a bug fix — the old number was
+  wrong — but it is still a value change on a published field.
+- **`totalCandidates` and `candidatesTruncated` are new on other tools.**
+  They now also appear on `context`, `trace`, the `explain` / `pdg_query`
+  block-anchor path, and on `rename` (which returns `context`'s ambiguous
+  payload verbatim). `candidatesTruncated: true` is present only when
+  `candidates[]` is shorter than `totalCandidates` — absent otherwise, never
+  `false`.
+- **The `message` template gained a `(showing M)` suffix.** It follows the
+  total — `Found 92 symbols matching 'constructor' (showing 20). …` — and
+  appears only when the returned window is smaller than the total. `impact`
+  uses the longer `(showing M of N)` form.
+
+### Do I need to migrate?
+
+**Only if you read `totalCandidates` or parse `message`.** The last two
+changes are purely additive — no field was removed or renamed and
+`candidates[]` keeps its shape — so PR #888's "no existing field has changed.
+No migration required for `context` callers" still holds for `context`.
+
+- Reading `totalCandidates` on `impact`: it is a true total now. Detect a
+  shortened window with `candidatesTruncated` (or `totalCandidates >
+  candidates.length`) rather than by comparing it to an array length.
+- Parsing `message` for a count: the total is still the first number, but a
+  `(showing M)` parenthetical may now follow it. Prefer the structured
+  `totalCandidates` field over the string.
+
+### What happens on re-index?
+
+Nothing — this is an MCP-surface change only. The graph schema, indexer,
+and stored data are untouched.
+
+## `schemaVersion` → `schemaFingerprint` (issue #2798)
+
+The field that decides whether an existing index can be reused changed in
+`.gitnexus/gitnexus.json` (and in each `branches/<slug>/gitnexus.json`):
+`schemaVersion?: number` has been removed and `schemaFingerprint?: string`
+added. The new value is a 12-character digest of the graph DDL this build
+creates, so it *describes* the schema an index's tables were actually built
+from rather than asserting a number about it.
+
+An absent fingerprint is treated as a mismatch, and that is the whole
+backward-compatibility story: every index written by an earlier GitNexus
+carries no fingerprint, so it is rebuilt exactly once.
+
+### Do I need to migrate?
+
+**No.** There is nothing to run, edit, or pass. The first `analyze` after
+upgrading logs one line —
+
+```
+index schema changed (built by an unidentified GitNexus build, this build is <fingerprint>); forcing a full re-analyze so the database is recreated from the current schema.
+```
+
+— and then performs that full re-analyze itself. The same run stamps the
+fingerprint, and every run after it takes the normal incremental path again.
+
+### What happens on re-index?
+
+One automatic full re-analyze, once per index. Nothing else changes; the
+resulting graph is what the current build would have produced anyway.
+
+The scope of that one-time cost is worth knowing before you hit it. It is
+per **index**, not per machine or per repository — branch-scoped index slots
+(#2106) each keep their own `gitnexus.json`, so every slot pays for itself
+the first time it is analyzed after the upgrade. On a very large repository
+a full re-analyze is substantial, not a blip; plan the first post-upgrade
+run accordingly.
+
+### Why a digest instead of a version number?
+
+`schemaVersion` was hand-incremented, and it had to predict something a
+number cannot know: whether the DDL an on-disk database was created from
+matches this build's. It collided with `main` eight times, twice *exactly* —
+and an exact clash was the quiet failure. Two builds stamp the same number
+over different DDL, the strict `===` reuse gate reads the index as current,
+the `CREATE … TABLE` statements are skipped as "already exists", and edges
+whose endpoint pair the live database cannot persist are dropped. A wrong
+graph, with no error anywhere.
+
+A derived digest cannot fail that way: two builds agree exactly when their
+DDL agrees, so concurrent branches never need renumbering and a mismatch is
+always a real mismatch. The retired ladder's per-version rationale (v2
+`BasicBlock.callees` through v35's generated relation cross-product) now
+lives only in git history:
+`git show 561f913a3:gitnexus/src/storage/repo-manager.ts`.
+
+### What about rollback?
+
+Downgrading to an older GitNexus is safe. The older binary looks for
+`schemaVersion`, does not find one, treats the index as pre-versioning, and
+forces its own full rebuild — the same one-time cost in the other direction,
+never a stale or mismatched graph.
+
+### What if I alternate between an old and a new binary?
+
+Every switch forces a rebuild. The end-of-run metadata is written as a fresh
+object literal rather than merged over the previous file, so a new build's
+write drops `schemaVersion` and an old build's write drops
+`schemaFingerprint` — neither field survives the other's run, and each binary
+then finds its own gate unsatisfied. This hits anyone running a pinned
+`npx gitnexus@<version>` alongside a local build, or an editor hook still on
+an older release. It is a cost, not a correctness problem: each run rebuilds
+against its own schema, and the graph it serves is correct for the binary
+that produced it. Pin one version per index to avoid the churn.

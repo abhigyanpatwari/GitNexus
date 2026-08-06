@@ -41,7 +41,19 @@ import { ftsDegradedWarning } from '../core/search/fts-indexes.js';
 import { LocalBackend } from '../mcp/local/local-backend.js';
 import { mountMCPEndpoints } from './mcp-http.js';
 import { fileURLToPath } from 'url';
-import { JobManager } from './analyze-job.js';
+import { isTerminalJobStatus, JobManager, type AnalyzeJobPartialOutcome } from './analyze-job.js';
+import { mountSSEProgress } from './sse-progress.js';
+import {
+  resolveEmbedRunOutcome,
+  withMeasuredEmbeddingCount,
+  type EmbedRunFinalizeContext,
+} from './embed-run-outcome.js';
+import { decideEmbeddingResume, mintInterruptedCheckpoint } from '../core/embedding-checkpoint.js';
+import {
+  measurePersistedEmbeddingCount,
+  persistedEmbeddingCountOrUndefined,
+  type PersistedEmbeddingCount,
+} from '../core/embedding-count.js';
 import { assertString, escapeRegExp, BadRequestError, createRouteLimiter } from './validation.js';
 import {
   extractRepoName,
@@ -51,7 +63,16 @@ import {
   GITHUB_TOKEN_HOSTS,
 } from './git-clone.js';
 import { createAnalyzeUploadHandler } from './analyze-upload.js';
-import { createLocalhostOriginGuard, normalizeBoundHost } from './middleware.js';
+import {
+  assertServeAuthForPublicOrigin,
+  createPublicOriginMatcher,
+  createWriteOriginGuard,
+  logOriginPolicy,
+  PUBLIC_ORIGIN_ENV,
+  resolveTrustProxy,
+  TRUST_PROXY_ENV,
+  warnIfRateLimitKeysCollapse,
+} from './middleware.js';
 import { createLaunchAnalysisWorker } from './analyze-launch.js';
 import { UPLOAD_ROOT } from './upload-paths.js';
 import { sweepStaleUploads } from './upload-sweep.js';
@@ -73,6 +94,8 @@ const pkg = _require('../../package.json');
  *     172.16.0.0/12   → 172.16.x.x – 172.31.x.x
  *     192.168.0.0/16  → 192.168.x.x
  * - https://gitnexus.vercel.app — the deployed GitNexus web UI
+ * - the origin named by GITNEXUS_PUBLIC_ORIGIN, when set — matched on hostname
+ *   always, and on scheme and port when the configured value carries them
  *
  * @param origin - The value of the HTTP `Origin` request header, or `undefined`
  *                 when the header is absent (non-browser request).
@@ -98,21 +121,22 @@ export const isAllowedOrigin = (origin: string | undefined): boolean => {
 
   // RFC 1918 private network ranges — allow any port on these hosts.
   // We parse the hostname out of the origin URL and check against each range.
-  let hostname: string;
-  let protocol: string;
+  let parsed: URL;
   try {
-    const parsed = new URL(origin);
-    hostname = parsed.hostname;
-    protocol = parsed.protocol;
+    parsed = new URL(origin);
   } catch {
     // Malformed origin — reject
     return false;
   }
 
   // Only allow HTTP(S) origins — reject ftp://, file://, etc.
-  if (protocol !== 'http:' && protocol !== 'https:') return false;
+  if (parsed.protocol !== 'http:' && parsed.protocol !== 'https:') return false;
 
-  return isRfc1918PrivateIpv4(hostname);
+  // The matcher is rebuilt per call, so changing the env var takes effect
+  // without a restart. The write guard in middleware.ts snapshots it instead.
+  if (createPublicOriginMatcher(process.env[PUBLIC_ORIGIN_ENV])?.matches(parsed)) return true;
+
+  return isRfc1918PrivateIpv4(parsed.hostname);
 };
 
 type GraphStreamRecord =
@@ -464,98 +488,6 @@ export const streamGraphNdjson = async (
   });
 };
 
-/**
- * Mount an SSE progress endpoint for a JobManager.
- * Handles: initial state, terminal events, heartbeat, event IDs, client disconnect.
- *
- * Terminal payloads carry `repoPath` (the analyzed path) alongside the display
- * `repoName` so clients can reconnect by path identity — with duplicate
- * basenames, a name-only reconnect resolves to the first same-named sibling.
- * Exported for unit tests that lock the wire payload shape.
- */
-export const mountSSEProgress = (app: express.Express, routePath: string, jm: JobManager) => {
-  app.get(routePath, (req, res) => {
-    let jobId: string;
-    try {
-      jobId = assertString(req.params.jobId, 'jobId');
-    } catch (err: any) {
-      res.status(err.status ?? 400).json({ error: err.message });
-      return;
-    }
-    const job = jm.getJob(jobId);
-    if (!job) {
-      res.status(404).json({ error: 'Job not found' });
-      return;
-    }
-
-    let eventId = 0;
-    res.writeHead(200, {
-      'Content-Type': 'text/event-stream',
-      'Cache-Control': 'no-cache',
-      Connection: 'keep-alive',
-      'X-Accel-Buffering': 'no',
-    });
-
-    // Send current state immediately
-    eventId++;
-    res.write(`id: ${eventId}\ndata: ${JSON.stringify(job.progress)}\n\n`);
-
-    // If already terminal, send event and close
-    if (job.status === 'complete' || job.status === 'failed') {
-      eventId++;
-      res.write(
-        `id: ${eventId}\nevent: ${job.status}\ndata: ${JSON.stringify({
-          repoName: job.repoName,
-          repoPath: job.repoPath,
-          error: job.error,
-        })}\n\n`,
-      );
-      res.end();
-      return;
-    }
-
-    // Heartbeat to detect zombie connections
-    const heartbeat = setInterval(() => {
-      try {
-        res.write(':heartbeat\n\n');
-      } catch {
-        clearInterval(heartbeat);
-        unsubscribe();
-      }
-    }, 30_000);
-
-    // Subscribe to progress updates
-    const unsubscribe = jm.onProgress(job.id, (progress) => {
-      try {
-        eventId++;
-        if (progress.phase === 'complete' || progress.phase === 'failed') {
-          const eventJob = jm.getJob(jobId);
-          res.write(
-            `id: ${eventId}\nevent: ${progress.phase}\ndata: ${JSON.stringify({
-              repoName: eventJob?.repoName,
-              repoPath: eventJob?.repoPath,
-              error: eventJob?.error,
-            })}\n\n`,
-          );
-          clearInterval(heartbeat);
-          res.end();
-          unsubscribe();
-        } else {
-          res.write(`id: ${eventId}\ndata: ${JSON.stringify(progress)}\n\n`);
-        }
-      } catch {
-        clearInterval(heartbeat);
-        unsubscribe();
-      }
-    });
-
-    req.on('close', () => {
-      clearInterval(heartbeat);
-      unsubscribe();
-    });
-  });
-};
-
 const statusFromError = (err: any): number => {
   // Validation helpers throw BadRequestError / ForbiddenError with a typed
   // .status field — honor it before falling back to message-string matching.
@@ -783,6 +715,11 @@ export function validateAnalyzeToken(
 }
 
 export const createServer = async (port: number, host: string = '127.0.0.1') => {
+  // Refuse a public-origin config before anything is opened or bound: `serve`
+  // has no authentication yet, so the setting that makes a public bind usable
+  // must not be usable either. Throws — `serve` reports it and exits non-zero.
+  assertServeAuthForPublicOrigin();
+
   // Surface a cleartext Azure DevOps PAT config at boot (operators rarely
   // read per-request logs). Warn-only — http:// self-hosted stays supported.
   warnIfInsecureAzureConfig();
@@ -790,26 +727,13 @@ export const createServer = async (port: number, host: string = '127.0.0.1') => 
   const app = express();
   app.disable('x-powered-by');
 
-  // Trust X-Forwarded-* headers only when the connection comes from the
-  // local loopback or RFC1918 private/link-local addresses — exactly the
-  // origins the CORS allowlist accepts. Without this, every request behind
-  // any reverse proxy / Docker bridge counts as the same `req.ip` and a
-  // single user can trip the per-IP rate limiter for everyone.
-  //
-  // SCOPE: this setting is process-wide. Every middleware and route in this
-  // Express app sees req.ip resolved from X-Forwarded-For when the upstream
-  // hop is in the trusted set above — not just the rate-limited routes.
-  // Future IP-based middleware (audit logging, IP-bound authz) inherits this
-  // behavior.
-  //
-  // CLOUD-DEPLOY CAVEAT: a public cloud LB (AWS ALB, Cloudflare, Fly.io
-  // edge, CGNAT 100.64/10) is NOT in the trusted set. In those topologies
-  // req.ip will collapse to the LB hop IP for every request and the per-IP
-  // rate limiter degrades to per-server. Add an explicit env-var override
-  // and document the cloud-deploy story before binding to a non-loopback
-  // host in those topologies (tracked as a follow-up; not blocking for the
-  // local-bound default).
-  app.set('trust proxy', 'loopback, linklocal, uniquelocal');
+  // Which upstream hops may set X-Forwarded-*. Process-wide: every route's
+  // req.ip, and so the per-IP rate limiter, resolves through this.
+  app.set('trust proxy', resolveTrustProxy(process.env[TRUST_PROXY_ENV]));
+  // resolveTrustProxy validates the value in isolation; only here do we know
+  // what we bound, and so whether the default is about to collapse the per-IP
+  // rate limit to one global limit behind a load balancer.
+  warnIfRateLimitKeysCollapse(host);
 
   // Chromium Private Network Access (required since Chrome 130+). Must run before
   // cors: the cors middleware ends OPTIONS preflight responses, so this header
@@ -833,21 +757,10 @@ export const createServer = async (port: number, host: string = '127.0.0.1') => 
   );
   app.use(express.json({ limit: '10mb' }));
 
-  // Same-host origin guard for write routes. Only allows loopback and the
-  // server's own bound host — scoped to prevent CSRF from other LAN devices.
-  const requireLocalhostOrigin = createLocalhostOriginGuard(host);
-
-  // A wildcard bind (`0.0.0.0`/`::`) has no single host identity for the
-  // same-host check, so browser write routes accept only loopback origins.
-  // Warn the operator so a remote-access deployment isn't silently write-blocked.
-  if (host && normalizeBoundHost(host) === undefined) {
-    logger.warn(
-      { host },
-      `[gitnexus serve] Bound to a wildcard address (${host}); browser write routes ` +
-        `accept only loopback origins (localhost/127.0.0.1/[::1]). To allow writes from a ` +
-        `specific LAN address, bind --host <that-address> instead of a wildcard.`,
-    );
-  }
+  // Origin guard for write routes: loopback, the server's own bound host, and
+  // any configured public origin — prevents CSRF from other devices.
+  const requireTrustedOrigin = createWriteOriginGuard(host, port);
+  logOriginPolicy(host);
 
   // No explicit OPTIONS route is registered. The Chromium Private Network
   // Access header is set by the global middleware above (pre-cors), and
@@ -1068,7 +981,7 @@ export const createServer = async (port: number, host: string = '127.0.0.1') => 
   // Rate-limited (CodeQL js/missing-rate-limiting): destructive operation
   // doing fs.rm of clone + storage dirs. Default 60 rpm/IP is generous for
   // delete; tighten if abuse is observed.
-  app.delete('/api/repo', createRouteLimiter(), requireLocalhostOrigin, async (req, res) => {
+  app.delete('/api/repo', createRouteLimiter(), requireTrustedOrigin, async (req, res) => {
     try {
       const repoName = requestedRepo(req);
       if (!repoName) {
@@ -1317,6 +1230,9 @@ export const createServer = async (port: number, host: string = '127.0.0.1') => 
               // Label is validated against NODE_TABLES (compile-time safe identifiers);
               // nodeId uses $nid parameter binding to prevent injection
               const [connRes, clusterRes, procRes] = await Promise.all([
+                // determinism: probe — aggregate singleton. Both projections are
+                // `collect(...)` with no grouping key, which yields exactly one
+                // row, and `n` is PK-anchored on `$nid`; the LIMIT never chooses.
                 executePrepared(
                   `
               MATCH (n:${nodeLabel} {id: $nid})
@@ -1334,6 +1250,7 @@ export const createServer = async (port: number, host: string = '127.0.0.1') => 
               MATCH (n:${nodeLabel} {id: $nid})
               MATCH (n)-[:CodeRelation {type: 'MEMBER_OF'}]->(c:Community)
               RETURN c.label AS label, c.description AS description
+              ORDER BY c.id
               LIMIT 1
             `,
                   { nid: nodeId },
@@ -1572,7 +1489,7 @@ export const createServer = async (port: number, host: string = '127.0.0.1') => 
   app.post(
     '/api/analyze',
     createRouteLimiter({ limit: 10 }),
-    requireLocalhostOrigin,
+    requireTrustedOrigin,
     async (req, res) => {
       try {
         const {
@@ -1611,9 +1528,10 @@ export const createServer = async (port: number, host: string = '127.0.0.1') => 
         // (both collapse `..` identically) and only false-rejected trailing
         // slashes, so it is dropped. Analyzing a local path the operator names
         // is the tool's intended capability (same as the CLI); the dangerous
-        // part was cross-origin reach, which is closed by requireLocalhostOrigin
-        // on this route (scoped to the server's own bound host — other LAN
-        // devices are NOT trusted). We only require an absolute path here and
+        // part was cross-origin reach, which is closed by requireTrustedOrigin
+        // on this route (scoped to loopback, the server's own bound host, and a
+        // configured GITNEXUS_PUBLIC_ORIGIN — other LAN devices are NOT
+        // trusted). We only require an absolute path here and
         // let the analyze worker surface a clear error if it does not exist.
         // (We do NOT realpath/stat the path in-route: that would be a
         // user-controlled filesystem read — CodeQL js/path-injection — for no
@@ -1703,7 +1621,7 @@ export const createServer = async (port: number, host: string = '127.0.0.1') => 
   app.post(
     '/api/analyze/upload',
     createRouteLimiter({ limit: 5 }),
-    requireLocalhostOrigin,
+    requireTrustedOrigin,
     createAnalyzeUploadHandler({
       createJob: (params) => jobManager.createJob(params),
       launch: (job, targetPath, opts) => launchAnalysisWorker(job, targetPath, opts),
@@ -1735,14 +1653,14 @@ export const createServer = async (port: number, host: string = '127.0.0.1') => 
   mountSSEProgress(app, '/api/analyze/:jobId/progress', jobManager);
 
   // DELETE /api/analyze/:jobId — cancel a running analysis job
-  app.delete('/api/analyze/:jobId', requireLocalhostOrigin, (req, res) => {
+  app.delete('/api/analyze/:jobId', requireTrustedOrigin, (req, res) => {
     const jobId = req.params.jobId as string;
     const job = jobManager.getJob(jobId);
     if (!job) {
       res.status(404).json({ error: 'Job not found' });
       return;
     }
-    if (job.status === 'complete' || job.status === 'failed') {
+    if (isTerminalJobStatus(job.status)) {
       res.status(400).json({ error: `Job already ${job.status}` });
       return;
     }
@@ -1758,7 +1676,7 @@ export const createServer = async (port: number, host: string = '127.0.0.1') => 
   app.post(
     '/api/embed',
     createRouteLimiter({ limit: 20 }),
-    requireLocalhostOrigin,
+    requireTrustedOrigin,
     async (req, res) => {
       try {
         const entry = await resolveRepo(requestedRepo(req));
@@ -1788,13 +1706,16 @@ export const createServer = async (port: number, host: string = '127.0.0.1') => 
         const EMBED_TIMEOUT_MS = 30 * 60 * 1000;
         const embedTimeout = setTimeout(() => {
           const current = embedJobManager.getJob(job.id);
-          if (current && current.status !== 'complete' && current.status !== 'failed') {
+          if (current && !isTerminalJobStatus(current.status)) {
             embedJobManager.cancelJob(job.id, 'Embedding timed out (30 minute limit)');
           }
         }, EMBED_TIMEOUT_MS);
 
         // Run embedding pipeline asynchronously
         (async () => {
+          // Set inside withLbugDb, read after it closes (#2790).
+          let partialRunError: string | undefined;
+          let partialRunDetail: AnalyzeJobPartialOutcome | undefined;
           try {
             const lbugPath = path.join(entry.storagePath, 'lbug');
             await withLbugDb(lbugPath, async () => {
@@ -1808,23 +1729,25 @@ export const createServer = async (port: number, host: string = '127.0.0.1') => 
                 throw new Error('Repository metadata is missing; run gitnexus analyze first');
               }
               const priorCheckpoint = embeddingMeta.embeddingCheckpoint;
-              if (priorCheckpoint && priorCheckpoint.provider !== embeddingIdentity.provider) {
-                throw new Error(
-                  'Cannot resume embedding checkpoint: the embedding provider configuration differs.',
-                );
+              // The SAME decision the CLI's resume gate makes
+              // (core/embedding-checkpoint.ts). This route used to hard-throw on
+              // any identity mismatch and ignore `attempts` entirely, so a
+              // `'partial'` marker written by `gitnexus analyze` and resumed
+              // here hit exactly the permanent wedge `kind` exists to remove:
+              // two readers of one record disagreeing about the rule it encodes.
+              // No `force`/`--drop-embeddings` equivalent exists on this route,
+              // so the flag options go unset and `'discard'` is unreachable —
+              // it is folded into the abandon arm rather than given an invented
+              // flag. `maxAttempts` is left to the shared default.
+              const resume = priorCheckpoint
+                ? decideEmbeddingResume(priorCheckpoint, embeddingIdentity)
+                : undefined;
+              if (resume?.action === 'abort') throw new Error(resume.error);
+              if (resume?.action === 'abandon' || resume?.action === 'discard') {
+                logger.warn({ repo: entry.name }, resume.log);
               }
-              if (
-                priorCheckpoint &&
-                (priorCheckpoint.model !== embeddingIdentity.model ||
-                  priorCheckpoint.dimensions !== embeddingIdentity.dimensions)
-              ) {
-                throw new Error(
-                  `Cannot resume embedding checkpoint: it uses ${priorCheckpoint.model} at ` +
-                    `${priorCheckpoint.dimensions} dimensions, but this run resolves ` +
-                    `${embeddingIdentity.model} at ${embeddingIdentity.dimensions}.`,
-                );
-              }
-              const forceReembedNodeIds = new Set(priorCheckpoint?.pendingNodeIds ?? []);
+              const forceReembedNodeIds: ReadonlySet<string> =
+                resume?.action === 'resume' ? resume.pendingNodeIds : new Set<string>();
               const saveEmbeddingCheckpoint = async (
                 checkpoint: {
                   nodesProcessed: number;
@@ -1832,6 +1755,7 @@ export const createServer = async (port: number, host: string = '127.0.0.1') => 
                   chunksProcessed: number;
                 },
                 pendingNodeIds: string[],
+                embeddings?: PersistedEmbeddingCount,
               ): Promise<void> => {
                 // tri-review NEW-2: re-read immediately before writing (mirrors
                 // the pattern in run-analyze.ts's --repair-fts stamp) instead of
@@ -1841,16 +1765,41 @@ export const createServer = async (port: number, host: string = '127.0.0.1') => 
                 // --repair-fts capability stamp) would be silently reverted on
                 // every checkpoint save for the job's whole lifetime.
                 const latestMeta = (await loadMeta(entry.storagePath)) ?? embeddingMeta;
-                embeddingMeta = {
-                  ...latestMeta,
-                  embeddingCheckpoint: {
-                    at: new Date().toISOString(),
-                    ...checkpoint,
-                    ...embeddingIdentity,
-                    pendingNodeIds,
+                // `stats.embeddings` only moves when the caller MEASURED the
+                // live count (the post-flush `onCheckpoint`). The window-start
+                // callback measures nothing and passes nothing: restating the
+                // old count there would re-publish a stale number and clobber
+                // what a preceding `onCheckpoint` just wrote (same split as
+                // run-analyze.ts's checkpoint writer).
+                embeddingMeta = withMeasuredEmbeddingCount(
+                  {
+                    ...latestMeta,
+                    // In flight ⇒ `kind: 'interrupted'` (embedding-checkpoint.ts).
+                    embeddingCheckpoint: mintInterruptedCheckpoint(
+                      embeddingIdentity,
+                      checkpoint,
+                      pendingNodeIds,
+                    ),
                   },
-                };
+                  embeddings,
+                );
                 await saveMeta(entry.storagePath, embeddingMeta);
+              };
+              /**
+               * Count the persisted rows, or report the answer never arrived.
+               * The TRI-STATE is carried to the fold rather than collapsed here:
+               * `unknown` is not 0, and only the fold knows what to carry
+               * forward instead (core/embedding-count.ts).
+               */
+              const countPersistedEmbeddings = async (): Promise<PersistedEmbeddingCount> => {
+                const counted = await measurePersistedEmbeddingCount(executeQuery);
+                if (counted.kind === 'unknown') {
+                  logger.warn(
+                    { reason: counted.reason },
+                    '[embed] could not count persisted embeddings; leaving stats.embeddings untouched',
+                  );
+                }
+                return counted;
               };
               // Fetch existing content hashes for incremental embedding.
               // Delegated to lbug-adapter which owns the DB query logic and legacy-fallback handling.
@@ -1861,14 +1810,25 @@ export const createServer = async (port: number, host: string = '127.0.0.1') => 
                   `[embed] ${existingEmbeddings.size} nodes already embedded — incremental run with content-hash comparison`,
                 );
               }
-              await runEmbeddingPipeline(
+              const pipelineResult = await runEmbeddingPipeline(
                 executeQuery,
                 executeWithReusedStatement,
                 (p) => {
                   embedJobManager.updateJob(job.id, {
                     progress: {
+                      // `ready` maps to 'finalizing', NOT 'complete' (#2790).
+                      // The pipeline emits `ready`/100% unconditionally before
+                      // returning — including when it dropped nodes to endpoint
+                      // failures — and the route has not measured the index or
+                      // decided the outcome yet, so 'complete' here would make
+                      // the job record contradict itself (`status: 'analyzing'`,
+                      // `progress.phase: 'complete'`).
                       phase:
-                        p.phase === 'ready' ? 'complete' : p.phase === 'error' ? 'failed' : p.phase,
+                        p.phase === 'ready'
+                          ? 'finalizing'
+                          : p.phase === 'error'
+                            ? 'failed'
+                            : p.phase,
                       percent: p.percent,
                       message:
                         p.phase === 'loading-model'
@@ -1878,7 +1838,7 @@ export const createServer = async (port: number, host: string = '127.0.0.1') => 
                             : p.phase === 'indexing'
                               ? 'Creating vector index...'
                               : p.phase === 'ready'
-                                ? 'Embeddings complete'
+                                ? 'Finalizing embeddings...'
                                 : `${p.phase} (${p.percent}%)`,
                     },
                   });
@@ -1893,8 +1853,10 @@ export const createServer = async (port: number, host: string = '127.0.0.1') => 
                     await saveEmbeddingCheckpoint(checkpoint, nodeIds);
                   },
                   onCheckpoint: async (checkpoint) => {
+                    // Count AFTER the flush, so the number describes rows that
+                    // are durable rather than rows still pending in the WAL.
                     await flushWAL();
-                    await saveEmbeddingCheckpoint(checkpoint, []);
+                    await saveEmbeddingCheckpoint(checkpoint, [], await countPersistedEmbeddings());
                   },
                 },
               );
@@ -1904,16 +1866,64 @@ export const createServer = async (port: number, host: string = '127.0.0.1') => 
               // handles this during process exit, but the server keeps the
               // connection open for other routes — a CHECKPOINT is enough.
               await flushWAL();
-              // Same re-read-before-write reasoning as saveEmbeddingCheckpoint above.
+              // Measure inside withLbugDb, after the flush and while the
+              // connection is still open — this is the route's only chance to
+              // stamp `stats.embeddings` (embed-run-outcome.ts). A partial run
+              // gets the same stamp: an honest count of a partial index is what
+              // makes it survivable.
+              const measuredEmbeddings = await countPersistedEmbeddings();
+              // Same re-read-before-write reasoning as saveEmbeddingCheckpoint
+              // above — and the outcome decision reads it too: its
+              // `embeddingCheckpoint` is the marker this run's own mid-run
+              // writer saved, which is the only record of the work when the
+              // count query could not answer.
               const finalMeta = (await loadMeta(entry.storagePath)) ?? embeddingMeta;
-              embeddingMeta = { ...finalMeta, embeddingCheckpoint: undefined };
+              const finalizeContext: EmbedRunFinalizeContext = {
+                measuredEmbeddings: persistedEmbeddingCountOrUndefined(measuredEmbeddings),
+                onDisk: finalMeta,
+                // The marker the job STARTED from — `finalMeta`'s has since been
+                // overwritten by the in-flight writer, so only this one carries
+                // the `'partial'` attempt chain.
+                resumedFrom: priorCheckpoint,
+              };
+              const outcome = resolveEmbedRunOutcome(
+                embeddingIdentity,
+                pipelineResult,
+                finalizeContext,
+              );
+              partialRunError = outcome.error;
+              partialRunDetail = outcome.partial;
+              embeddingMeta = withMeasuredEmbeddingCount(
+                { ...finalMeta, embeddingCheckpoint: outcome.checkpoint },
+                measuredEmbeddings,
+              );
               await saveMeta(entry.storagePath, embeddingMeta);
             });
 
             // Don't overwrite 'failed' if the job was cancelled while the pipeline was running
             const current = embedJobManager.getJob(job.id);
             if (!current || current.status !== 'failed') {
-              embedJobManager.updateJob(job.id, { status: 'complete' });
+              // The ONLY terminal event for the job, on both branches — nothing
+              // earlier maps to a terminal status, and `updateJob` synthesizes
+              // exactly one event per terminal status (#2264 P3). The explicit
+              // `progress` keeps the record self-consistent for a poller reading
+              // `progress.phase` (#2790).
+              embedJobManager.updateJob(
+                job.id,
+                partialRunError === undefined
+                  ? {
+                      status: 'complete',
+                      progress: { phase: 'complete', percent: 100, message: 'Embeddings complete' },
+                    }
+                  : {
+                      status: 'failed',
+                      error: partialRunError,
+                      // Lets a client separate "retry these N nodes" from "the
+                      // run produced nothing" without a new status member.
+                      partial: partialRunDetail,
+                      progress: { phase: 'failed', percent: 100, message: partialRunError },
+                    },
+              );
             }
           } catch (err: any) {
             const current = embedJobManager.getJob(job.id);
@@ -1953,6 +1963,9 @@ export const createServer = async (port: number, host: string = '127.0.0.1') => 
       repoName: job.repoName,
       progress: job.progress,
       error: job.error,
+      // Absent unless the run was a partial one — omitted by JSON.stringify, so
+      // the response shape is unchanged for every other outcome (#2790).
+      partial: job.partial,
       startedAt: job.startedAt,
       completedAt: job.completedAt,
     });
@@ -1962,14 +1975,14 @@ export const createServer = async (port: number, host: string = '127.0.0.1') => 
   mountSSEProgress(app, '/api/embed/:jobId/progress', embedJobManager);
 
   // DELETE /api/embed/:jobId — cancel embedding job
-  app.delete('/api/embed/:jobId', requireLocalhostOrigin, (req, res) => {
+  app.delete('/api/embed/:jobId', requireTrustedOrigin, (req, res) => {
     const jobId = req.params.jobId as string;
     const job = embedJobManager.getJob(jobId);
     if (!job) {
       res.status(404).json({ error: 'Job not found' });
       return;
     }
-    if (job.status === 'complete' || job.status === 'failed') {
+    if (isTerminalJobStatus(job.status)) {
       res.status(400).json({ error: `Job already ${job.status}` });
       return;
     }

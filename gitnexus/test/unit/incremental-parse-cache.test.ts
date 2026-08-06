@@ -101,9 +101,38 @@ describe('fileContentHash', () => {
 });
 
 describe('PARSE_CACHE_VERSION', () => {
-  // 36 -> 37 for Java/Kotlin Spring AOP capture side-channels (#2416).
-  it('pins SCHEMA_BUMP to 37 so concurrent bumps cannot silently collide (#2416)', () => {
-    expect(Number(PARSE_CACHE_VERSION.split('+', 1)[0])).toBe(37);
+  // 35 -> 36 for the bound-callable start-line join (#2735), 36 -> 37 for
+  // Java/Kotlin Spring AOP capture side-channels (#2416), 37 -> 38 for the Swift
+  // conditional-directive parse-semantics change (#2771), 38 -> 39 for
+  // receiver-chain wire format v2: every persisted chain string changed prefix
+  // and a v2 decoder refuses v1 by design, so a stale cache replays chains this
+  // build silently discards. 39 -> 40 for inference-typed field captures in six
+  // languages (#2807) — all parse-time emission, so a warm cache replays the
+  // pre-fix capture set for byte-unchanged files and the new receiver edges
+  // never appear.
+  //
+  // This pin has now earned its keep EIGHT times, and twice it caught an EXACT
+  // clash rather than a near-miss: main took 37 for #2416 while this branch
+  // already used 37, and then took 38 for #2771 after this branch had moved to
+  // 38. Both times two incompatible schemas claimed one number. Note when the
+  // second clash was caught — after review, while the branch sat waiting to
+  // merge — which is precisely the window in which `main` allocates. Re-check
+  // against origin/main immediately before merge, not at review time.
+  // Moved 42 -> 43 for #2813's `@reference.embedded-pointer` capture, which is
+  // parse-time emission and so cannot be served from a v42 warm cache.
+  // Moved 43 -> 44 for #2842's TypeScript heritage capture (interface and
+  // abstract-class `@reference.inherits`), which is parse-time emission and so
+  // cannot be served from a v43 warm cache.
+  // Moved 44 -> 45 for #2837 (Go struct/interface captures re-anchored from
+  // `type_declaration` to `type_spec`). This branch first took 44 and COLLIDED
+  // with #2842 above, which merged first — the ninth entry in the ledger and the
+  // third EXACT clash. Note what this pin could and could not do: it cannot
+  // detect the tie (both branches asserted `toBe(44)`, which passes when main is
+  // already 44); only the merge-time diff against origin/main surfaced it. What
+  // the pin DOES do is fail loudly the moment the constant and this expectation
+  // drift apart, which is what forces the re-check to happen at all.
+  it('pins SCHEMA_BUMP to 45 so concurrent bumps cannot silently collide (#2766)', () => {
+    expect(Number(PARSE_CACHE_VERSION.split('+', 1)[0])).toBe(45);
   });
 
   it('embeds the gitnexus package version (so upgrades invalidate the cache)', () => {

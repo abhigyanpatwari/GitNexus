@@ -8,14 +8,18 @@
  *
  *   1. **super branch** — `provider.isSuperReceiver(receiverName)` →
  *      MRO walk skipping self
- *   2. **Case 0 (compound)** — receiver has `.` or `(` → compound resolver
+ *   2. **Case 0 (compound)** — receiver has `.` or `(` → compound resolver.
+ *      Also emits the interface-dispatch fan-out when the folded receiver type
+ *      is an Interface (#2829) — see Case 4, which does the same.
  *   3. **Case 0.5 (implicit `this` receiver)** — GATED: fires only when
  *      the language sets `resolveThisViaEnclosingClass === true` AND the
  *      receiver is literally `this` → enclosing-class + MRO chain walk
  *      with C++ member-name-hiding semantics. Languages that leave the
  *      toggle unset skip this case entirely; their `this` sites fall
  *      through to Case 4 via the synthesized `this` typeBinding (which
- *      also emits interface-dispatch fan-out that this case does not).
+ *      emits the interface-dispatch fan-out that this case does not —
+ *      as do Cases 0 since #2829 and 3b since #2832; Case 0.5 remains
+ *      the only fold-or-walk case without it).
  *   4. **Case 1 (namespace)** — receiver in `namespaceTargets` → exported def
  *   5. **Case 2 (class-name / static receiver)** — receiver resolves to a
  *      class-like binding (Class/Interface/Struct/Record/Enum/Trait) → MRO
@@ -25,7 +29,9 @@
  *   6. **Case 3 (dotted typeBinding for namespace prefix)** —
  *      `typeRef.rawName` like `models.User`
  *   7. **Case 3b (chain-typebinding)** — `typeRef.rawName` has a dot
- *      but not a namespace prefix → compound resolver
+ *      but not a namespace prefix → compound resolver. Also emits the
+ *      interface-dispatch fan-out when the folded receiver type is an
+ *      Interface (#2832) — same call Cases 0 and 4 make.
  *   8. **Case 4 (simple typeBinding)** — `typeRef.rawName` has no dot →
  *      MRO walk + `findOwnedMember`
  *   9. **Case 5 (value-receiver bridge)** — receiver is a `Const`/`Variable`
@@ -61,6 +67,8 @@ import {
   findReceiverTypeBinding,
   findValueBindingInScope,
   isClassLike,
+  isNamespaceNameShadowed,
+  type DecorationStripper,
 } from '../scope/walkers.js';
 import {
   tryEmitEdge,
@@ -82,6 +90,10 @@ import type {
   ResolutionOutcomeRecorder,
   ResolutionSuppressionReason,
 } from '../resolution-outcome.js';
+import { classifyReceiverShape } from '../resolution-outcome.js';
+import type { ReceiverOrigin } from '../resolution-outcome.js';
+import { decodeReceiverChain } from '../../utils/receiver-chain-codec.js';
+import type { DecodedReceiverChain } from '../../utils/receiver-chain-codec.js';
 
 /** Subset of `ScopeResolver` consumed by this pass. Accepting the
  *  subset rather than the full provider keeps tests and partial
@@ -92,11 +104,13 @@ type ReceiverBoundProviderSubset = Pick<
   | 'isSuperReceiverInContext'
   | 'fieldFallbackOnMethodLookup'
   | 'collapseMemberCallsByCallerTarget'
-  | 'unwrapCollectionAccessor'
+  | 'elementTypeOf'
   | 'hoistTypeBindingsToModule'
   | 'stripReceiverCastExpressions'
   | 'constructionSyntax'
+  | 'stripTypePreservingDecoration'
   | 'resolveQualifiedReceiverMember'
+  | 'namespaceReceiverPaths'
   | 'resolveReceiverMember'
   | 'resolveThisViaEnclosingClass'
   | 'conversionRankFn'
@@ -113,8 +127,17 @@ function resolveClassBindingForName(
   scopeId: string,
   rawClassName: string,
   scopes: ScopeResolutionIndexes,
+  /**
+   * OPT-IN, and deliberately not passed by the emitting cases. `findClass
+   * BindingInScope`'s own docstring explains why the stripper is opt-in: a name
+   * that previously bound nothing starts binding, which SUPPRESSES the
+   * `?? otherResolver(...)` fallbacks several callers rely on. Case 4 therefore
+   * keeps exact-name behaviour and only `classifyReceiverOrigin` — which emits
+   * no edge and can only change a diagnostic label — passes it.
+   */
+  stripDecoration?: DecorationStripper,
 ): SymbolDefinition | undefined {
-  const direct = findClassBindingInScope(scopeId, rawClassName, scopes);
+  const direct = findClassBindingInScope(scopeId, rawClassName, scopes, stripDecoration);
   if (direct !== undefined) return direct;
 
   if (!rawClassName.includes('<')) return undefined;
@@ -128,7 +151,7 @@ function resolveClassBindingForName(
     // default to [] before checking `.length`.
     const qnameIds = scopes.qualifiedNames.get(baseName) ?? [];
     if (qnameIds.length === 0) {
-      return findClassBindingInScope(scopeId, baseName, scopes);
+      return findClassBindingInScope(scopeId, baseName, scopes, stripDecoration);
     }
     const matches: SymbolDefinition[] = [];
     for (const id of qnameIds) {
@@ -149,7 +172,155 @@ function resolveClassBindingForName(
     // safety in non-ODR or mixed-language edge cases.
   }
 
-  return findClassBindingInScope(scopeId, baseName, scopes);
+  return findClassBindingInScope(scopeId, baseName, scopes, stripDecoration);
+}
+
+/** A bare, undecorated identifier and nothing else — see {@link isBareTypeName}. */
+const BARE_TYPE_NAME_RE = /^[A-Za-z_$][\w$]*$/;
+
+/**
+ * A type name a built-in test may be asked about: a bare, undecorated
+ * identifier and nothing else.
+ *
+ * `Promise<User>`, `[]Repo` and `Option<Repo>` all name a built-in CONTAINER
+ * whose ELEMENT is very often in-program, and an await/index/unwrap step is
+ * exactly how a receiver chain reaches that element. Answering "external"
+ * because the outer spelling matched a built-in would relabel a real in-program
+ * drop, which is the failure this whole function exists to stop. A decorated or
+ * dotted spelling is likewise not a built-in name, it merely contains one.
+ */
+function isBareTypeName(rawName: string): boolean {
+  return BARE_TYPE_NAME_RE.test(rawName);
+}
+
+/**
+ * Is this dropped receiver rooted inside the analyzed program?
+ *
+ * Asks of the receiver's BASE — the leftmost name the chain hangs off — what
+ * this index can DEMONSTRATE. Three answers, and the asymmetry between them is
+ * the whole point:
+ *
+ * - `in-program` — the base's declared type resolves here, or the base itself is
+ *   a class, a qualified name, or a value this program declares. A real edge was
+ *   lost; the hedge must fire.
+ * - `external` — POSITIVE evidence that the target is outside: the language
+ *   itself names the base (or its bare declared type) a built-in. `console.log`,
+ *   `fetch(...)`, `JSON.stringify` reach code no index contains, so there is no
+ *   node an edge could have pointed at and nothing was lost.
+ * - `unknown` — everything else. An absence of evidence is NOT evidence of
+ *   externality: an unannotated parameter (`function f(svc) { svc.a().b(); }`)
+ *   is recorded nowhere in the scope model at all, and calling that "external"
+ *   published `epistemic: 'exact'` over a genuinely missing in-program caller —
+ *   strictly worse than hedging, because it is a confident wrong answer rather
+ *   than an admitted gap. `unknown` counts WITH `in-program` in
+ *   `summarizeUnresolvedReceivers`, which is the safe direction.
+ *
+ * Uses the AST-derived chain base when one was minted, and falls back to the
+ * head of the receiver text otherwise — never a regex over the source line.
+ *
+ * Exported for the unit tests that pin the three-way split; the pass is its only
+ * production caller.
+ */
+export function classifyReceiverOrigin(
+  decoded: DecodedReceiverChain | undefined,
+  inScope: string,
+  receiverName: string,
+  scopes: ScopeResolutionIndexes,
+  options: {
+    /** The language's type-preserving decoration stripper. Without it a Go
+     *  pointer receiver — `func (h *Host)` binds `h` to the literal `*Host` —
+     *  resolves to no class and the whole method body's drops were reported as
+     *  external. Same hook the three receiver-chain lookups in
+     *  `compound-receiver.ts` already receive. */
+    readonly stripTypePreservingDecoration?: DecorationStripper;
+    /** `LanguageProvider.isBuiltInName`, threaded through the pass options the
+     *  same way `emitFreeCallFallback` receives it. THE only source of positive
+     *  external evidence available here; languages that declare no built-in set
+     *  simply never produce an `external` verdict, which is the safe default. */
+    readonly isBuiltInName?: (name: string) => boolean;
+  } = {},
+): ReceiverOrigin {
+  // The chain's base is authoritative. Without one, take the head of the
+  // receiver text up to the first member/call punctuation.
+  const base = decoded?.baseReceiverName ?? /^[A-Za-z_$][\w$]*/.exec(receiverName)?.[0];
+  if (base === undefined || base.length === 0) return 'unknown';
+  const strip = options.stripTypePreservingDecoration;
+  const isBuiltIn = options.isBuiltInName;
+
+  // The base's declared TYPE, when it has one, is the strongest signal about
+  // where the member lives: `inputs.stream()` has an in-program base bound to
+  // `List<String>`, whose `stream` is in the JDK.
+  const binding = findReceiverTypeBinding(inScope, base, scopes);
+  if (binding !== undefined) {
+    // `resolveClassBindingForName`, not a bare lookup: it also strips template
+    // arguments, so an in-program generic base (`Box<String> b; b.open()`)
+    // resolves instead of being mislabelled and dropped from the hedge.
+    if (
+      resolveClassBindingForName(binding.declaredAtScope, binding.rawName, scopes, strip) !==
+      undefined
+    ) {
+      return 'in-program';
+    }
+    // The declared type is not one this index contains. That is only proof of
+    // externality when the language itself names it — otherwise the type merely
+    // failed to resolve (an alias, an inferred callable, a generic parameter),
+    // and we fall through to ask what the index knows about the base itself.
+    if (isBareTypeName(binding.rawName) && isBuiltIn?.(binding.rawName) === true) {
+      return 'external';
+    }
+  }
+  // Anything else this index knows by that name (namespace, module, free fn).
+  // O(1), so it goes ahead of the scope-chain walks below: all three checks are
+  // arms of the same `in-program` disjunction and none has a side effect, so
+  // answering from the index first is free and changes no verdict.
+  if (scopes.qualifiedNames.has(base)) return 'in-program';
+  // A type the program declares, used as a static receiver.
+  if (findClassBindingInScope(inScope, base, scopes, strip) !== undefined) return 'in-program';
+  // A VALUE the program declares — an object-literal service, a local whose
+  // initializer we could not type (`const loc = makeIt(); loc.getUser().save()`),
+  // a field. The type channel had nothing usable to say about these, but the
+  // program demonstrably declares the name, so the lost edge is in-program and
+  // failing to type it is a resolver defect. This is the channel Case 5 already
+  // dispatches on; consulting it here keeps the diagnostic honest about the
+  // same population.
+  if (findValueBindingInScope(inScope, base, scopes) !== undefined) return 'in-program';
+
+  // Positive external evidence, and the only kind reachable from this pass.
+  if (isBuiltIn?.(base) === true) return 'external';
+
+  return 'unknown';
+}
+
+/**
+ * Upper bound on how many implementors ONE interface member may fan out to at a
+ * single call site (#2829).
+ *
+ * Mirrors `MAX_PROPERTY_DISPATCH_FANOUT` in `property-dispatch.ts`, deliberately
+ * including its reporting half: a bare cap would silently discard valid dispatch
+ * targets, which is the same false-safe silence #2813 was filed about. The
+ * default matches that sibling's 32 — the fan-out is a per-call-site product, so
+ * an interface with hundreds of implementors (mock proliferation is the usual
+ * cause) multiplies the graph without adding information a reader can act on.
+ *
+ * Override with `GITNEXUS_MAX_INTERFACE_DISPATCH_FANOUT` for a repo with
+ * legitimately high implementor counts.
+ */
+export const MAX_INTERFACE_DISPATCH_FANOUT = (() => {
+  const env = Number(process.env.GITNEXUS_MAX_INTERFACE_DISPATCH_FANOUT);
+  return Number.isInteger(env) && env >= 1 ? env : 32;
+})();
+
+/** Bound on the sample of over-cap interface members kept for the warning. */
+const MAX_REPORTED_SKIPPED_INTERFACES = 20;
+
+/** What `emitReceiverBoundCalls` reports back to the orchestrator. */
+export interface ReceiverBoundResult {
+  /** CALLS/ACCESSES edges emitted by this pass. */
+  readonly emitted: number;
+  /** Dispatch targets DROPPED because a member exceeded the fan-out cap. */
+  readonly dispatchFanoutSkipped: number;
+  /** Bounded sample naming which interface members lost targets. */
+  readonly dispatchFanoutSkippedNames: readonly string[];
 }
 
 export function emitReceiverBoundCalls(
@@ -168,9 +339,19 @@ export function emitReceiverBoundCalls(
      *  `undefined` ⇒ zero overhead, byte-identity (R4). Per-file capture
      *  contexts are built from this + `parsed.filePath` in the loop. */
     readonly calleeIdSink?: CalleeIdSink;
+    /** `LanguageProvider.isBuiltInName`. Passed through the options bag rather
+     *  than widened into `ReceiverBoundProviderSubset`, mirroring how
+     *  `emitFreeCallFallback` receives the same hook — the subset exists to keep
+     *  test providers small, and this pass reads nothing else off the language
+     *  provider. Consumed ONLY by `classifyReceiverOrigin`, so leaving it unset
+     *  degrades a drop's label to `unknown` (the safe direction) and changes no
+     *  edge. */
+    readonly isBuiltInName?: (name: string) => boolean;
   } = {},
-): number {
+): ReceiverBoundResult {
   let emitted = 0;
+  let dispatchFanoutSkipped = 0;
+  const dispatchFanoutSkippedNames: string[] = [];
   // Per-pass dedup so the multiple cases don't double-emit if two of
   // them resolve the same site to the same target. NEVER pre-seed
   // from the reference index — see Contract Invariant I5.
@@ -180,10 +361,17 @@ export function emitReceiverBoundCalls(
   const hoistTypeBindingsToModule = provider.hoistTypeBindingsToModule === true;
   const compoundOpts = {
     fieldFallback,
-    unwrapCollectionAccessor: provider.unwrapCollectionAccessor,
+    elementTypeOf: provider.elementTypeOf,
     hoistTypeBindingsToModule,
     stripReceiverCastExpressions: provider.stripReceiverCastExpressions === true,
     constructionSyntax: provider.constructionSyntax,
+    stripTypePreservingDecoration: provider.stripTypePreservingDecoration,
+  };
+  // Loop-invariant: both hooks come off the pass arguments, so the options bag
+  // for `classifyReceiverOrigin` is built once here rather than per dropped site.
+  const receiverOriginOpts = {
+    stripTypePreservingDecoration: provider.stripTypePreservingDecoration,
+    isBuiltInName: options.isBuiltInName,
   };
 
   // Build an interface → implementors map from IMPLEMENTS edges.
@@ -199,23 +387,115 @@ export function emitReceiverBoundCalls(
       if (graphId !== undefined) graphIdToClassDef.set(graphId, def);
     }
   }
-  const implementorsByInterfaceDefId = new Map<string, SymbolDefinition[]>();
-  for (const rel of graph.iterRelationshipsByType('IMPLEMENTS')) {
-    const ifaceDef = graphIdToClassDef.get(rel.targetId);
-    const implDef = graphIdToClassDef.get(rel.sourceId);
-    if (ifaceDef === undefined || implDef === undefined) continue;
-    let list = implementorsByInterfaceDefId.get(ifaceDef.nodeId);
+  // Direct subtypes of a type, keyed by the SUPERtype's def id.
+  //
+  // Built from IMPLEMENTS **and** EXTENDS (#2829). IMPLEMENTS alone is not the
+  // set of implementations: `preEmitInheritanceEdges` classifies heritage by the
+  // TARGET's kind, so `interface B extends A` is stored as `B IMPLEMENTS A` and
+  // an INTERFACE lands in A's list; and a concrete class reaches its interface
+  // through `class C extends AbstractBase` (EXTENDS) + `AbstractBase implements
+  // I` (IMPLEMENTS), so it is two hops away and invisible to a depth-1 walk.
+  // Both shapes previously ended the fan-out on a bodiless declaration while the
+  // only executable target got no edge at all.
+  const subtypesBySupertypeDefId = new Map<string, SymbolDefinition[]>();
+  const addSubtype = (superId: string, sub: SymbolDefinition): void => {
+    let list = subtypesBySupertypeDefId.get(superId);
     if (list === undefined) {
       list = [];
-      implementorsByInterfaceDefId.set(ifaceDef.nodeId, list);
+      subtypesBySupertypeDefId.set(superId, list);
     }
-    list.push(implDef);
+    list.push(sub);
+  };
+  for (const relType of ['IMPLEMENTS', 'EXTENDS'] as const) {
+    for (const rel of graph.iterRelationshipsByType(relType)) {
+      const superDef = graphIdToClassDef.get(rel.targetId);
+      const subDef = graphIdToClassDef.get(rel.sourceId);
+      if (superDef === undefined || subDef === undefined) continue;
+      addSubtype(superDef.nodeId, subDef);
+    }
   }
 
-  /** Emit secondary CALLS edges with reason='interface-dispatch'
-   *  when the primary receiver-typed edge targeted an Interface's
-   *  method. Each implementing class's same-named method gets a
-   *  secondary edge (excluding the primary target itself). */
+  /**
+   * Is this member a bodiless DECLARATION rather than an implementation?
+   *
+   * An interface method, and an `abstract` method on an abstract base, are
+   * both declarations: dispatching to them names something with no body while
+   * the executable target sits further down the hierarchy. `isAbstract` lives
+   * on the graph NODE (the structure phase sets it), not on `SymbolDefinition`,
+   * so this resolves the def to its node. A def that cannot be resolved is
+   * treated as NOT abstract — the fail-open direction, matching how the rest of
+   * this pass treats an unresolvable lookup.
+   */
+  const isDeclarationOnly = (def: SymbolDefinition): boolean => {
+    const graphId = resolveDefGraphId(def.filePath, def, nodeLookup);
+    if (graphId === undefined) return false;
+    return graph.getNode(graphId)?.properties.isAbstract === true;
+  };
+
+  /**
+   * Can an INSTANCE-typed receiver reach this member? A static member cannot be,
+   * ever — `class C implements I { static save() {} }` does not satisfy `I`
+   * (TypeScript rejects it outright as TS2420, "Property 'save' is missing"), so
+   * an edge to it from an `I`-typed receiver names a target no dispatch can
+   * produce. Every comparable tool draws the same line: tsserver partitions
+   * static from instance results, clangd gates on `isVirtual()` (C++ forbids
+   * virtual statics), jdtls filters abstract-or-static, and class-hierarchy
+   * analysis expands only VIRTUAL call sites — a static call already has exactly
+   * one target and needs no fan-out.
+   *
+   * Two sources answer this, and the order matters:
+   *
+   *   1. `provider.isStaticOnly` when the language declares it. It is the
+   *      precise answer, because a language that needs the distinction defines
+   *      it exactly — Kotlin marks only COMPANION-promoted defs, so a Kotlin
+   *      `object Impl : Iface { override fun handle() }` is correctly kept: an
+   *      `object` is a singleton INSTANCE and its members really are reachable
+   *      through an `Iface`-typed receiver.
+   *   2. Otherwise the graph node's `isStatic`. For every language that does not
+   *      declare the hook, that flag comes from the member's own modifier (or,
+   *      for Ruby, from `singleton_class` — `def self.foo`, which is likewise
+   *      unreachable through an instance), so it means what we need here.
+   *
+   * Getting that order wrong is a live regression, not a hypothetical: the
+   * method extractor derives `isStatic` from the OWNER type as well as the
+   * member (`method-extractors/generic.ts`, `staticOwnerTypes`), and the JVM
+   * config lists `object_declaration`. Reading the flag first would delete
+   * Kotlin object implementations from the fan-out. A language that needs
+   * precision declares the hook; that is the upgrade path.
+   *
+   * Unresolvable defs fail open (treated as reachable), matching
+   * `isDeclarationOnly` and the rest of this pass.
+   */
+  const isUnreachableByInstanceDispatch = (def: SymbolDefinition): boolean => {
+    const staticOnly = provider.isStaticOnly;
+    if (staticOnly !== undefined) return staticOnly(def) === true;
+    const graphId = resolveDefGraphId(def.filePath, def, nodeLookup);
+    if (graphId === undefined) return false;
+    return graph.getNode(graphId)?.properties.isStatic === true;
+  };
+
+  /**
+   * Emit secondary CALLS edges with reason='interface-dispatch' when the primary
+   * receiver-typed edge targeted an Interface's method.
+   *
+   * Walks the SUBTYPE CLOSURE of the interface rather than its direct
+   * implementors (#2829). Two shapes made the depth-1 walk both wrong and
+   * incomplete, each reproduced in plain Java:
+   *
+   *   interface ReadCloser extends Reader { int read(String p); }   // re-declares
+   *   abstract class AbstractHandler implements Handler { public abstract void handle(String s); }
+   *
+   * In both, the depth-1 list contains a type whose `read`/`handle` is a bodiless
+   * declaration, so the fan-out emitted an edge to *that* — while the only class
+   * with a body (`FileRC`, `RealHandler`) is one hop further down and received
+   * nothing at all. Descending and skipping declarations fixes both directions
+   * at once: the wrong edge disappears and the real implementation gains one.
+   *
+   * Descent continues THROUGH a type that supplied a concrete member, because an
+   * override further down is an equally real runtime target — dispatch is an
+   * over-approximation by design, and stopping early would silently prefer the
+   * base.
+   */
   const emitInterfaceDispatchFor = (
     ownerDef: SymbolDefinition,
     memberName: string,
@@ -225,19 +505,56 @@ export function emitReceiverBoundCalls(
     calleeCapture: CalleeIdCaptureCtx | undefined,
   ): number => {
     if (ownerDef.type !== 'Interface') return 0;
-    const impls = implementorsByInterfaceDefId.get(ownerDef.nodeId);
-    if (impls === undefined) return 0;
-    let n = 0;
-    for (const implDef of impls) {
-      const implMember = pickOverload(implDef.nodeId, memberName, site, model, provider);
-      if (
-        implMember === undefined ||
-        implMember === OVERLOAD_AMBIGUOUS ||
-        implMember.isDeleted === true
-      ) {
-        continue;
+    if (subtypesBySupertypeDefId.get(ownerDef.nodeId) === undefined) return 0;
+
+    // Collect concrete targets across the closure first, so the cap below counts
+    // real dispatch targets rather than types visited.
+    const targets: SymbolDefinition[] = [];
+    const seenTypes = new Set<string>([ownerDef.nodeId]);
+    const queue: string[] = [ownerDef.nodeId];
+    while (queue.length > 0) {
+      const superId = queue.shift() as string;
+      for (const subDef of subtypesBySupertypeDefId.get(superId) ?? []) {
+        if (seenTypes.has(subDef.nodeId)) continue;
+        seenTypes.add(subDef.nodeId);
+        queue.push(subDef.nodeId);
+        const implMember = pickOverload(subDef.nodeId, memberName, site, model, provider);
+        if (
+          implMember === undefined ||
+          implMember === OVERLOAD_AMBIGUOUS ||
+          implMember.isDeleted === true
+        ) {
+          continue;
+        }
+        if (implMember.nodeId === primaryMemberDef.nodeId) continue;
+        // A re-declared interface method or an `abstract` override is not an
+        // implementation — keep descending past it rather than emitting to it.
+        if (isDeclarationOnly(implMember)) continue;
+        // Nor is a static member: no instance-typed receiver can reach one, so
+        // an edge to it is a target dispatch cannot produce (#2842 review).
+        if (isUnreachableByInstanceDispatch(implMember)) continue;
+        targets.push(implMember);
       }
-      if (implMember.nodeId === primaryMemberDef.nodeId) continue;
+    }
+
+    // Bounded, and NEVER silently (#2829). An interface with a very large
+    // implementor set multiplies edges by every call site — Go, TypeScript and
+    // Kotlin do not set `collapseMemberCallsByCallerTarget`, so the product is
+    // per SITE. Truncating without saying so would recreate the false-safe
+    // silence this whole issue is about, which is why the sibling
+    // `MAX_PROPERTY_DISPATCH_FANOUT` reports its dropped keys too.
+    if (targets.length > MAX_INTERFACE_DISPATCH_FANOUT) {
+      dispatchFanoutSkipped += targets.length - MAX_INTERFACE_DISPATCH_FANOUT;
+      if (dispatchFanoutSkippedNames.length < MAX_REPORTED_SKIPPED_INTERFACES) {
+        dispatchFanoutSkippedNames.push(
+          `${ownerDef.qualifiedName ?? ownerDef.nodeId}.${memberName} (${targets.length} targets)`,
+        );
+      }
+      targets.length = MAX_INTERFACE_DISPATCH_FANOUT;
+    }
+
+    let n = 0;
+    for (const implMember of targets) {
       const ok = tryEmitEdge(
         graph,
         scopes,
@@ -256,7 +573,10 @@ export function emitReceiverBoundCalls(
   };
 
   for (const parsed of parsedFiles) {
-    const namespaceTargets = collectNamespaceTargets(parsed, scopes);
+    const namespaceTargets = collectNamespaceTargets(parsed, scopes, {
+      receiverPaths: provider.namespaceReceiverPaths,
+      moduleFileExists: (filePath) => index.moduleScopeByFile.has(filePath),
+    });
     const fileCompoundOpts = { ...compoundOpts, namespaceTargets };
     // Per-file resolved-callee-id capture context (#2227 U2). Built once per
     // file; `undefined` when the sink is absent (pdg off) so the `tryEmitEdge`
@@ -402,7 +722,23 @@ export function emitReceiverBoundCalls(
       // the end of the site loop, not here — a later case may still resolve
       // the site, and only a site that survives every case is a real drop.
       let compoundReceiverUnresolved = false;
-      if (receiverName.includes('.') || receiverName.includes('(')) {
+      // The punctuation test is a C-family heuristic and it is the reason
+      // `repos[0].save()` is INVISIBLE in all 14 languages: a subscript receiver
+      // contains neither `.` nor `(`, so this case never fired, the fold was
+      // never consulted, and no drop was recorded either — the call vanished
+      // with the instrument blind to it. PHP `->` and `::` receivers are lost
+      // the same way.
+      //
+      // A minted receiver chain is the STRUCTURAL answer to the same question:
+      // the capture layer walked the real AST and found the receiver is an
+      // expression, whatever punctuation it happens to be spelled with. Trusting
+      // that instead of the text is the substitution this whole line of work
+      // exists to make.
+      if (
+        receiverName.includes('.') ||
+        receiverName.includes('(') ||
+        site.receiverChain !== undefined
+      ) {
         const currentClass = resolveCompoundReceiverClass(
           receiverName,
           site.inScope,
@@ -482,6 +818,48 @@ export function emitReceiverBoundCalls(
               calleeCapture,
             );
             if (ok) emitted++;
+            // Interface dispatch, exactly as Case 4 does it (#2813). When the
+            // folded receiver type is an Interface, the primary edge above
+            // lands on the interface's own method DECLARATION; these secondary
+            // edges are what reach the implementations.
+            //
+            // Case 4 had this and Case 0 did not, which made the gap a property
+            // of receiver SYNTAX rather than of types: a struct-field receiver
+            // (`s.orderRepo`) contains a dot, so it always takes Case 0, while
+            // the same interface reached through a local or parameter is a bare
+            // name and reaches Case 4. Field-held interfaces — dependency
+            // injection, in other words — were the half that silently lost every
+            // implementation edge.
+            //
+            // `currentClass` is the receiver's own folded type, matching what
+            // Case 4 passes. `emitInterfaceDispatchFor` self-gates on
+            // `ownerDef.type !== 'Interface'`, so this is inert for every
+            // concrete receiver and needs no language check of its own — a
+            // member whose owner resolved to a Struct emits nothing extra.
+            //
+            // Confidence mirrors THIS case's own primary emit above — the 0.85
+            // literal — so a site's dispatch edges never claim more certainty
+            // than the edge they hang off.
+            //
+            // Case 4 passes a site.kind-dependent value instead (1.0 for
+            // read/write, `:1399-1405`) because ITS primary varies the same way.
+            // Case 0 does branch on `site.kind` when picking the member
+            // (`:713-716`), it simply does not vary reason/confidence with it,
+            // so there is no 1.0 arm here to mirror. That leaves a read/write
+            // ACCESSES through a compound receiver at 0.85 while the same access
+            // through a bare name is 1.0 — a PRE-EXISTING difference between the
+            // two cases' primaries, not something this fan-out introduces.
+            // Deliberately not "fixed" here: changing Case 0's primary
+            // confidence is a separate behavioural change affecting every
+            // language, and is out of scope for #2813.
+            emitted += emitInterfaceDispatchFor(
+              currentClass,
+              memberName,
+              memberDef,
+              site,
+              0.85,
+              calleeCapture,
+            );
             // Always mark handled when the site was resolved, even
             // if the edge was deduplicated (collapse mode), so
             // `emitReferencesViaLookup` doesn't re-emit from the
@@ -667,7 +1045,24 @@ export function emitReceiverBoundCalls(
       }
 
       // ── Case 1: namespace receiver ───────────────────────────────
-      const targetFiles = namespaceTargets.get(receiverName);
+      // `namespaceTargets` is collected per FILE, so a local declaration that
+      // shadows the import must suppress it — `def f(pkg): pkg.db.query()`
+      // calls a method on the PARAMETER, and resolving it through the import
+      // emits a wrong edge, not a missing one. The compound-receiver
+      // construction path has applied this guard since #2770; Case 1 never did,
+      // for dotted and single-segment receivers alike.
+      // Map lookup FIRST: it is an O(1) miss for almost every site, and the
+      // guard is a scope-chain walk (a Set allocation plus a linear `ownedDefs`
+      // scan per level). Guarding before looking up would charge that walk to
+      // every explicit-receiver site in every language, for a candidate set
+      // that is usually empty. Mirrors the order the compound-receiver
+      // construction path already uses.
+      const namespaceCandidates = namespaceTargets.get(receiverName);
+      const targetFiles =
+        namespaceCandidates !== undefined &&
+        !isNamespaceNameShadowed(receiverName, site.inScope, scopes)
+          ? namespaceCandidates
+          : undefined;
       if (targetFiles !== undefined && provider.resolveQualifiedReceiverMember === undefined) {
         let found = false;
         for (const targetFile of targetFiles) {
@@ -1015,6 +1410,50 @@ export function emitReceiverBoundCalls(
               calleeCapture,
             );
             if (ok) emitted++;
+            // Interface dispatch, exactly as Cases 0 and 4 do it (#2832). Case
+            // 3b folds a chain to a receiver type through the SAME
+            // `resolveCompoundReceiverClass` call and the same MRO walk Case 0
+            // uses, so when that fold lands on an Interface the primary edge
+            // above names the interface's own bodiless DECLARATION and nothing
+            // reaches the implementations.
+            //
+            // Leaving 3b out made the fan-out a property of how the receiver
+            // was SPELLED rather than of what it resolved to: `d.repo.save()`
+            // took Case 0 and fanned out, while binding the identical field to
+            // a local first (`const r = d.repo; r.save()`) took Case 3b and
+            // did not. #2829 closed that gap for Case 0 and left this half of
+            // it open (#2832).
+            //
+            // `ownerDef` is the receiver's own folded type — matching Case 0's
+            // `currentClass` and Case 4's `ownerDef` — NOT the owner of the
+            // member the MRO walk settled on. That distinction matters: a
+            // receiver that folds to a concrete class merely INHERITING an
+            // interface method must not fan out, because its runtime type is
+            // that class. `emitInterfaceDispatchFor` self-gates on
+            // `ownerDef.type !== 'Interface'`, so this is inert for every
+            // concrete receiver and needs no language check of its own.
+            //
+            // That gate is deliberately narrower than "the primary landed on
+            // something bodiless": a chain folding to an ABSTRACT class also
+            // dead-ends on a declaration-only member and does NOT fan out
+            // here. Widening it to `|| isDeclarationOnly(memberDef)` would
+            // cover that, but it changes Cases 0 and 4 identically and for
+            // every language, so it is not #2832's to make.
+            //
+            // Confidence mirrors THIS case's own primary emit above — the 0.85
+            // literal — so a site's dispatch edges never claim more certainty
+            // than the edge they hang off. Case 4 passes a site.kind-dependent
+            // value instead because ITS primary varies that way; Case 3b's
+            // primary, like Case 0's, does not, so there is no 1.0 arm here to
+            // mirror.
+            emitted += emitInterfaceDispatchFor(
+              ownerDef,
+              memberName,
+              memberDef,
+              site,
+              0.85,
+              calleeCapture,
+            );
             // Always mark handled when the site was resolved, even
             // if the edge was deduplicated (collapse mode), so
             // `emitReferencesViaLookup` doesn't re-emit from the
@@ -1341,6 +1780,10 @@ export function emitReceiverBoundCalls(
       // dropped site (its callee is unknown by definition, so the drop cannot
       // be attributed to any target symbol).
       if (compoundReceiverUnresolved && !handledSites.has(siteKey)) {
+        // Decoded once: both the shape census and the origin classifier read the
+        // same chain, and this is inside the drop guard so a resolved site pays
+        // nothing.
+        const decodedChain = decodeReceiverChain(site.receiverChain);
         options.recordResolutionOutcome?.({
           kind: 'suppressed',
           reason: 'receiver-unresolved',
@@ -1354,12 +1797,28 @@ export function emitReceiverBoundCalls(
           // recorded here too. Carry the kind so a consumer can separate a
           // dropped CALL from a dropped property access.
           siteKind: site.kind,
+          // Structural, from the AST-derived chain the emitter minted — never
+          // re-derived from the source line.
+          // `decodeReceiverChain` opens with a non-string guard, so the
+          // undefined case needs no ternary here.
+          receiverShape: classifyReceiverShape(decodedChain),
+          // Whether anything was actually lost. An external target has no node
+          // to point at, so its absence is completeness, not uncertainty — but
+          // ONLY a positive built-in match may say so. Everything the index
+          // cannot demonstrate stays `unknown` and keeps hedging.
+          receiverOrigin: classifyReceiverOrigin(
+            decodedChain,
+            site.inScope,
+            receiverName,
+            scopes,
+            receiverOriginOpts,
+          ),
         });
       }
     }
   }
 
-  return emitted;
+  return { emitted, dispatchFanoutSkipped, dispatchFanoutSkippedNames };
 }
 
 /** Resolve a member by name on a class def, narrowing by argument

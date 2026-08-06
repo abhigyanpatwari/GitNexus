@@ -21,12 +21,13 @@
  */
 
 import type { ScopeId, SymbolDefinition, TypeRef } from 'gitnexus-shared';
-import type { ScopeResolver } from '../contract/scope-resolver.js';
+import type { ElementAccessRoute, ScopeResolver } from '../contract/scope-resolver.js';
 import type { ScopeResolutionIndexes } from '../../model/scope-resolution-indexes.js';
 import type { WorkspaceResolutionIndex } from '../workspace-index.js';
 import { stripTemplateArguments } from '../../utils/template-arguments.js';
 import type { DecodedReceiverChain } from '../../utils/receiver-chain-codec.js';
 import { decodeReceiverChain } from '../../utils/receiver-chain-codec.js';
+import type { DecorationStripper } from '../scope/walkers.js';
 import {
   findClassBindingInScope,
   findEnclosingClassDef,
@@ -34,6 +35,7 @@ import {
   findExportedDefByName,
   findReceiverTypeBinding,
   isClassLike,
+  isNamespaceNameShadowed,
 } from '../scope/walkers.js';
 
 /** Max depth for compound-receiver chain resolution (`a().b().c().d()`).
@@ -77,14 +79,13 @@ interface ResolveCompoundReceiverOptions {
    *  class, walk its fields and try the lookup on each field's class.
    *  Phase-9C "unified fixpoint" — Python-shaped heuristic. */
   readonly fieldFallback?: boolean;
-  /** Language-specific accessor unwrap — `data.Values` on a
-   *  Dictionary<K,V>-typed receiver yields V (C#), etc. Returns the
-   *  element type's simple name, or `undefined` to let the regular
-   *  field-walk handle the access. */
-  readonly unwrapCollectionAccessor?: (
-    receiverType: string,
-    accessor: string,
-  ) => string | undefined;
+  /** Container -> element, by subscript (`repos[0]`) or accessor (`data.Values`
+   *  on a `Dictionary<K,V>` yields V). Returns the element type's simple name,
+   *  or `undefined`. See the `ScopeResolver` field of the same name for why the
+   *  two routes share one hook, and for why `undefined` on the `index` route
+   *  means "not a container" — a step that gets it DECLINES, so a language must
+   *  answer that route to get index folding at all. */
+  readonly elementTypeOf?: (containerType: string, via: ElementAccessRoute) => string | undefined;
   /** Walk up from the class scope to ancestor (Module) scopes when
    *  looking up a method's return-type typeBinding. Only enable for
    *  languages that hoist return-type bindings to Module scope (C#);
@@ -121,6 +122,13 @@ interface ResolveCompoundReceiverOptions {
    *  (`const Config = make(1); Config.db.query()` emitted `entry → Database.query`),
    *  the exact wrong-edge failure this work exists to avoid. */
   readonly strictBaseBinding?: boolean;
+  /** Per-language type-preserving decoration stripper, from the `ScopeResolver`
+   *  contract. Passed to the class lookup at the base and step sites so a
+   *  decorated declared type (`*Host`) resolves to its class. Absent for
+   *  languages whose declared types carry no such decoration, and never applied
+   *  by the shared lookup's other callers — see the contract's own note on why
+   *  this is opt-in rather than global. */
+  readonly stripTypePreservingDecoration?: DecorationStripper;
 }
 
 /** Is this hop the language's construction selector applied to the class
@@ -147,42 +155,6 @@ function isConstructionSelectorHop(
  *  a metacharacter would otherwise silently build a wrong pattern. */
 function escapeForRegExp(literal: string): string {
   return literal.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
-}
-
-/** True when a local declaration between the call site and its module scope
- * shadows a file-level namespace import with the same name. Namespace targets
- * are collected per file, so callers must apply this lexical guard before
- * trusting them at an inner scope. */
-function isNamespaceNameShadowed(
-  namespaceName: string,
-  inScope: ScopeId,
-  scopes: ScopeResolutionIndexes,
-): boolean {
-  let currentId: ScopeId | null = inScope;
-  const visited = new Set<ScopeId>();
-  while (currentId !== null) {
-    if (visited.has(currentId)) return true;
-    visited.add(currentId);
-    const scope = scopes.scopeTree.getScope(currentId);
-    if (scope === undefined) return true;
-    if (
-      scope.kind !== 'Object' &&
-      (scope.bindings.has(namespaceName) ||
-        scope.typeBindings.has(namespaceName) ||
-        scope.lexicalNames?.has(namespaceName) === true ||
-        scope.ownedDefs.some((def) => {
-          const qualifiedName = def.qualifiedName;
-          if (qualifiedName === undefined) return false;
-          const dot = qualifiedName.lastIndexOf('.');
-          return (dot === -1 ? qualifiedName : qualifiedName.slice(dot + 1)) === namespaceName;
-        }))
-    ) {
-      return true;
-    }
-    if (scope.kind === 'Module') return false;
-    currentId = scope.parent;
-  }
-  return true;
 }
 
 /**
@@ -276,35 +248,77 @@ function resolveConstructionExpressionClass(
 }
 
 /**
- * One step of the fold: the type of `memberName` on `owner`, or `undefined`.
+ * One position in a fold: the class the chain has reached, PLUS the declared
+ * type text that produced it.
  *
- * A method's return type and a field's declared type both live in the owning
- * class scope's `typeBindings`, keyed by name, so a `call` step and a `field`
- * step are the same lookup — the step's `kind` carries no resolution
- * difference, only intent. Walks the MRO so an inherited member resolves.
+ * The declared type is carried for two reasons, and the index step is its only
+ * reader. First, it is the CONTAINER evidence that step demands: capture
+ * normalizes `repos: User[]` down to `User`, so the resolved class alone cannot
+ * tell a reduced container from a class the source merely subscripted, and
+ * folding on that ambiguity typed `grid[0].run()` as `Grid.run`. Second, a
+ * declared type that named NO class is still a usable position —
+ * `Promise<User>` and `[]Repo` match nothing in the workspace — because a later
+ * step may unwrap it; keeping only the class would strand those shapes at the
+ * step that produced them.
  *
- * Deliberately does NOT consult the field fallback that
- * `resolveCompoundReceiverClass` offers. That fallback iterates every field of
- * the owner and re-resolves each one's class looking for a same-named member —
- * O(fields x depth x names) per step, the shape behind the 128 GB blowup in
- * #1871 — and it answers a DIFFERENT question ("does any field's type have a
- * member of this name?"), which is a guess. Structure exists precisely so this
- * does not have to guess.
+ * `undefined` when the position was reached by a route that has no declared type
+ * to report (a static class receiver, say). A step needing one declines rather
+ * than guessing.
  */
+interface FoldState {
+  /**
+   * Absent when the position's declared type named no class — `Promise<User>`
+   * and `[]Repo` name nothing in the workspace. ONE signal, not two: an earlier
+   * version carried a separate `unresolvedDeclaredType` flag alongside a `def`
+   * holding the PREVIOUS position, which no path ever read. Two sources of
+   * truth for one fact, and the dead `def` read as intentional.
+   *
+   * Only an unwrapping step (await, index) can advance from an absent `def`;
+   * every other step declines, because folding on against the previous class
+   * would look the next member up on the wrong owner.
+   */
+  readonly def: SymbolDefinition | undefined;
+  /**
+   * The declared type AS WRITTEN — the spelling when capture normalized one
+   * away (`TypeRef.declaredSpelling`), else `rawName` (they are the same string
+   * when nothing was normalized). Only the index step reads it, and only the
+   * as-written form separates `repos: User[]` from `grid: Grid`: both reduce to
+   * a bare, resolvable class name.
+   */
+  readonly declaredType?: string;
+  readonly declaredAtScope?: ScopeId;
+}
+
 function typeOfMemberOnClass(
   owner: SymbolDefinition,
   memberName: string,
   scopes: ScopeResolutionIndexes,
   index: WorkspaceResolutionIndex,
   options: ResolveCompoundReceiverOptions,
-): SymbolDefinition | undefined {
+): FoldState | undefined {
   const classScopeByDefId = index.classScopeByDefId;
   const ownerChain = [owner.nodeId, ...scopes.methodDispatch.mroFor(owner.nodeId)];
   for (const ownerId of ownerChain) {
     const classScope = classScopeByDefId.get(ownerId);
     const memberType = classScope?.typeBindings.get(memberName);
     if (memberType !== undefined) {
-      return findClassBindingInScope(memberType.declaredAtScope, memberType.rawName, scopes);
+      const def = findClassBindingInScope(
+        memberType.declaredAtScope,
+        memberType.rawName,
+        scopes,
+        options.stripTypePreservingDecoration,
+      );
+      // The declared type is reported even when it resolved to no class:
+      // `Promise<User>` and `[]Repo` name nothing in the workspace, and an
+      // await or index step unwrapping them is exactly how they become
+      // resolvable. Returning `undefined` here would strand those shapes. A
+      // `def` that stayed absent is reported as absent, NOT as the previous
+      // owner, so nothing may fold an ordinary member off this position.
+      return {
+        def,
+        declaredType: memberType.declaredSpelling ?? memberType.rawName,
+        declaredAtScope: memberType.declaredAtScope,
+      };
     }
     // Languages whose binding-scope hook hoists a method's return-type binding
     // out of the class body and onto an ancestor (Module) scope keep NOTHING in
@@ -320,7 +334,26 @@ function typeOfMemberOnClass(
         if (curScope === undefined) break;
         const hoisted = curScope.typeBindings.get(memberName);
         if (hoisted !== undefined) {
-          return findClassBindingInScope(hoisted.declaredAtScope, hoisted.rawName, scopes);
+          const def = findClassBindingInScope(
+            hoisted.declaredAtScope,
+            hoisted.rawName,
+            scopes,
+            // Same stripper the primary branch above passes. Omitting it here
+            // meant a decorated declared type (`*Host`) resolved on one branch
+            // and not the other, for the same member of the same class.
+            options.stripTypePreservingDecoration,
+          );
+          // Identical to the primary branch: a declared type that named no
+          // class is still a usable position when the next step unwraps it.
+          // Returning `undefined` here made `svc.getMap()['k'].run()` decline
+          // while byte-identical `byId['k'].run()` resolved, purely because ten
+          // languages route return-type bindings through this hoisted branch
+          // and the other through the class scope.
+          return {
+            def,
+            declaredType: hoisted.declaredSpelling ?? hoisted.rawName,
+            declaredAtScope: hoisted.declaredAtScope,
+          };
         }
         curId = curScope.parent;
       }
@@ -362,15 +395,92 @@ export function foldReceiverChain(
   // `receiverChain` is dropped before resolving the base: it describes the
   // whole receiver, and handing it back to the resolver would re-enter this
   // fold on the base and never terminate.
-  let current = resolveCompoundReceiverClass(chain.baseReceiverName, inScope, scopes, index, {
+  const baseDef = resolveCompoundReceiverClass(chain.baseReceiverName, inScope, scopes, index, {
     ...options,
     fieldFallback: false,
     receiverChain: undefined,
     strictBaseBinding: true,
   });
-  if (current === undefined) return undefined;
+  // The base's own declared type is carried too, so a chain whose FIRST step is
+  // an unwrap (`repos[0].save()` — index applied directly to the base) has the
+  // container spelling available. Without it that shape declines at step 1.
+  // Looked up ONLY when something will read it: the base failed to resolve (so
+  // an unwrap step is the last chance), or an index step will unwrap the
+  // container. `resolveCompoundReceiverClass` already walked the scope chain for
+  // this same name above, so doing it unconditionally duplicated that walk on
+  // every fold — and the U10 census says 86% of chains are pure field/call and
+  // never read it.
+  const needsBaseDeclaredType =
+    baseDef === undefined || chain.steps.some((step) => step.kind === 'index');
+  const baseBinding = needsBaseDeclaredType
+    ? findReceiverTypeBinding(inScope, chain.baseReceiverName, scopes)
+    : undefined;
+
+  // A base whose declared type names no class is NOT automatically a dead end:
+  // `repos: User[]` binds to the literal `User[]`, which matches no class
+  // because a container is not one. That position is still usable IF the next
+  // step unwraps it — which is exactly what an index step does. Carrying it
+  // forward with the marker lets that step recover; every other step kind
+  // declines on the marker, so nothing folds against a phantom owner.
+  if (baseDef === undefined && baseBinding === undefined) return undefined;
+  let current: FoldState = {
+    def: baseDef,
+    declaredType: baseBinding?.declaredSpelling ?? baseBinding?.rawName,
+    declaredAtScope: baseBinding?.declaredAtScope,
+  };
 
   for (const step of chain.steps) {
+    // A position whose declared type named no class can only be advanced by an
+    // unwrapping step. Folding an ordinary member off it would look the member
+    // up on the PREVIOUS class — a wrong owner, silently.
+    //
+    // `await` IS identity, and soundly so: every language whose capture layer
+    // reduces the wrapper has ALREADY done it by the time a binding reaches the
+    // fold (TypeScript strips `Promise<X>`, C# strips `Task<X>`), and awaiting a
+    // value that is NOT a thenable yields that same value — so both regimes land
+    // on the identical answer and there is nothing to distinguish.
+    if (step.kind === 'await') continue;
+    if (step.kind === 'index') {
+      // An index step is NOT identity, and that asymmetry with `await` above is
+      // the whole point. `await` on a non-promise is a no-op; a subscript on a
+      // non-container is not — it yields the element of an indexer whose type
+      // is a different class entirely.
+      //
+      // The NORMALIZED type name cannot tell the two regimes apart: capture
+      // reduces `repos: User[]` to `User`, so a reduced container and a class
+      // the source merely subscripted (`grid: Grid` where `Grid` declares an
+      // index signature) both arrive as a bare, resolvable class name. Falling
+      // back to identity there kept `current` on the CONTAINER and looked the
+      // next member up on it — `grid[0].run()` → `Grid.run`, `t[0].Render()` →
+      // `Table.Render`. A confidently wrong owner, which is strictly worse than
+      // no edge and invisible to a bench that scores edge PRESENCE.
+      //
+      // So the step demands positive evidence instead: `declaredType`, the
+      // AS-WRITTEN spelling (`TypeRef.declaredSpelling`, preserved precisely
+      // because `rawName` threw it away), handed to the language's
+      // `elementTypeOf`. A provider that does not recognize the spelling as a
+      // container is answering "not a container", and the only sound move is to
+      // decline — a language must therefore answer the `index` route to get
+      // index folding at all.
+      const declared = current.declaredType;
+      const element =
+        declared === undefined ? undefined : options.elementTypeOf?.(declared, { kind: 'index' });
+      if (element === undefined) return undefined;
+      const scopeForLookup = current.declaredAtScope ?? inScope;
+      const elementClass = findClassBindingInScope(
+        scopeForLookup,
+        element,
+        scopes,
+        options.stripTypePreservingDecoration,
+      );
+      if (elementClass === undefined) return undefined;
+      current = {
+        def: elementClass,
+        declaredType: element,
+        declaredAtScope: scopeForLookup,
+      };
+      continue;
+    }
     // Construction is NOT an ordinary member lookup. `Factory.new` on a class
     // constant denotes an instance of Factory, and the cascade already encodes
     // that (`isConstructionSelectorHop`) along with the class-constant test that
@@ -381,13 +491,23 @@ export function foldReceiverChain(
     // first. That turned a correct edge into a WRONG one (Ruby
     // `Factory.new.run` → `Product.run`), which is the failure mode this whole
     // line of work exists to avoid. Decline and let the cascade answer.
+    //
+    // Placed AFTER the name-free continues above, deliberately. When it sat
+    // first, `options.constructionSyntax?.selector === step.name` compared
+    // `undefined === undefined` for every await/index step in a language with no
+    // construction selector, vetoing the entire fold before it ran — which is
+    // why those receivers minted a chain, fired the gate, and produced no edge.
+    // Position, not a guard, is what makes that unreachable: only named steps
+    // get here.
     if (options.constructionSyntax?.selector === step.name) return undefined;
-
-    const next = typeOfMemberOnClass(current, step.name, scopes, index, options);
+    if (current.def === undefined) return undefined;
+    const next = typeOfMemberOnClass(current.def, step.name, scopes, index, options);
     if (next === undefined) return undefined;
     current = next;
   }
-  return current;
+  // A chain that ended without a class returns undefined naturally — no
+  // separate guard, because `def` IS the signal.
+  return current.def;
 }
 
 export function resolveCompoundReceiverClass(
@@ -480,7 +600,12 @@ export function resolveCompoundReceiverClass(
         return findClassBindingInScope(rhsTb.declaredAtScope, arg, scopes);
       }
 
-      const viaTb = findClassBindingInScope(tb.declaredAtScope, tb.rawName, scopes);
+      const viaTb = findClassBindingInScope(
+        tb.declaredAtScope,
+        tb.rawName,
+        scopes,
+        options.stripTypePreservingDecoration,
+      );
       if (viaTb !== undefined) return viaTb;
 
       // Member-alias / call-result shapes store the RHS path on rawName
@@ -714,7 +839,7 @@ export function resolveCompoundReceiverClass(
   // the final segment and unwraps the receiver's generic, return
   // the element class directly. Resolved before the field-walk
   // because Dictionary-family types aren't local class defs.
-  if (options.unwrapCollectionAccessor !== undefined && parts.length >= 2) {
+  if (options.elementTypeOf !== undefined && parts.length >= 2) {
     const last = parts[parts.length - 1];
     const headInner = parts[0];
     if (last === undefined || headInner === undefined) return undefined;
@@ -742,7 +867,12 @@ export function resolveCompoundReceiverClass(
       prefixType = cur;
     }
     if (prefixType !== undefined) {
-      const elemName = options.unwrapCollectionAccessor(prefixType.rawName, last);
+      // `rawName`, not `declaredSpelling`, and deliberately: the accessor route
+      // only fires on a multi-arg container (`Dictionary<K,V>`), which every
+      // provider's capture-time normalization leaves ALONE — so the two are the
+      // same string here, and reading the spelling would change nothing except
+      // to widen an unmeasured surface.
+      const elemName = options.elementTypeOf(prefixType.rawName, { kind: 'accessor', name: last });
       if (elemName !== undefined) {
         return findClassBindingInScope(prefixType.declaredAtScope, elemName, scopes);
       }

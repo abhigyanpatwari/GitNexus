@@ -16,6 +16,46 @@ import { parseSourceSafe } from '../../../tree-sitter/safe-parse.js';
 import { synthesizeCallableFlowCaptures } from '../../utils/callable-flow-captures.js';
 import { synthesizeReceiverChainCapture } from '../../utils/receiver-chain-captures.js';
 
+/** Range for a capture that marks no source span. */
+const ZERO_RANGE = Object.freeze({ startLine: 0, startCol: 0, endLine: 0, endCol: 0 });
+
+/**
+ * The callee-position marker, allocated once for the whole process.
+ *
+ * This capture is a PRESENCE FLAG, not a payload: `scope-extractor.ts` reads it
+ * only as `match['@reference.callee-position'] !== undefined`, and the tag is
+ * listed in `KNOWN_SUB_TAGS`, so `anchorCaptureFor` never considers its range
+ * when picking a reference anchor. Nothing else in the pipeline touches it.
+ * (Its range used to duplicate `@reference.read`'s exactly, and that capture is
+ * still emitted, so the one place that scans every capture's range — the
+ * synthetic Module-scope span in `scope-extractor.ts` — sees the same maximum.)
+ *
+ * Minting it per site from the read node was therefore pure cost, and not a
+ * cheap one: `node.text` is an `input.substring` behind N-API index marshals,
+ * and `startPosition` / `endPosition` are two more round-trips each. A frozen
+ * singleton carries exactly the same information — its presence — for free.
+ */
+const CALLEE_POSITION_MARKER: Capture = Object.freeze({
+  name: '@reference.callee-position',
+  range: ZERO_RANGE,
+  text: '',
+});
+
+/**
+ * Presence-only marker for an embedded field written as `*T` rather than `T`.
+ *
+ * Go's method-set rules treat the two forms differently — `S{T}` promotes only
+ * the value-receiver methods of `T` into `MS(S)`, while `S{*T}` promotes both
+ * value- and pointer-receiver ones (go.dev/ref/spec#Struct_types). Structural
+ * interface detection cannot give an exact answer without knowing which was
+ * written, so the spelling is recorded here and interpreted downstream.
+ */
+const EMBEDDED_POINTER_MARKER: Capture = Object.freeze({
+  name: '@reference.embedded-pointer',
+  range: ZERO_RANGE,
+  text: '',
+});
+
 const GO_CALLABLE_CAPTURE_OPTIONS = {
   functionNodeTypes: new Set(['function_declaration', 'method_declaration', 'func_literal']),
   callNodeTypes: new Set(['call_expression']),
@@ -44,6 +84,25 @@ const GO_CALLABLE_CAPTURE_OPTIONS = {
     return destinations.map((destination, index) => ({ destination, source: sources[index]! }));
   },
 } as const;
+
+/**
+ * Is this `selector_expression` in CALLEE position — the `function` child of an
+ * enclosing `call_expression` — rather than free-standing?
+ *
+ * `h.dep.Work` in `h.dep.Work()` is in callee position; `f := h.dep.Work` (a
+ * method value, or a func-typed field value) is not.
+ *
+ * Callee position alone does NOT make the selector a non-read. Go dispatches
+ * `h.dep.Work()` through a func-typed struct field just as readily as through a
+ * method, and this predicate cannot tell the two apart — `call_expression` has
+ * the same shape either way, and the tail's declaration may live in another
+ * package. See {@link emitGoScopeCaptures} for what is done with the answer.
+ */
+function isCalleeOfMemberCall(node: SyntaxNode): boolean {
+  const parent = node.parent;
+  if (parent === null || parent.type !== 'call_expression') return false;
+  return parent.childForFieldName('function')?.id === node.id;
+}
 
 export function emitGoScopeCaptures(
   sourceText: string,
@@ -183,6 +242,34 @@ export function emitGoScopeCaptures(
       }
     }
 
+    // Mark — do NOT drop — the read site on a member call's callee.
+    //
+    // The `@reference.read` pattern matches every `selector_expression`, so
+    // `h.dep.Work()` yields THREE sites: the call on `Work`, a read on the inner
+    // `h.dep` (the genuine field read), and a read on the OUTER `h.dep.Work`.
+    //
+    // That third site is a phantom ONLY when `Work` is a method: it then
+    // resolves through `findOwnedMember` (which prefers methods over fields) and
+    // emits an ACCESSES edge to the METHOD duplicating the CALLS edge at the
+    // same position — `v.impl.DoWork()` emitting both `CALLS -> DoWork` and
+    // `ACCESSES -> DoWork`.
+    //
+    // When `Work` is a FUNC-TYPED STRUCT FIELD (`Work func() error` — callback
+    // structs, hook structs, hand-rolled mocks) the very same syntax is a
+    // genuine field read followed by an indirect call through the value it
+    // holds, and that read is the field's only ACCESSES evidence. Dropping the
+    // site here deleted it (#2782 review).
+    //
+    // Method-vs-field is not knowable at capture: `call_expression` has the same
+    // shape either way and the tail's declaration may live in another package.
+    // So the capture layer records the POSITION and edge emission — which knows
+    // the resolved target's kind — decides. See `ReferenceSite.inCalleePosition`
+    // and `tryEmitEdge`.
+    const readNode = nodeMap['@reference.read'];
+    if (readNode !== undefined && isCalleeOfMemberCall(readNode)) {
+      grouped['@reference.callee-position'] = CALLEE_POSITION_MARKER;
+    }
+
     // Structural receiver chain for a call whose receiver is itself an
     // expression, so resolution can type it by folding over structure
     // instead of re-parsing the receiver's source text. Self-gating: a
@@ -286,7 +373,12 @@ function synthesizeGoInheritanceReferences(root: SyntaxNode): CaptureMatch[] {
           if (field.childForFieldName('name') !== null) continue;
           // `field.type` is the embedded base — bare/qualified/generic, with any
           // `*` pointer marker as an unnamed sibling token (already unwrapped).
-          emitGoEmbedInheritance(field.childForFieldName('type'), out);
+          // That token is the ONLY record of `*T` versus `T`, and the two have
+          // different method sets, so read it off the field text before it is
+          // lost. An embedded field has no name, so a leading `*` can only be
+          // the pointer marker.
+          const embeddedAsPointer = field.text.trimStart().startsWith('*');
+          emitGoEmbedInheritance(field.childForFieldName('type'), out, embeddedAsPointer);
         }
       } else if (typeNode.type === 'interface_type') {
         for (const elem of typeNode.namedChildren) {
@@ -295,7 +387,8 @@ function synthesizeGoInheritanceReferences(root: SyntaxNode): CaptureMatch[] {
           // `type_elem` with >1 named child — skip them (legacy
           // `shouldSkipExtends`); a single-element `type_elem` is the embed.
           if (elem.type !== 'type_elem' || elem.namedChildCount !== 1) continue;
-          emitGoEmbedInheritance(elem.namedChild(0), out);
+          // An interface embed is never a pointer form.
+          emitGoEmbedInheritance(elem.namedChild(0), out, false);
         }
       }
     }
@@ -308,13 +401,20 @@ function synthesizeGoInheritanceReferences(root: SyntaxNode): CaptureMatch[] {
  * node, reducing the name to its bare simple identifier. No-ops when `baseNode`
  * is null or not one of the embed shapes.
  */
-function emitGoEmbedInheritance(baseNode: SyntaxNode | null, out: CaptureMatch[]): void {
+function emitGoEmbedInheritance(
+  baseNode: SyntaxNode | null,
+  out: CaptureMatch[],
+  embeddedAsPointer: boolean,
+): void {
   if (baseNode === null) return;
   const nameNode = goEmbedBaseNameNode(baseNode);
   if (nameNode === null) return;
   out.push({
     '@reference.inherits': nodeToCapture('@reference.inherits', baseNode),
     '@reference.name': nodeToCapture('@reference.name', nameNode),
+    // Added ONLY for the pointer form, so a value embed's capture set is
+    // byte-identical to what it was before this marker existed.
+    ...(embeddedAsPointer ? { '@reference.embedded-pointer': EMBEDDED_POINTER_MARKER } : {}),
   });
 }
 
