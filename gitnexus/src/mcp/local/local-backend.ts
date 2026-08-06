@@ -5915,8 +5915,14 @@ export class LocalBackend {
           let summary: {
             impactedCount: number;
             risk: string;
+            riskNote?: string;
             summary?: { direct: number };
           } | null = null;
+          // Tracks THIS candidate's probe. The outer `probeFailed` is a
+          // fan-out-wide flag, and `UNKNOWN` now has two causes — a probe that
+          // threw, and a walk that resolved and found no callers — so the two
+          // must not be told apart by the enum alone.
+          let candidateProbeFailed = false;
           try {
             summary = await this._runImpactBFS(
               repo,
@@ -5935,6 +5941,7 @@ export class LocalBackend {
             );
           } catch (e) {
             probeFailed = true;
+            candidateProbeFailed = true;
             logQueryError('impact:ambiguous-candidate', e);
           }
           return {
@@ -5947,6 +5954,18 @@ export class LocalBackend {
             impactedCount: summary?.impactedCount ?? 0,
             risk: summary?.risk ?? 'UNKNOWN',
             direct: summary?.summary?.direct ?? 0,
+            ...(summary?.riskNote !== undefined ? { riskNote: summary.riskNote } : {}),
+            // Carry the explanation with the verdict. The single-symbol path
+            // pairs a zero-caller `UNKNOWN` with a `riskNote` telling the reader
+            // to confirm with a text search; this shape dropped it, so the same
+            // enum arrived here bare — losing the entire point of the change on
+            // the path where a name is ambiguous.
+
+            // `UNKNOWN` used to mean exactly one thing on this path: the probe
+            // threw. The zero-caller branch gives it a second meaning, so an
+            // all-UNKNOWN fan-out is no longer distinguishable from a broken one
+            // without this flag.
+            ...(candidateProbeFailed ? { probeFailed: true } : {}),
           };
         }),
       );
@@ -5957,10 +5976,17 @@ export class LocalBackend {
       candidateSummaries.sort((a, b) => b.impactedCount - a.impactedCount);
       const maxImpactedCount = candidateSummaries.reduce((m, c) => Math.max(m, c.impactedCount), 0);
       const RISK_ORDER = ['LOW', 'MEDIUM', 'HIGH', 'CRITICAL'];
-      // If EVERY candidate probe failed (all 'UNKNOWN' — e.g. pool exhaustion
-      // under the fan-out), the worst real risk is genuinely unknown, not LOW.
-      // Reporting LOW here would re-introduce the false-safe signal. Only fall to
-      // the LOW seed when at least one candidate produced a real risk.
+      // If NO candidate produced a real risk, the worst risk is genuinely
+      // unknown, not LOW. Reporting LOW here would re-introduce the false-safe
+      // signal. Only fall to the LOW seed when at least one candidate produced
+      // a real risk.
+      //
+      // Note the two ways this set can be all-UNKNOWN, which is why candidates
+      // now carry `probeFailed`: every probe THREW (pool exhaustion under the
+      // fan-out — nothing was measured), or every walk RESOLVED and found no
+      // callers (measured, and the honest answer). Both are correctly UNKNOWN
+      // here; the flag is what lets a reader tell a broken fan-out from a
+      // genuinely caller-less one.
       const anyKnownRisk = candidateSummaries.some((c) => RISK_ORDER.includes(c.risk));
       const maxRisk = anyKnownRisk
         ? candidateSummaries.reduce(

@@ -31,6 +31,11 @@ const SEED = [
   `CREATE (used:Function {id: 'Function:src/used.ts:usedHelper', name: 'usedHelper', filePath: 'src/used.ts', startLine: 1, endLine: 3, isExported: true, content: '', description: ''})`,
   `CREATE (caller:Function {id: 'Function:src/caller.ts:callerFn', name: 'callerFn', filePath: 'src/caller.ts', startLine: 1, endLine: 8, isExported: true, content: '', description: ''})`,
   `MATCH (a:Function {id:'Function:src/caller.ts:callerFn'}), (b:Function {id:'Function:src/used.ts:usedHelper'}) CREATE (a)-[:CodeRelation {type:'CALLS', confidence:0.9, reason:'direct', step:0}]->(b)`,
+  // Two symbols sharing a name, both caller-less: forces the AMBIGUOUS
+  // fan-out, which builds its own candidate shape rather than returning the
+  // single-symbol one.
+  `CREATE (t1:Function {id: 'Function:src/a.ts:orphanTwin', name: 'orphanTwin', filePath: 'src/a.ts', startLine: 1, endLine: 3, isExported: true, content: '', description: ''})`,
+  `CREATE (t2:Function {id: 'Function:src/b.ts:orphanTwin', name: 'orphanTwin', filePath: 'src/b.ts', startLine: 1, endLine: 3, isExported: true, content: '', description: ''})`,
 ];
 
 withTestLbugDB(
@@ -49,6 +54,41 @@ withTestLbugDB(
       expect(result).not.toHaveProperty('error');
       expect(result.impactedCount).toBe(0);
       expect(result.risk).toBe('UNKNOWN');
+    });
+
+    // The ambiguous fan-out narrows candidates into a fresh object, and that
+    // shape had no `riskNote` field — so the same `UNKNOWN` arrived with no
+    // explanation, on the path where the reader has the LEAST context. The
+    // note is the whole point of the verdict.
+    it('carries riskNote onto ambiguous candidates too', async () => {
+      const result = await backend.callTool('impact', {
+        target: 'orphanTwin',
+        direction: 'upstream',
+      });
+      expect(result.status).toBe('ambiguous');
+      const candidates = result.candidates as {
+        risk: string;
+        riskNote?: string;
+        probeFailed?: boolean;
+      }[];
+      expect(candidates.length).toBeGreaterThan(1);
+      for (const c of candidates) {
+        expect(c.risk).toBe('UNKNOWN');
+        expect(typeof c.riskNote).toBe('string');
+        expect(c.riskNote).toMatch(/not evidence/i);
+      }
+    });
+
+    // `UNKNOWN` on this path used to mean exactly one thing — the probe threw.
+    // The zero-caller branch gives it a second meaning, so a reader must still
+    // be able to tell a resolved-and-empty walk from a broken one.
+    it('marks a resolved zero-caller candidate as NOT probe-failed', async () => {
+      const result = await backend.callTool('impact', {
+        target: 'orphanTwin',
+        direction: 'upstream',
+      });
+      const candidates = result.candidates as { probeFailed?: boolean }[];
+      for (const c of candidates) expect(c.probeFailed).toBeUndefined();
     });
 
     it('explains the withheld verdict in riskNote', async () => {

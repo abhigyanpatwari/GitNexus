@@ -1233,7 +1233,20 @@ MATCH (n:Function {id: emb.nodeId}) RETURN n`,
           }
         }
 
-        return `No ${direction} dependencies found for "${target}" (types: ${activeRelTypes.join(', ')}). This code appears to be ${direction === 'upstream' ? 'unused (not called by anything)' : 'self-contained (no outgoing dependencies)'}.${multipleMatchWarning}`;
+        // An empty UPSTREAM walk is not evidence of disuse — it is the absence
+        // of evidence. The symbol may be reached only through a reference class
+        // the index does not record (a property access on a plain object, a
+        // dynamic dispatch, a call from a language whose resolver is weaker
+        // here). The Node/MCP path reports `risk: UNKNOWN` with a `riskNote`
+        // for exactly this case; this surface answers in prose rather than an
+        // enum, so it carries the same MEANING rather than the same field —
+        // saying "appears to be unused" here is the identical false certainty.
+        //
+        // Downstream keeps its wording: no outgoing dependencies really does
+        // describe the symbol itself, not a claim about the rest of the repo.
+        return direction === 'upstream'
+          ? `No ${direction} dependencies found for "${target}" (types: ${activeRelTypes.join(', ')}). This does NOT establish the symbol is unused — an empty caller set can also mean the callers are not resolvable by the index (plain-object property access, dynamic dispatch, cross-language calls). Confirm with a text search before treating it as dead code.${multipleMatchWarning}`
+          : `No ${direction} dependencies found for "${target}" (types: ${activeRelTypes.join(', ')}). This code appears to be self-contained (no outgoing dependencies).${multipleMatchWarning}`;
       }
 
       const depth1 = byDepth.get(1) || [];
