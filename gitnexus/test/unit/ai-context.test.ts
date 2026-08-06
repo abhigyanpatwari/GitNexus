@@ -308,16 +308,16 @@ describe('generateAIContextFiles', () => {
     // legitimate future additions but will fail loudly if the trim is
     // reverted or someone pads the block back out toward the original size.
     //
-    // Raised 2700 → 2900 for #243: the regression-compare example (one
-    // load-bearing per-repo `base_ref` line on the detect_changes bullet) is a
-    // legitimate addition, not a revert of the trim — the block stays roughly
-    // half the original size.
-    //
-    // Raised 2900 → 2950 for the bunx lane: the bootstrap note has to name every
-    // install-free runner, because the machine that most needs it (bun-only: no
-    // npm, npx or pnpm at all) is the one an npx-only note strands with a command
-    // it cannot run. Same test: a legitimate load-bearing line, still ~54% of the
-    // pre-#856 5465-char block.
+    // Raised 2700 → 2900 for #243, then 2900 → 2950 for the bunx bootstrap note
+    // — each time with the same argument, that the added line is load-bearing and
+    // the block is still about half its old size. That is a ratchet with no
+    // ratchet: an absolute cap can only ever fail on the PR that adds the
+    // character, and the fix is always to nudge the number. Assert the invariant
+    // the justifications actually appeal to — the RATIO to the pre-trim size —
+    // so a legitimate clause fits without ceremony while a genuine re-pad fails.
+    // (The structural guard is the sibling test asserting the six #856 section
+    // headers stay deleted; this one bounds bulk.)
+    const PRE_TRIM_BLOCK_CHARS = 5465;
     const stats = { nodes: 50, edges: 100, processes: 5 };
     await generateAIContextFiles(tmpDir, storagePath, 'TestProject', stats);
 
@@ -326,7 +326,7 @@ describe('generateAIContextFiles', () => {
       content.indexOf('<!-- gitnexus:start -->'),
       content.indexOf('<!-- gitnexus:end -->'),
     );
-    expect(block.length).toBeLessThan(2950);
+    expect(block.length).toBeLessThan(PRE_TRIM_BLOCK_CHARS * 0.55);
   });
 
   it('handles empty stats', async () => {

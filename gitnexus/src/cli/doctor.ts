@@ -192,6 +192,10 @@ function nativeStatusText(check: NativeCheckResult): string {
       return '✗ @ladybugdb/core not installed';
     case 'load_failed':
       return '✗ lbugjs.node present but failed to load';
+    case 'binary_unwritable':
+      // The prebuilt exists; only the copy into node_modules was refused. Saying
+      // "missing" here would contradict the detail printed underneath (#2672).
+      return '✗ lbugjs.node not installed (node_modules not writable)';
     default:
       // 'binary_missing', and any future kind: the conservative claim.
       return '✗ lbugjs.node missing';

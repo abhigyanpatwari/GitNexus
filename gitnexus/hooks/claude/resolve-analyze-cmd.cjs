@@ -17,9 +17,7 @@
  * bun's install-free one-shot runner and needs no allow-build equivalent — bun
  * skips lifecycle scripts unconditionally for a `bunx` fetch, which the native
  * loader recovers from directly (see core/lbug/native-check.ts). Both bun rungs
- * require `bunx` to actually run, not merely to exist on PATH: selecting bun
- * also suppresses the npm-11 npx warning, so a dead shim would otherwise dead-end
- * silently.
+ * gate on `bunx` actually running, not merely existing on PATH — see `hasBun`.
  *
  * The `--allow-build` flags MUST precede the `dlx` token. pnpm < 10.14 keeps
  * `dlx` in its argv escape list, so flags placed *after* `dlx` are parsed as
@@ -55,8 +53,11 @@ const PNPM_ALLOW_BUILD_EMBEDDINGS = ['onnxruntime-node'];
 // (~3s); the pnpm path then adds up to two 1s `--version` probes (npm, pnpm), so
 // the worst case is ~7s — within budget. A healthy `--version` returns in well
 // under a second, so the realistic cost is far lower. The bun rungs add at most
-// one more 1s probe (`bunx --version`), and only on a machine that reached them:
-// pnpm is absent there, so its probe never ran and the budget is unchanged.
+// one more 1s probe (`bunx --version`), reached only when pnpm is unusable and
+// npm is 11+ or unreadable, for a ~8s theoretical cap. That cap needs an absent
+// pnpm to burn its full second, which only Windows can do (`shell: true` spawns
+// cmd.exe); on POSIX an absent pnpm ENOENTs in ~1ms, so the real ceiling is
+// unmoved.
 const PROBE_TIMEOUT_MS = 1000;
 
 /**
@@ -118,9 +119,17 @@ function resolveOnPath(
   return weakHit;
 }
 
-// One spawn of `<command> --version` → { major, minor } (each null when
+// One spawn of `<command> --version` → { ran, major, minor } (versions null when
 // unreadable). Version injection happens at the resolver seam (getNpmMajorVersion
 // / formatPnpmAllowBuildArgs), so this stays a pure real-process probe.
+//
+// `ran` is liveness, kept separate from the version because a PATH hit proves a
+// file exists, not that it works, and the two answers differ: a banner-printing
+// or oddly-versioned tool is alive with `major: null`, while a stale shim left by
+// a partial uninstall is neither. Only the bun rung consults `ran` today (see
+// hasBun) — it is the one runner with no version to read, so a dedicated probe is
+// its only liveness signal; pnpm gets the same evidence for free from the version
+// spawn it must make anyway, and deliberately forgives an unreadable one (#1939).
 function probeVersion(command) {
   try {
     const output = execFileSync(command, ['--version'], {
@@ -145,42 +154,13 @@ function probeVersion(command) {
       .find((l) => /^v?\d+\.\d+/.test(l));
     const match = versionLine ? versionLine.match(/^v?(\d+)\.(\d+)/) : null;
     return {
+      ran: true,
       major: match ? Number(match[1]) : null,
       minor: match ? Number(match[2]) : null,
     };
   } catch {
-    return { major: null, minor: null };
-  }
-}
-
-/**
- * Does `<command> --version` actually run? A liveness check, not a version read:
- * a PATH hit proves a file exists, not that it works. `bunx` in particular is
- * left behind by partial uninstalls (a failed `bun upgrade`, `rm ~/.bun/bin/bun`
- * without cleaning up the sibling shim), and routing to a dead shim is a silent
- * dead end — the bun mode also suppresses the npm-11 npx warning, so the user
- * gets no diagnostic at all until the emitted command fails.
- *
- * Deliberately ignores the output: a spawn failure, a non-zero exit or the
- * timeout means "do not route here", while a banner or an unparseable version
- * still counts as alive (the same leniency the pnpm rung gets from its separate
- * `pnpmPresent` carry — probeVersion cannot express it because it collapses
- * "did not run" and "ran, output unreadable" into the same null).
- */
-function probeRuns(command) {
-  try {
-    execFileSync(command, ['--version'], {
-      timeout: PROBE_TIMEOUT_MS,
-      stdio: 'ignore',
-      windowsHide: true,
-      // Same CVE-2024-27980 shim constraint as probeVersion: Windows `bunx` can
-      // be a `.cmd`/`.ps1` shim that Node refuses to spawn without a shell, and
-      // a bare-name ENOENT here would report a working bunx as dead.
-      shell: process.platform === 'win32',
-    });
-    return true;
-  } catch {
-    return false;
+    // Spawn failure, non-zero exit, or the timeout — the command did not run.
+    return { ran: false, major: null, minor: null };
   }
 }
 
@@ -248,17 +228,16 @@ function resolveInvocationMode(probe = resolveOnPath, deps = {}) {
         : Boolean(probe('pnpm'));
 
   // bun usability is resolved lazily: only the two branches below can select it,
-  // so a machine with npm or pnpm never pays the extra PATH scan or spawn.
-  // `bunx` (not `bun`) is probed because `bunx` is what the resolved command
-  // actually runs. Two gates, cheapest first: a spawn-free PATH scan, then a
-  // real `bunx --version` (see probeRuns) — a PATH hit alone would route a
-  // present-but-broken shim to a command that only fails at execution time.
+  // so a machine with pnpm, or with npm < 11, never pays the PATH scan or the
+  // spawn. `bunx` (not `bun`) is probed because `bunx` is what the resolved
+  // command actually runs. Two gates, `&&`-ordered cheapest first: a spawn-free
+  // PATH scan, then liveness — a PATH hit alone would route a present-but-broken
+  // shim to a command that can only fail at execution time.
   let bunCache;
   const hasBun = () => {
     if (bunCache === undefined) {
       const present = 'bunPresent' in deps ? Boolean(deps.bunPresent) : Boolean(probe('bunx'));
-      const runs = () => ('bunRuns' in deps ? Boolean(deps.bunRuns) : probeRuns('bunx'));
-      bunCache = present && runs();
+      bunCache = present && ('bunRuns' in deps ? Boolean(deps.bunRuns) : probeVersion('bunx').ran);
     }
     return bunCache;
   };

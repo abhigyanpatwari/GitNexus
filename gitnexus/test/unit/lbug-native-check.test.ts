@@ -24,11 +24,20 @@ describe('checkLbugNative', () => {
       expect(result.message).toContain('missing');
       expect(result.message).toContain('install.js');
       expect(result.message).toContain('trustedDependencies');
-      // Every package gitnexus/package.json trusts, not just the first one — a
-      // partial list leaves tree-sitter unbuilt and the repair only half works.
+      // Every package gitnexus/package.json actually trusts, not just the first —
+      // a partial list leaves one unbuilt and the "repair" only half works. Read
+      // from the manifest rather than restated, so adding a native package fails
+      // here instead of silently shipping stale advice.
+      const manifest = JSON.parse(
+        await fs.readFile(path.join(__dirname, '..', '..', 'package.json'), 'utf-8'),
+      ) as { trustedDependencies: string[] };
+      expect(manifest.trustedDependencies.length).toBeGreaterThan(0);
       expect(result.message).toContain(
-        '"trustedDependencies": ["@ladybugdb/core", "gitnexus", "tree-sitter"]',
+        `"trustedDependencies": [${manifest.trustedDependencies.map((p) => `"${p}"`).join(', ')}]`,
       );
+      for (const pkg of manifest.trustedDependencies) {
+        expect(result.message).toContain(`--allow-build=${pkg}`);
+      }
       // A `bunx gitnexus@latest …` one-shot has no package.json to edit, so the
       // trustedDependencies advice alone is unactionable for this PR's audience.
       expect(result.message).toContain('bun install -g gitnexus');
@@ -44,6 +53,25 @@ describe('checkLbugNative', () => {
     }
   });
 
+  // The `<name>-<platform>-<arch>` sub-package layout restorePrebuiltNativeBinary
+  // derives is encoded here once, so the two tests that depend on it cannot drift
+  // apart — and the negative test below stays honest about WHY it finds nothing.
+  async function prebuiltFixture(prefix: string) {
+    const root = await fs.mkdtemp(path.join(os.tmpdir(), prefix));
+    const pkgDir = path.join(root, 'node_modules', '@ladybugdb', 'core');
+    const subPkgDir = path.join(
+      root,
+      'node_modules',
+      '@ladybugdb',
+      `core-${process.platform}-${process.arch}`,
+    );
+    await fs.mkdir(pkgDir, { recursive: true });
+    await fs.mkdir(subPkgDir, { recursive: true });
+    await fs.writeFile(path.join(pkgDir, 'package.json'), '{"name":"@ladybugdb/core"}');
+    await fs.writeFile(path.join(subPkgDir, 'package.json'), '{"name":"sub"}');
+    return { root, pkgDir, subPkgDir };
+  }
+
   it('restores a missing lbugjs.node from the prebuilt platform sub-package', async () => {
     // The "install lifecycle script was skipped" case is recoverable without a
     // network fetch: the binary is already on disk in the per-platform optional
@@ -51,19 +79,8 @@ describe('checkLbugNative', () => {
     // `bunx gitnexus@latest …` — bun skips lifecycle scripts for a bunx fetch,
     // offers no per-invocation opt-in, and re-extracts on every run, so an
     // out-of-band repair cannot survive to the next invocation.
-    const root = await fs.mkdtemp(path.join(os.tmpdir(), 'lbug-restore-'));
+    const { root, pkgDir, subPkgDir } = await prebuiltFixture('lbug-restore-');
     try {
-      const pkgDir = path.join(root, 'node_modules', '@ladybugdb', 'core');
-      const subPkgDir = path.join(
-        root,
-        'node_modules',
-        '@ladybugdb',
-        `core-${process.platform}-${process.arch}`,
-      );
-      await fs.mkdir(pkgDir, { recursive: true });
-      await fs.mkdir(subPkgDir, { recursive: true });
-      await fs.writeFile(path.join(pkgDir, 'package.json'), '{"name":"@ladybugdb/core"}');
-      await fs.writeFile(path.join(subPkgDir, 'package.json'), '{"name":"sub"}');
       // A real, loadable binary so the check reaches ok:true rather than
       // stopping at the load probe — this asserts the whole path, not just the copy.
       const realPath = checkLbugNative().binaryPath;
@@ -110,26 +127,17 @@ describe('checkLbugNative', () => {
       // The lifecycle-script cause list (trustedDependencies / --allow-build /
       // ignore-scripts) is the wrong remedy — no build-script permission makes a
       // read-only filesystem writable — so it must not be what the user is shown.
-      const root = await fs.mkdtemp(path.join(os.tmpdir(), 'lbug-restore-ro-'));
-      const pkgDir = path.join(root, 'node_modules', '@ladybugdb', 'core');
+      const { root, pkgDir, subPkgDir } = await prebuiltFixture('lbug-restore-ro-');
       try {
-        const subPkgDir = path.join(
-          root,
-          'node_modules',
-          '@ladybugdb',
-          `core-${process.platform}-${process.arch}`,
-        );
-        await fs.mkdir(pkgDir, { recursive: true });
-        await fs.mkdir(subPkgDir, { recursive: true });
-        await fs.writeFile(path.join(pkgDir, 'package.json'), '{"name":"@ladybugdb/core"}');
-        await fs.writeFile(path.join(subPkgDir, 'package.json'), '{"name":"sub"}');
         await fs.writeFile(path.join(subPkgDir, 'lbugjs.node'), Buffer.from('prebuilt'));
         await fs.chmod(pkgDir, 0o555);
 
         const result = checkLbugNative(pkgDir);
 
         expect(result.ok).toBe(false);
-        expect(result.kind).toBe('binary_missing');
+        // Its own kind, not binary_missing: doctor's status line switches on this,
+        // and "missing" would contradict the message printed beneath it (#2672).
+        expect(result.kind).toBe('binary_unwritable');
         expect(result.message).toContain('permission problem');
         expect(result.message).toContain('IS present in the platform sub-package');
         // The mechanisms may be NAMED (to say they will not help) but must never

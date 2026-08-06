@@ -74,13 +74,13 @@ interface CjsModule {
 // the tests exercise production code, not a TypeScript mirror of it.
 //
 // Determinism invariant: createRequire bypasses vitest's node:child_process mock,
-// so the live subprocesses this module can run are probeVersion (`npm`/`pnpm
-// --version`) and probeRuns (`bunx --version`). resolveOnPath is now spawn-free —
-// a pure PATH scan — so tests pin it by passing an injected `{ platform, env }`
-// (never the host PATH). Mode tests inject a fake `probe` or force
-// GITNEXUS_INVOCATION; version tests inject `deps`. Any test whose `probe`
-// reports a bunx PATH hit MUST also inject `bunRuns`, or the liveness probe
-// spawns the host's real bunx and the result depends on whether bun is installed.
+// so the only live subprocess this module can run is probeVersion (`npm`/`pnpm`/
+// `bunx --version`). resolveOnPath is now spawn-free — a pure PATH scan — so tests
+// pin it by passing an injected `{ platform, env }` (never the host PATH). Mode
+// tests inject a fake `probe` or force GITNEXUS_INVOCATION; version tests inject
+// `deps`. Any test whose `probe` reports a bunx PATH hit MUST also inject
+// `bunRuns`, or the liveness probe spawns the host's real bunx and the result
+// depends on whether bun is installed.
 // Keep new tests on one of those paths so results never depend on the host.
 const cjs = cjsRequire(CANONICAL_CJS) as CjsModule;
 
@@ -137,6 +137,9 @@ describe('resolve-analyze-cmd.cjs (canonical invocation resolver)', () => {
   });
 
   it('falls back to npx when npm is null-absent and pnpm is also absent', () => {
+    // Also pins the cheapest-first gate order in hasBun: neither `bunPresent` nor
+    // `bunRuns` is injected, so a liveness spawn ahead of the PATH scan would
+    // reach the host's real bunx and make this host-dependent.
     expect(cjs.resolveInvocationMode(() => null, { npmMajor: null })).toBe('npx');
   });
 
@@ -254,13 +257,6 @@ describe('resolve-analyze-cmd.cjs (canonical invocation resolver)', () => {
     const probe = (c: string) => (c === 'bunx' ? '/usr/local/bin/bunx' : null);
     expect(cjs.resolveInvocationMode(probe, { npmMajor: null, bunRuns: false })).toBe('npx');
     expect(cjs.resolveInvocationMode(probe, { npmMajor: 11, bunRuns: false })).toBe('npx');
-  });
-
-  it('skips the liveness spawn entirely when bunx is not on PATH', () => {
-    // The two gates are ordered cheapest-first: no PATH hit, no subprocess.
-    // Injecting neither bunPresent nor bunRuns proves it — a spawn here would
-    // reach the host's real bunx and make the result environment-dependent.
-    expect(cjs.resolveInvocationMode(() => null, { npmMajor: null })).toBe('npx');
   });
 
   it('never probes bunx when npm or pnpm already decides the mode', () => {
