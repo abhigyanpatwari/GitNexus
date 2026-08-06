@@ -15,24 +15,12 @@
  *     that dominates idiomatic JS. Not precisely solvable without types;
  *     covered by name-based fallback at reduced confidence.
  *
- * STATUS — definition nodes DONE, edge resolution REMAINING.
- *
- * Done: object-literal keys bound to a variable now mint both halves — the
- * graph `Property` node (JAVASCRIPT_QUERIES) and the scope-resolution def
- * (languages/javascript/query.ts). A config field is findable by name where it
- * previously did not exist as a symbol at all.
- *
- * Remaining: the ACCESSES edges. The two receiver shapes need different
- * mechanisms and neither is implemented:
- *   - Through the holding variable (`exitRules.exitMinAtrMult`) the receiver is
- *     typeable, so it must resolve precisely — the Const holding the literal
- *     has to be typed to the literal's scope, the way `classScopeByDefId` maps
- *     a class def to its scope.
- *   - Through an untyped param (`cfg.exitMinAtrMult`) it is not typeable in
- *     plain JS and needs name-based matching — sanctioned for dynamic languages
- *     here (`fieldFallbackOnMethodLookup` defaults on, and the Vue provider
- *     documents it recovering plain-object-literal cases) but it must carry
- *     reduced confidence so precision is not overclaimed.
+ * Both halves now land. Object-literal keys bound to a variable mint the graph
+ * `Property` node (JAVASCRIPT_QUERIES) and the scope-resolution def
+ * (languages/javascript/query.ts), and the ACCESSES edges resolve for both
+ * receiver shapes: precisely where the receiver is typeable, and by
+ * workspace-unique name where it is not — at reduced confidence, refusing to
+ * choose when two properties share a name (see the ambiguity cases below).
  *
  * TRAP, learned the hard way and recorded so the next reader does not repeat
  * it: under vitest the PARSE WORKER runs the BUILT `dist/` code, because
