@@ -1,0 +1,81 @@
+# yaml-language-server: $schema=https://render.com/schema/render.yaml.json
+#
+# One-click GitNexus deploy: a private API server, plus the public web UI that
+# proxies /api/* to it over Render's private network.
+#
+# SECURITY: the web service's URL is discoverable (onrender.com names appear in
+# CT logs). The generated GITNEXUS_SERVE_AUTH_TOKEN is the only access control —
+# the proxy strips Origin, so the server's CSRF guard sees no proxied traffic,
+# and rate limits bound cost, not access. Anyone holding the token can read
+# every indexed repo. See SECURITY.md § Hosted Deploys on Render.
+
+previews:
+  generation: 'off'
+
+projects:
+  - name: gitnexus
+    environments:
+      - name: production
+        services:
+          # Private: no public URL. `serve` has no authentication of its own.
+          - type: pserv
+            name: gitnexus-server
+            runtime: docker
+            # Private networking needs one shared region.
+            region: oregon
+            # plan sets RAM: standard 2GB, pro 4GB. Indexing is memory-bound.
+            plan: standard
+            dockerfilePath: ./Dockerfile.cli
+            dockerContext: .
+            # No dockerCommand — the image's CMD already binds $PORT, and Render
+            # re-wraps dockerCommand in a shell, so `sh -c` exits 127.
+            # No healthCheckPath either: Render rejects one on a pserv. The
+            # proxy's connect-retry covers the restart window instead.
+            #
+            # Don't restart an indexing server on a push.
+            autoDeployTrigger: 'off'
+            # mountPath must equal GITNEXUS_HOME in Dockerfile.cli.
+            disk:
+              name: gitnexus-data
+              mountPath: /data/gitnexus
+              sizeGB: 10
+            envVars:
+              # Dockerfile.cli's CMD binds this.
+              - key: PORT
+                value: 4747
+              # One hop: gitnexus-web's proxy, which writes X-Forwarded-For
+              # itself. A count rather than the default ranges (loopback,
+              # linklocal, uniquelocal), which assume Render's private network
+              # is RFC1918. `true` is rejected outright.
+              - key: GITNEXUS_TRUST_PROXY
+                value: 1
+
+          # Public: the UI, plus a token-gated same-origin proxy to the server.
+          - type: web
+            name: gitnexus-web
+            runtime: docker
+            region: oregon
+            plan: starter
+            dockerfilePath: ./Dockerfile.web
+            dockerContext: .
+            healthCheckPath: /
+            autoDeployTrigger: 'off'
+            envVars:
+              # host:port, scheme-less; the proxy prefixes http://. Set without
+              # the token below, docker-server.mjs refuses to start.
+              - key: GITNEXUS_UPSTREAM_URL
+                fromService:
+                  type: pserv
+                  name: gitnexus-server
+                  property: hostport
+              # Bearer token for every /api/* request. Copy it from this
+              # service's Environment tab into the UI's settings panel; rotate by
+              # editing it here and redeploying.
+              - key: GITNEXUS_SERVE_AUTH_TOKEN
+                generateValue: true
+              # Render's load balancer is the one hop in front and appends the
+              # real peer. The proxy ignores inbound XFF by default.
+              - key: GITNEXUS_PROXY_TRUST_XFF
+                value: 1
+              # Deliberately unset: GITNEXUS_BACKEND_URL. docker-server.mjs falls
+              # back to RENDER_EXTERNAL_URL, this service's own origin.

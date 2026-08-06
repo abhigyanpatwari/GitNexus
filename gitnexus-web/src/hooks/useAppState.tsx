@@ -34,7 +34,7 @@ import {
   readFile as backendReadFile,
   startEmbeddings as backendStartEmbeddings,
   streamEmbeddingProgress,
-  probeBackend,
+  probeBackendStatus,
   // Aliased: switchRepo declares a local `let repoIdentity` that would shadow
   // a plain named import of this helper.
   repoIdentity as repoIdentityOf,
@@ -516,7 +516,7 @@ const AppStateProviderInner = ({ children }: { children: ReactNode }) => {
   }, []);
 
   const isDatabaseReady = useCallback(async (): Promise<boolean> => {
-    return probeBackend();
+    return (await probeBackendStatus()) === 'ok';
   }, []);
 
   // Embedding methods — now trigger server-side via /api/embed

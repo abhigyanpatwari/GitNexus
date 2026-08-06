@@ -3,6 +3,7 @@ import type { SemanticModel } from '../../model/semantic-model.js';
 import type { ScopeResolutionIndexes } from '../../model/scope-resolution-indexes.js';
 import { simpleQualifiedName } from '../../scope-resolution/graph-bridge/ids.js';
 import { resolveInheritanceBaseInScope } from '../../scope-resolution/scope/walkers.js';
+import { goPackageDir } from './package-clause.js';
 
 type MethodSet = ReadonlyMap<string, readonly SymbolDefinition[]>;
 type MutableMethodSet = Map<string, SymbolDefinition[]>;
@@ -752,11 +753,13 @@ function signatureContextForFile(
   };
 }
 
+/** The package directory, or `undefined` for a repo-root file.
+ *
+ *  Shares `goPackageDir` with the package-clause resolver rather than repeating
+ *  its normalize-and-slice (#2837): the two disagree only on how they spell "no
+ *  directory", so the difference stays here, at the one call site that cares. */
 function packageQualifierForFile(filePath: string): string | undefined {
-  const normalized = filePath.replace(/\\/g, '/');
-  const slash = normalized.lastIndexOf('/');
-  if (slash === -1) return undefined;
-  const packageDir = normalized.slice(0, slash);
+  const packageDir = goPackageDir(filePath);
   return packageDir.length === 0 ? undefined : packageDir;
 }
 

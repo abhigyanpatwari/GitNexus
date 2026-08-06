@@ -125,5 +125,7 @@ ENV GITNEXUS_HOME=/data/gitnexus \
 
 EXPOSE 4747
 
-# Bind to 0.0.0.0 so the server is reachable from the host's mapped port.
-CMD ["node", "gitnexus/dist/cli/index.js", "serve", "--host", "0.0.0.0", "--port", "4747"]
+# Bind 0.0.0.0 for the host's mapped port, honoring an injected $PORT (Render
+# sets one). `sh -c` expands it; `exec` keeps the server PID 1 so SIGTERM still
+# reaches it. Platforms can rely on this instead of a dockerCommand override.
+CMD ["sh", "-c", "exec gitnexus serve --host 0.0.0.0 --port \"${PORT:-4747}\""]
