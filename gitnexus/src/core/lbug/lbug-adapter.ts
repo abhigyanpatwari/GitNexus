@@ -979,14 +979,6 @@ const copyCsvWithRetry = async (
 };
 
 /**
- * Bulk-COPY every node CSV sequentially on the single writable connection
- * (LadybugDB allows one write txn at a time). Extracted from loadGraphToLbug so
- * it can run either at the node-phase boundary — overlapping the relationship
- * emit pass (#2203) — or after emit in the serial escape-hatch path. Each COPY
- * keeps the IGNORE_ERRORS=true retry; a hard failure throws (no node rows ⇒ the
- * relationship COPY would dangle on missing endpoints).
- */
-/**
  * A staging CSV named in the COPY manifest is gone by the time COPY runs.
  *
  * Only tables with `rows > 0` enter the manifest (see `csv-generator.ts`), so
@@ -1005,6 +997,38 @@ export const missingStagingCsvError = (table: string, csvPath: string, rows: num
       `\`gitnexus analyze --force\`.`,
   );
 
+/**
+ * Bulk-COPY every node CSV sequentially on the single writable connection
+ * (LadybugDB allows one write txn at a time). Extracted from loadGraphToLbug so
+ * it can run either at the node-phase boundary — overlapping the relationship
+ * emit pass (#2203) — or after emit in the serial escape-hatch path. Each COPY
+ * keeps the IGNORE_ERRORS=true retry; a hard failure throws (no node rows ⇒ the
+ * relationship COPY would dangle on missing endpoints).
+ */
+/**
+ * Re-check a staging CSV a few times before declaring it gone.
+ *
+ * Review asked whether turning a silent degrade into a hard abort was
+ * deliberate. It is — a fallback that recovers zero rows is exactly the
+ * confident-empty failure this work is about, so failing loud is right. But the
+ * transient the error message itself names, a second concurrent `analyze`
+ * sharing `.gitnexus/csv`, is a RACE, and aborting a multi-minute rebuild on
+ * one stat() is a harsh answer to a file that may reappear microseconds later.
+ *
+ * Bounded and short: three extra looks over ~150ms total. Long enough to ride
+ * out a rename or a slow network filesystem, far too short to mask a file that
+ * is genuinely gone.
+ */
+const stagingCsvExists = async (csvPath: string): Promise<boolean> => {
+  const RETRY_DELAYS_MS = [25, 50, 75];
+  if (existsSync(csvPath)) return true;
+  for (const delay of RETRY_DELAYS_MS) {
+    await new Promise((resolve) => setTimeout(resolve, delay));
+    if (existsSync(csvPath)) return true;
+  }
+  return false;
+};
+
 const copyNodeCSVs = async (
   targetConn: lbug.Connection,
   nodeFileEntries: [NodeTableName, { csvPath: string; rows: number }][],
@@ -1016,7 +1040,7 @@ const copyNodeCSVs = async (
     stepsDone++;
     log(`Loading nodes ${stepsDone}/${totalSteps}: ${table} (${rows.toLocaleString()} rows)`);
 
-    if (!existsSync(csvPath)) throw missingStagingCsvError(table, csvPath, rows);
+    if (!(await stagingCsvExists(csvPath))) throw missingStagingCsvError(table, csvPath, rows);
 
     const copyQuery = getCopyQuery(table, normalizeCopyPath(csvPath));
     await copyCsvWithRetry(targetConn, copyQuery, (retryErr) => {
@@ -1238,7 +1262,7 @@ export const loadGraphToLbug = async (
       // Same guarantee as the node COPY: a pair file only reaches this loop
       // with rows on it, so an absent file means it vanished mid-run. This is
       // the `rel_Folder_File.csv` ENOENT the field reports end on.
-      if (!existsSync(pairCsvPath)) {
+      if (!(await stagingCsvExists(pairCsvPath))) {
         throw missingStagingCsvError(`${fromLabel} -> ${toLabel}`, pairCsvPath, rows);
       }
       const normalizedPath = normalizeCopyPath(pairCsvPath);

@@ -214,6 +214,9 @@ Language-agnostic scope-resolution resolver. This is the resolution path for eve
     │  emitReferencesViaLookup ── uses handledSites + deferred-site skip set
     │  emitPropertyDispatchCalls ── registration USES + conservative CALLS
     │  emitCallableValueFlow   ── assigned/passed callable invocation CALLS
+    │  emitImportedValueReferences ── cross-file value reads via finalized imports
+    │  emitUniqueNamePropertyAccesses ── LAST-RESORT property reads by name,
+    │       narrowed same-file → direct-import, refusing to choose otherwise
     │  emitImportEdges
     ▼
  KnowledgeGraph  (IMPORTS / CALLS / ACCESSES / INHERITS / USES)

@@ -139,7 +139,7 @@ Lightweight reads (~100-500 tokens) for navigation:
 
 ## Graph Schema
 
-**Nodes:** File, Folder, Function, Class, Interface, Method, CodeElement, Community, Process, Route, Tool, plus language-specific types (Struct, Enum, Trait, Impl, Namespace, Module, …) and BasicBlock (`--pdg` indexes only). The full node list lives in `gitnexus://repo/{name}/schema`.
+**Nodes:** File, Folder, Function, Class, Interface, Method, Property, TypeAlias, CodeElement, Community, Process, Route, Tool, plus language-specific types (Struct, Enum, Trait, Impl, Namespace, Module, …) and BasicBlock (`--pdg` indexes only). The full node list lives in `gitnexus://repo/{name}/schema`.
 **Edges (via CodeRelation.type):** CALLS, IMPORTS, EXTENDS, IMPLEMENTS, DEFINES, CONTAINS, MEMBER_OF, HAS_METHOD, HAS_PROPERTY, ACCESSES, METHOD_OVERRIDES, METHOD_IMPLEMENTS, STEP_IN_PROCESS, HANDLES_ROUTE, FETCHES, HANDLES_TOOL, ENTRY_POINT_OF, WRAPS, QUERIES, INJECTS, plus `--pdg`-only types (CFG, REACHING_DEF, TAINTED, SANITIZES, TAINT_PATH, CDG — zero rows on a default index).
 
 Read `gitnexus://repo/{name}/schema` before writing Cypher — it is the authoritative schema for the indexed repo.

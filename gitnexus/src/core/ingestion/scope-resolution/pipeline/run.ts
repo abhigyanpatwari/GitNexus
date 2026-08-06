@@ -163,9 +163,7 @@ function preEmitInheritanceEdges(
     if (site.kind !== 'inherits') continue;
     const scope = scopes.scopeTree.getScope(site.inScope);
     const siteKey =
-      scope?.filePath !== undefined
-        ? `${scope.filePath}:${site.atRange.startLine}:${site.atRange.startCol}`
-        : undefined;
+      scope?.filePath !== undefined ? callableFlowSiteKey(scope.filePath, site.atRange) : undefined;
     if (siteKey !== undefined) {
       // Intentionally suppress every `inherits` site from the generic
       // reference bridge, even when this pre-pass can't emit an EXTENDS
@@ -441,12 +439,12 @@ interface RunScopeResolutionStats {
    * #2437 false-safe gap for exactly those keys (names are in the warn log).
    */
   readonly propertyDispatchSkippedKeys: number;
-  /**
-   * ACCESSES edges recovered by workspace-unique property name (A1/A5) — the
-   * last-resort pass for receivers no precise pass could type.
-   */
   /** Cross-file value references resolved through finalized import bindings. */
   readonly importedValueRefEdges: number;
+  /**
+   * ACCESSES edges recovered by property NAME (A1/A5) — the last-resort pass
+   * for receivers no precise pass could type.
+   */
   readonly uniqueNamePropertyEdges: number;
   /**
    * Read/write sites left unresolved because two or more `Property` defs share
@@ -1001,7 +999,7 @@ export function runScopeResolution(
     const fromFilePath = indexes.scopeTree.getScope(fromScope)?.filePath;
     if (fromFilePath === undefined) continue;
     for (const ref of refs) {
-      uniqueNameSkipSites.add(`${fromFilePath}:${ref.atRange.startLine}:${ref.atRange.startCol}`);
+      uniqueNameSkipSites.add(callableFlowSiteKey(fromFilePath, ref.atRange));
     }
   }
   // Gated on the language's own field-name-fallback policy. A statically-typed

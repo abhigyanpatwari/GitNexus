@@ -28,6 +28,7 @@ import type { ScopeResolutionIndexes } from '../../model/scope-resolution-indexe
 import type { GraphNodeLookup } from '../graph-bridge/node-lookup.js';
 import { tryEmitEdge } from '../graph-bridge/edges.js';
 import { findValueBindingInScope } from '../scope/walkers.js';
+import { callableFlowSiteKey } from './callable-value-flow.js';
 
 /**
  * Confidence for a reference resolved through a finalized import binding.
@@ -58,7 +59,7 @@ export function emitImportedValueReferences(
       // A member read (`obj.field`) is the receiver-bound passes' business;
       // this pass exists for the BARE identifier an import binds.
       if (site.explicitReceiver !== undefined) continue;
-      const siteKey = `${parsed.filePath}:${site.atRange.startLine}:${site.atRange.startCol}`;
+      const siteKey = callableFlowSiteKey(parsed.filePath, site.atRange);
       if (skipSites.has(siteKey)) continue;
 
       const def = findValueBindingInScope(site.inScope, site.name, indexes);

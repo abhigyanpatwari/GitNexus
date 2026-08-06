@@ -304,15 +304,6 @@ export interface RepoMeta {
    */
   fileHashes?: Record<string, string>;
   /**
-   * Crash-recovery dirty flag — a generic marker written to the metadata
-   * file (gitnexus.json + its meta.json mirror) BEFORE any destructive DB
-   * mutation by BOTH writeback branches (incremental since its introduction;
-   * full rebuilds over an existing meta since #2099 F1); cleared on success
-   * by overwriting the metadata file. If a run crashes between, the next
-   * run sees the flag and forces a full rebuild — the cheapest path back
-   * to a known-good index.
-   */
-  /**
    * Set when a run finished but the persisted edge count came back far short
    * of what the pipeline produced — the B2 "refresh reports SUCCESS while the
    * index is unusable" failure (observed as edges collapsing 23009 -> 2170,
@@ -331,6 +322,15 @@ export interface RepoMeta {
     /** Relationships readable from the DB after the write. */
     persisted: number;
   };
+  /**
+   * Crash-recovery dirty flag — a generic marker written to the metadata
+   * file (gitnexus.json + its meta.json mirror) BEFORE any destructive DB
+   * mutation by BOTH writeback branches (incremental since its introduction;
+   * full rebuilds over an existing meta since #2099 F1); cleared on success
+   * by overwriting the metadata file. If a run crashes between, the next
+   * run sees the flag and forces a full rebuild — the cheapest path back
+   * to a known-good index.
+   */
   incrementalInProgress?: {
     /** When the run started (epoch ms). */
     startedAt: number;

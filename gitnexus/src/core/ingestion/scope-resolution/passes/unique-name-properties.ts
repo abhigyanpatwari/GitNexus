@@ -68,6 +68,7 @@ import type { KnowledgeGraph } from '../../../graph/types.js';
 import type { ScopeResolutionIndexes } from '../../model/scope-resolution-indexes.js';
 import type { GraphNodeLookup } from '../graph-bridge/node-lookup.js';
 import { resolveCallerGraphId } from '../graph-bridge/ids.js';
+import { callableFlowSiteKey } from './callable-value-flow.js';
 
 /**
  * Confidence for a workspace-unique name match. Deliberately the global tier's
@@ -277,7 +278,7 @@ export function emitUniqueNamePropertyAccesses(
       // is no object whose member this could be, and matching one by name
       // would link a local variable to an unrelated object's key.
       if (site.explicitReceiver === undefined) continue;
-      const siteKey = `${parsed.filePath}:${site.atRange.startLine}:${site.atRange.startCol}`;
+      const siteKey = callableFlowSiteKey(parsed.filePath, site.atRange);
       if (skipSites.has(siteKey)) continue;
 
       const candidates = byName.get(site.name);

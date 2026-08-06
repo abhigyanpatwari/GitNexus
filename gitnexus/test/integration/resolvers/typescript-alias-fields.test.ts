@@ -59,20 +59,16 @@ describe('TypeScript type-alias and interface members (A4)', () => {
     expect(nodesOfLabel('Property')).toContain('ifaceSlots');
   });
 
-  // The EDGES are not landed yet — nodes and declarations are.
+  // Member edges land through the PRECISE path only. The shape is a class-like
+  // scope (`interface_declaration` and `type_alias_declaration value:
+  // (object_type)` both emit `@scope.class`) and `property_signature` emits
+  // `@declaration.property`, so a typed receiver resolves to the shape's scope
+  // and finds the member there.
   //
-  // Established: the shape is a class-like scope already (`interface_declaration`
-  // and `type_alias_declaration value:(object_type)` both emit `@scope.class`),
-  // and `property_signature` now emits `@declaration.property` alongside the
-  // pre-existing `method_signature` -> `@declaration.method`. So the receiver
-  // has a scope and the scope has members, yet no ACCESSES forms — the missing
-  // link is owner/type-binding, i.e. the member def carrying an `ownerId` that
-  // the typed receiver resolves to via `findOwnedMember`.
-  //
-  // There is deliberately NO name-based safety net here: TypeScript sets
+  // There is deliberately NO name-based safety net: TypeScript sets
   // `fieldFallbackOnMethodLookup: false` (scope-resolver.ts) because name
-  // matching over-connects in a typed language, and the unique-name pass
-  // honors that opt-out. The precise path is the only route for TS, by design.
+  // matching over-connects in a typed language, and the unique-name pass honors
+  // that opt-out. The precise path is the only route for TS, by design.
   it('links an interface field to its consumer', () => {
     expect(readersOf('ifaceSlots')).toContain('renderIface');
   });

@@ -16,7 +16,7 @@
 import { it, expect, beforeAll, vi } from 'vitest';
 import { LocalBackend } from '../../src/mcp/local/local-backend.js';
 import { listRegisteredRepos } from '../../src/storage/repo-manager.js';
-import { withTestLbugDB } from '../helpers/test-indexed-db.js';
+import { withTestLbugDB, type IndexedDBHandle } from '../helpers/test-indexed-db.js';
 
 vi.mock('../../src/storage/repo-manager.js', () => ({
   listRegisteredRepos: vi.fn().mockResolvedValue([]),
@@ -38,12 +38,22 @@ const SEED = [
   `CREATE (t2:Function {id: 'Function:src/b.ts:orphanTwin', name: 'orphanTwin', filePath: 'src/b.ts', startLine: 1, endLine: 3, isExported: true, content: '', description: ''})`,
 ];
 
+type BackendHandle = IndexedDBHandle & { _backend?: LocalBackend };
+
 withTestLbugDB(
   'impact-zero-caller-risk',
   (handle) => {
     let backend: LocalBackend;
     beforeAll(() => {
-      backend = (handle as any)._backend;
+      // Typed and null-checked, matching `caller-identity-regression.test.ts`
+      // in this directory. An `as any` read here turns "the harness never
+      // attached the backend" into an undefined-property crash several lines
+      // later instead of a message naming the cause.
+      const ext = handle as BackendHandle;
+      if (!ext._backend) {
+        throw new Error('LocalBackend not initialized — afterSetup did not attach _backend');
+      }
+      backend = ext._backend;
     });
 
     it('reports UNKNOWN, not LOW, when an upstream walk resolves no callers', async () => {

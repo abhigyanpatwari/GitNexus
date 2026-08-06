@@ -52,6 +52,12 @@ Format: **Trigger → Instruction → Reason**. Append new Signs when the same m
 - **Do:** Re-run plain `npx gitnexus analyze` — no `--embeddings` flag needed. A retained `embeddingCheckpoint` in the index metadata forces embedding generation for exactly the pending nodes regardless of flags, and clears once they succeed. `--drop-embeddings` abandons the pending nodes instead of retrying them; `--force` also discards the checkpoint (with a warning) and rebuilds without resuming it.
 - **Why:** A long analyze run against a flaky HTTP embedding endpoint tolerates bounded sub-batch failures instead of aborting the whole run: it deletes the affected nodes' embedding rows (so they hold zero rows, never a partial set) and records those nodes as pending in `embeddingCheckpoint`. `stats.embeddings` stays an honest, non-zero count of everything that did succeed, so this state never trips the "Embeddings vanished" Sign above — `embedding-checkpoint-pending` is the only reliable signal.
 
+### Analyze reports INCOMPLETE with a collapsed graph write
+
+- **Trigger:** `npx gitnexus status` reports `incompleteReasons: ["graph-write-collapsed"]`; the analyze summary printed `Repository indexed INCOMPLETELY` naming an expected and a persisted relationship count, and the CLI exited non-zero.
+- **Do:** Re-run `npx gitnexus analyze --force`. If it recurs, check free disk space on the volume holding `.gitnexus/`, confirm no second `analyze` is running against the same repo (both stage through `.gitnexus/csv`), then run `npx gitnexus doctor`.
+- **Why:** The run finished and wrote metadata, but far fewer relationships are readable back than the pipeline produced. Nothing throws: the DB holds rows and the metadata is valid, so every query answers with missing edges rather than an error — a confident empty answer, which is worse than a failure because it looks like a result. Unlike `incremental-in-progress` and `embedding-checkpoint-pending`, which describe a run that did what it said and left work for next time, this one means most of your edges are gone, so it is the one incomplete reason that also fails the exit code. The check compares in-memory totals (including rows streamed out of the heap) against the post-write count, refuses to answer when the count cannot be read, and is skipped on incremental runs where whole-scope counts are not comparable.
+
 ### MCP lists no repos
 
 - **Trigger:** MCP stderr says no indexed repos.
