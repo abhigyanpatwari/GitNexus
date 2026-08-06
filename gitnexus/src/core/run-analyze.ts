@@ -32,6 +32,8 @@ import {
   loadCachedEmbeddings,
   deleteNodesForFiles,
   ensureEmbeddingRowDmlSafe,
+  ensureFtsRowDmlSafe,
+  readIndexCatalogRows,
   deleteAllCommunitiesAndProcesses,
   deleteAllInterprocTaintPaths,
   deleteAllCallSummaries,
@@ -2122,8 +2124,20 @@ async function runFullAnalysisInner(
       // cannot be dropped without the extension either), so surgery is
       // impossible: fall through to the escalation valve's wipe-and-COPY plan,
       // which rebuilds the DB files outright and needs no embedding-row DML.
-      const embeddingRowDmlSafe = await ensureEmbeddingRowDmlSafe();
-      if (!embeddingRowDmlSafe && cachedEmbeddings.length === 0) {
+      //
+      // FTS twin (#2841): the identical wall exists for every table carrying an
+      // FTS index — LadybugDB refuses the DML at BIND time, so even a zero-row
+      // DETACH DELETE fails, and `DROP_FTS_INDEX` is itself an FTS-extension
+      // function (there is no SQL `DROP INDEX` at all), so the indexes cannot be
+      // cleared in place either. Same verdict, same remedy: escalate. Both gates
+      // share ONE `SHOW_INDEXES` read — they answer different questions about the
+      // same catalog snapshot, and nothing between here and the write plan
+      // creates or drops an index.
+      const indexCatalogRows = await readIndexCatalogRows();
+      const embeddingRowDmlSafe = await ensureEmbeddingRowDmlSafe(indexCatalogRows);
+      const ftsRowDmlSafe = await ensureFtsRowDmlSafe(indexCatalogRows);
+      const extensionForcedRebuild = !embeddingRowDmlSafe || !ftsRowDmlSafe;
+      if (extensionForcedRebuild && cachedEmbeddings.length === 0) {
         // The escalation below WIPES the DB files, and Phase 3.5 restores
         // embedding rows from `cachedEmbeddings` — which is only populated when
         // `deriveEmbeddingMode` saw `meta.stats.embeddings > 0`. A DB whose meta
@@ -2144,7 +2158,7 @@ async function runFullAnalysisInner(
         }
       }
       if (
-        !embeddingRowDmlSafe ||
+        extensionForcedRebuild ||
         shouldEscalateIncrementalWrite(
           filesToDelete.length,
           effectiveWriteSet.size,
@@ -2152,14 +2166,34 @@ async function runFullAnalysisInner(
         )
       ) {
         escalatedFullWrite = true;
+        // Every blocked extension is named, not just the first: a DB can carry
+        // BOTH a vector index and FTS indexes, and reporting one cause while the
+        // other is equally fatal is how #2841 stayed mis-diagnosed for so long.
+        const blockedCauses: string[] = [];
+        const degradedEffects: string[] = [];
+        if (!embeddingRowDmlSafe) {
+          blockedCauses.push(
+            `the ${EMBEDDING_TABLE_NAME} vector index exists but the VECTOR extension could not be ` +
+              `loaded, so embedding rows cannot be rewritten in place`,
+          );
+          degradedEffects.push(
+            'Semantic search falls back to exact scan until VECTOR is available.',
+          );
+        }
+        if (!ftsRowDmlSafe) {
+          blockedCauses.push(
+            `this index carries FTS search indexes but the FTS extension could not be loaded, so no ` +
+              `indexed table can be written in place (LadybugDB refuses the write at bind time, and ` +
+              `the indexes cannot be dropped without the extension either)`,
+          );
+          degradedEffects.push('Full-text/BM25 search stays degraded until FTS is available.');
+        }
         log(
-          !embeddingRowDmlSafe
-            ? `Incremental: the ${EMBEDDING_TABLE_NAME} vector index exists but the VECTOR ` +
-                `extension could not be loaded, so embedding rows cannot be rewritten in place — ` +
-                `switching to a full DB write (wipe + bulk COPY) for this run. Semantic search ` +
-                `falls back to exact scan until VECTOR is available; run \`gitnexus doctor\` for ` +
-                `live extension status, or set GITNEXUS_LBUG_EXTENSION_INSTALL=auto to allow one ` +
-                `bounded install attempt.`
+          blockedCauses.length > 0
+            ? `Incremental: ${blockedCauses.join('; and ')} — switching to a full DB write ` +
+                `(wipe + bulk COPY) for this run. ${degradedEffects.join(' ')} Run ` +
+                `\`gitnexus doctor\` for live extension status, or set ` +
+                `GITNEXUS_LBUG_EXTENSION_INSTALL=auto to allow one bounded install attempt.`
             : `Incremental: effective write set covers ${effectiveWriteSet.size}/${allFilePaths.length} ` +
                 // Display clamp only (predicate unchanged): BFS-found deleted
                 // importers can push the numerator past the CURRENT file list, so
