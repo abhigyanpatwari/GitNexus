@@ -81,18 +81,6 @@ list_repos { offset: 400 }  → repos 401–437,                 hasMore false  
 
 Notes: `offset` ≥ `total` returns an empty page (with `total` still reported). Out-of-range or malformed `limit`/`offset` (non-integer, `limit` outside `[1, 200]`, `offset < 0`) are rejected with a clear error — `limit` above the max is rejected, not silently capped. The order is deterministic (lower-cased name, then path), so paging never skips or duplicates an entry while the registry is unchanged.
 
-### Inline staleness signal (`query` / `context` / `impact` / `cypher`)
-
-These four hot read tools attach a non-blocking `staleness` field to their response when the index is behind the checkout's current HEAD — the same `{ commitsBehind, hint }` shape `list_repos` already reports — so a direct tool call surfaces a behind-HEAD index without a separate `list_repos` call:
-
-```jsonc
-{ /* …the tool's normal result… */
-  "staleness": { "commitsBehind": 3, "hint": "⚠️ Index is 3 commits behind HEAD. Run analyze tool to update." }
-}
-```
-
-The field is **absent when the index is current** (or when the freshness check can't run), so its presence is the signal. It is only ever added to object results — raw-array `cypher` output and error envelopes are returned unchanged. `@group`-targeted calls do not carry it (multi-repo staleness is ill-defined). When you see it, the graph may be behind the working tree — re-run `analyze` before trusting blast-radius or dependence answers.
-
 ### Taint findings (`explain`)
 
 `explain` returns taint findings recorded by `gitnexus analyze --pdg` — intra-procedural `TAINTED` edges plus cross-function `TAINT_PATH` hops where the interprocedural taint phase found a function-level source→sink chain. Each finding includes a sink category (command-injection, code-injection, path-traversal, sql-injection, xss), source/sink lines, and the ordered hop path with the variable carried on each hop.
@@ -139,7 +127,7 @@ Lightweight reads (~100-500 tokens) for navigation:
 
 ## Graph Schema
 
-**Nodes:** File, Folder, Function, Class, Interface, Method, Property, TypeAlias, CodeElement, Community, Process, Route, Tool, plus language-specific types (Struct, Enum, Trait, Impl, Namespace, Module, …) and BasicBlock (`--pdg` indexes only). The full node list lives in `gitnexus://repo/{name}/schema`.
+**Nodes:** File, Folder, Function, Class, Interface, Method, CodeElement, Community, Process, Route, Tool, plus language-specific types (Struct, Enum, Trait, Impl, Namespace, Module, …) and BasicBlock (`--pdg` indexes only). The full node list lives in `gitnexus://repo/{name}/schema`.
 **Edges (via CodeRelation.type):** CALLS, IMPORTS, EXTENDS, IMPLEMENTS, DEFINES, CONTAINS, MEMBER_OF, HAS_METHOD, HAS_PROPERTY, ACCESSES, METHOD_OVERRIDES, METHOD_IMPLEMENTS, STEP_IN_PROCESS, HANDLES_ROUTE, FETCHES, HANDLES_TOOL, ENTRY_POINT_OF, WRAPS, QUERIES, INJECTS, plus `--pdg`-only types (CFG, REACHING_DEF, TAINTED, SANITIZES, TAINT_PATH, CDG — zero rows on a default index).
 
 Read `gitnexus://repo/{name}/schema` before writing Cypher — it is the authoritative schema for the indexed repo.

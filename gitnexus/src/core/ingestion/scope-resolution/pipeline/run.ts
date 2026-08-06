@@ -475,6 +475,18 @@ interface RunScopeResolutionStats {
    * unanswerable, so the gap is actionable rather than merely measured.
    */
   readonly uniqueNamePropertyAmbiguousNames: readonly string[];
+  /**
+   * Read/write sites whose name IS defined in the workspace but only in another
+   * LANGUAGE, so per-language inference declined. Separate from
+   * `uniqueNamePropertyAmbiguous` because the remedy differs: ambiguity wants
+   * better receiver typing, this wants an anchor in the reading language (R3-1).
+   */
+  readonly uniqueNamePropertyCrossLanguage: number;
+  /** Those names with the languages their definitions actually live in. */
+  readonly uniqueNamePropertyCrossLanguageNames: readonly {
+    readonly name: string;
+    readonly languages: string[];
+  }[];
   readonly resolutionOutcomes: readonly ResolutionOutcome[];
   /**
    * Per-function taint summaries harvested in the pdg window (#2084 M4 U1).
@@ -608,6 +620,8 @@ export function runScopeResolution(
       uniqueNamePropertyAmbiguous: 0,
       uniqueNamePropertyNarrowed: 0,
       uniqueNamePropertyAmbiguousNames: [],
+      uniqueNamePropertyCrossLanguage: 0,
+      uniqueNamePropertyCrossLanguageNames: [],
       resolutionOutcomes,
       functionSummaries: [],
       callSummaries: [],
@@ -642,6 +656,8 @@ export function runScopeResolution(
       uniqueNamePropertyAmbiguous: 0,
       uniqueNamePropertyNarrowed: 0,
       uniqueNamePropertyAmbiguousNames: [],
+      uniqueNamePropertyCrossLanguage: 0,
+      uniqueNamePropertyCrossLanguageNames: [],
       resolutionOutcomes,
       functionSummaries: [],
       callSummaries: [],
@@ -1033,7 +1049,14 @@ export function runScopeResolution(
 
   const uniqueNameProperties =
     callableFlowOnly || provider.fieldFallbackOnMethodLookup === false
-      ? { emitted: 0, ambiguous: 0, narrowed: 0, ambiguousNames: [] }
+      ? {
+          emitted: 0,
+          ambiguous: 0,
+          narrowed: 0,
+          ambiguousNames: [],
+          crossLanguageOnly: 0,
+          crossLanguageOnlyNames: [],
+        }
       : emitUniqueNamePropertyAccesses(
           graph,
           indexes,
@@ -1527,6 +1550,8 @@ export function runScopeResolution(
     uniqueNamePropertyAmbiguous: uniqueNameProperties.ambiguous,
     uniqueNamePropertyNarrowed: uniqueNameProperties.narrowed,
     uniqueNamePropertyAmbiguousNames: uniqueNameProperties.ambiguousNames,
+    uniqueNamePropertyCrossLanguage: uniqueNameProperties.crossLanguageOnly,
+    uniqueNamePropertyCrossLanguageNames: uniqueNameProperties.crossLanguageOnlyNames,
     resolutionOutcomes,
     functionSummaries: harvestedSummaries,
     callSummaries: harvestedCallSummaries,

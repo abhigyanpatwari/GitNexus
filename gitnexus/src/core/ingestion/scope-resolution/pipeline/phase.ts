@@ -62,6 +62,23 @@ export interface ScopeResolutionOutput {
   readonly referenceEdgesEmitted: number;
   /** Additive stream of resolver diagnostics; does not affect graph edges. */
   readonly resolutionOutcomes: readonly ResolutionOutcome[];
+  /**
+   * Property inference facts a CALLER needs in order to read an empty result
+   * correctly (R3-1). Without these, "no ACCESSES for this field" is
+   * byte-identical whether the field is unused, ambiguous, or anchored in a
+   * language this pass may not infer across — three different situations with
+   * three different remedies.
+   */
+  readonly propertyInference: {
+    /** Sites declined because the name could not be narrowed to one definition. */
+    readonly ambiguous: number;
+    /** Those field names, capped. */
+    readonly ambiguousNames: readonly string[];
+    /** Sites declined because every definition of the name is another language. */
+    readonly crossLanguage: number;
+    /** Those field names with the languages their definitions live in, capped. */
+    readonly crossLanguageNames: readonly { readonly name: string; readonly languages: string[] }[];
+  };
   /** Per-language breakdown for telemetry. */
   readonly perLanguage: ReadonlyMap<
     SupportedLanguages,
@@ -103,6 +120,7 @@ const NOOP_OUTPUT: ScopeResolutionOutput = Object.freeze({
   perLanguage: new Map(),
   functionSummaries: [],
   callSummaries: [],
+  propertyInference: { ambiguous: 0, ambiguousNames: [], crossLanguage: 0, crossLanguageNames: [] },
 });
 
 /** Select source files that must be materialized for one resolver pass. */
@@ -328,6 +346,11 @@ export const scopeResolutionPhase: PipelinePhase<ScopeResolutionOutput> = {
     // finalize/propagate/a provider hook) must still release the sink's file
     // descriptors. finalize() runs on the success path; the finally closes the
     // sink only when finalize did not (idempotent via the sink's `finalized`).
+    // R3-1 accumulators — see the warning after the language loop.
+    let crossLanguagePropertyReads = 0;
+    const crossLanguageAnchorsByName = new Map<string, Set<string>>();
+    let ambiguousPropertyReads = 0;
+    const ambiguousPropertyNames = new Set<string>();
     let pdgEmitManifest: PdgEmitManifest | undefined;
     let pdgSinkSettled = false;
     try {
@@ -548,6 +571,36 @@ export const scopeResolutionPhase: PipelinePhase<ScopeResolutionOutput> = {
             `[scope-resolution:${lang}] ${stats.filesProcessed} files → ${stats.importsEmitted} IMPORTS + ${stats.referenceEdgesEmitted} reference edges (${stats.resolve.unresolved} unresolved sites, ${stats.referenceSkipped} skipped)`,
           );
         }
+
+        // R3-1. Accumulated across languages and reported once below, NOT gated
+        // on isDev: a field whose only definition lives in another language
+        // answers an empty ACCESSES query that is byte-identical to "unused",
+        // and that is the confident-empty failure this whole series removes.
+        ambiguousPropertyReads += stats.uniqueNamePropertyAmbiguous;
+        for (const n of stats.uniqueNamePropertyAmbiguousNames) ambiguousPropertyNames.add(n);
+        crossLanguagePropertyReads += stats.uniqueNamePropertyCrossLanguage;
+        for (const entry of stats.uniqueNamePropertyCrossLanguageNames) {
+          const existing = crossLanguageAnchorsByName.get(entry.name);
+          if (existing === undefined) {
+            crossLanguageAnchorsByName.set(entry.name, new Set(entry.languages));
+          } else {
+            for (const l of entry.languages) existing.add(l);
+          }
+        }
+      }
+
+      if (crossLanguagePropertyReads > 0) {
+        const sample = Array.from(crossLanguageAnchorsByName)
+          .slice(0, 10)
+          .map(([name, langs]) => `${name} (${Array.from(langs).sort().join('/')})`)
+          .join(', ');
+        logger.warn(
+          `[scope-resolution] ${crossLanguagePropertyReads} property read/write site(s) name a field ` +
+            `that IS defined in this workspace, but only in another language, so per-language inference ` +
+            `declined to link them. Queries for these fields return an empty result that does NOT mean ` +
+            `"unused" — it means the definition anchor is in a different language. ` +
+            `Affected: ${sample}${crossLanguageAnchorsByName.size > 10 ? ', …' : ''}`,
+        );
       }
 
       // Finalize the streaming PDG sink (#2202) once after the last language:
@@ -598,6 +651,15 @@ export const scopeResolutionPhase: PipelinePhase<ScopeResolutionOutput> = {
       functionSummaries,
       callSummaries,
       pdgEmitManifest,
+      propertyInference: {
+        ambiguous: ambiguousPropertyReads,
+        ambiguousNames: Array.from(ambiguousPropertyNames).sort().slice(0, 25),
+        crossLanguage: crossLanguagePropertyReads,
+        crossLanguageNames: Array.from(crossLanguageAnchorsByName)
+          .sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0))
+          .slice(0, 25)
+          .map(([name, languages]) => ({ name, languages: Array.from(languages).sort() })),
+      },
     };
   },
 };

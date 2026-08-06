@@ -195,15 +195,19 @@ describe('JavaScript plain-object property access (A1/A5)', () => {
       expect(readersOf('sharedTimeoutMs')).toEqual([]);
     });
 
+    // This assertion was VACUOUS when written: it read the stat off a
+    // `scopeResolution` field that PipelineResult does not have, so the
+    // `undefined` guard swallowed it and the whole test passed with the
+    // production code deleted. The facts are now published as
+    // `propertyInference`, and the guard is an assertion rather than an escape.
     it('reports the names it could not resolve, not only a count', () => {
-      const stats = (result as unknown as { scopeResolution?: Record<string, unknown> })
-        .scopeResolution;
-      if (stats === undefined) return;
+      const inference = result.propertyInference;
+      expect(inference).toBeDefined();
       // Both halves. Asserting only the empty edge set is satisfied equally by
       // "the ambiguity gate fired" and "the name was never looked up at all",
       // so the counter must be shown to have MOVED.
-      expect(Number(stats.uniqueNamePropertyAmbiguous ?? 0)).toBeGreaterThan(0);
-      expect(stats.uniqueNamePropertyAmbiguousNames).toContain('sharedTimeoutMs');
+      expect(inference!.ambiguous).toBeGreaterThan(0);
+      expect(inference!.ambiguousNames).toContain('sharedTimeoutMs');
     });
   });
 

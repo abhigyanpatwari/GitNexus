@@ -69,6 +69,12 @@ import type { ScopeResolutionIndexes } from '../../model/scope-resolution-indexe
 import type { GraphNodeLookup } from '../graph-bridge/node-lookup.js';
 import { resolveCallerGraphId } from '../graph-bridge/ids.js';
 import { callableFlowSiteKey } from './callable-value-flow.js';
+import { getLanguageFromFilename } from 'gitnexus-shared';
+
+/** Language a definition lives in, for reporting which anchor a reader cannot reach. */
+function languageOf(filePath: string): string {
+  return getLanguageFromFilename(filePath) ?? 'unknown';
+}
 
 /**
  * Confidence for a workspace-unique name match. Deliberately the global tier's
@@ -130,6 +136,29 @@ export interface UniqueNamePropertyStats {
    * difference between a metric and something a reader can act on.
    */
   readonly ambiguousNames: readonly string[];
+  /**
+   * Read/write sites whose name IS defined in the workspace, but only in
+   * ANOTHER language — so per-language inference correctly declined, and the
+   * caller got an empty result byte-identical to "this field is unused".
+   *
+   * Keeping this separate from {@link ambiguous} matters: ambiguity means the
+   * analyzer saw several candidates and refused to choose, while this means it
+   * saw candidates it was not allowed to consider. The remedies differ — one
+   * wants better receiver typing, the other wants an anchor in this language
+   * (or a text search) — so collapsing them would tell a reader the wrong thing
+   * to do.
+   */
+  readonly crossLanguageOnly: number;
+  /**
+   * The distinct names behind {@link crossLanguageOnly}, capped, each with the
+   * languages its definitions actually live in. That is the actionable half:
+   * "wickRatio is defined only in TypeScript" tells a reader why their
+   * JavaScript query came back empty and what to do about it.
+   */
+  readonly crossLanguageOnlyNames: readonly {
+    readonly name: string;
+    readonly languages: string[];
+  }[];
 }
 
 /**
@@ -199,9 +228,10 @@ function candidatesForLanguage(
     mine.push(candidate);
   }
   // Three outcomes, and they are not interchangeable: `undefined` means no
-  // property of this name exists in this language (nothing to say, and NOT an
-  // ambiguity), `null` means too many to choose between (reportable), and a
-  // list means proceed to narrowing.
+  // property of this name exists in this language (nothing to say HERE, though
+  // see `crossLanguageAnchors` for why the CALLER still needs to know), `null`
+  // means too many to choose between (reportable), and a list means proceed to
+  // narrowing.
   return mine.length === 0 ? undefined : mine;
 }
 
@@ -294,7 +324,14 @@ export function emitUniqueNamePropertyAccesses(
   const byName = prebuiltPropertyNameIndex ?? buildPropertyNameIndex(graph);
   const ownFilePaths = new Set(parsedFiles.map((p) => p.filePath));
   if (byName.size === 0) {
-    return { emitted: 0, ambiguous: 0, narrowed: 0, ambiguousNames: [] };
+    return {
+      emitted: 0,
+      ambiguous: 0,
+      narrowed: 0,
+      ambiguousNames: [],
+      crossLanguageOnly: 0,
+      crossLanguageOnlyNames: [],
+    };
   }
   const directImports =
     finalized === undefined
@@ -304,7 +341,10 @@ export function emitUniqueNamePropertyAccesses(
   let emitted = 0;
   let ambiguous = 0;
   let narrowed = 0;
+  let crossLanguageOnly = 0;
   const ambiguousNames = new Set<string>();
+  /** name -> the languages its definitions actually live in. */
+  const crossLanguageAnchors = new Map<string, Set<string>>();
   const seen = new Set<string>();
 
   for (const parsed of parsedFiles) {
@@ -320,7 +360,22 @@ export function emitUniqueNamePropertyAccesses(
       const allWithName = byName.get(site.name);
       if (allWithName === undefined) continue;
       const candidates = candidatesForLanguage(allWithName, ownFilePaths);
-      if (candidates === undefined) continue;
+      if (candidates === undefined) {
+        // The name IS defined in this workspace, just not in a language this
+        // pass may infer across — so declining is correct, and staying silent
+        // about it is not. An empty answer here is byte-identical to "this
+        // field is unused", which is the confident-empty failure this whole
+        // series exists to remove; the only difference is that the missing
+        // fact is now about the ANALYZER's reach rather than the code's.
+        crossLanguageOnly++;
+        if (!crossLanguageAnchors.has(site.name)) {
+          crossLanguageAnchors.set(
+            site.name,
+            new Set(allWithName.map((c) => languageOf(c.filePath))),
+          );
+        }
+        continue;
+      }
       if (candidates === OVERSATURATED) {
         ambiguous++;
         ambiguousNames.add(site.name);
@@ -369,5 +424,10 @@ export function emitUniqueNamePropertyAccesses(
     ambiguous,
     narrowed,
     ambiguousNames: Array.from(ambiguousNames).sort().slice(0, MAX_REPORTED_AMBIGUOUS_NAMES),
+    crossLanguageOnly,
+    crossLanguageOnlyNames: Array.from(crossLanguageAnchors)
+      .sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0))
+      .slice(0, MAX_REPORTED_AMBIGUOUS_NAMES)
+      .map(([name, languages]) => ({ name, languages: Array.from(languages).sort() })),
   };
 }
