@@ -109,6 +109,18 @@ const NON_BRIDGE_CORPUS = [
     emitter: 'tools-phase HANDLES_TOOL',
     sentinels: ['Class|Tool'],
   },
+  {
+    // A TypeScript object-type alias owns its members, so it emits
+    // HAS_PROPERTY from a `TypeAlias` — a label on the ELEVEN-table list this
+    // suite exists for, and one no rule reaches. Shipped once without the pair
+    // declared: emit threw `UndeclaredRelationPairError` and the whole analyze
+    // died on any repo containing `type X = { ... }`. Every resolver test still
+    // passed, because they build an in-memory graph and never write to the DB —
+    // this suite is the only place that difference shows up.
+    fixture: 'typescript-alias-fields',
+    emitter: 'object-type alias HAS_PROPERTY',
+    sentinels: ['TypeAlias|Property', 'Interface|Property'],
+  },
 ] as const satisfies readonly CorpusEntry[];
 
 /*
