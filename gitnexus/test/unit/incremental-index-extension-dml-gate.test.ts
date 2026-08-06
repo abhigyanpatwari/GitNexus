@@ -33,6 +33,15 @@
  *   - an extension-forced rebuild is environmental, not repo churn, so it builds
  *     into a staging file beside the live index and publishes it with one rename
  *     (review H2) — an interrupted rebuild must leave the current index intact.
+ *
+ * That rebuild stamps `lastCommit`, so the plain rerun the CLI's own degraded-
+ * search warning advises ("install it once with network access … then rerun")
+ * lands on the `alreadyUpToDate` fast path with a clean tree at the same commit.
+ * §5.C's `healDegradedFts` bypass is what makes that advice true — and it sits
+ * one conjunct away from a permanent full-re-analyze loop, so both sides are
+ * pinned here: it re-analyzes when the extension can load again, and it stands
+ * down on `skipReason: 'build-failed'`, whose rebuild would fail identically on
+ * every run forever.
  */
 import { readFile, readdir, writeFile } from 'fs/promises';
 import { execSync } from 'child_process';
@@ -41,7 +50,7 @@ import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vite
 import type { TestContext } from 'vitest';
 import { setupMiniRepo } from '../helpers/mini-repo.js';
 import { seedEmbeddingsForFiles } from '../helpers/embedding-seed.js';
-import { getStoragePaths } from '../../src/storage/repo-manager.js';
+import { getStoragePaths, loadMeta, saveMeta } from '../../src/storage/repo-manager.js';
 import { createTempDir } from '../helpers/test-db.js';
 import { FTS_INDEXES } from '../../src/core/search/fts-schema.js';
 import { EMBEDDING_TABLE_NAME } from '../../src/core/lbug/schema.js';
@@ -233,51 +242,6 @@ describe('runFullAnalysis incremental writeback — extension-gated DML decided 
     }
     ctx.skip();
   };
-
-  it('escalates to a full DB write instead of crashing when the DB carries FTS indexes and FTS cannot be loaded', async () => {
-    const { runFullAnalysis } = await import('../../src/core/run-analyze.js');
-
-    const repo = await setupMiniRepo('gitnexus-2841-fts-blocked-');
-    const previousPolicy = process.env.GITNEXUS_LBUG_EXTENSION_INSTALL;
-    try {
-      // Run 1 builds the graph WITH FTS available, so the DB ends up carrying
-      // the real index set — the precondition the issue reports.
-      await runFullAnalysis(repo.dbPath, { skipAgentsMd: true }, { onProgress: () => {} });
-      const { lbugPath } = getStoragePaths(repo.dbPath);
-      expect((await readFtsIndexRows(lbugPath)).length).toBe(FTS_INDEXES.length);
-
-      await touchAndCommit(repo.dbPath, '#2841 blocked-path touch');
-
-      // FTS becomes unloadable for this run. Pre-fix this rejects with
-      // "Trying to delete from an index on table File but its extension is not
-      // loaded" — the run dies mid-writeback.
-      await blockExtensionLoads();
-      const logs: string[] = [];
-      await expect(
-        runFullAnalysis(
-          repo.dbPath,
-          { skipAgentsMd: true },
-          { onProgress: () => {}, onLog: (m: string) => logs.push(m) },
-        ),
-      ).resolves.toBeDefined();
-
-      // The reason must be stated in FTS terms before the plan switches — the
-      // whole issue is that the crash named no extension at all.
-      expect(logs.some((m) => m.includes('full DB write'))).toBe(true);
-      expect(logs.some((m) => m.includes('FTS'))).toBe(true);
-
-      // The rebuild really happened: the wiped DB carries no FTS index (they
-      // cannot be recreated without the extension), and the newly committed
-      // content is in the graph.
-      expect((await readFtsIndexRows(lbugPath)).length).toBe(0);
-      const fileRows = await readGraphFileRows(lbugPath);
-      expect(fileRows.filter((r) => r.filePath === 'src/handler.ts').length).toBe(1);
-      expect(contentsByPath(fileRows).get('src/handler.ts')).toContain('#2841 blocked-path touch');
-    } finally {
-      await restoreExtensionPolicy(previousPolicy);
-      await repo.cleanup();
-    }
-  }, 300_000);
 
   it('keeps the surgical write plan (and the indexes) when FTS is available', async () => {
     const { runFullAnalysis } = await import('../../src/core/run-analyze.js');
@@ -489,6 +453,19 @@ describe('runFullAnalysis incremental writeback — extension-gated DML decided 
       ).resolves.toBeDefined();
       expect(escalatedLogs.some((m) => m.includes('full DB write'))).toBe(true);
       expect((await readFtsIndexRows(lbugPath)).length).toBe(0);
+      // The reason must be stated in FTS terms before the plan switches — the
+      // whole issue is that the pre-fix crash ("Trying to delete from an index
+      // on table File but its extension is not loaded") named no extension at
+      // all. The both-blocked case asserts this on the escalation line itself,
+      // but it is VECTOR-gated, so an FTS-only host would lose the property
+      // entirely without this check.
+      expect(escalatedLogs.some((m) => m.includes('FTS'))).toBe(true);
+      // The wipe-and-bulk-COPY republished each file exactly once. Asserted on
+      // ROWS, not through `contentsByPath`: that Map collapses duplicates, so a
+      // rebuild that appended a stale twin beside the fresh row would slip past
+      // every content check in this suite.
+      const escalatedRows = await readGraphFileRows(lbugPath);
+      expect(escalatedRows.filter((r) => r.filePath === 'src/handler.ts').length).toBe(1);
 
       // Run 3: FTS loads again and a DIFFERENT file changes. Nothing may carry
       // the escalation forward — the catalog-first gate sees no FTS index, so
@@ -583,6 +560,125 @@ describe('runFullAnalysis incremental writeback — extension-gated DML decided 
       expect(await readStagingEntries(storagePath)).toEqual([]);
       const contents = contentsByPath(await readGraphFileRows(lbugPath));
       expect(contents.get('src/handler.ts')).toContain('#2841 staged-rebuild touch');
+    } finally {
+      await restoreExtensionPolicy(previousPolicy);
+      await repo.cleanup();
+    }
+  }, 300_000);
+
+  /**
+   * §5.C, healing half. A degraded index stamps `lastCommit` like any other
+   * successful run, so the rerun the CLI advises arrives at the up-to-date fast
+   * path on a clean tree at the same commit — every ordinary freshness signal
+   * says "return in milliseconds", and only the environment changed. The
+   * `healDegradedFts` probe is the one thing that can tell the difference.
+   */
+  it('re-analyzes past the up-to-date fast path once the FTS extension loads again (§5.C)', async () => {
+    const { runFullAnalysis } = await import('../../src/core/run-analyze.js');
+
+    const repo = await setupMiniRepo('gitnexus-2841-heal-degraded-fts-');
+    const previousPolicy = process.env.GITNEXUS_LBUG_EXTENSION_INSTALL;
+    try {
+      // Run 1 is FTS-blocked from the start, so the published DB carries no
+      // search index at all and Phase 3 stamps the recorded-degraded state the
+      // probe reads back.
+      await blockExtensionLoads();
+      await runFullAnalysis(repo.dbPath, { skipAgentsMd: true }, { onProgress: () => {} });
+      const { lbugPath, storagePath } = getStoragePaths(repo.dbPath);
+      expect((await readFtsIndexRows(lbugPath)).length).toBe(0);
+      const degradedMeta = await loadMeta(storagePath);
+      expect(degradedMeta?.capabilities?.fts.status).toBe('unavailable');
+      expect(degradedMeta?.capabilities?.fts.skipReason).toBe('extension-unavailable');
+
+      // Run 2: same commit, clean working tree, FTS available again. Nothing
+      // about the REPO changed, so a run that trusts commit + tree alone
+      // returns here and leaves keyword search dead until the next edit.
+      await restoreExtensionPolicy(previousPolicy);
+      const logs: string[] = [];
+      const healed = await runFullAnalysis(
+        repo.dbPath,
+        { skipAgentsMd: true },
+        { onProgress: () => {}, onLog: (m: string) => logs.push(m) },
+      );
+
+      // REVERSION: drop the `await degradedFtsCanBeRebuiltNow(lbugPath)`
+      // conjunct — or the whole `healDegradedFts` term — from the fast-path
+      // guard in run-analyze.ts and this run early-returns
+      // `alreadyUpToDate: true` without logging anything, so the assertion
+      // below finds zero FTS indexes on an index that will never rebuild them.
+      expect(healed.alreadyUpToDate).toBeUndefined();
+      expect(
+        logs.some((m) =>
+          m.includes(
+            'Index is up to date but its search indexes are missing and the FTS extension now ' +
+              'loads — re-analyzing so Phase 3 can rebuild them.',
+          ),
+        ),
+      ).toBe(true);
+      // The bypass is only worth taking if Phase 3 actually rebuilds: the whole
+      // index set is back, from a run that changed no file.
+      expect((await readFtsIndexRows(lbugPath)).length).toBe(FTS_INDEXES.length);
+    } finally {
+      await restoreExtensionPolicy(previousPolicy);
+      await repo.cleanup();
+    }
+  }, 300_000);
+
+  /**
+   * §5.C, standing-down half — the regression that made the bypass dangerous.
+   * `status: 'unavailable'` cannot distinguish "the extension never loaded"
+   * from "the extension loaded and the index BUILD failed". The second cause is
+   * deterministic (an un-tokenizable stored row, #2544/#2546), so healing it
+   * re-analyzes the entire repo, degrades identically, restamps, and does it
+   * again on the next run — forever, in place of a single `stat`.
+   */
+  it('leaves the fast path alone when the degraded index failed to BUILD rather than to load (§5.C)', async () => {
+    const { runFullAnalysis } = await import('../../src/core/run-analyze.js');
+
+    const repo = await setupMiniRepo('gitnexus-2841-build-failed-no-loop-');
+    const previousPolicy = process.env.GITNEXUS_LBUG_EXTENSION_INSTALL;
+    try {
+      await blockExtensionLoads();
+      await runFullAnalysis(repo.dbPath, { skipAgentsMd: true }, { onProgress: () => {} });
+      const { lbugPath, storagePath } = getStoragePaths(repo.dbPath);
+      expect((await readFtsIndexRows(lbugPath)).length).toBe(0);
+
+      // Restamp the CAUSE and nothing else. Reproducing a real build failure
+      // needs a stored row the native tokenizer rejects, which is neither
+      // portable nor deterministic across hosts; what §5.C actually reads is
+      // this single discriminator, so rewriting it reaches the exact state
+      // under test with no environment dependence.
+      const degradedMeta = await loadMeta(storagePath);
+      expect(degradedMeta?.capabilities?.fts.skipReason).toBe('extension-unavailable');
+      const capabilities = degradedMeta!.capabilities!;
+      await saveMeta(storagePath, {
+        ...degradedMeta!,
+        capabilities: {
+          ...capabilities,
+          fts: { ...capabilities.fts, skipReason: 'build-failed' },
+        },
+      });
+
+      // FTS loads again, so the probe's other two questions BOTH answer yes —
+      // the indexes are missing and the extension is loadable. Only the stamped
+      // cause stands between this run and a full re-analysis.
+      await restoreExtensionPolicy(previousPolicy);
+      const logs: string[] = [];
+      const rerun = await runFullAnalysis(
+        repo.dbPath,
+        { skipAgentsMd: true },
+        { onProgress: () => {}, onLog: (m: string) => logs.push(m) },
+      );
+
+      // REVERSION: drop the `skipReason !== 'build-failed'` conjunct from the
+      // fast-path guard in run-analyze.ts and this run re-analyzes the whole
+      // repo instead of returning — the first turn of the permanent loop.
+      expect(rerun.alreadyUpToDate).toBe(true);
+      expect(logs.some((m) => m.includes('re-analyzing so Phase 3 can rebuild them'))).toBe(false);
+      // …and nothing was rebuilt, which is the point: a build failure is
+      // `--repair-fts`'s job (and the next content change's), not the fast
+      // path's.
+      expect((await readFtsIndexRows(lbugPath)).length).toBe(0);
     } finally {
       await restoreExtensionPolicy(previousPolicy);
       await repo.cleanup();
