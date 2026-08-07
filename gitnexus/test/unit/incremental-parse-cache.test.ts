@@ -176,8 +176,10 @@ describe('PARSE_CACHE_VERSION', () => {
   // does do is fail loudly the moment the constant and this expectation drift
   // apart, which is what forces the merge-time diff against origin/main to
   // happen at all.
-  it('pins SCHEMA_BUMP to 53 so concurrent bumps cannot silently collide (#2766)', () => {
-    expect(Number(PARSE_CACHE_VERSION.split('+', 1)[0])).toBe(53);
+  // Moved 53 -> 54 for W2-8: type parameters are captured on generic functions
+  // and aliases, not just class-likes, so the shadowing guard has data to read.
+  it('pins SCHEMA_BUMP to 54 so concurrent bumps cannot silently collide (#2766)', () => {
+    expect(Number(PARSE_CACHE_VERSION.split('+', 1)[0])).toBe(54);
   });
 
   it('embeds the gitnexus package version (so upgrades invalidate the cache)', () => {

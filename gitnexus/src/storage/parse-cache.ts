@@ -388,7 +388,14 @@ import type { ParseWorkerResult } from '../core/ingestion/workers/parse-worker.j
 // published (46, 47) is superseded by 48, so a warm cache stamped with either is
 // correctly invalidated.
 // RE-CHECK AGAINST origin/main IMMEDIATELY BEFORE MERGING.
-const SCHEMA_BUMP = 53;
+// 53 -> 54 for W2-8: `@declaration.type-parameters` is now captured on generic
+// FUNCTIONS, generator functions and type ALIASES in TYPESCRIPT_SCOPE_QUERY, not
+// only on class/interface declarations. Parse-time emission, so a warm cache
+// replays ParsedFiles whose defs carry no parameter list and the shadowing guard
+// that consumes it silently does nothing — the feature would look implemented
+// and be inert, which is the failure this constant exists to prevent.
+// RE-CHECK AGAINST origin/main IMMEDIATELY BEFORE MERGING.
+const SCHEMA_BUMP = 54;
 const GITNEXUS_PKG_VERSION = (() => {
   try {
     // package.json sits at gitnexus/package.json — two levels up from

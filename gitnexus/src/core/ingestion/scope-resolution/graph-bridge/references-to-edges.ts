@@ -26,6 +26,7 @@ import { mapReferenceKindToEdgeType } from '../graph-bridge/edges.js';
 import type { GraphNodeLookup } from '../graph-bridge/node-lookup.js';
 import type { CalleeIdSink } from '../graph-bridge/callee-id-sink.js';
 import { isValueDefinitionLabel } from '../../utils/ast-helpers.js';
+import { bindsTypeParameter } from '../scope/walkers.js';
 
 /**
  * Optional opaque skip key — providers may pre-emit edges (e.g. via
@@ -42,6 +43,17 @@ type ReferenceSiteSkipSet = ReadonlySet<string>;
  * body — see `functionLocalValueDefIds`. Everything else, including a class
  * member in a language that keeps no values at module scope, is emitted.
  */
+
+/**
+ * Trailing symbol name of a resolved graph id (`Interface:src/one.ts:Result` ->
+ * `Result`), dropping any positional suffix function-local ids carry.
+ * `SymbolDefinition` has no simple-name field, and `qualifiedName` is optional.
+ */
+function simpleNameOfDefId(graphId: string): string {
+  const tail = graphId.slice(graphId.lastIndexOf(':') + 1);
+  const at = tail.indexOf('@');
+  return at === -1 ? tail : tail.slice(0, at);
+}
 
 export function emitReferencesViaLookup(
   graph: KnowledgeGraph,
@@ -112,6 +124,34 @@ export function emitReferencesViaLookup(
 
       const edgeType = mapReferenceKindToEdgeType(ref.kind);
       if (edgeType === undefined) {
+        skipped++;
+        continue;
+      }
+
+      // A TYPE PARAMETER SHADOWS A DECLARED TYPE OF THE SAME NAME.
+      //
+      // `export function unwrap<Result>(value: Result): Result` names the
+      // parameter, not the `interface Result` next to it — tsc resolves BOTH
+      // annotations to the parameter. The type-reference capture had no notion
+      // of a parameter binding, so each one minted a `USES` edge into the
+      // interface at the same confidence as a real consumer and indistinguishable
+      // from one. Measured on a three-line fixture: two of the three edges were
+      // false, and the rule's whole purpose is answering "what breaks if I remove
+      // this field?".
+      //
+      // Blast radius is every generic whose parameter name collides with a
+      // declared type — `Result`, `Key`, `Value`, `Item`, `Node`, `Options`,
+      // `Config`, `Props`, `State`, `Response`.
+      //
+      // Reuses the predicate #2833 introduced for the CALL-receiver path, which
+      // stopped a workspace `class T` answering for `<T>` but never reached type
+      // references. Absence is not evidence there and is not here: `typeParameters`
+      // is populated only by languages whose captures were extended for it, so a
+      // POSITIVE match declines and an absent list changes nothing.
+      if (
+        edgeType === 'USES' &&
+        bindsTypeParameter(fromScope, simpleNameOfDefId(targetGraphId), scopes)
+      ) {
         skipped++;
         continue;
       }

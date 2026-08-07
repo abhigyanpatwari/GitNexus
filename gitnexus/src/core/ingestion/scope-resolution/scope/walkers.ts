@@ -581,7 +581,7 @@ function typeParameterNamesInScope(
  * yet. So only a POSITIVE match declines; an absent list changes nothing, which
  * is what keeps every unconverted language behaving exactly as it does today.
  */
-function bindsTypeParameter(
+export function bindsTypeParameter(
   scopeId: ScopeId,
   name: string,
   scopes: ScopeResolutionIndexes,

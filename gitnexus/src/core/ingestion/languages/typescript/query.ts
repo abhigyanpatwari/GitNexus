@@ -175,17 +175,20 @@ export const TYPESCRIPT_SCOPE_QUERY = `
 ;; to no label and TypeScript aliases produced NO scope-resolution def at all.
 ;; Kotlin and Dart already spell it this way.
 (type_alias_declaration
-  name: (type_identifier) @declaration.name) @declaration.type_alias
+  name: (type_identifier) @declaration.name
+  type_parameters: (type_parameters)? @declaration.type-parameters) @declaration.type_alias
 
 (internal_module
   name: (identifier) @declaration.name) @declaration.namespace
 
 ;; Declarations — methods / functions / constructors
 (function_declaration
-  name: (identifier) @declaration.name) @declaration.function
+  name: (identifier) @declaration.name
+  type_parameters: (type_parameters)? @declaration.type-parameters) @declaration.function
 
 (generator_function_declaration
-  name: (identifier) @declaration.name) @declaration.function
+  name: (identifier) @declaration.name
+  type_parameters: (type_parameters)? @declaration.type-parameters) @declaration.function
 
 ;; Function overload signatures (declaration-only; body in a separate
 ;; function_declaration). Extractors dedup by (name, parameterTypes).
