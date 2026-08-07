@@ -166,23 +166,27 @@ export const processProcesses = async (
   // terminals in the top 20 went 3 -> 20, and the repo's own domain flows
   // (`ReconcilePositions -> ...`) moved into the top 4%.
   //
-  // Two things this does NOT do, recorded so neither reads as settled. The
+  // What this does NOT do, recorded so it does not read as settled: the
   // reported cause — ranking rewarding fan-in, promoting chains ending in
-  // widely-called helpers — measured FALSE: those terminals have one caller
+  // widely-called helpers — measured FALSE. Those terminals have one caller
   // each (`alignWindowStart` 1, `validateSymbol` 1). A fan-in discount was
-  // implemented against that hypothesis and moved nothing. And a business flow
-  // still cannot be a process in its own right: `traceFromEntryPoint` only
-  // emits at a leaf, at max depth, or on a cycle, so a flow whose meaningful
-  // endpoint calls onward is never a candidate — it survives here only as
-  // whatever leaf it happens to bottom out in. Fixing that means teaching the
-  // walk what a sink is (I/O, route handler, external call), which is a change
-  // to what a process IS rather than to how processes are ranked.
+  // implemented against that hypothesis and moved nothing.
   //
   // R3-6 adds one rule ahead of depth: a SINK-terminated trace outranks a
   // leaf-terminated one. A flow that ends where the program does something —
   // places an order, writes a row — is what a reader came for; a chain that
   // ends in a date helper is where control happened to stop. Depth still orders
   // within each group.
+  //
+  // This is what closed the gap that used to be described here as out of reach:
+  // a business flow could not be a process in its own right, because the walk
+  // emitted only at a leaf, at max depth, or on a cycle, so a flow whose
+  // meaningful endpoint calls onward survived only as whatever leaf it bottomed
+  // out in. Ranking could never fix it — the flow was not a candidate to rank.
+  // It is bounded honestly rather than fully closed: sinks are exactly where
+  // fetch/ORM extraction fires (see `buildSinkFunctionSet`), so a codebase whose
+  // outward calls are not detected as such still sees leaf-terminated traces
+  // only.
   const tracesByTerminal = new Map<string, string[][]>();
   const rankedByInterest = [...endpointDeduped].sort((a, b) => {
     const aSink = Number(isSink(a[a.length - 1] ?? ''));
