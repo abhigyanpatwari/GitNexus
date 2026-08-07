@@ -34,11 +34,22 @@ Production's former 450-pair surface came out _faster_ than 332 on three of the
 four runs, so at this size the pair count is inside run-to-run noise. Everything
 past ~640 is not.
 
-#2801 remeasured the new 461-pair production surface on Windows at
-**1.20–1.42× untyped / 1.05–1.12× typed** across three stable runs. Two
-additional runs were discarded: one had the typed floor move more than the
-untyped ratio, and one had an anomalously fast 332-pair reference that inflated
-every larger ratio.
+#2801 remeasured the new 461-pair production surface on Windows six times:
+
+| run | untyped ratio | typed ratio | interpretation                      |
+| --- | ------------- | ----------- | ----------------------------------- |
+| 1   | 1.101×        | 1.157×      | noise-dominated (`typed > untyped`) |
+| 2   | 1.324×        | 1.122×      | below the operational budget        |
+| 3   | 2.705×        | 1.089×      | exceeds the operational budget      |
+| 4   | 1.417×        | 1.065×      | below the operational budget        |
+| 5   | 1.196×        | 1.050×      | below the operational budget        |
+| 6   | 1.585×        | 2.577×      | noise-dominated (`typed > untyped`) |
+
+The three comparable Windows runs below the 1.5× operational ceiling span
+**1.20–1.42× untyped / 1.05–1.12× typed**. Run 3 is published rather than
+silently discarded: no pre-registered rule excludes it, and `--check` would
+correctly reject it. These Windows measurements are not combined with the
+historical reference-box rows to infer cross-size ordering.
 
 **Quote the range, not a single run** — one run is not evidence here.
 
@@ -87,11 +98,13 @@ Before timing anything, the harness round-trips the **real** `SCHEMA_QUERIES`
 through a real database and asserts that `CALL SHOW_CONNECTION('CodeRelation')`
 reports exactly the pairs `parseRelationSchemaPairs` finds in `RELATION_SCHEMA`.
 
-No magic number is baked in: the invariant is that the DDL LadybugDB _accepted_
-carries the pair set our own parser believes it declares. The absolute count is
-reported as `declared_pairs`. A pair declared twice would not reach this check at
-all — LadybugDB rejects the `CREATE REL TABLE` outright, which is why a duplicate
-kills every `analyze` rather than one repository's.
+No production-size magic number is baked in: the measured production size and
+budget key are derived from that parsed DDL count. A missing `ratio_<size>_budget`
+entry makes `--check` fail closed. The invariant is that the DDL LadybugDB
+_accepted_ carries the pair set our own parser believes it declares. The
+absolute count is reported as `declared_pairs`. A pair declared twice would not
+reach this check at all — LadybugDB rejects the `CREATE REL TABLE` outright,
+which is why a duplicate kills every `analyze` rather than one repository's.
 
 ## What it does NOT measure
 
@@ -108,4 +121,6 @@ production's own pair count may cost relative to the 332-pair hand-list it
 replaced. Re-run without `--check` **several times** and copy the top of the
 observed production-size ratio range plus headroom — the spread between runs on
 this box is wider than the effect being measured near production, so a single
-run cannot set it.
+run cannot set it. Publish the raw ratios and apply only the pre-registered
+`typed_ratio > ratio` noise rule; do not silently discard another run to make a
+budget pass.

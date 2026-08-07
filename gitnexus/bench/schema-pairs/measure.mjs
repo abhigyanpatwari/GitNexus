@@ -86,9 +86,14 @@ const lbug = (await import('@ladybugdb/core')).default;
 
 // ---- sizes + the pair enumeration every size is a prefix of ----
 
-const SIZES = [332, 450, 461, 641, 786, 1024];
 const REFERENCE_SIZE = 332; // ratios are relative to this
-const PRODUCTION_SIZE = 461; // the size schema.ts ships
+// Derive production from the same executable DDL the correctness gate
+// round-trips. A LINKABLE_LABELS widening must not require a second copied
+// count here — and cannot silently select a stale/missing budget key.
+const PRODUCTION_SIZE = parseRelationSchemaPairs(RELATION_SCHEMA).size;
+const SIZES = [...new Set([REFERENCE_SIZE, 450, PRODUCTION_SIZE, 641, 786, 1024])].sort(
+  (a, b) => a - b,
+);
 
 // The four pairs the synthetic data uses. Pinned to the FRONT of the
 // enumeration so they are declared at every size — otherwise a smaller pair set
@@ -339,8 +344,13 @@ if (!CHECK) {
   process.stdout.write(JSON.stringify(summary) + '\n');
 } else {
   const baselines = JSON.parse(fs.readFileSync(BASELINE_PATH, 'utf8'));
-  const budget = baselines[`ratio_${PRODUCTION_SIZE}_budget`];
-  if (budget !== undefined && summary[`ratio_${PRODUCTION_SIZE}`] >= budget) {
+  const budgetKey = `ratio_${PRODUCTION_SIZE}_budget`;
+  const budget = baselines[budgetKey];
+  if (budget === undefined) {
+    failures.push(`no ${budgetKey} in baselines.json — the production gate is disarmed`);
+  } else if (typeof budget !== 'number' || !Number.isFinite(budget)) {
+    failures.push(`${budgetKey} must be a finite number (got ${JSON.stringify(budget)})`);
+  } else if (summary[`ratio_${PRODUCTION_SIZE}`] >= budget) {
     failures.push(
       `production pair set (${PRODUCTION_SIZE}) costs ${summary[`ratio_${PRODUCTION_SIZE}`]}× vs ` +
         `${REFERENCE_SIZE} pairs, >= budget ${budget} (untyped ${reference.untyped_ms}ms -> ` +

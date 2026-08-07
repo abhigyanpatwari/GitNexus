@@ -362,8 +362,9 @@ const DEFINITION_ANCHOR_LABELS: readonly NodeTableName[] = NODE_TABLES.filter(
  * `analyze` outright on a user's repo, while an unused DECLARED pair costs
  * almost nothing — `bench/schema-pairs` measured the pre-#2801 332→450 growth
  * (118 pairs, of which these ~47 are a part) at 0.93–1.05×, i.e. inside
- * run-to-run noise. #2801's 11 generated `Record` pairs bring the total to 461,
- * measured at 1.20–1.42× across three stable Windows runs.
+ * run-to-run noise. #2801's 11 generated `Record` pairs bring the total to 461.
+ * Its Windows measurements and noise caveats live in the benchmark README; the
+ * operational production ceiling is the checked 1.5× budget.
  * Every one of the four aborts above came from re-narrowing a set to what one
  * predicate looked like it allowed — so a reading of `isCommunitySymbol` is not
  * grounds to shrink this. Widening either predicate is then a no-op here.
@@ -378,15 +379,16 @@ const DEFINITION_ANCHOR_LABELS: readonly NodeTableName[] = NODE_TABLES.filter(
  * data — untyped-endpoint anchored queries
  * (`MATCH (a {id: $id})-[r:CodeRelation]->(b)`, the shape `impact` / `context` /
  * `detect_changes` issue), relative to the 332-pair hand-list it replaced.
- * The historical reference-box range plus #2801's current production range:
+ * Keep the historical reference-box and current Windows measurements separate:
  *
- *   450 → 0.93–1.05×   461 → 1.20–1.42×   641 → 1.22–1.43×   1024 → 2.03–2.34×
+ *   reference box: 450 → 0.93–1.05×   641 → 1.22–1.43×   1024 → 2.03–2.34×
+ *   Windows:       461 → 1.20–1.42× across three comparable runs
  *
- * 450 was inside historical run-to-run noise; 461 remains below its 1.5×
- * production budget, while the larger pair sets show material growth. The
- * containment half below therefore stays hand-declared instead of becoming a
- * third cross product.
- * Re-run that bench and quote the range — not one run — before proposing one.
+ * Those rows are not a cross-machine ordering. The current operational claim is
+ * only that 461 remains below its 1.5× production budget. The historical
+ * same-box 450→641 comparison still shows the cost of the deferred third cross
+ * product, so the containment half below stays hand-declared. Re-run all
+ * candidate sizes on one box and quote the range before proposing that rule.
  */
 const ATTACHMENT_TARGET_LABELS: readonly NodeTableName[] = [
   'Annotation',
@@ -399,7 +401,7 @@ const ATTACHMENT_TARGET_LABELS: readonly NodeTableName[] = [
 ];
 
 /**
- * The 72 pairs NEITHER rule above generates — everything left after the two
+ * The 69 pairs NEITHER rule above generates — everything left after the two
  * cross products are subtracted. Carried by CONTAINMENT, inheritance, imports
  * and DI: a container label crossed with a contained label. No predicate
  * describes that surface (any container can hold any definition).
@@ -424,9 +426,10 @@ const ATTACHMENT_TARGET_LABELS: readonly NodeTableName[] = [
  * (`DEFINITION_ANCHOR_LABELS × {CodeElement, Section, Typedef, Union,
  * Namespace, Impl, TypeAlias, Static, Template}`) would take the table to 641
  * pairs and leave only ~29 lines here. `bench/schema-pairs` measures 641 at
- * 1.22–1.43× on anchored queries, where production's 450 is inside noise — so
- * that trade buys ~43 fewer hand-written lines for a real ~22–43% on the query
- * shape `impact` uses, which is why it is deferred rather than taken.
+ * 1.22–1.43× on the historical reference box; current production's 461 pairs
+ * remain below their 1.5× Windows budget. Those cross-machine values are not an
+ * ordering, so any proposal must remeasure both sizes on one box. Until then,
+ * the rule stays deferred rather than trading ~40 lines for unmeasured query cost.
  *
  * Exported so `test/unit/schema-pair-coverage.test.ts` can subtract it and
  * assert the GENERATED region of the DDL for exact equality against the two

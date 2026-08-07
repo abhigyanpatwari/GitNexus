@@ -39,7 +39,7 @@ import { CALL_TARGET_TYPES } from '../../src/core/ingestion/model/symbol-table.j
  *    pair …` below is the one that sees it.
  *
  * WHAT THIS FILE CANNOT SEE: a pair hand-added to {@link STRUCTURAL_PAIR_DDL}
- * that NEITHER rule covers — the ~72 containment/inheritance/import pairs
+ * that NEITHER rule covers — the ~69 containment/inheritance/import pairs
  * between two definition labels. That surface has no predicate, so it is
  * bounded by a corpus instead, in
  * `test/integration/structural-pair-coverage.test.ts`.
