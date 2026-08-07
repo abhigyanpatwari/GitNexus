@@ -119,6 +119,7 @@ import type { ConstructorBinding } from '../type-env.js';
 import { detectFrameworkFromAST } from '../framework-detection.js';
 import { generateId } from '../../../lib/utils.js';
 import { defaultExportNameCollides } from '../languages/typescript/cjs-export-assignment.js';
+import { synthesizeLombokAccessors } from '../languages/java/lombok-synthesizer.js';
 import {
   extractVueScript,
   extractTemplateComponents,
@@ -3079,6 +3080,25 @@ const processFileGroup = (
     if (provider.extractRouteInheritanceTypes) {
       const springTypes = provider.extractRouteInheritanceTypes(tree, file.path);
       if (springTypes.length > 0) (result.springTypes ??= []).push(...springTypes);
+    }
+
+    // Lombok accessor synthesis: generate virtual Method nodes for getter/setter
+    // methods that Lombok generates at compile time (@Data/@Getter/@Setter).
+    // Java only — the synthesizer walks the AST for annotated classes.
+    if (language === SupportedLanguages.Java) {
+      // Build class-name → node-ID map from symbols created in this file
+      const classNodeIds = new Map<string, string>();
+      for (const sym of result.symbols) {
+        if (sym.type === 'Class' && sym.name) {
+          classNodeIds.set(sym.name, sym.nodeId);
+        }
+      }
+      const lombok = synthesizeLombokAccessors(tree, file.path, classNodeIds);
+      if (lombok.symbols.length > 0) {
+        for (const node of lombok.nodes) result.nodes.push(node as never);
+        for (const sym of lombok.symbols) result.symbols.push(sym as never);
+        for (const rel of lombok.relationships) result.relationships.push(rel as never);
+      }
     }
 
     // Vue: emit CALLS edges for components used in <template>
