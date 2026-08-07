@@ -248,7 +248,14 @@ import type { ParseWorkerResult } from '../core/ingestion/workers/parse-worker.j
 // them. Only comparing against origin/main at MERGE time surfaces it.
 // PR #2840 (Objective-C, draft) still claims 44 as well — it must move too.
 // RE-CHECK AGAINST origin/main IMMEDIATELY BEFORE MERGING.
-const SCHEMA_BUMP = 45;
+//
+// 46 -> 47: method-level Spring `@RequestMapping` now emits wildcard routes
+// and one route per static `RequestMethod.X` value. These decorator routes live
+// in ParseWorkerResult and are replayed verbatim on warm cache hits, so keeping
+// the previous version would make the fix a no-op for every unchanged Java file.
+// PR #2856 claims 46, so this branch owns 47. Verified against upstream/main at
+// 021ac3037 (still 45). RE-CHECK BEFORE MERGE.
+const SCHEMA_BUMP = 47;
 const GITNEXUS_PKG_VERSION = (() => {
   try {
     // package.json sits at gitnexus/package.json — two levels up from

@@ -1605,10 +1605,8 @@ public class UserController {
       expect(route).toBeDefined();
     });
 
-    it('does NOT emit a provider for @GetMapping(produces = ...) without path/value', async () => {
-      // Anti-regression: without the `key:` constraint, the named-arg
-      // query would capture `produces = "application/json"` and emit
-      // a bogus `http::GET::/application/json` contract.
+    it('emits a root provider for pathless @GetMapping without leaking produces', async () => {
+      // A pathless mapping is valid, but produces metadata must never become a path.
       const dir = path.join(tmpDir, 'spring-produces-only');
       fs.mkdirSync(path.join(dir, 'src/controller'), { recursive: true });
       fs.writeFileSync(
@@ -1628,17 +1626,16 @@ public class MisleadingController {
       const contracts = await extractor.extract(null, dir, makeRepo(dir));
       const providers = contracts.filter((c) => c.role === 'provider');
 
-      // No GET provider should be emitted for this method — the only
-      // string literal in the annotation is a non-route attribute.
+      // The non-route string must not become an /application/json provider.
       expect(
         providers.find((c) => c.contractId === 'http::GET::/application/json'),
       ).toBeUndefined();
-      // And the controller has no other route, so providers list for
-      // this file should be empty.
+      // The mapping itself still contributes one pathless root provider.
       const fromThisFile = providers.filter((c) =>
         c.symbolRef.filePath.endsWith('MisleadingController.java'),
       );
-      expect(fromThisFile).toHaveLength(0);
+      expect(fromThisFile).toHaveLength(1);
+      expect(fromThisFile[0].contractId).toBe('http::GET::/');
     });
 
     it('emits exactly one provider for @GetMapping(name = "...", value = "/users")', async () => {
