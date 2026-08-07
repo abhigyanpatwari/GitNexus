@@ -37,9 +37,10 @@ import { isValueDefinitionLabel } from '../../utils/ast-helpers.js';
 type ReferenceSiteSkipSet = ReadonlySet<string>;
 
 /**
- * Value labels whose defs may be BLOCK-LOCAL. A reference to one of these is
- * only worth an edge when the def lives at module scope — see
- * `moduleScopeValueDefIds`.
+ * Value labels whose defs MAY be function-local. A reference to one of these is
+ * dropped only when the def is positively identified as living inside a function
+ * body — see `functionLocalValueDefIds`. Everything else, including a class
+ * member in a language that keeps no values at module scope, is emitted.
  */
 
 export function emitReferencesViaLookup(
@@ -53,9 +54,9 @@ export function emitReferencesViaLookup(
    *  CALLS emit below BEFORE this loop's `seen` dedup (KTD6/R8). */
   calleeIdSink?: CalleeIdSink,
   /**
-   * Def ids of value symbols bound at MODULE scope. When supplied, a
-   * read/write whose target is a `Const`/`Variable`/`Static` outside this set
-   * emits no edge.
+   * Def ids of value symbols bound inside a FUNCTION body. When supplied, a
+   * read/write whose target is a `Const`/`Variable`/`Static` in this set emits
+   * no edge.
    *
    * Bare-identifier reads (A2) made module-scope constants answerable, but the
    * same capture also matches a read of a BLOCK-LOCAL `const`. An edge to one
@@ -65,9 +66,16 @@ export function emitReferencesViaLookup(
    * question about a module's surface; a local's uses are the three lines
    * around it.
    *
+   * A BLOCKLIST, not an allowlist, and the direction is the point. Asking
+   * "is this def module-level?" silently excludes class members — Java/C#
+   * fields, Python class attributes — which are neither module-level nor local.
+   * Asking "is this def function-local?" excludes only what it can positively
+   * identify, so an unrecognised or uninspected def is emitted. A stray inert
+   * local is recoverable; a deleted edge class reads as "nothing uses this".
+   *
    * Optional so callers that never capture bare identifiers are unchanged.
    */
-  moduleScopeValueDefIds?: ReadonlySet<string>,
+  functionLocalValueDefIds?: ReadonlySet<string>,
 ): { emitted: number; skipped: number } {
   let emitted = 0;
   let skipped = 0;
@@ -108,12 +116,12 @@ export function emitReferencesViaLookup(
         continue;
       }
 
-      // Block-local value reference — see `moduleScopeValueDefIds`.
+      // Function-local value reference — see `functionLocalValueDefIds`.
       if (
-        moduleScopeValueDefIds !== undefined &&
+        functionLocalValueDefIds !== undefined &&
         edgeType === 'ACCESSES' &&
         isValueDefinitionLabel(targetDef.type) &&
-        !moduleScopeValueDefIds.has(targetDef.nodeId)
+        functionLocalValueDefIds.has(targetDef.nodeId)
       ) {
         skipped++;
         continue;

@@ -835,32 +835,57 @@ export function runScopeResolution(
   // were simply absent, which is the confident-empty answer this PR exists to
   // remove.
   //
-  // `Module` is also not the only module level. A `Namespace` scope (TS
-  // `namespace`, Rust `mod`, C++/C# `namespace`) holds importable values too,
-  // and treating its consts as function-locals dropped their edges as well.
-  // Included when the whole chain to the root is Module/Namespace — a namespace
-  // declared inside a function body is a local like anything else there.
-  const moduleScopeValueDefIds = new Set<string>();
-  let moduleScopesInspected = false;
+  // ── The question is "is this def FUNCTION-LOCAL?", so ask exactly that ──
+  //
+  // This was first written as an ALLOWLIST of module-scope value defs, and that
+  // shape carried a defect that only shows outside JavaScript. A value def is
+  // not partitioned into {module-level, block-local}; there is a third home —
+  // a CLASS body. Java/C# fields and Python class attributes live there, and an
+  // allowlist keyed on "module level" excludes all of them by construction.
+  // Worse, the guard written to make that safe could not fire: the set is armed
+  // whenever a Module scope is FOUND, and Java has module scopes while having no
+  // module-level values at all, so for Java it armed permanently empty.
+  //
+  // Inverting it removes the whole class. A BLOCKLIST of defs positively
+  // identified as function-local fails safe: anything the walk does not
+  // recognise — a Java field, a Python class attribute, a language whose scopes
+  // could not be inspected at all — is emitted rather than dropped. That also
+  // retires `moduleScopesInspected`; there is nothing left to arm, because an
+  // empty blocklist and an uninspected one mean the same thing and both mean
+  // "emit". The failure mode moves from "silently deletes a whole edge class"
+  // to "retains an inert local", which is the direction this work wants.
+  //
+  // Built HERE, above the out-of-core seal, and deliberately from `parsedFiles`
+  // rather than `emitParsedFiles`. The seal below replaces the latter with a
+  // scope-STRIPPED copy, so building this after it walked `scopes: []` for every
+  // file and produced an empty set. Under the old allowlist that read as "no def
+  // is module-level" and dropped EVERY `Const`/`Variable`/`Static` ACCESSES edge
+  // in the repo on the one path (`GITNEXUS_DISK_SCOPE_INDEX=1`) taken by the
+  // largest repos. Under the blocklist the same mistake would merely stop
+  // filtering — still wrong, still worth the ordering, no longer catastrophic.
+  //
+  // A scope is function-local when its chain to the root passes through a
+  // `Function`. `Block`/`Expression`/`Object` alone are not enough: a bare block
+  // at module level still holds module-level values, and a `Namespace` nested in
+  // a function IS local, which the chain walk gets right for free.
+  const functionLocalValueDefIds = new Set<string>();
   for (const parsed of parsedFiles) {
     const scopeById = new Map(parsed.scopes.map((sc) => [sc.id, sc]));
     for (const scope of parsed.scopes) {
-      if (scope.kind !== 'Module' && scope.kind !== 'Namespace') continue;
-      let ancestor = scope.parent === null ? undefined : scopeById.get(scope.parent);
-      let atModuleLevel = true;
-      while (ancestor !== undefined) {
-        if (ancestor.kind !== 'Module' && ancestor.kind !== 'Namespace') {
-          atModuleLevel = false;
+      let cursor: typeof scope | undefined = scope;
+      let insideFunction = false;
+      while (cursor !== undefined) {
+        if (cursor.kind === 'Function') {
+          insideFunction = true;
           break;
         }
-        ancestor = ancestor.parent === null ? undefined : scopeById.get(ancestor.parent);
+        cursor = cursor.parent === null ? undefined : scopeById.get(cursor.parent);
       }
-      if (!atModuleLevel) continue;
-      moduleScopesInspected = true;
+      if (!insideFunction) continue;
       for (const [, refs] of scope.bindings) {
         for (const ref of refs) {
           if (isValueDefinitionLabel(ref.def.type)) {
-            moduleScopeValueDefIds.add(ref.def.nodeId);
+            functionLocalValueDefIds.add(ref.def.nodeId);
           }
         }
       }
@@ -1009,12 +1034,11 @@ export function runScopeResolution(
         postHeritageNodeLookup,
         referenceSkipSites,
         calleeIdAccumulator,
-        // FAIL OPEN, not closed. An empty set is a legitimate answer ("this repo
-        // has no module-level value defs, so every such target is a local"), but
-        // it is indistinguishable from "the scopes could not be inspected" — and
-        // in the second case arming the filter deletes a whole edge class. Only
-        // pass the set when scopes were actually walked.
-        moduleScopesInspected ? moduleScopeValueDefIds : undefined,
+        // A blocklist, so it needs no arming: empty means "nothing identified as
+        // function-local", which is also what an uninspected repo means, and
+        // both correctly emit. See the build site above for why the earlier
+        // allowlist could not be made safe this way.
+        functionLocalValueDefIds,
       );
   // Last-resort property resolution by workspace-unique name (A1/A5). Runs
   // after every precise pass and only sees what they left behind, so a
