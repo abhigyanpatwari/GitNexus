@@ -145,16 +145,74 @@ describe('JavaScript plain-object property access (A1/A5)', () => {
       expect(writersOf('destructuredOnlyField')).toContain('buildFlat');
     });
 
-    // The point of modelling these as writes rather than definitions: more
-    // definitions would add same-named competitors to the narrowing that makes
-    // these fields resolvable in the first place.
-    it('mints NO new definition for a constructed record', () => {
-      expect(propertyNames().filter((n) => n === 'destructuredOnlyField')).toHaveLength(1);
+    // This asserted `toHaveLength(1)` — no new definition — until R3-4 began
+    // anchoring returned literals, which mints exactly one here (`buildFlat`'s
+    // return shape). The assertion was the right instinct expressed as the
+    // wrong invariant: what R2-1b actually protects is that adding definitions
+    // must not move an answer that already resolved, and node count was a proxy
+    // for that. The property itself is now asserted directly, and it holds
+    // because narrowing ranks declared anchors above return shapes.
+    it('keeps the DECLARED definition winning despite a return-shape sibling', () => {
+      const nodes = propertyNames().filter((n) => n === 'destructuredOnlyField');
+      expect(nodes.length).toBeGreaterThan(1);
+      // Every reader still resolves, and to the declared home — a read that had
+      // dropped to ambiguous would show up as a missing edge here.
+      for (const reader of ['appliesDestructured', 'appliesShorthand', 'appliesRenamed']) {
+        expect(readersOf('destructuredOnlyField')).toContain(reader);
+      }
     });
 
     it('leaves an inline call-argument prop bag alone', () => {
       expect(propertyNames()).not.toContain('notAConstructedField');
       expect(writersOf('notAConstructedField')).toEqual([]);
+    });
+  });
+
+  // R3-4. The dominant shape in idiomatic JS and the one with no anchor at all:
+  // 437 `return {` sites in a single backend directory of the reporting repo,
+  // including the ~25-field payload of its whole signal pipeline. The literal
+  // binds to nothing, so its keys could not even be named.
+  describe('anonymous returned object literals (R3-4)', () => {
+    it('indexes keys of a literal returned from a named function', () => {
+      expect(propertyNames()).toContain('returnShapeOnlyField');
+    });
+
+    it('resolves a read of a return-shape key', () => {
+      expect(readersOf('returnShapeOnlyField')).toContain('readsReturnShape');
+    });
+
+    // `{ symbol, interval, score }` is the commonest spelling of all and
+    // `(pair)` does not match it — tree-sitter models it as
+    // `shorthand_property_identifier`, where the key IS the value. Caught by
+    // dumping the golden fixture and seeing that a literal returning
+    // `{ level, message, timestamp: Date.now() }` had indexed only `timestamp`.
+    it('indexes SHORTHAND keys, not just explicit pairs', () => {
+      expect(propertyNames()).toContain('shorthandOnlyField');
+    });
+
+    // Qualified by the owning function, so two functions returning the same key
+    // are two shapes rather than one merged symbol — the same collision
+    // `ownerName` prevents for variable-bound literals.
+    it('qualifies by the owning function', () => {
+      const ids = Array.from(
+        (result as unknown as { graph: { iterNodes(): Iterable<PropNode> } }).graph.iterNodes(),
+      )
+        .filter((n) => n.label === 'Property')
+        .map((n) => String(n.id));
+      expect(ids.some((id) => id.includes('formatAlert.returnShapeOnlyField'))).toBe(true);
+      expect(ids.some((id) => id.includes('formatSummary.summaryOnlyField'))).toBe(true);
+    });
+
+    // THE GUARANTEE that reconciles this with R2-1b. `sharedWithDeclared` is
+    // both a named-object key and a return-shape key; a read must still resolve
+    // to the DECLARED one, or indexing return shapes would silently move
+    // answers that already worked.
+    it('never outranks a declared anchor', () => {
+      expect(readersOf('sharedWithDeclared')).toContain('readsShared');
+      const declaredWins = getRelationships(result, 'ACCESSES').filter(
+        (e) => e.target === 'sharedWithDeclared' && e.source === 'readsShared',
+      );
+      expect(declaredWins.length).toBeGreaterThan(0);
     });
   });
 

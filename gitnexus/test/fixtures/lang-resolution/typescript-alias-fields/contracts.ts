@@ -44,6 +44,11 @@ export type NestedConfig = {
 };
 
 // Inline RETURN type — the third position the unanchored rule reached.
-export function buildInline(): { inlineReturnOnlyKey: number } {
-  return { inlineReturnOnlyKey: 1 };
+// The TYPE annotation's member and the returned VALUE's key are named
+// differently ON PURPOSE. They are separate rules with opposite expectations —
+// an inline return TYPE must mint nothing (RV-4), while a returned literal's
+// keys are a function's return shape and must mint (R3-4) — and sharing a name
+// left the RV-4 assertion unable to tell which rule produced the node.
+export function buildInline(): { inlineReturnTypeOnlyKey: number } {
+  return { inlineReturnValueOnlyKey: 1 } as never;
 }

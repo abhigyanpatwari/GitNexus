@@ -289,7 +289,18 @@ import type { ParseWorkerResult } from '../core/ingestion/workers/parse-worker.j
 // clashes. It is NOT on this branch, so until that one merges the re-check
 // below is still manual.
 // RE-CHECK AGAINST origin/main IMMEDIATELY BEFORE MERGING.
-const SCHEMA_BUMP = 48;
+// 48 -> 49 for the return-shape and shorthand captures (R3-4): keys of an
+// anonymous literal in return position, and shorthand keys in both that and the
+// variable-bound form. Parse-time again.
+//
+// The v34 hazard, and this branch has already tripped it: a build stamped 48
+// was installed and used to analyze two repos BEFORE these captures existed, so
+// caches stamped 48 exist that carry none of them. Within one PR the version
+// only has to differ from main's, but an INTERMEDIATE build of the same series
+// is a different capture set wearing the same number — which is exactly what
+// the note above records for 33/34.
+// RE-CHECK AGAINST origin/main IMMEDIATELY BEFORE MERGING.
+const SCHEMA_BUMP = 49;
 const GITNEXUS_PKG_VERSION = (() => {
   try {
     // package.json sits at gitnexus/package.json — two levels up from
