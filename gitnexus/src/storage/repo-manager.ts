@@ -201,7 +201,32 @@ export interface RepoMeta {
    */
   capabilities?: {
     graph: { provider: string; status: 'available' | 'degraded' | 'unavailable' };
-    fts: { provider: string; status: 'available' | 'degraded' | 'unavailable' };
+    fts: {
+      provider: string;
+      status: 'available' | 'degraded' | 'unavailable';
+      /**
+       * Why THIS run ended up without search indexes, when `status` is
+       * `'unavailable'` (#2841). Mirrors `AnalysisResult.ftsSkipReason` in
+       * core/run-analyze.ts — the same discriminator that surface already
+       * reports to the CLI, persisted rather than re-derived because the two
+       * causes need OPPOSITE handling on the next run:
+       *
+       *  - `extension-unavailable` — the FTS extension could not load. Healable
+       *    from outside the repo (install it), so the up-to-date fast path
+       *    probes whether it loads now and re-analyzes when it does.
+       *  - `build-failed` — the extension loaded fine and the index BUILD
+       *    failed (e.g. one un-tokenizable pre-existing row, #2544/#2546).
+       *    Deterministic: the same probe would "heal" it into a full
+       *    re-analysis that degrades identically and restamps, forever. Only
+       *    `--repair-fts` or a content change addresses it.
+       *
+       * Collapsing both into `status: 'unavailable'` is exactly what made that
+       * loop reachable. ABSENT on indexes written before #2841 and on the
+       * `--repair-fts` stamp (which writes `status: 'available'`); `undefined`
+       * therefore reads as "cause unknown" and keeps the pre-#2841 behaviour.
+       */
+      skipReason?: 'extension-unavailable' | 'build-failed';
+    };
     vectorSearch: {
       provider: string;
       status: 'vector-index' | 'exact-scan' | 'unavailable';
