@@ -3,6 +3,7 @@ import { logger } from '../../../logger.js';
 import { isClassLike, populateClassOwnedMembers } from '../../scope-resolution/scope/walkers.js';
 
 import { goPackageDir, inferGoPackageName } from './package-clause.js';
+import { stampGoInterfaceTypeParameters } from './generic-type-parameters.js';
 
 /** Bound on the sample of no-package-clause paths named in the warning. */
 const SKIPPED_SAMPLE_CAP = 5;
@@ -32,6 +33,13 @@ export function populateGoWorkspaceOwners(
   parsedFiles: readonly ParsedFile[],
   ctx: { readonly fileContents: ReadonlyMap<string, string> },
 ): void {
+  // Generic interfaces get their type-parameter list stamped here rather than at
+  // capture time, because this is the first main-thread hook that sees BOTH the
+  // parsed scopes and the file text (it already reads `fileContents` for the
+  // package clause). `detectGoInterfaceImplementations` runs later in the same
+  // pass and is the only reader. See `stampGoInterfaceTypeParameters`.
+  stampGoInterfaceTypeParameters(parsedFiles, ctx.fileContents);
+
   const filesByPackage = new Map<string, ParsedFile[]>();
   // A file with no resolvable package clause is dropped from ownership
   // resolution entirely — its methods never attach to a struct declared in a

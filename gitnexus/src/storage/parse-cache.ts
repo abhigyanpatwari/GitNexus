@@ -255,7 +255,52 @@ import type { ParseWorkerResult } from '../core/ingestion/workers/parse-worker.j
 // the previous version would make the fix a no-op for every unchanged Java file.
 // PR #2856 claims 46, so this branch owns 47. Verified against upstream/main at
 // 021ac3037 (still 45). RE-CHECK BEFORE MERGE.
-const SCHEMA_BUMP = 47;
+
+// 47 -> 48: #2833 makes a generic-typed FIELD usable as a call receiver. Three
+// parse-time changes ride on this one value:
+//   - C++ (`languages/cpp/query.ts`) gains `field_declaration` rules whose
+//     `type:` is a `template_type` or a `qualified_identifier` wrapping one.
+//     The rules that existed all required a bare `type_identifier`, so
+//     `Repo<User> repo;` and `std::vector<Item> items;` matched NONE of them and
+//     the member got no type binding at all — new captures where there were none.
+//   - Python (`languages/python/interpret.ts`) reduces a subscripted type its
+//     container allow-lists do not claim to its base name, so `Repo[User]` binds
+//     as `Repo`. That rewrites `TypeRef.rawName`, which is serialized into the
+//     cached ParsedFile.
+//   - `SymbolDefinition.typeParameters` — the DECLARED parameter list
+//     (`template <class T>`, `class Box<T extends Repo>`), captured nowhere
+//     before and on a different axis from the existing `templateArguments`. Six
+//     per-language declaration queries gained `@declaration.type-parameters` and
+//     `scope-extractor.ts` reads it onto every class-like def.
+// A warm cache would replay the pre-fix ParsedFiles, so every file served from
+// it would carry the old captures while passing every cold-run test — the exact
+// failure this constant exists to prevent.
+//
+// WHAT THE BUMP DOES NOT COVER. It invalidates the PARSE half only. Whether the
+// re-parsed captures reach the graph is a separate gate: `isIncremental`
+// (`core/run-analyze.ts`) tests `!options.force`, an existing meta,
+// `!schemaFingerprintMismatch(...)`, feature parity, non-empty `fileHashes` and
+// a git repo — SCHEMA_BUMP appears in none of them — and an incremental run then
+// writes back only `hashDiff.toWrite`, logging the rest as "unchanged file rows
+// preserved". SCHEMA_FINGERPRINT is a hash of node/relation DDL, which this
+// branch does not touch, so it is byte-identical and moves nothing either.
+// Net: after this bump an incremental analyze re-parses an unchanged file
+// correctly but keeps its existing rows, and the new edges land on the next full
+// rebuild (`--force`, or any run whose runner identity or DDL moved). That is
+// the pre-existing contract for every capture change, not a regression here.
+//
+// THIS BRANCH COLLIDED TWICE, which is why it lands on 48 rather than 46.
+// It first took 46 (the C++/Python captures) and then 47 (typeParameters), both
+// verified free against origin/main at 021ac3037. By merge time main had moved:
+// #2856 claims 46 and #2857 took 47 and merged first. The eleventh entry in this
+// ledger and the FOURTH and FIFTH exact clashes — and note what caught them.
+// Not the pin test: this branch asserted `toBe(47)` and so did #2857, and both
+// pass, because a literal pin cannot see the other side. Only diffing
+// origin/main at the moment of merge surfaces it. Every value this branch
+// published (46, 47) is superseded by 48, so a warm cache stamped with either is
+// correctly invalidated.
+// RE-CHECK AGAINST origin/main IMMEDIATELY BEFORE MERGING.
+const SCHEMA_BUMP = 48;
 const GITNEXUS_PKG_VERSION = (() => {
   try {
     // package.json sits at gitnexus/package.json — two levels up from
