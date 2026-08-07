@@ -141,15 +141,24 @@ describe('PARSE_CACHE_VERSION', () => {
   // a row. Same lesson as the note above — the pin cannot detect the tie, since
   // both sides asserted `toBe(45)` and that passes while main is already 45.
   // Only the merge-time diff against origin/main surfaces it.
-  // Moved 49 -> 50 for dispatch-guard routes (R3-7): the JS/TS providers now
+  //
+  // Moved 46 -> 47 for method-level Spring `@RequestMapping` routes (#2857):
+  // cached ParseWorkerResults otherwise replay the pre-fix empty route set.
+  // That PR read this branch's claim on 46 and took 47 rather than colliding —
+  // the FIFTH clash, and the first the ledger's convention actually prevented.
+  // It only moved the collision up one step, though: this branch's own 47 and
+  // everything above it had to be renumbered +1 at merge time. Capture sets
+  // unchanged; only the numbers moved.
+  //
+  // Moved 50 -> 51 for dispatch-guard routes (R3-7): the JS/TS providers now
   // implement `extractDecoratorRoutes`, and decorator routes are worker output
-  // carried in the cache. A v49 warm cache replays a worker result whose
+  // carried in the cache. A v50 warm cache replays a worker result whose
   // `decoratorRoutes` predates the extractor, so `route_map` keeps answering
   // empty — the exact symptom the change fixes, disguised as "it does not work".
-  // Moved 50 -> 51 for the same-file constant folding that followed, because a
-  // build stamped 50 had already been used to analyze without it.
-  it('pins SCHEMA_BUMP to 51 so concurrent bumps cannot silently collide (#2766)', () => {
-    expect(Number(PARSE_CACHE_VERSION.split('+', 1)[0])).toBe(51);
+  // Moved 51 -> 52 for the same-file constant folding that followed, because a
+  // build stamped 50 (now 51) had already been used to analyze without it.
+  it('pins SCHEMA_BUMP to 52 so concurrent bumps cannot silently collide (#2766)', () => {
+    expect(Number(PARSE_CACHE_VERSION.split('+', 1)[0])).toBe(52);
   });
 
   it('embeds the gitnexus package version (so upgrades invalidate the cache)', () => {
