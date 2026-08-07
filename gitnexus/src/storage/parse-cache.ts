@@ -272,9 +272,22 @@ import type { ParseWorkerResult } from '../core/ingestion/workers/parse-worker.j
 //     before and on a different axis from the existing `templateArguments`. Six
 //     per-language declaration queries gained `@declaration.type-parameters` and
 //     `scope-extractor.ts` reads it onto every class-like def.
-// A warm cache would replay the pre-fix ParsedFiles and the whole fix would be a
-// silent no-op on every incremental analyze while passing every cold-run test —
-// the exact failure this constant exists to prevent.
+// A warm cache would replay the pre-fix ParsedFiles, so every file served from
+// it would carry the old captures while passing every cold-run test — the exact
+// failure this constant exists to prevent.
+//
+// WHAT THE BUMP DOES NOT COVER. It invalidates the PARSE half only. Whether the
+// re-parsed captures reach the graph is a separate gate: `isIncremental`
+// (`core/run-analyze.ts`) tests `!options.force`, an existing meta,
+// `!schemaFingerprintMismatch(...)`, feature parity, non-empty `fileHashes` and
+// a git repo — SCHEMA_BUMP appears in none of them — and an incremental run then
+// writes back only `hashDiff.toWrite`, logging the rest as "unchanged file rows
+// preserved". SCHEMA_FINGERPRINT is a hash of node/relation DDL, which this
+// branch does not touch, so it is byte-identical and moves nothing either.
+// Net: after this bump an incremental analyze re-parses an unchanged file
+// correctly but keeps its existing rows, and the new edges land on the next full
+// rebuild (`--force`, or any run whose runner identity or DDL moved). That is
+// the pre-existing contract for every capture change, not a regression here.
 //
 // THIS BRANCH COLLIDED TWICE, which is why it lands on 48 rather than 46.
 // It first took 46 (the C++/Python captures) and then 47 (typeParameters), both
