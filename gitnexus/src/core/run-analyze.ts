@@ -2383,7 +2383,20 @@ async function runFullAnalysisInner(
         // throwaway file and keeps the live index) — and `forceRealCloseForSwap`
         // engages on Windows, which is why the upgrade is gated on the same
         // `posixSwap || windowsSwapOk` policy that governs every other swap.
-        if (!useAtomicSwap && (posixSwap || windowsSwapOk)) {
+        // …but NOT when we are escalating out of ignorance. An unreadable
+        // catalog means `CALL SHOW_INDEXES()` itself failed, which on a real
+        // index means the store is damaged — e.g. a stray directory sitting at
+        // `lbug.wal.checkpoint` makes every open of that path an IO exception.
+        // Staging would then quietly write a fresh index NEXT to the damage,
+        // swap it in, and exit 0: the run "succeeds", the broken sidecar
+        // survives untouched, and the next in-place writeback trips over it
+        // again. Building in place keeps the underlying IO fault on the failure
+        // path where the operator gets a diagnosis (this is what
+        // `analyze-wal-checkpoint-failure.test.ts` pins). Staging protects a
+        // HEALTHY live index from a machine-level cause; it must not be used to
+        // route around a damaged one.
+        const catalogWasReadable = indexCatalogRows !== INDEX_CATALOG_UNREADABLE;
+        if (catalogWasReadable && !useAtomicSwap && (posixSwap || windowsSwapOk)) {
           useAtomicSwap = true;
           buildPath = `${lbugPath}.staging.${randomUUID()}`;
           log(
