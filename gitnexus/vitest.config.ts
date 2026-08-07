@@ -101,6 +101,20 @@ export default defineConfig({
             'test/integration/impact-ambiguous-blast-radius.test.ts',
             'test/unit/incremental-dirty-recovery.test.ts',
             'test/unit/incremental-orchestration.test.ts',
+            // #2841. Native @ladybugdb/core: it runs real analyses, reopens the
+            // DB under different extension-install policies, and reads
+            // SHOW_INDEXES on the writable connection — exactly the mmap
+            // file-lock exposure this project exists to serialize (TESTING.md
+            // § Vitest projects). Registering it here does NOT narrow where it
+            // runs: vitest applies `--shard` once to the combined cross-project
+            // spec list (PerfSequencer/assignShards is a complete, disjoint
+            // partition), and run-cross-platform.ts hands vitest explicit file
+            // paths, which resolve against every project's include list. Its
+            // `incremental-vector-extension-ordering` /
+            // `incremental-fts-drop-ordering` siblings are equally native and
+            // still sit in `default` — pre-existing drift, deliberately left
+            // alone here.
+            'test/unit/incremental-index-extension-dml-gate.test.ts',
           ],
           fileParallelism: false,
           sequence: { groupOrder: 1 },
@@ -152,6 +166,9 @@ export default defineConfig({
             'test/integration/impact-ambiguous-blast-radius.test.ts',
             'test/unit/incremental-dirty-recovery.test.ts',
             'test/unit/incremental-orchestration.test.ts',
+            // Excluded here because it is included by `lbug-db` above; a file
+            // in two projects would be collected (and run) twice.
+            'test/unit/incremental-index-extension-dml-gate.test.ts',
           ],
         },
       },
