@@ -15,7 +15,7 @@ describe('Spring Bean Class persistence schema', () => {
     expect(CLASS_SCHEMA).toContain('frameworkAnnotations STRING[]');
 
     expect(getCopyQuery('Class', '/tmp/class.csv')).toContain(
-      '(id, name, filePath, startLine, endLine, isExported, content, description, frameworkAnnotations)',
+      '(id, name, filePath, startLine, endLine, isExported, isTestCode, content, description, frameworkAnnotations)',
     );
   });
 

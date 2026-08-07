@@ -49,6 +49,7 @@ CREATE NODE TABLE Function (
   startLine INT64,
   endLine INT64,
   isExported BOOLEAN,
+  isTestCode BOOLEAN,
   content STRING,
   description STRING,
   PRIMARY KEY (id)
@@ -62,6 +63,7 @@ CREATE NODE TABLE Class (
   startLine INT64,
   endLine INT64,
   isExported BOOLEAN,
+  isTestCode BOOLEAN,
   content STRING,
   description STRING,
   frameworkAnnotations STRING[],
@@ -76,6 +78,7 @@ CREATE NODE TABLE Interface (
   startLine INT64,
   endLine INT64,
   isExported BOOLEAN,
+  isTestCode BOOLEAN,
   content STRING,
   description STRING,
   PRIMARY KEY (id)
@@ -89,6 +92,7 @@ CREATE NODE TABLE Method (
   startLine INT64,
   endLine INT64,
   isExported BOOLEAN,
+  isTestCode BOOLEAN,
   content STRING,
   description STRING,
   parameterCount INT32,
@@ -104,6 +108,7 @@ CREATE NODE TABLE CodeElement (
   startLine INT64,
   endLine INT64,
   isExported BOOLEAN,
+  isTestCode BOOLEAN,
   content STRING,
   description STRING,
   PRIMARY KEY (id)
