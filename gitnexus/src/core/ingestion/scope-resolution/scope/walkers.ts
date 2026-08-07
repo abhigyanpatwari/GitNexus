@@ -20,7 +20,14 @@
  * as-is for TypeScript, Java, Kotlin, Ruby, etc.
  */
 
-import type { BindingRef, ParsedFile, ScopeId, SymbolDefinition, TypeRef } from 'gitnexus-shared';
+import type {
+  BindingRef,
+  ParsedFile,
+  ScopeId,
+  SymbolDefinition,
+  TypeParameter,
+  TypeRef,
+} from 'gitnexus-shared';
 import type { ScopeResolutionIndexes } from '../../model/scope-resolution-indexes.js';
 import type { SemanticModel } from '../../model/semantic-model.js';
 import type { WorkspaceResolutionIndex } from '../workspace-index.js';
@@ -441,6 +448,162 @@ export type DecorationStripper = (typeName: string) => string | undefined;
  *  shallowly (`*[]T`, `const T&`); three layers is generous. */
 const MAX_DECORATION_LAYERS = 3;
 
+/** Memo for {@link typeParameterNamesInScope}, keyed by index bundle then
+ *  scope. One bundle per model, so the outer WeakMap releases with it. */
+const typeParameterNamesByBundle = new WeakMap<
+  ScopeResolutionIndexes,
+  Map<ScopeId, ReadonlySet<string>>
+>();
+
+const NO_TYPE_PARAMETERS: ReadonlySet<string> = Object.freeze(new Set<string>());
+
+/**
+ * Every name the scope chain above `scopeId` (inclusive) binds as a declared
+ * TYPE PARAMETER.
+ *
+ * Memoized per scope, and each scope's answer is built from its PARENT's, so a
+ * chain is walked once and every scope on it is O(own defs) rather than
+ * O(depth × defs). That matters because the caller runs on every class-binding
+ * lookup, and a module scope's `ownedDefs` is the whole file.
+ */
+function typeParameterNamesInScope(
+  scopeId: ScopeId,
+  scopes: ScopeResolutionIndexes,
+): ReadonlySet<string> {
+  let byScope = typeParameterNamesByBundle.get(scopes);
+  if (byScope === undefined) {
+    byScope = new Map<ScopeId, ReadonlySet<string>>();
+    typeParameterNamesByBundle.set(scopes, byScope);
+  }
+  const memo = byScope.get(scopeId);
+  if (memo !== undefined) return memo;
+
+  // Collect the chain first, then fold from the top down, so the recursion is
+  // an explicit loop (a deep scope chain must not risk the call stack) and
+  // every scope passed through is memoized on the way back.
+  const chain: ScopeId[] = [];
+  const seen = new Set<ScopeId>();
+  let cursor: ScopeId | null = scopeId;
+  let inherited: ReadonlySet<string> = NO_TYPE_PARAMETERS;
+  while (cursor !== null && !seen.has(cursor)) {
+    seen.add(cursor);
+    const cached = byScope.get(cursor);
+    if (cached !== undefined) {
+      inherited = cached;
+      break;
+    }
+    chain.push(cursor);
+    cursor = scopes.scopeTree.getScope(cursor)?.parent ?? null;
+  }
+
+  for (let i = chain.length - 1; i >= 0; i -= 1) {
+    const id = chain[i]!;
+    const scope = scopes.scopeTree.getScope(id);
+    let own: Set<string> | undefined;
+    for (const def of scope?.ownedDefs ?? []) {
+      for (const parameter of def.typeParameters ?? []) {
+        if (parameter.name.length === 0) continue;
+        own ??= new Set<string>(inherited);
+        own.add(parameter.name);
+      }
+    }
+    inherited = own ?? inherited;
+    byScope.set(id, inherited);
+  }
+  return inherited;
+}
+
+/**
+ * Does the scope chain at `scopeId` bind `name` as a declared TYPE PARAMETER?
+ *
+ * The question a class-binding lookup has to ask before it answers, because a
+ * type parameter and a class are spelled identically and only the declaration
+ * says which one a name is. `class Box<T> { t: T }` beside a workspace
+ * `export class T` resolved `t` to the CLASS and emitted a confident wrong edge
+ * from every member call on `t` — the exact failure mode this subsystem treats
+ * as worse than a missing edge.
+ *
+ * WHY LEXICAL GROUNDING CANNOT SUBSTITUTE. The erasure grounds in
+ * `resolveErasedBaseName` all ask "can the file SEE a declaration by this
+ * name", and here it plainly can: `export class T` is imported, bound, and
+ * lexically visible. Visibility is not the defect — the name means something
+ * else at this site regardless of what else is visible, and only the enclosing
+ * declaration's parameter list records that. Measured: with the grounding rule
+ * in place the false edge still emitted.
+ *
+ * ABSENCE IS NOT EVIDENCE. `typeParameters` is populated only by the languages
+ * whose captures were extended for it, and is absent both for a non-generic
+ * declaration and for every declaration in a language that does not populate it
+ * yet. So only a POSITIVE match declines; an absent list changes nothing, which
+ * is what keeps every unconverted language behaving exactly as it does today.
+ */
+export function bindsTypeParameter(
+  scopeId: ScopeId,
+  name: string,
+  scopes: ScopeResolutionIndexes,
+): boolean {
+  if (name.length === 0) return false;
+  return typeParameterNamesInScope(scopeId, scopes).has(name);
+}
+
+/**
+ * The declared parameter `name` refers to at `scopeId`, nearest declaration
+ * first, or `undefined` when `name` is not a type parameter here.
+ *
+ * Separate from {@link bindsTypeParameter} because the guard only needs to know
+ * THAT a name is a parameter, while resolving through a bound needs the
+ * parameter itself — and the memoized name set deliberately keeps no payload so
+ * that the guard, which runs on every lookup, stays a single hash probe.
+ */
+function typeParameterAt(
+  scopeId: ScopeId,
+  name: string,
+  scopes: ScopeResolutionIndexes,
+): TypeParameter | undefined {
+  let cursor: ScopeId | null = scopeId;
+  const seen = new Set<ScopeId>();
+  while (cursor !== null && !seen.has(cursor)) {
+    seen.add(cursor);
+    const scope = scopes.scopeTree.getScope(cursor);
+    for (const def of scope?.ownedDefs ?? []) {
+      const hit = def.typeParameters?.find((parameter) => parameter.name === name);
+      if (hit !== undefined) return hit;
+    }
+    cursor = scope?.parent ?? null;
+  }
+  return undefined;
+}
+
+/**
+ * The single class-like name a declared bound names, or `undefined` when the
+ * bound names none or names more than one.
+ *
+ * DECLINING ON AN INTERSECTION is the point. `T extends Repo & Closeable` and
+ * `T: Repo + Clone` make a member reachable through EITHER bound, so picking one
+ * — the first, as erasure would — mints a confidently-attributed edge to a
+ * declaration that may not own the member at all. Two candidates and no way to
+ * choose is exactly the case this file already answers with `undefined` in
+ * `findClassBindingInScope`'s decoration fallback: a missing edge is
+ * recoverable, a wrong one is not.
+ *
+ * Type ARGUMENTS on the bound are erased (`T extends Repo<User>` → `Repo`),
+ * which is sound here for the same reason the erased base-name route exists: the
+ * members are declared once, on the declaration written against its parameters.
+ */
+function soleBoundBaseName(bound: string): string | undefined {
+  // `&` (Java, TypeScript) and `+` (Rust, Kotlin) both compose bounds. Split on
+  // whichever appears OUTSIDE brackets, so `Repo<A & B>` stays one bound.
+  let depth = 0;
+  for (let i = 0; i < bound.length; i += 1) {
+    const ch = bound[i];
+    if (ch === '<' || ch === '(' || ch === '[' || ch === '{') depth += 1;
+    else if (ch === '>' || ch === ')' || ch === ']' || ch === '}') depth -= 1;
+    else if (depth === 0 && (ch === '&' || ch === '+')) return undefined;
+  }
+  const base = stripTemplateArguments(bound).trim();
+  return base.length === 0 ? undefined : base;
+}
+
 export function findClassBindingInScope(
   startScope: ScopeId,
   receiverName: string,
@@ -458,6 +621,16 @@ export function findClassBindingInScope(
    */
   stripDecoration?: DecorationStripper,
 ): SymbolDefinition | undefined {
+  // A TYPE PARAMETER is not a class, and it is checked before every route below
+  // rather than inside one of them because each route would otherwise reach a
+  // same-named class by its own channel: the scope chain when the class is
+  // imported, the qualified-name index when it is not, and the decoration
+  // fallback after stripping. The declaration that introduced the parameter is
+  // the only thing that knows, and it knows for all three.
+  if (bindsTypeParameter(startScope, receiverName, scopes)) {
+    return resolveThroughTypeParameterBound(startScope, receiverName, scopes, stripDecoration);
+  }
+
   const local = walkScopeChain(startScope, receiverName, scopes, (def) => isClassLike(def.type));
   if (local !== undefined) return local;
 
@@ -502,6 +675,36 @@ export function findClassBindingInScope(
     }
   }
   return undefined;
+}
+
+/**
+ * What a TYPE PARAMETER used in type position resolves to — its declared BOUND
+ * when it states exactly one, and nothing when it is unbounded.
+ *
+ * `class Box<T extends Repo> { t: T; run() { this.t.save(); } }` has one sound
+ * answer for `this.t.save()`: the member set a `T` is GUARANTEED to have is its
+ * bound's, so `Repo.save` is the target the declaration itself licenses. An
+ * unbounded `class Box2<T>` licenses nothing — `T` has no members — and gets
+ * `undefined`, which is the whole of the Gap-C fix.
+ *
+ * ONE HOP ONLY. The retry is guarded against a bound that is itself a parameter
+ * (`class Box<T extends U, U extends Repo>`), so the recursion cannot chain or
+ * cycle. Following such a chain is sound in principle but has no measured case
+ * behind it, and an unbounded step in the middle would have to decline anyway.
+ */
+function resolveThroughTypeParameterBound(
+  startScope: ScopeId,
+  parameterName: string,
+  scopes: ScopeResolutionIndexes,
+  stripDecoration?: DecorationStripper,
+): SymbolDefinition | undefined {
+  const bound = typeParameterAt(startScope, parameterName, scopes)?.bound;
+  if (bound === undefined) return undefined;
+  const baseName = soleBoundBaseName(bound);
+  if (baseName === undefined || baseName === parameterName) return undefined;
+  // A bound naming another parameter terminates here rather than recursing.
+  if (bindsTypeParameter(startScope, baseName, scopes)) return undefined;
+  return findClassBindingInScope(startScope, baseName, scopes, stripDecoration);
 }
 
 function normalizeTemplateArgToken(value: string): string {
@@ -556,6 +759,101 @@ function matchingTemplateArguments(
       defArgs.every((value, i) => value === wantedArgs[i])
     );
   });
+}
+
+/**
+ * Class-like defs the SCOPE CHAIN binds for `name` — locals, imports, wildcards,
+ * namespace siblings; everything `findAllBindingsInScope` reaches. No
+ * workspace-index fallback, which is the entire point: this is the set that
+ * answers "can the file see a declaration by this name", and
+ * `findAllClassBindingsInScope` deliberately cannot answer it because it falls
+ * through to the scope-free index when the chain is silent.
+ */
+function lexicalClassBindingsInScope(
+  startScope: ScopeId,
+  name: string,
+  scopes: ScopeResolutionIndexes,
+): readonly SymbolDefinition[] {
+  return findAllBindingsInScope(startScope, name, scopes, (def) => isClassLike(def.type));
+}
+
+/**
+ * The one declaration among `candidates` written against its PARAMETERS rather
+ * than against particular arguments — or `undefined` when there is not exactly
+ * one.
+ *
+ * ORDER-INDEPENDENT by construction, and that is why it exists separately from
+ * "take the first": an unordered candidate set (the workspace index, whose order
+ * is insertion order) must never let source order decide a call target. The
+ * scope-chain route keeps its nearest-first answer; only the index routes use
+ * this.
+ */
+function theInstantiationAgnosticDeclaration(
+  candidates: readonly SymbolDefinition[],
+): SymbolDefinition | undefined {
+  const parameterized = candidates.filter((def) => !carriesOwnTemplateArguments(def));
+  return parameterized.length === 1 ? parameterized[0] : undefined;
+}
+
+/** Memo for {@link bindsAnyCrossFileClass}, keyed by index bundle then module
+ *  scope. One bundle per model, so the outer WeakMap releases with it. */
+const crossFileClassChannelByBundle = new WeakMap<ScopeResolutionIndexes, Map<ScopeId, boolean>>();
+
+/**
+ * Does the FILE containing `scopeId` bind, at its module scope, any class-like
+ * definition declared in a DIFFERENT file?
+ *
+ * This is the question "is a name's absence from this file's scope chain
+ * evidence of anything", and it has to be asked of the data because the answer
+ * differs per language while the scope model records no fact that says which.
+ * Both halves were MEASURED on this pipeline, not assumed:
+ *
+ *   - A C++ `#include` materializes NO binding. Two files declaring `Repo`, one
+ *     of them `#include`d by the referencing file, resolves to NEITHER — the
+ *     include contributed nothing and the ambiguity was decided by the
+ *     workspace-wide index alone. So a C++ file's chain binds nothing
+ *     cross-file, and the index is the only channel it has.
+ *   - A TypeScript `import` does bind, and so does a C# `using` (through the
+ *     accessible-namespace channel).
+ *
+ * So "the chain does not bind `Map`" is real evidence in a TypeScript file and
+ * no evidence at all in a C++ one. Asking the data which kind of file this is
+ * keeps the rule out of the business of naming languages (AGENTS.md R6).
+ *
+ * FAILS TOWARD PERMISSIVE. `false` — no module scope, no file path, nothing
+ * cross-file bound — restores exactly the import-blind behaviour that predates
+ * this check, so every way it can be wrong costs a wrong edge that already
+ * existed rather than a working edge that did not.
+ */
+function bindsAnyCrossFileClass(scopeId: ScopeId, scopes: ScopeResolutionIndexes): boolean {
+  const moduleScopeId = moduleScopeIdOf(scopeId, scopes);
+  if (moduleScopeId === null) return false;
+  let byScope = crossFileClassChannelByBundle.get(scopes);
+  if (byScope === undefined) {
+    byScope = new Map<ScopeId, boolean>();
+    crossFileClassChannelByBundle.set(scopes, byScope);
+  }
+  const memo = byScope.get(moduleScopeId);
+  if (memo !== undefined) return memo;
+
+  const answer = scanForCrossFileClass(moduleScopeId, scopes);
+  byScope.set(moduleScopeId, answer);
+  return answer;
+}
+
+/** The uncached scan behind {@link bindsAnyCrossFileClass}. Answers on the FIRST
+ *  hit, so a file with a wide `export *` surface stops at its first imported
+ *  class rather than walking the surface; a file with none is walked in full,
+ *  but its module scope then holds only its own declarations. */
+function scanForCrossFileClass(moduleScopeId: ScopeId, scopes: ScopeResolutionIndexes): boolean {
+  const filePath = scopes.scopeTree.getScope(moduleScopeId)?.filePath;
+  if (filePath === undefined) return false;
+  for (const name of namesAtScope(moduleScopeId, scopes)) {
+    for (const ref of lookupBindingsAt(moduleScopeId, name, scopes)) {
+      if (isClassLike(ref.def.type) && ref.def.filePath !== filePath) return true;
+    }
+  }
+  return false;
 }
 
 /**
@@ -642,24 +940,84 @@ export function resolveClassBindingForName(
   // Nothing matched the arguments as written, so what is left to find is the
   // declaration written against its PARAMETERS — the one instantiation-agnostic
   // declaration the erasure is entitled to reach.
-  const fallback = findClassBindingInScope(scopeId, baseName, scopes, stripDecoration);
-  if (fallback === undefined || !carriesOwnTemplateArguments(fallback)) return fallback;
+  return resolveErasedBaseName(scopeId, baseName, scopes);
+}
 
-  // The walk landed on a declaration that pinned its own arguments — arguments
-  // the branch above just proved are NOT the ones written. It won on nothing but
-  // being reached first: `Vec<int> vi` bound the `Vec<bool>` specialization when
-  // the specialization happened to be declared above the primary template, and
-  // the primary when it did not. Source order deciding a call target is a wrong
-  // edge, not a missing one.
+/**
+ * The declaration an ERASED base name is entitled to reach — the counterpart of
+ * `findClassBindingInScope` for a name that lost its type arguments, and the one
+ * place the grounding rule for that erasure lives.
+ *
+ * GROUNDING is the whole difference between a fix and a fabrication. Erasure
+ * makes ONE declaration answer for EVERY instantiation of a name, so reaching it
+ * by NAME ALONE is the widest step in this file: it is why `Map<string, User>`
+ * bound a workspace `class Map` the file cannot see, and why a third-party
+ * `Mapped[User]` bound an unrelated workspace `class Mapped` — a family of
+ * confident wrong edges the language interpreters have been holding back with
+ * deny-lists over an open universe of names. The name is not evidence. One of
+ * four grounds must connect the site to the declaration, strongest first.
+ */
+function resolveErasedBaseName(
+  scopeId: string,
+  baseName: string,
+  scopes: ScopeResolutionIndexes,
+): SymbolDefinition | undefined {
+  // (1) THE SCOPE CHAIN binds the base name — a local, an import, a wildcard, a
+  // namespace sibling. The file demonstrably sees a declaration by that name, so
+  // erasing to it is what the source meant.
+  const lexical = lexicalClassBindingsInScope(scopeId, baseName, scopes);
+  if (lexical.length > 0) {
+    const nearest = lexical[0]!;
+    // The walk landed on a declaration that pinned its own arguments — arguments
+    // the branch above just proved are NOT the ones written. It won on nothing
+    // but being reached first: `Vec<int> vi` bound the `Vec<bool>`
+    // specialization when the specialization happened to be declared above the
+    // primary template, and the primary when it did not. Source order deciding a
+    // call target is a wrong edge, not a missing one. Re-decide over the same
+    // visible candidates with those declarations removed.
+    return carriesOwnTemplateArguments(nearest)
+      ? theInstantiationAgnosticDeclaration(lexical)
+      : nearest;
+  }
+
+  // Nothing lexical. Both remaining grounds read the workspace-wide qualified-
+  // name index, which consults no scope, no import and no module — so each one
+  // has to supply the connection the index itself cannot.
+  const indexed = classDefsByQualifiedName(baseName, scopes);
+
+  // (2) THE DECLARATION IS IN THIS VERY FILE. A same-file declaration is visible
+  // to the site in every language — no import, no `using`, no `#include` — which
+  // is exactly what makes this ground language-neutral rather than a guess. It
+  // is also load-bearing rather than theoretical: a member typed `ns::Repo<User>`
+  // resolves through here, because the qualifier is dropped at capture and a
+  // sibling NAMESPACE is not on the file's scope chain.
+  const siteFile = scopes.scopeTree.getScope(scopeId)?.filePath;
+  const sameFile = siteFile === undefined ? [] : indexed.filter((def) => def.filePath === siteFile);
+  if (sameFile.length > 0) return theInstantiationAgnosticDeclaration(sameFile);
+
+  // (3) THE INDEX PROVES THE NAME IS A TEMPLATE FAMILY — some declaration under
+  // it pins its own arguments. That is the same evidence the exact-argument
+  // index match above already acts on, and acting on it in only one direction
+  // was incoherent: in one measured fixture `Vec<bool>` bound the cross-file
+  // SPECIALIZATION through the index while `Vec<int>` bound nothing, though both
+  // are equally import-blind and the primary template is the only declaration
+  // that can answer `int`.
   //
-  // Re-decide over the same visible candidates with those declarations removed.
-  // Exactly one, or decline — the rule `findClassBindingInScope` already applies
-  // on its decoration path, for the same reason: a missing edge is recoverable
-  // and a confident wrong one is not. This can only ever REPLACE an answer that
-  // was already unsound, so a name whose declarations pin no arguments (every
-  // one measured outside C++ specializations) never reaches here.
-  const parameterized = visible().filter((def) => !carriesOwnTemplateArguments(def));
-  return parameterized.length === 1 ? parameterized[0] : undefined;
+  // (4) …or THE FILE HAS NO CROSS-FILE CHANNEL to be absent from, in which case
+  // the index is not a shortcut around the scope chain — it is the only channel
+  // that file has, and refusing it deletes every cross-file generic in the
+  // languages whose visibility is not lexical. Measured, both directions: a C++
+  // `#include` binds nothing, so `Repo<User>` in a `.cpp` reaches its header
+  // declaration ONLY here; a TypeScript `import` binds, so a file that imports
+  // anything and still cannot see `Map` genuinely cannot see it.
+  //
+  // Between them these two grounds are what separates the fix from the
+  // fabrication: `Map`, `Queue`, `Deque` in a file with a working import channel
+  // offer nothing but a spelling, and now get nothing.
+  if (indexed.some(carriesOwnTemplateArguments) || !bindsAnyCrossFileClass(scopeId, scopes)) {
+    return theInstantiationAgnosticDeclaration(indexed);
+  }
+  return undefined;
 }
 
 /**
