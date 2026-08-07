@@ -47,6 +47,13 @@ export const WINDOWS_WEIGHTS_SEC: Readonly<Record<string, number>> = {
   'test/integration/cli-e2e.test.ts': 361,
   'test/integration/worker-pool.test.ts': 222,
   'test/unit/incremental-vector-extension-ordering.test.ts': 87,
+  // ESTIMATE, not a measurement (#2841): this suite drives more full
+  // `runFullAnalysis` cycles than the VECTOR sibling above, so the 8 s
+  // PER_FILE_OVERHEAD floor would badly under-charge it and skew the Windows
+  // split — the failure mode that produced the job timeouts this table exists
+  // to prevent. Scaled from the sibling's measured 87 s by analyze-run count.
+  // Replace with a real figure after the first green Windows matrix run.
+  'test/unit/incremental-index-extension-dml-gate.test.ts': 180,
   'test/integration/cli-limit-e2e.test.ts': 75,
   'test/unit/hooks.test.ts': 26,
   'test/integration/analyze-heap-oom-e2e.test.ts': 23,
