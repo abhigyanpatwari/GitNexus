@@ -39,7 +39,20 @@
  *     measures ~4 at this scale gap. This is a TIMING gate: re-run it on an
  *     idle machine before investigating.
  *
- * Three properties of the corpora are load-bearing and must not be
+ * A ratio cannot see a constant factor and a file-count ratio cannot see a
+ * depth cost, so `--check` also asserts a DEPTH ratio (file count fixed, paths
+ * ~3x deeper) and an absolute ceiling on the small arm. A full workspace scan
+ * reintroduced on 1-in-32 imports scores 1.490 — inside the scaling budget —
+ * while running 2.8x slower; the ceiling is what catches that shape.
+ *
+ * One honest limit: at a very small import count the index loses. Building it
+ * is one workspace pass, so a single import into a 100k-file workspace costs
+ * ~0.8 s against ~0 for a scan that returns on its first hit. It inverts at
+ * roughly 15 imports, and in the polyglot case that motivates the worry —
+ * 100k files, 5% Kotlin, a couple of imports — the index already wins, because
+ * the build skips non-`.kt` entries as cheaply as the scan did.
+ *
+ * Five properties of the corpora are load-bearing and must not be
  * "simplified" away:
  *
  *   1. **The correctness corpus fuzzes each file set in BOTH iteration
@@ -58,6 +71,24 @@
  *      was worst when nothing matched, because only then did all four tiers
  *      run. A corpus where every import hits tier 1 exits after one pass and
  *      scores a per-import scan far closer to linear.
+ *   4. **The hashed record includes the FILE SET, not just the query and the
+ *      result.** Otherwise a corpus edit that swaps the workspace under a case
+ *      while leaving its result string alone is invisible: dropping the
+ *      competing file from the "exact beats an earlier suffix" case, or
+ *      emptying the repeated-directory negative case, each leaves `cases`,
+ *      `non_null` and the fingerprint byte-identical and the gate green.
+ *   5. **Path depth and package size are spanned, not pinned.** Both loops this
+ *      change added are driven by depth — one `suffixByStem` entry per '/' in a
+ *      stem, one `dirChildren` pass per component of `dir` — and the fan-out
+ *      tier returns a bucket whose length is the package size. While the corpus
+ *      capped depth at 8 components and packages at 16 files, three plausible
+ *      follow-up guards (cap suffix depth at 7, skip the `dirChildren` suffix
+ *      loop above depth 8, cap a bucket at 17) all passed `--check` with a
+ *      byte-identical fingerprint — while on a standard Gradle layout the depth
+ *      skip resolved EVERY package import to null and the bucket cap truncated
+ *      fan-out by 58%. Import ARITY, by contrast, was never blind: a tier-4 cap
+ *      at 4 dotted segments already failed the gate, because the branch matrix
+ *      carries 6- and 8-segment cases.
  *
  * Run:
  *   node --import tsx bench/kotlin-import-target/measure.mjs            # report
@@ -80,6 +111,9 @@ const LARGE = 1600;
  *  the tens of ms: at ~2 ms timer granularity and JIT warm-up, not scaling, set
  *  the ratio — the same artifact bench/cpp-qualified-ns documents. */
 const IMPORTS_PER_FILE = 32;
+/** Depth arm: same file count either side, ~3x the path depth on one side. */
+const DEPTH_FILES = 800;
+const DEPTH_PAD = 16;
 const WARMUP = 2;
 const REPS = 7;
 
@@ -106,7 +140,14 @@ function record(files, targetRaw, fromFile = 'App.kt') {
     const r = resolve(list, targetRaw, fromFile);
     if (r !== null) nonNull++;
     const rendered = r === null ? 'NULL' : Array.isArray(r) ? `[${r.join(',')}]` : r;
-    lines.push(`${order}\t${fromFile}\t${targetRaw}\t${rendered}`);
+    // The FILE SET is part of the hashed record, not just the query and the
+    // result — see header property 4. Without it a corpus edit that changes
+    // which workspace a case runs against, while leaving the result string
+    // alone, is invisible: dropping the competing file from the
+    // "exact beats an earlier suffix" case, or emptying the repeated-directory
+    // negative case, both leave `cases`, `non_null` and the fingerprint
+    // byte-identical.
+    lines.push(`${order}\t${list.join('|')}\t${fromFile}\t${targetRaw}\t${rendered}`);
   }
 }
 
@@ -174,6 +215,58 @@ record(['pkg/A.kt'], 'pkg.');
 // pinned so a future change that starts consulting it is visible here.
 record(['util/User.kt'], 'util.User', 'deep/nested/Caller.kt');
 
+// ---- 1b. Depth and package size, the two axes the loops scale on ----------
+//
+// Header property 5. The index writes one `suffixByStem` entry per '/' in a
+// stem and walks `dir` once per component, so DEPTH is what those two loops
+// cost, and `dirChildren` bucket length is what the fan-out tier returns. A
+// corpus that pins either as a constant cannot see a guard on it: capping
+// suffix-key depth at 7, skipping the `dirChildren` suffix loop above depth 8,
+// or capping a bucket at 17 entries all left the fingerprint, `cases` and
+// `non_null` byte-identical before these cases existed — while, on a standard
+// Gradle layout, the depth skip resolved EVERY package import to null and the
+// bucket cap silently truncated fan-out by 58%.
+const DEEP = 'core/data/src/main/kotlin/com/example/core/data/repository';
+// 11 components — ordinary for Android/Gradle source, which runs 9-12.
+record([`${DEEP}/UserRepository.kt`], 'com.example.core.data.repository.UserRepository');
+record([`${DEEP}/UserRepository.kt`], 'repository.UserRepository');
+record([`${DEEP}/UserRepository.kt`], 'core.data.repository.UserRepository');
+record([`${DEEP}/UserRepository.kt`, `${DEEP}/PostRepository.kt`], 'repository.findAll');
+record([`${DEEP}/UserRepository.kt`, `${DEEP}/PostRepository.kt`], 'core.data.repository.findAll');
+// Deeper still, and with the repeated-name shape at depth.
+const DEEPER = 'feature/home/src/main/kotlin/com/example/feature/home/data/local/dao';
+record([`${DEEPER}/UserDao.kt`], 'dao.UserDao');
+record([`${DEEPER}/UserDao.kt`, `${DEEPER}/PostDao.kt`], 'dao.insertAll');
+record([`${DEEPER}/UserDao.kt`], 'home.data.local.dao.UserDao');
+// Suffix keys deeper than 7 components. Depth in the FILE is not enough on its
+// own: a cap on how many component-suffixes a stem contributes stays invisible
+// unless something QUERIES one of the deep keys, and every Gradle-shaped import
+// above is 6 segments or fewer. These reach the top of the stem.
+record(
+  [`${DEEP}/UserRepository.kt`],
+  'src.main.kotlin.com.example.core.data.repository.UserRepository',
+);
+record(
+  [`${DEEP}/UserRepository.kt`],
+  'data.src.main.kotlin.com.example.core.data.repository.UserRepository',
+);
+record([`${DEEPER}/UserDao.kt`], 'src.main.kotlin.com.example.feature.home.data.local.dao.UserDao');
+record(
+  [`${DEEPER}/UserDao.kt`],
+  'home.src.main.kotlin.com.example.feature.home.data.local.dao.UserDao',
+);
+record(
+  [`${DEEP}/UserRepository.kt`, `${DEEP}/PostRepository.kt`],
+  'src.main.kotlin.com.example.core.data.repository.findAll',
+);
+
+// A package larger than any plausible bucket cap. 40 files in one package is
+// ordinary; a silent sibling cap is exactly what #2732 shipped on the JVM side.
+const BIG_PACKAGE = Array.from({ length: 40 }, (_, i) => `${DEEP}/Item${i}.kt`);
+record(BIG_PACKAGE, 'repository.someTopLevelFun');
+record(BIG_PACKAGE, 'com.example.core.data.repository.someTopLevelFun');
+record([...BIG_PACKAGE, `${DEEP}/sub/Nested.kt`], 'repository.someTopLevelFun');
+
 // ---- 2. Deterministic fuzz -------------------------------------------------
 
 /** xorshift32 — seeded, so the corpus is identical on every machine. */
@@ -202,8 +295,34 @@ const DIRS = [
   'data/src/main/kotlin/com/example/data',
   'top/data/mid/data',
   'win\\pkg',
+  // Depth beyond the Gradle norm, so the fuzz spans the axis too rather than
+  // leaving it to the hand-written cases above.
+  'core/data/src/main/kotlin/com/example/core/data/repository',
+  'feature/home/src/main/kotlin/com/example/feature/home/data/local/dao',
+  'a/b/c/d/e/f/g/h/i/j/k/l',
 ];
-const SEGS = ['User', 'Repo', 'Util', 'Service', 'Model', 'data', 'core', 'api', 'store', 'sub'];
+// Segment alphabet overlaps the DIRS entries on purpose: a random dotted target
+// only exercises a deep suffix key if its segments can actually align with a
+// deep path.
+const SEGS = [
+  'User',
+  'Repo',
+  'Util',
+  'Service',
+  'Model',
+  'data',
+  'core',
+  'api',
+  'store',
+  'sub',
+  'src',
+  'main',
+  'kotlin',
+  'com',
+  'example',
+  'repository',
+  'dao',
+];
 const EXTS = ['.kt', '.kt', '.kt', '.kts', '.java', '.md'];
 
 function randPath() {
@@ -214,14 +333,20 @@ function randPath() {
   return dir.includes('\\') ? `${dir}\\${file}` : `${dir}/${file}`;
 }
 function randDotted() {
-  const n = 1 + Math.floor(rnd() * 4);
+  // Up to 9 segments, not 4: import arity is the one axis the branch matrix
+  // already spanned, but the fuzz should cover it too now that the corpus
+  // carries paths deep enough for a long target to align with one.
+  const n = 1 + Math.floor(rnd() * 9);
   const parts = [];
   for (let i = 0; i < n; i++) parts.push(pick(SEGS));
   return rnd() < 0.12 ? `${parts.join('.')}.*` : parts.join('.');
 }
 
+// File counts run to 45, not 16: a package that never exceeds 16 direct
+// children cannot distinguish an uncapped `dirChildren` bucket from one capped
+// at 17 (header property 5).
 for (let repo = 0; repo < 400; repo++) {
-  const fileCount = 3 + Math.floor(rnd() * 14);
+  const fileCount = 3 + Math.floor(rnd() * 43);
   const files = [];
   for (let i = 0; i < fileCount; i++) files.push(randPath());
   const fromFile = randPath();
@@ -239,13 +364,19 @@ const correctnessFingerprint = crypto
 
 /** A synthetic Kotlin monorepo: Gradle-module roots over a shared package
  *  namespace, at the path depth real Kotlin source has (the index stores one
- *  suffix entry per '/' in a stem, so depth is a cost driver and a flat corpus
- *  would understate the build). */
-function buildCorpus(fileCount) {
+ *  suffix entry per '/' in a stem and walks `dir` once per component, so depth
+ *  is a cost driver and a flat corpus would understate the build).
+ *
+ *  `padDepth` inserts filler segments so the depth arm below can hold the file
+ *  count fixed and vary only depth — the scaling ratio is scale-invariant in
+ *  FILE COUNT and would otherwise never see a depth-driven cost regression. */
+function buildCorpus(fileCount, padDepth = 0) {
+  const pad = Array.from({ length: padDepth }, (_, d) => `p${d}`).join('/');
   const files = [];
   for (let i = 0; i < fileCount; i++) {
     const mod = i % 16;
-    files.push(`lib${mod}/src/main/kotlin/com/example/mod${mod}/Class${i}.kt`);
+    const root = pad === '' ? `lib${mod}` : `lib${mod}/${pad}`;
+    files.push(`${root}/src/main/kotlin/com/example/mod${mod}/Class${i}.kt`);
   }
   return files;
 }
@@ -325,13 +456,29 @@ for (const [name, fileCount] of [
 
 const scalingRatio = scales.large.ms / scales.small.ms / (LARGE / SMALL);
 
+// Depth arm: file count fixed, depth roughly tripled. `scaling_ratio` divides
+// out the file count, so it is scale-INVARIANT and structurally cannot see a
+// cost that grows with path depth instead — and both loops this PR added are
+// depth loops. Same corpus size, same imports, only the paths get longer.
+const depthFiles = buildCorpus(DEPTH_FILES, 0);
+const depthFilesPadded = buildCorpus(DEPTH_FILES, DEPTH_PAD);
+const depthImports = buildImports(DEPTH_FILES);
+const shallowMs = timeResolution(depthFiles, depthImports);
+const deepMs = timeResolution(depthFilesPadded, depthImports);
+const depthRatio = deepMs / shallowMs;
+
 const report = {
   small: scales.small,
   large: scales.large,
   scaling_ratio: Number(scalingRatio.toFixed(3)),
-  // Reported, not asserted: a corpus edit that collapses the resolved surface
-  // still produces a "valid" fingerprint over far less, so these make the
-  // shrink visible in the diff.
+  depth: {
+    files: DEPTH_FILES,
+    shallow_components: 8,
+    deep_components: 8 + DEPTH_PAD,
+    shallow_ms: Number(shallowMs.toFixed(3)),
+    deep_ms: Number(deepMs.toFixed(3)),
+  },
+  depth_ratio: Number(depthRatio.toFixed(3)),
   cases: lines.length,
   non_null: nonNull,
   fingerprint: correctnessFingerprint,
@@ -352,12 +499,14 @@ if (report.fingerprint !== baseline.fingerprint) {
       `make CI green.`,
   );
 }
-if (report.cases !== baseline.cases) {
-  failures.push(
-    `case count ${report.cases} != ${baseline.cases} — the corpus itself changed, so the ` +
-      `fingerprint above is computed over a different surface and proves nothing about the ` +
-      `resolver. Re-baseline both fields together, deliberately.`,
-  );
+for (const field of ['cases', 'non_null']) {
+  if (report[field] !== baseline[field]) {
+    failures.push(
+      `${field} ${report[field]} != ${baseline[field]} — the corpus itself changed, so the ` +
+        `fingerprint above is computed over a different surface and proves nothing about the ` +
+        `resolver. Re-baseline every corpus field together, deliberately.`,
+    );
+  }
 }
 if (report.scaling_ratio > baseline.scaling_budget) {
   failures.push(
@@ -365,6 +514,21 @@ if (report.scaling_ratio > baseline.scaling_budget) {
       `with workspace size again, i.e. a tier went back to walking allFilePaths. Timing arm: ` +
       `re-run on an idle machine before investigating (see _scaling_note in baselines.json); the ` +
       `fingerprint arm is deterministic and never warrants a re-run.`,
+  );
+}
+if (report.depth_ratio > baseline.depth_budget) {
+  failures.push(
+    `depth ratio ${report.depth_ratio} > budget ${baseline.depth_budget} — cost now grows with ` +
+      `PATH DEPTH at a fixed file count. scaling_ratio divides the file count out and cannot ` +
+      `see this. Timing arm: re-run on an idle machine first.`,
+  );
+}
+if (report.small.ms > baseline.small_ms_ceiling) {
+  failures.push(
+    `small arm ${report.small.ms} ms > ceiling ${baseline.small_ms_ceiling} ms — scaling_ratio is ` +
+      `a RATIO, so a constant-factor regression that grows both arms equally passes it (a full ` +
+      `scan reintroduced on 1-in-32 imports measured 1.490, inside the budget, while running ` +
+      `2.8x slower). This ceiling is what catches that. Timing arm: re-run on an idle machine.`,
   );
 }
 

@@ -1,4 +1,5 @@
 import type { ParsedImport, WorkspaceIndex } from 'gitnexus-shared';
+import { KOTLIN_EXTENSIONS } from '../../import-resolvers/jvm.js';
 import { recordKotlinFileIndexBuild } from './index-stats.js';
 
 export interface KotlinResolveContext {
@@ -40,9 +41,18 @@ export function resolveKotlinImportTarget(
   //  4. Progressive prefix strip for deeper namespace aliases that
   //     don't map 1:1 to directories.
   const index = getKotlinFileIndex(ctx.allFilePaths);
-  const stripped = pathLike.split('/').slice(0, -1).join('/');
+  const direct = findKotlinFile(index, pathLike);
+  if (direct !== null) return direct;
+
+  // Only tiers 2 and 3 need the stripped path, and tier 1 answers most
+  // imports, so it is computed here rather than above. `lastIndexOf`/`slice`
+  // rather than `split`/`slice`/`join`: same result for every input, two
+  // allocations fewer per import. The `li < 0` guard is load-bearing —
+  // `'a'.slice(0, -1)` is `''`, which is what the split form yields for a
+  // single-segment path, but only by accident of `[].join('/')`.
+  const li = pathLike.lastIndexOf('/');
+  const stripped = li < 0 ? '' : pathLike.slice(0, li);
   return (
-    findKotlinFile(index, pathLike) ??
     findKotlinExactOrSuffix(index, stripped) ??
     findKotlinPackageFiles(index, stripped) ??
     findByProgressivePrefixStrip(index, pathLike)
@@ -130,23 +140,47 @@ function findByProgressivePrefixStrip(index: KotlinFileIndex, pathLike: string):
  *  - `suffixByStem`: every component-suffix of that stem -> raw path, for the
  *    `file ends with /pathLike+ext` tier. Keyed per suffix rather than per
  *    basename so a multi-segment import (`util/OneArg`) hits one bucket instead
- *    of filtering a basename bucket.
+ *    of filtering a basename bucket. The basename-bucket form Python uses was
+ *    built and measured against this one during review: byte-identical output,
+ *    ~66% less memory, and 7.3x slower per query on a repeated-basename corpus
+ *    — enough to fail this resolver's own scaling budget at ~2.0. The memory
+ *    the per-suffix keying costs is small in absolute terms (~60 MiB at 100k
+ *    Kotlin files at depth 8), so it is not a trade worth revisiting.
  *  - `dirChildren`: package directory -> its direct `.kt`/`.kts` children, in
  *    set-iteration order, serving both the fan-out tier and the
  *    first-child fallback.
  *
  * Both stem maps keep the FIRST path inserted for a key, because the scans they
  * replace returned the first match in set-iteration order.
+ *
+ * The shared `buildSuffixIndex` (`import-resolvers/utils.ts`, used by C#, Ruby,
+ * Vue and TypeScript) is deliberately NOT reused — the same call Python
+ * documents at `python/import-target.ts`. Run side by side against this
+ * resolver, four probes out of five diverge:
+ *
+ *  - `['deep/util/User.kt', 'util/User.kt']` for `util.User` — it conflates
+ *    exact and proper-suffix matches in one map, so the deep path wins where
+ *    the scan returned the exact one;
+ *  - `['deep/util/User.kt', 'util/User.kts']` for `util.User` — its keys carry
+ *    the extension, so a `.kt` SUFFIX beats a `.kts` EXACT;
+ *  - `['data/src/…/data/Repo.kt']` for `data.getRepo` — it indexes every
+ *    directory suffix with no first-occurrence rule, so it fans out where the
+ *    scan returned null;
+ *  - `['models/A.kts', 'models/B.kt']` for `models.getThing` — it splits the
+ *    package into `:kt` and `:kts` buckets instead of returning both in set
+ *    order.
+ *
+ * Each divergence is an edge that would move in every Kotlin repository, so
+ * consolidating the two is a behaviour change, not a cleanup.
  */
 interface KotlinFileIndex {
   readonly exactByStem: Map<string, string>;
   readonly suffixByStem: Map<string, string>;
-  readonly dirChildren: Map<string, string[]>;
+  /** Buckets are frozen once the build loop finishes — see `getKotlinFileIndex`. */
+  readonly dirChildren: Map<string, readonly string[]>;
 }
 
 const KOTLIN_FILE_INDEX_CACHE = new WeakMap<ReadonlySet<string>, KotlinFileIndex>();
-
-const KOTLIN_EXTENSIONS = ['.kt', '.kts'] as const;
 
 function getKotlinFileIndex(allFilePaths: ReadonlySet<string>): KotlinFileIndex {
   const cached = KOTLIN_FILE_INDEX_CACHE.get(allFilePaths);
@@ -157,7 +191,7 @@ function getKotlinFileIndex(allFilePaths: ReadonlySet<string>): KotlinFileIndex 
 
   const exactByStem = new Map<string, string>();
   const suffixByStem = new Map<string, string>();
-  const dirChildren = new Map<string, string[]>();
+  const dirChildren: MutableDirChildren = new Map();
 
   for (const raw of allFilePaths) {
     const norm = raw.replace(/\\/g, '/');
@@ -210,6 +244,17 @@ function getKotlinFileIndex(allFilePaths: ReadonlySet<string>): KotlinFileIndex 
     }
   }
 
+  // `findKotlinPackageFiles` hands a bucket straight out of the index — the
+  // same array `findKotlinDirectoryChild` reads `children[0]` from. The
+  // `readonly string[]` return type does not survive the caller: the finalize
+  // pass normalizes with `Array.isArray(t) ? t : [t]`, and `isArray`'s
+  // `arg is any[]` predicate widens the true branch, so `tsc --strict` accepts
+  // a `.sort()` or `.push()` there. A downstream sort would permanently
+  // reorder the cached bucket and flip the FIRST-child tier's answer for every
+  // later import in the run. Freezing makes the contract true at runtime, so a
+  // future mutation is a loud TypeError instead of a silent edge move.
+  for (const bucket of dirChildren.values()) Object.freeze(bucket);
+
   const index: KotlinFileIndex = { exactByStem, suffixByStem, dirChildren };
   KOTLIN_FILE_INDEX_CACHE.set(allFilePaths, index);
   return index;
@@ -220,3 +265,7 @@ function addChild(dirChildren: Map<string, string[]>, dir: string, raw: string):
   if (bucket === undefined) dirChildren.set(dir, [raw]);
   else bucket.push(raw);
 }
+
+/** Mutable view of the buckets, used only while building — the index exposes
+ *  them as `readonly` and freezes them before it is cached. */
+type MutableDirChildren = Map<string, string[]>;

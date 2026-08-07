@@ -112,7 +112,35 @@ describe('resolveKotlinImportTarget — index parity', () => {
     // used `indexOf` — the first `/data/` here is not the parent directory, and
     // it never looked for a second one. The file is therefore NOT a child of
     // `data`, even though it sits directly inside one.
+    //
+    // NOTE this case exercises the `startsWith` half only: `data` is the
+    // LEADING segment, so the guard fires and the `indexOf` equality is never
+    // reached. The mid-path case below is what pins that half — without it, a
+    // resolver whose position check is relaxed to `indexOf(...) >= 0` passes
+    // this whole file.
     expect(resolve(['data/src/main/kotlin/com/example/data/Repo.kt'], 'data.something')).toBeNull();
+  });
+
+  it('a repeated directory name below the root still only counts its first occurrence', () => {
+    // Neither `data` is leading, so `startsWith` does not fire and the result
+    // is decided by the `indexOf` position check alone. The first `/data/` is
+    // not the parent, so this is not a child of `data`.
+    expect(resolve(['top/data/mid/data/Repo.kt'], 'data.something')).toBeNull();
+    expect(resolve(['a/c/b/c/File.kt'], 'c.X')).toBeNull();
+    // Same shape, but the first occurrence IS the parent — this one resolves,
+    // so the case above cannot pass by simply never matching anything.
+    expect(resolve(['top/data/Repo.kt'], 'data.something')).toEqual(['top/data/Repo.kt']);
+  });
+
+  it('the package directory is derived from the normalized path, not the raw one', () => {
+    // A backslash path whose `dirChildren` key must come from the normalized
+    // form: reading the raw path's last separator instead would make the whole
+    // `win\pkg\A.kt` string its own directory and the fan-out would miss.
+    expect(resolve(['win\\pkg\\A.kt', 'win\\pkg\\B.kt'], 'win.pkg.someFunction')).toEqual([
+      'win\\pkg\\A.kt',
+      'win\\pkg\\B.kt',
+    ]);
+    expect(resolve(['win\\pkg\\A.kt'], 'pkg.someFunction')).toEqual(['win\\pkg\\A.kt']);
   });
 
   it('a path starting with the directory name is not a child of it unless direct', () => {
