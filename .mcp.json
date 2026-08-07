@@ -2,8 +2,8 @@
   "mcpServers": {
     "gitnexus": {
       "type": "stdio",
-      "command": "gitnexus",
-      "args": ["mcp"]
+      "command": "npx",
+      "args": ["-y", "gitnexus@latest", "mcp"]
     }
   }
 }
