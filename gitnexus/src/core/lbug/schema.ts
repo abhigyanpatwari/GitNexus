@@ -183,6 +183,25 @@ CREATE NODE TABLE \`Property\` (
   content STRING,
   description STRING,
   declaredType STRING,
+  /*
+   * DETAIL SYMBOL — true when this property is a member of a shape that has no
+   * independent identity: the keys of an anonymous literal returned from a
+   * function (R3-4).
+   *
+   * It exists because indexing those keys is right for the GRAPH and wrong for
+   * TEXT SEARCH. They are ordinary words (message, value, timestamp) and
+   * there are many of them, so letting them into the FTS result set pushes the
+   * CALLABLES named after the same concept past the row cap the search applies
+   * — measured: query('message') went from two processes to none on the
+   * mini-repo fixture. A ranking tweak cannot fix that, because the rows never
+   * come back from the FTS call in the first place.
+   *
+   * So the search layer gained a notion it did not have — a symbol that is
+   * queryable, walkable and impact-analysable, but not a concept a text search
+   * should surface on its own. buildFtsQueryCypher excludes these for the
+   * Property table only; every other consumer sees them normally.
+   */
+  isDetail BOOLEAN,
   PRIMARY KEY (id)
 )`;
 export const RECORD_SCHEMA = CODE_ELEMENT_BASE('Record');

@@ -1539,7 +1539,7 @@ export const getCopyQuery = (table: NodeTableName, filePath: string): string => 
     return `COPY ${t}(id, name, filePath, startLine, endLine, isExported, content, description, parameterCount, returnType) FROM "${filePath}" ${COPY_CSV_OPTS}`;
   }
   if (table === 'Property') {
-    return `COPY ${t}(id, name, filePath, startLine, endLine, content, description, declaredType) FROM "${filePath}" ${COPY_CSV_OPTS}`;
+    return `COPY ${t}(id, name, filePath, startLine, endLine, content, description, declaredType, isDetail) FROM "${filePath}" ${COPY_CSV_OPTS}`;
   }
   // TypeScript/JS code element tables have isExported; multi-language tables do not
   if (TABLES_WITH_EXPORTED.has(table)) {
@@ -1602,7 +1602,7 @@ export const insertNodeToLbug = async (
       const descPart = properties.description
         ? `, description: ${formatCypherValue(properties.description)}`
         : '';
-      query = `CREATE (n:${t} {id: ${formatCypherValue(properties.id)}, name: ${formatCypherValue(properties.name)}, filePath: ${formatCypherValue(properties.filePath)}, startLine: ${properties.startLine || 0}, endLine: ${properties.endLine || 0}, content: ${formatCypherValue(properties.content || '')}${descPart}, declaredType: ${formatCypherValue(properties.declaredType || '')}})`;
+      query = `CREATE (n:${t} {id: ${formatCypherValue(properties.id)}, name: ${formatCypherValue(properties.name)}, filePath: ${formatCypherValue(properties.filePath)}, startLine: ${properties.startLine || 0}, endLine: ${properties.endLine || 0}, content: ${formatCypherValue(properties.content || '')}${descPart}, declaredType: ${formatCypherValue(properties.declaredType || '')}, isDetail: ${properties.isDetail === true}})`;
     } else {
       // Multi-language tables (Struct, Impl, Trait, Macro, etc.) — no isExported
       const descPart = properties.description
@@ -1692,7 +1692,7 @@ export const batchInsertNodesToLbug = async (
           const descPart = properties.description
             ? `, n.description = ${formatCypherValue(properties.description)}`
             : '';
-          query = `MERGE (n:${t} {id: ${formatCypherValue(properties.id)}}) SET n.name = ${formatCypherValue(properties.name)}, n.filePath = ${formatCypherValue(properties.filePath)}, n.startLine = ${properties.startLine || 0}, n.endLine = ${properties.endLine || 0}, n.content = ${formatCypherValue(properties.content || '')}${descPart}, n.declaredType = ${formatCypherValue(properties.declaredType || '')}`;
+          query = `MERGE (n:${t} {id: ${formatCypherValue(properties.id)}}) SET n.name = ${formatCypherValue(properties.name)}, n.filePath = ${formatCypherValue(properties.filePath)}, n.startLine = ${properties.startLine || 0}, n.endLine = ${properties.endLine || 0}, n.content = ${formatCypherValue(properties.content || '')}${descPart}, n.declaredType = ${formatCypherValue(properties.declaredType || '')}, n.isDetail = ${properties.isDetail === true}`;
         } else {
           const descPart = properties.description
             ? `, n.description = ${formatCypherValue(properties.description)}`
@@ -3459,13 +3459,37 @@ export const classifyFtsQueryError = (message: string): FtsQueryFailureClass => 
  * ORDER BY tiebreak for #2787 being the latest. Lives beside
  * {@link classifyFtsQueryError}, which was already shared for exactly this call.
  */
+/**
+ * DETAIL SYMBOLS DO NOT COMPETE IN TEXT SEARCH.
+ *
+ * `Property.isDetail` marks the keys of an anonymous literal returned from a
+ * function (R3-4): real symbols, worth walking and worth an impact analysis,
+ * but not concepts a text search should surface on their own. Their names are
+ * ordinary words (`message`, `value`, `timestamp`) and there are many of them,
+ * so without this they consume the FTS call's own LIMIT and push out the
+ * CALLABLES named after the same concept — measured, `query('message')` went
+ * from two processes to none on the mini-repo fixture.
+ *
+ * Filtered HERE rather than after the call, because that is the only place it
+ * works: rows crowded out by the LIMIT never reach the caller, so no amount of
+ * re-ranking downstream can recover them. (Tried, and it recovered nothing.)
+ *
+ * Property-only, since no other table has the column, and `IS NULL`-tolerant so
+ * an index written before this column existed still answers.
+ */
+const FTS_DETAIL_FILTER = `
+    WITH node, score
+    WHERE node.isDetail IS NULL OR node.isDetail = false`;
+
 export const buildFtsQueryCypher = (
   tableName: string,
   indexName: string,
   limit: number,
   conjunctive: boolean = false,
 ): string => `
-    CALL QUERY_FTS_INDEX('${tableName}', '${indexName}', $query, conjunctive := ${conjunctive})
+    CALL QUERY_FTS_INDEX('${tableName}', '${indexName}', $query, conjunctive := ${conjunctive})${
+      tableName === 'Property' ? FTS_DETAIL_FILTER : ''
+    }
     RETURN node, score
     ORDER BY score DESC, node.id
     LIMIT ${limit}

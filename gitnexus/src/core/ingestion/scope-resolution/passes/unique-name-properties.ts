@@ -69,6 +69,7 @@ import type { ScopeResolutionIndexes } from '../../model/scope-resolution-indexe
 import type { GraphNodeLookup } from '../graph-bridge/node-lookup.js';
 import { resolveCallerGraphId } from '../graph-bridge/ids.js';
 import { callableFlowSiteKey } from './callable-value-flow.js';
+import { isTestFile } from '../../entry-point-scoring.js';
 import { getLanguageFromFilename } from 'gitnexus-shared';
 
 /** Language a definition lives in, for reporting which anchor a reader cannot reach. */
@@ -101,6 +102,19 @@ const OVERSATURATED = null;
 interface PropertyCandidate {
   readonly id: string;
   readonly filePath: string;
+  /**
+   * True when this definition is the RETURN SHAPE of a function (R3-4) rather
+   * than a declared surface — a named object literal, a class field, an
+   * interface or alias member.
+   *
+   * Return shapes are the weaker anchor and are ranked below declared ones, so
+   * adding them cannot change an answer that already resolved. That is what
+   * reconciles this with R2-1b, which deliberately modelled returned keys as
+   * WRITES to avoid adding same-named competitors to narrowing: they are
+   * definitions now, but they never outrank a real declaration, so the
+   * competitor problem it was avoiding does not come back.
+   */
+  readonly fromReturnShape: boolean;
 }
 
 /**
@@ -186,13 +200,18 @@ export function buildPropertyNameIndex(graph: KnowledgeGraph): PropertyNameIndex
     if (typeof name !== 'string' || name.length === 0) continue;
     const filePath = node.properties.filePath;
     if (typeof filePath !== 'string') continue;
+    const candidate: PropertyCandidate = {
+      id: node.id,
+      filePath,
+      fromReturnShape: node.properties.fromReturnShape === true,
+    };
     const existing = byName.get(name);
     if (existing === undefined) {
-      byName.set(name, [{ id: node.id, filePath }]);
+      byName.set(name, [candidate]);
       continue;
     }
     if (existing.some((c) => c.id === node.id)) continue;
-    existing.push({ id: node.id, filePath });
+    existing.push(candidate);
   }
   return byName;
 }
@@ -281,13 +300,39 @@ function buildDirectImportMap(
  * imported third would answer a question the reader's own file contradicts.
  */
 function narrowToSingleCandidate(
-  candidates: readonly PropertyCandidate[],
+  candidatesIn: readonly PropertyCandidate[],
   readingFile: string,
   importedFiles: ReadonlySet<string> | undefined,
 ): { readonly id: string; readonly tier: string } | null {
-  if (candidates.length === 1) {
-    return { id: candidates[0]!.id, tier: 'workspace-unique' };
+  // DECLARED ANCHORS FIRST. A return shape is a real definition but a weaker
+  // one: it says "some function builds an object with this key", where a named
+  // literal or a class/interface member says "this IS the field". Whenever both
+  // exist, the declared one is what a reader means — and ranking it first is
+  // what guarantees R3-4 cannot change an answer that already resolved before
+  // return shapes were indexed at all.
+  let candidates = candidatesIn;
+
+  // PRODUCTION CODE FIRST. A test constructs throwaway shapes with the same
+  // field names as the thing it exercises — measured on the reporting repo,
+  // four of the seven JavaScript anchors for `wickRatio` are in `tests/` — and
+  // a read in production code cannot mean any of them. Applied before the
+  // declared/return-shape split because "is this the shipped program" is the
+  // stronger signal: a declaration in a test fixture is still a test fixture.
+  //
+  // Only when the READER is production. A read inside a test legitimately means
+  // the test's own shape, so this must not fire there.
+  if (!isTestFile(readingFile)) {
+    const production = candidates.filter((c) => !isTestFile(c.filePath));
+    if (production.length > 0) candidates = production;
   }
+
+  const declared = candidates.filter((c) => !c.fromReturnShape);
+  const ranked = declared.length > 0 ? declared : candidates;
+
+  if (ranked.length === 1) {
+    return { id: ranked[0]!.id, tier: 'workspace-unique' };
+  }
+  candidates = ranked;
 
   const sameFile = candidates.filter((c) => c.filePath === readingFile);
   if (sameFile.length > 0) {

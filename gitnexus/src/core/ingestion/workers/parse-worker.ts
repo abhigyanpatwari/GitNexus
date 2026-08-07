@@ -91,6 +91,8 @@ import {
   getDefinitionNodeFromCaptures,
   findEnclosingClassInfo,
   findObjectLiteralBindingInfo,
+  findReturnShapeOwnerInfo,
+  isReturnShapeProperty,
   findMemberAssignmentOwnerInfo,
   isCjsDefaultExportAssignment,
   type EnclosingClassInfo,
@@ -2361,8 +2363,19 @@ const processFileGroup = (
               // byte-identical or every object-literal method in every indexed
               // repo changes id.
               includeOwnerName: nodeLabel === 'Property',
-            }))
+            }) ??
+            // R3-4: an anonymous literal in return position is owned by the
+            // function whose shape it is. Last in the chain so a variable-bound
+            // literal keeps its existing owner and its existing id.
+            (nodeLabel === 'Property' ? findReturnShapeOwnerInfo(definitionNode, file.path) : null))
           : null;
+      // Provenance for narrowing (R3-4). A return shape is a real definition but
+      // the weaker one, and the unique-name pass ranks declared anchors above it
+      // so indexing these cannot change an answer that already resolved.
+      const returnShapeProperty =
+        nodeLabel === 'Property' && definitionNode !== undefined && definitionNode !== null
+          ? isReturnShapeProperty(definitionNode)
+          : false;
 
       // #1978: hoisted ABOVE qualifiedName/node-id (load-bearing order) so a
       // class-like node can key its id by its fully-qualified path. Derived from
@@ -2809,6 +2822,7 @@ const processFileGroup = (
           ...(description !== undefined ? { description } : {}),
           ...methodProps,
           ...(declaredType !== undefined ? { declaredType } : {}),
+          ...(returnShapeProperty ? { fromReturnShape: true, isDetail: true } : {}),
         },
       });
 
