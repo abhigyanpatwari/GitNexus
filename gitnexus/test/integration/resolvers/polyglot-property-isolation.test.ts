@@ -36,6 +36,33 @@ describe('cross-language property inference (RV-5)', () => {
     expect(readersOf('loyaltyPointsBalance')).not.toContain('renderLoyalty');
   });
 
+  // The SAME boundary, reached through the other pass. `renderLoyalty` above has
+  // an untyped receiver, so it routes through unique-name inference — the pass
+  // this fixture was written to police. Typing the receiver by construction
+  // routes an identical read through `return-shape-members.ts` instead, which
+  // consumed the same whole-graph index with no language restriction and emitted
+  // at 0.9 rather than 0.5 — the PRECISE tier, where a `minConfidence` floor
+  // cannot filter the result out.
+  //
+  // Note WHY a same-file check was not enough here. `new Loyalty()` types the
+  // receiver through the shared class registry, which is polyglot, so the
+  // producer resolves into `Loyalty.java` and its member genuinely lives in that
+  // same file. File equality is satisfied; only the language restriction stops
+  // the edge.
+  describe('the bound-receiver path (review finding 2)', () => {
+    const targetsOf = (source: string): string[] =>
+      getRelationships(result, 'ACCESSES')
+        .filter((e) => e.source === source)
+        .map((e) => e.targetFilePath ?? '');
+
+    it('never reaches the Java field through the bound path', () => {
+      // Asserted on TARGET FILE, not on absence of the name: the leak this
+      // catches is an edge that exists and points into another language, which
+      // a name-only assertion would not distinguish from a correct local edge.
+      expect(targetsOf('readsBoundLoyalty').some((f) => f.includes('Loyalty.java'))).toBe(false);
+    });
+  });
+
   // The other half: restricting by language must not disable the pass.
   it('still resolves a same-language unique name', () => {
     expect(readersOf('jsOnlyThreshold')).toContain('readsJsOnly');
