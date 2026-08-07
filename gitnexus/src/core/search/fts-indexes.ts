@@ -1,5 +1,13 @@
-import { createFTSIndex, dropFTSIndex, DEFAULT_FTS_STEMMER } from '../lbug/lbug-adapter.js';
-import { getExtensionCapabilities } from '../lbug/extension-loader.js';
+import {
+  createFTSIndex,
+  dropFTSIndex,
+  indexRowName,
+  indexRowTable,
+  resolveGateRows,
+  DEFAULT_FTS_STEMMER,
+  type IndexCatalogSnapshot,
+} from '../lbug/lbug-adapter.js';
+import { getFtsCapability } from '../lbug/extension-loader.js';
 import { classifyExtensionLoadError } from '../lbug/extension-load-error.js';
 import { FTS_INDEXES } from './fts-schema.js';
 
@@ -67,7 +75,7 @@ const formatWarningContext = (context: FtsWarningContext): string => {
  */
 export const ftsDegradedWarning = (context?: FtsWarningContext): string => {
   const suffix = context ? formatWarningContext(context) : '';
-  const fts = getExtensionCapabilities().find((c) => c.name === 'fts');
+  const fts = getFtsCapability();
   if (fts && !fts.loaded) {
     const reason = fts.reason ? redactPaths(fts.reason).replace(/\.$/, '') : undefined;
     // A missing *runtime dependency* (Windows error 126, etc.) is not healed by
@@ -188,15 +196,63 @@ export function getSearchFTSStemmer(): string {
 }
 
 /**
- * Drop every configured FTS index (no-op per index when absent or unloadable
- * — `dropFTSIndex` tolerates both). Callable ahead of any DML that mutates an
- * FTS-indexed table's rows: LadybugDB's FTS extension is not proven to
- * survive a DETACH DELETE against a table that still carries a live index
- * from a prior run (#2589) — dropping first removes that hazard entirely,
- * regardless of whether it also fixed a specific native inconsistency.
+ * Drop every configured FTS index ahead of any DML that mutates an FTS-indexed
+ * table's rows: LadybugDB's FTS extension is not proven to survive a DETACH
+ * DELETE against a table that still carries a live index from a prior run
+ * (#2589) — dropping first removes that hazard entirely, regardless of whether
+ * it also fixed a specific native inconsistency.
+ *
+ * CALLER OBLIGATION (#2841). `dropFTSIndex` still no-ops per index when the
+ * index is ABSENT, but "unloadable" is no longer unconditionally tolerated: a
+ * LIVE index plus an FTS extension that cannot load now THROWS, naming FTS and
+ * its remedies, instead of reporting a drop that never happened and letting the
+ * next insert/delete die at bind time with a message that never mentions FTS.
+ * Nothing in the type system enforces that — callers must have already proven
+ * the extension is loadable (`ensureFtsRowDmlSafe()` returning `true`, or a
+ * direct `loadFTSExtension()`) before calling this. `run-analyze.ts` settles it
+ * at the incremental extension gate and escalates to a full wipe-and-rebuild
+ * write plan when the gate says no, so this function is only reached on the
+ * branch where the drops can actually succeed.
+ *
+ * @param indexRows An {@link IndexCatalogSnapshot} the caller already read on
+ * THIS connection with no index created or dropped since — the same freshness
+ * contract, and the same one-shared-`SHOW_INDEXES`-read purpose, as the gates in
+ * `lbug-adapter.ts`. Omit it to have the sweep read the catalog itself.
  */
-export async function dropSearchFTSIndexes(): Promise<void> {
+export async function dropSearchFTSIndexes(indexRows?: IndexCatalogSnapshot): Promise<void> {
+  // One catalog read for the whole sweep, decided PER CONFIGURED INDEX on
+  // IDENTITY (#2841 cleanup review). `undefined` = the catalog could not be
+  // read, which proves nothing — attempt every drop rather than skip a real one,
+  // the same fail-closed reading `ensureFtsRowDmlSafe` applies to its own rows.
+  //
+  // Deliberately NOT an all-or-nothing early return keyed on index TYPE. That
+  // shape put a second `=== 'FTS'` predicate over the same rows next to the
+  // gate's `undefined || === 'FTS'` one, disagreeing on the polarity of an
+  // unreadable index_type: the gate treats it as "might be FTS" and blocks,
+  // while a bare `=== 'FTS'` here read it as "no FTS index anywhere" and skipped
+  // the entire sweep. If the row shape ever changes while FTS still loads, the
+  // gate would answer SAFE (surgical path), the sweep would drop nothing, and
+  // `deleteNodesForFiles` would run against tables carrying live FTS indexes —
+  // the exact #2589 hazard this sweep exists to prevent. Keying on identity
+  // removes the polarity question entirely. Its stated justification was also
+  // unreachable: the loop only ever drops the CONFIGURED `FTS_INDEXES` entries,
+  // so an index left over from an older, differently-named set was never dropped
+  // whether the sweep ran or not.
+  const rows = await resolveGateRows(indexRows);
   for (const { table, indexName } of FTS_INDEXES) {
+    // Skip only what the catalog POSITIVELY proves absent. Without this, a
+    // machine whose FTS extension cannot load, analyzing a DB that never carried
+    // an FTS index, pays one failed `CALL DROP_FTS_INDEX` per configured table on
+    // EVERY incremental run — and each of those failures now costs a fresh
+    // catalog read inside `dropFTSIndex`'s liveness guard, forever, with nothing
+    // to heal (#2841 review). The `ensuredFTSIndexes` memo needs no clearing here
+    // either: an index absent from the catalog cannot be memoized as ensured on
+    // this connection, and `createSearchFTSIndexes` drops per index itself before
+    // creating.
+    const provenAbsent =
+      rows !== undefined &&
+      !rows.some((row) => indexRowTable(row) === table && indexRowName(row) === indexName);
+    if (provenAbsent) continue;
     await dropFTSIndex(table, indexName);
   }
 }
@@ -239,7 +295,13 @@ export async function verifySearchFTSIndexes(
   for (const row of rows) {
     if (typeof row !== 'object' || row === null) continue;
     const record = row as Record<string, unknown>;
-    const indexName = record.index_name;
+    const indexName = indexRowName(record);
+    // LADYBUGDB-CONTRACT: `property_names` is the one SHOW_INDEXES column with a
+    // single reader, so it has no shared accessor — see {@link IndexCatalogRow}
+    // in lbug-adapter.ts for the full column list and the re-validation rule.
+    // Unlike the gates, an unreadable shape here is safe: it reports the index as
+    // not covering its columns, i.e. "missing", which degrades keyword search
+    // loudly rather than passing a broken index off as verified.
     const propertyNames = record.property_names;
     if (typeof indexName !== 'string' || !Array.isArray(propertyNames)) continue;
     propsByIndex.set(
