@@ -45,3 +45,11 @@ export const anonHolder = [
     return { anonReturnKey: row.x };
   },
 ];
+
+// The production anchor for a name a test fixture also constructs. A read here
+// must resolve to THIS one, not to the fixture's.
+export function buildProductionShape(row) {
+  return {
+    productionAndTestField: row.real,
+  };
+}

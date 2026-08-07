@@ -69,6 +69,7 @@ import type { ScopeResolutionIndexes } from '../../model/scope-resolution-indexe
 import type { GraphNodeLookup } from '../graph-bridge/node-lookup.js';
 import { resolveCallerGraphId } from '../graph-bridge/ids.js';
 import { callableFlowSiteKey } from './callable-value-flow.js';
+import { isTestFile } from '../../entry-point-scoring.js';
 import { getLanguageFromFilename } from 'gitnexus-shared';
 
 /** Language a definition lives in, for reporting which anchor a reader cannot reach. */
@@ -310,6 +311,21 @@ function narrowToSingleCandidate(
   // what guarantees R3-4 cannot change an answer that already resolved before
   // return shapes were indexed at all.
   let candidates = candidatesIn;
+
+  // PRODUCTION CODE FIRST. A test constructs throwaway shapes with the same
+  // field names as the thing it exercises — measured on the reporting repo,
+  // four of the seven JavaScript anchors for `wickRatio` are in `tests/` — and
+  // a read in production code cannot mean any of them. Applied before the
+  // declared/return-shape split because "is this the shipped program" is the
+  // stronger signal: a declaration in a test fixture is still a test fixture.
+  //
+  // Only when the READER is production. A read inside a test legitimately means
+  // the test's own shape, so this must not fire there.
+  if (!isTestFile(readingFile)) {
+    const production = candidates.filter((c) => !isTestFile(c.filePath));
+    if (production.length > 0) candidates = production;
+  }
+
   const declared = candidates.filter((c) => !c.fromReturnShape);
   const ranked = declared.length > 0 ? declared : candidates;
 

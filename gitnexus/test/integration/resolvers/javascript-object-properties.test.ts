@@ -203,6 +203,25 @@ describe('JavaScript plain-object property access (A1/A5)', () => {
       expect(ids.some((id) => id.includes('formatSummary.summaryOnlyField'))).toBe(true);
     });
 
+    // Production code outranks test fixtures. Measured on the reporting repo:
+    // four of the seven JavaScript anchors for one field were in `tests/`,
+    // competing with the three real ones and making every production read
+    // ambiguous. A test builds throwaway shapes with production field names; a
+    // read in shipped code cannot mean one.
+    it('does not let a test fixture compete with the production anchor', () => {
+      expect(readersOf('productionAndTestField')).toContain('readsProductionShape');
+      const ids = Array.from(
+        (result as unknown as { graph: { iterNodes(): Iterable<PropNode> } }).graph.iterNodes(),
+      )
+        .filter((n) => n.label === 'Property')
+        .map((n) => String(n.id));
+      // Both anchors exist — it is the RANKING that differs, not the indexing.
+      expect(ids.some((id) => id.includes('buildProductionShape.productionAndTestField'))).toBe(
+        true,
+      );
+      expect(ids.some((id) => id.includes('buildTestFixture.productionAndTestField'))).toBe(true);
+    });
+
     // THE GUARANTEE that reconciles this with R2-1b. `sharedWithDeclared` is
     // both a named-object key and a return-shape key; a read must still resolve
     // to the DECLARED one, or indexing return shapes would silently move
