@@ -23,7 +23,6 @@ import type { KnowledgeGraph } from './graph/types.js';
 import { resetDegradedParseCounter } from './tree-sitter/safe-parse.js';
 import {
   initLbug,
-  withLbugDb,
   loadGraphToLbug,
   getLbugStats,
   executeQuery,
@@ -73,7 +72,6 @@ import {
   getExtensionCapability,
   getExtensionCapabilities,
   getFtsCapability,
-  getExtensionInstallPolicy,
   resolveAnalyzeInstallPolicy,
 } from './lbug/extension-loader.js';
 import { diagnoseExtensionLoad } from './lbug/extension-load-error.js';
@@ -860,69 +858,6 @@ async function resolveWriteTarget(repoPath: string, options: AnalyzeOptions): Pr
 }
 
 /**
- * §5.C — can a previously-degraded FTS index be rebuilt on THIS run?
- *
- * After an FTS-forced escalation (#2841) the rebuild stamps `lastCommit`, so a
- * plain rerun on a clean tree at the same commit hits the `alreadyUpToDate` fast
- * path and returns long before Phase 3 ever retries `loadFTSExtension` — the
- * indexes are never rebuilt, while the CLI's own degraded-search warning tells
- * the user to install the extension "then rerun". Only `--repair-fts` or a later
- * content change healed it. This probe is what lets that advice be true.
- *
- * Two questions, and BOTH must answer yes:
- *
- *  1. Are search indexes actually missing? Asked of the catalog, never of the
- *     meta stamp — `--repair-fts` writes `capabilities.fts` best-effort, so a
- *     failed stamp leaves meta claiming 'unavailable' over a perfectly healthy
- *     index, and bypassing the fast path on that alone would re-analyze forever.
- *     `verifySearchFTSIndexes` needs no extension (a plain `SHOW_INDEXES` read).
- *  2. Can the FTS extension be loaded NOW? `quiet` because a failed probe is the
- *     EXPECTED answer here and Phase 3 owns the real degradation report.
- *
- * READ-ONLY, and that is load-bearing on both counts (#2841 cleanup F1/F2).
- * Measured on a 391 MB index, a cold WRITABLE open costs ~1 s and drags in
- * `runSchemaCreationQueries`' DDL, the cross-process write lock, sidecar
- * reclaim, and a real `CHECKPOINT` on `closeLbug` — all charged to the path
- * whose entire contract is "return in milliseconds". A read-only open answers
- * both questions (`SHOW_INDEXES` and `LOAD EXTENSION` are reads) with none of
- * it. It also fixes the install trap: `doInitLbug`'s own FTS pre-load resolves
- * the ENV policy on the writable branch, so an operator who exports
- * `GITNEXUS_LBUG_EXTENSION_INSTALL=auto` — precisely what our own remedy tells
- * them to do — was paying a forked 15 s installer on EVERY up-to-date run,
- * forever, because the attempt is memoized per process and the CLI is a fresh
- * process each time. The read-only branch pins `load-only` explicitly, so the
- * probe can never spawn one.
- *
- * Fail-safe by construction: any error (missing/unopenable DB, read-only mount,
- * #1549) answers `false` and the fast path stands — an up-to-date run must never
- * be turned into a failure by a diagnostic.
- */
-async function degradedFtsCanBeRebuiltNow(lbugPath: string): Promise<boolean> {
-  try {
-    return await withLbugDb(
-      lbugPath,
-      async () => {
-        const missing = await verifySearchFTSIndexes(executeQuery);
-        if (missing.length === 0) return false;
-        return await loadFTSExtension(undefined, {
-          policy: getExtensionInstallPolicy(),
-          quiet: true,
-        });
-      },
-      { readOnly: true },
-    );
-  } catch {
-    return false;
-  } finally {
-    // Always hand the run back a closed DB: the pipeline below opens
-    // `buildPath` itself (writable), and `closeLbug` is what resets the
-    // per-connection `ftsLoaded` memo so that open re-probes instead of
-    // trusting this read-only one.
-    await closeLbug().catch(() => {});
-  }
-}
-
-/**
  * Run the full analysis under an exclusive, index-directory-scoped write lock
  * (#2658). A second concurrent `analyze` on the same slot waits here for the
  * first to finish, then falls through to the normal freshness check inside —
@@ -1539,48 +1474,22 @@ async function runFullAnalysisInner(
       // opt-in branch so the common fast path keeps its single-stat cost.
       const healUnregistered =
         options.allowDuplicateName === true && !(await isRepoRegistered(repoPath));
-      // ── §5.C: don't freeze a degraded search index behind the fast path ──
-      // Phase 3 stamps `capabilities.fts.status = 'unavailable'` (the same
-      // signal `ftsSkipped` reports to the CLI) whenever this run could not
-      // build the search indexes. An #2841 FTS-forced rebuild then stamps
-      // `lastCommit` as well, so the very rerun the CLI advises — "install it
-      // once with network access … then rerun" — would land here and
-      // early-return, leaving keyword search dead until the next content
-      // change. Probe only in that recorded-degraded state, and only when the
-      // run would otherwise return: a healthy index still costs one stat.
-      const healDegradedFts =
-        !dirty &&
-        !healUnregistered &&
-        // `?.` on `fts` as well as `capabilities`: meta.json is a schema-less
-        // JSON.parse of on-disk state (same reason the embedding-dims guard
-        // above refuses to quote back a value it cannot type-check), so a
-        // legacy/hand-edited file can carry `capabilities` without `fts`.
-        existingMeta.capabilities?.fts?.status === 'unavailable' &&
-        // …and only for the cause a rerun can actually fix. `status` is the
-        // same value for both causes, so without the stamped discriminator
-        // this probe treats a `build-failed` run as a missing extension:
-        // `verifySearchFTSIndexes` reports the indexes missing (they are),
-        // `loadFTSExtension` succeeds (the extension was never the problem),
-        // and the run re-analyzes the entire repo — where Phase 3 hits the same
-        // un-tokenizable row (#2544/#2546, deterministic), degrades identically,
-        // and restamps. That is a permanent full-re-analyze loop in place of a
-        // single `stat`, so `build-failed` is excluded here and left to
-        // `--repair-fts` / the next content change, which is exactly what its
-        // Phase 3 log line tells the user to run.
-        //
-        // `!== 'build-failed'`, NOT `=== 'extension-unavailable'`: metas written
-        // before #2841 carry no `skipReason` at all, and `undefined` must keep
-        // the pre-existing behaviour (probe) rather than silently freezing a
-        // genuinely healable degraded index behind the fast path forever.
-        existingMeta.capabilities.fts.skipReason !== 'build-failed' &&
-        (await degradedFtsCanBeRebuiltNow(lbugPath));
-      if (healDegradedFts) {
-        log(
-          'Index is up to date but its search indexes are missing and the FTS extension now ' +
-            'loads — re-analyzing so Phase 3 can rebuild them.',
-        );
-      }
-      if (!dirty && !healUnregistered && !healDegradedFts) {
+      // §5.C is deliberately NOT self-healed here. An #2841 FTS-forced rebuild
+      // stamps `lastCommit`, so a plain rerun lands on this fast path and the
+      // search indexes stay missing until the next content change. The fix for
+      // that is the ADVICE, not a probe: the degraded-search warning now points
+      // at `gitnexus analyze --repair-fts` (which rebuilds the indexes without
+      // re-parsing anything) instead of "then rerun".
+      //
+      // An auto-heal probe was tried and reverted. It could not distinguish
+      // "extension was missing" from "index build failed" without a stamped
+      // discriminator, so a deterministic build failure (#2544/#2546) re-analyzed
+      // the whole repo on every invocation forever; it opened the live index on
+      // the millisecond fast path; and it turned this early return into a full
+      // re-analysis whenever an index authored where FTS was unavailable was
+      // later read on a host where it loads — which is a legitimate, common
+      // state, and the invariant `analyzer-identity-cli.test.ts` pins.
+      if (!dirty && !healUnregistered) {
         // ── #2354: restamp the workspace label on a same-commit branch flip ──
         // The flat slot follows the checked-out working tree; a branch switch
         // at the SAME commit with a clean tree changes nothing the pipeline
