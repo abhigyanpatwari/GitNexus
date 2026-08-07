@@ -35,9 +35,35 @@ describe('detectGraphWriteCollapse (B2 detection)', () => {
     expect(detectGraphWriteCollapse(23009, 23009)).toBeUndefined();
   });
 
-  it('stays silent when MORE rows persist than the call graph built (--pdg)', () => {
-    // PDG layers write into the same table, so persisted > expected is normal.
+  // A surplus is still tolerated — the detector only ever fires on a SHORTFALL,
+  // and small overcounts are legitimate (a row written by a path the manifest
+  // does not enumerate). What changed is the caller, not this rule.
+  it('stays silent when more rows persist than expected', () => {
     expect(detectGraphWriteCollapse(1000, 4000)).toBeUndefined();
+  });
+
+  // THE CASE THIS FILE USED TO PIN THE WRONG WAY, and why the fix is at the
+  // CALLER rather than here.
+  //
+  // The old assertion read `detectGraphWriteCollapse(1000, 4000)` with the
+  // comment "PDG layers write into the same table, so persisted > expected is
+  // normal". True about the table — and it quietly licensed the masking. The
+  // caller passed `stats.edges`, a count of EVERY CodeRelation row, against an
+  // expectation covering only the structural halves, so losing all 1,000
+  // structural edges while 4,000 PDG rows persisted was indistinguishable from
+  // health.
+  //
+  // Padding `expected` with the PDG rows does NOT fix that, which is worth
+  // recording because it is the obvious move: 4,000 persisted against 5,000
+  // expected still clears the 0.5 ratio. The ratio would be judging a minority
+  // population. `run-analyze.ts` therefore compares STRUCTURAL against
+  // STRUCTURAL, using the new `getLbugStats().structuralEdges`.
+  //
+  // At this level that is simply the ordinary shortfall case: once both sides
+  // count structural edges only, a total structural wipeout on a --pdg run is
+  // `(1000, 0)` and fires like any other.
+  it('fires on a total structural loss even when PDG rows are plentiful', () => {
+    expect(detectGraphWriteCollapse(1000, 0)).toEqual({ expected: 1000, persisted: 0 });
   });
 
   // REGRESSION. A non-numeric `expected` does not merely skip the guards, it

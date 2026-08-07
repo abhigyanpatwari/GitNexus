@@ -106,6 +106,19 @@ withTestLbugDB(
 
         // 4 relationships (2 CALLS, 2 CONTAINS)
         expect(stats.edges).toBe(4);
+
+        // STRUCTURAL count must be a real number, not `undefined`.
+        //
+        // This assertion exists because the failure mode is silent: the query is
+        // wrapped in a try/catch that yields `undefined` on error, and
+        // `undefined` makes the graph-write-collapse check decline to compare.
+        // A typo in the Cypher would therefore not throw, not fail any test, and
+        // simply switch the collapse guard off — the exact shape of
+        // confidently-doing-nothing this whole area exists to prevent.
+        //
+        // The seeded graph has no PDG layers, so structural == total here; the
+        // point is that the count was TAKEN.
+        expect(stats.structuralEdges).toBe(4);
       });
 
       it('deleteAllInterprocTaintPaths: removes TAINT_PATH edges and is benign when none exist (#2084 review P2-5)', async () => {

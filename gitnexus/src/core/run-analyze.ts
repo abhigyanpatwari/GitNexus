@@ -1349,6 +1349,31 @@ async function runFullAnalysisInner(
     options = { ...options, force: true };
   }
 
+  // ── a recorded graph-write collapse forces a full rebuild ────────
+  //
+  // Every other meta-driven trigger above and below gets a block here;
+  // `graphWriteCollapsed` was recorded and then never read by anything
+  // (`grep -rn graphWriteCollapsed src/` showed writes only). The consequence is
+  // the worst available: a collapsed index whose commit has not changed takes
+  // the `alreadyUpToDate` fast path, prints "Already up to date", exits 0, and
+  // keeps doing so forever. The one state that means "most of your edges are
+  // gone" was the one state that repaired itself only if the user happened to
+  // pass `--force`.
+  //
+  // Forcing is the correct remedy rather than merely re-running: the collapse
+  // means the persisted graph disagrees with what the pipeline produced, and an
+  // incremental pass over unchanged files would write nothing and re-stamp the
+  // same broken index as fresh.
+  if (existingMeta?.graphWriteCollapsed) {
+    const { expected, persisted } = existingMeta.graphWriteCollapsed;
+    log(
+      `previous run persisted ${persisted} of ${expected} expected relationships ` +
+        `(recorded as a graph-write collapse); forcing a full re-analyze rather than ` +
+        `reporting an index this build already knows is incomplete.`,
+    );
+    options = { ...options, force: true };
+  }
+
   // ── independently-versioned analysis capabilities ────────────────
   // `schemaFingerprint` is reserved for graph-wide incremental invariants. Some
   // persisted semantics apply only to repositories containing relevant source
@@ -2792,8 +2817,23 @@ async function runFullAnalysisInner(
     // must not read as a measured collapse. `nodes > 0` is independent evidence
     // the DB was readable at all, but it says nothing about whether the EDGE
     // query threw, so both conditions are required.
+    //
+    // STRUCTURAL ONLY, and that is the whole correction. `expected` above counts
+    // the in-memory graph plus the streamed STRUCTURAL manifest; the streamed
+    // PDG layers never enter `graph.relationshipCount`. But `stats.edges` counts
+    // EVERY `CodeRelation` row, and PDG writes into that same table — so on a
+    // `--pdg` run the two sides measured different populations and the surplus
+    // masked real loss. With 1,000 structural edges expected and 4,000 PDG rows
+    // persisted, losing EVERY structural edge still read `persisted = 4000` and
+    // cleared the ratio: a total wipeout, reported healthy, on exactly the large
+    // repos `--pdg` is used for.
+    //
+    // Padding `expected` with the PDG rows instead does NOT fix it — it makes
+    // the universes match but leaves the ratio judging a minority population:
+    // 4,000 of 5,000 still clears 0.5. Only comparing structural against
+    // structural asks the question the check exists to ask.
     const persistedRelationships =
-      stats.nodes > 0 && stats.edges !== undefined ? stats.edges : undefined;
+      stats.nodes > 0 && stats.structuralEdges !== undefined ? stats.structuralEdges : undefined;
     // NOT COMPARABLE ON AN INCREMENTAL WRITE. That path persists only
     // `extractChangedSubgraph(...)` while both counts here are whole-scope: the
     // full in-memory graph against the entire DB. A 10,000-edge index whose
@@ -2806,6 +2846,26 @@ async function runFullAnalysisInner(
     const graphWriteCollapsed = wroteChangedSubgraphOnly
       ? undefined
       : detectGraphWriteCollapse(expectedRelationships, persistedRelationships);
+
+    // `undefined` above means TWO different things, and conflating them erased
+    // the stamp. An incremental write produces NO VERDICT (whole-scope counts
+    // are not comparable to a partial write); a full write producing no
+    // collapse is a POSITIVE all-clear. `saveMeta` is a full atomic overwrite,
+    // not a merge, so leaving the field off in the first case silently dropped
+    // `graph-write-collapsed` from meta.json while the missing edges were still
+    // missing — the index went back to reporting itself fresh without anything
+    // having repaired it.
+    //
+    // Three-way, explicitly:
+    //   collapse detected      -> stamp it
+    //   full run, no collapse  -> CLEAR it (the index really is healthy now)
+    //   no verdict             -> carry the previous stamp forward
+    //
+    // Mirrors `branch: branchLabel ?? existingMeta?.branch` a few lines down in
+    // the meta write, which had the preserve-on-absence shape all along.
+    const persistedCollapseStamp = wroteChangedSubgraphOnly
+      ? existingMeta?.graphWriteCollapsed
+      : graphWriteCollapsed;
     if (graphWriteCollapsed) {
       log(
         `Warning: graph write incomplete — the pipeline produced ${expectedRelationships} ` +
@@ -3223,9 +3283,10 @@ async function runFullAnalysisInner(
       // origin remote, which is fine: paths-only repos behave as
       // before.
       remoteUrl: hasGitDir(repoPath) ? getRemoteUrl(repoPath) : undefined,
-      // Absent on a healthy run; present it and the index reports as
-      // incomplete rather than fresh (`graph-write-collapsed`).
-      ...(graphWriteCollapsed ? { graphWriteCollapsed } : {}),
+      // Absent on a healthy FULL run; present it and the index reports as
+      // incomplete rather than fresh (`graph-write-collapsed`). Carried forward
+      // when this run had no verdict — see `persistedCollapseStamp`.
+      ...(persistedCollapseStamp ? { graphWriteCollapsed: persistedCollapseStamp } : {}),
       // R3-1. Not a health signal — the index is complete and correct. This
       // records which fields the per-language inference declined to link so a
       // later query can say WHY it is returning nothing, instead of leaving an

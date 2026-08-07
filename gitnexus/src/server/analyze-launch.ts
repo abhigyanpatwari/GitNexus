@@ -203,6 +203,32 @@ export function createLaunchAnalysisWorker(deps: LaunchDeps) {
             .catch(() => {}) // best-effort: eviction failure must not fail the job
             .then(() => backend.init())
             .then(() => {
+              // PARITY WITH THE CLI, which is what the IPC projection was added
+              // for. `analyze-worker-ipc.ts` carries `graphWriteCollapsed`
+              // "so a server-side caller sees the same degraded outcome the CLI
+              // does" — but nothing here read it, so the comment described an
+              // intention rather than the shipped behaviour and every collapsed
+              // run reported `complete` to the UI and to every API consumer.
+              //
+              // `failed` rather than `complete`, because that is the CLI's
+              // choice: it prints `Repository indexed INCOMPLETELY` and exits
+              // non-zero. The index exists but most of its edges do not, and a
+              // consumer that reads "complete" will query it and get confident
+              // wrong answers — the precise failure this whole guard exists to
+              // stop. The message names the remedy, and a re-run now forces a
+              // full rebuild on its own (see the `graphWriteCollapsed` trigger
+              // in run-analyze.ts).
+              const collapse = msg.result.graphWriteCollapsed;
+              if (collapse) {
+                jobManager.updateJob(job.id, {
+                  status: 'failed',
+                  error:
+                    `Repository indexed INCOMPLETELY: only ${collapse.persisted} of ` +
+                    `${collapse.expected} expected relationships are readable. The index was not ` +
+                    `marked fresh. Re-run the analysis — it will rebuild from scratch.`,
+                });
+                return;
+              }
               jobManager.updateJob(job.id, { status: 'complete', repoName: msg.result.repoName });
             })
             .catch((err) => {
