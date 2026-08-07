@@ -409,7 +409,7 @@
   },
   "rust-generic-impl-same-method-name/lib.rs": {
     "captureGroups": 21,
-    "digest": "b947e11ce51005eeba5cb7720f33be8829959aedbd344d7a2531f7b00d51ad37"
+    "digest": "854a7e9888c4e83de5d37324bed8c12726a8124a0c2f2ad577cd3fcdfe529c8b"
   },
   "rust-grouped-imports/src/helpers/mod.rs": {
     "captureGroups": 16,
@@ -609,7 +609,7 @@
   },
   "rust-nested-tail-collision-generic/lib.rs": {
     "captureGroups": 33,
-    "digest": "ab9d8bdfc674adac69965aa9b214fe6c5028184a98a504db7219af7bc9835265"
+    "digest": "11894223dc878e2cd96796172103976e4069b10baa5b454b5c1ec15ae8bab82b"
   },
   "rust-nested-tail-collision/lib.rs": {
     "captureGroups": 19,
@@ -657,7 +657,7 @@
   },
   "rust-qualified-trait/src/traits.rs": {
     "captureGroups": 9,
-    "digest": "10f3bba4c2a16cdac77de0498ff506910ac09cc1a85e7daebfc5743c54e26015"
+    "digest": "de4f2cf25c265d6cf6a15449f914a50bcac6fdcece855bb4a330eb01098a74d5"
   },
   "rust-qualified-trait/src/widget.rs": {
     "captureGroups": 23,

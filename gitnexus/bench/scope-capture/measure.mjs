@@ -209,10 +209,22 @@ const LANGS = [
     // Heritage-bearing: `: public Base, public Mixin` (single + multiple
     // inheritance) drives emitCppInheritanceCaptures (#1951) at scale. Added
     // (was unbenched); adding it exposed + fixed the same O(n²) root-walk (#1956).
+    //
+    // Also GENERIC-MEMBER-bearing (#2833): `Repo<Entity_n> repo;` is a member
+    // whose declared type is a bare `template_type`, and
+    // `std::vector<Entity_n> items;` is the far commoner spelling where a
+    // `qualified_identifier` WRAPS that template_type. Both were absent, and
+    // their absence is why two successive rounds of `field_declaration`
+    // type-binding rules landed with a byte-identical cpp fingerprint: the gate
+    // could not see a member field it had no instance of. With them present,
+    // reverting either round of rules drifts the fingerprint, which is the
+    // property that makes the gate worth running.
     header:
-      '#include <string>\n\nclass Base {\n public:\n  long baseId() const { return 0; }\n};\n\nclass Mixin {\n public:\n  void mix() {}\n};\n\n',
+      '#include <string>\n#include <vector>\n\ntemplate <typename T>\nclass Repo {\n public:\n  void save(T v) {}\n};\n\nclass Base {\n public:\n  long baseId() const { return 0; }\n};\n\nclass Mixin {\n public:\n  void mix() {}\n};\n\n',
     unit: (n) =>
       `class Entity${n} : public Base, public Mixin {\n public:\n  long id;\n  std::string name;\n` +
+      `  Repo<Entity${n}> repo;\n` +
+      `  std::vector<Entity${n}> items;\n` +
       `  long getId() const { return id; }\n` +
       `  void setName(std::string v) { name = v; }\n};\n\n`,
   },
