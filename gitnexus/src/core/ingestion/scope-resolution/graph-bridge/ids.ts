@@ -63,6 +63,10 @@ export const CALLER_ANCHOR_LABELS: ReadonlySet<NodeLabel> = new Set<NodeLabel>([
   'Interface',
   'Struct',
   'Enum',
+  // Record is class-like executable context for declaration initializers.
+  // Without this anchor, calls from Java static-field / C# property initializers
+  // fall through to File even though the canonical Record node is linkable.
+  'Record',
 ]);
 
 function isCallerAnchorLabel(label: NodeLabel): boolean {
@@ -436,7 +440,7 @@ export function simpleQualifiedName(def: SymbolDefinition): string | undefined {
 
 /**
  * Walk the scope chain from `startScope` upward looking for the first
- * scope whose `ownedDefs` contains a Function/Method/Class — that's
+ * scope whose `ownedDefs` contains a callable or class-like anchor — that's
  * our caller anchor. Translate via `nodeLookup` to the graph-node ID.
  *
  * Module-level references (e.g. Python `u = models.User()` at top
@@ -462,7 +466,7 @@ export function resolveCallerGraphId(
     lastFilePath = scope.filePath;
 
     // Prefer Function/Method/Constructor anchors; fall back to
-    // Class/Interface/Struct/Enum. Variable/Property are NOT valid
+    // Class/Interface/Struct/Enum/Record. Variable/Property are NOT valid
     // caller anchors — see `isCallerAnchorLabel` for why.
     const picked = pickCallerCallableDef(scope, scopes, atRange);
     if (picked !== undefined) {

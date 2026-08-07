@@ -360,9 +360,10 @@ const DEFINITION_ANCHOR_LABELS: readonly NodeTableName[] = NODE_TABLES.filter(
  * Those pairs stay declared because the two sides of the error are not
  * symmetric: an UNDECLARED pair makes LadybugDB reject the edge and aborts
  * `analyze` outright on a user's repo, while an unused DECLARED pair costs
- * almost nothing — `bench/schema-pairs` measures the whole 332→450 growth
+ * almost nothing — `bench/schema-pairs` measured the pre-#2801 332→450 growth
  * (118 pairs, of which these ~47 are a part) at 0.93–1.05×, i.e. inside
- * run-to-run noise.
+ * run-to-run noise. #2801's 11 generated `Record` pairs bring the total to 461,
+ * measured at 1.20–1.42× across three stable Windows runs.
  * Every one of the four aborts above came from re-narrowing a set to what one
  * predicate looked like it allowed — so a reading of `isCommunitySymbol` is not
  * grounds to shrink this. Widening either predicate is then a no-op here.
@@ -372,17 +373,19 @@ const DEFINITION_ANCHOR_LABELS: readonly NodeTableName[] = NODE_TABLES.filter(
  * `ENTRY_POINT_OF`, and admitting them would mint twelve further pairs no
  * emitter can currently reach.
  *
- * Sized deliberately: this rule brings the DDL to 450 pairs. `bench/schema-pairs`
- * measures it against real `@ladybugdb/core` with identical data — untyped-endpoint
- * anchored queries (`MATCH (a {id: $id})-[r:CodeRelation]->(b)`, the shape
- * `impact` / `context` / `detect_changes` issue), relative to the 332-pair
- * hand-list this replaced. Four runs on the same box:
+ * Sized deliberately: this rule plus the `Record` bridge brings the DDL to 461
+ * pairs. `bench/schema-pairs` measures real `@ladybugdb/core` with identical
+ * data — untyped-endpoint anchored queries
+ * (`MATCH (a {id: $id})-[r:CodeRelation]->(b)`, the shape `impact` / `context` /
+ * `detect_changes` issue), relative to the 332-pair hand-list it replaced.
+ * The historical reference-box range plus #2801's current production range:
  *
- *   450 → 0.93–1.05×   641 → 1.22–1.43×   786 → 1.52–1.75×   1024 → 2.03–2.34×
+ *   450 → 0.93–1.05×   461 → 1.20–1.42×   641 → 1.22–1.43×   1024 → 2.03–2.34×
  *
- * 450 is inside run-to-run noise (it came out FASTER than 332 on three of the
- * four runs); everything past ~640 is not. The knee sits just above 450, so the containment half below
- * stays hand-declared rather than being folded into a third cross product.
+ * 450 was inside historical run-to-run noise; 461 remains below its 1.5×
+ * production budget, while the larger pair sets show material growth. The
+ * containment half below therefore stays hand-declared instead of becoming a
+ * third cross product.
  * Re-run that bench and quote the range — not one run — before proposing one.
  */
 const ATTACHMENT_TARGET_LABELS: readonly NodeTableName[] = [
@@ -413,8 +416,8 @@ const ATTACHMENT_TARGET_LABELS: readonly NodeTableName[] = [
  * NOTHING A RULE ALREADY COVERS BELONGS HERE. `generatedRelationPairs` skips
  * any pair present in this block, so a redundant line does not merely duplicate
  * — it SUPPRESSES generation, and later narrowing a rule would silently keep
- * that pair alive with no test failing. 161 such lines were deleted from this
- * block (the DDL's pair set is unchanged: they moved into the generated half);
+ * that pair alive with no test failing. 164 such lines now live in the generated
+ * half (161 from #2793 plus the three `Record` member pairs moved by #2801);
  * `test/unit/schema-pair-coverage.test.ts` now fails if one comes back.
  *
  * Folding this remainder into a third cross product
@@ -492,9 +495,6 @@ export const STRUCTURAL_PAIR_DDL = `  FROM File TO Folder,
   FROM \`Impl\` TO \`Impl\`,
   FROM \`TypeAlias\` TO \`Trait\`,
   FROM \`TypeAlias\` TO Class,
-  FROM \`Record\` TO Method,
-  FROM \`Record\` TO \`Constructor\`,
-  FROM \`Record\` TO \`Property\`,
   FROM \`Constructor\` TO \`Template\`,
   FROM \`Constructor\` TO \`TypeAlias\`,
   FROM \`Constructor\` TO \`Impl\`,
