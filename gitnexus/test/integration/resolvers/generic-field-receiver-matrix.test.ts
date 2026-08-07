@@ -45,9 +45,14 @@
  * none of them and the member got no type binding at all. Both spellings failed
  * while a LOCAL of the same type resolved, because the local declaration rules
  * had gained their `template_type` variant long ago. Three mirrored rules close
- * the bare spelling and six more close the QUALIFIED one (`std::vector<Item>`,
- * which tree-sitter parses as a `qualified_identifier` WRAPPING the
- * `template_type`, so it matched none of the three either).
+ * the bare spelling. The QUALIFIED spelling (`std::vector<Item>`, `ns::Address`)
+ * is a `qualified_identifier` WRAPPING either node, so it matched none of the
+ * six — GENERIC OR NOT, which is why `std::string name;` bound nothing either —
+ * and three further rules match that outer node directly. Matching the outer
+ * node rather than enumerating the inner one is what makes them depth-agnostic:
+ * there is no longer a qualifier depth at which a member field stops being
+ * captured, and `cppQualifiedTail` in `interpret.ts` reduces `a::b::c::Deeper<T>`
+ * to `Deeper<T>` the way the bare spelling already resolved.
  *
  * ── MEASURED STATE (all rows below are measured, none predicted) ─────────────
  *
@@ -55,49 +60,99 @@
  *   -----------  --------------  ------------------------------------------
  *   TypeScript   fixed           shared lookup now generic-aware
  *   C#           fixed           same
- *   C++          fixed           + new template_type field captures
+ *   C++          fixed           + new template_type/qualified field captures
  *   Python       fixed           + base-name erasure for `Name[...]`
  *   Java         already ok      erases generics at interpret time
  *   Kotlin       already ok      same
- *   Go           already ok      same, for its `[T]` spelling
- *   Rust         already ok      same
+ *   Go           fixed           + generic-interface instantiation fan-out
+ *   Rust         already ok      erases generics at interpret time
  *   Swift        already ok      same
  *   Dart         already ok      same
- *   PHP          n/a             no generic syntax; typed property pinned
+ *   JavaScript   fixed           + `@type {Repo<User>}` docblock field capture
+ *   PHP          fixed           + `@var Repo<User>` docblock property capture;
+ *                                its native typed property has no generic syntax
  *   Ruby, C,     n/a             no generics in the language
  *   COBOL
  *
- * ── PRE-EXISTING GAPS MEASURED HERE, NONE OF THEM #2833 ──────────────────────
+ * ── BASE-NAME ERASURE IS THE WIDEST STEP HERE, AND IT IS GROUNDED ────────────
  *
- * Each is pinned with a CONTROL that fails identically, which is what makes it
- * a gap in some other mechanism rather than in generic typing:
+ * Reaching a declaration by NAME ALONE binds whatever the workspace happens to
+ * declare under that name, so a third-party `Mapped[User]` beside an unrelated
+ * workspace `class Mapped` would become a confident WRONG edge — strictly worse
+ * than the missing one it replaced. `resolveClassBindingForName` therefore
+ * admits an erased base name only on grounds that connect the SITE to the
+ * declaration (the scope chain binds the name; the declaration is in the same
+ * file; the index proves the name is a template family; the file has no
+ * cross-file class channel to be absent from). `py-erased-grounding` pins the
+ * refusal and `py-generic-grounding-mirrors`, `cpp-csharp-index-channel` and the
+ * `-crossfile` rows pin the four shapes that would break if it were stricter.
  *
- *   - C++ `this->field.m()` emits nothing even for a NON-generic field.
- *   - JavaScript/PHP docblock-declared field types bind nothing at all.
- *   - A STATIC/class-level member receiver (`Holder.repo.save(u)`) emits nothing
- *     in TypeScript — and `Holder.plain.save(u)`, a non-generic static of the
- *     same class, emits nothing either (`ts-reach-shapes`).
- *   - A C++ generic field whose type is qualified THREE deep
- *     (`a::b::c::Deeper<User>`) is not captured; two deep is
- *     (`cpp-qualified-generic-field`). That boundary is the documented cost of
- *     one query pattern per qualifier depth.
- *   - A C++ specialization declared in ANOTHER file binds, but the PRIMARY
- *     template does not when the instantiating file names it nowhere lexically
- *     (`cpp-spec-cross-file` / `runIntCrossFile`).
+ * ── GAPS THIS FILE ONCE PINNED, NOW CLOSED ───────────────────────────────────
+ *
+ * Every one of these was a measured empty row here, each with a CONTROL that
+ * failed identically — which is what classified it as a gap in some other
+ * mechanism rather than in generic typing. The mechanism named is what closed
+ * it, and every row below is now asserted non-empty:
+ *
+ *   - C++ `this->field.m()` emitted nothing even for a NON-generic field: a
+ *     `this`-head seed gap. The compound fold now seeds the head from the
+ *     enclosing class for a language that sets `resolveThisViaEnclosingClass`
+ *     (`cpp-this-head-field`).
+ *   - JavaScript `@type {…}` and PHP `@var …` docblock field types bound nothing
+ *     at all — the only way either language can spell a field's type at all in
+ *     the generic case. Both now synthesize the same annotation-strength binding
+ *     the native syntax emits (`js-docblock-field`, `php-docblock-property`).
+ *   - A STATIC/class-level member receiver (`Holder.repo.save(u)`) emitted
+ *     nothing, and so did `Holder.plain.save(u)`. Case 6 types the receiver off
+ *     the static field DEF, which is the thing a per-scope `typeBindings` map
+ *     cannot hold for a class declaring both a static and an instance member of
+ *     one name (`ts-reach-shapes`, `kotlin-companion-static-member`).
+ *   - A C++ generic field qualified THREE deep was not captured; that was the
+ *     cost of one query pattern per qualifier depth, and the depth-agnostic
+ *     rules removed the boundary rather than raising it
+ *     (`cpp-qualified-generic-field`, now pinned at depth 3 AND 4).
+ *   - A C++ PRIMARY template did not bind cross-file when the instantiating file
+ *     named it nowhere lexically. The base-name route now re-decides over the
+ *     declarations that pin no template arguments of their own, and exactly one
+ *     of the two `Vec` declarations does (`cpp-spec-cross-file`).
+ *   - A workspace `class T` shadowed a type PARAMETER named `T` and answered for
+ *     it. Declarations now carry their declared `typeParameters`, and a name a
+ *     lexically enclosing declaration binds as a parameter is refused
+ *     (`neg-type-parameter`).
+ *
+ * ── DELIBERATE LIMITS STILL PINNED HERE ──────────────────────────────────────
+ *
+ * These rows are NOT gaps waiting to be closed. Each states a decision, and
+ * changing one is a semantics change to argue for, not a bug to fix quietly:
+ *
+ *   - C++ partial-specialization SELECTION resolves to the PRIMARY template.
+ *     Selecting `Vec<T*>` for `Vec<int*>` needs template-argument DEDUCTION,
+ *     ruled out of scope; what IS pinned is that the answer does not depend on
+ *     declaration order (`cpp-partial-spec-*`).
+ *   - `std::unique_ptr<Payload>` types to `unique_ptr`, NOT to the pointee.
+ *     Smart-pointer transparency is not applied on this path.
+ *   - A C++ node id drops the namespace, so two same-named specializations in
+ *     ONE file collapse to one node. `cpp-spec-lexical-shadowing` puts its two
+ *     `Box<bool>` declarations in two FILES for exactly that reason.
+ *   - A chain HEAD whose own type was erased still binds through the
+ *     bare-identifier branch's callable-alias retry: `m.inner.ping()` where
+ *     `m: Mapped[User]` resolves, while the one-segment-shallower `m.save(u)`
+ *     correctly refuses. `py-erased-grounding` / `run_head_chain` pins it.
  *
  * ── THE NEGATIVE CONTROLS ─────────────────────────────────────────────────────
  *
  * Erasing `Repo<User>` to `Repo` is right for finding a DECLARATION — one
- * declaration serves every instantiation in each language here. Three shapes
- * must not be swept up with it, and each gets a row:
+ * declaration serves every instantiation in each language here. Four shapes must
+ * not be swept up with it, and each gets a row:
  *
  *   - A bare TYPE PARAMETER (`class Box<TItem> { t: TItem }`) denotes no
  *     declaration at all. Inventing one is a false edge, which is strictly worse
  *     than the missing edge #2833 is about. `Box2<T>` beside a workspace class
- *     literally named `T` pins the PRE-EXISTING collision: `T` carries no type
- *     arguments, so it never enters the generic path, and that edge is measured
- *     unchanged by the fix. It is pinned here so it cannot be mistaken for
- *     fallout — and so it stays visible until it gets its own fix.
+ *     literally named `T` is the hard case, because `T` carries no type
+ *     arguments and so never enters the generic path at all — visibility was
+ *     never the defect, and no grounding rule could have declined it. Only the
+ *     enclosing declaration's own parameter list records that the name means
+ *     something else here.
  *   - A C++ explicit specialization (`template<> struct Vec<bool>`) genuinely IS
  *     a different class from the primary template. Erasing to `Vec` before
  *     trying an exact argument match would silently retarget it, which is why
@@ -111,13 +166,19 @@
  *   - A workspace class whose name collides with a CONTAINER
  *     (`class Map` beside `m: Map<string, User>`) now binds where it did not
  *     before, because base-name erasure reaches it. `container-name-collision`
- *     makes that policy visible instead of accidental.
+ *     makes that policy visible instead of accidental, and the C++ qualified
+ *     rows state the same policy for `std::string name;` when the workspace
+ *     really does declare a `string`.
+ *   - Go interface satisfaction against a generic interface is SUBSTITUTION, not
+ *     erasure: `Repo[Order]` instantiates to `Save(x Order)`, which an
+ *     implementor of `Save(x User)` does not satisfy and must not fan out to
+ *     (`go-instantiation-mismatch`).
  *
- * A bounded type parameter (`T extends Repo`) resolves to nothing today. Making
- * it resolve to its bound is defensible but is a semantics EXPANSION beyond this
- * bug, so the row pins current behaviour rather than asserting a wish — beside a
- * sibling in the same fixture that DOES resolve, so the empty set can never be
- * the sound of a fixture that stopped parsing.
+ * A BOUNDED type parameter (`T extends Repo`) now resolves through its bound,
+ * because the parameter list that declines the unbounded case carries the bound
+ * with it. The row asserts the fan-out that the bound's own field produces,
+ * beside that sibling in the same fixture, so neither can be the sound of a
+ * fixture that stopped parsing.
  *
  * ── WHY THIS IS STILL ONE FILE ────────────────────────────────────────────────
  *
@@ -328,8 +389,12 @@ func (s ControlSvc) RunControl(u User) { s.plain.Save(u) }
       },
       {
         caller: 'RunGeneric',
-        targets: ['Method:a.go:Repo.Save#1'],
-        note: 'ALREADY CORRECT for the bracket spelling. Pinned against regression.',
+        targets: [
+          'Method:a.go:PlainRepo.Save#1',
+          'Method:a.go:Repo.Save#1',
+          'Method:a.go:UserRepo.Save#1',
+        ],
+        note: 'the bracket spelling always typed the receiver; what it lacked was structural satisfaction against a GENERIC interface. `Repo[User]` now instantiates to `interface{ Save(x User) }`, which both value-receiver impls satisfy — so Go finally matches its own control instead of stopping at the declaration.',
       },
     ],
   },
@@ -531,6 +596,7 @@ export class Svc {
     file: 'a.ts',
     source: `
 export class T { foo(): void {} }
+export class Plain { foo(): void {} }
 export class Box<TItem> {
   private t: TItem;
   constructor(t: TItem) { this.t = t; }
@@ -541,8 +607,18 @@ export class Box2<T> {
   constructor(t: T) { this.t = t; }
   run2(): void { this.t.foo(); }
 }
+export class BoxControl {
+  private p: Plain;
+  constructor(p: Plain) { this.p = p; }
+  runPlain(): void { this.p.foo(); }
+}
 `,
     rows: [
+      {
+        caller: 'runPlain',
+        targets: ['Method:a.ts:Plain.foo#0'],
+        note: 'ANTI-VACUITY CONTROL for the two negatives below, and the reason it must be here: both of them are empty now, so without an ordinary field receiver resolving in this same fixture the case could go green on a repo that never parsed.',
+      },
       {
         caller: 'run',
         targets: [],
@@ -550,8 +626,8 @@ export class Box2<T> {
       },
       {
         caller: 'run2',
-        targets: ['Method:a.ts:T.foo#0'],
-        note: 'PRE-EXISTING GAP, pinned: a workspace class named T shadows the type parameter. `T` carries no type arguments so it never enters the generic path — measured unchanged by the #2833 fix. Tracked separately; this row exists so it cannot be mistaken for fallout.',
+        targets: [],
+        note: "THE FALSE EDGE, now closed: a workspace `class T` used to answer for the type parameter `T`. Visibility was never the defect — `export class T` is declared, exported and lexically in scope, so no grounding rule could decline it, and `T` carries no type arguments so it never entered the generic path either. Only `Box2`'s own declared `typeParameters` record that `T` means something else inside it, and `findClassBindingInScope` now refuses a name a lexically enclosing declaration binds as a parameter.",
       },
     ],
   },
@@ -572,13 +648,13 @@ export class Box<T extends Repo> {
     rows: [
       {
         caller: 'run',
-        targets: [],
-        note: 'Pins current behaviour. Resolving a bound is a semantics expansion beyond #2833.',
+        targets: ['Method:a.ts:Repo.save#0', 'Method:a.ts:RepoImpl.save#0'],
+        note: 'a BOUNDED type parameter now resolves THROUGH its bound, with the same interface-dispatch fan-out a field of the bound produces. It comes for free with the parameter list that declines the UNBOUNDED case one fixture up: refusing `T` requires knowing `Box` declares it, and the same entry carries `extends Repo`. Resolving to the bound is the sound direction — every `T` here IS a `Repo` — so this is a deliberate semantics expansion, not fallout.',
       },
       {
         caller: 'runDirect',
         targets: ['Method:a.ts:Repo.save#0', 'Method:a.ts:RepoImpl.save#0'],
-        note: "ANTI-VACUITY SIBLING for the row above: a field of the BOUND itself, in the same class of the same fixture, resolves with fan-out. Without it, `run`'s empty set would also be what a fixture that never parsed produces, and the negative would pass for the wrong reason.",
+        note: 'THE YARDSTICK for the row above: a field of the BOUND itself, in the same class of the same fixture. The two are now asserted to the same target set, which is the whole claim — resolving through a bound must land where naming the bound lands, not merely somewhere.',
       },
     ],
   },
@@ -793,8 +869,8 @@ struct Svc {
       },
       {
         caller: 'runIntCrossFile',
-        targets: [],
-        note: 'PRE-EXISTING GAP, pinned: the PRIMARY template does not bind cross-file. Nothing matches `int` exactly, and the base-name walk declines because two workspace defs are registered under `Vec` and neither is lexically visible. Not caused by #2833 and not fixed by it; the sibling row above proves resolution ran in this fixture.',
+        targets: ['Method:vec_primary.cpp:Vec.save#0~c:16619u1'],
+        note: 'the PRIMARY template now binds cross-file too. Nothing matches `int` exactly and two workspace defs are registered under `Vec`, which used to be a flat decline; the base-name route now re-decides over the declarations that pin NO template arguments of their own, and exactly one of the two does — the primary. `Vec<bool>` is excluded by the same rule that keeps the sibling row above landing on it.',
       },
     ],
   },
@@ -835,7 +911,9 @@ class Svc {
   // ── C++ field DECORATION and QUALIFICATION ────────────────────────────────
   // The bare `Repo<User> repo;` rule was only one of the three the fix added;
   // the pointer and reference forms had no row at all until now, and the
-  // qualified forms (six more rules) none either.
+  // qualified forms (three further rules, one per declarator shape and
+  // depth-agnostic) none either. `cpp-qualified-non-generic-field` below pins
+  // the half of that second group which is not about generics at all.
   {
     name: 'cpp-pointer-reference-generic-field',
     file: 'a.cpp',
@@ -901,6 +979,9 @@ template <class T> struct Deep { void go(User x) {} };
 namespace a { namespace b { namespace c {
 template <class T> struct Deeper { void go3(User x) {} };
 } } }
+namespace a { namespace b { namespace c { namespace d {
+template <class T> struct Deepest { void go4(User x) {} };
+} } } }
 struct Svc {
   std::vector<Item> items;
   ns::Repo<User> r;
@@ -908,7 +989,8 @@ struct Svc {
   std::vector<Item>* pitems;
   ns::Repo<User>& rr;
   std::unique_ptr<Payload> up;
-  a::b::c::Deeper<User> tooDeep;
+  a::b::c::Deeper<User> deep3;
+  a::b::c::d::Deepest<User> deep4;
   Plain plain;
   void runQualStd(Item i) { items.push_back(i); }
   void runQualNs(User u) { r.save(u); }
@@ -916,7 +998,8 @@ struct Svc {
   void runQualPtr(Item i) { pitems->push_back(i); }
   void runQualRef(User u) { rr.save(u); }
   void runQualUnique() { up.reset(); }
-  void runQualTooDeep(User u) { tooDeep.go3(u); }
+  void runQualDepth3(User u) { deep3.go3(u); }
+  void runQualDepth4(User u) { deep4.go4(u); }
   void runQualControl(User u) { plain.save(u); }
 };
 `,
@@ -929,7 +1012,7 @@ struct Svc {
       {
         caller: 'runQualStd',
         targets: ['Method:a.cpp:vector.push_back#1~c:16619u1'],
-        note: 'depth-1 qualifier, `std::vector<Item>` — the commonest real spelling of a generic member and the one the six new rules exist for',
+        note: 'depth-1 qualifier, `std::vector<Item>` — the commonest real spelling of a generic member and the one the qualified rules exist for',
       },
       {
         caller: 'runQualNs',
@@ -949,17 +1032,22 @@ struct Svc {
       {
         caller: 'runQualDeep',
         targets: ['Method:a.cpp:Deep.go#1~c:16619u1'],
-        note: 'depth-2 qualifier, `a::b::Deep<User>` — the deepest the rules cover',
+        note: 'depth-2 qualifier, `a::b::Deep<User>`',
       },
       {
         caller: 'runQualUnique',
         targets: ['Method:a.cpp:unique_ptr.reset#0~c:16619u1'],
-        note: 'MEASURED, and worth stating: `std::unique_ptr<Payload>` types to `unique_ptr`, NOT deref-stripped to `Payload` — `Payload` also declares `reset()` and does not receive the edge. The capture drops the qualifier and keeps the template head, so smart-pointer transparency is not applied on this path.',
+        note: 'DELIBERATE LIMIT, measured: `std::unique_ptr<Payload>` types to `unique_ptr`, NOT deref-stripped to `Payload` — `Payload` also declares `reset()` and does not receive the edge. The qualifier is dropped and the template head kept, so smart-pointer transparency is not applied on this path. Flipping this row means implementing that transparency, which is a semantics expansion.',
       },
       {
-        caller: 'runQualTooDeep',
-        targets: [],
-        note: 'DOCUMENTED BOUNDARY, pinned: qualifier depth 3 (`a::b::c::Deeper<User>`) is NOT captured — a tree-sitter query cannot match a node at arbitrary nesting depth and each level costs three more patterns. Everything else in this fixture resolves, so the empty set is the boundary and not a dead fixture. Raising the depth means adding rules AND flipping this row.',
+        caller: 'runQualDepth3',
+        targets: ['Method:a.cpp:Deeper.go3#1~c:16619u1'],
+        note: 'depth 3 (`a::b::c::Deeper<User>`) was the DOCUMENTED BOUNDARY this file used to pin at empty, because the rules enumerated the INNER node and each level cost three more patterns. The rules now match the outer `qualified_identifier` instead, which is one node type whatever the depth, so the boundary is gone rather than moved.',
+      },
+      {
+        caller: 'runQualDepth4',
+        targets: ['Method:a.cpp:Deepest.go4#1~c:16619u1'],
+        note: 'depth 4, and the row that says the boundary was REMOVED and not merely raised by one: if depth were still enumerated per level, closing depth 3 would have left this one empty. Nothing in the query mentions a depth, so there is no next boundary to find.',
       },
     ],
   },
@@ -1336,13 +1424,13 @@ export class CrossSvc {
       },
       {
         caller: 'runStaticControl',
-        targets: [],
-        note: 'PRE-EXISTING GAP, and the control that classifies it: a NON-generic static member receiver emits nothing either. So the empty row below is a static/class-level member gap, not a generics one.',
+        targets: ['Method:repo.ts:Plain.save#1'],
+        note: 'the control that CLASSIFIED the gap: a NON-generic static member receiver emitted nothing either, so `Holder.repo.save(u)` was never a generics failure. Case 6 closed both at once, and this row is the half that proves it was not a generics fix.',
       },
       {
         caller: 'runStatic',
-        targets: [],
-        note: 'PRE-EXISTING GAP, pinned: `Holder.repo.save(u)` through a STATIC generic member emits nothing. Behaves exactly like its non-generic control above, which is the bar this file measures against. Four other rows in this same fixture resolve, so the empty set is a gap and not a dead fixture.',
+        targets: ['Method:repo.ts:Repo.save#1', 'Method:repo.ts:UserRepo.save#1'],
+        note: 'STATIC/class-level member receiver: `Holder.repo.save(u)` resolves, with the interface-dispatch fan-out every other reach shape in this fixture gets. A per-scope `typeBindings` map cannot hold both `repo` and `static repo` for one class, so Case 6 types the receiver off the static field DEF instead. The extra target relative to the control is the fan-out, not the staticness — `Repo` is an interface and `Plain` is a class.',
       },
     ],
   },
@@ -1371,7 +1459,473 @@ class ControlSvc {
       {
         caller: 'runGeneric',
         targets: ['Method:a.php:Repo.save#1'],
-        note: 'PHP has no generic type syntax — a typed property is the closest analogue and is pinned so the shared change cannot regress it. PHP expresses generics only in docblocks, which bind no field type at all (its CONTROL fails identically); that is a separate pre-existing gap, not a generics one.',
+        note: 'PHP has no generic type syntax — `private Repo<User> $repo;` is a parse error — so a NATIVE typed property is the closest analogue and is pinned so neither the shared change nor the new docblock pass can regress it. The docblock spelling PHP actually uses for generics is a separate capture path with its own case below; this row must keep passing whatever that one does.',
+      },
+    ],
+  },
+  // ── DOCBLOCK-declared field types ─────────────────────────────────────────
+  // JavaScript has no type annotations at all and PHP cannot spell a generic in
+  // its own syntax, so for both languages a docblock is the ONLY way a field
+  // declares one — and neither bound anything, generic or not. Both now
+  // synthesize the same annotation-strength `@type-binding` the native syntax
+  // emits, so no resolution-side code distinguishes them.
+  {
+    name: 'js-docblock-field',
+    file: 'a.js',
+    source: `
+export class User {}
+export class Repo { save(x) {} }
+export class Plain { save(x) {} }
+export class GenericSvc {
+  /** @type {Repo<User>} */
+  repo;
+  runJsGeneric(u) { this.repo.save(u); }
+}
+export class ControlSvc {
+  /** @type {Plain} */
+  plain;
+  runJsControl(u) { this.plain.save(u); }
+}
+`,
+    rows: [
+      {
+        caller: 'runJsControl',
+        targets: ['Method:a.js:Plain.save#1'],
+        note: 'control, and the row that says this was never a generics gap: a NON-generic `@type {Plain}` bound nothing either before the docblock pass',
+      },
+      {
+        caller: 'runJsGeneric',
+        targets: ['Method:a.js:Repo.save#1'],
+        note: '`@type {Repo<User>}` on a class field. `Repo` is an ordinary class here because JavaScript has no way to declare a generic one — the type ARGUMENT is the part that has to survive the docblock and then erase, and it does, matching the control exactly.',
+      },
+    ],
+  },
+  {
+    name: 'php-docblock-property',
+    file: 'a.php',
+    source: `<?php
+class User {}
+class Repo { public function save(User $x) {} }
+class Plain { public function save(User $x) {} }
+class DocSvc {
+    /** @var Repo<User> */
+    private $repo;
+    /** @var Plain */
+    private $plain;
+    /** @var Repo[] */
+    private $many;
+    /** @var list<User> */
+    private $listed;
+    /** @var Repo|Plain */
+    private $united;
+    public function runPhpDocGeneric(User $u) { $this->repo->save($u); }
+    public function runPhpDocControl(User $u) { $this->plain->save($u); }
+    public function runPhpDocArray(User $u) { $this->many->save($u); }
+    public function runPhpDocList(User $u) { $this->listed->save($u); }
+    public function runPhpDocUnion(User $u) { $this->united->save($u); }
+}
+`,
+    rows: [
+      {
+        caller: 'runPhpDocControl',
+        targets: ['Method:a.php:Plain.save#1'],
+        note: 'control: a NON-generic `@var Plain` on an untyped property bound nothing either, which is what makes the row below a docblock gap rather than a generics one',
+      },
+      {
+        caller: 'runPhpDocGeneric',
+        targets: ['Method:a.php:Repo.save#1'],
+        note: '`@var Repo<User>` — the only spelling PHP has for a generic field, and the reason the arguments are erased in the PHP capture rather than left to the shared lookup: `normalizePhpType` reduces `X<Y>` to `Y` for the foreach/element convention, so passing the spelling through bound the field to `User` and emitted `User::save`. A WRONG edge, so the erasure happens before that rule can read it.',
+      },
+      {
+        caller: 'runPhpDocArray',
+        targets: [],
+        note: 'DECLINE, pinned: `@var Repo[]` types an ARRAY. Binding it to `Repo` would claim `$this->many->find(...)` for a repository class, so the array spelling emits no field binding at all — `extractPropertyElementType` reads the same annotation for `foreach`, and the two readings must not collide.',
+      },
+      {
+        caller: 'runPhpDocList',
+        targets: [],
+        note: 'DECLINE, pinned: `@var list<User>` erases to `list`, which PHP has no type for — so the only class it could ever bind is a workspace class that happens to be called `list`, i.e. exactly the wrong-edge direction. Compared case-folded rather than by listing spellings.',
+      },
+      {
+        caller: 'runPhpDocUnion',
+        targets: [],
+        note: 'DECLINE, pinned, and NOT by a rule of the docblock pass: `Repo|Plain` reaches the same `normalizePhpType` a native `private Repo|Plain $x;` goes through and is rejected there. The row is here because "delegated" is a claim about behaviour, and this is the measurement of it.',
+      },
+    ],
+  },
+  // ── Class-level (static) member receivers ─────────────────────────────────
+  // `ts-reach-shapes` pins the TypeScript spelling among its other reach
+  // shapes. Kotlin reaches the same Case 6 by a different syntax — a
+  // `companion object` rather than a `static` modifier — and was equally broken
+  // for its non-generic control, so it gets its own case rather than a row.
+  {
+    name: 'kotlin-companion-static-member',
+    file: 'A.kt',
+    source: `
+class User
+interface Repo<T> { fun save(x: T) }
+class UserRepo : Repo<User> { override fun save(x: User) {} }
+interface Plain { fun save(x: User) }
+class PlainRepo : Plain { override fun save(x: User) {} }
+class Holder {
+  companion object {
+    lateinit var repo: Repo<User>
+    lateinit var plain: Plain
+  }
+}
+class StaticSvc {
+  fun runKtStatic(u: User) { Holder.repo.save(u) }
+  fun runKtStaticControl(u: User) { Holder.plain.save(u) }
+}
+`,
+    rows: [
+      {
+        caller: 'runKtStaticControl',
+        targets: ['Method:A.kt:Plain.save#1', 'Method:A.kt:PlainRepo.save#1'],
+        note: 'control: a NON-generic companion member, emitting nothing before Case 6. Both members here are interface-typed so the pair is count-comparable, unlike the TypeScript one.',
+      },
+      {
+        caller: 'runKtStatic',
+        targets: ['Method:A.kt:Repo.save#1', 'Method:A.kt:UserRepo.save#1'],
+        note: '`Holder.repo.save(u)` through a `companion object` member matches its control exactly, fan-out included. Kotlin erases type arguments at interpret time, so this row is about the class-level RECEIVER and nothing else — which is the point: the gap was never about generics in any language that reached it.',
+      },
+    ],
+  },
+  // ── Erased base names must be GROUNDED ────────────────────────────────────
+  // Reaching a declaration by name alone binds whatever the workspace declares
+  // under that name. Python is where this bites hardest — it reduces
+  // `Mapped[User]` to `Mapped` at capture time, so every such receiver arrives
+  // as a bare class name with nothing to distinguish it from one — and
+  // `sqlalchemy.orm.Mapped` beside a workspace `class Mapped` is not a
+  // hypothetical collision.
+  {
+    name: 'py-erased-grounding',
+    file: 'a.py',
+    source: `
+from models import User
+from sqlalchemy.orm import Mapped
+
+class Local:
+    def ping(self, u):
+        pass
+
+def run_param(m: Mapped[User], u: User) -> None:
+    m.save(u)
+
+def run_local_control(l: Local, u: User) -> None:
+    l.ping(u)
+
+def run_head_chain(m: Mapped[User], u: User) -> None:
+    m.inner.ping()
+
+class InferredSvc:
+    def __init__(self, m: Mapped[User]):
+        self.m = m
+
+    def run_inferred_field(self, u: User) -> None:
+        self.m.save(u)
+
+class AnnotatedSvc:
+    m: Mapped[User]
+
+    def run_annotated_field(self, u: User) -> None:
+        self.m.save(u)
+`,
+    extraFiles: {
+      'models.py': `
+class User:
+    def touch(self):
+        pass
+`,
+      'other.py': `
+class Inner:
+    def ping(self):
+        pass
+
+class Mapped:
+    inner: Inner
+
+    def save(self, x):
+        pass
+`,
+      'b.py': `
+class BUser:
+    pass
+
+def run_no_import_channel(m: Mapped[BUser], u: BUser) -> None:
+    m.save(u)
+`,
+    },
+    rows: [
+      {
+        caller: 'run_local_control',
+        targets: ['Method:a.py:Local.ping#1'],
+        note: 'ANTI-VACUITY CONTROL: an ordinary same-file parameter receiver in the same module as the refusal below. Without it the empty row would also be what a file that stopped parsing produces.',
+      },
+      {
+        caller: 'run_head_chain',
+        targets: ['Method:other.py:Inner.ping#0'],
+        note: 'REMAINING WRONG EDGE, pinned at its measured value so closing it is a visible flip. `m.inner.ping()` binds the unrelated workspace `Mapped` through a route that survives the refusal, while the one-segment-shallower `m.save(u)` (`run_param`, above) correctly declines — same receiver, same declared type, one more segment. The obvious one-line guard in the bare-identifier branch (decline every retry once an erased application failed to ground) was tried and MEASURED not to close it, so the surviving route is elsewhere and this needs its own diagnosis rather than a guess. Deliberately not fixed here: a broader refusal would change chain-head resolution for every language without pinning the shape it is meant to fix.',
+      },
+      {
+        caller: 'run_param',
+        targets: [],
+        note: 'THE REFUSAL: `Mapped[User]` no longer binds the unrelated workspace `class Mapped` in `other.py` (measured as `Method:other.py:Mapped.save#1` before). The erased base name is admitted only on a ground that connects this site to that declaration, and none holds — the name is imported from a module the workspace does not contain, `other.py` is a different file, and the index knows no `Mapped` template family.',
+      },
+      {
+        caller: 'run_no_import_channel',
+        targets: ['Method:other.py:Mapped.save#1'],
+        note: 'THE GROUND THAT ADMITS, pinned so the refusal above cannot be read as "erased names never resolve": `b.py` imports nothing at all, so its failure to import `Mapped` is no evidence of anything, and the workspace-wide index answers. Identical spelling to `run_param`, opposite answer, and the file\'s import channel is the only difference.',
+      },
+      {
+        caller: 'run_inferred_field',
+        targets: [],
+        note: 'THE FIELD-SIDE REFUSAL, and the row that says the grounding is no longer PARAMETER-side only: `self.m.save(u)` on a field inferred from the constructor parameter now declines exactly as `run_param` does. The wrong edge was never a defect in the grounding — the structural fold applied it and refused correctly — it was that a declined fold falls THROUGH to the text cascade by design, and the cascade held its own ungrounded copy of the member-typing lookup that re-minted the refused target from the workspace index. Both routes now ask through one lookup.',
+      },
+      {
+        caller: 'run_annotated_field',
+        targets: [],
+        note: 'THE SAME REFUSAL FROM AN EXPLICIT ANNOTATION, which is what proves the fix is not about the binding SOURCE: a class-level `m: Mapped[User]` and a constructor-inferred `self.m` reach the identical answer, as they always did — both wrong before, both empty now. The receiver spelling was never the discriminator either; the two spellings simply entered different lookups, and only one of them was grounded.',
+      },
+    ],
+  },
+  // The mirrors. A grounding rule is only as good as what it still admits, and
+  // these are the four shapes that would break if it were tightened: two Python
+  // channels (same-file and imported), a C++ `#include` — which materializes no
+  // lexical binding whatever, so the index is its only channel — and a C#
+  // cross-namespace reference with no `using`.
+  {
+    name: 'py-generic-grounding-mirrors',
+    file: 'a.py',
+    source: `
+from typing import Generic, TypeVar
+from repo import CrossRepo
+
+T = TypeVar("T")
+
+class User:
+    pass
+
+class SameRepo(Generic[T]):
+    def save(self, x):
+        pass
+
+def run_same_file(r: SameRepo[User], u: User) -> None:
+    r.save(u)
+
+def run_imported(r: CrossRepo[User], u: User) -> None:
+    r.save(u)
+`,
+    extraFiles: {
+      'repo.py': `
+from typing import Generic, TypeVar
+
+T = TypeVar("T")
+
+class CrossRepo(Generic[T]):
+    def save(self, x):
+        pass
+`,
+    },
+    rows: [
+      {
+        caller: 'run_same_file',
+        targets: ['Method:a.py:SameRepo.save#1'],
+        note: 'MIRROR: a genuine same-file `SameRepo[User]` still resolves — the declaration is in the file the site is in, which is a ground on its own',
+      },
+      {
+        caller: 'run_imported',
+        targets: ['Method:repo.py:CrossRepo.save#1'],
+        note: 'MIRROR: a genuine imported `CrossRepo[User]` still resolves — the import binds the name in the scope chain, the strongest ground. The two classes are named differently on purpose so neither can answer for the other.',
+      },
+    ],
+  },
+  {
+    name: 'cpp-csharp-index-channel',
+    file: 'a.cpp',
+    source: `
+#include "repo.h"
+void runCppIncluded(User u) { Repo<User> r; r.save(u); }
+`,
+    extraFiles: {
+      'repo.h': `
+class User {};
+template <class T> struct Repo { void save(T x) {} };
+`,
+      'Repo.cs': `
+namespace Data {
+  class Repo<T> { public void Save(T x) {} }
+}
+`,
+      'A.cs': `
+namespace App {
+  class User {}
+  class Svc {
+    public void RunCsNoUsing(User u) { Repo<User> r = null; r.Save(u); }
+  }
+}
+`,
+    },
+    rows: [
+      {
+        caller: 'runCppIncluded',
+        targets: ['Method:repo.h:Repo.save#1~c:132qlr3'],
+        note: 'MIRROR: a C++ `#include` binds no name lexically — it is a textual include, not an import — so the workspace-wide index is the ONLY channel this site has. A grounding rule that required a lexical binding would delete this edge for every C++ program.',
+      },
+      {
+        caller: 'RunCsNoUsing',
+        targets: ['Method:Repo.cs:Repo.Save#1'],
+        note: "MIRROR: C# resolves `Data.Repo<T>` from `App` with no `using` at all, which is how C# actually behaves. Same shape as the C++ row and a second language, so the ground that admits them is not one language's quirk.",
+      },
+    ],
+  },
+  // ── C++ qualified fields that are not generic at all ──────────────────────
+  // The qualified rules were written for `std::vector<Item>`, but the node they
+  // match is the outer `qualified_identifier` — which is also what wraps a
+  // PLAIN `ns::Address`. So the same three rules closed a much larger miss
+  // than the generic one, and the rows below are that half.
+  {
+    name: 'cpp-qualified-non-generic-field',
+    file: 'a.cpp',
+    source: `
+struct User {};
+struct Other { void ping() {} };
+struct Plain { void save(User x) {} };
+namespace std {
+struct string { void size() {} };
+}
+namespace ns {
+struct Address { void city() {} };
+}
+struct Svc {
+  std::string name;
+  ns::Address addr;
+  ns::Address* paddr;
+  std::mutex mu;
+  Plain plain;
+  void runQualStdString() { name.size(); }
+  void runQualNsStruct() { addr.city(); }
+  void runQualNsPtr() { paddr->city(); }
+  void runQualAbsent() { mu.ping(); }
+  void runQualNonGenericControl(User u) { plain.save(u); }
+};
+`,
+    rows: [
+      {
+        caller: 'runQualNonGenericControl',
+        targets: ['Method:a.cpp:Plain.save#1'],
+        note: 'control: unqualified, non-generic field in the same struct',
+      },
+      {
+        caller: 'runQualStdString',
+        targets: ['Method:a.cpp:string.size#0'],
+        note: 'INTENDED, and the same accepted policy as `container-name-collision`, stated in C++: the qualifier is dropped and the tail `string` names a class this workspace really declares, so it binds. The annotation names `string`, so naming `string` is the right answer — a resolver that refused it would have to know which names are "someone else\'s", and this pipeline deliberately does not. Where the workspace does NOT declare the tail, the binding is simply absent (`runQualAbsent`), so the policy closes misses without minting edges.',
+      },
+      {
+        caller: 'runQualNsStruct',
+        targets: ['Method:a.cpp:Address.city#0'],
+        note: 'a plain `ns::Address addr;` — no template arguments anywhere. This member had no type binding at all before the qualified rules, which is why the fix is not describable as a generics fix.',
+      },
+      {
+        caller: 'runQualNsPtr',
+        targets: ['Method:a.cpp:Address.city#0'],
+        note: 'the `pointer_declarator` shape of the same thing, reached through `->`',
+      },
+      {
+        caller: 'runQualAbsent',
+        targets: [],
+        note: 'THE OTHER HALF OF THE POLICY, pinned: `std::mutex mu;` reduces to `mutex`, which this workspace declares nowhere, so the field binds nothing and the call emits nothing. `struct Other` declares a `ping()` and does NOT receive the edge — dropping the qualifier widens what can MATCH, it does not invent a match.',
+      },
+    ],
+  },
+  // ── C++ `this->field.m()` ─────────────────────────────────────────────────
+  // A `this`-head seed gap, not a generics one: the fold reads `this` out of a
+  // per-function-scope typeBinding, and C++ deliberately synthesizes none
+  // because it declares `this` to BE the enclosing class
+  // (`resolveThisViaEnclosingClass`). So every `this->x.m()` chain folded to
+  // nothing, for a generic member and a plain one alike.
+  {
+    name: 'cpp-this-head-field',
+    file: 'a.cpp',
+    source: `
+struct User {};
+template <class T> struct Repo { void save(User x) {} };
+struct Plain { void save(User x) {} };
+struct Svc {
+  Repo<User> repo;
+  Plain plain;
+  void runThisGeneric(User u) { this->repo.save(u); }
+  void runThisControl(User u) { this->plain.save(u); }
+  void runBareGeneric(User u) { repo.save(u); }
+  void runBareControl(User u) { plain.save(u); }
+};
+`,
+    rows: [
+      {
+        caller: 'runBareControl',
+        targets: ['Method:a.cpp:Plain.save#1'],
+        note: 'BARE-RECEIVER CONTROL, non-generic: the spelling that always worked, so the two `this->` rows can be read as a statement about the HEAD and not about the member',
+      },
+      {
+        caller: 'runBareGeneric',
+        targets: ['Method:a.cpp:Repo.save#1~c:16619u1'],
+        note: 'BARE-RECEIVER CONTROL, generic: same member as `runThisGeneric`, same target, different receiver spelling',
+      },
+      {
+        caller: 'runThisControl',
+        targets: ['Method:a.cpp:Plain.save#1'],
+        note: 'THE CLASSIFYING ROW: `this->plain.save(u)` names no generic anywhere and emitted nothing either. Fixing it required seeding the chain head from the enclosing class for languages that declare `this` that way — the same provider flag Case 0.5 already used for a BARE `this` receiver.',
+      },
+      {
+        caller: 'runThisGeneric',
+        targets: ['Method:a.cpp:Repo.save#1~c:16619u1'],
+        note: '`this->repo.save(u)` now matches both its non-generic sibling and its bare-receiver twin, which is the definition of fixed for this file',
+      },
+    ],
+  },
+  // ── Go: substitution, not erasure ─────────────────────────────────────────
+  // The `go` case above pins the fan-out an instantiation SHOULD produce. This
+  // one pins that it is positional: an implementor whose method takes the wrong
+  // type argument is not an implementor of that instantiation.
+  {
+    name: 'go-instantiation-mismatch',
+    file: 'a.go',
+    source: `package main
+
+type User struct{}
+
+type Order struct{}
+
+type Repo[T any] interface{ Save(x T) }
+
+type UserRepo struct{}
+
+func (r UserRepo) Save(x User) {}
+
+type Plain interface{ Ping() }
+
+type Pinger struct{}
+
+func (p Pinger) Ping() {}
+
+type GenericSvc struct{ repo Repo[Order] }
+
+func (s GenericSvc) RunOrderRepo(o Order) { s.repo.Save(o) }
+
+type ControlSvc struct{ plain Plain }
+
+func (s ControlSvc) RunPlainControl() { s.plain.Ping() }
+`,
+    rows: [
+      {
+        caller: 'RunPlainControl',
+        targets: ['Method:a.go:Pinger.Ping#0', 'Method:a.go:Plain.Ping#0'],
+        note: 'ANTI-VACUITY CONTROL: an ordinary non-generic interface field in the same file DOES fan out to its implementor, so the single target below is a refusal and not a dead fixture',
+      },
+      {
+        caller: 'RunOrderRepo',
+        targets: ['Method:a.go:Repo.Save#1'],
+        note: 'NEGATIVE: `Repo[Order]` substitutes to `interface{ Save(x Order) }`, which `UserRepo.Save(x User)` does not satisfy — so the declaration is the only target and there is no fan-out. `Repo[Order]` is the ONLY instantiation written in this repo, deliberately: GitNexus holds one node per generic DECLARATION, so a repo that also wrote `Repo[User]` would union both method sets onto it and this row could not distinguish substitution from erasure.',
       },
     ],
   },
@@ -1466,6 +2020,50 @@ describe('generic-typed field receivers across languages (#2833)', () => {
     { name: 'dart', control: 'runControl', generic: 'runGeneric', matches: true },
     { name: 'swift', control: 'runControl', generic: 'runGeneric', matches: true },
     { name: 'rust', control: 'run_control', generic: 'run_generic', matches: true },
+    // Go was EXCLUDED from this sweep while its generic field stopped at the
+    // declaration and its control fanned out — an exclusion that was the
+    // taxonomy quietly admitting a bug rather than describing a language.
+    // Generic-interface instantiation closed it, so Go is now an ordinary row.
+    { name: 'go', control: 'RunControl', generic: 'RunGeneric', matches: true },
+    { name: 'js-docblock-field', control: 'runJsControl', generic: 'runJsGeneric', matches: true },
+    {
+      name: 'php-docblock-property',
+      control: 'runPhpDocControl',
+      generic: 'runPhpDocGeneric',
+      matches: true,
+    },
+    {
+      name: 'kotlin-companion-static-member',
+      control: 'runKtStaticControl',
+      generic: 'runKtStatic',
+      matches: true,
+    },
+    {
+      name: 'cpp-this-head-field',
+      control: 'runThisControl',
+      generic: 'runThisGeneric',
+      matches: true,
+    },
+    {
+      // The one pair on a different axis: QUALIFIED against UNQUALIFIED rather
+      // than generic against plain. It belongs in this sweep because the rules
+      // that closed the qualified generic field closed this one with it, so a
+      // narrowing of them has to fail here too.
+      name: 'cpp-qualified-non-generic-field',
+      control: 'runQualNonGenericControl',
+      generic: 'runQualNsStruct',
+      matches: true,
+    },
+    {
+      // PINNED NON-MATCH, and a DELIBERATE one: `Repo[Order]` must NOT fan out
+      // to an implementor of `Save(x User)`, while the non-generic control
+      // interface does fan out to its own. Substitution is positional; a match
+      // here would mean erasure had crept back in (see the row notes).
+      name: 'go-instantiation-mismatch',
+      control: 'RunPlainControl',
+      generic: 'RunOrderRepo',
+      matches: false,
+    },
     {
       name: 'cpp-pointer-reference-generic-field',
       control: 'runControlPtr',
@@ -1497,11 +2095,18 @@ describe('generic-typed field receivers across languages (#2833)', () => {
       matches: true,
     },
     {
-      // PINNED NON-MATCH: qualifier depth 3 is uncaptured (see the row note).
+      // Was a PINNED NON-MATCH while qualifier depth 3 was uncaptured. The
+      // depth-agnostic rules removed the boundary, so it is an ordinary row.
       name: 'cpp-qualified-generic-field',
       control: 'runQualControl',
-      generic: 'runQualTooDeep',
-      matches: false,
+      generic: 'runQualDepth3',
+      matches: true,
+    },
+    {
+      name: 'cpp-qualified-generic-field',
+      control: 'runQualControl',
+      generic: 'runQualDepth4',
+      matches: true,
     },
     {
       name: 'csharp-partial-generic-cross-file',
@@ -1534,12 +2139,13 @@ describe('generic-typed field receivers across languages (#2833)', () => {
       matches: true,
     },
     {
-      // PINNED NON-MATCH: a bounded type parameter resolves to nothing while a
-      // field of its BOUND resolves with fan-out (see the row notes).
+      // Was a PINNED NON-MATCH while a bounded type parameter resolved to
+      // nothing. It now resolves THROUGH the bound, so it matches a field of
+      // that bound exactly — which is the claim the row makes.
       name: 'neg-bounded-type-parameter',
       control: 'runDirect',
       generic: 'run',
-      matches: false,
+      matches: true,
     },
   ] as const;
 
