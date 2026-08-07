@@ -299,6 +299,21 @@ function buildDirectImportMap(
   return byFile;
 }
 
+/** Is this Property id qualified by `<owner>.`, allowing a position suffix? */
+function idOwnedBy(id: string, owner: string): boolean {
+  const at = id.indexOf(`:${owner}.`);
+  if (at === -1) return false;
+  const rest = id.slice(at + owner.length + 2);
+  return !rest.includes('.') || rest.indexOf('@') < rest.indexOf('.');
+}
+
+/** Trailing symbol name of a graph id (`Function:a/b.js:buildB` -> `buildB`). */
+function simpleNameOfGraphId(graphId: string): string {
+  const tail = graphId.slice(graphId.lastIndexOf(':') + 1);
+  const at = tail.indexOf('@');
+  return at === -1 ? tail : tail.slice(0, at);
+}
+
 /**
  * Pick the single candidate a read in `readingFile` can plausibly mean.
  *
@@ -312,6 +327,8 @@ function narrowToSingleCandidate(
   candidatesIn: readonly PropertyCandidate[],
   readingFile: string,
   importedFiles: ReadonlySet<string> | undefined,
+  /** Simple name of the callable the site sits in, when it could be resolved. */
+  ownerName?: string,
 ): { readonly id: string; readonly tier: string } | null {
   // DECLARED ANCHORS FIRST. A return shape is a real definition but a weaker
   // one: it says "some function builds an object with this key", where a named
@@ -320,6 +337,23 @@ function narrowToSingleCandidate(
   // what guarantees R3-4 cannot change an answer that already resolved before
   // return shapes were indexed at all.
   let candidates = candidatesIn;
+
+  // A SITE INSIDE ITS OWN RETURN SHAPE BINDS TO ITS OWN KEY.
+  //
+  // `export function buildB(row) { return { tickIntervalMs: row.b } }` writes
+  // the key that IS `buildB.tickIntervalMs`. Ranking declared anchors above
+  // return shapes is right for a READ through a receiver, but applied here it
+  // handed that write to a same-named module const (`fnSettings.tickIntervalMs`)
+  // that `buildB` never touches — a wrong edge, reported at the confident tier,
+  // and the node the key actually defines was left with no writer at all.
+  //
+  // Checked before every other rule because it is evidence rather than ranking:
+  // the owner qualifier on the candidate id and the enclosing callable are the
+  // same symbol. Nothing else can outrank that.
+  if (ownerName !== undefined && ownerName.length > 0) {
+    const own = candidates.filter((c) => c.fromReturnShape && idOwnedBy(c.id, ownerName));
+    if (own.length === 1) return { id: own[0]!.id, tier: 'own-return-shape' };
+  }
 
   // PRODUCTION CODE FIRST. A test constructs throwaway shapes with the same
   // field names as the thing it exercises — measured on the reporting repo,
@@ -339,7 +373,15 @@ function narrowToSingleCandidate(
   const ranked = declared.length > 0 ? declared : candidates;
 
   if (ranked.length === 1) {
-    return { id: ranked[0]!.id, tier: 'workspace-unique' };
+    // TIER HONESTY. `workspace-unique` is a claim that exactly one node in the
+    // workspace carries this name — a fact about the graph. Reaching one
+    // survivor by FILTERING (tests out, return shapes down-ranked) is a
+    // different and weaker claim, and reporting it under the same label told a
+    // reader "unambiguous workspace-wide match" for an answer that was
+    // narrowed. The edge is the same; what it is allowed to say about itself is
+    // not. `narrowed` counts it correctly now too, since that keys off the tier.
+    const tier = candidatesIn.length === 1 ? 'workspace-unique' : 'ranked';
+    return { id: ranked[0]!.id, tier };
   }
   candidates = ranked;
 
@@ -447,10 +489,16 @@ export function emitUniqueNamePropertyAccesses(
         continue;
       }
 
+      // Resolved BEFORE narrowing: the enclosing callable is evidence the
+      // ranking needs, not just the edge's source.
+      const callerGraphId = resolveCallerGraphId(site.inScope, indexes, nodeLookup, site.atRange);
+      if (callerGraphId === undefined) continue;
+
       const choice = narrowToSingleCandidate(
         candidates,
         parsed.filePath,
         directImports.get(parsed.filePath),
+        simpleNameOfGraphId(callerGraphId),
       );
       if (choice === null) {
         ambiguous++;
@@ -460,8 +508,6 @@ export function emitUniqueNamePropertyAccesses(
       const targetId = choice.id;
       if (choice.tier !== 'workspace-unique') narrowed++;
 
-      const callerGraphId = resolveCallerGraphId(site.inScope, indexes, nodeLookup, site.atRange);
-      if (callerGraphId === undefined) continue;
       // A property reading itself is not a fact about anything.
       if (callerGraphId === targetId) continue;
 

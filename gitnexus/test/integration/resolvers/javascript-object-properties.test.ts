@@ -259,16 +259,59 @@ describe('JavaScript plain-object property access (A1/A5)', () => {
       expect(targetOf('readsBeta').some((id) => id.includes('producerAlpha.'))).toBe(false);
     });
 
-    it('marks the edge as precise, not as name inference', () => {
-      const reasons = getRelationships(result, 'ACCESSES')
-        .filter((e) => e.target === 'ambiguousProducedField')
-        .map((e) => String(e.rel.reason ?? ''));
-      expect(reasons.every((r) => r.includes('return-shape member'))).toBe(true);
-      for (const e of getRelationships(result, 'ACCESSES').filter(
-        (x) => x.target === 'ambiguousProducedField',
-      )) {
+    // Scoped to the READERS. The producer itself also touches this field — it
+    // constructs the key — and that edge is a different claim reached a
+    // different way (see the own-return-shape case below), so folding both into
+    // one "every edge must be precise" assertion would either forbid a correct
+    // write or force it to lie about its tier.
+    it('marks the reader edges as precise, not as name inference', () => {
+      const readerEdges = getRelationships(result, 'ACCESSES').filter(
+        (e) =>
+          e.target === 'ambiguousProducedField' &&
+          (e.source === 'readsAlpha' || e.source === 'readsBeta'),
+      );
+      expect(readerEdges.length).toBeGreaterThan(0);
+      for (const e of readerEdges) {
+        expect(String(e.rel.reason ?? '')).toContain('return-shape member');
         expect(e.rel.confidence).toBeGreaterThan(0.85);
       }
+    });
+
+    // Review finding 3, the telemetry half. `workspace-unique` is a claim that
+    // exactly one node in the workspace carries this name — a fact about the
+    // graph, and the label a reader trusts most. An answer reached by FILTERING
+    // (tests down-ranked, return shapes down-ranked) is a weaker claim, and
+    // reporting it under the same label said "unambiguous workspace-wide match"
+    // for something that was narrowed. The edge is unchanged; what it is allowed
+    // to say about itself is not.
+    it('does not claim workspace-uniqueness for an answer reached by ranking', () => {
+      // `sharedWithDeclared` is carried by BOTH a declared object key and a
+      // return-shape key, so the workspace is not unique in it. The read
+      // resolves only because declared anchors outrank return shapes — a
+      // ranking decision — and the edge must say so.
+      const ranked = getRelationships(result, 'ACCESSES').filter(
+        (e) => e.target === 'sharedWithDeclared' && e.source === 'readsShared',
+      );
+      expect(ranked.length).toBeGreaterThan(0);
+      for (const e of ranked) {
+        expect(String(e.rel.reason ?? '')).not.toContain('(workspace-unique)');
+      }
+    });
+
+    // Review finding 3, the half that was a real wrong edge. A function that
+    // returns `{ field: … }` WRITES the key that is its own return shape. The
+    // declared-outranks-return-shape ranking is right for a read through a
+    // receiver, but applied to this site it handed the write to a same-named
+    // declared const the producer never touches — and left the node the key
+    // actually defines with no writer at all.
+    it('binds a producer writing its own returned key to that key', () => {
+      const own = getRelationships(result, 'ACCESSES').filter(
+        (e) => e.source === 'producerAlpha' && e.target === 'ambiguousProducedField',
+      );
+      expect(own.length).toBeGreaterThan(0);
+      for (const e of own) expect(e.targetFilePath ?? '').toBeTruthy();
+      // Never the OTHER producer's key: the owner qualifier is the evidence.
+      expect(targetOf('producerAlpha').some((id) => id.includes('producerBeta.'))).toBe(false);
     });
 
     // THE BOUND, asserted so the mechanism is not mistaken for something it is
