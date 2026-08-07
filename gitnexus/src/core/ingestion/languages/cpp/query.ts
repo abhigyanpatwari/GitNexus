@@ -55,12 +55,26 @@ const CPP_SCOPE_QUERY = `
   declarator: (type_identifier) @declaration.name) @declaration.struct
 
 ;; ─── Declarations — class / struct inside template_declaration ───────
+;; \`parameters:\` is the DECLARED parameter list (\`template <class T>\`), which
+;; lives on the template_declaration and not on the specifier — the opposite
+;; nesting from \`@declaration.template-arguments\` above, which is part of the
+;; specifier's own NAME. A partial specialization carries both, and that pairing
+;; is the only thing separating it from a full specialization written against
+;; the identical arguments.
+;;
+;; These four patterns are TWINS of the four standalone specifier patterns
+;; above: a templated struct matches both, minting two defs with one id, and
+;; only this half can see the parameter list. The duplicate-declaration backfill
+;; in scope-extractor.ts is what stops match order from deciding which twin
+;; keeps the parameters.
 (template_declaration
+  parameters: (template_parameter_list) @declaration.type-parameters
   (class_specifier
     name: (type_identifier) @declaration.name
     body: (field_declaration_list)) @declaration.class)
 
 (template_declaration
+  parameters: (template_parameter_list) @declaration.type-parameters
   (class_specifier
     name: (template_type
       (type_identifier) @declaration.name
@@ -68,11 +82,13 @@ const CPP_SCOPE_QUERY = `
     body: (field_declaration_list)) @declaration.class)
 
 (template_declaration
+  parameters: (template_parameter_list) @declaration.type-parameters
   (struct_specifier
     name: (type_identifier) @declaration.name
     body: (field_declaration_list)) @declaration.struct)
 
 (template_declaration
+  parameters: (template_parameter_list) @declaration.type-parameters
   (struct_specifier
     name: (template_type
       (type_identifier) @declaration.name
@@ -564,75 +580,56 @@ const CPP_SCOPE_QUERY = `
   declarator: (reference_declarator
     (field_identifier) @type-binding.name)) @type-binding.field
 
-;; ─── Generic field type, QUALIFIED: std::vector<Item> items; (#2833) ─
-;; The six rules above require the type node to BE a template_type, but the
-;; commonest real-world spelling of a generic member is qualified, and
-;; tree-sitter-cpp parses std::vector<Item> as a qualified_identifier WRAPPING
-;; the template_type. So std::vector<Item>, ns::Repo<User> and
-;; std::unique_ptr<Repo> matched none of them and still bound nothing.
+;; ─── Field type, QUALIFIED: ns::Address addr; std::vector<Item> items; ─
+;; The six rules above require the type node to BE a type_identifier or a
+;; template_type, and a qualified member type is NEITHER: tree-sitter-cpp parses
+;; ns::Address as a qualified_identifier WRAPPING the type_identifier, and
+;; std::vector<Item> as one wrapping the template_type. So every qualified
+;; member — generic or not — matched none of the six and bound nothing, which
+;; covers the commonest member spellings in real C++ (std::string, std::mutex,
+;; std::vector<T>, ns::Config).
 ;;
-;; WHICH NODE IS CAPTURED IS THE WHOLE DESIGN, and it was measured rather than
-;; assumed. @type-binding.type is put on the INNER template_type, so the binding
-;; records Repo<User> and the qualifier is dropped. Capturing the outer
-;; qualified_identifier instead would record ns::Repo<User>, which resolves to
-;; NOTHING: findClassBindingInScope's dotted-tail fallback splits on "." and C++
-;; writes "::", and resolveClassBindingForName's generic branch then looks up the
-;; base ns::Repo, which is not a key either because C++ emits no
-;; @declaration.qualified_name and indexes ns::Repo under Repo. Dropping the
-;; qualifier lands on exactly the path the BARE spelling already takes — one
-;; class-like match or decline — so a qualified generic field now behaves like
-;; the bare one instead of like nothing.
+;; ONE PATTERN PER DECLARATOR SHAPE, MATCHING THE OUTER qualified_identifier,
+;; and that is the whole design. A tree-sitter query cannot match a node at
+;; arbitrary nesting depth, and a::b::c::Repo<User> nests one
+;; qualified_identifier per qualifier — so enumerating the inner node instead
+;; costs 3 patterns per depth per genericity and STILL ends at whatever depth
+;; the last author enumerated (that boundary was real: depth 3 was uncaptured).
+;; Matching the outer node is depth-agnostic and genericity-agnostic, and it is
+;; a single node type in the field position, not an alternation — the
+;; tree-sitter 0.21 hazard this repo has been bitten by before.
 ;;
-;; Two qualifier depths, because a::b::Repo<User> nests one qualified_identifier
-;; inside another and a query cannot match a node at arbitrary depth. Depth 3+
-;; (a::b::c::Repo<User>) is still uncaptured; it is vanishingly rare and adding
-;; a level costs three more patterns.
+;; The QUALIFIER IS THEN DROPPED, by cppQualifiedTail in interpret.ts, not
+;; here — and dropping it was measured rather than assumed. Recording
+;; ns::Repo<User> resolves to NOTHING: findClassBindingInScope's dotted-tail
+;; fallback splits on "." and C++ writes "::", and resolveClassBindingForName's
+;; generic branch then looks up the base ns::Repo, which is not a key either
+;; because C++ emits no @declaration.qualified_name and indexes ns::Repo under
+;; Repo. Reducing to the tail lands on exactly the path the BARE spelling
+;; already takes — one class-like match or decline — so a qualified member field
+;; behaves like the bare one instead of like nothing. A tail that names no
+;; workspace class (std::string with no "class string" in the repo) binds
+;; nothing and emits nothing, which is why this is a miss-closing change rather
+;; than an edge-fabricating one.
 ;;
-;; Separate patterns rather than one alternation, same as above: a node-type
-;; alternation in a field position is the tree-sitter 0.21 hazard this repo has
-;; been bitten by before. And, like the six above, each requires the declarator
-;; to reach the field_identifier DIRECTLY, so a method whose return type is a
-;; qualified generic (std::vector<Item> method();) still captures no field — a
-;; function_declarator sits in between and none of these match it.
+;; Like the six above, each requires the declarator to reach the field_identifier
+;; DIRECTLY, so a method whose return type is qualified (ns::Thing method();)
+;; still captures no field — a function_declarator sits in between and none of
+;; these match it. Same for a function-pointer member, a using/typedef alias, a
+;; friend declaration and an operator declaration.
 (field_declaration
-  type: (qualified_identifier
-    name: (template_type) @type-binding.type)
+  type: (qualified_identifier) @type-binding.type
   declarator: (field_identifier) @type-binding.name) @type-binding.field
 
-;; Qualified generic field, pointer: std::unique_ptr<Repo>* repo;
+;; Qualified field, pointer: ns::Address* addr; std::unique_ptr<Repo>* repo;
 (field_declaration
-  type: (qualified_identifier
-    name: (template_type) @type-binding.type)
+  type: (qualified_identifier) @type-binding.type
   declarator: (pointer_declarator
     declarator: (field_identifier) @type-binding.name)) @type-binding.field
 
-;; Qualified generic field, reference: std::vector<Item>& items;
+;; Qualified field, reference: ns::Address& addr; std::vector<Item>& items;
 (field_declaration
-  type: (qualified_identifier
-    name: (template_type) @type-binding.type)
-  declarator: (reference_declarator
-    (field_identifier) @type-binding.name)) @type-binding.field
-
-;; Twice-qualified generic field: a::b::Repo<User> repo;
-(field_declaration
-  type: (qualified_identifier
-    name: (qualified_identifier
-      name: (template_type) @type-binding.type))
-  declarator: (field_identifier) @type-binding.name) @type-binding.field
-
-;; Twice-qualified generic field, pointer: std::pmr::vector<Item>* items;
-(field_declaration
-  type: (qualified_identifier
-    name: (qualified_identifier
-      name: (template_type) @type-binding.type))
-  declarator: (pointer_declarator
-    declarator: (field_identifier) @type-binding.name)) @type-binding.field
-
-;; Twice-qualified generic field, reference: a::b::Repo<User>& repo;
-(field_declaration
-  type: (qualified_identifier
-    name: (qualified_identifier
-      name: (template_type) @type-binding.type))
+  type: (qualified_identifier) @type-binding.type
   declarator: (reference_declarator
     (field_identifier) @type-binding.name)) @type-binding.field
 

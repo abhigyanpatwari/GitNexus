@@ -137,8 +137,15 @@ describe('PARSE_CACHE_VERSION', () => {
   // Both are serialized into the cached ParsedFile, so a v45 warm cache replays
   // the pre-fix bindings and the fix becomes a silent no-op on incremental
   // analyze while every cold-run test still passes.
-  it('pins SCHEMA_BUMP to 46 so concurrent bumps cannot silently collide (#2833)', () => {
-    expect(Number(PARSE_CACHE_VERSION.split('+', 1)[0])).toBe(46);
+  // Moved 46 -> 47 for #2833 again: `SymbolDefinition.typeParameters` is a NEW
+  // parse-time field (six per-language declaration queries gained a
+  // `@declaration.type-parameters` capture; the extractor reads it onto every
+  // class-like def). The predecessor value is this same branch's own 46, not a
+  // value from main — a warm cache stamped 46 carries ParsedFiles with no
+  // `typeParameters`, so replaying it leaves the type-parameter false-edge fix
+  // inert on incremental analyze while cold runs stay green.
+  it('pins SCHEMA_BUMP to 47 so concurrent bumps cannot silently collide (#2833)', () => {
+    expect(Number(PARSE_CACHE_VERSION.split('+', 1)[0])).toBe(47);
   });
 
   it('embeds the gitnexus package version (so upgrades invalidate the cache)', () => {

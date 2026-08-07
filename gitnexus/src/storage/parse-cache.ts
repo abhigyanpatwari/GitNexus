@@ -265,7 +265,28 @@ import type { ParseWorkerResult } from '../core/ingestion/workers/parse-worker.j
 // free. RE-CHECK AGAINST origin/main IMMEDIATELY BEFORE MERGING — this ledger
 // records three EXACT clashes already, and the pin test cannot catch one
 // (`toBe(46)` passes just as well when main has already taken 46).
-const SCHEMA_BUMP = 46;
+// 46 -> 47: #2833 adds `SymbolDefinition.typeParameters` — the DECLARED
+// type-parameter list (`template <class T>`, `class Box<T extends Repo>`) which
+// was captured nowhere, on a different axis from the existing
+// `templateArguments`. Parse-time in the strictest sense: six per-language
+// declaration queries (typescript, cpp, java, kotlin, csharp, rust) gained a
+// `@declaration.type-parameters` capture, and `scope-extractor.ts` reads it into
+// a new field on every class-like def.
+//
+// 46 was taken by THIS SAME BRANCH (the C++ field_declaration + Python
+// subscript fix above), which is exactly why this needs its own value rather
+// than riding along: anyone who already ran an analyze on this branch has a warm
+// cache stamped 46 whose ParsedFiles carry no `typeParameters` at all. Replaying
+// them would leave the false-edge fix silently inert on every incremental
+// analyze while passing every cold-run test — the failure this constant exists
+// to prevent, arriving from a same-branch predecessor rather than from main.
+//
+// Re-verified against origin/main at 021ac3037 immediately before writing this:
+// main is on 45, so 46 and 47 are both free and 47 is the next value after this
+// branch's own 46. RE-CHECK AGAINST origin/main IMMEDIATELY BEFORE MERGING —
+// this ledger records three EXACT clashes already and the pin test cannot catch
+// one, since `toBe(47)` passes just as well when main has already taken 47.
+const SCHEMA_BUMP = 47;
 const GITNEXUS_PKG_VERSION = (() => {
   try {
     // package.json sits at gitnexus/package.json — two levels up from
