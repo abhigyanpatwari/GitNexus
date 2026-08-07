@@ -83,8 +83,16 @@ export const processProcesses = async (
   memberships: CommunityMembership[],
   onProgress?: (message: string, progress: number) => void,
   config: Partial<ProcessDetectionConfig> = {},
+  /**
+   * Places the program reaches outward — fetch calls and ORM queries, each with
+   * a file and a line (R3-6). Attributed to their enclosing function to form the
+   * sink set; omitted, behaviour is exactly as before.
+   */
+  outwardActionSites: readonly OutwardActionSite[] = [],
 ): Promise<ProcessDetectionResult> => {
   const cfg = { ...DEFAULT_CONFIG, ...config };
+  const sinkFunctions = buildSinkFunctionSet(knowledgeGraph, outwardActionSites);
+  const isSink = (nodeId: string): boolean => sinkFunctions.has(nodeId);
 
   onProgress?.('Finding entry points...', 0);
 
@@ -109,7 +117,7 @@ export const processProcesses = async (
 
   for (let i = 0; i < entryPoints.length && allTraces.length < cfg.maxProcesses * 2; i++) {
     const entryId = entryPoints[i];
-    const traces = traceFromEntryPoint(entryId, callsEdges, cfg);
+    const traces = traceFromEntryPoint(entryId, callsEdges, cfg, isSink);
 
     // Filter out traces that are too short
     traces.filter((t) => t.length >= cfg.minSteps).forEach((t) => allTraces.push(t));
@@ -125,7 +133,7 @@ export const processProcesses = async (
   onProgress?.(`Found ${allTraces.length} traces, deduplicating...`, 60);
 
   // Step 3: Deduplicate similar traces (subset removal)
-  const uniqueTraces = deduplicateTraces(allTraces);
+  const uniqueTraces = deduplicateTraces(allTraces, isSink);
 
   // Step 3b: Deduplicate by entry+terminal pair (keep longest path per pair)
   const endpointDeduped = deduplicateByEndpoints(uniqueTraces);
@@ -169,8 +177,19 @@ export const processProcesses = async (
   // whatever leaf it happens to bottom out in. Fixing that means teaching the
   // walk what a sink is (I/O, route handler, external call), which is a change
   // to what a process IS rather than to how processes are ranked.
+  //
+  // R3-6 adds one rule ahead of depth: a SINK-terminated trace outranks a
+  // leaf-terminated one. A flow that ends where the program does something —
+  // places an order, writes a row — is what a reader came for; a chain that
+  // ends in a date helper is where control happened to stop. Depth still orders
+  // within each group.
   const tracesByTerminal = new Map<string, string[][]>();
-  for (const trace of [...endpointDeduped].sort((a, b) => b.length - a.length)) {
+  const rankedByInterest = [...endpointDeduped].sort((a, b) => {
+    const aSink = Number(isSink(a[a.length - 1] ?? ''));
+    const bSink = Number(isSink(b[b.length - 1] ?? ''));
+    return bSink - aSink || b.length - a.length;
+  });
+  for (const trace of rankedByInterest) {
     const terminalId = trace[trace.length - 1];
     if (terminalId === undefined) continue;
     const existing = tracesByTerminal.get(terminalId);
@@ -402,6 +421,13 @@ export const traceFromEntryPoint = (
   entryId: string,
   callsEdges: AdjacencyList,
   config: ProcessDetectionConfig,
+  /**
+   * Functions that reach outward (R3-6). A trace also ENDS here, even though
+   * the walk continues past it: a flow whose meaningful endpoint calls onward
+   * was otherwise never a candidate, only ever surviving as whatever leaf it
+   * bottomed out in.
+   */
+  isSink: (nodeId: string) => boolean = () => false,
 ): string[][] => {
   const traces: string[][] = [];
 
@@ -443,6 +469,13 @@ export const traceFromEntryPoint = (
         traces.push([...path]);
       }
     } else {
+      // A SINK ends a trace without ending the walk (R3-6). Emitting here is
+      // what lets `placeOrder` be an endpoint while `placeOrder -> formatDate`
+      // still exists as its own longer trace; the two answer different
+      // questions and neither should suppress the other.
+      if (isSink(currentId) && path.length >= config.minSteps) {
+        traces.push([...path]);
+      }
       // Continue tracing - limit branching
       const limitedCallees = callees.slice(0, config.maxBranching);
       let addedBranch = false;
@@ -485,6 +518,75 @@ export const traceFromEntryPoint = (
 };
 
 // ============================================================================
+// HELPER: Function-level sink set
+// ============================================================================
+
+/** A place in the source where the program reaches outward. */
+export interface OutwardActionSite {
+  readonly filePath: string;
+  readonly lineNumber: number;
+}
+
+const CALLABLE_SINK_LABELS: ReadonlySet<NodeLabel> = new Set<NodeLabel>([
+  'Function',
+  'Method',
+  'Constructor',
+]);
+
+/**
+ * Functions that DO something outward — issue a request, run a query (R3-6).
+ *
+ * The missing layer behind "business flows are never processes". A trace is
+ * only emitted at a node with NO outgoing calls, so a real flow — scan, score,
+ * arm, place the order — is always a PREFIX of some longer chain that runs on
+ * into date helpers and formatters, and can never be a process in its own
+ * right. Ending a trace somewhere meaningful needs a notion of an endpoint that
+ * is not a leaf, and the walk had none.
+ *
+ * GitNexus already knew where the program reaches outward: the parse phase
+ * collects fetch calls and ORM queries carrying `filePath` + `lineNumber`. Those
+ * facts only ever produced FILE-level edges (`File -[FETCHES]-> Route`), which
+ * is too coarse to end a trace on — every function in a file containing one
+ * would qualify. Attributing each site to the function whose range CONTAINS it
+ * turns the same facts into the function-level signal the walk needs, with no
+ * new extraction, no new relation pair, and no schema change.
+ *
+ * Innermost wins: a nested closure that performs the call is the sink, not the
+ * outer function that merely spans it.
+ */
+export function buildSinkFunctionSet(
+  graph: KnowledgeGraph,
+  sites: readonly OutwardActionSite[],
+): ReadonlySet<string> {
+  const sinks = new Set<string>();
+  if (sites.length === 0) return sinks;
+
+  const byFile = new Map<string, { id: string; start: number; end: number }[]>();
+  for (const node of graph.iterNodes()) {
+    if (!CALLABLE_SINK_LABELS.has(node.label)) continue;
+    const props = node.properties as { filePath?: string; startLine?: number; endLine?: number };
+    if (typeof props.filePath !== 'string') continue;
+    if (typeof props.startLine !== 'number' || typeof props.endLine !== 'number') continue;
+    const entry = { id: node.id, start: props.startLine, end: props.endLine };
+    const list = byFile.get(props.filePath);
+    if (list === undefined) byFile.set(props.filePath, [entry]);
+    else list.push(entry);
+  }
+
+  for (const site of sites) {
+    const candidates = byFile.get(site.filePath);
+    if (candidates === undefined) continue;
+    let best: { id: string; start: number; end: number } | undefined;
+    for (const c of candidates) {
+      if (site.lineNumber < c.start || site.lineNumber > c.end) continue;
+      if (best === undefined || c.end - c.start < best.end - best.start) best = c;
+    }
+    if (best !== undefined) sinks.add(best.id);
+  }
+  return sinks;
+}
+
+// ============================================================================
 // HELPER: Deduplicate traces
 // ============================================================================
 
@@ -492,7 +594,11 @@ export const traceFromEntryPoint = (
  * Merge traces that are subsets of other traces.
  * Keep longer traces, remove redundant shorter ones.
  */
-const deduplicateTraces = (traces: string[][]): string[][] => {
+const deduplicateTraces = (
+  traces: string[][],
+  /** See `buildSinkFunctionSet` — a sink-terminated trace survives subsumption. */
+  isSink: (nodeId: string) => boolean = () => false,
+): string[][] => {
   if (traces.length === 0) return [];
 
   // Sort by length descending
@@ -500,6 +606,17 @@ const deduplicateTraces = (traces: string[][]): string[][] => {
   const unique: string[][] = [];
 
   for (const trace of sorted) {
+    // A SINK-TERMINATED trace is never redundant (R3-6), even though it is by
+    // definition a prefix of the longer chain that runs on past the sink into
+    // helpers. That is the whole shape of a business flow — scan, score, arm,
+    // PLACE THE ORDER — so subsuming it here is exactly what kept such flows
+    // from ever being processes. Emitting one at the walk and deleting it one
+    // step later would have been a no-op fix.
+    const terminal = trace[trace.length - 1];
+    if (terminal !== undefined && isSink(terminal)) {
+      unique.push(trace);
+      continue;
+    }
     // Check if this trace is a subset of any already-added trace
     const traceKey = trace.join('->');
     const isSubset = unique.some((existing) => {

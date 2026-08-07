@@ -38,11 +38,19 @@ export function computeDynamicMaxProcesses(symbolCount: number): number {
 
 export const processesPhase: PipelinePhase<ProcessesOutput> = {
   name: 'processes',
-  // `structure` supplies `totalFiles` (progress counter) without the spurious
-  // structural data dependency on `parse`. `pruneLocalSymbols` is declared
+  // `structure` supplies `totalFiles` (progress counter), which is why this
+  // phase historically avoided depending on `parse` at all — that dependency
+  // was spurious for a progress number.
+  //
+  // It is no longer spurious. R3-6 reads `allFetchCalls` / `allORMQueries` from
+  // the parse output to learn WHERE the program reaches outward, which is what
+  // lets a trace end at a sink instead of only at a leaf. That is a real data
+  // dependency, so it is declared rather than reached for implicitly — and the
+  // read below still fails open, so a pipeline without that output detects no
+  // sinks rather than failing the phase. `pruneLocalSymbols` is declared
   // explicitly so process extraction always reads the trimmed graph even if a
   // future option drops the intervening `mro`/`communities` phases.
-  deps: ['communities', 'routes', 'tools', 'pruneLocalSymbols', 'structure'],
+  deps: ['communities', 'routes', 'tools', 'pruneLocalSymbols', 'structure', 'parse'],
 
   async execute(
     ctx: PipelineContext,
@@ -66,6 +74,29 @@ export const processesPhase: PipelinePhase<ProcessesOutput> = {
     });
     const dynamicMaxProcesses = computeDynamicMaxProcesses(symbolCount);
 
+    // R3-6: where the program reaches outward. Already collected by the parse
+    // phase for FILE-level FETCHES/QUERIES edges; reused here at function
+    // granularity so a trace can end somewhere meaningful instead of only at a
+    // leaf. Absent (or an older parse output) simply yields no sinks and the
+    // previous behaviour.
+    let parseOutput:
+      | {
+          allFetchCalls?: { filePath: string; lineNumber: number }[];
+          allORMQueries?: { filePath: string; lineNumber: number }[];
+        }
+      | undefined;
+    try {
+      parseOutput = getPhaseOutput(deps, 'parse');
+    } catch {
+      // Fail open: no sinks, previous behaviour. A missing parse output is a
+      // pipeline-composition question, not a reason to lose every process.
+      parseOutput = undefined;
+    }
+    const outwardActionSites = [
+      ...(parseOutput?.allFetchCalls ?? []),
+      ...(parseOutput?.allORMQueries ?? []),
+    ].filter((s) => typeof s?.filePath === 'string' && typeof s?.lineNumber === 'number');
+
     const processResult = await processProcesses(
       ctx.graph,
       communityResult.memberships,
@@ -79,6 +110,7 @@ export const processesPhase: PipelinePhase<ProcessesOutput> = {
         });
       },
       { maxProcesses: dynamicMaxProcesses, minSteps: 3 },
+      outwardActionSites,
     );
 
     if (isDev) {

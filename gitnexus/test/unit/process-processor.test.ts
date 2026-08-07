@@ -2,6 +2,7 @@ import { describe, it, expect, vi } from 'vitest';
 import {
   processProcesses,
   traceFromEntryPoint,
+  buildSinkFunctionSet,
   type ProcessDetectionConfig,
 } from '../../src/core/ingestion/process-processor.js';
 import { computeDynamicMaxProcesses } from '../../src/core/ingestion/pipeline-phases/processes.js';
@@ -633,6 +634,109 @@ describe('process depth (D1/D2)', () => {
   // What IS observable at this level is which traces survive SELECTION, and
   // that is asserted in the diversity describe below. Traversal order is
   // asserted against `traceFromEntryPoint` directly, above.
+});
+
+describe('sink-terminated flows (R3-6)', () => {
+  const addFn = (
+    graph: ReturnType<typeof createKnowledgeGraph>,
+    id: string,
+    line: number,
+  ): void => {
+    graph.addNode({
+      id,
+      label: 'Function',
+      properties: {
+        name: id.split(':')[1],
+        filePath: 'src/flow.ts',
+        startLine: line,
+        endLine: line + 2,
+      },
+    });
+  };
+  const addCall = (
+    graph: ReturnType<typeof createKnowledgeGraph>,
+    from: string,
+    to: string,
+  ): void => {
+    graph.addRelationship({
+      id: `rel:${from}->${to}`,
+      sourceId: from,
+      targetId: to,
+      type: 'CALLS',
+      confidence: 1,
+      reason: 'test',
+    });
+  };
+
+  /**
+   * The shape the whole item is about: a business flow whose meaningful
+   * endpoint CALLS ONWARD into helpers. `placeOrder` is where the program does
+   * something; `formatDate` is merely where control stops.
+   */
+  const flowGraph = (): ReturnType<typeof createKnowledgeGraph> => {
+    const graph = createKnowledgeGraph();
+    addFn(graph, 'func:scan', 1);
+    addFn(graph, 'func:score', 10);
+    addFn(graph, 'func:placeOrder', 20);
+    addFn(graph, 'func:formatDate', 30);
+    addFn(graph, 'func:pad', 40);
+    addCall(graph, 'func:scan', 'func:score');
+    addCall(graph, 'func:score', 'func:placeOrder');
+    addCall(graph, 'func:placeOrder', 'func:formatDate');
+    addCall(graph, 'func:formatDate', 'func:pad');
+    return graph;
+  };
+
+  // `placeOrder` spans lines 20-22, so an outward action on line 21 belongs to
+  // it — the attribution the file-level FETCHES edge could not express.
+  const ORDER_SITE = [{ filePath: 'src/flow.ts', lineNumber: 21 }];
+
+  it('ends a trace where the program reaches outward', async () => {
+    const result = await processProcesses(flowGraph(), [], undefined, {}, ORDER_SITE);
+    expect(result.processes.map((p) => p.terminalId)).toContain('func:placeOrder');
+  });
+
+  // The half a naive implementation gets wrong: emitting the sink trace at the
+  // walk and then letting subset-removal delete it one step later is a no-op,
+  // because a sink-terminated flow is BY DEFINITION a prefix of the longer
+  // chain that runs on past it.
+  it('keeps the sink flow even though it is a prefix of a longer chain', async () => {
+    const result = await processProcesses(flowGraph(), [], undefined, {}, ORDER_SITE);
+    const terminals = result.processes.map((p) => p.terminalId);
+    expect(terminals).toContain('func:placeOrder');
+    // The longer chain still exists — the two answer different questions.
+    expect(terminals).toContain('func:pad');
+  });
+
+  it('ranks the sink flow above the leaf chain', async () => {
+    const result = await processProcesses(flowGraph(), [], undefined, {}, ORDER_SITE);
+    const first = result.processes[0]?.terminalId;
+    expect(first).toBe('func:placeOrder');
+  });
+
+  // Without sites, behaviour must be exactly what it was.
+  it('changes nothing when no outward action is known', async () => {
+    const result = await processProcesses(flowGraph(), [], undefined, {}, []);
+    expect(result.processes.map((p) => p.terminalId)).not.toContain('func:placeOrder');
+  });
+
+  it('attributes a site to the INNERMOST enclosing function', () => {
+    const graph = createKnowledgeGraph();
+    // An outer function spanning the inner one; the inner performs the call.
+    graph.addNode({
+      id: 'func:outer',
+      label: 'Function',
+      properties: { name: 'outer', filePath: 'src/a.ts', startLine: 1, endLine: 50 },
+    });
+    graph.addNode({
+      id: 'func:inner',
+      label: 'Function',
+      properties: { name: 'inner', filePath: 'src/a.ts', startLine: 10, endLine: 20 },
+    });
+    const sinks = buildSinkFunctionSet(graph, [{ filePath: 'src/a.ts', lineNumber: 15 }]);
+    expect(sinks.has('func:inner')).toBe(true);
+    expect(sinks.has('func:outer')).toBe(false);
+  });
 });
 
 describe('process selection diversity (R2-3)', () => {
