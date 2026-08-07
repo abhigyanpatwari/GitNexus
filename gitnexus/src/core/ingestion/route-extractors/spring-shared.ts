@@ -24,7 +24,7 @@ import { parseSpringAnnotationArguments } from '../frameworks/spring/annotation-
  *
  * `@RequestMapping` is intentionally absent: on a method it carries no implicit
  * verb (the verb lives in its `method = RequestMethod.X` attribute), and on a
- * class it is a URL prefix rather than a route. Callers handle `@RequestMapping`
+ * class it is a URL prefix rather than a route. Callers handle `RequestMapping`
  * separately.
  */
 export const METHOD_ANNOTATION_TO_HTTP: Record<string, string> = {
@@ -34,6 +34,45 @@ export const METHOD_ANNOTATION_TO_HTTP: Record<string, string> = {
   DeleteMapping: 'DELETE',
   PatchMapping: 'PATCH',
 };
+
+/**
+ * All recognised Spring mapping-annotation simple names (shortcut + base).
+ * Sorted longest-first so {@link resolveSpringAnnotationAlias} prefers the most
+ * specific suffix (e.g. `PostMapping` before any hypothetical shorter overlap).
+ */
+const SPRING_MAPPING_NAMES: readonly string[] = [
+  ...Object.keys(METHOD_ANNOTATION_TO_HTTP),
+  'RequestMapping',
+].sort((a, b) => b.length - a.length);
+
+/**
+ * Resolve a custom (vendor-derived) Spring mapping annotation to the built-in
+ * annotation it wraps, by naming suffix.
+ *
+ * Frameworks commonly wrap Spring's built-in annotations with company-specific
+ * variants — e.g. Winning Health's `@WinPostMapping` is meta-annotated with
+ * `@PostMapping`. The definition lives in a binary JAR (not in source), so the
+ * meta-annotation cannot be read statically. Instead we resolve by suffix:
+ * `WinPostMapping` → `PostMapping`, `WinRequestMapping` → `RequestMapping`.
+ *
+ * This matches the universal Java convention of naming a derived annotation
+ * with the base name as a suffix. The false-positive risk is negligible: a
+ * non-HTTP annotation ending in `PostMapping`/`GetMapping`/… is unprecedented
+ * in the ecosystem.
+ *
+ * Returns the base annotation name (`PostMapping`, `RequestMapping`, …) for
+ * names that are NOT themselves a known mapping annotation but end with one,
+ * or `undefined` otherwise. Exact-known names (`PostMapping`, `RequestMapping`,
+ * …) return `undefined` — callers handle those directly.
+ */
+export function resolveSpringAnnotationAlias(annotationName: string): string | undefined {
+  for (const base of SPRING_MAPPING_NAMES) {
+    if (annotationName.length > base.length && annotationName.endsWith(base)) {
+      return base;
+    }
+  }
+  return undefined;
+}
 
 /**
  * Parse one `RequestMethod.X` literal or a Java annotation array of literals.
@@ -89,14 +128,28 @@ function parseRequestMethodValues(value: string): readonly string[] | null {
  * one or more static `RequestMethod.X` values; when its `method` member is
  * absent or an empty array, `'*'` preserves Spring's method-agnostic semantics.
  * A present but non-static method expression yields no methods (fail closed).
+ *
+ * Vendor-derived aliases (e.g. `@WinPostMapping`) are resolved by suffix to
+ * their base annotation before the above logic applies — see
+ * {@link resolveSpringAnnotationAlias}.
  */
 export function springAnnotationHttpMethods(
   annotationName: string,
   annotationText: string,
 ): readonly string[] {
+  // Exact shortcut match (PostMapping → POST, etc.)
   const shortcut = METHOD_ANNOTATION_TO_HTTP[annotationName];
   if (shortcut) return [shortcut];
-  if (annotationName !== 'RequestMapping') return [];
+
+  // Resolve vendor alias by suffix (WinPostMapping → PostMapping, etc.)
+  const base = resolveSpringAnnotationAlias(annotationName) ?? annotationName;
+
+  // Alias of a shortcut annotation
+  const aliasShortcut = METHOD_ANNOTATION_TO_HTTP[base];
+  if (aliasShortcut) return [aliasShortcut];
+
+  // Direct or aliased @RequestMapping: parse the method= attribute
+  if (base !== 'RequestMapping') return [];
 
   const args = parseSpringAnnotationArguments(annotationText);
   if (args === null) return [];
