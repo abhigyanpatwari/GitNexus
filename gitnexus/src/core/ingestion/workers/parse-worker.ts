@@ -363,6 +363,16 @@ export interface ExtractedDecoratorRoute {
    * resolution then falls back (the Route node simply carries no handlerSymbolId).
    */
   handlerName?: string;
+  /**
+   * Provenance for the `HANDLES_ROUTE` edge, overriding the default
+   * `decorator-<decoratorName>`. Present when the route was extracted from a
+   * shape that is not a decorator at all — today, JS/TS dispatch guards
+   * (`route-extractors/dispatch-guard.ts`), where the route is INFERRED from a
+   * path comparison rather than DECLARED by an annotation. That distinction is
+   * the only thing that differs downstream, so it travels as a field instead of
+   * as a parallel extraction channel.
+   */
+  source?: string;
 }
 
 /**

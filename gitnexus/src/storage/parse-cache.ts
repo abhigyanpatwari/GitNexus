@@ -304,7 +304,24 @@ import type { ParseWorkerResult } from '../core/ingestion/workers/parse-worker.j
 // parse-time capture, so a warm cache replays ParsedFiles that already carry
 // everything it reads. Recorded because the reflex on this branch has been to
 // bump, and a bump nobody needs still forces every user a full re-parse.
-const SCHEMA_BUMP = 49;
+//
+// 49 -> 50 IS needed for dispatch-guard routes (R3-7): the JS/TS providers now
+// implement `extractDecoratorRoutes`, and decorator routes are worker output
+// carried in the parse cache. A warm cache replays a worker result whose
+// `decoratorRoutes` predates the extractor entirely, so every hand-rolled route
+// stays invisible and `route_map` keeps answering empty — the exact symptom the
+// change exists to fix, wearing the mask of "the extractor does not work".
+//
+// 50 -> 51 for the same-file constant folding that followed it. The v34 hazard
+// again, and this branch has now tripped it TWICE: a build stamped 50 was used
+// to analyze before folding existed, so caches stamped 50 carry the unfolded
+// route set. Caught by measuring — the post-folding run came back suspiciously
+// fast and would have reported the pre-folding number, which is precisely how
+// "an intermediate build of the same series is a different capture set wearing
+// the same number" shows up in practice. Within one PR the version only has to
+// differ from main's; against a cache YOU wrote, it has to differ from itself.
+// RE-CHECK AGAINST origin/main IMMEDIATELY BEFORE MERGING.
+const SCHEMA_BUMP = 51;
 const GITNEXUS_PKG_VERSION = (() => {
   try {
     // package.json sits at gitnexus/package.json — two levels up from
