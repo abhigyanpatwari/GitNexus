@@ -824,3 +824,157 @@ describe('process selection diversity (R2-3)', () => {
     expect(result.processes.map((p) => p.terminalId)).toContain('func:ownTerminal');
   });
 });
+
+// ============================================================================
+// DETERMINISM (W2-5)
+// ============================================================================
+//
+// The persisted graph must not depend on the order nodes and edges happened to
+// be inserted. Four sorts in this file ranked by score or length alone and
+// returned 0 on a tie; `Array.prototype.sort` is stable, so a 0 preserves INPUT
+// order, which traces back to `graph.iterNodes()` — i.e. to the order the
+// filesystem enumerated files. Under `maxProcesses` capping that decided which
+// `Process` and `STEP_IN_PROCESS` nodes were persisted at all.
+//
+// Reproduced before the fix: two equal three-step flows with `maxProcesses: 1`
+// selected `handleAlpha`; inserting the identical nodes and CALLS edges in
+// reverse selected `handleBeta`. Same repository, same commit, different graph.
+//
+// This asserts the INVARIANT rather than any one sort, so it covers all four
+// sites — and any future one — without needing to know where they are.
+describe('process detection is insertion-order invariant (W2-5)', () => {
+  const buildGraph = (reverse: boolean) => {
+    const graph = createKnowledgeGraph();
+    const memberships: CommunityMembership[] = [];
+    const chains = [
+      ['handleAlpha', 'midAlpha', 'endAlpha'],
+      ['handleBeta', 'midBeta', 'endBeta'],
+      ['handleGamma', 'midGamma', 'endGamma'],
+    ];
+    const ordered = reverse ? [...chains].reverse() : chains;
+    for (const chain of ordered) {
+      for (const name of chain) {
+        graph.addNode({
+          id: `func:${name}`,
+          label: 'Function',
+          properties: {
+            name,
+            filePath: `src/${name}.ts`,
+            startLine: 1,
+            endLine: 10,
+            isExported: true,
+          },
+        });
+        memberships.push({ nodeId: `func:${name}`, communityId: 'community:0' });
+      }
+    }
+    for (const chain of ordered) {
+      for (let i = 0; i < chain.length - 1; i++) {
+        graph.addRelationship({
+          id: `call:${chain[i]}`,
+          sourceId: `func:${chain[i]}`,
+          targetId: `func:${chain[i + 1]}`,
+          type: 'CALLS',
+          confidence: 0.9,
+          reason: 'import-resolved',
+        });
+      }
+    }
+    return { graph, memberships };
+  };
+
+  it('selects the same process under a cap regardless of insertion order', async () => {
+    // The capped case is the one that mattered: with room for everything the
+    // set is equal either way and only the ORDER differs, so a cap is what turns
+    // an ordering difference into a persistence difference.
+    const forward = buildGraph(false);
+    const reversed = buildGraph(true);
+    const a = await processProcesses(forward.graph, forward.memberships, undefined, {
+      maxProcesses: 1,
+    });
+    const b = await processProcesses(reversed.graph, reversed.memberships, undefined, {
+      maxProcesses: 1,
+    });
+    expect(a.processes.length).toBe(1);
+    expect(a.processes[0]?.entryPointId).toBe(b.processes[0]?.entryPointId);
+  });
+
+  it('produces an identical process set uncapped', async () => {
+    const forward = buildGraph(false);
+    const reversed = buildGraph(true);
+    const a = await processProcesses(forward.graph, forward.memberships);
+    const b = await processProcesses(reversed.graph, reversed.memberships);
+    const shape = (r: Awaited<ReturnType<typeof processProcesses>>): string[] =>
+      r.processes.map((p) => `${p.entryPointId}->${p.terminalId}`).sort();
+    expect(shape(a).length).toBeGreaterThan(0);
+    expect(shape(a)).toEqual(shape(b));
+  });
+
+  // The TRACE-RANK tie specifically. The chains above differ by entry point, so
+  // they are separated by the entry-point sort before trace ranking is reached —
+  // which means they do NOT exercise `rankedByInterest`'s tiebreak, verified by
+  // mutation. This fixture gives ONE entry point two equal-length branches to
+  // different terminals, so the only thing that can order them is the trace
+  // comparator itself.
+  const buildBranchedGraph = (reverse: boolean) => {
+    const graph = createKnowledgeGraph();
+    const memberships: CommunityMembership[] = [];
+    const branches = [
+      ['midAlpha', 'endAlpha'],
+      ['midBeta', 'endBeta'],
+    ];
+    const ordered = reverse ? [...branches].reverse() : branches;
+    const add = (name: string, isExported: boolean) => {
+      graph.addNode({
+        id: `func:${name}`,
+        label: 'Function',
+        properties: { name, filePath: `src/${name}.ts`, startLine: 1, endLine: 10, isExported },
+      });
+      memberships.push({ nodeId: `func:${name}`, communityId: 'community:0' });
+    };
+    add('handleShared', true);
+    for (const branch of ordered) for (const name of branch) add(name, true);
+    for (const branch of ordered) {
+      graph.addRelationship({
+        id: `call:root:${branch[0]}`,
+        sourceId: 'func:handleShared',
+        targetId: `func:${branch[0]}`,
+        type: 'CALLS',
+        confidence: 0.9,
+        reason: 'import-resolved',
+      });
+      graph.addRelationship({
+        id: `call:${branch[0]}`,
+        sourceId: `func:${branch[0]}`,
+        targetId: `func:${branch[1]}`,
+        type: 'CALLS',
+        confidence: 0.9,
+        reason: 'import-resolved',
+      });
+    }
+    return { graph, memberships };
+  };
+
+  it('orders two equal-length traces from ONE entry point deterministically', async () => {
+    const forward = buildBranchedGraph(false);
+    const reversed = buildBranchedGraph(true);
+    const a = await processProcesses(forward.graph, forward.memberships, undefined, {
+      maxProcesses: 1,
+    });
+    const b = await processProcesses(reversed.graph, reversed.memberships, undefined, {
+      maxProcesses: 1,
+    });
+    expect(a.processes.length).toBe(1);
+    expect(a.processes[0]?.terminalId).toBe(b.processes[0]?.terminalId);
+  });
+
+  it('emits the traces in the same ORDER, not merely the same set', async () => {
+    // Order is what the cap consumes, so a set-only assertion would pass while
+    // the defect persisted.
+    const forward = buildGraph(false);
+    const reversed = buildGraph(true);
+    const a = await processProcesses(forward.graph, forward.memberships);
+    const b = await processProcesses(reversed.graph, reversed.memberships);
+    expect(a.processes.map((p) => p.entryPointId)).toEqual(b.processes.map((p) => p.entryPointId));
+  });
+});

@@ -187,11 +187,39 @@ export const processProcesses = async (
   // fetch/ORM extraction fires (see `buildSinkFunctionSet`), so a codebase whose
   // outward calls are not detected as such still sees leaf-terminated traces
   // only.
+  // DETERMINISM. The comparator below ranks by sink-ness then by depth, and for
+  // two flows equal on both it returned 0. `Array.prototype.sort` is stable, so
+  // a 0 preserves INPUT order — which traces back to `graph.iterNodes()`, i.e.
+  // the order files happened to be inserted. Under `maxProcesses` capping that
+  // decided which `Process` and `STEP_IN_PROCESS` nodes were persisted at all.
+  //
+  // Reproduced: two equal three-step flows with `maxProcesses: 1` select
+  // `handleAlpha`; inserting the identical nodes and CALLS edges in reverse
+  // select `handleBeta`. Same repository, same commit, different persisted
+  // graph — so an incremental run that reorders assembly, or a filesystem that
+  // enumerates differently, silently changes what the tool reports.
+  //
+  // The id is the tiebreak because it is the only totally-ordered, content-derived
+  // key available here; comparing the whole path keeps it stable when two traces
+  // share a terminal.
+  //
+  // MUTATION STATUS, recorded so nobody mistakes this for a verified guard:
+  // removing THIS tiebreak alone fails nothing, because the two dedup sorts
+  // below already impose a total order on the list that reaches here. The
+  // entry-point sort and the dedup sorts each ARE individually verified. This
+  // one is kept as defence in depth — it cannot misbehave (it only makes an
+  // already-deterministic order explicit) and it is what stops a future change
+  // to dedup ordering from silently re-opening the defect.
+  const traceOrderKey = (trace: readonly string[]): string => trace.join(' ');
   const tracesByTerminal = new Map<string, string[][]>();
   const rankedByInterest = [...endpointDeduped].sort((a, b) => {
     const aSink = Number(isSink(a[a.length - 1] ?? ''));
     const bSink = Number(isSink(b[b.length - 1] ?? ''));
-    return bSink - aSink || b.length - a.length;
+    return (
+      bSink - aSink ||
+      b.length - a.length ||
+      (traceOrderKey(a) < traceOrderKey(b) ? -1 : traceOrderKey(a) > traceOrderKey(b) ? 1 : 0)
+    );
   });
   for (const trace of rankedByInterest) {
     const terminalId = trace[trace.length - 1];
@@ -388,8 +416,14 @@ const findEntryPoints = (
     }
   }
 
-  // Sort by score descending and return top candidates
-  const sorted = entryPointCandidates.sort((a, b) => b.score - a.score);
+  // Sort by score descending, then by node id. Ties on score are common — most
+  // candidates share a heuristic bucket — and a stable sort resolves them by
+  // `iterNodes()` order, so which entry points survive the `slice` below became
+  // a function of file insertion order. See the determinism note on
+  // `rankedByInterest`.
+  const sorted = entryPointCandidates.sort(
+    (a, b) => b.score - a.score || (a.id < b.id ? -1 : a.id > b.id ? 1 : 0),
+  );
 
   // DEBUG: Log top candidates with new scoring details
   if (sorted.length > 0 && isDev) {
@@ -605,8 +639,14 @@ const deduplicateTraces = (
 ): string[][] => {
   if (traces.length === 0) return [];
 
-  // Sort by length descending
-  const sorted = [...traces].sort((a, b) => b.length - a.length);
+  // Sort by length descending, then by path, so equal-length traces have a
+  // total order instead of inheriting graph-traversal order (determinism note
+  // on `rankedByInterest`). Which of two equal traces is kept as the
+  // representative is otherwise decided by insertion order.
+  const sorted = [...traces].sort(
+    (a, b) =>
+      b.length - a.length || (a.join(' ') < b.join(' ') ? -1 : a.join(' ') > b.join(' ') ? 1 : 0),
+  );
   const unique: string[][] = [];
   // Keys for `unique`, built ONCE per surviving trace rather than once per
   // COMPARISON. The join used to sit inside the `some()` callback below, so
@@ -660,8 +700,13 @@ const deduplicateByEndpoints = (traces: string[][]): string[][] => {
   if (traces.length === 0) return [];
 
   const byEndpoints = new Map<string, string[]>();
-  // Sort longest first so the first seen per key is the longest
-  const sorted = [...traces].sort((a, b) => b.length - a.length);
+  // Sort longest first so the first seen per key is the longest; the path
+  // tiebreak makes "which of two equal-length traces represents this endpoint
+  // pair" independent of insertion order.
+  const sorted = [...traces].sort(
+    (a, b) =>
+      b.length - a.length || (a.join(' ') < b.join(' ') ? -1 : a.join(' ') > b.join(' ') ? 1 : 0),
+  );
 
   for (const trace of sorted) {
     const key = `${trace[0]}::${trace[trace.length - 1]}`;
