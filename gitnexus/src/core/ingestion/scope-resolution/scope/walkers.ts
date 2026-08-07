@@ -418,16 +418,29 @@ export function findAllClassBindingsInScope(
   name: string,
   scopes: ScopeResolutionIndexes,
 ): readonly SymbolDefinition[] {
-  const inScope = findAllBindingsInScope(startScope, name, scopes, (def) => isClassLike(def.type));
-  // The scope chain wins outright when it binds the name: an inner binding
-  // shadows anything the qualified-name index would contribute.
-  if (inScope.length > 0) return inScope;
+  return classBindingsVisibleFrom(
+    lexicalClassBindingsInScope(startScope, name, scopes),
+    name,
+    scopes,
+  );
+}
 
+/**
+ * {@link findAllClassBindingsInScope} for a caller that already holds the
+ * scope-chain half (see {@link lexicalClassBindingsInScope}), so the chain is
+ * walked once rather than once per question asked about the same name.
+ *
+ * The chain wins outright when it binds the name: an inner binding shadows
+ * anything the qualified-name index would contribute.
+ */
+function classBindingsVisibleFrom(
+  lexical: readonly SymbolDefinition[],
+  name: string,
+  scopes: ScopeResolutionIndexes,
+): readonly SymbolDefinition[] {
+  if (lexical.length > 0) return lexical;
   const byNodeId = new Map<string, SymbolDefinition>();
-  for (const id of scopes.qualifiedNames.get(name)) {
-    const def = scopes.defs.get(id);
-    if (def !== undefined && isClassLike(def.type)) byNodeId.set(def.nodeId, def);
-  }
+  for (const def of classDefsByQualifiedName(name, scopes)) byNodeId.set(def.nodeId, def);
   return [...byNodeId.values()];
 }
 
@@ -537,7 +550,7 @@ function typeParameterNamesInScope(
  * yet. So only a POSITIVE match declines; an absent list changes nothing, which
  * is what keeps every unconverted language behaving exactly as it does today.
  */
-export function bindsTypeParameter(
+function bindsTypeParameter(
   scopeId: ScopeId,
   name: string,
   scopes: ScopeResolutionIndexes,
@@ -841,16 +854,72 @@ function bindsAnyCrossFileClass(scopeId: ScopeId, scopes: ScopeResolutionIndexes
   return answer;
 }
 
-/** The uncached scan behind {@link bindsAnyCrossFileClass}. Answers on the FIRST
- *  hit, so a file with a wide `export *` surface stops at its first imported
- *  class rather than walking the surface; a file with none is walked in full,
- *  but its module scope then holds only its own declarations. */
+/**
+ * The uncached scan behind {@link bindsAnyCrossFileClass}. Answers on the FIRST
+ * hit, so a file with a wide `export *` surface stops at its first imported
+ * class rather than walking the surface; a file with none is walked in full, but
+ * its module scope then holds only its own declarations.
+ *
+ * Reads the binding CHANNELS rather than asking `lookupBindingsAt` once per
+ * name, because the question is existential and the per-name route answers a
+ * question it does not need: a module scope activates the accessibility-gated
+ * namespace channel, so every one of N bound names re-probed all K accessible
+ * namespaces (75.6 ms for one C#-shaped file at N=5,000, K=1,000) and paid
+ * `lookupBindingsAt`'s merge allocation each time. The population considered is
+ * identical — the two per-scope channels' own buckets, plus the namespace and
+ * workspace channels under exactly the names those two bind.
+ */
 function scanForCrossFileClass(moduleScopeId: ScopeId, scopes: ScopeResolutionIndexes): boolean {
   const filePath = scopes.scopeTree.getScope(moduleScopeId)?.filePath;
   if (filePath === undefined) return false;
-  for (const name of namesAtScope(moduleScopeId, scopes)) {
-    for (const ref of lookupBindingsAt(moduleScopeId, name, scopes)) {
-      if (isClassLike(ref.def.type) && ref.def.filePath !== filePath) return true;
+  const bindsCrossFileClass = (refs: readonly BindingRef[] | undefined): boolean =>
+    refs !== undefined &&
+    refs.some((ref) => isClassLike(ref.def.type) && ref.def.filePath !== filePath);
+
+  // The two per-scope channels, read as whole buckets. An ordinary import lands
+  // here, so this is where the early exit usually fires.
+  const finalized = scopes.bindings.get(moduleScopeId);
+  const augmented = scopes.bindingAugmentations.get(moduleScopeId);
+  for (const channel of [finalized, augmented]) {
+    for (const refs of channel?.values() ?? []) {
+      if (bindsCrossFileClass(refs)) return true;
+    }
+  }
+
+  const boundNameCount = (finalized?.size ?? 0) + (augmented?.size ?? 0);
+  if (boundNameCount === 0) return false;
+  const bindsName = (name: string): boolean =>
+    finalized?.has(name) === true || augmented?.has(name) === true;
+  // Materialized once, not per channel — `namesAtScope` allocates when both
+  // per-scope channels are populated.
+  let boundNames: readonly string[] | undefined;
+  const namesBoundHere = (): readonly string[] =>
+    (boundNames ??= [...namesAtScope(moduleScopeId, scopes)]);
+
+  // The accessibility-gated namespace channel: ONE lookup per accessible
+  // namespace, then whichever of the two sides is smaller is the one iterated —
+  // so neither a namespace with a large type table nor a file with many bound
+  // names can reintroduce the product.
+  for (const ns of scopes.accessibleNamespacesByScope?.get(moduleScopeId) ?? []) {
+    const inNamespace = scopes.namespaceFqnBindings?.get(ns);
+    if (inNamespace === undefined || inNamespace.size === 0) continue;
+    if (inNamespace.size <= boundNameCount) {
+      for (const [name, refs] of inNamespace) {
+        if (bindsName(name) && bindsCrossFileClass(refs)) return true;
+      }
+    } else {
+      for (const name of namesBoundHere()) {
+        if (bindsCrossFileClass(inNamespace.get(name))) return true;
+      }
+    }
+  }
+
+  // The scope-independent workspace channel is keyed by name alone and has no
+  // per-scope bucket to walk, so it stays a probe per bound name.
+  const workspace = scopes.workspaceFqnBindings;
+  if (workspace !== undefined && workspace.size > 0) {
+    for (const name of namesBoundHere()) {
+      if (bindsCrossFileClass(workspace.get(name))) return true;
     }
   }
   return false;
@@ -886,16 +955,13 @@ export function resolveClassBindingForName(
    * previously bound nothing starts binding, which SUPPRESSES the
    * `?? otherResolver(...)` fallbacks several callers rely on.
    *
-   * Passed by exactly the receiver-TYPING callers, which is the population that
-   * docstring already sanctions ("receiver-chain base and step resolution"):
-   * `classifyReceiverOrigin`, which emits no edge and can only change a
-   * diagnostic label, and three lookups in `compound-receiver.ts` — two that
-   * type a FIELD receiver off a class scope (#2833) and one that types a BARE
-   * identifier off its typeBinding, i.e. every local and parameter in every
-   * language. All three forward the same
-   * `options.stripTypePreservingDecoration` they always passed to the bare
-   * lookup, so a Go pointer receiver keeps resolving through this path.
-   * Case 4 still calls without it, keeping exact-name behaviour.
+   * THE RULE, not a roll-call of who currently passes it (that list has been
+   * appended to once per round of this work and is stale the moment it is
+   * written): pass it from a receiver-TYPING site, and only where the site
+   * already forwarded the same `stripTypePreservingDecoration` to the bare
+   * lookup — so a Go pointer receiver keeps resolving exactly as it did. A site
+   * that has never stripped must keep calling without it, because starting to
+   * strip is what suppresses its fallback.
    */
   stripDecoration?: DecorationStripper,
 ): SymbolDefinition | undefined {
@@ -906,13 +972,12 @@ export function resolveClassBindingForName(
   const baseName = stripTemplateArguments(rawClassName).replace(/\s+/g, '');
   if (baseName.length === 0) return undefined;
 
-  // Lazily computed: the class-like defs the base name can see from HERE —
-  // everything bound at the nearest scope in the chain that binds it, or the
-  // workspace-wide index when the chain binds it nowhere. One extra chain walk,
-  // paid only by a spelling that carries type arguments.
-  let visibleCandidates: readonly SymbolDefinition[] | undefined;
-  const visible = (): readonly SymbolDefinition[] =>
-    (visibleCandidates ??= findAllClassBindingsInScope(scopeId, baseName, scopes));
+  // The class-like defs the SCOPE CHAIN binds for the base name. Computed once
+  // and used twice — it is the lexical half of "what can the base name see from
+  // here" AND ground (1) of the erasure rule below, and the two asked for it
+  // separately, bottoming out in the same walk for a third of the cost of every
+  // lookup whose declared type carries type arguments.
+  const lexical = lexicalClassBindingsInScope(scopeId, baseName, scopes);
 
   const wantedArgs = extractTemplateArguments(rawClassName)?.map(normalizeTemplateArgToken);
   if (wantedArgs !== undefined && wantedArgs.length > 0) {
@@ -922,7 +987,10 @@ export function resolveClassBindingForName(
     // matches, a decline, and a fall through to whatever base-name declaration
     // the walk reached first. Candidates the scope chain actually offers are
     // ranked ahead of it, exactly as every other lookup in this file does.
-    const lexicalMatches = matchingTemplateArguments(visible(), wantedArgs);
+    const lexicalMatches = matchingTemplateArguments(
+      classBindingsVisibleFrom(lexical, baseName, scopes),
+      wantedArgs,
+    );
     if (lexicalMatches.length === 1) return lexicalMatches[0];
     if (lexicalMatches.length === 0) {
       // Workspace-wide fallback — consulted ONLY when the scope chain offered no
@@ -940,7 +1008,7 @@ export function resolveClassBindingForName(
   // Nothing matched the arguments as written, so what is left to find is the
   // declaration written against its PARAMETERS — the one instantiation-agnostic
   // declaration the erasure is entitled to reach.
-  return resolveErasedBaseName(scopeId, baseName, scopes);
+  return resolveErasedBaseName(scopeId, baseName, scopes, lexical);
 }
 
 /**
@@ -961,11 +1029,17 @@ function resolveErasedBaseName(
   scopeId: string,
   baseName: string,
   scopes: ScopeResolutionIndexes,
+  /**
+   * Ground (1) below, already computed: {@link lexicalClassBindingsInScope} for
+   * `baseName` at `scopeId`. A parameter rather than a call because the only
+   * caller needs the same list for its exact-argument match, and computing it
+   * twice walked the scope chain twice.
+   */
+  lexical: readonly SymbolDefinition[],
 ): SymbolDefinition | undefined {
   // (1) THE SCOPE CHAIN binds the base name — a local, an import, a wildcard, a
   // namespace sibling. The file demonstrably sees a declaration by that name, so
   // erasing to it is what the source meant.
-  const lexical = lexicalClassBindingsInScope(scopeId, baseName, scopes);
   if (lexical.length > 0) {
     const nearest = lexical[0]!;
     // The walk landed on a declaration that pinned its own arguments — arguments

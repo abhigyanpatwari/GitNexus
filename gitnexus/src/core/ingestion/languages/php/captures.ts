@@ -141,16 +141,16 @@ export function emitPhpScopeCaptures(
     }
   }
 
-  // PHPDoc `@var` on an untyped property — the only way PHP can spell a
-  // generic field type, and the reason its non-generic control failed too
-  // (#2833). Computed BEFORE the loop rather than appended after it, because
-  // the property declarations it claims must join `typedPropertyAnchorIds`:
-  // it emits the same `@declaration.property` the typed rule does, so without
-  // this the loose `@declaration.variable` catch-all would declare the very
-  // same node a second time under its `$`-sigilled name — exactly the
-  // duplicate the set above exists to suppress.
-  const docProperties = synthesizePhpDocPropertyBindings(tree.rootNode);
-  for (const id of docProperties.anchorIds) typedPropertyAnchorIds.add(id);
+  // The one full-tree walk: class/trait heritage, and PHPDoc `@var` on an
+  // untyped property. Run BEFORE the match loop rather than appended after it,
+  // because the property declarations the `@var` half claims must join
+  // `typedPropertyAnchorIds`: it emits the same `@declaration.property` the
+  // typed rule does, so without this the loose `@declaration.variable`
+  // catch-all would declare the very same node a second time under its
+  // `$`-sigilled name — exactly the duplicate the set above exists to suppress.
+  // Its matches are still appended in the original order after the loop.
+  const walked = synthesizePhpTreeWalkCaptures(tree.rootNode);
+  for (const id of walked.docPropertyAnchorIds) typedPropertyAnchorIds.add(id);
 
   for (const m of rawMatches) {
     // Group captures by their tag name. Tree-sitter strips the leading
@@ -376,22 +376,55 @@ export function emitPhpScopeCaptures(
     out.push(grouped);
   }
 
-  out.push(...synthesizePhpInheritanceReferences(tree.rootNode));
-  out.push(...docProperties.matches);
+  out.push(...walked.inheritance);
+  out.push(...walked.docProperties);
   out.push(...synthesizeCallableFlowCaptures(tree.rootNode, PHP_CALLABLE_CAPTURE_OPTIONS));
 
   return out;
 }
 
-// ─── PHP inheritance synthesis ───────────────────────────────────────────────
+// ─── PHP whole-tree synthesis ────────────────────────────────────────────────
 
 /**
- * Synthesize `@reference.inherits` captures from PHP class/trait heritage so
- * the registry-primary scope-resolution path emits EXTENDS / IMPLEMENTS edges
- * (mirrors C# `synthesizeCsharpInheritanceReferences` / C++
- * `emitCppInheritanceCaptures`). Without this, PHP inheritance edges came only
- * from the legacy heritage-capture leg (removed in #942), which the worker
- * pipeline drops for registry-primary languages (issue #1951).
+ * The single `walkNamedTree` pass of `emitPhpScopeCaptures`, dispatching every
+ * synthesis that needs to see the whole tree.
+ *
+ * ONE walk, not one per synthesis. A tree-sitter node walk is not cheap next to
+ * the work it feeds: measured on a 1.2k-line PHP source (9.6k nodes), a single
+ * `walkNamedTree` pass costs 7.4 ms against 2.1 ms to PARSE the file, because
+ * every step materializes node wrappers across the N-API boundary. So a new
+ * node kind is a branch here rather than a pass of its own — the two below emit
+ * into separate arrays, and `emitPhpScopeCaptures` appends them in the order
+ * they were appended when they were two passes.
+ *
+ * The `@reference.inherits` half exists so the registry-primary
+ * scope-resolution path emits EXTENDS / IMPLEMENTS edges (mirrors C#
+ * `synthesizeCsharpInheritanceReferences` / C++ `emitCppInheritanceCaptures`).
+ * Without it, PHP inheritance edges came only from the legacy heritage-capture
+ * leg (removed in #942), which the worker pipeline drops for registry-primary
+ * languages (issue #1951). See {@link emitPhpDocPropertyBinding} for the other.
+ */
+function synthesizePhpTreeWalkCaptures(root: SyntaxNode): {
+  readonly inheritance: readonly CaptureMatch[];
+  readonly docProperties: readonly CaptureMatch[];
+  readonly docPropertyAnchorIds: ReadonlySet<number>;
+} {
+  const inheritance: CaptureMatch[] = [];
+  const docProperties: CaptureMatch[] = [];
+  const docPropertyAnchorIds = new Set<number>();
+  walkNamedTree(root, (node) => {
+    if (node.type === 'class_declaration' || node.type === 'trait_declaration') {
+      emitPhpHeritageReferences(node, inheritance);
+    } else if (node.type === 'property_declaration') {
+      emitPhpDocPropertyBinding(node, docProperties, docPropertyAnchorIds);
+    }
+  });
+  return { inheritance, docProperties, docPropertyAnchorIds };
+}
+
+/**
+ * Emit `@reference.inherits` for the heritage of one `class_declaration` or
+ * `trait_declaration`.
  *
  * Scope matches the legacy PHP heritage query (tree-sitter-queries.ts
  * PHP_QUERIES extends / implements / trait-use captures):
@@ -413,24 +446,18 @@ export function emitPhpScopeCaptures(
  * || type === 'Trait' ? 'IMPLEMENTS' : 'EXTENDS'`), so `use Trait` resolves to
  * IMPLEMENTS on both the legacy and registry-primary paths.
  */
-function synthesizePhpInheritanceReferences(root: SyntaxNode): CaptureMatch[] {
-  const out: CaptureMatch[] = [];
-  walkNamedTree(root, (node) => {
-    if (node.type === 'class_declaration') {
-      // extends: single base_clause child carrying one base name.
-      const baseClause = findNamedChild(node, 'base_clause');
-      if (baseClause !== null) emitPhpBaseNames(baseClause, out);
-      // implements: class_interface_clause may list several interfaces.
-      const ifaceClause = findNamedChild(node, 'class_interface_clause');
-      if (ifaceClause !== null) emitPhpBaseNames(ifaceClause, out);
-      // trait use: `use TraitName;` inside the class body.
-      emitPhpTraitUses(node, out);
-    } else if (node.type === 'trait_declaration') {
-      // trait-uses-trait: `use OtherTrait;` inside a trait body.
-      emitPhpTraitUses(node, out);
-    }
-  });
-  return out;
+function emitPhpHeritageReferences(node: SyntaxNode, out: CaptureMatch[]): void {
+  if (node.type === 'class_declaration') {
+    // extends: single base_clause child carrying one base name.
+    const baseClause = findNamedChild(node, 'base_clause');
+    if (baseClause !== null) emitPhpBaseNames(baseClause, out);
+    // implements: class_interface_clause may list several interfaces.
+    const ifaceClause = findNamedChild(node, 'class_interface_clause');
+    if (ifaceClause !== null) emitPhpBaseNames(ifaceClause, out);
+  }
+  // trait use: `use TraitName;` inside the class body, and trait-uses-trait:
+  // `use OtherTrait;` inside a trait body.
+  emitPhpTraitUses(node, out);
 }
 
 /**
@@ -665,21 +692,55 @@ const PHP_PRIMITIVES = new Set([
 ]);
 
 /**
- * Collect comment text from siblings immediately before `fnNode`.
- * Skips PHP 8+ attribute_list nodes.
+ * The comment siblings immediately preceding `node`, in SOURCE order (the
+ * nearest comment last), stopping at the first named sibling that is not a
+ * comment or a PHP 8+ attribute.
+ *
+ * The single implementation of that chain walk. Every PHPDoc reader in this
+ * file wants the same siblings under the same stop rule — `@param`/`@return` on
+ * a method, `@var` for a foreach element type, `@var` for a field type — and
+ * three hand-copied walks meant a fix to the stop rule (attributes between the
+ * docblock and the declaration, say) could land on one reader and not the
+ * others, which shows up as a field typed differently from its own foreach
+ * element type.
  */
-function collectPrecedingComments(fnNode: SyntaxNode): string {
-  const texts: string[] = [];
-  let sibling = fnNode.previousSibling;
+function precedingCommentSiblings(node: SyntaxNode): SyntaxNode[] {
+  const comments: SyntaxNode[] = [];
+  let sibling = node.previousSibling;
   while (sibling !== null) {
     if (sibling.type === 'comment') {
-      texts.unshift(sibling.text);
+      comments.unshift(sibling);
     } else if (sibling.isNamed && !SKIP_SIBLING_TYPES.has(sibling.type)) {
       break;
     }
     sibling = sibling.previousSibling;
   }
-  return texts.join('\n');
+  return comments;
+}
+
+/**
+ * First match of `re` over {@link precedingCommentSiblings}, searched from the
+ * NEAREST comment outward — a docblock written directly above the declaration
+ * wins over one further up, and an earlier comment is still reached when the
+ * nearest one carries no such tag.
+ */
+function nearestPrecedingCommentMatch(node: SyntaxNode, re: RegExp): RegExpExecArray | null {
+  const comments = precedingCommentSiblings(node);
+  for (let i = comments.length - 1; i >= 0; i--) {
+    const m = re.exec(comments[i].text);
+    if (m !== null) return m;
+  }
+  return null;
+}
+
+/**
+ * Collect comment text from siblings immediately before `fnNode`.
+ * Skips PHP 8+ attribute_list nodes.
+ */
+function collectPrecedingComments(fnNode: SyntaxNode): string {
+  return precedingCommentSiblings(fnNode)
+    .map((comment) => comment.text)
+    .join('\n');
 }
 
 /**
@@ -979,8 +1040,20 @@ function findClassPropertyElementType(
   return null;
 }
 
-/** Regex for PHPDoc @var: `@var Type` */
-const PHPDOC_VAR_RE = /@var\s+(\S+)/;
+/**
+ * PHPDoc `@var`, with the optional variable name PHPStan/Psalm allow
+ * (`@var Repo<User> $repo`). `\S+` for the type deliberately: a docblock type is
+ * untyped text and everything past the first space is prose.
+ *
+ * ONE regex for both readings of the tag. The FIELD type
+ * ({@link synthesizePhpDocPropertyBindings}) needs group 2 to tell `@var Repo
+ * $other` from `@var Repo`; the foreach ELEMENT type
+ * ({@link extractPropertyElementType}) ignores it — and since the trailing group
+ * is optional it can never change what group 1 captures, so a second, narrower
+ * copy bought nothing but the chance of the two readings of one annotation
+ * drifting apart.
+ */
+const PHPDOC_VAR_RE = /@var\s+(\S+)(?:\s+\$(\w+))?/;
 
 /**
  * Extract element type from a property_declaration node:
@@ -988,17 +1061,11 @@ const PHPDOC_VAR_RE = /@var\s+(\S+)/;
  * 2. PHP 7.4+ native type field (non-array)
  */
 function extractPropertyElementType(propDecl: SyntaxNode): string | null {
-  // Strategy 1: PHPDoc @var on a preceding comment sibling
-  let sibling = propDecl.previousSibling;
-  while (sibling !== null) {
-    if (sibling.type === 'comment') {
-      const m = PHPDOC_VAR_RE.exec(sibling.text);
-      if (m !== null) return normalizePhpDocType(m[1]);
-    } else if (sibling.isNamed && !SKIP_SIBLING_TYPES.has(sibling.type)) {
-      break;
-    }
-    sibling = sibling.previousSibling;
-  }
+  // Strategy 1: PHPDoc @var on a preceding comment sibling. The `$name` group
+  // is not consulted: an element type is asked for by the ONE foreach that
+  // already named this property, so a mismatched name cannot mis-attribute it.
+  const varTag = nearestPrecedingCommentMatch(propDecl, PHPDOC_VAR_RE);
+  if (varTag !== null) return normalizePhpDocType(varTag[1]);
   // Strategy 2: native type field — skip generic 'array'
   const typeNode = propDecl.childForFieldName('type');
   if (typeNode === null) return null;
@@ -1008,13 +1075,6 @@ function extractPropertyElementType(propDecl: SyntaxNode): string | null {
 }
 
 // ─── PHPDoc @var property synthesis ──────────────────────────────────────────
-
-/**
- * PHPDoc `@var` on a property, with the optional variable name PHPStan/Psalm
- * allow (`@var Repo<User> $repo`). `\S+` for the type deliberately: a docblock
- * type is untyped text and everything past the first space is prose.
- */
-const PHPDOC_VAR_PROPERTY_RE = /@var\s+(\S+)(?:\s+\$(\w+))?/;
 
 /**
  * Container spellings that base-name erasure would turn into a PHANTOM class.
@@ -1040,6 +1100,15 @@ const PHPDOC_PHANTOM_CONTAINER_BASES: ReadonlySet<string> = new Set(['list']);
  * `Repo|null`. Bracket-counting rather than a regex so a nested or
  * multi-argument spelling reduces in one pass; an unbalanced `<` simply
  * swallows the tail, which is the declining direction.
+ *
+ * NOT the shared `stripTemplateArguments`, and the difference is the UNION:
+ * that one truncates at the first `<`, so `Repo<User>|null` becomes `Repo` and
+ * the nullability is lost with the arguments. A docblock type is the one place
+ * a union survives to the binding — `interpretPhpTypeBinding` runs
+ * `normalizePhpType` over what this returns, and that is what strips `|null`
+ * exactly as it does for a native `Repo|null` property. So a PHP docblock needs
+ * the arguments gone and the rest of the spelling intact, which is a different
+ * operation and not a candidate for a seventh caller of the shared one.
  */
 function erasePhpDocTypeArguments(text: string): string {
   let out = '';
@@ -1098,8 +1167,9 @@ function phpDocPropertyFieldType(rawType: string): string | null {
 }
 
 /**
- * Synthesize a field type-binding from a PHPDoc `@var` block preceding an
- * UNTYPED property declaration (`/** @var Repo *​/ private $repo;`).
+ * Emit the field type-binding a PHPDoc `@var` block declares on one UNTYPED
+ * property declaration (`/** @var Repo *​/ private $repo;`), and record its
+ * anchor id in `anchorIds`.
  *
  * PHP's own type story leans on docblocks for everything its native syntax
  * cannot spell — and generics are exactly that, since `private Repo<User>
@@ -1123,77 +1193,64 @@ function phpDocPropertyFieldType(rawType: string): string | null {
  *   - `private $a, $b;` — one `@var` cannot say which element it types;
  *   - `@var Repo $other` naming a DIFFERENT property than the one it precedes.
  */
-function synthesizePhpDocPropertyBindings(root: SyntaxNode): {
-  readonly matches: readonly CaptureMatch[];
-  readonly anchorIds: ReadonlySet<number>;
-} {
-  const matches: CaptureMatch[] = [];
-  const anchorIds = new Set<number>();
-  walkNamedTree(root, (node) => {
-    if (node.type !== 'property_declaration') return;
-    // A native type hint already produces the binding via query.ts.
-    if (node.childForFieldName('type') !== null) return;
+function emitPhpDocPropertyBinding(
+  node: SyntaxNode,
+  matches: CaptureMatch[],
+  anchorIds: Set<number>,
+): void {
+  // A native type hint already produces the binding via query.ts.
+  if (node.childForFieldName('type') !== null) return;
 
-    const elements = node.namedChildren.filter(
-      (c): c is SyntaxNode => c !== null && c.type === 'property_element',
-    );
-    if (elements.length !== 1) return;
-    const varNameNode = elements[0].childForFieldName('name') ?? elements[0].firstNamedChild;
-    if (varNameNode === null || varNameNode.type !== 'variable_name') return;
+  const elements = node.namedChildren.filter(
+    (c): c is SyntaxNode => c !== null && c.type === 'property_element',
+  );
+  if (elements.length !== 1) return;
+  const varNameNode = elements[0].childForFieldName('name') ?? elements[0].firstNamedChild;
+  if (varNameNode === null || varNameNode.type !== 'variable_name') return;
 
-    const raw = findPhpDocVarTag(node);
-    if (raw === null) return;
-    // `@var Repo $other` on `private $repo;` types neither — decline.
-    if (raw.varName !== undefined && '$' + raw.varName !== varNameNode.text) return;
+  const raw = findPhpDocVarTag(node);
+  if (raw === null) return;
+  // `@var Repo $other` on `private $repo;` types neither — decline.
+  if (raw.varName !== undefined && '$' + raw.varName !== varNameNode.text) return;
 
-    const typeName = phpDocPropertyFieldType(raw.type);
-    if (typeName === null) return;
+  const typeName = phpDocPropertyFieldType(raw.type);
+  if (typeName === null) return;
 
-    anchorIds.add(node.id);
-    matches.push({
-      '@type-binding.annotation': nodeToCapture('@type-binding.annotation', node),
-      '@type-binding.name': syntheticCapture('@type-binding.name', varNameNode, varNameNode.text),
-      '@type-binding.type': syntheticCapture('@type-binding.type', varNameNode, typeName),
-    });
-    // …and the FIELD declaration, which the native rule emits as its own
-    // separate match. Without it the property stays a `@declaration.variable`
-    // named `$repo` — a Variable, not a class-owned member — and the type
-    // binding alone is not enough: measured, `$this->repo->save()` resolved
-    // while `save` was unique to one class and went UNRESOLVED as soon as a
-    // second class declared a `save`, because narrowing a same-named method
-    // needs the receiver's member to be owned. The native typed property
-    // resolved the identical file. The `$` is stripped for the same reason it
-    // is on the native path: PHP stores field names unsigilled so `$obj->repo`
-    // looks up `repo`.
-    matches.push({
-      '@declaration.property': nodeToCapture('@declaration.property', node),
-      '@declaration.name': syntheticCapture(
-        '@declaration.name',
-        varNameNode,
-        varNameNode.text.replace(/^\$/, ''),
-      ),
-    });
+  anchorIds.add(node.id);
+  matches.push({
+    '@type-binding.annotation': nodeToCapture('@type-binding.annotation', node),
+    '@type-binding.name': syntheticCapture('@type-binding.name', varNameNode, varNameNode.text),
+    '@type-binding.type': syntheticCapture('@type-binding.type', varNameNode, typeName),
   });
-  return { matches, anchorIds };
+  // …and the FIELD declaration, which the native rule emits as its own
+  // separate match. Without it the property stays a `@declaration.variable`
+  // named `$repo` — a Variable, not a class-owned member — and the type
+  // binding alone is not enough: measured, `$this->repo->save()` resolved
+  // while `save` was unique to one class and went UNRESOLVED as soon as a
+  // second class declared a `save`, because narrowing a same-named method
+  // needs the receiver's member to be owned. The native typed property
+  // resolved the identical file. The `$` is stripped for the same reason it
+  // is on the native path: PHP stores field names unsigilled so `$obj->repo`
+  // looks up `repo`.
+  matches.push({
+    '@declaration.property': nodeToCapture('@declaration.property', node),
+    '@declaration.name': syntheticCapture(
+      '@declaration.name',
+      varNameNode,
+      varNameNode.text.replace(/^\$/, ''),
+    ),
+  });
 }
 
 /**
- * The `@var` tag on the comment siblings immediately preceding `propDecl`.
- * Walks the same sibling chain (and skips the same attribute nodes) as
- * `collectPrecedingComments` / `extractPropertyElementType`.
+ * The `@var` tag on the comment siblings immediately preceding `propDecl` —
+ * the same chain, the same regex and the same nearest-first order
+ * `extractPropertyElementType` reads the tag through, so the two readings of
+ * one annotation cannot disagree about WHICH annotation they read.
  */
 function findPhpDocVarTag(
   propDecl: SyntaxNode,
 ): { readonly type: string; readonly varName?: string } | null {
-  let sibling = propDecl.previousSibling;
-  while (sibling !== null) {
-    if (sibling.type === 'comment') {
-      const m = PHPDOC_VAR_PROPERTY_RE.exec(sibling.text);
-      if (m !== null) return { type: m[1], varName: m[2] };
-    } else if (sibling.isNamed && !SKIP_SIBLING_TYPES.has(sibling.type)) {
-      break;
-    }
-    sibling = sibling.previousSibling;
-  }
-  return null;
+  const m = nearestPrecedingCommentMatch(propDecl, PHPDOC_VAR_RE);
+  return m === null ? null : { type: m[1], varName: m[2] };
 }

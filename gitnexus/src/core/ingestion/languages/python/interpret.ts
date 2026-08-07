@@ -289,10 +289,12 @@ function isNotAUserGenericBase(base: string): boolean {
  * universe is open, so enumerating it only ever chases the last escape, and
  * denying an ordinary name like `Model` would cost real edges in the many
  * projects that legitimately declare one. Those spellings still reduce to their
- * base, and the base still binds through `findClassBindingInScope`'s
- * scope-free single-match fallback — see the follow-up noted on #2855: the
- * structural fix is to prove the base is a class the FILE can see, at
- * resolution time, which this parse-time pass cannot do.
+ * base, and the base is now admitted only on the grounds `resolveErasedBaseName`
+ * applies at resolution time — the file's scope chain binds it, the declaration
+ * is in this very file, the index proves the name is a template family, or the
+ * file has no cross-file class channel to be absent from. A `Mapped[User]` whose
+ * base the file cannot see therefore binds nothing, which is the structural
+ * answer this parse-time pass cannot give and no longer has to.
  *
  * Two distinct reasons to decline, both always-correct at this layer:
  *   - CONTAINERS, including ones the two rules above do not own. Reducing

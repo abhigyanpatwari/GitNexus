@@ -38,18 +38,15 @@ type SignatureContext = {
   readonly packageQualifier: string | undefined;
   readonly importQualifiers: ReadonlyMap<string, string>;
 };
-/** One `Repo[User]` written somewhere in the program, reduced to the type
- *  arguments ALREADY normalized in the signature context of the file that wrote
- *  them — so a cross-package `repo.Repo[model.User]` and the implementor's own
- *  `model.User` compare as the same type without either side re-qualifying the
- *  other's spelling. */
-type GoInstantiation = { readonly normalizedArgs: readonly string[] };
 type DetectionIndexes = {
   readonly interfaces: readonly SymbolDefinition[];
   readonly structsById: ReadonlyMap<string, SymbolDefinition>;
   readonly methodsByOwner: ReadonlyMap<string, MethodSet>;
   readonly effectiveMethodsByStructId: ReadonlyMap<string, MethodSet>;
-  readonly interfaceById: ReadonlyMap<string, SymbolDefinition>;
+  /** Every interface in the program keyed by `qualifiedName`, `null` where more
+   *  than one declares that name — the single probe behind
+   *  {@link uniqueInterfaceNamed}. */
+  readonly interfacesByQualifiedName: ReadonlyMap<string, SymbolDefinition | null>;
   readonly interfaceOwnMethodsById: ReadonlyMap<string, MethodSet>;
   readonly embeddedSitesByInterfaceId: ReadonlyMap<string, readonly ReferenceSite[]>;
   readonly parentStructIdsByStructId: ReadonlyMap<string, readonly EmbeddedParent[]>;
@@ -60,9 +57,18 @@ type DetectionIndexes = {
    *  Absence means "not generic" and is the gate on the whole instantiation
    *  path — no entry, nothing below runs. */
   readonly typeParametersByInterfaceId: ReadonlyMap<string, readonly string[]>;
-  /** Every distinct instantiation of each generic interface observed anywhere
-   *  in the program, deduplicated by normalized argument list. */
-  readonly instantiationsByInterfaceId: ReadonlyMap<string, readonly GoInstantiation[]>;
+  /**
+   * Every distinct instantiation of each generic interface observed anywhere in
+   * the program: interface id → the instantiation's normalized type ARGUMENTS,
+   * keyed by that list joined — which is what deduplicates it.
+   *
+   * An instantiation is nothing but that list. `Repo[User]` reduces to the type
+   * arguments ALREADY normalized in the signature context of the file that wrote
+   * them, so a cross-package `repo.Repo[model.User]` and the implementor's own
+   * `model.User` compare as the same type without either side re-qualifying the
+   * other's spelling.
+   */
+  readonly instantiationsByInterfaceId: ReadonlyMap<string, ReadonlyMap<string, readonly string[]>>;
   readonly scopeIndexes: ScopeResolutionIndexes;
 };
 
@@ -155,6 +161,16 @@ function buildDetectionIndexes(
     }
   }
 
+  // Built from the nodeId-keyed map, so a def that appears in two ParsedFiles is
+  // one interface here just as it is one there — not a name collision with
+  // itself.
+  const interfacesByQualifiedName = new Map<string, SymbolDefinition | null>();
+  for (const iface of interfaceById.values()) {
+    const name = iface.qualifiedName;
+    if (name === undefined || name.length === 0) continue;
+    interfacesByQualifiedName.set(name, interfacesByQualifiedName.has(name) ? null : iface);
+  }
+
   for (const parsed of parsedFiles) {
     for (const scope of parsed.scopes) {
       const iface = scope.ownedDefs.find((def) => def.type === 'Interface');
@@ -241,7 +257,7 @@ function buildDetectionIndexes(
     structsById,
     methodsByOwner,
     effectiveMethodsByStructId,
-    interfaceById,
+    interfacesByQualifiedName,
     interfaceOwnMethodsById,
     embeddedSitesByInterfaceId,
     parentStructIdsByStructId,
@@ -260,7 +276,7 @@ function buildDetectionIndexes(
             parsedFiles,
             signatureContextByFilePath,
             typeParametersByInterfaceId,
-            interfaceById,
+            interfacesByQualifiedName,
             indexes,
           ),
     scopeIndexes: indexes,
@@ -287,11 +303,27 @@ function collectGoInstantiations(
   parsedFiles: readonly ParsedFile[],
   signatureContextByFilePath: ReadonlyMap<string, SignatureContext>,
   typeParametersByInterfaceId: ReadonlyMap<string, readonly string[]>,
-  interfaceById: ReadonlyMap<string, SymbolDefinition>,
+  interfacesByQualifiedName: ReadonlyMap<string, SymbolDefinition | null>,
   indexes: ScopeResolutionIndexes,
-): ReadonlyMap<string, readonly GoInstantiation[]> {
-  const byInterfaceId = new Map<string, GoInstantiation[]>();
-  const seenArgsByInterfaceId = new Map<string, Set<string>>();
+): ReadonlyMap<string, ReadonlyMap<string, readonly string[]>> {
+  // One map where there were two on the same key: the inner map's KEY is the
+  // joined argument list, so holding it is the deduplication.
+  const argsByInterfaceId = new Map<string, Map<string, readonly string[]>>();
+  // A base name resolves once per scope. The bracket gate below cannot filter
+  // Go's commonest types — `map[string]string` scans as base `map` — so the
+  // FALSE bases dominate this pass, and each one otherwise re-walks the whole
+  // scope chain for a name that will never bind.
+  const basesInScope = new Map<string, SymbolDefinition | null>();
+  const resolveBase = (baseName: string, inScope: string): SymbolDefinition | undefined => {
+    // NUL-joined for the same reason `methodSetKey` is: it cannot occur in Go
+    // source, so no two (scope, name) pairs can collide on one key.
+    const key = `${inScope}\u0000${baseName}`;
+    const memo = basesInScope.get(key);
+    if (memo !== undefined) return memo ?? undefined;
+    const iface = resolveGoInstantiationBase(baseName, inScope, interfacesByQualifiedName, indexes);
+    basesInScope.set(key, iface ?? null);
+    return iface;
+  };
   const record = (
     spelling: string | undefined,
     inScope: string,
@@ -301,7 +333,7 @@ function collectGoInstantiations(
     // scan below is the only per-spelling cost this pass adds.
     if (spelling === undefined || !spelling.includes('[')) return;
     for (const { baseName, rawArgs } of parseGoInstantiationSpellings(spelling)) {
-      const iface = resolveGoInstantiationBase(baseName, inScope, interfaceById, indexes);
+      const iface = resolveBase(baseName, inScope);
       if (iface === undefined) continue;
       const typeParameters = typeParametersByInterfaceId.get(iface.nodeId);
       // A partial or over-long argument list is not a valid instantiation
@@ -311,14 +343,13 @@ function collectGoInstantiations(
       if (typeParameters === undefined || typeParameters.length !== rawArgs.length) continue;
       const normalizedArgs = normalizeGoTypeArguments(rawArgs, context);
       if (normalizedArgs === undefined) continue;
-      const seen = seenArgsByInterfaceId.get(iface.nodeId) ?? new Set<string>();
+      let byArgs = argsByInterfaceId.get(iface.nodeId);
+      if (byArgs === undefined) {
+        byArgs = new Map<string, readonly string[]>();
+        argsByInterfaceId.set(iface.nodeId, byArgs);
+      }
       const key = normalizedArgs.join(',');
-      if (seen.has(key)) continue;
-      seen.add(key);
-      seenArgsByInterfaceId.set(iface.nodeId, seen);
-      const list = byInterfaceId.get(iface.nodeId) ?? [];
-      list.push({ normalizedArgs });
-      byInterfaceId.set(iface.nodeId, list);
+      if (!byArgs.has(key)) byArgs.set(key, normalizedArgs);
     }
   };
 
@@ -338,7 +369,7 @@ function collectGoInstantiations(
       }
     }
   }
-  return byInterfaceId;
+  return argsByInterfaceId;
 }
 
 /** Every `Ident[…]` / `pkg.Ident[…]` application in a type spelling, with its
@@ -381,27 +412,47 @@ function normalizeGoTypeArguments(
  *
  * Goes through `resolveInheritanceBaseInScope` first — the same real scope
  * resolution the embedded-interface path uses — and falls back to a globally
- * UNIQUE name match. Ambiguity drops the site rather than guessing: two
- * same-named interfaces in different packages would otherwise cross-pollinate
- * each other's instantiations, and a dropped site only costs fan-out that does
- * not exist today anyway.
+ * UNIQUE name match.
  */
 function resolveGoInstantiationBase(
   baseName: string,
   inScope: string,
-  interfaceById: ReadonlyMap<string, SymbolDefinition>,
+  interfacesByQualifiedName: ReadonlyMap<string, SymbolDefinition | null>,
   indexes: ScopeResolutionIndexes,
 ): SymbolDefinition | undefined {
-  const simpleName = simpleTypeName(baseName);
-  const bound = resolveInheritanceBaseInScope(inScope, simpleName, indexes);
+  const bound = resolveInheritanceBaseInScope(inScope, simpleTypeName(baseName), indexes);
   if (bound !== undefined) return bound.type === 'Interface' ? bound : undefined;
-  const matches: SymbolDefinition[] = [];
-  for (const iface of interfaceById.values()) {
-    if (iface.qualifiedName === baseName || iface.qualifiedName === simpleName) {
-      matches.push(iface);
-    }
-  }
-  return matches.length === 1 ? matches[0] : undefined;
+  return uniqueInterfaceNamed(baseName, interfacesByQualifiedName);
+}
+
+/**
+ * The one interface a written name denotes by NAME ALONE — the fallback both
+ * name-match routes here share, once the real scope resolution above them has
+ * declined.
+ *
+ * Ambiguity drops the site rather than guessing: two same-named interfaces in
+ * different packages would otherwise cross-pollinate each other's
+ * instantiations, and a dropped site only costs fan-out that does not exist
+ * today anyway. A qualified spelling is tried under both its own name and its
+ * simple tail, and a hit under EACH is two matches, so it declines as well.
+ *
+ * One probe rather than a scan of every interface in the program, which is what
+ * made this quadratic: the bracket gate in `collectGoInstantiations` cannot
+ * filter `map[…]` or `[]T`, so a Go program pays this once per bracketed
+ * spelling it writes.
+ */
+function uniqueInterfaceNamed(
+  name: string,
+  interfacesByQualifiedName: ReadonlyMap<string, SymbolDefinition | null>,
+): SymbolDefinition | undefined {
+  const exact = interfacesByQualifiedName.get(name);
+  if (exact === null) return undefined;
+  const simpleName = simpleTypeName(name);
+  if (simpleName === name) return exact;
+  const simple = interfacesByQualifiedName.get(simpleName);
+  if (simple === null) return undefined;
+  if (exact !== undefined && simple !== undefined) return undefined;
+  return exact ?? simple;
 }
 
 function detectGoInterfaceImplementationsFromIndexes(
@@ -414,13 +465,19 @@ function detectGoInterfaceImplementationsFromIndexes(
     if (required === undefined || required.size === 0) continue;
     if (!methodSetHasVerifiableSignatures(required)) continue;
 
+    // Hoisted, not recomputed per set: `substituteMethodSet` rewrites
+    // SIGNATURES and returns the identical key set, and `candidateStructIdsFor`
+    // keys off nothing but those method names — so every set below has exactly
+    // these candidates. Materialized because it is iterated once per
+    // instantiation and one of the branches behind it yields a live iterator.
+    const candidateStructIds = [...candidateStructIdsFor(required, indexes)];
     // The declaration's own method set, then one per observed instantiation.
     // The declaration set runs FIRST and unconditionally, so this is strictly
     // additive: every implementor found before #2855 is still found, in the
     // same order, and instantiation only ever appends.
     const formByStructId = new Map<string, GoReceiverForm>();
     for (const candidateSet of [required, ...instantiatedMethodSetsFor(iface, required, indexes)]) {
-      for (const structId of candidateStructIdsFor(candidateSet, indexes)) {
+      for (const structId of candidateStructIds) {
         if (formByStructId.get(structId) === 'value') continue;
         const pointerSet = indexes.effectiveMethodsByStructId.get(structId);
         if (pointerSet === undefined) continue;
@@ -494,15 +551,15 @@ function instantiatedMethodSetsFor(
 ): MethodSet[] {
   const typeParameters = indexes.typeParametersByInterfaceId.get(iface.nodeId);
   if (typeParameters === undefined) return [];
-  const instantiations = indexes.instantiationsByInterfaceId.get(iface.nodeId) ?? [];
-  if (instantiations.length === 0) return [];
+  const instantiations = indexes.instantiationsByInterfaceId.get(iface.nodeId);
+  if (instantiations === undefined || instantiations.size === 0) return [];
   const indexByName = new Map(typeParameters.map((name, index) => [name, index]));
   const sets: MethodSet[] = [];
-  for (const instantiation of instantiations) {
+  for (const normalizedArgs of instantiations.values()) {
     const substituted = substituteMethodSet(
       required,
       indexByName,
-      instantiation.normalizedArgs,
+      normalizedArgs,
       indexes.signatureContextByDefId,
     );
     if (substituted !== undefined) sets.push(substituted);
@@ -878,15 +935,7 @@ function resolveEmbeddedInterface(
 ): SymbolDefinition | undefined {
   const bound = resolveInheritanceBaseInScope(site.inScope, site.name, indexes.scopeIndexes);
   if (bound !== undefined) return bound.type === 'Interface' ? bound : undefined;
-
-  const simpleName = simpleTypeName(site.name);
-  const matches: SymbolDefinition[] = [];
-  for (const iface of indexes.interfaceById.values()) {
-    if (iface.qualifiedName === site.name || iface.qualifiedName === simpleName) {
-      matches.push(iface);
-    }
-  }
-  return matches.length === 1 ? matches[0] : undefined;
+  return uniqueInterfaceNamed(site.name, indexes.interfacesByQualifiedName);
 }
 
 function simpleTypeName(name: string): string {

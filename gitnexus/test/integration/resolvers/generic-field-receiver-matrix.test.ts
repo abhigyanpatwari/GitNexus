@@ -182,15 +182,21 @@
  *
  * ── WHY THIS IS STILL ONE FILE ────────────────────────────────────────────────
  *
- * Four assertions at the bottom compare cases AGAINST EACH OTHER: the
- * control/generic pairing sweep, the control-non-emptiness sweep, the
- * duplicate-edge sweep, and the C++ source-order property (which is only
- * meaningful as an equality between two separately-built fixtures). Splitting
- * out, say, a `-cpp` sibling would either duplicate those sweeps or drop the
- * cases they cover, and a matrix whose sweeps do not see every row is the thing
- * this file exists to prevent. The cost is linear in cases — one pipeline run
- * each, in one vitest worker — not quadratic, so the file grows in wall time the
- * way a list does, not the way a matrix does.
+ * Five assertions at the bottom read the whole matrix rather than one case: the
+ * pairing-completeness gate, the control/generic pairing sweep, the
+ * control-non-emptiness sweep, the duplicate-edge sweep, and the C++
+ * source-order property (which is only meaningful as an equality between two
+ * separately-built fixtures). Splitting out, say, a `-cpp` sibling would either
+ * duplicate those sweeps or drop the cases they cover, and a matrix whose sweeps
+ * do not see every row is the thing this file exists to prevent. The cost is
+ * linear in cases — one pipeline run each, in one vitest worker — not quadratic,
+ * so the file grows in wall time the way a list does, not the way a matrix does.
+ *
+ * The pairing sweep is DERIVED from `Row.pairsWith` rather than restated in a
+ * list of its own, and the gate makes every case declare either a pair or an
+ * `unpaired` reason. A second hand-maintained list of caller names is exactly
+ * the way a case gets quietly left out of a sweep this file says nothing may be
+ * left out of — measured, 19 of the 41 cases were.
  */
 import { describe, it, expect, beforeAll } from 'vitest';
 import fs from 'node:fs';
@@ -198,6 +204,7 @@ import path from 'node:path';
 import os from 'node:os';
 import { getRelationships, runPipelineFromRepo, writeFixtureRepo } from './helpers.js';
 import type { PipelineResult } from './helpers.js';
+import { cleanupTempDirSync } from '../../helpers/test-db.js';
 
 /** One measured call site: the method the call is written in, and every distinct
  *  CALLS target it emits, by node id. */
@@ -211,6 +218,17 @@ interface Row {
    *  expectation can never pass vacuously. */
   readonly targets: readonly string[];
   readonly note: string;
+  /** `caller` of the CONTROL row this one is measured against, when this row is
+   *  a generic (or otherwise-decorated) receiver with a plain counterpart in the
+   *  same fixture. The control/generic sweep near the bottom of this file is
+   *  DERIVED from these, so a pairing lives beside the fixture it pairs and
+   *  cannot be forgotten in a second list. */
+  readonly pairsWith?: string;
+  /** Set only where the pair is a PINNED NON-MATCH — the generic row must NOT
+   *  emit as many targets as its control. States a decision; see the row note
+   *  for the argument. Absent means "matches", which is what every other pair
+   *  claims. */
+  readonly matchesControl?: false;
 }
 
 interface Case {
@@ -223,6 +241,11 @@ interface Case {
    *  compared side by side. Written after `file`, in literal order. */
   readonly extraFiles?: Readonly<Record<string, string>>;
   readonly rows: readonly Row[];
+  /** Why NO row of this case carries `pairsWith`, for the cases the
+   *  control/generic sweep cannot measure. Required whenever the case has no
+   *  paired row, and asserted below: an omission has to be a sentence someone
+   *  wrote, not a case that quietly fell out of the sweep. */
+  readonly unpaired?: string;
 }
 
 const CASES: readonly Case[] = [
@@ -256,6 +279,7 @@ export class ControlSvc {
         caller: 'runGeneric',
         targets: ['Method:a.ts:Repo.save#1', 'Method:a.ts:UserRepo.save#1'],
         note: '#2833: generic-typed field matches the control exactly, primary + fan-out',
+        pairsWith: 'runControl',
       },
     ],
   },
@@ -287,6 +311,7 @@ class ControlSvc {
         caller: 'RunGeneric',
         targets: ['Method:A.cs:IRepo.Save#1', 'Method:A.cs:UserRepo.Save#1'],
         note: '#2833: matches the control exactly, primary + fan-out',
+        pairsWith: 'RunControl',
       },
     ],
   },
@@ -318,6 +343,7 @@ class ControlSvc {
         caller: 'runGeneric',
         targets: ['Method:A.java:Repo.save#1', 'Method:A.java:UserRepo.save#1'],
         note: 'ALREADY CORRECT — interpret-time erasure. Pinned against regression.',
+        pairsWith: 'runControl',
       },
     ],
   },
@@ -347,6 +373,7 @@ class ControlSvc(private val plain: Plain) {
         caller: 'runGeneric',
         targets: ['Method:A.kt:Repo.save#1', 'Method:A.kt:UserRepo.save#1'],
         note: 'ALREADY CORRECT. Pinned against regression.',
+        pairsWith: 'runControl',
       },
     ],
   },
@@ -395,6 +422,12 @@ func (s ControlSvc) RunControl(u User) { s.plain.Save(u) }
           'Method:a.go:UserRepo.Save#1',
         ],
         note: 'the bracket spelling always typed the receiver; what it lacked was structural satisfaction against a GENERIC interface. `Repo[User]` now instantiates to `interface{ Save(x User) }`, which both value-receiver impls satisfy — so Go finally matches its own control instead of stopping at the declaration.',
+        // Go was EXCLUDED from this sweep while its generic field stopped at
+        // the declaration and its control fanned out — an exclusion that was
+        // the taxonomy quietly admitting a bug rather than describing a
+        // language. Generic-interface instantiation closed it, so Go is now an
+        // ordinary pair.
+        pairsWith: 'RunControl',
       },
     ],
   },
@@ -422,6 +455,7 @@ impl ControlSvc { pub fn run_control(&self, u: &User) { self.plain.save(u); } }
         caller: 'run_generic',
         targets: ['Function:a.rs:Repo.save#1'],
         note: 'ALREADY CORRECT. Pinned against regression.',
+        pairsWith: 'run_control',
       },
     ],
   },
@@ -451,6 +485,7 @@ class ControlSvc {
         caller: 'runGeneric',
         targets: ['Function:A.swift:BoxRepo.save#1'],
         note: 'ALREADY CORRECT — but the initializer is a constructor of the SAME generic type, so this row cannot separate "the annotation resolved" from "the construction resolved". It pins the INITIALIZER path only; `annotation-only-swift-dart` pins the annotation on its own.',
+        pairsWith: 'runControl',
       },
     ],
   },
@@ -480,6 +515,7 @@ class ControlSvc {
         caller: 'runGeneric',
         targets: ['Method:a.dart:Repo.save#1'],
         note: 'ALREADY CORRECT — same caveat as the Swift row: initializer of the identical generic type, so it pins the INITIALIZER path. `annotation-only-swift-dart` pins the annotation on its own.',
+        pairsWith: 'runControl',
       },
     ],
   },
@@ -509,6 +545,7 @@ struct ControlSvc {
         caller: 'runGeneric',
         targets: ['Method:a.cpp:Repo.save#1~c:16619u1'],
         note: '#2833: fixed by the new template_type field_declaration captures — a C++ member whose type carried template arguments previously bound nothing at all',
+        pairsWith: 'runControl',
       },
     ],
   },
@@ -555,6 +592,7 @@ class ControlSvc:
         caller: 'run_generic',
         targets: ['Method:a.py:Repo.save#1'],
         note: '#2833: fixed by base-name erasure in the Python interpreter — the bracket spelling never reached the `<`-gated generic branch',
+        pairsWith: 'run_control',
       },
     ],
   },
@@ -590,6 +628,8 @@ export class Svc {
         note: 'the whole bug in one file — same type, same class, only the FIELD lost it',
       },
     ],
+    unpaired:
+      'its three rows pin the IDENTICAL target list for a local, a parameter and a field of the same generic type, which is a stronger statement than an equal COUNT — and none of the three is a non-generic control',
   },
   {
     name: 'neg-type-parameter',
@@ -630,6 +670,8 @@ export class BoxControl {
         note: "THE FALSE EDGE, now closed: a workspace `class T` used to answer for the type parameter `T`. Visibility was never the defect — `export class T` is declared, exported and lexically in scope, so no grounding rule could decline it, and `T` carries no type arguments so it never entered the generic path either. Only `Box2`'s own declared `typeParameters` record that `T` means something else inside it, and `findClassBindingInScope` now refuses a name a lexically enclosing declaration binds as a parameter.",
       },
     ],
+    unpaired:
+      'the two rows under test are asserted EMPTY on purpose and `runPlain` is an ANTI-VACUITY control for them, not a yardstick: pairing an empty row against it would pin 0 !== 1 forever and say nothing about type parameters',
   },
   {
     name: 'neg-bounded-type-parameter',
@@ -650,6 +692,10 @@ export class Box<T extends Repo> {
         caller: 'run',
         targets: ['Method:a.ts:Repo.save#0', 'Method:a.ts:RepoImpl.save#0'],
         note: 'a BOUNDED type parameter now resolves THROUGH its bound, with the same interface-dispatch fan-out a field of the bound produces. It comes for free with the parameter list that declines the UNBOUNDED case one fixture up: refusing `T` requires knowing `Box` declares it, and the same entry carries `extends Repo`. Resolving to the bound is the sound direction — every `T` here IS a `Repo` — so this is a deliberate semantics expansion, not fallout.',
+        // Was a PINNED NON-MATCH while a bounded type parameter resolved to
+        // nothing. It now resolves THROUGH the bound, so it matches a field of
+        // that bound exactly — which is the claim the row makes.
+        pairsWith: 'runDirect',
       },
       {
         caller: 'runDirect',
@@ -683,6 +729,8 @@ struct Svc {
         note: 'the primary template instantiation — distinct target id from the specialization above',
       },
     ],
+    unpaired:
+      "both rows are generic instantiations and the claim is WHICH declaration each lands on, not how many targets it emits; C++'s control/generic pair is the `cpp` case",
   },
   // ── C++ specialization must not depend on SOURCE ORDER ────────────────────
   // The two cases below are byte-identical except for the order of the two
@@ -725,6 +773,8 @@ struct Svc {
         note: 'THE ORDER BUG: `Vec<int>` bound the `Vec<bool>` specialization in this arrangement before the fix, purely because that declaration was written above the primary. Must be the primary.',
       },
     ],
+    unpaired:
+      'both rows are generic instantiations, and the property these order fixtures carry is the cross-fixture EQUALITY asserted in its own test below, not a count against a control',
   },
   {
     name: 'cpp-spec-order-primary-first',
@@ -752,6 +802,8 @@ struct Svc {
         note: 'mirror arrangement — same answer as specialization-first. Asserted as an equality between the two cases as well, below.',
       },
     ],
+    unpaired:
+      'both rows are generic instantiations, and the property these order fixtures carry is the cross-fixture EQUALITY asserted in its own test below, not a count against a control',
   },
   // ── Partial specialization: DETERMINISM, not deduction ────────────────────
   // `Vec<int*>` against `template<class T> struct Vec<T*>` would need
@@ -783,6 +835,8 @@ struct Svc {
         note: 'primary template — `Vec<T*>` would require deduction (out of scope)',
       },
     ],
+    unpaired:
+      'a single generic row, whose property is the cross-fixture EQUALITY with `cpp-partial-spec-partial-first` asserted below',
   },
   {
     name: 'cpp-partial-spec-partial-first',
@@ -803,6 +857,8 @@ struct Svc {
         note: 'same target as primary-first: the partial specialization pins `T*`, which is not the `int*` written, so it cannot win the exact match and is excluded from the base-name re-decision',
       },
     ],
+    unpaired:
+      'a single generic row, whose property is the cross-fixture EQUALITY with `cpp-partial-spec-primary-first` asserted below',
   },
   {
     name: 'cpp-spec-lexical-shadowing',
@@ -839,6 +895,8 @@ struct InnerSvc {
         note: 'LEXICAL SHADOWING: the namespace-local `N::Box<bool>` wins for a field inside `N`. The two specializations are separated into two FILES because a same-named specialization in the same file collapses to one node id, which would make this row unable to tell the two apart. Before the fix the workspace-wide index was consulted first: it offered two `Box<bool>` matches, declined, and fell through to the base-name walk — landing on a PRIMARY template for both services.',
       },
     ],
+    unpaired:
+      'both rows are the same generic spelling resolved from two different scopes; the claim is which declaration wins, and neither row is a control for the other',
   },
   {
     name: 'cpp-spec-cross-file',
@@ -873,6 +931,8 @@ struct Svc {
         note: 'the PRIMARY template now binds cross-file too. Nothing matches `int` exactly and two workspace defs are registered under `Vec`, which used to be a flat decline; the base-name route now re-decides over the declarations that pin NO template arguments of their own, and exactly one of the two does — the primary. `Vec<bool>` is excluded by the same rule that keeps the sibling row above landing on it.',
       },
     ],
+    unpaired:
+      'both rows are generic instantiations reached across files; the claim is which declaration each binds, not a count against a non-generic control',
   },
   {
     name: 'csharp-partial-generic-cross-file',
@@ -905,6 +965,7 @@ class Svc {
         caller: 'RunPartial',
         targets: ['Method:RepoA.cs:Repo.Save#1'],
         note: 'NON-REGRESSION: a generic `partial class` split across two files, with the field in a third, resolves — and TWO defs are registered under the base name `Repo`. This is the row that ruled out "return only on exactly one base-name candidate": that rule would have deleted this edge. The base-name route keeps `findClassBindingInScope`\'s own single-match-or-decline behaviour instead, which the partial halves survive because neither pins template arguments.',
+        pairsWith: 'RunPartialControl',
       },
     ],
   },
@@ -945,16 +1006,19 @@ struct Svc {
         caller: 'runGenericPtr',
         targets: ['Method:a.cpp:Repo.save#1~c:16619u1'],
         note: 'the `pointer_declarator` rule of the three the fix added — previously untested',
+        pairsWith: 'runControlPtr',
       },
       {
         caller: 'runGenericRef',
         targets: ['Method:a.cpp:Repo.save#1~c:16619u1'],
         note: 'the `reference_declarator` rule — previously untested',
+        pairsWith: 'runControlRef',
       },
       {
         caller: 'runGenericNested',
         targets: ['Method:a.cpp:Repo.save#1~c:16619u1'],
         note: 'nested `Repo<Repo<User>>` — the depth-aware argument scan must not stop at the inner `>`',
+        pairsWith: 'runControlRef',
       },
     ],
   },
@@ -1018,6 +1082,7 @@ struct Svc {
         caller: 'runQualNs',
         targets: ['Method:a.cpp:Repo.save#1~c:16619u1'],
         note: 'depth-1 qualifier, user namespace `ns::Repo<User>`',
+        pairsWith: 'runQualControl',
       },
       {
         caller: 'runQualPtr',
@@ -1033,6 +1098,7 @@ struct Svc {
         caller: 'runQualDeep',
         targets: ['Method:a.cpp:Deep.go#1~c:16619u1'],
         note: 'depth-2 qualifier, `a::b::Deep<User>`',
+        pairsWith: 'runQualControl',
       },
       {
         caller: 'runQualUnique',
@@ -1043,11 +1109,15 @@ struct Svc {
         caller: 'runQualDepth3',
         targets: ['Method:a.cpp:Deeper.go3#1~c:16619u1'],
         note: 'depth 3 (`a::b::c::Deeper<User>`) was the DOCUMENTED BOUNDARY this file used to pin at empty, because the rules enumerated the INNER node and each level cost three more patterns. The rules now match the outer `qualified_identifier` instead, which is one node type whatever the depth, so the boundary is gone rather than moved.',
+        // Was a PINNED NON-MATCH while qualifier depth 3 was uncaptured. The
+        // depth-agnostic rules removed the boundary, so it is an ordinary pair.
+        pairsWith: 'runQualControl',
       },
       {
         caller: 'runQualDepth4',
         targets: ['Method:a.cpp:Deepest.go4#1~c:16619u1'],
         note: 'depth 4, and the row that says the boundary was REMOVED and not merely raised by one: if depth were still enumerated per level, closing depth 3 would have left this one empty. Nothing in the query mentions a depth, so there is no next boundary to find.',
+        pairsWith: 'runQualControl',
       },
     ],
   },
@@ -1094,11 +1164,13 @@ class CsSvc {
         caller: 'runTsContainer',
         targets: ['Method:a.ts:Map.save#0'],
         note: 'INTENDED, and new: `Map<string, User>` binds the workspace `class Map`, not the value type `User`. The annotation names `Map`, so naming `Map` is the right answer; the row exists because base-name erasure reaches it on the shared path with no container guard, and that policy should be readable here rather than inferred from an absence.',
+        pairsWith: 'runTsControl',
       },
       {
         caller: 'RunCsContainer',
         targets: ['Method:A.cs:Dictionary.Save#0'],
         note: 'INTENDED, and new: same policy in C# for `Dictionary<string, CsUser>`. `CsUser` also declares `Save()` and does NOT receive the edge, which is what proves the base name won rather than the container allow-list unwrapping to the value type.',
+        pairsWith: 'RunCsControl',
       },
     ],
   },
@@ -1132,6 +1204,8 @@ class Svc(private val repo: Repo<User>?) {
         note: 'nullable generic `Repo<User>?` — decoration and type arguments compose. INTERPRET-TIME PATH: cannot fail on a revert of the shared lookup.',
       },
     ],
+    unpaired:
+      'one row, and no non-generic control field on purpose: this case adds a SPELLING (`Repo<User>?`) to a language whose control/generic pair is the `kotlin` case',
   },
   {
     name: 'java-wildcard-and-raw-generic',
@@ -1159,6 +1233,8 @@ class Svc {
         note: 'raw type `Repo` — the erased spelling Java itself permits. Carries no type arguments at all, so it never enters the generic path in any build.',
       },
     ],
+    unpaired:
+      "both rows are generic SPELLINGS (`Repo<? extends User>`, raw `Repo`) with no plain control between them; Java's control/generic pair is the `java` case",
   },
   {
     name: 'rust-nested-generic',
@@ -1177,6 +1253,8 @@ impl Svc { pub fn run_nested(&self, u: &User) { self.repo.save(u); } }
         note: 'nested generic `Repo<Repo<User>>` — the depth-aware scan must not stop at the inner `>`. INTERPRET-TIME PATH: cannot fail on a revert of the shared lookup.',
       },
     ],
+    unpaired:
+      "one row, adding the nested SPELLING `Repo<Repo<User>>`; Rust's control/generic pair is the `rust` case",
   },
   {
     name: 'ts-multiarg-generic',
@@ -1198,6 +1276,8 @@ export class Svc {
         note: 'multi-argument generic `Handler<Key, User>` — the container allow-lists deliberately ignore multi-arg shapes, so this only resolves via base-name erasure. DISCRIMINATING: TypeScript is on the shared path.',
       },
     ],
+    unpaired:
+      "one row, adding the multi-argument SPELLING `Handler<Key, User>`; TypeScript's control/generic pair is the `typescript` case",
   },
   {
     name: 'ts-python-nested-and-multiarg',
@@ -1266,6 +1346,8 @@ class PyMultiSvc:
         note: 'DISCRIMINATING multi-argument generic in the square-bracket spelling, `PyHandler[PyKey, PyUser]` — the shape the container allow-lists decline',
       },
     ],
+    unpaired:
+      'every row is a generic spelling, across two languages; the control/generic pairs for both live in the `typescript` and `python` cases',
   },
   // ── Annotation-only Swift and Dart ────────────────────────────────────────
   // The `swift` and `dart` cases above give the field an initializer of the
@@ -1321,11 +1403,13 @@ class DAnnControl {
         caller: 'runSwiftAnnotationOnly',
         targets: ['Function:A.swift:BoxRepo.save#1'],
         note: 'the ANNOTATION alone types the receiver — no initializer exists to be the source',
+        pairsWith: 'runSwiftAnnotationControl',
       },
       {
         caller: 'runDartAnnotationOnly',
         targets: ['Method:a.dart:DRepo.save#1'],
         note: 'the ANNOTATION alone types the receiver — `late` with no initializer',
+        pairsWith: 'runDartAnnotationControl',
       },
     ],
   },
@@ -1433,6 +1517,8 @@ export class CrossSvc {
         note: 'STATIC/class-level member receiver: `Holder.repo.save(u)` resolves, with the interface-dispatch fan-out every other reach shape in this fixture gets. A per-scope `typeBindings` map cannot hold both `repo` and `static repo` for one class, so Case 6 types the receiver off the static field DEF instead. The extra target relative to the control is the fan-out, not the staticness — `Repo` is an interface and `Plain` is a class.',
       },
     ],
+    unpaired:
+      '`runStaticControl` IS a control, but a class-typed one against an interface-typed generic, so the two differ by the dispatch fan-out BY DESIGN and an equal-count yardstick would misread it (the row notes say so); each row pins its exact target set instead, and the static REACH is swept as a pair by `kotlin-companion-static-member`, whose two sides are both class-typed',
   },
   {
     name: 'php-typed-property',
@@ -1460,6 +1546,11 @@ class ControlSvc {
         caller: 'runGeneric',
         targets: ['Method:a.php:Repo.save#1'],
         note: 'PHP has no generic type syntax — `private Repo<User> $repo;` is a parse error — so a NATIVE typed property is the closest analogue and is pinned so neither the shared change nor the new docblock pass can regress it. The docblock spelling PHP actually uses for generics is a separate capture path with its own case below; this row must keep passing whatever that one does.',
+        // Newly swept: this case always had a control and a generic row in one
+        // fixture and was simply absent from the hand-maintained list the sweep
+        // used to be — which is the failure mode deriving it from the rows
+        // removes.
+        pairsWith: 'runControl',
       },
     ],
   },
@@ -1497,6 +1588,7 @@ export class ControlSvc {
         caller: 'runJsGeneric',
         targets: ['Method:a.js:Repo.save#1'],
         note: '`@type {Repo<User>}` on a class field. `Repo` is an ordinary class here because JavaScript has no way to declare a generic one — the type ARGUMENT is the part that has to survive the docblock and then erase, and it does, matching the control exactly.',
+        pairsWith: 'runJsControl',
       },
     ],
   },
@@ -1535,6 +1627,7 @@ class DocSvc {
         caller: 'runPhpDocGeneric',
         targets: ['Method:a.php:Repo.save#1'],
         note: '`@var Repo<User>` — the only spelling PHP has for a generic field, and the reason the arguments are erased in the PHP capture rather than left to the shared lookup: `normalizePhpType` reduces `X<Y>` to `Y` for the foreach/element convention, so passing the spelling through bound the field to `User` and emitted `User::save`. A WRONG edge, so the erasure happens before that rule can read it.',
+        pairsWith: 'runPhpDocControl',
       },
       {
         caller: 'runPhpDocArray',
@@ -1588,6 +1681,7 @@ class StaticSvc {
         caller: 'runKtStatic',
         targets: ['Method:A.kt:Repo.save#1', 'Method:A.kt:UserRepo.save#1'],
         note: '`Holder.repo.save(u)` through a `companion object` member matches its control exactly, fan-out included. Kotlin erases type arguments at interpret time, so this row is about the class-level RECEIVER and nothing else — which is the point: the gap was never about generics in any language that reached it.',
+        pairsWith: 'runKtStaticControl',
       },
     ],
   },
@@ -1688,6 +1782,8 @@ def run_no_import_channel(m: Mapped[BUser], u: BUser) -> None:
         note: 'THE SAME REFUSAL FROM AN EXPLICIT ANNOTATION, which is what proves the fix is not about the binding SOURCE: a class-level `m: Mapped[User]` and a constructor-inferred `self.m` reach the identical answer, as they always did — both wrong before, both empty now. The receiver spelling was never the discriminator either; the two spellings simply entered different lookups, and only one of them was grounded.',
       },
     ],
+    unpaired:
+      'the rows are grounding routes and refusals, three of them asserted EMPTY, and `run_local_control` is an ANTI-VACUITY control for those rather than a count to match',
   },
   // The mirrors. A grounding rule is only as good as what it still admits, and
   // these are the four shapes that would break if it were tightened: two Python
@@ -1739,6 +1835,8 @@ class CrossRepo(Generic[T]):
         note: 'MIRROR: a genuine imported `CrossRepo[User]` still resolves — the import binds the name in the scope chain, the strongest ground. The two classes are named differently on purpose so neither can answer for the other.',
       },
     ],
+    unpaired:
+      "both rows are generic and both are MIRRORS — shapes the grounding rule must still admit — so neither is the other's control; Python's control/generic pair is the `python` case",
   },
   {
     name: 'cpp-csharp-index-channel',
@@ -1778,6 +1876,8 @@ namespace App {
         note: "MIRROR: C# resolves `Data.Repo<T>` from `App` with no `using` at all, which is how C# actually behaves. Same shape as the C++ row and a second language, so the ground that admits them is not one language's quirk.",
       },
     ],
+    unpaired:
+      "one C++ row and one C# row, both generic and both mirrors of the index channel; each language's control/generic pair is its own case",
   },
   // ── C++ qualified fields that are not generic at all ──────────────────────
   // The qualified rules were written for `std::vector<Item>`, but the node they
@@ -1825,6 +1925,11 @@ struct Svc {
         caller: 'runQualNsStruct',
         targets: ['Method:a.cpp:Address.city#0'],
         note: 'a plain `ns::Address addr;` — no template arguments anywhere. This member had no type binding at all before the qualified rules, which is why the fix is not describable as a generics fix.',
+        // The one pair on a different axis: QUALIFIED against UNQUALIFIED rather
+        // than generic against plain. It belongs in this sweep because the rules
+        // that closed the qualified generic field closed this one with it, so a
+        // narrowing of them has to fail here too.
+        pairsWith: 'runQualNonGenericControl',
       },
       {
         caller: 'runQualNsPtr',
@@ -1880,6 +1985,7 @@ struct Svc {
         caller: 'runThisGeneric',
         targets: ['Method:a.cpp:Repo.save#1~c:16619u1'],
         note: '`this->repo.save(u)` now matches both its non-generic sibling and its bare-receiver twin, which is the definition of fixed for this file',
+        pairsWith: 'runThisControl',
       },
     ],
   },
@@ -1926,6 +2032,12 @@ func (s ControlSvc) RunPlainControl() { s.plain.Ping() }
         caller: 'RunOrderRepo',
         targets: ['Method:a.go:Repo.Save#1'],
         note: 'NEGATIVE: `Repo[Order]` substitutes to `interface{ Save(x Order) }`, which `UserRepo.Save(x User)` does not satisfy — so the declaration is the only target and there is no fan-out. `Repo[Order]` is the ONLY instantiation written in this repo, deliberately: GitNexus holds one node per generic DECLARATION, so a repo that also wrote `Repo[User]` would union both method sets onto it and this row could not distinguish substitution from erasure.',
+        // PINNED NON-MATCH, and a DELIBERATE one: `Repo[Order]` must NOT fan out
+        // to an implementor of `Save(x User)`, while the non-generic control
+        // interface does fan out to its own. Substitution is positional; a match
+        // here would mean erasure had crept back in (see the row notes).
+        pairsWith: 'RunPlainControl',
+        matchesControl: false,
       },
     ],
   },
@@ -1937,14 +2049,23 @@ describe('generic-typed field receivers across languages (#2833)', () => {
   beforeAll(async () => {
     for (const testCase of CASES) {
       const dir = fs.mkdtempSync(path.join(os.tmpdir(), `gn-2833-${testCase.name}-`));
-      writeFixtureRepo(dir, { [testCase.file]: testCase.source, ...(testCase.extraFiles ?? {}) });
-      // CALLS resolution is complete before the graph phases run and nothing
-      // here reads what they produce, so skipping them narrows each run to the
-      // phase under test.
-      results.set(
-        testCase.name,
-        await runPipelineFromRepo(dir, () => {}, { skipGraphPhases: true }),
-      );
+      try {
+        writeFixtureRepo(dir, { [testCase.file]: testCase.source, ...(testCase.extraFiles ?? {}) });
+        // CALLS resolution is complete before the graph phases run and nothing
+        // here reads what they produce, so skipping them narrows each run to the
+        // phase under test.
+        results.set(
+          testCase.name,
+          await runPipelineFromRepo(dir, () => {}, { skipGraphPhases: true }),
+        );
+      } finally {
+        // Not a bare `rmSync`: a pipeline run can still hold a handle open when
+        // this fires, which surfaces as EBUSY/EPERM on Windows — `force` does
+        // not suppress that — and this suite runs in the sharded Windows CI.
+        // One fixture repo (each with its own LadybugDB) per CASE, so without
+        // this the suite leaks 41 of them per run.
+        cleanupTempDirSync(dir);
+      }
     }
   }, 1800000);
 
@@ -2006,148 +2127,63 @@ describe('generic-typed field receivers across languages (#2833)', () => {
   // A generic-typed field must not merely emit SOMETHING — it must emit exactly
   // as many targets as the SAME language's non-generic control field. Asserted
   // across the whole matrix in one place so adding a language cannot quietly
-  // skip it, and stated as an explicit per-pair map rather than "all true" so
-  // the pinned non-matches are visible in the expectation itself. Keyed by
-  // case AND generic caller, because one case can pin several pairs (the C++
-  // pointer/reference forms, and the two languages of a shared fixture).
-  const PAIRED = [
-    { name: 'typescript', control: 'runControl', generic: 'runGeneric', matches: true },
-    { name: 'csharp', control: 'RunControl', generic: 'RunGeneric', matches: true },
-    { name: 'cpp', control: 'runControl', generic: 'runGeneric', matches: true },
-    { name: 'python', control: 'run_control', generic: 'run_generic', matches: true },
-    { name: 'java', control: 'runControl', generic: 'runGeneric', matches: true },
-    { name: 'kotlin', control: 'runControl', generic: 'runGeneric', matches: true },
-    { name: 'dart', control: 'runControl', generic: 'runGeneric', matches: true },
-    { name: 'swift', control: 'runControl', generic: 'runGeneric', matches: true },
-    { name: 'rust', control: 'run_control', generic: 'run_generic', matches: true },
-    // Go was EXCLUDED from this sweep while its generic field stopped at the
-    // declaration and its control fanned out — an exclusion that was the
-    // taxonomy quietly admitting a bug rather than describing a language.
-    // Generic-interface instantiation closed it, so Go is now an ordinary row.
-    { name: 'go', control: 'RunControl', generic: 'RunGeneric', matches: true },
-    { name: 'js-docblock-field', control: 'runJsControl', generic: 'runJsGeneric', matches: true },
-    {
-      name: 'php-docblock-property',
-      control: 'runPhpDocControl',
-      generic: 'runPhpDocGeneric',
-      matches: true,
-    },
-    {
-      name: 'kotlin-companion-static-member',
-      control: 'runKtStaticControl',
-      generic: 'runKtStatic',
-      matches: true,
-    },
-    {
-      name: 'cpp-this-head-field',
-      control: 'runThisControl',
-      generic: 'runThisGeneric',
-      matches: true,
-    },
-    {
-      // The one pair on a different axis: QUALIFIED against UNQUALIFIED rather
-      // than generic against plain. It belongs in this sweep because the rules
-      // that closed the qualified generic field closed this one with it, so a
-      // narrowing of them has to fail here too.
-      name: 'cpp-qualified-non-generic-field',
-      control: 'runQualNonGenericControl',
-      generic: 'runQualNsStruct',
-      matches: true,
-    },
-    {
-      // PINNED NON-MATCH, and a DELIBERATE one: `Repo[Order]` must NOT fan out
-      // to an implementor of `Save(x User)`, while the non-generic control
-      // interface does fan out to its own. Substitution is positional; a match
-      // here would mean erasure had crept back in (see the row notes).
-      name: 'go-instantiation-mismatch',
-      control: 'RunPlainControl',
-      generic: 'RunOrderRepo',
-      matches: false,
-    },
-    {
-      name: 'cpp-pointer-reference-generic-field',
-      control: 'runControlPtr',
-      generic: 'runGenericPtr',
-      matches: true,
-    },
-    {
-      name: 'cpp-pointer-reference-generic-field',
-      control: 'runControlRef',
-      generic: 'runGenericRef',
-      matches: true,
-    },
-    {
-      name: 'cpp-pointer-reference-generic-field',
-      control: 'runControlRef',
-      generic: 'runGenericNested',
-      matches: true,
-    },
-    {
-      name: 'cpp-qualified-generic-field',
-      control: 'runQualControl',
-      generic: 'runQualNs',
-      matches: true,
-    },
-    {
-      name: 'cpp-qualified-generic-field',
-      control: 'runQualControl',
-      generic: 'runQualDeep',
-      matches: true,
-    },
-    {
-      // Was a PINNED NON-MATCH while qualifier depth 3 was uncaptured. The
-      // depth-agnostic rules removed the boundary, so it is an ordinary row.
-      name: 'cpp-qualified-generic-field',
-      control: 'runQualControl',
-      generic: 'runQualDepth3',
-      matches: true,
-    },
-    {
-      name: 'cpp-qualified-generic-field',
-      control: 'runQualControl',
-      generic: 'runQualDepth4',
-      matches: true,
-    },
-    {
-      name: 'csharp-partial-generic-cross-file',
-      control: 'RunPartialControl',
-      generic: 'RunPartial',
-      matches: true,
-    },
-    {
-      name: 'container-name-collision',
-      control: 'runTsControl',
-      generic: 'runTsContainer',
-      matches: true,
-    },
-    {
-      name: 'container-name-collision',
-      control: 'RunCsControl',
-      generic: 'RunCsContainer',
-      matches: true,
-    },
-    {
-      name: 'annotation-only-swift-dart',
-      control: 'runSwiftAnnotationControl',
-      generic: 'runSwiftAnnotationOnly',
-      matches: true,
-    },
-    {
-      name: 'annotation-only-swift-dart',
-      control: 'runDartAnnotationControl',
-      generic: 'runDartAnnotationOnly',
-      matches: true,
-    },
-    {
-      // Was a PINNED NON-MATCH while a bounded type parameter resolved to
-      // nothing. It now resolves THROUGH the bound, so it matches a field of
-      // that bound exactly — which is the claim the row makes.
-      name: 'neg-bounded-type-parameter',
-      control: 'runDirect',
-      generic: 'run',
-      matches: true,
-    },
-  ] as const;
+  // skip it, and DERIVED from the rows rather than restated: a second
+  // hand-maintained list of caller names is exactly how a case gets left out of
+  // a sweep the file's own header says nothing may be left out of (measured:
+  // 19 of 41 cases had no entry in that list). Keyed by case AND generic
+  // caller, because one case can pin several pairs (the C++ pointer/reference
+  // forms, and the two languages of a shared fixture); `matchesControl: false`
+  // on a row is what makes a pinned NON-match visible in the expectation.
+  const PAIRED: readonly {
+    readonly name: string;
+    readonly control: string;
+    readonly generic: string;
+    readonly matches: boolean;
+  }[] = CASES.flatMap((testCase) =>
+    testCase.rows.flatMap((row) =>
+      row.pairsWith === undefined
+        ? []
+        : [
+            {
+              name: testCase.name,
+              control: row.pairsWith,
+              generic: row.caller,
+              matches: row.matchesControl ?? true,
+            },
+          ],
+    ),
+  );
+
+  // The derivation above can only sweep a case that CLAIMS a pair, so this is
+  // the gate that keeps "no pair" a decision instead of an oversight: every
+  // case must either carry a `pairsWith` row or state in `unpaired` why the
+  // control/generic yardstick does not apply to it — and never both, which
+  // would be a case arguing with itself. A count of 0 is the omission this
+  // exists to catch; a count of 2 is a contradiction.
+  it('every case is either swept as a control/generic pair or says why it is not', () => {
+    const classified = Object.fromEntries(
+      CASES.map((testCase) => [
+        testCase.name,
+        [
+          testCase.rows.some((row) => row.pairsWith !== undefined),
+          testCase.unpaired !== undefined,
+        ].filter(Boolean).length,
+      ]),
+    );
+    expect(classified).toEqual(Object.fromEntries(CASES.map((testCase) => [testCase.name, 1])));
+
+    // A `pairsWith` naming a caller no row of the same case declares would sweep
+    // a control that does not exist, which reads as an ordinary count mismatch
+    // rather than as the typo it is.
+    const danglingControls = CASES.flatMap((testCase) =>
+      testCase.rows.flatMap((row) =>
+        row.pairsWith === undefined || testCase.rows.some((other) => other.caller === row.pairsWith)
+          ? []
+          : [`${testCase.name}/${row.caller} -> ${row.pairsWith}`],
+      ),
+    );
+    expect(danglingControls).toEqual([]);
+  });
 
   const pairKey = (pair: { readonly name: string; readonly generic: string }): string =>
     `${pair.name}/${pair.generic}`;

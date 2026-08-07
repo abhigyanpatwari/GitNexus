@@ -346,12 +346,15 @@ interface FoldState {
  */
 function classOfDeclaredType(
   typeRef: TypeRef,
-  scopeId: ScopeId,
   scopes: ScopeResolutionIndexes,
   stripDecoration?: DecorationStripper,
 ): SymbolDefinition | undefined {
+  // `declaredAtScope`, never a scope the caller chose: all five sites passed
+  // exactly this `TypeRef`'s own anchor, and taking it as a parameter is what
+  // would let a sixth quietly not — which is the hole this helper exists to
+  // close, one level up.
   return resolveClassBindingForName(
-    scopeId,
+    typeRef.declaredAtScope,
     erasedTypeApplication(typeRef) ?? typeRef.rawName,
     scopes,
     stripDecoration,
@@ -371,12 +374,7 @@ function typeOfMemberOnClass(
     const classScope = classScopeByDefId.get(ownerId);
     const memberType = classScope?.typeBindings.get(memberName);
     if (memberType !== undefined) {
-      const def = classOfDeclaredType(
-        memberType,
-        memberType.declaredAtScope,
-        scopes,
-        options.stripTypePreservingDecoration,
-      );
+      const def = classOfDeclaredType(memberType, scopes, options.stripTypePreservingDecoration);
       // The declared type is reported even when it resolved to no class:
       // `Promise<User>` and `[]Repo` name nothing in the workspace, and an
       // await or index step unwrapping them is exactly how they become
@@ -403,15 +401,10 @@ function typeOfMemberOnClass(
         if (curScope === undefined) break;
         const hoisted = curScope.typeBindings.get(memberName);
         if (hoisted !== undefined) {
-          const def = classOfDeclaredType(
-            hoisted,
-            hoisted.declaredAtScope,
-            scopes,
-            // Same stripper the primary branch above passes. Omitting it here
-            // meant a decorated declared type (`*Host`) resolved on one branch
-            // and not the other, for the same member of the same class.
-            options.stripTypePreservingDecoration,
-          );
+          // Same stripper the primary branch above passes. Omitting it here
+          // meant a decorated declared type (`*Host`) resolved on one branch and
+          // not the other, for the same member of the same class.
+          const def = classOfDeclaredType(hoisted, scopes, options.stripTypePreservingDecoration);
           // Identical to the primary branch: a declared type that named no
           // class is still a usable position when the next step unwraps it.
           // Returning `undefined` here made `svc.getMap()['k'].run()` decline
@@ -683,12 +676,7 @@ export function resolveCompoundReceiverClass(
         return findClassBindingInScope(rhsTb.declaredAtScope, arg, scopes);
       }
 
-      const viaTb = classOfDeclaredType(
-        tb,
-        tb.declaredAtScope,
-        scopes,
-        options.stripTypePreservingDecoration,
-      );
+      const viaTb = classOfDeclaredType(tb, scopes, options.stripTypePreservingDecoration);
       if (viaTb !== undefined) return viaTb;
 
       // Member-alias / call-result shapes store the RHS path on rawName
@@ -979,7 +967,7 @@ export function resolveCompoundReceiverClass(
   // two had a fixture. See `classOfDeclaredType` for why this cannot change a
   // `TypeRef` that was never reduced.
   let currentClass: SymbolDefinition | undefined = headType
-    ? classOfDeclaredType(headType, headType.declaredAtScope, scopes)
+    ? classOfDeclaredType(headType, scopes)
     : findClassBindingInScope(inScope, headMemberName, scopes);
   // Whether the walk currently sits on the CLASS ITSELF rather than on a
   // value of that class. Seeded true only when the head resolved straight to
@@ -1109,7 +1097,7 @@ export function resolveCompoundReceiverClass(
     // grounds fell through here — a declined fold is documented as "no answer",
     // never a veto — and this walk re-minted `other.py:Mapped` from the
     // workspace index. Same rule, same lookup, so the two routes now agree.
-    let nextClass = classOfDeclaredType(memberType, memberType.declaredAtScope, scopes);
+    let nextClass = classOfDeclaredType(memberType, scopes);
     if (nextClass === undefined) {
       const fromMap = unwrapMapValueToClass(memberType, scopes);
       if (fromMap !== undefined) nextClass = fromMap;

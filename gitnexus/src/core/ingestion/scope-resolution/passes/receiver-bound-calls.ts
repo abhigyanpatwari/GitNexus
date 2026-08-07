@@ -323,7 +323,6 @@ export function emitReceiverBoundCalls(
   // for `classifyReceiverOrigin` is built once here rather than per dropped site.
   const receiverOriginOpts = {
     stripTypePreservingDecoration: provider.stripTypePreservingDecoration,
-    resolveThisViaEnclosingClass: provider.resolveThisViaEnclosingClass,
     isBuiltInName: options.isBuiltInName,
   };
 

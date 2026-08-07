@@ -13,7 +13,7 @@ import type { ParsedFile, Range, SymbolDefinition } from 'gitnexus-shared';
  * type parameter), so a set or a name→constraint map would lose exactly the
  * information this exists to carry.
  */
-export type GoGenericInterfaceDefinition = SymbolDefinition & {
+type GoGenericInterfaceDefinition = SymbolDefinition & {
   readonly goTypeParameters?: readonly string[];
 };
 
@@ -82,10 +82,7 @@ export function readGoTypeParameters(def: SymbolDefinition): readonly string[] |
  * separate question from implementation of an interface, and constraints are
  * never harvested as instantiations — see `interface-impls.ts`).
  */
-export function goTypeParameterNames(
-  declaration: string,
-  interfaceName: string,
-): string[] | undefined {
+function goTypeParameterNames(declaration: string, interfaceName: string): string[] | undefined {
   if (!declaration.startsWith(interfaceName)) return undefined;
   if (declaration[interfaceName.length] !== '[') return undefined;
   const close = matchingGoDelimiter(declaration, interfaceName.length);
