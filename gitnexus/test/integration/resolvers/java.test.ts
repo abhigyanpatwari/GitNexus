@@ -1245,6 +1245,34 @@ describe('Java record method resolution (#2564)', () => {
     const sumCall = calls.find((c) => c.target === 'sum' && c.source === 'scaled');
     expect(sumCall).toBeDefined();
   });
+
+  it('uses the Record node as a caller source and constructor-call target (#2801)', async () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), 'gitnexus-java-record-link-'));
+    try {
+      writeFixtureRepo(root, {
+        'Point.java': `package probe;
+          public record Point(int x) {
+            private static final int SEED = initialize();
+            private static int initialize() { return 1; }
+          }`,
+        'Use.java':
+          'package probe; public class Use { public Point make() { return new Point(1); } }',
+      });
+
+      const linked = await runPipelineFromRepo(root, () => {});
+      const initializerCall = getRelationships(linked, 'CALLS').find(
+        (edge) => edge.source === 'Point' && edge.target === 'initialize',
+      );
+      expect(initializerCall?.sourceLabel).toBe('Record');
+
+      const constructorCall = getRelationships(linked, 'CALLS').find(
+        (edge) => edge.source === 'make' && edge.target === 'Point',
+      );
+      expect(constructorCall?.targetLabel).toBe('Record');
+    } finally {
+      fs.rmSync(root, { recursive: true, force: true });
+    }
+  }, 60000);
 });
 
 // ---------------------------------------------------------------------------
