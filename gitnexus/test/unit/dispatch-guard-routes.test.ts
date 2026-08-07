@@ -176,6 +176,70 @@ describe('dispatch-guard route extraction', () => {
     });
   });
 
+  // BOOLEAN POLARITY. The module refuses to inherit a verb from an `if` whose
+  // `else` branch holds the comparison, because that branch runs precisely when
+  // the condition did NOT hold. `!` is the same fact written as an operator, and
+  // it was not handled — a stated invariant with half an implementation, which
+  // is worse than an absent one because the doc comment reads as covered.
+  //
+  // Every case below was reproduced against the unguarded extractor before the
+  // fix: `!(path)` INVENTED a route, and `!(verb) && path` emitted the one verb
+  // the branch guarantees the request does not have.
+  describe('negated conditions', () => {
+    it('claims nothing when the path comparison is negated', () => {
+      expect(paths(`function h(req) { if (!(pathname === '/api/admin')) { return 1 } }`)).toEqual(
+        [],
+      );
+    });
+
+    it('claims nothing when the whole guard is negated', () => {
+      expect(
+        paths(
+          `function h(req) { if (!(req.method === 'POST' && pathname === '/api/w')) { return 1 } }`,
+        ),
+      ).toEqual([]);
+    });
+
+    it('keeps the path but drops a NEGATED verb rather than inverting it', () => {
+      // The path is still evidence — this branch is reached for `/api/x`. The
+      // verb is not: `!(method === 'GET')` says every method EXCEPT GET, which
+      // no single value can express, so the honest answer is verb-less.
+      expect(
+        extract(
+          `function h(req) { if (!(req.method === 'GET') && pathname === '/api/x') { return 1 } }`,
+        ),
+      ).toMatchObject([{ routePath: '/api/x', httpMethod: '' }]);
+    });
+
+    it('treats double negation as positive', () => {
+      // PARITY, not presence. A rule keyed on "is there a `!` above me" would
+      // refuse this, which is a real route.
+      expect(paths(`function h(req) { if (!!(pathname === '/api/z')) { return 1 } }`)).toEqual([
+        '/api/z',
+      ]);
+    });
+
+    it('does not let an outer negation leak into the branch BODY', () => {
+      // Polarity is a property of the expression, not of the statements a branch
+      // contains: the inner comparison is positive where it is written.
+      expect(
+        paths(`
+          function h(req) {
+            if (!(req.method === 'GET')) {
+              if (pathname === '/api/inner') { return 1 }
+            }
+          }
+        `),
+      ).toEqual(['/api/inner']);
+    });
+
+    it('negates a regex path test too', () => {
+      expect(
+        paths(`function h(req) { if (!/^\\/api\\/runs\\/[^/]+$/.test(pathname)) { return 1 } }`),
+      ).toEqual([]);
+    });
+  });
+
   // Not in any report — the same dispatch written with different syntax. A
   // graph that waits for a bug report per shape stays permanently one idiom
   // behind the code it indexes.

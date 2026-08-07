@@ -252,6 +252,51 @@ function isPathExpression(node: SyntaxNode): boolean {
   return false;
 }
 
+/** A logical `!`. `-` and `~` are unary too and are not negation. */
+function isNegation(node: SyntaxNode): boolean {
+  return node.type === 'unary_expression' && node.childForFieldName('operator')?.text === '!';
+}
+
+/**
+ * Is this comparison reached only when it is FALSE?
+ *
+ * The module already refuses to inherit a verb from an `if` whose `else` branch
+ * holds the comparison, for the reason stated in `governingVerb`: the branch runs
+ * precisely when the condition did NOT hold, so attributing it is backwards.
+ * `!` is the same fact written as an operator, and it was not handled — a stated
+ * invariant with half an implementation, which is worse than an absent one
+ * because the doc comment reads as though it were covered.
+ *
+ * Measured before fixing. `if (!(pathname === '/api/admin'))` INVENTED
+ * `/api/admin`; `if (!(req.method === 'GET') && pathname === '/api/x')` emitted
+ * `GET /api/x`, the one verb the branch guarantees the request does not have.
+ *
+ * PARITY, not presence: `!!x` is `x`, and a rule keyed on "is there a `!` above
+ * me" would refuse a positive condition.
+ *
+ * The walk stops at the FUNCTION boundary and nowhere else. An earlier draft
+ * also broke at `statement_block`, reasoning that `if (!cond) { … }` must not
+ * negate a comparison written in its body — true, but already guaranteed by the
+ * tree shape: the `!` lives in the if's CONDITION, which is a sibling of the
+ * block, never an ancestor of anything inside it. So that break could only ever
+ * fire where a `!` genuinely IS an ancestor across a block, i.e. an IIFE — which
+ * the function-boundary stop catches first. Unreachable, and unreachable in the
+ * UNSAFE direction: stopping early under-counts negations, and an under-count
+ * reads a negated guard as positive and invents the route. Removed rather than
+ * kept for symmetry.
+ */
+function isNegatedContext(node: SyntaxNode): boolean {
+  let negations = 0;
+  let current: SyntaxNode = node;
+  let parent = current.parent;
+  while (parent !== null && !FUNCTION_NODE_TYPES.has(parent.type)) {
+    if (isNegation(parent)) negations += 1;
+    current = parent;
+    parent = current.parent;
+  }
+  return negations % 2 === 1;
+}
+
 /** Strip redundant parentheses, which the grammar keeps as real nodes. */
 function unparenthesize(node: SyntaxNode | null): SyntaxNode | null {
   let current = node;
@@ -346,6 +391,10 @@ function governingVerb(comparison: SyntaxNode): string | null {
 
 /** First verb comparison anywhere in this subtree. */
 function findVerbInSubtree(node: SyntaxNode): string | null {
+  // A verb under a `!` is the verb the branch EXCLUDES. Returning null keeps the
+  // route (the path evidence is unaffected) and leaves it verb-less, which is
+  // the honest answer: this branch does not tell us which method it serves.
+  if (isNegation(node)) return null;
   const direct = verbFromComparison(node);
   if (direct !== null) return direct;
   for (const child of node.namedChildren) {
@@ -487,6 +536,9 @@ export function extractDispatchGuardRoutes(
 }
 
 function collectFromComparison(node: SyntaxNode, out: GuardRoute[], constants: ConstantMap): void {
+  // Reached only when the comparison is FALSE — claiming the path would be
+  // exactly backwards. See `isNegatedContext`.
+  if (isNegatedContext(node)) return;
   const operator = node.childForFieldName('operator')?.text ?? '';
   if (!EQUALITY_OPERATORS.has(operator)) return;
   const left = node.childForFieldName('left');
@@ -553,6 +605,7 @@ function collectFromSwitch(node: SyntaxNode, out: GuardRoute[], constants: Const
 }
 
 function collectFromRegexTest(node: SyntaxNode, out: GuardRoute[]): void {
+  if (isNegatedContext(node)) return;
   const callee = node.childForFieldName('function');
   if (callee === null || callee.type !== 'member_expression') return;
   if (callee.childForFieldName('property')?.text !== 'test') return;
