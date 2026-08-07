@@ -248,45 +248,46 @@ import type { ParseWorkerResult } from '../core/ingestion/workers/parse-worker.j
 // them. Only comparing against origin/main at MERGE time surfaces it.
 // PR #2840 (Objective-C, draft) still claims 44 as well — it must move too.
 // RE-CHECK AGAINST origin/main IMMEDIATELY BEFORE MERGING.
-// 45 -> 46: #2833 makes a generic-typed FIELD usable as a call receiver, and
-// both halves are parse-time.
-//   - C++ (`languages/cpp/query.ts`) gains three `field_declaration` rules whose
-//     `type:` is a `template_type`. The three that existed all required a
-//     `type_identifier`, so `Repo<User> repo;` matched NONE of them and the
-//     member got no type binding at all — new captures where there were none.
+//
+// 46 -> 47: method-level Spring `@RequestMapping` now emits wildcard routes
+// and one route per static `RequestMethod.X` value. These decorator routes live
+// in ParseWorkerResult and are replayed verbatim on warm cache hits, so keeping
+// the previous version would make the fix a no-op for every unchanged Java file.
+// PR #2856 claims 46, so this branch owns 47. Verified against upstream/main at
+// 021ac3037 (still 45). RE-CHECK BEFORE MERGE.
+
+// 47 -> 48: #2833 makes a generic-typed FIELD usable as a call receiver. Three
+// parse-time changes ride on this one value:
+//   - C++ (`languages/cpp/query.ts`) gains `field_declaration` rules whose
+//     `type:` is a `template_type` or a `qualified_identifier` wrapping one.
+//     The rules that existed all required a bare `type_identifier`, so
+//     `Repo<User> repo;` and `std::vector<Item> items;` matched NONE of them and
+//     the member got no type binding at all — new captures where there were none.
 //   - Python (`languages/python/interpret.ts`) reduces a subscripted type its
-//     container allow-lists do not claim to the base name, so `Repo[User]`
-//     binds as `Repo`. That rewrites `TypeRef.rawName`, which is serialized
-//     into the cached ParsedFile.
-// A warm cache would replay the pre-fix bindings and the whole fix would be a
+//     container allow-lists do not claim to its base name, so `Repo[User]` binds
+//     as `Repo`. That rewrites `TypeRef.rawName`, which is serialized into the
+//     cached ParsedFile.
+//   - `SymbolDefinition.typeParameters` — the DECLARED parameter list
+//     (`template <class T>`, `class Box<T extends Repo>`), captured nowhere
+//     before and on a different axis from the existing `templateArguments`. Six
+//     per-language declaration queries gained `@declaration.type-parameters` and
+//     `scope-extractor.ts` reads it onto every class-like def.
+// A warm cache would replay the pre-fix ParsedFiles and the whole fix would be a
 // silent no-op on every incremental analyze while passing every cold-run test —
 // the exact failure this constant exists to prevent.
-// Verified against origin/main at this branch's base: main is on 45, so 46 is
-// free. RE-CHECK AGAINST origin/main IMMEDIATELY BEFORE MERGING — this ledger
-// records three EXACT clashes already, and the pin test cannot catch one
-// (`toBe(46)` passes just as well when main has already taken 46).
-// 46 -> 47: #2833 adds `SymbolDefinition.typeParameters` — the DECLARED
-// type-parameter list (`template <class T>`, `class Box<T extends Repo>`) which
-// was captured nowhere, on a different axis from the existing
-// `templateArguments`. Parse-time in the strictest sense: six per-language
-// declaration queries (typescript, cpp, java, kotlin, csharp, rust) gained a
-// `@declaration.type-parameters` capture, and `scope-extractor.ts` reads it into
-// a new field on every class-like def.
 //
-// 46 was taken by THIS SAME BRANCH (the C++ field_declaration + Python
-// subscript fix above), which is exactly why this needs its own value rather
-// than riding along: anyone who already ran an analyze on this branch has a warm
-// cache stamped 46 whose ParsedFiles carry no `typeParameters` at all. Replaying
-// them would leave the false-edge fix silently inert on every incremental
-// analyze while passing every cold-run test — the failure this constant exists
-// to prevent, arriving from a same-branch predecessor rather than from main.
-//
-// Re-verified against origin/main at 021ac3037 immediately before writing this:
-// main is on 45, so 46 and 47 are both free and 47 is the next value after this
-// branch's own 46. RE-CHECK AGAINST origin/main IMMEDIATELY BEFORE MERGING —
-// this ledger records three EXACT clashes already and the pin test cannot catch
-// one, since `toBe(47)` passes just as well when main has already taken 47.
-const SCHEMA_BUMP = 47;
+// THIS BRANCH COLLIDED TWICE, which is why it lands on 48 rather than 46.
+// It first took 46 (the C++/Python captures) and then 47 (typeParameters), both
+// verified free against origin/main at 021ac3037. By merge time main had moved:
+// #2856 claims 46 and #2857 took 47 and merged first. The eleventh entry in this
+// ledger and the FOURTH and FIFTH exact clashes — and note what caught them.
+// Not the pin test: this branch asserted `toBe(47)` and so did #2857, and both
+// pass, because a literal pin cannot see the other side. Only diffing
+// origin/main at the moment of merge surfaces it. Every value this branch
+// published (46, 47) is superseded by 48, so a warm cache stamped with either is
+// correctly invalidated.
+// RE-CHECK AGAINST origin/main IMMEDIATELY BEFORE MERGING.
+const SCHEMA_BUMP = 48;
 const GITNEXUS_PKG_VERSION = (() => {
   try {
     // package.json sits at gitnexus/package.json — two levels up from
