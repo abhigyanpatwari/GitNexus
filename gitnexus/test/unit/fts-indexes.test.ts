@@ -5,6 +5,19 @@ const { calls } = vi.hoisted(() => ({ calls: [] as string[] }));
 
 vi.mock('../../src/core/lbug/lbug-adapter.js', () => ({
   DEFAULT_FTS_STEMMER: 'porter',
+  // Row accessors and the snapshot resolver are PURE — mirror the real
+  // implementations rather than stubbing them, or `verifySearchFTSIndexes`
+  // and `dropSearchFTSIndexes` read `undefined` out of every catalog row and
+  // the suite passes for the wrong reason. (#2841 cleanup moved these reads
+  // behind named accessors so the LadybugDB column contract has one home; a
+  // whole-module mock has to follow.)
+  indexRowTable: (row: Record<string, unknown> | undefined) => row?.table_name ?? row?.[0],
+  indexRowName: (row: Record<string, unknown> | undefined) => row?.index_name ?? row?.[1],
+  indexRowType: (row: Record<string, unknown> | undefined) => row?.index_type ?? row?.[2],
+  readIndexCatalogRows: vi.fn(async () => undefined),
+  resolveGateRows: vi.fn(async (rows?: unknown) =>
+    rows === undefined ? undefined : (rows as unknown[]),
+  ),
   dropFTSIndex: vi.fn(async (table: string, indexName: string) => {
     calls.push(`drop:${table}.${indexName}`);
   }),
