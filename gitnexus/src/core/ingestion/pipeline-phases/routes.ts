@@ -300,6 +300,37 @@ export const routesPhase: PipelinePhase<RoutesOutput> = {
           confidence: 1.0,
           reason: routeSource,
         });
+
+        // Definition-level HANDLES_ROUTE, emitted alongside the file-level edge
+        // whenever the handler symbol resolved.
+        //
+        // Why both: the file-level edge is what `http-route-extractor.ts` reads
+        // (its query is typed `(handlerFile:File)`), so it stays. But a FILE does
+        // not handle a route — a function does, and without an edge to it the
+        // handler carries no relationship at all beyond `DEFINES`. Every
+        // decorated handler then looks exactly like dead code even though the
+        // framework invokes it, and blast-radius analysis from a route stops at
+        // file granularity.
+        //
+        // This mirrors the sibling decorator overlay: `pipeline-phases/tools.ts`
+        // already anchors HANDLES_TOOL on the definition the decorator sat on,
+        // not on its file. Routes were the outlier.
+        //
+        // `Function|Route` and its siblings are already declared by the
+        // ATTACHMENT rule in `lbug/schema.ts`
+        // (`DEFINITION_ANCHOR_LABELS × ATTACHMENT_TARGET_LABELS`), which that
+        // file documents as deliberate headroom for exactly this case — so no
+        // new pair is needed and `assertDeclaredPair` cannot abort on it.
+        if (handlerSymbolId) {
+          ctx.graph.addRelationship({
+            id: generateId('HANDLES_ROUTE', `${handlerSymbolId}->${routeNodeId}`),
+            sourceId: handlerSymbolId,
+            targetId: routeNodeId,
+            type: 'HANDLES_ROUTE',
+            confidence: 1.0,
+            reason: routeSource,
+          });
+        }
       }
 
       if (isDev) {
