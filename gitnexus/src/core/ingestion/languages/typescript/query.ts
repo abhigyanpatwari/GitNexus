@@ -150,14 +150,22 @@ export const TYPESCRIPT_SCOPE_QUERY = `
   value: (object_type)) @scope.class
 
 ;; Declarations — types
+;; The type-parameter list is captured with \`?\` rather than as a second
+;; pattern: a separate rule would make a GENERIC declaration match twice, and
+;; both matches mint the same def id (filePath+range+type+name), so which one
+;; survived — the one carrying the parameters or the one without — would be
+;; decided by match order. An optional child keeps it at one match either way.
 (class_declaration
-  name: (type_identifier) @declaration.name) @declaration.class
+  name: (type_identifier) @declaration.name
+  type_parameters: (type_parameters)? @declaration.type-parameters) @declaration.class
 
 (abstract_class_declaration
-  name: (type_identifier) @declaration.name) @declaration.class
+  name: (type_identifier) @declaration.name
+  type_parameters: (type_parameters)? @declaration.type-parameters) @declaration.class
 
 (interface_declaration
-  name: (type_identifier) @declaration.name) @declaration.interface
+  name: (type_identifier) @declaration.name
+  type_parameters: (type_parameters)? @declaration.type-parameters) @declaration.interface
 
 (enum_declaration
   name: (identifier) @declaration.name) @declaration.enum
