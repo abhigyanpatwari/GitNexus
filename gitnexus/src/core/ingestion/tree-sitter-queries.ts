@@ -424,43 +424,6 @@ export const TYPESCRIPT_QUERIES = `
     (pair
       key: (property_identifier) @name) @definition.property))
 
-; Keys of an ANONYMOUS object literal in RETURN position (R3-4). The dominant
-; shape in idiomatic JS: 437 sites in one backend directory of the reporting
-; repo, including the ~25-field payload of its whole signal pipeline, none of
-; which could be named because the literal binds to nothing.
-;
-; The enclosing function is the owner -- the literal is that function's return
-; shape, a contract its callers consume -- so the key qualifies as
-; <function>.<key> and two functions returning the same key stay distinct.
-;
-; DEFINITIONS, unlike the record-construction writes of R2-1b, and the
-; difference is deliberate: there a definition already existed elsewhere and a
-; construction site was a USE of it, while here nothing else names the field at
-; all. To keep that from regressing R2-1b's case, narrowing ranks declared
-; anchors ABOVE return shapes, so a name that already resolves keeps resolving
-; to what it resolved to before.
-(return_statement
-  (object
-    (pair
-      key: (property_identifier) @name) @definition.property))
-
-; SHORTHAND keys of the same literal. "return { symbol, interval, score }" is
-; the commonest spelling of all -- the reporting repo's own alert payload is
-; mostly shorthand -- and (pair) does not match it: tree-sitter models it as
-; shorthand_property_identifier, where the key IS the value. Found by dumping
-; the golden fixture and noticing that a literal returning
-; { level, message, timestamp: Date.now() } had indexed only timestamp.
-(return_statement
-  (object
-    (shorthand_property_identifier) @name @definition.property))
-
-; Shorthand keys of a named object literal -- same gap, same reason as the
-; return-position rule above.
-(variable_declarator
-  name: (identifier)
-  value: (object
-    (shorthand_property_identifier) @name @definition.property))
-
 (variable_declarator
   name: (identifier)
   value: (call_expression
@@ -968,43 +931,6 @@ export const JAVASCRIPT_QUERIES = `
   value: (object
     (pair
       key: (property_identifier) @name) @definition.property))
-
-; Keys of an ANONYMOUS object literal in RETURN position (R3-4). The dominant
-; shape in idiomatic JS: 437 sites in one backend directory of the reporting
-; repo, including the ~25-field payload of its whole signal pipeline, none of
-; which could be named because the literal binds to nothing.
-;
-; The enclosing function is the owner -- the literal is that function's return
-; shape, a contract its callers consume -- so the key qualifies as
-; <function>.<key> and two functions returning the same key stay distinct.
-;
-; DEFINITIONS, unlike the record-construction writes of R2-1b, and the
-; difference is deliberate: there a definition already existed elsewhere and a
-; construction site was a USE of it, while here nothing else names the field at
-; all. To keep that from regressing R2-1b's case, narrowing ranks declared
-; anchors ABOVE return shapes, so a name that already resolves keeps resolving
-; to what it resolved to before.
-(return_statement
-  (object
-    (pair
-      key: (property_identifier) @name) @definition.property))
-
-; SHORTHAND keys of the same literal. "return { symbol, interval, score }" is
-; the commonest spelling of all -- the reporting repo's own alert payload is
-; mostly shorthand -- and (pair) does not match it: tree-sitter models it as
-; shorthand_property_identifier, where the key IS the value. Found by dumping
-; the golden fixture and noticing that a literal returning
-; { level, message, timestamp: Date.now() } had indexed only timestamp.
-(return_statement
-  (object
-    (shorthand_property_identifier) @name @definition.property))
-
-; Shorthand keys of a named object literal -- same gap, same reason as the
-; return-position rule above.
-(variable_declarator
-  name: (identifier)
-  value: (object
-    (shorthand_property_identifier) @name @definition.property))
 
 ; Same named shape, behind an IDENTITY-PRESERVING wrapper (R2-1a):
 ;

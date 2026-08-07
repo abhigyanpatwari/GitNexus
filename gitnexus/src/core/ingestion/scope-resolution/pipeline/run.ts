@@ -77,11 +77,9 @@ import {
 } from '../passes/property-dispatch.js';
 import { emitReferencesViaLookup } from '../graph-bridge/references-to-edges.js';
 import {
-  buildPropertyNameIndex,
   emitUniqueNamePropertyAccesses,
   type PropertyNameIndex,
 } from '../passes/unique-name-properties.js';
-import { emitReturnShapeMemberAccesses } from '../passes/return-shape-members.js';
 import { emitImportedValueReferences } from '../passes/imported-value-refs.js';
 import {
   createCalleeIdAccumulator,
@@ -1055,23 +1053,6 @@ export function runScopeResolution(
   // TS-anchor case R3-1 was filed about — the identical defect, mirrored.
   // `reportOnly` counts without emitting: no edge, no inference, no change to
   // what the opt-out protects.
-  // PRECISE first (R3-5). A call result's return shape names WHICH producer a
-  // receiver holds, so it answers exactly the case name inference must refuse:
-  // several functions returning the same field name. Sites it resolves are
-  // added to the skip set, so the fallback below never second-guesses them.
-  const sharedPropertyIndex = input.prebuiltPropertyNameIndex ?? buildPropertyNameIndex(graph);
-  const returnShapeMembers = callableFlowOnly
-    ? { emitted: 0, memberNotOnShape: 0 }
-    : emitReturnShapeMemberAccesses(
-        graph,
-        indexes,
-        emitParsedFiles,
-        postHeritageNodeLookup,
-        uniqueNameSkipSites,
-        sharedPropertyIndex,
-        uniqueNameSkipSites,
-      );
-
   const nameFallbackDisabled = provider.fieldFallbackOnMethodLookup === false;
   const uniqueNameProperties = callableFlowOnly
     ? {
@@ -1089,7 +1070,7 @@ export function runScopeResolution(
         postHeritageNodeLookup,
         uniqueNameSkipSites,
         finalized,
-        sharedPropertyIndex,
+        input.prebuiltPropertyNameIndex,
         nameFallbackDisabled,
       );
 

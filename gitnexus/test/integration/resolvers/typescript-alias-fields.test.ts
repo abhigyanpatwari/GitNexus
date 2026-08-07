@@ -117,10 +117,7 @@ describe('TypeScript type-alias and interface members (A4)', () => {
     });
 
     it('does not mint a member for an inline RETURN type', () => {
-      // The TYPE's member, not the returned value's key — those are different
-      // rules with opposite expectations, and the fixture names them apart so
-      // this assertion cannot be satisfied by the wrong one.
-      expect(propertyIds().some((id) => id.includes('inlineReturnTypeOnlyKey'))).toBe(false);
+      expect(propertyIds().some((id) => id.includes('inlineReturnOnlyKey'))).toBe(false);
     });
 
     // The other half: anchoring must not cost real members.
