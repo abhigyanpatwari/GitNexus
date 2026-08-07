@@ -19,6 +19,8 @@ import {
   runPipelineFromRepo,
   type PipelineResult,
 } from './helpers.js';
+import { emitLuaScopeCaptures } from '../../../src/core/ingestion/languages/lua/index.js';
+import { collectLuaCaptureSideChannel } from '../../../src/core/ingestion/languages/lua/capture-side-channel.js';
 
 function writeFixtureRepo(root: string, files: Record<string, string>): void {
   for (const [rel, content] of Object.entries(files)) {
@@ -131,5 +133,47 @@ return Dog
     const classes = getNodesByLabel(result, 'Class');
     expect(classes).toContain('Dog');
     expect(classes).toContain('Animal');
+  });
+});
+
+// ---------------------------------------------------------------------------
+// heritage lifecycle: re-capture with no middleclass must not retain stale
+// EXTENDS / HAS_METHOD facts from a prior pass (reanalysis regression)
+// ---------------------------------------------------------------------------
+
+describe('Lua scope: heritage lifecycle (no stale facts on reanalysis)', () => {
+  // The capture side channel is a module-level map populated by
+  // `emitLuaScopeCaptures` (worker) and snapshotted by
+  // `collectLuaCaptureSideChannel`. Calling both here in the test process
+  // exercises the same module instance, so a re-capture that produces no
+  // heritage must drop the prior facts — otherwise reanalysis of a file that
+  // lost its middleclass class would emit stale EXTENDS / HAS_METHOD edges.
+  const heritageSrc = `local class = require("lib.class")
+local Animal = class("Animal")
+function Animal:speak() return "..." end
+local Dog = class("Dog", Animal)
+function Dog:bark() return "woof" end
+return Dog
+`;
+  const noHeritageSrc = `local x = 1
+return x
+`;
+
+  it('populates facts on a middleclass capture', () => {
+    emitLuaScopeCaptures(heritageSrc, 'lifecycle.lua');
+    const facts = collectLuaCaptureSideChannel('lifecycle.lua');
+    expect(facts).toBeDefined();
+    expect(facts?.extendsPairs.length).toBeGreaterThan(0);
+    expect(facts?.methodOwners.length).toBeGreaterThan(0);
+  });
+
+  it('clears facts on a subsequent no-heritage capture (no stale state)', () => {
+    // First capture establishes heritage facts for the file.
+    emitLuaScopeCaptures(heritageSrc, 'lifecycle.lua');
+    expect(collectLuaCaptureSideChannel('lifecycle.lua')).toBeDefined();
+    // Re-capture with no middleclass — the prior facts must be dropped, not
+    // retained for collectLuaCaptureSideChannel to snapshot as stale edges.
+    emitLuaScopeCaptures(noHeritageSrc, 'lifecycle.lua');
+    expect(collectLuaCaptureSideChannel('lifecycle.lua')).toBeUndefined();
   });
 });

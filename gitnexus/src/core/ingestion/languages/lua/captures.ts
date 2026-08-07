@@ -23,6 +23,7 @@ import { nodeToCapture } from '../../utils/ast-helpers.js';
 import { getLuaParser, getLuaScopeQuery, getHeritageQuery, getMethodOwnerQuery } from './query.js';
 import {
   setLuaHeritageFacts,
+  clearLuaHeritageFactsForFile,
   type LuaExtendsPair,
   type LuaMethodOwnerPair,
 } from './capture-side-channel.js';
@@ -95,6 +96,11 @@ export function emitLuaScopeCaptures(
   }
   if (extendsPairs.length > 0 || methodOwners.length > 0) {
     setLuaHeritageFacts(filePath, { kind: 'lua', extendsPairs, methodOwners });
+  } else {
+    // Re-capture produced no heritage — drop any prior facts for this file so
+    // reanalysis of a file that lost its middleclass class does not emit stale
+    // EXTENDS / HAS_METHOD edges from the previous pass.
+    clearLuaHeritageFactsForFile(filePath);
   }
 
   return out;

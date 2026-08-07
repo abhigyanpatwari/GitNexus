@@ -7,7 +7,7 @@ name: Build tree-sitter prebuilds
 #
 # Grammars covered here (the at-risk set — everything else already ships 6
 # upstream prebuilds AND stays dependency-review-tracked, so it is left alone).
-# All seven are vendored under gitnexus/vendor/; `kind` (below) only picks where
+# All eight are vendored under gitnexus/vendor/; `kind` (below) only picks where
 # the build job fetches the C source to compile:
 #   - tree-sitter-c      (vendored prebuild-only; built from the published npm
 #                         package — closes upstream's 4/6 ARM gap #2116 for a
@@ -26,7 +26,12 @@ name: Build tree-sitter prebuilds
 #                         off npm optionalDependency so `npm i -g gitnexus`
 #                         no longer warns on peerOptional tree-sitter@^0.22.1.
 #                         Upstream linux-arm64 prebuild is a mispackaged
-#                         x86-64 binary; this workflow rebuilds all seven.)
+#                         x86-64 binary; this workflow rebuilds all eight.)
+#   - tree-sitter-lua    (vendored source; built from gitnexus/vendor/ — the
+#                         upstream npm package ships nan-based bindings
+#                         incompatible with the pinned tree-sitter runtime, and
+#                         source-only for the relevant tuples, so all 6 are
+#                         cross-built here)
 #
 # Output: gitnexus/vendor/<grammar>/prebuilds/<platform-arch>/<grammar>.node for
 # all 6 targets ({linux,darwin,win32}-{x64,arm64}). tree-sitter grammars are
@@ -63,7 +68,7 @@ on:
   workflow_dispatch:
     inputs:
       grammars:
-        description: 'Comma-separated grammar shortnames to build (c,dart,proto,kotlin,objc,swift,zig), or "all".'
+        description: 'Comma-separated grammar shortnames to build (c,dart,proto,kotlin,objc,swift,zig,lua), or "all".'
         required: false
         type: string
         default: 'all'
@@ -95,7 +100,7 @@ on:
       - '!gitnexus/vendor/tree-sitter-*/prebuilds/**'
       # Self-test: re-run the guard if a future grammar pin is reintroduced in
       # the main package.json (optionalDependencies fallback). No-op otherwise —
-      # all seven grammars are now fully vendored (including kotlin, objc, and zig).
+      # all eight grammars are now fully vendored (including kotlin, objc, zig, and lua).
       - 'gitnexus/package.json'
       # Self-test: re-run the guard (normally a no-op) when the recipe changes.
       - '.github/workflows/build-tree-sitter-prebuilds.yml'
@@ -177,6 +182,11 @@ jobs:
             // on peerOptional tree-sitter@^0.22.1. Upstream linux-arm64
             // prebuild is a mispackaged x86-64 binary; rebuild here.
             zig:    { name: 'tree-sitter-zig',    kind: 'vendored' },
+            // lua is vendored WITH its source (parser.c/scanner.c/binding.gyp);
+            // the upstream npm package ships SOURCE ONLY for the relevant
+            // platform tuples, so GitNexus cross-builds all 6 prebuilds here
+            // like dart/proto/swift to keep install toolchain-free everywhere.
+            lua:    { name: 'tree-sitter-lua',    kind: 'vendored' },
           };
           const PLATFORMS = [
             { platform_arch: 'linux-x64',    os: 'ubuntu-24.04' },
@@ -513,6 +523,7 @@ jobs:
               objc:   "@interface GNValidationProbe : NSObject\n@end",
               swift:  "func greet() { print(\"hi\") }",
               zig:    "pub fn main() void {}",
+              lua:    "local x = 1\nreturn x",
             };
             const src = snippets[process.env.GRAMMAR];
             if (!src) throw new Error("no validate snippet for grammar: " + process.env.GRAMMAR);

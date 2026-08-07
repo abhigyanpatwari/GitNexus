@@ -18,6 +18,7 @@ import { buildSuffixIndex, suffixResolve, type SuffixIndex } from '../../import-
 import type { ScopeResolver } from '../../scope-resolution/contract/scope-resolver.js';
 import { luaProvider } from '../lua.js';
 import { emitLuaHeritageEdges } from './heritage.js';
+import { clearLuaHeritageFacts } from './capture-side-channel.js';
 
 // Cache the suffix index across calls within one analyze run — `allFilePaths`
 // is the same ReadonlySet for every Lua import in the run, so keying on its
@@ -31,6 +32,16 @@ const luaScopeResolver: ScopeResolver = {
   language: SupportedLanguages.Lua,
   languageProvider: luaProvider,
   importEdgeReason: 'lua-scope: require',
+
+  // Worker capture facts are process-local and can outlive a single analysis in
+  // server mode. Runs once before each Lua workspace pass, mirroring the
+  // Java/Kotlin `loadResolutionConfig` clear. The per-file delete in
+  // `captures.ts` is the operative fix for the empty-recapture stale path;
+  // this clear-all is the belt-and-suspenders lifecycle hook.
+  loadResolutionConfig: () => {
+    clearLuaHeritageFacts();
+    return undefined;
+  },
 
   // require("a.b.c") → module path a/b/c (+ EXTENSIONS: .lua / /init.lua).
   // targetRaw arrives quote-stripped (interpretLuaImport); Lua's module

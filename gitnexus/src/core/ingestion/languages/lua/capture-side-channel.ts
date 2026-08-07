@@ -48,3 +48,10 @@ export function collectLuaCaptureSideChannel(filePath: string): LuaCaptureSideCh
 export function clearLuaHeritageFacts(): void {
   _facts.clear();
 }
+
+/** Drop this file's facts so a re-capture that produces no heritage (the file
+ *  lost its middleclass class between passes) does not leave stale EXTENDS /
+ *  HAS_METHOD facts for `collectLuaCaptureSideChannel` to snapshot. */
+export function clearLuaHeritageFactsForFile(filePath: string): void {
+  _facts.delete(filePath);
+}
