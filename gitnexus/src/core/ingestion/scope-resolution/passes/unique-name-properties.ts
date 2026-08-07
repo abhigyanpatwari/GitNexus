@@ -263,19 +263,28 @@ function candidatesForLanguage(
  * narrow every read to nothing.
  */
 function buildDirectImportMap(
-  parsedFiles: readonly ParsedFile[],
+  indexes: ScopeResolutionIndexes,
   finalized: FinalizedImportView,
 ): ReadonlyMap<string, ReadonlySet<string>> {
-  const scopeToFile = new Map<string, string>();
-  for (const parsed of parsedFiles) {
-    for (const scope of parsed.scopes) {
-      scopeToFile.set(scope.id, parsed.filePath);
-    }
-  }
-
+  // Resolve each importing scope to its file by POINT LOOKUP on the scope tree,
+  // not by walking `parsed.scopes`.
+  //
+  // The out-of-core seal replaces `emitParsedFiles` with a scope-STRIPPED copy —
+  // `scopes: []` for every file — and that is the documented contract: after the
+  // seal, scopes are reachable only via `scopeTree.getScope`. Building the map
+  // from `parsed.scopes` therefore produced an EMPTY map under
+  // `GITNEXUS_DISK_SCOPE_INDEX=1`, every `directImports` lookup returned
+  // undefined, tier-2 narrowing died, and — worst of it — the loss was
+  // misreported as `ambiguous`: "several candidates, refused to choose" when the
+  // truth was "the evidence was discarded one function earlier". Same commit,
+  // same repo, two different graphs depending on an env var.
+  //
+  // This is the SECOND consumer of `parsed.scopes` on this branch to hit the
+  // seal. The first was hoisted above it; this one is converted to the point
+  // lookup instead, which is stronger — there is no ordering left to get wrong.
   const byFile = new Map<string, Set<string>>();
   for (const [scopeId, edges] of finalized.imports) {
-    const fromFile = scopeToFile.get(scopeId);
+    const fromFile = indexes.scopeTree.getScope(scopeId)?.filePath;
     if (fromFile === undefined) continue;
     for (const edge of edges) {
       if (edge.targetFile === null || edge.targetFile === fromFile) continue;
@@ -392,7 +401,7 @@ export function emitUniqueNamePropertyAccesses(
   const directImports =
     finalized === undefined
       ? new Map<string, ReadonlySet<string>>()
-      : buildDirectImportMap(parsedFiles, finalized);
+      : buildDirectImportMap(indexes, finalized);
 
   let emitted = 0;
   let ambiguous = 0;

@@ -91,6 +91,30 @@ describe('JavaScript module-scope const references (A2)', () => {
       expect([...sealedReaders()].sort()).toEqual([...readersOfConst()].sort());
     });
 
+    // WHOLESALE parity, not one field's readers.
+    //
+    // The two assertions around this one each pin a single name, and that is how
+    // a second instance of the same defect got in: a different consumer of
+    // `parsed.scopes` (`buildDirectImportMap`) was also reading scope-stripped
+    // files under the seal, tier-2 import narrowing died repo-wide, and every
+    // targeted assertion here still passed because none of them covered a
+    // narrowed name. Comparing the whole ACCESSES set is the only shape that
+    // notices a loss nobody thought to name.
+    //
+    // Reported as a sorted diff rather than a bare count so a failure says WHICH
+    // edges moved.
+    it('produces an identical ACCESSES edge set to the unsealed run', () => {
+      const edgeSet = (r: PipelineResult): string[] =>
+        getRelationships(r, 'ACCESSES')
+          .map((e) => `${e.source} -> ${e.target} (${e.rel.reason})`)
+          .sort();
+      const unsealed = edgeSet(result);
+      // Guard the guard: an empty set on both sides would compare equal and
+      // assert nothing.
+      expect(unsealed.length).toBeGreaterThan(0);
+      expect(edgeSet(sealed)).toEqual(unsealed);
+    });
+
     it('still withholds the block-local edge', () => {
       // The filter must fail OPEN when scopes are unavailable, not be disabled:
       // the block-local exclusion is a correctness property, not an optimization.
