@@ -131,9 +131,22 @@ describe('detectLocalCLI', () => {
 
 describe('resolveLLMConfig', () => {
   let tmpDir: string;
+  const envKeys = [
+    'ATLASCLOUD_API_KEY',
+    'GITNEXUS_API_KEY',
+    'OPENAI_API_KEY',
+    'GITNEXUS_LLM_BASE_URL',
+    'GITNEXUS_MODEL',
+  ] as const;
+  let originalEnv: Record<(typeof envKeys)[number], string | undefined>;
 
   beforeEach(async () => {
     vi.resetModules();
+    originalEnv = Object.fromEntries(envKeys.map((key) => [key, process.env[key]])) as Record<
+      (typeof envKeys)[number],
+      string | undefined
+    >;
+    for (const key of envKeys) delete process.env[key];
     tmpDir = await fs.mkdtemp(path.join(os.tmpdir(), 'wiki-test-config-'));
     // Create empty config so loadCLIConfig returns {}
     const configDir = path.join(tmpDir, '.gitnexus');
@@ -143,6 +156,11 @@ describe('resolveLLMConfig', () => {
 
   afterEach(async () => {
     vi.restoreAllMocks();
+    for (const key of envKeys) {
+      const value = originalEnv[key];
+      if (value === undefined) delete process.env[key];
+      else process.env[key] = value;
+    }
     await fs.rm(tmpDir, { recursive: true, force: true });
   });
 
@@ -248,6 +266,27 @@ describe('resolveLLMConfig', () => {
     expect(config.provider).toBe('openai');
     expect(config.model).toBe('minimax/minimax-m2.5');
     expect(config.baseUrl).toBe('https://openrouter.ai/api/v1');
+  });
+
+  it('uses Atlas Cloud defaults and its provider-specific API key', async () => {
+    process.env.ATLASCLOUD_API_KEY = 'atlas-key';
+    process.env.OPENAI_API_KEY = 'openai-key';
+    vi.doMock('../../src/storage/repo-manager.js', () => ({
+      loadCLIConfig: vi.fn().mockResolvedValue({
+        provider: 'openai',
+        apiKey: 'saved-openai-key',
+        baseUrl: 'https://api.openai.com/v1',
+        model: 'gpt-4o-mini',
+      }),
+    }));
+
+    const { resolveLLMConfig } = await import('../../src/core/wiki/llm-client.js');
+    const config = await resolveLLMConfig({ provider: 'atlascloud' });
+
+    expect(config.provider).toBe('atlascloud');
+    expect(config.apiKey).toBe('atlas-key');
+    expect(config.baseUrl).toBe('https://api.atlascloud.ai/v1');
+    expect(config.model).toBe('deepseek-ai/deepseek-v4-pro');
   });
 
   it('CLI overrides take priority over saved config', async () => {
@@ -579,6 +618,7 @@ describe('wikiCommand --timeout mapping', () => {
 
   async function loadWikiCommandHarness() {
     let capturedConfig: Record<string, unknown> | undefined;
+    const saveCLIConfig = vi.fn();
     const resolveLLMConfig = vi.fn().mockImplementation((overrides = {}) =>
       Promise.resolve({
         apiKey: 'sk-test',
@@ -614,7 +654,7 @@ describe('wikiCommand --timeout mapping', () => {
         model: 'gpt-4o',
         provider: 'openai',
       }),
-      saveCLIConfig: vi.fn(),
+      saveCLIConfig,
     }));
     vi.doMock('../../src/core/wiki/llm-client.js', async (importOriginal) => {
       const actual = await importOriginal<typeof import('../../src/core/wiki/llm-client.js')>();
@@ -647,8 +687,30 @@ describe('wikiCommand --timeout mapping', () => {
       consoleSpy,
       getCapturedConfig: () => capturedConfig,
       resolveLLMConfig,
+      saveCLIConfig,
     };
   }
+
+  it('switches to Atlas Cloud without overwriting a saved key from another provider', async () => {
+    const originalAtlasKey = process.env.ATLASCLOUD_API_KEY;
+    delete process.env.ATLASCLOUD_API_KEY;
+    const harness = await loadWikiCommandHarness();
+
+    try {
+      await harness.wikiCommand('/tmp/repo', { provider: 'atlascloud' });
+
+      expect(harness.saveCLIConfig).toHaveBeenCalledWith({
+        apiKey: 'sk-test',
+        baseUrl: 'https://api.atlascloud.ai/v1',
+        model: 'deepseek-ai/deepseek-v4-pro',
+        provider: 'atlascloud',
+      });
+      expect(harness.getCapturedConfig()?.apiKey).toBe('');
+    } finally {
+      if (originalAtlasKey === undefined) delete process.env.ATLASCLOUD_API_KEY;
+      else process.env.ATLASCLOUD_API_KEY = originalAtlasKey;
+    }
+  });
 
   it('maps --timeout seconds to requestTimeoutMs before constructing WikiGenerator', async () => {
     const harness = await loadWikiCommandHarness();

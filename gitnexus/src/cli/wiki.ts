@@ -18,6 +18,9 @@ import {
 } from '../storage/repo-manager.js';
 import { WikiGenerator, type WikiOptions } from '../core/wiki/generator.js';
 import {
+  ATLAS_CLOUD_BASE_URL,
+  ATLAS_CLOUD_DEFAULT_MODEL,
+  getProviderEnvApiKey,
   parseLLMAllowedInsecureHttpHosts,
   resolveLLMConfig,
   type LLMProvider,
@@ -206,6 +209,7 @@ const wikiCommandImpl = async (inputPath?: string, options?: WikiCommandOptions)
 
   // ── Resolve LLM config (with interactive fallback) ─────────────────
   // Save any CLI overrides immediately
+  let switchedToAtlasCloud = false;
   if (
     options?.apiKey ||
     options?.model ||
@@ -219,6 +223,11 @@ const wikiCommandImpl = async (inputPath?: string, options?: WikiCommandOptions)
     if (options.apiKey) updates.apiKey = options.apiKey;
     if (options.baseUrl) updates.baseUrl = options.baseUrl;
     if (options.provider) updates.provider = options.provider;
+    if (options.provider === 'atlascloud' && existing.provider !== 'atlascloud') {
+      switchedToAtlasCloud = true;
+      if (!options.baseUrl) updates.baseUrl = ATLAS_CLOUD_BASE_URL;
+      if (!options.model) updates.model = ATLAS_CLOUD_DEFAULT_MODEL;
+    }
     if (options.apiVersion) updates.apiVersion = options.apiVersion;
     if (options.reasoningModel !== undefined) updates.isReasoningModel = options.reasoningModel;
     // Save model to appropriate field based on provider.
@@ -257,6 +266,10 @@ const wikiCommandImpl = async (inputPath?: string, options?: WikiCommandOptions)
     isReasoningModel: options?.reasoningModel,
     allowedInsecureHttpHosts,
   });
+  if (switchedToAtlasCloud && !options?.apiKey && !getProviderEnvApiKey('atlascloud')) {
+    // Do not send a key saved for a different provider to Atlas Cloud.
+    llmConfig.apiKey = '';
+  }
 
   // Run interactive setup if no saved config and no CLI flags provided
   // (even if env vars exist — let user explicitly choose their provider)
@@ -265,7 +278,9 @@ const wikiCommandImpl = async (inputPath?: string, options?: WikiCommandOptions)
       // Non-interactive mode — need either API key or Cursor CLI
       if (!llmConfig.apiKey && !isLocalProvider(llmConfig.provider)) {
         console.log('  Error: No LLM API key found.');
-        console.log('  Set OPENAI_API_KEY or GITNEXUS_API_KEY environment variable,');
+        console.log(
+          '  Set ATLASCLOUD_API_KEY, OPENAI_API_KEY, or GITNEXUS_API_KEY environment variable,',
+        );
         console.log('  or pass --api-key <key>, or use --provider cursor|claude|codex|opencode.\n');
         process.exitCode = 1;
         return;
@@ -274,7 +289,7 @@ const wikiCommandImpl = async (inputPath?: string, options?: WikiCommandOptions)
     } else {
       console.log("  No LLM configured. Let's set it up.\n");
       console.log(
-        '  Supports OpenAI, OpenRouter, Azure, any OpenAI-compatible API, Cursor CLI, Claude CLI, Codex CLI, or OpenCode CLI.\n',
+        '  Supports OpenAI, OpenRouter, Atlas Cloud, Azure, any OpenAI-compatible API, Cursor CLI, Claude CLI, Codex CLI, or OpenCode CLI.\n',
       );
 
       // Check if local agent CLIs are available.
@@ -291,8 +306,9 @@ const wikiCommandImpl = async (inputPath?: string, options?: WikiCommandOptions)
       console.log('  [1] OpenAI (api.openai.com)');
       console.log('  [2] OpenRouter (openrouter.ai)');
       console.log('  [3] Azure OpenAI');
-      console.log('  [4] Custom endpoint');
-      let nextChoice = 5;
+      console.log('  [4] Atlas Cloud (api.atlascloud.ai)');
+      console.log('  [5] Custom endpoint');
+      let nextChoice = 6;
       if (hasCursor) {
         const choice = String(nextChoice++);
         localChoices.push({
@@ -413,12 +429,16 @@ const wikiCommandImpl = async (inputPath?: string, options?: WikiCommandOptions)
           provider: 'azure',
         };
       } else {
-        // OpenAI-compatible provider (OpenAI, OpenRouter, Custom)
+        // OpenAI-compatible provider (OpenAI, OpenRouter, Atlas Cloud, Custom)
         if (choice === '2') {
           baseUrl = 'https://openrouter.ai/api/v1';
           defaultModel = 'minimax/minimax-m2.5';
           provider = 'openrouter';
         } else if (choice === '4') {
+          baseUrl = ATLAS_CLOUD_BASE_URL;
+          defaultModel = ATLAS_CLOUD_DEFAULT_MODEL;
+          provider = 'atlascloud';
+        } else if (choice === '5') {
           baseUrl = await prompt('  Base URL (e.g. http://localhost:11434/v1): ');
           if (!baseUrl) {
             console.log('\n  No URL provided. Aborting.\n');
@@ -438,7 +458,7 @@ const wikiCommandImpl = async (inputPath?: string, options?: WikiCommandOptions)
         const model = modelInput || defaultModel;
 
         // API key — pre-fill hint if env var exists
-        const envKey = process.env.GITNEXUS_API_KEY || process.env.OPENAI_API_KEY || '';
+        const envKey = getProviderEnvApiKey(provider);
         if (envKey) {
           const masked = envKey.slice(0, 6) + '...' + envKey.slice(-4);
           const useEnv = await prompt(`  Use existing env key (${masked})? (Y/n): `);

@@ -303,7 +303,7 @@ program
   .option('-f, --force', 'Force full regeneration even if up to date')
   .option(
     '--provider <provider>',
-    'LLM provider: openai, openrouter, azure, custom, cursor, claude, codex, or opencode (default: openai)',
+    'LLM provider: openai, openrouter, atlascloud, azure, custom, cursor, claude, codex, or opencode (default: openai)',
   )
   .option('--model <model>', 'LLM model or Azure deployment name (default: minimax/minimax-m2.5)')
   .option(

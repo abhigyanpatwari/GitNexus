@@ -4,7 +4,7 @@ import { CircuitOpenError, ResilientFetchExhaustedError, resilientFetch } from '
  * LLM Client for Wiki Generation
  *
  * OpenAI-compatible API client using native fetch.
- * Supports OpenAI, Azure, LiteLLM, Ollama, and any OpenAI-compatible endpoint.
+ * Supports OpenAI, Atlas Cloud, Azure, LiteLLM, Ollama, and any OpenAI-compatible endpoint.
  *
  * Config priority: CLI flags > env vars > defaults
  */
@@ -12,12 +12,16 @@ import { CircuitOpenError, ResilientFetchExhaustedError, resilientFetch } from '
 export type LLMProvider =
   | 'openai'
   | 'openrouter'
+  | 'atlascloud'
   | 'azure'
   | 'custom'
   | 'cursor'
   | 'claude'
   | 'codex'
   | 'opencode';
+
+export const ATLAS_CLOUD_BASE_URL = 'https://api.atlascloud.ai/v1';
+export const ATLAS_CLOUD_DEFAULT_MODEL = 'deepseek-ai/deepseek-v4-pro';
 
 export interface LLMConfig {
   apiKey: string;
@@ -45,6 +49,13 @@ export interface LLMResponse {
   completionTokens?: number;
 }
 
+export function getProviderEnvApiKey(provider: LLMProvider | undefined): string {
+  if (provider === 'atlascloud') {
+    return process.env.ATLASCLOUD_API_KEY || process.env.GITNEXUS_API_KEY || '';
+  }
+  return process.env.GITNEXUS_API_KEY || process.env.OPENAI_API_KEY || '';
+}
+
 /**
  * Resolve LLM configuration from env vars, saved config, and optional overrides.
  * Priority: overrides (CLI flags) > env vars > ~/.gitnexus/config.json > error
@@ -55,6 +66,8 @@ export async function resolveLLMConfig(overrides?: Partial<LLMConfig>): Promise<
   const { loadCLIConfig } = await import('../../storage/repo-manager.js');
   const savedConfig = await loadCLIConfig();
   const savedProvider = overrides?.provider ?? savedConfig.provider;
+  const providerChanged =
+    overrides?.provider !== undefined && overrides.provider !== savedConfig.provider;
   const savedLocalModel =
     savedProvider === 'cursor'
       ? savedConfig.cursorModel
@@ -73,23 +86,26 @@ export async function resolveLLMConfig(overrides?: Partial<LLMConfig>): Promise<
 
   const apiKey =
     overrides?.apiKey ||
-    process.env.GITNEXUS_API_KEY ||
-    process.env.OPENAI_API_KEY ||
-    savedConfig.apiKey ||
+    getProviderEnvApiKey(savedProvider) ||
+    (providerChanged ? undefined : savedConfig.apiKey) ||
     '';
+  const defaultBaseUrl =
+    savedProvider === 'atlascloud' ? ATLAS_CLOUD_BASE_URL : 'https://openrouter.ai/api/v1';
+  const defaultModel =
+    savedProvider === 'atlascloud' ? ATLAS_CLOUD_DEFAULT_MODEL : 'minimax/minimax-m2.5';
 
   return {
     apiKey,
     baseUrl:
       overrides?.baseUrl ||
       process.env.GITNEXUS_LLM_BASE_URL ||
-      savedConfig.baseUrl ||
-      'https://openrouter.ai/api/v1',
+      (providerChanged ? undefined : savedConfig.baseUrl) ||
+      defaultBaseUrl,
     model:
       overrides?.model ||
       (localProvider ? undefined : process.env.GITNEXUS_MODEL) ||
       savedLocalModel ||
-      (localProvider ? '' : savedConfig.model || 'minimax/minimax-m2.5'),
+      (localProvider ? '' : (providerChanged ? undefined : savedConfig.model) || defaultModel),
     maxTokens: overrides?.maxTokens ?? 16_384,
     temperature: overrides?.temperature ?? 0,
     provider: savedProvider ?? 'openai',
