@@ -300,6 +300,10 @@ import type { ParseWorkerResult } from '../core/ingestion/workers/parse-worker.j
 // is a different capture set wearing the same number — which is exactly what
 // the note above records for 33/34.
 // RE-CHECK AGAINST origin/main IMMEDIATELY BEFORE MERGING.
+// 49 -> 50 is NOT needed for R3-5: that pass is scope-resolution, not
+// parse-time capture, so a warm cache replays ParsedFiles that already carry
+// everything it reads. Recorded because the reflex on this branch has been to
+// bump, and a bump nobody needs still forces every user a full re-parse.
 const SCHEMA_BUMP = 49;
 const GITNEXUS_PKG_VERSION = (() => {
   try {

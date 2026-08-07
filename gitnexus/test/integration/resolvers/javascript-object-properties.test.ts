@@ -235,6 +235,51 @@ describe('JavaScript plain-object property access (A1/A5)', () => {
     });
   });
 
+  // R3-5. The question three rounds of reports could not answer: a field
+  // produced by SEVERAL functions. Name inference must refuse it — the name
+  // alone cannot say which shape is meant — so this replaces inference with
+  // evidence, joining the call-result type binding (which already existed) to
+  // the return-shape owner (which R3-4 created).
+  describe('return-shape members via the call result (R3-5)', () => {
+    const targetOf = (source: string): string[] =>
+      getRelationships(result, 'ACCESSES')
+        .filter((e) => e.target === 'ambiguousProducedField' && e.source === source)
+        .map((e) => String((e.rel as { targetId?: string }).targetId ?? ''));
+
+    it('resolves to the producer the receiver actually holds', () => {
+      expect(targetOf('readsAlpha').some((id) => id.includes('producerAlpha.'))).toBe(true);
+      expect(targetOf('readsBeta').some((id) => id.includes('producerBeta.'))).toBe(true);
+    });
+
+    // The discriminator. Both producers own a field of this name, so a name
+    // match cannot tell them apart — getting the RIGHT one is only possible
+    // because the receiver's binding names the producer.
+    it('does not cross the two producers', () => {
+      expect(targetOf('readsAlpha').some((id) => id.includes('producerBeta.'))).toBe(false);
+      expect(targetOf('readsBeta').some((id) => id.includes('producerAlpha.'))).toBe(false);
+    });
+
+    it('marks the edge as precise, not as name inference', () => {
+      const reasons = getRelationships(result, 'ACCESSES')
+        .filter((e) => e.target === 'ambiguousProducedField')
+        .map((e) => String(e.rel.reason ?? ''));
+      expect(reasons.every((r) => r.includes('return-shape member'))).toBe(true);
+      for (const e of getRelationships(result, 'ACCESSES').filter(
+        (x) => x.target === 'ambiguousProducedField',
+      )) {
+        expect(e.rel.confidence).toBeGreaterThan(0.85);
+      }
+    });
+
+    // THE BOUND, asserted so the mechanism is not mistaken for something it is
+    // not. A bare parameter has no binding here — typing it needs the CALLER's
+    // type to flow in, which is inter-procedural — so it falls through to name
+    // inference, which refuses because two producers share the name.
+    it('leaves an unbound receiver to name inference, which refuses it', () => {
+      expect(targetOf('readsUnbound')).toEqual([]);
+    });
+  });
+
   // R2. Strict workspace uniqueness was measurably too blunt: in the reporting
   // repo `exitMinAtrMult` had 26 definitions, 16 of them in one-off scripts the
   // backend has no relationship with, so every backend read was refused because
