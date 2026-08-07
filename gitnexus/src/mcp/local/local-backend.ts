@@ -297,29 +297,18 @@ function normalizeToolParams(
 
 /**
  * Quick test-file detection for filtering impact results.
- * Matches common test file patterns across all supported languages.
+ *
+ * Re-exported from the shared predicate in
+ * `core/ingestion/utils/test-file-path.ts`, which is deliberately
+ * dependency-free: importing `entry-point-scoring.ts` (the other former home of
+ * this logic) would pull the language-provider registry back into MCP startup,
+ * the closure #2802 removed.
+ *
+ * The two copies had drifted — this one recognized no C#, Java or Swift test
+ * convention, so `includeTests: false` silently failed to filter them.
  */
-export function isTestFilePath(filePath: string | null | undefined): boolean {
-  if (!filePath) return false;
-  const p = filePath.toLowerCase().replace(/\\/g, '/');
-  return (
-    p.includes('.test.') ||
-    p.includes('.spec.') ||
-    p.includes('__tests__/') ||
-    p.includes('__mocks__/') ||
-    p.includes('/test/') ||
-    p.includes('/tests/') ||
-    p.includes('/testing/') ||
-    p.includes('/fixtures/') ||
-    p.endsWith('_test.go') ||
-    p.endsWith('_test.py') ||
-    p.endsWith('_spec.rb') ||
-    p.endsWith('_test.rb') ||
-    p.includes('/spec/') ||
-    p.includes('/test_') ||
-    p.includes('/conftest.')
-  );
-}
+import { isTestFilePath } from '../../core/ingestion/utils/test-file-path.js';
+export { isTestFilePath };
 
 /** Valid LadybugDB node labels for safe Cypher query construction */
 export const VALID_NODE_LABELS = new Set([
