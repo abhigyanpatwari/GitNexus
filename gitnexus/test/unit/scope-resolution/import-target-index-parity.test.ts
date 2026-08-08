@@ -25,18 +25,21 @@
  * move with it.
  *
  * The second half asserts the index is built once per file set rather than once
- * per import, by counting how often the Set is iterated. That is the regression
- * guard for PR #1918 review finding P1: an adapter that copies the Set
- * (`new Set(allFilePaths)`) hands a fresh `WeakMap` key per call and silently
- * restores the O(imports × files) behaviour while every correctness test still
- * passes. Kotlin (#2872) is covered there too — its own guard counts index
- * BUILDS, which a scan added beside a reused index does not move.
+ * per import, by counting how often the Set is iterated. It is the DETERMINISTIC
+ * guard against a scan reintroduced beside a reused index, which the benchmark
+ * provably cannot see: a full workspace scan on 1-in-32 imports scores 1.458
+ * against a 1.8 scaling budget and 1.736 ms against a 4 ms ceiling — it passes
+ * everything — while this counter reads 14 instead of 1. Timing gates catch the
+ * constant factor; this catches the scan. Kotlin (#2872) is covered there too,
+ * because its own guard counts index BUILDS and a scan beside a reused index
+ * moves no build count.
  *
- * That arm is also the only DETERMINISTIC guard against a reintroduced scan.
- * The benchmark's timing arms have a measured blind spot: a full workspace scan
- * on 1-in-32 imports scores 1.458 against a 1.8 scaling budget and 1.736 ms
- * against a 4 ms ceiling — it passes everything — while this counter reads 14
- * instead of 1. Timing gates catch the constant factor; this catches the scan.
+ * It is NOT the guard for PR #1918 review finding P1. That failure — a
+ * defensive `new Set(allFilePaths)` in the orchestrator ADAPTER, handing a fresh
+ * `WeakMap` key per call — lives one layer above everything in this file, which
+ * calls the resolver functions directly. Inserting that copy into
+ * `<lang>/scope-resolver.ts` leaves every arm here green. The adapter is guarded
+ * by `test/integration/{go,csharp,dart,ruby,kotlin,python}-import-index-reuse.test.ts`.
  */
 import { describe, expect, it } from 'vitest';
 import type { ParsedImport, WorkspaceIndex } from 'gitnexus-shared';
@@ -54,6 +57,7 @@ import { buildSuffixIndex } from '../../../src/core/ingestion/import-resolvers/u
 import { isHeritageMarker } from '../../../src/core/ingestion/utils/heritage-marker.js';
 import { csharpSuffixFallbackAllowed } from '../../../src/core/ingestion/csharp-namespace-gate.js';
 import { DART_HERITAGE_PREFIX } from '../../../src/core/ingestion/languages/dart/interpret.js';
+import { CountingSet } from '../../helpers/counting-file-set.js';
 
 // ─── verbatim pre-change implementations ─────────────────────────────────────
 
@@ -390,6 +394,13 @@ const RUBY_TARGETS = [
   './index',
   'lib/src/client',
   'Models',
+  // Addresses the corpus's `win\dir\thing.rb`. Without a target that reaches
+  // it, deleting the `raw.replace(/\\/g, '/')` normalization in
+  // `workspace-file-index.ts` moves no assertion here: the backslash file is in
+  // every corpus but nothing asked for it. Spelled with forward slashes because
+  // that is how a `require` is written; the normalization is what bridges the
+  // two spellings.
+  'win/dir/thing',
 ];
 
 const CSHARP_TARGETS = [
@@ -404,6 +415,12 @@ const CSHARP_TARGETS = [
   'X.Internal.Models',
   'Lib.Src',
   'Pkg.Pkg',
+  // The C# twin of the Ruby entry above: addresses the corpus's
+  // `win\dir\thing.cs` so the deletion of `workspace-file-index.ts`'s
+  // normalization has something to break. Lowercase because the corpus spells
+  // the file that way and the C# direct/suffix lookups are case-SENSITIVE
+  // (`getInsensitive` is only reached from the csproj leg).
+  'win.dir.thing',
 ];
 
 const DART_FROM_FILES = ['lib/main.dart', 'lib/src/main.dart', '/repo/pkg/main.dart', 'main.dart'];
@@ -522,6 +539,18 @@ describe('import-target index hoist — output parity with the pre-change scans'
       target: 'CrossFile.Models',
     },
     {
+      // `normToRaw` keeps the FIRST raw path per normalized key
+      // (`workspace-file-index.ts`), mirroring the `for (const raw of
+      // allFilePaths)` scan it replaced. No GENERATED corpus file set contains
+      // a normalization twin, so flipping that to last-wins moved nothing —
+      // the rule lived in a comment. Two spellings of one path, and only the
+      // first-wins reading returns the backslash one.
+      lang: 'csharp',
+      why: 'normToRaw keeps the FIRST raw path that normalizes to a key, not the last',
+      files: ['App\\Models.cs', 'App/Models.cs'],
+      target: 'App.Models',
+    },
+    {
       lang: 'go',
       why: 'root package leg is SORTED',
       files: ['b.go', 'a.go', 'c_test.go'],
@@ -545,7 +574,15 @@ describe('import-target index hoist — output parity with the pre-change scans'
       lang: 'go',
       why: 'a package dir nested inside itself does not answer the query',
       files: ['a/pkg/b/pkg/x.go'],
-      target: 'a/pkg',
+      // Addressed through the MODULE leg as the single segment `pkg`, not as
+      // `a/pkg`. `a/pkg` never reached the first-occurrence branch this case is
+      // named for: `'/a/pkg/b/pkg/'.endsWith('/a/pkg/')` is already false, so
+      // the naive `endsWith` rewrite agreed with the real predicate and the
+      // case passed either way. With `pkg`, `endsWith('/pkg/')` is TRUE and only
+      // the "…and that occurrence is the FIRST" half rejects it. The module leg
+      // is required because the GOPATH cascade skips single-segment targets.
+      target: 'example.com/mod/pkg',
+      modulePath: 'example.com/mod',
     },
     {
       lang: 'go',
@@ -570,6 +607,17 @@ describe('import-target index hoist — output parity with the pre-change scans'
       why: 'paths are matched RAW — a backslash path is not normalized into a hit',
       files: ['win\\dir\\thing.dart'],
       target: 'package:app/dir/thing.dart',
+    },
+    {
+      // The negative case above pins the guard NEXT DOOR to the one it names:
+      // the basename bucket lookup misses before the raw comparison is ever
+      // consulted, so normalizing only the bucket key, or only the comparison,
+      // still yields null and still matches. This positive twin puts the
+      // backslashes in the TARGET so a hit depends on both halves staying raw.
+      lang: 'dart',
+      why: 'a backslash TARGET matches only because neither the bucket key nor the comparison normalizes',
+      files: ['dir\\thing.dart'],
+      target: 'package:app/dir\\thing.dart',
     },
     {
       lang: 'dart',
@@ -667,30 +715,41 @@ describe('import-target index hoist — output parity with the pre-change scans'
         if (csharp(t, cs) !== null) hits.csharp++;
       }
     }
-    // Measured on this corpus: go 364, dart 75, ruby 219, csharp 156.
+    // Measured on this corpus: go 364, dart 75, ruby 259, csharp 196. Ruby and
+    // C# gained 40 each from the `win\dir\thing.<ext>` targets — one per repo,
+    // which is also the floor those two arms now defend.
     expect(hits.go).toBeGreaterThan(300);
     expect(hits.dart).toBeGreaterThan(60);
-    expect(hits.ruby).toBeGreaterThan(180);
-    expect(hits.csharp).toBeGreaterThan(120);
+    expect(hits.ruby).toBeGreaterThan(220);
+    expect(hits.csharp).toBeGreaterThan(160);
   });
 });
 
 // ─── index reuse ─────────────────────────────────────────────────────────────
 
 /**
- * A `Set` that counts full iterations of itself. Every index build in these
- * resolvers walks the set exactly once (`for…of` / spread); the per-import
- * lookups afterwards only do `Map.get` and `Set.has`. So the scan count IS the
- * number of index builds, measured without instrumenting production code.
+ * `CountingSet` (`test/helpers/counting-file-set.ts`) counts full traversals of
+ * the file set by every entry point — `for…of`, spread, `forEach`, `values`,
+ * `keys`, `entries`. Each index build in these resolvers walks the set exactly
+ * once, so on a stable set the scan count is the number of index builds PLUS
+ * any scan reintroduced beside a reused index, which is the mutation the
+ * benchmark cannot see.
+ *
+ * The number is not a complete scan census, and the docstring here used to
+ * claim it was. It watches the SET; the resolvers hold materialized arrays of
+ * the same file list (`WorkspaceFileIndex.normalized` / `.all`, Dart's basename
+ * buckets, `PackageDirIndex.filesByDir`), and a scan over one of those arrays
+ * moves nothing here. Closing that would mean instrumenting production or
+ * proxying an index internal for a test; neither is in place, so treat these
+ * arms as covering set-level scans only.
+ *
+ * These arms drive the resolver FUNCTIONS directly, which is one layer below
+ * the `new Set(allFilePaths)` hazard they are sometimes cited for: production
+ * reaches the resolvers through `<lang>ScopeResolver.resolveImportTarget`, and
+ * a defensive copy inserted in that adapter leaves every arm below green. The
+ * adapter-level guards are
+ * `test/integration/{go,csharp,dart,ruby,kotlin,python}-import-index-reuse.test.ts`.
  */
-class CountingSet extends Set<string> {
-  scans = 0;
-  override [Symbol.iterator](): SetIterator<string> {
-    this.scans++;
-    return super[Symbol.iterator]();
-  }
-}
-
 function countingCorpus(seed: number, extension: string): CountingSet {
   return new CountingSet(corpus(seed, extension, 200));
 }
