@@ -187,6 +187,37 @@ export function isClassLike(t: string): boolean {
 }
 
 /**
+ * Does this label declare MEMBERS addressable by name?
+ *
+ * `isClassLike` answers two questions that only coincide for classes:
+ *   1. does this declare members I can look up?  — a SHAPE (structural)
+ *   2. does this participate in inheritance / MRO? — a NOMINAL TYPE
+ *
+ * A TypeScript object-type alias answers YES to (1) and emphatically NO to
+ * (2): it declares the same `property_signature` members as the interface
+ * beside it, but has no supertypes and no place in a linearization. Answering
+ * (2) "yes" merely to buy (1) is what widening `isClassLike` would do, and it
+ * would enrol every language's aliases (Rust `type_item`, Kotlin/Swift/Dart
+ * typealias, C `typedef`) into MRO and heritage.
+ *
+ * So the two questions get two predicates. Use THIS one where the question is
+ * "find the shape so I can look up a member"; keep `isClassLike` where the
+ * question is inheritance. The call sites announce which they are:
+ * `resolveInheritanceBaseInScope` and `resolveQualifiedInheritanceBase` are
+ * (2); receiver typing is (1).
+ *
+ * NOT YET INCLUDED, deliberately: `Typedef` and `Union`. They belong here
+ * conceptually — the `union_item` note on `MEMBER_OWNER_NODE_TYPES` records
+ * the same gap, that a union owns fields captured as `Property` yet is not a
+ * recognized owner — but neither is wired as a member container today, so
+ * adding them would widen a predicate nothing exercises. They join when their
+ * containers do, with fixtures.
+ */
+export function isShapeLike(t: string): boolean {
+  return isClassLike(t) || t === 'TypeAlias';
+}
+
+/**
  * Walk the scope chain from `startScope` looking for a typeBinding
  * named `receiverName`. Returns the TypeRef or undefined if no binding
  * exists in the chain.
@@ -968,6 +999,19 @@ export function resolveClassBindingForName(
   const direct = findClassBindingInScope(scopeId, rawClassName, scopes, stripDecoration);
   if (direct !== undefined) return direct;
 
+  // NO object-type-ALIAS fallback here, and that is a decision rather than an
+  // omission. This function carried one before #2833 moved it out of
+  // `passes/receiver-bound-calls.ts`; the move dropped it, and re-applying it at
+  // merge time turned out to be wrong twice over. It is unexercised — deleting
+  // it fails no test, because alias MEMBERS resolve through the precise path
+  // instead (`type_alias_declaration value: (object_type)` emits `@scope.class`,
+  // so a typed receiver reaches the shape's own scope). And re-adding it
+  // unconditionally walked straight past the type-parameter refusal #2833 had
+  // just introduced, re-opening through an alias the exact false edge that
+  // change closed — their `neg-type-parameter` fixture caught it.
+  //
+  // If a future case genuinely needs it, it must be gated on
+  // `bindsTypeParameter` and land with a test that fails without it.
   if (!rawClassName.includes('<')) return undefined;
   const baseName = stripTemplateArguments(rawClassName).replace(/\s+/g, '');
   if (baseName.length === 0) return undefined;
@@ -1389,6 +1433,24 @@ export function findValueBindingInScope(
 }
 
 /**
+ * Look up a SHAPE binding (class-like, or an object-type alias) by name.
+ *
+ * Mirrors `findClassBindingInScope` exactly; only the accepted def-type
+ * predicate differs — the same relationship `findValueBindingInScope` has to
+ * it. Exists so a receiver typed as an object-type alias can reach that
+ * alias's members WITHOUT the alias becoming eligible as an inheritance base:
+ * `findClassBindingInScope` is what `resolveInheritanceBaseInScope` calls, so
+ * widening that one would answer a question about hierarchies with a shape.
+ */
+export function findShapeBindingInScope(
+  startScope: ScopeId,
+  receiverName: string,
+  scopes: ScopeResolutionIndexes,
+): SymbolDefinition | undefined {
+  return walkScopeChain(startScope, receiverName, scopes, (def) => isShapeLike(def.type));
+}
+
+/**
  * Generic scope-chain walker. Walks from `startScope` toward the root,
  * consulting both the local `scope.bindings` channel and the dual-source
  * `lookupBindingsAt` view (finalized + augmented). At each scope, local
@@ -1733,13 +1795,19 @@ export function populateClassOwnedMembers(parsed: ParsedFile): void {
   // on `class U: def save(self): def helper(): ...` — helper.ownerId will
   // remain undefined. The theoretical concern is real only if the
   // extractor ever stops creating scopes for inner defs.
+  // `isShapeLike`, not `isClassLike`: OWNERSHIP is question (1) — "which
+  // declaration do these members belong to?" — and an object-type alias owns
+  // members exactly as the interface beside it does. Without this its members
+  // get no `ownerId`, so nothing is registered under the alias and a receiver
+  // typed as one finds the owner but never its members. Inheritance/MRO keep
+  // `isClassLike`; see the predicate's docstring.
   for (const scope of parsed.scopes) {
     // Methods: function scope whose parent is a Class scope. Owner is
-    // the parent's class-like def.
+    // the parent's shape def.
     if (scope.parent !== null) {
       const parentScope = scopesById.get(scope.parent);
       if (parentScope !== undefined && parentScope.kind === 'Class') {
-        const classDef = parentScope.ownedDefs.find((d) => isClassLike(d.type));
+        const classDef = parentScope.ownedDefs.find((d) => isShapeLike(d.type));
         if (classDef !== undefined) {
           for (const def of scope.ownedDefs) {
             (def as { ownerId?: string }).ownerId = classDef.nodeId;
@@ -1751,7 +1819,7 @@ export function populateClassOwnedMembers(parsed: ParsedFile): void {
     // Class-body fields: defs directly owned by a Class scope (the
     // class-like def itself excluded).
     if (scope.kind === 'Class') {
-      const classDef = scope.ownedDefs.find((d) => isClassLike(d.type));
+      const classDef = scope.ownedDefs.find((d) => isShapeLike(d.type));
       if (classDef !== undefined) {
         for (const def of scope.ownedDefs) {
           if (def === classDef) continue;

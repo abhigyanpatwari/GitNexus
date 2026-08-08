@@ -170,8 +170,12 @@ export const TYPESCRIPT_SCOPE_QUERY = `
 (enum_declaration
   name: (identifier) @declaration.name) @declaration.enum
 
+;; Tagged @declaration.type_alias, NOT @declaration.type: normalizeNodeLabel
+;; accepts typealias / type_alias and has no "type" case, so the old tag mapped
+;; to no label and TypeScript aliases produced NO scope-resolution def at all.
+;; Kotlin and Dart already spell it this way.
 (type_alias_declaration
-  name: (type_identifier) @declaration.name) @declaration.type
+  name: (type_identifier) @declaration.name) @declaration.type_alias
 
 (internal_module
   name: (identifier) @declaration.name) @declaration.namespace
@@ -505,6 +509,48 @@ export const TYPESCRIPT_SCOPE_QUERY = `
 ;; Interface method signatures.
 (method_signature
   name: (property_identifier) @declaration.name) @declaration.method
+
+;; Members of a declared SHAPE — interface bodies and object-type aliases both
+;; spell them as property_signature (A4). The sibling method_signature rule
+;; above declared interface METHODS, so only properties were missing: a typed
+;; receiver resolved to the shape's scope and then found no member there, and
+;; the field's consumers were unreachable. TypeScript sets
+;; fieldFallbackOnMethodLookup:false, so there is no name-based safety net
+;; here — the precise path is the only one, and it needs the declaration.
+;; ANCHORED to declared shapes — see the matching rule in TYPESCRIPT_QUERIES
+;; for why. Unanchored this matched inline parameter and return types and
+;; nested object types, whose members then collided onto the enclosing
+;; class/interface/alias.
+(interface_body
+  (property_signature
+    name: (property_identifier) @declaration.name) @declaration.property)
+
+;; Object-literal keys of a NAMED object — the scope-resolution half of the
+;; matching rule in TYPESCRIPT_QUERIES. The parse query mints the Property NODE;
+;; this mints the DEF a precise read can resolve to.
+(variable_declarator
+  name: (identifier)
+  value: (object
+    (pair
+      key: (property_identifier) @declaration.name) @declaration.property))
+
+(variable_declarator
+  name: (identifier)
+  value: (call_expression
+    function: (member_expression
+      object: (identifier) @_ts.identity.obj
+      property: (property_identifier) @_ts.identity.fn)
+    arguments: (arguments
+      (object
+        (pair
+          key: (property_identifier) @declaration.name) @declaration.property)))
+  (#eq? @_ts.identity.obj "Object")
+  (#match? @_ts.identity.fn "^(freeze|seal|preventExtensions)$"))
+
+(type_alias_declaration
+  value: (object_type
+    (property_signature
+      name: (property_identifier) @declaration.name) @declaration.property))
 
 ;; Declarations — class fields
 (public_field_definition
@@ -1212,6 +1258,65 @@ export const TYPESCRIPT_SCOPE_QUERY = `
 
 (object
   (shorthand_property_identifier) @reference.name @reference.property-key @reference.value-ref)
+
+;; Bare-identifier reads (A2), VALUE POSITIONS ONLY — a blanket \`(identifier)\`
+;; rule would mint a site for every token in the file.
+;;
+;; These existed only in the JavaScript query, so A2 did not work for
+;; TypeScript AT ALL: a \`.ts\` module reading its own \`const\` by bare name
+;; produced no reference site, and "who uses this constant?" answered a
+;; confident zero for an entire language. Found by writing the namespace
+;; fixture below and watching it fail for the wrong reason.
+(arguments
+  (identifier) @reference.name @reference.read.identifier)
+
+(assignment_pattern
+  right: (identifier) @reference.name @reference.read.identifier)
+
+(return_statement
+  (identifier) @reference.name @reference.read.identifier)
+
+;; \`const next = LIMIT\` and \`n > LIMIT\` — both plainly value reads, and both
+;; named in review as gaps between what A2 claimed and what it matched.
+(variable_declarator
+  value: (identifier) @reference.name @reference.read.identifier)
+
+(binary_expression
+  left: (identifier) @reference.name @reference.read.identifier)
+
+(binary_expression
+  right: (identifier) @reference.name @reference.read.identifier)
+
+;; References — TYPE POSITION (R2-2). An annotation naming a declared type is
+;; the only thing that makes that type's declaration reachable from the code
+;; that depends on it, and TypeScript captured none: only cpp and csharp emitted
+;; type references at all. So an exported API-contract type owned its members
+;; (round 1) but had \`incoming: {}\`, and "what breaks if I remove this field?"
+;; — the question a contract type exists to answer — had no edge to walk.
+;;
+;; The resolution path was already complete on the other side:
+;; \`type-reference\` routes to the ClassRegistry, whose CLASS_KINDS already
+;; lists TypeAlias, Interface and Enum, and \`edges.ts\` already maps the kind to
+;; USES. Only the capture was missing.
+;;
+;; Anchored to the CONTEXTS a type is used in — annotations, type arguments,
+;; and heritage \`implements\` — never a bare \`(type_identifier)\`. A blanket rule
+;; would also match the identifier in \`type X = …\` and \`interface X\`, making
+;; every declaration a consumer of itself.
+(type_annotation
+  (type_identifier) @reference.name @reference.type_reference)
+
+(type_annotation
+  (generic_type
+    name: (type_identifier) @reference.name @reference.type_reference))
+
+(type_arguments
+  (type_identifier) @reference.name @reference.type_reference)
+
+;; \`x as SomeType\` / \`satisfies SomeType\` — an assertion is a claim ABOUT a
+;; declared type, so the code making it depends on that declaration.
+(as_expression
+  (type_identifier) @reference.name @reference.type_reference)
 `;
 
 /**

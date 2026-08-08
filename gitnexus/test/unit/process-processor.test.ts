@@ -1,6 +1,8 @@
 import { describe, it, expect, vi } from 'vitest';
 import {
   processProcesses,
+  traceFromEntryPoint,
+  buildSinkFunctionSet,
   type ProcessDetectionConfig,
 } from '../../src/core/ingestion/process-processor.js';
 import { computeDynamicMaxProcesses } from '../../src/core/ingestion/pipeline-phases/processes.js';
@@ -558,5 +560,267 @@ describe('processProcesses', () => {
       expect(largeRepo).toBe(1000);
       expect(largeRepo).toBeGreaterThan(300);
     });
+  });
+});
+
+/**
+ * D1/D2 — the trace walk must reach DEEP flows, not just shallow ones.
+ *
+ * The walk stops after a fixed NUMBER of traces, so traversal order decides
+ * which traces those are. Breadth-first reached every shallow terminal before
+ * any deep one, so the quota filled with the shortest paths in the graph and
+ * the walk stopped — `maxTraceDepth` was never approached.
+ *
+ * Measured on a 75k-node repo before the fix: of 300 processes NONE exceeded 7
+ * steps and 90% were 3-4, so a multi-hop business flow had no process that
+ * could represent it and `query` could only rank the mechanical pairs that did
+ * exist. What looked like a ranking problem was a construction problem.
+ *
+ * This fixture is that shape in miniature: one deep chain competing with enough
+ * shallow branches to exhaust the trace budget before the chain is reached.
+ */
+describe('process depth (D1/D2)', () => {
+  // Drives the walk DIRECTLY. Through `processProcesses` this is unobservable:
+  // `findEntryPoints` returns several starting points, so the deep chain is
+  // traced from inside it whatever the traversal order does — a test there
+  // passes under BOTH traversals and guards nothing.
+  const cfg = { maxTraceDepth: 10, maxBranching: 4, maxProcesses: 75, minSteps: 3 };
+
+  const deepAndShallow = (order: readonly string[]): Map<string, string[]> => {
+    // Fan-out is capped at maxBranching (4), so the budget is exhausted BELOW
+    // the entry: three shallow branches carrying four immediate terminals each
+    // = 12 traces, exactly the walk budget (maxBranching * 3). Breadth-first
+    // records all twelve and stops before descending the deep branch at all.
+    const calls = new Map<string, string[]>();
+    calls.set('entry', [...order]);
+    for (const b of ['s1', 's2', 's3']) {
+      calls.set(b, [`${b}_l1`, `${b}_l2`, `${b}_l3`, `${b}_l4`]);
+    }
+    for (let i = 1; i <= 7; i++) calls.set(`d${i}`, [`d${i + 1}`]);
+    return calls;
+  };
+
+  it('descends a deep chain instead of spending the budget on shallow branches', () => {
+    const traces = traceFromEntryPoint('entry', deepAndShallow(['d1', 's1', 's2', 's3']), cfg);
+    const deepest = Math.max(0, ...traces.map((t) => t.length));
+    // Shallow terminals are 3 nodes. Anything longer proves it descended.
+    expect(deepest).toBeGreaterThan(3);
+  });
+
+  // Sibling ORDER, which the walk previously got backwards: `slice` selected
+  // the first N callees while `pop()` explored them last-first, so the budget
+  // went to the LAST-declared branch. For `main() { init(); …; shutdown(); }`
+  // that spends the walk on `shutdown` and can drop `init` — the earliest steps
+  // of a flow, which is the opposite of what a process describes.
+  //
+  // The consequence is honest and worth pinning: with a fixed trace budget, a
+  // deep branch declared AFTER enough shallow ones is not reached. That is a
+  // budget limitation, not a traversal one, and it must not be silent.
+  it('follows source order, so an early deep branch wins and a late one may not', () => {
+    const early = traceFromEntryPoint('entry', deepAndShallow(['d1', 's1', 's2', 's3']), cfg);
+    const late = traceFromEntryPoint('entry', deepAndShallow(['s1', 's2', 's3', 'd1']), cfg);
+    expect(Math.max(0, ...early.map((t) => t.length))).toBeGreaterThan(3);
+    // Not asserted as a desirable outcome — asserted so a change to the budget
+    // shows up here rather than silently altering which flows exist.
+    expect(Math.max(0, ...late.map((t) => t.length))).toBe(3);
+  });
+  // The `processProcesses`-level depth test that used to sit here was VACUOUS,
+  // and the note at the top of this describe says exactly why: `findEntryPoints`
+  // returns several starting points, so the deep chain gets traced from inside
+  // it whatever the traversal does. Measured: under breadth-first the same
+  // fixture still yielded a deepest stepCount of 8, so the assertion passed
+  // with the production change reverted and guarded nothing.
+  //
+  // What IS observable at this level is which traces survive SELECTION, and
+  // that is asserted in the diversity describe below. Traversal order is
+  // asserted against `traceFromEntryPoint` directly, above.
+});
+
+describe('sink-terminated flows (R3-6)', () => {
+  const addFn = (
+    graph: ReturnType<typeof createKnowledgeGraph>,
+    id: string,
+    line: number,
+  ): void => {
+    graph.addNode({
+      id,
+      label: 'Function',
+      properties: {
+        name: id.split(':')[1],
+        filePath: 'src/flow.ts',
+        startLine: line,
+        endLine: line + 2,
+      },
+    });
+  };
+  const addCall = (
+    graph: ReturnType<typeof createKnowledgeGraph>,
+    from: string,
+    to: string,
+  ): void => {
+    graph.addRelationship({
+      id: `rel:${from}->${to}`,
+      sourceId: from,
+      targetId: to,
+      type: 'CALLS',
+      confidence: 1,
+      reason: 'test',
+    });
+  };
+
+  /**
+   * The shape the whole item is about: a business flow whose meaningful
+   * endpoint CALLS ONWARD into helpers. `placeOrder` is where the program does
+   * something; `formatDate` is merely where control stops.
+   */
+  const flowGraph = (): ReturnType<typeof createKnowledgeGraph> => {
+    const graph = createKnowledgeGraph();
+    addFn(graph, 'func:scan', 1);
+    addFn(graph, 'func:score', 10);
+    addFn(graph, 'func:placeOrder', 20);
+    addFn(graph, 'func:formatDate', 30);
+    addFn(graph, 'func:pad', 40);
+    addCall(graph, 'func:scan', 'func:score');
+    addCall(graph, 'func:score', 'func:placeOrder');
+    addCall(graph, 'func:placeOrder', 'func:formatDate');
+    addCall(graph, 'func:formatDate', 'func:pad');
+    return graph;
+  };
+
+  // `placeOrder` spans lines 20-22, so an outward action on line 21 belongs to
+  // it — the attribution the file-level FETCHES edge could not express.
+  const ORDER_SITE = [{ filePath: 'src/flow.ts', lineNumber: 21 }];
+
+  it('ends a trace where the program reaches outward', async () => {
+    const result = await processProcesses(flowGraph(), [], undefined, {}, ORDER_SITE);
+    expect(result.processes.map((p) => p.terminalId)).toContain('func:placeOrder');
+  });
+
+  // The half a naive implementation gets wrong: emitting the sink trace at the
+  // walk and then letting subset-removal delete it one step later is a no-op,
+  // because a sink-terminated flow is BY DEFINITION a prefix of the longer
+  // chain that runs on past it.
+  it('keeps the sink flow even though it is a prefix of a longer chain', async () => {
+    const result = await processProcesses(flowGraph(), [], undefined, {}, ORDER_SITE);
+    const terminals = result.processes.map((p) => p.terminalId);
+    expect(terminals).toContain('func:placeOrder');
+    // The longer chain still exists — the two answer different questions.
+    expect(terminals).toContain('func:pad');
+  });
+
+  it('ranks the sink flow above the leaf chain', async () => {
+    const result = await processProcesses(flowGraph(), [], undefined, {}, ORDER_SITE);
+    const first = result.processes[0]?.terminalId;
+    expect(first).toBe('func:placeOrder');
+  });
+
+  // Without sites, behaviour must be exactly what it was.
+  it('changes nothing when no outward action is known', async () => {
+    const result = await processProcesses(flowGraph(), [], undefined, {}, []);
+    expect(result.processes.map((p) => p.terminalId)).not.toContain('func:placeOrder');
+  });
+
+  it('attributes a site to the INNERMOST enclosing function', () => {
+    const graph = createKnowledgeGraph();
+    // An outer function spanning the inner one; the inner performs the call.
+    graph.addNode({
+      id: 'func:outer',
+      label: 'Function',
+      properties: { name: 'outer', filePath: 'src/a.ts', startLine: 1, endLine: 50 },
+    });
+    graph.addNode({
+      id: 'func:inner',
+      label: 'Function',
+      properties: { name: 'inner', filePath: 'src/a.ts', startLine: 10, endLine: 20 },
+    });
+    const sinks = buildSinkFunctionSet(graph, [{ filePath: 'src/a.ts', lineNumber: 15 }]);
+    expect(sinks.has('func:inner')).toBe(true);
+    expect(sinks.has('func:outer')).toBe(false);
+  });
+});
+
+describe('process selection diversity (R2-3)', () => {
+  const addFn = (graph: ReturnType<typeof createKnowledgeGraph>, id: string): void => {
+    graph.addNode({
+      id,
+      label: 'Function',
+      properties: { name: id.split(':')[1], filePath: 'src/a.ts', startLine: 1, endLine: 2 },
+    });
+  };
+  const addCall = (
+    graph: ReturnType<typeof createKnowledgeGraph>,
+    from: string,
+    to: string,
+  ): void => {
+    graph.addRelationship({
+      id: `rel:${from}->${to}`,
+      sourceId: from,
+      targetId: to,
+      type: 'CALLS',
+      confidence: 1,
+      reason: 'test',
+    });
+  };
+
+  // The shape that crowded the reporting repo's list: many entry points whose
+  // deepest chains all bottom out in the SAME utility, plus a shorter flow
+  // ending somewhere of its own. Ranking on depth alone hands every slot to
+  // the first group and the reader learns one thing many times.
+  it('does not let one terminal take every slot', async () => {
+    const graph = createKnowledgeGraph();
+
+    // Six entry points, each with a 5-node chain into one shared utility.
+    addFn(graph, 'func:sharedUtil');
+    for (let e = 1; e <= 6; e++) {
+      let prev = `func:entry${e}`;
+      addFn(graph, prev);
+      for (let i = 1; i <= 3; i++) {
+        const mid = `func:e${e}_m${i}`;
+        addFn(graph, mid);
+        addCall(graph, prev, mid);
+        prev = mid;
+      }
+      addCall(graph, prev, 'func:sharedUtil');
+    }
+
+    // One shorter, distinct flow — the "business flow" analogue.
+    addFn(graph, 'func:ownEntry');
+    addFn(graph, 'func:ownMid');
+    addFn(graph, 'func:ownTerminal');
+    addCall(graph, 'func:ownEntry', 'func:ownMid');
+    addCall(graph, 'func:ownMid', 'func:ownTerminal');
+
+    const result = await processProcesses(graph, [], undefined, { maxProcesses: 4 });
+    const terminals = result.processes.map((p) => p.terminalId);
+    const sharedCount = terminals.filter((t) => t === 'func:sharedUtil').length;
+
+    // Under depth-only ranking every one of the four slots goes to a
+    // five-node chain ending in sharedUtil.
+    expect(sharedCount).toBeLessThan(terminals.length);
+    expect(new Set(terminals).size).toBeGreaterThan(1);
+  });
+
+  it('keeps a shorter flow with its own terminal rather than a fifth duplicate', async () => {
+    const graph = createKnowledgeGraph();
+    addFn(graph, 'func:sharedUtil');
+    for (let e = 1; e <= 6; e++) {
+      let prev = `func:entry${e}`;
+      addFn(graph, prev);
+      for (let i = 1; i <= 3; i++) {
+        const mid = `func:e${e}_m${i}`;
+        addFn(graph, mid);
+        addCall(graph, prev, mid);
+        prev = mid;
+      }
+      addCall(graph, prev, 'func:sharedUtil');
+    }
+    addFn(graph, 'func:ownEntry');
+    addFn(graph, 'func:ownMid');
+    addFn(graph, 'func:ownTerminal');
+    addCall(graph, 'func:ownEntry', 'func:ownMid');
+    addCall(graph, 'func:ownMid', 'func:ownTerminal');
+
+    const result = await processProcesses(graph, [], undefined, { maxProcesses: 4 });
+    expect(result.processes.map((p) => p.terminalId)).toContain('func:ownTerminal');
   });
 });

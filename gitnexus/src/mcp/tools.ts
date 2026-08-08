@@ -455,7 +455,8 @@ WHEN TO USE: Before making code changes — especially refactoring, renaming, or
 AFTER THIS: Review d=1 items (WILL BREAK). Use context() on high-risk symbols.
 
 Output includes:
-- risk: LOW / MEDIUM / HIGH / CRITICAL / UNKNOWN
+- risk: LOW / MEDIUM / HIGH / CRITICAL / UNKNOWN. An upstream walk that resolved ZERO callers reports UNKNOWN, never LOW, and carries riskNote: "safe to change" is a claim about callers and there were none to reason about, so the symbol is either genuinely unused OR reached only through a reference class the index does not record (plain-object property access, a bare-identifier read of a module-scope const). Confirm with a text search before acting on it. Downstream walks are unaffected — an empty downstream result reports resolved callees, not safety.
+- riskNote: string — present only when risk is UNKNOWN; states why the verdict is withheld.
 - summary: direct callers, processes affected, modules affected
 - affected_processes: which execution flows break and at which step
 - affected_modules: which functional areas are hit (direct vs indirect)

@@ -183,6 +183,25 @@ CREATE NODE TABLE \`Property\` (
   content STRING,
   description STRING,
   declaredType STRING,
+  /*
+   * DETAIL SYMBOL — true when this property is a member of a shape that has no
+   * independent identity: the keys of an anonymous literal returned from a
+   * function (R3-4).
+   *
+   * It exists because indexing those keys is right for the GRAPH and wrong for
+   * TEXT SEARCH. They are ordinary words (message, value, timestamp) and
+   * there are many of them, so letting them into the FTS result set pushes the
+   * CALLABLES named after the same concept past the row cap the search applies
+   * — measured: query('message') went from two processes to none on the
+   * mini-repo fixture. A ranking tweak cannot fix that, because the rows never
+   * come back from the FTS call in the first place.
+   *
+   * So the search layer gained a notion it did not have — a symbol that is
+   * queryable, walkable and impact-analysable, but not a concept a text search
+   * should surface on its own. buildFtsQueryCypher excludes these for the
+   * Property table only; every other consumer sees them normally.
+   */
+  isDetail BOOLEAN,
   PRIMARY KEY (id)
 )`;
 export const RECORD_SCHEMA = CODE_ELEMENT_BASE('Record');
@@ -408,7 +427,7 @@ const ATTACHMENT_TARGET_LABELS: readonly NodeTableName[] = [
  *
  * What survives here is characteristic, not arbitrary. Almost all of it is a
  * TARGET no rule reaches — `CodeElement`, `Impl`, `Namespace`, `Template`,
- * `TypeAlias`, `Typedef`, `Union`, `Static`, `Section`, `Folder` are in neither
+ * `Typedef`, `Union`, `Static`, `Section`, `Folder` are in neither
  * `SCOPE_BRIDGE_TARGET_LABELS` nor {@link ATTACHMENT_TARGET_LABELS} — plus the
  * `Impl|*` and `Template|*` member rows (Rust `impl`/`trait` bodies, C++
  * templates), the two `Route|Process` / `Tool|Process` entry points whose
@@ -418,9 +437,22 @@ const ATTACHMENT_TARGET_LABELS: readonly NodeTableName[] = [
  * NOTHING A RULE ALREADY COVERS BELONGS HERE. `generatedRelationPairs` skips
  * any pair present in this block, so a redundant line does not merely duplicate
  * — it SUPPRESSES generation, and later narrowing a rule would silently keep
- * that pair alive with no test failing. 164 such lines now live in the generated
- * half (161 from #2793 plus the three `Record` member pairs moved by #2801);
+ * that pair alive with no test failing. 166 such lines now live in the generated
+ * half (161 from #2793, the three `Record` member pairs moved by #2801/#2871,
+ * and the two `TypeAlias` pairs moved by R2-2 here);
  * `test/unit/schema-pair-coverage.test.ts` now fails if one comes back.
+ *
+ * Those last two arrived by MERGE, and the shape is worth recording because it
+ * is the one this block's warning cannot catch by itself. #2871 and this branch
+ * each deleted their OWN label's hand-written pairs — `Record` there,
+ * `TypeAlias` here — for the identical reason, in the identical region. Git
+ * presents that as one conflict in which each side appears to be deleting the
+ * other's lines, and "keep ours" or "keep theirs" both resolve cleanly, compile,
+ * and silently re-suppress the other label's generation. The correct resolution
+ * is neither: take the UNION of the deletions. Verified by asserting all five
+ * pairs are still present in the emitted DDL — a check that does not read
+ * `LINKABLE_LABELS`, unlike the pair-coverage test, which derives both sides
+ * from it and so moves with any change to it.
  *
  * Folding this remainder into a third cross product
  * (`DEFINITION_ANCHOR_LABELS × {CodeElement, Section, Typedef, Union,
@@ -443,7 +475,6 @@ export const STRUCTURAL_PAIR_DDL = `  FROM File TO Folder,
   FROM File TO \`Union\`,
   FROM File TO \`Namespace\`,
   FROM File TO \`Impl\`,
-  FROM File TO \`TypeAlias\`,
   FROM File TO \`Static\`,
   FROM File TO \`Template\`,
   FROM File TO Section,
@@ -451,20 +482,17 @@ export const STRUCTURAL_PAIR_DDL = `  FROM File TO Folder,
   FROM Folder TO File,
   FROM Function TO \`Template\`,
   FROM Function TO \`Namespace\`,
-  FROM Function TO \`TypeAlias\`,
   FROM Function TO \`Impl\`,
   FROM Function TO \`Typedef\`,
   FROM Function TO \`Union\`,
   FROM Function TO CodeElement,
   FROM Class TO \`Template\`,
-  FROM Class TO \`TypeAlias\`,
   FROM Class TO \`Impl\`,
   FROM Class TO \`Union\`,
   FROM Class TO \`Namespace\`,
   FROM Class TO \`Typedef\`,
   FROM Class TO CodeElement,
   FROM Method TO \`Template\`,
-  FROM Method TO \`TypeAlias\`,
   FROM Method TO \`Namespace\`,
   FROM Method TO \`Impl\`,
   FROM Method TO CodeElement,
@@ -486,8 +514,6 @@ export const STRUCTURAL_PAIR_DDL = `  FROM File TO Folder,
   FROM CodeElement TO \`Property\`,
   FROM Section TO Section,
   FROM Interface TO CodeElement,
-  FROM Interface TO \`TypeAlias\`,
-  FROM \`Enum\` TO \`TypeAlias\`,
   FROM \`Namespace\` TO \`Struct\`,
   FROM \`Impl\` TO Method,
   FROM \`Impl\` TO Function,
@@ -496,10 +522,7 @@ export const STRUCTURAL_PAIR_DDL = `  FROM File TO Folder,
   FROM \`Impl\` TO \`Trait\`,
   FROM \`Impl\` TO \`Struct\`,
   FROM \`Impl\` TO \`Impl\`,
-  FROM \`TypeAlias\` TO \`Trait\`,
-  FROM \`TypeAlias\` TO Class,
   FROM \`Constructor\` TO \`Template\`,
-  FROM \`Constructor\` TO \`TypeAlias\`,
   FROM \`Constructor\` TO \`Impl\`,
   FROM \`Constructor\` TO \`Namespace\`,
   FROM \`Constructor\` TO \`Typedef\`,
