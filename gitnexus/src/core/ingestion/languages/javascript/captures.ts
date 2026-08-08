@@ -18,7 +18,9 @@
  *      inferred from leading JSDoc comments. A lightweight regex scanner
  *      (`parseJsDocParams` / `parseJsDocReturn`) extracts `@param {T} n`
  *      and `@returns {T}` tags and emits synthetic captures positioned on
- *      the annotated function node.
+ *      the annotated function node. `@type {T}` on a class FIELD is the same
+ *      story one level down — it is the only way JavaScript can declare a
+ *      field's type at all — and emits `@type-binding.class-field` (#2833).
  *
  *   4. **Shared synthesis passes** — destructuring, for-of map-tuple, and
  *      instanceof narrowing passes are duplicated from `typescript/captures.ts`
@@ -40,6 +42,7 @@ import { computeTsArityMetadata } from '../typescript/arity-metadata.js';
 import { synthesizeTsReceiverBinding } from '../typescript/receiver-binding.js';
 import { isArrayMethodCallbackArrow } from '../typescript/array-callback.js';
 import { isStaticClassFieldBinding } from '../typescript/captures.js';
+import { reducesToContainedType } from '../typescript/interpret.js';
 
 /** JavaScript's spelling of a class-field declaration — the TypeScript grammar
  *  calls the same construct `public_field_definition`. Named here, not in the
@@ -373,8 +376,139 @@ function parseJsDocType(text: string): string | null {
 }
 
 /**
+ * A type REFERENCE, possibly qualified, generic, or unioned:
+ * `Repo`, `Repo<User>`, `models.Repo`, `Handler<Req, Res>`, `Repo|null`,
+ * `Repo<User> | null`.
+ *
+ * Applied only to a string already capped by {@link JSDOC_TYPE_MAX_LENGTH}:
+ * the union and generic groups both nest quantifiers, so an unbounded
+ * non-matching input is a backtracking hazard, and a docblock's `{…}` payload
+ * is attacker-shaped text (it is whatever the file says).
+ *
+ * JSDoc's `{…}` payload is free text and carries shapes that are not
+ * references at all — record types (`{{a: number}}`), function types
+ * (`{function(string): void}`), the any-type `{*}`, parenthesized unions
+ * (`{(Repo|Other)}`). None of those name a class, so a field annotated with
+ * one is DECLINED rather than bound to whatever substring survives
+ * normalization. (`parseJsDocType`'s `[^}]+` also truncates a record type at
+ * its first `}`, which this rejects too.)
+ */
+/** Longest `@type {…}` payload considered. A type REFERENCE that names a class
+ *  is far shorter; past this the string is a structural type or generated
+ *  noise, which this pass declines anyway, and the cap is what keeps
+ *  {@link JSDOC_TYPE_REFERENCE_RE}'s nested quantifiers off an unbounded
+ *  input. */
+const JSDOC_TYPE_MAX_LENGTH = 200;
+
+const JSDOC_TYPE_REFERENCE_RE =
+  /^[A-Za-z_$][\w$]*(?:\.[A-Za-z_$][\w$]*)*(?:\s*<[\w$.,<>\s]*>)?(?:\s*\|\s*[A-Za-z_$][\w$]*(?:\.[A-Za-z_$][\w$]*)*(?:\s*<[\w$.,<>\s]*>)?)*$/;
+
+/**
+ * The spelling a JSDoc `@type` should bind a class FIELD to, or `null` to
+ * decline.
+ *
+ * The as-written spelling is returned, NOT a reduced one: `interpretJsTypeBinding`
+ * carries `Repo<User>` through to `TypeRef.rawName` untouched (user generics are
+ * not on `stripGeneric`'s wrapper list), and `resolveClassBindingForName` erases
+ * the arguments to `Repo` at lookup time. That is the same erasure every other
+ * language in #2833 relies on, so generics need no code here — verified, not
+ * assumed, by the capture probe in that issue.
+ *
+ * Two declines:
+ *   - `reducesToContainedType` — the container spellings whose interpretation
+ *     would yield the ELEMENT (`Repo[]`, `Array<Repo>`, `Promise<Repo>`). See
+ *     that predicate for why a field must not take its element's type.
+ *   - anything that is not a type reference (see JSDOC_TYPE_REFERENCE_RE).
+ *
+ * The leading `?` / `!` nullability sigils are JSDoc-specific decoration with no
+ * bearing on which class is named, so they are peeled first — `{?Repo}` binds
+ * `Repo` exactly as `{Repo|null}` does.
+ */
+function jsDocFieldTypeSpelling(rawType: string): string | null {
+  const spelling = rawType
+    .trim()
+    .replace(/^[?!]+/, '')
+    .trim();
+  if (spelling === '' || spelling.length > JSDOC_TYPE_MAX_LENGTH) return null;
+  if (reducesToContainedType(spelling)) return null;
+  if (!JSDOC_TYPE_REFERENCE_RE.test(spelling)) return null;
+  return spelling;
+}
+
+/**
+ * The identifier a JSDoc `@type` may bind a `field_definition` to, or `null` if
+ * this field takes no docblock binding at all (#2833).
+ *
+ * Two refusals, and both are cheaper to answer than the docblock search they
+ * gate, which is why they run before it:
+ *
+ *   - `static` fields are dropped, exactly as the query-driven annotation path
+ *     drops them in `emitJsScopeCaptures` — a static member belongs to the class
+ *     object and would silently RETYPE an instance field of the same name. The
+ *     full cost of that trade, measured, is in `isStaticClassFieldBinding`
+ *     (#2807). Re-checked here because the synthesis pass runs outside the
+ *     match loop that applies it.
+ *   - a name that is not a plain identifier (a computed key, a string key)
+ *     names nothing `this.x` could look up.
+ *
+ * The JavaScript grammar names a field's name `property:`, not `name:`. `#priv`
+ * arrives as `private_property_identifier`; TypeScript binds those under their
+ * `#`-prefixed spelling, which is how `this.#priv` looks it up.
+ */
+function jsDocBindableFieldName(node: SyntaxNode): SyntaxNode | null {
+  if (isStaticClassFieldBinding(node, JS_CLASS_FIELD_DEFINITION_TYPES)) return null;
+  const nameNode = node.childForFieldName('property');
+  if (
+    nameNode === null ||
+    (nameNode.type !== 'property_identifier' && nameNode.type !== 'private_property_identifier')
+  ) {
+    return null;
+  }
+  return nameNode;
+}
+
+/**
+ * Emit the class-FIELD type binding a JSDoc `@type {T}` block declares (#2833).
+ *
+ * JavaScript has no type annotations, so a docblock is the only way a field
+ * can declare one — and measured before this branch, `/** @type {Repo<User>} *​/
+ * repo;` bound NOTHING, taking down the non-generic control (`{Plain}`) with
+ * it. TypeScript's equivalent `repo: Repo<User>` has always bound, via the
+ * `@type-binding.annotation` rule on `public_field_definition`; this reaches the
+ * same DESTINATION from the docblock — an annotation-strength binding on the
+ * enclosing Class scope, which is the only place `typeOfMemberOnClass` reads a
+ * field's type — so the compound-receiver resolver finds it the way it always
+ * has. No resolution-side change. See the tag note on the emit below for why
+ * the marker is `class-field` rather than `annotation`.
+ */
+function emitJsDocFieldBinding(
+  docComment: string,
+  nameNode: SyntaxNode,
+  out: CaptureMatch[],
+): void {
+  const rawType = parseJsDocType(docComment);
+  const spelling = rawType === null ? null : jsDocFieldTypeSpelling(rawType);
+  if (spelling === null) return;
+  out.push({
+    '@type-binding.name': syntheticCapture('@type-binding.name', nameNode, nameNode.text),
+    '@type-binding.type': syntheticCapture('@type-binding.type', nameNode, spelling),
+    // `class-field`, not `annotation`: this is the JS provider's own
+    // marker for a binding that must be HOISTED to the enclosing Class
+    // scope, which is where `typeOfMemberOnClass` reads a field's type.
+    // `jsBindingScopeFor` does that walk; `interpretJsTypeBinding` then
+    // remaps the tag to `annotation` so the source strength is the same
+    // as TypeScript's `repo: Repo<User>`. Measured: with `annotation`
+    // the binding lands on the innermost scope and the field never
+    // types — the same shape `synthesizeConstructorFieldBindings` needs
+    // for `this.p = new Outer()`.
+    '@type-binding.class-field': syntheticCapture('@type-binding.class-field', nameNode, '1'),
+  });
+}
+
+/**
  * Walk the AST and synthesize `@type-binding.*` captures from JSDoc
- * comments immediately preceding function declarations / expressions.
+ * comments immediately preceding function declarations / expressions and class
+ * field definitions.
  *
  * Only `/** … *​/` block comments are scanned. Line comments (`//`) are
  * intentionally excluded — JSDoc lives in block comments.
@@ -385,10 +519,23 @@ function parseJsDocType(text: string): string | null {
  *   - `@type-binding.annotation` for `@type {T}` on `let`/`const`/`var`
  *     declarations — covers the common `/** @type {User} *​/ const u = …`
  *     pattern (ECMA-262 §14.3.1/§14.3.2 variable declarations).
+ *   - `@type-binding.class-field` for `@type {T}` on a `field_definition`
+ *     (#2833) — see {@link emitJsDocFieldBinding}.
  *
  * The binding is anchored on the function node so `tsBindingScopeFor`
  * can hoist method return-type bindings to Module scope (matching the
  * TypeScript path where `hoistTypeBindingsToModule: true`).
+ *
+ * `field_definition` is a node kind of THIS walk rather than a pass of its own,
+ * even though a field's anchor and name are the field itself while every other
+ * branch keys off a function-like anchor. A separate pass would be a ninth
+ * full-tree traversal of `emitJsScopeCaptures`, and measured on
+ * `dist/core/ingestion/workers/parse-worker.js` (2.4k lines, 17.3k nodes) one
+ * `namedChildren` walk costs 14.3 ms against 7.5 ms to PARSE the whole file —
+ * `node.namedChildren` materializes a fresh array of node wrappers across the
+ * N-API boundary at every node. The two node kinds share this walk's preceding-
+ * comment search and nothing else, so the branch below returns as soon as it
+ * has emitted.
  */
 function synthesizeJsDocBindings(root: SyntaxNode, out: CaptureMatch[]): void {
   const stack: SyntaxNode[] = [root];
@@ -404,8 +551,15 @@ function synthesizeJsDocBindings(root: SyntaxNode, out: CaptureMatch[]): void {
     const isMethodDef = node.type === 'method_definition';
     // Also check lexical_declaration containing an arrow/fn-expression
     const isLexDecl = node.type === 'lexical_declaration' || node.type === 'variable_declaration';
+    const isFieldDef = node.type === 'field_definition';
 
-    if (!isFnDecl && !isMethodDef && !isLexDecl) continue;
+    if (!isFnDecl && !isMethodDef && !isLexDecl && !isFieldDef) continue;
+
+    // Non-null exactly for a field that can carry a binding, so it doubles as
+    // the branch selector inside the comment search below. Answered before that
+    // search because an unbindable field has no reason to look for a docblock.
+    const fieldNameNode = isFieldDef ? jsDocBindableFieldName(node) : null;
+    if (isFieldDef && fieldNameNode === null) continue;
 
     // For `export function foo() { ... }`, the JSDoc comment precedes the
     // wrapping export_statement, not the inner function_declaration.
@@ -418,6 +572,14 @@ function synthesizeJsDocBindings(root: SyntaxNode, out: CaptureMatch[]): void {
     while (sibling !== null && sibling.type === 'comment') {
       const text = sibling.text;
       if (text.startsWith('/**')) {
+        // A field's docblock declares its own type and nothing else — `@param` /
+        // `@returns` on a field name no callable — so this branch does not fall
+        // through to the function-like tags below.
+        if (fieldNameNode !== null) {
+          emitJsDocFieldBinding(text, fieldNameNode, out);
+          break;
+        }
+
         // Found a JSDoc block.
         const params = parseJsDocParams(text);
         const retType = parseJsDocReturn(text);
