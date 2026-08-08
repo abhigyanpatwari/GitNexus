@@ -508,6 +508,19 @@ jobs:
         run: node --import tsx bench/cpp-qualified-ns/measure.mjs --check
         working-directory: gitnexus
 
+      - name: Import-target resolution guards (#2877 #2878 #2879 #2880)
+        # Build-free: asserts the Go/C#/Dart/Ruby import-target resolvers return
+        # an unchanged target set (per-language fingerprint) and that per-import
+        # cost stays independent of corpus size. Each of those resolvers used to
+        # scan the whole workspace per import (Ruby rebuilt a suffix index per
+        # `require`), so resolution was O(imports × files); the same corpus
+        # scores >3.3 against the pre-fix implementations. The corpus SHAPE is
+        # asserted too — a fingerprint alone cannot tell a legitimate resolution
+        # change from a corpus quietly shrunk below the size the scaling arm
+        # needs. Rationale and history: see the header of measure.mjs.
+        run: node --import tsx bench/import-target/measure.mjs --check
+        working-directory: gitnexus
+
       - name: Receiver-resolution drop guards
         # NOT build-free: this one runs the real pipeline, so it needs dist/
         # (the setup action above builds). ~2m15s.

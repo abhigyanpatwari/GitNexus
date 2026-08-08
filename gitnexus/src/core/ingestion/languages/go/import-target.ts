@@ -1,4 +1,9 @@
 import type { GoModuleConfig } from '../../language-config.js';
+import {
+  buildPackageDirIndex,
+  filesDirectlyInPkgDir,
+  type PackageDirIndex,
+} from '../../import-resolvers/package-dir-index.js';
 
 /**
  * Resolve a Go import path to ALL .go files in the matching package directory.
@@ -50,29 +55,44 @@ export function resolveGoImportTarget(
   return null;
 }
 
+/**
+ * Package index over the file set, memoized on the Set's identity (#2877).
+ *
+ * Every leg above used to walk all of `allFilePaths`, and the GOPATH fallback
+ * walks once per path segment — so a single unresolved import (which is most of
+ * them: stdlib and third-party module paths run the whole cascade to completion
+ * before returning null) cost several full workspace scans, making resolution
+ * O(imports × files).
+ *
+ * The orchestrator hands the same Set to every import in a pass, so the index
+ * is built once per run. `resolveGoImportTarget` must therefore never copy the
+ * Set before this point — see `import-resolvers/workspace-file-index.ts`.
+ */
+const GO_PACKAGE_INDEX_CACHE = new WeakMap<ReadonlySet<string>, PackageDirIndex>();
+
+/** Go packages exclude `_test.go` files: they are a separate package. */
+function isGoPackageFile(normalized: string): boolean {
+  return normalized.endsWith('.go') && !normalized.endsWith('_test.go');
+}
+
+function getGoPackageIndex(allFilePaths: ReadonlySet<string>): PackageDirIndex {
+  const cached = GO_PACKAGE_INDEX_CACHE.get(allFilePaths);
+  if (cached !== undefined) return cached;
+  const built = buildPackageDirIndex(allFilePaths, isGoPackageFile);
+  GO_PACKAGE_INDEX_CACHE.set(allFilePaths, built);
+  return built;
+}
+
 function findRootPackageFiles(allFilePaths: ReadonlySet<string>): string[] {
-  const result: string[] = [];
-  for (const raw of allFilePaths) {
-    const normalized = raw.replace(/\\/g, '/');
-    if (normalized.includes('/')) continue;
-    if (!normalized.endsWith('.go') || normalized.endsWith('_test.go')) continue;
-    result.push(raw);
-  }
-  return result.sort();
+  // Copy before sorting: the index's array is shared across every import in the
+  // run, and the result leaves this module as the edge's target list.
+  return [...getGoPackageIndex(allFilePaths).rootFiles].sort();
 }
 
 function findAllFilesInPkgDir(allFilePaths: ReadonlySet<string>, pkgPath: string): string[] {
-  const pkgDir = '/' + pkgPath + '/';
-  const result: string[] = [];
-  for (const raw of allFilePaths) {
-    const normalized = '/' + raw.replace(/\\/g, '/');
-    if (!normalized.includes(pkgDir)) continue;
-    if (!normalized.endsWith('.go') || normalized.endsWith('_test.go')) continue;
-    // Ensure file is directly in the package directory (not a subdirectory)
-    const afterPkg = normalized.substring(normalized.indexOf(pkgDir) + pkgDir.length);
-    if (!afterPkg.includes('/')) result.push(raw);
-  }
-  return result;
+  // Deliberately UNSORTED, unlike the root leg: the previous single-pass scan
+  // emitted in Set-iteration order and `filesDirectlyInPkgDir` reproduces it.
+  return filesDirectlyInPkgDir(getGoPackageIndex(allFilePaths), pkgPath);
 }
 
 /** Preserved for backward compat. */

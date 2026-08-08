@@ -1,0 +1,81 @@
+{
+  "_what": "Baselines for bench/import-target/measure.mjs (#2877 go, #2878 csharp, #2879 dart, #2880 ruby).",
+  "_fingerprint_note": "Per-language sha256 over every distinct fromFile|target -> resolved target. A change here is a BEHAVIOUR change: the resolver returned a different target set. Re-baseline only with a deliberate resolution change, and only after test/unit/scope-resolution/import-target-index-parity.test.ts has been updated to match — that harness, not this file, is what proves a rewrite preserved the tie-breaks.",
+  "_scaling_note": "Measured on this branch at the full 400/1600 scale: go 0.98, csharp 1.08, dart 1.09, ruby 1.12. The same corpus scored 3.36 / 4.10 / 3.32 / 3.87 against the pre-#2877 scans at 150/600, matching the ratios reported in the issues. The 1.8 budget sits well above the linear result and well below the quadratic one; the timing arm is the only one that can move under CI load, so re-run on an idle machine before investigating a ratio failure.",
+  "_shape_note": "files/imports/resolved/distinct_outcomes are asserted exactly. A fingerprint alone cannot tell a legitimate resolution change from a corpus that was quietly shrunk below the size at which the scaling arm can see anything.",
+  "scaling_budget": 1.8,
+  "languages": {
+    "go": {
+      "small": {
+        "files": 400,
+        "imports": 3200,
+        "resolved": 979,
+        "distinct_outcomes": 2913,
+        "fingerprint": "c96c4a0adce69f7c0e40fa84f6d2920c160e8a76d594803b4c725666fdcb7edf"
+      },
+      "large": {
+        "files": 1600,
+        "imports": 12800,
+        "resolved": 4064,
+        "distinct_outcomes": 11709,
+        "fingerprint": "ec4bb401b3465713ad6dedc4f9aa774e586b319f21d406fd79eaad29f4e98861"
+      },
+      "fingerprint": "ec4bb401b3465713ad6dedc4f9aa774e586b319f21d406fd79eaad29f4e98861",
+      "_measured_scaling_ratio": 1
+    },
+    "csharp": {
+      "small": {
+        "files": 400,
+        "imports": 3200,
+        "resolved": 979,
+        "distinct_outcomes": 2844,
+        "fingerprint": "cd1d665d997280a3eeb52069f2a8745f85ef91042085498a9ab546ed45faf10b"
+      },
+      "large": {
+        "files": 1600,
+        "imports": 12800,
+        "resolved": 4064,
+        "distinct_outcomes": 11440,
+        "fingerprint": "0b46146f5213fea8c07f1f90305a14da5ce31c865c495180f3f3903ddc6b8117"
+      },
+      "fingerprint": "0b46146f5213fea8c07f1f90305a14da5ce31c865c495180f3f3903ddc6b8117",
+      "_measured_scaling_ratio": 1.157
+    },
+    "dart": {
+      "small": {
+        "files": 400,
+        "imports": 3200,
+        "resolved": 1153,
+        "distinct_outcomes": 2987,
+        "fingerprint": "318084f48ffa4eeae4a5b7fc25916d4ad78673d92dba62b7e462d1bb87ca553a"
+      },
+      "large": {
+        "files": 1600,
+        "imports": 12800,
+        "resolved": 4681,
+        "distinct_outcomes": 11875,
+        "fingerprint": "5151cd2498bd4b7698dc9309e2539977d306f9ba82a388c630c89b51fc4a3187"
+      },
+      "fingerprint": "5151cd2498bd4b7698dc9309e2539977d306f9ba82a388c630c89b51fc4a3187",
+      "_measured_scaling_ratio": 1.007
+    },
+    "ruby": {
+      "small": {
+        "files": 400,
+        "imports": 3200,
+        "resolved": 1153,
+        "distinct_outcomes": 2936,
+        "fingerprint": "54abc79cc3fd4bfbf341119f3c511c2d64d55556a0c23984032f34e259283e46"
+      },
+      "large": {
+        "files": 1600,
+        "imports": 12800,
+        "resolved": 4681,
+        "distinct_outcomes": 11786,
+        "fingerprint": "31804ae9633d51ce7597d886f9c2230fec3448b0aa00d9ab953086e393cd28a9"
+      },
+      "fingerprint": "31804ae9633d51ce7597d886f9c2230fec3448b0aa00d9ab953086e393cd28a9",
+      "_measured_scaling_ratio": 1.093
+    }
+  }
+}
