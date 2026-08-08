@@ -6029,12 +6029,33 @@ export class LocalBackend {
       // here; the flag is what lets a reader tell a broken fan-out from a
       // genuinely caller-less one.
       const anyKnownRisk = candidateSummaries.some((c) => RISK_ORDER.includes(c.risk));
-      const maxRisk = anyKnownRisk
+      // The highest risk among candidates that actually RESOLVED. Kept as its
+      // own value rather than being folded into `maxRisk`, so narrowing the
+      // aggregate below does not throw away what was measured.
+      const knownMaxRisk = anyKnownRisk
         ? candidateSummaries.reduce(
             (worst, c) => (RISK_ORDER.indexOf(c.risk) > RISK_ORDER.indexOf(worst) ? c.risk : worst),
             'LOW',
           )
         : 'UNKNOWN';
+      // UNKNOWN DOMINATES A MIXED SET, and that is the correction.
+      //
+      // The reasoning above covers the ALL-UNKNOWN case and stops there. The
+      // MIXED case fell through it: `RISK_ORDER` has no `UNKNOWN` entry, so
+      // `indexOf` returns -1 and an UNKNOWN candidate can never win the reduce.
+      // One caller-less candidate (UNKNOWN) beside one single-caller candidate
+      // (LOW) therefore reported `maxRisk: 'LOW'` — a confident floor over a
+      // set containing an interpretation nobody measured, which is the exact
+      // false-safe the all-UNKNOWN branch was written to prevent, one case over.
+      //
+      // `maxRisk` answers "how bad could this be?", and an unresolved candidate
+      // could be CRITICAL. So any UNKNOWN in the set makes the aggregate
+      // UNKNOWN, and `knownMaxRisk` carries the measured part alongside — the
+      // reader gets "at least LOW among what resolved, and one interpretation
+      // could not be walked at all", which is strictly more than either value
+      // alone.
+      const anyUnknownRisk = candidateSummaries.some((c) => !RISK_ORDER.includes(c.risk));
+      const maxRisk = anyUnknownRisk ? 'UNKNOWN' : knownMaxRisk;
       // `candidateSummaries` is `Promise.all` over `probed`, so the two lengths
       // are the same; `probed` is the one the message and the flag agree on.
       const { atLeast, showing, fields } = ambiguityReport(outcome, probed.length, true);
@@ -6044,7 +6065,11 @@ export class LocalBackend {
         message:
           `Found ${atLeast}${outcome.total} symbols matching '${target}'` +
           showing +
-          `. Blast radius differs per candidate (max ${maxImpactedCount} impacted at risk ${maxRisk}). ` +
+          `. Blast radius differs per candidate (max ${maxImpactedCount} impacted at risk ${maxRisk}` +
+          (anyUnknownRisk && anyKnownRisk
+            ? `; ${knownMaxRisk} among the candidates that resolved, and at least one could not be walked`
+            : '') +
+          `). ` +
           `Disambiguate with target_uid (or file_path/kind) for a single authoritative result.`,
         target: { name: target },
         direction,
@@ -6067,6 +6092,11 @@ export class LocalBackend {
         risk: 'UNKNOWN',
         maxImpactedCount,
         maxRisk,
+        // Present only when the two differ, i.e. when something resolved AND
+        // something did not. Absent on a fully-resolved set (where it would
+        // duplicate `maxRisk`) and on a fully-unknown one (where there is no
+        // measured part to report).
+        ...(anyUnknownRisk && anyKnownRisk ? { knownMaxRisk } : {}),
         ...(probeFailed ? { partialProbe: true } : {}),
         candidates: candidateSummaries,
       };
