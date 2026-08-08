@@ -416,7 +416,14 @@ import type { ParseWorkerResult } from '../core/ingestion/workers/parse-worker.j
 // (`([^/]+)`) — the form every real dispatcher writes and the one it refused.
 // All parse-time route output, replayed verbatim from a warm cache.
 // RE-CHECK AGAINST origin/main IMMEDIATELY BEFORE MERGING.
-const SCHEMA_BUMP = 57;
+// 57 -> 58 for #2897: the fetch capture no longer requires a LITERAL url, so a
+// call passing a variable is recorded as an outward-action site. Measured, 44 of
+// 47 fetch calls in this repo pass a variable, so the R3-6 sink signal was
+// absent from 94% of them. Parse-time capture output replayed verbatim from a
+// warm cache, so without the bump an indexed repo keeps its empty sink set and
+// the fix looks inert.
+// RE-CHECK AGAINST origin/main IMMEDIATELY BEFORE MERGING.
+const SCHEMA_BUMP = 58;
 const GITNEXUS_PKG_VERSION = (() => {
   try {
     // package.json sits at gitnexus/package.json — two levels up from

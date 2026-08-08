@@ -185,8 +185,9 @@ describe('PARSE_CACHE_VERSION', () => {
   // serves, so a multi-method guard emits several routes where it emitted one.
   // Moved 56 -> 57 for R3-8 part 2: `.match()` dispatch, bound-match test sites,
   // named regex consts, and capturing segment wildcards in `regexToRoutePath`.
-  it('pins SCHEMA_BUMP to 57 so concurrent bumps cannot silently collide (#2766)', () => {
-    expect(Number(PARSE_CACHE_VERSION.split('+', 1)[0])).toBe(57);
+  // Moved 57 -> 58 for #2897: fetch sites are captured without a literal URL.
+  it('pins SCHEMA_BUMP to 58 so concurrent bumps cannot silently collide (#2766)', () => {
+    expect(Number(PARSE_CACHE_VERSION.split('+', 1)[0])).toBe(58);
   });
 
   it('embeds the gitnexus package version (so upgrades invalidate the cache)', () => {

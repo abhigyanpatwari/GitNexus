@@ -81,18 +81,6 @@ list_repos { offset: 400 }  → repos 401–437,                 hasMore false  
 
 Notes: `offset` ≥ `total` returns an empty page (with `total` still reported). Out-of-range or malformed `limit`/`offset` (non-integer, `limit` outside `[1, 200]`, `offset < 0`) are rejected with a clear error — `limit` above the max is rejected, not silently capped. The order is deterministic (lower-cased name, then path), so paging never skips or duplicates an entry while the registry is unchanged.
 
-### Inline staleness signal (`query` / `context` / `impact` / `cypher`)
-
-These four hot read tools attach a non-blocking `staleness` field to their response when the index is behind the checkout's current HEAD — the same `{ commitsBehind, hint }` shape `list_repos` already reports — so a direct tool call surfaces a behind-HEAD index without a separate `list_repos` call:
-
-```jsonc
-{ /* …the tool's normal result… */
-  "staleness": { "commitsBehind": 3, "hint": "⚠️ Index is 3 commits behind HEAD. Run analyze tool to update." }
-}
-```
-
-The field is **absent when the index is current** (or when the freshness check can't run), so its presence is the signal. It is only ever added to object results — raw-array `cypher` output and error envelopes are returned unchanged. `@group`-targeted calls do not carry it (multi-repo staleness is ill-defined). When you see it, the graph may be behind the working tree — re-run `analyze` before trusting blast-radius or dependence answers.
-
 ### Taint findings (`explain`)
 
 `explain` returns taint findings recorded by `gitnexus analyze --pdg` — intra-procedural `TAINTED` edges plus cross-function `TAINT_PATH` hops where the interprocedural taint phase found a function-level source→sink chain. Each finding includes a sink category (command-injection, code-injection, path-traversal, sql-injection, xss), source/sink lines, and the ordered hop path with the variable carried on each hop.
