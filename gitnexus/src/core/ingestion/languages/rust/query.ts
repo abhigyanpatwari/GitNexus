@@ -22,15 +22,18 @@ const RUST_SCOPE_QUERY = `
 
 ;; Declarations — struct
 (struct_item
-  name: (type_identifier) @declaration.name) @declaration.struct
+  name: (type_identifier) @declaration.name
+  type_parameters: (type_parameters)? @declaration.type-parameters) @declaration.struct
 
 ;; Declarations — trait
 (trait_item
-  name: (type_identifier) @declaration.name) @declaration.trait
+  name: (type_identifier) @declaration.name
+  type_parameters: (type_parameters)? @declaration.type-parameters) @declaration.trait
 
 ;; Declarations — enum
 (enum_item
-  name: (type_identifier) @declaration.name) @declaration.enum
+  name: (type_identifier) @declaration.name
+  type_parameters: (type_parameters)? @declaration.type-parameters) @declaration.enum
 
 ;; Declarations — union
 ;; Deliberately tagged @declaration.struct (→ Struct label), NOT a
@@ -42,7 +45,8 @@ const RUST_SCOPE_QUERY = `
 ;; constructor, so Struct is both the resolvable and the semantically
 ;; honest label here. #1934 F71.
 (union_item
-  name: (type_identifier) @declaration.name) @declaration.struct
+  name: (type_identifier) @declaration.name
+  type_parameters: (type_parameters)? @declaration.type-parameters) @declaration.struct
 
 ;; Declarations — module (mod foo { ... } / mod foo;)
 ;; A Rust mod is an ITEM, not just a lexical region: rustc resolves the first

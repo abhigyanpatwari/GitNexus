@@ -61,9 +61,9 @@
       "awaitParen": "N/A",
       "explicitTypeArgs": "VISIBLE-GAP",
       "indexElement": "RESOLVES",
-      "fieldReceiverCall": "INVISIBLE-GAP",
+      "fieldReceiverCall": "RESOLVES",
       "decoratedReceiverBase": "N/A",
-      "decoratedFieldType": "INVISIBLE-GAP"
+      "decoratedFieldType": "RESOLVES"
     },
     "go": {
       "plainChain": "RESOLVES",

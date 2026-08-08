@@ -159,6 +159,50 @@ function stripForwardRefQuotes(text: string): string {
 }
 
 /**
+ * Container bases whose SINGLE type argument is the element type.
+ *
+ * The single source of truth for both the matcher below and the property test
+ * that asserts every one of them is also declined as a user generic — the two
+ * lists drifting apart is the defect this arrangement exists to make
+ * impossible. Order is significant only in that it is the regex alternation
+ * order; keep additions grouped with their family.
+ */
+export const SINGLE_ARG_CONTAINERS: readonly string[] = [
+  'list',
+  'List',
+  'set',
+  'Set',
+  'tuple',
+  'Tuple',
+  'Iterable',
+  'Iterator',
+  'Sequence',
+  'Generator',
+  'AsyncIterable',
+  'AsyncIterator',
+];
+
+/** Container bases whose SECOND type argument is the value type. See {@link SINGLE_ARG_CONTAINERS}. */
+export const MAPPING_CONTAINERS: readonly string[] = [
+  'dict',
+  'Dict',
+  'Mapping',
+  'MutableMapping',
+  'OrderedDict',
+  'DefaultDict',
+];
+
+const QUALIFIER = '(?:[A-Za-z_][A-Za-z0-9_]*\\.)?';
+
+const SINGLE_ARG_CONTAINER_RE = new RegExp(
+  `^${QUALIFIER}(?:${SINGLE_ARG_CONTAINERS.join('|')})\\[([^,\\]]+)\\]$`,
+);
+
+const MAPPING_CONTAINER_RE = new RegExp(
+  `^${QUALIFIER}(?:${MAPPING_CONTAINERS.join('|')})\\[[^,\\]]+,\\s*([^\\]]+)\\]$`,
+);
+
+/**
  * Unwrap a single-arg generic collection wrapper — `list[User]`,
  * `set[User]`, `Iterable[User]`, `Sequence[User]`, `Iterator[User]`,
  * `Generator[User, ...]` — to its element type.
@@ -170,9 +214,7 @@ function stripForwardRefQuotes(text: string): string {
  * resolution time.
  */
 function stripGeneric(text: string): string {
-  const single = text.match(
-    /^(?:[A-Za-z_][A-Za-z0-9_]*\.)?(?:list|List|set|Set|tuple|Tuple|Iterable|Iterator|Sequence|Generator|AsyncIterable|AsyncIterator)\[([^,\]]+)\]$/,
-  );
+  const single = text.match(SINGLE_ARG_CONTAINER_RE);
   if (single !== null) return single[1].trim();
   // dict[K, V] / Dict[K, V] / Mapping[K, V] — strip to value type V.
   // For-loop destructuring of `for k, v in d.items()` binds `v` to
@@ -181,12 +223,204 @@ function stripGeneric(text: string): string {
   // only shape worth handling. Match a top-level K up to the first
   // comma and a V to the closing bracket; nested generics in V (e.g.
   // `dict[str, list[User]]`) are left for a downstream strip pass.
-  const dict = text.match(
-    /^(?:[A-Za-z_][A-Za-z0-9_]*\.)?(?:dict|Dict|Mapping|MutableMapping|OrderedDict|DefaultDict)\[[^,\]]+,\s*([^\]]+)\]$/,
-  );
+  const dict = text.match(MAPPING_CONTAINER_RE);
   if (dict !== null) return dict[1].trim();
+
+  // A subscripted type the two allow-lists above did NOT claim is a
+  // user-defined GENERIC, not a container: `Repo[User]`, `Handler[Req, Res]`.
+  // Its base names one declaration — `Repo[User]` and `Repo[Order]` are the
+  // same `class Repo(Generic[T])` — so reduce to that base, exactly as Java's
+  // and Swift's interpreters already do for their `<…>` spelling (#2833).
+  //
+  // Guarded by a DENY set rather than reached by fallthrough, because "the two
+  // rules above did not match" is NOT the same as "not a container". Two
+  // measured counterexamples, both of which this branch got wrong before the
+  // guard existed:
+  //   - `dict[str, list[User]]` — the dict rule's value group cannot span a
+  //     nested `]`, so it declines and the shape falls through. Reducing it to
+  //     `dict` destroys the value type the dict rule explicitly leaves "for a
+  //     downstream strip pass"; the annotation must survive intact instead.
+  //   - `Callable[[int], User]`, `Literal["a"]`, `Annotated[int, F()]`,
+  //     `Union[A, B]`, `tuple[int, ...]` — typing SPECIAL FORMS, not classes.
+  //     Reducing them yields a bare `Callable`/`Literal`/`Union`, which binds
+  //     to a workspace class of that name if one exists — a fabricated edge,
+  //     and those names are ordinary enough for a real codebase to declare.
+  // Anything named here keeps its as-written text and resolves as it did
+  // before #2833.
+  //
+  // Only reached for genuine annotations: every Python `@type-binding.type`
+  // capture is a `(type)`, `(identifier)`, `(attribute)` or `(dotted_name)`
+  // node, so a subscripted VALUE expression (`arr[0]`) never arrives here.
+  //
+  // The as-written spelling is not lost — `scope-extractor` keeps it on
+  // `TypeRef.declaredSpelling` whenever it differs from the reduced name,
+  // which is what the receiver fold's index step reads.
+  const userGeneric = text.match(/^((?:[A-Za-z_][A-Za-z0-9_]*\.)*[A-Za-z_][A-Za-z0-9_]*)\[.+\]$/s);
+  if (userGeneric !== null) {
+    const qualified = userGeneric[1].trim();
+    const base = qualified.slice(qualified.lastIndexOf('.') + 1);
+    if (!isNotAUserGenericBase(base)) return qualified;
+  }
   return text;
 }
+
+/**
+ * Whether a subscripted annotation's base names a Python type-system construct
+ * rather than a workspace class — see {@link NOT_A_USER_GENERIC_SPELLINGS}.
+ *
+ * CASE-FOLDED, and that is the load-bearing part. PEP 585 gave nearly every
+ * container two spellings — the builtin/`collections` one and the `typing`
+ * alias (`deque` / `typing.Deque`, `frozenset` / `typing.FrozenSet`,
+ * `defaultdict` / `typing.DefaultDict`) — which differ ONLY in case. Matching
+ * exactly meant each pair had to be listed twice and any half-pair was a silent
+ * escape: `deque` was listed, `Deque` was not, so `self.dq: Deque[User]`
+ * reduced to `Deque` and bound to a workspace `class Deque` (#2855). Folding
+ * case closes that axis by construction instead of by vigilance.
+ *
+ * The cost is that a workspace class whose name is a case VARIANT of a stdlib
+ * construct (`class deque(Generic[T])`) stops reducing. PEP 8 makes such a
+ * class vanishingly rare, and the loss is a missing edge — recoverable — where
+ * the gain is not minting a confident wrong one.
+ */
+function isNotAUserGenericBase(base: string): boolean {
+  return NOT_A_USER_GENERIC.has(base.toLowerCase());
+}
+
+/**
+ * Bases a subscripted annotation may carry that are NOT user-defined generics.
+ *
+ * SCOPE — the standard library, and deliberately nothing else. The names below
+ * are the documented Python type-system surface (`typing`'s deprecated PEP 585
+ * aliases and its special forms, plus the stdlib classes those aliases point
+ * at); that universe is CLOSED and versioned by CPython, so the list is
+ * auditable against
+ * <https://docs.python.org/3/library/typing.html#deprecated-aliases>.
+ *
+ * Third-party generics (`Mapped[int]`, `QuerySet[User]`) are NOT listed. That
+ * universe is open, so enumerating it only ever chases the last escape, and
+ * denying an ordinary name like `Model` would cost real edges in the many
+ * projects that legitimately declare one. Those spellings still reduce to their
+ * base, and the base is now admitted only on the grounds `resolveErasedBaseName`
+ * applies at resolution time — the file's scope chain binds it, the declaration
+ * is in this very file, the index proves the name is a template family, or the
+ * file has no cross-file class channel to be absent from. A `Mapped[User]` whose
+ * base the file cannot see therefore binds nothing, which is the structural
+ * answer this parse-time pass cannot give and no longer has to.
+ *
+ * Two distinct reasons to decline, both always-correct at this layer:
+ *   - CONTAINERS, including ones the two rules above do not own. Reducing
+ *     `deque[User]` to `deque` types a receiver as the container and retargets
+ *     every call in a for-loop chain, and reducing `dict[str, list[User]]` to
+ *     `dict` destroys the value type the dict rule leaves for a downstream pass.
+ *   - `typing` SPECIAL FORMS, which are not classes at all. `Callable`,
+ *     `Literal`, `Union` reduce to a bare name that binds to a workspace class
+ *     of that name if one exists — a fabricated edge.
+ *
+ * Members are listed ONCE per case-insensitive concept: {@link
+ * isNotAUserGenericBase} folds case, so the builtin spelling covers its PEP 585
+ * `typing` twin (`deque` covers `Deque`, `frozenset` covers `FrozenSet`).
+ * Non-generic ABCs (`Hashable`, `Sized`) are omitted — they cannot be written
+ * subscripted, so they never reach this branch.
+ *
+ * Exported for the property test that asserts the case-fold closure holds
+ * behaviourally; nothing else should read it.
+ */
+export const NOT_A_USER_GENERIC_SPELLINGS: readonly string[] = [
+  // ── builtins subscriptable since PEP 585 ──────────────────────────────────
+  'list',
+  'set',
+  'frozenset',
+  'tuple',
+  'dict',
+  'type',
+  // ── `collections` ─────────────────────────────────────────────────────────
+  'defaultdict',
+  'OrderedDict',
+  'ChainMap',
+  'Counter',
+  'deque',
+  // ── `collections.abc`, the subscriptable members ──────────────────────────
+  'Mapping',
+  'MutableMapping',
+  'Sequence',
+  'MutableSequence',
+  'AbstractSet',
+  'MutableSet',
+  'Collection',
+  'Container',
+  'Reversible',
+  'Iterable',
+  'Iterator',
+  'Generator',
+  'AsyncIterable',
+  'AsyncIterator',
+  'AsyncGenerator',
+  'Awaitable',
+  'Coroutine',
+  'KeysView',
+  'ValuesView',
+  'ItemsView',
+  'MappingView',
+  // ── `contextlib`, and the `typing` aliases to it ──────────────────────────
+  'ContextManager',
+  'AsyncContextManager',
+  'AbstractContextManager',
+  'AbstractAsyncContextManager',
+  // ── `re`, and the `typing` aliases to it ──────────────────────────────────
+  // `Pattern` and `Match` ARE classes, so reducing them is not wrong the way
+  // reducing `Callable` is; they are declined because in Python annotations
+  // these spellings are overwhelmingly the `re` types, while a workspace class
+  // of the same name is a parser's own `Pattern`/`Match` and would be bound
+  // with no import evidence whatsoever. Same policy as the receiver-chain
+  // resolver's: a missing edge is recoverable, a confident wrong one is not.
+  'Pattern',
+  'Match',
+  // ── I/O streams (`typing.IO` and its two subclasses) ──────────────────────
+  'IO',
+  'TextIO',
+  'BinaryIO',
+  // ── stdlib generic classes with ordinary names ────────────────────────────
+  // Same policy call as `Pattern`/`Match` above, and the sharpest instance of
+  // it: `asyncio.Task[Result]` reduces to `asyncio.Task`, whose dotted-tail
+  // fallback then single-matches an unrelated workspace `class Task`.
+  'Queue',
+  'Task',
+  'Future',
+  'PathLike',
+  // ── `typing` special forms — not classes ──────────────────────────────────
+  'Callable',
+  'Literal',
+  'Annotated',
+  'Union',
+  'Optional',
+  'Final',
+  'ClassVar',
+  // `typing.Type` is the PEP 585 alias for the builtin `type` listed above, and
+  // the case fold already covers it — see the one-entry-per-concept rule.
+  'TypeGuard',
+  'TypeIs',
+  'Unpack',
+  'Required',
+  'NotRequired',
+  'ReadOnly',
+  'Concatenate',
+  'LiteralString',
+  // ── generic machinery: bases and type-parameter declarations ──────────────
+  // `Generic[T]`/`Protocol[T]` are written subscripted for real. The three
+  // declaration forms are not subscriptable in valid Python, but this
+  // interpreter checks no grammar — it reduces whatever text the annotation
+  // capture carried — so they are declined defensively.
+  'Generic',
+  'Protocol',
+  'TypeVar',
+  'ParamSpec',
+  'TypeVarTuple',
+];
+
+/** Case-folded lookup index over {@link NOT_A_USER_GENERIC_SPELLINGS}. */
+const NOT_A_USER_GENERIC: ReadonlySet<string> = new Set(
+  NOT_A_USER_GENERIC_SPELLINGS.map((name) => name.toLowerCase()),
+);
 
 /**
  * Unwrap nullable type annotations so downstream resolution treats
