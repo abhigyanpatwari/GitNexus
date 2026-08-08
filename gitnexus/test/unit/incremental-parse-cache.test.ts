@@ -131,8 +131,33 @@ describe('PARSE_CACHE_VERSION', () => {
   // already 44); only the merge-time diff against origin/main surfaced it. What
   // the pin DOES do is fail loudly the moment the constant and this expectation
   // drift apart, which is what forces the re-check to happen at all.
-  // Moved 45 -> 46 for method-level Spring `@RequestMapping` routes (#2824):
+  // Moved 45 -> 46 for the JavaScript bare-identifier read captures, the
+  // object-literal `@definition.property` rule and the TypeScript shape-member
+  // captures (A1/A2/A4/A5) — all parse-time, so a v45 warm cache serves entries
+  // carrying neither the new reference sites nor the new Property nodes.
+  //
+  // This branch first took 45 and COLLIDED with #2837 above, which merged
+  // first: the TENTH ledger entry and the FOURTH exact clash, and the second in
+  // a row. Same lesson as the note above — the pin cannot detect the tie, since
+  // both sides asserted `toBe(45)` and that passes while main is already 45.
+  // Only the merge-time diff against origin/main surfaces it.
+  //
+  // Moved 46 -> 47 for method-level Spring `@RequestMapping` routes (#2857):
   // cached ParseWorkerResults otherwise replay the pre-fix empty route set.
+  // That PR read this branch's claim on 46 and took 47 rather than colliding —
+  // the FIFTH clash, and the first the ledger's convention actually prevented.
+  // It only moved the collision up one step, though: this branch's own 47 and
+  // everything above it had to be renumbered +1 at merge time. Capture sets
+  // unchanged; only the numbers moved.
+  //
+  // Moved 51 -> 52 for dispatch-guard routes (R3-7): the JS/TS providers now
+  // implement `extractDecoratorRoutes`, and decorator routes are worker output
+  // carried in the cache. A v50 warm cache replays a worker result whose
+  // `decoratorRoutes` predates the extractor, so `route_map` keeps answering
+  // empty — the exact symptom the change fixes, disguised as "it does not work".
+  // Moved 52 -> 53 for the same-file constant folding that followed, because a
+  // build stamped 50 (now 52) had already been used to analyze without it.
+  //
   //
   // Moved 47 -> 48 for #2833's three parse-time changes: C++
   // `field_declaration` captures for `template_type` and qualified generic
@@ -151,8 +176,8 @@ describe('PARSE_CACHE_VERSION', () => {
   // does do is fail loudly the moment the constant and this expectation drift
   // apart, which is what forces the merge-time diff against origin/main to
   // happen at all.
-  it('pins SCHEMA_BUMP to 48 so concurrent bumps cannot silently collide (#2833)', () => {
-    expect(Number(PARSE_CACHE_VERSION.split('+', 1)[0])).toBe(48);
+  it('pins SCHEMA_BUMP to 53 so concurrent bumps cannot silently collide (#2766)', () => {
+    expect(Number(PARSE_CACHE_VERSION.split('+', 1)[0])).toBe(53);
   });
 
   it('embeds the gitnexus package version (so upgrades invalidate the cache)', () => {

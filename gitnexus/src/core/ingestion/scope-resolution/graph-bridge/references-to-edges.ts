@@ -25,6 +25,7 @@ import { resolveCallerGraphId, resolveDefGraphId } from '../graph-bridge/ids.js'
 import { mapReferenceKindToEdgeType } from '../graph-bridge/edges.js';
 import type { GraphNodeLookup } from '../graph-bridge/node-lookup.js';
 import type { CalleeIdSink } from '../graph-bridge/callee-id-sink.js';
+import { isValueDefinitionLabel } from '../../utils/ast-helpers.js';
 
 /**
  * Optional opaque skip key — providers may pre-emit edges (e.g. via
@@ -34,6 +35,13 @@ import type { CalleeIdSink } from '../graph-bridge/callee-id-sink.js';
  * `${filePath}:${startLine}:${startCol}`.
  */
 type ReferenceSiteSkipSet = ReadonlySet<string>;
+
+/**
+ * Value labels whose defs MAY be function-local. A reference to one of these is
+ * dropped only when the def is positively identified as living inside a function
+ * body — see `functionLocalValueDefIds`. Everything else, including a class
+ * member in a language that keeps no values at module scope, is emitted.
+ */
 
 export function emitReferencesViaLookup(
   graph: KnowledgeGraph,
@@ -45,6 +53,29 @@ export function emitReferencesViaLookup(
    *  `--pdg`; `undefined` ⇒ zero overhead, byte-identity (R4). Captured at the
    *  CALLS emit below BEFORE this loop's `seen` dedup (KTD6/R8). */
   calleeIdSink?: CalleeIdSink,
+  /**
+   * Def ids of value symbols bound inside a FUNCTION body. When supplied, a
+   * read/write whose target is a `Const`/`Variable`/`Static` in this set emits
+   * no edge.
+   *
+   * Bare-identifier reads (A2) made module-scope constants answerable, but the
+   * same capture also matches a read of a BLOCK-LOCAL `const`. An edge to one
+   * of those keeps alive precisely the inert local symbols `pruneLocalSymbols`
+   * exists to drop — turning a pruned node into a retained node plus an edge,
+   * in every function of every indexed repo. "Who uses this constant?" is a
+   * question about a module's surface; a local's uses are the three lines
+   * around it.
+   *
+   * A BLOCKLIST, not an allowlist, and the direction is the point. Asking
+   * "is this def module-level?" silently excludes class members — Java/C#
+   * fields, Python class attributes — which are neither module-level nor local.
+   * Asking "is this def function-local?" excludes only what it can positively
+   * identify, so an unrecognised or uninspected def is emitted. A stray inert
+   * local is recoverable; a deleted edge class reads as "nothing uses this".
+   *
+   * Optional so callers that never capture bare identifiers are unchanged.
+   */
+  functionLocalValueDefIds?: ReadonlySet<string>,
 ): { emitted: number; skipped: number } {
   let emitted = 0;
   let skipped = 0;
@@ -81,6 +112,17 @@ export function emitReferencesViaLookup(
 
       const edgeType = mapReferenceKindToEdgeType(ref.kind);
       if (edgeType === undefined) {
+        skipped++;
+        continue;
+      }
+
+      // Function-local value reference — see `functionLocalValueDefIds`.
+      if (
+        functionLocalValueDefIds !== undefined &&
+        edgeType === 'ACCESSES' &&
+        isValueDefinitionLabel(targetDef.type) &&
+        functionLocalValueDefIds.has(targetDef.nodeId)
+      ) {
         skipped++;
         continue;
       }

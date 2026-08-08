@@ -248,6 +248,24 @@ import type { ParseWorkerResult } from '../core/ingestion/workers/parse-worker.j
 // them. Only comparing against origin/main at MERGE time surfaces it.
 // PR #2840 (Objective-C, draft) still claims 44 as well — it must move too.
 // RE-CHECK AGAINST origin/main IMMEDIATELY BEFORE MERGING.
+// 45 -> 46 for the JavaScript bare-identifier read captures (A2), which emit
+// `@reference.read.identifier` in value positions (call arguments,
+// default-parameter values, return statements) so a module-scope `const` read
+// only by bare name finally mints a reference site, plus the object-literal
+// `@definition.property` rule and the TypeScript shape-member captures. All
+// PARSE-TIME emission, so a warm cache serves entries carrying none of those
+// matches and the new nodes and edges never appear — observed directly while
+// developing: a full `analyze --force` produced a byte-identical graph and read
+// as a failed hypothesis until the cache was cleared by hand.
+//
+// This branch originally took 45 and it COLLIDED: #2837 above merged first and
+// claimed it. The TENTH entry in this ledger and the FOURTH exact clash, caught
+// exactly as the note above says it must be — by comparing against origin/main
+// at merge time, not at review time. The pin test cannot catch it: both sides
+// asserted `toBe(45)`, which passes while main is already 45, so two capture
+// schemas would have shared one PARSE_CACHE_VERSION and the durable ParsedFile
+// store would have replayed pre-fix ParsedFiles verbatim for one of them.
+// RE-CHECK AGAINST origin/main IMMEDIATELY BEFORE MERGING.
 //
 // 46 -> 47: method-level Spring `@RequestMapping` now emits wildcard routes
 // and one route per static `RequestMethod.X` value. These decorator routes live
@@ -255,6 +273,76 @@ import type { ParseWorkerResult } from '../core/ingestion/workers/parse-worker.j
 // the previous version would make the fix a no-op for every unchanged Java file.
 // PR #2856 claims 46, so this branch owns 47. Verified against upstream/main at
 // 021ac3037 (still 45). RE-CHECK BEFORE MERGE.
+//
+// ── The FIFTH clash, and the first one the ledger's own convention prevented ──
+// #2857 above merged while this branch sat waiting, and it did the right thing:
+// it read this PR's claim on 46 and took 47 instead of colliding. That left the
+// clash one step further up — 46 was safe, but THIS branch's own 47 (below) was
+// not, and neither was anything after it. Every entry from here down has been
+// renumbered +1 at merge time. Nothing about the capture sets changed; only the
+// numbers did, which is the whole point of re-checking at merge rather than at
+// review. Ledger entries 11 through 15.
+//
+// SIXTH clash, same shape, one merge later: #2833 then took 48 for a generic-
+// receiver fix, so this branch's chain shifted +1 AGAIN and now runs 49-53.
+// The capture sets have never moved; only the numbers have. This is the cost of
+// a single global counter with concurrent PRs, and #2860 is the mechanical fix.
+//
+// 48 -> 49 for the round-2 capture work: object literals behind an
+// identity-preserving wrapper (`const X = Object.freeze({ ... })`) now mint
+// `@definition.property` for their keys. Parse-time like every entry above, and
+// this one was ALSO observed as a false negative first: `analyze --force`
+// against a fixture carrying the new shape returned the pre-change node set and
+// read as "the query does not match", until the on-disk cache was removed by
+// hand and the same run produced the node. `--force` re-runs the pipeline but
+// still serves ParsedFiles from the durable store, so it does not substitute
+// for this bump.
+// RE-CHECK AGAINST origin/main IMMEDIATELY BEFORE MERGING.
+//
+// 49 -> 50 for the TypeScript object-literal captures (R3-3): named
+// object-literal keys and the identity-wrapper form now mint `@definition.property`
+// in TYPESCRIPT_QUERIES, as they already did for JavaScript. Parse-time, so a
+// warm cache would replay ParsedFiles carrying none of those matches and the
+// keys would stay invisible.
+//
+// #2860 adds a CI check comparing this against the base branch — the merge-time
+// re-check this ledger has asked for by hand across ten entries and four exact
+// clashes. It is NOT on this branch, so until that one merges the re-check
+// below is still manual.
+// RE-CHECK AGAINST origin/main IMMEDIATELY BEFORE MERGING.
+// 50 -> 51 for the return-shape and shorthand captures (R3-4): keys of an
+// anonymous literal in return position, and shorthand keys in both that and the
+// variable-bound form. Parse-time again.
+//
+// The v34 hazard, and this branch has already tripped it: a build stamped 48
+// (now 50) was installed and used to analyze two repos BEFORE these captures
+// existed, so caches stamped 48 exist that carry none of them. Within one PR the version
+// only has to differ from main's, but an INTERMEDIATE build of the same series
+// is a different capture set wearing the same number — which is exactly what
+// the note above records for 33/34.
+// RE-CHECK AGAINST origin/main IMMEDIATELY BEFORE MERGING.
+// 51 -> 52 is NOT needed for R3-5: that pass is scope-resolution, not
+// parse-time capture, so a warm cache replays ParsedFiles that already carry
+// everything it reads. Recorded because the reflex on this branch has been to
+// bump, and a bump nobody needs still forces every user a full re-parse.
+//
+// 51 -> 52 IS needed for dispatch-guard routes (R3-7): the JS/TS providers now
+// implement `extractDecoratorRoutes`, and decorator routes are worker output
+// carried in the parse cache. A warm cache replays a worker result whose
+// `decoratorRoutes` predates the extractor entirely, so every hand-rolled route
+// stays invisible and `route_map` keeps answering empty — the exact symptom the
+// change exists to fix, wearing the mask of "the extractor does not work".
+//
+// 52 -> 53 for the same-file constant folding that followed it. The v34 hazard
+// again, and this branch has now tripped it TWICE: a build stamped 50 (now 52)
+// was used to analyze before folding existed, so those caches carry the unfolded
+// route set. Caught by measuring — the post-folding run came back suspiciously
+// fast and would have reported the pre-folding number, which is precisely how
+// "an intermediate build of the same series is a different capture set wearing
+// the same number" shows up in practice. Within one PR the version only has to
+// differ from main's; against a cache YOU wrote, it has to differ from itself.
+// RE-CHECK AGAINST origin/main IMMEDIATELY BEFORE MERGING.
+//
 
 // 47 -> 48: #2833 makes a generic-typed FIELD usable as a call receiver. Three
 // parse-time changes ride on this one value:
@@ -300,7 +388,7 @@ import type { ParseWorkerResult } from '../core/ingestion/workers/parse-worker.j
 // published (46, 47) is superseded by 48, so a warm cache stamped with either is
 // correctly invalidated.
 // RE-CHECK AGAINST origin/main IMMEDIATELY BEFORE MERGING.
-const SCHEMA_BUMP = 48;
+const SCHEMA_BUMP = 53;
 const GITNEXUS_PKG_VERSION = (() => {
   try {
     // package.json sits at gitnexus/package.json — two levels up from

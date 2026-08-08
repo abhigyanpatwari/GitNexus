@@ -335,6 +335,15 @@ export const CLASS_CONTAINER_TYPES = new Set([
   'class_declaration',
   'abstract_class_declaration',
   'interface_declaration',
+  // A TypeScript object-type alias owns its members exactly as the interface
+  // beside it does — same `property_signature` members, same "who reads this
+  // contract field?" question. Without it an alias member is minted with a
+  // bare id and no owner, so two aliases in one file sharing a field name
+  // collapse onto one node and nothing links the field to its consumers,
+  // while the identical interface resolves. Aliases with no object type
+  // (`type Id = string`) declare no members, so they own nothing and are
+  // unaffected.
+  'type_alias_declaration',
   'struct_declaration',
   'record_declaration',
   'class_specifier',
@@ -398,6 +407,9 @@ export const CONTAINER_TYPE_TO_LABEL: Record<string, string> = {
   class_declaration: 'Class',
   abstract_class_declaration: 'Class',
   interface_declaration: 'Interface',
+  // Required by the CLASS_CONTAINER_TYPES invariant above: a container missing
+  // here gets orphaned member edges or a wrong owner label.
+  type_alias_declaration: 'TypeAlias',
   struct_declaration: 'Struct',
   struct_specifier: 'Struct',
   class_specifier: 'Class',
@@ -1103,8 +1115,15 @@ export interface ObjectLiteralBindingInfo {
    *
    * Set by {@link findMemberAssignmentOwnerInfo} so a prototype method keys as
    * `Foo.bar` — without it two constructors in one file that each define
-   * `bar` collapse onto a single `Method:<file>:bar` id. Left undefined by
-   * {@link findObjectLiteralBindingInfo}, whose ids stay exactly as they were.
+   * `bar` collapse onto a single `Method:<file>:bar` id.
+   *
+   * {@link findObjectLiteralBindingInfo} sets it ONLY when the caller opts in
+   * via `includeOwnerName`. Its `Method` ids must stay exactly as they were —
+   * qualifying them would rewrite every object-literal method id in every
+   * indexed repo — but object-literal KEYS (indexed since A1/A5) genuinely
+   * need it: two config objects in one file sharing a key name otherwise
+   * collapse onto a single `Property:<file>:<key>` id, merging two distinct
+   * settings into one symbol.
    */
   ownerName?: string;
 }
@@ -1158,9 +1177,101 @@ const BLOCK_SCOPE_BOUNDARY_TYPES = new Set([
  *     ancestor also returns null (catches block-scoped declarations inside
  *     top-level `if`/`for`/`try`/etc., which cannot be imported).
  */
+/**
+ * Owner for the keys of an ANONYMOUS object literal in return position (R3-4).
+ *
+ * `return { symbol, score, wickRatio, … }` binds to nothing, so its keys had no
+ * anchor and could not be qualified — which on the reporting repo left the
+ * central payload of the signal pipeline, ~25 fields, entirely unqueryable.
+ * There are 437 such sites in one backend directory, so this is the dominant
+ * shape, not an edge case.
+ *
+ * The enclosing FUNCTION is the honest owner: the literal is that function's
+ * return shape, which is a contract its callers consume. Qualifying by it keeps
+ * two functions returning the same key name as two distinct nodes, exactly as
+ * `ownerName` does for variable-bound literals.
+ *
+ * Returns null when the literal is not DIRECTLY returned (a nested literal, or
+ * one inside a callback several frames down), because then the enclosing
+ * function is not what the object describes.
+ */
+/**
+ * True when this definition node is a key of a literal in RETURN position.
+ *
+ * Deliberately independent of whether an OWNER NAME could be derived. The two
+ * are different questions, and conflating them mislabels the anonymous case:
+ * `[function (row) { return { k: row.x }; }]` yields no name to qualify by, so
+ * the owner lookup returns null — but the key is still a return shape, and
+ * flagging it by owner-presence would leave it looking like a DECLARED anchor
+ * and let it outrank a real declaration during narrowing.
+ */
+export const isReturnShapeProperty = (node: SyntaxNode): boolean => {
+  let current: SyntaxNode | null = node;
+  let objectDepth = 0;
+  while (current && objectDepth === 0) {
+    if (current.type === 'object') objectDepth = 1;
+    else if (FUNCTION_NODE_TYPES.has(current.type)) return false;
+    else current = current.parent;
+  }
+  return current?.parent?.type === 'return_statement';
+};
+
+export const findReturnShapeOwnerInfo = (
+  node: SyntaxNode,
+  filePath: string,
+  // NO `ownerId`, deliberately, and the union's optional field is what says so.
+  // An owner id would emit `HAS_PROPERTY` from the FUNCTION, a `Function|Property`
+  // relation pair that the schema does not declare — and an undeclared pair does
+  // not degrade, it throws `UndeclaredRelationPairError` and kills the entire
+  // analyze. That already shipped once in this PR. The qualifier alone is what
+  // this needs: it makes the key nameable and keeps two functions' same-named
+  // keys distinct, without asserting a containment edge nothing consumes.
+): { readonly ownerId?: string; readonly ownerName: string } | null => {
+  // Walk to the literal this key belongs to; bail if it is nested inside
+  // another object, whose shape it describes instead.
+  let current: SyntaxNode | null = node;
+  let objectDepth = 0;
+  while (current && objectDepth === 0) {
+    if (current.type === 'object') objectDepth = 1;
+    else if (FUNCTION_NODE_TYPES.has(current.type)) return null;
+    else current = current.parent;
+  }
+  if (!current) return null;
+  const literal = current;
+  if (literal.parent?.type !== 'return_statement') return null;
+
+  // The nearest enclosing function-like, and its name. An anonymous function
+  // (a callback, an IIFE) gives nothing to qualify by, so those stay
+  // unanchored rather than colliding on a shared empty owner.
+  let fn: SyntaxNode | null = literal.parent.parent;
+  while (fn && !FUNCTION_NODE_TYPES.has(fn.type)) fn = fn.parent;
+  if (!fn) return null;
+
+  const nameNode = fn.childForFieldName?.('name');
+  if (nameNode?.type === 'identifier' || nameNode?.type === 'property_identifier') {
+    return { ownerName: nameNode.text };
+  }
+  // `const formatAlert = (…) => ({ … })` and `const f = function () {}`: the
+  // name is on the declarator, not the function.
+  const declarator = fn.parent;
+  if (declarator?.type === 'variable_declarator') {
+    const declName = declarator.childForFieldName?.('name');
+    if (declName?.type === 'identifier') return { ownerName: declName.text };
+  }
+  void filePath;
+  return null;
+};
+
 export const findObjectLiteralBindingInfo = (
   node: SyntaxNode,
   filePath: string,
+  options?: {
+    /**
+     * Also return `ownerName` so the member qualifies as `<owner>.<member>`.
+     * Opt-in because turning it on for `Method` would rewrite existing ids.
+     */
+    readonly includeOwnerName?: boolean;
+  },
 ): ObjectLiteralBindingInfo | null => {
   // ── Phase A: walk up from node, count `object` ancestors, find declarator
   let current: SyntaxNode | null = node;
@@ -1218,6 +1329,7 @@ export const findObjectLiteralBindingInfo = (
   const ownerLabel = declaration?.type === 'variable_declaration' ? 'Variable' : 'Const';
   return {
     ownerId: generateId(ownerLabel, `${filePath}:${nameNode.text}`),
+    ...(options?.includeOwnerName === true ? { ownerName: nameNode.text } : {}),
   };
 };
 
