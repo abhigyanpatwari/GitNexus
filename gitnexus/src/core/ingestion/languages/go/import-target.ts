@@ -94,10 +94,3 @@ function findAllFilesInPkgDir(allFilePaths: ReadonlySet<string>, pkgPath: string
   // emitted in Set-iteration order and `filesDirectlyInPkgDir` reproduces it.
   return filesDirectlyInPkgDir(getGoPackageIndex(allFilePaths), pkgPath);
 }
-
-/** Preserved for backward compat. */
-export interface GoResolveContext {
-  readonly fromFile: string;
-  readonly allFilePaths: ReadonlySet<string>;
-  readonly goModule?: GoModuleConfig;
-}

@@ -10,9 +10,21 @@
  * IMPORTANT for callers: the Set must be passed THROUGH, never copied. A
  * defensive `new Set(allFilePaths)` in an adapter hands a fresh `WeakMap` key
  * per call and silently restores the O(imports × files) behaviour — the exact
- * bug PR #1918 shipped and had to fix in review (P1). `test/unit/
- * scope-resolution/import-target-index-parity.test.ts` guards that by counting
- * how many times the Set is iterated.
+ * bug PR #1918 shipped and had to fix in review (P1).
+ *
+ * Two layers guard that, and they guard different things:
+ *  - ADAPTER BOUNDARY, where the defensive-copy hazard actually lives:
+ *    `test/integration/<lang>-import-index-reuse.test.ts` (csharp and ruby for
+ *    this index; go, dart, kotlin and python for the sibling ones) resolves
+ *    through `<lang>ScopeResolver.resolveImportTarget` — the orchestrator
+ *    adapter — and asserts the file set is traversed once per run (twice for
+ *    C#, which builds two indexes). Kotlin and Python instead count index
+ *    BUILDS from production (`languages/<lang>/index-stats.ts`); either way, a
+ *    copy inserted in an adapter fails these.
+ *  - RESOLVER LEVEL: `test/unit/scope-resolution/import-target-index-parity.test.ts`
+ *    calls the resolvers directly, so it never crosses the adapter boundary and
+ *    a copy there leaves it green. What it catches is a rescan reintroduced
+ *    INSIDE a resolver, by counting how many times the Set is iterated.
  */
 
 import { buildSuffixIndex, type SuffixIndex } from './utils.js';

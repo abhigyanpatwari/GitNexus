@@ -42,8 +42,9 @@ export interface CsharpResolveContext {
 
 /**
  * Namespace-directory index over the `.cs` files, memoized on the Set's
- * identity. Feeds `findDirectChild`, which the no-csproj path calls up to once
- * per stripped namespace prefix.
+ * identity. Feeds `firstFileDirectlyInPkgDir` (in
+ * `import-resolvers/package-dir-index.ts`), which the no-csproj path calls once
+ * for the direct match and then up to once per stripped namespace prefix.
  */
 const csharpDirIndexCache = new WeakMap<ReadonlySet<string>, PackageDirIndex>();
 
