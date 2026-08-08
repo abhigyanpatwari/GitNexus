@@ -715,7 +715,7 @@ export function buildSinkFunctionSet(
  * Merge traces that are subsets of other traces.
  * Keep longer traces, remove redundant shorter ones.
  */
-const deduplicateTraces = (
+export const deduplicateTraces = (
   traces: string[][],
   /** See `buildSinkFunctionSet` — a sink-terminated trace survives subsumption. */
   isSink: (nodeId: string) => boolean = () => false,
@@ -753,7 +753,23 @@ const deduplicateTraces = (
     // from ever being processes. Emitting one at the walk and deleting it one
     // step later would have been a no-op fix.
     const terminal = trace[trace.length - 1];
-    const traceKey = trace.join('->');
+    // PADDED with the separator on both ends, so `includes` can only match whole
+    // steps (#2894). Unpadded, the test is not anchored to a step boundary and a
+    // match may begin in the MIDDLE of a node id:
+    //
+    //   'X->AA->B'.includes('A->B')   ->  true
+    //
+    // which discards `A -> B` as redundant against a chain `A` is not a step of
+    // at all. Measured inert on every corpus tried — the collision needs one id
+    // to be a strict suffix of another, which real ids
+    // (`Function:<path>:<name>`) do not produce — but the predicate did not mean
+    // what the surrounding code says it means, and this is a function whose
+    // entire job is deciding what to delete.
+    //
+    // Note the encoding assumes `->` never appears IN a node id. A C++
+    // `operator->` would defeat the join regardless of padding; out of scope
+    // here, but the assumption is real.
+    const traceKey = `->${trace.join('->')}->`;
     if (terminal !== undefined && isSink(terminal)) {
       unique.push(trace);
       uniqueKeys.push(traceKey);

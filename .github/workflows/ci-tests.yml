@@ -482,6 +482,14 @@ jobs:
         working-directory: gitnexus
 
       - name: Cross-language scope-capture fingerprint + scaling guards
+        # Runs even after an earlier guard fails (#2895). Every step here was
+        # fail-fast, so the FIRST failing --check aborted the job and every guard
+        # after it reported `skipped` — which reads identically to "nothing to do".
+        # Audited across 13 benchmark runs on #2856: the job succeeded zero times
+        # and the last two guards executed zero times for the life of the PR, while
+        # two reviews read the checks summary and saw nothing wrong. `!cancelled()`
+        # rather than `always()` so an explicit cancel still stops the job.
+        if: ${{ !cancelled() }}
         # Build-free: asserts emit<Lang>ScopeCaptures output is unchanged
         # (fingerprint) and stays linear (scaling < 1.5) for go/csharp/rust/php/
         # ruby/cobol. Catches an O(n^2) re-regression without the worker pool.
@@ -489,6 +497,7 @@ jobs:
         working-directory: gitnexus
 
       - name: Callable-value-flow target-index guards (#2693)
+        if: ${{ !cancelled() }}
         # Build-free: asserts buildGraphTargetIndex resolves an unchanged target
         # set (fingerprint), stays linear in def count, and that the #2693
         # widened gate — which now considers VALUE bindings, a population that
@@ -501,6 +510,7 @@ jobs:
         working-directory: gitnexus
 
       - name: C++ qualified-namespace resolution guards (#2788)
+        if: ${{ !cancelled() }}
         # Build-free: asserts resolveCppQualifiedNamespaceMember resolves an
         # unchanged symbol set (fingerprint) and that per-call-site cost stays
         # independent of corpus size. Rationale and history: see the header of
@@ -509,6 +519,7 @@ jobs:
         working-directory: gitnexus
 
       - name: Kotlin import-resolution identity + scaling guards
+        if: ${{ !cancelled() }}
         # Build-free: asserts resolveKotlinImportTarget resolves an unchanged
         # file set (fingerprint, in both file-set iteration orders — every
         # tie-break in that resolver is expressed only through iteration order)
@@ -520,6 +531,7 @@ jobs:
         working-directory: gitnexus
 
       - name: Receiver-resolution drop guards
+        if: ${{ !cancelled() }}
         # NOT build-free: this one runs the real pipeline, so it needs dist/
         # (the setup action above builds). ~2m15s.
         #
@@ -545,6 +557,7 @@ jobs:
         working-directory: gitnexus
 
       - name: Scope-emission guards (#2699)
+        if: ${{ !cancelled() }}
         # Build-free: asserts the JS/TS scope set is unchanged. Block scopes are
         # what make `let`/`const` in sibling blocks distinct bindings, but a
         # scope per `statement_block` triples the count and deepens every
@@ -557,6 +570,7 @@ jobs:
         working-directory: gitnexus
 
       - name: CFG construction time / disk / memory guards (#2081 M1)
+        if: ${{ !cancelled() }}
         # Build-free: asserts collectFunctionCfgs output is unchanged
         # (fingerprint) and that wall-time, cfgSideChannel disk bytes, AND
         # retained heap all stay sub-quadratic for the straight-line /
@@ -567,6 +581,7 @@ jobs:
         working-directory: gitnexus
 
       - name: Emit-persistence throughput / byte-identity guards (#2203)
+        if: ${{ !cancelled() }}
         # Build-free: asserts streamAllCSVsToDisk output is byte-identical
         # (order-independent CSV-line fingerprint — the #2203 U2/U3 emit
         # optimisations must not change graph content) and that emit wall-time
@@ -576,6 +591,7 @@ jobs:
         working-directory: gitnexus
 
       - name: Streaming PDG-emit byte-identity / bounded-RSS guards (#2202)
+        if: ${{ !cancelled() }}
         # Build-free: asserts the streaming PdgEmitSink emits a CSV row SET
         # byte-identical to the whole-graph streamAllCSVsToDisk emit, AND that
         # the in-memory graph retains zero BasicBlock nodes (the O(chunk) peak-RSS
@@ -585,6 +601,7 @@ jobs:
         working-directory: gitnexus
 
       - name: Cross-language pipeline benchmarks (GITNEXUS_BENCH, serial)
+        if: ${{ !cancelled() }}
         # cpp-adl-benchmark.test.ts is not a `*-pipeline-benchmark.test.ts` but
         # belongs here for the same reason: it is skipIf-gated on GITNEXUS_BENCH,
         # so it had never run in CI and the PR #1990 ADL emit-scaling guard it

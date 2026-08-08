@@ -3,6 +3,7 @@ import {
   processProcesses,
   traceFromEntryPoint,
   buildSinkFunctionSet,
+  deduplicateTraces,
   type ProcessDetectionConfig,
 } from '../../src/core/ingestion/process-processor.js';
 import { computeDynamicMaxProcesses } from '../../src/core/ingestion/pipeline-phases/processes.js';
@@ -1123,5 +1124,55 @@ describe('truncation is reported, not swallowed (W2-3)', () => {
       avgStepCount: expect.any(Number),
       entryPointsFound: expect.any(Number),
     });
+  });
+});
+
+// #2894. `deduplicateTraces` decided subsumption with an UNANCHORED
+// `String.includes`, so a match could begin in the middle of a node id and a
+// trace was discarded against a chain it does not appear in.
+//
+// Reported as measured-inert — the collision needs one node id to be a strict
+// suffix of another at a `->` boundary, and real ids (`Function:<path>:<name>`)
+// do not produce that. These use bare ids to exercise the predicate directly,
+// which is the only way to reach it: the shape cannot be built from realistic
+// ids, and that is precisely why nothing caught it.
+describe('trace subsumption matches whole steps only (#2894)', () => {
+  const noSink = (): boolean => false;
+
+  it('keeps a trace whose key appears mid-identifier in a longer trace', () => {
+    // 'X->AA->B'.includes('A->B') is true, but `A` is not a step of that chain.
+    const kept = deduplicateTraces(
+      [
+        ['X', 'AA', 'B'],
+        ['A', 'B'],
+      ],
+      noSink,
+    );
+    expect(kept.map((t) => t.join('->'))).toContain('A->B');
+  });
+
+  it('still discards a GENUINE sub-path', () => {
+    // The behaviour the predicate exists for, pinned so the fix cannot be
+    // "stop subsuming anything", which would pass the test above trivially.
+    const kept = deduplicateTraces(
+      [
+        ['A', 'B', 'C'],
+        ['A', 'B'],
+      ],
+      noSink,
+    );
+    expect(kept.map((t) => t.join('->'))).toEqual(['A->B->C']);
+  });
+
+  it('discards a sub-path that is a SUFFIX of a longer trace', () => {
+    // Padding both ends must not break suffix or prefix subsumption.
+    const kept = deduplicateTraces(
+      [
+        ['A', 'B', 'C'],
+        ['B', 'C'],
+      ],
+      noSink,
+    );
+    expect(kept.map((t) => t.join('->'))).toEqual(['A->B->C']);
   });
 });
