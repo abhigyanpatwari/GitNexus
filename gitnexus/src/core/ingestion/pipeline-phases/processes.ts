@@ -4,8 +4,9 @@
  * Detects execution flows (processes) and creates Process nodes +
  * STEP_IN_PROCESS edges. Also links Route/Tool nodes to processes.
  *
- * @deps    communities, routes, tools, pruneLocalSymbols
- * @reads   graph (all nodes and relationships), communityResult, routeRegistry, toolDefs
+ * @deps    communities, routes, tools, pruneLocalSymbols, structure, parse
+ * @reads   graph (all nodes and relationships), communityResult, routeRegistry,
+ *          toolDefs, parse's allFetchCalls + allORMQueries (R3-6 sink sites)
  * @writes  graph (Process nodes, STEP_IN_PROCESS edges, ENTRY_POINT_OF edges)
  */
 
@@ -15,6 +16,7 @@ import type { CommunitiesOutput } from './communities.js';
 import type { RoutesOutput } from './routes.js';
 import type { ToolsOutput } from './tools.js';
 import type { StructureOutput } from './structure.js';
+import type { ParseOutput } from './parse.js';
 import { processProcesses, type ProcessDetectionResult } from '../process-processor.js';
 import { generateId } from '../../../lib/utils.js';
 import { routeNodeKey } from '../route-extractors/route-path.js';
@@ -79,14 +81,17 @@ export const processesPhase: PipelinePhase<ProcessesOutput> = {
     // granularity so a trace can end somewhere meaningful instead of only at a
     // leaf. Absent (or an older parse output) simply yields no sinks and the
     // previous behaviour.
-    let parseOutput:
-      | {
-          allFetchCalls?: { filePath: string; lineNumber: number }[];
-          allORMQueries?: { filePath: string; lineNumber: number }[];
-        }
-      | undefined;
+    //
+    // Typed as `ParseOutput` rather than a locally re-declared structural shape,
+    // the way every other parse consumer does it (cross-file.ts, orm.ts,
+    // routes.ts, tools.ts). `getPhaseOutput` is a raw `as T` cast, so a local
+    // shape does not check anything — it only severs the compile-time link, and
+    // renaming `allFetchCalls` on `ParseOutput` would then still compile here and
+    // silently detect zero sinks. The runtime `.filter` below is the actual
+    // guard, and it stays.
+    let parseOutput: ParseOutput | undefined;
     try {
-      parseOutput = getPhaseOutput(deps, 'parse');
+      parseOutput = getPhaseOutput<ParseOutput>(deps, 'parse');
     } catch {
       // Fail open: no sinks, previous behaviour. A missing parse output is a
       // pipeline-composition question, not a reason to lose every process.
