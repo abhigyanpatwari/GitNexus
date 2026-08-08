@@ -1,5 +1,5 @@
 import fs from 'fs/promises';
-import { createReadStream, createWriteStream, constants as fsConstants } from 'fs';
+import { createReadStream, createWriteStream, existsSync, constants as fsConstants } from 'fs';
 import { createInterface } from 'readline';
 import { once } from 'events';
 import { finished } from 'stream/promises';
@@ -983,6 +983,25 @@ const copyCsvWithRetry = async (
 };
 
 /**
+ * A staging CSV named in the COPY manifest is gone by the time COPY runs.
+ *
+ * Only tables with `rows > 0` enter the manifest (see `csv-generator.ts`), so
+ * the file WAS written during this run and something removed it since. Raw,
+ * that surfaces as a LadybugDB "Binder exception: No file found that matches
+ * the pattern …" and then an ENOENT on the next file — two engine-level
+ * messages that name neither the cause nor a remedy, and which the field
+ * reports show operators hitting on a forced rebuild with nothing to act on.
+ */
+export const missingStagingCsvError = (table: string, csvPath: string, rows: number): Error =>
+  new Error(
+    `Staging CSV for ${table} is missing: ${csvPath}. It was written with ` +
+      `${rows.toLocaleString()} rows during this run, so it was removed mid-run — most often a ` +
+      `second \`gitnexus analyze\` on the same repo (both use .gitnexus/csv), or an external ` +
+      `cleanup of .gitnexus/. Ensure no other analyze is running, then re-run ` +
+      `\`gitnexus analyze --force\`.`,
+  );
+
+/**
  * Bulk-COPY every node CSV sequentially on the single writable connection
  * (LadybugDB allows one write txn at a time). Extracted from loadGraphToLbug so
  * it can run either at the node-phase boundary — overlapping the relationship
@@ -990,6 +1009,30 @@ const copyCsvWithRetry = async (
  * keeps the IGNORE_ERRORS=true retry; a hard failure throws (no node rows ⇒ the
  * relationship COPY would dangle on missing endpoints).
  */
+/**
+ * Re-check a staging CSV a few times before declaring it gone.
+ *
+ * Review asked whether turning a silent degrade into a hard abort was
+ * deliberate. It is — a fallback that recovers zero rows is exactly the
+ * confident-empty failure this work is about, so failing loud is right. But the
+ * transient the error message itself names, a second concurrent `analyze`
+ * sharing `.gitnexus/csv`, is a RACE, and aborting a multi-minute rebuild on
+ * one stat() is a harsh answer to a file that may reappear microseconds later.
+ *
+ * Bounded and short: three extra looks over ~150ms total. Long enough to ride
+ * out a rename or a slow network filesystem, far too short to mask a file that
+ * is genuinely gone.
+ */
+const stagingCsvExists = async (csvPath: string): Promise<boolean> => {
+  const RETRY_DELAYS_MS = [25, 50, 75];
+  if (existsSync(csvPath)) return true;
+  for (const delay of RETRY_DELAYS_MS) {
+    await new Promise((resolve) => setTimeout(resolve, delay));
+    if (existsSync(csvPath)) return true;
+  }
+  return false;
+};
+
 const copyNodeCSVs = async (
   targetConn: lbug.Connection,
   nodeFileEntries: [NodeTableName, { csvPath: string; rows: number }][],
@@ -1000,6 +1043,8 @@ const copyNodeCSVs = async (
   for (const [table, { csvPath, rows }] of nodeFileEntries) {
     stepsDone++;
     log(`Loading nodes ${stepsDone}/${totalSteps}: ${table} (${rows.toLocaleString()} rows)`);
+
+    if (!(await stagingCsvExists(csvPath))) throw missingStagingCsvError(table, csvPath, rows);
 
     const copyQuery = getCopyQuery(table, normalizeCopyPath(csvPath));
     await copyCsvWithRetry(targetConn, copyQuery, (retryErr) => {
@@ -1218,6 +1263,12 @@ export const loadGraphToLbug = async (
     for (const { pairKey, csvPath: pairCsvPath, rows } of copyJobs) {
       pairIdx++;
       const [fromLabel, toLabel] = pairKey.split('|');
+      // Same guarantee as the node COPY: a pair file only reaches this loop
+      // with rows on it, so an absent file means it vanished mid-run. This is
+      // the `rel_Folder_File.csv` ENOENT the field reports end on.
+      if (!(await stagingCsvExists(pairCsvPath))) {
+        throw missingStagingCsvError(`${fromLabel} -> ${toLabel}`, pairCsvPath, rows);
+      }
       const normalizedPath = normalizeCopyPath(pairCsvPath);
       // PARALLEL=false is load-bearing here too — see COPY_CSV_OPTS (#2203 / kuzudb/kuzu#5778).
       const copyQuery = `COPY ${REL_TABLE_NAME} FROM "${normalizedPath}" (from="${fromLabel}", to="${toLabel}", HEADER=true, ESCAPE='"', DELIM=',', QUOTE='"', PARALLEL=false, auto_detect=false)`;
@@ -1488,7 +1539,7 @@ export const getCopyQuery = (table: NodeTableName, filePath: string): string => 
     return `COPY ${t}(id, name, filePath, startLine, endLine, isExported, content, description, parameterCount, returnType) FROM "${filePath}" ${COPY_CSV_OPTS}`;
   }
   if (table === 'Property') {
-    return `COPY ${t}(id, name, filePath, startLine, endLine, content, description, declaredType) FROM "${filePath}" ${COPY_CSV_OPTS}`;
+    return `COPY ${t}(id, name, filePath, startLine, endLine, content, description, declaredType, isDetail) FROM "${filePath}" ${COPY_CSV_OPTS}`;
   }
   // TypeScript/JS code element tables have isExported; multi-language tables do not
   if (TABLES_WITH_EXPORTED.has(table)) {
@@ -1551,7 +1602,7 @@ export const insertNodeToLbug = async (
       const descPart = properties.description
         ? `, description: ${formatCypherValue(properties.description)}`
         : '';
-      query = `CREATE (n:${t} {id: ${formatCypherValue(properties.id)}, name: ${formatCypherValue(properties.name)}, filePath: ${formatCypherValue(properties.filePath)}, startLine: ${properties.startLine || 0}, endLine: ${properties.endLine || 0}, content: ${formatCypherValue(properties.content || '')}${descPart}, declaredType: ${formatCypherValue(properties.declaredType || '')}})`;
+      query = `CREATE (n:${t} {id: ${formatCypherValue(properties.id)}, name: ${formatCypherValue(properties.name)}, filePath: ${formatCypherValue(properties.filePath)}, startLine: ${properties.startLine || 0}, endLine: ${properties.endLine || 0}, content: ${formatCypherValue(properties.content || '')}${descPart}, declaredType: ${formatCypherValue(properties.declaredType || '')}, isDetail: ${properties.isDetail === true}})`;
     } else {
       // Multi-language tables (Struct, Impl, Trait, Macro, etc.) — no isExported
       const descPart = properties.description
@@ -1641,7 +1692,7 @@ export const batchInsertNodesToLbug = async (
           const descPart = properties.description
             ? `, n.description = ${formatCypherValue(properties.description)}`
             : '';
-          query = `MERGE (n:${t} {id: ${formatCypherValue(properties.id)}}) SET n.name = ${formatCypherValue(properties.name)}, n.filePath = ${formatCypherValue(properties.filePath)}, n.startLine = ${properties.startLine || 0}, n.endLine = ${properties.endLine || 0}, n.content = ${formatCypherValue(properties.content || '')}${descPart}, n.declaredType = ${formatCypherValue(properties.declaredType || '')}`;
+          query = `MERGE (n:${t} {id: ${formatCypherValue(properties.id)}}) SET n.name = ${formatCypherValue(properties.name)}, n.filePath = ${formatCypherValue(properties.filePath)}, n.startLine = ${properties.startLine || 0}, n.endLine = ${properties.endLine || 0}, n.content = ${formatCypherValue(properties.content || '')}${descPart}, n.declaredType = ${formatCypherValue(properties.declaredType || '')}, n.isDetail = ${properties.isDetail === true}`;
         } else {
           const descPart = properties.description
             ? `, n.description = ${formatCypherValue(properties.description)}`
@@ -1774,9 +1825,23 @@ export const executeWithReusedStatement = async (
   }
 };
 
-export const getLbugStats = async (): Promise<{ nodes: number; edges: number }> => {
+/**
+ * Node and edge totals for the open index.
+ *
+ * `edges` is `undefined` when the count could NOT BE TAKEN, and that is a
+ * different fact from zero. It used to be initialised to 0 with the query in a
+ * swallowing `catch`, so a WAL/lock contention throw during finalize — a
+ * documented hazard on this exact call — returned a measured-looking 0. The
+ * collapse check downstream then read a perfectly healthy index as a total
+ * write collapse, which is precisely the confident-zero failure that check
+ * exists to prevent.
+ */
+export const getLbugStats = async (): Promise<{
+  nodes: number;
+  edges: number | undefined;
+}> => {
   const c = conn;
-  if (!c) return { nodes: 0, edges: 0 };
+  if (!c) return { nodes: 0, edges: undefined };
 
   // Called during analyze finalize while the WAL-checkpoint driver is still
   // running; each count read takes the connection lock so it cannot execute
@@ -1797,7 +1862,7 @@ export const getLbugStats = async (): Promise<{ nodes: number; edges: number }> 
     }
   }
 
-  let totalEdges = 0;
+  let totalEdges: number | undefined;
   try {
     totalEdges = await withConnLock(async () => {
       const queryResult = await c.query(
@@ -1807,7 +1872,8 @@ export const getLbugStats = async (): Promise<{ nodes: number; edges: number }> 
       return edgeRows.length > 0 ? Number(edgeRows[0]?.cnt ?? edgeRows[0]?.[0] ?? 0) : 0;
     });
   } catch {
-    // ignore
+    // Leave `totalEdges` undefined: the count was not obtained. Reporting 0
+    // here is what made a throwing query indistinguishable from an empty table.
   }
 
   return { nodes: totalNodes, edges: totalEdges };
@@ -3393,13 +3459,37 @@ export const classifyFtsQueryError = (message: string): FtsQueryFailureClass => 
  * ORDER BY tiebreak for #2787 being the latest. Lives beside
  * {@link classifyFtsQueryError}, which was already shared for exactly this call.
  */
+/**
+ * DETAIL SYMBOLS DO NOT COMPETE IN TEXT SEARCH.
+ *
+ * `Property.isDetail` marks the keys of an anonymous literal returned from a
+ * function (R3-4): real symbols, worth walking and worth an impact analysis,
+ * but not concepts a text search should surface on their own. Their names are
+ * ordinary words (`message`, `value`, `timestamp`) and there are many of them,
+ * so without this they consume the FTS call's own LIMIT and push out the
+ * CALLABLES named after the same concept — measured, `query('message')` went
+ * from two processes to none on the mini-repo fixture.
+ *
+ * Filtered HERE rather than after the call, because that is the only place it
+ * works: rows crowded out by the LIMIT never reach the caller, so no amount of
+ * re-ranking downstream can recover them. (Tried, and it recovered nothing.)
+ *
+ * Property-only, since no other table has the column, and `IS NULL`-tolerant so
+ * an index written before this column existed still answers.
+ */
+const FTS_DETAIL_FILTER = `
+    WITH node, score
+    WHERE node.isDetail IS NULL OR node.isDetail = false`;
+
 export const buildFtsQueryCypher = (
   tableName: string,
   indexName: string,
   limit: number,
   conjunctive: boolean = false,
 ): string => `
-    CALL QUERY_FTS_INDEX('${tableName}', '${indexName}', $query, conjunctive := ${conjunctive})
+    CALL QUERY_FTS_INDEX('${tableName}', '${indexName}', $query, conjunctive := ${conjunctive})${
+      tableName === 'Property' ? FTS_DETAIL_FILTER : ''
+    }
     RETURN node, score
     ORDER BY score DESC, node.id
     LIMIT ${limit}

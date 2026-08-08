@@ -516,7 +516,8 @@ export const streamAllCSVsToDisk = async (
       'Template',
       'Module',
     ] as const;
-    const propertyHeader = 'id,name,filePath,startLine,endLine,content,description,declaredType';
+    const propertyHeader =
+      'id,name,filePath,startLine,endLine,content,description,declaredType,isDetail';
     const multiLangWriters = new Map<string, BufferedCSVWriter>();
     for (const t of MULTI_LANG_TYPES) {
       multiLangWriters.set(
@@ -709,7 +710,13 @@ export const streamAllCSVsToDisk = async (
                   escapeCSVField(content),
                   escapeCSVField(formatFtsDescription(node.properties.description || '')),
                   ...(node.label === 'Property'
-                    ? [escapeCSVField(node.properties.declaredType || '')]
+                    ? [
+                        escapeCSVField(node.properties.declaredType || ''),
+                        // R3-4 detail symbols — see PROPERTY_SCHEMA. Written as
+                        // an explicit boolean so the column is never empty; an
+                        // empty BOOLEAN cell fails the COPY.
+                        node.properties.isDetail === true ? 'true' : 'false',
+                      ]
                     : []),
                 ].join(','),
               );
