@@ -61,9 +61,9 @@
       "awaitParen": "N/A",
       "explicitTypeArgs": "VISIBLE-GAP",
       "indexElement": "RESOLVES",
-      "fieldReceiverCall": "INVISIBLE-GAP",
+      "fieldReceiverCall": "RESOLVES",
       "decoratedReceiverBase": "N/A",
-      "decoratedFieldType": "INVISIBLE-GAP"
+      "decoratedFieldType": "RESOLVES"
     },
     "go": {
       "plainChain": "RESOLVES",
@@ -200,10 +200,11 @@
   },
   "countArm": {
     "callDrops": 102,
-    "totalDropsAllKinds": 129,
+    "totalDropsAllKinds": 140,
     "bySiteKind": {
       "call": 102,
-      "read": 27
+      "read": 27,
+      "write": 11
     },
     "callDropsByExtension": {
       ".java": 49,

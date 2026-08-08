@@ -201,7 +201,32 @@ export interface RepoMeta {
    */
   capabilities?: {
     graph: { provider: string; status: 'available' | 'degraded' | 'unavailable' };
-    fts: { provider: string; status: 'available' | 'degraded' | 'unavailable' };
+    fts: {
+      provider: string;
+      status: 'available' | 'degraded' | 'unavailable';
+      /**
+       * Why THIS run ended up without search indexes, when `status` is
+       * `'unavailable'` (#2841). Mirrors `AnalysisResult.ftsSkipReason` in
+       * core/run-analyze.ts — the same discriminator that surface already
+       * reports to the CLI, persisted rather than re-derived because the two
+       * causes need OPPOSITE handling on the next run:
+       *
+       *  - `extension-unavailable` — the FTS extension could not load. Healable
+       *    from outside the repo (install it), so the up-to-date fast path
+       *    probes whether it loads now and re-analyzes when it does.
+       *  - `build-failed` — the extension loaded fine and the index BUILD
+       *    failed (e.g. one un-tokenizable pre-existing row, #2544/#2546).
+       *    Deterministic: the same probe would "heal" it into a full
+       *    re-analysis that degrades identically and restamps, forever. Only
+       *    `--repair-fts` or a content change addresses it.
+       *
+       * Collapsing both into `status: 'unavailable'` is exactly what made that
+       * loop reachable. ABSENT on indexes written before #2841 and on the
+       * `--repair-fts` stamp (which writes `status: 'available'`); `undefined`
+       * therefore reads as "cause unknown" and keeps the pre-#2841 behaviour.
+       */
+      skipReason?: 'extension-unavailable' | 'build-failed';
+    };
     vectorSearch: {
       provider: string;
       status: 'vector-index' | 'exact-scan' | 'unavailable';
@@ -303,6 +328,38 @@ export interface RepoMeta {
    * Map keys are repo-relative paths.
    */
   fileHashes?: Record<string, string>;
+  /**
+   * Set when a run finished but the persisted edge count came back far short
+   * of what the pipeline produced — the B2 "refresh reports SUCCESS while the
+   * index is unusable" failure (observed as edges collapsing 23009 -> 2170,
+   * and as a missing `CodeRelation` table, which reads here as a persisted
+   * count of zero).
+   *
+   * Recorded rather than thrown because the metadata IS written and the DB
+   * does hold rows; what is false is the claim that the index is complete.
+   * `getIndexIncompleteReasons` turns this into `graph-write-collapsed` so
+   * `status` and the MCP resources report the index as incomplete instead of
+   * fresh. Absent on a healthy run.
+   */
+  /**
+   * Fields whose property reads could not be linked because every definition of
+   * the name lives in ANOTHER language (R3-1).
+   *
+   * Persisted because the graph cannot answer this at query time: the unlinked
+   * reads mint no edge and no node, so the only record that they existed is the
+   * analyze pass that declined them. Without it, `context()` on such a field
+   * shows an empty incoming list that is byte-identical to a genuinely unread
+   * field — and the two demand opposite actions.
+   *
+   * Capped at analyze time; a long tail is not more actionable than a short one.
+   */
+  crossLanguageProperties?: readonly { name: string; languages: string[] }[];
+  graphWriteCollapsed?: {
+    /** Relationships the pipeline produced in memory. */
+    expected: number;
+    /** Relationships readable from the DB after the write. */
+    persisted: number;
+  };
   /**
    * Crash-recovery dirty flag — a generic marker written to the metadata
    * file (gitnexus.json + its meta.json mirror) BEFORE any destructive DB

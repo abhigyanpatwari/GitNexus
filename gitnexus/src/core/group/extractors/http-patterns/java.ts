@@ -7,7 +7,8 @@ import {
   type LanguagePatterns,
 } from '../tree-sitter-scanner.js';
 import {
-  METHOD_ANNOTATION_TO_HTTP,
+  springAnnotationHttpMethods,
+  intersectSpringHttpMethods,
   isRouteMemberKey,
   findEnclosingClass,
   joinPath,
@@ -44,7 +45,7 @@ import type {
 
 /**
  * Java HTTP plugin. Handles:
- *   - Spring `@RequestMapping` class prefixes + `@(Get|Post|...)Mapping` method annotations
+ *   - Spring `@RequestMapping` class prefixes + shortcut/`@RequestMapping` method annotations
  *   - Spring `RestTemplate.getForObject/...`, `exchange(...)`
  *   - Spring `WebClient.method(HttpMethod.X, ...)`, `WebClient.get().uri(...)`
  *   - OkHttp `new Request.Builder().url("...")`
@@ -408,6 +409,35 @@ function simpleName(text: string): string {
   return text.split('.').pop() ?? text;
 }
 
+function declarationAnnotations(node: Parser.SyntaxNode): Parser.SyntaxNode[] {
+  const modifiers = node.namedChildren.find((child) => child.type === 'modifiers');
+  if (!modifiers) return [];
+  return modifiers.namedChildren.filter(
+    (child) => child.type === 'annotation' || child.type === 'marker_annotation',
+  );
+}
+
+function annotationHasRouteMember(annotation: Parser.SyntaxNode): boolean {
+  const args = annotation.childForFieldName('arguments');
+  if (!args) return false;
+  for (const child of args.namedChildren) {
+    if (child.type !== 'element_value_pair') return true;
+    const key = child.childForFieldName('key');
+    if (isRouteMemberKey(key ?? undefined)) return true;
+  }
+  return false;
+}
+
+function typeRequestMethods(typeNode: Parser.SyntaxNode): readonly string[] {
+  const mappings = declarationAnnotations(typeNode).filter(
+    (annotation) =>
+      simpleName(annotation.childForFieldName('name')?.text ?? '') === 'RequestMapping',
+  );
+  if (mappings.length === 0) return ['*'];
+  if (mappings.length !== 1) return [];
+  return springAnnotationHttpMethods('RequestMapping', mappings[0].text);
+}
+
 function hasAnnotation(node: Parser.SyntaxNode, names: string | readonly string[]): boolean {
   const modifiers = node.namedChildren.find((child) => child.type === 'modifiers');
   if (!modifiers) return false;
@@ -437,6 +467,8 @@ interface MethodRouteAnnotation {
   methodName: string | null;
   httpMethod: string;
   rawPath: string;
+  /** OpenFeign's single effective verb; null means its contract is invalid/ambiguous. */
+  feignHttpMethod?: string | null;
 }
 
 interface RequestLineAnnotation {
@@ -452,7 +484,7 @@ interface RouteAnnotationScan {
   feignPrefixByInterfaceId: Map<number, string[]>;
   /** Spring HTTP Interface `@HttpExchange(url|value)` type-level prefixes per class/interface node id. */
   httpExchangePrefixByTypeId: Map<number, string[]>;
-  /** One entry per resolved Spring `@(Get|...)Mapping` route — a method with N mappings yields N entries. */
+  /** Resolved Spring shortcut/`@RequestMapping` routes — paths × verbs yield one entry each. */
   methodRoutes: MethodRouteAnnotation[];
   /** One entry per OpenFeign `@RequestLine` whose value parses to a verb + path. */
   requestLines: RequestLineAnnotation[];
@@ -484,6 +516,7 @@ function scanRouteAnnotations(tree: Parser.Tree): RouteAnnotationScan {
   const methodRoutes: MethodRouteAnnotation[] = [];
   const requestLines: RequestLineAnnotation[] = [];
   const exchangeRoutes: MethodRouteAnnotation[] = [];
+  const httpMethodsByAnnotationId = new Map<number, readonly string[]>();
   // Interface `@RequestMapping` prefixes rank below `@FeignClient(path)`;
   // collect them and apply only after the FeignClient pass below.
   const interfaceRequestMappingPrefixes: Array<{ id: number; prefix: string }> = [];
@@ -505,18 +538,29 @@ function scanRouteAnnotations(tree: Parser.Tree): RouteAnnotationScan {
     const keyNode = captures.key; // undefined for the positional shape
 
     if (node.type === 'method_declaration') {
-      // Method-level: a Spring `@(Get|...)Mapping` route, or native `@RequestLine`.
-      const httpMethod = METHOD_ANNOTATION_TO_HTTP[ann];
-      if (httpMethod) {
+      // Method-level: a Spring shortcut/`@RequestMapping` route, or native `@RequestLine`.
+      const annotationNode = annNode.parent;
+      if (!annotationNode) continue;
+      let httpMethods = httpMethodsByAnnotationId.get(annotationNode.id);
+      if (!httpMethods) {
+        httpMethods = springAnnotationHttpMethods(ann, annotationNode.text);
+        httpMethodsByAnnotationId.set(annotationNode.id, httpMethods);
+      }
+      if (httpMethods.length > 0) {
+        const feignHttpMethod =
+          httpMethods.length === 1 ? (httpMethods[0] === '*' ? 'GET' : httpMethods[0]) : null;
         if (!isRouteMemberKey(keyNode)) continue;
         const rawPath = unquoteLiteral(valueNode.text);
         if (rawPath !== null) {
-          methodRoutes.push({
-            methodNode: node,
-            methodName: captures.member?.text ?? null,
-            httpMethod,
-            rawPath,
-          });
+          for (const httpMethod of httpMethods) {
+            methodRoutes.push({
+              methodNode: node,
+              methodName: captures.member?.text ?? null,
+              httpMethod,
+              rawPath,
+              feignHttpMethod,
+            });
+          }
         }
       } else if (ann === 'RequestLine') {
         // Feign packs verb + path in one literal; its only named argument is `value`.
@@ -573,6 +617,43 @@ function scanRouteAnnotations(tree: Parser.Tree): RouteAnnotationScan {
     }
   }
 
+  const classHttpMethodsByTypeId = new Map<number, readonly string[]>();
+  for (const match of runCompiledPatterns(SPRING_TYPE_DECLARATION_PATTERNS, tree)) {
+    const typeNode = match.captures.type;
+    if (!typeNode) continue;
+    const classMethods = typeRequestMethods(typeNode);
+    classHttpMethodsByTypeId.set(typeNode.id, classMethods);
+    for (const methodNode of collectDirectMethods(typeNode)) {
+      for (const annotationNode of declarationAnnotations(methodNode)) {
+        if (annotationHasRouteMember(annotationNode)) continue;
+        const ann = simpleName(annotationNode.childForFieldName('name')?.text ?? '');
+        const httpMethods = springAnnotationHttpMethods(ann, annotationNode.text);
+        if (httpMethods.length === 0) continue;
+        const feignHttpMethod =
+          httpMethods.length === 1 ? (httpMethods[0] === '*' ? 'GET' : httpMethods[0]) : null;
+        for (const httpMethod of httpMethods) {
+          methodRoutes.push({
+            methodNode,
+            methodName: getNodeName(methodNode),
+            httpMethod,
+            rawPath: '',
+            feignHttpMethod,
+          });
+        }
+      }
+    }
+  }
+
+  const constrainedMethodRoutes = methodRoutes.flatMap((route) => {
+    const typeNode =
+      findEnclosingInterface(route.methodNode) ?? findEnclosingClass(route.methodNode);
+    const classMethods = typeNode ? (classHttpMethodsByTypeId.get(typeNode.id) ?? ['*']) : ['*'];
+    return intersectSpringHttpMethods(classMethods, [route.httpMethod]).map((httpMethod) => ({
+      ...route,
+      httpMethod,
+    }));
+  });
+
   // `@RequestMapping` on a Feign interface is the fallback prefix, but only when
   // the interface has no `@FeignClient(path)` of its own (path wins).
   for (const { id, prefix } of interfaceRequestMappingPrefixes) {
@@ -583,7 +664,7 @@ function scanRouteAnnotations(tree: Parser.Tree): RouteAnnotationScan {
     prefixByTypeId,
     feignPrefixByInterfaceId,
     httpExchangePrefixByTypeId,
-    methodRoutes,
+    methodRoutes: constrainedMethodRoutes,
     requestLines,
     exchangeRoutes,
   };
@@ -705,7 +786,7 @@ export const JAVA_HTTP_PLUGIN: HttpLanguagePlugin = {
 
     // ─── Spring providers + OpenFeign consumers (one query pass) ────
     // `scanRouteAnnotations` resolves every route-defining annotation —
-    // class/interface prefixes, method `@(Get|...)Mapping`s and native
+    // class/interface prefixes, method shortcut/`@RequestMapping`s and native
     // `@RequestLine`s — from a single `matches()` pass over the tree.
     const {
       prefixByTypeId,
@@ -724,12 +805,13 @@ export const JAVA_HTTP_PLUGIN: HttpLanguagePlugin = {
     for (const route of methodRoutes) {
       const enclosingInterface = findEnclosingInterface(route.methodNode);
       if (enclosingInterface && hasAnnotation(enclosingInterface, 'FeignClient')) {
+        if (!route.feignHttpMethod) continue;
         const prefixes = feignPrefixByInterfaceId.get(enclosingInterface.id) ?? [''];
         for (const prefix of prefixes) {
           out.push({
             role: 'consumer',
             framework: OPENFEIGN_FRAMEWORK,
-            method: route.httpMethod,
+            method: route.feignHttpMethod,
             path: joinPath(prefix, route.rawPath),
             name: route.methodName,
             line: route.methodNode.startPosition.row + 1,

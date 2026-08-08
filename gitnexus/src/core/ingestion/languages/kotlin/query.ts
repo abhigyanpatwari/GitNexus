@@ -81,13 +81,22 @@ const KOTLIN_SCOPE_QUERY = `
 (lambda_literal) @scope.block
 
 ;; Declarations — types
+;; The Kotlin grammar puts NO named fields on \`class_declaration\`, so the
+;; parameter list is matched positionally as an optional unnamed child, exactly
+;; as the name already is.
+;;
+;; Only the INLINE bound (\`<T : Repo>\`) is read. A \`where T : Repo\` clause is a
+;; separate \`type_constraints\` sibling and is left alone, so its bound reads as
+;; absent — "unknown", not "unbounded".
 (class_declaration
   "interface"
-  (type_identifier) @declaration.name) @declaration.interface
+  (type_identifier) @declaration.name
+  (type_parameters)? @declaration.type-parameters) @declaration.interface
 
 (class_declaration
   "class"
-  (type_identifier) @declaration.name) @declaration.class
+  (type_identifier) @declaration.name
+  (type_parameters)? @declaration.type-parameters) @declaration.class
 
 (object_declaration
   (type_identifier) @declaration.name) @declaration.class

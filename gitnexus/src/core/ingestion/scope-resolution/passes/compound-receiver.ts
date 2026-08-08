@@ -24,17 +24,19 @@ import type { ScopeId, SymbolDefinition, TypeRef } from 'gitnexus-shared';
 import type { ElementAccessRoute, ScopeResolver } from '../contract/scope-resolver.js';
 import type { ScopeResolutionIndexes } from '../../model/scope-resolution-indexes.js';
 import type { WorkspaceResolutionIndex } from '../workspace-index.js';
-import { stripTemplateArguments } from '../../utils/template-arguments.js';
+import { erasedTypeApplication, stripTemplateArguments } from '../../utils/template-arguments.js';
 import type { DecodedReceiverChain } from '../../utils/receiver-chain-codec.js';
 import { decodeReceiverChain } from '../../utils/receiver-chain-codec.js';
 import type { DecorationStripper } from '../scope/walkers.js';
 import {
   findClassBindingInScope,
+  resolveClassBindingForName,
   findEnclosingClassDef,
   findExportedDef,
   findExportedDefByName,
   findReceiverTypeBinding,
   isClassLike,
+  isNamespaceNameShadowed,
 } from '../scope/walkers.js';
 
 /** Max depth for compound-receiver chain resolution (`a().b().c().d()`).
@@ -90,6 +92,10 @@ interface ResolveCompoundReceiverOptions {
    *  languages that hoist return-type bindings to Module scope (C#);
    *  otherwise we risk picking up unrelated module-level bindings. */
   readonly hoistTypeBindingsToModule?: boolean;
+  /** `ScopeResolver.resolveThisViaEnclosingClass` — the language declares that
+   *  `this` IS the enclosing class rather than a per-function-scope binding.
+   *  Read only by the `this` head seed below. */
+  readonly resolveThisViaEnclosingClass?: boolean;
   /** Strip C-style cast expressions from the receiver text before
    *  resolving it (`stripCastWrappers`). Default `false` — the text
    *  reaches the resolver untouched and no cast logic runs. See the
@@ -156,42 +162,6 @@ function escapeForRegExp(literal: string): string {
   return literal.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
 }
 
-/** True when a local declaration between the call site and its module scope
- * shadows a file-level namespace import with the same name. Namespace targets
- * are collected per file, so callers must apply this lexical guard before
- * trusting them at an inner scope. */
-function isNamespaceNameShadowed(
-  namespaceName: string,
-  inScope: ScopeId,
-  scopes: ScopeResolutionIndexes,
-): boolean {
-  let currentId: ScopeId | null = inScope;
-  const visited = new Set<ScopeId>();
-  while (currentId !== null) {
-    if (visited.has(currentId)) return true;
-    visited.add(currentId);
-    const scope = scopes.scopeTree.getScope(currentId);
-    if (scope === undefined) return true;
-    if (
-      scope.kind !== 'Object' &&
-      (scope.bindings.has(namespaceName) ||
-        scope.typeBindings.has(namespaceName) ||
-        scope.lexicalNames?.has(namespaceName) === true ||
-        scope.ownedDefs.some((def) => {
-          const qualifiedName = def.qualifiedName;
-          if (qualifiedName === undefined) return false;
-          const dot = qualifiedName.lastIndexOf('.');
-          return (dot === -1 ? qualifiedName : qualifiedName.slice(dot + 1)) === namespaceName;
-        }))
-    ) {
-      return true;
-    }
-    if (scope.kind === 'Module') return false;
-    currentId = scope.parent;
-  }
-  return true;
-}
-
 /**
  * Type of a construction expression's callee — the class it constructs.
  *
@@ -239,8 +209,8 @@ function resolveConstructionExpressionClass(
 
   // Generic construction — `new Box<string>()` arrives here as `Box<string>`,
   // which names no class binding. Retry on the base name, the same
-  // normalization `resolveClassBindingForName` in `receiver-bound-calls`
-  // already applies for typed receivers (#2708).
+  // normalization `resolveClassBindingForName` (in `scope/walkers.ts`) already
+  // applies for typed receivers (#2708).
   const baseName = stripTemplateArguments(calleeName).trim();
   const lastDot = baseName.lastIndexOf('.');
   if (lastDot !== -1) {
@@ -324,6 +294,73 @@ interface FoldState {
   readonly declaredAtScope?: ScopeId;
 }
 
+/**
+ * The class a receiver position's DECLARED TYPE denotes — the one lookup every
+ * route in this file uses to turn a `TypeRef` into an owner to look the next
+ * member up on.
+ *
+ * ── WHY NOT `findClassBindingInScope(scope, typeRef.rawName)` ────────────────
+ *
+ * `rawName` is post-normalization, and several providers reduce a type
+ * APPLICATION to its base name at capture time (`Mapped[User]` → `Mapped`,
+ * `Repo<User>` → `Repo`). Handing that base name to the bare lookup takes its
+ * workspace-wide qualified-name fallback, which consults no scope, no import
+ * and no module: it binds whatever the workspace happens to declare under that
+ * name. A third-party `Mapped[User]` beside an unrelated workspace
+ * `class Mapped` then produces a confident WRONG edge — strictly worse than the
+ * missing one it replaced, and not recoverable downstream.
+ *
+ * `resolveClassBindingForName` owns the grounding rule for exactly this
+ * ({@link resolveErasedBaseName}: the scope chain binds the name, or the
+ * declaration is in the same file, or the index proves the name is a template
+ * family, or the file has no cross-file class channel to be absent from), but it
+ * is entered on the SPELLING — a name that already lost its arguments is
+ * indistinguishable from an ordinary class name. {@link erasedTypeApplication}
+ * restores the application from `declaredSpelling`, which is what puts a
+ * capture-time-erased receiver back on the grounded route.
+ *
+ * ── WHY IT IS ONE HELPER AND NOT FIVE CALL SITES ─────────────────────────────
+ *
+ * This file types a receiver position from a `TypeRef` in five places — the
+ * structural fold's member step and its module-hoist branch, the cascade's
+ * bare-identifier binding, the cascade's dotted-chain HEAD, and the cascade's
+ * per-segment member walk. They are five routes to ONE question, and only three
+ * were wired to the grounded lookup, which is what left the hole: a Python
+ * `self.m.save(u)` whose fold step correctly refused fell THROUGH to the
+ * cascade — a declined fold is documented as "no answer", never a veto — and
+ * the cascade's own ungrounded member walk re-minted the very edge the grounds
+ * had just rejected. One shared helper is what makes "the fold refused" and
+ * "the cascade refused" the same sentence, rather than two lookups that happen
+ * to agree until one of them is edited.
+ *
+ * `stripDecoration` stays a per-caller argument because it is a DIFFERENT
+ * normalization with its own risk — its own docstring records that turning a
+ * former `undefined` into a hit suppresses the `?? otherResolver(...)`
+ * fallbacks two dozen call sites rely on. The three fold/binding callers pass
+ * the provider's stripper as they always have; the two cascade callers pass
+ * nothing, as they always have. So the only behaviour this helper changes
+ * anywhere is the erasure grounding, and a `TypeRef` that was never reduced
+ * resolves through the identical `findClassBindingInScope` call it did before
+ * (`resolveClassBindingForName` tries that first, and a name with no `<`
+ * returns immediately after it).
+ */
+function classOfDeclaredType(
+  typeRef: TypeRef,
+  scopes: ScopeResolutionIndexes,
+  stripDecoration?: DecorationStripper,
+): SymbolDefinition | undefined {
+  // `declaredAtScope`, never a scope the caller chose: all five sites passed
+  // exactly this `TypeRef`'s own anchor, and taking it as a parameter is what
+  // would let a sixth quietly not — which is the hole this helper exists to
+  // close, one level up.
+  return resolveClassBindingForName(
+    typeRef.declaredAtScope,
+    erasedTypeApplication(typeRef) ?? typeRef.rawName,
+    scopes,
+    stripDecoration,
+  );
+}
+
 function typeOfMemberOnClass(
   owner: SymbolDefinition,
   memberName: string,
@@ -337,12 +374,7 @@ function typeOfMemberOnClass(
     const classScope = classScopeByDefId.get(ownerId);
     const memberType = classScope?.typeBindings.get(memberName);
     if (memberType !== undefined) {
-      const def = findClassBindingInScope(
-        memberType.declaredAtScope,
-        memberType.rawName,
-        scopes,
-        options.stripTypePreservingDecoration,
-      );
+      const def = classOfDeclaredType(memberType, scopes, options.stripTypePreservingDecoration);
       // The declared type is reported even when it resolved to no class:
       // `Promise<User>` and `[]Repo` name nothing in the workspace, and an
       // await or index step unwrapping them is exactly how they become
@@ -369,15 +401,10 @@ function typeOfMemberOnClass(
         if (curScope === undefined) break;
         const hoisted = curScope.typeBindings.get(memberName);
         if (hoisted !== undefined) {
-          const def = findClassBindingInScope(
-            hoisted.declaredAtScope,
-            hoisted.rawName,
-            scopes,
-            // Same stripper the primary branch above passes. Omitting it here
-            // meant a decorated declared type (`*Host`) resolved on one branch
-            // and not the other, for the same member of the same class.
-            options.stripTypePreservingDecoration,
-          );
+          // Same stripper the primary branch above passes. Omitting it here
+          // meant a decorated declared type (`*Host`) resolved on one branch and
+          // not the other, for the same member of the same class.
+          const def = classOfDeclaredType(hoisted, scopes, options.stripTypePreservingDecoration);
           // Identical to the primary branch: a declared type that named no
           // class is still a usable position when the next step unwraps it.
           // Returning `undefined` here made `svc.getMap()['k'].run()` decline
@@ -621,6 +648,20 @@ export function resolveCompoundReceiverClass(
       return findClassBindingInScope(rhsTb.declaredAtScope, arg, scopes);
     }
 
+    // A language may declare that `this` IS the enclosing class rather than a
+    // per-function-scope binding (`ScopeResolver.resolveThisViaEnclosingClass`,
+    // the same flag Case 0.5 in `receiver-bound-calls` uses for a BARE `this`
+    // receiver). Such a language synthesizes no `this` typeBinding anywhere, so
+    // a chain whose BASE is `this` — `this->repo.save(u)`, `this.repo.save(u)` —
+    // had no way to seed its head and folded to nothing. Measured for the
+    // NON-generic control too, so it was never a generics gap.
+    // Placed before the typeBinding read: a language that DOES bind `this` per
+    // function scope never sets the flag, so nothing else can reach this.
+    if (workingText === 'this' && options.resolveThisViaEnclosingClass === true) {
+      const enclosing = findEnclosingClassDef(inScope, scopes);
+      if (enclosing !== undefined) return enclosing;
+    }
+
     const tb = findReceiverTypeBinding(inScope, workingText, scopes);
     if (tb !== undefined) {
       // Map for-of: binding name is `user` but rawType is
@@ -635,12 +676,7 @@ export function resolveCompoundReceiverClass(
         return findClassBindingInScope(rhsTb.declaredAtScope, arg, scopes);
       }
 
-      const viaTb = findClassBindingInScope(
-        tb.declaredAtScope,
-        tb.rawName,
-        scopes,
-        options.stripTypePreservingDecoration,
-      );
+      const viaTb = classOfDeclaredType(tb, scopes, options.stripTypePreservingDecoration);
       if (viaTb !== undefined) return viaTb;
 
       // Member-alias / call-result shapes store the RHS path on rawName
@@ -918,8 +954,20 @@ export function resolveCompoundReceiverClass(
   if (head === undefined) return undefined;
   const headMemberName = stripCallParens(head);
   const headType = findReceiverTypeBinding(inScope, headMemberName, scopes);
+  // The typed arm reads a DECLARED TYPE and so goes through the grounded lookup
+  // (see {@link classOfDeclaredType}); the untyped arm resolves the head NAME as
+  // the source WROTE it — a static class receiver — which was never erased and
+  // keeps the bare lookup.
+  //
+  // NO MEASURED CASE OF ITS OWN, and that is worth saying plainly: every fixture
+  // reaching here has an un-erased head (`self`, `this`, a local), for which the
+  // two lookups are the same call. It is changed because leaving one of five
+  // sibling reads of a `TypeRef` on the ungrounded lookup is precisely how the
+  // hole below survived — three were wired, two were not, and only one of the
+  // two had a fixture. See `classOfDeclaredType` for why this cannot change a
+  // `TypeRef` that was never reduced.
   let currentClass: SymbolDefinition | undefined = headType
-    ? findClassBindingInScope(headType.declaredAtScope, headType.rawName, scopes)
+    ? classOfDeclaredType(headType, scopes)
     : findClassBindingInScope(inScope, headMemberName, scopes);
   // Whether the walk currently sits on the CLASS ITSELF rather than on a
   // value of that class. Seeded true only when the head resolved straight to
@@ -939,11 +987,21 @@ export function resolveCompoundReceiverClass(
   // lexically enclosing class would fabricate edges. Head resolution
   // only; the per-segment walk below is shared with every other
   // chain shape.
+  //
+  // A language may ALSO declare that `this` is always the enclosing class —
+  // `ScopeResolver.resolveThisViaEnclosingClass`, the same flag Case 0.5 in
+  // `receiver-bound-calls` already uses for a bare `this` receiver. Such a
+  // language deliberately synthesizes no `this` typeBinding anywhere, so the
+  // initializer-context test above can never be true inside a method body and
+  // every `this->field.m()` / `this.field.m()` chain folded to nothing —
+  // measured for the NON-generic control too, so it was never a generics gap.
+  // Reading the provider flag keeps the rule language-free: a language that
+  // does bind `this` per function scope does not set it, and is unaffected.
   if (
     currentClass === undefined &&
     headType === undefined &&
     headMemberName === 'this' &&
-    isInitializerContext(inScope, scopes)
+    (isInitializerContext(inScope, scopes) || options.resolveThisViaEnclosingClass === true)
   ) {
     currentClass = findEnclosingClassDef(inScope, scopes);
   }
@@ -1033,7 +1091,13 @@ export function resolveCompoundReceiverClass(
       }
       return undefined;
     }
-    let nextClass = findClassBindingInScope(memberType.declaredAtScope, memberType.rawName, scopes);
+    // THE MEASURED HOLE (#2833 follow-up). This is the cascade's copy of the
+    // fold's member step, and it read the possibly-erased `rawName` directly.
+    // A Python `self.m.save(u)` whose fold step refused `Mapped[User]` on
+    // grounds fell through here — a declined fold is documented as "no answer",
+    // never a veto — and this walk re-minted `other.py:Mapped` from the
+    // workspace index. Same rule, same lookup, so the two routes now agree.
+    let nextClass = classOfDeclaredType(memberType, scopes);
     if (nextClass === undefined) {
       const fromMap = unwrapMapValueToClass(memberType, scopes);
       if (fromMap !== undefined) nextClass = fromMap;

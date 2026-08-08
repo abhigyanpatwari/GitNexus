@@ -13,6 +13,9 @@
  * symbol stays exact.
  */
 
+import { createLogger } from '../../logger.js';
+import { compareCodeUnits } from '../../../lib/utils.js';
+
 import type { ResolutionOutcome } from './resolution-outcome.js';
 
 /** Cap on distinct member names persisted. Well above what a real repo
@@ -74,15 +77,53 @@ export interface UnresolvedReceiverSummary {
  * `omitted` is the number of distinct names past the cap, so the caller can
  * report truncation rather than silently losing entries.
  */
-function rankAndCap(counts: Map<string, number>): {
+function rankAndCap(
+  counts: Map<string, number>,
+  cap: number = MAX_UNRESOLVED_RECEIVER_MEMBERS,
+): {
   kept: [string, number][];
   omitted: number;
 } {
   const ranked = [...counts.entries()].sort(
-    ([aName, aCount], [bName, bCount]) => bCount - aCount || aName.localeCompare(bName),
+    // `compareCodeUnits`, not `localeCompare` (#2787). The tiebreak feeds the
+    // `.slice()` below, so locale-sensitive collation would decide WHICH
+    // entries survive the cap, not merely how they are listed — and ICU order
+    // varies by platform and ICU build, so two runs over one repo could persist
+    // different sets. Key-based lookup is unaffected either way.
+    ([aName, aCount], [bName, bCount]) => bCount - aCount || compareCodeUnits(aName, bName),
   );
-  const kept = ranked.slice(0, MAX_UNRESOLVED_RECEIVER_MEMBERS);
+  const kept = ranked.slice(0, cap);
   return { kept, omitted: ranked.length - kept.length };
+}
+
+/**
+ * A `receiver-unresolved` drop at a CALL site.
+ *
+ * ONE predicate, shared by the persisted summary and the per-file diagnostic —
+ * the same contract `rankAndCap` states for its comparator. If the two ever
+ * disagreed, the diagnostic would rank a different population than the artifact
+ * it exists to explain.
+ *
+ * Call sites only: Case 0's recorder gates on the receiver's punctuation, not on
+ * what the reference IS, so property reads (`d.source.kind`) and writes
+ * (`x.argtypes = [...]`) arrive alongside lost method calls — measured at 25 of
+ * 124 drops on the fixture corpus. Counting them made the consumer's "N call
+ * sites invoking X were dropped" literally false. A missing `siteKind` counts as
+ * a call: the only emitter always sets it, and erring toward `lower-bound` is
+ * the safe direction for an epistemic signal.
+ *
+ * Receiver ORIGIN is deliberately NOT decided here — the summary routes external
+ * drops into their own bucket while the diagnostic excludes them, and collapsing
+ * that choice into this predicate would take it away from both callers.
+ */
+function isUnresolvedReceiverCall(
+  outcome: ResolutionOutcome,
+): outcome is Extract<ResolutionOutcome, { kind: 'suppressed' }> {
+  return (
+    outcome.kind === 'suppressed' &&
+    outcome.reason === 'receiver-unresolved' &&
+    (outcome.siteKind === undefined || outcome.siteKind === 'call')
+  );
 }
 
 /**
@@ -99,17 +140,10 @@ export function summarizeUnresolvedReceivers(
   let totalSites = 0;
   let externalSites = 0;
   for (const outcome of outcomes) {
-    if (outcome.kind !== 'suppressed' || outcome.reason !== 'receiver-unresolved') continue;
+    // CALL sites only — see `isUnresolvedReceiverCall`, which the per-file
+    // diagnostic shares so the two can never rank different populations.
+    if (!isUnresolvedReceiverCall(outcome)) continue;
     if (outcome.name.length === 0) continue;
-    // CALL sites only. Case 0's recorder gates on the receiver's punctuation, not
-    // on what the reference IS, so property reads (`d.source.kind`) and writes
-    // (`x.argtypes = [...]`) are recorded alongside lost method calls — measured at
-    // 25 of 124 drops on the fixture corpus. Counting them made the consumer's
-    // "N call sites invoking X were dropped" literally false, and flagged symbols
-    // whose CALL count was never short. `siteKind` exists to make this separable.
-    // A missing `siteKind` counts as a call: the only emitter always sets it, and
-    // erring toward `lower-bound` is the safe direction for an epistemic signal.
-    if (outcome.siteKind !== undefined && outcome.siteKind !== 'call') continue;
     // Routed, not discarded. External-rooted drops (`console.log(...)`,
     // `fetch(...)`) reach code this index does not contain, so there is no node
     // an edge could have pointed at and nothing was lost — they must not hedge.
@@ -193,4 +227,75 @@ export function lookupExternalCallCount(
   const sites = counts[symName];
   if (typeof sites !== 'number' || !Number.isFinite(sites) || sites <= 0) return undefined;
   return sites;
+}
+
+/**
+ * Opt-in, following the repo's established diagnostic pattern
+ * (`createLogger(name, { debugEnvVar })`). Every repository in every language
+ * drops SOME receivers, so emitting this at `info` unconditionally would add a
+ * line to every analyze anyone ever runs — the noise ADV-6 flagged. #2837's
+ * reporter turns it on deliberately:
+ *
+ *     GITNEXUS_DEBUG_RECEIVER_DROPS=1 gitnexus analyze
+ */
+// Built on first use, not at import. `createLogger` is eager where the `logger`
+// singleton is a lazy Proxy — it resolves `pino-pretty`, constructs a SonicBoom
+// destination and registers a `beforeExit` hook. This module is imported by
+// `mcp/local/local-backend.ts` for its lookup helpers, so an eager call would
+// put that on MCP server startup for a diagnostic that is off by default.
+let receiverDropLog: ReturnType<typeof createLogger> | undefined;
+const dropLog = (): ReturnType<typeof createLogger> =>
+  (receiverDropLog ??= createLogger('receiver-drops', {
+    debugEnvVar: 'GITNEXUS_DEBUG_RECEIVER_DROPS',
+  }));
+
+/** Files named in the per-file receiver-drop line. Bounded: this is a signpost
+ *  pointing at where to look, not an inventory. */
+const UNRESOLVED_RECEIVER_FILE_SAMPLE = 10;
+
+/**
+ * Report which FILES lost the most call sites to an untyped receiver (#2837).
+ *
+ * `summarizeUnresolvedReceivers` persists the same drops keyed by member NAME,
+ * capped at 500 distinct names, and discards `filePath` — deliberately, because
+ * its consumer (`impact()`'s exact-vs-lower-bound verdict) asks "is this
+ * symbol's caller count trustworthy", a question about names.
+ *
+ * That leaves "why does THIS file resolve nothing while its sibling resolves
+ * everything" unanswerable from any artifact, which is exactly what #2837 asked
+ * for and could not run: comparing the drop records of two files with identical
+ * declared shapes separates "receiver never typed" from "typed but no edge
+ * emitted", and narrows a per-file split in one run instead of a bisect.
+ *
+ * A log line rather than a persisted field because nothing queries it — a
+ * persisted `byFile` map would be an unread field carrying its own cap and
+ * truncation semantics. When a consumer appears, `UnresolvedReceiverSummary` is
+ * already a `RepoMeta` field and can carry it with no schema change.
+ */
+export function logUnresolvedReceiverFiles(outcomes: readonly ResolutionOutcome[]): void {
+  // Nothing below is observable unless the diagnostic is switched on, so skip
+  // the whole tally rather than building it and discarding it at the emit.
+  if (!dropLog().isLevelEnabled('debug')) return;
+
+  const byFile = new Map<string, number>();
+  let totalSites = 0;
+  for (const outcome of outcomes) {
+    // External-rooted drops (`fmt.Println`) reach code this index does not
+    // contain, so no node existed for an edge to point at and nothing was lost.
+    // Counting them here led the ranking with files that call `fmt` the most.
+    if (!isUnresolvedReceiverCall(outcome) || outcome.receiverOrigin === 'external') continue;
+    totalSites += 1;
+    byFile.set(outcome.filePath, (byFile.get(outcome.filePath) ?? 0) + 1);
+  }
+  if (totalSites === 0) return;
+  const { kept } = rankAndCap(byFile, UNRESOLVED_RECEIVER_FILE_SAMPLE);
+  dropLog().debug(
+    {
+      totalSites,
+      filesAffected: byFile.size,
+      topFiles: kept.map(([filePath, sites]) => ({ filePath, sites })),
+    },
+    'receiver-unresolved call sites by file (top offenders; a file far above its ' +
+      'siblings usually means its receivers were never typed, not that it has more calls)',
+  );
 }

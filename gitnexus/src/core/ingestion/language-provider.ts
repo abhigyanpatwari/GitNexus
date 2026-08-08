@@ -282,14 +282,22 @@ interface LanguageProviderConfig {
   ) => ExtractedRoute[];
 
   /**
-   * Extract decorator-style route annotations from a parsed file.
+   * Extract routes that a parsed file declares in its own AST.
    *
    * When defined, the parse worker calls this after per-file capture processing
-   * to extract framework route definitions that require AST-level analysis beyond
+   * to extract route definitions that require AST-level analysis beyond
    * generic `@decorator` captures (e.g., Java Spring class-level prefix joining,
    * multi-class handling). The returned routes are appended to `decoratorRoutes`.
    *
-   * Default: undefined (no language-specific decorator route extraction).
+   * Decorators are the common case and the reason for the name, but not the only
+   * shape: JS/TS uses this hook for hand-rolled dispatch guards
+   * (`route-extractors/dispatch-guard.ts`), where a raw `node:http` server
+   * declares a route by comparing the request path to a literal. Anything that
+   * yields a `(path, verb, handler)` triple from one file's AST belongs here —
+   * set `ExtractedDecoratorRoute.source` when the provenance is not a decorator,
+   * so the `HANDLES_ROUTE` edge does not claim one.
+   *
+   * Default: undefined (no language-specific route extraction).
    */
   readonly extractDecoratorRoutes?: (
     tree: Parser.Tree,

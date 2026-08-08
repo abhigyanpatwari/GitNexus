@@ -114,13 +114,23 @@
  *          languages that set `resolveThisViaEnclosingClass === true`;
  *          it intercepts every bare-`this` call/read/write site ahead of
  *          Case 4 and does NOT emit the interface-dispatch fan-out that
- *          Cases 0 and 4 both perform (Case 0 gained it in #2829), so
- *          enabling the toggle for a language changes that language's
- *          `this` dispatch semantics (see the toggle's doc below)
+ *          Cases 0, 3b and 4 all perform (Case 0 gained it in #2829 and
+ *          Case 3b in #2832, leaving 0.5 the only INSTANCE-receiver case
+ *          that folds or walks to a receiver type without fanning out.
+ *          Read that narrowly: Case 2 also walks an MRO and its binding
+ *          admits `Interface`, but its receiver IS the type name, so the
+ *          site is static dispatch and a fan-out would be wrong; Cases 3
+ *          and 5 resolve by direct lookup rather than a fold or MRO walk,
+ *          and no language is known to reach Case 3 with an Interface —
+ *          every one that could strips the namespace qualifier first,
+ *          sending it to Case 4), so enabling the toggle
+ *          for a language changes that language's `this` dispatch
+ *          semantics (see the toggle's doc below)
  *       4. Case 1 namespace-receiver
  *       5. Case 2 class-name receiver
  *       6. Case 3 dotted typeBinding for namespace prefix
- *       7. Case 3b chain-typebinding (compound resolver)
+ *       7. Case 3b chain-typebinding (compound resolver + interface-dispatch
+ *          fan-out on an Interface fold, #2832)
  *       8. Case 4 simple typeBinding (MRO walk + findOwnedMember)
  *     Reordering or merging cases changes resolution semantics. The
  *     numbering is part of the contract — keep the comments.
@@ -1083,6 +1093,44 @@ export interface ScopeResolver {
     parsedFiles: readonly ParsedFile[],
     callsite?: Callsite,
   ) => SymbolDefinition | 'ambiguous' | undefined;
+
+  /**
+   * Every receiver spelling under which a namespace import's target is
+   * reachable, and the file each spelling names (#2826). Returning
+   * `undefined` keeps the shared default: the local binding name alone,
+   * mapped to the edge's own target file.
+   *
+   * Python needs this because one `import a.b.c` statement binds THREE
+   * spellings at once — `a`, `a.b` and `a.b.c` — each naming a DIFFERENT
+   * file (`a/__init__.py`, `a/b/__init__.py`, `a/b/c.py`), while
+   * `ImportEdge` carries only the leaf. The default keyed `a` (its
+   * `localName`) to the LEAF, so `a.helper()` resolved into `a/b/c.py`
+   * whenever that module happened to export `helper` — a wrong edge — and
+   * `a.b.mid()` resolved to nothing at all.
+   *
+   * Shared code cannot derive this. Swift's `import Foo.Bar` produces an
+   * edge shape identical to Python's (`localName: 'Foo'`,
+   * `targetExportedName: 'Foo.Bar'`), yet there the FIRST segment is the
+   * resolved target and `Foo.Bar` names a nested TYPE; keying it would hand
+   * `resolveConstructionExpressionClass` an authoritative namespace — that
+   * branch deliberately does not fall through on a miss — and break
+   * `Foo.Bar(x)` construction that resolves correctly today. And the
+   * `__init__.py` convention that turns a dotted prefix into a file is
+   * Python's alone.
+   *
+   * `moduleFileExists` reports whether a path is a module the workspace
+   * actually parsed, so a provider can propose a prefix file and have it
+   * dropped when absent (a PEP-420 namespace package has no `__init__.py`)
+   * rather than minting a key to a file that is not there.
+   */
+  readonly namespaceReceiverPaths?: (
+    edge: {
+      readonly localName: string;
+      readonly importPath: string;
+      readonly targetFile: string;
+    },
+    moduleFileExists: (filePath: string) => boolean,
+  ) => readonly (readonly [spelling: string, targetFile: string])[] | undefined;
 
   /**
    * Optional language-specific member-lattice lookup. Runs for a resolved

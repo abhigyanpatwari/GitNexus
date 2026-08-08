@@ -121,7 +121,8 @@ export interface GitNexusContentOptions {
   skipSkills?: boolean;
   /** Project-relative path to the runner `gitnexus analyze` drops next to the
    *  index (#1945). Referenced by docs so a single CLI-neutral command resolves
-   *  the available runner (global `gitnexus` → `pnpm dlx` → `npx`) at call time. */
+   *  the available runner (global `gitnexus` → `pnpm dlx` → `bunx` → `npx`) at
+   *  call time. */
   runnerPath?: string;
   /** Default branch for the regression-compare example (#243). Configurable so
    *  projects on `develop`/`master`/etc. don't get `base_ref: "main"` rewritten
@@ -184,9 +185,15 @@ ${tableBody}`
   // stay under the CLAUDE.md block token budget (#856); the cli skill carries the
   // full bootstrap + npm-11 fallback (`node.target is null` npx install crash).
   const runner = `node ${runnerPath}`;
+  // Bootstrap names every install-free one-shot rather than the one this machine
+  // resolves to: the block is committed, so a host-specific command would make
+  // two contributors on different package managers rewrite it at each other on
+  // every analyze (the per-machine churn of #1706). `bunx` is listed because a
+  // bun-only machine has no npm, npx or pnpm at all, and the npx-only note left
+  // it with a bootstrap command it could not run.
   const bootstrapNote =
-    `No \`${runnerPath}\` yet? \`npx gitnexus analyze\` ` +
-    '(npm 11 crash → `npm i -g gitnexus`; #1939).';
+    `No \`${runnerPath}\` yet? Bootstrap with \`npx\`, \`bunx\`, or \`pnpm dlx\` — ` +
+    'e.g. `bunx gitnexus@latest analyze` (npm 11 npx crash; #1939).';
 
   return `${GITNEXUS_START_MARKER}
 # GitNexus — Code Intelligence

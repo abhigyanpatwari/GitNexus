@@ -51,6 +51,19 @@ If you fork GitNexus or self-host it, we recommend enabling the following in you
 - **Secret scanning** and **Push protection** — blocks pushes that introduce known secret patterns. Defense-in-depth on top of the in-CI Gitleaks scan documented below.
 - **Code scanning** — surfaces SARIF results from CodeQL, Trivy, Scorecard, and zizmor in one place.
 
+### Hosted Deploys on Render
+
+The `render.yaml` Blueprint (see the README's **Deploy to Render**) puts `gitnexus serve` on a **private service** with no public URL, and a public web service in front of it that reverse-proxies `/api/*`. What that does and does not protect:
+
+- **The web service is public and its URL is discoverable.** `onrender.com` hostnames appear in certificate transparency logs. Treat the URL as known rather than secret.
+- **The generated `GITNEXUS_SERVE_AUTH_TOKEN` is the only access control.** The proxy rejects any `/api/*` request without it with a `401` before forwarding. Rotate it by editing the environment variable on the `gitnexus-web` service and redeploying.
+- **The CSRF guard is inert on this path.** The proxy strips `Origin` before forwarding, so the server's write-origin guard does nothing for proxied traffic — it passes `Origin`-less requests through by design. The token is not a second layer behind the guard.
+- **Anyone holding the token can read every indexed repo's source.** These routes carry no origin guard, and the first three carry no rate limiter either: `GET /api/repos`, `GET /api/graph`, `POST /api/query`, `GET /api/file`, `GET /api/grep`. Whoever has the token can also index and delete repositories.
+- **`POST /api/mcp` rides the same path.** `serve` mounts the MCP handler via `mountMCPEndpoints`, and `createStreamableHttpHandler` is called with no `authToken` — a **pre-existing** gap in `serve` itself, not something this deploy introduces. On Render it is closed only by the edge token and the private network. A `serve` bound directly to a public interface has no such cover.
+- **Rate limits bound cost, not access.** They cap what a token holder can spend; they do not decide who gets in.
+
+Do not hand the URL out as a public demo. A token holder has read access to everything the deploy has indexed.
+
 ## Automated Scans Running in CI
 
 This repository runs the following scans automatically. Findings appear under the repository's **Security → Code scanning** tab.

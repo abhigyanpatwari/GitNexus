@@ -120,6 +120,18 @@ describe('intended standard-skill improvements stay in every applicable copy', (
     }
   });
 
+  // These copies are NOT byte-compared (only the engineering FAMILY above is),
+  // so a runner added to resolve-analyze-cmd.cjs can silently miss them. The
+  // audience that most needs bunx documented — a bun-only machine with no npm,
+  // npx or pnpm — is exactly the one an npx/pnpm-only bootstrap line strands.
+  it('documents the bunx runner and bootstrap in every CLI copy', () => {
+    for (const file of standardSkillCopies('gitnexus-cli')) {
+      const content = fs.readFileSync(file, 'utf-8');
+      expect(content).toContain('else `bunx`');
+      expect(content).toContain('bunx gitnexus@latest analyze');
+    }
+  });
+
   it('documents CLI fallbacks in every impact-analysis copy', () => {
     const required = [
       'node .gitnexus/run.cjs impact <symbol> --direction upstream --repo .',
@@ -128,6 +140,31 @@ describe('intended standard-skill improvements stay in every applicable copy', (
       'detect_changes({scope: "all"})',
     ];
     for (const file of standardSkillCopies('gitnexus-impact-analysis')) {
+      const content = fs.readFileSync(file, 'utf-8');
+      for (const fragment of required) expect(content).toContain(fragment);
+    }
+  });
+
+  // The risk scale's own escape hatch. `UNKNOWN` means the walk could not
+  // answer, and an agent that reads it as a low rung proceeds on a zero — the
+  // one reading the verdict exists to prevent.
+  //
+  // This assertion exists because its absence let real drift ship: the canonical
+  // `.claude/` copy lost the UNKNOWN block while the plugin mirror kept it, and
+  // this suite passed 54/54 with the two copies contradicting each other. The
+  // byte-identical check above covers only the plan/work/review/lfg family, and
+  // the fragment lists are the only guard the standard skills get — so a fragment
+  // that is not listed is a fragment nothing protects.
+  it('keeps the UNKNOWN-risk guidance in every impact-analysis copy', () => {
+    const required = [
+      '| **Zero callers found**         | **UNKNOWN** |',
+      '`UNKNOWN` is not a low rung on this scale',
+      'Confirm with a text search before',
+    ];
+    const copies = standardSkillCopies('gitnexus-impact-analysis');
+    // Guard the guard: an empty copy list would make every loop below vacuous.
+    expect(copies.length).toBeGreaterThan(1);
+    for (const file of copies) {
       const content = fs.readFileSync(file, 'utf-8');
       for (const fragment of required) expect(content).toContain(fragment);
     }

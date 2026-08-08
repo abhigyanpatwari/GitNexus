@@ -39,7 +39,7 @@ import { CALL_TARGET_TYPES } from '../../src/core/ingestion/model/symbol-table.j
  *    pair …` below is the one that sees it.
  *
  * WHAT THIS FILE CANNOT SEE: a pair hand-added to {@link STRUCTURAL_PAIR_DDL}
- * that NEITHER rule covers — the ~72 containment/inheritance/import pairs
+ * that NEITHER rule covers — the ~69 containment/inheritance/import pairs
  * between two definition labels. That surface has no predicate, so it is
  * bounded by a corpus instead, in
  * `test/integration/structural-pair-coverage.test.ts`.
@@ -122,9 +122,10 @@ describe('RELATION_SCHEMA pair coverage', () => {
     // then silently keep that pair alive, and every other assertion in this file
     // subtracts `structural` from both sides, so none of them would notice.
     // (The integration corpus only checks emitted ⊆ declared — blind to an
-    // EXCESS declaration by construction.) 161 such lines were deleted when this
-    // guard went in; the DDL's pair set did not change, they moved into the
-    // generated half. Failing here means deleting the line, not widening this.
+    // EXCESS declaration by construction.) 164 such lines now live in the
+    // generated half: 161 moved when this guard went in, plus the three Record
+    // member pairs moved when Record became linkable (#2801). Failing here means
+    // deleting the line, not widening this.
     const allRulePairs = new Set([...scopeBridgePairs(), ...attachmentPairs()]);
     expect([...structural].filter((pair) => allRulePairs.has(pair))).toEqual([]);
   });

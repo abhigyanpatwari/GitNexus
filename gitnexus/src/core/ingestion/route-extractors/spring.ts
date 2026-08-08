@@ -23,7 +23,8 @@ import Parser from 'tree-sitter';
 import Java from 'tree-sitter-java';
 import type { ExtractedDecoratorRoute } from '../workers/parse-worker.js';
 import {
-  METHOD_ANNOTATION_TO_HTTP,
+  intersectSpringHttpMethods,
+  springAnnotationHttpMethods,
   isRouteMemberKey,
   findEnclosingType,
   unquoteSpringLiteral,
@@ -60,14 +61,14 @@ const ROUTE_ANNOTATION_QUERY = new Parser.Query(
     (class_declaration
       (modifiers
         (annotation
-          name: (identifier) @ann
+          name: [(identifier) (scoped_identifier)] @ann
           arguments: (annotation_argument_list
             [(string_literal) @value
              (element_value_array_initializer (string_literal) @value)])))) @node
     (class_declaration
       (modifiers
         (annotation
-          name: (identifier) @ann
+          name: [(identifier) (scoped_identifier)] @ann
           arguments: (annotation_argument_list
             (element_value_pair
               key: (identifier) @key
@@ -76,14 +77,14 @@ const ROUTE_ANNOTATION_QUERY = new Parser.Query(
     (method_declaration
       (modifiers
         (annotation
-          name: (identifier) @ann
+          name: [(identifier) (scoped_identifier)] @ann
           arguments: (annotation_argument_list
             [(string_literal) @value
              (element_value_array_initializer (string_literal) @value)])))) @node
     (method_declaration
       (modifiers
         (annotation
-          name: (identifier) @ann
+          name: [(identifier) (scoped_identifier)] @ann
           arguments: (annotation_argument_list
             (element_value_pair
               key: (identifier) @key
@@ -121,6 +122,13 @@ export function extractSpringRoutes(
   // class-array cross-product support is out of scope here.
   const prefixByClassId = new Map<number, string>();
   const classesWithArrayPrefix = new Set<number>();
+  const classHttpMethodsById = new Map<number, readonly string[]>();
+  for (const match of TYPE_DECLARATION_QUERY.matches(tree.rootNode)) {
+    const typeNode = match.captures.find((capture) => capture.name === 'type')?.node;
+    if (typeNode?.type === 'class_declaration') {
+      classHttpMethodsById.set(typeNode.id, typeRequestMethods(typeNode));
+    }
+  }
 
   for (const match of matches) {
     const caps: Record<string, Parser.SyntaxNode> = {};
@@ -133,7 +141,8 @@ export function extractSpringRoutes(
     const keyNode = caps['key'];
     if (!annNode || !node || !valueNode) continue;
 
-    if (node.type === 'class_declaration' && annNode.text === 'RequestMapping') {
+    const capturedAnnotationName = annNode.text.split('.').pop() ?? annNode.text;
+    if (node.type === 'class_declaration' && capturedAnnotationName === 'RequestMapping') {
       if (!isRouteMemberKey(keyNode)) continue;
       if (valueNode.parent?.type === 'element_value_array_initializer') {
         classesWithArrayPrefix.add(node.id);
@@ -146,6 +155,7 @@ export function extractSpringRoutes(
 
   // Phase 2: collect method-level routes and resolve their class prefix
   const routes: ExtractedDecoratorRoute[] = [];
+  const httpMethodsByAnnotationId = new Map<number, readonly string[]>();
 
   for (const match of matches) {
     const caps: Record<string, Parser.SyntaxNode> = {};
@@ -160,9 +170,15 @@ export function extractSpringRoutes(
 
     if (node.type !== 'method_declaration') continue;
 
-    const ann = annNode.text;
-    const httpMethod = METHOD_ANNOTATION_TO_HTTP[ann];
-    if (!httpMethod) continue; // skip @RequestMapping on methods (ambiguous verb)
+    const ann = annNode.text.split('.').pop() ?? annNode.text;
+    const annotationNode = annNode.parent;
+    if (!annotationNode) continue;
+    let methodMethods = httpMethodsByAnnotationId.get(annotationNode.id);
+    if (!methodMethods) {
+      methodMethods = springAnnotationHttpMethods(ann, annotationNode.text);
+      httpMethodsByAnnotationId.set(annotationNode.id, methodMethods);
+    }
+    if (methodMethods.length === 0) continue;
     if (!isRouteMemberKey(keyNode)) continue;
 
     const routePath = unquoteSpringLiteral(valueNode.text);
@@ -177,6 +193,11 @@ export function extractSpringRoutes(
     if (enclosingType?.kind === 'interface') continue;
     const enclosingClass = enclosingType?.kind === 'class' ? enclosingType.node : null;
 
+    const httpMethods = intersectSpringHttpMethods(
+      enclosingClass ? (classHttpMethodsById.get(enclosingClass.id) ?? ['*']) : ['*'],
+      methodMethods,
+    );
+    if (httpMethods.length === 0) continue;
     // Suppress a method-level *array-form* route nested under a class-level
     // array-form @RequestMapping. The class prefix is one of several values that
     // cannot be resolved to a single string here, so emitting the route would
@@ -195,15 +216,47 @@ export function extractSpringRoutes(
     // handler method name (resolved to a symbol UID later by the routes phase).
     const handlerName = node.childForFieldName('name')?.text;
 
-    routes.push({
-      filePath,
-      routePath,
-      httpMethod,
-      decoratorName: ann,
-      lineNumber: annNode.startPosition.row + lineOffset,
-      ...(classPrefix ? { prefix: classPrefix } : {}),
-      ...(handlerName ? { handlerName } : {}),
-    });
+    for (const httpMethod of httpMethods) {
+      routes.push({
+        filePath,
+        routePath,
+        httpMethod,
+        decoratorName: ann,
+        lineNumber: annNode.startPosition.row + lineOffset,
+        ...(classPrefix ? { prefix: classPrefix } : {}),
+        ...(handlerName ? { handlerName } : {}),
+      });
+    }
+  }
+
+  // Mapping annotations without a path bind to the enclosing class prefix.
+  for (const match of TYPE_DECLARATION_QUERY.matches(tree.rootNode)) {
+    const typeNode = match.captures.find((capture) => capture.name === 'type')?.node;
+    if (typeNode?.type !== 'class_declaration') continue;
+    const classPrefix = prefixByClassId.get(typeNode.id) ?? '';
+    const classMethods = classHttpMethodsById.get(typeNode.id) ?? ['*'];
+    for (const methodNode of directMethods(typeNode)) {
+      const handlerName = methodNode.childForFieldName('name')?.text;
+      if (!handlerName) continue;
+      for (const annotationNode of declarationAnnotations(methodNode)) {
+        const ann = annotationName(annotationNode) ?? '';
+        if (annotationHasRouteMember(annotationNode)) continue;
+        const methodMethods = springAnnotationHttpMethods(ann, annotationNode.text);
+        const httpMethods = intersectSpringHttpMethods(classMethods, methodMethods);
+        if (httpMethods.length === 0) continue;
+        for (const httpMethod of httpMethods) {
+          routes.push({
+            filePath,
+            routePath: '',
+            httpMethod,
+            decoratorName: ann,
+            lineNumber: annotationNode.startPosition.row + lineOffset,
+            ...(classPrefix ? { prefix: classPrefix } : {}),
+            handlerName,
+          });
+        }
+      }
+    }
   }
 
   return routes;
@@ -270,6 +323,34 @@ function annotationRoutePaths(ann: Parser.SyntaxNode): string[] {
     }
   }
   return out;
+}
+
+/** Whether an annotation explicitly supplies a positional or path/value member. */
+function annotationHasRouteMember(ann: Parser.SyntaxNode): boolean {
+  const args = ann.childForFieldName('arguments');
+  if (!args) return false;
+  for (const child of args.namedChildren) {
+    if (child.type !== 'element_value_pair') return true;
+    const key = child.childForFieldName('key');
+    if (isRouteMemberKey(key ?? undefined)) return true;
+  }
+  return false;
+}
+
+/** Static class/interface-level RequestMapping method constraint, or wildcard by default. */
+function typeRequestMethods(typeNode: Parser.SyntaxNode): readonly string[] {
+  const mappings = declarationAnnotations(typeNode).filter(
+    (ann) => annotationName(ann) === 'RequestMapping',
+  );
+  if (mappings.length === 0) return ['*'];
+  if (mappings.length !== 1) return [];
+  return springAnnotationHttpMethods('RequestMapping', mappings[0].text);
+}
+
+function annotationRoutePathsOrDefault(ann: Parser.SyntaxNode): string[] {
+  const paths = annotationRoutePaths(ann);
+  if (paths.length > 0) return paths;
+  return annotationHasRouteMember(ann) ? [] : [''];
 }
 
 /** Class-level `@RequestMapping` prefixes for a type (array-aware; may be []). */
@@ -343,6 +424,7 @@ export function extractSpringTypes(tree: Parser.Tree, filePath: string): SharedS
     const annNames = declarationAnnotations(typeNode).map(annotationName);
     const isController =
       kind === 'class' && (annNames.includes('RestController') || annNames.includes('Controller'));
+    const classMethods = typeRequestMethods(typeNode);
 
     const methods = directMethods(typeNode)
       .map((methodNode) => {
@@ -350,9 +432,12 @@ export function extractSpringTypes(tree: Parser.Tree, filePath: string): SharedS
         if (!methodName) return null;
         const routes: Array<{ method: string; path: string }> = [];
         for (const ann of declarationAnnotations(methodNode)) {
-          const verb = METHOD_ANNOTATION_TO_HTTP[annotationName(ann) ?? ''];
-          if (!verb) continue;
-          for (const path of annotationRoutePaths(ann)) routes.push({ method: verb, path });
+          const methodMethods = springAnnotationHttpMethods(annotationName(ann) ?? '', ann.text);
+          const verbs = intersectSpringHttpMethods(classMethods, methodMethods);
+          for (const verb of verbs) {
+            for (const path of annotationRoutePathsOrDefault(ann))
+              routes.push({ method: verb, path });
+          }
         }
         return { name: methodName, routes };
       })

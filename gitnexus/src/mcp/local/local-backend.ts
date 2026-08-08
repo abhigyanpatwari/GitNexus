@@ -799,6 +799,21 @@ export function resolveWorktreeCwd(repoPath: string, launchCwd: string): string 
   return repoPath;
 }
 
+export function buildDetectChangesDiffArgs(scope: string, baseRef?: string): string[] | null {
+  const args = ['diff', '--ignore-cr-at-eol'];
+  switch (scope) {
+    case 'staged':
+      return [...args, '--staged', '-U0'];
+    case 'all':
+      return [...args, 'HEAD', '-U0'];
+    case 'compare':
+      return baseRef ? [...args, baseRef, '-U0'] : null;
+    case 'unstaged':
+    default:
+      return [...args, '-U0'];
+  }
+}
+
 /**
  * Length of the path-derived suffix appended to a colliding repo id.
  * Exported so tests can pin the suffix shape without re-deriving the
@@ -4100,6 +4115,46 @@ export class LocalBackend {
     const beanMetadataPromise = queryClassBeanMetadata(repo.lbugPath, symId, epistemicSymType);
     const aopMetadataPromise = querySpringAopMetadata(repo.lbugPath, symId, epistemicSymType);
 
+    // R3-1. A `Property` whose name the analyzer declined to link — because
+    // every definition of it lives in another language — otherwise returns an
+    // incoming list byte-identical to a genuinely unread field. Those demand
+    // opposite actions ("look in the other language / grep" vs "delete it"), so
+    // the difference has to travel with the answer.
+    //
+    // The graph cannot answer this: the unlinked reads mint no edge and no
+    // node, so the only record is the analyze pass that declined them. Hence the
+    // meta read — bounded to Property lookups, since `ensureInitialized`
+    // deliberately avoids a per-call `loadMeta` on the hot path.
+    let crossLanguageAnchor: {
+      unresolved?: string;
+      anchorLanguages?: readonly string[];
+    } = {};
+    {
+      try {
+        // Keyed on the NAME, not on the resolved label. Gating on
+        // `=== 'Property'` was tried and is wrong: the label is not always
+        // populated on this path (it reads `''` for a plain Property node), so
+        // the gate silently suppressed the whole feature. The meta list only
+        // ever contains property names, so matching the name IS the type check.
+        const hit = (await this.crossLanguagePropertiesFor(repo)).get(
+          (sym.name || sym[1]) as string,
+        );
+        if (hit) {
+          crossLanguageAnchor = {
+            unresolved:
+              `property reads of this name were NOT linked: every definition of it is ` +
+              `${hit.join('/')}, and name inference does not cross languages. ` +
+              `An empty or short incoming list here is not evidence the field is unused — ` +
+              `confirm with a text search, or give it an anchor in the reading language.`,
+            anchorLanguages: hit,
+          };
+        }
+      } catch {
+        // A missing or unreadable meta is not worth failing a context lookup
+        // over; the answer is merely less explained, which is the status quo.
+      }
+    }
+
     let methodMetadata: Record<string, unknown> | undefined;
     if (isMethodLike) {
       try {
@@ -4160,6 +4215,7 @@ export class LocalBackend {
         ...(aopMetadata ? { aop: aopMetadata } : {}),
       },
       ...epistemic,
+      ...crossLanguageAnchor,
       incoming: categorize(incomingRows),
       outgoing: categorize(outgoingRows),
       ...(typedPropertyRows.length > 0
@@ -4917,24 +4973,10 @@ export class LocalBackend {
     const scope = params.scope || 'unstaged';
     const { execFileSync } = await import('child_process');
 
-    // Build git diff args based on scope (using execFileSync to avoid shell injection)
-    let diffArgs: string[];
-    switch (scope) {
-      case 'staged':
-        diffArgs = ['diff', '--staged', '-U0'];
-        break;
-      case 'all':
-        diffArgs = ['diff', 'HEAD', '-U0'];
-        break;
-      case 'compare':
-        if (!params.base_ref) return { error: 'base_ref is required for "compare" scope' };
-        diffArgs = ['diff', params.base_ref, '-U0'];
-        break;
-      case 'unstaged':
-      default:
-        diffArgs = ['diff', '-U0'];
-        break;
-    }
+    // Ignore CR-only EOL differences, while preserving meaningful whitespace changes.
+    // execFileSync receives an argv array, so refs never pass through a shell.
+    const diffArgs = buildDetectChangesDiffArgs(scope, params.base_ref);
+    if (!diffArgs) return { error: 'base_ref is required for "compare" scope' };
 
     let diffOutput: string;
     try {
@@ -5914,8 +5956,14 @@ export class LocalBackend {
           let summary: {
             impactedCount: number;
             risk: string;
+            riskNote?: string;
             summary?: { direct: number };
           } | null = null;
+          // Tracks THIS candidate's probe. The outer `probeFailed` is a
+          // fan-out-wide flag, and `UNKNOWN` now has two causes — a probe that
+          // threw, and a walk that resolved and found no callers — so the two
+          // must not be told apart by the enum alone.
+          let candidateProbeFailed = false;
           try {
             summary = await this._runImpactBFS(
               repo,
@@ -5934,6 +5982,7 @@ export class LocalBackend {
             );
           } catch (e) {
             probeFailed = true;
+            candidateProbeFailed = true;
             logQueryError('impact:ambiguous-candidate', e);
           }
           return {
@@ -5946,6 +5995,18 @@ export class LocalBackend {
             impactedCount: summary?.impactedCount ?? 0,
             risk: summary?.risk ?? 'UNKNOWN',
             direct: summary?.summary?.direct ?? 0,
+            ...(summary?.riskNote !== undefined ? { riskNote: summary.riskNote } : {}),
+            // Carry the explanation with the verdict. The single-symbol path
+            // pairs a zero-caller `UNKNOWN` with a `riskNote` telling the reader
+            // to confirm with a text search; this shape dropped it, so the same
+            // enum arrived here bare — losing the entire point of the change on
+            // the path where a name is ambiguous.
+
+            // `UNKNOWN` used to mean exactly one thing on this path: the probe
+            // threw. The zero-caller branch gives it a second meaning, so an
+            // all-UNKNOWN fan-out is no longer distinguishable from a broken one
+            // without this flag.
+            ...(candidateProbeFailed ? { probeFailed: true } : {}),
           };
         }),
       );
@@ -5956,10 +6017,17 @@ export class LocalBackend {
       candidateSummaries.sort((a, b) => b.impactedCount - a.impactedCount);
       const maxImpactedCount = candidateSummaries.reduce((m, c) => Math.max(m, c.impactedCount), 0);
       const RISK_ORDER = ['LOW', 'MEDIUM', 'HIGH', 'CRITICAL'];
-      // If EVERY candidate probe failed (all 'UNKNOWN' — e.g. pool exhaustion
-      // under the fan-out), the worst real risk is genuinely unknown, not LOW.
-      // Reporting LOW here would re-introduce the false-safe signal. Only fall to
-      // the LOW seed when at least one candidate produced a real risk.
+      // If NO candidate produced a real risk, the worst risk is genuinely
+      // unknown, not LOW. Reporting LOW here would re-introduce the false-safe
+      // signal. Only fall to the LOW seed when at least one candidate produced
+      // a real risk.
+      //
+      // Note the two ways this set can be all-UNKNOWN, which is why candidates
+      // now carry `probeFailed`: every probe THREW (pool exhaustion under the
+      // fan-out — nothing was measured), or every walk RESOLVED and found no
+      // callers (measured, and the honest answer). Both are correctly UNKNOWN
+      // here; the flag is what lets a reader tell a broken fan-out from a
+      // genuinely caller-less one.
       const anyKnownRisk = candidateSummaries.some((c) => RISK_ORDER.includes(c.risk));
       const maxRisk = anyKnownRisk
         ? candidateSummaries.reduce(
@@ -6261,6 +6329,39 @@ export class LocalBackend {
    * Never throws: on query error it returns 'exact', so it can only add signal,
    * never suppress a result.
    */
+  /**
+   * Fields the analyzer declined to link because every definition of the name
+   * lives in another language (R3-1), keyed by name.
+   *
+   * Cached per index version. `ensureInitialized` deliberately avoids a
+   * per-call `loadMeta` because every tool call routes through it; this is one
+   * small read per (index, indexedAt), which re-reads exactly when a re-analyze
+   * could have changed the answer and never otherwise.
+   */
+  private readonly crossLanguagePropertyCache = new Map<
+    string,
+    { indexedAt: string | undefined; byName: ReadonlyMap<string, readonly string[]> }
+  >();
+
+  private async crossLanguagePropertiesFor(
+    repo: RepoHandle,
+  ): Promise<ReadonlyMap<string, readonly string[]>> {
+    const cached = this.crossLanguagePropertyCache.get(repo.lbugPath);
+    if (cached !== undefined && cached.indexedAt === repo.indexedAt) return cached.byName;
+    const byName = new Map<string, readonly string[]>();
+    try {
+      const meta = await loadMeta(path.dirname(repo.lbugPath));
+      for (const entry of meta?.crossLanguageProperties ?? []) {
+        byName.set(entry.name, entry.languages);
+      }
+    } catch {
+      // A missing or unreadable meta is not worth failing a lookup over; the
+      // answer is merely less explained, which is the status quo.
+    }
+    this.crossLanguagePropertyCache.set(repo.lbugPath, { indexedAt: repo.indexedAt, byName });
+    return byName;
+  }
+
   private async computeEpistemicBoundary(
     repo: RepoHandle,
     symId: string,
@@ -7049,8 +7150,27 @@ export class LocalBackend {
     // Risk scoring
     const processCount = affectedProcesses.length;
     const moduleCount = affectedModules.length;
-    let risk = 'LOW';
-    if (directCount >= 30 || processCount >= 5 || moduleCount >= 5 || impacted.length >= 200) {
+    let risk: string;
+    if (direction === 'upstream' && impacted.length === 0) {
+      // An upstream walk that resolved NO callers cannot support `LOW`. "Safe
+      // to change" is a claim ABOUT callers, and this walk found none to reason
+      // about: the symbol may be genuinely unused, or reached only through a
+      // reference class this index does not record — a property access on a
+      // plain object, or a bare-identifier read of a module-scope `Const`,
+      // neither of which mints a reference site today. Seeding `LOW` from an
+      // empty result is the same false-safe signal `anyKnownRisk` refuses to
+      // emit on the ambiguous-candidate path, and that #2687 removed by making
+      // an undetermined `impactedCount` `null` instead of `0`.
+      //
+      // Downstream is deliberately untouched: an empty downstream walk reports
+      // that this symbol resolved no callees, which is not a safety verdict.
+      risk = 'UNKNOWN';
+    } else if (
+      directCount >= 30 ||
+      processCount >= 5 ||
+      moduleCount >= 5 ||
+      impacted.length >= 200
+    ) {
       risk = 'CRITICAL';
     } else if (
       directCount >= 15 ||
@@ -7061,6 +7181,8 @@ export class LocalBackend {
       risk = 'HIGH';
     } else if (directCount >= 5 || impacted.length >= 30) {
       risk = 'MEDIUM';
+    } else {
+      risk = 'LOW';
     }
 
     // Build per-depth counts (always included, even in summaryOnly mode)
@@ -7089,6 +7211,16 @@ export class LocalBackend {
       direction,
       impactedCount: impacted.length,
       risk,
+      ...(risk === 'UNKNOWN'
+        ? {
+            riskNote:
+              'No callers resolved. Absence of edges is not evidence the symbol is unused: ' +
+              'a caller reaching it through a reference class this index does not record — ' +
+              'plain-object property access, a bare-identifier read of a module-scope const — ' +
+              'produces no edge to find. Confirm with a text search before treating the ' +
+              'change as safe.',
+          }
+        : {}),
       ...epistemic,
       ...(!traversalComplete && { partial: true }),
       summary: {

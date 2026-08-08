@@ -3,7 +3,7 @@
  *
  * Detects execution flows (Processes) in the code graph by:
  * 1. Finding entry points (functions with no internal callers)
- * 2. Tracing forward via CALLS edges (BFS)
+ * 2. Tracing forward via CALLS edges (DFS)
  * 3. Grouping and deduplicating similar paths
  * 4. Labeling with heuristic names
  *
@@ -83,8 +83,16 @@ export const processProcesses = async (
   memberships: CommunityMembership[],
   onProgress?: (message: string, progress: number) => void,
   config: Partial<ProcessDetectionConfig> = {},
+  /**
+   * Places the program reaches outward — fetch calls and ORM queries, each with
+   * a file and a line (R3-6). Attributed to their enclosing function to form the
+   * sink set; omitted, behaviour is exactly as before.
+   */
+  outwardActionSites: readonly OutwardActionSite[] = [],
 ): Promise<ProcessDetectionResult> => {
   const cfg = { ...DEFAULT_CONFIG, ...config };
+  const sinkFunctions = buildSinkFunctionSet(knowledgeGraph, outwardActionSites);
+  const isSink = (nodeId: string): boolean => sinkFunctions.has(nodeId);
 
   onProgress?.('Finding entry points...', 0);
 
@@ -109,7 +117,7 @@ export const processProcesses = async (
 
   for (let i = 0; i < entryPoints.length && allTraces.length < cfg.maxProcesses * 2; i++) {
     const entryId = entryPoints[i];
-    const traces = traceFromEntryPoint(entryId, callsEdges, cfg);
+    const traces = traceFromEntryPoint(entryId, callsEdges, cfg, isSink);
 
     // Filter out traces that are too short
     traces.filter((t) => t.length >= cfg.minSteps).forEach((t) => allTraces.push(t));
@@ -125,7 +133,7 @@ export const processProcesses = async (
   onProgress?.(`Found ${allTraces.length} traces, deduplicating...`, 60);
 
   // Step 3: Deduplicate similar traces (subset removal)
-  const uniqueTraces = deduplicateTraces(allTraces);
+  const uniqueTraces = deduplicateTraces(allTraces, isSink);
 
   // Step 3b: Deduplicate by entry+terminal pair (keep longest path per pair)
   const endpointDeduped = deduplicateByEndpoints(uniqueTraces);
@@ -135,10 +143,78 @@ export const processProcesses = async (
     70,
   );
 
-  // Step 4: Limit to max processes (prioritize longer traces)
-  const limitedTraces = endpointDeduped
-    .sort((a, b) => b.length - a.length)
-    .slice(0, cfg.maxProcesses);
+  // Step 4: Limit to max processes — deepest first, but ROUND-ROBIN across
+  // TERMINALS (R2-3).
+  //
+  // Ranking was `sort by length` alone, and the top of that list was one
+  // behaviour described many ways: measured on the reporting repo, eleven of
+  // the top fourteen processes were four entry points crossed with three
+  // terminals of the same date-window utility cluster — `Handle ->
+  // AlignWindowEnd`, `Main -> AlignWindowStart`, `ProcessSymbol ->
+  // ResolveGridIntervalMs`. Genuine call chains, but a reader learns one thing
+  // from fourteen entries.
+  //
+  // Keyed on the TERMINAL, not the entry point. Keying on the entry was tried
+  // first and made it worse — many files declare a `main`, so each was a
+  // distinct entry that round-robin then awarded its own slot, and
+  // `Main -> AlignWindowEnd` went from one row to eight. The repetition was
+  // never in where a flow starts; it is in where flows pile up.
+  //
+  // Depth still orders within a terminal and still leads the list, since
+  // insertion order here is deepest-first. What changes is that no terminal
+  // takes a second slot until every other has had a first. Measured: distinct
+  // terminals in the top 20 went 3 -> 20, and the repo's own domain flows
+  // (`ReconcilePositions -> ...`) moved into the top 4%.
+  //
+  // What this does NOT do, recorded so it does not read as settled: the
+  // reported cause — ranking rewarding fan-in, promoting chains ending in
+  // widely-called helpers — measured FALSE. Those terminals have one caller
+  // each (`alignWindowStart` 1, `validateSymbol` 1). A fan-in discount was
+  // implemented against that hypothesis and moved nothing.
+  //
+  // R3-6 adds one rule ahead of depth: a SINK-terminated trace outranks a
+  // leaf-terminated one. A flow that ends where the program does something —
+  // places an order, writes a row — is what a reader came for; a chain that
+  // ends in a date helper is where control happened to stop. Depth still orders
+  // within each group.
+  //
+  // This is what closed the gap that used to be described here as out of reach:
+  // a business flow could not be a process in its own right, because the walk
+  // emitted only at a leaf, at max depth, or on a cycle, so a flow whose
+  // meaningful endpoint calls onward survived only as whatever leaf it bottomed
+  // out in. Ranking could never fix it — the flow was not a candidate to rank.
+  // It is bounded honestly rather than fully closed: sinks are exactly where
+  // fetch/ORM extraction fires (see `buildSinkFunctionSet`), so a codebase whose
+  // outward calls are not detected as such still sees leaf-terminated traces
+  // only.
+  const tracesByTerminal = new Map<string, string[][]>();
+  const rankedByInterest = [...endpointDeduped].sort((a, b) => {
+    const aSink = Number(isSink(a[a.length - 1] ?? ''));
+    const bSink = Number(isSink(b[b.length - 1] ?? ''));
+    return bSink - aSink || b.length - a.length;
+  });
+  for (const trace of rankedByInterest) {
+    const terminalId = trace[trace.length - 1];
+    if (terminalId === undefined) continue;
+    const existing = tracesByTerminal.get(terminalId);
+    if (existing === undefined) tracesByTerminal.set(terminalId, [trace]);
+    else existing.push(trace);
+  }
+
+  // Insertion order is deepest-trace-first, so the round-robin visits terminals
+  // in that order too and depth still leads the list.
+  const limitedTraces: string[][] = [];
+  for (let round = 0; limitedTraces.length < cfg.maxProcesses; round++) {
+    let addedAny = false;
+    for (const traces of tracesByTerminal.values()) {
+      const trace = traces[round];
+      if (trace === undefined) continue;
+      limitedTraces.push(trace);
+      addedAny = true;
+      if (limitedTraces.length >= cfg.maxProcesses) break;
+    }
+    if (!addedAny) break;
+  }
 
   onProgress?.(`Creating ${limitedTraces.length} process nodes...`, 80);
 
@@ -333,26 +409,55 @@ const findEntryPoints = (
 };
 
 // ============================================================================
-// HELPER: Trace from entry point (BFS)
+// HELPER: Trace from entry point (DFS)
 // ============================================================================
 
 /**
- * Trace forward from an entry point using BFS.
+ * Trace forward from an entry point using DEPTH-first search.
  * Returns all distinct paths up to maxDepth.
  */
-const traceFromEntryPoint = (
+// Exported for tests ONLY: traversal order is the whole behaviour here, and it
+// is unobservable through `processProcesses` because `findEntryPoints` supplies
+// several starting points — a deep chain gets traced from inside it regardless
+// of order, so a test at that level passes under either traversal and pins
+// nothing.
+export const traceFromEntryPoint = (
   entryId: string,
   callsEdges: AdjacencyList,
   config: ProcessDetectionConfig,
+  /**
+   * Functions that reach outward (R3-6). A trace also ENDS here, even though
+   * the walk continues past it: a flow whose meaningful endpoint calls onward
+   * was otherwise never a candidate, only ever surviving as whatever leaf it
+   * bottomed out in.
+   */
+  isSink: (nodeId: string) => boolean = () => false,
 ): string[][] => {
   const traces: string[][] = [];
 
-  // BFS with path tracking
-  // Each queue item: [currentNodeId, pathSoFar]
-  const queue: [string, string[]][] = [[entryId, [entryId]]];
+  // DEPTH-first, not breadth-first. Each stack item: [currentNodeId, pathSoFar].
+  //
+  // The walk stops after a fixed NUMBER of traces, so the traversal order
+  // decides which traces those are. Breadth-first reaches every shallow
+  // terminal before any deep one, so the quota filled with the shortest paths
+  // in the graph and the walk stopped — `maxTraceDepth` was never approached.
+  // Measured on a 75k-node repo: of 300 processes, none exceeded 7 steps and
+  // 90% were 3-4, so a multi-hop business flow (signal → order → exit) had no
+  // process that could represent it, and `query` could only rank the mechanical
+  // pairs that did exist.
+  //
+  // Depth-first descends to a terminal first, so the same quota is spent on
+  // paths worth keeping. Cost is unchanged — same budget, same cycle guard,
+  // same `maxTraceDepth` ceiling — only the ORDER of exploration differs, and
+  // the caller already sorts by length and dedupes by endpoint, so it was
+  // always asking for the deepest traces this walk could give it.
+  // A LIFO stack, not a queue — the name followed the traversal when this was
+  // breadth-first and was left behind by the change to depth-first.
+  const stack: [string, string[]][] = [[entryId, [entryId]]];
 
-  while (queue.length > 0 && traces.length < config.maxBranching * 3) {
-    const [currentId, path] = queue.shift()!;
+  const traceBudget = config.maxBranching * 3;
+  while (stack.length > 0 && traces.length < traceBudget) {
+    const [currentId, path] = stack.pop()!;
 
     // Get outgoing calls
     const callees = callsEdges.get(currentId) || [];
@@ -368,14 +473,29 @@ const traceFromEntryPoint = (
         traces.push([...path]);
       }
     } else {
+      // A SINK ends a trace without ending the walk (R3-6). Emitting here is
+      // what lets `placeOrder` be an endpoint while `placeOrder -> formatDate`
+      // still exists as its own longer trace; the two answer different
+      // questions and neither should suppress the other.
+      if (isSink(currentId) && path.length >= config.minSteps) {
+        traces.push([...path]);
+      }
       // Continue tracing - limit branching
       const limitedCallees = callees.slice(0, config.maxBranching);
       let addedBranch = false;
 
-      for (const calleeId of limitedCallees) {
+      // PUSHED IN REVERSE so the stack POPS them in source order. `slice`
+      // selects the first N callees while `pop()` takes the last pushed, so
+      // without this the walk spends its trace budget on the LAST-declared
+      // branch first: for `main() { init(); loadConfig(); run(); shutdown(); }`
+      // it explores `shutdown` first and can exhaust the quota before reaching
+      // `init` — dropping the earliest steps of a flow, which is the opposite
+      // of what a process is meant to describe. Selecting the first N and then
+      // exploring them last-first was simply inconsistent.
+      for (const calleeId of [...limitedCallees].reverse()) {
         // Avoid cycles
         if (!path.includes(calleeId)) {
-          queue.push([calleeId, [...path, calleeId]]);
+          stack.push([calleeId, [...path, calleeId]]);
           addedBranch = true;
         }
       }
@@ -387,8 +507,88 @@ const traceFromEntryPoint = (
     }
   }
 
+  // A silently truncating cap reads as "this is everything", which is the same
+  // class of confident-empty answer this work is about. The repo already sets
+  // this precedent for `dispatchFanoutSkipped` and
+  // `propertyDispatch.skippedKeys`.
+  if (stack.length > 0) {
+    logger.debug(
+      { entryId, traceBudget, unexploredBranches: stack.length },
+      'process-processor: trace budget exhausted; unexplored branches remain for this entry point',
+    );
+  }
+
   return traces;
 };
+
+// ============================================================================
+// HELPER: Function-level sink set
+// ============================================================================
+
+/** A place in the source where the program reaches outward. */
+export interface OutwardActionSite {
+  readonly filePath: string;
+  readonly lineNumber: number;
+}
+
+const CALLABLE_SINK_LABELS: ReadonlySet<NodeLabel> = new Set<NodeLabel>([
+  'Function',
+  'Method',
+  'Constructor',
+]);
+
+/**
+ * Functions that DO something outward — issue a request, run a query (R3-6).
+ *
+ * The missing layer behind "business flows are never processes". A trace is
+ * only emitted at a node with NO outgoing calls, so a real flow — scan, score,
+ * arm, place the order — is always a PREFIX of some longer chain that runs on
+ * into date helpers and formatters, and can never be a process in its own
+ * right. Ending a trace somewhere meaningful needs a notion of an endpoint that
+ * is not a leaf, and the walk had none.
+ *
+ * GitNexus already knew where the program reaches outward: the parse phase
+ * collects fetch calls and ORM queries carrying `filePath` + `lineNumber`. Those
+ * facts only ever produced FILE-level edges (`File -[FETCHES]-> Route`), which
+ * is too coarse to end a trace on — every function in a file containing one
+ * would qualify. Attributing each site to the function whose range CONTAINS it
+ * turns the same facts into the function-level signal the walk needs, with no
+ * new extraction, no new relation pair, and no schema change.
+ *
+ * Innermost wins: a nested closure that performs the call is the sink, not the
+ * outer function that merely spans it.
+ */
+export function buildSinkFunctionSet(
+  graph: KnowledgeGraph,
+  sites: readonly OutwardActionSite[],
+): ReadonlySet<string> {
+  const sinks = new Set<string>();
+  if (sites.length === 0) return sinks;
+
+  const byFile = new Map<string, { id: string; start: number; end: number }[]>();
+  for (const node of graph.iterNodes()) {
+    if (!CALLABLE_SINK_LABELS.has(node.label)) continue;
+    const props = node.properties as { filePath?: string; startLine?: number; endLine?: number };
+    if (typeof props.filePath !== 'string') continue;
+    if (typeof props.startLine !== 'number' || typeof props.endLine !== 'number') continue;
+    const entry = { id: node.id, start: props.startLine, end: props.endLine };
+    const list = byFile.get(props.filePath);
+    if (list === undefined) byFile.set(props.filePath, [entry]);
+    else list.push(entry);
+  }
+
+  for (const site of sites) {
+    const candidates = byFile.get(site.filePath);
+    if (candidates === undefined) continue;
+    let best: { id: string; start: number; end: number } | undefined;
+    for (const c of candidates) {
+      if (site.lineNumber < c.start || site.lineNumber > c.end) continue;
+      if (best === undefined || c.end - c.start < best.end - best.start) best = c;
+    }
+    if (best !== undefined) sinks.add(best.id);
+  }
+  return sinks;
+}
 
 // ============================================================================
 // HELPER: Deduplicate traces
@@ -398,23 +598,50 @@ const traceFromEntryPoint = (
  * Merge traces that are subsets of other traces.
  * Keep longer traces, remove redundant shorter ones.
  */
-const deduplicateTraces = (traces: string[][]): string[][] => {
+const deduplicateTraces = (
+  traces: string[][],
+  /** See `buildSinkFunctionSet` — a sink-terminated trace survives subsumption. */
+  isSink: (nodeId: string) => boolean = () => false,
+): string[][] => {
   if (traces.length === 0) return [];
 
   // Sort by length descending
   const sorted = [...traces].sort((a, b) => b.length - a.length);
   const unique: string[][] = [];
+  // Keys for `unique`, built ONCE per surviving trace rather than once per
+  // COMPARISON. The join used to sit inside the `some()` callback below, so
+  // every already-kept trace had its key rebuilt from scratch against every
+  // candidate — O(T*U) joins of O(depth * id-length) characters, and it is that
+  // allocation, not the substring scan, that dominates the pass.
+  //
+  // Nothing about breadth-first search made that safe; it only kept the cost
+  // small by keeping traces short. Measured on this repo, the walk went from an
+  // average of 4.3 steps to 9.4 when D1 made it depth-first, which roughly
+  // doubles both the number of surviving traces and the length of every key —
+  // so the same quadratic that was affordable under BFS is ~6x the work under
+  // DFS. Hoisting the join removes the multiplication entirely.
+  const uniqueKeys: string[] = [];
 
   for (const trace of sorted) {
-    // Check if this trace is a subset of any already-added trace
+    // A SINK-TERMINATED trace is never redundant (R3-6), even though it is by
+    // definition a prefix of the longer chain that runs on past the sink into
+    // helpers. That is the whole shape of a business flow — scan, score, arm,
+    // PLACE THE ORDER — so subsuming it here is exactly what kept such flows
+    // from ever being processes. Emitting one at the walk and deleting it one
+    // step later would have been a no-op fix.
+    const terminal = trace[trace.length - 1];
     const traceKey = trace.join('->');
-    const isSubset = unique.some((existing) => {
-      const existingKey = existing.join('->');
-      return existingKey.includes(traceKey);
-    });
+    if (terminal !== undefined && isSink(terminal)) {
+      unique.push(trace);
+      uniqueKeys.push(traceKey);
+      continue;
+    }
+    // Check if this trace is a subset of any already-added trace
+    const isSubset = uniqueKeys.some((existingKey) => existingKey.includes(traceKey));
 
     if (!isSubset) {
       unique.push(trace);
+      uniqueKeys.push(traceKey);
     }
   }
 

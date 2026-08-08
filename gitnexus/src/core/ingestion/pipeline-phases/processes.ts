@@ -4,8 +4,9 @@
  * Detects execution flows (processes) and creates Process nodes +
  * STEP_IN_PROCESS edges. Also links Route/Tool nodes to processes.
  *
- * @deps    communities, routes, tools, pruneLocalSymbols
- * @reads   graph (all nodes and relationships), communityResult, routeRegistry, toolDefs
+ * @deps    communities, routes, tools, pruneLocalSymbols, structure, parse
+ * @reads   graph (all nodes and relationships), communityResult, routeRegistry,
+ *          toolDefs, parse's allFetchCalls + allORMQueries (R3-6 sink sites)
  * @writes  graph (Process nodes, STEP_IN_PROCESS edges, ENTRY_POINT_OF edges)
  */
 
@@ -15,6 +16,7 @@ import type { CommunitiesOutput } from './communities.js';
 import type { RoutesOutput } from './routes.js';
 import type { ToolsOutput } from './tools.js';
 import type { StructureOutput } from './structure.js';
+import type { ParseOutput } from './parse.js';
 import { processProcesses, type ProcessDetectionResult } from '../process-processor.js';
 import { generateId } from '../../../lib/utils.js';
 import { routeNodeKey } from '../route-extractors/route-path.js';
@@ -38,11 +40,19 @@ export function computeDynamicMaxProcesses(symbolCount: number): number {
 
 export const processesPhase: PipelinePhase<ProcessesOutput> = {
   name: 'processes',
-  // `structure` supplies `totalFiles` (progress counter) without the spurious
-  // structural data dependency on `parse`. `pruneLocalSymbols` is declared
+  // `structure` supplies `totalFiles` (progress counter), which is why this
+  // phase historically avoided depending on `parse` at all — that dependency
+  // was spurious for a progress number.
+  //
+  // It is no longer spurious. R3-6 reads `allFetchCalls` / `allORMQueries` from
+  // the parse output to learn WHERE the program reaches outward, which is what
+  // lets a trace end at a sink instead of only at a leaf. That is a real data
+  // dependency, so it is declared rather than reached for implicitly — and the
+  // read below still fails open, so a pipeline without that output detects no
+  // sinks rather than failing the phase. `pruneLocalSymbols` is declared
   // explicitly so process extraction always reads the trimmed graph even if a
   // future option drops the intervening `mro`/`communities` phases.
-  deps: ['communities', 'routes', 'tools', 'pruneLocalSymbols', 'structure'],
+  deps: ['communities', 'routes', 'tools', 'pruneLocalSymbols', 'structure', 'parse'],
 
   async execute(
     ctx: PipelineContext,
@@ -66,6 +76,32 @@ export const processesPhase: PipelinePhase<ProcessesOutput> = {
     });
     const dynamicMaxProcesses = computeDynamicMaxProcesses(symbolCount);
 
+    // R3-6: where the program reaches outward. Already collected by the parse
+    // phase for FILE-level FETCHES/QUERIES edges; reused here at function
+    // granularity so a trace can end somewhere meaningful instead of only at a
+    // leaf. Absent (or an older parse output) simply yields no sinks and the
+    // previous behaviour.
+    //
+    // Typed as `ParseOutput` rather than a locally re-declared structural shape,
+    // the way every other parse consumer does it (cross-file.ts, orm.ts,
+    // routes.ts, tools.ts). `getPhaseOutput` is a raw `as T` cast, so a local
+    // shape does not check anything — it only severs the compile-time link, and
+    // renaming `allFetchCalls` on `ParseOutput` would then still compile here and
+    // silently detect zero sinks. The runtime `.filter` below is the actual
+    // guard, and it stays.
+    let parseOutput: ParseOutput | undefined;
+    try {
+      parseOutput = getPhaseOutput<ParseOutput>(deps, 'parse');
+    } catch {
+      // Fail open: no sinks, previous behaviour. A missing parse output is a
+      // pipeline-composition question, not a reason to lose every process.
+      parseOutput = undefined;
+    }
+    const outwardActionSites = [
+      ...(parseOutput?.allFetchCalls ?? []),
+      ...(parseOutput?.allORMQueries ?? []),
+    ].filter((s) => typeof s?.filePath === 'string' && typeof s?.lineNumber === 'number');
+
     const processResult = await processProcesses(
       ctx.graph,
       communityResult.memberships,
@@ -79,6 +115,7 @@ export const processesPhase: PipelinePhase<ProcessesOutput> = {
         });
       },
       { maxProcesses: dynamicMaxProcesses, minSteps: 3 },
+      outwardActionSites,
     );
 
     if (isDev) {

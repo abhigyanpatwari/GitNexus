@@ -508,6 +508,17 @@ jobs:
         run: node --import tsx bench/cpp-qualified-ns/measure.mjs --check
         working-directory: gitnexus
 
+      - name: Kotlin import-resolution identity + scaling guards
+        # Build-free: asserts resolveKotlinImportTarget resolves an unchanged
+        # file set (fingerprint, in both file-set iteration orders — every
+        # tie-break in that resolver is expressed only through iteration order)
+        # and that per-import cost stays independent of workspace size. The
+        # pre-index implementation scores 3.737 on this corpus against 0.99 for
+        # the index, so the gate separates them by a wide margin. Rationale and
+        # history: see the header of bench/kotlin-import-target/measure.mjs.
+        run: node --import tsx bench/kotlin-import-target/measure.mjs --check
+        working-directory: gitnexus
+
       - name: Receiver-resolution drop guards
         # NOT build-free: this one runs the real pipeline, so it needs dist/
         # (the setup action above builds). ~2m15s.

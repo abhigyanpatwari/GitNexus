@@ -154,6 +154,18 @@ const LBUG_NATIVE = [
   // proven on the windows-latest native addon, not just Ubuntu. Budget: ~25s
   // on Linux → expect ~2min on the slowest Windows shard.
   'test/unit/incremental-vector-extension-ordering.test.ts',
+  // #2841: the FTS half of that same gate, plus the both-extensions-blocked
+  // case — and it needs this matrix for two reasons the VECTOR sibling above
+  // does not cover. The reported failure environment is a machine where the
+  // extension stopped LOADING, which is the #2374 class and Windows-reported
+  // (the same reason fts-extension-e2e.test.ts is registered below), so the
+  // FTS-unavailable branch has to run on a real Windows/macOS runner rather
+  // than only on Ubuntu where FTS always loads. And its both-blocked case is
+  // gated on GITNEXUS_REQUIRE_VECTOR=1, which ci-tests.yml sets ONLY on this
+  // job — everywhere else an unavailable VECTOR extension skips instead of
+  // failing. Budget: four real analyze runs, so expect it to sit alongside the
+  // VECTOR sibling's ~87s Windows measurement.
+  'test/unit/incremental-index-extension-dml-gate.test.ts',
 ];
 
 // Process spawning and CLI tests — exercise child_process with real

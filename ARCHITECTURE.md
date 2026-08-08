@@ -98,7 +98,7 @@ scan → structure → [springConfig, markdown, cobol] → parse → [routes, to
 | `markdown`                | `markdown.ts`                          | `structure`                                                        | Section nodes, cross-link edges from .md/.mdx                                                                                                                                               |
 | `cobol`                   | `cobol.ts`                             | `structure`                                                        | COBOL program/paragraph/section nodes (regex, no tree-sitter)                                                                                                                               |
 | `parse`                   | `parse.ts` + `parse-impl.ts`           | `structure`, `markdown`, `cobol`                                   | Symbol nodes, IMPORTS/CALLS/EXTENDS edges, extracted routes/tools/ORM queries                                                                                                               |
-| `routes`                  | `routes.ts`                            | `parse`                                                            | Route nodes + HANDLES_ROUTE edges (Next.js, Expo, PHP, decorators)                                                                                                                          |
+| `routes`                  | `routes.ts`                            | `parse`                                                            | Route nodes + HANDLES_ROUTE edges (Next.js, Expo, PHP, decorators, and JS/TS dispatch guards — see below)                                                                                    |
 | `tools`                   | `tools.ts`                             | `parse`                                                            | Tool nodes + HANDLES_TOOL edges                                                                                                                                                             |
 | `orm`                     | `orm.ts`                               | `parse`                                                            | QUERIES edges (Prisma, Supabase)                                                                                                                                                            |
 | `crossFile`               | `cross-file.ts` + `cross-file-impl.ts` | `parse`, `routes`, `tools`, `orm`                                  | Cross-file type propagation in topological import order                                                                                                                                     |
@@ -164,6 +164,48 @@ export const myPhase: PipelinePhase<MyPhaseOutput> = {
 };
 ```
 
+### Where routes come from
+
+`route-extractors/` holds four independent ways a route can be discovered, all
+converging on the routes phase's `(method, url)` registry:
+
+| Source | Shape | Examples |
+| --- | --- | --- |
+| Filesystem convention | path → URL, no parsing | Next.js `app/`, Expo, PHP |
+| Single-file framework route | `isRouteFile` + worker extraction | Laravel `routes/*.php` |
+| Cross-file framework route | `discoverRootRouteFiles` + `extractRoutes` | Django `urlpatterns` |
+| AST-level route in a normal file | `extractDecoratorRoutes` | Spring, FastAPI, NestJS, **JS/TS dispatch guards** |
+
+The last row is the one whose name undersells it. A route is DECLARED by a
+decorator, but it can also be **inferred** from a raw `node:http` server's own
+dispatch — `if (req.method === 'GET' && pathname === '/api/x')` is a route with
+a path, a verb and a handler, and nothing else in the pipeline could see it.
+`route-extractors/dispatch-guard.ts` reads that shape; the transport, dedup and
+handler resolution are shared with decorator routes, and
+`ExtractedDecoratorRoute.source` carries the provenance difference through to
+the `HANDLES_ROUTE` edge.
+
+That extractor is deliberately **precision-weighted**: `route_map` presents its
+output as fact, so a `startsWith` namespace test, a bare `pathname === '/'`
+without a verb, and any regex it cannot translate exactly are all dropped rather
+than guessed at. A missing route is a coverage limit; an invented one is a lie.
+
+Two rules there need more than one comparison to decide, and are worth knowing
+about before changing either:
+
+- **Same-file constant folding.** `` pathname === `${basePath}/rules` `` is
+  common enough that refusing it loses whole route modules — and loses them
+  invisibly, since a module with unfoldable paths and a module with no routes
+  produce the same empty answer. Folding is same-file, string literals only, one
+  alias hop, and refuses on ambiguity (a name declared twice with different
+  values is dropped, never guessed).
+- **Whole-repo reconciliation** (`reconcileDispatchGuardRoutes`, applied in the
+  routes phase). A split route table — one module listing every path it
+  recognises so the dispatcher can 404 early, handlers in others — otherwise
+  lists every route twice, once verb-less with the table as its "handler". It
+  applies to dispatch-guard routes only: a framework route with no verb is
+  method-agnostic *by declaration*, which is a fact, not a weaker observation.
+
 ---
 
 ## Semantic model
@@ -214,6 +256,9 @@ Language-agnostic scope-resolution resolver. This is the resolution path for eve
     │  emitReferencesViaLookup ── uses handledSites + deferred-site skip set
     │  emitPropertyDispatchCalls ── registration USES + conservative CALLS
     │  emitCallableValueFlow   ── assigned/passed callable invocation CALLS
+    │  emitImportedValueReferences ── cross-file value reads via finalized imports
+    │  emitUniqueNamePropertyAccesses ── LAST-RESORT property reads by name,
+    │       narrowed same-file → direct-import, refusing to choose otherwise
     │  emitImportEdges
     ▼
  KnowledgeGraph  (IMPORTS / CALLS / ACCESSES / INHERITS / USES)

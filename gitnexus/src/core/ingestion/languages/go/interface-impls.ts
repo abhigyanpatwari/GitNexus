@@ -3,6 +3,12 @@ import type { SemanticModel } from '../../model/semantic-model.js';
 import type { ScopeResolutionIndexes } from '../../model/scope-resolution-indexes.js';
 import { simpleQualifiedName } from '../../scope-resolution/graph-bridge/ids.js';
 import { resolveInheritanceBaseInScope } from '../../scope-resolution/scope/walkers.js';
+import { goPackageDir } from './package-clause.js';
+import {
+  matchingGoDelimiter,
+  readGoTypeParameters,
+  splitTopLevelGoList,
+} from './generic-type-parameters.js';
 
 type MethodSet = ReadonlyMap<string, readonly SymbolDefinition[]>;
 type MutableMethodSet = Map<string, SymbolDefinition[]>;
@@ -37,13 +43,32 @@ type DetectionIndexes = {
   readonly structsById: ReadonlyMap<string, SymbolDefinition>;
   readonly methodsByOwner: ReadonlyMap<string, MethodSet>;
   readonly effectiveMethodsByStructId: ReadonlyMap<string, MethodSet>;
-  readonly interfaceById: ReadonlyMap<string, SymbolDefinition>;
+  /** Every interface in the program keyed by `qualifiedName`, `null` where more
+   *  than one declares that name — the single probe behind
+   *  {@link uniqueInterfaceNamed}. */
+  readonly interfacesByQualifiedName: ReadonlyMap<string, SymbolDefinition | null>;
   readonly interfaceOwnMethodsById: ReadonlyMap<string, MethodSet>;
   readonly embeddedSitesByInterfaceId: ReadonlyMap<string, readonly ReferenceSite[]>;
   readonly parentStructIdsByStructId: ReadonlyMap<string, readonly EmbeddedParent[]>;
   readonly valueMethodsByStructId: ReadonlyMap<string, MethodSet>;
   readonly structIdsByMethodName: ReadonlyMap<string, ReadonlySet<string>>;
   readonly signatureContextByDefId: ReadonlyMap<string, SignatureContext>;
+  /** Type-parameter names, in declaration order, for every GENERIC interface.
+   *  Absence means "not generic" and is the gate on the whole instantiation
+   *  path — no entry, nothing below runs. */
+  readonly typeParametersByInterfaceId: ReadonlyMap<string, readonly string[]>;
+  /**
+   * Every distinct instantiation of each generic interface observed anywhere in
+   * the program: interface id → the instantiation's normalized type ARGUMENTS,
+   * keyed by that list joined — which is what deduplicates it.
+   *
+   * An instantiation is nothing but that list. `Repo[User]` reduces to the type
+   * arguments ALREADY normalized in the signature context of the file that wrote
+   * them, so a cross-package `repo.Repo[model.User]` and the implementor's own
+   * `model.User` compare as the same type without either side re-qualifying the
+   * other's spelling.
+   */
+  readonly instantiationsByInterfaceId: ReadonlyMap<string, ReadonlyMap<string, readonly string[]>>;
   readonly scopeIndexes: ScopeResolutionIndexes;
 };
 
@@ -72,14 +97,21 @@ function buildDetectionIndexes(
   const signatureContextByDefId = new Map<string, SignatureContext>();
   const interfaceIdByScopeId = new Map<string, string>();
   const structIdByScopeId = new Map<string, string>();
+  const typeParametersByInterfaceId = new Map<string, readonly string[]>();
+  const signatureContextByFilePath = new Map<string, SignatureContext>();
 
   for (const parsed of parsedFiles) {
     const signatureContext = signatureContextForFile(parsed, indexes);
+    signatureContextByFilePath.set(parsed.filePath, signatureContext);
     for (const def of parsed.localDefs) {
       signatureContextByDefId.set(def.nodeId, signatureContext);
       if (def.type === 'Interface') {
         interfaces.push(def);
         interfaceById.set(def.nodeId, def);
+        const typeParameters = readGoTypeParameters(def);
+        if (typeParameters !== undefined) {
+          typeParametersByInterfaceId.set(def.nodeId, typeParameters);
+        }
         continue;
       }
       if (def.type === 'Struct') {
@@ -127,6 +159,16 @@ function buildDetectionIndexes(
         def,
       );
     }
+  }
+
+  // Built from the nodeId-keyed map, so a def that appears in two ParsedFiles is
+  // one interface here just as it is one there — not a name collision with
+  // itself.
+  const interfacesByQualifiedName = new Map<string, SymbolDefinition | null>();
+  for (const iface of interfaceById.values()) {
+    const name = iface.qualifiedName;
+    if (name === undefined || name.length === 0) continue;
+    interfacesByQualifiedName.set(name, interfacesByQualifiedName.has(name) ? null : iface);
   }
 
   for (const parsed of parsedFiles) {
@@ -215,15 +257,202 @@ function buildDetectionIndexes(
     structsById,
     methodsByOwner,
     effectiveMethodsByStructId,
-    interfaceById,
+    interfacesByQualifiedName,
     interfaceOwnMethodsById,
     embeddedSitesByInterfaceId,
     parentStructIdsByStructId,
     structIdsByMethodName,
     valueMethodsByStructId,
     signatureContextByDefId,
+    typeParametersByInterfaceId,
+    // Gated on the repo declaring at least one generic interface. A Go codebase
+    // with none — the overwhelming majority — never runs the harvest at all,
+    // which matters because the spellings it would scan (`[]byte`,
+    // `map[string]X`) are among the commonest types in the language.
+    instantiationsByInterfaceId:
+      typeParametersByInterfaceId.size === 0
+        ? new Map()
+        : collectGoInstantiations(
+            parsedFiles,
+            signatureContextByFilePath,
+            typeParametersByInterfaceId,
+            interfacesByQualifiedName,
+            indexes,
+          ),
     scopeIndexes: indexes,
   };
+}
+
+/**
+ * Every distinct instantiation of a generic interface written anywhere in the
+ * program, resolved and deduplicated in one pass.
+ *
+ * Go records no instantiation anywhere on the DECLARATION — `Repo[User]` exists
+ * only where it is written — so the sites are the field/parameter/variable type
+ * spellings the capture layer already preserved: `TypeRef.declaredSpelling`
+ * (which keeps the arguments `rawName` drops), and the def-side `declaredType` /
+ * `parameterTypes` / `returnType`.
+ *
+ * A spelling is scanned rather than parsed as a whole, so decorated and nested
+ * forms yield their inner instantiations too: `[]Repo[User]`, `*Repo[User]` and
+ * `map[string]Repo[User]` all yield `Repo[User]`, and `Outer[Repo[User]]` yields
+ * both — each of which really is an instantiation present in the program. False
+ * bases (`map[` scans as base `map`) resolve to no interface and drop out.
+ */
+function collectGoInstantiations(
+  parsedFiles: readonly ParsedFile[],
+  signatureContextByFilePath: ReadonlyMap<string, SignatureContext>,
+  typeParametersByInterfaceId: ReadonlyMap<string, readonly string[]>,
+  interfacesByQualifiedName: ReadonlyMap<string, SymbolDefinition | null>,
+  indexes: ScopeResolutionIndexes,
+): ReadonlyMap<string, ReadonlyMap<string, readonly string[]>> {
+  // One map where there were two on the same key: the inner map's KEY is the
+  // joined argument list, so holding it is the deduplication.
+  const argsByInterfaceId = new Map<string, Map<string, readonly string[]>>();
+  // A base name resolves once per scope. The bracket gate below cannot filter
+  // Go's commonest types — `map[string]string` scans as base `map` — so the
+  // FALSE bases dominate this pass, and each one otherwise re-walks the whole
+  // scope chain for a name that will never bind.
+  const basesInScope = new Map<string, SymbolDefinition | null>();
+  const resolveBase = (baseName: string, inScope: string): SymbolDefinition | undefined => {
+    // NUL-joined for the same reason `methodSetKey` is: it cannot occur in Go
+    // source, so no two (scope, name) pairs can collide on one key.
+    const key = `${inScope}\u0000${baseName}`;
+    const memo = basesInScope.get(key);
+    if (memo !== undefined) return memo ?? undefined;
+    const iface = resolveGoInstantiationBase(baseName, inScope, interfacesByQualifiedName, indexes);
+    basesInScope.set(key, iface ?? null);
+    return iface;
+  };
+  const record = (
+    spelling: string | undefined,
+    inScope: string,
+    context: SignatureContext,
+  ): void => {
+    // Cheap gate first: most Go type spellings have no bracket at all, and the
+    // scan below is the only per-spelling cost this pass adds.
+    if (spelling === undefined || !spelling.includes('[')) return;
+    for (const { baseName, rawArgs } of parseGoInstantiationSpellings(spelling)) {
+      const iface = resolveBase(baseName, inScope);
+      if (iface === undefined) continue;
+      const typeParameters = typeParametersByInterfaceId.get(iface.nodeId);
+      // A partial or over-long argument list is not a valid instantiation
+      // ("For a generic type, all type arguments must always be provided
+      // explicitly" — go.dev/ref/spec#Instantiations), so there is nothing to
+      // substitute and the site is dropped.
+      if (typeParameters === undefined || typeParameters.length !== rawArgs.length) continue;
+      const normalizedArgs = normalizeGoTypeArguments(rawArgs, context);
+      if (normalizedArgs === undefined) continue;
+      let byArgs = argsByInterfaceId.get(iface.nodeId);
+      if (byArgs === undefined) {
+        byArgs = new Map<string, readonly string[]>();
+        argsByInterfaceId.set(iface.nodeId, byArgs);
+      }
+      const key = normalizedArgs.join(',');
+      if (!byArgs.has(key)) byArgs.set(key, normalizedArgs);
+    }
+  };
+
+  for (const parsed of parsedFiles) {
+    const context = signatureContextByFilePath.get(parsed.filePath);
+    if (context === undefined) continue;
+    for (const scope of parsed.scopes) {
+      for (const binding of scope.typeBindings.values()) {
+        record(binding.declaredSpelling ?? binding.rawName, scope.id, context);
+      }
+      for (const def of scope.ownedDefs) {
+        record(def.declaredType, scope.id, context);
+        record(def.returnType, scope.id, context);
+        for (const parameterType of def.parameterTypes ?? []) {
+          record(parameterType, scope.id, context);
+        }
+      }
+    }
+  }
+  return argsByInterfaceId;
+}
+
+/** Every `Ident[…]` / `pkg.Ident[…]` application in a type spelling, with its
+ *  top-level (comma-separated, delimiter-balanced) arguments. */
+function parseGoInstantiationSpellings(
+  spelling: string,
+): Array<{ readonly baseName: string; readonly rawArgs: readonly string[] }> {
+  const out: Array<{ baseName: string; rawArgs: string[] }> = [];
+  const namePattern = /[A-Za-z_][A-Za-z0-9_.]*(?=\[)/g;
+  let match: RegExpExecArray | null;
+  while ((match = namePattern.exec(spelling)) !== null) {
+    const open = match.index + match[0].length;
+    const close = matchingGoDelimiter(spelling, open);
+    if (close === -1) continue;
+    const rawArgs = splitTopLevelGoList(spelling.slice(open + 1, close));
+    if (rawArgs.length === 0) continue;
+    out.push({ baseName: match[0], rawArgs });
+  }
+  return out;
+}
+
+/** Normalize each type argument in the context of the file that WROTE it, or
+ *  `undefined` when any of them carries an unresolvable import qualifier — a
+ *  half-normalized argument list would compare against nothing meaningful. */
+function normalizeGoTypeArguments(
+  rawArgs: readonly string[],
+  context: SignatureContext,
+): string[] | undefined {
+  const normalizedArgs: string[] = [];
+  for (const rawArg of rawArgs) {
+    const normalized = normalizeSignatureType(rawArg, context);
+    if (normalized === undefined) return undefined;
+    normalizedArgs.push(normalized);
+  }
+  return normalizedArgs;
+}
+
+/**
+ * Bind an instantiation's base name to the generic interface it names.
+ *
+ * Goes through `resolveInheritanceBaseInScope` first — the same real scope
+ * resolution the embedded-interface path uses — and falls back to a globally
+ * UNIQUE name match.
+ */
+function resolveGoInstantiationBase(
+  baseName: string,
+  inScope: string,
+  interfacesByQualifiedName: ReadonlyMap<string, SymbolDefinition | null>,
+  indexes: ScopeResolutionIndexes,
+): SymbolDefinition | undefined {
+  const bound = resolveInheritanceBaseInScope(inScope, simpleTypeName(baseName), indexes);
+  if (bound !== undefined) return bound.type === 'Interface' ? bound : undefined;
+  return uniqueInterfaceNamed(baseName, interfacesByQualifiedName);
+}
+
+/**
+ * The one interface a written name denotes by NAME ALONE — the fallback both
+ * name-match routes here share, once the real scope resolution above them has
+ * declined.
+ *
+ * Ambiguity drops the site rather than guessing: two same-named interfaces in
+ * different packages would otherwise cross-pollinate each other's
+ * instantiations, and a dropped site only costs fan-out that does not exist
+ * today anyway. A qualified spelling is tried under both its own name and its
+ * simple tail, and a hit under EACH is two matches, so it declines as well.
+ *
+ * One probe rather than a scan of every interface in the program, which is what
+ * made this quadratic: the bracket gate in `collectGoInstantiations` cannot
+ * filter `map[…]` or `[]T`, so a Go program pays this once per bracketed
+ * spelling it writes.
+ */
+function uniqueInterfaceNamed(
+  name: string,
+  interfacesByQualifiedName: ReadonlyMap<string, SymbolDefinition | null>,
+): SymbolDefinition | undefined {
+  const exact = interfacesByQualifiedName.get(name);
+  if (exact === null) return undefined;
+  const simpleName = simpleTypeName(name);
+  if (simpleName === name) return exact;
+  const simple = interfacesByQualifiedName.get(simpleName);
+  if (simple === null) return undefined;
+  if (exact !== undefined && simple !== undefined) return undefined;
+  return exact ?? simple;
 }
 
 function detectGoInterfaceImplementationsFromIndexes(
@@ -236,28 +465,206 @@ function detectGoInterfaceImplementationsFromIndexes(
     if (required === undefined || required.size === 0) continue;
     if (!methodSetHasVerifiableSignatures(required)) continue;
 
-    const implementors: GoStructuralImplementor[] = [];
-    for (const structId of candidateStructIdsFor(required, indexes)) {
-      const pointerSet = indexes.effectiveMethodsByStructId.get(structId);
-      if (pointerSet === undefined) continue;
-      // MS(*T) is the superset: if it does not satisfy, neither does MS(T).
-      if (!methodSetSatisfies(pointerSet, required, indexes.signatureContextByDefId)) continue;
-      // Then ask the narrower question separately — does the VALUE type satisfy?
-      // This is the distinction `var x I = T{}` turns on, and it is a fact about
-      // the program, not a heuristic.
-      const valueSet = indexes.valueMethodsByStructId.get(structId);
-      const satisfiesByValue =
-        valueSet !== undefined &&
-        methodSetSatisfies(valueSet, required, indexes.signatureContextByDefId);
-      implementors.push({
-        structDefId: structId,
-        receiverForm: satisfiesByValue ? 'value' : 'pointer',
-      });
+    // Hoisted, not recomputed per set: `substituteMethodSet` rewrites
+    // SIGNATURES and returns the identical key set, and `candidateStructIdsFor`
+    // keys off nothing but those method names — so every set below has exactly
+    // these candidates. Materialized because it is iterated once per
+    // instantiation and one of the branches behind it yields a live iterator.
+    const candidateStructIds = [...candidateStructIdsFor(required, indexes)];
+    // The declaration's own method set, then one per observed instantiation.
+    // The declaration set runs FIRST and unconditionally, so this is strictly
+    // additive: every implementor found before #2855 is still found, in the
+    // same order, and instantiation only ever appends.
+    const formByStructId = new Map<string, GoReceiverForm>();
+    for (const candidateSet of [required, ...instantiatedMethodSetsFor(iface, required, indexes)]) {
+      for (const structId of candidateStructIds) {
+        if (formByStructId.get(structId) === 'value') continue;
+        const pointerSet = indexes.effectiveMethodsByStructId.get(structId);
+        if (pointerSet === undefined) continue;
+        // MS(*T) is the superset: if it does not satisfy, neither does MS(T).
+        if (!methodSetSatisfies(pointerSet, candidateSet, indexes.signatureContextByDefId))
+          continue;
+        // Then ask the narrower question separately — does the VALUE type satisfy?
+        // This is the distinction `var x I = T{}` turns on, and it is a fact about
+        // the program, not a heuristic.
+        const valueSet = indexes.valueMethodsByStructId.get(structId);
+        const satisfiesByValue =
+          valueSet !== undefined &&
+          methodSetSatisfies(valueSet, candidateSet, indexes.signatureContextByDefId);
+        formByStructId.set(structId, satisfiesByValue ? 'value' : 'pointer');
+      }
     }
+    const implementors: GoStructuralImplementor[] = [...formByStructId].map(
+      ([structDefId, receiverForm]) => ({ structDefId, receiverForm }),
+    );
     if (implementors.length > 0) implementations.set(iface.nodeId, implementors);
   }
 
   return implementations;
+}
+
+/**
+ * The method set of each observed INSTANTIATION of a generic interface.
+ *
+ * Go spec, Instantiations: "A generic function or type is instantiated by
+ * substituting type arguments for the type parameters. … Each type argument is
+ * substituted for its corresponding type parameter in the generic declaration. …
+ * Instantiating a type results in a new non-generic named type." Combined with
+ * Type definitions ("Generic types must be instantiated when they are used") the
+ * consequence is that `Repo` is not a type at all and `Repo[User]` is — with
+ * method set `{ Save(x User) }` after substitution. Implementing an interface
+ * then asks whether a type "is an element of the type set of I", and Basic
+ * interfaces defines that type set as "the set of types which implement all of
+ * those methods". `UserRepo`, whose method set contains `Save(x User)`, is an
+ * element of `Repo[User]`'s type set — so it implements `Repo[User]`, and a call
+ * through a `Repo[User]`-typed field really can land on `UserRepo.Save`. Before
+ * this, it could not: the required parameter type stayed the type PARAMETER `T`,
+ * matched no implementor's `User`, and the interface got no IMPLEMENTS edge at
+ * all. That is the same false-silence shape as #2813/#2829, one abstraction up.
+ *
+ * SUBSTITUTION, NOT ERASURE. `Repo[Order]` instantiates to `Save(x Order)` and
+ * is NOT satisfied by a `Save(x User)` implementor. Treating `T` as a wildcard
+ * would satisfy both and mint an edge Go does not have; the whole point of
+ * #2829 was that an exact model beats an approximate one.
+ *
+ * WHAT THIS DELIBERATELY DOES NOT MODEL. GitNexus holds one node per generic
+ * DECLARATION, not one per instantiation, so an interface instantiated at two
+ * different arguments in the same program unions their implementors onto the one
+ * `Repo` node — `Repo[User]` and `Repo[Order]` in the same repo both fan out to
+ * every type satisfying either. That is the same one-node-per-declaration
+ * over-approximation every nominal language in the graph already carries (a
+ * Kotlin `class UserRepo : Repo<User>` yields `UserRepo IMPLEMENTS Repo`, argument
+ * discarded), and it is bounded by the arguments the program actually writes —
+ * strictly narrower than erasure, which admits arguments that appear nowhere.
+ *
+ * Constraints are out of reach by construction and that is correct: a generic
+ * interface used as a CONSTRAINT (`func F[T Repo[X]](…)`) is written in a type
+ * parameter list, which produces no type binding and no declared type, so no
+ * such site is ever harvested. Non-basic interfaces — the union/type-set kind
+ * that "may only be used as type constraints" (General interfaces) — declare no
+ * methods and are already dropped by the empty-method-set guard above.
+ */
+function instantiatedMethodSetsFor(
+  iface: SymbolDefinition,
+  required: MethodSet,
+  indexes: DetectionIndexes,
+): MethodSet[] {
+  const typeParameters = indexes.typeParametersByInterfaceId.get(iface.nodeId);
+  if (typeParameters === undefined) return [];
+  const instantiations = indexes.instantiationsByInterfaceId.get(iface.nodeId);
+  if (instantiations === undefined || instantiations.size === 0) return [];
+  const indexByName = new Map(typeParameters.map((name, index) => [name, index]));
+  const sets: MethodSet[] = [];
+  for (const normalizedArgs of instantiations.values()) {
+    const substituted = substituteMethodSet(
+      required,
+      indexByName,
+      normalizedArgs,
+      indexes.signatureContextByDefId,
+    );
+    if (substituted !== undefined) sets.push(substituted);
+  }
+  return sets;
+}
+
+/**
+ * Rewrite a required method set under one instantiation, or `undefined` when any
+ * signature in it cannot be normalized (an unresolved import qualifier) — a
+ * partially substituted set would compare a mix of instantiated and
+ * uninstantiated types, so the instantiation is dropped whole.
+ *
+ * The substituted defs carry a synthetic node id that is deliberately absent
+ * from `signatureContextByDefId`. Their parameter/return types come out of here
+ * ALREADY normalized — the type arguments in the context that WROTE them, the
+ * rest in the interface's own — and `normalizeSignatureType` with no context is
+ * the identity beyond whitespace, so the comparison in `signaturesCompatible`
+ * cannot re-qualify a spelling that is already fully qualified.
+ */
+function substituteMethodSet(
+  required: MethodSet,
+  indexByName: ReadonlyMap<string, number>,
+  normalizedArgs: readonly string[],
+  signatureContextByDefId: ReadonlyMap<string, SignatureContext>,
+): MutableMethodSet | undefined {
+  const out = new Map<string, SymbolDefinition[]>();
+  for (const [name, overloads] of required) {
+    const substitutedOverloads: SymbolDefinition[] = [];
+    for (const def of overloads) {
+      const context = signatureContextByDefId.get(def.nodeId);
+      const parameterTypes: string[] = [];
+      for (const parameterType of def.parameterTypes ?? []) {
+        const substituted = substituteSignatureType(
+          parameterType,
+          indexByName,
+          normalizedArgs,
+          context,
+        );
+        if (substituted === undefined) return undefined;
+        parameterTypes.push(substituted);
+      }
+      let returnType: string | undefined;
+      if (def.returnType !== undefined) {
+        returnType = substituteSignatureType(def.returnType, indexByName, normalizedArgs, context);
+        if (returnType === undefined) return undefined;
+      }
+      substitutedOverloads.push({
+        ...def,
+        nodeId: `${def.nodeId}\u0000instantiated`,
+        ...(def.parameterTypes !== undefined ? { parameterTypes } : {}),
+        ...(returnType !== undefined ? { returnType } : {}),
+      });
+    }
+    out.set(name, substitutedOverloads);
+  }
+  return out;
+}
+
+/**
+ * Placeholder for the type argument at position `i` while its enclosing type is
+ * normalized. NUL-delimited — the same separator `methodSetKey` already uses,
+ * and for the same reason: it cannot occur in Go source.
+ *
+ * Both halves of that choice are load-bearing. `qualifyGoSignatureTypes` rewrites
+ * only tokens matching `[A-Za-z_][A-Za-z0-9_]*`, which can start with neither NUL
+ * nor a digit, so the placeholder survives normalization untouched; and
+ * `normalizeSignatureType` strips `\s+` FIRST, so a whitespace-delimited
+ * placeholder would lose its delimiters and become indistinguishable from an
+ * array length (`[5]int`).
+ */
+const TYPE_PARAMETER_PLACEHOLDER = /\u0000(\d+)\u0000/g;
+
+/**
+ * Substitute type arguments into one signature type, preserving Go's type
+ * identity rules for everything around them.
+ *
+ * Substitution happens BEFORE normalization and reinstatement AFTER, so the
+ * argument's own spelling is never re-qualified by the interface's package while
+ * the rest of the type still is: `[]T` in package `repo` with argument
+ * `internal/model.User` yields `[]internal/model.User`, not
+ * `[]repo.internal/model.User`. Pointer, slice, map and variadic shape survive
+ * because only the identifier token is replaced (`*T` -> `*model.User`), which is
+ * what makes `Save(x T)` and `Save(x *T)` stay different methods.
+ */
+function substituteSignatureType(
+  typeName: string,
+  indexByName: ReadonlyMap<string, number>,
+  normalizedArgs: readonly string[],
+  context: SignatureContext | undefined,
+): string | undefined {
+  const placeheld = typeName.replace(
+    /[A-Za-z_][A-Za-z0-9_]*/g,
+    (token, offset: number, source: string) => {
+      // `pkg.T` names `T` in package `pkg`, never the type parameter `T`.
+      if (hasPackageQualifierDot(source, offset)) return token;
+      const index = indexByName.get(token);
+      return index === undefined ? token : `\u0000${index}\u0000`;
+    },
+  );
+  const normalized = normalizeSignatureType(placeheld, context);
+  if (normalized === undefined) return undefined;
+  return normalized.replace(TYPE_PARAMETER_PLACEHOLDER, (_match, digits: string) => {
+    return normalizedArgs[Number(digits)] ?? _match;
+  });
 }
 
 /**
@@ -528,15 +935,7 @@ function resolveEmbeddedInterface(
 ): SymbolDefinition | undefined {
   const bound = resolveInheritanceBaseInScope(site.inScope, site.name, indexes.scopeIndexes);
   if (bound !== undefined) return bound.type === 'Interface' ? bound : undefined;
-
-  const simpleName = simpleTypeName(site.name);
-  const matches: SymbolDefinition[] = [];
-  for (const iface of indexes.interfaceById.values()) {
-    if (iface.qualifiedName === site.name || iface.qualifiedName === simpleName) {
-      matches.push(iface);
-    }
-  }
-  return matches.length === 1 ? matches[0] : undefined;
+  return uniqueInterfaceNamed(site.name, indexes.interfacesByQualifiedName);
 }
 
 function simpleTypeName(name: string): string {
@@ -752,11 +1151,13 @@ function signatureContextForFile(
   };
 }
 
+/** The package directory, or `undefined` for a repo-root file.
+ *
+ *  Shares `goPackageDir` with the package-clause resolver rather than repeating
+ *  its normalize-and-slice (#2837): the two disagree only on how they spell "no
+ *  directory", so the difference stays here, at the one call site that cares. */
 function packageQualifierForFile(filePath: string): string | undefined {
-  const normalized = filePath.replace(/\\/g, '/');
-  const slash = normalized.lastIndexOf('/');
-  if (slash === -1) return undefined;
-  const packageDir = normalized.slice(0, slash);
+  const packageDir = goPackageDir(filePath);
   return packageDir.length === 0 ? undefined : packageDir;
 }
 
