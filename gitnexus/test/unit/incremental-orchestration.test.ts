@@ -47,6 +47,7 @@ import {
   SPRING_AOP_FEATURE,
   SPRING_BEAN_INVENTORY_FEATURE,
   SPRING_CONDITIONALS_FEATURE,
+  SPRING_NON_HTTP_HANDLERS_FEATURE,
 } from '../../src/core/ingestion/frameworks/spring/analysis-features.js';
 import {
   decodeSpringAopReason,
@@ -516,6 +517,7 @@ describe('runFullAnalysis — incremental orchestration', () => {
         [SPRING_AOP_FEATURE.id]: SPRING_AOP_FEATURE.version,
         [SPRING_BEAN_INVENTORY_FEATURE.id]: SPRING_BEAN_INVENTORY_FEATURE.version,
         [SPRING_CONDITIONALS_FEATURE.id]: SPRING_CONDITIONALS_FEATURE.version,
+        [SPRING_NON_HTTP_HANDLERS_FEATURE.id]: SPRING_NON_HTTP_HANDLERS_FEATURE.version,
       });
 
       await saveMeta(storagePath, withoutAnalysisFeature(meta!, SPRING_BEAN_INVENTORY_FEATURE.id));
@@ -534,6 +536,7 @@ describe('runFullAnalysis — incremental orchestration', () => {
         [SPRING_AOP_FEATURE.id]: SPRING_AOP_FEATURE.version,
         [SPRING_BEAN_INVENTORY_FEATURE.id]: SPRING_BEAN_INVENTORY_FEATURE.version,
         [SPRING_CONDITIONALS_FEATURE.id]: SPRING_CONDITIONALS_FEATURE.version,
+        [SPRING_NON_HTTP_HANDLERS_FEATURE.id]: SPRING_NON_HTTP_HANDLERS_FEATURE.version,
       });
     } finally {
       await repo.cleanup();
@@ -603,6 +606,7 @@ describe('runFullAnalysis — incremental orchestration', () => {
         [SPRING_AOP_FEATURE.id]: SPRING_AOP_FEATURE.version,
         [SPRING_BEAN_INVENTORY_FEATURE.id]: SPRING_BEAN_INVENTORY_FEATURE.version,
         [SPRING_CONDITIONALS_FEATURE.id]: SPRING_CONDITIONALS_FEATURE.version,
+        [SPRING_NON_HTTP_HANDLERS_FEATURE.id]: SPRING_NON_HTTP_HANDLERS_FEATURE.version,
       });
     } finally {
       await repo.cleanup();

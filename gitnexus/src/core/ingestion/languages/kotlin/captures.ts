@@ -23,6 +23,7 @@ import {
   setKotlinSpringAopFacts,
   setKotlinSpringConditionalFacts,
   setKotlinSpringDiFacts,
+  setKotlinSpringNonHttpHandlerFacts,
 } from './capture-side-channel.js';
 import { captureKotlinPackageFact } from './package-facts.js';
 import { synthesizeCallableFlowCaptures } from '../../utils/callable-flow-captures.js';
@@ -33,6 +34,10 @@ import {
   captureKotlinSpringConditionalFacts,
   type KotlinSpringConditionalFact,
 } from './spring-conditionals.js';
+import {
+  captureKotlinSpringNonHttpHandlerFacts,
+  type KotlinSpringNonHttpHandlerFact,
+} from './spring-non-http-handlers.js';
 
 const FUNCTION_DECL_TAGS = ['@declaration.function'] as const;
 
@@ -99,6 +104,7 @@ export function emitKotlinScopeCaptures(
   const springAopTypeNodeIds = new Set<number>();
   const springConditionalFacts: KotlinSpringConditionalFact[] = [];
   const springDiFacts: KotlinSpringDiClassFact[] = [];
+  const springNonHttpHandlerFacts: KotlinSpringNonHttpHandlerFact[] = [];
   const springDiClassNodeIds = new Set<number>();
   const returnTypes = collectKotlinReturnTypeTexts(tree.rootNode);
   out.push(...synthesizeKotlinLocalAssignmentBindings(tree.rootNode, returnTypes));
@@ -140,6 +146,9 @@ export function emitKotlinScopeCaptures(
       springDiClassNodeIds.add(springDiClassNode.id);
       springConditionalFacts.push(
         ...captureKotlinSpringConditionalFacts(springDiClassNode, filePath),
+      );
+      springNonHttpHandlerFacts.push(
+        ...captureKotlinSpringNonHttpHandlerFacts(springDiClassNode, filePath),
       );
       const fact = captureKotlinSpringDiClassFact(springDiClassNode, filePath);
       if (fact !== null) springDiFacts.push(fact);
@@ -342,6 +351,7 @@ export function emitKotlinScopeCaptures(
   setKotlinSpringAopFacts(filePath, springAopFacts);
   setKotlinSpringConditionalFacts(filePath, springConditionalFacts);
   setKotlinSpringDiFacts(filePath, springDiFacts);
+  setKotlinSpringNonHttpHandlerFacts(filePath, springNonHttpHandlerFacts);
   out.push(...synthesizeCallableFlowCaptures(tree.rootNode, KOTLIN_CALLABLE_CAPTURE_OPTIONS));
   return out;
 }
