@@ -29,6 +29,7 @@ import {
   compiledMatcherMatchesRoute,
 } from '../route-extractors/middleware.js';
 import { processNextjsFetchRoutes } from '../call-processor.js';
+import { reconcileDispatchGuardRoutes } from '../route-extractors/dispatch-guard.js';
 import {
   normalizeExtractedRoutePath,
   normalizeRouteMethod,
@@ -248,11 +249,18 @@ export const routesPhase: PipelinePhase<RoutesOutput> = {
         namedRouteRegistry.set(route.routeName, routeUrl);
       }
     }
-    for (const dr of allDecoratorRoutes) {
+    // A dispatch-guard route observed WITHOUT a verb is dropped when the same
+    // URL is claimed WITH one anywhere in the repo — the split route-table
+    // idiom, which no single file can reconcile. Framework routes are untouched;
+    // their verb-less form is a declaration, not a weaker observation.
+    for (const dr of reconcileDispatchGuardRoutes(allDecoratorRoutes)) {
       const url = normalizeExtractedRoutePath(dr.routePath, dr.prefix ?? null);
       addRoute(url, {
         filePath: dr.filePath,
-        source: `decorator-${dr.decoratorName}`,
+        // A route extracted from a file's own AST is usually a decorator; a
+        // dispatch guard is the same transport with different provenance, and
+        // says so (`ExtractedDecoratorRoute.source`).
+        source: dr.source ?? `decorator-${dr.decoratorName}`,
         method: normalizeRouteMethod(dr.httpMethod),
       });
     }

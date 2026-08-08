@@ -211,6 +211,11 @@ describe('doctor native status line (#2672)', () => {
       { ok: false, kind: 'load_failed', binaryPath: '/x/lbugjs.node', message: 'x' },
       '✗ lbugjs.node present but failed to load',
     ],
+    [
+      'a prebuilt that exists but could not be copied into a read-only node_modules',
+      { ok: false, kind: 'binary_unwritable', binaryPath: '/x/lbugjs.node', message: 'x' },
+      '✗ lbugjs.node not installed (node_modules not writable)',
+    ],
     ['a failure with no kind recorded', { ok: false, message: 'x' }, '✗ lbugjs.node missing'],
   ];
 

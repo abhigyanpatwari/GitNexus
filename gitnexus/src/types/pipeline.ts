@@ -45,4 +45,18 @@ export interface PipelineResult {
    * additional COPY jobs, not map entries).
    */
   graphEmitManifest?: GraphEmitManifest;
+  /**
+   * Property-inference facts from scope resolution (R3-1). Present so a caller
+   * — a test, the CLI, or a future MCP surface — can tell WHY a field has no
+   * ACCESSES rows: genuinely unread, ambiguous between candidates, or anchored
+   * only in a language the per-language inference may not cross. Those are
+   * three different situations with three different remedies, and without this
+   * they produce byte-identical empty results.
+   */
+  propertyInference?: {
+    readonly ambiguous: number;
+    readonly ambiguousNames: readonly string[];
+    readonly crossLanguage: number;
+    readonly crossLanguageNames: readonly { readonly name: string; readonly languages: string[] }[];
+  };
 }

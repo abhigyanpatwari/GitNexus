@@ -220,7 +220,25 @@ function lookupForSite(
         ...(site.explicitReceiver !== undefined ? { explicitReceiver: site.explicitReceiver } : {}),
       };
       const fieldHits = fieldRegistry.lookup(site.name, site.inScope, fieldOpts);
-      if (fieldHits.length > 0) return fieldHits;
+      // A BARE IDENTIFIER is not a member access. With no receiver there is no
+      // object whose `Property` this could be, so a hit on one is a false edge:
+      // in JS/TS/Python/Ruby a field read needs `this.` / `self.` / `@`, and the
+      // bare name means the nearest lexical binding instead.
+      //
+      // Observed: `class Box { baseUrl = '...'; pick() { const baseUrl = ...;
+      // return baseUrl; } }` linked the block-local read to `Box.baseUrl`,
+      // duplicating the legitimate `this.baseUrl` edge. That predates the
+      // TypeScript captures added here — JavaScript has emitted bare-identifier
+      // reads since A2 and no class fixture exercised the shadow.
+      //
+      // Callables are deliberately still reachable: `cb = save` naming a
+      // top-level function is a real bare-name reference, which is why the
+      // method/class fallbacks below are untouched.
+      const receiverlessFieldHits =
+        site.explicitReceiver === undefined
+          ? fieldHits.filter((hit) => hit.def?.type !== 'Property')
+          : fieldHits;
+      if (receiverlessFieldHits.length > 0) return receiverlessFieldHits;
       const methodHits = methodRegistry.lookup(site.name, site.inScope);
       if (methodHits.length > 0) return methodHits;
       return classRegistry.lookup(site.name, site.inScope);

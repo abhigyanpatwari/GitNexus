@@ -52,6 +52,14 @@ description: Analyze blast radius before making code changes
 | 5-15 symbols, 2-5 processes | MEDIUM |
 | >15 symbols or many processes | HIGH |
 | Critical path (auth, payments) | CRITICAL |
+| **Zero callers found**         | **UNKNOWN** |
+
+`UNKNOWN` is not a low rung on this scale — it means the walk could not answer.
+An empty caller set is equally consistent with "genuinely unused" and "the
+callers are not resolvable by the index" (plain-object property access, dynamic
+dispatch, cross-language calls), so few-callers ⇒ LOW does **not** apply. The
+result carries a `riskNote` saying so. Confirm with a text search before
+treating the symbol as safe to change or delete.
 
 ## Tools
 
