@@ -41,7 +41,11 @@ import type { KnowledgeGraph } from '../../../graph/types.js';
 import type { ScopeResolutionIndexes } from '../../model/scope-resolution-indexes.js';
 import type { GraphNodeLookup } from '../graph-bridge/node-lookup.js';
 import { resolveCallerGraphId } from '../graph-bridge/ids.js';
-import { findCallableBindingInScope, findReceiverTypeBinding } from '../scope/walkers.js';
+import {
+  findCallableBindingInScope,
+  findClassBindingInScope,
+  findReceiverTypeBinding,
+} from '../scope/walkers.js';
 import { callableFlowSiteKey } from './callable-value-flow.js';
 import type { PropertyNameIndex } from './unique-name-properties.js';
 
@@ -128,16 +132,7 @@ export function emitReturnShapeMemberAccesses(
       // R3-4 qualifies a returned key by the producing function's own name, so
       // the owner segment to match is the LAST one. For a plain producer this is
       // a no-op.
-      //
-      // A MEMBER-CALL producer (`const r = svc.make()`) binds `svc.make`, and
-      // that spelling resolves to no value binding below, so this pass DECLINES
-      // rather than resolving it. That is a known coverage limit, not a fix:
-      // answering it means typing `svc` first and then finding `make` on that
-      // type, which is a different (and larger) piece of work. Declining is the
-      // correct behaviour in the meantime — the alternative, matching
-      // `make.<member>` by name across the graph, is precisely the fabrication
-      // the file guard below exists to stop.
-      const producer = producerRef.slice(producerRef.lastIndexOf('.') + 1);
+      let producer = producerRef.slice(producerRef.lastIndexOf('.') + 1);
       if (producer.length === 0) continue;
 
       // Resolve the producer to a real definition and keep only members that
@@ -177,7 +172,42 @@ export function emitReturnShapeMemberAccesses(
       //                  legitimately in that same file. File equality passes
       //                  there; only the language restriction closes it.
       const producerDef = findCallableBindingInScope(site.inScope, producerRef, indexes);
-      const producerFile = producerDef?.filePath;
+      let producerFile = producerDef?.filePath;
+
+      // MEMBER-CALL PRODUCERS (W2-1). Tried only where the callable lookup above
+      // DECLINED, so every reference that resolved before resolves identically —
+      // this adds a case, it does not reroute the existing one.
+      //
+      // `const r = svc.make()` binds the spelling `svc.make`. Slicing that to its
+      // last segment leaves `make`, which is a METHOD and so never a callable
+      // binding in scope; the lookup failed and the pass declined. The limit was
+      // documented as needing inter-procedural receiver typing, but measured, the
+      // pipeline had already done the hard part: `svc.make()` resolves to its
+      // Method node as an ordinary CALLS edge, and R3-4 anchors the returned
+      // literal's keys to that method, so `SignalService.make.secretFlag` already
+      // existed as a node. Only this join was missing.
+      //
+      // Nothing new is inferred. The receiver is typed by the SAME predicate that
+      // typed `r` above, and it must resolve to a class of its own — a receiver
+      // that cannot be typed still declines. The owner segment is then TWO parts
+      // (`SignalService.make`) rather than one, which is exactly how R3-4
+      // qualifies a key returned from a method, and it is what separates two
+      // methods on one class that return the same key name from each other and
+      // from a free function of that name.
+      if (producerFile === undefined) {
+        const dotAt = producerRef.lastIndexOf('.');
+        if (dotAt <= 0) continue;
+        const receiverExpr = producerRef.slice(0, dotAt);
+        const methodName = producerRef.slice(dotAt + 1);
+        if (methodName.length === 0) continue;
+        const ownerType = findReceiverTypeBinding(site.inScope, receiverExpr, indexes)?.rawName;
+        if (ownerType === undefined || ownerType.length === 0) continue;
+        const ownerDef = findClassBindingInScope(site.inScope, ownerType, indexes);
+        if (ownerDef === undefined) continue;
+        producer = `${ownerType}.${methodName}`;
+        producerFile = ownerDef.filePath;
+      }
+
       if (producerFile === undefined) continue;
       if (!ownFilePaths.has(producerFile)) continue;
 
