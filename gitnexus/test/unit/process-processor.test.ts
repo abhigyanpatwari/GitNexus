@@ -978,3 +978,150 @@ describe('process detection is insertion-order invariant (W2-5)', () => {
     expect(a.processes.map((p) => p.entryPointId)).toEqual(b.processes.map((p) => p.entryPointId));
   });
 });
+
+// W2-3. Every ceiling in this file used to fire silently: the result came back
+// looking whole and no consumer could tell it was partial. The code's own
+// comment said as much ("a silently truncating cap reads as 'this is
+// everything'") and then only logged at debug — a log nobody has enabled is not
+// a disclosure. Each counter below is asserted against a graph built to trip
+// exactly one ceiling.
+describe('truncation is reported, not swallowed (W2-3)', () => {
+  const addFn = (graph: ReturnType<typeof createKnowledgeGraph>, id: string): void => {
+    graph.addNode({
+      id,
+      label: 'Function',
+      properties: { name: id.split(':')[1], filePath: 'src/a.ts', startLine: 1, endLine: 2 },
+    });
+  };
+  const addCall = (
+    graph: ReturnType<typeof createKnowledgeGraph>,
+    from: string,
+    to: string,
+  ): void => {
+    graph.addRelationship({
+      id: `rel:${from}->${to}`,
+      sourceId: from,
+      targetId: to,
+      type: 'CALLS',
+      confidence: 1,
+      reason: 'test',
+    });
+  };
+
+  /** A chain of `len` functions, prefixed so several can coexist in one graph. */
+  const addChain = (
+    graph: ReturnType<typeof createKnowledgeGraph>,
+    prefix: string,
+    len: number,
+  ): void => {
+    for (let i = 0; i < len; i++) addFn(graph, `func:${prefix}${i}`);
+    for (let i = 0; i < len - 1; i++)
+      addCall(graph, `func:${prefix}${i}`, `func:${prefix}${i + 1}`);
+  };
+
+  it('reports nothing truncated when every flow fits', async () => {
+    // Asserted FIRST: every positive assertion below is meaningless if the flag
+    // is simply always true.
+    const graph = createKnowledgeGraph();
+    addChain(graph, 'a', 3);
+    const result = await processProcesses(graph, [], undefined, {
+      maxTraceDepth: 10,
+      maxBranching: 4,
+      maxProcesses: 50,
+    });
+    expect(result.processes.length).toBeGreaterThan(0);
+    expect(result.stats.truncation.truncated).toBe(false);
+    expect(result.stats.truncation).toMatchObject({
+      entryPointsUnexplored: 0,
+      walksCutByBudget: 0,
+      tracesDepthCapped: 0,
+      calleesDropped: 0,
+      processesDropped: 0,
+    });
+  });
+
+  it('counts entry points that were never traced at all', async () => {
+    // The trace loop stops on the TRACE quota (maxProcesses * 2), so the
+    // remaining entry points are not "no flows found" — nothing looked at them.
+    const graph = createKnowledgeGraph();
+    for (let e = 0; e < 8; e++) addChain(graph, `e${e}_`, 3);
+    const result = await processProcesses(graph, [], undefined, { maxProcesses: 1 });
+    const { entryPointsFound } = result.stats;
+    const { entryPointsUnexplored } = result.stats.truncation;
+    expect(entryPointsFound).toBeGreaterThan(0);
+    // Strictly between: some WERE traced, so this is a real early exit rather
+    // than "the loop never ran", and strictly less than the total, so the
+    // counter is not just echoing `entryPointsFound` back.
+    expect(entryPointsUnexplored).toBeGreaterThan(0);
+    expect(entryPointsUnexplored).toBeLessThan(entryPointsFound);
+    expect(result.stats.truncation.truncated).toBe(true);
+  });
+
+  it('counts traces that stop at maxTraceDepth rather than at a terminal', async () => {
+    // The trace is KEPT, but it is a prefix of a longer flow, and only this
+    // counter tells the two apart downstream.
+    const graph = createKnowledgeGraph();
+    addChain(graph, 'deep', 12);
+    const result = await processProcesses(graph, [], undefined, { maxTraceDepth: 4 });
+    expect(result.stats.truncation.tracesDepthCapped).toBeGreaterThan(0);
+    expect(result.stats.truncation.truncated).toBe(true);
+  });
+
+  it('counts callees never followed because of maxBranching', async () => {
+    const graph = createKnowledgeGraph();
+    addFn(graph, 'func:fanout');
+    for (let c = 0; c < 9; c++) {
+      addChain(graph, `leaf${c}_`, 2);
+      addCall(graph, 'func:fanout', `func:leaf${c}_0`);
+    }
+    const result = await processProcesses(graph, [], undefined, { maxBranching: 2 });
+    expect(result.stats.truncation.calleesDropped).toBeGreaterThan(0);
+    expect(result.stats.truncation.truncated).toBe(true);
+  });
+
+  it('counts entry-point walks abandoned with branches still on the stack', async () => {
+    // Per-entry-point trace budget is `maxBranching * 3`, so a tree that is
+    // wide enough exhausts it with unexplored branches left. Every node here
+    // has EXACTLY `maxBranching` callees, which keeps `calleesDropped` at zero
+    // so this asserts its own counter and not a neighbour's.
+    const graph = createKnowledgeGraph();
+    addFn(graph, 'func:root');
+    for (let a = 0; a < 4; a++) {
+      addFn(graph, `func:mid${a}`);
+      addCall(graph, 'func:root', `func:mid${a}`);
+      for (let b = 0; b < 4; b++) {
+        addFn(graph, `func:leaf${a}_${b}`);
+        addCall(graph, `func:mid${a}`, `func:leaf${a}_${b}`);
+      }
+    }
+    const result = await processProcesses(graph, [], undefined, { maxBranching: 4 });
+    expect(result.stats.truncation.walksCutByBudget).toBeGreaterThan(0);
+    expect(result.stats.truncation.calleesDropped).toBe(0);
+    expect(result.stats.truncation.truncated).toBe(true);
+  });
+
+  it('counts deduplicated traces dropped by the maxProcesses cap', async () => {
+    // Counted against the DEDUPED population: the gap between raw traces and
+    // deduped ones is deduplication working, which is not truncation.
+    const graph = createKnowledgeGraph();
+    for (let e = 0; e < 6; e++) addChain(graph, `p${e}_`, 3);
+    const result = await processProcesses(graph, [], undefined, { maxProcesses: 2 });
+    expect(result.processes.length).toBeLessThanOrEqual(2);
+    expect(result.stats.truncation.processesDropped).toBeGreaterThan(0);
+    expect(result.stats.truncation.truncated).toBe(true);
+  });
+
+  it('leaves the four pre-existing stats untouched', async () => {
+    // The field is ADDITIVE. A consumer reading totalProcesses must not have to
+    // learn about truncation to keep working.
+    const graph = createKnowledgeGraph();
+    addChain(graph, 'x', 3);
+    const result = await processProcesses(graph, []);
+    expect(result.stats).toMatchObject({
+      totalProcesses: expect.any(Number),
+      crossCommunityCount: expect.any(Number),
+      avgStepCount: expect.any(Number),
+      entryPointsFound: expect.any(Number),
+    });
+  });
+});

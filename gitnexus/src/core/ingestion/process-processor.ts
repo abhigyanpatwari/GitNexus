@@ -58,6 +58,36 @@ export interface ProcessStep {
   step: number; // 1-indexed position in trace
 }
 
+/**
+ * What the detection ceilings dropped, so a partial answer cannot present
+ * itself as a complete one.
+ *
+ * Every field here was previously either a `logger.debug` line or nothing at
+ * all: the caps fired, the result came back looking whole, and no consumer
+ * could tell. A silently truncating cap reads as "this is everything", which is
+ * the same class of confident-empty answer the rest of this work is about.
+ * `dispatchFanoutSkipped` / `propertyDispatch.skippedKeys` are the precedent.
+ *
+ * The counters are kept SEPARATE rather than summed because they mean different
+ * things and a reader acts on them differently: unexplored entry points mean
+ * whole flows are missing, while a depth-capped trace means a flow is present
+ * but shorter than it really is. `truncated` is the single boolean to branch on.
+ */
+export interface ProcessTruncationStats {
+  /** True when any ceiling below fired. */
+  truncated: boolean;
+  /** Entry points never traced at all — the trace-collection loop stopped first. */
+  entryPointsUnexplored: number;
+  /** Entry-point walks abandoned with branches still on the stack. */
+  walksCutByBudget: number;
+  /** Traces that end at `maxTraceDepth`, i.e. are a PREFIX of a longer flow. */
+  tracesDepthCapped: number;
+  /** Callees never followed because a call site exceeded `maxBranching`. */
+  calleesDropped: number;
+  /** Deduplicated traces discarded because `maxProcesses` was already full. */
+  processesDropped: number;
+}
+
 export interface ProcessDetectionResult {
   processes: ProcessNode[];
   steps: ProcessStep[];
@@ -66,8 +96,20 @@ export interface ProcessDetectionResult {
     crossCommunityCount: number;
     avgStepCount: number;
     entryPointsFound: number;
+    /** Additive — existing consumers read the four counters above unchanged. */
+    truncation: ProcessTruncationStats;
   };
 }
+
+/** Zeroed counters, mutated in place by the walk. */
+const emptyTruncation = (): ProcessTruncationStats => ({
+  truncated: false,
+  entryPointsUnexplored: 0,
+  walksCutByBudget: 0,
+  tracesDepthCapped: 0,
+  calleesDropped: 0,
+  processesDropped: 0,
+});
 
 // ============================================================================
 // MAIN PROCESSOR
@@ -114,10 +156,13 @@ export const processProcesses = async (
 
   // Step 2: Trace processes from each entry point
   const allTraces: string[][] = [];
+  const truncation = emptyTruncation();
 
+  let tracedEntryPoints = 0;
   for (let i = 0; i < entryPoints.length && allTraces.length < cfg.maxProcesses * 2; i++) {
     const entryId = entryPoints[i];
-    const traces = traceFromEntryPoint(entryId, callsEdges, cfg, isSink);
+    const traces = traceFromEntryPoint(entryId, callsEdges, cfg, isSink, truncation);
+    tracedEntryPoints = i + 1;
 
     // Filter out traces that are too short
     traces.filter((t) => t.length >= cfg.minSteps).forEach((t) => allTraces.push(t));
@@ -129,6 +174,9 @@ export const processProcesses = async (
       );
     }
   }
+  // The loop exits on the TRACE quota, not on running out of entry points, so
+  // the remainder are not "no flows found" — they were never looked at.
+  truncation.entryPointsUnexplored = entryPoints.length - tracedEntryPoints;
 
   onProgress?.(`Found ${allTraces.length} traces, deduplicating...`, 60);
 
@@ -210,7 +258,7 @@ export const processProcesses = async (
   // one is kept as defence in depth — it cannot misbehave (it only makes an
   // already-deterministic order explicit) and it is what stops a future change
   // to dedup ordering from silently re-opening the defect.
-  const traceOrderKey = (trace: readonly string[]): string => trace.join(' ');
+  const traceOrderKey = (trace: readonly string[]): string => trace.join('\u0000');
   const tracesByTerminal = new Map<string, string[][]>();
   const rankedByInterest = [...endpointDeduped].sort((a, b) => {
     const aSink = Number(isSink(a[a.length - 1] ?? ''));
@@ -243,6 +291,10 @@ export const processProcesses = async (
     }
     if (!addedAny) break;
   }
+  // Counted against the DEDUPED input, not `allTraces`: the difference between
+  // those two is deduplication doing its job, which is not truncation.
+  const dedupedAvailable = [...tracesByTerminal.values()].reduce((n, t) => n + t.length, 0);
+  truncation.processesDropped = dedupedAvailable - limitedTraces.length;
 
   onProgress?.(`Creating ${limitedTraces.length} process nodes...`, 80);
 
@@ -306,6 +358,19 @@ export const processProcesses = async (
       ? processes.reduce((sum, p) => sum + p.stepCount, 0) / processes.length
       : 0;
 
+  // Derived last, from the counters the walk accumulated, so a new ceiling added
+  // later cannot be forgotten here — it only has to increment its own counter.
+  truncation.truncated =
+    truncation.entryPointsUnexplored > 0 ||
+    truncation.walksCutByBudget > 0 ||
+    truncation.tracesDepthCapped > 0 ||
+    truncation.calleesDropped > 0 ||
+    truncation.processesDropped > 0;
+
+  if (truncation.truncated) {
+    logger.debug({ truncation }, 'process-processor: detection was truncated by one or more caps');
+  }
+
   return {
     processes,
     steps,
@@ -314,6 +379,7 @@ export const processProcesses = async (
       crossCommunityCount,
       avgStepCount: Math.round(avgStepCount * 10) / 10,
       entryPointsFound: entryPoints.length,
+      truncation,
     },
   };
 };
@@ -466,6 +532,12 @@ export const traceFromEntryPoint = (
    * bottomed out in.
    */
   isSink: (nodeId: string) => boolean = () => false,
+  /**
+   * Mutated in place when a ceiling fires. Optional so the many direct callers
+   * in tests are unchanged, and because a caller that does not care about
+   * completeness should not have to invent a counter to ask for a trace.
+   */
+  truncation?: ProcessTruncationStats,
 ): string[][] => {
   const traces: string[][] = [];
 
@@ -502,7 +574,10 @@ export const traceFromEntryPoint = (
         traces.push([...path]);
       }
     } else if (path.length >= config.maxTraceDepth) {
-      // Max depth reached - save what we have
+      // Max depth reached - save what we have. The trace is kept, but it is a
+      // PREFIX of a longer flow rather than a flow that ended, and only this
+      // counter distinguishes the two downstream.
+      if (truncation !== undefined) truncation.tracesDepthCapped++;
       if (path.length >= config.minSteps) {
         traces.push([...path]);
       }
@@ -516,6 +591,9 @@ export const traceFromEntryPoint = (
       }
       // Continue tracing - limit branching
       const limitedCallees = callees.slice(0, config.maxBranching);
+      if (truncation !== undefined && callees.length > limitedCallees.length) {
+        truncation.calleesDropped += callees.length - limitedCallees.length;
+      }
       let addedBranch = false;
 
       // PUSHED IN REVERSE so the stack POPS them in source order. `slice`
@@ -545,7 +623,12 @@ export const traceFromEntryPoint = (
   // class of confident-empty answer this work is about. The repo already sets
   // this precedent for `dispatchFanoutSkipped` and
   // `propertyDispatch.skippedKeys`.
+  //
+  // The debug line stays for the per-entry-point detail (which entry, how many
+  // branches); the counter is what escapes to a CONSUMER. A log nobody has
+  // enabled is not a disclosure.
   if (stack.length > 0) {
+    if (truncation !== undefined) truncation.walksCutByBudget++;
     logger.debug(
       { entryId, traceBudget, unexploredBranches: stack.length },
       'process-processor: trace budget exhausted; unexplored branches remain for this entry point',

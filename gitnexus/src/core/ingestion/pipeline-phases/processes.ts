@@ -124,6 +124,24 @@ export const processesPhase: PipelinePhase<ProcessesOutput> = {
       );
     }
 
+    // Not gated on `isDev`, and warn rather than debug: this is the one line
+    // that tells a reader the process list is a SAMPLE. "823 flows" presented
+    // without it reads as the complete set, which is the confident-empty
+    // failure in its other direction — a confident-COMPLETE one.
+    const { truncation } = processResult.stats;
+    if (truncation.truncated) {
+      logger.warn(
+        { truncation },
+        `[processes] ${processResult.stats.totalProcesses} flows reported, but detection hit its ceilings: ` +
+          `${truncation.entryPointsUnexplored} entry point(s) never traced, ` +
+          `${truncation.processesDropped} deduplicated flow(s) dropped, ` +
+          `${truncation.tracesDepthCapped} trace(s) cut at maxTraceDepth, ` +
+          `${truncation.calleesDropped} callee(s) skipped at maxBranching, ` +
+          `${truncation.walksCutByBudget} walk(s) cut by the per-entry trace budget. ` +
+          `An absent flow does NOT mean the code path does not exist.`,
+      );
+    }
+
     processResult.processes.forEach((proc) => {
       ctx.graph.addNode({
         id: proc.id,
