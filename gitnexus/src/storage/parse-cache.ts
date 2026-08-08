@@ -395,7 +395,15 @@ import type { ParseWorkerResult } from '../core/ingestion/workers/parse-worker.j
 // that consumes it silently does nothing — the feature would look implemented
 // and be inert, which is the failure this constant exists to prevent.
 // RE-CHECK AGAINST origin/main IMMEDIATELY BEFORE MERGING.
-const SCHEMA_BUMP = 54;
+// 54 -> 55 for W2-9: the dispatch-guard verb walk now tracks boolean POLARITY,
+// so `(req.method === 'GET' ? false : true) && pathname === '/x'` no longer
+// reports GET — the one method that branch guarantees the request does not have
+// — and `!!(req.method === 'GET')` no longer loses its verb. Routes are emitted
+// at parse time and replayed verbatim from a warm cache, so without this bump an
+// already-indexed repo keeps serving the inverted verb and the fix looks inert.
+// Same reason 51 and 52 were taken for R3-7.
+// RE-CHECK AGAINST origin/main IMMEDIATELY BEFORE MERGING.
+const SCHEMA_BUMP = 55;
 const GITNEXUS_PKG_VERSION = (() => {
   try {
     // package.json sits at gitnexus/package.json — two levels up from

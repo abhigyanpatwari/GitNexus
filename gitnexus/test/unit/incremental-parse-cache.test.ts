@@ -178,8 +178,11 @@ describe('PARSE_CACHE_VERSION', () => {
   // happen at all.
   // Moved 53 -> 54 for W2-8: type parameters are captured on generic functions
   // and aliases, not just class-likes, so the shadowing guard has data to read.
-  it('pins SCHEMA_BUMP to 54 so concurrent bumps cannot silently collide (#2766)', () => {
-    expect(Number(PARSE_CACHE_VERSION.split('+', 1)[0])).toBe(54);
+  // Moved 54 -> 55 for W2-9: the dispatch-guard verb walk tracks boolean polarity,
+  // so a ternary can no longer report the verb it excludes. Routes are emitted at
+  // parse time, so a warm cache would replay the inverted verb indefinitely.
+  it('pins SCHEMA_BUMP to 55 so concurrent bumps cannot silently collide (#2766)', () => {
+    expect(Number(PARSE_CACHE_VERSION.split('+', 1)[0])).toBe(55);
   });
 
   it('embeds the gitnexus package version (so upgrades invalidate the cache)', () => {

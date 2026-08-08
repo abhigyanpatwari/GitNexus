@@ -389,17 +389,77 @@ function governingVerb(comparison: SyntaxNode): string | null {
   return null;
 }
 
-/** First verb comparison anywhere in this subtree. */
-function findVerbInSubtree(node: SyntaxNode): string | null {
-  // A verb under a `!` is the verb the branch EXCLUDES. Returning null keeps the
-  // route (the path evidence is unaffected) and leaves it verb-less, which is
-  // the honest answer: this branch does not tell us which method it serves.
-  if (isNegation(node)) return null;
+/**
+ * The verb a subtree GUARANTEES when it evaluates truthy.
+ *
+ * `negated` counts whether an odd number of `!` stands between the question and
+ * this node. It is PARITY, the same rule `isNegatedContext` states — and the
+ * rule the previous presence-based check contradicted: it returned null at the
+ * first `!` it saw, so `!!(req.method === 'GET')` lost a verb the source states
+ * outright. A stated invariant with half an implementation, in the same module
+ * that had already been fixed for exactly that once.
+ *
+ * A verb reached at odd parity is the verb the branch EXCLUDES, so it yields
+ * nothing — the route survives, verb-less, which is the honest answer: this
+ * branch does not say which method it serves. Siblings are still searched,
+ * because excluding one verb says nothing about the next.
+ */
+function findVerbInSubtree(node: SyntaxNode, negated = false): string | null {
+  if (isNegation(node)) {
+    const operand = node.childForFieldName('argument');
+    return operand === null ? null : findVerbInSubtree(operand, !negated);
+  }
+
+  // A ternary SELECTS between its arms, so a verb inside one is not reached
+  // merely because the whole is truthy — see `verbFromTernary`.
+  if (node.type === 'ternary_expression') return verbFromTernary(node, negated);
+
   const direct = verbFromComparison(node);
-  if (direct !== null) return direct;
+  if (direct !== null) return negated ? null : direct;
+
   for (const child of node.namedChildren) {
-    const found = findVerbInSubtree(child);
+    const found = findVerbInSubtree(child, negated);
     if (found !== null) return found;
+  }
+  return null;
+}
+
+/**
+ * The verb a ternary guarantees — which is one only when an arm is a boolean
+ * literal, because that is what collapses the selection into a conjunction:
+ *
+ *   c ? A : false   ≡  c && A     both hold, so search both
+ *   c ? false : B   ≡  !c && B    c must NOT hold, so search it at flipped parity
+ *   c ? true  : B   ≡  c || B     a disjunction guarantees neither operand
+ *   c ? A : true    ≡  !c || A    likewise
+ *
+ * With two non-literal arms the verb is chosen by a condition whose value is
+ * unknown, so the ternary guarantees nothing.
+ *
+ * Measured before fixing: `(req.method === 'GET' ? false : true) && pathname ===
+ * '/api/i'` emitted `GET /api/i` — the one method that branch guarantees the
+ * request does NOT have, the same inversion `!` produced before `d4dcba8c`. The
+ * three shapes that were already right stay right; refusing every ternary would
+ * have been safe but would have dropped them.
+ *
+ * At odd parity every conjunction above becomes a disjunction (De Morgan) and
+ * guarantees nothing, so a negated ternary yields no verb. `!(c ? false : true)`
+ * is really `c` and could be read, but it needs BOTH arms folded as literals to
+ * see that, and no such condition has been observed in a real dispatcher.
+ * Declining is the safe direction: a missing verb, not an inverted one.
+ */
+function verbFromTernary(node: SyntaxNode, negated: boolean): string | null {
+  if (negated) return null;
+  const condition = unparenthesize(node.childForFieldName('condition'));
+  const consequence = unparenthesize(node.childForFieldName('consequence'));
+  const alternative = unparenthesize(node.childForFieldName('alternative'));
+  if (condition === null || consequence === null || alternative === null) return null;
+
+  if (alternative.type === 'false') {
+    return findVerbInSubtree(condition, false) ?? findVerbInSubtree(consequence, false);
+  }
+  if (consequence.type === 'false') {
+    return findVerbInSubtree(condition, true) ?? findVerbInSubtree(alternative, false);
   }
   return null;
 }

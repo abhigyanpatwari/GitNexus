@@ -238,6 +238,83 @@ describe('dispatch-guard route extraction', () => {
         paths(`function h(req) { if (!/^\\/api\\/runs\\/[^/]+$/.test(pathname)) { return 1 } }`),
       ).toEqual([]);
     });
+
+    it('reads a doubly-negated VERB, not just a doubly-negated path', () => {
+      // The parity rule was stated for `!` but the verb walk refused on the mere
+      // PRESENCE of one, so this lost a verb the source states outright. The
+      // path-position case above passed throughout and hid it.
+      expect(
+        extract(
+          `function h(req) { if (!!(req.method === 'GET') && pathname === '/api/dn') { return 1 } }`,
+        ),
+      ).toMatchObject([{ routePath: '/api/dn', httpMethod: 'GET' }]);
+    });
+  });
+
+  // A ternary SELECTS between its arms, so a verb inside one is not reached
+  // merely because the whole condition is truthy. Reproduced against the
+  // extractor before fixing: the first case emitted `GET /api/i`, the one method
+  // that branch guarantees the request does NOT have — the same inversion `!`
+  // produced before it was handled, one level up.
+  //
+  // The last three cases were ALREADY correct and are here to pin them: refusing
+  // every ternary would fix the bug and silently drop three real verbs.
+  describe('ternary polarity', () => {
+    const guard = (cond: string, path = '/api/i') =>
+      extract(`function h(req) { if (${cond} && pathname === '${path}') { return 1 } }`);
+
+    it('drops the verb when a ternary INVERTS it', () => {
+      // `c ? false : true` is `!c`: the branch runs for every method except GET.
+      expect(guard(`(req.method === 'GET' ? false : true)`)).toMatchObject([
+        { routePath: '/api/i', httpMethod: '' },
+      ]);
+    });
+
+    it('keeps the verb when a ternary is the identity', () => {
+      // `c ? true : false` is `c`. Verb-less would be safe but wrong to settle for.
+      expect(guard(`(req.method === 'GET' ? true : false)`)).toMatchObject([
+        { routePath: '/api/i', httpMethod: 'GET' },
+      ]);
+    });
+
+    it('keeps a verb in the consequence when the alternative is `false`', () => {
+      // `c ? A : false` is `c && A` — reaching the body requires BOTH.
+      expect(guard(`(isAdmin ? req.method === 'GET' : false)`)).toMatchObject([
+        { routePath: '/api/i', httpMethod: 'GET' },
+      ]);
+    });
+
+    it('keeps a verb in the alternative when the consequence is `false`', () => {
+      // `c ? false : B` is `!c && B`.
+      expect(guard(`(isAdmin ? false : req.method === 'GET')`)).toMatchObject([
+        { routePath: '/api/i', httpMethod: 'GET' },
+      ]);
+    });
+
+    it('claims no verb when both arms are live comparisons', () => {
+      // Which verb this serves depends on `isAdmin`, so naming either is a guess.
+      expect(guard(`(isAdmin ? req.method === 'GET' : req.method === 'POST')`)).toMatchObject([
+        { routePath: '/api/i', httpMethod: '' },
+      ]);
+    });
+
+    it('claims no verb when a `true` arm makes the ternary a disjunction', () => {
+      // `c ? true : B` is `c || B`: the body is also reached for any method when
+      // `isAdmin` holds, so `GET` would present a broader route as a narrow one.
+      expect(guard(`(req.method === 'GET' ? true : isAdmin)`)).toMatchObject([
+        { routePath: '/api/i', httpMethod: '' },
+      ]);
+    });
+
+    it('claims no verb when the whole ternary is negated', () => {
+      // `!(c ? A : false)` is `!(c && A)`, i.e. `!c || !A` — a disjunction, which
+      // guarantees nothing. Without the parity guard the conjunction rule would
+      // read `GET` straight out of the consequence and invert it exactly as the
+      // un-negated form did.
+      expect(guard(`!(isAdmin ? req.method === 'GET' : false)`, '/api/n')).toMatchObject([
+        { routePath: '/api/n', httpMethod: '' },
+      ]);
+    });
   });
 
   // Not in any report — the same dispatch written with different syntax. A
