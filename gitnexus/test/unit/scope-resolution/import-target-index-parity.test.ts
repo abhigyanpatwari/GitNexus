@@ -29,7 +29,14 @@
  * guard for PR #1918 review finding P1: an adapter that copies the Set
  * (`new Set(allFilePaths)`) hands a fresh `WeakMap` key per call and silently
  * restores the O(imports × files) behaviour while every correctness test still
- * passes.
+ * passes. Kotlin (#2872) is covered there too — its own guard counts index
+ * BUILDS, which a scan added beside a reused index does not move.
+ *
+ * That arm is also the only DETERMINISTIC guard against a reintroduced scan.
+ * The benchmark's timing arms have a measured blind spot: a full workspace scan
+ * on 1-in-32 imports scores 1.458 against a 1.8 scaling budget and 1.736 ms
+ * against a 4 ms ceiling — it passes everything — while this counter reads 14
+ * instead of 1. Timing gates catch the constant factor; this catches the scan.
  */
 import { describe, expect, it } from 'vitest';
 import type { ParsedImport, WorkspaceIndex } from 'gitnexus-shared';
@@ -41,6 +48,7 @@ import {
   resolveCsharpImportTarget,
   type CsharpResolveContext,
 } from '../../../src/core/ingestion/languages/csharp/import-target.js';
+import { resolveKotlinImportTarget } from '../../../src/core/ingestion/languages/kotlin/import-target.js';
 import { resolveRubyImportInternal } from '../../../src/core/ingestion/import-resolvers/ruby.js';
 import { buildSuffixIndex } from '../../../src/core/ingestion/import-resolvers/utils.js';
 import { isHeritageMarker } from '../../../src/core/ingestion/utils/heritage-marker.js';
@@ -722,6 +730,21 @@ describe('import-target index hoist — built once per file set, not once per im
     }
     // Two passes: the shared workspace/suffix index and the namespace-dir index.
     expect(files.scans).toBe(2);
+  });
+
+  it('kotlin builds one index for many imports (#2872)', () => {
+    // Kotlin's own guard (`test/integration/kotlin-import-index-reuse.test.ts`)
+    // counts index BUILDS. That catches the per-import rebuild, but a scan added
+    // beside a reused index moves no build count — this arm sees it, because it
+    // counts iterations of the Set rather than cache misses.
+    const files = countingCorpus(7, '.kt');
+    for (let i = 0; i < 200; i++) {
+      resolveKotlinImportTarget(
+        { kind: 'named', localName: 'X', importedName: 'X', targetRaw: `ghost${i}.deep.Missing` },
+        { fromFile: 'App.kt', allFilePaths: files } as unknown as WorkspaceIndex,
+      );
+    }
+    expect(files.scans).toBe(1);
   });
 
   it('a distinct file set gets its own index (no stale cross-run reuse)', () => {

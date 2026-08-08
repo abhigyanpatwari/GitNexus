@@ -1,9 +1,25 @@
 {
-  "_what": "Baselines for bench/import-target/measure.mjs (#2877 go, #2878 csharp, #2879 dart, #2880 ruby).",
-  "_fingerprint_note": "Per-language sha256 over every distinct fromFile|target -> resolved target. A change here is a BEHAVIOUR change: the resolver returned a different target set. Re-baseline only with a deliberate resolution change, and only after test/unit/scope-resolution/import-target-index-parity.test.ts has been updated to match — that harness, not this file, is what proves a rewrite preserved the tie-breaks.",
-  "_scaling_note": "Measured on this branch at the full 400/1600 scale: go 0.98, csharp 1.08, dart 1.09, ruby 1.12. The same corpus scored 3.36 / 4.10 / 3.32 / 3.87 against the pre-#2877 scans at 150/600, matching the ratios reported in the issues. The 1.8 budget sits well above the linear result and well below the quadratic one; the timing arm is the only one that can move under CI load, so re-run on an idle machine before investigating a ratio failure.",
-  "_shape_note": "files/imports/resolved/distinct_outcomes are asserted exactly. A fingerprint alone cannot tell a legitimate resolution change from a corpus that was quietly shrunk below the size at which the scaling arm can see anything.",
+  "_what": "Baselines for bench/import-target/measure.mjs — the Go, C#, Dart, Ruby (#2877/#2878/#2879/#2880) and Kotlin (#2872) import-target resolvers on one shared corpus.",
+  "_fingerprint_note": "Per-language sha256 over every distinct fromFile|target -> resolved target. A change here is a BEHAVIOUR change: the resolver returned a different target set, and IMPORTS/CALLS edges moved. Explain it, never re-baseline to make CI green. For the four languages this PR changed, the pre-change implementations produce these same values on this corpus at both 400 and 1600 files — that is what makes the index hoist a performance change. The tie-break-level proof lives in test/unit/scope-resolution/import-target-index-parity.test.ts (verbatim copies of the pre-change code, diffed) and, for Kotlin, in test/unit/scope-resolution/kotlin/kotlin-import-target-parity.test.ts.",
+  "_shape_note": "files/imports/resolved/distinct_outcomes are asserted exactly, per scale. A fingerprint alone cannot tell a legitimate resolution change from a corpus quietly shrunk below the size at which the timing arms can see anything. The deep arm additionally must resolve exactly what the small arm resolves — padding was supposed to change path depth and nothing else, and a deep arm that stopped resolving would be timing the null path.",
+  "_arms_note": "Three timing arms plus one deterministic arm elsewhere, because none of them gates alone. scaling_ratio (t_large/t_small)/(1600/400) catches cost growing with FILE COUNT — the #2877-#2880 regression itself. depth_ratio (t_deep/t_small at a FIXED file count, ~6x the path components) catches cost growing with path DEPTH, which scaling_ratio divides out and structurally cannot see; buildSuffixIndex (C#, Ruby) and Kotlin suffixByStem emit one entry per component, so they legitimately sit above 1.0 while Go and Dart, whose indexes are depth-free, sit at ~0.9. small_ms_ceiling is ABSOLUTE (4x the measured arm), because a constant-factor regression that grows both arms equally passes every ratio.",
+  "_triage": "Every ratio and ceiling here is a TIMING signal — re-run on an idle machine before investigating; runner contention dominates. The fingerprint and shape arms are the opposite: deterministic, a re-run never changes them, and they must never be wished away.",
+  "_floor": "Measured against the pre-change implementations on this corpus at 150/600 files: go 3.36, csharp 4.10, dart 3.32, ruby 3.87 — matching the ratios reported in the issues (4.00 / 3.43 / 4.05). Kotlin's own bench measured its pre-index floor at 3.737. The 1.8 budget sits well above the linear result and well below every one of those.",
   "scaling_budget": 1.8,
+  "depth_budget": {
+    "go": 1.6,
+    "csharp": 5,
+    "dart": 1.6,
+    "ruby": 2.2,
+    "kotlin": 3.4
+  },
+  "small_ms_ceiling": {
+    "go": 7,
+    "csharp": 11,
+    "dart": 3,
+    "ruby": 77,
+    "kotlin": 12
+  },
   "languages": {
     "go": {
       "small": {
@@ -20,8 +36,19 @@
         "distinct_outcomes": 11709,
         "fingerprint": "ec4bb401b3465713ad6dedc4f9aa774e586b319f21d406fd79eaad29f4e98861"
       },
+      "deep": {
+        "files": 400,
+        "imports": 3200,
+        "resolved": 979,
+        "distinct_outcomes": 2913,
+        "fingerprint": "f1ce3dbe9fa4d03bae9504b644e39cc3c815d99defda70aedcf09fb743575f54"
+      },
       "fingerprint": "ec4bb401b3465713ad6dedc4f9aa774e586b319f21d406fd79eaad29f4e98861",
-      "_measured_scaling_ratio": 1
+      "_measured": {
+        "scaling_ratio": 0.984,
+        "depth_ratio": 1.057,
+        "small_ms": 1.503
+      }
     },
     "csharp": {
       "small": {
@@ -38,8 +65,19 @@
         "distinct_outcomes": 11440,
         "fingerprint": "0b46146f5213fea8c07f1f90305a14da5ce31c865c495180f3f3903ddc6b8117"
       },
+      "deep": {
+        "files": 400,
+        "imports": 3200,
+        "resolved": 979,
+        "distinct_outcomes": 2844,
+        "fingerprint": "2baee530615a03ac6342d8d330f8b40e619b46e5de40f688ca8fb8a5f8b35027"
+      },
       "fingerprint": "0b46146f5213fea8c07f1f90305a14da5ce31c865c495180f3f3903ddc6b8117",
-      "_measured_scaling_ratio": 1.157
+      "_measured": {
+        "scaling_ratio": 1.138,
+        "depth_ratio": 3.446,
+        "small_ms": 2.526
+      }
     },
     "dart": {
       "small": {
@@ -56,8 +94,19 @@
         "distinct_outcomes": 11875,
         "fingerprint": "5151cd2498bd4b7698dc9309e2539977d306f9ba82a388c630c89b51fc4a3187"
       },
+      "deep": {
+        "files": 400,
+        "imports": 3200,
+        "resolved": 1153,
+        "distinct_outcomes": 2987,
+        "fingerprint": "79776ec1c22afa619fd31aeb05dcac567723b436d0461a5782693b9e929f6f74"
+      },
       "fingerprint": "5151cd2498bd4b7698dc9309e2539977d306f9ba82a388c630c89b51fc4a3187",
-      "_measured_scaling_ratio": 1.007
+      "_measured": {
+        "scaling_ratio": 0.787,
+        "depth_ratio": 0.88,
+        "small_ms": 0.718
+      }
     },
     "ruby": {
       "small": {
@@ -74,8 +123,49 @@
         "distinct_outcomes": 11786,
         "fingerprint": "31804ae9633d51ce7597d886f9c2230fec3448b0aa00d9ab953086e393cd28a9"
       },
+      "deep": {
+        "files": 400,
+        "imports": 3200,
+        "resolved": 1153,
+        "distinct_outcomes": 2936,
+        "fingerprint": "a6dac0609e6800571bcc19ee30818ab571549f275d691f98e4c238aaa4fb1362"
+      },
       "fingerprint": "31804ae9633d51ce7597d886f9c2230fec3448b0aa00d9ab953086e393cd28a9",
-      "_measured_scaling_ratio": 1.093
+      "_measured": {
+        "scaling_ratio": 1.123,
+        "depth_ratio": 1.48,
+        "small_ms": 19.063
+      }
+    },
+    "kotlin": {
+      "small": {
+        "files": 400,
+        "imports": 3200,
+        "resolved": 1100,
+        "distinct_outcomes": 2868,
+        "fingerprint": "59c4287225e765d75518a7ae1531487e0270c9a1ce42a3e1821c301f7cfeb3cc"
+      },
+      "large": {
+        "files": 1600,
+        "imports": 12800,
+        "resolved": 4456,
+        "distinct_outcomes": 11512,
+        "fingerprint": "003bb2fe82972c6bb6b4b4e569fb49dfcda2d7c61922d68c65b04398cbbde50b"
+      },
+      "deep": {
+        "files": 400,
+        "imports": 3200,
+        "resolved": 1100,
+        "distinct_outcomes": 2868,
+        "fingerprint": "e541c9daee39c271ccc08b045f5330a98efba8b8dd4ded233e39e174f50d3785"
+      },
+      "fingerprint": "003bb2fe82972c6bb6b4b4e569fb49dfcda2d7c61922d68c65b04398cbbde50b",
+      "_measured": {
+        "scaling_ratio": 1.119,
+        "depth_ratio": 2.199,
+        "small_ms": 2.797
+      }
     }
-  }
+  },
+  "_blind_spot": "MEASURED, so nobody has to rediscover it: a full workspace scan reintroduced on 1-in-32 imports passes EVERY arm here — dart scored 1.458 scaling and 1.736 ms against the 1.8 budget and 4 ms ceiling of an earlier revision. At 1-in-8 the scaling arm catches it (2.414). The gate that actually closes this is not a timing gate at all: test/unit/scope-resolution/import-target-index-parity.test.ts counts iterations of the file-set Set and reads 14 instead of 1 for that same 1-in-32 mutation, deterministically and for all five languages. Read the two together; tightening these ceilings toward the noise floor to chase that case would only buy flaky CI."
 }
