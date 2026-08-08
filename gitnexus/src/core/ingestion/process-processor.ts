@@ -608,6 +608,19 @@ const deduplicateTraces = (
   // Sort by length descending
   const sorted = [...traces].sort((a, b) => b.length - a.length);
   const unique: string[][] = [];
+  // Keys for `unique`, built ONCE per surviving trace rather than once per
+  // COMPARISON. The join used to sit inside the `some()` callback below, so
+  // every already-kept trace had its key rebuilt from scratch against every
+  // candidate — O(T*U) joins of O(depth * id-length) characters, and it is that
+  // allocation, not the substring scan, that dominates the pass.
+  //
+  // Nothing about breadth-first search made that safe; it only kept the cost
+  // small by keeping traces short. Measured on this repo, the walk went from an
+  // average of 4.3 steps to 9.4 when D1 made it depth-first, which roughly
+  // doubles both the number of surviving traces and the length of every key —
+  // so the same quadratic that was affordable under BFS is ~6x the work under
+  // DFS. Hoisting the join removes the multiplication entirely.
+  const uniqueKeys: string[] = [];
 
   for (const trace of sorted) {
     // A SINK-TERMINATED trace is never redundant (R3-6), even though it is by
@@ -617,19 +630,18 @@ const deduplicateTraces = (
     // from ever being processes. Emitting one at the walk and deleting it one
     // step later would have been a no-op fix.
     const terminal = trace[trace.length - 1];
+    const traceKey = trace.join('->');
     if (terminal !== undefined && isSink(terminal)) {
       unique.push(trace);
+      uniqueKeys.push(traceKey);
       continue;
     }
     // Check if this trace is a subset of any already-added trace
-    const traceKey = trace.join('->');
-    const isSubset = unique.some((existing) => {
-      const existingKey = existing.join('->');
-      return existingKey.includes(traceKey);
-    });
+    const isSubset = uniqueKeys.some((existingKey) => existingKey.includes(traceKey));
 
     if (!isSubset) {
       unique.push(trace);
+      uniqueKeys.push(traceKey);
     }
   }
 
