@@ -183,8 +183,10 @@ describe('PARSE_CACHE_VERSION', () => {
   // parse time, so a warm cache would replay the inverted verb indefinitely.
   // Moved 55 -> 56 for R3-8 part 1: the verb walk returns every method a guard
   // serves, so a multi-method guard emits several routes where it emitted one.
-  it('pins SCHEMA_BUMP to 56 so concurrent bumps cannot silently collide (#2766)', () => {
-    expect(Number(PARSE_CACHE_VERSION.split('+', 1)[0])).toBe(56);
+  // Moved 56 -> 57 for R3-8 part 2: `.match()` dispatch, bound-match test sites,
+  // named regex consts, and capturing segment wildcards in `regexToRoutePath`.
+  it('pins SCHEMA_BUMP to 57 so concurrent bumps cannot silently collide (#2766)', () => {
+    expect(Number(PARSE_CACHE_VERSION.split('+', 1)[0])).toBe(57);
   });
 
   it('embeds the gitnexus package version (so upgrades invalidate the cache)', () => {

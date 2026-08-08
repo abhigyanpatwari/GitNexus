@@ -582,6 +582,197 @@ describe('dispatch-guard route extraction', () => {
     it('ignores a regex tested against something that is not a request path', () => {
       expect(paths(`function f() { if (/^\\/api\\/x$/.test(filename)) { return 1 } }`)).toEqual([]);
     });
+
+    // The form every real dispatcher writes, and the one this converter refused.
+    // `(` fell through to the metacharacter bail, so the capturing pattern
+    // translated to nothing while its non-capturing twin translated fine — which
+    // is exactly why every test above passed. The reporting repo does not contain
+    // a single non-capturing path wildcard: a dispatcher captures the segment
+    // because it needs the id.
+    it('converts a CAPTURING single-segment wildcard', () => {
+      expect(regexToRoutePath('^\\/api\\/research-runs\\/([^/]+)$')).toBe(
+        '/api/research-runs/{param1}',
+      );
+    });
+
+    it('converts a capturing wildcard followed by more literal path', () => {
+      expect(regexToRoutePath('^\\/api\\/live\\/positions\\/([^/]+)\\/replay$')).toBe(
+        '/api/live/positions/{param1}/replay',
+      );
+    });
+
+    it('still refuses a capture group around anything that is not one segment', () => {
+      // `.+` spans slashes, so it is not a single segment and cannot be one
+      // `{param}`. Accepting `(` must not mean accepting every group.
+      expect(regexToRoutePath('^\\/api\\/x\\/(.+)$')).toBeNull();
+      expect(regexToRoutePath('^\\/api\\/x\\/(a|b)$')).toBeNull();
+    });
+
+    it('refuses an unbalanced capture group', () => {
+      // A stray `)` would otherwise be read as a literal path character.
+      expect(regexToRoutePath('^\\/api\\/x\\/([^/]+$')).toBeNull();
+    });
+  });
+
+  // `RE.test(pathname)` and `pathname.match(RE)` are the same test with the
+  // operands swapped. Only `.test` was read, which is why 28 of the reporting
+  // repo's 75 routes still named the shared route table as their handler: their
+  // modules dispatch with `.match`.
+  //
+  // `.match` differs in one way that matters — its result is USED, so it is
+  // almost always BOUND, and the verb then lives in a later `if` rather than
+  // around the call.
+  describe('bound .match() dispatch', () => {
+    const RUNS = `/^\\/api\\/research-runs\\/([^/]+)$/`;
+
+    it('reads the verb from where the binding is TESTED, not where it is bound', () => {
+      expect(
+        extract(`
+          function handle(req) {
+            const runMatch = pathname.match(${RUNS})
+            if (req.method === 'GET' && runMatch) { return runMatch[1] }
+          }
+        `),
+      ).toMatchObject([
+        { routePath: '/api/research-runs/{param1}', httpMethod: 'GET', handlerName: 'handle' },
+      ]);
+    });
+
+    it('emits a route per method for a multi-method bound match', () => {
+      // Verbatim shape from researchRunRoutes.js.
+      expect(
+        extract(`
+          function handle(req) {
+            const bundlesMatch = pathname.match(/^\\/api\\/runs\\/([^/]+)\\/bundles$/)
+            if ((req.method === 'GET' || req.method === 'POST') && bundlesMatch) { return 1 }
+          }
+        `).map((r) => r.httpMethod),
+      ).toEqual(['GET', 'POST']);
+    });
+
+    it('emits once per TEST SITE, not once per capture read', () => {
+      // `m[1]` is a read of the captured segment. It says nothing about
+      // dispatch, and counting it would mint a duplicate route per use of the id.
+      expect(
+        extract(`
+          function handle(req) {
+            const m = pathname.match(/^\\/api\\/w\\/([^/]+)$/)
+            if (req.method === 'GET' && m) { return [m[1], m[2], m[1]] }
+          }
+        `),
+      ).toMatchObject([{ routePath: '/api/w/{param1}', httpMethod: 'GET' }]);
+    });
+
+    it('emits a route per test site when one binding is tested for two methods', () => {
+      expect(
+        extract(`
+          function handle(req) {
+            const m = pathname.match(/^\\/api\\/t\\/([^/]+)$/)
+            if (req.method === 'GET' && m) { return 1 }
+            if (req.method === 'PUT' && m) { return 2 }
+          }
+        `).map((r) => r.httpMethod),
+      ).toEqual(['GET', 'PUT']);
+    });
+
+    it('does not inherit a verb across a NEGATED guard clause', () => {
+      // `if (!m) return` is the early-out. The `if (method === 'GET')` after it
+      // governs the rest of the function, not this binding's test.
+      expect(
+        extract(`
+          function handle(req) {
+            const m = pathname.match(/^\\/api\\/z\\/([^/]+)$/)
+            if (!m) { return false }
+            if (req.method === 'GET') { return 1 }
+          }
+        `),
+      ).toMatchObject([{ routePath: '/api/z/{param1}', httpMethod: '' }]);
+    });
+
+    it('keeps the path when a binding is never tested', () => {
+      // The code still computed an anchored match against the request path —
+      // the same evidence an unbound `.test` carries.
+      expect(
+        extract(`
+          function handle(req) {
+            const m = pathname.match(/^\\/api\\/y\\/([^/]+)$/)
+            return m[1]
+          }
+        `),
+      ).toMatchObject([{ routePath: '/api/y/{param1}', httpMethod: '' }]);
+    });
+
+    it('reads an UNBOUND .match like a .test', () => {
+      expect(
+        extract(
+          `function handle(req) { if (req.method === 'GET' && pathname.match(/^\\/api\\/x$/)) { return 1 } }`,
+        ),
+      ).toMatchObject([{ routePath: '/api/x', httpMethod: 'GET' }]);
+    });
+
+    it('resolves a regex named by a same-file const, both ways round', () => {
+      // positionReplayRoutes.js declares the pattern once and uses it both ways.
+      const re = `const RE = /^\\/api\\/positions\\/([^/]+)\\/replay$/`;
+      expect(
+        extract(`
+          ${re}
+          function handle(req) {
+            const routeMatch = pathname.match(RE)
+            if (req.method === 'DELETE' && routeMatch) { return 1 }
+          }
+        `),
+      ).toMatchObject([{ routePath: '/api/positions/{param1}/replay', httpMethod: 'DELETE' }]);
+      expect(
+        extract(`
+          ${re}
+          function handle(req) { if (req.method === 'GET' && RE.test(pathname)) { return 1 } }
+        `),
+      ).toMatchObject([{ routePath: '/api/positions/{param1}/replay', httpMethod: 'GET' }]);
+    });
+
+    it('refuses .match on a receiver that is not a request path', () => {
+      // The genuine route alongside it is load-bearing, NOT decoration: without
+      // a path token somewhere in the file, PATH_TOKEN_HINT skips the walk
+      // entirely and this assertion is satisfied by a file that was never
+      // examined. It proves the file WAS processed and `userAgent` was refused
+      // on its merits.
+      expect(
+        paths(`
+          function handle(req) {
+            const m = userAgent.match(/^\\/api\\/nope$/)
+            if (req.method === 'GET' && m) { return 1 }
+            if (req.method === 'GET' && pathname === '/api/real') { return 2 }
+          }
+        `),
+      ).toEqual(['/api/real']);
+    });
+
+    it('claims no verb when the test site itself sits under a negation', () => {
+      // `if (!(method === 'GET' && m))` runs precisely when the path did NOT
+      // match, so attributing GET is backwards. `!m` alone never reaches this
+      // check — a `unary_expression` parent is not a truthiness position to
+      // begin with — so the wrapped conjunction is the shape that exercises it.
+      expect(
+        extract(`
+          function handle(req) {
+            const m = pathname.match(/^\\/api\\/n\\/([^/]+)$/)
+            if (!(req.method === 'GET' && m)) { return false }
+          }
+        `),
+      ).toMatchObject([{ routePath: '/api/n/{param1}', httpMethod: '' }]);
+    });
+
+    it('refuses a regex const bound twice to different patterns', () => {
+      // Same ambiguity refusal the string-constant map applies: a half-right
+      // regex is a wrong route.
+      expect(
+        paths(`
+          const RE = /^\\/api\\/a\\/([^/]+)$/
+          const RE = /^\\/api\\/b\\/([^/]+)$/
+          function handle(req) { if (req.method === 'GET' && RE.test(pathname)) { return 1 } }
+        `),
+      ).toEqual([]);
+    });
   });
 
   describe('handler attribution', () => {

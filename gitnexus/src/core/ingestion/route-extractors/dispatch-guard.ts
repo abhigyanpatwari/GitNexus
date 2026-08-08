@@ -554,15 +554,33 @@ function enclosingHandlerName(node: SyntaxNode): string | undefined {
 }
 
 /**
+ * A single URL segment, capturing or not: `[^/]+`, `[^\/]*`, `([^/]+)`.
+ *
+ * The CAPTURING form is the one real dispatchers write, and it was the one form
+ * this converter refused. `(` fell through to the metacharacter bail below, so
+ * `^\/api\/research-runs\/([^/]+)$` translated to nothing — while the
+ * non-capturing twin translated fine, which is why every test for this rule
+ * passed. The tests were written against the implementation instead of against
+ * the corpus, and the reporting repo does not contain a single non-capturing
+ * path wildcard: a dispatcher captures the segment because it needs the id.
+ *
+ * The alternatives are balanced on purpose — `([^/]+` unclosed is not a segment,
+ * and matching it would leave a stray `)` to be read as a literal.
+ */
+const SEGMENT_WILDCARD = /^(?:\(\[\^\\?\/\][+*]\)|\[\^\\?\/\][+*])/;
+
+/**
  * Convert an anchored regex used as a path test into a route path, or `null` if
  * any part of it is not cleanly representable.
  *
- * `^\/api\/research-runs\/[^/]+$` → `/api/research-runs/{param}`
+ * `^\/api\/research-runs\/([^/]+)$` → `/api/research-runs/{param1}`
  *
- * Only two wildcard atoms are recognised, both single-segment (`[^/]+` and
- * `[^/]*`, with or without the slash escaped). Anything else — an optional
- * group, an alternation, a bare `.*` — bails, because a route path is a claim
- * about what the server serves and a mistranslated pattern is a wrong one.
+ * Only single-segment wildcards are recognised — see {@link SEGMENT_WILDCARD}.
+ * Anything else — an optional group, an alternation, a bare `.*` — bails,
+ * because a route path is a claim about what the server serves and a
+ * mistranslated pattern is a wrong one. A capture group around anything OTHER
+ * than a segment wildcard still bails: `(.+)` spans slashes, so it is not one
+ * segment and cannot be one `{param}`.
  */
 export function regexToRoutePath(source: string): string | null {
   if (!source.startsWith('^') || !source.endsWith('$')) return null;
@@ -574,7 +592,7 @@ export function regexToRoutePath(source: string): string | null {
   let paramIndex = 0;
   while (i < body.length) {
     const rest = body.slice(i);
-    const wildcard = /^\[\^\\?\/\][+*]/.exec(rest);
+    const wildcard = SEGMENT_WILDCARD.exec(rest);
     if (wildcard !== null) {
       paramIndex += 1;
       out += `{param${paramIndex}}`;
@@ -630,14 +648,19 @@ export function extractDispatchGuardRoutes(
   const found: GuardRoute[] = [];
 
   const constants = buildConstantMap(tree.rootNode);
+  const regexes = buildRegexConstantMap(tree.rootNode);
+  const matchBindings = new Map<string, MatchBinding | null>();
 
   const visit = (node: SyntaxNode): void => {
     if (node.type === 'binary_expression') collectFromComparison(node, found, constants);
-    else if (node.type === 'call_expression') collectFromRegexTest(node, found);
+    else if (node.type === 'call_expression')
+      collectFromRegexDispatch(node, found, regexes, matchBindings);
     else if (node.type === 'switch_statement') collectFromSwitch(node, found, constants);
     for (const child of node.namedChildren) visit(child);
   };
   visit(tree.rootNode);
+
+  collectFromMatchBindings(tree.rootNode, matchBindings, found);
 
   return dedupeWithinFile(found).map((route) => ({
     filePath,
@@ -735,27 +758,241 @@ function collectFromSwitch(node: SyntaxNode, out: GuardRoute[], constants: Const
   }
 }
 
-function collectFromRegexTest(node: SyntaxNode, out: GuardRoute[]): void {
-  if (isNegatedContext(node)) return;
+/** A name bound to the result of an anchored-regex match against the path. */
+interface MatchBinding {
+  readonly url: string;
+  readonly line: number;
+  readonly handlerName: string | undefined;
+}
+
+/**
+ * Same-file `const NAME = /re/` bindings, so a regex named once and used by name
+ * still yields its route.
+ *
+ * Verbatim from the reporting repo: `positionReplayRoutes.js` declares
+ * `const POSITION_REPLAY_RE = /^\/api\/live\/positions\/([^/]+)\/replay$/` at
+ * module scope and then uses it BOTH ways — `POSITION_REPLAY_RE.test(pathname)`
+ * and `pathname.match(POSITION_REPLAY_RE)`. Keying only on inline literals
+ * loses the whole file.
+ *
+ * Ambiguity is refused the same way {@link buildConstantMap} refuses it: a name
+ * bound twice to different patterns is dropped rather than resolved to the
+ * first, because a half-right regex is a wrong route.
+ */
+function buildRegexConstantMap(root: SyntaxNode): ReadonlyMap<string, string> {
+  const patterns = new Map<string, string>();
+  const ambiguous = new Set<string>();
+
+  const visit = (node: SyntaxNode): void => {
+    if (node.type === 'variable_declarator') {
+      const name = node.childForFieldName('name');
+      const value = unparenthesize(node.childForFieldName('value'));
+      if (name !== null && name.type === 'identifier' && value !== null && value.type === 'regex') {
+        const pattern = value.childForFieldName('pattern')?.text;
+        if (pattern !== undefined) {
+          const existing = patterns.get(name.text);
+          if (existing !== undefined && existing !== pattern) ambiguous.add(name.text);
+          else patterns.set(name.text, pattern);
+        }
+      }
+    }
+    for (const child of node.namedChildren) visit(child);
+  };
+  visit(root);
+
+  for (const name of ambiguous) patterns.delete(name);
+  return patterns;
+}
+
+/** The regex pattern this expression denotes — inline literal or named const. */
+function regexPatternOf(
+  node: SyntaxNode | null,
+  regexes: ReadonlyMap<string, string>,
+): string | null {
+  const expr = unparenthesize(node);
+  if (expr === null) return null;
+  if (expr.type === 'regex') return expr.childForFieldName('pattern')?.text ?? null;
+  if (expr.type === 'identifier') return regexes.get(expr.text) ?? null;
+  return null;
+}
+
+/**
+ * A route declared by matching the path against an anchored regex.
+ *
+ * Two spellings of the same test, with the operands swapped:
+ *
+ *     if (RE.test(pathname))              — receiver is the regex
+ *     const m = pathname.match(RE)        — receiver is the path
+ *
+ * Only `.test` was read, which is why 28 of the reporting repo's 75 routes still
+ * named the shared route table as their handler rather than the module that
+ * actually serves them: their modules dispatch with `.match`.
+ *
+ * `.match` differs in one way that matters. Its result is USED — it carries the
+ * captured segments — so it is almost always BOUND, and the verb then lives in a
+ * later `if` rather than around the call:
+ *
+ *     const runMatch = pathname.match(/^\/api\/research-runs\/([^/]+)$/)
+ *     if (req.method === 'GET' && runMatch) { … }
+ *
+ * Reading the verb off the CALL would report every one of those verb-less. So a
+ * bound match is recorded rather than emitted, and {@link collectFromMatchBindings}
+ * emits it where the binding is actually tested. An unbound match is a plain
+ * predicate and is emitted here, exactly like `.test`.
+ */
+function collectFromRegexDispatch(
+  node: SyntaxNode,
+  out: GuardRoute[],
+  regexes: ReadonlyMap<string, string>,
+  matchBindings: Map<string, MatchBinding | null>,
+): void {
   const callee = node.childForFieldName('function');
   if (callee === null || callee.type !== 'member_expression') return;
-  if (callee.childForFieldName('property')?.text !== 'test') return;
+  const method = callee.childForFieldName('property')?.text;
+  if (method !== 'test' && method !== 'match') return;
+
   const receiver = callee.childForFieldName('object');
-  if (receiver === null || receiver.type !== 'regex') return;
+  const argument = node.childForFieldName('arguments')?.namedChildren[0] ?? null;
+  if (receiver === null || argument === null) return;
 
-  const argument = node.childForFieldName('arguments')?.namedChildren[0];
-  if (argument === undefined || !isPathExpression(argument)) return;
-
-  const pattern = receiver.childForFieldName('pattern');
+  // `RE.test(pathname)` vs `pathname.match(RE)` — the regex and the path swap
+  // sides with the method, so each spelling is checked in its own orientation
+  // rather than accepting any pairing.
+  const pattern =
+    method === 'test'
+      ? isPathExpression(argument)
+        ? regexPatternOf(receiver, regexes)
+        : null
+      : isPathExpression(receiver)
+        ? regexPatternOf(argument, regexes)
+        : null;
   if (pattern === null) return;
-  const url = regexToRoutePath(pattern.text);
+
+  const url = regexToRoutePath(pattern);
   if (url === null) return;
 
+  const boundName = boundDeclaratorName(node);
+  if (boundName !== null) {
+    // Flat, like the constant maps: a name bound twice to DIFFERENT routes is
+    // poisoned rather than resolved to the first.
+    const existing = matchBindings.get(boundName);
+    if (existing !== undefined && (existing === null || existing.url !== url)) {
+      matchBindings.set(boundName, null);
+      return;
+    }
+    matchBindings.set(boundName, {
+      url,
+      line: node.startPosition.row + 1,
+      handlerName: enclosingHandlerName(node),
+    });
+    return;
+  }
+
+  // Unbound: the call IS the predicate, so its own context carries the verb.
+  if (isNegatedContext(node)) return;
   pushPerVerb(out, governingVerbs(node), {
     url,
     handlerName: enclosingHandlerName(node),
     line: node.startPosition.row + 1,
   });
+}
+
+/** The name this call's result is bound to by `const NAME = <call>`, if any. */
+function boundDeclaratorName(call: SyntaxNode): string | null {
+  const parent = call.parent;
+  if (parent === null || parent.type !== 'variable_declarator') return null;
+  if (parent.childForFieldName('value')?.id !== call.id) return null;
+  const name = parent.childForFieldName('name');
+  return name !== null && name.type === 'identifier' ? name.text : null;
+}
+
+/**
+ * Emit a route wherever a recorded match binding is TESTED.
+ *
+ * The binding's declaration proves a path; the test site proves the method, and
+ * one binding can be tested more than once. A reference counts only in a
+ * truthiness position — see {@link isTruthinessPosition} — which is what
+ * separates `if (m && …)` from `m[1]`, a read of the captured segment that says
+ * nothing about dispatch and would otherwise mint a duplicate route per capture
+ * group used.
+ *
+ * A binding that is never tested still emits ONE verb-less route: the code did
+ * compute an anchored match against the request path, which is the same evidence
+ * an unbound `.test` carries, and dropping it would trade a known path for
+ * nothing.
+ *
+ * The DECLARATION's own name identifier needs no special case: its parent is a
+ * `variable_declarator`, which is not a truthiness position, so the same
+ * predicate that rejects `m[1]` rejects it. An explicit skip was written here
+ * first and removed once it proved unreachable — it read as though the
+ * declaration were a hazard, which sends the next reader looking for one.
+ */
+function collectFromMatchBindings(
+  root: SyntaxNode,
+  matchBindings: ReadonlyMap<string, MatchBinding | null>,
+  out: GuardRoute[],
+): void {
+  if (matchBindings.size === 0) return;
+  const tested = new Set<string>();
+
+  const visit = (node: SyntaxNode): void => {
+    if (node.type === 'identifier') {
+      const binding = matchBindings.get(node.text);
+      if (
+        binding !== undefined &&
+        binding !== null &&
+        isTruthinessPosition(node) &&
+        !isNegatedContext(node)
+      ) {
+        tested.add(node.text);
+        pushPerVerb(out, governingVerbs(node), {
+          url: binding.url,
+          handlerName: enclosingHandlerName(node) ?? binding.handlerName,
+          line: node.startPosition.row + 1,
+        });
+      }
+    }
+    for (const child of node.namedChildren) visit(child);
+  };
+  visit(root);
+
+  for (const [name, binding] of matchBindings) {
+    if (binding === null || tested.has(name)) continue;
+    out.push({
+      url: binding.url,
+      verb: null,
+      handlerName: binding.handlerName,
+      line: binding.line,
+    });
+  }
+}
+
+/**
+ * Is this reference read for its TRUTH — an operand of `&&`/`||`, or the whole
+ * condition of an `if`?
+ *
+ * Deliberately narrow. `runMatch[1]` (a `subscript_expression` parent) reads a
+ * captured segment, and `validate(runMatch)` passes it along; neither asserts
+ * that the request took this route, and counting them would emit one duplicate
+ * route per use of the captured id. Parentheses are transparent, so
+ * `if ((runMatch))` and `if (verb && (runMatch))` both count.
+ */
+function isTruthinessPosition(node: SyntaxNode): boolean {
+  let current: SyntaxNode = node;
+  let parent = current.parent;
+  while (parent !== null && parent.type === 'parenthesized_expression') {
+    current = parent;
+    parent = current.parent;
+  }
+  if (parent === null) return false;
+  if (parent.type === 'binary_expression') {
+    const operator = parent.childForFieldName('operator')?.text;
+    return operator === '&&' || operator === '||';
+  }
+  if (parent.type === 'if_statement') {
+    return parent.childForFieldName('condition')?.id === current.id;
+  }
+  return false;
 }
 
 /**

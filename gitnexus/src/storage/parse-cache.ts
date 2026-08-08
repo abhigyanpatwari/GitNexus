@@ -409,7 +409,14 @@ import type { ParseWorkerResult } from '../core/ingestion/workers/parse-worker.j
 // disjunction with a non-verb operand emits none instead of the first verb it
 // saw. Routes are parse-time output replayed verbatim from a warm cache.
 // RE-CHECK AGAINST origin/main IMMEDIATELY BEFORE MERGING.
-const SCHEMA_BUMP = 56;
+// 56 -> 57 for R3-8 (part 2): `pathname.match(RE)` is read as a route test
+// alongside `RE.test(pathname)`, a bound match takes its verb from where the
+// binding is TESTED rather than where it is bound, a regex named by a same-file
+// const resolves, and `regexToRoutePath` accepts a CAPTURING segment wildcard
+// (`([^/]+)`) — the form every real dispatcher writes and the one it refused.
+// All parse-time route output, replayed verbatim from a warm cache.
+// RE-CHECK AGAINST origin/main IMMEDIATELY BEFORE MERGING.
+const SCHEMA_BUMP = 57;
 const GITNEXUS_PKG_VERSION = (() => {
   try {
     // package.json sits at gitnexus/package.json — two levels up from
