@@ -36,7 +36,7 @@
  * name inference, and keep being reported when it declines.
  */
 
-import type { ParsedFile } from 'gitnexus-shared';
+import type { CallableFlowOperand, ParsedFile, ScopeId } from 'gitnexus-shared';
 import type { KnowledgeGraph } from '../../../graph/types.js';
 import type { ScopeResolutionIndexes } from '../../model/scope-resolution-indexes.js';
 import type { GraphNodeLookup } from '../graph-bridge/node-lookup.js';
@@ -86,6 +86,123 @@ function idNamesMember(id: string, owner: string, member: string): boolean {
   return after.length === 0 || after.startsWith('@');
 }
 
+/**
+ * Key a parameter cell by the scope it BINDS IN plus its name.
+ *
+ * Not by its definition id, which is what the first attempt used: a parameter
+ * is not reachable through `findValueBindingInScope` (its predicate
+ * `isOwnableValueLabel` lists Const / Variable / Property / Static, because it
+ * exists for OWNERSHIP registration and a parameter is owned by nothing), and
+ * measured, it is not reachable as a `local` binding either — the join found the
+ * formal and then resolved no def at all.
+ *
+ * The scope plus the name is enough and needs no def: the `formal` site already
+ * states the scope its parameter binds in, and a read of that name anywhere
+ * inside that scope's subtree refers to it unless something nearer shadows it —
+ * which the walk below handles by stopping at the FIRST scope that carries the
+ * name.
+ */
+function parameterCellKey(scope: ScopeId, name: string): string {
+  return `${scope}\u0000${name}`;
+}
+
+/**
+ * Producer names for PARAMETERS, derived from what their callers pass (W2-2).
+ *
+ * `function f(spike) { return spike.wickRatio }` has nothing to type `spike`
+ * from — that is the standing limit of R3-5 and the reason the 0.5 name tier
+ * exists at all. Measured on the reporting repo, it is also the LARGEST one:
+ * 11,012 of 13,672 property edges (81%) rest on that name guess.
+ *
+ * The two facts needed to answer it were already being extracted, for a
+ * different purpose. `callable-flow-captures` synthesizes, for JS and TS among
+ * others:
+ *
+ *   formal    owner=f  binding=spike  parameter-index=0
+ *   argument  source=s  parameter-index=0  direct-callee-name=f
+ *
+ * so joining them on `(callee, parameterIndex)` says which cell reaches which
+ * parameter, and the argument's own binding is typed by the same
+ * `findReceiverTypeBinding` used for a directly-bound receiver. No new capture,
+ * no parse-time change, and deliberately NOT a change to the callable-value-flow
+ * solver that owns these sites — that pass is guarded by a fingerprint
+ * correctness gate, so this reads the same facts and computes its own map.
+ *
+ * A parameter with callers passing DIFFERENT producers resolves to nothing.
+ * Picking one would fabricate at the 0.9 PRECISE tier, which no `minConfidence`
+ * floor can filter out — the same reason `buildConstantMap` drops an ambiguous
+ * constant instead of taking the first.
+ *
+ * COVERAGE, measured rather than assumed. The synthesis skips an argument that
+ * is itself a call result (`f(makeSignal())` emits no argument site, by an
+ * explicit `continue` in `callable-flow-captures`), so only the bound spelling
+ * `const s = makeSignal(); f(s)` is served. That looked fatal until counted: in
+ * the reporting repo bare-identifier arguments outnumber call-result arguments
+ * 2,563 to 50. The captured spelling is the dominant one by 51:1.
+ */
+function buildParameterProducers(
+  indexes: ScopeResolutionIndexes,
+  parsedFiles: readonly ParsedFile[],
+): ReadonlyMap<string, string> {
+  /** parameter def id -> producer name, or CONFLICT once callers disagree. */
+  const producers = new Map<string, string>();
+  const conflicted = new Set<string>();
+
+  // Formals keyed by the file that declares them, so two same-named functions
+  // in different files cannot answer for each other — the same file identity
+  // the member join below relies on.
+  const formals = new Map<string, CallableFlowOperand>();
+  for (const parsed of parsedFiles) {
+    for (const flow of parsed.callableFlowSites ?? []) {
+      if (flow.kind !== 'formal') continue;
+      formals.set(
+        `${parsed.filePath}\u0000${flow.ownerName}\u0000${flow.parameterIndex}`,
+        flow.binding,
+      );
+    }
+  }
+  if (formals.size === 0) return producers;
+
+  for (const parsed of parsedFiles) {
+    for (const flow of parsed.callableFlowSites ?? []) {
+      if (flow.kind !== 'argument') continue;
+      const callee = flow.directCalleeName;
+      if (callee === undefined || callee.length === 0) continue;
+
+      // Resolve the callee from the CALL SITE, so the formal is looked up in the
+      // file that actually declares the function rather than the one calling it.
+      const calleeDef = findCallableBindingInScope(flow.source.inScope, callee, indexes);
+      if (calleeDef?.filePath === undefined) continue;
+
+      const binding = formals.get(
+        `${calleeDef.filePath}\u0000${callee}\u0000${flow.parameterIndex}`,
+      );
+      if (binding === undefined) continue;
+
+      const cell = parameterCellKey(binding.inScope, binding.name);
+      if (conflicted.has(cell)) continue;
+
+      const producer = findReceiverTypeBinding(
+        flow.source.inScope,
+        flow.source.name,
+        indexes,
+      )?.rawName;
+      if (producer === undefined || producer.length === 0) continue;
+
+      const existing = producers.get(cell);
+      if (existing !== undefined && existing !== producer) {
+        // Two callers, two producers. Which shape this parameter holds depends
+        // on the call, and this pass answers at the precise tier or not at all.
+        producers.delete(cell);
+        conflicted.add(cell);
+        continue;
+      }
+      producers.set(cell, producer);
+    }
+  }
+  return producers;
+}
+
 export function emitReturnShapeMemberAccesses(
   graph: KnowledgeGraph,
   indexes: ScopeResolutionIndexes,
@@ -114,6 +231,9 @@ export function emitReturnShapeMemberAccesses(
   // own files is what actually closes it.
   const ownFilePaths = new Set(parsedFiles.map((p) => p.filePath));
 
+  // Caller-derived parameter types (W2-2) — see `buildParameterProducers`.
+  const parameterProducers = buildParameterProducers(indexes, parsedFiles);
+
   for (const parsed of parsedFiles) {
     for (const site of parsed.referenceSites) {
       if (site.kind !== 'read' && site.kind !== 'write') continue;
@@ -126,7 +246,18 @@ export function emitReturnShapeMemberAccesses(
       // whole point: `formatSpikeAlert` is a function, and before R3-4 there
       // was nothing named after it to look a member up on.
       const typeRef = findReceiverTypeBinding(site.inScope, receiver, indexes);
-      const producerRef = typeRef?.rawName;
+      let producerRef = typeRef?.rawName;
+
+      // W2-2. A receiver with no binding of its own may still be a PARAMETER
+      // whose callers all pass the same producer. Consulted only where the
+      // direct binding declined, so a receiver that already had a type keeps it.
+      if (producerRef === undefined || producerRef.length === 0) {
+        let cursor: ScopeId | null = site.inScope;
+        while (cursor !== null && producerRef === undefined) {
+          producerRef = parameterProducers.get(parameterCellKey(cursor, receiver));
+          cursor = indexes.scopeTree.getScope(cursor)?.parent ?? null;
+        }
+      }
       if (producerRef === undefined || producerRef.length === 0) continue;
 
       // R3-4 qualifies a returned key by the producing function's own name, so
