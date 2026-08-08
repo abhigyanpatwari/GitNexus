@@ -13,6 +13,7 @@ import {
   detectGraphWriteCollapse,
   GRAPH_WRITE_COLLAPSE_MIN_EDGES,
 } from '../../src/core/index-freshness.js';
+import { computeExpectedStructuralRelationships } from '../../src/core/run-analyze.js';
 
 /**
  * The `expected` count as `run-analyze` computes it. Kept as a tiny local
@@ -77,5 +78,72 @@ describe('graph-collapse wiring: incremental writes are not comparable (3a)', ()
   // entirely on that path; this pins the arithmetic that makes skipping right.
   it('cannot see a real incremental loss through whole-scope counts', () => {
     expect(detectGraphWriteCollapse(10000, 9800)).toBeUndefined();
+  });
+});
+
+/**
+ * PDG ROWS MUST NOT INFLATE `expected` (#2899 regression).
+ *
+ * These import the REAL `computeExpectedStructuralRelationships` rather than the
+ * local mirror above — and that is the whole point of them. The mirror exists
+ * "because the production expression is inline in a 3000-line function", and a
+ * mirror cannot catch a term the original got wrong. It did not catch this.
+ *
+ * Measured on a real repo: in-memory 20,825 + streamed 179,676 (of which ~110k
+ * were PDG) gave `expected` 200,501 against a structural `persisted` of 64,764,
+ * so a complete index reported INCOMPLETE and exited non-zero — then the stamp
+ * forced a rebuild that did it again.
+ */
+describe('graph-collapse wiring: PDG rows are excluded from `expected`', () => {
+  it('uses the sink STRUCTURAL subtotal, not its total-row size hint', () => {
+    // 179,676 streamed of which 69,771 were structural.
+    expect(
+      computeExpectedStructuralRelationships(20_825, {
+        structuralRows: 69_771,
+        totalRows: 179_676,
+      }),
+    ).toBe(90_596);
+  });
+
+  it('does not report a collapse on a healthy --pdg run', () => {
+    const expected = computeExpectedStructuralRelationships(20_825, {
+      structuralRows: 69_771,
+      totalRows: 179_676,
+    });
+    // The structural rows actually readable back. Well above the ratio.
+    expect(detectGraphWriteCollapse(expected, 64_764)).toBeUndefined();
+  });
+
+  it('would have reported one against the unfiltered total — the bug', () => {
+    // Pinning the defect itself: feeding the total-row hint reproduces the
+    // false INCOMPLETE exactly, so the distinction cannot be quietly undone.
+    expect(detectGraphWriteCollapse(20_825 + 179_676, 64_764)).toEqual({
+      expected: 200_501,
+      persisted: 64_764,
+    });
+  });
+
+  it('still detects a REAL structural collapse', () => {
+    // The subtraction must not blind the check.
+    const expected = computeExpectedStructuralRelationships(20_825, {
+      structuralRows: 69_771,
+      totalRows: 179_676,
+    });
+    expect(detectGraphWriteCollapse(expected, 1_000)).toEqual({
+      expected: 90_596,
+      persisted: 1_000,
+    });
+  });
+
+  it('picks structuralRows over totalRows when they differ', () => {
+    // The field choice itself, which a numeric parameter left at an untestable
+    // call site — and choosing wrong there is the whole defect.
+    expect(computeExpectedStructuralRelationships(0, { structuralRows: 7, totalRows: 999 })).toBe(
+      7,
+    );
+  });
+
+  it('is unchanged on a run with no streaming at all', () => {
+    expect(computeExpectedStructuralRelationships(10_000, undefined)).toBe(10_000);
   });
 });

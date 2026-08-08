@@ -535,6 +535,33 @@ import {
   deriveEmbeddingCap,
   DEFAULT_EMBEDDING_NODE_LIMIT,
 } from './embedding-mode.js';
+import type { GraphEmitManifest } from './lbug/graph-emit-sink.js';
+
+/**
+ * The STRUCTURAL relationship count a healthy write is expected to persist.
+ *
+ * Exported and called by production rather than mirrored in a test. That is the
+ * point: the wiring test kept a LOCAL COPY of this expression "because the
+ * production expression is inline in a 3000-line function", and a copy cannot
+ * catch a term the original got wrong. It did not catch this one.
+ *
+ * Both terms must exclude PDG, because the persisted side counts structural rows
+ * only: `relationshipCount` excludes it by construction (PDG never enters the
+ * in-memory graph when it streams), and `structuralRows` is the sink's
+ * type-aware subtotal rather than its `totalRows` size hint.
+ */
+export function computeExpectedStructuralRelationships(
+  inMemoryRelationships: number,
+  /**
+   * The MANIFEST, not a pre-selected number. Taking the whole object puts the
+   * `structuralRows` / `totalRows` choice INSIDE the tested function — the
+   * choice that was wrong before, and that a numeric parameter leaves at an
+   * untestable call site.
+   */
+  graphEmitManifest: Pick<GraphEmitManifest, 'structuralRows' | 'totalRows'> | undefined,
+): number {
+  return inMemoryRelationships + (graphEmitManifest?.structuralRows ?? 0);
+}
 
 export const PHASE_LABELS: Record<string, string> = {
   extracting: 'Scanning files',
@@ -2810,8 +2837,24 @@ async function runFullAnalysisInner(
     // recovery paths AND the `analyze --force` retry this check's own warning
     // tells the operator to run. Same correction, and for the same reason, as
     // the buffer-pool hint earlier in this file.
-    const expectedRelationships =
-      pipelineResult.graph.relationshipCount + (pipelineResult.graphEmitManifest?.totalRows ?? 0);
+    //
+    // `structuralRows`, NOT `totalRows`. The manifest's `totalRows` is a
+    // buffer-pool size hint and counts EVERY streamed row; PDG edges stream
+    // through this same sink (measured: `pdgEmitManifest` absent, zero PDG
+    // resident in the graph, 179,676 streamed rows of which ~110k were PDG), so
+    // using it compared a structural-plus-PDG expectation against the
+    // structural-only measurement below and declared a healthy `--pdg` index
+    // INCOMPLETE — 200,501 against 64,764 on a real repo, with every row
+    // present. The stamp then forced a rebuild on the next run, which repeated
+    // it: a permanent loop on an undamaged index.
+    //
+    // A pair key cannot separate them — it is `From|To` NODE LABELS, and a PDG
+    // edge shares `Function|Function` with `CALLS` — so the sink counts the
+    // split at the point it writes, where `relationship.type` is in hand.
+    const expectedRelationships = computeExpectedStructuralRelationships(
+      pipelineResult.graph.relationshipCount,
+      pipelineResult.graphEmitManifest,
+    );
     // `getLbugStats` returns `edges: undefined` when the count could not be
     // taken, which is a different fact from zero — an edge query that throws
     // must not read as a measured collapse. `nodes > 0` is independent evidence
