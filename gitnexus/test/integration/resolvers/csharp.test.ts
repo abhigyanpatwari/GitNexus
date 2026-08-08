@@ -2353,6 +2353,35 @@ describe('C# record base resolution (record inheritance + base.Save)', () => {
     }
   }, 60000);
 
+  it('fans interface calls out to an implementing Record method (#2884)', async () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), 'gitnexus-csharp-record-dispatch-'));
+    try {
+      writeFixtureRepo(root, {
+        'INamed.cs': 'namespace Probe; public interface INamed { string Name(); }',
+        'User.cs': `namespace Probe;
+          public record User(string Value) : INamed {
+            public string Name() => Value;
+          }`,
+        'Reader.cs':
+          'namespace Probe; public class Reader { public string Read(INamed value) => value.Name(); }',
+      });
+
+      const linked = await runPipelineFromRepo(root, () => {});
+      const fanout = getRelationships(linked, 'CALLS').filter(
+        (edge) =>
+          edge.source === 'Read' &&
+          edge.target === 'Name' &&
+          edge.rel.reason === 'interface-dispatch',
+      );
+
+      expect(fanout.map((edge) => `${edge.targetLabel}:${edge.targetFilePath}`)).toEqual([
+        'Method:User.cs',
+      ]);
+    } finally {
+      fs.rmSync(root, { recursive: true, force: true });
+    }
+  }, 60000);
+
   it('resolves base.Save() inside UserRecord.Save to BaseEntity.Save (not self)', () => {
     const calls = getRelationships(result, 'CALLS');
     const baseSave = calls.find(

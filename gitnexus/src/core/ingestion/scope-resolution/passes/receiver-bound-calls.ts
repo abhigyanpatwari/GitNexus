@@ -327,14 +327,14 @@ export function emitReceiverBoundCalls(
   };
 
   // Build an interface → implementors map from IMPLEMENTS edges.
-  // Maps Interface graph-id → list of implementor class scope-def-ids.
+  // Maps class-like graph ids back to their scope definitions.
   // We translate graph-ids back to scope-resolution DefIds via
   // `parsedFiles.localDefs` lookup so downstream `findOwnedMember`
   // (which keys by DefId) can find the implementor's members.
   const graphIdToClassDef = new Map<string, SymbolDefinition>();
   for (const parsed of parsedFiles) {
     for (const def of parsed.localDefs) {
-      if (def.type !== 'Class' && def.type !== 'Struct' && def.type !== 'Interface') continue;
+      if (!isClassLike(def.type)) continue;
       const graphId = resolveDefGraphId(parsed.filePath, def, nodeLookup);
       if (graphId !== undefined) graphIdToClassDef.set(graphId, def);
     }
