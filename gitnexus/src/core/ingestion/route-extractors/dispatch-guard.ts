@@ -342,7 +342,7 @@ function verbFromComparison(node: SyntaxNode): string | null {
 }
 
 /**
- * Find the verb that governs a path comparison, by walking outward.
+ * Find the verbs that govern a path comparison, by walking outward.
  *
  * Two idioms, both common and both handled:
  *   `if (req.method === 'GET' && pathname === '/x')` — a sibling in the same
@@ -355,8 +355,14 @@ function verbFromComparison(node: SyntaxNode): string | null {
  * `if (req.method === 'POST') {…} else if (pathname === '/x')` the path
  * comparison is reached precisely when the method is NOT POST, so attributing
  * POST to it would be exactly backwards.
+ *
+ * Returns a LIST because one guard can serve several methods:
+ * `if ((req.method === 'GET' || req.method === 'POST') && pathname === '/x')` is
+ * two routes, and returning the first verb reported it as GET-only — a route
+ * that silently loses its other methods reads as a narrower contract than the
+ * code implements. Empty means "no verb is guaranteed", which stays verb-less.
  */
-function governingVerb(comparison: SyntaxNode): string | null {
+function governingVerbs(comparison: SyntaxNode): readonly string[] {
   let current: SyntaxNode = comparison;
   let parent = current.parent;
 
@@ -369,8 +375,8 @@ function governingVerb(comparison: SyntaxNode): string | null {
         parent.childForFieldName('left')?.id === current.id
           ? parent.childForFieldName('right')
           : parent.childForFieldName('left');
-      const verb = sibling === null ? null : findVerbInSubtree(sibling);
-      if (verb !== null) return verb;
+      const verbs = sibling === null ? [] : findVerbsInSubtree(sibling);
+      if (verbs.length > 0) return verbs;
     }
     if (parent.type === 'if_statement') {
       const alternative = parent.childForFieldName('alternative');
@@ -379,14 +385,14 @@ function governingVerb(comparison: SyntaxNode): string | null {
       // A comparison inside the condition itself is handled by the `&&` rule
       // above; here we only inherit from an ENCLOSING if we are governed by.
       if (!inElseBranch && condition !== null && condition.id !== current.id) {
-        const verb = findVerbInSubtree(condition);
-        if (verb !== null) return verb;
+        const verbs = findVerbsInSubtree(condition);
+        if (verbs.length > 0) return verbs;
       }
     }
     current = parent;
     parent = current.parent;
   }
-  return null;
+  return [];
 }
 
 /**
@@ -404,24 +410,64 @@ function governingVerb(comparison: SyntaxNode): string | null {
  * branch does not say which method it serves. Siblings are still searched,
  * because excluding one verb says nothing about the next.
  */
-function findVerbInSubtree(node: SyntaxNode, negated = false): string | null {
+function findVerbsInSubtree(node: SyntaxNode, negated = false): readonly string[] {
   if (isNegation(node)) {
     const operand = node.childForFieldName('argument');
-    return operand === null ? null : findVerbInSubtree(operand, !negated);
+    return operand === null ? [] : findVerbsInSubtree(operand, !negated);
   }
 
   // A ternary SELECTS between its arms, so a verb inside one is not reached
-  // merely because the whole is truthy — see `verbFromTernary`.
-  if (node.type === 'ternary_expression') return verbFromTernary(node, negated);
+  // merely because the whole is truthy — see `verbsFromTernary`.
+  if (node.type === 'ternary_expression') return verbsFromTernary(node, negated);
+
+  if (isDisjunction(node)) return verbsFromDisjunction(node, negated);
 
   const direct = verbFromComparison(node);
-  if (direct !== null) return negated ? null : direct;
+  if (direct !== null) return negated ? [] : [direct];
 
+  // Generic descent keeps FIRST-match rather than unioning across children: an
+  // arbitrary node says nothing about how its children combine, and two verbs
+  // found under one are far more likely to be unrelated than alternatives. The
+  // one construct that genuinely means "either of these" is `||`, handled above.
   for (const child of node.namedChildren) {
-    const found = findVerbInSubtree(child, negated);
-    if (found !== null) return found;
+    const found = findVerbsInSubtree(child, negated);
+    if (found.length > 0) return found;
   }
-  return null;
+  return [];
+}
+
+/** A logical `||`. */
+function isDisjunction(node: SyntaxNode): boolean {
+  return node.type === 'binary_expression' && node.childForFieldName('operator')?.text === '||';
+}
+
+/**
+ * The verbs a disjunction guarantees — ALL of them, or none.
+ *
+ * `req.method === 'GET' || req.method === 'POST'` is the multi-method guard, and
+ * every operand names a verb, so the guard serves exactly those two.
+ *
+ * `req.method === 'GET' || isAdmin` is not: the branch is reached for ANY method
+ * when `isAdmin` holds, so the honest answer is no verb at all. Reporting `GET`
+ * — which is what taking the first match did — presents a route open to every
+ * method as one restricted to a single method, and this module's whole bar is
+ * that a wrong answer costs more than a missing one.
+ *
+ * So: every operand must yield at least one verb, or the whole disjunction
+ * yields none. At odd parity `!(A || B)` is `!A && !B`, which excludes verbs
+ * rather than offering them, so nothing is guaranteed either.
+ */
+function verbsFromDisjunction(node: SyntaxNode, negated: boolean): readonly string[] {
+  if (negated) return [];
+  const operands = [node.childForFieldName('left'), node.childForFieldName('right')];
+  const collected: string[] = [];
+  for (const operand of operands) {
+    if (operand === null) return [];
+    const verbs = findVerbsInSubtree(operand, false);
+    if (verbs.length === 0) return [];
+    for (const verb of verbs) if (!collected.includes(verb)) collected.push(verb);
+  }
+  return collected;
 }
 
 /**
@@ -448,20 +494,29 @@ function findVerbInSubtree(node: SyntaxNode, negated = false): string | null {
  * see that, and no such condition has been observed in a real dispatcher.
  * Declining is the safe direction: a missing verb, not an inverted one.
  */
-function verbFromTernary(node: SyntaxNode, negated: boolean): string | null {
-  if (negated) return null;
+function verbsFromTernary(node: SyntaxNode, negated: boolean): readonly string[] {
+  if (negated) return [];
   const condition = unparenthesize(node.childForFieldName('condition'));
   const consequence = unparenthesize(node.childForFieldName('consequence'));
   const alternative = unparenthesize(node.childForFieldName('alternative'));
-  if (condition === null || consequence === null || alternative === null) return null;
+  if (condition === null || consequence === null || alternative === null) return [];
+
+  const firstNonEmpty = (a: readonly string[], b: readonly string[]): readonly string[] =>
+    a.length > 0 ? a : b;
 
   if (alternative.type === 'false') {
-    return findVerbInSubtree(condition, false) ?? findVerbInSubtree(consequence, false);
+    return firstNonEmpty(
+      findVerbsInSubtree(condition, false),
+      findVerbsInSubtree(consequence, false),
+    );
   }
   if (consequence.type === 'false') {
-    return findVerbInSubtree(condition, true) ?? findVerbInSubtree(alternative, false);
+    return firstNonEmpty(
+      findVerbsInSubtree(condition, true),
+      findVerbsInSubtree(alternative, false),
+    );
   }
-  return null;
+  return [];
 }
 
 /**
@@ -612,17 +667,34 @@ function collectFromComparison(node: SyntaxNode, out: GuardRoute[], constants: C
     if (!isPathExpression(expr)) continue;
     const value = literalValue(literal, constants);
     if (value === null || !isPathLiteral(value)) continue;
-    const verb = governingVerb(node);
+    const verbs = governingVerbs(node);
     // A bare `/` is only a route when a verb says so — see the module header.
-    if (value === '/' && verb === null) continue;
-    out.push({
+    if (value === '/' && verbs.length === 0) continue;
+    pushPerVerb(out, verbs, {
       url: value,
-      verb,
       handlerName: enclosingHandlerName(node),
       line: node.startPosition.row + 1,
     });
     return;
   }
+}
+
+/**
+ * Emit one route per governing verb, or a single verb-less route when the guard
+ * guarantees none. A multi-method guard is genuinely several routes: they share
+ * a path and a handler but not a method, and `(method, url)` is the key every
+ * downstream consumer dedups and looks up on.
+ */
+function pushPerVerb(
+  out: GuardRoute[],
+  verbs: readonly string[],
+  route: Omit<GuardRoute, 'verb'>,
+): void {
+  if (verbs.length === 0) {
+    out.push({ ...route, verb: null });
+    return;
+  }
+  for (const verb of verbs) out.push({ ...route, verb });
 }
 
 /**
@@ -644,9 +716,9 @@ function collectFromSwitch(node: SyntaxNode, out: GuardRoute[], constants: Const
   const body = node.childForFieldName('body');
   if (body === null) return;
 
-  // The verb governing the whole switch, if any (`if (req.method === 'GET')
-  // switch (pathname) { … }`). Read once — every arm shares it.
-  const verb = governingVerb(node);
+  // The verbs governing the whole switch, if any (`if (req.method === 'GET')
+  // switch (pathname) { … }`). Read once — every arm shares them.
+  const verbs = governingVerbs(node);
 
   for (const arm of body.namedChildren) {
     if (arm.type !== 'switch_case') continue;
@@ -654,10 +726,9 @@ function collectFromSwitch(node: SyntaxNode, out: GuardRoute[], constants: Const
     if (caseValue === null) continue;
     const value = literalValue(caseValue, constants);
     if (value === null || !isPathLiteral(value)) continue;
-    if (value === '/' && verb === null) continue;
-    out.push({
+    if (value === '/' && verbs.length === 0) continue;
+    pushPerVerb(out, verbs, {
       url: value,
-      verb,
       handlerName: enclosingHandlerName(arm),
       line: arm.startPosition.row + 1,
     });
@@ -680,9 +751,8 @@ function collectFromRegexTest(node: SyntaxNode, out: GuardRoute[]): void {
   const url = regexToRoutePath(pattern.text);
   if (url === null) return;
 
-  out.push({
+  pushPerVerb(out, governingVerbs(node), {
     url,
-    verb: governingVerb(node),
     handlerName: enclosingHandlerName(node),
     line: node.startPosition.row + 1,
   });

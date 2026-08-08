@@ -317,6 +317,75 @@ describe('dispatch-guard route extraction', () => {
     });
   });
 
+  // One guard, several methods. Verbatim from the reporting repo:
+  //   if ((req.method === 'GET' || req.method === 'POST') && bundlesMatch) { … }
+  // Taking the FIRST verb reported this as GET-only, so `route_map` presented a
+  // route open to two methods as restricted to one, and `impact` on the POST
+  // path found nothing.
+  describe('multi-method guards', () => {
+    const guard = (cond: string) =>
+      extract(`function h(req) { if (${cond} && pathname === '/api/i') { return 1 } }`).map(
+        (r) => r.httpMethod,
+      );
+
+    it('emits one route per method in a verb disjunction', () => {
+      expect(guard(`(req.method === 'GET' || req.method === 'POST')`)).toEqual(['GET', 'POST']);
+    });
+
+    it('handles more than two', () => {
+      expect(
+        guard(`(req.method === 'GET' || req.method === 'POST' || req.method === 'PUT')`),
+      ).toEqual(['GET', 'POST', 'PUT']);
+    });
+
+    it('claims NO verb when a disjunct is not a verb test', () => {
+      // `GET || isAdmin` is reached for ANY method when `isAdmin` holds. Naming
+      // GET would describe a route open to everything as single-method — the
+      // direction this module treats as more expensive than saying nothing.
+      expect(guard(`(req.method === 'GET' || isAdmin)`)).toEqual(['']);
+    });
+
+    it('claims no verb when the disjunction is negated', () => {
+      // `!(GET || POST)` excludes both rather than offering either.
+      expect(guard(`!(req.method === 'GET' || req.method === 'POST')`)).toEqual(['']);
+    });
+
+    it('still distributes ONE verb across an OR of paths', () => {
+      // The pre-existing rule, pinned against the disjunction change: here the
+      // `||` joins PATHS, not verbs, and must not start multiplying methods.
+      expect(
+        extract(`
+          function h(req) {
+            if (req.method === 'GET' && (pathname === '/api/a' || pathname === '/api/b')) { return 1 }
+          }
+        `),
+      ).toMatchObject([
+        { routePath: '/api/a', httpMethod: 'GET' },
+        { routePath: '/api/b', httpMethod: 'GET' },
+      ]);
+    });
+
+    it('gives every switch arm the full method set', () => {
+      expect(
+        extract(`
+          function h(req) {
+            if (req.method === 'GET' || req.method === 'POST') {
+              switch (pathname) {
+                case '/api/a': return 1
+                case '/api/b': return 2
+              }
+            }
+          }
+        `),
+      ).toMatchObject([
+        { routePath: '/api/a', httpMethod: 'GET' },
+        { routePath: '/api/a', httpMethod: 'POST' },
+        { routePath: '/api/b', httpMethod: 'GET' },
+        { routePath: '/api/b', httpMethod: 'POST' },
+      ]);
+    });
+  });
+
   // Not in any report — the same dispatch written with different syntax. A
   // graph that waits for a bug report per shape stays permanently one idiom
   // behind the code it indexes.

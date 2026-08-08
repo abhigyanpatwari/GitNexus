@@ -181,8 +181,10 @@ describe('PARSE_CACHE_VERSION', () => {
   // Moved 54 -> 55 for W2-9: the dispatch-guard verb walk tracks boolean polarity,
   // so a ternary can no longer report the verb it excludes. Routes are emitted at
   // parse time, so a warm cache would replay the inverted verb indefinitely.
-  it('pins SCHEMA_BUMP to 55 so concurrent bumps cannot silently collide (#2766)', () => {
-    expect(Number(PARSE_CACHE_VERSION.split('+', 1)[0])).toBe(55);
+  // Moved 55 -> 56 for R3-8 part 1: the verb walk returns every method a guard
+  // serves, so a multi-method guard emits several routes where it emitted one.
+  it('pins SCHEMA_BUMP to 56 so concurrent bumps cannot silently collide (#2766)', () => {
+    expect(Number(PARSE_CACHE_VERSION.split('+', 1)[0])).toBe(56);
   });
 
   it('embeds the gitnexus package version (so upgrades invalidate the cache)', () => {

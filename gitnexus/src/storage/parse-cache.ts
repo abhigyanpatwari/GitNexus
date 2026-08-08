@@ -403,7 +403,13 @@ import type { ParseWorkerResult } from '../core/ingestion/workers/parse-worker.j
 // already-indexed repo keeps serving the inverted verb and the fix looks inert.
 // Same reason 51 and 52 were taken for R3-7.
 // RE-CHECK AGAINST origin/main IMMEDIATELY BEFORE MERGING.
-const SCHEMA_BUMP = 55;
+// 55 -> 56 for R3-8 (part 1): a dispatch guard's verb walk now returns ALL the
+// methods a guard serves, so `(req.method === 'GET' || req.method === 'POST') &&
+// pathname === '/x'` emits two routes instead of reporting GET alone, and a
+// disjunction with a non-verb operand emits none instead of the first verb it
+// saw. Routes are parse-time output replayed verbatim from a warm cache.
+// RE-CHECK AGAINST origin/main IMMEDIATELY BEFORE MERGING.
+const SCHEMA_BUMP = 56;
 const GITNEXUS_PKG_VERSION = (() => {
   try {
     // package.json sits at gitnexus/package.json — two levels up from
