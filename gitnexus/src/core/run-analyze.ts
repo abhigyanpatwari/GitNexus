@@ -9,6 +9,7 @@
  * wrapper or server worker) is responsible for process lifecycle.
  */
 
+import { detectGraphWriteCollapse } from './index-freshness.js';
 import path from 'path';
 import fs from 'fs/promises';
 import { randomUUID } from 'node:crypto';
@@ -483,6 +484,14 @@ export interface AnalyzeResult {
    * full-text/BM25 search is disabled. Lets callers (CLI summary, server) and
    * the persisted meta surface the degraded state instead of reporting healthy.
    */
+  /**
+   * Set when the post-write integrity check found far fewer relationships in
+   * the DB than the pipeline produced. Surfaced on the RESULT, not only in
+   * metadata, because the CLI and the analyze worker both report completion
+   * from this object — and a run whose edges are mostly gone must not be able
+   * to print "indexed successfully" and exit 0.
+   */
+  graphWriteCollapsed?: { expected: number; persisted: number };
   ftsSkipped?: boolean;
   /**
    * Why FTS was skipped, when `ftsSkipped` is true (#2658 review L2):
@@ -1937,6 +1946,10 @@ async function runFullAnalysisInner(
     // process already holds and — worse — ran a read against the DB between
     // writeback and finalize for no recovery benefit.
     let deletedFilePathsForRestore: Set<string> | null = null;
+    // True once this run has persisted only a CHANGED SUBGRAPH. The post-write
+    // collapse check compares the whole in-memory graph against the whole DB,
+    // which is only a like-for-like comparison on a full rebuild.
+    let wroteChangedSubgraphOnly = false;
     if (isIncremental && hashDiff) {
       // ── Incremental DB writeback ───────────────────────────────────
       // 0. Expand the writable set with transitive importers of
@@ -2507,6 +2520,7 @@ async function runFullAnalysisInner(
         //    the SAME effectiveWriteSet so the subgraph and the deletes
         //    cover identical files (asymmetry would silently corrupt).
         const subgraph = extractChangedSubgraph(pipelineResult.graph, effectiveWriteSet);
+        wroteChangedSubgraphOnly = true;
         await saveIncrementalDirtyState('load-graph', {
           importerExpansion,
           shadowSeedCount: shadowSeed.length,
@@ -2747,6 +2761,61 @@ async function runFullAnalysisInner(
 
     // ── Phase 4: Embeddings (90–98%) ──────────────────────────────────
     const stats = await getLbugStats();
+
+    // Post-write integrity: the pipeline knows exactly how many relationships
+    // it produced, and `stats` is what the DB hands back after the write, so a
+    // large shortfall is provable rather than inferred — no comparison against
+    // the previous index needed. This is the guard for a refresh that reports
+    // SUCCESS while leaving the index unusable: edges collapsing to a fraction
+    // of what was built, or a `CodeRelation` table that never materialized
+    // (which surfaces here as a persisted count of zero).
+    //
+    // A RATIO, not equality: some relationship types legitimately do not round
+    // -trip one-for-one, and `--pdg` writes MORE rows into the same table than
+    // the call-graph produced, so demanding equality would fire on healthy
+    // runs. Only a collapse is a defect.
+    //
+    // Fail-safe when `expected` reads 0: an implementation that offloads
+    // relationships out of memory may no longer be able to report a total, and
+    // a false "your index is broken" is worse than a missed one.
+    //
+    // STREAMED EDGES COUNT. When `GraphEmitSink` streaming is active the bulk
+    // types (CALLS/IMPORTS/REFERENCES/ACCESSES) leave the heap at parse time and
+    // never enter `relationshipCount`, so a bare count understates `expected` by
+    // most of the edge volume and the ratio passes trivially. Streaming is on for
+    // any `force === true` run — which includes the crash/schema-mismatch
+    // recovery paths AND the `analyze --force` retry this check's own warning
+    // tells the operator to run. Same correction, and for the same reason, as
+    // the buffer-pool hint earlier in this file.
+    const expectedRelationships =
+      pipelineResult.graph.relationshipCount + (pipelineResult.graphEmitManifest?.totalRows ?? 0);
+    // `getLbugStats` returns `edges: undefined` when the count could not be
+    // taken, which is a different fact from zero — an edge query that throws
+    // must not read as a measured collapse. `nodes > 0` is independent evidence
+    // the DB was readable at all, but it says nothing about whether the EDGE
+    // query threw, so both conditions are required.
+    const persistedRelationships =
+      stats.nodes > 0 && stats.edges !== undefined ? stats.edges : undefined;
+    // NOT COMPARABLE ON AN INCREMENTAL WRITE. That path persists only
+    // `extractChangedSubgraph(...)` while both counts here are whole-scope: the
+    // full in-memory graph against the entire DB. A 10,000-edge index whose
+    // incremental rewrite lost 200 replacements reads 9,800 against 10,000 —
+    // comfortably above the ratio — so a corrupt index would be certified
+    // complete, and the reverse (a small change to a large index) would report
+    // a collapse that did not happen. Producing no verdict is the honest answer
+    // until the check is given the write-set delta to compare against; that is
+    // the same fail-safe the `expected === 0` case already takes.
+    const graphWriteCollapsed = wroteChangedSubgraphOnly
+      ? undefined
+      : detectGraphWriteCollapse(expectedRelationships, persistedRelationships);
+    if (graphWriteCollapsed) {
+      log(
+        `Warning: graph write incomplete — the pipeline produced ${expectedRelationships} ` +
+          `relationships but only ${persistedRelationships} are readable from the index. Recording the ` +
+          `index as INCOMPLETE (graph-write-collapsed) rather than fresh; re-run ` +
+          `\`gitnexus analyze --force\`.`,
+      );
+    }
     let embeddingSkipped = true;
     let semanticMode: 'vector-index' | 'exact-scan' | undefined;
     // Hoisted out of the Phase 4 block so the Phase 5 gate can tell "the
@@ -3156,6 +3225,20 @@ async function runFullAnalysisInner(
       // origin remote, which is fine: paths-only repos behave as
       // before.
       remoteUrl: hasGitDir(repoPath) ? getRemoteUrl(repoPath) : undefined,
+      // Absent on a healthy run; present it and the index reports as
+      // incomplete rather than fresh (`graph-write-collapsed`).
+      ...(graphWriteCollapsed ? { graphWriteCollapsed } : {}),
+      // R3-1. Not a health signal — the index is complete and correct. This
+      // records which fields the per-language inference declined to link so a
+      // later query can say WHY it is returning nothing, instead of leaving an
+      // empty result that reads as "unused".
+      ...(pipelineResult.propertyInference?.crossLanguageNames?.length
+        ? {
+            crossLanguageProperties: pipelineResult.propertyInference.crossLanguageNames.map(
+              (e) => ({ name: e.name, languages: [...e.languages] }),
+            ),
+          }
+        : {}),
       stats: {
         files: pipelineResult.totalFileCount,
         nodes: stats.nodes,
@@ -3450,6 +3533,7 @@ async function runFullAnalysisInner(
       repoPath,
       stats: meta.stats,
       pipelineResult,
+      ...(graphWriteCollapsed ? { graphWriteCollapsed } : {}),
       ftsSkipped: !ftsReady,
       ftsSkipReason: ftsReady ? undefined : ftsSkipReason,
       isPrimaryBranch: !placement.branch,

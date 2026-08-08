@@ -381,6 +381,7 @@ export const runPipelineFromRepo = async (
   const resolutionOutcomes = scopeResolutionOutput.resolutionOutcomes;
   // Streamed PDG-emit manifest (#2202): present only when streaming was on.
   const pdgEmitManifest = scopeResolutionOutput.pdgEmitManifest;
+  const propertyInference = scopeResolutionOutput.propertyInference;
 
   // Presence check, not `!skipGraphPhases`: phases can now be filtered out by
   // any `enabledWhen` predicate (streamGraphEmit disables communities/processes
@@ -422,5 +423,6 @@ export const runPipelineFromRepo = async (
     resolutionOutcomes,
     usedWorkerPool,
     pdgEmitManifest,
+    propertyInference,
   };
 };

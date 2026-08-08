@@ -51,7 +51,13 @@ import type { AnalyzeResult } from '../core/run-analyze.js';
  */
 export type AnalyzeResultIpc = Pick<
   AnalyzeResult,
-  'repoName' | 'repoPath' | 'stats' | 'alreadyUpToDate' | 'ftsRepairedOnly' | 'ftsSkipped'
+  | 'repoName'
+  | 'repoPath'
+  | 'stats'
+  | 'alreadyUpToDate'
+  | 'ftsRepairedOnly'
+  | 'ftsSkipped'
+  | 'graphWriteCollapsed'
 >;
 
 /**
@@ -68,5 +74,9 @@ export function projectAnalyzeResultForIpc(result: AnalyzeResult): AnalyzeResult
     alreadyUpToDate: result.alreadyUpToDate,
     ftsRepairedOnly: result.ftsRepairedOnly,
     ftsSkipped: result.ftsSkipped,
+    // Carried across IPC so a server-side caller sees the same degraded
+    // outcome the CLI does; without it the worker reports a clean `complete`
+    // for a run whose edges are mostly missing.
+    graphWriteCollapsed: result.graphWriteCollapsed,
   };
 }
