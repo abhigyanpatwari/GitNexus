@@ -131,8 +131,28 @@ describe('PARSE_CACHE_VERSION', () => {
   // already 44); only the merge-time diff against origin/main surfaced it. What
   // the pin DOES do is fail loudly the moment the constant and this expectation
   // drift apart, which is what forces the re-check to happen at all.
-  it('pins SCHEMA_BUMP to 45 so concurrent bumps cannot silently collide (#2766)', () => {
-    expect(Number(PARSE_CACHE_VERSION.split('+', 1)[0])).toBe(45);
+  // Moved 45 -> 46 for method-level Spring `@RequestMapping` routes (#2824):
+  // cached ParseWorkerResults otherwise replay the pre-fix empty route set.
+  //
+  // Moved 47 -> 48 for #2833's three parse-time changes: C++
+  // `field_declaration` captures for `template_type` and qualified generic
+  // member types (those members had NO type binding before), a Python interpret
+  // change that reduces `Repo[User]` to `Repo` in `TypeRef.rawName`, and the new
+  // `SymbolDefinition.typeParameters` field read from a
+  // `@declaration.type-parameters` capture in six languages. All three are
+  // serialized into the cached ParsedFile, so an older warm cache replays
+  // pre-fix bindings and the fix is a silent no-op on incremental analyze while
+  // every cold-run test still passes.
+  //
+  // 48, not 46, because this branch collided TWICE: it staged 46 and then 47,
+  // both free when written, and by merge time #2856 claimed 46 and #2857 took 47
+  // and merged first. This assertion is exactly what CANNOT detect that — the
+  // branch asserted `toBe(47)` and so did #2857, and both passed. What this pin
+  // does do is fail loudly the moment the constant and this expectation drift
+  // apart, which is what forces the merge-time diff against origin/main to
+  // happen at all.
+  it('pins SCHEMA_BUMP to 48 so concurrent bumps cannot silently collide (#2833)', () => {
+    expect(Number(PARSE_CACHE_VERSION.split('+', 1)[0])).toBe(48);
   });
 
   it('embeds the gitnexus package version (so upgrades invalidate the cache)', () => {

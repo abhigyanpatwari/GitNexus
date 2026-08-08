@@ -13,9 +13,10 @@ node --import tsx bench/schema-pairs/measure.mjs --check    # gate vs baselines.
 
 `src/core/lbug/schema.ts` generates its relation pairs from two cross products,
 and declines to add a third one **on the strength of a number** — roughly 1.04×
-at 450 declared pairs, 1.6× at 786, 2.1× at 1024. That measurement used to live
-in a scratch directory, so nobody proposing a third rule could re-run it. This
-harness is that measurement, committed — and it reproduces those figures.
+near production's pair count, 1.6× at 786, 2.1× at 1024. That measurement used
+to live in a scratch directory, so nobody proposing a third rule could re-run
+it. This harness is that measurement, committed — and it reproduces those
+figures.
 
 Run it before widening a rule, and quote the new ratio in the review.
 
@@ -29,8 +30,27 @@ Observed on the reference box, **four runs** (ratios vs the 332-pair list):
 | 786   | 1.52–1.75× | 1.19–1.31×    |
 | 1024  | 2.03–2.34× | 1.31–1.57×    |
 
-Production's 450 came out _faster_ than 332 on three of the four runs, so at this
-size the pair count is inside run-to-run noise. Everything past ~640 is not.
+Production's former 450-pair surface came out _faster_ than 332 on three of the
+four runs, so at this size the pair count is inside run-to-run noise. Everything
+past ~640 is not.
+
+#2801 remeasured the new 461-pair production surface on Windows six times:
+
+| run | untyped ratio | typed ratio | interpretation                      |
+| --- | ------------- | ----------- | ----------------------------------- |
+| 1   | 1.101×        | 1.157×      | noise-dominated (`typed > untyped`) |
+| 2   | 1.324×        | 1.122×      | below the operational budget        |
+| 3   | 2.705×        | 1.089×      | exceeds the operational budget      |
+| 4   | 1.417×        | 1.065×      | below the operational budget        |
+| 5   | 1.196×        | 1.050×      | below the operational budget        |
+| 6   | 1.585×        | 2.577×      | noise-dominated (`typed > untyped`) |
+
+The three comparable Windows runs below the 1.5× operational ceiling span
+**1.20–1.42× untyped / 1.05–1.12× typed**. Run 3 is published rather than
+silently discarded: no pre-registered rule excludes it, and `--check` would
+correctly reject it. These Windows measurements are not combined with the
+historical reference-box rows to infer cross-size ordering.
+
 **Quote the range, not a single run** — one run is not evidence here.
 
 ## What it measures
@@ -52,8 +72,8 @@ data**, then times two query shapes over 40 anchors × 15 reps (median):
   control; the real cost of widening sits between it and `ratio_*`. A run where
   `typed_ratio` moves _more_ than `ratio` is noise-dominated and should be
   rerun.
-- **`ratio_<size>`** — `untyped_ms_<size> / untyped_ms_332`. `ratio_450` is the
-  figure `schema.ts` quotes.
+- **`ratio_<size>`** — `untyped_ms_<size> / untyped_ms_332`. The
+  production-size ratio is the figure `schema.ts` quotes.
 
 ### Sizes
 
@@ -66,7 +86,8 @@ harness fails if the row counts ever differ across sizes.
 | size | what it is                                                                                                                                                                                                |
 | ---- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | 332  | the pre-#2792 hand-written list — the reference for every ratio                                                                                                                                           |
-| 450  | production today (two cross products + 72 hand-declared pairs)                                                                                                                                            |
+| 450  | production before Record became linkable (#2801)                                                                                                                                                          |
+| 461  | production today (two cross products + 69 hand-declared pairs)                                                                                                                                            |
 | 641  | the third cross product `schema.ts` defers (`DEFINITION_ANCHOR_LABELS × {CodeElement, Section, Typedef, Union, Namespace, Impl, TypeAlias, Static, Template}`), which would leave ~29 hand-declared lines |
 | 786  | the size an earlier revision of that comment attributed to the third rule — it is 641; kept as a measured waypoint                                                                                        |
 | 1024 | the full cross product, the ceiling                                                                                                                                                                       |
@@ -77,11 +98,13 @@ Before timing anything, the harness round-trips the **real** `SCHEMA_QUERIES`
 through a real database and asserts that `CALL SHOW_CONNECTION('CodeRelation')`
 reports exactly the pairs `parseRelationSchemaPairs` finds in `RELATION_SCHEMA`.
 
-No magic number is baked in: the invariant is that the DDL LadybugDB _accepted_
-carries the pair set our own parser believes it declares. The absolute count is
-reported as `declared_pairs`. A pair declared twice would not reach this check at
-all — LadybugDB rejects the `CREATE REL TABLE` outright, which is why a duplicate
-kills every `analyze` rather than one repository's.
+No production-size magic number is baked in: the measured production size and
+budget key are derived from that parsed DDL count. A missing `ratio_<size>_budget`
+entry makes `--check` fail closed. The invariant is that the DDL LadybugDB
+_accepted_ carries the pair set our own parser believes it declares. The
+absolute count is reported as `declared_pairs`. A pair declared twice would not
+reach this check at all — LadybugDB rejects the `CREATE REL TABLE` outright,
+which is why a duplicate kills every `analyze` rather than one repository's.
 
 ## What it does NOT measure
 
@@ -93,8 +116,11 @@ kills every `analyze` rather than one repository's.
 
 ## Regenerating the baseline
 
-`baselines.json` holds one budget, `ratio_450_budget` — the ceiling on what
+`baselines.json` holds one production-size budget — the ceiling on what
 production's own pair count may cost relative to the 332-pair hand-list it
 replaced. Re-run without `--check` **several times** and copy the top of the
-observed `ratio_450` range plus headroom — the spread between runs on this box
-is wider than the effect being measured at 450, so a single run cannot set it.
+observed production-size ratio range plus headroom — the spread between runs on
+this box is wider than the effect being measured near production, so a single
+run cannot set it. Publish the raw ratios and apply only the pre-registered
+`typed_ratio > ratio` noise rule; do not silently discard another run to make a
+budget pass.

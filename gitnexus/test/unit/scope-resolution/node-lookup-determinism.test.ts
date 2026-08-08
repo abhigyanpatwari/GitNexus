@@ -9,12 +9,16 @@ import {
   qualifiedKey,
   simpleKey,
 } from '../../../src/core/ingestion/scope-resolution/graph-bridge/node-lookup.js';
+import { resolveDefGraphId } from '../../../src/core/ingestion/scope-resolution/graph-bridge/ids.js';
 import type { ParseWorkerResult } from '../../../src/core/ingestion/workers/parse-worker.js';
 
 const FILE = 'src/service.ts';
 
 interface Candidate {
   id: string;
+  label?: NodeLabel;
+  name?: string;
+  qualifiedName?: string;
   startLine?: number;
 }
 
@@ -24,10 +28,10 @@ function buildLookup(candidates: readonly Candidate[]) {
     (candidate) =>
       ({
         id: candidate.id,
-        label: 'Method' as NodeLabel,
+        label: candidate.label ?? ('Method' as NodeLabel),
         properties: {
-          name: 'save',
-          qualifiedName: 'Service.save',
+          name: candidate.name ?? 'save',
+          qualifiedName: candidate.qualifiedName ?? 'Service.save',
           filePath: FILE,
           ...(candidate.startLine !== undefined ? { startLine: candidate.startLine } : {}),
         },
@@ -90,5 +94,36 @@ describe('parse-result graph insertion determinism', () => {
     const lookup = buildLookup([second, first]);
 
     expect(lookup.get(simpleKey(FILE, 'save'))).toBe(first.id);
+  });
+
+  it('resolves a Record definition to its Record node instead of a same-named fallback', () => {
+    const record = {
+      id: `Record:${FILE}:Person`,
+      label: 'Record' as const,
+      name: 'Person',
+      qualifiedName: 'Person',
+      startLine: 10,
+    };
+    const sameNamedMethod = {
+      id: `Method:${FILE}:Factory.Person#0`,
+      label: 'Method' as const,
+      name: 'Person',
+      qualifiedName: 'Factory.Person',
+      startLine: 20,
+    };
+
+    const lookup = buildLookup([sameNamedMethod, record]);
+
+    expect(lookup.get(qualifiedKey(FILE, 'Record', 'Person'))).toBe(record.id);
+    expect(
+      resolveDefGraphId(
+        FILE,
+        {
+          type: 'Record',
+          qualifiedName: 'Person',
+        },
+        lookup,
+      ),
+    ).toBe(record.id);
   });
 });

@@ -1,6 +1,6 @@
 /**
  * Build a `(filePath, name) → graphNodeId` lookup over the graph's
- * Function/Method/Class/Constructor nodes. Two keys per node:
+ * {@link LINKABLE_LABELS} definition nodes. Two keys per node:
  *
  *   - simple name (`User` / `save`) — legacy fallback
  *   - qualified name when derivable from the node id (`User.save`)
@@ -30,7 +30,7 @@ import { parameterShapeIdTag } from '../../utils/method-props.js';
 export type GraphNodeLookup = ReadonlyMap<string, string>;
 
 /**
- * Parse a qualified name out of a Function/Method node id.
+ * Parse a qualified name out of a linkable graph-node id.
  *
  * Node id format: `${label}:${filePath}:${qualifiedName}${arityTag}`,
  * where `arityTag` is `#<n>` (or empty). Strips the known-length
@@ -268,6 +268,11 @@ export const LINKABLE_LABELS: ReadonlySet<NodeLabel> = new Set<NodeLabel>([
   'Interface',
   'Struct',
   'Enum',
+  // Record participates in the same def→graph bridge as other class-like
+  // declarations. Without this entry, its qualified/template lookup branches
+  // are unreachable and label-agnostic fallback can alias it to a same-named
+  // Constructor or Method (#2801).
+  'Record',
   // Trait nodes are linkable so MRO builders can bridge PHP/Rust trait
   // defs between scope-resolution DefIds and the graph's node ids.
   // IMPLEMENTS edges from classes to traits are otherwise invisible to
