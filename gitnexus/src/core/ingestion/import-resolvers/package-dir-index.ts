@@ -3,15 +3,9 @@
  * `<pkgPath>`?" — the query Go's package resolution and C#'s namespace-directory
  * fallback both answered with a full `allFilePaths` scan per import.
  *
- * Both scans had the same shape:
- *
- *   for (const raw of allFilePaths) {
- *     const f = '/' + raw.replace(/\\/g, '/');       // Go prefixes '/'; C# splits
- *     if (!accept(f)) continue;                      // '.go' / '.cs' filter
- *     const at = f.indexOf('/' + pkgPath + '/');     // FIRST occurrence
- *     if (at < 0) continue;
- *     if (f.slice(at + pkgPath.length + 2).includes('/')) continue;
- *   }
+ * Both scans ran the same predicate: normalize to forward slashes, apply the
+ * language's extension filter, find the FIRST `'/' + pkgPath + '/'` occurrence,
+ * and keep the file only if nothing after that occurrence contains a slash.
  *
  * That predicate depends only on the file's DIRECTORY, so it can be answered
  * from an index built once per file set:
@@ -39,23 +33,38 @@
  * scans emitted in that order and Go returns the whole list as the import
  * target (one `ImportEdge` per file).
  *
- * Each language owns its own `WeakMap` memo and `accept` predicate, so a
- * polyglot repo never pays to index another language's files.
+ * Each language owns its own `WeakMap` memo and `accept` predicate, so the
+ * STORED index holds only that language's files — the build pass itself still
+ * walks every path it is handed once per language. That is not a polyglot tax
+ * in practice: `scope-resolution/pipeline/run.ts:673` rebuilds `allFilePaths`
+ * from the provider's own `parsedFiles`, so the set already contains only that
+ * language's files.
  */
 
 interface IndexedFile {
   readonly raw: string;
-  /** Position in `allFilePaths` iteration order. */
+  /**
+   * Position in `allFilePaths` iteration order. Still load-bearing:
+   * `filesDirectlyInPkgDir` sorts on it to interleave several directories back
+   * into the order the original single-pass scan emitted.
+   */
   readonly ord: number;
 }
 
+/**
+ * Deeply read-only on purpose. The memo hoist turned what used to be per-call
+ * scratch into state shared by every import in a run, and `readonly` on the
+ * PROPERTY still lets a caller do `idx.rootFiles.sort()` in place. Typing the
+ * containers as read-only makes Go's deliberate `[...rootFiles].sort()` copy
+ * compile-enforced instead of comment-enforced.
+ */
 export interface PackageDirIndex {
   /** Last path segment of a directory → every normalized directory ending in it. */
-  readonly dirsByLastSegment: Map<string, string[]>;
+  readonly dirsByLastSegment: ReadonlyMap<string, readonly string[]>;
   /** Normalized directory → the accepted files directly inside it, in Set order. */
-  readonly filesByDir: Map<string, IndexedFile[]>;
+  readonly filesByDir: ReadonlyMap<string, readonly IndexedFile[]>;
   /** Accepted files with no directory at all, in Set order. */
-  readonly rootFiles: string[];
+  readonly rootFiles: readonly string[];
 }
 
 /**
@@ -104,7 +113,7 @@ export function buildPackageDirIndex(
 }
 
 /** Every indexed directory matching `pkgPath`, in first-seen order. */
-function* matchingDirs(index: PackageDirIndex, pkgPath: string): Generator<IndexedFile[]> {
+function* matchingDirs(index: PackageDirIndex, pkgPath: string): Generator<readonly IndexedFile[]> {
   const lastSegment = pkgPath.slice(pkgPath.lastIndexOf('/') + 1);
   const dirs = index.dirsByLastSegment.get(lastSegment);
   if (dirs === undefined) return;
@@ -126,16 +135,20 @@ function* matchingDirs(index: PackageDirIndex, pkgPath: string): Generator<Index
  * `allFilePaths` iteration order.
  */
 export function filesDirectlyInPkgDir(index: PackageDirIndex, pkgPath: string): string[] {
-  let merged: IndexedFile[] | null = null;
+  // One accumulator, appended to once per file. Re-spreading per matching
+  // directory instead costs O(files × dirs²) copies, which a monorepo carrying
+  // the same package directory under many services (`svcN/internal/models`,
+  // queried by Go's two-segment GOPATH tail) pays on every import.
+  const merged: IndexedFile[] = [];
   let dirCount = 0;
   for (const files of matchingDirs(index, pkgPath)) {
     dirCount++;
-    merged = dirCount === 1 ? files : [...(merged ?? []), ...files];
+    for (const f of files) merged.push(f);
   }
-  if (merged === null) return [];
+  if (merged.length === 0) return [];
   // One directory is already in Set order; several interleave and need merging
   // back onto the order the original single-pass scan emitted.
-  if (dirCount > 1) merged = [...merged].sort((a, b) => a.ord - b.ord);
+  if (dirCount > 1) merged.sort((a, b) => a.ord - b.ord);
   return merged.map((f) => f.raw);
 }
 
@@ -144,10 +157,17 @@ export function filesDirectlyInPkgDir(index: PackageDirIndex, pkgPath: string): 
  * directory ending with `pkgPath`, or `null`.
  */
 export function firstFileDirectlyInPkgDir(index: PackageDirIndex, pkgPath: string): string | null {
-  let best: IndexedFile | null = null;
+  // Returning the FIRST match is already the minimum-`ord` answer, and it is
+  // the build loop that makes it so: `buildPackageDirIndex` appends a directory
+  // to its last-segment bucket at the moment it accepts that directory's first
+  // file, so bucket order IS ascending first-file-`ord` order. Comparing `ord`
+  // across the remaining directories can never improve on the first hit
+  // (differentially verified: 0 divergences). Change that append point — buffer
+  // the directories, sort them, populate `filesByDir` before `dirsByLastSegment`
+  // — and this early return silently starts answering with the wrong file.
   for (const files of matchingDirs(index, pkgPath)) {
     const first = files[0];
-    if (first !== undefined && (best === null || first.ord < best.ord)) best = first;
+    if (first !== undefined) return first.raw;
   }
-  return best === null ? null : best.raw;
+  return null;
 }
