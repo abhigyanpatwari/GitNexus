@@ -2,9 +2,9 @@
  * One property, asserted for EVERY registered `ScopeResolver` (#2909).
  *
  * Import-target resolution must not traverse the workspace file set once per
- * import. Nine per-language guards in `test/integration/*-import-index-reuse.test.ts`
- * say that nine times, each with its own corpus, its own expected traversal
- * count and its own header. None of them says it for the seven languages with no
+ * import. Twelve per-language guards in `test/integration/*-import-index-reuse.test.ts`
+ * say that twelve times, each with its own corpus, its own expected traversal
+ * count and its own header. None of them says it for the four languages with no
  * guard at all — and adding a resolver to `SCOPE_RESOLVERS` is two lines
  * (`pipeline/registry.ts`), neither of which is a test. This file closes that:
  * the table below is keyed by `SupportedLanguages` and the inventory arm fails
@@ -46,7 +46,15 @@
  *
  * Only traversals of the SET are visible here (see `test/helpers/counting-file-set.ts`):
  * once an index has materialized the paths into an array, a scan over that array
- * moves nothing.
+ * moves nothing. That is not hypothetical — JavaScript's adapter had no suffix
+ * index at all until #2910, so every JavaScript import ran `suffixResolve`'s
+ * linear pass over the materialized `normalizedFileList` (6448.9 µs per import
+ * at 2000 files, against 25.0 µs for TypeScript), and the `javascript` case
+ * below scored a clean pass throughout: the pass cache WAS reused, so the
+ * traversal count read 2 either way. What catches that class of defect is a
+ * behaviour or call-count assertion, not a traversal count — see
+ * `test/integration/javascript-import-index-reuse.test.ts` and
+ * `test/unit/scope-resolution/javascript-import-target-parity.test.ts`.
  */
 import { describe, expect, it } from 'vitest';
 import { SupportedLanguages } from 'gitnexus-shared';

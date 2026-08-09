@@ -14,8 +14,8 @@
  * logic fires.
  *
  * Memoization mirrors the TypeScript adapter: workspace file-list
- * arrays, the suffix index, and the per-pass resolve cache are rebuilt
- * lazily when `allFilePaths` reference changes (once per workspace pass).
+ * arrays, the suffix index and the per-pass resolve cache are built
+ * once per `allFilePaths` Set and memoized on that Set's identity.
  */
 
 import { SupportedLanguages } from 'gitnexus-shared';
@@ -28,12 +28,51 @@ interface VueResolutionConfig {
 }
 
 interface PassCache {
-  readonly key: ReadonlySet<string>;
   readonly allFilePaths: Set<string>;
   readonly allFileList: readonly string[];
   readonly normalizedFileList: readonly string[];
   readonly index: SuffixIndex;
   readonly resolveCache: Map<string, string | null>;
+}
+
+/**
+ * Memoized on the `allFilePaths` Set identity, like every other language's
+ * import index (`import-resolvers/workspace-file-index.ts` and friends).
+ *
+ * This used to be a single-slot `let cached` invalidated by
+ * `cached.key !== allFilePaths` — correct for one file set and degenerate for
+ * two: alternating calls across two sets rebuilt everything every time.
+ * Measured on the identical TypeScript adapter at 4000 files × 400 imports:
+ * 12.0 ms for one set, 1438.2 ms alternating between two (120x). A `WeakMap`
+ * has no such state to thrash, and it is what lets this adapter carry the
+ * standard
+ * `expectDistinctFileSetsGetOwnIndex` guard the other languages carry
+ * (`test/integration/vue-import-index-reuse.test.ts`).
+ *
+ * The Set must be passed THROUGH by the caller, never copied: a defensive
+ * `new Set(allFilePaths)` at the adapter boundary hands a fresh key per import
+ * and restores the per-import rebuild (PR #1918 review P1).
+ */
+const PASS_CACHE = new WeakMap<ReadonlySet<string>, PassCache>();
+
+function passCacheFor(allFilePaths: ReadonlySet<string>): PassCache {
+  const cached = PASS_CACHE.get(allFilePaths);
+  if (cached !== undefined) return cached;
+
+  const allFileList = Array.from(allFilePaths);
+  const normalizedFileList = allFileList.map((f) => f.toLowerCase());
+  const built: PassCache = {
+    // Copied ONCE per file set, not once per import: `TsResolveContext` wants a
+    // mutable `Set` and the orchestrator hands us a `ReadonlySet`. The copy is
+    // not the #1918 hazard because the cache KEY is the caller's original Set.
+    allFilePaths: new Set(allFilePaths),
+    allFileList,
+    normalizedFileList,
+    index: buildSuffixIndex(normalizedFileList, allFileList),
+    resolveCache: new Map(),
+  };
+  PASS_CACHE.set(allFilePaths, built);
+  return built;
 }
 
 /**
@@ -49,21 +88,8 @@ export function makeVueResolveImportTarget(): (
   allFilePaths: ReadonlySet<string>,
   resolutionConfig?: unknown,
 ) => string | readonly string[] | null {
-  let cached: PassCache | null = null;
-
   return (targetRaw, fromFile, allFilePaths, resolutionConfig) => {
-    if (cached === null || cached.key !== allFilePaths) {
-      const allFileList = Array.from(allFilePaths);
-      const normalizedFileList = allFileList.map((f) => f.toLowerCase());
-      cached = {
-        key: allFilePaths,
-        allFilePaths: new Set(allFilePaths),
-        allFileList,
-        normalizedFileList,
-        index: buildSuffixIndex(normalizedFileList, allFileList),
-        resolveCache: new Map(),
-      };
-    }
+    const cached = passCacheFor(allFilePaths);
 
     const cfg = resolutionConfig as VueResolutionConfig | undefined;
     const ws: TsResolveContext = {
