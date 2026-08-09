@@ -123,8 +123,8 @@
  *   - `collide_scaling_ratio`, the same measurement on a corpus whose
  *     directories SHARE their last segment and whose files share basenames —
  *     see the `collide` section below;
- *   - `heap` (7 of the 17): retained bytes of the per-pass import index — see
- *     the `heap` section below;
+ *   - `heap` (8 of the 17): retained bytes of the per-pass import index, read by
+ *     resolving one real import — see the `heap` section below;
  *   - a sha256 over every distinct `fromFile | target → result`, as the
  *     correctness gate. The tie-break-level proof that this PR's index
  *     reproduces the scans lives in
@@ -151,7 +151,17 @@
  *     comparing the arms to `small` is the only thing that notices;
  *   - `small_ms_ceiling` and `collide_ms_ceiling`, ABSOLUTE bounds, because a
  *     constant-factor regression that grows both scale arms equally passes
- *     every ratio.
+ *     every ratio;
+ *   - a heap FLOOR beside every heap ceiling, and a presence check in front of
+ *     every timing budget. Both exist because the same failure has now happened
+ *     twice in this file's short life: an arm that stops measuring passes. A
+ *     lazy `buildSuffixIndex` made four heap arms read 0 B, and 0 B is under
+ *     every ceiling; a deleted budget key makes `got > undefined` false, which
+ *     is a deleted gate wearing a passing arm's clothes;
+ *   - an INVENTORY arm against `SCOPE_RESOLVERS` itself. `LANG_REGISTRY` claims
+ *     to cover every registered resolver; this is what makes the claim true
+ *     rather than commented, and it is the arm that would have caught #2910's
+ *     language shipping unmeasured.
  *
  * SCOPE OF THE "independent of corpus size" CLAIM — the `collide` arm.
  * `small`/`large`/`deep` mint one directory name per index (`src/pkg7`,
@@ -212,17 +222,31 @@
  * footprint. Measured in ABSOLUTE bytes, not only as a ratio: the finding is
  * about the footprint itself, and a ratio alone hides a large constant.
  *
- * Three more are gated for the same reason as those four. JavaScript is the
+ * Four more are gated for the same reason as those four. JavaScript is the
  * clearest case in the file: before #2910 it retained NOTHING because it built
- * no index at all, and it now retains 44.07 MiB at 32 000 files through the
- * same `buildSuffixIndex`. Python's `getPythonFileIndex` (7.27 MiB) and C's
- * basename map (9.55 MiB) are each an order of magnitude smaller but are the
- * only structure either language keeps, and both are one careless edit — a
- * stored `split('/')` array instead of a depth NUMBER — away from the
+ * no index at all, and it now retains 25.51 MiB at 32 000 files through the
+ * same `buildSuffixIndex`. `csharp_csproj` is the newest and the one that
+ * proves the arm's design: same corpus and same `getWorkspaceFileIndex` as
+ * `csharp`, but its csproj leg asks all three questions instead of one, and it
+ * retains 70.29 MiB against C#'s 28.48. Python's `getPythonFileIndex`
+ * (9.88 MiB) and C's basename map (9.55 MiB) are an order of magnitude smaller
+ * but are the only structure either language keeps, and both are one careless
+ * edit — a stored `split('/')` array instead of a depth NUMBER — away from the
  * O(files × depth) shape this arm exists to catch.
  *
- * SEVEN of the seventeen are deliberately NOT in `HEAP_LANGS`, every one of
- * them measured before being left out rather than argued out:
+ * WHAT THE ARM MEASURES IS NOW THE READ PATTERN, and that is the correction
+ * this file most needed. `buildSuffixIndex`'s two suffix maps became lazy
+ * (#2903 extended past `dirMap`), and the four original arms — which called
+ * `getWorkspaceFileIndex(set)` directly and read `index.all.length` — stopped
+ * asking any suffix question, built no map, and reported 0 B at 32 000 files.
+ * 0 B is under every ceiling, so `--check` PASSED with four gates that had
+ * become ceilings over nothing. Every arm now resolves one real MISSING import
+ * through the real resolver, so the maps it forces are the maps production
+ * forces; `HEAP_PROBE_TARGET` and `retainedPassBytes` carry the details, and
+ * `heap_floor_fraction` is the gate that would have caught the 0 B.
+ *
+ * SIX of the seventeen are deliberately NOT in `HEAP_LANGS`, every one of them
+ * measured before being left out rather than argued out:
  *
  *   - rust builds no index on this hook at all. Measured 16 B at 8000 files and
  *     0 B at 32 000 — the arm would be a ceiling over nothing;
@@ -234,26 +258,19 @@
  *   - COBOL, for the same reason and separately measured: two
  *     `Map<basename, path>`, O(files) with no depth term, 0.54 MB at 8000 files
  *     and 0 B at 32 000;
- *   - typescript and vue run javascript's builder over a same-shaped corpus, so
- *     their numbers are duplicates and measurably so: typescript reads
- *     46 208 544 B against javascript's 46 208 832 B, a 288 B difference on
- *     46 MB (0.0006%), and vue reads 48 699 384 B, the +5.4% that four
- *     characters of `.vue` instead of `.ts` buys on two thirds of the paths;
- *   - cpp likewise duplicates c: 10 021 320 B against 10 016 960 B, 0.04% apart;
- *   - `csharp_csproj` resolves over the SAME corpus as `csharp` through the same
- *     `getWorkspaceFileIndex`, so its number would be a duplicate. Its one
- *     distinguishing footprint is `buildSuffixIndex`'s `dirMap`, which #2903
- *     made lazy and which `getFilesInDir` on the csproj leg forces back into
- *     existence: measured at +20.8% of the retained C# index at 32 000 files.
- *     That is a REPORTED residual, not a gated one — see the residual note in
- *     `_arms_note`, which already states that a dirMap-sized addition passes
- *     the 1.5x ceiling.
+ *   - typescript and vue run javascript's builder over a same-shaped corpus and
+ *     ask it the same questions, so their numbers are duplicates and measurably
+ *     so: typescript read 46 208 544 B against javascript's 46 208 832 B, a
+ *     288 B difference on 46 MB (0.0006%), and vue read 48 699 384 B, the +5.4%
+ *     that four characters of `.vue` instead of `.ts` buys on two thirds of the
+ *     paths;
+ *   - cpp likewise duplicates c: 10 021 320 B against 10 016 960 B, 0.04% apart.
  *
- * The four original heap languages are read by calling `getWorkspaceFileIndex`
- * directly; the three added ones are read through `retainedPassBytes`, because
- * their builders are private to their modules. The two numbers are NOT
- * comparable to one another and each ceiling is set from its own reading —
- * see `retainedPassBytes`.
+ * Those four "it would be a duplicate" exclusions are duplicates of a BUILDER
+ * and of a READ PATTERN, and both halves have to hold — `csharp_csproj` was on
+ * this list on the strength of the first half alone, at +20.8% of the C# index,
+ * and reads 2.47x of it now that the second half decides the number. If any of
+ * the four ever diverges in what it ASKS, it earns an arm the same way.
  *
  * KNOWN BLIND SPOT, measured: a full workspace scan reintroduced on 1-in-32
  * imports passes every arm here (dart scored 1.458 scaling, 1.736 ms). The gate
@@ -272,9 +289,12 @@
  * could not see, and it took a differential parity test over 211 200 pairs plus
  * this bench's arrival to pin it.
  *
- * COST. ~46 s for seventeen arms, up from ~26 s for nine — see the wall-clock
- * note in `_arms_note` for the per-language breakdown and for what to drop
- * first if that stops fitting the job.
+ * COST. ~35 s in report mode and ~42 s for `--check`, down from ~46 s. The
+ * timing phase fell from 39.8 s to 28.7 s when `REPS` became per-language (see
+ * `repsFor`); `--check` then pays 7.3 s that report mode does not, for the one
+ * dynamic import the inventory arm needs. See the wall-clock note in
+ * `_arms_note` for the per-language breakdown and for what to drop first if
+ * that stops fitting the job.
  *
  * Run:
  *   node --expose-gc --import tsx bench/import-target/measure.mjs           # report
@@ -284,6 +304,8 @@ import fs from 'node:fs';
 import path from 'node:path';
 import crypto from 'node:crypto';
 import { fileURLToPath } from 'node:url';
+
+import { SupportedLanguages } from 'gitnexus-shared';
 
 import { resolveGoImportTarget } from '../../src/core/ingestion/languages/go/import-target.ts';
 import { resolveDartImportTarget } from '../../src/core/ingestion/languages/dart/import-target.ts';
@@ -302,7 +324,11 @@ import { makeVueResolveImportTarget } from '../../src/core/ingestion/languages/v
 import { typescriptScopeResolver } from '../../src/core/ingestion/languages/typescript/scope-resolver.ts';
 import { cScopeResolver } from '../../src/core/ingestion/languages/c/scope-resolver.ts';
 import { cppScopeResolver } from '../../src/core/ingestion/languages/cpp/scope-resolver.ts';
-import { getWorkspaceFileIndex } from '../../src/core/ingestion/import-resolvers/workspace-file-index.ts';
+// `SCOPE_RESOLVERS` is NOT imported here — see the inventory arm at the bottom,
+// which loads it dynamically. Statically it costs 7.3 s of module load (3.3 s
+// -> 10.6 s, measured), because reaching the registry pulls in all sixteen
+// providers and everything under them, and it is wanted by one `--check` arm
+// that runs after the last measurement.
 
 /** The JS and Vue adapter FACTORIES return a closure; the memo they read is
  *  module-level, so one instance per process is both correct and what the
@@ -318,16 +344,52 @@ const LARGE = 1600;
 const IMPORTS_PER_FILE = 8;
 /** Extra directory components prepended in the `deep` arm — see `depth_ratio`. */
 const DEEP_PAD = 16;
-/** `fastest()` below is a min-of-N estimator, so N is the noise knob: raising it
- *  lowers and stabilises the minimum. `depth_ratio` divides two sub-3 ms
- *  measurements, and Dart's are sub-1 ms, so it is by far the noisiest number
- *  here and it sets N for the whole file. Measured over 22 `--check` runs on an
- *  idle box: at N=5 it tripped its own budget ~1 run in 20, at N=7 Dart still
- *  swung 3.0x peak-to-peak and tripped once. N=15 matches `bench/cfg`,
- *  `bench/schema-pairs` and `bench/callable-value-flow`; the distributions it
- *  produces are recorded in `_arms_note`. */
-const REPS = 15;
+/**
+ * `fastest()` below is a min-of-N estimator, so N is the noise knob: raising it
+ * lowers and stabilises the minimum. `depth_ratio` divides two sub-3 ms
+ * measurements, and Dart's are sub-1 ms, so it is by far the noisiest number
+ * here. Measured over 22 `--check` runs on an idle box: at N=5 it tripped its
+ * own budget ~1 run in 20, at N=7 Dart still swung 3.0x peak-to-peak and
+ * tripped once. N=15 (which matches `bench/cfg`, `bench/schema-pairs` and
+ * `bench/callable-value-flow`) collapsed every language to a 1.13-1.26x swing
+ * with 22/22 passing; the distributions are recorded in `_arms_note`.
+ *
+ * N used to be 15 for EVERY arm, set globally by the noisiest cell. That paid
+ * the noisiest cell's insurance premium on cells a thousand times its size:
+ * the recorded overshoot of min-of-K against min-of-15 is a function of the
+ * cell's absolute duration, not of the language — 31.8% on `swift.small`
+ * (0.43 ms) and 37.6% on `dart.collide` (1.5 ms) at the extreme, but at most
+ * 6.3% at K=7 for every cell at or above 10 ms.
+ *
+ * So N is picked PER LANGUAGE, from the cost of its cheapest arm: 15 while that
+ * is under `REPS_CHEAP_MS`, and `~REPS_BUDGET_MS` worth of samples above it,
+ * floored at `REPS_MIN`. Per language rather than per cell so all five arms of
+ * a language share one estimator and the four ratios stay comparisons of like
+ * with like. In practice that is still 15 for go, csharp, dart, kotlin, java,
+ * cobol, swift, rust, python, c and cpp — every language the flakiness above
+ * was ever about — and 7-8 for php, csharp_csproj, ruby, javascript, typescript
+ * and vue, whose cheapest cell is 20-28 ms. Replayed against two independent
+ * runs' sample sets it saved 12.8 s and 12.4 s of a 46 s run with all 85 cells
+ * passing all five gates at 0.4-0.7 of budget, and min-of-7 reads slightly
+ * HIGHER than min-of-15, so the gates get marginally more sensitive rather than
+ * less. The chosen N is reported per language as `reps`.
+ */
+const REPS_MAX = 15;
+const REPS_MIN = 7;
+/** Sampling budget per cell for the languages that do not get `REPS_MAX`. */
+const REPS_BUDGET_MS = 150;
+/** Below this a cell is small enough for the min-of-N estimator itself to be
+ *  the dominant error, so it gets the full `REPS_MAX` regardless of budget. The
+ *  nearest language on either side of it is 3.2 ms and 20.0 ms, so nothing sits
+ *  near the boundary. */
+const REPS_CHEAP_MS = 5;
 const WARMUP = 2;
+
+/** N for one language, from one warmed pass of its cheapest arm. */
+function repsFor(probeMs) {
+  if (probeMs < REPS_CHEAP_MS) return REPS_MAX;
+  return Math.min(REPS_MAX, Math.max(REPS_MIN, Math.ceil(REPS_BUDGET_MS / probeMs)));
+}
 
 /** Heap arm. Far more files than the timing arms because the finding
  *  is an ABSOLUTE footprint at repository scale, and 1600 files would report a
@@ -337,17 +399,33 @@ const WARMUP = 2;
 const HEAP_SMALL = 8000;
 const HEAP_LARGE = 32000;
 const HEAP_PAD = 8;
-/** The languages whose retained per-pass index is measured. The first four
- *  retain the shared `WorkspaceFileIndex` and retained NOTHING at BASE; the
- *  last three were added with the other twelve languages and are read through
- *  `retainedPassBytes` instead. Seven of seventeen: COBOL, `csharp_csproj`,
- *  rust, swift, typescript, vue and cpp are absent on purpose and the MEMORY
- *  section of the header gives a separate reason for each. */
-const HEAP_LANGS = ['csharp', 'ruby', 'php', 'java', 'javascript', 'python', 'c'];
+/** The languages whose retained per-pass index is measured, all eight the same
+ *  way — `retainedPassBytes`, one real import through the real resolver. The
+ *  first five reach the shared `WorkspaceFileIndex` and retained NOTHING at
+ *  BASE; `csharp_csproj` is the same corpus through the same index under the
+ *  csproj context, and it is here rather than excluded as a duplicate because
+ *  after #2903 its READ PATTERN, not its corpus, decides the number. Eight of
+ *  seventeen: COBOL, rust, swift, typescript, vue and cpp are absent on purpose
+ *  and the MEMORY section of the header gives a separate reason for each. */
+const HEAP_LANGS = ['csharp', 'csharp_csproj', 'ruby', 'php', 'java', 'javascript', 'python', 'c'];
 
-/** Needs `node --expose-gc` to force collection for a clean delta; without it
- *  the heap metric is reported as null and its `--check` gate would be skipped,
- *  which is why `--check` refuses to run without the flag (see below). */
+/**
+ * Needs `node --expose-gc` to force collection for a clean delta; without it
+ * the heap metric is reported as null and its `--check` gate would be skipped,
+ * which is why `--check` refuses to run without the flag (see below).
+ *
+ * TWO cycles because the value is a `WeakMap`'s: the first clears the entry
+ * once its key is unreachable, the second collects what the entry held. That is
+ * not always enough — PHP reaches the shared index through a second per-file-
+ * set memo of its own (`getPhpWorkspaceIndex` wraps `getWorkspaceFileIndex`,
+ * both keyed on the same Set) and that chain measured FOUR cycles to release,
+ * with two leaving 9.3 MB of the previous read still counted live. The answer
+ * to that is `HEAP_RETAINED`, which removes the need to release anything inside
+ * a measurement window, plus the deeper drain `measureHeap` runs between
+ * languages where a late free costs nothing. Cycles are not the knob: with
+ * `HEAP_RETAINED` in place, two and four produce byte-identical readings, and
+ * four cost 4.5 s of wall clock over a retained heap this size.
+ */
 const GC = typeof global.gc === 'function' ? () => (global.gc(), global.gc()) : null;
 
 /** Deterministic 32-bit avalanche (murmur3 finalizer) — no `Math.random()`, so
@@ -392,10 +470,11 @@ const CSPROJ_CONFIGS = [
  * a third copy — and every local Vue import below is spelled `@/…`.
  */
 const VUE_TSCONFIG = { tsconfigPaths: { aliases: new Map([['@/', 'src/']]), baseUrl: '.' } };
+/** Keyed by LAYOUT name, so there is no `csharp_csproj` row: `buildFiles`
+ *  aliases that arm to `csharp` before this table is read. */
 const EXTENSION = {
   go: '.go',
   csharp: '.cs',
-  csharp_csproj: '.cs',
   dart: '.dart',
   ruby: '.rb',
   kotlin: '.kt',
@@ -427,10 +506,10 @@ const dirsFor = (fileCount) => Math.max(4, Math.floor(fileCount / 8));
 const SWIFT_COLLIDE_MODULES = 4;
 /** File stems follow each language's own naming convention, because C#'s and
  *  PHP's suffix maps carry a case-insensitive tier and a lower-cased corpus
- *  would leave it answering the same question twice. */
+ *  would leave it answering the same question twice. Keyed by LAYOUT name, like
+ *  `EXTENSION` — no `csharp_csproj` row, for the same reason. */
 const PASCAL_CASE_FILES = new Set([
   'csharp',
-  'csharp_csproj',
   'kotlin',
   'php',
   'java',
@@ -443,6 +522,29 @@ const PASCAL_CASE_FILES = new Set([
  *  the first file minted in each directory is that file rather than a numbered
  *  one. Every in-repo target below resolves to one of them. */
 const PACKAGE_STEM = { rust: 'mod', python: '__init__' };
+
+/**
+ * The end of a per-language dispatcher, where five of them used to fall through
+ * to a bare `return`.
+ *
+ * Four of those fallthroughs meant "ruby" and the fifth meant "csharp". So
+ * `ruby` appeared nowhere in this file except `EXTENSION` and the language
+ * list, and — the part that matters — a language added to the list but missed
+ * in the dispatchers would have been benchmarked as RUBY'S CORPUS RESOLVED BY
+ * C#'S RESOLVER: five plausible timings, a stable fingerprint, and a permanent
+ * pass over a language nobody had measured. Every dispatcher now names its last
+ * branch and throws here instead, so the missing wiring is a crash on the first
+ * run rather than a green gate.
+ */
+function unwiredLanguage(where, lang) {
+  return new Error(
+    `bench: ${where} has no branch for '${lang}'. Every language in LANG_REGISTRY needs one in ` +
+      `uniqueDir, collideDir, uniqueTarget, collideTarget and resolveOne. (uniqueDir and ` +
+      `collideDir see the LAYOUT name, which is never 'csharp_csproj' — buildFiles aliases it ` +
+      `to 'csharp'.) Falling through here used to hand the language another one's corpus or ` +
+      `another one's resolver, and nothing in --check could tell.`,
+  );
+}
 
 /**
  * UNIQUE-LEAF layout: one directory name per index, so no two directories share
@@ -488,7 +590,8 @@ function uniqueDir(lang, d, i) {
   // C and C++ split headers from sources — the shape that makes
   // `resolutionConfig` load-bearing. Odd `i` is the header.
   if (lang === 'c' || lang === 'cpp') return i % 2 === 1 ? `include/comp${d}` : `src/comp${d}`;
-  return `lib/mod${d}`;
+  if (lang === 'ruby') return `lib/mod${d}`;
+  throw unwiredLanguage('uniqueDir', lang);
 }
 
 /**
@@ -537,7 +640,8 @@ function collideDir(lang, d, i) {
   if (lang === 'javascript' || lang === 'typescript') return `pkg${d}/src`;
   if (lang === 'vue') return `src/pkg${d}/components`;
   if (lang === 'c' || lang === 'cpp') return i % 2 === 1 ? `svc${d}/include` : `svc${d}/src`;
-  return `svc${d}/lib/models`;
+  if (lang === 'ruby') return `svc${d}/lib/models`;
+  throw unwiredLanguage('collideDir', lang);
 }
 
 /**
@@ -816,11 +920,14 @@ function uniqueTarget(lang, { local, r, d, j, dirs }) {
         ? ['stdio.h', 'stdlib.h', 'string.h'][(r >>> 4) % 3]
         : `vendor${(r >>> 4) % 97}/missing${h}`;
   }
-  return local
-    ? `mod${d}/file${j}`
-    : (r >>> 3) % 2 === 0
-      ? ['json', 'set', 'net/http', 'digest'][(r >>> 4) % 4]
-      : `gem${(r >>> 4) % 97}/missing/thing`;
+  if (lang === 'ruby') {
+    return local
+      ? `mod${d}/file${j}`
+      : (r >>> 3) % 2 === 0
+        ? ['json', 'set', 'net/http', 'digest'][(r >>> 4) % 4]
+        : `gem${(r >>> 4) % 97}/missing/thing`;
+  }
+  throw unwiredLanguage('uniqueTarget', lang);
 }
 
 /**
@@ -1029,11 +1136,17 @@ function collideTarget(lang, { local, r, d, j, dirs }) {
         ? ['stdio.h', 'stdlib.h', 'string.h'][(r >>> 4) % 3]
         : `vendor${(r >>> 4) % 97}/mod0${h}`;
   }
-  return local
-    ? `svc${j % dirs}/lib/models/mod${Math.floor(j / dirs)}`
-    : (r >>> 3) % 2 === 0
-      ? ['json', 'set', 'net/http', 'digest'][(r >>> 4) % 4]
-      : `gem${(r >>> 4) % 97}/missing/thing`;
+  if (lang === 'ruby') {
+    // `models/mod{n}.rb` in every package. Ruby answers `require` from a keyed
+    // suffix map, so the repeated basename cannot grow a bucket: this arm
+    // asserts that immunity, which is why its collide budget is the linear one.
+    return local
+      ? `svc${j % dirs}/lib/models/mod${Math.floor(j / dirs)}`
+      : (r >>> 3) % 2 === 0
+        ? ['json', 'set', 'net/http', 'digest'][(r >>> 4) % 4]
+        : `gem${(r >>> 4) % 97}/missing/thing`;
+  }
+  throw unwiredLanguage('collideTarget', lang);
 }
 
 /**
@@ -1167,16 +1280,19 @@ function resolveOne(lang, from, target, pass) {
   if (lang === 'cpp') {
     return cppScopeResolver.resolveImportTarget(target, from, allFilePaths, pass.config);
   }
-  return resolveCsharpImportTarget(
-    { kind: 'namespace', localName: '_', importedName: '_', targetRaw: target },
-    {
-      fromFile: from,
-      allFilePaths,
-      // The ONLY difference between the two C# arms. Present, the adapter takes
-      // the csproj branch and never falls through to the no-csproj legs.
-      ...(lang === 'csharp_csproj' ? { csharpConfigs: CSPROJ_CONFIGS } : {}),
-    },
-  );
+  if (lang === 'csharp' || lang === 'csharp_csproj') {
+    return resolveCsharpImportTarget(
+      { kind: 'namespace', localName: '_', importedName: '_', targetRaw: target },
+      {
+        fromFile: from,
+        allFilePaths,
+        // The ONLY difference between the two C# arms. Present, the adapter
+        // takes the csproj branch and never falls through to the no-csproj legs.
+        ...(lang === 'csharp_csproj' ? { csharpConfigs: CSPROJ_CONFIGS } : {}),
+      },
+    );
+  }
+  throw unwiredLanguage('resolveOne', lang);
 }
 
 /** The single untimed identity pass, producing BOTH non-timing results: the
@@ -1219,10 +1335,10 @@ function fastest(values) {
   return Math.min(...values);
 }
 
-function timeResolution(lang, files, imports) {
+function timeResolution(lang, files, imports, reps) {
   for (let w = 0; w < WARMUP; w++) resolveAll(lang, files, imports);
   const samples = [];
-  for (let r = 0; r < REPS; r++) {
+  for (let r = 0; r < reps; r++) {
     const t0 = performance.now();
     resolveAll(lang, files, imports);
     samples.push(performance.now() - t0);
@@ -1231,58 +1347,79 @@ function timeResolution(lang, files, imports) {
 }
 
 /**
- * Retained JS heap of the `WorkspaceFileIndex` built over `files`.
+ * One WARMED pass, used only to size `reps` for the language.
  *
- * GROWTH form, not the release form `bench/cfg/measure.mjs` uses: the index is
- * memoized in a `WeakMap` keyed on the Set, so releasing it means releasing the
- * Set too, which would fold the Set's own cost into the delta. Here the Set is
- * live across BOTH reads and the `files` array holds the path strings, so the
- * delta is the index's own footprint — the arrays, the three `buildSuffixIndex`
- * maps and `normToRaw` — and not the paths they point at. A forced double GC
- * before each read makes it robust to pre-existing garbage the same way.
+ * Run on the `small` arm, and `small` is measurably the cheapest of the five
+ * for every language where the answer can differ — all six that come out below
+ * `REPS_MAX` (csharp_csproj, ruby, php, javascript, typescript, vue). Three
+ * languages do have a cheaper arm — cobol's `collide` by 45%, kotlin's by 7%,
+ * dart's `deep` by a few percent — and all three sit so far under
+ * `REPS_CHEAP_MS` that either reading returns 15. `small` is also the arm
+ * `small_ms_ceiling` bounds, so it is the one number here a reader already has
+ * an intuition for.
+ *
+ * Warmed rather than taken from the WARMUP passes themselves: an unwarmed pass
+ * reads several times high, which would push the expensive languages to
+ * `REPS_MIN` for the wrong reason.
  */
-function retainedIndexBytes(files) {
-  const set = new Set(files);
-  GC();
-  const before = process.memoryUsage().heapUsed;
-  const index = getWorkspaceFileIndex(set);
-  GC();
-  const after = process.memoryUsage().heapUsed;
-  // Keeps both live past the second read, and fails loudly if the corpus ever
-  // stops being one distinct path per file (which would silently shrink it).
-  if (index.all.length !== files.length || set.size !== files.length) {
-    throw new Error(`heap arm corpus is not distinct: ${set.size} of ${files.length}`);
-  }
-  return Math.max(0, after - before);
+function probeMs(lang, files, imports) {
+  for (let w = 0; w < WARMUP; w++) resolveAll(lang, files, imports);
+  const t0 = performance.now();
+  resolveAll(lang, files, imports);
+  return performance.now() - t0;
 }
 
 /**
- * The same measurement for a language whose index builder is PRIVATE to its
- * module — which is all four added here.
+ * Retained JS heap of everything one language derives from one file set —
+ * measured by RESOLVING AN IMPORT through it, never by calling a builder.
  *
- * `getWorkspaceFileIndex` above is exported and can be called directly. Swift's
- * `getSwiftModuleIndex`, Python's `getPythonFileIndex`, C's `suffixIndex` and
- * the ts-family `passCacheFor` are not, and exporting them to feed a bench
- * would widen four module surfaces for a measurement's convenience. Resolving
- * ONE import builds exactly the same structures, and the per-file-set `WeakMap`
- * keyed on the live Set is what keeps them reachable across the second read —
- * so the delta is the resolver's whole retained per-pass footprint. For C and
- * C++ that legitimately includes the augmented Set, which is part of what they
- * hold.
+ * THE ARM READS WHAT THE LANGUAGE READS, and that is now the whole design.
+ * Until #2903 was extended to the two suffix maps, four of these arms called
+ * `getWorkspaceFileIndex(set)` directly and read `index.all.length`, which asks
+ * no suffix question at all. That was harmless only while `buildSuffixIndex`
+ * built both maps eagerly. The moment they went lazy the direct call built NO
+ * map, all four arms reported 0 B at 32 000 files, and 0 B is under every
+ * ceiling — four gates silently became ceilings over nothing, which is exactly
+ * the failure this file's header warns about for rust and cobol. Driving the
+ * real resolver cannot fail that way: whatever maps the language forces are the
+ * maps it forces in production, and if a resolver starts asking a new question
+ * the number moves on its own instead of needing this file edited.
  *
- * Strictly a superset of the direct form (it also retains a resolve-cache entry
- * or two), which is why the two are not compared against one another and each
- * language's ceiling is set from its own reading.
+ * It also happens to be the only form available for half of these languages —
+ * Swift's `getSwiftModuleIndex`, Python's `getPythonFileIndex`, C's
+ * `suffixIndex` and the ts-family `passCacheFor` are private to their modules,
+ * and exporting four builders to feed a bench would widen four module surfaces
+ * for a measurement's convenience. Now that all eight arms use one form, the
+ * readings ARE comparable to one another (they were not before).
+ *
+ * GROWTH form, not the release form `bench/cfg/measure.mjs` uses: every index
+ * here is memoized in a `WeakMap` keyed on the Set, so releasing it means
+ * releasing the Set too, which would fold the Set's own cost into the delta.
+ * Here the pass is live across BOTH samples and the `files` array holds the
+ * path strings, so the delta is the derived structures' own footprint and not
+ * the paths they point at. For C and C++ it legitimately includes the augmented
+ * Set, which is part of what they hold; for every language it includes the one
+ * or two resolve-cache entries the probe leaves behind.
  */
 function retainedPassBytes(lang, files, probeTarget) {
   const pass = newPass(lang, files);
+  // See `HEAP_RETAINED`: nothing built for this language is released until the
+  // next one starts, so no deferred collection can land between the two samples
+  // below and cancel part of the delta.
+  HEAP_RETAINED.push(pass);
   GC();
   const before = process.memoryUsage().heapUsed;
-  resolveOne(lang, files[0], probeTarget, pass);
+  const hit = resolveOne(lang, files[0], probeTarget, pass);
   GC();
   const after = process.memoryUsage().heapUsed;
-  // Keeps the pass live past the second read, and fails loudly if the corpus
-  // ever stops being one distinct path per file.
+  // A HIT would mean the reading is a materialized answer rather than the
+  // index, and — for the languages whose cascade returns early — that the legs
+  // past the hit were never reached and their structures never built.
+  if (hit !== null) {
+    throw new Error(`heap probe '${probeTarget}' resolved for ${lang}; it must MISS: ${hit}`);
+  }
+  // Fails loudly if the corpus ever stops being one distinct path per file,
+  // which would silently shrink every reading here.
   const size = pass.allFilePaths.size + (pass.config instanceof Set ? pass.config.size : 0);
   if (size !== files.length) {
     throw new Error(`heap arm corpus is not distinct: ${size} of ${files.length}`);
@@ -1290,31 +1427,114 @@ function retainedPassBytes(lang, files, probeTarget) {
   return Math.max(0, after - before);
 }
 
-/** The import each `retainedPassBytes` language resolves to force its index
- *  build. A MISS in every case, so the reading is the index and not a
- *  materialized answer. */
+/**
+ * Every pass this arm builds, held alive ON PURPOSE until the next language
+ * starts.
+ *
+ * A `heapUsed` delta is only the new structures if nothing OLD is released
+ * between its two samples, and that is not a property a forced GC can be
+ * trusted to establish: measured, the previous read's index survived a
+ * two-cycle collect at the next read's baseline and was dropped by the collect
+ * before its second sample, so the two cancelled and the arm reported 249 200 B
+ * for a 9.3 MB index (PHP) and 329 064 B for a 6.7 MB one (JavaScript, once,
+ * non-reproducibly — the same defect with a different language's timing).
+ *
+ * Holding the passes removes the precondition instead of tuning it: nothing a
+ * measurement window depends on is ever collectable inside it, so the delta
+ * cannot absorb a late free no matter how many cycles the collector needs.
+ * Byte-identical readings at two and at four `gc()` cycles are the evidence
+ * that it works, where without it the two disagree by 9 MB.
+ *
+ * Emptied once per language, in `measureHeap`, which is the one place a late
+ * free is harmless: it happens before that language's first baseline and
+ * outside both of its measurement windows, and it is followed by a drain deeper
+ * than any chain here has needed. Never emptying at all also works and is what
+ * this was first measured with, but it peaks at ~380 MB and costs 4.5 s,
+ * because every forced collection from that point on has to mark it.
+ */
+const HEAP_RETAINED = [];
+
+/**
+ * The import each heap language resolves to force its build. A MISS in every
+ * case (asserted above), so the reading is the index and not a materialized
+ * answer, and so the cascade runs to completion instead of returning at the
+ * first leg.
+ *
+ * Each spelling is one the language's own corpus already mints in
+ * `uniqueTarget`, so the arm forces the same read pattern the timing arms do —
+ * which after #2903 is what decides the number:
+ *
+ *   - `csharp` and `java` ask `index.get` and never `getInsensitive`, so the
+ *     case-folded map is never built (49.6% of the eager Java index was dead);
+ *   - `php` asks `getInsensitive` and never `get` (49.4% dead), and builds its
+ *     own first-proper-suffix map on top;
+ *   - `ruby` and the ts family read `get(s) || getInsensitive(s)`, so they pay
+ *     for both — the second one DERIVED from the first, which is why they cost
+ *     less than two independent traversals;
+ *   - `csharp_csproj` additionally asks `getFilesInDir`, forcing the `dirMap`
+ *     #2903 made lazy. It is the witness that the read pattern IS the
+ *     footprint: same corpus and same `getWorkspaceFileIndex` as `csharp`,
+ *     three times the retained bytes.
+ */
 const HEAP_PROBE_TARGET = {
+  csharp: 'Ghost0.Deep.Missing',
+  // Matches the `App` root namespace and no directory, so it runs the config
+  // loop's single-file leg (`get` + `getInsensitive`) AND its directory leg
+  // (`getFilesInDir`) before answering null — the three-map read pattern.
+  csharp_csproj: 'App.Missing0',
+  ruby: 'gem0/missing/thing',
+  php: 'Vendor0\\Ghost\\Missing',
+  java: 'com.google.common.vendor0.Missing',
   javascript: 'vendor0/lib/missing',
   python: 'vendor0.deep.missing',
   c: 'vendor0/missing.h',
 };
 
+/**
+ * `buildFiles` mints every path with a template literal, and V8 represents
+ * those as ROPES — the concatenation is not materialized until something forces
+ * it. The first traversal that slices a path (`lastIndexOf('/')`, `toLowerCase`,
+ * every index builder here) flattens it, which allocates the flat string AND
+ * drops the rope's now-unreachable pieces, so a build measured over an
+ * unflattened corpus reports the index MINUS that net release: measured 11%
+ * low, uniformly, on every language whose index slices paths.
+ *
+ * It biased the arm in the one direction that matters. `bytes_small` was read
+ * over a corpus a discarded warm-up pass had already flattened and
+ * `bytes_large` over a fresh one, so every `ratio` here was ~0.85-0.89 for
+ * structures that are exactly linear in the file count — the ratio budget was
+ * bounding an artefact. Flattened first, all eight read 0.99-1.02.
+ *
+ * It also retires the warm-up pass, which was never about JIT: with the corpus
+ * flat, a language's first and second reads of the same file count agree to
+ * within 0.3%.
+ */
+function flatten(files) {
+  for (const file of files) file.lastIndexOf('/');
+  return files;
+}
+
 function measureHeap(lang) {
   if (GC === null) return null;
+  // Release the PREVIOUS language's passes here and nowhere else, then drain
+  // them twice over. This is the one point at which a deferred collection is
+  // free: it is before this language's first baseline and outside both of its
+  // measurement windows, so however many cycles the release needs, it cannot
+  // land between a `before` and an `after`.
+  HEAP_RETAINED.length = 0;
+  GC();
+  GC();
   const probe = HEAP_PROBE_TARGET[lang];
-  const read =
-    probe === undefined ? retainedIndexBytes : (files) => retainedPassBytes(lang, files, probe);
-  const small = buildFiles(lang, HEAP_SMALL, HEAP_PAD, 'unique');
-  // The first build in a fresh process reads a few percent low (lazily grown
-  // spaces, unJITted build loop); discard it.
-  read(small);
+  const read = (files) => retainedPassBytes(lang, files, probe);
+  const small = flatten(buildFiles(lang, HEAP_SMALL, HEAP_PAD, 'unique'));
   const bytesSmall = read(small);
-  const large = buildFiles(lang, HEAP_LARGE, HEAP_PAD, 'unique');
+  const large = flatten(buildFiles(lang, HEAP_LARGE, HEAP_PAD, 'unique'));
   const bytesLarge = read(large);
   return {
     files_small: HEAP_SMALL,
     files_large: HEAP_LARGE,
     path_segments: small[0].split('/').length,
+    probe,
     bytes_small: bytesSmall,
     bytes_large: bytesLarge,
     mib_large: Number((bytesLarge / 1024 / 1024).toFixed(2)),
@@ -1342,28 +1562,50 @@ if (CHECK && GC === null) {
   process.exit(1);
 }
 
-/** Every language in `SCOPE_RESOLVERS` (16), plus `csharp_csproj` — the same
- *  corpus as `csharp` under a context the no-csproj arm can never reach. Sixteen
- *  registered languages, seventeen arms, no import site ungated. */
-const LANGS = [
-  'go',
-  'csharp',
-  'csharp_csproj',
-  'dart',
-  'ruby',
-  'kotlin',
-  'php',
-  'java',
-  'cobol',
-  'swift',
-  'rust',
-  'python',
-  'javascript',
-  'typescript',
-  'vue',
-  'c',
-  'cpp',
-];
+/**
+ * Every arm, and the registered language each one exercises.
+ *
+ * This used to be a hand-written list of seventeen strings under a comment
+ * claiming it was "every language in `SCOPE_RESOLVERS`" — a claim nothing in
+ * the file could check, because the file never imported the registry. Adding a
+ * resolver to `pipeline/registry.ts` is two lines, neither of which is this
+ * one, so a seventeenth registered language would have shipped ungated and
+ * printed PASS. That is not a hypothetical failure mode: JavaScript reached
+ * `suffixResolve` with no index at all and measured 25 972 µs per import at
+ * 8000 files (#2910) for exactly as long as nothing gated it.
+ *
+ * So the list is DERIVED and the claim is ASSERTED. `LANGS` is this table's
+ * keys, and the `--check` inventory arm below fails when a registered resolver
+ * has no arm here (or an arm names a language the registry does not have) —
+ * the same shape `test/unit/scope-resolution/import-target-index-reuse.contract.test.ts`
+ * uses ten files away, and the same "one row per language" table
+ * `bench/cfg/measure.mjs` keeps.
+ *
+ * The mapping is many-to-one on purpose: `csharp` and `csharp_csproj` are two
+ * arms over one registered resolver, differing only in whether `csharpConfigs`
+ * is supplied, because the no-csproj arm returns before it can reach the leg
+ * #2902 indexed.
+ */
+const LANG_REGISTRY = {
+  go: SupportedLanguages.Go,
+  csharp: SupportedLanguages.CSharp,
+  csharp_csproj: SupportedLanguages.CSharp,
+  dart: SupportedLanguages.Dart,
+  ruby: SupportedLanguages.Ruby,
+  kotlin: SupportedLanguages.Kotlin,
+  php: SupportedLanguages.PHP,
+  java: SupportedLanguages.Java,
+  cobol: SupportedLanguages.Cobol,
+  swift: SupportedLanguages.Swift,
+  rust: SupportedLanguages.Rust,
+  python: SupportedLanguages.Python,
+  javascript: SupportedLanguages.JavaScript,
+  typescript: SupportedLanguages.TypeScript,
+  vue: SupportedLanguages.Vue,
+  c: SupportedLanguages.C,
+  cpp: SupportedLanguages.CPlusPlus,
+};
+const LANGS = Object.keys(LANG_REGISTRY);
 /** name, file count, depth padding, directory/basename layout. */
 const ARMS = [
   ['small', SMALL, 0, 'unique'],
@@ -1379,9 +1621,14 @@ const SCALES = ARMS.map(([name]) => name);
 const report = {};
 for (const lang of LANGS) {
   const scales = {};
+  // Sized once per language, from the FIRST arm — `small`, the cheapest — so
+  // all five arms share one estimator and the four ratios below stay
+  // comparisons of like with like. See `repsFor`.
+  let reps = null;
   for (const [name, fileCount, pad, shape] of ARMS) {
     const { files, imports } = buildRepo(lang, fileCount, pad, shape);
     const { outcomes, resolved } = identityPass(lang, files, imports);
+    if (reps === null) reps = repsFor(probeMs(lang, files, imports));
     scales[name] = {
       files: files.length,
       imports: imports.length,
@@ -1389,12 +1636,15 @@ for (const lang of LANGS) {
       // resolved share would still produce a "valid" fingerprint over far less.
       resolved,
       distinct_outcomes: outcomes.size,
-      ms: Number(timeResolution(lang, files, imports).toFixed(3)),
+      ms: Number(timeResolution(lang, files, imports, reps).toFixed(3)),
       fingerprint: fingerprint(outcomes),
     };
   }
   report[lang] = {
     ...scales,
+    // Reported so a triager can see which estimator produced the five ms
+    // numbers above; environment-derived, so never asserted.
+    reps,
     scaling_ratio: Number((scales.large.ms / scales.small.ms / (LARGE / SMALL)).toFixed(3)),
     // `scaling_ratio` divides the file count out, so it is scale-invariant and
     // structurally cannot see a cost that grows with path DEPTH instead — and
@@ -1412,10 +1662,13 @@ for (const lang of LANGS) {
   };
 }
 
-// AFTER every timing arm, never interleaved with them: the heap arm allocates a
-// 32k-path corpus and a ~75 MiB index, and leaving that garbage behind for the
-// next language's timed loop to collect would tax an arm it has nothing to do
-// with.
+// AFTER every timing arm, never interleaved with them, and now for a second
+// reason as well as the first. The first: the heap arm allocates a 32k-path
+// corpus and a ~70 MiB index per language, and leaving that behind for the next
+// language's timed loop to collect would tax an arm it has nothing to do with.
+// The second: `HEAP_RETAINED` holds a language's whole corpus and index alive
+// across both of its reads — up to ~92 MiB for `csharp_csproj` — and that must
+// not overlap a measurement of time.
 for (const lang of HEAP_LANGS) report[lang].heap = measureHeap(lang);
 
 if (!CHECK) {
@@ -1440,45 +1693,68 @@ for (const lang of LANGS) {
   // trailing sentence exists once instead of drifting into five wordings. Each
   // `why` stays the arm's OWN: it is what tells a triager which corpus shape
   // regressed, and flattening it would cost the message its whole value.
+  // `key` is the baselines.json path the budget came from, so the presence
+  // check below can name it.
   const timingChecks = [
     {
       label: 'scaling',
+      key: 'scaling_budget',
       got: got.scaling_ratio,
       budget: baseline.scaling_budget,
       why: 'per-import cost grows with corpus size again.',
     },
     {
       label: 'depth',
+      key: `depth_budget.${lang}`,
       got: got.depth_ratio,
-      budget: baseline.depth_budget[lang],
+      budget: baseline.depth_budget?.[lang],
       why:
         'cost grows with path DEPTH at a fixed file count, which scaling_ratio divides out and ' +
         'cannot see.',
     },
     {
       label: 'collide scaling',
+      key: `collide_scaling_budget.${lang}`,
       got: got.collide_scaling_ratio,
-      budget: baseline.collide_scaling_budget[lang],
+      budget: baseline.collide_scaling_budget?.[lang],
       why:
         'on the SHARED-LEAF layout (svcN/internal, SrcN/Models, a repeated basename per package) ' +
         'per-import cost grew beyond what this shape already costs by construction.',
     },
     {
       label: 'small arm ms',
+      key: `small_ms_ceiling.${lang}`,
       got: got.small.ms,
-      budget: baseline.small_ms_ceiling[lang],
+      budget: baseline.small_ms_ceiling?.[lang],
       why:
         'an ABSOLUTE bound, because a constant-factor regression that grows both arms equally ' +
         'passes the ratio.',
     },
     {
       label: 'collide arm ms',
+      key: `collide_ms_ceiling.${lang}`,
       got: got.collide.ms,
-      budget: baseline.collide_ms_ceiling[lang],
+      budget: baseline.collide_ms_ceiling?.[lang],
       why: 'the ABSOLUTE bound on the shared-leaf layout.',
     },
   ];
   for (const check of timingChecks) {
+    // PRESENCE FIRST, because `got > undefined` is `false`: without this, going
+    // from a budget to no budget is going from a gate to no gate, and the run
+    // still prints PASS. All five maps are complete today, which is exactly
+    // when the check is worth adding — every one of the four per-language
+    // lookups above is one deleted key away from a silent no-op. The heap arm
+    // never had the hole because it iterates the BASELINE's keys; the timing
+    // arms iterate LANGS, so they have to ask.
+    if (typeof check.budget !== 'number') {
+      failures.push(
+        `${lang}: no ${check.label} budget — baselines.json has no numeric ${check.key}. ` +
+          `A missing budget is a DELETED GATE, not a passing arm: the comparison below reads ` +
+          `\`${check.got} > undefined\`, which is false for every possible measurement. ` +
+          `Deterministic: a re-run will not change it.`,
+      );
+      continue;
+    }
     if (check.got > check.budget) {
       failures.push(
         `${lang}: ${check.label} ${check.got} > budget ${check.budget} — ${check.why} ` +
@@ -1540,6 +1816,32 @@ for (const [lang, ceiling] of Object.entries(baseline.heap_ceiling_bytes)) {
         `re-run will not change it.`,
     );
   }
+  // A FLOOR as well as a ceiling, and it is the arm that would have caught the
+  // one defect this whole block exists for. When `buildSuffixIndex` went lazy,
+  // these four arms stopped asking a suffix question, built no map and reported
+  // 0 B at 32 000 files — and 0 B is under every ceiling, so `--check` printed
+  // PASS over four gates that had become ceilings over nothing. A ceiling can
+  // only ever say "not too big"; nothing said "still measuring something".
+  //
+  // Set as a fraction of the ceiling rather than as a second hand-maintained
+  // map, so the two cannot drift apart. At 0.33 x a ceiling that is itself
+  // 1.5x the measurement, the floor sits at half the measured size — far below
+  // any plausible drift (the readings reproduce to the byte across processes)
+  // and far above the collapse it watches for. A genuine 2x memory WIN trips it
+  // too, and that is intended: it must be explained and re-baselined, exactly
+  // like a fingerprint move.
+  const floor = ceiling * baseline.heap_floor_fraction;
+  if (heap.bytes_large < floor) {
+    failures.push(
+      `${lang}: retained per-pass import index ${heap.bytes_large} B at ${heap.files_large} ` +
+        `files < floor ${Math.round(floor)} B (${baseline.heap_floor_fraction} x ceiling ` +
+        `${ceiling}) — this arm has almost certainly stopped MEASURING rather than started ` +
+        `saving. Probe '${heap.probe}' resolves through the real resolver; if a leg it used to ` +
+        `reach now returns earlier, or an index it forced is now built lazily behind a question ` +
+        `nobody asks, the arm reads ~0 and every ceiling above passes. Deterministic: a re-run ` +
+        `will not change it.`,
+    );
+  }
   if (heap.ratio > baseline.heap_ratio_budget) {
     failures.push(
       `${lang}: retained-heap ratio ${heap.ratio} > budget ${baseline.heap_ratio_budget} ` +
@@ -1547,6 +1849,44 @@ for (const [lang, ceiling] of Object.entries(baseline.heap_ceiling_bytes)) {
         `${heap.files_large}) — the index stopped growing linearly in the file count.`,
     );
   }
+}
+
+// INVENTORY, the arm that makes "every registered language is gated" a checked
+// claim instead of a comment. `LANG_REGISTRY` is a hand-written table — it has
+// to be, since each row also implies five dispatcher branches — but which
+// languages it must contain is not a judgement call, and this is where the two
+// are reconciled. Both directions: a resolver registered with no arm here is
+// the #2910 hole (a language shipping unmeasured), and an arm naming a language
+// the registry does not have is a bench measuring something the pipeline no
+// longer runs.
+//
+// Loaded HERE, after the last measurement, rather than imported at the top.
+// Reaching `pipeline/registry.ts` drags in all sixteen scope resolvers and
+// their providers — 7.3 s of module load, measured, against 39 s of actual
+// benchmarking — and this arm is the only thing in the file that wants it. The
+// side benefit is that both modes now measure in the same module state: report
+// mode never loads the registry, and `--check` loads it only once every number
+// has been taken.
+const { SCOPE_RESOLVERS } =
+  await import('../../src/core/ingestion/scope-resolution/pipeline/registry.ts');
+const registeredLanguages = [...SCOPE_RESOLVERS.keys()].sort();
+const benchedLanguages = [...new Set(Object.values(LANG_REGISTRY))].sort();
+for (const language of registeredLanguages) {
+  if (benchedLanguages.includes(language)) continue;
+  failures.push(
+    `${language} is registered in SCOPE_RESOLVERS but has no arm in LANG_REGISTRY — its ` +
+      `import-target resolver is ungated: nothing pins its output and nothing pins its scaling. ` +
+      `That is the state JavaScript was in at 25 972 µs per import (#2910). Add a row, then the ` +
+      `five dispatcher branches it needs (uniqueDir, collideDir, uniqueTarget, collideTarget, ` +
+      `resolveOne) and a baselines.json entry. Deterministic: a re-run will not change it.`,
+  );
+}
+for (const language of benchedLanguages) {
+  if (registeredLanguages.includes(language)) continue;
+  failures.push(
+    `LANG_REGISTRY names '${language}', which is not in SCOPE_RESOLVERS — this bench is gating a ` +
+      `resolver the pipeline no longer registers. Deterministic: a re-run will not change it.`,
+  );
 }
 
 console.log(JSON.stringify(report, null, 2));

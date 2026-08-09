@@ -172,6 +172,16 @@ const filesByDirectory = perFileSet(
  * those strings. (Whole-string vs per-segment lowercasing agree here: no case
  * mapping in Unicode produces or consumes `/`, so `lower(p).split('/')` and
  * `p.split('/').map(lower)` are the same list.)
+ *
+ * `index.getInsensitive` is the ONLY shared-index method this file calls — it
+ * never asks the case-sensitive question — which is why `buildSuffixIndex`
+ * defers its two suffix maps rather than fusing them: PHP builds and retains
+ * one of the pair instead of both (34.49 MiB of 69.85 MiB at 32 000 paths).
+ *
+ * The two maps built HERE are deferred for the same reason and are each cheap
+ * only in ENTRIES, not in the walk that fills them — see the notes on
+ * `getFirstProperSuffixMatch` (O(paths × depth) to fill, typically zero entries)
+ * and `getFilesByRawDirectory` (unreachable without a `composer.json`).
  */
 interface PhpWorkspaceIndex {
   /** Every path, backslashes normalized to `/`. Parallel to `all`. */
@@ -189,34 +199,77 @@ const getPhpWorkspaceIndex = perFileSet((allFilePaths: ReadonlySet<string>): Php
   // fresh key per import and silently restore O(imports × files) (#1918 P1).
   const { normalized, all, index } = getWorkspaceFileIndex(allFilePaths);
 
-  const wholePathLower = new Set<string>();
-  for (const path of normalized) wholePathLower.add(path.toLowerCase());
+  /**
+   * Whole-path-lowercase → the first PROPER-suffix match, the correction `get`
+   * applies to a whole-path hit from the shared index.
+   *
+   * DEFERRED, and deferred all the way to the branch that reads it rather than
+   * to the first `get`. The builder walks every slash of every path and
+   * lowercases a slice at each, so it is O(paths × depth) in both time and
+   * allocation — measured 46.0 ms at 32 000 paths on the PHP arm of
+   * `bench/import-target/`, filling a map that held ZERO entries, because it
+   * can only hold one when some file's whole path is also a proper suffix of
+   * another's. Most repos never produce that, and the ones that do reach this
+   * branch only for the imports that actually hit a whole path. Pure function
+   * of `normalized`/`all`, both of which the returned object already retains,
+   * so building it late is behaviour-identical and retains nothing new.
+   *
+   * `wholePathLower` is a scratch set of the builder, not state: nothing reads
+   * it afterwards, so deferring the map defers it too.
+   */
+  let firstProperSuffixMatch: Map<string, string> | null = null;
+  const getFirstProperSuffixMatch = (): Map<string, string> => {
+    if (firstProperSuffixMatch !== null) return firstProperSuffixMatch;
+    const wholePathLower = new Set<string>();
+    for (const path of normalized) wholePathLower.add(path.toLowerCase());
 
-  // Only the suffixes that a whole path can shadow are worth storing; see the
-  // header. Built from `normalized`, so it costs no traversal of the Set.
-  const firstProperSuffixMatch = new Map<string, string>();
-  for (let i = 0; i < normalized.length; i++) {
-    const lower = normalized[i].toLowerCase();
-    for (let slash = lower.indexOf('/'); slash >= 0; slash = lower.indexOf('/', slash + 1)) {
-      const suffix = lower.slice(slash + 1);
-      if (!wholePathLower.has(suffix)) continue;
-      if (!firstProperSuffixMatch.has(suffix)) firstProperSuffixMatch.set(suffix, all[i]);
+    // Only the suffixes that a whole path can shadow are worth storing; see the
+    // header. Built from `normalized`, so it costs no traversal of the Set.
+    const built = new Map<string, string>();
+    for (let i = 0; i < normalized.length; i++) {
+      const lower = normalized[i].toLowerCase();
+      for (let slash = lower.indexOf('/'); slash >= 0; slash = lower.indexOf('/', slash + 1)) {
+        const suffix = lower.slice(slash + 1);
+        if (!wholePathLower.has(suffix)) continue;
+        if (!built.has(suffix)) built.set(suffix, all[i]);
+      }
     }
-  }
+    firstProperSuffixMatch = built;
+    return built;
+  };
 
-  // Raw paths, not normalized: the scan this replaces tests `f.startsWith(...)`
-  // against the Set's own strings, so a backslash path is a miss there and must
-  // stay a miss here. Insertion order is Set order, so `[0]` is the file the
-  // scan would have returned first.
-  const filesByRawDirectory = new Map<string, string[]>();
-  for (const raw of all) {
-    const separator = raw.lastIndexOf('/');
-    if (separator < 0) continue;
-    const directory = raw.slice(0, separator);
-    const bucket = filesByRawDirectory.get(directory);
-    if (bucket === undefined) filesByRawDirectory.set(directory, [raw]);
-    else bucket.push(raw);
-  }
+  /**
+   * Raw directory → the files directly in it, for `getFilesInDir`.
+   *
+   * DEFERRED for the same reason as the shared `dirMap` (#2903), and here the
+   * case is stronger: `getFilesInDir` has exactly one caller,
+   * `import-resolvers/php.ts`'s PSR-4 function/constant fallback, and that
+   * caller sits inside `if (composerConfig) { … }`. `resolvePhpImportTarget`
+   * hard-codes `composerConfig: null`, so on the LanguageProvider path the map
+   * is statically unreachable; on the ScopeResolver path it is reachable only
+   * in a repo that has a parseable `composer.json` with `autoload.psr-4`.
+   * Measured 6.8 ms / 3.56 MiB at 32 000 paths, paid by every PHP repo without
+   * one. Pure function of `all`, which the returned object retains.
+   */
+  let filesByRawDirectory: Map<string, string[]> | null = null;
+  const getFilesByRawDirectory = (): Map<string, string[]> => {
+    if (filesByRawDirectory !== null) return filesByRawDirectory;
+    // Raw paths, not normalized: the scan this replaces tests `f.startsWith(...)`
+    // against the Set's own strings, so a backslash path is a miss there and must
+    // stay a miss here. Insertion order is Set order, so `[0]` is the file the
+    // scan would have returned first.
+    const built = new Map<string, string[]>();
+    for (const raw of all) {
+      const separator = raw.lastIndexOf('/');
+      if (separator < 0) continue;
+      const directory = raw.slice(0, separator);
+      const bucket = built.get(directory);
+      if (bucket === undefined) built.set(directory, [raw]);
+      else bucket.push(raw);
+    }
+    filesByRawDirectory = built;
+    return built;
+  };
 
   const suffixIndex: SuffixIndex = {
     get: (suffix: string): string | undefined => {
@@ -227,7 +280,9 @@ const getPhpWorkspaceIndex = perFileSet((allFilePaths: ReadonlySet<string>): Php
       // the first file matching EITHER way, so nothing earlier matched at all.
       if (hit.replace(/\\/g, '/').toLowerCase() !== lower) return hit;
       // Whole-path hit — invisible to `endsWith('/' + S)`. The scan keeps going.
-      return firstProperSuffixMatch.get(lower);
+      // The only branch that needs the correction map, hence the only one that
+      // builds it.
+      return getFirstProperSuffixMatch().get(lower);
     },
     // Site 1 must stay a no-op, and `suffixResolve` folds this into `get`.
     getInsensitive: (): undefined => undefined,
@@ -235,7 +290,7 @@ const getPhpWorkspaceIndex = perFileSet((allFilePaths: ReadonlySet<string>): Php
       // `nsDirPrefix` is `nsDir` when it already ends in `/`, else `nsDir + '/'`
       // — either way the directory is `nsDir` minus one trailing slash.
       const directory = dirSuffix.endsWith('/') ? dirSuffix.slice(0, -1) : dirSuffix;
-      const bucket = filesByRawDirectory.get(directory);
+      const bucket = getFilesByRawDirectory().get(directory);
       if (bucket === undefined) return [];
       return bucket.filter((file) => file.endsWith(extension));
     },

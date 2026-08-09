@@ -546,10 +546,20 @@ jobs:
         # language AND per arm), that per-import cost stays independent of
         # corpus size AND of path depth, that the absolute small-arm cost holds
         # — a constant-factor regression that grows both scale arms equally
-        # passes every ratio — and that the per-pass index seven of them retain
+        # passes every ratio — and that the per-pass index eight of them retain
         # stays within an absolute byte ceiling. The corpus SHAPE is asserted
         # too: a fingerprint alone cannot tell a legitimate resolution change
         # from a corpus quietly shrunk below the size the timing arms need.
+        #
+        # Three arms exist because an arm that stops MEASURING otherwise passes.
+        # The heap arms drive real resolvers and carry a FLOOR as well as a
+        # ceiling: when buildSuffixIndex's suffix maps went lazy, four arms that
+        # called the builder directly read 0 B, and 0 B is under every ceiling.
+        # Each timing budget is checked for PRESENCE first, because
+        # `got > undefined` is false, so deleting a budget key deleted its gate.
+        # And an inventory arm reconciles the bench's language table against
+        # SCOPE_RESOLVERS itself, so a seventeenth registered resolver cannot
+        # ship ungated the way JavaScript did.
         #
         # The first nine were added as their own O(imports × files) scans were
         # indexed away (Ruby rebuilt a suffix index per `require`; COBOL scanned
@@ -577,16 +587,21 @@ jobs:
         #
         # --expose-gc enables the retained-heap arm; --check REFUSES to run
         # without it rather than passing with the memory gate silently skipped.
-        # ~46 s for seventeen arms (was ~26 s for nine). The ts family
-        # (javascript/typescript/vue) is 14.6 s of the increase, because
-        # suffixResolve probes ~39 extensions per path part on a miss; php and
-        # csharp_csproj are another ~11 s for the same reason. If this ever has
-        # to shrink, drop collide/collide_large for typescript and vue (−3.9 s)
-        # — the only cut that removes near-duplicate work rather than coverage.
-        # REPS is 15 (matching bench/cfg) rather than a cheaper 5 or 7
-        # because depth_ratio divides two sub-3 ms numbers and at those settings
-        # it tripped its own budget roughly 1 run in 20 — the estimator was
-        # fixed instead of the budget widened; distributions in _arms_note.
+        # ~42 s for seventeen arms, down from ~46 s: the timing phase fell from
+        # 39.8 s to 28.7 s when the min-of-N estimator became per-language, and
+        # 7.3 s of what is left is the one dynamic import the inventory arm
+        # needs (pipeline/registry.ts pulls in all sixteen providers), loaded
+        # after the last measurement so report mode does not pay it. The ts
+        # family (javascript/typescript/vue) is still the largest block, 8.8 s,
+        # because suffixResolve probes ~39 extensions per path part on a miss.
+        # If this ever has to shrink, drop collide/collide_large for typescript
+        # and vue (−3.9 s) — the only cut that removes near-duplicate work
+        # rather than coverage. N is 15 (matching bench/cfg) for every language
+        # whose cheapest arm is under 5 ms, because depth_ratio divides two
+        # sub-3 ms numbers and at 5 or 7 it tripped its own budget roughly 1 run
+        # in 20; the six languages whose cheapest arm is 20-28 ms drop to 7-8,
+        # where the measured overshoot is at most 6.3%. The estimator was fixed
+        # rather than the budget widened; distributions in _arms_note.
         # The Kotlin arm here is a second corpus, not a replacement for the
         # kotlin-import-target bench below, which carries tie-break probes (both
         # file-set iteration orders, the four-tier cascade) this one does not.

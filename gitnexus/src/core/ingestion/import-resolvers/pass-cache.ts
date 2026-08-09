@@ -39,6 +39,8 @@ export interface ImportPassCache {
  */
 export function buildImportPassCache(allFilePaths: ReadonlySet<string>): ImportPassCache {
   const allFileList = Array.from(allFilePaths);
+  // LOWERCASED, not slash-normalized — unlike every other caller of
+  // `buildSuffixIndex`. That is what `alreadyLowercased` below records.
   const normalizedFileList = allFileList.map((f) => f.toLowerCase());
   return {
     // Copied ONCE per file set, not once per import: `TsResolveContext` wants a
@@ -47,7 +49,19 @@ export function buildImportPassCache(allFilePaths: ReadonlySet<string>): ImportP
     allFilePaths: new Set(allFilePaths),
     allFileList,
     normalizedFileList,
-    index: buildSuffixIndex(normalizedFileList, allFileList),
+    // Every suffix of an all-lowercase path is itself lowercase, so the index's
+    // case-folded map came out a byte-for-byte copy of its exact map — same
+    // keys, same values, same insertion order — and TypeScript, JavaScript and
+    // Vue each carried one. Measured 14.00 MiB at 32 000 paths, 29.8% of the
+    // retained `ImportPassCache`. The flag drops the copy; it does not change
+    // what `getInsensitive` answers, because the copy was the identity (see
+    // `SuffixIndexOptions`). Checked, not assumed: over 474 524 probes on four
+    // mixed-case corpora — Vue PascalCase plus alias specifiers, case-colliding
+    // twins, a 600-file deep monorepo, and Unicode paths carrying final sigma,
+    // dotted-I and sharp-S — the two maps came out byte-identical, the exact
+    // map was the sole answerer 0 times, and `get(s) || getInsensitive(s)`
+    // returned the same file 474 524 times out of 474 524.
+    index: buildSuffixIndex(normalizedFileList, allFileList, { alreadyLowercased: true }),
     resolveCache: new Map(),
   };
 }
