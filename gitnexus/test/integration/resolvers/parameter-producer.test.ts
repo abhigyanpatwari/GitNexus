@@ -84,4 +84,62 @@ describe('caller-derived parameter types (W2-2)', () => {
     expect(there).toHaveLength(1);
     expect(there[0]).toContain('makeCandle.source');
   });
+
+  /**
+   * Every precise (0.9) return-shape target emitted from ONE fixture file.
+   *
+   * Scoped by FILE rather than by reader name because the fixtures below turn
+   * on two callables sharing a name: filtering by the name would report which
+   * of the twins was typed, and the property under test is that NEITHER is.
+   */
+  const preciseTargetsInFile = (file: string): string[] =>
+    getRelationships(result, 'ACCESSES')
+      .filter(
+        (e) =>
+          e.targetLabel === 'Property' &&
+          e.rel.confidence === 0.9 &&
+          e.sourceFilePath.endsWith(file),
+      )
+      .map((e) => e.rel.targetId);
+
+  it('keeps same-named callables in ONE file apart — free vs nested function', () => {
+    // The declaring FILE separates `readSpike` from `other.js`'s twin, but not
+    // a free `parse` from a `parse` nested inside `outer`: a `formal`'s owner is
+    // a bare identifier, so both key parameter 0 identically. Last-write-wins
+    // then gives `callParse`'s `makeSpike` to whichever formal was visited last
+    // — an edge at the 0.9 PRECISE tier for a call that never happened.
+    expect(preciseTargetsInFile('same-file-nested.js')).toEqual([]);
+  });
+
+  it('keeps same-named callables in ONE file apart — free function vs method', () => {
+    // `Runner.apply` owns its formal under the bare name `apply`, so it
+    // collides with the free `apply` exactly as the nested function does.
+    expect(preciseTargetsInFile('same-file-method.js')).toEqual([]);
+  });
+
+  it('does not type a shadowing ARROW parameter from the enclosing formal', () => {
+    // `items.map((spike) => spike.wickRatio)` inside `readShadowedArrow(spike, …)`.
+    // The arrow rebinds `spike`; an anonymous arrow emits no `formal` site, so
+    // its scope looks empty to a producer-only walk and the ARRAY ELEMENT gets
+    // typed from the outer parameter's callers.
+    expect(preciseTargetsInFile('shadow-arrow.js')).toEqual([]);
+  });
+
+  it('does not type a shadowing block-scoped CONST from the enclosing formal', () => {
+    // `{ const item = rows[0]; return item.wickRatio }` inside
+    // `readShadowedConst(item, rows)`. The block binds the name nearer than the
+    // formal whose callers were measured. The initializer is a subscript
+    // deliberately: `const item = rows` would bind `item` through the
+    // type-binding alias channel and the pass would decline before the scope
+    // walk ever ran, passing this test for the wrong reason.
+    expect(preciseTargetsInFile('shadow-const.js')).toEqual([]);
+  });
+
+  it('still reaches the formal through a block that shadows nothing', () => {
+    // The guard must stop at a scope binding THIS name, not at any binding
+    // scope: `{ const label = 1; … spike.wickRatio }` still reads the formal.
+    const targets = preciseTargetsInFile('nested-block.js');
+    expect(targets).toHaveLength(1);
+    expect(targets[0]).toContain('makeSpike.wickRatio');
+  });
 });

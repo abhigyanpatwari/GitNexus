@@ -36,7 +36,7 @@
  * name inference, and keep being reported when it declines.
  */
 
-import type { CallableFlowOperand, ParsedFile, ScopeId } from 'gitnexus-shared';
+import type { CallableFlowOperand, ParsedFile, Scope, ScopeId } from 'gitnexus-shared';
 import type { KnowledgeGraph } from '../../../graph/types.js';
 import type { ScopeResolutionIndexes } from '../../model/scope-resolution-indexes.js';
 import type { GraphNodeLookup } from '../graph-bridge/node-lookup.js';
@@ -99,11 +99,99 @@ function idNamesMember(id: string, owner: string, member: string): boolean {
  * The scope plus the name is enough and needs no def: the `formal` site already
  * states the scope its parameter binds in, and a read of that name anywhere
  * inside that scope's subtree refers to it unless something nearer shadows it —
- * which the walk below handles by stopping at the FIRST scope that carries the
- * name.
+ * which {@link parameterProducerFor} handles by stopping at the first scope that
+ * BINDS the name.
  */
 function parameterCellKey(scope: ScopeId, name: string): string {
   return `${scope}\u0000${name}`;
+}
+
+/**
+ * Does `scope` BIND `name` itself — with or without a type or a definition?
+ *
+ * The question the parameter walk has to ask before it climbs, and it is NOT
+ * "does this scope hold a parameter producer", which is what the first attempt
+ * asked. A `const`, a `for…of` binder, a catch binding and a parameter are all
+ * nearer declarations of the name, and none of them is in the producer map — so
+ * a walk that consults only that map climbs straight past the nearer binding and
+ * types the shadow from an enclosing parameter's callers.
+ *
+ * Reads the scope's OWN tables rather than `lookupBindingsAt`, for the same
+ * reason `isNamespaceNameShadowed` does: the question here is what this scope
+ * declares LOCALLY, and the finalized/augmented import channels answer a
+ * different one — routing through them would let a module-level import of the
+ * name count as a shadow of itself.
+ *
+ * `ownedDefs` is consulted alongside `bindings` because a language may register
+ * a declaration without a binding entry of its own; the sibling guard reads both
+ * for that reason, and here an extra STOP only ever costs an edge.
+ */
+function scopeBindsName(scope: Scope, name: string): boolean {
+  return (
+    scope.bindings.has(name) ||
+    scope.typeBindings.has(name) ||
+    scope.lexicalNames?.has(name) === true ||
+    scope.ownedDefs.some((def) => {
+      const qualifiedName = def.qualifiedName;
+      if (qualifiedName === undefined) return false;
+      const dot = qualifiedName.lastIndexOf('.');
+      return (dot === -1 ? qualifiedName : qualifiedName.slice(dot + 1)) === name;
+    })
+  );
+}
+
+/**
+ * The caller-derived producer for `name` as read at `startScope`, or undefined.
+ *
+ * A cell is keyed by the scope its parameter BINDS IN, so a read nested below
+ * that scope has to climb to reach it — through a nested block, a class body, a
+ * `catch`. The climb is the whole reason this walk exists, and it is also the
+ * whole risk: every scope crossed is a scope that might declare the name itself.
+ *
+ * So the walk stops at the FIRST scope that binds the name at all, not at the
+ * first scope that happens to hold a producer. `{ const item = rows[0]; …
+ * item.wickRatio }` inside `f(item, rows)` is the shape that separates the two:
+ * the block declares `item`, the producer map does not know that name, and a
+ * producer-only walk climbs past it to the formal and types a value the callers
+ * never supplied.
+ *
+ * A CALLABLE boundary stops the walk even when nothing visible binds the name,
+ * because a parameter list is the one binder this pass cannot see through: an
+ * anonymous arrow is dropped by `collectFunctions` (it cannot be named), so it
+ * emits no `formal` site and `items.map((spike) => spike.wickRatio)` presents a
+ * scope that looks EMPTY while in fact rebinding `spike`. Crossing it types an
+ * array element from the enclosing parameter's callers, at 0.9. The price is a
+ * closure that genuinely reads an enclosing parameter, which now declines — the
+ * trade this pass is built to make, since a wrong answer at the precise tier is
+ * one no `minConfidence` floor can filter out, while a missing one still falls
+ * through to the 0.5 name tier.
+ *
+ * NO VISITED SET, deliberately, unlike the sibling walks in `walkers.ts`. Those
+ * fail closed on a parent cycle; this one cannot meet a cycle to fail on. Both
+ * constructions of this tree (`buildScopeTree`, and `TransitionalScopeTree`
+ * which validates through it) enforce that a parent's range STRICTLY contains
+ * its child's and throw otherwise, and strict containment is well-founded — a
+ * cycle would need a scope strictly containing itself. A per-site `Set` here
+ * would be defence against a state the builder rejects, allocated once for every
+ * read/write site in the repo.
+ */
+function parameterProducerFor(
+  startScope: ScopeId,
+  name: string,
+  parameterProducers: ReadonlyMap<string, string>,
+  indexes: ScopeResolutionIndexes,
+): string | undefined {
+  let cursor: ScopeId | null = startScope;
+  while (cursor !== null) {
+    const producer = parameterProducers.get(parameterCellKey(cursor, name));
+    if (producer !== undefined && producer.length > 0) return producer;
+    const scope = indexes.scopeTree.getScope(cursor);
+    if (scope === undefined) return undefined;
+    if (scopeBindsName(scope, name)) return undefined;
+    if (scope.kind === 'Function') return undefined;
+    cursor = scope.parent;
+  }
+  return undefined;
 }
 
 /**
@@ -151,14 +239,39 @@ function buildParameterProducers(
   // Formals keyed by the file that declares them, so two same-named functions
   // in different files cannot answer for each other — the same file identity
   // the member join below relies on.
+  //
+  // AMBIGUITY IS REFUSED HERE TOO, not settled by arrival order. The file is
+  // only one of the two axes a name can collide on: `ownerName` is a BARE
+  // identifier, and `emitFormalFacts` emits one `formal` per parameter of every
+  // callable it collects — nested functions and class methods included. So a
+  // free `parse` and a `parse` nested inside it, or a free `apply` and
+  // `Runner.apply`, key this map identically within ONE file. A plain `.set`
+  // lets the last one visited win, which hands a caller's producer to a
+  // parameter that caller never reached; the edge that follows is emitted at the
+  // 0.9 PRECISE tier, above every `minConfidence` floor, while the genuine
+  // consumer is left untyped. Poisoning the key costs both callables their edge
+  // and fabricates neither — the same discipline the `producers` map applies to
+  // disagreeing callers thirty lines below.
   const formals = new Map<string, CallableFlowOperand>();
+  /** Formal keys claimed by two DIFFERENT parameters — unable to answer. */
+  const ambiguousFormals = new Set<string>();
   for (const parsed of parsedFiles) {
     for (const flow of parsed.callableFlowSites ?? []) {
       if (flow.kind !== 'formal') continue;
-      formals.set(
-        `${parsed.filePath}\u0000${flow.ownerName}\u0000${flow.parameterIndex}`,
-        flow.binding,
-      );
+      const formalKey = `${parsed.filePath}\u0000${flow.ownerName}\u0000${flow.parameterIndex}`;
+      if (ambiguousFormals.has(formalKey)) continue;
+      const claimed = formals.get(formalKey);
+      if (claimed !== undefined) {
+        // The same cell restated is not a disagreement — only a formal naming a
+        // DIFFERENT parameter leaves the key unable to answer.
+        if (claimed.inScope === flow.binding.inScope && claimed.name === flow.binding.name) {
+          continue;
+        }
+        formals.delete(formalKey);
+        ambiguousFormals.add(formalKey);
+        continue;
+      }
+      formals.set(formalKey, flow.binding);
     }
   }
   if (formals.size === 0) return producers;
@@ -252,11 +365,7 @@ export function emitReturnShapeMemberAccesses(
       // whose callers all pass the same producer. Consulted only where the
       // direct binding declined, so a receiver that already had a type keeps it.
       if (producerRef === undefined || producerRef.length === 0) {
-        let cursor: ScopeId | null = site.inScope;
-        while (cursor !== null && producerRef === undefined) {
-          producerRef = parameterProducers.get(parameterCellKey(cursor, receiver));
-          cursor = indexes.scopeTree.getScope(cursor)?.parent ?? null;
-        }
+        producerRef = parameterProducerFor(site.inScope, receiver, parameterProducers, indexes);
       }
       if (producerRef === undefined || producerRef.length === 0) continue;
 
