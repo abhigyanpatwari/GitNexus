@@ -277,6 +277,22 @@ program
   .action(createLazyAction(() => import('./embeddings.js'), 'embeddingsInstallCommand'));
 
 program
+  .command('extensions')
+  .description('Manage optional LadybugDB extensions (FTS keyword search, VECTOR semantic search)')
+  .command('install [name]')
+  .description(
+    'Install an optional LadybugDB extension on demand (fts, VECTOR, or "all"/omitted for both). ' +
+      'Query/serve/MCP paths never install these themselves (offline-first by default, load-only ' +
+      'policy) -- run this explicitly once, with network access, e.g. as a Docker image build step, ' +
+      'so later queries on that machine/image find the extension already on disk.',
+  )
+  .option(
+    '--timeout <ms>',
+    'Install timeout in milliseconds (default: 15000, or GITNEXUS_LBUG_EXTENSION_INSTALL_TIMEOUT_MS)',
+  )
+  .action(createLbugLazyAction(() => import('./extensions.js'), 'extensionsInstallCommand'));
+
+program
   .command('clean')
   .description('Delete GitNexus index for current repo')
   .option('-f, --force', 'Skip confirmation prompt')

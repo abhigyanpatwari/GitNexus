@@ -97,7 +97,8 @@ export const ftsDegradedWarning = (context?: FtsWarningContext): string => {
   }
   return (
     'FTS indexes missing — keyword search degraded. Run: gitnexus analyze --repair-fts ' +
-    '(or gitnexus analyze --force) to rebuild indexes.' +
+    '(or gitnexus analyze --force) to rebuild indexes, or `gitnexus extensions install fts` to ' +
+    'just warm the extension cache with no target repo needed (e.g. in a Docker image build).' +
     suffix
   );
 };
