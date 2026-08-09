@@ -72,10 +72,26 @@ export interface ProcessStep {
  * things and a reader acts on them differently: unexplored entry points mean
  * whole flows are missing, while a depth-capped trace means a flow is present
  * but shorter than it really is. `truncated` is the single boolean to branch on.
+ * That distinction is not decoration — `pipeline-phases/processes.ts` uses it to
+ * decide which of these are worth a `warn` and which belong at `debug`.
+ *
+ * `entryPointCandidatesDropped` was MISSED on the first pass, which is worth
+ * recording because the comment deriving `truncated` claimed "a new ceiling
+ * added later cannot be forgotten here" while an EXISTING one already had been:
+ * `findEntryPoints` ranks every scoring candidate and then keeps 200, so
+ * `entryPointsUnexplored` — computed over the list it RETURNS — could only ever
+ * see the survivors. On any repository with more than 200 candidate entry
+ * points that slice is the dominant ceiling, and it was invisible.
  */
 export interface ProcessTruncationStats {
   /** True when any ceiling below fired. */
   truncated: boolean;
+  /**
+   * Scoring candidates that never reached the trace loop because
+   * `findEntryPoints` keeps only the top `ENTRY_POINT_CANDIDATE_LIMIT`.
+   * Counted BEFORE the slice, so it sees what `entryPointsFound` cannot.
+   */
+  entryPointCandidatesDropped: number;
   /** Entry points never traced at all — the trace-collection loop stopped first. */
   entryPointsUnexplored: number;
   /** Entry-point walks abandoned with branches still on the stack. */
@@ -104,6 +120,7 @@ export interface ProcessDetectionResult {
 /** Zeroed counters, mutated in place by the walk. */
 const emptyTruncation = (): ProcessTruncationStats => ({
   truncated: false,
+  entryPointCandidatesDropped: 0,
   entryPointsUnexplored: 0,
   walksCutByBudget: 0,
   tracesDepthCapped: 0,
@@ -147,8 +164,12 @@ export const processProcesses = async (
   const nodeMap = new Map<string, GraphNode>();
   for (const n of knowledgeGraph.iterNodes()) nodeMap.set(n.id, n);
 
+  // Declared before Step 1 because `findEntryPoints` has a ceiling of its own
+  // (see `ENTRY_POINT_CANDIDATE_LIMIT`) and reports it through the same record.
+  const truncation = emptyTruncation();
+
   // Step 1: Find entry points (functions that call others but have few callers)
-  const entryPoints = findEntryPoints(knowledgeGraph, reverseCallsEdges, callsEdges);
+  const entryPoints = findEntryPoints(knowledgeGraph, reverseCallsEdges, callsEdges, truncation);
 
   onProgress?.(`Found ${entryPoints.length} entry points, tracing flows...`, 20);
 
@@ -156,7 +177,6 @@ export const processProcesses = async (
 
   // Step 2: Trace processes from each entry point
   const allTraces: string[][] = [];
-  const truncation = emptyTruncation();
 
   let tracedEntryPoints = 0;
   for (let i = 0; i < entryPoints.length && allTraces.length < cfg.maxProcesses * 2; i++) {
@@ -176,6 +196,11 @@ export const processProcesses = async (
   }
   // The loop exits on the TRACE quota, not on running out of entry points, so
   // the remainder are not "no flows found" — they were never looked at.
+  //
+  // Counted over the list `findEntryPoints` RETURNS, which is already capped at
+  // `ENTRY_POINT_CANDIDATE_LIMIT`; candidates beyond that cap are invisible here
+  // by construction and are reported separately as
+  // `entryPointCandidatesDropped`.
   truncation.entryPointsUnexplored = entryPoints.length - tracedEntryPoints;
 
   onProgress?.(`Found ${allTraces.length} traces, deduplicating...`, 60);
@@ -258,17 +283,24 @@ export const processProcesses = async (
   // one is kept as defence in depth — it cannot misbehave (it only makes an
   // already-deterministic order explicit) and it is what stops a future change
   // to dedup ordering from silently re-opening the defect.
-  const traceOrderKey = (trace: readonly string[]): string => trace.join('\u0000');
+  //
+  // Decorated once and sorted on the precomputed key rather than joining inside
+  // the comparator — see `traceOrderKey` for why the key exists at all and
+  // `sortByDepthThenPath` for why it is built exactly once per trace. The sink
+  // test is hoisted for the same reason: it ran twice per comparison.
   const tracesByTerminal = new Map<string, string[][]>();
-  const rankedByInterest = [...endpointDeduped].sort((a, b) => {
-    const aSink = Number(isSink(a[a.length - 1] ?? ''));
-    const bSink = Number(isSink(b[b.length - 1] ?? ''));
-    return (
-      bSink - aSink ||
-      b.length - a.length ||
-      (traceOrderKey(a) < traceOrderKey(b) ? -1 : traceOrderKey(a) > traceOrderKey(b) ? 1 : 0)
+  const rankedByInterest = ((): string[][] => {
+    const decorated = endpointDeduped.map((trace) => ({
+      trace,
+      sink: isSink(trace[trace.length - 1] ?? '') ? 1 : 0,
+      key: traceOrderKey(trace),
+    }));
+    decorated.sort(
+      (a, b) =>
+        b.sink - a.sink || b.trace.length - a.trace.length || compareOrderKeys(a.key, b.key),
     );
-  });
+    return decorated.map((d) => d.trace);
+  })();
   for (const trace of rankedByInterest) {
     const terminalId = trace[trace.length - 1];
     if (terminalId === undefined) continue;
@@ -360,7 +392,14 @@ export const processProcesses = async (
 
   // Derived last, from the counters the walk accumulated, so a new ceiling added
   // later cannot be forgotten here — it only has to increment its own counter.
+  //
+  // That claim was wrong when it was written: `findEntryPoints`' 200-candidate
+  // slice was an EXISTING ceiling with no counter, so it was not merely
+  // forgettable, it had already been forgotten. Adding a counter is only half
+  // the discipline; the other half is checking, when you write a line like this,
+  // that every cap in the file actually has one.
   truncation.truncated =
+    truncation.entryPointCandidatesDropped > 0 ||
     truncation.entryPointsUnexplored > 0 ||
     truncation.walksCutByBudget > 0 ||
     truncation.tracesDepthCapped > 0 ||
@@ -425,6 +464,13 @@ const buildReverseCallsGraph = (graph: KnowledgeGraph): AdjacencyList => {
 };
 
 /**
+ * How many ranked candidates survive to be traced. Everything below this line
+ * is discarded — see `ProcessTruncationStats.entryPointCandidatesDropped`, the
+ * counter that exists because this cap spent a release being invisible.
+ */
+const ENTRY_POINT_CANDIDATE_LIMIT = 200;
+
+/**
  * Find functions/methods that are good entry points for tracing.
  *
  * Entry points are scored based on:
@@ -438,6 +484,14 @@ const findEntryPoints = (
   graph: KnowledgeGraph,
   reverseCallsEdges: AdjacencyList,
   callsEdges: AdjacencyList,
+  /**
+   * Mutated in place when the candidate cap fires. Optional and reported
+   * through an out-parameter rather than a richer return value, matching
+   * `traceFromEntryPoint`: the `string[]` contract every caller already uses is
+   * unchanged, and a caller that does not care about completeness does not have
+   * to unwrap a counter to ask for entry points.
+   */
+  truncation?: ProcessTruncationStats,
 ): string[] => {
   const symbolTypes = new Set<NodeLabel>(['Function', 'Method']);
   const entryPointCandidates: {
@@ -503,9 +557,17 @@ const findEntryPoints = (
     });
   }
 
-  return sorted
-    .slice(0, 200) // Limit to prevent explosion
-    .map((c) => c.id);
+  // Limit to prevent explosion — and SAY SO. This is the ceiling that decides
+  // how much of a repository process detection ever looks at: on anything with
+  // more than 200 scoring candidates the reported flows are a sample of the
+  // top-ranked ones, and every downstream count (`entryPointsFound`,
+  // `entryPointsUnexplored`) is computed over the survivors, so none of them can
+  // see what was cut here.
+  if (truncation !== undefined && sorted.length > ENTRY_POINT_CANDIDATE_LIMIT) {
+    truncation.entryPointCandidatesDropped = sorted.length - ENTRY_POINT_CANDIDATE_LIMIT;
+  }
+
+  return sorted.slice(0, ENTRY_POINT_CANDIDATE_LIMIT).map((c) => c.id);
 };
 
 // ============================================================================
@@ -708,6 +770,57 @@ export function buildSinkFunctionSet(
 }
 
 // ============================================================================
+// HELPER: Deterministic trace ordering
+// ============================================================================
+
+/**
+ * Total-order key for a trace — the TIEBREAK every trace sort in this file uses.
+ *
+ * NUL is the separator, and that is load-bearing rather than cosmetic. Node ids
+ * embed file paths and a path may contain a SPACE, so a space-joined key is
+ * ambiguous in exactly the way `traceKey`'s unpadded `->` join was (#2894):
+ * `['A B', 'C']` and `['A', 'B C']` both render as `A B C`, the comparator
+ * returns 0, and `Array.prototype.sort` — being stable — falls straight back to
+ * the input order the tiebreak exists to remove. Two of the three trace sorts
+ * here joined on a space and had that hole; all three now share this key.
+ *
+ * NUL cannot occur in a node id (not in a POSIX path, not in a source
+ * identifier) and sorts below every character that can, so joining on it is
+ * order-equivalent to comparing the two arrays element by element. That
+ * equivalence is what makes it a drop-in for the space-joined keys: on any
+ * corpus without the collision above the resulting order is IDENTICAL, which is
+ * asserted directly in `process-processor.test.ts`.
+ */
+const traceOrderKey = (trace: readonly string[]): string => trace.join('\u0000');
+
+/** Lexicographic compare of two `traceOrderKey` results. */
+const compareOrderKeys = (a: string, b: string): number => (a < b ? -1 : a > b ? 1 : 0);
+
+/**
+ * Sort traces deepest-first, breaking ties on the path key.
+ *
+ * A Schwartzian transform: the key is built ONCE per trace and the comparator
+ * only compares two strings. Written the obvious way — `a.join(sep) <
+ * b.join(sep)` inside the comparator — each comparison allocates up to FOUR
+ * joined strings, so an O(n log n) sort performs O(n log n) joins of
+ * O(depth x id-length) characters each.
+ *
+ * `n` is bounded here (`ENTRY_POINT_CANDIDATE_LIMIT` entry points x the
+ * per-entry trace budget), so the cost is small and once-per-analyze: measured
+ * at the ceiling, 23,851 comparisons performed 70,524 joins, and end-to-end
+ * `processProcesses` at 80,000 functions / 640k CALLS went 456 -> 555 ms. It is
+ * fixed anyway because it is the same allocation-in-the-comparator shape that
+ * was just removed from `deduplicateTraces` below (deep_chain 1233 -> 102 ms),
+ * and leaving one instance of it standing next to that comment invites the next
+ * one.
+ */
+const sortByDepthThenPath = (traces: readonly string[][]): string[][] => {
+  const decorated = traces.map((trace) => ({ trace, key: traceOrderKey(trace) }));
+  decorated.sort((a, b) => b.trace.length - a.trace.length || compareOrderKeys(a.key, b.key));
+  return decorated.map((d) => d.trace);
+};
+
+// ============================================================================
 // HELPER: Deduplicate traces
 // ============================================================================
 
@@ -726,10 +839,7 @@ export const deduplicateTraces = (
   // total order instead of inheriting graph-traversal order (determinism note
   // on `rankedByInterest`). Which of two equal traces is kept as the
   // representative is otherwise decided by insertion order.
-  const sorted = [...traces].sort(
-    (a, b) =>
-      b.length - a.length || (a.join(' ') < b.join(' ') ? -1 : a.join(' ') > b.join(' ') ? 1 : 0),
-  );
+  const sorted = sortByDepthThenPath(traces);
   const unique: string[][] = [];
   // Keys for `unique`, built ONCE per surviving trace rather than once per
   // COMPARISON. The join used to sit inside the `some()` callback below, so
@@ -802,10 +912,7 @@ const deduplicateByEndpoints = (traces: string[][]): string[][] => {
   // Sort longest first so the first seen per key is the longest; the path
   // tiebreak makes "which of two equal-length traces represents this endpoint
   // pair" independent of insertion order.
-  const sorted = [...traces].sort(
-    (a, b) =>
-      b.length - a.length || (a.join(' ') < b.join(' ') ? -1 : a.join(' ') > b.join(' ') ? 1 : 0),
-  );
+  const sorted = sortByDepthThenPath(traces);
 
   for (const trace of sorted) {
     const key = `${trace[0]}::${trace[trace.length - 1]}`;

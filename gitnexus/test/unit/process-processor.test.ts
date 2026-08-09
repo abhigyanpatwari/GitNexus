@@ -1127,6 +1127,241 @@ describe('truncation is reported, not swallowed (W2-3)', () => {
   });
 });
 
+// The ceiling the first pass of W2-3 MISSED. `findEntryPoints` ranks every
+// scoring candidate and then keeps the top 200, so `entryPointsUnexplored` —
+// computed over the list it RETURNS — can only ever see the survivors, and the
+// cap that decides how much of a repository is looked at at all reported
+// nothing. On anything above 200 candidates it is the DOMINANT ceiling.
+describe('the entry-point candidate cap is disclosed too', () => {
+  const addFn = (graph: ReturnType<typeof createKnowledgeGraph>, id: string): void => {
+    graph.addNode({
+      id,
+      label: 'Function',
+      properties: { name: id.split(':')[1], filePath: 'src/a.ts', startLine: 1, endLine: 2 },
+    });
+  };
+  const addCall = (
+    graph: ReturnType<typeof createKnowledgeGraph>,
+    from: string,
+    to: string,
+  ): void => {
+    graph.addRelationship({
+      id: `rel:${from}->${to}`,
+      sourceId: from,
+      targetId: to,
+      type: 'CALLS',
+      confidence: 1,
+      reason: 'test',
+    });
+  };
+
+  /**
+   * 205 three-node chains. Every node with at least one callee scores above
+   * zero, so this is 410 candidates for 200 slots — and NOTHING else is
+   * truncated: the chains are three long (under `maxTraceDepth`), single-callee
+   * (under `maxBranching`), one trace each (under the per-entry budget), and
+   * `maxProcesses` is set high enough that none are dropped.
+   */
+  const manyCandidates = (): ReturnType<typeof createKnowledgeGraph> => {
+    const graph = createKnowledgeGraph();
+    for (let c = 0; c < 205; c++) {
+      for (let i = 0; i < 3; i++) addFn(graph, `func:c${c}_${i}`);
+      for (let i = 0; i < 2; i++) addCall(graph, `func:c${c}_${i}`, `func:c${c}_${i + 1}`);
+    }
+    return graph;
+  };
+
+  it('counts the candidates that never made the ranked list', async () => {
+    const result = await processProcesses(manyCandidates(), [], undefined, {
+      maxProcesses: 1000,
+    });
+
+    // 410 candidates, 200 kept: the counter reports what `entryPointsFound`
+    // structurally cannot.
+    expect(result.stats.entryPointsFound).toBe(200);
+    expect(result.stats.truncation.entryPointCandidatesDropped).toBe(210);
+  });
+
+  it('folds the new ceiling into `truncated`, and fires ALONE', async () => {
+    // Asserted exhaustively rather than as `truncated === true`: if any other
+    // counter were also non-zero the first assertion would prove nothing about
+    // which ceiling was detected.
+    const result = await processProcesses(manyCandidates(), [], undefined, {
+      maxProcesses: 1000,
+    });
+
+    expect(result.stats.truncation).toEqual({
+      truncated: true,
+      entryPointCandidatesDropped: 210,
+      entryPointsUnexplored: 0,
+      walksCutByBudget: 0,
+      tracesDepthCapped: 0,
+      calleesDropped: 0,
+      processesDropped: 0,
+    });
+  });
+
+  it('reports nothing dropped when every candidate fits', async () => {
+    // The control for the two above — the counter must not simply always fire.
+    const graph = createKnowledgeGraph();
+    for (let c = 0; c < 5; c++) {
+      for (let i = 0; i < 3; i++) addFn(graph, `func:s${c}_${i}`);
+      for (let i = 0; i < 2; i++) addCall(graph, `func:s${c}_${i}`, `func:s${c}_${i + 1}`);
+    }
+
+    const result = await processProcesses(graph, [], undefined, { maxProcesses: 1000 });
+
+    expect(result.stats.truncation.entryPointCandidatesDropped).toBe(0);
+    expect(result.stats.truncation.truncated).toBe(false);
+  });
+});
+
+// The three trace sorts in this file each joined the path inside the COMPARATOR
+// — up to four joins per comparison — and two of the three joined on a SPACE.
+// Both are now one shared helper keyed on NUL.
+//
+// The separator is not cosmetic. Node ids embed file paths and a path may
+// contain a space, so `['A B', 'C']` and `['A', 'B C']` produce the same
+// space-joined key, the comparator returns 0, and a stable sort falls back to
+// the input order the tiebreak exists to remove — the exact defect W2-5 fixed,
+// reintroduced by the key. `traceKey` two functions away already pads with `->`
+// because an unanchored join is ambiguous (#2894); this is the same lesson.
+describe('trace ordering is total and allocation-free (#2899 follow-up)', () => {
+  const noSink = (): boolean => false;
+
+  /**
+   * A deterministic 200-trace corpus with NO space in any id — i.e. the corpus
+   * on which the old space-joined key and the new NUL-joined key must agree.
+   *
+   * Lehmer LCG rather than `Math.random`: the assertion below is an ORDER
+   * IDENTITY claim, and evidence for it has to be reproducible. Every trace ends
+   * in an id unique to it, which is what keeps subsumption out of the way so the
+   * function returns exactly its sorted input.
+   */
+  const seededCorpus = (): string[][] => {
+    let seed = 20260809;
+    const next = (): number => (seed = (seed * 48271) % 2147483647);
+    const traces: string[][] = [];
+    for (let i = 0; i < 200; i++) {
+      const depth = 3 + (next() % 3);
+      const trace: string[] = [];
+      for (let j = 0; j < depth - 1; j++) trace.push(`n${next() % 6}`);
+      trace.push(`term${i}`);
+      traces.push(trace);
+    }
+    return traces;
+  };
+
+  it('produces exactly the order the space-joined comparator produced', () => {
+    // ORDER IDENTITY. The refactor is only allowed to change WHEN keys are
+    // built, never the resulting order, because the order is what the
+    // `maxProcesses` cap consumes. Both separators sort below every character a
+    // node id can contain, so joining on either is order-equivalent to comparing
+    // the arrays element by element — this pins that equivalence instead of
+    // asserting it in a comment.
+    const corpus = seededCorpus();
+    const legacy = [...corpus].sort(
+      (a, b) =>
+        b.length - a.length || (a.join(' ') < b.join(' ') ? -1 : a.join(' ') > b.join(' ') ? 1 : 0),
+    );
+
+    expect(deduplicateTraces(corpus, noSink)).toEqual(legacy);
+  });
+
+  it('orders a pair that COLLIDES under a space separator', () => {
+    // `['r', 'a b', 'c']` and `['r', 'a', 'b c']` both join to "r a b c", so the
+    // space comparator returns 0 and `Array.prototype.sort`, being stable, hands
+    // the decision back to input order. Under NUL they differ at the third
+    // character and the order is fixed.
+    const first: string[][] = [
+      ['r', 'a b', 'c'],
+      ['r', 'a', 'b c'],
+    ];
+    const second: string[][] = [
+      ['r', 'a', 'b c'],
+      ['r', 'a b', 'c'],
+    ];
+
+    expect(deduplicateTraces(first, noSink)).toEqual(deduplicateTraces(second, noSink));
+  });
+});
+
+// The same collision, reached through the WHOLE processor rather than one
+// helper — because a space in a node id is not hypothetical (ids embed file
+// paths, and directories with spaces are ordinary), and because W2-5 states its
+// guarantee over `processProcesses`, not over its internals.
+//
+// The observable defect was narrower than the collision itself: `rankedByInterest`
+// already keyed on NUL, so the FINAL rank was safe. It was `deduplicateByEndpoints`
+// — which keeps ONE representative per entry->terminal pair — that still joined on
+// a space, so when two equal-length paths between the SAME two endpoints collided,
+// which one survived was decided by insertion order. The surviving path is what
+// the `Process` node records, so the persisted graph differed.
+describe('insertion-order invariance survives ids containing spaces', () => {
+  /**
+   * Two four-step paths from `func:r` to `func:z`, via `func:a b -> func:c` and
+   * via `func:a -> b func:c`. Both join to "func:r func:a b func:c func:z" under
+   * a space, so the endpoint-dedup comparator returned 0 and kept whichever the
+   * DFS happened to reach first. Under NUL they differ at the separator after
+   * `func:a` and the representative is fixed.
+   */
+  const collidingGraph = (reverse: boolean): ReturnType<typeof createKnowledgeGraph> => {
+    const graph = createKnowledgeGraph();
+    const add = (id: string, name: string): void => {
+      graph.addNode({
+        id,
+        label: 'Function',
+        properties: { name, filePath: 'src/a.ts', startLine: 1, endLine: 2 },
+      });
+    };
+    const call = (from: string, to: string): void => {
+      graph.addRelationship({
+        id: `rel:${from}=>${to}`,
+        sourceId: from,
+        targetId: to,
+        type: 'CALLS',
+        confidence: 1,
+        reason: 'test',
+      });
+    };
+    const branches: [string, string][] = [
+      ['func:a b', 'func:c'],
+      ['func:a', 'b func:c'],
+    ];
+    const ordered = reverse ? [...branches].reverse() : branches;
+    add('func:r', 'r');
+    add('func:z', 'z');
+    for (const [mid, next] of ordered) {
+      add(mid, 'mid');
+      add(next, 'next');
+    }
+    for (const [mid, next] of ordered) {
+      call('func:r', mid);
+      call(mid, next);
+      call(next, 'func:z');
+    }
+    return graph;
+  };
+
+  it('keeps the same representative path whichever branch is inserted first', async () => {
+    const a = await processProcesses(collidingGraph(false), []);
+    const b = await processProcesses(collidingGraph(true), []);
+
+    // One entry->terminal pair, so endpoint dedup keeps exactly one path — and
+    // that path is what the Process node records.
+    expect(a.processes.length).toBe(1);
+    expect(a.processes[0]?.trace).toEqual(b.processes[0]?.trace);
+  });
+
+  it('selects the same flow under a cap whichever branch is inserted first', async () => {
+    const a = await processProcesses(collidingGraph(false), [], undefined, { maxProcesses: 1 });
+    const b = await processProcesses(collidingGraph(true), [], undefined, { maxProcesses: 1 });
+
+    expect(a.processes.length).toBe(1);
+    expect(a.processes[0]?.trace).toEqual(b.processes[0]?.trace);
+  });
+});
+
 // #2894. `deduplicateTraces` decided subsumption with an UNANCHORED
 // `String.includes`, so a match could begin in the middle of a node id and a
 // trace was discarded against a chain it does not appear in.
