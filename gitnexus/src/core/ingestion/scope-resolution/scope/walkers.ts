@@ -23,6 +23,7 @@
 import type {
   BindingRef,
   ParsedFile,
+  Scope,
   ScopeId,
   SymbolDefinition,
   TypeParameter,
@@ -40,6 +41,7 @@ import {
   extractTemplateArguments,
   stripTemplateArguments,
 } from '../../utils/template-arguments.js';
+import { definitionIdPosition } from '../utils/definition-id.js';
 
 const EMPTY_BINDINGS: readonly BindingRef[] = Object.freeze([]);
 
@@ -502,6 +504,44 @@ const typeParameterNamesByBundle = new WeakMap<
 const NO_TYPE_PARAMETERS: ReadonlySet<string> = Object.freeze(new Set<string>());
 
 /**
+ * Did `def` OPEN `scope` — i.e. is this scope the declaration's own body?
+ *
+ * The gate on reading a declaration's `typeParameters` as a lexical binding.
+ * `ownedDefs` answers "which scope was this declaration written in", which is a
+ * DIFFERENT question: a declaration that opens no scope of its own is owned by
+ * whatever encloses it, and reading its parameters there binds them across that
+ * entire enclosing region.
+ *
+ * Measured (#2899): a TypeScript `type Maybe<Result> = Result | null` opens no
+ * scope — only the `object_type` alias form does — so its parameter list landed
+ * in the MODULE's `ownedDefs`. Since each scope's answer is built from its
+ * parent's, `Result` was then bound as a type parameter in every scope in the
+ * file, and the `USES` guard downstream deleted every genuine edge to the
+ * `interface Result` beside it, imported ones included. One un-anchored
+ * parameter list silently emptied an entire file of the edge class that answers
+ * "what breaks if I remove this field?".
+ *
+ * Compares the def's declaration position with the scope's start — the same
+ * alignment test `pickCallerCallableDef` uses to tell a closure from a nested
+ * function, and sound for the same reason: when a declaration is itself the
+ * scope node, both sides are built from one `Range`. Every language that
+ * populates `typeParameters` today anchors them on a declaration that IS a scope
+ * node (TS class/interface/function, Java/C#/Kotlin/Rust type declarations, the
+ * C++ `class_specifier` inside a `template_declaration`), so the alignment holds
+ * wherever the parameters were meant to bind.
+ *
+ * A `Module` scope is excluded outright rather than left to the position test:
+ * a module is opened by the file, never by a declaration, and a declaration
+ * written on the file's first line shares its start coordinates.
+ */
+function declarationOpenedScope(def: SymbolDefinition, scope: Scope): boolean {
+  if (scope.kind === 'Module') return false;
+  const position = definitionIdPosition(def.nodeId, def.filePath);
+  if (position === undefined) return false;
+  return position.line === scope.range.startLine && position.column === scope.range.startCol;
+}
+
+/**
  * Every name the scope chain above `scopeId` (inclusive) binds as a declared
  * TYPE PARAMETER.
  *
@@ -509,6 +549,10 @@ const NO_TYPE_PARAMETERS: ReadonlySet<string> = Object.freeze(new Set<string>())
  * chain is walked once and every scope on it is O(own defs) rather than
  * O(depth × defs). That matters because the caller runs on every class-binding
  * lookup, and a module scope's `ownedDefs` is the whole file.
+ *
+ * That parent-inheriting fold is also why {@link declarationOpenedScope} gates
+ * every read: a parameter list picked up one scope too high does not merely
+ * over-reach by one scope, it reaches every scope below it as well.
  */
 function typeParameterNamesInScope(
   scopeId: ScopeId,
@@ -545,7 +589,9 @@ function typeParameterNamesInScope(
     const scope = scopes.scopeTree.getScope(id);
     let own: Set<string> | undefined;
     for (const def of scope?.ownedDefs ?? []) {
-      for (const parameter of def.typeParameters ?? []) {
+      if (def.typeParameters === undefined) continue;
+      if (scope === undefined || !declarationOpenedScope(def, scope)) continue;
+      for (const parameter of def.typeParameters) {
         if (parameter.name.length === 0) continue;
         own ??= new Set<string>(inherited);
         own.add(parameter.name);
