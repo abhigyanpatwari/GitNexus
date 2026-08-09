@@ -176,8 +176,11 @@ describe('PARSE_CACHE_VERSION', () => {
   // does do is fail loudly the moment the constant and this expectation drift
   // apart, which is what forces the merge-time diff against origin/main to
   // happen at all.
-  it('pins SCHEMA_BUMP to 53 so concurrent bumps cannot silently collide (#2766)', () => {
-    expect(Number(PARSE_CACHE_VERSION.split('+', 1)[0])).toBe(53);
+  // Moved 53 -> 59 for Spring non-HTTP handler side-channel facts (#2417 / #2891).
+  // Values 54-58 are claimed by the current open #2899 head. Whichever PR
+  // merges second must allocate a fresh value after rebasing.
+  it('pins SCHEMA_BUMP to 59 so concurrent bumps cannot silently collide (#2766)', () => {
+    expect(Number(PARSE_CACHE_VERSION.split('+', 1)[0])).toBe(59);
   });
 
   it('embeds the gitnexus package version (so upgrades invalidate the cache)', () => {

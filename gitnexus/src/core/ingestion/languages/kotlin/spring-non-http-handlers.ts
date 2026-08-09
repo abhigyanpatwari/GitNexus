@@ -1,14 +1,16 @@
 import { makeScopeId } from 'gitnexus-shared';
 import {
   createSpringNonHttpHandlerMetadataAttacher,
+  type SpringNonHttpHandlerAnnotationFact,
   type SpringNonHttpHandlerFact,
 } from '../../frameworks/spring/non-http-handlers.js';
 import { nodeToCapture, type SyntaxNode } from '../../utils/ast-helpers.js';
 import { getKotlinSpringNonHttpHandlerFacts } from './capture-side-channel.js';
 import { isKotlinPackageSiblingVisibilityIncomplete } from './package-siblings.js';
-import { kotlinSpringAnnotationFacts, type KotlinAnnotationSyntaxFact } from './spring-di.js';
+import { kotlinSpringAnnotationFacts } from './spring-di.js';
 
-export type KotlinSpringNonHttpHandlerFact = SpringNonHttpHandlerFact<KotlinAnnotationSyntaxFact>;
+export type KotlinSpringNonHttpHandlerFact =
+  SpringNonHttpHandlerFact<SpringNonHttpHandlerAnnotationFact>;
 
 /**
  * Capture annotated callables conservatively. A simple-name prefilter would
@@ -20,7 +22,9 @@ export function captureKotlinSpringNonHttpHandlerFacts(
   filePath: string,
 ): KotlinSpringNonHttpHandlerFact[] {
   const facts: KotlinSpringNonHttpHandlerFact[] = [];
-  const body = classNode.namedChildren.find((child) => child.type === 'class_body');
+  const body = classNode.namedChildren.find(
+    (child) => child.type === 'class_body' || child.type === 'enum_class_body',
+  );
   if (body === undefined) return facts;
   for (const member of body.namedChildren) {
     if (member.type !== 'function_declaration') continue;
@@ -31,7 +35,12 @@ export function captureKotlinSpringNonHttpHandlerFacts(
       ownerScopeId: makeScopeId({ filePath, range: ownerRange, kind: 'Function' }),
       ownerFilePath: filePath,
       ownerRange,
-      annotations,
+      annotations: annotations.map((annotation) => ({
+        name: annotation.name,
+        ...(annotation.useSiteTarget === undefined
+          ? {}
+          : { useSiteTarget: annotation.useSiteTarget }),
+      })),
     });
   }
   return facts;

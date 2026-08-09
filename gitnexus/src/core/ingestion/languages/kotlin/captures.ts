@@ -105,6 +105,7 @@ export function emitKotlinScopeCaptures(
   const springConditionalFacts: KotlinSpringConditionalFact[] = [];
   const springDiFacts: KotlinSpringDiClassFact[] = [];
   const springNonHttpHandlerFacts: KotlinSpringNonHttpHandlerFact[] = [];
+  const springNonHttpHandlerTypeNodeIds = new Set<number>();
   const springDiClassNodeIds = new Set<number>();
   const returnTypes = collectKotlinReturnTypeTexts(tree.rootNode);
   out.push(...synthesizeKotlinLocalAssignmentBindings(tree.rootNode, returnTypes));
@@ -136,9 +137,17 @@ export function emitKotlinScopeCaptures(
       nodeIfType(groupedNodes['@scope.class'], 'object_declaration'),
       nodeIfType(groupedNodes['@scope.class'], 'companion_object'),
     ].find((node): node is SyntaxNode => node !== null);
-    if (springAopTypeNode !== undefined && !springAopTypeNodeIds.has(springAopTypeNode.id)) {
-      springAopTypeNodeIds.add(springAopTypeNode.id);
-      springAopFacts.push(...captureKotlinSpringAopFacts(springAopTypeNode, filePath));
+    if (springAopTypeNode !== undefined) {
+      if (!springAopTypeNodeIds.has(springAopTypeNode.id)) {
+        springAopTypeNodeIds.add(springAopTypeNode.id);
+        springAopFacts.push(...captureKotlinSpringAopFacts(springAopTypeNode, filePath));
+      }
+      if (!springNonHttpHandlerTypeNodeIds.has(springAopTypeNode.id)) {
+        springNonHttpHandlerTypeNodeIds.add(springAopTypeNode.id);
+        springNonHttpHandlerFacts.push(
+          ...captureKotlinSpringNonHttpHandlerFacts(springAopTypeNode, filePath),
+        );
+      }
     }
 
     const springDiClassNode = nodeIfType(groupedNodes['@scope.class'], 'class_declaration');
@@ -146,9 +155,6 @@ export function emitKotlinScopeCaptures(
       springDiClassNodeIds.add(springDiClassNode.id);
       springConditionalFacts.push(
         ...captureKotlinSpringConditionalFacts(springDiClassNode, filePath),
-      );
-      springNonHttpHandlerFacts.push(
-        ...captureKotlinSpringNonHttpHandlerFacts(springDiClassNode, filePath),
       );
       const fact = captureKotlinSpringDiClassFact(springDiClassNode, filePath);
       if (fact !== null) springDiFacts.push(fact);

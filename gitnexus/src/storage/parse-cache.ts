@@ -388,7 +388,16 @@ import type { ParseWorkerResult } from '../core/ingestion/workers/parse-worker.j
 // published (46, 47) is superseded by 48, so a warm cache stamped with either is
 // correctly invalidated.
 // RE-CHECK AGAINST origin/main IMMEDIATELY BEFORE MERGING.
-const SCHEMA_BUMP = 53;
+// 53 -> 59 for Spring non-HTTP handler side-channel facts (#2417 / #2891).
+// Java and Kotlin ParsedFiles now persist scheduled, event, messaging, and
+// managed-job handler syntax. A v53 warm cache has no such facts, so the graph
+// rebuild would stamp the analysis feature as complete while promoting zero
+// handlers. Values 54-58 are already claimed by the current open #2899 head,
+// so 59 avoids that known collision while main remains at 53. Whichever PR
+// merges second must allocate a fresh value after rebasing; if #2899 lands
+// first, bump this value again before merging.
+// RE-CHECK AGAINST origin/main IMMEDIATELY BEFORE MERGING.
+const SCHEMA_BUMP = 59;
 const GITNEXUS_PKG_VERSION = (() => {
   try {
     // package.json sits at gitnexus/package.json — two levels up from

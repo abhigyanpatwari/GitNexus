@@ -4,6 +4,7 @@ import type { ScopeResolutionIndexes } from '../../model/scope-resolution-indexe
 import { resolveCallerGraphId } from '../../scope-resolution/graph-bridge/ids.js';
 import type { GraphNodeLookup } from '../../scope-resolution/graph-bridge/node-lookup.js';
 import { createSpringAnnotationNameResolver } from './bean-candidates.js';
+import { SPRING_BEAN_ANNOTATION } from './bean-factories.js';
 
 export const SPRING_NON_HTTP_HANDLER_ENTRY_POINT_MULTIPLIER = 3.0;
 
@@ -32,6 +33,9 @@ export interface SpringNonHttpHandlerAdapter<
   isPackageVisibilityIncomplete(filePath: string): boolean;
 }
 
+const SPRING_SERVICE_ACTIVATOR_ANNOTATION =
+  'org.springframework.integration.annotation.ServiceActivator';
+
 const HANDLER_ANNOTATIONS = new Map<string, SpringNonHttpHandlerKind>([
   ['org.springframework.scheduling.annotation.Scheduled', 'scheduled'],
   ['org.springframework.scheduling.annotation.Schedules', 'scheduled'],
@@ -50,13 +54,17 @@ const HANDLER_ANNOTATIONS = new Map<string, SpringNonHttpHandlerKind>([
   ['io.awspring.cloud.messaging.listener.annotation.SqsListener', 'message'],
   ['org.springframework.cloud.aws.messaging.listener.annotation.SqsListener', 'message'],
   ['org.springframework.cloud.stream.annotation.StreamListener', 'message'],
-  ['org.springframework.integration.annotation.ServiceActivator', 'message'],
+  [SPRING_SERVICE_ACTIVATOR_ANNOTATION, 'message'],
   ['org.springframework.messaging.handler.annotation.MessageMapping', 'message'],
   ['org.springframework.messaging.simp.annotation.SubscribeMapping', 'message'],
   ['com.xxl.job.core.handler.annotation.XxlJob', 'xxl-job'],
 ]);
 
 const RECOGNIZED_HANDLER_ANNOTATIONS = new Set(HANDLER_ANNOTATIONS.keys());
+const RESOLVABLE_NON_HTTP_ANNOTATIONS = new Set([
+  ...RECOGNIZED_HANDLER_ANNOTATIONS,
+  SPRING_BEAN_ANNOTATION,
+]);
 
 function simpleName(name: string): string {
   const separator = name.lastIndexOf('.');
@@ -76,7 +84,12 @@ export function hasSpringNonHttpHandlerRelevantAnnotation(
 function exactCallableOwnersByRange(graph: KnowledgeGraph): ReadonlyMap<string, GraphNode | null> {
   const owners = new Map<string, GraphNode | null>();
   for (const node of graph.iterNodes()) {
-    if (node.label !== 'Method' || typeof node.properties.filePath !== 'string') continue;
+    if (
+      (node.label !== 'Method' && node.label !== 'Function') ||
+      typeof node.properties.filePath !== 'string'
+    ) {
+      continue;
+    }
     const key = `${node.properties.filePath}\0${node.properties.startLine}\0${node.properties.endLine}`;
     owners.set(key, owners.has(key) ? null : node);
   }
@@ -88,18 +101,20 @@ function ownerGraphNode(
   indexes: ScopeResolutionIndexes,
   nodeLookup: GraphNodeLookup,
   graph: KnowledgeGraph,
-  exactOwnerByRange: ReadonlyMap<string, GraphNode | null>,
+  getExactOwnerByRange: () => ReadonlyMap<string, GraphNode | null>,
 ): GraphNode | undefined {
-  let ownerId = resolveCallerGraphId(fact.ownerScopeId, indexes, nodeLookup);
-  if (ownerId === undefined && fact.ownerFilePath !== undefined && fact.ownerRange !== undefined) {
-    const fallback = exactOwnerByRange.get(
+  const ownerId = resolveCallerGraphId(fact.ownerScopeId, indexes, nodeLookup);
+  if (ownerId !== undefined) {
+    const owner = graph.getNode(ownerId);
+    if (owner?.label === 'Method' || owner?.label === 'Function') return owner;
+  }
+  if (fact.ownerFilePath !== undefined && fact.ownerRange !== undefined) {
+    const fallback = getExactOwnerByRange().get(
       `${fact.ownerFilePath}\0${fact.ownerRange.startLine - 1}\0${fact.ownerRange.endLine - 1}`,
     );
-    if (fallback !== null && fallback !== undefined) ownerId = fallback.id;
+    if (fallback !== null && fallback !== undefined) return fallback;
   }
-  if (ownerId === undefined) return undefined;
-  const owner = graph.getNode(ownerId);
-  return owner?.label === 'Method' ? owner : undefined;
+  return undefined;
 }
 
 function handlerReason(kinds: ReadonlySet<SpringNonHttpHandlerKind>): string {
@@ -124,23 +139,38 @@ export function createSpringNonHttpHandlerMetadataAttacher<
     nodeLookup: GraphNodeLookup,
     indexes: ScopeResolutionIndexes,
   ): void => {
-    const resolveAnnotation = createSpringAnnotationNameResolver(indexes);
-    const exactOwnerByRange = exactCallableOwnersByRange(graph);
-    const classByMethod = new Map<string, GraphNode>();
-    for (const relationship of graph.iterRelationshipsByType('HAS_METHOD')) {
-      const owner = graph.getNode(relationship.sourceId);
-      if (owner !== undefined) classByMethod.set(relationship.targetId, owner);
+    const factsByFile = new Map<string, readonly SpringNonHttpHandlerFact<Annotation>[]>();
+    for (const parsed of parsedFiles) {
+      const facts = adapter.getFacts(parsed.filePath);
+      if (facts.length > 0) factsByFile.set(parsed.filePath, facts);
     }
+    if (factsByFile.size === 0) return;
+
+    const resolveAnnotation = createSpringAnnotationNameResolver(indexes);
+    let exactOwnerByRange: ReadonlyMap<string, GraphNode | null> | undefined;
+    const getExactOwnerByRange = (): ReadonlyMap<string, GraphNode | null> =>
+      (exactOwnerByRange ??= exactCallableOwnersByRange(graph));
+    let classIdByMethod: ReadonlyMap<string, string> | undefined;
+    const ownerClassLabel = (methodId: string): GraphNode['label'] | undefined => {
+      if (classIdByMethod === undefined) {
+        const owners = new Map<string, string>();
+        for (const relationship of graph.iterRelationshipsByType('HAS_METHOD')) {
+          owners.set(relationship.targetId, relationship.sourceId);
+        }
+        classIdByMethod = owners;
+      }
+      const classId = classIdByMethod.get(methodId);
+      return classId === undefined ? undefined : graph.getNode(classId)?.label;
+    };
 
     for (const parsed of parsedFiles) {
+      const facts = factsByFile.get(parsed.filePath);
+      if (facts === undefined) continue;
       const incomplete = adapter.isPackageVisibilityIncomplete(parsed.filePath);
       const resolvedAnnotations = new Map<string, string | undefined>();
-      for (const fact of adapter.getFacts(parsed.filePath)) {
-        const owner = ownerGraphNode(fact, indexes, nodeLookup, graph, exactOwnerByRange);
-        if (owner === undefined || classByMethod.get(owner.id)?.label === 'Interface') continue;
-
+      for (const fact of facts) {
         const ownerScope = indexes.scopeTree.getScope(fact.ownerScopeId);
-        const kinds = new Set<SpringNonHttpHandlerKind>();
+        const resolvedFactAnnotations = new Set<string>();
         for (const annotation of fact.annotations) {
           if (annotation.useSiteTarget !== undefined) continue;
           const enclosingScope = ownerScope?.parent ?? null;
@@ -151,16 +181,25 @@ export function createSpringNonHttpHandlerMetadataAttacher<
               annotation.name,
               parsed,
               enclosingScope,
-              RECOGNIZED_HANDLER_ANNOTATIONS,
+              RESOLVABLE_NON_HTTP_ANNOTATIONS,
               incomplete,
             );
             resolvedAnnotations.set(cacheKey, resolved);
           }
-          if (resolved === undefined) continue;
+          if (resolved !== undefined) resolvedFactAnnotations.add(resolved);
+        }
+
+        const beanFactoryMethod = resolvedFactAnnotations.has(SPRING_BEAN_ANNOTATION);
+        const kinds = new Set<SpringNonHttpHandlerKind>();
+        for (const resolved of resolvedFactAnnotations) {
+          if (beanFactoryMethod && resolved === SPRING_SERVICE_ACTIVATOR_ANNOTATION) continue;
           const kind = HANDLER_ANNOTATIONS.get(resolved);
           if (kind !== undefined) kinds.add(kind);
         }
         if (kinds.size === 0) continue;
+
+        const owner = ownerGraphNode(fact, indexes, nodeLookup, graph, getExactOwnerByRange);
+        if (owner === undefined || ownerClassLabel(owner.id) === 'Interface') continue;
 
         const currentMultiplier = owner.properties.astFrameworkMultiplier ?? 1.0;
         owner.properties.astFrameworkMultiplier = Math.max(
