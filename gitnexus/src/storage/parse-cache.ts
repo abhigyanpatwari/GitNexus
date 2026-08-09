@@ -387,7 +387,7 @@ import type { ParseWorkerResult } from '../core/ingestion/workers/parse-worker.j
 // origin/main at the moment of merge surfaces it. Every value this branch
 // published (46, 47) is superseded by 48, so a warm cache stamped with either is
 // correctly invalidated.
-// RE-CHECK AGAINST origin/main IMMEDIATELY BEFORE MERGING.
+//
 // 53 -> 54 for W2-8: `@declaration.type-parameters` is now captured on generic
 // FUNCTIONS, generator functions and type ALIASES in TYPESCRIPT_SCOPE_QUERY, not
 // only on class/interface declarations. Parse-time emission, so a warm cache
@@ -442,7 +442,33 @@ import type { ParseWorkerResult } from '../core/ingestion/workers/parse-worker.j
 // wrong answers than a cold one — which is exactly the state this constant
 // exists to make unreachable. Same reason 55, 56 and 57 were taken.
 // RE-CHECK AGAINST origin/main IMMEDIATELY BEFORE MERGING.
-const SCHEMA_BUMP = 59;
+//
+// 59 -> 60 for #2864's `ParsedImport.reexportsName` plus the `@import.publishes`
+// capture that gates it. The FIELD is the easy half to miss: it is not a
+// capture, but `parsedfile-store.ts` serializes the whole ParsedFile
+// generically, so a new optional property on `ParsedImport` is part of the
+// cached shape all the same. Without the bump a warm cache replays pre-fix
+// `ParsedImport`s carrying no flag, `isNamedReexport`'s strict `=== true` takes
+// the old path, and the whole fix is a silent no-op on incremental analyze while
+// every cold-run test passes — landing hardest on `__init__.py`, the
+// rarest-changing and highest-cache-hit files in a Python repo. The MARKER makes
+// it a capture change too, confirmed independently by
+// `bench/python-scope/measure.mjs` drifting.
+//
+// This branch is the SIXTH exact clash, and the first one the re-check caught
+// where the number did NOT have to move. It staged 60 while main was 53,
+// deliberately clearing the two claims visible at the time (#2899 and #2891).
+// #2899 then merged and cascaded main 53 -> 59 in five steps — far past the 54
+// its diff appeared to claim, because reading a PR's LAST bump hunk understates a
+// branch that bumps repeatedly. 60 survived only because it was chosen above the
+// highest claim rather than at main + 1; had it been staged at 54 it would now be
+// buried four deep inside main's own ledger. Take the next free value above every
+// in-flight MAXIMUM, not above origin/main.
+//
+// Still open at this commit: #2891 also claims 59, which main now holds. That is
+// a live exact clash for #2891 to renumber, not for this branch.
+// RE-CHECK AGAINST origin/main IMMEDIATELY BEFORE MERGING.
+const SCHEMA_BUMP = 60;
 const GITNEXUS_PKG_VERSION = (() => {
   try {
     // package.json sits at gitnexus/package.json — two levels up from

@@ -34,9 +34,13 @@
  *      as `ownedDefs` + a local `BindingRef { origin: 'local' }`.
  *   3. **Collect raw imports.** Walk `@import.*` matches. Call
  *      `provider.interpretImport` per match; attach the returned
- *      `ParsedImport` to the ParsedFile (not to any `Scope` — finalize
- *      reconstructs the owning scope via `provider.importOwningScope`
- *      during Phase 2).
+ *      `ParsedImport` to the ParsedFile — not to any `Scope`, and nothing
+ *      downstream recovers one. `provider.importOwningScope` is declared on
+ *      `LanguageProvider` and implemented by a dozen providers, but has no
+ *      call site anywhere; this step's output is scope-free. A provider whose
+ *      `ParsedImport` needs to distinguish module-level from nested must
+ *      decide that in its own capture emitter, where the node is still in
+ *      hand (see `languages/python/import-decomposer.ts`).
  *   4. **Collect type bindings.** Walk `@type-binding.*` matches. Call
  *      `provider.interpretTypeBinding` per match. Attach the resulting
  *      `TypeRef` to the innermost containing scope's `typeBindings`
@@ -1609,6 +1613,10 @@ const KNOWN_SUB_TAGS: ReadonlySet<string> = new Set<string>([
   '@import.name',
   '@import.source',
   '@import.alias',
+  // Provider-set marker, not a statement anchor. Listed for the same reason as
+  // its siblings: it is emitted on a sub-node of the import statement, and the
+  // anchor must stay `@import.statement` regardless of relative span.
+  '@import.publishes',
   '@type-binding.name',
   '@type-binding.type',
   '@reference.name',

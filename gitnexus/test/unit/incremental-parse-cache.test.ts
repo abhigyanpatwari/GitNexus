@@ -191,12 +191,17 @@ describe('PARSE_CACHE_VERSION', () => {
   // and a ternary conjunction INTERSECTS its operands instead of taking the first
   // non-empty set. Both strictly remove routes, so a warm cache would keep
   // serving a fabricated verbed route that evicts the true one.
-  it('pins SCHEMA_BUMP to 59 so concurrent bumps cannot silently collide (#2766)', () => {
-    expect(Number(PARSE_CACHE_VERSION.split('+', 1)[0])).toBe(59);
+  // Moved 59 -> 60 for #2864's `ParsedImport.reexportsName` and the
+  // `@import.publishes` capture gating it — a serialized ParsedFile field AND a
+  // capture change, the first being the easy-to-miss half. 60 was staged while
+  // main was 53, chosen above every in-flight MAXIMUM rather than at main + 1;
+  // #2899 then cascaded main to 59, and 60 survived only because of that choice.
+  it('pins SCHEMA_BUMP to 60 so concurrent bumps cannot silently collide (#2766)', () => {
+    expect(Number(PARSE_CACHE_VERSION.split('+', 1)[0])).toBe(60);
     // The PREVIOUS version must fail the reuse gate, not merely differ from the
     // current one — a hardcoded number outside the conflict hunk rebases cleanly
     // while being wrong, which is exactly how the 37/38 exact clashes landed.
-    expect(Number(PARSE_CACHE_VERSION.split('+', 1)[0])).not.toBe(58);
+    expect(Number(PARSE_CACHE_VERSION.split('+', 1)[0])).not.toBe(59);
   });
 
   it('embeds the gitnexus package version (so upgrades invalidate the cache)', () => {

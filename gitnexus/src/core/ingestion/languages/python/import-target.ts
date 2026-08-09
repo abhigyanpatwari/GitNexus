@@ -122,6 +122,29 @@ export function resolvePythonImportTarget(
   return resolveAbsoluteFromFiles(pathLike, ctx.allFilePaths, ctx.fromFile);
 }
 
+/**
+ * Answers "does this package expose `importedName` as an attribute?" from
+ * `localDefs` alone — so it says no for a name the package only re-exports.
+ *
+ * KNOWN DIVERGENCE from `buildReexportClosures`, which since #2864 does carry
+ * re-exported names (`ParsedImport.reexportsName`). With
+ * `pkg/__init__.py: from .impl import log`, `pkg/impl.py: def log`, and a
+ * same-named `pkg/log.py`, this returns false, the caller falls through to the
+ * submodule probe, and `from pkg import log` targets `pkg/log.py` — where
+ * `log` is not a local def either, so the edge ends unresolved and the closure
+ * is never consulted, for exactly the case it was built for. CPython binds
+ * `pkg.log` to the function.
+ *
+ * NOT fixed by reusing the flag here, which is the obvious three-line change
+ * and is wrong: `reexportsName` is also set for `pkg/__init__.py: from .
+ * import log`, where CPython binds `pkg.log` to the **module** `pkg/log.py`
+ * (verified on 3.11) and returning true here would kill the correct namespace
+ * edge. Separating the two needs the re-export's own resolved target, i.e.
+ * re-entering `resolvePythonImportTarget` from a different `fromFile` — and
+ * that classification is what open issue #2882 is about, so it belongs with
+ * that fix rather than bolted on here. Not a regression: both halves behave
+ * exactly as they did before #2864.
+ */
 function pythonFileExportsName(
   targetFile: string,
   importedName: string,
