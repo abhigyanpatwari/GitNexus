@@ -471,16 +471,44 @@ function verbsFromDisjunction(node: SyntaxNode, negated: boolean): readonly stri
 }
 
 /**
+ * The verbs BOTH operands of a conjunction guarantee — their INTERSECTION.
+ *
+ * `A && B` is reached only when each side holds, so the methods it serves are
+ * the methods they agree on. Taking the first non-empty side instead — which is
+ * what {@link verbsFromTernary} did — reports one operand's set unintersected:
+ * `(GET || POST) ? (POST || PUT) : false` emitted GET and POST where only POST
+ * can reach the body, so the GET route was invented outright.
+ *
+ * An EMPTY side is "this operand names no method", not "this operand admits
+ * none", so it yields to the other rather than annihilating it — that is the
+ * `isAdmin && req.method === 'POST'` shape, and it is the whole reason the
+ * fallthrough existed. An empty INTERSECTION of two non-empty sides is the
+ * opposite: two conflicting method assertions, a guard nothing can satisfy. No
+ * verb is honest there, and the route survives verb-less, which is this
+ * module's stated direction for "cannot prove it".
+ */
+function intersectVerbs(a: readonly string[], b: readonly string[]): readonly string[] {
+  if (a.length === 0) return b;
+  if (b.length === 0) return a;
+  return a.filter((verb) => b.includes(verb));
+}
+
+/**
  * The verb a ternary guarantees — which is one only when an arm is a boolean
  * literal, because that is what collapses the selection into a conjunction:
  *
- *   c ? A : false   ≡  c && A     both hold, so search both
+ *   c ? A : false   ≡  c && A     both hold, so INTERSECT both
  *   c ? false : B   ≡  !c && B    c must NOT hold, so search it at flipped parity
  *   c ? true  : B   ≡  c || B     a disjunction guarantees neither operand
  *   c ? A : true    ≡  !c || A    likewise
  *
  * With two non-literal arms the verb is chosen by a condition whose value is
  * unknown, so the ternary guarantees nothing.
+ *
+ * The two conjunctions intersect rather than take the first side that names a
+ * verb — see {@link intersectVerbs} for the route that mistake invented. The
+ * `||` rule below is the mirror image and already had it right: a disjunction
+ * UNIONS its operands, all-or-nothing.
  *
  * Measured before fixing: `(req.method === 'GET' ? false : true) && pathname ===
  * '/api/i'` emitted `GET /api/i` — the one method that branch guarantees the
@@ -501,17 +529,14 @@ function verbsFromTernary(node: SyntaxNode, negated: boolean): readonly string[]
   const alternative = unparenthesize(node.childForFieldName('alternative'));
   if (condition === null || consequence === null || alternative === null) return [];
 
-  const firstNonEmpty = (a: readonly string[], b: readonly string[]): readonly string[] =>
-    a.length > 0 ? a : b;
-
   if (alternative.type === 'false') {
-    return firstNonEmpty(
+    return intersectVerbs(
       findVerbsInSubtree(condition, false),
       findVerbsInSubtree(consequence, false),
     );
   }
   if (consequence.type === 'false') {
-    return firstNonEmpty(
+    return intersectVerbs(
       findVerbsInSubtree(condition, true),
       findVerbsInSubtree(alternative, false),
     );
@@ -528,29 +553,98 @@ function verbsFromTernary(node: SyntaxNode, negated: boolean): readonly string[]
  * repo's route modules are written.
  */
 function enclosingHandlerName(node: SyntaxNode): string | undefined {
-  let current: SyntaxNode | null = node.parent;
-  while (current !== null) {
-    if (FUNCTION_NODE_TYPES.has(current.type)) {
-      const own = current.childForFieldName('name');
-      if (own !== null) return own.text;
-      const parent = current.parent;
-      if (parent === null) return undefined;
-      if (parent.type === 'variable_declarator' || parent.type === 'pair') {
-        const bound = parent.childForFieldName('name') ?? parent.childForFieldName('key');
-        return bound?.text;
-      }
-      if (parent.type === 'assignment_expression') {
-        const left = parent.childForFieldName('left');
-        if (left === null) return undefined;
-        return left.type === 'member_expression'
-          ? (left.childForFieldName('property')?.text ?? undefined)
-          : left.text;
-      }
-      return undefined;
-    }
-    current = current.parent;
+  const fn = enclosingFunction(node);
+  if (fn === null) return undefined;
+  const own = fn.childForFieldName('name');
+  if (own !== null) return own.text;
+  const parent = fn.parent;
+  if (parent === null) return undefined;
+  if (parent.type === 'variable_declarator' || parent.type === 'pair') {
+    const bound = parent.childForFieldName('name') ?? parent.childForFieldName('key');
+    return bound?.text;
+  }
+  if (parent.type === 'assignment_expression') {
+    const left = parent.childForFieldName('left');
+    if (left === null) return undefined;
+    return left.type === 'member_expression'
+      ? (left.childForFieldName('property')?.text ?? undefined)
+      : left.text;
   }
   return undefined;
+}
+
+/**
+ * The function this node sits in, or `null` at module scope.
+ *
+ * ONE traversal, three readers: the handler name above, the scope half of a
+ * match-binding key, and the chain an assignment can rebind. They have to agree
+ * on where a function begins or "the same name in the same function" stops
+ * meaning one thing, so they share the walk rather than each re-deriving it.
+ */
+function enclosingFunction(node: SyntaxNode): SyntaxNode | null {
+  let current: SyntaxNode | null = node.parent;
+  while (current !== null) {
+    if (FUNCTION_NODE_TYPES.has(current.type)) return current;
+    current = current.parent;
+  }
+  return null;
+}
+
+/** Names bound outside every function share this scope. */
+const MODULE_SCOPE_ID = -1;
+
+/** The scope half of a binding key: the id of the function this node lives in. */
+function enclosingScopeId(node: SyntaxNode): number {
+  return enclosingFunction(node)?.id ?? MODULE_SCOPE_ID;
+}
+
+/**
+ * Every scope an assignment written here could be rebinding — its own function,
+ * then outward. `m = x` inside a callback rebinds the `m` of whichever enclosing
+ * function declared it, and this module does not resolve which, so an assignment
+ * is taken to reach all of them.
+ */
+function enclosingScopeIds(node: SyntaxNode): number[] {
+  const ids: number[] = [];
+  for (let fn = enclosingFunction(node); fn !== null; fn = enclosingFunction(fn)) ids.push(fn.id);
+  ids.push(MODULE_SCOPE_ID);
+  return ids;
+}
+
+/**
+ * A binding key: the function a name is bound in, plus the name.
+ *
+ * The scope id is a number and NUL cannot appear in an identifier, so the two
+ * halves cannot run together into a collision. Written as the `\u0000` ESCAPE,
+ * never a raw NUL byte: a literal NUL makes the source a binary file to git,
+ * grep and every other line-oriented tool.
+ */
+function bindingKey(scopeId: number, name: string): string {
+  return `${scopeId}\u0000${name}`;
+}
+
+/**
+ * Every name a binding pattern introduces — `m`, `{ m }`, `{ a: m }`, `[m]`,
+ * `...m`, `m = fallback`.
+ *
+ * Destructuring is here because it SHADOWS: `{ const { m } = req.body }` in a
+ * block below a real `const m = pathname.match(…)` binds a different `m` in the
+ * same function scope, and a shadow this module cannot see is a shadow it would
+ * mint a route from. Over-collecting a name only ever refuses one, so the
+ * recursion is deliberately blunt about the shapes it does not name.
+ */
+function patternNames(pattern: SyntaxNode, out: string[] = []): string[] {
+  if (pattern.type === 'identifier' || pattern.type === 'shorthand_property_identifier_pattern') {
+    out.push(pattern.text);
+    return out;
+  }
+  if (pattern.type === 'pair_pattern' || pattern.type === 'assignment_pattern') {
+    const bound = pattern.childForFieldName('value') ?? pattern.childForFieldName('left');
+    if (bound !== null) patternNames(bound, out);
+    return out;
+  }
+  for (const child of pattern.namedChildren) patternNames(child, out);
+  return out;
 }
 
 /**
@@ -649,18 +743,27 @@ export function extractDispatchGuardRoutes(
 
   const constants = buildConstantMap(tree.rootNode);
   const regexes = buildRegexConstantMap(tree.rootNode);
-  const matchBindings = new Map<string, MatchBinding | null>();
+  const matches: MatchBindingState = { bindings: new Map(), declarations: new Map() };
 
+  // Declarations and assignments are noted on the SAME walk that records the
+  // bindings, and every emission happens after it, so a shadow or a rebinding
+  // written below the match still refuses the name it would have poisoned.
   const visit = (node: SyntaxNode): void => {
     if (node.type === 'binary_expression') collectFromComparison(node, found, constants);
     else if (node.type === 'call_expression')
-      collectFromRegexDispatch(node, found, regexes, matchBindings);
+      collectFromRegexDispatch(node, found, regexes, matches);
     else if (node.type === 'switch_statement') collectFromSwitch(node, found, constants);
+    else if (node.type === 'variable_declarator') noteDeclaration(node, matches);
+    else if (
+      node.type === 'assignment_expression' ||
+      node.type === 'augmented_assignment_expression'
+    )
+      noteReassignment(node, matches);
     for (const child of node.namedChildren) visit(child);
   };
   visit(tree.rootNode);
 
-  collectFromMatchBindings(tree.rootNode, matchBindings, found);
+  collectFromMatchBindings(tree.rootNode, matches.bindings, found);
 
   return dedupeWithinFile(found).map((route) => ({
     filePath,
@@ -760,9 +863,94 @@ function collectFromSwitch(node: SyntaxNode, out: GuardRoute[], constants: Const
 
 /** A name bound to the result of an anchored-regex match against the path. */
 interface MatchBinding {
+  readonly name: string;
   readonly url: string;
   readonly line: number;
   readonly handlerName: string | undefined;
+}
+
+/**
+ * Match bindings, keyed by the FUNCTION a name is bound in as well as the name.
+ *
+ * The bare name is not enough, and settling for it invented routes. `m`, `match`
+ * and `result` are the three most common local names in dispatcher code, so a
+ * file with two handlers routinely binds `m` twice to unrelated things:
+ *
+ *     function handleReplay(req)   { const m = pathname.match(REPLAY_RE)
+ *                                    if (req.method === 'GET' && m) … }
+ *     function handleSettings(req) { const m = req.headers['x-mode']
+ *                                    if (req.method === 'DELETE' && m) … }
+ *
+ * Keyed by name alone, the second function's `m` resolved to the FIRST
+ * function's binding and minted `DELETE /api/live/positions/{param1}/replay` —
+ * wrong in its verb, its handler and its line, for a path that handler never
+ * serves. The poison rule did not catch it because poisoning only ran when a
+ * second REGEX MATCH bound the name; a binding to anything else never reached
+ * that code at all. And the loss compounded: the fabricated route carries a
+ * verb, so {@link reconcileDispatchGuardRoutes} treats it as the authoritative
+ * claim on that URL and EVICTS the honest verb-less one.
+ *
+ * Two names in two functions are now two keys, so neither can see the other.
+ * Within ONE scope the module still refuses rather than resolves, the way
+ * {@link buildConstantMap} does: a second declarator for the same key is a
+ * shadow this walk cannot order, and an assignment can rebind a name from any
+ * function nested inside the one that declared it.
+ */
+interface MatchBindingState {
+  /** Binding key -> the binding, or `null` once the name is ambiguous there. */
+  readonly bindings: Map<string, MatchBinding | null>;
+  /** Binding key -> how many declarators bind it. A second one is a shadow. */
+  readonly declarations: Map<string, number>;
+}
+
+/**
+ * Count a declarator against its key, and refuse the key once a second one
+ * binds it.
+ *
+ * Refusing rather than ordering costs the real route in
+ * `const m = pathname.match(RE); { const m = other() }` — the honest GET is
+ * dropped alongside the shadow that would have fabricated a DELETE. That is the
+ * cheaper failure by this module's own bar, and it is the same trade
+ * {@link buildConstantMap} makes for a name declared twice.
+ */
+function noteDeclaration(node: SyntaxNode, matches: MatchBindingState): void {
+  const name = node.childForFieldName('name');
+  if (name === null) return;
+  const scopeId = enclosingScopeId(node);
+  for (const bound of patternNames(name)) {
+    const key = bindingKey(scopeId, bound);
+    const count = (matches.declarations.get(key) ?? 0) + 1;
+    matches.declarations.set(key, count);
+    if (count > 1) matches.bindings.set(key, null);
+  }
+}
+
+/**
+ * Refuse a name that is ASSIGNED anywhere it could reach.
+ *
+ * `let m = pathname.match(RE); m = fallback()` leaves `m` holding something this
+ * walk never saw, and the declaration alone is no longer evidence of what the
+ * later `if (m)` tests. Poisoning pre-emptively — before the binding is even
+ * recorded — is what makes the order of the two statements not matter.
+ *
+ * Only a REBINDING counts. `m.index = 0` and `m[1] = x` assign THROUGH the name
+ * and leave it bound to the same match, so refusing on them would drop routes
+ * for writes that change nothing this module reads.
+ */
+const REBINDABLE_TARGETS: ReadonlySet<string> = new Set([
+  'identifier',
+  'array_pattern',
+  'object_pattern',
+]);
+
+function noteReassignment(node: SyntaxNode, matches: MatchBindingState): void {
+  const left = node.childForFieldName('left');
+  if (left === null || !REBINDABLE_TARGETS.has(left.type)) return;
+  const names = patternNames(left);
+  if (names.length === 0) return;
+  for (const scopeId of enclosingScopeIds(node)) {
+    for (const name of names) matches.bindings.set(bindingKey(scopeId, name), null);
+  }
 }
 
 /**
@@ -778,6 +966,14 @@ interface MatchBinding {
  * Ambiguity is refused the same way {@link buildConstantMap} refuses it: a name
  * bound twice to different patterns is dropped rather than resolved to the
  * first, because a half-right regex is a wrong route.
+ *
+ * That refusal only ever SAW regex literals, which left the two rebindings that
+ * matter walking straight past it. `let RE = /^\/api\/re\/([^/]+)$/` followed by
+ * `RE = buildDynamic(req)` still minted the literal's route, and so did a
+ * `const RE = new RegExp(userPrefix + '/x')` twin in another function — the map
+ * is flat, so a same-named binding anywhere in the file is exactly the ambiguity
+ * the doc claims to refuse. A name bound to ANYTHING that is not a regex
+ * literal, or assigned at all, is now dropped.
  */
 function buildRegexConstantMap(root: SyntaxNode): ReadonlyMap<string, string> {
   const patterns = new Map<string, string>();
@@ -787,14 +983,22 @@ function buildRegexConstantMap(root: SyntaxNode): ReadonlyMap<string, string> {
     if (node.type === 'variable_declarator') {
       const name = node.childForFieldName('name');
       const value = unparenthesize(node.childForFieldName('value'));
-      if (name !== null && name.type === 'identifier' && value !== null && value.type === 'regex') {
-        const pattern = value.childForFieldName('pattern')?.text;
-        if (pattern !== undefined) {
+      if (name !== null && name.type === 'identifier') {
+        const pattern =
+          value !== null && value.type === 'regex'
+            ? (value.childForFieldName('pattern')?.text ?? null)
+            : null;
+        if (pattern === null) ambiguous.add(name.text);
+        else {
           const existing = patterns.get(name.text);
           if (existing !== undefined && existing !== pattern) ambiguous.add(name.text);
           else patterns.set(name.text, pattern);
         }
       }
+    }
+    if (node.type === 'assignment_expression' || node.type === 'augmented_assignment_expression') {
+      const left = node.childForFieldName('left');
+      if (left !== null && left.type === 'identifier') ambiguous.add(left.text);
     }
     for (const child of node.namedChildren) visit(child);
   };
@@ -844,7 +1048,7 @@ function collectFromRegexDispatch(
   node: SyntaxNode,
   out: GuardRoute[],
   regexes: ReadonlyMap<string, string>,
-  matchBindings: Map<string, MatchBinding | null>,
+  matches: MatchBindingState,
 ): void {
   const callee = node.childForFieldName('function');
   if (callee === null || callee.type !== 'member_expression') return;
@@ -873,14 +1077,18 @@ function collectFromRegexDispatch(
 
   const boundName = boundDeclaratorName(node);
   if (boundName !== null) {
-    // Flat, like the constant maps: a name bound twice to DIFFERENT routes is
-    // poisoned rather than resolved to the first.
-    const existing = matchBindings.get(boundName);
+    // Keyed by the function this name is bound in — see MatchBindingState for
+    // the routes the bare name invented. Already-refused keys stay refused, and
+    // a key bound twice to DIFFERENT routes is poisoned rather than resolved to
+    // the first.
+    const key = bindingKey(enclosingScopeId(node), boundName);
+    const existing = matches.bindings.get(key);
     if (existing !== undefined && (existing === null || existing.url !== url)) {
-      matchBindings.set(boundName, null);
+      matches.bindings.set(key, null);
       return;
     }
-    matchBindings.set(boundName, {
+    matches.bindings.set(key, {
+      name: boundName,
       url,
       line: node.startPosition.row + 1,
       handlerName: enclosingHandlerName(node),
@@ -926,25 +1134,38 @@ function boundDeclaratorName(call: SyntaxNode): string | null {
  * predicate that rejects `m[1]` rejects it. An explicit skip was written here
  * first and removed once it proved unreachable — it read as though the
  * declaration were a hazard, which sends the next reader looking for one.
+ *
+ * A use counts only against a binding in ITS OWN function. `tested` is keyed the
+ * same way, and that half matters as much as the emission: keyed by bare name, a
+ * same-named local in another handler marked the name tested and SUPPRESSED the
+ * real binding's own verb-less route from the tail loop below — so the honest
+ * route was not merely joined by a fabricated one, it was replaced by it, down
+ * to reporting the wrong handler and the wrong line.
  */
 function collectFromMatchBindings(
   root: SyntaxNode,
   matchBindings: ReadonlyMap<string, MatchBinding | null>,
   out: GuardRoute[],
 ): void {
-  if (matchBindings.size === 0) return;
+  // Resolving a scope costs a walk to the function boundary, and this visits
+  // every identifier in the file. Names that no live binding uses are rejected
+  // on a set lookup first, so files without a bound match pay nothing.
+  const liveNames = new Set<string>();
+  for (const binding of matchBindings.values()) if (binding !== null) liveNames.add(binding.name);
+  if (liveNames.size === 0) return;
   const tested = new Set<string>();
 
   const visit = (node: SyntaxNode): void => {
-    if (node.type === 'identifier') {
-      const binding = matchBindings.get(node.text);
+    if (node.type === 'identifier' && liveNames.has(node.text)) {
+      const key = bindingKey(enclosingScopeId(node), node.text);
+      const binding = matchBindings.get(key);
       if (
         binding !== undefined &&
         binding !== null &&
         isTruthinessPosition(node) &&
         !isNegatedContext(node)
       ) {
-        tested.add(node.text);
+        tested.add(key);
         pushPerVerb(out, governingVerbs(node), {
           url: binding.url,
           handlerName: enclosingHandlerName(node) ?? binding.handlerName,
@@ -956,8 +1177,8 @@ function collectFromMatchBindings(
   };
   visit(root);
 
-  for (const [name, binding] of matchBindings) {
-    if (binding === null || tested.has(name)) continue;
+  for (const [key, binding] of matchBindings) {
+    if (binding === null || tested.has(key)) continue;
     out.push({
       url: binding.url,
       verb: null,

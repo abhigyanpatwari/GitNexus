@@ -423,7 +423,26 @@ import type { ParseWorkerResult } from '../core/ingestion/workers/parse-worker.j
 // warm cache, so without the bump an indexed repo keeps its empty sink set and
 // the fix looks inert.
 // RE-CHECK AGAINST origin/main IMMEDIATELY BEFORE MERGING.
-const SCHEMA_BUMP = 58;
+// 58 -> 59 for the #2899 REVIEW FOLLOW-UP to the dispatch-guard route walk. Two
+// route-output changes, both parse-time and both replayed verbatim from a warm
+// cache, so without this bump an already-indexed repo keeps serving the wrong
+// routes and both fixes look implemented while being inert:
+//   (a) `matchBindings` / `tested` are keyed on (enclosing function, name)
+//       instead of the bare identifier. A same-named non-match binding in
+//       ANOTHER function used to mint a fabricated verbed route under the wrong
+//       handler — reproduced: `DELETE /api/live/positions/{param1}/replay
+//       handler=handleSettings` — which then EVICTED the true verb-less route
+//       through `reconcileDispatchGuardRoutes`. `buildRegexConstantMap` refuses
+//       a name rebound to a non-regex for the same reason.
+//   (b) `verbsFromTernary` INTERSECTS the operands of a conjunction instead of
+//       taking the first non-empty set. `(GET||POST) ? (POST||PUT) : false`
+//       emitted GET and POST where only POST is reachable, and
+//       `GET ? POST : false` emitted GET for an unsatisfiable guard.
+// Both changes strictly REMOVE routes, so a stale cache serves strictly more
+// wrong answers than a cold one — which is exactly the state this constant
+// exists to make unreachable. Same reason 55, 56 and 57 were taken.
+// RE-CHECK AGAINST origin/main IMMEDIATELY BEFORE MERGING.
+const SCHEMA_BUMP = 59;
 const GITNEXUS_PKG_VERSION = (() => {
   try {
     // package.json sits at gitnexus/package.json — two levels up from

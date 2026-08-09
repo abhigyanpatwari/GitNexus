@@ -186,8 +186,17 @@ describe('PARSE_CACHE_VERSION', () => {
   // Moved 56 -> 57 for R3-8 part 2: `.match()` dispatch, bound-match test sites,
   // named regex consts, and capturing segment wildcards in `regexToRoutePath`.
   // Moved 57 -> 58 for #2897: fetch sites are captured without a literal URL.
-  it('pins SCHEMA_BUMP to 58 so concurrent bumps cannot silently collide (#2766)', () => {
-    expect(Number(PARSE_CACHE_VERSION.split('+', 1)[0])).toBe(58);
+  // Moved 58 -> 59 for the #2899 review follow-up: the dispatch-guard walk keys
+  // match bindings on (enclosing function, name) instead of the bare identifier,
+  // and a ternary conjunction INTERSECTS its operands instead of taking the first
+  // non-empty set. Both strictly remove routes, so a warm cache would keep
+  // serving a fabricated verbed route that evicts the true one.
+  it('pins SCHEMA_BUMP to 59 so concurrent bumps cannot silently collide (#2766)', () => {
+    expect(Number(PARSE_CACHE_VERSION.split('+', 1)[0])).toBe(59);
+    // The PREVIOUS version must fail the reuse gate, not merely differ from the
+    // current one — a hardcoded number outside the conflict hunk rebases cleanly
+    // while being wrong, which is exactly how the 37/38 exact clashes landed.
+    expect(Number(PARSE_CACHE_VERSION.split('+', 1)[0])).not.toBe(58);
   });
 
   it('embeds the gitnexus package version (so upgrades invalidate the cache)', () => {

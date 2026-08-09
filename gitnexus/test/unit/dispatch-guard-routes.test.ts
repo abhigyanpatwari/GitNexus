@@ -315,6 +315,48 @@ describe('dispatch-guard route extraction', () => {
         { routePath: '/api/n', httpMethod: '' },
       ]);
     });
+
+    // `c ? A : false` is `c && A`, and the methods a CONJUNCTION guarantees are
+    // the ones both sides admit — their intersection. Taking the first side that
+    // named a verb reported one operand's set unintersected, which is how a verb
+    // the guard excludes got minted as a route of its own.
+    it('INTERSECTS the two sides of the conjunction instead of taking the first', () => {
+      // {GET,POST} ∩ {POST,PUT} is POST alone. GET reaches the ternary but not
+      // its consequence, so `GET /api/t1` was a route no request can take.
+      expect(
+        guard(
+          `((req.method === 'GET' || req.method === 'POST') ? (req.method === 'POST' || req.method === 'PUT') : false)`,
+          '/api/t1',
+        ),
+      ).toMatchObject([{ routePath: '/api/t1', httpMethod: 'POST' }]);
+    });
+
+    it('claims no verb when the two sides cannot both hold', () => {
+      // `GET && POST` is unsatisfiable — no method satisfies this guard, so
+      // naming either side invents a route. Verb-less is the honest answer, and
+      // the path itself is still proven.
+      expect(
+        guard(`(req.method === 'GET' ? req.method === 'POST' : false)`, '/api/t2'),
+      ).toMatchObject([{ routePath: '/api/t2', httpMethod: '' }]);
+    });
+
+    it('intersects the other conjunction too, at flipped parity', () => {
+      // `c ? false : B` is `!c && B`. With `c` = `!(method === 'GET')` the guard
+      // reads `GET && POST` — the same contradiction, reached through the arm
+      // that searches the condition negated.
+      expect(
+        guard(`(!(req.method === 'GET') ? false : req.method === 'POST')`, '/api/t4'),
+      ).toMatchObject([{ routePath: '/api/t4', httpMethod: '' }]);
+    });
+
+    it('still reads a conjunction where only ONE side names a verb', () => {
+      // The fallthrough the intersection replaces stays right when a side is
+      // simply silent about the method: `isReady && POST` serves POST. An empty
+      // side means "names no method", not "admits none".
+      expect(guard(`(isReady ? req.method === 'POST' : false)`, '/api/t3')).toMatchObject([
+        { routePath: '/api/t3', httpMethod: 'POST' },
+      ]);
+    });
   });
 
   // One guard, several methods. Verbatim from the reporting repo:
@@ -770,6 +812,124 @@ describe('dispatch-guard route extraction', () => {
           const RE = /^\\/api\\/a\\/([^/]+)$/
           const RE = /^\\/api\\/b\\/([^/]+)$/
           function handle(req) { if (req.method === 'GET' && RE.test(pathname)) { return 1 } }
+        `),
+      ).toEqual([]);
+    });
+
+    // That refusal only ever compared regex LITERALS, so the two rebindings that
+    // actually occur walked straight past it and the literal's route was minted
+    // as though the name still held it.
+    it('refuses a regex const REASSIGNED to something dynamic', () => {
+      expect(
+        paths(`
+          let RE = /^\\/api\\/re\\/([^/]+)$/
+          RE = buildDynamic(req)
+          function handle(req) { if (req.method === 'GET' && RE.test(pathname)) { return 1 } }
+        `),
+      ).toEqual([]);
+    });
+
+    it('refuses a regex const with a non-literal twin in another function', () => {
+      // The map is flat, so a same-named binding anywhere in the file is the
+      // ambiguity it claims to refuse — `new RegExp(userPrefix + '/x')` is not a
+      // `regex` node, which is the only reason it used to survive.
+      expect(
+        paths(`
+          const RE = /^\\/api\\/twin\\/([^/]+)$/
+          function other(userPrefix) { const RE = new RegExp(userPrefix + '/x'); return RE }
+          function handle(req) { if (req.method === 'GET' && RE.test(pathname)) { return 1 } }
+        `),
+      ).toEqual([]);
+    });
+
+    // A match binding is keyed by the FUNCTION it is bound in, not by its bare
+    // name. `m`, `match` and `result` are the commonest locals in dispatcher
+    // code, so a file with two handlers routinely binds one of them twice to
+    // unrelated things — and the poison rule never fired, because it only ran
+    // when a second REGEX MATCH bound the name.
+    it('does not resolve a same-named local in ANOTHER function to this binding', () => {
+      // Measured before fixing: this emitted a second route,
+      // `DELETE /api/live/positions/{param1}/replay @9 handler=handleSettings`
+      // — wrong verb, wrong handler, wrong line, for a path that handler never
+      // serves. Being VERBED, it also outranked the real route in
+      // `reconcileDispatchGuardRoutes`, which drops a verb-less URL claimed with
+      // a verb anywhere in the repo.
+      expect(
+        extract(`
+          function handleReplay(req, res) {
+            const pathname = new URL(req.url, 'http://x').pathname
+            const m = pathname.match(/^\\/api\\/live\\/positions\\/([^/]+)\\/replay$/)
+            if (req.method === 'GET' && m) { return replay(m[1]) }
+          }
+          function handleSettings(req, res) {
+            const m = req.headers['x-mode']
+            if (req.method === 'DELETE' && m) { return wipeEverything() }
+          }
+        `),
+      ).toEqual([
+        {
+          routePath: '/api/live/positions/{param1}/replay',
+          httpMethod: 'GET',
+          handlerName: 'handleReplay',
+          source: DISPATCH_GUARD_SOURCE,
+        },
+      ]);
+    });
+
+    it('keeps an untested binding verb-less when another function reuses the name', () => {
+      // The second loss channel of the same defect: `tested` was keyed by bare
+      // name too, so the unrelated `if (m)` below marked `m` tested and
+      // SUPPRESSED this binding's own verb-less emit. The honest route was not
+      // merely joined by a fabricated one — it was replaced by it, reporting
+      // `handleSettings` as the handler for a path only `handleReplay` serves.
+      expect(
+        extract(`
+          function handleReplay(req, res) {
+            const m = pathname.match(/^\\/api\\/live\\/positions\\/([^/]+)\\/replay$/)
+            return m[1]
+          }
+          function handleSettings(req, res) {
+            const m = req.headers['x-mode']
+            if (m) { return wipeEverything() }
+          }
+        `),
+      ).toEqual([
+        {
+          routePath: '/api/live/positions/{param1}/replay',
+          httpMethod: '',
+          handlerName: 'handleReplay',
+          source: DISPATCH_GUARD_SOURCE,
+        },
+      ]);
+    });
+
+    it('refuses a name shadowed by a second declarator in the SAME function', () => {
+      // The key is the function, not the block, so a shadow inside one handler
+      // is ambiguity this walk cannot order — refused whole, the way
+      // `buildConstantMap` refuses a constant declared twice. It costs the real
+      // GET alongside the DELETE the shadow would have fabricated, which is the
+      // cheaper of the two failures.
+      expect(
+        extract(`
+          function handle(req) {
+            const m = pathname.match(/^\\/api\\/bs\\/([^/]+)$/)
+            if (req.method === 'GET' && m) { return 1 }
+            { const m = req.headers['x']; if (req.method === 'DELETE' && m) { return wipe() } }
+          }
+        `),
+      ).toEqual([]);
+    });
+
+    it('refuses a match binding REASSIGNED later in the same function', () => {
+      // `m` no longer holds the match by the time it is tested, so the
+      // declaration is not evidence of what the `if` asks about.
+      expect(
+        paths(`
+          function handle(req) {
+            let m = pathname.match(/^\\/api\\/ra\\/([^/]+)$/)
+            m = req.headers['x-mode']
+            if (req.method === 'GET' && m) { return 1 }
+          }
         `),
       ).toEqual([]);
     });
