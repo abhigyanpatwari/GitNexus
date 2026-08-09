@@ -500,6 +500,17 @@ jobs:
         run: node --import tsx bench/callable-value-flow/measure.mjs --check
         working-directory: gitnexus
 
+      - name: Re-export closure scaling guards (#2864)
+        # Build-free: asserts buildReexportClosures stays linear in chain depth
+        # and within an absolute ceiling on a wide package corpus. #2864 changed
+        # this pass's input class from TypeScript barrels (a handful of shallow
+        # edges) to every module-level Python `from m import x`, which is where
+        # its two quadratic corners became reachable. The depth arm specifically
+        # guards MAX_VIA_LENGTH — the bound that was removed once already, in
+        # fc919ad6, and stayed invisible for as long as the input was shallow.
+        run: node --import tsx bench/finalize-reexport/measure.mjs --check
+        working-directory: gitnexus
+
       - name: C++ qualified-namespace resolution guards (#2788)
         # Build-free: asserts resolveCppQualifiedNamespaceMember resolves an
         # unchanged symbol set (fingerprint) and that per-call-site cost stays
