@@ -176,8 +176,13 @@ describe('PARSE_CACHE_VERSION', () => {
   // does do is fail loudly the moment the constant and this expectation drift
   // apart, which is what forces the merge-time diff against origin/main to
   // happen at all.
-  it('pins SCHEMA_BUMP to 53 so concurrent bumps cannot silently collide (#2766)', () => {
-    expect(Number(PARSE_CACHE_VERSION.split('+', 1)[0])).toBe(53);
+  //
+  // Moved 53 -> 60 for #2864's `ParsedImport.reexportsName` — a serialized
+  // ParsedFile field rather than a capture, which is the easy-to-miss variant of
+  // the same rule. 60 clears the in-flight claims (#2899 on 54, #2891 on 59) as
+  // well as main's 53.
+  it('pins SCHEMA_BUMP to 60 so concurrent bumps cannot silently collide (#2766)', () => {
+    expect(Number(PARSE_CACHE_VERSION.split('+', 1)[0])).toBe(60);
   });
 
   it('embeds the gitnexus package version (so upgrades invalidate the cache)', () => {

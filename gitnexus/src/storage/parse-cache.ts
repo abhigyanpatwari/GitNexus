@@ -387,8 +387,22 @@ import type { ParseWorkerResult } from '../core/ingestion/workers/parse-worker.j
 // origin/main at the moment of merge surfaces it. Every value this branch
 // published (46, 47) is superseded by 48, so a warm cache stamped with either is
 // correctly invalidated.
+//
+// Moved 53 -> 60 for #2864's `ParsedImport.reexportsName`. It is not a capture
+// change, which is why it is easy to miss: `parsedfile-store.ts` serializes the
+// whole ParsedFile generically, so a new optional field on `ParsedImport` is
+// part of the cached shape all the same. Without the bump, a warm cache replays
+// pre-fix `ParsedImport`s with no flag, `isNamedReexport`'s strict `=== true`
+// takes the old path, and the fix is a silent no-op on incremental analyze while
+// every cold-run test passes — landing hardest on `__init__.py`, the rarest-
+// changing and highest-cache-hit files in a Python repo.
+// 60, not 54, because the value has to clear every in-flight claim, not just
+// origin/main: at the time of writing main is 53 while open PR #2899 claims 54
+// and #2891 claims 59. Taking the next free value above the highest claim is
+// what the five recorded exact clashes above teach; a literal pin cannot see
+// the other side of a tie.
 // RE-CHECK AGAINST origin/main IMMEDIATELY BEFORE MERGING.
-const SCHEMA_BUMP = 53;
+const SCHEMA_BUMP = 60;
 const GITNEXUS_PKG_VERSION = (() => {
   try {
     // package.json sits at gitnexus/package.json — two levels up from
