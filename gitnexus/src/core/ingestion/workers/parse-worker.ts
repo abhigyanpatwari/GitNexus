@@ -1772,13 +1772,20 @@ const processFileGroup = (
       // Extract HTTP consumer URLs: fetch(), axios.get(), $.get(), requests.get(), etc.
       if (captureMap['route.fetch']) {
         const urlNode = captureMap['route.url'] ?? captureMap['route.template_url'];
-        if (urlNode) {
-          result.fetchCalls.push({
-            filePath: file.path,
-            fetchURL: urlNode.text,
-            lineNumber: captureMap['route.fetch'].startPosition.row + lineOffset,
-          });
-        }
+        // A fetch whose URL is not a literal is still an OUTWARD CALL, and that
+        // is the whole of what the R3-6 sink set needs — where the program
+        // reaches out, not where to. Recorded with an empty `fetchURL` (#2897):
+        // route linking normalizes the URL first and skips anything that yields
+        // nothing, so these add sink sites without inventing a FETCHES edge.
+        //
+        // Measured before this: 44 of 47 fetch calls in this repo pass a
+        // variable, so the sink signal was absent from 94% of them and
+        // sink-terminated flows could effectively never fire.
+        result.fetchCalls.push({
+          filePath: file.path,
+          fetchURL: urlNode ? urlNode.text : '',
+          lineNumber: captureMap['route.fetch'].startPosition.row + lineOffset,
+        });
         continue;
       }
 
