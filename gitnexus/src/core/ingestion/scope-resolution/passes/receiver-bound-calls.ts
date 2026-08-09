@@ -326,17 +326,22 @@ export function emitReceiverBoundCalls(
     isBuiltInName: options.isBuiltInName,
   };
 
-  // Build an interface → implementors map from IMPLEMENTS edges.
-  // Maps class-like graph ids back to their scope definitions.
-  // We translate graph-ids back to scope-resolution DefIds via
-  // `parsedFiles.localDefs` lookup so downstream `findOwnedMember`
-  // (which keys by DefId) can find the implementor's members.
-  const graphIdToClassDef = new Map<string, SymbolDefinition>();
+  // Maps class-like graph ids back to ALL scope definitions that resolved to
+  // them. Same-file partial declarations share one graph id but keep distinct
+  // DefIds, and `pickOverload` keys member lookup by those DefIds. Preserving
+  // every part makes dispatch independent of declaration order.
+  const graphIdToClassDefs = new Map<string, SymbolDefinition[]>();
   for (const parsed of parsedFiles) {
     for (const def of parsed.localDefs) {
       if (!isClassLike(def.type)) continue;
       const graphId = resolveDefGraphId(parsed.filePath, def, nodeLookup);
-      if (graphId !== undefined) graphIdToClassDef.set(graphId, def);
+      if (graphId === undefined) continue;
+      let defs = graphIdToClassDefs.get(graphId);
+      if (defs === undefined) {
+        defs = [];
+        graphIdToClassDefs.set(graphId, defs);
+      }
+      defs.push(def);
     }
   }
   // Direct subtypes of a type, keyed by the SUPERtype's def id.
@@ -360,10 +365,12 @@ export function emitReceiverBoundCalls(
   };
   for (const relType of ['IMPLEMENTS', 'EXTENDS'] as const) {
     for (const rel of graph.iterRelationshipsByType(relType)) {
-      const superDef = graphIdToClassDef.get(rel.targetId);
-      const subDef = graphIdToClassDef.get(rel.sourceId);
-      if (superDef === undefined || subDef === undefined) continue;
-      addSubtype(superDef.nodeId, subDef);
+      const superDefs = graphIdToClassDefs.get(rel.targetId);
+      const subDefs = graphIdToClassDefs.get(rel.sourceId);
+      if (superDefs === undefined || subDefs === undefined) continue;
+      for (const superDef of superDefs) {
+        for (const subDef of subDefs) addSubtype(superDef.nodeId, subDef);
+      }
     }
   }
 
