@@ -55,8 +55,11 @@ interface IndexedFile {
  * Deeply read-only on purpose. The memo hoist turned what used to be per-call
  * scratch into state shared by every import in a run, and `readonly` on the
  * PROPERTY still lets a caller do `idx.rootFiles.sort()` in place. Typing the
- * containers as read-only makes Go's deliberate `[...rootFiles].sort()` copy
- * compile-enforced instead of comment-enforced.
+ * containers as read-only makes the copy-before-mutating rule compile-enforced
+ * instead of comment-enforced — but `readonly` is erased at runtime and is not
+ * hard to widen back (the sibling Kotlin index documents `Array.isArray`'s
+ * `arg is any[]` predicate doing exactly that), so the one container callers
+ * read directly is handed out through `sortedRootFiles` rather than raw.
  */
 export interface PackageDirIndex {
   /** Last path segment of a directory → every normalized directory ending in it. */
@@ -135,21 +138,38 @@ function* matchingDirs(index: PackageDirIndex, pkgPath: string): Generator<reado
  * `allFilePaths` iteration order.
  */
 export function filesDirectlyInPkgDir(index: PackageDirIndex, pkgPath: string): string[] {
-  // One accumulator, appended to once per file. Re-spreading per matching
-  // directory instead costs O(files × dirs²) copies, which a monorepo carrying
-  // the same package directory under many services (`svcN/internal/models`,
-  // queried by Go's two-segment GOPATH tail) pays on every import.
-  const merged: IndexedFile[] = [];
-  let dirCount = 0;
+  // The first bucket is held by reference, not copied into an accumulator: one
+  // matching directory is the overwhelmingly common case (every unique-leaf
+  // call, and any query whose package path has more than one segment), and it
+  // then reaches the `map` with zero intermediate copies.
+  //
+  // A second directory promotes that reference to a real accumulator, which is
+  // appended to once per file from then on — never re-spread per directory,
+  // because that costs O(files × dirs²) copies, which a monorepo carrying the
+  // same package directory under many services (`svcN/internal/models`, queried
+  // by Go's two-segment GOPATH tail) would pay on every import.
+  let first: readonly IndexedFile[] | null = null;
+  let merged: IndexedFile[] | null = null;
   for (const files of matchingDirs(index, pkgPath)) {
-    dirCount++;
+    if (first === null) {
+      first = files;
+      continue;
+    }
+    if (merged === null) merged = [...first];
     for (const f of files) merged.push(f);
   }
-  if (merged.length === 0) return [];
+  if (first === null) return [];
   // One directory is already in Set order; several interleave and need merging
   // back onto the order the original single-pass scan emitted.
-  if (dirCount > 1) merged.sort((a, b) => a.ord - b.ord);
+  if (merged === null) return first.map((f) => f.raw);
+  merged.sort((a, b) => a.ord - b.ord);
   return merged.map((f) => f.raw);
+}
+
+/** Root-package files in sorted order. Copies: the index array is shared by
+ *  every import in the run and the result leaves as an edge target list. */
+export function sortedRootFiles(index: PackageDirIndex): string[] {
+  return [...index.rootFiles].sort();
 }
 
 /**

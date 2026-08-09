@@ -187,6 +187,10 @@ function mix(n) {
 
 const GO_MODULE = { modulePath: 'example.com/mod' };
 const EXTENSION = { go: '.go', csharp: '.cs', dart: '.dart', ruby: '.rb', kotlin: '.kt' };
+/** Directory fan-out. Shared because `buildRepo`'s collide targets address
+ *  files by `j % dirs` / `Math.floor(j / dirs)` and must agree with the layout
+ *  `buildFiles` produced. */
+const dirsFor = (fileCount) => Math.max(4, Math.floor(fileCount / 8));
 
 /**
  * UNIQUE-LEAF layout: one directory name per index, so no two directories share
@@ -249,7 +253,7 @@ function collideDir(lang, d) {
  * minting 256k import tuples it would never resolve.
  */
 function buildFiles(lang, fileCount, pad, shape) {
-  const dirs = Math.max(4, Math.floor(fileCount / 8));
+  const dirs = dirsFor(fileCount);
   const files = [];
   const ext = EXTENSION[lang];
   const prefix = pad === 0 ? '' : Array.from({ length: pad }, (_, n) => `d${n}`).join('/') + '/';
@@ -278,13 +282,127 @@ function buildFiles(lang, fileCount, pad, shape) {
 }
 
 /**
+ * The import one file issues in the UNIQUE-LEAF layout `uniqueDir` produced.
+ *
+ * The TARGET axis is split from the DIRECTORY axis exactly the way `uniqueDir`
+ * and `collideDir` split it above — two flat functions, selected once — rather
+ * than a `collide ?` ternary threaded through five languages' `local ? …`
+ * ladders. `local` picks in-repo vs external; the handful of MISS lines that
+ * are identical between the two shapes are duplicated on purpose, because the
+ * alternative is four levels of nesting in a single expression.
+ */
+function uniqueTarget(lang, { local, r, d, j }) {
+  if (lang === 'go') {
+    return local
+      ? `${GO_MODULE.modulePath}/src/pkg${d}`
+      : (r >>> 3) % 2 === 0
+        ? ['fmt', 'os', 'net/http', 'encoding/json'][(r >>> 4) % 4]
+        : `github.com/org/repo${(r >>> 4) % 97}/pkg/util`;
+  }
+  if (lang === 'csharp') {
+    return local
+      ? `App.Ns${d}`
+      : (r >>> 3) % 2 === 0
+        ? ['System', 'System.Threading.Tasks', 'System.Collections.Generic'][(r >>> 4) % 3]
+        : `Ghost${(r >>> 4) % 97}.Deep.Missing`;
+  }
+  if (lang === 'dart') {
+    return local
+      ? `package:app/feature${d}/file${j}.dart`
+      : (r >>> 3) % 3 === 0
+        ? ['dart:core', 'dart:async', 'dart:io'][(r >>> 4) % 3]
+        : `package:ext${(r >>> 4) % 97}/src/thing.dart`;
+  }
+  if (lang === 'kotlin') {
+    // A share of wildcard imports: `.*` lands on the package fan-out tier,
+    // which returns a LIST and is the only tier whose output is order-bearing.
+    return local
+      ? (r >>> 3) % 3 === 0
+        ? `com.example.pkg${d}.*`
+        : `com.example.pkg${d}.File${j}`
+      : (r >>> 3) % 2 === 0
+        ? ['java.util.List', 'kotlin.collections.Map', 'kotlinx.coroutines.flow.Flow'][
+            (r >>> 4) % 3
+          ]
+        : `com.ghost${(r >>> 4) % 97}.deep.Missing`;
+  }
+  return local
+    ? `mod${d}/file${j}`
+    : (r >>> 3) % 2 === 0
+      ? ['json', 'set', 'net/http', 'digest'][(r >>> 4) % 4]
+      : `gem${(r >>> 4) % 97}/missing/thing`;
+}
+
+/**
+ * The same import in the SHARED-LEAF layout `collideDir` produced. Each
+ * language's local spelling is chosen so this arm resolves exactly as many
+ * imports as the unique arm does (asserted): same workload, different layout.
+ */
+function collideTarget(lang, { local, r, d, j, dirs }) {
+  if (lang === 'go') {
+    return local
+      ? // The replicated package is addressed by the path it shares, so the
+        // module leg matches every service at once (`dirCount > 1`).
+        d % 5 === 1 && d % 7 !== 0
+        ? `${GO_MODULE.modulePath}/internal/shared`
+        : `${GO_MODULE.modulePath}/svc${d}/internal`
+      : (r >>> 3) % 2 === 0
+        ? ['fmt', 'os', 'net/http', 'encoding/json'][(r >>> 4) % 4]
+        : // Ends in the shared segment, so the GOPATH fallback walks the whole
+          // bucket three times and still returns null: the MISS path this arm
+          // exists to measure.
+          `github.com/org/repo${(r >>> 4) % 97}/internal`;
+  }
+  if (lang === 'csharp') {
+    return local
+      ? // `Vendor` has no directory anywhere, mirroring the unique arm's
+        // nested-same-name slice, which also resolves to nothing.
+        d % 7 === 0
+        ? `App.Src${d}.Vendor`
+        : `App.Src${d}.Models`
+      : (r >>> 3) % 2 === 0
+        ? ['System', 'System.Threading.Tasks', 'System.Collections.Generic'][(r >>> 4) % 3]
+        : `Ghost${(r >>> 4) % 97}.Deep.Missing`;
+  }
+  if (lang === 'dart') {
+    return local
+      ? `package:app/pkg${j % dirs}/lib/src/mod${Math.floor(j / dirs)}.dart`
+      : (r >>> 3) % 3 === 0
+        ? ['dart:core', 'dart:async', 'dart:io'][(r >>> 4) % 3]
+        : // A repeated basename under a directory nothing carries: both
+          // candidates walk the whole basename bucket and miss.
+          `package:ext${(r >>> 4) % 97}/other/mod${(r >>> 4) % 8}.dart`;
+  }
+  if (lang === 'kotlin') {
+    // Same wildcard share as the unique arm; `vendor${d}` is the collide
+    // layout's spelling of a package that exists nowhere.
+    return local
+      ? (r >>> 3) % 3 === 0
+        ? d % 7 === 0
+          ? `com.example.vendor${d}.*`
+          : `com.example.models.*`
+        : `com.example.models.File${j}`
+      : (r >>> 3) % 2 === 0
+        ? ['java.util.List', 'kotlin.collections.Map', 'kotlinx.coroutines.flow.Flow'][
+            (r >>> 4) % 3
+          ]
+        : `com.ghost${(r >>> 4) % 97}.deep.Missing`;
+  }
+  return local
+    ? `svc${j % dirs}/lib/models/mod${Math.floor(j / dirs)}`
+    : (r >>> 3) % 2 === 0
+      ? ['json', 'set', 'net/http', 'digest'][(r >>> 4) % 4]
+      : `gem${(r >>> 4) % 97}/missing/thing`;
+}
+
+/**
  * One synthetic repository per language: the file set plus the import list each
  * file issues.
  */
 function buildRepo(lang, fileCount, pad = 0, shape = 'unique') {
-  const dirs = Math.max(4, Math.floor(fileCount / 8));
+  const dirs = dirsFor(fileCount);
   const files = buildFiles(lang, fileCount, pad, shape);
-  const collide = shape === 'collide';
+  const mintTarget = shape === 'collide' ? collideTarget : uniqueTarget;
 
   const imports = [];
   for (let i = 0; i < fileCount; i++) {
@@ -296,76 +414,7 @@ function buildRepo(lang, fileCount, pad = 0, shape = 'unique') {
       const local = r % 8 < 3;
       const d = r % dirs;
       const j = r % fileCount;
-      let target;
-      if (lang === 'go') {
-        target = local
-          ? collide
-            ? // The replicated package is addressed by the path it shares, so
-              // the module leg matches every service at once (`dirCount > 1`).
-              d % 5 === 1 && d % 7 !== 0
-              ? `${GO_MODULE.modulePath}/internal/shared`
-              : `${GO_MODULE.modulePath}/svc${d}/internal`
-            : `${GO_MODULE.modulePath}/src/pkg${d}`
-          : (r >>> 3) % 2 === 0
-            ? ['fmt', 'os', 'net/http', 'encoding/json'][(r >>> 4) % 4]
-            : collide
-              ? // Ends in the shared segment, so the GOPATH fallback walks the
-                // whole bucket three times and still returns null: the MISS
-                // path this arm exists to measure.
-                `github.com/org/repo${(r >>> 4) % 97}/internal`
-              : `github.com/org/repo${(r >>> 4) % 97}/pkg/util`;
-      } else if (lang === 'csharp') {
-        target = local
-          ? collide
-            ? // `Vendor` has no directory anywhere, mirroring the unique arm's
-              // nested-same-name slice, which also resolves to nothing.
-              d % 7 === 0
-              ? `App.Src${d}.Vendor`
-              : `App.Src${d}.Models`
-            : `App.Ns${d}`
-          : (r >>> 3) % 2 === 0
-            ? ['System', 'System.Threading.Tasks', 'System.Collections.Generic'][(r >>> 4) % 3]
-            : `Ghost${(r >>> 4) % 97}.Deep.Missing`;
-      } else if (lang === 'dart') {
-        target = local
-          ? collide
-            ? `package:app/pkg${j % dirs}/lib/src/mod${Math.floor(j / dirs)}.dart`
-            : `package:app/feature${d}/file${j}.dart`
-          : (r >>> 3) % 3 === 0
-            ? ['dart:core', 'dart:async', 'dart:io'][(r >>> 4) % 3]
-            : collide
-              ? // A repeated basename under a directory nothing carries: both
-                // candidates walk the whole basename bucket and miss.
-                `package:ext${(r >>> 4) % 97}/other/mod${(r >>> 4) % 8}.dart`
-              : `package:ext${(r >>> 4) % 97}/src/thing.dart`;
-      } else if (lang === 'kotlin') {
-        // A share of wildcard imports: `.*` lands on the package fan-out tier,
-        // which returns a LIST and is the only tier whose output is order-bearing.
-        target = local
-          ? (r >>> 3) % 3 === 0
-            ? collide
-              ? d % 7 === 0
-                ? `com.example.vendor${d}.*`
-                : `com.example.models.*`
-              : `com.example.pkg${d}.*`
-            : collide
-              ? `com.example.models.File${j}`
-              : `com.example.pkg${d}.File${j}`
-          : (r >>> 3) % 2 === 0
-            ? ['java.util.List', 'kotlin.collections.Map', 'kotlinx.coroutines.flow.Flow'][
-                (r >>> 4) % 3
-              ]
-            : `com.ghost${(r >>> 4) % 97}.deep.Missing`;
-      } else {
-        target = local
-          ? collide
-            ? `svc${j % dirs}/lib/models/mod${Math.floor(j / dirs)}`
-            : `mod${d}/file${j}`
-          : (r >>> 3) % 2 === 0
-            ? ['json', 'set', 'net/http', 'digest'][(r >>> 4) % 4]
-            : `gem${(r >>> 4) % 97}/missing/thing`;
-      }
-      imports.push([from, target]);
+      imports.push([from, mintTarget(lang, { local, r, d, j, dirs })]);
     }
   }
   return { files, imports };
@@ -400,22 +449,37 @@ function resolveOne(lang, from, target, allFilePaths) {
   );
 }
 
-/** Untimed identity pass, one resolve per DISTINCT `from|target`: on a fixed
- *  file set the resolvers are pure, so a repeated pair can only re-derive what
- *  the first occurrence already recorded. */
-function outcomesOf(lang, files, imports) {
+/** The single untimed identity pass, producing BOTH non-timing results: the
+ *  distinct `from|target → result` set the fingerprint hashes, and `resolved`
+ *  counted over every import. One resolve per DISTINCT pair — on a fixed file
+ *  set the resolvers are pure, so a repeated pair can only re-derive what the
+ *  first occurrence already recorded, and the memoized `key → wasNull` answers
+ *  the count for the repeat. Merged from two passes that each walked the whole
+ *  corpus; the duplicate resolves measured ~1.15 s of an 11.4 s run.
+ *
+ *  Deliberately NOT shared with `resolveAll`, which is the TIMED loop: the memo
+ *  that makes this pass cheap is exactly what would hide the cost that loop
+ *  exists to measure. */
+function identityPass(lang, files, imports) {
   const allFilePaths = new Set(files);
   const outcomes = new Set();
-  const seen = new Set();
+  const wasNullByKey = new Map();
+  let resolved = 0;
   for (const [from, target] of imports) {
     const key = `${from}\u0000${target}`;
-    if (seen.has(key)) continue;
-    seen.add(key);
+    let wasNull = wasNullByKey.get(key);
+    if (wasNull !== undefined) {
+      if (!wasNull) resolved++;
+      continue;
+    }
     const hit = resolveOne(lang, from, target, allFilePaths);
-    const rendered = hit === null ? '<null>' : Array.isArray(hit) ? hit.join(',') : hit;
+    wasNull = hit === null;
+    wasNullByKey.set(key, wasNull);
+    if (!wasNull) resolved++;
+    const rendered = wasNull ? '<null>' : Array.isArray(hit) ? hit.join(',') : hit;
     outcomes.add(`${key}\u0000${rendered}`);
   }
-  return outcomes;
+  return { outcomes, resolved };
 }
 
 /** MIN, not median: both scales are timed in one process and every error source
@@ -503,25 +567,30 @@ if (CHECK && GC === null) {
 }
 
 const LANGS = ['go', 'csharp', 'dart', 'ruby', 'kotlin'];
-const SCALES = ['small', 'large', 'deep', 'collide', 'collide_large'];
+/** name, file count, depth padding, directory/basename layout. */
+const ARMS = [
+  ['small', SMALL, 0, 'unique'],
+  ['large', LARGE, 0, 'unique'],
+  ['deep', SMALL, DEEP_PAD, 'unique'],
+  ['collide', SMALL, 0, 'collide'],
+  ['collide_large', LARGE, 0, 'collide'],
+];
+/** Derived, never hand-written: the shape/fingerprint gate below iterates these
+ *  names, so a new arm is asserted by construction rather than measured,
+ *  printed and silently left out of the gate. */
+const SCALES = ARMS.map(([name]) => name);
 const report = {};
 for (const lang of LANGS) {
   const scales = {};
-  for (const [name, fileCount, pad, shape] of [
-    ['small', SMALL, 0, 'unique'],
-    ['large', LARGE, 0, 'unique'],
-    ['deep', SMALL, DEEP_PAD, 'unique'],
-    ['collide', SMALL, 0, 'collide'],
-    ['collide_large', LARGE, 0, 'collide'],
-  ]) {
+  for (const [name, fileCount, pad, shape] of ARMS) {
     const { files, imports } = buildRepo(lang, fileCount, pad, shape);
-    const outcomes = outcomesOf(lang, files, imports);
+    const { outcomes, resolved } = identityPass(lang, files, imports);
     scales[name] = {
       files: files.length,
       imports: imports.length,
       // Reported, not asserted on its own: a corpus edit that collapsed the
       // resolved share would still produce a "valid" fingerprint over far less.
-      resolved: resolveAll(lang, files, imports),
+      resolved,
       distinct_outcomes: outcomes.size,
       ms: Number(timeResolution(lang, files, imports).toFixed(3)),
       fingerprint: fingerprint(outcomes),
@@ -567,41 +636,55 @@ for (const lang of LANGS) {
         `parity harness in test/unit/scope-resolution/import-target-index-parity.test.ts.`,
     );
   }
-  if (got.scaling_ratio > baseline.scaling_budget) {
-    failures.push(
-      `${lang}: scaling ${got.scaling_ratio} > budget ${baseline.scaling_budget} — per-import ` +
-        `cost grows with corpus size again. Timing arm: re-run on an idle machine before ` +
-        `investigating; the fingerprint arm never warrants a re-run.`,
-    );
-  }
-  if (got.depth_ratio > baseline.depth_budget[lang]) {
-    failures.push(
-      `${lang}: depth ${got.depth_ratio} > budget ${baseline.depth_budget[lang]} — cost grows with ` +
-        `path DEPTH at a fixed file count, which scaling_ratio divides out and cannot see. ` +
-        `Timing arm: re-run on an idle machine before investigating.`,
-    );
-  }
-  if (got.collide_scaling_ratio > baseline.collide_scaling_budget[lang]) {
-    failures.push(
-      `${lang}: collide scaling ${got.collide_scaling_ratio} > budget ` +
-        `${baseline.collide_scaling_budget[lang]} — on the SHARED-LEAF layout (svcN/internal, ` +
-        `SrcN/Models, a repeated basename per package) per-import cost grew beyond what this ` +
-        `shape already costs by construction. Timing arm: re-run on an idle machine first.`,
-    );
-  }
-  if (got.small.ms > baseline.small_ms_ceiling[lang]) {
-    failures.push(
-      `${lang}: small arm ${got.small.ms} ms > ceiling ${baseline.small_ms_ceiling[lang]} ms — ` +
-        `an ABSOLUTE bound, because a constant-factor regression that grows both arms equally ` +
-        `passes the ratio. Timing arm: re-run on an idle machine before investigating.`,
-    );
-  }
-  if (got.collide.ms > baseline.collide_ms_ceiling[lang]) {
-    failures.push(
-      `${lang}: collide arm ${got.collide.ms} ms > ceiling ${baseline.collide_ms_ceiling[lang]} ` +
-        `ms — the ABSOLUTE bound on the shared-leaf layout. Timing arm: re-run on an idle ` +
-        `machine before investigating.`,
-    );
+  // One shape, five facts, so the five budgets read side by side and the shared
+  // trailing sentence exists once instead of drifting into five wordings. Each
+  // `why` stays the arm's OWN: it is what tells a triager which corpus shape
+  // regressed, and flattening it would cost the message its whole value.
+  const timingChecks = [
+    {
+      label: 'scaling',
+      got: got.scaling_ratio,
+      budget: baseline.scaling_budget,
+      why: 'per-import cost grows with corpus size again.',
+    },
+    {
+      label: 'depth',
+      got: got.depth_ratio,
+      budget: baseline.depth_budget[lang],
+      why:
+        'cost grows with path DEPTH at a fixed file count, which scaling_ratio divides out and ' +
+        'cannot see.',
+    },
+    {
+      label: 'collide scaling',
+      got: got.collide_scaling_ratio,
+      budget: baseline.collide_scaling_budget[lang],
+      why:
+        'on the SHARED-LEAF layout (svcN/internal, SrcN/Models, a repeated basename per package) ' +
+        'per-import cost grew beyond what this shape already costs by construction.',
+    },
+    {
+      label: 'small arm ms',
+      got: got.small.ms,
+      budget: baseline.small_ms_ceiling[lang],
+      why:
+        'an ABSOLUTE bound, because a constant-factor regression that grows both arms equally ' +
+        'passes the ratio.',
+    },
+    {
+      label: 'collide arm ms',
+      got: got.collide.ms,
+      budget: baseline.collide_ms_ceiling[lang],
+      why: 'the ABSOLUTE bound on the shared-leaf layout.',
+    },
+  ];
+  for (const check of timingChecks) {
+    if (check.got > check.budget) {
+      failures.push(
+        `${lang}: ${check.label} ${check.got} > budget ${check.budget} — ${check.why} ` +
+          `Timing arm: re-run on an idle machine before investigating.`,
+      );
+    }
   }
   for (const arm of ['deep', 'collide']) {
     if (got[arm].resolved !== got.small.resolved) {

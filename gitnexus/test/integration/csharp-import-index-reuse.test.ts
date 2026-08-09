@@ -30,7 +30,7 @@
  */
 import { describe, it, expect } from 'vitest';
 import { csharpScopeResolver } from '../../src/core/ingestion/languages/csharp/scope-resolver.js';
-import { CountingSet } from '../helpers/counting-file-set.js';
+import { CountingSet, expectDistinctFileSetsGetOwnIndex } from '../helpers/counting-file-set.js';
 
 const { resolveImportTarget } = csharpScopeResolver;
 
@@ -80,20 +80,17 @@ describe('C# import resolution — index reuse across usings (#2878)', () => {
   });
 
   it('a distinct file set gets its own indexes (no stale cross-run reuse)', () => {
-    const a = buildWorkspace(20);
-    const b = buildWorkspace(20);
-
-    for (let i = 0; i < 20; i++) {
-      expect(resolveImportTarget('App.Models.User', FROM_FILE, a, undefined)).toBe(
-        'App/Models/User.cs',
-      );
-      expect(resolveImportTarget('App.Models.User', FROM_FILE, b, undefined)).toBe(
-        'App/Models/User.cs',
-      );
-    }
-
-    expect(a.scans).toBe(2);
-    expect(b.scans).toBe(2);
+    expectDistinctFileSetsGetOwnIndex({
+      resolveImportTarget,
+      buildWorkspace: () => buildWorkspace(20),
+      targetRaw: 'App.Models.User',
+      fromFile: FROM_FILE,
+      resolutionConfig: undefined,
+      expected: 'App/Models/User.cs',
+      // Two, not one: the shared workspace/suffix index and the namespace-dir
+      // index are separate WeakMaps over the same Set.
+      expectedScans: 2,
+    });
   });
 
   it('still resolves real usings correctly (the perf test is not vacuous)', () => {

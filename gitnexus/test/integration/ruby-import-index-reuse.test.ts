@@ -22,7 +22,7 @@
  */
 import { describe, it, expect } from 'vitest';
 import { rubyScopeResolver } from '../../src/core/ingestion/languages/ruby/scope-resolver.js';
-import { CountingSet } from '../helpers/counting-file-set.js';
+import { CountingSet, expectDistinctFileSetsGetOwnIndex } from '../helpers/counting-file-set.js';
 
 const { resolveImportTarget } = rubyScopeResolver;
 
@@ -67,16 +67,15 @@ describe('Ruby import resolution — index reuse across requires (#2880)', () =>
   });
 
   it('a distinct file set gets its own index (no stale cross-run reuse)', () => {
-    const a = buildWorkspace(20);
-    const b = buildWorkspace(20);
-
-    for (let i = 0; i < 20; i++) {
-      expect(resolveImportTarget('app/models/user', FROM_FILE, a)).toBe('lib/app/models/user.rb');
-      expect(resolveImportTarget('app/models/user', FROM_FILE, b)).toBe('lib/app/models/user.rb');
-    }
-
-    expect(a.scans).toBe(1);
-    expect(b.scans).toBe(1);
+    expectDistinctFileSetsGetOwnIndex({
+      resolveImportTarget,
+      buildWorkspace: () => buildWorkspace(20),
+      targetRaw: 'app/models/user',
+      fromFile: FROM_FILE,
+      resolutionConfig: undefined,
+      expected: 'lib/app/models/user.rb',
+      expectedScans: 1,
+    });
   });
 
   it('still resolves real requires correctly (the perf test is not vacuous)', () => {

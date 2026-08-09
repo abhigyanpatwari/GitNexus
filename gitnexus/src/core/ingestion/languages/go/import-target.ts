@@ -2,6 +2,7 @@ import type { GoModuleConfig } from '../../language-config.js';
 import {
   buildPackageDirIndex,
   filesDirectlyInPkgDir,
+  sortedRootFiles,
   type PackageDirIndex,
 } from '../../import-resolvers/package-dir-index.js';
 
@@ -84,9 +85,7 @@ function getGoPackageIndex(allFilePaths: ReadonlySet<string>): PackageDirIndex {
 }
 
 function findRootPackageFiles(allFilePaths: ReadonlySet<string>): string[] {
-  // Copy before sorting: the index's array is shared across every import in the
-  // run, and the result leaves this module as the edge's target list.
-  return [...getGoPackageIndex(allFilePaths).rootFiles].sort();
+  return sortedRootFiles(getGoPackageIndex(allFilePaths));
 }
 
 function findAllFilesInPkgDir(allFilePaths: ReadonlySet<string>, pkgPath: string): string[] {

@@ -22,7 +22,7 @@
  */
 import { describe, it, expect } from 'vitest';
 import { dartScopeResolver } from '../../src/core/ingestion/languages/dart/scope-resolver.js';
-import { CountingSet } from '../helpers/counting-file-set.js';
+import { CountingSet, expectDistinctFileSetsGetOwnIndex } from '../helpers/counting-file-set.js';
 
 const { resolveImportTarget } = dartScopeResolver;
 
@@ -71,16 +71,15 @@ describe('Dart import resolution — index reuse across imports (#2879)', () => 
   });
 
   it('a distinct file set gets its own index (no stale cross-run reuse)', () => {
-    const a = buildWorkspace(20);
-    const b = buildWorkspace(20);
-
-    for (let i = 0; i < 20; i++) {
-      expect(resolveImportTarget('package:app/models.dart', FROM_FILE, a)).toBe('lib/models.dart');
-      expect(resolveImportTarget('package:app/models.dart', FROM_FILE, b)).toBe('lib/models.dart');
-    }
-
-    expect(a.scans).toBe(1);
-    expect(b.scans).toBe(1);
+    expectDistinctFileSetsGetOwnIndex({
+      resolveImportTarget,
+      buildWorkspace: () => buildWorkspace(20),
+      targetRaw: 'package:app/models.dart',
+      fromFile: FROM_FILE,
+      resolutionConfig: undefined,
+      expected: 'lib/models.dart',
+      expectedScans: 1,
+    });
   });
 
   it('still resolves real imports correctly (the perf test is not vacuous)', () => {

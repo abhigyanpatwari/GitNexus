@@ -25,7 +25,7 @@
  */
 import { describe, it, expect } from 'vitest';
 import { goScopeResolver } from '../../src/core/ingestion/languages/go/scope-resolver.js';
-import { CountingSet } from '../helpers/counting-file-set.js';
+import { CountingSet, expectDistinctFileSetsGetOwnIndex } from '../helpers/counting-file-set.js';
 
 // `resolveImportTarget` is a required member of `ScopeResolver`, so this is a
 // plain read — no optional call, and no `toBeDefined()` guarding a branch that
@@ -84,20 +84,15 @@ describe('Go import resolution — index reuse across imports (#2877)', () => {
   });
 
   it('a distinct file set gets its own index (no stale cross-run reuse)', () => {
-    const a = buildWorkspace(20);
-    const b = buildWorkspace(20);
-
-    for (let i = 0; i < 20; i++) {
-      expect(
-        resolveImportTarget('example.com/mod/internal/models', FROM_FILE, a, GO_MODULE),
-      ).toEqual(['internal/models/user.go', 'internal/models/order.go']);
-      expect(
-        resolveImportTarget('example.com/mod/internal/models', FROM_FILE, b, GO_MODULE),
-      ).toEqual(['internal/models/user.go', 'internal/models/order.go']);
-    }
-
-    expect(a.scans).toBe(1);
-    expect(b.scans).toBe(1);
+    expectDistinctFileSetsGetOwnIndex({
+      resolveImportTarget,
+      buildWorkspace: () => buildWorkspace(20),
+      targetRaw: 'example.com/mod/internal/models',
+      fromFile: FROM_FILE,
+      resolutionConfig: GO_MODULE,
+      expected: ['internal/models/user.go', 'internal/models/order.go'],
+      expectedScans: 1,
+    });
   });
 
   it('still resolves real imports correctly (the perf test is not vacuous)', () => {

@@ -44,7 +44,14 @@
  * workspace context whose `allFilePaths` is not a `Set`, so a plain object with
  * a counter would silently resolve nothing and every assertion would pass on
  * `null === null`.
+ *
+ * `expectDistinctFileSetsGetOwnIndex` below is the one arm of those guards that
+ * is identical in every language once the four values that differ are named, so
+ * it lives here beside the instrument it reads rather than in each guard.
  */
+import { expect } from 'vitest';
+import type { ScopeResolver } from '../../src/core/ingestion/scope-resolution/contract/scope-resolver.js';
+
 export class CountingSet extends Set<string> {
   /** Full traversals of this set, by any entry point. */
   scans = 0;
@@ -76,4 +83,79 @@ export class CountingSet extends Set<string> {
     this.scans++;
     super.forEach(callbackfn, thisArg);
   }
+}
+
+/**
+ * Everything that differs between the per-language spellings of the
+ * distinct-file-set arm. Nothing else about that arm varies, which is why it is
+ * a parameter list rather than four copies.
+ */
+export interface DistinctFileSetArm {
+  /**
+   * The orchestrator adapter under test — `<lang>ScopeResolver
+   * .resolveImportTarget`, NOT the language's `resolve<Lang>ImportTarget`. The
+   * adapter is the surface the unit parity test cannot reach, and the surface a
+   * defensive `new Set(allFilePaths)` copy would break.
+   */
+  readonly resolveImportTarget: ScopeResolver['resolveImportTarget'];
+  /**
+   * Builds one workspace. Called twice, and must return a FRESH `CountingSet`
+   * each time: the two sets being distinct objects is the whole subject of the
+   * arm, since the indexes are memoized on Set identity via a `WeakMap`.
+   */
+  readonly buildWorkspace: () => CountingSet;
+  /** The import spelling to resolve, as it would appear in source. */
+  readonly targetRaw: string;
+  /** The importing file the target is resolved against. */
+  readonly fromFile: string;
+  /**
+   * The resolver's `resolutionConfig` argument (Go's `{ modulePath }`). Not
+   * optional: the languages that take none pass `undefined` in the open, so a
+   * call site never hides which adapters read this channel behind an omission.
+   */
+  readonly resolutionConfig: unknown;
+  /**
+   * What `targetRaw` must resolve to — a path for the string-returning
+   * resolvers, a path list for Go. Never `null`: the pairing rule below exists
+   * precisely because an adapter that has stopped resolving anything returns
+   * `null` and still posts a perfect scan count, so a `null` expectation would
+   * reinstate the hole it closes.
+   */
+  readonly expected: string | readonly string[];
+  /** Traversals of ONE file set that full reuse permits: one per index built. */
+  readonly expectedScans: number;
+}
+
+/** Resolutions driven against each file set before the counts are read. */
+const DISTINCT_FILE_SET_REPEATS = 20;
+
+/**
+ * Assert that two independently built file sets each get their own index, built
+ * once — no stale reuse of one set's index for the other, and no rebuild per
+ * import within either.
+ *
+ * The repeats are driven bare, following the equivalent arm in
+ * `test/unit/scope-resolution/import-target-index-parity.test.ts`: asserting
+ * inside the loop restates one bit of information forty times. The two asserted
+ * resolutions afterwards are the pairing rule the guards' headers state — a
+ * scan count must never be the count of an adapter that resolves nothing.
+ */
+export function expectDistinctFileSetsGetOwnIndex(arm: DistinctFileSetArm): void {
+  const a = arm.buildWorkspace();
+  const b = arm.buildWorkspace();
+
+  for (let i = 0; i < DISTINCT_FILE_SET_REPEATS; i++) {
+    arm.resolveImportTarget(arm.targetRaw, arm.fromFile, a, arm.resolutionConfig);
+    arm.resolveImportTarget(arm.targetRaw, arm.fromFile, b, arm.resolutionConfig);
+  }
+
+  expect(arm.resolveImportTarget(arm.targetRaw, arm.fromFile, a, arm.resolutionConfig)).toEqual(
+    arm.expected,
+  );
+  expect(arm.resolveImportTarget(arm.targetRaw, arm.fromFile, b, arm.resolutionConfig)).toEqual(
+    arm.expected,
+  );
+
+  expect(a.scans).toBe(arm.expectedScans);
+  expect(b.scans).toBe(arm.expectedScans);
 }
