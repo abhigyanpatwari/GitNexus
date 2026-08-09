@@ -83,7 +83,13 @@ export interface SuffixIndex {
   get(suffix: string): string | undefined;
   /** Case-insensitive suffix lookup */
   getInsensitive(suffix: string): string | undefined;
-  /** Get all files in a directory suffix */
+  /**
+   * Get all files in a directory suffix.
+   *
+   * The directory map behind this is built on the FIRST call and memoized —
+   * see `buildSuffixIndex`. Callers that never ask a directory question never
+   * pay for it.
+   */
   getFilesInDir(dirSuffix: string, extension: string): string[];
 }
 
@@ -92,8 +98,6 @@ export function buildSuffixIndex(normalizedFileList: string[], allFileList: stri
   const exactMap = new Map<string, string>();
   // Map: lowercase suffix -> original file path
   const lowerMap = new Map<string, string>();
-  // Map: directory suffix -> list of file paths in that directory
-  const dirMap = new Map<string, string[]>();
 
   for (let i = 0; i < normalizedFileList.length; i++) {
     const normalized = normalizedFileList[i];
@@ -112,11 +116,49 @@ export function buildSuffixIndex(normalizedFileList: string[], allFileList: stri
         lowerMap.set(lower, original);
       }
     }
+  }
 
-    // Index directory membership
-    const lastSlash = normalized.lastIndexOf('/');
-    if (lastSlash >= 0) {
+  /**
+   * Map: `${directory suffix}:${extension}` -> file paths in that directory.
+   *
+   * DEFERRED, not dropped (#2903). This is the array-valued map of the three
+   * and by far the most expensive: one entry — and one array push — per file
+   * per directory component, so O(files × depth) in entries AND in array
+   * churn. Measured on the 32k-path arms of `bench/import-target/`, it is
+   * ~15% of the retained C# index and ~19% of the retained Ruby one.
+   *
+   * Only `getFilesInDir` reads it, and only four call sites reach that:
+   * `import-resolvers/{php,csharp,jvm}.ts` and `import-resolvers/configs/
+   * python.ts`. Every other consumer of this index — `workspace-file-index.ts`
+   * serving Ruby, `languages/typescript/scope-resolver.ts`,
+   * `languages/vue/import-target.ts`, `group/extractors/include-extractor.ts`
+   * — asks only suffix questions and was paying the whole footprint for a map
+   * it never touched. Since these indexes are now retained for a whole
+   * resolution pass rather than rebuilt per import (#2877-#2880), that is
+   * retained memory against the #2649 kernel-scale OOM constraint.
+   *
+   * `null` until the first `getFilesInDir`; the MAP is memoized, not the
+   * decision to build it, so a repeated miss cannot rebuild it. Building it
+   * later is behaviour-identical because it is a pure function of
+   * `normalizedFileList` / `allFileList`, and it retains nothing new: every
+   * production caller already holds both arrays alive alongside the index
+   * (`WorkspaceFileIndex.normalized`/`.all`, the TS and Vue `PassCache`s,
+   * `IncludeExtractor.extract`'s locals).
+   */
+  let dirMap: Map<string, string[]> | null = null;
+
+  const getDirMap = (): Map<string, string[]> => {
+    if (dirMap !== null) return dirMap;
+    const built = new Map<string, string[]>();
+    for (let i = 0; i < normalizedFileList.length; i++) {
+      const normalized = normalizedFileList[i];
+      const original = allFileList[i];
+      const lastSlash = normalized.lastIndexOf('/');
+      // A file at the repo root is in no directory suffix.
+      if (lastSlash < 0) continue;
+
       // Build all directory suffixes
+      const parts = normalized.split('/');
       const dirParts = parts.slice(0, -1);
       const fileName = parts[parts.length - 1];
       const ext = fileName.substring(fileName.lastIndexOf('.'));
@@ -124,21 +166,23 @@ export function buildSuffixIndex(normalizedFileList: string[], allFileList: stri
       for (let j = dirParts.length - 1; j >= 0; j--) {
         const dirSuffix = dirParts.slice(j).join('/');
         const key = `${dirSuffix}:${ext}`;
-        let list = dirMap.get(key);
+        let list = built.get(key);
         if (!list) {
           list = [];
-          dirMap.set(key, list);
+          built.set(key, list);
         }
         list.push(original);
       }
     }
-  }
+    dirMap = built;
+    return built;
+  };
 
   return {
     get: (suffix: string) => exactMap.get(suffix),
     getInsensitive: (suffix: string) => lowerMap.get(suffix.toLowerCase()),
     getFilesInDir: (dirSuffix: string, extension: string) => {
-      return dirMap.get(`${dirSuffix}:${extension}`) || [];
+      return getDirMap().get(`${dirSuffix}:${extension}`) || [];
     },
   };
 }
