@@ -5,6 +5,7 @@
  * This file contains shared helpers for namespace-based resolution.
  */
 
+import { perFileSet } from './per-file-set.js';
 import type { SuffixIndex } from './utils.js';
 import { suffixResolve } from './utils.js';
 import type { CSharpProjectConfig, CSharpNamespaceEvidence } from '../language-config.js';
@@ -77,45 +78,40 @@ interface CsharpNamespaceDirIndex {
  * array to every import, so this build runs once. A caller that copies the
  * array per import silently restores the O(imports × files) cost.
  */
-const NAMESPACE_DIR_INDEX_CACHE = new WeakMap<readonly string[], CsharpNamespaceDirIndex>();
+const getCsharpNamespaceDirIndex = perFileSet(
+  (normalizedFileList: readonly string[]): CsharpNamespaceDirIndex => {
+    const dirsByLastSegment = new Map<string, string[]>();
+    const positionsByDir = new Map<string, number[]>();
+    const singleSegmentDirs: string[] = [];
 
-function getCsharpNamespaceDirIndex(normalizedFileList: string[]): CsharpNamespaceDirIndex {
-  const cached = NAMESPACE_DIR_INDEX_CACHE.get(normalizedFileList);
-  if (cached !== undefined) return cached;
+    for (let i = 0; i < normalizedFileList.length; i++) {
+      const normalized = normalizedFileList[i];
+      if (!normalized.endsWith('.cs')) continue;
+      const lastSlash = normalized.lastIndexOf('/');
+      // A file with no directory can never match: the needle always ends with
+      // '/', so `indexOf` on a slash-free path is always -1.
+      if (lastSlash < 0) continue;
 
-  const dirsByLastSegment = new Map<string, string[]>();
-  const positionsByDir = new Map<string, number[]>();
-  const singleSegmentDirs: string[] = [];
-
-  for (let i = 0; i < normalizedFileList.length; i++) {
-    const normalized = normalizedFileList[i];
-    if (!normalized.endsWith('.cs')) continue;
-    const lastSlash = normalized.lastIndexOf('/');
-    // A file with no directory can never match: the needle always ends with
-    // '/', so `indexOf` on a slash-free path is always -1.
-    if (lastSlash < 0) continue;
-
-    const dir = normalized.slice(0, lastSlash);
-    let positions = positionsByDir.get(dir);
-    if (positions === undefined) {
-      positions = [];
-      positionsByDir.set(dir, positions);
-      const lastSegment = dir.slice(dir.lastIndexOf('/') + 1);
-      if (lastSegment === dir) singleSegmentDirs.push(dir);
-      let dirs = dirsByLastSegment.get(lastSegment);
-      if (dirs === undefined) {
-        dirs = [];
-        dirsByLastSegment.set(lastSegment, dirs);
+      const dir = normalized.slice(0, lastSlash);
+      let positions = positionsByDir.get(dir);
+      if (positions === undefined) {
+        positions = [];
+        positionsByDir.set(dir, positions);
+        const lastSegment = dir.slice(dir.lastIndexOf('/') + 1);
+        if (lastSegment === dir) singleSegmentDirs.push(dir);
+        let dirs = dirsByLastSegment.get(lastSegment);
+        if (dirs === undefined) {
+          dirs = [];
+          dirsByLastSegment.set(lastSegment, dirs);
+        }
+        dirs.push(dir);
       }
-      dirs.push(dir);
+      positions.push(i);
     }
-    positions.push(i);
-  }
 
-  const built: CsharpNamespaceDirIndex = { dirsByLastSegment, positionsByDir, singleSegmentDirs };
-  NAMESPACE_DIR_INDEX_CACHE.set(normalizedFileList, built);
-  return built;
-}
+    return { dirsByLastSegment, positionsByDir, singleSegmentDirs };
+  },
+);
 
 /**
  * Every directory that could satisfy `dirPrefix`, as a superset — the exact

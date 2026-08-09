@@ -22,7 +22,8 @@ import { simpleKey } from '../../scope-resolution/graph-bridge/node-lookup.js';
 import type { ScopeResolutionIndexes } from '../../model/scope-resolution-indexes.js';
 import { typescriptProvider } from '../typescript.js';
 import { loadTsconfigPaths, type TsconfigPaths } from '../../language-config.js';
-import { buildSuffixIndex, type SuffixIndex } from '../../import-resolvers/utils.js';
+import { buildImportPassCache } from '../../import-resolvers/pass-cache.js';
+import { perFileSet } from '../../import-resolvers/per-file-set.js';
 import { indexOnlyElementType } from '../../type-extractors/shared.js';
 import {
   typescriptArityCompatibility,
@@ -55,24 +56,6 @@ const TYPESCRIPT_TYPE_ONLY_BINDING_TYPES = new Set<NodeLabel>([
 ]);
 
 /**
- * Everything `resolveTsTarget` derives from one workspace file set: the file
- * list, the lower-cased file list, the suffix index and the per-pass
- * `resolveCache`.
- *
- * Without this memoization `resolveTsTarget` re-derived `allFileList` and
- * `normalizedFileList` (both O(N_files)), rebuilt the index and threw away the
- * `resolveCache` on every import — O(N_files × N_imports) total work for what
- * should be O(N_files + N_imports).
- */
-interface TsPassCache {
-  readonly allFilePaths: Set<string>;
-  readonly allFileList: readonly string[];
-  readonly normalizedFileList: readonly string[];
-  readonly index: SuffixIndex;
-  readonly resolveCache: Map<string, string | null>;
-}
-
-/**
  * Memoized on the `allFilePaths` Set identity, like every other language's
  * import index (`import-resolvers/workspace-file-index.ts` and friends).
  *
@@ -89,27 +72,7 @@ interface TsPassCache {
  * `new Set(allFilePaths)` at the adapter boundary hands a fresh key per import
  * and restores the per-import rebuild (PR #1918 review P1).
  */
-const TS_PASS_CACHE = new WeakMap<ReadonlySet<string>, TsPassCache>();
-
-function tsPassCacheFor(allFilePaths: ReadonlySet<string>): TsPassCache {
-  const cached = TS_PASS_CACHE.get(allFilePaths);
-  if (cached !== undefined) return cached;
-
-  const allFileList = Array.from(allFilePaths);
-  const normalizedFileList = allFileList.map((f) => f.toLowerCase());
-  const built: TsPassCache = {
-    // Copied ONCE per file set, not once per import: `TsResolveContext` wants a
-    // mutable `Set` and the orchestrator hands us a `ReadonlySet`. The copy is
-    // not the #1918 hazard because the cache KEY is the caller's original Set.
-    allFilePaths: new Set(allFilePaths),
-    allFileList,
-    normalizedFileList,
-    index: buildSuffixIndex(normalizedFileList, allFileList),
-    resolveCache: new Map(),
-  };
-  TS_PASS_CACHE.set(allFilePaths, built);
-  return built;
-}
+const tsPassCacheFor = perFileSet(buildImportPassCache);
 
 /**
  * Build a `resolveImportTarget` adapter that reads the memoized per-file-set

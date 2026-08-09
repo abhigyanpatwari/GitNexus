@@ -11,6 +11,7 @@
  */
 
 import type { ParsedFile, ParsedImport, WorkspaceIndex } from 'gitnexus-shared';
+import { perFileSet } from '../../import-resolvers/per-file-set.js';
 import { resolvePythonImportInternal } from '../../import-resolvers/python.js';
 
 export interface PythonResolveContext {
@@ -347,13 +348,9 @@ interface PythonFileIndex {
   readonly dirPrefixes: Set<string>;
 }
 
-const PYTHON_FILE_INDEX_CACHE = new WeakMap<ReadonlySet<string>, PythonFileIndex>();
-
-function getPythonFileIndex(allFilePaths: ReadonlySet<string>): PythonFileIndex {
-  const cached = PYTHON_FILE_INDEX_CACHE.get(allFilePaths);
-  if (cached !== undefined) return cached;
-  // Cache miss: materialize a fresh index. That it happens once per run and not
-  // once per import is asserted by counting traversals of the Set itself, in
+const getPythonFileIndex = perFileSet((allFilePaths: ReadonlySet<string>): PythonFileIndex => {
+  // Runs on a cache miss only. That it happens once per run and not once per
+  // import is asserted by counting traversals of the Set itself, in
   // `test/integration/python-import-index-reuse.test.ts` — the PR #1918 review
   // P1 guard (#2909).
 
@@ -413,10 +410,8 @@ function getPythonFileIndex(allFilePaths: ReadonlySet<string>): PythonFileIndex 
     }
   }
 
-  const index: PythonFileIndex = { normSet, byBasename, byInitParent, dirPrefixes };
-  PYTHON_FILE_INDEX_CACHE.set(allFilePaths, index);
-  return index;
-}
+  return { normSet, byBasename, byInitParent, dirPrefixes };
+});
 
 function pythonImportedSubmoduleTarget(parsedImport: ParsedImport): string | null {
   if (parsedImport.kind !== 'named' && parsedImport.kind !== 'alias') return null;

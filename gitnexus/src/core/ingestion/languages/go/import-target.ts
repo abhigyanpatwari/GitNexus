@@ -5,6 +5,7 @@ import {
   sortedRootFiles,
   type PackageDirIndex,
 } from '../../import-resolvers/package-dir-index.js';
+import { perFileSet } from '../../import-resolvers/per-file-set.js';
 
 /**
  * Resolve a Go import path to ALL .go files in the matching package directory.
@@ -56,6 +57,11 @@ export function resolveGoImportTarget(
   return null;
 }
 
+/** Go packages exclude `_test.go` files: they are a separate package. */
+function isGoPackageFile(normalized: string): boolean {
+  return normalized.endsWith('.go') && !normalized.endsWith('_test.go');
+}
+
 /**
  * Package index over the file set, memoized on the Set's identity (#2877).
  *
@@ -69,20 +75,10 @@ export function resolveGoImportTarget(
  * is built once per run. `resolveGoImportTarget` must therefore never copy the
  * Set before this point — see `import-resolvers/workspace-file-index.ts`.
  */
-const GO_PACKAGE_INDEX_CACHE = new WeakMap<ReadonlySet<string>, PackageDirIndex>();
-
-/** Go packages exclude `_test.go` files: they are a separate package. */
-function isGoPackageFile(normalized: string): boolean {
-  return normalized.endsWith('.go') && !normalized.endsWith('_test.go');
-}
-
-function getGoPackageIndex(allFilePaths: ReadonlySet<string>): PackageDirIndex {
-  const cached = GO_PACKAGE_INDEX_CACHE.get(allFilePaths);
-  if (cached !== undefined) return cached;
-  const built = buildPackageDirIndex(allFilePaths, isGoPackageFile);
-  GO_PACKAGE_INDEX_CACHE.set(allFilePaths, built);
-  return built;
-}
+const getGoPackageIndex = perFileSet(
+  (allFilePaths: ReadonlySet<string>): PackageDirIndex =>
+    buildPackageDirIndex(allFilePaths, isGoPackageFile),
+);
 
 function findRootPackageFiles(allFilePaths: ReadonlySet<string>): string[] {
   return sortedRootFiles(getGoPackageIndex(allFilePaths));

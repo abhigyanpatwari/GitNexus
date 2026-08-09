@@ -1,5 +1,6 @@
 import type { ParsedImport, WorkspaceIndex } from 'gitnexus-shared';
 import { KOTLIN_EXTENSIONS } from '../../import-resolvers/jvm.js';
+import { perFileSet } from '../../import-resolvers/per-file-set.js';
 
 export interface KotlinResolveContext {
   readonly fromFile: string;
@@ -179,13 +180,9 @@ interface KotlinFileIndex {
   readonly dirChildren: Map<string, readonly string[]>;
 }
 
-const KOTLIN_FILE_INDEX_CACHE = new WeakMap<ReadonlySet<string>, KotlinFileIndex>();
-
-function getKotlinFileIndex(allFilePaths: ReadonlySet<string>): KotlinFileIndex {
-  const cached = KOTLIN_FILE_INDEX_CACHE.get(allFilePaths);
-  if (cached !== undefined) return cached;
-  // Cache miss: materialize a fresh index. That it happens once per run and not
-  // once per import is asserted by counting traversals of the Set itself, in
+const getKotlinFileIndex = perFileSet((allFilePaths: ReadonlySet<string>): KotlinFileIndex => {
+  // Runs on a cache miss only. That it happens once per run and not once per
+  // import is asserted by counting traversals of the Set itself, in
   // `test/integration/kotlin-import-index-reuse.test.ts` (#2909).
 
   const exactByStem = new Map<string, string>();
@@ -254,10 +251,8 @@ function getKotlinFileIndex(allFilePaths: ReadonlySet<string>): KotlinFileIndex 
   // future mutation is a loud TypeError instead of a silent edge move.
   for (const bucket of dirChildren.values()) Object.freeze(bucket);
 
-  const index: KotlinFileIndex = { exactByStem, suffixByStem, dirChildren };
-  KOTLIN_FILE_INDEX_CACHE.set(allFilePaths, index);
-  return index;
-}
+  return { exactByStem, suffixByStem, dirChildren };
+});
 
 function addChild(dirChildren: Map<string, string[]>, dir: string, raw: string): void {
   const bucket = dirChildren.get(dir);

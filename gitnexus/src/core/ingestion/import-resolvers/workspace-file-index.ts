@@ -33,6 +33,7 @@
  *    INSIDE a resolver, by counting how many times the Set is iterated.
  */
 
+import { perFileSet } from './per-file-set.js';
 import { buildSuffixIndex, type SuffixIndex } from './utils.js';
 
 export interface WorkspaceFileIndex {
@@ -52,27 +53,22 @@ export interface WorkspaceFileIndex {
   readonly normToRaw: Map<string, string>;
 }
 
-const WORKSPACE_FILE_INDEX_CACHE = new WeakMap<ReadonlySet<string>, WorkspaceFileIndex>();
+export const getWorkspaceFileIndex = perFileSet(
+  (allFilePaths: ReadonlySet<string>): WorkspaceFileIndex => {
+    const all = [...allFilePaths];
+    const normalized = all.map((f) => f.replace(/\\/g, '/'));
+    const normToRaw = new Map<string, string>();
+    for (let i = 0; i < normalized.length; i++) {
+      // First wins, mirroring the `for (const raw of allFilePaths)` scans this
+      // replaces: they returned on the first match in iteration order.
+      if (!normToRaw.has(normalized[i])) normToRaw.set(normalized[i], all[i]);
+    }
 
-export function getWorkspaceFileIndex(allFilePaths: ReadonlySet<string>): WorkspaceFileIndex {
-  const cached = WORKSPACE_FILE_INDEX_CACHE.get(allFilePaths);
-  if (cached !== undefined) return cached;
-
-  const all = [...allFilePaths];
-  const normalized = all.map((f) => f.replace(/\\/g, '/'));
-  const normToRaw = new Map<string, string>();
-  for (let i = 0; i < normalized.length; i++) {
-    // First wins, mirroring the `for (const raw of allFilePaths)` scans this
-    // replaces: they returned on the first match in iteration order.
-    if (!normToRaw.has(normalized[i])) normToRaw.set(normalized[i], all[i]);
-  }
-
-  const built: WorkspaceFileIndex = {
-    normalized,
-    all,
-    index: buildSuffixIndex(normalized, all),
-    normToRaw,
-  };
-  WORKSPACE_FILE_INDEX_CACHE.set(allFilePaths, built);
-  return built;
-}
+    return {
+      normalized,
+      all,
+      index: buildSuffixIndex(normalized, all),
+      normToRaw,
+    };
+  },
+);

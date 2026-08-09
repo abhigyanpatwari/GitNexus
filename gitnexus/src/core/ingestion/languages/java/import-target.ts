@@ -58,6 +58,7 @@ import {
   firstFileDirectlyInPkgDir,
   type PackageDirIndex,
 } from '../../import-resolvers/package-dir-index.js';
+import { perFileSet } from '../../import-resolvers/per-file-set.js';
 
 export interface JavaResolveContext {
   readonly fromFile: string;
@@ -69,15 +70,10 @@ export interface JavaResolveContext {
  * identity. Feeds `firstFileDirectlyInPkgDir`, which is called once for the
  * direct match and then up to once per stripped package prefix.
  */
-const javaDirIndexCache = new WeakMap<ReadonlySet<string>, PackageDirIndex>();
-
-function getJavaDirIndex(allFilePaths: ReadonlySet<string>): PackageDirIndex {
-  const cached = javaDirIndexCache.get(allFilePaths);
-  if (cached !== undefined) return cached;
-  const built = buildPackageDirIndex(allFilePaths, (normalized) => normalized.endsWith('.java'));
-  javaDirIndexCache.set(allFilePaths, built);
-  return built;
-}
+const getJavaDirIndex = perFileSet(
+  (allFilePaths: ReadonlySet<string>): PackageDirIndex =>
+    buildPackageDirIndex(allFilePaths, (normalized) => normalized.endsWith('.java')),
+);
 
 export function resolveJavaImportTarget(
   parsedImport: ParsedImport,

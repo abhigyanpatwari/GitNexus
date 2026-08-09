@@ -1,4 +1,5 @@
 import { dirname, join } from 'path';
+import { perFileSet } from '../../import-resolvers/per-file-set.js';
 
 /**
  * A workspace file path pre-decomposed for the suffix-match fallback:
@@ -28,26 +29,20 @@ interface CSuffixCandidate {
  * `WeakMap`-keyed so it is reclaimed with the pass (no cross-pass staleness).
  * Shared by C and C++ (`resolveCppImportTarget` delegates here).
  */
-const suffixIndexByPaths = new WeakMap<ReadonlySet<string>, Map<string, CSuffixCandidate[]>>();
-
-function suffixIndex(allFilePaths: ReadonlySet<string>): Map<string, CSuffixCandidate[]> {
-  let index = suffixIndexByPaths.get(allFilePaths);
-  if (index === undefined) {
-    index = new Map<string, CSuffixCandidate[]>();
-    for (const original of allFilePaths) {
-      const normalized = original.replace(/\\/g, '/');
-      const basename = normalized.slice(normalized.lastIndexOf('/') + 1);
-      let bucket = index.get(basename);
-      if (bucket === undefined) {
-        bucket = [];
-        index.set(basename, bucket);
-      }
-      bucket.push({ original, normalized, depth: normalized.split('/').length });
+const suffixIndex = perFileSet((allFilePaths: ReadonlySet<string>) => {
+  const index = new Map<string, CSuffixCandidate[]>();
+  for (const original of allFilePaths) {
+    const normalized = original.replace(/\\/g, '/');
+    const basename = normalized.slice(normalized.lastIndexOf('/') + 1);
+    let bucket = index.get(basename);
+    if (bucket === undefined) {
+      bucket = [];
+      index.set(basename, bucket);
     }
-    suffixIndexByPaths.set(allFilePaths, index);
+    bucket.push({ original, normalized, depth: normalized.split('/').length });
   }
   return index;
-}
+});
 
 /**
  * Resolve a C #include path to a file in the workspace.

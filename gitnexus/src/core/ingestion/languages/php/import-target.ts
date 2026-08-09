@@ -19,6 +19,7 @@ import type { ParsedFile, ParsedImport, WorkspaceIndex } from 'gitnexus-shared';
 import type { ImportResolutionContext } from '../../scope-resolution/contract/scope-resolver.js';
 import { resolvePhpImportInternal } from '../../import-resolvers/php.js';
 import type { SuffixIndex } from '../../import-resolvers/utils.js';
+import { perFileSet } from '../../import-resolvers/per-file-set.js';
 import { getWorkspaceFileIndex } from '../../import-resolvers/workspace-file-index.js';
 import type { ComposerConfig } from '../../language-config.js';
 import { readFileSync } from 'node:fs';
@@ -74,12 +75,6 @@ function namespaceDirectories(
   return [...directories];
 }
 
-// A scope-resolution pass shares one stable parsedFiles array across imports.
-const phpDirectoryIndexCache = new WeakMap<
-  readonly ParsedFile[],
-  ReadonlyMap<string, readonly ParsedFile[]>
->();
-
 function parentDirectory(filePath: string): string {
   const normalizedPath = normalizePhpPath(filePath);
   const separator = normalizedPath.lastIndexOf('/');
@@ -100,23 +95,25 @@ function directoryAliases(filePath: string): string[] {
   return [...aliases];
 }
 
-function filesByDirectory(
-  parsedFiles: readonly ParsedFile[],
-): ReadonlyMap<string, readonly ParsedFile[]> {
-  const cached = phpDirectoryIndexCache.get(parsedFiles);
-  if (cached) return cached;
-
-  const mutable = new Map<string, ParsedFile[]>();
-  for (const parsed of parsedFiles) {
-    for (const directory of directoryAliases(parsed.filePath)) {
-      const files = mutable.get(directory) ?? [];
-      files.push(parsed);
-      mutable.set(directory, files);
+/**
+ * Directory alias → the files under it, built once per pass.
+ *
+ * A scope-resolution pass shares one stable `parsedFiles` array across imports,
+ * so the array identity is the memo key — see `perFileSet`.
+ */
+const filesByDirectory = perFileSet(
+  (parsedFiles: readonly ParsedFile[]): ReadonlyMap<string, readonly ParsedFile[]> => {
+    const mutable = new Map<string, ParsedFile[]>();
+    for (const parsed of parsedFiles) {
+      for (const directory of directoryAliases(parsed.filePath)) {
+        const files = mutable.get(directory) ?? [];
+        files.push(parsed);
+        mutable.set(directory, files);
+      }
     }
-  }
-  phpDirectoryIndexCache.set(parsedFiles, mutable);
-  return mutable;
-}
+    return mutable;
+  },
+);
 
 // ─── workspace index (#2901) ───────────────────────────────────────────────
 
@@ -185,9 +182,8 @@ interface PhpWorkspaceIndex {
   readonly suffixIndex: SuffixIndex;
 }
 
-const PHP_WORKSPACE_INDEX_CACHE = new WeakMap<ReadonlySet<string>, PhpWorkspaceIndex>();
-
-function buildPhpWorkspaceIndex(allFilePaths: ReadonlySet<string>): PhpWorkspaceIndex {
+/** Memoized on the `allFilePaths` Set identity, like `getWorkspaceFileIndex`. */
+const getPhpWorkspaceIndex = perFileSet((allFilePaths: ReadonlySet<string>): PhpWorkspaceIndex => {
   // The Set is passed THROUGH to the shared cache, never copied — a defensive
   // `new Set(...)` here or in `scope-resolver.ts` would hand both WeakMaps a
   // fresh key per import and silently restore O(imports × files) (#1918 P1).
@@ -246,16 +242,7 @@ function buildPhpWorkspaceIndex(allFilePaths: ReadonlySet<string>): PhpWorkspace
   };
 
   return { normalized, all, suffixIndex };
-}
-
-/** Memoized on the `allFilePaths` Set identity, like `getWorkspaceFileIndex`. */
-function getPhpWorkspaceIndex(allFilePaths: ReadonlySet<string>): PhpWorkspaceIndex {
-  const cached = PHP_WORKSPACE_INDEX_CACHE.get(allFilePaths);
-  if (cached !== undefined) return cached;
-  const built = buildPhpWorkspaceIndex(allFilePaths);
-  PHP_WORKSPACE_INDEX_CACHE.set(allFilePaths, built);
-  return built;
-}
+});
 
 // ─── loadResolutionConfig ──────────────────────────────────────────────────
 

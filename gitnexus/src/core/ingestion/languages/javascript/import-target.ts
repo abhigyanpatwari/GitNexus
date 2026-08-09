@@ -46,7 +46,8 @@
 
 import { SupportedLanguages } from 'gitnexus-shared';
 import { resolveTsTarget, type TsResolveContext } from '../typescript/import-target.js';
-import { buildSuffixIndex, type SuffixIndex } from '../../import-resolvers/utils.js';
+import { buildImportPassCache } from '../../import-resolvers/pass-cache.js';
+import { perFileSet } from '../../import-resolvers/per-file-set.js';
 
 export type JsResolveContext = TsResolveContext;
 
@@ -69,16 +70,7 @@ export type JsResolveContext = TsResolveContext;
  * traversals of the SET, and this scan walks the materialized array behind it.
  * See `test/integration/javascript-import-index-reuse.test.ts` for the guard
  * that can.
- */
-interface PassCache {
-  readonly allFilePaths: Set<string>;
-  readonly allFileList: readonly string[];
-  readonly normalizedFileList: readonly string[];
-  readonly index: SuffixIndex;
-  readonly resolveCache: Map<string, string | null>;
-}
-
-/**
+ *
  * Memoized on the `allFilePaths` Set identity, like every other language's
  * import index (`import-resolvers/workspace-file-index.ts` and friends).
  *
@@ -94,27 +86,7 @@ interface PassCache {
  * `new Set(allFilePaths)` at the adapter boundary hands a fresh key per import
  * and restores the per-import rebuild (PR #1918 review P1).
  */
-const PASS_CACHE = new WeakMap<ReadonlySet<string>, PassCache>();
-
-function passCacheFor(allFilePaths: ReadonlySet<string>): PassCache {
-  const cached = PASS_CACHE.get(allFilePaths);
-  if (cached !== undefined) return cached;
-
-  const allFileList = Array.from(allFilePaths);
-  const normalizedFileList = allFileList.map((f) => f.toLowerCase());
-  const built: PassCache = {
-    // Copied ONCE per file set, not once per import: `TsResolveContext` wants a
-    // mutable `Set` and the orchestrator hands us a `ReadonlySet`. The copy is
-    // not the #1918 hazard because the cache KEY is the caller's original Set.
-    allFilePaths: new Set(allFilePaths),
-    allFileList,
-    normalizedFileList,
-    index: buildSuffixIndex(normalizedFileList, allFileList),
-    resolveCache: new Map(),
-  };
-  PASS_CACHE.set(allFilePaths, built);
-  return built;
-}
+const passCacheFor = perFileSet(buildImportPassCache);
 
 /**
  * Build a memoized `resolveImportTarget` adapter for JavaScript.

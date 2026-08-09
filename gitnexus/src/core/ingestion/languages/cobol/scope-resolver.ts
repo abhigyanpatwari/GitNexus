@@ -12,6 +12,7 @@
 import path from 'node:path';
 import type { ParsedFile } from 'gitnexus-shared';
 import { SupportedLanguages } from 'gitnexus-shared';
+import { perFileSet } from '../../import-resolvers/per-file-set.js';
 import { populateClassOwnedMembers } from '../../scope-resolution/scope/walkers.js';
 import type { ScopeResolver } from '../../scope-resolution/contract/scope-resolver.js';
 import { cobolProvider } from '../cobol.js';
@@ -56,12 +57,7 @@ interface CobolCopyIndex {
   readonly sources: ReadonlyMap<string, string>;
 }
 
-const COBOL_COPY_INDEX_CACHE = new WeakMap<ReadonlySet<string>, CobolCopyIndex>();
-
-function getCobolCopyIndex(allFilePaths: ReadonlySet<string>): CobolCopyIndex {
-  const cached = COBOL_COPY_INDEX_CACHE.get(allFilePaths);
-  if (cached !== undefined) return cached;
-
+const getCobolCopyIndex = perFileSet((allFilePaths: ReadonlySet<string>): CobolCopyIndex => {
   const copybooks = new Map<string, string>();
   const sources = new Map<string, string>();
   // One pass builds both tiers: the two scans walked the same files and
@@ -79,10 +75,8 @@ function getCobolCopyIndex(allFilePaths: ReadonlySet<string>): CobolCopyIndex {
     if (!tier.has(basename)) tier.set(basename, fp);
   }
 
-  const built: CobolCopyIndex = { copybooks, sources };
-  COBOL_COPY_INDEX_CACHE.set(allFilePaths, built);
-  return built;
-}
+  return { copybooks, sources };
+});
 
 const cobolScopeResolver: ScopeResolver = {
   language: SupportedLanguages.Cobol,
