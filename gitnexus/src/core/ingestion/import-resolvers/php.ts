@@ -67,21 +67,38 @@ export function resolvePhpImportInternal(
         const lastSlash = remainder.lastIndexOf('/');
         const nsDir = lastSlash >= 0 ? dirPrefix + '/' + remainder.slice(0, lastSlash) : dirPrefix;
 
-        // Prefer SuffixIndex directory lookup (O(log n + matches)) over linear scan
+        // Prefer SuffixIndex directory lookup (O(log n + matches)) over linear scan.
+        //
+        // An EMPTY bucket is a final answer, not a miss to retry with the scan
+        // below — which is what the `else` restores, and what this comment
+        // always claimed. Re-scanning on empty was the last per-import
+        // workspace traversal left in PHP resolution after #2901: any `use`
+        // matching a PSR-4 prefix whose directory holds no direct `.php` child
+        // (`App\Legacy\Ghost`) paid a full pass, measured at 201 traversals for
+        // 200 imports.
+        //
+        // The bucket is a superset of what the scan can find, for BOTH index
+        // shapes that reach here. A root-anchored direct child `nsDir/<x>.php`
+        // has its directory exactly equal to `nsDir`, and `nsDir` is always one
+        // of that directory's own suffixes — so the shared `dirMap` (keyed on
+        // every directory suffix) necessarily contains it, as does the
+        // root-anchored parity index `languages/php/import-target.ts` builds.
+        // Empty superset therefore implies empty scan, and control falls
+        // through to the next PSR-4 prefix exactly as before.
         if (index) {
           const candidates = index.getFilesInDir(nsDir, '.php');
           if (candidates.length > 0) return candidates[0];
-        }
-
-        // Fallback: linear scan (only when SuffixIndex unavailable)
-        const nsDirPrefix = nsDir.endsWith('/') ? nsDir : nsDir + '/';
-        for (const f of allFiles) {
-          if (
-            f.startsWith(nsDirPrefix) &&
-            f.endsWith('.php') &&
-            !f.slice(nsDirPrefix.length).includes('/')
-          ) {
-            return f;
+        } else {
+          // Linear scan, only when a SuffixIndex is genuinely unavailable.
+          const nsDirPrefix = nsDir.endsWith('/') ? nsDir : nsDir + '/';
+          for (const f of allFiles) {
+            if (
+              f.startsWith(nsDirPrefix) &&
+              f.endsWith('.php') &&
+              !f.slice(nsDirPrefix.length).includes('/')
+            ) {
+              return f;
+            }
           }
         }
       }
