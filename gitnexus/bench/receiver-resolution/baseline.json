@@ -200,10 +200,11 @@
   },
   "countArm": {
     "callDrops": 102,
-    "totalDropsAllKinds": 129,
+    "totalDropsAllKinds": 148,
     "bySiteKind": {
       "call": 102,
-      "read": 27
+      "read": 27,
+      "write": 19
     },
     "callDropsByExtension": {
       ".java": 49,

@@ -91,6 +91,8 @@ import {
   getDefinitionNodeFromCaptures,
   findEnclosingClassInfo,
   findObjectLiteralBindingInfo,
+  findReturnShapeOwnerInfo,
+  isReturnShapeProperty,
   findMemberAssignmentOwnerInfo,
   isCjsDefaultExportAssignment,
   type EnclosingClassInfo,
@@ -361,6 +363,16 @@ export interface ExtractedDecoratorRoute {
    * resolution then falls back (the Route node simply carries no handlerSymbolId).
    */
   handlerName?: string;
+  /**
+   * Provenance for the `HANDLES_ROUTE` edge, overriding the default
+   * `decorator-<decoratorName>`. Present when the route was extracted from a
+   * shape that is not a decorator at all — today, JS/TS dispatch guards
+   * (`route-extractors/dispatch-guard.ts`), where the route is INFERRED from a
+   * path comparison rather than DECLARED by an annotation. That distinction is
+   * the only thing that differs downstream, so it travels as a field instead of
+   * as a parallel extraction channel.
+   */
+  source?: string;
 }
 
 /**
@@ -1760,13 +1772,20 @@ const processFileGroup = (
       // Extract HTTP consumer URLs: fetch(), axios.get(), $.get(), requests.get(), etc.
       if (captureMap['route.fetch']) {
         const urlNode = captureMap['route.url'] ?? captureMap['route.template_url'];
-        if (urlNode) {
-          result.fetchCalls.push({
-            filePath: file.path,
-            fetchURL: urlNode.text,
-            lineNumber: captureMap['route.fetch'].startPosition.row + lineOffset,
-          });
-        }
+        // A fetch whose URL is not a literal is still an OUTWARD CALL, and that
+        // is the whole of what the R3-6 sink set needs — where the program
+        // reaches out, not where to. Recorded with an empty `fetchURL` (#2897):
+        // route linking normalizes the URL first and skips anything that yields
+        // nothing, so these add sink sites without inventing a FETCHES edge.
+        //
+        // Measured before this: 44 of 47 fetch calls in this repo pass a
+        // variable, so the sink signal was absent from 94% of them and
+        // sink-terminated flows could effectively never fire.
+        result.fetchCalls.push({
+          filePath: file.path,
+          fetchURL: urlNode ? urlNode.text : '',
+          lineNumber: captureMap['route.fetch'].startPosition.row + lineOffset,
+        });
         continue;
       }
 
@@ -2345,11 +2364,35 @@ const processFileGroup = (
       // syntax rather than from an ancestor walk, and both are language-shaped
       // helpers behind the provider's own label decision — shared code here
       // only asks "does this Method name an owner".
+      // `Property` joins `Method` here because object-literal KEYS are now
+      // indexed (A1/A5), and a key is owned by the object that holds it exactly
+      // as a literal's function-valued member is. Without it, two config
+      // objects in one file sharing a key name (`httpConfig.timeoutMs` and
+      // `dbConfig.timeoutMs`) generate the same `Property:<file>:timeoutMs` id
+      // and COLLAPSE INTO ONE node — two distinct settings become one symbol,
+      // and the merged name then looks workspace-unique to name inference,
+      // which resolves reads of it to a node representing both.
       const objectLiteralOwnerInfo =
-        !enclosingClassId && nodeLabel === 'Method' && definitionNode
+        !enclosingClassId && (nodeLabel === 'Method' || nodeLabel === 'Property') && definitionNode
           ? (findMemberAssignmentOwnerInfo(definitionNode, file.path) ??
-            findObjectLiteralBindingInfo(definitionNode, file.path))
+            findObjectLiteralBindingInfo(definitionNode, file.path, {
+              // Only `Property` opts into the qualifier; `Method` ids must stay
+              // byte-identical or every object-literal method in every indexed
+              // repo changes id.
+              includeOwnerName: nodeLabel === 'Property',
+            }) ??
+            // R3-4: an anonymous literal in return position is owned by the
+            // function whose shape it is. Last in the chain so a variable-bound
+            // literal keeps its existing owner and its existing id.
+            (nodeLabel === 'Property' ? findReturnShapeOwnerInfo(definitionNode, file.path) : null))
           : null;
+      // Provenance for narrowing (R3-4). A return shape is a real definition but
+      // the weaker one, and the unique-name pass ranks declared anchors above it
+      // so indexing these cannot change an answer that already resolved.
+      const returnShapeProperty =
+        nodeLabel === 'Property' && definitionNode !== undefined && definitionNode !== null
+          ? isReturnShapeProperty(definitionNode)
+          : false;
 
       // #1978: hoisted ABOVE qualifiedName/node-id (load-bearing order) so a
       // class-like node can key its id by its fully-qualified path. Derived from
@@ -2796,6 +2839,7 @@ const processFileGroup = (
           ...(description !== undefined ? { description } : {}),
           ...methodProps,
           ...(declaredType !== undefined ? { declaredType } : {}),
+          ...(returnShapeProperty ? { fromReturnShape: true, isDetail: true } : {}),
         },
       });
 

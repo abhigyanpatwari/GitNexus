@@ -106,6 +106,19 @@ Running `npx gitnexus analyze` writes both `gitnexus.json` and `meta.json`
 with identical content. A pre-existing repo that only has `meta.json` gets
 `gitnexus.json` bootstrapped from it on the first run.
 
+### Process ids are not stable across this release
+
+`Process` ids are positional (`proc_<idx>_<entry>`), and this release changes
+both which execution flows are detected and the order they are selected in:
+tracing is depth-first, sibling branches follow source order, and selection
+round-robins across terminals so one flow cannot take every slot. A given
+`proc_7_handle` before the upgrade is not the same flow afterwards.
+
+Nothing in GitNexus persists or joins on a raw process id across a re-index —
+the MCP resource keys by label — so this is one-time index churn rather than a
+broken consumer. If you have external tooling that stored a process id, re-
+resolve it by label after the next analyze.
+
 ### What about rollback?
 
 Downgrading to an older GitNexus version is safe: `meta.json` is always

@@ -9,6 +9,8 @@
  * wrapper or server worker) is responsible for process lifecycle.
  */
 
+import { detectGraphWriteCollapse, type GraphWriteCollapseVerdict } from './index-freshness.js';
+import { PDG_EDGE_TYPES } from './lbug/pdg-emit-sink.js';
 import path from 'path';
 import fs from 'fs/promises';
 import { randomUUID } from 'node:crypto';
@@ -481,6 +483,14 @@ export interface AnalyzeResult {
    * full-text/BM25 search is disabled. Lets callers (CLI summary, server) and
    * the persisted meta surface the degraded state instead of reporting healthy.
    */
+  /**
+   * Set when the post-write integrity check found far fewer relationships in
+   * the DB than the pipeline produced. Surfaced on the RESULT, not only in
+   * metadata, because the CLI and the analyze worker both report completion
+   * from this object — and a run whose edges are mostly gone must not be able
+   * to print "indexed successfully" and exit 0.
+   */
+  graphWriteCollapsed?: { expected: number; persisted: number };
   ftsSkipped?: boolean;
   /**
    * Why FTS was skipped, when `ftsSkipped` is true (#2658 review L2):
@@ -526,6 +536,113 @@ import {
   deriveEmbeddingCap,
   DEFAULT_EMBEDDING_NODE_LIMIT,
 } from './embedding-mode.js';
+import type { GraphEmitManifest } from './lbug/graph-emit-sink.js';
+
+/**
+ * Relationships RESIDENT in the in-memory graph, excluding the PDG layers —
+ * the heap-side counterpart of the sink's `structuralRows` subtotal and of
+ * `getLbugStats().structuralEdges`, counted by the same `PDG_EDGE_TYPES`
+ * predicate so all three measure one population.
+ *
+ * A type-aware scan rather than `graph.relationshipCount`, because that count is
+ * PDG-INCLUSIVE on every run that does not stream. `resolveStreamPdgEmit` and
+ * `resolveStreamGraphEmit` BOTH require `force === true`, so with no `--force`
+ * there is no sink at all and `scope-resolution/pipeline/run.ts` writes the PDG
+ * layers into the ordinary graph (`input.pdgEmitSink ?? graph`). Measured
+ * directly: one `runScopeResolution({ pdg: true })` with no sink leaves
+ * `relationshipCount = 1`, all of it `CFG`. A first-time `analyze --pdg` on a
+ * fresh repo is a FULL write (so the collapse check runs) and a non-streaming
+ * one, so `relationshipCount` there compares structural-plus-PDG against a
+ * structural-only measurement — the same false collapse the streamed path
+ * already fixed, on the default configuration rather than the `--force` one.
+ *
+ * `forEachRelationshipFields` is the zero-allocation columnar scan (~90 ms per
+ * million edges) and `pipelineResult.graph` is always the RAW graph, never the
+ * sink, so this never has to recall an offloaded edge.
+ *
+ * `NaN` when the graph cannot be scanned at all, which is the SAME fact the
+ * previous `graph.relationshipCount` read produced for such a graph (`undefined
+ * + streamedRows`), and which `detectGraphWriteCollapse` maps to an explicit
+ * `'unmeasurable'`. Its docstring already names "a graph implementation that
+ * reports no total, a lightweight pipeline result" as an expected input, so
+ * calling an absent method here would convert a documented no-verdict into a
+ * crashed analyze.
+ */
+export function countStructuralRelationships(
+  graph: Partial<Pick<KnowledgeGraph, 'forEachRelationshipFields'>> | undefined,
+): number {
+  if (typeof graph?.forEachRelationshipFields !== 'function') return Number.NaN;
+  let structural = 0;
+  graph.forEachRelationshipFields((_sourceId, _targetId, type) => {
+    if (!PDG_EDGE_TYPES.has(type)) structural++;
+  });
+  return structural;
+}
+
+/**
+ * The STRUCTURAL relationship count a healthy write is expected to persist.
+ *
+ * Exported and called by production rather than mirrored in a test. That is the
+ * point: the wiring test kept a LOCAL COPY of this expression "because the
+ * production expression is inline in a 3000-line function", and a copy cannot
+ * catch a term the original got wrong. It did not catch this one.
+ *
+ * BOTH terms are objects, not pre-selected numbers, and for the same reason:
+ * every defect this expression has had was a wrong FIELD chosen at a call site
+ * no unit test can reach — first `totalRows` over `structuralRows`, then
+ * `relationshipCount` over the structural subtotal. Taking the graph and the
+ * manifest puts both choices inside the tested function.
+ */
+export function computeExpectedStructuralRelationships(
+  /**
+   * The in-memory graph, NOT its `relationshipCount`. That count includes the
+   * PDG layers whenever they did not stream — which is every run without
+   * `--force`, i.e. the default configuration. A graph that cannot be scanned
+   * yields `NaN`, i.e. an explicit no-verdict, exactly as an absent
+   * `relationshipCount` did.
+   */
+  graph: Partial<Pick<KnowledgeGraph, 'forEachRelationshipFields'>> | undefined,
+  /**
+   * The MANIFEST, not a pre-selected number. Taking the whole object puts the
+   * `structuralRows` / `totalRows` choice INSIDE the tested function — the
+   * choice that was wrong before, and that a numeric parameter leaves at an
+   * untestable call site.
+   */
+  graphEmitManifest: Pick<GraphEmitManifest, 'structuralRows' | 'totalRows'> | undefined,
+): number {
+  return countStructuralRelationships(graph) + (graphEmitManifest?.structuralRows ?? 0);
+}
+
+/**
+ * Which `graphWriteCollapsed` stamp a finished run should PERSIST.
+ *
+ * Split on the VERDICT, never on the write mode. `saveMeta` overwrites
+ * meta.json atomically rather than merging, so returning `undefined` DELETES
+ * the stamp — and the stamp is what marks the index incomplete and forces the
+ * rebuild that repairs it. Only a positive `'healthy'` measurement earns that
+ * deletion; `'unmeasurable'` means this run compared nothing, and a run that
+ * measured nothing has repaired nothing.
+ *
+ * Exported and called by production for the same reason
+ * {@link computeExpectedStructuralRelationships} is: the previous version of
+ * this decision lived inline in a 3000-line function, where no unit test could
+ * reach it, and it shipped implementing a documented three-way taxonomy as a
+ * two-way branch on `wroteChangedSubgraphOnly`.
+ */
+export function selectPersistedCollapseStamp(
+  verdict: GraphWriteCollapseVerdict,
+  /** The stamp already on disk. Survives every non-`'healthy'` verdict. */
+  previousStamp: RepoMeta['graphWriteCollapsed'],
+): RepoMeta['graphWriteCollapsed'] {
+  switch (verdict.verdict) {
+    case 'collapsed':
+      return { expected: verdict.expected, persisted: verdict.persisted };
+    case 'healthy':
+      return undefined;
+    case 'unmeasurable':
+      return previousStamp;
+  }
+}
 
 export const PHASE_LABELS: Record<string, string> = {
   extracting: 'Scanning files',
@@ -1340,6 +1457,31 @@ async function runFullAnalysisInner(
     options = { ...options, force: true };
   }
 
+  // ── a recorded graph-write collapse forces a full rebuild ────────
+  //
+  // Every other meta-driven trigger above and below gets a block here;
+  // `graphWriteCollapsed` was recorded and then never read by anything
+  // (`grep -rn graphWriteCollapsed src/` showed writes only). The consequence is
+  // the worst available: a collapsed index whose commit has not changed takes
+  // the `alreadyUpToDate` fast path, prints "Already up to date", exits 0, and
+  // keeps doing so forever. The one state that means "most of your edges are
+  // gone" was the one state that repaired itself only if the user happened to
+  // pass `--force`.
+  //
+  // Forcing is the correct remedy rather than merely re-running: the collapse
+  // means the persisted graph disagrees with what the pipeline produced, and an
+  // incremental pass over unchanged files would write nothing and re-stamp the
+  // same broken index as fresh.
+  if (existingMeta?.graphWriteCollapsed) {
+    const { expected, persisted } = existingMeta.graphWriteCollapsed;
+    log(
+      `previous run persisted ${persisted} of ${expected} expected relationships ` +
+        `(recorded as a graph-write collapse); forcing a full re-analyze rather than ` +
+        `reporting an index this build already knows is incomplete.`,
+    );
+    options = { ...options, force: true };
+  }
+
   // ── independently-versioned analysis capabilities ────────────────
   // `schemaFingerprint` is reserved for graph-wide incremental invariants. Some
   // persisted semantics apply only to repositories containing relevant source
@@ -1935,6 +2077,10 @@ async function runFullAnalysisInner(
     // process already holds and — worse — ran a read against the DB between
     // writeback and finalize for no recovery benefit.
     let deletedFilePathsForRestore: Set<string> | null = null;
+    // True once this run has persisted only a CHANGED SUBGRAPH. The post-write
+    // collapse check compares the whole in-memory graph against the whole DB,
+    // which is only a like-for-like comparison on a full rebuild.
+    let wroteChangedSubgraphOnly = false;
     if (isIncremental && hashDiff) {
       // ── Incremental DB writeback ───────────────────────────────────
       // 0. Expand the writable set with transitive importers of
@@ -2505,6 +2651,7 @@ async function runFullAnalysisInner(
         //    the SAME effectiveWriteSet so the subgraph and the deletes
         //    cover identical files (asymmetry would silently corrupt).
         const subgraph = extractChangedSubgraph(pipelineResult.graph, effectiveWriteSet);
+        wroteChangedSubgraphOnly = true;
         await saveIncrementalDirtyState('load-graph', {
           importerExpansion,
           shadowSeedCount: shadowSeed.length,
@@ -2745,6 +2892,165 @@ async function runFullAnalysisInner(
 
     // ── Phase 4: Embeddings (90–98%) ──────────────────────────────────
     const stats = await getLbugStats();
+
+    // Post-write integrity: the pipeline knows exactly how many relationships
+    // it produced, and `stats` is what the DB hands back after the write, so a
+    // large shortfall is provable rather than inferred — no comparison against
+    // the previous index needed. This is the guard for a refresh that reports
+    // SUCCESS while leaving the index unusable: edges collapsing to a fraction
+    // of what was built, or a `CodeRelation` table that never materialized
+    // (which surfaces here as a persisted count of zero).
+    //
+    // A RATIO, not equality: some relationship types legitimately do not round
+    // -trip one-for-one, and `--pdg` writes MORE rows into the same table than
+    // the call-graph produced, so demanding equality would fire on healthy
+    // runs. Only a collapse is a defect.
+    //
+    // Fail-safe when `expected` reads 0: an implementation that offloads
+    // relationships out of memory may no longer be able to report a total, and
+    // a false "your index is broken" is worse than a missed one.
+    //
+    // STREAMED EDGES COUNT. When `GraphEmitSink` streaming is active the bulk
+    // types (CALLS/IMPORTS/REFERENCES/ACCESSES) leave the heap at parse time and
+    // never enter `relationshipCount`, so a bare count understates `expected` by
+    // most of the edge volume and the ratio passes trivially. Streaming is on for
+    // any `force === true` run — which includes the crash/schema-mismatch
+    // recovery paths AND the `analyze --force` retry this check's own warning
+    // tells the operator to run. Same correction, and for the same reason, as
+    // the buffer-pool hint earlier in this file.
+    //
+    // `structuralRows`, NOT `totalRows`. The manifest's `totalRows` is a
+    // buffer-pool size hint and counts EVERY streamed row; PDG edges stream
+    // through this same sink (measured: `pdgEmitManifest` absent, zero PDG
+    // resident in the graph, 179,676 streamed rows of which ~110k were PDG), so
+    // using it compared a structural-plus-PDG expectation against the
+    // structural-only measurement below and declared a healthy `--pdg` index
+    // INCOMPLETE — 200,501 against 64,764 on a real repo, with every row
+    // present. The stamp then forced a rebuild on the next run, which repeated
+    // it: a permanent loop on an undamaged index.
+    //
+    // A pair key cannot separate them — it is `From|To` NODE LABELS, and a PDG
+    // edge shares `Function|Function` with `CALLS` — so the sink counts the
+    // split at the point it writes, where `relationship.type` is in hand.
+    //
+    // The GRAPH, not `graph.relationshipCount`. That count is PDG-inclusive on
+    // every run that does NOT stream, and streaming needs `force === true`
+    // (`resolveStreamGraphEmit` opens with `if (options.force !== true) return
+    // false`, `resolveStreamPdgEmit` the same), so plain `analyze --pdg` has no
+    // sink and `run.ts` writes the PDG layers into the ordinary graph. A first
+    // run on a fresh repo has no `existingMeta`, so it is not incremental and
+    // this check RUNS — comparing structural-plus-PDG against structural-only
+    // and failing a healthy index. `computeExpectedStructuralRelationships`
+    // therefore counts the heap side type-aware too, so both sides measure the
+    // same population in every configuration rather than only under `--force`.
+    const expectedRelationships = computeExpectedStructuralRelationships(
+      pipelineResult.graph,
+      pipelineResult.graphEmitManifest,
+    );
+    // `getLbugStats` returns `edges: undefined` when the count could not be
+    // taken, which is a different fact from zero — an edge query that throws
+    // must not read as a measured collapse. `nodes > 0` is independent evidence
+    // the DB was readable at all, but it says nothing about whether the EDGE
+    // query threw, so both conditions are required.
+    //
+    // STRUCTURAL ONLY, and that is the whole correction. `expected` above counts
+    // the in-memory graph plus the streamed STRUCTURAL manifest; the streamed
+    // PDG layers never enter `graph.relationshipCount`. But `stats.edges` counts
+    // EVERY `CodeRelation` row, and PDG writes into that same table — so on a
+    // `--pdg` run the two sides measured different populations and the surplus
+    // masked real loss. With 1,000 structural edges expected and 4,000 PDG rows
+    // persisted, losing EVERY structural edge still read `persisted = 4000` and
+    // cleared the ratio: a total wipeout, reported healthy, on exactly the large
+    // repos `--pdg` is used for.
+    //
+    // Padding `expected` with the PDG rows instead does NOT fix it — it makes
+    // the universes match but leaves the ratio judging a minority population:
+    // 4,000 of 5,000 still clears 0.5. Only comparing structural against
+    // structural asks the question the check exists to ask.
+    //
+    // FALLBACK when the structural query alone failed. `structuralEdges` is the
+    // newer, filtered, `IN`-predicate query; before it existed only `edges` had
+    // to succeed, and routing the whole check through the newer one made a
+    // single throw disable the guard AND — since the stamp now triggers the
+    // automatic rebuild — the repair it drives. When this run had no PDG layer
+    // the two counts are equal by construction (nothing writes a PDG row), so
+    // `edges` answers the same question and the guard keeps working. With
+    // `--pdg` on there is no substitute and the absence stands: it becomes an
+    // explicit `'unmeasurable'` verdict below, which preserves rather than
+    // erases the previous stamp.
+    const structuralCountMissed = stats.nodes > 0 && stats.structuralEdges === undefined;
+    const persistedRelationships =
+      stats.nodes > 0
+        ? (stats.structuralEdges ?? (options.pdg === true ? undefined : stats.edges))
+        : undefined;
+    // Never swallowed. The count is taken inside a `catch {}` in `getLbugStats`,
+    // so without this line a failed measurement is indistinguishable from a
+    // healthy one in the logs — and "measured nothing" reading as "measured
+    // fine" is the whole class of defect this area keeps producing.
+    if (structuralCountMissed) {
+      log(
+        `Warning: the structural relationship count could not be read` +
+          `${stats.structuralEdgesError ? ` (${stats.structuralEdgesError})` : ''}` +
+          `${
+            persistedRelationships === undefined
+              ? '; the graph-write-collapse check produced no verdict this run and any ' +
+                'previously recorded collapse is kept rather than cleared.'
+              : `; falling back to the unfiltered edge count (${stats.edges}), which is ` +
+                'equal to it on this run because no PDG layer was written.'
+          }`,
+      );
+    }
+    // NOT COMPARABLE ON AN INCREMENTAL WRITE. That path persists only
+    // `extractChangedSubgraph(...)` while both counts here are whole-scope: the
+    // full in-memory graph against the entire DB. A 10,000-edge index whose
+    // incremental rewrite lost 200 replacements reads 9,800 against 10,000 —
+    // comfortably above the ratio — so a corrupt index would be certified
+    // complete, and the reverse (a small change to a large index) would report
+    // a collapse that did not happen. Producing no verdict is the honest answer
+    // until the check is given the write-set delta to compare against; that is
+    // the same fail-safe the `expected === 0` case already takes.
+    const collapseVerdict: GraphWriteCollapseVerdict = wroteChangedSubgraphOnly
+      ? { verdict: 'unmeasurable', reason: 'incremental-write' }
+      : detectGraphWriteCollapse(expectedRelationships, persistedRelationships);
+    const graphWriteCollapsed =
+      collapseVerdict.verdict === 'collapsed'
+        ? { expected: collapseVerdict.expected, persisted: collapseVerdict.persisted }
+        : undefined;
+
+    // SPLIT ON THE VERDICT, NOT THE WRITE MODE. `saveMeta` is a full atomic
+    // overwrite, not a merge, so whichever branch omits the field DELETES the
+    // stamp from meta.json — and the stamp is what marks the index incomplete
+    // and forces the repairing rebuild.
+    //
+    // Three-way, explicitly:
+    //   collapse detected -> stamp it
+    //   healthy           -> CLEAR it (the index really is healthy now)
+    //   no verdict        -> carry the previous stamp forward
+    //
+    // Keying on `wroteChangedSubgraphOnly` implemented that as a TWO-way and got
+    // the third case wrong wherever it arose on a FULL run: a run whose
+    // structural count could not be READ (the `catch {}` in `getLbugStats`,
+    // reachable through the `withConnLock` contention the comment on that call
+    // warns about) reaches no verdict, but took the "full run ⇒ clear it"
+    // branch and erased a stamp recording real, unrepaired loss. The next run
+    // then found nothing forcing a rebuild, took `alreadyUpToDate`, printed
+    // "Already up to date" and exited 0 — permanently, which is exactly the
+    // failure the stamp exists to prevent.
+    //
+    // Mirrors `branch: branchLabel ?? existingMeta?.branch` a few lines down in
+    // the meta write, which had the preserve-on-absence shape all along.
+    const persistedCollapseStamp = selectPersistedCollapseStamp(
+      collapseVerdict,
+      existingMeta?.graphWriteCollapsed,
+    );
+    if (graphWriteCollapsed) {
+      log(
+        `Warning: graph write incomplete — the pipeline produced ${expectedRelationships} ` +
+          `relationships but only ${persistedRelationships} are readable from the index. Recording the ` +
+          `index as INCOMPLETE (graph-write-collapsed) rather than fresh; re-run ` +
+          `\`gitnexus analyze --force\`.`,
+      );
+    }
     let embeddingSkipped = true;
     let semanticMode: 'vector-index' | 'exact-scan' | undefined;
     // Hoisted out of the Phase 4 block so the Phase 5 gate can tell "the
@@ -3154,6 +3460,21 @@ async function runFullAnalysisInner(
       // origin remote, which is fine: paths-only repos behave as
       // before.
       remoteUrl: hasGitDir(repoPath) ? getRemoteUrl(repoPath) : undefined,
+      // Absent on a healthy FULL run; present it and the index reports as
+      // incomplete rather than fresh (`graph-write-collapsed`). Carried forward
+      // when this run had no verdict — see `persistedCollapseStamp`.
+      ...(persistedCollapseStamp ? { graphWriteCollapsed: persistedCollapseStamp } : {}),
+      // R3-1. Not a health signal — the index is complete and correct. This
+      // records which fields the per-language inference declined to link so a
+      // later query can say WHY it is returning nothing, instead of leaving an
+      // empty result that reads as "unused".
+      ...(pipelineResult.propertyInference?.crossLanguageNames?.length
+        ? {
+            crossLanguageProperties: pipelineResult.propertyInference.crossLanguageNames.map(
+              (e) => ({ name: e.name, languages: [...e.languages] }),
+            ),
+          }
+        : {}),
       stats: {
         files: pipelineResult.totalFileCount,
         nodes: stats.nodes,
@@ -3448,6 +3769,7 @@ async function runFullAnalysisInner(
       repoPath,
       stats: meta.stats,
       pipelineResult,
+      ...(graphWriteCollapsed ? { graphWriteCollapsed } : {}),
       ftsSkipped: !ftsReady,
       ftsSkipReason: ftsReady ? undefined : ftsSkipReason,
       isPrimaryBranch: !placement.branch,

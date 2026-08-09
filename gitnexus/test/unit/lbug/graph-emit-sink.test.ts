@@ -424,3 +424,54 @@ describe('field scan matches the object scan', () => {
     sink.finalize();
   });
 });
+
+/**
+ * STRUCTURAL SUBTOTAL (#2899 regression).
+ *
+ * `totalRows` is a buffer-pool size hint and counts every streamed row. The
+ * graph-write-collapse check reused it as its expectation while measuring
+ * STRUCTURAL rows on the other side — and PDG edges stream through this very
+ * sink, so on a `--pdg` run it compared ~200k against ~65k and declared a
+ * complete index INCOMPLETE. The stamp then forced a rebuild next run, which
+ * repeated it.
+ *
+ * A pair key cannot separate the two: it is `From|To` NODE LABELS, and a `CFG`
+ * edge shares `Function|Function` with `CALLS`. Only this write path sees
+ * `relationship.type`, so the split has to be counted here.
+ */
+describe('GraphEmitSink structural subtotal', () => {
+  it('counts a structural row in BOTH totals', () => {
+    const sink = new GraphEmitSink(createKnowledgeGraph(), csvDir);
+    sink.beginStreaming();
+    sink.addRelationship(rel('CALLS', 'a', 'b'));
+    expect(sink.finalize()).toMatchObject({ totalRows: 1, structuralRows: 1 });
+  });
+
+  it('excludes a PDG row from structuralRows but not from totalRows', () => {
+    // `totalRows` must keep counting it — it still sizes the buffer pool.
+    const sink = new GraphEmitSink(createKnowledgeGraph(), csvDir);
+    sink.beginStreaming();
+    sink.addRelationship(rel('CFG', 'a', 'b'));
+    expect(sink.finalize()).toMatchObject({ totalRows: 1, structuralRows: 0 });
+  });
+
+  it('splits a MIXED stream, which is the shape a --pdg run produces', () => {
+    const sink = new GraphEmitSink(createKnowledgeGraph(), csvDir);
+    sink.beginStreaming();
+    sink.addRelationship(rel('CALLS', 'a', 'b'));
+    sink.addRelationship(rel('CFG', 'a', 'b'));
+    sink.addRelationship(rel('REACHING_DEF', 'a', 'b'));
+    sink.addRelationship(rel('CALLS', 'b', 'c'));
+    expect(sink.finalize()).toMatchObject({ totalRows: 4, structuralRows: 2 });
+  });
+
+  it('counts TAINT_PATH as structural', () => {
+    // Deliberately NOT in PDG_EDGE_TYPES: a whole-program Function->Function
+    // edge persisted by the normal emit, so it is structural and must stay
+    // counted on both sides of the collapse check.
+    const sink = new GraphEmitSink(createKnowledgeGraph(), csvDir);
+    sink.beginStreaming();
+    sink.addRelationship(rel('TAINT_PATH', 'a', 'b'));
+    expect(sink.finalize()).toMatchObject({ totalRows: 1, structuralRows: 1 });
+  });
+});

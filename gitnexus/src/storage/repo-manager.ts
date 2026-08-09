@@ -329,6 +329,38 @@ export interface RepoMeta {
    */
   fileHashes?: Record<string, string>;
   /**
+   * Set when a run finished but the persisted edge count came back far short
+   * of what the pipeline produced — the B2 "refresh reports SUCCESS while the
+   * index is unusable" failure (observed as edges collapsing 23009 -> 2170,
+   * and as a missing `CodeRelation` table, which reads here as a persisted
+   * count of zero).
+   *
+   * Recorded rather than thrown because the metadata IS written and the DB
+   * does hold rows; what is false is the claim that the index is complete.
+   * `getIndexIncompleteReasons` turns this into `graph-write-collapsed` so
+   * `status` and the MCP resources report the index as incomplete instead of
+   * fresh. Absent on a healthy run.
+   */
+  /**
+   * Fields whose property reads could not be linked because every definition of
+   * the name lives in ANOTHER language (R3-1).
+   *
+   * Persisted because the graph cannot answer this at query time: the unlinked
+   * reads mint no edge and no node, so the only record that they existed is the
+   * analyze pass that declined them. Without it, `context()` on such a field
+   * shows an empty incoming list that is byte-identical to a genuinely unread
+   * field — and the two demand opposite actions.
+   *
+   * Capped at analyze time; a long tail is not more actionable than a short one.
+   */
+  crossLanguageProperties?: readonly { name: string; languages: string[] }[];
+  graphWriteCollapsed?: {
+    /** Relationships the pipeline produced in memory. */
+    expected: number;
+    /** Relationships readable from the DB after the write. */
+    persisted: number;
+  };
+  /**
    * Crash-recovery dirty flag — a generic marker written to the metadata
    * file (gitnexus.json + its meta.json mirror) BEFORE any destructive DB
    * mutation by BOTH writeback branches (incremental since its introduction;

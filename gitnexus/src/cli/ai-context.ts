@@ -211,6 +211,7 @@ This project is indexed by GitNexus as **${projectName}**${noStats ? '' : ` (${s
   }
 - **MUST analyze graph changes before committing.** Use \`detect_changes({scope: "all"})\` (MCP) or \`${runner} detect-changes --scope all --repo .\` (CLI fallback). For regression review: \`detect_changes({scope: "compare", base_ref: ${JSON.stringify(markdownSafeBranch(defaultBranch))}})\` or \`${runner} detect-changes --scope compare --base-ref ${JSON.stringify(markdownSafeBranch(defaultBranch))} --repo .\`.
 - **MUST warn the user** if impact analysis returns HIGH or CRITICAL risk before proceeding with edits.
+- **MUST treat \`risk: UNKNOWN\` as unresolved, not as low.** An empty caller set is not evidence the symbol is unused — it can also mean the callers are not resolvable by the index (plain-object property access, dynamic dispatch, cross-language calls). \`impact\` pairs \`UNKNOWN\` with a \`riskNote\` saying so. Confirm with a text search before treating the symbol as safe to change or delete; do not proceed on the strength of a zero.
 - When exploring unfamiliar code, use \`query({search_query: "concept"})\` to find execution flows instead of grepping. It returns process-grouped results ranked by relevance.
 - When you need full context on a specific symbol — callers, callees, which execution flows it participates in — use \`context({name: "symbolName"})\`.
 - For security review, \`explain({target: "fileOrSymbol"})\` lists taint findings (source→sink flows; needs \`analyze --pdg\`).${
@@ -222,7 +223,7 @@ This project is indexed by GitNexus as **${projectName}**${noStats ? '' : ` (${s
 ## Never Do
 
 - NEVER edit a function, class, or method before MCP/CLI impact analysis.
-- NEVER ignore HIGH or CRITICAL risk warnings from impact analysis.
+- NEVER ignore HIGH or CRITICAL risk warnings from impact analysis, and never read \`UNKNOWN\` as an all-clear — it means the walk could not answer, which is the one verdict that requires confirming by other means.
 - NEVER rename symbols with find-and-replace — use \`rename\` which understands the call graph.
 - NEVER commit before MCP/CLI graph change analysis.
 

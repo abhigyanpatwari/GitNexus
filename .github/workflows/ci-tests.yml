@@ -482,6 +482,14 @@ jobs:
         working-directory: gitnexus
 
       - name: Cross-language scope-capture fingerprint + scaling guards
+        # Runs even after an earlier guard fails (#2895). Every step here was
+        # fail-fast, so the FIRST failing --check aborted the job and every guard
+        # after it reported `skipped` — which reads identically to "nothing to do".
+        # Audited across 13 benchmark runs on #2856: the job succeeded zero times
+        # and the last two guards executed zero times for the life of the PR, while
+        # two reviews read the checks summary and saw nothing wrong. `!cancelled()`
+        # rather than `always()` so an explicit cancel still stops the job.
+        if: ${{ !cancelled() }}
         # Build-free: asserts emit<Lang>ScopeCaptures output is unchanged
         # (fingerprint) and stays linear (scaling < 1.5) for go/csharp/rust/php/
         # ruby/cobol. Catches an O(n^2) re-regression without the worker pool.
@@ -489,6 +497,7 @@ jobs:
         working-directory: gitnexus
 
       - name: Callable-value-flow target-index guards (#2693)
+        if: ${{ !cancelled() }}
         # Build-free: asserts buildGraphTargetIndex resolves an unchanged target
         # set (fingerprint), stays linear in def count, and that the #2693
         # widened gate — which now considers VALUE bindings, a population that
@@ -500,7 +509,19 @@ jobs:
         run: node --import tsx bench/callable-value-flow/measure.mjs --check
         working-directory: gitnexus
 
+      - name: Re-export closure scaling guards (#2864)
+        # Build-free: asserts buildReexportClosures stays linear in chain depth
+        # and within an absolute ceiling on a wide package corpus. #2864 changed
+        # this pass's input class from TypeScript barrels (a handful of shallow
+        # edges) to every module-level Python `from m import x`, which is where
+        # its two quadratic corners became reachable. The depth arm specifically
+        # guards MAX_VIA_LENGTH — the bound that was removed once already, in
+        # fc919ad6, and stayed invisible for as long as the input was shallow.
+        run: node --import tsx bench/finalize-reexport/measure.mjs --check
+        working-directory: gitnexus
+
       - name: C++ qualified-namespace resolution guards (#2788)
+        if: ${{ !cancelled() }}
         # Build-free: asserts resolveCppQualifiedNamespaceMember resolves an
         # unchanged symbol set (fingerprint) and that per-call-site cost stays
         # independent of corpus size. Rationale and history: see the header of
@@ -508,7 +529,66 @@ jobs:
         run: node --import tsx bench/cpp-qualified-ns/measure.mjs --check
         working-directory: gitnexus
 
+      - name: Import-target resolution guards (#2877/#2878/#2879/#2880/#2872)
+        # Build-free: runs the Go/C#/Dart/Ruby/Kotlin import-target resolvers
+        # over ONE shared corpus and asserts each returns an unchanged target
+        # set (a fingerprint per language AND per arm), that per-import cost
+        # stays independent of corpus size AND of path depth, that the absolute
+        # small-arm cost holds — a constant-factor regression that grows both
+        # scale arms equally passes every ratio — and that the shared
+        # WorkspaceFileIndex C# and Ruby retain stays within an absolute byte
+        # ceiling. Each of those resolvers used to scan the whole workspace per
+        # import (Ruby rebuilt a suffix index per `require`), so resolution was
+        # O(imports × files); the same corpus shape scores >3.3 against the
+        # pre-fix implementations. The corpus SHAPE is asserted too — a
+        # fingerprint alone cannot tell a legitimate resolution change from a
+        # corpus quietly shrunk below the size the timing arms need.
+        #
+        # SCOPE: "independent of corpus size" holds for UNIQUE-LEAF layouts,
+        # where no two directories share a last segment and no two files share a
+        # basename — which is what the small/large/deep arms are, and where
+        # every index bucket holds exactly one entry. The `collide` arm runs the
+        # identical workload on the layout these languages are actually written
+        # in (svcN/internal, SrcN/Models, a repeated basename per package);
+        # there the bucket grows with the file count by construction and go,
+        # csharp and dart legitimately score 2.1–3.9, so that arm carries its
+        # own per-language budget. It is a scope limit, not a regression — the
+        # indexed code is still faster on that shape than the pre-change scan.
+        #
+        # --expose-gc enables the retained-heap arm; --check REFUSES to run
+        # without it rather than passing with the memory gate silently skipped.
+        # ~14 s. REPS is 15 (matching bench/cfg) rather than a cheaper 5 or 7
+        # because depth_ratio divides two sub-3 ms numbers and at those settings
+        # it tripped its own budget roughly 1 run in 20 — the estimator was
+        # fixed instead of the budget widened; distributions in _arms_note.
+        # The Kotlin arm here is a second corpus, not a replacement for the
+        # kotlin-import-target bench below, which carries tie-break probes (both
+        # file-set iteration orders, the four-tier cascade) this one does not.
+        # A failing step aborts every step after it in this job (#2895), which
+        # cuts both ways: parking a new gate at the end is not safety, it is the
+        # slot least likely to execute. This one sits with the other
+        # resolver-index guards; the estimator fix above is what makes that
+        # safe, and #2899 carries the `if: ${{ !cancelled() }}` that fixes the
+        # masking for every step at once.
+        # Rationale, budgets and the measured blind spot: see the header of
+        # measure.mjs and _blind_spot in baselines.json.
+        run: node --expose-gc --import tsx bench/import-target/measure.mjs --check
+        working-directory: gitnexus
+
+      - name: Kotlin import-resolution identity + scaling guards
+        if: ${{ !cancelled() }}
+        # Build-free: asserts resolveKotlinImportTarget resolves an unchanged
+        # file set (fingerprint, in both file-set iteration orders — every
+        # tie-break in that resolver is expressed only through iteration order)
+        # and that per-import cost stays independent of workspace size. The
+        # pre-index implementation scores 3.737 on this corpus against 0.99 for
+        # the index, so the gate separates them by a wide margin. Rationale and
+        # history: see the header of bench/kotlin-import-target/measure.mjs.
+        run: node --import tsx bench/kotlin-import-target/measure.mjs --check
+        working-directory: gitnexus
+
       - name: Receiver-resolution drop guards
+        if: ${{ !cancelled() }}
         # NOT build-free: this one runs the real pipeline, so it needs dist/
         # (the setup action above builds). ~2m15s.
         #
@@ -534,6 +614,7 @@ jobs:
         working-directory: gitnexus
 
       - name: Scope-emission guards (#2699)
+        if: ${{ !cancelled() }}
         # Build-free: asserts the JS/TS scope set is unchanged. Block scopes are
         # what make `let`/`const` in sibling blocks distinct bindings, but a
         # scope per `statement_block` triples the count and deepens every
@@ -546,6 +627,7 @@ jobs:
         working-directory: gitnexus
 
       - name: CFG construction time / disk / memory guards (#2081 M1)
+        if: ${{ !cancelled() }}
         # Build-free: asserts collectFunctionCfgs output is unchanged
         # (fingerprint) and that wall-time, cfgSideChannel disk bytes, AND
         # retained heap all stay sub-quadratic for the straight-line /
@@ -556,6 +638,7 @@ jobs:
         working-directory: gitnexus
 
       - name: Emit-persistence throughput / byte-identity guards (#2203)
+        if: ${{ !cancelled() }}
         # Build-free: asserts streamAllCSVsToDisk output is byte-identical
         # (order-independent CSV-line fingerprint — the #2203 U2/U3 emit
         # optimisations must not change graph content) and that emit wall-time
@@ -565,6 +648,7 @@ jobs:
         working-directory: gitnexus
 
       - name: Streaming PDG-emit byte-identity / bounded-RSS guards (#2202)
+        if: ${{ !cancelled() }}
         # Build-free: asserts the streaming PdgEmitSink emits a CSV row SET
         # byte-identical to the whole-graph streamAllCSVsToDisk emit, AND that
         # the in-memory graph retains zero BasicBlock nodes (the O(chunk) peak-RSS
@@ -574,6 +658,7 @@ jobs:
         working-directory: gitnexus
 
       - name: Cross-language pipeline benchmarks (GITNEXUS_BENCH, serial)
+        if: ${{ !cancelled() }}
         # cpp-adl-benchmark.test.ts is not a `*-pipeline-benchmark.test.ts` but
         # belongs here for the same reason: it is skipIf-gated on GITNEXUS_BENCH,
         # so it had never run in CI and the PR #1990 ADL emit-scaling guard it
