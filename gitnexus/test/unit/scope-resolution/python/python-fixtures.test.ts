@@ -274,11 +274,36 @@ describe('Python imports — interpretImport', () => {
 // ─── Imports inside functions ─────────────────────────────────────────────
 
 describe('Python imports — function-local', () => {
-  it('case 20: function-local `from x import Y` is captured (visible to importOwningScope)', () => {
+  it('case 20: function-local `from x import Y` is captured but does NOT republish', () => {
     const f = parse('def loader():\n    from m import X\n');
-    // Decomposed at parse time; finalize will route via importOwningScope.
+    // No `reexportsName`: a function-body import binds `X` locally and puts
+    // nothing in the module namespace, so `from <this module> import X`
+    // elsewhere is an ImportError. Verified against CPython 3.11.
     expect(f.parsedImports).toEqual([
-      { kind: 'named', localName: 'X', importedName: 'X', targetRaw: 'm', reexportsName: true },
+      { kind: 'named', localName: 'X', importedName: 'X', targetRaw: 'm' },
+    ]);
+  });
+
+  it('case 21: class-body `from x import Y` does NOT republish either', () => {
+    const f = parse('class C:\n    from m import X\n');
+    // `class C: from m import X` makes `X` a class attribute (`C.X`), not a
+    // module attribute — same suppression as a function body.
+    expect(f.parsedImports).toEqual([
+      { kind: 'named', localName: 'X', importedName: 'X', targetRaw: 'm' },
+    ]);
+  });
+
+  it('case 22: `if` / `try` / `for` bodies DO republish — Python has no block scope', () => {
+    // The counterpart negative control: these are still module-level bindings
+    // in CPython, so narrowing the flag to "top level" must not narrow it to
+    // "first indentation level". Verified against CPython 3.11.
+    const f = parse(
+      'if TYPE_CHECKING:\n    from m import A\ntry:\n    from m import B\nexcept ImportError:\n    B = None\nfor _ in r:\n    from m import C\n',
+    );
+    expect(f.parsedImports).toEqual([
+      { kind: 'named', localName: 'A', importedName: 'A', targetRaw: 'm', reexportsName: true },
+      { kind: 'named', localName: 'B', importedName: 'B', targetRaw: 'm', reexportsName: true },
+      { kind: 'named', localName: 'C', importedName: 'C', targetRaw: 'm', reexportsName: true },
     ]);
   });
 });

@@ -21,10 +21,18 @@ export function interpretPythonImport(captures: CaptureMatch): ParsedImport | nu
   //   `@import.name`  : the imported symbol name (or module name for plain imports)
   //   `@import.alias` : the local alias name (for `as` forms)
   //   `@import.source`: the module path (always present except for `dynamic`)
+  //   `@import.publishes`: present iff the statement is at module level
   const kindCap = captures['@import.kind'];
   const nameCap = captures['@import.name'];
   const aliasCap = captures['@import.alias'];
   const sourceCap = captures['@import.source'];
+
+  // Python has no dedicated re-export form: a module-level `from m import x`
+  // binds `x` AND publishes it as `<this module>.x`. See `reexportsName` on
+  // `ParsedImport` for the contract, and `import-decomposer.ts` for why the
+  // marker — not this function — decides whether the statement is at module
+  // level.
+  const republishes = captures['@import.publishes'] !== undefined;
 
   const kind = kindCap?.text;
   if (kind === undefined) return null;
@@ -52,26 +60,20 @@ export function interpretPythonImport(captures: CaptureMatch): ParsedImport | nu
     }
     case 'from': {
       // `from m import x`
-      // `reexportsName`: Python has no dedicated re-export form — this binds `x`
-      // locally AND publishes it as `<this module>.x`, which is how a package
-      // `__init__.py` defines its public surface. Flagging it lets the name
-      // enter the re-export closure so `from <this module> import x` elsewhere
-      // resolves to the original definition. See `ParsedImport` in
-      // gitnexus-shared.
       if (sourceCap === undefined || nameCap === undefined) return null;
       return {
         kind: 'named',
         localName: nameCap.text,
         importedName: nameCap.text,
         targetRaw: sourceCap.text,
-        reexportsName: true,
+        ...(republishes ? { reexportsName: true } : {}),
       };
     }
     case 'from-alias': {
       // `from m import x as y` — republished under the alias (`<module>.y`).
       // PEP 484 treats `import x as x` as an explicit re-export; Python's
-      // runtime namespace makes every module-level form republish, so the flag
-      // is set uniformly here rather than only for the redundant-alias case.
+      // runtime namespace republishes every module-level form, so the flag
+      // follows module level rather than the redundant-alias case.
       if (sourceCap === undefined || nameCap === undefined || aliasCap === undefined) return null;
       return {
         kind: 'alias',
@@ -79,7 +81,7 @@ export function interpretPythonImport(captures: CaptureMatch): ParsedImport | nu
         importedName: nameCap.text,
         alias: aliasCap.text,
         targetRaw: sourceCap.text,
-        reexportsName: true,
+        ...(republishes ? { reexportsName: true } : {}),
       };
     }
     case 'wildcard': {
