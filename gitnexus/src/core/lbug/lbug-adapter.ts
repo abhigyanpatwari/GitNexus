@@ -28,6 +28,7 @@ import {
 import { streamAllCSVsToDisk, type StreamedCSVResult } from './csv-generator.js';
 import type { GraphEmitManifest } from './graph-emit-sink.js';
 import type { PdgEmitManifest } from './pdg-emit-sink.js';
+import { PDG_EDGE_TYPES } from './pdg-emit-sink.js';
 import { getNodeLabel as deriveNodeLabel, type WriteStreamFactory } from './rel-pair-routing.js';
 import { EMBEDDABLE_LABELS, type CachedEmbedding } from '../embeddings/types.js';
 import {
@@ -1839,9 +1840,40 @@ export const executeWithReusedStatement = async (
 export const getLbugStats = async (): Promise<{
   nodes: number;
   edges: number | undefined;
+  /**
+   * Edges EXCLUDING the streamed PDG layers, or `undefined` when the count could
+   * not be taken (same distinction `edges` makes — an unmeasurable count is not
+   * a measured zero).
+   *
+   * The graph-write-collapse check compares what the pipeline produced against
+   * what the database holds, and `edges` counts every `CodeRelation` row — PDG
+   * writes into that same table. On a `--pdg` run the expected side is
+   * structural-only, so comparing it against the total let PDG volume mask
+   * structural loss outright: 1,000 structural edges expected, 4,000 PDG rows
+   * persisted, every structural edge gone, and the ratio still clears. This is
+   * the like-for-like counterpart.
+   */
+  structuralEdges: number | undefined;
+  /**
+   * Why `structuralEdges` is absent, when it is; `undefined` once the count was
+   * taken. Recorded rather than swallowed because this query is NEWER and
+   * NARROWER than `edges` — it filters on `r.type` with an `IN` predicate — and
+   * the collapse check consults only it, so a throw here disables the guard and
+   * (since the guard is now also the automatic-rebuild trigger) the repair it
+   * drives. A caller that cannot see the difference between "measured" and
+   * "could not measure" has no way to say so in its log or its metadata.
+   */
+  structuralEdgesError?: string;
 }> => {
   const c = conn;
-  if (!c) return { nodes: 0, edges: undefined };
+  if (!c) {
+    return {
+      nodes: 0,
+      edges: undefined,
+      structuralEdges: undefined,
+      structuralEdgesError: 'no open connection',
+    };
+  }
 
   // Called during analyze finalize while the WAL-checkpoint driver is still
   // running; each count read takes the connection lock so it cannot execute
@@ -1876,7 +1908,36 @@ export const getLbugStats = async (): Promise<{
     // here is what made a throwing query indistinguishable from an empty table.
   }
 
-  return { nodes: totalNodes, edges: totalEdges };
+  // Structural-only count for the collapse check. `TAINT_PATH` is deliberately
+  // NOT in `PDG_EDGE_TYPES` — it is a whole-program Function→Function edge that
+  // lives in the in-memory graph and is persisted by the normal emit, so it IS
+  // structural and must stay counted on both sides.
+  let structuralEdges: number | undefined;
+  let structuralEdgesError: string | undefined;
+  try {
+    const excluded = [...PDG_EDGE_TYPES].map((t) => `'${t}'`).join(', ');
+    structuralEdges = await withConnLock(async () => {
+      const queryResult = await c.query(
+        `MATCH ()-[r:${REL_TABLE_NAME}]->() WHERE NOT r.type IN [${excluded}] RETURN count(r) AS cnt`,
+      );
+      const rows = await readQueryRows(queryResult);
+      return rows.length > 0 ? Number(rows[0]?.cnt ?? rows[0]?.[0] ?? 0) : 0;
+    });
+  } catch (err) {
+    // Same contract as `edges`: leave undefined rather than report a zero the
+    // collapse check would read as a total wipeout. But NOT silent — the reason
+    // travels back on the result and is logged by the caller, so "the guard
+    // declined because it could not measure" is visible instead of looking
+    // identical to "the guard ran and found nothing wrong".
+    structuralEdgesError = err instanceof Error ? err.message : String(err);
+    logger.warn(
+      { err },
+      'Structural relationship count failed; the graph-write-collapse check will have no ' +
+        'structural measurement from this run.',
+    );
+  }
+
+  return { nodes: totalNodes, edges: totalEdges, structuralEdges, structuralEdgesError };
 };
 
 /**

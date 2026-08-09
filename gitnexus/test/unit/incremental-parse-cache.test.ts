@@ -176,13 +176,32 @@ describe('PARSE_CACHE_VERSION', () => {
   // does do is fail loudly the moment the constant and this expectation drift
   // apart, which is what forces the merge-time diff against origin/main to
   // happen at all.
-  //
-  // Moved 53 -> 60 for #2864's `ParsedImport.reexportsName` — a serialized
-  // ParsedFile field rather than a capture, which is the easy-to-miss variant of
-  // the same rule. 60 clears the in-flight claims (#2899 on 54, #2891 on 59) as
-  // well as main's 53.
+  // Moved 53 -> 54 for W2-8: type parameters are captured on generic functions
+  // and aliases, not just class-likes, so the shadowing guard has data to read.
+  // Moved 54 -> 55 for W2-9: the dispatch-guard verb walk tracks boolean polarity,
+  // so a ternary can no longer report the verb it excludes. Routes are emitted at
+  // parse time, so a warm cache would replay the inverted verb indefinitely.
+  // Moved 55 -> 56 for R3-8 part 1: the verb walk returns every method a guard
+  // serves, so a multi-method guard emits several routes where it emitted one.
+  // Moved 56 -> 57 for R3-8 part 2: `.match()` dispatch, bound-match test sites,
+  // named regex consts, and capturing segment wildcards in `regexToRoutePath`.
+  // Moved 57 -> 58 for #2897: fetch sites are captured without a literal URL.
+  // Moved 58 -> 59 for the #2899 review follow-up: the dispatch-guard walk keys
+  // match bindings on (enclosing function, name) instead of the bare identifier,
+  // and a ternary conjunction INTERSECTS its operands instead of taking the first
+  // non-empty set. Both strictly remove routes, so a warm cache would keep
+  // serving a fabricated verbed route that evicts the true one.
+  // Moved 59 -> 60 for #2864's `ParsedImport.reexportsName` and the
+  // `@import.publishes` capture gating it — a serialized ParsedFile field AND a
+  // capture change, the first being the easy-to-miss half. 60 was staged while
+  // main was 53, chosen above every in-flight MAXIMUM rather than at main + 1;
+  // #2899 then cascaded main to 59, and 60 survived only because of that choice.
   it('pins SCHEMA_BUMP to 60 so concurrent bumps cannot silently collide (#2766)', () => {
     expect(Number(PARSE_CACHE_VERSION.split('+', 1)[0])).toBe(60);
+    // The PREVIOUS version must fail the reuse gate, not merely differ from the
+    // current one — a hardcoded number outside the conflict hunk rebases cleanly
+    // while being wrong, which is exactly how the 37/38 exact clashes landed.
+    expect(Number(PARSE_CACHE_VERSION.split('+', 1)[0])).not.toBe(59);
   });
 
   it('embeds the gitnexus package version (so upgrades invalidate the cache)', () => {

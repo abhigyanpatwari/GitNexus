@@ -388,19 +388,85 @@ import type { ParseWorkerResult } from '../core/ingestion/workers/parse-worker.j
 // published (46, 47) is superseded by 48, so a warm cache stamped with either is
 // correctly invalidated.
 //
-// Moved 53 -> 60 for #2864's `ParsedImport.reexportsName`. It is not a capture
-// change, which is why it is easy to miss: `parsedfile-store.ts` serializes the
-// whole ParsedFile generically, so a new optional field on `ParsedImport` is
-// part of the cached shape all the same. Without the bump, a warm cache replays
-// pre-fix `ParsedImport`s with no flag, `isNamedReexport`'s strict `=== true`
-// takes the old path, and the fix is a silent no-op on incremental analyze while
-// every cold-run test passes — landing hardest on `__init__.py`, the rarest-
-// changing and highest-cache-hit files in a Python repo.
-// 60, not 54, because the value has to clear every in-flight claim, not just
-// origin/main: at the time of writing main is 53 while open PR #2899 claims 54
-// and #2891 claims 59. Taking the next free value above the highest claim is
-// what the five recorded exact clashes above teach; a literal pin cannot see
-// the other side of a tie.
+// 53 -> 54 for W2-8: `@declaration.type-parameters` is now captured on generic
+// FUNCTIONS, generator functions and type ALIASES in TYPESCRIPT_SCOPE_QUERY, not
+// only on class/interface declarations. Parse-time emission, so a warm cache
+// replays ParsedFiles whose defs carry no parameter list and the shadowing guard
+// that consumes it silently does nothing — the feature would look implemented
+// and be inert, which is the failure this constant exists to prevent.
+// RE-CHECK AGAINST origin/main IMMEDIATELY BEFORE MERGING.
+// 54 -> 55 for W2-9: the dispatch-guard verb walk now tracks boolean POLARITY,
+// so `(req.method === 'GET' ? false : true) && pathname === '/x'` no longer
+// reports GET — the one method that branch guarantees the request does not have
+// — and `!!(req.method === 'GET')` no longer loses its verb. Routes are emitted
+// at parse time and replayed verbatim from a warm cache, so without this bump an
+// already-indexed repo keeps serving the inverted verb and the fix looks inert.
+// Same reason 51 and 52 were taken for R3-7.
+// RE-CHECK AGAINST origin/main IMMEDIATELY BEFORE MERGING.
+// 55 -> 56 for R3-8 (part 1): a dispatch guard's verb walk now returns ALL the
+// methods a guard serves, so `(req.method === 'GET' || req.method === 'POST') &&
+// pathname === '/x'` emits two routes instead of reporting GET alone, and a
+// disjunction with a non-verb operand emits none instead of the first verb it
+// saw. Routes are parse-time output replayed verbatim from a warm cache.
+// RE-CHECK AGAINST origin/main IMMEDIATELY BEFORE MERGING.
+// 56 -> 57 for R3-8 (part 2): `pathname.match(RE)` is read as a route test
+// alongside `RE.test(pathname)`, a bound match takes its verb from where the
+// binding is TESTED rather than where it is bound, a regex named by a same-file
+// const resolves, and `regexToRoutePath` accepts a CAPTURING segment wildcard
+// (`([^/]+)`) — the form every real dispatcher writes and the one it refused.
+// All parse-time route output, replayed verbatim from a warm cache.
+// RE-CHECK AGAINST origin/main IMMEDIATELY BEFORE MERGING.
+// 57 -> 58 for #2897: the fetch capture no longer requires a LITERAL url, so a
+// call passing a variable is recorded as an outward-action site. Measured, 44 of
+// 47 fetch calls in this repo pass a variable, so the R3-6 sink signal was
+// absent from 94% of them. Parse-time capture output replayed verbatim from a
+// warm cache, so without the bump an indexed repo keeps its empty sink set and
+// the fix looks inert.
+// RE-CHECK AGAINST origin/main IMMEDIATELY BEFORE MERGING.
+// 58 -> 59 for the #2899 REVIEW FOLLOW-UP to the dispatch-guard route walk. Two
+// route-output changes, both parse-time and both replayed verbatim from a warm
+// cache, so without this bump an already-indexed repo keeps serving the wrong
+// routes and both fixes look implemented while being inert:
+//   (a) `matchBindings` / `tested` are keyed on (enclosing function, name)
+//       instead of the bare identifier. A same-named non-match binding in
+//       ANOTHER function used to mint a fabricated verbed route under the wrong
+//       handler — reproduced: `DELETE /api/live/positions/{param1}/replay
+//       handler=handleSettings` — which then EVICTED the true verb-less route
+//       through `reconcileDispatchGuardRoutes`. `buildRegexConstantMap` refuses
+//       a name rebound to a non-regex for the same reason.
+//   (b) `verbsFromTernary` INTERSECTS the operands of a conjunction instead of
+//       taking the first non-empty set. `(GET||POST) ? (POST||PUT) : false`
+//       emitted GET and POST where only POST is reachable, and
+//       `GET ? POST : false` emitted GET for an unsatisfiable guard.
+// Both changes strictly REMOVE routes, so a stale cache serves strictly more
+// wrong answers than a cold one — which is exactly the state this constant
+// exists to make unreachable. Same reason 55, 56 and 57 were taken.
+// RE-CHECK AGAINST origin/main IMMEDIATELY BEFORE MERGING.
+//
+// 59 -> 60 for #2864's `ParsedImport.reexportsName` plus the `@import.publishes`
+// capture that gates it. The FIELD is the easy half to miss: it is not a
+// capture, but `parsedfile-store.ts` serializes the whole ParsedFile
+// generically, so a new optional property on `ParsedImport` is part of the
+// cached shape all the same. Without the bump a warm cache replays pre-fix
+// `ParsedImport`s carrying no flag, `isNamedReexport`'s strict `=== true` takes
+// the old path, and the whole fix is a silent no-op on incremental analyze while
+// every cold-run test passes — landing hardest on `__init__.py`, the
+// rarest-changing and highest-cache-hit files in a Python repo. The MARKER makes
+// it a capture change too, confirmed independently by
+// `bench/python-scope/measure.mjs` drifting.
+//
+// This branch is the SIXTH exact clash, and the first one the re-check caught
+// where the number did NOT have to move. It staged 60 while main was 53,
+// deliberately clearing the two claims visible at the time (#2899 and #2891).
+// #2899 then merged and cascaded main 53 -> 59 in five steps — far past the 54
+// its diff appeared to claim, because reading a PR's LAST bump hunk understates a
+// branch that bumps repeatedly. 60 survived only because it was chosen above the
+// highest claim rather than at main + 1; had it been staged at 54 it would now be
+// buried four deep inside main's own ledger. Take the next free value above every
+// in-flight MAXIMUM, not above origin/main.
+//
+// Still open at this commit: #2891 also claims 59, which main now holds. That is
+// a live exact clash for #2891 to renumber, not for this branch.
 // RE-CHECK AGAINST origin/main IMMEDIATELY BEFORE MERGING.
 const SCHEMA_BUMP = 60;
 const GITNEXUS_PKG_VERSION = (() => {
