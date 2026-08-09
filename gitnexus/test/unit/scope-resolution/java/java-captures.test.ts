@@ -33,7 +33,8 @@ function ctorRefs(src: string) {
 function inheritanceRefs(src: string): string[] {
   return emitJavaScopeCaptures(src, 'C.java')
     .filter((m) => m['@reference.inherits'] !== undefined)
-    .flatMap((m) => m['@reference.name']?.text ?? []);
+    .flatMap((m) => m['@reference.name']?.text ?? [])
+    .sort();
 }
 
 describe('emitJavaScopeCaptures — constructor reference names (F35 #1928)', () => {
@@ -95,10 +96,11 @@ describe('emitJavaScopeCaptures — record interface heritage (#2900)', () => {
       'record User(int id) implements Named, Comparable<User>, audit.Auditable {}',
     );
 
-    expect(refs).toEqual(['Named', 'Comparable', 'Auditable']);
+    expect(refs).toEqual(['Auditable', 'Comparable', 'Named']);
   });
 
-  it('does not widen enum heritage while adding record support', () => {
+  it('does not yet emit enum heritage (#2918)', () => {
+    // Delete this characterization when #2918 adds enum interface heritage.
     expect(inheritanceRefs('enum Status implements Named { ACTIVE }')).toEqual([]);
   });
 });
