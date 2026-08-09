@@ -638,13 +638,17 @@ function findEnclosingTypeDeclaration(node: SyntaxNode): SyntaxNode | null {
  * is dropped for registry-primary languages in the worker pipeline (issue #1951).
  *
  * Scope covers `class_declaration` (`superclass` extends + `interfaces`
- * implements clauses) AND `interface_declaration` (`extends_interfaces` →
- * interface-to-interface EXTENDS), matching the legacy Java heritage query
+ * implements clauses), `record_declaration` (`interfaces` implements clauses),
+ * AND `interface_declaration` (`extends_interfaces` → interface-to-interface
+ * EXTENDS), matching the legacy Java heritage query
  * (tree-sitter-queries.ts), which has a dedicated `interface_declaration
  * (extends_interfaces (type_list …))` arm. Without the interface arm the
  * registry-primary synth silently dropped every `interface IA extends IB`
  * edge while the legacy leg emitted it — the exact =0/=N parity break #1951
- * targets. Enum/record heritage stays unemitted (no legacy arm). Generic
+ * targets. Record heritage is emitted even though the legacy query had no
+ * matching arm: Record graph nodes are canonical link targets since #2801, so
+ * dropping their `implements` clause prevents interface dispatch (#2900). Enum
+ * heritage remains unemitted. Generic
  * bases (`extends Box<T>`, `implements IFoo<T>`) ARE emitted here: the legacy
  * heritage query was widened to capture the inner `type_identifier` of a
  * `generic_type` (tree-sitter-queries.ts), so both paths now agree on SIMPLE
@@ -671,7 +675,7 @@ function synthesizeJavaInheritanceReferences(root: SyntaxNode): CaptureMatch[] {
   const stack: SyntaxNode[] = [root];
   while (stack.length > 0) {
     const node = stack.pop()!;
-    if (node.type === 'class_declaration') {
+    if (node.type === 'class_declaration' || node.type === 'record_declaration') {
       const superclass = node.childForFieldName('superclass');
       if (superclass !== null) {
         for (const base of superclass.namedChildren) emitJavaInheritanceBase(out, base);
