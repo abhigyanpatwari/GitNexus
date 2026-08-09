@@ -12,7 +12,6 @@
 
 import type { ParsedFile, ParsedImport, WorkspaceIndex } from 'gitnexus-shared';
 import { resolvePythonImportInternal } from '../../import-resolvers/python.js';
-import { recordPythonFileIndexBuild } from './index-stats.js';
 
 export interface PythonResolveContext {
   readonly fromFile: string;
@@ -353,9 +352,10 @@ const PYTHON_FILE_INDEX_CACHE = new WeakMap<ReadonlySet<string>, PythonFileIndex
 function getPythonFileIndex(allFilePaths: ReadonlySet<string>): PythonFileIndex {
   const cached = PYTHON_FILE_INDEX_CACHE.get(allFilePaths);
   if (cached !== undefined) return cached;
-  // Cache miss: materialize a fresh index. Counted so a test can assert this
-  // happens once per run, not once per import (PR #1918 review P1 guard).
-  recordPythonFileIndexBuild();
+  // Cache miss: materialize a fresh index. That it happens once per run and not
+  // once per import is asserted by counting traversals of the Set itself, in
+  // `test/integration/python-import-index-reuse.test.ts` — the PR #1918 review
+  // P1 guard (#2909).
 
   const normSet = new Set<string>();
   const byBasename = new Map<string, { raw: string; norm: string }[]>();

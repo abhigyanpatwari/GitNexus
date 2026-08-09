@@ -30,9 +30,7 @@
  * provably cannot see: a full workspace scan on 1-in-32 imports scores 1.458
  * against a 1.8 scaling budget and 1.736 ms against a 4 ms ceiling — it passes
  * everything — while this counter reads 14 instead of 1. Timing gates catch the
- * constant factor; this catches the scan. Kotlin (#2872) is covered there too,
- * because its own guard counts index BUILDS and a scan beside a reused index
- * moves no build count.
+ * constant factor; this catches the scan. Kotlin (#2872) is covered there too.
  *
  * It is NOT the guard for PR #1918 review finding P1. That failure — a
  * defensive `new Set(allFilePaths)` in the orchestrator ADAPTER, handing a fresh
@@ -793,9 +791,9 @@ describe('import-target index hoist — built once per file set, not once per im
 
   it('kotlin builds one index for many imports (#2872)', () => {
     // Kotlin's own guard (`test/integration/kotlin-import-index-reuse.test.ts`)
-    // counts index BUILDS. That catches the per-import rebuild, but a scan added
-    // beside a reused index moves no build count — this arm sees it, because it
-    // counts iterations of the Set rather than cache misses.
+    // counts the same traversals one layer up, at the adapter. This arm covers
+    // the resolver function directly, so a rescan reintroduced inside
+    // `resolveKotlinImportTarget` fails here even if the adapter is untouched.
     const files = countingCorpus(7, '.kt');
     for (let i = 0; i < 200; i++) {
       resolveKotlinImportTarget(

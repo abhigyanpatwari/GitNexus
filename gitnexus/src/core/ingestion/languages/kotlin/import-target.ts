@@ -1,6 +1,5 @@
 import type { ParsedImport, WorkspaceIndex } from 'gitnexus-shared';
 import { KOTLIN_EXTENSIONS } from '../../import-resolvers/jvm.js';
-import { recordKotlinFileIndexBuild } from './index-stats.js';
 
 export interface KotlinResolveContext {
   readonly fromFile: string;
@@ -185,9 +184,9 @@ const KOTLIN_FILE_INDEX_CACHE = new WeakMap<ReadonlySet<string>, KotlinFileIndex
 function getKotlinFileIndex(allFilePaths: ReadonlySet<string>): KotlinFileIndex {
   const cached = KOTLIN_FILE_INDEX_CACHE.get(allFilePaths);
   if (cached !== undefined) return cached;
-  // Cache miss: materialize a fresh index. Counted so a test can assert this
-  // happens once per run, not once per import.
-  recordKotlinFileIndexBuild();
+  // Cache miss: materialize a fresh index. That it happens once per run and not
+  // once per import is asserted by counting traversals of the Set itself, in
+  // `test/integration/kotlin-import-index-reuse.test.ts` (#2909).
 
   const exactByStem = new Map<string, string>();
   const suffixByStem = new Map<string, string>();

@@ -1,6 +1,6 @@
 /**
  * Per-file-set workspace index for the import-target resolvers that need the
- * shared `SuffixIndex` (C#, Ruby).
+ * shared `SuffixIndex` (C#, Java, PHP, Ruby).
  *
  * The scope-resolution orchestrator passes the SAME `allFilePaths` Set object to
  * every `resolveImportTarget` call in a pass (`pipeline/run.ts` builds it once),
@@ -12,15 +12,21 @@
  * per call and silently restores the O(imports × files) behaviour — the exact
  * bug PR #1918 shipped and had to fix in review (P1).
  *
- * Two layers guard that, and they guard different things:
+ * Three layers guard that, and they guard different things:
  *  - ADAPTER BOUNDARY, where the defensive-copy hazard actually lives:
- *    `test/integration/<lang>-import-index-reuse.test.ts` (csharp and ruby for
- *    this index; go, dart, kotlin and python for the sibling ones) resolves
- *    through `<lang>ScopeResolver.resolveImportTarget` — the orchestrator
- *    adapter — and asserts the file set is traversed once per run (twice for
- *    C#, which builds two indexes). Kotlin and Python instead count index
- *    BUILDS from production (`languages/<lang>/index-stats.ts`); either way, a
- *    copy inserted in an adapter fails these.
+ *    `test/integration/<lang>-import-index-reuse.test.ts` (csharp, java, php
+ *    and ruby for this index; cobol, dart, go, kotlin and python for the
+ *    sibling ones) resolves through `<lang>ScopeResolver.resolveImportTarget` —
+ *    the orchestrator adapter — and asserts the file set is traversed once per
+ *    run (twice for C# and Java, which build two indexes). All nine count
+ *    traversals of a `CountingSet` (`test/helpers/counting-file-set.ts`): one
+ *    instrument, no production surface, and it catches both the per-import
+ *    rebuild and a scan reintroduced beside a reused index (#2909).
+ *  - EVERY REGISTERED LANGUAGE, at the same boundary but as one property rather
+ *    than nine corpora: `test/unit/scope-resolution/import-target-index-reuse.contract.test.ts`
+ *    drives each entry of `SCOPE_RESOLVERS` and asserts the traversal count for
+ *    many imports equals the count for two. A new language cannot skip it — the
+ *    inventory arm fails when a registered resolver has no fixture.
  *  - RESOLVER LEVEL: `test/unit/scope-resolution/import-target-index-parity.test.ts`
  *    calls the resolvers directly, so it never crosses the adapter boundary and
  *    a copy there leaves it green. What it catches is a rescan reintroduced

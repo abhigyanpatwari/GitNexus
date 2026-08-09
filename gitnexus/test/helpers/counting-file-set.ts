@@ -1,16 +1,18 @@
 /**
- * A `Set<string>` that counts how many times it is TRAVERSED in full — the
- * measuring instrument behind the import-target index-reuse guards
- * (`test/unit/scope-resolution/import-target-index-parity.test.ts` and the
- * per-language `test/integration/<lang>-import-index-reuse.test.ts` files).
+ * A `Set<string>` that counts how many times it is TRAVERSED in full — the one
+ * measuring instrument behind every import-target index-reuse guard
+ * (`test/unit/scope-resolution/import-target-index-parity.test.ts`,
+ * `test/unit/scope-resolution/import-target-index-reuse.contract.test.ts`, and
+ * the per-language `test/integration/<lang>-import-index-reuse.test.ts` files).
  *
  * ## Why a counting Set rather than a production build counter
  *
- * Kotlin and Python count index BUILDS from production (`languages/<lang>/
- * index-stats.ts`). That catches the per-import rebuild, but it is blind to a
- * scan added BESIDE a reused index: the cache still hits, the build count still
- * reads 1. Counting traversals of the file set instead needs no production
- * surface at all and catches both failures with one number:
+ * Kotlin and Python used to count index BUILDS, through a counter module that
+ * shipped in production for no reason but this observation (deleted in #2909).
+ * A build count catches the per-import rebuild, but it is blind to a scan added
+ * BESIDE a reused index: the cache still hits, the count still reads 1. Counting
+ * traversals of the file set instead needs no production surface at all and
+ * catches both failures with one number:
  *
  *   - an adapter that copies the set (`new Set(allFilePaths)`) hands a fresh
  *     `WeakMap` key per import, so the count rises to the import count;
