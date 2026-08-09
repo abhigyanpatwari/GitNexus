@@ -18,6 +18,71 @@ import { cobolProvider } from '../cobol.js';
 
 // Copybook file extensions for COPY name resolution
 const COPYBOOK_EXTENSIONS = new Set(['.cpy', '.copybook']);
+// COBOL source files, searched only after every copybook has missed.
+const COBOL_SOURCE_EXTENSIONS = new Set(['.cbl', '.cob', '.cobol']);
+
+/**
+ * Uppercased-basename → first file carrying it, one map PER TIER, memoized on
+ * the `allFilePaths` Set identity (#2908).
+ *
+ * `resolveImportTarget` used to run two full workspace scans per `COPY` — one
+ * for the copybook tier, one for the source tier — each calling `path.extname`
+ * + `path.basename` + `toUpperCase` on every entry. A `COPY` of a member that
+ * lives outside the repo (the common case: vendor and system copybooks) missed
+ * in both, so both scans always ran to completion, making resolution
+ * O(copies × files). The orchestrator passes the SAME Set to every import in a
+ * pass (`pipeline/run.ts` builds it once), so a `WeakMap` keyed on that Set
+ * turns the scans into one build per run.
+ *
+ * Two tiers rather than one map is the tie-break, not a stylistic choice: a
+ * `.cpy`/`.copybook` hit beats a `.cbl`/`.cob`/`.cobol` hit even when the source
+ * file comes FIRST in Set-iteration order, which is exactly what collapsing the
+ * tiers into a single first-wins map would silently discard. Within a tier the
+ * first file in Set-iteration order wins, mirroring the `return` on first match
+ * in the scans this replaces.
+ *
+ * The per-file key is derived with the same `path.extname(fp).toLowerCase()` →
+ * `path.basename(fp, ext)` → `toUpperCase()` sequence the scans used, including
+ * its quirk: `path.basename` strips the suffix only on an exact, case-sensitive
+ * match, so `Foo.CPY` indexes under `FOO.CPY` rather than `FOO`. Node's `path`
+ * stays in the loop for the same reason — on POSIX it does not treat `\` as a
+ * separator, and hand-rolled slicing on `/` would start resolving backslash
+ * paths the scans never resolved.
+ */
+interface CobolCopyIndex {
+  /** `.cpy` / `.copybook` files — tier 1. */
+  readonly copybooks: ReadonlyMap<string, string>;
+  /** `.cbl` / `.cob` / `.cobol` files — tier 2. */
+  readonly sources: ReadonlyMap<string, string>;
+}
+
+const COBOL_COPY_INDEX_CACHE = new WeakMap<ReadonlySet<string>, CobolCopyIndex>();
+
+function getCobolCopyIndex(allFilePaths: ReadonlySet<string>): CobolCopyIndex {
+  const cached = COBOL_COPY_INDEX_CACHE.get(allFilePaths);
+  if (cached !== undefined) return cached;
+
+  const copybooks = new Map<string, string>();
+  const sources = new Map<string, string>();
+  // One pass builds both tiers: the two scans walked the same files and
+  // classified each by the same extension test.
+  for (const fp of allFilePaths) {
+    const ext = path.extname(fp).toLowerCase();
+    const tier = COPYBOOK_EXTENSIONS.has(ext)
+      ? copybooks
+      : COBOL_SOURCE_EXTENSIONS.has(ext)
+        ? sources
+        : undefined;
+    if (tier === undefined) continue;
+    const basename = path.basename(fp, ext).toUpperCase();
+    // First in Set-iteration order wins, as the scans' first-match `return` did.
+    if (!tier.has(basename)) tier.set(basename, fp);
+  }
+
+  const built: CobolCopyIndex = { copybooks, sources };
+  COBOL_COPY_INDEX_CACHE.set(allFilePaths, built);
+  return built;
+}
 
 const cobolScopeResolver: ScopeResolver = {
   language: SupportedLanguages.Cobol,
@@ -27,22 +92,9 @@ const cobolScopeResolver: ScopeResolver = {
   // ── Resolve COPY bookname to file path ─────────────────────────────
   resolveImportTarget: (targetRaw, _fromFile, allFilePaths) => {
     const upper = targetRaw.toUpperCase();
-    // Check copybook files first
-    for (const fp of allFilePaths) {
-      const ext = path.extname(fp).toLowerCase();
-      if (!COPYBOOK_EXTENSIONS.has(ext)) continue;
-      const basename = path.basename(fp, ext).toUpperCase();
-      if (basename === upper) return fp;
-    }
-    // Also search COBOL source files (.cbl, .cob, .cobol)
-    const COBOL_SOURCE_EXTS = new Set(['.cbl', '.cob', '.cobol']);
-    for (const fp of allFilePaths) {
-      const ext = path.extname(fp).toLowerCase();
-      if (!COBOL_SOURCE_EXTS.has(ext)) continue;
-      const basename = path.basename(fp, ext).toUpperCase();
-      if (basename === upper) return fp;
-    }
-    return null;
+    const index = getCobolCopyIndex(allFilePaths);
+    // Copybooks first, then COBOL sources — the tier order IS the tie-break.
+    return index.copybooks.get(upper) ?? index.sources.get(upper) ?? null;
   },
 
   // COBOL has no binding-merge rules beyond the default (local-first-then-imports).
