@@ -36,6 +36,11 @@
  * generated corpus is emitted in a fixed order and several hand cases appear
  * twice with the two files swapped. Nothing here is random.
  *
+ * Every hand case additionally pins ABSOLUTE `expected` /
+ * `expectedViaWorkspace` literals, for the reason spelled out under the
+ * verbatim-copy banner below: the differential cannot fail on anything the two
+ * sides share, and they share `resolvePhpImportInternal` itself.
+ *
  * This file calls the resolver functions directly, so it does NOT guard PR
  * #1918 review finding P1 — a defensive `new Set(allFilePaths)` in
  * `php/scope-resolver.ts` leaves every arm here green. That is
@@ -57,9 +62,21 @@ import { CountingSet } from '../../helpers/counting-file-set.js';
 
 // ─── verbatim pre-change implementation ──────────────────────────────────────
 // Copied from `git show HEAD~:gitnexus/src/core/ingestion/languages/php/
-// import-target.ts`. `resolvePhpImportInternal` itself is untouched by #2901,
-// so it is imported rather than copied — the whole subject of this file is what
-// the sixth argument does to it.
+// import-target.ts`. `resolvePhpImportInternal` is NOT copied — it is imported
+// from the shipped source, and #2901 (`67307cc91`) DID change it: 41 lines,
+// including the `if (index) … else` split that moved the namespace-directory
+// scan out of the empty-bucket path.
+//
+// Passing `index: undefined` still reaches the pre-change behaviour through that
+// new `else`, so the legacy side remains a faithful stand-in for the one
+// function — but it is a stand-in built out of the code under test. The `..`
+// guard, the PSR-4 prefix loop, `allFiles.has`, the `nsDir` computation and the
+// `suffixResolve` call are LITERALLY SHARED with the current side, so an edit to
+// any of them moves both sides identically and `expect(current).toBe(legacy)`
+// stays green. That is a real weakness of importing rather than copying, and it
+// is why every hand case below also pins absolute literals: the differential
+// proves the index hoist preserved behaviour, the literals prove the behaviour
+// being preserved is the one the case is named for.
 
 function legacyNormalizePhpPath(value: string): string {
   return value.replace(/\\/g, '/').replace(/^\.\//, '').replace(/\/+$/, '');
@@ -264,6 +281,27 @@ interface Case {
   readonly defs?: ReadonlyMap<string, readonly [SymbolDefinition['type'], string][]>;
 }
 
+/**
+ * A hand case plus the two literals it must produce. Required, not optional:
+ * the generated sweep is a pure differential by design, but a hand case exists
+ * to pin one named behaviour and cannot do that without saying what it is.
+ */
+interface HandCase extends Case {
+  /**
+   * What the ScopeResolver adapter (`resolvePhpImportTargetInternal`) returns.
+   * That is the path with `composerConfig` and the function/const declaration
+   * leg, so it is the one PSR-4 and `context` actually reach.
+   */
+  readonly expected: string | null;
+  /**
+   * What the LanguageProvider adapter (`resolvePhpImportTarget`) returns. It
+   * hard-codes `composerConfig: null` and takes no `ImportResolutionContext`,
+   * so for every case carrying a `composer` or a `parsedImport` this is the
+   * plain `suffixResolve` answer and differs from `expected`.
+   */
+  readonly expectedViaWorkspace: string | null;
+}
+
 function composer(entries: readonly (readonly [string, string])[]): ComposerConfig {
   return { psr4: new Map(entries) };
 }
@@ -372,217 +410,409 @@ const GENERATED_CASES: readonly Case[] = generatedTargets().flatMap((target) =>
   ),
 );
 
-/** Hand-built cases, one per tie-break the index could have moved. */
-const HAND_CASES: readonly Case[] = [
+/**
+ * Hand-built cases, one per tie-break the index could have moved.
+ *
+ * Every `expected` / `expectedViaWorkspace` below was derived by hand from
+ * `resolvePhpImportInternal` + `suffixResolve` and then confirmed against both
+ * implementations. Two rules do most of the work and are worth stating once:
+ *
+ *  - `suffixResolve`'s PATH-PART loop is OUTER and its EXTENSION loop is inner,
+ *    so a longer suffix always beats a shorter one no matter which extensions
+ *    are involved; within one path-part it is first-in-Set-order and
+ *    case-INSENSITIVE (the scan's `endsWith(p)` disjunct is subsumed by its
+ *    `toLowerCase().endsWith(...)` one).
+ *  - the PSR-4 namespace-directory fallback is NOT gated on the imported symbol
+ *    kind. It fires for a class import too, whenever the class-style path
+ *    misses, and returns the FIRST `.php` file directly in the namespace
+ *    directory — see the "known limitation" note atop `import-resolvers/php.ts`.
+ *    Cases that lean on it are marked; their answers are order-dependent in
+ *    general and deterministic here only because the fixture pins the order.
+ */
+const HAND_CASES: readonly HandCase[] = [
   // ── divergence 3: whole-path vs proper suffix ────────────────────────────
   {
+    // `Foo.php` IS the suffix, not a file carrying it, and `endsWith('/Foo.php')`
+    // can only match a PROPER suffix. Unresolvable — the behaviour the parity
+    // view exists to preserve.
     name: 'root-level file is not a proper suffix of itself',
     files: ['Foo.php', 'src/Bar.php'],
     target: 'Foo',
+    expected: null,
+    expectedViaWorkspace: null,
   },
   {
+    // `App/Models/User.php` is invisible at path-part 0 (whole path), so both
+    // files compete at part 1 on `/Models/User.php` and Set order decides.
     name: 'whole-path match loses to an earlier proper-suffix match',
     files: ['vendor/x/Models/User.php', 'App/Models/User.php'],
     target: 'App\\Models\\User',
+    expected: 'vendor/x/Models/User.php',
+    expectedViaWorkspace: 'vendor/x/Models/User.php',
   },
   {
     name: 'whole-path match loses to a later proper-suffix match too',
     files: ['App/Models/User.php', 'vendor/x/Models/User.php'],
     target: 'App\\Models\\User',
+    expected: 'App/Models/User.php',
+    expectedViaWorkspace: 'App/Models/User.php',
   },
   {
+    // Still not found as a whole path — found at part 1, as `Models/User.php`.
     name: 'whole path is the only candidate at all',
     files: ['App/Models/User.php'],
     target: 'App\\Models\\User',
+    expected: 'App/Models/User.php',
+    expectedViaWorkspace: 'App/Models/User.php',
   },
   {
     // A whole-path candidate the scan must skip, plus TWO proper-suffix
     // candidates behind it — so the skip has to land on the first of them and
-    // not merely on "some other file".
+    // not merely on "some other file". Both are hit at path-part 0.
     name: 'whole-path match skipped, first of several proper-suffix matches wins',
     files: ['App/Models/User.php', 'one/App/Models/User.php', 'two/App/Models/User.php'],
     target: 'App\\Models\\User',
+    expected: 'one/App/Models/User.php',
+    expectedViaWorkspace: 'one/App/Models/User.php',
   },
   {
     name: 'whole-path match skipped, first of several proper-suffix matches wins, reversed',
     files: ['two/App/Models/User.php', 'App/Models/User.php', 'one/App/Models/User.php'],
     target: 'App\\Models\\User',
+    expected: 'two/App/Models/User.php',
+    expectedViaWorkspace: 'two/App/Models/User.php',
   },
   {
     name: 'root-level file with a namespace-shaped import',
     files: ['index.php', 'Kernel.php'],
     target: 'Kernel',
+    expected: null,
+    expectedViaWorkspace: null,
   },
   // ── divergence 3: case-sensitive hit must not outrank an earlier ci hit ──
   {
+    // `a/FOO.php` matches `/Foo.php` case-insensitively and comes first, so the
+    // exact-case `b/Foo.php` behind it never gets a turn.
     name: 'lowercase file first, exact-case file second',
     files: ['a/FOO.php', 'b/Foo.php'],
     target: 'Foo',
+    expected: 'a/FOO.php',
+    expectedViaWorkspace: 'a/FOO.php',
   },
   {
     name: 'exact-case file first, lowercase file second',
     files: ['b/Foo.php', 'a/FOO.php'],
     target: 'Foo',
+    expected: 'b/Foo.php',
+    expectedViaWorkspace: 'b/Foo.php',
   },
   {
     name: 'case tie across a multi-segment suffix',
     files: ['vendor/x/models/user.php', 'app/Models/User.php'],
     target: 'Models\\User',
+    expected: 'vendor/x/models/user.php',
+    expectedViaWorkspace: 'vendor/x/models/user.php',
   },
   {
     name: 'case tie across a multi-segment suffix, reversed',
     files: ['app/Models/User.php', 'vendor/x/models/user.php'],
     target: 'Models\\User',
+    expected: 'app/Models/User.php',
+    expectedViaWorkspace: 'app/Models/User.php',
   },
   // ── divergence 1: PSR-4 class-style is an exact whole-path test ──────────
   {
+    // The only case in this group that the class-style `allFiles.has` leg
+    // actually answers: `App\Models\User` + `App => app` is exactly
+    // `app/Models/User.php`. Everything below it misses that leg and falls
+    // through, which is what makes the group interesting.
     name: 'psr-4 exact hit',
     files: ['app/Models/User.php'],
     target: 'App\\Models\\User',
     composer: APP_PSR4,
+    expected: 'app/Models/User.php',
+    // No composer on this path, so it comes from `/Models/User.php` at part 1.
+    expectedViaWorkspace: 'app/Models/User.php',
   },
   {
+    // PSR-4 is case-sensitive by spec, so the exact leg correctly misses
+    // `app/models/user.php`, the namespace directory `app/Models` does not
+    // exist either, and the answer comes from the case-INSENSITIVE suffix
+    // fallback. Loose, but it is the shipped behaviour and predates #2901.
     name: 'psr-4 target differs from the file only by case',
     files: ['app/models/user.php'],
     target: 'App\\Models\\User',
     composer: APP_PSR4,
+    expected: 'app/models/user.php',
+    expectedViaWorkspace: 'app/models/user.php',
   },
   {
+    // KNOWN LIMITATION: the class-style path `src/Models/User.php` misses, and
+    // the namespace-directory fallback then answers a CLASS import with "first
+    // `.php` in `src/Models/`" — here `src/Models/user.php`, which is only
+    // coincidentally the right file. `other/Models/User.php` is never reached.
     name: 'psr-4 mapped dir differs from the namespace, file differs by case',
     files: ['src/Models/user.php', 'other/Models/User.php'],
     target: 'App\\Models\\User',
     composer: SRC_PSR4,
+    expected: 'src/Models/user.php',
+    expectedViaWorkspace: 'src/Models/user.php',
   },
   {
+    // `src/Models/` does not exist at the repo root, so the root-anchored
+    // directory bucket is empty and the suffix leg finds the vendor copy at
+    // path-part 1. A directory index keyed on suffixes would have answered it
+    // one leg earlier — same file here, different file in the case below.
     name: 'psr-4 mapped dir exists only under vendor, by case-insensitive suffix',
     files: ['vendor/pkg/src/Models/User.php'],
     target: 'App\\Models\\User',
     composer: SRC_PSR4,
+    expected: 'vendor/pkg/src/Models/User.php',
+    expectedViaWorkspace: 'vendor/pkg/src/Models/User.php',
   },
   {
     // The mapped directory (`src/lib`) shares no segment with the namespace
     // (`App`), so the class-style probe and the `suffixResolve` fallback name
     // two DIFFERENT files. Only the exact-`has` leg is supposed to see the
     // first one; the raw index's case-insensitive suffix probe reaches it.
+    // Correct answer: the suffix leg's `other/Models/User.php`, first in order.
     name: 'psr-4 mapped dir path and namespace path name different files',
     files: ['other/Models/User.php', 'vendor/one/src/lib/Models/user.php'],
     target: 'App\\Models\\User',
     composer: composer([['App', 'src/lib']]),
+    expected: 'other/Models/User.php',
+    expectedViaWorkspace: 'other/Models/User.php',
   },
   {
     name: 'psr-4 mapped dir path and namespace path name different files, reversed',
     files: ['vendor/one/src/lib/Models/user.php', 'other/Models/User.php'],
     target: 'App\\Models\\User',
     composer: composer([['App', 'src/lib']]),
+    expected: 'vendor/one/src/lib/Models/user.php',
+    expectedViaWorkspace: 'vendor/one/src/lib/Models/user.php',
   },
   {
+    // `App\Models => app/Domain` sorts before `App => app` (longer key), so the
+    // class-style leg hits `app/Domain/User.php` and never considers
+    // `app/Models/User.php`. The two adapters legitimately disagree here: with
+    // no composer there is no longest-prefix rule and the suffix leg answers
+    // `/Models/User.php` instead.
     name: 'psr-4 longest-prefix mapping wins',
     files: ['app/Domain/User.php', 'app/Models/User.php'],
     target: 'App\\Models\\User',
     composer: NESTED_PSR4,
+    expected: 'app/Domain/User.php',
+    expectedViaWorkspace: 'app/Models/User.php',
   },
   {
+    // KNOWN LIMITATION: an empty `dirPrefix` builds the class-style path as
+    // `'' + '/Models/User' + '.php'` = `/Models/User.php`, with a leading slash
+    // no repo-relative path has — so a root PSR-4 mapping never hits that leg,
+    // and `nsDir` comes out `/Models` which no directory bucket holds either.
+    // The answer is the suffix leg's, and only at path-part 2 (`/User.php`):
+    // `Models/User.php` is the whole path, invisible to `/Models/User.php`.
     name: 'psr-4 mapped to the repo root',
     files: ['Models/User.php'],
     target: 'App\\Models\\User',
     composer: ROOT_PSR4,
+    expected: 'Models/User.php',
+    expectedViaWorkspace: 'Models/User.php',
   },
   {
+    // KNOWN LIMITATION: a mapping kept with its trailing slash concatenates to
+    // `app//Models/User.php`, which misses every leg. `loadPhpComposerConfig`
+    // strips trailing slashes, so production never builds this config — the
+    // arm pins what happens if one ever reaches the resolver. The answer is
+    // again the plain suffix leg's.
     name: 'psr-4 dir prefix carries a trailing slash',
     files: ['app/Models/User.php'],
     target: 'App\\Models\\User',
     composer: TRAILING_SLASH_PSR4,
+    expected: 'app/Models/User.php',
+    expectedViaWorkspace: 'app/Models/User.php',
   },
   // ── divergence 2: namespace-directory scan is root-anchored ──────────────
   {
+    // The witness for divergence 2: `app/Models` is also a SUFFIX of
+    // `vendor/pkg/app/Models`, and the vendor file comes first in Set order, so
+    // a suffix-keyed directory index answers `vendor/pkg/app/Models/Zed.php`.
+    // Root-anchored, only `app/Models/Aaa.php` is in the bucket.
     name: 'namespace dir: root-anchored candidate beats a suffix-matching vendor dir',
     files: ['vendor/pkg/app/Models/Zed.php', 'app/Models/Aaa.php'],
     target: 'App\\Models\\getUser',
     composer: APP_PSR4,
+    expected: 'app/Models/Aaa.php',
+    // Without composer there is no namespace-directory leg at all, and
+    // `getUser` is not a file, so nothing matches.
+    expectedViaWorkspace: null,
   },
   {
+    // Same witness from the other side: with the root-anchored bucket empty the
+    // vendor mirror is unreachable, where a suffix-keyed one would return it.
     name: 'namespace dir: only a suffix-matching vendor dir exists',
     files: ['vendor/pkg/app/Models/Zed.php'],
     target: 'App\\Models\\getUser',
     composer: APP_PSR4,
+    expected: null,
+    expectedViaWorkspace: null,
   },
   {
+    // KNOWN LIMITATION, pinned rather than endorsed: "first `.php` file in the
+    // namespace directory" is Set-iteration order, so `Bbb` beats the
+    // alphabetically-earlier `Aaa`. Deterministic here only because the fixture
+    // fixes the insertion order; in a real repo it follows the walker's.
     name: 'namespace dir: several candidates, first in order wins',
     files: ['app/Models/Bbb.php', 'app/Models/Aaa.php', 'app/Models/Ccc.php'],
     target: 'App\\Models\\getUser',
     composer: APP_PSR4,
+    expected: 'app/Models/Bbb.php',
+    expectedViaWorkspace: null,
   },
   {
     name: 'namespace dir: nested subdirectory is not a direct child',
     files: ['app/Models/Nested/Deep.php'],
     target: 'App\\Models\\getUser',
     composer: APP_PSR4,
+    expected: null,
+    expectedViaWorkspace: null,
   },
   {
     name: 'namespace dir: non-php sibling is skipped',
     files: ['app/Models/notes.md', 'app/Models/Aaa.php'],
     target: 'App\\Models\\getUser',
     composer: APP_PSR4,
+    expected: 'app/Models/Aaa.php',
+    expectedViaWorkspace: null,
   },
   {
+    // KNOWN LIMITATION, the multi-segment half of the trailing-slash bug: the
+    // remainder `Models/getUser` has a separator, so `nsDir` is built as
+    // `'app/' + '/' + 'Models'` = `app//Models` and matches no directory. Not
+    // reachable from a parsed `composer.json` (trailing slashes are stripped).
     name: 'namespace dir with a trailing-slash mapping',
     files: ['app/Models/Aaa.php'],
     target: 'App\\Models\\getUser',
     composer: TRAILING_SLASH_PSR4,
+    expected: null,
+    expectedViaWorkspace: null,
   },
   {
     // `nsDir` keeps the mapping's trailing slash when the remainder has no
-    // separator, so the directory bucket must be keyed without it.
+    // separator, so the directory bucket must be keyed without it. `nsDir` is
+    // `app/` here, and `app/bootstrap.php` is its only direct `.php` child —
+    // `app/Models/User.php` lives one level down.
     name: 'namespace dir IS the trailing-slash mapping',
     files: ['app/bootstrap.php', 'app/Models/User.php'],
     target: 'App\\getUser',
     composer: TRAILING_SLASH_PSR4,
+    expected: 'app/bootstrap.php',
+    expectedViaWorkspace: null,
   },
   {
+    // KNOWN LIMITATION: with `App => ''` the namespace directory is the repo
+    // root, and neither the bucket (built from `lastIndexOf('/')`, so root files
+    // are in no directory) nor the scan it mirrors (`startsWith('/')`) can see
+    // `User.php`. A root-mapped function import is unresolvable.
     name: 'namespace dir at the repo root',
     files: ['User.php', 'nested/Other.php'],
     target: 'App\\getUser',
     composer: ROOT_PSR4,
+    expected: null,
+    expectedViaWorkspace: null,
   },
   // ── raw vs normalized paths ──────────────────────────────────────────────
   {
+    // Matched on the normalized path, returned RAW.
     name: 'backslash file paths',
     files: ['src\\App\\Models\\User.php'],
     target: 'App\\Models\\User',
+    expected: 'src\\App\\Models\\User.php',
+    expectedViaWorkspace: 'src\\App\\Models\\User.php',
   },
   {
+    // `allFiles.has('app/Models/User.php')` is a miss (the Set holds the
+    // backslash spelling) and the directory bucket is keyed on raw paths, which
+    // have no `/` at all — so only the normalized suffix leg can answer.
     name: 'backslash file paths under a psr-4 mapping',
     files: ['app\\Models\\User.php'],
     target: 'App\\Models\\User',
     composer: APP_PSR4,
+    expected: 'app\\Models\\User.php',
+    expectedViaWorkspace: 'app\\Models\\User.php',
   },
   {
+    // Same, minus a suffix leg that can match: `getUser` is not a file.
     name: 'backslash namespace dir candidate',
     files: ['app\\Models\\Aaa.php'],
     target: 'App\\Models\\getUser',
     composer: APP_PSR4,
+    expected: null,
+    expectedViaWorkspace: null,
   },
   // ── extension order and misses ───────────────────────────────────────────
   {
     name: 'extension order: .php before .phtml at the same depth',
     files: ['x/User.phtml', 'y/User.php'],
     target: 'User',
+    expected: 'y/User.php',
+    expectedViaWorkspace: 'y/User.php',
   },
   {
-    name: 'extension order: a .ts file shadows a deeper .php file',
+    // The path-part loop is OUTER, so the full `App/Models/User` + `.php` is
+    // tried before any extension is tried against the bare `User` — the `.ts`
+    // file never gets a turn even though `.ts` precedes `.php` in `EXTENSIONS`.
+    // (Renamed: the old name, "a .ts file shadows a deeper .php file", claimed
+    // the opposite of what this resolves to. Writing the literal down is what
+    // surfaced that.)
+    name: 'extension order: the outer path-part loop beats the inner extension list',
     files: ['x/User.ts', 'y/App/Models/User.php'],
     target: 'App\\Models\\User',
+    expected: 'y/App/Models/User.php',
+    expectedViaWorkspace: 'y/App/Models/User.php',
   },
-  { name: 'plain miss', files: ['src/App/Models/User.php'], target: 'Other\\Thing' },
   {
+    name: 'plain miss',
+    files: ['src/App/Models/User.php'],
+    target: 'Other\\Thing',
+    expected: null,
+    expectedViaWorkspace: null,
+  },
+  {
+    // Refused by `if (normalized.includes('..')) return null` before any index
+    // is consulted. Without that guard the suffix leg resolves this to
+    // `app/Models/User.php` at path-part 1 — on BOTH sides, so the literal is
+    // the only assertion here that can see the guard disappear.
     name: 'path traversal is rejected',
     files: ['app/Models/User.php'],
     target: '..\\Models\\User',
+    expected: null,
+    expectedViaWorkspace: null,
   },
-  { name: 'empty file set', files: [], target: 'App\\Models\\User', composer: APP_PSR4 },
-  { name: 'single-segment miss', files: ['app/Models/User.php'], target: 'Nope' },
-  // ── function / const leg (context-driven) ────────────────────────────────
   {
+    name: 'empty file set',
+    files: [],
+    target: 'App\\Models\\User',
+    composer: APP_PSR4,
+    expected: null,
+    expectedViaWorkspace: null,
+  },
+  {
+    name: 'single-segment miss',
+    files: ['app/Models/User.php'],
+    target: 'Nope',
+    expected: null,
+    expectedViaWorkspace: null,
+  },
+  // ── function / const leg (context-driven) ────────────────────────────────
+  //
+  // Only the ScopeResolver adapter takes an `ImportResolutionContext`, so
+  // `expectedViaWorkspace` is the no-composer suffix answer throughout — `null`
+  // for every one of them, because a symbol name is not a file name.
+  {
+    // The namespace-directory leg answers `app/Models/User.php` (first in the
+    // bucket, and the wrong file); the declaration search then overrides it with
+    // the file that actually declares `getUser`. That override is the whole
+    // point of the leg, so pinning the literal is what proves it ran.
     name: 'function import with a unique declaration',
     files: ['app/Models/User.php', 'app/Models/UserFactory.php'],
     target: 'App\\Models\\getUser',
@@ -592,8 +822,12 @@ const HAND_CASES: readonly Case[] = [
       ['app/Models/User.php', [['Class', 'User'] as const]],
       ['app/Models/UserFactory.php', [['Function', 'getUser'] as const]],
     ]),
+    expected: 'app/Models/UserFactory.php',
+    expectedViaWorkspace: null,
   },
   {
+    // Two declarations of the same name: `declaringFiles.length > 1` returns
+    // null outright, rather than falling back to the namespace-directory answer.
     name: 'function import with duplicate declarations fails closed',
     files: ['app/Models/First.php', 'app/Models/Second.php'],
     target: 'App\\Models\\getUser',
@@ -603,38 +837,63 @@ const HAND_CASES: readonly Case[] = [
       ['app/Models/First.php', [['Function', 'getUser'] as const]],
       ['app/Models/Second.php', [['Function', 'getUser'] as const]],
     ]),
+    expected: null,
+    expectedViaWorkspace: null,
   },
   {
+    // KNOWN LIMITATION: the `app/Models` directory ALIAS spans two roots, so
+    // `distinctParents.size > 1` empties the candidate list and the leg falls
+    // back to `resolved` — `app/Models/functions.php`, which does NOT declare
+    // `getUser`. The file that does (`vendor/pkg/app/Models/helpers.php`) is
+    // never returned. Failing closed here means "keep the composer answer",
+    // not "return null".
     name: 'function import across suffix-colliding roots',
     files: ['app/Models/functions.php', 'vendor/pkg/app/Models/helpers.php'],
     target: 'App\\Models\\getUser',
     composer: APP_PSR4,
     parsedImport: namedImport('App\\Models\\getUser', 'function', 'getUser'),
     defs: new Map([['vendor/pkg/app/Models/helpers.php', [['Function', 'getUser'] as const]]]),
+    expected: 'app/Models/functions.php',
+    expectedViaWorkspace: null,
   },
   {
+    // PHP constants are not emitted as local definitions, so `declaringFiles` is
+    // always empty and the single-candidate rule decides.
     name: 'const import with a single candidate file',
     files: ['app/Config/constants.php'],
     target: 'App\\Config\\MAX_USERS',
     composer: APP_PSR4,
     parsedImport: namedImport('App\\Config\\MAX_USERS', 'const', 'MAX_USERS'),
     defs: new Map(),
+    expected: 'app/Config/constants.php',
+    expectedViaWorkspace: null,
   },
   {
+    // KNOWN LIMITATION: the single-candidate rule declines, but the fallback is
+    // `resolved` — itself "first `.php` in `app/Config/`", i.e. the same Set
+    // order the rule is documented as refusing to inherit. Declining changes
+    // which code picks the file, not whether order picks it.
     name: 'const import with several candidate files',
     files: ['app/Config/constants.php', 'app/Config/more.php'],
     target: 'App\\Config\\MAX_USERS',
     composer: APP_PSR4,
     parsedImport: namedImport('App\\Config\\MAX_USERS', 'const', 'MAX_USERS'),
     defs: new Map(),
+    expected: 'app/Config/constants.php',
+    expectedViaWorkspace: null,
   },
   {
+    // `importedSymbolKind: 'class'` returns before the declaration leg, so this
+    // is the plain PSR-4 class-style hit — and the one context-carrying case
+    // whose LanguageProvider answer is not null.
     name: 'class import ignores the declaration leg',
     files: ['app/Models/User.php'],
     target: 'App\\Models\\User',
     composer: APP_PSR4,
     parsedImport: namedImport('App\\Models\\User', 'class', 'User'),
     defs: new Map([['app/Models/User.php', [['Class', 'User'] as const]]]),
+    expected: 'app/Models/User.php',
+    expectedViaWorkspace: 'app/Models/User.php',
   },
 ];
 
@@ -690,10 +949,19 @@ function runBothWorkspaceAdapter(testCase: Case): {
 // ─── the differential ────────────────────────────────────────────────────────
 
 describe('PHP import-target parity with the pre-index implementation (#2901)', () => {
+  // Three assertions per arm, and each answers a different question.
+  // `current === legacy` proves the index hoist behaviour-preserving, but it
+  // is blind to every line the two sides SHARE — including all of
+  // `resolvePhpImportInternal`, which is imported rather than copied. Pinning
+  // the literal on both sides is what makes the arm able to fail on a change
+  // there, and what says the case still exercises the behaviour it is named
+  // for rather than having decayed into `null === null`.
   it.each(HAND_CASES.map((testCase) => [testCase.name, testCase] as const))(
     'ScopeResolver adapter agrees: %s',
     (_name, testCase) => {
       const { legacy, current } = runBoth(testCase);
+      expect(legacy).toBe(testCase.expected);
+      expect(current).toBe(testCase.expected);
       expect(current).toBe(legacy);
     },
   );
@@ -702,9 +970,37 @@ describe('PHP import-target parity with the pre-index implementation (#2901)', (
     'LanguageProvider adapter agrees: %s',
     (_name, testCase) => {
       const { legacy, current } = runBothWorkspaceAdapter(testCase);
+      expect(legacy).toBe(testCase.expectedViaWorkspace);
+      expect(current).toBe(testCase.expectedViaWorkspace);
       expect(current).toBe(legacy);
     },
   );
+
+  /**
+   * Non-vacuity, the way the Java and COBOL harnesses state it: a table of
+   * literals is only a specification if enough of them are real paths. 32 of
+   * the 86 arms above legitimately expect `null` (a resolver miss is a real
+   * answer and must be pinned like any other), so this fixes the balance rather
+   * than letting a corpus that quietly stopped matching pass as one that never
+   * matched.
+   */
+  it('the hand corpus pins real paths, not only misses', () => {
+    const scopeHits = HAND_CASES.filter((testCase) => testCase.expected !== null);
+    const workspaceHits = HAND_CASES.filter((testCase) => testCase.expectedViaWorkspace !== null);
+    const distinct = new Set([
+      ...scopeHits.map((testCase) => testCase.expected),
+      ...workspaceHits.map((testCase) => testCase.expectedViaWorkspace),
+    ]);
+
+    expect(scopeHits.length).toBe(31);
+    expect(workspaceHits.length).toBe(23);
+    expect(distinct.size).toBeGreaterThan(20);
+    // The two adapters must not be the same assertion twice: `composer` and
+    // `context` are visible only through the ScopeResolver one.
+    expect(
+      HAND_CASES.filter((testCase) => testCase.expected !== testCase.expectedViaWorkspace).length,
+    ).toBe(9);
+  });
 
   it('agrees on every generated target × composer configuration', () => {
     const disagreements = GENERATED_CASES.filter((testCase) => {

@@ -42,6 +42,14 @@
  * Guarding that would mean either instrumenting production or proxying an index
  * internal; see the header of the parity test for why neither is in place.
  *
+ * It is equally blind to the OTHER per-file-set key the orchestrator threads —
+ * `ImportResolutionContext.parsedFiles`, the fifth argument of
+ * `resolveImportTarget`. PHP's `filesByDirectory` memo (`languages/php/
+ * import-target.ts`) is keyed on that array, not on this Set, so defeating it
+ * rebuilds a `Map<dirAlias, ParsedFile[]>` per import at O(files × depth)
+ * without moving this counter by one. `countedParsedFiles` below is the
+ * instrument for that channel.
+ *
  * `instanceof Set` still holds, which matters: C#'s `narrowContext` rejects a
  * workspace context whose `allFilePaths` is not a `Set`, so a plain object with
  * a counter would silently resolve nothing and every assertion would pass on
@@ -52,6 +60,7 @@
  * it lives here beside the instrument it reads rather than in each guard.
  */
 import { expect } from 'vitest';
+import type { ParsedFile } from 'gitnexus-shared';
 import type { ScopeResolver } from '../../src/core/ingestion/scope-resolution/contract/scope-resolver.js';
 
 export class CountingSet extends Set<string> {
@@ -85,6 +94,81 @@ export class CountingSet extends Set<string> {
     this.scans++;
     super.forEach(callbackfn, thisArg);
   }
+}
+
+/**
+ * The `CountingSet` of the OTHER per-file-set key: the `parsedFiles` array the
+ * orchestrator passes as `resolveImportTarget`'s fifth argument
+ * (`scope-resolution/pipeline/run.ts`). PHP memoizes `filesByDirectory` on that
+ * array's identity and Python reads it in `pythonFileExportsName`, and neither
+ * touches the path Set while doing so — so without this the whole `context`
+ * channel is unmeasured.
+ *
+ * ## Element reads, not traversal entry points
+ *
+ * `CountingSet` can override the five ways a `Set` is walked and be done. An
+ * array has no such closed list: `for…of`, `forEach`, `map`, `filter`,
+ * `flatMap`, `reduce`, `find`, `some`, `every`, `indexOf` and a bare
+ * `for (let i = 0; i < a.length; i++)` all walk the same elements, and the last
+ * one goes through no method at all. Overriding a chosen subset would build in
+ * exactly the blind spot this instrument exists to remove — PHP's builder is a
+ * `for…of` today and one refactor away from an index loop.
+ *
+ * So the trap is on the read of an own indexed element. Every route above goes
+ * through it, including the index loop, and nothing else does: `length`,
+ * method lookups and `Symbol.iterator` are not counted. A full pass over N
+ * files therefore reads exactly N, and the number is a function of the file
+ * count and the number of passes — never of wall time.
+ *
+ * ## It counts THIS array only
+ *
+ * Reads of arrays DERIVED from it — the `ParsedFile[]` buckets inside PHP's
+ * directory index, the `candidateFiles` list filtered per import — are
+ * invisible, and deliberately so. That per-import work is bounded by the
+ * candidate set rather than by the workspace, so counting it would make the
+ * count grow with the import count for correct code and there would be no
+ * property left to assert.
+ *
+ * The `ParsedFile`s are minimal on purpose: `filePath` is the only field either
+ * consumer reads to build its index, and empty `localDefs` keeps both languages
+ * on their fallback answer, so the fixture measures the index and changes no
+ * resolution result. A test that needs the declaration legs to FIRE wants
+ * `php-import-target-parity.test.ts`, which carries defs.
+ */
+export interface CountedFileList {
+  /** Pass as `ImportResolutionContext.parsedFiles`. Stable identity, so it is
+   *  a usable `perFileSet` key for the whole run. */
+  readonly parsedFiles: readonly ParsedFile[];
+  /** Reads of an own indexed element of `parsedFiles`, by any route. */
+  readonly reads: () => number;
+}
+
+/** Own array indices — `'0'`, `'12'`; not `'length'`, `'-1'` or `'01'`. */
+const ARRAY_INDEX = /^(?:0|[1-9][0-9]*)$/;
+
+/**
+ * A counted `parsedFiles` workspace for `filePaths`, one minimal `ParsedFile`
+ * each, in order. Build a FRESH one per run: the indexes are memoized on the
+ * array's identity, so two runs sharing one would have the second read the
+ * first's index and report zero.
+ */
+export function countedParsedFiles(filePaths: readonly string[]): CountedFileList {
+  const backing: ParsedFile[] = filePaths.map((filePath) => ({
+    filePath,
+    moduleScope: `module:${filePath}`,
+    scopes: [],
+    parsedImports: [],
+    localDefs: [],
+    referenceSites: [],
+  }));
+  let reads = 0;
+  const counting = new Proxy(backing, {
+    get(target, key, receiver): unknown {
+      reads += typeof key === 'string' && ARRAY_INDEX.test(key) ? 1 : 0;
+      return Reflect.get(target, key, receiver);
+    },
+  });
+  return { parsedFiles: counting, reads: () => reads };
 }
 
 /**

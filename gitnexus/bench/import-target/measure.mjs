@@ -1,24 +1,27 @@
 /**
  * Build-free scaling + identity bench for EVERY import-target resolver in
- * `SCOPE_RESOLVERS` — all sixteen registered languages — over ONE shared corpus
- * so the arms are directly comparable. Seventeen arms, because `csharp` appears
- * twice: once with no csproj configs and once with them (#2902).
+ * `SCOPE_RESOLVERS` — the registry decides which, not a list kept here, and the
+ * `--check` inventory arm at the foot of this file fails when the two disagree
+ * — over ONE shared corpus so the arms are directly comparable. One arm per
+ * registered language, plus a second `csharp` arm carrying csproj configs
+ * (#2902), so there is one more arm than there are languages.
  *
  * NO LANGUAGE IS OMITTED, and that is the point of the list rather than an
- * accident of it. Nine of these (go, csharp, csharp_csproj, dart, ruby, kotlin,
- * php, java, cobol) were added as their own O(imports × files) scans were
- * indexed away — #2877/#2878/#2879/#2880, #2872, #2901, #2902, #2908 — and the
- * bench is the forward guard on each. The other eight (swift, rust, python,
- * javascript, typescript, vue, c, cpp) resolve imports through the same
- * registered hook with the same per-run memoized indexes, and were ungated:
- * nothing pinned their output and nothing pinned their scaling. One of them was
- * not hypothetical — JavaScript reached `suffixResolve` with no index at all and
- * measured 25 972 µs per import at 8000 files (#2910) — which is exactly the
- * class of defect the other seven were one commit away from.
+ * accident of it. Nine of these arms (go, csharp, csharp_csproj, dart, ruby,
+ * kotlin, php, java, cobol) were added as their own O(imports × files) scans
+ * were indexed away — #2877/#2878/#2879/#2880, #2872, #2901, #2902, #2908 — and
+ * the bench is the forward guard on each. The eight added alongside them
+ * (swift, rust, python, javascript, typescript, vue, c, cpp) resolve imports
+ * through the same registered hook with the same per-run memoized indexes, and
+ * were ungated: nothing pinned their output and nothing pinned their scaling.
+ * One of them was not hypothetical — JavaScript reached `suffixResolve` with no
+ * index at all and measured 25 972 µs per import at 8000 files (PR #2911) —
+ * which is exactly the class of defect the other seven were one commit away
+ * from.
  *
  * A C or C++ `#include` is an import site for this purpose and is gated like
- * the other fourteen. See `newPass` for the one structural thing those two need
- * that no other language does.
+ * every other registered language. See `newPass` for the one structural thing
+ * those two need that no other language does.
  *
  * Kotlin also has `bench/kotlin-import-target/`, and this does not replace it:
  * that bench fingerprints both file-set iteration orders and probes the
@@ -160,7 +163,7 @@
  *     is a deleted gate wearing a passing arm's clothes;
  *   - an INVENTORY arm against `SCOPE_RESOLVERS` itself. `LANG_REGISTRY` claims
  *     to cover every registered resolver; this is what makes the claim true
- *     rather than commented, and it is the arm that would have caught #2910's
+ *     rather than commented, and it is the arm that would have caught PR #2911's
  *     language shipping unmeasured.
  *
  * SCOPE OF THE "independent of corpus size" CLAIM — the `collide` arm.
@@ -223,8 +226,9 @@
  * about the footprint itself, and a ratio alone hides a large constant.
  *
  * Four more are gated for the same reason as those four. JavaScript is the
- * clearest case in the file: before #2910 it retained NOTHING because it built
- * no index at all, and it now retains 25.51 MiB at 32 000 files through the
+ * clearest case in the file: before PR #2911 it retained NOTHING because it
+ * built no index at all, and it now retains 25.51 MiB at 32 000 files through
+ * the
  * same `buildSuffixIndex`. `csharp_csproj` is the newest and the one that
  * proves the arm's design: same corpus and same `getWorkspaceFileIndex` as
  * `csharp`, but its csproj leg asks all three questions instead of one, and it
@@ -283,16 +287,63 @@
  * maps), and a 1-in-32 scan over one of THOSE passes
  * both the parity test and `--check`. Chasing it by tightening these ceilings
  * toward the noise floor would only buy flaky CI; see `_blind_spot` in
- * baselines.json. #2910 is the proof that this blind spot is real rather than
- * theoretical: JavaScript's missing index was a scan of
+ * baselines.json. PR #2911 is the proof that this blind spot is real rather
+ * than theoretical: JavaScript's missing index was a scan of
  * `ImportPassCache.normalizedFileList` on EVERY import, which the Set counter
  * could not see, and it took a differential parity test over 211 200 pairs plus
  * this bench's arrival to pin it.
  *
- * COST. ~35 s in report mode and ~42 s for `--check`, down from ~46 s. The
- * timing phase fell from 39.8 s to 28.7 s when `REPS` became per-language (see
- * `repsFor`); `--check` then pays 7.3 s that report mode does not, for the one
- * dynamic import the inventory arm needs. See the wall-clock note in
+ * SECOND BLIND SPOT, stated because an undocumented one in a merge-required
+ * gate is worse than a documented one: THIS HARNESS MEASURES THE NO-CONTEXT
+ * CALL SHAPE ONLY. `run.ts` calls `provider.resolveImportTarget` with five
+ * arguments, the fifth being `{ parsedFiles, parsedImport }`; `resolveOne`
+ * below calls the inner resolvers and never supplies it. For fifteen of the
+ * seventeen arms that is not a gap — their providers declare three or four
+ * parameters and cannot observe a fifth — but PHP and Python declare it and
+ * both have a leg behind it:
+ *
+ *   - PHP takes it when `parsedImport.kind` is `named` or `alias` AND the
+ *     imported symbol is a `function` or a `const`, and that leg calls
+ *     `filesByDirectory(context.parsedFiles)`. Defeating that memo has been
+ *     measured at 197.0 µs -> 9976.2 µs per import (50.6x) with every test
+ *     still green, so the leg is worth an arm;
+ *   - Python threads `context.parsedFiles` into `PythonResolveContext` and
+ *     falls back to exactly the synthetic `namespace` import `resolveOne`
+ *     already passes, so its arm matches the no-context path precisely — the
+ *     unmeasured part is the `parsedFiles` field, not the spelling.
+ *
+ * That leg is gated by COUNT rather than by time, in
+ * `test/unit/scope-resolution/import-target-index-reuse.contract.test.ts`, and
+ * that is the gate to read alongside this file — the same division of labour
+ * as the blind spot above. Closing it HERE is not a small change and should not
+ * be done as a drive-by: `run.ts` derives `allFilePaths` FROM `parsedFiles`, so
+ * `buildRepo` would have to mint the parsed files first and derive the path set
+ * from them (two independently built lists are a shape production cannot
+ * produce). That moves PHP's fingerprints and PHP's and Python's timing
+ * budgets, and it adds a per-file object graph to the 8000/32 000-file heap
+ * corpora, which moves all eight heap readings and their ceilings. Every one of
+ * those has to be re-recorded on an idle box, in one change, with the moves
+ * explained — which is a piece of work, not a parameter.
+ *
+ * COST, and the honest version of it. REPORT mode is ~33-35 s, down from ~46 s:
+ * the timing phase fell from 39.8 s to 28.7 s when `REPS` became per-language
+ * (see `repsFor`), and that win is real. `--check` is ~44-45 s, which is
+ * ESSENTIALLY UNCHANGED from the ~46 s it cost before, because the inventory
+ * arm added here loads `pipeline/registry.ts` and that one dynamic import
+ * consumes almost the whole `repsFor` win — measured 6.3-6.5 s on one box and
+ * 9.3-10.0 s on another, in isolation and after this file's own static imports
+ * are already resident. Do not read the two modes as "~46 → ~42": only report
+ * mode got faster.
+ *
+ * That cost was weighed and KEPT, on the one number that decides it: the
+ * `benchmarks` job is not CI's critical path. On the last green run of main it
+ * finished in 9 m 23 s against 12 m 58 s for the sharded coverage job that
+ * gates the merge, so ~4 m 40 s of slack sits above this bench and ten seconds
+ * of it buys zero merge latency. Moving the arm into a vitest file would move
+ * the registry load ONTO that critical path, and would weaken it besides: from
+ * `LANG_REGISTRY`'s `SupportedLanguages` values, which are what the five
+ * dispatcher branches key off, down to baselines.json's arm NAMES plus a
+ * hand-written rule for de-aliasing `csharp_csproj`. See the wall-clock note in
  * `_arms_note` for the per-language breakdown and for what to drop first if
  * that stops fitting the job.
  *
@@ -325,10 +376,10 @@ import { typescriptScopeResolver } from '../../src/core/ingestion/languages/type
 import { cScopeResolver } from '../../src/core/ingestion/languages/c/scope-resolver.ts';
 import { cppScopeResolver } from '../../src/core/ingestion/languages/cpp/scope-resolver.ts';
 // `SCOPE_RESOLVERS` is NOT imported here — see the inventory arm at the bottom,
-// which loads it dynamically. Statically it costs 7.3 s of module load (3.3 s
-// -> 10.6 s, measured), because reaching the registry pulls in all sixteen
-// providers and everything under them, and it is wanted by one `--check` arm
-// that runs after the last measurement.
+// which loads it dynamically. Statically it costs 6-10 s of module load
+// depending on the box (measured both ways there), because reaching the
+// registry pulls in every registered provider and everything under them, and it
+// is wanted by one `--check` arm that runs after the last measurement.
 
 /** The JS and Vue adapter FACTORIES return a closure; the memo they read is
  *  module-level, so one instance per process is both correct and what the
@@ -887,8 +938,8 @@ function uniqueTarget(lang, { local, r, d, j, dirs }) {
   if (lang === 'javascript' || lang === 'typescript') {
     // BARE specifiers, not relative ones. A relative import resolves by exact
     // `Set.has` and never reaches `suffixResolve` — the leg that had no index
-    // for JavaScript until #2910 and cost 25 972 µs per import at 8000 files —
-    // so a corpus of `./sibling` imports would measure the wrong function.
+    // for JavaScript until PR #2911 and cost 25 972 µs per import at 8000
+    // files — so a corpus of `./sibling` imports would measure the wrong one.
     return local
       ? `src/mod${d}/file${j}`
       : (r >>> 3) % 2 === 0
@@ -1236,7 +1287,9 @@ function resolveOne(lang, from, target, pass) {
     );
   }
   // No `resolutionConfig`, so no composer.json: the PSR-4 legs are skipped and
-  // every import lands on the suffix cascade #2901 indexed.
+  // every import lands on the suffix cascade #2901 indexed. No `context`
+  // either, so the named/alias function-or-const leg over
+  // `filesByDirectory(parsedFiles)` is never timed — see SECOND BLIND SPOT.
   if (lang === 'php') return resolvePhpImportTargetInternal(target, from, allFilePaths);
   if (lang === 'java') {
     return resolveJavaImportTarget(
@@ -1257,7 +1310,9 @@ function resolveOne(lang, from, target, pass) {
     // The spelling `pythonScopeResolver` falls back to when the orchestrator
     // has no `parsedImport` for the edge. A `named` import would additionally
     // take the submodule-precedence branch, which re-enters the resolver twice
-    // per import and would measure that recursion rather than the index.
+    // per import and would measure that recursion rather than the index. The
+    // provider also threads `context.parsedFiles` into `PythonResolveContext`
+    // and this passes none — see SECOND BLIND SPOT.
     return resolvePythonImportTarget(
       { kind: 'namespace', localName: '_', importedName: '_', targetRaw: target },
       { fromFile: from, allFilePaths },
@@ -1572,7 +1627,7 @@ if (CHECK && GC === null) {
  * one, so a seventeenth registered language would have shipped ungated and
  * printed PASS. That is not a hypothetical failure mode: JavaScript reached
  * `suffixResolve` with no index at all and measured 25 972 µs per import at
- * 8000 files (#2910) for exactly as long as nothing gated it.
+ * 8000 files (PR #2911) for exactly as long as nothing gated it.
  *
  * So the list is DERIVED and the claim is ASSERTED. `LANGS` is this table's
  * keys, and the `--check` inventory arm below fails when a registered resolver
@@ -1678,6 +1733,36 @@ if (!CHECK) {
 
 const baseline = JSON.parse(fs.readFileSync(BASELINE_PATH, 'utf-8'));
 const failures = [];
+
+/** The corpus-shape facts asserted for one timing scale. */
+const SCALE_SHAPE = {
+  fields: ['files', 'imports', 'resolved', 'distinct_outcomes', 'fingerprint'],
+  why:
+    'the corpus changed shape or the resolver changed its answer for this arm. Every scale is ' +
+    'asserted separately: the arms differ only in padding and layout, so a defect that touches ' +
+    'one of them alone moves nothing in the others.',
+};
+/** The same, for the heap arm — the four inputs that decide what it measures.
+ *  `bytes_small`/`bytes_large` are deliberately NOT here: they are bounded by
+ *  `heap_ceiling_bytes` and `heap_reading_bytes` with ~50% of slack either way,
+ *  because a Node major or a different platform moves heapUsed accounting and
+ *  an exact-equality arm on a byte count would be a re-baseline per runner. */
+const HEAP_SHAPE = {
+  fields: ['files_small', 'files_large', 'path_segments', 'probe'],
+  why:
+    'these four decide WHAT the heap arm measures and nothing else here can see them move — a ' +
+    'probe that stops reaching a leg, or two file counts collapsed onto one, leaves every ' +
+    'ceiling, floor and ratio passing over an arm that changed workload. Deterministic: a ' +
+    're-run will not change it.',
+};
+/** Every asserted arm for one language, derived so a new scale is covered by
+ *  construction. The heap arm is present for exactly `HEAP_LANGS`, which the
+ *  reconciliation below pins to `heap_ceiling_bytes`' keys. */
+const armShapes = (lang) => [
+  ...SCALES.map((scale) => [scale, SCALE_SHAPE]),
+  ...(HEAP_LANGS.includes(lang) ? [['heap', HEAP_SHAPE]] : []),
+];
+
 for (const lang of LANGS) {
   const got = report[lang];
   const want = baseline.languages[lang];
@@ -1744,8 +1829,9 @@ for (const lang of LANGS) {
     // still prints PASS. All five maps are complete today, which is exactly
     // when the check is worth adding — every one of the four per-language
     // lookups above is one deleted key away from a silent no-op. The heap arm
-    // never had the hole because it iterates the BASELINE's keys; the timing
-    // arms iterate LANGS, so they have to ask.
+    // HAD THE SAME HOLE and this comment used to deny it: iterating the
+    // BASELINE's keys protects that loop against a deleted MEASUREMENT, which
+    // is a different thing from a deleted BUDGET. See `heapBudgetChecks`.
     if (typeof check.budget !== 'number') {
       failures.push(
         `${lang}: no ${check.label} budget — baselines.json has no numeric ${check.key}. ` +
@@ -1783,28 +1869,96 @@ for (const lang of LANGS) {
       );
     }
   }
-  for (const scale of SCALES) {
-    for (const field of ['files', 'imports', 'resolved', 'distinct_outcomes', 'fingerprint']) {
-      if (got[scale][field] !== want[scale][field]) {
+  // ONE loop for every arm's corpus shape, timing and heap alike. The heap arm
+  // was reported here and asserted nowhere, which made the four fields that
+  // decide WHAT it measures free to move: `HEAP_PROBE_TARGET.csharp_csproj`
+  // swapped for a target matching no `CSPROJ_CONFIGS` rootNamespace skips the
+  // whole config loop, so the `getFilesInDir` and `getInsensitive` legs never
+  // run, and the arm the MEMORY section calls "the witness that the read
+  // pattern IS the footprint" quietly becomes a two-map arm — measured
+  // 73 703 384 -> 59 921 216 B, ratio 1.017 -> 1.011, ceiling and floor both
+  // still passing. `HEAP_SMALL` set equal to `HEAP_LARGE` is the same shape of
+  // hole: it makes `ratio` identically ~1.0 and leaves `bytes_large` untouched.
+  for (const [arm, shape] of armShapes(lang)) {
+    for (const field of shape.fields) {
+      if (got[arm][field] !== want[arm]?.[field]) {
         failures.push(
-          `${lang}.${scale}.${field}: ${got[scale][field]} != ${want[scale][field]} — the corpus ` +
-            `changed shape or the resolver changed its answer for this arm. Every scale is ` +
-            `asserted separately: the arms differ only in padding and layout, so a defect that ` +
-            `touches one of them alone moves nothing in the others.`,
+          `${lang}.${arm}.${field}: ${got[arm][field]} != ${want[arm]?.[field]} — ${shape.why}`,
         );
       }
     }
   }
 }
 
-// Driven by the BASELINE's keys, not the report's, so deleting a heap
-// measurement fails instead of silently dropping the gate.
-for (const [lang, ceiling] of Object.entries(baseline.heap_ceiling_bytes)) {
+// PRESENCE FIRST for the two SCALAR heap budgets, for exactly the reason the
+// five timing budgets get it — and the reason the comment up there used to give
+// for the heap arm not needing it was wrong. Iterating the baseline's keys
+// protects the loop below against a deleted MEASUREMENT (`heap == null`, right
+// there); it does nothing about a deleted BUDGET. `ceiling * undefined` is
+// `NaN` and `bytes_large < NaN` is false, `ratio > undefined` is false: these
+// two keys are scalars rather than per-language maps, so deleting either is one
+// keystroke that silently disables that arm for ALL EIGHT languages at once.
+// That makes them the widest-blast-radius keys in this file, not the safest.
+const heapBudgetChecks = [
+  { key: 'heap_floor_fraction', value: baseline.heap_floor_fraction, reads: 'bytes_large < NaN' },
+  { key: 'heap_ratio_budget', value: baseline.heap_ratio_budget, reads: 'ratio > undefined' },
+];
+for (const check of heapBudgetChecks) {
+  if (Number.isFinite(check.value)) continue;
+  failures.push(
+    `no numeric ${check.key} in baselines.json — a missing budget is a DELETED GATE, not a ` +
+      `passing arm: the comparison below reads \`${check.reads}\`, which is false for every ` +
+      `possible measurement. This one key gates all ${HEAP_LANGS.length} heap arms at once. ` +
+      `Deterministic: a re-run will not change it.`,
+  );
+}
+
+// And EXACT KEY EQUALITY between `HEAP_LANGS` and the two per-language heap
+// maps, because the loop below iterates the baseline: delete one language's
+// ceiling and that language drops out of the loop entirely — still measured,
+// still printed, never checked. Both directions, the same shape as the
+// LANG_REGISTRY/SCOPE_RESOLVERS inventory arm at the bottom of the file. The
+// forward direction (a language with no budget) is the per-language presence
+// check inside the loop; this is the reverse (a budget with no arm).
+const heapBudgetMaps = [
+  ['heap_ceiling_bytes', baseline.heap_ceiling_bytes],
+  ['heap_reading_bytes', baseline.heap_reading_bytes],
+];
+for (const [key, map] of heapBudgetMaps) {
+  for (const lang of Object.keys(map ?? {})) {
+    if (HEAP_LANGS.includes(lang)) continue;
+    failures.push(
+      `baselines.json ${key} has an entry for '${lang}', which is not in HEAP_LANGS — the bench ` +
+        `budgets a heap arm it does not measure. Deterministic: a re-run will not change it.`,
+    );
+  }
+}
+
+// Driven by HEAP_LANGS, the CODE's list, exactly as the timing arms iterate
+// LANGS — so a deleted budget key is a presence failure rather than a language
+// that quietly stops being iterated. A deleted MEASUREMENT still fails too:
+// `measureHeap` runs for precisely these languages, so a `heap == null` here is
+// the arm having been removed or skipped.
+for (const lang of HEAP_LANGS) {
+  const ceiling = baseline.heap_ceiling_bytes?.[lang];
+  const reading = baseline.heap_reading_bytes?.[lang];
+  for (const [key, value] of [
+    ['heap_ceiling_bytes', ceiling],
+    ['heap_reading_bytes', reading],
+  ]) {
+    if (Number.isFinite(value)) continue;
+    failures.push(
+      `${lang}: no numeric ${key}.${lang} in baselines.json — a missing budget is a DELETED ` +
+        `GATE, not a passing arm, and this loop iterates HEAP_LANGS precisely so that deleting ` +
+        `the key fails here instead of dropping ${lang} out of the gate. Deterministic: a ` +
+        `re-run will not change it.`,
+    );
+  }
   const heap = report[lang]?.heap;
   if (heap == null) {
     failures.push(
-      `${lang}: heap arm missing though heap_ceiling_bytes has a budget for it — the retained-` +
-        `index measurement was removed or skipped. It is the only arm that can see memory.`,
+      `${lang}: heap arm missing though HEAP_LANGS names it — the retained-index measurement ` +
+        `was removed or skipped. It is the only arm that can see memory.`,
     );
     continue;
   }
@@ -1823,19 +1977,25 @@ for (const [lang, ceiling] of Object.entries(baseline.heap_ceiling_bytes)) {
   // PASS over four gates that had become ceilings over nothing. A ceiling can
   // only ever say "not too big"; nothing said "still measuring something".
   //
-  // Set as a fraction of the ceiling rather than as a second hand-maintained
-  // map, so the two cannot drift apart. At 0.33 x a ceiling that is itself
-  // 1.5x the measurement, the floor sits at half the measured size — far below
-  // any plausible drift (the readings reproduce to the byte across processes)
-  // and far above the collapse it watches for. A genuine 2x memory WIN trips it
-  // too, and that is intended: it must be explained and re-baselined, exactly
-  // like a fingerprint move.
-  const floor = ceiling * baseline.heap_floor_fraction;
+  // Taken as a fraction of the RECORDED READING, not of the ceiling. It used to
+  // be 0.33 x the ceiling, with the comment claiming that put it "at half the
+  // measured size" — true only for as long as every ceiling stayed at exactly
+  // 1.5x its reading, which is a convention this file states and nothing
+  // enforces. Re-tuning one ceiling upward would have loosened that language's
+  // floor by the same factor, in the one direction the floor exists to watch.
+  // 0.5 x the reading is the same effective floor today (within 0.8% for all
+  // eight) and says what it means. `heap_reading_bytes` is the measurement the
+  // ceiling is derived from too, so the pair still moves together on a
+  // re-baseline — far below any plausible drift (the readings reproduce to the
+  // byte across processes) and far above the collapse it watches for. A genuine
+  // 2x memory WIN trips it too, and that is intended: it must be explained and
+  // re-baselined, exactly like a fingerprint move.
+  const floor = reading * baseline.heap_floor_fraction;
   if (heap.bytes_large < floor) {
     failures.push(
       `${lang}: retained per-pass import index ${heap.bytes_large} B at ${heap.files_large} ` +
-        `files < floor ${Math.round(floor)} B (${baseline.heap_floor_fraction} x ceiling ` +
-        `${ceiling}) — this arm has almost certainly stopped MEASURING rather than started ` +
+        `files < floor ${Math.round(floor)} B (${baseline.heap_floor_fraction} x recorded ` +
+        `reading ${reading}) — this arm has almost certainly stopped MEASURING rather than started ` +
         `saving. Probe '${heap.probe}' resolves through the real resolver; if a leg it used to ` +
         `reach now returns earlier, or an index it forced is now built lazily behind a question ` +
         `nobody asks, the arm reads ~0 and every ceiling above passes. Deterministic: a re-run ` +
@@ -1856,17 +2016,25 @@ for (const [lang, ceiling] of Object.entries(baseline.heap_ceiling_bytes)) {
 // to be, since each row also implies five dispatcher branches — but which
 // languages it must contain is not a judgement call, and this is where the two
 // are reconciled. Both directions: a resolver registered with no arm here is
-// the #2910 hole (a language shipping unmeasured), and an arm naming a language
-// the registry does not have is a bench measuring something the pipeline no
-// longer runs.
+// the PR #2911 hole (a language shipping unmeasured), and an arm naming a
+// language the registry does not have is a bench measuring something the
+// pipeline no longer runs.
 //
 // Loaded HERE, after the last measurement, rather than imported at the top.
-// Reaching `pipeline/registry.ts` drags in all sixteen scope resolvers and
-// their providers — 7.3 s of module load, measured, against 39 s of actual
-// benchmarking — and this arm is the only thing in the file that wants it. The
+// Reaching `pipeline/registry.ts` drags in every registered scope resolver and
+// its providers, and this arm is the only thing in the file that wants it. The
 // side benefit is that both modes now measure in the same module state: report
 // mode never loads the registry, and `--check` loads it only once every number
 // has been taken.
+//
+// It is NOT cheap and the header says so plainly rather than rounding it down:
+// 6.3-6.5 s on one box and 9.3-10.0 s on another, measured in isolation with
+// this file's own static imports already resident, which is most of the
+// `repsFor` win and the whole reason `--check` did not get faster. Kept anyway,
+// because the `benchmarks` job runs ~4.5 minutes clear of CI's critical path,
+// so the seconds buy nothing, and because the alternative reconciles arm NAMES
+// where this reconciles the `SupportedLanguages` values the dispatchers key
+// off. See COST in the header.
 const { SCOPE_RESOLVERS } =
   await import('../../src/core/ingestion/scope-resolution/pipeline/registry.ts');
 const registeredLanguages = [...SCOPE_RESOLVERS.keys()].sort();
@@ -1876,8 +2044,8 @@ for (const language of registeredLanguages) {
   failures.push(
     `${language} is registered in SCOPE_RESOLVERS but has no arm in LANG_REGISTRY — its ` +
       `import-target resolver is ungated: nothing pins its output and nothing pins its scaling. ` +
-      `That is the state JavaScript was in at 25 972 µs per import (#2910). Add a row, then the ` +
-      `five dispatcher branches it needs (uniqueDir, collideDir, uniqueTarget, collideTarget, ` +
+      `That is the state JavaScript was in at 25 972 µs per import (PR #2911). Add a row, then ` +
+      `the five dispatcher branches it needs (uniqueDir, collideDir, uniqueTarget, collideTarget, ` +
       `resolveOne) and a baselines.json entry. Deterministic: a re-run will not change it.`,
   );
 }

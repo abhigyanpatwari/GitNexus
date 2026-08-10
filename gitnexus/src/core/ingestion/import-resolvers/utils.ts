@@ -100,8 +100,22 @@ export interface SuffixIndex {
    * The directory map behind this is built on the FIRST call and memoized —
    * see `buildSuffixIndex`. Callers that never ask a directory question never
    * pay for it.
+   *
+   * Returns the index's OWN bucket, by reference, and `readonly` is the
+   * contract rather than a comment about one: the map is built once and then
+   * held for the whole pass, so an in-place `sort`/`splice` would corrupt every
+   * later import in that pass, and the compiler now refuses it at the call
+   * site. Sharing beats copying here because no caller keeps the array — of the
+   * four (see `dirMap` below) two only measure it (`configs/python.ts` reads
+   * `.length`, `php.ts` reads `[0]`) and two build a fresh array from it
+   * (`jvm.ts` flatMaps, `csharp.ts` pushes into its own `results`) — so a
+   * defensive copy would allocate a whole bucket per import on the path this
+   * index exists to keep flat. `package-dir-index.ts` reached the same
+   * conclusion for the same reason and states it the same way, with read-only
+   * containers plus one copy where a bucket genuinely LEAVES (`sortedRootFiles`);
+   * `configs/swift.ts` is that leaving case and copies.
    */
-  getFilesInDir(dirSuffix: string, extension: string): string[];
+  getFilesInDir(dirSuffix: string, extension: string): readonly string[];
 }
 
 export interface SuffixIndexOptions {
@@ -116,7 +130,8 @@ export interface SuffixIndexOptions {
    * `suffix.toLowerCase() === suffix` and the case-folded map came out a
    * byte-identical copy of the exact one — same keys, same values, same
    * insertion order. Measured 14.00 MiB at 32 000 paths, 29.8% of the retained
-   * `ImportPassCache`, carried three times over (TypeScript, JavaScript, Vue).
+   * `ImportPassCache` — and one `ImportPassCache` is built per ts-family
+   * adapter per pass, so the waste was carried once for each of them.
    *
    * With this set, `getInsensitive` reads the exact map directly instead. It is
    * the same map the derivation below would have produced, so this is a skipped

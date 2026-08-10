@@ -46,6 +46,7 @@ import {
   type SuffixIndex,
 } from '../../../src/core/ingestion/import-resolvers/utils.js';
 import { csharpSuffixFallbackAllowed } from '../../../src/core/ingestion/csharp-namespace-gate.js';
+import { CountingSet } from '../../helpers/counting-file-set.js';
 import type {
   CSharpProjectConfig,
   CSharpNamespaceEvidence,
@@ -276,6 +277,13 @@ const RAW_FILES: readonly string[] = [
 const ALL_FILE_LIST: string[] = [...RAW_FILES];
 const NORMALIZED_FILE_LIST: string[] = ALL_FILE_LIST.map((f) => f.replace(/\\/g, '/'));
 const SUFFIX_INDEX: SuffixIndex = buildSuffixIndex(NORMALIZED_FILE_LIST, ALL_FILE_LIST);
+// One Set per corpus, built once: `resolveCSharpImportInternal` now derives its
+// normalized/raw lists from `getWorkspaceFileIndex(allFilePaths)`, whose memo is
+// keyed on this object's identity. `RAW_FILES` is duplicate-free, so the derived
+// pair is `NORMALIZED_FILE_LIST`/`ALL_FILE_LIST` element for element — which is
+// what keeps the differential below a like-for-like comparison against the
+// frozen legacy implementation, which still takes the two arrays.
+const ALL_FILE_PATHS: ReadonlySet<string> = new Set(ALL_FILE_LIST);
 
 const CONFIG_SHAPES: ReadonlyArray<readonly [string, CSharpProjectConfig[]]> = [
   ['no configs at all', []],
@@ -369,13 +377,7 @@ const PAIRS: ReadonlyArray<{
 );
 
 function runCurrent(pair: (typeof PAIRS)[number]): string[] {
-  return resolveCSharpImportInternal(
-    pair.importPath,
-    pair.configs,
-    NORMALIZED_FILE_LIST,
-    ALL_FILE_LIST,
-    pair.index,
-  );
+  return resolveCSharpImportInternal(pair.importPath, pair.configs, ALL_FILE_PATHS, pair.index);
 }
 
 function runLegacy(pair: (typeof PAIRS)[number]): string[] {
@@ -412,8 +414,7 @@ describe('C# csproj leg — directory index vs the pre-change linear scan (#2902
       current[pair.key] = resolveCSharpImportInternal(
         pair.importPath,
         pair.configs,
-        NORMALIZED_FILE_LIST,
-        ALL_FILE_LIST,
+        ALL_FILE_PATHS,
         pair.index,
         evidence,
       ).join(' , ');
@@ -445,13 +446,7 @@ describe('C# csproj leg — directory index vs the pre-change linear scan (#2902
 
 describe('C# csproj leg — the answers only step 3 can give (#2902)', () => {
   const withIndex = (configs: CSharpProjectConfig[], importPath: string): string[] =>
-    resolveCSharpImportInternal(
-      importPath,
-      configs,
-      NORMALIZED_FILE_LIST,
-      ALL_FILE_LIST,
-      SUFFIX_INDEX,
-    );
+    resolveCSharpImportInternal(importPath, configs, ALL_FILE_PATHS, SUFFIX_INDEX);
 
   it('`relative === ""` with no projectDir gives dirPrefix "" — every .cs one level deep, merged', () => {
     // `getFilesInDir('', '.cs')` is empty for every file set, so step 2 cannot
@@ -555,27 +550,22 @@ describe('C# csproj leg — the answers only step 3 can give (#2902)', () => {
   });
 });
 
-describe('C# csproj leg — the directory index is built once per file list (#2902)', () => {
-  /** Counts element reads, so a rebuild per import shows up as N reads of `[0]`. */
-  function countingList(values: readonly string[]): { list: string[]; reads: () => number } {
-    let reads = 0;
-    const list = new Proxy([...values], {
-      get(target: string[], property: string | symbol, receiver: unknown): unknown {
-        reads += Number(property === '0');
-        return Reflect.get(target, property, receiver) as unknown;
-      },
-    });
-    return { list, reads: () => reads };
-  }
-
-  it('resolves many imports with a single pass over the normalized list', () => {
-    const { list, reads } = countingList(NORMALIZED_FILE_LIST);
+describe('C# csproj leg — the directory index is built once per file set (#2902)', () => {
+  it('resolves many imports with a single pass over the file set', () => {
+    // `CountingSet`, not a counting ARRAY. This arm used to proxy
+    // `normalizedFileList` and count reads of `[0]`, because the index was keyed
+    // on that array; #2911 rekeyed it onto the Set, so the file set is now the
+    // only thing a rebuild has to re-traverse and the one instrument every other
+    // import-index guard already uses covers this leg too.
+    const files = new CountingSet(ALL_FILE_LIST);
     const index = buildSuffixIndex([...NORMALIZED_FILE_LIST], ALL_FILE_LIST);
     const configs: CSharpProjectConfig[] = [{ rootNamespace: 'App', projectDir: 'src' }];
     for (let i = 0; i < 40; i++) {
-      resolveCSharpImportInternal(`App.Missing${i % 4}`, configs, list, ALL_FILE_LIST, index);
+      // Every one of these misses steps 1 and 2 and reaches step 3, so the
+      // directory index is genuinely consulted 40 times.
+      resolveCSharpImportInternal(`App.Missing${i % 4}`, configs, files, index);
     }
-    expect(reads()).toBe(1);
+    expect(files.scans).toBe(1);
   });
 
   it('a path that BEGINS with a slash keeps parity (its directory is the empty string)', () => {
@@ -584,6 +574,9 @@ describe('C# csproj leg — the directory index is built once per file list (#29
     // `dirPrefix` here and short-circuit the very leg the arms above pin.
     const raw = ['/Rooted.cs', 'src/Nested.cs', '/Other.cs'];
     const normalized = raw.map((f) => f.replace(/\\/g, '/'));
+    // Duplicate-free, so the resolver derives exactly `normalized`/`raw` from
+    // it and the two sides of the differential still see the same corpus.
+    const rootedPaths: ReadonlySet<string> = new Set(raw);
     const index = buildSuffixIndex([...normalized], [...raw]);
     const shapes: CSharpProjectConfig[][] = [
       [{ rootNamespace: 'App', projectDir: '' }],
@@ -595,9 +588,7 @@ describe('C# csproj leg — the directory index is built once per file list (#29
     for (const configs of shapes) {
       for (const importPath of ['App', 'App.Nested', 'App.Rooted']) {
         for (const withIndex of [index, undefined]) {
-          current.push(
-            resolveCSharpImportInternal(importPath, configs, [...normalized], raw, withIndex),
-          );
+          current.push(resolveCSharpImportInternal(importPath, configs, rootedPaths, withIndex));
           legacy.push(
             legacyResolveCSharpImportInternal(importPath, configs, [...normalized], raw, withIndex),
           );
@@ -610,27 +601,20 @@ describe('C# csproj leg — the directory index is built once per file list (#29
       resolveCSharpImportInternal(
         'App',
         [{ rootNamespace: 'App', projectDir: '' }],
-        [...normalized],
-        raw,
+        rootedPaths,
         undefined,
       ),
     ).toEqual(['/Rooted.cs', 'src/Nested.cs', '/Other.cs']);
   });
 
-  it('a distinct file list gets its own index (no stale cross-run reuse)', () => {
-    const other = ['App2/Models/Only.cs'];
+  it('a distinct file set gets its own index (no stale cross-run reuse)', () => {
+    const other: ReadonlySet<string> = new Set(['App2/Models/Only.cs']);
     const configs: CSharpProjectConfig[] = [{ rootNamespace: 'App', projectDir: 'App2' }];
-    expect(
-      resolveCSharpImportInternal('App.Models', configs, [...other], [...other], undefined),
-    ).toEqual(['App2/Models/Only.cs']);
-    expect(
-      resolveCSharpImportInternal(
-        'App.Models',
-        configs,
-        NORMALIZED_FILE_LIST,
-        ALL_FILE_LIST,
-        undefined,
-      ),
-    ).toEqual([]);
+    expect(resolveCSharpImportInternal('App.Models', configs, other, undefined)).toEqual([
+      'App2/Models/Only.cs',
+    ]);
+    expect(resolveCSharpImportInternal('App.Models', configs, ALL_FILE_PATHS, undefined)).toEqual(
+      [],
+    );
   });
 });

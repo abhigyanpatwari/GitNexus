@@ -51,8 +51,9 @@
  * The last arm counts entries into `suffixResolve`'s linear branch. That is the
  * instrument this defect needed and did not have: `CountingSet` counts
  * traversals of the SET, and this scan walks the materialized array behind it,
- * which is exactly why the defect shipped under nine index-reuse guards and a
- * sixteen-language contract test. The arm reads the legacy adapter first, so a
+ * which is exactly why the defect survived every index-reuse guard that existed
+ * and the contract test over `SCOPE_RESOLVERS`. The arm reads the legacy
+ * adapter first, so a
  * count of zero is paired with a demonstration that the counter can be nonzero.
  */
 import { describe, expect, it, vi } from 'vitest';

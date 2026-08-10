@@ -27,9 +27,27 @@
  * result assertions on purpose: a count of 2 is equally true of an adapter that
  * has stopped resolving anything at all, so counting alone would stay green
  * while every C# IMPORTS edge disappeared.
+ *
+ * ## The csproj leg is guarded by the SAME instrument (#2911 review)
+ *
+ * With `.csproj` configs present the adapter takes a different branch entirely
+ * — `resolveCSharpImportInternal` — and that branch used to be unguarded here:
+ * no arm supplied `csharpConfigs`, so no counting Set ever entered it. Worse,
+ * its namespace-directory index was keyed on the `normalizedFileList` ARRAY, a
+ * shape no scan count can instrument — a `[...normalized]` copy at the adapter
+ * boundary rebuilt the index once per `using` while traversing the Set exactly
+ * zero extra times. Reproduced against this PR's tree: the copy left all 67
+ * tests of the four import-index guards green and only the timing bench
+ * noticed (`csharp_csproj scaling 3.556 > 1.8`).
+ *
+ * #2911 rekeyed that index onto the Set, so the array shape is gone and the
+ * only remaining way to defeat the memo — copying the Set — is what
+ * `CountingSet` already counts. The csproj arms below therefore read the same
+ * one number as the arms above, with no second instrument.
  */
 import { describe, it, expect } from 'vitest';
 import { csharpScopeResolver } from '../../src/core/ingestion/languages/csharp/scope-resolver.js';
+import type { CsharpResolutionConfig } from '../../src/core/ingestion/languages/csharp/resolution-config.js';
 import { CountingSet, expectDistinctFileSetsGetOwnIndex } from '../helpers/counting-file-set.js';
 
 const { resolveImportTarget } = csharpScopeResolver;
@@ -49,6 +67,32 @@ function buildWorkspace(fileCount: number): CountingSet {
   }
   files.push('App/Models/User.cs');
   files.push('Domain/Order.cs');
+  files.push('App/Program.cs');
+  return new CountingSet(files);
+}
+
+/** The one `.csproj` config that puts the adapter on the csproj leg. */
+const CSPROJ_CONFIG: CsharpResolutionConfig = {
+  csharpConfigs: [{ rootNamespace: 'App', projectDir: 'App' }],
+};
+
+/**
+ * A workspace whose `App.Models` resolution reaches the namespace-DIRECTORY
+ * index, which is the only thing on the csproj leg keyed on the array.
+ *
+ * That takes a layout the first two legs both miss. `src/MyApp/Models/` answers
+ * `dirPrefix = 'App/Models'` under the unanchored substring rule ('MyApp/'
+ * supplies the 'App/'), and under nothing weaker: no file is named
+ * `App/Models.cs` or `Models.cs`, so the single-file leg misses, and no
+ * directory has the SEGMENT suffix `App/Models`, so `getFilesInDir` misses too.
+ * A layout where the first two legs answer would leave the index unbuilt and
+ * the build count blind to the very copy it is here to catch.
+ */
+function buildCsprojWorkspace(fileCount: number): CountingSet {
+  const files: string[] = [];
+  for (let i = 0; i < fileCount; i++) {
+    files.push(`src/MyApp/Models/Entity${String(i).padStart(5, '0')}.cs`);
+  }
   files.push('App/Program.cs');
   return new CountingSet(files);
 }
@@ -112,5 +156,45 @@ describe('C# import resolution — index reuse across usings (#2878)', () => {
     // BCL usings stay gated (#1881) and unknown namespaces resolve to nothing.
     expect(resolveImportTarget('System.Threading.Tasks', FROM_FILE, files, undefined)).toBeNull();
     expect(resolveImportTarget('Vendor.Ghost.Missing', FROM_FILE, files, undefined)).toBeNull();
+  });
+});
+
+describe('C# import resolution — index reuse on the csproj leg (#2911)', () => {
+  it('builds each index once for many usings over a stable file set', () => {
+    const files = buildCsprojWorkspace(300);
+    const resolved: (string | readonly string[] | null)[] = [];
+
+    for (let i = 0; i < 200; i++) {
+      // A namespace-directory hit and a miss, both reaching the array-keyed
+      // index — the miss under a fresh namespace each time so no upstream
+      // string-level memo can stand in for the index being reused.
+      resolved.push(resolveImportTarget('App.Models', FROM_FILE, files, CSPROJ_CONFIG));
+      resolved.push(resolveImportTarget(`App.Ghost${i}`, FROM_FILE, files, CSPROJ_CONFIG));
+    }
+
+    // One traversal for 400 usings. One, not two: `getCsharpDirIndex` belongs to
+    // the no-csproj leg, and the namespace-directory index this branch DOES
+    // build reads its file list from the same `getWorkspaceFileIndex` memo
+    // rather than re-walking the Set. A defensive copy of the Set at the
+    // adapter boundary reads 400 here.
+    expect(files.scans).toBe(1);
+
+    // Paired result assertions — the count must not be the count of an adapter
+    // that resolves nothing.
+    expect(resolved[0]).toBe('src/MyApp/Models/Entity00000.cs');
+    expect(resolved[1]).toBeNull();
+  });
+
+  it('a distinct file set gets its own indexes (no stale cross-run reuse)', () => {
+    expectDistinctFileSetsGetOwnIndex({
+      resolveImportTarget,
+      buildWorkspace: () => buildCsprojWorkspace(20),
+      targetRaw: 'App.Models',
+      fromFile: FROM_FILE,
+      resolutionConfig: CSPROJ_CONFIG,
+      expected: 'src/MyApp/Models/Entity00000.cs',
+      // One, not two: see the scan-count comment above.
+      expectedScans: 1,
+    });
   });
 });

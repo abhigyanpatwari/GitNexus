@@ -19,9 +19,21 @@ export interface ImportPassCache {
 }
 
 /**
- * Build that state. Shared by the adapters whose resolution runs through
- * `resolveTsTarget` (TypeScript, JavaScript, Vue) — three byte-identical copies
- * before this existed.
+ * Build that state. Shared by every adapter whose resolution runs through
+ * `resolveTsTarget`.
+ *
+ * Not a dedup of identical copies, and the difference is the point. At
+ * 49c5b7d81 each of those adapters carried this record inline and they did NOT
+ * agree: `languages/typescript/scope-resolver.ts` and
+ * `languages/vue/import-target.ts` held six byte-identical fields built around
+ * `index: buildSuffixIndex(normalizedFileList, allFileList)`, while
+ * `languages/javascript/import-target.ts` held five and never called
+ * `buildSuffixIndex` at all. That one missing field IS the O(imports × files)
+ * defect PR #2911 fixed — `resolveTsTarget` fell back to `suffixResolve`'s
+ * linear scan for every JavaScript import — and the header of
+ * `languages/javascript/import-target.ts` carries the measurements. Hoisting
+ * the builder is what makes a fourth adapter unable to omit it again: `index`
+ * is not optional on `ImportPassCache`.
  *
  * The BUILDER is shared; the MEMO deliberately is not. Each adapter wraps this
  * in its own `perFileSet(...)`, so each gets its own `WeakMap`, its own index
@@ -51,9 +63,9 @@ export function buildImportPassCache(allFilePaths: ReadonlySet<string>): ImportP
     normalizedFileList,
     // Every suffix of an all-lowercase path is itself lowercase, so the index's
     // case-folded map came out a byte-for-byte copy of its exact map — same
-    // keys, same values, same insertion order — and TypeScript, JavaScript and
-    // Vue each carried one. Measured 14.00 MiB at 32 000 paths, 29.8% of the
-    // retained `ImportPassCache`. The flag drops the copy; it does not change
+    // keys, same values, same insertion order — one per `ImportPassCache`, so
+    // once per adapter per pass. Measured 14.00 MiB at 32 000 paths, 29.8% of
+    // the retained `ImportPassCache`. The flag drops the copy; it does not change
     // what `getInsensitive` answers, because the copy was the identity (see
     // `SuffixIndexOptions`). Checked, not assumed: over 474 524 probes on four
     // mixed-case corpora — Vue PascalCase plus alias specifiers, case-colliding

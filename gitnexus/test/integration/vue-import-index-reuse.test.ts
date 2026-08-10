@@ -9,7 +9,7 @@
  * the `resolveCache` on every call. Measured on the identical TypeScript
  * adapter at 4000 files × 400 imports: 12.0 ms for one set, 1438.2 ms
  * alternating between two — 120x, and the same O(imports × files) shape the
- * nine index hoists removed.
+ * per-file-set index hoists removed.
  *
  * That is why this adapter could not carry `expectDistinctFileSetsGetOwnIndex`,
  * the one arm every other language's guard has: the arm alternates two sets by

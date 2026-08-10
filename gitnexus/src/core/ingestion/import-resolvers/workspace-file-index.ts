@@ -14,19 +14,24 @@
  *
  * Three layers guard that, and they guard different things:
  *  - ADAPTER BOUNDARY, where the defensive-copy hazard actually lives:
- *    `test/integration/<lang>-import-index-reuse.test.ts` (csharp, java, php
- *    and ruby for this index; cobol, dart, go, kotlin and python for the
- *    sibling ones) resolves through `<lang>ScopeResolver.resolveImportTarget` —
- *    the orchestrator adapter — and asserts the file set is traversed once per
- *    run (twice for C# and Java, which build two indexes). All nine count
- *    traversals of a `CountingSet` (`test/helpers/counting-file-set.ts`): one
- *    instrument, no production surface, and it catches both the per-import
- *    rebuild and a scan reintroduced beside a reused index (#2909).
+ *    `test/integration/*-import-index-reuse.test.ts` resolves through
+ *    `<lang>ScopeResolver.resolveImportTarget` — the orchestrator adapter — and
+ *    pins the EXACT number of times a run traverses the file set, one file per
+ *    covered language over that language's own corpus. (The expected count is
+ *    per language and legitimately differs: it is however many times the
+ *    adapter derives something from the Set — two indexes, or an index plus the
+ *    mutable copy the ts-family context wants.) All of them count traversals
+ *    of a `CountingSet` (`test/helpers/counting-file-set.ts`): one instrument,
+ *    no production surface, and it catches both the per-import rebuild and a
+ *    scan reintroduced beside a reused index (#2909).
  *  - EVERY REGISTERED LANGUAGE, at the same boundary but as one property rather
- *    than nine corpora: `test/unit/scope-resolution/import-target-index-reuse.contract.test.ts`
+ *    than one corpus per language: `test/unit/scope-resolution/import-target-index-reuse.contract.test.ts`
  *    drives each entry of `SCOPE_RESOLVERS` and asserts the traversal count for
- *    many imports equals the count for two. A new language cannot skip it — the
- *    inventory arm fails when a registered resolver has no fixture.
+ *    many imports equals the count for two. A new language cannot skip it, and
+ *    the enforcement is a test rather than a roster anyone maintains: that
+ *    file's inventory arm compares `SCOPE_RESOLVERS`' keys against its own
+ *    fixture table and fails on a registered resolver that has neither a
+ *    fixture nor an exemption, and its next arm pins the exemption map empty.
  *  - RESOLVER LEVEL: `test/unit/scope-resolution/import-target-index-parity.test.ts`
  *    calls the resolvers directly, so it never crosses the adapter boundary and
  *    a copy there leaves it green. What it catches is a rescan reintroduced

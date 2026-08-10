@@ -529,16 +529,19 @@ jobs:
         run: node --import tsx bench/cpp-qualified-ns/measure.mjs --check
         working-directory: gitnexus
 
-      - name: Import-target resolution guards (all 16 registered languages, #2877–#2910)
+      - name: Import-target resolution guards (every registered language, #2877–#2909, PR #2911)
         if: ${{ !cancelled() }}
         # Build-free: runs EVERY import-target resolver registered in
-        # SCOPE_RESOLVERS — go, csharp, dart, ruby, kotlin, php, java, cobol,
-        # swift, rust, python, javascript, typescript, vue, c, cpp — plus C# a
-        # second time WITH csproj configs, over the identical corpus, because
-        # the no-csproj arm returns before it can reach the leg #2902 indexed.
-        # Seventeen arms over ONE shared corpus, and no registered language
-        # ungated: a C/C++ #include is an import site for this purpose and is
-        # gated like the other fourteen (its headers arrive through
+        # SCOPE_RESOLVERS — plus C# a second time WITH csproj configs, over the
+        # identical corpus, because the no-csproj arm returns before it can
+        # reach the leg #2902 indexed. One arm per registered language over ONE
+        # shared corpus, and no registered language ungated. That is enforced,
+        # not enumerated: measure.mjs derives its list from a LANG_REGISTRY
+        # table and its --check inventory arm reconciles that table against
+        # SCOPE_RESOLVERS in both directions, so a language roster typed out
+        # here would only be a second copy that can go stale — this one did.
+        # A C/C++ #include is an import site for this purpose and is gated like
+        # every other registered language (its headers arrive through
         # resolutionConfig rather than allFilePaths, which is the one structural
         # difference — see `newPass`).
         #
@@ -551,23 +554,29 @@ jobs:
         # too: a fingerprint alone cannot tell a legitimate resolution change
         # from a corpus quietly shrunk below the size the timing arms need.
         #
-        # Three arms exist because an arm that stops MEASURING otherwise passes.
-        # The heap arms drive real resolvers and carry a FLOOR as well as a
-        # ceiling: when buildSuffixIndex's suffix maps went lazy, four arms that
-        # called the builder directly read 0 B, and 0 B is under every ceiling.
-        # Each timing budget is checked for PRESENCE first, because
-        # `got > undefined` is false, so deleting a budget key deleted its gate.
-        # And an inventory arm reconciles the bench's language table against
-        # SCOPE_RESOLVERS itself, so a seventeenth registered resolver cannot
-        # ship ungated the way JavaScript did.
+        # Several arms exist because an arm that stops MEASURING otherwise
+        # passes. The heap arms drive real resolvers and carry a FLOOR as well
+        # as a ceiling: when buildSuffixIndex's suffix maps went lazy, four arms
+        # that called the builder directly read 0 B, and 0 B is under every
+        # ceiling. EVERY budget is checked for PRESENCE first, timing and heap
+        # alike, because `got > undefined` is false and `got < ceiling *
+        # undefined` is false too, so deleting a budget key deleted its gate —
+        # and the two heap scalars gate all eight heap arms at once. The heap
+        # arm's own corpus shape (its two file counts, its path depth and the
+        # probe it resolves) is asserted by the same loop as the timing arms,
+        # because those four decide WHAT it measures. And an inventory arm
+        # reconciles the bench's language table against SCOPE_RESOLVERS itself,
+        # so a newly registered resolver cannot ship ungated the way JavaScript
+        # did.
         #
-        # The first nine were added as their own O(imports × files) scans were
-        # indexed away (Ruby rebuilt a suffix index per `require`; COBOL scanned
-        # twice per `COPY`), and the same corpus shape scores >3.3 against those
-        # pre-fix implementations. The other seven were ungated until now, which
-        # is not a theoretical gap: #2910 found JavaScript reaching suffixResolve
-        # with no index at all — 25 972 µs per import at 8000 files, protected
-        # only by unit tests. This step is what stops the next one shipping.
+        # The resolvers gated first were added as their own O(imports × files)
+        # scans were indexed away (Ruby rebuilt a suffix index per `require`;
+        # COBOL scanned twice per `COPY`), and the same corpus shape scores >3.3
+        # against those pre-fix implementations. The rest were ungated until
+        # this PR, which is not a theoretical gap: PR #2911 found JavaScript
+        # reaching suffixResolve with no index at all — 25 972 µs per import at
+        # 8000 files, protected only by unit tests. This step is what stops the
+        # next one shipping.
         #
         # SCOPE: "independent of corpus size" holds for UNIQUE-LEAF layouts,
         # where no two directories share a last segment and no two files share a
@@ -587,11 +596,15 @@ jobs:
         #
         # --expose-gc enables the retained-heap arm; --check REFUSES to run
         # without it rather than passing with the memory gate silently skipped.
-        # ~42 s for seventeen arms, down from ~46 s: the timing phase fell from
-        # 39.8 s to 28.7 s when the min-of-N estimator became per-language, and
-        # 7.3 s of what is left is the one dynamic import the inventory arm
-        # needs (pipeline/registry.ts pulls in all sixteen providers), loaded
-        # after the last measurement so report mode does not pay it. The ts
+        # ~44–45 s, which is essentially unchanged from the ~46 s it cost
+        # before: the timing phase did fall from 39.8 s to 28.7 s when the
+        # min-of-N estimator became per-language, but the inventory arm's one
+        # dynamic import (pipeline/registry.ts pulls in every registered
+        # provider) costs 6–10 s depending on the box and consumes almost all of
+        # that. Report mode, which does not load the registry, is the mode that
+        # got faster: ~33–35 s. Kept as-is because this job runs minutes clear
+        # of the sharded coverage job that gates the merge, so the seconds buy
+        # no merge latency — see COST in the bench header. The ts
         # family (javascript/typescript/vue) is still the largest block, 8.8 s,
         # because suffixResolve probes ~39 extensions per path part on a miss.
         # If this ever has to shrink, drop collide/collide_large for typescript

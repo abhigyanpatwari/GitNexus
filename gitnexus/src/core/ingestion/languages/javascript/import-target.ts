@@ -19,7 +19,7 @@
  * standard extension-suffix fallback; the alias branch is a no-op when
  * `tsconfigPaths` is null.
  *
- * ## The suffix index changes bare-specifier answers (#2910)
+ * ## The suffix index changes bare-specifier answers (PR #2911)
  *
  * Supplying `index` is not only a speed-up: `suffixResolve` answers a different
  * question with one than without. Without an index it tests
@@ -55,7 +55,7 @@ export type JsResolveContext = TsResolveContext;
  * Everything `resolveTsTarget` derives from one workspace file set, built once
  * per set rather than once per import.
  *
- * `index` is not optional, and its absence was the defect (#2910). The
+ * `index` is not optional, and its absence was the defect (PR #2911). The
  * TypeScript adapter has carried a `SuffixIndex` since #1918; this one did not,
  * so every JavaScript import reached `suffixResolve` with `index === undefined`
  * and took its linear-`findIndex` fallback — one pass over `normalizedFileList`
@@ -80,7 +80,8 @@ export type JsResolveContext = TsResolveContext;
  * the TypeScript adapter at 4000 files × 400 imports: 12.0 ms for one set,
  * 1438.2 ms alternating between two (120x). A `WeakMap` has no such state to
  * thrash, which is also what lets this adapter carry the standard
- * `expectDistinctFileSetsGetOwnIndex` guard the other nine languages carry.
+ * `expectDistinctFileSetsGetOwnIndex` guard every other indexed adapter
+ * carries.
  *
  * The Set must be passed THROUGH by the caller, never copied: a defensive
  * `new Set(allFilePaths)` at the adapter boundary hands a fresh key per import

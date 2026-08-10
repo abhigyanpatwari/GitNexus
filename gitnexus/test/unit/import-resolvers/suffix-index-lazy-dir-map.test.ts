@@ -318,9 +318,9 @@ function dirProbeSpace(normalized: readonly string[]): Array<readonly [string, s
 
 function probeAllDirs(
   probes: ReadonlyArray<readonly [string, string]>,
-  lookup: (dirSuffix: string, extension: string) => string[],
-): Record<string, string[]> {
-  const answers: Record<string, string[]> = {};
+  lookup: (dirSuffix: string, extension: string) => readonly string[],
+): Record<string, readonly string[]> {
+  const answers: Record<string, readonly string[]> = {};
   for (const [dirSuffix, ext] of probes)
     answers[`${dirSuffix}\u0000${ext}`] = lookup(dirSuffix, ext);
   return answers;

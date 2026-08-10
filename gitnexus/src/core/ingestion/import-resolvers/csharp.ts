@@ -6,6 +6,7 @@
  */
 
 import { perFileSet } from './per-file-set.js';
+import { getWorkspaceFileIndex } from './workspace-file-index.js';
 import type { SuffixIndex } from './utils.js';
 import { suffixResolve } from './utils.js';
 import type { CSharpProjectConfig, CSharpNamespaceEvidence } from '../language-config.js';
@@ -57,12 +58,15 @@ interface CsharpNamespaceDirIndex {
   /** Last path segment of a directory → every `.cs` directory ending in it. */
   readonly dirsByLastSegment: ReadonlyMap<string, readonly string[]>;
   /**
-   * Directory → positions in `normalizedFileList` of the `.cs` files directly
-   * inside it, ascending.
+   * Directory → positions in `WorkspaceFileIndex.normalized` of the `.cs` files
+   * directly inside it, ascending.
    *
-   * Positions rather than paths: the emitted value is `allFileList[i]`, and
-   * keying the memo on `normalizedFileList` while reading `allFileList` fresh
-   * at query time keeps the two arrays' pairing entirely out of the cache.
+   * Positions rather than paths: the emitted value is the RAW path, and the two
+   * arrays are parallel by construction — `normalized` is `all.map(slash)` — so
+   * a position is the one key that reads correctly in either. Both arrays come
+   * from the same `getWorkspaceFileIndex(allFilePaths)` object as this index
+   * itself, so the pairing cannot drift; it used to be a precondition on the
+   * caller, who passed the two arrays independently.
    */
   readonly positionsByDir: ReadonlyMap<string, readonly number[]>;
   /**
@@ -73,13 +77,28 @@ interface CsharpNamespaceDirIndex {
 }
 
 /**
- * Memoized on the ARRAY's identity, mirroring `workspace-file-index.ts`: the
- * orchestrator builds `normalizedFileList` once per run and passes the same
- * array to every import, so this build runs once. A caller that copies the
- * array per import silently restores the O(imports × files) cost.
+ * Memoized on the file SET's identity, the same key every other per-file-set
+ * index in this pipeline uses: the orchestrator builds one Set per pass and
+ * threads it through every import, so this build runs once.
+ *
+ * It used to key on the `normalizedFileList` ARRAY, which was a second key
+ * shape and — more to the point — one no guard could instrument. Copying an
+ * array mints a fresh `WeakMap` key while traversing the SET zero extra times,
+ * so a `[...normalized]` copy at the adapter boundary rebuilt this index once
+ * per `using` while every scan-counting guard stayed green and only the timing
+ * bench noticed (#2911 review). Taking the array from
+ * `getWorkspaceFileIndex(allFilePaths)` inside the builder retires that shape:
+ * the only way to defeat the memo now is to copy the Set, which is exactly what
+ * `CountingSet` counts.
+ *
+ * It also retires a precondition. The cached positions index `normalized` while
+ * the emitted value is read from `all`; both now come from the same
+ * `getWorkspaceFileIndex` object, so the caller can no longer pair a position
+ * list against a differently-ordered array.
  */
 const getCsharpNamespaceDirIndex = perFileSet(
-  (normalizedFileList: readonly string[]): CsharpNamespaceDirIndex => {
+  (allFilePaths: ReadonlySet<string>): CsharpNamespaceDirIndex => {
+    const { normalized: normalizedFileList } = getWorkspaceFileIndex(allFilePaths);
     const dirsByLastSegment = new Map<string, string[]>();
     const positionsByDir = new Map<string, number[]>();
     const singleSegmentDirs: string[] = [];
@@ -212,15 +231,23 @@ function pushFilesDirectlyInNamespaceDir(
  * The final unanchored suffix fallback is gated on `evidence` so BCL usings
  * (e.g. `System.Threading.Tasks`) can't match a coincidentally-named local
  * file (#1881). When `evidence` is omitted the fallback stays permissive.
+ *
+ * Takes the file SET, not the two materialized lists it used to take: both are
+ * derived here from the per-pass `getWorkspaceFileIndex` memo, which is where
+ * every caller already got them. That leaves one key shape for the indexes
+ * below and makes the `normalized`/`all` pairing structural rather than a
+ * contract the caller has to honour. `index` stays a parameter — the parity
+ * harness drives this resolver with and without one, and the no-index legs are
+ * a tested dimension, not a degenerate case.
  */
 export function resolveCSharpImportInternal(
   importPath: string,
   csharpConfigs: CSharpProjectConfig[],
-  normalizedFileList: string[],
-  allFileList: string[],
+  allFilePaths: ReadonlySet<string>,
   index?: SuffixIndex,
   evidence?: CSharpNamespaceEvidence,
 ): string[] {
+  const { normalized: normalizedFileList, all: allFileList } = getWorkspaceFileIndex(allFilePaths);
   const namespacePath = importPath.replace(/\./g, '/');
   const results: string[] = [];
 
@@ -288,7 +315,7 @@ export function resolveCSharpImportInternal(
     // anything, and so does this leg, so every iteration of the config loop
     // starts empty.
     pushFilesDirectlyInNamespaceDir(
-      getCsharpNamespaceDirIndex(normalizedFileList),
+      getCsharpNamespaceDirIndex(allFilePaths),
       dirPrefix,
       allFileList,
       results,

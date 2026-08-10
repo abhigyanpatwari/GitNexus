@@ -65,12 +65,11 @@ export function resolveCsharpImportTarget(
 
   const csharpConfigs = ctx.csharpConfigs ?? [];
   if (csharpConfigs.length > 0) {
-    const { normalized, all, index } = getWorkspaceFileIndex(ctx.allFilePaths);
+    const { index } = getWorkspaceFileIndex(ctx.allFilePaths);
     const fromCsproj = resolveCSharpImportInternal(
       targetRaw,
       [...csharpConfigs],
-      normalized,
-      all,
+      ctx.allFilePaths,
       index,
       evidence,
     );
