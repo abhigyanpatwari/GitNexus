@@ -1,6 +1,6 @@
 import fsp from 'node:fs/promises';
 import path from 'node:path';
-import { createHash, randomBytes } from 'node:crypto';
+import { createHash } from 'node:crypto';
 import lbug from '@ladybugdb/core';
 import type { LbugValue } from '@ladybugdb/core';
 import type { BridgeHandle, BridgeMeta, StoredContract, CrossLink, RepoSnapshot } from './types.js';
@@ -12,7 +12,7 @@ import {
 } from '../lbug/lbug-config.js';
 import { dedupeContracts, dedupeCrossLinks } from './normalization.js';
 import { createLogger } from '../logger.js';
-import { retryRename } from '../../storage/fs-atomic.js';
+import { retryRename, writeFileAtomic } from '../../storage/fs-atomic.js';
 
 const bridgeLogger = createLogger('bridge-db', {
   debugEnvVar: 'GITNEXUS_DEBUG_BRIDGE',
@@ -647,30 +647,7 @@ export async function closeBridgeDb(handle: BridgeHandle): Promise<void> {
 /* ------------------------------------------------------------------ */
 
 export async function writeBridgeMeta(groupDir: string, meta: BridgeMeta): Promise<void> {
-  const target = path.join(groupDir, 'meta.json');
-  // Unpredictable suffix + O_EXCL via `'wx'` flag closes the symlink/
-  // pre-create attack window. The third argument `0o600` is the
-  // user-only mode mask — CodeQL's `js/insecure-temporary-file` query
-  // sources its verdict from the `mode` argument, NOT from `flags`:
-  // its `isSecureMode(mode)` predicate requires the low 6 bits to be
-  // zero (no group/world bits). Without an explicit mode the file is
-  // created with the process umask (typically 0o644 = group/world
-  // readable), which the query treats as the actual vulnerability.
-  // Both `'wx'` (runtime O_EXCL) AND `0o600` (CodeQL-credited mode)
-  // are needed: one closes the symlink race, the other closes the
-  // permissions exposure.
-  const tmp = `${target}.tmp.${randomBytes(8).toString('hex')}`;
-  const handle = await fsp.open(tmp, 'wx', 0o600);
-  try {
-    await handle.writeFile(JSON.stringify(meta, null, 2), 'utf-8');
-  } finally {
-    await handle.close();
-  }
-  // Use retryRename for consistency with writeBridge's atomic swap — on
-  // Windows a concurrent reader can cause EBUSY/EPERM even on a tiny
-  // meta.json, and we don't want meta write to be less robust than the
-  // bridge.lbug swap it accompanies.
-  await retryRename(tmp, target);
+  await writeFileAtomic(path.join(groupDir, 'meta.json'), JSON.stringify(meta, null, 2));
 }
 
 export async function readBridgeMeta(groupDir: string): Promise<BridgeMeta> {
