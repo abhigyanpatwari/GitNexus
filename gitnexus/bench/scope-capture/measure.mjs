@@ -267,14 +267,15 @@ const LANGS = [
     fixturePrefix: 'java',
     exts: ['.java'],
     file: 'bench.java',
-    // Java was previously unbenched. Heritage-bearing: extends Base + implements
-    // Marker (both forms) so the @reference.inherits synth (#1951) is driven at scale.
+    // Java was previously unbenched. Class and record heritage both implement
+    // Marker so the @reference.inherits synth (#1951, #2900) is driven at scale.
     header: 'package generated;\n\nclass Base {}\n\ninterface Marker {}\n\n',
     unit: (n) =>
       `class Entity${n} extends Base implements Marker {\n` +
       `  long id = 0L;\n  String name = "";\n` +
       `  public long getId() { return this.id; }\n` +
-      `  public void setName(String v) { this.name = v; }\n}\n\n`,
+      `  public void setName(String v) { this.name = v; }\n}\n\n` +
+      `record RecordEntity${n}(long id) implements Marker {}\n\n`,
   },
   {
     name: 'java-local-types',
