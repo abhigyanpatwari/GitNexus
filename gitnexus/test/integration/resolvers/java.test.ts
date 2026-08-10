@@ -1273,6 +1273,72 @@ describe('Java record method resolution (#2564)', () => {
       fs.rmSync(root, { recursive: true, force: true });
     }
   }, 60000);
+
+  it('links and dispatches an explicit Record interface method (#2900)', async () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), 'gitnexus-java-record-heritage-'));
+    try {
+      writeFixtureRepo(root, {
+        'RecordHeritage.java': `interface Named { String name(); }
+          record User(String value) implements Named {
+            public String name() { return value; }
+          }
+          class Reader {
+            String read(Named value) { return value.name(); }
+          }`,
+      });
+
+      const linked = await runPipelineFromRepo(root, () => {});
+      const implementsEdge = getRelationships(linked, 'IMPLEMENTS').find(
+        (edge) => edge.source === 'User' && edge.target === 'Named',
+      );
+      const fanout = getRelationships(linked, 'CALLS').filter(
+        (edge) =>
+          edge.source === 'read' &&
+          edge.target === 'name' &&
+          edge.rel.reason === 'interface-dispatch',
+      );
+
+      expect(implementsEdge?.sourceLabel).toBe('Record');
+      expect(implementsEdge?.targetLabel).toBe('Interface');
+      expect(fanout.map((edge) => `${edge.targetLabel}:${edge.targetFilePath}`).sort()).toEqual([
+        'Method:RecordHeritage.java',
+      ]);
+    } finally {
+      fs.rmSync(root, { recursive: true, force: true });
+    }
+  }, 60000);
+
+  it('documents missing dispatch to an implicit Record component accessor (#2917)', async () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), 'gitnexus-java-record-accessor-'));
+    try {
+      writeFixtureRepo(root, {
+        'RecordAccessor.java': `interface Named { String name(); }
+          record User(String name) implements Named {}
+          class Reader {
+            String read(Named value) { return value.name(); }
+          }`,
+      });
+
+      const linked = await runPipelineFromRepo(root, () => {});
+      const implementsEdge = getRelationships(linked, 'IMPLEMENTS').find(
+        (edge) => edge.source === 'User' && edge.target === 'Named',
+      );
+      const fanout = getRelationships(linked, 'CALLS').filter(
+        (edge) =>
+          edge.source === 'read' &&
+          edge.target === 'name' &&
+          edge.rel.reason === 'interface-dispatch',
+      );
+
+      expect(implementsEdge?.sourceLabel).toBe('Record');
+      expect(implementsEdge?.targetLabel).toBe('Interface');
+      // TODO(#2917): implicit component accessors are not Method nodes yet.
+      // Replace this characterization with the expected User.name target.
+      expect(fanout).toEqual([]);
+    } finally {
+      fs.rmSync(root, { recursive: true, force: true });
+    }
+  }, 60000);
 });
 
 // ---------------------------------------------------------------------------
