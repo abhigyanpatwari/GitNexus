@@ -196,6 +196,7 @@ function parsedGoFile(
     readonly scopes?: readonly Scope[];
     readonly referenceSites?: readonly ReferenceSite[];
     readonly parsedImports?: readonly ParsedImport[];
+    readonly moduleScope?: ScopeId;
   } = {},
 ) {
   return {
@@ -204,6 +205,7 @@ function parsedGoFile(
     scopes: options.scopes ?? [],
     imports: [],
     parsedImports: options.parsedImports ?? [],
+    ...(options.moduleScope === undefined ? {} : { moduleScope: options.moduleScope }),
     localDefs: [...defs],
     referenceSites: options.referenceSites ?? [],
   } as any;
@@ -1197,6 +1199,92 @@ describe('Go structural interface detection', () => {
         }),
       ],
       scopeIndexes(defs),
+      {} as any,
+    );
+
+    expect(result.get(iface.nodeId)).toBeUndefined();
+  });
+
+  // The fallback fills gaps, it does not compete: an import that DID resolve
+  // in-repo keeps its package directory, which is the spelling a file inside
+  // that package produces for its own bare type names.
+  it('prefers the in-repo package directory over the import path', () => {
+    const iface = goDef('iface:Saver', 'Interface', 'Saver', undefined, { filePath: 'api/s.go' });
+    const struct = goDef('struct:User', 'Struct', 'User', undefined, {
+      filePath: 'model/user.go',
+    });
+    const ifaceSave = goDef('iface:Saver.Save', 'Method', 'Saver.Save', iface.nodeId, {
+      filePath: 'api/s.go',
+      parameterCount: 1,
+      requiredParameterCount: 1,
+      parameterTypes: ['model.User'],
+      returnType: 'error',
+    });
+    // Declared inside package `model`, so it spells its own type bare.
+    const structSave = goDef('struct:User.Save', 'Method', 'User.Save', struct.nodeId, {
+      filePath: 'model/user.go',
+      parameterCount: 1,
+      requiredParameterCount: 1,
+      parameterTypes: ['User'],
+      returnType: 'error',
+    });
+    const defs = [iface, struct, ifaceSave, structSave];
+    const apiScope = 'scope:api' as ScopeId;
+
+    const result = detectGoInterfaceImplementations(
+      [
+        parsedGoFile('api/s.go', [iface, ifaceSave], {
+          moduleScope: apiScope,
+          // Both channels name `model`; only the resolved edge may win.
+          parsedImports: [goNamespaceImport('model', 'example.com/x/model')],
+        }),
+        parsedGoFile('model/user.go', [struct, structSave]),
+      ],
+      scopeIndexes(defs, [], {
+        imports: new Map([
+          [
+            apiScope,
+            [
+              {
+                kind: 'namespace',
+                localName: 'model',
+                targetFile: 'model/user.go',
+                targetExportedName: 'model',
+              } as ImportEdge,
+            ],
+          ],
+        ]),
+      }),
+      {} as any,
+    );
+
+    expect(implIds(result, iface.nodeId)).toEqual([struct.nodeId]);
+  });
+
+  // Go's dot-import has no qualifier to register, and the extractor gives it a
+  // different `ParsedImport` kind for that reason. Blank imports never reach
+  // here at all.
+  it('registers no qualifier for a dot-import', () => {
+    const iface = goDef('iface:Saver', 'Interface', 'Saver');
+    const struct = goDef('struct:Repo', 'Struct', 'Repo');
+    const ifaceSave = goDef('iface:Saver.Save', 'Method', 'Saver.Save', iface.nodeId, {
+      parameterCount: 1,
+      requiredParameterCount: 1,
+      parameterTypes: ['dotted.User'],
+      returnType: 'error',
+    });
+    const structSave = goDef('struct:Repo.Save', 'Method', 'Repo.Save', struct.nodeId, {
+      parameterCount: 1,
+      requiredParameterCount: 1,
+      parameterTypes: ['dotted.User'],
+      returnType: 'error',
+    });
+
+    const result = detectGoInterfaceImplementations(
+      parsedGoDefs([iface, struct, ifaceSave, structSave], {
+        parsedImports: [{ kind: 'wildcard', targetRaw: 'example.com/x/dotted' } as ParsedImport],
+      }),
+      emptyIndexes,
       {} as any,
     );
 

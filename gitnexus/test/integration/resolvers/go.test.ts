@@ -2194,8 +2194,10 @@ describe('Go signatures naming out-of-repo packages', () => {
   // Two different out-of-repo packages sharing a last path segment must stay
   // distinct: the qualifier is keyed on the import PATH, not the local name.
   it('does not match same-named out-of-repo packages from different import paths', () => {
+    // Exact-set, not `not.toContain`: an empty edge list would satisfy the
+    // negative on its own, and the positive above is what proves it non-empty.
     const implementsEdges = getRelationships(result, 'IMPLEMENTS');
-    expect(edgeSet(implementsEdges)).not.toContain('BetaDialer → Dialer');
+    expect(edgeSet(implementsEdges)).toEqual(['Mem → Store']);
   });
 
   it('dispatches an interface-typed field call to the implementor', () => {
