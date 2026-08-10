@@ -1740,59 +1740,70 @@ describe('generated-plan anchoring capability gate', () => {
     }
   });
 
-  it('refuses the macOS capability gate when no trusted python3 backend exists', async () => {
-    const repo = createBaseRepo('gitnexus-plan-darwin-gate-');
-    const originalPlatform = Object.getOwnPropertyDescriptor(
-      process,
-      'platform',
-    ) as PropertyDescriptor;
-    const realRealpath = fs.realpathSync.bind(fs) as (target: fs.PathLike) => string;
-    const deniedCandidates: string[] = [];
-    // macOS anchoring is only as available as the interpreter that performs it,
-    // so making every python3 candidate unusable must close the gate rather than
-    // silently downgrade to a lexical write.
-    //
-    // The denial has to key on the *candidate* path, which always ends in the
-    // literal component "python3", and it has to intercept the resolve step:
-    // validatedPathExecutable calls accessSync on the realpath, so a mock keyed
-    // on the resolved name would miss every version-suffixed interpreter
-    // (/opt/homebrew/bin/python3 -> .../python3.13, pyenv, uv, and Debian's
-    // /usr/bin/python3.11) and quietly assert nothing at all.
-    const realpathSpy = vi.spyOn(fs, 'realpathSync').mockImplementation(((target: fs.PathLike) => {
-      [String(target)]
-        .filter((candidate) => path.basename(candidate) === 'python3')
-        .forEach((candidate) => {
-          deniedCandidates.push(candidate);
-          throw Object.assign(new Error(`ENOENT: no interpreter, realpath '${candidate}'`), {
-            code: 'ENOENT',
+  // Spoofing process.platform does not spoof fs.constants, and Windows Node
+  // defines no O_DIRECTORY — so a darwin-spoofed run there refuses at the flag
+  // check and can never reach the python3-backend branch this test covers. The
+  // sibling test above still asserts the Windows refusal on Windows.
+  const DARWIN_BACKEND_GATE = process.platform === 'win32' ? it.skip : it;
+
+  DARWIN_BACKEND_GATE(
+    'refuses the macOS capability gate when no trusted python3 backend exists',
+    async () => {
+      const repo = createBaseRepo('gitnexus-plan-darwin-gate-');
+      const originalPlatform = Object.getOwnPropertyDescriptor(
+        process,
+        'platform',
+      ) as PropertyDescriptor;
+      const realRealpath = fs.realpathSync.bind(fs) as (target: fs.PathLike) => string;
+      const deniedCandidates: string[] = [];
+      // macOS anchoring is only as available as the interpreter that performs it,
+      // so making every python3 candidate unusable must close the gate rather than
+      // silently downgrade to a lexical write.
+      //
+      // The denial has to key on the *candidate* path, which always ends in the
+      // literal component "python3", and it has to intercept the resolve step:
+      // validatedPathExecutable calls accessSync on the realpath, so a mock keyed
+      // on the resolved name would miss every version-suffixed interpreter
+      // (/opt/homebrew/bin/python3 -> .../python3.13, pyenv, uv, and Debian's
+      // /usr/bin/python3.11) and quietly assert nothing at all.
+      const realpathSpy = vi.spyOn(fs, 'realpathSync').mockImplementation(((
+        target: fs.PathLike,
+      ) => {
+        [String(target)]
+          .filter((candidate) => path.basename(candidate) === 'python3')
+          .forEach((candidate) => {
+            deniedCandidates.push(candidate);
+            throw Object.assign(new Error(`ENOENT: no interpreter, realpath '${candidate}'`), {
+              code: 'ENOENT',
+            });
           });
-        });
-      return realRealpath(target);
-    }) as typeof fs.realpathSync);
-    try {
-      const planner = await importHelper(PLAN_HELPER);
-      Object.defineProperty(process, 'platform', { value: 'darwin', configurable: true });
-      expect(() =>
-        planner.writePlanSafely({
-          repo,
-          generatedPlanPath: SAFE_PLAN_PATH,
-          contents: '# blocked\n',
-        }),
-      ).toThrow(
-        /require a trusted macOS python3 exposing os\.supports_dir_fd and renameatx_np .*refusing an unanchored write/,
-      );
-      expect(() => planner.readPlanSafely({ repo, generatedPlanPath: SAFE_PLAN_PATH })).toThrow(
-        /Xcode Command Line Tools/,
-      );
-      // Without this the fixture would still pass on a host that simply has no
-      // renameatx_np, proving nothing on the platform it exists to cover.
-      expect(deniedCandidates).not.toHaveLength(0);
-      expect(fs.existsSync(path.join(repo, SAFE_PLAN_PATH))).toBe(false);
-      expect(fs.existsSync(path.join(repo, 'docs'))).toBe(false);
-    } finally {
-      Object.defineProperty(process, 'platform', originalPlatform);
-      realpathSpy.mockRestore();
-      fs.rmSync(repo, { recursive: true, force: true });
-    }
-  });
+        return realRealpath(target);
+      }) as typeof fs.realpathSync);
+      try {
+        const planner = await importHelper(PLAN_HELPER);
+        Object.defineProperty(process, 'platform', { value: 'darwin', configurable: true });
+        expect(() =>
+          planner.writePlanSafely({
+            repo,
+            generatedPlanPath: SAFE_PLAN_PATH,
+            contents: '# blocked\n',
+          }),
+        ).toThrow(
+          /require a trusted macOS python3 exposing os\.supports_dir_fd and renameatx_np .*refusing an unanchored write/,
+        );
+        expect(() => planner.readPlanSafely({ repo, generatedPlanPath: SAFE_PLAN_PATH })).toThrow(
+          /Xcode Command Line Tools/,
+        );
+        // Without this the fixture would still pass on a host that simply has no
+        // renameatx_np, proving nothing on the platform it exists to cover.
+        expect(deniedCandidates).not.toHaveLength(0);
+        expect(fs.existsSync(path.join(repo, SAFE_PLAN_PATH))).toBe(false);
+        expect(fs.existsSync(path.join(repo, 'docs'))).toBe(false);
+      } finally {
+        Object.defineProperty(process, 'platform', originalPlatform);
+        realpathSpy.mockRestore();
+        fs.rmSync(repo, { recursive: true, force: true });
+      }
+    },
+  );
 });
