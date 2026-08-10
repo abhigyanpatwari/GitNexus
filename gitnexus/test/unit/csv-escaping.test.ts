@@ -170,4 +170,29 @@ describe('isBinaryContent', () => {
     const text = 'a'.repeat(1000) + '\x00'.repeat(500);
     expect(isBinaryContent(text)).toBe(false);
   });
+
+  // #2889 — every file enters through a lossy `utf-8` decode, so an embedded
+  // binary payload reaches this function as U+FFFD, never as the raw bytes.
+  it('returns true when >10% U+FFFD replacement characters', () => {
+    const decoded = 'a'.repeat(80) + '�'.repeat(20);
+    expect(isBinaryContent(decoded)).toBe(true);
+  });
+
+  it('counts U+FFFD toward the same threshold as control bytes', () => {
+    // 5 control + 6 replacement = 11% of 100 — neither group crosses 10% alone.
+    const mixed = 'a'.repeat(89) + '\x01'.repeat(5) + '�'.repeat(6);
+    expect(isBinaryContent(mixed)).toBe(true);
+  });
+
+  it('returns false for text carrying a few replacement characters', () => {
+    // A mis-decoded latin-1 comment in an otherwise clean file stays indexable.
+    const mostlyText = 'a'.repeat(95) + '�'.repeat(5);
+    expect(isBinaryContent(mostlyText)).toBe(false);
+  });
+
+  it('returns false for CJK text', () => {
+    // Guards the #2889 gate against the opposite failure: multi-byte text is
+    // not binary, and every code point here is well above the control range.
+    expect(isBinaryContent('库存管理系统更新'.repeat(20))).toBe(false);
+  });
 });
