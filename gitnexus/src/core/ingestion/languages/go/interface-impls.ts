@@ -1145,10 +1145,33 @@ function signatureContextForFile(
     const qualifier = packageQualifierForFile(edge.targetFile);
     if (qualifier !== undefined) importQualifiers.set(edge.localName, qualifier);
   }
+  // An import that resolves to no file in the repository — every stdlib and
+  // third-party package — still has an identity: its import path, which the
+  // parsed directive kept even though the finalized `ImportEdge` did not (#2873).
+  // Without this fallback `ctx context.Context` normalized to `undefined`, and
+  // `undefined` reads as "signatures differ" on both sides at once, so two
+  // textually identical methods compared unequal and Go interface satisfaction
+  // only ever succeeded for builtin-only signatures.
+  for (const directive of parsed.parsedImports) {
+    if (directive.kind !== 'namespace') continue;
+    if (importQualifiers.has(directive.localName)) continue;
+    importQualifiers.set(directive.localName, externalPackageQualifier(directive.targetRaw));
+  }
   return {
     packageQualifier: packageQualifierForFile(parsed.filePath),
     importQualifiers,
   };
+}
+
+/** Identity for a package that lives outside the repository.
+ *
+ *  The import path is the exact identity — `net/http` and `example.com/x/http`
+ *  are different packages that both spell their qualifier `http`, so keying on
+ *  the local name would make them compare equal. The prefix keeps the result in
+ *  a namespace no in-repo qualifier can reach: those are package directories,
+ *  which never contain `:`. */
+function externalPackageQualifier(importPath: string): string {
+  return `extern:${importPath}`;
 }
 
 /** The package directory, or `undefined` for a repo-root file.

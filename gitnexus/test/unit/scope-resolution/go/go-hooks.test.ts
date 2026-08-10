@@ -3,6 +3,7 @@ import type {
   BindingRef,
   Callsite,
   ImportEdge,
+  ParsedImport,
   ReferenceSite,
   Scope,
   ScopeId,
@@ -172,18 +173,20 @@ function parsedGoDefs(
   options: {
     readonly scopes?: readonly Scope[];
     readonly referenceSites?: readonly ReferenceSite[];
+    readonly parsedImports?: readonly ParsedImport[];
   } = {},
 ) {
-  return [
-    {
-      filePath: 'repo.go',
-      language: 'go',
-      scopes: options.scopes ?? [],
-      imports: [],
-      localDefs: [...defs],
-      referenceSites: options.referenceSites ?? [],
-    },
-  ] as any;
+  return [parsedGoFile('repo.go', defs, options)] as any;
+}
+
+/** `import <local> "<path>"` as the extractor records it (#2873). */
+function goNamespaceImport(localName: string, targetRaw: string): ParsedImport {
+  return {
+    kind: 'namespace',
+    localName,
+    importedName: targetRaw.slice(targetRaw.lastIndexOf('/') + 1),
+    targetRaw,
+  };
 }
 
 function parsedGoFile(
@@ -192,6 +195,7 @@ function parsedGoFile(
   options: {
     readonly scopes?: readonly Scope[];
     readonly referenceSites?: readonly ReferenceSite[];
+    readonly parsedImports?: readonly ParsedImport[];
   } = {},
 ) {
   return {
@@ -199,6 +203,7 @@ function parsedGoFile(
     language: 'go',
     scopes: options.scopes ?? [],
     imports: [],
+    parsedImports: options.parsedImports ?? [],
     localDefs: [...defs],
     referenceSites: options.referenceSites ?? [],
   } as any;
@@ -1051,6 +1056,147 @@ describe('Go structural interface detection', () => {
     const result = detectGoInterfaceImplementations(
       parsedGoDefs([iface, struct, ifaceSave, structSave]),
       emptyIndexes,
+      {} as any,
+    );
+
+    expect(result.get(iface.nodeId)).toBeUndefined();
+  });
+
+  // #2873: an out-of-repo package resolves to no file, so it used to be absent
+  // from the qualifier map, and a missing qualifier collapsed the whole signature
+  // to `undefined` — which both compatibility checks read as "differs". Since
+  // `ctx context.Context` opens nearly every idiomatic Go method, that left
+  // structural satisfaction working only for builtin-only signatures.
+  it('matches signatures qualified by the same out-of-repo package', () => {
+    const iface = goDef('iface:Saver', 'Interface', 'Saver');
+    const struct = goDef('struct:Repo', 'Struct', 'Repo');
+    const ifaceSave = goDef('iface:Saver.Save', 'Method', 'Saver.Save', iface.nodeId, {
+      parameterCount: 2,
+      requiredParameterCount: 2,
+      parameterTypes: ['context.Context', 'string'],
+      returnType: 'error',
+    });
+    const structSave = goDef('struct:Repo.Save', 'Method', 'Repo.Save', struct.nodeId, {
+      parameterCount: 2,
+      requiredParameterCount: 2,
+      parameterTypes: ['context.Context', 'string'],
+      returnType: 'error',
+    });
+
+    const result = detectGoInterfaceImplementations(
+      parsedGoDefs([iface, struct, ifaceSave, structSave], {
+        parsedImports: [goNamespaceImport('context', 'context')],
+      }),
+      emptyIndexes,
+      {} as any,
+    );
+
+    expect(implIds(result, iface.nodeId)).toEqual([struct.nodeId]);
+  });
+
+  it('matches an out-of-repo return type across packages', () => {
+    const iface = goDef('iface:Ctxer', 'Interface', 'Ctxer', undefined, {
+      filePath: 'api/ctx.go',
+    });
+    const struct = goDef('struct:Impl', 'Struct', 'Impl', undefined, { filePath: 'store/ctx.go' });
+    const ifaceCtx = goDef('iface:Ctxer.Ctx', 'Method', 'Ctxer.Ctx', iface.nodeId, {
+      filePath: 'api/ctx.go',
+      parameterCount: 0,
+      requiredParameterCount: 0,
+      returnType: 'context.Context',
+    });
+    const implCtx = goDef('struct:Impl.Ctx', 'Method', 'Impl.Ctx', struct.nodeId, {
+      filePath: 'store/ctx.go',
+      parameterCount: 0,
+      requiredParameterCount: 0,
+      returnType: 'context.Context',
+    });
+    const defs = [iface, struct, ifaceCtx, implCtx];
+
+    const result = detectGoInterfaceImplementations(
+      [
+        parsedGoFile('api/ctx.go', [iface, ifaceCtx], {
+          parsedImports: [goNamespaceImport('context', 'context')],
+        }),
+        parsedGoFile('store/ctx.go', [struct, implCtx], {
+          parsedImports: [goNamespaceImport('context', 'context')],
+        }),
+      ],
+      scopeIndexes(defs),
+      {} as any,
+    );
+
+    expect(implIds(result, iface.nodeId)).toEqual([struct.nodeId]);
+  });
+
+  // The import PATH is the identity, not the local name: an alias changes only
+  // how one file spells the package.
+  it('matches an aliased out-of-repo import against its unaliased spelling', () => {
+    const iface = goDef('iface:Saver', 'Interface', 'Saver', undefined, { filePath: 'api/s.go' });
+    const struct = goDef('struct:Repo', 'Struct', 'Repo', undefined, { filePath: 'store/s.go' });
+    const ifaceSave = goDef('iface:Saver.Save', 'Method', 'Saver.Save', iface.nodeId, {
+      filePath: 'api/s.go',
+      parameterCount: 1,
+      requiredParameterCount: 1,
+      parameterTypes: ['c.Context'],
+      returnType: 'error',
+    });
+    const structSave = goDef('struct:Repo.Save', 'Method', 'Repo.Save', struct.nodeId, {
+      filePath: 'store/s.go',
+      parameterCount: 1,
+      requiredParameterCount: 1,
+      parameterTypes: ['context.Context'],
+      returnType: 'error',
+    });
+    const defs = [iface, struct, ifaceSave, structSave];
+
+    const result = detectGoInterfaceImplementations(
+      [
+        parsedGoFile('api/s.go', [iface, ifaceSave], {
+          parsedImports: [goNamespaceImport('c', 'context')],
+        }),
+        parsedGoFile('store/s.go', [struct, structSave], {
+          parsedImports: [goNamespaceImport('context', 'context')],
+        }),
+      ],
+      scopeIndexes(defs),
+      {} as any,
+    );
+
+    expect(implIds(result, iface.nodeId)).toEqual([struct.nodeId]);
+  });
+
+  // The other half of keying on the path: two DIFFERENT out-of-repo packages
+  // whose last segment collides still have to compare unequal.
+  it('rejects same-named out-of-repo packages with different import paths', () => {
+    const iface = goDef('iface:Dialer', 'Interface', 'Dialer', undefined, { filePath: 'api/d.go' });
+    const struct = goDef('struct:Impl', 'Struct', 'Impl', undefined, { filePath: 'store/d.go' });
+    const ifaceDial = goDef('iface:Dialer.Dial', 'Method', 'Dialer.Dial', iface.nodeId, {
+      filePath: 'api/d.go',
+      parameterCount: 1,
+      requiredParameterCount: 1,
+      parameterTypes: ['client.Config'],
+      returnType: 'error',
+    });
+    const implDial = goDef('struct:Impl.Dial', 'Method', 'Impl.Dial', struct.nodeId, {
+      filePath: 'store/d.go',
+      parameterCount: 1,
+      requiredParameterCount: 1,
+      parameterTypes: ['client.Config'],
+      returnType: 'error',
+    });
+    const defs = [iface, struct, ifaceDial, implDial];
+
+    const result = detectGoInterfaceImplementations(
+      [
+        parsedGoFile('api/d.go', [iface, ifaceDial], {
+          parsedImports: [goNamespaceImport('client', 'example.com/alpha/client')],
+        }),
+        parsedGoFile('store/d.go', [struct, implDial], {
+          parsedImports: [goNamespaceImport('client', 'example.com/beta/client')],
+        }),
+      ],
+      scopeIndexes(defs),
       {} as any,
     );
 

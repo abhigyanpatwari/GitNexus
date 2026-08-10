@@ -2156,3 +2156,52 @@ describe('Go grouped type declaration scoping (#2837)', () => {
     expect(methods).not.toContain('AuditSink.Observe');
   });
 });
+
+// ---------------------------------------------------------------------------
+// Out-of-repo package qualifiers in signatures (#2873)
+// ---------------------------------------------------------------------------
+
+describe('Go signatures naming out-of-repo packages', () => {
+  let result: PipelineResult;
+
+  beforeAll(async () => {
+    result = await runPipelineFromRepo(
+      path.join(FIXTURES, 'go-extern-qualified-signatures'),
+      () => {},
+    );
+  }, 60000);
+
+  function owningTypeName(methodId: string): string {
+    for (const rel of result.graph.iterRelationshipsByType('HAS_METHOD')) {
+      if (rel.targetId !== methodId) continue;
+      const owner = result.graph.getNode(rel.sourceId);
+      return (owner?.properties.name ?? rel.sourceId) as string;
+    }
+    return '';
+  }
+
+  // `context.Context` resolves to no file in the repo, which used to collapse the
+  // whole signature to `undefined` on BOTH sides — so identical signatures
+  // compared unequal and no Go interface with a `ctx` parameter was ever
+  // implemented.
+  it('emits structural IMPLEMENTS across packages for stdlib-qualified signatures', () => {
+    const implementsEdges = getRelationships(result, 'IMPLEMENTS').filter((edge) =>
+      (edge.rel.reason ?? '').startsWith('go-structural-implements'),
+    );
+    expect(edgeSet(implementsEdges)).toEqual(['Mem → Store']);
+  });
+
+  // Two different out-of-repo packages sharing a last path segment must stay
+  // distinct: the qualifier is keyed on the import PATH, not the local name.
+  it('does not match same-named out-of-repo packages from different import paths', () => {
+    const implementsEdges = getRelationships(result, 'IMPLEMENTS');
+    expect(edgeSet(implementsEdges)).not.toContain('BetaDialer → Dialer');
+  });
+
+  it('dispatches an interface-typed field call to the implementor', () => {
+    const dispatched = getRelationships(result, 'CALLS')
+      .filter((edge) => edge.source === 'Remove' && edge.rel.reason === 'interface-dispatch')
+      .map((edge) => `${owningTypeName(edge.rel.targetId)}.${edge.target}`);
+    expect(dispatched).toEqual(['Mem.Delete']);
+  });
+});

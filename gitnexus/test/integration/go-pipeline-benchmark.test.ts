@@ -590,6 +590,7 @@ function generateSyntheticInterfaceData(interfaceCount: number, structCount: num
       language: 'go',
       scopes: [],
       imports: [],
+      parsedImports: [],
       localDefs: defs,
       referenceSites: [],
     },
