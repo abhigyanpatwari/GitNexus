@@ -293,37 +293,69 @@
  * could not see, and it took a differential parity test over 211 200 pairs plus
  * this bench's arrival to pin it.
  *
- * SECOND BLIND SPOT, stated because an undocumented one in a merge-required
- * gate is worse than a documented one: THIS HARNESS MEASURES THE NO-CONTEXT
- * CALL SHAPE ONLY. `run.ts` calls `provider.resolveImportTarget` with five
- * arguments, the fifth being `{ parsedFiles, parsedImport }`; `resolveOne`
- * below calls the inner resolvers and never supplies it. For fifteen of the
- * seventeen arms that is not a gap — their providers declare three or four
- * parameters and cannot observe a fifth — but PHP and Python declare it and
- * both have a leg behind it:
+ * THE FIFTH ARGUMENT — `context`, and exactly how much of it is measured. This
+ * harness used to call the inner resolvers with THREE arguments while `run.ts`
+ * calls `provider.resolveImportTarget` with FIVE, the fifth being
+ * `{ parsedFiles, parsedImport }`. Every arm was therefore a measurement of a
+ * call shape production never makes, and that is not a cheap thing to get
+ * wrong: defeating the `perFileSet` memo behind PHP's `filesByDirectory`
+ * measures 197.0 µs -> 9976.2 µs per import (50.6x) with every test still
+ * green, and nothing here could see it.
  *
- *   - PHP takes it when `parsedImport.kind` is `named` or `alias` AND the
- *     imported symbol is a `function` or a `const`, and that leg calls
- *     `filesByDirectory(context.parsedFiles)`. Defeating that memo has been
- *     measured at 197.0 µs -> 9976.2 µs per import (50.6x) with every test
- *     still green, so the leg is worth an arm;
- *   - Python threads `context.parsedFiles` into `PythonResolveContext` and
- *     falls back to exactly the synthetic `namespace` import `resolveOne`
- *     already passes, so its arm matches the no-context path precisely — the
- *     unmeasured part is the `parsedFiles` field, not the spelling.
+ * `resolveOne` now makes the production call. Only TWO of the seventeen arms
+ * can observe it — PHP and Python are the only registered hooks that declare a
+ * fifth parameter — and that is ASSERTED rather than asserted-in-a-comment: the
+ * inventory arm at the foot of the file reads
+ * `SCOPE_RESOLVERS.get(language).resolveImportTarget.length` and reconciles it
+ * against `CONTEXT_LANGS` in both directions, so a language that grows a
+ * context leg cannot ship with the leg unmeasured. The other fifteen are handed
+ * nothing and build no `ParsedFile[]` at all, so their numbers are unmoved.
  *
- * That leg is gated by COUNT rather than by time, in
- * `test/unit/scope-resolution/import-target-index-reuse.contract.test.ts`, and
- * that is the gate to read alongside this file — the same division of labour
- * as the blind spot above. Closing it HERE is not a small change and should not
- * be done as a drive-by: `run.ts` derives `allFilePaths` FROM `parsedFiles`, so
- * `buildRepo` would have to mint the parsed files first and derive the path set
- * from them (two independently built lists are a shape production cannot
- * produce). That moves PHP's fingerprints and PHP's and Python's timing
- * budgets, and it adds a per-file object graph to the 8000/32 000-file heap
- * corpora, which moves all eight heap readings and their ceilings. Every one of
- * those has to be re-recorded on an idle box, in one change, with the moves
- * explained — which is a piece of work, not a parameter.
+ * `newPass` mints the `ParsedFile[]` FIRST and derives the path set from it
+ * (`new Set(parsedFiles.map(f => f.filePath))`), because that is what `run.ts`
+ * does — two independently built lists are a shape the pipeline cannot produce
+ * and would let the two memos disagree about which files exist. Both are fresh
+ * per pass for the reason the Set always was: `filesByDirectory` (PHP) and
+ * `parsedFileByPath` (Python) are `perFileSet` memos keyed on the ARRAY's
+ * identity, so a reused array would hide their build from rep 2 onward and
+ * `fastest()` takes the minimum.
+ *
+ * THE LEGS ACTUALLY RUN, which is what a "context is threaded" claim is worth
+ * nothing without — a leg that returns early measures nothing, the exact
+ * failure the four 0 B heap arms already demonstrated in this file. PHP's needs
+ * `parsedImport.kind` to be `named` or `alias` AND `importedSymbolKind` to be
+ * `function` or `const`; Python's needs a `named`/`alias` import too, because
+ * the synthetic `namespace` spelling this file used to pass makes
+ * `pythonImportedSubmoduleTarget` return null and `context.parsedFiles` is then
+ * never read at all. A deterministic `context` arm pins both per language: a
+ * three-file corpus resolved through `resolveOne` twice, once with the pass's
+ * `parsedFiles` and once without, whose two answers must DIFFER and must both
+ * equal what baselines.json records. Dropping the fifth argument, dropping
+ * `importedSymbolKind`, or reverting Python to `namespace` collapses the two
+ * onto one value and fails — and no other arm here would: on the main corpus
+ * the leg agrees with the cascade, so both languages' fingerprints are
+ * UNCHANGED by this (measured, all ten).
+ *
+ * WHAT IS STILL NOT MEASURED, narrowed rather than deleted:
+ *
+ *   - Python's `parsedFileByPath` memo is exercised by the five timing arms and
+ *     NOT by the heap arm, and structurally cannot be. `retainedPassBytes`
+ *     requires its probe to MISS, while every path that builds that memo runs
+ *     through a non-null `packageTarget` which `resolvePythonImportTarget` then
+ *     returns. So nothing here bounds that Map's footprint; it is one pointer
+ *     per parsed file, O(files) with no depth term, and the count gate in
+ *     import-target-index-reuse.contract.test.ts is what holds it to one build
+ *     per pass;
+ *   - PHP's leg is measured with NO composer.json — `resolutionConfig` is
+ *     undefined here, as it always has been — so `namespaceDirectories` only
+ *     ever returns the directory of an already-resolved file and the PSR-4
+ *     mapping branch stays unreached, exactly as `csharp` cannot reach the
+ *     csproj leg. Closing that is a second PHP arm on the `csharp_csproj`
+ *     precedent, not a parameter;
+ *   - the `const` tail of PHP's leg (`candidateFiles.length === 1`) is a
+ *     different ANSWER, not a different cost: `function` runs the identical
+ *     candidate gather and `localDefs` filter and diverges only in the last two
+ *     lines. It is gated by count in the contract test above.
  *
  * COST, and the honest version of it. REPORT mode is ~33-35 s, down from ~46 s:
  * the timing phase fell from 39.8 s to 28.7 s when `REPS` became per-language
@@ -459,6 +491,20 @@ const HEAP_PAD = 8;
  *  seventeen: COBOL, rust, swift, typescript, vue and cpp are absent on purpose
  *  and the MEMORY section of the header gives a separate reason for each. */
 const HEAP_LANGS = ['csharp', 'csharp_csproj', 'ruby', 'php', 'java', 'javascript', 'python', 'c'];
+
+/**
+ * The arms handed the fifth `context` argument — `{ parsedFiles, parsedImport }`
+ * — because their registered hook DECLARES it. Two of seventeen, and the
+ * inventory arm at the foot of this file reconciles that claim against
+ * `SCOPE_RESOLVERS` in both directions rather than trusting this line.
+ *
+ * These are also the only arms for which `newPass` builds a `ParsedFile[]` at
+ * all. Building one for the other fifteen would cost their timed loop an
+ * O(files) allocation per pass that no resolver of theirs can even observe —
+ * their hooks declare three or four parameters — so their numbers stay exactly
+ * where they were.
+ */
+const CONTEXT_LANGS = ['php', 'python'];
 
 /**
  * Needs `node --expose-gc` to force collection for a clean delta; without it
@@ -785,6 +831,58 @@ function buildFiles(lang, fileCount, pad, shape) {
     files.push(`${prefix}${dir}/${stem}${suffix}`);
   }
   return files;
+}
+
+/**
+ * The `ParsedFile[]` the orchestrator threads beside the path set, for the two
+ * languages whose hook declares a `context` — see `CONTEXT_LANGS`.
+ *
+ * CARRIES THE FIELDS THE RESOLVERS READ AND NOTHING ELSE, deliberately.
+ * `filesByDirectory` reads `filePath`; PHP's declaring-file filter reads
+ * `localDefs[].type` and `localDefs[].qualifiedName`; Python's
+ * `pythonFileExportsName` reads `localDefs[].qualifiedName`. `scopes`,
+ * `parsedImports` and `referenceSites` are on the real shape and are inert on
+ * this path, and this array is rebuilt inside every timed pass (see `newPass`),
+ * so filling them would charge the RESOLUTION arms for extraction work that
+ * happens in another phase entirely.
+ *
+ * Two defs per file, and both are real shapes rather than padding. PHP keeps
+ * classes and functions in SEPARATE symbol tables, so `App\Ns7\File7` naming
+ * both a class and a function is ordinary PHP — and it is what makes the leg's
+ * two halves reachable on the same corpus: the class def exercises the
+ * `def.type !== expectedType` reject (which returns before the split) and the
+ * function def exercises the `split(/[\\.]/).at(-1)` compare that decides the
+ * match. The qualified name carries two separators because that split's cost is
+ * a function of how many there are, and a one-segment name would understate it.
+ *
+ * The owner segment is the file's own directory name (`Ns7`, `Models`, `pkg7`),
+ * which is stable across the `small`, `deep` and `collide` arms — so the `deep`
+ * arm differs from `small` in path DEPTH alone, exactly as it does for the path
+ * set. That matters here: `directoryAliases` emits one entry per path segment,
+ * so `filesByDirectory` is O(files × depth) and the depth arm is the only one
+ * that can see it.
+ */
+function buildParsedFiles(lang, files) {
+  const parsedFiles = [];
+  for (const filePath of files) {
+    const slash = filePath.lastIndexOf('/');
+    const stem = filePath.slice(slash + 1, filePath.lastIndexOf('.'));
+    const parent = slash < 0 ? '' : filePath.slice(0, slash);
+    const owner = parent.slice(parent.lastIndexOf('/') + 1);
+    const qualifiedName = lang === 'php' ? `App\\${owner}\\${stem}` : `${owner}.${stem}`;
+    parsedFiles.push({
+      filePath,
+      moduleScope: filePath,
+      scopes: [],
+      parsedImports: [],
+      localDefs: [
+        { nodeId: `${filePath}#c`, filePath, type: 'Class', qualifiedName },
+        { nodeId: `${filePath}#f`, filePath, type: 'Function', qualifiedName },
+      ],
+      referenceSites: [],
+    });
+  }
+  return parsedFiles;
 }
 
 /**
@@ -1251,6 +1349,15 @@ function buildRepo(lang, fileCount, pad = 0, shape = 'unique') {
  *
  * `csharp_csproj` is the precedent and stays where it is: a per-language
  * CONTEXT over a corpus aliased to another language's, rather than a new axis.
+ *
+ * `parsedFiles` is the third pass-stable object, present for `CONTEXT_LANGS`
+ * and undefined for everyone else. It is built BEFORE the path set and the path
+ * set is derived FROM it, which is not a stylistic choice: `run.ts` does
+ * `new Set(parsedFiles.map((f) => f.filePath))`, so two independently built
+ * lists would be a shape the pipeline cannot produce. Fresh per pass for
+ * exactly the reason the Set is — `filesByDirectory` and `parsedFileByPath` are
+ * `perFileSet` memos keyed on this ARRAY's identity, so reusing one array would
+ * hide their build from rep 2 onward and `fastest()` reports the minimum.
  */
 function newPass(lang, files) {
   if (HEADER_EXTENSION[lang] !== undefined) {
@@ -1260,8 +1367,27 @@ function newPass(lang, files) {
     return { allFilePaths: new Set(sources), config: new Set(headers) };
   }
   if (lang === 'vue') return { allFilePaths: new Set(files), config: VUE_TSCONFIG };
+  if (CONTEXT_LANGS.includes(lang)) {
+    const parsedFiles = buildParsedFiles(lang, files);
+    return {
+      allFilePaths: new Set(parsedFiles.map((f) => f.filePath)),
+      config: undefined,
+      parsedFiles,
+    };
+  }
   return { allFilePaths: new Set(files), config: undefined };
 }
+
+/**
+ * The `{ parsedFiles, parsedImport }` object `run.ts` mints per import — per
+ * import there too, so this allocation is production's, not the bench's.
+ *
+ * `undefined` when the pass carries no parsed workspace, which happens in
+ * exactly one place: the CONTROL half of the `context` arm, whose whole job is
+ * to prove the arm can tell the two call shapes apart.
+ */
+const contextFor = (pass, parsedImport) =>
+  pass.parsedFiles === undefined ? undefined : { parsedFiles: pass.parsedFiles, parsedImport };
 
 /** The timed loop. One `newPass` per pass, so every pass pays exactly one index
  *  build — see `newPass`. */
@@ -1286,11 +1412,35 @@ function resolveOne(lang, from, target, pass) {
       { fromFile: from, allFilePaths },
     );
   }
-  // No `resolutionConfig`, so no composer.json: the PSR-4 legs are skipped and
-  // every import lands on the suffix cascade #2901 indexed. No `context`
-  // either, so the named/alias function-or-const leg over
-  // `filesByDirectory(parsedFiles)` is never timed — see SECOND BLIND SPOT.
-  if (lang === 'php') return resolvePhpImportTargetInternal(target, from, allFilePaths);
+  // `pass.config` is undefined for PHP, so no composer.json: the PSR-4 mapping
+  // legs are skipped and every import lands on the suffix cascade #2901
+  // indexed. The FIFTH argument is the production one, and
+  // `importedSymbolKind: 'function'` is what opens the named/alias leg over
+  // `filesByDirectory(context.parsedFiles)` — see THE FIFTH ARGUMENT. It runs
+  // on every import rather than on a share of them because the leg is the point
+  // of the arm and it costs the cascade nothing: `resolvePhpImportInternal`
+  // has already returned by the time the leg is consulted, so this arm still
+  // measures everything it measured before, plus the leg.
+  //
+  // `importedName` is inert here and stays 'X' like the java and kotlin arms:
+  // the leg derives the name it matches on from `targetRaw` itself, so
+  // computing a real one would be a split per import charged to the timed loop
+  // for a field nothing reads.
+  if (lang === 'php') {
+    return resolvePhpImportTargetInternal(
+      target,
+      from,
+      allFilePaths,
+      pass.config,
+      contextFor(pass, {
+        kind: 'named',
+        localName: 'X',
+        importedName: 'X',
+        targetRaw: target,
+        importedSymbolKind: 'function',
+      }),
+    );
+  }
   if (lang === 'java') {
     return resolveJavaImportTarget(
       { kind: 'named', localName: 'X', importedName: 'X', targetRaw: target },
@@ -1307,15 +1457,30 @@ function resolveOne(lang, from, target, pass) {
   }
   if (lang === 'rust') return resolveRustImportTarget(target, from, allFilePaths, undefined);
   if (lang === 'python') {
-    // The spelling `pythonScopeResolver` falls back to when the orchestrator
-    // has no `parsedImport` for the edge. A `named` import would additionally
-    // take the submodule-precedence branch, which re-enters the resolver twice
-    // per import and would measure that recursion rather than the index. The
-    // provider also threads `context.parsedFiles` into `PythonResolveContext`
-    // and this passes none — see SECOND BLIND SPOT.
+    // `from <target> import X` — the spelling the orchestrator actually hands
+    // the provider, and the ONLY one that reads `context.parsedFiles`: a
+    // `namespace` import makes `pythonImportedSubmoduleTarget` return null, the
+    // submodule-precedence branch never runs and the field is dead. This arm
+    // used to pass that synthetic namespace spelling and skipped the branch
+    // for exactly that reason, which is what made the field unmeasurable.
+    //
+    // So the arm now pays the branch: a package probe, a `parsedFileByPath`
+    // lookup over the resolved package's `localDefs`, and a submodule probe —
+    // up to three entries into the resolver per import, which is why its ms
+    // numbers are several times what the namespace spelling read. That IS the
+    // per-import cost of a `from … import …` in production.
+    //
+    // 'X' names nothing the corpus declares, on purpose: `pythonFileExportsName`
+    // then scans the whole `localDefs` list and returns false, so every
+    // resolving import runs the submodule probe too. That is the expensive
+    // half of the branch — a name the package DOES export short-circuits at
+    // the first def — and matches corpus property 1 above.
+    //
+    // The `{ fromFile, allFilePaths, parsedFiles }` shape is exactly what
+    // `pythonScopeResolver` builds from the context before calling this.
     return resolvePythonImportTarget(
-      { kind: 'namespace', localName: '_', importedName: '_', targetRaw: target },
-      { fromFile: from, allFilePaths },
+      { kind: 'named', localName: 'X', importedName: 'X', targetRaw: target },
+      { fromFile: from, allFilePaths, parsedFiles: pass.parsedFiles },
     );
   }
   if (lang === 'javascript') return jsResolveImportTarget(target, from, allFilePaths);
@@ -1377,10 +1542,20 @@ function identityPass(lang, files, imports) {
     wasNull = hit === null;
     wasNullByKey.set(key, wasNull);
     if (!wasNull) resolved++;
-    const rendered = wasNull ? '<null>' : Array.isArray(hit) ? hit.join(',') : hit;
+    const rendered = renderResolved(hit);
     outcomes.add(`${key}\u0000${rendered}`);
   }
   return { outcomes, resolved };
+}
+
+/** One resolver answer as a comparable string. Kotlin and Java can return a
+ *  LIST (their wildcard tier), so the array form is part of the shape, and
+ *  `<null>` keeps a miss distinct from a resolver that answered the empty
+ *  string. Shared by the fingerprint above and by the `context` arm below, so
+ *  the two never drift into reporting one answer two ways. */
+function renderResolved(hit) {
+  if (hit === null) return '<null>';
+  return Array.isArray(hit) ? hit.join(',') : hit;
 }
 
 /** MIN, not median: both scales are timed in one process and every error source
@@ -1597,6 +1772,105 @@ function measureHeap(lang) {
   };
 }
 
+/** One hand-built `ParsedFile` for the `context` arm's corpora. Same fields
+ *  `buildParsedFiles` fills, with the defs named explicitly because these two
+ *  corpora exist to produce ONE specific disagreement each. */
+const probeFile = (filePath, defs) => ({
+  filePath,
+  moduleScope: filePath,
+  scopes: [],
+  parsedImports: [],
+  localDefs: defs.map(([type, qualifiedName], n) => ({
+    nodeId: `${filePath}#${n}`,
+    filePath,
+    type,
+    qualifiedName,
+  })),
+  referenceSites: [],
+});
+
+/**
+ * The `context` arm's corpora — one per `CONTEXT_LANGS` entry, each a handful
+ * of files carrying ONE import whose answer DIFFERS between the production
+ * five-argument call and the three-argument one this harness used to make.
+ *
+ * That difference is the whole arm. The main corpus cannot serve as one: there
+ * the leg AGREES with the cascade for every import (measured — both languages'
+ * ten fingerprints are unchanged by threading the context), which is the right
+ * outcome for a corpus built to measure cost, and useless for proving the
+ * context arrives. Timing cannot prove it either; a dropped context makes the
+ * arms FASTER, and nothing here has a lower bound on ms.
+ *
+ * Both are resolved THROUGH `resolveOne`, not through the resolvers directly,
+ * because what is under test is this file's threading rather than the
+ * resolvers' behaviour. The control differs in exactly one thing:
+ * `pass.parsedFiles` is undefined, which `contextFor` turns into no fifth
+ * argument at all.
+ */
+const CONTEXT_PROBE = {
+  /**
+   * `use function App\Ns0\Dup;` where the CLASS `Dup` lives in `Dup.php` and
+   * the FUNCTION `Dup` lives in `Helpers.php`. PHP keeps the two in separate
+   * symbol tables and PSR-4 maps only the class, which is the case the leg
+   * exists for: the suffix cascade answers the file whose NAME matches the last
+   * segment, the leg answers the file that DECLARES the function. Two distinct
+   * non-null paths, so neither half of the arm can be mistaken for a miss, and
+   * `Alpha.php` is a third file in the same directory so the candidate gather
+   * has something to reject.
+   */
+  php: {
+    from: 'src/App/Ns0/Alpha.php',
+    target: 'App\\Ns0\\Dup',
+    parsedFiles: [
+      probeFile('src/App/Ns0/Alpha.php', [['Class', 'App\\Ns0\\Alpha']]),
+      probeFile('src/App/Ns0/Dup.php', [['Class', 'App\\Ns0\\Dup']]),
+      probeFile('src/App/Ns0/Helpers.php', [['Function', 'App\\Ns0\\Dup']]),
+    ],
+  },
+  /**
+   * `from pkg import X`, with `pkg/__init__.py` exporting `X` AND a same-named
+   * submodule `pkg/X.py` beside it — the precedence CPython documents and the
+   * one `pythonFileExportsName` exists to reproduce. With the parsed workspace
+   * the package's own export wins (`pkg/__init__.py`); without it the export is
+   * invisible, the submodule probe runs and `pkg/X.py` wins.
+   *
+   * `X` rather than a prettier name because `resolveOne` passes `importedName:
+   * 'X'`: the probe is tied to the spelling the timing arms use, so changing
+   * one without the other fails here.
+   *
+   * This corpus also catches a revert to the synthetic `namespace` spelling,
+   * which no exact-value assertion could: that spelling never reads
+   * `parsedFiles`, so BOTH halves answer `pkg/__init__.py` and the
+   * with/without inequality below is what notices.
+   */
+  python: {
+    from: 'app/main.py',
+    target: 'pkg',
+    parsedFiles: [
+      probeFile('pkg/__init__.py', [['Function', 'pkg.X']]),
+      probeFile('pkg/X.py', [['Function', 'pkg.X.run']]),
+      probeFile('app/main.py', [['Function', 'app.main.run']]),
+    ],
+  },
+};
+
+/** Resolve the probe twice through `resolveOne` — once with the pass's parsed
+ *  workspace, once without — and report both answers. Deterministic and
+ *  microseconds, so it runs in report mode too. */
+function measureContext(lang) {
+  const { from, target, parsedFiles } = CONTEXT_PROBE[lang];
+  const allFilePaths = new Set(parsedFiles.map((f) => f.filePath));
+  const answer = (files) =>
+    renderResolved(
+      resolveOne(lang, from, target, { allFilePaths, config: undefined, parsedFiles: files }),
+    );
+  return {
+    target,
+    with_context: answer(parsedFiles),
+    without_context: answer(undefined),
+  };
+}
+
 function fingerprint(outcomes) {
   return crypto
     .createHash('sha256')
@@ -1726,6 +2000,12 @@ for (const lang of LANGS) {
 // not overlap a measurement of time.
 for (const lang of HEAP_LANGS) report[lang].heap = measureHeap(lang);
 
+// Deterministic and microseconds — it resolves six imports over two three-file
+// corpora — so unlike the heap arm it neither needs nor deserves isolation from
+// the timing phase. It runs last only because it reads best beside the heap arm
+// in the report.
+for (const lang of CONTEXT_LANGS) report[lang].context = measureContext(lang);
+
 if (!CHECK) {
   console.log(JSON.stringify(report, null, 2));
   process.exit(0);
@@ -1755,12 +2035,28 @@ const HEAP_SHAPE = {
     'ceiling, floor and ratio passing over an arm that changed workload. Deterministic: a ' +
     're-run will not change it.',
 };
+/** The same, for the `context` arm. All three fields are exact strings, not
+ *  bounds: this arm has no measurement noise at all — it resolves one import
+ *  two ways over a three-file corpus — so anything less than equality would be
+ *  slack for nothing. */
+const CONTEXT_SHAPE = {
+  fields: ['target', 'with_context', 'without_context'],
+  why:
+    'the fifth `context` argument stopped reaching this resolver, reached it in a different ' +
+    'shape, or the resolver changed what it does with it. `with_context` is what the five-argument ' +
+    'call `run.ts` makes answers and `without_context` is what the three-argument one this bench ' +
+    'used to make answers; both are pinned, so a change is attributed rather than guessed. ' +
+    'Deterministic: a re-run will not change it.',
+};
 /** Every asserted arm for one language, derived so a new scale is covered by
  *  construction. The heap arm is present for exactly `HEAP_LANGS`, which the
- *  reconciliation below pins to `heap_ceiling_bytes`' keys. */
+ *  reconciliation below pins to `heap_ceiling_bytes`' keys; the context arm for
+ *  exactly `CONTEXT_LANGS`, which the registry-arity arm at the foot of the
+ *  file pins to the hooks that DECLARE a fifth parameter. */
 const armShapes = (lang) => [
   ...SCALES.map((scale) => [scale, SCALE_SHAPE]),
   ...(HEAP_LANGS.includes(lang) ? [['heap', HEAP_SHAPE]] : []),
+  ...(CONTEXT_LANGS.includes(lang) ? [['context', CONTEXT_SHAPE]] : []),
 ];
 
 for (const lang of LANGS) {
@@ -1869,6 +2165,27 @@ for (const lang of LANGS) {
       );
     }
   }
+  // The `context` arm's own discriminator, and the same shape of gate as the
+  // deep/collide fingerprint comparison above: `armShapes` pins WHAT the two
+  // call shapes answer, and this pins that they still answer DIFFERENTLY.
+  // Without it the arm degrades exactly the way `DEEP_PAD = 0` degrades the
+  // depth arm — a probe on which both halves agree asserts two copies of one
+  // number. Deleting the fifth argument from `resolveOne`, deleting
+  // `importedSymbolKind` from PHP's import, or reverting Python to the
+  // `namespace` spelling all land here, and NOTHING else in this file would
+  // notice: on the main corpus the leg agrees with the cascade, so the
+  // fingerprints do not move, and a dropped context only makes the timing arms
+  // faster.
+  if (CONTEXT_LANGS.includes(lang) && got.context.with_context === got.context.without_context) {
+    failures.push(
+      `${lang}: context arm answers '${got.context.with_context}' with AND without the pass's ` +
+        `parsedFiles — the fifth argument is not reaching the resolver, or the leg behind it no ` +
+        `longer runs (PHP needs parsedImport.kind named|alias AND importedSymbolKind ` +
+        `function|const; Python needs named|alias, since a namespace import never reads ` +
+        `parsedFiles). run.ts calls resolveImportTarget with five arguments and this bench must ` +
+        `too. Deterministic: a re-run will not change it.`,
+    );
+  }
   // ONE loop for every arm's corpus shape, timing and heap alike. The heap arm
   // was reported here and asserted nowhere, which made the four fields that
   // decide WHAT it measures free to move: `HEAP_PROBE_TARGET.csharp_csproj`
@@ -1932,6 +2249,22 @@ for (const [key, map] of heapBudgetMaps) {
         `budgets a heap arm it does not measure. Deterministic: a re-run will not change it.`,
     );
   }
+}
+
+// The same reverse direction for the context arm. The forward direction (a
+// language in CONTEXT_LANGS with no baseline block) is `armShapes`, which
+// compares against `want.context?.[field]` and fails on undefined; this is the
+// other way round — a baseline block for a language the bench hands no context
+// is a gate over an arm that is never measured, and `armShapes` would never
+// look at it.
+for (const lang of Object.keys(baseline.languages)) {
+  if (baseline.languages[lang].context === undefined) continue;
+  if (CONTEXT_LANGS.includes(lang)) continue;
+  failures.push(
+    `baselines.json languages.${lang} has a context block, but '${lang}' is not in ` +
+      `CONTEXT_LANGS — the bench pins an arm it does not run. Deterministic: a re-run will not ` +
+      `change it.`,
+  );
 }
 
 // Driven by HEAP_LANGS, the CODE's list, exactly as the timing arms iterate
@@ -2054,6 +2387,39 @@ for (const language of benchedLanguages) {
   failures.push(
     `LANG_REGISTRY names '${language}', which is not in SCOPE_RESOLVERS — this bench is gating a ` +
       `resolver the pipeline no longer registers. Deterministic: a re-run will not change it.`,
+  );
+}
+
+// The SAME reconciliation for `CONTEXT_LANGS`, against the registry rather than
+// against a claim in a comment. `run.ts` passes the fifth argument to every
+// provider; which ones can OBSERVE it is decided by how many parameters each
+// hook declares, and that is a number the registry can be asked for. Today
+// exactly two answer 5 (php, python) and the other fourteen answer 3 or 4 —
+// which is why fourteen arms could ignore this whole question and their numbers
+// did not move when it was fixed.
+//
+// `Function.length` stops at the first defaulted or rest parameter, so a hook
+// written as `(a, b, c, d, context = {})` would read 4 and slip past this arm.
+// The shared contract declares the parameter as `context?:`, which compiles to
+// a plain parameter, so every resolver written against it counts — and one that
+// is not is one this arm asks you to look at.
+const CONTEXT_PARAM_COUNT = 5;
+const contextLanguages = new Set(CONTEXT_LANGS.map((lang) => LANG_REGISTRY[lang]));
+for (const [language, resolver] of SCOPE_RESOLVERS) {
+  const declares = resolver.resolveImportTarget.length >= CONTEXT_PARAM_COUNT;
+  const benched = contextLanguages.has(language);
+  if (declares === benched) continue;
+  failures.push(
+    declares
+      ? `${language}'s resolveImportTarget declares ${resolver.resolveImportTarget.length} ` +
+          `parameters, so it can read the { parsedFiles, parsedImport } context run.ts passes, ` +
+          `but no arm here supplies one — that leg is measured by nothing. Add the language to ` +
+          `CONTEXT_LANGS, thread the context in resolveOne, and give it a CONTEXT_PROBE whose ` +
+          `two answers differ. Deterministic: a re-run will not change it.`
+      : `CONTEXT_LANGS names '${language}', whose resolveImportTarget declares only ` +
+          `${resolver.resolveImportTarget.length} parameters — it cannot observe a context, so ` +
+          `this bench is building a ParsedFile[] per pass that nothing reads and asserting a ` +
+          `context arm that cannot fail. Deterministic: a re-run will not change it.`,
   );
 }
 

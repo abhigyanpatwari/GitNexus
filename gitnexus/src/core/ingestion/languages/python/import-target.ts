@@ -12,6 +12,7 @@
 
 import type { ParsedFile, ParsedImport, WorkspaceIndex } from 'gitnexus-shared';
 import { perFileSet } from '../../import-resolvers/per-file-set.js';
+import { getPythonFileIndex, importerAncestors } from '../../import-resolvers/python-file-index.js';
 import { resolvePythonImportInternal } from '../../import-resolvers/python.js';
 
 export interface PythonResolveContext {
@@ -82,7 +83,35 @@ export function resolvePythonImportTarget(
       workspaceIndex,
     );
     if (submodule !== null) return submodule;
-    if (packageTarget !== null) return packageTarget;
+
+    // `return packageTarget`, not `if (packageTarget !== null) return …` —
+    // falling through when it is null RE-RAN THE ENTIRE TAIL BELOW, a second
+    // time, with byte-identical arguments.
+    //
+    // `packageTarget` IS this function's tail for this import. The recursion
+    // above differs from the outer frame in exactly one field,
+    // `targetIncludesImportedName`, whose only effect is to make
+    // `pythonImportedSubmoduleTarget` return null and so skip this branch: the
+    // spread preserves `kind` (still `named`/`alias`, so the
+    // `dynamic-unresolved` guard cannot fire) and `targetRaw` (which already
+    // passed the null/empty guard), and `workspaceIndex` is the same object, so
+    // `ctx.fromFile`, `ctx.allFilePaths` and `ctx.parsedFiles` are the same
+    // references. The recursion therefore ran `resolvePythonImportInternal` →
+    // relative gate → `hasRepoCandidate` → `resolveAbsoluteFromFiles` on
+    // exactly the inputs the fallthrough would use.
+    //
+    // That tail is a pure function of (`fromFile`, `targetRaw`,
+    // `allFilePaths`): it only reads the Set and indexes memoized on the Set,
+    // and the `submodule` probe in between is equally read-only, so nothing can
+    // have changed the answer. Reaching this line means the tail already
+    // returned null; running it again returns null again, after another
+    // proximity probe and another full ancestor walk to the workspace root.
+    //
+    // Measured before this change, `from x import y` at four directory
+    // components: 24 `allFilePaths.has` probes per import, of which probes
+    // 12-23 were byte-identical repeats of 0-11. `python-import-probe-count
+    // .test.ts` is the gate.
+    return packageTarget;
   }
 
   // PEP-328 relative + single-segment proximity bare imports.
@@ -231,6 +260,11 @@ function resolveAbsoluteFromFiles(
   // whether the walk can hit at all: neither bucket present means no tier below
   // can match, and one bucket absent removes that tier's probe from EVERY step
   // of the walk. On the deep corpus that is half the walk's probes (#2913).
+  //
+  // `pythonSegmentAbsent` states this same rule for the single-segment bare
+  // tier. It is deliberately not called here: that tier needs only the answer,
+  // this one needs the candidate ARRAYS for the suffix fallback below, so
+  // sharing would mean two extra `has` lookups per import to save four lines.
   const index = getPythonFileIndex(allFilePaths);
   const lastSeg = pathLike.slice(pathLike.lastIndexOf('/') + 1);
   const moduleCandidates = index.byBasename.get(`${lastSeg}.py`);
@@ -365,209 +399,6 @@ function hasRepoCandidate(
   }
   return false;
 }
-
-/**
- * The importer's ancestor directories, CLOSEST FIRST and excluding the
- * workspace root — `["backend/routers", "backend"]` for `backend/routers/x.py`
- * — memoized per importer DIRECTORY for the lifetime of the pass.
- *
- * This is the #2913 fix. Both consumers used to rebuild the chain inline, one
- * `dirParts.slice(0, i).join('/')` per component, on EVERY import: a per-import
- * cost proportional to the importer's path depth, and quadratic in characters,
- * on a file index that is itself depth-free. Real Python layouts are deep
- * (`src/pkg/sub/feature/impl/mod.py` is ordinary), so the resolver was 6.8x
- * slower on a deep corpus than on a shallow one holding the file count fixed,
- * where every other language sat between 1.0x and 3.4x.
- *
- * A directory's ancestors are a pure function of the directory, and a pass
- * resolves many imports per file, so one entry serves every import issued from
- * anywhere in that directory.
- *
- * ## Lifetime and memory
- *
- * The Map lives INSIDE the per-file-set index, so it is reclaimed with the file
- * set it was reached through (`perFileSet` is a `WeakMap`): it cannot leak
- * across passes or repos, and there is no invalidation rule to get wrong. It is
- * filled lazily, so it holds one entry per directory that actually ISSUES a
- * Python import, never one per file and never one per directory in the repo —
- * the bound #2649 (kernel-scale OOM) asks for. Each entry's strings are
- * `slice`s of the longest one, so a chain costs pointers rather than a copy of
- * the path per component.
- *
- * The derived key is the importer's directory exactly as the old inline code
- * computed it — `norm.split('/').slice(0, -1).join('/')`, which for a path
- * without a separator is `''` (a root-level importer, whose chain is empty).
- */
-function importerAncestors(index: PythonFileIndex, fromFile: string): readonly string[] {
-  const norm = fromFile.replace(/\\/g, '/');
-  const lastSlash = norm.lastIndexOf('/');
-  const importerDir = lastSlash === -1 ? '' : norm.slice(0, lastSlash);
-  const memoized = index.ancestorsByDir.get(importerDir);
-  if (memoized !== undefined) return memoized;
-  const built = buildImporterAncestors(importerDir);
-  index.ancestorsByDir.set(importerDir, built);
-  return built;
-}
-
-/**
- * `["a/b/c", "a/b", "a"]` for `a/b/c`. Empty components are dropped first, so
- * an absolute `/a/b` yields `["a/b", "a"]` — matching the `filter(Boolean)` the
- * two inline walks did, and with it the absolute-path gating pinned by
- * `python-import-target-parity.test.ts` (PR #1918 review P3a).
- */
-function buildImporterAncestors(importerDir: string): readonly string[] {
-  const chain: string[] = [];
-  const parts = importerDir.split('/').filter(Boolean);
-  if (parts.length === 0) return chain;
-  chain.push(parts.join('/'));
-  for (let i = 1; i < parts.length; i++) {
-    const child = chain[i - 1];
-    chain.push(child.slice(0, child.lastIndexOf('/')));
-  }
-  return chain;
-}
-
-/**
- * Per-file-set index for Python import resolution, memoized on the
- * `allFilePaths` Set object (the same Set is passed for every import in a run,
- * so the index is built once and reused). Replaces the per-import O(files)
- * scans in `resolveAbsoluteFromFiles` (suffix match) and `hasRepoCandidate`
- * (package-existence gate) with O(1)/O(bucket) lookups.
- *
- *  - `normSet`: every file path, normalized to forward slashes (for the exact
- *    `f === rootFile|initFile` membership checks).
- *  - `byBasename`: last path component (e.g. `models.py`, `__init__.py`) ->
- *    all `{ raw, norm }` candidates, so suffix matches can be gathered from the
- *    relevant bucket and the exact tie-break applied across ALL of them.
- *  - `byInitParent`: `__init__.py` files keyed by their last TWO components
- *    (`<parentDir>/__init__.py`). The package suffix lookup (`pkg.sub` ->
- *    `…/sub/__init__.py`) targets only same-named package dirs via this map
- *    instead of scanning every `__init__.py` in the repo — the common
- *    multi-segment import path no longer scales with package count
- *    (PR #1918 review P2b). `__init__.py` files stay in `byBasename` too, for
- *    the rarer explicit `pkg.__init__` import that resolves via the module
- *    (`…<lastSeg>.py`) lookup.
- *  - `dirPrefixes`: every directory prefix of a `.py` file, trailing-slashed
- *    (`a/b/c.py` -> `a/`, `a/b/`), for "is there a .py file under `<dir>/`".
- *  - `nestedDirNames`: the NAME of every such directory that has a non-empty
- *    parent (`a/b/c.py` -> `b`, not `a`), which is exactly the set of segments
- *    `hasRepoCandidate`'s ancestor walk can ever match — so a segment absent
- *    from it settles the walk in one lookup (#2913).
- *  - `ancestorsByDir`: the per-importer-directory ancestor-chain memo behind
- *    `importerAncestors`. The one structure here that is NOT derived from the
- *    file set: it is filled lazily, from the importer paths the pass actually
- *    resolves against, and lives here so it dies with the pass.
- *
- * Exported for `test/unit/scope-resolution/python/python-importer-ancestors.test.ts`,
- * which reads `ancestorsByDir` after driving the production adapter. No counter
- * ships for it — the Map is the memo, and its SIZE is the assertion: one entry
- * per importer directory, however many imports were resolved. Everything else
- * about the index stays internal.
- */
-export interface PythonFileIndex {
-  readonly normSet: Set<string>;
-  readonly byBasename: Map<string, { raw: string; norm: string }[]>;
-  readonly byInitParent: Map<string, { raw: string; norm: string }[]>;
-  readonly dirPrefixes: Set<string>;
-  readonly nestedDirNames: Set<string>;
-  readonly ancestorsByDir: Map<string, readonly string[]>;
-}
-
-export const getPythonFileIndex = perFileSet(
-  (allFilePaths: ReadonlySet<string>): PythonFileIndex => {
-    // Runs on a cache miss only. That it happens once per run and not once per
-    // import is asserted by counting traversals of the Set itself, in
-    // `test/integration/python-import-index-reuse.test.ts` — the PR #1918 review
-    // P1 guard (#2909).
-
-    const normSet = new Set<string>();
-    const byBasename = new Map<string, { raw: string; norm: string }[]>();
-    const byInitParent = new Map<string, { raw: string; norm: string }[]>();
-    const dirPrefixes = new Set<string>();
-    const nestedDirNames = new Set<string>();
-
-    for (const raw of allFilePaths) {
-      const norm = raw.replace(/\\/g, '/');
-      // Python import resolution only ever queries `.py` paths: module `<seg>.py`
-      // and package `<seg>/__init__.py` membership (normSet), `<lastSeg>.py` /
-      // `__init__.py` basename buckets (byBasename), and `.py` directory prefixes
-      // (dirPrefixes). Non-`.py` files can never match any of those, so skip them
-      // — they were dead weight in every structure on polyglot monorepos
-      // (PR #1918 review P3b; dirPrefixes was already `.py`-gated).
-      if (!norm.endsWith('.py')) continue;
-      normSet.add(norm);
-
-      const lastSlash = norm.lastIndexOf('/');
-      const base = lastSlash >= 0 ? norm.slice(lastSlash + 1) : norm;
-      let bucket = byBasename.get(base);
-      if (bucket === undefined) {
-        bucket = [];
-        byBasename.set(base, bucket);
-      }
-      bucket.push({ raw, norm });
-
-      // Package files also get a parent-keyed bucket so a `pkg.sub` lookup hits
-      // only `…/sub/__init__.py` candidates, not every `__init__.py` (P2b).
-      if (base === '__init__.py' && lastSlash >= 0) {
-        const dir = norm.slice(0, lastSlash);
-        const parentSlash = dir.lastIndexOf('/');
-        const parentName = parentSlash >= 0 ? dir.slice(parentSlash + 1) : dir;
-        if (parentName) {
-          const initKey = `${parentName}/__init__.py`;
-          let ib = byInitParent.get(initKey);
-          if (ib === undefined) {
-            ib = [];
-            byInitParent.set(initKey, ib);
-          }
-          ib.push({ raw, norm });
-        }
-      }
-
-      // Directory prefixes: every slash-terminated prefix of the path (every
-      // index just past a '/', up to and including the file's own directory).
-      // Scanning the FULL normalized path — including any leading '/' for
-      // absolute paths — makes `dirPrefixes.has(X)` match exactly when the old
-      // gate's `f.startsWith(X)` (X always ends in '/') matched. The previous
-      // split+`filter(Boolean)` dropped the leading empty component, so an
-      // absolute file `/repo/svc/x.py` yielded `repo/svc/` (no leading slash) and
-      // gate-passed where `"/repo/svc/x.py".startsWith("repo/svc/")` is false
-      // (PR #1918 review P3a). For relative paths the set is identical.
-      //
-      // The walk runs from the DEEPEST prefix outward and stops at the first
-      // one already recorded. Every prefix is added together with all of its
-      // own ancestors, so a hit proves the rest of the chain is already there —
-      // which makes the second and later files of a directory cost ONE lookup
-      // instead of one insert per path component. This build was the last part
-      // of Python's resolution that still scaled with path depth (#2913): the
-      // same 400-file corpus moved sixteen directories down went from 800
-      // inserts to 7200, for the same ~120 distinct prefixes.
-      //
-      // `nestedDirNames` rides the same walk. A directory prefix has the shape
-      // `<parent>/<name>/` — the only shape `hasRepoCandidate`'s check (3)
-      // probes — exactly when another slash precedes it at index > 0. Index 0
-      // is excluded on purpose: `a/` and `/` name a directory whose parent is
-      // empty, which check (2) already answers and which the ancestor walk
-      // (non-empty ancestors only) never probes.
-      for (let i = lastSlash; i >= 0; i--) {
-        if (norm[i] !== '/') continue;
-        const dirPrefix = norm.slice(0, i + 1);
-        if (dirPrefixes.has(dirPrefix)) break;
-        dirPrefixes.add(dirPrefix);
-        const parentSlash = i > 0 ? norm.lastIndexOf('/', i - 1) : -1;
-        if (parentSlash > 0) nestedDirNames.add(norm.slice(parentSlash + 1, i));
-      }
-    }
-
-    return {
-      normSet,
-      byBasename,
-      byInitParent,
-      dirPrefixes,
-      nestedDirNames,
-      ancestorsByDir: new Map<string, readonly string[]>(),
-    };
-  },
-);
 
 function pythonImportedSubmoduleTarget(parsedImport: ParsedImport): string | null {
   if (parsedImport.kind !== 'named' && parsedImport.kind !== 'alias') return null;
