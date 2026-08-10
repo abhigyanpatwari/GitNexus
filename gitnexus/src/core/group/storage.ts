@@ -34,9 +34,6 @@ export async function writeContractRegistry(
   groupDir: string,
   registry: ContractRegistry,
 ): Promise<void> {
-  // Shared primitive: unpredictable tmp suffix + `'wx'` (O_EXCL) + `0o600` +
-  // retryRename, plus removal of the tmp file when the publish fails (#2888).
-  // See writeFileAtomic's docstring for why each part is load-bearing.
   await writeFileAtomic(path.join(groupDir, CONTRACTS_FILE), JSON.stringify(registry, null, 2));
 }
 

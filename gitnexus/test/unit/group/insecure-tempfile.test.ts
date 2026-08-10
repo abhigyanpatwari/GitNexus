@@ -65,21 +65,16 @@ describe('insecure tempfile — structural guards (#1318 U6)', () => {
     expect(fsAtomicSource).toMatch(/\.tmp\.\$\{randomBytes\(8\)\.toString\('hex'\)\}/);
   });
 
-  it('fs-atomic.ts opens the tmp file via fsp.open(..., "wx", <user-only mode>)', () => {
+  it('fs-atomic.ts opens the tmp file via fsp.open(..., "wx", 0o600)', () => {
     // O_EXCL via `'wx'` flag closes the symlink-race; explicit `0o600`
     // mode closes the permissions exposure CodeQL's
     // `isSecureMode` predicate inspects (low 6 bits must be zero).
     // Both arguments are required to fully clear the
     // `js/insecure-temporary-file` alert — flags alone are ignored by
-    // the analyzer, mode alone leaves the symlink window open.
-    expect(fsAtomicSource).toMatch(/fsp\.open\(tmpPath,\s*['"]wx['"],\s*mode\)/);
-    expect(fsAtomicSource).toMatch(/mode\s*=\s*0o600/);
-  });
-
-  it('fs-atomic.ts removes the tmp file when the publish fails', () => {
-    // A random suffix means a leaked tmp is no longer overwritten by the
-    // next writer the way a fixed `<target>.tmp` was (#2888).
-    expect(fsAtomicSource).toMatch(/fsp\.unlink\(tmpPath\)\.catch\(\(\) => \{\}\)/);
+    // the analyzer, mode alone leaves the symlink window open. The
+    // resulting file mode and the tmp cleanup are asserted for real in
+    // test/unit/storage/fs-atomic.test.ts.
+    expect(fsAtomicSource).toMatch(/fsp\.open\(tmpPath,\s*['"]wx['"],\s*0o600\)/);
   });
 
   it('bridge-db.ts publishes meta.json through the shared primitive', () => {
@@ -110,16 +105,11 @@ describe('insecure tempfile — structural guards (#1318 U6)', () => {
   it('storage.ts publishes contracts.json through the shared primitive', () => {
     // Was a local `tmpSuffix()` helper duplicating the same randomBytes +
     // 'wx' + 0o600 + retryRename sequence; the sequence now lives once in
-    // fs-atomic.ts, guarded above (#2888).
+    // fs-atomic.ts, guarded above (#2888). The Date.now() guard this module
+    // used to carry is gone with its temp path — it has none to get wrong.
     expect(storageSource).toMatch(/writeFileAtomic\(path\.join\(groupDir,\s*CONTRACTS_FILE\),/);
-    expect(storageSource).not.toMatch(/\.tmp\./);
-  });
-
-  it('storage.ts does not use Date.now() in any active temp path', () => {
-    // Same comment-strip trick as bridge-db.ts above (block + line).
     const codeOnly = storageSource.replace(/\/\*[\s\S]*?\*\//g, '').replace(/\/\/[^\n]*/g, '');
-    const tmpDateNow = codeOnly.match(/\.tmp\.\$\{Date\.now\(\)\}/g) ?? [];
-    expect(tmpDateNow.length).toBe(0);
+    expect(codeOnly).not.toMatch(/\.tmp/);
   });
 });
 

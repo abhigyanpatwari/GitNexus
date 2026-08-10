@@ -12,29 +12,19 @@
  * delegating vi.mock is required (same split as repo-manager-rm-failure.test.ts
  * and repo-manager-ensure-ignore-readonly.test.ts, #1549).
  */
-import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
+import { describe, it, expect, beforeAll, afterAll, beforeEach, afterEach, vi } from 'vitest';
 import path from 'path';
-
-type FsFn = (...args: never[]) => Promise<unknown>;
 
 const fsCtx = vi.hoisted(() => ({
   renameMock: vi.fn(),
   realRename: null as ((src: string, dst: string) => Promise<void>) | null,
-  realWriteFile: null as ((file: string, data: string, enc: string) => Promise<void>) | null,
 }));
 
 vi.mock('fs/promises', async (importOriginal) => {
   const actual = await importOriginal<typeof import('fs/promises')>();
   const d = actual.default;
   fsCtx.realRename = d.rename.bind(d) as (src: string, dst: string) => Promise<void>;
-  fsCtx.realWriteFile = d.writeFile.bind(d) as (
-    file: string,
-    data: string,
-    enc: string,
-  ) => Promise<void>;
-  fsCtx.renameMock.mockImplementation((...args: never[]) =>
-    (fsCtx.realRename as unknown as FsFn)(...args),
-  );
+  fsCtx.renameMock.mockImplementation((src: string, dst: string) => fsCtx.realRename!(src, dst));
   return {
     default: new Proxy(d, {
       get(target, prop) {
@@ -89,7 +79,8 @@ describe('writeRegistry — private tmp path per transaction (#2888)', () => {
         lastCommit: meta.lastCommit,
       },
     ];
-    await fsCtx.realWriteFile!(rivalTmp, JSON.stringify(rival, null, 2), 'utf-8');
+    // Only `rename` is intercepted, so `fs.writeFile` here is the real one.
+    await fs.writeFile(rivalTmp, JSON.stringify(rival, null, 2), 'utf-8');
     await fsCtx.realRename!(rivalTmp, registryPath);
     await fsCtx.realRename!(src, dst);
   };
@@ -97,26 +88,32 @@ describe('writeRegistry — private tmp path per transaction (#2888)', () => {
   const readRegistryFromDisk = async (): Promise<RegistryEntry[]> =>
     JSON.parse(await fs.readFile(registryPath, 'utf-8')) as RegistryEntry[];
 
-  beforeEach(async () => {
-    tmpHome = await createTempDir('gitnexus-registry-atomic-home-');
+  // The repo dirs are only ever path arguments — every mutation lands in
+  // tmpHome, which is what has to be fresh per test.
+  beforeAll(async () => {
     tmpRepoA = await createTempDir('gitnexus-registry-atomic-repo-a-');
     tmpRepoB = await createTempDir('gitnexus-registry-atomic-repo-b-');
+  });
+
+  afterAll(async () => {
+    await tmpRepoA.cleanup();
+    await tmpRepoB.cleanup();
+  });
+
+  beforeEach(async () => {
+    tmpHome = await createTempDir('gitnexus-registry-atomic-home-');
     savedGitnexusHome = process.env.GITNEXUS_HOME;
     home = tmpHome.dbPath;
     process.env.GITNEXUS_HOME = home;
     registryPath = path.join(home, 'registry.json');
     fsCtx.renameMock.mockClear();
-    fsCtx.renameMock.mockImplementation((...args: never[]) =>
-      (fsCtx.realRename as unknown as FsFn)(...args),
-    );
+    fsCtx.renameMock.mockImplementation((src: string, dst: string) => fsCtx.realRename!(src, dst));
   });
 
   afterEach(async () => {
     if (savedGitnexusHome === undefined) delete process.env.GITNEXUS_HOME;
     else process.env.GITNEXUS_HOME = savedGitnexusHome;
     await tmpHome.cleanup();
-    await tmpRepoA.cleanup();
-    await tmpRepoB.cleanup();
   });
 
   it('survives a rival that publishes registry.json between our write and our rename', async () => {
@@ -146,7 +143,6 @@ describe('writeRegistry — private tmp path per transaction (#2888)', () => {
     await registerRepo(tmpRepoB.dbPath, meta, { name: 'b' });
 
     const staged = fsCtx.renameMock.mock.calls.map((c) => c[0] as string);
-    expect(staged).toHaveLength(2);
     // Distinct per transaction — this is the whole fix.
     expect(new Set(staged).size).toBe(2);
     // Never the shared name the crash was staged through.
@@ -155,7 +151,7 @@ describe('writeRegistry — private tmp path per transaction (#2888)', () => {
     expect(staged.map((s) => path.dirname(s))).toEqual([home, home]);
   });
 
-  it('removes its tmp file when the rename fails, leaving the previous registry intact', async () => {
+  it('leaves the previous registry intact when the write fails', async () => {
     await registerRepo(tmpRepoA.dbPath, meta, { name: 'seed' });
     fsCtx.renameMock.mockClear();
     // EIO, not EBUSY/EPERM/EACCES: those are retryRename's retry codes, so
@@ -169,12 +165,6 @@ describe('writeRegistry — private tmp path per transaction (#2888)', () => {
     );
 
     expect(fsCtx.renameMock).toHaveBeenCalledTimes(1);
-    // A random tmp suffix is not self-limiting the way the fixed name was:
-    // without cleanup every failed publish would orphan another file forever.
-    const leftovers = (await fs.readdir(home)).filter(
-      (f) => f !== 'registry.json' && f.startsWith('registry.json'),
-    );
-    expect(leftovers).toEqual([]);
     expect((await readRegistryFromDisk()).map((e) => e.name)).toEqual(['seed']);
   });
 

@@ -732,15 +732,6 @@ export const loadMeta = async (metaDir: string): Promise<RepoMeta | null> => {
 };
 
 /**
- * Atomically write `meta` to `<dir>/<filename>` through the shared
- * {@link writeFileAtomic} primitive (private tmp path + rename, see its
- * docstring for why the tmp name must not be fixed).
- */
-async function writeMetaFile(dir: string, filename: string, meta: RepoMeta): Promise<void> {
-  await writeFileAtomic(path.join(dir, filename), JSON.stringify(meta, null, 2));
-}
-
-/**
  * Save metadata to the metadata file (gitnexus.json) in the given directory,
  * dual-writing the legacy `meta.json` mirror for backward compatibility.
  *
@@ -760,9 +751,12 @@ async function writeMetaFile(dir: string, filename: string, meta: RepoMeta): Pro
  */
 export const saveMeta = async (metaDir: string, meta: RepoMeta): Promise<void> => {
   await fs.mkdir(metaDir, { recursive: true });
-  await writeMetaFile(metaDir, INDEX_METADATA_FILE, meta);
+  // Serialised once: `meta` carries a fileHashes entry per file, so on a large
+  // repo this string is megabytes and both writes want the identical bytes.
+  const json = JSON.stringify(meta, null, 2);
+  await writeFileAtomic(path.join(metaDir, INDEX_METADATA_FILE), json);
   try {
-    await writeMetaFile(metaDir, LEGACY_METADATA_FILE, meta);
+    await writeFileAtomic(path.join(metaDir, LEGACY_METADATA_FILE), json);
   } catch (err) {
     logger.warn({ err, metaDir }, 'Failed to write legacy meta.json mirror (non-critical)');
   }
@@ -1118,22 +1112,20 @@ export const readRegistry = async (): Promise<RegistryEntry[]> => {
 };
 
 /**
- * Write the global registry to disk
+ * Write the global registry to disk.
+ *
+ * Atomic tmp+rename: a crash mid-write can never leave a truncated
+ * registry.json that the next load would treat as empty and silently drop
+ * every registered repo (#2106 R9). The tmp path must stay per-write — the
+ * registry is the one file every gitnexus process on the machine writes, and
+ * `withRegistryLock` degrades to unlocked on timeout, so the write cannot rely
+ * on the lock to keep two writers off one staging path (#2888).
+ *
+ * `attempts` is forwarded to the rename retry; best-effort callers pass `1`.
  */
-const writeRegistry = async (entries: RegistryEntry[]): Promise<void> => {
-  const dir = getGlobalDir();
-  await fs.mkdir(dir, { recursive: true });
-  // Atomic tmp+rename (mirrors saveMeta): a crash mid-write can never leave a
-  // truncated/half-written registry.json that the next load would treat as
-  // empty and silently drop every registered repo (#2106 R9).
-  //
-  // The tmp path MUST stay per-write (writeFileAtomic's random suffix): the
-  // registry is the one file every gitnexus process on the machine writes, so
-  // a fixed `registry.json.tmp` made two starting processes steal each other's
-  // staged file and crash with ENOENT on rename (#2888). `withRegistryLock`
-  // serializes the callers below, but it degrades to unlocked on timeout, so
-  // the write itself has to be collision-proof on its own.
-  await writeFileAtomic(getGlobalRegistryPath(), JSON.stringify(entries, null, 2));
+const writeRegistry = async (entries: RegistryEntry[], attempts?: number): Promise<void> => {
+  await fs.mkdir(getGlobalDir(), { recursive: true });
+  await writeFileAtomic(getGlobalRegistryPath(), JSON.stringify(entries, null, 2), attempts);
 };
 
 /**
@@ -1841,9 +1833,8 @@ export const resolveRegistryEntry = (entries: RegistryEntry[], target: string): 
  *
  * With `validate: true`, prunes only entries whose metadata is *provably* gone
  * (fs.access on both gitnexus.json and legacy meta.json fails with ENOENT or
- * ENOTDIR) and persists the result on a best-effort basis — the pruned view is
- * always returned, a failed write is warned about and retried by the next
- * validating read (it must not throw, see the call site). Entries that are merely "not provably
+ * ENOTDIR) and persists the result on a best-effort basis: the pruned view is
+ * always returned, even when the write fails. Entries that are merely "not provably
  * absent" — any other fs.access failure (EIO/EAGAIN/EBUSY/EACCES, etc.) — are
  * KEPT, so a transient I/O storm cannot wipe the registry. A kept entry is
  * therefore "not confirmed present," not "confirmed present"; downstream DB
@@ -1913,20 +1904,21 @@ export const listRegisteredRepos = async (opts?: {
     try {
       await withRegistryLock(async () => {
         const fresh = await readRegistry();
-        await writeRegistry(fresh.filter((entry) => !pruned.has(entry.path)));
+        // attempts: 1 — the catch below discards a failure, so the rename
+        // backoff would only make every other process wait out this lock.
+        await writeRegistry(
+          fresh.filter((entry) => !pruned.has(entry.path)),
+          1,
+        );
       });
     } catch (err) {
-      // Housekeeping, not the caller's request: every caller consumes the
-      // returned `valid` array, and the prune set is recomputed from scratch on
-      // the next validating read, so a failed write costs a retry — never
-      // correctness. Rethrowing cost far more: this runs on the MCP startup
-      // path (LocalBackend.init → refreshRepos), where nothing catches, so a
-      // read-only home, a full disk, or the #2888 tmp collision took down the
-      // whole server with "Server disconnected" instead of degrading to a
-      // registry that still lists a dead entry.
+      // Best-effort housekeeping: callers consume the returned view, and the
+      // prune set is recomputed on the next validating read. It must not throw
+      // — this runs on MCP startup (LocalBackend.init → refreshRepos), where
+      // nothing catches and a rejection reads as "Server disconnected".
       logger.warn(
         { err, prunedCount: pruned.size },
-        'Could not persist the pruned global registry; continuing with the pruned view in memory (it will be retried on the next validating read).',
+        'Could not persist the pruned global registry; continuing with the in-memory pruned view.',
       );
     }
   }

@@ -31,45 +31,41 @@ export async function retryRename(src: string, dst: string, attempts = 3): Promi
 /**
  * Atomically publish `data` to `targetPath` via a private tmp file + rename.
  *
- * The tmp name carries a random suffix, so two processes publishing the same
- * target never stage through the same path. A FIXED `<target>.tmp` is not
- * multi-process safe even though the rename itself is atomic: writer B's
- * `writeFile` overwrites writer A's staged bytes and B's `rename` moves that
- * inode away, so A's own rename fails with `ENOENT` — the #2888 crash, which
- * killed the MCP server during startup because nothing catches a registry
- * write rejection there. A cross-process lock narrows that window but cannot
- * close it (`repo-manager`'s registry lock deliberately degrades to unlocked
- * on timeout); a private tmp path closes it whether or not a lock is held.
+ * The tmp name carries a random suffix, so concurrent publishers to one target
+ * never stage through the same path. A FIXED `<target>.tmp` is not
+ * multi-process safe even though the rename itself is atomic: writer B's write
+ * overwrites writer A's staged bytes and B's rename moves that inode away, so
+ * A's own rename fails with `ENOENT` (#2888).
  *
- * `'wx'` (O_EXCL) closes the symlink/pre-create race, and the explicit `mode`
+ * `'wx'` (O_EXCL) closes the symlink/pre-create race, and the `0o600` mode
  * closes the permissions exposure CodeQL's `js/insecure-temporary-file` query
  * reads off the `mode` argument (it requires the low 6 bits to be zero; with
  * no mode the file lands at umask, typically group/world readable).
- * `retryRename` absorbs a transient EBUSY/EPERM/EACCES from a concurrent
- * reader on Windows.
  *
- * Any failure that rejects — a full disk, a read-only home, a rename that
- * retryRename gives up on — removes the tmp file before rethrowing. With a
- * random suffix a leaked tmp is no longer self-limiting the way a fixed name
- * was (the next writer simply overwrote it), so a recurring failure would
- * otherwise deposit one more orphan beside the target every time. A hard kill
- * between the open and the rename still leaves one behind; nothing enumerates
- * these directories, so a stale tmp is inert rather than a correctness problem.
+ * A rejection anywhere after the tmp exists removes it before rethrowing: with
+ * a random suffix a leaked tmp is no longer self-limiting the way a fixed name
+ * was (the next writer simply overwrote it), so a recurring failure would drop
+ * one more orphan beside the target every time. A hard kill between the open
+ * and the rename still leaves one behind.
+ *
+ * `attempts` is passed through to {@link retryRename}; pass `1` when the
+ * caller discards the failure anyway, so a best-effort write cannot spend the
+ * retry backoff (and, under a lock, make everyone else wait for it).
  */
 export async function writeFileAtomic(
   targetPath: string,
   data: string,
-  mode = 0o600,
+  attempts?: number,
 ): Promise<void> {
   const tmpPath = `${targetPath}.tmp.${randomBytes(8).toString('hex')}`;
-  const handle = await fsp.open(tmpPath, 'wx', mode);
+  const handle = await fsp.open(tmpPath, 'wx', 0o600);
   try {
     try {
       await handle.writeFile(data, 'utf-8');
     } finally {
       await handle.close();
     }
-    await retryRename(tmpPath, targetPath);
+    await retryRename(tmpPath, targetPath, attempts);
   } catch (err) {
     await fsp.unlink(tmpPath).catch(() => {});
     throw err;

@@ -647,11 +647,6 @@ export async function closeBridgeDb(handle: BridgeHandle): Promise<void> {
 /* ------------------------------------------------------------------ */
 
 export async function writeBridgeMeta(groupDir: string, meta: BridgeMeta): Promise<void> {
-  // Shared primitive: unpredictable tmp suffix + `'wx'` (O_EXCL) + `0o600` +
-  // retryRename, and — new since #2888 — the tmp file is removed when the
-  // publish fails. Nothing about a group's meta.json is special enough to
-  // justify a private copy of that sequence; see writeFileAtomic's docstring
-  // for why each part is load-bearing.
   await writeFileAtomic(path.join(groupDir, 'meta.json'), JSON.stringify(meta, null, 2));
 }
 
