@@ -170,11 +170,15 @@ function legacyResolvePhpImportTarget(
   parsedImport: ParsedImport,
   workspaceIndex: WorkspaceIndex,
 ): string | null {
-  const ctx = workspaceIndex as PhpResolveContext | undefined;
+  // The shipped adapter spells this guard `ctx === undefined || ...`; CodeQL
+  // flags that as a comparison between inconvertible types (`WorkspaceIndex` is
+  // an object type, never `undefined`). Optional chaining is the same guard at
+  // runtime — an undefined index still fails the `typeof` test and returns null
+  // — so the copy stays behaviourally verbatim.
+  const ctx = workspaceIndex as PhpResolveContext;
   if (
-    ctx === undefined ||
-    typeof (ctx as { fromFile?: unknown }).fromFile !== 'string' ||
-    !((ctx as { allFilePaths?: unknown }).allFilePaths instanceof Set)
+    typeof (workspaceIndex as { fromFile?: unknown } | undefined)?.fromFile !== 'string' ||
+    !((workspaceIndex as { allFilePaths?: unknown } | undefined)?.allFilePaths instanceof Set)
   ) {
     return null;
   }
