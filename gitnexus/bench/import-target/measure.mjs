@@ -126,8 +126,9 @@
  *   - `collide_scaling_ratio`, the same measurement on a corpus whose
  *     directories SHARE their last segment and whose files share basenames —
  *     see the `collide` section below;
- *   - `heap` (8 of the 17): retained bytes of the per-pass import index, read by
- *     resolving one real import — see the `heap` section below;
+ *   - `heap` (all 17): retained bytes of the per-pass import index, read by
+ *     resolving one real import — see the `heap` section below. Eight carry a
+ *     ceiling, a floor and a ratio; the other nine carry an upper bound only;
  *   - a sha256 over every distinct `fromFile | target → result`, as the
  *     correctness gate. The tie-break-level proof that this PR's index
  *     reproduces the scans lives in
@@ -249,32 +250,65 @@
  * forces; `HEAP_PROBE_TARGET` and `retainedPassBytes` carry the details, and
  * `heap_floor_fraction` is the gate that would have caught the 0 B.
  *
- * SIX of the seventeen are deliberately NOT in `HEAP_LANGS`, every one of them
- * measured before being left out rather than argued out:
+ * EVERY LANGUAGE IS MEASURED, and the eight-entry list this arm ran on is now
+ * the BUDGET tier rather than the measurement tier. That list — `HEAP_LANGS`,
+ * now `HEAP_BUDGETED` — was reconciled bidirectionally against its two budget
+ * maps and every entry had to produce a reading, but nothing tied it to the
+ * property it stood for, "the languages that retain a per-pass index". Its two
+ * neighbours in this file do not have that gap: `LANG_REGISTRY` is reconciled
+ * against `SCOPE_RESOLVERS.keys()` and `CONTEXT_LANGS` against hook arity, both
+ * directions, both derived. Nine languages were excluded on readings taken once
+ * and written into this prose, and the paragraph below states the re-entry
+ * condition ("if any of the four ever diverges in what it ASKS, it earns an arm
+ * the same way") with nothing watching for the divergence.
  *
- *   - rust builds no index on this hook at all. Measured 16 B at 8000 files and
- *     0 B at 32 000 — the arm would be a ceiling over nothing;
- *   - swift's `byModule` holds one POINTER per (file × interior segment) and
- *     mints no new strings, and it reads 0.98 MB at 8000 files against 0.29 MB
- *     at 32 000 — a four-fold larger corpus reading three times SMALLER, which
- *     is what a measurement below its own noise floor looks like. Gating that
- *     would gate noise;
- *   - COBOL, for the same reason and separately measured: two
- *     `Map<basename, path>`, O(files) with no depth term, 0.54 MB at 8000 files
- *     and 0 B at 32 000;
- *   - typescript and vue run javascript's builder over a same-shaped corpus and
- *     ask it the same questions, so their numbers are duplicates and measurably
- *     so: typescript read 46 208 544 B against javascript's 46 208 832 B, a
- *     288 B difference on 46 MB (0.0006%), and vue read 48 699 384 B, the +5.4%
- *     that four characters of `.vue` instead of `.ts` buys on two thirds of the
- *     paths;
- *   - cpp likewise duplicates c: 10 021 320 B against 10 016 960 B, 0.04% apart.
+ * Re-measured — all seventeen, five runs each, one probe per language through
+ * the same `retainedPassBytes` — the prose was wrong in three separate ways:
  *
- * Those four "it would be a duplicate" exclusions are duplicates of a BUILDER
- * and of a READ PATTERN, and both halves have to hold — `csharp_csproj` was on
- * this list on the strength of the first half alone, at +20.8% of the C# index,
- * and reads 2.47x of it now that the second half decides the number. If any of
- * the four ever diverges in what it ASKS, it earns an arm the same way.
+ *   1. THREE OF THE NINE HAD NO STATED REASON AT ALL. The old paragraph opened
+ *      "SIX of the seventeen are deliberately NOT in HEAP_LANGS" against a list
+ *      of eight, so go, dart and kotlin were excluded silently. All three
+ *      retain a real per-pass structure: go's `PackageDirIndex` reads
+ *      2 998 464 B, dart's basename buckets 7 834 200 B, and kotlin's
+ *      `suffixByStem` cascade 48 073 096 B (45.85 MiB) — the second-largest
+ *      reading in this file, above ruby's 39.12 and java's 33.34, both of which
+ *      carry a full budget.
+ *   2. TWO OF THE STATED REASONS NO LONGER HOLD. swift was excluded as "below
+ *      its own noise floor" on 0.98 MB at 8000 files against 0.29 MB at 32 000;
+ *      it now reads 969 120 B and 3 449 216 B, growing the right way. COBOL was
+ *      excluded "for the same reason" on 0.54 MB then 0 B; it now reads
+ *      536 264 B and 2 320 456 B, ratio 1.082. Neither number moved because
+ *      either index changed — the ARM changed, twice, when it started resolving
+ *      a real import (#2903) and when `measureHeap` began flattening its
+ *      corpus. Both re-measure to within 0.24% peak-to-peak over five runs,
+ *      which is not a noise floor.
+ *   3. THE PROSE HAD GONE STALE AGAINST ITSELF. It quoted javascript at
+ *      46 208 832 B four paragraphs after quoting it at 25.51 MiB
+ *      (26 745 296 B), because one number was re-taken with the arm and the
+ *      other was only ever written down.
+ *
+ * Only rust's exclusion survived unchanged: 16 B at 8000 files and 16 B at
+ * 32 000, identical in all five runs, because it probes candidate paths with
+ * `allFilePaths.has(...)` and builds nothing.
+ *
+ * So the nine are still not BUDGETED — their ceilings, floors and ratio arms
+ * are not this change to write — but they are all measured and all bounded. See
+ * `HEAP_BOUNDED` for the gate and `_heap_bound_note` in baselines.json for each
+ * language's reading and its own reason, which are not one reason: rust builds
+ * nothing; go, dart, kotlin, swift and cobol build something this file has
+ * never bounded; and typescript, vue and cpp are duplicates of a BUILDER and of
+ * a READ PATTERN, both halves of which have to hold — `csharp_csproj` was
+ * excluded on the first half alone, at +20.8% of the C# index, and reads 2.47x
+ * of it now that the second half decides the number. Measured here: typescript
+ * 26 745 296 B against javascript's 26 745 296 B (byte-identical in four runs
+ * of five), cpp 10 023 344 B against c's 10 018 816 B (+0.05%), vue
+ * 28 884 016 B (+8.0%, what `.vue` instead of `.ts` buys on two thirds of the
+ * paths). The bound is what watches for the divergence the re-entry condition
+ * names — and it watches at 1.5x, so it catches a language GROWING an index,
+ * not a duplicate drifting by 8%. That limit is stated rather than papered
+ * over: the tight form is a same-process ratio against the arm each one
+ * duplicates, which is the only form immune to the cross-runner heapUsed drift
+ * an absolute bound has to tolerate.
  *
  * KNOWN BLIND SPOT, measured: a full workspace scan reintroduced on 1-in-32
  * imports passes every arm here (dart scored 1.458 scaling, 1.736 ms). The gate
@@ -366,6 +400,19 @@
  * 9.3-10.0 s on another, in isolation and after this file's own static imports
  * are already resident. Do not read the two modes as "~46 → ~42": only report
  * mode got faster.
+ *
+ * MEASURING ALL SEVENTEEN HEAP ARMS instead of eight costs 1.37 s, and that is
+ * a measured number rather than the "seconds are free here" the paragraph below
+ * would have let it be. Timed per language with the phase instrumented, twice:
+ * the heap phase goes 2.06 s -> 3.43 s (1.377 s and 1.370 s added over the two
+ * runs). The nine are kotlin 0.57 s — it retains the largest index of the nine
+ * and builds all three of its maps eagerly — then vue 0.18, typescript 0.17,
+ * cpp 0.09, swift 0.08, dart 0.08, go 0.07, cobol 0.07, rust 0.06. End to end
+ * that is report mode 33.76 s -> 34.93 s (min of three runs each, +1.17 s,
+ * consistent with the phase measurement inside run-to-run noise). `--check` was
+ * 41.60 s before and reads 41.48-43.56 s after, i.e. the whole-run difference
+ * is INSIDE the registry import's own 6.3-10.0 s spread and cannot be resolved
+ * at that level — the +1.37 s phase number is the one to quote.
  *
  * That cost was weighed and KEPT, on the one number that decides it: the
  * `benchmarks` job is not CI's critical path. On the last green run of main it
@@ -482,15 +529,47 @@ function repsFor(probeMs) {
 const HEAP_SMALL = 8000;
 const HEAP_LARGE = 32000;
 const HEAP_PAD = 8;
-/** The languages whose retained per-pass index is measured, all eight the same
- *  way — `retainedPassBytes`, one real import through the real resolver. The
- *  first five reach the shared `WorkspaceFileIndex` and retained NOTHING at
- *  BASE; `csharp_csproj` is the same corpus through the same index under the
- *  csproj context, and it is here rather than excluded as a duplicate because
- *  after #2903 its READ PATTERN, not its corpus, decides the number. Eight of
- *  seventeen: COBOL, rust, swift, typescript, vue and cpp are absent on purpose
- *  and the MEMORY section of the header gives a separate reason for each. */
-const HEAP_LANGS = ['csharp', 'csharp_csproj', 'ruby', 'php', 'java', 'javascript', 'python', 'c'];
+/** The languages whose retained per-pass index carries a BUDGET — a ceiling, a
+ *  floor derived from `heap_reading_bytes`, and the linear-growth ratio arm.
+ *  All eight are measured the same way as the other nine (`retainedPassBytes`,
+ *  one real import through the real resolver); what this list decides is which
+ *  GATE a reading gets, not whether it is taken. The first five reach the shared
+ *  `WorkspaceFileIndex` and retained NOTHING at BASE; `csharp_csproj` is the
+ *  same corpus through the same index under the csproj context, and it is here
+ *  rather than excluded as a duplicate because after #2903 its READ PATTERN,
+ *  not its corpus, decides the number.
+ *
+ *  The remaining three are `HEAP_BOUNDED`, DERIVED from this list rather than
+ *  written beside it, and they carry an upper bound and NO floor. That asymmetry
+ *  is the point: a bound catches "this language grew an index", which is the
+ *  re-entry condition, while a floor over a reading at or below its own noise
+ *  would gate the noise. rust reads 16 B at both scales; swift's ratio is 0.888
+ *  and cobol's 1.082, both outside the linearity every budgeted arm shows, so a
+ *  floor and a ratio arm would be measuring the measurement. See the MEMORY
+ *  section of the header for what re-measuring all seventeen found. */
+const HEAP_BUDGETED = [
+  'csharp',
+  'csharp_csproj',
+  'ruby',
+  'php',
+  'java',
+  'javascript',
+  'python',
+  'c',
+  // Promoted once every language was actually measured. Each retains a real
+  // per-pass structure and each grows LINEARLY with the file count (ratio
+  // 0.996-1.004 against a 1.25 budget over 8000 -> 32000 files), so each can
+  // carry the full ceiling + floor + ratio set rather than a bound alone.
+  // kotlin's 45.85 MiB is the second-largest reading in this file — larger than
+  // ruby's and java's, both of which were budgeted from the start — and it had
+  // no stated exclusion reason at all.
+  'kotlin',
+  'dart',
+  'go',
+  'typescript',
+  'vue',
+  'cpp',
+];
 
 /**
  * The arms handed the fifth `context` argument — `{ parsedFiles, parsedImport }`
@@ -1741,6 +1820,31 @@ const HEAP_PROBE_TARGET = {
   javascript: 'vendor0/lib/missing',
   python: 'vendor0.deep.missing',
   c: 'vendor0/missing.h',
+  // The nine below are the BOUNDED tier — see `HEAP_BOUNDED`. Same rule as the
+  // eight above: a spelling `uniqueTarget` already mints for that language, and
+  // one that MISSES, so the reading is the index and the cascade runs to the
+  // end. Chosen from the miss family that reaches furthest into each cascade:
+  //   - `go` takes the GOPATH fallback, one `filesDirectlyInPkgDir` per path
+  //     segment, which is the leg that forces `PackageDirIndex`;
+  //   - `dart` is an external package, so BOTH candidate paths miss and both
+  //     walk the basename bucket to completion;
+  //   - `kotlin` misses in `suffixByStem`, the map its four-tier cascade builds;
+  //   - `cobol` misses in both tier maps, `swift` in `byModule`, and `rust`
+  //     probes candidate paths and builds nothing — that last is the reading
+  //     the exclusion rests on;
+  //   - `typescript`, `vue` and `cpp` carry the same spelling shape as the
+  //     `javascript` and `c` arms they are excluded as duplicates OF, so the
+  //     bound compares like with like. `vue`'s is bare rather than `@/…`
+  //     because the alias branch rewrites to `src/` and would resolve.
+  go: 'github.com/org/repo0/pkg/util',
+  dart: 'package:ext0/src/thing.dart',
+  kotlin: 'com.ghost0.deep.Missing',
+  cobol: 'VENDOR0',
+  swift: 'ExternalPkg0',
+  rust: 'ghost0::Missing',
+  typescript: 'vendor0/lib/missing',
+  vue: 'vendor0/lib/Missing.vue',
+  cpp: 'vendor0/missing.hpp',
 };
 
 /**
@@ -1941,6 +2045,28 @@ const LANG_REGISTRY = {
   cpp: SupportedLanguages.CPlusPlus,
 };
 const LANGS = Object.keys(LANG_REGISTRY);
+/**
+ * The heap arm's SECOND tier: every arm that is not budgeted, and the reason it
+ * is a `filter` over `LANGS` rather than a second list beside `HEAP_BUDGETED`.
+ *
+ * The two tiers partition `LANGS` by construction, so there is no third state a
+ * language can be in — the state the nine spent this file's whole life in,
+ * where "not budgeted" and "not measured" were the same thing and neither was
+ * derived from anything. Adding a registered language now costs a bound whether
+ * or not anyone thinks about memory: the inventory arm gives it a `LANGS` row,
+ * this line gives it a tier, and the presence check below fails until it has a
+ * key. Deriving it also means the two tiers cannot overlap or leave a gap, which
+ * two hand-written lists could do in either direction.
+ *
+ * A bound and NOT a floor, deliberately, and the boundary is the one thing here
+ * worth re-reading before moving a language across it: a floor asserts "this
+ * arm is still measuring something", which is a claim about an index the file
+ * has budgeted, and rust's 16 B cannot carry it. What every one of the nine CAN
+ * carry is "the exclusion still holds" — that this language has not grown an
+ * index since it was left out. See the TIER TWO loop at the foot of the file,
+ * and `_heap_bound_note` in baselines.json for each language's reason.
+ */
+const HEAP_BOUNDED = LANGS.filter((lang) => !HEAP_BUDGETED.includes(lang));
 /** name, file count, depth padding, directory/basename layout. */
 const ARMS = [
   ['small', SMALL, 0, 'unique'],
@@ -2004,7 +2130,11 @@ for (const lang of LANGS) {
 // The second: `HEAP_RETAINED` holds a language's whole corpus and index alive
 // across both of its reads — up to ~92 MiB for `csharp_csproj` — and that must
 // not overlap a measurement of time.
-for (const lang of HEAP_LANGS) report[lang].heap = measureHeap(lang);
+//
+// `LANGS`, not `HEAP_BUDGETED`: which tier a language is in decides its GATE,
+// not whether it is read. Measured cost of the nine extra arms is 1.37 s — this
+// phase goes 2.06 s -> 3.43 s, of which kotlin alone is 0.57 s. See COST.
+for (const lang of LANGS) report[lang].heap = measureHeap(lang);
 
 // Deterministic and microseconds — it resolves six imports over two three-file
 // corpora — so unlike the heap arm it neither needs nor deserves isolation from
@@ -2081,17 +2211,22 @@ const SCALE_SHAPE = {
     'one of them alone moves nothing in the others.',
 };
 /** The same, for the heap arm — the four inputs that decide what it measures.
+ *  Asserted for all seventeen, budgeted tier and bounded tier alike, and it is
+ *  the bounded tier that needs it most: a bound is a single comparison, so a
+ *  probe swapped for one that reaches less is a bound over a smaller workload
+ *  and there is no floor beside it to notice.
  *  `bytes_small`/`bytes_large` are deliberately NOT here: they are bounded by
- *  `heap_ceiling_bytes` and `heap_reading_bytes` with ~50% of slack either way,
- *  because a Node major or a different platform moves heapUsed accounting and
- *  an exact-equality arm on a byte count would be a re-baseline per runner. */
+ *  `heap_ceiling_bytes` and `heap_reading_bytes` with ~50% of slack either way
+ *  (`heap_bound_bytes` with 50% on the one side), because a Node major or a
+ *  different platform moves heapUsed accounting and an exact-equality arm on a
+ *  byte count would be a re-baseline per runner. */
 const HEAP_SHAPE = {
   fields: ['files_small', 'files_large', 'path_segments', 'probe'],
   why:
     'these four decide WHAT the heap arm measures and nothing else here can see them move — a ' +
     'probe that stops reaching a leg, or two file counts collapsed onto one, leaves every ' +
-    'ceiling, floor and ratio passing over an arm that changed workload. Deterministic: a ' +
-    're-run will not change it.',
+    'ceiling, floor, bound and ratio passing over an arm that changed workload. Deterministic: ' +
+    'a re-run will not change it.',
 };
 /** The same, for the `context` arm. All three fields are exact strings, not
  *  bounds: this arm has no measurement noise at all — it resolves one import
@@ -2107,13 +2242,15 @@ const CONTEXT_SHAPE = {
     'Deterministic: a re-run will not change it.',
 };
 /** Every asserted arm for one language, derived so a new scale is covered by
- *  construction. The heap arm is present for exactly `HEAP_LANGS`, which the
- *  reconciliation below pins to `heap_ceiling_bytes`' keys; the context arm for
- *  exactly `CONTEXT_LANGS`, which the registry-arity arm at the foot of the
- *  file pins to the hooks that DECLARE a fifth parameter. */
+ *  construction. The heap arm is present for EVERY language now — it used to be
+ *  conditional on `HEAP_LANGS`, which is what let the other nine be measured by
+ *  nothing and pinned by nothing; the two tiers below decide which gate the
+ *  reading gets. The context arm is still conditional, on `CONTEXT_LANGS`, which
+ *  the registry-arity arm at the foot of the file pins to the hooks that DECLARE
+ *  a fifth parameter. */
 const armShapes = (lang) => [
   ...SCALES.map((scale) => [scale, SCALE_SHAPE]),
-  ...(HEAP_LANGS.includes(lang) ? [['heap', HEAP_SHAPE]] : []),
+  ['heap', HEAP_SHAPE],
   ...(CONTEXT_LANGS.includes(lang) ? [['context', CONTEXT_SHAPE]] : []),
 ];
 
@@ -2278,32 +2415,66 @@ const heapBudgetChecks = [
   { key: 'heap_floor_fraction', value: baseline.heap_floor_fraction, reads: 'bytes_large < NaN' },
   { key: 'heap_ratio_budget', value: baseline.heap_ratio_budget, reads: 'ratio > undefined' },
 ];
-const heapArmScope = `This one key gates all ${HEAP_LANGS.length} heap arms at once.`;
+const heapArmScope = `This one key gates all ${HEAP_BUDGETED.length} budgeted heap arms at once.`;
 for (const check of heapBudgetChecks) {
   const missing = requireNumericBudget({ ...check, scope: heapArmScope });
   if (missing !== null) failures.push(missing);
 }
 
-// And EXACT KEY EQUALITY between `HEAP_LANGS` and the two per-language heap
-// maps, because the loop below iterates the baseline: delete one language's
-// ceiling and that language drops out of the loop entirely — still measured,
-// still printed, never checked. Both directions, the same shape as the
+// And EXACT KEY EQUALITY between each tier's CODE list and the baseline maps
+// that gate it, because the loops below iterate the baseline: delete one
+// language's ceiling and that language drops out of the loop entirely — still
+// measured, still printed, never checked. Both directions, the same shape as the
 // LANG_REGISTRY/SCOPE_RESOLVERS inventory arm at the bottom of the file. The
 // forward direction (a language with no budget) is the per-language presence
-// check inside the loop; this is the reverse (a budget with no arm).
+// check inside each loop; this is the reverse (a budget with no arm).
+//
+// Three maps rather than two: `heap_bound_bytes` is reconciled against
+// `HEAP_BOUNDED` exactly as the other two are against `HEAP_BUDGETED`, so a
+// language promoted from bounded to budgeted has to move its key in the same
+// edit — leave the bound behind and it is an orphan here, take the bound away
+// without adding a ceiling and the presence check fires there.
 const heapBudgetMaps = [
-  ['heap_ceiling_bytes', baseline.heap_ceiling_bytes],
-  ['heap_reading_bytes', baseline.heap_reading_bytes],
+  ['heap_ceiling_bytes', baseline.heap_ceiling_bytes, HEAP_BUDGETED, 'HEAP_BUDGETED'],
+  ['heap_reading_bytes', baseline.heap_reading_bytes, HEAP_BUDGETED, 'HEAP_BUDGETED'],
+  ['heap_bound_bytes', baseline.heap_bound_bytes, HEAP_BOUNDED, 'HEAP_BOUNDED'],
 ];
-for (const [key, map] of heapBudgetMaps) {
+for (const [key, map, codeList, codeListName] of heapBudgetMaps) {
   expectNoOrphanKeys(
     `baselines.json ${key}`,
     Object.keys(map ?? {}),
-    HEAP_LANGS,
-    'HEAP_LANGS',
+    codeList,
+    codeListName,
     'the bench budgets a heap arm it does not measure.',
   );
 }
+
+// The two heap tiers are a PARTITION of LANGS by construction (`HEAP_BOUNDED`
+// is a filter over it), so the only way a name can be in neither is for
+// `HEAP_BUDGETED` to hold one `LANGS` does not — a typo, or a language dropped
+// from the registry with its budget left behind. That name would then be
+// measured by nothing, and the loop below would report it as a missing arm
+// without ever saying why; this says why.
+expectNoOrphanKeys(
+  'HEAP_BUDGETED',
+  HEAP_BUDGETED,
+  LANGS,
+  'LANGS',
+  'that name is in neither heap tier, because HEAP_BOUNDED is derived as the languages LANGS ' +
+    'has and this list does not — so its budget gates nothing and its language, if it has one, ' +
+    'is bounded by nothing.',
+);
+// The same, for the probe map. The forward direction — a language with no probe
+// — is caught by the `heap.probe` shape assertion (`undefined` never equals a
+// recorded string), so what is left is a probe kept for an arm that no longer
+// runs, which reads as coverage and is not.
+expectNoOrphanKeys(
+  'HEAP_PROBE_TARGET',
+  Object.keys(HEAP_PROBE_TARGET),
+  LANGS,
+  'LANGS',
+  'the bench carries a heap probe for a language it does not benchmark.',
+);
 
 // The same reverse direction for the context arm. The forward direction (a
 // language in CONTEXT_LANGS with no baseline block) is `armShapes`, which
@@ -2319,12 +2490,14 @@ expectNoOrphanKeys(
   'the bench pins an arm it does not run.',
 );
 
-// Driven by HEAP_LANGS, the CODE's list, exactly as the timing arms iterate
+// TIER ONE, the budgeted arms: ceiling, floor and ratio, all three unchanged.
+//
+// Driven by HEAP_BUDGETED, the CODE's list, exactly as the timing arms iterate
 // LANGS — so a deleted budget key is a presence failure rather than a language
 // that quietly stops being iterated. A deleted MEASUREMENT still fails too:
-// `measureHeap` runs for precisely these languages, so a `heap == null` here is
-// the arm having been removed or skipped.
-for (const lang of HEAP_LANGS) {
+// `measureHeap` now runs for every language, so a `heap == null` here is the arm
+// having been removed or skipped.
+for (const lang of HEAP_BUDGETED) {
   const ceiling = baseline.heap_ceiling_bytes?.[lang];
   const reading = baseline.heap_reading_bytes?.[lang];
   // `reads` names the comparison each key gates further down: the ceiling is
@@ -2339,7 +2512,7 @@ for (const lang of HEAP_LANGS) {
       value,
       reads,
       scope:
-        `This loop iterates HEAP_LANGS precisely so that deleting the key fails here instead ` +
+        `This loop iterates HEAP_BUDGETED precisely so that deleting the key fails here instead ` +
         `of dropping ${lang} out of the gate.`,
     });
     if (missing !== null) failures.push(`${lang}: ${missing}`);
@@ -2347,7 +2520,7 @@ for (const lang of HEAP_LANGS) {
   const heap = report[lang]?.heap;
   if (heap == null) {
     failures.push(
-      `${lang}: heap arm missing though HEAP_LANGS names it — the retained-index measurement ` +
+      `${lang}: heap arm missing though HEAP_BUDGETED names it — the retained-index measurement ` +
         `was removed or skipped. It is the only arm that can see memory.`,
     );
     continue;
@@ -2397,6 +2570,61 @@ for (const lang of HEAP_LANGS) {
       `${lang}: retained-heap ratio ${heap.ratio} > budget ${baseline.heap_ratio_budget} ` +
         `(${heap.bytes_small} B at ${heap.files_small} files -> ${heap.bytes_large} B at ` +
         `${heap.files_large}) — the index stopped growing linearly in the file count.`,
+    );
+  }
+}
+
+/**
+ * TIER TWO, the bounded arms: ONE comparison, and what it is a comparison FOR.
+ *
+ * `heap_bound_bytes` is the "exclusion still holds" bound. It does not claim
+ * these nine indexes are small enough, which is what a ceiling claims about a
+ * budgeted one; it claims each is still the SIZE the decision to leave it out
+ * was taken on. The re-entry condition the MEMORY section states — "if any of
+ * the four ever diverges in what it ASKS, it earns an arm the same way" — is a
+ * claim about growth, and this is the only thing in the file that can see it.
+ *
+ * NO FLOOR, and the reason is per language rather than uniform. rust reads 16 B
+ * because it builds nothing, so any floor at all would be a floor on noise and
+ * `1.5 x 0 B` is 0 — its bound is ABSOLUTE (1 MiB) for the same reason: a
+ * multiplier on 16 B fails on the first byte of anything. The other eight are
+ * stable enough today to floor (0.24% peak-to-peak at worst over five runs) and
+ * two of them — kotlin at 45.85 MiB and dart at 7.47 — are larger than budgeted
+ * arms, so a floor there would be worth having. That is a promotion to tier one,
+ * with a ceiling and a recorded reading, and it is not this change: a floor
+ * without them would assert "still measuring" against a number nothing else
+ * bounds. What this tier is NOT is a weaker version of tier one — it is the
+ * different question, asked of every language instead of eight.
+ */
+const heapBoundScope =
+  `That leaves the arm bounded by nothing, which is the state all nine of these were in before ` +
+  `they were measured.`;
+for (const lang of HEAP_BOUNDED) {
+  const bound = baseline.heap_bound_bytes?.[lang];
+  const missing = requireNumericBudget({
+    key: `heap_bound_bytes.${lang}`,
+    value: bound,
+    reads: 'bytes_large > undefined',
+    scope: heapBoundScope,
+  });
+  if (missing !== null) failures.push(`${lang}: ${missing}`);
+  const heap = report[lang]?.heap;
+  if (heap == null) {
+    failures.push(
+      `${lang}: heap arm missing though HEAP_BOUNDED names it — every registered language is ` +
+        `measured now, and the tier only decides which gate the reading gets.`,
+    );
+    continue;
+  }
+  if (missing === null && heap.bytes_large > bound) {
+    failures.push(
+      `${lang}: retained per-pass import index ${heap.mib_large} MiB at ${heap.files_large} ` +
+        `files (${heap.bytes_large} B) > bound ${bound} B — this language is EXCLUDED from the ` +
+        `budgeted heap tier, and the bound is what says the exclusion still holds. It has grown ` +
+        `a structure, or started asking its index a question it did not ask when the exclusion ` +
+        `was recorded. Read _heap_bound_note in baselines.json for this language's reason and ` +
+        `its recorded reading, then either explain the growth or promote it to HEAP_BUDGETED ` +
+        `with a ceiling, a reading and a floor. Deterministic: a re-run will not change it.`,
     );
   }
 }

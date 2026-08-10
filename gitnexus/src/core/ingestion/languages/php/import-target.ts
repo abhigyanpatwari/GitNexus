@@ -185,9 +185,9 @@ const filesByDirectory = perFileSet(
  */
 interface PhpWorkspaceIndex {
   /** Every path, backslashes normalized to `/`. Parallel to `all`. */
-  readonly normalized: string[];
+  readonly normalized: readonly string[];
   /** Every path, exactly as it appears in the Set. Parallel to `normalized`. */
-  readonly all: string[];
+  readonly all: readonly string[];
   /** Scan-equivalent `SuffixIndex` for `resolvePhpImportInternal`. */
   readonly suffixIndex: SuffixIndex;
 }

@@ -37,8 +37,8 @@ export function resolvePhpImportInternal(
   importPath: string,
   composerConfig: ComposerConfig | null,
   allFiles: Set<string>,
-  normalizedFileList: string[],
-  allFileList: string[],
+  normalizedFileList: readonly string[],
+  allFileList: readonly string[],
   index?: SuffixIndex,
 ): string | null {
   // Normalize: replace backslashes with forward slashes

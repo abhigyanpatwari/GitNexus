@@ -25,8 +25,8 @@ export function resolveGoPackageDir(importPath: string, goModule: GoModuleConfig
 export function resolveGoPackage(
   importPath: string,
   goModule: GoModuleConfig,
-  normalizedFileList: string[],
-  allFileList: string[],
+  normalizedFileList: readonly string[],
+  allFileList: readonly string[],
 ): string[] {
   if (!importPath.startsWith(goModule.modulePath)) return [];
 

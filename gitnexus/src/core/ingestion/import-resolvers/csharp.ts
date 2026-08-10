@@ -197,7 +197,7 @@ function* matchingDirPositions(
 function pushFilesDirectlyInNamespaceDir(
   index: CsharpNamespaceDirIndex,
   dirPrefix: string,
-  allFileList: string[],
+  allFileList: readonly string[],
   results: string[],
 ): void {
   // One matching directory is the overwhelmingly common case, and its positions

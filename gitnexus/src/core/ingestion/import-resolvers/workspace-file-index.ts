@@ -41,11 +41,26 @@
 import { perFileSet } from './per-file-set.js';
 import { buildSuffixIndex, type SuffixIndex } from './utils.js';
 
+/**
+ * `normalized` and `all` are `readonly string[]`, and — like
+ * `SuffixIndex.getFilesInDir` — that is the CONTRACT rather than a description
+ * of the arrays: they are built once and then held for the whole pass, so an
+ * in-place `sort`/`splice`/`reverse` would corrupt every later import in that
+ * pass, and these two are the largest shared arrays here (one element per file,
+ * read by C#, Java, PHP and Ruby). `readonly` on the field is what makes the
+ * compiler refuse the mutation at the call site instead of leaving it to a
+ * comment. `ImportPassCache` (`pass-cache.ts`) states the same contract the
+ * same way for the ts-family lists.
+ *
+ * The positional pairing is load-bearing too and depends on it: `csharp.ts`
+ * caches POSITIONS into `normalized` and reads the answer out of `all`, so a
+ * reordering of either array alone silently re-points every cached position.
+ */
 export interface WorkspaceFileIndex {
   /** Every path, backslashes normalized to `/`. Parallel to `all`. */
-  readonly normalized: string[];
+  readonly normalized: readonly string[];
   /** Every path, exactly as it appears in the Set. Parallel to `normalized`. */
-  readonly all: string[];
+  readonly all: readonly string[];
   /** Segment-suffix → first file (in Set iteration order) carrying that suffix. */
   readonly index: SuffixIndex;
   /**

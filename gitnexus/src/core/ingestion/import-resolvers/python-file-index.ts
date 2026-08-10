@@ -103,7 +103,17 @@ function buildImporterAncestors(importerDir: string): readonly string[] {
  * (package-existence gate) with O(1)/O(bucket) lookups.
  *
  *  - `normSet`: every file path, normalized to forward slashes (for the exact
- *    `f === rootFile|initFile` membership checks).
+ *    `f === rootFile|initFile` membership checks). It IS derivable from the two
+ *    buckets below — both probes could be a `.some(c => c.norm === …)` over
+ *    `byBasename.get(rootFile)` / `byInitParent.get(initFile)` — and it is kept
+ *    anyway, deliberately. `byBasename` is keyed on the BASENAME, so its bucket
+ *    for a common Python file name is not small and grows with the repo: on a
+ *    9 000-file service tree, `utils.py`, `models.py` and `views.py` hold 1 000
+ *    entries each. `import utils` would then scan every `utils.py` in the
+ *    workspace on every import — a per-import cost proportional to corpus size,
+ *    which is the exact defect class #2901/#2902/#2908 removed. The Set trades
+ *    ~1.6 MB at 32 000 files, against a 6.4 MB reading, to keep both probes
+ *    O(1). Do not "simplify" it away without re-measuring that bucket.
  *  - `byBasename`: last path component (e.g. `models.py`, `__init__.py`) ->
  *    all `{ raw, norm }` candidates, so suffix matches can be gathered from the
  *    relevant bucket and the exact tie-break applied across ALL of them.
