@@ -116,12 +116,12 @@
     "digest": "af2c5772cad79b3a88c86764290f8806fb9a6e8fc12e4c22095eabdc2555b5a6"
   },
   "go-extern-qualified-signatures/memory/memory.go": {
-    "captureGroups": 32,
-    "digest": "8cc41ed43f83c773e0a2d9f46a08e9805c746efe74c8bb04386b1f00a49d7eed"
+    "captureGroups": 47,
+    "digest": "f079bb9c78b2e38473d0fb7e88ad7b3017abdb5716405ac69929ee40afd5e316"
   },
   "go-extern-qualified-signatures/store/store.go": {
-    "captureGroups": 6,
-    "digest": "c4d51419586904a826c1e65827bb96f0ec1e9ffed0d39f14dba3caa14b428624"
+    "captureGroups": 8,
+    "digest": "6b5ed1163020250ec52ae6b67cad03c68a5247971fc10c7b6281821434badfe3"
   },
   "go-field-types/cmd/main.go": {
     "captureGroups": 10,

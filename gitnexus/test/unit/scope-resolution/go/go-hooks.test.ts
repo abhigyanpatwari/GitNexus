@@ -1261,6 +1261,90 @@ describe('Go structural interface detection', () => {
     expect(implIds(result, iface.nodeId)).toEqual([struct.nodeId]);
   });
 
+  // The extractor derives the local name from the LAST path segment, which for a
+  // module at v2+ is the version, not the package. Source still writes `bar.`.
+  it('recovers the package name from a major-version import path', () => {
+    const iface = goDef('iface:Saver', 'Interface', 'Saver', undefined, { filePath: 'api/s.go' });
+    const struct = goDef('struct:Repo', 'Struct', 'Repo', undefined, { filePath: 'store/s.go' });
+    const ifaceSave = goDef('iface:Saver.Save', 'Method', 'Saver.Save', iface.nodeId, {
+      filePath: 'api/s.go',
+      parameterCount: 2,
+      requiredParameterCount: 2,
+      parameterTypes: ['bar.Config', 'yaml.Node'],
+      returnType: 'error',
+    });
+    const structSave = goDef('struct:Repo.Save', 'Method', 'Repo.Save', struct.nodeId, {
+      filePath: 'store/s.go',
+      parameterCount: 2,
+      requiredParameterCount: 2,
+      parameterTypes: ['bar.Config', 'yaml.Node'],
+      returnType: 'error',
+    });
+    const defs = [iface, struct, ifaceSave, structSave];
+    const imports = [
+      goNamespaceImport('v2', 'github.com/foo/bar/v2'),
+      goNamespaceImport('yaml.v3', 'gopkg.in/yaml.v3'),
+    ];
+
+    const result = detectGoInterfaceImplementations(
+      [
+        parsedGoFile('api/s.go', [iface, ifaceSave], { parsedImports: imports }),
+        parsedGoFile('store/s.go', [struct, structSave], { parsedImports: imports }),
+      ],
+      scopeIndexes(defs),
+      {} as any,
+    );
+
+    expect(implIds(result, iface.nodeId)).toEqual([struct.nodeId]);
+  });
+
+  // Two majors of one module are two packages, and Go forces an alias to import
+  // both. The alias owns its token; the bare name stays with the unaliased one.
+  it('keeps two major versions of the same module distinct', () => {
+    const iface = goDef('iface:Saver', 'Interface', 'Saver', undefined, { filePath: 'api/s.go' });
+    const struct = goDef('struct:Repo', 'Struct', 'Repo', undefined, { filePath: 'store/s.go' });
+    const ifaceSave = goDef('iface:Saver.Save', 'Method', 'Saver.Save', iface.nodeId, {
+      filePath: 'api/s.go',
+      parameterCount: 1,
+      requiredParameterCount: 1,
+      parameterTypes: ['bar.Config'],
+      returnType: 'error',
+    });
+    const structSave = goDef('struct:Repo.Save', 'Method', 'Repo.Save', struct.nodeId, {
+      filePath: 'store/s.go',
+      parameterCount: 1,
+      requiredParameterCount: 1,
+      parameterTypes: ['bar.Config'],
+      returnType: 'error',
+    });
+    const defs = [iface, struct, ifaceSave, structSave];
+
+    const result = detectGoInterfaceImplementations(
+      [
+        // `bar` here is v1 …
+        parsedGoFile('api/s.go', [iface, ifaceSave], {
+          parsedImports: [goNamespaceImport('bar', 'github.com/foo/bar')],
+        }),
+        // … and here it is the alias of v2, imported alongside v1.
+        parsedGoFile('store/s.go', [struct, structSave], {
+          parsedImports: [
+            goNamespaceImport('v1', 'github.com/foo/bar'),
+            {
+              kind: 'namespace',
+              localName: 'bar',
+              importedName: 'v2',
+              targetRaw: 'github.com/foo/bar/v2',
+            } as ParsedImport,
+          ],
+        }),
+      ],
+      scopeIndexes(defs),
+      {} as any,
+    );
+
+    expect(result.get(iface.nodeId)).toBeUndefined();
+  });
+
   // Go's dot-import has no qualifier to register, and the extractor gives it a
   // different `ParsedImport` kind for that reason. Blank imports never reach
   // here at all.

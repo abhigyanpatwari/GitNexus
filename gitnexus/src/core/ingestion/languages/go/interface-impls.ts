@@ -1139,9 +1139,15 @@ function signatureContextForFile(
   indexes: ScopeResolutionIndexes,
 ): SignatureContext {
   const importQualifiers = new Map<string, string>();
+  const inRepoLocalNames = new Set<string>();
   const importEdges = indexes.imports?.get(parsed.moduleScope) ?? [];
   for (const edge of importEdges) {
     if (edge.kind !== 'namespace' || edge.targetFile === null) continue;
+    // Claimed even when the package has no directory to name it by — a
+    // repo-ROOT package. That case has no qualifier either side can agree on
+    // (the declaring file spells its own types bare), but it is in-repo, and
+    // labelling it as external below would only make the map lie.
+    inRepoLocalNames.add(edge.localName);
     const qualifier = packageQualifierForFile(edge.targetFile);
     if (qualifier !== undefined) importQualifiers.set(edge.localName, qualifier);
   }
@@ -1154,8 +1160,18 @@ function signatureContextForFile(
   // only ever succeeded for builtin-only signatures.
   for (const directive of parsed.parsedImports) {
     if (directive.kind !== 'namespace') continue;
-    if (importQualifiers.has(directive.localName)) continue;
-    importQualifiers.set(directive.localName, externalPackageQualifier(directive.targetRaw));
+    if (inRepoLocalNames.has(directive.localName)) continue;
+    const qualifier = externalPackageQualifier(directive.targetRaw);
+    if (!importQualifiers.has(directive.localName)) {
+      importQualifiers.set(directive.localName, qualifier);
+    }
+    // Only an UNALIASED import needs its package name recovered — an aliased one
+    // already told us the token the source will use, and minting the path-derived
+    // name for it could steal the token a sibling import spells natively.
+    if (directive.localName !== directive.importedName) continue;
+    const packageName = goPackageNameFromImportPath(directive.targetRaw);
+    if (packageName === directive.localName || importQualifiers.has(packageName)) continue;
+    importQualifiers.set(packageName, qualifier);
   }
   return {
     packageQualifier: packageQualifierForFile(parsed.filePath),
@@ -1168,10 +1184,29 @@ function signatureContextForFile(
  *  The import path is the exact identity — `net/http` and `example.com/x/http`
  *  are different packages that both spell their qualifier `http`, so keying on
  *  the local name would make them compare equal. The prefix keeps the result in
- *  a namespace no in-repo qualifier can reach: those are package directories,
- *  which never contain `:`. */
+ *  a namespace no in-repo qualifier can reach: no package directory can begin
+ *  with the literal `extern:`. */
 function externalPackageQualifier(importPath: string): string {
   return `extern:${importPath}`;
+}
+
+/** The token Go source will use for an unaliased import of `importPath`.
+ *
+ *  The import extractor takes the last path segment, which is right until a
+ *  module carries a major version: `github.com/foo/bar/v2` is imported as `bar`
+ *  and `gopkg.in/yaml.v3` as `yaml`, per the same rule the go tool applies. Left
+ *  unhandled, every v2+ dependency reproduced #2873 exactly — the qualifier the
+ *  source writes was absent from the map, so the whole signature normalized to
+ *  `undefined`.
+ *
+ *  A package whose name diverges from its path for any OTHER reason cannot be
+ *  recovered without reading the dependency's own source, which is by definition
+ *  outside the repository. Those stay unresolved, which is the safe direction. */
+function goPackageNameFromImportPath(importPath: string): string {
+  const segments = importPath.split('/').filter((segment) => segment.length > 0);
+  let last = segments.pop() ?? importPath;
+  if (/^v\d+$/.test(last) && segments.length > 0) last = segments.pop()!;
+  return last.replace(/\.v\d+$/, '');
 }
 
 /** The package directory, or `undefined` for a repo-root file.
