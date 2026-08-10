@@ -44,6 +44,13 @@ const fullCoverageRows = () =>
 afterEach(() => {
   calls.length = 0;
   vi.clearAllMocks();
+  // `clearAllMocks` does NOT drain the `…Once` queue. A test that queues more
+  // rejections than the code under test consumes would otherwise leak the
+  // leftovers into whichever test runs next — order-dependent, and exactly the
+  // shape of failure a per-index isolation change makes easy to introduce.
+  // `mockReset` restores the implementation the `vi.mock` factory passed to
+  // `vi.fn(impl)`, so the recording default survives.
+  vi.mocked(createFTSIndex).mockReset();
   vi.unstubAllEnvs();
 });
 
@@ -85,6 +92,71 @@ describe('createSearchFTSIndexes', () => {
     await expect(createSearchFTSIndexes()).rejects.toThrow('Invalid GITNEXUS_FTS_STEMMER');
     expect(calls).toEqual([]);
   });
+
+  // #2889 — one untokenizable row used to cost the indexes of its own table AND
+  // every table after it in FTS_INDEXES order, because the first rejection left
+  // the loop. The `drop` for the failing table has already run by then, so the
+  // damage was never confined to "the index we could not rebuild".
+  describe('per-index failure isolation (#2889)', () => {
+    const POISON = 'Runtime exception: Failed calling LOWER: Invalid UTF-8.';
+    const recordCreate = async (
+      table: string,
+      indexName: string,
+      _properties: string[],
+      stemmer: string,
+    ) => {
+      calls.push(`create:${table}.${indexName}:${stemmer}`);
+    };
+
+    it('builds every remaining table after one index build rejects', async () => {
+      const poisoned = FTS_INDEXES[1];
+      vi.mocked(createFTSIndex)
+        .mockImplementationOnce(recordCreate)
+        .mockRejectedValueOnce(new Error(POISON));
+
+      const failures = await createSearchFTSIndexes();
+
+      expect(failures).toEqual([
+        {
+          table: poisoned.table,
+          indexName: poisoned.indexName,
+          error: POISON,
+          failureClass: 'capability',
+        },
+      ]);
+      expect(calls.filter((call) => call.startsWith('create:'))).toEqual(
+        FTS_INDEXES.filter((i) => i.indexName !== poisoned.indexName).map(
+          (i) => `create:${i.table}.${i.indexName}:porter`,
+        ),
+      );
+    });
+
+    it('still drops the failing index, and every other index is left rebuilt', async () => {
+      vi.mocked(createFTSIndex)
+        .mockImplementationOnce(recordCreate)
+        .mockRejectedValueOnce(new Error(POISON));
+
+      await createSearchFTSIndexes();
+
+      expect(calls.filter((call) => call.startsWith('drop:'))).toEqual(
+        FTS_INDEXES.map((i) => `drop:${i.table}.${i.indexName}`),
+      );
+    });
+
+    it('does not report a failed index as ready', async () => {
+      const poisoned = FTS_INDEXES[1];
+      vi.mocked(createFTSIndex)
+        .mockImplementationOnce(recordCreate)
+        .mockRejectedValueOnce(new Error(POISON));
+      const ready: string[] = [];
+
+      await createSearchFTSIndexes({ onIndexReady: (_t, name) => ready.push(name) });
+
+      expect(ready).toEqual(
+        FTS_INDEXES.filter((i) => i.indexName !== poisoned.indexName).map((i) => i.indexName),
+      );
+    });
+  });
 });
 
 describe('buildSearchIndexesOrDegrade', () => {
@@ -106,6 +178,44 @@ describe('buildSearchIndexesOrDegrade', () => {
 
     expect(result.ok).toBe(false);
     expect(result.error).toContain('Invalid UTF-8');
+  });
+
+  it('names every failing table, not just the first (#2889)', async () => {
+    vi.mocked(createFTSIndex)
+      .mockRejectedValueOnce(new Error('Runtime exception: Failed calling LOWER: Invalid UTF-8.'))
+      .mockRejectedValueOnce(new Error('Runtime exception: Failed calling LOWER: Invalid UTF-8.'));
+    const executeQuery = vi.fn(async () => fullCoverageRows());
+
+    const result = await buildSearchIndexesOrDegrade(executeQuery);
+
+    expect(result.ok).toBe(false);
+    expect(result.error).toContain(FTS_INDEXES[0].table);
+    expect(result.error).toContain(FTS_INDEXES[1].table);
+    expect(result.error).toContain(`2 of ${FTS_INDEXES.length} tables`);
+  });
+
+  it('escalates the aggregate to integrity when any single failure is integrity (#2889)', async () => {
+    // Capability signatures are checked first, so aggregating the raw messages
+    // into one string would have let an untokenizable row mask a broken write.
+    vi.mocked(createFTSIndex)
+      .mockRejectedValueOnce(new Error('Runtime exception: Failed calling LOWER: Invalid UTF-8.'))
+      .mockRejectedValueOnce(new Error('IO exception: checkpoint failed'));
+    const executeQuery = vi.fn(async () => fullCoverageRows());
+
+    const result = await buildSearchIndexesOrDegrade(executeQuery);
+
+    expect(result.failureClass).toBe('integrity');
+  });
+
+  it('stays capability when every failure is a row-level tokenizer error (#2889)', async () => {
+    vi.mocked(createFTSIndex).mockRejectedValueOnce(
+      new Error('Runtime exception: Failed calling LOWER: Invalid UTF-8.'),
+    );
+    const executeQuery = vi.fn(async () => fullCoverageRows());
+
+    const result = await buildSearchIndexesOrDegrade(executeQuery);
+
+    expect(result.failureClass).toBe('capability');
   });
 
   it('returns ok:false when verification finds a missing index, without throwing', async () => {

@@ -257,10 +257,39 @@ export async function dropSearchFTSIndexes(indexRows?: IndexCatalogSnapshot): Pr
   }
 }
 
+/** One configured index that could not be (re)built, and why. */
+export interface FtsIndexBuildFailure {
+  table: string;
+  indexName: string;
+  /** The raw LadybugDB message, unmodified — it is the only row-level evidence there is. */
+  error: string;
+  failureClass: FtsBuildFailureClass;
+}
+
+/**
+ * Build every configured FTS index, and keep going when one of them fails
+ * (#2889).
+ *
+ * The loop used to let the first failure propagate, which made a single
+ * untokenizable row far more expensive than it looks: `dropFTSIndex` has
+ * already run for the failing table, so that table ends with NO index, and
+ * every table after it in {@link FTS_INDEXES} order is never reached — on a
+ * fresh build, or on the incremental path where `dropSearchFTSIndexes` cleared
+ * them all up front, those tables end with no index either. One bad `Method`
+ * row therefore cost keyword search on Namespace, Property, Record, Union,
+ * Static and Variable as well, and `verifySearchFTSIndexes` never ran to say
+ * so. The blast radius was an artifact of loop control flow, not of the data.
+ *
+ * Isolating per index bounds the damage to the table that actually holds the
+ * bad row, and makes `--repair-fts` able to recover everything else. Failures
+ * are returned rather than thrown so the caller can decide — degrade or abort —
+ * with every failure in hand instead of only the first.
+ */
 export async function createSearchFTSIndexes(
   options?: CreateSearchFTSIndexesOptions,
-): Promise<void> {
+): Promise<FtsIndexBuildFailure[]> {
   const stemmer = getSearchFTSStemmer();
+  const failures: FtsIndexBuildFailure[] = [];
   for (const { table, indexName, properties } of FTS_INDEXES) {
     options?.onIndexStart?.(table, indexName);
     // Drop first so the live `properties` always win. `createFTSIndex` is
@@ -274,11 +303,22 @@ export async function createSearchFTSIndexes(
     // skipping when present; FTS build is proportional to symbol-table size and
     // runs inside the existing FTS phase. Gate on a stored schema fingerprint if
     // this rebuild cost ever shows up in analyze profiles.
-    await dropFTSIndex(table, indexName);
-    await createFTSIndex(table, indexName, [...properties], stemmer);
+    try {
+      await dropFTSIndex(table, indexName);
+      await createFTSIndex(table, indexName, [...properties], stemmer);
+    } catch (e) {
+      const error = e instanceof Error ? e.message : String(e);
+      failures.push({ table, indexName, error, failureClass: classifyFtsBuildError(error) });
+      continue;
+    }
     options?.onIndexReady?.(table, indexName);
   }
+  return failures;
 }
+
+/** `Method.method_fts (Runtime exception: …), Variable.variable_fts (…)` — every failure, table-named. */
+export const describeFtsIndexBuildFailures = (failures: readonly FtsIndexBuildFailure[]): string =>
+  failures.map((f) => `${f.table}.${f.indexName} (${f.error})`).join(', ');
 
 export async function verifySearchFTSIndexes(
   executeQuery: (cypher: string) => Promise<unknown[]>,
@@ -413,7 +453,18 @@ export async function buildSearchIndexesOrDegrade(
   options?: CreateSearchFTSIndexesOptions,
 ): Promise<BuildSearchIndexesResult> {
   try {
-    await createSearchFTSIndexes(options);
+    const failures = await createSearchFTSIndexes(options);
+    if (failures.length > 0) {
+      // Every OTHER index was still built and verified below is skipped only
+      // for the report — the surviving tables stay searchable this run (#2889).
+      // `integrity` wins the aggregate: a genuinely broken write must not be
+      // downgraded to a degrade just because an untokenizable row failed first.
+      const error = `FTS index build failed for ${failures.length} of ${FTS_INDEXES.length} tables: ${describeFtsIndexBuildFailures(failures)}`;
+      const failureClass = failures.some((f) => f.failureClass === 'integrity')
+        ? 'integrity'
+        : 'capability';
+      return { ok: false, error, failureClass };
+    }
     const missing = await verifySearchFTSIndexes(executeQuery);
     if (missing.length > 0) {
       // Structural incompleteness with no thrown error — treat as capability
