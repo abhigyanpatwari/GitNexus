@@ -61,6 +61,7 @@ import {
   buildSearchIndexesOrDegrade,
   ftsFailureIsFatal,
   createSearchFTSIndexes,
+  summarizeFtsIndexBuildFailures,
   dropSearchFTSIndexes,
   initialiseSearchFTSStemmer,
   verifySearchFTSIndexes,
@@ -1193,7 +1194,7 @@ async function runFullAnalysisInner(
         );
       }
       progress('fts', 85, 'Repairing search indexes...');
-      await createSearchFTSIndexes({
+      const repairFailures = await createSearchFTSIndexes({
         onIndexStart: options.verbose
           ? (table, indexName) => log(`FTS: creating ${table}.${indexName}`)
           : undefined,
@@ -1203,8 +1204,16 @@ async function runFullAnalysisInner(
       });
       const missing = await verifySearchFTSIndexes(executeQuery);
       if (missing.length > 0) {
+        // #2889: name WHY each index is missing when the build itself said so.
+        // Repair now rebuilds every table it can before reporting, so the tables
+        // absent from this list were genuinely repaired even on a failed run —
+        // previously the first failure aborted the sweep and the message could
+        // only ever list "missing", never a reason. Same sentence the analyze
+        // degrade path prints, so one failure does not read two ways.
+        const reasons =
+          repairFailures.length > 0 ? ` ${summarizeFtsIndexBuildFailures(repairFailures)}.` : '';
         throw new Error(
-          `FTS repair failed - missing indexes after rebuild: ${missing.join(', ')}. ` +
+          `FTS repair failed - missing indexes after rebuild: ${missing.join(', ')}.${reasons} ` +
             'Run `gitnexus analyze --force` to perform a full graph+FTS rebuild; ' +
             'if that also fails, verify FTS extension availability via `gitnexus doctor`.',
         );
