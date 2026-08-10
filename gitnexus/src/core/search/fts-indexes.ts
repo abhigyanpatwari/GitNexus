@@ -257,10 +257,38 @@ export async function dropSearchFTSIndexes(indexRows?: IndexCatalogSnapshot): Pr
   }
 }
 
+/** One configured index that could not be (re)built, and why. */
+export interface FtsIndexBuildFailure {
+  table: string;
+  indexName: string;
+  /** The raw LadybugDB message, unmodified — it is the only row-level evidence there is. */
+  error: string;
+}
+
+/**
+ * Build every configured FTS index, and keep going when one of them fails
+ * (#2889).
+ *
+ * The loop used to let the first failure propagate, which made a single
+ * untokenizable row far more expensive than it looks: `dropFTSIndex` has
+ * already run for the failing table, so that table ends with NO index, and
+ * every table after it in {@link FTS_INDEXES} order is never reached — on a
+ * fresh build, or on the incremental path where `dropSearchFTSIndexes` cleared
+ * them all up front, those tables end with no index either. One bad `Method`
+ * row therefore cost keyword search on Namespace, Property, Record, Union,
+ * Static and Variable as well, and `verifySearchFTSIndexes` never ran to say
+ * so. The blast radius was an artifact of loop control flow, not of the data.
+ *
+ * Isolating per index bounds the damage to the table that actually holds the
+ * bad row, and makes `--repair-fts` able to recover everything else. Failures
+ * are returned rather than thrown so the caller can decide — degrade or abort —
+ * with every failure in hand instead of only the first.
+ */
 export async function createSearchFTSIndexes(
   options?: CreateSearchFTSIndexesOptions,
-): Promise<void> {
+): Promise<FtsIndexBuildFailure[]> {
   const stemmer = getSearchFTSStemmer();
+  const failures: FtsIndexBuildFailure[] = [];
   for (const { table, indexName, properties } of FTS_INDEXES) {
     options?.onIndexStart?.(table, indexName);
     // Drop first so the live `properties` always win. `createFTSIndex` is
@@ -274,11 +302,35 @@ export async function createSearchFTSIndexes(
     // skipping when present; FTS build is proportional to symbol-table size and
     // runs inside the existing FTS phase. Gate on a stored schema fingerprint if
     // this rebuild cost ever shows up in analyze profiles.
-    await dropFTSIndex(table, indexName);
-    await createFTSIndex(table, indexName, [...properties], stemmer);
+    try {
+      await dropFTSIndex(table, indexName);
+      await createFTSIndex(table, indexName, [...properties], stemmer);
+    } catch (e) {
+      // The message, never the Error: holding the Error would pin its stack and
+      // whatever the native binding attached to it, for up to one per table.
+      failures.push({ table, indexName, error: e instanceof Error ? e.message : String(e) });
+      continue;
+    }
     options?.onIndexReady?.(table, indexName);
   }
+  return failures;
 }
+
+/**
+ * One sentence naming every table that failed and why, e.g. `FTS index build
+ * failed for 2 of 21 tables: Method.method_fts (Runtime exception: …), …`.
+ *
+ * Lives here rather than at the call sites because only this module knows the
+ * denominator. Both the analyze degrade path and `--repair-fts` render it, so
+ * one failure reads the same way whichever command produced it.
+ *
+ * Embeds the raw LadybugDB message UNREDACTED — CLI and log surfaces only.
+ * Anything heading for a network response has to pass it through
+ * {@link redactPaths} first, the same rule the query-side warnings follow.
+ */
+export const summarizeFtsIndexBuildFailures = (failures: readonly FtsIndexBuildFailure[]): string =>
+  `FTS index build failed for ${failures.length} of ${FTS_INDEXES.length} tables: ` +
+  failures.map((f) => `${f.table}.${f.indexName} (${f.error})`).join(', ');
 
 export async function verifySearchFTSIndexes(
   executeQuery: (cypher: string) => Promise<unknown[]>,
@@ -413,16 +465,36 @@ export async function buildSearchIndexesOrDegrade(
   options?: CreateSearchFTSIndexesOptions,
 ): Promise<BuildSearchIndexesResult> {
   try {
-    await createSearchFTSIndexes(options);
+    // Verify ALWAYS runs, failures or not (#2889). Reporting must not jump the
+    // queue ahead of verification: a partial build is exactly when "the other
+    // tables are fine" needs proving rather than asserting, and a stale
+    // name+content-only index is invisible to the build (it succeeds) yet still
+    // means description search is broken (#2299).
+    const failures = await createSearchFTSIndexes(options);
     const missing = await verifySearchFTSIndexes(executeQuery);
-    if (missing.length > 0) {
-      // Structural incompleteness with no thrown error — treat as capability
-      // (degrade), matching prior behavior; a broken *write* surfaces as a
-      // thrown IO/checkpoint error below and is classified integrity there.
-      const error = `missing indexes after build: ${missing.join(', ')}`;
-      return { ok: false, error, failureClass: classifyFtsBuildError(error) };
-    }
-    return { ok: true };
+    if (failures.length === 0 && missing.length === 0) return { ok: true };
+
+    // A table that failed to build is necessarily missing too — report it once,
+    // with its reason, and keep `missing` for indexes nothing explains.
+    const named = new Set(failures.map((f) => `${f.table}.${f.indexName}`));
+    const unexplained = missing.filter((name) => !named.has(name));
+    const error = [
+      failures.length > 0 ? summarizeFtsIndexBuildFailures(failures) : '',
+      // Structural incompleteness with no thrown error — classified capability
+      // (degrade) below, matching prior behavior; a broken *write* surfaces as
+      // a thrown IO/checkpoint error and is classified integrity there.
+      unexplained.length > 0 ? `missing indexes after build: ${unexplained.join(', ')}` : '',
+    ]
+      .filter((part) => part.length > 0)
+      .join('; ');
+
+    // Classify per failure, not over the joined text: capability signatures are
+    // checked first, so folding the messages together would let an untokenizable
+    // row mask a genuinely broken write and downgrade an abort into a degrade.
+    const failureClass = failures.some((f) => classifyFtsBuildError(f.error) === 'integrity')
+      ? 'integrity'
+      : classifyFtsBuildError(error);
+    return { ok: false, error, failureClass };
   } catch (e) {
     const error = e instanceof Error ? e.message : String(e);
     return { ok: false, error, failureClass: classifyFtsBuildError(error) };
