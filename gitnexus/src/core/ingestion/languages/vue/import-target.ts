@@ -14,27 +14,39 @@
  * logic fires.
  *
  * Memoization mirrors the TypeScript adapter: workspace file-list
- * arrays, the suffix index, and the per-pass resolve cache are rebuilt
- * lazily when `allFilePaths` reference changes (once per workspace pass).
+ * arrays, the suffix index and the per-pass resolve cache are built
+ * once per `allFilePaths` Set and memoized on that Set's identity.
  */
 
 import { SupportedLanguages } from 'gitnexus-shared';
 import { resolveTsTarget, type TsResolveContext } from '../typescript/import-target.js';
-import { buildSuffixIndex, type SuffixIndex } from '../../import-resolvers/utils.js';
+import { buildImportPassCache } from '../../import-resolvers/pass-cache.js';
+import { perFileSet } from '../../import-resolvers/per-file-set.js';
 import type { TsconfigPaths } from '../../language-config.js';
 
 interface VueResolutionConfig {
   readonly tsconfigPaths: TsconfigPaths | null;
 }
 
-interface PassCache {
-  readonly key: ReadonlySet<string>;
-  readonly allFilePaths: Set<string>;
-  readonly allFileList: readonly string[];
-  readonly normalizedFileList: readonly string[];
-  readonly index: SuffixIndex;
-  readonly resolveCache: Map<string, string | null>;
-}
+/**
+ * Memoized on the `allFilePaths` Set identity, like every other language's
+ * import index (`import-resolvers/workspace-file-index.ts` and friends).
+ *
+ * This used to be a single-slot `let cached` invalidated by
+ * `cached.key !== allFilePaths` — correct for one file set and degenerate for
+ * two: alternating calls across two sets rebuilt everything every time.
+ * Measured on the identical TypeScript adapter at 4000 files × 400 imports:
+ * 12.0 ms for one set, 1438.2 ms alternating between two (120x). A `WeakMap`
+ * has no such state to thrash, and it is what lets this adapter carry the
+ * standard
+ * `expectDistinctFileSetsGetOwnIndex` guard the other languages carry
+ * (`test/integration/vue-import-index-reuse.test.ts`).
+ *
+ * The Set must be passed THROUGH by the caller, never copied: a defensive
+ * `new Set(allFilePaths)` at the adapter boundary hands a fresh key per import
+ * and restores the per-import rebuild (PR #1918 review P1).
+ */
+const passCacheFor = perFileSet(buildImportPassCache);
 
 /**
  * Build a memoized `resolveImportTarget` adapter for Vue SFCs.
@@ -49,21 +61,8 @@ export function makeVueResolveImportTarget(): (
   allFilePaths: ReadonlySet<string>,
   resolutionConfig?: unknown,
 ) => string | readonly string[] | null {
-  let cached: PassCache | null = null;
-
   return (targetRaw, fromFile, allFilePaths, resolutionConfig) => {
-    if (cached === null || cached.key !== allFilePaths) {
-      const allFileList = Array.from(allFilePaths);
-      const normalizedFileList = allFileList.map((f) => f.toLowerCase());
-      cached = {
-        key: allFilePaths,
-        allFilePaths: new Set(allFilePaths),
-        allFileList,
-        normalizedFileList,
-        index: buildSuffixIndex(normalizedFileList, allFileList),
-        resolveCache: new Map(),
-      };
-    }
+    const cached = passCacheFor(allFilePaths);
 
     const cfg = resolutionConfig as VueResolutionConfig | undefined;
     const ws: TsResolveContext = {

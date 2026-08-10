@@ -31,8 +31,8 @@ export const appendKotlinWildcard = (importPath: string, importNode: SyntaxNode)
  */
 export function resolveJvmWildcard(
   importPath: string,
-  normalizedFileList: string[],
-  allFileList: string[],
+  normalizedFileList: readonly string[],
+  allFileList: readonly string[],
   extensions: readonly string[],
   index?: SuffixIndex,
 ): string[] {
@@ -90,8 +90,8 @@ export function resolveJvmWildcard(
  */
 export function resolveJvmMemberImport(
   importPath: string,
-  normalizedFileList: string[],
-  allFileList: string[],
+  normalizedFileList: readonly string[],
+  allFileList: readonly string[],
   extensions: readonly string[],
   index?: SuffixIndex,
 ): string | null {

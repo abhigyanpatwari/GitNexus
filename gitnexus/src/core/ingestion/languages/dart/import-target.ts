@@ -13,6 +13,7 @@
  * `targetRaw` arrives already quote-stripped from `interpretDartImport`.
  */
 
+import { perFileSet } from '../../import-resolvers/per-file-set.js';
 import { DART_HERITAGE_PREFIX } from './interpret.js';
 
 /**
@@ -35,11 +36,7 @@ interface DartFileIndex {
   readonly byBasename: Map<string, string[]>;
 }
 
-const DART_FILE_INDEX_CACHE = new WeakMap<ReadonlySet<string>, DartFileIndex>();
-
-function getDartFileIndex(allFilePaths: ReadonlySet<string>): DartFileIndex {
-  const cached = DART_FILE_INDEX_CACHE.get(allFilePaths);
-  if (cached !== undefined) return cached;
+const getDartFileIndex = perFileSet((allFilePaths: ReadonlySet<string>): DartFileIndex => {
   const byBasename = new Map<string, string[]>();
   for (const fp of allFilePaths) {
     const base = fp.slice(fp.lastIndexOf('/') + 1);
@@ -50,10 +47,8 @@ function getDartFileIndex(allFilePaths: ReadonlySet<string>): DartFileIndex {
     }
     bucket.push(fp);
   }
-  const built: DartFileIndex = { byBasename };
-  DART_FILE_INDEX_CACHE.set(allFilePaths, built);
-  return built;
-}
+  return { byBasename };
+});
 
 /** First file (in Set-iteration order) that IS `candidate` or ends with
  *  `/<candidate>` — the exact predicate of the scans this replaces. */

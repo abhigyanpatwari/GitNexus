@@ -529,47 +529,101 @@ jobs:
         run: node --import tsx bench/cpp-qualified-ns/measure.mjs --check
         working-directory: gitnexus
 
-      - name: Import-target resolution guards (#2877/#2878/#2879/#2880/#2872)
-        # Build-free: runs the Go/C#/Dart/Ruby/Kotlin import-target resolvers
-        # over ONE shared corpus and asserts each returns an unchanged target
-        # set (a fingerprint per language AND per arm), that per-import cost
-        # stays independent of corpus size AND of path depth, that the absolute
-        # small-arm cost holds — a constant-factor regression that grows both
-        # scale arms equally passes every ratio — and that the shared
-        # WorkspaceFileIndex C# and Ruby retain stays within an absolute byte
-        # ceiling. Each of those resolvers used to scan the whole workspace per
-        # import (Ruby rebuilt a suffix index per `require`), so resolution was
-        # O(imports × files); the same corpus shape scores >3.3 against the
-        # pre-fix implementations. The corpus SHAPE is asserted too — a
-        # fingerprint alone cannot tell a legitimate resolution change from a
-        # corpus quietly shrunk below the size the timing arms need.
+      - name: Import-target resolution guards (every registered language, #2877–#2909, PR #2911)
+        if: ${{ !cancelled() }}
+        # Build-free: runs EVERY import-target resolver registered in
+        # SCOPE_RESOLVERS — plus C# a second time WITH csproj configs, over the
+        # identical corpus, because the no-csproj arm returns before it can
+        # reach the leg #2902 indexed. One arm per registered language over ONE
+        # shared corpus, and no registered language ungated. That is enforced,
+        # not enumerated: measure.mjs derives its list from a LANG_REGISTRY
+        # table and its --check inventory arm reconciles that table against
+        # SCOPE_RESOLVERS in both directions, so a language roster typed out
+        # here would only be a second copy that can go stale — this one did.
+        # A C/C++ #include is an import site for this purpose and is gated like
+        # every other registered language (its headers arrive through
+        # resolutionConfig rather than allFilePaths, which is the one structural
+        # difference — see `newPass`).
+        #
+        # Asserts each returns an unchanged target set (a fingerprint per
+        # language AND per arm), that per-import cost stays independent of
+        # corpus size AND of path depth, that the absolute small-arm cost holds
+        # — a constant-factor regression that grows both scale arms equally
+        # passes every ratio — and that the per-pass index eight of them retain
+        # stays within an absolute byte ceiling. The corpus SHAPE is asserted
+        # too: a fingerprint alone cannot tell a legitimate resolution change
+        # from a corpus quietly shrunk below the size the timing arms need.
+        #
+        # Several arms exist because an arm that stops MEASURING otherwise
+        # passes. The heap arms drive real resolvers and carry a FLOOR as well
+        # as a ceiling: when buildSuffixIndex's suffix maps went lazy, four arms
+        # that called the builder directly read 0 B, and 0 B is under every
+        # ceiling. EVERY budget is checked for PRESENCE first, timing and heap
+        # alike, because `got > undefined` is false and `got < ceiling *
+        # undefined` is false too, so deleting a budget key deleted its gate —
+        # and the two heap scalars gate all eight heap arms at once. The heap
+        # arm's own corpus shape (its two file counts, its path depth and the
+        # probe it resolves) is asserted by the same loop as the timing arms,
+        # because those four decide WHAT it measures. And an inventory arm
+        # reconciles the bench's language table against SCOPE_RESOLVERS itself,
+        # so a newly registered resolver cannot ship ungated the way JavaScript
+        # did.
+        #
+        # The resolvers gated first were added as their own O(imports × files)
+        # scans were indexed away (Ruby rebuilt a suffix index per `require`;
+        # COBOL scanned twice per `COPY`), and the same corpus shape scores >3.3
+        # against those pre-fix implementations. The rest were ungated until
+        # this PR, which is not a theoretical gap: PR #2911 found JavaScript
+        # reaching suffixResolve with no index at all — 25 972 µs per import at
+        # 8000 files, protected only by unit tests. This step is what stops the
+        # next one shipping.
         #
         # SCOPE: "independent of corpus size" holds for UNIQUE-LEAF layouts,
         # where no two directories share a last segment and no two files share a
         # basename — which is what the small/large/deep arms are, and where
         # every index bucket holds exactly one entry. The `collide` arm runs the
         # identical workload on the layout these languages are actually written
-        # in (svcN/internal, SrcN/Models, a repeated basename per package);
-        # there the bucket grows with the file count by construction and go,
-        # csharp and dart legitimately score 2.1–3.9, so that arm carries its
-        # own per-language budget. It is a scope limit, not a regression — the
-        # indexed code is still faster on that shape than the pre-change scan.
+        # in (svcN/internal, SrcN/Models, a repeated basename per package, four
+        # SPM modules instead of fifty); there the bucket grows with the file
+        # count by construction and go, csharp, dart, java, swift and c/cpp
+        # legitimately score 2.1–3.9, so that arm carries its own per-language
+        # budget. It is a scope limit, not a regression — the indexed code is
+        # still faster on that shape than the pre-change scan. Rust is the one
+        # language whose collide arm is NOT a shared-leaf layout: it probes
+        # candidate paths and is provably flat in the file count, so its arm is
+        # a deep module tree that varies `::` segment count instead — the axis
+        # its cost actually has.
         #
         # --expose-gc enables the retained-heap arm; --check REFUSES to run
         # without it rather than passing with the memory gate silently skipped.
-        # ~14 s. REPS is 15 (matching bench/cfg) rather than a cheaper 5 or 7
-        # because depth_ratio divides two sub-3 ms numbers and at those settings
-        # it tripped its own budget roughly 1 run in 20 — the estimator was
-        # fixed instead of the budget widened; distributions in _arms_note.
+        # ~44–45 s, which is essentially unchanged from the ~46 s it cost
+        # before: the timing phase did fall from 39.8 s to 28.7 s when the
+        # min-of-N estimator became per-language, but the inventory arm's one
+        # dynamic import (pipeline/registry.ts pulls in every registered
+        # provider) costs 6–10 s depending on the box and consumes almost all of
+        # that. Report mode, which does not load the registry, is the mode that
+        # got faster: ~33–35 s. Kept as-is because this job runs minutes clear
+        # of the sharded coverage job that gates the merge, so the seconds buy
+        # no merge latency — see COST in the bench header. The ts
+        # family (javascript/typescript/vue) is still the largest block, 8.8 s,
+        # because suffixResolve probes ~39 extensions per path part on a miss.
+        # If this ever has to shrink, drop collide/collide_large for typescript
+        # and vue (−3.9 s) — the only cut that removes near-duplicate work
+        # rather than coverage. N is 15 (matching bench/cfg) for every language
+        # whose cheapest arm is under 5 ms, because depth_ratio divides two
+        # sub-3 ms numbers and at 5 or 7 it tripped its own budget roughly 1 run
+        # in 20; the six languages whose cheapest arm is 20-28 ms drop to 7-8,
+        # where the measured overshoot is at most 6.3%. The estimator was fixed
+        # rather than the budget widened; distributions in _arms_note.
         # The Kotlin arm here is a second corpus, not a replacement for the
         # kotlin-import-target bench below, which carries tie-break probes (both
         # file-set iteration orders, the four-tier cascade) this one does not.
-        # A failing step aborts every step after it in this job (#2895), which
-        # cuts both ways: parking a new gate at the end is not safety, it is the
-        # slot least likely to execute. This one sits with the other
-        # resolver-index guards; the estimator fix above is what makes that
-        # safe, and #2899 carries the `if: ${{ !cancelled() }}` that fixes the
-        # masking for every step at once.
+        # It sits with the other resolver-index guards rather than at the end of
+        # the job: parking a new gate last is not safety, it is the slot least
+        # likely to execute (#2895 measured the last two guards running zero
+        # times in 13 runs). #2899 landed the `if: ${{ !cancelled() }}` below,
+        # which is what makes position irrelevant — a failing step no longer
+        # aborts the ones after it.
         # Rationale, budgets and the measured blind spot: see the header of
         # measure.mjs and _blind_spot in baselines.json.
         run: node --expose-gc --import tsx bench/import-target/measure.mjs --check

@@ -31,6 +31,7 @@ import {
   firstFileDirectlyInPkgDir,
   type PackageDirIndex,
 } from '../../import-resolvers/package-dir-index.js';
+import { perFileSet } from '../../import-resolvers/per-file-set.js';
 import { csharpSuffixFallbackAllowed } from '../../csharp-namespace-gate.js';
 
 export interface CsharpResolveContext {
@@ -46,15 +47,10 @@ export interface CsharpResolveContext {
  * `import-resolvers/package-dir-index.ts`), which the no-csproj path calls once
  * for the direct match and then up to once per stripped namespace prefix.
  */
-const csharpDirIndexCache = new WeakMap<ReadonlySet<string>, PackageDirIndex>();
-
-function getCsharpDirIndex(allFilePaths: ReadonlySet<string>): PackageDirIndex {
-  const cached = csharpDirIndexCache.get(allFilePaths);
-  if (cached) return cached;
-  const built = buildPackageDirIndex(allFilePaths, (normalized) => normalized.endsWith('.cs'));
-  csharpDirIndexCache.set(allFilePaths, built);
-  return built;
-}
+const getCsharpDirIndex = perFileSet(
+  (allFilePaths: ReadonlySet<string>): PackageDirIndex =>
+    buildPackageDirIndex(allFilePaths, (normalized) => normalized.endsWith('.cs')),
+);
 
 export function resolveCsharpImportTarget(
   parsedImport: ParsedImport,
@@ -69,12 +65,11 @@ export function resolveCsharpImportTarget(
 
   const csharpConfigs = ctx.csharpConfigs ?? [];
   if (csharpConfigs.length > 0) {
-    const { normalized, all, index } = getWorkspaceFileIndex(ctx.allFilePaths);
+    const { index } = getWorkspaceFileIndex(ctx.allFilePaths);
     const fromCsproj = resolveCSharpImportInternal(
       targetRaw,
       [...csharpConfigs],
-      normalized,
-      all,
+      ctx.allFilePaths,
       index,
       evidence,
     );

@@ -12,11 +12,11 @@
  * replaced. Python hit exactly that (PR #1918 review P1), and the parity test
  * cannot see it: it never crosses the adapter.
  *
- * Kotlin and Python count index BUILDS from production (`index-stats.ts`).
- * These four use `CountingSet` (`test/helpers/counting-file-set.ts`) instead,
+ * Every one of these guards uses `CountingSet` (`test/helpers/counting-file-set.ts`),
  * which counts full traversals of the file set and so catches BOTH the
  * per-import rebuild and a scan reintroduced beside a reused index — with no
- * production surface added for a test-only observation.
+ * production surface added for a test-only observation. Kotlin and Python
+ * counted index BUILDS from production until #2909 moved them onto this one.
  *
  * The traversal-count assertions are the perf guard. They are paired with
  * result assertions on purpose: a count of 1 is equally true of an adapter that
