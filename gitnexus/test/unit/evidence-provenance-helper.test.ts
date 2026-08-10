@@ -150,7 +150,13 @@ function createBaseRepo(prefix = 'gitnexus-evidence-v2-'): string {
   write(repo, 'base.txt', 'base\n');
   git(repo, ['add', 'base.txt']);
   git(repo, ['commit', '--quiet', '-m', 'base']);
-  return repo;
+  // assertRepository compares fs.realpathSync(repo) against the realpath of
+  // `git rev-parse --show-toplevel`. On Windows os.tmpdir() hands back the 8.3
+  // short form (C:\Users\RUNNER~1\...) and plain realpathSync leaves it that
+  // way, while git always reports the long form — so the fixture has to
+  // normalize with the native resolver or the helper rejects its own temp repo
+  // before any platform gate is reached. No-op where the two agree.
+  return fs.realpathSync.native(repo);
 }
 
 function createFixture(): string {
