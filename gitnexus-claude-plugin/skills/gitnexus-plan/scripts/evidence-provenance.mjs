@@ -479,11 +479,11 @@ function resolveOwnGitTopLevel(absolute) {
   if (result.status !== 0) return null;
   let topLevel;
   try {
-    topLevel = fs.realpathSync(decodeUtf8(result.stdout, 'nested repository root').trim());
+    topLevel = fs.realpathSync.native(decodeUtf8(result.stdout, 'nested repository root').trim());
   } catch {
     return null;
   }
-  return topLevel === fs.realpathSync(absolute) ? topLevel : null;
+  return topLevel === fs.realpathSync.native(absolute) ? topLevel : null;
 }
 
 function readOwnGitlinkHead(absolute) {
@@ -646,98 +646,106 @@ function guardPathParents(repo, repoPath, mutationGuards) {
   }
 }
 
-function recordAnchoredAbsence(repo, repoPath, mutationGuards) {
+const ANCHORED_DIRECTORY_FLAGS =
+  fs.constants.O_RDONLY |
+  fs.constants.O_DIRECTORY |
+  fs.constants.O_NOFOLLOW |
+  (fs.constants.O_CLOEXEC ?? 0);
+
+// Every absence receipt is verified long after its walk returns, so the chain
+// that produced it has to stay pinned until the snapshot ends — an unpinned inode
+// number can be recycled by a replacement directory that then reproduces the
+// recorded identity exactly. Absent cited paths overwhelmingly share prefixes, so
+// the walked directories are cached per snapshot and keyed by repo-relative
+// prefix: one open descriptor and one anchored walk per distinct directory rather
+// than per path. snapshotEvidence owns every descriptor in this cache and closes
+// each exactly once; guards only borrow them for verification.
+function anchoredAbsenceRoot(repo, cache) {
+  const cached = cache.get('');
+  if (cached) return cached;
+  const backend = anchoringBackend();
+  const fd = backend.openDirectory(repo, ANCHORED_DIRECTORY_FLAGS);
+  const handle = {
+    fd,
+    expectedPath: repo,
+    descriptors: [fd],
+    anchor: backend.rootAnchor(repo, fd),
+  };
+  cache.set('', handle);
+  return handle;
+}
+
+function recordAnchoredAbsence(repo, repoPath, mutationGuards, cache) {
   requireDescriptorAnchoring();
   const backend = anchoringBackend();
-  const flags =
-    fs.constants.O_RDONLY |
-    fs.constants.O_DIRECTORY |
-    fs.constants.O_NOFOLLOW |
-    (fs.constants.O_CLOEXEC ?? 0);
-  const descriptors = [];
-  let retainedDescriptors = new Set();
-  try {
-    let currentFd = backend.openDirectoryPath(repo, flags);
-    descriptors.push(currentFd);
-    // The absence receipt is verified long after this walk returns. On a
-    // stateless backend the retained descriptors are paired with the identity
-    // chain that produced them, and that chain is re-walked at receipt time —
-    // which is only sound while every one of those descriptors is still open,
-    // because an unpinned inode number can be recycled by a replacement
-    // directory that then reproduces the recorded identity exactly.
-    let currentHandle = {
-      fd: currentFd,
-      expectedPath: repo,
-      anchor: backend.rootAnchor(repo, currentFd),
-    };
-    const components = repoPath.split('/');
-    for (let index = 0; index < components.length; index += 1) {
-      const component = components[index];
-      const child = anchoredChild(currentHandle, component);
-      let childStat;
-      try {
-        childStat = backend.lstatChild(child);
-      } catch (error) {
-        if (error?.code !== 'ENOENT' && error?.code !== 'ENOTDIR') throw error;
-        const parentStat = fs.fstatSync(currentFd, { bigint: true });
-        if (!parentStat.isDirectory()) {
-          throw new Error(`Absence parent is no longer a directory for ${repoPath}`);
-        }
-        // Whatever the backend needs pinned until the receipt is verified stays
-        // open and is handed to the guard; everything else is closed here.
-        // snapshotEvidence closes guard.descriptors when it finishes.
-        const retained = backend.retainAnchorDescriptors(descriptors, currentFd);
-        retainedDescriptors = new Set(retained);
-        mutationGuards.push({
-          type: 'absence',
-          fd: currentFd,
-          descriptors: retained,
-          childName: component,
-          repoPath,
-          anchor: currentHandle.anchor,
-          parentIdentity: stableDirectoryIdentity(parentStat),
-          parentMutationIdentity: statIdentity(parentStat),
-        });
-        for (const fd of descriptors) {
-          if (!retainedDescriptors.has(fd)) fs.closeSync(fd);
-        }
-        return;
+  const components = repoPath.split('/');
+  let handle = anchoredAbsenceRoot(repo, cache);
+  let prefix = '';
+  for (let index = 0; index < components.length; index += 1) {
+    const component = components[index];
+    const isFinal = index === components.length - 1;
+    prefix = prefix === '' ? component : `${prefix}/${component}`;
+    // The final component is always re-checked against the filesystem: it is the
+    // one whose absence is being recorded, and a cached answer would be a stale
+    // one. Only the prefix directories are reused.
+    const cached = isFinal ? undefined : cache.get(prefix);
+    if (cached) {
+      handle = cached;
+      continue;
+    }
+    const child = anchoredChild(handle, component);
+    let childStat;
+    try {
+      childStat = backend.lstatChild(child);
+    } catch (error) {
+      if (error?.code !== 'ENOENT' && error?.code !== 'ENOTDIR') throw error;
+      const parentStat = fs.fstatSync(handle.fd, { bigint: true });
+      if (!parentStat.isDirectory()) {
+        throw new Error(`Absence parent is no longer a directory for ${repoPath}`);
       }
-      if (index === components.length - 1) {
-        throw new Error(`${repoPath} appeared while its absence was being anchored`);
-      }
-      if (childStat.isSymbolicLink() || !childStat.isDirectory()) {
-        throw new Error(`Refusing a non-directory parent while anchoring absence for ${repoPath}`);
-      }
-      const nextFd = backend.openChildDirectory(child, flags);
-      descriptors.push(nextFd);
-      if (!backend.descriptorIsAnchoredChild(nextFd, childStat)) {
+      mutationGuards.push({
+        type: 'absence',
+        fd: handle.fd,
+        descriptors: handle.descriptors,
+        childName: component,
+        repoPath,
+        anchor: handle.anchor,
+        parentIdentity: stableDirectoryIdentity(parentStat),
+        parentMutationIdentity: statIdentity(parentStat),
+      });
+      return;
+    }
+    if (isFinal) {
+      throw new Error(`${repoPath} appeared while its absence was being anchored`);
+    }
+    if (childStat.isSymbolicLink() || !childStat.isDirectory()) {
+      throw new Error(`Refusing a non-directory parent while anchoring absence for ${repoPath}`);
+    }
+    const childFd = backend.openDirectory(child.path, ANCHORED_DIRECTORY_FLAGS);
+    let next;
+    try {
+      if (!backend.descriptorIsAnchoredChild(childFd, childStat)) {
         throw new Error(
           `Absence parent descriptor does not match its anchored inode for ${repoPath}`,
         );
       }
-      currentHandle = {
-        fd: nextFd,
-        expectedPath: path.join(currentHandle.expectedPath, component),
-        anchor: backend.extendAnchor(currentHandle.anchor, component, childStat, nextFd),
+      next = {
+        fd: childFd,
+        expectedPath: path.join(handle.expectedPath, component),
+        descriptors: [...handle.descriptors, childFd],
+        anchor: backend.extendAnchor(handle.anchor, component, childStat),
       };
-      currentFd = nextFd;
+    } catch (error) {
+      fs.closeSync(childFd);
+      throw error;
     }
-    throw new Error(`Could not anchor absence for ${repoPath}`);
-  } catch (error) {
-    for (const fd of descriptors) {
-      if (retainedDescriptors.has(fd)) continue;
-      try {
-        fs.closeSync(fd);
-      } catch {
-        // Preserve the primary absence-anchoring error.
-      }
-    }
-    throw error;
+    cache.set(prefix, next);
+    handle = next;
   }
+  throw new Error(`Could not anchor absence for ${repoPath}`);
 }
 
-function materializeRecord(repo, statusRecord, layers, mutationGuards, testHooks) {
+function materializeRecord(repo, statusRecord, layers, mutationGuards, testHooks, absenceCache) {
   const head = layers.head(statusRecord.path);
   const index = layers.index(statusRecord.path);
   const expectedKind = index.kind === 'gitlink' || head.kind === 'gitlink' ? 'gitlink' : null;
@@ -748,7 +756,9 @@ function materializeRecord(repo, statusRecord, layers, mutationGuards, testHooks
     mutationGuards,
     testHooks,
   );
-  if (filesystem.kind === ABSENT) recordAnchoredAbsence(repo, statusRecord.path, mutationGuards);
+  if (filesystem.kind === ABSENT) {
+    recordAnchoredAbsence(repo, statusRecord.path, mutationGuards, absenceCache);
+  }
   if (statusRecord.directory_hint && filesystem.kind !== 'directory') {
     throw new Error(
       `Git reported an embedded directory but found ${filesystem.kind}: ${statusRecord.path}`,
@@ -817,9 +827,15 @@ export function serializeDirtyRecords(entries) {
 }
 
 function assertRepository(repoInput) {
-  const repo = fs.realpathSync(requireString(repoInput, 'repo'));
+  // realpathSync.native, not realpathSync: the JS resolver preserves a Windows
+  // 8.3 short component (C:\Users\RUNNER~1\...) while git always reports the long
+  // form, so the two would never compare equal and every caller would be told the
+  // worktree root is not the worktree root it just named.
+  const repo = fs.realpathSync.native(requireString(repoInput, 'repo'));
   const topLevelResult = git(repo, ['rev-parse', '--show-toplevel']);
-  const topLevel = fs.realpathSync(decodeUtf8(topLevelResult.stdout, 'repository root').trim());
+  const topLevel = fs.realpathSync.native(
+    decodeUtf8(topLevelResult.stdout, 'repository root').trim(),
+  );
   if (topLevel !== repo) throw new Error(`--repo must be the Git worktree root (${topLevel})`);
   return repo;
 }
@@ -952,37 +968,19 @@ function externalDescriptorPath(fd, childName) {
   return childName === undefined ? base : path.join(base, childName);
 }
 
-// Best-effort Darwin hardening, deliberately not a capability probe.
 // O_NOFOLLOW_ANY (macOS 11+) rejects a symlink anywhere in the path instead of
-// only in the final component. XNU's open1() does not validate unrecognized flag
-// bits, so on an older kernel this bit is silently ignored rather than rejected
-// and the latch below will simply never fire — the guarantee this backend
-// actually rests on is the dev/ino/mode comparison against the anchored stat,
-// with this flag as an extra and unreliable layer over it. The latch is kept only
-// so that a kernel which does reject the bit stops being asked twice.
+// only in the final component. XNU's open1() does not validate unrecognized open
+// flag bits, so on an older kernel the bit is silently ignored rather than
+// rejected — there is nothing to probe for and nothing to fall back to. It is
+// best-effort hardening layered over the dev/ino/mode comparison against the
+// anchored stat, which is what actually decides whether an open landed on the
+// anchored inode, and never a substitute for it.
 const DARWIN_O_NOFOLLOW_ANY = 0x20000000;
 
-let darwinNoFollowAnyRejected = false;
-
-function darwinHardenedOpen(absolute, flags, mode) {
+function darwinHardenedOpen(absolute, flags) {
   // O_NONBLOCK keeps a swapped-in FIFO from wedging the process on open; a FIFO
   // still fails the identity comparison immediately afterwards.
-  const base = flags | (fs.constants.O_NONBLOCK ?? 0);
-  if (!darwinNoFollowAnyRejected) {
-    try {
-      return mode === undefined
-        ? fs.openSync(absolute, base | DARWIN_O_NOFOLLOW_ANY)
-        : fs.openSync(absolute, base | DARWIN_O_NOFOLLOW_ANY, mode);
-    } catch (error) {
-      // ELOOP means the flag worked and found a symlink; only an outright
-      // rejection of the bit is a reason to stop asking for it.
-      if (error?.code !== 'EINVAL' && error?.code !== 'ENOTSUP' && error?.code !== 'EOPNOTSUPP') {
-        throw error;
-      }
-      darwinNoFollowAnyRejected = true;
-    }
-  }
-  return mode === undefined ? fs.openSync(absolute, base) : fs.openSync(absolute, base, mode);
+  return fs.openSync(absolute, flags | (fs.constants.O_NONBLOCK ?? 0) | DARWIN_O_NOFOLLOW_ANY);
 }
 
 const RENAME_NOREPLACE_SCRIPT = String.raw`
@@ -1010,12 +1008,32 @@ if result != 0:
 
 let atomicMoverPath;
 
+// The interpreter descriptor is handed to the child as stdio slot 3, so both the
+// path that names it and the slot it occupies come from the same constant.
+const HELD_EXECUTABLE_FD = 3;
+
+// The one place the per-spawn options live. The 10s bound is the value most
+// likely to need raising on a slow macOS runner, and env is rebuilt per call so a
+// caller that mutates process.env between import and spawn still wins.
+const HELD_INTERPRETER_TIMEOUT_MS = 10_000;
+
+function heldInterpreterOptions() {
+  return {
+    encoding: 'utf8',
+    env: { ...process.env, LANG: 'C', LC_ALL: 'C' },
+    timeout: HELD_INTERPRETER_TIMEOUT_MS,
+    windowsHide: true,
+  };
+}
+
 // Tier 1, both platforms: the validated interpreter is executed through the
 // descriptor we already fstat-verified, so the bytes that run are the bytes that
 // were validated even if the path is swapped in between. Linux exposes that
 // descriptor as /proc/self/fd/3; macOS exposes it as /dev/fd/3.
 function heldExecutablePath() {
-  return process.platform === 'darwin' ? '/dev/fd/3' : '/proc/self/fd/3';
+  return process.platform === 'darwin'
+    ? `/dev/fd/${HELD_EXECUTABLE_FD}`
+    : descriptorPath(HELD_EXECUTABLE_FD);
 }
 
 function spawnHeldExecutable(executable, args, options) {
@@ -1023,7 +1041,7 @@ function spawnHeldExecutable(executable, args, options) {
   if (!before.isFile() || statIdentity(before) !== executable.identity) {
     throw new Error('Validated Python executable changed before invocation');
   }
-  const result = spawnSync(executable.launch ?? heldExecutablePath(), args, {
+  const result = spawnSync(executable.launch, args, {
     ...options,
     stdio: ['ignore', 'pipe', 'pipe', executable.fd],
   });
@@ -1089,22 +1107,21 @@ function validatedPathExecutable(candidate) {
 // never leaves tier 1.
 const INTERPRETER_VERSION_ARGS = ['-I', '-S', '-c', 'import sys; print(sys.version_info[0])'];
 
+// Returns the launch path that worked, or null if the candidate is unusable.
 function probeInterpreterLaunch(executable) {
   const launches =
     process.platform === 'darwin'
       ? [heldExecutablePath(), executable.resolved]
       : [heldExecutablePath()];
   for (const launch of launches) {
-    executable.launch = launch;
-    const version = spawnHeldExecutable(executable, INTERPRETER_VERSION_ARGS, {
-      encoding: 'utf8',
-      env: { ...process.env, LANG: 'C', LC_ALL: 'C' },
-      timeout: 10_000,
-      windowsHide: true,
-    });
-    if (version.status === 0 && version.stdout.trim() === '3') return true;
+    const version = spawnHeldExecutable(
+      { ...executable, launch },
+      INTERPRETER_VERSION_ARGS,
+      heldInterpreterOptions(),
+    );
+    if (version.status === 0 && version.stdout.trim() === '3') return launch;
   }
-  return false;
+  return null;
 }
 
 function resolveAtomicMover() {
@@ -1116,6 +1133,7 @@ function resolveAtomicMover() {
   for (const entry of ['/usr/local/bin/python3', '/usr/bin/python3', '/bin/python3']) {
     candidates.add(entry);
   }
+  const rejections = [];
   for (const candidate of candidates) {
     const resolved = validatedPathExecutable(candidate);
     if (!resolved) continue;
@@ -1128,26 +1146,36 @@ function resolveAtomicMover() {
     } catch {
       continue;
     }
-    let accepted = false;
     let executable;
+    let rejection = 'is not a usable Python 3 interpreter';
     try {
-      const opened = fs.fstatSync(fd, { bigint: true });
-      executable = { fd, identity: statIdentity(opened), resolved };
-      accepted = probeInterpreterLaunch(executable) && anchoredBackendCandidateAccepted(executable);
+      const candidateExecutable = {
+        fd,
+        identity: statIdentity(fs.fstatSync(fd, { bigint: true })),
+        resolved,
+      };
+      const launch = probeInterpreterLaunch(candidateExecutable);
+      executable = launch === null ? null : { ...candidateExecutable, launch };
+      rejection = executable === null ? rejection : anchoredBackendRejection(executable);
     } catch (error) {
       fs.closeSync(fd);
       throw error;
     }
-    if (accepted) {
+    if (rejection === null) {
       atomicMoverPath = executable;
       return executable;
     }
+    rejections.push(`${resolved} ${rejection}`);
     fs.closeSync(fd);
   }
+  // Naming what each candidate was missing is the difference between an
+  // actionable message on a user's Mac and a shrug.
+  const detail = rejections.length === 0 ? '' : `; rejected: ${rejections.join(' | ')}`;
   throw new Error(
-    process.platform === 'darwin'
+    (process.platform === 'darwin'
       ? 'Safe generated-plan publication requires a trusted absolute Python 3 PATH candidate with os.supports_dir_fd and renameatx_np(RENAME_EXCL) support'
-      : 'Safe generated-plan publication requires a trusted absolute Python 3 PATH candidate with libc renameat2 support',
+      : 'Safe generated-plan publication requires a trusted absolute Python 3 PATH candidate with libc renameat2 support') +
+      detail,
   );
 }
 
@@ -1156,12 +1184,7 @@ function atomicMoveNoReplace(source, destination) {
   const result = spawnHeldExecutable(
     mover,
     ['-I', '-S', '-c', RENAME_NOREPLACE_SCRIPT, source, destination],
-    {
-      encoding: 'utf8',
-      env: { ...process.env, LANG: 'C', LC_ALL: 'C' },
-      timeout: 10_000,
-      windowsHide: true,
-    },
+    heldInterpreterOptions(),
   );
   if (result.error) throw result.error;
   if (result.status === 17) return false;
@@ -1206,7 +1229,6 @@ function atomicMoveNoReplace(source, destination) {
 // no third-party imports, and every optional capability probed with getattr /
 // os.supports_dir_fd rather than assumed from a version number.
 const ANCHORED_OPS_SCRIPT = String.raw`
-import ctypes
 import errno
 import json
 import os
@@ -1217,6 +1239,8 @@ UINT64_MASK = 0xFFFFFFFFFFFFFFFF
 DIRECTORY_FLAGS = os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW | getattr(os, "O_CLOEXEC", 0)
 DIR_FD_FUNCTIONS = (os.open, os.stat, os.mkdir, os.unlink)
 NOT_SUPPORTED = (getattr(errno, "ENOTSUP", -1), getattr(errno, "EOPNOTSUPP", -2))
+SUPPORTED_OPERATIONS = ("stat", "mkdir", "create", "unlink", "rename")
+OPERATIONS_TAKING_MODE = ("mkdir", "create")
 ANSWERED = []
 
 
@@ -1318,6 +1342,11 @@ def assert_identity(info, expected, label):
 
 
 def libsystem():
+    # ctypes is imported here rather than at module scope because only the rename
+    # operation ever needs it, and it is the single most expensive import in this
+    # script — nineteen of the twenty spawns in one write-plan never touch it.
+    import ctypes
+
     return ctypes.CDLL(None, use_errno=True)
 
 
@@ -1327,6 +1356,26 @@ def rename_supported():
     except AttributeError:
         return False
     return True
+
+
+def validate_request(request, operation):
+    # walk() validates every chain component at one chokepoint; the leaf name and
+    # the mode are validated here for the same reason, before anything is opened.
+    if operation not in SUPPORTED_OPERATIONS:
+        raise AnchorError("unsupported anchored operation: %s" % operation, "EBADREQUEST")
+    raw_name = request.get("name")
+    # stat is the one operation that may address the anchored directory itself.
+    addresses_directory = operation == "stat" and raw_name is None
+    name = None if addresses_directory else require_component(raw_name, "anchored name")
+    mode = None
+    if operation in OPERATIONS_TAKING_MODE:
+        mode = require_mode(request.get("mode"), "anchored mode")
+    destination_name = None
+    if operation == "rename":
+        destination_name = require_component(
+            request["destination"].get("name"), "anchored destination name"
+        )
+    return name, mode, destination_name
 
 
 def walk(spec, opened):
@@ -1384,6 +1433,8 @@ def anchored_directory_identity(name, directory_fd):
 
 
 def rename_no_replace(from_fd, from_name, to_fd, to_name):
+    import ctypes
+
     try:
         renameatx_np = libsystem().renameatx_np
     except AttributeError:
@@ -1443,22 +1494,16 @@ def main():
         raise AnchorError(
             "os.%s does not accept dir_fd on this interpreter" % missing[0], "EANCHOR"
         )
+    name, mode, destination_name = validate_request(request, operation)
     opened = []
     try:
         directory_fd = walk(request, opened)
         if operation == "stat":
-            requested = request.get("name")
-            target = None
-            if requested is not None:
-                target = require_component(requested, "anchored name")
-            respond({"ok": True, "stat": anchored_stat(directory_fd, target)})
-        if operation == "mkdir":
-            name = require_component(request.get("name"), "anchored name")
-            os.mkdir(name, require_mode(request.get("mode"), "anchored mode"), dir_fd=directory_fd)
+            respond({"ok": True, "stat": anchored_stat(directory_fd, name)})
+        elif operation == "mkdir":
+            os.mkdir(name, mode, dir_fd=directory_fd)
             respond({"ok": True, "stat": anchored_directory_identity(name, directory_fd)})
-        if operation == "create":
-            name = require_component(request.get("name"), "anchored name")
-            mode = require_mode(request.get("mode"), "anchored mode")
+        elif operation == "create":
             flags = (
                 os.O_RDWR
                 | os.O_CREAT
@@ -1472,20 +1517,14 @@ def main():
             finally:
                 os.close(handle)
             respond({"ok": True, "stat": payload})
-        if operation == "unlink":
-            os.unlink(require_component(request.get("name"), "anchored name"), dir_fd=directory_fd)
+        elif operation == "unlink":
+            os.unlink(name, dir_fd=directory_fd)
             respond({"ok": True})
-        if operation == "rename":
-            source_name = require_component(request.get("name"), "anchored source name")
-            destination = request["destination"]
-            destination_name = require_component(
-                destination.get("name"), "anchored destination name"
-            )
-            destination_fd = walk(destination, opened)
-            respond(
-                rename_no_replace(directory_fd, source_name, destination_fd, destination_name)
-            )
-        raise AnchorError("unsupported anchored operation: %s" % operation, "EBADREQUEST")
+        elif operation == "rename":
+            destination_fd = walk(request["destination"], opened)
+            respond(rename_no_replace(directory_fd, name, destination_fd, destination_name))
+        else:
+            raise AnchorError("unsupported anchored operation: %s" % operation, "EBADREQUEST")
     finally:
         for handle in opened:
             try:
@@ -1523,36 +1562,56 @@ except Exception as unexpected:
     )
 `;
 
-function anchoredBackendCandidateAccepted(executable) {
-  if (process.platform !== 'darwin') return true;
-  const probe = spawnHeldExecutable(
+// Runs the anchored-operation helper and parses its reply. The verdict belongs
+// to the caller: the candidate probe wants a reason string, request dispatch
+// wants a coded throw.
+function runAnchoredOps(executable, request) {
+  const result = spawnHeldExecutable(
     executable,
-    ['-I', '-S', '-c', ANCHORED_OPS_SCRIPT, JSON.stringify({ op: 'capabilities' })],
-    {
-      encoding: 'utf8',
-      env: { ...process.env, LANG: 'C', LC_ALL: 'C' },
-      timeout: 10_000,
-      windowsHide: true,
-    },
+    ['-I', '-S', '-c', ANCHORED_OPS_SCRIPT, JSON.stringify(request)],
+    heldInterpreterOptions(),
   );
-  if (probe.error || probe.status !== 0) return false;
+  if (result.error) {
+    return { failure: `could not run the anchoring interpreter: ${result.error.message}` };
+  }
+  if (result.status !== 0) {
+    return { failure: `failed (${result.status}): ${(result.stderr ?? '').trim()}` };
+  }
   let response;
   try {
-    response = JSON.parse(probe.stdout);
+    response = JSON.parse(result.stdout);
   } catch {
-    return false;
+    return { failure: 'produced output that is not a JSON response' };
   }
-  return (
-    response?.ok === true &&
-    response.capabilities?.dir_fd === true &&
-    response.capabilities?.renameatx_np === true
-  );
+  if (response?.ok !== true) {
+    return {
+      failure: `failed: ${response?.error ?? 'unknown anchored failure'}`,
+      errno: typeof response?.errno === 'string' ? response.errno : undefined,
+    };
+  }
+  return { response };
 }
 
-let darwinAnchoredBackendReady = false;
+// null when the candidate can back the macOS anchoring, otherwise why not.
+function anchoredBackendRejection(executable) {
+  if (process.platform !== 'darwin') return null;
+  const outcome = runAnchoredOps(executable, { op: 'capabilities' });
+  if (outcome.failure) return `capability probe ${outcome.failure}`;
+  const capabilities = outcome.response.capabilities ?? {};
+  const missing = [
+    ...(capabilities.dir_fd === true
+      ? []
+      : [
+          `does not accept dir_fd for ${
+            (capabilities.missing_dir_fd ?? []).join(', ') || 'the required os operations'
+          }`,
+        ]),
+    ...(capabilities.renameatx_np === true ? [] : ['does not expose renameatx_np']),
+  ];
+  return missing.length === 0 ? null : missing.join(' and ');
+}
 
 function requireDarwinAnchoredBackend() {
-  if (darwinAnchoredBackendReady) return;
   try {
     resolveAtomicMover();
   } catch (error) {
@@ -1562,7 +1621,6 @@ function requireDarwinAnchoredBackend() {
       }`,
     );
   }
-  darwinAnchoredBackendReady = true;
 }
 
 // Node's bigint stat widens st_dev to uint64_t through libuv while Darwin's
@@ -1594,21 +1652,23 @@ function codedError(message, code) {
 // number freed by an rmdir is handed straight back to the next mkdir, so an
 // attacker directory can reproduce a recorded identity exactly and the helper —
 // which holds nothing between spawns — cannot tell the difference. What makes the
-// chain durable is that Node keeps an open descriptor on every element of it for
-// the anchor's whole lifetime; an open descriptor pins the inode so its number
-// cannot be recycled while the anchor exists. That coupling is an invariant of
-// this file, not an accident of how openPlanParent happens to hold descriptors,
-// so it is enforced here on the way into every single request.
-function verifyAnchorPins(anchor) {
+// chain durable is that the holder keeps an open descriptor on every element of
+// it for the anchor's whole lifetime; an open descriptor pins the inode so its
+// number cannot be recycled while the anchor exists. Those descriptors are the
+// holder's own `descriptors` list, root-first and exactly one longer than the
+// chain, and this check is what enforces that coupling rather than leaving it to
+// be inferred from how the holder happens to be built.
+function verifyAnchorPins(holder) {
+  const { anchor, descriptors } = holder;
   const expected = [anchor.rootIdentity, ...anchor.chain.map((element) => element.identity)];
-  if (!Array.isArray(anchor.pins) || anchor.pins.length !== expected.length) {
+  if (!Array.isArray(descriptors) || descriptors.length !== expected.length) {
     throw codedError(
       'Anchored chain is missing the open descriptors that pin its inodes',
       'EANCHOR',
     );
   }
   expected.forEach((identity, index) => {
-    const pinned = fs.fstatSync(anchor.pins[index], { bigint: true });
+    const pinned = fs.fstatSync(descriptors[index], { bigint: true });
     if (!pinned.isDirectory() || !identityTripleMatches(pinned, identity)) {
       throw codedError(
         'Anchored chain descriptor no longer matches the identity it pins',
@@ -1618,61 +1678,33 @@ function verifyAnchorPins(anchor) {
   });
 }
 
-function anchorRequest(anchor) {
-  verifyAnchorPins(anchor);
-  return { root: anchor.root, root_identity: anchor.rootIdentity, chain: anchor.chain };
+// `holder` is anything carrying the anchor and the descriptors that pin it: a
+// plan-parent handle, a ref's parent directory, or an absence guard.
+function anchorRequest(holder) {
+  verifyAnchorPins(holder);
+  return {
+    root: holder.anchor.root,
+    root_identity: holder.anchor.rootIdentity,
+    chain: holder.anchor.chain,
+  };
 }
 
 function darwinAnchoredRequest(request) {
-  const mover = resolveAtomicMover();
-  const result = spawnHeldExecutable(
-    mover,
-    ['-I', '-S', '-c', ANCHORED_OPS_SCRIPT, JSON.stringify(request)],
-    {
-      encoding: 'utf8',
-      env: { ...process.env, LANG: 'C', LC_ALL: 'C' },
-      timeout: 10_000,
-      windowsHide: true,
-    },
-  );
+  const outcome = runAnchoredOps(resolveAtomicMover(), request);
   // A failure at the process boundary is an anchoring failure, never an absence.
   // spawnSync reports a missing interpreter as ENOENT, an unexecutable one as
   // EACCES and a hung one as ETIMEDOUT, and ENOENT is exactly what
   // lstatAnchoredOptional, inspectPlanDestination, readPlanSafely and
   // openPlanParent read as "the file is simply not there", so the EANCHOR
   // discipline the helper follows has to hold across the spawn layer too.
-  if (result.error) {
-    throw codedError(
-      `Anchored ${request.op} could not run the anchoring interpreter: ${result.error.message}`,
-      'EANCHOR',
-    );
+  if (outcome.failure) {
+    throw codedError(`Anchored ${request.op} ${outcome.failure}`, outcome.errno ?? 'EANCHOR');
   }
-  if (result.status !== 0) {
-    throw codedError(
-      `Anchored ${request.op} failed (${result.status}): ${(result.stderr ?? '').trim()}`,
-      'EANCHOR',
-    );
-  }
-  let response;
-  try {
-    response = JSON.parse(result.stdout);
-  } catch {
-    throw codedError(
-      `Anchored ${request.op} produced output that is not a JSON response`,
-      'EANCHOR',
-    );
-  }
-  if (response?.ok !== true) {
-    throw codedError(
-      `Anchored ${request.op} failed: ${response?.error ?? 'unknown anchored failure'}`,
-      typeof response?.errno === 'string' ? response.errno : 'EANCHOR',
-    );
-  }
-  return response;
+  return outcome.response;
 }
 
-function darwinAnchoredStat(anchor, name) {
-  return darwinAnchoredRequest({ op: 'stat', ...anchorRequest(anchor), name: name ?? null }).stat;
+function darwinAnchoredStat(holder, name) {
+  return darwinAnchoredRequest({ op: 'stat', ...anchorRequest(holder), name: name ?? null }).stat;
 }
 
 // A stateless backend cannot hand Node an anchored descriptor, so the anchored
@@ -1698,7 +1730,7 @@ function darwinAdoptAnchoredFile(ref, expected, flags) {
 
 function darwinUnlinkQuietly(ref) {
   try {
-    darwinAnchoredRequest({ op: 'unlink', ...anchorRequest(ref.dir.anchor), name: ref.name });
+    darwinAnchoredRequest({ op: 'unlink', ...anchorRequest(ref.dir), name: ref.name });
   } catch {
     // Preserve the primary anchoring failure.
   }
@@ -1717,21 +1749,15 @@ const LINUX_ANCHORING = {
   refreshAnchorTail() {
     return null;
   },
-  retainAnchorDescriptors(descriptors, retainedFd) {
-    // /proc/self/fd/<parent>/<child> re-resolves the child from the descriptor
-    // itself, so only the parent of the absent name has to stay open.
-    return [retainedFd];
-  },
-  openDirectoryPath(absolute, flags) {
+  openDirectory(absolute, flags) {
     return fs.openSync(absolute, flags);
-  },
-  openChildDirectory(ref, flags) {
-    return fs.openSync(ref.path, flags);
   },
   lstatChild(ref) {
     return fs.lstatSync(ref.path, { bigint: true });
   },
   openChildRead(ref, flags) {
+    // /proc/self/fd/<parent>/<name> resolves from the descriptor itself, so the
+    // open is anchored without needing the expected identity.
     return fs.openSync(ref.path, flags);
   },
   createChild(ref, flags, mode) {
@@ -1739,9 +1765,11 @@ const LINUX_ANCHORING = {
   },
   mkdirChild(ref, mode) {
     fs.mkdirSync(ref.path, { mode });
+    // Linux has no cheaper identity to hand back than the caller's own lstat.
+    return null;
   },
   descriptorMatchesExpectedPath(fd, expectedPath) {
-    return fs.realpathSync(descriptorPath(fd)) === expectedPath;
+    return fs.realpathSync.native(descriptorPath(fd)) === expectedPath;
   },
   descriptorIsAnchoredChild() {
     // A /proc/self/fd/<parent>/<name> open is anchored by construction: there is
@@ -1749,7 +1777,7 @@ const LINUX_ANCHORING = {
     return true;
   },
   parentStillResolves(parentHandle) {
-    return fs.realpathSync(descriptorPath(parentHandle.fd)) === parentHandle.expectedPath;
+    return fs.realpathSync.native(descriptorPath(parentHandle.fd)) === parentHandle.expectedPath;
   },
   renameNoReplace(sourceRef, destinationRef) {
     return atomicMoveNoReplace(
@@ -1772,55 +1800,33 @@ const DARWIN_ANCHORING = {
   childPath(dirHandle, childName) {
     return path.join(dirHandle.expectedPath, childName);
   },
-  // Every anchor carries the descriptors that pin its chain, in chain order, so
-  // that verifyAnchorPins can prove the recorded inode numbers have not been
-  // freed and handed to something else. `pins` is always root-first and exactly
-  // one longer than `chain`.
   rootAnchor(rootAbsolute, rootFd) {
     return {
       root: rootAbsolute,
       rootIdentity: identityTriple(fs.fstatSync(rootFd, { bigint: true })),
       chain: [],
-      pins: [rootFd],
     };
   },
-  extendAnchor(anchor, childName, childStat, childFd) {
+  extendAnchor(anchor, childName, childStat) {
     return {
       root: anchor.root,
       rootIdentity: anchor.rootIdentity,
       chain: [...anchor.chain, { name: childName, identity: identityTriple(childStat) }],
-      pins: [...anchor.pins, childFd],
     };
   },
   refreshAnchorTail(anchor, stat) {
-    if (anchor.chain.length === 0) {
-      return {
-        root: anchor.root,
-        rootIdentity: identityTriple(stat),
-        chain: [],
-        pins: anchor.pins,
-      };
-    }
     const chain = anchor.chain.slice();
     chain[chain.length - 1] = {
       name: chain[chain.length - 1].name,
       identity: identityTriple(stat),
     };
-    return { root: anchor.root, rootIdentity: anchor.rootIdentity, chain, pins: anchor.pins };
+    return { root: anchor.root, rootIdentity: anchor.rootIdentity, chain };
   },
-  retainAnchorDescriptors(descriptors) {
-    // The anchor is re-walked from the root at receipt time, so every element of
-    // the chain has to stay pinned, not just the parent of the absent name.
-    return [...descriptors];
-  },
-  openDirectoryPath(absolute, flags) {
+  openDirectory(absolute, flags) {
     return darwinHardenedOpen(absolute, flags);
   },
-  openChildDirectory(ref, flags) {
-    return darwinHardenedOpen(ref.path, flags);
-  },
   lstatChild(ref) {
-    const anchored = darwinAnchoredStat(ref.dir.anchor, ref.name);
+    const anchored = darwinAnchoredStat(ref.dir, ref.name);
     if (anchored.present !== true) {
       throw codedError(
         `${ref.name} does not exist under its anchored parent`,
@@ -1841,16 +1847,20 @@ const DARWIN_ANCHORING = {
     }
     return lexical;
   },
-  openChildRead(ref, flags) {
-    // Callers of openChildRead always compare the opened descriptor against the
-    // identity they got from an immediately preceding anchored lstatChild, so a
-    // lexical open that landed anywhere else is rejected by the caller.
-    return darwinHardenedOpen(ref.path, flags);
+  openChildRead(ref, flags, expectedStat) {
+    // The anchoring lives in the identity comparison, so it is done here rather
+    // than left to each caller to remember: a lexical open that landed on any
+    // other inode is refused before the descriptor escapes this function.
+    const fd = darwinAdoptAnchoredFile(ref, identityTriple(expectedStat), flags);
+    if (fd === null) {
+      throw new Error(`${ref.name} was replaced between its anchored stat and its no-follow open`);
+    }
+    return fd;
   },
   createChild(ref, flags, mode) {
     const created = darwinAnchoredRequest({
       op: 'create',
-      ...anchorRequest(ref.dir.anchor),
+      ...anchorRequest(ref.dir),
       name: ref.name,
       mode,
     }).stat;
@@ -1871,7 +1881,22 @@ const DARWIN_ANCHORING = {
     return fd;
   },
   mkdirChild(ref, mode) {
-    darwinAnchoredRequest({ op: 'mkdir', ...anchorRequest(ref.dir.anchor), name: ref.name, mode });
+    // The helper fstats the directory it opened O_DIRECTORY|O_NOFOLLOW right
+    // after creating it, precisely so the caller does not have to spend a second
+    // spawn looking the name up again. Its type is known by construction.
+    const created = darwinAnchoredRequest({
+      op: 'mkdir',
+      ...anchorRequest(ref.dir),
+      name: ref.name,
+      mode,
+    }).stat;
+    return {
+      dev: BigInt(created.dev),
+      ino: BigInt(created.ino),
+      mode: BigInt(created.mode),
+      isDirectory: () => true,
+      isSymbolicLink: () => false,
+    };
   },
   descriptorMatchesExpectedPath(fd, _expectedPath, anchoredStat) {
     // There is no live fd-to-path oracle on macOS (F_GETPATH is a name-cache
@@ -1882,34 +1907,30 @@ const DARWIN_ANCHORING = {
   },
   descriptorIsAnchoredChild(fd, anchoredStat) {
     const opened = fs.fstatSync(fd, { bigint: true });
-    return (
-      opened.isDirectory() &&
-      stableDirectoryIdentity(opened) === stableDirectoryIdentity(anchoredStat)
-    );
+    return opened.isDirectory() && identityTripleMatches(opened, identityTriple(anchoredStat));
   },
   parentStillResolves(parentHandle) {
     let anchored;
     try {
-      anchored = darwinAnchoredStat(parentHandle.anchor, null);
+      anchored = darwinAnchoredStat(parentHandle, null);
     } catch {
       // A chain that no longer walks is exactly the "moved or was replaced"
       // verdict the caller reports; it must never surface as a soft pass.
       return false;
     }
+    // validatePlanParent has already compared the descriptor against
+    // parentHandle.identity; what is left to prove is that the anchored chain
+    // still resolves to that same descriptor.
     const opened = fs.fstatSync(parentHandle.fd, { bigint: true });
-    return (
-      anchored.present === true &&
-      identityTripleMatches(opened, anchored) &&
-      stableDirectoryIdentity(opened) === parentHandle.identity
-    );
+    return anchored.present === true && identityTripleMatches(opened, anchored);
   },
   renameNoReplace(sourceRef, destinationRef) {
     const response = darwinAnchoredRequest({
       op: 'rename',
-      ...anchorRequest(sourceRef.dir.anchor),
+      ...anchorRequest(sourceRef.dir),
       name: sourceRef.name,
       destination: {
-        ...anchorRequest(destinationRef.dir.anchor),
+        ...anchorRequest(destinationRef.dir),
         name: destinationRef.name,
       },
     });
@@ -1918,7 +1939,7 @@ const DARWIN_ANCHORING = {
   verifyAbsentChild(guard) {
     let anchored;
     try {
-      anchored = darwinAnchoredStat(guard.anchor, guard.childName);
+      anchored = darwinAnchoredStat(guard, guard.childName);
     } catch (error) {
       throw new Error(
         `Absence anchor changed for ${guard.repoPath}: ${
@@ -1973,15 +1994,18 @@ function openPlanParent(
     fs.constants.O_DIRECTORY |
     fs.constants.O_NOFOLLOW |
     (fs.constants.O_CLOEXEC ?? 0);
+  // verifyAnchorPins requires this list to be root-first and exactly one longer
+  // than the anchor chain, which is what pins each recorded inode against reuse.
   const descriptors = [];
   try {
-    let currentFd = backend.openDirectoryPath(repo, flags);
+    let currentFd = backend.openDirectory(repo, flags);
     descriptors.push(currentFd);
     const rootStat = fs.fstatSync(currentFd, { bigint: true });
     const chain = [{ expectedPath: repo, identity: stableDirectoryIdentity(rootStat) }];
     let currentHandle = {
       fd: currentFd,
       expectedPath: repo,
+      descriptors,
       anchor: backend.rootAnchor(repo, currentFd),
     };
     const traversed = [];
@@ -1997,15 +2021,16 @@ function openPlanParent(
         if (!createMissing) {
           throw new Error(`${purpose} parent does not exist: ${traversed.join('/')}`);
         }
-        backend.mkdirChild(child, 0o755);
-        childStat = backend.lstatChild(child);
+        // A backend that already knows what it created says so; only one that
+        // does not costs a second lookup here.
+        childStat = backend.mkdirChild(child, 0o755) ?? backend.lstatChild(child);
         created = true;
       }
       if (childStat.isSymbolicLink() || !childStat.isDirectory()) {
         throw new Error(`${purpose} parent is not a real directory: ${traversed.join('/')}`);
       }
       const parentFd = currentFd;
-      const childFd = backend.openChildDirectory(child, flags);
+      const childFd = backend.openDirectory(child.path, flags);
       descriptors.push(childFd);
       currentFd = childFd;
       if (created) {
@@ -2018,13 +2043,11 @@ function openPlanParent(
       }
       const openedStat = fs.fstatSync(currentFd, { bigint: true });
       chain.push({ expectedPath: expected, identity: stableDirectoryIdentity(openedStat) });
-      // The anchor records the identity of the descriptor it pins, and that
-      // descriptor lives in `descriptors` for as long as the handle does — the
-      // pin is what keeps the recorded inode number from being recycled.
       currentHandle = {
         fd: currentFd,
         expectedPath: expected,
-        anchor: backend.extendAnchor(currentHandle.anchor, component, openedStat, currentFd),
+        descriptors,
+        anchor: backend.extendAnchor(currentHandle.anchor, component, openedStat),
       };
     }
     const stat = fs.fstatSync(currentFd, { bigint: true });
@@ -2054,7 +2077,18 @@ function closeDescriptors(descriptors) {
 
 function resolveGitDirectory(repo) {
   const result = git(repo, ['rev-parse', '--absolute-git-dir']);
-  return fs.realpathSync(decodeUtf8(result.stdout, 'Git administrative directory').trim());
+  return fs.realpathSync.native(decodeUtf8(result.stdout, 'Git administrative directory').trim());
+}
+
+// A handle records a directory's identity in two encodings — the lexical chain
+// that validatePlanParent walks and the anchored chain the macOS helper asserts —
+// so anything that changes the directory's mode has to re-stamp both or the next
+// anchored walk rejects the directory it just changed. This is the one place that
+// happens, and the one place it has to stay correct.
+function restampDirectoryIdentity(handle, stat) {
+  handle.identity = stableDirectoryIdentity(stat);
+  handle.chain[handle.chain.length - 1].identity = handle.identity;
+  handle.anchor = anchoringBackend().refreshAnchorTail(handle.anchor, stat);
 }
 
 function openBackupVault(repo, { createMissing = true } = {}) {
@@ -2065,13 +2099,7 @@ function openBackupVault(repo, { createMissing = true } = {}) {
   });
   fs.fchmodSync(handle.fd, 0o700);
   fs.fsyncSync(handle.fd);
-  const stat = fs.fstatSync(handle.fd, { bigint: true });
-  handle.identity = stableDirectoryIdentity(stat);
-  handle.chain[handle.chain.length - 1].identity = handle.identity;
-  // The fchmod above changes the vault's mode, and mode is part of every
-  // directory identity, so the anchor has to be re-stamped or the next anchored
-  // walk would reject the vault it just hardened.
-  handle.anchor = anchoringBackend().refreshAnchorTail(handle.anchor, stat);
+  restampDirectoryIdentity(handle, fs.fstatSync(handle.fd, { bigint: true }));
   return { ...handle, gitDirectory };
 }
 
@@ -2122,18 +2150,20 @@ function inspectPlanDestination(
   if (expectedIdentity && identity !== expectedIdentity) {
     throw new Error('Generated plan changed during the write');
   }
-  return identity;
+  return stat;
 }
 
 function openExistingPlanDestination(finalRef, replace) {
-  const identity = inspectPlanDestination(finalRef, { replace });
-  if (identity === null) {
+  const stat = inspectPlanDestination(finalRef, { replace });
+  if (stat === null) {
     if (replace) throw new Error('Deepen mode requires an existing generated plan to replace');
     return { fd: undefined, identity: null, stableIdentity: null };
   }
+  const identity = statIdentity(stat);
   const fd = anchoringBackend().openChildRead(
     finalRef,
     fs.constants.O_RDONLY | fs.constants.O_NOFOLLOW | (fs.constants.O_CLOEXEC ?? 0),
+    stat,
   );
   try {
     const opened = fs.fstatSync(fd, { bigint: true });
@@ -2198,6 +2228,7 @@ function validateCommittedPlan(finalRef, tempFd, expectedTemp, testHooks) {
   const finalFd = backend.openChildRead(
     finalRef,
     fs.constants.O_RDONLY | fs.constants.O_NOFOLLOW | (fs.constants.O_CLOEXEC ?? 0),
+    before,
   );
   try {
     const opened = fs.fstatSync(finalFd, { bigint: true });
@@ -2242,15 +2273,16 @@ function copyOpenFile(sourceFd, destinationFd, label) {
   return after;
 }
 
-function openVerifiedAnchoredFile(ref, label) {
+function openVerifiedAnchoredFile(ref, label, knownStat) {
   const backend = anchoringBackend();
-  const before = backend.lstatChild(ref);
+  const before = knownStat ?? backend.lstatChild(ref);
   if (before.isSymbolicLink() || !before.isFile()) {
     throw new Error(`${label} is not a regular no-follow file`);
   }
   const fd = backend.openChildRead(
     ref,
     fs.constants.O_RDONLY | fs.constants.O_NOFOLLOW | (fs.constants.O_CLOEXEC ?? 0),
+    before,
   );
   try {
     const opened = fs.fstatSync(fd, { bigint: true });
@@ -2298,6 +2330,7 @@ export function readPlanSafely({ repo: repoInput, generatedPlanPath, testHooks }
     fd = backend.openChildRead(
       finalRef,
       fs.constants.O_RDONLY | fs.constants.O_NOFOLLOW | (fs.constants.O_CLOEXEC ?? 0),
+      before,
     );
     const opened = fs.fstatSync(fd, { bigint: true });
     if (!opened.isFile() || statIdentity(opened) !== statIdentity(before)) {
@@ -2465,7 +2498,11 @@ function movePathToVault(repo, sourceHandle, sourceName, vault, role) {
   if (sourceAfter || !destinationAfter) {
     throw new Error(`${role} could not be atomically moved into the Git-admin vault`);
   }
-  const opened = openVerifiedAnchoredFile(destination, `${role} Git-admin artifact`);
+  const opened = openVerifiedAnchoredFile(
+    destination,
+    `${role} Git-admin artifact`,
+    destinationAfter,
+  );
   const gitPath = artifactGitPath(name);
   verifyVaultArtifactFromFreshRoot(repo, gitPath, opened.layer);
   return { role, gitPath, layer: opened.layer, fd: opened.fd };
@@ -2639,8 +2676,9 @@ export function writePlanSafely({
     ) {
       throw new Error('Generated-plan temporary path or content changed at publication');
     }
-    backend.renameNoReplace(tempRef, finalRef);
-    if (lstatAnchoredOptional(tempRef) || !lstatAnchoredOptional(finalRef)) {
+    // The no-replace rename reports the race itself; re-deriving that verdict
+    // from a later pair of stats would be both slower and weaker.
+    if (!backend.renameNoReplace(tempRef, finalRef)) {
       throw new Error('Generated-plan publication was refused because the destination raced');
     }
     fs.fsyncSync(parentHandle.fd);
@@ -2769,6 +2807,9 @@ export function snapshotEvidence({
   const headGuards = captureHeadGuards(repo);
   const dirty = initialDirty.records;
   const mutationGuards = [];
+  // Owns every descriptor an absence anchor holds, deduplicated by repo-relative
+  // prefix, and closes each exactly once below.
+  const absenceCache = new Map();
 
   try {
     testHooks?.afterAnchorCapture?.({ headCommit: head });
@@ -2783,7 +2824,9 @@ export function snapshotEvidence({
     testHooks?.afterGitLayerLoad?.({ headCommit: head });
     const globalEntries = [...dirty.values()]
       .filter((record) => record.path !== generatedPlan)
-      .map((record) => materializeRecord(repo, record, layers, mutationGuards, testHooks));
+      .map((record) =>
+        materializeRecord(repo, record, layers, mutationGuards, testHooks, absenceCache),
+      );
     const citedEntries = [...normalizedCitations].sort(compareUtf8).map((repoPath) => {
       const status = dirty.get(repoPath) ?? {
         path: repoPath,
@@ -2792,7 +2835,14 @@ export function snapshotEvidence({
         rename_to: null,
         has_untracked: false,
       };
-      const entry = materializeRecord(repo, status, layers, mutationGuards, testHooks);
+      const entry = materializeRecord(
+        repo,
+        status,
+        layers,
+        mutationGuards,
+        testHooks,
+        absenceCache,
+      );
       const present = Object.values(entry.object_kind).some((kind) => kind !== ABSENT);
       if (!present) entry.state = ABSENT;
       else if (entry.state === 'clean' && entry.object_kind.untracked !== ABSENT) {
@@ -2870,17 +2920,12 @@ export function snapshotEvidence({
       cited_path_manifest: citedEntries,
     };
   } finally {
-    const closed = new Set();
-    for (const guard of mutationGuards) {
-      if (guard.type !== 'absence') continue;
-      for (const fd of guard.descriptors) {
-        if (closed.has(fd)) continue;
-        closed.add(fd);
-        try {
-          fs.closeSync(fd);
-        } catch {
-          // Preserve the primary snapshot result/error.
-        }
+    // One entry per distinct anchored directory, so one close per descriptor.
+    for (const handle of absenceCache.values()) {
+      try {
+        fs.closeSync(handle.fd);
+      } catch {
+        // Preserve the primary snapshot result/error.
       }
     }
   }

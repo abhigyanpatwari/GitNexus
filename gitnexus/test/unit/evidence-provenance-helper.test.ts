@@ -150,13 +150,7 @@ function createBaseRepo(prefix = 'gitnexus-evidence-v2-'): string {
   write(repo, 'base.txt', 'base\n');
   git(repo, ['add', 'base.txt']);
   git(repo, ['commit', '--quiet', '-m', 'base']);
-  // assertRepository compares fs.realpathSync(repo) against the realpath of
-  // `git rev-parse --show-toplevel`. On Windows os.tmpdir() hands back the 8.3
-  // short form (C:\Users\RUNNER~1\...) and plain realpathSync leaves it that
-  // way, while git always reports the long form — so the fixture has to
-  // normalize with the native resolver or the helper rejects its own temp repo
-  // before any platform gate is reached. No-op where the two agree.
-  return fs.realpathSync.native(repo);
+  return repo;
 }
 
 function createFixture(): string {
@@ -697,13 +691,18 @@ type AnchoredResponse = {
   stat?: Record<string, string | boolean>;
 };
 
+let anchoredOpsScriptCache: string | undefined;
+
 function anchoredOpsScript(): string {
-  const source = fs.readFileSync(PLAN_HELPER, 'utf8');
-  const marker = 'const ANCHORED_OPS_SCRIPT = String.raw`';
-  const start = source.indexOf(marker);
-  expect(start).toBeGreaterThan(-1);
-  const bodyStart = start + marker.length;
-  return source.slice(bodyStart, source.indexOf('`;', bodyStart));
+  anchoredOpsScriptCache ??= (() => {
+    const source = fs.readFileSync(PLAN_HELPER, 'utf8');
+    const marker = 'const ANCHORED_OPS_SCRIPT = String.raw`';
+    const start = source.indexOf(marker);
+    expect(start).toBeGreaterThan(-1);
+    const bodyStart = start + marker.length;
+    return source.slice(bodyStart, source.indexOf('`;', bodyStart));
+  })();
+  return anchoredOpsScriptCache;
 }
 
 function runAnchoredOps(rawRequest: string): AnchoredResponse {
@@ -722,6 +721,10 @@ function anchoredIdentity(target: string): Record<string, string> {
     mode: BigInt.asUintN(64, stat.mode).toString(),
   };
 }
+
+// Absolute, outside every anchored fixture root, and never actually created —
+// the helper must refuse the name before it resolves.
+const ANCHORED_ESCAPE_TARGET = path.join(os.tmpdir(), 'gitnexus-anchored-escape');
 
 function anchoredFixture(): { root: string; base: Record<string, unknown> } {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'gitnexus-anchored-ops-'));
@@ -742,17 +745,15 @@ function anchoredFixture(): { root: string; base: Record<string, unknown> } {
   };
 }
 
-// Every anchored operation on macOS is one bounded python3 spawn, so the same
-// fixtures cost far more wall-clock there than the single-process Linux path.
-// vi.setConfig is file-global rather than describe-scoped, and this suite already
-// spawns git, the Node CLI and python3 per test under a sharded job, so the
-// timeout is only ever raised — every other platform keeps the inherited value.
-const DARWIN_SPAWN_TIMEOUT_MS = process.platform === 'darwin' ? [120_000] : [];
-DARWIN_SPAWN_TIMEOUT_MS.forEach((timeout) =>
-  vi.setConfig({ testTimeout: timeout, hookTimeout: timeout }),
-);
+// Every anchored operation on macOS is one bounded python3 spawn, so these
+// fixtures cost far more wall-clock there than on the single-process Linux path.
+// The allowance is scoped to this suite rather than set file-global, so a genuine
+// hang in the pure-JS capability-gate fixtures below still surfaces at the
+// inherited timeout instead of two minutes later.
+const SAFE_WRITE_SUITE_OPTIONS =
+  process.platform === 'darwin' ? { timeout: 120_000 } : ({} as { timeout?: number });
 
-SAFE_WRITE_FIXTURES('generated-plan safe writer', () => {
+SAFE_WRITE_FIXTURES('generated-plan safe writer', SAFE_WRITE_SUITE_OPTIONS, () => {
   it('reads an exact descriptor-anchored plan receipt through both API and CLI', async () => {
     const repo = createBaseRepo('gitnexus-plan-reader-');
     try {
@@ -1574,7 +1575,7 @@ SAFE_WRITE_FIXTURES('generated-plan safe writer', () => {
 
   it.each([
     ['a separator', 'create', 'sub/pwned.md'],
-    ['an absolute path', 'mkdir', '/tmp/gitnexus-anchored-escape'],
+    ['an absolute path', 'mkdir', ANCHORED_ESCAPE_TARGET],
     ['an absolute path on stat', 'stat', '/etc/passwd'],
     ['a parent traversal', 'unlink', '../../elsewhere/victim.txt'],
     ['an empty name', 'stat', ''],
@@ -1595,7 +1596,7 @@ SAFE_WRITE_FIXTURES('generated-plan safe writer', () => {
         // dir_fd is ignored outright for an absolute path and O_NOFOLLOW guards
         // only the final component, so a name that resolved would land outside.
         expect(fs.existsSync(path.join(root, 'elsewhere', 'victim.txt'))).toBe(true);
-        expect(fs.existsSync('/tmp/gitnexus-anchored-escape')).toBe(false);
+        expect(fs.existsSync(ANCHORED_ESCAPE_TARGET)).toBe(false);
         expect(fs.readdirSync(path.join(root, 'docs', 'plans'))).toEqual(['leaf.md']);
       } finally {
         fs.rmSync(root, { recursive: true, force: true });
@@ -1713,29 +1714,37 @@ SAFE_WRITE_FIXTURES('generated-plan safe writer', () => {
 // from every platform, including the ones it refuses, so it is asserted outside
 // the descriptor-anchored suite rather than skipped along with it.
 describe('generated-plan anchoring capability gate', () => {
+  // The gate reads process.platform at call time, so each of these fixtures runs
+  // the real helper against a spoofed platform and always puts the descriptor back.
+  function withPlatform(name: string, run: () => void): void {
+    const original = Object.getOwnPropertyDescriptor(process, 'platform') as PropertyDescriptor;
+    Object.defineProperty(process, 'platform', { value: name, configurable: true });
+    try {
+      run();
+    } finally {
+      Object.defineProperty(process, 'platform', original);
+    }
+  }
+
   it('refuses every platform that has neither anchoring backend', async () => {
     const repo = createBaseRepo('gitnexus-plan-platform-gate-');
-    const originalPlatform = Object.getOwnPropertyDescriptor(
-      process,
-      'platform',
-    ) as PropertyDescriptor;
     try {
       const planner = await importHelper(PLAN_HELPER);
-      Object.defineProperty(process, 'platform', { value: 'win32', configurable: true });
-      expect(() => planner.readPlanSafely({ repo, generatedPlanPath: SAFE_PLAN_PATH })).toThrow(
-        /Linux \/proc\/self\/fd or macOS \*at\(\) anchoring through a trusted python3; win32 offers neither, so refusing an unanchored write/,
-      );
-      expect(() =>
-        planner.writePlanSafely({
-          repo,
-          generatedPlanPath: SAFE_PLAN_PATH,
-          contents: '# blocked\n',
-        }),
-      ).toThrow(/win32 offers neither, so refusing an unanchored write/);
+      withPlatform('win32', () => {
+        expect(() => planner.readPlanSafely({ repo, generatedPlanPath: SAFE_PLAN_PATH })).toThrow(
+          /Linux \/proc\/self\/fd or macOS \*at\(\) anchoring through a trusted python3; win32 offers neither, so refusing an unanchored write/,
+        );
+        expect(() =>
+          planner.writePlanSafely({
+            repo,
+            generatedPlanPath: SAFE_PLAN_PATH,
+            contents: '# blocked\n',
+          }),
+        ).toThrow(/win32 offers neither, so refusing an unanchored write/);
+      });
       expect(fs.existsSync(path.join(repo, SAFE_PLAN_PATH))).toBe(false);
       expect(fs.existsSync(path.join(repo, 'docs'))).toBe(false);
     } finally {
-      Object.defineProperty(process, 'platform', originalPlatform);
       fs.rmSync(repo, { recursive: true, force: true });
     }
   });
@@ -1750,10 +1759,6 @@ describe('generated-plan anchoring capability gate', () => {
     'refuses the macOS capability gate when no trusted python3 backend exists',
     async () => {
       const repo = createBaseRepo('gitnexus-plan-darwin-gate-');
-      const originalPlatform = Object.getOwnPropertyDescriptor(
-        process,
-        'platform',
-      ) as PropertyDescriptor;
       const realRealpath = fs.realpathSync.bind(fs) as (target: fs.PathLike) => string;
       const deniedCandidates: string[] = [];
       // macOS anchoring is only as available as the interpreter that performs it,
@@ -1781,26 +1786,26 @@ describe('generated-plan anchoring capability gate', () => {
       }) as typeof fs.realpathSync);
       try {
         const planner = await importHelper(PLAN_HELPER);
-        Object.defineProperty(process, 'platform', { value: 'darwin', configurable: true });
-        expect(() =>
-          planner.writePlanSafely({
-            repo,
-            generatedPlanPath: SAFE_PLAN_PATH,
-            contents: '# blocked\n',
-          }),
-        ).toThrow(
-          /require a trusted macOS python3 exposing os\.supports_dir_fd and renameatx_np .*refusing an unanchored write/,
-        );
-        expect(() => planner.readPlanSafely({ repo, generatedPlanPath: SAFE_PLAN_PATH })).toThrow(
-          /Xcode Command Line Tools/,
-        );
+        withPlatform('darwin', () => {
+          expect(() =>
+            planner.writePlanSafely({
+              repo,
+              generatedPlanPath: SAFE_PLAN_PATH,
+              contents: '# blocked\n',
+            }),
+          ).toThrow(
+            /require a trusted macOS python3 exposing os\.supports_dir_fd and renameatx_np .*refusing an unanchored write/,
+          );
+          expect(() => planner.readPlanSafely({ repo, generatedPlanPath: SAFE_PLAN_PATH })).toThrow(
+            /Xcode Command Line Tools/,
+          );
+        });
         // Without this the fixture would still pass on a host that simply has no
         // renameatx_np, proving nothing on the platform it exists to cover.
         expect(deniedCandidates).not.toHaveLength(0);
         expect(fs.existsSync(path.join(repo, SAFE_PLAN_PATH))).toBe(false);
         expect(fs.existsSync(path.join(repo, 'docs'))).toBe(false);
       } finally {
-        Object.defineProperty(process, 'platform', originalPlatform);
         realpathSpy.mockRestore();
         fs.rmSync(repo, { recursive: true, force: true });
       }
