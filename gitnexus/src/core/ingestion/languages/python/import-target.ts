@@ -144,6 +144,13 @@ export function resolvePythonImportTarget(
  * that classification is what open issue #2882 is about, so it belongs with
  * that fix rather than bolted on here. Not a regression: both halves behave
  * exactly as they did before #2864.
+ *
+ * The `parsedFiles.find` this used to open with was the same O(imports x files)
+ * shape #2913 removes on the path Set, keyed on the other collection the
+ * orchestrator threads: every import whose package probe resolves scanned the
+ * whole parsed workspace, and on a repo where `from pkg import X` usually
+ * resolves that is most imports. `parsedFileByPath` replaces it with one pass
+ * per pass.
  */
 function pythonFileExportsName(
   targetFile: string,
@@ -151,7 +158,7 @@ function pythonFileExportsName(
   parsedFiles: readonly ParsedFile[] | undefined,
 ): boolean {
   if (parsedFiles === undefined) return false;
-  const parsed = parsedFiles.find((file) => file.filePath === targetFile);
+  const parsed = parsedFileByPath(parsedFiles).get(targetFile);
   if (parsed === undefined) return false;
   return parsed.localDefs.some((def) => {
     const qualifiedName = def.qualifiedName;
@@ -160,6 +167,27 @@ function pythonFileExportsName(
     return (dot === -1 ? qualifiedName : qualifiedName.slice(dot + 1)) === importedName;
   });
 }
+
+/**
+ * `filePath -> ParsedFile`, memoized on the identity of the pass's
+ * `parsedFiles` array — the second stable object the orchestrator threads
+ * through `resolveImportTarget`, beside the path Set.
+ *
+ * FIRST WINS on a duplicated path, which is what `Array.prototype.find`
+ * returned, so the answer is unchanged for a workspace that somehow parsed one
+ * path twice. Values are references to the array's own elements: the Map costs
+ * one pointer per parsed file and, living in a `WeakMap` keyed on the array,
+ * is reclaimed with the pass rather than accumulating across runs (#2649).
+ */
+const parsedFileByPath = perFileSet(
+  (parsedFiles: readonly ParsedFile[]): Map<string, ParsedFile> => {
+    const byPath = new Map<string, ParsedFile>();
+    for (const file of parsedFiles) {
+      if (!byPath.has(file.filePath)) byPath.set(file.filePath, file);
+    }
+    return byPath;
+  },
+);
 
 /**
  * Resolve `package/sub/module` style paths (already dot-flattened) to a
@@ -196,19 +224,39 @@ function resolveAbsoluteFromFiles(
   if (allFilePaths.has(directFile)) return directFile;
   if (allFilePaths.has(directPkg)) return directPkg;
 
+  // Both remaining tiers — the ancestor walk and the suffix fallback — can only
+  // ever land on a file whose basename is `<lastSeg>.py`, or on an `__init__.py`
+  // whose parent directory is named `<lastSeg>`. The two buckets the suffix
+  // fallback already needs therefore also decide, in O(1) and before the walk,
+  // whether the walk can hit at all: neither bucket present means no tier below
+  // can match, and one bucket absent removes that tier's probe from EVERY step
+  // of the walk. On the deep corpus that is half the walk's probes (#2913).
+  const index = getPythonFileIndex(allFilePaths);
+  const lastSeg = pathLike.slice(pathLike.lastIndexOf('/') + 1);
+  const moduleCandidates = index.byBasename.get(`${lastSeg}.py`);
+  const packageCandidates = index.byInitParent.get(`${lastSeg}/__init__.py`);
+  const mayBeModule = moduleCandidates !== undefined;
+  // `byInitParent` skips `__init__.py` files whose parent directory name is
+  // empty (a doubled separator), so an empty `<lastSeg>` — a target spelled
+  // with a trailing dot — cannot use the bucket as proof of absence and keeps
+  // probing exactly as before.
+  const mayBePackage = packageCandidates !== undefined || lastSeg === '';
+  if (!mayBeModule && !mayBePackage) return null;
+
   // Ancestor walk — match the single-segment resolver's behavior at
-  // multi-segment granularity. Closest match wins. Stop at `i > 0` because
-  // `i === 0` would re-check the workspace-root candidates already covered
-  // by the direct check above.
-  const importerDir = fromFile.replace(/\\/g, '/').split('/').slice(0, -1).join('/');
-  if (importerDir) {
-    const dirParts = importerDir.split('/').filter(Boolean);
-    for (let i = dirParts.length; i > 0; i--) {
-      const ancestor = dirParts.slice(0, i).join('/');
-      const prefix = `${ancestor}/`;
-      const candidateFile = `${prefix}${directFile}`;
-      const candidatePkg = `${prefix}${directPkg}`;
+  // multi-segment granularity. Closest match wins. The chain stops short of the
+  // workspace root because the root candidates are the direct check above.
+  //
+  // The chain comes from `importerAncestors`, which builds it ONCE per importer
+  // directory per pass. Rebuilding it here — one `slice(0, i).join('/')` per
+  // path component, on every import — was half of the depth quadratic in #2913.
+  for (const ancestor of importerAncestors(index, fromFile)) {
+    if (mayBeModule) {
+      const candidateFile = `${ancestor}/${directFile}`;
       if (allFilePaths.has(candidateFile)) return candidateFile;
+    }
+    if (mayBePackage) {
+      const candidatePkg = `${ancestor}/${directPkg}`;
       if (allFilePaths.has(candidatePkg)) return candidatePkg;
     }
   }
@@ -237,17 +285,15 @@ function resolveAbsoluteFromFiles(
   // shared buildSuffixIndex is deliberately NOT used: it keeps only one
   // path per suffix (longest wins) and so cannot reproduce this exact
   // fewest-segments-then-lexicographic tie-break across all candidates.
-  const index = getPythonFileIndex(allFilePaths);
-  const lastSeg = pathLike.slice(pathLike.lastIndexOf('/') + 1);
   const matches: { raw: string; norm: string }[] = [];
-  for (const cand of index.byBasename.get(`${lastSeg}.py`) ?? []) {
+  for (const cand of moduleCandidates ?? []) {
     if (cand.norm.endsWith(suffixFile)) matches.push(cand);
   }
   // Package form: only `__init__.py` files whose parent dir is named `<lastSeg>`
   // can match `…/<lastSeg>/__init__.py` — look them up by parent key (P2b) and
   // confirm the full suffix. Same final candidate set as the old `__init__.py`
   // scan, just without iterating unrelated packages.
-  for (const cand of index.byInitParent.get(`${lastSeg}/__init__.py`) ?? []) {
+  for (const cand of packageCandidates ?? []) {
     if (cand.norm.endsWith(suffixPkg)) matches.push(cand);
   }
   if (matches.length === 0) return null;
@@ -293,29 +339,92 @@ function hasRepoCandidate(
   const rootFile = `${leadingSegment}.py`;
   const initFile = `${leadingSegment}/__init__.py`;
 
-  // Build importer-ancestor prefixes: for `backend/routers/cron.py`,
-  // produces `["backend/routers/services/", "backend/services/"]` for
-  // segment `services` (closest first, root excluded — covered above).
-  const importerDir = fromFile.replace(/\\/g, '/').split('/').slice(0, -1).join('/');
-  const dirParts = importerDir ? importerDir.split('/').filter(Boolean) : [];
-  const ancestorPrefixes: string[] = [];
-  for (let i = dirParts.length; i > 0; i--) {
-    ancestorPrefixes.push(`${dirParts.slice(0, i).join('/')}/${leadingSegment}/`);
-  }
-
   // Indexed equivalents of the old O(files) scan:
   //  (1) `f === rootFile || f === initFile`  -> normalized-path membership.
   //  (2) `f.startsWith(`${seg}/`) && f.endsWith('.py')` -> some .py file lives
   //      under directory `${seg}/`, i.e. `${seg}/` is a known .py dir prefix.
   //  (3) ancestor namespace case -> `${ancestor}/${seg}/` is a known .py dir
-  //      prefix.
+  //      prefix, for some ancestor of the importer's directory.
   const index = getPythonFileIndex(allFilePaths);
   if (index.normSet.has(rootFile) || index.normSet.has(initFile)) return true;
   if (index.dirPrefixes.has(prefix)) return true;
-  for (const ap of ancestorPrefixes) {
-    if (index.dirPrefixes.has(ap)) return true;
+  // (3) used to MATERIALIZE one `${ancestor}/${seg}/` string per component of
+  // the importer's directory, eagerly, before checks (1) and (2) had even run —
+  // O(depth^2) characters on every import, and the other half of #2913. Two
+  // things replace that: `nestedDirNames` answers "is `seg` the name of any
+  // directory sitting under a non-empty parent?" in O(1), which is `false` for
+  // every external import (`os`, `django`, an unknown distribution) and skips
+  // the walk outright; and what remains walks the per-directory ancestor chain,
+  // built once per pass, closest first, so the common in-repo hit exits after a
+  // step or two. `nestedDirNames` is exact, not a filter: `${A}/${seg}/` can
+  // only be a directory prefix if `seg` names a directory under the non-empty
+  // parent `A`, so a miss here means the old loop would have missed too.
+  if (!index.nestedDirNames.has(leadingSegment)) return false;
+  for (const ancestor of importerAncestors(index, fromFile)) {
+    if (index.dirPrefixes.has(`${ancestor}/${prefix}`)) return true;
   }
   return false;
+}
+
+/**
+ * The importer's ancestor directories, CLOSEST FIRST and excluding the
+ * workspace root — `["backend/routers", "backend"]` for `backend/routers/x.py`
+ * — memoized per importer DIRECTORY for the lifetime of the pass.
+ *
+ * This is the #2913 fix. Both consumers used to rebuild the chain inline, one
+ * `dirParts.slice(0, i).join('/')` per component, on EVERY import: a per-import
+ * cost proportional to the importer's path depth, and quadratic in characters,
+ * on a file index that is itself depth-free. Real Python layouts are deep
+ * (`src/pkg/sub/feature/impl/mod.py` is ordinary), so the resolver was 6.8x
+ * slower on a deep corpus than on a shallow one holding the file count fixed,
+ * where every other language sat between 1.0x and 3.4x.
+ *
+ * A directory's ancestors are a pure function of the directory, and a pass
+ * resolves many imports per file, so one entry serves every import issued from
+ * anywhere in that directory.
+ *
+ * ## Lifetime and memory
+ *
+ * The Map lives INSIDE the per-file-set index, so it is reclaimed with the file
+ * set it was reached through (`perFileSet` is a `WeakMap`): it cannot leak
+ * across passes or repos, and there is no invalidation rule to get wrong. It is
+ * filled lazily, so it holds one entry per directory that actually ISSUES a
+ * Python import, never one per file and never one per directory in the repo —
+ * the bound #2649 (kernel-scale OOM) asks for. Each entry's strings are
+ * `slice`s of the longest one, so a chain costs pointers rather than a copy of
+ * the path per component.
+ *
+ * The derived key is the importer's directory exactly as the old inline code
+ * computed it — `norm.split('/').slice(0, -1).join('/')`, which for a path
+ * without a separator is `''` (a root-level importer, whose chain is empty).
+ */
+function importerAncestors(index: PythonFileIndex, fromFile: string): readonly string[] {
+  const norm = fromFile.replace(/\\/g, '/');
+  const lastSlash = norm.lastIndexOf('/');
+  const importerDir = lastSlash === -1 ? '' : norm.slice(0, lastSlash);
+  const memoized = index.ancestorsByDir.get(importerDir);
+  if (memoized !== undefined) return memoized;
+  const built = buildImporterAncestors(importerDir);
+  index.ancestorsByDir.set(importerDir, built);
+  return built;
+}
+
+/**
+ * `["a/b/c", "a/b", "a"]` for `a/b/c`. Empty components are dropped first, so
+ * an absolute `/a/b` yields `["a/b", "a"]` — matching the `filter(Boolean)` the
+ * two inline walks did, and with it the absolute-path gating pinned by
+ * `python-import-target-parity.test.ts` (PR #1918 review P3a).
+ */
+function buildImporterAncestors(importerDir: string): readonly string[] {
+  const chain: string[] = [];
+  const parts = importerDir.split('/').filter(Boolean);
+  if (parts.length === 0) return chain;
+  chain.push(parts.join('/'));
+  for (let i = 1; i < parts.length; i++) {
+    const child = chain[i - 1];
+    chain.push(child.slice(0, child.lastIndexOf('/')));
+  }
+  return chain;
 }
 
 /**
@@ -340,78 +449,125 @@ function hasRepoCandidate(
  *    (`…<lastSeg>.py`) lookup.
  *  - `dirPrefixes`: every directory prefix of a `.py` file, trailing-slashed
  *    (`a/b/c.py` -> `a/`, `a/b/`), for "is there a .py file under `<dir>/`".
+ *  - `nestedDirNames`: the NAME of every such directory that has a non-empty
+ *    parent (`a/b/c.py` -> `b`, not `a`), which is exactly the set of segments
+ *    `hasRepoCandidate`'s ancestor walk can ever match — so a segment absent
+ *    from it settles the walk in one lookup (#2913).
+ *  - `ancestorsByDir`: the per-importer-directory ancestor-chain memo behind
+ *    `importerAncestors`. The one structure here that is NOT derived from the
+ *    file set: it is filled lazily, from the importer paths the pass actually
+ *    resolves against, and lives here so it dies with the pass.
+ *
+ * Exported for `test/unit/scope-resolution/python/python-importer-ancestors.test.ts`,
+ * which reads `ancestorsByDir` after driving the production adapter. No counter
+ * ships for it — the Map is the memo, and its SIZE is the assertion: one entry
+ * per importer directory, however many imports were resolved. Everything else
+ * about the index stays internal.
  */
-interface PythonFileIndex {
+export interface PythonFileIndex {
   readonly normSet: Set<string>;
   readonly byBasename: Map<string, { raw: string; norm: string }[]>;
   readonly byInitParent: Map<string, { raw: string; norm: string }[]>;
   readonly dirPrefixes: Set<string>;
+  readonly nestedDirNames: Set<string>;
+  readonly ancestorsByDir: Map<string, readonly string[]>;
 }
 
-const getPythonFileIndex = perFileSet((allFilePaths: ReadonlySet<string>): PythonFileIndex => {
-  // Runs on a cache miss only. That it happens once per run and not once per
-  // import is asserted by counting traversals of the Set itself, in
-  // `test/integration/python-import-index-reuse.test.ts` — the PR #1918 review
-  // P1 guard (#2909).
+export const getPythonFileIndex = perFileSet(
+  (allFilePaths: ReadonlySet<string>): PythonFileIndex => {
+    // Runs on a cache miss only. That it happens once per run and not once per
+    // import is asserted by counting traversals of the Set itself, in
+    // `test/integration/python-import-index-reuse.test.ts` — the PR #1918 review
+    // P1 guard (#2909).
 
-  const normSet = new Set<string>();
-  const byBasename = new Map<string, { raw: string; norm: string }[]>();
-  const byInitParent = new Map<string, { raw: string; norm: string }[]>();
-  const dirPrefixes = new Set<string>();
+    const normSet = new Set<string>();
+    const byBasename = new Map<string, { raw: string; norm: string }[]>();
+    const byInitParent = new Map<string, { raw: string; norm: string }[]>();
+    const dirPrefixes = new Set<string>();
+    const nestedDirNames = new Set<string>();
 
-  for (const raw of allFilePaths) {
-    const norm = raw.replace(/\\/g, '/');
-    // Python import resolution only ever queries `.py` paths: module `<seg>.py`
-    // and package `<seg>/__init__.py` membership (normSet), `<lastSeg>.py` /
-    // `__init__.py` basename buckets (byBasename), and `.py` directory prefixes
-    // (dirPrefixes). Non-`.py` files can never match any of those, so skip them
-    // — they were dead weight in every structure on polyglot monorepos
-    // (PR #1918 review P3b; dirPrefixes was already `.py`-gated).
-    if (!norm.endsWith('.py')) continue;
-    normSet.add(norm);
+    for (const raw of allFilePaths) {
+      const norm = raw.replace(/\\/g, '/');
+      // Python import resolution only ever queries `.py` paths: module `<seg>.py`
+      // and package `<seg>/__init__.py` membership (normSet), `<lastSeg>.py` /
+      // `__init__.py` basename buckets (byBasename), and `.py` directory prefixes
+      // (dirPrefixes). Non-`.py` files can never match any of those, so skip them
+      // — they were dead weight in every structure on polyglot monorepos
+      // (PR #1918 review P3b; dirPrefixes was already `.py`-gated).
+      if (!norm.endsWith('.py')) continue;
+      normSet.add(norm);
 
-    const lastSlash = norm.lastIndexOf('/');
-    const base = lastSlash >= 0 ? norm.slice(lastSlash + 1) : norm;
-    let bucket = byBasename.get(base);
-    if (bucket === undefined) {
-      bucket = [];
-      byBasename.set(base, bucket);
-    }
-    bucket.push({ raw, norm });
+      const lastSlash = norm.lastIndexOf('/');
+      const base = lastSlash >= 0 ? norm.slice(lastSlash + 1) : norm;
+      let bucket = byBasename.get(base);
+      if (bucket === undefined) {
+        bucket = [];
+        byBasename.set(base, bucket);
+      }
+      bucket.push({ raw, norm });
 
-    // Package files also get a parent-keyed bucket so a `pkg.sub` lookup hits
-    // only `…/sub/__init__.py` candidates, not every `__init__.py` (P2b).
-    if (base === '__init__.py' && lastSlash >= 0) {
-      const dir = norm.slice(0, lastSlash);
-      const parentSlash = dir.lastIndexOf('/');
-      const parentName = parentSlash >= 0 ? dir.slice(parentSlash + 1) : dir;
-      if (parentName) {
-        const initKey = `${parentName}/__init__.py`;
-        let ib = byInitParent.get(initKey);
-        if (ib === undefined) {
-          ib = [];
-          byInitParent.set(initKey, ib);
+      // Package files also get a parent-keyed bucket so a `pkg.sub` lookup hits
+      // only `…/sub/__init__.py` candidates, not every `__init__.py` (P2b).
+      if (base === '__init__.py' && lastSlash >= 0) {
+        const dir = norm.slice(0, lastSlash);
+        const parentSlash = dir.lastIndexOf('/');
+        const parentName = parentSlash >= 0 ? dir.slice(parentSlash + 1) : dir;
+        if (parentName) {
+          const initKey = `${parentName}/__init__.py`;
+          let ib = byInitParent.get(initKey);
+          if (ib === undefined) {
+            ib = [];
+            byInitParent.set(initKey, ib);
+          }
+          ib.push({ raw, norm });
         }
-        ib.push({ raw, norm });
+      }
+
+      // Directory prefixes: every slash-terminated prefix of the path (every
+      // index just past a '/', up to and including the file's own directory).
+      // Scanning the FULL normalized path — including any leading '/' for
+      // absolute paths — makes `dirPrefixes.has(X)` match exactly when the old
+      // gate's `f.startsWith(X)` (X always ends in '/') matched. The previous
+      // split+`filter(Boolean)` dropped the leading empty component, so an
+      // absolute file `/repo/svc/x.py` yielded `repo/svc/` (no leading slash) and
+      // gate-passed where `"/repo/svc/x.py".startsWith("repo/svc/")` is false
+      // (PR #1918 review P3a). For relative paths the set is identical.
+      //
+      // The walk runs from the DEEPEST prefix outward and stops at the first
+      // one already recorded. Every prefix is added together with all of its
+      // own ancestors, so a hit proves the rest of the chain is already there —
+      // which makes the second and later files of a directory cost ONE lookup
+      // instead of one insert per path component. This build was the last part
+      // of Python's resolution that still scaled with path depth (#2913): the
+      // same 400-file corpus moved sixteen directories down went from 800
+      // inserts to 7200, for the same ~120 distinct prefixes.
+      //
+      // `nestedDirNames` rides the same walk. A directory prefix has the shape
+      // `<parent>/<name>/` — the only shape `hasRepoCandidate`'s check (3)
+      // probes — exactly when another slash precedes it at index > 0. Index 0
+      // is excluded on purpose: `a/` and `/` name a directory whose parent is
+      // empty, which check (2) already answers and which the ancestor walk
+      // (non-empty ancestors only) never probes.
+      for (let i = lastSlash; i >= 0; i--) {
+        if (norm[i] !== '/') continue;
+        const dirPrefix = norm.slice(0, i + 1);
+        if (dirPrefixes.has(dirPrefix)) break;
+        dirPrefixes.add(dirPrefix);
+        const parentSlash = i > 0 ? norm.lastIndexOf('/', i - 1) : -1;
+        if (parentSlash > 0) nestedDirNames.add(norm.slice(parentSlash + 1, i));
       }
     }
 
-    // Directory prefixes: every slash-terminated prefix of the path (every
-    // index just past a '/', up to and including the file's own directory).
-    // Scanning the FULL normalized path — including any leading '/' for
-    // absolute paths — makes `dirPrefixes.has(X)` match exactly when the old
-    // gate's `f.startsWith(X)` (X always ends in '/') matched. The previous
-    // split+`filter(Boolean)` dropped the leading empty component, so an
-    // absolute file `/repo/svc/x.py` yielded `repo/svc/` (no leading slash) and
-    // gate-passed where `"/repo/svc/x.py".startsWith("repo/svc/")` is false
-    // (PR #1918 review P3a). For relative paths the set is identical.
-    for (let i = 0; i <= lastSlash; i++) {
-      if (norm[i] === '/') dirPrefixes.add(norm.slice(0, i + 1));
-    }
-  }
-
-  return { normSet, byBasename, byInitParent, dirPrefixes };
-});
+    return {
+      normSet,
+      byBasename,
+      byInitParent,
+      dirPrefixes,
+      nestedDirNames,
+      ancestorsByDir: new Map<string, readonly string[]>(),
+    };
+  },
+);
 
 function pythonImportedSubmoduleTarget(parsedImport: ParsedImport): string | null {
   if (parsedImport.kind !== 'named' && parsedImport.kind !== 'alias') return null;
