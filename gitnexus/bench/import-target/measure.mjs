@@ -834,17 +834,45 @@ function buildFiles(lang, fileCount, pad, shape) {
 }
 
 /**
- * The `ParsedFile[]` the orchestrator threads beside the path set, for the two
- * languages whose hook declares a `context` — see `CONTEXT_LANGS`.
+ * ONE `ParsedFile`, and the ONE place in this file that spells that shape.
  *
  * CARRIES THE FIELDS THE RESOLVERS READ AND NOTHING ELSE, deliberately.
  * `filesByDirectory` reads `filePath`; PHP's declaring-file filter reads
  * `localDefs[].type` and `localDefs[].qualifiedName`; Python's
  * `pythonFileExportsName` reads `localDefs[].qualifiedName`. `scopes`,
  * `parsedImports` and `referenceSites` are on the real shape and are inert on
- * this path, and this array is rebuilt inside every timed pass (see `newPass`),
- * so filling them would charge the RESOLUTION arms for extraction work that
- * happens in another phase entirely.
+ * this path, and the timed corpora are rebuilt inside every pass (see
+ * `newPass`), so filling them would charge the RESOLUTION arms for extraction
+ * work that happens in another phase entirely.
+ *
+ * `nodeId` is inert as well — checked, not assumed: neither
+ * `php/import-target.ts` nor `python/import-target.ts` mentions it, and they are
+ * the two modules `resolveOne` enters. It is minted anyway because it is on the
+ * real shape, and its spelling is therefore free to be uniform.
+ *
+ * Both callers come through here — `buildParsedFiles` for the timed and heap
+ * corpora, `CONTEXT_PROBE` for the `context` arm's hand-built ones. It used to
+ * be spelled out twice, ~900 lines apart, differing only in that `nodeId`; this
+ * is an untyped `.mjs`, so nothing would have failed at build if `ParsedFile`
+ * grew a field and only one of the two copies learned about it.
+ */
+const probeFile = (filePath, defs) => ({
+  filePath,
+  moduleScope: filePath,
+  scopes: [],
+  parsedImports: [],
+  localDefs: defs.map(([type, qualifiedName], n) => ({
+    nodeId: `${filePath}#${n}`,
+    filePath,
+    type,
+    qualifiedName,
+  })),
+  referenceSites: [],
+});
+
+/**
+ * The `ParsedFile[]` the orchestrator threads beside the path set, for the two
+ * languages whose hook declares a `context` — see `CONTEXT_LANGS`.
  *
  * Two defs per file, and both are real shapes rather than padding. PHP keeps
  * classes and functions in SEPARATE symbol tables, so `App\Ns7\File7` naming
@@ -870,17 +898,12 @@ function buildParsedFiles(lang, files) {
     const parent = slash < 0 ? '' : filePath.slice(0, slash);
     const owner = parent.slice(parent.lastIndexOf('/') + 1);
     const qualifiedName = lang === 'php' ? `App\\${owner}\\${stem}` : `${owner}.${stem}`;
-    parsedFiles.push({
-      filePath,
-      moduleScope: filePath,
-      scopes: [],
-      parsedImports: [],
-      localDefs: [
-        { nodeId: `${filePath}#c`, filePath, type: 'Class', qualifiedName },
-        { nodeId: `${filePath}#f`, filePath, type: 'Function', qualifiedName },
-      ],
-      referenceSites: [],
-    });
+    parsedFiles.push(
+      probeFile(filePath, [
+        ['Class', qualifiedName],
+        ['Function', qualifiedName],
+      ]),
+    );
   }
   return parsedFiles;
 }
@@ -1772,23 +1795,6 @@ function measureHeap(lang) {
   };
 }
 
-/** One hand-built `ParsedFile` for the `context` arm's corpora. Same fields
- *  `buildParsedFiles` fills, with the defs named explicitly because these two
- *  corpora exist to produce ONE specific disagreement each. */
-const probeFile = (filePath, defs) => ({
-  filePath,
-  moduleScope: filePath,
-  scopes: [],
-  parsedImports: [],
-  localDefs: defs.map(([type, qualifiedName], n) => ({
-    nodeId: `${filePath}#${n}`,
-    filePath,
-    type,
-    qualifiedName,
-  })),
-  referenceSites: [],
-});
-
 /**
  * The `context` arm's corpora — one per `CONTEXT_LANGS` entry, each a handful
  * of files carrying ONE import whose answer DIFFERS between the production
@@ -2014,6 +2020,58 @@ if (!CHECK) {
 const baseline = JSON.parse(fs.readFileSync(BASELINE_PATH, 'utf-8'));
 const failures = [];
 
+/**
+ * PRESENCE, for one budget, in the one place that spells the reason.
+ *
+ * A missing budget is a DELETED GATE, not a passing arm: `got > undefined` is
+ * `false`, `ceiling * undefined` is `NaN` and `bytes < NaN` is `false`, so every
+ * comparison in this file answers "within budget" for every possible
+ * measurement the moment its key stops being a number. Each of the three call
+ * sites below is one deleted key away from a silent no-op, and the run still
+ * prints PASS.
+ *
+ * `Number.isFinite` rather than `typeof === 'number'`: over JSON input the two
+ * agree (JSON cannot express NaN or Infinity), and the stricter one is the one
+ * whose name says what the gate needs.
+ *
+ * The two per-site facts stay the caller's, because they are what a triager acts
+ * on: `reads` is the comparison that silently stopped gating, quoted, and
+ * `scope` is what deleting this one key actually costs — a single arm, or all
+ * eight at once. Only the shared framing and the shared trailing sentence live
+ * here. Returns the message rather than pushing it, so the timing loop can
+ * `continue` past a budget it must not then compare against.
+ */
+const requireNumericBudget = ({ key, value, reads, scope }) =>
+  Number.isFinite(value)
+    ? null
+    : `no numeric ${key} in baselines.json — a missing budget is a DELETED GATE, not a passing ` +
+      `arm: the comparison it gates reads \`${reads}\`, which is false for every possible ` +
+      `measurement. ${scope} Deterministic: a re-run will not change it.`;
+
+/**
+ * The REVERSE direction of a reconciliation: every key declared in `label` that
+ * `codeList` does not name.
+ *
+ * The forward direction ("the code has an arm with no budget") is a presence
+ * check inside whichever loop iterates the code's list. This is the other way
+ * round — a budget, a baseline block or a registry row for an arm that is never
+ * measured — and no forward check can see it, because the thing it names is
+ * exactly the thing nothing iterates.
+ *
+ * `codeListName` and `why` stay the caller's: which list is authoritative and
+ * what the orphan costs are the two facts that differ between the three arms,
+ * and flattening them would leave a triager with a name and no reading of it.
+ */
+function expectNoOrphanKeys(label, declaredKeys, codeList, codeListName, why) {
+  for (const key of declaredKeys) {
+    if (codeList.includes(key)) continue;
+    failures.push(
+      `${label} has an entry for '${key}', which is not in ${codeListName} — ${why} ` +
+        `Deterministic: a re-run will not change it.`,
+    );
+  }
+}
+
 /** The corpus-shape facts asserted for one timing scale. */
 const SCALE_SHAPE = {
   fields: ['files', 'imports', 'resolved', 'distinct_outcomes', 'fingerprint'],
@@ -2120,21 +2178,21 @@ for (const lang of LANGS) {
     },
   ];
   for (const check of timingChecks) {
-    // PRESENCE FIRST, because `got > undefined` is `false`: without this, going
-    // from a budget to no budget is going from a gate to no gate, and the run
-    // still prints PASS. All five maps are complete today, which is exactly
-    // when the check is worth adding — every one of the four per-language
-    // lookups above is one deleted key away from a silent no-op. The heap arm
-    // HAD THE SAME HOLE and this comment used to deny it: iterating the
-    // BASELINE's keys protects that loop against a deleted MEASUREMENT, which
-    // is a different thing from a deleted BUDGET. See `heapBudgetChecks`.
-    if (typeof check.budget !== 'number') {
-      failures.push(
-        `${lang}: no ${check.label} budget — baselines.json has no numeric ${check.key}. ` +
-          `A missing budget is a DELETED GATE, not a passing arm: the comparison below reads ` +
-          `\`${check.got} > undefined\`, which is false for every possible measurement. ` +
-          `Deterministic: a re-run will not change it.`,
-      );
+    // PRESENCE FIRST — see `requireNumericBudget` for why. All five maps are
+    // complete today, which is exactly when the check is worth having: every one
+    // of the four per-language lookups above is one deleted key away from a
+    // silent no-op. The heap arm HAD THE SAME HOLE and the comment here used to
+    // deny it: iterating the BASELINE's keys protects that loop against a
+    // deleted MEASUREMENT, which is a different thing from a deleted BUDGET.
+    // See `heapBudgetChecks`.
+    const missing = requireNumericBudget({
+      key: check.key,
+      value: check.budget,
+      reads: `${check.got} > undefined`,
+      scope: `That leaves ${lang}'s ${check.label} arm ungated.`,
+    });
+    if (missing !== null) {
+      failures.push(`${lang}: ${missing}`);
       continue;
     }
     if (check.got > check.budget) {
@@ -2211,23 +2269,19 @@ for (const lang of LANGS) {
 // five timing budgets get it — and the reason the comment up there used to give
 // for the heap arm not needing it was wrong. Iterating the baseline's keys
 // protects the loop below against a deleted MEASUREMENT (`heap == null`, right
-// there); it does nothing about a deleted BUDGET. `ceiling * undefined` is
-// `NaN` and `bytes_large < NaN` is false, `ratio > undefined` is false: these
-// two keys are scalars rather than per-language maps, so deleting either is one
-// keystroke that silently disables that arm for ALL EIGHT languages at once.
-// That makes them the widest-blast-radius keys in this file, not the safest.
+// there); it does nothing about a deleted BUDGET. These two keys are scalars
+// rather than per-language maps, so deleting either is one keystroke that
+// silently disables that arm for ALL EIGHT languages at once. That makes them
+// the widest-blast-radius keys in this file, not the safest — which is what
+// their `scope` sentence says and the per-language ones do not.
 const heapBudgetChecks = [
   { key: 'heap_floor_fraction', value: baseline.heap_floor_fraction, reads: 'bytes_large < NaN' },
   { key: 'heap_ratio_budget', value: baseline.heap_ratio_budget, reads: 'ratio > undefined' },
 ];
+const heapArmScope = `This one key gates all ${HEAP_LANGS.length} heap arms at once.`;
 for (const check of heapBudgetChecks) {
-  if (Number.isFinite(check.value)) continue;
-  failures.push(
-    `no numeric ${check.key} in baselines.json — a missing budget is a DELETED GATE, not a ` +
-      `passing arm: the comparison below reads \`${check.reads}\`, which is false for every ` +
-      `possible measurement. This one key gates all ${HEAP_LANGS.length} heap arms at once. ` +
-      `Deterministic: a re-run will not change it.`,
-  );
+  const missing = requireNumericBudget({ ...check, scope: heapArmScope });
+  if (missing !== null) failures.push(missing);
 }
 
 // And EXACT KEY EQUALITY between `HEAP_LANGS` and the two per-language heap
@@ -2242,13 +2296,13 @@ const heapBudgetMaps = [
   ['heap_reading_bytes', baseline.heap_reading_bytes],
 ];
 for (const [key, map] of heapBudgetMaps) {
-  for (const lang of Object.keys(map ?? {})) {
-    if (HEAP_LANGS.includes(lang)) continue;
-    failures.push(
-      `baselines.json ${key} has an entry for '${lang}', which is not in HEAP_LANGS — the bench ` +
-        `budgets a heap arm it does not measure. Deterministic: a re-run will not change it.`,
-    );
-  }
+  expectNoOrphanKeys(
+    `baselines.json ${key}`,
+    Object.keys(map ?? {}),
+    HEAP_LANGS,
+    'HEAP_LANGS',
+    'the bench budgets a heap arm it does not measure.',
+  );
 }
 
 // The same reverse direction for the context arm. The forward direction (a
@@ -2257,15 +2311,13 @@ for (const [key, map] of heapBudgetMaps) {
 // other way round — a baseline block for a language the bench hands no context
 // is a gate over an arm that is never measured, and `armShapes` would never
 // look at it.
-for (const lang of Object.keys(baseline.languages)) {
-  if (baseline.languages[lang].context === undefined) continue;
-  if (CONTEXT_LANGS.includes(lang)) continue;
-  failures.push(
-    `baselines.json languages.${lang} has a context block, but '${lang}' is not in ` +
-      `CONTEXT_LANGS — the bench pins an arm it does not run. Deterministic: a re-run will not ` +
-      `change it.`,
-  );
-}
+expectNoOrphanKeys(
+  'baselines.json languages.*.context',
+  Object.keys(baseline.languages).filter((lang) => baseline.languages[lang].context !== undefined),
+  CONTEXT_LANGS,
+  'CONTEXT_LANGS',
+  'the bench pins an arm it does not run.',
+);
 
 // Driven by HEAP_LANGS, the CODE's list, exactly as the timing arms iterate
 // LANGS — so a deleted budget key is a presence failure rather than a language
@@ -2275,17 +2327,22 @@ for (const lang of Object.keys(baseline.languages)) {
 for (const lang of HEAP_LANGS) {
   const ceiling = baseline.heap_ceiling_bytes?.[lang];
   const reading = baseline.heap_reading_bytes?.[lang];
-  for (const [key, value] of [
-    ['heap_ceiling_bytes', ceiling],
-    ['heap_reading_bytes', reading],
+  // `reads` names the comparison each key gates further down: the ceiling is
+  // compared directly, the reading only after `reading * heap_floor_fraction`
+  // has turned a missing one into `NaN`.
+  for (const [key, value, reads] of [
+    ['heap_ceiling_bytes', ceiling, 'bytes_large > undefined'],
+    ['heap_reading_bytes', reading, 'bytes_large < NaN'],
   ]) {
-    if (Number.isFinite(value)) continue;
-    failures.push(
-      `${lang}: no numeric ${key}.${lang} in baselines.json — a missing budget is a DELETED ` +
-        `GATE, not a passing arm, and this loop iterates HEAP_LANGS precisely so that deleting ` +
-        `the key fails here instead of dropping ${lang} out of the gate. Deterministic: a ` +
-        `re-run will not change it.`,
-    );
+    const missing = requireNumericBudget({
+      key: `${key}.${lang}`,
+      value,
+      reads,
+      scope:
+        `This loop iterates HEAP_LANGS precisely so that deleting the key fails here instead ` +
+        `of dropping ${lang} out of the gate.`,
+    });
+    if (missing !== null) failures.push(`${lang}: ${missing}`);
   }
   const heap = report[lang]?.heap;
   if (heap == null) {
@@ -2382,13 +2439,16 @@ for (const language of registeredLanguages) {
       `resolveOne) and a baselines.json entry. Deterministic: a re-run will not change it.`,
   );
 }
-for (const language of benchedLanguages) {
-  if (registeredLanguages.includes(language)) continue;
-  failures.push(
-    `LANG_REGISTRY names '${language}', which is not in SCOPE_RESOLVERS — this bench is gating a ` +
-      `resolver the pipeline no longer registers. Deterministic: a re-run will not change it.`,
-  );
-}
+// The reverse half is the same loop as the two above it, so it goes through the
+// same helper. Only the FORWARD half stays written out: its message is a
+// five-step remediation for adding a language, which no shared framing carries.
+expectNoOrphanKeys(
+  'LANG_REGISTRY',
+  benchedLanguages,
+  registeredLanguages,
+  'SCOPE_RESOLVERS',
+  'this bench is gating a resolver the pipeline no longer registers.',
+);
 
 // The SAME reconciliation for `CONTEXT_LANGS`, against the registry rather than
 // against a claim in a comment. `run.ts` passes the fifth argument to every

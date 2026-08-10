@@ -40,12 +40,31 @@
  * in the house style of `import-target-index-parity.test.ts`: they are the
  * specification, and the memo agreeing with them is what makes this a hoist
  * rather than a behaviour change.
+ *
+ * The four memo arms live in `counting-file-set.ts` beside the other
+ * import-target scaffolding, because this guard and the bare-prefix one
+ * (`test/unit/import-resolvers/python-importer-prefixes.test.ts`) are the same
+ * suite over the same importer corpus once four values are named (the memo, the
+ * drive, the legacy builder, the hit). The two CHAINS still differ — this one
+ * drops the empty components an absolute path or a doubled separator produces
+ * and the other keeps them — so `legacyChain` stays per-guard and the shared
+ * path-shape table names shapes rather than expectations.
  */
 import { describe, expect, it } from 'vitest';
 import type { ParsedImport } from 'gitnexus-shared';
 import { pythonScopeResolver } from '../../../../src/core/ingestion/languages/python/scope-resolver.js';
 import { getPythonFileIndex } from '../../../../src/core/ingestion/import-resolvers/python-file-index.js';
-import { countedParsedFiles } from '../../../helpers/counting-file-set.js';
+import {
+  IMPORTER_PATH_SHAPES,
+  countedParsedFiles,
+  expectDistinctFileSetsGetOwnChainMemo,
+  expectMemoizedChainMatchesLegacy,
+  expectOneChainPerImporterDir,
+  expectSameChainObjectReused,
+  sortedStrings,
+  type ChainMemoArm,
+  type ChainMemoResult,
+} from '../../../helpers/counting-file-set.js';
 
 const { resolveImportTarget } = pythonScopeResolver;
 
@@ -104,8 +123,6 @@ function specNestedDirNames(dirPrefixes: ReadonlySet<string>): Set<string> {
   return names;
 }
 
-const sorted = (values: Iterable<string>): string[] => [...values].sort();
-
 // ─── the workspace the adapter is driven against ─────────────────────────────
 
 /**
@@ -124,18 +141,6 @@ const WORKSPACE: readonly string[] = [
   'root.py',
 ];
 
-/** Every file that issues an import below, and the directory it sits in. */
-const IMPORTERS: readonly string[] = [
-  'svc/a/one.py',
-  'svc/a/two.py',
-  'svc/b/one.py',
-  'deep/x/y/z/one.py',
-  'root.py',
-];
-
-/** Four directories for five importers — `svc/a` holds two of them. */
-const IMPORTER_DIRS: readonly string[] = ['svc/a', 'svc/b', 'deep/x/y/z', ''];
-
 /**
  * One import that must resolve, so a memo count is never the count of an
  * adapter that has stopped resolving anything (the pairing rule every guard in
@@ -146,7 +151,7 @@ const HIT_TARGET = 'outer.nested.mod';
 const HIT_RESULT = 'outer/nested/mod.py';
 
 /**
- * Drives the ORCHESTRATOR ADAPTER, `perImporter` times per importer, with two
+ * Drives the ORCHESTRATOR ADAPTER `perImporter` times from `fromFile`, with two
  * spellings that between them enter the memo from both call sites:
  *   - `nested.ghost{i}` — reaches `hasRepoCandidate`'s ancestor walk and misses.
  *     Spelled differently every iteration, so nothing upstream can answer it
@@ -157,84 +162,54 @@ const HIT_RESULT = 'outer/nested/mod.py';
  *     `one.py` has to be a real basename somewhere or the walk is skipped
  *     before it starts, and the Python chain keeps no per-target cache, so a
  *     repeated spelling really is re-resolved.
+ * …then the one spelling that must resolve.
  */
-function driveAdapter(
-  files: ReadonlySet<string>,
+function driveImporter(
+  files: Set<string>,
+  fromFile: string,
   perImporter: number,
-): (string | readonly string[] | null)[] {
-  const out: (string | readonly string[] | null)[] = [];
-  for (const fromFile of IMPORTERS) {
-    for (let i = 0; i < perImporter; i++) {
-      out.push(resolveImportTarget(`nested.ghost${i}`, fromFile, files, undefined, undefined));
-      out.push(resolveImportTarget('outer.one', fromFile, files, undefined, undefined));
-    }
-    out.push(resolveImportTarget(HIT_TARGET, fromFile, files, undefined, undefined));
+): ChainMemoResult[] {
+  const out: ChainMemoResult[] = [];
+  for (let i = 0; i < perImporter; i++) {
+    out.push(resolveImportTarget(`nested.ghost${i}`, fromFile, files, undefined, undefined));
+    out.push(resolveImportTarget('outer.one', fromFile, files, undefined, undefined));
   }
+  out.push(resolveImportTarget(HIT_TARGET, fromFile, files, undefined, undefined));
   return out;
 }
+
+const ancestorArm: ChainMemoArm = {
+  memoOf: (files) => getPythonFileIndex(files).ancestorsByDir,
+  drive: driveImporter,
+  legacyChain: legacyAncestorChain,
+  hitResult: HIT_RESULT,
+};
 
 describe('Python importer-ancestor memo (#2913)', () => {
   it.each([
     { perImporter: 1, label: 'one import per importer' },
     { perImporter: 40, label: 'forty imports per importer' },
   ])('holds one chain per importer DIRECTORY, not per import — $label', ({ perImporter }) => {
-    const files = new Set(WORKSPACE);
-    const resolved = driveAdapter(files, perImporter);
-
-    // The gate. Five importers over four directories, any number of imports:
-    // four entries. A chain rebuilt per import cannot be memoized at all
-    // (size 0); a chain keyed on the importing FILE reads five.
-    expect(getPythonFileIndex(files).ancestorsByDir.size).toBe(IMPORTER_DIRS.length);
-    expect(sorted(getPythonFileIndex(files).ancestorsByDir.keys())).toEqual(sorted(IMPORTER_DIRS));
-
-    // Non-vacuity: a perfect memo count is equally true of an adapter that
-    // resolves nothing.
-    expect(resolved.filter((value) => value === HIT_RESULT)).toHaveLength(IMPORTERS.length);
-    expect(resolved.filter((value) => value === null).length).toBeGreaterThan(0);
+    expectOneChainPerImporterDir(ancestorArm, new Set(WORKSPACE), perImporter);
   });
 
   it('reuses the SAME chain object, rather than rebuilding and re-storing it', () => {
-    const files = new Set(WORKSPACE);
-    resolveImportTarget('nested.ghost0', 'svc/a/one.py', files, undefined, undefined);
-    const first = getPythonFileIndex(files).ancestorsByDir.get('svc/a');
-
-    // Contents first: `toBe` against an absent entry would pass on
-    // `undefined === undefined` if the memo were deleted outright.
-    expect(first).toEqual(['svc/a', 'svc']);
-
-    for (let i = 1; i <= 40; i++) {
-      resolveImportTarget(`nested.ghost${i}`, 'svc/a/one.py', files, undefined, undefined);
-      resolveImportTarget('outer.one', 'svc/a/two.py', files, undefined, undefined);
-    }
-
-    expect(getPythonFileIndex(files).ancestorsByDir.get('svc/a')).toBe(first);
+    expectSameChainObjectReused(ancestorArm, new Set(WORKSPACE));
   });
 
-  it.each([
-    { fromFile: 'svc/a/one.py', why: 'a two-component directory' },
-    { fromFile: 'deep/x/y/z/one.py', why: 'a four-component directory' },
-    { fromFile: 'root.py', why: 'a workspace-root importer (no ancestors)' },
-    { fromFile: '/abs/svc/a/one.py', why: 'an absolute path (leading empty part dropped)' },
-    { fromFile: 'svc//a/one.py', why: 'a doubled separator (empty part dropped)' },
-    { fromFile: 'svc\\a\\one.py', why: 'Windows separators' },
-    { fromFile: 'trailing/', why: 'a path ending in a separator' },
-  ])('memoizes the chain the pre-#2913 code built — $why', ({ fromFile }) => {
-    const files = new Set(WORKSPACE);
-    resolveImportTarget('nested.ghost', fromFile, files, undefined, undefined);
+  it.each(IMPORTER_PATH_SHAPES)(
+    'memoizes the chain the pre-#2913 code built — $why',
+    ({ fromFile }) => {
+      const chain = expectMemoizedChainMatchesLegacy(ancestorArm, new Set(WORKSPACE), fromFile);
 
-    const norm = fromFile.replace(/\\/g, '/');
-    const lastSlash = norm.lastIndexOf('/');
-    const importerDir = lastSlash === -1 ? '' : norm.slice(0, lastSlash);
-    const chain = getPythonFileIndex(files).ancestorsByDir.get(importerDir);
-
-    // Both consumers' chains, from the one memo: `resolveAbsoluteFromFiles`
-    // walked these directories, `hasRepoCandidate` walked the same directories
-    // with `/<segment>/` appended.
-    expect(chain).toEqual(legacyAncestorChain(fromFile));
-    expect((chain ?? []).map((ancestor) => `${ancestor}/nested/`)).toEqual(
-      legacyAncestorPrefixes(fromFile, 'nested'),
-    );
-  });
+      // Both consumers' chains, from the one memo: `resolveAbsoluteFromFiles`
+      // walked these directories, `hasRepoCandidate` walked the same directories
+      // with `/<segment>/` appended.
+      expect(chain.map((ancestor) => `${ancestor}/nested/`)).toEqual(
+        legacyAncestorPrefixes(fromFile, 'nested'),
+      );
+    },
+  );
 
   it.each([
     { why: 'relative paths sharing directories', files: WORKSPACE },
@@ -251,8 +226,8 @@ describe('Python importer-ancestor memo (#2913)', () => {
     // The build now walks separators from the deepest outward and stops at
     // the first prefix already present. Skipping the rest is only sound
     // because a prefix is always stored with all of its own ancestors.
-    expect(sorted(index.dirPrefixes)).toEqual(sorted(legacy));
-    expect(sorted(index.nestedDirNames)).toEqual(sorted(specNestedDirNames(legacy)));
+    expect(sortedStrings(index.dirPrefixes)).toEqual(sortedStrings(legacy));
+    expect(sortedStrings(index.nestedDirNames)).toEqual(sortedStrings(specNestedDirNames(legacy)));
   });
 
   /**
@@ -275,7 +250,7 @@ describe('Python importer-ancestor memo (#2913)', () => {
     const paths = ['pkg/__init__.py', ...modules, 'app/main.py'];
     const workspace = countedParsedFiles(paths);
     const files = new Set(paths);
-    const resolved: (string | readonly string[] | null)[] = [];
+    const resolved: ChainMemoResult[] = [];
 
     for (let i = 0; i < imports; i++) {
       const targetRaw = `pkg.m${i % modules.length}`;
@@ -307,17 +282,10 @@ describe('Python importer-ancestor memo (#2913)', () => {
     const a = new Set(WORKSPACE);
     const b = new Set(WORKSPACE);
 
-    driveAdapter(a, 2);
-    driveAdapter(b, 2);
+    expectDistinctFileSetsGetOwnChainMemo(ancestorArm, a, b, 2);
 
-    const indexA = getPythonFileIndex(a);
-    const indexB = getPythonFileIndex(b);
-
-    expect(indexA).not.toBe(indexB);
-    expect(indexA.ancestorsByDir).not.toBe(indexB.ancestorsByDir);
-    expect(indexA.ancestorsByDir.get('svc/a')).not.toBe(indexB.ancestorsByDir.get('svc/a'));
-    expect(indexA.ancestorsByDir.get('svc/a')).toEqual(indexB.ancestorsByDir.get('svc/a'));
-    expect(indexA.ancestorsByDir.size).toBe(IMPORTER_DIRS.length);
-    expect(indexB.ancestorsByDir.size).toBe(IMPORTER_DIRS.length);
+    // The whole per-file-set index, not only the memo inside it: the WeakMap is
+    // keyed on the Set, so two Sets can never share one index.
+    expect(getPythonFileIndex(a)).not.toBe(getPythonFileIndex(b));
   });
 });

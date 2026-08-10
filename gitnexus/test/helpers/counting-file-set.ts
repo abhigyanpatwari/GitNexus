@@ -57,10 +57,14 @@
  *
  * `expectDistinctFileSetsGetOwnIndex` below is the one arm of those guards that
  * is identical in every language once the four values that differ are named, so
- * it lives here beside the instrument it reads rather than in each guard.
+ * it lives here beside the instrument it reads rather than in each guard. The
+ * `ChainMemoArm` section at the bottom applies the same rule to the guards that
+ * watch a MEMO instead of a scan count — the two Python importer-chain guards,
+ * which this instrument provably cannot see (their headers say why) and which
+ * were arm-for-arm the same suite written twice.
  */
 import { expect } from 'vitest';
-import type { ParsedFile } from 'gitnexus-shared';
+import type { ParsedFile, ParsedImport } from 'gitnexus-shared';
 import type { ScopeResolver } from '../../src/core/ingestion/scope-resolution/contract/scope-resolver.js';
 
 export class CountingSet extends Set<string> {
@@ -244,4 +248,241 @@ export function expectDistinctFileSetsGetOwnIndex(arm: DistinctFileSetArm): void
 
   expect(a.scans).toBe(arm.expectedScans);
   expect(b.scans).toBe(arm.expectedScans);
+}
+
+// ─── Python import shapes ────────────────────────────────────────────────────
+
+/**
+ * `from <targetRaw> import Widget`. The shape that makes
+ * `resolvePythonImportTarget` run the package-attribute probe
+ * (`pythonFileExportsName`, the `context.parsedFiles` reader) ahead of the
+ * submodule fallback — so it is the shape that re-enters the resolver and pays
+ * the importer's chain TWICE, and the shape `pythonImportedSubmoduleTarget`
+ * fires for.
+ *
+ * The default the adapter synthesizes when `context` is absent is a `namespace`
+ * import, and that shape never reaches the probe. A guard that means to measure
+ * either leg therefore has to pass this one explicitly.
+ */
+export const pythonNamedImport = (targetRaw: string): ParsedImport => ({
+  kind: 'named',
+  localName: 'Widget',
+  importedName: 'Widget',
+  targetRaw,
+});
+
+/** `import <targetRaw>` — the single-walk shape, and the adapter's default. */
+export const pythonNamespaceImport = (targetRaw: string): ParsedImport => ({
+  kind: 'namespace',
+  localName: '_',
+  importedName: '_',
+  targetRaw,
+});
+
+/**
+ * ONE array per file that uses it, never a fresh `[]` per call:
+ * `parsedFileByPath` memoizes on its identity, and a new array per import would
+ * mint a `WeakMap` key per import for a channel these guards are not measuring
+ * (`countedParsedFiles` above is the instrument for that one). Empty, so
+ * `pythonFileExportsName` answers false and the package-vs-submodule precedence
+ * never fires — the walk, not the precedence, is what the numbers measure.
+ */
+export const NO_PARSED_FILES: readonly ParsedFile[] = [];
+
+// ─── the Python importer-chain memo guards ───────────────────────────────────
+
+/**
+ * What one resolution answered, as the chain-memo arms read it: a path, a path
+ * list (the `ScopeResolver` signature allows one), or `null`. The two values
+ * the non-vacuity pairing rule counts are `arm.hitResult` and `null`.
+ */
+export type ChainMemoResult = string | readonly string[] | null;
+
+/**
+ * Everything that differs between the two Python importer-chain memo guards:
+ * `test/unit/import-resolvers/python-importer-prefixes.test.ts`
+ * (`bareImportPrefixesByDir`) and
+ * `test/unit/scope-resolution/python/python-importer-ancestors.test.ts`
+ * (`ancestorsByDir`).
+ *
+ * The two memos hold DIFFERENT SEQUENCES under the same key — self included or
+ * not, workspace root included or not, empty components kept or dropped; see
+ * `importerBarePrefixes`'s header for why neither guard can be deleted in
+ * favour of the other. But each guard is the same four arms over the same
+ * importer corpus once these four values are named, so the arms live here and
+ * each guard supplies its own four.
+ */
+export interface ChainMemoArm {
+  /** The memo under test, read off the pass's per-file-set index. */
+  readonly memoOf: (files: ReadonlySet<string>) => ReadonlyMap<string, readonly string[]>;
+  /**
+   * Drives a production surface `perImporter` times from `fromFile`, with
+   * spellings that reach the memo, and answers what each call resolved to.
+   * Exactly one call per invocation must answer `arm.hitResult`, and at least
+   * one must answer `null`. Must pass `files` THROUGH: both memos are keyed on
+   * its identity, so a copy here would measure nothing.
+   */
+  readonly drive: (
+    files: Set<string>,
+    fromFile: string,
+    perImporter: number,
+  ) => readonly ChainMemoResult[];
+  /**
+   * The verbatim pre-change chain builder, which is the specification: the memo
+   * agreeing with it is what makes the change a hoist rather than a behaviour
+   * change.
+   */
+  readonly legacyChain: (fromFile: string) => readonly string[];
+  /** What the one must-resolve spelling in `drive` answers, once per importer. */
+  readonly hitResult: string;
+}
+
+/** Every file that issues an import in the chain-memo arms. */
+export const CHAIN_MEMO_IMPORTERS: readonly string[] = [
+  'svc/a/one.py',
+  'svc/a/two.py',
+  'svc/b/one.py',
+  'deep/x/y/z/one.py',
+  'root.py',
+];
+
+/** Four directories for those five importers — `svc/a` holds two of them. */
+export const CHAIN_MEMO_IMPORTER_DIRS: readonly string[] = ['svc/a', 'svc/b', 'deep/x/y/z', ''];
+
+/** The directory two importers share, which is where identity is measured. */
+const SHARED_DIR = 'svc/a';
+const SHARED_DIR_IMPORTERS: readonly string[] = ['svc/a/one.py', 'svc/a/two.py'];
+
+/** Imports one directory issues before its chain's identity is re-read. */
+const CHAIN_IDENTITY_REPEATS = 40;
+
+/** A sorted copy, so a key set is compared without depending on fill order. */
+export const sortedStrings = (values: Iterable<string>): string[] => [...values].sort();
+
+/**
+ * The importer directory both memos are keyed on, derived exactly as the
+ * pre-change inline code derived it — `''` for a path with no separator.
+ */
+const importerDirOf = (fromFile: string): string =>
+  fromFile.replace(/\\/g, '/').split('/').slice(0, -1).join('/');
+
+/**
+ * The path-shape space an importer chain has to be correct over, as ONE table
+ * both guards run: they enumerate the same space and nothing kept the two
+ * copies in lockstep.
+ *
+ * Each `why` names the SHAPE, not what either chain does with it, because the
+ * two chains do different things with several of these rows — the bare-prefix
+ * chain KEEPS the empty component an absolute path or a doubled separator
+ * produces and the ancestor chain drops it, and that difference decides real
+ * resolutions. Which is why every arm below compares against the guard's own
+ * `legacyChain` rather than against a shared expectation.
+ */
+export const IMPORTER_PATH_SHAPES: readonly { readonly fromFile: string; readonly why: string }[] =
+  [
+    { fromFile: 'svc/a/one.py', why: 'a two-component directory' },
+    { fromFile: 'deep/x/y/z/one.py', why: 'a four-component directory' },
+    { fromFile: 'root.py', why: 'a workspace-root importer' },
+    { fromFile: '/abs/svc/a/one.py', why: 'an absolute path (leading empty component)' },
+    { fromFile: 'svc//a/one.py', why: 'a doubled separator (empty component)' },
+    { fromFile: 'svc\\a\\one.py', why: 'Windows separators' },
+    { fromFile: 'trailing/', why: 'a path ending in a separator' },
+  ];
+
+/**
+ * The gate: N imports from five importers over four directories leave FOUR
+ * entries, for every N. That is "the chain work is O(1) amortized after the
+ * first import from a given directory", stated as a number. A chain rebuilt per
+ * import cannot be memoized at all (size 0); a chain keyed on the importing
+ * FILE reads five.
+ *
+ * Paired with the non-vacuity assertions every guard in this family states: a
+ * perfect memo count is equally true of an adapter that resolves nothing.
+ */
+export function expectOneChainPerImporterDir(
+  arm: ChainMemoArm,
+  files: Set<string>,
+  perImporter: number,
+): void {
+  const resolved: ChainMemoResult[] = [];
+  for (const fromFile of CHAIN_MEMO_IMPORTERS) {
+    resolved.push(...arm.drive(files, fromFile, perImporter));
+  }
+
+  expect(arm.memoOf(files).size).toBe(CHAIN_MEMO_IMPORTER_DIRS.length);
+  expect(sortedStrings(arm.memoOf(files).keys())).toEqual(sortedStrings(CHAIN_MEMO_IMPORTER_DIRS));
+
+  expect(resolved.filter((value) => value === arm.hitResult)).toHaveLength(
+    CHAIN_MEMO_IMPORTERS.length,
+  );
+  expect(resolved.filter((value) => value === null).length).toBeGreaterThan(0);
+}
+
+/**
+ * The stored-object arm: a memo that stores a FRESH chain on every import posts
+ * a perfect size while doing all of the work again, so the size gate above is
+ * paired with reference identity across many later imports from the same
+ * directory — issued from BOTH files in it, so a chain keyed on the importing
+ * file would be replaced rather than reused.
+ *
+ * Contents are asserted FIRST: `toBe` against an absent entry would pass on
+ * `undefined === undefined` if the memo were deleted outright.
+ */
+export function expectSameChainObjectReused(arm: ChainMemoArm, files: Set<string>): void {
+  const [firstImporter] = SHARED_DIR_IMPORTERS;
+  arm.drive(files, firstImporter, 1);
+  const first = arm.memoOf(files).get(SHARED_DIR);
+  expect(first).toEqual(arm.legacyChain(firstImporter));
+
+  for (const fromFile of SHARED_DIR_IMPORTERS) {
+    arm.drive(files, fromFile, CHAIN_IDENTITY_REPEATS);
+  }
+
+  expect(arm.memoOf(files).get(SHARED_DIR)).toBe(first);
+}
+
+/**
+ * The legacy-equality arm for one path shape: what the memo stored under
+ * `fromFile`'s directory is what the pre-change inline code built for it.
+ *
+ * Returns the memoized chain, so a guard whose memo feeds a SECOND consumer can
+ * go on to assert that consumer's derived form of it.
+ */
+export function expectMemoizedChainMatchesLegacy(
+  arm: ChainMemoArm,
+  files: Set<string>,
+  fromFile: string,
+): readonly string[] {
+  arm.drive(files, fromFile, 1);
+
+  const chain = arm.memoOf(files).get(importerDirOf(fromFile));
+  expect(chain).toEqual(arm.legacyChain(fromFile));
+  return chain ?? [];
+}
+
+/**
+ * The distinct-file-set arm: two independently built file sets each get their
+ * own memo — equal in content, never the same object, neither leaking into the
+ * other. The two are driven interleaved, so a memo keyed on anything but the
+ * Set's identity shows up here as a SHARED entry rather than as a stale one.
+ */
+export function expectDistinctFileSetsGetOwnChainMemo(
+  arm: ChainMemoArm,
+  a: Set<string>,
+  b: Set<string>,
+  perImporter: number,
+): void {
+  for (const fromFile of CHAIN_MEMO_IMPORTERS) {
+    arm.drive(a, fromFile, perImporter);
+    arm.drive(b, fromFile, perImporter);
+  }
+
+  const memoA = arm.memoOf(a);
+  const memoB = arm.memoOf(b);
+
+  expect(memoA).not.toBe(memoB);
+  expect(memoA.get(SHARED_DIR)).not.toBe(memoB.get(SHARED_DIR));
+  expect(memoA.get(SHARED_DIR)).toEqual(memoB.get(SHARED_DIR));
+  expect(memoA.size).toBe(CHAIN_MEMO_IMPORTER_DIRS.length);
+  expect(memoB.size).toBe(CHAIN_MEMO_IMPORTER_DIRS.length);
 }

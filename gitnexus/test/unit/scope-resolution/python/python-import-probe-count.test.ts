@@ -44,9 +44,14 @@
  * simply stopped working would post a perfect flat line.
  */
 import { describe, expect, it } from 'vitest';
-import type { ParsedFile, ParsedImport } from 'gitnexus-shared';
+import type { ParsedImport } from 'gitnexus-shared';
 import { pythonScopeResolver } from '../../../../src/core/ingestion/languages/python/scope-resolver.js';
 import { resolvePythonImportInternal } from '../../../../src/core/ingestion/import-resolvers/python.js';
+import {
+  NO_PARSED_FILES,
+  pythonNamedImport,
+  pythonNamespaceImport,
+} from '../../../helpers/counting-file-set.js';
 
 const { resolveImportTarget } = pythonScopeResolver;
 
@@ -61,23 +66,9 @@ class ProbeCountingSet extends Set<string> {
   }
 }
 
-/** One array for the whole file: `parsedFileByPath` memoizes on its identity,
- *  and it is empty, so the package-export precedence never fires and the walk
- *  is what the numbers measure. */
-const NO_PARSED_FILES: readonly ParsedFile[] = [];
-
-const namespaceImport = (targetRaw: string): ParsedImport => ({
-  kind: 'namespace',
-  localName: '_',
-  importedName: '_',
-  targetRaw,
-});
-const namedImport = (targetRaw: string): ParsedImport => ({
-  kind: 'named',
-  localName: 'Widget',
-  importedName: 'Widget',
-  targetRaw,
-});
+/** `import x as y`. The third kind, and the only one of the three that is not
+ *  shared with the memo guards — it reaches the same package-attribute probe
+ *  `pythonNamedImport` does, and both arms below assert they cost the same. */
 const aliasImport = (targetRaw: string): ParsedImport => ({
   kind: 'alias',
   localName: 'w',
@@ -162,8 +153,8 @@ const DOTTED_SUBMODULE_PROBES: readonly number[] = [5, 6, 8, 12, 20];
 
 describe('Python import probe count', () => {
   it.each([
-    { kind: 'import x (namespace)', mkImport: namespaceImport },
-    { kind: 'from x import y (named)', mkImport: namedImport },
+    { kind: 'import x (namespace)', mkImport: pythonNamespaceImport },
+    { kind: 'from x import y (named)', mkImport: pythonNamedImport },
     { kind: 'import x as y (alias)', mkImport: aliasImport },
   ])('costs the same for every import KIND — single-segment, resolving — $kind', ({ mkImport }) => {
     const counted = DEPTHS.map((depth) => probeCount(mkImport, depth, PRESENT_TARGET));
@@ -175,8 +166,16 @@ describe('Python import probe count', () => {
   });
 
   it.each([
-    { kind: 'import x (namespace)', mkImport: namespaceImport, expected: DOTTED_NAMESPACE_PROBES },
-    { kind: 'from x import y (named)', mkImport: namedImport, expected: DOTTED_SUBMODULE_PROBES },
+    {
+      kind: 'import x (namespace)',
+      mkImport: pythonNamespaceImport,
+      expected: DOTTED_NAMESPACE_PROBES,
+    },
+    {
+      kind: 'from x import y (named)',
+      mkImport: pythonNamedImport,
+      expected: DOTTED_SUBMODULE_PROBES,
+    },
     { kind: 'import x as y (alias)', mkImport: aliasImport, expected: DOTTED_SUBMODULE_PROBES },
   ])(
     'runs the package tail ONCE for a dotted target that misses — $kind',
@@ -191,8 +190,8 @@ describe('Python import probe count', () => {
   );
 
   it.each([
-    { kind: 'import x (namespace)', mkImport: namespaceImport },
-    { kind: 'from x import y (named)', mkImport: namedImport },
+    { kind: 'import x (namespace)', mkImport: pythonNamespaceImport },
+    { kind: 'from x import y (named)', mkImport: pythonNamedImport },
     { kind: 'import x as y (alias)', mkImport: aliasImport },
   ])('retires a provably absent segment in a CONSTANT probe count — $kind', ({ mkImport }) => {
     const counted = DEPTHS.map((depth) => probeCount(mkImport, depth, ABSENT_TARGET));
@@ -207,7 +206,9 @@ describe('Python import probe count', () => {
     // Control for the arm above: the same instrument, the same corpus, the same
     // depths, one different spelling — and the count triples across the range.
     // So a flat line means the walk was skipped, not that nothing is counted.
-    const present = DEPTHS.map((depth) => probeCount(namedImport, depth, PRESENT_TARGET).probes);
+    const present = DEPTHS.map(
+      (depth) => probeCount(pythonNamedImport, depth, PRESENT_TARGET).probes,
+    );
     expect(present).toEqual(PRESENT_PROBES);
     expect(new Set(present).size).toBe(DEPTHS.length);
   });

@@ -40,13 +40,22 @@
  * pipeline's, via `ImportTargetWorkspace`'s shared `ResolveCtx`). They thread
  * different objects around the same Set, and the memo is keyed on the Set.
  *
- * `legacyPrefixes` / `legacyImporterDir` are verbatim copies of the pre-change
- * inline code, in the house style of `python-importer-ancestors.test.ts`: they
- * are the specification, and the memo agreeing with them is what makes this a
- * hoist rather than a behaviour change.
+ * `legacyPrefixes` is a verbatim copy of the pre-change inline code, in the
+ * house style of `python-importer-ancestors.test.ts`: it is the specification,
+ * and the memo agreeing with it is what makes this a hoist rather than a
+ * behaviour change.
+ *
+ * The four arms themselves live in `test/helpers/counting-file-set.ts`, beside
+ * the other import-target scaffolding: this guard and the #2913 one are the
+ * same suite over the same importer corpus once four values are named (the
+ * memo, the drive, the legacy builder, the hit), and they were previously
+ * written out twice. The two chains still DIFFER — this one keeps the empty
+ * components an absolute path or a doubled separator produces, and #2913's
+ * drops them — which is why `legacyChain` is per-guard and the shared path-shape
+ * table names shapes rather than expectations.
  */
 import { describe, expect, it } from 'vitest';
-import type { ParsedFile, ParsedImport } from 'gitnexus-shared';
+import type { ParsedImport } from 'gitnexus-shared';
 import type { ImportResolutionContext } from '../../../src/core/ingestion/scope-resolution/contract/scope-resolver.js';
 import { pythonScopeResolver } from '../../../src/core/ingestion/languages/python/scope-resolver.js';
 import { resolvePythonImportInternal } from '../../../src/core/ingestion/import-resolvers/python.js';
@@ -61,10 +70,22 @@ import type {
   ImportResult,
   ResolveCtx,
 } from '../../../src/core/ingestion/import-resolvers/types.js';
+import {
+  IMPORTER_PATH_SHAPES,
+  NO_PARSED_FILES,
+  expectDistinctFileSetsGetOwnChainMemo,
+  expectMemoizedChainMatchesLegacy,
+  expectOneChainPerImporterDir,
+  expectSameChainObjectReused,
+  pythonNamedImport,
+  pythonNamespaceImport,
+  type ChainMemoArm,
+  type ChainMemoResult,
+} from '../../helpers/counting-file-set.js';
 
 const { resolveImportTarget } = pythonScopeResolver;
 
-// ─── verbatim pre-change implementations ─────────────────────────────────────
+// ─── verbatim pre-change implementation ──────────────────────────────────────
 
 /** The prefix sequence the inline walk materialized on every import. */
 function legacyPrefixes(currentFile: string): string[] {
@@ -76,11 +97,6 @@ function legacyPrefixes(currentFile: string): string[] {
     prefixes.push(ancestorDir ? `${ancestorDir}/` : '');
   }
   return prefixes;
-}
-
-/** The importer directory the inline code derived, and now the memo KEY. */
-function legacyImporterDir(currentFile: string): string {
-  return currentFile.replace(/\\/g, '/').split('/').slice(0, -1).join('/');
 }
 
 // ─── surfaces ────────────────────────────────────────────────────────────────
@@ -109,34 +125,19 @@ function makeResolveCtx(allFilePaths: Set<string>): ResolveCtx {
   };
 }
 
-const namespaceImport = (targetRaw: string): ParsedImport => ({
-  kind: 'namespace',
-  localName: '_',
-  importedName: '_',
-  targetRaw,
-});
-
-/** The kind that re-enters `resolvePythonImportTarget` and walks twice. */
-const namedImport = (targetRaw: string): ParsedImport => ({
-  kind: 'named',
-  localName: 'Widget',
-  importedName: 'Widget',
-  targetRaw,
-});
-
-/**
- * ONE array, not a fresh `[]` per call: `parsedFileByPath` memoizes on its
- * identity, and a new array per import would mint a `WeakMap` key per import
- * for a channel this file is not measuring. Empty, so `pythonFileExportsName`
- * answers false and the package-vs-submodule precedence never fires — the
- * walk, not the precedence, is under test here.
- */
-const NO_PARSED_FILES: readonly ParsedFile[] = [];
-
 const ctxFor = (parsedImport: ParsedImport): ImportResolutionContext => ({
   parsedFiles: NO_PARSED_FILES,
   parsedImport,
 });
+
+/**
+ * An `ImportResult` as the arms read it: the resolved path, or `null` for a
+ * miss. A stop-the-chain result carrying no files joins to `''`, which is
+ * neither the hit nor a miss — the same distinction the pre-collapse arm drew
+ * with `value?.kind === 'files' && value.files.join() === HIT_RESULT`.
+ */
+const resolvedPath = (result: ImportResult): ChainMemoResult =>
+  result === null ? null : result.files.join();
 
 // ─── the workspace the surfaces are driven against ───────────────────────────
 
@@ -164,91 +165,79 @@ const WORKSPACE: readonly string[] = [
   'root.py',
 ];
 
-/** Every file that issues an import below. */
-const IMPORTERS: readonly string[] = [
-  'svc/a/one.py',
-  'svc/a/two.py',
-  'svc/b/one.py',
-  'deep/x/y/z/one.py',
-  'root.py',
-];
-
-/** Four directories for five importers — `svc/a` holds two of them. */
-const IMPORTER_DIRS: readonly string[] = ['svc/a', 'svc/b', 'deep/x/y/z', ''];
-
 const HIT_TARGET = 'shared';
 const HIT_RESULT = 'shared.py';
 
-/** Survives the absence proof, then walks the whole chain and misses. */
+/** Survives the absence proof, then walks the whole chain and misses — the
+ *  dotted tier's suffix fallback picks it up as `elsewhere/deep/probe.py`. */
 const WALK_TARGET = 'probe';
-/** …and is then picked up by the dotted tier's suffix fallback. */
-const WALK_RESULT = 'elsewhere/deep/probe.py';
 /** Provably absent: retired before the walk, so it never touches the memo. */
 const ABSENT_TARGET = 'ghostmod';
 
-const sorted = (values: Iterable<string>): string[] => [...values].sort();
+/**
+ * The spelling sequence BOTH surfaces are driven with, `perImporter` rounds of
+ * it plus the one spelling that must resolve: one target that walks the whole
+ * chain and misses, one that the absence proof retires before the walk, and one
+ * that hits at the workspace root. No spelling is varied per round — the Python
+ * chain keeps no per-target cache, so a repeated target really is re-resolved.
+ *
+ * `resolve` is the only thing that differs between the orchestrator adapter and
+ * the import-resolver pipeline; everything about the sequence is shared, which
+ * is why the two used to be the same loop written twice.
+ */
+function drive<T>(
+  fromFile: string,
+  perImporter: number,
+  resolve: (targetRaw: string, fromFile: string) => T,
+): T[] {
+  const out: T[] = [];
+  for (let i = 0; i < perImporter; i++) {
+    for (const target of [WALK_TARGET, ABSENT_TARGET]) out.push(resolve(target, fromFile));
+  }
+  out.push(resolve(HIT_TARGET, fromFile));
+  return out;
+}
+
+/** The ORCHESTRATOR ADAPTER — the surface that pays the walk twice. */
+const adapterArm = (mkImport: (targetRaw: string) => ParsedImport): ChainMemoArm => ({
+  memoOf: prefixMemo,
+  drive: (files, fromFile, perImporter) =>
+    drive(fromFile, perImporter, (target, from) =>
+      resolveImportTarget(target, from, files, undefined, ctxFor(mkImport(target))),
+    ),
+  legacyChain: legacyPrefixes,
+  hitResult: HIT_RESULT,
+});
 
 /**
- * Drives the ORCHESTRATOR ADAPTER, `perImporter` times per importer, with three
- * spellings: one that walks the whole chain and misses, one that is retired by
- * the absence proof before the walk, and one that hits at the workspace root.
- * No spelling is varied per iteration — the Python chain keeps no per-target
- * cache, so a repeated target really is re-resolved.
+ * The import-resolver pipeline surface. One `ResolveCtx` per drive rather than
+ * one for the run, on purpose: everything the strategy reads off it is derived
+ * from the same Set (and `pythonImportStrategy` only ever WRITES
+ * `resolveCache`), so a fresh ctx around the same Set is exactly the "different
+ * objects, same Set" case the memo has to survive.
  */
-function driveAdapter(
-  files: ReadonlySet<string>,
-  perImporter: number,
-  mkImport: (targetRaw: string) => ParsedImport,
-): (string | readonly string[] | null)[] {
-  const out: (string | readonly string[] | null)[] = [];
-  for (const fromFile of IMPORTERS) {
-    for (let i = 0; i < perImporter; i++) {
-      for (const target of [WALK_TARGET, ABSENT_TARGET]) {
-        out.push(resolveImportTarget(target, fromFile, files, undefined, ctxFor(mkImport(target))));
-      }
-    }
-    out.push(
-      resolveImportTarget(HIT_TARGET, fromFile, files, undefined, ctxFor(mkImport(HIT_TARGET))),
+const strategyArm: ChainMemoArm = {
+  memoOf: prefixMemo,
+  drive: (files, fromFile, perImporter) => {
+    const ctx = makeResolveCtx(files);
+    return drive(fromFile, perImporter, (target, from) =>
+      resolvedPath(pythonImportStrategy(target, from, ctx)),
     );
-  }
-  return out;
-}
-
-/** The same drive against the import-resolver pipeline surface. */
-function driveStrategy(ctx: ResolveCtx, perImporter: number): ImportResult[] {
-  const out: ImportResult[] = [];
-  for (const fromFile of IMPORTERS) {
-    for (let i = 0; i < perImporter; i++) {
-      out.push(pythonImportStrategy(WALK_TARGET, fromFile, ctx));
-      out.push(pythonImportStrategy(ABSENT_TARGET, fromFile, ctx));
-    }
-    out.push(pythonImportStrategy(HIT_TARGET, fromFile, ctx));
-  }
-  return out;
-}
+  },
+  legacyChain: legacyPrefixes,
+  hitResult: HIT_RESULT,
+};
 
 describe('Python bare-import prefix memo', () => {
   it.each([
-    { perImporter: 1, kind: 'namespace', mkImport: namespaceImport },
-    { perImporter: 40, kind: 'namespace', mkImport: namespaceImport },
-    { perImporter: 1, kind: 'named', mkImport: namedImport },
-    { perImporter: 40, kind: 'named', mkImport: namedImport },
+    { perImporter: 1, kind: 'namespace', mkImport: pythonNamespaceImport },
+    { perImporter: 40, kind: 'namespace', mkImport: pythonNamespaceImport },
+    { perImporter: 1, kind: 'named', mkImport: pythonNamedImport },
+    { perImporter: 40, kind: 'named', mkImport: pythonNamedImport },
   ])(
     'holds one chain per importer DIRECTORY, not per import — $perImporter x $kind',
     ({ perImporter, mkImport }) => {
-      const files = new Set(WORKSPACE);
-      const resolved = driveAdapter(files, perImporter, mkImport);
-
-      // The gate. Five importers over four directories, any number of imports:
-      // four entries. A chain rebuilt per import cannot be memoized at all
-      // (size 0); a chain keyed on the importing FILE reads five.
-      expect(prefixMemo(files).size).toBe(IMPORTER_DIRS.length);
-      expect(sorted(prefixMemo(files).keys())).toEqual(sorted(IMPORTER_DIRS));
-
-      // Non-vacuity: a perfect memo count is equally true of an adapter that
-      // resolves nothing.
-      expect(resolved.filter((value) => value === HIT_RESULT)).toHaveLength(IMPORTERS.length);
-      expect(resolved.filter((value) => value === null).length).toBeGreaterThan(0);
+      expectOneChainPerImporterDir(adapterArm(mkImport), new Set(WORKSPACE), perImporter);
     },
   );
 
@@ -258,76 +247,24 @@ describe('Python bare-import prefix memo', () => {
   ])(
     'holds one chain per importer DIRECTORY on the import-resolver surface too — $label',
     ({ perImporter }) => {
-      const files = new Set(WORKSPACE);
-      const ctx = makeResolveCtx(files);
-      const resolved = driveStrategy(ctx, perImporter);
-
-      expect(prefixMemo(files).size).toBe(IMPORTER_DIRS.length);
-      expect(sorted(prefixMemo(files).keys())).toEqual(sorted(IMPORTER_DIRS));
-
-      expect(
-        resolved.filter((value) => value?.kind === 'files' && value.files.join() === HIT_RESULT),
-      ).toHaveLength(IMPORTERS.length);
-      expect(resolved.filter((value) => value === null).length).toBeGreaterThan(0);
+      expectOneChainPerImporterDir(strategyArm, new Set(WORKSPACE), perImporter);
     },
   );
 
   it('reuses the SAME chain object, rather than rebuilding and re-storing it', () => {
-    const files = new Set(WORKSPACE);
-    resolveImportTarget(
-      WALK_TARGET,
-      'svc/a/one.py',
-      files,
-      undefined,
-      ctxFor(namedImport(WALK_TARGET)),
-    );
-    const first = prefixMemo(files).get('svc/a');
-
-    // Contents first: `toBe` against an absent entry would pass on
-    // `undefined === undefined` if the memo were deleted outright.
-    expect(first).toEqual(['svc/', '']);
-
-    for (let i = 1; i <= 40; i++) {
-      resolveImportTarget(
-        WALK_TARGET,
-        'svc/a/one.py',
-        files,
-        undefined,
-        ctxFor(namedImport(WALK_TARGET)),
-      );
-      resolveImportTarget(
-        HIT_TARGET,
-        'svc/a/two.py',
-        files,
-        undefined,
-        ctxFor(namespaceImport(HIT_TARGET)),
-      );
-    }
-
-    expect(prefixMemo(files).get('svc/a')).toBe(first);
+    expectSameChainObjectReused(adapterArm(pythonNamedImport), new Set(WORKSPACE));
   });
 
-  it.each([
-    { fromFile: 'svc/a/one.py', why: 'a two-component directory' },
-    { fromFile: 'deep/x/y/z/one.py', why: 'a four-component directory' },
-    { fromFile: 'root.py', why: 'a workspace-root importer (root-only chain)' },
-    { fromFile: '/abs/svc/a/one.py', why: 'an absolute path (empty components KEPT)' },
-    { fromFile: 'svc//a/one.py', why: 'a doubled separator (empty component KEPT)' },
-    { fromFile: 'svc\\a\\one.py', why: 'Windows separators' },
-    { fromFile: 'trailing/', why: 'a path ending in a separator' },
-  ])('memoizes the chain the pre-change code built — $why', ({ fromFile }) => {
-    const files = new Set(WORKSPACE);
-    resolveImportTarget(
-      WALK_TARGET,
-      fromFile,
-      files,
-      undefined,
-      ctxFor(namespaceImport(WALK_TARGET)),
-    );
-
-    const chain = prefixMemo(files).get(legacyImporterDir(fromFile));
-    expect(chain).toEqual(legacyPrefixes(fromFile));
-  });
+  it.each(IMPORTER_PATH_SHAPES)(
+    'memoizes the chain the pre-change code built — $why',
+    ({ fromFile }) => {
+      expectMemoizedChainMatchesLegacy(
+        adapterArm(pythonNamespaceImport),
+        new Set(WORKSPACE),
+        fromFile,
+      );
+    },
+  );
 
   it.each([
     { perImporter: 2, label: 'two imports per importer' },
@@ -335,20 +272,12 @@ describe('Python bare-import prefix memo', () => {
   ])(
     'gives a distinct file set its own memo (no leak across passes) — $label',
     ({ perImporter }) => {
-      const a = new Set(WORKSPACE);
-      const b = new Set(WORKSPACE);
-
-      driveAdapter(a, perImporter, namedImport);
-      driveAdapter(b, perImporter, namedImport);
-
-      const memoA = prefixMemo(a);
-      const memoB = prefixMemo(b);
-
-      expect(memoA).not.toBe(memoB);
-      expect(memoA.get('svc/a')).not.toBe(memoB.get('svc/a'));
-      expect(memoA.get('svc/a')).toEqual(memoB.get('svc/a'));
-      expect(memoA.size).toBe(IMPORTER_DIRS.length);
-      expect(memoB.size).toBe(IMPORTER_DIRS.length);
+      expectDistinctFileSetsGetOwnChainMemo(
+        adapterArm(pythonNamedImport),
+        new Set(WORKSPACE),
+        new Set(WORKSPACE),
+        perImporter,
+      );
     },
   );
 
@@ -370,7 +299,7 @@ describe('Python bare-import prefix memo', () => {
       }
       paths.push('shared.py');
       const files = new Set(paths);
-      const resolved: (string | readonly string[] | null)[] = [];
+      const resolved: ChainMemoResult[] = [];
 
       for (let d = 0; d < dirs; d++) {
         for (let i = 0; i < importsPerDir; i++) {
@@ -380,7 +309,7 @@ describe('Python bare-import prefix memo', () => {
               `pkg${d}/nest/file0.py`,
               files,
               undefined,
-              ctxFor(namedImport(HIT_TARGET)),
+              ctxFor(pythonNamedImport(HIT_TARGET)),
             ),
           );
         }
@@ -462,7 +391,7 @@ describe('Python bare-import ancestor walk — resolution', () => {
     // strategy must agree: all three reach the same walk.
     expect(resolvePythonImportInternal(fromFile, 'user', set)).toBe(expected);
     expect(
-      resolveImportTarget('user', fromFile, set, undefined, ctxFor(namespaceImport('user'))),
+      resolveImportTarget('user', fromFile, set, undefined, ctxFor(pythonNamespaceImport('user'))),
     ).toBe(expected);
     expect(pythonImportStrategy('user', fromFile, makeResolveCtx(set))).toEqual({
       kind: 'files',

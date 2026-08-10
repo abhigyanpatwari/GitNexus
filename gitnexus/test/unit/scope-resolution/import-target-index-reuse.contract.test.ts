@@ -43,19 +43,19 @@
  * adapter declares three or four parameters and cannot observe a fifth. Which
  * ones those are is not a number to maintain here: the per-language
  * `minimumParsedFileReads` floor in the table IS the record, and it is what a
- * new reader has to change. What the `parsedFileReads` arm gates differs by
- * language, and only the first of these is a memo:
+ * new reader has to change. Both languages that read this key memoize on it,
+ * and the two memos fail differently:
  *
  *   - PHP: the `filesByDirectory` memo, `perFileSet`-keyed on the `parsedFiles`
  *     array. Defeat it and every import rebuilds a `Map<dirAlias,
  *     ParsedFile[]>`; the arm reads 603 against 9 (proven by mutation).
- *   - Python: there is NO memo on this key — `pythonFileExportsName` runs a
- *     `parsedFiles.find` for each import whose package probe resolves, and the
- *     misses here do not get that far, so one resolving import costs one scan.
- *     The arm pins exactly that: the read stays off the per-import path.
- *     Widening the fixture's `missTarget` to a spelling whose package DOES
- *     resolve puts it on that path and the arm reads 603 against 9, so it is a
- *     live gate rather than a `0 === 0`.
+ *   - Python: `parsedFileByPath`, keyed the same way, behind
+ *     `pythonFileExportsName`. It is built by the FIRST import whose package
+ *     probe resolves — one pass over the array — and every later one is a
+ *     `Map.get`, so the floor of 1 is that single build and the equality half
+ *     is what proves it does not repeat. Before that memo the same call was a
+ *     `parsedFiles.find` per resolving import, which is the shape #2901
+ *     removed on the file-set key; this arm is why it cannot come back.
  *   - Every other language: `0 === 0`, recorded as a floor of 0. A new reader
  *     arrives with that floor already in place and is caught by the equality
  *     half, which needs no per-language knowledge at all.
@@ -119,7 +119,11 @@ import type { ParsedImport } from 'gitnexus-shared';
 import { SCOPE_RESOLVERS } from '../../../src/core/ingestion/scope-resolution/pipeline/registry.js';
 import type { ScopeResolver } from '../../../src/core/ingestion/scope-resolution/contract/scope-resolver.js';
 import type { ComposerConfig } from '../../../src/core/ingestion/language-config.js';
-import { CountingSet, countedParsedFiles } from '../../helpers/counting-file-set.js';
+import {
+  CountingSet,
+  countedParsedFiles,
+  pythonNamedImport,
+} from '../../helpers/counting-file-set.js';
 
 /**
  * The minimum a language needs for one `resolveImportTarget` call to reach
@@ -233,13 +237,6 @@ const PHP_FUNCTION_IMPORT = (targetRaw: string): ParsedImport => ({
  * submodule fallback. The default the adapter synthesizes when `context` is
  * absent is a `namespace` import, and that shape never reaches the probe.
  */
-const PYTHON_NAMED_IMPORT = (targetRaw: string): ParsedImport => ({
-  kind: 'named',
-  localName: 'Widget',
-  importedName: 'Widget',
-  targetRaw,
-});
-
 const FIXTURES: ReadonlyMap<SupportedLanguages, ImportTargetFixture> = new Map<
   SupportedLanguages,
   ImportTargetFixture
@@ -255,10 +252,11 @@ const FIXTURES: ReadonlyMap<SupportedLanguages, ImportTargetFixture> = new Map<
       resolutionConfig: undefined,
       missTarget: (i) => `realpkg.ghost${i}`,
       hitTarget: 'realpkg.widget',
-      parsedImport: PYTHON_NAMED_IMPORT,
+      parsedImport: pythonNamedImport,
       minimumScans: 1,
-      // `pythonFileExportsName`'s `parsedFiles.find` on the one import whose
-      // package probe resolves — the misses never get that far.
+      // The one build of `parsedFileByPath`, triggered by the single import
+      // whose package probe resolves — the misses never get that far, and
+      // every later resolver is a `Map.get` rather than another pass.
       minimumParsedFileReads: 1,
     },
   ],

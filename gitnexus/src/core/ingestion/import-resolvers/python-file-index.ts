@@ -52,10 +52,24 @@ import { perFileSet } from './per-file-set.js';
  * computed it — `norm.split('/').slice(0, -1).join('/')`, which for a path
  * without a separator is `''` (a root-level importer, whose chain is empty).
  */
-export function importerAncestors(index: PythonFileIndex, fromFile: string): readonly string[] {
+/**
+ * The importer's own directory, normalized — the key BOTH per-directory memos
+ * below are stored under.
+ *
+ * One exported derivation rather than one per accessor: the two memos live in
+ * the same index and must agree on what "the importer's directory" is, and a
+ * caller that already holds the directory (the bare-import tier computes it for
+ * its own proximity check) should not pay for it twice. It was three copies of
+ * `replace / lastIndexOf / slice` across two modules before, byte-identical by
+ * inspection and by nothing else.
+ */
+export function importerDirOf(fromFile: string): string {
   const norm = fromFile.replace(/\\/g, '/');
   const lastSlash = norm.lastIndexOf('/');
-  const importerDir = lastSlash === -1 ? '' : norm.slice(0, lastSlash);
+  return lastSlash === -1 ? '' : norm.slice(0, lastSlash);
+}
+
+export function importerAncestors(index: PythonFileIndex, importerDir: string): readonly string[] {
   const memoized = index.ancestorsByDir.get(importerDir);
   if (memoized !== undefined) return memoized;
   const built = buildImporterAncestors(importerDir);
@@ -158,14 +172,24 @@ export const getPythonFileIndex = perFileSet(
       if (!norm.endsWith('.py')) continue;
       normSet.add(norm);
 
+      // ONE entry object per file, shared by both buckets below: a package file
+      // lands in `byBasename` and `byInitParent`, and two literals for the same
+      // `(raw, norm)` pair cost ~40 B each on every `__init__.py`.
+      const entry = { raw, norm };
+
       const lastSlash = norm.lastIndexOf('/');
       const base = lastSlash >= 0 ? norm.slice(lastSlash + 1) : norm;
-      let bucket = byBasename.get(base);
-      if (bucket === undefined) {
-        bucket = [];
-        byBasename.set(base, bucket);
-      }
-      bucket.push({ raw, norm });
+      // `set(base, [entry])` rather than `set(base, [])` then `push`: an empty
+      // array literal that is immediately pushed to makes V8 grow the backing
+      // store to its 16-slot minimum, so every bucket holding ONE file retains
+      // 15 empty pointer slots — 128 B — for the whole pass. `byBasename` has
+      // roughly one bucket per file, which made that the dominant term in this
+      // index: measured 5.50 MiB against 1.60 MiB for the one-element form at
+      // 32 000 `.py` paths, byte-identical contents. Same shape as
+      // `languages/php/import-target.ts`'s directory buckets.
+      const bucket = byBasename.get(base);
+      if (bucket === undefined) byBasename.set(base, [entry]);
+      else bucket.push(entry);
 
       // Package files also get a parent-keyed bucket so a `pkg.sub` lookup hits
       // only `…/sub/__init__.py` candidates, not every `__init__.py` (P2b).
@@ -175,12 +199,9 @@ export const getPythonFileIndex = perFileSet(
         const parentName = parentSlash >= 0 ? dir.slice(parentSlash + 1) : dir;
         if (parentName) {
           const initKey = `${parentName}/__init__.py`;
-          let ib = byInitParent.get(initKey);
-          if (ib === undefined) {
-            ib = [];
-            byInitParent.set(initKey, ib);
-          }
-          ib.push({ raw, norm });
+          const ib = byInitParent.get(initKey);
+          if (ib === undefined) byInitParent.set(initKey, [entry]);
+          else ib.push(entry);
         }
       }
 

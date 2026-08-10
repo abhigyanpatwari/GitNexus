@@ -9,6 +9,7 @@
 import {
   getPythonFileIndex,
   importerBarePrefixes,
+  importerDirOf,
   pythonSegmentAbsent,
 } from './python-file-index.js';
 import { tryResolveWithExtensions } from './utils.js';
@@ -69,13 +70,11 @@ export function resolvePythonImportInternal(
   const index = getPythonFileIndex(allFiles);
   if (pythonSegmentAbsent(index, pathLike)) return null;
 
-  // Normalize for Windows backslashes. `lastIndexOf` rather than
-  // `split('/').slice(0, -1).join('/')`: identical for every input (a path with
-  // no separator has no directory, which is `''` both ways) without the
-  // per-import array of one element per path component.
-  const norm = currentFile.replace(/\\/g, '/');
-  const lastSlash = norm.lastIndexOf('/');
-  const importerDir = lastSlash === -1 ? '' : norm.slice(0, lastSlash);
+  // One derivation, shared with the index's other per-directory memo — see
+  // `importerDirOf`. It replaced `split('/').slice(0, -1).join('/')`: identical
+  // for every input (a path with no separator has no directory, which is `''`
+  // both ways) without the per-import array of one element per path component.
+  const importerDir = importerDirOf(currentFile);
 
   // Proximity check — only applies when the importer lives in a subdirectory.
   // Root-level importers (importerDir === '') skip straight to the ancestor

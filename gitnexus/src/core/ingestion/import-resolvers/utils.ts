@@ -97,23 +97,18 @@ export interface SuffixIndex {
   /**
    * Get all files in a directory suffix.
    *
-   * The directory map behind this is built on the FIRST call and memoized —
-   * see `buildSuffixIndex`. Callers that never ask a directory question never
-   * pay for it.
+   * `readonly` is the CONTRACT, and it is the contract for every implementation
+   * of this interface, not a description of any one of them: an implementation
+   * is free to return its own bucket by reference, so callers must treat the
+   * result as shared and never `sort`/`splice` it in place. The compiler now
+   * refuses that at the call site. Whether a given implementation shares or
+   * copies is its own business and documented where it is built —
+   * `buildSuffixIndex` shares, the root-anchored parity index in
+   * `languages/php/import-target.ts` returns a filtered copy.
    *
-   * Returns the index's OWN bucket, by reference, and `readonly` is the
-   * contract rather than a comment about one: the map is built once and then
-   * held for the whole pass, so an in-place `sort`/`splice` would corrupt every
-   * later import in that pass, and the compiler now refuses it at the call
-   * site. Sharing beats copying here because no caller keeps the array — of the
-   * four (see `dirMap` below) two only measure it (`configs/python.ts` reads
-   * `.length`, `php.ts` reads `[0]`) and two build a fresh array from it
-   * (`jvm.ts` flatMaps, `csharp.ts` pushes into its own `results`) — so a
-   * defensive copy would allocate a whole bucket per import on the path this
-   * index exists to keep flat. `package-dir-index.ts` reached the same
-   * conclusion for the same reason and states it the same way, with read-only
-   * containers plus one copy where a bucket genuinely LEAVES (`sortedRootFiles`);
-   * `configs/swift.ts` is that leaving case and copies.
+   * Implementations that memoize should note the directory map behind this may
+   * be built on the FIRST call rather than up front, so a caller that never
+   * asks a directory question never pays for it — see `buildSuffixIndex`.
    */
   getFilesInDir(dirSuffix: string, extension: string): readonly string[];
 }
@@ -330,6 +325,18 @@ export function buildSuffixIndex(
   return {
     get: (suffix: string) => getExactMap().get(suffix),
     getInsensitive: (suffix: string) => getLowerMap().get(suffix.toLowerCase()),
+    // THIS implementation shares: it hands back `dirMap`'s own bucket rather
+    // than a copy. The map is built on first query and then held for the whole
+    // pass, so the window in which a mutating caller could corrupt later
+    // imports is the whole pass — which is why the interface makes the result
+    // `readonly` and the compiler refuses the mutation at the call site.
+    //
+    // Sharing beats copying because no caller keeps the array: two only measure
+    // it and two build a fresh array from it, so a defensive copy would
+    // allocate a whole bucket per import on the path this index exists to keep
+    // flat. `package-dir-index.ts` reached the same conclusion the same way —
+    // read-only containers, plus one copy where a bucket genuinely LEAVES
+    // (`sortedRootFiles`), which is the case `configs/swift.ts` is in.
     getFilesInDir: (dirSuffix: string, extension: string) => {
       return getDirMap().get(`${dirSuffix}:${extension}`) || [];
     },

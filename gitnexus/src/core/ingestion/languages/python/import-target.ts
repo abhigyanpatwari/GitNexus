@@ -12,7 +12,11 @@
 
 import type { ParsedFile, ParsedImport, WorkspaceIndex } from 'gitnexus-shared';
 import { perFileSet } from '../../import-resolvers/per-file-set.js';
-import { getPythonFileIndex, importerAncestors } from '../../import-resolvers/python-file-index.js';
+import {
+  getPythonFileIndex,
+  importerAncestors,
+  importerDirOf,
+} from '../../import-resolvers/python-file-index.js';
 import { resolvePythonImportInternal } from '../../import-resolvers/python.js';
 
 export interface PythonResolveContext {
@@ -284,7 +288,7 @@ function resolveAbsoluteFromFiles(
   // The chain comes from `importerAncestors`, which builds it ONCE per importer
   // directory per pass. Rebuilding it here — one `slice(0, i).join('/')` per
   // path component, on every import — was half of the depth quadratic in #2913.
-  for (const ancestor of importerAncestors(index, fromFile)) {
+  for (const ancestor of importerAncestors(index, importerDirOf(fromFile))) {
     if (mayBeModule) {
       const candidateFile = `${ancestor}/${directFile}`;
       if (allFilePaths.has(candidateFile)) return candidateFile;
@@ -394,7 +398,7 @@ function hasRepoCandidate(
   // only be a directory prefix if `seg` names a directory under the non-empty
   // parent `A`, so a miss here means the old loop would have missed too.
   if (!index.nestedDirNames.has(leadingSegment)) return false;
-  for (const ancestor of importerAncestors(index, fromFile)) {
+  for (const ancestor of importerAncestors(index, importerDirOf(fromFile))) {
     if (index.dirPrefixes.has(`${ancestor}/${prefix}`)) return true;
   }
   return false;

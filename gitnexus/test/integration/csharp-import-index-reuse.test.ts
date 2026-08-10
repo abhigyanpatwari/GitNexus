@@ -54,22 +54,41 @@ const { resolveImportTarget } = csharpScopeResolver;
 
 const FROM_FILE = 'App/Program.cs';
 
+/** Where a workspace's padded filler files go, and what is appended after them. */
+interface WorkspaceLayout {
+  /** Directory the filler files live in. */
+  readonly dir: string;
+  /** Basename stem the filler files are numbered from. */
+  readonly stem: string;
+  /** The files the resolutions actually target, appended in order. */
+  readonly extras: readonly string[];
+}
+
+/**
+ * `fileCount` filler files under `layout.dir`, then `layout.extras`. The filler
+ * is what makes a traversal expensive enough for a per-`using` rebuild to be a
+ * different number rather than a different constant; the counting instrument
+ * reads the traversals either way.
+ */
+function buildWorkspace(fileCount: number, layout: WorkspaceLayout): CountingSet {
+  const files: string[] = [];
+  for (let i = 0; i < fileCount; i++) {
+    files.push(`${layout.dir}/${layout.stem}${String(i).padStart(5, '0')}.cs`);
+  }
+  return new CountingSet([...files, ...layout.extras]);
+}
+
 /**
  * A synthetic C# solution with no `.csproj` discovered, which is the leg #2878
  * moved onto the indexes. `App/Models/User.cs` answers the whole-path lookup,
  * `App/Services/` answers the namespace-directory lookup, and `Domain/Order.cs`
  * is reachable only after progressive prefix stripping.
  */
-function buildWorkspace(fileCount: number): CountingSet {
-  const files: string[] = [];
-  for (let i = 0; i < fileCount; i++) {
-    files.push(`App/Services/Service${String(i).padStart(5, '0')}.cs`);
-  }
-  files.push('App/Models/User.cs');
-  files.push('Domain/Order.cs');
-  files.push('App/Program.cs');
-  return new CountingSet(files);
-}
+const NO_CSPROJ_LAYOUT: WorkspaceLayout = {
+  dir: 'App/Services',
+  stem: 'Service',
+  extras: ['App/Models/User.cs', 'Domain/Order.cs', 'App/Program.cs'],
+};
 
 /** The one `.csproj` config that puts the adapter on the csproj leg. */
 const CSPROJ_CONFIG: CsharpResolutionConfig = {
@@ -88,18 +107,15 @@ const CSPROJ_CONFIG: CsharpResolutionConfig = {
  * A layout where the first two legs answer would leave the index unbuilt and
  * the build count blind to the very copy it is here to catch.
  */
-function buildCsprojWorkspace(fileCount: number): CountingSet {
-  const files: string[] = [];
-  for (let i = 0; i < fileCount; i++) {
-    files.push(`src/MyApp/Models/Entity${String(i).padStart(5, '0')}.cs`);
-  }
-  files.push('App/Program.cs');
-  return new CountingSet(files);
-}
+const CSPROJ_LAYOUT: WorkspaceLayout = {
+  dir: 'src/MyApp/Models',
+  stem: 'Entity',
+  extras: ['App/Program.cs'],
+};
 
 describe('C# import resolution — index reuse across usings (#2878)', () => {
   it('builds each index once for many usings over a stable file set', () => {
-    const files = buildWorkspace(300);
+    const files = buildWorkspace(300, NO_CSPROJ_LAYOUT);
     const resolved: (string | readonly string[] | null)[] = [];
 
     for (let i = 0; i < 200; i++) {
@@ -126,7 +142,7 @@ describe('C# import resolution — index reuse across usings (#2878)', () => {
   it('a distinct file set gets its own indexes (no stale cross-run reuse)', () => {
     expectDistinctFileSetsGetOwnIndex({
       resolveImportTarget,
-      buildWorkspace: () => buildWorkspace(20),
+      buildWorkspace: () => buildWorkspace(20, NO_CSPROJ_LAYOUT),
       targetRaw: 'App.Models.User',
       fromFile: FROM_FILE,
       resolutionConfig: undefined,
@@ -138,7 +154,7 @@ describe('C# import resolution — index reuse across usings (#2878)', () => {
   });
 
   it('still resolves real usings correctly (the perf test is not vacuous)', () => {
-    const files = buildWorkspace(5);
+    const files = buildWorkspace(5, NO_CSPROJ_LAYOUT);
 
     // Whole-path match on the namespace path.
     expect(resolveImportTarget('App.Models.User', FROM_FILE, files, undefined)).toBe(
@@ -161,7 +177,7 @@ describe('C# import resolution — index reuse across usings (#2878)', () => {
 
 describe('C# import resolution — index reuse on the csproj leg (#2911)', () => {
   it('builds each index once for many usings over a stable file set', () => {
-    const files = buildCsprojWorkspace(300);
+    const files = buildWorkspace(300, CSPROJ_LAYOUT);
     const resolved: (string | readonly string[] | null)[] = [];
 
     for (let i = 0; i < 200; i++) {
@@ -188,7 +204,7 @@ describe('C# import resolution — index reuse on the csproj leg (#2911)', () =>
   it('a distinct file set gets its own indexes (no stale cross-run reuse)', () => {
     expectDistinctFileSetsGetOwnIndex({
       resolveImportTarget,
-      buildWorkspace: () => buildCsprojWorkspace(20),
+      buildWorkspace: () => buildWorkspace(20, CSPROJ_LAYOUT),
       targetRaw: 'App.Models',
       fromFile: FROM_FILE,
       resolutionConfig: CSPROJ_CONFIG,
