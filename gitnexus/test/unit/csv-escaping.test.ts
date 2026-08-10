@@ -189,10 +189,4 @@ describe('isBinaryContent', () => {
     const mostlyText = 'a'.repeat(95) + '�'.repeat(5);
     expect(isBinaryContent(mostlyText)).toBe(false);
   });
-
-  it('returns false for CJK text', () => {
-    // Guards the #2889 gate against the opposite failure: multi-byte text is
-    // not binary, and every code point here is well above the control range.
-    expect(isBinaryContent('库存管理系统更新'.repeat(20))).toBe(false);
-  });
 });

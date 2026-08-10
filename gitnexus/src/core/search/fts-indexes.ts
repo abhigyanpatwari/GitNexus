@@ -263,7 +263,6 @@ export interface FtsIndexBuildFailure {
   indexName: string;
   /** The raw LadybugDB message, unmodified — it is the only row-level evidence there is. */
   error: string;
-  failureClass: FtsBuildFailureClass;
 }
 
 /**
@@ -307,8 +306,9 @@ export async function createSearchFTSIndexes(
       await dropFTSIndex(table, indexName);
       await createFTSIndex(table, indexName, [...properties], stemmer);
     } catch (e) {
-      const error = e instanceof Error ? e.message : String(e);
-      failures.push({ table, indexName, error, failureClass: classifyFtsBuildError(error) });
+      // The message, never the Error: holding the Error would pin its stack and
+      // whatever the native binding attached to it, for up to one per table.
+      failures.push({ table, indexName, error: e instanceof Error ? e.message : String(e) });
       continue;
     }
     options?.onIndexReady?.(table, indexName);
@@ -316,8 +316,20 @@ export async function createSearchFTSIndexes(
   return failures;
 }
 
-/** `Method.method_fts (Runtime exception: …), Variable.variable_fts (…)` — every failure, table-named. */
-export const describeFtsIndexBuildFailures = (failures: readonly FtsIndexBuildFailure[]): string =>
+/**
+ * One sentence naming every table that failed and why, e.g. `FTS index build
+ * failed for 2 of 21 tables: Method.method_fts (Runtime exception: …), …`.
+ *
+ * Lives here rather than at the call sites because only this module knows the
+ * denominator. Both the analyze degrade path and `--repair-fts` render it, so
+ * one failure reads the same way whichever command produced it.
+ *
+ * Embeds the raw LadybugDB message UNREDACTED — CLI and log surfaces only.
+ * Anything heading for a network response has to pass it through
+ * {@link redactPaths} first, the same rule the query-side warnings follow.
+ */
+export const summarizeFtsIndexBuildFailures = (failures: readonly FtsIndexBuildFailure[]): string =>
+  `FTS index build failed for ${failures.length} of ${FTS_INDEXES.length} tables: ` +
   failures.map((f) => `${f.table}.${f.indexName} (${f.error})`).join(', ');
 
 export async function verifySearchFTSIndexes(
@@ -453,27 +465,36 @@ export async function buildSearchIndexesOrDegrade(
   options?: CreateSearchFTSIndexesOptions,
 ): Promise<BuildSearchIndexesResult> {
   try {
+    // Verify ALWAYS runs, failures or not (#2889). Reporting must not jump the
+    // queue ahead of verification: a partial build is exactly when "the other
+    // tables are fine" needs proving rather than asserting, and a stale
+    // name+content-only index is invisible to the build (it succeeds) yet still
+    // means description search is broken (#2299).
     const failures = await createSearchFTSIndexes(options);
-    if (failures.length > 0) {
-      // Every OTHER index was still built and verified below is skipped only
-      // for the report — the surviving tables stay searchable this run (#2889).
-      // `integrity` wins the aggregate: a genuinely broken write must not be
-      // downgraded to a degrade just because an untokenizable row failed first.
-      const error = `FTS index build failed for ${failures.length} of ${FTS_INDEXES.length} tables: ${describeFtsIndexBuildFailures(failures)}`;
-      const failureClass = failures.some((f) => f.failureClass === 'integrity')
-        ? 'integrity'
-        : 'capability';
-      return { ok: false, error, failureClass };
-    }
     const missing = await verifySearchFTSIndexes(executeQuery);
-    if (missing.length > 0) {
-      // Structural incompleteness with no thrown error — treat as capability
-      // (degrade), matching prior behavior; a broken *write* surfaces as a
-      // thrown IO/checkpoint error below and is classified integrity there.
-      const error = `missing indexes after build: ${missing.join(', ')}`;
-      return { ok: false, error, failureClass: classifyFtsBuildError(error) };
-    }
-    return { ok: true };
+    if (failures.length === 0 && missing.length === 0) return { ok: true };
+
+    // A table that failed to build is necessarily missing too — report it once,
+    // with its reason, and keep `missing` for indexes nothing explains.
+    const named = new Set(failures.map((f) => `${f.table}.${f.indexName}`));
+    const unexplained = missing.filter((name) => !named.has(name));
+    const error = [
+      failures.length > 0 ? summarizeFtsIndexBuildFailures(failures) : '',
+      // Structural incompleteness with no thrown error — classified capability
+      // (degrade) below, matching prior behavior; a broken *write* surfaces as
+      // a thrown IO/checkpoint error and is classified integrity there.
+      unexplained.length > 0 ? `missing indexes after build: ${unexplained.join(', ')}` : '',
+    ]
+      .filter((part) => part.length > 0)
+      .join('; ');
+
+    // Classify per failure, not over the joined text: capability signatures are
+    // checked first, so folding the messages together would let an untokenizable
+    // row mask a genuinely broken write and downgrade an abort into a degrade.
+    const failureClass = failures.some((f) => classifyFtsBuildError(f.error) === 'integrity')
+      ? 'integrity'
+      : classifyFtsBuildError(error);
+    return { ok: false, error, failureClass };
   } catch (e) {
     const error = e instanceof Error ? e.message : String(e);
     return { ok: false, error, failureClass: classifyFtsBuildError(error) };

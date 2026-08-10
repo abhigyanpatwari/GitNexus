@@ -576,7 +576,7 @@ describe('runFullAnalysis FTS repair and verification failure paths', () => {
     // before recreating it. If the extension is unavailable, the repair path must
     // bail before any drop runs — otherwise it would destroy the existing indexes
     // and then fail to recreate them, leaving the DB worse off.
-    const createSearchFTSIndexes = vi.fn(async () => undefined);
+    const createSearchFTSIndexes = vi.fn(async () => []);
     vi.doMock('../../src/core/lbug/lbug-adapter.js', () => ({
       initLbug: vi.fn(async () => undefined),
       loadGraphToLbug: vi.fn(async () => undefined),
@@ -644,7 +644,7 @@ describe('runFullAnalysis FTS repair and verification failure paths', () => {
   });
 
   it('repair error carries the runtime-dependency remedy, not "retry the network install" (#2383 F6a)', async () => {
-    const createSearchFTSIndexes = vi.fn(async () => undefined);
+    const createSearchFTSIndexes = vi.fn(async () => []);
     vi.doMock('../../src/core/lbug/lbug-adapter.js', () => ({
       initLbug: vi.fn(async () => undefined),
       loadGraphToLbug: vi.fn(async () => undefined),
@@ -855,7 +855,7 @@ describe('runFullAnalysis FTS repair and verification failure paths', () => {
     // Offline-first degradation: when loadFTSExtension() returns false, the
     // analyze path must NOT call createSearchFTSIndexes / verifySearchFTSIndexes
     // and must NOT throw — it logs a warning and completes (#1161).
-    const createSearchFTSIndexes = vi.fn(async () => undefined);
+    const createSearchFTSIndexes = vi.fn(async () => []);
     const verifySearchFTSIndexes = vi.fn(async () => []);
     vi.doMock('../../src/core/lbug/lbug-adapter.js', () => ({
       initLbug: vi.fn(async () => undefined),
@@ -928,7 +928,7 @@ describe('runFullAnalysis FTS repair and verification failure paths', () => {
   });
 
   it('degrade log for a missing runtime dependency omits the contradictory reinstall guidance (#2383 F2)', async () => {
-    const createSearchFTSIndexes = vi.fn(async () => undefined);
+    const createSearchFTSIndexes = vi.fn(async () => []);
     const verifySearchFTSIndexes = vi.fn(async () => []);
     vi.doMock('../../src/core/lbug/lbug-adapter.js', () => ({
       initLbug: vi.fn(async () => undefined),

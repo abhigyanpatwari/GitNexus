@@ -41,16 +41,17 @@ const { createFTSIndex } = await import('../../src/core/lbug/lbug-adapter.js');
 const fullCoverageRows = () =>
   FTS_INDEXES.map((i) => ({ index_name: i.indexName, property_names: [...i.properties] }));
 
+/** The row-level tokenizer error of #2544/#2546/#2889, verbatim. */
+const POISON = 'Runtime exception: Failed calling LOWER: Invalid UTF-8.';
+
 afterEach(() => {
   calls.length = 0;
-  vi.clearAllMocks();
-  // `clearAllMocks` does NOT drain the `…Once` queue. A test that queues more
-  // rejections than the code under test consumes would otherwise leak the
-  // leftovers into whichever test runs next — order-dependent, and exactly the
-  // shape of failure a per-index isolation change makes easy to introduce.
-  // `mockReset` restores the implementation the `vi.mock` factory passed to
-  // `vi.fn(impl)`, so the recording default survives.
-  vi.mocked(createFTSIndex).mockReset();
+  // `reset`, not `clear`: only reset drains the `…Once` queue, and a test that
+  // queues more rejections than the code consumes would otherwise leak the
+  // leftovers into whichever test runs next. Vitest 4's reset restores the
+  // implementation each `vi.fn(impl)` was created with, so the factory's
+  // recording defaults survive.
+  vi.resetAllMocks();
   vi.unstubAllEnvs();
 });
 
@@ -97,65 +98,25 @@ describe('createSearchFTSIndexes', () => {
   // every table after it in FTS_INDEXES order, because the first rejection left
   // the loop. The `drop` for the failing table has already run by then, so the
   // damage was never confined to "the index we could not rebuild".
-  describe('per-index failure isolation (#2889)', () => {
-    const POISON = 'Runtime exception: Failed calling LOWER: Invalid UTF-8.';
-    const recordCreate = async (
-      table: string,
-      indexName: string,
-      _properties: string[],
-      stemmer: string,
-    ) => {
-      calls.push(`create:${table}.${indexName}:${stemmer}`);
-    };
+  it('isolates a failing index: others build, all drop, the failed one is not ready (#2889)', async () => {
+    vi.mocked(createFTSIndex).mockRejectedValueOnce(new Error(POISON));
+    const ready: string[] = [];
 
-    it('builds every remaining table after one index build rejects', async () => {
-      const poisoned = FTS_INDEXES[1];
-      vi.mocked(createFTSIndex)
-        .mockImplementationOnce(recordCreate)
-        .mockRejectedValueOnce(new Error(POISON));
+    const failures = await createSearchFTSIndexes({ onIndexReady: (_t, name) => ready.push(name) });
 
-      const failures = await createSearchFTSIndexes();
-
-      expect(failures).toEqual([
-        {
-          table: poisoned.table,
-          indexName: poisoned.indexName,
-          error: POISON,
-          failureClass: 'capability',
-        },
-      ]);
-      expect(calls.filter((call) => call.startsWith('create:'))).toEqual(
-        FTS_INDEXES.filter((i) => i.indexName !== poisoned.indexName).map(
-          (i) => `create:${i.table}.${i.indexName}:porter`,
-        ),
-      );
-    });
-
-    it('still drops the failing index, and every other index is left rebuilt', async () => {
-      vi.mocked(createFTSIndex)
-        .mockImplementationOnce(recordCreate)
-        .mockRejectedValueOnce(new Error(POISON));
-
-      await createSearchFTSIndexes();
-
-      expect(calls.filter((call) => call.startsWith('drop:'))).toEqual(
-        FTS_INDEXES.map((i) => `drop:${i.table}.${i.indexName}`),
-      );
-    });
-
-    it('does not report a failed index as ready', async () => {
-      const poisoned = FTS_INDEXES[1];
-      vi.mocked(createFTSIndex)
-        .mockImplementationOnce(recordCreate)
-        .mockRejectedValueOnce(new Error(POISON));
-      const ready: string[] = [];
-
-      await createSearchFTSIndexes({ onIndexReady: (_t, name) => ready.push(name) });
-
-      expect(ready).toEqual(
-        FTS_INDEXES.filter((i) => i.indexName !== poisoned.indexName).map((i) => i.indexName),
-      );
-    });
+    const [poisoned, ...survivors] = FTS_INDEXES;
+    expect(failures).toEqual([
+      { table: poisoned.table, indexName: poisoned.indexName, error: POISON },
+    ]);
+    // The drop for the failing table still ran — that is why letting the
+    // rejection leave the loop cost the table its index as well as the rebuild.
+    expect(calls.filter((call) => call.startsWith('drop:'))).toEqual(
+      FTS_INDEXES.map((i) => `drop:${i.table}.${i.indexName}`),
+    );
+    expect(calls.filter((call) => call.startsWith('create:'))).toEqual(
+      survivors.map((i) => `create:${i.table}.${i.indexName}:porter`),
+    );
+    expect(ready).toEqual(survivors.map((i) => i.indexName));
   });
 });
 
@@ -169,21 +130,25 @@ describe('buildSearchIndexesOrDegrade', () => {
   });
 
   it('returns ok:false instead of throwing when a single index build rejects (#2544/#2546)', async () => {
-    vi.mocked(createFTSIndex).mockRejectedValueOnce(
-      new Error('Runtime exception: Failed calling LOWER: Invalid UTF-8.'),
-    );
+    vi.mocked(createFTSIndex).mockRejectedValueOnce(new Error(POISON));
     const executeQuery = vi.fn(async () => fullCoverageRows());
 
     const result = await buildSearchIndexesOrDegrade(executeQuery);
 
     expect(result.ok).toBe(false);
     expect(result.error).toContain('Invalid UTF-8');
+    // A row-level tokenizer error degrades; it must never escalate to an abort.
+    expect(result.failureClass).toBe('capability');
+    // #2889: verification still runs on a partial build — the surviving indexes
+    // are the whole point of isolating the failure, so they get proven, not
+    // assumed. (One SHOW_INDEXES read.)
+    expect(executeQuery).toHaveBeenCalledTimes(1);
   });
 
   it('names every failing table, not just the first (#2889)', async () => {
     vi.mocked(createFTSIndex)
-      .mockRejectedValueOnce(new Error('Runtime exception: Failed calling LOWER: Invalid UTF-8.'))
-      .mockRejectedValueOnce(new Error('Runtime exception: Failed calling LOWER: Invalid UTF-8.'));
+      .mockRejectedValueOnce(new Error(POISON))
+      .mockRejectedValueOnce(new Error(POISON));
     const executeQuery = vi.fn(async () => fullCoverageRows());
 
     const result = await buildSearchIndexesOrDegrade(executeQuery);
@@ -198,24 +163,13 @@ describe('buildSearchIndexesOrDegrade', () => {
     // Capability signatures are checked first, so aggregating the raw messages
     // into one string would have let an untokenizable row mask a broken write.
     vi.mocked(createFTSIndex)
-      .mockRejectedValueOnce(new Error('Runtime exception: Failed calling LOWER: Invalid UTF-8.'))
+      .mockRejectedValueOnce(new Error(POISON))
       .mockRejectedValueOnce(new Error('IO exception: checkpoint failed'));
     const executeQuery = vi.fn(async () => fullCoverageRows());
 
     const result = await buildSearchIndexesOrDegrade(executeQuery);
 
     expect(result.failureClass).toBe('integrity');
-  });
-
-  it('stays capability when every failure is a row-level tokenizer error (#2889)', async () => {
-    vi.mocked(createFTSIndex).mockRejectedValueOnce(
-      new Error('Runtime exception: Failed calling LOWER: Invalid UTF-8.'),
-    );
-    const executeQuery = vi.fn(async () => fullCoverageRows());
-
-    const result = await buildSearchIndexesOrDegrade(executeQuery);
-
-    expect(result.failureClass).toBe('capability');
   });
 
   it('returns ok:false when verification finds a missing index, without throwing', async () => {
@@ -225,6 +179,20 @@ describe('buildSearchIndexesOrDegrade', () => {
 
     expect(result.ok).toBe(false);
     expect(result.error).toContain('missing indexes');
+  });
+
+  it('reports a failed table once, with its reason, not twice (#2889)', async () => {
+    // The failing table is missing from the catalog too — verification would
+    // name it a second time, with no reason attached, if the report did not
+    // subtract what the build already explained.
+    vi.mocked(createFTSIndex).mockRejectedValueOnce(new Error(POISON));
+    const executeQuery = vi.fn(async () => fullCoverageRows().slice(1));
+
+    const result = await buildSearchIndexesOrDegrade(executeQuery);
+
+    const failed = `${FTS_INDEXES[0].table}.${FTS_INDEXES[0].indexName}`;
+    expect(result.error).toContain(`${failed} (${POISON})`);
+    expect(result.error).not.toContain('missing indexes');
   });
 });
 

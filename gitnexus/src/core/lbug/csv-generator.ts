@@ -137,38 +137,44 @@ const formatCSVStringArray = (value: unknown): string => {
 // CONTENT EXTRACTION (lazy — reads from disk on demand)
 // ============================================================================
 
-/**
- * U+FFFD REPLACEMENT CHARACTER — the only trace a byte-level corruption leaves
- * behind by the time this function sees it (#2889).
- *
- * Every source file enters the pipeline through a `utf-8` decode: the content
- * cache below reads with `fs.readFile(path, 'utf-8')` and the parse worker
- * decodes the same way. That decode is lossy and total — an invalid byte
- * sequence never survives as invalid bytes, it is REPLACED with U+FFFD. So the
- * embedded-binary payloads #2889 describes (webpack bundles, class-file
- * constant pools, serialized objects inside .js/.vue sources) arrive here as
- * long runs of U+FFFD, not as the control bytes this scan was written to count.
- * charCode 0xFFFD is neither `< 9` nor `>= 127`-and-below-32, so the detector
- * scored a wholly corrupt payload as clean text and every caller below waved it
- * through. Counting it is what makes this function see the case it exists for.
- *
- * The threshold stays 10% of the first 1000 characters: a legitimate source file
- * does not carry replacement characters at all unless it was mis-decoded, and a
- * handful (a stray latin-1 comment, one bad byte in a license header) still
- * scores far under the bar.
- */
+const BINARY_SAMPLE_CHARS = 1000;
 const UNICODE_REPLACEMENT_CHAR = 0xfffd;
 
+/**
+ * Did this text come from a binary payload? Density of non-printables over the
+ * first {@link BINARY_SAMPLE_CHARS} characters, above 10%.
+ *
+ * U+FFFD counts, and it is the character that matters most here (#2889). Every
+ * source file enters the pipeline through a `utf-8` decode — the content cache
+ * below reads with `fs.readFile(path, 'utf-8')`, and the parse worker decodes
+ * the same way. That decode is lossy and total: an invalid byte sequence never
+ * survives as invalid bytes, it is REPLACED with U+FFFD. So the embedded-binary
+ * payloads #2889 describes (webpack bundles, class-file constant pools,
+ * serialized objects inside .js/.vue sources) arrive here as long runs of
+ * U+FFFD, not as the control bytes this scan was originally written to count —
+ * charCode 0xFFFD is neither `< 9`, nor between 13 and 32, nor 127, so the
+ * detector scored a wholly corrupt payload as clean text and every caller waved
+ * it through.
+ *
+ * The threshold stays at 10%: a legitimate source file carries no replacement
+ * characters at all unless it was mis-decoded, and a handful (a stray latin-1
+ * comment, one bad byte in a license header) still scores far under the bar.
+ * Density rather than "contains any binary run" is deliberate — a description
+ * that is mostly real prose with one stray replacement character is worth more
+ * indexed than dropped.
+ */
 export const isBinaryContent = (content: string): boolean => {
-  if (!content || content.length === 0) return false;
-  const sample = content.slice(0, 1000);
+  // `content &&` keeps the original tolerance for a null/undefined caller —
+  // `strict` is off in this package, so the type alone does not rule it out.
+  const end = content ? Math.min(content.length, BINARY_SAMPLE_CHARS) : 0;
+  if (end === 0) return false;
   let nonPrintable = 0;
-  for (let i = 0; i < sample.length; i++) {
-    const code = sample.charCodeAt(i);
-    if (code < 9 || (code > 13 && code < 32) || code === 127) nonPrintable++;
-    else if (code === UNICODE_REPLACEMENT_CHAR) nonPrintable++;
+  for (let i = 0; i < end; i++) {
+    const code = content.charCodeAt(i);
+    if (code < 9 || (code > 13 && code < 32) || code === 127 || code === UNICODE_REPLACEMENT_CHAR)
+      nonPrintable++;
   }
-  return nonPrintable / sample.length > 0.1;
+  return nonPrintable / end > 0.1;
 };
 
 /**
