@@ -179,14 +179,14 @@ function parsedGoDefs(
   return [parsedGoFile('repo.go', defs, options)] as any;
 }
 
-/** `import <local> "<path>"` as the extractor records it (#2873). */
+/** `import <local> "<path>"` as the extractor records it (#2873).
+ *
+ *  Both names carry the alias when there is one — `import-decomposer.ts` puts
+ *  the alias in `@import.name` — so an aliased import is modelled by passing a
+ *  `localName` that differs from the path's last segment, NOT by the two name
+ *  fields disagreeing. They never disagree on real Go input. */
 function goNamespaceImport(localName: string, targetRaw: string): ParsedImport {
-  return {
-    kind: 'namespace',
-    localName,
-    importedName: targetRaw.slice(targetRaw.lastIndexOf('/') + 1),
-    targetRaw,
-  };
+  return { kind: 'namespace', localName, importedName: localName, targetRaw };
 }
 
 function parsedGoFile(
@@ -205,7 +205,7 @@ function parsedGoFile(
     scopes: options.scopes ?? [],
     imports: [],
     parsedImports: options.parsedImports ?? [],
-    ...(options.moduleScope === undefined ? {} : { moduleScope: options.moduleScope }),
+    moduleScope: options.moduleScope,
     localDefs: [...defs],
     referenceSites: options.referenceSites ?? [],
   } as any;
@@ -1329,12 +1329,7 @@ describe('Go structural interface detection', () => {
         parsedGoFile('store/s.go', [struct, structSave], {
           parsedImports: [
             goNamespaceImport('v1', 'github.com/foo/bar'),
-            {
-              kind: 'namespace',
-              localName: 'bar',
-              importedName: 'v2',
-              targetRaw: 'github.com/foo/bar/v2',
-            } as ParsedImport,
+            goNamespaceImport('bar', 'github.com/foo/bar/v2'),
           ],
         }),
       ],

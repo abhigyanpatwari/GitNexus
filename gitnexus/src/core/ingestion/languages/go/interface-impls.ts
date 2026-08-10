@@ -36,7 +36,12 @@ export type GoStructuralImplementor = {
 };
 type SignatureContext = {
   readonly packageQualifier: string | undefined;
-  readonly importQualifiers: ReadonlyMap<string, string>;
+  /** Every token this file may write before a `.`, mapped to the package it
+   *  names. Keyed on the token the SOURCE uses, which is the import's local name
+   *  except where that had to be recovered from the path (`…/bar/v2` -> `bar`).
+   *  An `undefined` value is a name that is claimed but has no agreeable
+   *  qualifier; it reads the same as an absent key at the one consumer. */
+  readonly importQualifiers: ReadonlyMap<string, string | undefined>;
 };
 type DetectionIndexes = {
   readonly interfaces: readonly SymbolDefinition[];
@@ -1104,13 +1109,33 @@ function returnTypesCompatible(
   return actualType !== undefined && requiredType !== undefined && actualType === requiredType;
 }
 
+/** Normalized form of every type spelling seen in a file, keyed by its context.
+ *
+ *  Normalization is a pure function of (spelling, context), and a context is
+ *  immutable once built — so this is a cache, not state. It earns its keep
+ *  because #2873 removed the early bail: a parameter list that named an
+ *  out-of-repo type used to normalize to `undefined` and stop the comparison at
+ *  parameter 0, and now every pair of (interface method, candidate struct) walks
+ *  its whole signature, re-normalizing both sides once per candidate. */
+const normalizedTypesByContext = new WeakMap<SignatureContext, Map<string, string | undefined>>();
+
 function normalizeSignatureType(typeName: string, context?: SignatureContext): string | undefined {
   // Go type identity includes pointer/slice/map/variadic shape and package
   // qualifiers. Only erase whitespace and qualify bare local type names; stripping
   // `*`, `[]`, `...`, or `pkg.` would make non-identical signatures compare equal.
   const compact = typeName.replace(/\s+/g, '');
   if (context === undefined) return compact;
-  return qualifyGoSignatureTypes(compact, context);
+  let normalized = normalizedTypesByContext.get(context);
+  if (normalized === undefined) {
+    normalized = new Map();
+    normalizedTypesByContext.set(context, normalized);
+  }
+  // `has`, not a truthiness check: `undefined` — "no agreeable identity" — is
+  // itself a result worth caching, and it is the one this file mints most.
+  if (normalized.has(compact)) return normalized.get(compact);
+  const qualified = qualifyGoSignatureTypes(compact, context);
+  normalized.set(compact, qualified);
+  return qualified;
 }
 
 function qualifyGoSignatureTypes(typeName: string, context: SignatureContext): string | undefined {
@@ -1138,18 +1163,15 @@ function signatureContextForFile(
   parsed: ParsedFile,
   indexes: ScopeResolutionIndexes,
 ): SignatureContext {
-  const importQualifiers = new Map<string, string>();
-  const inRepoLocalNames = new Set<string>();
+  // A key present with an `undefined` value means "in-repo, but no directory to
+  // name it by" — a repo-ROOT package, whose own file spells its types bare, so
+  // no qualifier either side can agree on exists. It still has to occupy the
+  // name, or the fallback below would label a repo package external.
+  const importQualifiers = new Map<string, string | undefined>();
   const importEdges = indexes.imports?.get(parsed.moduleScope) ?? [];
   for (const edge of importEdges) {
     if (edge.kind !== 'namespace' || edge.targetFile === null) continue;
-    // Claimed even when the package has no directory to name it by — a
-    // repo-ROOT package. That case has no qualifier either side can agree on
-    // (the declaring file spells its own types bare), but it is in-repo, and
-    // labelling it as external below would only make the map lie.
-    inRepoLocalNames.add(edge.localName);
-    const qualifier = packageQualifierForFile(edge.targetFile);
-    if (qualifier !== undefined) importQualifiers.set(edge.localName, qualifier);
+    importQualifiers.set(edge.localName, packageQualifierForFile(edge.targetFile));
   }
   // An import that resolves to no file in the repository — every stdlib and
   // third-party package — still has an identity: its import path, which the
@@ -1160,18 +1182,11 @@ function signatureContextForFile(
   // only ever succeeded for builtin-only signatures.
   for (const directive of parsed.parsedImports) {
     if (directive.kind !== 'namespace') continue;
-    if (inRepoLocalNames.has(directive.localName)) continue;
-    const qualifier = externalPackageQualifier(directive.targetRaw);
-    if (!importQualifiers.has(directive.localName)) {
-      importQualifiers.set(directive.localName, qualifier);
-    }
-    // Only an UNALIASED import needs its package name recovered — an aliased one
-    // already told us the token the source will use, and minting the path-derived
-    // name for it could steal the token a sibling import spells natively.
-    if (directive.localName !== directive.importedName) continue;
-    const packageName = goPackageNameFromImportPath(directive.targetRaw);
-    if (packageName === directive.localName || importQualifiers.has(packageName)) continue;
-    importQualifiers.set(packageName, qualifier);
+    const token = goImportToken(directive.localName, directive.targetRaw);
+    // The edges ran first, so a token an in-repo import already claimed keeps
+    // its package directory — the fallback fills gaps, it does not compete.
+    if (importQualifiers.has(token)) continue;
+    importQualifiers.set(token, externalPackageQualifier(directive.targetRaw));
   }
   return {
     packageQualifier: packageQualifierForFile(parsed.filePath),
@@ -1190,23 +1205,26 @@ function externalPackageQualifier(importPath: string): string {
   return `extern:${importPath}`;
 }
 
-/** The token Go source will use for an unaliased import of `importPath`.
+/** The token Go source writes before the `.` for this import.
  *
- *  The import extractor takes the last path segment, which is right until a
- *  module carries a major version: `github.com/foo/bar/v2` is imported as `bar`
- *  and `gopkg.in/yaml.v3` as `yaml`, per the same rule the go tool applies. Left
- *  unhandled, every v2+ dependency reproduced #2873 exactly — the qualifier the
- *  source writes was absent from the map, so the whole signature normalized to
- *  `undefined`.
+ *  An alias names its own token, so it is returned as-is. An unaliased import
+ *  arrives here spelled as the last path segment, which is right until a module
+ *  carries a major version: `github.com/foo/bar/v2` is written `bar` and
+ *  `gopkg.in/yaml.v3` is written `yaml`, per the rule the go tool applies.
+ *
+ *  Deriving "aliased" from the path rather than from `importedName` is
+ *  deliberate — the Go extractor sets both names to the alias when there is one
+ *  (`import-decomposer.ts`), so the two fields never disagree.
  *
  *  A package whose name diverges from its path for any OTHER reason cannot be
  *  recovered without reading the dependency's own source, which is by definition
  *  outside the repository. Those stay unresolved, which is the safe direction. */
-function goPackageNameFromImportPath(importPath: string): string {
+function goImportToken(localName: string, importPath: string): string {
   const segments = importPath.split('/').filter((segment) => segment.length > 0);
-  let last = segments.pop() ?? importPath;
-  if (/^v\d+$/.test(last) && segments.length > 0) last = segments.pop()!;
-  return last.replace(/\.v\d+$/, '');
+  const leaf = segments.pop() ?? importPath;
+  if (localName !== leaf) return localName;
+  const name = /^v\d+$/.test(leaf) ? (segments.pop() ?? leaf) : leaf;
+  return name.replace(/\.v\d+$/, '');
 }
 
 /** The package directory, or `undefined` for a repo-root file.
