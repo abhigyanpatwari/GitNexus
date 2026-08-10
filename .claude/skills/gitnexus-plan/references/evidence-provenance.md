@@ -98,8 +98,12 @@ excluded.
 
 ## Safe existing-plan read contract
 
-`read-plan` fails closed unless Linux `/proc/self/fd`, `O_DIRECTORY`, and
-`O_NOFOLLOW` are available. It resolves the exact Git top-level, opens the
+`read-plan` fails closed unless descriptor anchoring is available for the host
+platform: Linux `/proc/self/fd` with `O_DIRECTORY` and `O_NOFOLLOW`, or macOS
+`O_DIRECTORY`/`O_NOFOLLOW` plus a trusted `python3` exposing the `*at()` family
+through `os.supports_dir_fd`. Every other platform is refused outright — an
+unanchored read is not a degraded read, it is a different, racy operation.
+It resolves the exact Git top-level, opens the
 repository root and every plan parent as held no-follow directory descriptors,
 rejects missing, symlink, non-directory, and escaping parents, and opens the
 leaf with `O_NOFOLLOW`. It reads at most 16 MiB from that held file descriptor,
@@ -109,13 +113,29 @@ Neither Deepen nor work may parse bytes obtained before or outside this receipt.
 
 ## Safe generated-plan write contract
 
-The writer fails closed unless Linux `/proc/self/fd`, `O_DIRECTORY`,
-`O_NOFOLLOW`, and Python 3 with libc `renameat2(RENAME_NOREPLACE)` support are
-available. Python may live in `/usr/local`, a Nix profile, or another absolute
+The writer fails closed unless the host platform offers both descriptor
+anchoring and a no-replace rename. On Linux that means `/proc/self/fd`,
+`O_DIRECTORY`, `O_NOFOLLOW`, and Python 3 with libc
+`renameat2(RENAME_NOREPLACE)`. On macOS, where Node can reach neither
+`/proc/self/fd` nor `openat`, both come from the same spawned Python 3: the
+`*at()` family via `os.supports_dir_fd`, and `renameatx_np` with `RENAME_EXCL`
+via `ctypes`. A filesystem that answers `ENOTSUP` to `RENAME_EXCL` is a refusal,
+never a fallback to a replacing rename. Python may live in `/usr/local`, a Nix
+profile, the Xcode Command Line Tools, or another absolute
 PATH directory, but the helper accepts only a resolved executable and
 containing directory owned by root or the current user and not writable by
 group/other. The resolved executable is opened without following links and
-invoked through that held descriptor. Relative PATH entries are ignored. The plan parent and the
+invoked through that held descriptor (`/proc/self/fd/3` on Linux, `/dev/fd/3` on
+macOS). Launching through the descriptor is proven by the interpreter probe
+rather than assumed: macOS additionally accepts a second tier that launches the
+validated resolved path when the kernel will not execute through an `fdesc`
+node, and the before/after descriptor identity checks run on both tiers. Only
+the first tier proves the exact inode was executed; the second narrows to "an
+executable that is still, immediately before and after the spawn, the inode we
+validated", which an unprivileged attacker cannot subvert because the resolved
+executable and its directory must already be owned by root or the current user
+and not writable by group or other. Linux never leaves the first tier. Relative
+PATH entries are ignored. The plan parent and the
 repository's Git-admin directory must also share a filesystem. It resolves
 the target repository's exact Git top-level, opens that root and every
 destination parent as held no-follow directory descriptors, creates missing
@@ -136,6 +156,28 @@ opening it with `O_NOFOLLOW`, hashing both the original temporary fd and the
 path-bound fd, and performing a second descriptor-anchored path identity check
 after hashing. A detected mutation or replacement aborts instead of accepting
 mixed-era output.
+
+### How anchoring differs on macOS
+
+Node cannot perform `openat`-style directory-relative resolution on macOS, so
+the Darwin backend is stateless: every anchored operation re-walks the chain
+from the repository root inside the helper interpreter with
+`O_DIRECTORY|O_NOFOLLOW`, asserting the caller's recorded device, inode, and
+mode at each level before acting. A chain that fails that assertion reports a
+dedicated anchoring error, never `ENOENT`, so a moved parent can never be read
+as an absent file. Continuity between operations rests on that identity chain,
+which is the same proof the Linux path already re-runs at every write boundary.
+
+One difference is disclosed rather than papered over. Operations that must hand
+Node an open descriptor — reading an existing plan, creating the temporary file
+— are anchored in the helper and then opened by Node from the lexical path with
+`O_NOFOLLOW`, and the resulting inode is compared against the anchored result.
+An attacker racing that window can force a mismatch, which aborts, or land on
+the inode the anchored walk already found, which is harmless. What Linux
+additionally prevents, and macOS does not, is a perfect ABA: swapping the parent
+out and restoring the identical inode entirely within that window. No published
+byte escapes verification in either case; the residual difference is that Linux
+makes the race impossible where macOS detects all but its narrowest form.
 
 `--replace` accepts only a pre-existing regular file and is reserved for
 Deepen; without it, accidental overwrite is rejected. It also requires the

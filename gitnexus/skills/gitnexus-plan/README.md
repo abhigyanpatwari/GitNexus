@@ -124,12 +124,16 @@ phase that needs them.
   statement-level claims (never reconstructs fake edges).
 - No GitNexus at all → fallback mode: targeted grep/read exploration, findings
   labelled **source-derived**, with a recommendation to index.
-- Reading or publishing a plan requires Linux `/proc/self/fd`, `O_DIRECTORY`,
-  and `O_NOFOLLOW`; publication also requires a validated absolute Python 3
-  PATH candidate with libc `renameat2(RENAME_NOREPLACE)` support, a
-  writable target repository, and a shared filesystem for the plan and
-  Git-admin vault. The writer fails closed when those guarantees are
-  unavailable; it never redirects the plan elsewhere.
+- Reading or publishing a plan requires descriptor anchoring plus a no-replace
+  rename, both of which are platform-specific. On Linux that is `/proc/self/fd`
+  with `O_DIRECTORY`/`O_NOFOLLOW`, and libc `renameat2(RENAME_NOREPLACE)`. On
+  macOS, where neither is reachable from Node, both come from the `*at()` family
+  and `renameatx_np(RENAME_EXCL)` through the same helper process. Either way
+  publication requires a validated absolute Python 3 PATH candidate (on macOS,
+  the Xcode Command Line Tools interpreter), a writable target repository, and a
+  shared filesystem for the plan and Git-admin vault. Every other platform is
+  refused. The writer fails closed when those guarantees are unavailable; it
+  never redirects the plan elsewhere.
 
 ## Limitations
 

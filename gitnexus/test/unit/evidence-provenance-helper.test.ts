@@ -667,7 +667,84 @@ REAL_GIT_FIXTURES('evidence provenance v2 helper', () => {
   });
 });
 
-const SAFE_WRITE_FIXTURES = process.platform === 'linux' ? describe : describe.skip;
+// The safe writer runs on every platform that can anchor a name to an inode:
+// Linux through /proc/self/fd, macOS through the *at() family in the spawned,
+// integrity-checked python3. Everything else is refused, which the
+// "neither backend" fixture below asserts from any host.
+const DESCRIPTOR_ANCHORED_PLATFORMS = new Set(['linux', 'darwin']);
+const SAFE_WRITE_FIXTURES = DESCRIPTOR_ANCHORED_PLATFORMS.has(process.platform)
+  ? describe
+  : describe.skip;
+
+function directoryIdentity(stat: fs.BigIntStats): string {
+  return `${stat.dev}:${stat.ino}`;
+}
+
+// The anchored-operation helper is the security boundary the macOS backend rests
+// on, so it is exercised directly rather than only through the Node orchestration
+// that happens to normalize its inputs today. Its dir_fd primitives behave the
+// same on Linux, so these fixtures run wherever the safe writer runs.
+type AnchoredResponse = {
+  ok: boolean;
+  errno?: string;
+  error?: string;
+  stat?: Record<string, string | boolean>;
+};
+
+function anchoredOpsScript(): string {
+  const source = fs.readFileSync(PLAN_HELPER, 'utf8');
+  const marker = 'const ANCHORED_OPS_SCRIPT = String.raw`';
+  const start = source.indexOf(marker);
+  expect(start).toBeGreaterThan(-1);
+  const bodyStart = start + marker.length;
+  return source.slice(bodyStart, source.indexOf('`;', bodyStart));
+}
+
+function runAnchoredOps(rawRequest: string): AnchoredResponse {
+  const result = spawnSync('python3', ['-I', '-S', '-c', anchoredOpsScript(), rawRequest], {
+    encoding: 'utf8',
+  });
+  expect(result.status, result.stderr).toBe(0);
+  return JSON.parse(result.stdout) as AnchoredResponse;
+}
+
+function anchoredIdentity(target: string): Record<string, string> {
+  const stat = fs.statSync(target, { bigint: true });
+  return {
+    dev: BigInt.asUintN(64, stat.dev).toString(),
+    ino: BigInt.asUintN(64, stat.ino).toString(),
+    mode: BigInt.asUintN(64, stat.mode).toString(),
+  };
+}
+
+function anchoredFixture(): { root: string; base: Record<string, unknown> } {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'gitnexus-anchored-ops-'));
+  fs.mkdirSync(path.join(root, 'docs', 'plans'), { recursive: true });
+  fs.writeFileSync(path.join(root, 'docs', 'plans', 'leaf.md'), 'leaf\n');
+  fs.mkdirSync(path.join(root, 'elsewhere'));
+  fs.writeFileSync(path.join(root, 'elsewhere', 'victim.txt'), 'victim\n');
+  return {
+    root,
+    base: {
+      root,
+      root_identity: anchoredIdentity(root),
+      chain: [
+        { name: 'docs', identity: anchoredIdentity(path.join(root, 'docs')) },
+        { name: 'plans', identity: anchoredIdentity(path.join(root, 'docs', 'plans')) },
+      ],
+    },
+  };
+}
+
+// Every anchored operation on macOS is one bounded python3 spawn, so the same
+// fixtures cost far more wall-clock there than the single-process Linux path.
+// vi.setConfig is file-global rather than describe-scoped, and this suite already
+// spawns git, the Node CLI and python3 per test under a sharded job, so the
+// timeout is only ever raised — every other platform keeps the inherited value.
+const DARWIN_SPAWN_TIMEOUT_MS = process.platform === 'darwin' ? [120_000] : [];
+DARWIN_SPAWN_TIMEOUT_MS.forEach((timeout) =>
+  vi.setConfig({ testTimeout: timeout, hookTimeout: timeout }),
+);
 
 SAFE_WRITE_FIXTURES('generated-plan safe writer', () => {
   it('reads an exact descriptor-anchored plan receipt through both API and CLI', async () => {
@@ -1392,8 +1469,11 @@ SAFE_WRITE_FIXTURES('generated-plan safe writer', () => {
     const realFsync = fs.fsyncSync.bind(fs);
     const spy = vi.spyOn(fs, 'fsyncSync').mockImplementation((fd) => {
       try {
-        const resolved = fs.realpathSync(`/proc/self/fd/${fd}`);
-        if (fs.fstatSync(fd).isDirectory()) fsyncedDirectories.push(resolved);
+        // A descriptor cannot be turned back into a path on macOS — /proc/self/fd
+        // has no equivalent and F_GETPATH is unreachable from Node — so a synced
+        // directory is identified by the inode it refers to, on both platforms.
+        const stat = fs.fstatSync(fd, { bigint: true });
+        fsyncedDirectories.push(...(stat.isDirectory() ? [directoryIdentity(stat)] : []));
       } catch {
         // The production call below owns any real fsync error.
       }
@@ -1415,6 +1495,8 @@ SAFE_WRITE_FIXTURES('generated-plan safe writer', () => {
         expectedPlanDigest: loadedPlanDigest(planner, repo),
       });
       const gitDirectory = fs.realpathSync(path.join(repo, '.git'));
+      const identityOf = (directory: string): string =>
+        directoryIdentity(fs.statSync(directory, { bigint: true }));
       for (const durableDirectory of [
         repo,
         path.join(repo, 'docs'),
@@ -1422,16 +1504,15 @@ SAFE_WRITE_FIXTURES('generated-plan safe writer', () => {
         gitDirectory,
         path.join(gitDirectory, 'gitnexus-plan-backups'),
       ]) {
-        expect(fsyncedDirectories).toContain(fs.realpathSync(durableDirectory));
+        expect(fsyncedDirectories).toContain(identityOf(durableDirectory));
       }
       expect(
-        fsyncedDirectories.filter(
-          (entry) => entry === fs.realpathSync(path.join(repo, 'docs/plans')),
-        ).length,
+        fsyncedDirectories.filter((entry) => entry === identityOf(path.join(repo, 'docs/plans')))
+          .length,
       ).toBeGreaterThanOrEqual(2);
       expect(
         fsyncedDirectories.filter(
-          (entry) => entry === fs.realpathSync(path.join(gitDirectory, 'gitnexus-plan-backups')),
+          (entry) => entry === identityOf(path.join(gitDirectory, 'gitnexus-plan-backups')),
         ).length,
       ).toBeGreaterThanOrEqual(2);
     } finally {
@@ -1440,6 +1521,10 @@ SAFE_WRITE_FIXTURES('generated-plan safe writer', () => {
     }
   });
 
+  // The interpreter is always executed through the descriptor the helper already
+  // fstat-verified (/proc/self/fd/3 on Linux, /dev/fd/3 on macOS), never through
+  // its resolved path, so this fixture also proves the held-descriptor spawn
+  // reaches the exact candidate that was validated.
   it('uses a validated absolute python3 candidate from a nonstandard PATH directory', async () => {
     const repo = createBaseRepo('gitnexus-plan-python-path-');
     const toolsDirectory = fs.mkdtempSync(path.join(os.tmpdir(), 'gitnexus-safe-tools-'));
@@ -1478,6 +1563,230 @@ SAFE_WRITE_FIXTURES('generated-plan safe writer', () => {
       else process.env.GITNEXUS_TEST_PYTHON_MARKER = originalMarker;
       fs.rmSync(repo, { recursive: true, force: true });
       fs.rmSync(toolsDirectory, { recursive: true, force: true });
+    }
+  });
+
+  it.each([
+    ['a separator', 'create', 'sub/pwned.md'],
+    ['an absolute path', 'mkdir', '/tmp/gitnexus-anchored-escape'],
+    ['an absolute path on stat', 'stat', '/etc/passwd'],
+    ['a parent traversal', 'unlink', '../../elsewhere/victim.txt'],
+    ['an empty name', 'stat', ''],
+    ['a dot segment', 'stat', '.'],
+    ['a parent segment', 'stat', '..'],
+    ['a backslash', 'stat', 'a\\b'],
+    ['a NUL', 'stat', 'a\u0000b'],
+  ] as const)(
+    'the anchored helper refuses %s instead of resolving it',
+    (_label, operation, name) => {
+      const { root, base } = anchoredFixture();
+      try {
+        const response = runAnchoredOps(
+          JSON.stringify({ ...base, op: operation, name, mode: 0o600 }),
+        );
+        expect(response.ok).toBe(false);
+        expect(response.errno).toBe('EBADREQUEST');
+        // dir_fd is ignored outright for an absolute path and O_NOFOLLOW guards
+        // only the final component, so a name that resolved would land outside.
+        expect(fs.existsSync(path.join(root, 'elsewhere', 'victim.txt'))).toBe(true);
+        expect(fs.existsSync('/tmp/gitnexus-anchored-escape')).toBe(false);
+        expect(fs.readdirSync(path.join(root, 'docs', 'plans'))).toEqual(['leaf.md']);
+      } finally {
+        fs.rmSync(root, { recursive: true, force: true });
+      }
+    },
+  );
+
+  it.each([
+    ['setuid plus world-writable via -1', '-1'],
+    ['an explicit setuid bit', '2559'],
+    ['a mode beyond the permission bits', '1099511627776'],
+    ['a string mode', '"0755"'],
+    ['a float mode', '493.0'],
+    ['a boolean mode', 'true'],
+  ] as const)('the anchored helper refuses %s on create', (_label, encodedMode) => {
+    const { root, base } = anchoredFixture();
+    try {
+      const response = runAnchoredOps(
+        `${JSON.stringify({ ...base, op: 'create', name: 'moded.tmp' }).slice(0, -1)},"mode":${encodedMode}}`,
+      );
+      expect(response.ok).toBe(false);
+      expect(response.errno).toBe('EBADREQUEST');
+      expect(fs.existsSync(path.join(root, 'docs', 'plans', 'moded.tmp'))).toBe(false);
+    } finally {
+      fs.rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it.each([
+    ['not JSON at all', () => 'this is not json'],
+    ['a JSON array', () => '[1,2,3]'],
+    [
+      'a missing operation',
+      (base: Record<string, unknown>) => JSON.stringify({ ...base, name: 'leaf.md' }),
+    ],
+    ['a missing root', () => JSON.stringify({ chain: [], op: 'stat', name: 'leaf.md' })],
+    [
+      'a relative root',
+      (base: Record<string, unknown>) =>
+        JSON.stringify({ ...base, root: 'relative/dir', op: 'stat', name: 'leaf.md' }),
+    ],
+    [
+      'a chain that is not a list',
+      (base: Record<string, unknown>) =>
+        JSON.stringify({ ...base, chain: 'docs', op: 'stat', name: 'leaf.md' }),
+    ],
+    [
+      'chain elements without identities',
+      (base: Record<string, unknown>) =>
+        JSON.stringify({ ...base, chain: [{ name: 'docs' }], op: 'stat', name: 'leaf.md' }),
+    ],
+    [
+      'an absolute chain element',
+      (base: Record<string, unknown>) =>
+        JSON.stringify({
+          ...base,
+          chain: [{ name: '/etc', identity: anchoredIdentity('/etc') }],
+          op: 'stat',
+          name: 'passwd',
+        }),
+    ],
+  ] as const)('the anchored helper answers %s with a JSON refusal', (_label, build) => {
+    const { root, base } = anchoredFixture();
+    try {
+      const response = runAnchoredOps(build(base));
+      expect(response.ok).toBe(false);
+      expect(response.errno).toBe('EBADREQUEST');
+    } finally {
+      fs.rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it('answers mkdir from the directory it created, not from a second lookup', () => {
+    const { root, base } = anchoredFixture();
+    try {
+      const response = runAnchoredOps(
+        JSON.stringify({ ...base, op: 'mkdir', name: 'fresh', mode: 0o755 }),
+      );
+      expect(response.ok).toBe(true);
+      expect(response.stat).toMatchObject(
+        anchoredIdentity(path.join(root, 'docs', 'plans', 'fresh')),
+      );
+      expect(Number(response.stat?.mode) & 0o170000).toBe(0o040000);
+    } finally {
+      fs.rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it.each([
+    ['a missing name on stat', 'stat', 'missing.md', false, 'ENOENT'],
+    ['an existing name on create', 'create', 'leaf.md', true, 'EANCHOR'],
+    ['a missing name on unlink', 'unlink', 'missing.md', true, 'EANCHOR'],
+    ['a name that already exists on mkdir', 'mkdir', 'leaf.md', true, 'EANCHOR'],
+  ] as const)(
+    'the anchored helper reports %s with the errno its callers may act on',
+    (_label, operation, name, isFailure, errno) => {
+      const { root, base } = anchoredFixture();
+      try {
+        const response = runAnchoredOps(
+          JSON.stringify({ ...base, op: operation, name, mode: 0o600 }),
+        );
+        // An absence verdict may only ever arrive as the stat op's explicit
+        // present:false payload; every operational failure is EANCHOR so that no
+        // caller can read one as "the target is simply not there".
+        expect(response.ok).toBe(!isFailure);
+        expect(response.errno ?? response.stat?.errno).toBe(errno);
+      } finally {
+        fs.rmSync(root, { recursive: true, force: true });
+      }
+    },
+  );
+});
+
+// The capability gate is the one part of the safe writer that must be observable
+// from every platform, including the ones it refuses, so it is asserted outside
+// the descriptor-anchored suite rather than skipped along with it.
+describe('generated-plan anchoring capability gate', () => {
+  it('refuses every platform that has neither anchoring backend', async () => {
+    const repo = createBaseRepo('gitnexus-plan-platform-gate-');
+    const originalPlatform = Object.getOwnPropertyDescriptor(
+      process,
+      'platform',
+    ) as PropertyDescriptor;
+    try {
+      const planner = await importHelper(PLAN_HELPER);
+      Object.defineProperty(process, 'platform', { value: 'win32', configurable: true });
+      expect(() => planner.readPlanSafely({ repo, generatedPlanPath: SAFE_PLAN_PATH })).toThrow(
+        /Linux \/proc\/self\/fd or macOS \*at\(\) anchoring through a trusted python3; win32 offers neither, so refusing an unanchored write/,
+      );
+      expect(() =>
+        planner.writePlanSafely({
+          repo,
+          generatedPlanPath: SAFE_PLAN_PATH,
+          contents: '# blocked\n',
+        }),
+      ).toThrow(/win32 offers neither, so refusing an unanchored write/);
+      expect(fs.existsSync(path.join(repo, SAFE_PLAN_PATH))).toBe(false);
+      expect(fs.existsSync(path.join(repo, 'docs'))).toBe(false);
+    } finally {
+      Object.defineProperty(process, 'platform', originalPlatform);
+      fs.rmSync(repo, { recursive: true, force: true });
+    }
+  });
+
+  it('refuses the macOS capability gate when no trusted python3 backend exists', async () => {
+    const repo = createBaseRepo('gitnexus-plan-darwin-gate-');
+    const originalPlatform = Object.getOwnPropertyDescriptor(
+      process,
+      'platform',
+    ) as PropertyDescriptor;
+    const realRealpath = fs.realpathSync.bind(fs) as (target: fs.PathLike) => string;
+    const deniedCandidates: string[] = [];
+    // macOS anchoring is only as available as the interpreter that performs it,
+    // so making every python3 candidate unusable must close the gate rather than
+    // silently downgrade to a lexical write.
+    //
+    // The denial has to key on the *candidate* path, which always ends in the
+    // literal component "python3", and it has to intercept the resolve step:
+    // validatedPathExecutable calls accessSync on the realpath, so a mock keyed
+    // on the resolved name would miss every version-suffixed interpreter
+    // (/opt/homebrew/bin/python3 -> .../python3.13, pyenv, uv, and Debian's
+    // /usr/bin/python3.11) and quietly assert nothing at all.
+    const realpathSpy = vi.spyOn(fs, 'realpathSync').mockImplementation(((target: fs.PathLike) => {
+      [String(target)]
+        .filter((candidate) => path.basename(candidate) === 'python3')
+        .forEach((candidate) => {
+          deniedCandidates.push(candidate);
+          throw Object.assign(new Error(`ENOENT: no interpreter, realpath '${candidate}'`), {
+            code: 'ENOENT',
+          });
+        });
+      return realRealpath(target);
+    }) as typeof fs.realpathSync);
+    try {
+      const planner = await importHelper(PLAN_HELPER);
+      Object.defineProperty(process, 'platform', { value: 'darwin', configurable: true });
+      expect(() =>
+        planner.writePlanSafely({
+          repo,
+          generatedPlanPath: SAFE_PLAN_PATH,
+          contents: '# blocked\n',
+        }),
+      ).toThrow(
+        /require a trusted macOS python3 exposing os\.supports_dir_fd and renameatx_np .*refusing an unanchored write/,
+      );
+      expect(() => planner.readPlanSafely({ repo, generatedPlanPath: SAFE_PLAN_PATH })).toThrow(
+        /Xcode Command Line Tools/,
+      );
+      // Without this the fixture would still pass on a host that simply has no
+      // renameatx_np, proving nothing on the platform it exists to cover.
+      expect(deniedCandidates).not.toHaveLength(0);
+      expect(fs.existsSync(path.join(repo, SAFE_PLAN_PATH))).toBe(false);
+      expect(fs.existsSync(path.join(repo, 'docs'))).toBe(false);
+    } finally {
+      Object.defineProperty(process, 'platform', originalPlatform);
+      realpathSpy.mockRestore();
+      fs.rmSync(repo, { recursive: true, force: true });
     }
   });
 });
