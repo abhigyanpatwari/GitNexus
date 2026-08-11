@@ -26,6 +26,25 @@ import { resilientFetch } from 'gitnexus-shared';
 
 const STORAGE_KEY = 'gitnexus-llm-settings';
 
+const mergeMiniMaxSettings = (
+  stored?: LLMSettings['minimax'],
+): NonNullable<LLMSettings['minimax']> => {
+  const merged = {
+    ...DEFAULT_LLM_SETTINGS.minimax,
+    ...stored,
+  };
+
+  if (!(MINIMAX_MODEL_IDS as readonly string[]).includes(merged.model ?? '')) {
+    return {
+      ...merged,
+      model: DEFAULT_LLM_SETTINGS.minimax?.model,
+      thinkingMode: DEFAULT_LLM_SETTINGS.minimax?.thinkingMode,
+    };
+  }
+
+  return merged;
+};
+
 const mergeWithDefaults = (parsed?: Partial<LLMSettings> | null): LLMSettings => ({
   ...DEFAULT_LLM_SETTINGS,
   ...parsed,
@@ -53,10 +72,7 @@ const mergeWithDefaults = (parsed?: Partial<LLMSettings> | null): LLMSettings =>
     ...DEFAULT_LLM_SETTINGS.openrouter,
     ...parsed?.openrouter,
   },
-  minimax: {
-    ...DEFAULT_LLM_SETTINGS.minimax,
-    ...parsed?.minimax,
-  },
+  minimax: mergeMiniMaxSettings(parsed?.minimax),
   glm: {
     ...DEFAULT_LLM_SETTINGS.glm,
     ...parsed?.glm,

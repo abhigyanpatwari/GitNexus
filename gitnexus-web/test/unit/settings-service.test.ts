@@ -15,6 +15,7 @@ import {
   MINIMAX_ANTHROPIC_BASE_URLS,
   MINIMAX_MODEL_IDS,
 } from '../../src/core/llm/types';
+import { createChatModel } from '../../src/core/llm/agent';
 
 describe('loadSettings', () => {
   it('returns defaults when nothing is stored', () => {
@@ -43,6 +44,30 @@ describe('loadSettings', () => {
     expect(settings.ollama.model).toBe('qwen3-coder:30b');
     // Should still have other provider defaults
     expect(settings.openai).toBeDefined();
+  });
+
+  it('migrates unsupported legacy MiniMax models to the current default', () => {
+    sessionStorage.setItem(
+      'gitnexus-llm-settings',
+      JSON.stringify({
+        activeProvider: 'minimax',
+        minimax: {
+          apiKey: 'minimax-test-key',
+          model: 'MiniMax-M2.5',
+          temperature: 0.1,
+        },
+      }),
+    );
+
+    const settings = loadSettings();
+    expect(settings.minimax).toMatchObject({
+      model: MINIMAX_MODEL_IDS[0],
+      thinkingMode: 'adaptive',
+    });
+
+    const model = createChatModel(getActiveProviderConfig()!) as any;
+    expect(model.model).toBe(MINIMAX_MODEL_IDS[0]);
+    expect(model.thinking).toEqual({ type: 'adaptive' });
   });
 
   it('returns defaults on corrupted JSON', () => {
