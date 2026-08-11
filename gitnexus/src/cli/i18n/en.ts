@@ -226,16 +226,15 @@ export const en = {
     'Clean parked LadybugDB recovery sidecars (missing-shadow WAL quarantines and dirty-recovery parks)',
   'help.option.wiki.force': 'Force full regeneration even if up to date',
   'help.option.wiki.provider':
-    'LLM provider: openai, openrouter, azure, custom, cursor, claude, codex, or opencode (default: openai)',
-  'help.option.wiki.model': 'LLM model or Azure deployment name (default: minimax/minimax-m2.5)',
+    'LLM provider: minimax, openai, openrouter, azure, custom, cursor, claude, codex, or opencode (default: minimax)',
+  'help.option.wiki.model': 'LLM model or deployment name (default: MiniMax-M3)',
   'help.option.wiki.baseUrl':
     'LLM API base URL. Azure v1: https://{resource}.openai.azure.com/openai/v1',
   'help.option.wiki.apiKey': 'LLM API key or Azure api-key (saved to ~/.gitnexus/config.json)',
   'help.option.wiki.apiVersion':
     'Azure api-version query param, e.g. 2024-10-21 (legacy Azure API only)',
-  'help.option.wiki.reasoningModel':
-    'Mark deployment as reasoning model (o1/o3/o4-mini) — strips temperature, uses max_completion_tokens',
-  'help.option.wiki.noReasoningModel': 'Disable reasoning model mode (overrides saved config)',
+  'help.option.wiki.reasoningModel': 'Enable reasoning mode; MiniMax-M3 uses adaptive thinking',
+  'help.option.wiki.noReasoningModel': 'Disable reasoning mode; MiniMax-M3 disables thinking',
   'help.option.wiki.concurrency': 'Parallel LLM calls (default: 3)',
   'help.option.wiki.timeout': 'LLM request timeout in seconds (default: disabled)',
   'help.option.wiki.retries': 'Max LLM retry attempts per request (default: 3)',

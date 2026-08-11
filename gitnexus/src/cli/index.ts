@@ -303,9 +303,9 @@ program
   .option('-f, --force', 'Force full regeneration even if up to date')
   .option(
     '--provider <provider>',
-    'LLM provider: openai, openrouter, azure, custom, cursor, claude, codex, or opencode (default: openai)',
+    'LLM provider: minimax, openai, openrouter, azure, custom, cursor, claude, codex, or opencode (default: minimax)',
   )
-  .option('--model <model>', 'LLM model or Azure deployment name (default: minimax/minimax-m2.5)')
+  .option('--model <model>', 'LLM model or deployment name (default: MiniMax-M3)')
   .option(
     '--base-url <url>',
     'LLM API base URL. Azure v1: https://{resource}.openai.azure.com/openai/v1',
@@ -315,11 +315,8 @@ program
     '--api-version <version>',
     'Azure api-version query param, e.g. 2024-10-21 (legacy Azure API only)',
   )
-  .option(
-    '--reasoning-model',
-    'Mark deployment as reasoning model (o1/o3/o4-mini) — strips temperature, uses max_completion_tokens',
-  )
-  .option('--no-reasoning-model', 'Disable reasoning model mode (overrides saved config)')
+  .option('--reasoning-model', 'Enable reasoning mode; MiniMax-M3 uses adaptive thinking')
+  .option('--no-reasoning-model', 'Disable reasoning mode; MiniMax-M3 disables thinking')
   .option('--concurrency <n>', 'Parallel LLM calls (default: 3)', '3')
   .option('--timeout <seconds>', 'LLM request timeout in seconds (default: disabled)')
   .option('--retries <n>', 'Max LLM retry attempts per request (default: 3)')

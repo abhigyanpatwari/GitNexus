@@ -1982,7 +1982,8 @@ export interface CLIConfig {
     | 'cursor'
     | 'claude'
     | 'codex'
-    | 'opencode';
+    | 'opencode'
+    | 'minimax';
   cursorModel?: string;
   claudeModel?: string;
   codexModel?: string;
