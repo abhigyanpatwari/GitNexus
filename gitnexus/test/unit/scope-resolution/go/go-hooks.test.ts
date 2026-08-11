@@ -288,10 +288,10 @@ function inheritsSite(name: string, inScope: ScopeId): ReferenceSite {
  * it explicitly.
  */
 function implIds(
-  result: Map<string, readonly { readonly structDefId: string }[]>,
+  result: { readonly implementations: Map<string, readonly { readonly structDefId: string }[]> },
   ifaceId: string,
 ): string[] | undefined {
-  const found = result.get(ifaceId);
+  const found = result.implementations.get(ifaceId);
   // Deliberately NOT sorted: several rows below assert detection ORDER
   // (shallowest-promoted-first), which sorting would silently destroy.
   return found === undefined ? undefined : found.map((i) => i.structDefId);
@@ -381,7 +381,7 @@ describe('Go structural interface detection', () => {
     );
 
     expect(implIds(result, iface.nodeId)).toEqual([struct.nodeId]);
-    expect(result.get(iface.nodeId)?.[0]?.receiverForm).toBe('pointer');
+    expect(result.implementations.get(iface.nodeId)?.[0]?.receiverForm).toBe('pointer');
   });
 
   it('rejects same-name methods with incompatible parameter types', () => {
@@ -412,7 +412,7 @@ describe('Go structural interface detection', () => {
       {} as any,
     );
 
-    expect(result.get(iface.nodeId)).toBeUndefined();
+    expect(result.implementations.get(iface.nodeId)).toBeUndefined();
   });
 
   it('preserves Go parameter type shape when checking signatures', () => {
@@ -443,7 +443,7 @@ describe('Go structural interface detection', () => {
       {} as any,
     );
 
-    expect(result.get(iface.nodeId)).toBeUndefined();
+    expect(result.implementations.get(iface.nodeId)).toBeUndefined();
   });
 
   it('does not conflate variadic and slice parameter types in interface signatures', () => {
@@ -474,7 +474,7 @@ describe('Go structural interface detection', () => {
       {} as any,
     );
 
-    expect(result.get(iface.nodeId)).toBeUndefined();
+    expect(result.implementations.get(iface.nodeId)).toBeUndefined();
   });
 
   it('preserves variadic element package identity when checking signatures', () => {
@@ -515,7 +515,7 @@ describe('Go structural interface detection', () => {
       {} as any,
     );
 
-    expect(result.get(iface.nodeId)).toBeUndefined();
+    expect(result.implementations.get(iface.nodeId)).toBeUndefined();
   });
 
   it('requires methods inherited from embedded interfaces', () => {
@@ -562,7 +562,7 @@ describe('Go structural interface detection', () => {
       {} as any,
     );
 
-    expect(result.get(readCloser.nodeId)).toBeUndefined();
+    expect(result.implementations.get(readCloser.nodeId)).toBeUndefined();
   });
 
   it('accepts structs implementing methods from embedded interfaces', () => {
@@ -907,8 +907,8 @@ describe('Go structural interface detection', () => {
       {} as any,
     );
 
-    expect(result.get(ifaceA.nodeId)).toBeUndefined();
-    expect(result.get(ifaceB.nodeId)).toBeUndefined();
+    expect(result.implementations.get(ifaceA.nodeId)).toBeUndefined();
+    expect(result.implementations.get(ifaceB.nodeId)).toBeUndefined();
   });
 
   it('allows one struct to satisfy multiple unrelated interfaces', () => {
@@ -981,7 +981,7 @@ describe('Go structural interface detection', () => {
       {} as any,
     );
 
-    expect(result.get(readCloser.nodeId)).toBeUndefined();
+    expect(result.implementations.get(readCloser.nodeId)).toBeUndefined();
   });
 
   it('allows embedded empty interfaces to contribute no required methods', () => {
@@ -1036,7 +1036,7 @@ describe('Go structural interface detection', () => {
       {} as any,
     );
 
-    expect(result.get(iface.nodeId)).toBeUndefined();
+    expect(result.implementations.get(iface.nodeId)).toBeUndefined();
   });
 
   it('does not match signatures with unresolved import-qualified types', () => {
@@ -1061,7 +1061,84 @@ describe('Go structural interface detection', () => {
       {} as any,
     );
 
-    expect(result.get(iface.nodeId)).toBeUndefined();
+    expect(result.implementations.get(iface.nodeId)).toBeUndefined();
+    // …but it is NOT reported as a decided negative. Nothing about `missing.User`
+    // was ever compared, and a consumer that reads the empty implementor list as
+    // "nobody implements Saver" is reading a question as an answer (#2873).
+    expect(result.undecided).toEqual([
+      {
+        interfaceDefId: iface.nodeId,
+        interfaceName: 'Saver',
+        filePath: 'repo.go',
+        undecidedCandidates: 1,
+      },
+    ]);
+  });
+
+  it('reports a decided mismatch as decided, with nothing undecided', () => {
+    const iface = goDef('iface:Saver', 'Interface', 'Saver');
+    const struct = goDef('struct:Repo', 'Struct', 'Repo');
+    const ifaceSave = goDef('iface:Saver.Save', 'Method', 'Saver.Save', iface.nodeId, {
+      parameterCount: 1,
+      requiredParameterCount: 1,
+      parameterTypes: ['string'],
+      returnType: 'error',
+    });
+    const structSave = goDef('struct:Repo.Save', 'Method', 'Repo.Save', struct.nodeId, {
+      parameterCount: 1,
+      requiredParameterCount: 1,
+      parameterTypes: ['int'],
+      returnType: 'error',
+    });
+
+    const result = detectGoInterfaceImplementations(
+      parsedGoDefs([iface, struct, ifaceSave, structSave]),
+      emptyIndexes,
+      {} as any,
+    );
+
+    expect(result.implementations.get(iface.nodeId)).toBeUndefined();
+    expect(result.undecided).toEqual([]);
+  });
+
+  // A hard no anywhere in the method set beats an unknown elsewhere: the type
+  // provably lacks a required method, so the answer is trustworthy.
+  it('prefers a decided mismatch over an unknown in the same method set', () => {
+    const iface = goDef('iface:Saver', 'Interface', 'Saver');
+    const struct = goDef('struct:Repo', 'Struct', 'Repo');
+    const ifaceSave = goDef('iface:Saver.Save', 'Method', 'Saver.Save', iface.nodeId, {
+      parameterCount: 1,
+      requiredParameterCount: 1,
+      parameterTypes: ['missing.User'],
+      returnType: 'error',
+    });
+    const ifaceLoad = goDef('iface:Saver.Load', 'Method', 'Saver.Load', iface.nodeId, {
+      parameterCount: 1,
+      requiredParameterCount: 1,
+      parameterTypes: ['string'],
+      returnType: 'error',
+    });
+    const structSave = goDef('struct:Repo.Save', 'Method', 'Repo.Save', struct.nodeId, {
+      parameterCount: 1,
+      requiredParameterCount: 1,
+      parameterTypes: ['missing.User'],
+      returnType: 'error',
+    });
+    const structLoad = goDef('struct:Repo.Load', 'Method', 'Repo.Load', struct.nodeId, {
+      parameterCount: 1,
+      requiredParameterCount: 1,
+      parameterTypes: ['int'],
+      returnType: 'error',
+    });
+
+    const result = detectGoInterfaceImplementations(
+      parsedGoDefs([iface, struct, ifaceSave, ifaceLoad, structSave, structLoad]),
+      emptyIndexes,
+      {} as any,
+    );
+
+    expect(result.implementations.get(iface.nodeId)).toBeUndefined();
+    expect(result.undecided).toEqual([]);
   });
 
   // #2873: an out-of-repo package resolves to no file, so it used to be absent
@@ -1202,7 +1279,7 @@ describe('Go structural interface detection', () => {
       {} as any,
     );
 
-    expect(result.get(iface.nodeId)).toBeUndefined();
+    expect(result.implementations.get(iface.nodeId)).toBeUndefined();
   });
 
   // The fallback fills gaps, it does not compete: an import that DID resolve
@@ -1337,7 +1414,7 @@ describe('Go structural interface detection', () => {
       {} as any,
     );
 
-    expect(result.get(iface.nodeId)).toBeUndefined();
+    expect(result.implementations.get(iface.nodeId)).toBeUndefined();
   });
 
   // Go's dot-import has no qualifier to register, and the extractor gives it a
@@ -1367,7 +1444,7 @@ describe('Go structural interface detection', () => {
       {} as any,
     );
 
-    expect(result.get(iface.nodeId)).toBeUndefined();
+    expect(result.implementations.get(iface.nodeId)).toBeUndefined();
   });
 
   it('rejects methods missing an interface-required return type', () => {
@@ -1395,7 +1472,7 @@ describe('Go structural interface detection', () => {
       {} as any,
     );
 
-    expect(result.get(iface.nodeId)).toBeUndefined();
+    expect(result.implementations.get(iface.nodeId)).toBeUndefined();
   });
 
   it('rejects methods with fewer grouped return values than the interface requires', () => {
@@ -1424,7 +1501,7 @@ describe('Go structural interface detection', () => {
       {} as any,
     );
 
-    expect(result.get(iface.nodeId)).toBeUndefined();
+    expect(result.implementations.get(iface.nodeId)).toBeUndefined();
   });
 
   it('rejects interface methods without enough signature metadata', () => {
@@ -1450,7 +1527,7 @@ describe('Go structural interface detection', () => {
       {} as any,
     );
 
-    expect(result.get(iface.nodeId)).toBeUndefined();
+    expect(result.implementations.get(iface.nodeId)).toBeUndefined();
   });
 });
 

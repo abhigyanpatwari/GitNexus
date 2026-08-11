@@ -624,8 +624,8 @@ describe('Go structural interface detection O(n²) regression tripwire', () => {
     const elapsedMs = Date.now() - start;
 
     // Sanity: each interface should be implemented by all STRUCT_COUNT structs
-    expect(result.size).toBe(IFACE_COUNT);
-    for (const [, impls] of result) {
+    expect(result.implementations.size).toBe(IFACE_COUNT);
+    for (const [, impls] of result.implementations) {
       expect(impls).toHaveLength(STRUCT_COUNT);
     }
     // Regression guard
@@ -679,7 +679,7 @@ describe.skipIf(!BENCH_ENABLED)('Go structural interface detection benchmark', (
         if (elapsed < bestMs) {
           bestMs = elapsed;
           implEdges = 0;
-          for (const [, impls] of result) implEdges += impls.length;
+          for (const [, impls] of result.implementations) implEdges += impls.length;
         }
       }
 
@@ -762,7 +762,7 @@ describe.skipIf(!BENCH_ENABLED)('Go structural interface detection split-phase b
         if (elapsed < bestTotal) {
           bestTotal = elapsed;
           bestImplEdges = 0;
-          for (const [, impls] of result) bestImplEdges += impls.length;
+          for (const [, impls] of result.implementations) bestImplEdges += impls.length;
         }
       }
 
