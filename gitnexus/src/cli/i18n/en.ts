@@ -65,6 +65,8 @@ export const en = {
   'tool.warn.unknownKind':
     "--kind '{{kind}}' is not a known symbol kind (e.g. Function, Class, Method); it will not narrow the result.",
   'tool.detectChanges.noChanges': 'No changes detected.',
+  'tool.detectChanges.partial':
+    'PARTIAL RESULT: a graph query failed, so changed symbols may be missing. Do not read this as a clean pre-commit check.',
   'tool.detectChanges.changesSummary': 'Changes: {{files}} files, {{symbols}} symbols',
   'tool.detectChanges.affectedProcesses': 'Affected processes: {{count}}',
   'tool.detectChanges.riskLevel': 'Risk level: {{risk}}',

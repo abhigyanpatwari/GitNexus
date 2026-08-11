@@ -25,6 +25,7 @@ type AffectedProcess = {
 
 type DetectChangesResult = {
   error?: unknown;
+  partial?: boolean;
   summary?: DetectChangesSummary;
   changed_symbols?: ChangedSymbol[];
   affected_processes?: AffectedProcess[];
@@ -35,11 +36,18 @@ export function formatDetectChangesResult(result: unknown): string {
   if (payload.error) return t('common.error', { message: String(payload.error) });
 
   const summary = payload.summary ?? {};
+  // A swallowed query failure sets `partial` and leaves the counts at zero
+  // (#2283). Printing only "No changes detected." turns a degraded run into a
+  // clean bill of health for the pre-commit gate, so say so either way.
+  const partialNote = payload.partial ? t('tool.detectChanges.partial') : null;
+
   if ((summary.changed_count ?? 0) === 0) {
-    return t('tool.detectChanges.noChanges');
+    const noChanges = t('tool.detectChanges.noChanges');
+    return partialNote ? `${partialNote}\n${noChanges}` : noChanges;
   }
 
   const lines: string[] = [];
+  if (partialNote) lines.push(partialNote, '');
   lines.push(
     t('tool.detectChanges.changesSummary', {
       files: summary.changed_files ?? 0,
@@ -59,7 +67,9 @@ export function formatDetectChangesResult(result: unknown): string {
     lines.push(t('tool.detectChanges.changedSymbols'));
     const shown = changed.slice(0, 15);
     for (const symbol of shown) {
-      lines.push(`  ${symbol.type ?? 'Symbol'} ${symbol.name ?? '?'} → ${symbol.filePath ?? '?'}`);
+      // `||`, not `??`: a node whose label came back as an empty string (several
+      // node types do — see enrichCandidateLabels) still needs the placeholder.
+      lines.push(`  ${symbol.type || 'Symbol'} ${symbol.name || '?'} → ${symbol.filePath || '?'}`);
     }
     // Overflow is measured against the TRUE total (summary.changed_count), not
     // the array length — the array may already be `--limit`-sliced, so using its

@@ -520,6 +520,24 @@ describe('formatDetectChangesResult', () => {
     expect(result).toBe('No changes detected.');
   });
 
+  it('flags a degraded run instead of printing a clean bill of health (#2283)', () => {
+    // The backend sets `partial` when a graph query is swallowed, and leaves the
+    // counts at zero. Without the note the pre-commit gate reads as "clean".
+    const result = formatDetectChangesResult({ partial: true, summary: { changed_count: 0 } });
+    expect(result).toContain('PARTIAL RESULT');
+    expect(result).toContain('No changes detected.');
+  });
+
+  it('flags a degraded run that still found symbols', () => {
+    const result = formatDetectChangesResult({
+      partial: true,
+      summary: { changed_files: 1, changed_count: 1, affected_count: 0, risk_level: 'LOW' },
+      changed_symbols: [{ type: 'Function', name: 'foo', filePath: 'src/a.ts' }],
+    });
+    expect(result).toContain('PARTIAL RESULT');
+    expect(result).toContain('foo');
+  });
+
   it('formats changes with affected processes', () => {
     const result = formatDetectChangesResult({
       summary: { changed_files: 2, changed_count: 3, affected_count: 1, risk_level: 'MEDIUM' },
