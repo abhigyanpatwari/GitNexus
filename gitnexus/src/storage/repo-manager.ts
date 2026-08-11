@@ -18,7 +18,7 @@ import fs from 'fs/promises';
 import { realpathSync } from 'fs';
 import path from 'path';
 import os from 'os';
-import { getInferredRepoName, resolveRepoIdentityRoot } from './git.js';
+import { getInferredRepoName, resolveRepoIdentityRoot, stripUrlCredentials } from './git.js';
 import { stripWindowsLongPathPrefix } from '../lib/utils.js';
 import { writeFileAtomic } from './fs-atomic.js';
 import { logger } from '../core/logger.js';
@@ -1116,13 +1116,34 @@ const withRegistryLock = async <T>(operation: () => Promise<T>): Promise<T> => {
 };
 
 /**
+ * Drop credentials from every entry's `remoteUrl` (#2914).
+ *
+ * Applied on BOTH registry edges. Capture-time stripping in `getRemoteUrl`
+ * only covers values this version writes; a `registry.json` (or a per-repo
+ * meta that a re-register copies forward) written by an older version still
+ * holds the credential. Reading through here keeps it out of every consumer —
+ * `listRegisteredRepos`, MCP `list_repos`, `gitnexus list`, group sync — and
+ * writing through here means the next registry write drops it at rest instead
+ * of round-tripping it back to disk.
+ *
+ * Sanitised values compare equal to a freshly captured `getRemoteUrl`, so
+ * sibling-clone matching (#2054) is unaffected: both sides lose the same span.
+ */
+const sanitizeEntries = (entries: RegistryEntry[]): RegistryEntry[] =>
+  entries.map((e) => {
+    if (!e.remoteUrl) return e;
+    const cleaned = stripUrlCredentials(e.remoteUrl);
+    return cleaned === e.remoteUrl ? e : { ...e, remoteUrl: cleaned };
+  });
+
+/**
  * Read the global registry. Returns empty array if not found.
  */
 export const readRegistry = async (): Promise<RegistryEntry[]> => {
   try {
     const raw = await fs.readFile(getGlobalRegistryPath(), 'utf-8');
     const data = JSON.parse(raw);
-    return Array.isArray(data) ? data : [];
+    return Array.isArray(data) ? sanitizeEntries(data) : [];
   } catch {
     return [];
   }
@@ -1142,7 +1163,11 @@ export const readRegistry = async (): Promise<RegistryEntry[]> => {
  */
 const writeRegistry = async (entries: RegistryEntry[], attempts?: number): Promise<void> => {
   await fs.mkdir(getGlobalDir(), { recursive: true });
-  await writeFileAtomic(getGlobalRegistryPath(), JSON.stringify(entries, null, 2), attempts);
+  await writeFileAtomic(
+    getGlobalRegistryPath(),
+    JSON.stringify(sanitizeEntries(entries), null, 2),
+    attempts,
+  );
 };
 
 /**
