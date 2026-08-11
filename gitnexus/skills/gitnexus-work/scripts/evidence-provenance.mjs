@@ -663,7 +663,7 @@ const ANCHORED_DIRECTORY_FLAGS =
 function anchoredAbsenceRoot(repo, cache) {
   const cached = cache.get('');
   if (cached) return cached;
-  const fd = anchoringBackend().openDirectory(repo, ANCHORED_DIRECTORY_FLAGS);
+  const fd = openVerifiedDirectory(repo, ANCHORED_DIRECTORY_FLAGS);
   const handle = {
     fd,
     expectedPath: repo,
@@ -723,7 +723,7 @@ function recordAnchoredAbsence(repo, repoPath, mutationGuards, cache) {
     if (childStat.isSymbolicLink() || !childStat.isDirectory()) {
       throw new Error(`Refusing a non-directory parent while anchoring absence for ${repoPath}`);
     }
-    const childFd = backend.openDirectory(child.path, ANCHORED_DIRECTORY_FLAGS);
+    const childFd = openVerifiedDirectory(child.path, ANCHORED_DIRECTORY_FLAGS);
     let next;
     try {
       if (!backend.descriptorIsVerifiedChild(childFd, childStat)) {
@@ -978,21 +978,30 @@ function descriptorPath(fd, childName) {
   return childName === undefined ? base : path.join(base, childName);
 }
 
-// O_NOFOLLOW_ANY (macOS 11+) rejects a symlink anywhere in the path instead of
-// only in the final component. XNU's open1() does not validate unrecognized open
-// flag bits, so on an older kernel the bit is silently ignored rather than
-// rejected — there is nothing to probe for and nothing to fall back to. It is
-// hardening layered over the dev/ino/mode comparison that actually decides
-// whether an open landed on the verified inode, never a substitute for it.
-const DARWIN_O_NOFOLLOW_ANY = 0x20000000;
+// Directory opens are plain O_RDONLY|O_DIRECTORY|O_NOFOLLOW|O_CLOEXEC on both
+// platforms, and deliberately nothing else.
+//
+// O_NOFOLLOW_ANY (macOS 11+) used to be ORed in here on the theory that XNU
+// ignores unrecognized open flag bits, so it would be inert where unsupported.
+// That was wrong: combined with O_DIRECTORY macOS rejects it outright with
+// EINVAL, and every directory open on Darwin failed. It is gone and is not
+// coming back behind a probe or a degrade-on-EINVAL path — the per-component
+// O_NOFOLLOW walk is what delivers the guarantee. Rust's cap-std, the closest
+// reference implementation of this problem, has not adopted O_NOFOLLOW_ANY
+// either (their issue #179 is still open).
+function openVerifiedDirectory(absolute, flags) {
+  return fs.openSync(absolute, flags);
+}
 
-function darwinHardenedOpen(absolute, flags, mode) {
-  // O_NONBLOCK keeps a swapped-in FIFO from wedging the process on open; a FIFO
-  // still fails the identity comparison immediately afterwards.
-  const hardened = flags | (fs.constants.O_NONBLOCK ?? 0) | DARWIN_O_NOFOLLOW_ANY;
+// File opens additionally get O_NONBLOCK, which directory opens do not need:
+// it stops a FIFO swapped in at the target name from wedging the process on
+// open. The identity comparison that follows rejects the FIFO anyway, but only
+// if we ever get as far as running it.
+function openVerifiedFile(absolute, flags, mode) {
+  const nonBlocking = flags | (fs.constants.O_NONBLOCK ?? 0);
   return mode === undefined
-    ? fs.openSync(absolute, hardened)
-    : fs.openSync(absolute, hardened, mode);
+    ? fs.openSync(absolute, nonBlocking)
+    : fs.openSync(absolute, nonBlocking, mode);
 }
 
 // The publish primitive, identical on both platforms.
@@ -1010,13 +1019,40 @@ function darwinHardenedOpen(absolute, flags, mode) {
 //
 // On Linux both paths are /proc/self/fd/<fd>/<name>, so the publish is anchored
 // to the held parent descriptors exactly like every other operation.
+// link(2) BUGS: "On NFS filesystems, the return code may be wrong in case the NFS
+// server performs the link creation and dies before it can say so. Use stat(2) to
+// find out if the link got created." open(2) NOTES gives the remedy this
+// implements: on a reported failure, stat the source and see whether its link
+// count reached 2. A false positive would need someone to have hardlinked a
+// 16-random-byte name inside a directory we hold open — and validateCommittedPlan
+// still proves the destination is the exact temporary inode afterwards.
+function linkCreatedDespiteError(sourcePath) {
+  try {
+    return fs.statSync(sourcePath, { bigint: true }).nlink === 2n;
+  } catch {
+    return false;
+  }
+}
+
 function linkNoReplace(sourcePath, destinationPath) {
   try {
     fs.linkSync(sourcePath, destinationPath);
   } catch (error) {
     // Callers treat "destination taken" as a distinct outcome, not a failure.
     if (error?.code === 'EEXIST') return false;
-    throw error;
+    if (!linkCreatedDespiteError(sourcePath)) {
+      // FAT, Coda, and some SMB/FUSE/virtiofs mounts have no hardlinks at all.
+      // Git falls back to rename here, but git can afford to lose collision
+      // detection because its objects are content-addressed; a plan destination
+      // is a plain name, so a replacing rename would silently clobber whatever
+      // is already there. Refuse loudly instead.
+      if (error?.code === 'EPERM' || error?.code === 'ENOTSUP' || error?.code === 'EMLINK') {
+        throw new Error(
+          `Generated-plan publication requires hard links, which this filesystem refused (${error.code}); refusing to fall back to a replacing rename`,
+        );
+      }
+      throw error;
+    }
   }
   try {
     fs.unlinkSync(sourcePath);
@@ -1107,7 +1143,7 @@ function darwinVerifiedOperation(holders, run) {
 // function unless it refers to the inode the caller already verified by name, so
 // a lexical open that landed anywhere else cannot be used by accident.
 function darwinAdoptVerifiedFile(ref, expectedStat, flags) {
-  const fd = darwinHardenedOpen(ref.path, flags);
+  const fd = openVerifiedFile(ref.path, flags);
   let opened;
   try {
     opened = fs.fstatSync(fd, { bigint: true });
@@ -1125,9 +1161,6 @@ function darwinAdoptVerifiedFile(ref, expectedStat, flags) {
 const LINUX_ANCHORING = {
   childPath(dirHandle, childName) {
     return descriptorPath(dirHandle.fd, childName);
-  },
-  openDirectory(absolute, flags) {
-    return fs.openSync(absolute, flags);
   },
   lstatChild(ref) {
     return fs.lstatSync(ref.path, { bigint: true });
@@ -1172,9 +1205,6 @@ const DARWIN_ANCHORING = {
   childPath(dirHandle, childName) {
     return path.join(dirHandle.expectedPath, childName);
   },
-  openDirectory(absolute, flags) {
-    return darwinHardenedOpen(absolute, flags);
-  },
   lstatChild(ref) {
     return darwinVerifiedOperation(ref.dir, () => fs.lstatSync(ref.path, { bigint: true }));
   },
@@ -1195,7 +1225,7 @@ const DARWIN_ANCHORING = {
   createChild(ref, flags, mode) {
     // O_CREAT|O_EXCL|O_NOFOLLOW is atomic at the leaf, so the only thing the
     // chain verification has to cover is which directory the leaf landed in.
-    return darwinVerifiedOperation(ref.dir, () => darwinHardenedOpen(ref.path, flags, mode));
+    return darwinVerifiedOperation(ref.dir, () => openVerifiedFile(ref.path, flags, mode));
   },
   mkdirChild(ref, mode) {
     darwinVerifiedOperation(ref.dir, () => fs.mkdirSync(ref.path, { mode }));
@@ -1261,7 +1291,29 @@ function anchoringBackend() {
   return process.platform === 'darwin' ? DARWIN_ANCHORING : LINUX_ANCHORING;
 }
 
+// The single place a name becomes a path, and therefore the right place to
+// enforce that a name is one ordinary component.
+//
+// A trailing separator is the sharp edge here, not a tidiness concern:
+// open(path, O_NOFOLLOW) FOLLOWS a symlink when path ends in "/" — the trap
+// behind CVE-2026-39822 / golang/go#79005, which let os.Root escape its own
+// root. path.join preserves that trailing slash, so a component carrying one
+// would turn every no-follow open in this file into a following one.
+// normalizeRepoPath already rejects such components upstream; this is the
+// chokepoint that makes it true for every caller, including the generated
+// temporary and vault names that never pass through it.
 function anchoredChild(dirHandle, childName) {
+  if (
+    typeof childName !== 'string' ||
+    childName === '' ||
+    childName === '.' ||
+    childName === '..' ||
+    childName.includes('/') ||
+    childName.includes('\\') ||
+    childName.includes('\0')
+  ) {
+    throw new Error(`Refusing to resolve ${JSON.stringify(childName)} as a single path component`);
+  }
   return {
     dir: dirHandle,
     name: childName,
@@ -1294,7 +1346,7 @@ function openPlanParent(
   // that, and the descriptors are what pin each recorded inode against reuse.
   const descriptors = [];
   try {
-    let currentFd = backend.openDirectory(repo, flags);
+    let currentFd = openVerifiedDirectory(repo, flags);
     descriptors.push(currentFd);
     const rootStat = fs.fstatSync(currentFd, { bigint: true });
     const chain = [{ expectedPath: repo, identity: stableDirectoryIdentity(rootStat) }];
@@ -1320,7 +1372,7 @@ function openPlanParent(
         throw new Error(`${purpose} parent is not a real directory: ${traversed.join('/')}`);
       }
       const parentFd = currentFd;
-      const childFd = backend.openDirectory(child.path, flags);
+      const childFd = openVerifiedDirectory(child.path, flags);
       descriptors.push(childFd);
       currentFd = childFd;
       if (created) {
@@ -1961,6 +2013,15 @@ export function writePlanSafely({
     if (!backend.publishNoReplace(tempRef, finalRef)) {
       throw new Error('Generated-plan publication was refused because the destination raced');
     }
+    // link() creates a directory entry, so it needs the parent fsync that rename
+    // needed: the file's own bytes were fsynced through tempFd before this point,
+    // and this makes the name that now reaches them durable too. Skipping it is
+    // the step write-file-atomic omits and maildir, git and atomicwrites all
+    // mandate.
+    //
+    // Honest limitation: on macOS fsync is not a write barrier — the durable
+    // primitive there is fcntl(F_FULLFSYNC), which Node does not expose. A
+    // macOS plan write is therefore as durable as fsync makes it and no more.
     fs.fsyncSync(parentHandle.fd);
     testHooks?.afterPublication?.({ fd: parentHandle.fd, finalPath: finalRef.path });
     testHooks?.afterRename?.({ fd: parentHandle.fd, finalPath: finalRef.path });

@@ -684,6 +684,12 @@ function directoryIdentity(stat: fs.BigIntStats): string {
 // only the path differs. Chosen from the real platform, never a spoofed one.
 const OPEN_DESCRIPTOR_DIRECTORY = process.platform === 'darwin' ? '/dev/fd' : '/proc/self/fd';
 
+// O_CLOEXEC is POSIX-only and absent from the Node typings, so the helper reads
+// it as `?? 0`; the fixtures below have to compose the same value the same way.
+const O_CLOEXEC = (fs.constants as typeof fs.constants & { O_CLOEXEC?: number }).O_CLOEXEC ?? 0;
+const VERIFIED_DIRECTORY_FLAGS =
+  fs.constants.O_RDONLY | fs.constants.O_DIRECTORY | fs.constants.O_NOFOLLOW | O_CLOEXEC;
+
 SAFE_WRITE_FIXTURES('generated-plan safe writer', () => {
   it('reads an exact descriptor-anchored plan receipt through both API and CLI', async () => {
     const repo = createBaseRepo('gitnexus-plan-reader-');
@@ -1627,6 +1633,137 @@ describe('generated-plan anchoring capability gate', () => {
             released.has(identityOf(directory)) && !baseline.has(identityOf(directory)),
         ),
       ).toEqual([]);
+    } finally {
+      fs.rmSync(repo, { recursive: true, force: true });
+    }
+  });
+
+  // macOS rejected O_NOFOLLOW_ANY combined with O_DIRECTORY outright (EINVAL),
+  // which took out every directory open on Darwin. The flags are pinned here so
+  // the next "this bit is probably harmless" idea fails on Linux first.
+  DARWIN_BACKEND('opens directories with exactly the four verified flags', async () => {
+    const repo = createBaseRepo('gitnexus-plan-flags-');
+    const openFlags: number[] = [];
+    const realOpen = fs.openSync.bind(fs) as typeof fs.openSync;
+    try {
+      const planner = await importHelper(PLAN_HELPER);
+      const spy = vi.spyOn(fs, 'openSync').mockImplementation(((
+        target: fs.PathLike,
+        flags: number,
+        mode?: fs.Mode,
+      ) => {
+        openFlags.push(flags);
+        return realOpen(target, flags, mode);
+      }) as typeof fs.openSync);
+      try {
+        withPlatform('darwin', () => {
+          planner.writePlanSafely({
+            repo,
+            generatedPlanPath: SAFE_PLAN_PATH,
+            contents: '# flags\n',
+          });
+        });
+      } finally {
+        spy.mockRestore();
+      }
+
+      const directoryOpens = openFlags.filter(
+        (flags) => (flags & fs.constants.O_DIRECTORY) === fs.constants.O_DIRECTORY,
+      );
+      expect(directoryOpens).not.toHaveLength(0);
+      expect(directoryOpens.filter((flags) => flags !== VERIFIED_DIRECTORY_FLAGS)).toEqual([]);
+      // O_NOFOLLOW_ANY must not reappear on any open, directory or file.
+      expect(openFlags.filter((flags) => (flags & 0x20000000) !== 0)).toEqual([]);
+      // Every no-follow open keeps O_NOFOLLOW; nothing silently drops it.
+      expect(openFlags.filter((flags) => (flags & fs.constants.O_NOFOLLOW) === 0)).toEqual([]);
+    } finally {
+      fs.rmSync(repo, { recursive: true, force: true });
+    }
+  });
+
+  // CVE-2026-39822 / golang/go#79005: open(path, O_NOFOLLOW) follows a symlink
+  // when path ends in "/", which is how os.Root escaped its own root.
+  DARWIN_BACKEND('never resolves a component carrying a trailing separator', async () => {
+    const repo = createBaseRepo('gitnexus-plan-slash-');
+    const outside = fs.mkdtempSync(path.join(os.tmpdir(), 'gitnexus-plan-slash-outside-'));
+    const openedPaths: string[] = [];
+    const realOpen = fs.openSync.bind(fs) as typeof fs.openSync;
+    try {
+      fs.writeFileSync(path.join(outside, 'loot.md'), 'loot\n');
+      const decoy = path.join(repo, 'decoy');
+      fs.symlinkSync(outside, decoy);
+      // The trap is real on this host: the same open is refused without the
+      // slash and follows straight into the attacker's directory with it.
+      expect(() => fs.closeSync(fs.openSync(decoy, VERIFIED_DIRECTORY_FLAGS))).toThrow();
+      const followed = fs.openSync(`${decoy}/`, VERIFIED_DIRECTORY_FLAGS);
+      try {
+        expect(fs.readdirSync(`${decoy}/`)).toContain('loot.md');
+      } finally {
+        fs.closeSync(followed);
+      }
+
+      const planner = await importHelper(PLAN_HELPER);
+      const spy = vi.spyOn(fs, 'openSync').mockImplementation(((
+        target: fs.PathLike,
+        flags: number,
+        mode?: fs.Mode,
+      ) => {
+        openedPaths.push(String(target));
+        return realOpen(target, flags, mode);
+      }) as typeof fs.openSync);
+      try {
+        withPlatform('darwin', () => {
+          planner.writePlanSafely({
+            repo,
+            generatedPlanPath: SAFE_PLAN_PATH,
+            contents: '# no trailing slash\n',
+          });
+        });
+      } finally {
+        spy.mockRestore();
+      }
+      expect(openedPaths).not.toHaveLength(0);
+      expect(openedPaths.filter((entry) => entry !== '/' && entry.endsWith('/'))).toEqual([]);
+
+      // And a plan path that smuggles one in is refused before any open.
+      expect(() =>
+        planner.writePlanSafely({
+          repo,
+          generatedPlanPath: `${SAFE_PLAN_PATH}/`,
+          contents: '# blocked\n',
+        }),
+      ).toThrow(/normalized repo-relative path|restricted to docs\/plans/);
+    } finally {
+      fs.rmSync(repo, { recursive: true, force: true });
+      fs.rmSync(outside, { recursive: true, force: true });
+    }
+  });
+
+  it('refuses a filesystem without hard links instead of replacing the destination', async () => {
+    const repo = createBaseRepo('gitnexus-plan-nolinks-');
+    try {
+      const planner = await importHelper(PLAN_HELPER);
+      const spy = vi.spyOn(fs, 'linkSync').mockImplementation(() => {
+        throw Object.assign(new Error('EPERM: operation not permitted, link'), { code: 'EPERM' });
+      });
+      let message = '';
+      try {
+        planner.writePlanSafely({
+          repo,
+          generatedPlanPath: SAFE_PLAN_PATH,
+          contents: '# intended\n',
+        });
+      } catch (error) {
+        message = (error as Error).message;
+      } finally {
+        spy.mockRestore();
+      }
+      expect(message).toMatch(
+        /requires hard links, which this filesystem refused \(EPERM\); refusing to fall back to a replacing rename/,
+      );
+      // Nothing was published, and the intended bytes are still recoverable.
+      expect(fs.existsSync(path.join(repo, SAFE_PLAN_PATH))).toBe(false);
+      expect(artifactContents(repo, message, 'intended-plan')).toBe('# intended\n');
     } finally {
       fs.rmSync(repo, { recursive: true, force: true });
     }
