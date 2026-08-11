@@ -727,8 +727,10 @@ function unwiredLanguage(where, lang) {
  * a last segment and no two files share a basename. Every index bucket holds
  * exactly one entry. A nested same-name directory in one repo slice is the
  * shape whose handling the first-`indexOf` tie-break decides (see
- * package-dir-index.ts), and the shape Kotlin's `dirChildren` resolves the same
- * way.
+ * package-dir-index.ts). Kotlin no longer applies that tie-break — #2881
+ * removed it there and only there — so this one corpus shape is deliberately
+ * scored two different ways: the kotlin arm resolves its `d % 7` slice and the
+ * go, csharp and java arms still miss on theirs.
  */
 function uniqueDir(lang, d, i) {
   if (lang === 'go') return d % 7 === 0 ? `src/pkg${d}/internal/pkg${d}` : `src/pkg${d}`;
@@ -1246,13 +1248,18 @@ function collideTarget(lang, { local, r, d, j, dirs }) {
           `package:ext${(r >>> 4) % 97}/other/mod${(r >>> 4) % 8}.dart`;
   }
   if (lang === 'kotlin') {
-    // Same wildcard share as the unique arm; `vendor${d}` is the collide
-    // layout's spelling of a package that exists nowhere.
+    // Same wildcard share as the unique arm. This used to send the `d % 7`
+    // nested slice to `com.example.vendor${d}`, a package that exists nowhere,
+    // to mirror the unique arm's nested slice — which missed, because
+    // `dirChildren` required the parent to be the FIRST occurrence of its own
+    // name and `…/com/example/pkg${d}/inner/pkg${d}` therefore did not belong to
+    // `pkg${d}`. #2881 removed that rule, so the unique arm's nested wildcards
+    // resolve and the mirror has to as well, or this arm stops resolving as
+    // many imports as `small` — which is the invariant that makes the two
+    // timings comparable, and it is asserted below.
     return local
       ? (r >>> 3) % 3 === 0
-        ? d % 7 === 0
-          ? `com.example.vendor${d}.*`
-          : `com.example.models.*`
+        ? `com.example.models.*`
         : `com.example.models.File${j}`
       : (r >>> 3) % 2 === 0
         ? ['java.util.List', 'kotlin.collections.Map', 'kotlinx.coroutines.flow.Flow'][

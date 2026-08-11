@@ -156,21 +156,21 @@ function findByProgressivePrefixStrip(index: KotlinFileIndex, pathLike: string):
  * The shared `buildSuffixIndex` (`import-resolvers/utils.ts`, used by C#, Ruby,
  * Vue and TypeScript) is deliberately NOT reused — the same call Python
  * documents at `python/import-target.ts`. Run side by side against this
- * resolver, four probes out of five diverge:
+ * resolver, three probes out of five diverge:
  *
  *  - `['deep/util/User.kt', 'util/User.kt']` for `util.User` — it conflates
  *    exact and proper-suffix matches in one map, so the deep path wins where
  *    the scan returned the exact one;
  *  - `['deep/util/User.kt', 'util/User.kts']` for `util.User` — its keys carry
  *    the extension, so a `.kt` SUFFIX beats a `.kts` EXACT;
- *  - `['data/src/…/data/Repo.kt']` for `data.getRepo` — it indexes every
- *    directory suffix with no first-occurrence rule, so it fans out where the
- *    scan returned null;
  *  - `['models/A.kts', 'models/B.kt']` for `models.getThing` — it splits the
  *    package into `:kt` and `:kts` buckets instead of returning both in set
  *    order.
  *
- * Each divergence is an edge that would move in every Kotlin repository, so
+ * A fourth probe — `['data/src/…/data/Repo.kt']` for `data.getRepo`, where the
+ * shared index fanned out and this one returned null — stopped diverging in
+ * #2881, which removed the first-occurrence rule that caused it. The remaining
+ * three are still edges that would move in every Kotlin repository, so
  * consolidating the two is a behaviour change, not a cleanup.
  */
 interface KotlinFileIndex {
@@ -214,29 +214,37 @@ const getKotlinFileIndex = perFileSet((allFilePaths: ReadonlySet<string>): Kotli
     // matched `norm.startsWith(dir + '/')` and found no '/' after it.
     addChild(dirChildren, dir, raw);
 
-    // A component-suffix of the directory also qualifies — but only under the
-    // rule the scan actually implemented, which is narrower than "the parent
-    // directory is named `s`":
+    // Every component-suffix of the directory also qualifies: `s` is a suffix
+    // of `dir` starting after a '/', so `dir` ends with `/s` by construction
+    // and the file IS a direct child of a directory named `s`.
     //
-    //  - `atRoot` was tested FIRST, so if the path *starts* with `s + '/'` the
-    //    scan used index 0 and the remainder still contained '/', i.e. no
-    //    match — even when a later directory is also named `s`.
-    //  - otherwise it used `indexOf`, the FIRST occurrence of `/s/`. A path
-    //    like `data/src/main/kotlin/com/example/data/Repo.kt` therefore does
-    //    NOT count as a child of `data`: the first `/data/` is not the parent,
-    //    and the scan never looked for a second one.
+    // #2881: this loop used to carry two guards, both inherited from the
+    // pre-index per-import scan rather than from anything Kotlin requires —
+    // `startsWith(s + '/')` skipped the bucket outright, and an `indexOf`
+    // equality demanded that the parent be the FIRST `/s/` in the path. Between
+    // them they dropped the bucket whenever the package name repeated higher up
+    // the tree, so `data/src/main/kotlin/com/example/data/Repo.kt` was not a
+    // child of `data` (leading segment, `startsWith`) and neither was
+    // `top/data/mid/data/Repo.kt` (mid-path, `indexOf`). `import data.helper`
+    // resolved to null in both. Only the fan-out tier was affected —
+    // `data.Repo` answered from `suffixByStem`, which never had such a guard,
+    // which is why the shape looked narrow enough to preserve.
     //
-    // Preserving that exactly keeps this a pure performance change. It is
-    // arguably a bug — the file IS a direct child of a `data` directory — but
-    // fixing it here would silently move edges in every Kotlin repository,
-    // which belongs in its own change with its own fixtures.
+    // Widening is filtered downstream for tier 3, which hands the finalize pass
+    // a candidate list (`findKotlinPackageFiles`), but NOT for the tier-1
+    // fallback, which commits to `children[0]` unfiltered
+    // (`findKotlinDirectoryChild`) — and that unfiltered tier is where most of
+    // the change lands: of the 235 corpus records that moved, 149 are a
+    // different first child and only 32 are a wider fan-out array. Both are
+    // deliberate. A narrower bucket for the first-child tier alone would keep
+    // its answers byte-identical, but it would also leave `import data.*` — a
+    // wildcard, which strips to `data` and lands on exactly that tier —
+    // resolving to null on the very shape this fixes. The bucket is either
+    // right or it is not; there is no version of it that is right for one
+    // consumer and wrong for the other.
     for (let i = 0; i < dir.length; i++) {
       if (dir[i] !== '/') continue;
-      const suffix = dir.slice(i + 1);
-      if (norm.startsWith(`${suffix}/`)) continue;
-      if (norm.indexOf(`/${suffix}/`) === dir.length - suffix.length - 1) {
-        addChild(dirChildren, suffix, raw);
-      }
+      addChild(dirChildren, dir.slice(i + 1), raw);
     }
   }
 

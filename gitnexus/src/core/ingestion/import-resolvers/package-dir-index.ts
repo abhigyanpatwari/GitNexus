@@ -22,6 +22,18 @@
  *     a cleanup and moves edges in every repository that nests a directory name
  *     inside itself (`internal/…/internal`, `Models/…/Models`).
  *
+ * Condition 2 is no longer universal across the codebase. Kotlin does not use
+ * this index — it builds its own `dirChildren` in
+ * `languages/kotlin/import-target.ts` — and #2881 removed the equivalent rule
+ * there, because a root-level package whose name repeats higher in the tree
+ * (`data/src/main/kotlin/com/example/data/Repo.kt` for `import data.helper`)
+ * resolved to null. The languages served here (Go, Java, C#) still carry it and
+ * still have that shape; fixing them means re-baselining three languages and
+ * editing the verbatim pre-change scans that
+ * `test/unit/scope-resolution/import-target-index-parity.test.ts` keeps as the
+ * specification, which is why #2881 did not reach them. Read this comment as
+ * "what these three languages do", not "what package resolution means".
+ *
  * Candidates are narrowed by the directory's LAST segment rather than by
  * indexing every directory suffix: a suffix map costs O(files × depth) entries,
  * which is exactly the memory this codebase runs out of at kernel scale

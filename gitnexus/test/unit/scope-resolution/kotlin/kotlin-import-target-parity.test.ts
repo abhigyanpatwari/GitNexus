@@ -8,6 +8,11 @@
  * the tie-breaks the scans implemented implicitly through iteration order.
  * These cases pin those semantics, so an index regression fails CI instead of
  * silently moving resolved edges in every Kotlin repository.
+ *
+ * ONE rule is deliberately no longer parity: #2881 removed the scan's
+ * first-occurrence restriction on `dirChildren`, so a file whose package
+ * directory name repeats higher in its path is now a child of that package.
+ * The cases carrying it say so and name the issue.
  */
 import { describe, it, expect } from 'vitest';
 import { resolveKotlinImportTarget } from '../../../../src/core/ingestion/languages/kotlin/import-target.js';
@@ -107,29 +112,39 @@ describe('resolveKotlinImportTarget — index parity', () => {
     expect(resolve(['pkg/A.java', 'pkg/A.md'], 'pkg.A')).toBeNull();
   });
 
-  it('only the FIRST occurrence of a repeated directory name counts', () => {
-    // Deliberate parity with the scan: it tested `startsWith` first and then
-    // used `indexOf` — the first `/data/` here is not the parent directory, and
-    // it never looked for a second one. The file is therefore NOT a child of
-    // `data`, even though it sits directly inside one.
-    //
-    // NOTE this case exercises the `startsWith` half only: `data` is the
-    // LEADING segment, so the guard fires and the `indexOf` equality is never
-    // reached. The mid-path case below is what pins that half — without it, a
-    // resolver whose position check is relaxed to `indexOf(...) >= 0` passes
-    // this whole file.
-    expect(resolve(['data/src/main/kotlin/com/example/data/Repo.kt'], 'data.something')).toBeNull();
+  it('a package name repeated as the LEADING segment still fans out (#2881)', () => {
+    // The scan tested `startsWith` before `indexOf`, so a path whose leading
+    // segment repeats the parent directory name was dropped from the `data`
+    // bucket entirely and `import data.something` resolved to null. The file is
+    // a direct child of a `data` directory, so it belongs in the bucket.
+    expect(resolve(['data/src/main/kotlin/com/example/data/Repo.kt'], 'data.something')).toEqual([
+      'data/src/main/kotlin/com/example/data/Repo.kt',
+    ]);
+    // The single-file tiers were never affected — `suffixByStem` carries no
+    // such guard — so this one resolved before the fix and still does.
+    expect(resolve(['data/src/main/kotlin/com/example/data/Repo.kt'], 'data.Repo')).toBe(
+      'data/src/main/kotlin/com/example/data/Repo.kt',
+    );
   });
 
-  it('a repeated directory name below the root still only counts its first occurrence', () => {
-    // Neither `data` is leading, so `startsWith` does not fire and the result
-    // is decided by the `indexOf` position check alone. The first `/data/` is
-    // not the parent, so this is not a child of `data`.
-    expect(resolve(['top/data/mid/data/Repo.kt'], 'data.something')).toBeNull();
-    expect(resolve(['a/c/b/c/File.kt'], 'c.X')).toBeNull();
-    // Same shape, but the first occurrence IS the parent — this one resolves,
-    // so the case above cannot pass by simply never matching anything.
+  it('a package name repeated MID-PATH also fans out (#2881)', () => {
+    // Neither `data` is leading, so `startsWith` never fired here and the null
+    // came from the `indexOf` position check alone — a second, independent
+    // guard. Both are gone; without this case a fix that only drops
+    // `startsWith` passes the file above and still leaves this shape broken.
+    expect(resolve(['top/data/mid/data/Repo.kt'], 'data.something')).toEqual([
+      'top/data/mid/data/Repo.kt',
+    ]);
+    expect(resolve(['a/c/b/c/File.kt'], 'c.X')).toEqual(['a/c/b/c/File.kt']);
+    // Unrepeated control: the parent is the only occurrence.
     expect(resolve(['top/data/Repo.kt'], 'data.something')).toEqual(['top/data/Repo.kt']);
+  });
+
+  it('a repeated name that is NOT the parent directory stays out of the bucket', () => {
+    // The rule is "the parent directory is named `s`", not "`s` appears
+    // anywhere in the path" — dropping the two guards must not widen it that
+    // far. `data` is a component of the path but the parent is `mid`.
+    expect(resolve(['top/data/mid/Repo.kt'], 'data.something')).toBeNull();
   });
 
   it('the package directory is derived from the normalized path, not the raw one', () => {
