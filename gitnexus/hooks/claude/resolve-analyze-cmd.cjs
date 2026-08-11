@@ -276,7 +276,13 @@ function formatBunxCommand(gitnexusArgs) {
 }
 
 function formatAnalyzeCommand(options = {}, deps = {}) {
-  const suffix = options.embeddings ? ' --embeddings' : '';
+  // `--index-only` is what a routine "your index is stale" nudge wants: it
+  // reindexes without rewriting AGENTS.md / CLAUDE.md / skills, so an agent
+  // following the nudge on every commit cannot churn the tracked agent guides
+  // (#2907). Callers that actually want the docs refreshed omit it.
+  const suffix = `${options.indexOnly ? ' --index-only' : ''}${
+    options.embeddings ? ' --embeddings' : ''
+  }`;
   // Keep the stale-index hook budget tight by querying each tool at most once.
   // The memoized `probe` is a spawn-free PATH scan (resolveOnPath) shared with
   // resolveInvocationMode, so `gitnexus` is scanned only once and no subprocess
