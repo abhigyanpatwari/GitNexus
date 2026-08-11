@@ -12,7 +12,10 @@
  * That is wrong, and this file is the proof. Step 2 filters
  * `index.getFilesInDir(dirPrefix, '.cs')`, whose buckets are keyed on
  * SEGMENT-aligned directory suffixes; step 3 runs an UNANCHORED
- * `normalized.indexOf(dirPrefix + '/')`. Step 3 therefore answers strictly more:
+ * `normalized.lastIndexOf(dirPrefix + '/')` (`indexOf` before #2881, which is
+ * the first-occurrence rule that issue removed; the empty-prefix case still
+ * takes `indexOf` — see the guard in both copies). Step 3 therefore answers
+ * strictly more:
  *
  *   - `dirPrefix = 'ubModels'` matches `src/SubModels/` (character suffix of a
  *     segment, not a segment);
@@ -104,8 +107,14 @@ function legacyResolveCSharpImportInternal(
       const dirFiles = index.getFilesInDir(dirPrefix, '.cs');
       for (const f of dirFiles) {
         const normalized = f.replace(/\\/g, '/');
-        // Check it's a direct child by finding the dirPrefix and ensuring no deeper slashes
-        const prefixIdx = normalized.indexOf(dirPrefix + '/');
+        // Direct child of a directory ENDING with `dirPrefix` — since #2881,
+        // minus "…and that occurrence is the FIRST". Empty `dirPrefix` keeps
+        // `indexOf`: its needle is a bare '/', and step 3 answers that query
+        // from the one-directory-deep set, which only the first occurrence
+        // expresses.
+        const needle2 = dirPrefix + '/';
+        const prefixIdx =
+          dirPrefix === '' ? normalized.indexOf(needle2) : normalized.lastIndexOf(needle2);
         if (prefixIdx < 0) continue;
         const afterDir = normalized.substring(prefixIdx + dirPrefix.length + 1);
         if (!afterDir.includes('/')) {
@@ -121,7 +130,8 @@ function legacyResolveCSharpImportInternal(
       for (let i = 0; i < normalizedFileList.length; i++) {
         const normalized = normalizedFileList[i];
         if (!normalized.endsWith('.cs')) continue;
-        const prefixIdx = normalized.indexOf(dirTrail);
+        const prefixIdx =
+          dirPrefix === '' ? normalized.indexOf(dirTrail) : normalized.lastIndexOf(dirTrail);
         if (prefixIdx < 0) continue;
         const afterDir = normalized.substring(prefixIdx + dirTrail.length);
         if (!afterDir.includes('/')) {
@@ -189,7 +199,9 @@ function skipStep3WhenIndexed(
       const dirFiles = index.getFilesInDir(dirPrefix, '.cs');
       for (const f of dirFiles) {
         const normalized = f.replace(/\\/g, '/');
-        const prefixIdx = normalized.indexOf(dirPrefix + '/');
+        const needle2 = dirPrefix + '/';
+        const prefixIdx =
+          dirPrefix === '' ? normalized.indexOf(needle2) : normalized.lastIndexOf(needle2);
         if (prefixIdx < 0) continue;
         const afterDir = normalized.substring(prefixIdx + dirPrefix.length + 1);
         if (!afterDir.includes('/')) {
@@ -204,7 +216,8 @@ function skipStep3WhenIndexed(
     for (let i = 0; i < normalizedFileList.length; i++) {
       const normalized = normalizedFileList[i];
       if (!normalized.endsWith('.cs')) continue;
-      const prefixIdx = normalized.indexOf(dirTrail);
+      const prefixIdx =
+        dirPrefix === '' ? normalized.indexOf(dirTrail) : normalized.lastIndexOf(dirTrail);
       if (prefixIdx < 0) continue;
       const afterDir = normalized.substring(prefixIdx + dirTrail.length);
       if (!afterDir.includes('/')) {
@@ -252,8 +265,10 @@ const RAW_FILES: readonly string[] = [
   // Character suffix across a segment boundary: answers `rc/Models`.
   'vendor/mysrc/Models/Vendored.cs',
   'src/Models/Late.cs',
-  // `Models` nested inside `Models`: the FIRST `indexOf` occurrence is the
-  // outer one, whose remainder still holds a slash, so this answers nothing.
+  // `Models` nested inside `Models`. Answered nothing until #2881, because the
+  // FIRST `indexOf` occurrence was the outer one and its remainder still held a
+  // slash; the predicate now asks whether the file's DIRECTORY ends with the
+  // prefix, which the inner `Models` satisfies.
   'nest/Models/inner/Models/Ignored.cs',
   // Single-segment directory, so it answers the empty `dirPrefix`.
   'Models/TopLevel.cs',
@@ -483,9 +498,14 @@ describe('C# csproj leg — the answers only step 3 can give (#2902)', () => {
     ]);
   });
 
-  it('keeps the FIRST-occurrence tie-break: a directory nested inside a same-named one loses', () => {
-    // `nest/Models/inner/Models/Ignored.cs` is absent: `indexOf('odels/')` finds
-    // the outer `Models/`, and `inner/Models/Ignored.cs` still has a slash.
+  it('a directory nested inside a same-named one now answers too (#2881)', () => {
+    // `nest/Models/inner/Models/Ignored.cs` used to be absent: `indexOf('odels/')`
+    // found the OUTER `Models/`, and `inner/Models/Ignored.cs` still had a
+    // slash. The predicate is now "the file's directory ends with the prefix",
+    // which the inner `Models` satisfies. Note this arm queries `App.odels` —
+    // the UNANCHORED half — so it also pins that removing the first-occurrence
+    // rule did not accidentally anchor the match to a segment boundary:
+    // `src/SubModels/Widget.cs` is still here.
     expect(withIndex([{ rootNamespace: 'App', projectDir: '' }], 'App.odels')).toEqual([
       'src/Models/User.cs',
       'src/Models/Order.cs',
@@ -493,6 +513,7 @@ describe('C# csproj leg — the answers only step 3 can give (#2902)', () => {
       'other/Models/Thing.cs',
       'vendor/mysrc/Models/Vendored.cs',
       'src/Models/Late.cs',
+      'nest/Models/inner/Models/Ignored.cs',
       'Models/TopLevel.cs',
       'win\\Models\\Win.cs',
     ]);
@@ -506,15 +527,19 @@ describe('C# csproj leg — the answers only step 3 can give (#2902)', () => {
 
   it('a leading-slash dirPrefix cannot bogus-match a shorter directory', () => {
     // `dirPrefix = '/Models'` (projectDir used verbatim, since the import IS
-    // the root namespace): `'Models/'` is SHORTER than `'/Models/'`, and both
-    // `indexOf` and `haystack.length - needle.length` come out -1 without a
-    // length guard, so `Models/TopLevel.cs` would join the answer.
+    // the root namespace): `'Models/'` is SHORTER than `'/Models/'`, so
+    // `Models/TopLevel.cs` must not join the answer. The `indexOf` form needed
+    // an explicit length guard for this, because `indexOf` and
+    // `haystack.length - needle.length` both came out -1; `endsWith` is simply
+    // false on a shorter haystack, so the property now holds without one, and
+    // this case is what proves the guard's removal was safe.
     expect(withIndex([{ rootNamespace: 'App', projectDir: '/Models' }], 'App')).toEqual([
       'src/Models/User.cs',
       'src/Models/Order.cs',
       'other/Models/Thing.cs',
       'vendor/mysrc/Models/Vendored.cs',
       'src/Models/Late.cs',
+      'nest/Models/inner/Models/Ignored.cs',
       'win\\Models\\Win.cs',
     ]);
   });

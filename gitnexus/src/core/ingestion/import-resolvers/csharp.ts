@@ -25,16 +25,18 @@ import { csharpSuffixFallbackAllowed } from '../csharp-namespace-gate.js';
  * normalized directory of a `.cs` file and `dirPrefix` for the query:
  *
  *   let H = D + '/', P = dirPrefix + '/'
- *   match ⟺ H.length >= P.length && H.indexOf(P) === H.length - P.length
+ *   match ⟺ H.endsWith(P)
  *
- * Derivation, because both halves are load-bearing:
+ * Derivation:
  *  - the scan keeps a file only when nothing after the matched occurrence holds
  *    a slash, so the occurrence's trailing '/' must be the file's LAST slash —
  *    i.e. `H` ends with `P`;
- *  - it uses `indexOf`, the FIRST occurrence, so `a/Models/b/Models/x.cs` does
- *    NOT answer `Models`: the first `Models/` is found and `b/Models/x.cs`
- *    still contains a slash. Dropping that half moves edges in every repo that
- *    nests a directory name inside itself.
+ *  - it used `indexOf`, the FIRST occurrence, so `a/Models/b/Models/x.cs` did
+ *    NOT answer `Models`. That half was removed in #2881: it was an artifact of
+ *    how the pre-index scan was written, not a rule about C# namespaces, and it
+ *    dropped every repository that nests a directory name inside itself. The
+ *    same removal landed in `package-dir-index.ts` and in step 2 below, which
+ *    have to move together — see the note at step 3.
  *  - the needle ends with '/', so every occurrence of it lies wholly inside
  *    `D + '/'` and never reaches into the file name — which is what lets the
  *    whole test be evaluated on `D` alone.
@@ -179,11 +181,12 @@ function* matchingDirPositions(
   const needle = dirPrefix + '/';
   for (const dir of candidateDirs(index, dirPrefix)) {
     const haystack = dir + '/';
-    // The length guard is not redundant: for a shorter `haystack`, `indexOf`
-    // returns -1 and `haystack.length - needle.length` can also be -1, which
-    // would report a bogus match.
-    if (haystack.length < needle.length) continue;
-    if (haystack.indexOf(needle) !== haystack.length - needle.length) continue;
+    // `endsWith` subsumes the length guard the `indexOf` form needed: a shorter
+    // haystack is simply false, where `indexOf` returned -1 and
+    // `haystack.length - needle.length` could also be -1 and report a bogus
+    // match. Still deliberately UNANCHORED (no leading '/'), so `src/SubModels`
+    // keeps answering `Models` — see the derivation above.
+    if (!haystack.endsWith(needle)) continue;
     const positions = index.positionsByDir.get(dir);
     if (positions !== undefined) yield positions;
   }
@@ -286,8 +289,16 @@ export function resolveCSharpImportInternal(
       const dirFiles = index.getFilesInDir(dirPrefix, '.cs');
       for (const f of dirFiles) {
         const normalized = f.replace(/\\/g, '/');
-        // Check it's a direct child by finding the dirPrefix and ensuring no deeper slashes
-        const prefixIdx = normalized.indexOf(dirPrefix + '/');
+        // Direct child of a directory ENDING with `dirPrefix` — the same
+        // predicate as before minus "…and that occurrence is the FIRST one".
+        // An empty `dirPrefix` keeps `indexOf`: its needle is a bare '/', and
+        // step 3 answers that query from `singleSegmentDirs` ("exactly one
+        // directory deep"), which only the FIRST occurrence expresses. With
+        // `lastIndexOf` there, an empty prefix would accept every `.cs` that
+        // sits in any directory and step 2 would diverge from step 3.
+        const needle = dirPrefix + '/';
+        const prefixIdx =
+          dirPrefix === '' ? normalized.indexOf(needle) : normalized.lastIndexOf(needle);
         if (prefixIdx < 0) continue;
         const afterDir = normalized.substring(prefixIdx + dirPrefix.length + 1);
         if (!afterDir.includes('/')) {
@@ -301,7 +312,7 @@ export function resolveCSharpImportInternal(
     //
     // Not redundant with step 2, and not skippable when `index` is present:
     // `getFilesInDir` is keyed on SEGMENT suffixes of a directory, while this
-    // leg's predicate is an unanchored substring one, so it additionally
+    // leg's predicate is an unanchored ends-with one, so it additionally
     // answers `Models` with `src/SubModels/` and `src/Models` with
     // `vendor/mysrc/Models/`. It is also the only leg that answers an empty
     // `dirPrefix` — the `relative = ''` branch above (the import IS the root

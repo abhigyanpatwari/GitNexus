@@ -219,7 +219,10 @@ const getKotlinFileIndex = perFileSet((allFilePaths: ReadonlySet<string>): Kotli
     // and the file IS a direct child of a directory named `s`.
     //
     // #2881: this loop used to carry two guards, both inherited from the
-    // pre-index per-import scan rather than from anything Kotlin requires —
+    // pre-index per-import scan rather than from anything Kotlin requires
+    // (the same generation of code put the `indexOf` half into
+    // `import-resolvers/package-dir-index.ts` and `import-resolvers/csharp.ts`,
+    // where it was removed under the same issue) —
     // `startsWith(s + '/')` skipped the bucket outright, and an `indexOf`
     // equality demanded that the parent be the FIRST `/s/` in the path. Between
     // them they dropped the bucket whenever the package name repeated higher up

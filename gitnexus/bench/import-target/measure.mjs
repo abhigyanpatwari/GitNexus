@@ -726,14 +726,21 @@ function unwiredLanguage(where, lang) {
  * UNIQUE-LEAF layout: one directory name per index, so no two directories share
  * a last segment and no two files share a basename. Every index bucket holds
  * exactly one entry. A nested same-name directory in one repo slice is the
- * shape whose handling the first-`indexOf` tie-break decides (see
- * package-dir-index.ts). Kotlin no longer applies that tie-break — #2881
- * removed it there and only there — so this one corpus shape is deliberately
- * scored two different ways: the kotlin arm resolves its `d % 7` slice and the
- * go, csharp and java arms still miss on theirs.
+ * shape the first-`indexOf` tie-break used to reject (see package-dir-index.ts);
+ * #2881 removed that tie-break from every resolver that had it, so the go,
+ * csharp, java and kotlin arms all resolve their `d % 7` slice now. Each of
+ * those four languages repeats the shape at whatever granularity ITS query uses
+ * — the last segment for csharp/java/kotlin, the whole package path for go —
+ * because a repeat the query cannot even ask about leaves the arm blind.
  */
 function uniqueDir(lang, d, i) {
-  if (lang === 'go') return d % 7 === 0 ? `src/pkg${d}/internal/pkg${d}` : `src/pkg${d}`;
+  // Go's nested slice repeats the WHOLE queried path (`src/pkg{d}`), not just
+  // its last segment. `src/pkg{d}/internal/pkg{d}` repeated only `pkg{d}`, so
+  // the query `src/pkg{d}` failed on "the directory ends with the package path"
+  // and never reached the first-occurrence rule at all — Go's arms did not move
+  // when #2881 removed that rule, which would have shipped a widened bucket
+  // with no bench coverage while C# and Java were re-baselined for it.
+  if (lang === 'go') return d % 7 === 0 ? `src/pkg${d}/internal/src/pkg${d}` : `src/pkg${d}`;
   if (lang === 'csharp') return d % 7 === 0 ? `src/Ns${d}/Sub/Ns${d}` : `src/Ns${d}`;
   if (lang === 'dart') return d % 3 === 0 ? `lib/feature${d}` : `pkg/feature${d}`;
   if (lang === 'kotlin') {
@@ -784,7 +791,10 @@ function uniqueDir(lang, d, i) {
  */
 function collideDir(lang, d, i) {
   if (lang === 'go') {
-    if (d % 7 === 0) return `svc${d}/internal/sub/internal`;
+    // `…/sub/internal` repeats only the last segment, which the ends-with test
+    // answers on its own; `…/internal/sub/svc{d}/internal` is the shape the
+    // removed first-occurrence rule used to reject (see `uniqueDir`).
+    if (d % 7 === 0) return `svc${d}/internal/sub/svc${d}/internal`;
     return d % 5 === 1 ? `svc${d}/internal/shared` : `svc${d}/internal`;
   }
   if (lang === 'csharp') return d % 7 === 0 ? `Src${d}/Models/Inner/Models` : `Src${d}/Models`;
@@ -1205,11 +1215,13 @@ function collideTarget(lang, { local, r, d, j, dirs }) {
   }
   if (lang === 'csharp') {
     return local
-      ? // `Vendor` has no directory anywhere, mirroring the unique arm's
-        // nested-same-name slice, which also resolves to nothing.
-        d % 7 === 0
-        ? `App.Src${d}.Vendor`
-        : `App.Src${d}.Models`
+      ? // This used to send the `d % 7` slice to `App.Src{d}.Vendor`, a
+        // namespace with no directory anywhere, to mirror the unique arm's
+        // nested-same-name slice, which also resolved to nothing. #2881 made
+        // that slice resolve, so the mirror has to as well — otherwise this arm
+        // stops resolving as many imports as `small`, which is the invariant
+        // that makes the two timings comparable and is asserted below.
+        `App.Src${d}.Models`
       : (r >>> 3) % 2 === 0
         ? ['System', 'System.Threading.Tasks', 'System.Collections.Generic'][(r >>> 4) % 3]
         : `Ghost${(r >>> 4) % 97}.Deep.Missing`;
@@ -1289,13 +1301,13 @@ function collideTarget(lang, { local, r, d, j, dirs }) {
     // every directory now ends in, so `firstFileDirectlyInPkgDir` walks the
     // whole `model` bucket twice — at the direct match and again after the
     // first strip — before the third strip finds `model` on its own. That walk
-    // is the non-constant term this arm exists to measure. `vendor` buckets to
-    // nothing, mirroring the unique arm's nested slice, which also misses.
+    // is the non-constant term this arm exists to measure. The `d % 7` slice
+    // used to import `com.svc{d}.vendor`, which buckets to nothing, mirroring
+    // the unique arm's nested slice — which missed until #2881 and resolves
+    // now, so the mirror follows it or the same-workload invariant below breaks.
     return local
       ? (r >>> 3) % 3 === 0
-        ? d % 7 === 0
-          ? `com.svc${d}.vendor.*`
-          : `com.svc${d}.model.*`
+        ? `com.svc${d}.model.*`
         : `com.example.model.File${j}`
       : (r >>> 3) % 2 === 0
         ? ['java.util.List', 'java.io.IOException', 'java.util.concurrent.ConcurrentHashMap'][

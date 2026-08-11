@@ -46,7 +46,10 @@ export function resolveGoPackage(
       normalized.endsWith('.go') &&
       !normalized.endsWith('_test.go')
     ) {
-      const afterPkg = normalized.substring(normalized.indexOf(pkgSuffix) + pkgSuffix.length);
+      // `lastIndexOf`, not `indexOf`: `pkgSuffix` is '/'-anchored on both sides,
+      // so the LAST occurrence is the file's own parent. `indexOf` asked for the
+      // first, which made `a/pkg/b/pkg/x.go` not a member of `pkg` (#2881).
+      const afterPkg = normalized.substring(normalized.lastIndexOf(pkgSuffix) + pkgSuffix.length);
       if (!afterPkg.includes('/')) {
         matches.push(allFileList[i]);
       }

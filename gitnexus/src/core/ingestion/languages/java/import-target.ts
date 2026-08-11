@@ -42,10 +42,15 @@
  *     only a `.java` file can carry a `…/<name>.java` suffix key, so the
  *     extension filter is implied on the file/suffix legs and explicit in the
  *     directory index's `accept`.
- *  5. The directory-child leg matched on the FIRST `'/' + pathLike + '/'`
- *     occurrence, so `com/example/com/example/Deep.java` does NOT answer
- *     `com.example`. `firstFileDirectlyInPkgDir` encodes exactly that rule (see
- *     the header of `import-resolvers/package-dir-index.ts`).
+ *  5. The directory-child leg used to match on the FIRST `'/' + pathLike + '/'`
+ *     occurrence, so `com/example/com/example/Deep.java` did NOT answer
+ *     `com.example`. #2881 removed that: the rule came from how the pre-index
+ *     scan was written, not from Java, and it made a package whose name repeats
+ *     higher in the path unresolvable. `firstFileDirectlyInPkgDir` now answers
+ *     plain "the parent directory ends with `pathLike`" (see the header of
+ *     `import-resolvers/package-dir-index.ts`). This leg commits to ONE file
+ *     with no downstream filter, so widening it can change which file an
+ *     already-resolving import binds to, not only turn a null into a hit.
  */
 
 import type { ParsedImport, WorkspaceIndex } from 'gitnexus-shared';

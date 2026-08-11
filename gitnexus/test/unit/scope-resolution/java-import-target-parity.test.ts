@@ -17,8 +17,11 @@
  *     — while its directory child is collected and returned only after the scan
  *     completes, so file/suffix beats directory child within one `skip` level
  *     regardless of order;
- *   - the directory-child leg takes the FIRST `'/' + pathLike + '/'` occurrence,
- *     so `com/example/com/example/Deep.java` does NOT answer `com.example`;
+ *   - the directory-child leg answers when the file's PARENT directory ends
+ *     with `pathLike`, so `com/example/com/example/Deep.java` DOES answer
+ *     `com.example`. It took the FIRST `'/' + pathLike + '/'` occurrence until
+ *     #2881, which made a package whose name repeats higher in its own path
+ *     unresolvable;
  *   - a wildcard import drops its trailing `.*` before any of that runs;
  *   - paths are compared normalized (`\` → `/`) but returned RAW.
  *
@@ -95,14 +98,13 @@ function legacyResolveJavaImportTarget(
       suffixFile = raw;
     }
     if (directoryChild === null) {
-      const atRoot = f.startsWith(dirPrefix);
-      const atNested = f.includes(suffixDirPrefix);
-      if (atRoot || atNested) {
-        const idx = atRoot ? 0 : f.indexOf(suffixDirPrefix) + 1;
-        const after = f.slice(idx + dirPrefix.length);
-        if (after.length > 0 && !after.includes('/')) {
-          directoryChild = raw;
-        }
+      // Since #2881: "the file's parent directory ends with `pathLike`". The
+      // `atRoot`/`indexOf` pair this replaces said that AND "…and that is the
+      // first occurrence". `>= 0`, not `> 0` — a repo-root file has `lastSlash`
+      // 0 for `/Top.java` shapes and the bare-wildcard case depends on it.
+      const lastSlash = f.lastIndexOf('/');
+      if (lastSlash >= 0 && `/${f.slice(0, lastSlash)}/`.endsWith(suffixDirPrefix)) {
+        directoryChild = raw;
       }
     }
   }
@@ -128,12 +130,9 @@ function legacyResolveJavaImportTarget(
       if (f === tailFile) return raw;
       if (f.endsWith(tailSuffix)) return raw;
       if (tailDirectChild === null) {
-        const atRoot = f.startsWith(tailDir);
-        const atNested = f.includes(tailSuffixDir);
-        if (atRoot || atNested) {
-          const idx = atRoot ? 0 : f.indexOf(tailSuffixDir) + 1;
-          const after = f.slice(idx + tailDir.length);
-          if (after.length > 0 && !after.includes('/')) tailDirectChild = raw;
+        const lastSlash = f.lastIndexOf('/');
+        if (lastSlash >= 0 && `/${f.slice(0, lastSlash)}/`.endsWith(tailSuffixDir)) {
+          tailDirectChild = raw;
         }
       }
     }
@@ -222,9 +221,11 @@ const HAND_CASES: readonly Case[] = [
     target: 'com.example.service.*',
   },
   {
-    // Tie-break 5: the FIRST `/com/example/` occurrence leaves `com/example/
-    // Deep.java` after it, which still contains a slash — so no match.
-    label: 'self-nested-directory-does-not-match-outer',
+    // Tie-break 5: the parent directory `com/example/com/example` ends with
+    // `com/example`, so it answers. Until #2881 the leg took the FIRST
+    // `/com/example/` occurrence, which leaves `com/example/Deep.java` after it
+    // — still containing a slash — and the import resolved to null.
+    label: 'self-nested-directory-answers-the-outer-package',
     files: ['com/example/com/example/Deep.java'],
     target: 'com.example',
   },
@@ -358,7 +359,7 @@ const HAND_EXPECTED: readonly string[] = [
   'directory-child-order-follows-insertion => com/example/service/Alpha.java',
   'wildcard-resolves-as-package-directory => com/example/service/Beta.java',
   'wildcard-exact-file-beats-directory => com/example/service.java',
-  'self-nested-directory-does-not-match-outer => null',
+  'self-nested-directory-answers-the-outer-package => com/example/com/example/Deep.java',
   'self-nested-directory-matches-full-path => com/example/com/example/Deep.java',
   'stripping-suffix-beats-earlier-directory-child => y/models/Order.java',
   'stripping-reaches-root-file => Order.java',

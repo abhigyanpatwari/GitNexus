@@ -12,27 +12,26 @@
  *
  *   let D = '/' + <normalized dir of the file> + '/'
  *   let P = '/' + pkgPath + '/'
+ *   match ⟺ D.endsWith(P)
+ *
+ * It used to say one more thing, and #2881 removed it:
+ *
  *   match ⟺ D.length >= P.length && D.indexOf(P) === D.length - P.length
  *
- * The right-hand side says two things at once, and BOTH are load-bearing:
- *  1. `D` ends with `P` — the file's directory ends with `pkgPath`;
- *  2. that trailing occurrence is the FIRST one — so `a/pkg/b/pkg/x.go` does
- *     NOT answer `pkg`, because the original `indexOf` found the earlier `/pkg/`
- *     and `b/pkg/x.go` still contained a slash. Dropping condition 2 looks like
- *     a cleanup and moves edges in every repository that nests a directory name
- *     inside itself (`internal/…/internal`, `Models/…/Models`).
+ * — i.e. `D` ends with `P` AND that trailing occurrence is the FIRST one, so
+ * `a/pkg/b/pkg/x.go` did NOT answer `pkg`. The second half was never a rule
+ * anyone chose. It is what the pre-index per-import scan happened to compute
+ * (it called `indexOf`, then checked that nothing after the match contained a
+ * slash), and the index was built to reproduce that scan byte for byte. It
+ * dropped exactly the repositories that nest a directory name inside itself:
+ * `internal/…/internal`, `Models/…/Models`, and the reported shape
+ * `data/src/main/kotlin/com/example/data/Repo.kt`, where `import data.helper`
+ * resolved to null. Kotlin was fixed first, in its own `dirChildren`
+ * (`languages/kotlin/import-target.ts`); this index and the C# csproj index
+ * followed, so the four resolvers agree again.
  *
- * Condition 2 is no longer universal across the codebase. Kotlin does not use
- * this index — it builds its own `dirChildren` in
- * `languages/kotlin/import-target.ts` — and #2881 removed the equivalent rule
- * there, because a root-level package whose name repeats higher in the tree
- * (`data/src/main/kotlin/com/example/data/Repo.kt` for `import data.helper`)
- * resolved to null. The languages served here (Go, Java, C#) still carry it and
- * still have that shape; fixing them means re-baselining three languages and
- * editing the verbatim pre-change scans that
- * `test/unit/scope-resolution/import-target-index-parity.test.ts` keeps as the
- * specification, which is why #2881 did not reach them. Read this comment as
- * "what these three languages do", not "what package resolution means".
+ * The length guard the `indexOf` form needed is gone with it: `endsWith` is
+ * false for a shorter `D` instead of comparing -1 to -1.
  *
  * Candidates are narrowed by the directory's LAST segment rather than by
  * indexing every directory suffix: a suffix map costs O(files × depth) entries,
@@ -135,11 +134,11 @@ function* matchingDirs(index: PackageDirIndex, pkgPath: string): Generator<reado
   const needle = `/${pkgPath}/`;
   for (const dir of dirs) {
     const haystack = `/${dir}/`;
-    // The length guard is not redundant: for a shorter `haystack`,
-    // `indexOf` returns -1 and `haystack.length - needle.length` can also be
-    // -1, which would report a bogus match.
-    if (haystack.length < needle.length) continue;
-    if (haystack.indexOf(needle) !== haystack.length - needle.length) continue;
+    // `endsWith` subsumes the length guard the `indexOf` form needed: a shorter
+    // haystack is simply false, where `indexOf` returned -1 and
+    // `haystack.length - needle.length` could also be -1 and report a bogus
+    // match.
+    if (!haystack.endsWith(needle)) continue;
     const files = index.filesByDir.get(dir);
     if (files !== undefined) yield files;
   }

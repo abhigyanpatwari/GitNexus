@@ -77,7 +77,10 @@ function legacyFindAllFilesInPkgDir(allFilePaths: ReadonlySet<string>, pkgPath: 
     const normalized = '/' + raw.replace(/\\/g, '/');
     if (!normalized.includes(pkgDir)) continue;
     if (!normalized.endsWith('.go') || normalized.endsWith('_test.go')) continue;
-    const afterPkg = normalized.substring(normalized.indexOf(pkgDir) + pkgDir.length);
+    // `lastIndexOf` since #2881: `pkgDir` is '/'-anchored on both sides, so the
+    // LAST occurrence is the file's own parent. `indexOf` asked for the first,
+    // which made `a/pkg/b/pkg/x.go` not a member of `pkg`.
+    const afterPkg = normalized.substring(normalized.lastIndexOf(pkgDir) + pkgDir.length);
     if (!afterPkg.includes('/')) result.push(raw);
   }
   return result;
@@ -203,17 +206,19 @@ function legacyFindDirectChild(
   allFilePaths: ReadonlySet<string>,
   dirSegment: string,
 ): string | null {
-  const dirPrefix = `${dirSegment}/`;
-  const nestedDirPrefix = `/${dirPrefix}`;
+  // Since #2881 this is plain "the file's parent directory ends with
+  // `dirSegment`". The `atRoot`-then-`indexOf` pair it replaces expressed the
+  // same thing PLUS "…and that occurrence is the first", which is the half that
+  // was removed; the segment anchoring the leading '/' provided is kept by
+  // testing `'/' + dir + '/'` against `'/' + dirSegment + '/'`.
+  const needle = `/${dirSegment}/`;
   for (const raw of allFilePaths) {
     const f = raw.replace(/\\/g, '/');
     if (!f.endsWith('.cs')) continue;
-    const atRoot = f.startsWith(dirPrefix);
-    const atNested = f.includes(nestedDirPrefix);
-    if (!atRoot && !atNested) continue;
-    const idx = atRoot ? 0 : f.indexOf(nestedDirPrefix) + 1;
-    const after = f.slice(idx + dirPrefix.length);
-    if (after.length > 0 && !after.includes('/')) return raw;
+    const lastSlash = f.lastIndexOf('/');
+    if (lastSlash < 0) continue;
+    if (!`/${f.slice(0, lastSlash)}/`.endsWith(needle)) continue;
+    return raw;
   }
   return null;
 }
@@ -526,7 +531,7 @@ describe('import-target index hoist — output parity with the pre-change scans'
     },
     {
       lang: 'csharp',
-      why: 'a namespace dir nested inside itself does not answer the query',
+      why: 'a namespace dir nested inside itself DOES answer the query (#2881)',
       files: ['Models/Models/User.cs'],
       target: 'Models',
     },
@@ -570,15 +575,17 @@ describe('import-target index hoist — output parity with the pre-change scans'
     },
     {
       lang: 'go',
-      why: 'a package dir nested inside itself does not answer the query',
+      why: 'a package dir nested inside itself DOES answer the query (#2881)',
       files: ['a/pkg/b/pkg/x.go'],
       // Addressed through the MODULE leg as the single segment `pkg`, not as
-      // `a/pkg`. `a/pkg` never reached the first-occurrence branch this case is
-      // named for: `'/a/pkg/b/pkg/'.endsWith('/a/pkg/')` is already false, so
-      // the naive `endsWith` rewrite agreed with the real predicate and the
-      // case passed either way. With `pkg`, `endsWith('/pkg/')` is TRUE and only
-      // the "…and that occurrence is the FIRST" half rejects it. The module leg
-      // is required because the GOPATH cascade skips single-segment targets.
+      // `a/pkg`. `a/pkg` never reached the first-occurrence branch this case
+      // was named for: `'/a/pkg/b/pkg/'.endsWith('/a/pkg/')` is already false,
+      // so the `endsWith` form agreed with the old predicate and the case
+      // passed either way. With `pkg`, `endsWith('/pkg/')` is TRUE and ONLY the
+      // "…and that occurrence is the FIRST" half rejected it — which is exactly
+      // why this case is the one that flips, and why it is still the case that
+      // tells the two predicates apart. The module leg is required because the
+      // GOPATH cascade skips single-segment targets.
       target: 'example.com/mod/pkg',
       modulePath: 'example.com/mod',
     },
@@ -667,10 +674,11 @@ describe('import-target index hoist — output parity with the pre-change scans'
 
   it('every hand-built layout resolves to something (they pin a winner, not a null)', () => {
     // `toEqual(null) === toEqual(null)` would make the arm above pass for the
-    // wrong reason. Only the three "must NOT match" layouts may be null.
+    // wrong reason. Only the "must NOT match" layouts may be null. The two
+    // nested-inside-itself layouts left this set in #2881: they now resolve, so
+    // they are held to the same "pin a winner" bar as everything else, which is
+    // a stronger assertion than the null they used to carry.
     const mustBeNull = new Set([
-      'a namespace dir nested inside itself does not answer the query',
-      'a package dir nested inside itself does not answer the query',
       '_test.go files are a different package and never match',
       'paths are matched RAW — a backslash path is not normalized into a hit',
     ]);
@@ -713,9 +721,14 @@ describe('import-target index hoist — output parity with the pre-change scans'
         if (csharp(t, cs) !== null) hits.csharp++;
       }
     }
-    // Measured on this corpus: go 364, dart 75, ruby 259, csharp 196. Ruby and
+    // Measured on this corpus: go 366, dart 75, ruby 259, csharp 220. Ruby and
     // C# gained 40 each from the `win\dir\thing.<ext>` targets — one per repo,
-    // which is also the floor those two arms now defend.
+    // which is also the floor those two arms now defend. #2881 moved go 364 ->
+    // 366 and csharp 196 -> 220, from the corpus's `pkg/pkg`, `a/pkg/b/pkg` and
+    // `Models/Models` directories: those now answer their own name. The floors
+    // are deliberately NOT raised to lock that in — they exist to catch an arm
+    // that stopped resolving at all, and a revert of #2881 is caught precisely
+    // by the differential arms above, which compare against the real resolver.
     expect(hits.go).toBeGreaterThan(300);
     expect(hits.dart).toBeGreaterThan(60);
     expect(hits.ruby).toBeGreaterThan(220);
