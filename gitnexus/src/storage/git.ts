@@ -202,6 +202,28 @@ export const getCurrentCommit = (repoPath: string): string => {
 };
 
 /**
+ * Remove `user[:password]@` userinfo from an http(s) URL.
+ *
+ * `git config remote.origin.url` returns whatever was configured, and the
+ * HTTPS token form `https://x-access-token:<token>@host/owner/repo` is how
+ * CI checkouts and credential helpers routinely authenticate. That string
+ * reached `registry.json`, the per-repo meta and the MCP `list_repos`
+ * payload verbatim, which turned repository discovery into credential
+ * disclosure (#2914).
+ *
+ * Only `http`/`https` are rewritten. `ssh://git@host/…` and the SCP-like
+ * `git@host:owner/repo` carry an SSH *user name*, not a secret, and are part
+ * of the remote's identity — dropping it would repoint the sibling-clone
+ * fingerprint (#2054) for every already-registered repo.
+ *
+ * The match is bounded by the authority (`[^/]*` cannot cross the first `/`
+ * after the scheme) and greedy to the last `@` in it, so a password
+ * containing `@` is removed whole rather than leaving its tail behind.
+ */
+export const stripUrlCredentials = (url: string): string =>
+  url.replace(/^(https?:\/\/)[^/]*@/i, '$1');
+
+/**
  * Get a stable canonical identifier for the repo's `origin` remote, if any.
  *
  * Used to fingerprint two on-disk clones as the same logical repository
@@ -212,6 +234,10 @@ export const getCurrentCommit = (repoPath: string): string => {
  * survives those conventions.
  *
  * Normalisation strategy:
+ *   - Strip http(s) userinfo credentials (see {@link stripUrlCredentials}).
+ *     Done FIRST, before the host lower-casing below — that regex treats the
+ *     whole `user:pass@host` span as the host and would mangle the secret's
+ *     case on its way into the registry (#2914).
  *   - Strip a trailing `.git` so `https://x/y` and `https://x/y.git` collapse.
  *   - Strip a trailing `/` for the same reason.
  *   - `git@github.com:foo/bar` and `https://github.com/foo/bar` are
@@ -239,7 +265,9 @@ export const getRemoteUrl = (repoPath: string): string | undefined => {
   }
   if (!raw) return undefined;
 
-  let normalised = raw.replace(/\/$/, '').replace(/\.git$/, '');
+  let normalised = stripUrlCredentials(raw)
+    .replace(/\/$/, '')
+    .replace(/\.git$/, '');
 
   // Lower-case the host segment of `scheme://[user@]host[:port]/...`
   // and the host segment of `git@host:owner/repo` SCP form.

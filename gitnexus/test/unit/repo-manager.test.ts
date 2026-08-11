@@ -975,6 +975,112 @@ describe('registerRepo name override + collision guard (#829)', () => {
 
 // ─── registerRepo branch nesting (#2106) ─────────────────────────────
 
+// ─── remoteUrl credentials (#2914) ───────────────────────────────────
+//
+// The registry is the surface `list_repos` (MCP), `gitnexus list` and group
+// sync read from, so a `remoteUrl` carrying `https://user:token@` turns repo
+// discovery into credential disclosure. Capture-time stripping in
+// `getRemoteUrl` only covers what THIS version writes — a registry.json (or a
+// per-repo meta a re-register copies forward) written by an older version
+// still holds one, so both registry edges sanitize. Fake credential only.
+
+describe('registry never emits or persists remoteUrl credentials (#2914)', () => {
+  const FAKE_TOKEN = 'ExAmPle-FAKE-SECRET';
+  const CREDENTIALED = `https://x-access-token:${FAKE_TOKEN}@github.com/example/project`;
+  const CLEAN = 'https://github.com/example/project';
+
+  let tmpHome: Awaited<ReturnType<typeof createTempDir>>;
+  let tmpRepo: Awaited<ReturnType<typeof createTempDir>>;
+  let savedGitnexusHome: string | undefined;
+  let registryPath: string;
+
+  const meta: RepoMeta = {
+    repoPath: '',
+    lastCommit: 'abc1234',
+    indexedAt: '2026-08-11T12:00:00.000Z',
+    stats: { files: 1, nodes: 1 },
+  };
+
+  beforeEach(async () => {
+    tmpHome = await createTempDir('gitnexus-2914-home-');
+    tmpRepo = await createTempDir('gitnexus-2914-repo-');
+    savedGitnexusHome = process.env.GITNEXUS_HOME;
+    process.env.GITNEXUS_HOME = tmpHome.dbPath;
+    registryPath = path.join(tmpHome.dbPath, 'registry.json');
+  });
+
+  afterEach(async () => {
+    if (savedGitnexusHome === undefined) delete process.env.GITNEXUS_HOME;
+    else process.env.GITNEXUS_HOME = savedGitnexusHome;
+    await tmpHome.cleanup();
+    await tmpRepo.cleanup();
+  });
+
+  /** A registry.json as an older version would have left it. */
+  const seedLegacyRegistry = async (entryPath: string): Promise<void> => {
+    const legacy: RegistryEntry[] = [
+      {
+        name: 'legacy',
+        path: entryPath,
+        storagePath: path.join(entryPath, '.gitnexus'),
+        indexedAt: meta.indexedAt,
+        lastCommit: meta.lastCommit,
+        remoteUrl: CREDENTIALED,
+      },
+    ];
+    await fs.writeFile(registryPath, JSON.stringify(legacy, null, 2), 'utf-8');
+  };
+
+  it('sanitizes a legacy on-disk entry before listRegisteredRepos returns it', async () => {
+    await seedLegacyRegistry(tmpRepo.dbPath);
+
+    const entries = await listRegisteredRepos();
+
+    expect(entries).toHaveLength(1);
+    expect(entries[0].remoteUrl).toBe(CLEAN);
+    expect(JSON.stringify(entries)).not.toContain(FAKE_TOKEN);
+  });
+
+  it('never writes a credentialed remoteUrl to registry.json', async () => {
+    // meta.remoteUrl bypasses getRemoteUrl entirely — this is the legacy
+    // per-repo gitnexus.json being copied forward into a fresh registry.
+    await registerRepo(tmpRepo.dbPath, { ...meta, remoteUrl: CREDENTIALED }, { name: 'repro' });
+
+    const raw = await fs.readFile(registryPath, 'utf-8');
+    expect(raw).not.toContain(FAKE_TOKEN);
+    expect((JSON.parse(raw) as RegistryEntry[])[0].remoteUrl).toBe(CLEAN);
+  });
+
+  it('scrubs an untouched legacy entry when some other repo is registered', async () => {
+    const other = await createTempDir('gitnexus-2914-other-');
+    try {
+      await seedLegacyRegistry(other.dbPath);
+      await registerRepo(tmpRepo.dbPath, meta, { name: 'fresh' });
+
+      const raw = await fs.readFile(registryPath, 'utf-8');
+      expect(raw).not.toContain(FAKE_TOKEN);
+      // The legacy entry survives — it is scrubbed, not dropped.
+      expect(JSON.parse(raw)).toHaveLength(2);
+    } finally {
+      await other.cleanup();
+    }
+  });
+
+  it('still matches sibling clones after sanitization (#2054 fingerprint)', async () => {
+    await registerRepo(tmpRepo.dbPath, { ...meta, remoteUrl: CREDENTIALED }, { name: 'with-cred' });
+    const other = await createTempDir('gitnexus-2914-sibling-');
+    try {
+      await registerRepo(other.dbPath, { ...meta, remoteUrl: CLEAN }, { name: 'clean' });
+
+      const entries = await listRegisteredRepos();
+      const remotes = entries.map((e) => e.remoteUrl);
+      expect(remotes).toEqual([CLEAN, CLEAN]);
+    } finally {
+      await other.cleanup();
+    }
+  });
+});
+
 describe('registerRepo branch nesting (#2106)', () => {
   let tmpHome: Awaited<ReturnType<typeof createTempDir>>;
   let tmpRepo: Awaited<ReturnType<typeof createTempDir>>;
