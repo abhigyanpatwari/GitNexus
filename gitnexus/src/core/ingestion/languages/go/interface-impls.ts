@@ -1,4 +1,8 @@
 import type { ParsedFile, ReferenceSite, SymbolDefinition } from 'gitnexus-shared';
+import type {
+  StructuralImplementationResult,
+  UndecidedSatisfaction,
+} from '../../scope-resolution/contract/scope-resolver.js';
 import type { SemanticModel } from '../../model/semantic-model.js';
 import type { ScopeResolutionIndexes } from '../../model/scope-resolution-indexes.js';
 import { simpleQualifiedName } from '../../scope-resolution/graph-bridge/ids.js';
@@ -29,6 +33,23 @@ type EmbeddedParent = { readonly structId: string; readonly asPointer: boolean }
 type DualMethodSet = { readonly value: MutableMethodSet; readonly pointer: MutableMethodSet };
 /** Which method set satisfied an interface. `value` implies pointer too. */
 export type GoReceiverForm = 'value' | 'pointer';
+/**
+ * Whether a type satisfies an interface — or whether we could not tell.
+ *
+ * `undecided` is the state #2873 was missing. It means a required signature
+ * named something we could not give an identity to (a package qualifier with no
+ * recoverable import path), so the comparison was never actually performed.
+ * Folding it into `unsatisfied` is what let `impact()` answer a confident zero
+ * for a method that in fact had callers.
+ *
+ * It stays distinct from `unsatisfied` in exactly one direction: an undecided
+ * pair mints NO edge (a speculative one would fan out into fabricated CALLS),
+ * but it IS reported, so the answer downstream is a lower bound instead of a
+ * fact. Compare `go/types`, which folds the same case the other way — its
+ * `hasAllMethods` returns true for an invalid type — because a type checker's
+ * job is to avoid cascading errors, not to bound a blast radius.
+ */
+type Verdict = 'satisfied' | 'unsatisfied' | 'undecided';
 /** One structural implementor plus the form in which it implements. */
 export type GoStructuralImplementor = {
   readonly structDefId: string;
@@ -36,7 +57,12 @@ export type GoStructuralImplementor = {
 };
 type SignatureContext = {
   readonly packageQualifier: string | undefined;
-  readonly importQualifiers: ReadonlyMap<string, string>;
+  /** Every token this file may write before a `.`, mapped to the package it
+   *  names. Keyed on the token the SOURCE uses, which is the import's local name
+   *  except where that had to be recovered from the path (`…/bar/v2` -> `bar`).
+   *  An `undefined` value is a name that is claimed but has no agreeable
+   *  qualifier; it reads the same as an absent key at the one consumer. */
+  readonly importQualifiers: ReadonlyMap<string, string | undefined>;
 };
 type DetectionIndexes = {
   readonly interfaces: readonly SymbolDefinition[];
@@ -76,7 +102,7 @@ export function detectGoInterfaceImplementations(
   parsedFiles: readonly ParsedFile[],
   _indexes: ScopeResolutionIndexes,
   _model: SemanticModel,
-): Map<string, GoStructuralImplementor[]> {
+): StructuralImplementationResult {
   return detectGoInterfaceImplementationsFromIndexes(buildDetectionIndexes(parsedFiles, _indexes));
 }
 
@@ -457,8 +483,9 @@ function uniqueInterfaceNamed(
 
 function detectGoInterfaceImplementationsFromIndexes(
   indexes: DetectionIndexes,
-): Map<string, GoStructuralImplementor[]> {
+): StructuralImplementationResult {
   const implementations = new Map<string, GoStructuralImplementor[]>();
+  const undecided: UndecidedSatisfaction[] = [];
   const methodSetCache = new Map<string, MutableMethodSet>();
   for (const iface of indexes.interfaces) {
     const required = collectInterfaceMethodSet(iface, indexes, new Set(), methodSetCache);
@@ -476,31 +503,60 @@ function detectGoInterfaceImplementationsFromIndexes(
     // additive: every implementor found before #2855 is still found, in the
     // same order, and instantiation only ever appends.
     const formByStructId = new Map<string, GoReceiverForm>();
+    const undecidedStructIds = new Set<string>();
     for (const candidateSet of [required, ...instantiatedMethodSetsFor(iface, required, indexes)]) {
       for (const structId of candidateStructIds) {
         if (formByStructId.get(structId) === 'value') continue;
         const pointerSet = indexes.effectiveMethodsByStructId.get(structId);
         if (pointerSet === undefined) continue;
         // MS(*T) is the superset: if it does not satisfy, neither does MS(T).
-        if (!methodSetSatisfies(pointerSet, candidateSet, indexes.signatureContextByDefId))
+        const verdict = methodSetSatisfies(
+          pointerSet,
+          candidateSet,
+          indexes.signatureContextByDefId,
+        );
+        if (verdict !== 'satisfied') {
+          // `undecided` mints no edge — a speculative IMPLEMENTS would fan out
+          // into fabricated CALLS through `emitReceiverBoundCalls`. It is
+          // recorded instead, so `impact` can report a lower bound rather than
+          // a confident zero (#2873). A decided `unsatisfied` records nothing:
+          // that answer is trustworthy.
+          if (verdict === 'undecided') undecidedStructIds.add(structId);
           continue;
+        }
         // Then ask the narrower question separately — does the VALUE type satisfy?
         // This is the distinction `var x I = T{}` turns on, and it is a fact about
         // the program, not a heuristic.
         const valueSet = indexes.valueMethodsByStructId.get(structId);
         const satisfiesByValue =
           valueSet !== undefined &&
-          methodSetSatisfies(valueSet, candidateSet, indexes.signatureContextByDefId);
+          methodSetSatisfies(valueSet, candidateSet, indexes.signatureContextByDefId) ===
+            'satisfied';
         formByStructId.set(structId, satisfiesByValue ? 'value' : 'pointer');
+        undecidedStructIds.delete(structId);
       }
     }
     const implementors: GoStructuralImplementor[] = [...formByStructId].map(
       ([structDefId, receiverForm]) => ({ structDefId, receiverForm }),
     );
     if (implementors.length > 0) implementations.set(iface.nodeId, implementors);
+    if (undecidedStructIds.size > 0) {
+      const candidateNames: string[] = [];
+      for (const structId of undecidedStructIds) {
+        const name = indexes.structsById.get(structId)?.qualifiedName;
+        if (name !== undefined) candidateNames.push(name);
+      }
+      undecided.push({
+        interfaceDefId: iface.nodeId,
+        interfaceName: iface.qualifiedName,
+        filePath: iface.filePath,
+        undecidedCandidates: undecidedStructIds.size,
+        candidateNames,
+      });
+    }
   }
 
-  return implementations;
+  return { implementations, undecided };
 }
 
 /**
@@ -1004,36 +1060,54 @@ function methodSetSatisfies(
   actual: MethodSet,
   required: MethodSet,
   signatureContextByDefId: ReadonlyMap<string, SignatureContext>,
-): boolean {
+): Verdict {
+  let undecided = false;
   for (const [name, requiredOverloads] of required) {
     const actualOverloads = actual.get(name);
-    if (actualOverloads === undefined) return false;
+    if (actualOverloads === undefined) return 'unsatisfied';
     for (const requiredMethod of requiredOverloads) {
       // Fast arity pre-filter: if the required method has a known parameter
       // count, reject immediately when no actual overload matches it. This
       // avoids the expensive signature normalization loop for obvious mismatches.
       if (requiredMethod.parameterCount !== undefined) {
         if (!actualOverloads.some((a) => a.parameterCount === requiredMethod.parameterCount)) {
-          return false;
+          return 'unsatisfied';
         }
       }
-      if (!hasCompatibleMethod(actualOverloads, requiredMethod, signatureContextByDefId)) {
-        return false;
-      }
+      const verdict = compatibleMethodVerdict(
+        actualOverloads,
+        requiredMethod,
+        signatureContextByDefId,
+      );
+      // A decided mismatch anywhere ends it — a type that provably lacks ONE
+      // required method does not implement the interface, however many other
+      // methods we could not read. Undecided keeps scanning for exactly that
+      // reason: a hard no may still be waiting, and it is the better answer.
+      if (verdict === 'unsatisfied') return 'unsatisfied';
+      if (verdict === 'undecided') undecided = true;
     }
   }
-  return true;
+  return undecided ? 'undecided' : 'satisfied';
 }
 
-function hasCompatibleMethod(
+function compatibleMethodVerdict(
   actualOverloads: readonly SymbolDefinition[],
   requiredMethod: SymbolDefinition,
   signatureContextByDefId: ReadonlyMap<string, SignatureContext>,
-): boolean {
-  if (!hasVerifiableSignature(requiredMethod)) return false;
-  return actualOverloads.some((actualMethod) =>
-    signaturesCompatible(actualMethod, requiredMethod, signatureContextByDefId),
-  );
+): Verdict {
+  // Nothing in the interface's own method to compare against: this is missing
+  // information, not a difference. It was a `false` before #2873.
+  if (!hasVerifiableSignature(requiredMethod)) return 'undecided';
+  let undecided = false;
+  for (const actualMethod of actualOverloads) {
+    const verdict = signaturesCompatible(actualMethod, requiredMethod, signatureContextByDefId);
+    // One overload that provably matches settles the method — the unknowns on
+    // the others cannot unsettle it. (Pyright does the same: a resolvable path
+    // suppresses the partially-unknown diagnostic from the others.)
+    if (verdict === 'satisfied') return 'satisfied';
+    if (verdict === 'undecided') undecided = true;
+  }
+  return undecided ? 'undecided' : 'unsatisfied';
 }
 
 function methodSetHasVerifiableSignatures(methods: MethodSet): boolean {
@@ -1056,53 +1130,97 @@ function signaturesCompatible(
   actual: SymbolDefinition,
   required: SymbolDefinition,
   signatureContextByDefId: ReadonlyMap<string, SignatureContext>,
-): boolean {
+): Verdict {
   const actualContext = signatureContextByDefId.get(actual.nodeId);
   const requiredContext = signatureContextByDefId.get(required.nodeId);
-  return (
-    countsCompatible(actual.parameterCount, required.parameterCount) &&
-    countsCompatible(actual.requiredParameterCount, required.requiredParameterCount) &&
-    parameterTypesCompatible(
-      actual.parameterTypes,
-      required.parameterTypes,
-      actualContext,
-      requiredContext,
-    ) &&
-    returnTypesCompatible(actual.returnType, required.returnType, actualContext, requiredContext)
+  if (
+    !countsCompatible(actual.parameterCount, required.parameterCount) ||
+    !countsCompatible(actual.requiredParameterCount, required.requiredParameterCount)
+  ) {
+    return 'unsatisfied';
+  }
+  // A decided mismatch beats an unknown — it is the answer we can stand behind —
+  // so the parameter verdict only short-circuits when it is `unsatisfied`.
+  const parameters = parameterTypesVerdict(actual, required, actualContext, requiredContext);
+  if (parameters === 'unsatisfied') return 'unsatisfied';
+  const returns = returnTypeVerdict(
+    actual.returnType,
+    required.returnType,
+    actualContext,
+    requiredContext,
   );
+  if (returns === 'unsatisfied') return 'unsatisfied';
+  return parameters === 'undecided' || returns === 'undecided' ? 'undecided' : 'satisfied';
 }
 
 function countsCompatible(actual: number | undefined, required: number | undefined): boolean {
   return actual === undefined || required === undefined || actual === required;
 }
 
-function parameterTypesCompatible(
-  actual: readonly string[] | undefined,
-  required: readonly string[] | undefined,
+function parameterTypesVerdict(
+  actualDef: SymbolDefinition,
+  requiredDef: SymbolDefinition,
   actualContext: SignatureContext | undefined,
   requiredContext: SignatureContext | undefined,
-): boolean {
-  if (actual === undefined || required === undefined) return true;
-  if (actual.length !== required.length) return false;
-  return actual.every((type, index) => {
-    const actualType = normalizeSignatureType(type, actualContext);
-    const requiredType = normalizeSignatureType(required[index]!, requiredContext);
-    return actualType !== undefined && requiredType !== undefined && actualType === requiredType;
-  });
+): Verdict {
+  const actual = actualDef.parameterTypes;
+  const required = requiredDef.parameterTypes;
+  if (actual === undefined || required === undefined) {
+    // A method that takes nothing has no list to carry — that is a decided
+    // agreement, not a gap, and it is the shape of every `Close() error`.
+    if (actualDef.parameterCount === 0 && requiredDef.parameterCount === 0) return 'satisfied';
+    // Otherwise the types really are unread. This is where the old code assumed
+    // `true` and called two signatures compatible without comparing them.
+    return 'undecided';
+  }
+  if (actual.length !== required.length) return 'unsatisfied';
+  // Indexed loop, not `entries()`: this is the innermost comparison in the
+  // detection pass and runs once per parameter per candidate pair.
+  let undecided = false;
+  for (let index = 0; index < actual.length; index++) {
+    const verdict = typeVerdict(actual[index]!, required[index]!, actualContext, requiredContext);
+    if (verdict === 'unsatisfied') return 'unsatisfied';
+    if (verdict === 'undecided') undecided = true;
+  }
+  return undecided ? 'undecided' : 'satisfied';
 }
 
-function returnTypesCompatible(
+function returnTypeVerdict(
   actual: string | undefined,
   required: string | undefined,
   actualContext: SignatureContext | undefined,
   requiredContext: SignatureContext | undefined,
-): boolean {
-  if (required === undefined) return actual === undefined;
-  if (actual === undefined) return false;
+): Verdict {
+  if (required === undefined) return actual === undefined ? 'satisfied' : 'unsatisfied';
+  if (actual === undefined) return 'unsatisfied';
+  return typeVerdict(actual, required, actualContext, requiredContext);
+}
+
+/** The one place a type spelling decides anything, and the only mint site of
+ *  `undecided` below the method level: `normalizeSignatureType` returns
+ *  `undefined` when a package qualifier has no identity we could recover, and
+ *  two spellings we could not normalize are not thereby different. */
+function typeVerdict(
+  actual: string,
+  required: string,
+  actualContext: SignatureContext | undefined,
+  requiredContext: SignatureContext | undefined,
+): Verdict {
   const actualType = normalizeSignatureType(actual, actualContext);
   const requiredType = normalizeSignatureType(required, requiredContext);
-  return actualType !== undefined && requiredType !== undefined && actualType === requiredType;
+  if (actualType === undefined || requiredType === undefined) return 'undecided';
+  return actualType === requiredType ? 'satisfied' : 'unsatisfied';
 }
+
+/** Normalized form of every type spelling seen in a file, keyed by its context.
+ *
+ *  Normalization is a pure function of (spelling, context), and a context is
+ *  immutable once built — so this is a cache, not state. It earns its keep
+ *  because #2873 removed the early bail: a parameter list that named an
+ *  out-of-repo type used to normalize to `undefined` and stop the comparison at
+ *  parameter 0, and now every pair of (interface method, candidate struct) walks
+ *  its whole signature, re-normalizing both sides once per candidate. */
+const normalizedTypesByContext = new WeakMap<SignatureContext, Map<string, string | undefined>>();
 
 function normalizeSignatureType(typeName: string, context?: SignatureContext): string | undefined {
   // Go type identity includes pointer/slice/map/variadic shape and package
@@ -1110,7 +1228,17 @@ function normalizeSignatureType(typeName: string, context?: SignatureContext): s
   // `*`, `[]`, `...`, or `pkg.` would make non-identical signatures compare equal.
   const compact = typeName.replace(/\s+/g, '');
   if (context === undefined) return compact;
-  return qualifyGoSignatureTypes(compact, context);
+  let normalized = normalizedTypesByContext.get(context);
+  if (normalized === undefined) {
+    normalized = new Map();
+    normalizedTypesByContext.set(context, normalized);
+  }
+  // `has`, not a truthiness check: `undefined` — "no agreeable identity" — is
+  // itself a result worth caching, and it is the one this file mints most.
+  if (normalized.has(compact)) return normalized.get(compact);
+  const qualified = qualifyGoSignatureTypes(compact, context);
+  normalized.set(compact, qualified);
+  return qualified;
 }
 
 function qualifyGoSignatureTypes(typeName: string, context: SignatureContext): string | undefined {
@@ -1138,17 +1266,68 @@ function signatureContextForFile(
   parsed: ParsedFile,
   indexes: ScopeResolutionIndexes,
 ): SignatureContext {
-  const importQualifiers = new Map<string, string>();
+  // A key present with an `undefined` value means "in-repo, but no directory to
+  // name it by" — a repo-ROOT package, whose own file spells its types bare, so
+  // no qualifier either side can agree on exists. It still has to occupy the
+  // name, or the fallback below would label a repo package external.
+  const importQualifiers = new Map<string, string | undefined>();
   const importEdges = indexes.imports?.get(parsed.moduleScope) ?? [];
   for (const edge of importEdges) {
     if (edge.kind !== 'namespace' || edge.targetFile === null) continue;
-    const qualifier = packageQualifierForFile(edge.targetFile);
-    if (qualifier !== undefined) importQualifiers.set(edge.localName, qualifier);
+    importQualifiers.set(edge.localName, packageQualifierForFile(edge.targetFile));
+  }
+  // An import that resolves to no file in the repository — every stdlib and
+  // third-party package — still has an identity: its import path, which the
+  // parsed directive kept even though the finalized `ImportEdge` did not (#2873).
+  // Without this fallback `ctx context.Context` normalized to `undefined`, and
+  // `undefined` reads as "signatures differ" on both sides at once, so two
+  // textually identical methods compared unequal and Go interface satisfaction
+  // only ever succeeded for builtin-only signatures.
+  for (const directive of parsed.parsedImports) {
+    if (directive.kind !== 'namespace') continue;
+    const token = goImportToken(directive.localName, directive.targetRaw);
+    // The edges ran first, so a token an in-repo import already claimed keeps
+    // its package directory — the fallback fills gaps, it does not compete.
+    if (importQualifiers.has(token)) continue;
+    importQualifiers.set(token, externalPackageQualifier(directive.targetRaw));
   }
   return {
     packageQualifier: packageQualifierForFile(parsed.filePath),
     importQualifiers,
   };
+}
+
+/** Identity for a package that lives outside the repository.
+ *
+ *  The import path is the exact identity — `net/http` and `example.com/x/http`
+ *  are different packages that both spell their qualifier `http`, so keying on
+ *  the local name would make them compare equal. The prefix keeps the result in
+ *  a namespace no in-repo qualifier can reach: no package directory can begin
+ *  with the literal `extern:`. */
+function externalPackageQualifier(importPath: string): string {
+  return `extern:${importPath}`;
+}
+
+/** The token Go source writes before the `.` for this import.
+ *
+ *  An alias names its own token, so it is returned as-is. An unaliased import
+ *  arrives here spelled as the last path segment, which is right until a module
+ *  carries a major version: `github.com/foo/bar/v2` is written `bar` and
+ *  `gopkg.in/yaml.v3` is written `yaml`, per the rule the go tool applies.
+ *
+ *  Deriving "aliased" from the path rather than from `importedName` is
+ *  deliberate — the Go extractor sets both names to the alias when there is one
+ *  (`import-decomposer.ts`), so the two fields never disagree.
+ *
+ *  A package whose name diverges from its path for any OTHER reason cannot be
+ *  recovered without reading the dependency's own source, which is by definition
+ *  outside the repository. Those stay unresolved, which is the safe direction. */
+function goImportToken(localName: string, importPath: string): string {
+  const segments = importPath.split('/').filter((segment) => segment.length > 0);
+  const leaf = segments.pop() ?? importPath;
+  if (localName !== leaf) return localName;
+  const name = /^v\d+$/.test(leaf) ? (segments.pop() ?? leaf) : leaf;
+  return name.replace(/\.v\d+$/, '');
 }
 
 /** The package directory, or `undefined` for a repo-root file.
