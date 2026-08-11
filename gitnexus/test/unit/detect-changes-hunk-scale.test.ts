@@ -1,16 +1,12 @@
 /**
  * #2915 — `detect_changes` must not scale its query with the diff's hunk count.
+ * See `coalesceHunks` in src/storage/git.ts for the crash mechanism.
  *
- * The old mapping folded one `(n.startLine <= $hunkEndI AND n.endLine >=
- * $hunkStartI)` pair per hunk into a single WHERE clause. A generated file
- * diffs at thousands of hunks with `-U0`, and the expression tree that produced
- * overflowed LadybugDB's recursive evaluator copy — SIGBUS with no output where
- * secondary threads get 512 KB of stack, a swallowed 30s timeout elsewhere.
- *
- * Hunk ranges are now coalesced and matched in JS, so the Cypher text and the
- * parameter set are the same whether the file changed in 1 place or 5,000.
  * These tests drive the real `detect_changes` path against a real git repo with
- * a mocked query layer, so they observe the query the engine would receive.
+ * the query layer mocked, so they observe the query the engine would receive:
+ * its text and parameters must not grow with the hunk count. What the ENGINE
+ * then does with that query — path anchoring and the line bound — is pinned
+ * against a real index in test/integration/detect-changes-path-anchoring.
  *
  * They also pin the line-base fix that came with the rewrite: graph rows are
  * 0-based (#2377) and git hunks are 1-based, so comparing them raw shifted
@@ -36,11 +32,6 @@ vi.mock('../../src/core/lbug/pool-adapter.js', async (importOriginal) => {
   return { ...actual, ...lbugMocks };
 });
 
-vi.mock('../../src/mcp/core/lbug-adapter.js', async (importOriginal) => {
-  const actual = await importOriginal();
-  return { ...actual, ...lbugMocks };
-});
-
 vi.mock('../../src/storage/repo-manager.js', async (importOriginal) => {
   const actual = await importOriginal<typeof import('../../src/storage/repo-manager.js')>();
   return {
@@ -51,24 +42,9 @@ vi.mock('../../src/storage/repo-manager.js', async (importOriginal) => {
   };
 });
 
-vi.mock('../../src/core/git-staleness.js', () => ({
-  checkStaleness: vi.fn().mockReturnValue({ isStale: false, commitsBehind: 0 }),
-  checkStalenessAsync: vi.fn().mockResolvedValue({ isStale: false, commitsBehind: 0 }),
-  checkCwdMatch: vi.fn().mockResolvedValue({ match: 'none' }),
-}));
-
-vi.mock('../../src/core/search/bm25-index.js', () => ({
-  searchFTSFromLbug: vi.fn().mockResolvedValue({ results: [], ftsAvailable: true }),
-}));
-
-vi.mock('../../src/mcp/core/embedder.js', () => ({
-  embedQuery: vi.fn().mockResolvedValue([]),
-  getEmbeddingDims: vi.fn().mockReturnValue(384),
-}));
-
 import { LocalBackend } from '../../src/mcp/local/local-backend.js';
 import { listRegisteredRepos, type RegistryEntry } from '../../src/storage/repo-manager.js';
-import { coalesceHunks, hunksOverlapRange } from '../../src/storage/git.js';
+import { coalesceHunks, coalesceHunksByPath, hunksOverlapRange } from '../../src/storage/git.js';
 import { createTempDirPool } from '../helpers/temp-dir-pool.js';
 
 const tempDirs = createTempDirPool('gnx-hunk-scale-');
@@ -82,6 +58,7 @@ function makeRepo(files: string[], lines: number): string {
   execFileSync('git', ['config', 'user.email', 'test@example.com'], { cwd: repoDir });
   execFileSync('git', ['config', 'user.name', 'Test'], { cwd: repoDir });
   for (const file of files) {
+    mkdirSync(path.dirname(path.join(repoDir, file)), { recursive: true });
     writeFileSync(
       path.join(repoDir, file),
       Array.from({ length: lines }, (_, i) => `line ${i + 1}`).join('\n') + '\n',
@@ -126,8 +103,9 @@ function symbolQueryCalls(): { query: string; params: Record<string, unknown> }[
 }
 
 interface DetectChangesResult {
-  summary: { changed_count: number };
+  summary: { changed_count: number; changed_files: number };
   changed_symbols: { name?: string }[];
+  symbols_truncated?: { listed: number; total: number };
 }
 
 async function runDetectChanges(): Promise<DetectChangesResult> {
@@ -197,8 +175,25 @@ describe('#2915 detect_changes hunk scaling', () => {
     await runDetectChanges();
 
     const calls = symbolQueryCalls();
-    expect(calls[0].params.bounds).toEqual([{ path: 'big.txt', lo: 19, hi: 59 }]);
+    expect(calls[0].params.bounds).toEqual([
+      { path: 'big.txt', suffix: '/big.txt', lo: 19, hi: 59 },
+    ]);
     expect(calls[0].query).toContain('n.startLine <= b.hi AND n.endLine >= b.lo');
+  });
+
+  it('anchors the path match on a separator so a sibling suffix cannot match', async () => {
+    const repoDir = makeRepo(['lib/a.ts'], 4);
+    writeFileSync(path.join(repoDir, 'lib/a.ts'), 'line 1 changed\nline 2\nline 3\nline 4\n');
+    registerRepo(repoDir);
+
+    await runDetectChanges();
+
+    const calls = symbolQueryCalls();
+    // A bare `ENDS WITH lib/a.ts` also matches an indexed `src/mylib/a.ts`.
+    expect(calls[0].query).toContain('n.filePath = b.path OR n.filePath ENDS WITH b.suffix');
+    expect(calls[0].params.bounds).toEqual([
+      { path: 'lib/a.ts', suffix: '/lib/a.ts', lo: 0, hi: 0 },
+    ]);
   });
 
   it('batches changed files instead of running one full scan each', async () => {
@@ -240,6 +235,33 @@ describe('#2915 detect_changes hunk scaling', () => {
     expect(result.changed_symbols).toEqual([]);
   });
 
+  it('caps the listed symbols without capping the counts', async () => {
+    const repoDir = makeRepo(['code.py'], 2);
+    writeFileSync(path.join(repoDir, 'code.py'), 'line 1 changed\nline 2\n');
+    registerRepo(repoDir);
+    mockSymbolRows(
+      Array.from({ length: 1200 }, (_, i) => ({ name: `fn${i}`, startLine: 0, endLine: 1 })),
+    );
+
+    const result = await runDetectChanges();
+
+    expect(result.changed_symbols).toHaveLength(1000);
+    // The gate's own number stays true, so the CLI's "... and N more" and any
+    // client comparing list length against the count still see 1,200.
+    expect(result.summary.changed_count).toBe(1200);
+    expect(result.symbols_truncated).toEqual({ listed: 1000, total: 1200 });
+  });
+
+  it('counts a path reported twice in one diff as one changed file', async () => {
+    const repoDir = makeRepo(['code.py'], 4);
+    writeFileSync(path.join(repoDir, 'code.py'), 'line 1 changed\nline 2\nline 3\nline 4\n');
+    registerRepo(repoDir);
+
+    const result = await runDetectChanges();
+
+    expect(result.summary.changed_files).toBe(1);
+  });
+
   it('reports a node matched by two changed paths once', async () => {
     const repoDir = makeRepo(['code.py'], 2);
     writeFileSync(path.join(repoDir, 'code.py'), 'line 1 changed\nline 2\n');
@@ -271,7 +293,9 @@ describe('coalesceHunks', () => {
     ]);
   });
 
-  it('sorts unordered input and leaves a two-line gap unmerged', () => {
+  // The one property the cases around this do not pin: output ORDER, which
+  // `hunksOverlapRange`'s binary search depends on.
+  it('returns ranges in ascending order for unordered input', () => {
     expect(
       coalesceHunks([
         { startLine: 8, endLine: 8 },
@@ -310,6 +334,33 @@ describe('coalesceHunks', () => {
       { startLine: 1, endLine: 1 },
       { startLine: 2, endLine: 5 },
     ]);
+  });
+});
+
+describe('coalesceHunksByPath', () => {
+  it('converts git 1-based hunks into the graph 0-based space', () => {
+    const byPath = coalesceHunksByPath([
+      { filePath: 'a.ts', hunks: [{ startLine: 10, endLine: 12 }] },
+    ]);
+
+    expect(byPath.get('a.ts')).toEqual([{ startLine: 9, endLine: 11 }]);
+  });
+
+  it('accumulates a path reported twice in one diff', () => {
+    const byPath = coalesceHunksByPath([
+      { filePath: 'a.ts', hunks: [{ startLine: 20, endLine: 20 }] },
+      { filePath: 'a.ts', hunks: [{ startLine: 5, endLine: 6 }] },
+    ]);
+
+    expect(byPath.size).toBe(1);
+    expect(byPath.get('a.ts')).toEqual([
+      { startLine: 4, endLine: 5 },
+      { startLine: 19, endLine: 19 },
+    ]);
+  });
+
+  it('skips files whose diff carried no hunks', () => {
+    expect(coalesceHunksByPath([{ filePath: 'renamed.ts', hunks: [] }]).size).toBe(0);
   });
 });
 

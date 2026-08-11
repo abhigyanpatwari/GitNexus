@@ -3,6 +3,7 @@ import { statSync, existsSync } from 'fs';
 import path from 'path';
 import os from 'os';
 import { logger } from '../core/logger.js';
+import { toZeroBasedLine } from '../core/ingestion/utils/line-base.js';
 
 // Git utilities for repository detection, commit tracking, and diff analysis
 
@@ -730,6 +731,32 @@ export function coalesceHunks(hunks: DiffHunk[]): DiffHunk[] {
     else merged.push({ ...next });
   }
   return merged;
+}
+
+/**
+ * Group a diff's hunks by file, in the graph's 0-based line space.
+ *
+ * The base conversion lives here, at the parse boundary, rather than in each
+ * consumer: `parseDiffHunks` stays faithful to git (1-based, like the `@@`
+ * headers it reads) and everything downstream compares graph-native values
+ * (#2377). Comparing the two raw shifts every symbol one line up, which hides
+ * edits to a symbol's last line.
+ *
+ * A path can appear twice in one diff (e.g. a rename reported alongside an
+ * edit), so hunks accumulate per path instead of the later entry winning.
+ */
+export function coalesceHunksByPath(fileDiffs: FileDiff[]): Map<string, DiffHunk[]> {
+  const byPath = new Map<string, DiffHunk[]>();
+  for (const fileDiff of fileDiffs) {
+    if (fileDiff.hunks.length === 0) continue;
+    const zeroBased = fileDiff.hunks.map((hunk) => ({
+      startLine: toZeroBasedLine(hunk.startLine),
+      endLine: toZeroBasedLine(hunk.endLine),
+    }));
+    const existing = byPath.get(fileDiff.filePath) ?? [];
+    byPath.set(fileDiff.filePath, coalesceHunks([...existing, ...zeroBased]));
+  }
+  return byPath;
 }
 
 /**

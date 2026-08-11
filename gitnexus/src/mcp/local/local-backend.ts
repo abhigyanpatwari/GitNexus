@@ -22,7 +22,8 @@ import { queryClassBeanMetadata } from './bean-metadata.js';
 import { querySpringAopMetadata } from './aop-metadata.js';
 import { isValidQueryParams } from '../../core/lbug/query-params.js';
 import { toDisplayLine } from './line-display.js';
-import { toZeroBasedLine } from '../../core/ingestion/utils/line-base.js';
+import { chunk, mapBatches, LBUG_QUERY_BATCH_SIZE } from '../../core/lbug/query-batch.js';
+import { toOneBasedLine } from '../../core/ingestion/utils/line-base.js';
 import { isWalCorruptionError, WAL_RECOVERY_SUGGESTION } from '../../core/lbug/lbug-config.js';
 // Embedding imports are lazy (dynamic import) to avoid loading onnxruntime-node
 // at MCP server startup — crashes on unsupported Node ABI versions (#89)
@@ -30,11 +31,10 @@ import { isWalCorruptionError, WAL_RECOVERY_SUGGESTION } from '../../core/lbug/l
 // import { isGitRepo, getCurrentCommit, getGitRoot } from '../../storage/git.js';
 import {
   parseDiffHunks,
-  coalesceHunks,
+  coalesceHunksByPath,
   hunksOverlapRange,
   getCanonicalRepoRoot,
   getGitRoot,
-  type DiffHunk,
   type FileDiff,
 } from '../../storage/git.js';
 import { realpathSync } from 'fs';
@@ -907,10 +907,19 @@ export function resolveWorktreeCwd(repoPath: string, launchCwd: string): string 
 
 /**
  * Changed files folded into one hunk→symbol query. The match is an unlabeled
- * `MATCH (n)`, so the batch trades round-trips against rows held at once; 100
- * measured fastest on a real index and matches the impact path's `CHUNK_SIZE`.
+ * `MATCH (n)`, so the batch trades round-trips against rows held at once; the
+ * shared size measured fastest for this query too (see `query-batch.ts`).
  */
-const DETECT_CHANGES_FILE_BATCH = 100;
+const DETECT_CHANGES_FILE_BATCH = LBUG_QUERY_BATCH_SIZE;
+
+/**
+ * Changed symbols listed in one `detect_changes` result.
+ *
+ * The counts in `summary` are never capped — only the array is, so a repo-wide
+ * diff cannot put an unbounded payload on the MCP wire. A truncated result says
+ * so in `symbols_truncated`.
+ */
+const DETECT_CHANGES_MAX_LISTED_SYMBOLS = 1000;
 
 export function buildDetectChangesDiffArgs(scope: string, baseRef?: string): string[] | null {
   const args = ['diff', '--ignore-cr-at-eol'];
@@ -1392,7 +1401,7 @@ export class LocalBackend {
       ? 'a.id STARTS WITH $idPrefix AND a.startLine >= $symStart AND a.startLine <= $symEnd'
       : 'a.id STARTS WITH $idPrefix';
     const queryParams: Record<string, unknown> = hasSpan
-      ? { idPrefix, symStart: sym.startLine + 1, symEnd: sym.endLine + 1 }
+      ? { idPrefix, symStart: toOneBasedLine(sym.startLine), symEnd: toOneBasedLine(sym.endLine) }
       : { idPrefix };
 
     const rows = await executeParameterized(
@@ -4433,10 +4442,14 @@ export class LocalBackend {
       return {
         anchorClause:
           'a.id STARTS WITH $idPrefix AND a.startLine >= $symStart AND a.startLine <= $symEnd',
-        queryParams: { idPrefix, symStart: sym.startLine + 1, symEnd: sym.endLine + 1 },
+        queryParams: {
+          idPrefix,
+          symStart: toOneBasedLine(sym.startLine),
+          symEnd: toOneBasedLine(sym.endLine),
+        },
         // Display anchor is 1-based, matching the ambiguous-candidate branch and
         // the context/query/impact tools (#2380). This is display-only — the
-        // BasicBlock join above uses the raw `sym.startLine + 1` in `symStart`.
+        // BasicBlock join above targets the CFG's own 1-based id space.
         anchor: {
           file: sym.filePath,
           symbol: sym.name,
@@ -5174,54 +5187,43 @@ export class LocalBackend {
     // degraded run cannot report a false-clean `risk_level:'low'` (#2283).
     let queryDegraded = false;
 
-    // Hunks are converted into the graph's 0-based line space ONCE, here, so
-    // every comparison downstream is base-neutral. Git counts from 1 and
-    // GraphNode rows from 0 (#2377); comparing them raw shifted every symbol one
-    // line up, which hid edits to a symbol's last line.
-    const hunksByPath = new Map<string, DiffHunk[]>();
-    for (const fileDiff of fileDiffs) {
-      if (fileDiff.hunks.length === 0) continue;
-      // A path can appear twice in one diff (e.g. a rename reported alongside an
-      // edit), so accumulate rather than let the later entry win.
-      const zeroBased = fileDiff.hunks.map((h) => ({
-        startLine: toZeroBasedLine(h.startLine),
-        endLine: toZeroBasedLine(h.endLine),
-      }));
-      const existing = hunksByPath.get(fileDiff.filePath) ?? [];
-      hunksByPath.set(fileDiff.filePath, coalesceHunks([...existing, ...zeroBased]));
-    }
+    // Hunks arrive grouped per path and already in the graph's 0-based line
+    // space, so every comparison below is base-neutral (#2377).
+    const hunksByPath = coalesceHunksByPath(fileDiffs);
 
-    // One [lo, hi] span per file, spanning its whole touched region. Coalesced
-    // ranges are sorted and disjoint, so the span is free — and it lets the
-    // engine drop the symbols that lie outside it instead of shipping every row
-    // in the file across the native boundary. Depth stays constant (two
-    // comparisons per file, not per hunk), so this cannot revive #2915;
-    // `hunksOverlapRange` still rejects symbols landing in the gaps between
-    // hunks.
-    const bounds = Array.from(hunksByPath, ([path, hunks]) => ({
-      path,
+    // One [lo, hi] span per file, spanning its whole touched region, plus the
+    // anchored forms of its path. Coalesced ranges are sorted and disjoint, so
+    // the span is free — and it lets the engine drop the symbols that lie
+    // outside it instead of shipping every row in the file across the native
+    // boundary. Depth stays constant (two comparisons per file, not per hunk),
+    // so this cannot revive #2915; `hunksOverlapRange` still rejects symbols
+    // landing in the gaps between hunks.
+    //
+    // `suffix` is the path with a leading separator: a bare `ENDS WITH` is a
+    // plain string suffix, so a diff touching `lib/a.ts` also matched an indexed
+    // `src/mylib/a.ts`. Anchoring on the separator (with the exact-equality arm
+    // for a path that IS the indexed value) is the form `explain` already uses.
+    const bounds = Array.from(hunksByPath, ([filePath, hunks]) => ({
+      path: filePath,
+      suffix: `/${filePath}`,
       lo: hunks[0].startLine,
       hi: hunks[hunks.length - 1].endLine,
     }));
-    for (let offset = 0; offset < bounds.length; offset += DETECT_CHANGES_FILE_BATCH) {
-      const queryParams: Record<string, any> = {
-        bounds: bounds.slice(offset, offset + DETECT_CHANGES_FILE_BATCH),
-      };
 
-      // Exclude BasicBlock rows by id prefix: on a --pdg index every edited
-      // function otherwise contributes N nameless BasicBlock pseudo-"symbols"
-      // (they carry filePath/start/end but no name), inflating changed_count
-      // and risk level with rows no consumer can act on (#2082 U7). Blocks
-      // are implementation substrate, not symbols — the owning Function row
-      // already represents the change. The id prefix (`BasicBlock:<file>:…`,
-      // cfg/emit.ts basicBlockId) beats a label predicate (`labels(n)[0]` is
-      // known to come back empty for several node types — see
-      // enrichCandidateLabels) AND beats `n.name IS NOT NULL` (which would
-      // also drop legitimate symbols whose name loaded as NULL, e.g.
-      // quoted-empty CSV fields for anonymous constructs).
-      const symbolQuery = `
+    // Exclude BasicBlock rows by id prefix: on a --pdg index every edited
+    // function otherwise contributes N nameless BasicBlock pseudo-"symbols"
+    // (they carry filePath/start/end but no name), inflating changed_count
+    // and risk level with rows no consumer can act on (#2082 U7). Blocks
+    // are implementation substrate, not symbols — the owning Function row
+    // already represents the change. The id prefix (`BasicBlock:<file>:…`,
+    // cfg/emit.ts basicBlockId) beats a label predicate (`labels(n)[0]` is
+    // known to come back empty for several node types — see
+    // enrichCandidateLabels) AND beats `n.name IS NOT NULL` (which would
+    // also drop legitimate symbols whose name loaded as NULL, e.g.
+    // quoted-empty CSV fields for anonymous constructs).
+    const symbolQuery = `
         UNWIND $bounds AS b
-        MATCH (n) WHERE n.filePath ENDS WITH b.path
+        MATCH (n) WHERE (n.filePath = b.path OR n.filePath ENDS WITH b.suffix)
           AND NOT n.id STARTS WITH 'BasicBlock:'
           AND n.startLine IS NOT NULL AND n.endLine IS NOT NULL
           AND n.startLine <= b.hi AND n.endLine >= b.lo
@@ -5229,33 +5231,43 @@ export class LocalBackend {
                n.filePath AS filePath, n.startLine AS startLine, n.endLine AS endLine
       `;
 
-      try {
-        const rows = await executeParameterized(repo.lbugPath, symbolQuery, queryParams);
-        for (const sym of rows) {
-          const hunks = hunksByPath.get(String(sym.diffPath)) ?? [];
-          if (!hunksOverlapRange(hunks, sym.startLine, sym.endLine)) continue;
-          // `ENDS WITH` is a plain string suffix, so a node whose path ends with
-          // two different changed paths (`README.md` and `pkg/README.md`) comes
-          // back once per match.
-          if (seenSymbolIds.has(sym.id)) continue;
-          seenSymbolIds.add(sym.id);
+    // Batches run a few at a time: `executeParameterized` checks a connection
+    // out of the per-repo pool for the duration of the query, so parallel calls
+    // never share one, and the default leaves headroom for other in-flight
+    // tools. A failed batch degrades the result (`partial`) instead of
+    // discarding the batches that succeeded next to it.
+    const batchResults = await mapBatches(
+      chunk(bounds, DETECT_CHANGES_FILE_BATCH),
+      (batch) => executeParameterized(repo.lbugPath, symbolQuery, { bounds: batch }),
+      {
+        onError: (error) => {
+          // The symbol query failed: those symbols are missing and the result
+          // would otherwise look like a clean no-op (`changed_count:0`,
+          // `risk_level:'low'`). detect_changes is the pre-commit safety gate,
+          // so flag the result `partial` rather than let a swallowed failure
+          // masquerade as "nothing changed" (#2283).
+          logQueryError('detect-changes:file-symbols', error);
+          queryDegraded = true;
+        },
+      },
+    );
 
-          changedSymbols.push({
-            id: sym.id,
-            name: sym.name,
-            type: sym.type,
-            filePath: sym.filePath,
-            change_type: 'touched',
-          });
-        }
-      } catch (e) {
-        logQueryError('detect-changes:file-symbols', e);
-        // The symbol query failed: changedSymbols stays empty and the result
-        // would otherwise look like a clean no-op (`changed_count:0`,
-        // `risk_level:'low'`). detect_changes is the pre-commit safety gate, so
-        // flag the result `partial` rather than let a swallowed failure
-        // masquerade as "nothing changed" (#2283).
-        queryDegraded = true;
+    for (const rows of batchResults) {
+      for (const sym of rows ?? []) {
+        const hunks = hunksByPath.get(String(sym.diffPath)) ?? [];
+        if (!hunksOverlapRange(hunks, sym.startLine, sym.endLine)) continue;
+        // One node can still match two changed paths that share a trailing
+        // segment (`README.md` and `pkg/README.md`), once per match.
+        if (seenSymbolIds.has(sym.id)) continue;
+        seenSymbolIds.add(sym.id);
+
+        changedSymbols.push({
+          id: sym.id,
+          name: sym.name,
+          type: sym.type,
+          filePath: sym.filePath,
+          change_type: 'touched',
+        });
       }
     }
 
@@ -5308,18 +5320,33 @@ export class LocalBackend {
             ? 'high'
             : 'critical';
 
+    // A repo-wide diff can touch thousands of symbols, and the whole array goes
+    // into one MCP payload (the CLI slices with --limit; an MCP client has no
+    // such control). Cap the LISTING, never the counts: `changed_count` stays
+    // the true total, so the risk level, the CLI's "... and N more" line and any
+    // client comparing the two still see the real number.
+    const listedSymbols = changedSymbols.slice(0, DETECT_CHANGES_MAX_LISTED_SYMBOLS);
+
     return {
       summary: {
         changed_count: changedSymbols.length,
         affected_count: processCount,
-        changed_files: fileDiffs.length,
+        // Distinct paths, not `fileDiffs.length`: one path can appear twice in a
+        // diff (a rename reported alongside an edit) and must not count twice.
+        changed_files: new Set(fileDiffs.map((fileDiff) => fileDiff.filePath)).size,
         risk_level: risk,
       },
-      changed_symbols: changedSymbols,
+      changed_symbols: listedSymbols,
       affected_processes: Array.from(affectedProcesses.values()),
       // A swallowed query failure makes the counts/risk above incomplete — tell
       // the caller so the safety gate isn't trusted as a clean result (#2283).
       ...(queryDegraded && { partial: true }),
+      ...(listedSymbols.length < changedSymbols.length && {
+        symbols_truncated: {
+          listed: listedSymbols.length,
+          total: changedSymbols.length,
+        },
+      }),
     };
   }
 
