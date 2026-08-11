@@ -16,22 +16,23 @@
  * the index metadata.
  */
 import { it, expect, beforeAll, vi } from 'vitest';
-import fs from 'node:fs/promises';
 import path from 'node:path';
 import { LocalBackend } from '../../src/mcp/local/local-backend.js';
-import { INDEX_METADATA_FILE } from '../../src/storage/repo-manager.js';
 import { withTestLbugDB } from '../helpers/test-indexed-db.js';
 
 vi.mock('../../src/storage/repo-manager.js', async (importOriginal) => {
   const actual = await importOriginal<typeof import('../../src/storage/repo-manager.js')>();
   return {
     ...actual,
+    // Spied, not stubbed: the read count per query is the invariant below.
+    loadMeta: vi.fn(actual.loadMeta),
     listRegisteredRepos: vi.fn().mockResolvedValue([]),
     cleanupOldKuzuFiles: vi.fn().mockResolvedValue({ found: false, needsReindex: false }),
     findSiblingClones: vi.fn().mockResolvedValue([]),
   };
 });
-const { listRegisteredRepos } = await import('../../src/storage/repo-manager.js');
+const { listRegisteredRepos, loadMeta, saveMeta } =
+  await import('../../src/storage/repo-manager.js');
 
 const SEED = [
   // The interface, its would-be implementor, and the implementor's method.
@@ -79,6 +80,14 @@ withTestLbugDB(
       expect(result.boundaries.join(' ')).toContain('could not be fully determined');
     });
 
+    // Two independent probes read this record, and the file is dominated by
+    // `fileHashes` — megabytes on a real repo. They must share one read.
+    it('reads the index metadata at most once per query', async () => {
+      vi.mocked(loadMeta).mockClear();
+      await backend.callTool('impact', { target: 'Delete', direction: 'upstream' });
+      expect(vi.mocked(loadMeta).mock.calls.length).toBeLessThanOrEqual(1);
+    });
+
     it('leaves a symbol the analyzer decided cleanly as exact', async () => {
       const result: any = await backend.callTool('impact', {
         target: 'FormatDate',
@@ -95,18 +104,17 @@ withTestLbugDB(
       // The record the analyzer would have written. `CtxStore` had 2 candidate
       // types it could not judge; `CtxStoreImpl` was a candidate for 1
       // interface — the two sides of the same undecided pair set.
-      await fs.writeFile(
-        path.join(path.dirname(h.dbPath), INDEX_METADATA_FILE),
-        JSON.stringify({
-          undecidedInterfaceSatisfaction: {
-            counts: { CtxStore: 2 },
-            totalInterfaces: 1,
-            totalCandidates: 2,
-            candidateCounts: { CtxStoreImpl: 1 },
-          },
-        }),
-        'utf-8',
-      );
+      // `saveMeta`, not a hand-rolled write: it is the only writer production
+      // uses, and it is atomic and dual-writes the legacy mirror. Writing the
+      // file directly would pin a shape no real analyze can produce.
+      await saveMeta(path.dirname(h.dbPath), {
+        undecidedInterfaceSatisfaction: {
+          counts: { CtxStore: 2 },
+          totalInterfaces: 1,
+          totalCandidates: 2,
+          candidateCounts: { CtxStoreImpl: 1 },
+        },
+      } as any);
       vi.mocked(listRegisteredRepos).mockResolvedValue([
         {
           name: 'test-repo',

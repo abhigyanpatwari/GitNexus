@@ -231,12 +231,8 @@ function emitDetectedInterfaceImplementations(
   provider: ScopeResolver,
   indexes: ReturnType<typeof finalizeScopeModel>,
   model: SemanticModel,
-  /** Collector for interfaces whose satisfaction check could not be completed.
-   *  These mint no edges — they exist so a query can report a lower bound
-   *  instead of a confident zero (#2873). */
-  undecidedSink: UndecidedSatisfaction[],
-): number {
-  if (provider.detectInterfaceImplementations === undefined) return 0;
+): readonly UndecidedSatisfaction[] {
+  if (provider.detectInterfaceImplementations === undefined) return [];
 
   const graphIdByDefId = new Map<string, string>();
   for (const parsed of parsedFiles) {
@@ -252,9 +248,7 @@ function emitDetectedInterfaceImplementations(
     existing.add(`${rel.sourceId}->${rel.targetId}`);
   }
 
-  let emitted = 0;
   const detected = provider.detectInterfaceImplementations(parsedFiles, indexes, model);
-  undecidedSink.push(...detected.undecided);
   for (const [interfaceDefId, implementorDefIds] of detected.implementations) {
     const targetId = graphIdByDefId.get(interfaceDefId);
     if (targetId === undefined) continue;
@@ -282,11 +276,13 @@ function emitDetectedInterfaceImplementations(
             ? `${provider.language}-structural-implements-pointer`
             : `${provider.language}-structural-implements`,
       });
-      emitted++;
     }
   }
 
-  return emitted;
+  // The interfaces this provider could not decide. They mint no edges — they
+  // exist so a query can report a lower bound instead of a confident zero
+  // (#2873); see `undecided-satisfaction.ts`.
+  return detected.undecided;
 }
 
 export type ScopeResolutionSubPhase =
@@ -737,14 +733,15 @@ export function runScopeResolution(
       ? buildGraphNodeLookup(graph)
       : nodeLookup;
   if (!callableFlowOnly) {
-    emitDetectedInterfaceImplementations(
-      graph,
-      parsedFiles,
-      postHeritageNodeLookup,
-      provider,
-      finalized,
-      readonlyModel,
-      undecidedSatisfaction,
+    undecidedSatisfaction.push(
+      ...emitDetectedInterfaceImplementations(
+        graph,
+        parsedFiles,
+        postHeritageNodeLookup,
+        provider,
+        finalized,
+        readonlyModel,
+      ),
     );
   }
   const mroByClassDefId = provider.buildMro(graph, parsedFiles, postHeritageNodeLookup);

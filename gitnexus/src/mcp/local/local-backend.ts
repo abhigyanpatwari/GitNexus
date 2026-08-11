@@ -114,6 +114,9 @@ import {
   lookupExternalCallCount,
   lookupUnresolvedCallCount,
 } from '../../core/ingestion/scope-resolution/unresolved-receivers.js';
+import type { UnresolvedReceiverSummary } from '../../core/ingestion/scope-resolution/unresolved-receivers.js';
+import type { UndecidedSatisfactionSummary } from '../../core/ingestion/scope-resolution/undecided-satisfaction.js';
+import { lookupCount } from '../../core/ingestion/scope-resolution/summary-maps.js';
 import {
   fnLineOf,
   isPdgDegradedLayerStatus,
@@ -732,6 +735,78 @@ function epistemicFrom(dropped: {
           undecidedSatisfaction: dropped.undecided,
         },
       };
+}
+
+/**
+ * Boundary notes for call sites the analyzer dropped because it could not type
+ * their receiver, when the queried symbol's name is among them (#2744).
+ *
+ * Empty when the index records no drops for this name — including every index
+ * written before the summary existed, which is why the schema version was
+ * bumped rather than treating "absent" as "none".
+ */
+function unresolvedReceiverBoundaries(
+  summary: UnresolvedReceiverSummary | undefined,
+  symName: string,
+): { notes: string[]; sites: number; external: number } {
+  if (symName.length === 0) return { notes: [], sites: 0, external: 0 };
+  const sites = lookupUnresolvedCallCount(summary, symName);
+  const external = lookupExternalCallCount(summary, symName) ?? 0;
+  if (sites === undefined) return { notes: [], sites: 0, external };
+  return {
+    notes: [
+      `${sites} call ${sites === 1 ? 'site' : 'sites'} invoking \`${symName}\` ${
+        sites === 1 ? 'was' : 'were'
+      } dropped at index time because the receiver's type could not be ` +
+        `established (e.g. an unresolved constructor, factory or chained ` +
+        `expression). Those callers are absent from this result — actual ` +
+        `impact may be higher.`,
+    ],
+    sites,
+    external,
+  };
+}
+
+/**
+ * Boundary notes for interface-satisfaction checks the analyzer could not
+ * COMPLETE, when the queried symbol is on either side of one (#2873).
+ *
+ * Matched against both maps because a query arrives from either direction: on
+ * the interface itself, or on a candidate implementation — the reported case,
+ * and the one no graph probe can find, because the edge that would lead there
+ * is precisely what went missing. See `undecided-satisfaction.ts`.
+ */
+function undecidedSatisfactionBoundaries(
+  summary: UndecidedSatisfactionSummary,
+  names: readonly string[],
+): { notes: string[]; undecided: number } {
+  const notes: string[] = [];
+  let undecided = 0;
+  for (const name of names) {
+    const asInterface = lookupCount(summary.counts, name) ?? 0;
+    if (asInterface > 0) {
+      undecided += asInterface;
+      notes.push(
+        `\`${name}\` is an interface whose implementors could not be fully determined at ` +
+          `index time: ${asInterface} candidate ${asInterface === 1 ? 'type was' : 'types were'} ` +
+          `left unjudged because a type in a required signature could not be resolved. ` +
+          `Implementations are missing from this result — actual impact may be higher.`,
+      );
+    }
+    const asCandidate = lookupCount(summary.candidateCounts, name) ?? 0;
+    if (asCandidate > 0) {
+      undecided += asCandidate;
+      const one = asCandidate === 1;
+      notes.push(
+        `\`${name}\` was a candidate implementation for ${asCandidate} ` +
+          `${one ? 'interface' : 'interfaces'} the analyzer could not decide, so no ` +
+          `IMPLEMENTS edge was recorded and callers dispatching through ` +
+          `${one ? 'that interface' : 'those interfaces'} are absent from this result — ` +
+          `actual impact may be higher.`,
+      );
+    }
+  }
+  return { notes, undecided };
 }
 
 interface RepoHandle {
@@ -6437,20 +6512,42 @@ export class LocalBackend {
     // reason #2708 was filed. A dropped site's callee is unknown, so the index
     // records the member NAME invoked at the drop; a match on the queried
     // symbol's name means at least one call to something of that name was lost.
-    const receiverDrops = await this.unresolvedReceiverBoundaries(repo, symName);
+    // ONE read of the index metadata for both probes below. They are the second
+    // and third consumers of this file on a path whose own comments call out
+    // avoiding a per-call `loadMeta` (see `ensureInitialized`), and the file is
+    // dominated by `fileHashes` — megabytes on a large repo.
+    // `try`, not `.catch`: `loadMeta` can throw synchronously (a stubbed module
+    // in tests, a mid-read unmount), and a probe failing must never read as
+    // certainty — the whole point of this function.
+    let meta: Awaited<ReturnType<typeof loadMeta>> | undefined;
+    try {
+      meta = await loadMeta(path.dirname(repo.lbugPath));
+    } catch {
+      meta = undefined;
+    }
+    const receiverDrops = unresolvedReceiverBoundaries(meta?.unresolvedReceiverMembers, symName);
     // #2873 — satisfaction checks the analyzer never completed. Read on the
     // same footing as the receiver drops, and BEFORE the heritage probe for the
     // same reason: this cause leaves no edge for that probe to find, so a
     // graph-only answer is exactly the confident zero being fixed.
-    const undecidedNames =
-      symType === 'Method' || symType === 'Function'
-        ? [symName, ...(await this.owningTypeNames(repo, symId))]
-        : [symName];
-    const undecidedDrops = await this.undecidedSatisfactionBoundaries(repo, undecidedNames);
+    //
+    // Gated on the record existing: without it the answer cannot change, and
+    // the owning-type hop below would be a graph round-trip per method query in
+    // every index that has no such record — which is every non-Go one, since Go
+    // is the only language with a structural-satisfaction hook.
+    const undecidedSummary = meta?.undecidedInterfaceSatisfaction;
+    const undecidedDrops =
+      undecidedSummary === undefined
+        ? { notes: [], undecided: 0 }
+        : undecidedSatisfactionBoundaries(undecidedSummary, [
+            symName,
+            ...(symType === 'Method' || symType === 'Function'
+              ? await this.owningTypeNames(repo, symId)
+              : []),
+          ]);
     const droppedBoundaries = {
+      ...receiverDrops,
       notes: [...receiverDrops.notes, ...undecidedDrops.notes],
-      sites: receiverDrops.sites,
-      external: receiverDrops.external,
       undecided: undecidedDrops.undecided,
     };
     try {
@@ -6559,119 +6656,22 @@ export class LocalBackend {
     }
   }
 
-  /**
-   * Boundary notes for call sites the analyzer dropped because it could not
-   * type their receiver, when the queried symbol's name is among them (#2744).
-   * Empty when the index records no drops for this name — including every
-   * index written before the summary existed, which is why the schema version
-   * was bumped rather than treating "absent" as "none".
-   */
-  /**
-   * Boundary notes for interface-satisfaction checks the analyzer could not
-   * COMPLETE, when the queried symbol is on either side of one (#2873).
-   *
-   * Matched against both maps because a query arrives from either direction:
-   * on the interface itself (`counts`), or on a candidate implementation
-   * (`candidateCounts`) — which is the reported case, and the one no graph
-   * probe can find, because the edge that would lead there is precisely what
-   * went missing.
-   *
-   * `ownerName` is the declaring type of a queried method, resolved by the
-   * caller only when it is cheap; asking about `(*CtxStoreImpl).Delete` has to
-   * hedge on `CtxStoreImpl`.
-   */
   /** Declaring types of a method, for matching against a candidate-keyed
-   *  record. One hop, and only asked for methods. */
+   *  record. One hop, asked only for methods, and only when a record exists to
+   *  match against. */
   private async owningTypeNames(repo: RepoHandle, symId: string): Promise<string[]> {
-    try {
-      const rows = await executeParameterized(
-        repo.lbugPath,
-        `MATCH (owner)-[r:CodeRelation]->(m)
+    const rows = await executeParameterized(
+      repo.lbugPath,
+      `MATCH (owner)-[r:CodeRelation]->(m)
          WHERE m.id = $symId AND r.type = 'HAS_METHOD'
          RETURN DISTINCT owner.name AS name
          ORDER BY name
          LIMIT 8`,
-        { symId },
-      ).catch(() => []);
-      return rows
-        .map((r: any) => (r.name ?? r[0] ?? '') as string)
-        .filter((n: string) => n.length > 0);
-    } catch {
-      return [];
-    }
-  }
-
-  private async undecidedSatisfactionBoundaries(
-    repo: RepoHandle,
-    names: readonly string[],
-  ): Promise<{ notes: string[]; undecided: number }> {
-    try {
-      const meta = await loadMeta(path.dirname(repo.lbugPath));
-      const summary = meta?.undecidedInterfaceSatisfaction;
-      if (summary === undefined) return { notes: [], undecided: 0 };
-      const notes: string[] = [];
-      let undecided = 0;
-      for (const name of names) {
-        if (name.length === 0) continue;
-        // Prototype-safe lookup: a bare `counts[name]` returns a Function for
-        // `constructor` / `toString` and compares as neither absent nor a number.
-        const asInterface = Object.prototype.hasOwnProperty.call(summary.counts, name)
-          ? summary.counts[name]
-          : undefined;
-        const asCandidate = Object.prototype.hasOwnProperty.call(summary.candidateCounts, name)
-          ? summary.candidateCounts[name]
-          : undefined;
-        if (typeof asInterface === 'number' && asInterface > 0) {
-          undecided += asInterface;
-          notes.push(
-            `\`${name}\` is an interface whose implementors could not be fully determined at ` +
-              `index time: ${asInterface} candidate ${asInterface === 1 ? 'type was' : 'types were'} ` +
-              `left unjudged because a type in a required signature could not be resolved. ` +
-              `Implementations are missing from this result — actual impact may be higher.`,
-          );
-        }
-        if (typeof asCandidate === 'number' && asCandidate > 0) {
-          undecided += asCandidate;
-          notes.push(
-            `\`${name}\` was a candidate implementation for ${asCandidate} ` +
-              `${asCandidate === 1 ? 'interface' : 'interfaces'} the analyzer could not decide, so no ` +
-              `IMPLEMENTS edge was recorded and callers dispatching through ${asCandidate === 1 ? 'that interface' : 'those interfaces'} ` +
-              `are absent from this result — actual impact may be higher.`,
-          );
-        }
-      }
-      return { notes, undecided };
-    } catch {
-      return { notes: [], undecided: 0 };
-    }
-  }
-
-  private async unresolvedReceiverBoundaries(
-    repo: RepoHandle,
-    symName: string,
-  ): Promise<{ notes: string[]; sites: number; external: number; undecided: number }> {
-    if (symName.length === 0) return { notes: [], sites: 0, external: 0, undecided: 0 };
-    try {
-      const meta = await loadMeta(path.dirname(repo.lbugPath));
-      const summary = meta?.unresolvedReceiverMembers;
-      // Prototype-safe: see `lookupUnresolvedCallCount`. A bare `counts[symName]`
-      // returns a Function for `constructor`/`toString`/… and `NaN <= 0` is false,
-      // so the old guard let it through into user-facing text.
-      const sites = lookupUnresolvedCallCount(summary, symName);
-      const external = lookupExternalCallCount(summary, symName) ?? 0;
-      if (sites === undefined) return { notes: [], sites: 0, external, undecided: 0 };
-      const notes = [
-        `${sites} call ${sites === 1 ? 'site' : 'sites'} invoking \`${symName}\` ${
-          sites === 1 ? 'was' : 'were'
-        } dropped at index time because the receiver's type could not be ` +
-          `established (e.g. an unresolved constructor, factory or chained ` +
-          `expression). Those callers are absent from this result — actual ` +
-          `impact may be higher.`,
-      ];
-      return { notes, sites, external, undecided: 0 };
-    } catch {
-      return { notes: [], sites: 0, external: 0, undecided: 0 };
-    }
+      { symId },
+    ).catch(() => []);
+    return rows
+      .map((r: any) => (r.name ?? r[0] ?? '') as string)
+      .filter((n: string) => n.length > 0);
   }
 
   /**

@@ -287,7 +287,7 @@ NOTE: ACCESSES edges (field read/write tracking) are included in context results
 COMPLETENESS OF incoming: alongside symbol/incoming/outgoing the result carries the same epistemic envelope impact() returns:
 - epistemic: 'exact' | 'lower-bound' — 'lower-bound' means callers exist that this view provably does not list.
 - boundaries: string[] — one plain-language sentence per reason. Prose for humans; branch on causes instead.
-- causes: { receiverTyping, dispatchBoundary, externalBoundary } — machine-readable WHY. Every field counts MISSING THINGS, never sentences:
+- causes: { receiverTyping, dispatchBoundary, externalBoundary, undecidedSatisfaction } — machine-readable WHY. Every field counts MISSING THINGS, never sentences:
   - causes.receiverTyping (unit: call sites) > 0 — RESOLVER GAP: the analyzer dropped that many call sites on this name because it could not type the receiver, so they are missing from incoming. Do not read an absent caller as proof none exists.
   - causes.externalBoundary (unit: call sites) > 0 — the calls left the indexed program (System.out.println, fetch(...)). NOT a defect: no in-graph node could have been reached. An epistemic:'exact' result can carry this.
   - causes.dispatchBoundary (unit: symbols) > 0 — DI / interface dispatch: implementations plus interface-level consumers behind a boundary static analysis cannot cross. Irreducible.

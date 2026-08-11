@@ -3542,13 +3542,16 @@ async function runFullAnalysisInner(
       // Git-only: non-git repos never take the incremental path.
       schemaFingerprint: hasGitDir(repoPath) ? SCHEMA_FINGERPRINT : undefined,
       unresolvedReceiverMembers: summarizeUnresolvedReceivers(resolutionOutcomes),
-      // Preserved rather than dropped when a run observed no scope resolution:
-      // `saveMeta` writes a fresh object, so omitting the key DELETES a prior
-      // run's record and silently turns a hedged answer back into a confident
-      // one.
+      // Carried forward ONLY when this run could not measure — `saveMeta` writes
+      // a fresh object, so omitting the key deletes a prior record and turns a
+      // hedged answer back into a confident one. A run that DID measure always
+      // wins, including when it measured nothing: vendoring the missing
+      // dependency and re-analyzing has to be able to clear the hedge, or the
+      // field becomes permanent noise and readers learn to ignore it.
       undecidedInterfaceSatisfaction:
-        summarizeUndecidedSatisfaction(pipelineResult.undecidedSatisfaction ?? []) ??
-        existingMeta?.undecidedInterfaceSatisfaction,
+        pipelineResult.undecidedSatisfaction === undefined
+          ? existingMeta?.undecidedInterfaceSatisfaction
+          : summarizeUndecidedSatisfaction(pipelineResult.undecidedSatisfaction),
       analysisFeatures: currentAnalysisFeatures,
       // Always stamped with the live resolved mode (#2331/#2339) — unlike
       // `pdg` below, 'none' is a meaningful value to compare, not an

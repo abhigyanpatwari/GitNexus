@@ -52,7 +52,8 @@ describe('summarizeUndecidedSatisfaction', () => {
     // the cap dropped, so a consumer can never mistake `counts` for the whole.
     expect(summary.totalInterfaces).toBe(MAX_UNDECIDED_INTERFACES + 10);
     expect(summary.totalCandidates).toBe(MAX_UNDECIDED_INTERFACES + 10);
-    expect(summary.omittedInterfaces).toBe(10);
+    // No `omittedInterfaces`: it is exactly `totalInterfaces - keys(counts)`,
+    // and one persisted field per fact is enough.
     expect(summary.omittedCandidates).toBe(10);
   });
 

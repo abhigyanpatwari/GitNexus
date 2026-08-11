@@ -21,9 +21,16 @@ export interface PipelineResult {
    * produced; graph edge semantics are unchanged.
    */
   resolutionOutcomes: readonly ResolutionOutcome[];
-  /** Interfaces whose structural-satisfaction check could not be completed
-   *  (#2873). Empty for languages with no structural detection. */
-  undecidedSatisfaction: readonly UndecidedSatisfaction[];
+  /**
+   * Interfaces whose structural-satisfaction check could not be completed
+   * (#2873). Empty for languages with no structural detection.
+   *
+   * ABSENT means scope resolution never ran, which is not the same claim as an
+   * empty array — that one says the analyzer looked and decided everything.
+   * The writer needs the difference: it carries a prior record forward across a
+   * run that could not measure, and CLEARS it on a run that measured clean.
+   */
+  undecidedSatisfaction?: readonly UndecidedSatisfaction[];
   /**
    * True if a worker pool was actually constructed for this run. The worker
    * pool is the sole parse path (sequential parsing was removed). False means

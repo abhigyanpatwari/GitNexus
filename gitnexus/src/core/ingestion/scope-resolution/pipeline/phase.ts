@@ -67,8 +67,10 @@ export interface ScopeResolutionOutput {
    * Interfaces whose structural-satisfaction check could not be completed
    * (#2873). Emits no edges — it is what lets a query distinguish "nothing
    * implements this" from "we could not tell what implements this".
+   *
+   * Absent when no language ran; `[]` when one ran and decided everything.
    */
-  readonly undecidedSatisfaction: readonly UndecidedSatisfaction[];
+  readonly undecidedSatisfaction?: readonly UndecidedSatisfaction[];
   /**
    * Property inference facts a CALLER needs in order to read an empty result
    * correctly (R3-1). Without these, "no ACCESSES for this field" is
@@ -124,7 +126,7 @@ const NOOP_OUTPUT: ScopeResolutionOutput = Object.freeze({
   importsEmitted: 0,
   referenceEdgesEmitted: 0,
   resolutionOutcomes: [],
-  undecidedSatisfaction: [],
+  // Deliberately absent, not `[]`: nothing ran, so nothing was decided either.
   perLanguage: new Map(),
   functionSummaries: [],
   callSummaries: [],
