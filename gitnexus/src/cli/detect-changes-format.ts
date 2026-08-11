@@ -31,6 +31,23 @@ type DetectChangesResult = {
   affected_processes?: AffectedProcess[];
 };
 
+/**
+ * One indented `Type name → path` listing line for a symbol. Shared by the
+ * `detect_changes` CLI formatter and the eval-server `query` formatter so the
+ * two renderings cannot drift apart.
+ *
+ * `||`, not `??`: a node whose label came back as an EMPTY STRING (several node
+ * types do — see enrichCandidateLabels) still needs the placeholder, and `??`
+ * would print the empty string instead.
+ */
+export function formatSymbolLine(
+  type: string | undefined,
+  name: string | undefined,
+  filePath: string | undefined,
+): string {
+  return `  ${type || 'Symbol'} ${name || '?'} → ${filePath || '?'}`;
+}
+
 export function formatDetectChangesResult(result: unknown): string {
   const payload = (result ?? {}) as DetectChangesResult;
   if (payload.error) return t('common.error', { message: String(payload.error) });
@@ -67,9 +84,7 @@ export function formatDetectChangesResult(result: unknown): string {
     lines.push(t('tool.detectChanges.changedSymbols'));
     const shown = changed.slice(0, 15);
     for (const symbol of shown) {
-      // `||`, not `??`: a node whose label came back as an empty string (several
-      // node types do — see enrichCandidateLabels) still needs the placeholder.
-      lines.push(`  ${symbol.type || 'Symbol'} ${symbol.name || '?'} → ${symbol.filePath || '?'}`);
+      lines.push(formatSymbolLine(symbol.type, symbol.name, symbol.filePath));
     }
     // Overflow is measured against the TRUE total (summary.changed_count), not
     // the array length — the array may already be `--limit`-sliced, so using its

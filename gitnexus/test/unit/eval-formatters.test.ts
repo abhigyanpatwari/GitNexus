@@ -15,6 +15,7 @@ import {
   MAX_BODY_SIZE,
   validateHost,
 } from '../../src/cli/eval-server.js';
+import { formatSymbolLine } from '../../src/cli/detect-changes-format.js';
 
 // ─── validateHost ────────────────────────────────────────────────────
 
@@ -505,6 +506,58 @@ describe('formatCypherResult', () => {
 
   it('handles string result', () => {
     expect(formatCypherResult('some text')).toBe('some text');
+  });
+});
+
+// ─── formatSymbolLine ────────────────────────────────────────────────
+
+describe('formatSymbolLine', () => {
+  it('renders the indented "Type name → path" shape', () => {
+    expect(formatSymbolLine('Function', 'login', 'src/auth.ts')).toBe(
+      '  Function login → src/auth.ts',
+    );
+  });
+
+  it('falls back to "Symbol" for an EMPTY-STRING label, not the empty string', () => {
+    // `||`, not `??`: several node types come back with an empty label, and the
+    // placeholder must still appear (a `??` here would render "  login → ...").
+    expect(formatSymbolLine('', 'login', 'src/auth.ts')).toBe('  Symbol login → src/auth.ts');
+  });
+
+  it('falls back to "Symbol" for a missing label', () => {
+    expect(formatSymbolLine(undefined, 'login', 'src/auth.ts')).toBe(
+      '  Symbol login → src/auth.ts',
+    );
+  });
+
+  it('falls back to "?" for a missing or empty name', () => {
+    expect(formatSymbolLine('Function', undefined, 'src/auth.ts')).toBe(
+      '  Function ? → src/auth.ts',
+    );
+    expect(formatSymbolLine('Function', '', 'src/auth.ts')).toBe('  Function ? → src/auth.ts');
+  });
+
+  it('falls back to "?" for a missing or empty file path', () => {
+    expect(formatSymbolLine('Function', 'login', undefined)).toBe('  Function login → ?');
+    expect(formatSymbolLine('Function', 'login', '')).toBe('  Function login → ?');
+  });
+
+  it('falls back on every field at once', () => {
+    expect(formatSymbolLine(undefined, undefined, undefined)).toBe('  Symbol ? → ?');
+  });
+
+  it('is the line both consumers render (detect_changes + query definitions)', () => {
+    const detectChanges = formatDetectChangesResult({
+      summary: { changed_files: 1, changed_count: 1, affected_count: 0, risk_level: 'LOW' },
+      changed_symbols: [{ type: '', name: 'foo', filePath: 'src/a.ts' }],
+    });
+    expect(detectChanges).toContain(formatSymbolLine('', 'foo', 'src/a.ts'));
+
+    const query = formatQueryResult({
+      processes: [],
+      definitions: [{ type: '', name: '', filePath: '' }],
+    });
+    expect(query).toContain(formatSymbolLine('', '', ''));
   });
 });
 
