@@ -5,9 +5,15 @@
  * Uses the MCP-style pooled lbug-adapter for connection management.
  */
 
-import { initLbug, executeQuery, closeLbug, touchRepo, pinRepo } from '../lbug/pool-adapter.js';
-import { escapeCypherString } from '../lbug/cypher-escape.js';
-import { chunk } from '../lbug/query-batch.js';
+import {
+  initLbug,
+  executeQuery,
+  executeParameterized,
+  closeLbug,
+  touchRepo,
+  pinRepo,
+} from '../lbug/pool-adapter.js';
+import { compareCodeUnits } from '../../lib/utils.js';
 
 const REPO_ID = '__wiki__';
 
@@ -65,11 +71,6 @@ type ProcessHeader = Omit<ProcessInfo, 'steps'>;
  */
 type QueryRow = Record<string | number, unknown>;
 
-/** The contents of a Cypher `IN [...]` literal: one quoted, escaped path each. */
-function fileListLiteral(filePaths: readonly string[]): string {
-  return filePaths.map((f) => `'${escapeCypherString(f)}'`).join(', ');
-}
-
 function toCallEdge(row: QueryRow): CallEdge {
   return {
     fromFile: (row.fromFile || row[0]) as string,
@@ -79,30 +80,13 @@ function toCallEdge(row: QueryRow): CallEdge {
   };
 }
 
-/**
- * Identity of a `RETURN DISTINCT` call-edge row. DISTINCT only holds within one
- * query, so batched runs have to re-establish it across batches; NUL occurs in
- * neither a file path nor a symbol name, so it cannot forge or split a key.
- */
-function callEdgeKey(edge: CallEdge): string {
-  return `${edge.fromFile}\u0000${edge.fromName}\u0000${edge.toFile}\u0000${edge.toName}`;
-}
-
-/**
- * Ordinal comparison, deliberately not `localeCompare`: its order depends on
- * the host's ICU data, and generated wiki pages must not differ by machine.
- */
-function compareStrings(a: string, b: string): number {
-  return a < b ? -1 : a > b ? 1 : 0;
-}
-
 /** The `ORDER BY fromName, toName, fromFile, toFile` of the unbatched form. */
 function compareCallEdges(a: CallEdge, b: CallEdge): number {
   return (
-    compareStrings(a.fromName, b.fromName) ||
-    compareStrings(a.toName, b.toName) ||
-    compareStrings(a.fromFile, b.fromFile) ||
-    compareStrings(a.toFile, b.toFile)
+    compareCodeUnits(a.fromName, b.fromName) ||
+    compareCodeUnits(a.toName, b.toName) ||
+    compareCodeUnits(a.fromFile, b.fromFile) ||
+    compareCodeUnits(a.toFile, b.toFile)
   );
 }
 
@@ -116,16 +100,6 @@ function toProcessHeader(row: QueryRow): ProcessHeader {
   };
 }
 
-/** The `ORDER BY stepCount DESC, id` of the unbatched form. */
-function compareProcessHeaders(a: ProcessHeader, b: ProcessHeader): number {
-  // Comparison operators rather than `b.stepCount - a.stepCount`: an integer
-  // column can arrive as a BigInt, which throws on mixed arithmetic but
-  // compares against a number fine.
-  if (a.stepCount > b.stepCount) return -1;
-  if (a.stepCount < b.stepCount) return 1;
-  return compareStrings(a.id, b.id);
-}
-
 function toProcessStep(row: QueryRow): ProcessInfo['steps'][number] {
   return {
     step: (row.step || row[3] || 0) as number,
@@ -135,17 +109,37 @@ function toProcessStep(row: QueryRow): ProcessInfo['steps'][number] {
   };
 }
 
-/** The full ordered step trace of one process. */
-async function getProcessSteps(processId: string): Promise<ProcessInfo['steps']> {
-  const stepRows = await executeQuery(
+/**
+ * Attach each header's full step trace, in one query for the whole set.
+ *
+ * One query per process cost 105ms for 20 processes against this repo's index;
+ * grouping them on `p.id IN $ids` costs 13ms. `ORDER BY pid, r.step` keeps each
+ * trace in step order, so the rows arrive already grouped.
+ */
+async function withSteps(headers: ProcessHeader[]): Promise<ProcessInfo[]> {
+  if (headers.length === 0) return [];
+
+  const stepRows = await executeParameterized(
     REPO_ID,
     `
-      MATCH (s)-[r:CodeRelation {type: 'STEP_IN_PROCESS'}]->(p:Process {id: '${escapeCypherString(processId)}'})
-      RETURN s.name AS name, s.filePath AS filePath, labels(s)[0] AS type, r.step AS step
-      ORDER BY r.step
+      MATCH (s)-[r:CodeRelation {type: 'STEP_IN_PROCESS'}]->(p:Process)
+      WHERE p.id IN $ids
+      RETURN p.id AS pid, s.name AS name, s.filePath AS filePath,
+             labels(s)[0] AS type, r.step AS step
+      ORDER BY pid, r.step
     `,
+    { ids: headers.map((header) => header.id) },
   );
-  return stepRows.map(toProcessStep);
+
+  const stepsById = new Map<string, ProcessInfo['steps']>();
+  for (const row of stepRows) {
+    const pid = String(row.pid);
+    const steps = stepsById.get(pid) ?? [];
+    steps.push(toProcessStep(row));
+    stepsById.set(pid, steps);
+  }
+
+  return headers.map((header) => ({ ...header, steps: stepsById.get(header.id) ?? [] }));
 }
 
 /**
@@ -244,43 +238,27 @@ export async function getInterFileCallEdges(): Promise<CallEdge[]> {
 export async function getIntraModuleCallEdges(filePaths: string[]): Promise<CallEdge[]> {
   if (filePaths.length === 0) return [];
 
-  const inModule = new Set(filePaths);
-  const edges = new Map<string, CallEdge>();
-
-  // #2915: `filePaths` is caller-sized — every file of a module, and every file
-  // under a parent module — so a single `IN [...]` literal holding all of them
-  // grows the query text with the repo. Query one batch of callers at a time.
-  //
-  // The callee arm cannot ride along on the same batch: a caller in batch i may
-  // call a file in batch j, and `b.filePath IN [batch]` would drop that edge.
-  // It moves to JS against the whole set instead — the same predicate over the
-  // same rows, paid for by also fetching each batch's calls that leave the set.
-  for (const batch of chunk(filePaths)) {
-    const rows = await executeQuery(
-      REPO_ID,
-      `
+  // The file list is BOUND, not spliced into the query text. A module can hold
+  // every file under a parent, so an `IN [...]` literal would grow the query
+  // with the repo — the shape that crashed the engine in #2915 (see
+  // `coalesceHunks` in src/storage/git.ts). As a parameter the text is constant
+  // at any list length, and measured ~3x faster than the equivalent literal, so
+  // both arms of the predicate can stay in Cypher where the engine can use them.
+  const rows = await executeParameterized(
+    REPO_ID,
+    `
     MATCH (a)-[:CodeRelation {type: 'CALLS'}]->(b)
-    WHERE a.filePath IN [${fileListLiteral(batch)}]
+    WHERE a.filePath IN $paths AND b.filePath IN $paths
     RETURN DISTINCT a.filePath AS fromFile, a.name AS fromName,
            b.filePath AS toFile, b.name AS toName
   `,
-    );
+    { paths: filePaths },
+  );
 
-    for (const row of rows) {
-      const edge = toCallEdge(row);
-      // A callee with no filePath is not in the set — `IN` never matched a null
-      // in the single-query form either.
-      if (!inModule.has(edge.toFile)) continue;
-      edges.set(callEdgeKey(edge), edge);
-    }
-  }
-
-  // The single-query form had no ORDER BY, so its row order was whatever the
-  // engine produced. Returning batch order instead would hand the whole 30-edge
-  // window that `formatCallEdges` keeps (prompts.ts) to the first 100 files;
-  // ordering on the symbol names spreads it across the set, for the same reason
-  // getInterModuleCallEdges orders that way (#2787).
-  return Array.from(edges.values()).sort(compareCallEdges);
+  // Sorted, unlike the original, which had no ORDER BY and so returned whatever
+  // the engine produced: `formatCallEdges` (prompts.ts) keeps only the first 30,
+  // and an unordered cut keeps a different subset per machine (#2787).
+  return rows.map(toCallEdge).sort(compareCallEdges);
 }
 
 /**
@@ -292,56 +270,10 @@ export async function getInterModuleCallEdges(filePaths: string[]): Promise<{
 }> {
   if (filePaths.length === 0) return { outgoing: [], incoming: [] };
 
-  const inModule = new Set(filePaths);
-  const outgoing = new Map<string, CallEdge>();
-  const incoming = new Map<string, CallEdge>();
-
-  // #2915: one batch of module files per query, as in getIntraModuleCallEdges.
+  // Bound list, as in getIntraModuleCallEdges — which also keeps the `NOT ...
+  // IN` arm honest: `NOT null IN [...]` is null, so a callee with no filePath
+  // is dropped by the engine, where a JS membership test would admit it.
   //
-  // The NOT arm keeps the SAME batch list rather than the whole set. That is
-  // sound — a file outside the module is outside every batch, so the arm only
-  // admits rows the JS filter below still rejects (a callee in another batch) —
-  // and it is what preserves the null handling: `NOT null IN [...]` is null, so
-  // the single-query form dropped edges to a node with no filePath, whereas a
-  // JS-only `!inModule.has(undefined)` would have started admitting them.
-  //
-  // ORDER BY and LIMIT move to JS for the same reason: a per-batch LIMIT would
-  // cut rows before the cross-batch membership filter ran, and could drop
-  // members of the true top 30.
-  for (const batch of chunk(filePaths)) {
-    const fileList = fileListLiteral(batch);
-
-    const outRows = await executeQuery(
-      REPO_ID,
-      `
-    MATCH (a)-[:CodeRelation {type: 'CALLS'}]->(b)
-    WHERE a.filePath IN [${fileList}] AND NOT b.filePath IN [${fileList}]
-    RETURN DISTINCT a.filePath AS fromFile, a.name AS fromName,
-           b.filePath AS toFile, b.name AS toName
-  `,
-    );
-    for (const row of outRows) {
-      const edge = toCallEdge(row);
-      if (inModule.has(edge.toFile)) continue;
-      outgoing.set(callEdgeKey(edge), edge);
-    }
-
-    const inRows = await executeQuery(
-      REPO_ID,
-      `
-    MATCH (a)-[:CodeRelation {type: 'CALLS'}]->(b)
-    WHERE NOT a.filePath IN [${fileList}] AND b.filePath IN [${fileList}]
-    RETURN DISTINCT a.filePath AS fromFile, a.name AS fromName,
-           b.filePath AS toFile, b.name AS toName
-  `,
-    );
-    for (const row of inRows) {
-      const edge = toCallEdge(row);
-      if (inModule.has(edge.fromFile)) continue;
-      incoming.set(callEdgeKey(edge), edge);
-    }
-  }
-
   // The sort leads with the symbol names, not the file paths. Ordering by
   // `fromFile` first makes the LIMIT a single-file prefix — on this repo's own
   // index the 30 outgoing edges of `core/wiki` all came from 1 of its 7 files,
@@ -349,14 +281,25 @@ export async function getInterModuleCallEdges(filePaths: string[]): Promise<{
   // The four columns are the whole DISTINCT tuple, so any permutation is a
   // total order and equally deterministic (#2787); leading with the names just
   // spreads the window across files (1 → 7 of 7 here).
-  return {
-    outgoing: Array.from(outgoing.values())
-      .sort(compareCallEdges)
-      .slice(0, INTER_MODULE_EDGE_LIMIT),
-    incoming: Array.from(incoming.values())
-      .sort(compareCallEdges)
-      .slice(0, INTER_MODULE_EDGE_LIMIT),
-  };
+  const edgeQuery = (membership: string): string => `
+    MATCH (a)-[:CodeRelation {type: 'CALLS'}]->(b)
+    WHERE ${membership}
+    RETURN DISTINCT a.filePath AS fromFile, a.name AS fromName,
+           b.filePath AS toFile, b.name AS toName
+    ORDER BY fromName, toName, fromFile, toFile
+    LIMIT ${INTER_MODULE_EDGE_LIMIT}
+  `;
+
+  const [outRows, inRows] = await Promise.all([
+    executeParameterized(REPO_ID, edgeQuery('a.filePath IN $paths AND NOT b.filePath IN $paths'), {
+      paths: filePaths,
+    }),
+    executeParameterized(REPO_ID, edgeQuery('NOT a.filePath IN $paths AND b.filePath IN $paths'), {
+      paths: filePaths,
+    }),
+  ]);
+
+  return { outgoing: outRows.map(toCallEdge), incoming: inRows.map(toCallEdge) };
 }
 
 /**
@@ -366,43 +309,22 @@ export async function getInterModuleCallEdges(filePaths: string[]): Promise<{
 export async function getProcessesForFiles(filePaths: string[], limit = 5): Promise<ProcessInfo[]> {
   if (filePaths.length === 0) return [];
 
-  const byId = new Map<string, ProcessHeader>();
-
-  // #2915: one batch of files per query. `LIMIT ${limit}` stays inside the
-  // batch, unlike getInterModuleCallEdges: `stepCount DESC, id` is a total
-  // order over the rows (p.id is unique), so a process in the global top
-  // `limit` is in its own batch's top `limit` too, and nothing the merge would
-  // have kept is cut here.
-  for (const batch of chunk(filePaths)) {
-    // Find processes that have steps in the given files
-    const procRows = await executeQuery(
-      REPO_ID,
-      `
+  // Bound list, as in getIntraModuleCallEdges, so `LIMIT` can stay in Cypher
+  // over the whole set instead of being applied per batch and re-merged.
+  const procRows = await executeParameterized(
+    REPO_ID,
+    `
     MATCH (s)-[r:CodeRelation {type: 'STEP_IN_PROCESS'}]->(p:Process)
-    WHERE s.filePath IN [${fileListLiteral(batch)}]
+    WHERE s.filePath IN $paths
     RETURN DISTINCT p.id AS id, p.heuristicLabel AS label,
            p.processType AS type, p.stepCount AS stepCount
     ORDER BY stepCount DESC, id
     LIMIT ${limit}
   `,
-    );
+    { paths: filePaths },
+  );
 
-    // One process can have steps in files from several batches.
-    for (const row of procRows) {
-      const header = toProcessHeader(row);
-      if (!byId.has(header.id)) byId.set(header.id, header);
-    }
-  }
-
-  const top = Array.from(byId.values()).sort(compareProcessHeaders).slice(0, limit);
-
-  const processes: ProcessInfo[] = [];
-  for (const header of top) {
-    // Get the full step trace for this process
-    processes.push({ ...header, steps: await getProcessSteps(header.id) });
-  }
-
-  return processes;
+  return withSteps(procRows.map(toProcessHeader));
 }
 
 /**
@@ -420,13 +342,7 @@ export async function getAllProcesses(limit = 20): Promise<ProcessInfo[]> {
   `,
   );
 
-  const processes: ProcessInfo[] = [];
-  for (const row of procRows) {
-    const header = toProcessHeader(row);
-    processes.push({ ...header, steps: await getProcessSteps(header.id) });
-  }
-
-  return processes;
+  return withSteps(procRows.map(toProcessHeader));
 }
 
 /**
