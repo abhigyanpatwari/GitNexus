@@ -379,6 +379,7 @@ export const runPipelineFromRepo = async (
   let processResult: ProcessesOutput['processResult'] | undefined;
   const scopeResolutionOutput = getPhaseOutput<ScopeResolutionOutput>(results, 'scopeResolution');
   const resolutionOutcomes = scopeResolutionOutput.resolutionOutcomes;
+  const undecidedSatisfaction = scopeResolutionOutput.undecidedSatisfaction;
   // Streamed PDG-emit manifest (#2202): present only when streaming was on.
   const pdgEmitManifest = scopeResolutionOutput.pdgEmitManifest;
   const propertyInference = scopeResolutionOutput.propertyInference;
@@ -421,6 +422,7 @@ export const runPipelineFromRepo = async (
     communityResult,
     processResult,
     resolutionOutcomes,
+    undecidedSatisfaction,
     usedWorkerPool,
     pdgEmitManifest,
     propertyInference,
