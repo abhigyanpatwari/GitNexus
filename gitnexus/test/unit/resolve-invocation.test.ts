@@ -38,9 +38,10 @@ const PLUGIN_CJS = path.resolve(
 
 interface CjsModule {
   formatAnalyzeCommand: (
-    o?: { embeddings?: boolean },
+    o?: { embeddings?: boolean; indexOnly?: boolean },
     deps?: { npmMajor?: number | null; pnpmMajor?: number | null; pnpmMinor?: number | null },
   ) => string;
+  formatBunxCommand: (args: string) => string;
   formatDocumentationDlxCommand: (args: string, o?: { embeddings?: boolean }) => string;
   formatPnpmAllowBuildArgs: (
     o?: { embeddings?: boolean; alwaysAllowBuild?: boolean },
@@ -48,15 +49,21 @@ interface CjsModule {
   ) => string[];
   resolveInvocationMode: (
     probe?: (command: string, gitnexusWrapper?: boolean) => string | null,
-    deps?: { npmMajor?: number | null; pnpmMajor?: number | null; pnpmPresent?: boolean },
-  ) => 'gitnexus' | 'pnpm' | 'npx';
+    deps?: {
+      npmMajor?: number | null;
+      pnpmMajor?: number | null;
+      pnpmPresent?: boolean;
+      bunPresent?: boolean;
+      bunRuns?: boolean;
+    },
+  ) => 'gitnexus' | 'pnpm' | 'npx' | 'bun';
   resolveOnPath: (
     command: string,
     preferExecExt?: boolean,
     opts?: { platform?: NodeJS.Platform; env?: NodeJS.ProcessEnv },
   ) => string | null;
   buildRunnerArgv: (
-    mode: 'gitnexus' | 'pnpm' | 'npx',
+    mode: 'gitnexus' | 'pnpm' | 'npx' | 'bun',
     gitnexusArgs: string[],
     deps?: { pnpmMajor?: number | null; pnpmMinor?: number | null },
   ) => { program: string; args: string[] };
@@ -67,10 +74,13 @@ interface CjsModule {
 // the tests exercise production code, not a TypeScript mirror of it.
 //
 // Determinism invariant: createRequire bypasses vitest's node:child_process mock,
-// so the only live subprocess this module can run is probeVersion (`npm`/`pnpm
-// --version`). resolveOnPath is now spawn-free — a pure PATH scan — so tests pin
-// it by passing an injected `{ platform, env }` (never the host PATH). Mode tests
-// inject a fake `probe` or force GITNEXUS_INVOCATION; version tests inject `deps`.
+// so the only live subprocess this module can run is probeVersion (`npm`/`pnpm`/
+// `bunx --version`). resolveOnPath is now spawn-free — a pure PATH scan — so tests
+// pin it by passing an injected `{ platform, env }` (never the host PATH). Mode
+// tests inject a fake `probe` or force GITNEXUS_INVOCATION; version tests inject
+// `deps`. Any test whose `probe` reports a bunx PATH hit MUST also inject
+// `bunRuns`, or the liveness probe spawns the host's real bunx and the result
+// depends on whether bun is installed.
 // Keep new tests on one of those paths so results never depend on the host.
 const cjs = cjsRequire(CANONICAL_CJS) as CjsModule;
 
@@ -105,6 +115,16 @@ describe('resolve-analyze-cmd.cjs (canonical invocation resolver)', () => {
     }
   });
 
+  it('appends --index-only for the routine stale-index nudge (#2907)', () => {
+    process.env.GITNEXUS_INVOCATION = 'gitnexus';
+    expect(cjs.formatAnalyzeCommand({ indexOnly: true })).toBe('gitnexus analyze --index-only');
+    expect(cjs.formatAnalyzeCommand({ indexOnly: true, embeddings: true })).toBe(
+      'gitnexus analyze --index-only --embeddings',
+    );
+    // Absent/false leaves the doc-refreshing form untouched.
+    expect(cjs.formatAnalyzeCommand({ indexOnly: false })).toBe('gitnexus analyze');
+  });
+
   it('auto-selects global gitnexus first', () => {
     expect(cjs.resolveInvocationMode(() => '/usr/local/bin/gitnexus')).toBe('gitnexus');
   });
@@ -127,6 +147,9 @@ describe('resolve-analyze-cmd.cjs (canonical invocation resolver)', () => {
   });
 
   it('falls back to npx when npm is null-absent and pnpm is also absent', () => {
+    // Also pins the cheapest-first gate order in hasBun: neither `bunPresent` nor
+    // `bunRuns` is injected, so a liveness spawn ahead of the PATH scan would
+    // reach the host's real bunx and make this host-dependent.
     expect(cjs.resolveInvocationMode(() => null, { npmMajor: null })).toBe('npx');
   });
 
@@ -197,6 +220,82 @@ describe('resolve-analyze-cmd.cjs (canonical invocation resolver)', () => {
   it('formatDocumentationDlxCommand always includes allow-build for committed docs', () => {
     expect(cjs.formatDocumentationDlxCommand('analyze')).toContain('--allow-build=@ladybugdb/core');
     expect(cjs.formatDocumentationDlxCommand('analyze')).toContain('gitnexus@latest analyze');
+  });
+
+  it('auto-selects bunx when npm and pnpm are both absent (bun-only machine)', () => {
+    // The headline gap: with no npm/npx/pnpm on PATH every rung used to fall
+    // through to `npx`, emitting a command the machine cannot run at all.
+    const probe = (c: string) => (c === 'bunx' ? '/usr/local/bin/bunx' : null);
+    expect(cjs.resolveInvocationMode(probe, { npmMajor: null, bunRuns: true })).toBe('bun');
+  });
+
+  it('auto-selects bunx on npm 11+ when pnpm is absent but bunx is present', () => {
+    // Same #1939 crash avoidance as the pnpm rung — bunx is install-free too.
+    const probe = (c: string) => (c === 'bunx' ? '/usr/local/bin/bunx' : null);
+    expect(cjs.resolveInvocationMode(probe, { npmMajor: 11, bunRuns: true })).toBe('bun');
+  });
+
+  it('still prefers pnpm over bunx on npm 11+ when both are present', () => {
+    const probe = (c: string) =>
+      c === 'pnpm' ? '/usr/local/bin/pnpm' : c === 'bunx' ? '/usr/local/bin/bunx' : null;
+    expect(cjs.resolveInvocationMode(probe, { npmMajor: 11, bunRuns: true })).toBe('pnpm');
+  });
+
+  it('still prefers npx on npm 10 even when bunx is present (no behavior change)', () => {
+    // Regression guard: the bun rungs must not steal the working npm<11 path.
+    const probe = (c: string) => (c === 'bunx' ? '/usr/local/bin/bunx' : null);
+    expect(cjs.resolveInvocationMode(probe, { npmMajor: 10, bunRuns: true })).toBe('npx');
+  });
+
+  it('still prefers pnpm over bunx when npm is absent and both are present', () => {
+    const probe = (c: string) =>
+      c === 'pnpm' ? '/usr/local/bin/pnpm' : c === 'bunx' ? '/usr/local/bin/bunx' : null;
+    expect(cjs.resolveInvocationMode(probe, { npmMajor: null, bunRuns: true })).toBe('pnpm');
+  });
+
+  it('honors bunPresent:false as explicit absence (overrides a PATH hit)', () => {
+    const probe = (c: string) => (c === 'bunx' ? '/usr/local/bin/bunx' : null);
+    expect(
+      cjs.resolveInvocationMode(probe, { npmMajor: null, bunPresent: false, bunRuns: true }),
+    ).toBe('npx');
+  });
+
+  it('rejects a bunx that is on PATH but does not run (stale shim)', () => {
+    // A partial bun uninstall leaves an executable `bunx` behind that no longer
+    // runs. PATH existence alone would select bun, emit `bunx gitnexus@latest`,
+    // AND suppress the npm-11 npx warning — a silent dead end until execution.
+    const probe = (c: string) => (c === 'bunx' ? '/usr/local/bin/bunx' : null);
+    expect(cjs.resolveInvocationMode(probe, { npmMajor: null, bunRuns: false })).toBe('npx');
+    expect(cjs.resolveInvocationMode(probe, { npmMajor: 11, bunRuns: false })).toBe('npx');
+  });
+
+  it('never probes bunx when npm or pnpm already decides the mode', () => {
+    // The bun lookup is lazy so machines with a Node toolchain pay no extra
+    // PATH scan — the stale-index hook budget is tight (PROBE_TIMEOUT_MS).
+    const probed: string[] = [];
+    const probe = (c: string) => {
+      probed.push(c);
+      return c === 'pnpm' ? '/usr/local/bin/pnpm' : null;
+    };
+    expect(cjs.resolveInvocationMode(probe, { npmMajor: 11 })).toBe('pnpm');
+    expect(probed).not.toContain('bunx');
+  });
+
+  it('formats and executes the bun mode as an install-free bunx one-shot', () => {
+    expect(cjs.formatBunxCommand('analyze')).toBe(`bunx ${cjs.NPX_REF} analyze`);
+    process.env.GITNEXUS_INVOCATION = 'bun';
+    expect(cjs.formatAnalyzeCommand()).toBe(`bunx ${cjs.NPX_REF} analyze`);
+    expect(cjs.formatAnalyzeCommand({ embeddings: true })).toBe(
+      `bunx ${cjs.NPX_REF} analyze --embeddings`,
+    );
+    expect(cjs.buildRunnerArgv('bun', ['analyze'])).toEqual({
+      program: 'bunx',
+      args: [cjs.NPX_REF, 'analyze'],
+    });
+    // bun has no per-invocation allow-build equivalent, so the argv stays flag-free.
+    expect(cjs.buildRunnerArgv('bun', ['analyze']).args).not.toContain(
+      '--allow-build=@ladybugdb/core',
+    );
   });
 
   it('lets GITNEXUS_INVOCATION override the probe without consulting it', () => {

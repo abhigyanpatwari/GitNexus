@@ -6,6 +6,17 @@
   "connected": "Connected",
   "notConnected": "Not connected",
   "runServeHint": "Run `gitnexus serve` to connect the web UI to a local backend.",
+  "accessToken": {
+    "label": "Access Token",
+    "placeholder": "Paste your deploy access token",
+    "hint": "Required only for a gated deploy. Find it in your Render dashboard under the gitnexus-web service's GITNEXUS_SERVE_AUTH_TOKEN environment variable. Leave empty for a local server.",
+    "title": "This deploy requires an access token",
+    "promptHint": "The GitNexus server is running but gated. Find the token in your Render dashboard under the gitnexus-web service's GITNEXUS_SERVE_AUTH_TOKEN environment variable.",
+    "connect": "Connect",
+    "reveal": "Show access token",
+    "hide": "Hide access token",
+    "sessionNote": "Stored for this browser session only. You will re-enter it in a new tab or after closing the browser."
+  },
   "provider": "Provider",
   "apiKey": "API Key",
   "learnMore": "Learn more",

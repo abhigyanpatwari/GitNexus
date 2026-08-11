@@ -189,17 +189,17 @@ describe('getGitRoot', () => {
 
 // ─── getRemoteUrl ─────────────────────────────────────────────────────────
 
-describe('getRemoteUrl', () => {
-  const setupRepoWithRemote = (remoteUrl: string): string => {
-    const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'gitnexus-remote-'));
-    // Use real fs paths and shellouts — the helper itself shells out to
-    // `git config`, so we need a real git repo for the assertion to be
-    // meaningful.
-    execSync('git init -q', { cwd: tmpDir });
-    execSync(`git remote add origin ${remoteUrl}`, { cwd: tmpDir });
-    return tmpDir;
-  };
+const setupRepoWithRemote = (remoteUrl: string): string => {
+  const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'gitnexus-remote-'));
+  // Use real fs paths and shellouts — the helper itself shells out to
+  // `git config`, so we need a real git repo for the assertion to be
+  // meaningful.
+  execSync('git init -q', { cwd: tmpDir });
+  execSync(`git remote add origin ${remoteUrl}`, { cwd: tmpDir });
+  return tmpDir;
+};
 
+describe('getRemoteUrl', () => {
   it('returns undefined for a non-git directory', async () => {
     const { getRemoteUrl } = await import('../../src/storage/git.js');
     const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'gitnexus-test-'));
@@ -251,6 +251,80 @@ describe('getRemoteUrl', () => {
     } finally {
       fs.rmSync(a, { recursive: true, force: true });
       fs.rmSync(b, { recursive: true, force: true });
+    }
+  });
+});
+
+// ─── credentials in remote URLs (#2914) ──────────────────────────────────
+//
+// `git config remote.origin.url` hands back whatever CI or a credential
+// helper configured, including `https://x-access-token:<token>@host/…`.
+// That value is persisted (registry.json, the per-repo meta) and echoed by
+// MCP `list_repos`, so it must lose its userinfo at capture time. Every
+// credential below is an obviously fake constant.
+
+describe('remote URL credentials (#2914)', () => {
+  const FAKE_TOKEN = 'ExAmPle-FAKE-SECRET';
+
+  it('strips userinfo from an HTTPS remote before it can be persisted', async () => {
+    const { getRemoteUrl } = await import('../../src/storage/git.js');
+    const tmpDir = setupRepoWithRemote(
+      `https://x-access-token:${FAKE_TOKEN}@github.com/example/project.git`,
+    );
+    try {
+      expect(getRemoteUrl(tmpDir)).toBe('https://github.com/example/project');
+    } finally {
+      fs.rmSync(tmpDir, { recursive: true, force: true });
+    }
+  });
+
+  it('strips a username-only HTTPS remote (the PAT-as-username form)', async () => {
+    const { getRemoteUrl } = await import('../../src/storage/git.js');
+    const tmpDir = setupRepoWithRemote(`https://${FAKE_TOKEN}@github.com/example/project.git`);
+    try {
+      expect(getRemoteUrl(tmpDir)).toBe('https://github.com/example/project');
+    } finally {
+      fs.rmSync(tmpDir, { recursive: true, force: true });
+    }
+  });
+
+  it('leaves plain HTTPS, SSH-URL and SCP-like remotes untouched', async () => {
+    const { stripUrlCredentials } = await import('../../src/storage/git.js');
+    // The SSH forms carry a user NAME, not a secret, and are part of the
+    // remote's identity — rewriting them would repoint the #2054 fingerprint.
+    expect(stripUrlCredentials('https://github.com/example/project.git')).toBe(
+      'https://github.com/example/project.git',
+    );
+    expect(stripUrlCredentials('ssh://git@github.com/example/project.git')).toBe(
+      'ssh://git@github.com/example/project.git',
+    );
+    expect(stripUrlCredentials('git@github.com:example/project.git')).toBe(
+      'git@github.com:example/project.git',
+    );
+    // An `@` in the PATH is not userinfo — the authority ends at the first `/`.
+    expect(stripUrlCredentials('https://github.com/example/pro@ject')).toBe(
+      'https://github.com/example/pro@ject',
+    );
+  });
+
+  it('removes a password containing @ whole, leaving no tail behind', async () => {
+    const { stripUrlCredentials } = await import('../../src/storage/git.js');
+    expect(stripUrlCredentials(`https://user:pa@ss-${FAKE_TOKEN}@host.example/o/r`)).toBe(
+      'https://host.example/o/r',
+    );
+  });
+
+  it('keeps the same fingerprint for credentialed and clean clones of one repo', async () => {
+    const { getRemoteUrl } = await import('../../src/storage/git.js');
+    const withCreds = setupRepoWithRemote(
+      `https://x-access-token:${FAKE_TOKEN}@example.com/foo/bar.git`,
+    );
+    const clean = setupRepoWithRemote('https://example.com/foo/bar');
+    try {
+      expect(getRemoteUrl(withCreds)).toBe(getRemoteUrl(clean));
+    } finally {
+      fs.rmSync(withCreds, { recursive: true, force: true });
+      fs.rmSync(clean, { recursive: true, force: true });
     }
   });
 });

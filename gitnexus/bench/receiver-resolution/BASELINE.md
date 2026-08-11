@@ -364,8 +364,13 @@ also resolves, so PHP nullable field types already work.
 
 **C++ — the base already resolves, but `this->` field receivers do not.**
 `pointerArrowChain` and `valueDotChain` both RESOLVE, so a decorated C++ base is
-not a gap. But `this->repo.save()` and `this->repo->save()` are both
-INVISIBLE-GAP — a distinct defect, not a decoration one.
+not a gap. `this->repo.save()` and `this->repo->save()` were both INVISIBLE-GAP
+when this was written — a distinct defect, not a decoration one — and #2833
+closed it: a language that declares `this` IS the enclosing class
+(`resolveThisViaEnclosingClass`) synthesizes no `this` typeBinding anywhere, so
+a chain whose BASE is `this` could never seed its head. It was never a generics
+gap; the NON-generic control failed identically. C++'s `fieldReceiverCall` and
+`decoratedFieldType` cells moved INVISIBLE-GAP -> RESOLVES with it.
 
 **Rust — the decorated receiver is NOT a gap.** `&mut self` resolves, so Go is
 the only language whose method receiver decoration defeats the lookup. Rust's

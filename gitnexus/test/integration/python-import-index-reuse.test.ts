@@ -1,7 +1,8 @@
 /**
  * Production-path regression guard for PR #1918 review finding P1.
  *
- * The Python file index (`getPythonFileIndex` in `import-target.ts`) is
+ * The Python file index (`getPythonFileIndex` in
+ * `import-resolvers/python-file-index.ts`) is
  * memoized on the `allFilePaths` Set identity via a WeakMap. The registry-
  * primary path reaches it through `pythonScopeResolver.resolveImportTarget`
  * (the orchestrator adapter) — NOT by calling `resolvePythonImportTarget`
@@ -10,15 +11,38 @@
  * WeakMap key per call so the index rebuilt every import (O(imports × files)).
  *
  * This test drives the adapter exactly as the orchestrator does and asserts the
- * index is built ONCE across many imports on a stable set. It fails (build
- * count == number of imports) if the per-import copy is reintroduced.
+ * file set is traversed ONCE across many imports on a stable set. It fails
+ * (one traversal per import) if the per-import copy is reintroduced.
+ *
+ * ## Why this counts TRAVERSALS and not index builds (#2909)
+ *
+ * This guard used to read a build counter that shipped in production purely so
+ * a test could read it (now deleted). `CountingSet`
+ * (`test/helpers/counting-file-set.ts`) replaces it, and the swap is not a
+ * wash:
+ *
+ *  - STRICTLY MORE COVERAGE. A scan added BESIDE a reused index moves no build
+ *    count — the cache still hits, the counter still reads 1 — but it does move
+ *    the traversal count. That mutation is the one `bench/import-target/`
+ *    provably cannot see either: `baselines.json` `_blind_spot` records a full
+ *    workspace scan on 1-in-32 imports passing every timing arm.
+ *  - LESS PRODUCTION SURFACE. ~30 lines shipped in the bundle whose only caller
+ *    outside a cache miss was this file.
+ *  - PARALLEL-SAFE. The counter lives on the instance the test built, so there
+ *    is no module-global to `reset()` and no ordering hazard between tests.
+ *
+ * The traversal-count assertions are the perf guard. They are paired with result
+ * assertions on purpose: a count of 1 is equally true of an adapter that has
+ * stopped resolving anything at all, so counting alone would stay green while
+ * every Python IMPORTS edge disappeared.
  */
 import { describe, it, expect } from 'vitest';
 import { pythonScopeResolver } from '../../src/core/ingestion/languages/python/scope-resolver.js';
-import {
-  getPythonFileIndexBuildCount,
-  resetPythonFileIndexBuildCount,
-} from '../../src/core/ingestion/languages/python/index-stats.js';
+import { CountingSet, expectDistinctFileSetsGetOwnIndex } from '../helpers/counting-file-set.js';
+
+const { resolveImportTarget } = pythonScopeResolver;
+
+const FROM_FILE = 'app/main.py';
 
 /**
  * A synthetic workspace: a real package (`realpkg/__init__.py`, so the
@@ -26,62 +50,60 @@ import {
  * below are multi-segment and miss every fast path, so each call reaches both
  * `hasRepoCandidate` and `resolveAbsoluteFromFiles` — the two index consumers.
  */
-function buildWorkspace(fileCount: number): Set<string> {
-  const files = new Set<string>();
+function buildWorkspace(fileCount: number): CountingSet {
+  const files: string[] = [];
   for (let i = 0; i < fileCount; i++) {
-    files.add(`pkg/sub/mod${String(i).padStart(5, '0')}.py`);
+    files.push(`pkg/sub/mod${String(i).padStart(5, '0')}.py`);
   }
-  files.add('realpkg/__init__.py');
-  files.add('realpkg/widget.py');
-  return files;
+  files.push('realpkg/__init__.py');
+  files.push('realpkg/widget.py');
+  return new CountingSet(files);
 }
 
 describe('Python import resolution — index reuse across imports (PR #1918 P1)', () => {
   it('builds the file index once for many imports over a stable file set', () => {
-    const allFilePaths = buildWorkspace(300);
-    const fromFile = 'app/main.py';
-    const importCount = 300;
+    const files = buildWorkspace(300);
+    const resolved: (string | readonly string[] | null)[] = [];
 
-    resetPythonFileIndexBuildCount();
-    for (let i = 0; i < importCount; i++) {
+    for (let i = 0; i < 300; i++) {
       // Multi-segment, candidate-passing, suffix-miss → reaches the index.
-      pythonScopeResolver.resolveImportTarget(`realpkg.ghost${i}`, fromFile, allFilePaths);
+      resolved.push(resolveImportTarget(`realpkg.ghost${i}`, FROM_FILE, files, undefined));
     }
+    resolved.push(resolveImportTarget('realpkg.widget', FROM_FILE, files, undefined));
 
     // The whole point of PR #1918: O(imports + files), not O(imports × files).
     // Pre-fix this was 300 (one rebuild per import via the adapter's Set copy).
-    expect(getPythonFileIndexBuildCount()).toBe(1);
+    expect(files.scans).toBe(1);
+
+    // Paired result assertions — a count of 1 must not be the count of an
+    // adapter that resolves nothing.
+    expect(resolved[0]).toBeNull();
+    expect(resolved[300]).toBe('realpkg/widget.py');
   });
 
-  it('rebuilds once per distinct file set (per-run isolation, no stale reuse)', () => {
-    const fromFile = 'app/main.py';
-
-    resetPythonFileIndexBuildCount();
-    const setA = buildWorkspace(50);
-    for (let i = 0; i < 20; i++) {
-      pythonScopeResolver.resolveImportTarget(`realpkg.ghost${i}`, fromFile, setA);
-    }
-    expect(getPythonFileIndexBuildCount()).toBe(1);
-
-    // A different Set instance is a different logical workspace → one more build.
-    const setB = buildWorkspace(50);
-    for (let i = 0; i < 20; i++) {
-      pythonScopeResolver.resolveImportTarget(`realpkg.ghost${i}`, fromFile, setB);
-    }
-    expect(getPythonFileIndexBuildCount()).toBe(2);
+  it('a distinct file set gets its own index (per-run isolation, no stale reuse)', () => {
+    expectDistinctFileSetsGetOwnIndex({
+      resolveImportTarget,
+      buildWorkspace: () => buildWorkspace(50),
+      targetRaw: 'realpkg.widget',
+      fromFile: FROM_FILE,
+      resolutionConfig: undefined,
+      expected: 'realpkg/widget.py',
+      expectedScans: 1,
+    });
   });
 
   it('still resolves real imports correctly (the perf test is not vacuous)', () => {
-    const allFilePaths = buildWorkspace(20);
-    const fromFile = 'app/main.py';
+    const files = buildWorkspace(20);
 
     // Suffix-fallback hit through the adapter: realpkg.widget → realpkg/widget.py.
-    expect(pythonScopeResolver.resolveImportTarget('realpkg.widget', fromFile, allFilePaths)).toBe(
+    expect(resolveImportTarget('realpkg.widget', FROM_FILE, files, undefined)).toBe(
       'realpkg/widget.py',
     );
     // Gated-out / unresolvable import returns null.
-    expect(
-      pythonScopeResolver.resolveImportTarget('realpkg.ghost', fromFile, allFilePaths),
-    ).toBeNull();
+    expect(resolveImportTarget('realpkg.ghost', FROM_FILE, files, undefined)).toBeNull();
+
+    // All of it off one traversal.
+    expect(files.scans).toBe(1);
   });
 });

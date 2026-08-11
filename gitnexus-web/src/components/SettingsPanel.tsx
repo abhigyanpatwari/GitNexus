@@ -20,6 +20,7 @@ import {
   getAvailableModels,
   fetchOpenRouterModels,
 } from '../core/llm/settings-service';
+import { getAuthToken, setAuthToken } from '../services/backend-client';
 import type { LLMSettings, LLMProvider, MiniMaxThinkingMode } from '../core/llm/types';
 import {
   getMiniMaxModelCapabilities,
@@ -29,6 +30,7 @@ import {
 } from '../core/llm/types';
 import { DEFAULT_OLLAMA_BASE_URL } from '../config/ui-constants';
 import { ProviderConfigCard } from './settings/ProviderConfigCard';
+import { SecretInput } from './settings/SecretInput';
 import { useTranslation } from 'react-i18next';
 
 interface SettingsPanelProps {
@@ -259,6 +261,8 @@ export const SettingsPanel = ({
   const { t } = useTranslation(['common', 'settings']);
   const [settings, setSettings] = useState<LLMSettings>(loadSettings);
   const [showApiKey, setShowApiKey] = useState<Record<string, boolean>>({});
+  /** Deploy access token. Stored outside LLM settings, persisted on Save. */
+  const [authToken, setAuthTokenState] = useState(getAuthToken);
   const [saveStatus, setSaveStatus] = useState<'idle' | 'saved' | 'error'>('idle');
   const saveTimerRef = useRef<ReturnType<typeof setTimeout>>(undefined);
   // Ollama connection state
@@ -281,6 +285,7 @@ export const SettingsPanel = ({
   useEffect(() => {
     if (isOpen) {
       setSettings(loadSettings());
+      setAuthTokenState(getAuthToken());
       setSaveStatus('idle');
       setOllamaError(null);
     }
@@ -321,6 +326,10 @@ export const SettingsPanel = ({
   const handleSave = () => {
     try {
       saveSettings(settings);
+      // The token persists on Save with everything else, not per keystroke: it
+      // is the only affordance this panel gives for "committed", and a
+      // half-typed token would otherwise ride the next probe.
+      setAuthToken(authToken);
       setSaveStatus('saved');
       onSettingsSaved?.();
       if (saveTimerRef.current) {
@@ -392,6 +401,25 @@ export const SettingsPanel = ({
 
         {/* Content */}
         <div className="flex-1 space-y-6 overflow-y-auto p-6">
+          {/* Deploy access token. Rendered unconditionally, unlike the Local
+              Server block below, which only appears when a caller passes the
+              backend-URL props. An empty token is a valid state — a local
+              `gitnexus serve` or `docker compose` deploy has no gate. */}
+          <div className="space-y-3">
+            <label className="block text-sm font-medium text-text-secondary">
+              {t('settings:accessToken.label')}
+            </label>
+            <SecretInput
+              value={authToken}
+              onChange={setAuthTokenState}
+              label={t('settings:accessToken.label')}
+              placeholder={t('settings:accessToken.placeholder')}
+              revealLabel={t('settings:accessToken.reveal')}
+              hideLabel={t('settings:accessToken.hide')}
+            />
+            <p className="text-xs text-text-muted">{t('settings:accessToken.hint')}</p>
+          </div>
+
           {/* Local Server */}
           {backendUrl !== undefined && onBackendUrlChange && (
             <div className="space-y-3">

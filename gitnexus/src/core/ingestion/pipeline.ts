@@ -379,8 +379,10 @@ export const runPipelineFromRepo = async (
   let processResult: ProcessesOutput['processResult'] | undefined;
   const scopeResolutionOutput = getPhaseOutput<ScopeResolutionOutput>(results, 'scopeResolution');
   const resolutionOutcomes = scopeResolutionOutput.resolutionOutcomes;
+  const undecidedSatisfaction = scopeResolutionOutput.undecidedSatisfaction;
   // Streamed PDG-emit manifest (#2202): present only when streaming was on.
   const pdgEmitManifest = scopeResolutionOutput.pdgEmitManifest;
+  const propertyInference = scopeResolutionOutput.propertyInference;
 
   // Presence check, not `!skipGraphPhases`: phases can now be filtered out by
   // any `enabledWhen` predicate (streamGraphEmit disables communities/processes
@@ -420,7 +422,9 @@ export const runPipelineFromRepo = async (
     communityResult,
     processResult,
     resolutionOutcomes,
+    undecidedSatisfaction,
     usedWorkerPool,
     pdgEmitManifest,
+    propertyInference,
   };
 };

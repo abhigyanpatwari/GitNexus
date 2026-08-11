@@ -141,7 +141,7 @@ describe.each(HOOKS)('hooks e2e ($name)', ({ name, path: hookPath }) => {
 
         const output = parseHookOutput(result.stdout);
         expect(output).not.toBeNull();
-        expect(output!.additionalContext).toContain('Run `gitnexus analyze`');
+        expect(output!.additionalContext).toContain('Run `gitnexus analyze --index-only`');
         expect(output!.additionalContext).not.toContain('npx gitnexus');
       } finally {
         gn.cleanup();
@@ -173,7 +173,9 @@ describe.each(HOOKS)('hooks e2e ($name)', ({ name, path: hookPath }) => {
 
         const output = parseHookOutput(result.stdout);
         expect(output).not.toBeNull();
-        expect(output!.additionalContext).toContain('Run `gitnexus analyze --embeddings`');
+        expect(output!.additionalContext).toContain(
+          'Run `gitnexus analyze --index-only --embeddings`',
+        );
         expect(output!.additionalContext).not.toContain('npx gitnexus');
       } finally {
         gn.cleanup();
@@ -231,7 +233,9 @@ describe.each(HOOKS)('hooks e2e ($name)', ({ name, path: hookPath }) => {
 
       const output = parseHookOutput(result.stdout);
       expect(output).not.toBeNull();
-      expect(output!.additionalContext).toContain('npx gitnexus@latest analyze --embeddings');
+      expect(output!.additionalContext).toContain(
+        'npx gitnexus@latest analyze --index-only --embeddings',
+      );
     });
 
     it('treats missing meta.json as stale', () => {

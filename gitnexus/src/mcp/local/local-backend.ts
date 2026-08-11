@@ -114,6 +114,9 @@ import {
   lookupExternalCallCount,
   lookupUnresolvedCallCount,
 } from '../../core/ingestion/scope-resolution/unresolved-receivers.js';
+import type { UnresolvedReceiverSummary } from '../../core/ingestion/scope-resolution/unresolved-receivers.js';
+import type { UndecidedSatisfactionSummary } from '../../core/ingestion/scope-resolution/undecided-satisfaction.js';
+import { lookupCount } from '../../core/ingestion/scope-resolution/summary-maps.js';
 import {
   fnLineOf,
   isPdgDegradedLayerStatus,
@@ -675,9 +678,30 @@ export interface EpistemicCauses {
    * Unit: call sites — same unit and same source as `receiverTyping`.
    */
   readonly externalBoundary: number;
+  /**
+   * Interface-satisfaction checks the ANALYZER could not complete, on a
+   * boundary this query crossed (#2873). Unit: unjudged (interface, candidate
+   * type) pairs.
+   *
+   * Distinct from every slot above, which count facts the analyzer decided and
+   * then could not attribute. This one counts questions it never answered — a
+   * type in a required signature had no identity to compare, so no IMPLEMENTS
+   * edge was minted and no dispatch boundary exists for the walk to notice. It
+   * is the one cause that makes a result short WITHOUT leaving a trace in the
+   * graph, which is why it has to be read from the index metadata instead.
+   *
+   * Zero on any index written before the field existed; that reads the same as
+   * "nothing was undecided", and a re-index is what tells the two apart.
+   */
+  readonly undecidedSatisfaction: number;
 }
 
-function epistemicFrom(dropped: { notes: readonly string[]; sites: number; external: number }): {
+function epistemicFrom(dropped: {
+  notes: readonly string[];
+  sites: number;
+  external: number;
+  undecided: number;
+}): {
   epistemic: 'exact' | 'lower-bound';
   boundaries?: string[];
   causes?: EpistemicCauses;
@@ -689,7 +713,12 @@ function epistemicFrom(dropped: { notes: readonly string[]; sites: number; exter
     ? dropped.external > 0
       ? {
           epistemic: 'exact',
-          causes: { receiverTyping: 0, dispatchBoundary: 0, externalBoundary: dropped.external },
+          causes: {
+            receiverTyping: 0,
+            dispatchBoundary: 0,
+            externalBoundary: dropped.external,
+            undecidedSatisfaction: 0,
+          },
         }
       : { epistemic: 'exact' }
     : {
@@ -703,8 +732,81 @@ function epistemicFrom(dropped: { notes: readonly string[]; sites: number; exter
           receiverTyping: dropped.sites,
           dispatchBoundary: 0,
           externalBoundary: dropped.external,
+          undecidedSatisfaction: dropped.undecided,
         },
       };
+}
+
+/**
+ * Boundary notes for call sites the analyzer dropped because it could not type
+ * their receiver, when the queried symbol's name is among them (#2744).
+ *
+ * Empty when the index records no drops for this name — including every index
+ * written before the summary existed, which is why the schema version was
+ * bumped rather than treating "absent" as "none".
+ */
+function unresolvedReceiverBoundaries(
+  summary: UnresolvedReceiverSummary | undefined,
+  symName: string,
+): { notes: string[]; sites: number; external: number } {
+  if (symName.length === 0) return { notes: [], sites: 0, external: 0 };
+  const sites = lookupUnresolvedCallCount(summary, symName);
+  const external = lookupExternalCallCount(summary, symName) ?? 0;
+  if (sites === undefined) return { notes: [], sites: 0, external };
+  return {
+    notes: [
+      `${sites} call ${sites === 1 ? 'site' : 'sites'} invoking \`${symName}\` ${
+        sites === 1 ? 'was' : 'were'
+      } dropped at index time because the receiver's type could not be ` +
+        `established (e.g. an unresolved constructor, factory or chained ` +
+        `expression). Those callers are absent from this result — actual ` +
+        `impact may be higher.`,
+    ],
+    sites,
+    external,
+  };
+}
+
+/**
+ * Boundary notes for interface-satisfaction checks the analyzer could not
+ * COMPLETE, when the queried symbol is on either side of one (#2873).
+ *
+ * Matched against both maps because a query arrives from either direction: on
+ * the interface itself, or on a candidate implementation — the reported case,
+ * and the one no graph probe can find, because the edge that would lead there
+ * is precisely what went missing. See `undecided-satisfaction.ts`.
+ */
+function undecidedSatisfactionBoundaries(
+  summary: UndecidedSatisfactionSummary,
+  names: readonly string[],
+): { notes: string[]; undecided: number } {
+  const notes: string[] = [];
+  let undecided = 0;
+  for (const name of names) {
+    const asInterface = lookupCount(summary.counts, name) ?? 0;
+    if (asInterface > 0) {
+      undecided += asInterface;
+      notes.push(
+        `\`${name}\` is an interface whose implementors could not be fully determined at ` +
+          `index time: ${asInterface} candidate ${asInterface === 1 ? 'type was' : 'types were'} ` +
+          `left unjudged because a type in a required signature could not be resolved. ` +
+          `Implementations are missing from this result — actual impact may be higher.`,
+      );
+    }
+    const asCandidate = lookupCount(summary.candidateCounts, name) ?? 0;
+    if (asCandidate > 0) {
+      undecided += asCandidate;
+      const one = asCandidate === 1;
+      notes.push(
+        `\`${name}\` was a candidate implementation for ${asCandidate} ` +
+          `${one ? 'interface' : 'interfaces'} the analyzer could not decide, so no ` +
+          `IMPLEMENTS edge was recorded and callers dispatching through ` +
+          `${one ? 'that interface' : 'those interfaces'} are absent from this result — ` +
+          `actual impact may be higher.`,
+      );
+    }
+  }
+  return { notes, undecided };
 }
 
 interface RepoHandle {
@@ -4115,6 +4217,46 @@ export class LocalBackend {
     const beanMetadataPromise = queryClassBeanMetadata(repo.lbugPath, symId, epistemicSymType);
     const aopMetadataPromise = querySpringAopMetadata(repo.lbugPath, symId, epistemicSymType);
 
+    // R3-1. A `Property` whose name the analyzer declined to link — because
+    // every definition of it lives in another language — otherwise returns an
+    // incoming list byte-identical to a genuinely unread field. Those demand
+    // opposite actions ("look in the other language / grep" vs "delete it"), so
+    // the difference has to travel with the answer.
+    //
+    // The graph cannot answer this: the unlinked reads mint no edge and no
+    // node, so the only record is the analyze pass that declined them. Hence the
+    // meta read — bounded to Property lookups, since `ensureInitialized`
+    // deliberately avoids a per-call `loadMeta` on the hot path.
+    let crossLanguageAnchor: {
+      unresolved?: string;
+      anchorLanguages?: readonly string[];
+    } = {};
+    {
+      try {
+        // Keyed on the NAME, not on the resolved label. Gating on
+        // `=== 'Property'` was tried and is wrong: the label is not always
+        // populated on this path (it reads `''` for a plain Property node), so
+        // the gate silently suppressed the whole feature. The meta list only
+        // ever contains property names, so matching the name IS the type check.
+        const hit = (await this.crossLanguagePropertiesFor(repo)).get(
+          (sym.name || sym[1]) as string,
+        );
+        if (hit) {
+          crossLanguageAnchor = {
+            unresolved:
+              `property reads of this name were NOT linked: every definition of it is ` +
+              `${hit.join('/')}, and name inference does not cross languages. ` +
+              `An empty or short incoming list here is not evidence the field is unused — ` +
+              `confirm with a text search, or give it an anchor in the reading language.`,
+            anchorLanguages: hit,
+          };
+        }
+      } catch {
+        // A missing or unreadable meta is not worth failing a context lookup
+        // over; the answer is merely less explained, which is the status quo.
+      }
+    }
+
     let methodMetadata: Record<string, unknown> | undefined;
     if (isMethodLike) {
       try {
@@ -4175,6 +4317,7 @@ export class LocalBackend {
         ...(aopMetadata ? { aop: aopMetadata } : {}),
       },
       ...epistemic,
+      ...crossLanguageAnchor,
       incoming: categorize(incomingRows),
       outgoing: categorize(outgoingRows),
       ...(typedPropertyRows.length > 0
@@ -5915,8 +6058,14 @@ export class LocalBackend {
           let summary: {
             impactedCount: number;
             risk: string;
+            riskNote?: string;
             summary?: { direct: number };
           } | null = null;
+          // Tracks THIS candidate's probe. The outer `probeFailed` is a
+          // fan-out-wide flag, and `UNKNOWN` now has two causes — a probe that
+          // threw, and a walk that resolved and found no callers — so the two
+          // must not be told apart by the enum alone.
+          let candidateProbeFailed = false;
           try {
             summary = await this._runImpactBFS(
               repo,
@@ -5935,6 +6084,7 @@ export class LocalBackend {
             );
           } catch (e) {
             probeFailed = true;
+            candidateProbeFailed = true;
             logQueryError('impact:ambiguous-candidate', e);
           }
           return {
@@ -5947,6 +6097,18 @@ export class LocalBackend {
             impactedCount: summary?.impactedCount ?? 0,
             risk: summary?.risk ?? 'UNKNOWN',
             direct: summary?.summary?.direct ?? 0,
+            ...(summary?.riskNote !== undefined ? { riskNote: summary.riskNote } : {}),
+            // Carry the explanation with the verdict. The single-symbol path
+            // pairs a zero-caller `UNKNOWN` with a `riskNote` telling the reader
+            // to confirm with a text search; this shape dropped it, so the same
+            // enum arrived here bare — losing the entire point of the change on
+            // the path where a name is ambiguous.
+
+            // `UNKNOWN` used to mean exactly one thing on this path: the probe
+            // threw. The zero-caller branch gives it a second meaning, so an
+            // all-UNKNOWN fan-out is no longer distinguishable from a broken one
+            // without this flag.
+            ...(candidateProbeFailed ? { probeFailed: true } : {}),
           };
         }),
       );
@@ -5957,17 +6119,45 @@ export class LocalBackend {
       candidateSummaries.sort((a, b) => b.impactedCount - a.impactedCount);
       const maxImpactedCount = candidateSummaries.reduce((m, c) => Math.max(m, c.impactedCount), 0);
       const RISK_ORDER = ['LOW', 'MEDIUM', 'HIGH', 'CRITICAL'];
-      // If EVERY candidate probe failed (all 'UNKNOWN' — e.g. pool exhaustion
-      // under the fan-out), the worst real risk is genuinely unknown, not LOW.
-      // Reporting LOW here would re-introduce the false-safe signal. Only fall to
-      // the LOW seed when at least one candidate produced a real risk.
+      // If NO candidate produced a real risk, the worst risk is genuinely
+      // unknown, not LOW. Reporting LOW here would re-introduce the false-safe
+      // signal. Only fall to the LOW seed when at least one candidate produced
+      // a real risk.
+      //
+      // Note the two ways this set can be all-UNKNOWN, which is why candidates
+      // now carry `probeFailed`: every probe THREW (pool exhaustion under the
+      // fan-out — nothing was measured), or every walk RESOLVED and found no
+      // callers (measured, and the honest answer). Both are correctly UNKNOWN
+      // here; the flag is what lets a reader tell a broken fan-out from a
+      // genuinely caller-less one.
       const anyKnownRisk = candidateSummaries.some((c) => RISK_ORDER.includes(c.risk));
-      const maxRisk = anyKnownRisk
+      // The highest risk among candidates that actually RESOLVED. Kept as its
+      // own value rather than being folded into `maxRisk`, so narrowing the
+      // aggregate below does not throw away what was measured.
+      const knownMaxRisk = anyKnownRisk
         ? candidateSummaries.reduce(
             (worst, c) => (RISK_ORDER.indexOf(c.risk) > RISK_ORDER.indexOf(worst) ? c.risk : worst),
             'LOW',
           )
         : 'UNKNOWN';
+      // UNKNOWN DOMINATES A MIXED SET, and that is the correction.
+      //
+      // The reasoning above covers the ALL-UNKNOWN case and stops there. The
+      // MIXED case fell through it: `RISK_ORDER` has no `UNKNOWN` entry, so
+      // `indexOf` returns -1 and an UNKNOWN candidate can never win the reduce.
+      // One caller-less candidate (UNKNOWN) beside one single-caller candidate
+      // (LOW) therefore reported `maxRisk: 'LOW'` — a confident floor over a
+      // set containing an interpretation nobody measured, which is the exact
+      // false-safe the all-UNKNOWN branch was written to prevent, one case over.
+      //
+      // `maxRisk` answers "how bad could this be?", and an unresolved candidate
+      // could be CRITICAL. So any UNKNOWN in the set makes the aggregate
+      // UNKNOWN, and `knownMaxRisk` carries the measured part alongside — the
+      // reader gets "at least LOW among what resolved, and one interpretation
+      // could not be walked at all", which is strictly more than either value
+      // alone.
+      const anyUnknownRisk = candidateSummaries.some((c) => !RISK_ORDER.includes(c.risk));
+      const maxRisk = anyUnknownRisk ? 'UNKNOWN' : knownMaxRisk;
       // `candidateSummaries` is `Promise.all` over `probed`, so the two lengths
       // are the same; `probed` is the one the message and the flag agree on.
       const { atLeast, showing, fields } = ambiguityReport(outcome, probed.length, true);
@@ -5977,7 +6167,11 @@ export class LocalBackend {
         message:
           `Found ${atLeast}${outcome.total} symbols matching '${target}'` +
           showing +
-          `. Blast radius differs per candidate (max ${maxImpactedCount} impacted at risk ${maxRisk}). ` +
+          `. Blast radius differs per candidate (max ${maxImpactedCount} impacted at risk ${maxRisk}` +
+          (anyUnknownRisk && anyKnownRisk
+            ? `; ${knownMaxRisk} among the candidates that resolved, and at least one could not be walked`
+            : '') +
+          `). ` +
           `Disambiguate with target_uid (or file_path/kind) for a single authoritative result.`,
         target: { name: target },
         direction,
@@ -6000,6 +6194,11 @@ export class LocalBackend {
         risk: 'UNKNOWN',
         maxImpactedCount,
         maxRisk,
+        // Present only when the two differ, i.e. when something resolved AND
+        // something did not. Absent on a fully-resolved set (where it would
+        // duplicate `maxRisk`) and on a fully-unknown one (where there is no
+        // measured part to report).
+        ...(anyUnknownRisk && anyKnownRisk ? { knownMaxRisk } : {}),
         ...(probeFailed ? { partialProbe: true } : {}),
         candidates: candidateSummaries,
       };
@@ -6262,6 +6461,39 @@ export class LocalBackend {
    * Never throws: on query error it returns 'exact', so it can only add signal,
    * never suppress a result.
    */
+  /**
+   * Fields the analyzer declined to link because every definition of the name
+   * lives in another language (R3-1), keyed by name.
+   *
+   * Cached per index version. `ensureInitialized` deliberately avoids a
+   * per-call `loadMeta` because every tool call routes through it; this is one
+   * small read per (index, indexedAt), which re-reads exactly when a re-analyze
+   * could have changed the answer and never otherwise.
+   */
+  private readonly crossLanguagePropertyCache = new Map<
+    string,
+    { indexedAt: string | undefined; byName: ReadonlyMap<string, readonly string[]> }
+  >();
+
+  private async crossLanguagePropertiesFor(
+    repo: RepoHandle,
+  ): Promise<ReadonlyMap<string, readonly string[]>> {
+    const cached = this.crossLanguagePropertyCache.get(repo.lbugPath);
+    if (cached !== undefined && cached.indexedAt === repo.indexedAt) return cached.byName;
+    const byName = new Map<string, readonly string[]>();
+    try {
+      const meta = await loadMeta(path.dirname(repo.lbugPath));
+      for (const entry of meta?.crossLanguageProperties ?? []) {
+        byName.set(entry.name, entry.languages);
+      }
+    } catch {
+      // A missing or unreadable meta is not worth failing a lookup over; the
+      // answer is merely less explained, which is the status quo.
+    }
+    this.crossLanguagePropertyCache.set(repo.lbugPath, { indexedAt: repo.indexedAt, byName });
+    return byName;
+  }
+
   private async computeEpistemicBoundary(
     repo: RepoHandle,
     symId: string,
@@ -6280,7 +6512,44 @@ export class LocalBackend {
     // reason #2708 was filed. A dropped site's callee is unknown, so the index
     // records the member NAME invoked at the drop; a match on the queried
     // symbol's name means at least one call to something of that name was lost.
-    const droppedBoundaries = await this.unresolvedReceiverBoundaries(repo, symName);
+    // ONE read of the index metadata for both probes below. They are the second
+    // and third consumers of this file on a path whose own comments call out
+    // avoiding a per-call `loadMeta` (see `ensureInitialized`), and the file is
+    // dominated by `fileHashes` — megabytes on a large repo.
+    // `try`, not `.catch`: `loadMeta` can throw synchronously (a stubbed module
+    // in tests, a mid-read unmount), and a probe failing must never read as
+    // certainty — the whole point of this function.
+    let meta: Awaited<ReturnType<typeof loadMeta>> | undefined;
+    try {
+      meta = await loadMeta(path.dirname(repo.lbugPath));
+    } catch {
+      meta = undefined;
+    }
+    const receiverDrops = unresolvedReceiverBoundaries(meta?.unresolvedReceiverMembers, symName);
+    // #2873 — satisfaction checks the analyzer never completed. Read on the
+    // same footing as the receiver drops, and BEFORE the heritage probe for the
+    // same reason: this cause leaves no edge for that probe to find, so a
+    // graph-only answer is exactly the confident zero being fixed.
+    //
+    // Gated on the record existing: without it the answer cannot change, and
+    // the owning-type hop below would be a graph round-trip per method query in
+    // every index that has no such record — which is every non-Go one, since Go
+    // is the only language with a structural-satisfaction hook.
+    const undecidedSummary = meta?.undecidedInterfaceSatisfaction;
+    const undecidedDrops =
+      undecidedSummary === undefined
+        ? { notes: [], undecided: 0 }
+        : undecidedSatisfactionBoundaries(undecidedSummary, [
+            symName,
+            ...(symType === 'Method' || symType === 'Function'
+              ? await this.owningTypeNames(repo, symId)
+              : []),
+          ]);
+    const droppedBoundaries = {
+      ...receiverDrops,
+      notes: [...receiverDrops.notes, ...undecidedDrops.notes],
+      undecided: undecidedDrops.undecided,
+    };
     try {
       // Discover the interface / abstract supertypes on the target's boundary.
       // If the target is itself an interface, it is its own boundary node.
@@ -6377,6 +6646,7 @@ export class LocalBackend {
           receiverTyping: droppedBoundaries.sites,
           dispatchBoundary: dispatchBoundarySymbols,
           externalBoundary: droppedBoundaries.external,
+          undecidedSatisfaction: droppedBoundaries.undecided,
         },
       };
     } catch {
@@ -6386,39 +6656,22 @@ export class LocalBackend {
     }
   }
 
-  /**
-   * Boundary notes for call sites the analyzer dropped because it could not
-   * type their receiver, when the queried symbol's name is among them (#2744).
-   * Empty when the index records no drops for this name — including every
-   * index written before the summary existed, which is why the schema version
-   * was bumped rather than treating "absent" as "none".
-   */
-  private async unresolvedReceiverBoundaries(
-    repo: RepoHandle,
-    symName: string,
-  ): Promise<{ notes: string[]; sites: number; external: number }> {
-    if (symName.length === 0) return { notes: [], sites: 0, external: 0 };
-    try {
-      const meta = await loadMeta(path.dirname(repo.lbugPath));
-      const summary = meta?.unresolvedReceiverMembers;
-      // Prototype-safe: see `lookupUnresolvedCallCount`. A bare `counts[symName]`
-      // returns a Function for `constructor`/`toString`/… and `NaN <= 0` is false,
-      // so the old guard let it through into user-facing text.
-      const sites = lookupUnresolvedCallCount(summary, symName);
-      const external = lookupExternalCallCount(summary, symName) ?? 0;
-      if (sites === undefined) return { notes: [], sites: 0, external };
-      const notes = [
-        `${sites} call ${sites === 1 ? 'site' : 'sites'} invoking \`${symName}\` ${
-          sites === 1 ? 'was' : 'were'
-        } dropped at index time because the receiver's type could not be ` +
-          `established (e.g. an unresolved constructor, factory or chained ` +
-          `expression). Those callers are absent from this result — actual ` +
-          `impact may be higher.`,
-      ];
-      return { notes, sites, external };
-    } catch {
-      return { notes: [], sites: 0, external: 0 };
-    }
+  /** Declaring types of a method, for matching against a candidate-keyed
+   *  record. One hop, asked only for methods, and only when a record exists to
+   *  match against. */
+  private async owningTypeNames(repo: RepoHandle, symId: string): Promise<string[]> {
+    const rows = await executeParameterized(
+      repo.lbugPath,
+      `MATCH (owner)-[r:CodeRelation]->(m)
+         WHERE m.id = $symId AND r.type = 'HAS_METHOD'
+         RETURN DISTINCT owner.name AS name
+         ORDER BY name
+         LIMIT 8`,
+      { symId },
+    ).catch(() => []);
+    return rows
+      .map((r: any) => (r.name ?? r[0] ?? '') as string)
+      .filter((n: string) => n.length > 0);
   }
 
   /**
@@ -7050,8 +7303,27 @@ export class LocalBackend {
     // Risk scoring
     const processCount = affectedProcesses.length;
     const moduleCount = affectedModules.length;
-    let risk = 'LOW';
-    if (directCount >= 30 || processCount >= 5 || moduleCount >= 5 || impacted.length >= 200) {
+    let risk: string;
+    if (direction === 'upstream' && impacted.length === 0) {
+      // An upstream walk that resolved NO callers cannot support `LOW`. "Safe
+      // to change" is a claim ABOUT callers, and this walk found none to reason
+      // about: the symbol may be genuinely unused, or reached only through a
+      // reference class this index does not record — a property access on a
+      // plain object, or a bare-identifier read of a module-scope `Const`,
+      // neither of which mints a reference site today. Seeding `LOW` from an
+      // empty result is the same false-safe signal `anyKnownRisk` refuses to
+      // emit on the ambiguous-candidate path, and that #2687 removed by making
+      // an undetermined `impactedCount` `null` instead of `0`.
+      //
+      // Downstream is deliberately untouched: an empty downstream walk reports
+      // that this symbol resolved no callees, which is not a safety verdict.
+      risk = 'UNKNOWN';
+    } else if (
+      directCount >= 30 ||
+      processCount >= 5 ||
+      moduleCount >= 5 ||
+      impacted.length >= 200
+    ) {
       risk = 'CRITICAL';
     } else if (
       directCount >= 15 ||
@@ -7062,6 +7334,8 @@ export class LocalBackend {
       risk = 'HIGH';
     } else if (directCount >= 5 || impacted.length >= 30) {
       risk = 'MEDIUM';
+    } else {
+      risk = 'LOW';
     }
 
     // Build per-depth counts (always included, even in summaryOnly mode)
@@ -7090,6 +7364,16 @@ export class LocalBackend {
       direction,
       impactedCount: impacted.length,
       risk,
+      ...(risk === 'UNKNOWN'
+        ? {
+            riskNote:
+              'No callers resolved. Absence of edges is not evidence the symbol is unused: ' +
+              'a caller reaching it through a reference class this index does not record — ' +
+              'plain-object property access, a bare-identifier read of a module-scope const — ' +
+              'produces no edge to find. Confirm with a text search before treating the ' +
+              'change as safe.',
+          }
+        : {}),
       ...epistemic,
       ...(!traversalComplete && { partial: true }),
       summary: {

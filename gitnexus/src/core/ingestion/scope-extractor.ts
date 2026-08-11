@@ -34,9 +34,13 @@
  *      as `ownedDefs` + a local `BindingRef { origin: 'local' }`.
  *   3. **Collect raw imports.** Walk `@import.*` matches. Call
  *      `provider.interpretImport` per match; attach the returned
- *      `ParsedImport` to the ParsedFile (not to any `Scope` — finalize
- *      reconstructs the owning scope via `provider.importOwningScope`
- *      during Phase 2).
+ *      `ParsedImport` to the ParsedFile — not to any `Scope`, and nothing
+ *      downstream recovers one. `provider.importOwningScope` is declared on
+ *      `LanguageProvider` and implemented by a dozen providers, but has no
+ *      call site anywhere; this step's output is scope-free. A provider whose
+ *      `ParsedImport` needs to distinguish module-level from nested must
+ *      decide that in its own capture emitter, where the node is still in
+ *      hand (see `languages/python/import-decomposer.ts`).
  *   4. **Collect type bindings.** Walk `@type-binding.*` matches. Call
  *      `provider.interpretTypeBinding` per match. Attach the resulting
  *      `TypeRef` to the innermost containing scope's `typeBindings`
@@ -83,6 +87,7 @@ import { buildPositionIndex, buildScopeTree, canParentScope, makeScopeId } from 
 import type { LanguageProvider } from './language-provider.js';
 import { isValidReceiverChain } from './utils/receiver-chain-codec.js';
 import { extractTemplateArguments } from './utils/template-arguments.js';
+import { parseTypeParameterList } from './utils/type-parameters.js';
 
 // ─── Narrow hook surface the extractor actually uses ───────────────────────
 
@@ -544,12 +549,43 @@ function pass2AttachDeclarations(
   const draftById = new Map<ScopeId, ScopeDraft>();
   for (const d of drafts) draftById.set(d.id, d);
 
+  // First def seen per `nodeId`, for the duplicate backfill below. Two query
+  // patterns can legitimately match ONE declaration — a C++ templated struct
+  // matches both the standalone `struct_specifier` rule and the
+  // `template_declaration` rule that wraps it — and both mint the same def id.
+  const firstDefByNodeId = new Map<string, SymbolDefinition>();
+
   for (const match of matches) {
     const anchor = anchorCaptureFor(match, '@declaration.');
     if (anchor === undefined) continue;
 
     const def = buildDefFromDeclarationMatch(match, anchor, filePath);
     if (def === undefined) continue;
+
+    // ── Duplicate-declaration backfill ───────────────────────────────────────
+    // `buildDefIndex` is FIRST-WRITE-WINS, so when one declaration produces two
+    // defs under one id, whichever match tree-sitter reported first is the one
+    // resolution sees. That was harmless while the twins were byte-identical.
+    // It stops being harmless the moment one twin can carry a field the other
+    // structurally cannot: a C++ `template <class T> struct Vec` has its
+    // parameter list on the ENCLOSING `template_declaration`, so the standalone
+    // `struct_specifier` twin can never see it, and match order would silently
+    // decide whether `Vec` remembers `T`. Source order deciding a resolution
+    // fact is the failure mode this subsystem rejects everywhere else.
+    //
+    // Copying the field onto BOTH twins makes the outcome identical whichever
+    // one wins. Deliberately narrow — only `typeParameters`, the one field with
+    // an asymmetric twin today. Widening this to "merge all metadata" would
+    // change what every existing duplicate resolves to, which is a different
+    // change with a different blast radius and no evidence behind it yet.
+    const first = firstDefByNodeId.get(def.nodeId);
+    if (first === undefined) {
+      firstDefByNodeId.set(def.nodeId, def);
+    } else if (first.typeParameters === undefined && def.typeParameters !== undefined) {
+      first.typeParameters = def.typeParameters;
+    } else if (def.typeParameters === undefined && first.typeParameters !== undefined) {
+      def.typeParameters = first.typeParameters;
+    }
 
     // Find the innermost scope that contains the declaration's anchor range.
     const innermostId = positionIndex.atPosition(
@@ -638,6 +674,12 @@ function buildDefFromDeclarationMatch(
   const declaredType = match['@declaration.field-type']?.text;
   const returnType = match['@declaration.return-type']?.text;
   const templateConstraints = parseJsonCapture(match['@declaration.template-constraints']);
+  // The DECLARED parameters, a different axis from `templateArguments` above:
+  // that reads the arguments written on the name, this reads the list the
+  // declaration was written in terms of. A declaration can carry both, and for a
+  // C++ partial specialization the pairing is the only thing that tells it apart
+  // from a full specialization with the identical arguments.
+  const typeParameters = parseTypeParameterList(match['@declaration.type-parameters']?.text ?? '');
   const isExplicit = parseBooleanCapture(match['@declaration.is-explicit']);
   const isDeleted = parseBooleanCapture(match['@declaration.is-deleted']);
 
@@ -653,6 +695,7 @@ function buildDefFromDeclarationMatch(
     ...(declaredType !== undefined ? { declaredType } : {}),
     ...(returnType !== undefined ? { returnType } : {}),
     ...(templateArguments !== undefined ? { templateArguments } : {}),
+    ...(typeParameters !== undefined ? { typeParameters } : {}),
     ...(templateConstraints !== undefined ? { templateConstraints } : {}),
     ...(isExplicit === true ? { isExplicit: true } : {}),
     ...(isDeleted === true ? { isDeleted: true } : {}),
@@ -1570,6 +1613,10 @@ const KNOWN_SUB_TAGS: ReadonlySet<string> = new Set<string>([
   '@import.name',
   '@import.source',
   '@import.alias',
+  // Provider-set marker, not a statement anchor. Listed for the same reason as
+  // its siblings: it is emitted on a sub-node of the import statement, and the
+  // anchor must stay `@import.statement` regardless of relative span.
+  '@import.publishes',
   '@type-binding.name',
   '@type-binding.type',
   '@reference.name',
@@ -1588,6 +1635,15 @@ const KNOWN_SUB_TAGS: ReadonlySet<string> = new Set<string>([
   '@declaration.parameter-type-classes',
   '@declaration.return-type',
   '@declaration.template-constraints',
+  // MUST be listed, and the failure it prevents is silent def LOSS rather than
+  // a missing field. `anchorCaptureFor` picks the broadest-span `@declaration.*`
+  // capture that is not a known sub-tag; a type-parameter list is normally
+  // narrower than the declaration that owns it, but a C++ `template <class A,
+  // class B, …>` or a multi-line Java `<T extends A & B>` written above a short
+  // declaration can out-span it. The anchor would then be `type-parameters`,
+  // `normalizeNodeLabel` would return undefined for it, and the whole class def
+  // would be dropped rather than merely losing its parameters.
+  '@declaration.type-parameters',
   '@declaration.is-explicit',
   '@declaration.is-deleted',
 ]);

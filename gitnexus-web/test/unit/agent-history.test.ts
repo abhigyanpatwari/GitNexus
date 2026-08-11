@@ -263,7 +263,7 @@ describe('createChatModel', () => {
       temperature: 0.1,
     } as any) as any;
 
-    expect(model.thinkingExplicitlySet).toBe(false);
+    expect(model.invocationParams({}).thinking).toBeUndefined();
     expect(model.temperature).toBeUndefined();
   });
 

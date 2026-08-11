@@ -218,11 +218,6 @@ const wikiCommandImpl = async (inputPath?: string, options?: WikiCommandOptions)
   ) {
     const existing = await loadCLIConfig();
     const updates: Partial<typeof existing> = {};
-    if (options.apiKey) updates.apiKey = options.apiKey;
-    if (options.baseUrl) updates.baseUrl = options.baseUrl;
-    if (options.provider) updates.provider = options.provider;
-    if (options.apiVersion) updates.apiVersion = options.apiVersion;
-    if (options.reasoningModel !== undefined) updates.isReasoningModel = options.reasoningModel;
     const providerChanged = !!options.provider && options.provider !== existing.provider;
     if (providerChanged) {
       updates.apiKey = undefined;
@@ -231,6 +226,11 @@ const wikiCommandImpl = async (inputPath?: string, options?: WikiCommandOptions)
       updates.apiVersion = undefined;
       updates.isReasoningModel = undefined;
     }
+    if (options.apiKey) updates.apiKey = options.apiKey;
+    if (options.baseUrl) updates.baseUrl = options.baseUrl;
+    if (options.provider) updates.provider = options.provider;
+    if (options.apiVersion) updates.apiVersion = options.apiVersion;
+    if (options.reasoningModel !== undefined) updates.isReasoningModel = options.reasoningModel;
     if (options.provider === 'minimax') {
       if (providerChanged && options.reasoningModel === undefined) {
         updates.isReasoningModel = undefined;

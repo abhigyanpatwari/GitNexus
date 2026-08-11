@@ -63,17 +63,31 @@ const CSHARP_SCOPE_QUERY = `
 ;; Anonymous methods / lambdas are not scoped — out of scope per plan.
 
 ;; Declarations — types
+;; The parameter list is matched as an UNNAMED optional child, not through a
+;; \`type_parameters:\` field: the C# grammar gives \`interface_declaration\` that
+;; field but \`class_declaration\` / \`struct_declaration\` / \`record_declaration\`
+;; only a bare \`type_parameter_list\` child, so the field form would silently
+;; capture nothing on exactly the three most common declarations. The unnamed
+;; form matches all four.
+;;
+;; A \`where T : IRepo\` constraint is a SEPARATE sibling clause
+;; (\`type_parameter_constraints_clause\`) and is deliberately not read here — the
+;; bound stays absent for C#, which reads as "unknown", the safe direction.
 (class_declaration
-  name: (identifier) @declaration.name) @declaration.class
+  name: (identifier) @declaration.name
+  (type_parameter_list)? @declaration.type-parameters) @declaration.class
 
 (interface_declaration
-  name: (identifier) @declaration.name) @declaration.interface
+  name: (identifier) @declaration.name
+  (type_parameter_list)? @declaration.type-parameters) @declaration.interface
 
 (struct_declaration
-  name: (identifier) @declaration.name) @declaration.struct
+  name: (identifier) @declaration.name
+  (type_parameter_list)? @declaration.type-parameters) @declaration.struct
 
 (record_declaration
-  name: (identifier) @declaration.name) @declaration.record
+  name: (identifier) @declaration.name
+  (type_parameter_list)? @declaration.type-parameters) @declaration.record
 
 (enum_declaration
   name: (identifier) @declaration.name) @declaration.enum

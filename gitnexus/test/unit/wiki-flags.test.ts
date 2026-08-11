@@ -320,6 +320,146 @@ describe('resolveLLMConfig', () => {
   });
 });
 
+describe('wikiCommand provider switch persistence', () => {
+  const originalExitCode = process.exitCode;
+
+  beforeEach(() => {
+    vi.resetModules();
+    process.exitCode = undefined;
+  });
+
+  afterEach(() => {
+    vi.restoreAllMocks();
+    vi.doUnmock('../../src/storage/git.js');
+    vi.doUnmock('../../src/storage/repo-manager.js');
+    vi.doUnmock('../../src/core/wiki/llm-client.js');
+    vi.doUnmock('../../src/core/wiki/generator.js');
+    vi.doUnmock('cli-progress');
+    process.exitCode = originalExitCode;
+  });
+
+  async function saveProviderSwitch(
+    existing: Record<string, unknown>,
+    options: Record<string, unknown>,
+  ) {
+    const saveCLIConfig = vi.fn();
+
+    vi.doMock('../../src/storage/git.js', () => ({
+      getGitRoot: vi.fn(),
+      isGitRepo: vi.fn().mockReturnValue(true),
+    }));
+    vi.doMock('../../src/storage/repo-manager.js', () => ({
+      getStoragePaths: vi
+        .fn()
+        .mockReturnValue({ storagePath: '/tmp/wiki-storage', lbugPath: '/tmp/wiki-db' }),
+      loadMeta: vi.fn().mockResolvedValue({ createdAt: '2026-01-01T00:00:00Z' }),
+      loadCLIConfig: vi.fn().mockResolvedValue(existing),
+      saveCLIConfig,
+    }));
+    vi.doMock('../../src/core/wiki/llm-client.js', async (importOriginal) => {
+      const actual = await importOriginal<typeof import('../../src/core/wiki/llm-client.js')>();
+      return {
+        ...actual,
+        resolveLLMConfig: vi.fn().mockResolvedValue({
+          apiKey: options.apiKey ?? '',
+          baseUrl: options.baseUrl ?? '',
+          model: options.model ?? '',
+          maxTokens: 16_384,
+          temperature: 0,
+          provider: options.provider,
+          apiVersion: options.apiVersion,
+          isReasoningModel: options.reasoningModel,
+        }),
+      };
+    });
+    vi.doMock('../../src/core/wiki/generator.js', () => ({
+      WikiGenerator: vi.fn().mockImplementation(function () {
+        return {
+          run: vi.fn().mockResolvedValue({ mode: 'up-to-date', pagesGenerated: 0 }),
+        };
+      }),
+    }));
+    vi.doMock('cli-progress', () => ({
+      default: {
+        SingleBar: vi.fn(function () {
+          return {
+            start: vi.fn(),
+            update: vi.fn(),
+            stop: vi.fn(),
+          };
+        }),
+        Presets: { shades_grey: {} },
+      },
+    }));
+
+    vi.spyOn(console, 'log').mockImplementation(() => {});
+    const { wikiCommand } = await import('../../src/cli/wiki.js');
+    await wikiCommand('/tmp/repo', options as Parameters<typeof wikiCommand>[1]);
+
+    return saveCLIConfig;
+  }
+
+  it('preserves explicit OpenAI settings when switching away from MiniMax', async () => {
+    const saveCLIConfig = await saveProviderSwitch(
+      {
+        provider: 'minimax',
+        apiKey: 'old-minimax-key',
+        baseUrl: 'https://api.minimax.io/v1',
+        model: 'MiniMax-M3',
+        apiVersion: 'old-version',
+        isReasoningModel: false,
+      },
+      {
+        provider: 'openai',
+        apiKey: 'new-openai-key',
+        baseUrl: 'https://api.openai.com/v1',
+        model: 'gpt-5',
+        apiVersion: 'v1',
+        reasoningModel: true,
+      },
+    );
+
+    expect(saveCLIConfig).toHaveBeenCalledWith({
+      provider: 'openai',
+      apiKey: 'new-openai-key',
+      baseUrl: 'https://api.openai.com/v1',
+      model: 'gpt-5',
+      apiVersion: 'v1',
+      isReasoningModel: true,
+    });
+  });
+
+  it('preserves explicit MiniMax settings when switching from OpenAI', async () => {
+    const saveCLIConfig = await saveProviderSwitch(
+      {
+        provider: 'openai',
+        apiKey: 'old-openai-key',
+        baseUrl: 'https://api.openai.com/v1',
+        model: 'gpt-4o',
+        apiVersion: 'old-version',
+        isReasoningModel: true,
+      },
+      {
+        provider: 'minimax',
+        apiKey: 'new-minimax-key',
+        baseUrl: 'https://api.minimaxi.com/v1',
+        model: 'MiniMax-M2.7',
+        apiVersion: 'v2',
+        reasoningModel: false,
+      },
+    );
+
+    expect(saveCLIConfig).toHaveBeenCalledWith({
+      provider: 'minimax',
+      apiKey: 'new-minimax-key',
+      baseUrl: 'https://api.minimaxi.com/v1',
+      model: 'MiniMax-M2.7',
+      apiVersion: 'v2',
+      isReasoningModel: false,
+    });
+  });
+});
+
 // ─── --verbose flag ──────────────────────────────────────────────────
 
 describe('--verbose flag', () => {

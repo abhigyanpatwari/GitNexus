@@ -128,6 +128,40 @@ export type ParsedImport =
        * duplicating `importedName`.
        */
       readonly targetIncludesImportedName?: boolean;
+      /**
+       * Set by providers whose import syntax *also* republishes the name from
+       * the importing module, so a third file can import it from there.
+       *
+       * Python has no dedicated re-export form: a module-level
+       * `from pkg.impl import X` binds `X` locally **and** publishes it as
+       * `pkg.X`, which is the standard way a package `__init__.py` declares
+       * its public surface. Languages with an explicit form (TS `export … from`,
+       * Rust `pub use`) emit `kind: 'reexport'` instead and leave this unset.
+       *
+       * **The flag must track actual republication, not syntax.** Only a
+       * module-level statement publishes: the same `from m import X` inside a
+       * `def` or `class` body binds locally and puts nothing in the module
+       * namespace, so flagging it fabricates a re-export of a name no importer
+       * can reach. `if` / `try` / `for` / `with` do not suppress it — Python
+       * has no block scope. A provider that cannot tell these apart at
+       * interpret time must carry the fact down from its capture emitter,
+       * where the syntax node is still available.
+       *
+       * **Why not `kind: 'reexport'`.** Not because that form drops the local
+       * binding — `materializeBindings` creates a module-scope `BindingRef`
+       * for every linked edge, re-export included. It is that `reexport`
+       * changes what the binding *is*: `origin` flips to `'reexport'`, which
+       * carries different evidence weight and `ORIGIN_PRIORITY`, and it
+       * misreports the parse-time syntax Python actually wrote. A flag adds
+       * the export-surface fact without restating the import as something the
+       * source does not say.
+       *
+       * Consumed by `buildReexportClosures` (`finalize-algorithm.ts`), which
+       * also documents how ambiguous duplicates of one published name are
+       * handled — the precedence rules that hold for an explicit re-export do
+       * not carry over.
+       */
+      readonly reexportsName?: boolean;
     }
   /**
    * Per-name import with rename.
@@ -146,6 +180,8 @@ export type ParsedImport =
       readonly importedSymbolKind?: 'type' | 'function' | 'const';
       /** See the same field on the `named` variant. */
       readonly targetIncludesImportedName?: boolean;
+      /** See the same field on the `named` variant. */
+      readonly reexportsName?: boolean;
     }
   /**
    * Qualified module handle, with or without rename. `importedName` is the

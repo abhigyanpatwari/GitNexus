@@ -515,9 +515,11 @@ function tryFinalize(
     return null;
   }
 
-  const viaFiles = [targetFile, ...followed.via];
+  // Capped here too, not just inside the closure: this is the last hop, the
+  // one the emitted edge carries.
+  const viaFiles = extendVia(targetFile, followed.via);
   const transitiveVia =
-    draft.source.kind === 'reexport' || viaFiles.length > 1 ? Object.freeze(viaFiles) : undefined;
+    draft.source.kind === 'reexport' || viaFiles.length > 1 ? viaFiles : undefined;
 
   return {
     ...draft.base,
@@ -549,11 +551,19 @@ type FileReexportClosure = ReadonlyMap<string, ReexportClosureEntry>;
  * level import graph. Replaces the legacy recursive
  * `followReexportChain` crawl with a bounded, stack-safe pass:
  *
- *   1. **Sub-graph.** Build a directed graph whose edges are
- *      `reexport` and `wildcard` drafts only (regular imports do not
- *      contribute to the export surface, and `namespace`/
- *      `reexport-namespace` are terminal — their target def lives in
- *      `localDefs`).
+ *   1. **Sub-graph.** Build a directed graph whose edges are `wildcard`
+ *      drafts, `reexport` drafts, and `named`/`alias` drafts flagged
+ *      `reexportsName` by their provider. `namespace`/`reexport-namespace`
+ *      are terminal — their target def lives in `localDefs` — and are
+ *      excluded on `base.kind`, after any `isNamespaceImport`
+ *      reclassification.
+ *
+ *      The flagged-named case is what languages with no dedicated
+ *      re-export form need (today: Python, whose module-level
+ *      `from m import x` both binds and republishes). For those providers
+ *      the sub-graph is close to the file-level named-import graph, NOT a
+ *      sparse barrel graph — measured ~20× more edges on the CPython
+ *      stdlib — so read every bound below with that input class in mind.
  *   2. **SCC condensation.** Run the same iterative `tarjanSccs` over
  *      the sub-graph. Output is in reverse-topological order (leaves
  *      first), so when we process an SCC every out-of-SCC neighbor
@@ -567,21 +577,34 @@ type FileReexportClosure = ReadonlyMap<string, ReexportClosureEntry>;
  *          the cycle; first-wins precedence keeps the map monotone
  *          so the fixpoint converges in at most |SCC| hops).
  *
- * **Precedence semantics — preserved from the recursive crawl.**
+ * **Precedence semantics.**
  *   * Named re-exports take precedence over wildcards.
  *   * Within each kind, declaration order wins (first match for a
- *     given exported name is kept; later drafts skip).
+ *     given exported name is kept; later drafts skip). This is only sound
+ *     where the language makes a duplicate export illegal — true for TS
+ *     and Rust `kind: 'reexport'`, false for the flagged-named form, where
+ *     the module namespace rebinds (last write wins) and `if`/`try` pairs
+ *     execute exactly one branch. For those, an in-file collision on the
+ *     same published name with two different in-workspace targets is
+ *     genuinely ambiguous and is dropped instead of guessed — see
+ *     `collectAmbiguousReexports`.
  *
  * **Complexity.**
  *   * Pre-pass: O(V + E_re) for SCC, plus O(|SCC| × Σ drafts) per cyclic
- *     SCC. For tree-shaped barrel graphs (the common case) it
- *     collapses to O(E_re) total.
- *   * Per-edge lookup at finalize time: O(1).
+ *     SCC. Tree-shaped barrel graphs collapse to O(E_re) total; the
+ *     flagged-named input class does not — the CPython stdlib produces 10
+ *     cyclic SCCs here where TypeScript-shaped input produced none.
+ *   * Per-edge lookup at finalize time: O(1). Target `localDefs` are
+ *     indexed by simple name on first use (`findExportByName`), so the
+ *     per-hop cost is O(1) rather than a linear scan of the target file.
  *   * `transitiveVia` preserves the exact file path chain for diagnostics
  *     and graph provenance. Building those arrays copies the inherited path,
- *     which is O(depth²) in a pathological single-name barrel chain; practical
- *     TypeScript barrel chains are shallow enough that we keep exact paths
- *     instead of capping or summarizing them.
+ *     which is Θ(depth²) in a single-name chain, and Θ(|SCC|²) for a cyclic
+ *     SCC whose chain tracks the cycle. `MAX_REEXPORT_DEPTH = 100` bounded
+ *     this until it was removed in `fc919ad6` for shallow TypeScript
+ *     barrels; **nothing bounds it now**, and the flagged-named class feeds
+ *     it far deeper input. Real `__init__.py` chains measure ≤ ~6, so this
+ *     is a known unenforced assumption, not a live regression.
  *   * Pathological deep chains that previously needed
  *     `MAX_REEXPORT_DEPTH=100` to bound stack growth now resolve
  *     in full and are bounded only by available memory — the
@@ -595,19 +618,22 @@ function buildReexportClosures(
   const closures = new Map<string, Map<string, ReexportClosureEntry>>();
   for (const file of files) closures.set(file.filePath, new Map());
 
-  // ── Step 1: build the re-export sub-graph (only resolvable
-  // reexport/wildcard targets contribute edges).
+  // ── Step 1: build the re-export sub-graph (only resolvable wildcard /
+  // reexport / flagged-named targets contribute edges), and collect the
+  // per-file ambiguous names in the same walk.
   const subGraph = new Map<string, Set<string>>();
+  const ambiguous = new Map<string, ReadonlySet<string>>();
   for (const file of files) {
     const targets = new Set<string>();
     const drafts = edgeIndex.get(file.filePath);
     if (drafts !== undefined) {
       for (const d of drafts) {
-        if (d.source.kind !== 'reexport' && d.source.kind !== 'wildcard') continue;
+        if (!contributesReexportEdge(d)) continue;
         if (d.targetFile === null) continue;
         if (!byFilePath.has(d.targetFile)) continue;
         targets.add(d.targetFile);
       }
+      ambiguous.set(file.filePath, collectAmbiguousReexports(drafts, byFilePath));
     }
     subGraph.set(file.filePath, targets);
   }
@@ -623,7 +649,7 @@ function buildReexportClosures(
     if (!scc.isCycle) {
       const filePath = scc.files[0];
       if (filePath !== undefined) {
-        populateFileClosure(filePath, byFilePath, edgeIndex, closures);
+        populateFileClosure(filePath, byFilePath, edgeIndex, closures, ambiguous);
       }
       continue;
     }
@@ -637,7 +663,7 @@ function buildReexportClosures(
       progressed = false;
       iter++;
       for (const filePath of scc.files) {
-        if (populateFileClosure(filePath, byFilePath, edgeIndex, closures)) {
+        if (populateFileClosure(filePath, byFilePath, edgeIndex, closures, ambiguous)) {
           progressed = true;
         }
       }
@@ -645,6 +671,95 @@ function buildReexportClosures(
   }
 
   return closures;
+}
+
+/**
+ * Does this import republish names from its target under the *importing* file,
+ * making it an edge in the re-export sub-graph?
+ *
+ * `reexport` and `wildcard` are the explicit forms; `named`/`alias` drafts
+ * flagged `reexportsName` cover providers whose ordinary import syntax also
+ * republishes (see that field on `ParsedImport` for the contract).
+ *
+ * Tested on `base.kind`, not `source.kind`: `isNamespaceImport` can reclassify
+ * a `named` draft to `namespace` (Python's `from . import submodule`), and a
+ * namespace import aliases the target *module* — it publishes no name, so
+ * admitting it would republish whatever def happens to share the module's
+ * simple name.
+ */
+function contributesReexportEdge(draft: ImportEdgeDraft): boolean {
+  if (draft.base.kind === 'namespace') return false;
+  if (draft.source.kind === 'wildcard') return true;
+  return isNamedReexport(draft);
+}
+
+/**
+ * Named (non-wildcard) re-export. The narrowed type lets `populateFileClosure`
+ * read `localName` (the name this file publishes) and `importedName` (the name
+ * the target exports) without re-discriminating on `kind`.
+ */
+function isNamedReexport(draft: ImportEdgeDraft): draft is ImportEdgeDraft & {
+  readonly source: Extract<ParsedImport, { kind: 'named' | 'alias' | 'reexport' }>;
+} {
+  if (draft.base.kind === 'namespace') return false;
+  const source = draft.source;
+  if (source.kind === 'reexport') return true;
+  return (source.kind === 'named' || source.kind === 'alias') && source.reexportsName === true;
+}
+
+/**
+ * Names this file publishes ambiguously, which the closure must decline to
+ * answer for rather than guess at.
+ *
+ * Declaration-order first-wins is sound only where a duplicate export is
+ * illegal — two `export { X } from …` is a TypeScript compile error, so the
+ * rule never fires. The flagged-named form has no such guarantee: CPython's
+ * module namespace rebinds, so
+ *
+ *     from .v1 import Client   # legacy, left behind
+ *     from .v2 import Client   # the actual public Client
+ *
+ * binds `v2`, and first-wins would attribute every `from pkg import Client` in
+ * the repo to the dead implementation. Last-wins is not the answer either —
+ * for the equally common `try:`/`except ImportError:` and `if
+ * sys.version_info` pairs exactly one branch runs, and which one is not
+ * decidable here. So both directions are wrong on real code and the entry is
+ * dropped: the importer stays unresolved, which is exactly the pre-#2864
+ * answer, and the file-level IMPORTS edge is unaffected.
+ *
+ * Computed once per file from data phase 0 froze (`edgeIndex`, `targetFile`)
+ * and never revised, so the closure map stays monotone and the `|SCC| + 1`
+ * fixpoint cap keeps the meaning it has above. A set that could grow mid-
+ * fixpoint would need retraction to propagate to files that already inherited
+ * the name, and would break both.
+ *
+ * Only two flagged drafts resolving to two *different in-workspace files*
+ * count. Duplicates of the same target are harmless, and an unresolvable
+ * target (`null` — the `try: import ujson / except: import json` shape, both
+ * external) never entered the closure to begin with.
+ *
+ * ponytail: named-vs-named only. Wildcard-vs-wildcard collisions are also
+ * first-wins today, but their inherited half depends on target closures that
+ * are still filling in, so detecting them needs a set that grows during the
+ * fixpoint — the thing this pre-pass exists to avoid.
+ */
+function collectAmbiguousReexports(
+  drafts: readonly ImportEdgeDraft[],
+  byFilePath: ReadonlyMap<string, FinalizeFile>,
+): ReadonlySet<string> {
+  const firstTarget = new Map<string, string>();
+  const conflicting = new Set<string>();
+  for (const draft of drafts) {
+    if (!isNamedReexport(draft)) continue;
+    if (draft.source.kind === 'reexport') continue; // explicit form: duplicates are illegal upstream
+    const targetFile = draft.targetFile;
+    if (targetFile === null || !byFilePath.has(targetFile)) continue;
+    const localName = draft.source.localName;
+    const seen = firstTarget.get(localName);
+    if (seen === undefined) firstTarget.set(localName, targetFile);
+    else if (seen !== targetFile) conflicting.add(localName);
+  }
+  return conflicting;
 }
 
 /**
@@ -666,24 +781,29 @@ function populateFileClosure(
   byFilePath: ReadonlyMap<string, FinalizeFile>,
   edgeIndex: ReadonlyMap<string, ImportEdgeDraft[]>,
   closures: Map<string, Map<string, ReexportClosureEntry>>,
+  ambiguousByFile: ReadonlyMap<string, ReadonlySet<string>>,
 ): boolean {
   const myClosure = closures.get(filePath);
   if (myClosure === undefined) return false;
   const before = myClosure.size;
   const drafts = edgeIndex.get(filePath);
   if (drafts === undefined) return false;
+  // Fixed for the whole run — see `collectAmbiguousReexports`. Consulted in
+  // both loops below: suppressing only the named one would let a later
+  // `import *` refill the name and reinstate an arbitrary winner.
+  const ambiguous = ambiguousByFile.get(filePath) ?? EMPTY_NAME_SET;
 
   // Named re-exports — precedence over wildcards, declaration order
   // first-wins for duplicates of the same exported name.
   for (const draft of drafts) {
-    if (draft.source.kind !== 'reexport') continue;
+    if (!isNamedReexport(draft)) continue;
     const targetFile = draft.targetFile;
     if (targetFile === null) continue;
     const targetModule = byFilePath.get(targetFile);
     if (targetModule === undefined) continue;
 
     const localName = draft.source.localName;
-    if (myClosure.has(localName)) continue;
+    if (ambiguous.has(localName) || myClosure.has(localName)) continue;
 
     const importedName = draft.source.importedName;
     const direct = findExportByName(targetModule.localDefs, importedName);
@@ -695,7 +815,7 @@ function populateFileClosure(
     if (inherited !== undefined) {
       myClosure.set(localName, {
         def: inherited.def,
-        via: Object.freeze([targetFile, ...inherited.via]),
+        via: extendVia(targetFile, inherited.via),
       });
     }
     // Else: target's closure is still empty (in-SCC, awaiting next
@@ -714,22 +834,51 @@ function populateFileClosure(
 
     for (const def of targetModule.localDefs) {
       const name = deriveSimpleName(def);
-      if (name === null || myClosure.has(name)) continue;
+      if (name === null || ambiguous.has(name) || myClosure.has(name)) continue;
       myClosure.set(name, { def, via: Object.freeze([targetFile]) });
     }
     const targetClosure = closures.get(targetFile);
     if (targetClosure !== undefined) {
       for (const [name, entry] of targetClosure) {
-        if (myClosure.has(name)) continue;
+        if (ambiguous.has(name) || myClosure.has(name)) continue;
         myClosure.set(name, {
           def: entry.def,
-          via: Object.freeze([targetFile, ...entry.via]),
+          via: extendVia(targetFile, entry.via),
         });
       }
     }
   }
 
   return myClosure.size > before;
+}
+
+/**
+ * Longest `transitiveVia` chain kept intact. Beyond this the tail is replaced
+ * by {@link VIA_TRUNCATED}, so the entry still says "this came through a long
+ * chain" without carrying it.
+ *
+ * Reinstates a bound the algorithm lost. Each hop copies the inherited path,
+ * so an uncapped chain is Θ(depth²) in both time and retained memory, and
+ * Θ(|SCC|²) for a cycle whose chain tracks it. `MAX_REEXPORT_DEPTH = 100`
+ * covered this until `fc919ad6` removed it — correctly, for the TypeScript
+ * barrels that were then the only input, which are shallow. Admitting
+ * flagged-named imports changes the input class, so the bound comes back.
+ *
+ * 32 against a measured real-world worst case of ~6 for `__init__.py` chains:
+ * five times the deepest chain anyone has, and it turns the quadratic into
+ * O(depth × 32). Safe to truncate because `ImportEdge.transitiveVia` has no
+ * production reader — it is diagnostic provenance, emitted and typed but not
+ * consumed by graph emission (`emitImportEdges` dedups on source→target and
+ * drops it).
+ */
+const MAX_VIA_LENGTH = 32;
+const VIA_TRUNCATED = '…';
+
+function extendVia(head: string, inherited: readonly string[]): readonly string[] {
+  if (inherited.length + 1 <= MAX_VIA_LENGTH) return Object.freeze([head, ...inherited]);
+  // Already truncated one hop down: re-truncating keeps the array at the cap
+  // rather than growing it by one per hop, which is the whole point.
+  return Object.freeze([head, ...inherited.slice(0, MAX_VIA_LENGTH - 2), VIA_TRUNCATED]);
 }
 
 /**
@@ -792,14 +941,51 @@ function findExportByName(
   //
   // See `gitnexus/test/integration/resolvers/typescript-hof-callbacks.test.ts`
   // for the cross-file regression this rule prevents.
-  let fallback: SymbolDefinition | undefined;
-  for (const d of defs) {
-    if (deriveSimpleName(d) !== name) continue;
-    if (isCallableOrTypeLike(d.type)) return d;
-    if (fallback === undefined) fallback = d;
-  }
-  return fallback;
+  return indexExportsByName(defs).get(name);
 }
+
+/**
+ * `simple name → winning def` for one file's `localDefs`, built once and
+ * memoized on the array itself.
+ *
+ * Every caller of `findExportByName` sits in a loop that revisits the same
+ * target files: the phase-3 fixpoint rescans a target once per iteration, and
+ * `populateFileClosure` scans once per admitted re-export — which for a
+ * provider setting `reexportsName` is every named import in the file, where it
+ * used to be zero. Keeping the scan turned that into O(edges × defs).
+ *
+ * Safe to key on identity because `FinalizeFile.localDefs` is documented static
+ * input that the fixpoint never mutates; a `WeakMap` ties each index to its
+ * array's lifetime with no cross-pass state to invalidate. Same shape as the
+ * `defById` map `materializeBindings` already builds for the same reason.
+ */
+const EXPORTS_BY_NAME = new WeakMap<
+  readonly SymbolDefinition[],
+  ReadonlyMap<string, SymbolDefinition>
+>();
+
+function indexExportsByName(
+  defs: readonly SymbolDefinition[],
+): ReadonlyMap<string, SymbolDefinition> {
+  const cached = EXPORTS_BY_NAME.get(defs);
+  if (cached !== undefined) return cached;
+  const index = new Map<string, SymbolDefinition>();
+  for (const d of defs) {
+    const name = deriveSimpleName(d);
+    if (name === null) continue;
+    const existing = index.get(name);
+    // First match wins within a tier; a callable displaces a stored value
+    // shadow but never another callable — identical to the linear scan's
+    // "first callable if any, else first match".
+    if (existing === undefined) index.set(name, d);
+    else if (!isCallableOrTypeLike(existing.type) && isCallableOrTypeLike(d.type))
+      index.set(name, d);
+  }
+  EXPORTS_BY_NAME.set(defs, index);
+  return index;
+}
+
+const EMPTY_NAME_SET: ReadonlySet<string> = new Set();
 
 const CALLABLE_OR_TYPE_LIKE: ReadonlySet<string> = new Set([
   'Function',

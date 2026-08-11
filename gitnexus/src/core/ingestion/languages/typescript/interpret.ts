@@ -310,3 +310,26 @@ function stripQualifier(text: string): string {
   if (lastDot === -1) return text;
   return text.slice(lastDot + 1);
 }
+
+/**
+ * Would this interpreter reduce `text` to the type it CONTAINS rather than to
+ * the type it names? True for the array suffix (`Repo[]`) and for every
+ * transparent wrapper on {@link stripGeneric}'s list (`Array<Repo>`,
+ * `Promise<Repo>`, `Set<Repo>`, …).
+ *
+ * Exported for the ONE caller that must decline exactly what this returns true
+ * for: the JavaScript provider's JSDoc `@type` FIELD binding (#2833). Element
+ * reduction is right where it was built — a chain step, a `for…of` variable, an
+ * awaited value — and wrong for a field, whose declared type IS the container:
+ * a field annotated `{Repo[]}` reduced to `Repo` makes `this.repos.find(…)`,
+ * an Array method call, resolve to a repository class's own `find`. A wrong
+ * edge, which #2833 treats as strictly worse than a missing one.
+ *
+ * A predicate rather than a copied name list on purpose: the list lives in
+ * `stripGeneric` and a second copy would drift out of sync silently, exactly
+ * the failure mode `python/interpret.ts` records for its own reduction.
+ */
+export function reducesToContainedType(text: string): boolean {
+  const trimmed = stripReadonly(text.trim());
+  return stripArraySuffix(trimmed) !== trimmed || stripGeneric(trimmed) !== trimmed;
+}

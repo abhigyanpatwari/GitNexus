@@ -107,6 +107,15 @@ export const JAVASCRIPT_SCOPE_QUERY = `
 (field_definition
   property: (property_identifier) @declaration.name) @declaration.property
 
+;; Object-literal keys of a NAMED object (A1/A5) — the scope-resolution half of
+;; the same rule in TYPESCRIPT/JAVASCRIPT_QUERIES. The parse query mints the
+;; Property NODE; this mints the DEF the resolver can point a read/write at.
+(variable_declarator
+  name: (identifier)
+  value: (object
+    (pair
+      key: (property_identifier) @declaration.name) @declaration.property))
+
 ;; Declarations — free functions
 (function_declaration
   name: (identifier) @declaration.name) @declaration.function
@@ -589,6 +598,99 @@ export const JAVASCRIPT_SCOPE_QUERY = `
 
 (object
   (shorthand_property_identifier) @reference.name @reference.property-key @reference.value-ref)
+
+;; Bare-identifier reads (A2). VALUE POSITIONS ONLY — a blanket
+;; \`(identifier)\` rule would mint a site for every token in the file.
+(arguments
+  (identifier) @reference.name @reference.read.identifier)
+
+(assignment_pattern
+  right: (identifier) @reference.name @reference.read.identifier)
+
+(return_statement
+  (identifier) @reference.name @reference.read.identifier)
+
+;; \`const next = LIMIT\` and \`n > LIMIT\` — both plainly value reads, and both
+;; named in review as gaps between what A2 claimed and what it matched.
+(variable_declarator
+  value: (identifier) @reference.name @reference.read.identifier)
+
+(binary_expression
+  left: (identifier) @reference.name @reference.read.identifier)
+
+(binary_expression
+  right: (identifier) @reference.name @reference.read.identifier)
+
+;; Destructured PARAMETER keys (R2-1c). \`function exit({ exitMinAtrMult = 0 })\`
+;; reads that property off whatever the caller passes, exactly as
+;; \`cfg.exitMinAtrMult\` would — the field just never appears in a
+;; member_expression, so the read had no site at all and the function that
+;; implements the behaviour was missing from "who reads this setting?".
+;;
+;; A distinct anchor rather than @reference.read.member: that tag is filtered
+;; emit-side to matches with a member_expression ancestor (calls and writes
+;; share its shape), and a destructuring pattern has none, so it would be
+;; dropped. The \`read.\` head is what maps this to a read kind, so the new tag
+;; needs no mapping change.
+;;
+;; The object_pattern is the receiver. It is anonymous — there is no name to
+;; type — which is precisely the untyped-receiver case the name-narrowing pass
+;; exists to serve.
+;;
+;; Scoped to formal_parameters deliberately. A destructuring binding elsewhere
+;; (\`const { x } = require('m')\`) is often an import rather than a field read,
+;; and minting a property read for it would attribute module bindings to
+;; unrelated same-named keys.
+(formal_parameters
+  (object_pattern
+    (shorthand_property_identifier_pattern) @reference.name
+      @reference.read.destructured) @reference.receiver)
+
+(formal_parameters
+  (object_pattern
+    (object_assignment_pattern
+      left: (shorthand_property_identifier_pattern) @reference.name
+        @reference.read.destructured)) @reference.receiver)
+
+(formal_parameters
+  (object_pattern
+    (pair_pattern
+      key: (property_identifier) @reference.name
+        @reference.read.destructured)) @reference.receiver)
+
+;; Object-literal keys in RECORD CONSTRUCTION position (R2-1b). Building
+;; \`{ exitContract: { exitMinAtrMult: settings.x } }\` SETS that field, so this
+;; is the write counterpart to the destructured read above — without it
+;; "who reads this setting?" answers well and "who SETS it?" misses the code
+;; that stamps the value.
+;;
+;; A WRITE REFERENCE, deliberately not a definition. The round-1 rule already
+;; mints Property nodes for literals bound to a variable; minting more for
+;; anonymous records would add same-named competitors to the very name-narrowing
+;; that makes these reads resolvable — measured at 26 competing definitions for
+;; one field on the reporting repo. A construction site is a USE of a field, not
+;; another declaration of it.
+;;
+;; Two positions only: nested under a key, and returned. Both are records with a
+;; name attached (the key, or the function). An inline call argument
+;; (\`doThing({ id: 1 })\`) stays excluded for the same reason round 1 excluded
+;; it from definitions — it is call-site data, not a named surface.
+;;
+;; The enclosing literal is the receiver, and it is anonymous, which routes
+;; these through the same narrowing and the same refusal-to-guess as every other
+;; untyped receiver.
+(pair
+  value: (object
+    (pair
+      key: (property_identifier) @reference.name
+        @reference.write.property-key) @_r2b.nested) @reference.receiver)
+
+(return_statement
+  (object
+    (pair
+      key: (property_identifier) @reference.name
+        @reference.write.property-key) @_r2b.returned) @reference.receiver)
+
 `;
 
 /** JSX-only suffix — appended when compiling against the JSX grammar for .jsx files. */

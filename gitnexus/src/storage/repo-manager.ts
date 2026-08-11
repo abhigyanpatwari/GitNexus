@@ -18,12 +18,12 @@ import fs from 'fs/promises';
 import { realpathSync } from 'fs';
 import path from 'path';
 import os from 'os';
-import { randomBytes } from 'crypto';
-import { getInferredRepoName, resolveRepoIdentityRoot } from './git.js';
+import { getInferredRepoName, resolveRepoIdentityRoot, stripUrlCredentials } from './git.js';
 import { stripWindowsLongPathPrefix } from '../lib/utils.js';
-import { retryRename } from './fs-atomic.js';
+import { writeFileAtomic } from './fs-atomic.js';
 import { logger } from '../core/logger.js';
 import type { UnresolvedReceiverSummary } from '../core/ingestion/scope-resolution/unresolved-receivers.js';
+import type { UndecidedSatisfactionSummary } from '../core/ingestion/scope-resolution/undecided-satisfaction.js';
 import { acquireIndexLock, IndexLockTimeoutError, type IndexLockHandle } from './index-lock.js';
 import {
   branchSlug,
@@ -201,7 +201,32 @@ export interface RepoMeta {
    */
   capabilities?: {
     graph: { provider: string; status: 'available' | 'degraded' | 'unavailable' };
-    fts: { provider: string; status: 'available' | 'degraded' | 'unavailable' };
+    fts: {
+      provider: string;
+      status: 'available' | 'degraded' | 'unavailable';
+      /**
+       * Why THIS run ended up without search indexes, when `status` is
+       * `'unavailable'` (#2841). Mirrors `AnalysisResult.ftsSkipReason` in
+       * core/run-analyze.ts — the same discriminator that surface already
+       * reports to the CLI, persisted rather than re-derived because the two
+       * causes need OPPOSITE handling on the next run:
+       *
+       *  - `extension-unavailable` — the FTS extension could not load. Healable
+       *    from outside the repo (install it), so the up-to-date fast path
+       *    probes whether it loads now and re-analyzes when it does.
+       *  - `build-failed` — the extension loaded fine and the index BUILD
+       *    failed (e.g. one un-tokenizable pre-existing row, #2544/#2546).
+       *    Deterministic: the same probe would "heal" it into a full
+       *    re-analysis that degrades identically and restamps, forever. Only
+       *    `--repair-fts` or a content change addresses it.
+       *
+       * Collapsing both into `status: 'unavailable'` is exactly what made that
+       * loop reachable. ABSENT on indexes written before #2841 and on the
+       * `--repair-fts` stamp (which writes `status: 'available'`); `undefined`
+       * therefore reads as "cause unknown" and keeps the pre-#2841 behaviour.
+       */
+      skipReason?: 'extension-unavailable' | 'build-failed';
+    };
     vectorSearch: {
       provider: string;
       status: 'vector-index' | 'exact-scan' | 'unavailable';
@@ -297,12 +322,60 @@ export interface RepoMeta {
    */
   unresolvedReceiverMembers?: UnresolvedReceiverSummary;
   /**
+   * Interfaces whose structural-satisfaction check this run could not COMPLETE
+   * (#2873) — not interfaces found to have no implementors.
+   *
+   * Read by `impact()` to report `epistemic: 'lower-bound'` instead of
+   * `'exact'` when a walk crosses one of these interfaces. Without it, an
+   * interface whose implementors were never decided is byte-identical to one
+   * that genuinely has none: both are zero IMPLEMENTS edges, and only the
+   * second is an answer.
+   *
+   * Absent when a run decided everything it looked at, which is the common case
+   * and keeps `epistemic` exact for cleanly-resolving repos. Absence is NOT the
+   * same as a zeroed record — an index written before this field existed also
+   * reads as absent, and both correctly mean "no hedge available from here".
+   */
+  undecidedInterfaceSatisfaction?: UndecidedSatisfactionSummary;
+  /**
    * SHA-256 of every file's content at the time of the last successful
    * indexing run. The next run computes current hashes and diffs against
    * this map to determine which files' DB rows must be replaced.
    * Map keys are repo-relative paths.
    */
   fileHashes?: Record<string, string>;
+  /**
+   * Set when a run finished but the persisted edge count came back far short
+   * of what the pipeline produced — the B2 "refresh reports SUCCESS while the
+   * index is unusable" failure (observed as edges collapsing 23009 -> 2170,
+   * and as a missing `CodeRelation` table, which reads here as a persisted
+   * count of zero).
+   *
+   * Recorded rather than thrown because the metadata IS written and the DB
+   * does hold rows; what is false is the claim that the index is complete.
+   * `getIndexIncompleteReasons` turns this into `graph-write-collapsed` so
+   * `status` and the MCP resources report the index as incomplete instead of
+   * fresh. Absent on a healthy run.
+   */
+  /**
+   * Fields whose property reads could not be linked because every definition of
+   * the name lives in ANOTHER language (R3-1).
+   *
+   * Persisted because the graph cannot answer this at query time: the unlinked
+   * reads mint no edge and no node, so the only record that they existed is the
+   * analyze pass that declined them. Without it, `context()` on such a field
+   * shows an empty incoming list that is byte-identical to a genuinely unread
+   * field — and the two demand opposite actions.
+   *
+   * Capped at analyze time; a long tail is not more actionable than a short one.
+   */
+  crossLanguageProperties?: readonly { name: string; languages: string[] }[];
+  graphWriteCollapsed?: {
+    /** Relationships the pipeline produced in memory. */
+    expected: number;
+    /** Relationships readable from the DB after the write. */
+    persisted: number;
+  };
   /**
    * Crash-recovery dirty flag — a generic marker written to the metadata
    * file (gitnexus.json + its meta.json mirror) BEFORE any destructive DB
@@ -676,26 +749,6 @@ export const loadMeta = async (metaDir: string): Promise<RepoMeta | null> => {
 };
 
 /**
- * Atomically write `meta` to `<dir>/<filename>`. Tmp name includes a random
- * suffix (not a fixed `.tmp`) so two concurrent writers targeting the same
- * directory never collide on the same tmp path — mirrors the pattern in
- * core/group/bridge-db.ts's `writeBridgeMeta` (`'wx'` + `0o600` closes the
- * symlink-race/permissions holes CodeQL flags as `js/insecure-temporary-file`;
- * `retryRename` absorbs a transient EBUSY/EPERM/EACCES on the rename itself).
- */
-async function writeMetaFile(dir: string, filename: string, meta: RepoMeta): Promise<void> {
-  const targetPath = path.join(dir, filename);
-  const tmpPath = `${targetPath}.tmp.${randomBytes(8).toString('hex')}`;
-  const handle = await fs.open(tmpPath, 'wx', 0o600);
-  try {
-    await handle.writeFile(JSON.stringify(meta, null, 2), 'utf-8');
-  } finally {
-    await handle.close();
-  }
-  await retryRename(tmpPath, targetPath);
-}
-
-/**
  * Save metadata to the metadata file (gitnexus.json) in the given directory,
  * dual-writing the legacy `meta.json` mirror for backward compatibility.
  *
@@ -715,9 +768,12 @@ async function writeMetaFile(dir: string, filename: string, meta: RepoMeta): Pro
  */
 export const saveMeta = async (metaDir: string, meta: RepoMeta): Promise<void> => {
   await fs.mkdir(metaDir, { recursive: true });
-  await writeMetaFile(metaDir, INDEX_METADATA_FILE, meta);
+  // Serialised once: `meta` carries a fileHashes entry per file, so on a large
+  // repo this string is megabytes and both writes want the identical bytes.
+  const json = JSON.stringify(meta, null, 2);
+  await writeFileAtomic(path.join(metaDir, INDEX_METADATA_FILE), json);
   try {
-    await writeMetaFile(metaDir, LEGACY_METADATA_FILE, meta);
+    await writeFileAtomic(path.join(metaDir, LEGACY_METADATA_FILE), json);
   } catch (err) {
     logger.warn({ err, metaDir }, 'Failed to write legacy meta.json mirror (non-critical)');
   }
@@ -1060,31 +1116,58 @@ const withRegistryLock = async <T>(operation: () => Promise<T>): Promise<T> => {
 };
 
 /**
+ * Drop credentials from every entry's `remoteUrl` (#2914).
+ *
+ * Applied on BOTH registry edges. Capture-time stripping in `getRemoteUrl`
+ * only covers values this version writes; a `registry.json` (or a per-repo
+ * meta that a re-register copies forward) written by an older version still
+ * holds the credential. Reading through here keeps it out of every consumer —
+ * `listRegisteredRepos`, MCP `list_repos`, `gitnexus list`, group sync — and
+ * writing through here means the next registry write drops it at rest instead
+ * of round-tripping it back to disk.
+ *
+ * Sanitised values compare equal to a freshly captured `getRemoteUrl`, so
+ * sibling-clone matching (#2054) is unaffected: both sides lose the same span.
+ */
+const sanitizeEntries = (entries: RegistryEntry[]): RegistryEntry[] =>
+  entries.map((e) => {
+    if (!e.remoteUrl) return e;
+    const cleaned = stripUrlCredentials(e.remoteUrl);
+    return cleaned === e.remoteUrl ? e : { ...e, remoteUrl: cleaned };
+  });
+
+/**
  * Read the global registry. Returns empty array if not found.
  */
 export const readRegistry = async (): Promise<RegistryEntry[]> => {
   try {
     const raw = await fs.readFile(getGlobalRegistryPath(), 'utf-8');
     const data = JSON.parse(raw);
-    return Array.isArray(data) ? data : [];
+    return Array.isArray(data) ? sanitizeEntries(data) : [];
   } catch {
     return [];
   }
 };
 
 /**
- * Write the global registry to disk
+ * Write the global registry to disk.
+ *
+ * Atomic tmp+rename: a crash mid-write can never leave a truncated
+ * registry.json that the next load would treat as empty and silently drop
+ * every registered repo (#2106 R9). The tmp path must stay per-write — the
+ * registry is the one file every gitnexus process on the machine writes, and
+ * `withRegistryLock` degrades to unlocked on timeout, so the write cannot rely
+ * on the lock to keep two writers off one staging path (#2888).
+ *
+ * `attempts` is forwarded to the rename retry; best-effort callers pass `1`.
  */
-const writeRegistry = async (entries: RegistryEntry[]): Promise<void> => {
-  const dir = getGlobalDir();
-  await fs.mkdir(dir, { recursive: true });
-  // Atomic tmp+rename (mirrors saveMeta): a crash mid-write can never leave a
-  // truncated/half-written registry.json that the next load would treat as
-  // empty and silently drop every registered repo (#2106 R9).
-  const target = getGlobalRegistryPath();
-  const tmp = `${target}.tmp`;
-  await fs.writeFile(tmp, JSON.stringify(entries, null, 2), 'utf-8');
-  await fs.rename(tmp, target);
+const writeRegistry = async (entries: RegistryEntry[], attempts?: number): Promise<void> => {
+  await fs.mkdir(getGlobalDir(), { recursive: true });
+  await writeFileAtomic(
+    getGlobalRegistryPath(),
+    JSON.stringify(sanitizeEntries(entries), null, 2),
+    attempts,
+  );
 };
 
 /**
@@ -1792,7 +1875,8 @@ export const resolveRegistryEntry = (entries: RegistryEntry[], target: string): 
  *
  * With `validate: true`, prunes only entries whose metadata is *provably* gone
  * (fs.access on both gitnexus.json and legacy meta.json fails with ENOENT or
- * ENOTDIR) and persists the result. Entries that are merely "not provably
+ * ENOTDIR) and persists the result on a best-effort basis: the pruned view is
+ * always returned, even when the write fails. Entries that are merely "not provably
  * absent" — any other fs.access failure (EIO/EAGAIN/EBUSY/EACCES, etc.) — are
  * KEPT, so a transient I/O storm cannot wipe the registry. A kept entry is
  * therefore "not confirmed present," not "confirmed present"; downstream DB
@@ -1859,10 +1943,26 @@ export const listRegisteredRepos = async (opts?: {
     const pruned = new Set(
       entries.filter((entry) => !valid.includes(entry)).map((entry) => entry.path),
     );
-    await withRegistryLock(async () => {
-      const fresh = await readRegistry();
-      await writeRegistry(fresh.filter((entry) => !pruned.has(entry.path)));
-    });
+    try {
+      await withRegistryLock(async () => {
+        const fresh = await readRegistry();
+        // attempts: 1 — the catch below discards a failure, so the rename
+        // backoff would only make every other process wait out this lock.
+        await writeRegistry(
+          fresh.filter((entry) => !pruned.has(entry.path)),
+          1,
+        );
+      });
+    } catch (err) {
+      // Best-effort housekeeping: callers consume the returned view, and the
+      // prune set is recomputed on the next validating read. It must not throw
+      // — this runs on MCP startup (LocalBackend.init → refreshRepos), where
+      // nothing catches and a rejection reads as "Server disconnected".
+      logger.warn(
+        { err, prunedCount: pruned.size },
+        'Could not persist the pruned global registry; continuing with the in-memory pruned view.',
+      );
+    }
   }
 
   return valid;
