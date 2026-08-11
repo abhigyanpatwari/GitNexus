@@ -188,6 +188,26 @@ const getKotlinFileIndex = perFileSet((allFilePaths: ReadonlySet<string>): Kotli
   const exactByStem = new Map<string, string>();
   const suffixByStem = new Map<string, string>();
   const dirChildren: MutableDirChildren = new Map();
+  /**
+   * BUILD-LOCAL: `dir` -> every `dirChildren` key a file in that directory
+   * contributes to. That list is a pure function of `dir`, and a package
+   * directory holds many files, so without this the walk below cuts one `slice`
+   * per component of the SAME directory once per FILE — and every slice after
+   * the first file's is a freshly allocated string that hashes to a key the map
+   * already holds and is then dropped. Interning them once per DIRECTORY
+   * instead of once per FILE is ~21% of the build at 32 000 files.
+   *
+   * It cannot move an answer. The array is filled on the first file of a
+   * directory, in the order the per-file walk produced, and every later file in
+   * that directory finds those keys already present — so the key set, the Map's
+   * key insertion order and every bucket's order are what the per-file form
+   * produced. Asserted structurally, not just through the fingerprint: the
+   * fingerprint only observes the index through the four resolver tiers, so a
+   * key-order move no corpus query reaches would survive it.
+   *
+   * Dropped with this frame, so it costs nothing retained.
+   */
+  const dirKeys = new Map<string, string[]>();
 
   for (const raw of allFilePaths) {
     const norm = raw.replace(/\\/g, '/');
@@ -206,13 +226,18 @@ const getKotlinFileIndex = perFileSet((allFilePaths: ReadonlySet<string>): Kotli
       if (!suffixByStem.has(suffix)) suffixByStem.set(suffix, raw);
     }
 
-    const lastSlash = norm.lastIndexOf('/');
-    if (lastSlash < 0) continue; // repo-root file has no package directory
-    const dir = norm.slice(0, lastSlash);
+    // From `stem`, not `norm`: an extension carries no '/', so the last '/' of
+    // the two is the same character at the same index, and `stem.slice(0,
+    // dirEnd)` IS the string `norm.slice(0, norm.lastIndexOf('/'))` was. One
+    // backwards scan instead of two, over the string this loop already walked.
+    const dirEnd = stem.lastIndexOf('/');
+    if (dirEnd < 0) continue; // repo-root file has no package directory
+    const dir = stem.slice(0, dirEnd);
 
+    const memo = dirKeys.get(dir);
     // The file's own directory always qualifies: the old scan's `atRoot` branch
     // matched `norm.startsWith(dir + '/')` and found no '/' after it.
-    addChild(dirChildren, dir, raw);
+    const keys = memo ?? [dir];
 
     // Every component-suffix of the directory also qualifies: `s` is a suffix
     // of `dir` starting after a '/', so `dir` ends with `/s` by construction
@@ -245,10 +270,14 @@ const getKotlinFileIndex = perFileSet((allFilePaths: ReadonlySet<string>): Kotli
     // resolving to null on the very shape this fixes. The bucket is either
     // right or it is not; there is no version of it that is right for one
     // consumer and wrong for the other.
-    for (let i = 0; i < dir.length; i++) {
-      if (dir[i] !== '/') continue;
-      addChild(dirChildren, dir.slice(i + 1), raw);
+    if (memo === undefined) {
+      for (let i = 0; i < dirEnd; i++) {
+        if (dir[i] !== '/') continue;
+        keys.push(dir.slice(i + 1));
+      }
+      dirKeys.set(dir, keys);
     }
+    for (const key of keys) addChild(dirChildren, key, raw);
   }
 
   // `findKotlinPackageFiles` hands a bucket straight out of the index — the
@@ -260,7 +289,33 @@ const getKotlinFileIndex = perFileSet((allFilePaths: ReadonlySet<string>): Kotli
   // reorder the cached bucket and flip the FIRST-child tier's answer for every
   // later import in the run. Freezing makes the contract true at runtime, so a
   // future mutation is a loud TypeError instead of a silent edge move.
-  for (const bucket of dirChildren.values()) Object.freeze(bucket);
+  //
+  // COMPACTED as they are frozen. `addChild` mints a bucket as `[raw]` and
+  // `push`es the rest, and V8 grows an array's backing store by
+  // `old + old/2 + 16`, so the SECOND child takes a 1-slot store to 17 and the
+  // eighteenth takes it to 41 — and every bucket then retains its overshoot for
+  // the life of the index. `slice()` allocates exactly `length`. Same fix and
+  // same accounting as the python `byBasename` sentence in
+  // `bench/import-target/baselines.json`: contents byte-identical, 5.13 MiB
+  // smaller at 32 000 paths, 11.2% of what that bench's kotlin heap arm reads
+  // (61 144 buckets x 88 B; 52.9% of those buckets' slots were empty).
+  //
+  // `length === 1` is skipped because a bucket that never grew is ALREADY exact
+  // — `[raw]` allocates one slot — so slicing it allocates a second array to
+  // save nothing. Not a micro-optimization: on a corpus of single-file packages
+  // the unguarded form costs 31% of the build and saves zero bytes.
+  //
+  // Re-`set` of a key the Map already holds keeps that key's position, so
+  // iteration order is unaffected.
+  for (const [key, bucket] of dirChildren) {
+    if (bucket.length === 1) {
+      Object.freeze(bucket);
+      continue;
+    }
+    const tight = bucket.slice();
+    Object.freeze(tight);
+    dirChildren.set(key, tight);
+  }
 
   return { exactByStem, suffixByStem, dirChildren };
 });

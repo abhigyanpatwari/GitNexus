@@ -135,7 +135,13 @@ describe('resolveKotlinImportTarget — index parity', () => {
     expect(resolve(['top/data/mid/data/Repo.kt'], 'data.something')).toEqual([
       'top/data/mid/data/Repo.kt',
     ]);
-    expect(resolve(['a/c/b/c/File.kt'], 'c.X')).toEqual(['a/c/b/c/File.kt']);
+    // `['a/c/b/c/File.kt'], 'c.X'` used to sit here too. It is the same shape
+    // with the segments renamed — four components, second and fourth equal,
+    // query the repeated name — so it could not fail while the case above
+    // passed. The bench corpus still carries it, where a second spelling of a
+    // shape costs nothing; a unit case that cannot distinguish two
+    // implementations is just a slower way to assert the first one.
+    //
     // Unrepeated control: the parent is the only occurrence.
     expect(resolve(['top/data/Repo.kt'], 'data.something')).toEqual(['top/data/Repo.kt']);
   });

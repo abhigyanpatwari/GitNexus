@@ -270,9 +270,12 @@
  *      of eight, so go, dart and kotlin were excluded silently. All three
  *      retain a real per-pass structure: go's `PackageDirIndex` reads
  *      2 998 464 B, dart's basename buckets 7 834 200 B, and kotlin's
- *      `suffixByStem` cascade 48 073 096 B (45.85 MiB) — the second-largest
- *      reading in this file, above ruby's 39.12 and java's 33.34, both of which
- *      carry a full budget.
+ *      `suffixByStem` cascade 42 802 456 B (40.82 MiB) — above ruby's 39.12 and
+ *      java's 33.34, both of which carry a full budget. (Read 48 073 096 B when
+ *      this paragraph was written and described as "the second-largest reading
+ *      in this file", which it was not even then: csharp_csproj and php both
+ *      read higher. #2881 then compacted kotlin's `dirChildren` buckets and
+ *      took 11% off it.)
  *   2. TWO OF THE STATED REASONS NO LONGER HOLD. swift was excluded as "below
  *      its own noise floor" on 0.98 MB at 8000 files against 0.29 MB at 32 000;
  *      it now reads 969 120 B and 3 449 216 B, growing the right way. COBOL was
@@ -560,9 +563,8 @@ const HEAP_BUDGETED = [
   // per-pass structure and each grows LINEARLY with the file count (ratio
   // 0.996-1.004 against a 1.25 budget over 8000 -> 32000 files), so each can
   // carry the full ceiling + floor + ratio set rather than a bound alone.
-  // kotlin's 45.85 MiB is the second-largest reading in this file — larger than
-  // ruby's and java's, both of which were budgeted from the start — and it had
-  // no stated exclusion reason at all.
+  // kotlin's 40.82 MiB is larger than ruby's and java's, both of which were
+  // budgeted from the start, and it had no stated exclusion reason at all.
   'kotlin',
   'dart',
   'go',
@@ -2608,7 +2610,7 @@ for (const lang of HEAP_BUDGETED) {
  * `1.5 x 0 B` is 0 — its bound is ABSOLUTE (1 MiB) for the same reason: a
  * multiplier on 16 B fails on the first byte of anything. The other eight are
  * stable enough today to floor (0.24% peak-to-peak at worst over five runs) and
- * two of them — kotlin at 45.85 MiB and dart at 7.47 — are larger than budgeted
+ * two of them — kotlin at 40.82 MiB and dart at 7.47 — are larger than budgeted
  * arms, so a floor there would be worth having. That is a promotion to tier one,
  * with a ceiling and a recorded reading, and it is not this change: a floor
  * without them would assert "still measuring" against a number nothing else
