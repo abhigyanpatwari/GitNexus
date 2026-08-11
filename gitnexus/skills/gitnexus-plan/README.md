@@ -124,16 +124,17 @@ phase that needs them.
   statement-level claims (never reconstructs fake edges).
 - No GitNexus at all → fallback mode: targeted grep/read exploration, findings
   labelled **source-derived**, with a recommendation to index.
-- Reading or publishing a plan requires descriptor anchoring plus a no-replace
-  rename, both of which are platform-specific. On Linux that is `/proc/self/fd`
-  with `O_DIRECTORY`/`O_NOFOLLOW`, and libc `renameat2(RENAME_NOREPLACE)`. On
-  macOS, where neither is reachable from Node, both come from the `*at()` family
-  and `renameatx_np(RENAME_EXCL)` through the same helper process. Either way
-  publication requires a validated absolute Python 3 PATH candidate (on macOS,
-  the Xcode Command Line Tools interpreter), a writable target repository, and a
-  shared filesystem for the plan and Git-admin vault. Every other platform is
-  refused. The writer fails closed when those guarantees are unavailable; it
-  never redirects the plan elsewhere.
+- Reading or publishing a plan requires `O_DIRECTORY` and `O_NOFOLLOW`, plus
+  `/proc/self/fd` on Linux; every other platform is refused. No interpreter is
+  spawned and no native code is loaded. Publication is `link(2)`, which fails
+  rather than replaces when the destination name is taken. Linux resolves every
+  name against a held descriptor, so a parent swapped mid-write cannot redirect
+  the operation; macOS has no equivalent path and instead pins each directory
+  with an open descriptor and re-proves the chain either side of every step,
+  which detects such a swap and aborts. Publishing also needs a writable target
+  repository and a shared filesystem for the plan and Git-admin vault. The
+  writer fails closed when those guarantees are unavailable; it never redirects
+  the plan elsewhere.
 
 ## Limitations
 
