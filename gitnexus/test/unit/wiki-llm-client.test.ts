@@ -3,6 +3,8 @@ import { describe, it, expect, vi, afterEach } from 'vitest';
 // Import the function we'll add in the next step
 import {
   LLM_ALLOW_INSECURE_CONNECTION_ENV,
+  MINIMAX_MODEL_IDS,
+  MINIMAX_OPENAI_BASE_URLS,
   isAzureProvider,
   isReasoningModel,
   buildRequestUrl,
@@ -57,7 +59,7 @@ describe('isReasoningModel', () => {
   });
 
   it('returns false for minimax', () => {
-    expect(isReasoningModel('minimax/minimax-m2.5')).toBe(false);
+    expect(isReasoningModel(MINIMAX_MODEL_IDS[1])).toBe(false);
   });
 
   it('respects explicit override', () => {
@@ -91,6 +93,40 @@ describe('buildRequestUrl', () => {
     expect(buildRequestUrl('https://myres.openai.azure.com/openai/v1', undefined)).toBe(
       'https://myres.openai.azure.com/openai/v1/chat/completions',
     );
+  });
+});
+
+describe('resolveLLMConfig provider isolation', () => {
+  afterEach(() => {
+    vi.unstubAllEnvs();
+    vi.restoreAllMocks();
+  });
+
+  it('does not use OpenAI environment credentials for the default MiniMax provider', async () => {
+    vi.stubEnv('OPENAI_API_KEY', 'openai-key');
+    vi.stubEnv('GITNEXUS_API_KEY', 'gitnexus-key');
+    vi.stubEnv('MINIMAX_API_KEY', '');
+
+    const config = await resolveLLMConfig();
+
+    expect(config.provider).toBe('minimax');
+    expect(config.apiKey).toBe('');
+  });
+
+  it('does not reuse saved credentials or API versions after switching providers', async () => {
+    vi.spyOn(await import('../../src/storage/repo-manager.js'), 'loadCLIConfig').mockResolvedValue({
+      provider: 'minimax',
+      apiKey: 'minimax-key',
+      baseUrl: MINIMAX_OPENAI_BASE_URLS.global_en,
+      model: MINIMAX_MODEL_IDS[0],
+      apiVersion: 'minimax-version',
+    });
+
+    const config = await resolveLLMConfig({ provider: 'openai' });
+
+    expect(config.apiKey).toBe('');
+    expect(config.apiVersion).toBeUndefined();
+    expect(config.baseUrl).toBe('https://openrouter.ai/api/v1');
   });
 });
 
@@ -237,6 +273,113 @@ describe('callLLM — reasoning model params', () => {
     expect(body.max_completion_tokens).toBe(500);
     expect(body.max_tokens).toBeUndefined();
     expect(body.temperature).toBe(0.5);
+  });
+});
+
+describe('callLLM — MiniMax request params', () => {
+  afterEach(() => vi.unstubAllGlobals());
+
+  const createFetchSpy = () =>
+    vi.fn().mockResolvedValue(
+      new Response(JSON.stringify({ choices: [{ message: { content: 'answer' } }], usage: {} }), {
+        status: 200,
+        headers: { 'Content-Type': 'application/json' },
+      }),
+    );
+
+  it('uses the China endpoint with adaptive thinking by default', async () => {
+    const fetchSpy = createFetchSpy();
+    vi.stubGlobal('fetch', fetchSpy);
+
+    const { callLLM } = await import('../../src/core/wiki/llm-client.js');
+    await callLLM('test', {
+      apiKey: 'minimax-test-key',
+      baseUrl: MINIMAX_OPENAI_BASE_URLS.cn_zh,
+      model: MINIMAX_MODEL_IDS[0],
+      maxTokens: 500,
+      temperature: 0.5,
+      provider: 'minimax',
+    });
+
+    const [url, init] = fetchSpy.mock.calls[0] as [string, RequestInit];
+    const body = JSON.parse(init.body as string);
+    expect(url).toBe(`${MINIMAX_OPENAI_BASE_URLS.cn_zh}/chat/completions`);
+    expect(body.thinking).toEqual({ type: 'adaptive' });
+    expect(body.reasoning_split).toBe(true);
+    expect(body.temperature).toBeUndefined();
+  });
+
+  it('supports disabled thinking', async () => {
+    const fetchSpy = createFetchSpy();
+    vi.stubGlobal('fetch', fetchSpy);
+
+    const { callLLM } = await import('../../src/core/wiki/llm-client.js');
+    await callLLM('test', {
+      apiKey: 'minimax-test-key',
+      baseUrl: MINIMAX_OPENAI_BASE_URLS.global_en,
+      model: MINIMAX_MODEL_IDS[0],
+      maxTokens: 500,
+      temperature: 0.5,
+      provider: 'minimax',
+      isReasoningModel: false,
+    });
+
+    const [, init] = fetchSpy.mock.calls[0] as [string, RequestInit];
+    const body = JSON.parse(init.body as string);
+    expect(body.thinking).toEqual({ type: 'disabled' });
+    expect(body.temperature).toBe(0.5);
+  });
+
+  it('leaves always-on thinking implicit', async () => {
+    const fetchSpy = createFetchSpy();
+    vi.stubGlobal('fetch', fetchSpy);
+
+    const { callLLM } = await import('../../src/core/wiki/llm-client.js');
+    await callLLM('test', {
+      apiKey: 'minimax-test-key',
+      baseUrl: MINIMAX_OPENAI_BASE_URLS.global_en,
+      model: MINIMAX_MODEL_IDS[1],
+      maxTokens: 500,
+      temperature: 0.5,
+      provider: 'minimax',
+      isReasoningModel: false,
+    });
+
+    const [, init] = fetchSpy.mock.calls[0] as [string, RequestInit];
+    const body = JSON.parse(init.body as string);
+    expect(body.thinking).toBeUndefined();
+    expect(body.reasoning_split).toBe(true);
+    expect(body.temperature).toBeUndefined();
+  });
+
+  it('preserves image and video content parts', async () => {
+    const fetchSpy = createFetchSpy();
+    vi.stubGlobal('fetch', fetchSpy);
+    const prompt = [
+      { type: 'text' as const, text: 'Compare these inputs.' },
+      {
+        type: 'image_url' as const,
+        image_url: { url: 'https://example.com/image.png', detail: 'high' as const },
+      },
+      {
+        type: 'video_url' as const,
+        video_url: { url: 'https://example.com/video.mp4', fps: 1 },
+      },
+    ];
+
+    const { callLLM } = await import('../../src/core/wiki/llm-client.js');
+    await callLLM(prompt, {
+      apiKey: 'minimax-test-key',
+      baseUrl: MINIMAX_OPENAI_BASE_URLS.global_en,
+      model: MINIMAX_MODEL_IDS[0],
+      maxTokens: 500,
+      temperature: 0.5,
+      provider: 'minimax',
+    });
+
+    const [, init] = fetchSpy.mock.calls[0] as [string, RequestInit];
+    const body = JSON.parse(init.body as string);
+    expect(body.messages).toEqual([{ role: 'user', content: prompt }]);
   });
 });
 

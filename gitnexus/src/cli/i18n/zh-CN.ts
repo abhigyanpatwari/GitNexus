@@ -216,15 +216,14 @@ export const zhCN = {
     '清理已暂存的 LadybugDB 恢复 sidecar（missing-shadow WAL 隔离文件与 dirty-recovery 暂存文件）',
   'help.option.wiki.force': '即使已是最新也强制完整重新生成',
   'help.option.wiki.provider':
-    'LLM 提供商：openai、openrouter、azure、custom、cursor、claude、codex 或 opencode（默认：openai）',
-  'help.option.wiki.model': 'LLM 模型或 Azure deployment 名称（默认：minimax/minimax-m2.5）',
+    'LLM 提供商：minimax、openai、openrouter、azure、custom、cursor、claude、codex 或 opencode（默认：minimax）',
+  'help.option.wiki.model': 'LLM 模型或 deployment 名称（默认：MiniMax-M3）',
   'help.option.wiki.baseUrl':
     'LLM API base URL。Azure v1：https://{resource}.openai.azure.com/openai/v1',
   'help.option.wiki.apiKey': 'LLM API key 或 Azure api-key（保存到 ~/.gitnexus/config.json）',
   'help.option.wiki.apiVersion': 'Azure api-version 查询参数，例如 2024-10-21（仅旧版 Azure API）',
-  'help.option.wiki.reasoningModel':
-    '标记 deployment 为 reasoning model（o1/o3/o4-mini）— 去除 temperature，使用 max_completion_tokens',
-  'help.option.wiki.noReasoningModel': '禁用 reasoning model 模式（覆盖已保存配置）',
+  'help.option.wiki.reasoningModel': '启用 reasoning 模式；MiniMax-M3 使用自适应 thinking',
+  'help.option.wiki.noReasoningModel': '禁用 reasoning 模式；MiniMax-M3 关闭 thinking',
   'help.option.wiki.concurrency': '并行 LLM 调用数（默认：3）',
   'help.option.wiki.timeout': 'LLM 请求超时时间（秒，默认：禁用）',
   'help.option.wiki.retries': '每个请求的最大 LLM 重试次数（默认：3）',
