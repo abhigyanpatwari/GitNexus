@@ -37,13 +37,14 @@ const PLATFORM_LOGIC = [
   'test/unit/cli-entry.test.ts',
   'test/unit/platform-capabilities.test.ts',
   // The gitnexus-plan safe writer resolves every name through a per-platform
-  // descriptor-anchoring backend (Linux /proc/self/fd, macOS openat via the
-  // helper's python3) and publishes with the platform's no-replace rename
-  // (renameat2 RENAME_NOREPLACE / renameatx_np RENAME_EXCL). #2905 shipped the
-  // Darwin backend after the suite had silently skipped on every non-Linux
-  // runner, so this file must run on the OS matrix or the macOS half is
-  // unverified by construction. Windows is still refused by the capability
-  // gate; the suite asserts that refusal rather than skipping it.
+  // backend: Linux anchors through /proc/self/fd, macOS resolves lexically and
+  // verifies each step against descriptors it holds open. Publication is link(2)
+  // on both. #2905 shipped the Darwin backend after the suite had silently
+  // skipped on every non-Linux runner, so this file must run on the OS matrix or
+  // the macOS half is unverified by construction — and the flag, trailing-
+  // separator and hard-link fixtures assert kernel behaviour that only a real
+  // Darwin kernel can confirm. Windows is refused by the capability gate; the
+  // suite asserts that refusal rather than skipping it.
   'test/unit/evidence-provenance-helper.test.ts',
   // Windows drive-letter case variance in the analyzer runner-identity path
   // fields (#2668): normalizeAnalyzerRootPath is a POSIX no-op, so the

@@ -94,7 +94,6 @@ type EvidenceHelper = {
         replace: boolean;
       }): void;
       afterPublication?(committed: { fd: number; finalPath: string }): void;
-      afterRename?(committed: { fd: number; finalPath: string }): void;
       afterFinalOpen?(committed: { fd: number; finalPath: string }): void;
     };
   }): {
@@ -205,10 +204,13 @@ function createFixture(): string {
   return repo;
 }
 
+// Cached, not cache-busted. The query-string bust existed for `let
+// atomicMoverPath`, the memoized python3 descriptor, which is gone: the helper
+// now has no module-level `let`/`var` at all and its module-level consts are
+// immutable lookup tables. Platform selection reads process.platform per call,
+// so a spoofed-platform fixture and a native one can share one instance.
 async function importHelper(file: string): Promise<EvidenceHelper> {
-  return (await import(
-    `${pathToFileURL(file).href}?test=${Date.now()}-${Math.random()}`
-  )) as EvidenceHelper;
+  return (await import(pathToFileURL(file).href)) as EvidenceHelper;
 }
 
 const REAL_GIT_FIXTURES = process.platform === 'win32' ? describe.skip : describe;
@@ -676,8 +678,26 @@ const SAFE_WRITE_FIXTURES = SUPPORTED_WRITE_PLATFORMS.has(process.platform)
   ? describe
   : describe.skip;
 
-function directoryIdentity(stat: fs.BigIntStats): string {
+function inodeIdentity(stat: fs.BigIntStats): string {
   return `${stat.dev}:${stat.ino}`;
+}
+
+function inodeIdentityOf(target: string): string {
+  return inodeIdentity(fs.statSync(target, { bigint: true }));
+}
+
+// Both open-flag fixtures want the same thing: record something about every
+// fs.openSync the helper issues, then delegate.
+function recordOpens<T>(collect: (target: fs.PathLike, flags: number) => T, into: T[]) {
+  const realOpen = fs.openSync.bind(fs) as typeof fs.openSync;
+  return vi.spyOn(fs, 'openSync').mockImplementation(((
+    target: fs.PathLike,
+    flags: number,
+    mode?: fs.Mode,
+  ) => {
+    into.push(collect(target, flags));
+    return realOpen(target, flags, mode);
+  }) as typeof fs.openSync);
 }
 
 // Both platforms expose the process's own descriptors as a readable directory;
@@ -1417,7 +1437,7 @@ SAFE_WRITE_FIXTURES('generated-plan safe writer', () => {
         // has no equivalent and F_GETPATH is unreachable from Node — so a synced
         // directory is identified by the inode it refers to, on both platforms.
         const stat = fs.fstatSync(fd, { bigint: true });
-        fsyncedDirectories.push(...(stat.isDirectory() ? [directoryIdentity(stat)] : []));
+        fsyncedDirectories.push(...(stat.isDirectory() ? [inodeIdentity(stat)] : []));
       } catch {
         // The production call below owns any real fsync error.
       }
@@ -1439,8 +1459,6 @@ SAFE_WRITE_FIXTURES('generated-plan safe writer', () => {
         expectedPlanDigest: loadedPlanDigest(planner, repo),
       });
       const gitDirectory = fs.realpathSync(path.join(repo, '.git'));
-      const identityOf = (directory: string): string =>
-        directoryIdentity(fs.statSync(directory, { bigint: true }));
       for (const durableDirectory of [
         repo,
         path.join(repo, 'docs'),
@@ -1448,20 +1466,95 @@ SAFE_WRITE_FIXTURES('generated-plan safe writer', () => {
         gitDirectory,
         path.join(gitDirectory, 'gitnexus-plan-backups'),
       ]) {
-        expect(fsyncedDirectories).toContain(identityOf(durableDirectory));
+        expect(fsyncedDirectories).toContain(inodeIdentityOf(durableDirectory));
       }
       expect(
-        fsyncedDirectories.filter((entry) => entry === identityOf(path.join(repo, 'docs/plans')))
-          .length,
+        fsyncedDirectories.filter(
+          (entry) => entry === inodeIdentityOf(path.join(repo, 'docs/plans')),
+        ).length,
       ).toBeGreaterThanOrEqual(2);
       expect(
         fsyncedDirectories.filter(
-          (entry) => entry === identityOf(path.join(gitDirectory, 'gitnexus-plan-backups')),
+          (entry) => entry === inodeIdentityOf(path.join(gitDirectory, 'gitnexus-plan-backups')),
         ).length,
       ).toBeGreaterThanOrEqual(2);
     } finally {
       spy.mockRestore();
       fs.rmSync(repo, { recursive: true, force: true });
+    }
+  });
+
+  it('refuses a filesystem without hard links instead of replacing the destination', async () => {
+    const repo = createBaseRepo('gitnexus-plan-nolinks-');
+    try {
+      const planner = await importHelper(PLAN_HELPER);
+      const spy = vi.spyOn(fs, 'linkSync').mockImplementation(() => {
+        throw Object.assign(new Error('EPERM: operation not permitted, link'), { code: 'EPERM' });
+      });
+      let message = '';
+      try {
+        planner.writePlanSafely({
+          repo,
+          generatedPlanPath: SAFE_PLAN_PATH,
+          contents: '# intended\n',
+        });
+      } catch (error) {
+        message = (error as Error).message;
+      } finally {
+        spy.mockRestore();
+      }
+      expect(message).toMatch(
+        /requires hard links, which this filesystem refused \(EPERM\); refusing to fall back to a replacing rename/,
+      );
+      // Nothing was published, and the intended bytes are still recoverable.
+      expect(fs.existsSync(path.join(repo, SAFE_PLAN_PATH))).toBe(false);
+      expect(artifactContents(repo, message, 'intended-plan')).toBe('# intended\n');
+    } finally {
+      fs.rmSync(repo, { recursive: true, force: true });
+    }
+  });
+
+  it('publishes by link: same inode, refusing a taken or symlinked destination', async () => {
+    const repo = createBaseRepo('gitnexus-plan-publish-');
+    const outside = fs.mkdtempSync(path.join(os.tmpdir(), 'gitnexus-plan-publish-outside-'));
+    try {
+      const planner = await importHelper(PLAN_HELPER);
+      // The published plan is the very inode whose bytes were fsynced, which is
+      // what lets validateCommittedPlan compare against the temporary file.
+      let temporaryIdentity = '';
+      planner.writePlanSafely({
+        repo,
+        generatedPlanPath: SAFE_PLAN_PATH,
+        contents: '# published\n',
+        testHooks: {
+          beforePublication({ tempPath }) {
+            temporaryIdentity = inodeIdentity(fs.statSync(tempPath, { bigint: true }));
+          },
+        },
+      });
+      const publishedStat = fs.statSync(path.join(repo, SAFE_PLAN_PATH), { bigint: true });
+      expect(inodeIdentity(publishedStat)).toBe(temporaryIdentity);
+      // link() plus unlink() leaves exactly one name for that inode.
+      expect(Number(publishedStat.nlink)).toBe(1);
+      expect(
+        fs.readdirSync(path.join(repo, 'docs/plans')).filter((entry) => entry.endsWith('.tmp')),
+      ).toEqual([]);
+
+      // A destination that is a symlink is refused without following it, so the
+      // symlink's target is never clobbered.
+      write(outside, 'victim.md', '# victim\n');
+      fs.symlinkSync(path.join(outside, 'victim.md'), path.join(repo, ALTERNATE_SAFE_PLAN_PATH));
+      expect(() =>
+        planner.writePlanSafely({
+          repo,
+          generatedPlanPath: ALTERNATE_SAFE_PLAN_PATH,
+          contents: '# blocked\n',
+        }),
+      ).toThrow(/regular file, never a symlink|already exists/);
+      expect(fs.readFileSync(path.join(outside, 'victim.md'), 'utf8')).toBe('# victim\n');
+    } finally {
+      fs.rmSync(repo, { recursive: true, force: true });
+      fs.rmSync(outside, { recursive: true, force: true });
     }
   });
 });
@@ -1536,10 +1629,17 @@ describe('generated-plan anchoring capability gate', () => {
         // Linux one quietly succeeding: Linux resolves children through
         // /proc/self/fd/<fd>/<name>, Darwin resolves them lexically.
         expect(observedPaths).toHaveLength(2);
+        // Deliberately prefix-independent: assertRepository realpaths the repo,
+        // so on macOS expectedPath is /private/var/... while the fixture holds
+        // the /var/... form it passed in. What distinguishes the backends is the
+        // shape, not the prefix — a lexical resolution keeps the docs/plans
+        // segments, and /proc/self/fd/<fd>/<name> has neither.
         expect(observedPaths.filter((entry) => entry.startsWith('/proc/'))).toEqual([]);
         expect(
-          observedPaths.every((entry) => entry.startsWith(path.join(repo, 'docs/plans'))),
-        ).toBe(true);
+          observedPaths.filter(
+            (entry) => !entry.includes(`${path.sep}docs${path.sep}plans${path.sep}`),
+          ),
+        ).toEqual([]);
         expect(planner.readPlanSafely({ repo, generatedPlanPath: SAFE_PLAN_PATH })).toMatchObject({
           plan_bytes_base64: Buffer.from('# verified\n').toString('base64'),
         });
@@ -1592,8 +1692,6 @@ describe('generated-plan anchoring capability gate', () => {
       git(repo, ['commit', '--quiet', '-m', 'ignore']);
       fs.mkdirSync(path.join(repo, 'a', 'b', 'c'), { recursive: true });
       const chain = [repo, path.join(repo, 'a'), path.join(repo, 'a/b'), path.join(repo, 'a/b/c')];
-      const identityOf = (directory: string): string =>
-        directoryIdentity(fs.statSync(directory, { bigint: true }));
       const openDirectoryInodes = (): Set<string> =>
         new Set(
           fs
@@ -1601,7 +1699,7 @@ describe('generated-plan anchoring capability gate', () => {
             .map((entry) => {
               try {
                 const stat = fs.fstatSync(Number(entry), { bigint: true });
-                return stat.isDirectory() ? directoryIdentity(stat) : null;
+                return stat.isDirectory() ? inodeIdentity(stat) : null;
               } catch {
                 // descriptor closed while enumerating
                 return null;
@@ -1625,12 +1723,12 @@ describe('generated-plan anchoring capability gate', () => {
           },
         });
       });
-      expect(chain.filter((directory) => !pinned.has(identityOf(directory)))).toEqual([]);
+      expect(chain.filter((directory) => !pinned.has(inodeIdentityOf(directory)))).toEqual([]);
       const released = openDirectoryInodes();
       expect(
         chain.filter(
           (directory) =>
-            released.has(identityOf(directory)) && !baseline.has(identityOf(directory)),
+            released.has(inodeIdentityOf(directory)) && !baseline.has(inodeIdentityOf(directory)),
         ),
       ).toEqual([]);
     } finally {
@@ -1644,17 +1742,9 @@ describe('generated-plan anchoring capability gate', () => {
   DARWIN_BACKEND('opens directories with exactly the four verified flags', async () => {
     const repo = createBaseRepo('gitnexus-plan-flags-');
     const openFlags: number[] = [];
-    const realOpen = fs.openSync.bind(fs) as typeof fs.openSync;
     try {
       const planner = await importHelper(PLAN_HELPER);
-      const spy = vi.spyOn(fs, 'openSync').mockImplementation(((
-        target: fs.PathLike,
-        flags: number,
-        mode?: fs.Mode,
-      ) => {
-        openFlags.push(flags);
-        return realOpen(target, flags, mode);
-      }) as typeof fs.openSync);
+      const spy = recordOpens((_target, flags) => flags, openFlags);
       try {
         withPlatform('darwin', () => {
           planner.writePlanSafely({
@@ -1687,7 +1777,6 @@ describe('generated-plan anchoring capability gate', () => {
     const repo = createBaseRepo('gitnexus-plan-slash-');
     const outside = fs.mkdtempSync(path.join(os.tmpdir(), 'gitnexus-plan-slash-outside-'));
     const openedPaths: string[] = [];
-    const realOpen = fs.openSync.bind(fs) as typeof fs.openSync;
     try {
       fs.writeFileSync(path.join(outside, 'loot.md'), 'loot\n');
       const decoy = path.join(repo, 'decoy');
@@ -1703,14 +1792,7 @@ describe('generated-plan anchoring capability gate', () => {
       }
 
       const planner = await importHelper(PLAN_HELPER);
-      const spy = vi.spyOn(fs, 'openSync').mockImplementation(((
-        target: fs.PathLike,
-        flags: number,
-        mode?: fs.Mode,
-      ) => {
-        openedPaths.push(String(target));
-        return realOpen(target, flags, mode);
-      }) as typeof fs.openSync);
+      const spy = recordOpens((target) => String(target), openedPaths);
       try {
         withPlatform('darwin', () => {
           planner.writePlanSafely({
@@ -1733,80 +1815,6 @@ describe('generated-plan anchoring capability gate', () => {
           contents: '# blocked\n',
         }),
       ).toThrow(/normalized repo-relative path|restricted to docs\/plans/);
-    } finally {
-      fs.rmSync(repo, { recursive: true, force: true });
-      fs.rmSync(outside, { recursive: true, force: true });
-    }
-  });
-
-  it('refuses a filesystem without hard links instead of replacing the destination', async () => {
-    const repo = createBaseRepo('gitnexus-plan-nolinks-');
-    try {
-      const planner = await importHelper(PLAN_HELPER);
-      const spy = vi.spyOn(fs, 'linkSync').mockImplementation(() => {
-        throw Object.assign(new Error('EPERM: operation not permitted, link'), { code: 'EPERM' });
-      });
-      let message = '';
-      try {
-        planner.writePlanSafely({
-          repo,
-          generatedPlanPath: SAFE_PLAN_PATH,
-          contents: '# intended\n',
-        });
-      } catch (error) {
-        message = (error as Error).message;
-      } finally {
-        spy.mockRestore();
-      }
-      expect(message).toMatch(
-        /requires hard links, which this filesystem refused \(EPERM\); refusing to fall back to a replacing rename/,
-      );
-      // Nothing was published, and the intended bytes are still recoverable.
-      expect(fs.existsSync(path.join(repo, SAFE_PLAN_PATH))).toBe(false);
-      expect(artifactContents(repo, message, 'intended-plan')).toBe('# intended\n');
-    } finally {
-      fs.rmSync(repo, { recursive: true, force: true });
-    }
-  });
-
-  it('publishes by link: same inode, refusing a taken or symlinked destination', async () => {
-    const repo = createBaseRepo('gitnexus-plan-publish-');
-    const outside = fs.mkdtempSync(path.join(os.tmpdir(), 'gitnexus-plan-publish-outside-'));
-    try {
-      const planner = await importHelper(PLAN_HELPER);
-      // The published plan is the very inode whose bytes were fsynced, which is
-      // what lets validateCommittedPlan compare against the temporary file.
-      let temporaryIdentity = '';
-      planner.writePlanSafely({
-        repo,
-        generatedPlanPath: SAFE_PLAN_PATH,
-        contents: '# published\n',
-        testHooks: {
-          beforePublication({ tempPath }) {
-            temporaryIdentity = directoryIdentity(fs.statSync(tempPath, { bigint: true }));
-          },
-        },
-      });
-      const publishedStat = fs.statSync(path.join(repo, SAFE_PLAN_PATH), { bigint: true });
-      expect(directoryIdentity(publishedStat)).toBe(temporaryIdentity);
-      // link() plus unlink() leaves exactly one name for that inode.
-      expect(Number(publishedStat.nlink)).toBe(1);
-      expect(
-        fs.readdirSync(path.join(repo, 'docs/plans')).filter((entry) => entry.endsWith('.tmp')),
-      ).toEqual([]);
-
-      // A destination that is a symlink is refused without following it, so the
-      // symlink's target is never clobbered.
-      write(outside, 'victim.md', '# victim\n');
-      fs.symlinkSync(path.join(outside, 'victim.md'), path.join(repo, ALTERNATE_SAFE_PLAN_PATH));
-      expect(() =>
-        planner.writePlanSafely({
-          repo,
-          generatedPlanPath: ALTERNATE_SAFE_PLAN_PATH,
-          contents: '# blocked\n',
-        }),
-      ).toThrow(/regular file, never a symlink|already exists/);
-      expect(fs.readFileSync(path.join(outside, 'victim.md'), 'utf8')).toBe('# victim\n');
     } finally {
       fs.rmSync(repo, { recursive: true, force: true });
       fs.rmSync(outside, { recursive: true, force: true });
