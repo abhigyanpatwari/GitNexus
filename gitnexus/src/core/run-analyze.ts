@@ -58,7 +58,7 @@ import {
   resolveNativeSafeStorageDir,
 } from './lbug/lbug-config.js';
 import { escapeCypherString } from './lbug/cypher-escape.js';
-import { chunk } from './lbug/query-batch.js';
+import { chunk } from '../lib/utils.js';
 import {
   buildSearchIndexesOrDegrade,
   ftsFailureIsFatal,

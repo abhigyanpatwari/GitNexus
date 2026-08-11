@@ -119,3 +119,20 @@ export const stripWindowsLongPathPrefix = (
   if (/^\\\\\?\\[A-Za-z]:\\/.test(p)) return p.slice(4);
   return p;
 };
+
+/**
+ * Split `items` into consecutive slices of at most `size`.
+ *
+ * Returns an empty array for empty input, and never returns an empty slice, so
+ * `for (const batch of chunk(xs, n))` always has something to work on.
+ *
+ * Callers batching a GRAPH QUERY should take the size from
+ * `LBUG_QUERY_BATCH_SIZE` (`core/lbug/query-batch.ts`), which documents why a
+ * query built from a caller-sized array needs a ceiling at all (#2915).
+ */
+export function chunk<T>(items: readonly T[], size: number): T[][] {
+  if (size < 1) throw new RangeError(`chunk size must be >= 1, got ${size}`);
+  const batches: T[][] = [];
+  for (let i = 0; i < items.length; i += size) batches.push(items.slice(i, i + size));
+  return batches;
+}

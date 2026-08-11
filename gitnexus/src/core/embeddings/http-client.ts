@@ -11,7 +11,7 @@
  * via `AbortSignal.timeout` on the underlying fetch.
  */
 
-import { chunk } from '../lbug/query-batch.js';
+import { chunk } from '../../lib/utils.js';
 import {
   CircuitOpenError,
   ResilientFetchExhaustedError,

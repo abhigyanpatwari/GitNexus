@@ -6,7 +6,8 @@ import { finished } from 'stream/promises';
 import path from 'path';
 import lbug from '@ladybugdb/core';
 import { closeQueryResults } from './query-result-utils.js';
-import { chunk } from './query-batch.js';
+import { chunk } from '../../lib/utils.js';
+import { warnIfQueryTextUnbounded } from './query-batch.js';
 import { escapeCypherString } from './cypher-escape.js';
 import { withConnLock } from './conn-lock.js';
 import { isWalDriverActive } from './wal-driver-state.js';
@@ -522,6 +523,12 @@ const readQueryRows = async (
   return rows;
 };
 
+// Deliberately NOT covered by `warnIfQueryTextUnbounded` (#2915): this is the
+// write/DDL raw path, and `batchInsertNodesToLbug` inlines a node's `content`
+// here, so any source file over the 64 KB text ceiling would trip the heuristic
+// on a query that is entirely legitimate. The guard sits on the read entry
+// points (`executePrepared`, `streamQuery`), which is where a caller-sized list
+// gets spliced into query TEXT.
 const queryAndDrain = async (targetConn: lbug.Connection, cypher: string): Promise<void> => {
   const run = async (): Promise<void> => {
     const queryResult = await targetConn.query(cypher);
@@ -1716,6 +1723,8 @@ export const batchInsertNodesToLbug = async (
   return { inserted, failed };
 };
 
+// Guarded by `executePrepared` — a pure delegation, so warning here too would
+// double-report the same query text (#2915).
 export const executeQuery = async (cypher: string): Promise<any[]> => {
   return await executePrepared(cypher, {});
 };
@@ -1724,6 +1733,9 @@ export const streamQuery = async (
   cypher: string,
   onRow: (row: any) => void | Promise<void>,
 ): Promise<number> => {
+  // The other raw `conn.query` read entry point (`executePrepared` covers the
+  // prepared path, and `executeQuery` delegates to it). Never throws (#2915).
+  warnIfQueryTextUnbounded(cypher, 'streamQuery', (message) => logger.warn(message));
   if (isWalDriverActive()) {
     // streamQuery reads rows on the singleton connection WITHOUT withConnLock; if
     // the WAL-checkpoint driver is live, those reads could race a CHECKPOINT — the
@@ -1773,6 +1785,8 @@ export const executePrepared = async (
   cypher: string,
   params: Record<string, any>,
 ): Promise<any[]> => {
+  // A `.length` compare on text we already hold; never throws (#2915).
+  warnIfQueryTextUnbounded(cypher, 'executePrepared', (message) => logger.warn(message));
   const c = conn;
   if (!c) {
     throw new Error('LadybugDB not initialized. Call initLbug first.');

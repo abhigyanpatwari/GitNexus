@@ -7,6 +7,7 @@ import type { CsharpStructureLineScanner } from './languages/csharp/namespace-si
 
 import { isDev } from './utils/env.js';
 
+import { mapConcurrent } from '../lbug/query-batch.js';
 import { logger } from '../logger.js';
 // ============================================================================
 // LANGUAGE-SPECIFIC CONFIG TYPES
@@ -276,33 +277,32 @@ export async function scanCSharpProject(repoRoot: string): Promise<CSharpProject
         csNames.push(entry.name);
       }
     }
-    for (let i = 0; i < csprojNames.length; i += CSHARP_SCAN_READ_CONCURRENCY) {
-      const batch = csprojNames.slice(i, i + CSHARP_SCAN_READ_CONCURRENCY);
-      const settled = await Promise.allSettled(
-        batch.map((name) => readCsprojConfig(path.join(dir, name), name, repoRoot, dir)),
-      );
-      for (const r of settled) {
-        const config = r.status === 'fulfilled' ? r.value : null;
-        if (config) {
-          configs.push(config);
-          rootNamespaces.add(config.rootNamespace);
-        }
+    // `mapConcurrent` runs the same bounded waves and degrades per item
+    // (a rejection becomes `undefined`), so entry order is still preserved.
+    const csprojResults = await mapConcurrent(
+      csprojNames,
+      (name) => readCsprojConfig(path.join(dir, name), name, repoRoot, dir),
+      { concurrency: CSHARP_SCAN_READ_CONCURRENCY },
+    );
+    for (const config of csprojResults) {
+      if (config) {
+        configs.push(config);
+        rootNamespaces.add(config.rootNamespace);
       }
     }
-    for (let i = 0; i < csNames.length; i += CSHARP_SCAN_READ_CONCURRENCY) {
-      const batch = csNames.slice(i, i + CSHARP_SCAN_READ_CONCURRENCY);
-      const settled = await Promise.allSettled(
-        batch.map((name) =>
-          collectDeclaredNamespaces(path.join(dir, name), declaredNamespaces, rootNamespaces),
-        ),
-      );
-      // A `.cs` that was unreadable (or whose read/scan unexpectedly rejected)
-      // leaves its namespaces uncollected → mark truncated to fail the #1881
-      // gate OPEN rather than wrongly suppress an import. The scan streams each
-      // file, so file size no longer trips truncation.
-      for (const r of settled) {
-        if (r.status !== 'fulfilled' || r.value === 'truncated') truncated = true;
-      }
+    const csResults = await mapConcurrent(
+      csNames,
+      (name) => collectDeclaredNamespaces(path.join(dir, name), declaredNamespaces, rootNamespaces),
+      { concurrency: CSHARP_SCAN_READ_CONCURRENCY },
+    );
+    // A `.cs` that was unreadable (or whose read/scan unexpectedly rejected)
+    // leaves its namespaces uncollected → mark truncated to fail the #1881
+    // gate OPEN rather than wrongly suppress an import. The scan streams each
+    // file, so file size no longer trips truncation. A rejected read arrives
+    // here as `undefined`, which is `!== 'ok'` just like the old
+    // `r.status !== 'fulfilled'` arm.
+    for (const r of csResults) {
+      if (r !== 'ok') truncated = true;
     }
   }
 

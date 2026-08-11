@@ -4,7 +4,8 @@
  * recursive evaluator copy, a bare SIGBUS with no error output).
  */
 import { describe, it, expect, vi } from 'vitest';
-import { chunk, mapBatches, LBUG_QUERY_BATCH_SIZE } from '../../src/core/lbug/query-batch.js';
+import { LBUG_QUERY_BATCH_SIZE, mapConcurrent } from '../../src/core/lbug/query-batch.js';
+import { chunk } from '../../src/lib/utils.js';
 
 describe('chunk', () => {
   it('splits into consecutive slices of at most `size`', () => {
@@ -22,8 +23,13 @@ describe('chunk', () => {
     ]);
   });
 
-  it('defaults to the shared query batch size', () => {
-    expect(chunk(Array.from({ length: LBUG_QUERY_BATCH_SIZE + 1 }, (_, i) => i))).toHaveLength(2);
+  it('splits at the shared query batch size', () => {
+    expect(
+      chunk(
+        Array.from({ length: LBUG_QUERY_BATCH_SIZE + 1 }, (_, i) => i),
+        LBUG_QUERY_BATCH_SIZE,
+      ),
+    ).toHaveLength(2);
   });
 
   it('rejects a size that would loop forever', () => {
@@ -31,10 +37,10 @@ describe('chunk', () => {
   });
 });
 
-describe('mapBatches', () => {
+describe('mapConcurrent', () => {
   it('returns results in batch order regardless of completion order', async () => {
     const order: number[] = [];
-    const results = await mapBatches(
+    const results = await mapConcurrent(
       [30, 10, 20],
       async (delay) => {
         await new Promise((resolve) => setTimeout(resolve, delay));
@@ -51,7 +57,7 @@ describe('mapBatches', () => {
   it('never exceeds the concurrency limit', async () => {
     let inFlight = 0;
     let peak = 0;
-    await mapBatches(
+    await mapConcurrent(
       Array.from({ length: 9 }, (_, i) => i),
       async () => {
         inFlight += 1;
@@ -74,7 +80,7 @@ describe('mapBatches', () => {
       },
       'ok-2': async () => 'ok-2',
     };
-    const results = await mapBatches(['ok-1', 'boom', 'ok-2'], (item) => behavior[item](), {
+    const results = await mapConcurrent(['ok-1', 'boom', 'ok-2'], (item) => behavior[item](), {
       concurrency: 3,
       onError,
     });
@@ -86,7 +92,7 @@ describe('mapBatches', () => {
   it('runs sequentially when concurrency is 1', async () => {
     let inFlight = 0;
     let peak = 0;
-    await mapBatches(
+    await mapConcurrent(
       [1, 2, 3],
       async () => {
         inFlight += 1;
