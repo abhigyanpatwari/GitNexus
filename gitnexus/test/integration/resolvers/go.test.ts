@@ -2192,3 +2192,34 @@ describe('Go signatures naming out-of-repo packages', () => {
     expect(dispatched).toEqual(['Mem.Delete']);
   });
 });
+
+// ---------------------------------------------------------------------------
+// Undecided satisfaction reaches the pipeline result (#2873)
+// ---------------------------------------------------------------------------
+
+describe('Go undecided interface satisfaction', () => {
+  let result: PipelineResult;
+
+  beforeAll(async () => {
+    result = await runPipelineFromRepo(path.join(FIXTURES, 'go-undecided-satisfaction'), () => {});
+  }, 60000);
+
+  // The pair is unjudged, so it mints no edge — and saying so is the whole
+  // point: an empty implementor list here is a question, not an answer.
+  it('reports the interface it could not decide, and only that one', () => {
+    const undecided = result.undecidedSatisfaction.map((entry) => entry.interfaceName).sort();
+    expect(undecided).toEqual(['Drawer']);
+  });
+
+  it('names the candidate type, so a query on the implementation can be hedged', () => {
+    const drawer = result.undecidedSatisfaction.find((e) => e.interfaceName === 'Drawer');
+    expect(drawer?.candidateNames).toEqual(['Canvas']);
+  });
+
+  it('still emits the IMPLEMENTS edge it could decide', () => {
+    const implementsEdges = getRelationships(result, 'IMPLEMENTS').filter((edge) =>
+      (edge.rel.reason ?? '').startsWith('go-structural-implements'),
+    );
+    expect(edgeSet(implementsEdges)).toEqual(['Label → Named']);
+  });
+});

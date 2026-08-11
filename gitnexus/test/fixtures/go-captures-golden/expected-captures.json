@@ -467,6 +467,10 @@
     "captureGroups": 18,
     "digest": "6e894e96dc0287118d6543bf7c7bcd6c0ae87ad5d1b812e612364c5e4465d340"
   },
+  "go-undecided-satisfaction/repo.go": {
+    "captureGroups": 24,
+    "digest": "f06022a5a1cfe7bfa03cd86e21135028a83ad99331e8b9af01635d29d6a2a51b"
+  },
   "go-variadic-resolution/cmd/main.go": {
     "captureGroups": 6,
     "digest": "443f9736b9c67df30fe97d8353ddc2584de4c88ba698e62878683d5d77362d89"
