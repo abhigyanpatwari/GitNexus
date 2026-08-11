@@ -29,8 +29,11 @@ import { isWalCorruptionError, WAL_RECOVERY_SUGGESTION } from '../../core/lbug/l
 // import { isGitRepo, getCurrentCommit, getGitRoot } from '../../storage/git.js';
 import {
   parseDiffHunks,
+  coalesceHunks,
+  hunksOverlapRange,
   getCanonicalRepoRoot,
   getGitRoot,
+  type DiffHunk,
   type FileDiff,
 } from '../../storage/git.js';
 import { realpathSync } from 'fs';
@@ -900,6 +903,15 @@ export function resolveWorktreeCwd(repoPath: string, launchCwd: string): string 
   }
   return repoPath;
 }
+
+/**
+ * How many changed files `detect_changes` folds into one hunk→symbol query.
+ *
+ * The match is an unlabeled `MATCH (n)` — a scan of every node table — so the
+ * batch trades round-trips against rows held in memory at once. 100 mirrors the
+ * `CHUNK_SIZE` the impact path already uses for batched id lookups.
+ */
+const DETECT_CHANGES_FILE_BATCH = 100;
 
 export function buildDetectChangesDiffArgs(scope: string, baseRef?: string): string[] | null {
   const args = ['diff', '--ignore-cr-at-eol'];
@@ -5150,24 +5162,43 @@ export class LocalBackend {
       };
     }
 
-    // Map diff hunks to indexed symbols via range overlap
+    // Map diff hunks to indexed symbols via range overlap.
+    //
+    // The overlap test runs in JS against coalesced hunk ranges, NOT as one
+    // OR'd condition pair per hunk in the Cypher WHERE clause. The old shape
+    // handed the engine an expression tree as deep as the file had hunks, which
+    // a generated file crashes outright (#2915 — see `coalesceHunks`). Query
+    // cost is now independent of hunk count.
+    //
+    // Files are queried in batches instead of one query per file: the match is
+    // an unlabeled `MATCH (n)`, i.e. a scan of every node table, so a wide diff
+    // used to pay one full scan per changed file. Each batch's rows are
+    // filtered and dropped before the next batch runs, so peak memory tracks
+    // the batch, not the whole diff.
     const changedSymbols: any[] = [];
     // Set if a swallowed graph query fails below — surfaces `partial:true` so a
     // degraded run cannot report a false-clean `risk_level:'low'` (#2283).
     let queryDegraded = false;
+
+    const hunksByPath = new Map<string, DiffHunk[]>();
     for (const fileDiff of fileDiffs) {
       if (fileDiff.hunks.length === 0) continue;
+      // A path can appear twice in one diff (e.g. a rename reported alongside
+      // an edit); keep every hunk rather than letting the later entry win.
+      const existing = hunksByPath.get(fileDiff.filePath);
+      hunksByPath.set(
+        fileDiff.filePath,
+        existing ? [...existing, ...fileDiff.hunks] : fileDiff.hunks,
+      );
+    }
+    for (const [filePath, hunks] of hunksByPath) {
+      hunksByPath.set(filePath, coalesceHunks(hunks));
+    }
 
-      // Build range overlap conditions for all hunks in this file
-      const overlapConditions = fileDiff.hunks
-        .map((_, i) => `(n.startLine <= $hunkEnd${i} AND n.endLine >= $hunkStart${i})`)
-        .join(' OR ');
-
-      const queryParams: Record<string, any> = { filePath: fileDiff.filePath };
-      fileDiff.hunks.forEach((hunk, i) => {
-        queryParams[`hunkStart${i}`] = hunk.startLine;
-        queryParams[`hunkEnd${i}`] = hunk.endLine;
-      });
+    const changedPaths = Array.from(hunksByPath.keys());
+    for (let offset = 0; offset < changedPaths.length; offset += DETECT_CHANGES_FILE_BATCH) {
+      const paths = changedPaths.slice(offset, offset + DETECT_CHANGES_FILE_BATCH);
+      const queryParams: Record<string, any> = { paths };
 
       // Exclude BasicBlock rows by id prefix: on a --pdg index every edited
       // function otherwise contributes N nameless BasicBlock pseudo-"symbols"
@@ -5181,22 +5212,35 @@ export class LocalBackend {
       // also drop legitimate symbols whose name loaded as NULL, e.g.
       // quoted-empty CSV fields for anonymous constructs).
       const symbolQuery = `
-        MATCH (n) WHERE n.filePath ENDS WITH $filePath
+        UNWIND $paths AS diffPath
+        MATCH (n) WHERE n.filePath ENDS WITH diffPath
           AND NOT n.id STARTS WITH 'BasicBlock:'
           AND n.startLine IS NOT NULL AND n.endLine IS NOT NULL
-          AND (${overlapConditions})
-        RETURN n.id AS id, n.name AS name, labels(n)[0] AS type,
+        RETURN diffPath AS diffPath, n.id AS id, n.name AS name, labels(n)[0] AS type,
                n.filePath AS filePath, n.startLine AS startLine, n.endLine AS endLine
       `;
 
       try {
         const rows = await executeParameterized(repo.lbugPath, symbolQuery, queryParams);
         for (const sym of rows) {
+          const hunks = hunksByPath.get(String(sym.diffPath ?? sym[0]));
+          if (!hunks) continue;
+
+          // Graph rows are 0-based (#2377); git hunk lines are 1-based. Compare
+          // in the 1-based space — matching them raw shifted every symbol one
+          // line up, so an edit to a symbol's LAST line reported nothing
+          // changed. `??` (not `||`) because startLine 0 is the common case for
+          // a symbol declared on the first line.
+          const startLine = toDisplayLine(sym.startLine ?? sym[5]);
+          const endLine = toDisplayLine(sym.endLine ?? sym[6]);
+          if (startLine === undefined || endLine === undefined) continue;
+          if (!hunksOverlapRange(hunks, startLine, endLine)) continue;
+
           changedSymbols.push({
-            id: sym.id || sym[0],
-            name: sym.name || sym[1],
-            type: sym.type || sym[2],
-            filePath: sym.filePath || sym[3],
+            id: sym.id ?? sym[1],
+            name: sym.name ?? sym[2],
+            type: sym.type ?? sym[3],
+            filePath: sym.filePath ?? sym[4],
             change_type: 'touched',
           });
         }

@@ -698,3 +698,63 @@ export function parseDiffHunks(diffOutput: string): FileDiff[] {
   }
   return files;
 }
+
+/**
+ * Merge a file's hunks into sorted, non-touching ranges.
+ *
+ * `detect_changes` used to fold one `(n.startLine <= $hunkEndI AND n.endLine >=
+ * $hunkStartI)` pair per hunk into a single Cypher `WHERE` clause. A
+ * machine-generated file (a cache JSON, a lockfile, a golden fixture) diffs at
+ * thousands of hunks with `-U0`, and the resulting expression tree is deep
+ * enough that LadybugDB's recursive evaluator copy overflows its worker-thread
+ * stack: a bare SIGBUS with no error output where secondary threads get 512 KB
+ * (macOS), and a swallowed 30s query timeout where they get more (#2915).
+ *
+ * Only ranges that overlap or ABUT (`next.startLine <= current.endLine + 1`)
+ * are merged, so the union covers exactly the lines the raw hunks covered —
+ * coalescing can never widen a range into a symbol the hunks did not touch.
+ */
+export function coalesceHunks(hunks: DiffHunk[]): DiffHunk[] {
+  if (hunks.length < 2) return hunks.map((h) => ({ ...h }));
+  const sorted = [...hunks].sort((a, b) => a.startLine - b.startLine || a.endLine - b.endLine);
+  const merged: DiffHunk[] = [{ ...sorted[0] }];
+  for (let i = 1; i < sorted.length; i++) {
+    const last = merged[merged.length - 1];
+    const next = sorted[i];
+    if (next.startLine <= last.endLine + 1) {
+      if (next.endLine > last.endLine) last.endLine = next.endLine;
+    } else {
+      merged.push({ ...next });
+    }
+  }
+  return merged;
+}
+
+/**
+ * Does any hunk overlap the inclusive line range [startLine, endLine]?
+ *
+ * `coalesced` must come from {@link coalesceHunks} — sorted and disjoint, which
+ * is what makes the binary search valid. Both sides must use the same line
+ * base; callers holding 0-based graph rows convert first (#2377).
+ */
+export function hunksOverlapRange(
+  coalesced: DiffHunk[],
+  startLine: number,
+  endLine: number,
+): boolean {
+  let lo = 0;
+  let hi = coalesced.length - 1;
+  let firstEndingAtOrAfterStart = -1;
+  while (lo <= hi) {
+    const mid = (lo + hi) >> 1;
+    if (coalesced[mid].endLine >= startLine) {
+      firstEndingAtOrAfterStart = mid;
+      hi = mid - 1;
+    } else {
+      lo = mid + 1;
+    }
+  }
+  return (
+    firstEndingAtOrAfterStart !== -1 && coalesced[firstEndingAtOrAfterStart].startLine <= endLine
+  );
+}
