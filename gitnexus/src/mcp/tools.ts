@@ -354,7 +354,7 @@ GIT WORKTREE SUPPORT: GitNexus automatically detects when the MCP server was lau
 
 Returns: changed symbols, affected processes, and a risk summary.
 - partial: true — a graph query failed and was swallowed, so changed_symbols may be short. changed_count:0 with partial:true is NOT a clean pre-commit check; re-run before treating the diff as safe.
-- symbols_truncated: {listed, total} — present only when the diff touched more symbols than one response lists. summary.changed_count is always the true total; the array is the capped listing.`,
+- truncated: true — the changed_symbols LISTING was capped for this response. summary.changed_count is always the true total, so compare the two rather than trusting the array length.`,
     annotations: READ_ONLY_TOOL_ANNOTATIONS,
     inputSchema: {
       type: 'object',

@@ -22,7 +22,9 @@ import { queryClassBeanMetadata } from './bean-metadata.js';
 import { querySpringAopMetadata } from './aop-metadata.js';
 import { isValidQueryParams } from '../../core/lbug/query-params.js';
 import { toDisplayLine } from './line-display.js';
-import { chunk, mapBatches, LBUG_QUERY_BATCH_SIZE } from '../../core/lbug/query-batch.js';
+import { LBUG_QUERY_BATCH_SIZE, mapConcurrent } from '../../core/lbug/query-batch.js';
+import { chunk } from '../../lib/utils.js';
+import { pathSuffixOf } from './path-predicate.js';
 import { toOneBasedLine } from '../../core/ingestion/utils/line-base.js';
 import { isWalCorruptionError, WAL_RECOVERY_SUGGESTION } from '../../core/lbug/lbug-config.js';
 // Embedding imports are lazy (dynamic import) to avoid loading onnxruntime-node
@@ -904,13 +906,6 @@ export function resolveWorktreeCwd(repoPath: string, launchCwd: string): string 
   }
   return repoPath;
 }
-
-/**
- * Changed files folded into one hunk→symbol query. The match is an unlabeled
- * `MATCH (n)`, so the batch trades round-trips against rows held at once; the
- * shared size measured fastest for this query too (see `query-batch.ts`).
- */
-const DETECT_CHANGES_FILE_BATCH = LBUG_QUERY_BATCH_SIZE;
 
 /**
  * Changed symbols listed in one `detect_changes` result.
@@ -2581,13 +2576,10 @@ export class LocalBackend {
     // isBenignMissingTableError + the response build below.
     let enrichmentDegraded = false;
 
-    // Chunk the IN-list like the impact path (CHUNK_SIZE=100) so a large result
-    // set never builds an unbounded `IN` parameter. Default batch is
-    // processLimit*maxSymbolsPerProcess (≤ one chunk), but chunk for robustness.
-    const QUERY_CHUNK_SIZE = 100;
-    for (let i = 0; i < nodeIds.length; i += QUERY_CHUNK_SIZE) {
-      const ids = nodeIds.slice(i, i + QUERY_CHUNK_SIZE);
-
+    // Chunked so a large result set never builds an unbounded `IN` parameter.
+    // The default batch is processLimit*maxSymbolsPerProcess (≤ one chunk); the
+    // chunking is for robustness.
+    for (const ids of chunk(nodeIds, LBUG_QUERY_BATCH_SIZE)) {
       // Processes each symbol participates in. `n.id AS nodeId` is prepended as
       // column 0 so rows from many symbols can be re-associated to their symbol.
       try {
@@ -3201,7 +3193,10 @@ export class LocalBackend {
 
       const results: any[] = [];
 
-      for (const [nodeId, chunk] of Array.from(bestChunks.entries()).slice(0, limit)) {
+      // Named `bestChunk`, not `chunk`: the module-level `chunk` helper is in
+      // scope here, and a shadowing local silently turns any later `chunk.x`
+      // into a property read on the function.
+      for (const [nodeId, bestChunk] of Array.from(bestChunks.entries()).slice(0, limit)) {
         const labelEndIdx = nodeId.indexOf(':');
         const label = labelEndIdx > 0 ? nodeId.substring(0, labelEndIdx) : 'Unknown';
 
@@ -3222,9 +3217,9 @@ export class LocalBackend {
               name: nodeRow.name ?? nodeRow[0] ?? '',
               type: label,
               filePath: nodeRow.filePath ?? nodeRow[1] ?? '',
-              distance: chunk.distance,
-              startLine: chunk.startLine,
-              endLine: chunk.endLine,
+              distance: bestChunk.distance,
+              startLine: bestChunk.startLine,
+              endLine: bestChunk.endLine,
             });
           }
         } catch {}
@@ -5181,8 +5176,11 @@ export class LocalBackend {
     // query cost no longer scales with hunk count. Files are batched because the
     // match is an unlabeled `MATCH (n)` — a scan of every node table — and a
     // wide diff used to pay one such scan per changed file.
-    const changedSymbols: any[] = [];
-    const seenSymbolIds = new Set<string>();
+    // Keyed by node id: one node can match two changed paths that share a
+    // trailing segment (`README.md` and `pkg/README.md`), once per match.
+    // Insertion order is preserved, so every output below is ordered as the
+    // rows arrived.
+    const changedSymbols = new Map<string, any>();
     // Set if a swallowed graph query fails below — surfaces `partial:true` so a
     // degraded run cannot report a false-clean `risk_level:'low'` (#2283).
     let queryDegraded = false;
@@ -5191,21 +5189,12 @@ export class LocalBackend {
     // space, so every comparison below is base-neutral (#2377).
     const hunksByPath = coalesceHunksByPath(fileDiffs);
 
-    // One [lo, hi] span per file, spanning its whole touched region, plus the
-    // anchored forms of its path. Coalesced ranges are sorted and disjoint, so
-    // the span is free — and it lets the engine drop the symbols that lie
-    // outside it instead of shipping every row in the file across the native
-    // boundary. Depth stays constant (two comparisons per file, not per hunk),
-    // so this cannot revive #2915; `hunksOverlapRange` still rejects symbols
-    // landing in the gaps between hunks.
-    //
-    // `suffix` is the path with a leading separator: a bare `ENDS WITH` is a
-    // plain string suffix, so a diff touching `lib/a.ts` also matched an indexed
-    // `src/mylib/a.ts`. Anchoring on the separator (with the exact-equality arm
-    // for a path that IS the indexed value) is the form `explain` already uses.
+    // One row per changed file: the anchored forms of its path, and the [lo, hi]
+    // span of its whole touched region (coalesced ranges are sorted and
+    // disjoint, so the span is free).
     const bounds = Array.from(hunksByPath, ([filePath, hunks]) => ({
       path: filePath,
-      suffix: `/${filePath}`,
+      suffix: pathSuffixOf(filePath),
       lo: hunks[0].startLine,
       hi: hunks[hunks.length - 1].endLine,
     }));
@@ -5221,6 +5210,13 @@ export class LocalBackend {
     // enrichCandidateLabels) AND beats `n.name IS NOT NULL` (which would
     // also drop legitimate symbols whose name loaded as NULL, e.g.
     // quoted-empty CSV fields for anonymous constructs).
+    // The path match is anchored on the separator (see path-predicate.ts): a
+    // bare ENDS WITH is a plain string suffix, so 'lib/a.ts' also matched an
+    // indexed 'src/mylib/a.ts'. The [lo, hi] span lets the engine drop symbols
+    // outside the file's touched region instead of shipping every row in the
+    // file across the native boundary — two comparisons per FILE, not per hunk,
+    // so #2915 cannot come back, and `hunksOverlapRange` below still rejects
+    // the gaps between hunks.
     const symbolQuery = `
         UNWIND $bounds AS b
         MATCH (n) WHERE (n.filePath = b.path OR n.filePath ENDS WITH b.suffix)
@@ -5231,13 +5227,8 @@ export class LocalBackend {
                n.filePath AS filePath, n.startLine AS startLine, n.endLine AS endLine
       `;
 
-    // Batches run a few at a time: `executeParameterized` checks a connection
-    // out of the per-repo pool for the duration of the query, so parallel calls
-    // never share one, and the default leaves headroom for other in-flight
-    // tools. A failed batch degrades the result (`partial`) instead of
-    // discarding the batches that succeeded next to it.
-    const batchResults = await mapBatches(
-      chunk(bounds, DETECT_CHANGES_FILE_BATCH),
+    const batchResults = await mapConcurrent(
+      chunk(bounds, LBUG_QUERY_BATCH_SIZE),
       (batch) => executeParameterized(repo.lbugPath, symbolQuery, { bounds: batch }),
       {
         onError: (error) => {
@@ -5256,12 +5247,9 @@ export class LocalBackend {
       for (const sym of rows ?? []) {
         const hunks = hunksByPath.get(String(sym.diffPath)) ?? [];
         if (!hunksOverlapRange(hunks, sym.startLine, sym.endLine)) continue;
-        // One node can still match two changed paths that share a trailing
-        // segment (`README.md` and `pkg/README.md`), once per match.
-        if (seenSymbolIds.has(sym.id)) continue;
-        seenSymbolIds.add(sym.id);
+        if (changedSymbols.has(sym.id)) continue;
 
-        changedSymbols.push({
+        changedSymbols.set(sym.id, {
           id: sym.id,
           name: sym.name,
           type: sym.type,
@@ -5273,9 +5261,8 @@ export class LocalBackend {
 
     // Find affected processes -- single batched query instead of N+1
     const affectedProcesses = new Map<string, any>();
-    if (changedSymbols.length > 0) {
-      const symIds = changedSymbols.map((s) => s.id);
-      const symNameById = new Map(changedSymbols.map((s) => [s.id, s.name]));
+    if (changedSymbols.size > 0) {
+      const symIds = Array.from(changedSymbols.keys());
       try {
         const procs = await executeParameterized(
           repo.lbugPath,
@@ -5300,7 +5287,7 @@ export class LocalBackend {
             });
           }
           affectedProcesses.get(pid)!.changed_steps.push({
-            symbol: symNameById.get(nodeId) ?? nodeId,
+            symbol: changedSymbols.get(nodeId)?.name ?? nodeId,
             step: proc.step || proc[5],
           });
         }
@@ -5324,12 +5311,16 @@ export class LocalBackend {
     // into one MCP payload (the CLI slices with --limit; an MCP client has no
     // such control). Cap the LISTING, never the counts: `changed_count` stays
     // the true total, so the risk level, the CLI's "... and N more" line and any
-    // client comparing the two still see the real number.
-    const listedSymbols = changedSymbols.slice(0, DETECT_CHANGES_MAX_LISTED_SYMBOLS);
+    // client comparing the two still see the real number. `truncated` is the
+    // key `explain`/`pdg_query`/`trace` already use for a capped window.
+    const listedSymbols = Array.from(changedSymbols.values()).slice(
+      0,
+      DETECT_CHANGES_MAX_LISTED_SYMBOLS,
+    );
 
     return {
       summary: {
-        changed_count: changedSymbols.length,
+        changed_count: changedSymbols.size,
         affected_count: processCount,
         // Distinct paths, not `fileDiffs.length`: one path can appear twice in a
         // diff (a rename reported alongside an edit) and must not count twice.
@@ -5341,12 +5332,7 @@ export class LocalBackend {
       // A swallowed query failure makes the counts/risk above incomplete — tell
       // the caller so the safety gate isn't trusted as a clean result (#2283).
       ...(queryDegraded && { partial: true }),
-      ...(listedSymbols.length < changedSymbols.length && {
-        symbols_truncated: {
-          listed: listedSymbols.length,
-          total: changedSymbols.length,
-        },
-      }),
+      ...(listedSymbols.length < changedSymbols.size && { truncated: true }),
     };
   }
 
@@ -7141,13 +7127,10 @@ export class LocalBackend {
       const processesMissingMinStep = new Set<string>();
 
       let chunksProcessed = 0;
-      for (
-        let i = 0;
-        i < impacted.length && chunksProcessed < MAX_CHUNKS;
-        i += CHUNK_SIZE, chunksProcessed++
-      ) {
-        const chunk = impacted.slice(i, i + CHUNK_SIZE);
-        const ids = chunk.map((item) => String(item.id ?? ''));
+      for (const batch of chunk(impacted, CHUNK_SIZE)) {
+        if (chunksProcessed >= MAX_CHUNKS) break;
+        chunksProcessed++;
+        const ids = batch.map((item) => String(item.id ?? ''));
 
         try {
           // Use parameterized list to avoid building long query strings
@@ -7322,8 +7305,7 @@ export class LocalBackend {
       };
 
       // Run module query chunks sequentially (safe on arm64 macOS)
-      for (let i = 0; i < allIdsArr.length; i += CHUNK_SIZE) {
-        const chunkIds = allIdsArr.slice(i, i + CHUNK_SIZE);
+      for (const chunkIds of chunk(allIdsArr, CHUNK_SIZE)) {
         await runModuleChunk(chunkIds);
       }
 
@@ -7349,8 +7331,7 @@ export class LocalBackend {
         }
       };
 
-      for (let i = 0; i < d1IdsArr.length; i += CHUNK_SIZE) {
-        const chunkIds = d1IdsArr.slice(i, i + CHUNK_SIZE);
+      for (const chunkIds of chunk(d1IdsArr, CHUNK_SIZE)) {
         await runDirectModuleChunk(chunkIds);
       }
 
@@ -7508,8 +7489,7 @@ export class LocalBackend {
         pageIdArr = pageIdArr.slice(0, maxPageIds);
         perSymbolEnrichmentCapped = true;
       }
-      for (let i = 0; i < pageIdArr.length; i += CHUNK_SIZE) {
-        const chunkIds = pageIdArr.slice(i, i + CHUNK_SIZE);
+      for (const chunkIds of chunk(pageIdArr, CHUNK_SIZE)) {
         try {
           const rows = await executeParameterized(
             repo.lbugPath,

@@ -720,7 +720,7 @@ export function parseDiffHunks(diffOutput: string): FileDiff[] {
  * are merged, so the union covers exactly the lines the raw hunks covered —
  * coalescing can never widen a range into a symbol the hunks did not touch.
  */
-export function coalesceHunks(hunks: DiffHunk[]): DiffHunk[] {
+export function coalesceHunks<T extends GraphLineRange>(hunks: T[]): GraphLineRange[] {
   if (hunks.length === 0) return [];
   const sorted = [...hunks].sort((a, b) => a.startLine - b.startLine);
   const merged: DiffHunk[] = [{ ...sorted[0] }];
@@ -734,28 +734,46 @@ export function coalesceHunks(hunks: DiffHunk[]): DiffHunk[] {
 }
 
 /**
- * Group a diff's hunks by file, in the graph's 0-based line space.
+ * An inclusive line range in the GRAPH's 0-based space, not git's 1-based one.
  *
- * The base conversion lives here, at the parse boundary, rather than in each
+ * A separate type from {@link DiffHunk} on purpose: the two carry the same two
+ * fields in different bases, and mixing them is exactly the #2377 bug — every
+ * symbol shifts one line and an edit to a symbol's last line reports nothing
+ * changed. The distinct name means a 1-based hunk cannot reach
+ * {@link hunksOverlapRange} without a conversion in between.
+ */
+export interface GraphLineRange {
+  startLine: number;
+  endLine: number;
+}
+
+/**
+ * Group a diff's hunks by file, converted into the graph's 0-based line space.
+ *
+ * The conversion lives here, at the parse boundary, rather than in each
  * consumer: `parseDiffHunks` stays faithful to git (1-based, like the `@@`
- * headers it reads) and everything downstream compares graph-native values
- * (#2377). Comparing the two raw shifts every symbol one line up, which hides
- * edits to a symbol's last line.
+ * headers it reads) and everything downstream compares graph-native values.
  *
  * A path can appear twice in one diff (e.g. a rename reported alongside an
- * edit), so hunks accumulate per path instead of the later entry winning.
+ * edit), so hunks accumulate per path instead of the later entry winning —
+ * accumulated raw first, coalesced once, so a path repeated K times costs one
+ * sort rather than K.
  */
-export function coalesceHunksByPath(fileDiffs: FileDiff[]): Map<string, DiffHunk[]> {
-  const byPath = new Map<string, DiffHunk[]>();
+export function coalesceHunksByPath(fileDiffs: FileDiff[]): Map<string, GraphLineRange[]> {
+  const rawByPath = new Map<string, GraphLineRange[]>();
   for (const fileDiff of fileDiffs) {
-    if (fileDiff.hunks.length === 0) continue;
-    const zeroBased = fileDiff.hunks.map((hunk) => ({
-      startLine: toZeroBasedLine(hunk.startLine),
-      endLine: toZeroBasedLine(hunk.endLine),
-    }));
-    const existing = byPath.get(fileDiff.filePath) ?? [];
-    byPath.set(fileDiff.filePath, coalesceHunks([...existing, ...zeroBased]));
+    const ranges = rawByPath.get(fileDiff.filePath) ?? [];
+    for (const hunk of fileDiff.hunks) {
+      ranges.push({
+        startLine: toZeroBasedLine(hunk.startLine),
+        endLine: toZeroBasedLine(hunk.endLine),
+      });
+    }
+    if (ranges.length > 0) rawByPath.set(fileDiff.filePath, ranges);
   }
+
+  const byPath = new Map<string, GraphLineRange[]>();
+  for (const [filePath, ranges] of rawByPath) byPath.set(filePath, coalesceHunks(ranges));
   return byPath;
 }
 
@@ -767,7 +785,7 @@ export function coalesceHunksByPath(fileDiffs: FileDiff[]): Map<string, DiffHunk
  * base.
  */
 export function hunksOverlapRange(
-  coalesced: DiffHunk[],
+  coalesced: GraphLineRange[],
   startLine: number,
   endLine: number,
 ): boolean {

@@ -105,7 +105,7 @@ function symbolQueryCalls(): { query: string; params: Record<string, unknown> }[
 interface DetectChangesResult {
   summary: { changed_count: number; changed_files: number };
   changed_symbols: { name?: string }[];
-  symbols_truncated?: { listed: number; total: number };
+  truncated?: boolean;
 }
 
 async function runDetectChanges(): Promise<DetectChangesResult> {
@@ -132,6 +132,21 @@ function mockSymbolRows(rows: { name: string; startLine: number; endLine: number
         }))
       : [],
   );
+}
+
+/**
+ * Commit `code.py`, replace it with `edited`, and answer the symbol query with
+ * `rows` — the setup every behaviour case below shares.
+ */
+async function detectChangesForCodePy(
+  edited: string,
+  rows: { name: string; startLine: number; endLine: number }[] = [],
+): Promise<DetectChangesResult> {
+  const repoDir = makeRepo(['code.py'], edited.trimEnd().split('\n').length);
+  writeFileSync(path.join(repoDir, 'code.py'), edited);
+  registerRepo(repoDir);
+  mockSymbolRows(rows);
+  return runDetectChanges();
 }
 
 beforeEach(() => {
@@ -210,69 +225,50 @@ describe('#2915 detect_changes hunk scaling', () => {
   });
 
   it('reports a symbol edited on its last line (0-based rows vs 1-based hunks, #2377)', async () => {
-    const repoDir = makeRepo(['code.py'], 2);
     // Touch source line 2 only. `hello` spans source lines 1–2, stored 0-based
     // as [0, 1] — the old raw comparison saw hunk [2,2] vs [0,1] and missed it.
-    writeFileSync(path.join(repoDir, 'code.py'), 'line 1\nline 2 changed\n');
-    registerRepo(repoDir);
-    mockSymbolRows([{ name: 'hello', startLine: 0, endLine: 1 }]);
-
-    const result = await runDetectChanges();
+    const result = await detectChangesForCodePy('line 1\nline 2 changed\n', [
+      { name: 'hello', startLine: 0, endLine: 1 },
+    ]);
 
     expect(result.changed_symbols.map((s) => s.name)).toEqual(['hello']);
     expect(result.summary.changed_count).toBe(1);
   });
 
   it('does not report a symbol that ends one line above the hunk', async () => {
-    const repoDir = makeRepo(['code.py'], 4);
-    writeFileSync(path.join(repoDir, 'code.py'), 'line 1\nline 2\nline 3\nline 4 changed\n');
-    registerRepo(repoDir);
     // 0-based [0,2] = source lines 1–3; the hunk is source line 4.
-    mockSymbolRows([{ name: 'above', startLine: 0, endLine: 2 }]);
-
-    const result = await runDetectChanges();
+    const result = await detectChangesForCodePy('line 1\nline 2\nline 3\nline 4 changed\n', [
+      { name: 'above', startLine: 0, endLine: 2 },
+    ]);
 
     expect(result.changed_symbols).toEqual([]);
   });
 
   it('caps the listed symbols without capping the counts', async () => {
-    const repoDir = makeRepo(['code.py'], 2);
-    writeFileSync(path.join(repoDir, 'code.py'), 'line 1 changed\nline 2\n');
-    registerRepo(repoDir);
-    mockSymbolRows(
+    const result = await detectChangesForCodePy(
+      'line 1 changed\nline 2\n',
       Array.from({ length: 1200 }, (_, i) => ({ name: `fn${i}`, startLine: 0, endLine: 1 })),
     );
-
-    const result = await runDetectChanges();
 
     expect(result.changed_symbols).toHaveLength(1000);
     // The gate's own number stays true, so the CLI's "... and N more" and any
     // client comparing list length against the count still see 1,200.
     expect(result.summary.changed_count).toBe(1200);
-    expect(result.symbols_truncated).toEqual({ listed: 1000, total: 1200 });
+    expect(result.truncated).toBe(true);
   });
 
   it('counts a path reported twice in one diff as one changed file', async () => {
-    const repoDir = makeRepo(['code.py'], 4);
-    writeFileSync(path.join(repoDir, 'code.py'), 'line 1 changed\nline 2\nline 3\nline 4\n');
-    registerRepo(repoDir);
-
-    const result = await runDetectChanges();
+    const result = await detectChangesForCodePy('line 1 changed\nline 2\nline 3\nline 4\n');
 
     expect(result.summary.changed_files).toBe(1);
   });
 
   it('reports a node matched by two changed paths once', async () => {
-    const repoDir = makeRepo(['code.py'], 2);
-    writeFileSync(path.join(repoDir, 'code.py'), 'line 1 changed\nline 2\n');
-    registerRepo(repoDir);
-    // `ENDS WITH` is a plain suffix match, so one node can come back per path.
-    mockSymbolRows([
+    // One node can come back once per changed path whose suffix it matches.
+    const result = await detectChangesForCodePy('line 1 changed\nline 2\n', [
       { name: 'hello', startLine: 0, endLine: 1 },
       { name: 'hello', startLine: 0, endLine: 1 },
     ]);
-
-    const result = await runDetectChanges();
 
     expect(result.changed_symbols.map((s) => s.name)).toEqual(['hello']);
   });
