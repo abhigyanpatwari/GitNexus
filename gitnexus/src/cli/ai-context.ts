@@ -157,7 +157,10 @@ export function generateGitNexusContent(
       ? generatedSkills
           .map(
             (s) =>
-              `| Work in the ${s.label} area (${s.symbolCount} symbols) | \`.claude/skills/${s.name}/SKILL.md\` |`,
+              // The per-cluster count is as volatile as the header parenthetical,
+              // so --no-stats drops it too (#2907) — otherwise the flag that
+              // promises "omit volatile symbol counts" left a churning one behind.
+              `| Work in the ${s.label} area${noStats ? '' : ` (${s.symbolCount} symbols)`} | \`.claude/skills/${s.name}/SKILL.md\` |`,
           )
           .join('\n')
       : '';
@@ -200,7 +203,7 @@ ${tableBody}`
 
 This project is indexed by GitNexus as **${projectName}**${noStats ? '' : ` (${stats.nodes || 0} symbols, ${stats.edges || 0} relationships, ${stats.processes || 0} execution flows)`}. Use GitNexus graph tools to understand code, assess impact, and navigate safely.
 
-> Index stale? Run \`${runner} analyze\` from the project root — it auto-selects an available runner. ${bootstrapNote}
+> Index stale? Run \`${runner} analyze --index-only\` from the project root — it auto-selects an available runner. ${bootstrapNote}
 
 ## Always Do
 
@@ -268,10 +271,32 @@ async function fileExists(filePath: string): Promise<boolean> {
 }
 
 /**
+ * Replace the block's volatile counts — the header parenthetical and the
+ * per-cluster symbol counts in the skills table — with fixed placeholders, so
+ * two renderings that differ only in those numbers compare equal.
+ *
+ * Placeholders rather than deletions: `--no-stats` REMOVES the parenthetical,
+ * which must still be written through. Deleting instead of substituting would
+ * make a with-counts block and a without-counts block compare equal, and the
+ * flag would silently stop taking effect on an already-injected file.
+ */
+function stripVolatileCounts(section: string): string {
+  return section
+    .replace(/ \(\d+ symbols, \d+ relationships, \d+ execution flows\)/g, ' (<counts>)')
+    .replace(/ \(\d+ symbols\)/g, ' (<count>)');
+}
+
+/**
  * Create or update GitNexus section in a file
  * - If file doesn't exist: create with GitNexus content
  * - If file exists without GitNexus section: append
- * - If file exists with GitNexus section: replace that section
+ * - If file exists with GitNexus section: replace that section, UNLESS the only
+ *   delta is the volatile counts (#2907). AGENTS.md and CLAUDE.md are the agent
+ *   guides teams commit, and the counts move with any code change, so a
+ *   count-only rewrite dirties a tracked file on every reindex for no reader
+ *   benefit. Live counts stay available from `gitnexus status` and
+ *   `gitnexus://repo/{name}/context`; the committed block keeps whichever
+ *   numbers it was last materially updated with.
  */
 async function upsertGitNexusSection(
   filePath: string,
@@ -283,7 +308,10 @@ async function upsertGitNexusSection(
   const exists = await fileExists(filePath);
 
   if (!exists) {
-    await fs.writeFile(filePath, content, 'utf-8');
+    // Same `.trim() + '\n'` shape the update paths write. Creating without the
+    // trailing newline made the NEXT analyze dirty a freshly committed file
+    // even at unchanged counts, purely to append it (#2907).
+    await fs.writeFile(filePath, content.trim() + '\n', 'utf-8');
     return 'created';
   }
 
@@ -344,6 +372,11 @@ async function upsertGitNexusSection(
 
       if (statsPattern.test(existingSection)) {
         const updatedSection = existingSection.replace(statsPattern, statsLine);
+        // Count-only delta — leave the committed lean block alone (#2907). A
+        // project rename, or --no-stats dropping the parenthetical, still writes.
+        if (stripVolatileCounts(updatedSection) === stripVolatileCounts(existingSection)) {
+          return 'preserved';
+        }
         const before = existingContent.substring(0, startIdx);
         const after = existingContent.substring(endIdx + GITNEXUS_END_MARKER.length);
         await fs.writeFile(filePath, (before + updatedSection + after).trim() + '\n', 'utf-8');
@@ -355,7 +388,11 @@ async function upsertGitNexusSection(
       return 'preserved';
     }
 
-    // No keep marker — replace existing section with full verbose content
+    // No keep marker — replace existing section with full verbose content,
+    // unless the counts are the only thing that moved (#2907).
+    if (stripVolatileCounts(existingSection) === stripVolatileCounts(content)) {
+      return 'preserved';
+    }
     const before = existingContent.substring(0, startIdx);
     const after = existingContent.substring(endIdx + GITNEXUS_END_MARKER.length);
     const newContent = before + content + after;
