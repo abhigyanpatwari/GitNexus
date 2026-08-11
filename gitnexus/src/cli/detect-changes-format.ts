@@ -1,4 +1,5 @@
 import { t } from './i18n/index.js';
+import { formatSymbolLine } from './format-symbol.js';
 
 type DetectChangesSummary = {
   changed_files?: number;
@@ -30,23 +31,6 @@ type DetectChangesResult = {
   changed_symbols?: ChangedSymbol[];
   affected_processes?: AffectedProcess[];
 };
-
-/**
- * One indented `Type name → path` listing line for a symbol. Shared by the
- * `detect_changes` CLI formatter and the eval-server `query` formatter so the
- * two renderings cannot drift apart.
- *
- * `||`, not `??`: a node whose label came back as an EMPTY STRING (several node
- * types do — see enrichCandidateLabels) still needs the placeholder, and `??`
- * would print the empty string instead.
- */
-export function formatSymbolLine(
-  type: string | undefined,
-  name: string | undefined,
-  filePath: string | undefined,
-): string {
-  return `  ${type || 'Symbol'} ${name || '?'} → ${filePath || '?'}`;
-}
 
 export function formatDetectChangesResult(result: unknown): string {
   const payload = (result ?? {}) as DetectChangesResult;

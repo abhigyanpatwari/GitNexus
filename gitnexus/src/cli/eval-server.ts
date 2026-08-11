@@ -44,7 +44,8 @@ import {
 } from '../mcp/local/local-backend.js';
 import { logger } from '../core/logger.js';
 import { cliInfo, cliWarn, cliError } from './cli-message.js';
-import { formatDetectChangesResult, formatSymbolLine } from './detect-changes-format.js';
+import { formatDetectChangesResult } from './detect-changes-format.js';
+import { formatSymbolLine } from './format-symbol.js';
 
 export { formatDetectChangesResult } from './detect-changes-format.js';
 

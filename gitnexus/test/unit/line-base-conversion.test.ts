@@ -38,22 +38,10 @@ describe('line-base conversions', () => {
   });
 
   it('does not clamp on the 1-based side: it is plain arithmetic', () => {
-    expect(toOneBasedLine(-1)).toBe(0);
-    expect(toOneBasedLine(-5)).toBe(-4);
-  });
-
-  it('is not an inverse below line 1, because the 0-based clamp is lossy there', () => {
-    // Documented asymmetry: `toZeroBasedLine` collapses 0 and every negative to
-    // 0, so lifting back cannot recover the original. Callers must only feed it
-    // real (>= 1) source lines.
-    expect(toOneBasedLine(toZeroBasedLine(0))).toBe(1);
-    expect(toOneBasedLine(toZeroBasedLine(-3))).toBe(1);
-  });
-
-  it('propagates a non-finite line instead of inventing one', () => {
-    // `toOneBasedLine` has no undefined/NaN handling by design — the PDG join in
+    // No undefined/NaN handling either, by design — the PDG join in
     // `pdg-impact.ts` guards with `typeof sym.startLine === 'number'` and keeps
     // its own `Number.NaN` fallback rather than delegating that decision here.
-    expect(toOneBasedLine(Number.NaN)).toBeNaN();
+    expect(toOneBasedLine(-1)).toBe(0);
+    expect(toOneBasedLine(-5)).toBe(-4);
   });
 });

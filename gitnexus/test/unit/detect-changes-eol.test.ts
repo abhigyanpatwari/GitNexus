@@ -4,6 +4,7 @@ import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { describe, expect, it } from 'vitest';
 import { buildDetectChangesDiffArgs } from '../../src/mcp/local/local-backend.js';
+import { commitAll, initGitRepo } from '../helpers/temp-git-repo.js';
 
 describe('detect_changes EOL filtering', () => {
   it.each([
@@ -22,12 +23,9 @@ describe('detect_changes EOL filtering', () => {
   it('suppresses CRLF-only changes but retains other whitespace changes', () => {
     const repoDir = mkdtempSync(path.join(tmpdir(), 'gitnexus-detect-eol-'));
     try {
-      execFileSync('git', ['init', '-q'], { cwd: repoDir });
-      execFileSync('git', ['config', 'user.email', 'test@example.com'], { cwd: repoDir });
-      execFileSync('git', ['config', 'user.name', 'Test'], { cwd: repoDir });
+      initGitRepo(repoDir);
       writeFileSync(path.join(repoDir, 'sample.ts'), 'const first = 1;\r\nconst second = 2;\r\n');
-      execFileSync('git', ['add', 'sample.ts'], { cwd: repoDir });
-      execFileSync('git', ['commit', '-q', '-m', 'initial'], { cwd: repoDir });
+      commitAll(repoDir, 'initial');
 
       writeFileSync(path.join(repoDir, 'sample.ts'), 'const first = 1;\nconst second = 2;\n');
       const diffArgs = buildDetectChangesDiffArgs('unstaged');
