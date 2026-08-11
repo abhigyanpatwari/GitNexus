@@ -103,6 +103,26 @@
     "captureGroups": 33,
     "digest": "9bbba66d384a47803aef95ef963224bbb80838340cdfb67560f2af5e81aa637a"
   },
+  "go-extern-qualified-signatures/alpha/alpha.go": {
+    "captureGroups": 5,
+    "digest": "1cd2e9e3bab3d04a54fd34a64d88ee68cd89a70a5b89e7657cba72025fbb2021"
+  },
+  "go-extern-qualified-signatures/app/app.go": {
+    "captureGroups": 21,
+    "digest": "5638e8a84cb862359620c8c5a1078e08e355d1a85883d6b166f5fab12bb33370"
+  },
+  "go-extern-qualified-signatures/beta/beta.go": {
+    "captureGroups": 11,
+    "digest": "af2c5772cad79b3a88c86764290f8806fb9a6e8fc12e4c22095eabdc2555b5a6"
+  },
+  "go-extern-qualified-signatures/memory/memory.go": {
+    "captureGroups": 47,
+    "digest": "f079bb9c78b2e38473d0fb7e88ad7b3017abdb5716405ac69929ee40afd5e316"
+  },
+  "go-extern-qualified-signatures/store/store.go": {
+    "captureGroups": 8,
+    "digest": "6b5ed1163020250ec52ae6b67cad03c68a5247971fc10c7b6281821434badfe3"
+  },
   "go-field-types/cmd/main.go": {
     "captureGroups": 10,
     "digest": "dfe8fb6cff7e28cc209ad1237b28e11ee25ca34e89d7101dfa3a69de3186cac9"
@@ -446,6 +466,10 @@
   "go-type-assertion/models.go": {
     "captureGroups": 18,
     "digest": "6e894e96dc0287118d6543bf7c7bcd6c0ae87ad5d1b812e612364c5e4465d340"
+  },
+  "go-undecided-satisfaction/repo.go": {
+    "captureGroups": 24,
+    "digest": "f06022a5a1cfe7bfa03cd86e21135028a83ad99331e8b9af01635d29d6a2a51b"
   },
   "go-variadic-resolution/cmd/main.go": {
     "captureGroups": 6,

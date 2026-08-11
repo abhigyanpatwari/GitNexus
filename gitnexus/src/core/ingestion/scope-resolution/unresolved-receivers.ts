@@ -14,7 +14,7 @@
  */
 
 import { createLogger } from '../../logger.js';
-import { compareCodeUnits } from '../../../lib/utils.js';
+import { rankAndCap, lookupCount } from './summary-maps.js';
 
 import type { ResolutionOutcome } from './resolution-outcome.js';
 
@@ -72,30 +72,7 @@ export interface UnresolvedReceiverSummary {
  * every analyze for no behavioural reason. ONE comparator, shared by the
  * in-program and external maps: two hand-copied comparators that must stay
  * identical or the artifact churns on one map and not the other is exactly the
- * drift this contract cannot tolerate.
- *
- * `omitted` is the number of distinct names past the cap, so the caller can
- * report truncation rather than silently losing entries.
  */
-function rankAndCap(
-  counts: Map<string, number>,
-  cap: number = MAX_UNRESOLVED_RECEIVER_MEMBERS,
-): {
-  kept: [string, number][];
-  omitted: number;
-} {
-  const ranked = [...counts.entries()].sort(
-    // `compareCodeUnits`, not `localeCompare` (#2787). The tiebreak feeds the
-    // `.slice()` below, so locale-sensitive collation would decide WHICH
-    // entries survive the cap, not merely how they are listed — and ICU order
-    // varies by platform and ICU build, so two runs over one repo could persist
-    // different sets. Key-based lookup is unaffected either way.
-    ([aName, aCount], [bName, bCount]) => bCount - aCount || compareCodeUnits(aName, bName),
-  );
-  const kept = ranked.slice(0, cap);
-  return { kept, omitted: ranked.length - kept.length };
-}
-
 /**
  * A `receiver-unresolved` drop at a CALL site.
  *
@@ -167,8 +144,11 @@ export function summarizeUnresolvedReceivers(
   // "nothing was lost" is distinguishable from "nothing was measured".
   if (totalSites === 0 && externalSites === 0) return undefined;
 
-  const { kept, omitted: omittedNames } = rankAndCap(counts);
-  const { kept: externalKept, omitted: externalOmittedNames } = rankAndCap(externalCounts);
+  const { kept, omitted: omittedNames } = rankAndCap(counts, MAX_UNRESOLVED_RECEIVER_MEMBERS);
+  const { kept: externalKept, omitted: externalOmittedNames } = rankAndCap(
+    externalCounts,
+    MAX_UNRESOLVED_RECEIVER_MEMBERS,
+  );
 
   return {
     counts: Object.fromEntries(kept),
@@ -202,12 +182,7 @@ export function lookupUnresolvedCallCount(
   summary: UnresolvedReceiverSummary | undefined,
   symName: string,
 ): number | undefined {
-  const counts = summary?.counts;
-  if (counts === undefined || symName.length === 0) return undefined;
-  if (!Object.hasOwn(counts, symName)) return undefined;
-  const sites = counts[symName];
-  if (typeof sites !== 'number' || !Number.isFinite(sites) || sites <= 0) return undefined;
-  return sites;
+  return lookupCount(summary?.counts, symName);
 }
 
 /**
@@ -221,12 +196,7 @@ export function lookupExternalCallCount(
   summary: UnresolvedReceiverSummary | undefined,
   symName: string,
 ): number | undefined {
-  const counts = summary?.externalCounts;
-  if (counts === undefined || symName.length === 0) return undefined;
-  if (!Object.hasOwn(counts, symName)) return undefined;
-  const sites = counts[symName];
-  if (typeof sites !== 'number' || !Number.isFinite(sites) || sites <= 0) return undefined;
-  return sites;
+  return lookupCount(summary?.externalCounts, symName);
 }
 
 /**

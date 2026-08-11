@@ -337,6 +337,41 @@ export interface StructuralImplementor {
   readonly receiverForm: 'value' | 'pointer';
 }
 
+/**
+ * One interface whose satisfaction check could not be COMPLETED for at least
+ * one candidate type — not one that was checked and came out negative.
+ *
+ * The distinction is the whole point (#2873): a detector that reports only
+ * positives makes "nobody implements this" and "we could not tell whether
+ * anybody implements this" byte-identical, and the second one silently becomes
+ * a confident zero in `impact`. Consumers must not turn these into edges; they
+ * exist so a query can say it is answering with a lower bound.
+ */
+export interface UndecidedSatisfaction {
+  readonly interfaceDefId: string;
+  readonly interfaceName: string;
+  readonly filePath: string;
+  /** How many candidate types went unjudged for this interface. */
+  readonly undecidedCandidates: number;
+  /**
+   * The candidate types themselves, by name.
+   *
+   * Both sides are recorded because a query arrives from either one. Asking
+   * `impact` about the IMPLEMENTATION — the case #2873 reports — never touches
+   * the interface node at all: the walk starts at a method whose owner has no
+   * heritage edge precisely because the check was undecided, so an
+   * interface-keyed record alone would leave that query unhedged.
+   */
+  readonly candidateNames: readonly string[];
+}
+
+/** What `detectInterfaceImplementations` answers: the positives, plus the
+ *  questions it could not answer. */
+export interface StructuralImplementationResult {
+  readonly implementations: Map<string, readonly StructuralImplementor[]>;
+  readonly undecided: readonly UndecidedSatisfaction[];
+}
+
 export interface ScopeResolver {
   /** Identity for telemetry + per-language flag check. */
   readonly language: SupportedLanguages;
@@ -1302,7 +1337,7 @@ export interface ScopeResolver {
     parsedFiles: readonly ParsedFile[],
     indexes: ScopeResolutionIndexes,
     model: SemanticModel,
-  ) => Map<string, readonly StructuralImplementor[]>;
+  ) => StructuralImplementationResult;
 
   /**
    * Optional: mirror typeBindings from namespace-import target modules

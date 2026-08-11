@@ -93,7 +93,7 @@ import {
   collectDeferredIndirectSites,
   emitCallableValueFlow,
 } from '../passes/callable-value-flow.js';
-import type { ScopeResolver } from '../contract/scope-resolver.js';
+import type { ScopeResolver, UndecidedSatisfaction } from '../contract/scope-resolver.js';
 import { findEnclosingClassDef, resolveInheritanceBaseInScope } from '../scope/walkers.js';
 import { buildWorkspaceResolutionIndex } from '../workspace-index.js';
 import type { ResolutionOutcome, ResolutionOutcomeRecorder } from '../resolution-outcome.js';
@@ -231,8 +231,8 @@ function emitDetectedInterfaceImplementations(
   provider: ScopeResolver,
   indexes: ReturnType<typeof finalizeScopeModel>,
   model: SemanticModel,
-): number {
-  if (provider.detectInterfaceImplementations === undefined) return 0;
+): readonly UndecidedSatisfaction[] {
+  if (provider.detectInterfaceImplementations === undefined) return [];
 
   const graphIdByDefId = new Map<string, string>();
   for (const parsed of parsedFiles) {
@@ -248,9 +248,8 @@ function emitDetectedInterfaceImplementations(
     existing.add(`${rel.sourceId}->${rel.targetId}`);
   }
 
-  let emitted = 0;
   const detected = provider.detectInterfaceImplementations(parsedFiles, indexes, model);
-  for (const [interfaceDefId, implementorDefIds] of detected) {
+  for (const [interfaceDefId, implementorDefIds] of detected.implementations) {
     const targetId = graphIdByDefId.get(interfaceDefId);
     if (targetId === undefined) continue;
     for (const implementor of implementorDefIds) {
@@ -277,11 +276,13 @@ function emitDetectedInterfaceImplementations(
             ? `${provider.language}-structural-implements-pointer`
             : `${provider.language}-structural-implements`,
       });
-      emitted++;
     }
   }
 
-  return emitted;
+  // The interfaces this provider could not decide. They mint no edges — they
+  // exist so a query can report a lower bound instead of a confident zero
+  // (#2873); see `undecided-satisfaction.ts`.
+  return detected.undecided;
 }
 
 export type ScopeResolutionSubPhase =
@@ -491,6 +492,14 @@ interface RunScopeResolutionStats {
   }[];
   readonly resolutionOutcomes: readonly ResolutionOutcome[];
   /**
+   * Interfaces whose structural-satisfaction check could not be completed for
+   * at least one candidate type (#2873). NOT the same as "no implementors" —
+   * these are questions the analyzer could not answer, and they are reported so
+   * `impact` can hedge a zero instead of asserting one. Empty for every
+   * language whose resolver has no `detectInterfaceImplementations` hook.
+   */
+  readonly undecidedSatisfaction: readonly UndecidedSatisfaction[];
+  /**
    * Per-function taint summaries harvested in the pdg window (#2084 M4 U1).
    * Empty unless `input.pdg === true` and the language has a registered taint
    * model. Keyed by resolved `Function`/`Method` node id; the cross-function
@@ -516,6 +525,7 @@ export function runScopeResolution(
   const callableFlowOnly = provider.scopeResolutionEdgeMode === 'callable-flow-only';
   const onWarn = input.onWarn ?? (() => {});
   const resolutionOutcomes: ResolutionOutcome[] = [];
+  const undecidedSatisfaction: UndecidedSatisfaction[] = [];
   const recordResolutionOutcome: ResolutionOutcomeRecorder = (outcome) => {
     resolutionOutcomes.push(outcome);
     input.recordResolutionOutcome?.(outcome);
@@ -625,6 +635,7 @@ export function runScopeResolution(
       uniqueNamePropertyCrossLanguage: 0,
       uniqueNamePropertyCrossLanguageNames: [],
       resolutionOutcomes,
+      undecidedSatisfaction,
       functionSummaries: [],
       callSummaries: [],
     };
@@ -661,6 +672,7 @@ export function runScopeResolution(
       uniqueNamePropertyCrossLanguage: 0,
       uniqueNamePropertyCrossLanguageNames: [],
       resolutionOutcomes,
+      undecidedSatisfaction,
       functionSummaries: [],
       callSummaries: [],
     };
@@ -721,13 +733,15 @@ export function runScopeResolution(
       ? buildGraphNodeLookup(graph)
       : nodeLookup;
   if (!callableFlowOnly) {
-    emitDetectedInterfaceImplementations(
-      graph,
-      parsedFiles,
-      postHeritageNodeLookup,
-      provider,
-      finalized,
-      readonlyModel,
+    undecidedSatisfaction.push(
+      ...emitDetectedInterfaceImplementations(
+        graph,
+        parsedFiles,
+        postHeritageNodeLookup,
+        provider,
+        finalized,
+        readonlyModel,
+      ),
     );
   }
   const mroByClassDefId = provider.buildMro(graph, parsedFiles, postHeritageNodeLookup);
@@ -1603,6 +1617,7 @@ export function runScopeResolution(
     uniqueNamePropertyCrossLanguage: uniqueNameProperties.crossLanguageOnly,
     uniqueNamePropertyCrossLanguageNames: uniqueNameProperties.crossLanguageOnlyNames,
     resolutionOutcomes,
+    undecidedSatisfaction,
     functionSummaries: harvestedSummaries,
     callSummaries: harvestedCallSummaries,
   };
