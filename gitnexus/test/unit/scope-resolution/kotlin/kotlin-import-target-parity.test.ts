@@ -146,13 +146,6 @@ describe('resolveKotlinImportTarget — index parity', () => {
     expect(resolve(['top/data/Repo.kt'], 'data.something')).toEqual(['top/data/Repo.kt']);
   });
 
-  it('a repeated name that is NOT the parent directory stays out of the bucket', () => {
-    // The rule is "the parent directory is named `s`", not "`s` appears
-    // anywhere in the path" — dropping the two guards must not widen it that
-    // far. `data` is a component of the path but the parent is `mid`.
-    expect(resolve(['top/data/mid/Repo.kt'], 'data.something')).toBeNull();
-  });
-
   it('the package directory is derived from the normalized path, not the raw one', () => {
     // A backslash path whose `dirChildren` key must come from the normalized
     // form: reading the raw path's last separator instead would make the whole
@@ -164,8 +157,15 @@ describe('resolveKotlinImportTarget — index parity', () => {
     expect(resolve(['win\\pkg\\A.kt'], 'pkg.someFunction')).toEqual(['win\\pkg\\A.kt']);
   });
 
-  it('a path starting with the directory name is not a child of it unless direct', () => {
+  it('a name that is not the PARENT directory stays out of the bucket', () => {
+    // The rule is "the parent directory is named `s`", not "`s` appears
+    // anywhere in the path" — dropping the two guards must not widen it that
+    // far. Leading and mid-path, since those were the two positions the guards
+    // distinguished; the new implementation has no positional logic at all, so
+    // one case would do, and the second is kept only because it is the exact
+    // shape the widened cases above use with the last segment changed.
     expect(resolve(['data/sub/Repo.kt'], 'data.something')).toBeNull();
+    expect(resolve(['top/data/mid/Repo.kt'], 'data.something')).toBeNull();
     expect(resolve(['data/Repo.kt'], 'data.something')).toEqual(['data/Repo.kt']);
   });
 

@@ -25,8 +25,9 @@
  *   - a wildcard import drops its trailing `.*` before any of that runs;
  *   - paths are compared normalized (`\` → `/`) but returned RAW.
  *
- * So this file keeps a VERBATIM copy of the pre-change implementation — the
- * `resolveJavaImportTarget` that shipped before #2908, scans and all — and
+ * So this file keeps a copy of the pre-change implementation — the
+ * `resolveJavaImportTarget` that shipped before #2908, scans and all, minus the
+ * one rule #2881 deliberately removed (see tie-break 3) — and
  * asserts the new one agrees with it, both on hand-built corpora built to force
  * exactly those cases and on a generated corpus replayed under three insertion
  * orders — order being the only channel most of these tie-breaks travel on.
@@ -49,7 +50,7 @@ import type { ParsedImport, WorkspaceIndex } from 'gitnexus-shared';
 import { resolveJavaImportTarget } from '../../../src/core/ingestion/languages/java/import-target.js';
 import { CountingSet } from '../../helpers/counting-file-set.js';
 
-// ─── verbatim pre-change implementation ──────────────────────────────────────
+// ─── pre-change implementation, minus the rule #2881 removed ─────────────────
 
 interface LegacyJavaResolveContext {
   readonly fromFile: string;
@@ -84,8 +85,7 @@ function legacyResolveJavaImportTarget(
   let exactFile: string | null = null;
   let suffixFile: string | null = null;
   let directoryChild: string | null = null;
-  const dirPrefix = `${pathLike}/`;
-  const suffixDirPrefix = `/${dirPrefix}`;
+  const suffixDirPrefix = `/${pathLike}/`;
 
   for (const raw of ctx.allFilePaths) {
     const f = raw.replace(/\\/g, '/');
@@ -121,8 +121,7 @@ function legacyResolveJavaImportTarget(
     if (tail === '') continue;
     const tailFile = `${tail}.java`;
     const tailSuffix = `/${tailFile}`;
-    const tailDir = `${tail}/`;
-    const tailSuffixDir = `/${tailDir}`;
+    const tailSuffixDir = `/${tail}/`;
     let tailDirectChild: string | null = null;
     for (const raw of ctx.allFilePaths) {
       const f = raw.replace(/\\/g, '/');
@@ -230,6 +229,11 @@ const HAND_CASES: readonly Case[] = [
     target: 'com.example',
   },
   {
+    // Kept beside `self-nested-directory-answers-the-outer-package` even though
+    // both now resolve to the same file: this one addresses the FULL path and
+    // hits the exact-file/suffix tier, that one addresses the outer package and
+    // hits the directory-child tier. Before #2881 the pair separated a hit from
+    // a null; it now separates two tiers, which is why it is still two cases.
     label: 'self-nested-directory-matches-full-path',
     files: ['com/example/com/example/Deep.java'],
     target: 'com.example.com.example',

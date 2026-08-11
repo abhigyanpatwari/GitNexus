@@ -27,8 +27,16 @@
  * `internal/…/internal`, `Models/…/Models`, and the reported shape
  * `data/src/main/kotlin/com/example/data/Repo.kt`, where `import data.helper`
  * resolved to null. Kotlin was fixed first, in its own `dirChildren`
- * (`languages/kotlin/import-target.ts`); this index and the C# csproj index
- * followed, so the four resolvers agree again.
+ * (`languages/kotlin/import-target.ts`); this index, the C# csproj index and
+ * the legacy `go.ts` scan followed.
+ *
+ * The strongest evidence that the rule was accidental is that a sixth
+ * implementation of the same question never had it. `import-resolvers/jvm.ts`
+ * answers "files directly inside a directory ending with <packagePath>" for
+ * Java and Kotlin wildcard imports, and has used `lastIndexOf` since #488 — it
+ * is live, wired as `importResolver` by `languages/{java,kotlin}.ts`. So before
+ * #2881 the Java and Kotlin LanguageProvider hook and their ScopeResolver hook
+ * disagreed about which files a package holds. Now all six agree.
  *
  * The length guard the `indexOf` form needed is gone with it: `endsWith` is
  * false for a shorter `D` instead of comparing -1 to -1.

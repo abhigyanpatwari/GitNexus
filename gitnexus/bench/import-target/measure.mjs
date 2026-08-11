@@ -730,10 +730,17 @@ function unwiredLanguage(where, lang) {
  * exactly one entry. A nested same-name directory in one repo slice is the
  * shape the first-`indexOf` tie-break used to reject (see package-dir-index.ts);
  * #2881 removed that tie-break from every resolver that had it, so the go,
- * csharp, java and kotlin arms all resolve their `d % 7` slice now. Each of
- * those four languages repeats the shape at whatever granularity ITS query uses
- * — the last segment for csharp/java/kotlin, the whole package path for go —
- * because a repeat the query cannot even ask about leaves the arm blind.
+ * csharp, java and kotlin arms all resolve their `d % 7` slice now.
+ *
+ * A repeat the query cannot ask about leaves the arm blind, which is why go's
+ * slice repeats the WHOLE package path: a Go import addresses `src/pkg{d}`, and
+ * `…/internal/pkg{d}` does not end with that, so the old rule was never even
+ * reached and every go arm sat still through the fix. Java, C# and Kotlin query
+ * the whole dotted path FIRST and only fall back to the tail through
+ * progressive stripping, so their slices — which repeat the last segment only —
+ * move through that fallback rather than the primary query. The consequence is
+ * measured and worth knowing: a partial revert that reinstates first-occurrence
+ * only for multi-segment package paths is caught on the go arm alone.
  */
 function uniqueDir(lang, d, i) {
   // Go's nested slice repeats the WHOLE queried path (`src/pkg{d}`), not just
@@ -743,6 +750,15 @@ function uniqueDir(lang, d, i) {
   // when #2881 removed that rule, which would have shipped a widened bucket
   // with no bench coverage while C# and Java were re-baselined for it.
   if (lang === 'go') return d % 7 === 0 ? `src/pkg${d}/internal/src/pkg${d}` : `src/pkg${d}`;
+  // The repeat is the whole queried path (`App.Ns{d}` -> `App/Ns{d}`), not just
+  // the leaf: C# queries the full dotted path first and only reaches the leaf
+  // through progressive stripping, so a leaf-only repeat exercises the fallback
+  // rather than the primary query (#2881).
+  // Leaf-only repeat, deliberately: this layout is shared with the
+  // `csharp_csproj` arm, whose configs mint `dirPrefix` against `src/Ns{d}`, so
+  // deepening it to the full `App/Ns{d}` query path resolves that arm to ZERO
+  // and breaks its same-workload invariant. C# therefore exercises the removed
+  // rule through progressive stripping rather than through its primary query.
   if (lang === 'csharp') return d % 7 === 0 ? `src/Ns${d}/Sub/Ns${d}` : `src/Ns${d}`;
   if (lang === 'dart') return d % 3 === 0 ? `lib/feature${d}` : `pkg/feature${d}`;
   if (lang === 'kotlin') {
@@ -803,7 +819,16 @@ function collideDir(lang, d, i) {
   if (lang === 'dart') return `pkg${d}/lib/src`;
   if (lang === 'kotlin') {
     return d % 7 === 0
-      ? `mod${d}/src/main/kotlin/com/example/models/inner/models`
+      ? // Repeats the WHOLE queried path (`com.example.models`), not just the
+        // `models` leaf. With a leaf-only repeat this arm was structurally
+        // blind to the #2881 rule: a full revert of the Kotlin guards left both
+        // collide fingerprints unmoved, because `com/example/models` is not a
+        // suffix of `…/models/inner/models` and the query never reached the
+        // rule. Deepening it is the only corpus edit in this file that buys
+        // coverage — the same deepening applied to the java and kotlin UNIQUE
+        // arms was measured and reverted, because progressive stripping lands
+        // those queries on the same file either way.
+        `mod${d}/src/main/kotlin/com/example/models/inner/com/example/models`
       : `mod${d}/src/main/kotlin/com/example/models`;
   }
   if (lang === 'php') return `svc${d}/src/Models`;
@@ -1841,8 +1866,9 @@ const HEAP_PROBE_TARGET = {
   javascript: 'vendor0/lib/missing',
   python: 'vendor0.deep.missing',
   c: 'vendor0/missing.h',
-  // The nine below are the BOUNDED tier — see `HEAP_BOUNDED`. Same rule as the
-  // eight above: a spelling `uniqueTarget` already mints for that language, and
+  // The entries below cover the BOUNDED tier — see `HEAP_BOUNDED`, which
+  // derives to cobol, swift and rust; the rest were promoted. Same rule as the
+  // budgeted ones above: a spelling `uniqueTarget` already mints for that language, and
   // one that MISSES, so the reading is the index and the cascade runs to the
   // end. Chosen from the miss family that reaches furthest into each cascade:
   //   - `go` takes the GOPATH fallback, one `filesDirectlyInPkgDir` per path
@@ -2599,9 +2625,12 @@ for (const lang of HEAP_BUDGETED) {
  * TIER TWO, the bounded arms: ONE comparison, and what it is a comparison FOR.
  *
  * `heap_bound_bytes` is the "exclusion still holds" bound. It does not claim
- * these nine indexes are small enough, which is what a ceiling claims about a
+ * these indexes are small enough, which is what a ceiling claims about a
  * budgeted one; it claims each is still the SIZE the decision to leave it out
- * was taken on. The re-entry condition the MEMORY section states — "if any of
+ * was taken on. `HEAP_BOUNDED` derives to THREE today — cobol, swift, rust.
+ * The prose below still counts nine because six were promoted to tier one
+ * after it was written; read the counts as history, and `HEAP_BOUNDED` itself
+ * as the answer. The re-entry condition the MEMORY section states — "if any of
  * the four ever diverges in what it ASKS, it earns an arm the same way" — is a
  * claim about growth, and this is the only thing in the file that can see it.
  *
@@ -2609,13 +2638,12 @@ for (const lang of HEAP_BUDGETED) {
  * because it builds nothing, so any floor at all would be a floor on noise and
  * `1.5 x 0 B` is 0 — its bound is ABSOLUTE (1 MiB) for the same reason: a
  * multiplier on 16 B fails on the first byte of anything. The other eight are
- * stable enough today to floor (0.24% peak-to-peak at worst over five runs) and
- * two of them — kotlin at 40.82 MiB and dart at 7.47 — are larger than budgeted
- * arms, so a floor there would be worth having. That is a promotion to tier one,
- * with a ceiling and a recorded reading, and it is not this change: a floor
- * without them would assert "still measuring" against a number nothing else
- * bounds. What this tier is NOT is a weaker version of tier one — it is the
- * different question, asked of every language instead of eight.
+ * stable enough today to floor (0.24% peak-to-peak at worst over five runs).
+ * The two this paragraph named as floor candidates, kotlin and dart, TOOK that
+ * promotion: both now carry a ceiling and a recorded reading in tier one, which
+ * is what the paragraph said the promotion had to be. What this tier is NOT is a
+ * weaker version of tier one — it is a different question, asked of the
+ * languages tier one does not ask it of.
  */
 const heapBoundScope =
   `That leaves the arm bounded by nothing, which is the state all nine of these were in before ` +

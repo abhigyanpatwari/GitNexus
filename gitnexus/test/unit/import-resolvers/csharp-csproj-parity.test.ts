@@ -102,6 +102,11 @@ function legacyResolveCSharpImportInternal(
       if (suffixResult) return [suffixResult];
     }
 
+    // Shared by steps 2 and 3 — the same needle, and since #2881 the same
+    // `indexOf`-only-when-empty rule, so it is declared once rather than
+    // re-derived per step.
+    const dirTrail = dirPrefix + '/';
+
     // 2. Try as directory: all .cs files directly inside (namespace import)
     if (index) {
       const dirFiles = index.getFilesInDir(dirPrefix, '.cs');
@@ -112,9 +117,8 @@ function legacyResolveCSharpImportInternal(
         // `indexOf`: its needle is a bare '/', and step 3 answers that query
         // from the one-directory-deep set, which only the first occurrence
         // expresses.
-        const needle2 = dirPrefix + '/';
         const prefixIdx =
-          dirPrefix === '' ? normalized.indexOf(needle2) : normalized.lastIndexOf(needle2);
+          dirPrefix === '' ? normalized.indexOf(dirTrail) : normalized.lastIndexOf(dirTrail);
         if (prefixIdx < 0) continue;
         const afterDir = normalized.substring(prefixIdx + dirPrefix.length + 1);
         if (!afterDir.includes('/')) {
@@ -126,7 +130,6 @@ function legacyResolveCSharpImportInternal(
 
     // 3. Linear scan fallback for directory matching
     if (results.length === 0) {
-      const dirTrail = dirPrefix + '/';
       for (let i = 0; i < normalizedFileList.length; i++) {
         const normalized = normalizedFileList[i];
         if (!normalized.endsWith('.cs')) continue;
@@ -195,13 +198,14 @@ function skipStep3WhenIndexed(
       if (suffixResult) return [suffixResult];
     }
 
+    const dirTrail = dirPrefix + '/';
+
     if (index) {
       const dirFiles = index.getFilesInDir(dirPrefix, '.cs');
       for (const f of dirFiles) {
         const normalized = f.replace(/\\/g, '/');
-        const needle2 = dirPrefix + '/';
         const prefixIdx =
-          dirPrefix === '' ? normalized.indexOf(needle2) : normalized.lastIndexOf(needle2);
+          dirPrefix === '' ? normalized.indexOf(dirTrail) : normalized.lastIndexOf(dirTrail);
         if (prefixIdx < 0) continue;
         const afterDir = normalized.substring(prefixIdx + dirPrefix.length + 1);
         if (!afterDir.includes('/')) {
@@ -212,7 +216,6 @@ function skipStep3WhenIndexed(
       continue;
     }
 
-    const dirTrail = dirPrefix + '/';
     for (let i = 0; i < normalizedFileList.length; i++) {
       const normalized = normalizedFileList[i];
       if (!normalized.endsWith('.cs')) continue;

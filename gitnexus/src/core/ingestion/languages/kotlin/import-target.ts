@@ -201,9 +201,11 @@ const getKotlinFileIndex = perFileSet((allFilePaths: ReadonlySet<string>): Kotli
    * directory, in the order the per-file walk produced, and every later file in
    * that directory finds those keys already present — so the key set, the Map's
    * key insertion order and every bucket's order are what the per-file form
-   * produced. Asserted structurally, not just through the fingerprint: the
-   * fingerprint only observes the index through the four resolver tiers, so a
-   * key-order move no corpus query reaches would survive it.
+   * produced. `kotlin-index-internals.test.ts` asserts that directly, over the
+   * built maps rather than through the resolver: the correctness fingerprint
+   * sees this index only through the four tiers, and `dirChildren` is only ever
+   * read by `.get(key)`, so a Map key-ORDER move has no consumer and no
+   * fingerprint could catch one.
    *
    * Dropped with this frame, so it costs nothing retained.
    */
@@ -234,10 +236,9 @@ const getKotlinFileIndex = perFileSet((allFilePaths: ReadonlySet<string>): Kotli
     if (dirEnd < 0) continue; // repo-root file has no package directory
     const dir = stem.slice(0, dirEnd);
 
-    const memo = dirKeys.get(dir);
     // The file's own directory always qualifies: the old scan's `atRoot` branch
     // matched `norm.startsWith(dir + '/')` and found no '/' after it.
-    const keys = memo ?? [dir];
+    let keys = dirKeys.get(dir);
 
     // Every component-suffix of the directory also qualifies: `s` is a suffix
     // of `dir` starting after a '/', so `dir` ends with `/s` by construction
@@ -270,14 +271,18 @@ const getKotlinFileIndex = perFileSet((allFilePaths: ReadonlySet<string>): Kotli
     // resolving to null on the very shape this fixes. The bucket is either
     // right or it is not; there is no version of it that is right for one
     // consumer and wrong for the other.
-    if (memo === undefined) {
+    if (keys === undefined) {
+      keys = [dir];
       for (let i = 0; i < dirEnd; i++) {
-        if (dir[i] !== '/') continue;
-        keys.push(dir.slice(i + 1));
+        if (dir[i] === '/') keys.push(dir.slice(i + 1));
       }
       dirKeys.set(dir, keys);
     }
-    for (const key of keys) addChild(dirChildren, key, raw);
+    for (const key of keys) {
+      const bucket = dirChildren.get(key);
+      if (bucket === undefined) dirChildren.set(key, [raw]);
+      else bucket.push(raw);
+    }
   }
 
   // `findKotlinPackageFiles` hands a bucket straight out of the index — the
@@ -290,15 +295,12 @@ const getKotlinFileIndex = perFileSet((allFilePaths: ReadonlySet<string>): Kotli
   // later import in the run. Freezing makes the contract true at runtime, so a
   // future mutation is a loud TypeError instead of a silent edge move.
   //
-  // COMPACTED as they are frozen. `addChild` mints a bucket as `[raw]` and
-  // `push`es the rest, and V8 grows an array's backing store by
-  // `old + old/2 + 16`, so the SECOND child takes a 1-slot store to 17 and the
-  // eighteenth takes it to 41 — and every bucket then retains its overshoot for
-  // the life of the index. `slice()` allocates exactly `length`. Same fix and
-  // same accounting as the python `byBasename` sentence in
-  // `bench/import-target/baselines.json`: contents byte-identical, 5.13 MiB
-  // smaller at 32 000 paths, 11.2% of what that bench's kotlin heap arm reads
-  // (61 144 buckets x 88 B; 52.9% of those buckets' slots were empty).
+  // COMPACTED as they are frozen. A bucket is minted as `[raw]` and pushed
+  // into, and V8 overshoots the backing store when it grows, so every bucket
+  // retains slack for the life of the index; `slice()` allocates exactly
+  // `length`. Contents are byte-identical. The byte accounting and the
+  // comparison to the python `byBasename` fix live once, in
+  // `bench/import-target/baselines.json`.
   //
   // `length === 1` is skipped because a bucket that never grew is ALREADY exact
   // — `[raw]` allocates one slot — so slicing it allocates a second array to
@@ -319,12 +321,6 @@ const getKotlinFileIndex = perFileSet((allFilePaths: ReadonlySet<string>): Kotli
 
   return { exactByStem, suffixByStem, dirChildren };
 });
-
-function addChild(dirChildren: Map<string, string[]>, dir: string, raw: string): void {
-  const bucket = dirChildren.get(dir);
-  if (bucket === undefined) dirChildren.set(dir, [raw]);
-  else bucket.push(raw);
-}
 
 /** Mutable view of the buckets, used only while building — the index exposes
  *  them as `readonly` and freezes them before it is cached. */

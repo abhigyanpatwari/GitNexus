@@ -10,19 +10,26 @@
  * through anything the type system or the existing tests can see:
  *
  *   - Go sorts the root-package leg and does NOT sort the package-dir leg;
- *   - Go and C# both take the FIRST occurrence of `/<segment>/` in the path, so
- *     a directory nested inside a same-named directory does not match;
+ *   - Go and C# answer when the file's PARENT directory ends with the queried
+ *     segment. Both took the FIRST occurrence of `/<segment>/` until #2881, so a
+ *     directory nested inside a same-named one did not match;
  *   - C#'s `resolveDirectMatch` lets a whole-path match win over a suffix match
  *     found EARLIER in iteration order, while `resolveByProgressiveStripping`
  *     takes whichever comes first;
  *   - Dart tries `lib/<rel>` fully before bare `<rel>`, and compares raw paths
  *     (no backslash normalization) on both legs.
  *
- * So this file keeps verbatim copies of the pre-change implementations and
- * asserts the new ones agree with them on a deterministic corpus built to force
- * exactly those cases. The copies are the specification; if a future change
- * makes one of these fail, the resolver's OUTPUT moved and the graph's edges
- * move with it.
+ * So this file keeps copies of the pre-change implementations and asserts the
+ * new ones agree with them on a deterministic corpus built to force exactly
+ * those cases. The copies are the specification; if a future change makes one of
+ * these fail, the resolver's OUTPUT moved and the graph's edges move with it.
+ *
+ * They were verbatim until #2881, which deliberately changed one rule and so had
+ * to edit them too. Read them now as an independent re-derivation of the CURRENT
+ * spec, not as a frozen record of what shipped before the hoist — a weaker claim,
+ * and the reason the hand-built arm below pins ABSOLUTE expectations as well as
+ * differential ones: a differential where both sides were edited together proves
+ * only self-consistency.
  *
  * The second half asserts the index is built once per file set rather than once
  * per import, by counting how often the Set is iterated. It is the DETERMINISTIC
@@ -57,7 +64,7 @@ import { csharpSuffixFallbackAllowed } from '../../../src/core/ingestion/csharp-
 import { DART_HERITAGE_PREFIX } from '../../../src/core/ingestion/languages/dart/interpret.js';
 import { CountingSet } from '../../helpers/counting-file-set.js';
 
-// ─── verbatim pre-change implementations ─────────────────────────────────────
+// ─── pre-change implementations, minus the rule #2881 removed ────────────────
 
 function legacyFindRootPackageFiles(allFilePaths: ReadonlySet<string>): string[] {
   const result: string[] = [];
@@ -303,11 +310,17 @@ function mix(n: number): number {
 }
 
 /**
- * Directory shapes, chosen so the corpus contains every case where the naive
- * "does the dir end with the segment" rewrite diverges from the original
- * first-`indexOf` predicate: a directory name nested inside itself
+ * Directory shapes, chosen so the corpus contains every case where the two
+ * candidate predicates disagree: a directory name nested inside itself
  * (`pkg/pkg`, `a/pkg/b/pkg`), the same leaf under several parents (collision
  * tie-breaks), an absolute-rooted layout, and the repo root.
+ *
+ * The nested shapes were originally here to prove the "does the dir end with
+ * the segment" rewrite was NOT safe, because the shipped predicate additionally
+ * required the first `indexOf` occurrence. #2881 removed that requirement and
+ * made the ends-with form the shipped one, so these shapes now pin the removal
+ * instead — same shapes, opposite verdict, and still the only ones that can
+ * tell the two apart.
  */
 const DIRS = [
   '',

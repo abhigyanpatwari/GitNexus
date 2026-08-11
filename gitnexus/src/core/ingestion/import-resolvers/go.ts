@@ -40,20 +40,16 @@ export function resolveGoPackage(
   for (let i = 0; i < normalizedFileList.length; i++) {
     // Prepend '/' so paths like "internal/auth/service.go" match suffix "/internal/auth/"
     const normalized = '/' + normalizedFileList[i];
-    // File must be directly in the package directory (not a subdirectory)
-    if (
-      normalized.includes(pkgSuffix) &&
-      normalized.endsWith('.go') &&
-      !normalized.endsWith('_test.go')
-    ) {
-      // `lastIndexOf`, not `indexOf`: `pkgSuffix` is '/'-anchored on both sides,
-      // so the LAST occurrence is the file's own parent. `indexOf` asked for the
-      // first, which made `a/pkg/b/pkg/x.go` not a member of `pkg` (#2881).
-      const afterPkg = normalized.substring(normalized.lastIndexOf(pkgSuffix) + pkgSuffix.length);
-      if (!afterPkg.includes('/')) {
-        matches.push(allFileList[i]);
-      }
-    }
+    if (!normalized.endsWith('.go') || normalized.endsWith('_test.go')) continue;
+    // The file's PARENT directory ends with the package path — the same
+    // predicate `package-dir-index.ts` states, in the same `endsWith` form.
+    // This used to ask `indexOf` for the FIRST `/<pkg>/` and then check that
+    // nothing after it held a slash, which made `a/pkg/b/pkg/x.go` not a member
+    // of `pkg` (#2881). Writing it as ends-with rather than swapping in
+    // `lastIndexOf` also drops the second scan the `includes` guard needed.
+    const lastSlash = normalized.lastIndexOf('/'); // >= 0: `normalized` starts with '/'
+    if (!normalized.slice(0, lastSlash + 1).endsWith(pkgSuffix)) continue;
+    matches.push(allFileList[i]);
   }
 
   return matches;
