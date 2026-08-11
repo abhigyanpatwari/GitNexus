@@ -186,7 +186,7 @@ describe('antigravity hook adapter e2e', () => {
 
         const output = parseHookOutput(result.stdout);
         expect(output).not.toBeNull();
-        expect(output!.additionalContext).toContain('Run `gitnexus analyze`');
+        expect(output!.additionalContext).toContain('Run `gitnexus analyze --index-only`');
         expect(output!.additionalContext).not.toContain('npx gitnexus');
       } finally {
         gn.cleanup();
@@ -240,7 +240,9 @@ describe('antigravity hook adapter e2e', () => {
 
       const output = parseHookOutput(result.stdout);
       expect(output).not.toBeNull();
-      expect(output!.additionalContext).toContain('npx gitnexus@latest analyze --embeddings');
+      expect(output!.additionalContext).toContain(
+        'npx gitnexus@latest analyze --index-only --embeddings',
+      );
     });
 
     it('prefers gitnexus.json over meta.json when both are present (dual-write steady state)', () => {
