@@ -16,10 +16,9 @@
  * 0-based (#2377) and git hunks are 1-based, so comparing them raw shifted
  * every symbol one line up and hid edits to a symbol's last line.
  */
-import { describe, it, expect, vi, beforeEach, afterAll } from 'vitest';
+import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { execFileSync } from 'child_process';
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'fs';
-import os from 'os';
+import { mkdirSync, writeFileSync } from 'fs';
 import path from 'path';
 
 const { lbugMocks } = vi.hoisted(() => ({
@@ -70,13 +69,13 @@ vi.mock('../../src/mcp/core/embedder.js', () => ({
 import { LocalBackend } from '../../src/mcp/local/local-backend.js';
 import { listRegisteredRepos, type RegistryEntry } from '../../src/storage/repo-manager.js';
 import { coalesceHunks, hunksOverlapRange } from '../../src/storage/git.js';
+import { createTempDirPool } from '../helpers/temp-dir-pool.js';
 
-const fixtureDirs: string[] = [];
+const tempDirs = createTempDirPool('gnx-hunk-scale-');
 
 /** A git repo with `files` tracked files of `lines` numbered lines each. */
 function makeRepo(files: string[], lines: number): string {
-  const repoDir = mkdtempSync(path.join(os.tmpdir(), 'gnx-hunk-scale-'));
-  fixtureDirs.push(repoDir);
+  const repoDir = tempDirs.dir();
   mkdirSync(path.join(repoDir, '.gitnexus', 'lbug'), { recursive: true });
   writeFileSync(path.join(repoDir, '.gitnexus', 'meta.json'), '{}');
   execFileSync('git', ['init', '-q'], { cwd: repoDir });
@@ -140,32 +139,66 @@ async function runDetectChanges(): Promise<DetectChangesResult> {
   })) as DetectChangesResult;
 }
 
+/** Make the hunk→symbol query return 0-based symbol rows for `code.py`. */
+function mockSymbolRows(rows: { name: string; startLine: number; endLine: number }[]): void {
+  lbugMocks.executeParameterized.mockImplementation(async (_db: string, query: string) =>
+    String(query).includes('diffPath')
+      ? rows.map((row) => ({
+          diffPath: 'code.py',
+          id: `Function:code.py:${row.name}`,
+          name: row.name,
+          type: 'Function',
+          filePath: 'code.py',
+          startLine: row.startLine,
+          endLine: row.endLine,
+        }))
+      : [],
+  );
+}
+
 beforeEach(() => {
   lbugMocks.executeParameterized.mockReset();
   lbugMocks.executeParameterized.mockResolvedValue([]);
 });
 
-afterAll(() => {
-  for (const dir of fixtureDirs) rmSync(dir, { recursive: true, force: true });
-});
-
 describe('#2915 detect_changes hunk scaling', () => {
-  it('sends one bounded query per file batch regardless of hunk count', async () => {
-    const repoDir = makeRepo(['big.txt'], 12000);
-    const hunks = editEveryNthLine(repoDir, 'big.txt', 12000, 4);
-    expect(hunks).toBe(3000);
+  it('sends the same query for a 3,000-hunk diff as for a 1-hunk diff', async () => {
+    const oneHunkRepo = makeRepo(['big.txt'], 12000);
+    editEveryNthLine(oneHunkRepo, 'big.txt', 12000, 12000);
+    registerRepo(oneHunkRepo);
+    await runDetectChanges();
+    const oneHunkCall = symbolQueryCalls()[0];
+
+    lbugMocks.executeParameterized.mockClear();
+    const manyHunksRepo = makeRepo(['big.txt'], 12000);
+    expect(editEveryNthLine(manyHunksRepo, 'big.txt', 12000, 4)).toBe(3000);
+    registerRepo(manyHunksRepo);
+    await runDetectChanges();
+    const calls = symbolQueryCalls();
+
+    expect(calls).toHaveLength(1);
+    // 3,000 hunks used to produce 3,000 OR'd condition pairs and 6,000 params.
+    expect(calls[0].query).toBe(oneHunkCall.query);
+    expect(Object.keys(calls[0].params)).toEqual(['bounds']);
+    expect(calls[0].query).not.toContain('$hunk');
+  });
+
+  it('bounds each file by its touched span, in the graph 0-based line space', async () => {
+    const repoDir = makeRepo(['big.txt'], 100);
+    // Source lines 20 and 60 (1-based) — the span the engine may prefilter on.
+    writeFileSync(
+      path.join(repoDir, 'big.txt'),
+      Array.from({ length: 100 }, (_, i) =>
+        i + 1 === 20 || i + 1 === 60 ? `line ${i + 1} changed` : `line ${i + 1}`,
+      ).join('\n') + '\n',
+    );
     registerRepo(repoDir);
 
     await runDetectChanges();
 
     const calls = symbolQueryCalls();
-    expect(calls).toHaveLength(1);
-    // The crash shape: one OR'd condition pair per hunk, two params each.
-    expect(calls[0].query).not.toContain('$hunk');
-    expect(Object.keys(calls[0].params)).toEqual(['paths']);
-    expect(calls[0].params.paths).toEqual(['big.txt']);
-    // 3,000 hunks used to produce a ~200 KB WHERE clause.
-    expect(calls[0].query.length).toBeLessThan(1000);
+    expect(calls[0].params.bounds).toEqual([{ path: 'big.txt', lo: 19, hi: 59 }]);
+    expect(calls[0].query).toContain('n.startLine <= b.hi AND n.endLine >= b.lo');
   });
 
   it('batches changed files instead of running one full scan each', async () => {
@@ -178,7 +211,7 @@ describe('#2915 detect_changes hunk scaling', () => {
 
     const calls = symbolQueryCalls();
     expect(calls).toHaveLength(3); // ceil(250 / 100)
-    expect(calls.flatMap((c) => c.params.paths)).toHaveLength(250);
+    expect(calls.flatMap((c) => c.params.bounds)).toHaveLength(250);
   });
 
   it('reports a symbol edited on its last line (0-based rows vs 1-based hunks, #2377)', async () => {
@@ -187,22 +220,7 @@ describe('#2915 detect_changes hunk scaling', () => {
     // as [0, 1] — the old raw comparison saw hunk [2,2] vs [0,1] and missed it.
     writeFileSync(path.join(repoDir, 'code.py'), 'line 1\nline 2 changed\n');
     registerRepo(repoDir);
-
-    lbugMocks.executeParameterized.mockImplementation(async (_db: string, query: string) =>
-      String(query).includes('diffPath')
-        ? [
-            {
-              diffPath: 'code.py',
-              id: 'Function:code.py:hello',
-              name: 'hello',
-              type: 'Function',
-              filePath: 'code.py',
-              startLine: 0,
-              endLine: 1,
-            },
-          ]
-        : [],
-    );
+    mockSymbolRows([{ name: 'hello', startLine: 0, endLine: 1 }]);
 
     const result = await runDetectChanges();
 
@@ -214,27 +232,27 @@ describe('#2915 detect_changes hunk scaling', () => {
     const repoDir = makeRepo(['code.py'], 4);
     writeFileSync(path.join(repoDir, 'code.py'), 'line 1\nline 2\nline 3\nline 4 changed\n');
     registerRepo(repoDir);
-
-    lbugMocks.executeParameterized.mockImplementation(async (_db: string, query: string) =>
-      String(query).includes('diffPath')
-        ? [
-            {
-              diffPath: 'code.py',
-              id: 'Function:code.py:above',
-              name: 'above',
-              type: 'Function',
-              // 0-based [0,2] = source lines 1–3; the hunk is source line 4.
-              startLine: 0,
-              endLine: 2,
-              filePath: 'code.py',
-            },
-          ]
-        : [],
-    );
+    // 0-based [0,2] = source lines 1–3; the hunk is source line 4.
+    mockSymbolRows([{ name: 'above', startLine: 0, endLine: 2 }]);
 
     const result = await runDetectChanges();
 
     expect(result.changed_symbols).toEqual([]);
+  });
+
+  it('reports a node matched by two changed paths once', async () => {
+    const repoDir = makeRepo(['code.py'], 2);
+    writeFileSync(path.join(repoDir, 'code.py'), 'line 1 changed\nline 2\n');
+    registerRepo(repoDir);
+    // `ENDS WITH` is a plain suffix match, so one node can come back per path.
+    mockSymbolRows([
+      { name: 'hello', startLine: 0, endLine: 1 },
+      { name: 'hello', startLine: 0, endLine: 1 },
+    ]);
+
+    const result = await runDetectChanges();
+
+    expect(result.changed_symbols.map((s) => s.name)).toEqual(['hello']);
   });
 });
 

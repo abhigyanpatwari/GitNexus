@@ -664,6 +664,11 @@ export const getInferredRepoName = (repoPath: string): string | null => {
   return parseRepoNameFromUrl(getRemoteOriginUrl(repoPath));
 };
 
+/**
+ * An inclusive run of changed lines in the NEW file, 1-based like `@@` headers
+ * and every other git line number. Graph rows are 0-based (#2377), so a consumer
+ * comparing the two converts one side first — see `coalesceHunks` callers.
+ */
 export interface DiffHunk {
   startLine: number;
   endLine: number;
@@ -715,17 +720,14 @@ export function parseDiffHunks(diffOutput: string): FileDiff[] {
  * coalescing can never widen a range into a symbol the hunks did not touch.
  */
 export function coalesceHunks(hunks: DiffHunk[]): DiffHunk[] {
-  if (hunks.length < 2) return hunks.map((h) => ({ ...h }));
-  const sorted = [...hunks].sort((a, b) => a.startLine - b.startLine || a.endLine - b.endLine);
+  if (hunks.length === 0) return [];
+  const sorted = [...hunks].sort((a, b) => a.startLine - b.startLine);
   const merged: DiffHunk[] = [{ ...sorted[0] }];
   for (let i = 1; i < sorted.length; i++) {
     const last = merged[merged.length - 1];
     const next = sorted[i];
-    if (next.startLine <= last.endLine + 1) {
-      if (next.endLine > last.endLine) last.endLine = next.endLine;
-    } else {
-      merged.push({ ...next });
-    }
+    if (next.startLine <= last.endLine + 1) last.endLine = Math.max(last.endLine, next.endLine);
+    else merged.push({ ...next });
   }
   return merged;
 }
@@ -734,27 +736,22 @@ export function coalesceHunks(hunks: DiffHunk[]): DiffHunk[] {
  * Does any hunk overlap the inclusive line range [startLine, endLine]?
  *
  * `coalesced` must come from {@link coalesceHunks} — sorted and disjoint, which
- * is what makes the binary search valid. Both sides must use the same line
- * base; callers holding 0-based graph rows convert first (#2377).
+ * is what makes the binary search valid — and both sides must use the same line
+ * base.
  */
 export function hunksOverlapRange(
   coalesced: DiffHunk[],
   startLine: number,
   endLine: number,
 ): boolean {
+  // Lower bound: first hunk ending at or after startLine. `lo === length` means
+  // every hunk ends before the range starts (and covers the empty list).
   let lo = 0;
-  let hi = coalesced.length - 1;
-  let firstEndingAtOrAfterStart = -1;
-  while (lo <= hi) {
+  let hi = coalesced.length;
+  while (lo < hi) {
     const mid = (lo + hi) >> 1;
-    if (coalesced[mid].endLine >= startLine) {
-      firstEndingAtOrAfterStart = mid;
-      hi = mid - 1;
-    } else {
-      lo = mid + 1;
-    }
+    if (coalesced[mid].endLine >= startLine) hi = mid;
+    else lo = mid + 1;
   }
-  return (
-    firstEndingAtOrAfterStart !== -1 && coalesced[firstEndingAtOrAfterStart].startLine <= endLine
-  );
+  return lo < coalesced.length && coalesced[lo].startLine <= endLine;
 }

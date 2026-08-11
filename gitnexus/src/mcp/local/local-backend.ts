@@ -22,6 +22,7 @@ import { queryClassBeanMetadata } from './bean-metadata.js';
 import { querySpringAopMetadata } from './aop-metadata.js';
 import { isValidQueryParams } from '../../core/lbug/query-params.js';
 import { toDisplayLine } from './line-display.js';
+import { toZeroBasedLine } from '../../core/ingestion/utils/line-base.js';
 import { isWalCorruptionError, WAL_RECOVERY_SUGGESTION } from '../../core/lbug/lbug-config.js';
 // Embedding imports are lazy (dynamic import) to avoid loading onnxruntime-node
 // at MCP server startup — crashes on unsupported Node ABI versions (#89)
@@ -905,11 +906,9 @@ export function resolveWorktreeCwd(repoPath: string, launchCwd: string): string 
 }
 
 /**
- * How many changed files `detect_changes` folds into one hunk→symbol query.
- *
- * The match is an unlabeled `MATCH (n)` — a scan of every node table — so the
- * batch trades round-trips against rows held in memory at once. 100 mirrors the
- * `CHUNK_SIZE` the impact path already uses for batched id lookups.
+ * Changed files folded into one hunk→symbol query. The match is an unlabeled
+ * `MATCH (n)`, so the batch trades round-trips against rows held at once; 100
+ * measured fastest on a real index and matches the impact path's `CHUNK_SIZE`.
  */
 const DETECT_CHANGES_FILE_BATCH = 100;
 
@@ -5164,41 +5163,50 @@ export class LocalBackend {
 
     // Map diff hunks to indexed symbols via range overlap.
     //
-    // The overlap test runs in JS against coalesced hunk ranges, NOT as one
-    // OR'd condition pair per hunk in the Cypher WHERE clause. The old shape
-    // handed the engine an expression tree as deep as the file had hunks, which
-    // a generated file crashes outright (#2915 — see `coalesceHunks`). Query
-    // cost is now independent of hunk count.
-    //
-    // Files are queried in batches instead of one query per file: the match is
-    // an unlabeled `MATCH (n)`, i.e. a scan of every node table, so a wide diff
-    // used to pay one full scan per changed file. Each batch's rows are
-    // filtered and dropped before the next batch runs, so peak memory tracks
-    // the batch, not the whole diff.
+    // Overlap is tested in JS against coalesced ranges rather than as one OR'd
+    // condition pair per hunk in the WHERE clause (why: `coalesceHunks`), so
+    // query cost no longer scales with hunk count. Files are batched because the
+    // match is an unlabeled `MATCH (n)` — a scan of every node table — and a
+    // wide diff used to pay one such scan per changed file.
     const changedSymbols: any[] = [];
+    const seenSymbolIds = new Set<string>();
     // Set if a swallowed graph query fails below — surfaces `partial:true` so a
     // degraded run cannot report a false-clean `risk_level:'low'` (#2283).
     let queryDegraded = false;
 
+    // Hunks are converted into the graph's 0-based line space ONCE, here, so
+    // every comparison downstream is base-neutral. Git counts from 1 and
+    // GraphNode rows from 0 (#2377); comparing them raw shifted every symbol one
+    // line up, which hid edits to a symbol's last line.
     const hunksByPath = new Map<string, DiffHunk[]>();
     for (const fileDiff of fileDiffs) {
       if (fileDiff.hunks.length === 0) continue;
-      // A path can appear twice in one diff (e.g. a rename reported alongside
-      // an edit); keep every hunk rather than letting the later entry win.
-      const existing = hunksByPath.get(fileDiff.filePath);
-      hunksByPath.set(
-        fileDiff.filePath,
-        existing ? [...existing, ...fileDiff.hunks] : fileDiff.hunks,
-      );
-    }
-    for (const [filePath, hunks] of hunksByPath) {
-      hunksByPath.set(filePath, coalesceHunks(hunks));
+      // A path can appear twice in one diff (e.g. a rename reported alongside an
+      // edit), so accumulate rather than let the later entry win.
+      const zeroBased = fileDiff.hunks.map((h) => ({
+        startLine: toZeroBasedLine(h.startLine),
+        endLine: toZeroBasedLine(h.endLine),
+      }));
+      const existing = hunksByPath.get(fileDiff.filePath) ?? [];
+      hunksByPath.set(fileDiff.filePath, coalesceHunks([...existing, ...zeroBased]));
     }
 
-    const changedPaths = Array.from(hunksByPath.keys());
-    for (let offset = 0; offset < changedPaths.length; offset += DETECT_CHANGES_FILE_BATCH) {
-      const paths = changedPaths.slice(offset, offset + DETECT_CHANGES_FILE_BATCH);
-      const queryParams: Record<string, any> = { paths };
+    // One [lo, hi] span per file, spanning its whole touched region. Coalesced
+    // ranges are sorted and disjoint, so the span is free — and it lets the
+    // engine drop the symbols that lie outside it instead of shipping every row
+    // in the file across the native boundary. Depth stays constant (two
+    // comparisons per file, not per hunk), so this cannot revive #2915;
+    // `hunksOverlapRange` still rejects symbols landing in the gaps between
+    // hunks.
+    const bounds = Array.from(hunksByPath, ([path, hunks]) => ({
+      path,
+      lo: hunks[0].startLine,
+      hi: hunks[hunks.length - 1].endLine,
+    }));
+    for (let offset = 0; offset < bounds.length; offset += DETECT_CHANGES_FILE_BATCH) {
+      const queryParams: Record<string, any> = {
+        bounds: bounds.slice(offset, offset + DETECT_CHANGES_FILE_BATCH),
+      };
 
       // Exclude BasicBlock rows by id prefix: on a --pdg index every edited
       // function otherwise contributes N nameless BasicBlock pseudo-"symbols"
@@ -5212,35 +5220,31 @@ export class LocalBackend {
       // also drop legitimate symbols whose name loaded as NULL, e.g.
       // quoted-empty CSV fields for anonymous constructs).
       const symbolQuery = `
-        UNWIND $paths AS diffPath
-        MATCH (n) WHERE n.filePath ENDS WITH diffPath
+        UNWIND $bounds AS b
+        MATCH (n) WHERE n.filePath ENDS WITH b.path
           AND NOT n.id STARTS WITH 'BasicBlock:'
           AND n.startLine IS NOT NULL AND n.endLine IS NOT NULL
-        RETURN diffPath AS diffPath, n.id AS id, n.name AS name, labels(n)[0] AS type,
+          AND n.startLine <= b.hi AND n.endLine >= b.lo
+        RETURN b.path AS diffPath, n.id AS id, n.name AS name, labels(n)[0] AS type,
                n.filePath AS filePath, n.startLine AS startLine, n.endLine AS endLine
       `;
 
       try {
         const rows = await executeParameterized(repo.lbugPath, symbolQuery, queryParams);
         for (const sym of rows) {
-          const hunks = hunksByPath.get(String(sym.diffPath ?? sym[0]));
-          if (!hunks) continue;
-
-          // Graph rows are 0-based (#2377); git hunk lines are 1-based. Compare
-          // in the 1-based space — matching them raw shifted every symbol one
-          // line up, so an edit to a symbol's LAST line reported nothing
-          // changed. `??` (not `||`) because startLine 0 is the common case for
-          // a symbol declared on the first line.
-          const startLine = toDisplayLine(sym.startLine ?? sym[5]);
-          const endLine = toDisplayLine(sym.endLine ?? sym[6]);
-          if (startLine === undefined || endLine === undefined) continue;
-          if (!hunksOverlapRange(hunks, startLine, endLine)) continue;
+          const hunks = hunksByPath.get(String(sym.diffPath)) ?? [];
+          if (!hunksOverlapRange(hunks, sym.startLine, sym.endLine)) continue;
+          // `ENDS WITH` is a plain string suffix, so a node whose path ends with
+          // two different changed paths (`README.md` and `pkg/README.md`) comes
+          // back once per match.
+          if (seenSymbolIds.has(sym.id)) continue;
+          seenSymbolIds.add(sym.id);
 
           changedSymbols.push({
-            id: sym.id ?? sym[1],
-            name: sym.name ?? sym[2],
-            type: sym.type ?? sym[3],
-            filePath: sym.filePath ?? sym[4],
+            id: sym.id,
+            name: sym.name,
+            type: sym.type,
+            filePath: sym.filePath,
             change_type: 'touched',
           });
         }

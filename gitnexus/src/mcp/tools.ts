@@ -352,7 +352,8 @@ AFTER THIS: Review affected processes. Use context() on high-risk symbols. READ 
 
 GIT WORKTREE SUPPORT: GitNexus automatically detects when the MCP server was launched from inside a linked git worktree and runs git diff against that worktree — no extra parameters needed in the common case. Pass "worktree" explicitly only when the server was started from a different directory than the worktree you are editing (e.g., the server runs from the canonical root but your changes are in a linked worktree at a different path).
 
-Returns: changed symbols, affected processes, and a risk summary.`,
+Returns: changed symbols, affected processes, and a risk summary.
+- partial: true — a graph query failed and was swallowed, so changed_symbols may be short. changed_count:0 with partial:true is NOT a clean pre-commit check; re-run before treating the diff as safe.`,
     annotations: READ_ONLY_TOOL_ANNOTATIONS,
     inputSchema: {
       type: 'object',
