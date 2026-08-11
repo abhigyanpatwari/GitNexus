@@ -42,6 +42,7 @@ import {
   forceGc,
 } from '../../../../storage/parsedfile-store.js';
 import type { ResolutionOutcome } from '../resolution-outcome.js';
+import type { UndecidedSatisfaction } from '../contract/scope-resolver.js';
 import type { FunctionSummary } from '../../taint/summary-model.js';
 import type { CallSummary } from '../../taint/call-summary-model.js';
 import { buildFunctionNodeIndex } from '../../taint/summary-harvest-driver.js';
@@ -62,6 +63,12 @@ export interface ScopeResolutionOutput {
   readonly referenceEdgesEmitted: number;
   /** Additive stream of resolver diagnostics; does not affect graph edges. */
   readonly resolutionOutcomes: readonly ResolutionOutcome[];
+  /**
+   * Interfaces whose structural-satisfaction check could not be completed
+   * (#2873). Emits no edges — it is what lets a query distinguish "nothing
+   * implements this" from "we could not tell what implements this".
+   */
+  readonly undecidedSatisfaction: readonly UndecidedSatisfaction[];
   /**
    * Property inference facts a CALLER needs in order to read an empty result
    * correctly (R3-1). Without these, "no ACCESSES for this field" is
@@ -117,6 +124,7 @@ const NOOP_OUTPUT: ScopeResolutionOutput = Object.freeze({
   importsEmitted: 0,
   referenceEdgesEmitted: 0,
   resolutionOutcomes: [],
+  undecidedSatisfaction: [],
   perLanguage: new Map(),
   functionSummaries: [],
   callSummaries: [],
@@ -209,6 +217,7 @@ export const scopeResolutionPhase: PipelinePhase<ScopeResolutionOutput> = {
     let totalRefs = 0;
     let anyRan = false;
     const resolutionOutcomes: ResolutionOutcome[] = [];
+    const undecidedSatisfaction: UndecidedSatisfaction[] = [];
     // M4 (#2084 U1): per-function taint summaries accumulated across every
     // language pass; the cross-function fixpoint phase reads this output.
     const functionSummaries: FunctionSummary[] = [];
@@ -556,6 +565,7 @@ export const scopeResolutionPhase: PipelinePhase<ScopeResolutionOutput> = {
         processedScopeFiles += langFileCount;
         anyRan = true;
         functionSummaries.push(...stats.functionSummaries);
+        undecidedSatisfaction.push(...stats.undecidedSatisfaction);
         callSummaries.push(...stats.callSummaries);
         totalFiles += stats.filesProcessed;
         totalImports += stats.importsEmitted;
@@ -647,6 +657,7 @@ export const scopeResolutionPhase: PipelinePhase<ScopeResolutionOutput> = {
       importsEmitted: totalImports,
       referenceEdgesEmitted: totalRefs,
       resolutionOutcomes,
+      undecidedSatisfaction,
       perLanguage,
       functionSummaries,
       callSummaries,

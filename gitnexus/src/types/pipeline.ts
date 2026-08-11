@@ -2,6 +2,7 @@ import type { KnowledgeGraph } from '../core/graph/types.js';
 import { CommunityDetectionResult } from '../core/ingestion/community-processor.js';
 import { ProcessDetectionResult } from '../core/ingestion/process-processor.js';
 import type { ResolutionOutcome } from '../core/ingestion/scope-resolution/resolution-outcome.js';
+import type { UndecidedSatisfaction } from '../core/ingestion/scope-resolution/contract/scope-resolver.js';
 import type { PdgEmitManifest } from '../core/lbug/pdg-emit-sink.js';
 import type { GraphEmitManifest } from '../core/lbug/graph-emit-sink.js';
 
@@ -20,6 +21,9 @@ export interface PipelineResult {
    * produced; graph edge semantics are unchanged.
    */
   resolutionOutcomes: readonly ResolutionOutcome[];
+  /** Interfaces whose structural-satisfaction check could not be completed
+   *  (#2873). Empty for languages with no structural detection. */
+  undecidedSatisfaction: readonly UndecidedSatisfaction[];
   /**
    * True if a worker pool was actually constructed for this run. The worker
    * pool is the sole parse path (sequential parsing was removed). False means

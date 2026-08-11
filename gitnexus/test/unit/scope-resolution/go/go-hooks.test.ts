@@ -1071,6 +1071,10 @@ describe('Go structural interface detection', () => {
         interfaceName: 'Saver',
         filePath: 'repo.go',
         undecidedCandidates: 1,
+        // Both sides recorded: a query on `Repo` — or on one of its methods —
+        // has to be hedged too, and it can never reach `Saver` through the
+        // graph because the edge that would take it there is the missing thing.
+        candidateNames: ['Repo'],
       },
     ]);
   });

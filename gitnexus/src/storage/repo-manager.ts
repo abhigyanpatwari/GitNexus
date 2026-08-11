@@ -23,6 +23,7 @@ import { stripWindowsLongPathPrefix } from '../lib/utils.js';
 import { writeFileAtomic } from './fs-atomic.js';
 import { logger } from '../core/logger.js';
 import type { UnresolvedReceiverSummary } from '../core/ingestion/scope-resolution/unresolved-receivers.js';
+import type { UndecidedSatisfactionSummary } from '../core/ingestion/scope-resolution/undecided-satisfaction.js';
 import { acquireIndexLock, IndexLockTimeoutError, type IndexLockHandle } from './index-lock.js';
 import {
   branchSlug,
@@ -320,6 +321,22 @@ export interface RepoMeta {
    * this adds no runtime dependency from storage/ on core/.
    */
   unresolvedReceiverMembers?: UnresolvedReceiverSummary;
+  /**
+   * Interfaces whose structural-satisfaction check this run could not COMPLETE
+   * (#2873) — not interfaces found to have no implementors.
+   *
+   * Read by `impact()` to report `epistemic: 'lower-bound'` instead of
+   * `'exact'` when a walk crosses one of these interfaces. Without it, an
+   * interface whose implementors were never decided is byte-identical to one
+   * that genuinely has none: both are zero IMPLEMENTS edges, and only the
+   * second is an answer.
+   *
+   * Absent when a run decided everything it looked at, which is the common case
+   * and keeps `epistemic` exact for cleanly-resolving repos. Absence is NOT the
+   * same as a zeroed record — an index written before this field existed also
+   * reads as absent, and both correctly mean "no hedge available from here".
+   */
+  undecidedInterfaceSatisfaction?: UndecidedSatisfactionSummary;
   /**
    * SHA-256 of every file's content at the time of the last successful
    * indexing run. The next run computes current hashes and diffs against

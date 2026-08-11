@@ -541,11 +541,17 @@ function detectGoInterfaceImplementationsFromIndexes(
     );
     if (implementors.length > 0) implementations.set(iface.nodeId, implementors);
     if (undecidedStructIds.size > 0) {
+      const candidateNames: string[] = [];
+      for (const structId of undecidedStructIds) {
+        const name = indexes.structsById.get(structId)?.qualifiedName;
+        if (name !== undefined) candidateNames.push(name);
+      }
       undecided.push({
         interfaceDefId: iface.nodeId,
         interfaceName: iface.qualifiedName,
         filePath: iface.filePath,
         undecidedCandidates: undecidedStructIds.size,
+        candidateNames,
       });
     }
   }

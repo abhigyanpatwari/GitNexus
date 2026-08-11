@@ -21,6 +21,7 @@ import {
   logUnresolvedReceiverFiles,
   summarizeUnresolvedReceivers,
 } from './ingestion/scope-resolution/unresolved-receivers.js';
+import { summarizeUndecidedSatisfaction } from './ingestion/scope-resolution/undecided-satisfaction.js';
 import type { KnowledgeGraph } from './graph/types.js';
 import { resetDegradedParseCounter } from './tree-sitter/safe-parse.js';
 import {
@@ -3541,6 +3542,13 @@ async function runFullAnalysisInner(
       // Git-only: non-git repos never take the incremental path.
       schemaFingerprint: hasGitDir(repoPath) ? SCHEMA_FINGERPRINT : undefined,
       unresolvedReceiverMembers: summarizeUnresolvedReceivers(resolutionOutcomes),
+      // Preserved rather than dropped when a run observed no scope resolution:
+      // `saveMeta` writes a fresh object, so omitting the key DELETES a prior
+      // run's record and silently turns a hedged answer back into a confident
+      // one.
+      undecidedInterfaceSatisfaction:
+        summarizeUndecidedSatisfaction(pipelineResult.undecidedSatisfaction ?? []) ??
+        existingMeta?.undecidedInterfaceSatisfaction,
       analysisFeatures: currentAnalysisFeatures,
       // Always stamped with the live resolved mode (#2331/#2339) — unlike
       // `pdg` below, 'none' is a meaningful value to compare, not an

@@ -353,6 +353,16 @@ export interface UndecidedSatisfaction {
   readonly filePath: string;
   /** How many candidate types went unjudged for this interface. */
   readonly undecidedCandidates: number;
+  /**
+   * The candidate types themselves, by name.
+   *
+   * Both sides are recorded because a query arrives from either one. Asking
+   * `impact` about the IMPLEMENTATION — the case #2873 reports — never touches
+   * the interface node at all: the walk starts at a method whose owner has no
+   * heritage edge precisely because the check was undecided, so an
+   * interface-keyed record alone would leave that query unhedged.
+   */
+  readonly candidateNames: readonly string[];
 }
 
 /** What `detectInterfaceImplementations` answers: the positives, plus the
