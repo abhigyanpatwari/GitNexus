@@ -119,3 +119,82 @@ export const stripWindowsLongPathPrefix = (
   if (/^\\\\\?\\[A-Za-z]:\\/.test(p)) return p.slice(4);
   return p;
 };
+
+/**
+ * Split `items` into consecutive slices of at most `size`.
+ *
+ * Returns an empty array for empty input, and never returns an empty slice, so
+ * `for (const batch of chunk(xs, n))` always has something to work on.
+ *
+ * Callers batching a GRAPH QUERY should take the size from `core/lbug/query-batch.ts`,
+ * which documents why a query built from a caller-sized array needs a ceiling at
+ * all (#2915) and which of the two ceilings applies: `LBUG_QUERY_BATCH_SIZE` when
+ * each item makes the query do more work, `LBUG_ID_PROBE_BATCH_SIZE` when it is a
+ * plain `id IN $ids` probe and round trips dominate. They differ by 10x, in
+ * opposite directions, for that reason.
+ */
+export function chunk<T>(items: readonly T[], size: number): T[][] {
+  // `NaN` fails every comparison, so a bare `size < 1` lets it through and
+  // A size is a COUNT, so it has to be a positive integer — `Number.isInteger`
+  // rather than `Number.isFinite`, because a fractional size silently DUPLICATES
+  // items rather than failing: `slice` truncates its indices while `i` does not,
+  // so size 1.5 yields slice(0, 1.5) = items 0-1 and then slice(1.5, 3) = items
+  // 1-2, and item 1 lands in two batches. `NaN` is the other shape this rejects —
+  // it fails every comparison, so a bare `size < 1` lets it through and `i += NaN`
+  // produces exactly one empty slice, which the docstring promises never to
+  // return. `mapConcurrent`'s `Math.max(1, …)` propagates a NaN concurrency the
+  // same way.
+  if (!Number.isInteger(size) || size < 1) {
+    throw new RangeError(`chunk size must be a positive integer, got ${size}`);
+  }
+  const batches: T[][] = [];
+  for (let i = 0; i < items.length; i += size) batches.push(items.slice(i, i + size));
+  return batches;
+}
+
+/**
+ * Run `run` over each item with at most `concurrency` in flight, returning the
+ * results in input order.
+ *
+ * A failure is reported through `onError` and yields `undefined` for that item,
+ * so one bad item degrades the result (the caller raises its own `partial`
+ * flag) instead of discarding the items that succeeded beside it.
+ *
+ * This SCHEDULES, it does not synchronize: `run` must be safe to execute
+ * concurrently with itself. Both kinds of caller here are — `fs.readFile` per
+ * path in the ingestion walkers, and graph queries, where `executeParameterized`
+ * checks a connection out of the per-repo pool for the duration of the query
+ * (`pool-adapter.ts`) so parallel calls never share one. The default leaves
+ * headroom for other in-flight work.
+ */
+export async function mapConcurrent<T, R>(
+  items: readonly T[],
+  run: (item: T) => Promise<R>,
+  options: { concurrency?: number; onError?: (error: unknown) => void } = {},
+): Promise<(R | undefined)[]> {
+  const settle = async (item: T): Promise<R | undefined> => {
+    try {
+      return await run(item);
+    } catch (error) {
+      // Reporting a failure must not become a failure. `onError` is caller-supplied
+      // — a logger with a bad format string is enough — and an uncaught throw here
+      // rejects `settle`, which rejects the whole `Promise.all` wave and discards
+      // the neighbouring successes this function exists to preserve.
+      try {
+        options.onError?.(error);
+      } catch {
+        /* empty */
+      }
+      return undefined;
+    }
+  };
+
+  // Wave scheduling rather than a rolling window: measured on the real query
+  // path the two are within noise (538ms vs 532ms on a 1,000-file diff, whose
+  // per-batch times spread only 1.35x), and most inputs produce a single wave.
+  const results: (R | undefined)[] = [];
+  for (const wave of chunk(items, Math.max(1, options.concurrency ?? 4))) {
+    results.push(...(await Promise.all(wave.map(settle))));
+  }
+  return results;
+}

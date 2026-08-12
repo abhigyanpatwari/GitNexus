@@ -11,6 +11,7 @@
  * via `AbortSignal.timeout` on the underlying fetch.
  */
 
+import { chunk } from '../../lib/utils.js';
 import {
   CircuitOpenError,
   ResilientFetchExhaustedError,
@@ -566,9 +567,7 @@ export const httpEmbed = async (
   const url = `${config.baseUrl}/embeddings`;
   const allVectors: Float32Array[] = [];
 
-  for (let i = 0; i < texts.length; i += HTTP_BATCH_SIZE) {
-    const batch = texts.slice(i, i + HTTP_BATCH_SIZE);
-    const batchIndex = Math.floor(i / HTTP_BATCH_SIZE);
+  for (const [batchIndex, batch] of chunk(texts, HTTP_BATCH_SIZE).entries()) {
     const items = await httpEmbedBatch(
       url,
       batch,
