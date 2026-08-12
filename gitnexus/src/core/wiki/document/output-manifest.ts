@@ -144,8 +144,8 @@ export function validateOutputManifest(manifest: OutputManifest): void {
   if (!/^[a-f0-9]{64}$/.test(manifest.generationSemanticsKey)) {
     throw new Error('OutputManifest generationSemanticsKey must be a SHA-256 digest');
   }
-  if (manifest.language.localeFingerprint.length !== 64) {
-    throw new Error('OutputManifest language identity is incomplete');
+  if (!/^[a-f0-9]{64}$/.test(manifest.language.localeFingerprint)) {
+    throw new Error('OutputManifest language localeFingerprint must be a SHA-256 digest');
   }
   if (!/^[a-zA-Z0-9][a-zA-Z0-9._-]{0,127}$/.test(manifest.generationId)) {
     throw new Error('OutputManifest generationId must be a safe stable identifier');

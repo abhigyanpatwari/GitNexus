@@ -12,7 +12,7 @@
 
 import fs from 'fs/promises';
 import path from 'path';
-import { createHash } from 'node:crypto';
+import { createHash, timingSafeEqual } from 'node:crypto';
 import { execSync, execFileSync } from 'child_process';
 
 import {
@@ -1813,7 +1813,15 @@ export class WikiGenerator {
       );
       if (!documentPlanArtifact) return null;
       const rawPlan = await fs.readFile(path.join(generationDir, 'document_plan.json'), 'utf8');
-      if (hashOutputContent(rawPlan) !== documentPlanArtifact.contentHash) return null;
+      // 用恒定时间比较校验 document_plan.json 的内容哈希,避免非常量时间比较泄露期望值
+      const planHash = hashOutputContent(rawPlan);
+      const expectedHash = documentPlanArtifact.contentHash;
+      if (
+        planHash.length !== expectedHash.length ||
+        !timingSafeEqual(Buffer.from(planHash), Buffer.from(expectedHash))
+      ) {
+        return null;
+      }
       const raw = JSON.parse(rawPlan) as Record<string, unknown>;
       const oldExpected: DocumentPlan = {
         ...expected,
