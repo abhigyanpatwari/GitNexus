@@ -42,10 +42,26 @@
  *     only a `.java` file can carry a `…/<name>.java` suffix key, so the
  *     extension filter is implied on the file/suffix legs and explicit in the
  *     directory index's `accept`.
- *  5. The directory-child leg matched on the FIRST `'/' + pathLike + '/'`
- *     occurrence, so `com/example/com/example/Deep.java` does NOT answer
- *     `com.example`. `firstFileDirectlyInPkgDir` encodes exactly that rule (see
- *     the header of `import-resolvers/package-dir-index.ts`).
+ *  5. The directory-child leg used to match on the FIRST `'/' + pathLike + '/'`
+ *     occurrence, so `com/example/com/example/Deep.java` did NOT answer
+ *     `com.example`. #2881 removed that: the rule came from how the pre-index
+ *     scan was written, not from Java, and it made a package whose name repeats
+ *     higher in the path unresolvable. `firstFileDirectlyInPkgDir` now answers
+ *     plain "the parent directory ends with `pathLike`" (see the header of
+ *     `import-resolvers/package-dir-index.ts`). This leg commits to ONE file
+ *     with no downstream filter, so widening it can change which file an
+ *     already-resolving import binds to, not only turn a null into a hit.
+ *     WHICH file it binds to is decided by nothing in this resolver: it is
+ *     `allFilePaths` iteration order, i.e. the insertion order of the Set built
+ *     from `parsedFiles` in `scope-resolution/pipeline/run.ts`, which for a full
+ *     scan is the canonical sorted path order `filesystem-walker.ts` imposes on
+ *     its unsorted recursive-`glob` result. So the widened set's winner is a
+ *     property of the file list, not of the import — pinned explicitly, in both
+ *     insertion orders, by "pins WHICH of two competing package directories the
+ *     first-child leg takes" in
+ *     `test/unit/scope-resolution/java-import-target-parity.test.ts` (Kotlin's
+ *     twin, which has the same unfiltered first-child leg, is in
+ *     `test/unit/scope-resolution/kotlin/kotlin-import-target-parity.test.ts`).
  */
 
 import type { ParsedImport, WorkspaceIndex } from 'gitnexus-shared';
