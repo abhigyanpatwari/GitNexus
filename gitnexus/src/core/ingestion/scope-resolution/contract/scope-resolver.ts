@@ -297,6 +297,7 @@ import { LanguageProvider } from '../../language-provider.js';
 import { ScopeResolutionIndexes } from '../../model/scope-resolution-indexes.js';
 import type { SemanticModel } from '../../model/semantic-model.js';
 import type { ConversionRankFn } from '../passes/overload-narrowing.js';
+import type { HeritageTypeArgumentSink } from '../utils/generic-instantiation.js';
 import type { WorkspaceResolutionIndex } from '../workspace-index.js';
 
 /** A LinearizeStrategy receives the full ancestor map so C3-style
@@ -586,6 +587,16 @@ export interface ScopeResolver {
    * shape. Must be idempotent (the orchestrator may call it more than once
    * during re-resolution).
    *
+   * `recordTypeArguments` is the same sink `preEmitInheritanceEdges` writes to:
+   * the generic INSTANTIATION a heritage clause was written with, so
+   * interface-dispatch fan-out can refuse an implementor of an incompatible one
+   * (#2912). An implementation that emits an edge for a generic base
+   * (`impl Validator<String> for V`, `class V implements Validator<String>`)
+   * should call it with the same (source, target) graph ids it just used;
+   * anything not recorded reads as "unknown" and keeps the pre-#2912 fan-out.
+   * Ignoring it entirely is correct for a language whose heritage carries no
+   * type arguments (Ruby `include`).
+   *
    * Default: undefined (no extra heritage edges needed).
    */
   readonly emitHeritageEdges?: (
@@ -593,6 +604,7 @@ export interface ScopeResolver {
     parsedFiles: readonly ParsedFile[],
     nodeLookup: GraphNodeLookup,
     scopes?: ScopeResolutionIndexes,
+    recordTypeArguments?: HeritageTypeArgumentSink,
   ) => void;
 
   /**

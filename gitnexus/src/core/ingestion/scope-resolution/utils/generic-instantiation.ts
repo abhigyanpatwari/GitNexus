@@ -86,6 +86,22 @@ export type TypeArgumentResolver = (name: string) => GroundedTypeArgument;
  */
 export type HeritageTypeArguments = ReadonlyMap<string, readonly string[]>;
 
+/**
+ * Records one heritage edge's instantiation, from whichever pass emitted that
+ * edge — the generic inheritance pre-pass, or a language's own
+ * `ScopeResolver.emitHeritageEdges` for heritage the pre-pass cannot express
+ * (Rust `impl Trait for S`, Dart's `implements` markers).
+ *
+ * The ids MUST be the same pair the emitted edge carries, because the dispatch
+ * walk looks the instantiation up by the edge it is crossing. Recording nothing
+ * is always safe: absence reads as "unknown" and keeps every target.
+ */
+export type HeritageTypeArgumentSink = (
+  subtypeGraphId: string,
+  supertypeGraphId: string,
+  typeArguments: readonly string[],
+) => void;
+
 /** Key for {@link HeritageTypeArguments}. NUL-separated because a graph id
  *  embeds a file path, and a path may legally contain every other separator a
  *  reader would reach for first — `:`, `|`, even a space. */
@@ -156,6 +172,28 @@ function grounded(type: GroundedTypeArgument): boolean {
   return type.definitionId !== undefined || type.builtIn;
 }
 
+/**
+ * Does this spelling name a SET of types rather than one — a Java wildcard
+ * (`?`, `? extends User`, `? super User`), a Kotlin star projection (`*`) or
+ * use-site variance (`out User`, `in User`)?
+ *
+ * Nullable decoration (`User?`, `string?`) matches the `?` test too. Keeping it
+ * in is deliberate: an argument that may or may not be null is still the same
+ * type for dispatch purposes, so the only cost is declining to prune a position
+ * that could have been pruned — the direction every other uncertainty here
+ * takes.
+ */
+function isWildcard(name: string): boolean {
+  return /[?*]/.test(name) || /^(?:out|in)\s/.test(name.trim());
+}
+
+/** Drop insignificant whitespace so two spellings of one instantiation compare
+ *  equal: `Map<string, User>` and `Map<string,User>` are the same type, and
+ *  which one a capture produced depends on how the source was written. */
+function compact(name: string): string {
+  return name.replace(/\s+/g, '');
+}
+
 /** Last segment of a qualified spelling: `java.lang.String` → `String`,
  *  `System::Text::Encoding` → `Encoding`. Used only when a name did not
  *  resolve, so the qualifier is exactly the part nothing can check. */
@@ -192,7 +230,14 @@ export function stepHeritageInstantiation(
       bindings.set(written, actual);
       continue;
     }
-    if (normalize(written) === normalize(actual)) continue;
+    // A WILDCARD names a set of types, not one: `Repo<? extends User>` holds a
+    // `Repo<User>` perfectly well, and Kotlin's `Repo<*>` or `Repo<out User>`
+    // say the same thing in their own spelling. Comparing one against a
+    // concrete argument answers a question neither spelling asked, so the
+    // position is simply unknown. Nullable decoration (`User?`, `string?`) trips
+    // the same test, which costs a little precision in the safe direction.
+    if (isWildcard(written) || isWildcard(actual)) continue;
+    if (compact(normalize(written)) === compact(normalize(actual))) continue;
     // Differing spellings, which is not yet a difference of TYPE. Resolve both
     // where each was written and compare what they bound to: an imported `User`
     // and a `Models.User` are one declaration, and a declaration is what the
@@ -209,7 +254,9 @@ export function stepHeritageInstantiation(
     // what is compared instead is the simple name, which cannot tell
     // `a.User` from `b.User` (kept, the over-approximating direction) but does
     // tell `String` from `Integer`.
-    if (simpleName(normalize(written)) === simpleName(normalize(actual))) continue;
+    if (simpleName(compact(normalize(written))) === simpleName(compact(normalize(actual)))) {
+      continue;
+    }
     // The one thing a spelling difference must not be read as: a TYPE VARIABLE
     // this pipeline never captured. Where the subtype's parameter list is not
     // known to be complete, only a pair of grounded names — resolved or built

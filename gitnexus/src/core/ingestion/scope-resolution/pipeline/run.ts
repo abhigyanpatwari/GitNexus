@@ -95,7 +95,10 @@ import {
 } from '../passes/callable-value-flow.js';
 import type { ScopeResolver, UndecidedSatisfaction } from '../contract/scope-resolver.js';
 import { findEnclosingClassDef, resolveInheritanceBaseInScope } from '../scope/walkers.js';
-import { heritageTypeArgumentsKey } from '../utils/generic-instantiation.js';
+import {
+  heritageTypeArgumentsKey,
+  type HeritageTypeArgumentSink,
+} from '../utils/generic-instantiation.js';
 import { buildWorkspaceResolutionIndex } from '../workspace-index.js';
 import type { ResolutionOutcome, ResolutionOutcomeRecorder } from '../resolution-outcome.js';
 import { logHeapProbe } from '../../utils/heap-probe.js';
@@ -723,16 +726,39 @@ export function runScopeResolution(
   });
   logHeapProbe('sr-post-finalize', `lang=${provider.language}`);
   const inheritance = callableFlowOnly
-    ? { handledSites: new Set<string>(), heritageTypeArguments: new Map<string, string[]>() }
+    ? {
+        handledSites: new Set<string>(),
+        heritageTypeArguments: new Map<string, readonly string[]>(),
+      }
     : preEmitInheritanceEdges(graph, finalized, nodeLookup);
   const preEmittedInheritanceSites = inheritance.handledSites;
+  // The same sink the pre-pass filled, offered to the language hook below so a
+  // heritage shape the pre-pass cannot express still carries its instantiation
+  // (#2912). First writer wins, matching the pre-pass's own rule.
+  const recordHeritageTypeArguments: HeritageTypeArgumentSink = (
+    subtypeGraphId,
+    supertypeGraphId,
+    typeArguments,
+  ) => {
+    if (typeArguments.length === 0) return;
+    const key = heritageTypeArgumentsKey(subtypeGraphId, supertypeGraphId);
+    if (!inheritance.heritageTypeArguments.has(key)) {
+      inheritance.heritageTypeArguments.set(key, typeArguments);
+    }
+  };
   // Call-based heritage hook (e.g., Ruby include/extend/prepend) — emits
   // IMPLEMENTS edges that `preEmitInheritanceEdges` cannot produce because
   // the heritage declarations are syntactic method calls, not grammar-level
   // heritage clauses. Must run BEFORE `buildMro` so MRO construction sees
   // the freshly-emitted IMPLEMENTS edges.
   if (!callableFlowOnly) {
-    provider.emitHeritageEdges?.(graph, parsedFiles, nodeLookup, finalized);
+    provider.emitHeritageEdges?.(
+      graph,
+      parsedFiles,
+      nodeLookup,
+      finalized,
+      recordHeritageTypeArguments,
+    );
   }
   // Implicit IMPORTS-edge hook — for languages whose files have compiler-
   // implicit cross-file visibility (no syntactic import statement). The

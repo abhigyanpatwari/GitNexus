@@ -149,6 +149,39 @@ describe('stepHeritageInstantiation — every uncertainty keeps the target', () 
     expect(result.compatible).toBe(true);
   });
 
+  it('keeps a wildcard receiver argument, which names a SET of types', () => {
+    // `Repo<? extends User>` genuinely holds a `Repo<User>`; so do Kotlin's
+    // `Repo<*>` and `Repo<out User>`.
+    for (const wildcard of ['? extends User', '?', '* ', 'out User', 'in User']) {
+      const result = stepHeritageInstantiation(
+        step({
+          supertypeArguments: [wildcard],
+          heritageArguments: ['User'],
+          resolveSupertypeArgument: () => ({ builtIn: true }),
+          resolveHeritageArgument: () => ({ definitionId: 'def:User', builtIn: false }),
+        }),
+      );
+      expect(result.compatible).toBe(true);
+    }
+  });
+
+  it('keeps a nullable spelling of the same argument', () => {
+    const result = stepHeritageInstantiation(
+      step({ supertypeArguments: ['User?'], heritageArguments: ['User'] }),
+    );
+    expect(result.compatible).toBe(true);
+  });
+
+  it('ignores whitespace when comparing nested spellings', () => {
+    const result = stepHeritageInstantiation(
+      step({
+        supertypeArguments: ['Map<string, User>'],
+        heritageArguments: ['Map<string,User>'],
+      }),
+    );
+    expect(result.compatible).toBe(true);
+  });
+
   it('keeps an unresolvable argument when the parameter list may be incomplete', () => {
     // The `T` of `class Box<T> : IValidator<T>` in a language that captures no
     // type parameters: indistinguishable from a concrete type named T, so it

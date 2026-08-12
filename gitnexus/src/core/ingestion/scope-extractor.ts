@@ -1158,17 +1158,26 @@ function pass5CollectReferences(
     const qualifiedCap = match['@reference.qualified-name'];
     // Generic ARGUMENTS written on a heritage reference (`: IValidator<string>`),
     // recovered from the anchor's own text because `name` is deliberately the
-    // erased base (#2912). Read from the anchor rather than from a new per-
-    // language capture: every emitter already anchors `@reference.inherits` on
-    // the whole base node, so this needs no query change anywhere and stays
-    // absent — the "unknown", fail-open value — for an emitter that anchors on
-    // the bare name instead.
+    // erased base (#2912). Most emitters already anchor `@reference.inherits` on
+    // the whole base node, so they need no query change at all.
+    //
+    // `@reference.type-arguments` is the explicit form, for an emitter whose
+    // anchor is the bare NAME node (Rust's `impl Trait for S` anchors on the
+    // trait identifier inside a `generic_type`). It wins where present: moving
+    // such an anchor to cover the arguments would change the site's range, and
+    // the range is part of every inheritance EDGE ID — a spelling detail must
+    // not renumber the graph.
     //
     // `inherits` only. Call/read/write anchors span the whole call expression,
     // whose `<…>` would be an argument list, a comparison, or nothing at all;
     // widening the kind would mint confident nonsense from those spellings.
+    const typeArgumentsCap = match['@reference.type-arguments'];
     const typeArguments =
-      kind === 'inherits' ? referenceTypeArguments(anchor.text, nameCap.text) : undefined;
+      kind !== 'inherits'
+        ? undefined
+        : typeArgumentsCap?.text !== undefined
+          ? typeApplicationArguments(typeArgumentsCap.text)
+          : referenceTypeArguments(anchor.text, nameCap.text);
     const inScopeId = positionIndex.atPosition(
       filePath,
       anchor.range.startLine,
@@ -1679,6 +1688,10 @@ const KNOWN_SUB_TAGS: ReadonlySet<string> = new Set<string>([
   '@type-binding.type',
   '@reference.name',
   '@reference.qualified-name',
+  // The generic arguments a heritage base was written with, when the emitter's
+  // anchor is the bare name and cannot carry them (#2912). A sub-tag for the
+  // usual reason: it spans a sibling node of the anchor, never the site itself.
+  '@reference.type-arguments',
   '@reference.property-key',
   '@reference.callee-position',
   '@reference.embedded-pointer',

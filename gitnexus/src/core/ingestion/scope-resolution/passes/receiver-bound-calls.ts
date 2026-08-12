@@ -332,6 +332,32 @@ export function emitReceiverBoundCalls(
     stripTypePreservingDecoration: provider.stripTypePreservingDecoration,
     resolveThisViaEnclosingClass: provider.resolveThisViaEnclosingClass,
   };
+  /**
+   * The last receiver position the compound fold typed from a declared type,
+   * and the class that type named (#2912).
+   *
+   * A folded receiver reaches its class through a spelling
+   * (`IValidator<string> _repo`) that the class alone no longer carries, and
+   * the fan-out needs the ARGUMENTS to refuse an incompatible implementor. One
+   * mutable holder and one closure for the whole pass, rather than a per-site
+   * allocation on the hottest loop here; `defId` is cleared before each fold so
+   * a stale report cannot be read as this site's, and the reader additionally
+   * requires it to name the class the fold returned.
+   */
+  const foldedReceiverType = { spelling: '', defId: '' };
+  const recordReceiverType = (spelling: string, defId: string): void => {
+    foldedReceiverType.spelling = spelling;
+    foldedReceiverType.defId = defId;
+  };
+  /** Type arguments of the just-folded receiver, when the fold's last typed
+   *  position IS the class it returned. Empty otherwise — a fold that reached
+   *  the class another way (a construction expression, a namespace target)
+   *  reports no spelling, and no arguments is the fail-open answer. */
+  const foldedReceiverTypeArguments = (folded: SymbolDefinition): readonly string[] | undefined =>
+    foldedReceiverType.defId === folded.nodeId
+      ? typeApplicationArguments(foldedReceiverType.spelling)
+      : undefined;
+
   // Loop-invariant: both hooks come off the pass arguments, so the options bag
   // for `classifyReceiverOrigin` is built once here rather than per dropped site.
   const receiverOriginOpts = {
@@ -679,7 +705,7 @@ export function emitReceiverBoundCalls(
       receiverPaths: provider.namespaceReceiverPaths,
       moduleFileExists: (filePath) => index.moduleScopeByFile.has(filePath),
     });
-    const fileCompoundOpts = { ...compoundOpts, namespaceTargets };
+    const fileCompoundOpts = { ...compoundOpts, namespaceTargets, recordReceiverType };
     // Per-file resolved-callee-id capture context (#2227 U2). Built once per
     // file; `undefined` when the sink is absent (pdg off) so the `tryEmitEdge`
     // capture is a no-op and emission stays byte-identical (R4).
@@ -841,6 +867,7 @@ export function emitReceiverBoundCalls(
         receiverName.includes('(') ||
         site.receiverChain !== undefined
       ) {
+        foldedReceiverType.defId = '';
         const currentClass = resolveCompoundReceiverClass(
           receiverName,
           site.inScope,
@@ -955,15 +982,9 @@ export function emitReceiverBoundCalls(
             // confidence is a separate behavioural change affecting every
             // language, and is out of scope for #2813.
             //
-            // No receiver type arguments: this case reached its type by FOLDING
-            // a compound receiver (`this.repo`, `svc.get().repo`) down to a
-            // class def, and the fold keeps the declaration, not the
-            // instantiation. Passing `undefined` leaves the unfiltered fan-out
-            // in place for these receivers rather than inventing an
-            // instantiation — the same fail-open direction #2912 takes
-            // everywhere else. Recovering it means threading the argument list
-            // back out of `resolveCompoundReceiverClass`, which is a change to
-            // the fold's contract and not this issue's to make.
+            // The instantiation the FOLD typed this receiver from — the
+            // declared spelling of `this.repo` / `svc.get().repo`, which the
+            // folded class alone no longer carries (#2912).
             emitted += emitInterfaceDispatchFor(
               currentClass,
               memberName,
@@ -971,7 +992,7 @@ export function emitReceiverBoundCalls(
               site,
               0.85,
               calleeCapture,
-              undefined,
+              foldedReceiverTypeArguments(currentClass),
             );
             // Always mark handled when the site was resolved, even
             // if the edge was deduplicated (collapse mode), so
@@ -1442,6 +1463,7 @@ export function emitReceiverBoundCalls(
         // already contain `()` (Ruby member-call-return captures),
         // pass through directly — the compound resolver handles the
         // full expression including the call syntax.
+        foldedReceiverType.defId = '';
         let ownerDef = resolveCompoundReceiverClass(
           typeRef.rawName,
           typeRef.declaredAtScope,
@@ -1559,8 +1581,7 @@ export function emitReceiverBoundCalls(
             // value instead because ITS primary varies that way; Case 3b's
             // primary, like Case 0's, does not, so there is no 1.0 arm here to
             // mirror.
-            // No receiver type arguments — same reason as Case 0: the chain was
-            // folded to a class, and the fold does not carry the instantiation.
+            // Same fold, same recovered spelling as Case 0.
             emitted += emitInterfaceDispatchFor(
               ownerDef,
               memberName,
@@ -1568,7 +1589,7 @@ export function emitReceiverBoundCalls(
               site,
               0.85,
               calleeCapture,
-              undefined,
+              foldedReceiverTypeArguments(ownerDef),
             );
             // Always mark handled when the site was resolved, even
             // if the edge was deduplicated (collapse mode), so

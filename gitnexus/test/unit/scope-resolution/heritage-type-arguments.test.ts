@@ -1,16 +1,22 @@
 /**
- * `ReferenceSite.typeArguments` on heritage sites, across languages (#2912).
+ * Heritage generic ARGUMENTS reach resolution, across languages (#2912).
  *
- * The arguments are read GENERICALLY, from the spelling each emitter already
- * anchors `@reference.inherits` on — no language query was changed, so what a
- * language gets depends only on how much of the base its anchor spans. These
- * tests pin that per language, in both directions:
+ * Three routes exist, and every language uses exactly one of them:
  *
- *   - the languages that DO get them, because interface-dispatch instantiation
- *     filtering silently reverts to the old fan-out if a capture stops
- *     reaching the anchor text;
- *   - the languages that DON'T, because the absence is the fail-open contract
- *     ("unknown"), not a bug to be papered over with a guess.
+ *   1. The `@reference.inherits` ANCHOR already spans the whole base, so the
+ *      spelling is read straight off it and no query changed (C#, Java,
+ *      TypeScript, Kotlin, Go, Python, Swift).
+ *   2. The anchor is the bare NAME node — widening it would move the site's
+ *      range, which is part of every inheritance edge's id — so the arguments
+ *      arrive through the `@reference.type-arguments` sub-tag (Rust, Dart
+ *      `extends`).
+ *   3. The clause never becomes a reference site at all, and rides a heritage
+ *      MARKER payload instead (Dart `implements` / `with`).
+ *
+ * Each is pinned here because instantiation filtering degrades SILENTLY to the
+ * pre-#2912 fan-out when a capture stops arriving: no error, no failing edge
+ * count, just an interface reaching implementors of the wrong instantiation
+ * again.
  */
 import { describe, it, expect } from 'vitest';
 import type { ParsedFile } from 'gitnexus-shared';
@@ -25,6 +31,7 @@ import { pythonProvider } from '../../../src/core/ingestion/languages/python.js'
 import { swiftProvider } from '../../../src/core/ingestion/languages/swift.js';
 import { rustProvider } from '../../../src/core/ingestion/languages/rust.js';
 import { dartProvider } from '../../../src/core/ingestion/languages/dart.js';
+import { decodeMarker } from '../../../src/core/ingestion/utils/heritage-marker.js';
 
 function inheritsSites(
   provider: LanguageProvider,
@@ -104,18 +111,59 @@ describe('heritage type arguments are captured', () => {
   });
 });
 
-describe('languages whose anchor is the bare name record nothing', () => {
+describe('emitters whose anchor is the bare name use the explicit sub-tag', () => {
   it('Rust trait impl', () => {
-    // The `@reference.inherits` anchor is the trait NAME node, so there is no
-    // spelling to read arguments from. Absent ⇒ unknown ⇒ unfiltered fan-out.
+    // The anchor is the trait NAME node inside a `generic_type`, and its range
+    // is part of the inheritance edge's id — so the arguments arrive through
+    // `@reference.type-arguments` rather than by widening the anchor.
     expect(inheritsSites(rustProvider, 'impl Validator<String> for V { }', 'v.rs')).toEqual([
+      { name: 'Validator', typeArguments: ['String'] },
+    ]);
+  });
+
+  it('Rust trait impl without arguments records none', () => {
+    expect(inheritsSites(rustProvider, 'impl Validator for V { }', 'v2.rs')).toEqual([
       { name: 'Validator', typeArguments: undefined },
     ]);
   });
 
   it('Dart extends clause', () => {
     expect(inheritsSites(dartProvider, 'class Repo extends Base<User> { }', 'r.dart')).toEqual([
-      { name: 'Base', typeArguments: undefined },
+      { name: 'Base', typeArguments: ['User'] },
+    ]);
+  });
+});
+
+describe('heritage that never becomes a reference site', () => {
+  // Dart's `implements` / `with` travel as heritage MARKERS on parsed imports,
+  // not as `inherits` sites: `emitDartHeritageEdges` reads the marker and emits
+  // the edge, so the instantiation has to ride the payload to reach the same
+  // sink the generic pre-pass writes to (#2912).
+  function heritageMarkers(source: string, filePath: string): Array<string[]> {
+    const parsed = extractParsedFile(dartProvider, source, filePath);
+    return (parsed?.parsedImports ?? [])
+      .map((imported) => decodeMarker(String(imported.targetRaw)))
+      .filter(
+        (marker): marker is { kind: 'heritage'; fields: string[] } => marker?.kind === 'heritage',
+      )
+      .map((marker) => marker.fields);
+  }
+
+  it('carries the arguments of a Dart `implements` clause', () => {
+    expect(heritageMarkers('class V implements Validator<String> { }', 'v.dart')).toEqual([
+      ['implements', 'Validator', 'V', '<String>'],
+    ]);
+  });
+
+  it('carries the arguments of a Dart `with` clause', () => {
+    expect(heritageMarkers('class V extends Base with M<int> { }', 'v2.dart')).toEqual([
+      ['with', 'M', 'V', '<int>'],
+    ]);
+  });
+
+  it('omits the field for a non-generic clause, so old payloads stay readable', () => {
+    expect(heritageMarkers('class V implements Validator { }', 'v3.dart')).toEqual([
+      ['implements', 'Validator', 'V'],
     ]);
   });
 });

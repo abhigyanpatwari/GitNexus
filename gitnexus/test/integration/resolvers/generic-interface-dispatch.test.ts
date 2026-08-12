@@ -9,6 +9,12 @@
  * pass-through implementor, a non-generic interface, and (C#) the predefined
  * alias spellings of one type.
  *
+ * Both ways a receiver gets its type are covered, because they reach the
+ * instantiation by different routes: a DECLARED receiver (`Validator<string> v`)
+ * carries it on the type binding, while a FOLDED one (`this._validator`,
+ * `this._holder.Validator`) is typed by the compound fold, which answers with a
+ * class and reports the spelling separately.
+ *
  * Every implementor lives in its own file so a dispatch target can be named by
  * `targetFilePath`: the two `Check` methods are otherwise indistinguishable by
  * node name alone.
@@ -105,6 +111,62 @@ describe('C# generic interface dispatch (#2912)', () => {
 
   it('still emits the primary edge to the interface declaration', () => {
     expect(calledFiles(result, 'Run', 'Check')).toContain('IValidator.cs');
+  });
+});
+
+describe('C# generic dispatch through a FOLDED receiver (#2912)', () => {
+  // The dependency-injection shape: the receiver is a field reached through a
+  // dot, so it is typed by the compound fold rather than by a type binding.
+  // The fold answers with a CLASS, which no longer carries the instantiation —
+  // the spelling it typed the position from is what does.
+  let result: PipelineResult;
+  let root: string;
+
+  beforeAll(async () => {
+    root = fs.mkdtempSync(path.join(os.tmpdir(), 'gitnexus-csharp-folded-dispatch-'));
+    writeFixtureRepo(root, {
+      'IValidator.cs': `namespace Probe;
+        public interface IValidator<T> { bool Check(T item); }`,
+      'UserValidator.cs': `namespace Probe;
+        public class UserValidator : IValidator<string> { public bool Check(string item) => true; }`,
+      'IntValidator.cs': `namespace Probe;
+        public class IntValidator : IValidator<int> { public bool Check(int item) => true; }`,
+      'Service.cs': `namespace Probe;
+        public class Service {
+          private readonly IValidator<string> _validator;
+          public Service(IValidator<string> validator) { _validator = validator; }
+          public bool Run() => this._validator.Check("x");
+        }`,
+      'Holder.cs': `namespace Probe;
+        public class Holder {
+          public IValidator<int> Validator { get; set; }
+        }`,
+      'ChainRunner.cs': `namespace Probe;
+        public class ChainRunner {
+          private readonly Holder _holder;
+          public ChainRunner(Holder holder) { _holder = holder; }
+          public bool RunChain() => this._holder.Validator.Check(1);
+        }`,
+    });
+    result = await runPipelineFromRepo(root, () => {});
+  }, 60000);
+
+  afterAll(() => {
+    fs.rmSync(root, { recursive: true, force: true });
+  });
+
+  it('filters a field-typed receiver by its own instantiation', () => {
+    const targets = dispatchTargetFiles(result, 'Run', 'Check');
+    expect(targets).toContain('UserValidator.cs');
+    expect(targets).not.toContain('IntValidator.cs');
+  });
+
+  it("filters a two-hop chain by the LAST hop's instantiation", () => {
+    // `this._holder.Validator` — the fold walks two members, and it is the
+    // second one's declared spelling that types the receiver.
+    const targets = dispatchTargetFiles(result, 'RunChain', 'Check');
+    expect(targets).toContain('IntValidator.cs');
+    expect(targets).not.toContain('UserValidator.cs');
   });
 });
 
