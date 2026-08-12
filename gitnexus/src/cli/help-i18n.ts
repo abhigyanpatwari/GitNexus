@@ -102,6 +102,7 @@ const OPTION_DESCRIPTION_KEYS = {
   'wiki|--gist': 'help.option.wiki.gist',
   'wiki|-v, --verbose': 'help.option.verbose',
   'wiki|--review': 'help.option.wiki.review',
+  'wiki|--profile <id>': 'help.option.wiki.profile',
   'wiki|--lang <lang>': 'help.option.wiki.lang',
   'publish|--id <owner/repo>': 'help.option.publish.id',
   'publish|--skip-git': 'help.option.skipGit',

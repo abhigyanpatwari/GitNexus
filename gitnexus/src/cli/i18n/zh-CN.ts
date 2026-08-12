@@ -235,6 +235,8 @@ export const zhCN = {
     '允许 http:// LLM base URL 使用的精确主机（逗号分隔；推荐使用 HTTPS）',
   'help.option.wiki.gist': '生成后发布 Wiki 为公开 GitHub Gist',
   'help.option.wiki.review': '分组后停止，以便在生成页面前审查模块结构',
+  'help.option.wiki.profile':
+    'Wiki 文档 Profile：default、engineering-wiki、arc42、ieee-1016-sdd 或 iso-42010-ad',
   'help.option.wiki.lang': '生成文档的输出语言（如 english、chinese、spanish、japanese）',
   'help.option.publish.id': '覆盖注册表 id（默认使用 origin remote）',
   'help.option.repo.targetOmitOne': '目标仓库（仅有一个已索引仓库时可省略）',

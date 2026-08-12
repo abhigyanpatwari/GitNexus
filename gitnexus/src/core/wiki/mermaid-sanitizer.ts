@@ -5,6 +5,7 @@ const EDGE_LABEL_RE = /\|([^|\n]+)\|/g;
 const UNSAFE_EDGE_LABEL_RE = /[()[\]{}<>]/;
 const UNSAFE_NODE_ID_RE = /[^A-Za-z0-9_-]/;
 const NODE_ID_RE = /^[A-Za-z0-9_.:/()-]+$/;
+const FLOWCHART_HEADER_RE = /^\s*(?:graph|flowchart)\s+(?:TB|TD|BT|RL|LR)\b/i;
 
 const LINE_PREFIX_RE = /^(\s*(?:(?:[-A-Za-z0-9_]+)\s*:\s*)?)(.*)$/;
 const EDGE_RE =
@@ -17,6 +18,7 @@ export function sanitizeMermaidMarkdown(markdown: string): string {
 }
 
 export function sanitizeMermaidDiagram(diagram: string): string {
+  const normalized = normalizeFlowchartStatements(diagram);
   const aliases = new Map<string, string>();
   let nextAlias = 1;
 
@@ -34,10 +36,83 @@ export function sanitizeMermaidDiagram(diagram: string): string {
     return alias;
   };
 
-  return diagram
+  return normalized
     .split('\n')
     .map((line) => sanitizeMermaidLine(line, aliasFor))
     .join('\n');
+}
+
+/**
+ * Mermaid 11 对同一行内用分号连接的 flowchart 声明兼容性不稳定。
+ * 生成模型常返回 `graph TD; A-->B;`，这里将语句确定性拆成逐行形式。
+ */
+function normalizeFlowchartStatements(diagram: string): string {
+  const firstNonEmpty = diagram.split('\n').find((line) => line.trim() !== '') ?? '';
+  if (!FLOWCHART_HEADER_RE.test(firstNonEmpty)) return diagram;
+
+  return splitOutsideLabels(diagram, ';')
+    .map((statement) => statement.trim())
+    .filter(Boolean)
+    .join('\n')
+    .concat('\n');
+}
+
+function splitOutsideLabels(value: string, separator: string): string[] {
+  const result: string[] = [];
+  let current = '';
+  let quote: '"' | "'" | null = null;
+  let escaped = false;
+  let squareDepth = 0;
+  let roundDepth = 0;
+  let curlyDepth = 0;
+  let inEdgeLabel = false;
+
+  for (const character of value) {
+    if (escaped) {
+      current += character;
+      escaped = false;
+      continue;
+    }
+    if (character === '\\') {
+      current += character;
+      escaped = true;
+      continue;
+    }
+    if (quote) {
+      current += character;
+      if (character === quote) quote = null;
+      continue;
+    }
+    if (character === '"' || character === "'") {
+      current += character;
+      quote = character;
+      continue;
+    }
+    if (character === '[') squareDepth += 1;
+    else if (character === ']') squareDepth = Math.max(0, squareDepth - 1);
+    else if (character === '(') roundDepth += 1;
+    else if (character === ')') roundDepth = Math.max(0, roundDepth - 1);
+    else if (character === '{') curlyDepth += 1;
+    else if (character === '}') curlyDepth = Math.max(0, curlyDepth - 1);
+    else if (character === '|' && squareDepth === 0 && roundDepth === 0 && curlyDepth === 0) {
+      inEdgeLabel = !inEdgeLabel;
+    }
+
+    if (
+      character === separator &&
+      squareDepth === 0 &&
+      roundDepth === 0 &&
+      curlyDepth === 0 &&
+      !inEdgeLabel
+    ) {
+      result.push(current);
+      current = '';
+    } else {
+      current += character;
+    }
+  }
+  result.push(current);
+  return result;
 }
 
 function sanitizeMermaidLine(line: string, aliasFor: (id: string) => string): string {
