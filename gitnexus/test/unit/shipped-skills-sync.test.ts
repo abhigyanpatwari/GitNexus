@@ -327,8 +327,13 @@ describe('root AGENTS.md / CLAUDE.md managed block keeps the risk: UNKNOWN polic
 // committed docs catches a stale generator binary or a hand-revert too.
 describe('root AGENTS.md / CLAUDE.md managed block keeps the degraded-detect_changes policy (#2915)', () => {
   const REQUIRED_FRAGMENTS = [
-    '`partial: true` (query failed) or `truncated: true` (listing capped) is not a clean check',
-    'a zero there means unseen, not unaffected; re-run it',
+    // Deliberately short. The block is under a hard size cap (#856), so this
+    // sentence gets re-trimmed whenever anything else in the block grows — it
+    // already lost both parentheticals to pay for restoring the `detect-changes`
+    // subcommand in the regression example. Pin the two claims that carry the
+    // policy, not the prose around them.
+    '`partial: true` or `truncated: true` is not a clean check',
+    'a zero means unseen, not unaffected; re-run it',
   ];
 
   it.each(['AGENTS.md', 'CLAUDE.md'])('%s managed block documents the policy', (file) => {
