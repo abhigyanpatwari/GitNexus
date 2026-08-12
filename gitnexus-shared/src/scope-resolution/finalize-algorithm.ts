@@ -392,7 +392,13 @@ function makeEdgeDrafts(
   // and resolved-dynamic imports are terminal at the file level — no
   // `targetDefId` needed since they materialize no `BindingRef`. Pre-
   // finalize them here so the fixpoint loop skips them entirely.
-  const targetFiles = Array.isArray(targetFile) ? targetFile : [targetFile];
+  // Annotated rather than inferred: `isArray`'s `arg is any[]` predicate widens
+  // the true branch to a MUTABLE array, and a resolver may hand back a cached,
+  // frozen candidate list (Kotlin's `dirChildren` buckets do). Only `.map` is
+  // wanted here, so pinning `readonly` makes an in-place `.sort()`/`.push()` —
+  // which would reorder that resolver's index for the rest of the run — a
+  // compile error rather than a runtime TypeError.
+  const targetFiles: readonly string[] = Array.isArray(targetFile) ? targetFile : [targetFile];
   const isFileLevelTerminal = parsed.kind === 'side-effect' || parsed.kind === 'dynamic-resolved';
   return targetFiles.map((tf) => {
     const base: ImportEdge = {
