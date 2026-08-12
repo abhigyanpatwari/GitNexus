@@ -34,13 +34,24 @@
  *      as `ownedDefs` + a local `BindingRef { origin: 'local' }`.
  *   3. **Collect raw imports.** Walk `@import.*` matches. Call
  *      `provider.interpretImport` per match; attach the returned
- *      `ParsedImport` to the ParsedFile — not to any `Scope`, and nothing
- *      downstream recovers one. `provider.importOwningScope` is declared on
- *      `LanguageProvider` and implemented by a dozen providers, but has no
- *      call site anywhere; this step's output is scope-free. A provider whose
- *      `ParsedImport` needs to distinguish module-level from nested must
- *      decide that in its own capture emitter, where the node is still in
- *      hand (see `languages/python/import-decomposer.ts`).
+ *      `ParsedImport` to the ParsedFile — not to any `Scope`.
+ *      `provider.importOwningScope` is declared on `LanguageProvider` and
+ *      implemented by a dozen providers, but has no call site anywhere; this
+ *      step's output is a flat per-file list.
+ *
+ *      One scope fact is read before that list flattens it away:
+ *      `runsOnlyWhenCalled`, set when the statement sits anywhere inside a
+ *      `Function`. It is decided here because here is the last stage that can
+ *      — finalize receives the flat list, and its consumer receives a map
+ *      keyed by the file's Module scope only (see
+ *      `ParsedImport.runsOnlyWhenCalled`). This is a position fact, not a
+ *      syntax one, so it is decided centrally for every language rather than
+ *      per provider — with one capability a provider may declare to opt out
+ *      of it entirely, `importsExecuteWhereWritten: false`, because position
+ *      cannot defer an import that never executes (C/C++ `#include`, Rust
+ *      `use`, COBOL `COPY`). Providers still decide their own *syntactic* nesting
+ *      facts in their capture emitters, where the node is in hand (see
+ *      `languages/python/import-decomposer.ts`).
  *   4. **Collect type bindings.** Walk `@type-binding.*` matches. Call
  *      `provider.interpretTypeBinding` per match. Attach the resulting
  *      `TypeRef` to the innermost containing scope's `typeBindings`
@@ -92,10 +103,10 @@ import { parseTypeParameterList } from './utils/type-parameters.js';
 // ─── Narrow hook surface the extractor actually uses ───────────────────────
 
 /**
- * The subset of `LanguageProvider` hooks that `extract()` reads. Declared
- * as its own type so:
+ * The subset of `LanguageProvider` members that `extract()` reads — the hooks
+ * it calls plus the capability flags it consults. Declared as its own type so:
  *
- *   - Tests can implement just these six hooks without faking the whole
+ *   - Tests can implement just these members without faking the whole
  *     `LanguageProvider` interface (which is ~40 fields including the
  *     legacy-DAG surface).
  *   - The extractor's dependency contract stays explicit — adding a new
@@ -110,6 +121,7 @@ export type ScopeExtractorHooks = Pick<
   | 'scopeOwnsReceivers'
   | 'bindingScopeFor'
   | 'interpretImport'
+  | 'importsExecuteWhereWritten'
   | 'interpretTypeBinding'
   | 'classifyCallForm'
 >;
@@ -187,7 +199,14 @@ export function extract(
 
   // ── Pass 3: collect raw imports ─────────────────────────────────────
   const parsedImports: ParsedImport[] = [];
-  pass3CollectImports(partitioned.import_, parsedImports, provider);
+  pass3CollectImports(
+    partitioned.import_,
+    positionIndex,
+    filePath,
+    parsedImports,
+    provider,
+    scopeTree,
+  );
 
   // ── Pass 4: collect type bindings ───────────────────────────────────
   pass4CollectTypeBindings(
@@ -937,18 +956,96 @@ function makeDefId(
 
 // ─── Pass 3: collect raw imports ───────────────────────────────────────────
 
+/**
+ * Does this import run only when something calls the function it sits in?
+ *
+ * Walks the scope chain to the file root rather than reading the immediate
+ * kind, because the immediate kind is not enough in either direction. A `Block`
+ * at the top of a module (`if (FLAG) { require('./x'); }`) runs during
+ * initialization; the same `Block` inside a function does not. `Class`,
+ * `Namespace`, `Expression` and `Object` bodies execute where they are defined,
+ * so they are initialization-time too. Only an enclosing `Function` — anywhere
+ * up the chain — defers execution.
+ *
+ * Language-agnostic on purpose: it is what catches Python's
+ * `def f(): from x import Y`, Ruby's `def f; require 'x'; end` and a CommonJS
+ * `require()` in a function body, none of which any `kind` marks as deferred —
+ * only their position says it.
+ *
+ * The rule is about EXECUTION, so it does not hold for a language whose
+ * imports are not executed statements at all — a C/C++ `#include` (spliced by
+ * the preprocessor before the program runs) or a Rust `use` (a compile-time
+ * path alias). Both are legal inside a function body and neither is deferred
+ * by sitting there, so a cycle they form is REAL. Marking one deferred would
+ * make `check --cycles` drop that cycle, and suppressing a true cycle is the
+ * failure direction that matters. Such a language opts out by declaring
+ * `LanguageProvider.importsExecuteWhereWritten: false`, checked by the caller
+ * — the capability is named on the provider rather than the language being
+ * named here, because shared ingestion code must not branch on language
+ * (AGENTS.md).
+ *
+ * Decided HERE and nowhere later because this is the last stage that knows the
+ * answer — see `ParsedImport.runsOnlyWhenCalled` for why finalize and the graph
+ * bridge cannot recover it.
+ */
+function runsOnlyWhenCalled(
+  scopeTree: ReturnType<typeof buildScopeTree>,
+  scopeId: ScopeId,
+): boolean {
+  // Inline rather than `utils/scope-tree-walk.ts`'s `walkToScope`, which is the
+  // shared primitive for exactly this climb and IS the right call everywhere it
+  // is used today — five `bindingScopeFor` hooks, all per-BINDING. This runs per
+  // IMPORT on every file of every analyze, and `walkToScope` takes `...kinds`
+  // and builds `new Set(kinds)` per call: measured on this host, 1.0 ns inline
+  // against 32.3 ns through the helper for the module-level case that is ~99% of
+  // imports, plus ~232 B of allocation each. Rewriting the helper's membership
+  // test as `kinds.includes` takes it to 8.8 ns — still 8x, because the rest
+  // array allocates regardless. Reuse loses to a two-field loop here; it would
+  // not on a colder path.
+  //
+  // No depth cap: the chain is acyclic by construction, since `buildScopeTree`
+  // only parents a scope to one that STRICTLY contains it.
+  let current: ScopeId | null = scopeId;
+  while (current !== null) {
+    const scope = scopeTree.getScope(current);
+    if (scope === undefined) return false;
+    if (scope.kind === 'Function') return true;
+    current = scope.parent;
+  }
+  return false;
+}
+
 function pass3CollectImports(
   matches: readonly CaptureMatch[],
+  positionIndex: ReturnType<typeof buildPositionIndex>,
+  filePath: string,
   parsedImports: ParsedImport[],
   provider: ScopeExtractorHooks,
+  scopeTree: ReturnType<typeof buildScopeTree>,
 ): void {
   if (provider.interpretImport === undefined) return;
+  // Hoisted: the capability is a property of the language, identical for every
+  // match in the file. A provider that declares its imports do not execute
+  // where they are written (C/C++ `#include`, Rust `use`, COBOL `COPY`) skips
+  // the position walk entirely — position cannot defer something that never
+  // runs, and marking one deferred would hide a real cycle. Absent reads as
+  // `true`, so an undeclared provider is unchanged. See
+  // `LanguageProvider.importsExecuteWhereWritten`.
+  const positionCanDefer = provider.importsExecuteWhereWritten !== false;
   for (const match of matches) {
     const anchor = anchorCaptureFor(match, '@import.');
     if (anchor === undefined) continue;
     const parsed = provider.interpretImport(match);
     if (parsed === null) continue;
-    parsedImports.push(parsed);
+    // The statement's own position, resolved to the innermost scope holding
+    // it. An unlocatable anchor leaves the import unmarked, which reads as
+    // "runs at initialization" — the fail-safe direction, since it can only
+    // make `check --cycles` over-report.
+    const inScopeId = positionCanDefer
+      ? positionIndex.atPosition(filePath, anchor.range.startLine, anchor.range.startCol)
+      : undefined;
+    const deferred = inScopeId !== undefined && runsOnlyWhenCalled(scopeTree, inScopeId);
+    parsedImports.push(deferred ? { ...parsed, runsOnlyWhenCalled: true } : parsed);
   }
 }
 

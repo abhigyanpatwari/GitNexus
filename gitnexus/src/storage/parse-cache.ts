@@ -467,10 +467,48 @@ import type { ParseWorkerResult } from '../core/ingestion/workers/parse-worker.j
 //
 // Still open at this commit: #2891 also claims 59, which main now holds. That is
 // a live exact clash for #2891 to renumber, not for this branch.
-// v61: Java enum `implements` clauses emit `@reference.inherits` captures
-// (#2918). Warm v60 ParsedFiles lack those captures and must be re-extracted.
+//
+// 60 -> 62 for the two optional `ParsedImport` fields the cycle-checker fix
+// adds: `typeOnly` (TS `import type`) and `runsOnlyWhenCalled` (an import
+// written inside a function body). This is #2864's lesson arriving again, in
+// the same shape and for the same reason — neither field is a capture, but
+// `parsedfile-store.ts` serializes the whole ParsedFile generically, so both are
+// part of the cached shape. Without the bump a warm cache replays pre-fix
+// `ParsedImport`s carrying no flag, the strict `=== true` reads in
+// `finalize-algorithm.ts` and `imports-to-edges.ts` take the untagged path, and
+// `check --cycles` keeps reporting the erased and deferred imports this branch
+// exists to stop reporting — a silent no-op on incremental analyze while every
+// cold-run test in the branch passes. The failure is toward OVER-reporting, so
+// it is loud rather than dangerous, but it is still the whole fix not applying.
+// (`typeOnly` also has a capture half — `@import.type-only` from
+// `typescript/import-decomposer.ts` — so that side would drift a capture bench;
+// `runsOnlyWhenCalled` is decided in scope-extractor Pass 3 from the scope tree
+// and has no marker at all, which is exactly the half that gets missed.)
+//
+// 63, not 62, and not 61: main holds 60, #2935 claims 61, and #2936 claims 62.
+// Per the rule three paragraphs up, this is the next free value above every
+// in-flight MAXIMUM, not above origin/main. #2891's 59 is already buried by main
+// and is theirs to renumber; #1616's 2 is stale.
+//
+// This staged 62 first and was correct when written. #2936 opened four hours
+// later and also took 62 — bumping for #2917's implicit Java record-component
+// accessors, a genuinely different cached shape — because it re-checked against
+// main (60) rather than against the in-flight claims, which is the SEVENTH exact
+// clash and the same mistake the ledger above keeps recording. Moving rather
+// than standing on seniority: 63 is above every claim, so it is correct whichever
+// of the two merges first, and needs no coordination to stay correct. An exact
+// clash is the dangerous shape precisely because neither side invalidates the
+// other — a warm cache written by #2936's build would be read as valid by this
+// one, and the accessor definitions it materializes are not in this branch's
+// ParsedFile shape at all.
+//
+// 63 -> 64 for Java enum `implements` clauses emitting
+// `@reference.inherits` captures (#2918). Warm v63 ParsedFiles lack those
+// captures and must be re-extracted. #2936 uses 65 for its independent record
+// accessor shape, keeping both in-flight branches distinct whichever merges
+// first.
 // RE-CHECK AGAINST origin/main IMMEDIATELY BEFORE MERGING.
-const SCHEMA_BUMP = 61;
+const SCHEMA_BUMP = 64;
 const GITNEXUS_PKG_VERSION = (() => {
   try {
     // package.json sits at gitnexus/package.json — two levels up from
