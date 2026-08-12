@@ -117,6 +117,10 @@ import {
   isLbugReady,
   closeLbug,
 } from '../../src/mcp/core/lbug-adapter.js';
+import {
+  DEFERRED_IMPORT_REASON_SUFFIX,
+  TYPE_ONLY_IMPORT_REASON_SUFFIX,
+} from '../../src/core/ingestion/scope-resolution/graph-bridge/imports-to-edges.js';
 
 // ─── Helpers ─────────────────────────────────────────────────────────
 
@@ -511,8 +515,12 @@ describe('LocalBackend.callTool', () => {
     // and an `ENDS WITH` hoisted out of the group satisfies `toContain` while
     // silently dropping those edges. So extract the balanced group and assert
     // membership in it.
-    expect(reasonNullAlternativeOf(query)).toContain("NOT r.reason ENDS WITH ' (deferred)'");
-    expect(reasonNullAlternativeOf(query)).toContain("NOT r.reason ENDS WITH ' (type-only)'");
+    expect(reasonNullAlternativeOf(query)).toContain(
+      `NOT r.reason ENDS WITH '${DEFERRED_IMPORT_REASON_SUFFIX}'`,
+    );
+    expect(reasonNullAlternativeOf(query)).toContain(
+      `NOT r.reason ENDS WITH '${TYPE_ONLY_IMPORT_REASON_SUFFIX}'`,
+    );
     expect(reasonNullAlternativeOf(query)).toContain("r.reason <> 'markdown-link'");
     expect(query).toContain('LIMIT 100001');
   });

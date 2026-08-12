@@ -17,6 +17,9 @@
 
 import type { CaptureMatch, ParsedImport, ParsedTypeBinding, TypeRef } from 'gitnexus-shared';
 
+/** Shared empty result for the non-type-only path — see `typeOnly` below. */
+const NO_TYPE_ONLY: { typeOnly?: true } = Object.freeze({});
+
 // ─── interpretImport ──────────────────────────────────────────────────────
 
 export function interpretTsImport(captures: CaptureMatch): ParsedImport | null {
@@ -37,8 +40,11 @@ export function interpretTsImport(captures: CaptureMatch): ParsedImport | null {
   // Spread rather than `typeOnly: <boolean>` so a value import keeps the exact
   // object shape it had before this marker existed — every `ParsedImport`
   // equality assertion in the suite compares whole objects.
+  // `NO_TYPE_ONLY` is shared rather than a fresh `{}` per import: the spread
+  // reads it and never retains it, and the ~99% of imports that are not
+  // type-only would otherwise each allocate an object to contribute nothing.
   const typeOnly: { typeOnly?: true } =
-    captures['@import.type-only'] !== undefined ? { typeOnly: true } : {};
+    captures['@import.type-only'] !== undefined ? { typeOnly: true } : NO_TYPE_ONLY;
 
   switch (kind) {
     case 'default': {

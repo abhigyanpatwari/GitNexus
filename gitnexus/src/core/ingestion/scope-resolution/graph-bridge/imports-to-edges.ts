@@ -147,12 +147,28 @@ const PRESENCE_INITIALIZES = 0;
 const PRESENCE_DEFERRED = 1;
 const PRESENCE_ERASED = 2;
 
-/** Suffix for a pair's winning presence; `''` for a real init dependency. */
-function reasonSuffixFor(presence: number): string {
-  if (presence === PRESENCE_ERASED) return TYPE_ONLY_IMPORT_REASON_SUFFIX;
-  if (presence === PRESENCE_DEFERRED) return DEFERRED_IMPORT_REASON_SUFFIX;
-  return '';
-}
+/**
+ * How much of an import survives to run time, as a rank. Narrower than
+ * `number` on purpose: the ordering IS the semantics, so a value outside the
+ * three would silently take the `''` arm below — which labels the pair a real
+ * initialization dependency and is the direction that hides a cycle.
+ */
+type ImportPresence =
+  | typeof PRESENCE_INITIALIZES
+  | typeof PRESENCE_DEFERRED
+  | typeof PRESENCE_ERASED;
+
+/**
+ * Suffix per presence rank; the empty string is a real init dependency.
+ *
+ * Indexed rather than branched so the rank order lives in exactly one place —
+ * the constants above — instead of being restated by the order of an if-chain.
+ */
+const REASON_SUFFIX_BY_PRESENCE: Readonly<Record<ImportPresence, string>> = {
+  [PRESENCE_INITIALIZES]: '',
+  [PRESENCE_DEFERRED]: DEFERRED_IMPORT_REASON_SUFFIX,
+  [PRESENCE_ERASED]: TYPE_ONLY_IMPORT_REASON_SUFFIX,
+};
 
 export function emitImportEdges(
   graph: KnowledgeGraph,
@@ -163,7 +179,7 @@ export function emitImportEdges(
   /** dedupKey -> the pair, plus the strongest runtime presence reaching it. */
   const pairs = new Map<
     string,
-    { readonly sourceFile: string; readonly targetFile: string; presence: number }
+    { readonly sourceFile: string; readonly targetFile: string; presence: ImportPresence }
   >();
 
   for (const [scopeId, edges] of imports) {
@@ -202,7 +218,7 @@ export function emitImportEdges(
       targetId: generateId('File', pair.targetFile),
       type: 'IMPORTS',
       confidence: 1.0,
-      reason: reason + reasonSuffixFor(pair.presence),
+      reason: reason + REASON_SUFFIX_BY_PRESENCE[pair.presence],
     });
   }
 

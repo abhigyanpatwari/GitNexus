@@ -110,6 +110,12 @@ describe('type-only imports reach the IMPORTS reason', () => {
   });
 
   it.each([
+    // `type` as a BINDING NAME, not the keyword: a default import that really
+    // runs. It is the case that separates matching the token's TYPE from
+    // matching its TEXT — the whole `import_clause` here spells `type`, so a
+    // text-based keyword check (`field-extractors/configs/helpers.ts`'s
+    // `hasKeyword`) would call this erased and drop a real cycle.
+    ['import type from "./b";', PLAIN],
     ['import { X } from "./b";', PLAIN],
     ['import D from "./b";', PLAIN],
     ['import * as N from "./b";', PLAIN],

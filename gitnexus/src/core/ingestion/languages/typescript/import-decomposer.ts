@@ -106,6 +106,30 @@ interface ImportSpec {
 }
 
 /**
+ * Cheap prefilter for {@link hasTypeKeyword}.
+ *
+ * The keyword's text is exactly `type`, and every specifier lies inside its
+ * statement's text, so a statement whose text holds no `type` substring
+ * anywhere cannot carry the token at either level. Sound in one direction only,
+ * which is the direction that matters: it can admit a statement that turns out
+ * to have no keyword (`import { getType }`), never reject one that has it.
+ *
+ * Worth the extra test because the two are not the same order of cost.
+ * `node.text` is one slice; {@link hasTypeKeyword} crosses the N-API boundary
+ * and allocates a node wrapper once per direct child, and it runs per statement
+ * AND per specifier — so a statement of N specifiers pays N+1 walks.
+ *
+ * It pays most where there is nothing to find, and that case is not rare:
+ * `javascript/captures.ts` shares this decomposer, JavaScript has no
+ * `import type` at all, and no `.js` import can contain the token — so every
+ * JavaScript file was paying the full walk, never early-exiting, for an answer
+ * that is structurally always `false`.
+ */
+function mayHaveTypeKeyword(stmtNode: SyntaxNode): boolean {
+  return stmtNode.text.includes('type');
+}
+
+/**
  * Does this node carry the `type` keyword that erases the import?
  *
  * The keyword is an ANONYMOUS token, so `findChild` (named children only)
@@ -121,6 +145,15 @@ interface ImportSpec {
  * No NAMED node in this grammar is called `type`, so matching the type name
  * alone identifies the keyword without asking about `isNamed`, whose spelling
  * differs between tree-sitter bindings.
+ *
+ * `field-extractors/configs/helpers.ts`'s `hasKeyword` walks the same direct
+ * children and must NOT be reused here, for a sharper reason than the walk: it
+ * matches on `child.text.trim()`, not on the node type. `import type from './m'`
+ * is a DEFAULT import binding the name `type`, and its `import_clause`'s whole
+ * text is `type` — so `hasKeyword` reports erasure for an import that really
+ * runs, and the pair would be dropped from cycle reporting. Matching the token's
+ * TYPE is what separates the keyword from an identifier that happens to spell
+ * it.
  */
 function hasTypeKeyword(node: SyntaxNode): boolean {
   for (let i = 0; i < node.childCount; i++) {
@@ -175,7 +208,8 @@ function splitImport(stmtNode: SyntaxNode): CaptureMatch[] {
   // { type X, Y }` erases only the marked ones, which is read per specifier
   // in `decomposeNamedSpecifier`. Default and namespace forms have no
   // per-specifier spelling, so the statement keyword is all there is.
-  const statementTypeOnly = hasTypeKeyword(stmtNode);
+  const mayHaveType = mayHaveTypeKeyword(stmtNode);
+  const statementTypeOnly = mayHaveType && hasTypeKeyword(stmtNode);
 
   const out: CaptureMatch[] = [];
   // An import_clause can have any combination of:
@@ -223,7 +257,13 @@ function splitImport(stmtNode: SyntaxNode): CaptureMatch[] {
       for (let j = 0; j < child.namedChildCount; j++) {
         const spec = child.namedChild(j);
         if (spec === null || spec.type !== 'import_specifier') continue;
-        const decomposed = decomposeNamedSpecifier(spec, source, stmtNode, statementTypeOnly);
+        const decomposed = decomposeNamedSpecifier(
+          spec,
+          source,
+          stmtNode,
+          statementTypeOnly,
+          mayHaveType,
+        );
         if (decomposed !== null) out.push(decomposed);
       }
       continue;
@@ -254,6 +294,7 @@ function decomposeNamedSpecifier(
   source: string,
   stmtNode: SyntaxNode,
   statementTypeOnly: boolean,
+  mayHaveType: boolean,
 ): CaptureMatch | null {
   // `import_specifier` layout:
   //   name: identifier
@@ -267,7 +308,7 @@ function decomposeNamedSpecifier(
   const aliasNode = spec.childForFieldName('alias');
   if (nameNode === null) return null;
   const name = nameNode.text;
-  const typeOnly = statementTypeOnly || hasTypeKeyword(spec);
+  const typeOnly = statementTypeOnly || (mayHaveType && hasTypeKeyword(spec));
 
   if (aliasNode !== null && aliasNode.startIndex !== nameNode.startIndex) {
     return buildImportMatch(stmtNode, {
@@ -307,7 +348,8 @@ function splitReexport(stmtNode: SyntaxNode): CaptureMatch[] {
 
   // `export type { X } from './m'`. Its `export type *` sibling is NOT
   // detectable — see the known gap in the module header.
-  const statementTypeOnly = hasTypeKeyword(stmtNode);
+  const mayHaveType = mayHaveTypeKeyword(stmtNode);
+  const statementTypeOnly = mayHaveType && hasTypeKeyword(stmtNode);
 
   const exportClause = findChild(stmtNode, 'export_clause');
   if (exportClause !== null) {
@@ -315,7 +357,13 @@ function splitReexport(stmtNode: SyntaxNode): CaptureMatch[] {
     for (let i = 0; i < exportClause.namedChildCount; i++) {
       const spec = exportClause.namedChild(i);
       if (spec === null || spec.type !== 'export_specifier') continue;
-      const decomposed = decomposeReexportSpecifier(spec, source, stmtNode, statementTypeOnly);
+      const decomposed = decomposeReexportSpecifier(
+        spec,
+        source,
+        stmtNode,
+        statementTypeOnly,
+        mayHaveType,
+      );
       if (decomposed !== null) out.push(decomposed);
     }
     return out;
@@ -375,12 +423,13 @@ function decomposeReexportSpecifier(
   source: string,
   stmtNode: SyntaxNode,
   statementTypeOnly: boolean,
+  mayHaveType: boolean,
 ): CaptureMatch | null {
   const nameNode = spec.childForFieldName('name');
   const aliasNode = spec.childForFieldName('alias');
   if (nameNode === null) return null;
   const name = nameNode.text;
-  const typeOnly = statementTypeOnly || hasTypeKeyword(spec);
+  const typeOnly = statementTypeOnly || (mayHaveType && hasTypeKeyword(spec));
 
   if (aliasNode !== null && aliasNode.startIndex !== nameNode.startIndex) {
     return buildImportMatch(stmtNode, {

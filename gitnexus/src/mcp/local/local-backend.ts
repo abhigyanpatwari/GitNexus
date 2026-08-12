@@ -118,6 +118,10 @@ import type { UnresolvedReceiverSummary } from '../../core/ingestion/scope-resol
 import type { UndecidedSatisfactionSummary } from '../../core/ingestion/scope-resolution/undecided-satisfaction.js';
 import { lookupCount } from '../../core/ingestion/scope-resolution/summary-maps.js';
 import {
+  DEFERRED_IMPORT_REASON_SUFFIX,
+  TYPE_ONLY_IMPORT_REASON_SUFFIX,
+} from '../../core/ingestion/scope-resolution/graph-bridge/imports-to-edges.js';
+import {
   fnLineOf,
   isPdgDegradedLayerStatus,
   makePdgImpactErrorResult,
@@ -2395,8 +2399,8 @@ export class LocalBackend {
          AND (r.reason IS NULL OR (
            r.reason <> 'swift-scope: implicit module visibility'
            AND r.reason <> 'markdown-link'
-           AND NOT r.reason ENDS WITH ' (deferred)'
-           AND NOT r.reason ENDS WITH ' (type-only)'
+           AND NOT r.reason ENDS WITH '${DEFERRED_IMPORT_REASON_SUFFIX}'
+           AND NOT r.reason ENDS WITH '${TYPE_ONLY_IMPORT_REASON_SUFFIX}'
          ))
        RETURN source.filePath AS source, target.filePath AS target
        LIMIT ${rowLimit}`,
