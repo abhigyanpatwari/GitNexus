@@ -565,6 +565,18 @@ const HEAP_BUDGETED = [
   // carry the full ceiling + floor + ratio set rather than a bound alone.
   // kotlin's 40.82 MiB is larger than ruby's and java's, both of which were
   // budgeted from the start, and it had no stated exclusion reason at all.
+  //
+  // Its ceiling is also the one TIGHT ceiling in this file — 1.0747x its
+  // reading where every other is 1.5x — because it is the only one gating a
+  // size REDUCTION being preserved rather than a footprint not growing.
+  // #2881 compacts `dirChildren`'s buckets, and deleting that `slice()` is
+  // invisible to every other instrument in the repository: output-identical,
+  // so no fingerprint moves; capacity has no reflective surface, so no unit
+  // assertion moves; and both heap scales grow together, so `heap_ratio_budget`
+  // divides it out. It shows up here and nowhere else, at +12.57%. See
+  // `_heap_compaction_gate` in baselines.json for the measurement, the
+  // arithmetic behind the 5.4 MB, and how to tell a lost compaction from a
+  // runner's heapUsed accounting moving under the whole file.
   'kotlin',
   'dart',
   'go',
@@ -750,10 +762,6 @@ function uniqueDir(lang, d, i) {
   // when #2881 removed that rule, which would have shipped a widened bucket
   // with no bench coverage while C# and Java were re-baselined for it.
   if (lang === 'go') return d % 7 === 0 ? `src/pkg${d}/internal/src/pkg${d}` : `src/pkg${d}`;
-  // The repeat is the whole queried path (`App.Ns{d}` -> `App/Ns{d}`), not just
-  // the leaf: C# queries the full dotted path first and only reaches the leaf
-  // through progressive stripping, so a leaf-only repeat exercises the fallback
-  // rather than the primary query (#2881).
   // Leaf-only repeat, deliberately: this layout is shared with the
   // `csharp_csproj` arm, whose configs mint `dirPrefix` against `src/Ns{d}`, so
   // deepening it to the full `App/Ns{d}` query path resolves that arm to ZERO
@@ -815,6 +823,32 @@ function collideDir(lang, d, i) {
     if (d % 7 === 0) return `svc${d}/internal/sub/svc${d}/internal`;
     return d % 5 === 1 ? `svc${d}/internal/shared` : `svc${d}/internal`;
   }
+  // Leaf-only repeat here too, and unlike the kotlin arm below that is not a
+  // blind spot — measured, base against head over this exact corpus. C#'s match
+  // test is an unanchored ends-with and its cascade strips leading segments, so
+  // `App.Src{d}.Models` reaches `Models` after two strips and finds
+  // `Src{d}/Models/Inner/Models`, whose FIRST `/Models/` is not its last: the
+  // removed first-occurrence rule rejected it and the current one takes it. The
+  // `csharp` collide fingerprint therefore moves across #2881 (03c9afe33276
+  // head, 89d0a054b617 base) with the resolved count unchanged at 1153 — the
+  // arm sees the change, it just sees it as different ANSWERS rather than more
+  // of them. Deepening the slice to `Src{d}/Models/Inner/Src{d}/Models` only
+  // moves which strip level finds it; both layouts move base -> head, so it
+  // buys nothing here.
+  //
+  // And it costs, because the `csharp_csproj` constraint binds this arm too —
+  // differently from the way it binds `uniqueDir`. There, deepening resolves
+  // that arm to ZERO. Here it resolves MORE: `Lib` has `projectDir: ''`, so its
+  // `dirPrefix` is `Src{d}/Models`, which is not a segment suffix of
+  // `…/Inner/Models` and is one of `…/Inner/Src{d}/Models`. Measured, the
+  // csproj arm's collide `resolved` goes 979 -> 1153 against its `small` 979,
+  // which is the same-workload invariant `--check` asserts. (Worth recording
+  // while it is measured: with the shipped layout BOTH csproj arms are blind to
+  // #2881 — unique and collide fingerprints identical base and head — because
+  // `getFilesInDir` is keyed on segment-aligned directory SUFFIXES and neither
+  // nested slice is one. Closing that is the deepening plus a mirrored miss for
+  // the csproj arm's `d % 7` slice, i.e. a corpus redesign and four
+  // re-baselines, not this edit.)
   if (lang === 'csharp') return d % 7 === 0 ? `Src${d}/Models/Inner/Models` : `Src${d}/Models`;
   if (lang === 'dart') return `pkg${d}/lib/src`;
   if (lang === 'kotlin') {
