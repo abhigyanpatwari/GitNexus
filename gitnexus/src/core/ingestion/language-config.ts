@@ -2,7 +2,6 @@ import fs from 'fs/promises';
 import { createReadStream } from 'fs';
 import { createInterface } from 'readline';
 import path from 'path';
-import type { ImportConfigs } from './import-resolvers/types.js';
 import type { CsharpStructureLineScanner } from './languages/csharp/namespace-siblings.js';
 
 import { isDev } from './utils/env.js';
@@ -469,6 +468,27 @@ export async function loadSwiftPackageConfig(repoRoot: string): Promise<SwiftPac
 // ============================================================================
 // BUNDLED CONFIG LOADER
 // ============================================================================
+
+/**
+ * Bundled language-specific configs loaded once per ingestion run — the
+ * result of {@link loadImportConfigs}, and every field's type is declared
+ * above in this module.
+ *
+ * It lives here rather than in `import-resolvers/types.ts` (its consumer, via
+ * `ResolveCtx`) so the dependency runs one way: the import-resolver types
+ * import this bundle, and this module imports nothing from them. Homing the
+ * producer's result type with the producer also keeps `import-resolvers/
+ * types.ts` free of per-language names.
+ */
+export interface ImportConfigs {
+  tsconfigPaths: TsconfigPaths | null;
+  goModule: GoModuleConfig | null;
+  composerConfig: ComposerConfig | null;
+  swiftPackageConfig: SwiftPackageConfig | null;
+  csharpConfigs: CSharpProjectConfig[];
+  /** In-repo namespace evidence gating C# suffix-fallback resolution (#1881). */
+  csharpNamespaces?: CSharpNamespaceEvidence;
+}
 
 /** Load all language-specific configs once for an ingestion run. */
 export async function loadImportConfigs(repoRoot: string): Promise<ImportConfigs> {
