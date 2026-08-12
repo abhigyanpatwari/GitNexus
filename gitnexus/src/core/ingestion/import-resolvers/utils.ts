@@ -97,6 +97,15 @@ export interface SuffixIndex {
   /**
    * Get all files in a directory suffix.
    *
+   * `dirSuffix` is matched as a SEGMENT-aligned directory suffix — every
+   * returned file is a direct child of a directory `D` with
+   * `D === dirSuffix || D.endsWith('/' + dirSuffix)`. Callers may rely on this
+   * and skip a direct-child re-check; `import-resolvers/csharp.ts` step 2 does
+   * exactly that. It bounds what may be RETURNED, not what must be found: an
+   * implementation is free to answer with fewer files, and the root-anchored
+   * index in `languages/php/import-target.ts` answers only the `D === dirSuffix`
+   * arm.
+   *
    * `readonly` is the CONTRACT, and it is the contract for every implementation
    * of this interface, not a description of any one of them: an implementation
    * is free to return its own bucket by reference, so callers must treat the

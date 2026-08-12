@@ -39,7 +39,17 @@ import { csharpSuffixFallbackAllowed } from '../csharp-namespace-gate.js';
  *    have to move together — see the note at step 3.
  *  - the needle ends with '/', so every occurrence of it lies wholly inside
  *    `D + '/'` and never reaches into the file name — which is what lets the
- *    whole test be evaluated on `D` alone.
+ *    whole test be evaluated on `D` alone;
+ *  - and then the '/' cancels. `(D + '/').endsWith(P + '/')` IS `D.endsWith(P)`:
+ *    the appended character only ever matches itself, so it decides nothing and
+ *    the comparison of everything before it is unchanged. The predicate the code
+ *    actually runs is therefore
+ *
+ *      match ⟺ D.endsWith(dirPrefix)
+ *
+ *    with no concatenation on either side. Verified rather than argued: over
+ *    every ordered pair of strings up to length 5 over `{a, b, '/'}` including
+ *    the empty string — 132 496 pairs — the two forms disagreed 0 times.
  *
  * NOT the same query as `package-dir-index.ts`, and the difference is exactly
  * one character on each side: that module tests `'/'+D+'/'` against
@@ -51,6 +61,11 @@ import { csharpSuffixFallbackAllowed } from '../csharp-namespace-gate.js';
  * nothing), so the looser predicate is preserved verbatim rather than
  * "cleaned up" into a reuse of `filesDirectlyInPkgDir` — see
  * `test/unit/import-resolvers/csharp-csproj-parity.test.ts`.
+ *
+ * That one character is also why the cancellation above empties this predicate
+ * out but not that one: the decoration is one term per side here (`D + '/'`) and
+ * two there (`'/' + D + '/'`), and only the TRAILING '/' cancels. Here nothing
+ * is left to concatenate; there the leading segment anchor has to stay.
  *
  * Candidates are narrowed by the directory's LAST segment, the same
  * O(directories) bucket `package-dir-index.ts` uses instead of an
@@ -178,15 +193,32 @@ function* matchingDirPositions(
   index: CsharpNamespaceDirIndex,
   dirPrefix: string,
 ): Generator<readonly number[]> {
-  const needle = dirPrefix + '/';
   for (const dir of candidateDirs(index, dirPrefix)) {
-    const haystack = dir + '/';
+    // `(dir + '/').endsWith(dirPrefix + '/')` IS `dir.endsWith(dirPrefix)` — the
+    // appended '/' only ever matches itself, so it decides nothing and BOTH
+    // concatenations go. Exhaustively verified, not assumed: 0 disagreements
+    // over every ordered pair of strings up to length 5 over `{a, b, '/'}`
+    // including '' (132 496 pairs). Measured 64.9 ns -> 18.4 ns per candidate
+    // (Node 22.18); the `dir + '/'` was paid once per candidate, on every sweep
+    // of the last-segment keys.
+    //
+    // Still deliberately UNANCHORED (no leading '/'), so `src/SubModels` keeps
+    // answering `Models` — see the derivation above. That is also exactly why
+    // the reduction empties this predicate out while `package-dir-index.ts`
+    // keeps its concatenations: one decorating term per side here, two there,
+    // and only the trailing one cancels.
+    //
     // `endsWith` subsumes the length guard the `indexOf` form needed: a shorter
-    // haystack is simply false, where `indexOf` returned -1 and
+    // `dir` is simply false, where `indexOf` returned -1 and
     // `haystack.length - needle.length` could also be -1 and report a bogus
-    // match. Still deliberately UNANCHORED (no leading '/'), so `src/SubModels`
-    // keeps answering `Models` — see the derivation above.
-    if (!haystack.endsWith(needle)) continue;
+    // match.
+    //
+    // Do NOT "finish the job" with the two-argument overload. `endsWith(search,
+    // endPosition)` measured 8.8-11.8 ns against 9.5-14.9 ns for the
+    // one-argument form across seven call-site shapes (Node 22.18) — a wash —
+    // and `dir.endsWith(dirPrefix, dir.length)` is character-for-character this
+    // same test anyway. There is nothing left here to win.
+    if (!dir.endsWith(dirPrefix)) continue;
     const positions = index.positionsByDir.get(dir);
     if (positions !== undefined) yield positions;
   }
@@ -295,12 +327,33 @@ export function resolveCSharpImportInternal(
       // pairs. It rejected before #2881 only because it asked `indexOf` for the
       // FIRST `/<dirPrefix>/`, which is the rule that issue removed.
       //
+      // That widening does not stay inside step 2's own bucket. This step
+      // returns as soon as it pushes anything, so a query it used to answer with
+      // nothing now also SUPPRESSES step 3, whose unanchored match set is a
+      // strict superset: over `SubModels/Models/F1.cs` + `SubModels/F3.cs`,
+      // `using App.Models` answered both through step 3 and now answers only the
+      // first through step 2. The new answer is the more precise one — a
+      // directory literally named `Models` beating a character-suffix hit on
+      // `SubModels` — and it is what this module's step-2-before-step-3 layering
+      // asks for, so it is kept rather than worked around. Pinned absolutely by
+      // the parity test, which is differentially blind to it (its frozen legacy
+      // copy moved in lockstep with this line).
+      //
       // The empty prefix is the exception and keeps a real filter. `getDirMap`
-      // emits an empty directory suffix for any path whose first slash is its
-      // last — including a doubled slash, `a//X.cs` — so the bucket is not
-      // "one directory deep" on its own, and step 3 answers that same query
-      // from `singleSegmentDirs`, which is. Filtering on `D` holding no slash
-      // is what keeps steps 2 and 3 in agreement.
+      // keys a file under every suffix of its DIRECTORY, so it emits the EMPTY
+      // one exactly when that directory's last component is empty: a leading '/'
+      // on a root-level file, or a doubled slash immediately before the file
+      // name. Probed against `getDirMap`'s own key emission:
+      //
+      //   src/X.cs   -> ['src:.cs']                        no empty key
+      //   /X.cs      -> [':.cs']                           empty key
+      //   a//X.cs    -> [':.cs', 'a/:.cs']                 empty key
+      //   /a/b/X.cs  -> ['b:.cs', 'a/b:.cs', '/a/b:.cs']   no empty key
+      //
+      // So the `''` bucket is not "one directory deep" on its own — `a//X.cs`
+      // sits in it two components down — while step 3 answers that same query
+      // from `singleSegmentDirs`, which is. Filtering on `D` holding no slash is
+      // what rejects `a//X.cs` and keeps steps 2 and 3 in agreement.
       for (const f of dirFiles) {
         if (dirPrefix === '') {
           const normalized = f.replace(/\\/g, '/');

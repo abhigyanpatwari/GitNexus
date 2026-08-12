@@ -33,10 +33,27 @@
  * The strongest evidence that the rule was accidental is that a sixth
  * implementation of the same question never had it. `import-resolvers/jvm.ts`
  * answers "files directly inside a directory ending with <packagePath>" for
- * Java and Kotlin wildcard imports, and has used `lastIndexOf` since #488 — it
- * is live, wired as `importResolver` by `languages/{java,kotlin}.ts`. So before
- * #2881 the Java and Kotlin LanguageProvider hook and their ScopeResolver hook
- * disagreed about which files a package holds. Now all six agree.
+ * Java and Kotlin wildcard imports, and has used `lastIndexOf` since #488.
+ *
+ * That is evidence about how the predicate was WRITTEN, not about live
+ * behaviour, and the distinction matters enough to spell out. `jvm.ts` is
+ * reached only through `provider.importResolver`, which `languages/java.ts` and
+ * `languages/kotlin.ts` do wire — but that field currently has no production
+ * READER. Its only reader anywhere is `import-target-adapter.ts`, whose own
+ * docblock says it is "threaded through `finalizeScopeModel`"; nothing threads
+ * it, and neither that module nor its two exports
+ * (`buildImportTargetWorkspace`, `resolveImportTargetAcrossLanguages`) is
+ * referenced outside its own unit test. So `jvm.ts`'s `resolveJvmWildcard` and
+ * `import-resolvers/go.ts`'s `resolveGoPackage` are dormant, while THIS index,
+ * `csharp.ts`'s `resolveCSharpImportInternal` and Kotlin's `dirChildren` are
+ * the ones that run. Whether those two dormant resolvers should be deleted or
+ * actually wired up is an open question and wants its own issue; it is not
+ * settled here.
+ *
+ * The argument survives that correction intact, because it never needed the
+ * resolvers to be live: an independent implementation of the same question,
+ * written without reference to the pre-index scan, reached for `lastIndexOf`.
+ * The extra clause was never a rule anyone chose. All six spellings now agree.
  *
  * The length guard the `indexOf` form needed is gone with it: `endsWith` is
  * false for a shorter `D` instead of comparing -1 to -1.
@@ -139,14 +156,40 @@ function* matchingDirs(index: PackageDirIndex, pkgPath: string): Generator<reado
   const lastSegment = pkgPath.slice(pkgPath.lastIndexOf('/') + 1);
   const dirs = index.dirsByLastSegment.get(lastSegment);
   if (dirs === undefined) return;
-  const needle = `/${pkgPath}/`;
+  // `('/' + D + '/').endsWith('/' + P + '/')` ⟺ `D === P || D.endsWith('/' + P)`,
+  // which is the same predicate without the two strings per candidate the
+  // wrapped form built: 32.58 ns → 8.22 ns per candidate, 3.96x, over 2001
+  // directories of which 668 match (Node 22.18.0, best-of-80 after 300 warmup
+  // passes). Verified exhaustively rather than argued, over every pair of
+  // strings up to length 5 over `{a, b, /}` including the empty string —
+  // 132 496 pairs, 911 of them matching: 0 divergences. The match count is
+  // reported beside the timing on purpose: two predicates that agree on `false`
+  // everywhere also show 0 divergences.
+  //
+  // Worth the care because this loop is genuinely hot: Go's GOPATH fallback
+  // calls `matchingDirs` once per import-path segment over the bucket holding
+  // EVERY directory that shares the queried last segment (every service's
+  // `internal`). At 1000 services × 100 000 unresolved imports × 4 segments
+  // that is ~34.6 s against ~14.0 s, and ~0.5 GB of transient garbage not
+  // allocated.
+  //
+  // There is nothing further to win by reaching for the two-argument
+  // `endsWith(search, endPosition)` or for `startsWith(needle, pos)`: on the
+  // same data all three land together — 8.15 ns one-argument, 8.55 ns
+  // two-argument, 8.54 ns `startsWith` — and against the unwrapped string the
+  // two-argument form is character-for-character the same test. A "the 2-arg
+  // overload leaves V8's fast path, 20x" claim was measured during review and
+  // did NOT reproduce here or in two independent re-runs; its 1.87 ns baseline
+  // was a one-argument call whose needle failed the length/last-char precheck
+  // and early-exited without comparing. Recorded because the retraction is the
+  // useful part: compare forms that do the same work and report the hit count.
+  //
+  // The equality arm also carries the length guard the `indexOf` form needed: a
+  // shorter `dir` is simply false, where `indexOf` returned -1 and
+  // `haystack.length - needle.length` could also be -1 and report a bogus match.
+  const suffix = `/${pkgPath}`;
   for (const dir of dirs) {
-    const haystack = `/${dir}/`;
-    // `endsWith` subsumes the length guard the `indexOf` form needed: a shorter
-    // haystack is simply false, where `indexOf` returned -1 and
-    // `haystack.length - needle.length` could also be -1 and report a bogus
-    // match.
-    if (!haystack.endsWith(needle)) continue;
+    if (dir !== pkgPath && !dir.endsWith(suffix)) continue;
     const files = index.filesByDir.get(dir);
     if (files !== undefined) yield files;
   }
