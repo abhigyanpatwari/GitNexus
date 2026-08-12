@@ -17,13 +17,17 @@
  *     — while its directory child is collected and returned only after the scan
  *     completes, so file/suffix beats directory child within one `skip` level
  *     regardless of order;
- *   - the directory-child leg takes the FIRST `'/' + pathLike + '/'` occurrence,
- *     so `com/example/com/example/Deep.java` does NOT answer `com.example`;
+ *   - the directory-child leg answers when the file's PARENT directory ends
+ *     with `pathLike`, so `com/example/com/example/Deep.java` DOES answer
+ *     `com.example`. It took the FIRST `'/' + pathLike + '/'` occurrence until
+ *     #2881, which made a package whose name repeats higher in its own path
+ *     unresolvable;
  *   - a wildcard import drops its trailing `.*` before any of that runs;
  *   - paths are compared normalized (`\` → `/`) but returned RAW.
  *
- * So this file keeps a VERBATIM copy of the pre-change implementation — the
- * `resolveJavaImportTarget` that shipped before #2908, scans and all — and
+ * So this file keeps a copy of the pre-change implementation — the
+ * `resolveJavaImportTarget` that shipped before #2908, scans and all, minus the
+ * one rule #2881 deliberately removed (see tie-break 3) — and
  * asserts the new one agrees with it, both on hand-built corpora built to force
  * exactly those cases and on a generated corpus replayed under three insertion
  * orders — order being the only channel most of these tie-breaks travel on.
@@ -46,7 +50,7 @@ import type { ParsedImport, WorkspaceIndex } from 'gitnexus-shared';
 import { resolveJavaImportTarget } from '../../../src/core/ingestion/languages/java/import-target.js';
 import { CountingSet } from '../../helpers/counting-file-set.js';
 
-// ─── verbatim pre-change implementation ──────────────────────────────────────
+// ─── pre-change implementation, minus the rule #2881 removed ─────────────────
 
 interface LegacyJavaResolveContext {
   readonly fromFile: string;
@@ -81,8 +85,7 @@ function legacyResolveJavaImportTarget(
   let exactFile: string | null = null;
   let suffixFile: string | null = null;
   let directoryChild: string | null = null;
-  const dirPrefix = `${pathLike}/`;
-  const suffixDirPrefix = `/${dirPrefix}`;
+  const suffixDirPrefix = `/${pathLike}/`;
 
   for (const raw of ctx.allFilePaths) {
     const f = raw.replace(/\\/g, '/');
@@ -95,14 +98,13 @@ function legacyResolveJavaImportTarget(
       suffixFile = raw;
     }
     if (directoryChild === null) {
-      const atRoot = f.startsWith(dirPrefix);
-      const atNested = f.includes(suffixDirPrefix);
-      if (atRoot || atNested) {
-        const idx = atRoot ? 0 : f.indexOf(suffixDirPrefix) + 1;
-        const after = f.slice(idx + dirPrefix.length);
-        if (after.length > 0 && !after.includes('/')) {
-          directoryChild = raw;
-        }
+      // Since #2881: "the file's parent directory ends with `pathLike`". The
+      // `atRoot`/`indexOf` pair this replaces said that AND "…and that is the
+      // first occurrence". `>= 0`, not `> 0` — a repo-root file has `lastSlash`
+      // 0 for `/Top.java` shapes and the bare-wildcard case depends on it.
+      const lastSlash = f.lastIndexOf('/');
+      if (lastSlash >= 0 && `/${f.slice(0, lastSlash)}/`.endsWith(suffixDirPrefix)) {
+        directoryChild = raw;
       }
     }
   }
@@ -119,8 +121,7 @@ function legacyResolveJavaImportTarget(
     if (tail === '') continue;
     const tailFile = `${tail}.java`;
     const tailSuffix = `/${tailFile}`;
-    const tailDir = `${tail}/`;
-    const tailSuffixDir = `/${tailDir}`;
+    const tailSuffixDir = `/${tail}/`;
     let tailDirectChild: string | null = null;
     for (const raw of ctx.allFilePaths) {
       const f = raw.replace(/\\/g, '/');
@@ -128,12 +129,9 @@ function legacyResolveJavaImportTarget(
       if (f === tailFile) return raw;
       if (f.endsWith(tailSuffix)) return raw;
       if (tailDirectChild === null) {
-        const atRoot = f.startsWith(tailDir);
-        const atNested = f.includes(tailSuffixDir);
-        if (atRoot || atNested) {
-          const idx = atRoot ? 0 : f.indexOf(tailSuffixDir) + 1;
-          const after = f.slice(idx + tailDir.length);
-          if (after.length > 0 && !after.includes('/')) tailDirectChild = raw;
+        const lastSlash = f.lastIndexOf('/');
+        if (lastSlash >= 0 && `/${f.slice(0, lastSlash)}/`.endsWith(tailSuffixDir)) {
+          tailDirectChild = raw;
         }
       }
     }
@@ -222,13 +220,20 @@ const HAND_CASES: readonly Case[] = [
     target: 'com.example.service.*',
   },
   {
-    // Tie-break 5: the FIRST `/com/example/` occurrence leaves `com/example/
-    // Deep.java` after it, which still contains a slash — so no match.
-    label: 'self-nested-directory-does-not-match-outer',
+    // Tie-break 5: the parent directory `com/example/com/example` ends with
+    // `com/example`, so it answers. Until #2881 the leg took the FIRST
+    // `/com/example/` occurrence, which leaves `com/example/Deep.java` after it
+    // — still containing a slash — and the import resolved to null.
+    label: 'self-nested-directory-answers-the-outer-package',
     files: ['com/example/com/example/Deep.java'],
     target: 'com.example',
   },
   {
+    // Kept beside `self-nested-directory-answers-the-outer-package` even though
+    // both now resolve to the same file: this one addresses the FULL path and
+    // hits the exact-file/suffix tier, that one addresses the outer package and
+    // hits the directory-child tier. Before #2881 the pair separated a hit from
+    // a null; it now separates two tiers, which is why it is still two cases.
     label: 'self-nested-directory-matches-full-path',
     files: ['com/example/com/example/Deep.java'],
     target: 'com.example.com.example',
@@ -347,6 +352,30 @@ const HAND_CASES: readonly Case[] = [
     files: ['com/example/model/User.java'],
     target: 'java.util.List',
   },
+  // ── negative control for the widening (#2881), matching Kotlin's ──────────
+  // Everything above pins the widened leg from the POSITIVE side: a file whose
+  // package directory repeats higher in its own path now answers. Nothing here
+  // pinned the other half — that dropping the first-occurrence rule did not
+  // widen "the parent directory ends with `pathLike`" into "`pathLike` appears
+  // somewhere in the path". These three are the same trio
+  // `kotlin-import-target-parity.test.ts` carries: the two positions the old
+  // `atRoot`/`indexOf` pair distinguished, plus the positive control that keeps
+  // the pair from passing by refusing everything.
+  {
+    label: 'not-the-parent-directory-stays-out-leading',
+    files: ['com/example/sub/Repo.java'],
+    target: 'com.example',
+  },
+  {
+    label: 'not-the-parent-directory-stays-out-mid-path',
+    files: ['top/com/example/mid/Repo.java'],
+    target: 'com.example',
+  },
+  {
+    label: 'the-parent-directory-itself-does-answer',
+    files: ['top/com/example/Repo.java'],
+    target: 'com.example',
+  },
 ];
 
 /** Absolute pre-change behaviour, so the differential cannot pass vacuously. */
@@ -358,7 +387,7 @@ const HAND_EXPECTED: readonly string[] = [
   'directory-child-order-follows-insertion => com/example/service/Alpha.java',
   'wildcard-resolves-as-package-directory => com/example/service/Beta.java',
   'wildcard-exact-file-beats-directory => com/example/service.java',
-  'self-nested-directory-does-not-match-outer => null',
+  'self-nested-directory-answers-the-outer-package => com/example/com/example/Deep.java',
   'self-nested-directory-matches-full-path => com/example/com/example/Deep.java',
   'stripping-suffix-beats-earlier-directory-child => y/models/Order.java',
   'stripping-reaches-root-file => Order.java',
@@ -384,6 +413,12 @@ const HAND_EXPECTED: readonly string[] = [
   'directory-named-like-a-java-file => null',
   'jdk-import-strips-into-a-local-lookalike => src/main/java/util/List.java',
   'jdk-import-with-no-lookalike-resolves-to-nothing => null',
+  // `com/example/sub` ends with `example/sub`, not with `com/example`, and the
+  // stripping loop's `example` level does not reach it either — so the file is
+  // in no bucket the query can name.
+  'not-the-parent-directory-stays-out-leading => null',
+  'not-the-parent-directory-stays-out-mid-path => null',
+  'the-parent-directory-itself-does-answer => top/com/example/Repo.java',
 ];
 
 // ─── generated corpus ────────────────────────────────────────────────────────
@@ -610,6 +645,55 @@ describe('Java import target — index hoist parity (#2908)', () => {
       'empty target => null',
       'wildcard kind => com/example/model/User.java',
     ]);
+  });
+
+  it('pins WHICH of two competing package directories the first-child leg takes', () => {
+    // `firstFileDirectlyInPkgDir` commits to ONE file with no downstream
+    // filter, and #2881 widened the set it chooses from. Every widened-shape
+    // case in HAND_CASES uses a ONE-FILE corpus, so the widened bucket has a
+    // single member and the choice is not exercised anywhere — yet a different
+    // first child is the largest class of movement the change produced.
+    //
+    // Both files below are legitimate members of the widened `com/example`
+    // set: `com/example/legacy/com/example` ends with `com/example` (it is the
+    // self-nested shape #2881 admitted) and `src/main/java/com/example` ends
+    // with it too. Nothing in the resolver prefers one over the other. The
+    // tie-break is FILE-SET ITERATION ORDER — the insertion order of the Set
+    // the caller passes — so reversing the corpus reverses the answer. That is
+    // the property these assertions pin, and the one nothing else watches:
+    // membership is already pinned above, the WINNER was not.
+    const set = (files: readonly string[]): WorkspaceIndex =>
+      ({ fromFile: FROM_FILE, allFilePaths: new Set(files) }) as WorkspaceIndex;
+    const nestedFirst = [
+      'com/example/legacy/com/example/Old.java',
+      'src/main/java/com/example/App.java',
+    ];
+    const conventionalFirst = [...nestedFirst].reverse();
+
+    expect(resolveJavaImportTarget(javaImport('com.example'), set(nestedFirst))).toBe(
+      'com/example/legacy/com/example/Old.java',
+    );
+    expect(resolveJavaImportTarget(javaImport('com.example'), set(conventionalFirst))).toBe(
+      'src/main/java/com/example/App.java',
+    );
+    // A wildcard drops its `.*` before any of that, so it lands on the same leg
+    // and moves with it. Spelled out because `com.example.*` is how real Java
+    // source reaches this tier.
+    expect(resolveJavaImportTarget(javaImport('com.example.*'), set(nestedFirst))).toBe(
+      'com/example/legacy/com/example/Old.java',
+    );
+    expect(resolveJavaImportTarget(javaImport('com.example.*'), set(conventionalFirst))).toBe(
+      'src/main/java/com/example/App.java',
+    );
+    // The pre-change copy agrees on both orders, which places the movement in
+    // #2881's removal of the first-occurrence rule rather than in #2908's
+    // index hoist: the hoist did not touch the tie-break, it inherited it.
+    expect(legacyResolveJavaImportTarget(javaImport('com.example'), set(nestedFirst))).toBe(
+      'com/example/legacy/com/example/Old.java',
+    );
+    expect(legacyResolveJavaImportTarget(javaImport('com.example'), set(conventionalFirst))).toBe(
+      'src/main/java/com/example/App.java',
+    );
   });
 
   it('builds each index once per file set rather than once per import', () => {
