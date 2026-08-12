@@ -468,7 +468,30 @@ import type { ParseWorkerResult } from '../core/ingestion/workers/parse-worker.j
 // Still open at this commit: #2891 also claims 59, which main now holds. That is
 // a live exact clash for #2891 to renumber, not for this branch.
 // RE-CHECK AGAINST origin/main IMMEDIATELY BEFORE MERGING.
-const SCHEMA_BUMP = 60;
+//
+// 60 -> 62 for the two optional `ParsedImport` fields the cycle-checker fix
+// adds: `typeOnly` (TS `import type`) and `runsOnlyWhenCalled` (an import
+// written inside a function body). This is #2864's lesson arriving again, in
+// the same shape and for the same reason — neither field is a capture, but
+// `parsedfile-store.ts` serializes the whole ParsedFile generically, so both are
+// part of the cached shape. Without the bump a warm cache replays pre-fix
+// `ParsedImport`s carrying no flag, the strict `=== true` reads in
+// `finalize-algorithm.ts` and `imports-to-edges.ts` take the untagged path, and
+// `check --cycles` keeps reporting the erased and deferred imports this branch
+// exists to stop reporting — a silent no-op on incremental analyze while every
+// cold-run test in the branch passes. The failure is toward OVER-reporting, so
+// it is loud rather than dangerous, but it is still the whole fix not applying.
+// (`typeOnly` also has a capture half — `@import.type-only` from
+// `typescript/import-decomposer.ts` — so that side would drift a capture bench;
+// `runsOnlyWhenCalled` is decided in scope-extractor Pass 3 from the scope tree
+// and has no marker at all, which is exactly the half that gets missed.)
+//
+// 62, not 61: main holds 60 and PR #2935 already claims 61. Per the rule three
+// paragraphs up, this is the next free value above every in-flight MAXIMUM, not
+// above origin/main. #2891's 59 is already buried by main and is theirs to
+// renumber; #1616's 2 is stale.
+// RE-CHECK AGAINST origin/main IMMEDIATELY BEFORE MERGING.
+const SCHEMA_BUMP = 62;
 const GITNEXUS_PKG_VERSION = (() => {
   try {
     // package.json sits at gitnexus/package.json — two levels up from

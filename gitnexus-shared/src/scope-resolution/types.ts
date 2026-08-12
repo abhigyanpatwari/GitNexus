@@ -151,6 +151,42 @@ export type ParsedImport =
        */
       readonly typeOnly?: boolean;
       /**
+       * Was this import written inside a function body — so that it runs only
+       * when something CALLS that function, never while the module itself is
+       * initializing?
+       *
+       * Python's `def f(): from x import Y` and Rust's fn-local `use` are the
+       * two spellings. Both are syntactically ordinary imports — no `kind`
+       * tells them apart from a top-level one, and nothing about the target
+       * does either. Only their POSITION defers them.
+       *
+       * **Why this cannot be re-derived downstream — the whole reason the
+       * field exists.** The natural place to decide it looks like the graph
+       * bridge, by walking the scope the finalized edges hang off; that is
+       * exactly what `graph-bridge/imports-to-edges.ts` once attempted, and it
+       * is dead code by construction. `finalize-algorithm.ts:295` publishes
+       * every file's finalized edges as
+       * `linkedByScope.set(file.moduleScope, …)`, so the map the bridge
+       * receives is keyed by the file's **Module** scope and by nothing else:
+       * the walk starts at a `Module` every time and answers `false` for every
+       * import in the tree. Finalize cannot recover the position either —
+       * `FinalizeFile.parsedImports` is a flat per-file `ParsedImport[]` with
+       * no scope attached. The extractor is the last stage that still knows
+       * where the statement sat (`scope-extractor.ts`, Pass 3), so it marks the
+       * fact here and it rides the edge from there — see
+       * {@link ImportEdge.runsOnlyWhenCalled}.
+       *
+       * Consumed by `check --cycles`, which asks "can these modules be
+       * initialized in any order?". A deferred import carries no
+       * initialization order, and deferring one is the standard way to BREAK
+       * an init cycle, so counting it reports the fix as the bug.
+       *
+       * Set by the central extractor for every language, not by providers.
+       * Absent reads as "runs at initialization" — the fail-safe direction,
+       * since it only makes `check --cycles` over-report.
+       */
+      readonly runsOnlyWhenCalled?: boolean;
+      /**
        * Set by providers when `targetRaw` already names the imported symbol
        * rather than only its containing module. Consumers that compose
        * `<local>.<member>` paths can then use `targetRaw.<member>` instead of
@@ -211,6 +247,10 @@ export type ParsedImport =
        *  interchangeable with `importedSymbolKind`. Reaches this variant from
        *  `import type D from './m'` and `import { type X as Y } from './m'`. */
       readonly typeOnly?: boolean;
+      /** See the same field on the `named` variant. Reaches this variant from
+       *  Python's `def f(): from x import Y as Z` and Rust's fn-local
+       *  `use foo::bar as baz`. */
+      readonly runsOnlyWhenCalled?: boolean;
       /** See the same field on the `named` variant. */
       readonly targetIncludesImportedName?: boolean;
       /** See the same field on the `named` variant. */
@@ -237,6 +277,9 @@ export type ParsedImport =
       /** See the same field on the `named` variant. Reaches this variant from
        *  TypeScript `import type * as N from './m'`. */
       readonly typeOnly?: boolean;
+      /** See the same field on the `named` variant. Reaches this variant from
+       *  Python's `def f(): import numpy as np`. */
+      readonly runsOnlyWhenCalled?: boolean;
     }
   /**
    * Syntactically-detectable parse-time re-export. Finalize may still produce
@@ -261,6 +304,9 @@ export type ParsedImport =
       /** See the same field on the `named` variant. Reaches this variant from
        *  TypeScript `export type { X } from './y'` and `export { type X } from './y'`. */
       readonly typeOnly?: boolean;
+      /** See the same field on the `named` variant. Reaches this variant from
+       *  a Rust fn-local `pub use foo::bar`. */
+      readonly runsOnlyWhenCalled?: boolean;
     }
   /**
    * Wildcard import — brings every exported name from the target module into
@@ -283,6 +329,11 @@ export type ParsedImport =
   | {
       readonly kind: 'wildcard';
       readonly targetRaw: string;
+      /** See the same field on the `named` variant. Present here although
+       *  `typeOnly` is not: erasure is a syntactic fact this spelling cannot
+       *  express, but POSITION is not — Rust's fn-local `use foo::*` is legal
+       *  and deferred. (Python rejects `from x import *` inside a `def`.) */
+      readonly runsOnlyWhenCalled?: boolean;
     }
   /**
    * Runtime-computed target — the import path is not a static literal at
@@ -299,6 +350,9 @@ export type ParsedImport =
       readonly localName: string;
       /** Source text of the unresolved expression when available; `null` otherwise. */
       readonly targetRaw: string | null;
+      /** See the same field on the `named` variant. Set by position like every
+       *  other variant; this kind links no target, so nothing reads it here. */
+      readonly runsOnlyWhenCalled?: boolean;
     }
   /**
    * Lazy / dynamic import whose target IS a static string literal at parse
@@ -320,6 +374,10 @@ export type ParsedImport =
   | {
       readonly kind: 'dynamic-resolved';
       readonly targetRaw: string;
+      /** See the same field on the `named` variant. Redundant on this kind —
+       *  `import()` is already deferred wherever it is written — but set
+       *  uniformly, because position is decided without consulting `kind`. */
+      readonly runsOnlyWhenCalled?: boolean;
     }
   /**
    * Bare-source / side-effect import that introduces no local name binding
@@ -335,6 +393,9 @@ export type ParsedImport =
   | {
       readonly kind: 'side-effect';
       readonly targetRaw: string;
+      /** See the same field on the `named` variant. Reaches this variant from
+       *  a Rust fn-local `use foo::bar as _`. */
+      readonly runsOnlyWhenCalled?: boolean;
     };
 
 /**
@@ -442,6 +503,25 @@ export interface ImportEdge {
    * forces an INITIALIZATION order.
    */
   readonly typeOnly?: boolean;
+  /**
+   * The import was written inside a function body, so it runs only when that
+   * function is called — never during module initialization. See
+   * `ParsedImport`'s `runsOnlyWhenCalled` on the `named` variant for the full
+   * note, including why the consumer cannot re-derive this from the scope tree
+   * and therefore has to be told (`finalize-algorithm.ts:295`).
+   *
+   * Carried straight from the `ParsedImport` by `makeEdgeDrafts`, for the same
+   * reason `typeOnly` is: the edge is where `graph-bridge/imports-to-edges.ts`
+   * can still see it. The edge is still emitted either way — a deferred import
+   * is a real dependency. What the flag removes is the claim that the pair
+   * forces an INITIALIZATION order.
+   *
+   * Distinct from `kind === 'dynamic-resolved'`, which records the OTHER way an
+   * import can be deferred (`import('./m')`). Neither implies the other: a
+   * top-level `import()` is deferred with this flag unset, and a function-local
+   * `from x import Y` is deferred with an ordinary `named` kind.
+   */
+  readonly runsOnlyWhenCalled?: boolean;
   /** Set to `'unresolved'` when the SCC fixpoint could not link this edge. */
   readonly linkStatus?: 'unresolved';
 }

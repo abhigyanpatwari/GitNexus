@@ -52,11 +52,13 @@ const hooks: FinalizeHooks = {
 /**
  * The `reason` on the single `src/a.ts → src/b.ts` edge that `src` produces.
  *
- * `scopeKind` is the scope the imports are attached to — `'Module'` for the
- * top level, `'Function'` to pose the deferred case that has to lose to a real
- * import and beat an erased one.
+ * The posed scope tree answers `Module` for every key, which is what the real
+ * pipeline hands the emitter: `finalize-algorithm.ts:295` publishes a file's
+ * edges as `linkedByScope.set(file.moduleScope, …)`, one bucket per file. The
+ * deferred cases below therefore come from source text (`import()`), never
+ * from posing a `Function` scope the pipeline could not produce.
  */
-function reasonFor(src: string, scopeKind: 'Module' | 'Function' = 'Module'): string | undefined {
+function reasonFor(src: string): string | undefined {
   const a: FinalizeFile = {
     filePath: SOURCE_FILE,
     moduleScope: MODULE_SCOPE as FinalizeFile['moduleScope'],
@@ -77,7 +79,7 @@ function reasonFor(src: string, scopeKind: 'Module' | 'Function' = 'Module'): st
 
   const rels: Array<{ reason: string }> = [];
   const scopeTree = {
-    getScope: () => ({ id: MODULE_SCOPE, parent: null, kind: scopeKind, filePath: SOURCE_FILE }),
+    getScope: () => ({ id: MODULE_SCOPE, parent: null, kind: 'Module', filePath: SOURCE_FILE }),
   };
   emitImportEdges(
     { addRelationship: (r: { reason: string }) => rels.push(r) } as never,
@@ -145,14 +147,22 @@ describe('a mixed statement is an initialization dependency', () => {
 
 describe('type-only against deferred', () => {
   it('a deferred import beside a type-only one wins — the module does load', () => {
-    // `scopeKind: 'Function'` makes the plain `import { Y }` deferred; the
-    // `import type { X }` beside it is erased. Deferred is the honest answer.
-    expect(reasonFor('import type { X } from "./b";\nimport { Y } from "./b";', 'Function')).toBe(
-      DEFERRED,
-    );
+    // `import('./b')` arrives as `kind: 'dynamic-resolved'`; the
+    // `import type { X }` beside it is erased. Deferred is the honest answer:
+    // `(type-only)` would claim `./b` never loads, and it does.
+    expect(reasonFor('import type { X } from "./b";\nconst m = import("./b");')).toBe(DEFERRED);
+    expect(reasonFor('const m = import("./b");\nimport type { X } from "./b";')).toBe(DEFERRED);
   });
 
   it('erasure still wins when the erased import is the only one', () => {
-    expect(reasonFor('import type { X } from "./b";', 'Function')).toBe(TYPE_ONLY);
+    expect(reasonFor('import type { X } from "./b";')).toBe(TYPE_ONLY);
+  });
+
+  it('a value import beats both', () => {
+    expect(
+      reasonFor(
+        'import type { X } from "./b";\nconst m = import("./b");\nimport { Y } from "./b";',
+      ),
+    ).toBe(PLAIN);
   });
 });

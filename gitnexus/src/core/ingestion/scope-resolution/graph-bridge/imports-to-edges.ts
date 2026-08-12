@@ -37,28 +37,50 @@
  * reader of the graph — or the next filter written against `reason` — needs to
  * be able to tell them apart.
  *
- * Three signals, because no one of them covers the others:
+ * Three signals, because no one of them covers the others. All three ride the
+ * EDGE — this function reads properties and never walks the scope tree for
+ * them, for the reason spelled out under "Why nothing here is derived from the
+ * scope tree" below:
  *
- *  - `ImportEdge.kind === 'dynamic-resolved'` — TS/JS `import()`. Already on
- *    the edge; this function simply never read it.
- *  - the import is attached to a scope inside a `Function` — Python's
- *    `def f(): from x import Y`, Rust's fn-local `use`. Nothing marks those as
- *    dynamic, because syntactically they are ordinary imports; what defers them
- *    is WHERE they sit. See `isInsideFunction`.
+ *  - `ImportEdge.kind === 'dynamic-resolved'` — TS/JS `import()`.
+ *  - `ImportEdge.runsOnlyWhenCalled` — the import sits inside a function body:
+ *    Python's `def f(): from x import Y`, Rust's fn-local `use`. Nothing marks
+ *    those as dynamic, because syntactically they are ordinary imports; what
+ *    defers them is WHERE they sit, so `scope-extractor.ts` decides it in Pass
+ *    3 and it is carried down — `ParsedImport` → `finalize-algorithm.ts` → the
+ *    edge.
  *  - `ImportEdge.typeOnly` — TypeScript `import type` / `import { type X }`.
  *    Neither of the other two sees it: the kind is the ordinary `named` /
  *    `alias`, and the statement sits at module top level like any other. Only
  *    the `type` keyword says it, so it is carried from the syntax down —
  *    `typescript/import-decomposer.ts` → `interpret.ts` → `finalize-algorithm.ts`.
  *
+ * ## Why nothing here is derived from the scope tree
+ *
+ * `scopeTree` is used for exactly one thing: turning the map's key into the
+ * source `filePath`. It is NOT a place to ask where an import was written.
+ * `finalize-algorithm.ts:295` publishes every file's finalized edges as
+ * `linkedByScope.set(file.moduleScope, …)`, so the `imports` map this function
+ * receives holds one bucket per FILE, keyed by that file's `Module` scope —
+ * never by the scope an import was actually written in. A walk from such a key
+ * looking for an enclosing `Function` starts at a `Module` and answers `false`
+ * every time, for every import in the tree.
+ *
+ * That walk was here, and it never fired once. It looked correct in unit tests
+ * only because they hand-built `new Map([['fn', …]])`, a shape the pipeline
+ * cannot produce. Position now arrives as `runsOnlyWhenCalled`, decided where
+ * the position is still known.
+ *
  * Tagging the reason is enough for the check query, which already filters
  * non-runtime edges that way (`markdown-link`, Swift implicit module
- * visibility) — no schema change, no new edge property.
+ * visibility) — no change to the persisted RELATION schema, no new property on
+ * the emitted `CodeRelation`. (`typeOnly` and `runsOnlyWhenCalled` are fields
+ * on the in-memory `ImportEdge`, which is never persisted; they end here.)
  *
- * ponytail: reason-string tagging rather than a typed edge property, because
- * the one consumer already filters on `reason` and a property would touch the
- * relation schema. If a second consumer ever needs to branch on this, promote
- * it to a real field then.
+ * ponytail: reason-string tagging rather than a typed relation property,
+ * because the one consumer already filters on `reason` and a property would
+ * touch the relation schema. If a second consumer ever needs to branch on this,
+ * promote it to a real field then.
  *
  * ## Precedence: the strongest runtime presence in a pair wins
  *
@@ -76,6 +98,9 @@
  *  - Deferred beats type-only. A pair with a function-local import plus some
  *    `import type`s does load the target at run time, so `(deferred)` is the
  *    honest label; `(type-only)` would claim the module never loads.
+ *  - The two deferred signals rank the same. `import()` and a function-local
+ *    import are the same claim about the emitted program — it loads, later —
+ *    so a pair reached only by them is `(deferred)` either way.
  *
  * That also settles the mixed statement `import { type X, Y } from './m'`
  * without the decomposer aggregating anything: `X` is erased, `Y` is not, and
@@ -113,9 +138,6 @@ export const DEFERRED_IMPORT_REASON_SUFFIX = ' (deferred)';
  */
 export const TYPE_ONLY_IMPORT_REASON_SUFFIX = ' (type-only)';
 
-/** Parent-chain cap. Scope depth is small; this only bounds a corrupt tree. */
-const MAX_SCOPE_DEPTH = 512;
-
 /**
  * How much of an import survives to run time. Lower is stronger; a pair takes
  * the minimum over every edge that reaches it. See the precedence section in
@@ -132,35 +154,6 @@ function reasonSuffixFor(presence: number): string {
   return '';
 }
 
-/**
- * Does this scope only execute when something calls it?
- *
- * Walks to the file root rather than reading the immediate kind, because the
- * immediate kind is not enough in either direction. A `Block` at the top of a
- * module (`if (FLAG) { require('./x'); }`) runs during initialization; the same
- * `Block` inside a function does not. `Class` and `Namespace` bodies execute
- * where they are defined, so they are init-time too. Only an enclosing
- * `Function` — anywhere up the chain — defers execution.
- *
- * This is the language-agnostic half of the deferred rule, and it is what
- * catches Python's `def f(): from x import Y` (a plain import statement that no
- * `kind` marks as dynamic) and Rust's fn-local `use`. `Scope.imports` already
- * documents those two as the reason local imports exist.
- */
-function isInsideFunction(
-  scopeTree: ScopeResolutionIndexes['scopeTree'],
-  scopeId: ScopeId,
-): boolean {
-  let current: ScopeId | null = scopeId;
-  for (let depth = 0; current !== null && depth < MAX_SCOPE_DEPTH; depth++) {
-    const scope = scopeTree.getScope(current);
-    if (scope === undefined) return false;
-    if (scope.kind === 'Function') return true;
-    current = scope.parent;
-  }
-  return false;
-}
-
 export function emitImportEdges(
   graph: KnowledgeGraph,
   imports: ReadonlyMap<ScopeId, readonly ImportEdge[]>,
@@ -174,11 +167,11 @@ export function emitImportEdges(
   >();
 
   for (const [scopeId, edges] of imports) {
+    // The key's only job here is naming the source file — see the module
+    // header on why it says nothing about where an import was written.
     const scope = scopeTree.getScope(scopeId);
     if (scope === undefined) continue;
     const sourceFile = scope.filePath;
-    // Once per scope, not once per edge — every edge in this bucket shares it.
-    const scopeDefers = isInsideFunction(scopeTree, scopeId);
 
     for (const edge of edges) {
       if (edge.targetFile === null) continue;
@@ -189,7 +182,7 @@ export function emitImportEdges(
       const presence =
         edge.typeOnly === true
           ? PRESENCE_ERASED
-          : scopeDefers || edge.kind === 'dynamic-resolved'
+          : edge.runsOnlyWhenCalled === true || edge.kind === 'dynamic-resolved'
             ? PRESENCE_DEFERRED
             : PRESENCE_INITIALIZES;
       const dedupKey = `${sourceFile}->${edge.targetFile}`;

@@ -129,6 +129,33 @@ const MOCK_REPO_ENTRY = {
   stats: { files: 10, nodes: 50, edges: 100, communities: 3, processes: 5 },
 };
 
+/**
+ * The `( ... )` group guarded by `r.reason IS NULL OR`, as one whitespace-
+ * collapsed string.
+ *
+ * The `check` query's reason exclusions are only correct INSIDE that
+ * alternative — hoisted out, they would also drop every edge whose `reason` is
+ * null, which is every producer that is not scope resolution. Substring
+ * assertions cannot tell the two placements apart, so the group is extracted by
+ * balancing parentheses from the guard to its own close.
+ *
+ * Returns `''` when the guard is absent, which fails the membership assertions
+ * rather than passing vacuously.
+ */
+function reasonNullAlternativeOf(query: string): string {
+  const flat = query.replace(/\s+/g, ' ');
+  const guard = 'r.reason IS NULL OR ';
+  const guardAt = flat.indexOf(guard);
+  const open = flat.indexOf('(', guardAt + guard.length);
+  if (guardAt < 0 || open < 0) return '';
+  let depth = 0;
+  for (let i = open; i < flat.length; i++) {
+    depth += Number(flat[i] === '(') - Number(flat[i] === ')');
+    if (depth === 0) return flat.slice(open + 1, i);
+  }
+  return '';
+}
+
 function setupSingleRepo() {
   (listRegisteredRepos as any).mockResolvedValue([MOCK_REPO_ENTRY]);
 }
@@ -477,11 +504,16 @@ describe('LocalBackend.callTool', () => {
     // `import type` is erased by `tsc` and never runs. `imports-to-edges.ts`
     // tags both by reason suffix; dropping either clause from this query
     // reports the standard cycle-BREAKING idioms as cycles.
-    expect(query).toContain("NOT r.reason ENDS WITH ' (deferred)'");
-    expect(query).toContain("NOT r.reason ENDS WITH ' (type-only)'");
-    // The exclusions must stay inside the `reason IS NULL` alternative —
-    // an untagged edge (every non-scope-resolution producer) still counts.
-    expect(query).toContain('r.reason IS NULL OR');
+    // The exclusions must sit INSIDE the `reason IS NULL OR (...)` alternative,
+    // or an untagged edge — every producer that is not scope resolution — stops
+    // counting and the check goes quiet. Asserting the fragments appear
+    // *somewhere* does not pin that: a query with the `IS NULL OR` in one place
+    // and an `ENDS WITH` hoisted out of the group satisfies `toContain` while
+    // silently dropping those edges. So extract the balanced group and assert
+    // membership in it.
+    expect(reasonNullAlternativeOf(query)).toContain("NOT r.reason ENDS WITH ' (deferred)'");
+    expect(reasonNullAlternativeOf(query)).toContain("NOT r.reason ENDS WITH ' (type-only)'");
+    expect(reasonNullAlternativeOf(query)).toContain("r.reason <> 'markdown-link'");
     expect(query).toContain('LIMIT 100001');
   });
 

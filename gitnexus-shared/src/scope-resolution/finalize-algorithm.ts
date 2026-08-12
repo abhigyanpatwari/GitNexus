@@ -374,6 +374,7 @@ function makeEdgeDrafts(
       targetExportedName: extractExportedName(parsed),
       kind: edgeKindFor(parsed),
       ...typeOnlyFor(parsed),
+      ...runsOnlyWhenCalledFor(parsed),
       linkStatus: 'unresolved',
     };
     return [
@@ -405,6 +406,7 @@ function makeEdgeDrafts(
           ? 'namespace'
           : edgeKindFor(parsed),
       ...typeOnlyFor(parsed),
+      ...runsOnlyWhenCalledFor(parsed),
     };
     return {
       source: parsed,
@@ -445,6 +447,30 @@ function typeOnlyFor(parsed: ParsedImport): { typeOnly?: true } {
       // `wildcard` variant for why `export type *` is not among them.
       return {};
   }
+}
+
+/**
+ * Carry `ParsedImport.runsOnlyWhenCalled` onto the edge — the position fact
+ * `check --cycles` needs and, unlike every other property of an import, cannot
+ * look up for itself.
+ *
+ * The scope an import was written in does not survive to here:
+ * `FinalizeFile.parsedImports` is a flat per-file list, and Phase 4 publishes
+ * the finalized edges under `file.moduleScope` (see `linkedByScope.set` above),
+ * so the consumer's map is keyed by the Module scope for every file. Walking
+ * that map's key to look for an enclosing `Function` therefore always starts —
+ * and ends — at a `Module`. Only the extractor still knows, so the edge has to
+ * carry what it decided.
+ *
+ * No `switch` on `kind`, unlike {@link typeOnlyFor}: erasure is a property of
+ * the syntax and only some spellings have it, while position is a property of
+ * where the statement sits and every kind can sit inside a function.
+ *
+ * Returns a spreadable object rather than a `boolean` so an edge that is not
+ * deferred keeps the exact property set it had before this field existed.
+ */
+function runsOnlyWhenCalledFor(parsed: ParsedImport): { runsOnlyWhenCalled?: true } {
+  return parsed.runsOnlyWhenCalled === true ? { runsOnlyWhenCalled: true } : {};
 }
 
 function extractLocalName(parsed: ParsedImport): string {

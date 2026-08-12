@@ -34,13 +34,21 @@
  *      as `ownedDefs` + a local `BindingRef { origin: 'local' }`.
  *   3. **Collect raw imports.** Walk `@import.*` matches. Call
  *      `provider.interpretImport` per match; attach the returned
- *      `ParsedImport` to the ParsedFile — not to any `Scope`, and nothing
- *      downstream recovers one. `provider.importOwningScope` is declared on
- *      `LanguageProvider` and implemented by a dozen providers, but has no
- *      call site anywhere; this step's output is scope-free. A provider whose
- *      `ParsedImport` needs to distinguish module-level from nested must
- *      decide that in its own capture emitter, where the node is still in
- *      hand (see `languages/python/import-decomposer.ts`).
+ *      `ParsedImport` to the ParsedFile — not to any `Scope`.
+ *      `provider.importOwningScope` is declared on `LanguageProvider` and
+ *      implemented by a dozen providers, but has no call site anywhere; this
+ *      step's output is a flat per-file list.
+ *
+ *      One scope fact is read before that list flattens it away:
+ *      `runsOnlyWhenCalled`, set when the statement sits anywhere inside a
+ *      `Function`. It is decided here because here is the last stage that can
+ *      — finalize receives the flat list, and its consumer receives a map
+ *      keyed by the file's Module scope only (see
+ *      `ParsedImport.runsOnlyWhenCalled`). This is a position fact, not a
+ *      syntax one, so it is decided centrally for every language rather than
+ *      per provider. Providers still decide their own *syntactic* nesting
+ *      facts in their capture emitters, where the node is in hand (see
+ *      `languages/python/import-decomposer.ts`).
  *   4. **Collect type bindings.** Walk `@type-binding.*` matches. Call
  *      `provider.interpretTypeBinding` per match. Attach the resulting
  *      `TypeRef` to the innermost containing scope's `typeBindings`
@@ -187,7 +195,14 @@ export function extract(
 
   // ── Pass 3: collect raw imports ─────────────────────────────────────
   const parsedImports: ParsedImport[] = [];
-  pass3CollectImports(partitioned.import_, parsedImports, provider);
+  pass3CollectImports(
+    partitioned.import_,
+    positionIndex,
+    filePath,
+    parsedImports,
+    provider,
+    scopeTree,
+  );
 
   // ── Pass 4: collect type bindings ───────────────────────────────────
   pass4CollectTypeBindings(
@@ -937,10 +952,63 @@ function makeDefId(
 
 // ─── Pass 3: collect raw imports ───────────────────────────────────────────
 
+/**
+ * Cap on the parent-chain walk in {@link runsOnlyWhenCalled}. Real scope depth
+ * is a handful of levels; the cap only bounds a corrupt tree.
+ */
+const MAX_IMPORT_SCOPE_DEPTH = 512;
+
+/**
+ * Does this import run only when something calls the function it sits in?
+ *
+ * Walks the scope chain to the file root rather than reading the immediate
+ * kind, because the immediate kind is not enough in either direction. A `Block`
+ * at the top of a module (`if (FLAG) { require('./x'); }`) runs during
+ * initialization; the same `Block` inside a function does not. `Class`,
+ * `Namespace`, `Expression` and `Object` bodies execute where they are defined,
+ * so they are initialization-time too. Only an enclosing `Function` — anywhere
+ * up the chain — defers execution.
+ *
+ * Language-agnostic on purpose: it is what catches Python's
+ * `def f(): from x import Y` and Rust's fn-local `use`, neither of which any
+ * `kind` marks as deferred. `Scope.imports` already documents those two as the
+ * reason local imports exist. It also picks up Ruby's `def f; require 'x'; end`
+ * and a CommonJS `require()` in a function body, which are deferred for exactly
+ * the same reason.
+ *
+ * Known imprecision, and it is the language-agnostic rule's price: a C/C++
+ * `#include` written inside a function body is spliced at compile time and is
+ * not deferred at all, so marking it makes `check --cycles` drop an include
+ * cycle formed only by such directives. Deciding otherwise would take
+ * knowledge of which languages "import" textually, and shared ingestion code
+ * must not branch on language (AGENTS.md). The shape is vanishingly rare —
+ * headers generally cannot be included at function scope at all.
+ *
+ * Decided HERE and nowhere later because this is the last stage that knows the
+ * answer — see `ParsedImport.runsOnlyWhenCalled` for why finalize and the graph
+ * bridge cannot recover it.
+ */
+function runsOnlyWhenCalled(
+  scopeTree: ReturnType<typeof buildScopeTree>,
+  scopeId: ScopeId,
+): boolean {
+  let current: ScopeId | null = scopeId;
+  for (let depth = 0; current !== null && depth < MAX_IMPORT_SCOPE_DEPTH; depth++) {
+    const scope = scopeTree.getScope(current);
+    if (scope === undefined) return false;
+    if (scope.kind === 'Function') return true;
+    current = scope.parent;
+  }
+  return false;
+}
+
 function pass3CollectImports(
   matches: readonly CaptureMatch[],
+  positionIndex: ReturnType<typeof buildPositionIndex>,
+  filePath: string,
   parsedImports: ParsedImport[],
   provider: ScopeExtractorHooks,
+  scopeTree: ReturnType<typeof buildScopeTree>,
 ): void {
   if (provider.interpretImport === undefined) return;
   for (const match of matches) {
@@ -948,7 +1016,17 @@ function pass3CollectImports(
     if (anchor === undefined) continue;
     const parsed = provider.interpretImport(match);
     if (parsed === null) continue;
-    parsedImports.push(parsed);
+    // The statement's own position, resolved to the innermost scope holding
+    // it. An unlocatable anchor leaves the import unmarked, which reads as
+    // "runs at initialization" — the fail-safe direction, since it can only
+    // make `check --cycles` over-report.
+    const inScopeId = positionIndex.atPosition(
+      filePath,
+      anchor.range.startLine,
+      anchor.range.startCol,
+    );
+    const deferred = inScopeId !== undefined && runsOnlyWhenCalled(scopeTree, inScopeId);
+    parsedImports.push(deferred ? { ...parsed, runsOnlyWhenCalled: true } : parsed);
   }
 }
 

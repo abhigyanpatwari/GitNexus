@@ -279,8 +279,19 @@ describe('Python imports — function-local', () => {
     // No `reexportsName`: a function-body import binds `X` locally and puts
     // nothing in the module namespace, so `from <this module> import X`
     // elsewhere is an ImportError. Verified against CPython 3.11.
+    //
+    // `runsOnlyWhenCalled` is the separate, language-agnostic fact the central
+    // extractor decides from the scope tree: `m` is not imported until someone
+    // calls `loader()`, so the pair cannot force an initialization order. It is
+    // set here and nowhere later — see `ParsedImport.runsOnlyWhenCalled`.
     expect(f.parsedImports).toEqual([
-      { kind: 'named', localName: 'X', importedName: 'X', targetRaw: 'm' },
+      {
+        kind: 'named',
+        localName: 'X',
+        importedName: 'X',
+        targetRaw: 'm',
+        runsOnlyWhenCalled: true,
+      },
     ]);
   });
 
@@ -288,6 +299,11 @@ describe('Python imports — function-local', () => {
     const f = parse('class C:\n    from m import X\n');
     // `class C: from m import X` makes `X` a class attribute (`C.X`), not a
     // module attribute — same suppression as a function body.
+    //
+    // But NO `runsOnlyWhenCalled`: a class body executes where it is written,
+    // during module initialization, so this import really does force an
+    // initialization order. The two facts are separate on purpose — this is
+    // the case where suppression and deferral disagree.
     expect(f.parsedImports).toEqual([
       { kind: 'named', localName: 'X', importedName: 'X', targetRaw: 'm' },
     ]);

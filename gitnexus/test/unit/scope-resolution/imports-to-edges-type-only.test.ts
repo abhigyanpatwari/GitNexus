@@ -65,6 +65,17 @@ function typeEdge(targetFile: string, kind: ImportEdge['kind'] = 'named'): Impor
   return { ...edge(targetFile, kind), typeOnly: true } as ImportEdge;
 }
 
+/**
+ * The `def f(): from x import Y` form of {@link edge} — deferred by POSITION.
+ *
+ * Set on the edge, not implied by the bucket's scope: finalize keys every
+ * file's edges by `file.moduleScope`, so the scope tree cannot answer where an
+ * import was written. See `imports-to-edges-deferred.test.ts` for the full note.
+ */
+function localEdge(targetFile: string, kind: ImportEdge['kind'] = 'named'): ImportEdge {
+  return { ...edge(targetFile, kind), runsOnlyWhenCalled: true } as ImportEdge;
+}
+
 function emit(
   nodes: Readonly<Record<string, { kind: string; parent: string | null }>>,
   imports: ReadonlyMap<string, readonly ImportEdge[]>,
@@ -80,11 +91,8 @@ function emit(
   return { rels, count };
 }
 
+/** The shape finalize really produces: one bucket, keyed by the Module scope. */
 const MODULE_ONLY = { mod: { kind: 'Module', parent: null } };
-const MODULE_AND_FN = {
-  mod: { kind: 'Module', parent: null },
-  fn: { kind: 'Function', parent: 'mod' },
-};
 
 const PLAIN = 'scope-resolution: import';
 const DEFERRED = `${PLAIN}${DEFERRED_IMPORT_REASON_SUFFIX}`;
@@ -170,41 +178,42 @@ describe('emitImportEdges — mixed-pair precedence', () => {
   });
 
   it('DEFERRED wins over type-only — the module really does load, just later', () => {
-    // `(type-only)` would claim the target never loads. It does.
-    const deferredFirst = emit(
-      MODULE_AND_FN,
-      new Map([
-        ['fn', [edge('src/b.ts')]],
-        ['mod', [typeEdge('src/b.ts')]],
-      ]),
+    // `(type-only)` would claim the target never loads. It does. Both
+    // deferral sources are checked, since either alone would leave the other
+    // untested: `kind` and position are independent signals.
+    const localFirst = emit(
+      MODULE_ONLY,
+      new Map([['mod', [localEdge('src/b.ts'), typeEdge('src/b.ts')]]]),
     );
     const typeFirst = emit(
-      MODULE_AND_FN,
-      new Map([
-        ['mod', [typeEdge('src/b.ts')]],
-        ['fn', [edge('src/b.ts')]],
-      ]),
+      MODULE_ONLY,
+      new Map([['mod', [typeEdge('src/b.ts'), localEdge('src/b.ts')]]]),
     );
-    expect(deferredFirst.rels[0].reason).toBe(DEFERRED);
+    const dynamicFirst = emit(
+      MODULE_ONLY,
+      new Map([['mod', [edge('src/b.ts', 'dynamic-resolved'), typeEdge('src/b.ts')]]]),
+    );
+    expect(localFirst.rels[0].reason).toBe(DEFERRED);
     expect(typeFirst.rels[0].reason).toBe(DEFERRED);
+    expect(dynamicFirst.rels[0].reason).toBe(DEFERRED);
   });
 
   it('a value import wins over BOTH', () => {
     const { rels, count } = emit(
-      MODULE_AND_FN,
-      new Map([
-        ['mod', [typeEdge('src/b.ts'), edge('src/b.ts')]],
-        ['fn', [edge('src/b.ts')]],
-      ]),
+      MODULE_ONLY,
+      new Map([['mod', [typeEdge('src/b.ts'), edge('src/b.ts'), localEdge('src/b.ts')]]]),
     );
     expect(count).toBe(1);
     expect(rels[0].reason).toBe(PLAIN);
   });
 
-  it('a type-only import inside a Function is ERASED, not deferred', () => {
-    // Both signals fire on this edge. Erasure is the stronger claim — the
+  it('a type-only import inside a function is ERASED, not deferred', () => {
+    // Both signals ride the same edge. Erasure is the stronger claim — the
     // import is gone from the output, not merely postponed — so it wins.
-    const { rels } = emit(MODULE_AND_FN, new Map([['fn', [typeEdge('src/b.ts')]]]));
+    const { rels } = emit(
+      MODULE_ONLY,
+      new Map([['mod', [{ ...typeEdge('src/b.ts'), runsOnlyWhenCalled: true }]]]),
+    );
     expect(rels[0].reason).toBe(TYPE_ONLY);
   });
 
@@ -218,10 +227,9 @@ describe('emitImportEdges — mixed-pair precedence', () => {
 
   it('separate pairs keep separate verdicts', () => {
     const { rels, count } = emit(
-      MODULE_AND_FN,
+      MODULE_ONLY,
       new Map([
-        ['mod', [edge('src/value.ts'), typeEdge('src/type.ts')]],
-        ['fn', [edge('src/deferred.ts')]],
+        ['mod', [edge('src/value.ts'), typeEdge('src/type.ts'), localEdge('src/deferred.ts')]],
       ]),
     );
     expect(count).toBe(3);
@@ -234,10 +242,12 @@ describe('emitImportEdges — mixed-pair precedence', () => {
 
   it('emission order and dedup are unchanged — first-seen pair order', () => {
     const { rels, count } = emit(
-      MODULE_AND_FN,
+      MODULE_ONLY,
       new Map([
-        ['mod', [typeEdge('src/z.ts'), edge('src/b.ts'), typeEdge('src/z.ts')]],
-        ['fn', [typeEdge('src/m.ts')]],
+        [
+          'mod',
+          [typeEdge('src/z.ts'), edge('src/b.ts'), typeEdge('src/z.ts'), typeEdge('src/m.ts')],
+        ],
       ]),
     );
     expect(count).toBe(3);
