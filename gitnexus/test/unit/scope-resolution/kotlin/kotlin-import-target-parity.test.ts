@@ -13,6 +13,16 @@
  * first-occurrence restriction on `dirChildren`, so a file whose package
  * directory name repeats higher in its path is now a child of that package.
  * The cases carrying it say so and name the issue.
+ *
+ * That removal has two consequences a widened-shape case built on a ONE-FILE
+ * corpus cannot express, and both are pinned at the bottom of this file:
+ *
+ *   - a bucket with TWO members makes `children[0]` a CHOICE. The wildcard tier
+ *     commits to it with no downstream filter, so widening the bucket moves
+ *     which file an already-resolving `import data.*` binds to.
+ *   - tier 3 sits in front of tier 4, so a bucket the removed guards used to
+ *     leave empty no longer lets tier 4 run — which can turn a bound answer
+ *     into a candidate list that does not carry the symbol.
  */
 import { describe, it, expect } from 'vitest';
 import { resolveKotlinImportTarget } from '../../../../src/core/ingestion/languages/kotlin/import-target.js';
@@ -183,5 +193,71 @@ describe('resolveKotlinImportTarget — index parity', () => {
 
   it('an unknown target resolves to null', () => {
     expect(resolve(['pkg/A.kt'], 'nowhere.Thing')).toBeNull();
+  });
+
+  it('two competing `data` directories: WHICH one the first-child tier picks (#2881)', () => {
+    // The gap every other widened-shape case above leaves open. Each of them
+    // uses a ONE-FILE corpus, so the widened bucket has exactly one member and
+    // `findKotlinDirectoryChild`'s `children[0]` has nothing to choose between.
+    // #2881 moved 149 of the census's 235 records to a DIFFERENT first child,
+    // and not one of those 149 is a shape any single-file case can express.
+    //
+    // Both files below are legitimate members of the widened `data` bucket:
+    // each is a direct child of a directory named `data`. Neither is "the right
+    // answer" — the resolver has no rule that prefers one, and the ONLY thing
+    // deciding it is FILE-SET ITERATION ORDER, i.e. the insertion order of the
+    // Set the caller hands in. That is what these assertions pin: not that the
+    // bucket contains both (the cases above already pin membership) but WHICH
+    // member wins, which is the property nothing else in the repo watches.
+    const files = ['top/data/mid/data/Wrong.kt', 'src/data/Correct.kt'];
+    const reversed = ['src/data/Correct.kt', 'top/data/mid/data/Wrong.kt'];
+
+    // Tier 3, the member path: `data.helper` strips to `data`, misses the file
+    // tiers and fans the WHOLE bucket out. Order is preserved but nothing is
+    // dropped, so this path commits to nothing on its own — the finalize pass
+    // still gets to pick by `localDefs` (#1759).
+    expect(resolve(files, 'data.helper')).toEqual([
+      'top/data/mid/data/Wrong.kt',
+      'src/data/Correct.kt',
+    ]);
+    expect(resolve(reversed, 'data.helper')).toEqual([
+      'src/data/Correct.kt',
+      'top/data/mid/data/Wrong.kt',
+    ]);
+
+    // Tier 1, the wildcard path: `data.*` strips to `data`, which IS the whole
+    // `pathLike`, so `findKotlinFile` answers with `children[0]` — one file,
+    // unfiltered, no later tier and no downstream narrowing. This is the leg
+    // where the widening changes a bound answer rather than adding a candidate,
+    // and it flips with insertion order alone.
+    expect(resolve(files, 'data.*')).toBe('top/data/mid/data/Wrong.kt');
+    expect(resolve(reversed, 'data.*')).toBe('src/data/Correct.kt');
+  });
+
+  it('tier 3 preempts tier 4: a widened bucket replaces a BOUND answer (#2881)', () => {
+    // The class the published `54 / 149 / 32` census has no bucket for, because
+    // that taxonomy is shape-preserving (null→resolved, wider array, different
+    // first child) and this one is not. `findKotlinPackageFiles` runs BEFORE
+    // `findByProgressivePrefixStrip`, so a bucket the removed guards used to
+    // leave empty returned null and let tier 4 run; a now-populated bucket
+    // stops tier 4 from running at all.
+    //
+    // Read the two assertions together. The answer here is no longer a bound
+    // file — it is a CANDIDATE LIST, and the only file in it does not carry
+    // `helper`. `common/helper.kt`, the file tier 4 used to bind, is not in the
+    // list at all: it is not a child of any `data` directory, so no widening of
+    // the bucket can ever reach it. A resolved answer became an unresolved one.
+    // The bench corpus contains ZERO instances of this class, which is why it
+    // ships ungated — `bench/kotlin-import-target`'s own generator at 4000
+    // repositories hits it only 4-12 times per seed. This case is the gate.
+    expect(
+      resolve(['data/src/main/kotlin/com/example/data/Repo.kt', 'common/helper.kt'], 'data.helper'),
+    ).toEqual(['data/src/main/kotlin/com/example/data/Repo.kt']);
+
+    // The control that makes the arm above a transition rather than a fact:
+    // drop the `data` directory and tier 3 has nothing, so tier 4 runs and
+    // binds the same import to the file that actually holds `helper`. This is
+    // what the first assertion returned before #2881.
+    expect(resolve(['common/helper.kt'], 'data.helper')).toBe('common/helper.kt');
   });
 });

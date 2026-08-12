@@ -13,25 +13,37 @@
  * here rather than silently moving Go IMPORTS edges in every repository that
  * nests a package name inside itself (`internal/…/internal` is the shape Go
  * actually produces).
+ *
+ * One caveat on "the LanguageProvider leg", recorded in #2929 review: nothing
+ * in production reads that field today. `configs/go.ts` reaches this function
+ * through `createImportResolver` → `LanguageProvider.importResolver`, and the
+ * only readers of `importResolver` are `import-target-adapter.ts:74-75`, whose
+ * two exports have no importer outside their own unit test. So the leg is wired
+ * but unreached, and this file is the only thing exercising it.
  */
 import { describe, expect, it } from 'vitest';
 import {
   resolveGoPackage,
   resolveGoPackageDir,
 } from '../../../src/core/ingestion/import-resolvers/go.js';
+import type { GoModuleConfig } from '../../../src/core/ingestion/language-config.js';
 import { resolveGoImportTarget } from '../../../src/core/ingestion/languages/go/import-target.js';
 
-const MOD = { modulePath: 'example.com/mod' } as const;
+const MOD: GoModuleConfig = { modulePath: 'example.com/mod' };
 
 function resolve(files: readonly string[], importPath: string): string[] {
   const normalized = files.map((f) => f.replace(/\\/g, '/'));
-  return resolveGoPackage(importPath, MOD as never, normalized, files);
+  return resolveGoPackage(importPath, MOD, normalized, files);
 }
 
 /** The indexed leg, for the agreement arm. */
 function indexed(files: readonly string[], importPath: string): readonly string[] {
   const got = resolveGoImportTarget(importPath, 'main.go', new Set(files), MOD);
-  return got === null ? [] : Array.isArray(got) ? got : [got];
+  // `typeof got === 'string'`, not `Array.isArray(got)`: `Array.isArray` narrows
+  // to `any[]`, which does not subsume `readonly string[]`, so the false branch
+  // kept the array member and `[got]` did not typecheck (TS2322 under
+  // `tsconfig.test.json`). Runtime behaviour is identical.
+  return got === null ? [] : typeof got === 'string' ? [got] : got;
 }
 
 describe('resolveGoPackage', () => {
@@ -92,10 +104,40 @@ describe('resolveGoPackage', () => {
     expect(resolve(['internal/auth/x.go'], 'github.com/other/repo/internal/auth')).toEqual([]);
     // The root package is the caller's `findRootPackageFiles` leg, not this one.
     expect(resolve(['main.go'], 'example.com/mod')).toEqual([]);
-    expect(resolveGoPackageDir('example.com/mod', MOD as never)).toBeNull();
-    expect(resolveGoPackageDir('example.com/mod/internal/auth', MOD as never)).toBe(
-      '/internal/auth/',
-    );
+    expect(resolveGoPackageDir('example.com/mod', MOD)).toBeNull();
+    expect(resolveGoPackageDir('example.com/mod/internal/auth', MOD)).toBe('/internal/auth/');
+  });
+
+  it('vendor/, testdata/ and nested-module directories all merge in (unmodelled)', () => {
+    // Go excludes all three from a package: `vendor/` is a dependency tree
+    // resolved against the vendoring module, the go tool ignores `testdata/`
+    // entirely, and a directory carrying its own `go.mod` is a separate module
+    // whose packages this module's import paths never name.
+    //
+    // This resolver models NONE of that — it matches on the parent directory's
+    // path suffix alone. That is unchanged by #2881: the pre-#2881 rule
+    // (first `/<pkg>/`, nothing but a filename after it) accepted all three
+    // shapes too. These assertions record what the function actually does so
+    // the gap is visible and a change to it is deliberate; they document the
+    // behaviour rather than endorse it.
+    const files = [
+      'go.mod',
+      'internal/auth/service.go',
+      'vendor/example.com/dep/internal/auth/vendored.go',
+      'testdata/internal/auth/fixture.go',
+      'sub/go.mod', // `sub/` is its own module; its packages are not ours
+      'sub/internal/auth/other_module.go',
+    ];
+    expect(resolve(files, 'example.com/mod/internal/auth')).toEqual([
+      'internal/auth/service.go',
+      'vendor/example.com/dep/internal/auth/vendored.go',
+      'testdata/internal/auth/fixture.go',
+      'sub/internal/auth/other_module.go',
+    ]);
+    // A `go.mod` beside the files changes nothing — it is not read here.
+    expect(resolve(['sub/go.mod', 'sub/pkg/x.go'], 'example.com/mod/pkg')).toEqual([
+      'sub/pkg/x.go',
+    ]);
   });
 
   it('agrees with the indexed leg on the repeated-name shapes', () => {

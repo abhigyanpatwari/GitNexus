@@ -352,6 +352,30 @@ const HAND_CASES: readonly Case[] = [
     files: ['com/example/model/User.java'],
     target: 'java.util.List',
   },
+  // ── negative control for the widening (#2881), matching Kotlin's ──────────
+  // Everything above pins the widened leg from the POSITIVE side: a file whose
+  // package directory repeats higher in its own path now answers. Nothing here
+  // pinned the other half — that dropping the first-occurrence rule did not
+  // widen "the parent directory ends with `pathLike`" into "`pathLike` appears
+  // somewhere in the path". These three are the same trio
+  // `kotlin-import-target-parity.test.ts` carries: the two positions the old
+  // `atRoot`/`indexOf` pair distinguished, plus the positive control that keeps
+  // the pair from passing by refusing everything.
+  {
+    label: 'not-the-parent-directory-stays-out-leading',
+    files: ['com/example/sub/Repo.java'],
+    target: 'com.example',
+  },
+  {
+    label: 'not-the-parent-directory-stays-out-mid-path',
+    files: ['top/com/example/mid/Repo.java'],
+    target: 'com.example',
+  },
+  {
+    label: 'the-parent-directory-itself-does-answer',
+    files: ['top/com/example/Repo.java'],
+    target: 'com.example',
+  },
 ];
 
 /** Absolute pre-change behaviour, so the differential cannot pass vacuously. */
@@ -389,6 +413,12 @@ const HAND_EXPECTED: readonly string[] = [
   'directory-named-like-a-java-file => null',
   'jdk-import-strips-into-a-local-lookalike => src/main/java/util/List.java',
   'jdk-import-with-no-lookalike-resolves-to-nothing => null',
+  // `com/example/sub` ends with `example/sub`, not with `com/example`, and the
+  // stripping loop's `example` level does not reach it either — so the file is
+  // in no bucket the query can name.
+  'not-the-parent-directory-stays-out-leading => null',
+  'not-the-parent-directory-stays-out-mid-path => null',
+  'the-parent-directory-itself-does-answer => top/com/example/Repo.java',
 ];
 
 // ─── generated corpus ────────────────────────────────────────────────────────
@@ -615,6 +645,55 @@ describe('Java import target — index hoist parity (#2908)', () => {
       'empty target => null',
       'wildcard kind => com/example/model/User.java',
     ]);
+  });
+
+  it('pins WHICH of two competing package directories the first-child leg takes', () => {
+    // `firstFileDirectlyInPkgDir` commits to ONE file with no downstream
+    // filter, and #2881 widened the set it chooses from. Every widened-shape
+    // case in HAND_CASES uses a ONE-FILE corpus, so the widened bucket has a
+    // single member and the choice is not exercised anywhere — yet a different
+    // first child is the largest class of movement the change produced.
+    //
+    // Both files below are legitimate members of the widened `com/example`
+    // set: `com/example/legacy/com/example` ends with `com/example` (it is the
+    // self-nested shape #2881 admitted) and `src/main/java/com/example` ends
+    // with it too. Nothing in the resolver prefers one over the other. The
+    // tie-break is FILE-SET ITERATION ORDER — the insertion order of the Set
+    // the caller passes — so reversing the corpus reverses the answer. That is
+    // the property these assertions pin, and the one nothing else watches:
+    // membership is already pinned above, the WINNER was not.
+    const set = (files: readonly string[]): WorkspaceIndex =>
+      ({ fromFile: FROM_FILE, allFilePaths: new Set(files) }) as WorkspaceIndex;
+    const nestedFirst = [
+      'com/example/legacy/com/example/Old.java',
+      'src/main/java/com/example/App.java',
+    ];
+    const conventionalFirst = [...nestedFirst].reverse();
+
+    expect(resolveJavaImportTarget(javaImport('com.example'), set(nestedFirst))).toBe(
+      'com/example/legacy/com/example/Old.java',
+    );
+    expect(resolveJavaImportTarget(javaImport('com.example'), set(conventionalFirst))).toBe(
+      'src/main/java/com/example/App.java',
+    );
+    // A wildcard drops its `.*` before any of that, so it lands on the same leg
+    // and moves with it. Spelled out because `com.example.*` is how real Java
+    // source reaches this tier.
+    expect(resolveJavaImportTarget(javaImport('com.example.*'), set(nestedFirst))).toBe(
+      'com/example/legacy/com/example/Old.java',
+    );
+    expect(resolveJavaImportTarget(javaImport('com.example.*'), set(conventionalFirst))).toBe(
+      'src/main/java/com/example/App.java',
+    );
+    // The pre-change copy agrees on both orders, which places the movement in
+    // #2881's removal of the first-occurrence rule rather than in #2908's
+    // index hoist: the hoist did not touch the tie-break, it inherited it.
+    expect(legacyResolveJavaImportTarget(javaImport('com.example'), set(nestedFirst))).toBe(
+      'com/example/legacy/com/example/Old.java',
+    );
+    expect(legacyResolveJavaImportTarget(javaImport('com.example'), set(conventionalFirst))).toBe(
+      'src/main/java/com/example/App.java',
+    );
   });
 
   it('builds each index once per file set rather than once per import', () => {
