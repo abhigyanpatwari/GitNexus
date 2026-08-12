@@ -54,6 +54,7 @@ import type { AnalyzeOptions } from './analyze-options.js';
 import { runFullAnalysis } from '../core/run-analyze.js';
 import { getRuntimeFingerprint } from '../core/platform/capabilities.js';
 import { getMaxFileSizeBannerMessage } from '../core/ingestion/utils/max-file-size.js';
+import { getIndexHiddenBannerMessage } from '../core/ingestion/utils/index-hidden.js';
 import { warnMissingOptionalGrammars, getOptionalGrammarExtensions } from './optional-grammars.js';
 import { glob } from 'glob';
 import fs from 'fs/promises';
@@ -1189,6 +1190,11 @@ const analyzeCommandImpl = async (
   const maxFileSizeBanner = getMaxFileSizeBannerMessage();
   if (maxFileSizeBanner) {
     console.log(`${maxFileSizeBanner}\n`);
+  }
+
+  const indexHiddenBanner = getIndexHiddenBannerMessage();
+  if (indexHiddenBanner) {
+    console.log(`${indexHiddenBanner}\n`);
   }
 
   // ── CLI progress bar setup ─────────────────────────────────────────

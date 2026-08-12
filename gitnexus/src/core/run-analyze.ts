@@ -173,6 +173,7 @@ import {
   SPRING_CONDITIONALS_FEATURE,
 } from './ingestion/frameworks/spring/analysis-features.js';
 import { SPRING_CONFIG_BINDINGS_FEATURE } from './ingestion/languages/java/analysis-features.js';
+import { INDEX_HIDDEN_SCOPE_FEATURE } from './ingestion/utils/index-hidden.js';
 import {
   CLASS_FRAMEWORK_ANNOTATIONS_FEATURE,
   findAnalysisFeatureMismatches,
@@ -221,6 +222,7 @@ const stripControlCharacters = (msg: string): string =>
 
 const ANALYSIS_FEATURES = [
   CLASS_FRAMEWORK_ANNOTATIONS_FEATURE,
+  INDEX_HIDDEN_SCOPE_FEATURE,
   SPRING_AOP_FEATURE,
   SPRING_BEAN_INVENTORY_FEATURE,
   SPRING_CONDITIONALS_FEATURE,

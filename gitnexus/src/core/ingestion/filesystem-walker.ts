@@ -1,5 +1,6 @@
 import { isVerboseIngestionEnabled } from './utils/verbose.js';
 import { DEFAULT_MAX_FILE_SIZE_BYTES, getMaxFileSizeBytes } from './utils/max-file-size.js';
+import { isIndexHiddenEnabled } from './utils/index-hidden.js';
 import fs from 'fs/promises';
 import path from 'path';
 import { glob } from 'glob';
@@ -50,7 +51,13 @@ export const walkRepositoryPaths = async (
   const filtered = await glob('**/*', {
     cwd: repoPath,
     nodir: true,
-    dot: false,
+    // Hidden paths are excluded by default — this is the primary mechanism that
+    // keeps `.git/`, `.vscode/` and `.venv/` out of the index, with the
+    // `DEFAULT_IGNORE_LIST` check in `ignore-service.ts` as defense-in-depth
+    // behind it. Opt in with `GITNEXUS_INDEX_HIDDEN=1` for repositories that
+    // keep first-party source under a dot-directory; `DEFAULT_IGNORE_LIST`
+    // still applies, so `.git/` and `node_modules/` remain excluded.
+    dot: isIndexHiddenEnabled(),
     ignore: ignoreFilter,
   });
   const entries: ScannedFile[] = [];
