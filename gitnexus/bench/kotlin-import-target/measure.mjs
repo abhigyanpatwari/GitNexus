@@ -60,13 +60,16 @@
  *      Set-iteration order — "first suffix match wins", and the two stem maps
  *      keeping the FIRST path inserted per key. A single-order corpus scores an
  *      implementation that keeps the LAST match identically.
- *   2. **The correctness corpus contains repeated directory names where the
- *      first occurrence is not the parent** (`data/src/main/kotlin/com/example/
- *      data/Repo.kt`). The pre-index scan tested `startsWith` and then used
- *      `indexOf`, so it only ever considered the FIRST `/dir/`; that file is
- *      therefore NOT a child of `data`. The index reproduces it deliberately.
- *      Without these shapes the fingerprint cannot tell the preserved rule from
- *      the intuitive one.
+ *   2. **The correctness corpus contains repeated directory names at BOTH the
+ *      leading and the mid-path position** (`data/src/main/kotlin/com/example/
+ *      data/Repo.kt` and `top/data/mid/data/Repo.kt`). Until #2881 the resolver
+ *      required a file's package directory to be the FIRST occurrence of that
+ *      name in its own path, so neither file was a child of `data`; both are
+ *      now, and that is what the fingerprint pins. Two positions, not one,
+ *      because the old rule was two guards and a half fix that drops only the
+ *      leading-position one still leaves the mid-path shape broken — see
+ *      `_gate_controls` in baselines.json. Without these shapes the fingerprint
+ *      cannot tell the current rule from either predecessor.
  *   3. **~40% of the scaling corpus's imports are unresolvable.** The old cost
  *      was worst when nothing matched, because only then did all four tiers
  *      run. A corpus where every import hits tier 1 exits after one pass and
@@ -141,12 +144,7 @@ function record(files, targetRaw, fromFile = 'App.kt') {
     if (r !== null) nonNull++;
     const rendered = r === null ? 'NULL' : Array.isArray(r) ? `[${r.join(',')}]` : r;
     // The FILE SET is part of the hashed record, not just the query and the
-    // result — see header property 4. Without it a corpus edit that changes
-    // which workspace a case runs against, while leaving the result string
-    // alone, is invisible: dropping the competing file from the
-    // "exact beats an earlier suffix" case, or emptying the repeated-directory
-    // negative case, both leave `cases`, `non_null` and the fingerprint
-    // byte-identical.
+    // result — see header property 4.
     lines.push(`${order}\t${list.join('|')}\t${fromFile}\t${targetRaw}\t${rendered}`);
   }
 }
@@ -187,7 +185,8 @@ record(['win\\pkg\\A.kt', 'win\\pkg\\B.kt'], 'win.pkg.someFunction');
 record(['pkg/A.java', 'pkg/A.md', 'pkg/A.kt.txt'], 'pkg.A');
 // Kotlin file alongside non-Kotlin noise of the same stem.
 record(['pkg/A.java', 'pkg/A.kt'], 'pkg.A');
-// Header property 2: repeated directory name, first occurrence is not the parent.
+// Header property 2: repeated directory name — a child of the repeated package
+// since #2881, at the leading position here and mid-path below.
 record(['data/src/main/kotlin/com/example/data/Repo.kt'], 'data.something');
 record(['data/src/main/kotlin/com/example/data/Repo.kt'], 'data.Repo');
 record(['a/c/b/c/File.kt'], 'c.X');

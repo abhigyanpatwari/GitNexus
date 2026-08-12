@@ -12,7 +12,10 @@
  * That is wrong, and this file is the proof. Step 2 filters
  * `index.getFilesInDir(dirPrefix, '.cs')`, whose buckets are keyed on
  * SEGMENT-aligned directory suffixes; step 3 runs an UNANCHORED
- * `normalized.indexOf(dirPrefix + '/')`. Step 3 therefore answers strictly more:
+ * `normalized.lastIndexOf(dirPrefix + '/')` (`indexOf` before #2881, which is
+ * the first-occurrence rule that issue removed; the empty-prefix case still
+ * takes `indexOf` — see `directChildIdx`, which both copies call). Step 3
+ * therefore answers strictly more:
  *
  *   - `dirPrefix = 'ubModels'` matches `src/SubModels/` (character suffix of a
  *     segment, not a segment);
@@ -58,6 +61,26 @@ import type {
 // `SuffixIndex`) are imported from production because this PR does not touch
 // them; only the function below changed.
 
+/**
+ * The direct-child probe the frozen copies below run — four call sites, two in
+ * each copy, that have to move together.
+ *
+ * Direct child of a directory ENDING with `dirPrefix` — since #2881, minus
+ * "…and that occurrence is the FIRST". Empty `dirPrefix` keeps `indexOf`: its
+ * needle is a bare '/', and step 3 answers that query from the
+ * one-directory-deep set, which only the first occurrence expresses.
+ *
+ * Local to this file on purpose. A parity harness has to stay independent of
+ * PRODUCTION — that independence is the whole instrument, and importing this
+ * expression from `csharp.ts` would make the differential compare production
+ * against itself. But all four copies live inside the harness, so one local
+ * helper keeps the independence while removing three sites that could silently
+ * drift apart from each other.
+ */
+function directChildIdx(normalized: string, dirPrefix: string, dirTrail: string): number {
+  return dirPrefix === '' ? normalized.indexOf(dirTrail) : normalized.lastIndexOf(dirTrail);
+}
+
 function legacyResolveCSharpImportInternal(
   importPath: string,
   csharpConfigs: CSharpProjectConfig[],
@@ -99,13 +122,17 @@ function legacyResolveCSharpImportInternal(
       if (suffixResult) return [suffixResult];
     }
 
+    // Shared by steps 2 and 3 — the same needle, and since #2881 the same
+    // `indexOf`-only-when-empty rule, so it is declared once rather than
+    // re-derived per step.
+    const dirTrail = dirPrefix + '/';
+
     // 2. Try as directory: all .cs files directly inside (namespace import)
     if (index) {
       const dirFiles = index.getFilesInDir(dirPrefix, '.cs');
       for (const f of dirFiles) {
         const normalized = f.replace(/\\/g, '/');
-        // Check it's a direct child by finding the dirPrefix and ensuring no deeper slashes
-        const prefixIdx = normalized.indexOf(dirPrefix + '/');
+        const prefixIdx = directChildIdx(normalized, dirPrefix, dirTrail);
         if (prefixIdx < 0) continue;
         const afterDir = normalized.substring(prefixIdx + dirPrefix.length + 1);
         if (!afterDir.includes('/')) {
@@ -117,11 +144,10 @@ function legacyResolveCSharpImportInternal(
 
     // 3. Linear scan fallback for directory matching
     if (results.length === 0) {
-      const dirTrail = dirPrefix + '/';
       for (let i = 0; i < normalizedFileList.length; i++) {
         const normalized = normalizedFileList[i];
         if (!normalized.endsWith('.cs')) continue;
-        const prefixIdx = normalized.indexOf(dirTrail);
+        const prefixIdx = directChildIdx(normalized, dirPrefix, dirTrail);
         if (prefixIdx < 0) continue;
         const afterDir = normalized.substring(prefixIdx + dirTrail.length);
         if (!afterDir.includes('/')) {
@@ -185,11 +211,13 @@ function skipStep3WhenIndexed(
       if (suffixResult) return [suffixResult];
     }
 
+    const dirTrail = dirPrefix + '/';
+
     if (index) {
       const dirFiles = index.getFilesInDir(dirPrefix, '.cs');
       for (const f of dirFiles) {
         const normalized = f.replace(/\\/g, '/');
-        const prefixIdx = normalized.indexOf(dirPrefix + '/');
+        const prefixIdx = directChildIdx(normalized, dirPrefix, dirTrail);
         if (prefixIdx < 0) continue;
         const afterDir = normalized.substring(prefixIdx + dirPrefix.length + 1);
         if (!afterDir.includes('/')) {
@@ -200,11 +228,10 @@ function skipStep3WhenIndexed(
       continue;
     }
 
-    const dirTrail = dirPrefix + '/';
     for (let i = 0; i < normalizedFileList.length; i++) {
       const normalized = normalizedFileList[i];
       if (!normalized.endsWith('.cs')) continue;
-      const prefixIdx = normalized.indexOf(dirTrail);
+      const prefixIdx = directChildIdx(normalized, dirPrefix, dirTrail);
       if (prefixIdx < 0) continue;
       const afterDir = normalized.substring(prefixIdx + dirTrail.length);
       if (!afterDir.includes('/')) {
@@ -252,8 +279,10 @@ const RAW_FILES: readonly string[] = [
   // Character suffix across a segment boundary: answers `rc/Models`.
   'vendor/mysrc/Models/Vendored.cs',
   'src/Models/Late.cs',
-  // `Models` nested inside `Models`: the FIRST `indexOf` occurrence is the
-  // outer one, whose remainder still holds a slash, so this answers nothing.
+  // `Models` nested inside `Models`. Answered nothing until #2881, because the
+  // FIRST `indexOf` occurrence was the outer one and its remainder still held a
+  // slash; the predicate now asks whether the file's DIRECTORY ends with the
+  // prefix, which the inner `Models` satisfies.
   'nest/Models/inner/Models/Ignored.cs',
   // Single-segment directory, so it answers the empty `dirPrefix`.
   'Models/TopLevel.cs',
@@ -483,9 +512,14 @@ describe('C# csproj leg — the answers only step 3 can give (#2902)', () => {
     ]);
   });
 
-  it('keeps the FIRST-occurrence tie-break: a directory nested inside a same-named one loses', () => {
-    // `nest/Models/inner/Models/Ignored.cs` is absent: `indexOf('odels/')` finds
-    // the outer `Models/`, and `inner/Models/Ignored.cs` still has a slash.
+  it('a directory nested inside a same-named one now answers too (#2881)', () => {
+    // `nest/Models/inner/Models/Ignored.cs` used to be absent: `indexOf('odels/')`
+    // found the OUTER `Models/`, and `inner/Models/Ignored.cs` still had a
+    // slash. The predicate is now "the file's directory ends with the prefix",
+    // which the inner `Models` satisfies. Note this arm queries `App.odels` —
+    // the UNANCHORED half — so it also pins that removing the first-occurrence
+    // rule did not accidentally anchor the match to a segment boundary:
+    // `src/SubModels/Widget.cs` is still here.
     expect(withIndex([{ rootNamespace: 'App', projectDir: '' }], 'App.odels')).toEqual([
       'src/Models/User.cs',
       'src/Models/Order.cs',
@@ -493,6 +527,7 @@ describe('C# csproj leg — the answers only step 3 can give (#2902)', () => {
       'other/Models/Thing.cs',
       'vendor/mysrc/Models/Vendored.cs',
       'src/Models/Late.cs',
+      'nest/Models/inner/Models/Ignored.cs',
       'Models/TopLevel.cs',
       'win\\Models\\Win.cs',
     ]);
@@ -506,15 +541,19 @@ describe('C# csproj leg — the answers only step 3 can give (#2902)', () => {
 
   it('a leading-slash dirPrefix cannot bogus-match a shorter directory', () => {
     // `dirPrefix = '/Models'` (projectDir used verbatim, since the import IS
-    // the root namespace): `'Models/'` is SHORTER than `'/Models/'`, and both
-    // `indexOf` and `haystack.length - needle.length` come out -1 without a
-    // length guard, so `Models/TopLevel.cs` would join the answer.
+    // the root namespace): `'Models/'` is SHORTER than `'/Models/'`, so
+    // `Models/TopLevel.cs` must not join the answer. The `indexOf` form needed
+    // an explicit length guard for this, because `indexOf` and
+    // `haystack.length - needle.length` both came out -1; `endsWith` is simply
+    // false on a shorter haystack, so the property now holds without one, and
+    // this case is what proves the guard's removal was safe.
     expect(withIndex([{ rootNamespace: 'App', projectDir: '/Models' }], 'App')).toEqual([
       'src/Models/User.cs',
       'src/Models/Order.cs',
       'other/Models/Thing.cs',
       'vendor/mysrc/Models/Vendored.cs',
       'src/Models/Late.cs',
+      'nest/Models/inner/Models/Ignored.cs',
       'win\\Models\\Win.cs',
     ]);
   });
@@ -616,5 +655,103 @@ describe('C# csproj leg — the directory index is built once per file set (#290
     expect(resolveCSharpImportInternal('App.Models', configs, ALL_FILE_PATHS, undefined)).toEqual(
       [],
     );
+  });
+});
+
+/**
+ * ABSOLUTE arms, deliberately not differential.
+ *
+ * The harness above is blind to everything in this block. Its frozen legacy copy
+ * carries the same `dirPrefix === '' ? indexOf : lastIndexOf` rule production
+ * does (see `directChildIdx`, and the header's note that #2881's edit landed in
+ * BOTH), so where #2881 moved step 2 the two sides moved together and the
+ * differential stays green by construction. Only stated expectations can see
+ * these, so each arm below names the exact line it gates.
+ */
+describe('C# csproj leg — where step 2 stops and step 3 begins (absolute)', () => {
+  function corpus(raw: readonly string[]): { paths: ReadonlySet<string>; index: SuffixIndex } {
+    const all = [...raw];
+    const normalized = all.map((f) => f.replace(/\\/g, '/'));
+    return { paths: new Set(all), index: buildSuffixIndex(normalized, all) };
+  }
+
+  const ROOT_NS_ONLY: CSharpProjectConfig[] = [{ rootNamespace: 'App', projectDir: '' }];
+
+  it("step 2's empty-`dirPrefix` filter rejects a doubled slash, which is NOT one directory deep", () => {
+    // Gates the five-line `if (dirPrefix === '')` guard in step 2 of
+    // `resolveCSharpImportInternal`. Delete it and this arm is the only thing in
+    // the suite that fails.
+    //
+    // `getDirMap` keys a file under every suffix of its DIRECTORY, so the empty
+    // key holds every path whose directory's last component is empty. That is a
+    // leading '/' on a root-level file (`/Root.cs`, directory ''), but ALSO a
+    // doubled slash immediately before the file name (`a//Doubled.cs`, directory
+    // 'a/'). Only the first is one directory deep — the query an empty
+    // `dirPrefix` is asking, and the one step 3 answers from `singleSegmentDirs`
+    // — so without the guard step 2 and step 3 disagree.
+    const { paths, index } = corpus([
+      '/Root.cs',
+      'a//Doubled.cs',
+      'Top.cs',
+      'one/Deep.cs',
+      'a/b/Deeper.cs',
+    ]);
+    // Not vacuous: `a//Doubled.cs` really is in the bucket step 2 filters, so
+    // this arm fails by ADDING it rather than by finding nothing to reject.
+    expect(index.getFilesInDir('', '.cs')).toEqual(['/Root.cs', 'a//Doubled.cs']);
+    expect(resolveCSharpImportInternal('App', ROOT_NS_ONLY, paths, index)).toEqual(['/Root.cs']);
+  });
+
+  it('step 2 answering a query it used to miss also PREEMPTS step 3', () => {
+    // #2881 widened step 2 from "the FIRST `/<dirPrefix>/`" to "the directory
+    // ENDS with `dirPrefix`". The justification reasons about step 2's own
+    // bucket and is right there — but step 2 returns as soon as it pushes
+    // anything, so a query it used to answer with nothing now also suppresses
+    // step 3, whose unanchored match set is a strict SUPERSET of step 2's.
+    //
+    // Pinned in both directions: step 2's answer with an index, and step 3's own
+    // answer with none. The gap between them is the suppression.
+    const { paths, index } = corpus([
+      'nest/src/SubModels/F0.cs',
+      'SubModels/Models/F1.cs',
+      'F2.cs',
+      'SubModels/F3.cs',
+    ]);
+    // Step 2 alone: `SubModels/Models` is the only SEGMENT-aligned `Models`.
+    expect(resolveCSharpImportInternal('App.Models', ROOT_NS_ONLY, paths, index)).toEqual([
+      'SubModels/Models/F1.cs',
+    ]);
+    // Step 3 alone: every directory whose path merely ENDS with `Models`, which
+    // is the segment-aligned hit plus both `SubModels` character-suffix ones.
+    // Before #2881 step 2 rejected here and this was the answer; the widened
+    // step 2 now returns first, and the narrower, more precise answer above is
+    // the one that reaches the graph.
+    expect(resolveCSharpImportInternal('App.Models', ROOT_NS_ONLY, paths, undefined)).toEqual([
+      'nest/src/SubModels/F0.cs',
+      'SubModels/Models/F1.cs',
+      'SubModels/F3.cs',
+    ]);
+  });
+
+  it('a name that is not a suffix of the PARENT directory stays out of the bucket', () => {
+    // The negative control for the widened rule, matching the one Kotlin's
+    // parity test carries. The rule is "the file's parent directory ENDS with
+    // `dirPrefix`", not "`dirPrefix` appears anywhere in the path" — dropping
+    // the first-occurrence half must not widen it that far. Both positions the
+    // old `indexOf` distinguished are covered: leading, and mid-path.
+    //
+    // Asserted through both legs, because they run different predicates on
+    // different indexes and either one alone could widen without the other.
+    const { paths, index } = corpus([
+      'Models/sub/Leading.cs',
+      'top/Models/mid/Middle.cs',
+      'Models/Direct.cs',
+    ]);
+    expect(resolveCSharpImportInternal('App.Models', ROOT_NS_ONLY, paths, index)).toEqual([
+      'Models/Direct.cs',
+    ]);
+    expect(resolveCSharpImportInternal('App.Models', ROOT_NS_ONLY, paths, undefined)).toEqual([
+      'Models/Direct.cs',
+    ]);
   });
 });
