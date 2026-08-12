@@ -7256,7 +7256,15 @@ export class LocalBackend {
     // CHUNK_SIZE` below goes NaN, silencing the truncation signal too. 0 is a
     // legitimate value (enrich nothing); only a non-integer or negative one
     // falls back to the default.
-    const parsedMaxChunks = Number.parseInt(process.env.IMPACT_MAX_CHUNKS ?? '', 10);
+    //
+    // `Number`, not `Number.parseInt`: parseInt takes the numeric PREFIX, so it
+    // reads '1.5' as 1 and '10junk' as 10 — both then satisfy `Number.isInteger`
+    // and silently apply a cap nobody configured, which is the opposite of the
+    // fallback promised above. The empty check is load-bearing too, because
+    // `Number('')` is 0 and 0 is a legitimate value here, so an UNSET variable
+    // would otherwise mean "enrich nothing" rather than "use the default".
+    const rawMaxChunks = process.env.IMPACT_MAX_CHUNKS?.trim();
+    const parsedMaxChunks = rawMaxChunks ? Number(rawMaxChunks) : Number.NaN;
     const MAX_CHUNKS =
       Number.isInteger(parsedMaxChunks) && parsedMaxChunks >= 0 ? parsedMaxChunks : 10;
 
