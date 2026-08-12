@@ -69,6 +69,7 @@ import type {
   CallableFlowOperand,
   CallableFlowPassingMode,
   CallableFlowSite,
+  Capture,
   CaptureMatch,
   ImportEdge,
   ParameterTypeClass,
@@ -1156,28 +1157,12 @@ function pass5CollectReferences(
     // sibling via the full-path QualifiedNameIndex before the simple-tail walk
     // (#1982). Absent for unqualified references — resolution stays unchanged.
     const qualifiedCap = match['@reference.qualified-name'];
-    // Generic ARGUMENTS written on a heritage reference (`: IValidator<string>`),
-    // recovered from the anchor's own text because `name` is deliberately the
-    // erased base (#2912). Most emitters already anchor `@reference.inherits` on
-    // the whole base node, so they need no query change at all.
-    //
-    // `@reference.type-arguments` is the explicit form, for an emitter whose
-    // anchor is the bare NAME node (Rust's `impl Trait for S` anchors on the
-    // trait identifier inside a `generic_type`). It wins where present: moving
-    // such an anchor to cover the arguments would change the site's range, and
-    // the range is part of every inheritance EDGE ID — a spelling detail must
-    // not renumber the graph.
-    //
-    // `inherits` only. Call/read/write anchors span the whole call expression,
-    // whose `<…>` would be an argument list, a comparison, or nothing at all;
-    // widening the kind would mint confident nonsense from those spellings.
-    const typeArgumentsCap = match['@reference.type-arguments'];
+    // Generic ARGUMENTS written on a heritage reference (`: IValidator<string>`);
+    // `inherits` only, because a call/read/write anchor spans the whole call
+    // expression, whose `<…>` would be an argument list, a comparison, or
+    // nothing at all — widening the kind would mint confident nonsense (#2912).
     const typeArguments =
-      kind !== 'inherits'
-        ? undefined
-        : typeArgumentsCap?.text !== undefined
-          ? typeApplicationArguments(typeArgumentsCap.text)
-          : referenceTypeArguments(anchor.text, nameCap.text);
+      kind === 'inherits' ? heritageTypeArguments(match, anchor, nameCap) : undefined;
     const inScopeId = positionIndex.atPosition(
       filePath,
       anchor.range.startLine,
@@ -1244,6 +1229,29 @@ function pass5CollectReferences(
     };
     referenceSites.push(site);
   }
+}
+
+/**
+ * The generic arguments a heritage reference was written with, by whichever of
+ * the two routes this emitter uses (#2912).
+ *
+ * `@reference.type-arguments` is the explicit route, for an emitter whose anchor
+ * is the bare NAME node (Rust's `impl Trait for S` anchors on the trait
+ * identifier inside a `generic_type`). It wins where present: moving such an
+ * anchor to cover the arguments would change the site's range, and that range is
+ * part of every inheritance EDGE ID — a spelling detail must not renumber the
+ * graph. Every other emitter already anchors on the whole base, so its spelling
+ * is read directly and no query changed.
+ */
+function heritageTypeArguments(
+  match: CaptureMatch,
+  anchor: Capture,
+  nameCap: Capture,
+): readonly string[] | undefined {
+  const explicit = match['@reference.type-arguments']?.text;
+  return explicit !== undefined
+    ? typeApplicationArguments(explicit)
+    : referenceTypeArguments(anchor.text, nameCap.text);
 }
 
 /**

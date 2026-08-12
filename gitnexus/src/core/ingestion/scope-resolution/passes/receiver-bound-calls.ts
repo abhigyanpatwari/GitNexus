@@ -349,14 +349,12 @@ export function emitReceiverBoundCalls(
     foldedReceiverType.spelling = spelling;
     foldedReceiverType.defId = defId;
   };
-  /** Type arguments of the just-folded receiver, when the fold's last typed
-   *  position IS the class it returned. Empty otherwise — a fold that reached
-   *  the class another way (a construction expression, a namespace target)
-   *  reports no spelling, and no arguments is the fail-open answer. */
-  const foldedReceiverTypeArguments = (folded: SymbolDefinition): readonly string[] | undefined =>
-    foldedReceiverType.defId === folded.nodeId
-      ? typeApplicationArguments(foldedReceiverType.spelling)
-      : undefined;
+  /** The declared spelling the just-folded receiver was typed from, when the
+   *  fold's last typed position IS the class it returned. `undefined` otherwise —
+   *  a fold that reached the class another way (a construction expression, a
+   *  namespace target) reports no spelling, and that is the fail-open answer. */
+  const foldedReceiverSpelling = (folded: SymbolDefinition): string | undefined =>
+    foldedReceiverType.defId === folded.nodeId ? foldedReceiverType.spelling : undefined;
 
   // Loop-invariant: both hooks come off the pass arguments, so the options bag
   // for `classifyReceiverOrigin` is built once here rather than per dropped site.
@@ -556,13 +554,22 @@ export function emitReceiverBoundCalls(
     site: ParsedFile['referenceSites'][number],
     confidence: number,
     calleeCapture: CalleeIdCaptureCtx | undefined,
-    /** The receiver's own type arguments (`IValidator<string>` → `['string']`),
-     *  or `undefined` where the case could not recover them — which restores the
-     *  unfiltered fan-out for that site rather than guessing. */
-    receiverTypeArguments: readonly string[] | undefined,
+    /** The receiver's declared type AS WRITTEN (`IValidator<string>`), or
+     *  `undefined` where the case could not recover it — which restores the
+     *  unfiltered fan-out for that site rather than guessing.
+     *
+     *  The SPELLING rather than the parsed arguments, so the parse happens after
+     *  the two gates below rather than at every resolved receiver site: all five
+     *  cases call this unconditionally, and the overwhelming majority of
+     *  receivers are concrete classes that return at the first line. */
+    receiverTypeSpelling: string | undefined,
   ): number => {
     if (ownerDef.type !== 'Interface') return 0;
     if (subtypesBySupertypeDefId.get(ownerDef.nodeId) === undefined) return 0;
+    const receiverTypeArguments =
+      receiverTypeSpelling === undefined
+        ? undefined
+        : typeApplicationArguments(receiverTypeSpelling);
 
     // Collect concrete targets across the closure first, so the cap below counts
     // real dispatch targets rather than types visited.
@@ -577,22 +584,26 @@ export function emitReceiverBoundCalls(
         defId: string;
         typeArguments: readonly string[] | undefined;
       };
-      const superGraphId = classGraphIdByDefId.get(superId);
+      // The whole instantiation apparatus hangs off ONE question: is the
+      // supertype's own instantiation known? It is not for a non-generic
+      // receiver, nor for any language that captures no heritage arguments, so
+      // those walks skip every lookup below and emit exactly what they did
+      // before #2912.
+      const superGraphId =
+        superArguments === undefined ? undefined : classGraphIdByDefId.get(superId);
       for (const subDef of subtypesBySupertypeDefId.get(superId) ?? []) {
         if (seenTypes.has(subDef.nodeId)) continue;
-        // What THIS heritage clause instantiated its base with. Looked up only
-        // when the supertype's own instantiation is known, so a repo with no
-        // generic heritage — and every language that captures none — does no
-        // work here at all and emits exactly what it emitted before.
-        const subGraphId = classGraphIdByDefId.get(subDef.nodeId);
+        // What THIS heritage clause instantiated its base with.
+        const subGraphId =
+          superGraphId === undefined ? undefined : classGraphIdByDefId.get(subDef.nodeId);
         const heritageArguments =
-          superArguments === undefined || superGraphId === undefined || subGraphId === undefined
+          subGraphId === undefined || superGraphId === undefined
             ? undefined
             : options.heritageTypeArguments?.get(
                 heritageTypeArgumentsKey(subGraphId, superGraphId),
               );
         let subtypeArguments: readonly string[] | undefined;
-        if (heritageArguments !== undefined) {
+        if (heritageArguments !== undefined && superArguments !== undefined) {
           const step = stepHeritageInstantiation({
             supertypeArguments: superArguments,
             heritageArguments,
@@ -992,7 +1003,7 @@ export function emitReceiverBoundCalls(
               site,
               0.85,
               calleeCapture,
-              foldedReceiverTypeArguments(currentClass),
+              foldedReceiverSpelling(currentClass),
             );
             // Always mark handled when the site was resolved, even
             // if the edge was deduplicated (collapse mode), so
@@ -1589,7 +1600,7 @@ export function emitReceiverBoundCalls(
               site,
               0.85,
               calleeCapture,
-              foldedReceiverTypeArguments(ownerDef),
+              foldedReceiverSpelling(ownerDef),
             );
             // Always mark handled when the site was resolved, even
             // if the edge was deduplicated (collapse mode), so
@@ -1876,7 +1887,7 @@ export function emitReceiverBoundCalls(
               site,
               confidence,
               calleeCapture,
-              typeApplicationArguments(typeApplication ?? typeRef.rawName),
+              typeApplication ?? typeRef.rawName,
             );
             // Always mark handled when the site was resolved, even
             // if the edge was deduplicated (collapse mode), so
@@ -2157,9 +2168,7 @@ export function emitReceiverBoundCalls(
                 site,
                 confidence,
                 calleeCapture,
-                fieldDeclaredType === undefined
-                  ? undefined
-                  : typeApplicationArguments(fieldDeclaredType),
+                fieldDeclaredType,
               );
               handledSites.add(siteKey);
               continue;

@@ -71,20 +71,34 @@ export function extractTemplateArguments(text: string): string[] | undefined {
  */
 export function typeApplicationArguments(spelling: string): string[] | undefined {
   const text = spelling.trim();
-  const start = text.search(/[<[]/);
-  if (start === -1) return undefined;
-  const opener = text[start] as '<' | '[';
+  const inner = balancedTailList(text, text.search(OPENING_BRACKET));
+  if (inner === undefined) return undefined;
+  const args = splitTopLevelArguments(inner);
+  return args.length > 0 ? args : undefined;
+}
+
+const OPENING_BRACKET = /[<[]/;
+
+/**
+ * The contents of the ONE balanced bracket list that opens at `start` and closes
+ * on the LAST character of `text` — `Repo<User>` from index 4 yields `User`.
+ *
+ * `undefined` for everything else, which is what both callers need: a list that
+ * closes early (`User[][]`, `Repo<User>?`), one that never closes
+ * (`Map<String, (Int) -> Unit>`), an empty one (`User[]`), or no bracket at all
+ * (`start === -1`). Shared because the rule is one rule — `erasedTypeApplication`
+ * rebuilds the spelling from it and `typeApplicationArguments` splits it, and two
+ * copies of a scan this fiddly would be free to disagree about `User[][]`.
+ */
+function balancedTailList(text: string, start: number): string | undefined {
+  const opener = text[start];
+  if (opener !== '<' && opener !== '[') return undefined;
   const closer = opener === '<' ? '>' : ']';
   let depth = 0;
   for (let i = start; i < text.length; i++) {
     if (text[i] === opener) depth++;
-    else if (text[i] === closer) {
-      depth--;
-      if (depth > 0) continue;
-      // One list, closing on the LAST character, holding something.
-      if (depth < 0 || i !== text.length - 1) return undefined;
-      const args = splitTopLevelArguments(text.slice(start + 1, i));
-      return args.length > 0 ? args : undefined;
+    else if (text[i] === closer && --depth === 0) {
+      return i === text.length - 1 && i > start + 1 ? text.slice(start + 1, i) : undefined;
     }
   }
   return undefined;
@@ -218,21 +232,8 @@ export function erasedTypeApplication(typeRef: TypeRef): string | undefined {
   if (spelling === undefined) return undefined;
   const base = typeRef.rawName.trim();
   if (base.length === 0 || !spelling.startsWith(base)) return undefined;
-  const rest = spelling.slice(base.length).trimStart();
-  const opener = rest[0];
-  if (opener !== '<' && opener !== '[') return undefined;
-  const closer = opener === '<' ? '>' : ']';
-  let depth = 0;
-  for (let i = 0; i < rest.length; i++) {
-    if (rest[i] === opener) depth++;
-    else if (rest[i] === closer) {
-      depth--;
-      // The list the spelling opened must close on the LAST character, and must
-      // have held something: `Repo[User]` yes, `User[]` no, `User[][]` no.
-      if (depth === 0) {
-        return i === rest.length - 1 && i > 1 ? `${base}<${rest.slice(1, i)}>` : undefined;
-      }
-    }
-  }
-  return undefined;
+  // The list must open immediately after the base and close on the LAST
+  // character, holding something: `Repo[User]` yes, `User[]` no, `User[][]` no.
+  const inner = balancedTailList(spelling.slice(base.length).trimStart(), 0);
+  return inner === undefined ? undefined : `${base}<${inner}>`;
 }
