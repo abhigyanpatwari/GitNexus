@@ -1,10 +1,15 @@
 /**
- * `chunk` / `mapBatches` — the shape every query built from a caller-sized array
- * has to take (#2915: one condition per diff hunk overflowed LadybugDB's
- * recursive evaluator copy, a bare SIGBUS with no error output).
+ * `chunk` at `LBUG_QUERY_BATCH_SIZE` — the shape every query built from a
+ * caller-sized array has to take (#2915: one condition per diff hunk overflowed
+ * LadybugDB's recursive evaluator copy, a bare SIGBUS with no error output).
+ *
+ * `chunk` itself lives in `lib/utils.ts`; what is tested here is the batching
+ * contract a GRAPH QUERY depends on. The scheduler that consumes those batches,
+ * `mapConcurrent`, is generic and has non-query callers, so its tests live
+ * beside it in `utils.test.ts`.
  */
-import { describe, it, expect, vi } from 'vitest';
-import { LBUG_QUERY_BATCH_SIZE, mapConcurrent } from '../../src/core/lbug/query-batch.js';
+import { describe, it, expect } from 'vitest';
+import { LBUG_QUERY_BATCH_SIZE } from '../../src/core/lbug/query-batch.js';
 import { chunk } from '../../src/lib/utils.js';
 
 describe('chunk', () => {
@@ -35,74 +40,11 @@ describe('chunk', () => {
   it('rejects a size that would loop forever', () => {
     expect(() => chunk([1], 0)).toThrow(RangeError);
   });
-});
 
-describe('mapConcurrent', () => {
-  it('returns results in batch order regardless of completion order', async () => {
-    const order: number[] = [];
-    const results = await mapConcurrent(
-      [30, 10, 20],
-      async (delay) => {
-        await new Promise((resolve) => setTimeout(resolve, delay));
-        order.push(delay);
-        return delay;
-      },
-      { concurrency: 3 },
-    );
-
-    expect(results).toEqual([30, 10, 20]);
-    expect(order).toEqual([10, 20, 30]);
-  });
-
-  it('never exceeds the concurrency limit', async () => {
-    let inFlight = 0;
-    let peak = 0;
-    await mapConcurrent(
-      Array.from({ length: 9 }, (_, i) => i),
-      async () => {
-        inFlight += 1;
-        peak = Math.max(peak, inFlight);
-        await new Promise((resolve) => setTimeout(resolve, 5));
-        inFlight -= 1;
-      },
-      { concurrency: 2 },
-    );
-
-    expect(peak).toBe(2);
-  });
-
-  it('degrades a failed batch to undefined and keeps the rest', async () => {
-    const onError = vi.fn();
-    const behavior: Record<string, () => Promise<string>> = {
-      'ok-1': async () => 'ok-1',
-      boom: async () => {
-        throw new Error('query failed');
-      },
-      'ok-2': async () => 'ok-2',
-    };
-    const results = await mapConcurrent(['ok-1', 'boom', 'ok-2'], (item) => behavior[item](), {
-      concurrency: 3,
-      onError,
-    });
-
-    expect(results).toEqual(['ok-1', undefined, 'ok-2']);
-    expect(onError).toHaveBeenCalledTimes(1);
-  });
-
-  it('runs sequentially when concurrency is 1', async () => {
-    let inFlight = 0;
-    let peak = 0;
-    await mapConcurrent(
-      [1, 2, 3],
-      async () => {
-        inFlight += 1;
-        peak = Math.max(peak, inFlight);
-        await new Promise((resolve) => setTimeout(resolve, 1));
-        inFlight -= 1;
-      },
-      { concurrency: 1 },
-    );
-
-    expect(peak).toBe(1);
+  it('rejects a non-finite size instead of returning one empty batch', () => {
+    // `NaN` fails every comparison, so a bare `size < 1` let it through and
+    // `i += NaN` produced exactly one EMPTY slice — the one shape the docstring
+    // promises never to return, and one a caller reads as "nothing to query".
+    expect(() => chunk([1], Number.NaN)).toThrow(RangeError);
   });
 });

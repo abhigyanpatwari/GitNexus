@@ -17,7 +17,6 @@
  *      membership tests) have to be re-established by hand — so reach for it
  *      second.
  */
-import { chunk } from '../../lib/utils.js';
 
 /**
  * Items per graph query when the input list is caller-sized.
@@ -53,47 +52,17 @@ export function warnIfQueryTextUnbounded(
   context: string,
   warn: (message: string) => void,
 ): void {
-  if (cypher.length <= QUERY_TEXT_CEILING_BYTES) return;
+  // `cypher.length` counts UTF-16 code units, and what reaches the engine is
+  // UTF-8 bytes — non-ASCII query text is undercounted by up to 3x. UTF-8 never
+  // needs more than 3 bytes per code unit (an astral character costs 4 bytes
+  // across 2 units), so a query short enough here cannot exceed the ceiling and
+  // never pays for the byte count. This runs on every read query.
+  if (cypher.length * 3 <= QUERY_TEXT_CEILING_BYTES) return;
+  const bytes = Buffer.byteLength(cypher, 'utf8');
+  if (bytes <= QUERY_TEXT_CEILING_BYTES) return;
   warn(
-    `${context}: query text is ${Math.round(cypher.length / 1024)} KB. A list spliced into query ` +
+    `${context}: query text is ${Math.round(bytes / 1024)} KB. A list spliced into query ` +
       `text grows the expression the engine has to parse and can overflow its evaluator stack ` +
       `(#2915) — bind the list as a parameter (WHERE x IN $list), or chunk it.`,
   );
-}
-
-/**
- * Run `run` over each item with at most `concurrency` in flight, returning the
- * results in input order.
- *
- * A failure is reported through `onError` and yields `undefined` for that item,
- * so one bad query degrades the result (the caller raises its own `partial`
- * flag) instead of discarding the items that succeeded beside it.
- *
- * Concurrency is safe for graph queries because `executeParameterized` checks a
- * connection out of the per-repo pool for the duration of the query
- * (`pool-adapter.ts`), so parallel calls never share one. The default leaves
- * headroom for other in-flight work.
- */
-export async function mapConcurrent<T, R>(
-  items: readonly T[],
-  run: (item: T) => Promise<R>,
-  options: { concurrency?: number; onError?: (error: unknown) => void } = {},
-): Promise<(R | undefined)[]> {
-  const settle = async (item: T): Promise<R | undefined> => {
-    try {
-      return await run(item);
-    } catch (error) {
-      options.onError?.(error);
-      return undefined;
-    }
-  };
-
-  // Wave scheduling rather than a rolling window: measured on the real query
-  // path the two are within noise (538ms vs 532ms on a 1,000-file diff, whose
-  // per-batch times spread only 1.35x), and most inputs produce a single wave.
-  const results: (R | undefined)[] = [];
-  for (const wave of chunk(items, Math.max(1, options.concurrency ?? 4))) {
-    results.push(...(await Promise.all(wave.map(settle))));
-  }
-  return results;
 }

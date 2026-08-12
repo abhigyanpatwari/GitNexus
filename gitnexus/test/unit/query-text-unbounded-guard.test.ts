@@ -78,6 +78,53 @@ describe('warnIfQueryTextUnbounded (#2915)', () => {
     warnIfQueryTextUnbounded('x'.repeat(64 * 1024 + 1), 'test context', pastCeiling);
     expect(pastCeiling).toHaveBeenCalledTimes(1);
   });
+
+  it('measures BYTES, so multi-byte text over the ceiling is not waved through', () => {
+    // The case a `cypher.length` comparison got wrong: 30,000 CJK characters are
+    // 30,000 UTF-16 code units — comfortably under a 65,536 ceiling — but 90,000
+    // UTF-8 bytes, which is what the engine actually parses. The reported figure
+    // has to be the byte figure too, or the warning understates by 3x (88 KB of
+    // query text reported as 29 KB).
+    const cjk = '中'.repeat(30_000);
+    expect(cjk.length).toBeLessThan(64 * 1024);
+    expect(Buffer.byteLength(cjk, 'utf8')).toBe(90_000);
+
+    const warn = vi.fn();
+    const byteLength = vi.spyOn(Buffer, 'byteLength');
+    warnIfQueryTextUnbounded(cjk, 'test context', warn);
+    // `mockRestore()` clears the call history, so read it first — and restore
+    // before asserting, so a failure never leaks the spy into another test.
+    const byteCountCalls = byteLength.mock.calls.length;
+    byteLength.mockRestore();
+
+    expect(warn).toHaveBeenCalledTimes(1);
+    expect(String(warn.mock.calls[0][0])).toContain('88 KB');
+    // Text this long is exactly what the early return is meant to let through
+    // to the byte count.
+    expect(byteCountCalls).toBe(1);
+  });
+
+  it('skips the byte count for text too short to reach the ceiling', () => {
+    // The guard runs on EVERY read query, so the common case must not pay for a
+    // `Buffer.byteLength` scan. What makes skipping safe is that UTF-8 never
+    // needs more than 3 bytes per UTF-16 code unit — a 3-byte BMP character is
+    // the densest there is (an astral one costs 4 bytes across 2 units). This
+    // fixture is the LONGEST text the early return lets through, made entirely
+    // of those densest characters: even so it lands under the ceiling, so
+    // nothing the byte count would have flagged is ever waved past.
+    const dense = '中'.repeat(Math.floor((64 * 1024) / 3));
+    expect(dense.length * 3).toBeLessThanOrEqual(64 * 1024);
+    expect(Buffer.byteLength(dense, 'utf8')).toBeLessThanOrEqual(64 * 1024);
+
+    const warn = vi.fn();
+    const byteLength = vi.spyOn(Buffer, 'byteLength');
+    warnIfQueryTextUnbounded(dense, 'test context', warn);
+    const byteCountCalls = byteLength.mock.calls.length;
+    byteLength.mockRestore();
+
+    expect(warn).not.toHaveBeenCalled();
+    expect(byteCountCalls).toBe(0);
+  });
 });
 
 describe('#2915 guard wired into lbug-adapter', () => {

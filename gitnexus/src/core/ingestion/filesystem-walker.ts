@@ -4,7 +4,7 @@ import fs from 'fs/promises';
 import path from 'path';
 import { glob } from 'glob';
 import { createIgnoreFilter } from '../../config/ignore-service.js';
-import { mapConcurrent } from '../lbug/query-batch.js';
+import { mapConcurrent } from '../../lib/utils.js';
 
 import { logger } from '../logger.js';
 

@@ -673,6 +673,8 @@ export const getInferredRepoName = (repoPath: string): string | null => {
 export interface DiffHunk {
   startLine: number;
   endLine: number;
+  /** Phantom brand, never set — see {@link GraphLineRange}. */
+  readonly lineBase?: 'git1';
 }
 
 export interface FileDiff {
@@ -683,6 +685,20 @@ export interface FileDiff {
 /**
  * Parse unified diff output (with -U0) into per-file hunk ranges.
  * Extracts the new-file line ranges from @@ hunk headers.
+ *
+ * A pure deletion adds no new lines, and unified diff spells that empty range
+ * as the line BEFORE it: `@@ -4,2 +3,0 @@` removed old lines 4–5 from between
+ * new lines 3 and 4 (git emits `+0,0` when the deletion is at the head of the
+ * file). The hunk still says WHERE the change landed, so it becomes the
+ * one-line range at that anchor rather than being dropped. Dropping it left the
+ * file entry with no hunks at all, so `detect_changes` contributed no bound for
+ * the path, issued no query, and reported "No changes detected." for a commit
+ * that deleted a function (#2915 review).
+ *
+ * The anchor line only, not the pair straddling the gap: a symbol that
+ * contained the deleted text still contains the anchor, whereas extending to
+ * the following line would also claim a symbol that merely STARTS after the
+ * gap — the widening {@link coalesceHunks} is careful never to do.
  */
 export function parseDiffHunks(diffOutput: string): FileDiff[] {
   const files: FileDiff[] = [];
@@ -698,6 +714,11 @@ export function parseDiffHunks(diffOutput: string): FileDiff[] {
         const count = match[2] !== undefined ? parseInt(match[2], 10) : 1;
         if (count > 0) {
           current.hunks.push({ startLine: start, endLine: start + count - 1 });
+        } else {
+          // Deletion: anchor on the line the removed text followed, clamped to
+          // 1 for a `+0,0` deletion at the head of the file (see above).
+          const anchor = Math.max(start, 1);
+          current.hunks.push({ startLine: anchor, endLine: anchor });
         }
       }
     }
@@ -720,10 +741,10 @@ export function parseDiffHunks(diffOutput: string): FileDiff[] {
  * are merged, so the union covers exactly the lines the raw hunks covered —
  * coalescing can never widen a range into a symbol the hunks did not touch.
  */
-export function coalesceHunks<T extends GraphLineRange>(hunks: T[]): GraphLineRange[] {
+export function coalesceHunks(hunks: readonly GraphLineRange[]): GraphLineRange[] {
   if (hunks.length === 0) return [];
   const sorted = [...hunks].sort((a, b) => a.startLine - b.startLine);
-  const merged: DiffHunk[] = [{ ...sorted[0] }];
+  const merged: GraphLineRange[] = [{ ...sorted[0] }];
   for (let i = 1; i < sorted.length; i++) {
     const last = merged[merged.length - 1];
     const next = sorted[i];
@@ -739,12 +760,19 @@ export function coalesceHunks<T extends GraphLineRange>(hunks: T[]): GraphLineRa
  * A separate type from {@link DiffHunk} on purpose: the two carry the same two
  * fields in different bases, and mixing them is exactly the #2377 bug — every
  * symbol shifts one line and an edit to a symbol's last line reports nothing
- * changed. The distinct name means a 1-based hunk cannot reach
- * {@link hunksOverlapRange} without a conversion in between.
+ * changed. The phantom `lineBase` field is what makes that distinction real to
+ * the compiler: two OPTIONAL properties with incompatible literal types are
+ * mutually unassignable, so a value typed {@link DiffHunk} cannot reach
+ * {@link hunksOverlapRange} without a conversion in between, while a bare
+ * `{ startLine, endLine }` literal still satisfies both and no construction
+ * site needs a cast. The brand catches plumbing that passes the wrong array,
+ * not a range a caller built by hand out of 1-based numbers.
  */
 export interface GraphLineRange {
   startLine: number;
   endLine: number;
+  /** Phantom brand, never set — see above. */
+  readonly lineBase?: 'graph0';
 }
 
 /**

@@ -7,7 +7,7 @@ import type { CsharpStructureLineScanner } from './languages/csharp/namespace-si
 
 import { isDev } from './utils/env.js';
 
-import { mapConcurrent } from '../lbug/query-batch.js';
+import { mapConcurrent } from '../../lib/utils.js';
 import { logger } from '../logger.js';
 // ============================================================================
 // LANGUAGE-SPECIFIC CONFIG TYPES
