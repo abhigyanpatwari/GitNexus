@@ -15,6 +15,15 @@
  *
  * The fake engine below answers from the bound parameters, so these tests fail
  * if a list ever goes back into the query text.
+ *
+ * SCOPE — mock for shape, engine for semantics. A fake that answers on
+ * `query.includes(...)` can pin what the query ASKS FOR; it cannot pin what
+ * LadybugDB does with it, and pretending otherwise is how two bugs shipped past
+ * a green suite on this branch (a `--` comment the engine rejects at PREPARE,
+ * and an `ORDER BY` whose second key the engine drops). Anything that depends
+ * on the engine's behavior is asserted in
+ * `test/integration/wiki-graph-queries-engine.test.ts` instead. What stays here
+ * is the query text, the parameter binding, and the row→object mapping.
  */
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 
@@ -55,6 +64,26 @@ type Edge = { fromFile: string; fromName: string; toFile?: string; toName: strin
 const DISTANT_CALLER = MODULE_FILES[0];
 const DISTANT_CALLEE = MODULE_FILES[FILE_COUNT - 10];
 
+/**
+ * Mirrors the private `CALL_EDGE_LIMIT` in graph-queries.ts. Not exported there
+ * on purpose — it exists only because `formatCallEdges` (prompts.ts) slices to
+ * 30 — so this suite restates it and fails loudly if the two ever diverge.
+ */
+const CALL_EDGE_LIMIT = 30;
+
+/**
+ * More intra-module edges than `CALL_EDGE_LIMIT` (30), so the LIMIT the query
+ * carries actually has something to cut. With the two hand-written edges below
+ * the intra arm matches 42 rows; before these existed it matched 2, and no test
+ * could tell a query that limits from one that doesn't.
+ */
+const BULK_EDGES: Edge[] = Array.from({ length: 40 }, (_, i) => ({
+  fromFile: MODULE_FILES[i % 5],
+  fromName: `bulk${String(i).padStart(2, '0')}`,
+  toFile: MODULE_FILES[(i % 5) + 5],
+  toName: 'sink',
+}));
+
 const EDGES: Edge[] = [
   // Inside the module, with the two ends far apart in the file list.
   { fromFile: DISTANT_CALLER, fromName: 'aFn', toFile: DISTANT_CALLEE, toName: 'zFn' },
@@ -64,19 +93,38 @@ const EDGES: Edge[] = [
   // Genuinely leaving / entering the module.
   { fromFile: MODULE_FILES[4], fromName: 'outbound', toFile: OUTSIDE_A, toName: 'extFn' },
   { fromFile: OUTSIDE_B, fromName: 'extCaller', toFile: MODULE_FILES[6], toName: 'entryFn' },
+  ...BULK_EDGES,
 ];
 
-type ProcessFixture = { id: string; label: string; stepCount: number; files: string[] };
+/**
+ * `label`/`type` are nullable here because the columns are: a Process row can
+ * carry a NULL `heuristicLabel` or an EMPTY one, and the two take different
+ * paths through `toProcessHeader`. `??` falls back only for the NULL; the `||`
+ * it replaced also swallowed the empty string and reported the process id in
+ * its place.
+ */
+type ProcessFixture = {
+  id: string;
+  label: string | null;
+  type: string | null;
+  stepCount: number;
+  files: string[];
+};
 
 const PROCESSES: ProcessFixture[] = [
-  { id: 'p-top', label: 'Top', stepCount: 99, files: [MODULE_FILES[FILE_COUNT - 1]] },
-  { id: 'p-mid', label: 'Mid', stepCount: 42, files: [MODULE_FILES[0]] },
+  { id: 'p-top', label: 'Top', type: 'flow', stepCount: 99, files: [MODULE_FILES[FILE_COUNT - 1]] },
+  { id: 'p-mid', label: 'Mid', type: 'flow', stepCount: 42, files: [MODULE_FILES[0]] },
   ...Array.from({ length: 12 }, (_, i) => ({
     id: `p-${String(i).padStart(2, '0')}`,
     label: `Flow ${i}`,
+    type: 'flow',
     stepCount: i,
     files: [MODULE_FILES[i]],
   })),
+  // Parked outside the module so the assertions above keep their exact
+  // expectations; reached through `getProcessesForFiles([OUTSIDE_A])`.
+  { id: 'p-null', label: null, type: null, stepCount: 2, files: [OUTSIDE_A] },
+  { id: 'p-empty', label: '', type: '', stepCount: 1, files: [OUTSIDE_A] },
 ];
 
 // ─── Fake engine, answering from the BOUND parameters ─────────────────────
@@ -119,17 +167,48 @@ function answerCallEdges(query: string, paths: string[]): QueryRow[] {
 function answerProcessHeaders(query: string, paths: string[]): QueryRow[] {
   const limit = Number(/LIMIT (\d+)/.exec(query)?.[1]);
   return PROCESSES.filter((p) => p.files.some((f) => paths.includes(f)))
-    .map((p) => ({ id: p.id, label: p.label, type: 'flow', stepCount: p.stepCount }))
+    .map((p) => ({ id: p.id, label: p.label, type: p.type, stepCount: p.stepCount }))
     .sort((a, b) => b.stepCount - a.stepCount || ordinal(a.id, b.id))
     .slice(0, limit);
 }
 
+/**
+ * LadybugDB returns a node's label as a SCALAR string, so `labels(s)[0]` is a
+ * 1-based character subscript on it — out of range, hence ''. `labels(s)[1]`
+ * would be 'F'. Modelling that is what lets this suite see the regression that
+ * described all 5,027 exported symbols to the LLM as `name ()`; the fake used
+ * to hardcode 'Function' and could observe neither the bug nor the fix.
+ */
+const projectLabel = (query: string, label: string): string => {
+  const subscript = /labels\(\w+\)\[(\d+)\]/.exec(query)?.[1];
+  const index = Number(subscript);
+  return subscript === undefined ? label : (label[index - 1] ?? '');
+};
+
+/**
+ * The seeded arrival order of each process's steps: 2, then 0, then 1.
+ *
+ * Deliberately NOT ascending, and deliberately including 0. The fake used to
+ * hand back rows already sorted per pid, which is why this suite could see
+ * neither the `ORDER BY pid, r.step` regression nor its fix — an assertion that
+ * passes whatever the query says is worth nothing. The engine's actual sort is
+ * pinned in test/integration/wiki-graph-queries-engine.test.ts; what a scrambled
+ * fake pins HERE is that `withSteps` groups the rows without reordering them,
+ * so the trace a wiki page prints is exactly the one the engine returned.
+ */
+const SEEDED_STEP_ORDER = [2, 0, 1];
+
 /** One row per (process, step), the shape the grouped step query returns. */
-function answerProcessSteps(ids: string[]): QueryRow[] {
-  return ids.flatMap((pid) => [
-    { pid, name: `${pid}-step1`, filePath: MODULE_FILES[0], type: 'Function', step: 1 },
-    { pid, name: `${pid}-step2`, filePath: MODULE_FILES[1], type: 'Function', step: 2 },
-  ]);
+function answerProcessSteps(query: string, ids: string[]): QueryRow[] {
+  return SEEDED_STEP_ORDER.flatMap((step) =>
+    ids.map((pid) => ({
+      pid,
+      name: `${pid}-step${step}`,
+      filePath: MODULE_FILES[step],
+      type: projectLabel(query, 'Function'),
+      step,
+    })),
+  );
 }
 
 beforeEach(() => {
@@ -138,7 +217,7 @@ beforeEach(() => {
   executeParameterizedMock.mockImplementation(
     async (_repo: string, query: string, params: Record<string, unknown>) => {
       seen.push({ query, params });
-      if (query.includes('p.id IN $ids')) return answerProcessSteps(params.ids as string[]);
+      if (query.includes('p.id IN $ids')) return answerProcessSteps(query, params.ids as string[]);
       const paths = (params.paths ?? []) as string[];
       if (query.includes('STEP_IN_PROCESS')) return answerProcessHeaders(query, paths);
       return answerCallEdges(query, paths);
@@ -183,10 +262,29 @@ describe('#2915 wiki graph queries bind their file list', () => {
     expect(edges.map((e) => e.toFile)).not.toContain(OUTSIDE_A);
   });
 
-  it('returns intra-module edges in a host-independent order', async () => {
+  it('asks the engine for the intra-module window too, not a JS sort', async () => {
+    // This used to assert that the returned edges were sorted — which the JS
+    // `.sort()` this replaced did, and which the 2-edge fixture satisfied either
+    // way. The ordering now lives in Cypher, so the property worth pinning is
+    // that the query carries it, exactly as for the inter-module sibling below.
+    await getIntraModuleCallEdges(MODULE_FILES);
+
+    const [call] = callEdgeQueries();
+    expect(call.query).toContain('ORDER BY fromName, toName, fromFile, toFile');
+    expect(call.query).toContain(`LIMIT ${CALL_EDGE_LIMIT}`);
+  });
+
+  it('returns the engine-cut window, without re-expanding it in JS', async () => {
     const edges = await getIntraModuleCallEdges(MODULE_FILES);
 
-    expect(edges.map((e) => e.fromName)).toEqual([...edges.map((e) => e.fromName)].sort());
+    // 42 edges match the intra arm; the query's LIMIT is the only reason 30
+    // come back. `aFn` and `bFn` sort ahead of every `bulkNN`.
+    expect(edges).toHaveLength(CALL_EDGE_LIMIT);
+    expect(edges.map((e) => e.fromName)).toEqual([
+      'aFn',
+      'bFn',
+      ...BULK_EDGES.slice(0, CALL_EDGE_LIMIT - 2).map((e) => e.fromName),
+    ]);
   });
 
   it('drops a callee with no filePath from the outgoing arm, as `NOT null IN` does', async () => {
@@ -203,7 +301,7 @@ describe('#2915 wiki graph queries bind their file list', () => {
     expect(calls).toHaveLength(2);
     for (const call of calls) {
       expect(call.query).toContain('ORDER BY fromName, toName, fromFile, toFile');
-      expect(call.query).toContain('LIMIT 30');
+      expect(call.query).toContain(`LIMIT ${CALL_EDGE_LIMIT}`);
       expect(call.params.paths).toEqual(MODULE_FILES);
     }
   });
@@ -230,11 +328,51 @@ describe('#2915 wiki graph queries bind their file list', () => {
     const stepQueries = seen.filter((q) => q.query.includes('p.id IN $ids'));
     expect(stepQueries).toHaveLength(1);
     expect(stepQueries[0].params.ids).toEqual(['p-top', 'p-mid', 'p-11']);
-    // Each trace goes back to its own process, in step order.
+    // Rows arrive interleaved across the three processes; each trace still goes
+    // back to its OWN process — that is the grouping, and it is separate from
+    // the ordering asserted below.
     expect(processes.map((p) => p.steps.map((s) => s.name))).toEqual([
-      ['p-top-step1', 'p-top-step2'],
-      ['p-mid-step1', 'p-mid-step2'],
-      ['p-11-step1', 'p-11-step2'],
+      ['p-top-step2', 'p-top-step0', 'p-top-step1'],
+      ['p-mid-step2', 'p-mid-step0', 'p-mid-step1'],
+      ['p-11-step2', 'p-11-step0', 'p-11-step1'],
+    ]);
+  });
+
+  it('delegates the step order to Cypher and reorders nothing in JS', async () => {
+    const processes = await getProcessesForFiles(MODULE_FILES, 1);
+
+    // The engine is asked to sort by `step` ALONE. Leading the sort with `pid` —
+    // the same property the `IN` list matches on — makes LadybugDB drop the
+    // second key and return insertion order; that shipped once, and every mocked
+    // test passed. The real sort is exercised in
+    // test/integration/wiki-graph-queries-engine.test.ts.
+    const [stepQuery] = seen.filter((q) => q.query.includes('p.id IN $ids'));
+    expect(stepQuery.query).toContain('ORDER BY step');
+    expect(stepQuery.query).not.toContain('ORDER BY pid');
+
+    // And the rows come out exactly as the engine handed them over: the fake
+    // emits 2, 0, 1, so any JS re-sort added here would break this.
+    expect(processes[0].steps.map((s) => s.step)).toEqual(SEEDED_STEP_ORDER);
+  });
+
+  it('reads the step label and number off the named columns', async () => {
+    const processes = await getProcessesForFiles(MODULE_FILES, 1);
+
+    // `labels(s)`, not `labels(s)[0]` — the subscript is an out-of-range
+    // character index on a scalar string, so every step's type rendered as ''.
+    expect(processes[0].steps.map((s) => s.type)).toEqual(['Function', 'Function', 'Function']);
+    // A step genuinely numbered 0 keeps its own number.
+    expect(processes[0].steps.map((s) => s.step)).toContain(0);
+  });
+
+  it('falls back for a null label but keeps an empty one', async () => {
+    const processes = await getProcessesForFiles([OUTSIDE_A], 2);
+
+    // `??`, not `||`. The NULL columns fall back to the id and 'unknown'; the
+    // EMPTY ones are the process's own values and `||` silently replaced them.
+    expect(processes.map((p) => ({ id: p.id, label: p.label, type: p.type }))).toEqual([
+      { id: 'p-null', label: 'p-null', type: 'unknown' },
+      { id: 'p-empty', label: '', type: '' },
     ]);
   });
 

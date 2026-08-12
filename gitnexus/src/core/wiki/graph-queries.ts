@@ -13,12 +13,16 @@ import {
   touchRepo,
   pinRepo,
 } from '../lbug/pool-adapter.js';
-import { compareCodeUnits } from '../../lib/utils.js';
 
 const REPO_ID = '__wiki__';
 
-/** Rows kept by {@link getInterModuleCallEdges}, formerly the query's `LIMIT`. */
-const INTER_MODULE_EDGE_LIMIT = 30;
+/**
+ * Rows kept by each call-edge query. One constant rather than one per query:
+ * every such list reaches the LLM through `formatCallEdges` (prompts.ts), whose
+ * `.slice(0, 30)` is the only reason a limit exists at all, so a second number
+ * could only ever drift from it.
+ */
+const CALL_EDGE_LIMIT = 30;
 
 /**
  * Touch the wiki DB connection to prevent idle timeout during long LLM calls.
@@ -65,47 +69,45 @@ export interface ProcessInfo {
 type ProcessHeader = Omit<ProcessInfo, 'steps'>;
 
 /**
- * One result row. The pooled adapter yields rows keyed by column alias, and
- * every mapper here falls back to the positional form, so the row type has to
- * admit both.
+ * One result row, keyed by its query's `AS` aliases. The adapter hands back
+ * `getAll()`'s `Record<string, LbugValue>` — alias keys only, never the
+ * positional form these mappers used to fall back to — so each row type below
+ * names its aliases, and reading a column the query does not return is a
+ * compile error rather than a silent `undefined`.
  */
-type QueryRow = Record<string | number, unknown>;
+type QueryRow<Alias extends string> = Record<Alias, unknown>;
 
-function toCallEdge(row: QueryRow): CallEdge {
+type CallEdgeRow = QueryRow<'fromFile' | 'fromName' | 'toFile' | 'toName'>;
+type ProcessHeaderRow = QueryRow<'id' | 'label' | 'type' | 'stepCount'>;
+type ProcessStepRow = QueryRow<'pid' | 'name' | 'filePath' | 'type' | 'step'>;
+
+function toCallEdge(row: CallEdgeRow): CallEdge {
   return {
-    fromFile: (row.fromFile || row[0]) as string,
-    fromName: (row.fromName || row[1]) as string,
-    toFile: (row.toFile || row[2]) as string,
-    toName: (row.toName || row[3]) as string,
+    fromFile: row.fromFile as string,
+    fromName: row.fromName as string,
+    toFile: row.toFile as string,
+    toName: row.toName as string,
   };
 }
 
-/** The `ORDER BY fromName, toName, fromFile, toFile` of the unbatched form. */
-function compareCallEdges(a: CallEdge, b: CallEdge): number {
-  return (
-    compareCodeUnits(a.fromName, b.fromName) ||
-    compareCodeUnits(a.toName, b.toName) ||
-    compareCodeUnits(a.fromFile, b.fromFile) ||
-    compareCodeUnits(a.toFile, b.toFile)
-  );
-}
-
-function toProcessHeader(row: QueryRow): ProcessHeader {
-  const id = (row.id || row[0]) as string;
+// The defaults below use `??`, not `||`: only an absent property falls back, so
+// a process genuinely labelled '' or a step numbered 0 keeps its own value.
+function toProcessHeader(row: ProcessHeaderRow): ProcessHeader {
+  const id = row.id as string;
   return {
     id,
-    label: (row.label || row[1] || id) as string,
-    type: (row.type || row[2] || 'unknown') as string,
-    stepCount: (row.stepCount || row[3] || 0) as number,
+    label: (row.label as string | null) ?? id,
+    type: (row.type as string | null) ?? 'unknown',
+    stepCount: (row.stepCount as number | null) ?? 0,
   };
 }
 
-function toProcessStep(row: QueryRow): ProcessInfo['steps'][number] {
+function toProcessStep(row: ProcessStepRow): ProcessInfo['steps'][number] {
   return {
-    step: (row.step || row[3] || 0) as number,
-    name: (row.name || row[0]) as string,
-    filePath: (row.filePath || row[1]) as string,
-    type: (row.type || row[2]) as string,
+    step: (row.step as number | null) ?? 0,
+    name: row.name as string,
+    filePath: row.filePath as string,
+    type: row.type as string,
   };
 }
 
@@ -113,20 +115,32 @@ function toProcessStep(row: QueryRow): ProcessInfo['steps'][number] {
  * Attach each header's full step trace, in one query for the whole set.
  *
  * One query per process cost 105ms for 20 processes against this repo's index;
- * grouping them on `p.id IN $ids` costs 13ms. `ORDER BY pid, r.step` keeps each
- * trace in step order, so the rows arrive already grouped.
+ * grouping them on `p.id IN $ids` costs 13ms. `stepsById` below does the
+ * grouping, so the rows need not arrive grouped — only in step order.
+ *
+ * `ORDER BY step`, and deliberately not `ORDER BY pid, step`: leading the sort
+ * with the same property the `IN` list matches on makes the engine stop after
+ * that key, and the trace comes back in insertion order (2,7,1,3,4,5,6 for
+ * `proc_1_incrementalupdate` on this repo's index). The identical query with
+ * `p.id = '…'` sorts fine, as does this one — a global sort by `step` keeps
+ * each process's own rows ascending, which is all the grouping needs.
+ *
+ * `labels(s)`, not `labels(s)[0]`: the engine returns a node's label as a
+ * scalar string, and subscripting a string is 1-based over its characters, so
+ * `[0]` was always '' and `[1]` would have been 'F'. Verified against this
+ * repo's index — `labels(s)` yields 'Function'.
  */
 async function withSteps(headers: ProcessHeader[]): Promise<ProcessInfo[]> {
   if (headers.length === 0) return [];
 
-  const stepRows = await executeParameterized(
+  const stepRows: ProcessStepRow[] = await executeParameterized(
     REPO_ID,
     `
       MATCH (s)-[r:CodeRelation {type: 'STEP_IN_PROCESS'}]->(p:Process)
       WHERE p.id IN $ids
       RETURN p.id AS pid, s.name AS name, s.filePath AS filePath,
-             labels(s)[0] AS type, r.step AS step
-      ORDER BY pid, r.step
+             labels(s) AS type, r.step AS step
+      ORDER BY step
     `,
     { ids: headers.map((header) => header.id) },
   );
@@ -163,33 +177,33 @@ export async function closeWikiDb(): Promise<void> {
  * longer have a direct File→DEFINES edge.
  */
 export async function getFilesWithExports(): Promise<FileWithExports[]> {
-  const rows = await executeQuery(
+  // `labels(n)`, not `labels(n)[0]` — see withSteps. `prompts.ts` renders this
+  // type as `name (type)`, so the subscript printed every symbol as `name ()`.
+  const rows: Array<QueryRow<'filePath' | 'name' | 'type'>> = await executeQuery(
     REPO_ID,
     `
     MATCH (f:File)-[:CodeRelation {type: 'DEFINES'}]->(n)
     WHERE n.isExported = true
-    RETURN f.filePath AS filePath, n.name AS name, labels(n)[0] AS type
+    RETURN f.filePath AS filePath, n.name AS name, labels(n) AS type
     UNION
     MATCH (f:File)-[:CodeRelation {type: 'DEFINES'}]->(c)
           -[mr:CodeRelation]->(n)
     WHERE mr.type IN ['HAS_METHOD', 'HAS_PROPERTY'] AND n.isExported = true
-    RETURN f.filePath AS filePath, n.name AS name, labels(n)[0] AS type
+    RETURN f.filePath AS filePath, n.name AS name, labels(n) AS type
     ORDER BY filePath
   `,
   );
 
   const fileMap = new Map<string, FileWithExports>();
   for (const row of rows) {
-    const fp = row.filePath || row[0];
-    const name = row.name || row[1];
-    const type = row.type || row[2];
+    const filePath = row.filePath as string;
 
-    let entry = fileMap.get(fp);
+    let entry = fileMap.get(filePath);
     if (!entry) {
-      entry = { filePath: fp, symbols: [] };
-      fileMap.set(fp, entry);
+      entry = { filePath, symbols: [] };
+      fileMap.set(filePath, entry);
     }
-    entry.symbols.push({ name, type });
+    entry.symbols.push({ name: row.name as string, type: row.type as string });
   }
 
   return Array.from(fileMap.values());
@@ -199,7 +213,7 @@ export async function getFilesWithExports(): Promise<FileWithExports[]> {
  * Get all files tracked in the graph (including those with no exports).
  */
 export async function getAllFiles(): Promise<string[]> {
-  const rows = await executeQuery(
+  const rows: Array<QueryRow<'filePath'>> = await executeQuery(
     REPO_ID,
     `
     MATCH (f:File)
@@ -207,14 +221,14 @@ export async function getAllFiles(): Promise<string[]> {
     ORDER BY f.filePath
   `,
   );
-  return rows.map((r) => r.filePath || r[0]);
+  return rows.map((row) => row.filePath as string);
 }
 
 /**
  * Get inter-file call edges (calls between different files).
  */
 export async function getInterFileCallEdges(): Promise<CallEdge[]> {
-  const rows = await executeQuery(
+  const rows: CallEdgeRow[] = await executeQuery(
     REPO_ID,
     `
     MATCH (a)-[:CodeRelation {type: 'CALLS'}]->(b)
@@ -224,12 +238,7 @@ export async function getInterFileCallEdges(): Promise<CallEdge[]> {
   `,
   );
 
-  return rows.map((r) => ({
-    fromFile: r.fromFile || r[0],
-    fromName: r.fromName || r[1],
-    toFile: r.toFile || r[2],
-    toName: r.toName || r[3],
-  }));
+  return rows.map(toCallEdge);
 }
 
 /**
@@ -244,21 +253,31 @@ export async function getIntraModuleCallEdges(filePaths: string[]): Promise<Call
   // `coalesceHunks` in src/storage/git.ts). As a parameter the text is constant
   // at any list length, and measured ~3x faster than the equivalent literal, so
   // both arms of the predicate can stay in Cypher where the engine can use them.
-  const rows = await executeParameterized(
+  // Ordered and cut in Cypher, like getInterModuleCallEdges below and for the
+  // same two reasons. Determinism: the original had no ORDER BY, so the engine's
+  // arbitrary order decided which 30 `formatCallEdges` (prompts.ts) kept, and
+  // the cut landed on a different subset per machine (#2787). Volume: a root
+  // parent page passes every file under it, i.e. the whole repo — over 2298
+  // paths this query returned 18299 rows in 1064ms to use 30 of them, against
+  // 30 rows in 97ms with the LIMIT below, same leading rows.
+  //
+  // The engine orders by UTF-8 bytes where the JS sort this replaces compared
+  // UTF-16 code units — identical for ASCII identifiers, divergent only above
+  // the BMP, and the sibling already relies on the engine, so the two agree.
+  const rows: CallEdgeRow[] = await executeParameterized(
     REPO_ID,
     `
     MATCH (a)-[:CodeRelation {type: 'CALLS'}]->(b)
     WHERE a.filePath IN $paths AND b.filePath IN $paths
     RETURN DISTINCT a.filePath AS fromFile, a.name AS fromName,
            b.filePath AS toFile, b.name AS toName
+    ORDER BY fromName, toName, fromFile, toFile
+    LIMIT ${CALL_EDGE_LIMIT}
   `,
     { paths: filePaths },
   );
 
-  // Sorted, unlike the original, which had no ORDER BY and so returned whatever
-  // the engine produced: `formatCallEdges` (prompts.ts) keeps only the first 30,
-  // and an unordered cut keeps a different subset per machine (#2787).
-  return rows.map(toCallEdge).sort(compareCallEdges);
+  return rows.map(toCallEdge);
 }
 
 /**
@@ -287,10 +306,10 @@ export async function getInterModuleCallEdges(filePaths: string[]): Promise<{
     RETURN DISTINCT a.filePath AS fromFile, a.name AS fromName,
            b.filePath AS toFile, b.name AS toName
     ORDER BY fromName, toName, fromFile, toFile
-    LIMIT ${INTER_MODULE_EDGE_LIMIT}
+    LIMIT ${CALL_EDGE_LIMIT}
   `;
 
-  const [outRows, inRows] = await Promise.all([
+  const [outRows, inRows]: [CallEdgeRow[], CallEdgeRow[]] = await Promise.all([
     executeParameterized(REPO_ID, edgeQuery('a.filePath IN $paths AND NOT b.filePath IN $paths'), {
       paths: filePaths,
     }),
@@ -311,7 +330,7 @@ export async function getProcessesForFiles(filePaths: string[], limit = 5): Prom
 
   // Bound list, as in getIntraModuleCallEdges, so `LIMIT` can stay in Cypher
   // over the whole set instead of being applied per batch and re-merged.
-  const procRows = await executeParameterized(
+  const procRows: ProcessHeaderRow[] = await executeParameterized(
     REPO_ID,
     `
     MATCH (s)-[r:CodeRelation {type: 'STEP_IN_PROCESS'}]->(p:Process)
@@ -331,7 +350,7 @@ export async function getProcessesForFiles(filePaths: string[], limit = 5): Prom
  * Get all processes in the graph (for overview page).
  */
 export async function getAllProcesses(limit = 20): Promise<ProcessInfo[]> {
-  const procRows = await executeQuery(
+  const procRows: ProcessHeaderRow[] = await executeQuery(
     REPO_ID,
     `
     MATCH (p:Process)

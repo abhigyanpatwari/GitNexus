@@ -99,6 +99,15 @@ export default defineConfig({
             'test/integration/lbug-delete-nodes-for-files.test.ts',
             'test/integration/lbug-query-importers-batch.test.ts',
             'test/integration/impact-ambiguous-blast-radius.test.ts',
+            // #2915. Native @ladybugdb/core via withTestLbugDB(poolAdapter:true),
+            // and it drives detect_changes over a real git repo — the mmap
+            // file-lock exposure this project serializes (TESTING.md § Vitest
+            // projects), on the Windows/macOS platforms #2915 was reported from.
+            'test/integration/detect-changes-path-anchoring.test.ts',
+            // #2915. Native @ladybugdb/core via withTestLbugDB(poolAdapter:true) —
+            // the wiki's graph queries executed by a real engine rather than a
+            // fake that answers on `query.includes(...)`.
+            'test/integration/wiki-graph-queries-engine.test.ts',
             'test/unit/incremental-dirty-recovery.test.ts',
             'test/unit/incremental-orchestration.test.ts',
             // #2841. Native @ladybugdb/core: it runs real analyses, reopens the
@@ -164,6 +173,8 @@ export default defineConfig({
             'test/integration/lbug-delete-nodes-for-files.test.ts',
             'test/integration/lbug-query-importers-batch.test.ts',
             'test/integration/impact-ambiguous-blast-radius.test.ts',
+            'test/integration/detect-changes-path-anchoring.test.ts',
+            'test/integration/wiki-graph-queries-engine.test.ts',
             'test/unit/incremental-dirty-recovery.test.ts',
             'test/unit/incremental-orchestration.test.ts',
             // Excluded here because it is included by `lbug-db` above; a file
