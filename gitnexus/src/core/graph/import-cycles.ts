@@ -129,13 +129,18 @@ export const IMPORT_CYCLE_LIMIT = 10_000;
  * cycles 50k files long, and 10k of those exhaust the heap. One bound cannot
  * see both, which is why there are two.
  *
- * Measured on this implementation, worst case is ~7M units/second — the
- * mutual-import chain, where every unit of budget buys a fresh SCC pass over a
- * barely-smaller component. 10M is therefore ~1.5s of enumeration, and it sits
- * far above what real import graphs cost: a 100k-file acyclic graph spends
- * 0.3M, and 20k independent three-file tangles spend 1.1M. Only a component
- * both large and densely tangled reaches it, and that component's honest answer
- * is "too tangled to enumerate", not a silently-shortened list.
+ * Measured on this implementation against the mutual-import chain — the shape
+ * that spends the whole budget, where every unit buys a fresh SCC pass over a
+ * barely-smaller component — the rate is 2.9-5.2M units/second (5.2M at 10k
+ * nodes, 2.9M at 50k; it falls as the component grows). So 10M buys roughly
+ * 1.9-3.5s of enumeration on this hardware. That is the one shape where a user
+ * waits, and it is the number to re-measure if this constant is ever moved.
+ *
+ * It sits far above what real import graphs cost: a 100k-file acyclic graph
+ * spends 220k units, and 20k independent three-file tangles spend 576k. Only a
+ * component both large and densely tangled reaches the cap, and that
+ * component's honest answer is "too tangled to enumerate", not a
+ * silently-shortened list.
  */
 export const IMPORT_CYCLE_WORK_LIMIT = 10_000_000;
 
@@ -386,7 +391,12 @@ function enumerateCircuitsFrom(
   const blocked = new Set<string>([root]);
   const blockedBy = new Map<string, Set<string>>();
   const path = [root];
-  const frames = [{ node: root, nextIndex: 0, foundCircuit: false }];
+  // `neighbors` rides the frame: the list is fixed for a node, while this loop
+  // re-enters per DFS STEP — ~2.6M iterations against 395k pushes on this
+  // repository, so looking it up per iteration re-hashes the path each time.
+  const frames = [
+    { node: root, nextIndex: 0, foundCircuit: false, neighbors: adjacency.get(root) ?? [] },
+  ];
 
   while (frames.length > 0) {
     // Budget spent: return rather than unwind. Everything this function owns is
@@ -395,7 +405,7 @@ function enumerateCircuitsFrom(
     // on exactly the graphs already judged too expensive.
     if (search.exceeded !== null) return;
     const frame = frames[frames.length - 1];
-    const neighbors = adjacency.get(frame.node) ?? [];
+    const neighbors = frame.neighbors;
 
     if (frame.nextIndex < neighbors.length) {
       const next = neighbors[frame.nextIndex];
@@ -433,7 +443,12 @@ function enumerateCircuitsFrom(
       if (!blocked.has(next)) {
         blocked.add(next);
         path.push(next);
-        frames.push({ node: next, nextIndex: 0, foundCircuit: false });
+        frames.push({
+          node: next,
+          nextIndex: 0,
+          foundCircuit: false,
+          neighbors: adjacency.get(next) ?? [],
+        });
       }
       continue;
     }
@@ -450,9 +465,16 @@ function enumerateCircuitsFrom(
     } else {
       for (const next of neighbors) {
         if (!allowed.has(next)) continue;
-        const waiting = blockedBy.get(next) ?? new Set<string>();
+        // `set` only when the entry is created: re-setting an existing key
+        // re-hashes the path string for no effect, and this runs once per
+        // out-edge of every unwound frame — measured at 1.06M redundant
+        // `Map.set` calls on this repository's own import graph.
+        let waiting = blockedBy.get(next);
+        if (waiting === undefined) {
+          waiting = new Set<string>();
+          blockedBy.set(next, waiting);
+        }
         waiting.add(frame.node);
-        blockedBy.set(next, waiting);
       }
     }
     if (frames.length > 0 && frame.foundCircuit) {
