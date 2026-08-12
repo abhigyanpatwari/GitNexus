@@ -139,15 +139,24 @@ export type ParsedImport =
        * That field is a resolution-NAMESPACE category (PHP's `use function` /
        * `use const` split), it exists only on this variant, and it says "the
        * thing imported is a type". A symbol being a type says nothing about
-       * whether the import statement is erased: TypeScript resolves a plain
-       * `import { SomeInterface }` at runtime unless `isolatedModules` +
-       * explicit `type` say otherwise, and PHP erases nothing at all. This
-       * field is about the STATEMENT's runtime existence, not the symbol's
+       * whether the import STATEMENT is erased, and PHP erases nothing at all.
+       * This field is about the statement's runtime existence, not the symbol's
        * category.
        *
        * Set only by providers whose syntax marks it. Absent everywhere else,
        * which reads as "not erased" — the fail-safe direction, since it only
        * makes `check --cycles` over-report.
+       *
+       * That fail-safe matters more than it first looks, because an explicit
+       * `type` is a SUFFICIENT signal of erasure and not a necessary one. With
+       * neither `verbatimModuleSyntax` nor `importsNotUsedAsValues: preserve`
+       * set — this repo sets neither — `tsc` also elides a plain
+       * `import { SomeInterface }` whose bindings are every one of them used in
+       * type position. Those statements are erased at run time and carry no
+       * marker, so they stay tagged as initializing and `check --cycles` can
+       * still report a cycle that cannot exist. Closing that gap needs
+       * whole-program binding USE information, not import syntax, which is why
+       * this field stops at what the syntax states.
        */
       readonly typeOnly?: boolean;
       /**

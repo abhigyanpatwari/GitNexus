@@ -572,7 +572,7 @@ describe('LocalBackend.callTool', () => {
   });
 
   it('degrades to component representatives rather than a shortened cycle list', async () => {
-    // A 9-file complete import graph has 109,600 elementary cycles, past
+    // A 9-file complete import graph has 125,664 elementary cycles, past
     // IMPORT_CYCLE_LIMIT. The response must NOT carry a capped `cycles` array
     // that reads as complete -- but it must still be actionable, so it carries
     // one representative per component, `truncated`, and an `enumeration` field
@@ -602,7 +602,7 @@ describe('LocalBackend.callTool', () => {
   });
 
   it('names every cyclic component when capped, including ones never enumerated', async () => {
-    // A 9-file complete graph (109,600 cycles) blows the cap long before the
+    // A 9-file complete graph (125,664 cycles) blows the cap long before the
     // disjoint y/z tangle is ever reached. The representative list must still
     // name BOTH components -- it comes from the decomposition, not from the
     // abandoned enumeration, so a tangle the search never got to is still
