@@ -22,8 +22,8 @@ import { queryClassBeanMetadata } from './bean-metadata.js';
 import { querySpringAopMetadata } from './aop-metadata.js';
 import { isValidQueryParams } from '../../core/lbug/query-params.js';
 import { toDisplayLine } from './line-display.js';
-import { LBUG_QUERY_BATCH_SIZE, mapConcurrent } from '../../core/lbug/query-batch.js';
-import { chunk } from '../../lib/utils.js';
+import { LBUG_QUERY_BATCH_SIZE } from '../../core/lbug/query-batch.js';
+import { chunk, mapConcurrent } from '../../lib/utils.js';
 import { pathSuffixOf } from './path-predicate.js';
 import { toOneBasedLine } from '../../core/ingestion/utils/line-base.js';
 import { isWalCorruptionError, WAL_RECOVERY_SUGGESTION } from '../../core/lbug/lbug-config.js';
@@ -910,14 +910,41 @@ export function resolveWorktreeCwd(repoPath: string, launchCwd: string): string 
 /**
  * Changed symbols listed in one `detect_changes` result.
  *
- * The counts in `summary` are never capped — only the array is, so a repo-wide
- * diff cannot put an unbounded payload on the MCP wire. A truncated result says
- * so in `symbols_truncated`.
+ * The cap applies to the `changed_symbols` ARRAY only: `summary.changed_count`
+ * still reports every symbol the run observed, and a capped result says so in
+ * `truncated`. It bounds that one array, not the whole payload —
+ * `affected_processes` and each entry's `changed_steps` are driven by the full
+ * symbol set, not by this cap, so a repo-wide diff can still return a large
+ * result.
  */
 const DETECT_CHANGES_MAX_LISTED_SYMBOLS = 1000;
 
+/** One row of the `detect_changes` hunk→symbol query (see `detectChanges`). */
+interface ChangedSymbolRow {
+  diffPath: string;
+  id: string;
+  name: string;
+  type: string;
+  filePath: string;
+  startLine: number;
+  endLine: number;
+}
+
 export function buildDetectChangesDiffArgs(scope: string, baseRef?: string): string[] | null {
-  const args = ['diff', '--ignore-cr-at-eol'];
+  // The prefix flags pin the `a/` + `b/` forms `parseDiffHunks` matches on.
+  // Without them git honours the user's config: `diff.noprefix` emits
+  // `+++ f.py` and `diff.mnemonicPrefix` emits `+++ w/f.py`, either of which
+  // parses to ZERO files — the user's git config silently turning the
+  // pre-commit gate into "No changes detected." (#2915). Use the src/dst pair,
+  // not `--default-prefix`, which needs git >= 2.42. `--no-ext-diff` stops a
+  // configured external diff driver from replacing the unified output we parse.
+  const args = [
+    'diff',
+    '--ignore-cr-at-eol',
+    '--no-ext-diff',
+    '--src-prefix=a/',
+    '--dst-prefix=b/',
+  ];
   switch (scope) {
     case 'staged':
       return [...args, '--staged', '-U0'];
@@ -5157,15 +5184,23 @@ export class LocalBackend {
     const fileDiffs: FileDiff[] = parseDiffHunks(diffOutput);
 
     if (fileDiffs.length === 0) {
+      // Git printed a diff but none of it parsed: the `+++ b/` headers were not
+      // where `parseDiffHunks` looks. That is a PARSE failure, not a clean tree,
+      // and the clean branch below would report it to the pre-commit gate as
+      // `risk_level:'none'`, no `partial`, exit 0 — a false all-clear (#2915).
+      const parseFailed = diffOutput.trim().length > 0;
       return {
         summary: {
           changed_count: 0,
           affected_count: 0,
-          risk_level: 'none',
-          message: 'No changes detected.',
+          risk_level: parseFailed ? 'unknown' : 'none',
+          message: parseFailed
+            ? 'Could not parse the git diff output — no file headers recognised.'
+            : 'No changes detected.',
         },
         changed_symbols: [],
         affected_processes: [],
+        ...(parseFailed && { partial: true }),
       };
     }
 
@@ -5217,64 +5252,129 @@ export class LocalBackend {
     // file across the native boundary — two comparisons per FILE, not per hunk,
     // so #2915 cannot come back, and `hunksOverlapRange` below still rejects
     // the gaps between hunks.
+    //
+    // The FIRST predicate is deliberately REDUNDANT — every row it admits the
+    // correlated `b` match on the next line admits too — and it must stay.
+    // `UNWIND` + an unlabeled `MATCH (n)` compiles to a cross product whose
+    // build side is a scan of the whole node table, and any predicate naming
+    // `b` becomes a STRUCT_EXTRACT filter ABOVE that cross product, where it
+    // can reduce neither the scan nor the set materialised into it (+242 MB for
+    // one batch at 1M nodes, +922 MB for the four in flight, paid even for a
+    // one-file diff — enough to fail with `Buffer manager exception` on a
+    // 268 MB pool). Stated batch-wide and `b`-free it plans as the first filter
+    // under the scan instead: measured 10x less memory, ~20% faster, identical
+    // rows. Safe because it is a provable superset of the correlated form —
+    // `n.filePath = b.path` implies `n.filePath IN $paths`, and
+    // `n.filePath ENDS WITH b.suffix` implies some `$suffixes` entry matches —
+    // so it cannot drop a row the correlated filter keeps.
+    //
+    // `labels(n)`, not `labels(n)[0]`: it returns the label as a scalar STRING,
+    // and subscripting a string is 1-based over its characters, so `[0]` was
+    // always "" and `changed_symbols[].type` never carried a type at all.
     const symbolQuery = `
         UNWIND $bounds AS b
-        MATCH (n) WHERE (n.filePath = b.path OR n.filePath ENDS WITH b.suffix)
+        MATCH (n) WHERE (n.filePath IN $paths OR ANY(s IN $suffixes WHERE n.filePath ENDS WITH s))
+          AND (n.filePath = b.path OR n.filePath ENDS WITH b.suffix)
           AND NOT n.id STARTS WITH 'BasicBlock:'
           AND n.startLine IS NOT NULL AND n.endLine IS NOT NULL
           AND n.startLine <= b.hi AND n.endLine >= b.lo
-        RETURN b.path AS diffPath, n.id AS id, n.name AS name, labels(n)[0] AS type,
+        RETURN b.path AS diffPath, n.id AS id, n.name AS name, labels(n) AS type,
                n.filePath AS filePath, n.startLine AS startLine, n.endLine AS endLine
       `;
 
+    // Batches run concurrently: each `executeParameterized` holds one connection
+    // checked out of the per-repo pool for the duration of its query, which is
+    // the safety rule documented alongside `mapConcurrent` (see the batching
+    // rationale in core/lbug/query-batch.ts) — not the single-query sequential
+    // rule the arm64 macOS module loop below follows.
     const batchResults = await mapConcurrent(
       chunk(bounds, LBUG_QUERY_BATCH_SIZE),
-      (batch) => executeParameterized(repo.lbugPath, symbolQuery, { bounds: batch }),
-      {
-        onError: (error) => {
-          // The symbol query failed: those symbols are missing and the result
-          // would otherwise look like a clean no-op (`changed_count:0`,
-          // `risk_level:'low'`). detect_changes is the pre-commit safety gate,
-          // so flag the result `partial` rather than let a swallowed failure
-          // masquerade as "nothing changed" (#2283).
-          logQueryError('detect-changes:file-symbols', error);
-          queryDegraded = true;
-        },
-      },
+      (batch) =>
+        executeParameterized(repo.lbugPath, symbolQuery, {
+          bounds: batch,
+          // Both halves of the redundant conjunct, derived from the batch in
+          // hand so the prefilter sees exactly the files this query asks about.
+          paths: batch.map((bound) => bound.path),
+          suffixes: batch.map((bound) => bound.suffix),
+        }),
+      { onError: (error) => logQueryError('detect-changes:file-symbols', error) },
+    );
+    // A batch whose query failed comes back `undefined`: those symbols are
+    // missing and the result would otherwise look like a clean no-op
+    // (`changed_count:0`, `risk_level:'low'`). detect_changes is the pre-commit
+    // safety gate, so flag the result `partial` rather than let a swallowed
+    // failure masquerade as "nothing changed" (#2283).
+    if (batchResults.includes(undefined)) queryDegraded = true;
+
+    // Every batch's rows in ONE deterministic order. The query has no ORDER BY,
+    // so row order was the engine's (5 distinct orders across 8 runs on one
+    // connection) — and both the 1000-symbol cut below and the process lookup
+    // read that order, so the same diff produced different output run to run.
+    // Same class as #2787, which this PR also fixes in graph-queries.ts. Sorted
+    // here rather than in Cypher because the rows are already materialised;
+    // (filePath, startLine, id) is a total key, `id` being unique per node.
+    const symbolRows = batchResults.flatMap((rows) => (rows ?? []) as ChangedSymbolRow[]);
+    symbolRows.sort(
+      (a, b) =>
+        compareCodeUnits(String(a.filePath), String(b.filePath)) ||
+        Number(a.startLine) - Number(b.startLine) ||
+        compareCodeUnits(String(a.id), String(b.id)),
     );
 
-    for (const rows of batchResults) {
-      for (const sym of rows ?? []) {
-        const hunks = hunksByPath.get(String(sym.diffPath)) ?? [];
-        if (!hunksOverlapRange(hunks, sym.startLine, sym.endLine)) continue;
-        if (changedSymbols.has(sym.id)) continue;
+    // Prefer the exact path. A detect_changes path is ALWAYS repo-root-relative
+    // (it comes from a `+++ b/` header), so `n.filePath = b.path` is the correct
+    // match and the anchored suffix arm only papers over an index whose root
+    // differs from the git root — where NOTHING matches exactly. Left as an
+    // unconditional OR it also admits whole-segment siblings: editing the root
+    // `README.md` reported symbols from `pkg/README.md` and `eval/README.md`.
+    // So it degrades to a fallback: a path that produced an exact row keeps only
+    // its exact rows, a path that produced none still widens. Decided on the
+    // rows already fetched, so the scan above is still paid exactly once.
+    const exactlyMatchedPaths = new Set(
+      symbolRows.filter((row) => row.filePath === row.diffPath).map((row) => String(row.diffPath)),
+    );
 
-        changedSymbols.set(sym.id, {
-          id: sym.id,
-          name: sym.name,
-          type: sym.type,
-          filePath: sym.filePath,
-          change_type: 'touched',
-        });
-      }
+    for (const sym of symbolRows) {
+      const diffPath = String(sym.diffPath);
+      if (sym.filePath !== sym.diffPath && exactlyMatchedPaths.has(diffPath)) continue;
+      const hunks = hunksByPath.get(diffPath) ?? [];
+      if (!hunksOverlapRange(hunks, sym.startLine, sym.endLine)) continue;
+      if (changedSymbols.has(sym.id)) continue;
+
+      changedSymbols.set(sym.id, {
+        id: sym.id,
+        name: sym.name,
+        type: sym.type,
+        filePath: sym.filePath,
+        change_type: 'touched',
+      });
     }
 
-    // Find affected processes -- single batched query instead of N+1
+    // Find affected processes -- batched queries instead of N+1
     const affectedProcesses = new Map<string, any>();
     if (changedSymbols.size > 0) {
-      const symIds = Array.from(changedSymbols.keys());
-      try {
-        const procs = await executeParameterized(
-          repo.lbugPath,
-          `
+      const processQuery = `
           MATCH (n)-[r:CodeRelation {type: 'STEP_IN_PROCESS'}]->(p:Process)
           WHERE n.id IN $ids
           RETURN n.id AS nodeId, p.id AS pid, p.heuristicLabel AS label,
                  p.processType AS processType, p.stepCount AS stepCount, r.step AS step
-        `,
-          { ids: symIds },
-        );
-        for (const proc of procs) {
+        `;
+      // Chunked, like every other caller-sized id list: this one is bound (not
+      // spliced), but a bound list is still materialised per query — a repo-wide
+      // diff measured 1,238 MB at 100k ids and 4,002 MB at 500k (#2915). The
+      // merge below is a Map upsert keyed by process id, so a process reached
+      // from two chunks simply accumulates its steps.
+      const processBatches = await mapConcurrent(
+        chunk(Array.from(changedSymbols.keys()), LBUG_QUERY_BATCH_SIZE),
+        (ids) => executeParameterized(repo.lbugPath, processQuery, { ids }),
+        { onError: (error) => logQueryError('detect-changes:process-lookup', error) },
+      );
+      // Same reasoning as the symbol query above: a failed chunk drops processes
+      // from the result, so it is `partial` — not the clean "nothing to worry
+      // about" it would otherwise look like.
+      if (processBatches.includes(undefined)) queryDegraded = true;
+      for (const procs of processBatches) {
+        for (const proc of procs ?? []) {
           const nodeId = proc.nodeId || proc[0];
           const pid = proc.pid || proc[1];
           if (!affectedProcesses.has(pid)) {
@@ -5291,15 +5391,19 @@ export class LocalBackend {
             step: proc.step || proc[5],
           });
         }
-      } catch (e) {
-        logQueryError('detect-changes:process-lookup', e);
-        queryDegraded = true;
       }
     }
 
     const processCount = affectedProcesses.size;
-    const risk =
-      processCount === 0
+    // A degraded run cannot rank risk. The ladder below reads `processCount` and
+    // nothing else, and a swallowed failure leaves that count short — usually
+    // zero — so a broken run scored `low` next to its own `partial:true`: a
+    // false all-clear from a pre-commit gate. `unknown` is what the CLI
+    // formatter already prints when a run has no risk level at all
+    // (`tool.detectChanges.unknownRisk`), so no consumer needs a new value.
+    const risk = queryDegraded
+      ? 'unknown'
+      : processCount === 0
         ? 'low'
         : processCount <= 5
           ? 'medium'
@@ -5310,9 +5414,11 @@ export class LocalBackend {
     // A repo-wide diff can touch thousands of symbols, and the whole array goes
     // into one MCP payload (the CLI slices with --limit; an MCP client has no
     // such control). Cap the LISTING, never the counts: `changed_count` stays
-    // the true total, so the risk level, the CLI's "... and N more" line and any
-    // client comparing the two still see the real number. `truncated` is the
-    // key `explain`/`pdg_query`/`trace` already use for a capped window.
+    // the total this run observed (a lower bound when `partial`), so the risk
+    // level, the CLI's "... and N more" line and any client comparing the two
+    // still see that number rather than 1000. `truncated` is the key
+    // `explain`/`pdg_query`/`trace` already use for a capped window. The map was
+    // filled in sorted order, so WHICH 1000 are listed is stable across runs.
     const listedSymbols = Array.from(changedSymbols.values()).slice(
       0,
       DETECT_CHANGES_MAX_LISTED_SYMBOLS,
@@ -5322,8 +5428,14 @@ export class LocalBackend {
       summary: {
         changed_count: changedSymbols.size,
         affected_count: processCount,
-        // Distinct paths, not `fileDiffs.length`: one path can appear twice in a
-        // diff (a rename reported alongside an edit) and must not count twice.
+        // Distinct paths, not `fileDiffs.length`: one path can appear twice in
+        // the PARSED diff and must not count twice. Not from a rename — real git
+        // reports rename+edit as a single `+++ b/` header (checked against
+        // rename+edit, typechange and conflicted trees). The shape that does it
+        // is a file whose own content contains a line starting `++ b/`: under
+        // `-U0` that added line renders as `+++ b/…`, and `parseDiffHunks`
+        // (`git.ts`, matching on `'+++ b/'`) opens a second entry for the same
+        // path. A repo that tracks `.patch` fixtures hits this.
         changed_files: new Set(fileDiffs.map((fileDiff) => fileDiff.filePath)).size,
         risk_level: risk,
       },
@@ -7096,7 +7208,16 @@ export class LocalBackend {
     const CHUNK_SIZE = 100;
     // Max number of chunks to process to avoid unbounded DB round-trips.
     // Configurable via env IMPACT_MAX_CHUNKS, default 10 => max items = 1000
-    const MAX_CHUNKS = parseInt(process.env.IMPACT_MAX_CHUNKS || '10', 10);
+    //
+    // Validated, because an unparseable value INVERTS the cap: `NaN` makes the
+    // `chunksProcessed >= MAX_CHUNKS` guard false forever, so every chunk runs
+    // (`IMPACT_MAX_CHUNKS=all` = unbounded round-trips) and `MAX_CHUNKS *
+    // CHUNK_SIZE` below goes NaN, silencing the truncation signal too. 0 is a
+    // legitimate value (enrich nothing); only a non-integer or negative one
+    // falls back to the default.
+    const parsedMaxChunks = Number.parseInt(process.env.IMPACT_MAX_CHUNKS ?? '', 10);
+    const MAX_CHUNKS =
+      Number.isInteger(parsedMaxChunks) && parsedMaxChunks >= 0 ? parsedMaxChunks : 10;
 
     // `skipEnrichment` (ambiguous #2129 per-candidate probes) bypasses the
     // process/module aggregation passes entirely — those probes need only the
@@ -7304,7 +7425,11 @@ export class LocalBackend {
         }
       };
 
-      // Run module query chunks sequentially (safe on arm64 macOS)
+      // Run THIS query's chunks sequentially (safe on arm64 macOS). The rule is
+      // specific to the #496 crash above, not a file-wide law: concurrent
+      // queries are fine where each holds its own pooled connection (see the
+      // batched detect_changes queries and ~15 other `Promise.all` call sites
+      // here), so scope the claim rather than let it be read as one.
       for (const chunkIds of chunk(allIdsArr, CHUNK_SIZE)) {
         await runModuleChunk(chunkIds);
       }
