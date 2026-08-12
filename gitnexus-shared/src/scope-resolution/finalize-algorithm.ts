@@ -373,6 +373,7 @@ function makeEdgeDrafts(
       targetFile: null,
       targetExportedName: extractExportedName(parsed),
       kind: edgeKindFor(parsed),
+      ...typeOnlyFor(parsed),
       linkStatus: 'unresolved',
     };
     return [
@@ -403,6 +404,7 @@ function makeEdgeDrafts(
         hooks.isNamespaceImport?.(parsed, tf, file.filePath) === true
           ? 'namespace'
           : edgeKindFor(parsed),
+      ...typeOnlyFor(parsed),
     };
     return {
       source: parsed,
@@ -418,6 +420,31 @@ function makeEdgeDrafts(
 function edgeKindFor(parsed: ParsedImport): ImportEdge['kind'] {
   if (parsed.kind === 'wildcard') return 'wildcard-expanded';
   return parsed.kind;
+}
+
+/**
+ * Carry `ParsedImport.typeOnly` onto the edge — the erasure fact `check
+ * --cycles` needs and cannot re-derive, since `kind` is identical for the
+ * erased and the runtime spelling of the same import.
+ *
+ * Returns a spreadable object rather than a `boolean` so an edge that is not
+ * type-only keeps the exact property set it had before this field existed.
+ * Every `finalized` edge is built by spreading `base`, so setting it here is
+ * enough for all of them.
+ */
+function typeOnlyFor(parsed: ParsedImport): { typeOnly?: true } {
+  switch (parsed.kind) {
+    case 'named':
+    case 'alias':
+    case 'namespace':
+    case 'reexport':
+      return parsed.typeOnly === true ? { typeOnly: true } : {};
+    default:
+      // `wildcard` / `side-effect` / both `dynamic-*` kinds have no erased
+      // spelling a provider can report today — see `ParsedImport`'s
+      // `wildcard` variant for why `export type *` is not among them.
+      return {};
+  }
 }
 
 function extractLocalName(parsed: ParsedImport): string {

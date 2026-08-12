@@ -29,7 +29,34 @@
  * Type-only constructs (`import type { X }`, `import { type X }`,
  * `export type { X }`) emit the same kinds as runtime forms — at the
  * TypeScript scope-resolution layer, types and values share the same
- * lookup; runtime-emission is a downstream concern.
+ * lookup, so the KIND is unchanged. They additionally carry an
+ * `@import.type-only` marker, because `tsc` deletes them: no `require` /
+ * `import` for the source module survives in the emitted JavaScript, so
+ * the pair cannot force a module-initialization order. `check --cycles`
+ * is the consumer — see `graph-bridge/imports-to-edges.ts`.
+ *
+ * Both spellings put the `type` keyword in a different place, so both are
+ * read (see `hasTypeKeyword`):
+ *
+ *   import type { X, Y } from './m'   — anonymous `type` token on the
+ *                                       `import_statement`, covering EVERY
+ *                                       specifier it decomposes to
+ *   import { type X, Y } from './m'   — anonymous `type` token on the
+ *                                       `import_specifier`, covering only X
+ *
+ * The marker is therefore per-specifier, which is what makes the mixed
+ * statement come out right: `X` is erased, `Y` is not, and the pair
+ * `./m` is a real initialization dependency because of `Y`. Emission
+ * dedupes per `(sourceFile, targetFile)` and lets any non-erased edge win,
+ * so a statement counts as type-only exactly when every specifier it
+ * decomposes to is — without this file having to aggregate anything.
+ *
+ * Known gap: TypeScript 5.0's `export type * from './m'` / `export type *
+ * as ns from './m'`. The vendored grammar does not parse them — the bare
+ * `type` token lands in an `ERROR` node beside the `*`, not as a statement
+ * child — so they emit no marker and are treated as value imports. That is
+ * the fail-safe direction (`check --cycles` over-reports rather than
+ * hiding a real cycle), and neither form appears in this repository.
  *
  * Side-effect imports (`import './polyfill'`) produce a single match
  * with `kind: 'side-effect'`. The shared finalize algorithm resolves
@@ -73,6 +100,33 @@ interface ImportSpec {
   /** Set on `dynamic` kind imports when the argument is a string literal —
    *  enables `interpretTsImport` to emit `dynamic-resolved`. */
   readonly literalSource?: boolean;
+  /** This specifier is erased by `tsc` (`import type` / `{ type X }`) —
+   *  enables `interpretTsImport` to set `ParsedImport.typeOnly`. */
+  readonly typeOnly?: boolean;
+}
+
+/**
+ * Does this node carry the `type` keyword that erases the import?
+ *
+ * The keyword is an ANONYMOUS token, so `findChild` (named children only)
+ * cannot see it and the direct child list has to be walked. Two nodes are
+ * ever asked:
+ *
+ *   - `import_statement` / `export_statement` — `import type { X } from './m'`
+ *   - `import_specifier` / `export_specifier` — `import { type X } from './m'`
+ *
+ * Only DIRECT children are considered. A nested `type` token means something
+ * else entirely — `export type Foo = Bar` puts one inside the child
+ * `type_alias_declaration` — and a subtree scan would read those as erasure.
+ * No NAMED node in this grammar is called `type`, so matching the type name
+ * alone identifies the keyword without asking about `isNamed`, whose spelling
+ * differs between tree-sitter bindings.
+ */
+function hasTypeKeyword(node: SyntaxNode): boolean {
+  for (let i = 0; i < node.childCount; i++) {
+    if (node.child(i)?.type === 'type') return true;
+  }
+  return false;
 }
 
 /**
@@ -117,6 +171,12 @@ function splitImport(stmtNode: SyntaxNode): CaptureMatch[] {
     ];
   }
 
+  // `import type ...` erases every specifier in the statement. `import
+  // { type X, Y }` erases only the marked ones, which is read per specifier
+  // in `decomposeNamedSpecifier`. Default and namespace forms have no
+  // per-specifier spelling, so the statement keyword is all there is.
+  const statementTypeOnly = hasTypeKeyword(stmtNode);
+
   const out: CaptureMatch[] = [];
   // An import_clause can have any combination of:
   //   - leading identifier  (default import)
@@ -135,6 +195,7 @@ function splitImport(stmtNode: SyntaxNode): CaptureMatch[] {
           name: 'default',
           alias: child.text,
           atNode: child,
+          typeOnly: statementTypeOnly,
         }),
       );
       continue;
@@ -151,6 +212,7 @@ function splitImport(stmtNode: SyntaxNode): CaptureMatch[] {
             name: source,
             alias: aliasId.text,
             atNode: child,
+            typeOnly: statementTypeOnly,
           }),
         );
       }
@@ -161,14 +223,14 @@ function splitImport(stmtNode: SyntaxNode): CaptureMatch[] {
       for (let j = 0; j < child.namedChildCount; j++) {
         const spec = child.namedChild(j);
         if (spec === null || spec.type !== 'import_specifier') continue;
-        const decomposed = decomposeNamedSpecifier(spec, source, stmtNode);
+        const decomposed = decomposeNamedSpecifier(spec, source, stmtNode, statementTypeOnly);
         if (decomposed !== null) out.push(decomposed);
       }
       continue;
     }
-    // Other children (e.g. `type` keyword token for `import type { ... }`)
-    // are ignored — they carry no per-specifier info; we fold type-only
-    // semantics into the same emitted kinds.
+    // No other named children exist on an `import_clause`. The `type`
+    // keyword of `import type { ... }` is an ANONYMOUS token on the
+    // statement, not a clause child, and is read by `hasTypeKeyword` above.
   }
 
   return out;
@@ -179,13 +241,19 @@ function splitImport(stmtNode: SyntaxNode): CaptureMatch[] {
  *
  *   - `{ X }`            → named
  *   - `{ X as Y }`       → named-alias
- *   - `{ type X }`       → named (type-only; same shape)
- *   - `{ type X as Y }`  → named-alias (type-only)
+ *   - `{ type X }`       → named       (+ `@import.type-only`)
+ *   - `{ type X as Y }`  → named-alias (+ `@import.type-only`)
+ *
+ * `statementTypeOnly` is the `import type { … }` form, which erases this
+ * specifier regardless of what the specifier itself spells; the two are
+ * ORed rather than one overriding the other, because `import type { type X }`
+ * is legal-ish input and both spellings mean the same erasure.
  */
 function decomposeNamedSpecifier(
   spec: SyntaxNode,
   source: string,
   stmtNode: SyntaxNode,
+  statementTypeOnly: boolean,
 ): CaptureMatch | null {
   // `import_specifier` layout:
   //   name: identifier
@@ -199,6 +267,7 @@ function decomposeNamedSpecifier(
   const aliasNode = spec.childForFieldName('alias');
   if (nameNode === null) return null;
   const name = nameNode.text;
+  const typeOnly = statementTypeOnly || hasTypeKeyword(spec);
 
   if (aliasNode !== null && aliasNode.startIndex !== nameNode.startIndex) {
     return buildImportMatch(stmtNode, {
@@ -207,6 +276,7 @@ function decomposeNamedSpecifier(
       name,
       alias: aliasNode.text,
       atNode: spec,
+      typeOnly,
     });
   }
   return buildImportMatch(stmtNode, {
@@ -214,6 +284,7 @@ function decomposeNamedSpecifier(
     source,
     name,
     atNode: spec,
+    typeOnly,
   });
 }
 
@@ -234,13 +305,17 @@ function splitReexport(stmtNode: SyntaxNode): CaptureMatch[] {
   const source = extractSource(stmtNode);
   if (source === null) return [];
 
+  // `export type { X } from './m'`. Its `export type *` sibling is NOT
+  // detectable — see the known gap in the module header.
+  const statementTypeOnly = hasTypeKeyword(stmtNode);
+
   const exportClause = findChild(stmtNode, 'export_clause');
   if (exportClause !== null) {
     const out: CaptureMatch[] = [];
     for (let i = 0; i < exportClause.namedChildCount; i++) {
       const spec = exportClause.namedChild(i);
       if (spec === null || spec.type !== 'export_specifier') continue;
-      const decomposed = decomposeReexportSpecifier(spec, source, stmtNode);
+      const decomposed = decomposeReexportSpecifier(spec, source, stmtNode, statementTypeOnly);
       if (decomposed !== null) out.push(decomposed);
     }
     return out;
@@ -273,6 +348,7 @@ function splitReexport(stmtNode: SyntaxNode): CaptureMatch[] {
           name: source,
           alias: aliasId.text,
           atNode: namespaceExport,
+          typeOnly: statementTypeOnly,
         }),
         buildNamespaceDeclarationMatch(namespaceExport, aliasId),
       ];
@@ -292,15 +368,19 @@ function splitReexport(stmtNode: SyntaxNode): CaptureMatch[] {
   ];
 }
 
+/** Mirror of {@link decomposeNamedSpecifier} for `export { … } from './m'`,
+ *  including the per-specifier `export { type X } from './m'` spelling. */
 function decomposeReexportSpecifier(
   spec: SyntaxNode,
   source: string,
   stmtNode: SyntaxNode,
+  statementTypeOnly: boolean,
 ): CaptureMatch | null {
   const nameNode = spec.childForFieldName('name');
   const aliasNode = spec.childForFieldName('alias');
   if (nameNode === null) return null;
   const name = nameNode.text;
+  const typeOnly = statementTypeOnly || hasTypeKeyword(spec);
 
   if (aliasNode !== null && aliasNode.startIndex !== nameNode.startIndex) {
     return buildImportMatch(stmtNode, {
@@ -309,6 +389,7 @@ function decomposeReexportSpecifier(
       name,
       alias: aliasNode.text,
       atNode: spec,
+      typeOnly,
     });
   }
   return buildImportMatch(stmtNode, {
@@ -316,6 +397,7 @@ function decomposeReexportSpecifier(
     source,
     name,
     atNode: spec,
+    typeOnly,
   });
 }
 
@@ -419,6 +501,12 @@ function buildImportMatch(stmtNode: SyntaxNode, spec: ImportSpec): CaptureMatch 
   }
   if (spec.literalSource === true) {
     m['@import.literal'] = syntheticCapture('@import.literal', spec.atNode, '');
+  }
+  // Presence-only, like `@import.literal`: absent means "not erased", so the
+  // marker is added rather than spelled `'false'`, and every non-TypeScript
+  // provider's matches keep the shape they already have.
+  if (spec.typeOnly === true) {
+    m['@import.type-only'] = syntheticCapture('@import.type-only', spec.atNode, '');
   }
   return m;
 }

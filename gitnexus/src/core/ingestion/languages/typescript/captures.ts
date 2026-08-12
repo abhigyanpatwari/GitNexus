@@ -6,7 +6,7 @@
  * synthesized streams on top:
  *
  *   1. **Import decomposition** — each `import_statement` / re-export is
- *      re-emitted with `@import.kind/source/name/alias` markers so
+ *      re-emitted with `@import.kind/source/name/alias/type-only` markers so
  *      `interpretTsImport` can recover the `ParsedImport` shape without
  *      re-parsing raw text (see `import-decomposer.ts`). Unit 2 adds this;
  *      until then, raw `@import.statement` matches flow through as-is.

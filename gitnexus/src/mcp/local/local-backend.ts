@@ -2381,18 +2381,22 @@ export class LocalBackend {
     const rows = await executeParameterized(
       repo.lbugPath,
       // A cycle here means "these modules cannot be initialized in any order".
-      // Only edges that force initialization count, so three kinds are excluded:
+      // Only edges that force initialization count, so four kinds are excluded:
       // Swift implicit module visibility and markdown links (never code
-      // dependencies at all), and imports reachable only through `import()`,
-      // which are deferred by construction — `import()` is the standard idiom
-      // for BREAKING an init cycle, so counting it reports the fix as the bug.
-      // `imports-to-edges.ts` tags those with DEFERRED_IMPORT_REASON_SUFFIX.
+      // dependencies at all); imports reachable only through `import()` or a
+      // function body, which are deferred by construction — deferring is the
+      // standard idiom for BREAKING an init cycle, so counting it reports the
+      // fix as the bug; and imports reachable only through TypeScript
+      // `import type`, which `tsc` erases outright, so no module load exists
+      // to order. `imports-to-edges.ts` tags the last two with
+      // DEFERRED_IMPORT_REASON_SUFFIX / TYPE_ONLY_IMPORT_REASON_SUFFIX.
       `MATCH (source:File)-[r:CodeRelation]->(target:File)
        WHERE r.type = 'IMPORTS'
          AND (r.reason IS NULL OR (
            r.reason <> 'swift-scope: implicit module visibility'
            AND r.reason <> 'markdown-link'
            AND NOT r.reason ENDS WITH ' (deferred)'
+           AND NOT r.reason ENDS WITH ' (type-only)'
          ))
        RETURN source.filePath AS source, target.filePath AS target
        LIMIT ${rowLimit}`,

@@ -11,19 +11,33 @@
  * `'scope-resolution: import'`; provider may override if downstream
  * filters on reason.
  *
- * ## Deferred imports carry a distinct `reason`
+ * ## Non-initializing imports carry a distinct `reason`
  *
- * A pair reached ONLY by a deferred import still gets an edge — it is a real
- * dependency, and impact/trace must see it — but it is not a module-INIT
- * dependency, so it cannot participate in the kind of cycle `check --cycles`
- * exists to find. Deferring is in fact the standard idiom for BREAKING such a
- * cycle, and this repository uses it that way on purpose in both spellings:
- * `core/group/service.ts` does `await import('./cross-impact.js')`, and
- * `eval/workflow_bench/proposer_sandbox.py` puts a plain `import` inside a
- * function under the comment "Kept lazy to avoid a module cycle". Reporting
- * those as cycles flags the fix as the bug.
+ * A pair reached ONLY by imports that cannot run at module-initialization time
+ * still gets an edge — it is a real dependency, and impact/trace must see it —
+ * but it cannot participate in the kind of cycle `check --cycles` exists to
+ * find. There are two such kinds, and they are NOT the same fact:
  *
- * Two signals, because one does not cover both spellings:
+ *  - **deferred** — the import exists at runtime, just later. `import('./m')`
+ *    and a function-local `import` both really load the module; what they do
+ *    not do is load it while the importing module is still initializing.
+ *    Deferring is in fact the standard idiom for BREAKING an init cycle, and
+ *    this repository uses it that way on purpose in both spellings:
+ *    `core/group/service.ts` does `await import('./cross-impact.js')`, and
+ *    `eval/workflow_bench/proposer_sandbox.py` puts a plain `import` inside a
+ *    function under the comment "Kept lazy to avoid a module cycle".
+ *  - **type-only** — the import does not exist at runtime AT ALL. `tsc` deletes
+ *    `import type { X } from './m'`; the emitted JavaScript contains no
+ *    reference to `./m`. Nothing was made later; the dependency is compile-time
+ *    only. Eight of the ten false cycles this repository reports are this.
+ *
+ * Reporting either as an init cycle flags the fix as the bug. They get separate
+ * suffixes rather than one shared "not really an import" tag because the two
+ * answers to "does this edge exist when the program runs?" are opposite, and a
+ * reader of the graph — or the next filter written against `reason` — needs to
+ * be able to tell them apart.
+ *
+ * Three signals, because no one of them covers the others:
  *
  *  - `ImportEdge.kind === 'dynamic-resolved'` — TS/JS `import()`. Already on
  *    the edge; this function simply never read it.
@@ -31,6 +45,11 @@
  *    `def f(): from x import Y`, Rust's fn-local `use`. Nothing marks those as
  *    dynamic, because syntactically they are ordinary imports; what defers them
  *    is WHERE they sit. See `isInsideFunction`.
+ *  - `ImportEdge.typeOnly` — TypeScript `import type` / `import { type X }`.
+ *    Neither of the other two sees it: the kind is the ordinary `named` /
+ *    `alias`, and the statement sits at module top level like any other. Only
+ *    the `type` keyword says it, so it is carried from the syntax down —
+ *    `typescript/import-decomposer.ts` → `interpret.ts` → `finalize-algorithm.ts`.
  *
  * Tagging the reason is enough for the check query, which already filters
  * non-runtime edges that way (`markdown-link`, Swift implicit module
@@ -41,13 +60,32 @@
  * relation schema. If a second consumer ever needs to branch on this, promote
  * it to a real field then.
  *
- * Static wins a mixed pair. Emission dedupes by `(sourceFile, targetFile)`,
- * so a pair carrying BOTH a static and a deferred import must be reported as
- * static — one `await import()` beside a top-level import does not make the
- * dependency deferred. That is why the pairs are collected before anything is
- * emitted rather than tagged from whichever edge happened to arrive first.
- * Insertion order into the map is first-seen order, so emission order is
- * byte-identical to the single-pass form it replaces.
+ * ## Precedence: the strongest runtime presence in a pair wins
+ *
+ * Emission dedupes by `(sourceFile, targetFile)`, so one edge has to speak for
+ * every import that reaches the pair. Rank them by how much of the dependency
+ * survives to run time — initializing > deferred > erased — and let the
+ * strongest win: the ranks ascend as presence weakens, so the pair keeps the
+ * LOWEST rank it sees ({@link PRESENCE_INITIALIZES} is 0). Inverting that
+ * comparison is the one mutation here that hides a real cycle rather than
+ * inventing a false one, which is why the suite pins it directly.
+ *
+ *  - Any initializing import wins outright. One top-level `import { f }` beside
+ *    an `await import()` and a dozen `import type`s is a real init dependency;
+ *    reporting the pair as deferred or erased would HIDE a true cycle.
+ *  - Deferred beats type-only. A pair with a function-local import plus some
+ *    `import type`s does load the target at run time, so `(deferred)` is the
+ *    honest label; `(type-only)` would claim the module never loads.
+ *
+ * That also settles the mixed statement `import { type X, Y } from './m'`
+ * without the decomposer aggregating anything: `X` is erased, `Y` is not, and
+ * `Y` carries the pair. A statement is type-only exactly when every specifier
+ * it decomposes to is.
+ *
+ * Pairs are collected before anything is emitted so the ranking sees every
+ * contributing edge rather than whichever one arrived first. Insertion order
+ * into the map is first-seen order, so emission order is byte-identical to the
+ * single-pass form this replaced.
  */
 
 import type { ImportEdge, ScopeId } from 'gitnexus-shared';
@@ -56,15 +94,43 @@ import type { ScopeResolutionIndexes } from '../../model/scope-resolution-indexe
 import { generateId } from '../../../../lib/utils.js';
 
 /**
- * Reason suffix for a pair reachable only through `import()`.
+ * Reason suffix for a pair reachable only through imports that run later —
+ * `import()` and function-local imports.
  *
  * `check --cycles` matches this EXACTLY, so a provider that overrides the base
  * reason keeps its deferred edges filterable — the suffix travels with it.
  */
 export const DEFERRED_IMPORT_REASON_SUFFIX = ' (deferred)';
 
+/**
+ * Reason suffix for a pair reachable only through imports the compiler erases —
+ * TypeScript `import type` / `import { type X }`.
+ *
+ * A second suffix rather than a reuse of {@link DEFERRED_IMPORT_REASON_SUFFIX}:
+ * both are excluded from the cycle query, but "runs later" and "never runs" are
+ * opposite answers about the emitted program, and the reason string is the only
+ * place the graph records which one this pair is.
+ */
+export const TYPE_ONLY_IMPORT_REASON_SUFFIX = ' (type-only)';
+
 /** Parent-chain cap. Scope depth is small; this only bounds a corrupt tree. */
 const MAX_SCOPE_DEPTH = 512;
+
+/**
+ * How much of an import survives to run time. Lower is stronger; a pair takes
+ * the minimum over every edge that reaches it. See the precedence section in
+ * the module header for why the order is this one.
+ */
+const PRESENCE_INITIALIZES = 0;
+const PRESENCE_DEFERRED = 1;
+const PRESENCE_ERASED = 2;
+
+/** Suffix for a pair's winning presence; `''` for a real init dependency. */
+function reasonSuffixFor(presence: number): string {
+  if (presence === PRESENCE_ERASED) return TYPE_ONLY_IMPORT_REASON_SUFFIX;
+  if (presence === PRESENCE_DEFERRED) return DEFERRED_IMPORT_REASON_SUFFIX;
+  return '';
+}
 
 /**
  * Does this scope only execute when something calls it?
@@ -101,10 +167,10 @@ export function emitImportEdges(
   scopeTree: ScopeResolutionIndexes['scopeTree'],
   reason = 'scope-resolution: import',
 ): number {
-  /** dedupKey -> the pair, plus whether EVERY edge reaching it is deferred. */
+  /** dedupKey -> the pair, plus the strongest runtime presence reaching it. */
   const pairs = new Map<
     string,
-    { readonly sourceFile: string; readonly targetFile: string; deferredOnly: boolean }
+    { readonly sourceFile: string; readonly targetFile: string; presence: number }
   >();
 
   for (const [scopeId, edges] of imports) {
@@ -118,13 +184,20 @@ export function emitImportEdges(
       if (edge.targetFile === null) continue;
       if (edge.targetFile === sourceFile) continue;
 
-      const deferred = scopeDefers || edge.kind === 'dynamic-resolved';
+      // Erasure is checked first: an `import type` inside a function is still
+      // erased, not merely deferred, and the two are not mutually exclusive.
+      const presence =
+        edge.typeOnly === true
+          ? PRESENCE_ERASED
+          : scopeDefers || edge.kind === 'dynamic-resolved'
+            ? PRESENCE_DEFERRED
+            : PRESENCE_INITIALIZES;
       const dedupKey = `${sourceFile}->${edge.targetFile}`;
       const existing = pairs.get(dedupKey);
       if (existing === undefined) {
-        pairs.set(dedupKey, { sourceFile, targetFile: edge.targetFile, deferredOnly: deferred });
-      } else if (!deferred) {
-        existing.deferredOnly = false;
+        pairs.set(dedupKey, { sourceFile, targetFile: edge.targetFile, presence });
+      } else if (presence < existing.presence) {
+        existing.presence = presence;
       }
     }
   }
@@ -136,7 +209,7 @@ export function emitImportEdges(
       targetId: generateId('File', pair.targetFile),
       type: 'IMPORTS',
       confidence: 1.0,
-      reason: pair.deferredOnly ? reason + DEFERRED_IMPORT_REASON_SUFFIX : reason,
+      reason: reason + reasonSuffixFor(pair.presence),
     });
   }
 

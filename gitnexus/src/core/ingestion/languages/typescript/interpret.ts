@@ -8,7 +8,8 @@
  *
  * The import matches arrive pre-decomposed by `emitTsScopeCaptures`
  * (one imported name per match, with synthesized
- * `@import.kind/source/name/alias` markers — see `import-decomposer.ts`).
+ * `@import.kind/source/name/alias/type-only` markers — see
+ * `import-decomposer.ts`).
  * The type-binding matches arrive straight from the raw query captures —
  * each `@type-binding.*` anchor carries `@type-binding.name` +
  * `@type-binding.type`.
@@ -20,10 +21,11 @@ import type { CaptureMatch, ParsedImport, ParsedTypeBinding, TypeRef } from 'git
 
 export function interpretTsImport(captures: CaptureMatch): ParsedImport | null {
   // Markers attached by `splitImportStatement` (import-decomposer.ts):
-  //   @import.kind   : one of the kinds documented there
-  //   @import.name   : imported name from the source module
-  //   @import.alias  : local alias name (for default / aliased / namespace forms)
-  //   @import.source : module path (always present except dynamic-unresolved)
+  //   @import.kind      : one of the kinds documented there
+  //   @import.name      : imported name from the source module
+  //   @import.alias     : local alias name (for default / aliased / namespace forms)
+  //   @import.source    : module path (always present except dynamic-unresolved)
+  //   @import.type-only : presence-only — this specifier is erased by `tsc`
   const kindCap = captures['@import.kind'];
   const nameCap = captures['@import.name'];
   const aliasCap = captures['@import.alias'];
@@ -31,6 +33,12 @@ export function interpretTsImport(captures: CaptureMatch): ParsedImport | null {
 
   const kind = kindCap?.text;
   if (kind === undefined) return null;
+
+  // Spread rather than `typeOnly: <boolean>` so a value import keeps the exact
+  // object shape it had before this marker existed — every `ParsedImport`
+  // equality assertion in the suite compares whole objects.
+  const typeOnly: { typeOnly?: true } =
+    captures['@import.type-only'] !== undefined ? { typeOnly: true } : {};
 
   switch (kind) {
     case 'default': {
@@ -45,6 +53,7 @@ export function interpretTsImport(captures: CaptureMatch): ParsedImport | null {
         importedName: 'default',
         alias: aliasCap.text,
         targetRaw: sourceCap.text,
+        ...typeOnly,
       };
     }
     case 'named': {
@@ -55,6 +64,7 @@ export function interpretTsImport(captures: CaptureMatch): ParsedImport | null {
         localName: nameCap.text,
         importedName: nameCap.text,
         targetRaw: sourceCap.text,
+        ...typeOnly,
       };
     }
     case 'named-alias': {
@@ -68,6 +78,7 @@ export function interpretTsImport(captures: CaptureMatch): ParsedImport | null {
         importedName: nameCap.text,
         alias: aliasCap.text,
         targetRaw: sourceCap.text,
+        ...typeOnly,
       };
     }
     case 'namespace': {
@@ -78,6 +89,7 @@ export function interpretTsImport(captures: CaptureMatch): ParsedImport | null {
         localName: aliasCap.text,
         importedName: sourceCap.text,
         targetRaw: sourceCap.text,
+        ...typeOnly,
       };
     }
     case 'reexport': {
@@ -88,6 +100,7 @@ export function interpretTsImport(captures: CaptureMatch): ParsedImport | null {
         localName: nameCap.text,
         importedName: nameCap.text,
         targetRaw: sourceCap.text,
+        ...typeOnly,
       };
     }
     case 'reexport-alias': {
@@ -101,6 +114,7 @@ export function interpretTsImport(captures: CaptureMatch): ParsedImport | null {
         importedName: nameCap.text,
         alias: aliasCap.text,
         targetRaw: sourceCap.text,
+        ...typeOnly,
       };
     }
     case 'reexport-wildcard': {
@@ -119,6 +133,7 @@ export function interpretTsImport(captures: CaptureMatch): ParsedImport | null {
         localName: aliasCap.text,
         importedName: sourceCap.text,
         targetRaw: sourceCap.text,
+        ...typeOnly,
       };
     }
     case 'dynamic': {

@@ -471,6 +471,17 @@ describe('LocalBackend.callTool', () => {
     const query = (executeParameterized as any).mock.calls.at(-1)[1] as string;
     expect(query).toContain("r.reason <> 'swift-scope: implicit module visibility'");
     expect(query).toContain("r.reason <> 'markdown-link'");
+    // A cycle means "these modules cannot be initialized in any order", so
+    // edges that carry no initialization order are excluded too: deferred
+    // imports (`import()`, function-local) run later, and TypeScript
+    // `import type` is erased by `tsc` and never runs. `imports-to-edges.ts`
+    // tags both by reason suffix; dropping either clause from this query
+    // reports the standard cycle-BREAKING idioms as cycles.
+    expect(query).toContain("NOT r.reason ENDS WITH ' (deferred)'");
+    expect(query).toContain("NOT r.reason ENDS WITH ' (type-only)'");
+    // The exclusions must stay inside the `reason IS NULL` alternative —
+    // an untagged edge (every non-scope-resolution producer) still counts.
+    expect(query).toContain('r.reason IS NULL OR');
     expect(query).toContain('LIMIT 100001');
   });
 

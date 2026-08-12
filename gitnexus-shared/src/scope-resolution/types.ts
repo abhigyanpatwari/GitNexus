@@ -119,8 +119,37 @@ export type ParsedImport =
       readonly importedName: string;
       readonly targetRaw: string;
       /** Provider-specific imported symbol category when module and symbol
-       * namespaces have distinct resolution rules (for example PHP). */
+       * namespaces have distinct resolution rules (for example PHP).
+       *
+       * **Not** the same fact as {@link ParsedImport.typeOnly} — see the note
+       * on `typeOnly` below, which is documented on this variant. */
       readonly importedSymbolKind?: 'type' | 'function' | 'const';
+      /**
+       * Is this import ERASED before the module ever runs?
+       *
+       * TypeScript `import type { X } from './m'` and `import { type X }` are
+       * deleted by `tsc`: no `require`/`import` for `./m` survives in the
+       * emitted JavaScript, so the pair cannot force a module-INITIALIZATION
+       * order and cannot participate in an init cycle. That is the one thing
+       * `check --cycles` exists to find, so the fact has to survive from the
+       * syntax down to the emitted `IMPORTS` edge — see `ImportEdge.typeOnly`
+       * and `graph-bridge/imports-to-edges.ts`.
+       *
+       * **Distinct from `importedSymbolKind: 'type'`, which is NOT a substitute.**
+       * That field is a resolution-NAMESPACE category (PHP's `use function` /
+       * `use const` split), it exists only on this variant, and it says "the
+       * thing imported is a type". A symbol being a type says nothing about
+       * whether the import statement is erased: TypeScript resolves a plain
+       * `import { SomeInterface }` at runtime unless `isolatedModules` +
+       * explicit `type` say otherwise, and PHP erases nothing at all. This
+       * field is about the STATEMENT's runtime existence, not the symbol's
+       * category.
+       *
+       * Set only by providers whose syntax marks it. Absent everywhere else,
+       * which reads as "not erased" — the fail-safe direction, since it only
+       * makes `check --cycles` over-report.
+       */
+      readonly typeOnly?: boolean;
       /**
        * Set by providers when `targetRaw` already names the imported symbol
        * rather than only its containing module. Consumers that compose
@@ -178,6 +207,10 @@ export type ParsedImport =
       readonly targetRaw: string;
       /** See the same field on the `named` variant. */
       readonly importedSymbolKind?: 'type' | 'function' | 'const';
+      /** See the same field on the `named` variant — including why it is not
+       *  interchangeable with `importedSymbolKind`. Reaches this variant from
+       *  `import type D from './m'` and `import { type X as Y } from './m'`. */
+      readonly typeOnly?: boolean;
       /** See the same field on the `named` variant. */
       readonly targetIncludesImportedName?: boolean;
       /** See the same field on the `named` variant. */
@@ -201,6 +234,9 @@ export type ParsedImport =
       /** Module being aliased (e.g. `numpy` in `import numpy as np`). */
       readonly importedName: string;
       readonly targetRaw: string;
+      /** See the same field on the `named` variant. Reaches this variant from
+       *  TypeScript `import type * as N from './m'`. */
+      readonly typeOnly?: boolean;
     }
   /**
    * Syntactically-detectable parse-time re-export. Finalize may still produce
@@ -222,6 +258,9 @@ export type ParsedImport =
       readonly targetRaw: string;
       /** Set when the re-export renames the symbol (e.g. `export { X as Y } from './y'`). */
       readonly alias?: string;
+      /** See the same field on the `named` variant. Reaches this variant from
+       *  TypeScript `export type { X } from './y'` and `export { type X } from './y'`. */
+      readonly typeOnly?: boolean;
     }
   /**
    * Wildcard import — brings every exported name from the target module into
@@ -233,6 +272,13 @@ export type ParsedImport =
    *   - Python `from foo import *`   → `{ kind: 'wildcard', targetRaw: 'foo' }`
    *   - JS `export * from './foo'`   → `{ kind: 'wildcard', targetRaw: './foo' }`
    *   - Rust `pub use foo::*`         → `{ kind: 'wildcard', targetRaw: 'foo' }`
+   *
+   * No `typeOnly` here on purpose. The one syntax that would set it,
+   * TypeScript 5.0's `export type * from './m'`, is not parsed by the
+   * vendored tree-sitter-typescript grammar — it yields an `ERROR` node
+   * holding the bare `type` token, so the fact is not readable at the
+   * statement level (see `typescript/import-decomposer.ts`). Add the field
+   * with the grammar that can express it, not before.
    */
   | {
       readonly kind: 'wildcard';
@@ -384,6 +430,18 @@ export interface ImportEdge {
     | 'side-effect';
   /** Re-export chain, for provenance (e.g., `['./y']` when re-exported via `./y`). */
   readonly transitiveVia?: readonly string[];
+  /**
+   * The import is erased before the module runs — see `ParsedImport`'s
+   * `typeOnly` on the `named` variant for the full note, including why
+   * `importedSymbolKind: 'type'` is a different fact and not a substitute.
+   *
+   * Carried straight from the `ParsedImport` by `makeEdgeDrafts`. The edge is
+   * still emitted: a type-only import is a real source-level dependency that
+   * `impact` and `trace` must see, and editing the target still breaks the
+   * importer's typecheck. What the flag removes is the claim that the pair
+   * forces an INITIALIZATION order.
+   */
+  readonly typeOnly?: boolean;
   /** Set to `'unresolved'` when the SCC fixpoint could not link this edge. */
   readonly linkStatus?: 'unresolved';
 }
