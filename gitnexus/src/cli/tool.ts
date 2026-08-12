@@ -395,16 +395,35 @@ export async function checkCommand(options?: {
     }
     if (options.json) {
       output(result);
-    } else if (result.cycleCount === 0) {
+    } else if (result.status === 'clean') {
       output('No circular imports found.');
     } else {
       output(
         result.cycles.map((cycle: { files: string[] }) => cycle.files.join(' -> ')).join('\n'),
       );
+      // Past the enumeration cap the tool reports one representative cycle per
+      // component instead of every elementary cycle. Say so, or the short list
+      // reads as the whole truth on exactly the repositories where it is not.
+      if (result.enumeration === 'component-representatives') {
+        // Phrased to need no plural: `checkCommand` predates the `t()` i18n
+        // layer and none of its output goes through it, so inventing a plural
+        // here by hand would be the only one in the file.
+        output(
+          `\n(showing one representative cycle per circular component — ` +
+            `${result.componentCount} in total; the full enumeration exceeded the safety limit.)`,
+        );
+      }
     }
     // Policy, not degradation: a clean run that FOUND cycles is `check` failing
-    // its own check. `output()` deliberately knows nothing about it.
-    if (result.cycleCount > 0) process.exitCode = 1;
+    // its own check, so `output()` — which fails closed on `error` and `partial`
+    // — deliberately knows nothing about it.
+    //
+    // Keyed on `status`, NOT on `cycleCount`. Past the enumeration cap the
+    // report carries `cycleCount: null` on purpose, because a partial count must
+    // not read as a real one — and `null > 0` is false, so counting here would
+    // exit 0 on precisely the repositories with the most cycles. `status`
+    // answers "were any found" in both enumeration modes.
+    if (result.status === 'cycles_found') process.exitCode = 1;
   } catch (error) {
     output({ error: error instanceof Error ? error.message : String(error) });
     process.exitCode = 1;

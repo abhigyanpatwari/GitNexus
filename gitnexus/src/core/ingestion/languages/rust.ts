@@ -188,6 +188,23 @@ export const rustProvider = defineLanguage({
   emitScopeCaptures: emitRustScopeCaptures,
   cfgVisitor: createRustCfgVisitor(),
   interpretImport: interpretRustImport,
+  // `use` is a compile-time path alias, not a statement that runs. Writing one
+  // inside a function body — `fn f() { use crate::m::X; }`, which is legal —
+  // narrows where the NAME is visible and defers nothing: Rust has no
+  // module-initialization order in the JS/Python sense and permits intra-crate
+  // module cycles outright. `rust/query.ts` captures `(use_declaration)` and
+  // nothing else, so this covers every import form the pipeline sees; the
+  // structural twin is C++'s `using ns::name`, exempt under the same
+  // capability. Without this the central Pass-3 position rule would tag an
+  // fn-local `use` `runsOnlyWhenCalled` and `check --cycles` would drop a
+  // cycle it is part of.
+  //
+  // Deliberately the NARROW claim — position does not defer a Rust import. It
+  // is not a claim that no Rust import can create an initialization
+  // dependency; that is a bigger semantic question (statics, `OnceLock`,
+  // `lazy_static`) which this capability does not reach and should not be read
+  // as settling. See `LanguageProvider.importsExecuteWhereWritten`.
+  importsExecuteWhereWritten: false,
   interpretTypeBinding: interpretRustTypeBinding,
   bindingScopeFor: rustBindingScopeFor,
   importOwningScope: rustImportOwningScope,
