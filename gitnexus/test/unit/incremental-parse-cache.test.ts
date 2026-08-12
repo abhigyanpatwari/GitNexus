@@ -196,14 +196,36 @@ describe('PARSE_CACHE_VERSION', () => {
   // capture change, the first being the easy-to-miss half. 60 was staged while
   // main was 53, chosen above every in-flight MAXIMUM rather than at main + 1;
   // #2899 then cascaded main to 59, and 60 survived only because of that choice.
-  // Moved 60 -> 62 for #2917's implicit Java record-component accessor
-  // definitions and scope declarations. In-flight #2935 already claims 61.
-  it('pins SCHEMA_BUMP to 62 so concurrent bumps cannot silently collide (#2766)', () => {
-    expect(Number(PARSE_CACHE_VERSION.split('+', 1)[0])).toBe(62);
+  // Moved 60 -> 62 for the cycle-checker fix's two optional `ParsedImport`
+  // fields, `typeOnly` and `runsOnlyWhenCalled`. Neither is a capture, but
+  // `parsedfile-store.ts` serializes the whole ParsedFile generically, so both
+  // are part of the cached shape — the same half of #2864 that was easy to miss.
+  // A warm cache would replay untagged imports, the strict `=== true` reads
+  // would take the untagged path, and `check --cycles` would keep reporting the
+  // erased and deferred imports the branch exists to stop reporting: a silent
+  // no-op on incremental analyze while every cold-run test passes.
+  // 63 rather than 62 or 61: main holds 60, #2935 claims 61, and #2936 claims 62
+  // — the next free value above every in-flight MAXIMUM, not above origin/main.
+  // This branch staged 62 first and was correct when written; #2936 opened four
+  // hours later, re-checked against main rather than the in-flight claims, and
+  // took 62 as well. Moving instead of standing on seniority, because 63 is
+  // right whichever of the two merges first.
+  // Moved 63 -> 65 for #2917's implicit Java record-component accessor
+  // definitions and scope declarations. #2935 uses 64 for enum heritage.
+  it('pins SCHEMA_BUMP to 65 so concurrent bumps cannot silently collide (#2766)', () => {
+    expect(Number(PARSE_CACHE_VERSION.split('+', 1)[0])).toBe(65);
     // The PREVIOUS version must fail the reuse gate, not merely differ from the
     // current one — a hardcoded number outside the conflict hunk rebases cleanly
     // while being wrong, which is exactly how the 37/38 exact clashes landed.
+    // Every live neighbour is named: 60 is what origin/main holds, so a rebase
+    // that drops this branch's bump lands there; 61 is claimed by BOTH #2935 and
+    // #2840 (a live clash of their own); and 62 is #2936's claim, which is what
+    // this value moved off.
+    expect(Number(PARSE_CACHE_VERSION.split('+', 1)[0])).not.toBe(60);
     expect(Number(PARSE_CACHE_VERSION.split('+', 1)[0])).not.toBe(61);
+    expect(Number(PARSE_CACHE_VERSION.split('+', 1)[0])).not.toBe(62);
+    expect(Number(PARSE_CACHE_VERSION.split('+', 1)[0])).not.toBe(63);
+    expect(Number(PARSE_CACHE_VERSION.split('+', 1)[0])).not.toBe(64);
   });
 
   it('embeds the gitnexus package version (so upgrades invalidate the cache)', () => {

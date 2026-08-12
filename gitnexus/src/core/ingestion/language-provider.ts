@@ -454,6 +454,94 @@ interface LanguageProviderConfig {
   readonly interpretImport?: (captures: CaptureMatch) => ParsedImport | null;
 
   /**
+   * Do this language's imports EXECUTE at the point in the program where they
+   * are written?
+   *
+   * The scope extractor marks an import `runsOnlyWhenCalled` when the statement
+   * sits inside a `Function` scope (Pass 3): where imports are executed
+   * statements, one written in a function body runs only when that function is
+   * called — Python's `def f(): from x import Y`, Ruby's
+   * `def f; require 'x'; end`, a CommonJS `require()` in a body (which
+   * `javascript/captures.ts` does capture, via its own AST walk). That rule is
+   * about EXECUTION. It says nothing true about a language whose "import" is
+   * not an executed statement at all, and in such a language moving one into a
+   * function body defers exactly nothing.
+   *
+   * "Where written" is about execution time, not textual placement: a
+   * `#include` is spliced precisely where it is written and still answers
+   * `false`, because splicing is not running.
+   *
+   * **The failure directions are not symmetric, which is why the default is
+   * what it is.** Answering `false` for a language that really does execute
+   * its imports un-defers a deliberately lazy one, and `check --cycles`
+   * reports a cycle its author broke on purpose — wrong, but visible on screen
+   * and arguable by whoever reads it. Answering `true` for a language that
+   * does not SUPPRESSES a cycle that is entirely real: nobody sees it, so
+   * nobody can argue with it. Getting this wrong in the `true` direction hides
+   * a true cycle, and that is the failure that matters.
+   *
+   * Absent — the default — reads as `true`, so every provider that does not
+   * name this keeps today's behaviour exactly. The flag never ADDS deferral;
+   * declaring `false` only WITHHOLDS it.
+   *
+   * Declared `false` by, and only by:
+   *
+   *   - **C and C++** — `#include` is a preprocessor directive. The header's
+   *     text is spliced in before a line of the program runs, wherever the
+   *     directive sits, and C permits one inside a function body. C++'s only
+   *     other Pass-3 import form, `using ns::name` / `using namespace ns`, is
+   *     compile-time name lookup, is legal in a function body too, and defers
+   *     no more than an `#include` does.
+   *   - **Rust** — `use` is a compile-time path alias, not a statement that
+   *     runs. `fn f() { use crate::m::X; }` is legal, and putting the `use`
+   *     there changes only where the name is VISIBLE, never when anything
+   *     happens; Rust has no module-initialization order in the JS/Python
+   *     sense and permits intra-crate module cycles outright. It is the
+   *     structural twin of C++'s `using ns::name`. `rust/query.ts` captures
+   *     `(use_declaration)` and nothing else, so this covers the whole
+   *     surface. (The claim here is the narrow one: POSITION does not defer a
+   *     Rust import. Whether a Rust `use` can create an initialization
+   *     dependency *at all* is a larger and separate question, and this flag
+   *     deliberately does not answer it.)
+   *   - **COBOL** — `COPY` is a pure textual splice performed by the copybook
+   *     preprocessor, the `#include` case exactly. Latent today: the COBOL
+   *     `@scope.function` capture covers a single line (`cobol/captures.ts`
+   *     ranges sections and paragraphs `line → line`), so a `COPY` on any
+   *     later line never resolves inside one and Pass 3 has nothing to mark.
+   *     Declared anyway, so that giving those anchors their true multi-line
+   *     ranges cannot silently start suppressing real copybook cycles.
+   *
+   * Per-provider rather than per-import, and that is sufficient — the question
+   * this answers is narrower than "do this language's imports execute". It is
+   * only ever asked of an import that resolved INSIDE A FUNCTION SCOPE, so the
+   * real domain is: *can a function-local import in this language be
+   * non-executing?* No supported language has two forms that are both
+   * function-local and disagree. C++ has two forms, `#include` and
+   * `using ns::name`; both can appear in a body and both are compile-time.
+   *
+   * PHP is the case that looks like a counterexample and is not. It does mix —
+   * `use Foo\Bar;` aliases at compile time while `require` executes — but
+   * `use` cannot appear in a function body at all (`php/query.ts` records this
+   * twice: "`namespace_use_declaration` is an import only at top level / inside
+   * namespace scope"), so it never reaches this flag. Absent is therefore
+   * PERMANENTLY correct for PHP, including the day `require` is captured: a
+   * `require` in a body will correctly defer, and a `use` still cannot get
+   * here. Do not read PHP as a reason to build a per-`ParsedImport`
+   * classification hook — it would cost a provider call per import on the
+   * extractor's hot path, and `ParsedImport.kind` does not discriminate the
+   * thing being asked anyway.
+   *
+   * A capability on the provider rather than a language check in
+   * `scope-extractor.ts`: shared `core/ingestion/` pipeline code must not name
+   * languages (AGENTS.md), and "imports here are not executed statements" is a
+   * property of the language, not of the walk.
+   *
+   * Default: undefined, read as `true` (imports execute where they are
+   * written; position defers them).
+   */
+  readonly importsExecuteWhereWritten?: boolean;
+
+  /**
    * What is the implicit receiver on a Function scope? For instance methods
    * this is `self`/`this`; for standalone functions it is `null`. Consulted
    * by `Registry.lookup` Step 2 via the `resolveTypeRef` helper.
