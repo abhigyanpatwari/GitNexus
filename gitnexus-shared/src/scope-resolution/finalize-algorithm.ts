@@ -425,6 +425,37 @@ function edgeKindFor(parsed: ParsedImport): ImportEdge['kind'] {
 }
 
 /**
+ * The `ParsedImport` variants that declare NO `typeOnly` property.
+ *
+ * Distributes over the union and keeps a variant only when `'typeOnly'` is
+ * absent from its keys. `keyof` counts optional keys, so a variant that gains
+ * `readonly typeOnly?: boolean` drops OUT of this union — which is the whole
+ * point: it makes "this kind cannot be type-only" a fact the compiler holds
+ * rather than a comment that goes stale. See {@link assertCannotBeTypeOnly}.
+ */
+type ImportKindWithoutTypeOnly<V = ParsedImport> = V extends unknown
+  ? 'typeOnly' extends keyof V
+    ? never
+    : V
+  : never;
+
+/**
+ * Accepts only a `ParsedImport` variant that cannot carry `typeOnly`, and
+ * returns the empty result for it.
+ *
+ * This is the self-check `typeOnlyFor` is built around. Its `default:` arm used
+ * to return `{}` for every remaining kind, so a variant that gained a
+ * `typeOnly` property would have had it silently dropped — the erasure fact
+ * would stop reaching the edge and `check --cycles` would start reporting the
+ * cycles `tsc` erases, with nothing failing anywhere. Naming the non-erasable
+ * kinds explicitly and passing them through here turns that into a compile
+ * error at this call site.
+ */
+function assertCannotBeTypeOnly(_parsed: ImportKindWithoutTypeOnly): { typeOnly?: never } {
+  return {};
+}
+
+/**
  * Carry `ParsedImport.typeOnly` onto the edge — the erasure fact `check
  * --cycles` needs and cannot re-derive, since `kind` is identical for the
  * erased and the runtime spelling of the same import.
@@ -433,6 +464,21 @@ function edgeKindFor(parsed: ParsedImport): ImportEdge['kind'] {
  * type-only keeps the exact property set it had before this field existed.
  * Every `finalized` edge is built by spreading `base`, so setting it here is
  * enough for all of them.
+ *
+ * **Every kind is listed, and neither arm has a catch-all.** The four erasable
+ * kinds are the exact set `interpret.ts` spreads `...typeOnly` onto: `named`
+ * (`import type { X }`, `import { type X }`), `alias` (`import type D` — the
+ * decomposer's `default` case yields `alias`, there is no `default` kind — and
+ * `import { type X as Y }`), `namespace` (`import type * as N`) and `reexport`
+ * (`export type { X }`, `export { type X }`). The rest go through
+ * {@link assertCannotBeTypeOnly}, which fails to compile if one of them ever
+ * declares `typeOnly`, and a kind added to `ParsedImport` fails to compile at
+ * `_exhaustive` below. Both drift directions are therefore a build break rather
+ * than an erasure fact quietly not reaching the graph.
+ *
+ * {@link runsOnlyWhenCalledFor} needs none of this: it reads the property
+ * without switching on `kind`, so a new variant that omits `runsOnlyWhenCalled`
+ * already fails to compile there.
  */
 function typeOnlyFor(parsed: ParsedImport): { typeOnly?: true } {
   switch (parsed.kind) {
@@ -441,11 +487,17 @@ function typeOnlyFor(parsed: ParsedImport): { typeOnly?: true } {
     case 'namespace':
     case 'reexport':
       return parsed.typeOnly === true ? { typeOnly: true } : {};
-    default:
-      // `wildcard` / `side-effect` / both `dynamic-*` kinds have no erased
-      // spelling a provider can report today — see `ParsedImport`'s
+    case 'wildcard':
+    case 'side-effect':
+    case 'dynamic-unresolved':
+    case 'dynamic-resolved':
+      // No erased spelling a provider can report today — see `ParsedImport`'s
       // `wildcard` variant for why `export type *` is not among them.
-      return {};
+      return assertCannotBeTypeOnly(parsed);
+    default: {
+      const _exhaustive: never = parsed;
+      throw new Error(`typeOnlyFor: unhandled ParsedImport kind ${JSON.stringify(_exhaustive)}`);
+    }
   }
 }
 
@@ -1113,6 +1165,30 @@ function expandWildcard(
       kind: 'wildcard-expanded',
       targetModuleScope: edge.targetModuleScope,
       targetDefId: def.nodeId,
+      // Every expanded edge inherits the presence facts of the ONE statement it
+      // came from. They are built fresh rather than spread from `edge` because
+      // `localName`, `targetExportedName` and `targetDefId` all differ per name
+      // — which is exactly how a property added to the wildcard edge upstream
+      // gets silently dropped here, and how `runsOnlyWhenCalled` was.
+      //
+      // `runsOnlyWhenCalled`: Rust's `fn f() { use m::*; }` is one statement
+      // inside one function body, so each name it brings in is bound only when
+      // `f` runs. Losing the flag here re-reports the pair as an
+      // initialization dependency and suppresses nothing — it INVENTS a cycle
+      // (`check --cycles`), which is why this is carried and not derived.
+      // (Python has no function-local `from x import *` — it is a SyntaxError —
+      // so Rust is the reachable spelling.)
+      //
+      // `typeOnly`: unreachable today and deliberately kept. No provider emits
+      // a type-only wildcard — `reexport-wildcard` returns `kind: 'wildcard'`
+      // with no `typeOnly` because `export type *` is unparseable by the
+      // vendored grammar (documented on `ParsedImport`'s `wildcard` variant).
+      // It is propagated so the day that gap closes does not silently
+      // reintroduce this same defect for erasure. Do not delete it as dead
+      // code; `typeOnlyFor` is the gate that decides whether it can ever be
+      // set, and it is where the correspondence is enforced.
+      ...(edge.typeOnly === true ? { typeOnly: true } : {}),
+      ...(edge.runsOnlyWhenCalled === true ? { runsOnlyWhenCalled: true } : {}),
     });
   }
   return expanded;

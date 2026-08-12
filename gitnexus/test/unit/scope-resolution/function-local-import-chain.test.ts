@@ -32,11 +32,13 @@ import {
   finalize,
   type FinalizeFile,
   type FinalizeHooks,
+  type ImportEdge,
   type ParsedFile,
   type ScopeId,
 } from 'gitnexus-shared';
 import type { LanguageProvider } from '../../../src/core/ingestion/language-provider.js';
 import { extractParsedFile } from '../../../src/core/ingestion/scope-extractor-bridge.js';
+import { cProvider } from '../../../src/core/ingestion/languages/c-cpp.js';
 import { pythonProvider } from '../../../src/core/ingestion/languages/python.js';
 import { rustProvider } from '../../../src/core/ingestion/languages/rust.js';
 import {
@@ -57,16 +59,25 @@ function extract(provider: LanguageProvider, src: string, filePath: string): Par
 }
 
 /**
- * The `reason` on the single `sourceFile → targetFile` edge that `src`
- * produces, taken through the whole chain.
+ * The whole chain's output for `src`: the `reason` on the single
+ * `sourceFile → targetFile` edge, and the finalized `ImportEdge[]` that
+ * produced it.
+ *
+ * The edges are returned as well because a wildcard case cannot be judged from
+ * the reason alone. `expandWildcard` returns the ORIGINAL edge untouched when
+ * the target contributes no names, and that edge already carries the flags — so
+ * a wildcard test that lets expansion no-op passes whether or not expansion
+ * preserves anything. `wildcardNames` makes expansion actually happen and the
+ * edge list is what proves it did.
  */
-function reasonFor(
+function runChain(
   provider: LanguageProvider,
   src: string,
   sourceFile: string,
   targetFile: string,
   targetRaws: readonly string[],
-): string | undefined {
+  wildcardNames: readonly string[],
+): { readonly reason: string | undefined; readonly edges: readonly ImportEdge[] } {
   const parsed = extract(provider, src, sourceFile);
 
   const source: FinalizeFile = {
@@ -87,7 +98,7 @@ function reasonFor(
 
   const hooks: FinalizeHooks = {
     resolveImportTarget: (targetRaw) => (targetRaws.includes(targetRaw) ? targetFile : null),
-    expandsWildcardTo: () => [],
+    expandsWildcardTo: () => wildcardNames,
     mergeBindings: (existing, incoming) => [...existing, ...incoming],
   };
   const out = finalize({ files: [source, target], workspaceIndex: undefined }, hooks);
@@ -104,12 +115,30 @@ function reasonFor(
     BASE_REASON,
   );
   expect(rels.length).toBeLessThanOrEqual(1);
-  return rels[0]?.reason;
+  return { reason: rels[0]?.reason, edges: out.imports.get(parsed.moduleScope) ?? [] };
+}
+
+/**
+ * The `reason` on the single `sourceFile → targetFile` edge that `src`
+ * produces, taken through the whole chain.
+ */
+function reasonFor(
+  provider: LanguageProvider,
+  src: string,
+  sourceFile: string,
+  targetFile: string,
+  targetRaws: readonly string[],
+): string | undefined {
+  return runChain(provider, src, sourceFile, targetFile, targetRaws, []).reason;
 }
 
 const py = (src: string) => reasonFor(pythonProvider, src, 'pkg/a.py', 'pkg/m.py', ['m']);
 const rs = (src: string) =>
   reasonFor(rustProvider, src, 'src/a.rs', 'src/m.rs', ['crate::m::X', 'crate::m']);
+/** Rust with a target that really contributes names, so a wildcard expands. */
+const rsWildcard = (src: string) =>
+  runChain(rustProvider, src, 'src/a.rs', 'src/m.rs', ['crate::m::X', 'crate::m'], ['X', 'Y']);
+const c = (src: string) => reasonFor(cProvider, src, 'src/a.c', 'src/m.h', ['m.h']);
 
 describe('Python: a function-local import reaches the IMPORTS reason', () => {
   it('`def f(): from m import X` is deferred', () => {
@@ -173,5 +202,78 @@ describe('Rust: a function-local `use` reaches the IMPORTS reason', () => {
 
   it('a top-level `use` is NOT deferred', () => {
     expect(rs('use crate::m::X;\n\nfn f() {\n    let _ = X;\n}\n')).toBe(PLAIN);
+  });
+});
+
+/**
+ * The one kind that is rebuilt rather than carried.
+ *
+ * `finalize`'s `expandWildcard` does not spread the wildcard edge — it
+ * constructs one fresh `wildcard-expanded` edge per exported name, because
+ * `localName`, `targetExportedName` and `targetDefId` all differ per name. Every
+ * property NOT named in that constructor is therefore dropped, and
+ * `runsOnlyWhenCalled` was: the extractor tagged the statement correctly (its
+ * walk has no `switch` on kind, so it covers `wildcard` like everything else),
+ * finalize put it on the base edge, and expansion then threw it away one line
+ * before the graph bridge could read it.
+ *
+ * Rust is the language that can express this — `fn f() { use m::*; }` is legal.
+ * Python cannot: `from x import *` inside a `def` is a SyntaxError.
+ *
+ * Each case asserts the expansion really happened. Left to itself the helper's
+ * target contributes no names, `expandWildcard` returns the original edge
+ * untouched, and the assertion on the reason would hold no matter what the
+ * expansion path does with the flag.
+ */
+describe('Rust: a function-local wildcard survives expansion', () => {
+  it('`fn f() { use crate::m::*; }` is deferred on every expanded edge', () => {
+    const { reason, edges } = rsWildcard('fn f() {\n    use crate::m::*;\n    let _ = X;\n}\n');
+    // Two names in, two `wildcard-expanded` edges out — expansion ran.
+    expect(edges.map((e) => e.kind)).toStrictEqual(['wildcard-expanded', 'wildcard-expanded']);
+    expect(edges.map((e) => e.localName)).toStrictEqual(['X', 'Y']);
+    // The flag is on each expanded edge, not merely on a pair that dedup
+    // happened to rank from something else.
+    expect(edges.map((e) => e.runsOnlyWhenCalled)).toStrictEqual([true, true]);
+    expect(reason).toBe(DEFERRED);
+  });
+
+  it('a top-level `use crate::m::*;` expands to UNtagged edges', () => {
+    const { reason, edges } = rsWildcard('use crate::m::*;\n\nfn f() {\n    let _ = X;\n}\n');
+    expect(edges.map((e) => e.kind)).toStrictEqual(['wildcard-expanded', 'wildcard-expanded']);
+    expect(edges.map((e) => e.runsOnlyWhenCalled)).toStrictEqual([undefined, undefined]);
+    expect(reason).toBe(PLAIN);
+  });
+});
+
+/**
+ * C `#include` is spliced, not executed — so position cannot defer it.
+ *
+ * The Pass-3 rule is about EXECUTION: an import inside a function body runs
+ * when the function is called. A `#include` is a preprocessor directive; the
+ * header's text is spliced in before the program starts, wherever the directive
+ * sits, and C permits it inside a function body. So an include cycle built from
+ * such directives is REAL, and tagging one deferred makes `check --cycles` drop
+ * it. A suppressed true cycle is the failure direction that matters — the C
+ * provider declares `importsSplicedAtCompileTime` to opt out of the walk.
+ *
+ * Python rides along in the same test rather than in its own: "nothing is ever
+ * tagged" would satisfy the C assertion on its own, and this is the file where
+ * that regression is cheapest to catch.
+ */
+describe('C: a `#include` inside a function body is NOT deferred', () => {
+  it('the include stays an initialization dependency while Python defers', () => {
+    // `void f(void) { #include "m.h" }` — the directive sits in a `Block`
+    // inside a `Function`, the exact shape the position walk marks for every
+    // language that executes its imports.
+    expect(c('void f(void) {\n#include "m.h"\n}\n')).toBe(PLAIN);
+    // Same run, same rule, a language whose imports do execute. Without this,
+    // an opt-out that leaked to every provider would still pass above.
+    expect(py('def loader():\n    from m import X\n    return X\n')).toBe(DEFERRED);
+  });
+
+  it('a top-level `#include` is an initialization dependency too', () => {
+    // The control on the control: the opt-out withholds deferral, it does not
+    // change what an ordinary include already was.
+    expect(c('#include "m.h"\n\nvoid f(void) {}\n')).toBe(PLAIN);
   });
 });

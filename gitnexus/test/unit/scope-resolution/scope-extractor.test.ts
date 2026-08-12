@@ -429,6 +429,59 @@ describe('Pass 3: runsOnlyWhenCalled', () => {
     );
     expect(result.parsedImports).toEqual([named]);
   });
+
+  // ─── The provider capability that opts out of the position rule ──────────
+  //
+  // The walk answers "does this run only when the enclosing function is
+  // called?", which presupposes the import is a statement that RUNS. C/C++
+  // `#include` is not: the preprocessor splices the header in before the
+  // program starts, wherever the directive sits — and C allows it inside a
+  // function body. Deferring one would make `check --cycles` drop an include
+  // cycle that is entirely real, and suppressing a true cycle is the failure
+  // direction that matters.
+  //
+  // The opt-out is a capability on the provider, checked here, rather than a
+  // language test inside the walk: shared `core/ingestion/` pipeline code must
+  // not name languages (AGENTS.md). These cases pin the CONTRACT — that the
+  // flag is read at all and that its default is unchanged — with no language
+  // in sight. `function-local-import-chain.test.ts` pins the C provider end of
+  // it against real `#include` source.
+
+  it('a provider whose imports are spliced at compile time is never marked', () => {
+    const result = extract(
+      [
+        scopeMatch('module', 1, 0, 100, 0),
+        scopeMatch('function', 2, 0, 99, 0),
+        importMatch(12, 0, 12, 30),
+      ],
+      'a.c',
+      mockProvider({ interpretImport: () => named, importsSplicedAtCompileTime: true }),
+    );
+    // Byte-identical to the un-deferred shape, not merely `!== true`.
+    expect(result.parsedImports).toEqual([named]);
+  });
+
+  it('the identical captures ARE marked for a provider that does not declare it', () => {
+    // The control that makes the case above mean something: same scopes, same
+    // import position, only the capability differs.
+    const captures = [
+      scopeMatch('module', 1, 0, 100, 0),
+      scopeMatch('function', 2, 0, 99, 0),
+      importMatch(12, 0, 12, 30),
+    ];
+    expect(
+      extract(captures, 'a.ts', mockProvider({ interpretImport: () => named })).parsedImports,
+    ).toEqual([{ ...named, runsOnlyWhenCalled: true }]);
+    // `false` is the same as absent — the flag withholds deferral, it never
+    // adds it, so an explicit `false` has to behave exactly like the default.
+    expect(
+      extract(
+        captures,
+        'a.ts',
+        mockProvider({ interpretImport: () => named, importsSplicedAtCompileTime: false }),
+      ).parsedImports,
+    ).toEqual([{ ...named, runsOnlyWhenCalled: true }]);
+  });
 });
 
 // ─── §Pass 4: type bindings ───────────────────────────────────────────────

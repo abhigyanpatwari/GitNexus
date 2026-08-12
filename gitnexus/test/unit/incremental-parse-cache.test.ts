@@ -196,12 +196,26 @@ describe('PARSE_CACHE_VERSION', () => {
   // capture change, the first being the easy-to-miss half. 60 was staged while
   // main was 53, chosen above every in-flight MAXIMUM rather than at main + 1;
   // #2899 then cascaded main to 59, and 60 survived only because of that choice.
-  it('pins SCHEMA_BUMP to 60 so concurrent bumps cannot silently collide (#2766)', () => {
-    expect(Number(PARSE_CACHE_VERSION.split('+', 1)[0])).toBe(60);
+  // Moved 60 -> 62 for the cycle-checker fix's two optional `ParsedImport`
+  // fields, `typeOnly` and `runsOnlyWhenCalled`. Neither is a capture, but
+  // `parsedfile-store.ts` serializes the whole ParsedFile generically, so both
+  // are part of the cached shape — the same half of #2864 that was easy to miss.
+  // A warm cache would replay untagged imports, the strict `=== true` reads
+  // would take the untagged path, and `check --cycles` would keep reporting the
+  // erased and deferred imports the branch exists to stop reporting: a silent
+  // no-op on incremental analyze while every cold-run test passes.
+  // 62 rather than 61 because main holds 60 and PR #2935 already claims 61 —
+  // the next free value above every in-flight MAXIMUM, not above origin/main.
+  it('pins SCHEMA_BUMP to 62 so concurrent bumps cannot silently collide (#2766)', () => {
+    expect(Number(PARSE_CACHE_VERSION.split('+', 1)[0])).toBe(62);
     // The PREVIOUS version must fail the reuse gate, not merely differ from the
     // current one — a hardcoded number outside the conflict hunk rebases cleanly
     // while being wrong, which is exactly how the 37/38 exact clashes landed.
-    expect(Number(PARSE_CACHE_VERSION.split('+', 1)[0])).not.toBe(59);
+    // Both neighbours are named: 60 is what origin/main holds, so a rebase that
+    // drops this branch's bump lands there, and 61 is PR #2935's live claim, so
+    // a renumber that reaches for "main + 1" collides with it.
+    expect(Number(PARSE_CACHE_VERSION.split('+', 1)[0])).not.toBe(60);
+    expect(Number(PARSE_CACHE_VERSION.split('+', 1)[0])).not.toBe(61);
   });
 
   it('embeds the gitnexus package version (so upgrades invalidate the cache)', () => {

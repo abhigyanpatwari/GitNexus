@@ -145,6 +145,53 @@ describe('a mixed statement is an initialization dependency', () => {
   });
 });
 
+/**
+ * Which `ParsedImport.kind` each erasable spelling actually arrives as.
+ *
+ * `finalize-algorithm.ts`'s `typeOnlyFor` reads `typeOnly` for exactly four
+ * kinds — `named`, `alias`, `namespace`, `reexport` — and every other kind goes
+ * through a compile-time assertion that it declares no `typeOnly` at all. That
+ * makes the TYPE side of the correspondence unable to drift silently. This is
+ * the other side: the kinds `interpret.ts` actually produces for the spellings
+ * that carry the `type` keyword.
+ *
+ * It is pinned because the correspondence is not obvious from either end and
+ * has already been misread once. There is no `default` kind on `ParsedImport`;
+ * the decomposer's `default` case — `import type Foo from './m'` — comes
+ * through as `alias`, and `import type * as NS from './m'` as `namespace`.
+ * Reading "default import" as an unhandled kind is the natural mistake, and
+ * this table is what answers it. The reason assertions above prove the fact
+ * reaches the graph; these name the kind that carried it, so a failure points
+ * at the correspondence instead of somewhere in four modules.
+ */
+describe('the erasable spellings map onto exactly the kinds typeOnlyFor handles', () => {
+  it.each([
+    ['import type { X } from "./b";', 'named'],
+    ['import { type X } from "./b";', 'named'],
+    ['import type D from "./b";', 'alias'],
+    ['import { type X as Y } from "./b";', 'alias'],
+    ['import type * as N from "./b";', 'namespace'],
+    ['export type { X } from "./b";', 'reexport'],
+    ['export { type X } from "./b";', 'reexport'],
+  ])('%s → one `%s` import carrying typeOnly', (src, kind) => {
+    expect(parseImports(src)).toEqual([expect.objectContaining({ kind, typeOnly: true })]);
+  });
+
+  it.each([
+    ['import D from "./b";', 'alias'],
+    ['import * as N from "./b";', 'namespace'],
+  ])('%s → the same `%s` kind WITHOUT typeOnly', (src, kind) => {
+    // The runtime twin of each. Same kind, no marker — so the four kinds above
+    // are not "the type-only kinds", they are ordinary kinds that a `type`
+    // keyword can mark, which is exactly why `typeOnlyFor` cannot infer
+    // erasure from `kind` and has to read the property.
+    const imports = parseImports(src);
+    expect(imports).toEqual([expect.objectContaining({ kind })]);
+    // `hasOwn`, not a value check: the marker is absent, not present-and-false.
+    expect(imports.map((p) => Object.hasOwn(p, 'typeOnly'))).toStrictEqual([false]);
+  });
+});
+
 describe('type-only against deferred', () => {
   it('a deferred import beside a type-only one wins — the module does load', () => {
     // `import('./b')` arrives as `kind: 'dynamic-resolved'`; the

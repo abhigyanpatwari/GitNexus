@@ -181,7 +181,14 @@ export type ParsedImport =
        * initialization order, and deferring one is the standard way to BREAK
        * an init cycle, so counting it reports the fix as the bug.
        *
-       * Set by the central extractor for every language, not by providers.
+       * Set by the central extractor for every language, not by providers —
+       * except that a provider may declare its imports spliced at compile time
+       * (`LanguageProvider.importsSplicedAtCompileTime`) and be skipped
+       * entirely. A C/C++ `#include` inside a function body is not deferred:
+       * the preprocessor splices the header in before anything runs, so the
+       * pair really is an initialization dependency and the include cycle it
+       * can form is real.
+       *
        * Absent reads as "runs at initialization" — the fail-safe direction,
        * since it only makes `check --cycles` over-report.
        */

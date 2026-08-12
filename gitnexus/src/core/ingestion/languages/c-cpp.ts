@@ -420,6 +420,13 @@ export const cProvider = defineLanguage({
   collectCaptureSideChannel: (filePath) =>
     assertCloneable(collectCStaticLinkageSideChannel(filePath)),
   interpretImport: interpretCImport,
+  // `#include` is a preprocessor directive, not a statement that runs. The
+  // header text is spliced in before the program starts, wherever the directive
+  // sits — and C allows it inside a function body. Without this the central
+  // Pass-3 position rule would mark such an include `runsOnlyWhenCalled` and
+  // `check --cycles` would silently drop an include cycle that is entirely
+  // real. See `LanguageProvider.importsSplicedAtCompileTime`.
+  importsSplicedAtCompileTime: true,
   interpretTypeBinding: interpretCTypeBinding,
   bindingScopeFor: cBindingScopeFor,
   importOwningScope: cImportOwningScope,
@@ -500,6 +507,12 @@ export const cppProvider = defineLanguage({
   // re-parse (#1983). See `cpp/capture-side-channel.ts`.
   collectCaptureSideChannel: (filePath) => assertCloneable(collectCppCaptureSideChannel(filePath)),
   interpretImport: interpretCppImport,
+  // Same as C — `cpp/query.ts` emits `@import.statement` for `preproc_include`
+  // too. It holds for C++'s whole import surface: the only other form Pass 3
+  // sees is `@import.using-decl` (`using ns::name` / `using namespace ns`),
+  // which is a compile-time name-lookup declaration and executes no more than
+  // an `#include` does. See the note on `cProvider`.
+  importsSplicedAtCompileTime: true,
   interpretTypeBinding: interpretCppTypeBinding,
   bindingScopeFor: cppBindingScopeFor,
   importOwningScope: cppImportOwningScope,

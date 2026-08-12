@@ -46,7 +46,10 @@
  *      keyed by the file's Module scope only (see
  *      `ParsedImport.runsOnlyWhenCalled`). This is a position fact, not a
  *      syntax one, so it is decided centrally for every language rather than
- *      per provider. Providers still decide their own *syntactic* nesting
+ *      per provider — with one capability a provider may declare to opt out
+ *      of it entirely, `importsSplicedAtCompileTime`, because position cannot
+ *      defer an import the compiler splices before anything runs (C/C++
+ *      `#include`). Providers still decide their own *syntactic* nesting
  *      facts in their capture emitters, where the node is in hand (see
  *      `languages/python/import-decomposer.ts`).
  *   4. **Collect type bindings.** Walk `@type-binding.*` matches. Call
@@ -100,10 +103,10 @@ import { parseTypeParameterList } from './utils/type-parameters.js';
 // ─── Narrow hook surface the extractor actually uses ───────────────────────
 
 /**
- * The subset of `LanguageProvider` hooks that `extract()` reads. Declared
- * as its own type so:
+ * The subset of `LanguageProvider` members that `extract()` reads — the hooks
+ * it calls plus the capability flags it consults. Declared as its own type so:
  *
- *   - Tests can implement just these six hooks without faking the whole
+ *   - Tests can implement just these members without faking the whole
  *     `LanguageProvider` interface (which is ~40 fields including the
  *     legacy-DAG surface).
  *   - The extractor's dependency contract stays explicit — adding a new
@@ -118,6 +121,7 @@ export type ScopeExtractorHooks = Pick<
   | 'scopeOwnsReceivers'
   | 'bindingScopeFor'
   | 'interpretImport'
+  | 'importsSplicedAtCompileTime'
   | 'interpretTypeBinding'
   | 'classifyCallForm'
 >;
@@ -976,13 +980,16 @@ const MAX_IMPORT_SCOPE_DEPTH = 512;
  * and a CommonJS `require()` in a function body, which are deferred for exactly
  * the same reason.
  *
- * Known imprecision, and it is the language-agnostic rule's price: a C/C++
- * `#include` written inside a function body is spliced at compile time and is
- * not deferred at all, so marking it makes `check --cycles` drop an include
- * cycle formed only by such directives. Deciding otherwise would take
- * knowledge of which languages "import" textually, and shared ingestion code
- * must not branch on language (AGENTS.md). The shape is vanishingly rare —
- * headers generally cannot be included at function scope at all.
+ * The rule is about EXECUTION, so it does not hold for a language whose
+ * imports are not executed statements. A C/C++ `#include` written inside a
+ * function body — which C permits — is spliced by the preprocessor before the
+ * program runs, so it is a full initialization dependency and an include cycle
+ * built from such directives is REAL. Marking it deferred would make
+ * `check --cycles` drop that cycle, and suppressing a true cycle is the
+ * failure direction that matters. Such a language opts out by declaring
+ * `LanguageProvider.importsSplicedAtCompileTime`, checked by the caller — the
+ * capability is named on the provider rather than the language being named
+ * here, because shared ingestion code must not branch on language (AGENTS.md).
  *
  * Decided HERE and nowhere later because this is the last stage that knows the
  * answer — see `ParsedImport.runsOnlyWhenCalled` for why finalize and the graph
@@ -1011,6 +1018,13 @@ function pass3CollectImports(
   scopeTree: ReturnType<typeof buildScopeTree>,
 ): void {
   if (provider.interpretImport === undefined) return;
+  // Hoisted: the capability is a property of the language, identical for every
+  // match in the file. A provider that declares its imports spliced at compile
+  // time (C/C++ `#include`) skips the position walk entirely — position cannot
+  // defer a directive the preprocessor resolves before anything runs, and
+  // marking one deferred would hide a real include cycle. See
+  // `LanguageProvider.importsSplicedAtCompileTime`.
+  const positionCanDefer = provider.importsSplicedAtCompileTime !== true;
   for (const match of matches) {
     const anchor = anchorCaptureFor(match, '@import.');
     if (anchor === undefined) continue;
@@ -1020,11 +1034,9 @@ function pass3CollectImports(
     // it. An unlocatable anchor leaves the import unmarked, which reads as
     // "runs at initialization" — the fail-safe direction, since it can only
     // make `check --cycles` over-report.
-    const inScopeId = positionIndex.atPosition(
-      filePath,
-      anchor.range.startLine,
-      anchor.range.startCol,
-    );
+    const inScopeId = positionCanDefer
+      ? positionIndex.atPosition(filePath, anchor.range.startLine, anchor.range.startCol)
+      : undefined;
     const deferred = inScopeId !== undefined && runsOnlyWhenCalled(scopeTree, inScopeId);
     parsedImports.push(deferred ? { ...parsed, runsOnlyWhenCalled: true } : parsed);
   }

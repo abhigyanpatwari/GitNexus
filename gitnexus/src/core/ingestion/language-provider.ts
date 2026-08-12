@@ -444,6 +444,45 @@ interface LanguageProviderConfig {
   readonly interpretImport?: (captures: CaptureMatch) => ParsedImport | null;
 
   /**
+   * Are this language's imports spliced at COMPILE time, so that where one is
+   * written cannot defer it?
+   *
+   * The scope extractor marks an import `runsOnlyWhenCalled` when the statement
+   * sits inside a `Function` scope (Pass 3), because in every language whose
+   * imports execute, an import in a function body runs only when that function
+   * is called — Python's `def f(): from x import Y`, Rust's fn-local `use`,
+   * Ruby's `def f; require 'x'; end`, a CommonJS `require()` in a body. That
+   * rule is about EXECUTION, and it is wrong for a language where the import is
+   * not an executed statement at all.
+   *
+   * **The motivating case is C/C++ `#include`.** The preprocessor splices the
+   * header's text in before a single line of the program runs, and it does so
+   * wherever the directive appears — including inside a function body, which C
+   * permits. So a `#include` written in a body is a full-strength
+   * initialization dependency, and an include cycle formed by such directives
+   * is a REAL cycle. Marking it deferred makes `check --cycles` drop it, and a
+   * suppressed true cycle is the failure direction that matters: a reported
+   * false one is visible and arguable, a hidden real one is not.
+   *
+   * Set to `true` only for a language whose "import" is a textual/compile-time
+   * splice. Absent (the default) keeps the position rule, so every other
+   * provider is unchanged; the flag never ADDS deferral, it only withholds it.
+   * It is per-provider, not per-import, so a language that mixes spliced and
+   * executed import forms would need a finer hook — C and C++ do not: C++'s
+   * only other form, `using ns::name`, is compile-time name lookup and defers
+   * no more than an `#include` does.
+   *
+   * A capability on the provider rather than a language check in
+   * `scope-extractor.ts`: shared `core/ingestion/` pipeline code must not name
+   * languages (AGENTS.md), and the property being described — "imports here are
+   * spliced, not executed" — belongs to the language, not to the walk.
+   *
+   * Default: undefined (imports execute where they are written; position
+   * defers them).
+   */
+  readonly importsSplicedAtCompileTime?: boolean;
+
+  /**
    * What is the implicit receiver on a Function scope? For instance methods
    * this is `self`/`this`; for standalone functions it is `null`. Consulted
    * by `Registry.lookup` Step 2 via the `resolveTypeRef` helper.
