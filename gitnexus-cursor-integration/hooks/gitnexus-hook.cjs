@@ -85,10 +85,66 @@ function findGitNexusDir(startDir) {
   return null;
 }
 
+function tokenizeShellWords(command) {
+  const tokens = [];
+  let current = '';
+  let quote = null;
+  let escaped = false;
+  let hasToken = false;
+
+  for (const char of command) {
+    if (escaped) {
+      current += char;
+      escaped = false;
+      hasToken = true;
+      continue;
+    }
+
+    if (quote === "'") {
+      if (char === "'") quote = null;
+      else current += char;
+      hasToken = true;
+      continue;
+    }
+
+    if (quote === '"') {
+      if (char === '"') {
+        quote = null;
+      } else if (char === '\\') {
+        escaped = true;
+      } else {
+        current += char;
+      }
+      hasToken = true;
+      continue;
+    }
+
+    if (char === '\\') {
+      escaped = true;
+      hasToken = true;
+    } else if (char === "'" || char === '"') {
+      quote = char;
+      hasToken = true;
+    } else if (/\s/.test(char)) {
+      if (hasToken) tokens.push(current);
+      current = '';
+      hasToken = false;
+    } else {
+      current += char;
+      hasToken = true;
+    }
+  }
+
+  if (escaped) current += '\\';
+  if (hasToken) tokens.push(current);
+  return tokens;
+}
+
 function parseRgGrepPattern(cmd) {
-  const tokens = cmd.split(/\s+/);
+  const tokens = tokenizeShellWords(cmd);
   let foundCmd = false;
   let skipNext = false;
+  let skipNextAsPattern = false;
   const flagsWithValues = new Set([
     '-e',
     '-f',
@@ -103,22 +159,33 @@ function parseRgGrepPattern(cmd) {
     '--include',
     '--exclude',
   ]);
+  const patternFlags = new Set(['-e', '--regexp']);
 
   for (const token of tokens) {
     if (skipNext) {
       skipNext = false;
+      if (skipNextAsPattern) {
+        skipNextAsPattern = false;
+        return token.length >= 3 ? token : null;
+      }
       continue;
     }
     if (!foundCmd) {
-      if (/\brg$|\bgrep$/.test(token)) foundCmd = true;
+      const commandName = token
+        .split(/[\\/]/)
+        .pop()
+        ?.replace(/\.exe$/i, '');
+      if (commandName === 'rg' || commandName === 'grep') foundCmd = true;
       continue;
     }
     if (token.startsWith('-')) {
-      if (flagsWithValues.has(token)) skipNext = true;
+      if (flagsWithValues.has(token) || patternFlags.has(token)) {
+        skipNext = true;
+        skipNextAsPattern = patternFlags.has(token);
+      }
       continue;
     }
-    const cleaned = token.replace(/['"]/g, '');
-    return cleaned.length >= 3 ? cleaned : null;
+    return token.length >= 3 ? token : null;
   }
   return null;
 }
@@ -282,4 +349,6 @@ function main() {
   }
 }
 
-main();
+if (require.main === module) main();
+
+module.exports = { parseRgGrepPattern, tokenizeShellWords };
