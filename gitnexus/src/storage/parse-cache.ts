@@ -468,7 +468,19 @@ import type { ParseWorkerResult } from '../core/ingestion/workers/parse-worker.j
 // Still open at this commit: #2891 also claims 59, which main now holds. That is
 // a live exact clash for #2891 to renumber, not for this branch.
 // RE-CHECK AGAINST origin/main IMMEDIATELY BEFORE MERGING.
-const SCHEMA_BUMP = 60;
+//
+// 60 -> 64 for #2912's `ReferenceSite.typeArguments`: the generic arguments a
+// heritage reference was written with (`: IValidator<string>`), derived at
+// EXTRACTION time from the anchor's spelling. A warm cache replays `inherits`
+// sites with the field absent, absence is the fail-open "unknown", and
+// generic-instantiation filtering therefore degrades to the pre-fix fan-out on
+// exactly the unchanged files — silent, and passing every cold-run test.
+//
+// 64 and not 61 per the ledger above: take the next free value above every
+// in-flight MAXIMUM, not above origin/main. At this commit main holds 60 and
+// three open PRs claim 61 (#2935), 62 (#2936) and 63 (#2934).
+// RE-CHECK AGAINST origin/main IMMEDIATELY BEFORE MERGING.
+const SCHEMA_BUMP = 64;
 const GITNEXUS_PKG_VERSION = (() => {
   try {
     // package.json sits at gitnexus/package.json — two levels up from

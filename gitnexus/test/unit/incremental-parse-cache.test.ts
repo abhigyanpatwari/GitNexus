@@ -196,12 +196,20 @@ describe('PARSE_CACHE_VERSION', () => {
   // capture change, the first being the easy-to-miss half. 60 was staged while
   // main was 53, chosen above every in-flight MAXIMUM rather than at main + 1;
   // #2899 then cascaded main to 59, and 60 survived only because of that choice.
-  it('pins SCHEMA_BUMP to 60 so concurrent bumps cannot silently collide (#2766)', () => {
-    expect(Number(PARSE_CACHE_VERSION.split('+', 1)[0])).toBe(60);
+  // Moved 60 -> 64 for #2912's `ReferenceSite.typeArguments` — heritage generic
+  // arguments derived at extraction time, so a warm cache replays `inherits`
+  // sites without them and instantiation-aware dispatch degrades silently to the
+  // pre-fix fan-out. 64 clears the three claims in flight at that commit (61,
+  // 62, 63), per the "above every in-flight maximum" rule.
+  it('pins SCHEMA_BUMP to 64 so concurrent bumps cannot silently collide (#2766)', () => {
+    expect(Number(PARSE_CACHE_VERSION.split('+', 1)[0])).toBe(64);
     // The PREVIOUS version must fail the reuse gate, not merely differ from the
     // current one — a hardcoded number outside the conflict hunk rebases cleanly
     // while being wrong, which is exactly how the 37/38 exact clashes landed.
-    expect(Number(PARSE_CACHE_VERSION.split('+', 1)[0])).not.toBe(59);
+    // The neighbours a concurrent branch could land on are guarded too.
+    for (const taken of [60, 61, 62, 63]) {
+      expect(Number(PARSE_CACHE_VERSION.split('+', 1)[0])).not.toBe(taken);
+    }
   });
 
   it('embeds the gitnexus package version (so upgrades invalidate the cache)', () => {

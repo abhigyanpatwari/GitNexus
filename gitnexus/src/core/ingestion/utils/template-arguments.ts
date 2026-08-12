@@ -47,6 +47,73 @@ export function extractTemplateArguments(text: string): string[] | undefined {
   return args.length > 0 ? args : undefined;
 }
 
+/**
+ * The type ARGUMENTS a reference applies to its base, read from the reference's
+ * own source spelling: `IValidator<string>` → `['string']`, `Base[User]` →
+ * `['User']`, `Repository` → `undefined`.
+ *
+ * The inverse direction of {@link erasedTypeApplication}, which rebuilds the
+ * `Base<Args>` SPELLING so a lookup can stay grounded; this returns the
+ * ARGUMENTS so a consumer that has already resolved the base can ask which
+ * instantiation it was (#2912).
+ *
+ * Both bracket families count, because both spell type application in a
+ * heritage position — `class C : IValidator<string>` and Go's `struct { Base[int] }`
+ * / Python's `class C(Base[User])`. What is NOT accepted is anything that fails
+ * to be exactly one balanced, non-empty list closing at the very end:
+ *
+ *   - `Base(args)`      — a C# primary-constructor base, not an application.
+ *   - `Foo[]`           — an empty list is an array spelling, not arguments.
+ *   - `(Int) -> Unit`   — a Kotlin function type, whose `>` closes nothing.
+ *
+ * Declining is the safe outcome for all of them: absence reads as "unknown"
+ * and every consumer of this fails open on it.
+ */
+export function typeApplicationArguments(spelling: string): string[] | undefined {
+  const text = spelling.trim();
+  const start = text.search(/[<[]/);
+  if (start === -1) return undefined;
+  const opener = text[start] as '<' | '[';
+  const closer = opener === '<' ? '>' : ']';
+  let depth = 0;
+  for (let i = start; i < text.length; i++) {
+    if (text[i] === opener) depth++;
+    else if (text[i] === closer) {
+      depth--;
+      if (depth > 0) continue;
+      // One list, closing on the LAST character, holding something.
+      if (depth < 0 || i !== text.length - 1) return undefined;
+      const args = splitTopLevelArguments(text.slice(start + 1, i));
+      return args.length > 0 ? args : undefined;
+    }
+  }
+  return undefined;
+}
+
+/** Split `string, Map<int, bool>` on the commas that are not inside a nested
+ *  list. Tracks BOTH bracket families so a mixed spelling (`List<Dict[a, b]>`)
+ *  does not split inside the inner one. */
+function splitTopLevelArguments(inner: string): string[] {
+  const args: string[] = [];
+  let depth = 0;
+  let tokenStart = 0;
+  const push = (end: number): void => {
+    const token = inner.slice(tokenStart, end).trim();
+    if (token.length > 0) args.push(token);
+  };
+  for (let i = 0; i < inner.length; i++) {
+    const ch = inner[i];
+    if (ch === '<' || ch === '[') depth++;
+    else if (ch === '>' || ch === ']') depth--;
+    else if (ch === ',' && depth === 0) {
+      push(i);
+      tokenStart = i + 1;
+    }
+  }
+  push(inner.length);
+  return args;
+}
+
 export function stripTemplateArguments(text: string): string {
   const start = text.indexOf('<');
   if (start === -1) return text;

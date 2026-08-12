@@ -86,7 +86,7 @@ import type {
 import { buildPositionIndex, buildScopeTree, canParentScope, makeScopeId } from 'gitnexus-shared';
 import type { LanguageProvider } from './language-provider.js';
 import { isValidReceiverChain } from './utils/receiver-chain-codec.js';
-import { extractTemplateArguments } from './utils/template-arguments.js';
+import { extractTemplateArguments, typeApplicationArguments } from './utils/template-arguments.js';
 import { parseTypeParameterList } from './utils/type-parameters.js';
 
 // ─── Narrow hook surface the extractor actually uses ───────────────────────
@@ -1156,6 +1156,19 @@ function pass5CollectReferences(
     // sibling via the full-path QualifiedNameIndex before the simple-tail walk
     // (#1982). Absent for unqualified references — resolution stays unchanged.
     const qualifiedCap = match['@reference.qualified-name'];
+    // Generic ARGUMENTS written on a heritage reference (`: IValidator<string>`),
+    // recovered from the anchor's own text because `name` is deliberately the
+    // erased base (#2912). Read from the anchor rather than from a new per-
+    // language capture: every emitter already anchors `@reference.inherits` on
+    // the whole base node, so this needs no query change anywhere and stays
+    // absent — the "unknown", fail-open value — for an emitter that anchors on
+    // the bare name instead.
+    //
+    // `inherits` only. Call/read/write anchors span the whole call expression,
+    // whose `<…>` would be an argument list, a comparison, or nothing at all;
+    // widening the kind would mint confident nonsense from those spellings.
+    const typeArguments =
+      kind === 'inherits' ? referenceTypeArguments(anchor.text, nameCap.text) : undefined;
     const inScopeId = positionIndex.atPosition(
       filePath,
       anchor.range.startLine,
@@ -1207,6 +1220,7 @@ function pass5CollectReferences(
       ...(qualifiedCap?.text !== undefined && qualifiedCap.text.length > 0
         ? { rawQualifiedName: qualifiedCap.text }
         : {}),
+      ...(typeArguments !== undefined ? { typeArguments } : {}),
       ...(propertyKeyCap?.text !== undefined && propertyKeyCap.text.length > 0
         ? { propertyKey: propertyKeyCap.text }
         : {}),
@@ -1221,6 +1235,50 @@ function pass5CollectReferences(
     };
     referenceSites.push(site);
   }
+}
+
+/**
+ * Type arguments written on a heritage reference, read from the anchor's own
+ * spelling — `IValidator<string>` → `['string']` (#2912).
+ *
+ * Two shapes are handled before the spelling is read as an application:
+ *
+ *   - A trailing CONSTRUCTOR INVOCATION is dropped. `record R : Base<int>(x)`
+ *     and Kotlin `class C : Bar<Int>()` write a call in the heritage position;
+ *     the call is not part of the type, and leaving it attached would make the
+ *     list fail to close at the end and lose the arguments entirely.
+ *   - The application's base must BE the referenced name (`Other::Inner<T>`
+ *     ends with `Inner`). An anchor that spans more than the base type is not
+ *     read at all rather than read wrongly.
+ *
+ * `undefined` for a non-generic base and for every spelling that is not exactly
+ * one balanced argument list — absence is the "unknown" value that consumers
+ * fail open on, so declining is always safe here.
+ */
+function referenceTypeArguments(
+  anchorText: string,
+  baseName: string,
+): readonly string[] | undefined {
+  const text = stripTrailingCallSuffix(anchorText.trim());
+  const opener = text.search(/[<[]/);
+  if (opener === -1) return undefined;
+  if (!text.slice(0, opener).trimEnd().endsWith(baseName)) return undefined;
+  return typeApplicationArguments(text);
+}
+
+/** Drop a balanced `(...)` that ENDS the text: the argument list of a base's
+ *  constructor invocation. Anything else is returned unchanged. */
+function stripTrailingCallSuffix(text: string): string {
+  if (!text.endsWith(')')) return text;
+  let depth = 0;
+  for (let i = text.length - 1; i >= 0; i--) {
+    if (text[i] === ')') depth++;
+    else if (text[i] === '(') {
+      depth--;
+      if (depth === 0) return text.slice(0, i).trimEnd();
+    }
+  }
+  return text;
 }
 
 function referenceKindFromAnchor(name: string): ReferenceKind | undefined {

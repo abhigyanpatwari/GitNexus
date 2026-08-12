@@ -102,6 +102,49 @@ const csharpScopeResolver: ScopeResolver = {
   // files. The compound-receiver walker needs to walk up from the
   // class scope to find them; see the contract field for rationale.
   hoistTypeBindingsToModule: true,
+
+  // `IValidator<string>` and `IValidator<String>` are one instantiation, so the
+  // dispatch fan-out must not read them as two (#2912). See the alias table.
+  normalizeTypeArgument: normalizeCsharpTypeArgument,
 };
+
+/**
+ * C# predefined type aliases — the 15 keywords the language defines as exact
+ * synonyms for `System` types (`string` ≡ `System.String`), plus `nint`/`nuint`.
+ * A codebase mixing the spellings is common enough that StyleCop ships a rule
+ * about it (SA1121), so the two forms genuinely meet across files.
+ *
+ * Keyword → BCL simple name; anything else is returned unchanged, including the
+ * BCL names themselves (already canonical) and any qualified spelling, which is
+ * compared as written.
+ */
+const CSHARP_PREDEFINED_TYPE_ALIASES: ReadonlyMap<string, string> = new Map([
+  ['bool', 'Boolean'],
+  ['byte', 'Byte'],
+  ['sbyte', 'SByte'],
+  ['char', 'Char'],
+  ['decimal', 'Decimal'],
+  ['double', 'Double'],
+  ['float', 'Single'],
+  ['int', 'Int32'],
+  ['uint', 'UInt32'],
+  ['long', 'Int64'],
+  ['ulong', 'UInt64'],
+  ['short', 'Int16'],
+  ['ushort', 'UInt16'],
+  ['nint', 'IntPtr'],
+  ['nuint', 'UIntPtr'],
+  ['object', 'Object'],
+  ['string', 'String'],
+]);
+
+function normalizeCsharpTypeArgument(name: string): string {
+  // `System.` is dropped first so the fully-qualified spelling of a predefined
+  // type meets its keyword: `System.String` → `String` ≡ `string` → `String`.
+  // Only that one namespace, and only as a whole prefix — an unrelated
+  // `Foo.String` stays qualified and is compared as written.
+  const trimmed = name.trim().replace(/^System\./, '');
+  return CSHARP_PREDEFINED_TYPE_ALIASES.get(trimmed) ?? trimmed;
+}
 
 export { csharpScopeResolver };

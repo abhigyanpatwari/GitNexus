@@ -95,6 +95,7 @@ import {
 } from '../passes/callable-value-flow.js';
 import type { ScopeResolver, UndecidedSatisfaction } from '../contract/scope-resolver.js';
 import { findEnclosingClassDef, resolveInheritanceBaseInScope } from '../scope/walkers.js';
+import { heritageTypeArgumentsKey } from '../utils/generic-instantiation.js';
 import { buildWorkspaceResolutionIndex } from '../workspace-index.js';
 import type { ResolutionOutcome, ResolutionOutcomeRecorder } from '../resolution-outcome.js';
 import { logHeapProbe } from '../../utils/heap-probe.js';
@@ -148,14 +149,22 @@ function emitInheritanceEdgeDirect(
  * graph in time for `buildMro`, while `handledSites` prevents the generic
  * reference-edge bridge from re-emitting the same sites later.
  *
- * @returns Site keys to seed the downstream handled-site skip set.
+ * @returns Site keys to seed the downstream handled-site skip set, plus the
+ * generic INSTANTIATION each heritage edge was written with (#2912) — see
+ * `HeritageTypeArguments` in `utils/generic-instantiation.ts`. This pass is
+ * where that pairing exists at all:
+ * the site carries the arguments and this is the only code that resolves the
+ * site to a (subtype, supertype) pair, so recording it here costs one map write
+ * per generic heritage edge, while recovering it downstream would mean redoing
+ * the resolution against a graph edge that no longer carries the spelling.
  */
 function preEmitInheritanceEdges(
   graph: KnowledgeGraph,
   scopes: ReturnType<typeof finalizeScopeModel>,
   nodeLookup: ReturnType<typeof buildGraphNodeLookup>,
-): Set<string> {
+): { handledSites: Set<string>; heritageTypeArguments: Map<string, readonly string[]> } {
   const handledSites = new Set<string>();
+  const heritageTypeArguments = new Map<string, readonly string[]>();
   const seen = new Set<string>();
   // Tracks inheritance edges emitted during this pass so the structural
   // interface-implementation pass (emitDetectedInterfaceImplementations) and
@@ -207,9 +216,18 @@ function preEmitInheritanceEdges(
     const edgeType: 'EXTENDS' | 'IMPLEMENTS' =
       targetDef.type === 'Interface' || targetDef.type === 'Trait' ? 'IMPLEMENTS' : 'EXTENDS';
     emitInheritanceEdgeDirect(graph, seen, existing, callerGraphId, targetGraphId, edgeType, site);
+    // The instantiation this heritage clause wrote (`: IValidator<string>`),
+    // keyed by the same graph-id pair the edge itself carries. Only generic
+    // bases produce an entry, and the FIRST wins: a repeated (sub, super) pair
+    // is a partial declaration or a re-listed base, and a later entry silently
+    // overwriting the first would make dispatch depend on file order.
+    if (site.typeArguments !== undefined && site.typeArguments.length > 0) {
+      const key = heritageTypeArgumentsKey(callerGraphId, targetGraphId);
+      if (!heritageTypeArguments.has(key)) heritageTypeArguments.set(key, site.typeArguments);
+    }
   }
 
-  return handledSites;
+  return { handledSites, heritageTypeArguments };
 }
 
 /**
@@ -704,9 +722,10 @@ export function runScopeResolution(
     },
   });
   logHeapProbe('sr-post-finalize', `lang=${provider.language}`);
-  const preEmittedInheritanceSites = callableFlowOnly
-    ? new Set<string>()
+  const inheritance = callableFlowOnly
+    ? { handledSites: new Set<string>(), heritageTypeArguments: new Map<string, string[]>() }
     : preEmitInheritanceEdges(graph, finalized, nodeLookup);
+  const preEmittedInheritanceSites = inheritance.handledSites;
   // Call-based heritage hook (e.g., Ruby include/extend/prepend) — emits
   // IMPLEMENTS edges that `preEmitInheritanceEdges` cannot produce because
   // the heritage declarations are syntactic method calls, not grammar-level
@@ -980,6 +999,10 @@ export function runScopeResolution(
           // receiver (`console.log`, `fetch(...)`). Same hook, same spelling as
           // the `emitFreeCallFallback` wiring below.
           isBuiltInName: provider.languageProvider.isBuiltInName,
+          // What each heritage clause instantiated its base with, so the
+          // interface-dispatch fan-out can refuse an incompatible instantiation
+          // (#2912). Empty under `callableFlowOnly`, which emits no dispatch.
+          heritageTypeArguments: inheritance.heritageTypeArguments,
         },
       );
   const receiverExtras = receiverBound.emitted;

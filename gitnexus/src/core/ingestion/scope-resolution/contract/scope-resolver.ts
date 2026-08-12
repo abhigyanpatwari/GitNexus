@@ -1007,6 +1007,25 @@ export interface ScopeResolver {
   readonly isStaticOnly?: (def: SymbolDefinition) => boolean;
 
   /**
+   * Optional canonicalizer for a written GENERIC TYPE ARGUMENT, so two
+   * spellings of one type compare equal during interface-dispatch
+   * instantiation matching (#2912).
+   *
+   * The case it exists for is a language with predefined ALIASES: C# `string`
+   * and `String` are the same type, so `IValidator<string>` must still fan out
+   * to `class V : IValidator<String>`. Without the hook the two spellings look
+   * like two instantiations and the implementor is pruned — a missing edge,
+   * which is the failure direction #2912 is most concerned to avoid.
+   *
+   * Called ONLY on the two sides of one argument comparison, never on a name
+   * used for lookup, so it may map to whatever canonical form the language
+   * prefers (`string` → `String`, or the reverse) as long as it is consistent.
+   * Languages whose types have one spelling each leave it undefined and the
+   * comparison stays exact.
+   */
+  readonly normalizeTypeArgument?: (name: string) => string;
+
+  /**
    * Optional predicate to gate free-call fallback emission by caller-side
    * visibility. When provided, `pickUniqueGlobalCallable` rejects candidates
    * the caller cannot legally reach — e.g., a PHP function in a different
