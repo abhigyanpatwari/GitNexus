@@ -37,6 +37,17 @@ function inheritanceRefs(src: string): string[] {
     .sort();
 }
 
+function recordAccessorDeclarations(src: string) {
+  return emitJavaScopeCaptures(src, 'C.java')
+    .filter((m) => m['@declaration.method'] !== undefined)
+    .map((m) => ({
+      name: m['@declaration.name']?.text,
+      arity: m['@declaration.parameter-count']?.text,
+      requiredArity: m['@declaration.required-parameter-count']?.text,
+      returnType: m['@declaration.return-type']?.text,
+    }));
+}
+
 describe('emitJavaScopeCaptures — constructor reference names (F35 #1928)', () => {
   it('binds the simple name for an unqualified `new User()`', () => {
     const refs = ctorRefs(wrapExpr('new User()'));
@@ -102,6 +113,44 @@ describe('emitJavaScopeCaptures — record interface heritage (#2900)', () => {
   it('does not yet emit enum heritage (#2918)', () => {
     // Delete this characterization when #2918 adds enum interface heritage.
     expect(inheritanceRefs('enum Status implements Named { ACTIVE }')).toEqual([]);
+  });
+});
+
+describe('emitJavaScopeCaptures — record component accessors (#2917)', () => {
+  it('synthesizes zero-argument declarations with full generic return types', () => {
+    expect(
+      recordAccessorDeclarations('record User(String name, java.util.List<String> tags) {}'),
+    ).toEqual([
+      { name: 'name', arity: '0', requiredArity: '0', returnType: 'String' },
+      {
+        name: 'tags',
+        arity: '0',
+        requiredArity: '0',
+        returnType: 'java.util.List<String>',
+      },
+    ]);
+  });
+
+  it('uses the array return type for a varargs component accessor', () => {
+    expect(recordAccessorDeclarations('record Samples(String... values) {}')).toEqual([
+      { name: 'values', arity: '0', requiredArity: '0', returnType: 'String[]' },
+    ]);
+  });
+
+  it('does not duplicate an explicit canonical accessor', () => {
+    const declarations = recordAccessorDeclarations(
+      'record User(String name) { public String name(/* canonical */) { return name; } }',
+    );
+
+    expect(declarations.filter((declaration) => declaration.name === 'name')).toHaveLength(1);
+  });
+
+  it('keeps an overload alongside the implicit zero-argument accessor', () => {
+    const declarations = recordAccessorDeclarations(
+      'record User(String name) { public String name(int repeat) { return name; } }',
+    ).filter((declaration) => declaration.name === 'name');
+
+    expect(declarations.map((declaration) => declaration.arity).sort()).toEqual(['0', '1']);
   });
 });
 

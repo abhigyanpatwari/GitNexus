@@ -1,5 +1,6 @@
 import { describe, it, expect } from 'vitest';
 import { createMethodExtractor } from '../../src/core/ingestion/method-extractors/generic.js';
+import { javaRecordMethodExtractor } from '../../src/core/ingestion/languages/java/record-components.js';
 import {
   javaMethodConfig,
   kotlinMethodConfig,
@@ -98,7 +99,7 @@ const csharpCtx: MethodExtractorContext = {
 // ---------------------------------------------------------------------------
 
 describe('Java MethodExtractor', () => {
-  const extractor = createMethodExtractor(javaMethodConfig);
+  const extractor = javaRecordMethodExtractor;
 
   describe('isTypeDeclaration', () => {
     it('recognizes class_declaration', () => {
@@ -403,6 +404,68 @@ describe('Java MethodExtractor', () => {
       expect(ctor!.parameters).toHaveLength(2);
       expect(ctor!.parameters[0].name).toBe('x');
       expect(ctor!.parameters[1].name).toBe('y');
+    });
+
+    it('synthesizes public zero-argument accessors with full component return types', () => {
+      const tree = parseJava('public record User(String name, java.util.List<String> tags) {}');
+      const result = extractor.extract(tree.rootNode.child(0)!, javaCtx);
+
+      expect(result!.methods).toHaveLength(2);
+      expect(result!.methods).toEqual(
+        expect.arrayContaining([
+          expect.objectContaining({
+            name: 'name',
+            returnType: 'String',
+            parameters: [],
+            visibility: 'public',
+          }),
+          expect.objectContaining({
+            name: 'tags',
+            returnType: 'java.util.List<String>',
+            parameters: [],
+            visibility: 'public',
+          }),
+        ]),
+      );
+    });
+
+    it('exposes a varargs component through its array-typed accessor', () => {
+      const tree = parseJava('public record Samples(String... values) {}');
+      const result = extractor.extract(tree.rootNode.child(0)!, javaCtx);
+
+      expect(result!.methods).toContainEqual(
+        expect.objectContaining({
+          name: 'values',
+          returnType: 'String[]',
+          parameters: [],
+        }),
+      );
+    });
+
+    it('keeps an explicit canonical accessor as the single definition', () => {
+      const tree = parseJava(`
+        public record User(String name) {
+          public String name(/* canonical accessor */) { return name.toUpperCase(); }
+        }
+      `);
+      const result = extractor.extract(tree.rootNode.child(0)!, javaCtx);
+      const accessors = result!.methods.filter((method) => method.name === 'name');
+
+      expect(accessors).toHaveLength(1);
+      expect(accessors[0].line).toBe(3);
+    });
+
+    it('retains an explicit overload alongside the implicit accessor', () => {
+      const tree = parseJava(`
+        public record User(String name) {
+          public String name(int repeat) { return name.repeat(repeat); }
+        }
+      `);
+      const result = extractor.extract(tree.rootNode.child(0)!, javaCtx);
+      const accessors = result!.methods.filter((method) => method.name === 'name');
+
+      expect(accessors).toHaveLength(2);
+      expect(accessors.map((method) => method.parameters.length).sort()).toEqual([0, 1]);
     });
   });
 

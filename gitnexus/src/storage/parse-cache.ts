@@ -468,7 +468,13 @@ import type { ParseWorkerResult } from '../core/ingestion/workers/parse-worker.j
 // Still open at this commit: #2891 also claims 59, which main now holds. That is
 // a live exact clash for #2891 to renumber, not for this branch.
 // RE-CHECK AGAINST origin/main IMMEDIATELY BEFORE MERGING.
-const SCHEMA_BUMP = 60;
+//
+// 60 -> 62 for #2917's implicit Java record-component accessor definitions and
+// scope declarations. A warm cache would otherwise replay ParsedFiles without
+// the synthesized accessors. Version 61 is already claimed by in-flight #2935,
+// so this branch takes the next free value above every visible maximum.
+// RE-CHECK AGAINST origin/main IMMEDIATELY BEFORE MERGING.
+const SCHEMA_BUMP = 62;
 const GITNEXUS_PKG_VERSION = (() => {
   try {
     // package.json sits at gitnexus/package.json — two levels up from

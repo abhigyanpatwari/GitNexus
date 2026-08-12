@@ -171,7 +171,10 @@ import {
   SPRING_BEAN_INVENTORY_FEATURE,
   SPRING_CONDITIONALS_FEATURE,
 } from './ingestion/frameworks/spring/analysis-features.js';
-import { SPRING_CONFIG_BINDINGS_FEATURE } from './ingestion/languages/java/analysis-features.js';
+import {
+  JAVA_RECORD_COMPONENT_ACCESSORS_FEATURE,
+  SPRING_CONFIG_BINDINGS_FEATURE,
+} from './ingestion/languages/java/analysis-features.js';
 import {
   CLASS_FRAMEWORK_ANNOTATIONS_FEATURE,
   findAnalysisFeatureMismatches,
@@ -224,6 +227,7 @@ const ANALYSIS_FEATURES = [
   SPRING_BEAN_INVENTORY_FEATURE,
   SPRING_CONDITIONALS_FEATURE,
   SPRING_CONFIG_BINDINGS_FEATURE,
+  JAVA_RECORD_COMPONENT_ACCESSORS_FEATURE,
 ] as const;
 
 interface PersistedFrameworkAnnotationRow {

@@ -2112,6 +2112,7 @@ const processFileGroup = (
       const definitionNode = getDefinitionNodeFromCaptures(captureMap);
       const defaultNodeLabel = getLabelFromCaptures(captureMap, provider);
       if (!defaultNodeLabel) continue;
+      if (provider.shouldSkipDefinitionCapture?.(captureMap, defaultNodeLabel) === true) continue;
 
       const nameNode = captureMap['name'];
       const extractedClassSymbol =

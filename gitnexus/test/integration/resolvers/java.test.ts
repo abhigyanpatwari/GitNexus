@@ -1308,15 +1308,19 @@ describe('Java record method resolution (#2564)', () => {
     }
   }, 60000);
 
-  it('documents missing dispatch to an implicit Record component accessor (#2917)', async () => {
+  it('materializes implicit accessors and dispatches them through a Record interface (#2917)', async () => {
     const root = fs.mkdtempSync(path.join(os.tmpdir(), 'gitnexus-java-record-accessor-'));
     try {
       writeFixtureRepo(root, {
-        'RecordAccessor.java': `interface Named { String name(); }
-          record User(String name) implements Named {}
-          class Reader {
-            String read(Named value) { return value.name(); }
-          }`,
+        'Named.java': 'interface Named { String name(); }',
+        'User.java': 'record User(String name, java.util.List<String> tags) implements Named {}',
+        'Explicit.java': `record Explicit(String name) implements Named {
+          public String name() { return name.toUpperCase(); }
+        }`,
+        'Reader.java': `class Reader {
+          String read(Named value) { return value.name(); }
+          java.util.List<String> directTags(User value) { return value.tags(); }
+        }`,
       });
 
       const linked = await runPipelineFromRepo(root, () => {});
@@ -1330,11 +1334,49 @@ describe('Java record method resolution (#2564)', () => {
           edge.rel.reason === 'interface-dispatch',
       );
 
+      const methods = getNodesByLabelFull(linked, 'Method');
+      const userName = methods.find(
+        (method) => method.name === 'name' && method.properties.filePath.endsWith('User.java'),
+      );
+      const userTags = methods.find(
+        (method) => method.name === 'tags' && method.properties.filePath.endsWith('User.java'),
+      );
+      const explicitNames = methods.filter(
+        (method) => method.name === 'name' && method.properties.filePath.endsWith('Explicit.java'),
+      );
+      const userHasMethod = getRelationships(linked, 'HAS_METHOD').filter(
+        (edge) => edge.source === 'User' && (edge.target === 'name' || edge.target === 'tags'),
+      );
+      const methodImplements = getRelationships(linked, 'METHOD_IMPLEMENTS').filter(
+        (edge) => edge.source === 'name' && edge.target === 'name',
+      );
+      const directTags = getRelationships(linked, 'CALLS').find(
+        (edge) => edge.source === 'directTags' && edge.target === 'tags',
+      );
+
       expect(implementsEdge?.sourceLabel).toBe('Record');
       expect(implementsEdge?.targetLabel).toBe('Interface');
-      // TODO(#2917): implicit component accessors are not Method nodes yet.
-      // Replace this characterization with the expected User.name target.
-      expect(fanout).toEqual([]);
+      expect(userName?.properties).toMatchObject({
+        parameterCount: 0,
+        returnType: 'String',
+        visibility: 'public',
+      });
+      expect(userTags?.properties).toMatchObject({
+        parameterCount: 0,
+        returnType: 'java.util.List<String>',
+        visibility: 'public',
+      });
+      expect(explicitNames).toHaveLength(1);
+      expect(userHasMethod.map((edge) => edge.target).sort()).toEqual(['name', 'tags']);
+      expect(methodImplements.map((edge) => edge.sourceFilePath).sort()).toEqual([
+        expect.stringContaining('Explicit.java'),
+        expect.stringContaining('User.java'),
+      ]);
+      expect(fanout.map((edge) => edge.targetFilePath).sort()).toEqual([
+        expect.stringContaining('Explicit.java'),
+        expect.stringContaining('User.java'),
+      ]);
+      expect(directTags?.targetFilePath).toContain('User.java');
     } finally {
       fs.rmSync(root, { recursive: true, force: true });
     }

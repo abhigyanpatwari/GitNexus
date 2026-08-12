@@ -214,6 +214,16 @@ interface LanguageProviderConfig {
    *  Default: undefined (standard label assignment). */
   readonly labelOverride?: (functionNode: SyntaxNode, defaultLabel: NodeLabel) => NodeLabel | null;
 
+  /**
+   * Suppress a definition query match after its default label is known.
+   * Languages use this for syntax that represents an implicit declaration
+   * unless an explicit declaration with the same semantics is present.
+   */
+  readonly shouldSkipDefinitionCapture?: (
+    captureMap: CaptureMap,
+    defaultLabel: NodeLabel,
+  ) => boolean;
+
   // ── MRO ───────────────────────────────────────────────────────────
   /** MRO strategy for multiple inheritance resolution.
    *  Default: 'first-wins'. */

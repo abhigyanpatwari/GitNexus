@@ -17,3 +17,10 @@ export const SPRING_CONFIG_BINDINGS_FEATURE: AnalysisFeatureDescriptor = {
       (filePath) => filePath.toLowerCase().endsWith('.java') || isSpringApplicationConfig(filePath),
     ),
 };
+
+/** Durable completeness contract for implicit Java record-component accessors. */
+export const JAVA_RECORD_COMPONENT_ACCESSORS_FEATURE: AnalysisFeatureDescriptor = {
+  id: 'java.record-component-accessors',
+  version: 1,
+  appliesTo: (filePaths) => filePaths.some((filePath) => filePath.toLowerCase().endsWith('.java')),
+};
