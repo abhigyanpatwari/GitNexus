@@ -19,6 +19,7 @@ import fs from 'fs/promises';
 import lbug from '@ladybugdb/core';
 import { isReadOnlyDbError, loadFTSExtension, loadVectorExtension } from './lbug-adapter.js';
 import { closeQueryResults } from './query-result-utils.js';
+import { warnIfQueryTextUnbounded } from './query-batch.js';
 import {
   createLbugDatabase,
   isWalCorruptionError,
@@ -1005,6 +1006,8 @@ function withTimeout<T>(promise: Promise<T>, ms: number, label: string): Promise
   return Promise.race([promise, timeout]).finally(() => clearTimeout(timer));
 }
 
+// Guarded by `executeParameterized` below — this is a pure delegation, and
+// warning here too would double-report the same query text (#2915).
 export const executeQuery = async (repoId: string, cypher: string): Promise<any[]> => {
   return await executeParameterized(repoId, cypher, {});
 };
@@ -1018,6 +1021,13 @@ export const executeParameterized = async (
   cypher: string,
   params: Record<string, any>,
 ): Promise<any[]> => {
+  // A `.length` compare on text we already hold — runs before the pool lookup so
+  // a query built by splicing a caller-sized list names itself even when the
+  // repo is not initialized. Never throws (#2915).
+  warnIfQueryTextUnbounded(cypher, `pool executeParameterized (repo "${repoId}")`, (message) =>
+    poolSidecarLogger.warn(message),
+  );
+
   const entry = pool.get(repoId);
   if (!entry) {
     throw new Error(`LadybugDB not initialized for repo "${repoId}". Call initLbug first.`);

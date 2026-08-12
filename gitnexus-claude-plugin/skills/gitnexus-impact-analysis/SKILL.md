@@ -92,6 +92,11 @@ detect_changes({scope: "all"})
 → Risk: MEDIUM
 ```
 
+`partial: true` (a graph query failed) or `truncated: true` (the changed-symbol
+listing was capped) means the result is short of the truth, and reads like
+`UNKNOWN` above: a zero there means unseen, not unaffected. Re-run it rather
+than tick the pre-commit check.
+
 ## Example: "What breaks if I change validateUser?"
 
 ```

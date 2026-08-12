@@ -65,6 +65,14 @@ export const en = {
   'tool.warn.unknownKind':
     "--kind '{{kind}}' is not a known symbol kind (e.g. Function, Class, Method); it will not narrow the result.",
   'tool.detectChanges.noChanges': 'No changes detected.',
+  'tool.detectChanges.partial':
+    'PARTIAL RESULT: a graph query failed, so changed symbols may be missing. Do not read this as a clean pre-commit check.',
+  'tool.detectChanges.truncated':
+    'LISTING CAPPED: the changed-symbol list was capped, so it does not name every changed symbol. The counts and risk level still cover all of them.',
+  // The reassurance above is only true on its own. When the run also degraded,
+  // `changed_count` was summed from the batches that SUCCEEDED, so it is a floor.
+  'tool.detectChanges.truncatedDegraded':
+    'LISTING CAPPED: the changed-symbol list was capped. The run also degraded, so the counts are a lower bound, not a total.',
   'tool.detectChanges.changesSummary': 'Changes: {{files}} files, {{symbols}} symbols',
   'tool.detectChanges.affectedProcesses': 'Affected processes: {{count}}',
   'tool.detectChanges.riskLevel': 'Risk level: {{risk}}',

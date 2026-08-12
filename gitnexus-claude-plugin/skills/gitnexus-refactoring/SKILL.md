@@ -87,6 +87,11 @@ detect_changes({scope: "all"})
 → Risk: MEDIUM
 ```
 
+`partial: true` (a graph query failed) or `truncated: true` (the changed-symbol
+listing was capped) means the result is short of the truth: a short or empty
+list is not proof that only the expected files changed. Re-run it rather than
+treat the refactor as verified.
+
 **cypher** — custom reference queries:
 
 ```cypher
