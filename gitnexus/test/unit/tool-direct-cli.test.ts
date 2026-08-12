@@ -103,6 +103,26 @@ describe('direct CLI tool commands', () => {
     expect(process.exitCode).toBe(1);
   });
 
+  it('prints the safety-limit error in PROSE mode instead of throwing on the missing cycle list', async () => {
+    // The `enumeration: 'none'` response — a run that died inside the component
+    // decomposition — carries `{ error, truncated }` and deliberately no
+    // `status` and no `cycles`. The prose branch reads `result.cycles.map(...)`,
+    // so without the error guard ahead of it this shape surfaces as a TypeError
+    // instead of the limit it is trying to report. JSON mode was covered; this
+    // is the path that renders.
+    callToolMock.mockResolvedValue({
+      error: 'Import cycle enumeration exceeded its 10000000 step safety limit.',
+      truncated: true,
+    });
+    const { checkCommand } = await import('../../src/cli/tool.js');
+
+    await checkCommand({ cycles: true });
+
+    expect(writeSyncMock).toHaveBeenCalledWith(1, expect.stringContaining('step safety limit'));
+    expect(writeSyncMock).not.toHaveBeenCalledWith(1, expect.stringContaining('TypeError'));
+    expect(process.exitCode).toBe(1);
+  });
+
   it('fails closed when the backend throws', async () => {
     callToolMock.mockRejectedValue(new Error('unknown branch'));
     const { checkCommand } = await import('../../src/cli/tool.js');
