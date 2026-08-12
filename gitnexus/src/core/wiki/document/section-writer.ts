@@ -95,7 +95,15 @@ function validateEngineeringDiagram(sectionId: string, blocks: readonly SectionB
   if (sectionId !== 'overall-architecture') return;
   const diagrams = blocks.filter((block) => block.type === 'diagram');
   if (diagrams.length === 0) {
-    throw new Error('engineering-wiki overall-architecture must contain a Mermaid diagram');
+    // 证据不足以绘制架构图时,prompt 允许输出 unknown block 作为诚实降级;
+    // 此处放行该降级路径,仅当既无 diagram 也无 unknown 标记时才视为非法。
+    const hasUnknown = blocks.some((block) => block.type === 'unknown');
+    if (!hasUnknown) {
+      throw new Error(
+        'engineering-wiki overall-architecture must contain a Mermaid diagram (or an unknown block when relationship evidence is insufficient)',
+      );
+    }
+    return;
   }
   for (const diagram of diagrams) {
     const nodeCount = countMermaidNodes(diagram.source);

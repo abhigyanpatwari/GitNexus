@@ -193,18 +193,22 @@ export class EvidenceCollector {
   private async collectFile(filePath: string): Promise<EvidenceRef> {
     const kind = classifyFile(filePath);
     const absolutePath = path.resolve(this.repoPath, filePath);
-    const relativePath = path.relative(this.repoPath, absolutePath);
     let excerpt: string | undefined;
     let status: EvidenceRef['status'] = 'verified';
 
-    if (relativePath.startsWith('..') || path.isAbsolute(relativePath)) {
-      status = 'missing';
-    } else {
-      try {
-        excerpt = (await fs.readFile(absolutePath, 'utf8')).slice(0, this.maxExcerptChars);
-      } catch {
+    try {
+      // 解析符号链接得到真实路径,并校验真实路径仍位于仓库目录内,
+      // 防止通过仓库内的符号链接读取仓库外文件作为证据
+      const realRepoPath = await fs.realpath(this.repoPath);
+      const realPath = await fs.realpath(absolutePath);
+      const realRelative = path.relative(realRepoPath, realPath);
+      if (realRelative.startsWith('..') || path.isAbsolute(realRelative)) {
         status = 'missing';
+      } else {
+        excerpt = (await fs.readFile(realPath, 'utf8')).slice(0, this.maxExcerptChars);
       }
+    } catch {
+      status = 'missing';
     }
 
     return createEvidenceRef({

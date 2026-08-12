@@ -66,8 +66,18 @@ function splitOutsideLabels(value: string, separator: string): string[] {
   let roundDepth = 0;
   let curlyDepth = 0;
   let inEdgeLabel = false;
+  let inComment = false;
 
-  for (const character of value) {
+  for (let i = 0; i < value.length; i++) {
+    const character = value[i];
+
+    // Mermaid 行注释:进入 %% 后直到行尾的内容不参与分号拆分
+    if (inComment) {
+      current += character;
+      if (character === '\n') inComment = false;
+      continue;
+    }
+
     if (escaped) {
       current += character;
       escaped = false;
@@ -76,6 +86,20 @@ function splitOutsideLabels(value: string, separator: string): string[] {
     if (character === '\\') {
       current += character;
       escaped = true;
+      continue;
+    }
+    if (
+      character === '%' &&
+      value[i + 1] === '%' &&
+      quote === null &&
+      squareDepth === 0 &&
+      roundDepth === 0 &&
+      curlyDepth === 0 &&
+      !inEdgeLabel
+    ) {
+      inComment = true;
+      current += '%%';
+      i += 1;
       continue;
     }
     if (quote) {

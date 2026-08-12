@@ -78,9 +78,14 @@ function relationLabel(ref: EvidenceRef): string | undefined {
   const relation = ref.relation?.replace(/^(?:internal|incoming|outgoing):calls:/, '');
   if (!relation) return source;
 
-  for (let index = relation.indexOf(':'); index >= 0; index = relation.indexOf(':', index + 1)) {
-    const targetPath = normalizeRelativePath(relation.slice(0, index));
-    const targetSymbol = normalizePlainText(relation.slice(index + 1));
+  // relation 形如 "<toFile>:<toName>":toFile 为仓库相对路径(可能含 Windows 盘符前缀),
+  // toName 为符号名(不含路径分隔符)。以最后一个路径分隔符之后的首个冒号作为分界,
+  // 避免把 Windows 盘符冒号(如 "C:/...")误当作 toFile/toName 分隔符。
+  const lastSlash = Math.max(relation.lastIndexOf('/'), relation.lastIndexOf('\\'));
+  const splitAt = relation.indexOf(':', lastSlash + 1);
+  if (splitAt >= 0) {
+    const targetPath = normalizeRelativePath(relation.slice(0, splitAt));
+    const targetSymbol = normalizePlainText(relation.slice(splitAt + 1));
     if (targetPath && targetSymbol) {
       const target = `${targetPath} · ${targetSymbol}`;
       return source ? `${source} → ${target}` : target;
