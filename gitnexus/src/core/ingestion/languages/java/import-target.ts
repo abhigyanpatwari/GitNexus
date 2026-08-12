@@ -51,6 +51,17 @@
  *     `import-resolvers/package-dir-index.ts`). This leg commits to ONE file
  *     with no downstream filter, so widening it can change which file an
  *     already-resolving import binds to, not only turn a null into a hit.
+ *     WHICH file it binds to is decided by nothing in this resolver: it is
+ *     `allFilePaths` iteration order, i.e. the insertion order of the Set built
+ *     from `parsedFiles` in `scope-resolution/pipeline/run.ts`, which for a full
+ *     scan is the canonical sorted path order `filesystem-walker.ts` imposes on
+ *     its unsorted recursive-`glob` result. So the widened set's winner is a
+ *     property of the file list, not of the import — pinned explicitly, in both
+ *     insertion orders, by "pins WHICH of two competing package directories the
+ *     first-child leg takes" in
+ *     `test/unit/scope-resolution/java-import-target-parity.test.ts` (Kotlin's
+ *     twin, which has the same unfiltered first-child leg, is in
+ *     `test/unit/scope-resolution/kotlin/kotlin-import-target-parity.test.ts`).
  */
 
 import type { ParsedImport, WorkspaceIndex } from 'gitnexus-shared';
