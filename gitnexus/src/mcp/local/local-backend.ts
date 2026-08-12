@@ -2412,16 +2412,50 @@ export class LocalBackend {
         truncated: true,
       };
     }
-    const cycles = findImportCycles(
+    const report = findImportCycles(
       rows.map((row: any) => ({
         source: String(row.source ?? row[0] ?? ''),
         target: String(row.target ?? row[1] ?? ''),
       })),
     );
+    // `enumeration` names what `cycles` IS, so the degraded answer is separable
+    // from the complete one by a machine rather than by reading prose. The
+    // fail-closed rule is unchanged in substance: a partial list of elementary
+    // cycles is never returned, because it cannot be told apart from a complete
+    // one. What IS returned when a bound is hit is a different kind of list —
+    // one representative per cyclic component — with `cycleCount: null` so no
+    // caller can read a count off a truncated result.
+    if (report.enumeration === 'none') {
+      // Nothing survived: not even the component decomposition finished, so
+      // there is genuinely nothing to report and the whole result is an error.
+      return {
+        error:
+          report.reason === 'cycles'
+            ? `Import graph exceeds the ${report.limit} elementary-cycle safety limit.`
+            : `Import cycle enumeration exceeded its ${report.limit} step safety limit.`,
+        truncated: true,
+      };
+    }
+    if (report.enumeration === 'component-representatives') {
+      return {
+        // Cycles were genuinely found — this is not a clean repository, and a
+        // CI gate reading `status` must fail on it.
+        status: 'cycles_found',
+        enumeration: 'component-representatives',
+        truncated: true,
+        // Explicitly not a number: the number of elementary cycles is unknown,
+        // and `cycles.length` here is a count of COMPONENTS, not of cycles.
+        cycleCount: null,
+        componentCount: report.componentCount,
+        cycles: report.cycles.map((files) => ({ files })),
+      };
+    }
     return {
-      status: cycles.length === 0 ? 'clean' : 'cycles_found',
-      cycleCount: cycles.length,
-      cycles: cycles.map((files) => ({ files })),
+      status: report.cycles.length === 0 ? 'clean' : 'cycles_found',
+      enumeration: 'complete',
+      cycleCount: report.cycles.length,
+      componentCount: report.componentCount,
+      cycles: report.cycles.map((files) => ({ files })),
     };
   }
 

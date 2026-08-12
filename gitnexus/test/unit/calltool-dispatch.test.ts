@@ -101,6 +101,7 @@ import {
   pdgBridgeEvidenceForImpact,
 } from '../../src/mcp/local/pdg-impact.js';
 import { CALLEES_TRUNCATED_SENTINEL } from '../../src/core/ingestion/cfg/emit.js';
+import { IMPORT_CYCLE_LIMIT } from '../../src/core/graph/import-cycles.js';
 import {
   listRegisteredRepos,
   cleanupOldKuzuFiles,
@@ -496,7 +497,9 @@ describe('LocalBackend.callTool', () => {
 
     expect(result).toEqual({
       status: 'cycles_found',
+      enumeration: 'complete',
       cycleCount: 1,
+      componentCount: 1,
       cycles: [{ files: ['src/a.ts', 'src/b.ts', 'src/a.ts'] }],
     });
     const query = (executeParameterized as any).mock.calls.at(-1)[1] as string;
@@ -530,8 +533,93 @@ describe('LocalBackend.callTool', () => {
 
     await expect(backend.callTool('check', undefined)).resolves.toEqual({
       status: 'clean',
+      enumeration: 'complete',
       cycleCount: 0,
+      componentCount: 0,
       cycles: [],
+    });
+  });
+
+  it('reports every elementary cycle, not one per cyclic component', async () => {
+    // One strongly connected component holding five elementary cycles. The
+    // previous implementation returned a single BFS path for it and called
+    // that `cycleCount: 1`, so this pins that `cycleCount` now counts cycles
+    // and `componentCount` carries the old tangle count under its own name.
+    (executeParameterized as any).mockResolvedValue([
+      { source: 'src/a.ts', target: 'src/b.ts' },
+      { source: 'src/b.ts', target: 'src/c.ts' },
+      { source: 'src/c.ts', target: 'src/d.ts' },
+      { source: 'src/d.ts', target: 'src/a.ts' },
+      { source: 'src/a.ts', target: 'src/z.ts' },
+      { source: 'src/z.ts', target: 'src/a.ts' },
+      { source: 'src/b.ts', target: 'src/d.ts' },
+      { source: 'src/d.ts', target: 'src/b.ts' },
+    ]);
+
+    await expect(backend.callTool('check', { cycles: true })).resolves.toEqual({
+      status: 'cycles_found',
+      enumeration: 'complete',
+      cycleCount: 5,
+      componentCount: 1,
+      cycles: [
+        { files: ['src/a.ts', 'src/b.ts', 'src/c.ts', 'src/d.ts', 'src/a.ts'] },
+        { files: ['src/a.ts', 'src/b.ts', 'src/d.ts', 'src/a.ts'] },
+        { files: ['src/a.ts', 'src/z.ts', 'src/a.ts'] },
+        { files: ['src/b.ts', 'src/c.ts', 'src/d.ts', 'src/b.ts'] },
+        { files: ['src/b.ts', 'src/d.ts', 'src/b.ts'] },
+      ],
+    });
+  });
+
+  it('degrades to component representatives rather than a shortened cycle list', async () => {
+    // A 9-file complete import graph has 109,600 elementary cycles, past
+    // IMPORT_CYCLE_LIMIT. The response must NOT carry a capped `cycles` array
+    // that reads as complete -- but it must still be actionable, so it carries
+    // one representative per component, `truncated`, and an `enumeration` field
+    // naming what the list is. `cycleCount` is null rather than a number: there
+    // is no count a caller could mistake for the real one.
+    const files = Array.from({ length: 9 }, (_, index) => `src/${index}.ts`);
+    (executeParameterized as any).mockResolvedValue(
+      files.flatMap((source) =>
+        files.filter((target) => target !== source).map((target) => ({ source, target })),
+      ),
+    );
+
+    await expect(backend.callTool('check', { cycles: true })).resolves.toEqual({
+      status: 'cycles_found',
+      enumeration: 'component-representatives',
+      truncated: true,
+      cycleCount: null,
+      componentCount: 1,
+      cycles: [{ files: ['src/0.ts', 'src/1.ts', 'src/0.ts'] }],
+    });
+  });
+
+  it('names every cyclic component when capped, including ones never enumerated', async () => {
+    // A 9-file complete graph (109,600 cycles) blows the cap long before the
+    // disjoint y/z tangle is ever reached. The representative list must still
+    // name BOTH components -- it comes from the decomposition, not from the
+    // abandoned enumeration, so a tangle the search never got to is still
+    // reported.
+    const files = Array.from({ length: 9 }, (_, index) => `src/${index}.ts`);
+    (executeParameterized as any).mockResolvedValue([
+      ...files.flatMap((source) =>
+        files.filter((target) => target !== source).map((target) => ({ source, target })),
+      ),
+      { source: 'src/y.ts', target: 'src/z.ts' },
+      { source: 'src/z.ts', target: 'src/y.ts' },
+    ]);
+
+    await expect(backend.callTool('check', { cycles: true })).resolves.toEqual({
+      status: 'cycles_found',
+      enumeration: 'component-representatives',
+      truncated: true,
+      cycleCount: null,
+      componentCount: 2,
+      cycles: [
+        { files: ['src/0.ts', 'src/1.ts', 'src/0.ts'] },
+        { files: ['src/y.ts', 'src/z.ts', 'src/y.ts'] },
+      ],
     });
   });
 

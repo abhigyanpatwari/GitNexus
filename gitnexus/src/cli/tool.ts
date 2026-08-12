@@ -366,14 +366,28 @@ export async function checkCommand(options?: {
     }
     if (options.json) {
       output(result);
-    } else if (result.cycleCount === 0) {
+    } else if (result.status === 'clean') {
       output('No circular imports found.');
     } else {
       output(
         result.cycles.map((cycle: { files: string[] }) => cycle.files.join(' -> ')).join('\n'),
       );
+      // Past the enumeration cap the tool reports one representative cycle per
+      // component instead of every elementary cycle. Say so, or the short list
+      // reads as the whole truth on exactly the repositories where it is not.
+      if (result.enumeration === 'component-representatives') {
+        output(
+          `\n(${result.componentCount} circular component(s); showing one representative cycle each — ` +
+            `the full enumeration exceeded the safety limit.)`,
+        );
+      }
     }
-    if (result.cycleCount > 0) process.exitCode = 1;
+    // Keyed on `status`, NOT on `cycleCount`. The degraded report carries
+    // `cycleCount: null` on purpose — a partial count must not read as a real
+    // one — and `null > 0` is false, so counting here would exit 0 on precisely
+    // the repositories with the most cycles. `status` is the field that answers
+    // "were any found", and it answers it in both enumeration modes.
+    if (result.status === 'cycles_found') process.exitCode = 1;
   } catch (error) {
     output({ error: error instanceof Error ? error.message : String(error) });
     process.exitCode = 1;
