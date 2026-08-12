@@ -21,6 +21,7 @@
 import { createHash } from 'crypto';
 import fs from 'fs/promises';
 import path from 'path';
+import { chunk } from '../lib/utils.js';
 
 /**
  * Compute SHA-256 of a single file. Returns null when the file can't be
@@ -45,8 +46,7 @@ export const computeFileHashes = async (
 ): Promise<Map<string, string>> => {
   const out = new Map<string, string>();
   const BATCH = 100;
-  for (let i = 0; i < relPaths.length; i += BATCH) {
-    const batch = relPaths.slice(i, i + BATCH);
+  for (const batch of chunk(relPaths, BATCH)) {
     const results = await Promise.all(
       batch.map(async (rel) => {
         const h = await computeFileHash(path.join(repoPath, rel));

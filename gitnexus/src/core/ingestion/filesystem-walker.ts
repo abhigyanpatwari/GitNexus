@@ -4,6 +4,7 @@ import fs from 'fs/promises';
 import path from 'path';
 import { glob } from 'glob';
 import { createIgnoreFilter } from '../../config/ignore-service.js';
+import { mapConcurrent } from '../../lib/utils.js';
 
 import { logger } from '../logger.js';
 
@@ -135,21 +136,21 @@ export const readFileContents = async (
 ): Promise<Map<string, string>> => {
   const contents = new Map<string, string>();
 
-  for (let start = 0; start < relativePaths.length; start += READ_CONCURRENCY) {
-    const batch = relativePaths.slice(start, start + READ_CONCURRENCY);
-    const results = await Promise.allSettled(
-      batch.map(async (relativePath) => {
-        const fullPath = path.join(repoPath, relativePath);
-        const content = await fs.readFile(fullPath, 'utf-8');
-        return { path: relativePath, content };
-      }),
-    );
+  const results = await mapConcurrent(
+    relativePaths,
+    async (relativePath) => {
+      const fullPath = path.join(repoPath, relativePath);
+      const content = await fs.readFile(fullPath, 'utf-8');
+      return { path: relativePath, content };
+    },
+    { concurrency: READ_CONCURRENCY },
+  );
 
-    for (const result of results) {
-      if (result.status === 'fulfilled') {
-        contents.set(result.value.path, result.value.content);
-      }
-    }
+  // An unreadable file yields `undefined` (mapConcurrent's per-item degrade) and
+  // is skipped, exactly as the previous allSettled/`status === 'fulfilled'` shape
+  // did — no `onError`, so the skip stays silent per this function's contract.
+  for (const result of results) {
+    if (result) contents.set(result.path, result.content);
   }
 
   return contents;
