@@ -424,6 +424,7 @@ function synthesizeJavaAnonymousClassDeclarations(rootNode: SyntaxNode): Capture
     out.push({
       '@declaration.class': nodeToCapture('@declaration.class', body),
       '@declaration.name': syntheticCapture('@declaration.name', body, identity.name),
+      '@declaration.is-synthetic': syntheticCapture('@declaration.is-synthetic', body, 'true'),
     });
 
     // Inheritance: the anonymous class extends/implements its constructed
@@ -485,6 +486,11 @@ function synthesizeJavaAnonymousClassDeclarations(rootNode: SyntaxNode): Capture
       out.push({
         '@declaration.class': nodeToCapture('@declaration.class', bodyNode),
         '@declaration.name': syntheticCapture('@declaration.name', bodyNode, bodiedIdentity.name),
+        '@declaration.is-synthetic': syntheticCapture(
+          '@declaration.is-synthetic',
+          bodyNode,
+          'true',
+        ),
       });
       if (hostEnum !== undefined) {
         out.push({
@@ -730,10 +736,12 @@ function javaBaseSimpleNameOf(typeNode: SyntaxNode): string | undefined {
 function javaBaseLookupNameNode(node: SyntaxNode): SyntaxNode | null {
   switch (node.type) {
     case 'type_identifier':
-      return node;
-    case 'scoped_type_identifier':
+      return node.isMissing || node.text.length === 0 ? null : node;
+    case 'scoped_type_identifier': {
       // `java.io.Serializable` → trailing `type_identifier` (`Serializable`).
-      return node.lastNamedChild;
+      const tail = node.lastNamedChild;
+      return tail === null ? null : javaBaseLookupNameNode(tail);
+    }
     case 'generic_type': {
       // `Box<String>` → recurse into the base type (`Box`).
       const first = node.firstNamedChild;

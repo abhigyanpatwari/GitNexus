@@ -5,6 +5,7 @@ import { describe, it, expect, beforeAll, afterAll } from 'vitest';
 import path from 'path';
 import fs from 'node:fs';
 import os from 'node:os';
+import { _captureLogger, type PinoLogRecord } from '../../../src/core/logger.js';
 import {
   FIXTURES,
   CROSS_FILE_FIXTURES,
@@ -1373,8 +1374,8 @@ describe('Java enum interface heritage (#2918)', () => {
       expect(implementsEdges).toHaveLength(1);
       expect(implementsEdges[0]?.sourceLabel).toBe('Enum');
       expect(implementsEdges[0]?.targetLabel).toBe('Interface');
-      expect(fanout.map((edge) => `${edge.targetLabel}:${edge.targetFilePath}`).sort()).toEqual([
-        'Method:EnumHeritage.java',
+      expect(fanout.map((edge) => edge.rel.targetId).sort()).toEqual([
+        'Method:EnumHeritage.java:Status.label#0',
       ]);
     } finally {
       fs.rmSync(root, { recursive: true, force: true });
@@ -1390,6 +1391,9 @@ describe('Java enum interface heritage (#2918)', () => {
             ACTIVE { public String label() { return "active"; } },
             INACTIVE;
             public String label() { return "inactive"; }
+          }
+          class Reader {
+            String read(Named value) { return value.label(); }
           }`,
       });
 
@@ -1401,6 +1405,81 @@ describe('Java enum interface heritage (#2918)', () => {
       expect(implementsEdges).toHaveLength(1);
       expect(implementsEdges[0]?.sourceLabel).toBe('Enum');
       expect(getNodesByLabel(linked, 'Method').filter((name) => name === 'label')).toHaveLength(3);
+      const fanout = getRelationships(linked, 'CALLS').filter(
+        (edge) =>
+          edge.source === 'read' &&
+          edge.target === 'label' &&
+          edge.rel.reason === 'interface-dispatch',
+      );
+      expect(fanout.map((edge) => edge.rel.targetId).sort()).toEqual([
+        'Method:EnumConstantBody.java:Status$1.label#0',
+        'Method:EnumConstantBody.java:Status.label#0',
+      ]);
+    } finally {
+      fs.rmSync(root, { recursive: true, force: true });
+    }
+  }, 60000);
+
+  it('keeps non-synthetic implementations ahead of abstract enum constant bodies at the cap', async () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), 'gitnexus-java-enum-fanout-cap-'));
+    try {
+      const constants = Array.from(
+        { length: 40 },
+        (_, index) => `A${index} { public String label() { return "enum-${index}"; } }`,
+      ).join(',\n');
+      const classes = Array.from(
+        { length: 30 },
+        (_, index) =>
+          `class ZImpl${index} extends ZBase { public String label() { return "class-${index}"; } }`,
+      ).join('\n');
+      writeFixtureRepo(root, {
+        'Fanout.java': `interface Named { String label(); }
+          enum AaaBig implements Named {
+            ${constants};
+            public abstract String label();
+          }
+          abstract class ZBase implements Named { public abstract String label(); }
+          ${classes}
+          class Reader { String read(Named value) { return value.label(); } }`,
+      });
+
+      const loggerCapture = _captureLogger();
+      let linked: PipelineResult;
+      let logRecords: PinoLogRecord[];
+      try {
+        linked = await runPipelineFromRepo(root, () => {});
+        logRecords = loggerCapture.records();
+      } finally {
+        loggerCapture.restore();
+      }
+      const fanoutIds = getRelationships(linked, 'CALLS')
+        .filter(
+          (edge) =>
+            edge.source === 'read' &&
+            edge.target === 'label' &&
+            edge.rel.reason === 'interface-dispatch',
+        )
+        .map((edge) => edge.rel.targetId);
+
+      expect(fanoutIds).toHaveLength(32);
+      for (let index = 0; index < 30; index++) {
+        expect(fanoutIds).toContain(`Method:Fanout.java:ZImpl${index}.label#0`);
+      }
+      expect(fanoutIds).toContain('Method:Fanout.java:AaaBig$1.label#0');
+      expect(fanoutIds).toContain('Method:Fanout.java:AaaBig$2.label#0');
+
+      const warning = logRecords.find(
+        (record) =>
+          record.msg ===
+          'interface-dispatch: members over the fan-out cap dropped implementors (their CALLS edges were not emitted)',
+      );
+      expect(warning).toMatchObject({
+        dispatchFanoutSkipped: 38,
+        fanoutCap: 32,
+        dispatchFanoutSkippedNames: [
+          'Named.label (70 targets; dropped: AaaBig$3.label, AaaBig$4.label, AaaBig$5.label, AaaBig$6.label, AaaBig$7.label, +33 more)',
+        ],
+      });
     } finally {
       fs.rmSync(root, { recursive: true, force: true });
     }

@@ -31,7 +31,7 @@ describe('analysis feature versions', () => {
     });
     expect(resolveAnalysisFeatureVersions(FEATURES, ['src/App.java'])).toEqual({
       'graph.class-framework-annotations': 1,
-      'java.enum-interface-heritage': 1,
+      'java.heritage-captures': 1,
       'spring.aop-advice': 1,
       'spring.bean-inventory': 2,
       'spring.conditionals-auto-configuration': 1,

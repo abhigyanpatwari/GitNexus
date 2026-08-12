@@ -18,9 +18,9 @@ export const SPRING_CONFIG_BINDINGS_FEATURE: AnalysisFeatureDescriptor = {
     ),
 };
 
-/** Durable completeness contract for Java enum interface heritage. */
+/** Durable completeness contract for Java heritage captures. */
 export const JAVA_ENUM_INTERFACE_HERITAGE_FEATURE: AnalysisFeatureDescriptor = {
-  id: 'java.enum-interface-heritage',
+  id: 'java.heritage-captures',
   version: 1,
   appliesTo: (filePaths) => filePaths.some((filePath) => filePath.toLowerCase().endsWith('.java')),
 };

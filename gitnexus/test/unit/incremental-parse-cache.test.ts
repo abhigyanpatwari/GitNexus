@@ -204,27 +204,25 @@ describe('PARSE_CACHE_VERSION', () => {
   // would take the untagged path, and `check --cycles` would keep reporting the
   // erased and deferred imports the branch exists to stop reporting: a silent
   // no-op on incremental analyze while every cold-run test passes.
-  // 63 rather than 62 or 61: main holds 60, #2935 claims 61, and #2936 claims 62
-  // — the next free value above every in-flight MAXIMUM, not above origin/main.
-  // This branch staged 62 first and was correct when written; #2936 opened four
-  // hours later, re-checked against main rather than the in-flight claims, and
-  // took 62 as well. Moving instead of standing on seniority, because 63 is
-  // right whichever of the two merges first.
-  // Moved 63 -> 64 for Java enum interface-heritage captures (#2918). #2936
-  // uses 65 for its independent record-component accessor cache shape.
-  it('pins SCHEMA_BUMP to 64 so concurrent bumps cannot silently collide (#2766)', () => {
-    expect(Number(PARSE_CACHE_VERSION.split('+', 1)[0])).toBe(64);
+  // Main subsequently advanced through 63. Values above it must remain distinct
+  // from both published branch heads and every active in-flight claim.
+  // Moved 63 -> 64 for Java enum and annotated heritage captures (#2918),
+  // then 64 -> 66 for the synthetic-declaration sidecar. #2936 uses 65 for
+  // its independent record-component accessor cache shape.
+  it('pins SCHEMA_BUMP to 66 so concurrent bumps cannot silently collide (#2766)', () => {
+    expect(Number(PARSE_CACHE_VERSION.split('+', 1)[0])).toBe(66);
     // The PREVIOUS version must fail the reuse gate, not merely differ from the
     // current one — a hardcoded number outside the conflict hunk rebases cleanly
     // while being wrong, which is exactly how the 37/38 exact clashes landed.
-    // Every live neighbour is named: 60 is what origin/main holds, so a rebase
-    // that drops this branch's bump lands there; 61 is claimed by BOTH #2935 and
-    // #2840 (a live clash of their own); and 62 is #2936's claim, which is what
-    // this value moved off.
+    // Every nearby historical value is rejected: origin/main advanced through
+    // 63, while this branch already published 64 and #2936 uses 65. Pinning 66
+    // and rejecting all prior values makes an accidental conflict resolution loud.
     expect(Number(PARSE_CACHE_VERSION.split('+', 1)[0])).not.toBe(60);
     expect(Number(PARSE_CACHE_VERSION.split('+', 1)[0])).not.toBe(61);
     expect(Number(PARSE_CACHE_VERSION.split('+', 1)[0])).not.toBe(62);
     expect(Number(PARSE_CACHE_VERSION.split('+', 1)[0])).not.toBe(63);
+    expect(Number(PARSE_CACHE_VERSION.split('+', 1)[0])).not.toBe(64);
+    expect(Number(PARSE_CACHE_VERSION.split('+', 1)[0])).not.toBe(65);
   });
 
   it('embeds the gitnexus package version (so upgrades invalidate the cache)', () => {

@@ -502,13 +502,15 @@ import type { ParseWorkerResult } from '../core/ingestion/workers/parse-worker.j
 // one, and the accessor definitions it materializes are not in this branch's
 // ParsedFile shape at all.
 //
-// 63 -> 64 for Java enum `implements` clauses emitting
-// `@reference.inherits` captures (#2918). Warm v63 ParsedFiles lack those
-// captures and must be re-extracted. #2936 uses 65 for its independent record
-// accessor shape, keeping both in-flight branches distinct whichever merges
-// first.
+// 63 -> 64 for Java enum heritage plus annotated class, record, interface,
+// enum, and explicit-super base names emitting corrected captures (#2918).
+// Warm v63 ParsedFiles lack those captures and must be re-extracted.
+// 64 -> 66 adds the synthetic-declaration sidecar used to keep anonymous class
+// implementations from evicting ordinary implementors at the dispatch cap.
+// This PR already published a v64 head, while #2936 uses 65 for its independent
+// record accessor shape, so 66 keeps all three cached shapes distinct.
 // RE-CHECK AGAINST origin/main IMMEDIATELY BEFORE MERGING.
-const SCHEMA_BUMP = 64;
+const SCHEMA_BUMP = 66;
 const GITNEXUS_PKG_VERSION = (() => {
   try {
     // package.json sits at gitnexus/package.json — two levels up from
