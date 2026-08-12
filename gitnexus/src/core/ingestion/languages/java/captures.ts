@@ -636,12 +636,14 @@ function findEnclosingTypeDeclaration(node: SyntaxNode): SyntaxNode | null {
  * `emitCppInheritanceCaptures`).
  *
  * Scope covers `class_declaration` (`superclass` extends + `interfaces`
- * implements clauses), `record_declaration` (`interfaces` implements clauses),
- * and `interface_declaration` (`extends_interfaces` clauses). Interface
+ * implements clauses), `record_declaration` and `enum_declaration`
+ * (`interfaces` implements clauses), and `interface_declaration`
+ * (`extends_interfaces` clauses). Interface
  * inheritance was restored for registry-primary resolution in #1951. Record
  * graph nodes became canonical link targets in #2801 / PR #2871, so their
- * `implements` clauses must participate for interface dispatch (#2900). Java
- * enum interface heritage remains a separately tracked gap (#2918).
+ * `implements` clauses must participate for interface dispatch (#2900).
+ * Enums use the same tree-sitter `interfaces` field and participate as
+ * class-like `Enum` graph nodes (#2918).
  *
  * Generic bases (`extends Box<T>`, `implements IFoo<T>`) and qualified bases
  * (`a.b.Base`, `a.b.Box<T>`, `a.b.IFoo<T>`) are normalized to their simple
@@ -664,9 +666,13 @@ function synthesizeJavaInheritanceReferences(root: SyntaxNode): CaptureMatch[] {
         for (const base of superclass.namedChildren) emitJavaInheritanceBase(out, base);
       }
     }
-    if (node.type === 'class_declaration' || node.type === 'record_declaration') {
-      // Records cannot declare a superclass; they share only the class
-      // `interfaces` arm.
+    if (
+      node.type === 'class_declaration' ||
+      node.type === 'record_declaration' ||
+      node.type === 'enum_declaration'
+    ) {
+      // Records and enums cannot declare a superclass; all three declarations
+      // expose implemented interfaces through the same tree-sitter field.
       const interfaces = node.childForFieldName('interfaces');
       if (interfaces !== null) {
         for (const typeList of interfaces.namedChildren) {
@@ -732,6 +738,11 @@ function javaBaseLookupNameNode(node: SyntaxNode): SyntaxNode | null {
       // `Box<String>` → recurse into the base type (`Box`).
       const first = node.firstNamedChild;
       return first === null ? null : javaBaseLookupNameNode(first);
+    }
+    case 'annotated_type': {
+      // The final named child is the base type; preceding children are annotations.
+      const type = node.lastNamedChild;
+      return type === null ? null : javaBaseLookupNameNode(type);
     }
     default:
       return null;

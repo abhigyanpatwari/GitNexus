@@ -467,8 +467,10 @@ import type { ParseWorkerResult } from '../core/ingestion/workers/parse-worker.j
 //
 // Still open at this commit: #2891 also claims 59, which main now holds. That is
 // a live exact clash for #2891 to renumber, not for this branch.
+// v61: Java enum `implements` clauses emit `@reference.inherits` captures
+// (#2918). Warm v60 ParsedFiles lack those captures and must be re-extracted.
 // RE-CHECK AGAINST origin/main IMMEDIATELY BEFORE MERGING.
-const SCHEMA_BUMP = 60;
+const SCHEMA_BUMP = 61;
 const GITNEXUS_PKG_VERSION = (() => {
   try {
     // package.json sits at gitnexus/package.json — two levels up from

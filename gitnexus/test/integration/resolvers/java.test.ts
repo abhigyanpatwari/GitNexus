@@ -1341,6 +1341,72 @@ describe('Java record method resolution (#2564)', () => {
   }, 60000);
 });
 
+describe('Java enum interface heritage (#2918)', () => {
+  it('links and dispatches an Enum interface method (#2918)', async () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), 'gitnexus-java-enum-heritage-'));
+    try {
+      writeFixtureRepo(root, {
+        'EnumHeritage.java': `import java.lang.annotation.ElementType;
+          import java.lang.annotation.Target;
+          @Target(ElementType.TYPE_USE) @interface Marker {}
+          interface Named { String label(); }
+          enum Status implements @Marker Named {
+            ACTIVE;
+            public String label() { return "active"; }
+          }
+          class Reader {
+            String read(Named value) { return value.label(); }
+          }`,
+      });
+
+      const linked = await runPipelineFromRepo(root, () => {});
+      const implementsEdges = getRelationships(linked, 'IMPLEMENTS').filter(
+        (edge) => edge.source === 'Status' && edge.target === 'Named',
+      );
+      const fanout = getRelationships(linked, 'CALLS').filter(
+        (edge) =>
+          edge.source === 'read' &&
+          edge.target === 'label' &&
+          edge.rel.reason === 'interface-dispatch',
+      );
+
+      expect(implementsEdges).toHaveLength(1);
+      expect(implementsEdges[0]?.sourceLabel).toBe('Enum');
+      expect(implementsEdges[0]?.targetLabel).toBe('Interface');
+      expect(fanout.map((edge) => `${edge.targetLabel}:${edge.targetFilePath}`).sort()).toEqual([
+        'Method:EnumHeritage.java',
+      ]);
+    } finally {
+      fs.rmSync(root, { recursive: true, force: true });
+    }
+  }, 60000);
+
+  it('keeps enum constant-body methods distinct while preserving enum heritage (#2918)', async () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), 'gitnexus-java-enum-constant-body-'));
+    try {
+      writeFixtureRepo(root, {
+        'EnumConstantBody.java': `interface Named { String label(); }
+          enum Status implements Named {
+            ACTIVE { public String label() { return "active"; } },
+            INACTIVE;
+            public String label() { return "inactive"; }
+          }`,
+      });
+
+      const linked = await runPipelineFromRepo(root, () => {});
+      const implementsEdges = getRelationships(linked, 'IMPLEMENTS').filter(
+        (edge) => edge.source === 'Status' && edge.target === 'Named',
+      );
+
+      expect(implementsEdges).toHaveLength(1);
+      expect(implementsEdges[0]?.sourceLabel).toBe('Enum');
+      expect(getNodesByLabel(linked, 'Method').filter((name) => name === 'label')).toHaveLength(3);
+    } finally {
+      fs.rmSync(root, { recursive: true, force: true });
+    }
+  }, 60000);
+});
+
 // ---------------------------------------------------------------------------
 // Java 16+ instanceof pattern variable: `if (obj instanceof User user)`
 // Phase 5.2: extractPatternBinding on instanceof_expression binds user → User.
