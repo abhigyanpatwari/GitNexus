@@ -5,14 +5,8 @@ import path from 'node:path';
 import { describe, expect, it } from 'vitest';
 import { buildDetectChangesDiffArgs } from '../../src/mcp/local/local-backend.js';
 import { parseDiffHunks } from '../../src/storage/git.js';
+import { diffArgsFor } from '../helpers/detect-changes-diff-args.js';
 import { commitAll, initGitRepo } from '../helpers/temp-git-repo.js';
-
-/** The arguments `detect_changes` runs, refusing the null no test here expects. */
-function diffArgsFor(scope: string, baseRef?: string): string[] {
-  const args = buildDetectChangesDiffArgs(scope, baseRef);
-  if (!args) throw new Error(`scope "${scope}" must produce git diff arguments`);
-  return args;
-}
 
 /** The five flags every scope carries, ahead of its own ref/staging arguments. */
 const GUARD_FLAGS = [

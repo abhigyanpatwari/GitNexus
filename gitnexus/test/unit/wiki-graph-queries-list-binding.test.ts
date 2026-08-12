@@ -46,6 +46,7 @@ import {
   getInterModuleCallEdges,
   getProcessesForFiles,
 } from '../../src/core/wiki/graph-queries.js';
+import { CALL_EDGE_LIMIT } from '../../src/core/wiki/prompts.js';
 
 // ─── Fixture ──────────────────────────────────────────────────────────────
 
@@ -65,17 +66,11 @@ const DISTANT_CALLER = MODULE_FILES[0];
 const DISTANT_CALLEE = MODULE_FILES[FILE_COUNT - 10];
 
 /**
- * Mirrors the private `CALL_EDGE_LIMIT` in graph-queries.ts. Not exported there
- * on purpose — it exists only because `formatCallEdges` (prompts.ts) slices to
- * 30 — so this suite restates it and fails loudly if the two ever diverge.
- */
-const CALL_EDGE_LIMIT = 30;
-
-/**
- * More intra-module edges than `CALL_EDGE_LIMIT` (30), so the LIMIT the query
- * carries actually has something to cut. With the two hand-written edges below
- * the intra arm matches 42 rows; before these existed it matched 2, and no test
- * could tell a query that limits from one that doesn't.
+ * More intra-module edges than `CALL_EDGE_LIMIT` (30, imported from prompts.ts
+ * — the one place that number lives), so the LIMIT the query carries actually
+ * has something to cut. With the two hand-written edges below the intra arm
+ * matches 42 rows; before these existed it matched 2, and no test could tell a
+ * query that limits from one that doesn't.
  */
 const BULK_EDGES: Edge[] = Array.from({ length: 40 }, (_, i) => ({
   fromFile: MODULE_FILES[i % 5],
@@ -173,19 +168,6 @@ function answerProcessHeaders(query: string, paths: string[]): QueryRow[] {
 }
 
 /**
- * LadybugDB returns a node's label as a SCALAR string, so `labels(s)[0]` is a
- * 1-based character subscript on it — out of range, hence ''. `labels(s)[1]`
- * would be 'F'. Modelling that is what lets this suite see the regression that
- * described all 5,027 exported symbols to the LLM as `name ()`; the fake used
- * to hardcode 'Function' and could observe neither the bug nor the fix.
- */
-const projectLabel = (query: string, label: string): string => {
-  const subscript = /labels\(\w+\)\[(\d+)\]/.exec(query)?.[1];
-  const index = Number(subscript);
-  return subscript === undefined ? label : (label[index - 1] ?? '');
-};
-
-/**
  * The seeded arrival order of each process's steps: 2, then 0, then 1.
  *
  * Deliberately NOT ascending, and deliberately including 0. The fake used to
@@ -198,14 +180,21 @@ const projectLabel = (query: string, label: string): string => {
  */
 const SEEDED_STEP_ORDER = [2, 0, 1];
 
-/** One row per (process, step), the shape the grouped step query returns. */
-function answerProcessSteps(query: string, ids: string[]): QueryRow[] {
+/**
+ * One row per (process, step), the shape the grouped step query returns.
+ *
+ * `type` is a plain label: what LadybugDB actually answers for a `labels(s)`
+ * projection is the engine's business, and is pinned against a real engine in
+ * test/integration/wiki-graph-queries-engine.test.ts. What is left here is the
+ * row→object mapping.
+ */
+function answerProcessSteps(ids: string[]): QueryRow[] {
   return SEEDED_STEP_ORDER.flatMap((step) =>
     ids.map((pid) => ({
       pid,
       name: `${pid}-step${step}`,
       filePath: MODULE_FILES[step],
-      type: projectLabel(query, 'Function'),
+      type: 'Function',
       step,
     })),
   );
@@ -217,7 +206,7 @@ beforeEach(() => {
   executeParameterizedMock.mockImplementation(
     async (_repo: string, query: string, params: Record<string, unknown>) => {
       seen.push({ query, params });
-      if (query.includes('p.id IN $ids')) return answerProcessSteps(query, params.ids as string[]);
+      if (query.includes('p.id IN $ids')) return answerProcessSteps(params.ids as string[]);
       const paths = (params.paths ?? []) as string[];
       if (query.includes('STEP_IN_PROCESS')) return answerProcessHeaders(query, paths);
       return answerCallEdges(query, paths);
@@ -355,13 +344,13 @@ describe('#2915 wiki graph queries bind their file list', () => {
     expect(processes[0].steps.map((s) => s.step)).toEqual(SEEDED_STEP_ORDER);
   });
 
-  it('reads the step label and number off the named columns', async () => {
+  it('reads the step number off its named column, including a genuine 0', async () => {
     const processes = await getProcessesForFiles(MODULE_FILES, 1);
 
-    // `labels(s)`, not `labels(s)[0]` — the subscript is an out-of-range
-    // character index on a scalar string, so every step's type rendered as ''.
-    expect(processes[0].steps.map((s) => s.type)).toEqual(['Function', 'Function', 'Function']);
-    // A step genuinely numbered 0 keeps its own number.
+    // A step genuinely numbered 0 keeps its own number — a falsy check on the
+    // column would substitute an index or drop the step entirely. (What the
+    // engine answers for the step's LABEL is asserted in
+    // test/integration/wiki-graph-queries-engine.test.ts.)
     expect(processes[0].steps.map((s) => s.step)).toContain(0);
   });
 

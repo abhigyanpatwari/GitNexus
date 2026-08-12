@@ -49,8 +49,7 @@ export function formatDetectChangesResult(result: unknown): string {
   if (payload.truncated) notes.push(t('tool.detectChanges.truncated'));
 
   if ((summary.changed_count ?? 0) === 0) {
-    const noChanges = t('tool.detectChanges.noChanges');
-    return notes.length > 0 ? [...notes, noChanges].join('\n') : noChanges;
+    return [...notes, t('tool.detectChanges.noChanges')].join('\n');
   }
 
   const lines: string[] = [];

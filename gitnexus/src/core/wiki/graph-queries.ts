@@ -14,15 +14,16 @@ import {
   pinRepo,
 } from '../lbug/pool-adapter.js';
 
-const REPO_ID = '__wiki__';
-
 /**
- * Rows kept by each call-edge query. One constant rather than one per query:
- * every such list reaches the LLM through `formatCallEdges` (prompts.ts), whose
- * `.slice(0, 30)` is the only reason a limit exists at all, so a second number
- * could only ever drift from it.
+ * Rows kept by each call-edge query. Owned by prompts.ts, where the reason for
+ * a limit lives: every one of these lists reaches the LLM through
+ * `formatCallEdges`, which slices to the same value. Fetching rows that slice
+ * would discard is waste, so the cut happens here too — but as the same number,
+ * not a second one, because a second one could only ever drift from it.
  */
-const CALL_EDGE_LIMIT = 30;
+import { CALL_EDGE_LIMIT } from './prompts.js';
+
+const REPO_ID = '__wiki__';
 
 /**
  * Touch the wiki DB connection to prevent idle timeout during long LLM calls.
@@ -148,9 +149,13 @@ async function withSteps(headers: ProcessHeader[]): Promise<ProcessInfo[]> {
   const stepsById = new Map<string, ProcessInfo['steps']>();
   for (const row of stepRows) {
     const pid = String(row.pid);
-    const steps = stepsById.get(pid) ?? [];
+
+    let steps = stepsById.get(pid);
+    if (!steps) {
+      steps = [];
+      stepsById.set(pid, steps);
+    }
     steps.push(toProcessStep(row));
-    stepsById.set(pid, steps);
   }
 
   return headers.map((header) => ({ ...header, steps: stepsById.get(header.id) ?? [] }));

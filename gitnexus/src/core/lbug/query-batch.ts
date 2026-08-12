@@ -19,14 +19,56 @@
  */
 
 /**
- * Items per graph query when the input list is caller-sized.
+ * Items per graph query when each item makes the query do MORE WORK — an
+ * `UNWIND` row, a per-item predicate, anything the engine pays for per item.
  *
  * Measured on a 25k-node index: for the `detect_changes` hunk→symbol query, 25
  * items cost 1025ms, 50 cost 642ms, **100 cost 476ms**, 200 cost 613ms and 800
  * cost 650ms — round-trip overhead dominates below 100, per-query cost above
- * it. The impact path's id lookups landed on the same number independently.
+ * it. The impact path's id lookups landed on the same number independently,
+ * and its list is bounded by `processLimit * maxSymbolsPerProcess` anyway, so
+ * it rarely fills even one chunk.
+ *
+ * NOT the size for an id-list probe — see `LBUG_ID_PROBE_BATCH_SIZE`, which
+ * measures an order of magnitude larger for the opposite reason. The two are
+ * deliberately separate constants.
  */
 export const LBUG_QUERY_BATCH_SIZE = 100;
+
+/**
+ * Items per graph query when the list is only a MEMBERSHIP TEST the engine
+ * probes with — `WHERE n.id IN $ids` and nothing else scaling with it.
+ *
+ * Ten times `LBUG_QUERY_BATCH_SIZE` because the two shapes are opposites:
+ *
+ * - The hunk→symbol query above is an unlabeled `MATCH (n)`, a scan of the
+ *   whole node table that every batch pays in full. More items per batch means
+ *   fewer scans to amortise, so the cost curve turns UP past ~100.
+ * - An `id IN $ids` probe does work proportional to the ids and nothing else.
+ *   There is no fixed cost to amortise, so a small batch is pure round-trip
+ *   overhead and the curve only turns up once a batch is big enough to
+ *   materialise a large list.
+ *
+ * Measured on this repo's index (25k nodes), `detect_changes`' symbol→process
+ * lookup at concurrency 4, median of 3:
+ *
+ * | ids    | chunk=100 | chunk=1000 | one query |
+ * |--------|-----------|------------|-----------|
+ * |  5,000 |     161ms |       88ms |     124ms |
+ * | 20,000 |     617ms |      266ms |     336ms |
+ *
+ * At 20,000 ids the curve is already flat at 1,000 (250:374ms, 500:300ms,
+ * 1000:261ms, 2000:248ms, 4000:269ms), so a larger batch buys ≤5% and gives
+ * back the ceiling that is the whole point of chunking: the unchunked form
+ * measured 1,238 MB at 100k ids and 4,002 MB at 500k (#2915). 1,000 is the
+ * first size on the flat part.
+ *
+ * This also settles an earlier measurement that read chunking this query as a
+ * regression (4,150 ids 129→152ms, 9,749 ids 238→325ms): that was chunk=100,
+ * which is slower than not chunking at all above ~2,000 ids. At 1,000 the
+ * chunked form beats both.
+ */
+export const LBUG_ID_PROBE_BATCH_SIZE = 1000;
 
 /**
  * Query text above which a caller is assumed to be splicing a caller-sized list

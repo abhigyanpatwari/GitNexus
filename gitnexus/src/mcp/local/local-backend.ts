@@ -22,7 +22,7 @@ import { queryClassBeanMetadata } from './bean-metadata.js';
 import { querySpringAopMetadata } from './aop-metadata.js';
 import { isValidQueryParams } from '../../core/lbug/query-params.js';
 import { toDisplayLine } from './line-display.js';
-import { LBUG_QUERY_BATCH_SIZE } from '../../core/lbug/query-batch.js';
+import { LBUG_ID_PROBE_BATCH_SIZE, LBUG_QUERY_BATCH_SIZE } from '../../core/lbug/query-batch.js';
 import { chunk, mapConcurrent } from '../../lib/utils.js';
 import { pathSuffixOf } from './path-predicate.js';
 import { toOneBasedLine } from '../../core/ingestion/utils/line-base.js';
@@ -928,6 +928,23 @@ interface ChangedSymbolRow {
   filePath: string;
   startLine: number;
   endLine: number;
+}
+
+/**
+ * One row of the `detect_changes` symbol→process query (see `detectChanges`).
+ *
+ * Keyed by the query's `AS` aliases, like `ChangedSymbolRow` above and the wiki
+ * row types (`core/wiki/graph-queries.ts`): the pool adapter returns
+ * `getAll()`'s `Record<string, LbugValue>`, so a row has alias keys and never
+ * the positional ones an older adapter offered.
+ */
+interface ProcessRow {
+  nodeId: string;
+  pid: string;
+  label: string;
+  processType: string;
+  stepCount: number;
+  step: number;
 }
 
 export function buildDetectChangesDiffArgs(scope: string, baseRef?: string): string[] | null {
@@ -5262,8 +5279,13 @@ export class LocalBackend {
     // one batch at 1M nodes, +922 MB for the four in flight, paid even for a
     // one-file diff — enough to fail with `Buffer manager exception` on a
     // 268 MB pool). Stated batch-wide and `b`-free it plans as the first filter
-    // under the scan instead: measured 10x less memory, ~20% faster, identical
-    // rows. Safe because it is a provable superset of the correlated form —
+    // under the scan instead: measured 10x less memory, identical rows. Both
+    // that figure and the "~20% faster" this comment used to also claim come
+    // from the 1M-node synthetic index where the blowup shows; the speed half
+    // does not survive at real sizes — on this repo's 25k-node index the same
+    // change measured 93ms against 85-92ms, inside the noise. Memory is the
+    // reason to keep it. Safe because it is a provable superset of the
+    // correlated form —
     // `n.filePath = b.path` implies `n.filePath IN $paths`, and
     // `n.filePath ENDS WITH b.suffix` implies some `$suffixes` entry matches —
     // so it cannot drop a row the correlated filter keeps.
@@ -5284,9 +5306,9 @@ export class LocalBackend {
 
     // Batches run concurrently: each `executeParameterized` holds one connection
     // checked out of the per-repo pool for the duration of its query, which is
-    // the safety rule documented alongside `mapConcurrent` (see the batching
-    // rationale in core/lbug/query-batch.ts) — not the single-query sequential
-    // rule the arm64 macOS module loop below follows.
+    // the safety rule documented on `mapConcurrent` itself (`lib/utils.ts`; why
+    // the list needs a ceiling at all is in core/lbug/query-batch.ts) — not the
+    // single-query sequential rule the arm64 macOS module loop below follows.
     const batchResults = await mapConcurrent(
       chunk(bounds, LBUG_QUERY_BATCH_SIZE),
       (batch) =>
@@ -5313,12 +5335,17 @@ export class LocalBackend {
     // Same class as #2787, which this PR also fixes in graph-queries.ts. Sorted
     // here rather than in Cypher because the rows are already materialised;
     // (filePath, startLine, id) is a total key, `id` being unique per node.
+    // Compared as the row type declares them (the engine returns STRING and
+    // INT64 columns as JS strings and numbers), not re-coerced per comparison:
+    // `String()`/`Number()` inside a comparator run O(n log n) times, measured
+    // 31-38% of the sort (500k rows 786ms vs 571ms). Every other read of these
+    // rows below trusts the same declaration.
     const symbolRows = batchResults.flatMap((rows) => (rows ?? []) as ChangedSymbolRow[]);
     symbolRows.sort(
       (a, b) =>
-        compareCodeUnits(String(a.filePath), String(b.filePath)) ||
-        Number(a.startLine) - Number(b.startLine) ||
-        compareCodeUnits(String(a.id), String(b.id)),
+        compareCodeUnits(a.filePath, b.filePath) ||
+        a.startLine - b.startLine ||
+        compareCodeUnits(a.id, b.id),
     );
 
     // Prefer the exact path. A detect_changes path is ALWAYS repo-root-relative
@@ -5330,12 +5357,17 @@ export class LocalBackend {
     // So it degrades to a fallback: a path that produced an exact row keeps only
     // its exact rows, a path that produced none still widens. Decided on the
     // rows already fetched, so the scan above is still paid exactly once.
-    const exactlyMatchedPaths = new Set(
-      symbolRows.filter((row) => row.filePath === row.diffPath).map((row) => String(row.diffPath)),
-    );
+    //
+    // Built in one pass: the `filter().map()` this replaces allocated two
+    // throwaway arrays the size of the row set (40k rows 11.4ms → 4.5ms, 200k
+    // rows 71.3ms → 26.6ms).
+    const exactlyMatchedPaths = new Set<string>();
+    for (const row of symbolRows) {
+      if (row.filePath === row.diffPath) exactlyMatchedPaths.add(row.diffPath);
+    }
 
     for (const sym of symbolRows) {
-      const diffPath = String(sym.diffPath);
+      const diffPath = sym.diffPath;
       if (sym.filePath !== sym.diffPath && exactlyMatchedPaths.has(diffPath)) continue;
       const hunks = hunksByPath.get(diffPath) ?? [];
       if (!hunksOverlapRange(hunks, sym.startLine, sym.endLine)) continue;
@@ -5364,8 +5396,12 @@ export class LocalBackend {
       // diff measured 1,238 MB at 100k ids and 4,002 MB at 500k (#2915). The
       // merge below is a Map upsert keyed by process id, so a process reached
       // from two chunks simply accumulates its steps.
+      // `LBUG_ID_PROBE_BATCH_SIZE`, not the hunk query's size: this is a pure
+      // `id IN $ids` probe with no scan to amortise, so it wants a batch an
+      // order of magnitude larger — 20k ids measured 617ms at 100 against 266ms
+      // at 1,000. The contrast is documented on both constants.
       const processBatches = await mapConcurrent(
-        chunk(Array.from(changedSymbols.keys()), LBUG_QUERY_BATCH_SIZE),
+        chunk(Array.from(changedSymbols.keys()), LBUG_ID_PROBE_BATCH_SIZE),
         (ids) => executeParameterized(repo.lbugPath, processQuery, { ids }),
         { onError: (error) => logQueryError('detect-changes:process-lookup', error) },
       );
@@ -5373,22 +5409,27 @@ export class LocalBackend {
       // from the result, so it is `partial` — not the clean "nothing to worry
       // about" it would otherwise look like.
       if (processBatches.includes(undefined)) queryDegraded = true;
+      // Read by alias only. The rows are `getAll()` records (`pool-adapter.ts`),
+      // so the `proc.label || proc[2]` positional fallbacks this loop used to
+      // carry could never fire — and where a column IS legitimately falsy they
+      // turned it into `undefined`: an empty heuristicLabel or a step numbered
+      // 0 lost its own value. Same reason `graph-queries.ts` moved these
+      // defaults from `||` to `??`; here there is nothing left to default to.
       for (const procs of processBatches) {
-        for (const proc of procs ?? []) {
-          const nodeId = proc.nodeId || proc[0];
-          const pid = proc.pid || proc[1];
+        for (const proc of (procs ?? []) as ProcessRow[]) {
+          const pid = proc.pid;
           if (!affectedProcesses.has(pid)) {
             affectedProcesses.set(pid, {
               id: pid,
-              name: proc.label || proc[2],
-              process_type: proc.processType || proc[3],
-              step_count: proc.stepCount || proc[4],
+              name: proc.label,
+              process_type: proc.processType,
+              step_count: proc.stepCount,
               changed_steps: [],
             });
           }
           affectedProcesses.get(pid)!.changed_steps.push({
-            symbol: changedSymbols.get(nodeId)?.name ?? nodeId,
-            step: proc.step || proc[5],
+            symbol: changedSymbols.get(proc.nodeId)?.name ?? proc.nodeId,
+            step: proc.step,
           });
         }
       }

@@ -20,9 +20,12 @@ import { springDiResolver } from './spring.js';
 
 /** The resolver contract lives in the leaf `./types.js` so an implementation
  *  can depend on it without depending on this registry (which imports every
- *  implementation). Re-exported here so consumers can keep importing the
- *  contract and the registry from one place. */
-export type { DiInjectionMatch, DiProviderMatch, DiResolver } from './types.js';
+ *  implementation). The two match shapes are re-exported here because consumers
+ *  of the registry read them off its results — `pipeline-phases/di.ts` and the
+ *  Spring metadata modules import them from this module alongside
+ *  `DI_RESOLVERS`. `DiResolver` itself is NOT re-exported: only implementations
+ *  need it, and they import it from `./types.js` directly. */
+export type { DiInjectionMatch, DiProviderMatch } from './types.js';
 
 /** All `SupportedLanguages` string values, for narrowing raw graph strings. */
 const SUPPORTED_LANGUAGE_VALUES: ReadonlySet<string> = new Set(Object.values(SupportedLanguages));

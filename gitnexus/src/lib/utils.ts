@@ -126,9 +126,12 @@ export const stripWindowsLongPathPrefix = (
  * Returns an empty array for empty input, and never returns an empty slice, so
  * `for (const batch of chunk(xs, n))` always has something to work on.
  *
- * Callers batching a GRAPH QUERY should take the size from
- * `LBUG_QUERY_BATCH_SIZE` (`core/lbug/query-batch.ts`), which documents why a
- * query built from a caller-sized array needs a ceiling at all (#2915).
+ * Callers batching a GRAPH QUERY should take the size from `core/lbug/query-batch.ts`,
+ * which documents why a query built from a caller-sized array needs a ceiling at
+ * all (#2915) and which of the two ceilings applies: `LBUG_QUERY_BATCH_SIZE` when
+ * each item makes the query do more work, `LBUG_ID_PROBE_BATCH_SIZE` when it is a
+ * plain `id IN $ids` probe and round trips dominate. They differ by 10x, in
+ * opposite directions, for that reason.
  */
 export function chunk<T>(items: readonly T[], size: number): T[][] {
   // `NaN` fails every comparison, so a bare `size < 1` lets it through and

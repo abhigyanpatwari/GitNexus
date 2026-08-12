@@ -18,15 +18,12 @@ type BoundedCheckpointBeforeExit =
 
 // The message shapes live in `analyze-worker-protocol.ts` — a declarations-only
 // leaf neither this entry module nor `analyze-worker-core.ts` sits downstream
-// of, which is what breaks the entry ⇄ core import cycle. Re-exported here (as
-// types, so the re-export is erased at runtime) to keep every existing import
-// site — `analyze-launch.ts` and the unit tests — working unchanged.
-export type {
-  ProgressMessage,
-  CompleteMessage,
-  ErrorMessage,
-  WorkerMessage,
-} from './analyze-worker-protocol.js';
+// of, which is what breaks the entry ⇄ core import cycle. The two shapes that
+// are imported from HERE are re-exported (as types, so the re-export is erased
+// at runtime): `WorkerMessage` by `analyze-launch.ts`, `CompleteMessage` by
+// `analyze-launch-collapse.test.ts`. Everything else imports the protocol module
+// directly, so nothing else belongs in this list.
+export type { CompleteMessage, WorkerMessage } from './analyze-worker-protocol.js';
 
 function send(msg: WorkerMessage) {
   // No try/catch: if the IPC channel is gone, process.send throws

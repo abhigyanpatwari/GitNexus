@@ -33,7 +33,7 @@ const { lbugMocks } = vi.hoisted(() => ({
 }));
 
 vi.mock('../../src/core/lbug/pool-adapter.js', async (importOriginal) => {
-  const actual = await importOriginal();
+  const actual = await importOriginal<typeof import('../../src/core/lbug/pool-adapter.js')>();
   return { ...actual, ...lbugMocks };
 });
 
@@ -47,7 +47,7 @@ vi.mock('../../src/storage/repo-manager.js', async (importOriginal) => {
   };
 });
 
-import { buildDetectChangesDiffArgs, LocalBackend } from '../../src/mcp/local/local-backend.js';
+import { LocalBackend } from '../../src/mcp/local/local-backend.js';
 import { listRegisteredRepos, type RegistryEntry } from '../../src/storage/repo-manager.js';
 import {
   coalesceHunks,
@@ -55,7 +55,9 @@ import {
   hunksOverlapRange,
   parseDiffHunks,
 } from '../../src/storage/git.js';
+import { diffArgsFor } from '../helpers/detect-changes-diff-args.js';
 import { createTempDirPool } from '../helpers/temp-dir-pool.js';
+import { commitAll, initGitRepo } from '../helpers/temp-git-repo.js';
 
 const tempDirs = createTempDirPool('gnx-hunk-scale-');
 
@@ -64,9 +66,7 @@ function makeRepo(files: string[], lines: number): string {
   const repoDir = tempDirs.dir();
   mkdirSync(path.join(repoDir, '.gitnexus', 'lbug'), { recursive: true });
   writeFileSync(path.join(repoDir, '.gitnexus', 'meta.json'), '{}');
-  execFileSync('git', ['init', '-q'], { cwd: repoDir });
-  execFileSync('git', ['config', 'user.email', 'test@example.com'], { cwd: repoDir });
-  execFileSync('git', ['config', 'user.name', 'Test'], { cwd: repoDir });
+  initGitRepo(repoDir);
   for (const file of files) {
     mkdirSync(path.dirname(path.join(repoDir, file)), { recursive: true });
     writeFileSync(
@@ -74,8 +74,7 @@ function makeRepo(files: string[], lines: number): string {
       Array.from({ length: lines }, (_, i) => `line ${i + 1}`).join('\n') + '\n',
     );
   }
-  execFileSync('git', ['add', '-A'], { cwd: repoDir });
-  execFileSync('git', ['commit', '-q', '-m', 'init'], { cwd: repoDir });
+  commitAll(repoDir, 'init');
   return repoDir;
 }
 
@@ -100,13 +99,6 @@ function registerRepo(repoDir: string): void {
     stats: { files: 1, nodes: 1, edges: 0, communities: 0, processes: 0 },
   };
   vi.mocked(listRegisteredRepos).mockResolvedValue([entry]);
-}
-
-/** The git arguments `detect_changes` itself runs for the scope these drive. */
-function unstagedDiffArgs(): string[] {
-  const args = buildDetectChangesDiffArgs('unstaged');
-  if (!args) throw new Error('unstaged scope must produce git diff arguments');
-  return args;
 }
 
 /** One bounded file in the hunk→symbol query's `$bounds` parameter. */
@@ -371,7 +363,7 @@ describe('#2915 detect_changes hunk scaling', () => {
 
     // Non-vacuous: the diff really does parse to two entries for one path.
     const parsed = parseDiffHunks(
-      execFileSync('git', unstagedDiffArgs(), { cwd: repoDir, encoding: 'utf-8' }),
+      execFileSync('git', diffArgsFor('unstaged'), { cwd: repoDir, encoding: 'utf-8' }),
     );
     expect(parsed.map((fileDiff) => fileDiff.filePath)).toEqual(['code.py', 'code.py']);
 

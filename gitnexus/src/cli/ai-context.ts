@@ -198,18 +198,17 @@ ${tableBody}`
     `No \`${runnerPath}\` yet? Bootstrap with \`npx\`, \`bunx\`, or \`pnpm dlx\` — ` +
     'e.g. `bunx gitnexus@latest analyze` (npm 11 npx crash; #1939).';
 
+  // This block is injected into every user's repo and its total size is capped
+  // by test (ai-context.test.ts, #856) — a new bullet or clause has to be paid
+  // for by trimming an existing one.
+  //
   // The detect_changes bullet carries the degraded-result rule (#2915): a run
   // that sets `partial` (a graph query failed) or `truncated` (the changed-symbol
   // listing was capped) is not the pre-commit gate passing, and `partial` pairs
   // routinely with changed_count:0 — the exact shape that printed "No changes
   // detected." and exited 0 on a broken analysis. Same reasoning as the
   // `risk: UNKNOWN` bullet below: the tool could not answer, so its zero is not
-  // an all-clear. This block is injected into every user's repo and its size is
-  // capped by test (ai-context.test.ts, #856), so the rule was paid for in the
-  // same currency it costs: the header's "use GitNexus graph tools…" exhortation
-  // (which the Always Do list restates as MUSTs, with commands) and the verbatim
-  // repeat of `<runner> detect-changes` in the regression-compare example, whose
-  // only delta from the command one sentence earlier is the flags.
+  // an all-clear.
   return `${GITNEXUS_START_MARKER}
 # GitNexus — Code Intelligence
 

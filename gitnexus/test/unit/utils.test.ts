@@ -41,6 +41,58 @@ describe('generateId', () => {
 });
 
 describe('mapConcurrent', () => {
+  /**
+   * Yield to the event loop once the microtask queue is drained, which is
+   * exactly when `mapConcurrent` has finished awaiting one wave and started the
+   * next. `setImmediate` fires after microtasks by definition, so this waits on
+   * the scheduler rather than on elapsed time.
+   */
+  const settleWave = (): Promise<void> => new Promise((resolve) => setImmediate(resolve));
+
+  /**
+   * Drive `mapConcurrent` over `itemCount` items whose promises are all held
+   * open by hand, releasing everything in flight one batch at a time.
+   *
+   * Same idea as the ordering test above: real `setTimeout` sleeps only made
+   * the same contract slower and jitter-dependent — a loaded shard could let a
+   * 5ms item outlive the next scheduling decision. Here nothing settles until
+   * this function says so, so `peak` is the scheduler's doing and nothing else.
+   *
+   * Returns how many items were in flight at the start of each batch, and the
+   * highest number ever concurrently in flight.
+   */
+  async function releaseInWaves(
+    itemCount: number,
+    concurrency: number,
+  ): Promise<{ started: number[]; peak: number }> {
+    let inFlight = 0;
+    let peak = 0;
+    const holds: (() => void)[] = [];
+    const settled = mapConcurrent(
+      Array.from({ length: itemCount }, (_, i) => i),
+      () =>
+        new Promise<void>((resolve) => {
+          inFlight += 1;
+          peak = Math.max(peak, inFlight);
+          holds.push(() => {
+            inFlight -= 1;
+            resolve();
+          });
+        }),
+      { concurrency },
+    );
+
+    const started: number[] = [];
+    for (let wave = 0; wave < Math.ceil(itemCount / concurrency); wave += 1) {
+      started.push(holds.length);
+      for (const release of holds.splice(0)) release();
+      await settleWave();
+    }
+
+    await settled;
+    return { started, peak };
+  }
+
   it('returns results in INPUT order regardless of completion order', async () => {
     // Deterministic by construction: each item's promise is settled by hand in
     // an order chosen here, so the test cannot depend on how loaded the shard
@@ -69,19 +121,13 @@ describe('mapConcurrent', () => {
   });
 
   it('never exceeds the concurrency limit', async () => {
-    let inFlight = 0;
-    let peak = 0;
-    await mapConcurrent(
-      Array.from({ length: 9 }, (_, i) => i),
-      async () => {
-        inFlight += 1;
-        peak = Math.max(peak, inFlight);
-        await new Promise((resolve) => setTimeout(resolve, 5));
-        inFlight -= 1;
-      },
-      { concurrency: 2 },
-    );
+    const { started, peak } = await releaseInWaves(9, 2);
 
+    // 9 items at concurrency 2: four full waves and a remainder of one. Nothing
+    // ran outside a wave, which is what the peak below rests on — an
+    // implementation that ignored `concurrency` would show 9 here and a peak
+    // of 9.
+    expect(started).toEqual([2, 2, 2, 2, 1]);
     expect(peak).toBe(2);
   });
 
@@ -104,19 +150,9 @@ describe('mapConcurrent', () => {
   });
 
   it('runs sequentially when concurrency is 1', async () => {
-    let inFlight = 0;
-    let peak = 0;
-    await mapConcurrent(
-      [1, 2, 3],
-      async () => {
-        inFlight += 1;
-        peak = Math.max(peak, inFlight);
-        await new Promise((resolve) => setTimeout(resolve, 1));
-        inFlight -= 1;
-      },
-      { concurrency: 1 },
-    );
+    const { started, peak } = await releaseInWaves(3, 1);
 
+    expect(started).toEqual([1, 1, 1]);
     expect(peak).toBe(1);
   });
 

@@ -33,6 +33,8 @@ import {
   getProcessesForFiles,
   initWikiDb,
 } from '../../src/core/wiki/graph-queries.js';
+import { CALL_EDGE_LIMIT } from '../../src/core/wiki/prompts.js';
+import { compareCodeUnits } from '../../src/lib/utils.js';
 
 // ─── Fixture ──────────────────────────────────────────────────────────────
 
@@ -48,10 +50,11 @@ const MODULE_FILES = [ALPHA, BETA];
 const pad = (n: number): string => String(n).padStart(2, '0');
 
 /**
- * `CALL_EDGE_LIMIT` is 30 and private to graph-queries.ts. 40 bulk callers plus
- * the two hand-written intra-module edges put 42 rows in front of it, so the
- * LIMIT has to cut — and `bulkNN` sorts after both hand-written names, which
- * makes the kept set an exactly predictable ordered prefix.
+ * 40 bulk callers plus the two hand-written intra-module edges put 42 rows in
+ * front of `CALL_EDGE_LIMIT` (imported above from prompts.ts, the one place
+ * that number lives), so the LIMIT has to cut — and `bulkNN` sorts after both
+ * hand-written names, which makes the kept set an exactly predictable ordered
+ * prefix.
  */
 const BULK_CALLERS = Array.from({ length: 40 }, (_, i) => `bulk${pad(i)}`);
 
@@ -117,13 +120,36 @@ const fn = (
 ): string => `{id: 'Function:${file}:${name}', name: '${name}', filePath: '${file}',
      startLine: ${line}, endLine: ${line}, isExported: ${isExported}, content: '', description: ''}`;
 
-const rel = (type: string, step = 0): string =>
+/** `step` is interpolated raw, so a caller may pass a Cypher expression. */
+const rel = (type: string, step: number | string = 0): string =>
   `[:CodeRelation {type: '${type}', confidence: 1.0, reason: 'seed', step: ${step}}]`;
 
-const stepEdge = (proc: string, symbol: string, step: number): string =>
-  `MATCH (s:Function), (p:Process)
-   WHERE s.id = 'Function:${symbolFile.get(symbol)}:${symbol}' AND p.id = '${proc}'
-   CREATE (s)-${rel('STEP_IN_PROCESS', step)}->(p)`;
+/** Every STEP_IN_PROCESS edge this fixture needs, seeded together below. */
+const ALL_STEP_EDGES = [
+  ...STEP_EDGES,
+  ...GAMMA_STEP_SYMBOLS.map((s, i) => ({ proc: 'proc-gamma', symbol: s.name, step: i + 1 })),
+  { proc: 'proc-blank', symbol: STEP_SYMBOLS[0].name, step: 1 },
+];
+
+/**
+ * All 714 step edges in ONE statement.
+ *
+ * `withTestLbugDB` runs each seed string as its own query, so one
+ * `MATCH … CREATE` per edge is 714 round trips — measured at 6.91s wall for
+ * this file against 0.19s for its mocked sibling, on a pool whose bare read
+ * round trip is 0.53ms. The edges themselves are unchanged: the list keeps its
+ * seeded order (see STEP_EDGES) and every row still resolves both endpoints by
+ * id, so nothing about what the ordering tests below can observe moves.
+ */
+const stepEdges = (edges: typeof ALL_STEP_EDGES): string =>
+  `UNWIND [${edges
+    .map(
+      (e) =>
+        `{sid: 'Function:${symbolFile.get(e.symbol)}:${e.symbol}', pid: '${e.proc}', step: ${e.step}}`,
+    )
+    .join(', ')}] AS e
+   MATCH (s:Function), (p:Process) WHERE s.id = e.sid AND p.id = e.pid
+   CREATE (s)-${rel('STEP_IN_PROCESS', 'e.step')}->(p)`;
 
 const SEED: string[] = [
   // Files
@@ -201,9 +227,7 @@ const SEED: string[] = [
   // still fall back to the id and 'unknown'. No steps either.
   `CREATE (p:Process {id: 'proc-null', label: 'LNull', stepCount: 0, communities: []})`,
 
-  ...STEP_EDGES.map((e) => stepEdge(e.proc, e.symbol, e.step)),
-  ...GAMMA_STEP_SYMBOLS.map((s, i) => stepEdge('proc-gamma', s.name, i + 1)),
-  stepEdge('proc-blank', STEP_SYMBOLS[0].name, 1),
+  stepEdges(ALL_STEP_EDGES),
 ];
 
 /** The trace every `proc-NN` must come back with: 1..stepCount, ascending. */
@@ -253,7 +277,9 @@ withTestLbugDB(
         expect(byFile.get(ALPHA)).toEqual([{ name: 'alphaFn', type: 'Function' }]);
         // UNION arm 1 (Function, Class) and arm 2 (Method, via HAS_METHOD) each
         // carry a label — the subscript blanked both sites.
-        expect([...(byFile.get(BETA) ?? [])].sort((a, b) => (a.name < b.name ? -1 : 1))).toEqual([
+        expect(
+          [...(byFile.get(BETA) ?? [])].sort((a, b) => compareCodeUnits(a.name, b.name)),
+        ).toEqual([
           { name: 'BetaService', type: 'Class' },
           { name: 'betaFn', type: 'Function' },
           { name: 'serve', type: 'Method' },
@@ -279,11 +305,11 @@ withTestLbugDB(
         // 42 edges match; `ORDER BY fromName, toName, fromFile, toFile / LIMIT`
         // decides which 30 survive. Drop the LIMIT and this is 42 rows; drop the
         // ORDER BY and the engine picks an arbitrary 30 (#2787).
-        expect(edges).toHaveLength(30);
+        expect(edges).toHaveLength(CALL_EDGE_LIMIT);
         expect(edges.map((e) => e.fromName)).toEqual([
           'alphaFn',
           'betaFn',
-          ...BULK_CALLERS.slice(0, 28),
+          ...BULK_CALLERS.slice(0, CALL_EDGE_LIMIT - 2),
         ]);
         expect(edges[0]).toEqual({
           fromFile: ALPHA,
@@ -344,7 +370,10 @@ withTestLbugDB(
         const [first] = await getAllProcesses();
 
         expect([...new Set(first.steps.map((s) => s.type))]).toEqual(['Function']);
-        expect([...new Set(first.steps.map((s) => s.filePath))].sort()).toEqual([ALPHA, BETA]);
+        expect([...new Set(first.steps.map((s) => s.filePath))].sort(compareCodeUnits)).toEqual([
+          ALPHA,
+          BETA,
+        ]);
       });
 
       it('keeps an empty label and type, and falls back only for a null one', async () => {

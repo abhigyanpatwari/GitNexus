@@ -120,6 +120,28 @@ describe('direct CLI tool commands', () => {
     expect(process.exitCode).toBe(1);
   });
 
+  // `partial` is cross-tool vocabulary, not detect_changes' private flag, and the
+  // degraded shape is the dangerous one: it looks like a result. `impact` matters
+  // most — AGENTS.md makes it the gate before every edit, so a truncated traversal
+  // that exits 0 lets `gitnexus impact … && <edit>` proceed on a short caller set.
+  it('fails closed when query degrades to a partial result', async () => {
+    callToolMock.mockResolvedValue({ results: [], partial: true });
+    const { queryCommand } = await import('../../src/cli/tool.js');
+
+    await queryCommand('auth flow');
+
+    expect(process.exitCode).toBe(1);
+  });
+
+  it('fails closed when impact truncates its traversal', async () => {
+    callToolMock.mockResolvedValue({ byDepth: {}, risk: 'LOW', partial: true });
+    const { impactCommand } = await import('../../src/cli/tool.js');
+
+    await impactCommand('someSymbol', { direction: 'upstream' });
+
+    expect(process.exitCode).toBe(1);
+  });
+
   it('fails closed when context returns a backend error payload', async () => {
     callToolMock.mockResolvedValue({ error: 'Symbol not found: nope' });
     const { contextCommand } = await import('../../src/cli/tool.js');
@@ -173,8 +195,8 @@ describe('direct CLI tool commands', () => {
     await detectChangesCommand({});
 
     expect(writeSyncMock).toHaveBeenCalledWith(1, expect.stringContaining('Error: index is stale'));
-    // The formatter renders the error as TEXT, so `output()`'s object-payload
-    // check never sees it — the status has to come off the structured result.
+    // `output()` gets the structured result plus its formatter, so the
+    // object-payload check sees the `error` the rendered prose hides.
     // `gitnexus detect-changes && git commit` must not proceed here.
     expect(process.exitCode).toBe(1);
   });
