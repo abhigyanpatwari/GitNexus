@@ -1,4 +1,4 @@
-import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 const initMock = vi.fn();
 const callToolMock = vi.fn();
@@ -25,6 +25,12 @@ describe('direct CLI tool commands', () => {
     writeSyncMock.mockReset();
     process.exitCode = undefined;
     initMock.mockResolvedValue(true);
+  });
+
+  // These commands set `process.exitCode` on the real process. Clearing it after
+  // each test keeps a deliberate failure here from failing the whole run.
+  afterEach(() => {
+    process.exitCode = undefined;
   });
 
   it('dispatches circular-import checks and fails CI when cycles exist', async () => {
@@ -160,13 +166,51 @@ describe('direct CLI tool commands', () => {
     expect(writeSyncMock).toHaveBeenCalledWith(1, expect.stringContaining('No changes detected.'));
   });
 
-  it('prints error message when result contains an error', async () => {
+  it('prints error message and fails the gate when result contains an error', async () => {
     callToolMock.mockResolvedValue({ error: 'index is stale' });
     const { detectChangesCommand } = await import('../../src/cli/tool.js');
 
     await detectChangesCommand({});
 
     expect(writeSyncMock).toHaveBeenCalledWith(1, expect.stringContaining('Error: index is stale'));
+    // The formatter renders the error as TEXT, so `output()`'s object-payload
+    // check never sees it — the status has to come off the structured result.
+    // `gitnexus detect-changes && git commit` must not proceed here.
+    expect(process.exitCode).toBe(1);
+  });
+
+  it('fails the gate for a partial run, which reports zeros it did not earn', async () => {
+    // A swallowed graph query leaves the counts at zero. Exit 0 would let
+    // `detect-changes && git commit` treat a run that never completed as clean.
+    callToolMock.mockResolvedValue({
+      partial: true,
+      summary: { changed_files: 1, changed_count: 0, affected_count: 0, risk_level: 'low' },
+    });
+    const { detectChangesCommand } = await import('../../src/cli/tool.js');
+
+    await detectChangesCommand({});
+
+    expect(writeSyncMock).toHaveBeenCalledWith(1, expect.stringContaining('PARTIAL RESULT'));
+    expect(process.exitCode).toBe(1);
+  });
+
+  it('keeps a truncated listing at exit zero — only the list was capped', async () => {
+    // Deliberately NOT a failure: `changed_count`, `affected_count` and
+    // `risk_level` are computed over every changed symbol, so the gate's verdict
+    // is sound. Failing on `truncated` would fire on every large-but-healthy
+    // diff and teach people to bypass the gate.
+    callToolMock.mockResolvedValue({
+      truncated: true,
+      summary: { changed_files: 40, changed_count: 500, affected_count: 3, risk_level: 'high' },
+      changed_symbols: [{ type: 'function', name: 'fn0', filePath: 'src/file0.ts' }],
+    });
+    const { detectChangesCommand } = await import('../../src/cli/tool.js');
+
+    await detectChangesCommand({});
+
+    expect(writeSyncMock).toHaveBeenCalledWith(1, expect.stringContaining('LISTING CAPPED'));
+    expect(writeSyncMock).toHaveBeenCalledWith(1, expect.stringContaining('Risk level: high'));
+    expect(process.exitCode).toBeUndefined();
   });
 
   it('truncates changed_symbols list beyond 15 and shows overflow count', async () => {

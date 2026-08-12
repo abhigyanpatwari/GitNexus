@@ -573,6 +573,54 @@ describe('formatDetectChangesResult', () => {
     expect(result).toContain('foo');
   });
 
+  it('flags a capped listing, so a short list is not read as a short diff', () => {
+    // `truncated` is `partial`'s sibling and NOT the same claim: the counts and
+    // risk level still cover every changed symbol, only the names were capped.
+    const result = formatDetectChangesResult({
+      truncated: true,
+      summary: { changed_files: 40, changed_count: 500, affected_count: 0, risk_level: 'HIGH' },
+      changed_symbols: [{ type: 'Function', name: 'foo', filePath: 'src/a.ts' }],
+    });
+    expect(result).toContain('LISTING CAPPED');
+    expect(result).not.toContain('PARTIAL RESULT');
+    expect(result).toContain('foo');
+  });
+
+  it('leads with both notes when a run was degraded AND capped', () => {
+    const result = formatDetectChangesResult({
+      partial: true,
+      truncated: true,
+      summary: { changed_files: 40, changed_count: 500, affected_count: 0, risk_level: 'HIGH' },
+      changed_symbols: [{ type: 'Function', name: 'foo', filePath: 'src/a.ts' }],
+    });
+    // A caveat printed after the summary is read too late, so both notes lead.
+    expect(result.indexOf('PARTIAL RESULT')).toBe(0);
+    expect(result.indexOf('LISTING CAPPED')).toBeGreaterThan(0);
+    expect(result.indexOf('LISTING CAPPED')).toBeLessThan(result.indexOf('Changes: 40 files'));
+  });
+
+  it('flags a capped listing that found nothing, alongside the no-changes line', () => {
+    const result = formatDetectChangesResult({ truncated: true, summary: { changed_count: 0 } });
+    expect(result).toContain('LISTING CAPPED');
+    expect(result).toContain('No changes detected.');
+  });
+
+  it('reports the overflow count once — the capped note carries no number of its own', () => {
+    const result = formatDetectChangesResult({
+      truncated: true,
+      summary: { changed_files: 40, changed_count: 500, affected_count: 0, risk_level: 'HIGH' },
+      changed_symbols: Array.from({ length: 15 }, (_, i) => ({
+        type: 'Function',
+        name: `fn${i}`,
+        filePath: 'src/test.ts',
+      })),
+    });
+    // Splitting on a needle yields (occurrences + 1) pieces.
+    expect(result.split('... and 485 more')).toHaveLength(2);
+    expect(result.split('LISTING CAPPED')).toHaveLength(2);
+    expect(result.match(/485/g)).toEqual(['485']);
+  });
+
   it('formats changes with affected processes', () => {
     const result = formatDetectChangesResult({
       summary: { changed_files: 2, changed_count: 3, affected_count: 1, risk_level: 'MEDIUM' },

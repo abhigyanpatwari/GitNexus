@@ -338,6 +338,17 @@ export async function detectChangesCommand(options?: {
       result.affected_processes = result.affected_processes.slice(0, limit);
   }
   output(formatDetectChangesResult(result));
+  // `output()` only fails the exit code for an OBJECT payload carrying `error`
+  // (#2469), and this command hands it a formatted STRING — so the status has to
+  // be taken off the structured result here, the same object-first way
+  // checkCommand does below. A hard failure (`error`, which the formatter also
+  // renders as text) and a swallowed one (`partial`) mean the same thing to
+  // `gitnexus detect-changes && git commit`: the gate did not complete, so the
+  // commit must not proceed — one non-zero code, because `&&` cannot tell two
+  // apart and a "softer" code for `partial` would invite exempting it again.
+  // `truncated` is deliberately NOT a failure: only the LISTING was capped, and
+  // the counts and risk level are still computed over every changed symbol.
+  if (result?.error || result?.partial) process.exitCode = 1;
 }
 
 export async function checkCommand(options?: {

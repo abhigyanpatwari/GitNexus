@@ -71,6 +71,8 @@ export const zhCN = {
   'tool.detectChanges.noChanges': '未检测到变更。',
   'tool.detectChanges.partial':
     '结果不完整：图查询失败，可能遗漏已变更符号。请勿将其视为通过的提交前检查。',
+  'tool.detectChanges.truncated':
+    '列表已截断：已变更符号列表被截断，未列出全部变更符号。计数与风险等级仍涵盖全部符号。',
   'tool.detectChanges.changesSummary': '变更：{{files}} 个文件，{{symbols}} 个符号',
   'tool.detectChanges.affectedProcesses': '受影响流程：{{count}}',
   'tool.detectChanges.riskLevel': '风险等级：{{risk}}',

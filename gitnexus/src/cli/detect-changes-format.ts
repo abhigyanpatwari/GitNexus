@@ -27,6 +27,7 @@ type AffectedProcess = {
 type DetectChangesResult = {
   error?: unknown;
   partial?: boolean;
+  truncated?: boolean;
   summary?: DetectChangesSummary;
   changed_symbols?: ChangedSymbol[];
   affected_processes?: AffectedProcess[];
@@ -40,15 +41,20 @@ export function formatDetectChangesResult(result: unknown): string {
   // A swallowed query failure sets `partial` and leaves the counts at zero
   // (#2283). Printing only "No changes detected." turns a degraded run into a
   // clean bill of health for the pre-commit gate, so say so either way.
-  const partialNote = payload.partial ? t('tool.detectChanges.partial') : null;
+  // `truncated` is its sibling flag: the backend caps the changed_symbols
+  // LISTING (never the counts), so a short list is not proof of a short diff.
+  // Both lead the output — a caveat printed after the summary is read too late.
+  const notes: string[] = [];
+  if (payload.partial) notes.push(t('tool.detectChanges.partial'));
+  if (payload.truncated) notes.push(t('tool.detectChanges.truncated'));
 
   if ((summary.changed_count ?? 0) === 0) {
     const noChanges = t('tool.detectChanges.noChanges');
-    return partialNote ? `${partialNote}\n${noChanges}` : noChanges;
+    return notes.length > 0 ? [...notes, noChanges].join('\n') : noChanges;
   }
 
   const lines: string[] = [];
-  if (partialNote) lines.push(partialNote, '');
+  if (notes.length > 0) lines.push(...notes, '');
   lines.push(
     t('tool.detectChanges.changesSummary', {
       files: summary.changed_files ?? 0,
