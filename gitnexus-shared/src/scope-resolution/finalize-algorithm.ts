@@ -1143,13 +1143,19 @@ function expandWildcard(
       // — which is exactly how a property added to the wildcard edge upstream
       // gets silently dropped here, and how `runsOnlyWhenCalled` was.
       //
-      // `runsOnlyWhenCalled`: Rust's `fn f() { use m::*; }` is one statement
-      // inside one function body, so each name it brings in is bound only when
-      // `f` runs. Losing the flag here re-reports the pair as an
-      // initialization dependency and suppresses nothing — it INVENTS a cycle
-      // (`check --cycles`), which is why this is carried and not derived.
-      // (Python has no function-local `from x import *` — it is a SyntaxError —
-      // so Rust is the reachable spelling.)
+      // `runsOnlyWhenCalled`: Ruby's `def f; require './m'; end` is one
+      // statement inside one method body — and every Ruby `require` is a
+      // wildcard, since the required file's whole surface becomes visible — so
+      // each name it brings in is bound only when `f` runs. Losing the flag
+      // here re-reports the pair as an initialization dependency and
+      // suppresses nothing — it INVENTS a cycle (`check --cycles`), which is
+      // why this is carried and not derived.
+      //
+      // Ruby is the reachable spelling. Python has no function-local
+      // `from x import *` — it is a SyntaxError — and Rust's `fn f() { use
+      // m::*; }`, which IS legal, is not deferred at all: `use` is a
+      // compile-time path alias, so the Rust provider opts out of the position
+      // rule (`LanguageProvider.importsExecuteWhereWritten`).
       //
       // `typeOnly`: unreachable today and deliberately kept. No provider emits
       // a type-only wildcard — `reexport-wildcard` returns `kind: 'wildcard'`

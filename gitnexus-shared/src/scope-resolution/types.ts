@@ -155,10 +155,17 @@ export type ParsedImport =
        * when something CALLS that function, never while the module itself is
        * initializing?
        *
-       * Python's `def f(): from x import Y` and Rust's fn-local `use` are the
-       * two spellings. Both are syntactically ordinary imports — no `kind`
-       * tells them apart from a top-level one, and nothing about the target
-       * does either. Only their POSITION defers them.
+       * Python's `def f(): from x import Y` and a CommonJS
+       * `function f() { const { Y } = require('./x'); }` are the spellings.
+       * Both are syntactically ordinary imports — no `kind` tells them apart
+       * from a top-level one, and nothing about the target does either. Only
+       * their POSITION defers them.
+       *
+       * Not every language's imports are like that, and the rule is wrong for
+       * the ones that are not: Rust's `use` and C/C++'s `#include` are legal
+       * in a function body and are deferred by NOTHING, because neither is an
+       * executed statement. Those providers opt out — see
+       * `LanguageProvider.importsExecuteWhereWritten`, below.
        *
        * **Why this cannot be re-derived downstream — the whole reason the
        * field exists.** The natural place to decide it looks like the graph
@@ -182,12 +189,12 @@ export type ParsedImport =
        * an init cycle, so counting it reports the fix as the bug.
        *
        * Set by the central extractor for every language, not by providers —
-       * except that a provider may declare its imports spliced at compile time
-       * (`LanguageProvider.importsSplicedAtCompileTime`) and be skipped
-       * entirely. A C/C++ `#include` inside a function body is not deferred:
-       * the preprocessor splices the header in before anything runs, so the
-       * pair really is an initialization dependency and the include cycle it
-       * can form is real.
+       * except that a provider may declare that its imports do not execute
+       * where they are written (`LanguageProvider.importsExecuteWhereWritten:
+       * false`) and be skipped entirely. C, C++, Rust and COBOL do. A `#include`
+       * or a `use` inside a function body is not deferred: the header is
+       * spliced and the path alias is resolved before anything runs, so the
+       * pair really is a dependency and the cycle it can form is real.
        *
        * Absent reads as "runs at initialization" — the fail-safe direction,
        * since it only makes `check --cycles` over-report.
@@ -255,8 +262,8 @@ export type ParsedImport =
        *  `import type D from './m'` and `import { type X as Y } from './m'`. */
       readonly typeOnly?: boolean;
       /** See the same field on the `named` variant. Reaches this variant from
-       *  Python's `def f(): from x import Y as Z` and Rust's fn-local
-       *  `use foo::bar as baz`. */
+       *  Python's `def f(): from x import Y as Z` and a CommonJS
+       *  `function f() { const { Y: Z } = require('./x'); }`. */
       readonly runsOnlyWhenCalled?: boolean;
       /** See the same field on the `named` variant. */
       readonly targetIncludesImportedName?: boolean;
@@ -311,8 +318,15 @@ export type ParsedImport =
       /** See the same field on the `named` variant. Reaches this variant from
        *  TypeScript `export type { X } from './y'` and `export { type X } from './y'`. */
       readonly typeOnly?: boolean;
-      /** See the same field on the `named` variant. Reaches this variant from
-       *  a Rust fn-local `pub use foo::bar`. */
+      /** See the same field on the `named` variant. NO spelling reaches this
+       *  variant today: the two providers that emit `reexport` are TypeScript
+       *  / JavaScript, whose `export … from` is a module-top-level-only
+       *  declaration, and Rust, whose `pub use` is a compile-time path alias
+       *  that its provider exempts from the position rule outright
+       *  (`LanguageProvider.importsExecuteWhereWritten`). Kept because the
+       *  extractor sets the field with no `switch` on `kind`, so a re-export
+       *  form that IS an executed statement would be tagged the moment one
+       *  appears — not because anything sets it now. */
       readonly runsOnlyWhenCalled?: boolean;
     }
   /**
@@ -338,8 +352,12 @@ export type ParsedImport =
       readonly targetRaw: string;
       /** See the same field on the `named` variant. Present here although
        *  `typeOnly` is not: erasure is a syntactic fact this spelling cannot
-       *  express, but POSITION is not — Rust's fn-local `use foo::*` is legal
-       *  and deferred. (Python rejects `from x import *` inside a `def`.) */
+       *  express, but POSITION is not — Ruby's `def f; require './m'; end` is
+       *  a wildcard (everything in the required file becomes visible) and IS
+       *  deferred. Python cannot reach it: `from x import *` inside a `def` is
+       *  a SyntaxError. Rust's fn-local `use foo::*` is legal but not
+       *  deferred — `use` does not execute
+       *  (`LanguageProvider.importsExecuteWhereWritten`). */
       readonly runsOnlyWhenCalled?: boolean;
     }
   /**
@@ -401,7 +419,8 @@ export type ParsedImport =
       readonly kind: 'side-effect';
       readonly targetRaw: string;
       /** See the same field on the `named` variant. Reaches this variant from
-       *  a Rust fn-local `use foo::bar as _`. */
+       *  a bare CommonJS `function f() { require('./polyfill'); }` — the ESM
+       *  spelling `import './polyfill'` cannot, being top-level only. */
       readonly runsOnlyWhenCalled?: boolean;
     };
 

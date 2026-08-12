@@ -444,43 +444,79 @@ interface LanguageProviderConfig {
   readonly interpretImport?: (captures: CaptureMatch) => ParsedImport | null;
 
   /**
-   * Are this language's imports spliced at COMPILE time, so that where one is
-   * written cannot defer it?
+   * Do this language's imports EXECUTE at the point in the program where they
+   * are written?
    *
    * The scope extractor marks an import `runsOnlyWhenCalled` when the statement
-   * sits inside a `Function` scope (Pass 3), because in every language whose
-   * imports execute, an import in a function body runs only when that function
-   * is called — Python's `def f(): from x import Y`, Rust's fn-local `use`,
-   * Ruby's `def f; require 'x'; end`, a CommonJS `require()` in a body. That
-   * rule is about EXECUTION, and it is wrong for a language where the import is
-   * not an executed statement at all.
+   * sits inside a `Function` scope (Pass 3): where imports are executed
+   * statements, one written in a function body runs only when that function is
+   * called — Python's `def f(): from x import Y`, Ruby's
+   * `def f; require 'x'; end`, a CommonJS `require()` in a body (which
+   * `javascript/captures.ts` does capture, via its own AST walk). That rule is
+   * about EXECUTION. It says nothing true about a language whose "import" is
+   * not an executed statement at all, and in such a language moving one into a
+   * function body defers exactly nothing.
    *
-   * **The motivating case is C/C++ `#include`.** The preprocessor splices the
-   * header's text in before a single line of the program runs, and it does so
-   * wherever the directive appears — including inside a function body, which C
-   * permits. So a `#include` written in a body is a full-strength
-   * initialization dependency, and an include cycle formed by such directives
-   * is a REAL cycle. Marking it deferred makes `check --cycles` drop it, and a
-   * suppressed true cycle is the failure direction that matters: a reported
-   * false one is visible and arguable, a hidden real one is not.
+   * "Where written" is about execution time, not textual placement: a
+   * `#include` is spliced precisely where it is written and still answers
+   * `false`, because splicing is not running.
    *
-   * Set to `true` only for a language whose "import" is a textual/compile-time
-   * splice. Absent (the default) keeps the position rule, so every other
-   * provider is unchanged; the flag never ADDS deferral, it only withholds it.
-   * It is per-provider, not per-import, so a language that mixes spliced and
-   * executed import forms would need a finer hook — C and C++ do not: C++'s
-   * only other form, `using ns::name`, is compile-time name lookup and defers
-   * no more than an `#include` does.
+   * **The failure directions are not symmetric, which is why the default is
+   * what it is.** Answering `false` for a language that really does execute
+   * its imports un-defers a deliberately lazy one, and `check --cycles`
+   * reports a cycle its author broke on purpose — wrong, but visible on screen
+   * and arguable by whoever reads it. Answering `true` for a language that
+   * does not SUPPRESSES a cycle that is entirely real: nobody sees it, so
+   * nobody can argue with it. Getting this wrong in the `true` direction hides
+   * a true cycle, and that is the failure that matters.
+   *
+   * Absent — the default — reads as `true`, so every provider that does not
+   * name this keeps today's behaviour exactly. The flag never ADDS deferral;
+   * declaring `false` only WITHHOLDS it.
+   *
+   * Declared `false` by, and only by:
+   *
+   *   - **C and C++** — `#include` is a preprocessor directive. The header's
+   *     text is spliced in before a line of the program runs, wherever the
+   *     directive sits, and C permits one inside a function body. C++'s only
+   *     other Pass-3 import form, `using ns::name` / `using namespace ns`, is
+   *     compile-time name lookup, is legal in a function body too, and defers
+   *     no more than an `#include` does.
+   *   - **Rust** — `use` is a compile-time path alias, not a statement that
+   *     runs. `fn f() { use crate::m::X; }` is legal, and putting the `use`
+   *     there changes only where the name is VISIBLE, never when anything
+   *     happens; Rust has no module-initialization order in the JS/Python
+   *     sense and permits intra-crate module cycles outright. It is the
+   *     structural twin of C++'s `using ns::name`. `rust/query.ts` captures
+   *     `(use_declaration)` and nothing else, so this covers the whole
+   *     surface. (The claim here is the narrow one: POSITION does not defer a
+   *     Rust import. Whether a Rust `use` can create an initialization
+   *     dependency *at all* is a larger and separate question, and this flag
+   *     deliberately does not answer it.)
+   *   - **COBOL** — `COPY` is a pure textual splice performed by the copybook
+   *     preprocessor, the `#include` case exactly. Latent today: the COBOL
+   *     `@scope.function` capture covers a single line (`cobol/captures.ts`
+   *     ranges sections and paragraphs `line → line`), so a `COPY` on any
+   *     later line never resolves inside one and Pass 3 has nothing to mark.
+   *     Declared anyway, so that giving those anchors their true multi-line
+   *     ranges cannot silently start suppressing real copybook cycles.
+   *
+   * The flag is per-provider, not per-import, so a language that MIXES
+   * compile-time and executed import forms cannot use it and would need a
+   * finer hook. None of the languages above mixes. PHP would — `use Foo\Bar;`
+   * aliases at compile time while `require` executes — which is why it is
+   * absent even though the only form `php/query.ts` captures today is
+   * `namespace_use_declaration`.
    *
    * A capability on the provider rather than a language check in
    * `scope-extractor.ts`: shared `core/ingestion/` pipeline code must not name
-   * languages (AGENTS.md), and the property being described — "imports here are
-   * spliced, not executed" — belongs to the language, not to the walk.
+   * languages (AGENTS.md), and "imports here are not executed statements" is a
+   * property of the language, not of the walk.
    *
-   * Default: undefined (imports execute where they are written; position
-   * defers them).
+   * Default: undefined, read as `true` (imports execute where they are
+   * written; position defers them).
    */
-  readonly importsSplicedAtCompileTime?: boolean;
+  readonly importsExecuteWhereWritten?: boolean;
 
   /**
    * What is the implicit receiver on a Function scope? For instance methods

@@ -1,14 +1,22 @@
 /**
  * A function-local import → `IMPORTS` edge `reason`, end to end.
  *
- * `def f(): from m import X` and Rust's fn-local `use` are syntactically
- * ordinary imports. Nothing about their kind, target or spelling says they are
- * deferred; only WHERE they sit does. That position fact crosses three modules
- * on its way to `check --cycles` — `scope-extractor.ts` reads it from the scope
- * tree in Pass 3, `finalize-algorithm.ts` carries it onto the `ImportEdge`, and
- * `imports-to-edges.ts` turns it into a reason suffix — and a break anywhere in
- * the chain looks the same from the end: a lazy import counted as a module
- * initialization dependency.
+ * `def f(): from m import X` and Ruby's `def f; require './m'; end` are
+ * syntactically ordinary imports. Nothing about their kind, target or spelling
+ * says they are deferred; only WHERE they sit does. That position fact crosses
+ * three modules on its way to `check --cycles` — `scope-extractor.ts` reads it
+ * from the scope tree in Pass 3, `finalize-algorithm.ts` carries it onto the
+ * `ImportEdge`, and `imports-to-edges.ts` turns it into a reason suffix — and a
+ * break anywhere in the chain looks the same from the end: a lazy import
+ * counted as a module initialization dependency.
+ *
+ * **Position only defers an import that EXECUTES.** C's `#include` and Rust's
+ * `use` are legal inside a function body and are deferred by nothing — one is
+ * a preprocessor splice, the other a compile-time path alias. Their providers
+ * declare `importsExecuteWhereWritten: false` and Pass 3 skips them. Both ends
+ * are pinned below, because the two failure directions are not equal: a
+ * missing tag over-reports a cycle in the open, a wrong tag SUPPRESSES a real
+ * one where nobody will see it.
  *
  * **This file exists because the fact cannot be recovered downstream, and the
  * first attempt to try shipped as dead code.** The emitter used to walk up from
@@ -40,6 +48,7 @@ import type { LanguageProvider } from '../../../src/core/ingestion/language-prov
 import { extractParsedFile } from '../../../src/core/ingestion/scope-extractor-bridge.js';
 import { cProvider } from '../../../src/core/ingestion/languages/c-cpp.js';
 import { pythonProvider } from '../../../src/core/ingestion/languages/python.js';
+import { rubyProvider } from '../../../src/core/ingestion/languages/ruby.js';
 import { rustProvider } from '../../../src/core/ingestion/languages/rust.js';
 import {
   DEFERRED_IMPORT_REASON_SUFFIX,
@@ -138,6 +147,10 @@ const rs = (src: string) =>
 /** Rust with a target that really contributes names, so a wildcard expands. */
 const rsWildcard = (src: string) =>
   runChain(rustProvider, src, 'src/a.rs', 'src/m.rs', ['crate::m::X', 'crate::m'], ['X', 'Y']);
+/** Ruby, whose every `require` is a wildcard, with a target that contributes
+ *  names so the wildcard actually expands. */
+const rbWildcard = (src: string) =>
+  runChain(rubyProvider, src, 'lib/a.rb', 'lib/m.rb', ['./m'], ['X', 'Y']);
 const c = (src: string) => reasonFor(cProvider, src, 'src/a.c', 'src/m.h', ['m.h']);
 
 describe('Python: a function-local import reaches the IMPORTS reason', () => {
@@ -186,22 +199,50 @@ describe('Python: a function-local import reaches the IMPORTS reason', () => {
   });
 });
 
-describe('Rust: a function-local `use` reaches the IMPORTS reason', () => {
-  it('`fn f() { use crate::m::X; }` is deferred', () => {
-    // Rust also proves the walk has to climb: the provider puts the function
-    // body in a `Block` whose parent is the `Function`, so an immediate-scope
-    // check would answer `Block` and miss this.
-    expect(rs('fn f() {\n    use crate::m::X;\n    let _ = X;\n}\n')).toBe(DEFERRED);
+/**
+ * Rust `use` is a compile-time path alias — position cannot defer it.
+ *
+ * The structural twin of C++'s `using ns::name`, and exempt under the same
+ * capability. `fn f() { use crate::m::X; }` is legal Rust, and putting the
+ * `use` there changes only where the name `X` is VISIBLE; it schedules
+ * nothing, because a `use` is not a statement that runs. Rust has no
+ * module-initialization order in the JS/Python sense at all, and permits
+ * intra-crate module cycles outright.
+ *
+ * So the position tag would be a lie, and an expensive one in the one
+ * direction that hides things: `check --cycles` drops every pair it is set on.
+ * The Rust provider declares `importsExecuteWhereWritten: false`.
+ *
+ * The claim pinned here is the narrow one — POSITION does not defer a Rust
+ * import. Not "no Rust import creates an initialization dependency", which is
+ * a larger question these cases do not reach.
+ */
+describe('Rust: a function-local `use` is NOT deferred', () => {
+  it('`fn f() { use crate::m::X; }` stays an initialization dependency', () => {
+    expect(rs('fn f() {\n    use crate::m::X;\n    let _ = X;\n}\n')).toBe(PLAIN);
   });
 
-  it('a `use` inside a nested block inside a function is still deferred', () => {
+  it('a `use` inside a nested block inside a function is not deferred either', () => {
+    // The opt-out is not a shallow "is the immediate scope a Function" check
+    // that a `Block` could slip past — the whole walk is skipped. Rust nests
+    // the function body in a `Block` under the `Function`, which is the shape
+    // that would have to climb, so this is where a half-applied opt-out shows.
     expect(
       rs('fn f() {\n    if true {\n        use crate::m::X;\n        let _ = X;\n    }\n}\n'),
-    ).toBe(DEFERRED);
+    ).toBe(PLAIN);
   });
 
-  it('a top-level `use` is NOT deferred', () => {
+  it('a top-level `use` is not deferred', () => {
+    // The control on the control: the opt-out WITHHOLDS deferral, it does not
+    // change what an ordinary top-level `use` already was. Both positions now
+    // answer the same, which is the point.
     expect(rs('use crate::m::X;\n\nfn f() {\n    let _ = X;\n}\n')).toBe(PLAIN);
+  });
+
+  it('Python still defers on the same run', () => {
+    // Without this, an opt-out that leaked to every provider would satisfy
+    // every assertion above.
+    expect(py('def loader():\n    from m import X\n    return X\n')).toBe(DEFERRED);
   });
 });
 
@@ -217,17 +258,21 @@ describe('Rust: a function-local `use` reaches the IMPORTS reason', () => {
  * finalize put it on the base edge, and expansion then threw it away one line
  * before the graph bridge could read it.
  *
- * Rust is the language that can express this — `fn f() { use m::*; }` is legal.
- * Python cannot: `from x import *` inside a `def` is a SyntaxError.
+ * Ruby is the language that can express this. Every Ruby `require` is a
+ * `kind: 'wildcard'` — the required file's whole surface becomes visible — and
+ * `def f; require './m'; end` executes only when `f` is called. Python cannot:
+ * `from x import *` inside a `def` is a SyntaxError. Rust's
+ * `fn f() { use m::*; }` is legal but is no longer a deferred import at all
+ * (see the Rust block above), so it can only serve as the negative case here.
  *
  * Each case asserts the expansion really happened. Left to itself the helper's
  * target contributes no names, `expandWildcard` returns the original edge
  * untouched, and the assertion on the reason would hold no matter what the
  * expansion path does with the flag.
  */
-describe('Rust: a function-local wildcard survives expansion', () => {
-  it('`fn f() { use crate::m::*; }` is deferred on every expanded edge', () => {
-    const { reason, edges } = rsWildcard('fn f() {\n    use crate::m::*;\n    let _ = X;\n}\n');
+describe('a function-local wildcard survives expansion', () => {
+  it('Ruby `def f; require "./m"; end` is deferred on every expanded edge', () => {
+    const { reason, edges } = rbWildcard("def f\n  require './m'\n  X\nend\n");
     // Two names in, two `wildcard-expanded` edges out — expansion ran.
     expect(edges.map((e) => e.kind)).toStrictEqual(['wildcard-expanded', 'wildcard-expanded']);
     expect(edges.map((e) => e.localName)).toStrictEqual(['X', 'Y']);
@@ -237,9 +282,22 @@ describe('Rust: a function-local wildcard survives expansion', () => {
     expect(reason).toBe(DEFERRED);
   });
 
-  it('a top-level `use crate::m::*;` expands to UNtagged edges', () => {
-    const { reason, edges } = rsWildcard('use crate::m::*;\n\nfn f() {\n    let _ = X;\n}\n');
+  it('a top-level Ruby `require` expands to UNtagged edges', () => {
+    const { reason, edges } = rbWildcard("require './m'\n\ndef f\n  X\nend\n");
     expect(edges.map((e) => e.kind)).toStrictEqual(['wildcard-expanded', 'wildcard-expanded']);
+    expect(edges.map((e) => e.runsOnlyWhenCalled)).toStrictEqual([undefined, undefined]);
+    expect(reason).toBe(PLAIN);
+  });
+
+  it('a function-local Rust `use crate::m::*;` expands but is NOT tagged', () => {
+    // Expansion and the position tag are independent, and this separates them:
+    // the same wildcard path runs, produces the same two edges, and carries no
+    // flag — because the Rust provider withheld it upstream, not because
+    // expansion dropped it. If the opt-out were implemented by making
+    // expansion lossy, the Ruby case above would fail instead.
+    const { reason, edges } = rsWildcard('fn f() {\n    use crate::m::*;\n    let _ = X;\n}\n');
+    expect(edges.map((e) => e.kind)).toStrictEqual(['wildcard-expanded', 'wildcard-expanded']);
+    expect(edges.map((e) => e.localName)).toStrictEqual(['X', 'Y']);
     expect(edges.map((e) => e.runsOnlyWhenCalled)).toStrictEqual([undefined, undefined]);
     expect(reason).toBe(PLAIN);
   });
@@ -254,11 +312,20 @@ describe('Rust: a function-local wildcard survives expansion', () => {
  * sits, and C permits it inside a function body. So an include cycle built from
  * such directives is REAL, and tagging one deferred makes `check --cycles` drop
  * it. A suppressed true cycle is the failure direction that matters — the C
- * provider declares `importsSplicedAtCompileTime` to opt out of the walk.
+ * provider declares `importsExecuteWhereWritten: false` to opt out of the walk.
  *
  * Python rides along in the same test rather than in its own: "nothing is ever
  * tagged" would satisfy the C assertion on its own, and this is the file where
  * that regression is cheapest to catch.
+ *
+ * COBOL declares the same capability for `COPY` and has no case here on
+ * purpose: it cannot be reached. `cobol/captures.ts` ranges every
+ * `@scope.function` over a SINGLE line, so a `COPY` on any later line never
+ * resolves inside one and Pass 3 has nothing to mark either way. A test would
+ * pass identically with the flag removed. The declaration is there so that
+ * giving those anchors their true multi-line ranges stays a scope-resolution
+ * fix instead of silently becoming a cycle-suppression bug — see
+ * `LanguageProvider.importsExecuteWhereWritten`.
  */
 describe('C: a `#include` inside a function body is NOT deferred', () => {
   it('the include stays an initialization dependency while Python defers', () => {

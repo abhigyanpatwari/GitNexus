@@ -22,7 +22,7 @@
  * `linkedByScope.set(file.moduleScope, …)`: the real map has one bucket per
  * FILE, keyed by that file's `Module` scope. `new Map([['fn', …]])` is a shape
  * the pipeline cannot produce, so the tests passed against dead code and
- * Python and Rust function-local imports went on being counted as
+ * Python and Ruby function-local imports went on being counted as
  * initialization dependencies. The scope-kind case below now pins the opposite
  * claim — the tree is not consulted — and
  * `function-local-import-chain.test.ts` drives the real path end to end.

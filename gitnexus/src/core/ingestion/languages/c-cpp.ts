@@ -425,8 +425,8 @@ export const cProvider = defineLanguage({
   // sits — and C allows it inside a function body. Without this the central
   // Pass-3 position rule would mark such an include `runsOnlyWhenCalled` and
   // `check --cycles` would silently drop an include cycle that is entirely
-  // real. See `LanguageProvider.importsSplicedAtCompileTime`.
-  importsSplicedAtCompileTime: true,
+  // real. See `LanguageProvider.importsExecuteWhereWritten`.
+  importsExecuteWhereWritten: false,
   interpretTypeBinding: interpretCTypeBinding,
   bindingScopeFor: cBindingScopeFor,
   importOwningScope: cImportOwningScope,
@@ -512,7 +512,7 @@ export const cppProvider = defineLanguage({
   // sees is `@import.using-decl` (`using ns::name` / `using namespace ns`),
   // which is a compile-time name-lookup declaration and executes no more than
   // an `#include` does. See the note on `cProvider`.
-  importsSplicedAtCompileTime: true,
+  importsExecuteWhereWritten: false,
   interpretTypeBinding: interpretCppTypeBinding,
   bindingScopeFor: cppBindingScopeFor,
   importOwningScope: cppImportOwningScope,

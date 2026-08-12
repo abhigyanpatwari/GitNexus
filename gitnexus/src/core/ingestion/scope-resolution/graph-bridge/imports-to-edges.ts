@@ -43,12 +43,16 @@
  * scope tree" below:
  *
  *  - `ImportEdge.kind === 'dynamic-resolved'` — TS/JS `import()`.
- *  - `ImportEdge.runsOnlyWhenCalled` — the import sits inside a function body:
- *    Python's `def f(): from x import Y`, Rust's fn-local `use`. Nothing marks
- *    those as dynamic, because syntactically they are ordinary imports; what
- *    defers them is WHERE they sit, so `scope-extractor.ts` decides it in Pass
- *    3 and it is carried down — `ParsedImport` → `finalize-algorithm.ts` → the
- *    edge.
+ *  - `ImportEdge.runsOnlyWhenCalled` — the import sits inside a function body
+ *    AND this language's imports execute where they are written: Python's
+ *    `def f(): from x import Y`, Ruby's `def f; require 'x'; end`, a CommonJS
+ *    `require()` in a body. Nothing marks those as dynamic, because
+ *    syntactically they are ordinary imports; what defers them is WHERE they
+ *    sit, so `scope-extractor.ts` decides it in Pass 3 and it is carried down
+ *    — `ParsedImport` → `finalize-algorithm.ts` → the edge. A language whose
+ *    imports do not execute never gets the tag no matter where one sits (Rust
+ *    `use`, C/C++ `#include`; see
+ *    `LanguageProvider.importsExecuteWhereWritten`).
  *  - `ImportEdge.typeOnly` — TypeScript `import type` / `import { type X }`.
  *    Neither of the other two sees it: the kind is the ordinary `named` /
  *    `alias`, and the statement sits at module top level like any other. Only

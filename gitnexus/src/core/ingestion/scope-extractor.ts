@@ -47,9 +47,9 @@
  *      `ParsedImport.runsOnlyWhenCalled`). This is a position fact, not a
  *      syntax one, so it is decided centrally for every language rather than
  *      per provider — with one capability a provider may declare to opt out
- *      of it entirely, `importsSplicedAtCompileTime`, because position cannot
- *      defer an import the compiler splices before anything runs (C/C++
- *      `#include`). Providers still decide their own *syntactic* nesting
+ *      of it entirely, `importsExecuteWhereWritten: false`, because position
+ *      cannot defer an import that never executes (C/C++ `#include`, Rust
+ *      `use`, COBOL `COPY`). Providers still decide their own *syntactic* nesting
  *      facts in their capture emitters, where the node is in hand (see
  *      `languages/python/import-decomposer.ts`).
  *   4. **Collect type bindings.** Walk `@type-binding.*` matches. Call
@@ -121,7 +121,7 @@ export type ScopeExtractorHooks = Pick<
   | 'scopeOwnsReceivers'
   | 'bindingScopeFor'
   | 'interpretImport'
-  | 'importsSplicedAtCompileTime'
+  | 'importsExecuteWhereWritten'
   | 'interpretTypeBinding'
   | 'classifyCallForm'
 >;
@@ -968,22 +968,21 @@ function makeDefId(
  * up the chain — defers execution.
  *
  * Language-agnostic on purpose: it is what catches Python's
- * `def f(): from x import Y` and Rust's fn-local `use`, neither of which any
- * `kind` marks as deferred. `Scope.imports` already documents those two as the
- * reason local imports exist. It also picks up Ruby's `def f; require 'x'; end`
- * and a CommonJS `require()` in a function body, which are deferred for exactly
- * the same reason.
+ * `def f(): from x import Y`, Ruby's `def f; require 'x'; end` and a CommonJS
+ * `require()` in a function body, none of which any `kind` marks as deferred —
+ * only their position says it.
  *
  * The rule is about EXECUTION, so it does not hold for a language whose
- * imports are not executed statements. A C/C++ `#include` written inside a
- * function body — which C permits — is spliced by the preprocessor before the
- * program runs, so it is a full initialization dependency and an include cycle
- * built from such directives is REAL. Marking it deferred would make
- * `check --cycles` drop that cycle, and suppressing a true cycle is the
+ * imports are not executed statements at all — a C/C++ `#include` (spliced by
+ * the preprocessor before the program runs) or a Rust `use` (a compile-time
+ * path alias). Both are legal inside a function body and neither is deferred
+ * by sitting there, so a cycle they form is REAL. Marking one deferred would
+ * make `check --cycles` drop that cycle, and suppressing a true cycle is the
  * failure direction that matters. Such a language opts out by declaring
- * `LanguageProvider.importsSplicedAtCompileTime`, checked by the caller — the
- * capability is named on the provider rather than the language being named
- * here, because shared ingestion code must not branch on language (AGENTS.md).
+ * `LanguageProvider.importsExecuteWhereWritten: false`, checked by the caller
+ * — the capability is named on the provider rather than the language being
+ * named here, because shared ingestion code must not branch on language
+ * (AGENTS.md).
  *
  * Decided HERE and nowhere later because this is the last stage that knows the
  * answer — see `ParsedImport.runsOnlyWhenCalled` for why finalize and the graph
@@ -1026,12 +1025,13 @@ function pass3CollectImports(
 ): void {
   if (provider.interpretImport === undefined) return;
   // Hoisted: the capability is a property of the language, identical for every
-  // match in the file. A provider that declares its imports spliced at compile
-  // time (C/C++ `#include`) skips the position walk entirely — position cannot
-  // defer a directive the preprocessor resolves before anything runs, and
-  // marking one deferred would hide a real include cycle. See
-  // `LanguageProvider.importsSplicedAtCompileTime`.
-  const positionCanDefer = provider.importsSplicedAtCompileTime !== true;
+  // match in the file. A provider that declares its imports do not execute
+  // where they are written (C/C++ `#include`, Rust `use`, COBOL `COPY`) skips
+  // the position walk entirely — position cannot defer something that never
+  // runs, and marking one deferred would hide a real cycle. Absent reads as
+  // `true`, so an undeclared provider is unchanged. See
+  // `LanguageProvider.importsExecuteWhereWritten`.
+  const positionCanDefer = provider.importsExecuteWhereWritten !== false;
   for (const match of matches) {
     const anchor = anchorCaptureFor(match, '@import.');
     if (anchor === undefined) continue;

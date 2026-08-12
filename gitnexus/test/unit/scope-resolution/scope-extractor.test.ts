@@ -434,20 +434,21 @@ describe('Pass 3: runsOnlyWhenCalled', () => {
   //
   // The walk answers "does this run only when the enclosing function is
   // called?", which presupposes the import is a statement that RUNS. C/C++
-  // `#include` is not: the preprocessor splices the header in before the
-  // program starts, wherever the directive sits — and C allows it inside a
-  // function body. Deferring one would make `check --cycles` drop an include
-  // cycle that is entirely real, and suppressing a true cycle is the failure
-  // direction that matters.
+  // `#include` is not — the preprocessor splices the header in before the
+  // program starts, wherever the directive sits — and neither is a Rust `use`,
+  // a compile-time path alias. Both are legal inside a function body.
+  // Deferring one would make `check --cycles` drop a cycle that is entirely
+  // real, and suppressing a true cycle is the failure direction that matters.
   //
   // The opt-out is a capability on the provider, checked here, rather than a
   // language test inside the walk: shared `core/ingestion/` pipeline code must
   // not name languages (AGENTS.md). These cases pin the CONTRACT — that the
-  // flag is read at all and that its default is unchanged — with no language
-  // in sight. `function-local-import-chain.test.ts` pins the C provider end of
-  // it against real `#include` source.
+  // flag is read at all, that its default is unchanged, and which of its two
+  // values is the opt-out — with no language in sight.
+  // `function-local-import-chain.test.ts` pins the C and Rust provider ends of
+  // it against real source.
 
-  it('a provider whose imports are spliced at compile time is never marked', () => {
+  it('a provider whose imports do not execute where written is never marked', () => {
     const result = extract(
       [
         scopeMatch('module', 1, 0, 100, 0),
@@ -455,7 +456,7 @@ describe('Pass 3: runsOnlyWhenCalled', () => {
         importMatch(12, 0, 12, 30),
       ],
       'a.c',
-      mockProvider({ interpretImport: () => named, importsSplicedAtCompileTime: true }),
+      mockProvider({ interpretImport: () => named, importsExecuteWhereWritten: false }),
     );
     // Byte-identical to the un-deferred shape, not merely `!== true`.
     expect(result.parsedImports).toEqual([named]);
@@ -472,13 +473,14 @@ describe('Pass 3: runsOnlyWhenCalled', () => {
     expect(
       extract(captures, 'a.ts', mockProvider({ interpretImport: () => named })).parsedImports,
     ).toEqual([{ ...named, runsOnlyWhenCalled: true }]);
-    // `false` is the same as absent — the flag withholds deferral, it never
-    // adds it, so an explicit `false` has to behave exactly like the default.
+    // Absent must mean `true`, not merely "not false" — the default is the
+    // safe direction (position defers), and only an explicit `false` withholds
+    // deferral. Spelling `true` therefore has to behave exactly like absent.
     expect(
       extract(
         captures,
         'a.ts',
-        mockProvider({ interpretImport: () => named, importsSplicedAtCompileTime: false }),
+        mockProvider({ interpretImport: () => named, importsExecuteWhereWritten: true }),
       ).parsedImports,
     ).toEqual([{ ...named, runsOnlyWhenCalled: true }]);
   });
