@@ -486,12 +486,27 @@ import type { ParseWorkerResult } from '../core/ingestion/workers/parse-worker.j
 // `runsOnlyWhenCalled` is decided in scope-extractor Pass 3 from the scope tree
 // and has no marker at all, which is exactly the half that gets missed.)
 //
-// 62, not 61: main holds 60 and PR #2935 already claims 61. Per the rule three
-// paragraphs up, this is the next free value above every in-flight MAXIMUM, not
-// above origin/main. #2891's 59 is already buried by main and is theirs to
-// renumber; #1616's 2 is stale.
+// 63, not 62, and not 61: main holds 60, #2935 claims 61, and #2936 claims 62.
+// Per the rule three paragraphs up, this is the next free value above every
+// in-flight MAXIMUM, not above origin/main. #2891's 59 is already buried by main
+// and is theirs to renumber; #1616's 2 is stale.
+//
+// This staged 62 first and was correct when written. #2936 opened four hours
+// later and also took 62 — bumping for #2917's implicit Java record-component
+// accessors, a genuinely different cached shape — because it re-checked against
+// main (60) rather than against the in-flight claims, which is the SEVENTH exact
+// clash and the same mistake the ledger above keeps recording. Moving rather
+// than standing on seniority: 63 is above every claim, so it is correct whichever
+// of the two merges first, and needs no coordination to stay correct. An exact
+// clash is the dangerous shape precisely because neither side invalidates the
+// other — a warm cache written by #2936's build would be read as valid by this
+// one, and the accessor definitions it materializes are not in this branch's
+// ParsedFile shape at all.
+//
+// Note for whoever merges next: #2935 and #2840 BOTH claim 61, independently of
+// this branch. That clash is still live and is theirs to resolve.
 // RE-CHECK AGAINST origin/main IMMEDIATELY BEFORE MERGING.
-const SCHEMA_BUMP = 62;
+const SCHEMA_BUMP = 63;
 const GITNEXUS_PKG_VERSION = (() => {
   try {
     // package.json sits at gitnexus/package.json — two levels up from
