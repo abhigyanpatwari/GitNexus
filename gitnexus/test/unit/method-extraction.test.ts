@@ -455,6 +455,20 @@ describe('Java MethodExtractor', () => {
       expect(accessors[0].line).toBe(3);
     });
 
+    it('does not count an explicit accessor receiver parameter toward arity', () => {
+      const tree = parseJava(`
+        public record User(String name) {
+          public String name(User this) { return name.toUpperCase(); }
+        }
+      `);
+      const result = extractor.extract(tree.rootNode.child(0)!, javaCtx);
+      const accessors = result!.methods.filter((method) => method.name === 'name');
+
+      expect(accessors).toHaveLength(1);
+      expect(accessors[0].parameters).toEqual([]);
+      expect(accessors[0].line).toBe(3);
+    });
+
     it('retains an explicit overload alongside the implicit accessor', () => {
       const tree = parseJava(`
         public record User(String name) {

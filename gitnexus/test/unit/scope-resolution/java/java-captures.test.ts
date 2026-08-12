@@ -145,6 +145,16 @@ describe('emitJavaScopeCaptures — record component accessors (#2917)', () => {
     expect(declarations.filter((declaration) => declaration.name === 'name')).toHaveLength(1);
   });
 
+  it('does not count an explicit accessor receiver parameter toward arity', () => {
+    const declarations = recordAccessorDeclarations(
+      'record User(String name) { public String name(User this) { return name; } }',
+    );
+
+    expect(declarations.filter((declaration) => declaration.name === 'name')).toEqual([
+      expect.objectContaining({ arity: '0', requiredArity: '0' }),
+    ]);
+  });
+
   it('keeps an overload alongside the implicit zero-argument accessor', () => {
     const declarations = recordAccessorDeclarations(
       'record User(String name) { public String name(int repeat) { return name; } }',

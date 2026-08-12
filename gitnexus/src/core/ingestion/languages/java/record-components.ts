@@ -40,9 +40,7 @@ function explicitZeroArgAccessorNames(recordNode: SyntaxNode): Set<string> {
       parameters?.namedChildren.filter(
         (parameter) =>
           parameter !== null &&
-          (parameter.type === 'formal_parameter' ||
-            parameter.type === 'spread_parameter' ||
-            parameter.type === 'receiver_parameter'),
+          (parameter.type === 'formal_parameter' || parameter.type === 'spread_parameter'),
       ).length ?? 0;
     if (name !== undefined && parameterCount === 0) names.add(name);
   }
