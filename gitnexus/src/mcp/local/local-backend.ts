@@ -105,7 +105,7 @@ import {
   PDG_QUERY_DEFAULT_LIMIT,
   PDG_QUERY_MAX_LIMIT,
 } from '../tools.js';
-import { findImportCycles } from '../../core/graph/import-cycles.js';
+import { findImportCycles, IMPORT_CYCLE_LIMIT } from '../../core/graph/import-cycles.js';
 import { decodeTaintPath } from '../../core/ingestion/taint/path-codec.js';
 import { decodeReachingDefReason } from '../../core/ingestion/cfg/reaching-def-reason-codec.js';
 import { EXTENSIONS } from '../../core/ingestion/import-resolvers/utils.js';
@@ -2412,11 +2412,22 @@ export class LocalBackend {
         truncated: true,
       };
     }
+    // The cycle cap is passed EXPLICITLY rather than taken as the enumerator's
+    // default, because its reason lives here and not there. The enumerator's
+    // work budget is a property of the algorithm — output sensitivity, retained
+    // heap — but this bound exists because the full enumeration of this
+    // repository is a 21.8 MB JSON response for a tool whose result an agent
+    // reads. That is a transport constraint, and it belongs beside `rowLimit`,
+    // which bounds the same response from the other end. Raise one and look at
+    // the other: `rowLimit` decides how large a graph is admitted at all, and
+    // the enumerator's work budget is documented against that same 100k-edge
+    // figure.
     const report = findImportCycles(
       rows.map((row: any) => ({
         source: String(row.source ?? row[0] ?? ''),
         target: String(row.target ?? row[1] ?? ''),
       })),
+      IMPORT_CYCLE_LIMIT,
     );
     // `enumeration` names what `cycles` IS, so the degraded answer is separable
     // from the complete one by a machine rather than by reading prose. The
@@ -2428,14 +2439,15 @@ export class LocalBackend {
     if (report.enumeration === 'none') {
       // Nothing survived: not even the component decomposition finished, so
       // there is genuinely nothing to report and the whole result is an error.
+      // Only the WORK bound can land here: the cycle bound is tripped inside
+      // the circuit search, which runs only once a decomposition has finished —
+      // and a finished decomposition yields representatives rather than `none`.
       return {
-        error:
-          report.reason === 'cycles'
-            ? `Import graph exceeds the ${report.limit} elementary-cycle safety limit.`
-            : `Import cycle enumeration exceeded its ${report.limit} step safety limit.`,
+        error: `Import cycle enumeration exceeded its ${report.limit} step safety limit.`,
         truncated: true,
       };
     }
+    const cycles = report.cycles.map((files) => ({ files }));
     if (report.enumeration === 'component-representatives') {
       return {
         // Cycles were genuinely found — this is not a clean repository, and a
@@ -2447,7 +2459,7 @@ export class LocalBackend {
         // and `cycles.length` here is a count of COMPONENTS, not of cycles.
         cycleCount: null,
         componentCount: report.componentCount,
-        cycles: report.cycles.map((files) => ({ files })),
+        cycles,
       };
     }
     return {
@@ -2455,7 +2467,7 @@ export class LocalBackend {
       enumeration: 'complete',
       cycleCount: report.cycles.length,
       componentCount: report.componentCount,
-      cycles: report.cycles.map((files) => ({ files })),
+      cycles,
     };
   }
 

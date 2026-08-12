@@ -384,8 +384,24 @@ Returns: changed symbols, affected processes, and a risk summary.`,
     name: 'check',
     description: `Run read-only structural checks against the indexed graph.
 
-Currently detects directed cycles between File nodes connected by IMPORTS edges.
-Returns deterministic cycle paths and a cycle count suitable for CI automation.`,
+Currently detects directed cycles between File nodes connected by IMPORTS edges, counting only
+edges that force a module-initialization order — a deferred import (\`import()\`, or one written
+inside a function body) and a TypeScript \`import type\` are excluded, because neither can make the
+modules impossible to initialize.
+
+READ \`enumeration\` BEFORE \`cycleCount\`:
+- \`enumeration: 'complete'\` — every elementary cycle is listed; \`cycleCount\` is their number.
+- \`enumeration: 'component-representatives'\` — the full enumeration exceeded a safety limit, so
+  \`cycles\` holds ONE representative per circular component, \`truncated\` is true, and
+  \`cycleCount\` is **null**. Do not compare \`cycleCount\` numerically here: \`null > 0\` is false,
+  so a caller keying on it alone concludes "clean" on exactly the most tangled repositories. Use
+  \`status === 'cycles_found'\`.
+
+\`componentCount\` (independent circular components) is present in both modes and is the number to
+act on and to trend: cutting one import can remove thousands of elementary cycles at once, so
+\`cycleCount\` swings wildly for small changes while \`componentCount\` stays stable.
+
+A graph too large to analyze at all returns \`{ error, truncated: true }\` with no \`status\`.`,
     annotations: READ_ONLY_TOOL_ANNOTATIONS,
     inputSchema: {
       type: 'object',

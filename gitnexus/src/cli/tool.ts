@@ -376,9 +376,12 @@ export async function checkCommand(options?: {
       // component instead of every elementary cycle. Say so, or the short list
       // reads as the whole truth on exactly the repositories where it is not.
       if (result.enumeration === 'component-representatives') {
+        // Phrased to need no plural: `checkCommand` predates the `t()` i18n
+        // layer and none of its output goes through it, so inventing a plural
+        // here by hand would be the only one in the file.
         output(
-          `\n(${result.componentCount} circular component(s); showing one representative cycle each — ` +
-            `the full enumeration exceeded the safety limit.)`,
+          `\n(showing one representative cycle per circular component — ` +
+            `${result.componentCount} in total; the full enumeration exceeded the safety limit.)`,
         );
       }
     }

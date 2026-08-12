@@ -83,6 +83,8 @@
  * that dies inside the decomposition itself reports nothing at all.
  */
 
+import { compareCodeUnits } from '../../lib/utils.js';
+
 interface ImportEdge {
   source: string;
   target: string;
@@ -152,27 +154,15 @@ const EMITTED_NODE_COST = 10;
 export type ImportCycleLimit = 'cycles' | 'work';
 
 /**
- * What a report's `cycles` list actually is.
+ * The result of an enumeration.
  *
- * This is the union's discriminant rather than a sibling flag, deliberately: a
- * caller cannot reach `cycles` without first narrowing on what kind of list it
- * is holding. A partial enumeration and a complete one are indistinguishable by
- * inspection — both are arrays of real cycles — so the difference has to be
- * carried in the type, not in a comment or a count that happens to look small.
+ * `enumeration` is the union's discriminant rather than a sibling flag,
+ * deliberately: a caller cannot reach `cycles` without first narrowing on what
+ * kind of list it is holding. A partial enumeration and a complete one are
+ * indistinguishable by inspection — both are arrays of real cycles — so the
+ * difference has to be carried in the type, not in a comment or a count that
+ * happens to look small.
  */
-export type ImportCycleEnumeration =
-  /** Every elementary cycle in the graph. */
-  | 'complete'
-  /**
-   * One cycle per cyclic component, and nothing about the rest. A bound was
-   * hit, so the full enumeration was abandoned; what remains is the shortest
-   * cycle through each component's least node — enough to name and locate every
-   * tangle, and explicitly not a count of anything.
-   */
-  | 'component-representatives'
-  /** No list at all: a bound was hit before even the decomposition finished. */
-  | 'none';
-
 export type ImportCycleReport =
   | {
       readonly enumeration: 'complete';
@@ -291,7 +281,6 @@ function stronglyConnectedComponents(
   if (overBudget(search, roots.length)) return components;
 
   for (const root of roots) {
-    if (search.exceeded !== null) break;
     if (index.has(root)) continue;
     index.set(root, counter);
     lowLink.set(root, counter);
@@ -358,7 +347,7 @@ function leastNode(nodes: readonly string[]): string {
 function byLeastNode(left: readonly string[], right: readonly string[]): number {
   const leftLeast = leastNode(left);
   const rightLeast = leastNode(right);
-  return leftLeast < rightLeast ? -1 : leftLeast > rightLeast ? 1 : 0;
+  return compareCodeUnits(leftLeast, rightLeast);
 }
 
 /**
@@ -400,10 +389,15 @@ function enumerateCircuitsFrom(
   const frames = [{ node: root, nextIndex: 0, foundCircuit: false }];
 
   while (frames.length > 0) {
+    // Budget spent: return rather than unwind. Everything this function owns is
+    // local and it returns void, so draining the stack would run the full
+    // `blockedBy` bookkeeping (or an `unblock` walk) per frame, to no effect,
+    // on exactly the graphs already judged too expensive.
+    if (search.exceeded !== null) return;
     const frame = frames[frames.length - 1];
     const neighbors = adjacency.get(frame.node) ?? [];
 
-    if (search.exceeded === null && frame.nextIndex < neighbors.length) {
+    if (frame.nextIndex < neighbors.length) {
       const next = neighbors[frame.nextIndex];
       frame.nextIndex += 1;
       if (overBudget(search)) continue;
@@ -509,18 +503,22 @@ function enumerateComponentCycles(
     // roots are visited in, `leastNode` picks Johnson's root regardless, and
     // the finished cycle list is sorted at the end. Sorting here would add an
     // O(n log n) term to every root for no observable difference.
-    const subComponents = stronglyConnectedComponents(
+    const decomposed = stronglyConnectedComponents(
       remaining,
       graph.adjacency,
       new Set(remaining),
       search,
-    )
+    );
+    // Same rule as above the call: once the budget is spent the `while` will
+    // refuse to pop whatever we push, so the filter/decorate/sort is waste.
+    if (search.exceeded !== null) return;
+    const subComponents = decomposed
       .filter((subComponent) => isCyclic(subComponent, graph.selfLoops))
       .map((subComponent) => ({ least: leastNode(subComponent), nodes: subComponent }))
       // Descending, so the stack pops them in increasing order of least node —
       // Johnson's root order, and what makes a budget-stopped run stop at a
       // deterministic point rather than wherever iteration happened to be.
-      .sort((a, b) => (a.least < b.least ? 1 : a.least > b.least ? -1 : 0));
+      .sort((a, b) => -compareCodeUnits(a.least, b.least));
     for (const subComponent of subComponents) stack.push(subComponent.nodes);
   }
 }
@@ -536,25 +534,20 @@ function enumerateComponentCycles(
  *
  * Linear in the component, and it runs only after the decomposition has already
  * succeeded, so it cannot fail the way the enumeration did. The budget is
- * charged for honesty — it is already spent at this point, and this work is not
- * optional, so the charge is accounting rather than a gate.
  */
 function representativeCycle(
   component: readonly string[],
   adjacency: ReadonlyMap<string, readonly string[]>,
-  search: CircuitSearch,
 ): string[] {
   const allowed = new Set(component);
   const start = leastNode(component);
   const parents = new Map<string, string | null>([[start, null]]);
   const queue = [start];
-  search.work += component.length;
 
   for (let index = 0; index < queue.length; index += 1) {
     const node = queue[index];
     for (const next of adjacency.get(node) ?? []) {
       if (!allowed.has(next)) continue;
-      search.work += 1;
       if (next === start) {
         const path: string[] = [];
         let cursor: string | null = node;
@@ -581,8 +574,8 @@ function representativeCycle(
 function compareCycles(left: readonly string[], right: readonly string[]): number {
   const shared = Math.min(left.length, right.length);
   for (let index = 0; index < shared; index += 1) {
-    if (left[index] < right[index]) return -1;
-    if (left[index] > right[index]) return 1;
+    const order = compareCodeUnits(left[index], right[index]);
+    if (order !== 0) return order;
   }
   return left.length - right.length;
 }
@@ -590,11 +583,10 @@ function compareCycles(left: readonly string[], right: readonly string[]): numbe
 /**
  * Enumerate every elementary cycle in the file import graph.
  *
- * Returns `status: 'limit_exceeded'` — carrying no cycles, only the tangle
- * count if it is known — when the search exceeds `cycleLimit` cycles or
- * `workLimit` units of effort. See the module docblock for the algorithm, the
- * rotation rule, and why overflow fails closed instead of returning a short
- * list.
+ * The result is discriminated on `enumeration`; see `ImportCycleReport` for
+ * what each variant carries. Past either bound the enumeration is discarded
+ * rather than truncated — see the module docblock for the algorithm, the
+ * rotation rule, and why a partial cycle list is not a safe thing to return.
  */
 export function findImportCycles(
   edges: readonly ImportEdge[],
@@ -629,7 +621,7 @@ export function findImportCycles(
     return {
       enumeration: 'component-representatives',
       cycles: cyclicComponents
-        .map((component) => representativeCycle(component, graph.adjacency, search))
+        .map((component) => representativeCycle(component, graph.adjacency))
         .sort(compareCycles),
       componentCount: cyclicComponents.length,
       reason,

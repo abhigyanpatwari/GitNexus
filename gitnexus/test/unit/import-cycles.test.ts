@@ -39,6 +39,13 @@ function fabricatedSteps(
     .filter((step) => !present.has(step));
 }
 
+/** Every ordered pair of distinct nodes — the complete digraph on `nodes`. */
+function completeDigraph(nodes: readonly string[]): { source: string; target: string }[] {
+  return nodes.flatMap((source) =>
+    nodes.filter((target) => target !== source).map((target) => ({ source, target })),
+  );
+}
+
 /** `a -> b` for every pair in a `a b` space-separated line, for readable fixtures. */
 function edgesOf(...pairs: string[]): { source: string; target: string }[] {
   return pairs.map((pair) => {
@@ -157,17 +164,13 @@ describe('findImportCycles', () => {
     // K_n has sum over k=2..n of C(n,k) * (k-1)! elementary cycles.
     // For n = 5 that is 10*1 + 10*2 + 5*6 + 1*24 = 84.
     const nodes = ['a', 'b', 'c', 'd', 'e'];
-    const edges = nodes.flatMap((source) =>
-      nodes.filter((target) => target !== source).map((target) => ({ source, target })),
-    );
+    const edges = completeDigraph(nodes);
     expect(cyclesOf(findImportCycles(edges))).toHaveLength(84);
   });
 
   it('never emits the same cycle under two rotations', () => {
     const nodes = ['a', 'b', 'c', 'd', 'e'];
-    const edges = nodes.flatMap((source) =>
-      nodes.filter((target) => target !== source).map((target) => ({ source, target })),
-    );
+    const edges = completeDigraph(nodes);
     // Canonicalize independently of the implementation's own rule: drop the
     // repeated tail, then rotate to the smallest node. Duplicates under any
     // rotation would collapse here and shrink the set.
@@ -195,11 +198,7 @@ describe('findImportCycles', () => {
 
   it('reports only edges that exist between consecutive nodes of a cycle', () => {
     const edges = edgesOf('a b', 'b c', 'c a', 'c b', 'b a', 'a c');
-    const present = new Set(edges.map(({ source, target }) => `${source}>${target}`));
-    const steps = cyclesOf(findImportCycles(edges)).flatMap((cycle) =>
-      cycle.slice(0, -1).map((node, index) => `${node}>${cycle[index + 1]}`),
-    );
-    expect(steps.filter((step) => !present.has(step))).toEqual([]);
+    expect(fabricatedSteps(cyclesOf(findImportCycles(edges)), edges)).toEqual([]);
   });
 
   it('improves on one-cycle-per-component reporting for a single tangled component', () => {
@@ -223,9 +222,7 @@ describe('findImportCycles', () => {
   it('does not return a shortened elementary-cycle list when the cap is reached', () => {
     // K5 has 84 cycles; a cap of 10 must not yield a 10-item list.
     const nodes = ['a', 'b', 'c', 'd', 'e'];
-    const edges = nodes.flatMap((source) =>
-      nodes.filter((target) => target !== source).map((target) => ({ source, target })),
-    );
+    const edges = completeDigraph(nodes);
     expect(findImportCycles(edges, 10)).toEqual({
       enumeration: 'component-representatives',
       reason: 'cycles',
@@ -259,9 +256,7 @@ describe('findImportCycles', () => {
   it('caps a graph whose cycle count exceeds the default limit', () => {
     // K9 has 109_600 elementary cycles, well past IMPORT_CYCLE_LIMIT.
     const nodes = ['a', 'b', 'c', 'd', 'e', 'f', 'g', 'h', 'i'];
-    const edges = nodes.flatMap((source) =>
-      nodes.filter((target) => target !== source).map((target) => ({ source, target })),
-    );
+    const edges = completeDigraph(nodes);
     expect(findImportCycles(edges)).toEqual({
       enumeration: 'component-representatives',
       reason: 'cycles',

@@ -578,6 +578,12 @@ describe('LocalBackend.callTool', () => {
     // one representative per component, `truncated`, and an `enumeration` field
     // naming what the list is. `cycleCount` is null rather than a number: there
     // is no count a caller could mistake for the real one.
+    //
+    // Asserted, not just stated: raising the cap above this graph's cycle count
+    // would silently turn this into a `complete` case and the expectation below
+    // would fail for a reason that has nothing to do with degradation.
+    const K9_ELEMENTARY_CYCLES = 109_600;
+    expect(K9_ELEMENTARY_CYCLES).toBeGreaterThan(IMPORT_CYCLE_LIMIT);
     const files = Array.from({ length: 9 }, (_, index) => `src/${index}.ts`);
     (executeParameterized as any).mockResolvedValue(
       files.flatMap((source) =>

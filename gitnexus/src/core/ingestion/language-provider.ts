@@ -501,12 +501,25 @@ interface LanguageProviderConfig {
    *     Declared anyway, so that giving those anchors their true multi-line
    *     ranges cannot silently start suppressing real copybook cycles.
    *
-   * The flag is per-provider, not per-import, so a language that MIXES
-   * compile-time and executed import forms cannot use it and would need a
-   * finer hook. None of the languages above mixes. PHP would — `use Foo\Bar;`
-   * aliases at compile time while `require` executes — which is why it is
-   * absent even though the only form `php/query.ts` captures today is
-   * `namespace_use_declaration`.
+   * Per-provider rather than per-import, and that is sufficient — the question
+   * this answers is narrower than "do this language's imports execute". It is
+   * only ever asked of an import that resolved INSIDE A FUNCTION SCOPE, so the
+   * real domain is: *can a function-local import in this language be
+   * non-executing?* No supported language has two forms that are both
+   * function-local and disagree. C++ has two forms, `#include` and
+   * `using ns::name`; both can appear in a body and both are compile-time.
+   *
+   * PHP is the case that looks like a counterexample and is not. It does mix —
+   * `use Foo\Bar;` aliases at compile time while `require` executes — but
+   * `use` cannot appear in a function body at all (`php/query.ts` records this
+   * twice: "`namespace_use_declaration` is an import only at top level / inside
+   * namespace scope"), so it never reaches this flag. Absent is therefore
+   * PERMANENTLY correct for PHP, including the day `require` is captured: a
+   * `require` in a body will correctly defer, and a `use` still cannot get
+   * here. Do not read PHP as a reason to build a per-`ParsedImport`
+   * classification hook — it would cost a provider call per import on the
+   * extractor's hot path, and `ParsedImport.kind` does not discriminate the
+   * thing being asked anyway.
    *
    * A capability on the provider rather than a language check in
    * `scope-extractor.ts`: shared `core/ingestion/` pipeline code must not name
