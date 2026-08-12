@@ -242,11 +242,17 @@ describe('CLI help surface', () => {
     }
   });
 
-  it('wiki help shows provider, review, and verbose flags', () => {
+  it('wiki help shows profile, provider, review, and verbose flags', () => {
     const result = runHelp('wiki');
 
     expect(result.status).toBe(0);
     expect(result.stdout).toContain('--provider <provider>');
+    expect(result.stdout).toContain('--profile <id>');
+    expect(result.stdout).toContain('ieee-1016-sdd');
+    expect(result.stdout).toContain('engineering-wiki');
+    expect(result.stdout).toContain('gitnexus wiki --profile default');
+    expect(result.stdout).toContain('gitnexus wiki --profile ieee-1016-sdd --lang chinese');
+    expect(result.stdout).toContain('gitnexus wiki --profile engineering-wiki --lang chinese');
     expect(result.stdout).toContain('claude');
     expect(result.stdout).toContain('codex');
     expect(result.stdout).toContain('--review');

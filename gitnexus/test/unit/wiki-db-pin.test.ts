@@ -85,7 +85,7 @@ describe('WikiGenerator DB pinning', () => {
         baseUrl: 'http://127.0.0.1:1/v1',
         apiKey: 'test',
       },
-      { force: true, reviewOnly: true },
+      { reviewOnly: true },
     );
 
     await expect(generator.run()).resolves.toMatchObject({

@@ -328,8 +328,17 @@ program
   .option('-v, --verbose', 'Enable verbose output (show LLM commands and responses)')
   .option('--review', 'Stop after grouping to review module structure before generating pages')
   .option(
+    '--profile <id>',
+    'Wiki document profile: default, engineering-wiki, arc42, ieee-1016-sdd, or iso-42010-ad',
+    'default',
+  )
+  .option(
     '--lang <lang>',
     'Output language for generated documentation (e.g. english, chinese, spanish, japanese)',
+  )
+  .addHelpText(
+    'after',
+    '\nExamples:\n  $ gitnexus wiki --profile default\n  $ gitnexus wiki --profile engineering-wiki --lang chinese\n  $ gitnexus wiki --profile ieee-1016-sdd --lang chinese',
   )
   .action(createLbugLazyAction(() => import('./wiki.js'), 'wikiCommand'));
 

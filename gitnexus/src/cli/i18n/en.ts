@@ -251,6 +251,8 @@ export const en = {
   'help.option.wiki.gist': 'Publish wiki as a public GitHub Gist after generation',
   'help.option.wiki.review':
     'Stop after grouping to review module structure before generating pages',
+  'help.option.wiki.profile':
+    'Wiki document profile: default, engineering-wiki, arc42, ieee-1016-sdd, or iso-42010-ad',
   'help.option.wiki.lang':
     'Output language for generated documentation (e.g. english, chinese, spanish, japanese)',
   'help.option.publish.id': 'Override the registry id (defaults to the origin remote)',

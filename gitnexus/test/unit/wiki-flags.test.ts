@@ -541,6 +541,10 @@ describe('WikiGenerator --review mode', () => {
 
     const repoPath = path.join(tmpDir, 'repo');
     await fs.mkdir(repoPath, { recursive: true });
+    await fs.mkdir(path.join(repoPath, 'src'), { recursive: true });
+    await Promise.all(
+      fakeFiles.map((file) => fs.writeFile(path.join(repoPath, file), 'export {};\n')),
+    );
 
     const llmConfig = {
       apiKey: '',
@@ -769,6 +773,7 @@ describe('wikiCommand --timeout mapping', () => {
 
   async function loadWikiCommandHarness() {
     let capturedConfig: Record<string, unknown> | undefined;
+    let capturedWikiOptions: Record<string, unknown> | undefined;
     const resolveLLMConfig = vi.fn().mockImplementation((overrides = {}) =>
       Promise.resolve({
         apiKey: 'sk-test',
@@ -782,8 +787,9 @@ describe('wikiCommand --timeout mapping', () => {
     );
     const generatorCtor = vi
       .fn()
-      .mockImplementation(function (_repoPath, _storagePath, _lbugPath, config) {
+      .mockImplementation(function (_repoPath, _storagePath, _lbugPath, config, wikiOptions) {
         capturedConfig = config;
+        capturedWikiOptions = wikiOptions;
         return {
           run: vi.fn().mockResolvedValue({ mode: 'up-to-date', pagesGenerated: 0 }),
         };
@@ -836,6 +842,7 @@ describe('wikiCommand --timeout mapping', () => {
       generatorCtor,
       consoleSpy,
       getCapturedConfig: () => capturedConfig,
+      getCapturedWikiOptions: () => capturedWikiOptions,
       resolveLLMConfig,
     };
   }
@@ -884,6 +891,37 @@ describe('wikiCommand --timeout mapping', () => {
       'llama-box.local',
       '192.168.1.23',
     ]);
+  });
+
+  it('resolves the default profile and locale before constructing WikiGenerator', async () => {
+    const harness = await loadWikiCommandHarness();
+
+    await harness.wikiCommand('/tmp/repo', { profile: 'default', lang: 'zh-CN' });
+
+    expect(harness.getCapturedWikiOptions()).toMatchObject({
+      profile: {
+        profile: { id: 'default' },
+        fingerprint: expect.stringMatching(/^[a-f0-9]{64}$/),
+      },
+      language: {
+        requestedLanguage: 'zh-CN',
+        resolvedLocale: 'zh-CN',
+        localeFingerprint: expect.stringMatching(/^[a-f0-9]{64}$/),
+      },
+    });
+  });
+
+  it('rejects an unknown profile before resolving LLM config or constructing the generator', async () => {
+    const harness = await loadWikiCommandHarness();
+
+    await harness.wikiCommand('/tmp/repo', { profile: 'unknown' });
+
+    expect(process.exitCode).toBe(1);
+    expect(harness.resolveLLMConfig).not.toHaveBeenCalled();
+    expect(harness.generatorCtor).not.toHaveBeenCalled();
+    expect(harness.consoleSpy).toHaveBeenCalledWith(
+      '  Error: Unknown wiki profile "unknown". Available profiles: arc42, default, engineering-wiki, ieee-1016-sdd, iso-42010-ad\n',
+    );
   });
 });
 
@@ -2006,7 +2044,8 @@ describe('WikiGenerator grouping prompt isolation', () => {
     const wikiDir = path.join(storagePath, 'wiki');
     const repoPath = path.join(tmpDir, 'repo');
     await fs.mkdir(wikiDir, { recursive: true });
-    await fs.mkdir(repoPath, { recursive: true });
+    await fs.mkdir(path.join(repoPath, 'src'), { recursive: true });
+    await fs.writeFile(path.join(repoPath, 'src/auth.ts'), 'export {};\n');
 
     const gen = new WikiGenerator(
       repoPath,

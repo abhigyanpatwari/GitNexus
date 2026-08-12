@@ -27,6 +27,8 @@ import {
 import { detectCursorCLI } from '../core/wiki/cursor-client.js';
 import { detectLocalCLI } from '../core/wiki/local-cli-client.js';
 import { logger } from '../core/logger.js';
+import { resolveLanguage } from '../core/wiki/profiles/locale.js';
+import { resolveTemplateProfile } from '../core/wiki/profiles/registry.js';
 
 export interface WikiCommandOptions {
   force?: boolean;
@@ -43,6 +45,7 @@ export interface WikiCommandOptions {
   timeout?: string;
   retries?: string;
   lang?: string;
+  profile?: string;
   allowInsecureConnection?: string;
 }
 
@@ -158,6 +161,19 @@ const wikiCommandImpl = async (inputPath?: string, options?: WikiCommandOptions)
   }
 
   console.log('\n  GitNexus Wiki Generator\n');
+
+  let profile: ReturnType<typeof resolveTemplateProfile>;
+  try {
+    profile = resolveTemplateProfile(options?.profile ?? 'default');
+  } catch (error) {
+    console.log(`  Error: ${(error as Error).message}\n`);
+    process.exitCode = 1;
+    return;
+  }
+  const language = resolveLanguage(options?.lang, profile.profile);
+  for (const diagnostic of language.diagnostics) {
+    console.log(`  Note: ${diagnostic.message}`);
+  }
 
   // ── Resolve repo path ───────────────────────────────────────────────
   let repoPath: string;
@@ -556,6 +572,8 @@ const wikiCommandImpl = async (inputPath?: string, options?: WikiCommandOptions)
     concurrency: options?.concurrency ? parseInt(options.concurrency, 10) : undefined,
     reviewOnly: options?.review,
     lang: options?.lang,
+    profile,
+    language,
   };
 
   const generator = new WikiGenerator(
@@ -585,6 +603,7 @@ const wikiCommandImpl = async (inputPath?: string, options?: WikiCommandOptions)
     const wikiDir = path.join(storagePath, 'wiki');
     const viewerPath = path.join(wikiDir, 'index.html');
     const treeFile = path.join(wikiDir, 'module_tree.json');
+    const planFile = path.join(wikiDir, 'document_plan.json');
 
     // Review mode: show module tree and ask for confirmation
     if (options?.review && result.moduleTree) {
@@ -612,6 +631,12 @@ const wikiCommandImpl = async (inputPath?: string, options?: WikiCommandOptions)
 
       console.log(`\n  Tree saved to: ${treeFile}`);
       console.log('  You can edit this file to remove/rename modules.\n');
+      if (profile.profile.id !== 'default') {
+        console.log(`  Versioned document plan: ${planFile}`);
+        console.log(
+          '  Profile, language, section IDs, evidence references, and paths are validated before generation.\n',
+        );
+      }
 
       // Ask for confirmation (auto-continue in non-interactive environments)
       if (!process.stdin.isTTY) {
