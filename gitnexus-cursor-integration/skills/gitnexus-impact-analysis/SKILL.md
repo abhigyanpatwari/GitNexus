@@ -36,6 +36,8 @@ description: Analyze blast radius before making code changes
 - [ ] Assess risk level and report to user
 ```
 
+> `partial: true` (a graph query failed) or `truncated: true` (the changed-symbol listing was capped) means the result is short of the truth: a zero there means unseen, not unaffected. Re-run it rather than tick the pre-commit check.
+
 ## Understanding Output
 
 | Depth | Risk Level | Meaning |

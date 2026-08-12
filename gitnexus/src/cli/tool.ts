@@ -42,9 +42,18 @@ async function getBackend(): Promise<LocalBackend> {
  * and write directly to the real stdout fd (#324).
  *
  * Falls back to stderr if the fd write fails (e.g., broken pipe).
+ *
+ * `render` is for the commands that print prose instead of JSON: they hand over
+ * the STRUCTURED result and a formatter, so the payload stays visible to the
+ * exit-code test below — pre-formatting it into a string would hide the very
+ * fields that test reads.
  */
-function output(data: any): void {
-  const text = typeof data === 'string' ? data : JSON.stringify(data, null, 2);
+function output<T>(data: T, render?: (data: T) => string): void {
+  const text = render
+    ? render(data)
+    : typeof data === 'string'
+      ? data
+      : JSON.stringify(data, null, 2);
   try {
     writeSync(1, text + '\n');
   } catch (err: any) {
@@ -56,18 +65,34 @@ function output(data: any): void {
     // Fallback: stderr (previous behavior, works on all platforms)
     process.stderr.write(text + '\n');
   }
-  // Backend failures come back as `{ error }` payloads rather than throws
-  // (#2469). Every tool command routes its result through here, so this is
-  // the one place that keeps scripted callers honest: print the payload,
-  // then exit non-zero.
-  if (
-    data &&
-    typeof data === 'object' &&
-    'error' in data &&
-    typeof data.error === 'string' &&
-    data.error.trim().length > 0
-  ) {
-    process.exitCode = 1;
+  // Every tool command routes its result through here, so this is the one place
+  // that keeps scripted callers honest — `gitnexus impact … && <edit>` and
+  // `gitnexus detect-changes && git commit` must not proceed on a result that
+  // did not complete. Two shapes say so, and both exit non-zero:
+  //
+  //   • `error` — a backend failure, returned as a payload rather than thrown
+  //     (#2469).
+  //   • `partial` — a step failed and was SWALLOWED (#2915), so the counts and
+  //     risk level are lower bounds a caller would otherwise read as clean. It
+  //     is cross-tool vocabulary, not detect_changes' private flag: `query`
+  //     raises it for degraded enrichment or a partial FTS failure, and `impact`
+  //     for an interrupted traversal or capped per-symbol enrichment — a short
+  //     caller set and an under-ranked risk, on the tool AGENTS.md makes a MUST
+  //     gate before every edit.
+  //
+  // One code for both, because `&&` cannot tell two apart and a "softer" code
+  // for `partial` would invite exempting it again.
+  //
+  // NOT here: `truncated`, where only the LISTING is capped while the counts and
+  // risk are computed over the full set — the verdict is sound, so failing on it
+  // would fire on every large-but-healthy diff. Nor `partialProbe`, a narrower
+  // per-candidate flag on ambiguous impact targets.
+  if (data && typeof data === 'object') {
+    const payload = data as { error?: unknown; partial?: unknown };
+    const failed =
+      (typeof payload.error === 'string' && payload.error.trim().length > 0) ||
+      payload.partial === true;
+    if (failed) process.exitCode = 1;
   }
 }
 
@@ -337,7 +362,9 @@ export async function detectChangesCommand(options?: {
     if (Array.isArray(result.affected_processes))
       result.affected_processes = result.affected_processes.slice(0, limit);
   }
-  output(formatDetectChangesResult(result));
+  // Hand over the structured result plus its formatter, not the formatted text:
+  // `output()` reads `error` / `partial` off the payload to set the exit code.
+  output(result, formatDetectChangesResult);
 }
 
 export async function checkCommand(options?: {
@@ -359,9 +386,11 @@ export async function checkCommand(options?: {
       repo: options.repo,
       branch: options.branch,
     });
+    // A rendering guard, not an exit-code decision — `output()` owns that. An
+    // error payload carries no `cycles` array, so the prose branch below would
+    // throw on it; print the structured payload and stop.
     if (result?.error) {
       output(result);
-      process.exitCode = 1;
       return;
     }
     if (options.json) {
@@ -385,11 +414,15 @@ export async function checkCommand(options?: {
         );
       }
     }
-    // Keyed on `status`, NOT on `cycleCount`. The degraded report carries
-    // `cycleCount: null` on purpose — a partial count must not read as a real
-    // one — and `null > 0` is false, so counting here would exit 0 on precisely
-    // the repositories with the most cycles. `status` is the field that answers
-    // "were any found", and it answers it in both enumeration modes.
+    // Policy, not degradation: a clean run that FOUND cycles is `check` failing
+    // its own check, so `output()` — which fails closed on `error` and `partial`
+    // — deliberately knows nothing about it.
+    //
+    // Keyed on `status`, NOT on `cycleCount`. Past the enumeration cap the
+    // report carries `cycleCount: null` on purpose, because a partial count must
+    // not read as a real one — and `null > 0` is false, so counting here would
+    // exit 0 on precisely the repositories with the most cycles. `status`
+    // answers "were any found" in both enumeration modes.
     if (result.status === 'cycles_found') process.exitCode = 1;
   } catch (error) {
     output({ error: error instanceof Error ? error.message : String(error) });

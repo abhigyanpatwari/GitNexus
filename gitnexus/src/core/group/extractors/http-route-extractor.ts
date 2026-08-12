@@ -6,6 +6,7 @@ import type { ContractExtractor, CypherExecutor } from '../contract-extractor.js
 import type { ExtractedContract, RepoHandle } from '../types.js';
 import { readSafe } from './fs-utils.js';
 import { parseSourceSafe } from '../../tree-sitter/safe-parse.js';
+import { toZeroBasedLine } from '../../ingestion/utils/line-base.js';
 import { logger } from '../../logger.js';
 import {
   getPluginForFile,
@@ -179,13 +180,17 @@ function resolveContainingSymbol(
   line: number,
 ): ResolvedSymbol | null {
   const norm = (x: unknown): string => String(x ?? '');
-  // Detection lines are 1-based; symbol spans are stored 0-based for the
-  // languages indexed today (parse-worker records `startPosition.row`). So the
-  // base-correct probe is `line - 1`. Pick the INNERMOST (smallest-span) symbol
-  // whose span contains the probe. Only if nothing contains `line - 1` do we
-  // retry with the raw `line` — a defensive fallback for any future language
-  // that stores 1-based spans. Probing `line - 1` first (rather than OR-ing both)
-  // avoids the +1 slack mis-picking a one-line sibling that sits on `line`.
+  // Detection lines are 1-based (`HttpDetection.line`); symbol spans are stored
+  // 0-based for the languages indexed today (parse-worker records
+  // `startPosition.row`). So the base-correct probe is `toZeroBasedLine(line)` —
+  // the same named 1-based→graph-space conversion the ingestion emitters use
+  // (#2377), rather than a bare literal. Pick the INNERMOST (smallest-span)
+  // symbol whose span contains the probe. Only if nothing contains the 0-based
+  // probe do we retry with the raw `line` — a defensive fallback for any future
+  // language that stores 1-based spans. Probing 0-based first (rather than
+  // OR-ing both) avoids the +1 slack mis-picking a one-line sibling that sits on
+  // `line`. The helper's `Math.max(0, …)` clamp is inert here: every plugin sets
+  // `line` from `startPosition.row + 1`, so it is always >= 1.
   const pick = (probe: number): ResolvedSymbol | null => {
     let best: ResolvedSymbol | null = null;
     let bestSpan = Number.POSITIVE_INFINITY;
@@ -208,7 +213,7 @@ function resolveContainingSymbol(
     }
     return best && best.uid ? best : null;
   };
-  return pick(line - 1) ?? pick(line);
+  return pick(toZeroBasedLine(line)) ?? pick(line);
 }
 
 /** A Function/Method in the file matching `name` exactly (for named handlers). */

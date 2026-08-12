@@ -21,6 +21,7 @@ import os from 'os';
 import path from 'path';
 import { spawnSync } from 'child_process';
 import { createRequire } from 'module';
+import { commitAll, initGitRepo } from '../helpers/temp-git-repo.js';
 
 const PKG_VERSION = (createRequire(import.meta.url)('../../package.json') as { version: string })
   .version;
@@ -413,12 +414,9 @@ describe('gitnexus-antigravity-hook adapter', () => {
 
   it('AfterTool emits stale-index hint after a successful git commit', async () => {
     // Initialize a git repo and a stale .gitnexus/meta.json.
-    spawnSync('git', ['init', '-q'], { cwd: workdir });
-    spawnSync('git', ['config', 'user.email', 'test@example.com'], { cwd: workdir });
-    spawnSync('git', ['config', 'user.name', 'Test'], { cwd: workdir });
+    initGitRepo(workdir);
     await fs.writeFile(path.join(workdir, 'a.txt'), 'hello', 'utf-8');
-    spawnSync('git', ['add', '.'], { cwd: workdir });
-    spawnSync('git', ['commit', '-q', '-m', 'init'], { cwd: workdir });
+    commitAll(workdir, 'init');
 
     const gnDir = path.join(workdir, '.gitnexus');
     await fs.mkdir(gnDir, { recursive: true });

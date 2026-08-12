@@ -6,6 +6,8 @@ import { finished } from 'stream/promises';
 import path from 'path';
 import lbug from '@ladybugdb/core';
 import { closeQueryResults } from './query-result-utils.js';
+import { chunk } from '../../lib/utils.js';
+import { warnIfQueryTextUnbounded } from './query-batch.js';
 import { escapeCypherString } from './cypher-escape.js';
 import { withConnLock } from './conn-lock.js';
 import { isWalDriverActive } from './wal-driver-state.js';
@@ -521,6 +523,12 @@ const readQueryRows = async (
   return rows;
 };
 
+// Deliberately NOT covered by `warnIfQueryTextUnbounded` (#2915): this is the
+// write/DDL raw path, and `batchInsertNodesToLbug` inlines a node's `content`
+// here, so any source file over the 64 KB text ceiling would trip the heuristic
+// on a query that is entirely legitimate. The guard sits on the read entry
+// points (`executePrepared`, `streamQuery`), which is where a caller-sized list
+// gets spliced into query TEXT.
 const queryAndDrain = async (targetConn: lbug.Connection, cypher: string): Promise<void> => {
   const run = async (): Promise<void> => {
     const queryResult = await targetConn.query(cypher);
@@ -1715,6 +1723,8 @@ export const batchInsertNodesToLbug = async (
   return { inserted, failed };
 };
 
+// Guarded by `executePrepared` — a pure delegation, so warning here too would
+// double-report the same query text (#2915).
 export const executeQuery = async (cypher: string): Promise<any[]> => {
   return await executePrepared(cypher, {});
 };
@@ -1723,6 +1733,9 @@ export const streamQuery = async (
   cypher: string,
   onRow: (row: any) => void | Promise<void>,
 ): Promise<number> => {
+  // The other raw `conn.query` read entry point (`executePrepared` covers the
+  // prepared path, and `executeQuery` delegates to it). Never throws (#2915).
+  warnIfQueryTextUnbounded(cypher, 'streamQuery', (message) => logger.warn(message));
   if (isWalDriverActive()) {
     // streamQuery reads rows on the singleton connection WITHOUT withConnLock; if
     // the WAL-checkpoint driver is live, those reads could race a CHECKPOINT — the
@@ -1772,6 +1785,8 @@ export const executePrepared = async (
   cypher: string,
   params: Record<string, any>,
 ): Promise<any[]> => {
+  // A `.length` compare on text we already hold; never throws (#2915).
+  warnIfQueryTextUnbounded(cypher, 'executePrepared', (message) => logger.warn(message));
   const c = conn;
   if (!c) {
     throw new Error('LadybugDB not initialized. Call initLbug first.');
@@ -1798,8 +1813,8 @@ export const executeWithReusedStatement = async (
   if (paramsList.length === 0) return;
 
   const SUB_BATCH_SIZE = 4;
-  for (let i = 0; i < paramsList.length; i += SUB_BATCH_SIZE) {
-    const subBatch = paramsList.slice(i, i + SUB_BATCH_SIZE);
+  for (const [subBatchIndex, subBatch] of chunk(paramsList, SUB_BATCH_SIZE).entries()) {
+    const firstRow = subBatchIndex * SUB_BATCH_SIZE;
     // One critical section per sub-batch: the prepare + its executes run with
     // exclusive access to the connection (so the WAL checkpoint driver cannot
     // interleave a CHECKPOINT mid-batch), while the lock is released between
@@ -1818,7 +1833,7 @@ export const executeWithReusedStatement = async (
         const msg = e instanceof Error ? e.message : String(e);
         const queryPreview = cypher.replace(/\s+/g, ' ').slice(0, 120);
         throw new Error(
-          `Batch execution failed for rows ${i + 1}-${i + subBatch.length}: ${msg} (${queryPreview})`,
+          `Batch execution failed for rows ${firstRow + 1}-${firstRow + subBatch.length}: ${msg} (${queryPreview})`,
         );
       }
       // Note: LadybugDB PreparedStatement doesn't require explicit close()
@@ -2541,9 +2556,8 @@ export const deleteNodesForFiles = async (
   }
   const targetConn = conn;
   let warnedMissingEmbeddingTable = false;
-  for (let i = 0; i < filePaths.length; i += DELETE_FILES_CHUNK_SIZE) {
-    const chunk = filePaths.slice(i, i + DELETE_FILES_CHUNK_SIZE);
-    const listLiteral = `[${chunk.map((p) => `'${escapeCypherString(p)}'`).join(', ')}]`;
+  for (const [chunkIndex, batch] of chunk(filePaths, DELETE_FILES_CHUNK_SIZE).entries()) {
+    const listLiteral = `[${batch.map((p) => `'${escapeCypherString(p)}'`).join(', ')}]`;
     // Embedding rows key on their OWNING NODE's id: generateId builds
     // label-first ids — `${label}:${name}` (src/lib/utils.ts) with qualified
     // names that embed the file path (e.g. `Function:src/f.ts:fn0:1`) — so
@@ -2589,7 +2603,10 @@ export const deleteNodesForFiles = async (
         `MATCH (n:${tn}) WHERE n.filePath IN ${listLiteral} DETACH DELETE n`,
       );
     }
-    options.onChunk?.(Math.min(i + DELETE_FILES_CHUNK_SIZE, filePaths.length), filePaths.length);
+    options.onChunk?.(
+      Math.min((chunkIndex + 1) * DELETE_FILES_CHUNK_SIZE, filePaths.length),
+      filePaths.length,
+    );
   }
 };
 
@@ -2676,11 +2693,8 @@ export const queryImportersBatch = async (
     throw new Error('LadybugDB not initialized. Call initLbug first.');
   }
   const importers = new Set<string>();
-  for (let i = 0; i < targetFilePaths.length; i += DELETE_FILES_CHUNK_SIZE) {
-    // `i` only ever advances in whole chunk strides, so this is exact.
-    const chunkIndex = i / DELETE_FILES_CHUNK_SIZE;
-    const chunk = targetFilePaths.slice(i, i + DELETE_FILES_CHUNK_SIZE);
-    const listLiteral = `[${chunk.map((p) => `'${escapeCypherString(p)}'`).join(', ')}]`;
+  for (const [chunkIndex, batch] of chunk(targetFilePaths, DELETE_FILES_CHUNK_SIZE).entries()) {
+    const listLiteral = `[${batch.map((p) => `'${escapeCypherString(p)}'`).join(', ')}]`;
     const cypher = `
       MATCH (a)-[r:${REL_TABLE_NAME}]->(b)
       WHERE r.type = 'IMPORTS' AND b.filePath IN ${listLiteral}
@@ -2704,10 +2718,10 @@ export const queryImportersBatch = async (
         // `err` key — `error` serializes to `{}`.
         logger.warn(
           { err },
-          `Incremental importer BFS: dropped chunk ${chunkIndex} (${chunk.length} target path(s)) — ` +
+          `Incremental importer BFS: dropped chunk ${chunkIndex} (${batch.length} target path(s)) — ` +
             'importer expansion degrades for this run; affected importers may keep stale edges until the next full rebuild.',
         );
-        options.onChunkFailure?.(chunkIndex, chunk.length, err);
+        options.onChunkFailure?.(chunkIndex, batch.length, err);
       } finally {
         if (queryResult) await closeQueryResults(queryResult);
       }

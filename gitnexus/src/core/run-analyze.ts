@@ -58,6 +58,7 @@ import {
   resolveNativeSafeStorageDir,
 } from './lbug/lbug-config.js';
 import { escapeCypherString } from './lbug/cypher-escape.js';
+import { chunk } from '../lib/utils.js';
 import {
   buildSearchIndexesOrDegrade,
   ftsFailureIsFatal,
@@ -2844,9 +2845,7 @@ async function runFullAnalysisInner(
               });
         progress('embeddings', 88, `Restoring ${rowsToRestore.length} cached embeddings...`);
         const EMBED_BATCH = 200;
-        for (let i = 0; i < rowsToRestore.length; i += EMBED_BATCH) {
-          const batch = rowsToRestore.slice(i, i + EMBED_BATCH);
-
+        for (const batch of chunk(rowsToRestore, EMBED_BATCH)) {
           try {
             await batchInsert(executeWithReusedStatement, batch);
             restoredEmbeddingCount += batch.length;
@@ -2874,9 +2873,8 @@ async function runFullAnalysisInner(
             .map((e) => `${e.nodeId}:${e.chunkIndex}`);
           if (orphanRowIds.length > 0) {
             try {
-              for (let i = 0; i < orphanRowIds.length; i += DELETE_FILES_CHUNK_SIZE) {
-                const chunk = orphanRowIds.slice(i, i + DELETE_FILES_CHUNK_SIZE);
-                const listLiteral = `[${chunk
+              for (const batch of chunk(orphanRowIds, DELETE_FILES_CHUNK_SIZE)) {
+                const listLiteral = `[${batch
                   .map((id) => `'${escapeCypherString(id)}'`)
                   .join(', ')}]`;
                 await executeQuery(

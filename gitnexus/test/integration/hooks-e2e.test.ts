@@ -16,6 +16,7 @@ import {
   createGitNexusPathEntry,
   envWithPath,
 } from '../utils/hook-test-helpers.js';
+import { commitAll, initGitRepo } from '../helpers/temp-git-repo.js';
 
 // ─── Paths to both hook variants ────────────────────────────────────
 
@@ -46,14 +47,11 @@ beforeAll(() => {
   fs.mkdirSync(gitNexusDir, { recursive: true });
 
   // Initialize a real git repo
-  spawnSync('git', ['init'], { cwd: tmpDir, stdio: 'pipe' });
-  spawnSync('git', ['config', 'user.email', 'test@test.com'], { cwd: tmpDir, stdio: 'pipe' });
-  spawnSync('git', ['config', 'user.name', 'Test'], { cwd: tmpDir, stdio: 'pipe' });
+  initGitRepo(tmpDir, { name: 'Test', email: 'test@test.com' });
 
   // Create a file and commit so HEAD exists
   fs.writeFileSync(path.join(tmpDir, 'hello.txt'), 'hello');
-  spawnSync('git', ['add', '.'], { cwd: tmpDir, stdio: 'pipe' });
-  spawnSync('git', ['commit', '-m', 'init'], { cwd: tmpDir, stdio: 'pipe' });
+  commitAll(tmpDir, 'init');
 });
 
 afterAll(() => {

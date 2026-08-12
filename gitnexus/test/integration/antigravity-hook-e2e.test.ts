@@ -31,6 +31,7 @@ import {
   envWithPath,
 } from '../utils/hook-test-helpers.js';
 import { setupCommand } from '../../src/cli/setup.js';
+import { commitAll, initGitRepo } from '../helpers/temp-git-repo.js';
 
 let tempHome: string;
 let installedHook: string;
@@ -86,12 +87,9 @@ beforeAll(async () => {
   tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'antigravity-hook-e2e-repo-'));
   gitNexusDir = path.join(tmpDir, '.gitnexus');
   fs.mkdirSync(gitNexusDir, { recursive: true });
-  spawnSync('git', ['init'], { cwd: tmpDir, stdio: 'pipe' });
-  spawnSync('git', ['config', 'user.email', 'test@test.com'], { cwd: tmpDir, stdio: 'pipe' });
-  spawnSync('git', ['config', 'user.name', 'Test'], { cwd: tmpDir, stdio: 'pipe' });
+  initGitRepo(tmpDir, { name: 'Test', email: 'test@test.com' });
   fs.writeFileSync(path.join(tmpDir, 'hello.txt'), 'hello');
-  spawnSync('git', ['add', '.'], { cwd: tmpDir, stdio: 'pipe' });
-  spawnSync('git', ['commit', '-m', 'init'], { cwd: tmpDir, stdio: 'pipe' });
+  commitAll(tmpDir, 'init');
 });
 
 afterAll(async () => {

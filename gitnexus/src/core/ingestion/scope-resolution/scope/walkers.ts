@@ -31,7 +31,7 @@ import type {
 } from 'gitnexus-shared';
 import type { ScopeResolutionIndexes } from '../../model/scope-resolution-indexes.js';
 import type { SemanticModel } from '../../model/semantic-model.js';
-import type { WorkspaceResolutionIndex } from '../workspace-index.js';
+import type { WorkspaceResolutionIndex } from '../workspace-index-types.js';
 import {
   normalizeQualifiedName,
   splitQualifiedName,
