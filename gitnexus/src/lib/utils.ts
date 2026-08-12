@@ -135,12 +135,17 @@ export const stripWindowsLongPathPrefix = (
  */
 export function chunk<T>(items: readonly T[], size: number): T[][] {
   // `NaN` fails every comparison, so a bare `size < 1` lets it through and
-  // `i += NaN` produces exactly one empty slice — the shape the docstring above
-  // promises never to return. `mapConcurrent`'s `Math.max(1, …)` propagates a
-  // NaN concurrency the same way, so the guard has to cover non-finite sizes
-  // rather than just small ones.
-  if (!Number.isFinite(size) || size < 1) {
-    throw new RangeError(`chunk size must be >= 1, got ${size}`);
+  // A size is a COUNT, so it has to be a positive integer — `Number.isInteger`
+  // rather than `Number.isFinite`, because a fractional size silently DUPLICATES
+  // items rather than failing: `slice` truncates its indices while `i` does not,
+  // so size 1.5 yields slice(0, 1.5) = items 0-1 and then slice(1.5, 3) = items
+  // 1-2, and item 1 lands in two batches. `NaN` is the other shape this rejects —
+  // it fails every comparison, so a bare `size < 1` lets it through and `i += NaN`
+  // produces exactly one empty slice, which the docstring promises never to
+  // return. `mapConcurrent`'s `Math.max(1, …)` propagates a NaN concurrency the
+  // same way.
+  if (!Number.isInteger(size) || size < 1) {
+    throw new RangeError(`chunk size must be a positive integer, got ${size}`);
   }
   const batches: T[][] = [];
   for (let i = 0; i < items.length; i += size) batches.push(items.slice(i, i + size));
@@ -171,7 +176,15 @@ export async function mapConcurrent<T, R>(
     try {
       return await run(item);
     } catch (error) {
-      options.onError?.(error);
+      // Reporting a failure must not become a failure. `onError` is caller-supplied
+      // — a logger with a bad format string is enough — and an uncaught throw here
+      // rejects `settle`, which rejects the whole `Promise.all` wave and discards
+      // the neighbouring successes this function exists to preserve.
+      try {
+        options.onError?.(error);
+      } catch {
+        /* empty */
+      }
       return undefined;
     }
   };

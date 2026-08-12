@@ -29,6 +29,7 @@ import {
   getFilesWithExports,
   getInterFileCallEdges,
   getInterModuleCallEdges,
+  getInterModuleEdgesForOverview,
   getIntraModuleCallEdges,
   getProcessesForFiles,
   initWikiDb,
@@ -259,6 +260,10 @@ withTestLbugDB(
             getInterModuleCallEdges(MODULE_FILES),
             getProcessesForFiles(MODULE_FILES),
             getAllProcesses(),
+            // Aggregates in JS over `getInterFileCallEdges`, so it issues no
+            // Cypher of its own — included anyway because this test claims to
+            // cover every exported query, and `generateOverview` calls it.
+            getInterModuleEdgesForOverview({ mod: MODULE_FILES, other: [GAMMA] }),
           ]),
         ).resolves.toBeDefined();
       });

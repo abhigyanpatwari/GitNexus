@@ -47,4 +47,13 @@ describe('chunk', () => {
     // promises never to return, and one a caller reads as "nothing to query".
     expect(() => chunk([1], Number.NaN)).toThrow(RangeError);
   });
+
+  it('rejects a fractional size, which would DUPLICATE an item rather than fail', () => {
+    // The nastier sibling of the NaN case, because it produces a plausible-looking
+    // result instead of an empty one. `slice` truncates its indices but `i` does
+    // not, so size 1.5 gives slice(0, 1.5) = items 0-1 then slice(1.5, 3) = items
+    // 1-2: 'b' is in two batches, and a caller batching a query would send it
+    // twice. `Number.isFinite` admits this; only `Number.isInteger` rejects it.
+    expect(() => chunk(['a', 'b', 'c'], 1.5)).toThrow(RangeError);
+  });
 });

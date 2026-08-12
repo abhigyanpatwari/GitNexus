@@ -46,7 +46,13 @@ export function formatDetectChangesResult(result: unknown): string {
   // Both lead the output — a caveat printed after the summary is read too late.
   const notes: string[] = [];
   if (payload.partial) notes.push(t('tool.detectChanges.partial'));
-  if (payload.truncated) notes.push(t('tool.detectChanges.truncated'));
+  // The plain truncation note reassures that the counts are whole. That is only
+  // true when the run did NOT also degrade — `changed_count` sums the batches
+  // that succeeded — so the two flags together get a different sentence.
+  if (payload.truncated)
+    notes.push(
+      t(payload.partial ? 'tool.detectChanges.truncatedDegraded' : 'tool.detectChanges.truncated'),
+    );
 
   if ((summary.changed_count ?? 0) === 0) {
     return [...notes, t('tool.detectChanges.noChanges')].join('\n');

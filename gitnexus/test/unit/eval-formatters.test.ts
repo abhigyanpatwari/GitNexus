@@ -597,6 +597,12 @@ describe('formatDetectChangesResult', () => {
     expect(result.indexOf('PARTIAL RESULT')).toBe(0);
     expect(result.indexOf('LISTING CAPPED')).toBeGreaterThan(0);
     expect(result.indexOf('LISTING CAPPED')).toBeLessThan(result.indexOf('Changes: 40 files'));
+    // And it must NOT keep the truncated-only reassurance that the counts are
+    // whole: `changed_count` was summed from the batches that succeeded, so with
+    // `partial` it is a floor. Claiming otherwise here contradicts the note above
+    // it and the tool description.
+    expect(result).toContain('lower bound');
+    expect(result).not.toContain('still cover all of them');
   });
 
   it('flags a capped listing that found nothing, alongside the no-changes line', () => {
