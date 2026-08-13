@@ -6,6 +6,24 @@ import type { UndecidedSatisfaction } from '../core/ingestion/scope-resolution/c
 import type { PdgEmitManifest } from '../core/lbug/pdg-emit-sink.js';
 import type { GraphEmitManifest } from '../core/lbug/graph-emit-sink.js';
 
+/** Per-extension breakdown of unsupported files */
+export interface UnsupportedExtension {
+  extension: string;
+  count: number;
+}
+
+/** Parser coverage stats — tracks which files were parsed vs skipped */
+export interface ParserCoverage {
+  /** Total source files in repo (before language filtering) */
+  totalFiles: number;
+  /** Files with supported extensions that entered the parse pipeline */
+  supportedFiles: number;
+  /** Files with unsupported extensions (no grammar defined) */
+  unsupportedFiles: number;
+  /** Per-extension breakdown of unsupported files, sorted by count desc */
+  unsupportedByExtension: UnsupportedExtension[];
+}
+
 // CLI-specific: in-memory result with graph + detection results
 export interface PipelineResult {
   graph: KnowledgeGraph;
@@ -70,4 +88,6 @@ export interface PipelineResult {
     readonly crossLanguage: number;
     readonly crossLanguageNames: readonly { readonly name: string; readonly languages: string[] }[];
   };
+  /** Parser coverage stats — which files were parsed vs skipped */
+  parserCoverage?: ParserCoverage;
 }

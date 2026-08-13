@@ -29,6 +29,7 @@ import fs from 'fs/promises';
 import path from 'path';
 import type { UnresolvedReceiverSummary } from '../core/ingestion/scope-resolution/unresolved-receivers.js';
 import type { UndecidedSatisfactionSummary } from '../core/ingestion/scope-resolution/undecided-satisfaction.js';
+import type { ParserCoverage } from '../types/pipeline.js';
 
 /** The `.gitnexus` directory name, relative to a repo root. */
 export const GITNEXUS_DIR = '.gitnexus';
@@ -107,6 +108,14 @@ export interface RepoMeta {
     communities?: number;
     processes?: number;
     embeddings?: number;
+    /**
+     * Parser coverage for the run that wrote this metadata (#1076): how many
+     * scanned files had a grammar versus were skipped for an unsupported
+     * extension, with a per-extension breakdown sorted by count desc. Optional
+     * so indexes written before #1076 stay readable — absent means the run did
+     * not measure coverage, NOT that every file was parsed.
+     */
+    parserCoverage?: ParserCoverage;
   };
   /**
    * Capability stamps for what THIS analyze run actually produced (mirrors

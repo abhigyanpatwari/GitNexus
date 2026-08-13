@@ -289,6 +289,9 @@ async function getReposResource(backend: LocalBackend): Promise<string> {
       lines.push(`    files: ${repo.stats.files || 0}`);
       lines.push(`    symbols: ${repo.stats.nodes || 0}`);
       lines.push(`    processes: ${repo.stats.processes || 0}`);
+      if (repo.stats.parserCoverage?.unsupportedFiles) {
+        lines.push(`    unsupported_files: ${repo.stats.parserCoverage.unsupportedFiles}`);
+      }
     }
   }
 
@@ -362,6 +365,21 @@ async function getContextResource(backend: LocalBackend, repoName?: string): Pro
   lines.push(`  files: ${freshStats?.files ?? context.stats.fileCount}`);
   lines.push(`  symbols: ${freshStats?.nodes ?? context.stats.functionCount}`);
   lines.push(`  processes: ${freshStats?.processes ?? context.stats.processCount}`);
+
+  const pc = freshStats?.parserCoverage ?? context.parserCoverage;
+  if (pc && pc.unsupportedFiles > 0) {
+    lines.push('');
+    lines.push('parser_coverage:');
+    lines.push(`  total_files: ${pc.totalFiles}`);
+    lines.push(`  supported: ${pc.supportedFiles}`);
+    lines.push(`  unsupported: ${pc.unsupportedFiles}`);
+    lines.push('  unsupported_by_extension:');
+    for (const ext of pc.unsupportedByExtension.slice(0, 10)) {
+      lines.push(`    - extension: "${ext.extension}"`);
+      lines.push(`      count: ${ext.count}`);
+    }
+  }
+
   lines.push('');
   lines.push('tools_available:');
   lines.push('  - query: Process-grouped code intelligence (execution flows related to a concept)');

@@ -31,6 +31,7 @@ import type {
 } from '../workers/parse-worker.js';
 import { runChunkedParseAndResolve } from './parse-impl.js';
 import type { MutableSemanticModel } from '../model/index.js';
+import type { ParserCoverage } from '../../../types/pipeline.js';
 
 export interface ParseOutput {
   /**
@@ -80,6 +81,8 @@ export interface ParseOutput {
    * costing ~58s on a 1000-file repo).
    */
   readonly parsedFiles: readonly ParsedFile[];
+  /** Parser coverage — which files were parsed vs skipped */
+  readonly parserCoverage: ParserCoverage;
 }
 
 export const parsePhase: PipelinePhase<ParseOutput> = {

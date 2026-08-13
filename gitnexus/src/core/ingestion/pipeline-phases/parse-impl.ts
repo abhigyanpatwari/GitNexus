@@ -94,6 +94,7 @@ import {
 } from '../route-extractors/spring-shared.js';
 import type { KnowledgeGraph } from '../../graph/types.js';
 import type { PipelineOptions } from '../pipeline.js';
+import type { ParserCoverage } from '../../../types/pipeline.js';
 import fs from 'node:fs';
 import { effectiveRamBytes, memoryAutopilotDisabled } from '../utils/effective-ram.js';
 import path from 'node:path';
@@ -478,6 +479,8 @@ export async function runChunkedParseAndResolve(
    *  cache analyze run can skip the dominant `extractParsedFile` cost
    *  (otherwise ~58s on a 1000-file repo). */
   parsedFiles: import('gitnexus-shared').ParsedFile[];
+  /** Parser coverage — which files were parsed vs skipped */
+  parserCoverage: ParserCoverage;
 }> {
   const model = createSemanticModel();
   const symbolTable = model.symbols;
@@ -486,6 +489,28 @@ export async function runChunkedParseAndResolve(
     const lang = getLanguageFromFilename(f.path);
     return lang && isLanguageAvailable(lang);
   });
+
+  // ── Parser coverage stats ──────────────────────────────────────────
+  const unsupportedExtCounts = new Map<string, number>();
+  for (const f of scannedFiles) {
+    const lang = getLanguageFromFilename(f.path);
+    if (!lang) {
+      const ext = path.extname(f.path).toLowerCase() || '(no extension)';
+      unsupportedExtCounts.set(ext, (unsupportedExtCounts.get(ext) || 0) + 1);
+    }
+  }
+  const unsupportedByExtension = Array.from(unsupportedExtCounts.entries())
+    .map(([extension, count]) => ({ extension, count }))
+    .sort((a, b) => b.count - a.count);
+  const unsupportedFiles = unsupportedByExtension.reduce((sum, e) => sum + e.count, 0);
+  const supportedFiles = parseableScanned.length;
+
+  const parserCoverage = {
+    totalFiles: scannedFiles.length,
+    supportedFiles,
+    unsupportedFiles,
+    unsupportedByExtension,
+  };
 
   // Warn about files skipped due to unavailable parsers
   const skippedByLang = new Map<string, number>();
@@ -519,6 +544,14 @@ export async function runChunkedParseAndResolve(
   // content changed. The cache also becomes platform-specific: a
   // Linux-built cache misses on macOS for the same repo.
   parseableScanned.sort((a, b) => (a.path < b.path ? -1 : a.path > b.path ? 1 : 0));
+
+  // Warn about files with unsupported extensions (no grammar at all)
+  if (unsupportedFiles > 0) {
+    const topExts = unsupportedByExtension.slice(0, 5).map((e) => `${e.extension}: ${e.count}`);
+    logger.warn(
+      `Skipped ${unsupportedFiles} files with unsupported extensions (${topExts.join(', ')}${unsupportedByExtension.length > 5 ? ', ...' : ''})`,
+    );
+  }
 
   const totalParseable = parseableScanned.length;
   const totalBytes = parseableScanned.reduce((sum, f) => sum + f.size, 0);
@@ -1548,5 +1581,6 @@ export async function runChunkedParseAndResolve(
     // cache: when the file's ParsedFile is here, scope-resolution skips its own
     // `extractParsedFile` call.
     parsedFiles: allParsedFiles,
+    parserCoverage,
   };
 }
