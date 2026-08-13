@@ -17,3 +17,10 @@ export const SPRING_CONFIG_BINDINGS_FEATURE: AnalysisFeatureDescriptor = {
       (filePath) => filePath.toLowerCase().endsWith('.java') || isSpringApplicationConfig(filePath),
     ),
 };
+
+/** Durable completeness contract for Java heritage captures. */
+export const JAVA_ENUM_INTERFACE_HERITAGE_FEATURE: AnalysisFeatureDescriptor = {
+  id: 'java.heritage-captures',
+  version: 1,
+  appliesTo: (filePaths) => filePaths.some((filePath) => filePath.toLowerCase().endsWith('.java')),
+};

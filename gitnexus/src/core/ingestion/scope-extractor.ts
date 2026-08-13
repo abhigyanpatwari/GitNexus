@@ -701,6 +701,7 @@ function buildDefFromDeclarationMatch(
   const typeParameters = parseTypeParameterList(match['@declaration.type-parameters']?.text ?? '');
   const isExplicit = parseBooleanCapture(match['@declaration.is-explicit']);
   const isDeleted = parseBooleanCapture(match['@declaration.is-deleted']);
+  const isSynthetic = parseBooleanCapture(match['@declaration.is-synthetic']);
 
   return {
     nodeId: makeDefId(filePath, anchor.range, type, nameCap.text),
@@ -718,6 +719,7 @@ function buildDefFromDeclarationMatch(
     ...(templateConstraints !== undefined ? { templateConstraints } : {}),
     ...(isExplicit === true ? { isExplicit: true } : {}),
     ...(isDeleted === true ? { isDeleted: true } : {}),
+    ...(isSynthetic === true ? { isSynthetic: true } : {}),
   };
 }
 
