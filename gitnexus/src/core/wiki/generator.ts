@@ -1108,6 +1108,7 @@ export class WikiGenerator {
       invokeLLM: (prompt, systemPrompt, options) => this.invokeLLM(prompt, systemPrompt, options),
       transformSystemPrompt: (systemPrompt) => this.buildSystemPrompt(systemPrompt),
       llmOptions: this.streamOpts(node.name),
+      diagramPolicy: this.profile.profile.diagramPolicy,
     });
 
     // H1 uses the English module name (stable slug source); body is LLM-translated.
@@ -1161,6 +1162,7 @@ export class WikiGenerator {
       invokeLLM: (prompt, systemPrompt, options) => this.invokeLLM(prompt, systemPrompt, options),
       transformSystemPrompt: (systemPrompt) => this.buildSystemPrompt(systemPrompt),
       llmOptions: this.streamOpts(node.name),
+      diagramPolicy: this.profile.profile.diagramPolicy,
     });
 
     const pageContent = sanitizeMermaidMarkdown(assembleSectionPage(node.name, payload));
@@ -1218,6 +1220,7 @@ export class WikiGenerator {
       invokeLLM: (prompt, systemPrompt, options) => this.invokeLLM(prompt, systemPrompt, options),
       transformSystemPrompt: (systemPrompt) => this.buildSystemPrompt(systemPrompt),
       llmOptions: this.streamOpts('Generating overview', 88),
+      diagramPolicy: this.profile.profile.diagramPolicy,
     });
 
     const pageContent = sanitizeMermaidMarkdown(
@@ -1582,6 +1585,7 @@ export class WikiGenerator {
             this.invokeLLM(userPrompt, systemPrompt, options),
           transformSystemPrompt: (systemPrompt) => this.buildSystemPrompt(systemPrompt),
           llmOptions: this.streamOpts(section.title),
+          diagramPolicy: this.profile.profile.diagramPolicy,
         });
         generated++;
       } catch (error) {
@@ -1716,6 +1720,7 @@ export class WikiGenerator {
       } else {
         result.add('source');
         result.add('call-graph');
+        result.add('external-call-graph');
         result.add('process');
       }
     }

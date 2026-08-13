@@ -36,6 +36,7 @@ export type EvidenceKind =
   | 'test'
   | 'documentation'
   | 'call-graph'
+  | 'external-call-graph'
   | 'process';
 
 export interface EvidenceRequirement {

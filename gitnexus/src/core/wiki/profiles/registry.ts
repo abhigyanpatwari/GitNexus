@@ -91,7 +91,15 @@ function validateEvidenceRequirement(value: EvidenceRequirement, label: string):
   assertClosedObject(value, ['id', 'kind', 'required', 'description'], label);
   validateSafeId(value.id, `${label}.id`);
   if (
-    !['source', 'config', 'test', 'documentation', 'call-graph', 'process'].includes(value.kind)
+    ![
+      'source',
+      'config',
+      'test',
+      'documentation',
+      'call-graph',
+      'external-call-graph',
+      'process',
+    ].includes(value.kind)
   ) {
     throw new Error(`${label}.kind is invalid`);
   }

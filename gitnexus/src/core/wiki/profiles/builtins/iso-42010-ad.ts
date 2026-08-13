@@ -91,7 +91,12 @@ export const ISO_42010_AD_TEMPLATE_PROFILE: TemplateProfile = {
       ['environment', 'external entities'],
       [
         requirement('environment-config', 'config', 'Environment configuration', '环境配置'),
-        requirement('external-calls', 'call-graph', 'External call relations', '外部调用关系'),
+        requirement(
+          'external-calls',
+          'external-call-graph',
+          'External call relations',
+          '外部调用关系',
+        ),
       ],
     ),
     section(
