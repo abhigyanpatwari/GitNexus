@@ -646,7 +646,66 @@ export function foldReceiverChain(
   }
   // A chain that ended without a class returns undefined naturally — no
   // separate guard, because `def` IS the signal.
+  //
+  // The receiver-type report is made HERE, from the final `FoldState`, because
+  // that record pairs the class with the spelling that produced it BY
+  // CONSTRUCTION — same step, same lookup. The individual `classOfDeclaredType`
+  // calls inside the fold also report, including from steps that were later
+  // folded past, so the last of those is not reliably about the class the fold
+  // returns. Reporting the final state last makes it the one that stands.
+  if (current.def !== undefined && current.declaredType !== undefined) {
+    options.recordReceiverType?.(current.declaredType, current.def.nodeId);
+  }
   return current.def;
+}
+
+/** A resolved compound receiver, together with the declared spelling that typed
+ *  the position it came from — see {@link resolveCompoundReceiverTyped}. */
+export interface TypedCompoundReceiver {
+  readonly def: SymbolDefinition;
+  /**
+   * The receiver's declared type AS WRITTEN (`IValidator<string>`), or
+   * `undefined` where the route that answered had no declared type to report — a
+   * construction expression, a namespace target, a static class receiver. The
+   * fan-out reads its generic arguments off this and restores the unfiltered
+   * behaviour when it is absent, so declining is always safe (#2912).
+   */
+  readonly declaredSpelling: string | undefined;
+}
+
+/**
+ * {@link resolveCompoundReceiverClass}, paired with the spelling that typed the
+ * position (#2912).
+ *
+ * The sink is created and read HERE, per call, which is the whole point: a
+ * recorder that outlives one resolution has to be reset by hand before every
+ * call, and the retry shapes in this pass make two calls in a row — a reset
+ * missed at one of them silently attributes the previous receiver's spelling to
+ * this one. A local cannot be forgotten.
+ *
+ * The def-id guard is the second half. Lookups that lost — an MRO walk that
+ * moved on, a fold step later folded past — report too, so a report counts only
+ * when it names the class actually returned. `foldReceiverChain` reports its
+ * final state last for exactly this reason, so the structural route wins.
+ */
+export function resolveCompoundReceiverTyped(
+  receiverText: string,
+  inScope: ScopeId,
+  scopes: ScopeResolutionIndexes,
+  index: WorkspaceResolutionIndex,
+  options: ResolveCompoundReceiverOptions = {},
+): TypedCompoundReceiver | undefined {
+  let spelling: string | undefined;
+  let spellingDefId: string | undefined;
+  const def = resolveCompoundReceiverClass(receiverText, inScope, scopes, index, {
+    ...options,
+    recordReceiverType: (reported, defId) => {
+      spelling = reported;
+      spellingDefId = defId;
+    },
+  });
+  if (def === undefined) return undefined;
+  return { def, declaredSpelling: spellingDefId === def.nodeId ? spelling : undefined };
 }
 
 export function resolveCompoundReceiverClass(

@@ -87,7 +87,10 @@ import {
   type CalleeIdCaptureCtx,
 } from '../graph-bridge/edges.js';
 import type { CalleeIdSink } from '../graph-bridge/callee-id-sink.js';
-import { resolveCompoundReceiverClass } from '../passes/compound-receiver.js';
+import {
+  resolveCompoundReceiverClass,
+  resolveCompoundReceiverTyped,
+} from '../passes/compound-receiver.js';
 import { erasedTypeApplication, typeApplicationArguments } from '../../utils/template-arguments.js';
 import {
   heritageTypeArgumentsKey,
@@ -335,30 +338,6 @@ export function emitReceiverBoundCalls(
     stripTypePreservingDecoration: provider.stripTypePreservingDecoration,
     resolveThisViaEnclosingClass: provider.resolveThisViaEnclosingClass,
   };
-  /**
-   * The last receiver position the compound fold typed from a declared type,
-   * and the class that type named (#2912).
-   *
-   * A folded receiver reaches its class through a spelling
-   * (`IValidator<string> _repo`) that the class alone no longer carries, and
-   * the fan-out needs the ARGUMENTS to refuse an incompatible implementor. One
-   * mutable holder and one closure for the whole pass, rather than a per-site
-   * allocation on the hottest loop here; `defId` is cleared before each fold so
-   * a stale report cannot be read as this site's, and the reader additionally
-   * requires it to name the class the fold returned.
-   */
-  const foldedReceiverType = { spelling: '', defId: '' };
-  const recordReceiverType = (spelling: string, defId: string): void => {
-    foldedReceiverType.spelling = spelling;
-    foldedReceiverType.defId = defId;
-  };
-  /** The declared spelling the just-folded receiver was typed from, when the
-   *  fold's last typed position IS the class it returned. `undefined` otherwise —
-   *  a fold that reached the class another way (a construction expression, a
-   *  namespace target) reports no spelling, and that is the fail-open answer. */
-  const foldedReceiverSpelling = (folded: SymbolDefinition): string | undefined =>
-    foldedReceiverType.defId === folded.nodeId ? foldedReceiverType.spelling : undefined;
-
   // Loop-invariant: both hooks come off the pass arguments, so the options bag
   // for `classifyReceiverOrigin` is built once here rather than per dropped site.
   const receiverOriginOpts = {
@@ -799,7 +778,7 @@ export function emitReceiverBoundCalls(
       receiverPaths: provider.namespaceReceiverPaths,
       moduleFileExists: (filePath) => index.moduleScopeByFile.has(filePath),
     });
-    const fileCompoundOpts = { ...compoundOpts, namespaceTargets, recordReceiverType };
+    const fileCompoundOpts = { ...compoundOpts, namespaceTargets };
     // Per-file resolved-callee-id capture context (#2227 U2). Built once per
     // file; `undefined` when the sink is absent (pdg off) so the `tryEmitEdge`
     // capture is a no-op and emission stays byte-identical (R4).
@@ -961,8 +940,7 @@ export function emitReceiverBoundCalls(
         receiverName.includes('(') ||
         site.receiverChain !== undefined
       ) {
-        foldedReceiverType.defId = '';
-        const currentClass = resolveCompoundReceiverClass(
+        const resolved = resolveCompoundReceiverTyped(
           receiverName,
           site.inScope,
           scopes,
@@ -971,8 +949,9 @@ export function emitReceiverBoundCalls(
           // captured chain describes it and the structural fold applies.
           { ...fileCompoundOpts, receiverChain: site.receiverChain },
         );
+        const currentClass = resolved?.def;
         compoundReceiverUnresolved = currentClass === undefined;
-        if (currentClass !== undefined) {
+        if (resolved !== undefined && currentClass !== undefined) {
           const chain = [currentClass.nodeId, ...scopes.methodDispatch.mroFor(currentClass.nodeId)];
           let memberDef: SymbolDefinition | undefined;
           let ambiguousOwnerId: string | undefined;
@@ -1086,7 +1065,7 @@ export function emitReceiverBoundCalls(
               site,
               0.85,
               calleeCapture,
-              foldedReceiverSpelling(currentClass),
+              resolved.declaredSpelling,
             );
             // Always mark handled when the site was resolved, even
             // if the edge was deduplicated (collapse mode), so
@@ -1557,16 +1536,18 @@ export function emitReceiverBoundCalls(
         // already contain `()` (Ruby member-call-return captures),
         // pass through directly — the compound resolver handles the
         // full expression including the call syntax.
-        foldedReceiverType.defId = '';
-        let ownerDef = resolveCompoundReceiverClass(
+        // Each attempt carries its OWN spelling: the retry below used to reuse a
+        // recorder reset once, before the first call, so a spelling reported by
+        // the attempt that FAILED could be read as the retry's.
+        let resolved = resolveCompoundReceiverTyped(
           typeRef.rawName,
           typeRef.declaredAtScope,
           scopes,
           index,
           fileCompoundOpts,
         );
-        if (ownerDef === undefined && !typeRef.rawName.includes('(')) {
-          ownerDef = resolveCompoundReceiverClass(
+        if (resolved === undefined && !typeRef.rawName.includes('(')) {
+          resolved = resolveCompoundReceiverTyped(
             typeRef.rawName + '()',
             typeRef.declaredAtScope,
             scopes,
@@ -1574,7 +1555,8 @@ export function emitReceiverBoundCalls(
             fileCompoundOpts,
           );
         }
-        if (ownerDef !== undefined) {
+        const ownerDef = resolved?.def;
+        if (resolved !== undefined && ownerDef !== undefined) {
           const chain = [ownerDef.nodeId, ...scopes.methodDispatch.mroFor(ownerDef.nodeId)];
           let memberDef: SymbolDefinition | undefined;
           let ambiguousOwnerId: string | undefined;
@@ -1683,7 +1665,7 @@ export function emitReceiverBoundCalls(
               site,
               0.85,
               calleeCapture,
-              foldedReceiverSpelling(ownerDef),
+              resolved.declaredSpelling,
             );
             // Always mark handled when the site was resolved, even
             // if the edge was deduplicated (collapse mode), so
