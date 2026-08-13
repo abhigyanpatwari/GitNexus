@@ -68,6 +68,18 @@ export interface GroundedTypeArgument {
   readonly definitionId?: string;
   /** The language declares this name built in (`string`, `int`). */
   readonly builtIn: boolean;
+  /**
+   * The name is a TYPE PARAMETER of a declaration enclosing where it was
+   * written — the `T` of `void Run<T>(IValidator<T> v)` at the call site, or of
+   * an outer class around a nested one's heritage clause.
+   *
+   * It stands for a different type at every instantiation, so it cannot be
+   * compared with anything, and it must be recognised SEPARATELY from
+   * ungrounded: a bounded `T extends User` grounds to its bound's declaration,
+   * and comparing that bound against a concrete argument would prune every
+   * implementor of a call written through `IValidator<T>`.
+   */
+  readonly typeVariable?: boolean;
 }
 
 /** Resolve a written type argument from the scope it was written in. */
@@ -238,6 +250,36 @@ export function stepHeritageInstantiation(
     // A type VARIABLE of the subtype binds rather than compares: `Wrapper<T> :
     // IValidator<T>` under an `IValidator<string>` receiver means T = string.
     if (subtypeParameters?.some((p) => p.name === written) === true) {
+      const previous = bindings.get(written);
+      if (previous !== undefined) {
+        // The SAME variable in a second position must receive the same type:
+        // `class C<T> : Pair<T, T>` cannot be a `Pair<string, int>`, and
+        // overwriting the first binding would both accept that and hand the
+        // next hop a substitution the subtype never had. Unify instead — but
+        // prune only on the evidence the concrete path below demands, since two
+        // spellings that differ are not yet two types.
+        const first = step.resolveSupertypeArgument(previous);
+        const second = step.resolveSupertypeArgument(actual);
+        if (
+          isWildcard(previous) ||
+          isWildcard(actual) ||
+          first.typeVariable === true ||
+          second.typeVariable === true
+        ) {
+          return UNKNOWN;
+        }
+        if (compact(normalize(previous)) === compact(normalize(actual))) continue;
+        if (first.definitionId !== undefined && second.definitionId !== undefined) {
+          if (first.definitionId === second.definitionId) continue;
+          return { compatible: false, subtypeArguments: undefined };
+        }
+        if (grounded(first) && grounded(second)) {
+          return { compatible: false, subtypeArguments: undefined };
+        }
+        // One side names something this pipeline cannot see. The position is
+        // undecided, and so is the binding it would have carried onward.
+        return UNKNOWN;
+      }
       bindings.set(written, actual);
       continue;
     }
@@ -259,6 +301,15 @@ export function stepHeritageInstantiation(
     // instantiation is actually about.
     const heritageType = step.resolveHeritageArgument(written);
     const supertypeType = step.resolveSupertypeArgument(actual);
+    // A type PARAMETER in scope where it was written stands for a different type
+    // at every instantiation, so it is not comparable with anything — and
+    // `subtypeParametersComplete` says nothing about it, because that flag is
+    // evidence about the SUBTYPE's parameter list while this `T` belongs to the
+    // enclosing generic method or class at the other end. Without this branch a
+    // call written `void Run<T>(IValidator<T> v) { v.Check(x); }` prunes every
+    // implementor: `T` is unbounded, so it grounds to nothing, and a bounded one
+    // grounds to its BOUND and compares unequal to the concrete argument.
+    if (heritageType.typeVariable === true || supertypeType.typeVariable === true) return UNKNOWN;
     if (heritageType.definitionId !== undefined && supertypeType.definitionId !== undefined) {
       if (heritageType.definitionId === supertypeType.definitionId) continue;
       return { compatible: false, subtypeArguments: undefined };
@@ -273,7 +324,10 @@ export function stepHeritageInstantiation(
     // The one thing a spelling difference must not be read as: a TYPE VARIABLE
     // this pipeline never captured. Where the subtype's parameter list is not
     // known to be complete, only a pair of grounded names — resolved or built
-    // in — is safe to prune on.
+    // in — is safe to prune on. A variable that IS captured never reaches here:
+    // the subtype's own bind above, and any other declaration's through the
+    // `typeVariable` test, which is why that test has to be reliable — see the
+    // type-parameter captures on generic METHODS.
     if (!step.subtypeParametersComplete && !(grounded(heritageType) && grounded(supertypeType))) {
       return UNKNOWN;
     }

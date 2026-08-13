@@ -14,6 +14,7 @@ import {
   type HeritageInstantiationStep,
 } from '../../../src/core/ingestion/scope-resolution/utils/generic-instantiation.js';
 import { typeApplicationArguments } from '../../../src/core/ingestion/utils/template-arguments.js';
+import { csharpScopeResolver } from '../../../src/core/ingestion/languages/csharp/scope-resolver.js';
 
 /** A step with everything unresolvable and no parameters — the pessimistic
  *  baseline each test overrides only what it is about. */
@@ -129,6 +130,46 @@ describe('stepHeritageInstantiation — substitution', () => {
     expect(result.compatible).toBe(true);
     expect(result.subtypeArguments).toBeUndefined();
   });
+
+  it('prunes a repeated variable the two positions disagree about', () => {
+    // `class C<T> : Pair<T, T>` is not a `Pair<string, int>` at any
+    // instantiation; the second position must not overwrite the first.
+    const result = stepHeritageInstantiation(
+      step({
+        supertypeArguments: ['string', 'int'],
+        heritageArguments: ['T', 'T'],
+        subtypeParameters: [{ name: 'T' }],
+        resolveSupertypeArgument: () => ({ builtIn: true }),
+      }),
+    );
+    expect(result.compatible).toBe(false);
+  });
+
+  it('keeps a repeated variable both positions agree about', () => {
+    const result = stepHeritageInstantiation(
+      step({
+        supertypeArguments: ['string', 'string'],
+        heritageArguments: ['T', 'T'],
+        subtypeParameters: [{ name: 'T' }],
+      }),
+    );
+    expect(result.compatible).toBe(true);
+    expect(result.subtypeArguments).toEqual(['string']);
+  });
+
+  it('keeps, without a binding, when a repeated variable cannot be decided', () => {
+    // `ExternalA` and `ExternalB` are both unresolvable, so the disagreement is
+    // not proven — and the binding the next hop would inherit is not either.
+    const result = stepHeritageInstantiation(
+      step({
+        supertypeArguments: ['ExternalA', 'ExternalB'],
+        heritageArguments: ['T', 'T'],
+        subtypeParameters: [{ name: 'T' }],
+      }),
+    );
+    expect(result.compatible).toBe(true);
+    expect(result.subtypeArguments).toBeUndefined();
+  });
 });
 
 describe('stepHeritageInstantiation — every uncertainty keeps the target', () => {
@@ -177,6 +218,42 @@ describe('stepHeritageInstantiation — every uncertainty keeps the target', () 
       step({
         supertypeArguments: ['Map<string, User>'],
         heritageArguments: ['Map<string,User>'],
+      }),
+    );
+    expect(result.compatible).toBe(true);
+  });
+
+  it('keeps every implementor for a receiver typed with a CALLER type variable', () => {
+    // `void Run<T>(IValidator<T> v) { v.Check(x); }`. `T` belongs to the calling
+    // method, not to the subtype, so `subtypeParametersComplete` — which is
+    // evidence about the SUBTYPE's list — says nothing about it. An unbounded
+    // `T` grounds to nothing and a bounded one grounds to its BOUND; both would
+    // otherwise compare unequal to the implementor's concrete argument.
+    for (const receiverType of [
+      { builtIn: false, typeVariable: true },
+      { definitionId: 'def:User', builtIn: false, typeVariable: true },
+    ]) {
+      const result = stepHeritageInstantiation(
+        step({
+          supertypeArguments: ['T'],
+          heritageArguments: ['Admin'],
+          subtypeParametersComplete: true,
+          resolveSupertypeArgument: () => receiverType,
+          resolveHeritageArgument: () => ({ definitionId: 'def:Admin', builtIn: false }),
+        }),
+      );
+      expect(result.compatible).toBe(true);
+    }
+  });
+
+  it('keeps a heritage argument that is a type variable of an ENCLOSING declaration', () => {
+    const result = stepHeritageInstantiation(
+      step({
+        supertypeArguments: ['string'],
+        heritageArguments: ['T'],
+        subtypeParametersComplete: true,
+        resolveSupertypeArgument: () => ({ builtIn: true }),
+        resolveHeritageArgument: () => ({ builtIn: false, typeVariable: true }),
       }),
     );
     expect(result.compatible).toBe(true);
@@ -249,5 +326,23 @@ describe('typeApplicationArguments', () => {
   it('declines a list that does not close at the end', () => {
     expect(typeApplicationArguments('Repo<User> by delegate')).toBeUndefined();
     expect(typeApplicationArguments('(Int) -> Unit')).toBeUndefined();
+  });
+});
+
+describe('C# normalizeTypeArgument', () => {
+  const normalize = csharpScopeResolver.normalizeTypeArgument as (name: string) => string;
+
+  it('makes every spelling of a predefined type one name', () => {
+    // Including the `global::` alias qualifier, which this repository already
+    // unwraps when decomposing imports.
+    for (const spelling of ['string', 'String', 'System.String', 'global::System.String']) {
+      expect(normalize(spelling)).toBe('String');
+    }
+    expect(normalize('int')).toBe('Int32');
+  });
+
+  it('leaves an unrelated qualified name as written', () => {
+    expect(normalize('Foo.String')).toBe('Foo.String');
+    expect(normalize('Models.User')).toBe('Models.User');
   });
 });

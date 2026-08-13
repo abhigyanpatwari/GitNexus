@@ -138,16 +138,34 @@ const CSHARP_PREDEFINED_TYPE_ALIASES: ReadonlyMap<string, string> = new Map([
   ['string', 'String'],
 ]);
 
-const SYSTEM_PREFIX = 'System.';
+/** The BCL simple names the keywords alias. A spelling that reduces to one of
+ *  these IS the predefined type; anything else that merely happens to sit in
+ *  `System` is an ordinary type and keeps its qualifier. */
+const CSHARP_PREDEFINED_TYPE_NAMES: ReadonlySet<string> = new Set(
+  CSHARP_PREDEFINED_TYPE_ALIASES.values(),
+);
+
+const CSHARP_SYSTEM_QUALIFIER = /^(?:global::)?System\./;
 
 function normalizeCsharpTypeArgument(name: string): string {
-  // `System.` is dropped first so the fully-qualified spelling of a predefined
-  // type meets its keyword: `System.String` → `String` ≡ `string` → `String`.
-  // Only that one namespace, and only as a whole prefix — an unrelated
-  // `Foo.String` stays qualified and is compared as written.
   const named = name.trim();
-  const trimmed = named.startsWith(SYSTEM_PREFIX) ? named.slice(SYSTEM_PREFIX.length) : named;
-  return CSHARP_PREDEFINED_TYPE_ALIASES.get(trimmed) ?? trimmed;
+  // A keyword answers immediately: `string` → `String`.
+  const aliased = CSHARP_PREDEFINED_TYPE_ALIASES.get(named);
+  if (aliased !== undefined) return aliased;
+  // Otherwise the `System.` qualifier is dropped so the fully-qualified
+  // spelling of a predefined type meets that keyword: `System.String` →
+  // `String` ≡ `string` → `String`. The optional `global::` alias qualifier goes
+  // with it — `import-decomposer` already unwraps that spelling elsewhere, and
+  // leaving it on would make `global::System.String` unequal to `string` and
+  // prune a live implementor.
+  //
+  // ONLY when what remains is a predefined type. `System.Custom` is an ordinary
+  // type that happens to live in `System`, and answering `Custom` for it would
+  // equate it with an unrelated `Custom` elsewhere in the workspace. Returned as
+  // written instead, which sends it to the identity comparison — the step that
+  // can actually tell two declarations apart.
+  const bare = named.replace(CSHARP_SYSTEM_QUALIFIER, '');
+  return bare !== named && CSHARP_PREDEFINED_TYPE_NAMES.has(bare) ? bare : named;
 }
 
 export { csharpScopeResolver };

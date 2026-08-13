@@ -38,7 +38,7 @@ function inheritsSites(
   source: string,
   filePath: string,
 ): Array<{ name: string; typeArguments?: readonly string[] }> {
-  const parsed: ParsedFile | null = extractParsedFile(provider, source, filePath);
+  const parsed: ParsedFile | undefined = extractParsedFile(provider, source, filePath);
   return (parsed?.referenceSites ?? [])
     .filter((site) => site.kind === 'inherits')
     .map((site) => ({ name: site.name, typeArguments: site.typeArguments }));

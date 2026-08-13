@@ -66,12 +66,15 @@ describe('C# generic interface dispatch (#2912)', () => {
         public record IntValidator : IValidator<int> { public bool Check(int item) => true; }`,
       'AliasValidator.cs': `namespace Probe;
         public class AliasValidator : IValidator<String> { public bool Check(String item) => true; }`,
+      'GlobalAliasValidator.cs': `namespace Probe;
+        public class GlobalAliasValidator : IValidator<global::System.String> { public bool Check(String item) => true; }`,
       'Wrapper.cs': `namespace Probe;
         public class Wrapper<T> : IValidator<T> { public bool Check(T item) => true; }`,
       'Runner.cs': `namespace Probe;
         public class Runner {
           public bool Run(IValidator<string> v) => v.Check("x");
           public bool RunInt(IValidator<int> v) => v.Check(1);
+          public bool RunAny<TItem>(IValidator<TItem> v, TItem item) => v.Check(item);
         }`,
     });
     result = await runPipelineFromRepo(root, () => {});
@@ -107,6 +110,23 @@ describe('C# generic interface dispatch (#2912)', () => {
     // alias, so pruning on the spelling would delete a real dispatch target.
     expect(dispatchTargetFiles(result, 'Run', 'Check')).toContain('AliasValidator.cs');
     expect(dispatchTargetFiles(result, 'RunInt', 'Check')).not.toContain('AliasValidator.cs');
+  });
+
+  it('treats the `global::`-qualified spelling as that same instantiation', () => {
+    expect(dispatchTargetFiles(result, 'Run', 'Check')).toContain('GlobalAliasValidator.cs');
+    expect(dispatchTargetFiles(result, 'RunInt', 'Check')).not.toContain(
+      'GlobalAliasValidator.cs',
+    );
+  });
+
+  it('keeps every implementor when the receiver is typed by a CALLER type variable', () => {
+    // `RunAny<TItem>(IValidator<TItem> v)` knows no instantiation, so the filter
+    // has nothing to prune on and must restore the unfiltered fan-out. `TItem`
+    // is a type parameter of the calling METHOD, which the subtype's own
+    // parameter-list evidence says nothing about.
+    const targets = dispatchTargetFiles(result, 'RunAny', 'Check');
+    expect(targets).toContain('UserValidator.cs');
+    expect(targets).toContain('IntValidator.cs');
   });
 
   it('still emits the primary edge to the interface declaration', () => {
@@ -218,6 +238,7 @@ describe('Java generic interface dispatch (#2912)', () => {
       'Runner.java': `package probe;
         public class Runner {
           public boolean run(Validator<String> v) { return v.check("x"); }
+          public <T> boolean runAny(Validator<T> v, T item) { return v.check(item); }
         }`,
     });
     result = await runPipelineFromRepo(root, () => {});
@@ -231,6 +252,51 @@ describe('Java generic interface dispatch (#2912)', () => {
     const targets = dispatchTargetFiles(result, 'run', 'check');
     expect(targets).toContain('StringValidator.java');
     expect(targets).not.toContain('NumberValidator.java');
+  });
+
+  it('keeps every implementor when the receiver is typed by a CALLER type variable', () => {
+    const targets = dispatchTargetFiles(result, 'runAny', 'check');
+    expect(targets).toContain('StringValidator.java');
+    expect(targets).toContain('NumberValidator.java');
+  });
+});
+
+describe('Kotlin generic interface dispatch (#2912)', () => {
+  let result: PipelineResult;
+  let root: string;
+
+  beforeAll(async () => {
+    root = fs.mkdtempSync(path.join(os.tmpdir(), 'gitnexus-kotlin-generic-dispatch-'));
+    writeFixtureRepo(root, {
+      'Validator.kt': `package probe
+interface Validator<T> { fun check(item: T): Boolean }`,
+      'StringValidator.kt': `package probe
+class StringValidator : Validator<String> { override fun check(item: String): Boolean = true }`,
+      'IntValidator.kt': `package probe
+class IntValidator : Validator<Int> { override fun check(item: Int): Boolean = true }`,
+      'Runner.kt': `package probe
+class Runner {
+  fun run(v: Validator<String>): Boolean = v.check("x")
+  fun <T> runAny(v: Validator<T>, item: T): Boolean = v.check(item)
+}`,
+    });
+    result = await runPipelineFromRepo(root, () => {});
+  }, 60000);
+
+  afterAll(() => {
+    fs.rmSync(root, { recursive: true, force: true });
+  });
+
+  it('reaches only the implementor of the receiver instantiation', () => {
+    const targets = dispatchTargetFiles(result, 'run', 'check');
+    expect(targets).toContain('StringValidator.kt');
+    expect(targets).not.toContain('IntValidator.kt');
+  });
+
+  it('keeps every implementor when the receiver is typed by a CALLER type variable', () => {
+    const targets = dispatchTargetFiles(result, 'runAny', 'check');
+    expect(targets).toContain('StringValidator.kt');
+    expect(targets).toContain('IntValidator.kt');
   });
 });
 
@@ -251,7 +317,8 @@ describe('TypeScript generic interface dispatch (#2912)', () => {
           check(item: number): boolean { return true; }
         }`,
       'runner.ts': `import type { Validator } from './validator.js';
-        export function run(v: Validator<string>): boolean { return v.check('x'); }`,
+        export function run(v: Validator<string>): boolean { return v.check('x'); }
+        export function runAny<T>(v: Validator<T>, item: T): boolean { return v.check(item); }`,
     });
     result = await runPipelineFromRepo(root, () => {});
   }, 60000);
@@ -264,6 +331,12 @@ describe('TypeScript generic interface dispatch (#2912)', () => {
     const targets = dispatchTargetFiles(result, 'run', 'check');
     expect(targets).toContain('string-validator.ts');
     expect(targets).not.toContain('number-validator.ts');
+  });
+
+  it('keeps every implementor when the receiver is typed by a CALLER type variable', () => {
+    const targets = dispatchTargetFiles(result, 'runAny', 'check');
+    expect(targets).toContain('string-validator.ts');
+    expect(targets).toContain('number-validator.ts');
   });
 });
 

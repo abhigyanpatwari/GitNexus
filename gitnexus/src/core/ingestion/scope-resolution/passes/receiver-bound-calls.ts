@@ -68,6 +68,7 @@ import type { GraphNodeLookup } from '../graph-bridge/node-lookup.js';
 import type { WorkspaceResolutionIndex } from '../workspace-index.js';
 import { collectNamespaceTargets } from '../scope/namespace-targets.js';
 import {
+  bindsTypeParameter,
   findClassBindingInScope,
   findEnclosingClassDef,
   isReceiverOwnedButUnbound,
@@ -507,6 +508,10 @@ export function emitReceiverBoundCalls(
    *
    * Neither answer is an error: a name that binds nothing and is not built in
    * comes back ungrounded, which the matcher reads as "unknown" and keeps.
+   *
+   * A TYPE PARAMETER is reported as such rather than left to the ungrounded
+   * path, because `resolveClassBindingForName` answers a bounded one with its
+   * BOUND's declaration — grounded, and the wrong thing to compare.
    */
   const groundTypeArgument = (name: string, scopeId: string | undefined): GroundedTypeArgument => {
     const def =
@@ -514,6 +519,9 @@ export function emitReceiverBoundCalls(
     return {
       ...(def !== undefined ? { definitionId: def.nodeId } : {}),
       builtIn: options.isBuiltInName?.(name) === true,
+      ...(scopeId !== undefined && bindsTypeParameter(scopeId, name, scopes)
+        ? { typeVariable: true }
+        : {}),
     };
   };
 
