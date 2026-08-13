@@ -117,6 +117,18 @@ const csharpScopeResolver: ScopeResolver = {
  * Keyword → BCL simple name; anything else is returned unchanged, including the
  * BCL names themselves (already canonical) and any qualified spelling, which is
  * compared as written.
+ *
+ * A workspace may legally declare its OWN type named `String`, which shadows the
+ * BCL simple name; this table then reads `IValidator<String>` as the `string`
+ * instantiation and KEEPS that implementor in the fan-out. Deliberate, and the
+ * safe direction: the alternative is pruning on the belief that two spellings
+ * differ, which is the missing-edge failure `generic-instantiation.ts` is built
+ * to avoid. Resolving instead of normalizing cannot settle it either — the
+ * identity comparison needs a `definitionId` from BOTH sides, and a built-in
+ * name has none, so "built-in versus workspace-declared" would be a new prune
+ * with no positive evidence behind it. The result is one surplus edge in a
+ * shape that is rare on its own terms, i.e. exactly the pre-#2912 fan-out for
+ * that pair and no worse.
  */
 const CSHARP_PREDEFINED_TYPE_ALIASES: ReadonlyMap<string, string> = new Map([
   ['bool', 'Boolean'],
