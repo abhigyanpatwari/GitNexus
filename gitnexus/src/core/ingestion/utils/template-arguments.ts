@@ -85,19 +85,30 @@ const OPENING_BRACKET = /[<[]/;
  *
  * `undefined` for everything else, which is what both callers need: a list that
  * closes early (`User[][]`, `Repo<User>?`), one that never closes
- * (`Map<String, (Int) -> Unit>`), an empty one (`User[]`), or no bracket at all
- * (`start === -1`). Shared because the rule is one rule — `erasedTypeApplication`
- * rebuilds the spelling from it and `typeApplicationArguments` splits it, and two
- * copies of a scan this fiddly would be free to disagree about `User[][]`.
+ * (`Map<String, (Int) -> Unit>`), an empty one (`User[]`), one whose brackets
+ * cross families (`Foo<Bar]>`), or no bracket at all (`start === -1`). Shared
+ * because the rule is one rule — `erasedTypeApplication` rebuilds the spelling
+ * from it and `typeApplicationArguments` splits it, and two copies of a scan
+ * this fiddly would be free to disagree about `User[][]`.
  */
 function balancedTailList(text: string, start: number): string | undefined {
   const opener = text[start];
   if (opener !== '<' && opener !== '[') return undefined;
-  const closer = opener === '<' ? '>' : ']';
-  let depth = 0;
+  // A STACK of expected closers rather than one counter for one family: a
+  // counter scanning `Foo<Bar]>` never sees the `]`, reaches the final `>` at
+  // depth zero and reports `Bar]` as a balanced argument list. Every closer must
+  // now match the opener it actually closes, so a crossed pair declines — which
+  // is what the contract above says and what both callers read as "unknown".
+  const expected: string[] = [];
   for (let i = start; i < text.length; i++) {
-    if (text[i] === opener) depth++;
-    else if (text[i] === closer && --depth === 0) {
+    const ch = text[i];
+    if (ch === '<' || ch === '[') {
+      expected.push(ch === '<' ? '>' : ']');
+      continue;
+    }
+    if (ch !== '>' && ch !== ']') continue;
+    if (expected.pop() !== ch) return undefined;
+    if (expected.length === 0) {
       return i === text.length - 1 && i > start + 1 ? text.slice(start + 1, i) : undefined;
     }
   }

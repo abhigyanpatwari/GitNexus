@@ -114,9 +114,7 @@ describe('C# generic interface dispatch (#2912)', () => {
 
   it('treats the `global::`-qualified spelling as that same instantiation', () => {
     expect(dispatchTargetFiles(result, 'Run', 'Check')).toContain('GlobalAliasValidator.cs');
-    expect(dispatchTargetFiles(result, 'RunInt', 'Check')).not.toContain(
-      'GlobalAliasValidator.cs',
-    );
+    expect(dispatchTargetFiles(result, 'RunInt', 'Check')).not.toContain('GlobalAliasValidator.cs');
   });
 
   it('keeps every implementor when the receiver is typed by a CALLER type variable', () => {

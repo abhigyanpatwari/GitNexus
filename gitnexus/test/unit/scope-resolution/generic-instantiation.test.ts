@@ -327,6 +327,16 @@ describe('typeApplicationArguments', () => {
     expect(typeApplicationArguments('Repo<User> by delegate')).toBeUndefined();
     expect(typeApplicationArguments('(Int) -> Unit')).toBeUndefined();
   });
+
+  it('declines brackets that cross families', () => {
+    // A one-family counter never sees the `]`, reaches the final `>` at depth
+    // zero and reports `Bar]` as a balanced argument list.
+    expect(typeApplicationArguments('Foo<Bar]>')).toBeUndefined();
+    expect(typeApplicationArguments('Foo[Bar>]')).toBeUndefined();
+    expect(typeApplicationArguments('Map<Dict[a, b>]')).toBeUndefined();
+    // The well-formed mixed nesting it must NOT start declining.
+    expect(typeApplicationArguments('List<Dict[a, b]>')).toEqual(['Dict[a, b]']);
+  });
 });
 
 describe('C# normalizeTypeArgument', () => {
@@ -344,5 +354,14 @@ describe('C# normalizeTypeArgument', () => {
   it('leaves an unrelated qualified name as written', () => {
     expect(normalize('Foo.String')).toBe('Foo.String');
     expect(normalize('Models.User')).toBe('Models.User');
+  });
+
+  it('keeps the qualifier on an ordinary type that merely lives in System', () => {
+    // Stripping `System.` unconditionally would answer `Custom` here, equating
+    // this with an unrelated `Custom` elsewhere in the workspace. Only a
+    // spelling that reduces to a PREDEFINED type earns the strip.
+    expect(normalize('System.Custom')).toBe('System.Custom');
+    expect(normalize('global::System.Custom')).toBe('global::System.Custom');
+    expect(normalize('System.Collections.Generic.List')).toBe('System.Collections.Generic.List');
   });
 });
