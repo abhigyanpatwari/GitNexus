@@ -266,3 +266,156 @@ describe('TypeScript generic interface dispatch (#2912)', () => {
     expect(targets).not.toContain('number-validator.ts');
   });
 });
+
+describe('Kotlin generic interface dispatch (#2912)', () => {
+  // Kotlin needs no per-language wiring: it emits heritage through the shared
+  // pre-pass, so the arguments are read off the clause's own spelling. The
+  // `class C : Bar<Int>()` shape — a base with a constructor invocation — is
+  // the one `stripTrailingCallSuffix` exists for, and is covered here by the
+  // supertype being an interface (no call suffix) plus the unit tests on that
+  // helper.
+  let result: PipelineResult;
+  let root: string;
+
+  beforeAll(async () => {
+    root = fs.mkdtempSync(path.join(os.tmpdir(), 'gitnexus-kotlin-generic-dispatch-'));
+    writeFixtureRepo(root, {
+      'Validator.kt': `package probe
+        interface Validator<T> { fun check(item: T): Boolean }`,
+      'StringValidator.kt': `package probe
+        class StringValidator : Validator<String> {
+          override fun check(item: String): Boolean = true
+        }`,
+      'NumberValidator.kt': `package probe
+        class NumberValidator : Validator<Int> {
+          override fun check(item: Int): Boolean = true
+        }`,
+      'Runner.kt': `package probe
+        class Runner { fun run(v: Validator<String>): Boolean = v.check("x") }`,
+    });
+    result = await runPipelineFromRepo(root, () => {});
+  }, 60000);
+
+  afterAll(() => {
+    fs.rmSync(root, { recursive: true, force: true });
+  });
+
+  it('reaches only the implementor of the receiver instantiation', () => {
+    const targets = dispatchTargetFiles(result, 'run', 'check');
+    expect(targets).toContain('StringValidator.kt');
+    expect(targets).not.toContain('NumberValidator.kt');
+  });
+});
+
+describe('Kotlin non-generic interface dispatch is unaffected (#2912)', () => {
+  // The CONTROL for the case above. Without it, the `not.toContain` there
+  // passes just as well when Kotlin emits no dispatch edge at all — which is
+  // exactly what Dart, Python and Rust turned out to do for this receiver
+  // shape, and why they are not asserted on in this file.
+  let result: PipelineResult;
+  let root: string;
+
+  beforeAll(async () => {
+    root = fs.mkdtempSync(path.join(os.tmpdir(), 'gitnexus-kotlin-plain-dispatch-'));
+    writeFixtureRepo(root, {
+      'Greeter.kt': `package probe
+        interface Greeter { fun greet(): String }`,
+      'Loud.kt': `package probe
+        class Loud : Greeter { override fun greet(): String = "HI" }`,
+      'Quiet.kt': `package probe
+        class Quiet : Greeter { override fun greet(): String = "hi" }`,
+      'Runner.kt': `package probe
+        class Runner { fun run(g: Greeter): String = g.greet() }`,
+    });
+    result = await runPipelineFromRepo(root, () => {});
+  }, 60000);
+
+  afterAll(() => {
+    fs.rmSync(root, { recursive: true, force: true });
+  });
+
+  it('fans out to every implementor when no generics are involved', () => {
+    expect(dispatchTargetFiles(result, 'run', 'greet')).toEqual(['Loud.kt', 'Quiet.kt']);
+  });
+});
+
+describe('Go generic interface dispatch (#2912)', () => {
+  // Go reaches the same filter by a different route: implementors are matched
+  // STRUCTURALLY rather than by a heritage clause, and the receiver's own
+  // `Validator[string]` spelling is what carries the instantiation.
+  let result: PipelineResult;
+  let root: string;
+
+  beforeAll(async () => {
+    root = fs.mkdtempSync(path.join(os.tmpdir(), 'gitnexus-go-generic-dispatch-'));
+    writeFixtureRepo(root, {
+      'validator.go': `package probe
+
+type Validator[T any] interface {
+	Check(item T) bool
+}`,
+      'string_validator.go': `package probe
+
+type StringValidator struct{}
+
+func (s StringValidator) Check(item string) bool { return true }`,
+      'number_validator.go': `package probe
+
+type NumberValidator struct{}
+
+func (n NumberValidator) Check(item int) bool { return true }`,
+      'runner.go': `package probe
+
+func Run(v Validator[string]) bool { return v.Check("x") }`,
+    });
+    result = await runPipelineFromRepo(root, () => {});
+  }, 60000);
+
+  afterAll(() => {
+    fs.rmSync(root, { recursive: true, force: true });
+  });
+
+  it('reaches only the implementor of the receiver instantiation', () => {
+    const targets = dispatchTargetFiles(result, 'Run', 'Check');
+    expect(targets).toContain('string_validator.go');
+    expect(targets).not.toContain('number_validator.go');
+  });
+});
+
+describe('Go non-generic interface dispatch is unaffected (#2912)', () => {
+  let result: PipelineResult;
+  let root: string;
+
+  beforeAll(async () => {
+    root = fs.mkdtempSync(path.join(os.tmpdir(), 'gitnexus-go-plain-dispatch-'));
+    writeFixtureRepo(root, {
+      'greeter.go': `package probe
+
+type Greeter interface {
+	Greet() string
+}`,
+      'loud.go': `package probe
+
+type Loud struct{}
+
+func (l Loud) Greet() string { return "HI" }`,
+      'quiet.go': `package probe
+
+type Quiet struct{}
+
+func (q Quiet) Greet() string { return "hi" }`,
+      'runner.go': `package probe
+
+func Run(g Greeter) string { return g.Greet() }`,
+    });
+    result = await runPipelineFromRepo(root, () => {});
+  }, 60000);
+
+  afterAll(() => {
+    fs.rmSync(root, { recursive: true, force: true });
+  });
+
+  it('fans out to every implementor when no generics are involved', () => {
+    expect(dispatchTargetFiles(result, 'Run', 'Greet')).toEqual(['loud.go', 'quiet.go']);
+  });
+});
