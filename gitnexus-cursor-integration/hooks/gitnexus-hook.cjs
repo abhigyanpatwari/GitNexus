@@ -92,7 +92,8 @@ function tokenizeShellWords(command) {
   let escaped = false;
   let hasToken = false;
 
-  for (const char of command) {
+  for (let index = 0; index < command.length; index += 1) {
+    const char = command[index];
     if (escaped) {
       current += char;
       escaped = false;
@@ -111,7 +112,12 @@ function tokenizeShellWords(command) {
       if (char === '"') {
         quote = null;
       } else if (char === '\\') {
-        escaped = true;
+        const next = command[index + 1];
+        if (next === '$' || next === '`' || next === '"' || next === '\\') {
+          escaped = true;
+        } else {
+          current += '\\';
+        }
       } else {
         current += char;
       }
@@ -165,7 +171,6 @@ function parseRgGrepPattern(cmd) {
     if (skipNext) {
       skipNext = false;
       if (skipNextAsPattern) {
-        skipNextAsPattern = false;
         return token.length >= 3 ? token : null;
       }
       continue;
