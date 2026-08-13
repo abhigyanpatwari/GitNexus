@@ -467,34 +467,84 @@ export function emitReceiverBoundCalls(
     if (subtypesBySupertypeDefId.get(ownerDef.nodeId) === undefined) return 0;
 
     // Collect concrete targets across the closure first, so the cap below counts
-    // real dispatch targets rather than types visited.
-    const targets: SymbolDefinition[] = [];
-    const seenTypes = new Set<string>([ownerDef.nodeId]);
-    const queue: string[] = [ownerDef.nodeId];
-    while (queue.length > 0) {
-      const superId = queue.shift() as string;
-      for (const subDef of subtypesBySupertypeDefId.get(superId) ?? []) {
-        if (seenTypes.has(subDef.nodeId)) continue;
-        seenTypes.add(subDef.nodeId);
-        queue.push(subDef.nodeId);
-        const implMember = pickOverload(subDef.nodeId, memberName, site, model, provider);
+    // real dispatch targets rather than types visited. Source-written owners
+    // rank ahead of synthesized owners so a large anonymous implementation
+    // family cannot consume the whole budget. Within each group, the priority
+    // counts concrete implementations already encountered on the path: the
+    // first implementation under an abstract branch ranks ahead of deeper
+    // overrides. Carrying that count through this existing walk avoids a reverse
+    // traversal per target at every call site.
+    type DispatchTarget = {
+      readonly member: SymbolDefinition;
+      readonly syntheticOwnerPriority: number;
+      readonly ancestorImplementationCount: number;
+      readonly discoveryOrder: number;
+    };
+    type DispatchTraversal = {
+      readonly typeId: string;
+      readonly ancestorImplementationCount: number;
+    };
+    const targetByMemberId = new Map<string, DispatchTarget>();
+    const bestIncomingCount = new Map<string, number>([[ownerDef.nodeId, 0]]);
+    const queue: DispatchTraversal[] = [
+      { typeId: ownerDef.nodeId, ancestorImplementationCount: 0 },
+    ];
+    let head = 0;
+    let discoveryOrder = 0;
+    while (head < queue.length) {
+      const current = queue[head++]!;
+      for (const subDef of subtypesBySupertypeDefId.get(current.typeId) ?? []) {
+        const previousIncomingCount = bestIncomingCount.get(subDef.nodeId);
         if (
-          implMember === undefined ||
-          implMember === OVERLOAD_AMBIGUOUS ||
-          implMember.isDeleted === true
+          previousIncomingCount !== undefined &&
+          previousIncomingCount <= current.ancestorImplementationCount
         ) {
           continue;
         }
-        if (implMember.nodeId === primaryMemberDef.nodeId) continue;
-        // A re-declared interface method or an `abstract` override is not an
-        // implementation — keep descending past it rather than emitting to it.
-        if (isDeclarationOnly(implMember)) continue;
-        // Nor is a static member: no instance-typed receiver can reach one, so
-        // an edge to it is a target dispatch cannot produce (#2842 review).
-        if (isUnreachableByInstanceDispatch(implMember)) continue;
-        targets.push(implMember);
+        bestIncomingCount.set(subDef.nodeId, current.ancestorImplementationCount);
+
+        const implMember = pickOverload(subDef.nodeId, memberName, site, model, provider);
+        let descendantImplementationCount = current.ancestorImplementationCount;
+        if (
+          implMember !== undefined &&
+          implMember !== OVERLOAD_AMBIGUOUS &&
+          implMember.isDeleted !== true &&
+          implMember.nodeId !== primaryMemberDef.nodeId &&
+          !isDeclarationOnly(implMember) &&
+          !isUnreachableByInstanceDispatch(implMember)
+        ) {
+          const existing = targetByMemberId.get(implMember.nodeId);
+          const syntheticOwnerPriority = subDef.isSynthetic === true ? 1 : 0;
+          if (
+            existing === undefined ||
+            syntheticOwnerPriority < existing.syntheticOwnerPriority ||
+            (syntheticOwnerPriority === existing.syntheticOwnerPriority &&
+              current.ancestorImplementationCount < existing.ancestorImplementationCount)
+          ) {
+            targetByMemberId.set(implMember.nodeId, {
+              member: implMember,
+              syntheticOwnerPriority,
+              ancestorImplementationCount: current.ancestorImplementationCount,
+              discoveryOrder: existing?.discoveryOrder ?? discoveryOrder++,
+            });
+          }
+          descendantImplementationCount++;
+        }
+        queue.push({
+          typeId: subDef.nodeId,
+          ancestorImplementationCount: descendantImplementationCount,
+        });
       }
     }
+
+    const targets = [...targetByMemberId.values()]
+      .sort(
+        (left, right) =>
+          left.syntheticOwnerPriority - right.syntheticOwnerPriority ||
+          left.ancestorImplementationCount - right.ancestorImplementationCount ||
+          left.discoveryOrder - right.discoveryOrder,
+      )
+      .map((target) => target.member);
 
     // Bounded, and NEVER silently (#2829). An interface with a very large
     // implementor set multiplies edges by every call site — Go, TypeScript and
@@ -505,8 +555,13 @@ export function emitReceiverBoundCalls(
     if (targets.length > MAX_INTERFACE_DISPATCH_FANOUT) {
       dispatchFanoutSkipped += targets.length - MAX_INTERFACE_DISPATCH_FANOUT;
       if (dispatchFanoutSkippedNames.length < MAX_REPORTED_SKIPPED_INTERFACES) {
+        const dropped = targets
+          .slice(MAX_INTERFACE_DISPATCH_FANOUT, MAX_INTERFACE_DISPATCH_FANOUT + 5)
+          .map((target) => target.qualifiedName ?? target.nodeId);
+        const omitted = targets.length - MAX_INTERFACE_DISPATCH_FANOUT - dropped.length;
         dispatchFanoutSkippedNames.push(
-          `${ownerDef.qualifiedName ?? ownerDef.nodeId}.${memberName} (${targets.length} targets)`,
+          `${ownerDef.qualifiedName ?? ownerDef.nodeId}.${memberName} (${targets.length} targets; ` +
+            `dropped: ${dropped.join(', ')}${omitted > 0 ? `, +${omitted} more` : ''})`,
         );
       }
       targets.length = MAX_INTERFACE_DISPATCH_FANOUT;

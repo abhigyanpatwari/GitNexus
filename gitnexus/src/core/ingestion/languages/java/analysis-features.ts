@@ -24,3 +24,10 @@ export const JAVA_RECORD_COMPONENT_ACCESSORS_FEATURE: AnalysisFeatureDescriptor 
   version: 1,
   appliesTo: (filePaths) => filePaths.some((filePath) => filePath.toLowerCase().endsWith('.java')),
 };
+
+/** Durable completeness contract for Java heritage captures. */
+export const JAVA_ENUM_INTERFACE_HERITAGE_FEATURE: AnalysisFeatureDescriptor = {
+  id: 'java.heritage-captures',
+  version: 1,
+  appliesTo: (filePaths) => filePaths.some((filePath) => filePath.toLowerCase().endsWith('.java')),
+};
