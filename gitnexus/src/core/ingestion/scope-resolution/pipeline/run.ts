@@ -152,22 +152,25 @@ function emitInheritanceEdgeDirect(
  * graph in time for `buildMro`, while `handledSites` prevents the generic
  * reference-edge bridge from re-emitting the same sites later.
  *
- * @returns Site keys to seed the downstream handled-site skip set, plus the
- * generic INSTANTIATION each heritage edge was written with (#2912) — see
+ * @returns Site keys to seed the downstream handled-site skip set.
+ *
+ * The generic INSTANTIATION each heritage edge was written with (#2912) goes to
+ * `recordTypeArguments` rather than out through the return, because the caller
+ * shares that sink with the language heritage hook — see
  * `HeritageTypeArguments` in `utils/generic-instantiation.ts`. This pass is
- * where that pairing exists at all:
- * the site carries the arguments and this is the only code that resolves the
- * site to a (subtype, supertype) pair, so recording it here costs one map write
- * per generic heritage edge, while recovering it downstream would mean redoing
- * the resolution against a graph edge that no longer carries the spelling.
+ * where the pairing exists at all: the site carries the arguments and this is
+ * the only code that resolves the site to a (subtype, supertype) pair, so
+ * recording it here costs one map write per generic heritage edge, while
+ * recovering it downstream would mean redoing the resolution against a graph
+ * edge that no longer carries the spelling.
  */
 function preEmitInheritanceEdges(
   graph: KnowledgeGraph,
   scopes: ReturnType<typeof finalizeScopeModel>,
   nodeLookup: ReturnType<typeof buildGraphNodeLookup>,
-): { handledSites: Set<string>; heritageTypeArguments: Map<string, readonly string[]> } {
+  recordTypeArguments: HeritageTypeArgumentSink,
+): Set<string> {
   const handledSites = new Set<string>();
-  const heritageTypeArguments = new Map<string, readonly string[]>();
   const seen = new Set<string>();
   // Tracks inheritance edges emitted during this pass so the structural
   // interface-implementation pass (emitDetectedInterfaceImplementations) and
@@ -221,16 +224,13 @@ function preEmitInheritanceEdges(
     emitInheritanceEdgeDirect(graph, seen, existing, callerGraphId, targetGraphId, edgeType, site);
     // The instantiation this heritage clause wrote (`: IValidator<string>`),
     // keyed by the same graph-id pair the edge itself carries. Only generic
-    // bases produce an entry, and the FIRST wins: a repeated (sub, super) pair
-    // is a partial declaration or a re-listed base, and a later entry silently
-    // overwriting the first would make dispatch depend on file order.
-    if (site.typeArguments !== undefined && site.typeArguments.length > 0) {
-      const key = heritageTypeArgumentsKey(callerGraphId, targetGraphId);
-      if (!heritageTypeArguments.has(key)) heritageTypeArguments.set(key, site.typeArguments);
+    // bases produce an entry; the sink owns the first-writer-wins rule.
+    if (site.typeArguments !== undefined) {
+      recordTypeArguments(callerGraphId, targetGraphId, site.typeArguments);
     }
   }
 
-  return { handledSites, heritageTypeArguments };
+  return handledSites;
 }
 
 /**
@@ -725,16 +725,13 @@ export function runScopeResolution(
     },
   });
   logHeapProbe('sr-post-finalize', `lang=${provider.language}`);
-  const inheritance = callableFlowOnly
-    ? {
-        handledSites: new Set<string>(),
-        heritageTypeArguments: new Map<string, readonly string[]>(),
-      }
-    : preEmitInheritanceEdges(graph, finalized, nodeLookup);
-  const preEmittedInheritanceSites = inheritance.handledSites;
-  // The same sink the pre-pass filled, offered to the language hook below so a
-  // heritage shape the pre-pass cannot express still carries its instantiation
-  // (#2912). First writer wins, matching the pre-pass's own rule.
+  // One store and ONE writer rule for heritage instantiations (#2912), shared by
+  // the pre-pass below and by the language hook further down — a heritage shape
+  // the pre-pass cannot express (Rust `impl T for S`, Dart `implements`) records
+  // through the same sink. FIRST writer wins: a repeated (sub, super) pair is a
+  // partial declaration or a re-listed base, and letting a later entry overwrite
+  // the first would make dispatch depend on file order.
+  const heritageTypeArguments = new Map<string, readonly string[]>();
   const recordHeritageTypeArguments: HeritageTypeArgumentSink = (
     subtypeGraphId,
     supertypeGraphId,
@@ -742,10 +739,11 @@ export function runScopeResolution(
   ) => {
     if (typeArguments.length === 0) return;
     const key = heritageTypeArgumentsKey(subtypeGraphId, supertypeGraphId);
-    if (!inheritance.heritageTypeArguments.has(key)) {
-      inheritance.heritageTypeArguments.set(key, typeArguments);
-    }
+    if (!heritageTypeArguments.has(key)) heritageTypeArguments.set(key, typeArguments);
   };
+  const preEmittedInheritanceSites = callableFlowOnly
+    ? new Set<string>()
+    : preEmitInheritanceEdges(graph, finalized, nodeLookup, recordHeritageTypeArguments);
   // Call-based heritage hook (e.g., Ruby include/extend/prepend) — emits
   // IMPLEMENTS edges that `preEmitInheritanceEdges` cannot produce because
   // the heritage declarations are syntactic method calls, not grammar-level
@@ -1028,7 +1026,7 @@ export function runScopeResolution(
           // What each heritage clause instantiated its base with, so the
           // interface-dispatch fan-out can refuse an incompatible instantiation
           // (#2912). Empty under `callableFlowOnly`, which emits no dispatch.
-          heritageTypeArguments: inheritance.heritageTypeArguments,
+          heritageTypeArguments,
         },
       );
   const receiverExtras = receiverBound.emitted;

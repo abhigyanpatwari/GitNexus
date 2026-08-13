@@ -71,7 +71,7 @@ export interface GroundedTypeArgument {
 }
 
 /** Resolve a written type argument from the scope it was written in. */
-export type TypeArgumentResolver = (name: string) => GroundedTypeArgument;
+type TypeArgumentResolver = (name: string) => GroundedTypeArgument;
 
 /**
  * Generic arguments written on a heritage clause, keyed by the GRAPH-ID pair of
@@ -152,7 +152,7 @@ export interface HeritageInstantiationStep {
   readonly normalize?: (name: string) => string;
 }
 
-export interface HeritageInstantiationResult {
+interface HeritageInstantiationResult {
   /** False ONLY when the two instantiations are provably different types. */
   readonly compatible: boolean;
   /**
@@ -165,6 +165,10 @@ export interface HeritageInstantiationResult {
 }
 
 const UNKNOWN: HeritageInstantiationResult = { compatible: true, subtypeArguments: undefined };
+
+/** Stand-in for a language that declares no `normalizeTypeArgument`. Module
+ *  level so the 15 that do not are not charged a closure per hop. */
+const identity = (name: string): string => name;
 
 /** A resolved declaration, or a name the language calls built in. Anything else
  *  might be a type variable nobody captured. */
@@ -184,15 +188,22 @@ function grounded(type: GroundedTypeArgument): boolean {
  * takes.
  */
 function isWildcard(name: string): boolean {
-  return /[?*]/.test(name) || /^(?:out|in)\s/.test(name.trim());
+  return WILDCARD_MARK.test(name) || USE_SITE_VARIANCE.test(name);
 }
+
+const WILDCARD_MARK = /[?*]/;
+/** Leading whitespace is matched rather than trimmed off, so a spelling that
+ *  carries none — the overwhelming majority — costs no allocation. */
+const USE_SITE_VARIANCE = /^\s*(?:out|in)\s/;
 
 /** Drop insignificant whitespace so two spellings of one instantiation compare
  *  equal: `Map<string, User>` and `Map<string,User>` are the same type, and
  *  which one a capture produced depends on how the source was written. */
 function compact(name: string): string {
-  return name.replace(/\s+/g, '');
+  return name.replace(INSIGNIFICANT_WHITESPACE, '');
 }
+
+const INSIGNIFICANT_WHITESPACE = /\s+/g;
 
 /** Last segment of a qualified spelling: `java.lang.String` → `String`,
  *  `System::Text::Encoding` → `Encoding`. Used only when a name did not
@@ -219,7 +230,7 @@ export function stepHeritageInstantiation(
   // concluded from a mismatched pairing, so nothing is.
   if (supertypeArguments.length !== heritageArguments.length) return UNKNOWN;
 
-  const normalize = step.normalize ?? ((name: string) => name);
+  const normalize = step.normalize ?? identity;
   const bindings = new Map<string, string>();
   for (let i = 0; i < heritageArguments.length; i++) {
     const written = heritageArguments[i] as string;
@@ -237,7 +248,11 @@ export function stepHeritageInstantiation(
     // position is simply unknown. Nullable decoration (`User?`, `string?`) trips
     // the same test, which costs a little precision in the safe direction.
     if (isWildcard(written) || isWildcard(actual)) continue;
-    if (compact(normalize(written)) === compact(normalize(actual))) continue;
+    // Normalized once and reused by the simple-name compare below, so both
+    // comparisons are visibly made on the same normalization.
+    const writtenKey = compact(normalize(written));
+    const actualKey = compact(normalize(actual));
+    if (writtenKey === actualKey) continue;
     // Differing spellings, which is not yet a difference of TYPE. Resolve both
     // where each was written and compare what they bound to: an imported `User`
     // and a `Models.User` are one declaration, and a declaration is what the
@@ -254,9 +269,7 @@ export function stepHeritageInstantiation(
     // what is compared instead is the simple name, which cannot tell
     // `a.User` from `b.User` (kept, the over-approximating direction) but does
     // tell `String` from `Integer`.
-    if (simpleName(compact(normalize(written))) === simpleName(compact(normalize(actual)))) {
-      continue;
-    }
+    if (simpleName(writtenKey) === simpleName(actualKey)) continue;
     // The one thing a spelling difference must not be read as: a TYPE VARIABLE
     // this pipeline never captured. Where the subtype's parameter list is not
     // known to be complete, only a pair of grounded names — resolved or built

@@ -24,7 +24,11 @@ import type { ScopeId, SymbolDefinition, TypeRef } from 'gitnexus-shared';
 import type { ElementAccessRoute, ScopeResolver } from '../contract/scope-resolver.js';
 import type { ScopeResolutionIndexes } from '../../model/scope-resolution-indexes.js';
 import type { WorkspaceResolutionIndex } from '../workspace-index.js';
-import { erasedTypeApplication, stripTemplateArguments } from '../../utils/template-arguments.js';
+import {
+  erasedTypeApplication,
+  matchingOpenParen,
+  stripTemplateArguments,
+} from '../../utils/template-arguments.js';
 import type { DecodedReceiverChain } from '../../utils/receiver-chain-codec.js';
 import { decodeReceiverChain } from '../../utils/receiver-chain-codec.js';
 import type { DecorationStripper } from '../scope/walkers.js';
@@ -401,6 +405,27 @@ function noteReceiverType(
 ): SymbolDefinition | undefined {
   if (def !== undefined) record?.(spelling, def.nodeId);
   return def;
+}
+
+/**
+ * The class a CALL's return type names, reported to the receiver-type side
+ * channel — the return-type twin of {@link classOfDeclaredType}.
+ *
+ * The pairing it exists to keep in one place: the lookup goes through
+ * `rawName`, while the SPELLING reported alongside it is the erased type
+ * application, so an `IValidator<string>` return is reported with its
+ * arguments intact. The spelling is built only once the lookup has actually
+ * found a class, because it is discarded otherwise — and every fold hop
+ * through a call reaches this, generic or not.
+ */
+function classOfReturnType(
+  retType: TypeRef,
+  scopes: ScopeResolutionIndexes,
+  record: ReceiverTypeRecorder | undefined,
+): SymbolDefinition | undefined {
+  const def = findClassBindingInScope(retType.declaredAtScope, retType.rawName, scopes);
+  if (def === undefined || record === undefined) return def;
+  return noteReceiverType(record, erasedTypeApplication(retType) ?? retType.rawName, def);
 }
 
 function typeOfMemberOnClass(
@@ -826,11 +851,7 @@ export function resolveCompoundReceiverClass(
         const viaReturn =
           retType === undefined
             ? undefined
-            : noteReceiverType(
-                options.recordReceiverType,
-                erasedTypeApplication(retType) ?? retType.rawName,
-                findClassBindingInScope(retType.declaredAtScope, retType.rawName, scopes),
-              );
+            : classOfReturnType(retType, scopes, options.recordReceiverType);
         if (viaReturn !== undefined) return viaReturn;
       }
       // Inline construction — `Service(db).m()` / `new Service(db).m()`.
@@ -952,11 +973,7 @@ export function resolveCompoundReceiverClass(
     }
 
     if (retType === undefined) return undefined;
-    return noteReceiverType(
-      options.recordReceiverType,
-      erasedTypeApplication(retType) ?? retType.rawName,
-      findClassBindingInScope(retType.declaredAtScope, retType.rawName, scopes),
-    );
+    return classOfReturnType(retType, scopes, options.recordReceiverType);
   }
 
   // Mixed dotted + call chain: `obj.field.method().field.method()…`.
@@ -1232,21 +1249,6 @@ function isInitializerContext(startScope: ScopeId, scopes: ScopeResolutionIndexe
   return false;
 }
 
-/** Find the index of the `(` that matches the trailing `)` of a
- *  call-expression text. Returns -1 if unbalanced. */
-function matchingOpenParen(text: string): number {
-  if (!text.endsWith(')')) return -1;
-  let depth = 0;
-  for (let i = text.length - 1; i >= 0; i--) {
-    const ch = text[i];
-    if (ch === ')') depth++;
-    else if (ch === '(') {
-      depth--;
-      if (depth === 0) return i;
-    }
-  }
-  return -1;
-}
 
 /** Max peel iterations for `stripCastWrappers`. Real cast nesting —
  *  including decompiler output like `((Target)((Object)expr))` —

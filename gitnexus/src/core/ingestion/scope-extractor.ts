@@ -98,7 +98,11 @@ import type {
 import { buildPositionIndex, buildScopeTree, canParentScope, makeScopeId } from 'gitnexus-shared';
 import type { LanguageProvider } from './language-provider.js';
 import { isValidReceiverChain } from './utils/receiver-chain-codec.js';
-import { extractTemplateArguments, typeApplicationArguments } from './utils/template-arguments.js';
+import {
+  extractTemplateArguments,
+  stripTrailingCallSuffix,
+  typeApplicationArguments,
+} from './utils/template-arguments.js';
 import { parseTypeParameterList } from './utils/type-parameters.js';
 
 // ─── Narrow hook surface the extractor actually uses ───────────────────────
@@ -1376,26 +1380,13 @@ function referenceTypeArguments(
   baseName: string,
 ): readonly string[] | undefined {
   const text = stripTrailingCallSuffix(anchorText.trim());
-  const opener = text.search(/[<[]/);
+  const opener = text.search(OPENING_BRACKET);
   if (opener === -1) return undefined;
   if (!text.slice(0, opener).trimEnd().endsWith(baseName)) return undefined;
   return typeApplicationArguments(text);
 }
 
-/** Drop a balanced `(...)` that ENDS the text: the argument list of a base's
- *  constructor invocation. Anything else is returned unchanged. */
-function stripTrailingCallSuffix(text: string): string {
-  if (!text.endsWith(')')) return text;
-  let depth = 0;
-  for (let i = text.length - 1; i >= 0; i--) {
-    if (text[i] === ')') depth++;
-    else if (text[i] === '(') {
-      depth--;
-      if (depth === 0) return text.slice(0, i).trimEnd();
-    }
-  }
-  return text;
-}
+const OPENING_BRACKET = /[<[]/;
 
 function referenceKindFromAnchor(name: string): ReferenceKind | undefined {
   const suffix = name.slice('@reference.'.length);

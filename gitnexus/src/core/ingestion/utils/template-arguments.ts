@@ -128,6 +128,37 @@ function splitTopLevelArguments(inner: string): string[] {
   return args;
 }
 
+/**
+ * Index of the `(` that matches the trailing `)` of `text`, or -1 when the text
+ * does not end in a balanced call suffix.
+ *
+ * Shared for the same reason as {@link balancedTailList}: this scan is fiddly
+ * enough that two copies would be free to disagree, and it has two unrelated
+ * readers — splitting a receiver chain at its call, and stripping a base's
+ * constructor invocation off a heritage spelling.
+ */
+export function matchingOpenParen(text: string): number {
+  if (!text.endsWith(')')) return -1;
+  let depth = 0;
+  for (let i = text.length - 1; i >= 0; i--) {
+    const ch = text[i];
+    if (ch === ')') depth++;
+    else if (ch === '(') {
+      depth--;
+      if (depth === 0) return i;
+    }
+  }
+  return -1;
+}
+
+/** Drop a balanced `(...)` that ENDS the text — the argument list of a base's
+ *  constructor invocation, as in `record R : Base<int>(x)` or Kotlin
+ *  `class C : Bar<Int>()`. Anything else is returned unchanged. */
+export function stripTrailingCallSuffix(text: string): string {
+  const open = matchingOpenParen(text);
+  return open === -1 ? text : text.slice(0, open).trimEnd();
+}
+
 export function stripTemplateArguments(text: string): string {
   const start = text.indexOf('<');
   if (start === -1) return text;

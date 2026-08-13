@@ -138,12 +138,15 @@ const CSHARP_PREDEFINED_TYPE_ALIASES: ReadonlyMap<string, string> = new Map([
   ['string', 'String'],
 ]);
 
+const SYSTEM_PREFIX = 'System.';
+
 function normalizeCsharpTypeArgument(name: string): string {
   // `System.` is dropped first so the fully-qualified spelling of a predefined
   // type meets its keyword: `System.String` → `String` ≡ `string` → `String`.
   // Only that one namespace, and only as a whole prefix — an unrelated
   // `Foo.String` stays qualified and is compared as written.
-  const trimmed = name.trim().replace(/^System\./, '');
+  const named = name.trim();
+  const trimmed = named.startsWith(SYSTEM_PREFIX) ? named.slice(SYSTEM_PREFIX.length) : named;
   return CSHARP_PREDEFINED_TYPE_ALIASES.get(trimmed) ?? trimmed;
 }
 

@@ -306,7 +306,9 @@ export function emitReceiverBoundCalls(
      *  edge. */
     readonly isBuiltInName?: (name: string) => boolean;
     /** The generic arguments each heritage clause instantiated its base with,
-     *  from the inheritance pre-pass that resolved those clauses (#2912). Read
+     *  from the passes that emitted those heritage edges — the inheritance
+     *  pre-pass, and the language resolvers that emit their own (Rust `impl T
+     *  for S`, Dart `implements` / `with`) (#2912). Read
      *  ONLY by the interface-dispatch fan-out, to refuse an implementor of an
      *  incompatible instantiation. Absent ⇒ every heritage instantiation reads
      *  as unknown ⇒ the pre-#2912 fan-out, unchanged. */
@@ -571,6 +573,10 @@ export function emitReceiverBoundCalls(
       receiverTypeSpelling === undefined
         ? undefined
         : typeApplicationArguments(receiverTypeSpelling);
+    // Captures only `site`, so it is built once per SITE rather than once per
+    // subtype visited. Its partner below cannot be: it is keyed by the subtype.
+    const resolveSupertypeArgument = (name: string): GroundedTypeArgument =>
+      groundTypeArgument(name, site.inScope);
 
     // Collect concrete targets across the closure first, so the cap below counts
     // real dispatch targets rather than types visited. Source-written owners
@@ -625,34 +631,39 @@ export function emitReceiverBoundCalls(
           continue;
         }
 
-        // What THIS heritage clause instantiated its base with.
-        const subGraphId =
-          superGraphId === undefined ? undefined : classGraphIdByDefId.get(subDef.nodeId);
-        const heritageArguments =
-          subGraphId === undefined || superGraphId === undefined
-            ? undefined
-            : options.heritageTypeArguments?.get(
-                heritageTypeArgumentsKey(subGraphId, superGraphId),
-              );
+        // What THIS heritage clause instantiated its base with. `superGraphId`
+        // already answers "is the supertype's instantiation known?", so it gates
+        // the whole lookup once instead of being re-asked at each step below.
         let subtypeArguments: readonly string[] | undefined;
-        if (heritageArguments !== undefined && current.typeArguments !== undefined) {
-          const step = stepHeritageInstantiation({
-            supertypeArguments: current.typeArguments,
-            heritageArguments,
-            subtypeParameters: subDef.typeParameters,
-            subtypeParametersComplete:
-              languageCapturesTypeParameters ||
-              (subDef.typeParameters !== undefined && subDef.typeParameters.length > 0),
-            resolveSupertypeArgument: (name) => groundTypeArgument(name, site.inScope),
-            resolveHeritageArgument: (name) =>
-              groundTypeArgument(name, index.classScopeByDefId.get(subDef.nodeId)?.id),
-            normalize: provider.normalizeTypeArgument,
-          });
-          // Skipped BEFORE the visit is recorded, so a type reachable by a
-          // second, compatible path still gets its edge; and without descending,
-          // because its own subtypes inherit the mismatch.
-          if (!step.compatible) continue;
-          subtypeArguments = step.subtypeArguments;
+        if (superGraphId !== undefined) {
+          const subGraphId = classGraphIdByDefId.get(subDef.nodeId);
+          const heritageArguments =
+            subGraphId === undefined
+              ? undefined
+              : options.heritageTypeArguments?.get(
+                  heritageTypeArgumentsKey(subGraphId, superGraphId),
+                );
+          if (heritageArguments !== undefined) {
+            const subtypeScopeId = index.classScopeByDefId.get(subDef.nodeId)?.id;
+            const step = stepHeritageInstantiation({
+              supertypeArguments: current.typeArguments,
+              heritageArguments,
+              subtypeParameters: subDef.typeParameters,
+              // The "this subtype declares parameters" disjunct an earlier
+              // revision carried here could never decide: `subDef` comes out of
+              // the same loop that sets this flag, from exactly these defs, so a
+              // subtype with parameters has already set it.
+              subtypeParametersComplete: languageCapturesTypeParameters,
+              resolveSupertypeArgument,
+              resolveHeritageArgument: (name) => groundTypeArgument(name, subtypeScopeId),
+              normalize: provider.normalizeTypeArgument,
+            });
+            // Skipped BEFORE the visit is recorded, so a type reachable by a
+            // second, compatible path still gets its edge; and without
+            // descending, because its own subtypes inherit the mismatch.
+            if (!step.compatible) continue;
+            subtypeArguments = step.subtypeArguments;
+          }
         }
 
         bestIncomingCount.set(subDef.nodeId, current.ancestorImplementationCount);
