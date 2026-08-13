@@ -40,7 +40,7 @@
     "i18next-browser-languagedetector": "^8.2.1",
     "langchain": "^1.5.4",
     "lru-cache": "^11.5.2",
-    "lucide-react": "^1.23.0",
+    "lucide-react": "^1.28.0",
     "mermaid": "^11.16.1",
     "mnemonist": "^0.40.4",
     "pandemonium": "^2.4.0",
