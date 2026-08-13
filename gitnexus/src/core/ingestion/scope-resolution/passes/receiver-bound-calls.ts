@@ -619,9 +619,7 @@ export function emitReceiverBoundCalls(
       // those walks skip every lookup below and emit exactly what they did
       // before #2912.
       const superGraphId =
-        current.typeArguments === undefined
-          ? undefined
-          : classGraphIdByDefId.get(current.typeId);
+        current.typeArguments === undefined ? undefined : classGraphIdByDefId.get(current.typeId);
       for (const subDef of subtypesBySupertypeDefId.get(current.typeId) ?? []) {
         const previousIncomingCount = bestIncomingCount.get(subDef.nodeId);
         if (

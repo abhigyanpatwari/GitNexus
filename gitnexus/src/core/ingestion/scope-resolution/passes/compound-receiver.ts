@@ -1249,7 +1249,6 @@ function isInitializerContext(startScope: ScopeId, scopes: ScopeResolutionIndexe
   return false;
 }
 
-
 /** Max peel iterations for `stripCastWrappers`. Real cast nesting —
  *  including decompiler output like `((Target)((Object)expr))` —
  *  is a handful of levels, and each cast level costs at most two
