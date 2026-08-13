@@ -17,12 +17,6 @@ export function arityForIdFromInfo(info: MethodInfo): number | undefined {
 }
 
 /**
- * Compute a type-based discriminator suffix for same-arity overloads.
- * Returns `~type1,type2` when the current method collides with another method
- * in the same class that has the same name and arity but different parameter types.
- * Returns `''` when there is no collision or types are unavailable.
- */
-/**
  * Key for the per-class method map built by `getMethodInfo` (parse-worker).
  *
  * `name:line` is NOT unique. Two callables can start on the same line with the
@@ -69,6 +63,12 @@ export function buildCollisionGroups(
   return groups;
 }
 
+/**
+ * Compute a type-based discriminator suffix for same-arity overloads.
+ * Returns `~type1,type2` when the current method collides with another method
+ * in the same class that has the same name and arity but different parameter types.
+ * Returns `''` when there is no collision or types are unavailable.
+ */
 export function typeTagForId(
   methodMap: Map<string, MethodInfo>,
   methodName: string,
