@@ -111,7 +111,7 @@ import {
   PDG_QUERY_DEFAULT_LIMIT,
   PDG_QUERY_MAX_LIMIT,
 } from '../tools.js';
-import { findImportCycles } from '../../core/graph/import-cycles.js';
+import { findImportCycles, IMPORT_CYCLE_LIMIT } from '../../core/graph/import-cycles.js';
 import { decodeTaintPath } from '../../core/ingestion/taint/path-codec.js';
 import { decodeReachingDefReason } from '../../core/ingestion/cfg/reaching-def-reason-codec.js';
 import { EXTENSIONS } from '../../core/ingestion/import-resolvers/utils.js';
@@ -123,6 +123,10 @@ import {
 import type { UnresolvedReceiverSummary } from '../../core/ingestion/scope-resolution/unresolved-receivers.js';
 import type { UndecidedSatisfactionSummary } from '../../core/ingestion/scope-resolution/undecided-satisfaction.js';
 import { lookupCount } from '../../core/ingestion/scope-resolution/summary-maps.js';
+import {
+  DEFERRED_IMPORT_REASON_SUFFIX,
+  TYPE_ONLY_IMPORT_REASON_SUFFIX,
+} from '../../core/ingestion/scope-resolution/graph-bridge/imports-to-edges.js';
 import {
   fnLineOf,
   isPdgDegradedLayerStatus,
@@ -2439,11 +2443,23 @@ export class LocalBackend {
     // and the whole result is REPLACED by an error, so a truncated page never reaches a caller.
     const rows = await executeParameterized(
       repo.lbugPath,
+      // A cycle here means "these modules cannot be initialized in any order".
+      // Only edges that force initialization count, so four kinds are excluded:
+      // Swift implicit module visibility and markdown links (never code
+      // dependencies at all); imports reachable only through `import()` or a
+      // function body, which are deferred by construction — deferring is the
+      // standard idiom for BREAKING an init cycle, so counting it reports the
+      // fix as the bug; and imports reachable only through TypeScript
+      // `import type`, which `tsc` erases outright, so no module load exists
+      // to order. `imports-to-edges.ts` tags the last two with
+      // DEFERRED_IMPORT_REASON_SUFFIX / TYPE_ONLY_IMPORT_REASON_SUFFIX.
       `MATCH (source:File)-[r:CodeRelation]->(target:File)
        WHERE r.type = 'IMPORTS'
          AND (r.reason IS NULL OR (
            r.reason <> 'swift-scope: implicit module visibility'
            AND r.reason <> 'markdown-link'
+           AND NOT r.reason ENDS WITH '${DEFERRED_IMPORT_REASON_SUFFIX}'
+           AND NOT r.reason ENDS WITH '${TYPE_ONLY_IMPORT_REASON_SUFFIX}'
          ))
        RETURN source.filePath AS source, target.filePath AS target
        LIMIT ${rowLimit}`,
@@ -2455,16 +2471,62 @@ export class LocalBackend {
         truncated: true,
       };
     }
-    const cycles = findImportCycles(
+    // The cycle cap is passed EXPLICITLY rather than taken as the enumerator's
+    // default, because its reason lives here and not there. The enumerator's
+    // work budget is a property of the algorithm — output sensitivity, retained
+    // heap — but this bound exists because the full enumeration of this
+    // repository is a 21.8 MB JSON response for a tool whose result an agent
+    // reads. That is a transport constraint, and it belongs beside `rowLimit`,
+    // which bounds the same response from the other end. Raise one and look at
+    // the other: `rowLimit` decides how large a graph is admitted at all, and
+    // the enumerator's work budget is documented against that same 100k-edge
+    // figure.
+    const report = findImportCycles(
       rows.map((row: any) => ({
         source: String(row.source ?? row[0] ?? ''),
         target: String(row.target ?? row[1] ?? ''),
       })),
+      IMPORT_CYCLE_LIMIT,
     );
+    // `enumeration` names what `cycles` IS, so the degraded answer is separable
+    // from the complete one by a machine rather than by reading prose. The
+    // fail-closed rule is unchanged in substance: a partial list of elementary
+    // cycles is never returned, because it cannot be told apart from a complete
+    // one. What IS returned when a bound is hit is a different kind of list —
+    // one representative per cyclic component — with `cycleCount: null` so no
+    // caller can read a count off a truncated result.
+    if (report.enumeration === 'none') {
+      // Nothing survived: not even the component decomposition finished, so
+      // there is genuinely nothing to report and the whole result is an error.
+      // Only the WORK bound can land here: the cycle bound is tripped inside
+      // the circuit search, which runs only once a decomposition has finished —
+      // and a finished decomposition yields representatives rather than `none`.
+      return {
+        error: `Import cycle enumeration exceeded its ${report.limit} step safety limit.`,
+        truncated: true,
+      };
+    }
+    const cycles = report.cycles.map((files) => ({ files }));
+    if (report.enumeration === 'component-representatives') {
+      return {
+        // Cycles were genuinely found — this is not a clean repository, and a
+        // CI gate reading `status` must fail on it.
+        status: 'cycles_found',
+        enumeration: 'component-representatives',
+        truncated: true,
+        // Explicitly not a number: the number of elementary cycles is unknown,
+        // and `cycles.length` here is a count of COMPONENTS, not of cycles.
+        cycleCount: null,
+        componentCount: report.componentCount,
+        cycles,
+      };
+    }
     return {
-      status: cycles.length === 0 ? 'clean' : 'cycles_found',
-      cycleCount: cycles.length,
-      cycles: cycles.map((files) => ({ files })),
+      status: report.cycles.length === 0 ? 'clean' : 'cycles_found',
+      enumeration: 'complete',
+      cycleCount: report.cycles.length,
+      componentCount: report.componentCount,
+      cycles,
     };
   }
 

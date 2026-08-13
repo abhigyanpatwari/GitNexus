@@ -54,6 +54,32 @@ describe('direct CLI tool commands', () => {
     expect(process.exitCode).toBe(1);
   });
 
+  it('still fails CI when the enumeration was capped and there is no cycle count', async () => {
+    // Past the cap the backend reports one representative cycle per component
+    // and `cycleCount: null` — deliberately not a number, so a partial count
+    // cannot be read as a real one. Keying the exit code off the count made
+    // `null > 0` false and exited 0 on exactly the repositories with the most
+    // cycles; this pins that `status` is what decides.
+    callToolMock.mockResolvedValue({
+      status: 'cycles_found',
+      enumeration: 'component-representatives',
+      truncated: true,
+      cycleCount: null,
+      componentCount: 2,
+      cycles: [
+        { files: ['src/a.ts', 'src/b.ts', 'src/a.ts'] },
+        { files: ['src/y.ts', 'src/z.ts', 'src/y.ts'] },
+      ],
+    });
+    const { checkCommand } = await import('../../src/cli/tool.js');
+
+    await checkCommand({ cycles: true });
+
+    expect(process.exitCode).toBe(1);
+    // and the operator is told the list is representative, not exhaustive
+    expect(writeSyncMock).toHaveBeenCalledWith(1, expect.stringContaining('representative'));
+  });
+
   it('emits JSON and succeeds for a clean import graph', async () => {
     callToolMock.mockResolvedValue({ status: 'clean', cycleCount: 0, cycles: [] });
     const { checkCommand } = await import('../../src/cli/tool.js');
@@ -74,6 +100,26 @@ describe('direct CLI tool commands', () => {
       1,
       expect.stringContaining('Import graph exceeds the safety limit.'),
     );
+    expect(process.exitCode).toBe(1);
+  });
+
+  it('prints the safety-limit error in PROSE mode instead of throwing on the missing cycle list', async () => {
+    // The `enumeration: 'none'` response — a run that died inside the component
+    // decomposition — carries `{ error, truncated }` and deliberately no
+    // `status` and no `cycles`. The prose branch reads `result.cycles.map(...)`,
+    // so without the error guard ahead of it this shape surfaces as a TypeError
+    // instead of the limit it is trying to report. JSON mode was covered; this
+    // is the path that renders.
+    callToolMock.mockResolvedValue({
+      error: 'Import cycle enumeration exceeded its 10000000 step safety limit.',
+      truncated: true,
+    });
+    const { checkCommand } = await import('../../src/cli/tool.js');
+
+    await checkCommand({ cycles: true });
+
+    expect(writeSyncMock).toHaveBeenCalledWith(1, expect.stringContaining('step safety limit'));
+    expect(writeSyncMock).not.toHaveBeenCalledWith(1, expect.stringContaining('TypeError'));
     expect(process.exitCode).toBe(1);
   });
 

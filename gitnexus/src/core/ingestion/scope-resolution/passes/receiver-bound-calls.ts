@@ -542,9 +542,10 @@ export function emitReceiverBoundCalls(
    * one subtype list, so without the substitution a `IValidator<string>` call
    * reaches `IntValidator.Check(int)` — a target no dispatch can produce. Each
    * hop unifies the arguments the subtype wrote against the ones the supertype
-   * is known to hold; an incompatible hop is skipped WITHOUT being marked seen,
-   * so a type reachable by a second, compatible path still gets its edge, and
-   * skipped WITHOUT descending, because its own subtypes inherit the mismatch.
+   * is known to hold; an incompatible hop is skipped BEFORE the visit is
+   * recorded, so a type reachable by a second, compatible path still gets its
+   * edge, and skipped WITHOUT descending, because its own subtypes inherit the
+   * mismatch.
    * Every uncertainty keeps the target — see `generic-instantiation.ts`.
    */
   const emitInterfaceDispatchFor = (
@@ -572,27 +573,58 @@ export function emitReceiverBoundCalls(
         : typeApplicationArguments(receiverTypeSpelling);
 
     // Collect concrete targets across the closure first, so the cap below counts
-    // real dispatch targets rather than types visited.
-    const targets: SymbolDefinition[] = [];
-    const seenTypes = new Set<string>([ownerDef.nodeId]);
-    const queue: Array<{
-      readonly defId: string;
+    // real dispatch targets rather than types visited. Source-written owners
+    // rank ahead of synthesized owners so a large anonymous implementation
+    // family cannot consume the whole budget. Within each group, the priority
+    // counts concrete implementations already encountered on the path: the
+    // first implementation under an abstract branch ranks ahead of deeper
+    // overrides. Carrying that count through this existing walk avoids a reverse
+    // traversal per target at every call site.
+    type DispatchTarget = {
+      readonly member: SymbolDefinition;
+      readonly syntheticOwnerPriority: number;
+      readonly ancestorImplementationCount: number;
+      readonly discoveryOrder: number;
+    };
+    type DispatchTraversal = {
+      readonly typeId: string;
+      readonly ancestorImplementationCount: number;
+      /** The instantiation this type is known to hold ON THIS PATH (#2912), or
+       *  `undefined` where it is not known — which restores the unfiltered
+       *  fan-out for the subtree below it rather than guessing. */
       readonly typeArguments: readonly string[] | undefined;
-    }> = [{ defId: ownerDef.nodeId, typeArguments: receiverTypeArguments }];
-    while (queue.length > 0) {
-      const { defId: superId, typeArguments: superArguments } = queue.shift() as {
-        defId: string;
-        typeArguments: readonly string[] | undefined;
-      };
+    };
+    const targetByMemberId = new Map<string, DispatchTarget>();
+    const bestIncomingCount = new Map<string, number>([[ownerDef.nodeId, 0]]);
+    const queue: DispatchTraversal[] = [
+      {
+        typeId: ownerDef.nodeId,
+        ancestorImplementationCount: 0,
+        typeArguments: receiverTypeArguments,
+      },
+    ];
+    let head = 0;
+    let discoveryOrder = 0;
+    while (head < queue.length) {
+      const current = queue[head++]!;
       // The whole instantiation apparatus hangs off ONE question: is the
       // supertype's own instantiation known? It is not for a non-generic
       // receiver, nor for any language that captures no heritage arguments, so
       // those walks skip every lookup below and emit exactly what they did
       // before #2912.
       const superGraphId =
-        superArguments === undefined ? undefined : classGraphIdByDefId.get(superId);
-      for (const subDef of subtypesBySupertypeDefId.get(superId) ?? []) {
-        if (seenTypes.has(subDef.nodeId)) continue;
+        current.typeArguments === undefined
+          ? undefined
+          : classGraphIdByDefId.get(current.typeId);
+      for (const subDef of subtypesBySupertypeDefId.get(current.typeId) ?? []) {
+        const previousIncomingCount = bestIncomingCount.get(subDef.nodeId);
+        if (
+          previousIncomingCount !== undefined &&
+          previousIncomingCount <= current.ancestorImplementationCount
+        ) {
+          continue;
+        }
+
         // What THIS heritage clause instantiated its base with.
         const subGraphId =
           superGraphId === undefined ? undefined : classGraphIdByDefId.get(subDef.nodeId);
@@ -603,9 +635,9 @@ export function emitReceiverBoundCalls(
                 heritageTypeArgumentsKey(subGraphId, superGraphId),
               );
         let subtypeArguments: readonly string[] | undefined;
-        if (heritageArguments !== undefined && superArguments !== undefined) {
+        if (heritageArguments !== undefined && current.typeArguments !== undefined) {
           const step = stepHeritageInstantiation({
-            supertypeArguments: superArguments,
+            supertypeArguments: current.typeArguments,
             heritageArguments,
             subtypeParameters: subDef.typeParameters,
             subtypeParametersComplete:
@@ -616,29 +648,58 @@ export function emitReceiverBoundCalls(
               groundTypeArgument(name, index.classScopeByDefId.get(subDef.nodeId)?.id),
             normalize: provider.normalizeTypeArgument,
           });
+          // Skipped BEFORE the visit is recorded, so a type reachable by a
+          // second, compatible path still gets its edge; and without descending,
+          // because its own subtypes inherit the mismatch.
           if (!step.compatible) continue;
           subtypeArguments = step.subtypeArguments;
         }
-        seenTypes.add(subDef.nodeId);
-        queue.push({ defId: subDef.nodeId, typeArguments: subtypeArguments });
+
+        bestIncomingCount.set(subDef.nodeId, current.ancestorImplementationCount);
+
         const implMember = pickOverload(subDef.nodeId, memberName, site, model, provider);
+        let descendantImplementationCount = current.ancestorImplementationCount;
         if (
-          implMember === undefined ||
-          implMember === OVERLOAD_AMBIGUOUS ||
-          implMember.isDeleted === true
+          implMember !== undefined &&
+          implMember !== OVERLOAD_AMBIGUOUS &&
+          implMember.isDeleted !== true &&
+          implMember.nodeId !== primaryMemberDef.nodeId &&
+          !isDeclarationOnly(implMember) &&
+          !isUnreachableByInstanceDispatch(implMember)
         ) {
-          continue;
+          const existing = targetByMemberId.get(implMember.nodeId);
+          const syntheticOwnerPriority = subDef.isSynthetic === true ? 1 : 0;
+          if (
+            existing === undefined ||
+            syntheticOwnerPriority < existing.syntheticOwnerPriority ||
+            (syntheticOwnerPriority === existing.syntheticOwnerPriority &&
+              current.ancestorImplementationCount < existing.ancestorImplementationCount)
+          ) {
+            targetByMemberId.set(implMember.nodeId, {
+              member: implMember,
+              syntheticOwnerPriority,
+              ancestorImplementationCount: current.ancestorImplementationCount,
+              discoveryOrder: existing?.discoveryOrder ?? discoveryOrder++,
+            });
+          }
+          descendantImplementationCount++;
         }
-        if (implMember.nodeId === primaryMemberDef.nodeId) continue;
-        // A re-declared interface method or an `abstract` override is not an
-        // implementation — keep descending past it rather than emitting to it.
-        if (isDeclarationOnly(implMember)) continue;
-        // Nor is a static member: no instance-typed receiver can reach one, so
-        // an edge to it is a target dispatch cannot produce (#2842 review).
-        if (isUnreachableByInstanceDispatch(implMember)) continue;
-        targets.push(implMember);
+        queue.push({
+          typeId: subDef.nodeId,
+          ancestorImplementationCount: descendantImplementationCount,
+          typeArguments: subtypeArguments,
+        });
       }
     }
+
+    const targets = [...targetByMemberId.values()]
+      .sort(
+        (left, right) =>
+          left.syntheticOwnerPriority - right.syntheticOwnerPriority ||
+          left.ancestorImplementationCount - right.ancestorImplementationCount ||
+          left.discoveryOrder - right.discoveryOrder,
+      )
+      .map((target) => target.member);
 
     // Bounded, and NEVER silently (#2829). An interface with a very large
     // implementor set multiplies edges by every call site — Go, TypeScript and
@@ -649,8 +710,13 @@ export function emitReceiverBoundCalls(
     if (targets.length > MAX_INTERFACE_DISPATCH_FANOUT) {
       dispatchFanoutSkipped += targets.length - MAX_INTERFACE_DISPATCH_FANOUT;
       if (dispatchFanoutSkippedNames.length < MAX_REPORTED_SKIPPED_INTERFACES) {
+        const dropped = targets
+          .slice(MAX_INTERFACE_DISPATCH_FANOUT, MAX_INTERFACE_DISPATCH_FANOUT + 5)
+          .map((target) => target.qualifiedName ?? target.nodeId);
+        const omitted = targets.length - MAX_INTERFACE_DISPATCH_FANOUT - dropped.length;
         dispatchFanoutSkippedNames.push(
-          `${ownerDef.qualifiedName ?? ownerDef.nodeId}.${memberName} (${targets.length} targets)`,
+          `${ownerDef.qualifiedName ?? ownerDef.nodeId}.${memberName} (${targets.length} targets; ` +
+            `dropped: ${dropped.join(', ')}${omitted > 0 ? `, +${omitted} more` : ''})`,
         );
       }
       targets.length = MAX_INTERFACE_DISPATCH_FANOUT;

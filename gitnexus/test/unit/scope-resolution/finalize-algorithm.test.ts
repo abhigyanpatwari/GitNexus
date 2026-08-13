@@ -856,6 +856,75 @@ describe('finalize', () => {
     });
   });
 
+  /**
+   * `typeOnly` is the one `ParsedImport` fact `check --cycles` needs that
+   * finalize cannot re-derive: the emitted `kind` for `import type { X }` is
+   * the same `named` a value import produces. So it has to be carried, and
+   * carried onto `base` specifically — every finalized edge is built by
+   * spreading `base`, including the re-export and namespace paths.
+   */
+  describe('type-only carry-through', () => {
+    const typeNamed = (localName: string, importedName: string, targetRaw: string): ParsedImport =>
+      ({ ...named(localName, importedName, targetRaw), typeOnly: true }) as ParsedImport;
+
+    it('carries `typeOnly` onto a linked edge', () => {
+      const b = file('b', [def('def:b.User', 'Class', 'b.User')]);
+      const a = file('a', [], [typeNamed('User', 'User', 'b')]);
+      const files = [a, b];
+      const out = finalize({ files, workspaceIndex: undefined }, defaultHooks(files));
+      const edge = firstImport(out, a.moduleScope)!;
+      // Same kind as the value import — which is exactly why the flag exists.
+      expect(edge.kind).toBe('named');
+      expect(edge.targetDefId).toBe('def:b.User');
+      expect(edge.typeOnly).toBe(true);
+    });
+
+    it('a value import gets NO `typeOnly` property', () => {
+      // Absent, not `false`: the field is spread in only when set, so an
+      // ordinary edge keeps the property set it had before this existed.
+      const b = file('b', [def('def:b.User', 'Class', 'b.User')]);
+      const a = file('a', [], [named('User', 'User', 'b')]);
+      const files = [a, b];
+      const out = finalize({ files, workspaceIndex: undefined }, defaultHooks(files));
+      expect(firstImport(out, a.moduleScope)!).not.toHaveProperty('typeOnly');
+    });
+
+    it('survives an unresolved target', () => {
+      // The unresolved branch builds its own `base`; it must set the flag too,
+      // or a package-external `import type` would read as a value import if it
+      // ever became resolvable.
+      const a = file('a', [], [typeNamed('User', 'User', 'external-pkg')]);
+      const out = finalize({ files: [a], workspaceIndex: undefined }, defaultHooks([a]));
+      const edge = firstImport(out, a.moduleScope)!;
+      expect(edge.linkStatus).toBe('unresolved');
+      expect(edge.typeOnly).toBe(true);
+    });
+
+    it('survives a re-export hop', () => {
+      // `export type { X } from './y'` in a barrel, imported through it. The
+      // finalized edge here is built on a later spread of `base`, not the one
+      // `makeEdgeDrafts` returned.
+      const leaf = file('leaf', [def('def:leaf.User', 'Class', 'leaf.User')]);
+      const barrel = file('barrel', [], [reexport('User', 'User', 'leaf')]);
+      const a = file('a', [], [typeNamed('User', 'User', 'barrel')]);
+      const files = [a, barrel, leaf];
+      const out = finalize({ files, workspaceIndex: undefined }, defaultHooks(files));
+      const edge = firstImport(out, a.moduleScope)!;
+      expect(edge.targetDefId).toBe('def:leaf.User');
+      expect(edge.typeOnly).toBe(true);
+    });
+
+    it('a kind with no erased spelling never gains the flag', () => {
+      const b = file('b', [def('def:b.User', 'Class', 'b.User')]);
+      const a = file('a', [], [sideEffect('b'), dynamicResolved('b'), wildcard('b')]);
+      const files = [a, b];
+      const out = finalize({ files, workspaceIndex: undefined }, defaultHooks(files));
+      const edges = out.imports.get(a.moduleScope) ?? [];
+      expect(edges.length).toBeGreaterThan(0);
+      expect(edges.filter((e) => 'typeOnly' in e)).toEqual([]);
+    });
+  });
+
   describe('SCC-DAG exposure for parallelism', () => {
     it('returns SCCs in reverse-topological order (leaves first)', () => {
       // c ← b ← a (a imports b, b imports c, c has no imports)

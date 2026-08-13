@@ -467,20 +467,73 @@ import type { ParseWorkerResult } from '../core/ingestion/workers/parse-worker.j
 //
 // Still open at this commit: #2891 also claims 59, which main now holds. That is
 // a live exact clash for #2891 to renumber, not for this branch.
-// RE-CHECK AGAINST origin/main IMMEDIATELY BEFORE MERGING.
 //
-// 60 -> 64 for #2912's `ReferenceSite.typeArguments`: the generic arguments a
+// 60 -> 62 for the two optional `ParsedImport` fields the cycle-checker fix
+// adds: `typeOnly` (TS `import type`) and `runsOnlyWhenCalled` (an import
+// written inside a function body). This is #2864's lesson arriving again, in
+// the same shape and for the same reason — neither field is a capture, but
+// `parsedfile-store.ts` serializes the whole ParsedFile generically, so both are
+// part of the cached shape. Without the bump a warm cache replays pre-fix
+// `ParsedImport`s carrying no flag, the strict `=== true` reads in
+// `finalize-algorithm.ts` and `imports-to-edges.ts` take the untagged path, and
+// `check --cycles` keeps reporting the erased and deferred imports this branch
+// exists to stop reporting — a silent no-op on incremental analyze while every
+// cold-run test in the branch passes. The failure is toward OVER-reporting, so
+// it is loud rather than dangerous, but it is still the whole fix not applying.
+// (`typeOnly` also has a capture half — `@import.type-only` from
+// `typescript/import-decomposer.ts` — so that side would drift a capture bench;
+// `runsOnlyWhenCalled` is decided in scope-extractor Pass 3 from the scope tree
+// and has no marker at all, which is exactly the half that gets missed.)
+//
+// 63, not 62, and not 61: main holds 60, #2935 claims 61, and #2936 claims 62.
+// Per the rule three paragraphs up, this is the next free value above every
+// in-flight MAXIMUM, not above origin/main. #2891's 59 is already buried by main
+// and is theirs to renumber; #1616's 2 is stale.
+//
+// This staged 62 first and was correct when written. #2936 opened four hours
+// later and also took 62 — bumping for #2917's implicit Java record-component
+// accessors, a genuinely different cached shape — because it re-checked against
+// main (60) rather than against the in-flight claims, which is the SEVENTH exact
+// clash and the same mistake the ledger above keeps recording. Moving rather
+// than standing on seniority: 63 is above every claim, so it is correct whichever
+// of the two merges first, and needs no coordination to stay correct. An exact
+// clash is the dangerous shape precisely because neither side invalidates the
+// other — a warm cache written by #2936's build would be read as valid by this
+// one, and the accessor definitions it materializes are not in this branch's
+// ParsedFile shape at all.
+//
+// 63 -> 64 for Java enum heritage plus annotated class, record, interface,
+// enum, and explicit-super base names emitting corrected captures (#2918).
+// Warm v63 ParsedFiles lack those captures and must be re-extracted.
+// 64 -> 66 adds the synthetic-declaration sidecar used to keep anonymous class
+// implementations from evicting ordinary implementors at the dispatch cap.
+// That PR published a v64 head first, so 66 kept all the shapes in flight at the
+// time distinct. (It also named a v65 claim from this branch; that claim was
+// superseded before either landed — see the 66 -> 67 entry below. Nothing holds
+// 65 now.)
+//
+// 66 -> 67 for #2917's implicit Java record-component accessor definitions and
+// scope declarations. A warm cache would otherwise replay ParsedFiles without
+// the synthesized accessors. This branch staged 65 before #2918's 66 landed on
+// main; 67 is the next free value above every in-flight claim (main 66, #2939's
+// 64), which is the ledger rule above — re-check against the claims, not just
+// against main.
+//
+// 67 -> 68 for #2912's `ReferenceSite.typeArguments`: the generic arguments a
 // heritage reference was written with (`: IValidator<string>`), derived at
 // EXTRACTION time from the anchor's spelling. A warm cache replays `inherits`
 // sites with the field absent, absence is the fail-open "unknown", and
 // generic-instantiation filtering therefore degrades to the pre-fix fan-out on
 // exactly the unchanged files — silent, and passing every cold-run test.
 //
-// 64 and not 61 per the ledger above: take the next free value above every
-// in-flight MAXIMUM, not above origin/main. At this commit main holds 60 and
-// three open PRs claim 61 (#2935), 62 (#2936) and 63 (#2934).
+// This branch staged 64 when main held 60 and #2935/#2936/#2934 claimed 61/62/63.
+// All three have since landed and cascaded main to 67, burying 64 inside main's
+// own ledger — the EIGHTH time the re-check moved a number, and the reason the
+// re-check is a merge step rather than a one-time choice. 68 is the next free
+// value above every in-flight claim at this merge (main 67, #2891's 59, #1616's
+// stale 2), which is the rule above: above every claim, not above origin/main.
 // RE-CHECK AGAINST origin/main IMMEDIATELY BEFORE MERGING.
-const SCHEMA_BUMP = 64;
+const SCHEMA_BUMP = 68;
 const GITNEXUS_PKG_VERSION = (() => {
   try {
     // package.json sits at gitnexus/package.json — two levels up from
