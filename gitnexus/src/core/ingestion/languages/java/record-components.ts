@@ -2,6 +2,7 @@ import { SupportedLanguages, type CaptureMatch } from 'gitnexus-shared';
 import type { CaptureMap } from '../../language-provider.js';
 import { createMethodExtractor } from '../../method-extractors/generic.js';
 import { javaMethodConfig } from '../../method-extractors/configs/jvm.js';
+import { extractAnnotations } from '../../field-extractors/configs/helpers.js';
 import type {
   ExtractedMethods,
   MethodExtractor,
@@ -21,13 +22,63 @@ function recordComponents(recordNode: SyntaxNode): SyntaxNode[] {
   );
 }
 
-function recordComponentNameNode(component: SyntaxNode): SyntaxNode | null {
-  if (component.type === 'formal_parameter') return component.childForFieldName('name');
-  const declarator = component.namedChildren.find((node) => node?.type === 'variable_declarator');
-  return declarator?.childForFieldName('name') ?? null;
+/**
+ * A record component is named by a real `identifier` and nothing else.
+ *
+ * Two node shapes reach this that are not one, and both would mint a graph node
+ * for source that does not compile:
+ *
+ *  - `record M(int x, y) {}` — a dropped type. tree-sitter recovers by
+ *    synthesizing `name: (MISSING identifier)`, a zero-width node whose text is
+ *    `''`. It still satisfies the query's `name: (identifier)`, so testing the
+ *    node TYPE alone does not reject it.
+ *  - `record R(int _) {}` — the grammar declares both `formal_parameter.name`
+ *    and `variable_declarator.name` as `identifier | underscore_pattern`, and
+ *    `_` parses with no error at all. `_` is illegal as a component name, and
+ *    admitting it here while the query rejects it is what let the structure and
+ *    scope paths disagree.
+ *
+ * Same degenerate-node shape as `javaBaseLookupNameNode` in captures.ts (#2935).
+ */
+function isRecordComponentName(node: SyntaxNode | null | undefined): node is SyntaxNode {
+  return (
+    node !== null &&
+    node !== undefined &&
+    node.type === 'identifier' &&
+    !node.isMissing &&
+    node.text.length > 0
+  );
 }
 
+function recordComponentNameNode(component: SyntaxNode): SyntaxNode | null {
+  const name =
+    component.type === 'formal_parameter'
+      ? component.childForFieldName('name')
+      : (component.namedChildren
+          .find((node) => node?.type === 'variable_declarator')
+          ?.childForFieldName('name') ?? null);
+  return isRecordComponentName(name) ? name : null;
+}
+
+/**
+ * Memoised per record node. `shouldSkipJavaRecordComponentDefinition` is called
+ * once per component capture, so recomputing this would rescan the whole record
+ * body per component — O(components x body members) for a single record. The
+ * scope-capture path hoists the call out of its own loop instead; this cache is
+ * what gives the structure path the same cost. Keyed weakly on the AST node, so
+ * it drops with the tree at the end of the file's parse.
+ */
+const explicitZeroArgAccessorNamesCache = new WeakMap<SyntaxNode, Set<string>>();
+
 function explicitZeroArgAccessorNames(recordNode: SyntaxNode): Set<string> {
+  const memoized = explicitZeroArgAccessorNamesCache.get(recordNode);
+  if (memoized !== undefined) return memoized;
+  const names = computeExplicitZeroArgAccessorNames(recordNode);
+  explicitZeroArgAccessorNamesCache.set(recordNode, names);
+  return names;
+}
+
+function computeExplicitZeroArgAccessorNames(recordNode: SyntaxNode): Set<string> {
   const names = new Set<string>();
   const body = recordNode.childForFieldName('body');
   if (body === null) return names;
@@ -76,9 +127,20 @@ function implicitAccessorInfo(
     isStatic: false,
     isAbstract: false,
     isFinal: false,
-    annotations: [],
+    // JLS 8.10.3 / 9.7.4: a component annotation reaches the generated accessor
+    // when its @Target admits METHOD (or TYPE_USE, in the return-type position).
+    // ponytail: over-approximate — we propagate every component annotation,
+    // because @Target lives in another file and parsing is per-file, so the
+    // target set is not knowable here. Nothing reads Method annotations today:
+    // `annotations` is not a column in METHOD_SCHEMA/FUNCTION_SCHEMA
+    // (src/core/lbug/schema.ts), so it lives only in the in-memory graph for one
+    // analyze run, and the sole in-memory reader (springDiFieldMatcher) is gated
+    // to `Property` nodes. If that column is ever added, revisit this: the set
+    // would then become an agent-visible claim that may over-state the target.
+    annotations: extractAnnotations(component, 'modifiers'),
     sourceFile: context.filePath,
     line: component.startPosition.row + 1,
+    column: component.startPosition.column,
   };
 }
 
@@ -156,11 +218,16 @@ export function shouldSkipJavaRecordComponentDefinition(captureMap: CaptureMap):
 
   const parameters = component.parent;
   const recordNode = parameters?.parent;
-  const name = captureMap['name']?.text;
-  return (
-    parameters?.type === 'formal_parameters' &&
-    recordNode?.type === 'record_declaration' &&
-    name !== undefined &&
-    explicitZeroArgAccessorNames(recordNode).has(name)
-  );
+  if (parameters?.type !== 'formal_parameters' || recordNode?.type !== 'record_declaration') {
+    return false;
+  }
+
+  // Same predicate the scope path applies, so the two can never disagree about
+  // which components have an accessor. The query's `name: (identifier)` is
+  // satisfied by tree-sitter's zero-width MISSING recovery token, so the
+  // structure path has to re-check what the query cannot express.
+  const nameNode = captureMap['name'];
+  if (!isRecordComponentName(nameNode)) return true;
+
+  return explicitZeroArgAccessorNames(recordNode).has(nameNode.text);
 }

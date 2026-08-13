@@ -1247,6 +1247,31 @@ describe('Java record method resolution (#2564)', () => {
     expect(sumCall).toBeDefined();
   });
 
+  // #2936: the implicit accessor is minted at the COMPONENT's position, so on a
+  // single line it shares (name, line) with an explicit overload. The worker's
+  // per-class method map keyed on that pair, so the appended implicit entry
+  // evicted the source-written method and both definitions collapsed onto
+  // `Scaled.x#0` — the arity-1 call then bound to a zero-argument target.
+  it('keeps a same-line explicit overload distinct from the implicit accessor (#2936)', async () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), 'gitnexus-java-record-sameline-'));
+    try {
+      writeFixtureRepo(root, {
+        'Scaled.java':
+          'package probe;\npublic record Scaled(int x, int y) { int x(int factor) { return x * factor; } }\n',
+      });
+
+      const linked = await runPipelineFromRepo(root, () => {});
+      const arities = getNodesByLabelFull(linked, 'Method')
+        .filter((node) => node.name === 'x')
+        .map((node) => Number(node.properties.parameterCount))
+        .sort((left, right) => left - right);
+
+      expect(arities).toEqual([0, 1]);
+    } finally {
+      fs.rmSync(root, { recursive: true, force: true });
+    }
+  }, 60000);
+
   it('uses the Record node as a caller source and constructor-call target (#2801)', async () => {
     const root = fs.mkdtempSync(path.join(os.tmpdir(), 'gitnexus-java-record-link-'));
     try {

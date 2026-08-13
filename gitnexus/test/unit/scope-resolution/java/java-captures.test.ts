@@ -194,6 +194,36 @@ describe('emitJavaScopeCaptures — record component accessors (#2917)', () => {
 
     expect(declarations.map((declaration) => declaration.arity).sort()).toEqual(['0', '1']);
   });
+
+  // A component is named by a real `identifier` and nothing else. tree-sitter's
+  // zero-width MISSING recovery token satisfies `name: (identifier)`, and the
+  // grammar admits `underscore_pattern` in the same field, so both would mint an
+  // accessor for source that does not compile.
+  it.each([
+    ['a dropped component type', 'record M(int x, y) {}', ['x']],
+    ['a nameless varargs component', 'record W(int... ) {}', []],
+    ['an underscore component', 'record R(int _) {}', []],
+    ['an underscore varargs component', 'record S(int... _) {}', []],
+  ])('emits no accessor declaration for %s', (_label, source, expected) => {
+    expect(recordAccessorDeclarations(source).map((declaration) => declaration.name)).toEqual(
+      expected,
+    );
+  });
+
+  it('emits no accessor scope for a component with no usable name', () => {
+    const scopes = emitJavaScopeCaptures('record M(int x, y) {}', 'C.java')
+      .filter((m) => m['@scope.function'] !== undefined)
+      .map((m) => m['@scope.function']?.text);
+
+    expect(scopes).toEqual(['int x']);
+  });
+
+  it('is unaffected for a valid record', () => {
+    expect(recordAccessorDeclarations('record P(int x, String... ys) {}')).toEqual([
+      { name: 'x', arity: '0', requiredArity: '0', returnType: 'int' },
+      { name: 'ys', arity: '0', requiredArity: '0', returnType: 'String[]' },
+    ]);
+  });
 });
 
 describe('emitJavaScopeCaptures — explicit constructor invocations (F38 #1928)', () => {

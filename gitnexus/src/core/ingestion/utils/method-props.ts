@@ -23,6 +23,32 @@ export function arityForIdFromInfo(info: MethodInfo): number | undefined {
  * Returns `''` when there is no collision or types are unavailable.
  */
 /**
+ * Key for the per-class method map built by `getMethodInfo` (parse-worker).
+ *
+ * `name:line` is NOT unique. Two callables can start on the same line with the
+ * same name whenever one of them is SYNTHESIZED at a position that is not its
+ * own declaration: a Java record's implicit component accessor is minted at the
+ * component (`record P(int x, int y) { int x(int s) {…} }`), and a C# 12 primary
+ * constructor at the owner's `parameter_list`
+ * (`class Point(int x, int y) { public Point(int x) : this(x, 0) {} }`). Both are
+ * appended LAST by their extractor, so under a `name:line` key the synthesized
+ * entry silently destroyed the source-written method's MethodInfo and the two
+ * ids collapsed onto one node (#2936).
+ *
+ * `line` is 1-based and `column` is 0-based — deliberately, because this is a
+ * join key rather than a displayed location and both sides derive it from the
+ * same node. Do not "normalize" one half; the join is the only contract.
+ *
+ * The KEY is never parsed by any consumer — `buildCollisionGroups`,
+ * `typeTagForId` and `constTagForId` all iterate `.values()`. Keep it that way,
+ * and never insert one MethodInfo under two keys: those consumers would then
+ * count it twice and turn every singleton into a false collision group.
+ */
+export function methodInfoKey(name: string, line: number, column: number): string {
+  return `${name}:${line}:${column}`;
+}
+
+/**
  * Build collision groups from a method map — groups methods by `name#arity`.
  * Call once per class, then pass to typeTagForId/constTagForId to avoid O(N²) scans.
  */

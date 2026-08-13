@@ -218,6 +218,10 @@ interface LanguageProviderConfig {
    * Suppress a definition query match after its default label is known.
    * Languages use this for syntax that represents an implicit declaration
    * unless an explicit declaration with the same semantics is present.
+   *
+   * `defaultLabel` is supplied so an implementation can scope itself to one
+   * kind of definition; implementations whose capture map alone decides the
+   * question may ignore it.
    */
   readonly shouldSkipDefinitionCapture?: (
     captureMap: CaptureMap,

@@ -507,8 +507,10 @@ import type { ParseWorkerResult } from '../core/ingestion/workers/parse-worker.j
 // Warm v63 ParsedFiles lack those captures and must be re-extracted.
 // 64 -> 66 adds the synthetic-declaration sidecar used to keep anonymous class
 // implementations from evicting ordinary implementors at the dispatch cap.
-// This PR already published a v64 head, while #2936 uses 65 for its independent
-// record accessor shape, so 66 keeps all three cached shapes distinct.
+// That PR published a v64 head first, so 66 kept all the shapes in flight at the
+// time distinct. (It also named a v65 claim from this branch; that claim was
+// superseded before either landed — see the 66 -> 67 entry below. Nothing holds
+// 65 now.)
 //
 // 66 -> 67 for #2917's implicit Java record-component accessor definitions and
 // scope declarations. A warm cache would otherwise replay ParsedFiles without

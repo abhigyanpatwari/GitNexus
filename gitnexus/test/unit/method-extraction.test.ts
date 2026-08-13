@@ -19,6 +19,7 @@ import { phpMethodConfig } from '../../src/core/ingestion/method-extractors/conf
 import { swiftMethodConfig } from '../../src/core/ingestion/method-extractors/configs/swift.js';
 import { goMethodConfig } from '../../src/core/ingestion/method-extractors/configs/go.js';
 import type { MethodExtractorContext } from '../../src/core/ingestion/method-types.js';
+import { methodInfoKey } from '../../src/core/ingestion/utils/method-props.js';
 import Parser from 'tree-sitter';
 import Java from 'tree-sitter-java';
 import Go from 'tree-sitter-go';
@@ -480,6 +481,48 @@ describe('Java MethodExtractor', () => {
 
       expect(accessors).toHaveLength(2);
       expect(accessors.map((method) => method.parameters.length).sort()).toEqual([0, 1]);
+    });
+
+    // #2936: the accessor is minted at the COMPONENT's position, so on a single
+    // line it shares (name, line) with an explicit overload. The worker's
+    // per-class map keys on that pair, so before `column` the appended implicit
+    // entry evicted the source-written method and both ids collapsed to `x#0`.
+    it('gives a same-line implicit accessor and explicit overload distinct map keys', () => {
+      const tree = parseJava(
+        'public record User(String name) { public String name(int repeat) { return name.repeat(repeat); } }',
+      );
+      const result = extractor.extract(tree.rootNode.child(0)!, javaCtx);
+      const keys = result!.methods
+        .filter((method) => method.name === 'name')
+        .map((method) => methodInfoKey(method.name, method.line, method.column))
+        .sort();
+
+      expect(keys).toEqual(['name:1:19', 'name:1:34']);
+    });
+
+    it.each([
+      ['a dropped component type', 'record M(int x, y) {}', ['x']],
+      ['a nameless varargs component', 'record W(int... ) {}', []],
+      ['an underscore component', 'record R(int _) {}', []],
+      ['an underscore varargs component', 'record S(int... _) {}', []],
+    ])('synthesizes no accessor for %s', (_label, source, expected) => {
+      const tree = parseJava(source);
+      const result = extractor.extract(tree.rootNode.child(0)!, javaCtx);
+
+      expect(result!.methods.map((method) => method.name)).toEqual(expected);
+    });
+
+    it.each([
+      ['a marker annotation', 'record U(@Marker String name) {}', ['@Marker']],
+      ['an annotation with arguments', 'record U(@Marker("x") String name) {}', ['@Marker']],
+      ['several annotations', 'record U(@A @B String name) {}', ['@A', '@B']],
+      ['an annotated varargs component', 'record U(@A String... xs) {}', ['@A']],
+      ['no annotation', 'record U(String name) {}', []],
+    ])('propagates %s to the implicit accessor', (_label, source, expected) => {
+      const tree = parseJava(source);
+      const result = extractor.extract(tree.rootNode.child(0)!, javaCtx);
+
+      expect(result!.methods[0]!.annotations).toEqual(expected);
     });
   });
 
