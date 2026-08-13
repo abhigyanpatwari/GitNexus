@@ -5,6 +5,7 @@ import { assembleSectionPage } from '../../src/core/wiki/document/assembler.js';
 import { createEvidencePresentation } from '../../src/core/wiki/document/evidence-presentation.js';
 import { sanitizeMarkdownForViewer } from '../../src/core/wiki/html-viewer.js';
 import { parseSectionDraftResponse } from '../../src/core/wiki/document/response-parser.js';
+import { renderPrompt } from '../../src/core/wiki/profiles/render-prompt.js';
 import { DEFAULT_TEMPLATE_PROFILE } from '../../src/core/wiki/profiles/builtins/default.js';
 import type { PromptSpec } from '../../src/core/wiki/profiles/types.js';
 
@@ -120,8 +121,18 @@ describe('wiki SectionWriter modes', () => {
       sectionEvidenceIds: [evidenceId],
       traceability: 'section-level',
     });
+    // 校验传给 LLM 的是完整的 legacy prompt 字节(模块标题以外的任何 prompt 文本、空白
+    // 或变量替换变化都应导致失败),而非仅断言包含模块标题子串
+    const expectedUser = renderPrompt(DEFAULT_TEMPLATE_PROFILE.prompts.module, {
+      MODULE_NAME: 'Core',
+      SOURCE_CODE: 'export const core = true;',
+      INTRA_CALLS: 'None',
+      OUTGOING_CALLS: 'None',
+      INCOMING_CALLS: 'None',
+      PROCESSES: 'No execution flows detected for this module.',
+    }).user;
     expect(invokeLLM).toHaveBeenCalledWith(
-      expect.stringContaining('Write documentation for the **Core** module.'),
+      expectedUser,
       `${DEFAULT_TEMPLATE_PROFILE.prompts.module.system}\n\nLANGUAGE`,
       undefined,
     );

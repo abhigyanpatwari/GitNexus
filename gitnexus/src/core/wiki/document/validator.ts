@@ -1,5 +1,4 @@
 import type {
-  EvidenceKind,
   RegisteredTemplateProfile,
   ResolvedLanguage,
   SectionSpec,
@@ -8,6 +7,7 @@ import { validateSectionBlocks } from './claim.js';
 import type { EvidenceBundle, EvidenceStatus } from './evidence.js';
 import {
   flattenSections,
+  requirementMatchesEvidence,
   validateDocumentPlan,
   type Diagnostic,
   type DocumentPlan,
@@ -208,23 +208,6 @@ function flattenSpecs(sections: readonly SectionSpec[]): SectionSpec[] {
   return result;
 }
 
-function evidenceKindsForRequirement(kind: EvidenceKind): readonly string[] {
-  switch (kind) {
-    case 'source':
-      return ['file', 'symbol', 'line'];
-    case 'config':
-      return ['config'];
-    case 'test':
-      return ['test'];
-    case 'documentation':
-      return ['existing-doc'];
-    case 'call-graph':
-      return ['relation'];
-    case 'process':
-      return ['process'];
-  }
-}
-
 function evidenceIdsForSection(section: SectionIR): string[] {
   if (section.payload.mode === 'legacy-markdown') {
     return [...section.payload.sectionEvidenceIds];
@@ -332,13 +315,21 @@ export function validateProfileCoverage(
       continue;
     }
     const sectionDiagnostics = [...section.diagnostics];
-    const missingRequirements = spec.evidenceRequirements.filter(
-      (requirement) =>
-        requirement.required &&
-        !allEvidence.some((item) =>
-          evidenceKindsForRequirement(requirement.kind).includes(item.kind),
-        ),
-    );
+    // 覆盖检查基于该 section 实际引用的证据,而非整个 bundle,避免无关 section 的证据
+    // 误满足本 section 的必需证据要求;含 unknown block(证据不足诚实降级)的 section
+    // 跳过必需证据缺失判定,因为降级本身已表明证据不足
+    const hasUnknownBlock =
+      section.payload.mode === 'structured' &&
+      section.payload.blocks.some((block) => block.type === 'unknown');
+    const sectionEvidenceIds = new Set(evidenceIdsForSection(section));
+    const sectionEvidence = allEvidence.filter((item) => sectionEvidenceIds.has(item.id));
+    const missingRequirements = hasUnknownBlock
+      ? []
+      : spec.evidenceRequirements.filter(
+          (requirement) =>
+            requirement.required &&
+            !sectionEvidence.some((item) => requirementMatchesEvidence(requirement, item)),
+        );
     for (const requirement of missingRequirements) {
       sectionDiagnostics.push({
         code: 'required-evidence-missing',

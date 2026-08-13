@@ -2,6 +2,7 @@ import type { ModuleTreeNode } from '../generator.js';
 import { localize } from '../profiles/locale.js';
 import type {
   EvidenceKind,
+  EvidenceRequirement,
   RegisteredTemplateProfile,
   ResolvedLanguage,
   SectionSpec,
@@ -73,9 +74,26 @@ export function evidenceKindsForRequirement(kind: EvidenceKind): readonly Eviden
       return ['existing-doc'];
     case 'call-graph':
       return ['relation'];
+    case 'external-call-graph':
+      return ['relation'];
     case 'process':
       return ['process'];
   }
+}
+
+// 判断证据项是否满足某项证据要求;external-call-graph 仅匹配外部调用关系(incoming/outgoing),
+// 排除模块内部调用,避免内部调用被误当作"外部调用关系"证据
+export function requirementMatchesEvidence(
+  requirement: EvidenceRequirement,
+  item: EvidenceRef,
+): boolean {
+  if (!evidenceKindsForRequirement(requirement.kind).includes(item.kind)) return false;
+  if (requirement.kind === 'external-call-graph' && item.kind === 'relation') {
+    const separator = item.relation?.indexOf(':') ?? -1;
+    const direction = separator > 0 ? item.relation!.slice(0, separator) : '';
+    return direction === 'incoming' || direction === 'outgoing';
+  }
+  return true;
 }
 
 function planSection(
@@ -87,15 +105,13 @@ function planSection(
 ): SectionIR {
   const matchedEvidence = evidence.filter((item) =>
     section.evidenceRequirements.some((requirement) =>
-      evidenceKindsForRequirement(requirement.kind).includes(item.kind),
+      requirementMatchesEvidence(requirement, item),
     ),
   );
   const missingRequirements = section.evidenceRequirements.filter(
     (requirement) =>
       requirement.required &&
-      !matchedEvidence.some((item) =>
-        evidenceKindsForRequirement(requirement.kind).includes(item.kind),
-      ),
+      !matchedEvidence.some((item) => requirementMatchesEvidence(requirement, item)),
   );
   const diagnostics: Diagnostic[] = missingRequirements.map((requirement) => ({
     code: 'required-evidence-missing',

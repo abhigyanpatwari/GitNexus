@@ -20,10 +20,10 @@ afterEach(async () => {
   await Promise.all(tempDirs.splice(0).map((dir) => fs.rm(dir, { recursive: true })));
 });
 
-function fixture(generationId: string) {
+function fixture(generationId: string, entryContent = '# Architecture') {
   const profile = resolveTemplateProfile('arc42');
   const files = {
-    'architecture-description.md': '# Architecture',
+    'architecture-description.md': entryContent,
     'context-scope.md': '# Context',
     'coverage.json': '{"status":"passed"}\n',
     'document_plan.json': '{"status":"generated"}\n',
@@ -119,6 +119,20 @@ describe('versioned wiki publication', () => {
 
     expect(second.current.generationId).toBe('generation-1');
     expect(second.current.previousGenerationId).toBeUndefined();
+    expect(await fs.readdir(path.join(wikiDir, '.generations'))).toEqual(['generation-1']);
+  });
+
+  it('rejects a generationId collision when the same id is republished with different content', async () => {
+    const wikiDir = await tempWiki();
+    await new WikiPublisher().publish({ wikiDir, ...fixture('generation-1') });
+
+    // 相同 generationId 但不同内容应触发内容寻址冲突,publisher 不会用新内容覆盖既有身份
+    await expect(
+      new WikiPublisher().publish({
+        wikiDir,
+        ...fixture('generation-1', '# Different Architecture\n'),
+      }),
+    ).rejects.toThrow('Wiki generation identity collision');
     expect(await fs.readdir(path.join(wikiDir, '.generations'))).toEqual(['generation-1']);
   });
 

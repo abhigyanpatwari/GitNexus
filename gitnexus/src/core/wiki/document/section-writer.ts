@@ -1,6 +1,6 @@
 import type { CallLLMOptions, LLMResponse } from '../llm-client.js';
 import { renderPrompt } from '../profiles/render-prompt.js';
-import type { PromptSpec, TemplateProfileId } from '../profiles/types.js';
+import type { DiagramPolicy, PromptSpec, TemplateProfileId } from '../profiles/types.js';
 import type { SectionDraftResponse } from './claim.js';
 import type { SectionBlock } from './claim.js';
 import type { SectionPayload } from './planner.js';
@@ -89,6 +89,45 @@ function countMermaidNodes(source: string): number {
   }
   for (const match of source.matchAll(targetPattern)) nodes.add(match[1]);
   return nodes.size;
+}
+
+// 根据 Mermaid 源首行判断图类型,用于校验 profile diagramPolicy.kinds
+function detectDiagramKind(source: string): DiagramPolicy['kinds'][number] | undefined {
+  const head =
+    source
+      .split('\n')
+      .find((line) => line.trim() !== '')
+      ?.trim() ?? '';
+  if (/^c4context\b/i.test(head)) return 'c4-context';
+  if (/^c4container\b/i.test(head)) return 'c4-container';
+  if (/^sequenceDiagram\b/i.test(head)) return 'mermaid-sequence';
+  if (/^(graph|flowchart)\b/i.test(head)) return 'mermaid-flowchart';
+  return undefined;
+}
+
+// 按 profile diagramPolicy 校验 diagram block:allowed 开关、maxNodes 上限、kinds 白名单
+function validateDiagramPolicy(blocks: readonly SectionBlock[], policy: DiagramPolicy): void {
+  if (!policy.allowed) {
+    if (blocks.some((block) => block.type === 'diagram')) {
+      throw new Error('profile diagramPolicy disallows diagram blocks');
+    }
+    return;
+  }
+  for (const block of blocks) {
+    if (block.type !== 'diagram') continue;
+    const nodeCount = countMermaidNodes(block.source);
+    if (nodeCount === 0 || nodeCount > policy.maxNodes) {
+      throw new Error(
+        `diagram must contain 1 to ${policy.maxNodes} nodes per profile diagramPolicy; got ${nodeCount}`,
+      );
+    }
+    if (policy.kinds.length > 0) {
+      const kind = detectDiagramKind(block.source);
+      if (kind === undefined || !policy.kinds.includes(kind)) {
+        throw new Error('diagram kind is not allowed by profile diagramPolicy');
+      }
+    }
+  }
 }
 
 function validateEngineeringDiagram(sectionId: string, blocks: readonly SectionBlock[]): void {
@@ -197,6 +236,7 @@ export interface WriteSectionRequest {
   invokeLLM: SectionLLMInvoker;
   transformSystemPrompt?: (systemPrompt: string) => string;
   llmOptions?: CallLLMOptions;
+  diagramPolicy?: DiagramPolicy;
 }
 
 export class SectionWriter {
@@ -234,6 +274,9 @@ export class SectionWriter {
         draft = parseGeneratedDraft(candidate, request.sectionId, knownEvidenceIds);
         if (request.profileId === 'engineering-wiki') {
           validateEngineeringDiagram(request.sectionId, draft.blocks);
+        }
+        if (request.diagramPolicy) {
+          validateDiagramPolicy(draft.blocks, request.diagramPolicy);
         }
         break;
       } catch (error) {
