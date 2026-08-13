@@ -47,6 +47,129 @@ export function extractTemplateArguments(text: string): string[] | undefined {
   return args.length > 0 ? args : undefined;
 }
 
+/**
+ * The type ARGUMENTS a reference applies to its base, read from the reference's
+ * own source spelling: `IValidator<string>` → `['string']`, `Base[User]` →
+ * `['User']`, `Repository` → `undefined`.
+ *
+ * The inverse direction of {@link erasedTypeApplication}, which rebuilds the
+ * `Base<Args>` SPELLING so a lookup can stay grounded; this returns the
+ * ARGUMENTS so a consumer that has already resolved the base can ask which
+ * instantiation it was (#2912).
+ *
+ * Both bracket families count, because both spell type application in a
+ * heritage position — `class C : IValidator<string>` and Go's `struct { Base[int] }`
+ * / Python's `class C(Base[User])`. What is NOT accepted is anything that fails
+ * to be exactly one balanced, non-empty list closing at the very end:
+ *
+ *   - `Base(args)`      — a C# primary-constructor base, not an application.
+ *   - `Foo[]`           — an empty list is an array spelling, not arguments.
+ *   - `(Int) -> Unit`   — a Kotlin function type, whose `>` closes nothing.
+ *
+ * Declining is the safe outcome for all of them: absence reads as "unknown"
+ * and every consumer of this fails open on it.
+ */
+export function typeApplicationArguments(spelling: string): string[] | undefined {
+  const text = spelling.trim();
+  const inner = balancedTailList(text, text.search(OPENING_BRACKET));
+  if (inner === undefined) return undefined;
+  const args = splitTopLevelArguments(inner);
+  return args.length > 0 ? args : undefined;
+}
+
+const OPENING_BRACKET = /[<[]/;
+
+/**
+ * The contents of the ONE balanced bracket list that opens at `start` and closes
+ * on the LAST character of `text` — `Repo<User>` from index 4 yields `User`.
+ *
+ * `undefined` for everything else, which is what both callers need: a list that
+ * closes early (`User[][]`, `Repo<User>?`), one that never closes
+ * (`Map<String, (Int) -> Unit>`), an empty one (`User[]`), one whose brackets
+ * cross families (`Foo<Bar]>`), or no bracket at all (`start === -1`). Shared
+ * because the rule is one rule — `erasedTypeApplication` rebuilds the spelling
+ * from it and `typeApplicationArguments` splits it, and two copies of a scan
+ * this fiddly would be free to disagree about `User[][]`.
+ */
+function balancedTailList(text: string, start: number): string | undefined {
+  const opener = text[start];
+  if (opener !== '<' && opener !== '[') return undefined;
+  // A STACK of expected closers rather than one counter for one family: a
+  // counter scanning `Foo<Bar]>` never sees the `]`, reaches the final `>` at
+  // depth zero and reports `Bar]` as a balanced argument list. Every closer must
+  // now match the opener it actually closes, so a crossed pair declines — which
+  // is what the contract above says and what both callers read as "unknown".
+  const expected: string[] = [];
+  for (let i = start; i < text.length; i++) {
+    const ch = text[i];
+    if (ch === '<' || ch === '[') {
+      expected.push(ch === '<' ? '>' : ']');
+      continue;
+    }
+    if (ch !== '>' && ch !== ']') continue;
+    if (expected.pop() !== ch) return undefined;
+    if (expected.length === 0) {
+      return i === text.length - 1 && i > start + 1 ? text.slice(start + 1, i) : undefined;
+    }
+  }
+  return undefined;
+}
+
+/** Split `string, Map<int, bool>` on the commas that are not inside a nested
+ *  list. Tracks BOTH bracket families so a mixed spelling (`List<Dict[a, b]>`)
+ *  does not split inside the inner one. */
+function splitTopLevelArguments(inner: string): string[] {
+  const args: string[] = [];
+  let depth = 0;
+  let tokenStart = 0;
+  const push = (end: number): void => {
+    const token = inner.slice(tokenStart, end).trim();
+    if (token.length > 0) args.push(token);
+  };
+  for (let i = 0; i < inner.length; i++) {
+    const ch = inner[i];
+    if (ch === '<' || ch === '[') depth++;
+    else if (ch === '>' || ch === ']') depth--;
+    else if (ch === ',' && depth === 0) {
+      push(i);
+      tokenStart = i + 1;
+    }
+  }
+  push(inner.length);
+  return args;
+}
+
+/**
+ * Index of the `(` that matches the trailing `)` of `text`, or -1 when the text
+ * does not end in a balanced call suffix.
+ *
+ * Shared for the same reason as {@link balancedTailList}: this scan is fiddly
+ * enough that two copies would be free to disagree, and it has two unrelated
+ * readers — splitting a receiver chain at its call, and stripping a base's
+ * constructor invocation off a heritage spelling.
+ */
+export function matchingOpenParen(text: string): number {
+  if (!text.endsWith(')')) return -1;
+  let depth = 0;
+  for (let i = text.length - 1; i >= 0; i--) {
+    const ch = text[i];
+    if (ch === ')') depth++;
+    else if (ch === '(') {
+      depth--;
+      if (depth === 0) return i;
+    }
+  }
+  return -1;
+}
+
+/** Drop a balanced `(...)` that ENDS the text — the argument list of a base's
+ *  constructor invocation, as in `record R : Base<int>(x)` or Kotlin
+ *  `class C : Bar<Int>()`. Anything else is returned unchanged. */
+export function stripTrailingCallSuffix(text: string): string {
+  const open = matchingOpenParen(text);
+  return open === -1 ? text : text.slice(0, open).trimEnd();
+}
+
 export function stripTemplateArguments(text: string): string {
   const start = text.indexOf('<');
   if (start === -1) return text;
@@ -151,21 +274,8 @@ export function erasedTypeApplication(typeRef: TypeRef): string | undefined {
   if (spelling === undefined) return undefined;
   const base = typeRef.rawName.trim();
   if (base.length === 0 || !spelling.startsWith(base)) return undefined;
-  const rest = spelling.slice(base.length).trimStart();
-  const opener = rest[0];
-  if (opener !== '<' && opener !== '[') return undefined;
-  const closer = opener === '<' ? '>' : ']';
-  let depth = 0;
-  for (let i = 0; i < rest.length; i++) {
-    if (rest[i] === opener) depth++;
-    else if (rest[i] === closer) {
-      depth--;
-      // The list the spelling opened must close on the LAST character, and must
-      // have held something: `Repo[User]` yes, `User[]` no, `User[][]` no.
-      if (depth === 0) {
-        return i === rest.length - 1 && i > 1 ? `${base}<${rest.slice(1, i)}>` : undefined;
-      }
-    }
-  }
-  return undefined;
+  // The list must open immediately after the base and close on the LAST
+  // character, holding something: `Repo[User]` yes, `User[]` no, `User[][]` no.
+  const inner = balancedTailList(spelling.slice(base.length).trimStart(), 0);
+  return inner === undefined ? undefined : `${base}<${inner}>`;
 }
