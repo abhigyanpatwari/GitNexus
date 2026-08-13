@@ -50,6 +50,7 @@ import {
   captureJavaSpringConditionalFacts,
   type JavaSpringConditionalFact,
 } from './spring-conditionals.js';
+import { synthesizeJavaRecordComponentAccessorCaptures } from './record-components.js';
 
 /** Declaration anchors that carry function-like arity metadata. */
 const FUNCTION_DECL_TAGS = ['@declaration.method', '@declaration.constructor'] as const;
@@ -397,6 +398,7 @@ export function emitJavaScopeCaptures(
     ...synthesizeJavaInheritanceReferences(tree.rootNode),
     ...synthesizeJavaExplicitConstructorReferences(tree.rootNode),
     ...synthesizeJavaAnonymousClassDeclarations(tree.rootNode),
+    ...synthesizeJavaRecordComponentAccessorCaptures(tree.rootNode),
     ...synthesizeCallableFlowCaptures(tree.rootNode, JAVA_CALLABLE_CAPTURE_OPTIONS),
   ];
 }
