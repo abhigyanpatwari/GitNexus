@@ -467,7 +467,6 @@ import type { ParseWorkerResult } from '../core/ingestion/workers/parse-worker.j
 //
 // Still open at this commit: #2891 also claims 59, which main now holds. That is
 // a live exact clash for #2891 to renumber, not for this branch.
-// RE-CHECK AGAINST origin/main IMMEDIATELY BEFORE MERGING.
 //
 // 60 -> 62 for the two optional `ParsedImport` fields the cycle-checker fix
 // adds: `typeOnly` (TS `import type`) and `runsOnlyWhenCalled` (an import
@@ -503,10 +502,15 @@ import type { ParseWorkerResult } from '../core/ingestion/workers/parse-worker.j
 // one, and the accessor definitions it materializes are not in this branch's
 // ParsedFile shape at all.
 //
-// Note for whoever merges next: #2935 and #2840 BOTH claim 61, independently of
-// this branch. That clash is still live and is theirs to resolve.
+// 63 -> 64 for Java enum heritage plus annotated class, record, interface,
+// enum, and explicit-super base names emitting corrected captures (#2918).
+// Warm v63 ParsedFiles lack those captures and must be re-extracted.
+// 64 -> 66 adds the synthetic-declaration sidecar used to keep anonymous class
+// implementations from evicting ordinary implementors at the dispatch cap.
+// This PR already published a v64 head, while #2936 uses 65 for its independent
+// record accessor shape, so 66 keeps all three cached shapes distinct.
 // RE-CHECK AGAINST origin/main IMMEDIATELY BEFORE MERGING.
-const SCHEMA_BUMP = 63;
+const SCHEMA_BUMP = 66;
 const GITNEXUS_PKG_VERSION = (() => {
   try {
     // package.json sits at gitnexus/package.json — two levels up from

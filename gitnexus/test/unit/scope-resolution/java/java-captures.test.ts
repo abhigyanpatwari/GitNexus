@@ -90,7 +90,7 @@ describe('emitJavaScopeCaptures — constructor reference names (F35 #1928)', ()
   });
 });
 
-describe('emitJavaScopeCaptures — record interface heritage (#2900)', () => {
+describe('emitJavaScopeCaptures — record and enum interface heritage (#2900, #2918)', () => {
   it('captures simple, generic, and qualified record interfaces by lookup name', () => {
     const refs = inheritanceRefs(
       'record User(int id) implements Named, Comparable<User>, audit.Auditable {}',
@@ -99,9 +99,41 @@ describe('emitJavaScopeCaptures — record interface heritage (#2900)', () => {
     expect(refs).toEqual(['Auditable', 'Comparable', 'Named']);
   });
 
-  it('does not yet emit enum heritage (#2918)', () => {
-    // Delete this characterization when #2918 adds enum interface heritage.
-    expect(inheritanceRefs('enum Status implements Named { ACTIVE }')).toEqual([]);
+  it('captures simple, generic, and qualified enum interfaces by lookup name', () => {
+    const refs = inheritanceRefs(
+      'enum Status implements Named, Tagged<Status>, audit.Auditable { ACTIVE }',
+    );
+
+    expect(refs).toEqual(['Auditable', 'Named', 'Tagged']);
+  });
+
+  it('unwraps type-use annotations on enum interface names', () => {
+    const refs = inheritanceRefs(
+      'enum Status implements @Marker Named, @Marker Tagged<Status>, audit.@Marker Auditable { ACTIVE }',
+    );
+
+    expect(refs).toEqual(['Auditable', 'Named', 'Tagged']);
+  });
+
+  it.each([
+    ['class extends', 'class Child extends @Marker Base {}', ['Base']],
+    ['class implements', 'class Child implements @Marker Named {}', ['Named']],
+    ['record implements', 'record Child(int id) implements @Marker Named {}', ['Named']],
+    ['interface extends', 'interface Child extends @Marker Named {}', ['Named']],
+  ])('unwraps type-use annotations for %s', (_label, source, expected) => {
+    expect(inheritanceRefs(source)).toEqual(expected);
+  });
+
+  it('does not emit an empty inheritance name from a torn annotated base', () => {
+    expect(inheritanceRefs('enum Status implements @Marker {')).toEqual([]);
+  });
+
+  it('preserves the enum constant-body link while adding enum interface heritage', () => {
+    expect(
+      inheritanceRefs(
+        'enum Status implements Named { ACTIVE { public String label() { return "active"; } } }',
+      ),
+    ).toEqual(['Named', 'Status']);
   });
 });
 
@@ -118,6 +150,11 @@ describe('emitJavaScopeCaptures — explicit constructor invocations (F38 #1928)
     const src = 'class C extends Box<String> { C() { super(); } }';
     const refs = ctorRefs(src);
     expect(refs.some((r) => r.name === 'Box' && r.arity === '0')).toBe(true);
+  });
+
+  it('unwraps an annotated superclass for explicit `super(...)`', () => {
+    const refs = ctorRefs('class C extends @Marker Base { C() { super(); } }');
+    expect(refs.some((r) => r.name === 'Base' && r.arity === '0')).toBe(true);
   });
 
   it('captures `this(...)` as a constructor ref to the enclosing class name', () => {
