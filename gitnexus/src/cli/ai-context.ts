@@ -384,7 +384,7 @@ async function upsertGitNexusSection(
         const statsLine = noStats
           ? `${statsPrefix} **${projectName}**`
           : `${statsPrefix} **${projectName}** (${newStatsInner})`;
-        const updatedSection = existingSection.replace(statsPattern, statsLine);
+        const updatedSection = existingSection.replace(statsPattern, () => statsLine);
         // Count-only delta — leave the committed lean block alone (#2907). A
         // project rename, or --no-stats dropping the parenthetical, still writes.
         if (stripVolatileCounts(updatedSection) === stripVolatileCounts(existingSection)) {

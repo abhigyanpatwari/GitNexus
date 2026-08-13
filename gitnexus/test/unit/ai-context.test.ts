@@ -1511,7 +1511,7 @@ indexed by GitNexus as **OldName** (10 symbols, 20 relationships, 3 execution fl
 `;
       await fs.writeFile(path.join(dir, 'CLAUDE.md'), original, 'utf-8');
 
-      const result = await generateAIContextFiles(dir, storage, 'NewName', {
+      const result = await generateAIContextFiles(dir, storage, 'Repo$1Name', {
         nodes: 55,
         edges: 66,
         processes: 7,
@@ -1519,7 +1519,7 @@ indexed by GitNexus as **OldName** (10 symbols, 20 relationships, 3 execution fl
 
       expect(result.files).toContain('CLAUDE.md (updated)');
       expect(await fs.readFile(path.join(dir, 'CLAUDE.md'), 'utf-8')).toContain(
-        'indexed by GitNexus as **NewName** (55 symbols, 66 relationships, 7 execution flows). Custom.',
+        'indexed by GitNexus as **Repo$1Name** (55 symbols, 66 relationships, 7 execution flows). Custom.',
       );
     } finally {
       await fs.rm(dir, { recursive: true, force: true });
