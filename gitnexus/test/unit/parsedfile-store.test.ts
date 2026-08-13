@@ -406,6 +406,7 @@ describe('parsedfile-store', () => {
         filePath: 'a.c',
         type: 'Function',
         qualifiedName: 'fn',
+        isSynthetic: true,
       };
       const pf = {
         filePath: 'a.c',
@@ -445,6 +446,7 @@ describe('parsedfile-store', () => {
         filePath: 'a.c',
         type: 'Function',
         qualifiedName: 'fn',
+        isSynthetic: true,
       });
     } finally {
       await rm(dir, { recursive: true, force: true });
