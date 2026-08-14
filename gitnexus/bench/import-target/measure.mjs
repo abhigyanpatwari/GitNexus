@@ -82,12 +82,27 @@
  *     component of the IMPORTER, so per-import cost is quadratic in path depth:
  *     measured depth_ratio 7.39, by far the largest here, and the reason its
  *     depth budget is 11 rather than the ~2 most languages carry.
- *   - javascript, typescript, vue: one resolver (`resolveTsTarget`) behind
+ *   - javascript, typescript, vue: one resolver (`resolveTsModule`) behind
  *     three adapters, so the three corpora are the same shape and differ only
- *     in what actually differs — the extension list (`.js` vs `.ts`) and, for
- *     Vue, the tsconfig alias branch (see `VUE_TSCONFIG`). All three are
- *     miss-dominated bare specifiers, because a relative import resolves by
- *     exact `Set.has` and never reaches the leg that had no index.
+ *     in what actually differs — the extension list (`.js` vs `.ts`) and which
+ *     config leg the arm exercises (`tsBaseUrlConfig` vs `vueTsconfig`). All
+ *     three are miss-dominated bare specifiers.
+ *
+ *     What they measure CHANGED with #2953. The leg used to be `suffixResolve`,
+ *     a repo-wide search for a path ending in the specifier; these three no
+ *     longer have it, and resolve only against a declared tsconfig mapping or a
+ *     package manifest. Two consequences the numbers show:
+ *
+ *       - the arms need a `resolutionConfig` to resolve anything at all. With
+ *         none they all reported `resolved: 0` — every import correctly
+ *         external — while still printing a clean scaling ratio, which is a
+ *         bench measuring an empty branch and passing exactly like one
+ *         measuring a full one.
+ *       - `depth_ratio` is now structurally flat for them, and that is the
+ *         result rather than a weakened arm: declared resolution never walks
+ *         path components, so the `deep` arm's uniform prefix reaches the
+ *         config (see `tsBaseUrlFor`) and its cost is the same keyed lookup the
+ *         other arms pay.
  *   - c, cpp: `resolveCppImportTarget` delegates to `resolveCImportTarget`, so
  *     the two share a resolver and differ in extension set and in which adapter
  *     builds the augmented set. Cost is a basename bucket walk with a
@@ -196,9 +211,10 @@
  *   - of the eight added later, swift (3.28) and c/cpp (2.54/2.64) are the two
  *     that scan a bucket, and they scan DIFFERENT buckets: swift's is the
  *     module's own file list, which it returns, and C's is the basename bucket
- *     its suffix fallback walks. python, javascript, typescript and vue answer
- *     from keyed maps and sit at 1.03-1.10, so they keep the linear budget and
- *     that immunity is their assertion, exactly as for ruby and kotlin;
+ *     its suffix fallback walks. python answers from keyed maps and sits at
+ *     1.03-1.10, and javascript, typescript and vue answer from a declared
+ *     config (#2953) — so all four keep the linear budget and that immunity is
+ *     their assertion, exactly as for ruby and kotlin;
  *   - rust's collide arm is the one that is NOT a shared-leaf layout, and the
  *     reason is in the list above: file count is not an axis its cost has, so a
  *     shared-leaf rust arm would have been an arm that cannot fail. Its collide
@@ -556,7 +572,6 @@ const HEAP_BUDGETED = [
   'ruby',
   'php',
   'java',
-  'javascript',
   'python',
   'c',
   // Promoted once every language was actually measured. Each retains a real
@@ -580,10 +595,21 @@ const HEAP_BUDGETED = [
   'kotlin',
   'dart',
   'go',
-  'typescript',
-  'vue',
   'cpp',
 ];
+// javascript, typescript and vue were budgeted here until #2953 and are now
+// BOUNDED, which is a demotion in gate strength and a promotion in what the
+// number means. They retained ~26.7 MiB each because they built a per-pass
+// `SuffixIndex` over the whole file list; they no longer build one at all,
+// because declared resolution derives nothing from the file set — a candidate
+// comes from a tsconfig mapping or a manifest and is checked with one
+// `Set.has`. The readings are 0-16 B.
+//
+// A floor over a reading at or below its own noise gates the noise, which is
+// the same reason rust sits in this tier at 16 B — so they take a bound and no
+// floor. The bound is what still matters: it catches these three growing an
+// index again, which is the re-entry condition for the cost #2911 and #1918
+// were about.
 
 /**
  * The arms handed the fifth `context` argument — `{ parsedFiles, parsedImport }`
@@ -649,17 +675,57 @@ const CSPROJ_CONFIGS = [
   { rootNamespace: 'Lib', projectDir: '' },
 ];
 /**
- * The `tsconfigPaths` the Vue arm threads as `resolutionConfig`.
+ * The `resolutionConfig` the ts-family arms thread (#2953).
  *
- * The Vue adapter is `resolveTsTarget` with `language: TypeScript` and nothing
- * else, so with a null config its arm would be a byte-for-byte re-run of the
- * TypeScript one over a differently-spelled corpus. The alias branch
- * (`standard.ts:57-70`) is the one leg of the shared resolver that neither the
- * `javascript` arm (which pins `tsconfigPaths: null`) nor the `typescript` arm
- * here reaches, so wiring it is what makes this a third measurement rather than
- * a third copy — and every local Vue import below is spelled `@/…`.
+ * These three used to run with `tsconfigPaths: null` for javascript and
+ * typescript and an alias map for vue, because the leg being measured was
+ * `suffixResolve` — a repo-wide search for a path ending in the specifier,
+ * which needs no configuration to answer and answered even when nothing
+ * declared the import. #2953 deleted that leg for the ts family: a specifier
+ * now resolves only against a declared tsconfig mapping or a package manifest.
+ *
+ * With no config, therefore, all three arms resolve NOTHING — every import is
+ * correctly external — and the bench measures an empty branch while reporting a
+ * perfect scaling ratio. A bench that measures nothing passes exactly like one
+ * that measures something, so each arm is given the config its corpus is
+ * spelled for, and the two configs cover the two legs the new resolver has:
+ *
+ *  - `TS_BASE_URL` — `baseUrl` at the repo root, so `src/mod3/file7` resolves
+ *    the way a `baseUrl` project's absolute import does. Used by javascript and
+ *    typescript.
+ *  - `vueTsconfig` — a `paths` PATTERN, which is a different branch:
+ *    longest-prefix selection and `*` substitution, then a candidate probe per
+ *    target. Every local Vue import below is spelled `@/…`, so the vue arm
+ *    stays a third measurement rather than a third copy — the same role it had
+ *    before, now against the branch that replaced the alias rewrite.
+ *
+ * Not covered here: the workspace-manifest leg
+ * (`node-workspace-packages.ts`), which is a `Map.get` on a package name and
+ * does not scale with the file set.
  */
-const VUE_TSCONFIG = { tsconfigPaths: { aliases: new Map([['@/', 'src/']]), baseUrl: '.' } };
+const tsBaseUrlConfig = (baseUrl) => ({
+  tsconfigs: { scopes: [{ dir: '', baseUrl, paths: [] }] },
+  nodeWorkspacePackages: null,
+});
+const vueTsconfig = (baseUrl) => ({
+  tsconfigs: {
+    scopes: [
+      { dir: '', baseUrl, paths: [{ pattern: '@/*', targets: [joinBase(baseUrl, 'src/*')] }] },
+    ],
+  },
+  nodeWorkspacePackages: null,
+});
+const joinBase = (baseUrl, rest) => (baseUrl === '' ? rest : `${baseUrl}/${rest}`);
+/**
+ * The `deep` arm prepends a UNIFORM `d0/…/d15/` prefix to every path
+ * (`buildFiles`), and the import spellings do not change. Under the old suffix
+ * matcher that was the point: the resolver walked path components, so depth was
+ * the cost. Declared resolution never walks — the config names an exact base —
+ * so the prefix has to reach the config or the whole arm resolves nothing and
+ * measures the miss path at depth instead of the hit path at depth.
+ */
+const tsBaseUrlFor = (pad) =>
+  pad === 0 ? '' : Array.from({ length: pad }, (_, n) => `d${n}`).join('/');
 /** Keyed by LAYOUT name, so there is no `csharp_csproj` row: `buildFiles`
  *  aliases that arm to `csharp` before this table is read. */
 const EXTENSION = {
@@ -1541,14 +1607,22 @@ function buildRepo(lang, fileCount, pad = 0, shape = 'unique') {
  * `perFileSet` memos keyed on this ARRAY's identity, so reusing one array would
  * hide their build from rep 2 onward and `fastest()` reports the minimum.
  */
-function newPass(lang, files) {
+function newPass(lang, files, pad = 0) {
   if (HEADER_EXTENSION[lang] !== undefined) {
     const sources = [];
     const headers = [];
     for (const f of files) (f.endsWith(HEADER_EXTENSION[lang]) ? headers : sources).push(f);
     return { allFilePaths: new Set(sources), config: new Set(headers) };
   }
-  if (lang === 'vue') return { allFilePaths: new Set(files), config: VUE_TSCONFIG };
+  if (lang === 'vue') {
+    return { allFilePaths: new Set(files), config: vueTsconfig(tsBaseUrlFor(pad)) };
+  }
+  // javascript and typescript resolve their `src/mod{d}/file{j}` locals through
+  // `baseUrl`; without a config every arm would correctly resolve nothing and
+  // measure an empty branch (#2953 — see `tsBaseUrlConfig`).
+  if (lang === 'javascript' || lang === 'typescript') {
+    return { allFilePaths: new Set(files), config: tsBaseUrlConfig(tsBaseUrlFor(pad)) };
+  }
   if (CONTEXT_LANGS.includes(lang)) {
     const parsedFiles = buildParsedFiles(lang, files);
     return {
@@ -1573,8 +1647,8 @@ const contextFor = (pass, parsedImport) =>
 
 /** The timed loop. One `newPass` per pass, so every pass pays exactly one index
  *  build — see `newPass`. */
-function resolveAll(lang, files, imports) {
-  const pass = newPass(lang, files);
+function resolveAll(lang, files, imports, pad = 0) {
+  const pass = newPass(lang, files, pad);
   let sink = 0;
   for (const [from, target] of imports) {
     const hit = resolveOne(lang, from, target, pass);
@@ -1665,7 +1739,9 @@ function resolveOne(lang, from, target, pass) {
       { fromFile: from, allFilePaths, parsedFiles: pass.parsedFiles },
     );
   }
-  if (lang === 'javascript') return jsResolveImportTarget(target, from, allFilePaths);
+  if (lang === 'javascript') {
+    return jsResolveImportTarget(target, from, allFilePaths, pass.config);
+  }
   if (lang === 'vue') return vueResolveImportTarget(target, from, allFilePaths, pass.config);
   // TypeScript, C and C++ go through the registered `ScopeResolver` hook rather
   // than an inner resolver, because for all three the thing under test lives IN
@@ -1674,7 +1750,7 @@ function resolveOne(lang, from, target, pass) {
   // is private to theirs. Calling past it would benchmark a copy of the adapter
   // instead of the adapter.
   if (lang === 'typescript') {
-    return typescriptScopeResolver.resolveImportTarget(target, from, allFilePaths, undefined);
+    return typescriptScopeResolver.resolveImportTarget(target, from, allFilePaths, pass.config);
   }
   if (lang === 'c') {
     return cScopeResolver.resolveImportTarget(target, from, allFilePaths, pass.config);
@@ -1708,8 +1784,8 @@ function resolveOne(lang, from, target, pass) {
  *  Deliberately NOT shared with `resolveAll`, which is the TIMED loop: the memo
  *  that makes this pass cheap is exactly what would hide the cost that loop
  *  exists to measure. */
-function identityPass(lang, files, imports) {
-  const pass = newPass(lang, files);
+function identityPass(lang, files, imports, pad = 0) {
+  const pass = newPass(lang, files, pad);
   const outcomes = new Set();
   const wasNullByKey = new Map();
   let resolved = 0;
@@ -1747,12 +1823,12 @@ function fastest(values) {
   return Math.min(...values);
 }
 
-function timeResolution(lang, files, imports, reps) {
-  for (let w = 0; w < WARMUP; w++) resolveAll(lang, files, imports);
+function timeResolution(lang, files, imports, reps, pad = 0) {
+  for (let w = 0; w < WARMUP; w++) resolveAll(lang, files, imports, pad);
   const samples = [];
   for (let r = 0; r < reps; r++) {
     const t0 = performance.now();
-    resolveAll(lang, files, imports);
+    resolveAll(lang, files, imports, pad);
     samples.push(performance.now() - t0);
   }
   return fastest(samples);
@@ -1774,10 +1850,10 @@ function timeResolution(lang, files, imports, reps) {
  * reads several times high, which would push the expensive languages to
  * `REPS_MIN` for the wrong reason.
  */
-function probeMs(lang, files, imports) {
-  for (let w = 0; w < WARMUP; w++) resolveAll(lang, files, imports);
+function probeMs(lang, files, imports, pad = 0) {
+  for (let w = 0; w < WARMUP; w++) resolveAll(lang, files, imports, pad);
   const t0 = performance.now();
-  resolveAll(lang, files, imports);
+  resolveAll(lang, files, imports, pad);
   return performance.now() - t0;
 }
 
@@ -1813,8 +1889,8 @@ function probeMs(lang, files, imports) {
  * Set, which is part of what they hold; for every language it includes the one
  * or two resolve-cache entries the probe leaves behind.
  */
-function retainedPassBytes(lang, files, probeTarget) {
-  const pass = newPass(lang, files);
+function retainedPassBytes(lang, files, probeTarget, pad = 0) {
+  const pass = newPass(lang, files, pad);
   // See `HEAP_RETAINED`: nothing built for this language is released until the
   // next one starts, so no deferred collection can land between the two samples
   // below and cancel part of the delta.
@@ -2169,8 +2245,8 @@ for (const lang of LANGS) {
   let reps = null;
   for (const [name, fileCount, pad, shape] of ARMS) {
     const { files, imports } = buildRepo(lang, fileCount, pad, shape);
-    const { outcomes, resolved } = identityPass(lang, files, imports);
-    if (reps === null) reps = repsFor(probeMs(lang, files, imports));
+    const { outcomes, resolved } = identityPass(lang, files, imports, pad);
+    if (reps === null) reps = repsFor(probeMs(lang, files, imports, pad));
     scales[name] = {
       files: files.length,
       imports: imports.length,
@@ -2178,7 +2254,7 @@ for (const lang of LANGS) {
       // resolved share would still produce a "valid" fingerprint over far less.
       resolved,
       distinct_outcomes: outcomes.size,
-      ms: Number(timeResolution(lang, files, imports, reps).toFixed(3)),
+      ms: Number(timeResolution(lang, files, imports, reps, pad).toFixed(3)),
       fingerprint: fingerprint(outcomes),
     };
   }

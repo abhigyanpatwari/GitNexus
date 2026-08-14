@@ -21,16 +21,13 @@ import type { ScopeResolver } from '../../scope-resolution/contract/scope-resolv
 import { simpleKey } from '../../scope-resolution/graph-bridge/node-lookup.js';
 import type { ScopeResolutionIndexes } from '../../model/scope-resolution-indexes.js';
 import { typescriptProvider } from '../typescript.js';
-import { loadTsconfigPaths, type TsconfigPaths } from '../../language-config.js';
-import { buildImportPassCache } from '../../import-resolvers/pass-cache.js';
-import { perFileSet } from '../../import-resolvers/per-file-set.js';
-import { indexOnlyElementType } from '../../type-extractors/shared.js';
+import { loadTsconfigIndex, type TsconfigIndex } from './tsconfig.js';
 import {
-  typescriptArityCompatibility,
-  typescriptMergeBindings,
-  resolveTsTarget,
-  type TsResolveContext,
-} from './index.js';
+  loadNodeWorkspacePackages,
+  type NodeWorkspacePackages,
+} from '../../import-resolvers/node-workspace-packages.js';
+import { indexOnlyElementType } from '../../type-extractors/shared.js';
+import { typescriptArityCompatibility, typescriptMergeBindings, resolveTsTarget } from './index.js';
 import {
   getNuxtAutoImportEntry,
   hasNuxtAutoImports,
@@ -40,7 +37,10 @@ import {
 
 /** Shape the orchestrator threads in via `RunScopeResolutionInput.resolutionConfig`. */
 interface TypescriptResolutionConfig {
-  readonly tsconfigPaths: TsconfigPaths | null;
+  /** Every tsconfig in the repo, `extends` resolved (#2953). */
+  readonly tsconfigs: TsconfigIndex | null;
+  /** Every in-repo `package.json`, for workspace-package resolution (#2953). */
+  readonly nodeWorkspacePackages: NodeWorkspacePackages | null;
   /** Nuxt/Nitro auto-import map. Null for non-Nuxt projects. */
   readonly nuxtAutoImports: NuxtAutoImportConfig | null;
 }
@@ -56,43 +56,22 @@ const TYPESCRIPT_TYPE_ONLY_BINDING_TYPES = new Set<NodeLabel>([
 ]);
 
 /**
- * Memoized on the `allFilePaths` Set identity, like every other language's
- * import index (`import-resolvers/workspace-file-index.ts` and friends).
+ * Build the `resolveImportTarget` adapter.
  *
- * This used to be a single-slot `let cached` invalidated by
- * `cached.key !== allFilePaths` — correct for one file set and degenerate for
- * two: alternating calls across two sets rebuilt everything every time.
- * Measured here at 4000 files × 400 imports: 12.0 ms for one set, 1438.2 ms
- * alternating between two (120x). A `WeakMap` has no such state to thrash, and
- * it is what lets this adapter carry the standard
- * `expectDistinctFileSetsGetOwnIndex` guard the other languages carry
- * (`test/integration/typescript-import-index-reuse.test.ts`).
- *
- * The Set must be passed THROUGH by the caller, never copied: a defensive
- * `new Set(allFilePaths)` at the adapter boundary hands a fresh key per import
- * and restores the per-import rebuild (PR #1918 review P1).
- */
-const tsPassCacheFor = perFileSet(buildImportPassCache);
-
-/**
- * Build a `resolveImportTarget` adapter that reads the memoized per-file-set
- * state above rather than re-deriving it on every import lookup.
+ * No per-file-set memo any more: the suffix index it existed to amortize is
+ * gone with #2953. Real resolution derives nothing from the file list — every
+ * candidate comes from a config the repo declares, and checking one is a
+ * `Set.has` — so there is nothing left to cache per pass.
  */
 function makeTsResolveImportTarget(): ScopeResolver['resolveImportTarget'] {
   return (targetRaw, fromFile, allFilePaths, resolutionConfig) => {
-    const cached = tsPassCacheFor(allFilePaths);
-
     const cfg = resolutionConfig as TypescriptResolutionConfig | undefined;
-    const ws: TsResolveContext = {
+    return resolveTsTarget(targetRaw, {
       fromFile,
-      allFilePaths: cached.allFilePaths,
-      allFileList: cached.allFileList,
-      normalizedFileList: cached.normalizedFileList,
-      index: cached.index,
-      resolveCache: cached.resolveCache,
-      tsconfigPaths: cfg?.tsconfigPaths ?? null,
-    };
-    return resolveTsTarget(targetRaw, ws);
+      allFilePaths,
+      tsconfigs: cfg?.tsconfigs ?? null,
+      nodeWorkspacePackages: cfg?.nodeWorkspacePackages ?? null,
+    });
   };
 }
 
@@ -118,7 +97,8 @@ const typescriptScopeResolver: ScopeResolver = {
   // `nuxtAutoImports` is null for non-Nuxt projects (no .nuxt/imports.d.ts),
   // so this adds zero overhead to ordinary TypeScript repos.
   loadResolutionConfig: async (repoPath: string) => ({
-    tsconfigPaths: await loadTsconfigPaths(repoPath),
+    tsconfigs: await loadTsconfigIndex(repoPath),
+    nodeWorkspacePackages: await loadNodeWorkspacePackages(repoPath),
     nuxtAutoImports: await loadNuxtAutoImports(repoPath),
   }),
 

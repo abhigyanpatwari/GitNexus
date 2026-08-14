@@ -1,44 +1,35 @@
 /**
  * Adapter from `(ParsedImport, WorkspaceIndex)` → concrete file path.
  *
- * Delegates to the existing standard-strategy resolver
- * (`resolveImportPath`) so tsconfig path aliases (`@/`, `~/`, …) and
- * suffix-based resolution follow the same rules as the legacy path.
+ * Delegates to `module-resolution.ts`, which runs the algorithm `tsc` and Node
+ * actually run. It used to delegate to the shared `resolveImportPath`, whose
+ * final step was `suffixResolve` — a repo-wide search for any file path ending
+ * in the specifier. That is what #2953 removed: this path now resolves only
+ * against declared inputs (real paths, tsconfig `paths`/`baseUrl`, package
+ * manifests) and answers `null` for everything else.
  *
- * The `WorkspaceIndex` is opaque at the shared contract layer; we
- * narrow it to a TypeScript-shaped context that carries `fromFile` +
- * the full `allFilePaths` set + the optional `tsconfigPaths` the
- * resolver reads.
+ * The `WorkspaceIndex` is opaque at the shared contract layer; we narrow it to
+ * a TypeScript-shaped context carrying `fromFile`, the workspace file set, and
+ * the two config indexes the algorithm reads.
  *
  * Returning `null` lets the finalize algorithm mark the edge as
- * `linkStatus: 'unresolved'`.
+ * `linkStatus: 'unresolved'` — which for an external package is the correct
+ * and complete answer.
  */
 
 import type { ParsedImport, WorkspaceIndex } from 'gitnexus-shared';
-import { SupportedLanguages } from 'gitnexus-shared';
-import { resolveImportPath } from '../../import-resolvers/standard.js';
-import type { SuffixIndex } from '../../import-resolvers/utils.js';
-import type { TsconfigPaths } from '../../language-config.js';
+import type { NodeWorkspacePackages } from '../../import-resolvers/node-workspace-packages.js';
+import { resolveTsModule } from './module-resolution.js';
+import type { TsconfigIndex } from './tsconfig.js';
 
 export interface TsResolveContext {
   readonly fromFile: string;
-  /** Mutable `Set` because the standard resolver consumes `Set<string>`.
-   *  Callers holding a `ReadonlySet` should copy via `new Set(...)`. */
-  readonly allFilePaths: Set<string>;
-  /** Repo file list, normalized (lowercased) for suffix matching. May
-   *  be supplied by the orchestrator; if absent we derive it on the
-   *  fly from `allFilePaths`. */
-  readonly allFileList?: readonly string[];
-  readonly normalizedFileList?: readonly string[];
-  /** Per-call resolution cache to dedupe repeated lookups. */
-  readonly resolveCache?: Map<string, string | null>;
-  /** Prebuilt suffix index for O(1)-style package/absolute import matching. */
-  readonly index?: SuffixIndex;
-  /** Parsed tsconfig path-aliases. `null` = no aliases configured. */
-  readonly tsconfigPaths?: TsconfigPaths | null;
-  /** JavaScript vs TypeScript switch — affects the extensions the
-   *  resolver tries. Defaults to TypeScript. */
-  readonly language?: SupportedLanguages.TypeScript | SupportedLanguages.JavaScript;
+  /** The workspace file set. */
+  readonly allFilePaths: ReadonlySet<string>;
+  /** Every tsconfig in the repo; `null` when the repo declares none. */
+  readonly tsconfigs?: TsconfigIndex | null;
+  /** Every in-repo `package.json`; `null` when the repo declares none. */
+  readonly nodeWorkspacePackages?: NodeWorkspacePackages | null;
 }
 
 export function resolveTsImportTarget(
@@ -59,36 +50,21 @@ export function resolveTsImportTarget(
 }
 
 /**
- * Resolve a raw module-path string to a workspace file path using the
- * same standard-strategy resolver as the legacy DAG. Operates directly on
- * the source string without requiring a `ParsedImport`, so the
- * `ScopeResolver.resolveImportTarget` adapter doesn't need to construct
- * a fake `ParsedImport` to reach the resolver.
+ * Resolve a raw module-path string to a workspace file path. Operates directly
+ * on the source string without requiring a `ParsedImport`, so the
+ * `ScopeResolver.resolveImportTarget` adapter doesn't need to construct a fake
+ * one to reach the resolver.
  *
- * Returns `null` when:
- *   - the context is malformed (missing `fromFile` / `allFilePaths`)
- *   - `targetRaw` is empty
- *   - the resolver finds no matching file
+ * Returns `null` when `targetRaw` is empty, names an external package, or names
+ * something no declared config maps into the repo.
  */
 export function resolveTsTarget(targetRaw: string, ctx: TsResolveContext): string | null {
-  if (targetRaw === '') return null;
-
-  const language = ctx.language ?? SupportedLanguages.TypeScript;
-  const allFileList = ctx.allFileList ?? Array.from(ctx.allFilePaths);
-  const normalizedFileList = ctx.normalizedFileList ?? allFileList.map((f) => f.toLowerCase());
-  const resolveCache = ctx.resolveCache ?? new Map<string, string | null>();
-
-  return resolveImportPath(
-    ctx.fromFile,
-    targetRaw,
-    ctx.allFilePaths,
-    allFileList,
-    normalizedFileList,
-    resolveCache,
-    language,
-    ctx.tsconfigPaths ?? null,
-    ctx.index,
-  );
+  return resolveTsModule(targetRaw, {
+    fromFile: ctx.fromFile,
+    allFilePaths: ctx.allFilePaths,
+    tsconfigs: ctx.tsconfigs ?? null,
+    workspacePackages: ctx.nodeWorkspacePackages ?? null,
+  });
 }
 
 function narrowTsContext(workspaceIndex: WorkspaceIndex): TsResolveContext | null {

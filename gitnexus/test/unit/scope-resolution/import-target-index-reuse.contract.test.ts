@@ -276,19 +276,6 @@ const FIXTURES: ReadonlyMap<SupportedLanguages, ImportTargetFixture> = new Map<
     },
   ],
   [
-    SupportedLanguages.TypeScript,
-    {
-      files: ['src/util.ts', 'src/models/user.ts', 'src/main.ts'],
-      fromFile: 'src/main.ts',
-      resolutionConfig: undefined,
-      missTarget: (i) => `./ghost${i}`,
-      hitTarget: './util',
-      parsedImport: IGNORES_CONTEXT,
-      minimumScans: 1,
-      minimumParsedFileReads: 0,
-    },
-  ],
-  [
     SupportedLanguages.Go,
     {
       files: ['internal/models/user.go', 'internal/models/user_test.go', 'main.go'],
@@ -389,19 +376,6 @@ const FIXTURES: ReadonlyMap<SupportedLanguages, ImportTargetFixture> = new Map<
     },
   ],
   [
-    SupportedLanguages.JavaScript,
-    {
-      files: ['src/util.js', 'src/models/user.js', 'src/main.js'],
-      fromFile: 'src/main.js',
-      resolutionConfig: undefined,
-      missTarget: (i) => `./ghost${i}`,
-      hitTarget: './util',
-      parsedImport: IGNORES_CONTEXT,
-      minimumScans: 1,
-      minimumParsedFileReads: 0,
-    },
-  ],
-  [
     SupportedLanguages.Kotlin,
     {
       files: [
@@ -477,39 +451,61 @@ const FIXTURES: ReadonlyMap<SupportedLanguages, ImportTargetFixture> = new Map<
       minimumParsedFileReads: 0,
     },
   ],
-  [
-    SupportedLanguages.Vue,
-    {
-      files: ['src/components/Widget.vue', 'src/util.ts', 'src/App.vue'],
-      fromFile: 'src/App.vue',
-      resolutionConfig: undefined,
-      missTarget: (i) => `./ghost${i}.vue`,
-      hitTarget: './components/Widget.vue',
-      parsedImport: IGNORES_CONTEXT,
-      minimumScans: 1,
-      minimumParsedFileReads: 0,
-    },
-  ],
 ]);
 
 /**
- * Registered resolvers exempted from the property, each with the open issue
- * that will remove the exemption.
+ * Registered resolvers exempted from the property, each citing the issue that
+ * explains why.
  *
- * EMPTY, and that is the result rather than the starting state: every resolver
- * in `SCOPE_RESOLVERS` either memoizes its index on the `allFilePaths` Set
- * identity or never traverses the Set at all (#2872, #2877, #2878, #2879, #2880,
- * #2901, #2902, #2908 closed the last of them). The map stays because the
- * mechanism is the point — the next language must not be able to opt out of the
- * property by quietly not appearing in `FIXTURES`. An entry here must
- * cite an open issue (`#NNNN`); the arm below enforces the citation, and the
- * pinned empty key list means adding one is a visible, reviewed edit rather
- * than a line in a table nobody reads.
+ * It was EMPTY until #2953, and that emptiness was a result rather than a
+ * starting state: every resolver in `SCOPE_RESOLVERS` either memoized its index
+ * on the `allFilePaths` Set identity or never traversed the Set at all (#2872,
+ * #2877, #2878, #2879, #2880, #2901, #2902, #2908 closed the last of them).
+ *
+ * The three entries it now carries are a different KIND of exemption, and the
+ * distinction is the reason this comment is worth reading. They are not "this
+ * resolver is allowed to re-scan": TypeScript, JavaScript and Vue stopped
+ * deriving anything from the file set at all, so there is no per-pass structure
+ * for the property to be about. `Set.has` against a candidate the config named
+ * is O(1) and independent of workspace size, which is the outcome the
+ * per-import-scan ban existed to secure.
+ *
+ * The mechanism stays because it is the point — a language must not be able to
+ * opt out by quietly not appearing in `FIXTURES`. An entry must cite an issue
+ * (`#NNNN`), and the key list is pinned exactly, so both adding one and letting
+ * one rot are visible, reviewed edits rather than lines in a table nobody
+ * reads.
  */
 const KNOWN_UNINDEXED: ReadonlyMap<SupportedLanguages, string> = new Map<
   SupportedLanguages,
   string
->();
+>([
+  // The three Node-family resolvers build no per-pass structure because #2953
+  // removed the thing one was for. They used to derive a `SuffixIndex` plus two
+  // file-list arrays from `allFilePaths` so `suffixResolve` could ask "does any
+  // file's path end in this specifier?" — a question real module resolution
+  // never asks. Every candidate now comes from a declared source (a real path,
+  // a tsconfig mapping, a package manifest) and is checked with a single
+  // `Set.has`, so there is nothing derived from the file set to reuse and no
+  // per-import cost for this property to catch.
+  //
+  // Exempt from THIS property, not from the guard behind it: `Set.has` is O(1)
+  // and independent of workspace size, which is the outcome the per-import scan
+  // ban existed to secure. `languages/typescript/module-resolution.ts` is where
+  // that now has to stay true.
+  [
+    SupportedLanguages.TypeScript,
+    'resolves against declared config only (#2953) — no per-pass index to reuse',
+  ],
+  [
+    SupportedLanguages.JavaScript,
+    'resolves against declared config only (#2953) — no per-pass index to reuse',
+  ],
+  [
+    SupportedLanguages.Vue,
+    'resolves against declared config only (#2953) — no per-pass index to reuse',
+  ],
+]);
 
 interface ContractCase {
   readonly language: SupportedLanguages;
@@ -640,11 +636,19 @@ describe('import-target index reuse — the contract every registered resolver h
     expect(accountedFor).toEqual(registered);
   });
 
-  it('exempts nothing, and would make an exemption cite an issue', () => {
+  it('exempts only the Node family, and makes every exemption cite an issue', () => {
     for (const [language, reason] of KNOWN_UNINDEXED) {
       expect(reason, `${language}'s exemption must cite an open issue`).toMatch(/#\d+/);
     }
 
-    expect([...KNOWN_UNINDEXED.keys()]).toEqual([]);
+    // Pinned as a list rather than a count. The exemption is not "this resolver
+    // is allowed to be slow" — it is "this resolver derives nothing from the
+    // file set, so there is no per-pass structure for the property to be about"
+    // (#2953). A fourth language appearing here is a claim someone has to make
+    // deliberately, and the likeliest reason for it is an adapter that quietly
+    // stopped building the index it still needs.
+    expect([...KNOWN_UNINDEXED.keys()].sort()).toEqual(
+      [SupportedLanguages.TypeScript, SupportedLanguages.JavaScript, SupportedLanguages.Vue].sort(),
+    );
   });
 });
