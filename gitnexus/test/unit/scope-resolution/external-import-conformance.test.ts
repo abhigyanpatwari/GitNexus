@@ -67,8 +67,19 @@ interface ConformanceCase {
    * `external` does, so a suffix matcher lands on it.
    */
   readonly decoy: string;
-  /** A specifier that SHOULD reach {@link decoy} — proves the decoy is live. */
-  readonly reachesDecoy: string;
+  /**
+   * A specifier that SHOULD reach {@link decoy} — the paired positive proving
+   * the decoy is live, so a `null` below is a refusal rather than an empty
+   * corpus.
+   *
+   * Required only for a language that HOLDS the property. For one in
+   * {@link KNOWN_GAPS} the gap assertion already resolves `external` TO the
+   * decoy, which is that proof — and for several of them no other spelling
+   * exists: Swift's `Foundation` and COBOL's `EXTERNAL` name the in-repo
+   * directory and copybook as well as the external module, which is precisely
+   * why those resolvers cannot tell the two apart.
+   */
+  readonly reachesDecoy?: string;
   readonly parsedImport?: (targetRaw: string) => ParsedImport | undefined;
 }
 
@@ -349,16 +360,20 @@ describe('external imports never resolve into the repository (#2953)', () => {
     expect([...CASES.keys()].sort()).toEqual([...SCOPE_RESOLVERS.keys()].sort());
   });
 
-  it.each([...CASES.keys()])(
+  it.each([...CASES.keys()].filter((language) => !KNOWN_GAPS.has(language)))(
     '%s: the decoy is reachable, so the arm below means something',
     (language) => {
       const testCase = CASES.get(language)!;
-      const reached = filesOf(resolveWith(language, testCase, testCase.reachesDecoy));
+      const reached = filesOf(resolveWith(language, testCase, testCase.reachesDecoy!));
 
+      // The DECOY specifically, not merely something. Asserting non-empty let a
+      // case pair `reachesDecoy` with a different file than `decoy` and still
+      // pass, which proves the resolver can reach SOME file and says nothing
+      // about whether the tempting wrong answer below was ever reachable.
       expect(
-        reached.length,
-        `${language}: '${testCase.reachesDecoy}' resolved to nothing, so this workspace proves nothing about '${testCase.external}'`,
-      ).toBeGreaterThan(0);
+        reached,
+        `${language}: '${testCase.reachesDecoy}' did not reach the decoy '${testCase.decoy}', so this workspace proves nothing about '${testCase.external}'`,
+      ).toContain(testCase.decoy);
     },
   );
 
@@ -368,13 +383,15 @@ describe('external imports never resolve into the repository (#2953)', () => {
     const gap = KNOWN_GAPS.get(language);
 
     if (gap !== undefined) {
-      // The gap is asserted, not skipped: a language that starts holding the
-      // property fails here, which is how the entry gets deleted deliberately
-      // rather than rotting into a lie.
+      // The gap is asserted, not skipped, and asserted as the RECORDED answer
+      // rather than as "something": a resolver returning an unrelated in-repo
+      // file would otherwise keep the entry green while the map's description
+      // of what it does went stale. A language that starts holding the property
+      // fails here too, which is how the entry gets deleted deliberately.
       expect(
         resolved,
-        `${language} unexpectedly holds the property — delete its KNOWN_GAPS entry`,
-      ).not.toEqual([]);
+        `${language}: KNOWN_GAPS records '${testCase.external}' resolving to '${testCase.decoy}', but it resolved to ${JSON.stringify(resolved)} — update the entry or delete it`,
+      ).toEqual([testCase.decoy]);
       return;
     }
 

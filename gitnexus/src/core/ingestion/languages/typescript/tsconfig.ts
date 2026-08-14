@@ -83,7 +83,7 @@ export async function loadTsconfigIndex(repoRoot: string): Promise<TsconfigIndex
   const files = await findTsconfigFiles(repoRoot);
   if (files.length === 0) return null;
 
-  const scopes: TsconfigScope[] = [];
+  const ranked: { scope: TsconfigScope; rank: number }[] = [];
   for (const absPath of files) {
     const options = await readCompilerOptions(absPath, 0);
     if (options === null) continue;
@@ -96,14 +96,33 @@ export async function loadTsconfigIndex(repoRoot: string): Promise<TsconfigIndex
       targets: mapping.targets.map((t) => rebaseTarget(repoRoot, t)),
     }));
     if (baseUrl === null && paths.length === 0) continue;
-    scopes.push({ dir: repoRelative(repoRoot, path.dirname(absPath)), baseUrl, paths });
+    ranked.push({
+      scope: { dir: repoRelative(repoRoot, path.dirname(absPath)), baseUrl, paths },
+      rank: configRank(path.basename(absPath)),
+    });
   }
-  if (scopes.length === 0) return null;
+  if (ranked.length === 0) return null;
 
-  // Deepest first: `tsconfigFor` takes the first match, which must be the most
-  // specific config, not whichever the directory walk happened to reach first.
-  scopes.sort((a, b) => b.dir.length - a.dir.length);
-  return { scopes };
+  // Deepest first, because `tsconfigFor` takes the first match and it must be
+  // the most specific config rather than whichever the walk reached first.
+  //
+  // Then by filename rank WITHIN a directory, which is the half that is easy to
+  // miss: `tsconfig.json` and `tsconfig.base.json` routinely sit side by side,
+  // and the base exists to be extended, not to govern. Reading whichever the
+  // directory listing returned first made a config's own `paths` invisible
+  // whenever its base happened to be listed earlier.
+  ranked.sort((a, b) => b.scope.dir.length - a.scope.dir.length || a.rank - b.rank);
+  return { scopes: ranked.map((entry) => entry.scope) };
+}
+
+/**
+ * Precedence among configs sharing a directory: the project config governs, and
+ * everything else is a base or a variant that exists to be extended.
+ */
+function configRank(fileName: string): number {
+  if (fileName === 'tsconfig.json') return 0;
+  if (fileName === 'jsconfig.json') return 1;
+  return 2;
 }
 
 /** Resolved compiler options, rebased to repo-relative paths. */
@@ -138,6 +157,12 @@ async function readCompilerOptions(
   }
 
   const dir = path.dirname(absPath);
+  // Read what this config extends FIRST: `paths` targets resolve against the
+  // EFFECTIVE `baseUrl`, which a config declaring `paths` alone inherits from
+  // its base. Resolving them against this config's own directory instead would
+  // load the right alias pattern and point every target at the wrong place.
+  const inherited = await readExtended(parsed.extends, dir, depth, repoRootHint);
+
   const own: ResolvedOptions = {};
   const compilerOptions = parsed.compilerOptions;
   if (compilerOptions !== null && typeof compilerOptions === 'object') {
@@ -146,11 +171,12 @@ async function readCompilerOptions(
       own.baseUrl = path.resolve(dir, opts.baseUrl);
     }
     if (opts.paths !== null && typeof opts.paths === 'object' && !Array.isArray(opts.paths)) {
-      // tsc resolves `paths` targets against `baseUrl` when the SAME config
-      // declares one, and against the config's own directory otherwise. Doing
-      // it here, per file, is what keeps an `extends` chain unambiguous: by the
+      // tsc resolves `paths` targets against the effective `baseUrl` — this
+      // config's own if it declares one, otherwise the inherited one — and
+      // against the config's own directory only when neither exists. Doing it
+      // here, per file, is what keeps an `extends` chain unambiguous: by the
       // time these merge, every target is already absolute.
-      const pathsBase = own.baseUrl ?? dir;
+      const pathsBase = own.baseUrl ?? inherited?.baseUrl ?? dir;
       own.paths = [];
       for (const [pattern, targets] of Object.entries(opts.paths as Record<string, unknown>)) {
         if (!Array.isArray(targets)) continue;
@@ -162,7 +188,6 @@ async function readCompilerOptions(
     }
   }
 
-  const inherited = await readExtended(parsed.extends, dir, depth, repoRootHint);
   // Own options win over inherited ones — that is what `extends` means. `paths`
   // is replaced wholesale rather than merged, matching tsc.
   return {

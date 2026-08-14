@@ -33,6 +33,7 @@
 
 import type { NodeWorkspacePackages } from '../../import-resolvers/node-workspace-packages.js';
 import {
+  matchSubpathMap,
   nodePackageNameOf,
   owningPackage,
   resolveNodeWorkspaceImport,
@@ -56,7 +57,8 @@ export function resolveTsModule(specifier: string, ctx: TsModuleResolutionContex
 
   // 1. A path specifier.
   if (specifier.startsWith('.')) {
-    return resolveFile(joinFrom(ctx.fromFile, specifier), ctx.allFilePaths);
+    const joined = joinFrom(ctx.fromFile, specifier);
+    return joined === null ? null : resolveFile(joined, ctx.allFilePaths);
   }
   if (specifier.startsWith('/')) {
     return resolveFile(specifier.slice(1), ctx.allFilePaths);
@@ -149,20 +151,34 @@ function resolveSubpathImport(specifier: string, ctx: TsModuleResolutionContext)
   if (packages === null) return null;
   const owner = owningPackage(ctx.fromFile, packages);
   if (owner === null) return null;
-  for (const stem of owner.subpathImports.get(specifier) ?? []) {
+  // `imports` takes pattern keys (`"#internal/*"`) exactly like `exports`, so
+  // it gets the same matcher rather than an exact lookup.
+  for (const stem of matchSubpathMap(owner.subpathImports, specifier) ?? []) {
     const resolved = resolveFile(stem, ctx.allFilePaths);
     if (resolved !== null) return resolved;
   }
   return null;
 }
 
-/** Resolve a relative specifier against the importing file's directory. */
-function joinFrom(fromFile: string, specifier: string): string {
+/**
+ * Resolve a relative specifier against the importing file's directory, or
+ * `null` when it climbs out of the repository.
+ *
+ * Popping an empty segment list would silently CLAMP at the root, so
+ * `../../../secret` from `src/main.ts` became `secret` and could resolve a
+ * repo-root file the specifier never named. Outside the repo there is nothing
+ * indexed to resolve to, so the honest answer is nothing.
+ */
+function joinFrom(fromFile: string, specifier: string): string | null {
   const segments = fromFile.split('/').slice(0, -1);
   for (const part of specifier.split('/')) {
     if (part === '.' || part === '') continue;
-    if (part === '..') segments.pop();
-    else segments.push(part);
+    if (part === '..') {
+      if (segments.length === 0) return null;
+      segments.pop();
+    } else {
+      segments.push(part);
+    }
   }
   return segments.join('/');
 }

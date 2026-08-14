@@ -17,10 +17,16 @@
 
 import fs from 'fs/promises';
 import path from 'path';
+import { createRequire } from 'node:module';
 
 import { isHardcodedIgnoredDirectory } from '../../../config/ignore-service.js';
 import { logger } from '../../logger.js';
 import { resolveFile } from '../languages/typescript/file-candidates.js';
+
+// `js-yaml` is CJS; the rest of this repository reaches it the same way
+// (`core/group/config-parser.ts`, `cli/group.ts`).
+const _require = createRequire(import.meta.url);
+const yaml = _require('js-yaml') as typeof import('js-yaml');
 
 /** One in-repo package. */
 export interface NodeWorkspacePackage {
@@ -114,16 +120,23 @@ export function resolveNodeWorkspaceImport(
   return null;
 }
 
-/** Candidate stems for one specifier into `pkg`, best first. */
-function entryStemsFor(pkg: NodeWorkspacePackage, subpath: string): readonly string[] {
-  if (subpath === '') return pkg.entries;
-
-  const exact = pkg.subpathExports.get(subpath);
+/**
+ * Look a specifier up in a subpath map — `exports` or `imports`, which share
+ * Node's matching rule exactly: an exact key wins, otherwise the pattern with
+ * the longest literal prefix does, and its `*` takes whatever the specifier put
+ * there.
+ *
+ * Shared because they diverged once: the `imports` side did an exact lookup
+ * only, so a declared `"#internal/*"` could never match `#internal/foo`.
+ */
+export function matchSubpathMap(
+  map: ReadonlyMap<string, readonly string[]>,
+  specifier: string,
+): readonly string[] | null {
+  const exact = map.get(specifier);
   if (exact !== undefined) return exact;
 
-  // Pattern exports: `"./features/*": "./src/features/*.ts"`. Longest literal
-  // prefix wins, matching Node's own subpath-pattern precedence.
-  const patterns = [...pkg.subpathExports.entries()]
+  const patterns = [...map.entries()]
     .filter(([key]) => key.includes('*'))
     .map(([key, stems]) => {
       const star = key.indexOf('*');
@@ -131,35 +144,186 @@ function entryStemsFor(pkg: NodeWorkspacePackage, subpath: string): readonly str
     })
     .filter(
       ({ prefix, suffix }) =>
-        subpath.startsWith(prefix) &&
-        subpath.endsWith(suffix) &&
-        subpath.length >= prefix.length + suffix.length,
+        specifier.startsWith(prefix) &&
+        specifier.endsWith(suffix) &&
+        specifier.length >= prefix.length + suffix.length,
     )
     .sort((a, b) => b.prefix.length - a.prefix.length);
 
   for (const { prefix, suffix, stems } of patterns) {
-    const stem = subpath.slice(prefix.length, subpath.length - suffix.length);
+    const stem = specifier.slice(prefix.length, specifier.length - suffix.length);
     return stems.map((s) => s.replace('*', stem));
   }
+  return null;
+}
+
+/** Candidate stems for one specifier into `pkg`, best first. */
+function entryStemsFor(pkg: NodeWorkspacePackage, subpath: string): readonly string[] {
+  if (subpath === '') return pkg.entries;
+
+  const declared = matchSubpathMap(pkg.subpathExports, subpath);
+  if (declared !== null) return declared;
 
   // A package with NO `exports` map is not restricted: Node resolves any
-  // subpath against its directory. A package WITH one exposes only what it
-  // lists, so an unlisted subpath resolves to nothing — that restriction is
-  // real, and honouring it is part of the difference between resolving and
-  // guessing.
+  // subpath against the package DIRECTORY, and only against it. A package WITH
+  // one exposes only what it lists, so an unlisted subpath resolves to nothing.
+  //
+  // Both restrictions are real, and neither is softened here. An earlier draft
+  // also tried `<dir>/src/<subpath>`, on the theory that a workspace package is
+  // consumed from source — but nothing declares that mapping, so it is the same
+  // kind of guess this module exists to remove: it would resolve
+  // `@repo/utils/deep/thing` to `packages/utils/src/deep/thing.ts` for a
+  // package whose manifest never said `deep/thing` lives under `src/`, and the
+  // import would be broken in the real project too.
   if (pkg.subpathExports.size > 0) return [];
-  return [joinRepoPath(pkg.dir, subpath), joinRepoPath(pkg.dir, `src/${subpath}`)];
+  return [joinRepoPath(pkg.dir, subpath)];
 }
 
 /**
- * Collect every in-repo `package.json`.
+ * The directories the workspace ADMITS as packages.
  *
- * Directory-only BFS: the sole files opened are manifests, so this is far
- * cheaper than the C# namespace scan next door, which reads every `.cs` file.
+ * `null` means the repository declares no workspace at all, in which case the
+ * only package is the one at the root — a nested `package.json` somewhere in
+ * `examples/` or `test/fixtures/` is not a member of anything and its name is
+ * not addressable by an import.
+ *
+ * This gate is the difference between reading manifests and trusting them.
+ * Without it, finding a `package.json` anywhere in the tree was enough to
+ * register its name, which recreates the false-positive half of #2953 from a
+ * different source: an app importing registry package `foo` would bind to an
+ * excluded fixture that happens to declare `name: "foo"`. THIS repository is
+ * the example — `test/fixtures/**` alone declares `@repo/utils` (added by this
+ * very change) among others.
+ */
+interface WorkspaceScope {
+  /** Positive patterns, repo-relative, as declared. */
+  readonly include: readonly string[];
+  /** `!`-prefixed patterns, with the `!` stripped. */
+  readonly exclude: readonly string[];
+}
+
+/** Whether `dir` (repo-relative, `''` for the root) is an admitted package. */
+function admits(scope: WorkspaceScope | null, dir: string): boolean {
+  // The root package is always itself, workspace or not.
+  if (dir === '') return true;
+  if (scope === null) return false;
+  if (scope.exclude.some((pattern) => globToRegExp(pattern).test(dir))) return false;
+  return scope.include.some((pattern) => globToRegExp(pattern).test(dir));
+}
+
+/**
+ * Match one workspace glob.
+ *
+ * The subset npm, pnpm, yarn and lerna actually use in `workspaces` /
+ * `packages`: `*` within a segment, `**` across segments, `?`, and a leading
+ * `!` for exclusion (handled by the caller). Deliberately not a general glob
+ * engine — the patterns are a documented, narrow dialect, and `minimatch` is
+ * only present here transitively through `glob`.
+ */
+function globToRegExp(pattern: string): RegExp {
+  const normalized = pattern.replace(/^\.\//, '').replace(/\/$/, '');
+  let out = '';
+  for (let i = 0; i < normalized.length; i++) {
+    const ch = normalized[i];
+    if (ch === '*') {
+      if (normalized[i + 1] === '*') {
+        // `**/` may match nothing at all, so `packages/**/x` also matches
+        // `packages/x`; a trailing `**` matches any depth below.
+        if (normalized[i + 2] === '/') {
+          out += '(?:.*/)?';
+          i += 2;
+        } else {
+          out += '.*';
+          i += 1;
+        }
+      } else {
+        out += '[^/]*';
+      }
+      continue;
+    }
+    if (ch === '?') {
+      out += '[^/]';
+      continue;
+    }
+    out += ch.replace(/[.+^${}()|[\]\\]/g, '\\$&');
+  }
+  return new RegExp(`^${out}$`);
+}
+
+/**
+ * Read the repository's workspace declaration.
+ *
+ * All three spellings are read and merged, because a repo may carry more than
+ * one (a pnpm workspace whose root `package.json` also lists `workspaces` for
+ * tooling that does not read pnpm's file).
+ */
+async function loadWorkspaceScope(repoRoot: string): Promise<WorkspaceScope | null> {
+  const patterns: string[] = [];
+
+  const rootManifest = await readJsonFile(path.join(repoRoot, 'package.json'));
+  const workspaces = rootManifest?.workspaces;
+  if (Array.isArray(workspaces)) {
+    patterns.push(...workspaces.filter((w): w is string => typeof w === 'string'));
+  } else if (workspaces !== null && typeof workspaces === 'object') {
+    // Yarn's object form: `{ "packages": [...], "nohoist": [...] }`.
+    const nested = (workspaces as { packages?: unknown }).packages;
+    if (Array.isArray(nested)) {
+      patterns.push(...nested.filter((w): w is string => typeof w === 'string'));
+    }
+  }
+
+  patterns.push(...(await readYamlPackages(path.join(repoRoot, 'pnpm-workspace.yaml'))));
+  patterns.push(...(await readYamlPackages(path.join(repoRoot, 'pnpm-workspace.yml'))));
+
+  const lerna = await readJsonFile(path.join(repoRoot, 'lerna.json'));
+  if (Array.isArray(lerna?.packages)) {
+    patterns.push(...lerna.packages.filter((w): w is string => typeof w === 'string'));
+  }
+
+  if (patterns.length === 0) return null;
+  return {
+    include: patterns.filter((p) => !p.startsWith('!')),
+    exclude: patterns.filter((p) => p.startsWith('!')).map((p) => p.slice(1)),
+  };
+}
+
+async function readJsonFile(filePath: string): Promise<Record<string, unknown> | null> {
+  try {
+    return JSON.parse(await fs.readFile(filePath, 'utf-8')) as Record<string, unknown>;
+  } catch {
+    return null;
+  }
+}
+
+async function readYamlPackages(filePath: string): Promise<string[]> {
+  let raw: string;
+  try {
+    raw = await fs.readFile(filePath, 'utf-8');
+  } catch {
+    return [];
+  }
+  try {
+    const parsed = yaml.load(raw) as { packages?: unknown } | null;
+    const packages = parsed?.packages;
+    return Array.isArray(packages)
+      ? packages.filter((p): p is string => typeof p === 'string')
+      : [];
+  } catch {
+    return [];
+  }
+}
+
+/**
+ * Collect the `package.json` of every ADMITTED workspace package.
+ *
+ * Directory-only BFS: the sole files opened are manifests and the workspace
+ * declaration, so this is far cheaper than the C# namespace scan next door,
+ * which reads every `.cs` file.
  */
 export async function loadNodeWorkspacePackages(
   repoRoot: string,
 ): Promise<NodeWorkspacePackages | null> {
+  const scope = await loadWorkspaceScope(repoRoot);
   const byName = new Map<string, NodeWorkspacePackage>();
   const queue: { dir: string; depth: number }[] = [{ dir: repoRoot, depth: 0 }];
   let dirsScanned = 0;
@@ -191,6 +355,12 @@ export async function loadNodeWorkspacePackages(
       }
       if (!entry.isFile() || entry.name !== 'package.json') continue;
 
+      const relDir = repoRelativeDir(repoRoot, dir);
+      // Found is not the same as admitted. A manifest outside the declared
+      // workspace belongs to something this repository does not build — a
+      // fixture, an example, a vendored copy — and its name is not addressable.
+      if (!admits(scope, relDir)) continue;
+
       const pkg = await readManifest(path.join(dir, entry.name), repoRoot, dir);
       // First declaration wins: BFS visits shallower directories first, so a
       // top-level package outranks a nested one that reuses the name.
@@ -215,8 +385,7 @@ async function readManifest(
   const name = typeof parsed.name === 'string' ? parsed.name : '';
   if (name === '') return null;
 
-  const relDir = path.relative(repoRoot, dir).split(path.sep).join('/');
-  const packageDir = relDir === '.' ? '' : relDir;
+  const packageDir = repoRelativeDir(repoRoot, dir);
   const rebase = (raw: string): string => joinRepoPath(packageDir, stripEntryPrefixes(raw));
 
   const subpathExports = new Map<string, readonly string[]>();
@@ -306,6 +475,12 @@ function stripEntryPrefixes(entry: string): string {
 
 function push(list: string[], value: string): void {
   if (value !== '' && !list.includes(value)) list.push(value);
+}
+
+/** `/repo/packages/utils` -> `packages/utils`; the root -> `''`. */
+function repoRelativeDir(repoRoot: string, dir: string): string {
+  const rel = path.relative(repoRoot, dir).split(path.sep).join('/');
+  return rel === '.' ? '' : rel;
 }
 
 function joinRepoPath(dir: string, rest: string): string {

@@ -82,6 +82,18 @@ describe('TypeScript workspace-package imports (#2953)', () => {
     expect(edge).toBeDefined();
   });
 
+  it('resolves nothing for a package outside the declared workspace globs', () => {
+    // `examples/excluded/package.json` declares `@repo/excluded`, but
+    // `pnpm-workspace.yaml` admits only `apps/*` and `packages/*`. A manifest
+    // the workspace never admitted is not a workspace package — treating every
+    // `package.json` found on disk as one recreates the false-positive half of
+    // #2953 from a different source, since an excluded fixture or example that
+    // happens to reuse a registry name would capture that name's imports.
+    const imports = getRelationships(result, 'IMPORTS');
+    const edge = imports.find((e) => e.sourceFilePath === 'apps/web/src/outside.ts');
+    expect(edge).toBeUndefined();
+  });
+
   it('resolves nothing for a specifier no config declares', () => {
     // `shared/helper` is not relative, not a package, and not reachable through
     // this project's `baseUrl` (`apps/web/src/shared/helper` does not exist).

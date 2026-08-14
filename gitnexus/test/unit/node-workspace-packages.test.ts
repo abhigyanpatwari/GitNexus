@@ -119,6 +119,22 @@ describe('external packages (#2953 direction 1)', () => {
   });
 });
 
+describe('relative traversal out of the repository', () => {
+  it('resolves nothing when a specifier climbs past the root', () => {
+    // Popping an empty segment list silently CLAMPS at the root, so
+    // `../../../secret` from `apps/web/src/main.ts` became `secret` and could
+    // resolve a repo-root file the specifier never named. Outside the repo
+    // there is nothing indexed, so the answer is nothing.
+    expect(resolve('../../../../../../etc/passwd')).toBeNull();
+  });
+
+  it('still resolves a traversal that lands exactly on the root', () => {
+    // The paired positive: climbing to the root is legal, only climbing PAST
+    // it is not, and the guard must not take the legal case with it.
+    expect(resolve('../../../packages/utils/src')).toBe('packages/utils/src/index.ts');
+  });
+});
+
 describe('tsconfig paths', () => {
   const withPaths: TsconfigIndex = {
     scopes: [
@@ -201,6 +217,41 @@ describe('workspace packages (#2953 direction 2)', () => {
 
   it('does not honour another package’s `#` imports', () => {
     expect(resolve('#hidden', { from: 'apps/web/src/main.ts' })).toBeNull();
+  });
+
+  it('does not fall back into `src/` for an unexported subpath', () => {
+    // `@repo/utils` declares no `exports`, so Node resolves a subpath against
+    // the package DIRECTORY and only against it. An earlier draft also tried
+    // `<dir>/src/<subpath>` on the theory that a workspace package is consumed
+    // from source — but nothing declares that mapping, so it is the same kind
+    // of guess this module exists to remove, and the import it "resolves" is
+    // broken in the real project too.
+    expect(resolve('@repo/utils/deep/thing')).toBeNull();
+  });
+
+  it('resolves a `#imports` PATTERN key, not just an exact one', () => {
+    const patterned: NodeWorkspacePackages = {
+      byName: new Map([
+        [
+          '@repo/inner',
+          {
+            dir: 'packages/inner',
+            entries: ['packages/inner/src/index'],
+            subpathExports: new Map(),
+            subpathImports: new Map([['#internal/*', ['packages/inner/src/*']]]),
+          },
+        ],
+      ]),
+    };
+
+    expect(
+      resolveTsModule('#internal/secret', {
+        fromFile: 'packages/inner/src/nest/index.ts',
+        allFilePaths: FILES,
+        tsconfigs: null,
+        workspacePackages: patterned,
+      }),
+    ).toBe('packages/inner/src/secret.ts');
   });
 
   it('resolves nothing when the repo declares no packages at all', () => {
