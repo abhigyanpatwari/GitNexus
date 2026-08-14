@@ -89,7 +89,13 @@ const JAVA_SCOPE_QUERY = `
     ])) @class-annotation.class
 
 ;; Declarations — methods / constructors
+;;
+;; A generic METHOD's parameters are read for the same reason a generic type's
+;; are (#2912 review): \`<T> boolean runAny(Validator<T> v)\` writes a receiver
+;; whose argument is a type VARIABLE, and a pass that cannot tell that from a
+;; concrete type prunes every implementor from the call's dispatch fan-out.
 (method_declaration
+  type_parameters: (type_parameters)? @declaration.type-parameters
   name: (identifier) @declaration.name) @declaration.method
 
 (constructor_declaration

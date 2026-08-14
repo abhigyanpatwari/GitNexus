@@ -42,7 +42,15 @@ const DART_SCOPE_QUERY = `
 (enum_declaration) @scope.class
 
 ; ── Declarations — types ─────────────────────────────────────────────────────
-(class_definition name: (identifier) @declaration.name) @declaration.class
+; The type-parameter list is matched as an UNNAMED optional child: the Dart
+; grammar hangs \`type_parameters\` off \`class_definition\` without a field name.
+; Recording it is what lets instantiation-aware interface dispatch tell a type
+; VARIABLE (\`class Box<T> implements Validator<T>\`) from a concrete argument
+; (\`class V implements Validator<String>\`) — see #2912; absent parameters are
+; indistinguishable from a language that captures none, and read as unknown.
+(class_definition
+  name: (identifier) @declaration.name
+  (type_parameters)? @declaration.type-parameters) @declaration.class
 (mixin_declaration (identifier) @declaration.name) @declaration.trait
 (extension_declaration name: (identifier) @declaration.name) @declaration.class
 (enum_declaration name: (identifier) @declaration.name) @declaration.enum

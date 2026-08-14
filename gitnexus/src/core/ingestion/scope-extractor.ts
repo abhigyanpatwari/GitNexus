@@ -80,6 +80,7 @@ import type {
   CallableFlowOperand,
   CallableFlowPassingMode,
   CallableFlowSite,
+  Capture,
   CaptureMatch,
   ImportEdge,
   ParameterTypeClass,
@@ -97,7 +98,11 @@ import type {
 import { buildPositionIndex, buildScopeTree, canParentScope, makeScopeId } from 'gitnexus-shared';
 import type { LanguageProvider } from './language-provider.js';
 import { isValidReceiverChain } from './utils/receiver-chain-codec.js';
-import { extractTemplateArguments } from './utils/template-arguments.js';
+import {
+  extractTemplateArguments,
+  stripTrailingCallSuffix,
+  typeApplicationArguments,
+} from './utils/template-arguments.js';
 import { parseTypeParameterList } from './utils/type-parameters.js';
 
 // ─── Narrow hook surface the extractor actually uses ───────────────────────
@@ -701,6 +706,7 @@ function buildDefFromDeclarationMatch(
   const typeParameters = parseTypeParameterList(match['@declaration.type-parameters']?.text ?? '');
   const isExplicit = parseBooleanCapture(match['@declaration.is-explicit']);
   const isDeleted = parseBooleanCapture(match['@declaration.is-deleted']);
+  const isSynthetic = parseBooleanCapture(match['@declaration.is-synthetic']);
 
   return {
     nodeId: makeDefId(filePath, anchor.range, type, nameCap.text),
@@ -718,6 +724,7 @@ function buildDefFromDeclarationMatch(
     ...(templateConstraints !== undefined ? { templateConstraints } : {}),
     ...(isExplicit === true ? { isExplicit: true } : {}),
     ...(isDeleted === true ? { isDeleted: true } : {}),
+    ...(isSynthetic === true ? { isSynthetic: true } : {}),
   };
 }
 
@@ -1253,6 +1260,12 @@ function pass5CollectReferences(
     // sibling via the full-path QualifiedNameIndex before the simple-tail walk
     // (#1982). Absent for unqualified references — resolution stays unchanged.
     const qualifiedCap = match['@reference.qualified-name'];
+    // Generic ARGUMENTS written on a heritage reference (`: IValidator<string>`);
+    // `inherits` only, because a call/read/write anchor spans the whole call
+    // expression, whose `<…>` would be an argument list, a comparison, or
+    // nothing at all — widening the kind would mint confident nonsense (#2912).
+    const typeArguments =
+      kind === 'inherits' ? heritageTypeArguments(match, anchor, nameCap) : undefined;
     const inScopeId = positionIndex.atPosition(
       filePath,
       anchor.range.startLine,
@@ -1304,6 +1317,7 @@ function pass5CollectReferences(
       ...(qualifiedCap?.text !== undefined && qualifiedCap.text.length > 0
         ? { rawQualifiedName: qualifiedCap.text }
         : {}),
+      ...(typeArguments !== undefined ? { typeArguments } : {}),
       ...(propertyKeyCap?.text !== undefined && propertyKeyCap.text.length > 0
         ? { propertyKey: propertyKeyCap.text }
         : {}),
@@ -1319,6 +1333,60 @@ function pass5CollectReferences(
     referenceSites.push(site);
   }
 }
+
+/**
+ * The generic arguments a heritage reference was written with, by whichever of
+ * the two routes this emitter uses (#2912).
+ *
+ * `@reference.type-arguments` is the explicit route, for an emitter whose anchor
+ * is the bare NAME node (Rust's `impl Trait for S` anchors on the trait
+ * identifier inside a `generic_type`). It wins where present: moving such an
+ * anchor to cover the arguments would change the site's range, and that range is
+ * part of every inheritance EDGE ID — a spelling detail must not renumber the
+ * graph. Every other emitter already anchors on the whole base, so its spelling
+ * is read directly and no query changed.
+ */
+function heritageTypeArguments(
+  match: CaptureMatch,
+  anchor: Capture,
+  nameCap: Capture,
+): readonly string[] | undefined {
+  const explicit = match['@reference.type-arguments']?.text;
+  return explicit !== undefined
+    ? typeApplicationArguments(explicit)
+    : referenceTypeArguments(anchor.text, nameCap.text);
+}
+
+/**
+ * Type arguments written on a heritage reference, read from the anchor's own
+ * spelling — `IValidator<string>` → `['string']` (#2912).
+ *
+ * Two shapes are handled before the spelling is read as an application:
+ *
+ *   - A trailing CONSTRUCTOR INVOCATION is dropped. `record R : Base<int>(x)`
+ *     and Kotlin `class C : Bar<Int>()` write a call in the heritage position;
+ *     the call is not part of the type, and leaving it attached would make the
+ *     list fail to close at the end and lose the arguments entirely.
+ *   - The application's base must BE the referenced name (`Other::Inner<T>`
+ *     ends with `Inner`). An anchor that spans more than the base type is not
+ *     read at all rather than read wrongly.
+ *
+ * `undefined` for a non-generic base and for every spelling that is not exactly
+ * one balanced argument list — absence is the "unknown" value that consumers
+ * fail open on, so declining is always safe here.
+ */
+function referenceTypeArguments(
+  anchorText: string,
+  baseName: string,
+): readonly string[] | undefined {
+  const text = stripTrailingCallSuffix(anchorText.trim());
+  const opener = text.search(OPENING_BRACKET);
+  if (opener === -1) return undefined;
+  if (!text.slice(0, opener).trimEnd().endsWith(baseName)) return undefined;
+  return typeApplicationArguments(text);
+}
+
+const OPENING_BRACKET = /[<[]/;
 
 function referenceKindFromAnchor(name: string): ReferenceKind | undefined {
   const suffix = name.slice('@reference.'.length);
@@ -1718,6 +1786,10 @@ const KNOWN_SUB_TAGS: ReadonlySet<string> = new Set<string>([
   '@type-binding.type',
   '@reference.name',
   '@reference.qualified-name',
+  // The generic arguments a heritage base was written with, when the emitter's
+  // anchor is the bare name and cannot carry them (#2912). A sub-tag for the
+  // usual reason: it spans a sibling node of the anchor, never the site itself.
+  '@reference.type-arguments',
   '@reference.property-key',
   '@reference.callee-position',
   '@reference.embedded-pointer',

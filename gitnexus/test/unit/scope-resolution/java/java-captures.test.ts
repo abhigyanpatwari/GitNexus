@@ -37,6 +37,17 @@ function inheritanceRefs(src: string): string[] {
     .sort();
 }
 
+function recordAccessorDeclarations(src: string) {
+  return emitJavaScopeCaptures(src, 'C.java')
+    .filter((m) => m['@declaration.method'] !== undefined)
+    .map((m) => ({
+      name: m['@declaration.name']?.text,
+      arity: m['@declaration.parameter-count']?.text,
+      requiredArity: m['@declaration.required-parameter-count']?.text,
+      returnType: m['@declaration.return-type']?.text,
+    }));
+}
+
 describe('emitJavaScopeCaptures — constructor reference names (F35 #1928)', () => {
   it('binds the simple name for an unqualified `new User()`', () => {
     const refs = ctorRefs(wrapExpr('new User()'));
@@ -90,7 +101,7 @@ describe('emitJavaScopeCaptures — constructor reference names (F35 #1928)', ()
   });
 });
 
-describe('emitJavaScopeCaptures — record interface heritage (#2900)', () => {
+describe('emitJavaScopeCaptures — record and enum interface heritage (#2900, #2918)', () => {
   it('captures simple, generic, and qualified record interfaces by lookup name', () => {
     const refs = inheritanceRefs(
       'record User(int id) implements Named, Comparable<User>, audit.Auditable {}',
@@ -99,9 +110,119 @@ describe('emitJavaScopeCaptures — record interface heritage (#2900)', () => {
     expect(refs).toEqual(['Auditable', 'Comparable', 'Named']);
   });
 
-  it('does not yet emit enum heritage (#2918)', () => {
-    // Delete this characterization when #2918 adds enum interface heritage.
-    expect(inheritanceRefs('enum Status implements Named { ACTIVE }')).toEqual([]);
+  it('captures simple, generic, and qualified enum interfaces by lookup name', () => {
+    const refs = inheritanceRefs(
+      'enum Status implements Named, Tagged<Status>, audit.Auditable { ACTIVE }',
+    );
+
+    expect(refs).toEqual(['Auditable', 'Named', 'Tagged']);
+  });
+
+  it('unwraps type-use annotations on enum interface names', () => {
+    const refs = inheritanceRefs(
+      'enum Status implements @Marker Named, @Marker Tagged<Status>, audit.@Marker Auditable { ACTIVE }',
+    );
+
+    expect(refs).toEqual(['Auditable', 'Named', 'Tagged']);
+  });
+
+  it.each([
+    ['class extends', 'class Child extends @Marker Base {}', ['Base']],
+    ['class implements', 'class Child implements @Marker Named {}', ['Named']],
+    ['record implements', 'record Child(int id) implements @Marker Named {}', ['Named']],
+    ['interface extends', 'interface Child extends @Marker Named {}', ['Named']],
+  ])('unwraps type-use annotations for %s', (_label, source, expected) => {
+    expect(inheritanceRefs(source)).toEqual(expected);
+  });
+
+  it('does not emit an empty inheritance name from a torn annotated base', () => {
+    expect(inheritanceRefs('enum Status implements @Marker {')).toEqual([]);
+  });
+
+  it('preserves the enum constant-body link while adding enum interface heritage', () => {
+    expect(
+      inheritanceRefs(
+        'enum Status implements Named { ACTIVE { public String label() { return "active"; } } }',
+      ),
+    ).toEqual(['Named', 'Status']);
+  });
+});
+
+describe('emitJavaScopeCaptures — record component accessors (#2917)', () => {
+  it('synthesizes zero-argument declarations with full generic return types', () => {
+    expect(
+      recordAccessorDeclarations('record User(String name, java.util.List<String> tags) {}'),
+    ).toEqual([
+      { name: 'name', arity: '0', requiredArity: '0', returnType: 'String' },
+      {
+        name: 'tags',
+        arity: '0',
+        requiredArity: '0',
+        returnType: 'java.util.List<String>',
+      },
+    ]);
+  });
+
+  it('uses the array return type for a varargs component accessor', () => {
+    expect(recordAccessorDeclarations('record Samples(String... values) {}')).toEqual([
+      { name: 'values', arity: '0', requiredArity: '0', returnType: 'String[]' },
+    ]);
+  });
+
+  it('does not duplicate an explicit canonical accessor', () => {
+    const declarations = recordAccessorDeclarations(
+      'record User(String name) { public String name(/* canonical */) { return name; } }',
+    );
+
+    expect(declarations.filter((declaration) => declaration.name === 'name')).toHaveLength(1);
+  });
+
+  it('does not count an explicit accessor receiver parameter toward arity', () => {
+    const declarations = recordAccessorDeclarations(
+      'record User(String name) { public String name(User this) { return name; } }',
+    );
+
+    expect(declarations.filter((declaration) => declaration.name === 'name')).toEqual([
+      expect.objectContaining({ arity: '0', requiredArity: '0' }),
+    ]);
+  });
+
+  it('keeps an overload alongside the implicit zero-argument accessor', () => {
+    const declarations = recordAccessorDeclarations(
+      'record User(String name) { public String name(int repeat) { return name; } }',
+    ).filter((declaration) => declaration.name === 'name');
+
+    expect(declarations.map((declaration) => declaration.arity).sort()).toEqual(['0', '1']);
+  });
+
+  // A component is named by a real `identifier` and nothing else. tree-sitter's
+  // zero-width MISSING recovery token satisfies `name: (identifier)`, and the
+  // grammar admits `underscore_pattern` in the same field, so both would mint an
+  // accessor for source that does not compile.
+  it.each([
+    ['a dropped component type', 'record M(int x, y) {}', ['x']],
+    ['a nameless varargs component', 'record W(int... ) {}', []],
+    ['an underscore component', 'record R(int _) {}', []],
+    ['an underscore varargs component', 'record S(int... _) {}', []],
+  ])('emits no accessor declaration for %s', (_label, source, expected) => {
+    expect(recordAccessorDeclarations(source).map((declaration) => declaration.name)).toEqual(
+      expected,
+    );
+  });
+
+  it('emits no accessor scope for a component with no usable name', () => {
+    const scopes = emitJavaScopeCaptures('record M(int x, y) {}', 'C.java')
+      .filter((m) => m['@scope.function'] !== undefined)
+      .map((m) => m['@scope.function']?.text);
+
+    expect(scopes).toEqual(['int x']);
+  });
+
+  it('is unaffected for a valid record', () => {
+    expect(recordAccessorDeclarations('record P(int x, String... ys) {}')).toEqual([
+      { name: 'x', arity: '0', requiredArity: '0', returnType: 'int' },
+      { name: 'ys', arity: '0', requiredArity: '0', returnType: 'String[]' },
+    ]);
   });
 });
 
@@ -118,6 +239,11 @@ describe('emitJavaScopeCaptures — explicit constructor invocations (F38 #1928)
     const src = 'class C extends Box<String> { C() { super(); } }';
     const refs = ctorRefs(src);
     expect(refs.some((r) => r.name === 'Box' && r.arity === '0')).toBe(true);
+  });
+
+  it('unwraps an annotated superclass for explicit `super(...)`', () => {
+    const refs = ctorRefs('class C extends @Marker Base { C() { super(); } }');
+    expect(refs.some((r) => r.name === 'Base' && r.arity === '0')).toBe(true);
   });
 
   it('captures `this(...)` as a constructor ref to the enclosing class name', () => {

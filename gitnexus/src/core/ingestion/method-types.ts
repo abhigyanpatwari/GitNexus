@@ -37,6 +37,22 @@ export interface MethodInfo {
   annotations: string[];
   sourceFile: string;
   line: number;
+  /**
+   * 0-based `startPosition.column` of the node `line` was derived from.
+   *
+   * `line` alone does NOT identify a callable. A callable that is SYNTHESIZED
+   * at a position that is not its own declaration shares its owner's line: a
+   * Java record's implicit component accessor is minted at the COMPONENT, and a
+   * C# 12 primary constructor at the owner's `parameter_list`. So both
+   * `record P(int x, int y) { int x(int s) {…} }` and
+   * `class Point(int x, int y) { public Point(int x) : this(x, 0) {} }` give two
+   * different callables the same (name, line) (#2936).
+   *
+   * Required, not optional: the per-class map in parse-worker keys on it, and
+   * an absent column would key an entry no lookup could ever reach — a silent,
+   * whole-language loss of method enrichment rather than a compile error.
+   */
+  column: number;
 }
 
 export interface MethodExtractorContext {

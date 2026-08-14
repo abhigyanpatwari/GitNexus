@@ -661,7 +661,7 @@
   },
   "rust-qualified-trait/src/widget.rs": {
     "captureGroups": 23,
-    "digest": "ee34385539f7e9398123c056738c6a662a80dac41fc038db96fab0da5c84c8ac"
+    "digest": "f131767bf717a065166a5d8b6bdd969e8ea31c8725eecbedeac694b2e2aaeea5"
   },
   "rust-receiver-resolution/src/main.rs": {
     "captureGroups": 25,

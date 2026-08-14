@@ -23,14 +23,16 @@ import { createCallExtractor } from '../call-extractors/generic.js';
 import { javaCallConfig } from '../call-extractors/configs/jvm.js';
 import { createFieldExtractor } from '../field-extractors/generic.js';
 import { javaConfig } from '../field-extractors/configs/jvm.js';
-import { createMethodExtractor } from '../method-extractors/generic.js';
-import { javaMethodConfig } from '../method-extractors/configs/jvm.js';
 import { createVariableExtractor } from '../variable-extractors/generic.js';
 import { javaVariableConfig } from '../variable-extractors/configs/jvm.js';
 import { createJavaCfgVisitor } from '../cfg/visitors/java.js';
 import { assertCloneable } from '../workers/clone-safety.js';
 import { collectJavaCaptureSideChannel } from './java/capture-side-channel.js';
 import type { SymbolDefinition } from 'gitnexus-shared';
+import {
+  javaRecordMethodExtractor,
+  shouldSkipJavaRecordComponentDefinition,
+} from './java/record-components.js';
 import {
   emitJavaScopeCaptures,
   interpretJavaImport,
@@ -186,7 +188,8 @@ export const javaProvider = defineLanguage({
   mroStrategy: 'implements-split',
   callExtractor: createCallExtractor(javaCallConfig),
   fieldExtractor: createFieldExtractor(javaConfig),
-  methodExtractor: createMethodExtractor(javaMethodConfig),
+  methodExtractor: javaRecordMethodExtractor,
+  shouldSkipDefinitionCapture: shouldSkipJavaRecordComponentDefinition,
   variableExtractor: createVariableExtractor(javaVariableConfig),
   classExtractor: createClassExtractor(javaClassConfig),
 

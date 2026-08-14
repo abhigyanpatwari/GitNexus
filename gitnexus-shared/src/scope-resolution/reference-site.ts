@@ -82,6 +82,28 @@ export interface ReferenceSite {
    * otherwise, in which case resolution is unchanged.
    */
   readonly rawQualifiedName?: string;
+  /**
+   * Top-level generic/template arguments the source wrote ON this reference —
+   * `class UserValidator : IValidator<string>` yields `['string']` on the
+   * `inherits` site whose `name` is `IValidator`.
+   *
+   * `name` is the BASE name and stays that way: every lookup in resolution is
+   * keyed by it, and one declaration answers for every instantiation of itself.
+   * This records what the erasure threw away, so a consumer that needs the
+   * INSTANTIATION — receiver-bound interface dispatch, which must not fan a
+   * `IValidator<string>` receiver out to an `IValidator<int>` implementor
+   * (#2912) — can ask for it without re-parsing the source.
+   *
+   * Derived generically from the anchor capture's own text (see
+   * `collectReferenceSites`), so no language query change is needed: an emitter
+   * whose `@reference.inherits` anchor spans the whole base gets this for free,
+   * and one whose anchor is the bare name simply leaves it absent.
+   *
+   * ABSENT MEANS UNKNOWN, never "not generic" — the two are indistinguishable
+   * here, and only the first is safe to act on. Consumers must fail OPEN on
+   * absence (keep the target), matching `SymbolDefinition.typeParameters`.
+   */
+  readonly typeArguments?: readonly string[];
   /** Source-text range of this reference. */
   readonly atRange: Range;
   /**

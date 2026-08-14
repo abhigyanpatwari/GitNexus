@@ -121,7 +121,13 @@ const KOTLIN_SCOPE_QUERY = `
     ])) @class-annotation.class
 
 ;; Declarations — functions / methods / properties
+;;
+;; A generic FUNCTION's parameters are read for the same reason a generic type's
+;; are (#2912 review): \`fun <T> runAny(v: Validator<T>)\` writes a receiver whose
+;; argument is a type VARIABLE, and a pass that cannot tell that from a concrete
+;; type prunes every implementor from the call's dispatch fan-out.
 (function_declaration
+  (type_parameters)? @declaration.type-parameters
   (simple_identifier) @declaration.name) @declaration.function
 
 ;; Lambda bound to a val/var: val handler = { x: Int -> target(x) }

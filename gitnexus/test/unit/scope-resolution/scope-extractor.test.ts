@@ -261,6 +261,22 @@ describe('Pass 2: declarations + local bindings', () => {
     expect(result.localDefs[0]!.type).toBe('Function');
   });
 
+  it('preserves a synthetic declaration marker on the definition', () => {
+    const result = extract(
+      [
+        scopeMatch('module', 1, 0, 100, 0),
+        declMatch('class', 'Worker$1', 5, 0, 10, 0, {
+          '@declaration.is-synthetic': cap('@declaration.is-synthetic', 5, 0, 10, 0, 'true'),
+        }),
+      ],
+      'a.ts',
+      mockProvider(),
+    );
+
+    expect(result.localDefs).toHaveLength(1);
+    expect(result.localDefs[0]!.isSynthetic).toBe(true);
+  });
+
   it('honors `provider.bindingScopeFor` to hoist a binding to an outer scope', () => {
     // Treat every declaration as hoisted to the module scope.
     const result = extract(

@@ -297,6 +297,7 @@ import { LanguageProvider } from '../../language-provider.js';
 import { ScopeResolutionIndexes } from '../../model/scope-resolution-indexes.js';
 import type { SemanticModel } from '../../model/semantic-model.js';
 import type { ConversionRankFn } from '../passes/overload-narrowing.js';
+import type { HeritageTypeArgumentSink } from '../utils/generic-instantiation.js';
 import type { WorkspaceResolutionIndex } from '../workspace-index.js';
 
 /** A LinearizeStrategy receives the full ancestor map so C3-style
@@ -586,6 +587,16 @@ export interface ScopeResolver {
    * shape. Must be idempotent (the orchestrator may call it more than once
    * during re-resolution).
    *
+   * `recordTypeArguments` is the same sink `preEmitInheritanceEdges` writes to:
+   * the generic INSTANTIATION a heritage clause was written with, so
+   * interface-dispatch fan-out can refuse an implementor of an incompatible one
+   * (#2912). An implementation that emits an edge for a generic base
+   * (`impl Validator<String> for V`, `class V implements Validator<String>`)
+   * should call it with the same (source, target) graph ids it just used;
+   * anything not recorded reads as "unknown" and keeps the pre-#2912 fan-out.
+   * Ignoring it entirely is correct for a language whose heritage carries no
+   * type arguments (Ruby `include`).
+   *
    * Default: undefined (no extra heritage edges needed).
    */
   readonly emitHeritageEdges?: (
@@ -593,6 +604,7 @@ export interface ScopeResolver {
     parsedFiles: readonly ParsedFile[],
     nodeLookup: GraphNodeLookup,
     scopes?: ScopeResolutionIndexes,
+    recordTypeArguments?: HeritageTypeArgumentSink,
   ) => void;
 
   /**
@@ -1005,6 +1017,25 @@ export interface ScopeResolver {
    * receiver class is a dispatch candidate).
    */
   readonly isStaticOnly?: (def: SymbolDefinition) => boolean;
+
+  /**
+   * Optional canonicalizer for a written GENERIC TYPE ARGUMENT, so two
+   * spellings of one type compare equal during interface-dispatch
+   * instantiation matching (#2912).
+   *
+   * The case it exists for is a language with predefined ALIASES: C# `string`
+   * and `String` are the same type, so `IValidator<string>` must still fan out
+   * to `class V : IValidator<String>`. Without the hook the two spellings look
+   * like two instantiations and the implementor is pruned — a missing edge,
+   * which is the failure direction #2912 is most concerned to avoid.
+   *
+   * Called ONLY on the two sides of one argument comparison, never on a name
+   * used for lookup, so it may map to whatever canonical form the language
+   * prefers (`string` → `String`, or the reverse) as long as it is consistent.
+   * Languages whose types have one spelling each leave it undefined and the
+   * comparison stays exact.
+   */
+  readonly normalizeTypeArgument?: (name: string) => string;
 
   /**
    * Optional predicate to gate free-call fallback emission by caller-side

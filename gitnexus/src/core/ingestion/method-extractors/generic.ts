@@ -256,5 +256,6 @@ function buildMethod(
     annotations: config.extractAnnotations?.(node) ?? [],
     sourceFile: context.filePath,
     line: node.startPosition.row + 1,
+    column: node.startPosition.column,
   };
 }

@@ -24,7 +24,11 @@ import type { ScopeId, SymbolDefinition, TypeRef } from 'gitnexus-shared';
 import type { ElementAccessRoute, ScopeResolver } from '../contract/scope-resolver.js';
 import type { ScopeResolutionIndexes } from '../../model/scope-resolution-indexes.js';
 import type { WorkspaceResolutionIndex } from '../workspace-index.js';
-import { erasedTypeApplication, stripTemplateArguments } from '../../utils/template-arguments.js';
+import {
+  erasedTypeApplication,
+  matchingOpenParen,
+  stripTemplateArguments,
+} from '../../utils/template-arguments.js';
 import type { DecodedReceiverChain } from '../../utils/receiver-chain-codec.js';
 import { decodeReceiverChain } from '../../utils/receiver-chain-codec.js';
 import type { DecorationStripper } from '../scope/walkers.js';
@@ -75,7 +79,22 @@ function parseMapTupleSentinel(text: string): { tupleIdx: number; rhs: string } 
   return { tupleIdx: Number(idxStr), rhs };
 }
 
+/**
+ * Notified with the spelling a receiver position was typed from and the class
+ * it resolved to — see {@link noteReceiverType}. Pure side channel: this file
+ * never reads it back, and resolution is identical whether or not it is set.
+ */
+type ReceiverTypeRecorder = (spelling: string, defId: string) => void;
+
 interface ResolveCompoundReceiverOptions {
+  /**
+   * Optional sink for the DECLARED TYPE SPELLINGS this fold typed receiver
+   * positions from (#2912). The fold returns a class, and a class has lost the
+   * generic arguments that decide which implementations an interface-typed
+   * receiver can dispatch to; the caller keeps the last report whose def id
+   * matches the returned class and reads the arguments off that spelling.
+   */
+  readonly recordReceiverType?: ReceiverTypeRecorder;
   /** When true (default), if method lookup fails on the receiver's
    *  class, walk its fields and try the lookup on each field's class.
    *  Phase-9C "unified fixpoint" — Python-shaped heuristic. */
@@ -348,17 +367,65 @@ function classOfDeclaredType(
   typeRef: TypeRef,
   scopes: ScopeResolutionIndexes,
   stripDecoration?: DecorationStripper,
+  recordReceiverType?: ReceiverTypeRecorder,
 ): SymbolDefinition | undefined {
   // `declaredAtScope`, never a scope the caller chose: all five sites passed
   // exactly this `TypeRef`'s own anchor, and taking it as a parameter is what
   // would let a sixth quietly not — which is the hole this helper exists to
   // close, one level up.
-  return resolveClassBindingForName(
+  const spelling = erasedTypeApplication(typeRef) ?? typeRef.rawName;
+  const def = resolveClassBindingForName(
     typeRef.declaredAtScope,
-    erasedTypeApplication(typeRef) ?? typeRef.rawName,
+    spelling,
     scopes,
     stripDecoration,
   );
+  return noteReceiverType(recordReceiverType, spelling, def);
+}
+
+/**
+ * Report the SPELLING a receiver position was typed from, alongside the class
+ * it resolved to (#2912).
+ *
+ * The fold answers "which class", which is all dispatch needed until generic
+ * instantiation mattered: `IValidator<string>` and `IValidator<int>` fold to
+ * the same declaration. The spelling is the only place the arguments survive,
+ * and it exists at every one of these lookups already — reporting it costs a
+ * function call and changes no resolution.
+ *
+ * Pairing it with the def id is what makes it usable: the caller keeps the LAST
+ * report and uses it only if it names the class the fold ultimately returned,
+ * so a route that typed an intermediate position, or a later route that
+ * answered differently, cannot lend its arguments to another class.
+ */
+function noteReceiverType(
+  record: ReceiverTypeRecorder | undefined,
+  spelling: string,
+  def: SymbolDefinition | undefined,
+): SymbolDefinition | undefined {
+  if (def !== undefined) record?.(spelling, def.nodeId);
+  return def;
+}
+
+/**
+ * The class a CALL's return type names, reported to the receiver-type side
+ * channel — the return-type twin of {@link classOfDeclaredType}.
+ *
+ * The pairing it exists to keep in one place: the lookup goes through
+ * `rawName`, while the SPELLING reported alongside it is the erased type
+ * application, so an `IValidator<string>` return is reported with its
+ * arguments intact. The spelling is built only once the lookup has actually
+ * found a class, because it is discarded otherwise — and every fold hop
+ * through a call reaches this, generic or not.
+ */
+function classOfReturnType(
+  retType: TypeRef,
+  scopes: ScopeResolutionIndexes,
+  record: ReceiverTypeRecorder | undefined,
+): SymbolDefinition | undefined {
+  const def = findClassBindingInScope(retType.declaredAtScope, retType.rawName, scopes);
+  if (def === undefined || record === undefined) return def;
+  return noteReceiverType(record, erasedTypeApplication(retType) ?? retType.rawName, def);
 }
 
 function typeOfMemberOnClass(
@@ -374,7 +441,12 @@ function typeOfMemberOnClass(
     const classScope = classScopeByDefId.get(ownerId);
     const memberType = classScope?.typeBindings.get(memberName);
     if (memberType !== undefined) {
-      const def = classOfDeclaredType(memberType, scopes, options.stripTypePreservingDecoration);
+      const def = classOfDeclaredType(
+        memberType,
+        scopes,
+        options.stripTypePreservingDecoration,
+        options.recordReceiverType,
+      );
       // The declared type is reported even when it resolved to no class:
       // `Promise<User>` and `[]Repo` name nothing in the workspace, and an
       // await or index step unwrapping them is exactly how they become
@@ -404,7 +476,12 @@ function typeOfMemberOnClass(
           // Same stripper the primary branch above passes. Omitting it here
           // meant a decorated declared type (`*Host`) resolved on one branch and
           // not the other, for the same member of the same class.
-          const def = classOfDeclaredType(hoisted, scopes, options.stripTypePreservingDecoration);
+          const def = classOfDeclaredType(
+            hoisted,
+            scopes,
+            options.stripTypePreservingDecoration,
+            options.recordReceiverType,
+          );
           // Identical to the primary branch: a declared type that named no
           // class is still a usable position when the next step unwraps it.
           // Returning `undefined` here made `svc.getMap()['k'].run()` decline
@@ -569,7 +646,66 @@ export function foldReceiverChain(
   }
   // A chain that ended without a class returns undefined naturally — no
   // separate guard, because `def` IS the signal.
+  //
+  // The receiver-type report is made HERE, from the final `FoldState`, because
+  // that record pairs the class with the spelling that produced it BY
+  // CONSTRUCTION — same step, same lookup. The individual `classOfDeclaredType`
+  // calls inside the fold also report, including from steps that were later
+  // folded past, so the last of those is not reliably about the class the fold
+  // returns. Reporting the final state last makes it the one that stands.
+  if (current.def !== undefined && current.declaredType !== undefined) {
+    options.recordReceiverType?.(current.declaredType, current.def.nodeId);
+  }
   return current.def;
+}
+
+/** A resolved compound receiver, together with the declared spelling that typed
+ *  the position it came from — see {@link resolveCompoundReceiverTyped}. */
+export interface TypedCompoundReceiver {
+  readonly def: SymbolDefinition;
+  /**
+   * The receiver's declared type AS WRITTEN (`IValidator<string>`), or
+   * `undefined` where the route that answered had no declared type to report — a
+   * construction expression, a namespace target, a static class receiver. The
+   * fan-out reads its generic arguments off this and restores the unfiltered
+   * behaviour when it is absent, so declining is always safe (#2912).
+   */
+  readonly declaredSpelling: string | undefined;
+}
+
+/**
+ * {@link resolveCompoundReceiverClass}, paired with the spelling that typed the
+ * position (#2912).
+ *
+ * The sink is created and read HERE, per call, which is the whole point: a
+ * recorder that outlives one resolution has to be reset by hand before every
+ * call, and the retry shapes in this pass make two calls in a row — a reset
+ * missed at one of them silently attributes the previous receiver's spelling to
+ * this one. A local cannot be forgotten.
+ *
+ * The def-id guard is the second half. Lookups that lost — an MRO walk that
+ * moved on, a fold step later folded past — report too, so a report counts only
+ * when it names the class actually returned. `foldReceiverChain` reports its
+ * final state last for exactly this reason, so the structural route wins.
+ */
+export function resolveCompoundReceiverTyped(
+  receiverText: string,
+  inScope: ScopeId,
+  scopes: ScopeResolutionIndexes,
+  index: WorkspaceResolutionIndex,
+  options: ResolveCompoundReceiverOptions = {},
+): TypedCompoundReceiver | undefined {
+  let spelling: string | undefined;
+  let spellingDefId: string | undefined;
+  const def = resolveCompoundReceiverClass(receiverText, inScope, scopes, index, {
+    ...options,
+    recordReceiverType: (reported, defId) => {
+      spelling = reported;
+      spellingDefId = defId;
+    },
+  });
+  if (def === undefined) return undefined;
+  return { def, declaredSpelling: spellingDefId === def.nodeId ? spelling : undefined };
 }
 
 export function resolveCompoundReceiverClass(
@@ -676,7 +812,12 @@ export function resolveCompoundReceiverClass(
         return findClassBindingInScope(rhsTb.declaredAtScope, arg, scopes);
       }
 
-      const viaTb = classOfDeclaredType(tb, scopes, options.stripTypePreservingDecoration);
+      const viaTb = classOfDeclaredType(
+        tb,
+        scopes,
+        options.stripTypePreservingDecoration,
+        options.recordReceiverType,
+      );
       if (viaTb !== undefined) return viaTb;
 
       // Member-alias / call-result shapes store the RHS path on rawName
@@ -769,7 +910,7 @@ export function resolveCompoundReceiverClass(
         const viaReturn =
           retType === undefined
             ? undefined
-            : findClassBindingInScope(retType.declaredAtScope, retType.rawName, scopes);
+            : classOfReturnType(retType, scopes, options.recordReceiverType);
         if (viaReturn !== undefined) return viaReturn;
       }
       // Inline construction — `Service(db).m()` / `new Service(db).m()`.
@@ -891,7 +1032,7 @@ export function resolveCompoundReceiverClass(
     }
 
     if (retType === undefined) return undefined;
-    return findClassBindingInScope(retType.declaredAtScope, retType.rawName, scopes);
+    return classOfReturnType(retType, scopes, options.recordReceiverType);
   }
 
   // Mixed dotted + call chain: `obj.field.method().field.method()…`.
@@ -967,7 +1108,7 @@ export function resolveCompoundReceiverClass(
   // two had a fixture. See `classOfDeclaredType` for why this cannot change a
   // `TypeRef` that was never reduced.
   let currentClass: SymbolDefinition | undefined = headType
-    ? classOfDeclaredType(headType, scopes)
+    ? classOfDeclaredType(headType, scopes, undefined, options.recordReceiverType)
     : findClassBindingInScope(inScope, headMemberName, scopes);
   // Whether the walk currently sits on the CLASS ITSELF rather than on a
   // value of that class. Seeded true only when the head resolved straight to
@@ -1097,7 +1238,7 @@ export function resolveCompoundReceiverClass(
     // grounds fell through here — a declined fold is documented as "no answer",
     // never a veto — and this walk re-minted `other.py:Mapped` from the
     // workspace index. Same rule, same lookup, so the two routes now agree.
-    let nextClass = classOfDeclaredType(memberType, scopes);
+    let nextClass = classOfDeclaredType(memberType, scopes, undefined, options.recordReceiverType);
     if (nextClass === undefined) {
       const fromMap = unwrapMapValueToClass(memberType, scopes);
       if (fromMap !== undefined) nextClass = fromMap;
@@ -1165,22 +1306,6 @@ function isInitializerContext(startScope: ScopeId, scopes: ScopeResolutionIndexe
     currentId = scope.parent;
   }
   return false;
-}
-
-/** Find the index of the `(` that matches the trailing `)` of a
- *  call-expression text. Returns -1 if unbalanced. */
-function matchingOpenParen(text: string): number {
-  if (!text.endsWith(')')) return -1;
-  let depth = 0;
-  for (let i = text.length - 1; i >= 0; i--) {
-    const ch = text[i];
-    if (ch === ')') depth++;
-    else if (ch === '(') {
-      depth--;
-      if (depth === 0) return i;
-    }
-  }
-  return -1;
 }
 
 /** Max peel iterations for `stripCastWrappers`. Real cast nesting —

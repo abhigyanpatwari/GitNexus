@@ -107,6 +107,10 @@ export interface SymbolDefinition {
    *  Unavailable callables still participate in overload selection, but a
    *  selected unavailable target must suppress edge emission. */
   isDeleted?: boolean;
+  /** True when the declaration identity was synthesized rather than written in
+   *  source (for example an anonymous class). Consumers may use this only as a
+   *  conservative priority hint; it does not change graph-node identity. */
+  isSynthetic?: boolean;
   /** Links Method/Constructor/Property to owning Class/Struct/Trait nodeId */
   ownerId?: string;
   /** #1982/#1993: bridge-held enclosing-namespace path (e.g. `NS1`, `Outer.Inner`)
