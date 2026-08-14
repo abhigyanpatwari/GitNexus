@@ -184,6 +184,10 @@ function parseRgGrepPattern(cmd) {
       continue;
     }
     if (token.startsWith('-')) {
+      const attachedPattern = token.match(/^--regexp=(.+)$/) || token.match(/^-e(.+)$/);
+      if (attachedPattern) {
+        return attachedPattern[1].length >= 3 ? attachedPattern[1] : null;
+      }
       if (flagsWithValues.has(token) || patternFlags.has(token)) {
         skipNext = true;
         skipNextAsPattern = patternFlags.has(token);

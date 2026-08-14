@@ -564,6 +564,8 @@ describe('Shell quoted-pattern parser', () => {
     ['rg User\\ Service src/', 'User Service'],
     [String.raw`rg "C:\Users" src/`, String.raw`C:\Users`],
     ['rg -e "User Service" src/', 'User Service'],
+    ['rg --regexp=UserService src/', 'UserService'],
+    ['grep -eUserService src/', 'UserService'],
     ['/usr/bin/rg -- "User Service" src/', 'User Service'],
   ])('extracts %j from %j', (command, expected) => {
     expect(parseRgGrepPattern(command)).toBe(expected);
