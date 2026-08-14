@@ -203,4 +203,34 @@ describe('wiki HTML viewer', () => {
     expect(html).toContain('if (currentNavigation !== navigationVersion) return');
     expect(html).toContain("console.warn('GitNexus Wiki Mermaid fallback:'");
   });
+
+  it('neutralizes script tag XSS vectors outside code fences', () => {
+    const sanitized = sanitizeMarkdownForViewer('<script>alert(1)</script>');
+    expect(sanitized).not.toContain('<script>');
+    expect(sanitized).not.toContain('</script>');
+    expect(sanitized).toContain('&lt;script&gt;');
+  });
+
+  it('removes multiline HTML comments that could hide script payloads', () => {
+    const sanitized = sanitizeMarkdownForViewer('<!-- multiline\n<script>alert(1)</script>\n-->');
+    expect(sanitized).not.toContain('<script>');
+    expect(sanitized).not.toContain('alert(1)');
+  });
+
+  it('escapes img onerror event handlers', () => {
+    const sanitized = sanitizeMarkdownForViewer('<img onerror=alert(1)>');
+    expect(sanitized).not.toContain('<img');
+    expect(sanitized).toContain('&lt;img onerror=alert(1)&gt;');
+  });
+
+  it('handles comment-tag interaction edge cases', () => {
+    // 注释与标签交互：整个字符串被当作 HTML 注释删除
+    const sanitized = sanitizeMarkdownForViewer('<!--><script>-->');
+    expect(sanitized).not.toContain('<script>');
+
+    // 残余标签在注释删除后仍被转义
+    const leftover = sanitizeMarkdownForViewer('<!-- safe --><script>alert(1)</script>');
+    expect(leftover).not.toContain('<script>');
+    expect(leftover).toContain('&lt;script&gt;');
+  });
 });

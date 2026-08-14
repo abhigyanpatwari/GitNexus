@@ -62,12 +62,7 @@ function validateSafeId(value: string, label: string): void {
 
 function validateSafeOutputFile(value: string, label: string): void {
   assertNonEmptyString(value, label);
-  if (
-    value.includes('\\') ||
-    value.startsWith('/') ||
-    value.split('/').includes('..') ||
-    !/^[a-zA-Z0-9][a-zA-Z0-9._/-]*$/.test(value)
-  ) {
+  if (value.includes('\\') || value.includes('/') || !/^[a-zA-Z0-9][a-zA-Z0-9._-]*$/.test(value)) {
     throw new Error(`${label} must be a safe relative file name`);
   }
 }

@@ -98,7 +98,7 @@ function generatedPlan(
             id: `claim-${section.id}`,
             text: `Evidence-backed content for ${section.id}.`,
             status: 'verified',
-            evidenceIds: allEvidence.map((evidence) => evidence.id),
+            evidenceIds: evidence.repository.map((evidence) => evidence.id),
             origin: 'llm',
           },
         },
@@ -138,7 +138,7 @@ describe('wiki Profile coverage validator', () => {
     expect(report.status).toBe('passed');
     expect(report.conclusion).toBe('GitNexus Profile 覆盖检查已通过；未进行标准符合性评估。');
     expect(report.profile.id).toBe('iso-42010-ad');
-    expect(report.sections.at(-1)?.id).toBe('profile-coverage');
+    expect(report.sections[report.sections.length - 1]?.id).toBe('profile-coverage');
   });
 
   it('reports incomplete when required evidence or a required generated section is missing', () => {

@@ -41,8 +41,10 @@ const LEGACY_LANGUAGE: ResolvedLanguage = {
 
 export function sanitizeMarkdownForViewer(markdown: string): string {
   const mermaidSafe = sanitizeMermaidMarkdown(markdown);
+  // 先对完整字符串删除 HTML 注释（可跨行），再按行处理围栏和标签
+  const commentRemoved = mermaidSafe.replace(/<!--[\s\S]*?-->/g, '');
   let inFence = false;
-  return mermaidSafe
+  return commentRemoved
     .split('\n')
     .map((line) => {
       if (/^\s*```/.test(line)) {
@@ -50,11 +52,10 @@ export function sanitizeMarkdownForViewer(markdown: string): string {
         return line;
       }
       if (inFence) return line;
-      return line
-        .replace(/<!--[\s\S]*?-->/g, '')
-        .replace(/<\/?[a-zA-Z][^>]*>/g, (tag) =>
-          tag.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;'),
-        );
+      // 转义所有 HTML 标签为实体（非围栏行不需要原始 HTML）
+      return line.replace(/<\/?[a-zA-Z/][^>]*>/g, (tag) =>
+        tag.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;'),
+      );
     })
     .join('\n');
 }

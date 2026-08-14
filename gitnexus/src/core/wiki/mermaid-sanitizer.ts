@@ -47,8 +47,12 @@ export function sanitizeMermaidDiagram(diagram: string): string {
  * 生成模型常返回 `graph TD; A-->B;`，这里将语句确定性拆成逐行形式。
  */
 function normalizeFlowchartStatements(diagram: string): string {
-  const firstNonEmpty = diagram.split('\n').find((line) => line.trim() !== '') ?? '';
-  if (!FLOWCHART_HEADER_RE.test(firstNonEmpty)) return diagram;
+  // 遍历所有行查找 flowchart header，跳过 %% 注释和 %%{init:}%% 指令
+  const headerLine = diagram.split('\n').find((line) => {
+    const trimmed = line.trim();
+    return trimmed !== '' && !trimmed.startsWith('%%');
+  });
+  if (!headerLine || !FLOWCHART_HEADER_RE.test(headerLine.trim())) return diagram;
 
   return splitOutsideLabels(diagram, ';')
     .map((statement) => statement.trim())

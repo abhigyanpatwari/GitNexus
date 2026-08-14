@@ -179,7 +179,11 @@ describe('versioned wiki publication', () => {
   it('rejects contention, invalid previous pointers, missing files, and content hash drift', async () => {
     const lockedDir = await tempWiki();
     await fs.mkdir(path.join(lockedDir, '.state'), { recursive: true });
-    await fs.writeFile(path.join(lockedDir, '.state/generation.lock'), 'occupied');
+    // 使用当前进程 PID 模拟活跃锁，确保陈旧锁检测不会接管
+    await fs.writeFile(
+      path.join(lockedDir, '.state/generation.lock'),
+      `${JSON.stringify({ pid: process.pid, startedAt: new Date().toISOString() })}\n`,
+    );
     await expect(
       new WikiPublisher().publish({ wikiDir: lockedDir, ...fixture('generation-1') }),
     ).rejects.toThrow('Wiki generation is locked by another publisher');
@@ -206,6 +210,99 @@ describe('versioned wiki publication', () => {
     drift.files['context-scope.md'] = '# Changed';
     await expect(new WikiPublisher().publish({ wikiDir: driftDir, ...drift })).rejects.toThrow(
       'Wiki publication hash mismatch: context-scope.md',
+    );
+  });
+});
+
+describe('WikiPublisher — 陈旧锁恢复', () => {
+  it('不存在的 PID 的陈旧锁可被接管', async () => {
+    const wikiDir = await tempWiki();
+    // 预置一个陈旧锁文件，PID 为一个不存在的进程
+    await fs.mkdir(path.join(wikiDir, '.state'), { recursive: true });
+    const lockPath = path.join(wikiDir, '.state', 'generation.lock');
+    await fs.writeFile(
+      lockPath,
+      `${JSON.stringify({ pid: 999999, startedAt: new Date().toISOString() })}\n`,
+    );
+
+    const publisher = new WikiPublisher();
+    const input = { wikiDir, ...fixture('generation-1') };
+    const result = await publisher.publish(input);
+    expect(result.current.generationId).toBe(input.manifest.generationId);
+  });
+
+  it('格式损坏的锁文件可被接管', async () => {
+    const wikiDir = await tempWiki();
+    await fs.mkdir(path.join(wikiDir, '.state'), { recursive: true });
+    const lockPath = path.join(wikiDir, '.state', 'generation.lock');
+    await fs.writeFile(lockPath, 'corrupted content');
+
+    const publisher = new WikiPublisher();
+    const input = { wikiDir, ...fixture('generation-1') };
+    const result = await publisher.publish(input);
+    expect(result.current.generationId).toBe(input.manifest.generationId);
+  });
+
+  it('活跃进程的锁仍被正确阻塞', async () => {
+    const wikiDir = await tempWiki();
+    await fs.mkdir(path.join(wikiDir, '.state'), { recursive: true });
+    const lockPath = path.join(wikiDir, '.state', 'generation.lock');
+    // 使用当前进程 PID 模拟活跃锁
+    await fs.writeFile(
+      lockPath,
+      `${JSON.stringify({ pid: process.pid, startedAt: new Date().toISOString() })}\n`,
+    );
+
+    const publisher = new WikiPublisher();
+    const input = { wikiDir, ...fixture('generation-1') };
+    await expect(publisher.publish(input)).rejects.toThrow(/locked by another publisher/);
+
+    // 清理：手动删除锁，避免影响 afterEach 的 tempDirs 清理之外的残留
+    await fs.unlink(lockPath).catch(() => {});
+  });
+});
+
+describe('WikiPublisher — symlink 逃逸防护', () => {
+  it('拒绝 .state 目录为符号链接', async () => {
+    const wikiDir = await tempWiki();
+    const escapeDir = await fs.mkdtemp(path.join(os.tmpdir(), 'wiki-escape-'));
+    tempDirs.push(escapeDir);
+    // 先创建 .state 再替换为指向外部的符号链接
+    await fs.mkdir(path.join(wikiDir, '.state'), { recursive: true });
+    await fs.rm(path.join(wikiDir, '.state'), { recursive: true });
+    await fs.symlink(escapeDir, path.join(wikiDir, '.state'));
+
+    const publisher = new WikiPublisher();
+    await expect(publisher.publish({ wikiDir, ...fixture('generation-1') })).rejects.toThrow(
+      /symbolic link|escapes/,
+    );
+  });
+
+  it('拒绝 .staging 目录为符号链接', async () => {
+    const wikiDir = await tempWiki();
+    const escapeDir = await fs.mkdtemp(path.join(os.tmpdir(), 'wiki-escape-'));
+    tempDirs.push(escapeDir);
+    await fs.mkdir(path.join(wikiDir, '.staging'), { recursive: true });
+    await fs.rm(path.join(wikiDir, '.staging'), { recursive: true });
+    await fs.symlink(escapeDir, path.join(wikiDir, '.staging'));
+
+    const publisher = new WikiPublisher();
+    await expect(publisher.publish({ wikiDir, ...fixture('generation-1') })).rejects.toThrow(
+      /symbolic link|escapes/,
+    );
+  });
+
+  it('拒绝 .generations 目录为符号链接', async () => {
+    const wikiDir = await tempWiki();
+    const escapeDir = await fs.mkdtemp(path.join(os.tmpdir(), 'wiki-escape-'));
+    tempDirs.push(escapeDir);
+    await fs.mkdir(path.join(wikiDir, '.generations'), { recursive: true });
+    await fs.rm(path.join(wikiDir, '.generations'), { recursive: true });
+    await fs.symlink(escapeDir, path.join(wikiDir, '.generations'));
+
+    const publisher = new WikiPublisher();
+    await expect(publisher.publish({ wikiDir, ...fixture('generation-1') })).rejects.toThrow(
+      /symbolic link|escapes/,
     );
   });
 });

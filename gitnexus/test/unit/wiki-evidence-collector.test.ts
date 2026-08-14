@@ -129,7 +129,7 @@ describe('wiki EvidenceCollector', () => {
       },
     ]);
     const collector = new EvidenceCollector(repoPath, graph, {
-      maxRepositoryItems: 3,
+      maxRepositoryItems: 10,
       maxModuleItems: 2,
     });
     const input = { sourceCommit: 'abc123', moduleFiles: { Core: ['src/core.ts'] } };
@@ -137,7 +137,7 @@ describe('wiki EvidenceCollector', () => {
     const first = await collector.collect(input);
     const second = await collector.collect(input);
 
-    expect(first.repository).toHaveLength(3);
+    expect(first.repository).toHaveLength(6); // 4 files + 1 symbol + 1 deduped process
     expect(first.modules.Core).toHaveLength(2);
     expect(first.repository.map((item) => item.id)).toEqual(
       second.repository.map((item) => item.id),

@@ -79,7 +79,8 @@ function normalizeEngineeringDraftOrigin(raw: string): string {
 function countMermaidNodes(source: string): number {
   const nodes = new Set<string>();
   const nodePattern = /(?:^|[;\s])([A-Za-z][A-Za-z0-9_-]*)(?=\s*(?:\[|\(|\{|--|==|-\.|$))/gm;
-  const targetPattern = /(?:--+>|==+>|-\.->)\s*([A-Za-z][A-Za-z0-9_-]*)/g;
+  // 识别 flowchart 边目标 + sequence diagram 消息箭头（->>, -->>, -x）
+  const targetPattern = /(?:--+>|==+>|-\.->|->>|-->>|-x)\s*([A-Za-z][A-Za-z0-9_-]*)/g;
   for (const match of source.matchAll(nodePattern)) {
     if (
       !['graph', 'flowchart', 'subgraph', 'end', 'TB', 'TD', 'BT', 'RL', 'LR'].includes(match[1])
@@ -88,6 +89,12 @@ function countMermaidNodes(source: string): number {
     }
   }
   for (const match of source.matchAll(targetPattern)) nodes.add(match[1]);
+  // 识别 sequence diagram 的 Participant 声明（Participant A as "Label"）
+  const participantPattern =
+    /^\s*(?:participant|actor|activate|deactivate)\s+([A-Za-z][A-Za-z0-9_-]*)/gim;
+  for (const match of source.matchAll(participantPattern)) {
+    nodes.add(match[1]);
+  }
   return nodes.size;
 }
 

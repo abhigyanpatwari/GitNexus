@@ -11,10 +11,14 @@ function evidenceSuffix(evidenceIds: readonly string[]): string {
 }
 
 function sanitizeStructuredMarkdown(value: string): string {
-  return value
-    .replace(/<!--/g, '&lt;!--')
-    .replace(/<(?=\/?[a-zA-Z])/g, '&lt;')
-    .replace(/\]\(\s*(?:javascript|vbscript|file|data)\s*:/gi, '](');
+  return (
+    value
+      // 转义所有尖括号，防止 HTML 注入（结构化内容不需要原始 HTML 标签）
+      .replace(/</g, '&lt;')
+      .replace(/>/g, '&gt;')
+      // 阻断危险协议的 Markdown 链接
+      .replace(/\]\(\s*(?:javascript|vbscript|file|data)\s*:/gi, '](')
+  );
 }
 
 function presentEvidenceTokens(
