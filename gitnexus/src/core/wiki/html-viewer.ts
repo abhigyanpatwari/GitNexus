@@ -44,7 +44,7 @@ export function sanitizeMarkdownForViewer(markdown: string): string {
   // 循环删除 HTML 注释与残留标记直至不动点：删除后相邻文本可能拼接出新的 <!--（如 <!-<!-- -->-），
   // 且 HTML 规范中 --> 与 --!> 均为合法注释结束符，需一并匹配
   let commentRemoved = mermaidSafe;
-  let previous = mermaidSafe;
+  let previous: string;
   do {
     previous = commentRemoved;
     commentRemoved = previous.replace(/<!--[\s\S]*?(?:-->|--!>)|<!--|--!>|-->/g, '');
