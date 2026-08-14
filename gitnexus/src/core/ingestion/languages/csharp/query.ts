@@ -93,8 +93,14 @@ const CSHARP_SCOPE_QUERY = `
   name: (identifier) @declaration.name) @declaration.enum
 
 ;; Declarations — methods / constructors / properties
+;;
+;; A generic METHOD's parameters are read for the same reason a generic type's
+;; are (#2912 review): \`void Run<T>(IValidator<T> v)\` writes a receiver whose
+;; argument is a type VARIABLE, and a pass that cannot tell that from a concrete
+;; type prunes every implementor of \`IValidator\` from the call's fan-out.
 (method_declaration
-  name: (identifier) @declaration.name) @declaration.method
+  name: (identifier) @declaration.name
+  (type_parameter_list)? @declaration.type-parameters) @declaration.method
 
 (constructor_declaration
   name: (identifier) @declaration.name) @declaration.constructor

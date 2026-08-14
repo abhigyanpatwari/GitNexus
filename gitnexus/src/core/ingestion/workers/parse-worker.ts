@@ -133,6 +133,7 @@ import {
   constTagForId,
   buildCollisionGroups,
   parameterShapeIdTag,
+  methodInfoKey,
 } from '../utils/method-props.js';
 import {
   extractTemplateArguments,
@@ -739,9 +740,12 @@ const methodInfoCache = new Map<number, Map<string, MethodInfo>>();
 
 /**
  * Get (or extract and cache) method info for a class node.
- * Returns a "name:line" → MethodInfo map, or undefined if the provider has no method extractor
- * or the class yielded no methods.
- * Keyed by name:line (not name alone) to support overloaded methods in Java/Kotlin.
+ * Returns a "name:line:column" → MethodInfo map, or undefined if the provider has no method
+ * extractor or the class yielded no methods.
+ * Keyed by name:line:column (not name, and not name:line) to support overloaded methods in
+ * Java/Kotlin AND to keep a callable SYNTHESIZED at another node's position from evicting the
+ * source-written one that starts on the same line (#2936). Every lookup site MUST pass the
+ * column of the SAME node it takes the line from — see `methodInfoKey`.
  */
 function getMethodInfo(
   classNode: SyntaxNode,
@@ -759,7 +763,7 @@ function getMethodInfo(
 
   cached = new Map<string, MethodInfo>();
   for (const method of result.methods) {
-    cached.set(`${method.name}:${method.line}`, method);
+    cached.set(methodInfoKey(method.name, method.line, method.column), method);
   }
   methodInfoCache.set(cacheKey, cached);
   return cached;
@@ -996,7 +1000,9 @@ const findEnclosingFunctionId = (
                 language: encLang,
               });
               const defLine = current.startPosition.row + 1;
-              const info = methodMap?.get(`${funcName}:${defLine}`);
+              const info = methodMap?.get(
+                methodInfoKey(funcName, defLine, current.startPosition.column),
+              );
               if (info) {
                 arity = info.parameters.some((p) => p.isVariadic)
                   ? undefined
@@ -1062,7 +1068,9 @@ const findEnclosingFunctionId = (
               language: encLang2,
             });
             const defLine2 = sigNode.startPosition.row + 1;
-            const info2 = methodMap2?.get(`${customResult.funcName}:${defLine2}`);
+            const info2 = methodMap2?.get(
+              methodInfoKey(customResult.funcName, defLine2, sigNode.startPosition.column),
+            );
             if (info2) {
               arity2 = info2.parameters.some((p) => p.isVariadic)
                 ? undefined
@@ -2112,6 +2120,7 @@ const processFileGroup = (
       const definitionNode = getDefinitionNodeFromCaptures(captureMap);
       const defaultNodeLabel = getLabelFromCaptures(captureMap, provider);
       if (!defaultNodeLabel) continue;
+      if (provider.shouldSkipDefinitionCapture?.(captureMap, defaultNodeLabel) === true) continue;
 
       const nameNode = captureMap['name'];
       const extractedClassSymbol =
@@ -2562,7 +2571,9 @@ const processFileGroup = (
               language,
             });
             const defLine = definitionNode.startPosition.row + 1;
-            const info = methodMap?.get(`${nodeName}:${defLine}`);
+            const info = methodMap?.get(
+              methodInfoKey(nodeName, defLine, definitionNode.startPosition.column),
+            );
             if (info) {
               enrichedByMethodExtractor = true;
               arityForId = arityForIdFromInfo(info);
