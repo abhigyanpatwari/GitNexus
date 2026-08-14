@@ -37,6 +37,7 @@ import {
   nodePackageNameOf,
   owningPackage,
   resolveNodeWorkspaceImport,
+  substituteStar,
 } from '../../import-resolvers/node-workspace-packages.js';
 import { resolveFile } from './file-candidates.js';
 import { tsconfigFor, type TsconfigIndex, type TsPathMapping } from './tsconfig.js';
@@ -132,12 +133,16 @@ function resolveViaPaths(
     });
   }
 
-  // An exact (starless) pattern outranks any wildcard, then longer prefix wins.
-  matches.sort((a, b) => b.prefixLength - a.prefixLength);
+  // An exact (starless) pattern outranks any wildcard, THEN longer prefix wins.
+  // Sorting on prefix length alone left that first rule to luck: `a` and `a*`
+  // both match `a` with prefix length 1, so whichever was declared first won.
+  matches.sort(
+    (a, b) => Number(a.stem !== null) - Number(b.stem !== null) || b.prefixLength - a.prefixLength,
+  );
 
   for (const match of matches) {
     for (const target of match.mapping.targets) {
-      const candidate = match.stem === null ? target : target.replace('*', match.stem);
+      const candidate = match.stem === null ? target : substituteStar(target, match.stem);
       const resolved = resolveFile(candidate, allFiles);
       if (resolved !== null) return resolved;
     }

@@ -11,6 +11,7 @@
 import { describe, it, expect } from 'vitest';
 import {
   nodePackageNameOf,
+  substituteStar,
   type NodeWorkspacePackages,
 } from '../../src/core/ingestion/import-resolvers/node-workspace-packages.js';
 import { resolveTsModule } from '../../src/core/ingestion/languages/typescript/module-resolution.js';
@@ -254,7 +255,54 @@ describe('workspace packages (#2953 direction 2)', () => {
     ).toBe('packages/inner/src/secret.ts');
   });
 
+  it('honours an `exports` ARRAY as an ordered fallback list', () => {
+    // `["./dist/x.js", "./src/x.ts"]` is what a workspace package publishes to
+    // say "built output, or source". For a static analyser the source arm is
+    // the one that matters, because `dist/` is build output and is not indexed
+    // — and a build need not have run at all for the repo to be analysable.
+    const withArray: NodeWorkspacePackages = {
+      byName: new Map([
+        [
+          '@repo/inner',
+          {
+            dir: 'packages/inner',
+            entries: ['packages/inner/src/index'],
+            subpathExports: new Map([
+              ['nest', ['packages/inner/dist/nest', 'packages/inner/src/nest']],
+            ]),
+            subpathImports: new Map(),
+          },
+        ],
+      ]),
+    };
+
+    expect(
+      resolveTsModule('@repo/inner/nest', {
+        fromFile: 'apps/web/src/main.ts',
+        allFilePaths: FILES,
+        tsconfigs: null,
+        workspacePackages: withArray,
+      }),
+    ).toBe('packages/inner/src/nest/index.ts');
+  });
+
   it('resolves nothing when the repo declares no packages at all', () => {
     expect(resolve('@repo/utils', { packages: null })).toBeNull();
+  });
+});
+
+describe('subpath pattern substitution', () => {
+  it('substitutes the single `*` a pattern is allowed to contain', () => {
+    // Node subpath patterns and tsconfig `paths` both allow AT MOST one `*`, so
+    // substituting the first occurrence is the specified behaviour. Pinned
+    // because the obvious spelling — `String.replace` with a string needle —
+    // states that only by accident and reads as the replace-all footgun.
+    expect(substituteStar('packages/utils/src/*.ts', 'deep/thing')).toBe(
+      'packages/utils/src/deep/thing.ts',
+    );
+  });
+
+  it('leaves a starless target alone', () => {
+    expect(substituteStar('packages/utils/src/index', 'ignored')).toBe('packages/utils/src/index');
   });
 });

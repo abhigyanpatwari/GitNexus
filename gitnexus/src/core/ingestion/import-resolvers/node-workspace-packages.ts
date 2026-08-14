@@ -152,9 +152,23 @@ export function matchSubpathMap(
 
   for (const { prefix, suffix, stems } of patterns) {
     const stem = specifier.slice(prefix.length, specifier.length - suffix.length);
-    return stems.map((s) => s.replace('*', stem));
+    return stems.map((target) => substituteStar(target, stem));
   }
   return null;
+}
+
+/**
+ * Substitute a subpath pattern's single `*`.
+ *
+ * Node's subpath patterns and TypeScript's `paths` both allow AT MOST one `*`,
+ * so replacing the first occurrence is the specified behaviour rather than a
+ * partial one — but `String.replace` with a string needle says that only by
+ * accident, and reads as a bug to anyone (CodeQL included) who has met the
+ * replace-all footgun. Slicing at the known index states the rule instead.
+ */
+export function substituteStar(target: string, stem: string): string {
+  const star = target.indexOf('*');
+  return star === -1 ? target : target.slice(0, star) + stem + target.slice(star + 1);
 }
 
 /** Candidate stems for one specifier into `pkg`, best first. */
@@ -430,7 +444,18 @@ function collectExports(
     subpaths.set(currentSubpath, [...(subpaths.get(currentSubpath) ?? []), rebase(node)]);
     return;
   }
-  if (node === null || typeof node !== 'object' || Array.isArray(node)) return;
+  // An array is an ordered FALLBACK LIST, not an opaque value: Node tries each
+  // entry in turn. `{"./feature": ["./dist/feature.js", "./src/feature.ts"]}` is
+  // the shape a workspace package publishes to say "built output, or source" —
+  // and the source arm is the one that matters here, because `dist/` is build
+  // output and is not indexed. Skipping arrays dropped the declaration entirely
+  // and left the package looking as though it declared no subpath exports.
+  if (Array.isArray(node)) {
+    for (const element of node)
+      collectExports(element, subpaths, rootStems, rebase, currentSubpath);
+    return;
+  }
+  if (node === null || typeof node !== 'object') return;
 
   for (const [key, value] of Object.entries(node as Record<string, unknown>)) {
     if (key.startsWith('.')) {
@@ -461,7 +486,12 @@ function collectImports(
     out.set(currentKey, [...(out.get(currentKey) ?? []), rebase(node)]);
     return;
   }
-  if (node === null || typeof node !== 'object' || Array.isArray(node)) return;
+  // Same ordered-fallback rule as `exports` — see `collectExports`.
+  if (Array.isArray(node)) {
+    for (const element of node) collectImports(element, out, rebase, currentKey);
+    return;
+  }
+  if (node === null || typeof node !== 'object') return;
   for (const [key, value] of Object.entries(node as Record<string, unknown>)) {
     collectImports(value, out, rebase, key.startsWith('#') ? key : currentKey);
   }

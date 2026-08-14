@@ -220,14 +220,45 @@ async function readExtended(
 /**
  * An `extends` value is either a path or a package name.
  *
- * The package form (`"extends": "@tsconfig/node20/tsconfig.json"`) lives in
- * `node_modules`, which is not indexed — a config we cannot read contributes no
- * `baseUrl`/`paths`, and returning `null` says exactly that rather than
- * inventing one.
+ * The package form (`"extends": "@tsconfig/node20/tsconfig.json"`,
+ * `"@acme/tsconfig"`) lives in `node_modules`, which this tool deliberately
+ * does NOT index — it is dependency code, not the repository's own. But not
+ * indexing it is different from not READING it, and the distinction matters
+ * here: a shared internal base config is exactly where a monorepo puts the
+ * `paths` its packages import through, so refusing to open it loses aliases
+ * that the repository genuinely declares.
+ *
+ * So the file is read from disk when it is there, walking `node_modules` up
+ * from the extending config the way Node does. When it is absent — an
+ * un-installed checkout, which is a shape a static analyser must expect and a
+ * compiler may refuse — the answer is `null`, and the caller keeps whatever the
+ * extending config declared itself. That degrades to fewer resolutions, never
+ * to invented ones.
  */
 async function resolveExtendsTarget(spec: string, fromDir: string): Promise<string | null> {
-  if (!spec.startsWith('.') && !path.isAbsolute(spec)) return null;
-  const base = path.resolve(fromDir, spec);
+  if (spec.startsWith('.') || path.isAbsolute(spec)) {
+    return firstReadableConfig(path.resolve(fromDir, spec));
+  }
+  for (const modulesDir of nodeModulesChain(fromDir)) {
+    const found = await firstReadableConfig(path.join(modulesDir, spec));
+    if (found !== null) return found;
+  }
+  return null;
+}
+
+/** `<dir>/node_modules`, then each ancestor's, the way Node resolves. */
+function* nodeModulesChain(fromDir: string): Generator<string> {
+  let dir = fromDir;
+  for (;;) {
+    if (path.basename(dir) !== 'node_modules') yield path.join(dir, 'node_modules');
+    const parent = path.dirname(dir);
+    if (parent === dir) return;
+    dir = parent;
+  }
+}
+
+/** The first spelling of `base` that is a readable file. */
+async function firstReadableConfig(base: string): Promise<string | null> {
   for (const candidate of [base, `${base}.json`, path.join(base, 'tsconfig.json')]) {
     try {
       const stat = await fs.stat(candidate);
