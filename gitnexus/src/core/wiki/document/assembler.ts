@@ -13,9 +13,13 @@ function evidenceSuffix(evidenceIds: readonly string[]): string {
 function sanitizeStructuredMarkdown(value: string): string {
   return (
     value
-      // 转义所有尖括号，防止 HTML 注入（结构化内容不需要原始 HTML 标签）
+      // 完整转义所有 HTML 特殊字符，防止注入
+      .replace(/&/g, '&amp;')
       .replace(/</g, '&lt;')
       .replace(/>/g, '&gt;')
+      .replace(/"/g, '&quot;')
+      .replace(/'/g, '&#x27;')
+      .replace(/\\/g, '&#x5c;')
       // 阻断危险协议的 Markdown 链接
       .replace(/\]\(\s*(?:javascript|vbscript|file|data)\s*:/gi, '](')
   );

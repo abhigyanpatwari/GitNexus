@@ -41,8 +41,10 @@ const LEGACY_LANGUAGE: ResolvedLanguage = {
 
 export function sanitizeMarkdownForViewer(markdown: string): string {
   const mermaidSafe = sanitizeMermaidMarkdown(markdown);
-  // 先对完整字符串删除 HTML 注释（可跨行），再按行处理围栏和标签
-  const commentRemoved = mermaidSafe.replace(/<!--[\s\S]*?-->/g, '');
+  // 先对完整字符串删除 HTML 注释（可跨行），再清除残留的注释标记片段，最后按行处理围栏和标签
+  const commentRemoved = mermaidSafe
+    .replace(/<!--[\s\S]*?-->/g, '')
+    .replace(/<!--|-->/g, '');
   let inFence = false;
   return commentRemoved
     .split('\n')
