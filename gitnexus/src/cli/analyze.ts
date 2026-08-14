@@ -1557,6 +1557,13 @@ const analyzeCommandImpl = async (
         `  Skipped ${pc.unsupportedFiles} files with unsupported extensions (${topExts.join(', ')}${pc.unsupportedByExtension.length > 5 ? ', ...' : ''})`,
       );
     }
+    if (s.parserCoverage && s.parserCoverage.unavailableParserFiles > 0) {
+      const pc = s.parserCoverage;
+      const topLangs = pc.unavailableByLanguage.slice(0, 5).map((e) => `${e.language}: ${e.count}`);
+      console.log(
+        `  Skipped ${pc.unavailableParserFiles} files with unavailable parsers (${topLangs.join(', ')}${pc.unavailableByLanguage.length > 5 ? ', ...' : ''})`,
+      );
+    }
     console.log(`  ${repoPath}`);
 
     // Persistent (non-scrolling) warning when FTS indexing was skipped — the

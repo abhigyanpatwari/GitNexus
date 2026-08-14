@@ -81,7 +81,7 @@ export interface ParseOutput {
    * costing ~58s on a 1000-file repo).
    */
   readonly parsedFiles: readonly ParsedFile[];
-  /** Parser coverage — which files were parsed vs skipped */
+  /** Parser coverage — parsed vs skipped (unsupported extension or unavailable parser) */
   readonly parserCoverage: ParserCoverage;
 }
 

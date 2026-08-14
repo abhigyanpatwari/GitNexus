@@ -492,17 +492,27 @@ export async function runChunkedParseAndResolve(
 
   // ── Parser coverage stats ──────────────────────────────────────────
   const unsupportedExtCounts = new Map<string, number>();
+  const unavailableLangCounts = new Map<string, number>();
   for (const f of scannedFiles) {
     const lang = getLanguageFromFilename(f.path);
     if (!lang) {
       const ext = path.extname(f.path).toLowerCase() || '(no extension)';
       unsupportedExtCounts.set(ext, (unsupportedExtCounts.get(ext) || 0) + 1);
+      continue;
+    }
+    const provider = getProvider(lang);
+    if (provider?.parseStrategy !== 'standalone' && !isLanguageAvailable(lang)) {
+      unavailableLangCounts.set(lang, (unavailableLangCounts.get(lang) || 0) + 1);
     }
   }
   const unsupportedByExtension = Array.from(unsupportedExtCounts.entries())
     .map(([extension, count]) => ({ extension, count }))
     .sort((a, b) => b.count - a.count);
+  const unavailableByLanguage = Array.from(unavailableLangCounts.entries())
+    .map(([language, count]) => ({ language, count }))
+    .sort((a, b) => b.count - a.count);
   const unsupportedFiles = unsupportedByExtension.reduce((sum, e) => sum + e.count, 0);
+  const unavailableParserFiles = unavailableByLanguage.reduce((sum, e) => sum + e.count, 0);
   const supportedFiles = parseableScanned.length;
 
   const parserCoverage = {
@@ -510,18 +520,12 @@ export async function runChunkedParseAndResolve(
     supportedFiles,
     unsupportedFiles,
     unsupportedByExtension,
+    unavailableParserFiles,
+    unavailableByLanguage,
   };
 
   // Warn about files skipped due to unavailable parsers
-  const skippedByLang = new Map<string, number>();
-  for (const f of scannedFiles) {
-    const lang = getLanguageFromFilename(f.path);
-    const provider = lang === null ? undefined : getProvider(lang);
-    if (lang && provider?.parseStrategy !== 'standalone' && !isLanguageAvailable(lang)) {
-      skippedByLang.set(lang, (skippedByLang.get(lang) || 0) + 1);
-    }
-  }
-  for (const [lang, count] of skippedByLang) {
+  for (const [lang, count] of unavailableLangCounts) {
     // Distinguish a deliberate runtime opt-out from a genuinely-missing binding
     // so we don't tell a user who set GITNEXUS_SKIP_OPTIONAL_GRAMMARS to
     // `npm rebuild` a grammar that built fine (#2091/#2093 review).

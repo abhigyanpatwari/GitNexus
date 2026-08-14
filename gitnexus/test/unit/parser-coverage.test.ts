@@ -2,20 +2,28 @@
  * Parser coverage stats from runChunkedParseAndResolve (#1076).
  *
  * Counts files whose extension has no bundled grammar (e.g. .md, .csv) in
- * parserCoverage.unsupportedFiles. Does not use skipWorkers — sequential parsing
- * was removed; all-parseable-empty repos skip the worker pool entirely.
+ * parserCoverage.unsupportedFiles, and recognized languages whose parser is
+ * unavailable in parserCoverage.unavailableParserFiles.
  */
-import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { pathToFileURL } from 'node:url';
 
+vi.mock('../../src/core/tree-sitter/parser-loader.js', async (importOriginal) => {
+  const actual =
+    await importOriginal<typeof import('../../src/core/tree-sitter/parser-loader.js')>();
+  return { ...actual, isLanguageAvailable: vi.fn(() => true) };
+});
+
 import { createKnowledgeGraph } from '../../src/core/graph/graph.js';
 import { runChunkedParseAndResolve } from '../../src/core/ingestion/pipeline-phases/parse-impl.js';
+import * as parserLoader from '../../src/core/tree-sitter/parser-loader.js';
 
-function makeTempRepo(files: Record<string, string>): string {
-  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'parser-coverage-'));
+function makeTempRepo(baseDir: string, files: Record<string, string>): string {
+  const dir = path.join(baseDir, 'repo');
+  fs.mkdirSync(dir, { recursive: true });
   for (const [rel, content] of Object.entries(files)) {
     const abs = path.join(dir, rel);
     fs.mkdirSync(path.dirname(abs), { recursive: true });
@@ -68,9 +76,10 @@ parentPort.on('message', (msg) => {
 
 describe('parser coverage stats (#1076)', () => {
   let tempDir = '';
-  let repoPath = '';
 
   beforeEach(() => {
+    vi.clearAllMocks();
+    vi.mocked(parserLoader.isLanguageAvailable).mockReturnValue(true);
     tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'parser-coverage-run-'));
   });
 
@@ -81,7 +90,7 @@ describe('parser coverage stats (#1076)', () => {
   });
 
   it('counts unsupported extensions when no parseable files exist (no worker pool)', async () => {
-    repoPath = makeTempRepo({
+    const repoPath = makeTempRepo(tempDir, {
       'readme.md': `# hello\n`,
       'data.csv': `a,b,c\n`,
     });
@@ -100,6 +109,7 @@ describe('parser coverage stats (#1076)', () => {
     expect(result.parserCoverage.totalFiles).toBe(2);
     expect(result.parserCoverage.supportedFiles).toBe(0);
     expect(result.parserCoverage.unsupportedFiles).toBe(2);
+    expect(result.parserCoverage.unavailableParserFiles).toBe(0);
     expect(result.parserCoverage.unsupportedByExtension).toEqual(
       expect.arrayContaining([
         { extension: '.md', count: 1 },
@@ -110,7 +120,7 @@ describe('parser coverage stats (#1076)', () => {
   });
 
   it('splits supported vs unsupported when both are present', async () => {
-    repoPath = makeTempRepo({
+    const repoPath = makeTempRepo(tempDir, {
       'a.ts': `export function foo() {}\n`,
       'readme.md': `# hello\n`,
       'data.csv': `a,b,c\n`,
@@ -137,6 +147,37 @@ describe('parser coverage stats (#1076)', () => {
     expect(result.parserCoverage.totalFiles).toBe(3);
     expect(result.parserCoverage.supportedFiles).toBe(1);
     expect(result.parserCoverage.unsupportedFiles).toBe(2);
+    expect(result.parserCoverage.unavailableParserFiles).toBe(0);
     expect(result.parserCoverage.unsupportedByExtension.length).toBeGreaterThan(0);
+    expect(
+      result.parserCoverage.supportedFiles +
+        result.parserCoverage.unsupportedFiles +
+        result.parserCoverage.unavailableParserFiles,
+    ).toBe(result.parserCoverage.totalFiles);
+  });
+
+  it('counts unavailable parsers for recognized languages', async () => {
+    vi.mocked(parserLoader.isLanguageAvailable).mockReturnValue(false);
+    const repoPath = makeTempRepo(tempDir, {
+      'App.swift': `class AppViewController {}\n`,
+    });
+    const files = ['App.swift'];
+    const graph = createKnowledgeGraph();
+    const result = await runChunkedParseAndResolve(
+      graph,
+      scanned(repoPath, files),
+      files,
+      files.length,
+      repoPath,
+      Date.now(),
+      () => {},
+    );
+
+    expect(result.parserCoverage.totalFiles).toBe(1);
+    expect(result.parserCoverage.supportedFiles).toBe(0);
+    expect(result.parserCoverage.unsupportedFiles).toBe(0);
+    expect(result.parserCoverage.unavailableParserFiles).toBe(1);
+    expect(result.parserCoverage.unavailableByLanguage).toEqual([{ language: 'swift', count: 1 }]);
+    expect(result.usedWorkerPool).toBe(false);
   });
 });

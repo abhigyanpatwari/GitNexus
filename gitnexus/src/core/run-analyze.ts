@@ -485,6 +485,8 @@ export interface AnalyzeResult {
       supportedFiles: number;
       unsupportedFiles: number;
       unsupportedByExtension: Array<{ extension: string; count: number }>;
+      unavailableParserFiles: number;
+      unavailableByLanguage: Array<{ language: string; count: number }>;
     };
   };
   alreadyUpToDate?: boolean;

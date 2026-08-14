@@ -12,6 +12,12 @@ export interface UnsupportedExtension {
   count: number;
 }
 
+/** Per-language breakdown of files whose parser is unavailable */
+export interface UnavailableLanguage {
+  language: string;
+  count: number;
+}
+
 /** Parser coverage stats — tracks which files were parsed vs skipped */
 export interface ParserCoverage {
   /** Total source files in repo (before language filtering) */
@@ -22,6 +28,10 @@ export interface ParserCoverage {
   unsupportedFiles: number;
   /** Per-extension breakdown of unsupported files, sorted by count desc */
   unsupportedByExtension: UnsupportedExtension[];
+  /** Files with a recognized language whose native parser is unavailable */
+  unavailableParserFiles: number;
+  /** Per-language breakdown of unavailable-parser skips, sorted by count desc */
+  unavailableByLanguage: UnavailableLanguage[];
 }
 
 // CLI-specific: in-memory result with graph + detection results
