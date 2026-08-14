@@ -47,7 +47,11 @@ function visibleStructuredText(
 }
 
 function tableCell(value: string, presentation?: EvidencePresentation): string {
-  return visibleStructuredText(value, presentation).replace(/\|/g, '\\|').replace(/\r?\n/g, '<br>');
+  // Markdown 表格单元格：先转义反斜杠本身，再转义竖线，避免 \ 与 | 组合产生转义歧义
+  return visibleStructuredText(value, presentation)
+    .replace(/\\/g, '\\\\')
+    .replace(/\|/g, '\\|')
+    .replace(/\r?\n/g, '<br>');
 }
 
 function visibleEvidence(
