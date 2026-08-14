@@ -117,4 +117,12 @@ describe('sanitizeMermaidMarkdown', () => {
       ['graph TD', 'A[load;validate] -->|read;write| B[done]', ''].join('\n'),
     );
   });
+
+  it('带 %% 注释前导的 flowchart 被正确归一化', () => {
+    const diagram = '%% This is a comment\ngraph TD\nA-->B;C-->D;';
+
+    expect(sanitizeMermaidDiagram(diagram)).toBe(
+      ['%% This is a comment', 'graph TD', 'A-->B', 'C-->D', ''].join('\n'),
+    );
+  });
 });

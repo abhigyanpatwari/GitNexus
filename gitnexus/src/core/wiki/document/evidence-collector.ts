@@ -139,9 +139,19 @@ export class EvidenceCollector {
     ]);
 
     const repository: EvidenceRef[] = [];
-    for (const filePath of [...allFiles].map(normalizeFilePath).sort()) {
+
+    // 在读取文件之前应用确定性选择和预算截断，避免大仓库中的无界 IO。
+    // 预留空间给 symbol 和 process 证据（它们不涉及文件 IO，创建成本低）。
+    const processCount = allProcesses.length;
+    const symbolCount = [...filesWithExports].reduce((sum, file) => sum + file.symbols.length, 0);
+    const fileBudget = Math.max(0, this.maxRepositoryItems - processCount - symbolCount);
+
+    // 确定性排序后截断，只读取预算内的文件
+    const sortedFiles = [...allFiles].map(normalizeFilePath).sort();
+    for (const filePath of sortedFiles.slice(0, fileBudget)) {
       repository.push(await this.collectFile(filePath));
     }
+    // symbol 和 process 证据不涉及文件 IO，但仍需在总预算内
     for (const file of [...filesWithExports].sort((a, b) => a.filePath.localeCompare(b.filePath))) {
       for (const symbol of [...file.symbols].sort((a, b) => a.name.localeCompare(b.name))) {
         repository.push(

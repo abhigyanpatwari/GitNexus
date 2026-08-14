@@ -137,10 +137,9 @@ describe('wiki template profile registry', () => {
       'module-dependencies',
       'core-execution-flows',
     ]);
-    expect(profile.sections.at(-1)?.children?.map((section) => section.id)).toEqual([
-      'architecture-decisions',
-      'risks-technical-debt',
-    ]);
+    expect(
+      profile.sections[profile.sections.length - 1]?.children?.map((section) => section.id),
+    ).toEqual(['architecture-decisions', 'risks-technical-debt']);
     expect(profile.output).toMatchObject({
       topology: 'standard-document',
       entryFile: 'engineering-wiki.md',
@@ -280,6 +279,14 @@ describe('wiki template profile registry', () => {
     const unsafeOutput = cloneDefault();
     unsafeOutput.output.entryFile = '../overview.md';
     expect(() => validateTemplateProfile(unsafeOutput)).toThrow(
+      'profile.output.entryFile must be a safe relative file name',
+    );
+  });
+
+  it('rejects output file names containing slashes', () => {
+    const slashOutput = cloneDefault();
+    slashOutput.output.entryFile = 'docs/overview.md';
+    expect(() => validateTemplateProfile(slashOutput)).toThrow(
       'profile.output.entryFile must be a safe relative file name',
     );
   });

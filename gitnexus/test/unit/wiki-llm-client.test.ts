@@ -12,6 +12,7 @@ import {
   resolveLLMConfig,
   validateLLMBaseUrl,
 } from '../../src/core/wiki/llm-client.js';
+import { fillTemplate } from '../../src/core/wiki/prompts.js';
 
 describe('isAzureProvider', () => {
   it('returns true for .openai.azure.com URLs', () => {
@@ -741,5 +742,37 @@ describe('validateLLMBaseUrl', () => {
         temperature: 0,
       }),
     ).rejects.toThrow('must use http:// or https://');
+  });
+});
+
+describe('fillTemplate — replaceAll 特殊模式安全', () => {
+  it('变量值包含 $& 时不破坏替换结果', () => {
+    const result = fillTemplate('Hello {{NAME}}!', { NAME: 'price is $& cool' });
+    expect(result).toBe('Hello price is $& cool!');
+  });
+
+  it("变量值包含 $' 时不破坏替换结果", () => {
+    const result = fillTemplate('Hello {{NAME}}!', { NAME: "a$'b" });
+    expect(result).toBe("Hello a$'b!");
+  });
+
+  it('变量值包含 $` 时不破坏替换结果', () => {
+    const result = fillTemplate('Hello {{NAME}}!', { NAME: 'a$`b' });
+    expect(result).toBe('Hello a$`b!');
+  });
+
+  it('变量值包含 $$ 时不破坏替换结果', () => {
+    const result = fillTemplate('Hello {{NAME}}!', { NAME: 'a$$b' });
+    expect(result).toBe('Hello a$$b!');
+  });
+
+  it('变量值包含 $0 时不破坏替换结果', () => {
+    const result = fillTemplate('Hello {{NAME}}!', { NAME: 'a$0b' });
+    expect(result).toBe('Hello a$0b!');
+  });
+
+  it('变量值包含 {{OTHER}} 文本时不递归替换', () => {
+    const result = fillTemplate('Hello {{NAME}}!', { NAME: '{{OTHER}}' });
+    expect(result).toBe('Hello {{OTHER}}!');
   });
 });

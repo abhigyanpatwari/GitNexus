@@ -399,6 +399,57 @@ describe('wiki SectionWriter modes', () => {
     expect(invokeLLM).toHaveBeenCalledTimes(3);
   });
 
+  it('countMermaidNodes 支持序列图的节点计数', async () => {
+    const prompt: PromptSpec = {
+      system: 'Return JSON.',
+      user: 'Write {{SECTION_ID}} from {{EVIDENCE_BUNDLE}}.',
+      requiredVariables: ['SECTION_ID', 'EVIDENCE_BUNDLE'],
+      allowedVariables: ['SECTION_ID', 'EVIDENCE_BUNDLE'],
+    };
+    // sequence diagram 使用 ->> 和 -->> 消息箭头，以及 participant 声明
+    const sequenceDiagram = JSON.stringify({
+      schemaVersion: 1,
+      sectionId: 'runtime-architecture',
+      blocks: [
+        {
+          type: 'diagram',
+          syntax: 'mermaid',
+          source:
+            'sequenceDiagram\nparticipant Client\nparticipant Server\nClient->>Server: Request\nServer-->>Client: Response',
+          evidenceIds: [evidenceId],
+        },
+      ],
+    });
+    const writer = new SectionWriter();
+    const invokeLLM = vi.fn().mockResolvedValue({ content: sequenceDiagram });
+
+    const payload = await writer.write({
+      profileId: 'engineering-wiki',
+      sectionId: 'runtime-architecture',
+      prompt,
+      variables: {
+        SECTION_ID: 'runtime-architecture',
+        EVIDENCE_BUNDLE: JSON.stringify([
+          {
+            id: evidenceId,
+            filePath: 'src/core.ts',
+            symbol: 'run',
+            summary: 'runtime flow',
+          },
+        ]),
+      },
+      evidenceIds: [evidenceId],
+      invokeLLM,
+    });
+
+    // sequence diagram 不应因节点计数为 0 而被拒绝
+    expect(payload).toMatchObject({
+      mode: 'structured',
+      blocks: [{ type: 'diagram' }, { type: 'table' }],
+    });
+    expect(invokeLLM).toHaveBeenCalledTimes(1);
+  });
+
   it('repairs an empty generated section instead of publishing a title-only page', async () => {
     const prompt: PromptSpec = {
       system: 'Return JSON.',

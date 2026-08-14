@@ -125,7 +125,8 @@ Write a clear overview of this project: what it does, how it's architected, and 
 export function fillTemplate(template: string, vars: Record<string, string>): string {
   let result = template;
   for (const [key, value] of Object.entries(vars)) {
-    result = result.replaceAll(`{{${key}}}`, value);
+    // 使用回调函数返回字面值，避免 JavaScript replaceAll 将 $&/$'/$` 等解释为特殊替换模式
+    result = result.replaceAll(`{{${key}}}`, () => value);
   }
   return result;
 }
