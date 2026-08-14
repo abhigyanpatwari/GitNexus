@@ -629,7 +629,7 @@ interface LanguageProviderConfig {
   readonly resolveImportTarget?: (
     parsedImport: ParsedImport,
     workspaceIndex: WorkspaceIndex,
-  ) => string | null;
+  ) => string | readonly string[] | null;
 
   /**
    * Enumerate the exported names of a file — used by the finalize algorithm
