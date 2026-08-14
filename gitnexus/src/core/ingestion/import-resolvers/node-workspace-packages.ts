@@ -406,13 +406,22 @@ async function readManifest(
   const rootExports: string[] = [];
   collectExports(parsed.exports, subpathExports, rootExports, rebase);
 
+  // `exports`, when present, is the package's ENTIRE public interface: Node
+  // ignores `main` outright and refuses any subpath the map does not list. This
+  // resolver already honoured that restriction for subpaths (`entryStemsFor`)
+  // and not for the ROOT, which is the same rule — so a manifest exporting only
+  // `"./feature"` still answered a bare `@repo/pkg` with `src/index`, an edge
+  // for an import that does not resolve in the real project.
+  const declaresExports = parsed.exports !== undefined && parsed.exports !== null;
   const entries: string[] = [...rootExports];
-  for (const field of ['module', 'main', 'types', 'typings']) {
-    const value = parsed[field];
-    if (typeof value === 'string') push(entries, rebase(value));
-  }
-  for (const conventional of ['src/index', 'index', 'lib/index']) {
-    push(entries, joinRepoPath(packageDir, conventional));
+  if (!declaresExports) {
+    for (const field of ['module', 'main', 'types', 'typings']) {
+      const value = parsed[field];
+      if (typeof value === 'string') push(entries, rebase(value));
+    }
+    for (const conventional of ['src/index', 'index', 'lib/index']) {
+      push(entries, joinRepoPath(packageDir, conventional));
+    }
   }
 
   const subpathImports = new Map<string, readonly string[]>();

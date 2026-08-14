@@ -286,6 +286,39 @@ describe('workspace packages (#2953 direction 2)', () => {
     ).toBe('packages/inner/src/nest/index.ts');
   });
 
+  it('refuses the package root when `exports` omits it', () => {
+    // `exports` is the package's ENTIRE public interface when present: Node
+    // ignores `main` and refuses anything the map does not list. The root is
+    // the same rule as a subpath, so a manifest exporting only `./nest` must
+    // not answer a bare `@repo/inner` — that import does not resolve in the
+    // real project, and an edge for it is a fabricated one.
+    const subpathOnly: NodeWorkspacePackages = {
+      byName: new Map([
+        [
+          '@repo/inner',
+          {
+            dir: 'packages/inner',
+            // What `readManifest` produces for `{"exports": {"./nest": …}}`:
+            // no root entry, and no legacy/conventional fallbacks.
+            entries: [],
+            subpathExports: new Map([['nest', ['packages/inner/src/nest']]]),
+            subpathImports: new Map(),
+          },
+        ],
+      ]),
+    };
+    const ctx = {
+      fromFile: 'apps/web/src/main.ts',
+      allFilePaths: FILES,
+      tsconfigs: null,
+      workspacePackages: subpathOnly,
+    };
+
+    expect(resolveTsModule('@repo/inner', ctx)).toBeNull();
+    // The paired positive: what the map DOES list still resolves.
+    expect(resolveTsModule('@repo/inner/nest', ctx)).toBe('packages/inner/src/nest/index.ts');
+  });
+
   it('resolves nothing when the repo declares no packages at all', () => {
     expect(resolve('@repo/utils', { packages: null })).toBeNull();
   });

@@ -131,6 +131,39 @@ describe('workspace boundary', () => {
     expect(packages?.byName.has('@repo/utils')).toBe(false);
   });
 
+  it('gives a package with a root-less `exports` map no root entries', async () => {
+    // The loader half of the rule: when `exports` is present it is the whole
+    // interface, so `main` and the conventional `src/index` fallback must not
+    // be offered for the bare package name.
+    const root = repo({
+      'pnpm-workspace.yaml': 'packages:\n  - "packages/*"\n',
+      'package.json': JSON.stringify({ name: 'root' }),
+      'packages/inner/package.json': JSON.stringify({
+        name: '@repo/inner',
+        main: 'src/index.ts',
+        exports: { './nest': './src/nest.ts' },
+      }),
+    });
+
+    const packages = await loadNodeWorkspacePackages(root);
+    const inner = packages?.byName.get('@repo/inner');
+
+    expect(inner?.entries).toEqual([]);
+    expect(inner?.subpathExports.get('nest')).toEqual(['packages/inner/src/nest']);
+  });
+
+  it('keeps legacy and conventional root entries when there is no `exports`', async () => {
+    const root = repo({
+      'pnpm-workspace.yaml': 'packages:\n  - "packages/*"\n',
+      'package.json': JSON.stringify({ name: 'root' }),
+      'packages/utils/package.json': JSON.stringify({ name: '@repo/utils', main: 'src/index.ts' }),
+    });
+
+    const packages = await loadNodeWorkspacePackages(root);
+
+    expect(packages?.byName.get('@repo/utils')?.entries).toContain('packages/utils/src/index');
+  });
+
   it('returns null when the repo has no manifest at all', async () => {
     const root = repo({ 'src/main.ts': 'export const x = 1;\n' });
 

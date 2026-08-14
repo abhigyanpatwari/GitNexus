@@ -95,7 +95,12 @@ export async function loadTsconfigIndex(repoRoot: string): Promise<TsconfigIndex
       pattern: mapping.pattern,
       targets: mapping.targets.map((t) => rebaseTarget(repoRoot, t)),
     }));
-    if (baseUrl === null && paths.length === 0) continue;
+    // A config declaring NEITHER is kept, not skipped. Dropping it let
+    // `tsconfigFor` fall through to an enclosing config, so a package whose own
+    // tsconfig declares no `baseUrl` — meaning its non-relative specifiers are
+    // package lookups — silently inherited the repo root's aliases instead.
+    // An empty scope is the accurate answer for such a file, and only a scope
+    // can express it.
     ranked.push({
       scope: { dir: repoRelative(repoRoot, path.dirname(absPath)), baseUrl, paths },
       rank: configRank(path.basename(absPath)),

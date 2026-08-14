@@ -153,6 +153,26 @@ describe('extends chains', () => {
 });
 
 describe('which config governs a file', () => {
+  it('lets a child config with no baseUrl shadow the root, rather than inheriting it', async () => {
+    // The child project declares no `baseUrl`, which in TypeScript means its
+    // non-relative specifiers are PACKAGE lookups. Dropping the empty child let
+    // `tsconfigFor` fall through to the root and apply the root's aliases to
+    // the child's files — inventing a resolution the child never declared.
+    const root = repo({
+      'tsconfig.json': JSON.stringify({ compilerOptions: { baseUrl: '.' } }),
+      'apps/web/tsconfig.json': JSON.stringify({ compilerOptions: { strict: true } }),
+    });
+    const index = await loadTsconfigIndex(root);
+
+    const child = tsconfigFor(index, 'apps/web/src/main.ts');
+    expect(child?.dir).toBe('apps/web');
+    expect(child?.baseUrl).toBeNull();
+    expect(child?.paths).toEqual([]);
+
+    // The root still governs everything outside that package.
+    expect(tsconfigFor(index, 'tools/script.ts')?.baseUrl).toBe('');
+  });
+
   it('takes the nearest config, not the root one', async () => {
     const root = repo({
       'tsconfig.json': JSON.stringify({ compilerOptions: { baseUrl: '.' } }),
