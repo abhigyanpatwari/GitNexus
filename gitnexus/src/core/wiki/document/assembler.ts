@@ -10,16 +10,21 @@ function evidenceSuffix(evidenceIds: readonly string[]): string {
   return evidenceIds.length > 0 ? ` <!-- evidence: ${evidenceIds.join(', ')} -->` : '';
 }
 
+// HTML 特殊字符实体映射：单次遍历统一转义，避免链式替换的顺序与覆盖问题
+const HTML_ENTITY_MAP: Record<string, string> = {
+  '&': '&amp;',
+  '<': '&lt;',
+  '>': '&gt;',
+  '"': '&quot;',
+  "'": '&#x27;',
+  '\\': '&#x5c;',
+};
+
 function sanitizeStructuredMarkdown(value: string): string {
   return (
     value
-      // 完整转义所有 HTML 特殊字符，防止注入
-      .replace(/&/g, '&amp;')
-      .replace(/</g, '&lt;')
-      .replace(/>/g, '&gt;')
-      .replace(/"/g, '&quot;')
-      .replace(/'/g, '&#x27;')
-      .replace(/\\/g, '&#x5c;')
+      // 单次遍历转义所有 HTML 特殊字符，防止注入
+      .replace(/[&<>"'\\]/g, (ch) => HTML_ENTITY_MAP[ch])
       // 阻断危险协议的 Markdown 链接
       .replace(/\]\(\s*(?:javascript|vbscript|file|data)\s*:/gi, '](')
   );

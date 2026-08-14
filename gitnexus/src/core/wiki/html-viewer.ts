@@ -41,8 +41,14 @@ const LEGACY_LANGUAGE: ResolvedLanguage = {
 
 export function sanitizeMarkdownForViewer(markdown: string): string {
   const mermaidSafe = sanitizeMermaidMarkdown(markdown);
-  // 先对完整字符串删除 HTML 注释（可跨行），再清除残留的注释标记片段，最后按行处理围栏和标签
-  const commentRemoved = mermaidSafe.replace(/<!--[\s\S]*?-->/g, '').replace(/<!--|-->/g, '');
+  // 循环删除 HTML 注释与残留标记直至不动点：删除后相邻文本可能拼接出新的 <!--（如 <!-<!-- -->-），
+  // 且 HTML 规范中 --> 与 --!> 均为合法注释结束符，需一并匹配
+  let commentRemoved = mermaidSafe;
+  let previous = mermaidSafe;
+  do {
+    previous = commentRemoved;
+    commentRemoved = previous.replace(/<!--[\s\S]*?(?:-->|--!>)|<!--|--!>|-->/g, '');
+  } while (commentRemoved !== previous);
   let inFence = false;
   return commentRemoved
     .split('\n')
@@ -52,10 +58,8 @@ export function sanitizeMarkdownForViewer(markdown: string): string {
         return line;
       }
       if (inFence) return line;
-      // 转义所有 HTML 标签为实体（非围栏行不需要原始 HTML）
-      return line.replace(/<\/?[a-zA-Z/][^>]*>/g, (tag) =>
-        tag.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;'),
-      );
+      // 非围栏行完整转义 HTML 特殊字符，任何残余标记均失去语义（非围栏行不需要原始 HTML）
+      return line.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
     })
     .join('\n');
 }
