@@ -1,123 +1,96 @@
 /**
- * Adapter from `(ParsedImport, WorkspaceIndex)` → concrete file path.
+ * Adapter from `(ParsedImport, WorkspaceIndex)` → the file(s) an import names.
  *
- * Converts Java package paths (dots → slashes) and tries:
- *   1. Exact file match: `com/example/User.java`
- *   2. Suffix match for nested layouts
- *   3. Directory match (wildcard imports)
- *   4. Progressive prefix stripping for non-standard layouts
+ * Delegates to `module-resolution.ts`, which resolves a Java import the way
+ * Java defines it: a fully-qualified type name looked up against the packages
+ * the workspace's files DECLARE.
  *
- * Returns `null` for unresolvable / JDK imports.
+ * ## What #2953 replaced, and why path shape could not work
  *
- * ## Why the scans are gone (#2908)
+ * This resolver used to turn dots into slashes and hunt for a file whose path
+ * ended that way — exact whole path, then any segment-suffix, then the first
+ * `.java` directly inside a matching directory — retrying the whole cascade
+ * with each leading segment stripped. Four legs, all describing where a file
+ * SITS rather than what it DECLARES.
  *
- * Every leg above used to be answered by `for (const raw of ctx.allFilePaths)`,
- * and the stripping loop ran that scan again per stripped segment — so one
- * unresolvable `import a.b.c.D;` (the COMMON case: JDK and third-party imports
- * run the whole cascade to completion) cost four full workspace passes. This is
- * byte-for-byte the shape C# carried until #2878; both now read the same two
- * per-file-set indexes, memoized on the Set's identity:
+ * Path shape is a convention, so it mostly worked, and failed hardest on the
+ * case that matters: it had no way to tell an import of something outside the
+ * repository from one inside it. `java.util.List` became `util/List`, then
+ * `List`, and bound to any `List.java` anywhere in the tree — a fabricated
+ * IMPORTS edge at full confidence, for an import naming a JDK class. Every JDK
+ * and third-party import in a repository was a candidate.
  *
- *   - `getWorkspaceFileIndex` — `normToRaw` (whole-path lookup) and `index`
- *     (segment-suffix lookup);
- *   - `getJavaDirIndex` — `firstFileDirectlyInPkgDir`'s package-directory index.
+ * Two secondary defects went with it, both consequences of resolving by shape:
  *
- * ## The tie-breaks the scans encoded, and where they now live
+ *  - a wildcard `import com.example.*;` answered with ONE arbitrary file — the
+ *    first `.java` in the package directory in `allFilePaths` iteration order,
+ *    which the previous header documented at length as being decided by "a
+ *    property of the file list, not of the import". It now answers with every
+ *    file declaring that package, which is what the import actually names.
+ *  - a file's location and its package were assumed to agree. They need not:
+ *    `weird/path/User.java` declaring `package com.example;` is importable as
+ *    `com.example.User`, and `com/example/User.java` declaring nothing is in
+ *    the default package and importable as nothing at all. Both now resolve
+ *    correctly, because the declaration is what is read.
  *
- *  1. The first pass `break`s on an exact whole-path hit but keeps scanning
- *     otherwise, then returns `exactFile ?? suffixFile ?? directoryChild`. So an
- *     exact match wins over a suffix or directory-child match found EARLIER in
- *     iteration order — hence `normToRaw` before `index`, which conflates the
- *     two (see `resolveDirectMatch`).
- *  2. The stripping loop instead `return`s mid-scan on `f === tailFile ||
- *     f.endsWith(tailSuffix)`, i.e. at the first hit of EITHER, and only returns
- *     its directory child after the scan completes. So file/suffix beats
- *     directory child within one `skip` level regardless of order, and the
- *     conflated `index.get` is the CORRECT lookup there (see
- *     `resolveByProgressiveStripping`).
- *  3. Wildcard imports drop their trailing `.*` before resolution, so
- *     `com.example.*` resolves as the package directory.
- *  4. `.java` filter and backslash normalization, with the RAW path returned:
- *     the indexes normalize for their keys and hand back the raw Set member, and
- *     only a `.java` file can carry a `…/<name>.java` suffix key, so the
- *     extension filter is implied on the file/suffix legs and explicit in the
- *     directory index's `accept`.
- *  5. The directory-child leg used to match on the FIRST `'/' + pathLike + '/'`
- *     occurrence, so `com/example/com/example/Deep.java` did NOT answer
- *     `com.example`. #2881 removed that: the rule came from how the pre-index
- *     scan was written, not from Java, and it made a package whose name repeats
- *     higher in the path unresolvable. `firstFileDirectlyInPkgDir` now answers
- *     plain "the parent directory ends with `pathLike`" (see the header of
- *     `import-resolvers/package-dir-index.ts`). This leg commits to ONE file
- *     with no downstream filter, so widening it can change which file an
- *     already-resolving import binds to, not only turn a null into a hit.
- *     WHICH file it binds to is decided by nothing in this resolver: it is
- *     `allFilePaths` iteration order, i.e. the insertion order of the Set built
- *     from `parsedFiles` in `scope-resolution/pipeline/run.ts`, which for a full
- *     scan is the canonical sorted path order `filesystem-walker.ts` imposes on
- *     its unsorted recursive-`glob` result. So the widened set's winner is a
- *     property of the file list, not of the import — pinned explicitly, in both
- *     insertion orders, by "pins WHICH of two competing package directories the
- *     first-child leg takes" in
- *     `test/unit/scope-resolution/java-import-target-parity.test.ts` (Kotlin's
- *     twin, which has the same unfiltered first-child leg, is in
- *     `test/unit/scope-resolution/kotlin/kotlin-import-target-parity.test.ts`).
+ * The package declaration was already being extracted during the parse pass and
+ * has been reachable here through `getJavaPackageFact` the whole time; nothing
+ * read it. So this costs no new I/O — no `pom.xml`, no `build.gradle`, no
+ * source-root inference. The workspace describes itself.
  */
 
-import type { ParsedImport, WorkspaceIndex } from 'gitnexus-shared';
-import {
-  getWorkspaceFileIndex,
-  type WorkspaceFileIndex,
-} from '../../import-resolvers/workspace-file-index.js';
-import {
-  buildPackageDirIndex,
-  firstFileDirectlyInPkgDir,
-  type PackageDirIndex,
-} from '../../import-resolvers/package-dir-index.js';
+import type { ParsedFile, ParsedImport, WorkspaceIndex } from 'gitnexus-shared';
 import { perFileSet } from '../../import-resolvers/per-file-set.js';
+import { getJavaPackageFact } from './package-facts.js';
+import {
+  buildJavaPackageIndex,
+  resolveJavaModule,
+  type JavaPackageIndex,
+} from './module-resolution.js';
 
 export interface JavaResolveContext {
   readonly fromFile: string;
   readonly allFilePaths: ReadonlySet<string>;
+  /**
+   * The pass's parsed Java files — the only input this resolver needs, because
+   * the package index is built from their declarations.
+   *
+   * Absent means "no workspace was supplied", not "the workspace declares
+   * nothing": the index would be empty and every import would answer `null`.
+   * The orchestrator always supplies it (`scope-resolution/pipeline/run.ts`
+   * threads `context.parsedFiles`), and it must be passed THROUGH rather than
+   * copied — the memo below keys on the array's identity.
+   */
+  readonly parsedFiles?: readonly ParsedFile[];
 }
 
 /**
- * Package-directory index over the `.java` files, memoized on the Set's
- * identity. Feeds `firstFileDirectlyInPkgDir`, which is called once for the
- * direct match and then up to once per stripped package prefix.
+ * The package index, built once per pass and read by every import.
+ *
+ * Keyed on the `parsedFiles` array the orchestrator already threads through the
+ * pass, like PHP's `filesByDirectory` and Python's `parsedFileByPath`. The
+ * instrument that can see this memo fail counts element reads on that array —
+ * `countedParsedFiles` in `test/helpers/counting-file-set.ts`, asserted for
+ * every language by `import-target-index-reuse.contract.test.ts`.
  */
-const getJavaDirIndex = perFileSet(
-  (allFilePaths: ReadonlySet<string>): PackageDirIndex =>
-    buildPackageDirIndex(allFilePaths, (normalized) => normalized.endsWith('.java')),
+const getJavaPackageIndex = perFileSet(
+  (parsedFiles: readonly ParsedFile[]): JavaPackageIndex =>
+    buildJavaPackageIndex(parsedFiles, getJavaPackageFact),
 );
 
 export function resolveJavaImportTarget(
   parsedImport: ParsedImport,
   workspaceIndex: WorkspaceIndex,
-): string | null {
+): string | readonly string[] | null {
   const ctx = narrowContext(workspaceIndex);
   if (ctx === null) return null;
   if (parsedImport.kind === 'dynamic-unresolved') return null;
   if (parsedImport.targetRaw === null || parsedImport.targetRaw === '') return null;
 
-  // Strip trailing `.*` for wildcard imports: `com.example.*` → `com.example`
-  let target = parsedImport.targetRaw;
-  if (target.endsWith('.*')) {
-    target = target.slice(0, -2);
-  }
+  const parsedFiles = ctx.parsedFiles;
+  if (parsedFiles === undefined || parsedFiles.length === 0) return null;
 
-  // Package path: `com.example.User` → `com/example/User`
-  const pathLike = target.replace(/\./g, '/');
-
-  const ws = getWorkspaceFileIndex(ctx.allFilePaths);
-  const dirs = getJavaDirIndex(ctx.allFilePaths);
-
-  const direct = resolveDirectMatch(ws, dirs, pathLike);
-  if (direct !== null) return direct;
-
-  // Progressive prefix stripping — handles `import com.example.User;`
-  // in a repo laid out `User.java` (no `com/example/` prefix).
-  return resolveByProgressiveStripping(ws, dirs, pathLike);
+  return resolveJavaModule(parsedImport.targetRaw, getJavaPackageIndex(parsedFiles));
 }
 
 /**
@@ -135,60 +108,4 @@ function narrowContext(workspaceIndex: WorkspaceIndex): JavaResolveContext | nul
     return null;
   }
   return ctx;
-}
-
-/**
- * First-pass resolution against the full package path:
- * exact whole-path file > nested suffix file > first `.java` directly inside
- * the package directory.
- */
-function resolveDirectMatch(
-  ws: WorkspaceFileIndex,
-  dirs: PackageDirIndex,
-  pathLike: string,
-): string | null {
-  const exactName = `${pathLike}.java`;
-  // The scan `break`s here, so an exact whole-path match wins even when a
-  // `…/<exactName>` suffix match appeared EARLIER in iteration order. The two
-  // lookups therefore stay separate: `index.get` conflates them and would
-  // return the earlier suffix hit.
-  const exact = ws.normToRaw.get(exactName);
-  if (exact !== undefined) return exact;
-  // No whole-path file exists, so every segment-suffix hit is a `/<exactName>`
-  // match and `index.get` yields the first one in iteration order — exactly the
-  // `suffixFile` the scan kept. Only a `.java` file can carry a `.java` suffix
-  // key, so the old `endsWith('.java')` filter is implied.
-  const suffixFile = ws.index.get(exactName);
-  if (suffixFile !== undefined) return suffixFile;
-  // First `.java` file living directly inside the package directory `pathLike`
-  // (at repo root or nested under a source-root prefix), not deeper — the leg
-  // wildcard imports land on.
-  return firstFileDirectlyInPkgDir(dirs, pathLike);
-}
-
-/**
- * Try each suffix of the package path against `.java` files and directories,
- * stripping leading segments one at a time. Models `import com.example.User;`
- * resolving to `User.java` in a repo laid out without the `com/example/` prefix.
- */
-function resolveByProgressiveStripping(
-  ws: WorkspaceFileIndex,
-  dirs: PackageDirIndex,
-  pathLike: string,
-): string | null {
-  const segments = pathLike.split('/').filter(Boolean);
-  for (let skip = 1; skip < segments.length; skip++) {
-    const tail = segments.slice(skip).join('/');
-    if (tail === '') continue;
-    // `f === tailFile || f.endsWith('/' + tailFile)`, first in iteration order —
-    // the scan returned at the first hit of EITHER, with no exact-wins rule,
-    // so here the conflated suffix lookup is the right one.
-    const tailFileMatch = ws.index.get(`${tail}.java`);
-    if (tailFileMatch !== undefined) return tailFileMatch;
-    // Collected mid-scan but returned only after it, so the file/suffix hit
-    // above beats it even when this one came first in iteration order.
-    const child = firstFileDirectlyInPkgDir(dirs, tail);
-    if (child !== null) return child;
-  }
-  return null;
 }

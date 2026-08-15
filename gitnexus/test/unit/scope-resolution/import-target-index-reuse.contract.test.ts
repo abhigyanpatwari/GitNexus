@@ -118,6 +118,10 @@ import type { ParsedImport } from 'gitnexus-shared';
 
 import { SCOPE_RESOLVERS } from '../../../src/core/ingestion/scope-resolution/pipeline/registry.js';
 import type { ScopeResolver } from '../../../src/core/ingestion/scope-resolution/contract/scope-resolver.js';
+import {
+  clearJavaPackageFacts,
+  setJavaPackageFact,
+} from '../../../src/core/ingestion/languages/java/package-facts.js';
 import type { ComposerConfig } from '../../../src/core/ingestion/language-config.js';
 import {
   CountingSet,
@@ -201,6 +205,13 @@ interface ImportTargetFixture {
    * how every arm of this file passed while measuring nothing on that channel.
    */
   readonly minimumParsedFileReads: number;
+  /**
+   * Seed whatever per-language fact store the resolver reads alongside
+   * `parsedFiles`. Java resolves an import against DECLARED packages (#2953),
+   * so without this its `hitTarget` resolves to nothing and every count below
+   * would be the count of a resolver doing nothing.
+   */
+  readonly declare?: () => void;
 }
 
 /** The `composer.json` PSR-4 map `loadPhpComposerConfig` would have produced. */
@@ -296,13 +307,28 @@ const FIXTURES: ReadonlyMap<SupportedLanguages, ImportTargetFixture> = new Map<
       files: ['com/example/model/User.java', 'src/main/java/com/example/App.java'],
       fromFile: 'src/main/java/com/example/App.java',
       resolutionConfig: undefined,
-      // Four segments and no hit: the progressive-stripping loop runs to the
-      // end, which is what every JDK and third-party import does.
+      // A four-segment miss, which is what every JDK and third-party import is.
+      // Since #2953 that is a lookup miss rather than a scan: no package named
+      // `vendor<i>.ghost.deep` is declared, so there is nothing to search.
       missTarget: (i) => `vendor${i}.ghost.deep.Missing`,
       hitTarget: 'com.example.model.User',
       parsedImport: IGNORES_CONTEXT,
-      minimumScans: 1,
-      minimumParsedFileReads: 0,
+      declare: () => {
+        clearJavaPackageFacts();
+        setJavaPackageFact('com/example/model/User.java', {
+          status: 'known',
+          packageName: 'com.example.model',
+        });
+        setJavaPackageFact('src/main/java/com/example/App.java', {
+          status: 'known',
+          packageName: 'com.example',
+        });
+      },
+      // Java reads the DECLARATIONS, not the file set: the package index is
+      // built from `context.parsedFiles`, so the file-set counter stays at zero
+      // and the parsed-file counter is where this property is now measured.
+      minimumScans: 0,
+      minimumParsedFileReads: 1,
     },
   ],
   [
@@ -555,6 +581,7 @@ function driveImports(
   fixture: ImportTargetFixture,
   importCount: number,
 ): ImportRun {
+  fixture.declare?.();
   const files = new CountingSet(fixture.files);
   const workspace = countedParsedFiles(fixture.files);
   const contextFor = (targetRaw: string) => ({

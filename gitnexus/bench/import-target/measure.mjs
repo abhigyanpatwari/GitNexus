@@ -361,7 +361,7 @@
  * inventory arm at the foot of the file reads
  * `SCOPE_RESOLVERS.get(language).resolveImportTarget.length` and reconciles it
  * against `CONTEXT_LANGS` in both directions, so a language that grows a
- * context leg cannot ship with the leg unmeasured. The other fifteen are handed
+ * context leg cannot ship with the leg unmeasured. The other fourteen are handed
  * nothing and build no `ParsedFile[]` at all, so their numbers are unmoved.
  *
  * `newPass` mints the `ParsedFile[]` FIRST and derives the path set from it
@@ -385,9 +385,9 @@
  * `parsedFiles` and once without, whose two answers must DIFFER and must both
  * equal what baselines.json records. Dropping the fifth argument, dropping
  * `importedSymbolKind`, or reverting Python to `namespace` collapses the two
- * onto one value and fails — and no other arm here would: on the main corpus
- * the leg agrees with the cascade, so both languages' fingerprints are
- * UNCHANGED by this (measured, all ten).
+ * onto one value and fails. PHP and Python still agree with their fallback on
+ * the main corpus; Java deliberately has no context-free fallback, so its
+ * fingerprints move to the declared-package answers recorded here.
  *
  * WHAT IS STILL NOT MEASURED, narrowed rather than deleted:
  *
@@ -462,7 +462,7 @@ import { resolveRubyImportTarget } from '../../src/core/ingestion/languages/ruby
 import { resolveCsharpImportTarget } from '../../src/core/ingestion/languages/csharp/import-target.ts';
 import { resolveKotlinImportTarget } from '../../src/core/ingestion/languages/kotlin/import-target.ts';
 import { resolvePhpImportTargetInternal } from '../../src/core/ingestion/languages/php/import-target.ts';
-import { resolveJavaImportTarget } from '../../src/core/ingestion/languages/java/import-target.ts';
+import { javaScopeResolver } from '../../src/core/ingestion/languages/java/scope-resolver.ts';
 import { cobolScopeResolver } from '../../src/core/ingestion/languages/cobol/scope-resolver.ts';
 import { resolveSwiftImportTarget } from '../../src/core/ingestion/languages/swift/import-target.ts';
 import { resolveRustImportTarget } from '../../src/core/ingestion/languages/rust/import-target.ts';
@@ -613,17 +613,17 @@ const HEAP_BUDGETED = [
 
 /**
  * The arms handed the fifth `context` argument — `{ parsedFiles, parsedImport }`
- * — because their registered hook DECLARES it. Two of seventeen, and the
+ * — because their registered hook DECLARES it. Three of seventeen, and the
  * inventory arm at the foot of this file reconciles that claim against
  * `SCOPE_RESOLVERS` in both directions rather than trusting this line.
  *
  * These are also the only arms for which `newPass` builds a `ParsedFile[]` at
- * all. Building one for the other fifteen would cost their timed loop an
+ * all. Building one for the other fourteen would cost their timed loop an
  * O(files) allocation per pass that no resolver of theirs can even observe —
  * their hooks declare three or four parameters — so their numbers stay exactly
  * where they were.
  */
-const CONTEXT_LANGS = ['php', 'python'];
+const CONTEXT_LANGS = ['php', 'java', 'python'];
 
 /**
  * Needs `node --expose-gc` to force collection for a clean delta; without it
@@ -1088,8 +1088,26 @@ const probeFile = (filePath, defs) => ({
   referenceSites: [],
 });
 
+const javaProbeFile = (filePath, packageName) => ({
+  ...probeFile(filePath, []),
+  captureSideChannel: {
+    kind: 'java',
+    packageFact: { status: 'known', packageName },
+    classAnnotations: [],
+  },
+});
+
+function javaBenchmarkPackage(filePath) {
+  const uniquePackage = /\/com\/example\/(pkg\d+)(?:\/|$)/.exec(`/${filePath}`)?.[1];
+  if (uniquePackage !== undefined) return `com.example.${uniquePackage}`;
+
+  return /\/svc\d+\/.*\/com\/example\/model(?:\/|$)/.test(`/${filePath}`)
+    ? 'com.example.model'
+    : '';
+}
+
 /**
- * The `ParsedFile[]` the orchestrator threads beside the path set, for the two
+ * The `ParsedFile[]` the orchestrator threads beside the path set, for the three
  * languages whose hook declares a `context` — see `CONTEXT_LANGS`.
  *
  * Two defs per file, and both are real shapes rather than padding. PHP keeps
@@ -1111,6 +1129,10 @@ const probeFile = (filePath, defs) => ({
 function buildParsedFiles(lang, files) {
   const parsedFiles = [];
   for (const filePath of files) {
+    if (lang === 'java') {
+      parsedFiles.push(javaProbeFile(filePath, javaBenchmarkPackage(filePath)));
+      continue;
+    }
     const slash = filePath.lastIndexOf('/');
     const stem = filePath.slice(slash + 1, filePath.lastIndexOf('.'));
     const parent = slash < 0 ? '' : filePath.slice(0, slash);
@@ -1424,17 +1446,12 @@ function collideTarget(lang, { local, r, d, j, dirs }) {
         : `Vendor${(r >>> 4) % 97}\\Ghost\\Missing`;
   }
   if (lang === 'java') {
-    // `com.svc{d}.model` matches no directory, but its LAST segment is the one
-    // every directory now ends in, so `firstFileDirectlyInPkgDir` walks the
-    // whole `model` bucket twice — at the direct match and again after the
-    // first strip — before the third strip finds `model` on its own. That walk
-    // is the non-constant term this arm exists to measure. The `d % 7` slice
-    // used to import `com.svc{d}.vendor`, which buckets to nothing, mirroring
-    // the unique arm's nested slice — which missed until #2881 and resolves
-    // now, so the mirror follows it or the same-workload invariant below breaks.
+    // Every file declares the same package despite living under different
+    // service paths. Exact and wildcard imports therefore exercise one growing
+    // declared-package bucket without relying on directory layout.
     return local
       ? (r >>> 3) % 3 === 0
-        ? `com.svc${d}.model.*`
+        ? 'com.example.model.*'
         : `com.example.model.File${j}`
       : (r >>> 3) % 2 === 0
         ? ['java.util.List', 'java.io.IOException', 'java.util.concurrent.ConcurrentHashMap'][
@@ -1625,6 +1642,7 @@ function newPass(lang, files, pad = 0) {
   }
   if (CONTEXT_LANGS.includes(lang)) {
     const parsedFiles = buildParsedFiles(lang, files);
+    restoreBenchmarkSideChannels(lang, parsedFiles);
     return {
       allFilePaths: new Set(parsedFiles.map((f) => f.filePath)),
       config: undefined,
@@ -1643,7 +1661,15 @@ function newPass(lang, files, pad = 0) {
  * to prove the arm can tell the two call shapes apart.
  */
 const contextFor = (pass, parsedImport) =>
-  pass.parsedFiles === undefined ? undefined : { parsedFiles: pass.parsedFiles, parsedImport };
+  pass.parsedFiles === undefined
+    ? undefined
+    : { parsedFiles: pass.parsedFiles, parsedImport, filesSkipped: 0 };
+
+function restoreBenchmarkSideChannels(lang, parsedFiles) {
+  if (lang !== 'java') return;
+  javaScopeResolver.loadResolutionConfig?.('');
+  for (const parsed of parsedFiles) javaScopeResolver.applyCaptureSideChannel?.(parsed);
+}
 
 /** The timed loop. One `newPass` per pass, so every pass pays exactly one index
  *  build — see `newPass`. */
@@ -1698,9 +1724,18 @@ function resolveOne(lang, from, target, pass) {
     );
   }
   if (lang === 'java') {
-    return resolveJavaImportTarget(
-      { kind: 'named', localName: 'X', importedName: 'X', targetRaw: target },
-      { fromFile: from, allFilePaths },
+    const parsedImport = {
+      kind: 'named',
+      localName: 'X',
+      importedName: 'X',
+      targetRaw: target,
+    };
+    return javaScopeResolver.resolveImportTarget(
+      target,
+      from,
+      allFilePaths,
+      pass.config,
+      contextFor(pass, parsedImport),
     );
   }
   // The `ScopeResolver` hook itself — COBOL's copy index has no other export.
@@ -2061,12 +2096,11 @@ function measureHeap(lang) {
  * of files carrying ONE import whose answer DIFFERS between the production
  * five-argument call and the three-argument one this harness used to make.
  *
- * That difference is the whole arm. The main corpus cannot serve as one: there
- * the leg AGREES with the cascade for every import (measured — both languages'
- * ten fingerprints are unchanged by threading the context), which is the right
- * outcome for a corpus built to measure cost, and useless for proving the
- * context arrives. Timing cannot prove it either; a dropped context makes the
- * arms FASTER, and nothing here has a lower bound on ms.
+ * That difference is the whole arm. PHP and Python need it because their main
+ * corpus answers agree with the fallback. Java's main fingerprint also catches
+ * a dropped context, but this tiny positive probe isolates the adapter contract
+ * from aggregate corpus changes. Timing cannot prove any of these; a dropped
+ * context makes the arms faster, and nothing here has a lower bound on ms.
  *
  * Both are resolved THROUGH `resolveOne`, not through the resolvers directly,
  * because what is under test is this file's threading rather than the
@@ -2092,6 +2126,15 @@ const CONTEXT_PROBE = {
       probeFile('src/App/Ns0/Alpha.php', [['Class', 'App\\Ns0\\Alpha']]),
       probeFile('src/App/Ns0/Dup.php', [['Class', 'App\\Ns0\\Dup']]),
       probeFile('src/App/Ns0/Helpers.php', [['Function', 'App\\Ns0\\Dup']]),
+    ],
+  },
+  /** A declared package resolves its type only when the parsed workspace arrives. */
+  java: {
+    from: 'app/Main.java',
+    target: 'com.example.model.User',
+    parsedFiles: [
+      javaProbeFile('app/Main.java', 'app'),
+      javaProbeFile('weird/path/User.java', 'com.example.model'),
     ],
   },
   /**
@@ -2127,10 +2170,12 @@ const CONTEXT_PROBE = {
 function measureContext(lang) {
   const { from, target, parsedFiles } = CONTEXT_PROBE[lang];
   const allFilePaths = new Set(parsedFiles.map((f) => f.filePath));
-  const answer = (files) =>
-    renderResolved(
+  const answer = (files) => {
+    restoreBenchmarkSideChannels(lang, files ?? []);
+    return renderResolved(
       resolveOne(lang, from, target, { allFilePaths, config: undefined, parsedFiles: files }),
     );
+  };
   return {
     target,
     with_context: answer(parsedFiles),
@@ -2293,7 +2338,7 @@ for (const lang of LANGS) {
 // phase goes 2.06 s -> 3.43 s, of which kotlin alone is 0.57 s. See COST.
 for (const lang of LANGS) report[lang].heap = measureHeap(lang);
 
-// Deterministic and microseconds — it resolves six imports over two three-file
+// Deterministic and microseconds — it resolves six imports over three tiny
 // corpora — so unlike the heap arm it neither needs nor deserves isolation from
 // the timing phase. It runs last only because it reads best beside the heap arm
 // in the report.
@@ -2841,7 +2886,7 @@ expectNoOrphanKeys(
 // against a claim in a comment. `run.ts` passes the fifth argument to every
 // provider; which ones can OBSERVE it is decided by how many parameters each
 // hook declares, and that is a number the registry can be asked for. Today
-// exactly two answer 5 (php, python) and the other fourteen answer 3 or 4 —
+// exactly three answer 5 (php, java, python) and the other fourteen answer 3 or 4 —
 // which is why fourteen arms could ignore this whole question and their numbers
 // did not move when it was fixed.
 //

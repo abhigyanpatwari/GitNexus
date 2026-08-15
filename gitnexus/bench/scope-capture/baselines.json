@@ -135,7 +135,7 @@
     "_rebaselined": "#1919 review CF3 fix: extended kotlin-local-property-owner (init/accessor destructuring) + new dart-accessor-owner fixture (getter/setter ownership). Fingerprint-only corpus drift; scaling ~1.0."
   },
   "java": {
-    "fingerprint": "79dafc369eaeb7183ee8cc1149b1a6c21ad672c7e5b806fe8b0060e5a952c79a",
+    "fingerprint": "2bf47cc19b595a9889ac21ec0154c6ce6786271d68551f21d1bc14c626bcd4ff",
     "scaling_budget": 1.5,
     "_rebaselined_2935_synthetic_declarations": "PR #2935 review follow-up: synthesized Java anonymous classes and bodied enum constants now carry the presence-only @declaration.is-synthetic sidecar used to preserve source-written dispatch targets at the fanout cap. DIGEST DRIFT ONLY, NOT A CAPTURE-SET CHANGE: the tag is attached to existing synthetic declaration matches; capture groups and fixture count remain 5755/18405, 3512, and 206. Prior 36d689c58526c4482fbd701d1d9ca156623a3970734ead145717858712271ab5 -> 2e2150b4f4d64519e3f4c6d7a2c12259178d3117872203c904fab8cba96a694a; CI scaling 0.971 < 1.5.",
     "_rebaselined_2917_record_component_accessors": "#2917: every implicit Java record-component accessor now emits a component-bounded @scope.function plus @declaration.method/name/zero-arity/return-type metadata. The scope boundary prevents subsequent record-body references from being attributed to the accessor. Java was the only general language fingerprint to move; capture groups scale by exactly two per generated record component (small 5755 -> 6255, large 18405 -> 20005). Prior 36d689c58526c4482fbd701d1d9ca156623a3970734ead145717858712271ab5 -> 901a66c7dc0f071eeef9e4864b2519e5b58a1a141a1f9a7817ea42f7ff70eafb; scaling 0.961 < 1.5. Re-measured after merging origin/main, which carries #2935's is-synthetic sidecar on top of the same corpus: 2e2150b4f4d64519e3f4c6d7a2c12259178d3117872203c904fab8cba96a694a -> 79dafc369eaeb7183ee8cc1149b1a6c21ad672c7e5b806fe8b0060e5a952c79a; scaling 1.085 < 1.5, capture groups 6255/20005, capture_groups_fp 3560, fixture_count 206 (unchanged by the merge).",
@@ -154,8 +154,9 @@
     "_rebaselined_2766_receiver_chain_wire_v2": "#2766: receiver-chain wire format v1 -> v2 (name-free `await` / `index` step kinds). The VERSION prefix is part of every emitted `@reference.receiver-chain` capture, so every chain-minting language's capture text changed. WIRE-FORMAT CHANGE, NOT A CAPTURE-SET CHANGE: the same chains are minted for the same sites, spelled `2|\u2026` instead of `1|\u2026`. Exactly the 12 chain-minting languages drifted; c, cobol and dart did not, which is the check that this is the prefix and not a capture regression. Accompanied by SCHEMA_BUMP 34 -> 37 and INCREMENTAL_SCHEMA_VERSION 28 -> 31 so a stale index is rejected rather than replaying chains a v2 decoder refuses. Prior 310adbc2e0827b5ac749acaa981cd12d256fc5b7cbc5592c5bee219e92abf9ee -> a9943355e945e03ddb87c800f4cc1f62b3d04feefb3ec64c258d8e0bb3b3fcd9.",
     "capture_groups_small": 6255,
     "capture_groups_large": 20005,
-    "capture_groups_fp": 3560,
-    "fixture_count": 206
+    "capture_groups_fp": 3586,
+    "fixture_count": 209,
+    "_rebaselined_2910_declared_package_fixtures": "#2910 adds three Java resolver fixture files covering an external JDK lookalike, a path/package mismatch, and wildcard package membership. Fixture-corpus growth only: Java query rules and synthetic scaling sources are unchanged; capture_groups_small/large remain 6255/20005. capture_groups_fp 3560 -> 3586 and fixture_count 206 -> 209."
   },
   "java-local-types": {
     "fingerprint": "bdde823fa725e636e257940efb4c8655aa23124c1727cbaa8856d1ad8f71729e",
