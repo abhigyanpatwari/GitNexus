@@ -18,7 +18,7 @@
 import { KnowledgeGraph } from '../graph/types.js';
 import type { SemanticModel, SymbolTableReader } from './model/index.js';
 import { generateId } from '../../lib/utils.js';
-import type { SymbolDefinition } from 'gitnexus-shared';
+import type { ParsedImport, SymbolDefinition } from 'gitnexus-shared';
 import { yieldToEventLoop } from './utils/event-loop.js';
 import type { ExtractedRoute, ExtractedFetchCall } from './workers/parse-worker.js';
 import type { ExtractedDecoratorRoute } from './workers/parse-worker.js';
@@ -29,6 +29,7 @@ import {
   routeNodeKey,
 } from './route-extractors/route-path.js';
 import { extractReturnTypeName } from './type-extractors/shared.js';
+import { DATA_ROUTE_TABLE_SOURCE } from './route-extractors/data-route-table.js';
 
 const MAX_EXPORTS_PER_FILE = 500;
 const MAX_TYPE_NAME_LENGTH = 256;
@@ -36,6 +37,18 @@ const MAX_TYPE_NAME_LENGTH = 256;
 /** Per-file resolved type bindings for exported symbols.
  *  Consumed by the cross-file re-resolution / enrichment pass. */
 export type ExportedTypeMap = Map<string, Map<string, string>>;
+
+interface RouteResolutionFile {
+  readonly filePath: string;
+  readonly parsedImports: readonly ParsedImport[];
+  readonly localDefs: readonly SymbolDefinition[];
+}
+
+interface RouteHandlerResolutionContext {
+  readonly files: readonly RouteResolutionFile[];
+  readonly resolveImportTarget: (parsedImport: ParsedImport, fromFile: string) => string | null;
+  readonly isExportedSymbol: (nodeId: string) => boolean;
+}
 
 /** Record one exported graph node into the incremental ExportedTypeMap. */
 export const accumulateExportedTypesFromParsedNode = (
@@ -281,6 +294,7 @@ export function resolveRouteHandlerSymbols(
   model: SemanticModel,
   extractedRoutes: readonly ExtractedRoute[],
   decoratorRoutes: readonly ExtractedDecoratorRoute[],
+  routeContext?: RouteHandlerResolutionContext,
 ): Map<string, string> {
   const out = new Map<string, string>();
   // Route identities already claimed by an earlier route (resolved or not).
@@ -293,6 +307,87 @@ export function resolveRouteHandlerSymbols(
   const uniqueSymbolId = (filePath: string, name: string): string | undefined => {
     const defs = model.symbols.lookupExactAll(filePath, name);
     return defs.length === 1 ? defs[0]?.nodeId : undefined;
+  };
+
+  const uniqueById = (defs: readonly SymbolDefinition[]): SymbolDefinition | undefined => {
+    const byId = new Map(defs.map((def) => [def.nodeId, def]));
+    return byId.size === 1 ? byId.values().next().value : undefined;
+  };
+
+  const routeCallables = (defs: readonly SymbolDefinition[]): readonly SymbolDefinition[] =>
+    defs.filter((def) => def.type === 'Function' || def.type === 'Method');
+
+  const filesByPath = new Map(routeContext?.files.map((file) => [file.filePath, file]) ?? []);
+
+  const uniqueImport = (filePath: string, localName: string): ParsedImport | undefined => {
+    const matches = (filesByPath.get(filePath)?.parsedImports ?? []).filter(
+      (parsedImport) =>
+        'localName' in parsedImport &&
+        parsedImport.localName === localName &&
+        parsedImport.kind !== 'dynamic-unresolved',
+    );
+    return matches.length === 1 ? matches[0] : undefined;
+  };
+
+  const importedTarget = (
+    filePath: string,
+    localName: string,
+  ): { parsedImport: ParsedImport; targetFile: string } | undefined => {
+    if (routeContext === undefined) return undefined;
+    const parsedImport = uniqueImport(filePath, localName);
+    if (parsedImport === undefined) return undefined;
+    const targetFile = routeContext.resolveImportTarget(parsedImport, filePath);
+    return targetFile === null ? undefined : { parsedImport, targetFile };
+  };
+
+  const resolveDataRouteHandler = (filePath: string, designator: string): string | undefined => {
+    const parts = designator.split('.');
+    if (parts.length === 1) {
+      const local = uniqueById(routeCallables(model.symbols.lookupExactAll(filePath, designator)));
+      if (local !== undefined) return local.nodeId;
+
+      const imported = importedTarget(filePath, designator);
+      if (
+        imported === undefined ||
+        imported.parsedImport.kind === 'namespace' ||
+        imported.parsedImport.kind === 'wildcard' ||
+        !('importedName' in imported.parsedImport)
+      ) {
+        return undefined;
+      }
+      if (imported.parsedImport.importedName === 'default') {
+        // ParsedFile does not carry explicit default-export provenance. Fail
+        // closed rather than infer an unrelated named export from the module.
+        return undefined;
+      }
+      return uniqueById(
+        routeCallables(
+          model.symbols.lookupExactAll(imported.targetFile, imported.parsedImport.importedName),
+        ),
+      )?.nodeId;
+    }
+    if (parts.length !== 2) return undefined;
+
+    const [receiver, member] = parts;
+    const localOwner = uniqueById(model.symbols.lookupExactAll(filePath, receiver));
+    if (localOwner !== undefined) {
+      return uniqueById(model.methods.lookupAllByOwner(localOwner.nodeId, member))?.nodeId;
+    }
+
+    const imported = importedTarget(filePath, receiver);
+    if (imported === undefined || imported.parsedImport.kind === 'wildcard') return undefined;
+    if (imported.parsedImport.kind === 'namespace') {
+      return uniqueById(routeCallables(model.symbols.lookupExactAll(imported.targetFile, member)))
+        ?.nodeId;
+    }
+    if (!('importedName' in imported.parsedImport)) return undefined;
+    if (imported.parsedImport.importedName === 'default') return undefined;
+    const owner = uniqueById(
+      model.symbols.lookupExactAll(imported.targetFile, imported.parsedImport.importedName),
+    );
+    return owner === undefined
+      ? undefined
+      : uniqueById(model.methods.lookupAllByOwner(owner.nodeId, member))?.nodeId;
   };
 
   const claim = (
@@ -326,10 +421,49 @@ export function resolveRouteHandlerSymbols(
     claim(route.routePath, route.prefix ?? null, route.httpMethod, methodId);
   }
 
-  // Decorator routes (Spring / FastAPI / generic) — the decorated handler in
-  // the route's own file.
+  const dataHandlerByRoute = new Map<ExtractedDecoratorRoute, string>();
+  const dataHandlersByIdentity = new Map<
+    string,
+    { handlers: Set<string>; hasUnresolved: boolean }
+  >();
   for (const dr of decoratorRoutes) {
-    const handlerId = dr.handlerName ? uniqueSymbolId(dr.filePath, dr.handlerName) : undefined;
+    if (dr.source !== DATA_ROUTE_TABLE_SOURCE || !dr.handlerName || !dr.routePath) continue;
+    const handlerId = resolveDataRouteHandler(dr.filePath, dr.handlerName);
+    const url = normalizeExtractedRoutePath(dr.routePath, dr.prefix ?? null);
+    const key = routeNodeKey(normalizeRouteMethod(dr.httpMethod), url);
+    const state = dataHandlersByIdentity.get(key) ?? {
+      handlers: new Set<string>(),
+      hasUnresolved: false,
+    };
+    if (handlerId === undefined) {
+      state.hasUnresolved = true;
+    } else {
+      dataHandlerByRoute.set(dr, handlerId);
+      state.handlers.add(handlerId);
+    }
+    dataHandlersByIdentity.set(key, state);
+  }
+
+  // Decorator routes (Spring / FastAPI / generic) — the decorated handler in
+  // the route's own file. Data tables additionally suppress an identity when
+  // duplicate entries resolve to different handlers: recording either one
+  // would invent a single-winner dispatch that the loop does not prove.
+  for (const dr of decoratorRoutes) {
+    const handlerId =
+      dr.source === DATA_ROUTE_TABLE_SOURCE
+        ? dataHandlerByRoute.get(dr)
+        : dr.handlerName
+          ? uniqueSymbolId(dr.filePath, dr.handlerName)
+          : undefined;
+    // An unproven data-table entry never becomes a Route node, so it must not
+    // reserve the identity and suppress a later, valid framework declaration.
+    if (dr.source === DATA_ROUTE_TABLE_SOURCE && handlerId === undefined) continue;
+    if (dr.source === DATA_ROUTE_TABLE_SOURCE && dr.routePath) {
+      const url = normalizeExtractedRoutePath(dr.routePath, dr.prefix ?? null);
+      const key = routeNodeKey(normalizeRouteMethod(dr.httpMethod), url);
+      const state = dataHandlersByIdentity.get(key);
+      if (state === undefined || state.hasUnresolved || state.handlers.size !== 1) continue;
+    }
     claim(dr.routePath, dr.prefix ?? null, dr.httpMethod, handlerId);
   }
 

@@ -533,7 +533,11 @@ import type { ParseWorkerResult } from '../core/ingestion/workers/parse-worker.j
 // value above every in-flight claim at this merge (main 67, #2891's 59, #1616's
 // stale 2), which is the rule above: above every claim, not above origin/main.
 // RE-CHECK AGAINST origin/main IMMEDIATELY BEFORE MERGING.
-const SCHEMA_BUMP = 68;
+//
+// 68 -> 69 for #2969's JS/TS data-route-table decoratorRoutes. A warm v68
+// cache would replay unchanged worker results without those routes and make the
+// feature appear to work only after source edits or explicit cache invalidation.
+const SCHEMA_BUMP = 69;
 const GITNEXUS_PKG_VERSION = (() => {
   try {
     // package.json sits at gitnexus/package.json — two levels up from

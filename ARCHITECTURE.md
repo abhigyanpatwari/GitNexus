@@ -98,7 +98,7 @@ scan → structure → [springConfig, markdown, cobol] → parse → [routes, to
 | `markdown`                | `markdown.ts`                          | `structure`                                                        | Section nodes, cross-link edges from .md/.mdx                                                                                                                                               |
 | `cobol`                   | `cobol.ts`                             | `structure`                                                        | COBOL program/paragraph/section nodes (regex, no tree-sitter)                                                                                                                               |
 | `parse`                   | `parse.ts` + `parse-impl.ts`           | `structure`, `markdown`, `cobol`                                   | Symbol nodes, IMPORTS/CALLS/EXTENDS edges, extracted routes/tools/ORM queries                                                                                                               |
-| `routes`                  | `routes.ts`                            | `parse`                                                            | Route nodes + HANDLES_ROUTE edges (Next.js, Expo, PHP, decorators, and JS/TS dispatch guards — see below)                                                                                    |
+| `routes`                  | `routes.ts`                            | `parse`                                                            | Route nodes + HANDLES_ROUTE edges (Next.js, Expo, PHP, decorators, and JS/TS static route sources — see below)                                                                              |
 | `tools`                   | `tools.ts`                             | `parse`                                                            | Tool nodes + HANDLES_TOOL edges                                                                                                                                                             |
 | `orm`                     | `orm.ts`                               | `parse`                                                            | QUERIES edges (Prisma, Supabase)                                                                                                                                                            |
 | `crossFile`               | `cross-file.ts` + `cross-file-impl.ts` | `parse`, `routes`, `tools`, `orm`                                  | Cross-file type propagation in topological import order                                                                                                                                     |
@@ -174,7 +174,7 @@ converging on the routes phase's `(method, url)` registry:
 | Filesystem convention | path → URL, no parsing | Next.js `app/`, Expo, PHP |
 | Single-file framework route | `isRouteFile` + worker extraction | Laravel `routes/*.php` |
 | Cross-file framework route | `discoverRootRouteFiles` + `extractRoutes` | Django `urlpatterns` |
-| AST-level route in a normal file | `extractDecoratorRoutes` | Spring, FastAPI, NestJS, **JS/TS dispatch guards** |
+| AST-level route in a normal file | `extractDecoratorRoutes` | Spring, FastAPI, NestJS, **JS/TS dispatch guards and static data route tables** |
 
 The last row is the one whose name undersells it. A route is DECLARED by a
 decorator, but it can also be **inferred** from a raw `node:http` server's own
@@ -184,6 +184,15 @@ a path, a verb and a handler, and nothing else in the pipeline could see it.
 handler resolution are shared with decorator routes, and
 `ExtractedDecoratorRoute.source` carries the provenance difference through to
 the `HANDLES_ROUTE` edge.
+
+JS/TS data route tables share that transport when a route-named array contains
+direct object literals with static `path`, `method`, and `handler` fields and a
+same-scope `for...of` dispatcher positively compares the path and method before
+directly invoking the handler. Dynamic values, computed keys, spreads,
+inline/called handlers, unknown verbs, and ambiguous handler bindings are
+suppressed. Bare import aliases and single-level member handlers are attributed
+only through declared import and owner provenance; an unproven receiver never
+falls back to a global name guess.
 
 That extractor is deliberately **precision-weighted**: `route_map` presents its
 output as fact, so a `startsWith` namespace test, a bare `pathname === '/'`
